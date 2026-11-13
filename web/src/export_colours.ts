@@ -48,8 +48,14 @@ export function hex(c: Rgba): string {
 }
 
 export interface Painted { fill?: string; text: string; under: string }
-// the two properties read from a computed style (getComputedStyle's own; a test passes a stand-in)
-export type StyleOf = (e: Element) => { backgroundColor: string; color: string };
+// the properties read from a computed style (getComputedStyle's own; a test passes a stand-in, which may leave out all
+// but the two colours: a missing opacity is 1, a missing border none, a missing weight normal)
+export interface Computed {
+  backgroundColor: string; color: string; opacity?: string;
+  borderLeftColor?: string; borderLeftWidth?: string; borderLeftStyle?: string;
+  fontWeight?: string; fontSize?: string; fontStyle?: string; textDecorationLine?: string;
+}
+export type StyleOf = (e: Element) => Computed;
 const WHITE: Rgba = [255, 255, 255, 1];
 const computed: StyleOf = e => getComputedStyle(e);
 
@@ -65,12 +71,59 @@ function stacked(e: Element | null, style: StyleOf): Rgba {
   return layers.reduceRight((under, top) => over(top, under), WHITE);
 }
 
+// faded: the group an element is painted in at an opacity under 1 (a stale part: app.css greys it): the product of the
+// opacities of the element and its ancestors, and the outermost ancestor so faded (the group's backdrop is what lies
+// under it). None faded: undefined.
+function faded(e: Element, style: StyleOf): { op: number; top: Element } | undefined {
+  let op = 1, top: Element | undefined;
+  for (let x: Element | null = e; x; x = x.parentElement) {
+    const o = Number(style(x).opacity ?? '1');
+    if (isFinite(o) && o < 1) { op *= o; top = x; }
+  }
+  return top ? { op, top } : undefined;
+}
+
+// paintOf: e's fill and text colour as the page's own CSS paints them (see the head of this file); an element inside a
+// faded group (an ancestor's opacity under 1) is blended at that opacity over the group's backdrop, its fill, its text
+// and, when its base is in the group too, the colour under the base
 export function paintOf(e: Element, base?: Element | null, style: StyleOf = computed): Painted {
   const b = base === undefined ? (e.parentElement?.closest('table') ?? e.parentElement) : base;
-  const at = stacked(e, style), under = b ? stacked(b, style) : WHITE;
+  let at = stacked(e, style), under = b ? stacked(b, style) : WHITE;
+  const t0 = parseColour(style(e).color) ?? [0, 0, 0, 1];
+  let text = over(t0, at);
+  const f = faded(e, style);
+  if (f) {
+    const back = stacked(f.top.parentElement, style);
+    const seen = (c: Rgba): Rgba => over([c[0], c[1], c[2], f.op], back);
+    at = seen(at); text = seen(text);
+    if (b && (f.top === b || f.top.contains(b))) under = seen(under);
+  }
   const fill = hex(at) === hex(under) ? undefined : hex(at);
-  const t = parseColour(style(e).color) ?? [0, 0, 0, 1];
-  return { fill, text: hex(over(t, at)), under: hex(under) };
+  return { fill, text: hex(text), under: hex(under) };
+}
+
+// borderLeftOf: e's left border colour as painted (a tile's state stripe), over e's own colour; none drawn = undefined
+export function borderLeftOf(e: Element, style: StyleOf = computed): string | undefined {
+  const s = style(e);
+  const w = parseFloat(s.borderLeftWidth ?? '0'), kind = s.borderLeftStyle ?? 'none';
+  if (!(w > 0) || kind === 'none' || kind === 'hidden') return undefined;
+  const c = parseColour(s.borderLeftColor);
+  if (!c || c[3] === 0) return undefined;
+  return hex(over(c, stacked(e, style)));
+}
+
+// textLook: the weight, size (points), slant and underline of e's text as the page draws it. The underline is the
+// element's own text-decoration or an ancestor's up to `upTo` (a decoration is drawn through the descendants' text)
+export function textLook(e: Element, upTo: Element | null = null, style: StyleOf = computed): { bold: boolean; pt?: number; italic: boolean; underline: boolean } {
+  const s = style(e);
+  const w = s.fontWeight === 'bold' ? 700 : Number(s.fontWeight ?? '400');
+  const px = parseFloat(s.fontSize ?? '');
+  let underline = false;
+  for (let x: Element | null = e; x; x = x.parentElement) {
+    if ((style(x).textDecorationLine ?? '').includes('underline')) { underline = true; break; }
+    if (x === upTo) break;
+  }
+  return { bold: w >= 600, pt: isFinite(px) && px > 0 ? Math.round(px * 0.75 * 2) / 2 : undefined, italic: s.fontStyle === 'italic', underline };
 }
 
 // readRows: what `read` gives for each row of a grid, the rows the screen does not draw included. Past its page a grid

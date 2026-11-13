@@ -36,9 +36,10 @@ eq('over: two translucent layers', hex(over([255, 0, 0, 0.5], over([0, 0, 255, 0
 eq('hex rounds and clamps', hex([255.6, -3, 127.5, 1]), 'FF0080');
 
 // paintOf on stand-in elements: tag, class, own style, parent
-const node = (tag, bg, color, parent = null) => ({ tagName: tag.toUpperCase(), bg, color, parentElement: parent,
-  closest(sel) { for (let x = this; x; x = x.parentElement) if (x.tagName === sel.toUpperCase()) return x; return null; } });
-const style = e => ({ backgroundColor: e.bg, color: e.color });
+const node = (tag, bg, color, parent = null, extra = {}) => ({ tagName: tag.toUpperCase(), bg, color, parentElement: parent, extra,
+  closest(sel) { for (let x = this; x; x = x.parentElement) if (x.tagName === sel.toUpperCase()) return x; return null; },
+  contains(o) { for (let x = o; x; x = x.parentElement) if (x === this) return true; return false; } });
+const style = e => ({ backgroundColor: e.bg, color: e.color, ...e.extra });
 const CLEAR = 'rgba(0, 0, 0, 0)';
 const tree = (panelBg, textColour) => {
   const panel = node('div', panelBg, textColour);
@@ -78,6 +79,37 @@ eq('an explicit base of null: the canvas white is the base',
   paintOf(node('td', 'rgb(240, 241, 246)', 'rgb(0, 79, 131)', L.tr), null, style), { fill: 'F0F1F6', text: '004F83', under: 'FFFFFF' });
 eq('an unreadable text colour: black',
   paintOf(node('td', CLEAR, 'oklch(0.5 0.1 200)', L.tr), undefined, style), { text: '000000', under: 'FFFFFF' });
+
+// an ancestor's opacity: a stale part (app.css greys it at .5) blended over the group's backdrop
+const { borderLeftOf, textLook } = m;
+const SP = tree('rgb(255, 255, 255)', 'rgb(27, 34, 48)');
+const stale = node('div', CLEAR, 'rgb(27, 34, 48)', SP.panel, { opacity: '0.5' });
+const sTable = node('table', CLEAR, 'rgb(27, 34, 48)', stale), sTr = node('tr', CLEAR, 'rgb(27, 34, 48)', node('tbody', CLEAR, 'rgb(27, 34, 48)', sTable));
+eq('opacity .5 on a group: a plain cell\'s text blended halfway to the backdrop, no fill (its table is faded too)',
+  paintOf(node('td', CLEAR, 'rgb(27, 34, 48)', sTr), undefined, style), { text: '8D9198', under: 'FFFFFF' });
+eq('opacity .5 on a group: a crit cell AB1F26 / white seen as D58F93 / FFFFFF',
+  paintOf(node('td', 'rgb(171, 31, 38)', 'rgb(255, 255, 255)', sTr), undefined, style), { fill: 'D58F93', text: 'FFFFFF', under: 'FFFFFF' });
+eq('opacity on the cell alone (its table not faded): the fill blended, the colour under the table as it is',
+  paintOf(node('td', 'rgb(0, 102, 56)', 'rgb(255, 255, 255)', SP.tr, { opacity: '0.5' }), undefined, style), { fill: '80B39C', text: 'FFFFFF', under: 'FFFFFF' });
+eq('opacity 1 everywhere: as without it',
+  paintOf(node('td', 'rgb(0, 102, 56)', 'rgb(255, 255, 255)', SP.tr, { opacity: '1' }), undefined, style), { fill: '006638', text: 'FFFFFF', under: 'FFFFFF' });
+// a tile's state stripe
+const card = (extra) => node('div', 'rgb(246, 247, 249)', 'rgb(27, 34, 48)', SP.panel, extra);
+eq("borderLeftOf: a tile's 4px solid stripe AB1F26", borderLeftOf(card({ borderLeftColor: 'rgb(171, 31, 38)', borderLeftWidth: '4px', borderLeftStyle: 'solid' }), style), 'AB1F26');
+eq('borderLeftOf: no border (width 0)', borderLeftOf(card({ borderLeftColor: 'rgb(171, 31, 38)', borderLeftWidth: '0px', borderLeftStyle: 'solid' }), style), undefined);
+eq('borderLeftOf: style none', borderLeftOf(card({ borderLeftColor: 'rgb(171, 31, 38)', borderLeftWidth: '4px', borderLeftStyle: 'none' }), style), undefined);
+eq('borderLeftOf: a translucent stripe over the card', borderLeftOf(card({ borderLeftColor: 'rgba(0, 0, 0, 0.5)', borderLeftWidth: '3px', borderLeftStyle: 'solid' }), style), '7B7C7D');
+eq('borderLeftOf: a stand-in without border properties', borderLeftOf(card({}), style), undefined);
+// the text's look
+const lk = (extra, parent = SP.tr) => textLook(node('span', CLEAR, 'rgb(0, 0, 0)', parent, extra), null, style);
+eq('textLook: weight 700, 16px: bold, 12 pt', lk({ fontWeight: '700', fontSize: '16px' }), { bold: true, pt: 12, italic: false, underline: false });
+eq('textLook: weight 600 is bold, 500 is not', [lk({ fontWeight: '600' }).bold, lk({ fontWeight: '500' }).bold], [true, false]);
+eq('textLook: 13px is 10 pt (to the half point), italic', lk({ fontSize: '13px', fontStyle: 'italic' }), { bold: false, pt: 10, italic: true, underline: false });
+const aLink = node('a', CLEAR, 'rgb(34, 89, 200)', SP.tr, { textDecorationLine: 'underline' });
+eq("textLook: a span inside an underlined link is underlined (the link's decoration)", textLook(node('span', CLEAR, 'rgb(34, 89, 200)', aLink), null, style).underline, true);
+eq('textLook: upTo itself counts (the link as upTo, two levels up)', textLook(node('span', CLEAR, 'rgb(0, 0, 0)', node('b', CLEAR, 'rgb(0, 0, 0)', aLink)), aLink, style).underline, true);
+const stop = node('td', CLEAR, 'rgb(0, 0, 0)', aLink);
+eq('textLook: an ancestor above upTo does not count', textLook(node('span', CLEAR, 'rgb(0, 0, 0)', stop), stop, style).underline, false);
 
 // readRows on a stand-in DOM: a row not in the page is read inside a hidden shell set right after the grid's table in
 // the grid's own parent, a batch at a time; a drawn row where it is; nothing left behind, also after a throw

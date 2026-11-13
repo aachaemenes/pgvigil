@@ -18,11 +18,21 @@ import { installGridTools } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
 import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
 import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showMenu } from './ui';
+import { readRows } from './export_colours';
+import { cellLook, gridHeadLook, headLook, pageSheet, withDot } from './export_page';
+import type { LookCache, PageSheet } from './export_page';
 
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
-export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string }   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
-export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string }   // note: the page's 'the newest N of M' line above the grid
+export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
+  look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
+  runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
+  jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
+  sheets?: number[] }   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+// Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
+// words, a thick left border in a colour (a tile's stripe)
+export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string }
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[] }   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -137,31 +147,20 @@ export function statusOf(td: Element): Status | undefined {
   return (['crit', 'warn', 'ok'] as Status[]).find(k => td.classList.contains(k));
 }
 
-// carry: a value cell takes the colour of the cell that judges it in its row (the page puts the verdict on the word:
-// 'failing', 'late', 'failed', '4 %'; DBA Dash colours the value too: the date of the late backup, the time of the
-// failed run). So the file colours these value cells where the screen leaves them plain. Column keys of the page
-// models: the value's key, then the keys of the cells that may judge it. A cell with a colour of its own keeps it; an
-// empty cell takes none.
-const carry: Record<string, string[]> = {
-  value: ['severity', 'check_name'],                                    // a finding's or a check's value
-  archive_age_s: ['archiver_failing'],                                  // Backups: the last archived WAL's age by the archiver's state
-  full_at: ['full_status'], full_age_hours: ['full_status'],            // SQL Server backups: each date and age by its type's status
-  diff_at: ['diff_status'], log_at: ['log_status'], log_age_minutes: ['log_status'],
-  last_run_at: ['last_outcome'], last_run_utc: ['last_outcome'],        // Jobs: the last run's time by its outcome
-  last_start: ['last_status'],                                          // Job report: the same
-  free_bytes: ['free_pct'],                                             // Storage, drives: the free size by the free share
-};
+// (No colour is carried from a judging cell to a value cell: the file follows the page, which leaves those value cells
+// plain; design line C4, the export's E2 answer.)
 
 // linkOf: a plain cell the screen draws as a link (a name that opens its page); a status cell keeps its status colours
 const linkOf = (td: Element) => !td.classList.contains('status') && !!td.querySelector('a[href]') || undefined;
 
 // a status cell that shows only its colour (a green Summary cell) carries its words in data-text; a statement cell
 // shown as its first characters (sqlview.ts) carries the whole text in data-full, which the export writes instead
+export const cellWords = (e: Element): string => text(e);
 const text = (e: Element) => e.querySelector('[data-full]')?.getAttribute('data-full')
   ?? ((e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''));
 
 // a heading's own words, without its 'what is this' button (sqlview.ts): they name a sheet and a CSV file
-const headingText = (e: Element) => {
+export const headingText = (e: Element): string => {
   const c = e.cloneNode(true) as Element;
   c.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove());
   return text(c);
@@ -169,7 +168,7 @@ const headingText = (e: Element) => {
 
 // readGrid: a grid's header and its rows as cells. A column hidden with the grid tools (its header carries
 // data-gt-hidden) is left out, as DBA Dash's export leaves out a hidden column; all = every column (the tools' own reads).
-export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'cols' | 'rows'> {
+export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'cols' | 'rows' | 'heads'> {
   const ths = [...table.querySelectorAll(':scope > thead > tr:first-child > th')];
   const cols = ths.map(headingText);   // a header's words without its filter button (ui.ts grid)
   const numCol = ths.map(h => h.classList.contains('num'));
@@ -179,32 +178,31 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
   const trs = (m?.allRows ? m.allRows() : [...table.querySelectorAll<HTMLTableRowElement>(':scope > tbody > tr')]).filter(tr => !tr.classList.contains('trend-row'));
   const data = m?.rows();
   const keys: (Col | undefined)[] = m && m.cols.length === cols.length ? m.cols : cols.map(() => undefined);
-  const at = new Map(keys.map((k, j) => [k?.key ?? '', j] as [string, number]));
-  const rows = trs.map((tr, i) => {
-    const r: Cell[] = [...tr.children].map((td, j) => {
-      const t = text(td);
-      const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
-      return { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
-    });
-    // the colours the row's own cells hold, read before any is carried: a carried colour is never carried on
-    const own = r.map(c => c.status);
-    r.forEach((c, j) => {
-      const from = keys[j] ? carry[keys[j]!.key] : undefined;
-      if (!from || c.status || c.text === '') return;
-      for (const k of from) { const s = at.has(k) ? own[at.get(k)!] : undefined; if (s) { c.status = s; break; } }
-    });
-    return r;
-  });
+  // each cell's look as the page's CSS paints it: a drawn row where it is, a row past the grid's page in a hidden copy of
+  // the table (readRows), one read per cell shape (cache)
+  const cache: LookCache = new Map();
+  const looks = readRows(table, trs, tr => [...tr.children].map(td => cellLook(td, table, cache)));
+  const rows = trs.map((tr, i) => [...tr.children].map((td, j) => {
+    const t = text(td);
+    const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
+    const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
+    const l = looks[i]?.[j];
+    return l ? withDot({ ...c, look: l.look }, l) : c;
+  }));
+  const heads = ths.map(th => headLook(th, table));
   const keep = ths.map(h => all || !h.hasAttribute('data-gt-hidden'));
-  if (keep.every(Boolean)) return { cols, rows };
-  return { cols: cols.filter((_, j) => keep[j]), rows: rows.map(r => r.filter((_, j) => keep[j] ?? true)) };
+  if (keep.every(Boolean)) return { cols, rows, heads };
+  return { cols: cols.filter((_, j) => keep[j]), rows: rows.map(r => r.filter((_, j) => keep[j] ?? true)), heads: heads.filter((_, j) => keep[j]) };
 }
 
 function readProps(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const rows = [...table.querySelectorAll('tr')].map(tr => {
     const th = tr.querySelector('th'), td = tr.querySelector('td');
     const a = th ? text(th) : '', b = td ? text(td) : '';
-    return [{ v: a, kind: 'text' as Kind, text: a }, { v: b, kind: 'text' as Kind, status: td ? statusOf(td) : undefined, text: b }];
+    const la = th ? cellLook(th, table) : undefined, lb = td ? cellLook(td, table) : undefined;
+    const ca: Cell = { v: a, kind: 'text' as Kind, text: a, ...(la ? { look: la.look } : {}) };
+    const cb: Cell = { v: b, kind: 'text' as Kind, status: td ? statusOf(td) : undefined, text: b, ...(lb ? { look: lb.look } : {}) };
+    return [la ? withDot(ca, la) : ca, lb ? withDot(cb, lb) : cb];
   });
   return { cols: ['item', 'value'], rows };
 }
@@ -250,6 +248,8 @@ export function sections(root: ParentNode, fallback: string, empties = false): S
 function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Section; el: Element }[] {
   let outer = fallback, inner: { text: string; within: Element } | undefined;
   const out: { sec: Section; el: Element }[] = [];
+  let cardHead: Look | undefined;   // a property card's sheet: its 'item | value' header in the page's grid-header look
+  const cardHeads = () => { const l = cardHead ??= (root instanceof Element ? gridHeadLook(root) : undefined); return l ? [l, l] : undefined; };
   for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, table.grid, table.props, p.empty[data-cols]' : 'h2, h3, h4, table.grid, table.props')) {
     if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
       const within = e.closest('[role=region]');
@@ -265,7 +265,11 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
       if (Array.isArray(cols) && cols.length) {
         // DBA Dash writes the visible columns' headers only: a column the grid tools hide stays out here too
         const all = cols.map(String), hid = hiddenOfEmpty(e, all);
-        out.push({ sec: { name: heading, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: text(e) || undefined }, el: e });
+        // the header row the page draws for it (ui.ts: a .grid-empty table beside the note): its cells' looks
+        const drawn = e.parentElement?.querySelector(':scope > table.grid-empty');
+        const ths = drawn ? [...drawn.querySelectorAll('th')] : [];
+        const heads = ths.length === all.length ? ths.map(th => headLook(th, drawn!)).filter((_, j) => !hid.has(j)) : undefined;
+        out.push({ sec: { name: heading, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: text(e) || undefined, ...(heads ? { heads } : {}) }, el: e });
       }
       continue;
     }
@@ -278,7 +282,8 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
     const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
     const notes = [prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;
-    out.push({ sec: { name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note }, el: t });
+    const read = t.classList.contains('grid') ? readGrid(t) : { ...readProps(t), ...(cardHeads() ? { heads: cardHeads() } : {}) };
+    out.push({ sec: { name: heading, ...read, note }, el: t });
   }
   return out;
 }
@@ -311,43 +316,66 @@ function colName(i: number): string {
   return s;
 }
 
-// Styles: one cellXfs entry per (number format, fill, font) used; fills 0 and 1 are the two the format reserves.
+// Styles: one cellXfs entry per (number format, fill, font, border, wrap) used; fills 0 and 1 are the two the format
+// reserves. A cell with a look (the page's CSS, export_page.ts) is written in that look; the old palette (fillOf, the
+// blue header) is for the one-grid workbook's Summary sheet, whose header row is the export's own.
 class Styles {
-  private xfs = new Map<string, number>([['0|0|0', 0]]);
+  private xfs = new Map<string, number>([['0|0|0|0|0', 0]]);
   private fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
   private fonts = ['<font><sz val="11"/><name val="Calibri"/></font>'];
+  private borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
   private fillIds = new Map<string, number>();
-  private fontIds = new Map<string, number>();
+  private fontIds = new Map<string, number>([['|0|0|0|11', 0]]);
+  private borderIds = new Map<string, number>();
   private fill(argb: string): number {
     let i = this.fillIds.get(argb);
     if (i === undefined) { i = this.fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${argb}"/><bgColor indexed="64"/></patternFill></fill>`) - 1; this.fillIds.set(argb, i); }
     return i;
   }
-  private font(argb: string, bold: boolean): number {
-    const k = argb + (bold ? 'b' : '');
+  private font(argb: string, bold: boolean, italic = false, underline = false, pt = 11): number {
+    const k = `${argb}|${+bold}|${+italic}|${+underline}|${pt}`;
     let i = this.fontIds.get(k);
-    if (i === undefined) { i = this.fonts.push(`<font>${bold ? '<b/>' : ''}<sz val="11"/><color rgb="${argb}"/><name val="Calibri"/></font>`) - 1; this.fontIds.set(k, i); }
+    if (i === undefined) {
+      i = this.fonts.push(`<font>${bold ? '<b/>' : ''}${italic ? '<i/>' : ''}${underline ? '<u/>' : ''}<sz val="${pt}"/>${argb ? `<color rgb="${argb}"/>` : ''}<name val="Calibri"/></font>`) - 1;
+      this.fontIds.set(k, i);
+    }
+    return i;
+  }
+  private border(argb: string): number {
+    let i = this.borderIds.get(argb);
+    if (i === undefined) { i = this.borders.push(`<border><left style="thick"><color rgb="${argb}"/></left><right/><top/><bottom/><diagonal/></border>`) - 1; this.borderIds.set(argb, i); }
+    return i;
+  }
+  private xf(fmt: number, fill: number, font: number, border: number, wrap: boolean): number {
+    const k = `${fmt}|${fill}|${font}|${border}|${+wrap}`;
+    let i = this.xfs.get(k);
+    if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }
     return i;
   }
   id(fmt: number, status?: Status, head = false, link = false): number {
     const fill = head ? this.fill(headFill) : status ? this.fill(fillOf[status]) : link ? this.fill(linkFill) : 0;
     const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], false) : link ? this.font(linkFont, false) : 0;
-    const k = `${fmt}|${fill}|${font}`;
-    let i = this.xfs.get(k);
-    if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }
-    return i;
+    return this.xf(fmt, fill, font, 0, false);
+  }
+  // look: a cell in the page's look ('RRGGBB' colours)
+  look(fmt: number, l: Look): number {
+    const fill = l.fill ? this.fill('FF' + l.fill) : 0;
+    const plain = !l.color && !l.bold && !l.italic && !l.underline && !l.pt;
+    const font = plain ? 0 : this.font(l.color ? 'FF' + l.color : '', !!l.bold, !!l.italic, !!l.underline, l.pt ?? 11);
+    return this.xf(fmt, fill, font, l.border ? this.border('FF' + l.border) : 0, !!l.wrap);
   }
   xml(): string {
     const xfs = [...this.xfs.keys()].map(k => {
-      const [n, f, t] = k.split('|');
-      return `<xf numFmtId="${n}" fontId="${t}" fillId="${f}" borderId="0" xfId="0"${n !== '0' ? ' applyNumberFormat="1"' : ''}${f !== '0' ? ' applyFill="1"' : ''}${t !== '0' ? ' applyFont="1"' : ''}/>`;
+      const [n, f, t, b, w] = k.split('|');
+      return `<xf numFmtId="${n}" fontId="${t}" fillId="${f}" borderId="${b}" xfId="0"${n !== '0' ? ' applyNumberFormat="1"' : ''}${f !== '0' ? ' applyFill="1"' : ''}${t !== '0' ? ' applyFont="1"' : ''}${b !== '0' ? ' applyBorder="1"' : ''}`
+        + (w === '1' ? ' applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' : '/>');
     });
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
       + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
       + `<numFmts count="${customFmts.length}">${customFmts.map(([i, f]) => `<numFmt numFmtId="${i}" formatCode="${esc(f)}"/>`).join('')}</numFmts>`
       + `<fonts count="${this.fonts.length}">${this.fonts.join('')}</fonts>`
       + `<fills count="${this.fills.length}">${this.fills.join('')}</fills>`
-      + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+      + `<borders count="${this.borders.length}">${this.borders.join('')}</borders>`
       + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
       + `<cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs>`
       + '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
@@ -396,7 +424,10 @@ export function colWidth(cells: { text: string; head: boolean }[]): number {
   return Math.min(MAX_WIDTH, Math.round((px - 0.025625) / 7 * 1e6) / 1e6);
 }
 
-interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number }   // data: a grid's sheet (the Summary sheet is not one); table: the id of its Excel table part
+// Sheet: a grid's sheet (data: its header row, then its rows; table: the id of its Excel table part), the one-grid
+// workbook's Summary sheet, or the page sheet (page: its rows written as they are from row 1, no header row); heads: the
+// header cells' looks as the page draws them; freeze: the rows that stay on screen; widths: the columns' widths as given
+interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number; heads?: Look[]; page?: boolean; freeze?: number; widths?: number[] }
 
 // Shared: the workbook's shared strings. Only a table's header cells use them: Excel matches a table's column names
 // against its header cells, and every writer Excel is known to accept (its own, DBA Dash's) stores those as shared
@@ -438,39 +469,64 @@ function tableXml(id: number, head: string[], nrow: number): string {
     + '<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>';   // DBA Dash's: no style name, so no stripe is drawn
 }
 
-function sheetXml(sh: Sheet, st: Styles, sst: Shared): string {
+function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): string {
   const ncol = Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
   const head = sh.table ? tableHead(sh.head, ncol) : sh.head;
-  const widths = Array.from({ length: ncol }, (_, j) => colWidth([{ text: head[j] ?? '', head: true }, ...sh.rows.map(r => ({ text: r[j] ? shown(r[j]) : '', head: !!r[j]?.head }))]));
+  const widths = sh.widths ? Array.from({ length: ncol }, (_, j) => sh.widths![j] ?? 0)
+    : Array.from({ length: ncol }, (_, j) => colWidth([{ text: head[j] ?? '', head: true }, ...sh.rows.map(r => ({ text: r[j] ? shown(r[j]) : '', head: !!r[j]?.head }))]));
+  const name = (c: Cell, s: string) => s.replace(/\{sheet(?::(\d+))?\}/g, (_, k) => names[(k !== undefined ? Number(k) : c.jump ?? -1) + 1] ?? '');
+  const runXml = (r: NonNullable<Cell['runs']>[number]) => `<r><rPr>${r.bold ? '<b/>' : ''}${r.italic ? '<i/>' : ''}${r.underline ? '<u/>' : ''}<sz val="${r.pt ?? 11}"/>${r.color ? `<color rgb="FF${r.color}"/>` : ''}<rFont val="Calibri"/></rPr><t xml:space="preserve">${esc(r.text)}</t></r>`;
   const cell = (ref: string, c: Cell, s: number) => {
     if (typeof c.v === 'number') return `<c r="${ref}" s="${s}"><v>${String(c.v).toUpperCase()}</v></c>`;
     if (c.v === '') return s ? `<c r="${ref}" s="${s}"/>` : '';
+    if (c.runs?.length) return `<c r="${ref}" s="${s}" t="inlineStr"><is>${c.runs.map(r => runXml({ ...r, text: name(c, r.text) })).join('')}</is></c>`;
     // Excel holds at most 32,767 characters in a cell (a longer one opens with a repair): the rest is cut, said in the cell
-    const v = c.v.length > 32767 ? c.v.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : c.v;
+    const t = name(c, c.v);
+    const v = t.length > 32767 ? t.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : t;
     return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
-  const hs = st.id(0, undefined, true);   // every sheet's header row, the Summary sheet's too
-  const rows = [`<row r="1">${head.map((h, j) => sh.table ? `<c r="${colName(j)}1" s="${hs}" t="s"><v>${sst.id(h)}</v></c>` : cell(colName(j) + '1', { v: h, kind: 'text', text: h }, hs)).join('')}</row>`];
-  // a cell has the fill the screen gives it and no other (DBA Dash bands no rows): a plain cell is unfilled
+  const styleOf = (c: Cell) => c.look ? st.look(fmtOf(c), c.look) : st.id(fmtOf(c), c.status, !!c.head, c.link);
+  const rows: string[] = [];
+  const jumps: string[] = [];
+  const first = sh.page ? 1 : 2;
+  if (!sh.page) {
+    const hs = st.id(0, undefined, true);   // the one-grid workbook's Summary sheet: the export's own header row
+    const hcell = (j: number) => {
+      const l = sh.heads?.[j], s = l ? st.look(0, l) : hs;
+      return sh.table ? `<c r="${colName(j)}1" s="${s}" t="s"><v>${sst.id(head[j])}</v></c>` : cell(colName(j) + '1', { v: head[j], kind: 'text', text: head[j] }, s);
+    };
+    rows.push(`<row r="1">${head.map((_, j) => hcell(j)).join('')}</row>`);
+  }
+  // a cell has the look the page gives it and no other (DBA Dash bands no rows): a plain cell is unfilled
   sh.rows.forEach((r, i) => {
-    rows.push(`<row r="${i + 2}">${r.map((c, j) => cell(colName(j) + (i + 2), c, st.id(fmtOf(c), c.status, !!c.head, c.link))).join('')}</row>`);
+    const n = i + first;
+    rows.push(`<row r="${n}">${r.map((c, j) => {
+      if (!c) return '';
+      if (c.jump !== undefined && names[c.jump + 1]) jumps.push(`<hyperlink ref="${colName(j)}${n}" location="${esc(`'${names[c.jump + 1].replace(/'/g, "''")}'!A1`)}" display="${esc(names[c.jump + 1])}"/>`);
+      return cell(colName(j) + n, c, styleOf(c));
+    }).join('')}</row>`);
   });
-  const last = `${colName(ncol - 1)}${sh.rows.length + 1}`;
+  const last = `${colName(ncol - 1)}${Math.max(sh.rows.length + first - 1, 1)}`;
+  const pane = sh.freeze ? `<pane ySplit="${sh.freeze}" topLeftCell="A${sh.freeze + 1}" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A${sh.freeze + 1}" sqref="A${sh.freeze + 1}"/>` : '';
+  const cols = widths.map((w, j) => w > 0 ? `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>` : '').join('');
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
     + `<dimension ref="A1:${last}"/>`
-    + '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'   // no frozen pane, as DBA Dash: a table shows its column names in place of the letters when scrolled
+    + `<sheetViews><sheetView workbookViewId="0">${pane}</sheetView></sheetViews>`
     + '<sheetFormatPr defaultRowHeight="15"/>'
-    + `<cols>${widths.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`
+    + (cols ? `<cols>${cols}</cols>` : '')
     + `<sheetData>${rows.join('')}</sheetData>`
-    + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : sh.data ? `<autoFilter ref="A1:${last}"/>` : '')
+    + (!sh.page && !sh.table && sh.data ? `<autoFilter ref="A1:${last}"/>` : '')
+    + (jumps.length ? `<hyperlinks>${jumps.join('')}</hyperlinks>` : '')
+    + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : '')
     + '</worksheet>';
 }
 
 // sheetNames: the screen's heading, cut to Excel's 31 characters without the characters a sheet name refuses,
-// a repeat numbered; 'Summary' is the export's own first sheet and 'History' is a name Excel reserves.
-export function sheetNames(names: string[]): string[] {
-  const used = new Set(['summary', 'history']);
+// a repeat numbered; the first sheet's own name (the one-grid workbook's 'Summary', the page sheet's tab name) and
+// 'History' (a name Excel reserves) are taken before the grids are named.
+export function sheetNames(names: string[], first = 'Summary'): string[] {
+  const used = new Set([first.toLowerCase(), 'history']);
   const cut = (s: string, n: number) => s.slice(0, n).replace(/[\s']+$/, '');
   return names.map(n => {
     const base = cut(n.replace(/[\\/?*[\]:]/g, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim(), 31) || 'Sheet';
@@ -481,7 +537,7 @@ export function sheetNames(names: string[]): string[] {
   });
 }
 
-export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date }
+export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date; engine?: string; platform?: string }   // engine, platform: an instance's (the page sheet's scope row)
 
 // timeZone: the zone the times in the file are written in, 'America/Los_Angeles (UTC-08:00 at export)': the display
 // zone (the browser's unless another was chosen in the range panel). Each time carries its own date's offset (a window
@@ -491,8 +547,13 @@ export function timeZone(at: Date): string {
   return `${zoneName()} (${offsetLabel(at)} at export), ${whose}; each time in its own date's offset`;
 }
 
-export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uint8Array }[] {
-  const names = sheetNames(secs.map(s => s.name));
+// workbook: the sheets as a .xlsx's parts. With a page sheet (the bar's Export .xlsx: export_page.ts) it is sheet 1 and
+// each grid's sheet after it freezes its header row (the page's grid header sticks, app.css; DBA Dash freezes none:
+// a departure, said in docs/export.md); without one (a grid's or a chart's own Export Excel) the Summary sheet of the
+// export's facts comes first, as before.
+export function workbook(meta: Meta, secs: Section[], page?: PageSheet): { name: string; data: Uint8Array }[] {
+  const first = page ? page.name.slice(0, 31).replace(/[\\/?*[\]:]/g, ' ').trim() || 'Page' : 'Summary';
+  const names = sheetNames(secs.map(s => s.name), first);
   const t = (v: string): Cell => ({ v, kind: 'text', text: v });
   const h = (v: string): Cell => ({ v, kind: 'text', text: v, head: true });
   const d = (v: Date): Cell => ({ v: excelDate(v), kind: 'date', text: '', stamp: localStamp(v) });
@@ -502,14 +563,16 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
     [t('Exported at'), d(meta.at)], [t('Time zone'), t(timeZone(meta.at))], [t('Source'), t('pgvigil')], [t(''), t('')], [h('Sheet'), h('Rows'), h('Note')],
     ...secs.map((s, i) => [t(names[i]), { v: s.rows.length, kind: 'int' as Kind, text: '' }, t(s.note ?? '')]),
   ];
-  const sheets: Sheet[] = [{ name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, data: false },
-    ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true }))];
+  const sheets: Sheet[] = [page ? { name: first, head: [], rows: page.rows, data: false, page: true, freeze: page.freeze, widths: page.widths }
+    : { name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, data: false },
+    ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true, ...(s.heads ? { heads: s.heads } : {}), ...(page ? { freeze: 1 } : {}) }))];
+  const all = sheets.map(sh => sh.name);
   // every grid with rows is an Excel table (a table needs a data row: an empty grid keeps the plain filter)
   let tables = 0;
   for (const sh of sheets) if (sh.data && sh.rows.length > 0) sh.table = ++tables;
   const st = new Styles(), sst = new Shared();
   const enc = new TextEncoder();
-  const files = sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh, st, sst)) }));
+  const files = sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh, st, sst, all)) }));
   const x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
   const ncolOf = (sh: Sheet) => Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
   const tableFiles = sheets.flatMap((sh, i) => sh.table ? [
@@ -621,13 +684,21 @@ const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$
 
 async function metaOf(ctx: Ctx): Promise<Meta> {
   let instance = ctx.tag ? 'tag ' + ctx.tag : 'fleet';
+  let engine: string | undefined, platform: string | undefined;
   if (ctx.instance) {
     instance = 'instance ' + ctx.instance;
-    try { const r = (await fleet()).instances.find(x => Number(x.instance_id) === ctx.instance); if (r) instance = String(r.name); } catch { /* the id stands */ }
+    try {
+      const r = (await fleet()).instances.find(x => Number(x.instance_id) === ctx.instance);
+      if (r) {
+        instance = String(r.name);
+        engine = String(r.engine ?? 'postgres') === 'sqlserver' ? 'SQL Server' : 'PostgreSQL';
+        if (r.platform) platform = String(r.platform);
+      }
+    } catch { /* the id stands */ }
   }
   const w = window_(ctx);
   const tab = (ctx.instance ? instanceTabs[ctx.tab] ?? mssqlInstanceTabs[ctx.tab] ?? drillTabs[ctx.tab] : rootTabs[ctx.tab]) ?? ctx.tab;
-  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date() };
+  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date(), ...(engine ? { engine } : {}), ...(platform ? { platform } : {}) };
 }
 
 export function exportName(m: Meta, ext: string): string {
@@ -736,12 +807,20 @@ export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => d
     b.disabled = true; note.textContent = '';
     try {
       const m = await metaOf(ctx);
+      // every read of the page from here to the workbook's parts runs in one task, after the last await (nothing is
+      // painted between: the hidden copy of a grid's rows past its page and the colour probe come and go unseen)
       const r = root();
-      const secs = r ? sections(r, m.tab, true) : [];
-      if (secs.length === 0) { note.textContent = 'Nothing to export: no grid on this page.'; return; }
+      const found = r ? walk(r, m.tab, true) : [];
+      const secs = found.map(f => f.sec);
       if (kind === 'xlsx') {
-        const z = await zip(workbook(m, secs), m.at);
+        // sheet 1 is the page as it shows (export_page.ts); a page without a grid still has it
+        const page = r ? pageSheet(r, m, found.map(f => f.el)) : undefined;
+        if (!page && secs.length === 0) { note.textContent = 'Nothing to export: no grid on this page.'; return; }
+        const parts = workbook(m, secs, page);
+        const z = await zip(parts, m.at);
         save(new Blob([z], { type: XLSX }), exportName(m, 'xlsx'));
+      } else if (secs.length === 0) {
+        note.textContent = 'Nothing to export: no grid on this page.'; return;
       } else if (secs.length === 1) {
         save(new Blob([csv(secs[0])], { type: 'text/csv;charset=utf-8' }), exportName(m, 'csv'));
       } else {

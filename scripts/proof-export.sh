@@ -19,15 +19,21 @@
 # Expected:
 #   names      fleet_Summary_<yyyymmdd-hhmm>_<yyyymmdd-hhmm>.xlsx and .csv; <instance>_Table-Size_<from>_<to>.xlsx and
 #              .csv.zip (the Table Size tab has two grids), the instance named as in the tree
-#   summary    sheets: Summary first, then one per grid named by the heading above it ('Summary' repeated is
-#              'Summary (2)', 'Summary (3)': the heading inside the Needs attention strip names no grid outside
-#              the strip); every data sheet: no frozen pane (DBA Dash's: P03), each column's width the rule's (export.ts
-#              colWidth, DBA Dash's AdjustToContents: Carlito widths, header 1.0286 x bold + 22.19 px, a cell 1.0738 x + 0.52
-#              px, (px - 0.025625) / 7, at most 150) within a pixel; styles.xml carries a solid
-#              fill in each status colour the Summary grid shows on screen
-#              (DBA Dash's: ok FF006638 white, warn FFE49325 dark FF1D1300, crit FFAB1F26 white, 'no sample' FFE0E1E9 FF004F83) and a cell of
-#              that sheet is styled with it, in a plain font (not bold, P03); the header row of every data sheet filled FF0063A3 with white bold text; each sheet's data rows = the grid's rows on screen;
-#              the Summary sheet's own header row (Item, Value, Note) and its 'Sheet | Rows | Note' line in the same blue, white bold (6 cells), no pane and no table on it
+#   summary    (the E2 answer changed this part: notes/teams/pdfp-relw2c-s2-report.md 'E2 LINES REWRITTEN') sheets: the
+#              page sheet first, named by the tab, then one per grid named by the heading above it ('Summary' repeated is
+#              'Summary (2)', 'Summary (3)': the heading inside the Needs attention strip names no grid outside the strip);
+#              every data sheet: its header row frozen (E2-13; DBA Dash froze none), each column's width the rule's
+#              (export.ts colWidth, DBA Dash's AdjustToContents: Carlito widths, header 1.0286 x bold + 22.19 px, a cell
+#              1.0738 x + 0.52 px, (px - 0.025625) / 7, at most 150) within a pixel; styles.xml carries a solid fill in
+#              each status colour the Summary grid shows on screen (ok FF006638 white, warn FFE49325 dark FF1D1300, crit
+#              FFAB1F26 white, 'no sample' FFE0E1E9 FF004F83: the page's own) and a cell of that sheet is styled with it, in
+#              a plain font; the header row of every data sheet in the page's th look (fill, text colour, weight: 004F83,
+#              white, normal - not DBA Dash's 0063A3 bold); each sheet's data rows = the grid's rows on screen
+#   page       the page sheet: row 1 '<tab> - <scope>' bold 14, row 3 'Window ... (UTC+hh:mm at export) ... compute on
+#              the grid sheets ...', rows 1-3 frozen, no table; every grid the page shows (SECTIONS' visible grids) found
+#              on it in page order by its header row, its drawn rows under it with each cell in the page's look (the
+#              colours row's rule), and under a grid past 200 rows the page's 'The first 200 of n rows' line with an
+#              internal link to the grid's sheet; the Running queries page's 'the newest 500 of N' line on it
 #   table      every data sheet with rows is an Excel table: the sheet names one table part (no sheet autoFilter beside
 #              it), the part's ref and its autoFilter's cover the sheet (A1 to the last column and row, = the sheet's
 #              dimension), its column names are unique whatever the case, none empty, and equal to the header cells in
@@ -35,21 +41,13 @@
 #              DBA Dash's (no style name, showRowStripes 1: no stripe drawn);
 #              ids and names unique in the workbook; the part in [Content_Types].xml. A grid a filter leaves
 #              without rows (the Table Size tab's second grid, filtered to nothing) keeps the plain sheet filter and no table
-#   colours    every cell of every row the page draws (a grid draws its first 200 rows; the read must return exactly
-#              those), against the page: a cell the screen colours (a status cell, a badge, a dot, a
-#              bare class set on the cell: no page draws one since ui.ts turns a Col's bare cls into a status cell,
-#              so the driver gives two cells of the Table Size tab one to keep export.ts's branch tested) carries that status's fill and text colour; a cell with a status fill
-#              the screen does not give it is a value its row's judging cell coloured: only in a value column of the
-#              pairs the doc lists (last archived / archiver, last start / last run, free size / free, a finding's
-#              value / severity ...), the judging cell of that row shows that colour, the cell is not empty; a cell
-#              the screen draws as a link is filled FFF1F1F6 with text
-#              FF004F83 (DBA Dash's link column); every other cell has NO fill and no text colour (no banded rows:
-#              DBA Dash bands none). Counted per sheet (the lines 'cells:'), to set beside DBA Dash's own export
-#   carry      Backups: every 'last archived' cell of a row whose 'archiver' cell is coloured is in that colour (the
-#              demo's failing archiver red, the archiving ones green: at least one each); Jobs: every 'last start' of
-#              a row with a coloured 'last run' is in its colour (at least one). Since the join the page's own rule
-#              colours those value cells on the screen (the file follows the screen); a value cell the screen leaves
-#              plain is carried in the file by export.ts. Either way the value's colour = the judging cell's
+#   colours    (E2-4') every cell of every row the page draws (a grid draws its first 200 rows; the read must return
+#              exactly those), against the page: its fill, its text colour and its weight in the file = the look the page's
+#              CSS gives it, read by the driver's own code (not export_colours.ts): the cell's fill, else a badge's in it,
+#              the colour of its first words; a link cell unfilled in the link's colour (DBA Dash's F1F1F6 link column
+#              dropped, E2-11'); the two Table Size cells the driver gives a bare class (crit, warn) the page's CSS does not
+#              paint stay unfilled as on the page. Counted per sheet (the lines 'cells:'). No colour is carried from a
+#              judging cell to a value cell (C4: the file follows the page; the old 'carry' rows are gone)
 #   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0%', DBA Dash's P1) whose value is the screen's percent / 100;
 #              its CSV keeps the percent figure itself (12.5, not 0.125)
 #   drives     the Storage folder's grids at the root (task 176): Drives (its metrics grid, every status), DB Space and
@@ -254,8 +252,27 @@ const SCREEN = `(() => {
     const w = ['crit', 'warn', 'ok', 'none'].find(k => got.has(k)); if (w) return w;
     return ['crit', 'warn', 'ok'].find(k => td.classList.contains(k)) ?? null; };
   const head = c => { const x = c.cloneNode(true); x.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove()); return words(x); };
+  // the look the page's CSS gives a cell, read here on its own (not by web/src/export_colours.ts): the backgrounds laid
+  // over each other up to the nearest solid one; the cell's fill when it differs from its table's, else a badge's in it;
+  // the text colour of the first words (or the badge's) blended over what lies under them; bold at 600 or more
+  const rgb = s => { s = (s || '').trim(); let m = /^rgba?\\(([^)]*)\\)$/.exec(s);
+    if (m) { const v = m[1].split(/[\\s,\\/]+/).filter(Boolean).map(parseFloat); return [v[0], v[1], v[2], v.length > 3 ? (/%/.test(m[1]) ? v[3] / 100 : v[3]) : 1]; }
+    m = /^color\\(srgb ([^)]*)\\)$/.exec(s);
+    if (m) { const v = m[1].split(/[\\s\\/]+/).filter(Boolean).map(parseFloat); return [v[0] * 255, v[1] * 255, v[2] * 255, v.length > 3 ? v[3] : 1]; }
+    return null; };
+  const ov = (t, u) => { const a = t[3] + u[3] * (1 - t[3]); return a ? [0, 1, 2].map(i => (t[i] * t[3] + u[i] * u[3] * (1 - t[3])) / a).concat([a]) : [0, 0, 0, 0]; };
+  const bg = e => { const L = []; for (let x = e; x; x = x.parentElement) { const c = rgb(getComputedStyle(x).backgroundColor); if (!c || !c[3]) continue; L.push(c); if (c[3] >= 1) break; } return L.reduceRight((u, t) => ov(t, u), [255, 255, 255, 1]); };
+  const hx = c => c.slice(0, 3).map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('').toUpperCase();
+  const look = (td, table) => {
+    const at = bg(td), base = hx(bg(table)); let fill = hx(at) === base ? null : hx(at), src = td, under = at;
+    const b = td.querySelector('.badge');
+    if (!fill && b && b.getBoundingClientRect().width > 0) { under = bg(b); fill = hx(under) === base ? null : hx(under); src = b; }
+    else { const w = document.createTreeWalker(td, NodeFilter.SHOW_TEXT); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.textContent.trim() && !n.parentElement.closest('button')) { src = n.parentElement; under = bg(src); break; } }
+    const t = rgb(getComputedStyle(src).color) || [0, 0, 0, 1];
+    return [fill, hx(ov(t, under)), Number(getComputedStyle(src).fontWeight) >= 600];
+  };
   // b: the colour is the page's own class on the cell itself (a Col's cls without 'status'), no status cell or mark
-  const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'),
+  const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'), p: look(td, td.closest('table')),
     b: !td.classList.contains('status') && !td.querySelector(KNOWN) && ['crit', 'warn', 'ok'].some(k => td.classList.contains(k)) });
   // a heading inside a region of its own (the Summary's Needs attention strip) names only the grids of that region
   let outer = '', inner = null;
@@ -268,11 +285,17 @@ const SCREEN = `(() => {
     const named = inner && inner.within.contains(e) ? inner.text : outer;
     // a grid with no row (ui.ts grid: its note carries its columns' names): the export's sheet of its header row alone
     // (a note with no column the export leaves out: null, dropped by grids())
-    if (e.tagName === 'P') { const cols = JSON.parse(e.dataset.cols || '[]'); return cols.length ? { named, rows: 0, head: cols, cells: [], status: [], empty: true, tests: !!e.closest('.tests'), att: !!e.closest('.attention') } : null; }
+    if (e.tagName === 'P') { const cols = JSON.parse(e.dataset.cols || '[]'); const eth = e.parentElement && e.parentElement.querySelector(':scope > table.grid-empty th'); return cols.length ? { named, rows: 0, head: cols, cells: [], status: [], empty: true, hl: eth ? look(eth, eth.closest('table')) : null, tests: !!e.closest('.tests'), att: !!e.closest('.attention') } : null; }
     const grid = e.classList.contains('grid');
     const cells = grid ? [...e.querySelectorAll(':scope > tbody > tr')].map(tr => [...tr.children].map(cell))
-      : [...e.querySelectorAll('tr')].map(tr => { const th = tr.querySelector('th'), td = tr.querySelector('td'); return [{ t: th ? words(th) : '', s: null, l: false }, { t: td ? words(td) : '', s: td ? st(td) : null, l: false }]; });
-    return { named, rows: e.dataset.rows ? Number(e.dataset.rows) : cells.length, head: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(head) : ['item', 'value'], cells,
+      : [...e.querySelectorAll('tr')].map(tr => { const th = tr.querySelector('th'), td = tr.querySelector('td'); return [{ t: th ? words(th) : '', s: null, l: false, p: th ? look(th, e) : null }, { t: td ? words(td) : '', s: td ? st(td) : null, l: false, p: td ? look(td, e) : null }]; });
+    // a property card's sheet has the export's own 'item | value' header: the page's grid-header look, read on a probe
+    // header put in the page and removed (the page draws no header over a card)
+    const probe = () => { const w = document.createElement('div'); w.className = 'grid-wrap'; w.style.cssText = 'position: fixed; left: -100000px; top: 0; visibility: hidden';
+      w.innerHTML = '<table class="grid"><thead><tr><th><span class="th-label">x</span></th></tr></thead></table>'; document.getElementById('main').append(w);
+      const r = look(w.querySelector('th'), w.querySelector('table')); w.remove(); return r; };
+    const th0 = grid ? e.querySelector(':scope > thead > tr:first-child > th') : null;
+    return { named, rows: e.dataset.rows ? Number(e.dataset.rows) : cells.length, head: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(head) : ['item', 'value'], cells, hl: th0 ? look(th0, e) : probe(),
       status: [...new Set(cells.flat().map(c => c.s).filter(k => k && k !== 'ack'))], tests: !!e.closest('.tests'), att: !!e.closest('.attention') };
   });
 })()`;
@@ -738,33 +761,29 @@ def cells_of(x, sst=()):
 PAIRS = {'last archived': ('archiver',), 'last start': ('last run',), 'free size': ('free',), 'last full': ('full',), 'full age': ('full',),
          'last differential': ('differential',), 'last log': ('log',), 'log age': ('log',), 'last run': ('outcome', 'last outcome'),
          'value': ('severity', 'check'), 'role': ('severity',), 'index': ('severity',), 'database': ('severity',), 'object': ('severity',)}
-def audit(key, name, x, cx, g, sst):
-    # every drawn cell against the screen: its own colour, a colour carried from its row, a link's fill and text, else no fill
-    cells = cells_of(x, sst); n = dict.fromkeys(['ok', 'warn', 'crit', 'none', 'ack', 'carried', 'link', 'plain', 'class'], 0); wrong = []
+def audit(key, name, x, cx, g, sst, first=2):
+    # every drawn cell against the page (E2-4'): its fill, its text colour and its weight in the file = the look the page's
+    # CSS gives it, read by the driver's own code (SCREEN look); a status cell's fill is the status colour (counted)
+    cells = cells_of(x, sst); n = dict.fromkeys(['ok', 'warn', 'crit', 'none', 'ack', 'link', 'plain', 'class', 'filled'], 0); wrong = []
     for i, row in enumerate(g['cells']):
         for j, c in enumerate(row):
-            sid = cells.get((i + 2, j), (0, None, None))[0]
-            f, fo = (cx[sid]['fill'], cx[sid]['font']) if sid < len(cx) else ('?', '?')
-            at = f"{colname(j)}{i + 2}"
-            if c['s']:
-                if f == fill[c['s']] and fo == font[c['s']]: n[c['s']] += 1; n['class'] += 1 if c.get('b') else 0
-                else: wrong.append(f"{at} {c['s']} on screen, fill {f} text {fo}")
-            elif f in fill.values():
-                head = g['head'][j] if j < len(g['head']) else ''
-                judges = [row[g['head'].index(h)] for h in PAIRS.get(head, ()) if h in g['head'] and g['head'].index(h) < len(row)]
-                if c['t'] != '' and any(q['s'] and fill[q['s']] == f for q in judges): n['carried'] += 1
-                else: wrong.append(f"{at} ('{head}') fill {f}: no judging cell of its row shows that colour")
-            elif c['l']:
-                if f == LINKFILL and fo == LINK: n['link'] += 1
-                else: wrong.append(f"{at} a link on screen, fill {f} text {fo}")
-            elif f is None and fo is None: n['plain'] += 1
-            else: wrong.append(f"{at} plain on screen, fill {f} text {fo}")
+            sid = cells.get((i + first, j), (0, None, None))[0]
+            f, fo, b = (cx[sid]['fill'], cx[sid]['font'], cx[sid]['bold']) if sid < len(cx) else ('?', '?', None)
+            at = f"{colname(j)}{i + first}"
+            pf, pt, pb = (c.get('p') or [None, None, None])
+            want = (('FF' + pf) if pf else None, ('FF' + pt) if pt else None, bool(pb))
+            if c.get('p') is None: wrong.append(f"{at}: the page's look not read"); continue
+            if (f, fo, bool(b)) != want: wrong.append(f"{at} '{c['t'][:20]}' file {f}/{fo}/{'b' if b else '-'} page {want[0]}/{want[1]}/{'b' if want[2] else '-'}"); continue
+            if c['s'] and f == fill.get(c['s']): n[c['s']] += 1
+            if c.get('b') and c['s']: n['class'] += 1
+            if c['l'] and not c['s']: n['link'] += 1
+            if f is None: n['plain'] += 1
+            else: n['filled'] += 1
     total = sum(len(r) for r in g['cells'])
     # the read returned the rows the page draws: all of them, or a long grid's first 200
     check(len(g['cells']) == min(g['rows'], 200), f"{key}: sheet '{name}' the screen read returned {len(g['cells'])} rows of the grid's {g['rows']} (the page draws at most 200)")
-    filled = n['ok'] + n['warn'] + n['crit'] + n['none'] + n['ack'] + n['carried']
-    check(not wrong, f"{key}: sheet '{name}' every drawn cell in the screen's colour ({total} cells of {len(g['cells'])} rows; {len(wrong)} wrong {wrong[:3]})")
-    print(f"     cells: {key} '{name}': {total} body cells, {filled} with a status fill (ok {n['ok']}, warn {n['warn']}, crit {n['crit']}, none {n['none']}, ack {n['ack']}, carried from the row {n['carried']}), {n['link']} link cells, {n['plain']} plain with no fill")
+    check(not wrong, f"{key}: sheet '{name}' every drawn cell in the page's look - fill, text colour, weight ({total} cells of {len(g['cells'])} rows; {len(wrong)} wrong {wrong[:3]})")
+    print(f"     cells: {key} '{name}': {total} body cells, {n['filled']} filled (status ok {n['ok']}, warn {n['warn']}, crit {n['crit']}, none {n['none']}, ack {n['ack']}), {n['link']} link cells, {n['plain']} unfilled")
     return n, cells
 def carried(key, name, g, cells, cx, judge, value, least):
     # a value cell in the colour of its row's judging cell: every row where the judge is coloured and the value not empty
@@ -793,14 +812,15 @@ def sheets_of(z):
 def xfs(z):
     st = z.read('xl/styles.xml').decode()
     fills = re.findall(r'<fill>(.*?)</fill>', re.search(r'<fills[^>]*>(.*?)</fills>', st).group(1))
-    cx = re.findall(r'<xf ([^>]*)/>', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st).group(1))
+    cx = re.findall(r'<xf ([^>]*?)\s*/?>(?:<alignment[^>]*/></xf>)?', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st).group(1))
     fonts = re.findall(r'<font>(.*?)</font>', re.search(r'<fonts[^>]*>(.*?)</fonts>', st).group(1))
     out = []
     for a in cx:
         g = lambda k: int(re.search(k + r'="(\d+)"', a).group(1))
         f = re.search(r'rgb="(\w+)"', fills[g('fillId')])
         fo = fonts[g('fontId')]; c = re.search(r'rgb="(\w+)"', fo)
-        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo})
+        sz = re.search(r'<sz val="([\d.]+)"/>', fo)
+        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'wrap': 'applyAlignment' in a, 'sz': float(sz.group(1)) if sz else 11.0})
     return st, out
 def grids(page):
     head, out = '', []
@@ -857,13 +877,14 @@ def widths_of(x):
         for k in range(int(a), int(b) + 1): out[k - 1] = float(w)
     return out
 def width_audit(x, cx, sst):
-    # every column: the width the rule gives its cells (a bold cell measured as a header), within one pixel (1/7)
+    # every column: the width the rule gives its cells (row 1, the header, measured as DBA Dash's bold header: the
+    # rule's own place, not the cell's font - the page's header is not bold, and a bold badge cell is no header),
+    # within one pixel (1/7)
     cells = cells_of(x, sst); ws = widths_of(x); cols = {}
     for (r, c), (sid, val, text) in cells.items():
         t = shown_py(val, text, cx[sid]['fmt'] if sid < len(cx) else 0)
         if not t: continue
-        bold = sid < len(cx) and cx[sid]['bold']
-        px = 1.0286 * tpx(t, True) + 22.19 if bold else 1.0738 * tpx(t, False) + 0.52
+        px = 1.0286 * tpx(t, True) + 22.19 if r == 1 else 1.0738 * tpx(t, False) + 0.52
         cols[c] = max(cols.get(c, 0), px)
     off = []
     for c, w in ws.items():
@@ -884,12 +905,14 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
     names = sheets_of(z)
-    check(names[0] == 'Summary' and len(names) == len(gs) + 1, f"{key}: sheets {names} = Summary + {len(gs)} grid(s)")
+    # (changed by the E2 answer, E2-2': sheet 1 is the page sheet named by the tab, no longer the export's Summary sheet)
+    check(re.sub(r'[^A-Za-z0-9._-]+', '-', names[0]) == tab and len(names) == len(gs) + 1, f"{key}: sheets {names} = the page sheet '{names[0]}' + {len(gs)} grid(s)")
     st, cx = xfs(z)
     ct = z.read('[Content_Types].xml').decode(); wbx = z.read('xl/workbook.xml').decode(); tabs = []; linked = False; classed = 0; sst = shared(z)
     for i, g in enumerate(gs):
         x, n = sheet_rows(z, i + 2)
-        check('<pane' not in x, f"{key}: sheet '{names[i + 1]}' no frozen pane (DBA Dash's)")
+        # (changed by E2-13: a grid's sheet freezes its header row as the page's grid header sticks; DBA Dash froze none)
+        check('<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' in x, f"{key}: sheet '{names[i + 1]}' its header row frozen (ySplit 1)")
         nw, woff = width_audit(x, cx, sst)
         check(nw >= max(1, len(g['head'])) and not woff, f"{key}: sheet '{names[i + 1]}' {nw} column widths by DBA Dash's rule, none over 150 ({len(woff)} off {woff[:3]})")
         check(n == g['rows'], f"{key}: sheet '{names[i + 1]}' {n} data rows = {g['rows']} on screen")
@@ -918,17 +941,21 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             tabs.append((re.search(r'<table [^>]*\bid="(\d+)"', tx) or [0, ''])[1] + '|' + (re.search(r'displayName="([^"]+)"', tx) or [0, ''])[1])
             check(bool(m) and f'PartName="/xl/tables/{m.group(1)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"' in ct, f"{key}: sheet '{names[i + 1]}' its table part is in [Content_Types].xml")
         if key == 'summary' and g['rows'] > 1 and any(c['l'] and not c['s'] for r in g['cells'] for c in r):
-            check(counts['link'] >= 1 and counts['plain'] >= 1, f"summary: sheet '{names[i + 1]}' a link cell is filled {LINKFILL} with text {LINK} and a plain cell has no fill ({counts['link']} link cells, {counts['plain']} plain)")
+            # (changed by E2-11': a link cell takes the link's own look - no fill, the link colour; DBA Dash's F1F1F6 link
+            # column dropped; the audit above holds each cell to the page)
+            lk = [cx[cells.get((k + 2, j), (0, None, None))[0]] for k, r in enumerate(g['cells']) for j, c in enumerate(r) if c['l'] and not c['s']]
+            check(counts['link'] >= 1 and counts['plain'] >= 1 and all(q['fill'] is None and q['font'] not in (None, LINK) for q in lk),
+                  f"summary: sheet '{names[i + 1]}' its link cells unfilled in the link's own colour, not DBA Dash's F1F1F6 / 004F83 ({counts['link']} link cells, {sorted({q['font'] for q in lk})[:2]}; {counts['plain']} unfilled)")
             linked = True
-        if key == 'backups' and 'archiver' in g['head'] and g['rows'] > 0: carried(key, names[i + 1], g, cells, cx, 'archiver', 'last archived', ['crit', 'ok'])
-        if key == 'jobs' and 'last run' in g['head'] and g['rows'] > 0: carried(key, names[i + 1], g, cells, cx, 'last run', 'last start', [])
+        # (changed by C4 in the E2 answer: no colour is carried from a judging cell to a value cell; the file follows the
+        # page, whose value cells the audit above holds to their own look: the rows 'carry' are gone)
         if key == 'storage' and 'free' in g['head'] and g['rows'] > 0:
             j = g['head'].index('free'); seen = [(number(r[j]['t']), cells.get((k + 2, j), (0, None, None))) for k, r in enumerate(g['cells']) if r[j]['t'] != '']
             off = [(a, b) for a, b in seen if a is None or b[1] is None or cx[b[0]]['fmt'] != 167 or abs(b[1] * 100 - a) > 0.006]
             check(len(seen) >= 1 and not off and 'numFmtId="167" formatCode="0.0%"' in st, f"storage: sheet '{names[i + 1]}' {len(seen)} 'free' cells, each the screen's percent / 100 under numFmt 167 '0.0%' (DBA Dash's) ({off[:2]})")
     check(len(set(tabs)) == len(tabs) and all(re.fullmatch(r'\d+\|Table\d+', t) for t in tabs), f"{key}: {len(tabs)} table(s), ids and names unique in the workbook")
     if key == 'summary':
-        check(linked, "summary: a grid with link cells (the instance names) was graded for the link's fill and text and for the plain cells' no fill")
+        check(linked, "summary: a grid with link cells (the instance names) was graded for the link's look and the plain cells'")
         check(names == ['Summary', 'Summary (2)', 'Summary (3)'], f"summary: the two grids are named by the page's own heading, not by the Needs attention strip's ({names})")
     if key == 'backups': check(any('archiver' in g['head'] for g in gs), "backups: the fleet grid with the 'archiver' column is on the page")
     if key == 'jobs': check(any('last run' in g['head'] for g in gs), "jobs: the fleet grid with the 'last run' column is on the page")
@@ -958,7 +985,11 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     if key == 'empty':
         tg = [g for g in gs if not g.get('empty')]   # the Table Size tab's grids with a table: the filtered one is the last
         check(tg[-1]['rows'] == 0 and len(tg) > 1 and tg[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
-        check(classed == 2, f"empty: the two cells that carry only a class of the page's own rule (crit, warn) are filled in their colours ({classed} cells)")
+        # (changed by E2-4': a bare class the page's CSS does not paint (app.css draws td.status.* only) leaves the cell as
+        # the page shows it - unfilled, in the plain text colour; the audit above held both cells to the page)
+        x0 = z.read('xl/worksheets/sheet2.xml').decode(); c0 = cells_of(x0, sst)
+        two = [cx[c0.get((2, j), (0, None, None))[0]] for j in (1, 2)]
+        check(classed == 2 and all(q['fill'] is None for q in two), f"empty: the two cells given a bare class (crit, warn) the page does not paint stay unfilled as on the page ({classed} cells, {[q['fill'] for q in two]})")
     if openpyxl is not None:
         try:
             wb = openpyxl.load_workbook(f"{dl}/{p['xlsx']}")
@@ -967,13 +998,22 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             check(False, f"{key}: openpyxl could not open {p['xlsx']}: {type(e).__name__}: {e}")
     for i, g in enumerate(gs):
         x, n = sheet_rows(z, i + 2)
+        # (changed by E2-4' / E2-5': a status the screen shows is no longer written as DBA Dash's solid fill in a plain
+        # font whatever the page draws; its cells take the page's look - a solid status cell its fill, a badge its tint,
+        # a pill the page draws bold in bold - which the audit above holds cell by cell. What stays: each status the
+        # screen shows is on the sheet in some cell of that status's look on the page)
         for s in g.get('status', []):
+            pl = {tuple(c['p']) for r_ in g['cells'] for c in r_ if c.get('s') == s and c.get('p')}
             used = {int(v) for v in re.findall(r' s="(\d+)"', x)}
-            check(any(cx[u]['fill'] == fill[s] and cx[u]['font'] == font[s] for u in used if u < len(cx)), f"{key}: '{s}' cells filled {fill[s]} with text {font[s]} in '{names[i + 1]}'")
-            check(not any(cx[u]['fill'] == fill[s] and cx[u]['bold'] for u in used if u < len(cx)), f"{key}: '{s}' cells in '{names[i + 1]}' in a plain font, not bold (DBA Dash's)")
+            have = {(cx[u]['fill'][2:] if cx[u]['fill'] else None, cx[u]['font'][2:] if cx[u]['font'] else None, cx[u]['bold']) for u in used if u < len(cx)}
+            check(bool(pl) and bool(pl & have), f"{key}: '{s}' cells in '{names[i + 1]}' in the page's look of that status ({sorted(pl, key=str)[:2]})")
         row1 = re.search(r'<row r="1"[^>]*>(.*?)</row>', x, re.S)
         hs1 = {int(v) for v in re.findall(r' s="(\d+)"', row1.group(1))} if row1 else set()
-        check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF0063A3' and cx[u]['font'] == 'FFFFFFFF' and cx[u]['bold'] for u in hs1), f"{key}: sheet '{names[i + 1]}' header row filled FF0063A3, white bold")
+        # (changed by E2-4': the header row in the page's own th look - 004F83, white, the page's weight - not DBA Dash's
+        # 0063A3 bold; wrapped as the page wraps a header)
+        hl = g.get('hl') or [None, None, None]
+        check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF' + str(hl[0]) and cx[u]['font'] == 'FF' + str(hl[1]) and cx[u]['bold'] == bool(hl[2]) for u in hs1),
+              f"{key}: sheet '{names[i + 1]}' header row in the page's th look {hl} ({sorted({(cx[u]['fill'], cx[u]['font'], cx[u]['bold']) for u in hs1 if u < len(cx)})})")
     # each sheet named by the heading above its grid (h2, h3 or h4): the name starts with the heading's first words
     # (cut at 31 characters, a repeat numbered; the Summary grid's heading meets the export's own Summary sheet)
     # (the export's rule: a character Excel refuses becomes a space, then each run of spaces one space)
@@ -1004,16 +1044,49 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     if key == 'summary':
         check(any(cx[s]['fill'] in fill.values() for s in range(len(cx))), "summary: a status fill in styles.xml")
     first = z.read('xl/worksheets/sheet1.xml').decode()
-    # the Summary sheet is formatted too: its header row and the heading of its list of sheets in the header's blue
-    f1 = cells_of(first); heads1 = [k for k, v in f1.items() if v[2] in ('Item', 'Value', 'Note', 'Sheet', 'Rows')]
-    check(len(heads1) == 6 and all(cx[f1[k][0]]['fill'] == 'FF0063A3' and cx[f1[k][0]]['font'] == 'FFFFFFFF' and cx[f1[k][0]]['bold'] for k in heads1)
-          and '<pane' not in first and '<tableParts' not in first, f"{key}: the Summary sheet's header row and its 'Sheet | Rows | Note' line are filled FF0063A3 with white bold text ({len(heads1)} cells)")
-    check('>Time zone<' in first and re.search(r'\(UTC[-+]\d\d:\d\d at export\)', first) is not None, f"{key}: the Summary sheet has a Time zone row with the offset at export")
+    # (changed by E2-2' / E2-3: sheet 1 is the page sheet, not the export's Summary sheet of facts) the page sheet: row 1
+    # '<tab> - <scope>' bold 14, row 3 the window and the zone, rows 1-3 frozen, no table on it; then every grid the page
+    # shows, in page order: its header row and the rows it draws, each cell in the page's look (the audit), and under a
+    # grid past 200 rows the page's 'The first 200 of n rows' line linking to the grid's own sheet
+    f1 = cells_of(first, sst)
+    def ptext(r, j):
+        # a cell's words as written: every run of an inline string joined (a dot's run, then the words), a shared
+        # string, else the number's text
+        v = f1.get((r, j))
+        if not v: return None
+        m_ = re.search(r'<c r="' + colname(j) + str(r) + r'"[^>]*t="inlineStr"><is>(.*?)</is>', first, re.S)
+        if m_: return unesc(''.join(re.findall(r'<t[^>]*>([^<]*)</t>', m_.group(1))))
+        if v[2] is not None: return v[2]
+        return (('%d' % v[1]) if float(v[1]).is_integer() else str(v[1])) if v[1] is not None else ''
+    t1 = ptext(1, 0) or ''
+    s1 = f1.get((1, 0), (0,))[0]
+    check(t1.startswith(names[0] + ' - ') and s1 < len(cx) and cx[s1]['bold'] and cx[s1]['sz'] == 14, f"{key}: the page sheet's row 1 '{t1}' (bold {cx[s1]['bold'] if s1 < len(cx) else '?'}, {cx[s1]['sz'] if s1 < len(cx) else '?'} pt)")
+    t3 = ptext(3, 0) or ''
+    check(t3.startswith('Window ') and re.search(r'\(UTC[-+]\d\d:\d\d at export\)', t3) is not None and 'compute on the grid sheets' in t3,
+          f"{key}: the page sheet's row 3 names the window, the zone with its offset at export and where to compute ({t3[:90]}...)")
+    check('<pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/>' in first and '<tableParts' not in first, f"{key}: the page sheet freezes rows 1-3 and holds no table")
+    nrow1 = max([r for r, _ in f1] or [0])
+    pos, found = 4, 0
+    vis = [x for x in ((p.get('sections') or {}).get('sections') or []) if x['kind'] == 'grid']
+    for g in gs:
+        h = [c for c in g['head']]
+        r = next((r for r in range(pos, nrow1 + 1) if [ptext(r, j) for j in range(len(h))] == h), None)
+        if r is None: continue
+        found += 1; pos = r + 1
+        if g.get('empty'): continue
+        audit(key, f"{names[0]}' at row {r}, grid '{g['name']}", first, cx, g, sst, first=r + 1)
+        if g['rows'] > 200:
+            rr = r + 1 + min(g['rows'], 200)
+            lk = re.search(r'<hyperlink ref="A' + str(rr) + r'" location="\'([^\']*)\'!A1"', first)
+            check(bool(lk) and unesc(lk.group(1)) in names[1:] and 'Every row: sheet' in (ptext(rr, 0) or ''),
+                  f"{key}: under grid '{g['name']}' ({g['rows']} rows, 200 drawn) the page's line links to its sheet ({ptext(rr, 0)!r}, {lk.group(1) if lk else None})")
+    check(found == len(vis) and found >= 1, f"{key}: the page sheet holds the {len(vis)} grid(s) the page shows, in page order, each found with its header row ({found} found)")
     if key == 'activity':
         i = next((i for i, g in enumerate(gs) if g['name'] == 'Per sample'), None)
         check(i is not None and gs[i]['rows'] == 500, f"activity: the Per sample grid shows 500 rows on screen ({gs[i]['rows'] if i is not None else 'no grid'})")
-        row = re.search(r'<row r="\d+"><c [^>]*><is><t[^>]*>Per sample</t></is></c><c [^>]*><v>(\d+)</v></c><c [^>]*><is><t[^>]*>([^<]*)</t>', first)
-        check(row is not None and row.group(1) == '500' and re.search(r'newest 500 of [\d,.\s\u202f\u00a0]*\d', row.group(2)) is not None, f"activity: the Summary's Per sample row carries the 'newest 500 of N' note ({row.group(2)[:60] if row else 'none'})")
+        lines = [ptext(r, 0) or '' for r in range(4, nrow1 + 1)]
+        nl = next((t for t in lines if re.search(r'newest 500 of [\d,.\s\u202f\u00a0]*\d', str(t))), None)
+        check(nl is not None, f"activity: the page sheet carries the page's 'the newest 500 of N' line ({str(nl)[:60] if nl else 'none'})")
     if key == 'slow':
         i = next((i for i, g in enumerate(gs) if g['name'].startswith('Per day')), None)
         check(i is not None and gs[i]['rows'] >= 1, f"slow: a Per day table with rows on screen ({gs[i]['rows'] if i is not None else 'no grid'})")
