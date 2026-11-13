@@ -595,8 +595,9 @@ for (const hash of ['#/dbspace?w=2h', `#/summary?i=${one.instance_id}&w=2h`, `#/
       charts.line.look = await ev(PAGELOOK);
       charts.line.page = await press('Export .xlsx', ['.xlsx']);
       await ev(`localStorage.setItem('pgvigil.theme', 'dark'); true`);
-      // under another window: the file's name holds the window, and the driver refuses a download that replaces one
-      const hashD = hash.replace(/w=2h/, 'w=3h');
+      // under another window: the file's name holds the window, and the driver refuses a download that replaces one; a
+      // preset of router.ts (2h and 3h are none: both fall back to 1h, the same name - t-e3-d2, t-e3-d4)
+      const hashD = hash.replace(/w=[^&]*/, 'w=4h');
       await cmd('Page.navigate', { url: 'about:blank' }); await sleep(300); await go(hashD); await sleep(700);
       charts.line.darkTheme = await ev(`document.documentElement.getAttribute('data-theme')`);
       charts.line.dark = await press('Export .xlsx', ['.xlsx']);
