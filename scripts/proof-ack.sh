@@ -181,31 +181,37 @@ const out = await ev(`(() => {
   const tables = [...document.querySelectorAll('main table')];
   const inst = tables[tables.length - 1], tests = tables[0];
   const rows = {};
+  // PerformanceMonitor's chips (task 177 D29: Total CPU ... Collectors) are filled by their band and are no checks:
+  // no acknowledgement touches them, so the counts leave their columns out
+  const ih = [...inst.querySelectorAll('thead th')].map(t => t.textContent.trim());
+  const chip = new Set(['Total CPU', 'Threads', 'Memory', 'Blocking', 'Collectors'].map(h => ih.indexOf(h)).filter(i => i >= 0));
+  const cells = (tr, cls) => [...tr.children].filter((td, i) => !chip.has(i) && td.matches('td.status.' + cls)).length;
   for (const tr of inst.querySelectorAll('tbody tr')) {
     const a = tr.querySelector('a[href*="i="]'); if (!a) continue;
-    rows[a.textContent] = { warn: tr.querySelectorAll('td.status.warn').length, crit: tr.querySelectorAll('td.status.crit').length, ack: tr.querySelectorAll('td.status.ack').length };
+    rows[a.textContent] = { warn: cells(tr, 'warn'), crit: cells(tr, 'crit'), ack: cells(tr, 'ack') };
   }
   const hdr = [...tests.querySelectorAll('thead th')].map(t => t.textContent);
-  const ai = hdr.findIndex(h => /acknowledged/.test(h));
+  const ai = hdr.findIndex(h => /acknowledged/i.test(h));   // 'Instance Count Acknowledged' since P08 (DBA Dash's header)
   let ackSum = 0;
   for (const tr of tests.querySelectorAll('tbody tr')) ackSum += Number(tr.children[ai]?.textContent || 0);
   const attention = [...document.querySelectorAll('.attention-row strong')].map(s => s.textContent);
-  return { rows, ackSum, ackCol: ai >= 0, counts: document.querySelector('.counts')?.textContent ?? '', attention };
+  return { rows, ackSum, ackCol: ai >= 0, chipCols: chip.size, counts: document.querySelector('.counts')?.textContent ?? '', attention };
 })()`);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 if (mode === 'pick') {
-  // click the first non-zero 'instances critical' count; read the instance grid's column after 'instance'
+  // click the first non-zero 'Instance Count Critical' count; read the instance grid's column after 'Instance'
+  // (P08 gave both grids DBA Dash's headers: read without regard to case)
   Object.assign(out, await ev(`(async () => {
     const tests = document.querySelectorAll('main table')[0];
     const hdr = [...tests.querySelectorAll('thead th')].map(t => t.textContent);
-    const ci = hdr.findIndex(h => h === 'instances critical');
+    const ci = hdr.findIndex(h => /critical$/i.test(h.trim()));
     const tr = [...tests.querySelectorAll('tbody tr')].find(r => Number(r.children[ci].textContent) > 0);
     const test = tr.children[0].textContent.trim();
     tr.children[ci].querySelector('button').click();
     await new Promise(r => setTimeout(r, 400));
     const tables = [...document.querySelectorAll('main table')];
     const h2 = [...tables[tables.length - 1].querySelectorAll('thead th')].map(t => t.textContent);
-    const after = h2[h2.indexOf('instance') + 1];
+    const after = h2[h2.findIndex(h => /^instance$/i.test(h.trim())) + 1];
     tr.children[ci].querySelector('button').click();   // the same count again clears the pick (it is kept per tab)
     await new Promise(r => setTimeout(r, 300));
     return { pickTest: test, afterInstance: after };
