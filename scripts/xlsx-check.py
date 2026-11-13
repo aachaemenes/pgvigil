@@ -6,12 +6,16 @@
       '<file>: PASS' or '<file>: FAIL Xa,Xb'. Exit 1 when any rule fails.
   python3 -I scripts/xlsx-check.py same REFERENCE.xlsx FILE.xlsx
       the reference (DBA Dash's file of a grid) against pgvigil's file of the same grid: one 'SAME <property>' or
-      'DIFF <property>: <reference> | <file>' line per property. Exit 0 (a report, not a verdict).
+      'DIFF <property>: <reference> | <file>' line per property; the sheets paired by name (then by order) on 'PAIR' lines,
+      each pair's columns matched by header with units spelled alike ('/sec' = '/s', '(sec)' = '(s)'), and a
+      'MATCHED <sheet>: N of M columns' line per pair. Exit 0 (a report, not a verdict); exit 2 on a file it cannot read.
 
 The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X0  every cell of a grid sheet is the header style (row 1) or one named pair or plain: no other fill, font colour,
       weight, slant, underline, size, border, alignment or wrap; no row of a custom height (plain = no fill and no
-      text colour of its own or black FF000000)
+      text colour of its own or black FF000000; a fill by theme, index, pattern or gradient is never plain, a text
+      colour by theme or index is plain only as Excel's default text: theme 1, index 8 or 64, automatic); a column's or
+      a row's own style (drawn on its empty cells) is plain too; a style, font, fill or border index past its list fails
   X1  the workbook opens on a grid sheet: sheet 1 holds one Excel table and is not 'About' (a page's first section may be
       its tiles or a card as an Item | Value | Status table: a grid sheet like any other), activeTab 0
   X2  sheet names: 1-31 characters, none of \\ / ? * [ ] :, unique ignoring case, no read time, no numbered repeat ' (n)',
@@ -19,12 +23,16 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X3  a Warning cell (fill FFE49325) has text FF1D1300 or FFFFFFFF
   X4  row 1 of a grid sheet: fill FF0063A3, white bold Calibri 11, nothing else
   X5  one Excel table per grid sheet over the whole grid (an empty grid: header + one empty row), autofilter = its ref,
-      no table style name, no sheet autofilter, no _FilterDatabase; Excel's repair rules (names = header texts,
-      non-empty, unique ignoring case, as many as the header's cells)
+      no table style name, no sheet autofilter, no _FilterDatabase; Excel's repair rules: column names = header texts,
+      non-empty, unique ignoring case, as many as the header's cells, column ids unique; table ids and names unique in
+      the workbook (names ignoring case), a name of letters, digits, '_' and '.' that starts with a letter, '_' or '\\'
+      and is not a cell reference; no merged range over a table
   X6  no pane on any sheet
-  X7  each cell's number format is General (id 0 or an empty code), '0', '0.0%', '0.00%' or 'yyyy-MM-dd HH:mm'
-  X8  no text cell that reads as a date-time (a date is a number under its format; a column's empty value may be text)
-  X9  no text cell whose whole value is true / false
+  X7  each cell's number format is General (id 0 or an empty code), '0', '0.0%', '0.00%', 'yyyy-MM-dd HH:mm' or, for a
+      day alone (a chart's per-day column), 'yyyy-MM-dd'
+  X8  no text cell that reads as a date-time or a day, ISO or a page's locale form ('10/3/2026, 21:05:00',
+      '13/11/2026 21:05:35', '2026-11-11'): a date is a number under its format; a column's empty value may be text
+  X9  no text cell whose whole value is true / false / yes / no (on / off are setting values, not booleans)
   X10 every column holding a value has a custom width of at most 150 characters (stored 150.71 with the padding); a numeric column at least as wide as its widest
       shown number (a digit one unit, any other character half)
   X11 no hyperlink to a place inside the application ('#/') or a jump inside the workbook; no underlined cell without an
@@ -49,7 +57,8 @@ BUILTIN = {0: 'General', 1: '0', 2: '0.00', 3: '#,##0', 4: '#,##0.00', 9: '0%', 
            15: 'd-mmm-yy', 16: 'd-mmm', 17: 'mmm-yy', 18: 'h:mm AM/PM', 19: 'h:mm:ss AM/PM', 20: 'h:mm', 21: 'h:mm:ss',
            22: 'm/d/yy h:mm', 45: 'mm:ss', 46: '[h]:mm:ss', 47: 'mmss.0', 49: '@'}
 DATE_FMT = 'yyyy-MM-dd HH:mm'
-FORMATS_OK = {'General', '', '0', '0.0%', '0.00%', DATE_FMT}
+DAY_FMT = 'yyyy-MM-dd'
+FORMATS_OK = {'General', '', '0', '0.0%', '0.00%', DATE_FMT, DAY_FMT}
 HEAD = ('FF0063A3', 'FFFFFFFF')
 # the named pairs: fill -> the text colours allowed on it
 PAIRS = {
@@ -62,11 +71,19 @@ PAIRS = {
     'FFF1F1F6': {'FF004F83'},              # a link cell
     '00FFFFFF': {'00000000'},              # DBA Dash's transparent (a date or percent cell without a colour of its own)
 }
-PLAIN_TEXT = {None, 'FF000000'}
-MAX_WIDTH = 150 + 5 / 7 + 1e-6   # 150 characters and Excel's 5 px of padding: DBA Dash's capped column is stored 150.71   # a plain cell: no fill, the default text (no colour of its own, or Excel's automatic black)
+# a plain cell: no fill, the default text (no colour of its own, Excel's automatic black, theme 1 = Text 1, index 8 / 64)
+PLAIN_TEXT = {None, 'FF000000', 'auto', 'theme:1', 'indexed:8', 'indexed:64'}
+MAX_WIDTH = 150 + 5 / 7 + 1e-6   # 150 characters and Excel's 5 px of padding: DBA Dash's capped column is stored 150.71
 RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12']
-DATE_TEXT = re.compile(r'^\s*\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}')
-READ_TIME = re.compile(r'\d{1,4}[ ./-]\d{1,2}[ ./-]\d{2,4}|\b\d{1,2} \d{2} \d{2}\b|\d{1,2}:\d{2}')
+DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}'                                   # ISO date-time
+                       r'|\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4},?(?:\s+|T)\d{1,2}[:h.]\d{2}'               # a locale date-time
+                       r'|(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/.]\d{1,2}[/.]\d{4})\s*$)')                  # a day alone
+BOOL_TEXT = re.compile(r'\s*(true|false|yes|no)\s*', re.I)
+# a read time in a sheet name: a day with a 4-digit year, a clock, the export's compact stamp; not an address or a version
+READ_TIME = re.compile(r'\b\d{4}[ ./-]\d{1,2}[ ./-]\d{1,2}\b|\b\d{1,2}[ ./-]\d{1,2}[ ./-]\d{4}\b|\b\d{8}[-_ ]?\d{4}\b'
+                       r'|\b\d{1,2} \d{2} \d{2}\b|\b\d{1,2}:\d{2}\b')
+TABLE_NAME = re.compile(r'[A-Za-z_\\][A-Za-z0-9_.]*$')
+CELL_LIKE = re.compile(r'(?:[A-Za-z]{1,3}\d+|[RrCc]|[Rr]\d*[Cc]\d*)$')
 
 
 def xml(zf, part):
@@ -89,9 +106,28 @@ def rels(zf, part):
 
 
 def colour(el):
+    """an RGB value, or a marker for a colour given another way ('theme:N', 'indexed:N', 'auto'); None = no colour"""
     if el is None:
         return None
-    return el.get('rgb').upper() if el.get('rgb') else None   # theme, indexed and auto colours count as no colour of the cell's own
+    if el.get('rgb'):
+        return el.get('rgb').upper()
+    for k in ('theme', 'indexed'):
+        if el.get(k) is not None:
+            return '%s:%s' % (k, el.get(k))
+    return 'auto' if el.get('auto') in ('1', 'true') else None
+
+
+def fill_of(f):
+    """a fill as the colour it draws: None (no fill), the solid fill's RGB, or a marker for any other kind"""
+    if f.find('m:gradientFill', NS) is not None:
+        return 'gradient'
+    p = f.find('m:patternFill', NS)
+    kind = p.get('patternType', 'none') if p is not None else 'none'
+    if kind == 'none':
+        return None
+    if kind == 'solid':
+        return colour(p.find('m:fgColor', NS)) or 'solid:auto'
+    return '%s:%s' % (kind, colour(p.find('m:fgColor', NS)))
 
 
 def col_index(ref):
@@ -133,11 +169,7 @@ class Book:
                           'underline': u is not None and u.get('val', 'single') != 'none',
                           'size': float(sz.get('val')) if sz is not None else 11.0,
                           'name': (f.find('m:name', NS).get('val') if f.find('m:name', NS) is not None else None)})
-        fills = []
-        for f in (st.findall('m:fills/m:fill', NS) if st is not None else []):
-            p = f.find('m:patternFill', NS)
-            solid = p is not None and p.get('patternType') == 'solid'
-            fills.append(colour(p.find('m:fgColor', NS)) if solid else None)
+        fills = [fill_of(f) for f in (st.findall('m:fills/m:fill', NS) if st is not None else [])]
         borders = []
         for b in (st.findall('m:borders/m:border', NS) if st is not None else []):
             borders.append(any(side.get('style') not in (None, 'none') for side in b if side.tag.split('}')[1] in ('left', 'right', 'top', 'bottom', 'diagonal')))
@@ -145,15 +177,22 @@ class Book:
         for x in (st.findall('m:cellXfs/m:xf', NS) if st is not None else []):
             al = x.find('m:alignment', NS)
             fid = int(x.get('numFmtId', 0))
-            font = fonts[int(x.get('fontId', 0))] if int(x.get('fontId', 0)) < len(fonts) else {}
+            past = []   # an index past its list: Excel repairs the file
+            ids = {}
+            for k, lst in (('fontId', fonts), ('fillId', fills), ('borderId', borders)):
+                ids[k] = int(x.get(k, 0))
+                if ids[k] >= len(lst) and (lst or ids[k]):
+                    past.append('%s %d past its list (%d)' % (k, ids[k], len(lst)))
             self.xfs.append({'fmt_id': fid, 'fmt': fmts.get(fid, 'id %d' % fid),
-                             'fill': fills[int(x.get('fillId', 0))] if int(x.get('fillId', 0)) < len(fills) else None,
-                             'font': font, 'border': borders[int(x.get('borderId', 0))] if int(x.get('borderId', 0)) < len(borders) else False,
+                             'fill': fills[ids['fillId']] if ids['fillId'] < len(fills) else None,
+                             'font': fonts[ids['fontId']] if ids['fontId'] < len(fonts) else {},
+                             'border': borders[ids['borderId']] if ids['borderId'] < len(borders) else False,
                              'halign': al.get('horizontal') if al is not None else None,
                              'valign': al.get('vertical') if al is not None else None,
-                             'wrap': al is not None and al.get('wrapText') in ('1', 'true')})
+                             'wrap': al is not None and al.get('wrapText') in ('1', 'true'), 'past': past})
         if not self.xfs:
-            self.xfs = [{'fmt_id': 0, 'fmt': 'General', 'fill': None, 'font': {}, 'border': False, 'halign': None, 'valign': None, 'wrap': False}]
+            self.xfs = [{'fmt_id': 0, 'fmt': 'General', 'fill': None, 'font': {}, 'border': False, 'halign': None, 'valign': None,
+                         'wrap': False, 'past': []}]
         sst = xml(zf, 'xl/sharedStrings.xml')
         self.sst = [''.join(t.text or '' for t in si.iter('{%s}t' % M)) for si in (sst.findall('m:si', NS) if sst is not None else [])]
         wb = xml(zf, 'xl/workbook.xml')
@@ -166,6 +205,7 @@ class Book:
         for sh in (wb.findall('m:sheets/m:sheet', NS) if wb is not None else []):
             part = wbr.get(sh.get(RID), {}).get('target')
             self.sheets.append(self.read_sheet(sh.get('name'), part))
+        self.tables = [t for s in self.sheets for t in s['tables'] if 'missing' not in t]
         n = len(self.sheets)
         for i, s in enumerate(self.sheets):
             s['about'] = i == n - 1 and n > 1 and s['name'] == 'About'
@@ -180,10 +220,17 @@ class Book:
             return ''.join(x.text or '' for x in c.iter('{%s}t' % M))
         return v.text if v is not None else None
 
+    def xf(self, s):
+        """the style of index s; one past cellXfs is reported (X0), the cell read as plain"""
+        i = int(s or 0)
+        if i < len(self.xfs):
+            return self.xfs[i]
+        return dict(self.xfs[0], past=['style %d past cellXfs (%d)' % (i, len(self.xfs))])
+
     def read_sheet(self, name, part):
         root = xml(self.zf, part) if part else None
         s = {'name': name, 'part': part, 'cells': [], 'rows': {}, 'cols': [], 'pane': False, 'autofilter': None,
-             'hyperlinks': [], 'tables': [], 'drawing': False}
+             'hyperlinks': [], 'tables': [], 'drawing': False, 'merges': [], 'styled': []}
         if root is None:
             return s
         srels = rels(self.zf, part)
@@ -194,15 +241,19 @@ class Book:
         for c in root.findall('m:cols/m:col', NS):
             s['cols'].append({'min': int(c.get('min')), 'max': int(c.get('max')), 'width': float(c.get('width', 0)),
                               'custom': c.get('customWidth') in ('1', 'true')})
+            if c.get('style') is not None:   # Excel draws a column's style on its empty cells
+                s['styled'].append(('column %s' % col_letters(int(c.get('min'))), self.xf(c.get('style'))))
         for row in root.findall('m:sheetData/m:row', NS):
             rn = int(row.get('r'))
             s['rows'][rn] = {'custom': row.get('customHeight') in ('1', 'true'), 'ht': row.get('ht')}
+            if row.get('s') is not None and row.get('customFormat') in ('1', 'true'):   # a row's own style, drawn on its empty cells
+                s['styled'].append(('row %d' % rn, self.xf(row.get('s'))))
             for c in row.findall('m:c', NS):
                 ref = c.get('r')
                 t = c.get('t', 'n')
                 val = self.text(c)
-                s['cells'].append({'ref': ref, 'row': row_index(ref), 'col': col_index(ref), 't': t, 'v': val,
-                                   'xf': self.xfs[int(c.get('s', 0))] if int(c.get('s', 0)) < len(self.xfs) else self.xfs[0]})
+                s['cells'].append({'ref': ref, 'row': row_index(ref), 'col': col_index(ref), 't': t, 'v': val, 'xf': self.xf(c.get('s'))})
+        s['merges'] = [m.get('ref') for m in root.findall('m:mergeCells/m:mergeCell', NS)]
         for h in root.findall('m:hyperlinks/m:hyperlink', NS):
             r = srels.get(h.get(RID), {}) if h.get(RID) else {}
             s['hyperlinks'].append({'ref': h.get('ref'), 'location': h.get('location'), 'target': r.get('target'), 'ext': r.get('ext', False)})
@@ -214,9 +265,11 @@ class Book:
                 continue
             tsi = troot.find('m:tableStyleInfo', NS)
             taf = troot.find('m:autoFilter', NS)
+            tcs = troot.findall('m:tableColumns/m:tableColumn', NS)
             s['tables'].append({'ref': troot.get('ref'), 'autofilter': taf.get('ref') if taf is not None else None,
-                                'style': tsi.get('name') if tsi is not None else None,
-                                'cols': [tc.get('name') for tc in troot.findall('m:tableColumns/m:tableColumn', NS)]})
+                                'style': tsi.get('name') if tsi is not None else None, 'id': troot.get('id'),
+                                'name': troot.get('name'), 'display': troot.get('displayName'), 'sheet': name,
+                                'cols': [tc.get('name') for tc in tcs], 'col_ids': [tc.get('id') for tc in tcs]})
         return s
 
 
@@ -245,6 +298,33 @@ def shown_number(v, fmt):
 
 def floor_units(t):
     return sum(1.0 if ch.isdigit() else 0.5 for ch in t)
+
+
+def body_problems(x):
+    """what makes a body cell's style (or a column's or a row's own style) more than plain or one named pair"""
+    f = x['font']
+    fill, text = x['fill'], f.get('colour')
+    ok = text in PLAIN_TEXT if fill is None else text in PAIRS.get(fill, set())
+    bad = list(x.get('past', [])) + ([] if ok else ['fill %s text %s' % (fill, text)])
+    if f.get('bold') or f.get('italic') or f.get('underline'):
+        bad.append('bold / italic / underlined')
+    if f.get('size', 11) != 11:
+        bad.append('size %s' % f.get('size'))
+    if x['border'] or x['wrap'] or x['halign'] not in (None, 'general') or x['valign'] not in (None, 'bottom'):
+        bad.append('border / wrap / alignment %s %s' % (x['halign'], x['valign']))
+    return bad
+
+
+def span(ref):
+    """'A1:C9' (or 'B2') as (first col, first row, last col, last row)"""
+    a, _, b = (ref or 'A1').partition(':')
+    b = b or a
+    return col_index(a), row_index(a), col_index(b), row_index(b)
+
+
+def overlap(r1, r2):
+    a, b = span(r1), span(r2)
+    return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
 
 
 def check(book):
@@ -309,7 +389,7 @@ def check(book):
             out['X4'].append("'%s' has no header row" % nm)
         for c in head:
             x, f = c['xf'], c['xf']['font']
-            bad = []
+            bad = list(x.get('past', []))
             if x['fill'] != HEAD[0]:
                 bad.append('fill %s' % x['fill'])
             if f.get('colour') != HEAD[1]:
@@ -320,6 +400,8 @@ def check(book):
                 bad.append('italic or underlined')
             if f.get('size', 11) != 11:
                 bad.append('size %s' % f.get('size'))
+            if f.get('name') != 'Calibri':
+                bad.append('font %s' % f.get('name'))
             if x['border'] or x['wrap'] or x['halign'] not in (None, 'general') or x['valign'] not in (None, 'bottom'):
                 bad.append('border / wrap / alignment %s %s' % (x['halign'], x['valign']))
             if bad:
@@ -330,24 +412,17 @@ def check(book):
         for c in s['cells']:
             if c['row'] == 1:
                 continue
-            x, f = c['xf'], c['xf']['font']
-            fill, text = x['fill'], f.get('colour')
-            if fill is None:
-                ok = text in PLAIN_TEXT
-            else:
-                ok = text in PAIRS.get(fill, set())
-            bad = [] if ok else ['fill %s text %s' % (fill, text)]
-            if f.get('bold') or f.get('italic') or f.get('underline'):
-                bad.append('bold / italic / underlined')
-            if f.get('size', 11) != 11:
-                bad.append('size %s' % f.get('size'))
-            if x['border'] or x['wrap'] or x['halign'] not in (None, 'general') or x['valign'] not in (None, 'bottom'):
-                bad.append('border / wrap / alignment %s %s' % (x['halign'], x['valign']))
+            fill, text = c['xf']['fill'], c['xf']['font'].get('colour')
+            bad = body_problems(c['xf'])
             if bad:
                 out['X0'].append("'%s'!%s %s" % (nm, c['ref'], ', '.join(bad)))
             # X3
             if fill == 'FFE49325' and text not in PAIRS['FFE49325']:
                 out['X3'].append("'%s'!%s Warning with text %s" % (nm, c['ref'], text))
+        for where, x in s['styled']:
+            bad = body_problems(x)
+            if bad:
+                out['X0'].append("'%s' %s style: %s" % (nm, where, ', '.join(bad)))
         for rn, r in s['rows'].items():
             if rn > 1 and r['custom']:
                 out['X0'].append("'%s' row %d has a custom height %s" % (nm, rn, r['ht']))
@@ -375,6 +450,11 @@ def check(book):
                 out['X5'].append("'%s' table column names empty or repeated" % nm)
             if [str(n) for n in t['cols']] != heads[:len(t['cols'])]:
                 out['X5'].append("'%s' table column names differ from the header cells" % nm)
+            if len(set(t['col_ids'])) != len(t['col_ids']):
+                out['X5'].append("'%s' table column ids repeated" % nm)
+            for m in s['merges']:
+                if overlap(m, t['ref']):
+                    out['X5'].append("'%s' merged range %s inside the table %s" % (nm, m, t['ref']))
         if s['autofilter']:
             out['X5'].append("'%s' has a sheet autofilter %s" % (nm, s['autofilter']))
         # X7 / X8 / X9 / X10 per cell
@@ -388,7 +468,7 @@ def check(book):
             text_cell = c['t'] in ('s', 'inlineStr', 'str')
             if text_cell and DATE_TEXT.match(c['v'] or ''):
                 out['X8'].append("'%s'!%s date as text '%s'" % (nm, c['ref'], c['v']))
-            if text_cell and re.fullmatch(r'\s*(true|false)\s*', c['v'] or '', re.I):
+            if text_cell and BOOL_TEXT.fullmatch(c['v'] or ''):
                 out['X9'].append("'%s'!%s '%s' as text" % (nm, c['ref'], c['v']))
             if c['t'] in ('n',) and c['v'] not in (None, ''):
                 u = floor_units(shown_number(c['v'], fmt))
@@ -406,6 +486,22 @@ def check(book):
                 out['X10'].append("'%s' column %s width %.2f under its widest number (%.1f)" % (nm, col_letters(j), w, widest[j]))
     for n in book.filter_names:
         out['X5'].append('defined name %s' % n)
+    # X5 across the workbook: table ids and names unique (names ignoring case), a name Excel accepts
+    ids, names = {}, {}
+    for t in book.tables:
+        ids.setdefault(t['id'], []).append(t['sheet'])
+        for k in ('name', 'display'):
+            n = t.get(k) or ''
+            if not TABLE_NAME.match(n) or CELL_LIKE.match(n):
+                out['X5'].append("'%s' table %s '%s' is not a name Excel accepts" % (t['sheet'], k, n))
+        for n in {(t.get('name') or '').lower(), (t.get('display') or '').lower()}:
+            names.setdefault(n, []).append(t['sheet'])
+    for i, where in ids.items():
+        if len(where) > 1:
+            out['X5'].append('table id %s on %d sheets (%s)' % (i, len(where), ', '.join(where)))
+    for n, where in names.items():
+        if len(where) > 1:
+            out['X5'].append("table name '%s' on %d sheets (%s)" % (n, len(where), ', '.join(where)))
     return out
 
 
@@ -415,7 +511,9 @@ def rules(paths):
         try:
             res = check(Book(p))
         except Exception as e:   # a file the check cannot read fails every rule
-            print('FAIL X0 %s: unreadable (%s)' % (p, e))
+            for r in RULES:
+                print('FAIL %s %s: unreadable (%s: %s)' % (r, p, type(e).__name__, e))
+            print('%s: FAIL %s' % (p, ','.join(RULES)))
             bad += 1
             continue
         failed = []
@@ -431,13 +529,20 @@ def rules(paths):
     return 1 if bad else 0
 
 
+def norm(h):
+    """a header as 'same' matches it: case and spaces ignored, a unit spelled one way ('/sec' = '/s', '(sec)' = '(s)')"""
+    h = re.sub(r'\s+', ' ', str(h or '').strip().lower())
+    return re.sub(r'\(sec\)', '(s)', re.sub(r'/sec\b', '/s', h))
+
+
 def profile(book):
-    """the properties 'same' compares"""
+    """the properties 'same' compares: the workbook's, and per grid sheet its columns by normalised header"""
     grids = [s for s in book.sheets if s['grid']]
     p = {'sheets': '%d: %s' % (len(book.sheets), ' | '.join(s['name'] for s in book.sheets)),
          'opens on': book.sheets[0]['name'] if book.sheets else '-'}
-    heads, pairs, cols = set(), {}, {}
+    heads, pairs, sheets = set(), {}, {}
     for s in grids:
+        cols = sheets.setdefault(s['name'], {})
         for c in s['cells']:
             x, f = c['xf'], c['xf']['font']
             if c['row'] == 1:
@@ -446,20 +551,18 @@ def profile(book):
             key = '%s/%s' % (x['fill'], f.get('colour'))
             if x['fill'] or f.get('colour') not in PLAIN_TEXT:   # a plain cell is no pair
                 pairs[key] = pairs.get(key, 0) + 1
-        hdr = {c['col']: str(c['v'] or '').strip() for c in s['cells'] if c['row'] == 1}
+        hdr = {c['col']: norm(c['v']) for c in sorted(s['cells'], key=lambda c: c['col']) if c['row'] == 1}
+        for j, k in hdr.items():
+            w = [x for x in s['cols'] if x['min'] <= j <= x['max']]
+            cols.setdefault(k, {'types': set(), 'formats': set(), 'width': w[0]['width'] if w else None, 'widest': ''})
         for c in s['cells']:
             if c['row'] == 1 or c['v'] is None or c['col'] not in hdr:
                 continue
-            k = hdr[c['col']].lower()
-            d = cols.setdefault(k, {'types': set(), 'formats': set(), 'width': None, 'widest': ''})
+            d = cols[hdr[c['col']]]
             d['types'].add({'s': 'text', 'inlineStr': 'text', 'str': 'text', 'b': 'boolean', 'n': 'number'}.get(c['t'], c['t']))
             d['formats'].add(c['xf']['fmt'] or 'General')
             if len(str(c['v'])) > len(d['widest']):
                 d['widest'] = str(c['v'])
-        for k_col, k in ((j, hdr[j].lower()) for j in hdr):
-            w = [x for x in s['cols'] if x['min'] <= k_col <= x['max']]
-            if k in cols and w:
-                cols[k]['width'] = w[0]['width']
     p['header style'] = ' ; '.join(sorted(heads)) or 'none'
     p['status pairs'] = ', '.join('%s x%d' % kv for kv in sorted(pairs.items())) or 'none'
     p['tables'] = ' ; '.join('%s style %s autofilter %s' % (t.get('ref'), t.get('style'), 'on' if t.get('autofilter') else 'off')
@@ -468,27 +571,54 @@ def profile(book):
     p['frozen panes'] = ', '.join(s['name'] for s in book.sheets if s['pane']) or 'none'
     p['hyperlinks'] = str(sum(len(s['hyperlinks']) for s in book.sheets))
     p['drawings / charts / pictures'] = str(sum(1 for x in book.parts if x.startswith(('xl/drawings/', 'xl/charts/', 'xl/media/'))))
-    return p, cols
+    return p, sheets
+
+
+def pair_sheets(ref_names, file_names):
+    """the reference's grid sheets paired with the file's: by name ignoring case first, then the rest in order"""
+    left = list(file_names)
+    pairs = []
+    for n in ref_names:
+        m = next((x for x in left if x.lower() == n.lower()), None)
+        if m is not None:
+            left.remove(m)
+        pairs.append([n, m])
+    for pr in pairs:
+        if pr[1] is None and left:
+            pr[1] = left.pop(0)
+    return pairs + [[None, x] for x in left]
 
 
 def same(ref_path, file_path):
-    a, acols = profile(Book(ref_path))
-    b, bcols = profile(Book(file_path))
+    books = []
+    for path in (ref_path, file_path):
+        try:
+            books.append(profile(Book(path)))
+        except Exception as e:   # one line, no traceback
+            print('UNREADABLE %s: %s: %s' % (path, type(e).__name__, e))
+            return 2
+    (a, asheets), (b, bsheets) = books
     for k in a:
         print(('SAME %s: %s' % (k, a[k])) if a[k] == b[k] else ('DIFF %s: %s | %s' % (k, a[k], b[k])))
-    for k in sorted(set(acols) | set(bcols)):
-        if k not in acols or k not in bcols:
-            print("DIFF column '%s': %s" % (k, 'reference only' if k in acols else 'file only'))
+    for rn, fn in pair_sheets(list(asheets), list(bsheets)):
+        print('PAIR %s = %s' % ("'%s'" % rn if rn is not None else 'none', "'%s'" % fn if fn is not None else 'none'))
+        if rn is None or fn is None:
             continue
-        x, y = acols[k], bcols[k]
-        for prop in ('types', 'formats'):
-            sx, sy = ', '.join(sorted(x[prop])), ', '.join(sorted(y[prop]))
-            print(("SAME column '%s' %s: %s" % (k, prop, sx)) if sx == sy else ("DIFF column '%s' %s: %s | %s" % (k, prop, sx, sy)))
-        if x['width'] is not None and y['width'] is not None:
-            tol = 1.0 if x['widest'] == y['widest'] else 0.15 * x['width']
-            ok = abs(x['width'] - y['width']) <= tol
-            print(("SAME column '%s' width: %.2f / %.2f" % (k, x['width'], y['width'])) if ok
-                  else ("DIFF column '%s' width: %.2f | %.2f" % (k, x['width'], y['width'])))
+        acols, bcols = asheets[rn], bsheets[fn]
+        for k in list(acols) + [k for k in bcols if k not in acols]:
+            if k not in acols or k not in bcols:
+                print("DIFF '%s' column '%s': %s" % (rn, k, 'reference only' if k in acols else 'file only'))
+                continue
+            x, y = acols[k], bcols[k]
+            for prop in ('types', 'formats'):
+                sx, sy = ', '.join(sorted(x[prop])), ', '.join(sorted(y[prop]))
+                print(("SAME '%s' column '%s' %s: %s" % (rn, k, prop, sx)) if sx == sy else ("DIFF '%s' column '%s' %s: %s | %s" % (rn, k, prop, sx, sy)))
+            if x['width'] is not None and y['width'] is not None:
+                tol = 1.0 if x['widest'] == y['widest'] else 0.15 * x['width']
+                ok = abs(x['width'] - y['width']) <= tol
+                print(("SAME '%s' column '%s' width: %.2f / %.2f" % (rn, k, x['width'], y['width'])) if ok
+                      else ("DIFF '%s' column '%s' width: %.2f | %.2f" % (rn, k, x['width'], y['width'])))
+        print("MATCHED '%s': %d of %d columns" % (rn, sum(1 for k in acols if k in bcols), len(acols)))
     return 0
 
 
