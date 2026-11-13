@@ -17,7 +17,7 @@
 #  R  the sqlserver user's own rights, RECORDED ONLY (not graded: each an answer for the docs): CustomerDbRootRole
 #     membership, the host platform, its server permission count.
 #  L  the documented login, each statement run alone as the sqlserver user and its answer recorded (ok, or the
-#     message): CREATE LOGIN, GRANT VIEW SERVER STATE, GRANT VIEW ANY DEFINITION, in msdb CREATE USER and
+#     message): CREATE LOGIN, GRANT VIEW SERVER STATE and VIEW ANY DEFINITION AS [CustomerDbRootRole], in msdb CREATE USER and
 #     db_datareader (Google protects msdb from users made in T-SQL: a refusal there is the expected kind of answer).
 #  A  `collect -once mssql_instance` as pgv_monitor: platform cloudsqlsqlserver when VIEW ANY DEFINITION was granted
 #     (else sqlserver, and the docs say the platform: cloudsql word is then needed).
@@ -69,8 +69,10 @@ step() { local db=$1 what=$2 sql=$3 out
   if out=$(printf 'SET NOCOUNT ON;\n%s\n' "$sql" | sq "$db" "$ROOT_USER" ROOT_PW -b 2>&1); then echo "   ok      $what"; L_OK+=("$what")
   else echo "   refused $what: $(tr -s '\r\n' ' ' <<<"$out" | cut -c1-220)"; fi; }
 step master 'CREATE LOGIN' "IF SUSER_ID(N'$MON_USER') IS NULL CREATE LOGIN [$MON_USER] WITH PASSWORD = N'$MON_PW';"
-step master 'VIEW SERVER STATE' "GRANT VIEW SERVER STATE TO [$MON_USER];"
-step master 'VIEW ANY DEFINITION' "GRANT VIEW ANY DEFINITION TO [$MON_USER];"
+# the sqlserver user holds these WITH GRANT OPTION through its role only (CustomerDbRootRole): a plain GRANT is
+# refused (Msg 4613, Grantor does not have GRANT permission, G1's first run); the grant names the role
+step master 'VIEW SERVER STATE' "GRANT VIEW SERVER STATE TO [$MON_USER] AS [CustomerDbRootRole];"
+step master 'VIEW ANY DEFINITION' "GRANT VIEW ANY DEFINITION TO [$MON_USER] AS [CustomerDbRootRole];"
 step msdb 'msdb user' "IF USER_ID(N'$MON_USER') IS NULL CREATE USER [$MON_USER] FOR LOGIN [$MON_USER];"
 step msdb 'msdb db_datareader' "ALTER ROLE db_datareader ADD MEMBER [$MON_USER];"
 printf '%s\n' "${L_OK[@]}" | grep -qx 'CREATE LOGIN' || fail "L: the monitor login could not be made: nothing else can run"
