@@ -146,8 +146,8 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 		if (form == XEFormCloudSQL) != strings.Contains(script, "filename=N''/var/opt/mssql/xevents/pgvigil_t1_slow.xel''") {
 			t.Errorf("%s: the event file's path", form)
 		}
-		// Cloud SQL has no sp_configure: its threshold advice names the database flag
-		if (form == XEFormCloudSQL) != strings.Contains(script, "database flag ''blocked process threshold (s)''") ||
+		// Cloud SQL has no sp_configure and no database flag for the threshold: its advice says the session stays empty
+		if (form == XEFormCloudSQL) != strings.Contains(script, "offer no blocked process threshold, so this session stays empty there") ||
 			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") {
 			t.Errorf("%s: the blocked process threshold's advice", form)
 		}

@@ -66,7 +66,7 @@ const (
 	XEFormAzureMI = "azuresqlmi" // Azure SQL Managed Instance: no local event file, a ring buffer for every capture
 	XEFormAzureDB = "azuresqldb" // Azure SQL Database: database-scoped sessions, a ring buffer for every capture
 	// Google Cloud SQL for SQL Server: the server form, its event file in the folder Google names
-	// (/var/opt/mssql/xevents/) and the blocked process threshold a database flag (no sp_configure there)
+	// (/var/opt/mssql/xevents/); the blocked process threshold cannot be set there (no sp_configure, no such flag)
 	XEFormCloudSQL = "cloudsql"
 )
 
@@ -209,7 +209,7 @@ func XEScript(installID, form string) (string, error) {
 	if form != XEFormAzureDB {
 		step := "EXEC sys.sp_configure ''blocked process threshold (s)'', 15; RECONFIGURE; (it is an advanced option; 5 is the lowest value SQL Server honours)"
 		if form == XEFormCloudSQL {
-			step = "the instance''s database flag ''blocked process threshold (s)'' set to 15, where Google''s flag list offers it (Cloud SQL has no sp_configure)"
+			step = "none on Cloud SQL: it has no sp_configure and its database flags offer no blocked process threshold, so this session stays empty there (deadlocks, slow queries and attention still capture)"
 		}
 		b.WriteString("-- The blocked-process capture needs the server's 'blocked process threshold (s)' above 0: at 0 SQL Server raises no\n" +
 			"-- blocked-process report and the session stays empty. This script does not change it. The value now:\n" +

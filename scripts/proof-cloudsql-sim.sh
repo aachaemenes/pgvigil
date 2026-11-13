@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# SIMULATED proof of Google Cloud SQL for SQL Server as a platform (CLOUDSQL C2) - a SQL Server 2022 container that
-# wears Cloud SQL's two marks (the server role CustomerDbRootRole, msdb.dbo.gcloudsql_bulk_insert), NOT the service:
-# the live half (a Cloud SQL instance, Allen's lab G1) is not proven here.
+# SIMULATED proof of Google Cloud SQL for SQL Server as a platform (CLOUDSQL C2) - a SQL Server 2022 container (on
+# Linux, as Cloud SQL's are) that wears Cloud SQL's mark, the server role CustomerDbRootRole, NOT the service:
+# the live half (a Cloud SQL instance) is not proven here.
 #   A. a login with exactly the documented grants (VIEW SERVER STATE, VIEW ANY DEFINITION, db_datareader in msdb):
 #      collect -once stores the instance with platform cloudsqlsqlserver;
-#   B. the same grants without VIEW ANY DEFINITION: the marks are invisible to the login (sys.server_principals and
-#      OBJECT_ID show nothing), the instance is stored as sqlserver - the configuration's platform: cloudsql names it
+#   B. the same grants without VIEW ANY DEFINITION: the role is invisible to the login (sys.server_principals shows
+#      nothing), the instance is stored as sqlserver - the configuration's platform: cloudsql names it
 #      then (C);
 #   C. platform: cloudsql on B's login: cloudsqlsqlserver;
 #   D. every collection on A's instance ends as it ends on the same server and login with platform: onprem (one
@@ -45,19 +45,18 @@ done
 [[ $up == 1 ]] || fail "the SQL Server container did not come up"
 PORT=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 
-echo "== the simulation (sa): Cloud SQL's two marks on a SQL Server 2022 container"
+echo "== the simulation (sa): Cloud SQL's role on a SQL Server 2022 container on Linux"
 sq "CREATE SERVER ROLE [CustomerDbRootRole];"
-sq "EXEC ('CREATE PROCEDURE dbo.gcloudsql_bulk_insert AS RETURN 0;');" msdb
 sq "CREATE LOGIN [$L1] WITH PASSWORD = '$P1', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1];
     CREATE LOGIN [$L0] WITH PASSWORD = '$P0', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$L0];"
 sq "CREATE USER [$L1] FOR LOGIN [$L1]; ALTER ROLE db_datareader ADD MEMBER [$L1]; CREATE USER [$L0] FOR LOGIN [$L0]; ALTER ROLE db_datareader ADD MEMBER [$L0];" msdb
-seen() { # what a login sees of the two marks: role|procedure
-  printf 'SET NOCOUNT ON; SELECT CAST((SELECT count(*) FROM sys.server_principals WHERE name = N'"'"'CustomerDbRootRole'"'"' AND type = '"'"'R'"'"') AS varchar(5)) + '"'"'|'"'"' + CASE WHEN OBJECT_ID(N'"'"'msdb.dbo.gcloudsql_bulk_insert'"'"') IS NULL THEN '"'"'0'"'"' ELSE '"'"'1'"'"' END;\n' |
+seen() { # whether a login sees the role
+  printf 'SET NOCOUNT ON; SELECT count(*) FROM sys.server_principals WHERE name = N'"'"'CustomerDbRootRole'"'"' AND type = '"'"'R'"'"';\n' |
     docker exec -i -e "SQLCMDPASSWORD=$2" "$SQL" "$SQLCMD" -S localhost -U "$1" -C -b -W -h -1 -i /dev/stdin | tr -d '\r '
 }
 S1=$(seen "$L1" "$P1"); S0=$(seen "$L0" "$P0")
-echo "   the marks as each login sees them (role|procedure): with VIEW ANY DEFINITION $S1, without it $S0"
-[[ "$S1" == "1|1" && "$S0" == "0|0" ]] || fail "the marks' visibility: want 1|1 with VIEW ANY DEFINITION and 0|0 without, got $S1 and $S0"
+echo "   the role as each login sees it: with VIEW ANY DEFINITION $S1, without it $S0"
+[[ "$S1" == "1" && "$S0" == "0" ]] || fail "the role's visibility: want 1 with VIEW ANY DEFINITION and 0 without, got $S1 and $S0"
 
 psql "$ADMIN_DSN dbname=postgres" -XAtqc "CREATE DATABASE $REPO_DB" >/dev/null; MADE_DB=1
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil
@@ -106,4 +105,4 @@ else
   cat "$TMPD/d.txt"; fail "D: the outcomes differ from platform: onprem's"
 fi
 grep ' error$' "$TMPD/a.txt" | sed 's/^/   error on both: /' || true
-echo "proof-cloudsql-sim: OK (SIMULATED: the two marks on a SQL Server 2022 container; a Cloud SQL instance NOT PROVEN - Allen's lab G1)"
+echo "proof-cloudsql-sim: OK (SIMULATED: Cloud SQL's role on a SQL Server 2022 container on Linux; a Cloud SQL instance NOT PROVEN)"

@@ -13,7 +13,7 @@ Before each collection the collector asks the server what it is (`internal/mssql
 | Azure SQL Database | 5 | | `azuresqldb` | 12.0 (120000) whatever engine runs it |
 | Amazon RDS for SQL Server | 2, 3 or 4 (Standard, Enterprise, Express; Web reads as Standard) | the database `rdsadmin` exists | `rdssqlserver` | the engine's own (SQL Server 2019 = 150000) |
 | Azure SQL Managed Instance | 8 | | `azuresqlmi` | 12.0 |
-| Google Cloud SQL for SQL Server | 2, 3 or 4 | the server role `CustomerDbRootRole`, or `msdb.dbo.gcloudsql_bulk_insert`; the login sees either only with VIEW ANY DEFINITION | `cloudsqlsqlserver` | the engine's own |
+| Google Cloud SQL for SQL Server | 2, 3 or 4 | the server role `CustomerDbRootRole` on a Linux host; the login sees the role only with VIEW ANY DEFINITION | `cloudsqlsqlserver` | the engine's own |
 
 `platform:` in the configuration names the service instead (`azuresqldb`, `rds`, `azuresqlmi`, `cloudsql`, `onprem`); `auto` (the default) keeps what the server says. The instance's Summary shows the platform as a badge beside its name.
 
@@ -90,7 +90,7 @@ Google's own SQL Server instances: SQL Server on Linux that Google runs, the cus
 
 ### How it is told apart
 
-Google names two marks of its own: the server role `CustomerDbRootRole` (the `sqlserver` user is its member, and grants it makes name it as their grantor) and msdb's `gcloudsql_*` procedures. Detection reads both after RDS's `rdsadmin`. A login sees either one only with VIEW ANY DEFINITION; a login without it reads the instance as a server someone runs, unless the configuration's `platform: cloudsql` (or Admin > Instances' platform Google Cloud SQL) names it.
+Google's own mark is the server role `CustomerDbRootRole` (the `sqlserver` user is its member, and grants it makes name it as their grantor). Detection asks for it, on a Linux host, only on a server that is neither Azure nor RDS, in a statement of its own (a role of that name carried to a Windows server is not Cloud SQL). msdb's `gcloudsql_bulk_insert` is no mark: Google creates it only once the bulk-insert flag is on. A login sees the role only with VIEW ANY DEFINITION; a login without it reads the instance as a server someone runs, unless the configuration's `platform: cloudsql` (or Admin > Instances' platform Google Cloud SQL) names it.
 
 ### The login
 
@@ -106,21 +106,22 @@ CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
 ALTER ROLE db_datareader ADD MEMBER [pgvigil_monitor];
 ```
 
-Whether the `sqlserver` user may grant each of these (Google's pages show its own rights, not which it may pass on) is settled only against a real instance. Google offers no IAM sign-in for SQL Server; the password-free way is Windows authentication through Managed Service for Microsoft Active Directory (above).
+Whether the `sqlserver` user may grant each of these (Google's pages show its own rights, not which it may pass on) is settled only against a real instance, and so is the msdb part: Google protects msdb from users created through SQL Server directly (its Managed Microsoft AD page, on SQL Server Agent), so the two msdb lines may be refused and the jobs then not read. Google offers no IAM sign-in for SQL Server; the password-free way is Windows authentication through Managed Service for Microsoft Active Directory (above).
 
 ### What runs
 
 The collections run as on a server someone runs, with these differences:
 
-- SQL Server Agent's jobs: read with a SQL login; skipped for an Active Directory login, which Google keeps from SQL Server Agent's objects in msdb.
+- SQL Server Agent's jobs: read when msdb lets the login in; otherwise skipped with Google's reason (msdb is protected from logins made in T-SQL; a user made through the console or gcloud carries `CustomerDbRootRole`'s rights, more than a monitor needs). Not settled until a real instance answers.
 - The Windows power plan: not read (Google runs the host; SQL Server on Linux there).
-- Extended Events: `pgvigil mssql-xe -print -form cloudsql` writes the slow capture's event file under `/var/opt/mssql/xevents/`, the folder Google names, and gives the blocked process threshold as the instance's database flag (Cloud SQL has no `sp_configure`).
+- Extended Events: `pgvigil mssql-xe -print -form cloudsql` writes the slow capture's event file under `/var/opt/mssql/xevents/`, the folder Google names. Cloud SQL has no `sp_configure` and its database flags offer no blocked process threshold, so the blocked-process session stays empty there; deadlocks, slow queries and attention still capture.
+- Trace flags: the Checks page advises the trace flags a server someone runs should have on (3226, 7745) only on such a server; on Cloud SQL a trace flag is Google's database flag, not advised.
 
-Not settled until a real instance answers: the error log (Google sends it to Cloud Logging; whether `sp_readerrorlog` answers the monitoring login), the default trace, Extended Events sessions made by a login other than the `sqlserver` user, Database Mail, Resource Governor and server triggers (Google lists them as unavailable), and how a high-availability instance or a read replica shows itself in T-SQL.
+Not settled until a real instance answers: SQL Server Agent's jobs (above), the blocked process threshold (no flag found), the error log (Google sends it to Cloud Logging; whether `sp_readerrorlog` answers the monitoring login), the default trace, Extended Events sessions made by a login other than the `sqlserver` user, Database Mail, Resource Governor and server triggers (Google lists them as unavailable), and how a high-availability instance or a read replica shows itself in T-SQL.
 
 ### Proof
 
-`scripts/proof-cloudsql-sim.sh` is a SIMULATION: a SQL Server 2022 container wearing the two marks. A login with exactly the grants above is stored as `cloudsqlsqlserver`; without VIEW ANY DEFINITION the marks are invisible and the instance is a server, until `platform: cloudsql` names it; every collection ends as it ends on the same server and login with `platform: onprem`. Against a real Cloud SQL instance: not proven in this release.
+`scripts/proof-cloudsql-sim.sh` is a SIMULATION: a SQL Server 2022 container on Linux wearing Cloud SQL's role. A login with exactly the grants above is stored as `cloudsqlsqlserver`; without VIEW ANY DEFINITION the role is invisible and the instance is a server, until `platform: cloudsql` names it; every collection ends as it ends on the same server and login with `platform: onprem`. Against a real Cloud SQL instance: not proven in this release.
 
 ## Amazon RDS for SQL Server
 
