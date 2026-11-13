@@ -396,7 +396,8 @@ for (const s of storageScopes.slice(2)) {
 }
 
 // P (task 177 D29): PerformanceMonitor's links and buttons on pgvigil - the instance header's name, the Summary
-// row's Silence button (the demo serves without the UI login: it is drawn off, with why), the calendar's month
+// row's Silence button (on for an instance the demo's write door carries: its confirm opens; anywhere else it is off -
+// aria-disabled, never the disabled attribute - with its reason as visible words it is described by), the calendar's month
 // buttons, a day and its drills (each to its page over that UTC day), Show as table, and the Performance page's zoom
 // chip (its x back to the range before the zoom), on an instance of each engine
 const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: 'pm', column, engine, link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
@@ -405,11 +406,14 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const sb = await ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => t.querySelector('td')?.textContent.trim() === ${JSON.stringify(pg.name)});
       const b = tr && [...tr.querySelectorAll('button')].find(x => /^(Silence|Unsilence)$/.test(x.textContent));
       if (!b) return null; const was = location.hash; b.click(); const d = document.querySelector('dialog[open]');
-      const out = { text: b.textContent, aria: b.getAttribute('aria-label'), disabled: b.disabled, title: b.title, dialog: d ? (d.querySelector('h3,h2')?.textContent ?? d.textContent.slice(0, 80)) : '', moved: location.hash !== was };
+      // off = aria-disabled (ui.ts offControl), its reason the visible words it is described by; a click on it does nothing
+      const n = b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+      const out = { text: b.textContent, aria: b.getAttribute('aria-label'), off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled,
+        words: n && n.offsetParent !== null ? n.textContent.trim() : '', dialog: d ? (d.querySelector('h3,h2')?.textContent ?? d.textContent.slice(0, 80)) : '', moved: location.hash !== was };
       if (d) { d.close(); d.remove(); } return out; })()`);
-    pm('root', 'Silence (Summary row)', 'postgres', sb ? `${sb.text}: ${sb.disabled ? `off - ${sb.title}` : `dialog '${sb.dialog}'`}` : 'no button',
-      !!sb && !sb.moved && sb.aria === `Silence all alerts for '${pg.name}'` && (sb.disabled ? sb.title.length > 0 : sb.dialog.startsWith(`Silence all alerts for '${pg.name}'?`)),
-      "PerformanceMonitor's Silence on the server's row: its confirm, or off with why");
+    pm('root', 'Silence (Summary row)', 'postgres', sb ? `${sb.text}: ${sb.off ? `off - ${sb.words || 'NO words on the page'}` : `dialog '${sb.dialog}'`}${sb.disabledAttr ? ' (the disabled attribute is set)' : ''}` : 'no button',
+      !!sb && !sb.moved && !sb.disabledAttr && sb.aria === `Silence all alerts for '${pg.name}'` && (sb.off ? sb.words.length > 0 && sb.dialog === '' : sb.dialog.startsWith(`Silence all alerts for '${pg.name}'?`)),
+      "PerformanceMonitor's Silence on the server's row: its confirm, or off (aria-disabled) with its reason in words");
   } else pm('root', 'Silence (Summary row)', 'postgres', 'the Summary did not draw', false, 'the Summary did not draw');
   for (const [inst, eng] of [[ms, 'sqlserver'], [pg, 'postgres']]) {
     const home = `#/summary?i=${inst.instance_id}`;

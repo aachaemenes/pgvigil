@@ -575,8 +575,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const ackAll = async (key: 'dumps' | 'uptime', what: string): Promise<{ done: number; text: string }> => {
     const said = (done: number, text: string) => { note.textContent = text; return { done, text }; };
     if (!ad.writable && !ad.door) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
-    const todo = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
-    if (!todo.length) return said(0, `No ${what} cell with a warning or a critical to acknowledge.`);
+    const open = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
+    // on a demo serve the door's instances alone are acknowledged; the others are left alone - never asked for, the
+    // door would refuse each - and counted in the answer
+    const todo = open.filter(r => ackOn(ad, Number(r.instance_id)));
+    const alone = open.length > todo.length ? `; ${open.length - todo.length} instance(s) not the demo's left alone` : '';
+    if (!todo.length) return said(0, alone ? `No demo instance has a ${what} cell with a warning or a critical to acknowledge${alone}.` : `No ${what} cell with a warning or a critical to acknowledge.`);
     let done = 0;
     const failed: string[] = [];
     for (const r of todo) {
@@ -586,7 +590,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       } catch (e) { failed.push(`${String(r.name)}: ${e instanceof Error ? e.message : String(e)}`); }
     }
     if (done) setTimeout(redraw, 1200);
-    return said(done, `${what} acknowledged on ${done} instance(s) until ${key === 'dumps' ? 'a newer dump' : 'the next restart'}${failed.length ? `; not saved: ${failed.join('; ')}` : ''}.`);
+    return said(done, `${what} acknowledged on ${done} instance(s) until ${key === 'dumps' ? 'a newer dump' : 'the next restart'}${alone}${failed.length ? `; not saved: ${failed.join('; ')}` : ''}.`);
   };
   const tbButton = (label: string, menu?: boolean) => el('button', { type: 'button', class: 'tb-btn', ...(menu ? { 'aria-haspopup': 'menu' } : {}) }, label);
   const refresh = tbButton('Refresh');

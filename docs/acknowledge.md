@@ -34,7 +34,8 @@ Writes take the same path as the Cancel and Terminate buttons (docs/running-quer
 - the repository login from the configuration (the collector's), which calls `pgvigil.import_ack`.
 
 The UI's read-only pool never writes. A server running with `-no-login`, or one whose actions door is off, shows the
-store read-only and says why: the buttons are disabled with the reason as their title.
+store read-only and says why in words on the page: one sentence where every control of the page shares the reason; the
+buttons stay focusable (aria-disabled) and are described by it.
 
 `pgvigil demo -serve` is the one server that writes without a signed-in user: for the demo's own instances only, as the
 user `demo` with the client `demo door`, and never a change wider than one instance (README, Demo).

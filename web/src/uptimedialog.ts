@@ -12,7 +12,7 @@
 // configuration); Clear Alert and Acknowledge are pgvigil's acknowledgements (POST /api/ack), held until the start or
 // the newest dump changes. summaryCellAction is the Summary cell's hook: Uptime opens its dialog in place.
 import { get, Row, rowsOf, Table } from './api';
-import { addAck, checkAcks, endAck, loadAckSafe, liveRows } from './ack';
+import { ackOn, ackWhy, addAck, checkAcks, endAck, loadAckSafe, liveRows, offBeside, onDoor } from './ack';
 import { humanize, sinceState } from './fleet';
 import { badge, el, fmtTime } from './ui';
 
@@ -71,6 +71,10 @@ export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Pr
   else { try { r = rowsOf((await get<Record<'uptime', Table | null>>('uptime', { instance: instanceId })).uptime)[0]; } catch { r = undefined; } }
   const name = root ? '(root)' : r ? String(r.instance) : `instance ${instanceId}`;
   const f = frame(`Uptime Threshold Config ${name}`, instanceId);
+  // who may acknowledge here: Clear Alert of an instance is off, with its reason in words, where the server writes
+  // nothing and on a demo serve for an instance that is not the demo's
+  const ad = await loadAckSafe(['acks']);
+  const clrWhy = root ? null : ackWhy(ad, instanceId, name);
   // in force: the instance's own, a tag's, the root's or the default; the root dialog shows the root's row or the default
   const own = root ? r?.threshold_id != null : r?.own_id != null;
   const warnNow = root ? (r?.threshold_id != null ? r.warn : r?.warn_default) : r?.warn;
@@ -91,7 +95,7 @@ export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Pr
   // DBA Dash's 'Uptime: 1 hour, 20 minutes, 12 seconds' and '(Acknowledged)' after an acknowledgement newer than the start
   let acked = false;
   if (!root && started != null) {
-    const a = checkAcks(await loadAckSafe(['acks'])).get(`${instanceId}|uptime`);
+    const a = checkAcks(ad).get(`${instanceId}|uptime`);
     acked = !!a && (!a.until_change || String(a.seen_state ?? '') === sinceState(started));
   }
   const uptime = started == null ? null : (Date.now() - Date.parse(String(started))) / 1000;
@@ -109,6 +113,7 @@ export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Pr
       ? `In force: ${warnNow == null ? 'no warning' : `warning under ${minsOf(warnNow)} mins`}, ${critNow == null ? 'no critical' : `critical under ${minsOf(critNow)} mins`}${root ? (r.threshold_id != null ? ' (set on the root)' : ' (the default)') : r.level === 'default' ? ' (the default)' : r.level === 'tag' ? ` (set on the tag ${String(r.tag)})` : ` (set on the ${String(r.level)})`}; the default: warning under ${minsOf(r.warn_default)} mins, critical under ${minsOf(r.crit_default)} mins.`
       : 'The instance or its threshold could not be read.'),
     row(clear, el('span', { style: 'flex:1' }), update));
+  if (clrWhy) offBeside(clear, clrWhy);
   rootLink.addEventListener('click', () => { f.dlg.close(); void openUptimeDialog(-1, clearAll); });
   clear.addEventListener('click', async () => {
     clear.disabled = true;
@@ -155,11 +160,24 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
   critOn.box.setAttribute('aria-label', 'Critical Threshold (Hrs): judged'); warnOn.box.setAttribute('aria-label', 'Warning Threshold (Hrs): judged');
   const sync = () => { crit.disabled = !critOn.box.checked; warn.disabled = !warnOn.box.checked; };
   critOn.box.addEventListener('change', sync); warnOn.box.addEventListener('change', sync); sync();
-  // DBA Dash's {AckDate}: the newest acknowledgement of a Memory Dump cell still in force; Clear ends them all
-  const ackRows = liveRows(await loadAckSafe(['acks']), 'ack').filter(a => a.check_key === 'dumps');
-  const ackAt = ackRows.reduce<string | null>((a, x) => x.created_at != null && (a == null || String(x.created_at) > a) ? String(x.created_at) : a, null);
+  // DBA Dash's {AckDate}: the newest acknowledgement of a Memory Dump cell still in force; Clear ends them all - on a
+  // demo serve those of the door's instances alone: the others are left alone (never asked for, the door would refuse
+  // each) and counted in the answer
+  const ad = await loadAckSafe(['acks']);
+  const allAcks = liveRows(ad, 'ack').filter(a => a.check_key === 'dumps');
+  // what this server may end: all of them where it writes; the door's instances' on a demo serve; none elsewhere
+  const ackRows = ad.writable ? allAcks : allAcks.filter(a => ackOn(ad, Number(a.instance_id) || null));
+  const alone = onDoor(ad) && allAcks.length > ackRows.length ? `; ${allAcks.length - ackRows.length} acknowledgement(s) of instances not the demo's left alone` : '';
+  // the date beside Clear is of what Clear would end here (a demo serve: its own instances'); a server that writes
+  // nothing shows the newest in force
+  const ackAt = (onDoor(ad) ? ackRows : allAcks).reduce<string | null>((a, x) => x.created_at != null && (a == null || String(x.created_at) > a) ? String(x.created_at) : a, null);
   const clearLink = el('button', { type: 'button', class: 'link' }, 'Clear');
-  clearLink.disabled = ackRows.length === 0;
+  // acknowledgements stand that this server may not end: Clear is off with that reason in words (never on to be
+  // refused once per row, never the disabled attribute without words); none stands at all: nothing to clear
+  const clearWhy = ackRows.length || !allAcks.length ? null
+    : onDoor(ad) ? "the acknowledgements in force are of instances that are not the demo's: ending them needs pgvigil serve with a signed-in user"
+    : ackWhy(ad) ?? 'acknowledgements are off';
+  if (clearWhy) offBeside(clearLink, clearWhy); else clearLink.disabled = ackRows.length === 0;
   const ackLink = el('button', { type: 'button', class: 'link' }, 'Acknowledge');
   ackLink.disabled = !acknowledge;
   const update = el('button', { type: 'submit' }, 'Update'), cancel = el('button', { type: 'button' }, 'Cancel');
@@ -170,7 +188,7 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
   f.form.append(
     table(3, labelOf('Warning Threshold (Hrs): ', warn), warn, warnOn.label,
       labelOf('Critical Threshold (Hrs): ', crit), crit, critOn.label,
-      ackLink, el('span', {}, ackAt == null ? 'Not acknowledged' : fmtTime(ackAt)), clearLink),
+      ackLink, el('span', {}, ackAt == null ? 'Not acknowledged' : fmtTime(ackAt)), el('span', {}, clearLink)),
     el('p', { class: 'meta threshold-now' }, r
       ? `${set ? 'Set on the root' : 'The default'}: critical when the newest memory dump (SQL Server) or crash restart (PostgreSQL) is under ${critV ?? '-'} hours old, warning under ${warnV ?? '-'}; the default ${r.crit_default} / ${r.warn_default} hours.`
       : 'The threshold could not be read.'),
@@ -188,7 +206,7 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
     clearLink.disabled = true;
     const failed: string[] = [];
     for (const a of ackRows) { try { await endAck(Number(a.ack_id)); } catch (e) { failed.push(e instanceof Error ? e.message : String(e)); } }
-    f.said(!failed.length, failed.length ? failed.join('; ') : `${ackRows.length} acknowledgement(s) ended: the dumps show again.`);
+    f.said(!failed.length, failed.length ? `${failed.join('; ')}${alone}` : `${ackRows.length} acknowledgement(s) ended: the dumps show again${alone}.`);
     f.done();
   });
   f.form.addEventListener('submit', async ev => {

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -111,6 +112,9 @@ func TestDemoDoorScope(t *testing.T) {
 	d := &demoDoor{ids: map[int]bool{1: true, 2: true, 5: true, 6: true}, prefix: "demo-", look: store}
 	const notDemo, wide = "is not one of this demo's instances", "would reach past the demo's instances"
 	const noInstance, noLevel, oneInstance = "names no instance that exists", "is not a level the demo writes at", "level names one instance: instance_id is missing or not a number"
+	// a job's thresholds and the job exclusions are NOT the door's until their pages are taught it: the server then does
+	// what those pages say ('this page's ... are off on pgvigil demo -serve')
+	const notDoor = "is not made through the demo"
 	for _, c := range []struct {
 		name string
 		sc   writeScope
@@ -136,20 +140,21 @@ func TestDemoDoorScope(t *testing.T) {
 		{"a rule by tag on one seeded instance", writeScope{Route: doorAck, Tag: "env:prod", InstanceID: 2}, ""},
 		{"a root threshold", writeScope{Route: doorDriveThreshold, Level: "root"}, "a root change " + wide},
 		{"a tag threshold", writeScope{Route: doorPgThreshold, Level: "tag", Tag: "demo"}, "a tag 'demo' change " + wide},
-		{"a root threshold that also names a seeded instance", writeScope{Route: doorJobThreshold, Level: "root", InstanceID: 1}, "a root change " + wide},
+		{"a root threshold that also names a seeded instance", writeScope{Route: doorPgThreshold, Level: "root", InstanceID: 1}, "a root change " + wide},
 		{"an instance threshold", writeScope{Route: doorDriveThreshold, Level: "instance", InstanceID: 1}, ""},
 		{"a drive threshold", writeScope{Route: doorDriveThreshold, Level: "drive", InstanceID: 2}, ""},
 		{"a database threshold on a real instance", writeScope{Route: doorPgThreshold, Level: "database", InstanceID: 3}, "prod-db1 " + notDemo},
-		{"a threshold level that names no instance", writeScope{Route: doorJobThreshold, Level: "job"}, "a job " + oneInstance},
-		{"a level of another route (a drive level on a job threshold)", writeScope{Route: doorJobThreshold, Level: "drive", InstanceID: 1}, "'drive' " + noLevel},
+		{"a threshold level that names no instance", writeScope{Route: doorPgThreshold, Level: "database"}, "a database " + oneInstance},
+		{"a level of another route (a database level on a drive threshold)", writeScope{Route: doorDriveThreshold, Level: "database", InstanceID: 1}, "'database' " + noLevel},
 		{"a level in another case", writeScope{Route: doorDriveThreshold, Level: "Root", InstanceID: 1}, "'Root' " + noLevel},
 		{"a level no function knows", writeScope{Route: doorPgThreshold, Level: "fleet", InstanceID: 1}, "'fleet' " + noLevel},
 		{"a threshold without a level", writeScope{Route: doorDriveThreshold, InstanceID: 1}, "'' " + noLevel},
 		{"a database threshold on a seeded instance", writeScope{Route: doorPgThreshold, Level: "database", InstanceID: 2}, ""},
-		{"a job threshold on a seeded instance", writeScope{Route: doorJobThreshold, Level: "job", InstanceID: 1}, ""},
-		{"a job level on an exclusion (root or instance only)", writeScope{Route: doorJobExclusion, Level: "job", InstanceID: 1}, "'job' " + noLevel},
-		{"a root job exclusion", writeScope{Route: doorJobExclusion, Level: "root"}, "a root change " + wide},
-		{"an instance's job exclusion", writeScope{Route: doorJobExclusion, Level: "instance", InstanceID: 2}, ""},
+		{"a job's threshold on a seeded instance (its page is not taught the door)", writeScope{Route: doorJobThreshold, Level: "job", InstanceID: 1}, notDoor},
+		{"an instance's job threshold on a seeded instance", writeScope{Route: doorJobThreshold, Level: "instance", InstanceID: 1}, notDoor},
+		{"a root job threshold", writeScope{Route: doorJobThreshold, Level: "root"}, notDoor},
+		{"a root job exclusion", writeScope{Route: doorJobExclusion, Level: "root"}, notDoor},
+		{"an instance's job exclusion on a seeded instance", writeScope{Route: doorJobExclusion, Level: "instance", InstanceID: 2}, notDoor},
 		{"the end of a seeded instance's row", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 10}}, ""},
 		{"the end of a real user's row on a real instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 11}}, "prod-db1 " + notDemo},
 		{"the end of a rule on every instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 12}}, "an every-instance change " + wide},
@@ -162,8 +167,8 @@ func TestDemoDoorScope(t *testing.T) {
 		{"the end of a row with a demo id on an alert of no instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 17}}, noInstance},
 		{"an undismiss of a seeded instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 20}}, ""},
 		{"an undismiss of a real instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 21}}, "prod-db1 " + notDemo},
-		{"the end of an instance's exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 30}}, ""},
-		{"the end of a root exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 31}}, "an every-instance change " + wide},
+		{"the end of a seeded instance's exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 30}}, notDoor},
+		{"the end of a root exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 31}}, notDoor},
 		{"a pause of a seeded instance's mute", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}}, ""},
 		{"an edit that asks for every instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, AnyInstance: true}, "an every-instance change " + wide},
 		{"an edit that moves the rule to a real instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, InstanceID: 3}, "prod-db1 " + notDemo},
@@ -364,5 +369,21 @@ func TestDoorInfo(t *testing.T) {
 	}
 	if got := (&Server{}).doorInfo(context.Background()); got != nil {
 		t.Errorf("a serve is told of a door: %v", got)
+	}
+}
+
+// TestDoorMustConnect: the door's own pool is tried when the door opens. A login that cannot connect (a role at its
+// connection limit, a server gone) is an error at Open - never a demo that starts with Acknowledge on and every click
+// answering 500 (pgxpool makes its pool without a connect).
+func TestDoorMustConnect(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d, err := newDemoDoor(ctx, &Server{}, &DemoDoor{DSN: "host=127.0.0.1 port=1 user=nobody dbname=nothing connect_timeout=1 sslmode=disable", Instances: []int{1}, Prefix: "demo-"})
+	if err == nil {
+		d.close()
+		t.Fatal("a door whose login cannot connect was opened")
+	}
+	if !strings.Contains(err.Error(), "demo door") {
+		t.Errorf("the error does not say whose it is: %v", err)
 	}
 }

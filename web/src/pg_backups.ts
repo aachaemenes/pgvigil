@@ -11,7 +11,7 @@
 //   pgBaseBackupsFleetSection  the base-backup section of the fleet Backups root (the join adds it to backups.ts)
 // Every write goes through a dialog that says what it changes; the server answers done or the reason it refused.
 import { get, Row, rowsOf, Table } from './api';
-import { AckBody, ackDialog, loadAckSafe, writeButton } from './ack';
+import { AckBody, ackDialog, ackWhy, loadAckSafe, writeButton } from './ack';
 import { Ctx, href } from './router';
 import { fleet, tagsOf } from './fleet';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
@@ -253,6 +253,11 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
     }
     // crashes
     const crashes = rowsOf(d.crashes);
+    // the grid's Acknowledge buttons share one reason when they are off - a server that writes nothing at all, or on
+    // a demo serve an instance that is not the demo's: said once above the grid, and every button points at it
+    const crashWhyNot = crashes.some(c => c.ack_id == null) ? ackWhy(ad, id, name) : null;
+    const crashOffP = crashWhyNot ? el('p', { class: 'meta' }, `Acknowledge is off: ${crashWhyNot}`) : null;
+    if (crashOffP && !ad.door) ad.note = crashOffP;
     const ackCol: Col = { key: 'ack_id', label: 'acknowledged', fmt: (v, r) => {
       if (v != null) return `by ${String(r.acked_by)} ${fmtTime(r.acked_at)}`;
       // the store clears every crash up to this acknowledgement (0103's pg_crashes) and a newer one opens the cell again;
@@ -261,12 +266,8 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
       return writeButton(ad, 'Acknowledge', `Acknowledge the crash of ${fmtTime(r.at)} on ${name}`, () => ackDialog({
         title: `Acknowledge the crash of ${fmtTime(r.at)}`,
         what: `The Summary's Crashes cell of ${name} loses this crash and every one before it; a newer crash colours it again. Who and when are kept.`,
-        body, expiry: false, noteField: 'optional', after: () => void draw() }), { instance: id, name });
+        body, expiry: false, noteField: 'optional', after: () => void draw() }), { instance: id, name, note: crashOffP ?? undefined });
     } };
-    // a server that writes nothing at all: the grid's Acknowledge buttons share one reason, said once above the grid
-    const crashOffP = !ad.writable && !ad.door && crashes.some(c => c.ack_id == null)
-      ? el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`) : null;
-    if (crashOffP) ad.note = crashOffP;
     out.push(el('section', {}, el('h3', {}, 'Crash restarts (30 days)'), crashOffP ?? '',
       cs ? el('p', { class: 'meta' }, `${fmtNum(cs.crashes_30d)} crash restart(s), ${fmtNum(cs.open_30d)} not acknowledged; the cell: ${String(cs.status)} (a crash within the hours: ${thresholdLine({ warn: cs.warn_h, crit: cs.crit_h, unit: 'hours', direction: 'under', level: cs.threshold_level })}).`) : '',
       grid(crashes, [{ key: 'at', label: 'when', fmt: fmtTime }, { key: 'signal', num: true }, { key: 'detail', wide: true }, { key: 'lines', label: 'log lines', num: true }, ackCol],

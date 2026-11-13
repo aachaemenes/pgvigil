@@ -9,9 +9,10 @@ package web
 //	where    an instance this process seeded that still carries the tag 'demo' and the demo's name prefix; never
 //	         another instance of the same repository, whatever its tags say
 //	what     an acknowledgement, a note, a close, a silence, a blackout, a mute or a known pattern of ONE instance or
-//	         ONE alert, a dismiss, and a threshold or a job exclusion at the instance level or below
+//	         ONE alert, a dismiss, and a drive's or a PostgreSQL threshold at the instance level or below
 //	never    a write wider than one instance (a root or tag level, a rule on every instance), a level its route does
-//	         not write at, Send test, and every route this file does not name - each refused in words
+//	         not write at, Send test, a job's thresholds and the job exclusions (their pages are not taught the door:
+//	         the route and the page come on together), and every route this file does not name - each refused in words
 //
 // One path: the door calls the same import_ functions with the same payloads as a serve does, on a small pool of its
 // own on the demo's repository login. A handler asks seat() who writes, then asks that seat for the pool with the
@@ -124,8 +125,6 @@ type demoDoor struct {
 var doorLevels = map[doorRoute][]string{
 	doorDriveThreshold: {"instance", "drive"},
 	doorPgThreshold:    {"instance", "database"},
-	doorJobThreshold:   {"instance", "job"},
-	doorJobExclusion:   {"instance"},
 }
 
 func doorWide(what string) string {
@@ -135,7 +134,9 @@ func doorWide(what string) string {
 // allow says why the door refuses a write, "" when it carries it.
 func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 	switch sc.Route {
-	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion:
+	// not on this list: doorJobThreshold and doorJobExclusion. Their pages keep their controls off on a demo serve
+	// ('this page's ... are off', offWords) until they are taught the door, and the server does what its page says.
+	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold:
 	case doorAlertTest:
 		return "Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here", nil
 	default:
@@ -362,6 +363,12 @@ func newDemoDoor(ctx context.Context, s *Server, o *DemoDoor) (*demoDoor, error)
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		return nil, fmt.Errorf("demo door: %w", err)
+	}
+	// the pool is made without a connect: it is tried now, so a login that cannot connect (a role at its connection
+	// limit, a server gone) fails the open - never a demo that starts with its buttons on and every click answering 500
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("demo door: its login cannot connect: %w", err)
 	}
 	d := &demoDoor{pool: pool, ids: map[int]bool{}, prefix: o.Prefix, look: pgDoorLookup{s.pool}}
 	for _, id := range o.Instances {
