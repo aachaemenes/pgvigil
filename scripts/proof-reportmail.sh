@@ -546,6 +546,8 @@ TESTID=""
 for _ in $(seq 1 60); do TESTID=$(q "select send_id from pgvigil.report_mail_sends where schedule_id = $S1 and kind = 'test'"); [[ -n $TESTID ]] && break; sleep 2; done
 [[ -n $TESTID ]] || fail "T: the test was not queued: $(grep -i 'report mail' "$WORK/serve.log" | tail -3)"
 waitsent "$TESTID" || fail "T: the test not answered"
+# the test mail is drawn after 'sb': one more read of its page after it (sc), so it too lies between two reads
+drive screen "$WORK" sc "${ROUTES[1]}" > /dev/null || fail "T: the driver's read after the test"
 [[ $(q "select outcome = 'sent' and subject like '[test] Proof schedule 1 - %' and requested_by = '$UIUSER' from pgvigil.report_mail_sends where send_id = $TESTID") == t ]] || fail "T: $(q "select outcome, subject, error from pgvigil.report_mail_sends where send_id = $TESTID")"
 ok "T: Send test drew schedule $S1's page as $UIUSER and mailed it (mail $TESTID, [test] in its subject); a second test at once refused (one at a time)"
 
@@ -636,10 +638,9 @@ problems = []; total = 0
 for sid, s in sorted(sends.items()):
     m = mails.get(sid)
     if m is None: problems.append(f'mail {sid}: not in the sink'); continue
-    pair = ('now', 'nowb') if s['kind'] == 'now' else ('sa', 'sm', 'sb')
+    pair = {'now': ('now', 'nowb'), 'test': ('sb', 'sc')}.get(s['kind'], ('sa', 'sm', 'sb'))
     reads = [screens.get(norm(s['route']), {}).get(k) for k in pair]
     if None in reads: problems.append(f'mail {sid}: no screens of {s["route"]} ({sorted(screens.get(norm(s["route"]), {}))})'); continue
-    scr, alt_scrs = reads[0], reads[1:]
     to = m['To']
     if to != ', '.join(s['to']): problems.append(f'mail {sid}: To {to!r}')
     subj = str(m['Subject'])
@@ -656,6 +657,11 @@ for sid, s in sorted(sends.items()):
     if p.bad: problems.append(f'mail {sid}: {p.bad[:3]}')
     if p.unstyled: problems.append(f'mail {sid}: {p.unstyled} cells without a style')
     if re.search(r'<\s*(script|style)\b', body, re.I): problems.append(f'mail {sid}: a script or style element')
+    # the base is the read whose grids with rows match the mail's by name and row count (the earliest such read): its
+    # grid list, empty grids and sheet count; the first read when none does (its differences are then the problems)
+    shape = lambda r: [(g['named'], g['rows']) for g in r if not g.get('empty')]
+    scr = next((r for r in reads if shape(r) == [(g['name'], len(g['rows'])) for g in p.grids]), reads[0])
+    alt_scrs = [r for r in reads if r is not scr]
     book = [g for g in scr]   # every grid of the page in order, the empty ones too: the workbook's sheets
     grids = [g for g in scr if not g.get('empty')]   # the grids with rows: the mail's body
     zone = re.search(r'>Time zone</th><td[^>]*>([^<]*)<', body)
@@ -673,14 +679,15 @@ for sid, s in sorted(sends.items()):
             if (c['bg'], c['fg'], c['bold']) != ('#0063a3', '#ffffff', True): problems.append(f'mail {sid} {sg["named"]}: a header cell {c}'); break
         if len(g['rows']) not in [sg['rows']] + [ag['rows'] for ag in ags]: problems.append(f'mail {sid} {sg["named"]}: {len(g["rows"])} rows vs {sg["rows"]} on the screen')
         for i, (mr, sr) in enumerate(zip(g['rows'], sg['cells'])):
-            later = [ag['cells'][i] for ag in ags if i < len(ag['cells']) and len(ag['cells'][i]) == len(sr)]
+            rows_i = [sr] + [ag['cells'][i] for ag in ags if i < len(ag['cells']) and len(ag['cells'][i]) == len(sr)]
             miss = lambda r: sum(1 for mc, c in zip(mr, r) if mc['t'] != c['t'])
-            # the read whose row the mail holds best (the earliest on a tie), whole: its texts and the colours they give the
-            # row (a row's label takes the row's worst status, so its text alone never tells the reads apart)
-            best = min([sr] + later, key=miss)
-            took = miss(best) < miss(sr)
-            if took: sr = best
-            for ar in later:   # a cell that moved apart from its row between reads: taken from the read that holds it
+            # the read whose row the mail holds best (the base on a tie), whole: its texts and the colours they give the row
+            # (a row's label takes the row's worst status, so its text alone never tells the reads apart)
+            best = min(rows_i, key=miss)
+            took = best is not sr
+            sr = best
+            for ar in rows_i:   # a cell that moved apart from its row between reads: taken from any other read that holds it
+                if ar is best: continue
                 if any(mc['t'] != sc['t'] and mc['t'] == ac['t'] for mc, sc, ac in zip(mr, sr, ar)):
                     sr = [ac if mc['t'] == ac['t'] and mc['t'] != sc['t'] else sc for mc, sc, ac in zip(mr, sr, ar)]
                     took = True

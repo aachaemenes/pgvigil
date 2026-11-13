@@ -1140,6 +1140,12 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 			out.Needs = append(out.Needs, *n)
 			break
 		}
+		if _, listed := s.mssqlDoor().doors[name]; engine == "sqlserver" && listed {
+			// listed in the configuration file, but its dsn (env:, file: or dpapi:) resolved to nothing on this server
+			out.Needs = append(out.Needs, hardNeed("a read login for "+name+": its dsn in the configuration file (env:, file: or dpapi:) resolved to an empty string on this server",
+				"set the variable, or make the file readable, for the account pgvigil serve runs as, and serve again (docs/configuration.md)", "configuration"))
+			break
+		}
 		login := "read login"
 		if engine == "postgres" {
 			login = "monitoring login"
@@ -1385,7 +1391,12 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	dbc, conn, why, err := openMS(ctx, s.msDoorDSN(name), "pgvigil-community")
+	dsn, no := s.msRunLogin(name)
+	if no != "" {
+		writeErr(w, http.StatusForbidden, errors.New(no))
+		return
+	}
+	dbc, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
 	if why != "" {
 		writeErr(w, http.StatusForbidden, errors.New(why))
 		return
@@ -1439,14 +1450,15 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 }
 
 // msRunLogin is a SQL Server instance's read login for a run, or why a run is refused before anything is sent: this
-// server holds no login for the instance (its configuration file does not list it - a plain serve has no demo
-// instance, so the demo's own instances are such instances there), or the configured dsn (env:, file: or dpapi:)
-// resolved to an empty string on this server. A custom report's run and a community tool's run use the same words.
+// server's configuration file does not list the instance (the logins come from that file alone - an instance added in
+// Admin > Instances has none here; a plain serve has no demo instance, so the demo's own instances are such instances
+// there), or the configured dsn (env:, file: or dpapi:) resolved to an empty string on this server. A custom report's
+// run, a community tool's run and its form (POST /api/community/params) use the same words.
 func (s *Server) msRunLogin(name string) (dsn, why string) {
 	d, ok := s.mssqlDoor().doors[name]
 	switch {
 	case !ok:
-		return "", "instance " + name + " has no read login configured on this server"
+		return "", "instance " + name + " has no read login in this server's configuration file"
 	case d.Monitor == "":
 		return "", "instance " + name + ": its read login's dsn (env:, file: or dpapi:) resolved to an empty string on this server"
 	}

@@ -137,7 +137,7 @@
 #     from any of it; the real instance: no sample in its tools, GET /api/community/sample 404; POST /api/community/run
 #     of the demo's SQL Server instance, never answered with a sample: on the signed-in plain serve (an instance without
 #     a login there: a plain serve has no demo instance) refused in its run row ('instance <name> has no read login
-#     configured on this server', nothing sent), a procedure's run and Glenn Berry's script's (one query's text) alike;
+#     in this server's configuration file', nothing sent), a procedure's run and Glenn Berry's script's (one query's text) alike;
 #     on the demo serve 403 ('Running a tool needs a signed-in user ...').
 #     [the fold of review 20261112-222929] a real PostgreSQL instance tagged demo on the plain -no-login serve: its
 #     ordinary line, no demo words, GET /api/community/sample 404 (only an instance this pgvigil demo seeded is a demo
@@ -1276,13 +1276,16 @@ if (mode === 'live') {
       await cmd('Page.setInterceptFileChooserDialog', { enabled: true });
       const fc = chooser();
       await ev(`[...document.querySelectorAll('#bar button')].find(b => b.textContent.trim() === 'Tools').click(); 1`);
-      await until(`[...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent.startsWith('Open Grid or Data Set'))`, 5000);
+      const menuUp = await until(`[...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent.startsWith('Open Grid or Data Set'))`, 5000);
       // a file input opens its chooser only on a user's activation (filedrop.ts pick: input.click()): the item's click is
       // evaluated as a user gesture, as menu-check's evaluates are, or no chooser opens and fileChooserOpened never comes
-      await cmd('Runtime.evaluate', { expression: `[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent.startsWith('Open Grid or Data Set')).click(); 1`,
-        returnByValue: true, userGesture: true });
-      const got = await Promise.race([fc, sleep(10000).then(() => null)]);
-      if (!got) out.reopen = { error: 'no file chooser opened' };
+      const clicked = menuUp ? await cmd('Runtime.evaluate', { expression: `[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent.startsWith('Open Grid or Data Set')).click(); 1`,
+        returnByValue: true, userGesture: true }) : null;
+      const thrown = clicked?.result?.exceptionDetails;
+      const got = menuUp && !thrown ? await Promise.race([fc, sleep(10000).then(() => null)]) : null;
+      if (!menuUp) out.reopen = { error: "the Tools menu showed no 'Open Grid or Data Set' item in 5 s" };
+      else if (thrown) out.reopen = { error: 'the Tools item threw in the page: ' + JSON.stringify(thrown).slice(0, 300) };
+      else if (!got) out.reopen = { error: 'no file chooser opened' };
       else {
         await cmd('DOM.setFileInputFiles', { files: [one], backendNodeId: got.backendNodeId });
         await until(`!!document.querySelector('dialog.fd-viewer[open] table.grid')`, 10000);
@@ -1587,7 +1590,7 @@ for q in d['picker']:
 assert sys.argv[4] == sys.argv[5], f"S: custom_report_log {sys.argv[4]} -> {sys.argv[5]}: opening samples wrote audit rows"
 print(f"ok   S: no audit row from any sample opened (custom_report_log {sys.argv[4]} before and after)")
 rr = json.load(open(sys.argv[6])); runs = rr.get('runs') or []; dname = ids[0][1]
-want = f"instance {dname} has no read login configured on this server"
+want = f"instance {dname} has no read login in this server's configuration file"
 assert len(runs) == 1 and runs[0].get('outcome') == 'refused' and runs[0].get('error') == want and runs[0].get('sets') == [] \
     and runs[0].get('rows') == 0 and 'sample' not in json.dumps(rr), f"S: a run asked of the demo's instance on the signed-in serve: {str(rr)[:300]}"
 print(f"ok   S: POST /api/community/run on {dname} from the signed-in plain serve: an instance without a login there, refused before anything is sent ('{want}') - never a sample")
