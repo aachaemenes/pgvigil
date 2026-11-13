@@ -767,7 +767,11 @@ func TestXECloudSQLOneMaxMemory(t *testing.T) {
 			t.Fatalf("%s: %d CREATE EVENT SESSION, want 4", form, len(parts))
 		}
 		for i, p := range parts {
-			p = p[:strings.Index(p, "EXEC sys.sp_executesql")]
+			end := strings.Index(p, "EXEC sys.sp_executesql")
+			if end < 0 {
+				t.Fatalf("%s: session %d has no EXEC sys.sp_executesql after its CREATE EVENT SESSION", form, i+1)
+			}
+			p = p[:end]
 			got := len(re.FindAllString(p, -1))
 			if form == "server" && strings.Contains(p, "event_file") {
 				continue // the slow session's file target has no max_memory of its own
