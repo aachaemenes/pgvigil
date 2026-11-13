@@ -59,6 +59,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	mssqldb "github.com/microsoft/go-mssqldb"
+
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // ---- definitions ------------------------------------------------------------------------------------------------
@@ -654,7 +656,7 @@ func openMS(ctx context.Context, dsn, app string) (*sql.DB, *sql.Conn, string, e
 	if strings.TrimSpace(dsn) == "" {
 		return nil, nil, "", errors.New("the read login's dsn resolved to an empty string")
 	}
-	db, err := sql.Open("sqlserver", mssqlApp(dsn, app))
+	db, err := mssqlopen.Open(mssqlApp(dsn, app))
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("dsn: %w", err)
 	}
@@ -1241,9 +1243,9 @@ func (s *Server) runOnInstance(ctx context.Context, d *reportDef, t runTarget, s
 	run := instanceRun{InstanceID: t.id, Instance: t.name, Engine: t.engine, Statement: stmt}
 	t0 := time.Now()
 	if t.engine == "sqlserver" {
-		dsn := s.msDoorDSN(t.name)
-		if dsn == "" {
-			run.finish(t0, nil, "instance "+t.name+" has no read login configured on this server", nil)
+		dsn, no := s.msRunLogin(t.name)
+		if no != "" {
+			run.finish(t0, nil, no, nil)
 			return run
 		}
 		args := []any{sql.Named("from", from), sql.Named("to", to)}

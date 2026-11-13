@@ -3,11 +3,11 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, summaryText, tagsOf } from './fleet';
-import { Ctx, href, rangeLabel, window_ } from './router';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf } from './fleet';
+import { Ctx, href, isMssql, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
-import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, showMenu, tile } from './ui';
+import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, showMenu, tile } from './ui';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
@@ -29,7 +29,7 @@ import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
-import { AckBody, AckData, ackDialog, ackHolds, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
+import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
 import { bandClass, cellState, Chip, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
@@ -265,6 +265,11 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // the acknowledgements in force and the Needs-attention rates (task 118); a server without them: no ack, no rate
   // the live read (task 177 D29) apart: a failure there never takes the acknowledgements and the rates with it
   const [f, , ad, lvd] = await Promise.all([fleet(), tagUI(), loadAckSafe(['acks', 'attention']), loadAckSafe(['live'])]);
+  // the page's one sentence where no acknowledgement can be written at all: every off control of the page points at
+  // it (the strip's Acknowledge, the grid's Silence). On a demo serve the door writes for the demo's own instances, and
+  // a control of another instance says its own reason beside itself.
+  const offP = ad.writable || ad.door ? null : el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`);
+  ad.note = offP ?? undefined;
   const acks = checkAcks(ad);
   const rates = new Map(rowsOf(ad.attention).map(r => [Number(r.instance_id), r]));
   // PerformanceMonitor's live figures per instance (task 177 D29, instheader.ts): the chips as columns, the freshness
@@ -275,6 +280,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const insts = applyTagFilter(scope);
   type Acked = Record<string, Row>;
   const cellsOf = (r: Row) => r._cells as Record<string, Cell>;
+  // a scope with no SQL Server instance names the groups in PostgreSQL's words (the column headers, the tests, the
+  // menus); a scope that holds one keeps DBA Dash's names; a row's own places follow the row's engine (labelOf)
+  const pgOnly = insts.length > 0 && !insts.some(r => isMssql(r.engine));
   const rows = insts.map(r => {
     const c = cells(f, r);
     // an acknowledged cell (in force, and for until-change the same state it was given for) loses its colour and its
@@ -326,7 +334,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     return cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${cv}` : base;
   };
   const statusCol = (g: Group): Col => ({
-    key: 'g_' + g.key, label: g.label,
+    key: 'g_' + g.key, label: labelOf(g, pgOnly),
     cls: (_v, r) => (r._acked as Acked)[g.key] ? 'status none ack' : 'status ' + cellClass(cellsOf(r)[g.key]),
     fmt: (_v, r) => {
       const all = cellsOf(r), c = all[g.key];
@@ -342,7 +350,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
         if (tip) s.title = tip;
         return s;
       }
-      const a = el('a', { href: cellHref(g, r), class: 'cell-link', 'aria-label': `${g.label}: ${text}${text === reading ? '' : ` (${reading})`}${ak ? ', ' + ackWords(ak) : ''}`, 'data-text': reading }, text);
+      const a = el('a', { href: cellHref(g, r), class: 'cell-link', 'aria-label': `${labelOf(g, !isMssql(r.engine))}: ${text}${text === reading ? '' : ` (${reading})`}${ak ? ', ' + ackWords(ak) : ''}`, 'data-text': reading }, text);
       if (tip) a.title = tip;
       summaryCellAction(a, g.key, r);
       return a;
@@ -366,7 +374,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   };
   // DBA Dash's columns in its order, then pgvigil's own tests, then pgvigil's other columns
   const cols: Col[] = [
-    { key: 'name', label: 'Instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
+    // an instance added on Admin > Instances and not read yet says so beside its name (its cells are all 'not yet')
+    { key: 'name', label: 'Instance', fmt: (v, r) => { const nr = notReadYet(r); const a = instLink(ctx, String(v), r.instance_id);
+      return nr ? el('span', {}, a, ' ', el('span', { class: 'meta not-read' }, nr)) : a; } },
     ...groups.filter(g => g.dd).map(statusCol),
     ...groups.filter(g => !g.dd).map(statusCol),
     // PerformanceMonitor's server card as columns (task 177 D29): each chip's value, its detail in the cell's title
@@ -406,7 +416,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     try {
       const p = JSON.parse(sessionStorage.getItem('pgvigil.summaryPick') ?? 'null') as { key?: string; b?: string } | null;
       const g = p && groups.find(x => x.key === p.key);
-      return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na' || p.b === 'ack' || p.b === 'bad') ? { key: g.key, label: g.label, b: p.b as Bucket } : null;
+      return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na' || p.b === 'ack' || p.b === 'bad') ? { key: g.key, label: labelOf(g, pgOnly), b: p.b as Bucket } : null;
     } catch { return null; }
   })();
   const setPick = (p: typeof pick) => {
@@ -416,6 +426,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const lower = el('div', { class: 'summary-instances' });
   // DBA Dash's toolbar button: enabled while a filter is set
   const clear = el('button', { type: 'button', class: 'clear-filter' }, 'Clear Filter');
+  // off while no count is picked: its own state, said in words beside it (never the disabled attribute alone)
+  const clearNote = el('span', { class: 'off-reason' });
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const note = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'N/A', ack: 'acknowledged', bad: 'warning or critical' };
@@ -442,7 +454,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     if (pick && !live.some(g => g.key === pick!.key) && pick.b !== 'na') setPick(null);   // its test is not on the page (the focused view, a new scope)
     if (pick) shown = rows.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
     for (const [k, b] of countBtns) b.setAttribute('aria-pressed', String(!!pick && k === pick.key + '|' + pick.b));
-    clear.disabled = !pick;
+    clearNote.textContent = pick ? '' : 'no count is picked';
+    offControl(clear, pick ? null : 'No count is picked: there is no filter to clear', clearNote);
     said.replaceChildren(pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}.` : focus ? `${inFocus} of ${rows.length} instance(s) need a look.` : `${rows.length} instance(s).`);
     // a picked test: its column alone among the status columns (DBA Dash's FilterByStatus hides the others)
     const shownCols = cols.filter(c => !c.key.startsWith('g_') || (pick ? c.key === 'g_' + pick.key : keep.has(c.key)));
@@ -460,7 +473,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       for (const r of rows) c[bucketOf(r, g.key)]++;   // every instance in scope, the focused view too (DBA Dash's GroupSummaryByTest)
       // the test name's fill: its worst count (DBA Dash's DgvTests_RowsAdded: critical, then warning, then OK, then
       // acknowledged; N/A only when nothing else)
-      return { key: g.key, test: g.label, ...c, _worst: c.crit ? 'crit' : c.warn ? 'warn' : c.ok ? 'ok' : c.ack ? 'none ack' : 'none' } as Row;
+      return { key: g.key, test: labelOf(g, pgOnly), ...c, _worst: c.crit ? 'crit' : c.warn ? 'warn' : c.ok ? 'ok' : c.ack ? 'none ack' : 'none' } as Row;
     });
     // by the test's name (DBA Dash sorts the grid by its display text); listed while an instance is OK, warning or
     // critical in it (DBA Dash's TestRowFilter), in the focused view while one is warning or critical
@@ -528,7 +541,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const lines = rows.filter(r => Number(r._worst) > 0).map(r => {
       const c = cellsOf(r), acked = r._acked as Acked;
       const open = groups.filter(g => !c[g.key].none && c[g.key].level > 0 && !acked[g.key]);
-      const reasons = open.map(g => `${g.label} ${cellText(c[g.key])}`);
+      const pgRow = !isMssql(r.engine);
+      const reasons = open.map(g => `${labelOf(g, pgRow)} ${cellText(c[g.key])}`);
       const rt = rates.get(Number(r.instance_id));
       const per = (k: string, label: string) => {
         const v = Number(rt?.[k] ?? 0), mins = Number(rt?.window_minutes ?? 15);
@@ -543,20 +557,20 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
         badge(lvl === 2 ? 'Critical' : 'Warning', lvl === 2 ? 'crit' : 'warn'),
         writeButton(ad, 'Acknowledge', `Acknowledge ${String(r.name)}: ${reasons.join(', ')}`, () => ackDialog({
           title: `Acknowledge ${String(r.name)}`,
-          what: `${open.map(g => `${g.label} (${cellText(c[g.key])})`).join(', ')}: each cell loses its colour and is counted as acknowledged. Who and when are kept.`,
+          what: `${open.map(g => `${labelOf(g, pgRow)} (${cellText(c[g.key])})`).join(', ')}: each cell loses its colour and is counted as acknowledged. Who and when are kept.`,
           body, expiry: true, untilChange: true, noteField: 'optional', after: redraw,
-        })));
+        }), { instance: Number(r.instance_id), name: String(r.name), note: offP ?? undefined }));
     });
     const ackList = rows.flatMap(r => Object.entries(r._acked as Acked).map(([k, a]) => {
-      const g = groups.find(x => x.key === k)!;
-      return el('li', {}, `${String(r.name)}: ${g.label} (${cellText(cellsOf(r)[k])}), ${ackWords(a)} `,
-        ad.writable ? endButton(Number(a.ack_id), `Unacknowledge ${String(r.name)} ${g.label}`, redraw, 'Unacknowledge') : null);
+      const g = groups.find(x => x.key === k)!, gl = labelOf(g, !isMssql(r.engine));
+      return el('li', {}, `${String(r.name)}: ${gl} (${cellText(cellsOf(r)[k])}), ${ackWords(a)} `,
+        ackOn(ad, Number(r.instance_id)) ? endButton(Number(a.ack_id), `Unacknowledge ${String(r.name)} ${gl}`, redraw, 'Unacknowledge') : null);
     }));
     strip.replaceChildren(...[el('h3', {}, 'Needs attention ', whatIsThis('One line per instance with a warning or a critical cell that is not acknowledged: blocking and deadlocks of the last 15 minutes as a count and a rate per hour, then the cells. Acknowledge takes the line\'s cells out of the colour until a time or until the cell changes; they are counted under Instance Count Acknowledged.', 'Needs attention')),
       lines.length ? el('div', {}, ...(allLines ? lines : lines.slice(0, 8)),
         lines.length > 8 ? (() => { const b = el('button', { type: 'button', class: 'link', 'aria-expanded': String(allLines) }, allLines ? 'Show the first 8' : `Show all ${lines.length}`); b.addEventListener('click', () => { allLines = !allLines; drawStrip(); }); return b; })() : null) : el('p', { class: 'empty' }, rows.length ? 'Nothing needs attention: no warning or critical cell that is not acknowledged.' : 'No instances yet.'),
       ackList.length ? el('details', {}, el('summary', {}, `${ackList.length} acknowledged check(s)`), el('ul', {}, ...ackList)) : null,
-      ad.writable ? null : el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`)].filter((x): x is NonNullable<typeof x> => x !== null));
+      ad.writable ? null : ad.door ? el('p', { class: 'meta', 'data-part': 'demo-door' }, `Demo: what you acknowledge here is saved as user ${ad.door.user}, on the demo's own instances only; nothing reaches a server.`) : offP].filter((x): x is NonNullable<typeof x> => x !== null));
   };
   sortSel.addEventListener('change', () => {
     sortBy = sortSel.value as SortBy;
@@ -569,9 +583,13 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // it answers what it did (the dialogs show it: the page's note sits behind their modal)
   const ackAll = async (key: 'dumps' | 'uptime', what: string): Promise<{ done: number; text: string }> => {
     const said = (done: number, text: string) => { note.textContent = text; return { done, text }; };
-    if (!ad.writable) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
-    const todo = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
-    if (!todo.length) return said(0, `No ${what} cell with a warning or a critical to acknowledge.`);
+    if (!ad.writable && !ad.door) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
+    const open = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
+    // on a demo serve the door's instances alone are acknowledged; the others are left alone - never asked for, the
+    // door would refuse each - and counted in the answer
+    const todo = open.filter(r => ackOn(ad, Number(r.instance_id)));
+    const alone = open.length > todo.length ? `; ${open.length - todo.length} instance(s) not the demo's left alone` : '';
+    if (!todo.length) return said(0, alone ? `No demo instance has a ${what} cell with a warning or a critical to acknowledge${alone}.` : `No ${what} cell with a warning or a critical to acknowledge.`);
     let done = 0;
     const failed: string[] = [];
     for (const r of todo) {
@@ -581,8 +599,10 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       } catch (e) { failed.push(`${String(r.name)}: ${e instanceof Error ? e.message : String(e)}`); }
     }
     if (done) setTimeout(redraw, 1200);
-    return said(done, `${what} acknowledged on ${done} instance(s) until ${key === 'dumps' ? 'a newer dump' : 'the next restart'}${failed.length ? `; not saved: ${failed.join('; ')}` : ''}.`);
+    return said(done, `${what} acknowledged on ${done} instance(s) until ${key === 'dumps' ? (pgOnly ? 'a newer crash' : 'a newer dump') : 'the next restart'}${alone}${failed.length ? `; not saved: ${failed.join('; ')}` : ''}.`);
   };
+  // the instances the Summary shows (the tag and its filter): the dump dialog's Clear acts on theirs, as Acknowledge does
+  const scopeIds = () => insts.map(r => Number(r.instance_id));
   const tbButton = (label: string, menu?: boolean) => el('button', { type: 'button', class: 'tb-btn', ...(menu ? { 'aria-haspopup': 'menu' } : {}) }, label);
   const refresh = tbButton('Refresh');
   refresh.addEventListener('click', () => { forget(); redraw(); });
@@ -596,7 +616,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const options = tbButton('Options', true);
   const sub = (items: [string, () => void][]) => () => showMenu(...below(options, 24, 8), items, options);
   options.addEventListener('click', () => showMenu(...below(options), [
-    ['Memory Dumps ▸', sub([['Acknowledge Dumps', () => void ackAll('dumps', 'Memory dumps')], ['Configure Thresholds', () => void openDumpDialog(() => ackAll('dumps', 'Memory dumps'))]])],
+    // DBA Dash's 'Memory Dumps' acts on PostgreSQL's crash restarts too: a scope with no SQL Server says it in those words
+    pgOnly ? ['Crash Restarts ▸', sub([['Acknowledge Crashes', () => void ackAll('dumps', 'Crash restarts')], ['Configure Thresholds', () => void openDumpDialog(() => ackAll('dumps', 'Crash restarts'), true, scopeIds())]])]
+      : ['Memory Dumps ▸', sub([['Acknowledge Dumps', () => void ackAll('dumps', 'Memory dumps')], ['Configure Thresholds', () => void openDumpDialog(() => ackAll('dumps', 'Memory dumps'), false, scopeIds())]])],
     ['Instance Uptime ▸', sub([['Acknowledge Uptime', () => void ackAll('uptime', 'Instance uptime')], ['Configure Thresholds', () => void openUptimeDialog(-1, () => ackAll('uptime', 'Instance uptime'))]])],
     ['Test Summary Max Height % ▸', sub(maxHeights.map(p => [tick(p === maxPct, `${p}%`), () => { maxPct = p; writeSetting('pgvigil.summaryTestsMaxPct', String(p)); sizeUpper(); }] as [string, () => void]))],
   ], options));
@@ -608,7 +630,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   drawStrip(); drawUpper(); drawLower();
   return el('section', { class: 'fleet-summary' }, el('h2', {}, 'Summary' + scopeLabel(ctx)),
     el('div', { class: 'toolbar summary-toolbar', style: 'display:flex;flex-wrap:wrap;gap:.4rem;align-items:center' },
-      refresh, view, options, clear, el('label', {}, 'Sort ', sortSel), filterBar, refreshTime),
+      refresh, view, options, clear, clearNote, el('label', {}, 'Sort ', sortSel), filterBar, refreshTime),
     note,
     tiles,
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
@@ -637,10 +659,10 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
   const notOk = groups.filter(g => !c[g.key].none && c[g.key].level > 0);
   // a cell without a read is named; an n/a cell is not (the other engine's check: QS, SQL Agent Alerts ... on PostgreSQL)
   const noRead = groups.filter(g => c[g.key].none && c[g.key].text !== 'n/a');
-  sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? (noRead.length ? `No warning or critical; no sample for: ${noRead.map(g => g.label).join(', ')}.` : 'Every check group is OK.') : 'Not OK: ',
+  sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? (noRead.length ? `No warning or critical; no sample for: ${noRead.map(g => labelOf(g, !isMssql(r.engine))).join(', ')}.` : 'Every check group is OK.') : 'Not OK: ',
     ...notOk.flatMap((g, i) => {
       const x = c[g.key];
-      const a = el('a', { class: cellClass(x), href: href(ctx, { tab: g.tab }) }, `${g.label} ${cellText(x)}`);
+      const a = el('a', { class: cellClass(x), href: href(ctx, { tab: g.tab }) }, `${labelOf(g, !isMssql(r.engine))} ${cellText(x)}`);
       if (x.detail.length) a.title = x.detail.join('\n');
       return i ? [', ', a] : [a];
     })));
@@ -657,7 +679,7 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
     ['data checksums', String(r.data_checksums ?? '')],
     ['pg_stat_statements', r.has_pg_stat_statements ? 'yes' : 'no'],
     ['tags', tagsOf(r).join(', ')],
-    ['last seen', fmtTime(r.last_seen)],
+    ['last seen', notReadYet(r) || fmtTime(r.last_seen)],
     ['last activity sample', fmtTime(r.activity_at)],
   ])));
   const checkCols: Col[] = [

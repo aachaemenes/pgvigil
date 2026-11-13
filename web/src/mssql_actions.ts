@@ -10,10 +10,18 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtTime, grid, props } from './ui';
+import { offBeside } from './ack';
 
 type Kind = 'kill' | 'job_start' | 'job_stop';
 interface OnOff { enabled: boolean; reason?: string }
-export interface MssqlActionsState { actions: Record<Kind, OnOff>; log: Table | null }
+// notes: per action, the page's visible sentence where it is off for the WHOLE instance (every row's button of that
+// kind shares the reason and points at it); a row's own reason ('a system session') stands beside its button
+export interface MssqlActionsState { actions: Record<Kind, OnOff>; log: Table | null; notes?: Partial<Record<Kind, HTMLElement>> }
+// an actions column and, where its action is off for the whole instance, the sentence that says why: the page that
+// builds the grid places it above the grid (the column's off buttons point at it)
+// rows: the page's rows, handed over before the grid draws: the sentence is then given to the page only where a row
+// will show a button that points at it (no job, or only system sessions: no sentence standing alone)
+export type ActionCol = Col & { readonly offNote?: HTMLElement; rows?(all: Row[]): void };
 
 interface Target {
   session_id?: number; login_time?: string; login?: string; host?: string; program?: string; database?: string; status?: string;
@@ -42,14 +50,14 @@ const titles: Record<Kind, string> = {
   job_stop: 'sp_stop_job: stop the running job',
 };
 
-function button(ctx: Ctx, st: MssqlActionsState, kind: Kind, why: string, r: Row, after: () => void): HTMLButtonElement {
+// own: the cell's one note for a reason that is the ROW's own (a row with two buttons says it once, after the pair)
+function button(ctx: Ctx, st: MssqlActionsState, kind: Kind, why: string, r: Row, after: () => void, own?: HTMLElement): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'act-' + kind, style: 'font-size:12px;padding:0 .4rem;margin-right:.2rem' }, labels[kind]);
   const reason = why || (st.actions[kind]?.enabled ? '' : st.actions[kind]?.reason || 'actions are off for this instance');
   if (reason) {
-    // off: the button stays reachable by keyboard so its reason can be read (a disabled button takes no focus)
-    b.setAttribute('aria-disabled', 'true');
-    b.setAttribute('aria-label', `${labels[kind]}: off. ${reason}`);
-    b.title = reason;
+    // off: the button stays reachable by keyboard and its reason is words on the page - the page's sentence for this
+    // kind where the action is off for the whole instance (st.notes), in the cell where the reason is this row's own
+    offBeside(b, reason, why ? own : st.notes?.[kind]);
     b.style.opacity = '.55';
     b.style.cursor = 'not-allowed';
   } else {
@@ -61,10 +69,37 @@ function button(ctx: Ctx, st: MssqlActionsState, kind: Kind, why: string, r: Row
 
 // mssqlKillCol is the Running queries grid's last column: Kill on a row with a session_id (a user session), disabled
 // with the reason otherwise. It reads the instance's door itself; after runs once an action is done.
-export async function mssqlKillCol(ctx: Ctx, after: () => void): Promise<Col> {
+// offSentences: what the page says ONCE, above the grid, for the kinds given that are off for the whole instance - a
+// reason every row shares never stands beside each row's button (Copy all and the exports carry a cell's text). One
+// sentence where all of them are off for one shared reason ('Start and Stop are off for this instance: R'); else one
+// per kind that is off ('Stop is off for this instance: R' - the instance's actions: list names one kind and not the
+// other, or their reasons differ); a kind that is on gets none. It sets st.notes, which the buttons point at, and
+// returns the element for the page to place (none when every kind is on).
+function offSentences(st: MssqlActionsState, kinds: Kind[]): HTMLElement | undefined {
+  const why = (k: Kind) => st.actions[k]?.enabled ? '' : st.actions[k]?.reason || 'actions are off for this instance';
+  const offKinds = kinds.filter(k => why(k) !== '');
+  if (!offKinds.length) return undefined;
+  const notes: Partial<Record<Kind, HTMLElement>> = {};
+  const said: HTMLElement[] = [];
+  if (offKinds.length === kinds.length && new Set(kinds.map(why)).size === 1) {
+    const p = el('p', { class: 'meta' }, `${kinds.map(k => labels[k]).join(' and ')} ${kinds.length > 1 ? 'are' : 'is'} off for this instance: ${why(kinds[0])}`);
+    for (const k of kinds) notes[k] = p;
+    said.push(p);
+  } else {
+    for (const k of offKinds) { const p = el('p', { class: 'meta' }, `${labels[k]} is off for this instance: ${why(k)}`); notes[k] = p; said.push(p); }
+  }
+  st.notes = { ...st.notes, ...notes };
+  return said.length === 1 ? said[0] : el('div', {}, ...said);
+}
+export async function mssqlKillCol(ctx: Ctx, after: () => void): Promise<ActionCol> {
   const st = await mssqlActionsState(ctx.instance);
+  const note = offSentences(st, ['kill']);
+  // a row whose Kill points at the sentence: a user session (a system session or a row without an id says its own)
+  let shown: boolean | undefined;
   return {
     key: '_actions', label: 'action',
+    rows(all: Row[]) { shown = all.some(r => { const id = Number(r.session_id); return Number.isInteger(id) && id > 50; }); },
+    get offNote() { return shown === false ? undefined : note; },
     fmt: (_v, r) => {
       const id = Number(r.session_id);
       const why = !Number.isInteger(id) || id <= 0 ? 'this row has no session id' : id <= 50 ? 'a system session' : '';
@@ -74,13 +109,20 @@ export async function mssqlKillCol(ctx: Ctx, after: () => void): Promise<Col> {
 }
 
 // mssqlJobCol is the Jobs grid's last column: Start and Stop on a row with a job_id.
-export async function mssqlJobCol(ctx: Ctx, after: () => void): Promise<Col> {
+export async function mssqlJobCol(ctx: Ctx, after: () => void): Promise<ActionCol> {
   const st = await mssqlActionsState(ctx.instance);
+  const note = offSentences(st, ['job_start', 'job_stop']);
+  // a row whose Start and Stop point at the sentence: a job with its id (a row without one says its own)
+  let shown: boolean | undefined;
   return {
     key: '_actions', label: 'action',
+    rows(all: Row[]) { shown = all.some(r => r.job_id != null && r.job_id !== ''); },
+    get offNote() { return shown === false ? undefined : note; },
     fmt: (_v, r) => {
       const why = r.job_id == null || r.job_id === '' ? 'this row has no job id' : '';
-      return el('span', { style: 'white-space:nowrap' }, button(ctx, st, 'job_start', why, r, after), button(ctx, st, 'job_stop', why, r, after));
+      // the row's own reason once in the cell: both buttons point at it
+      const own = why ? el('span', { class: 'off-reason' }, why) : undefined;
+      return el('span', { style: 'white-space:nowrap' }, button(ctx, st, 'job_start', why, r, after, own), button(ctx, st, 'job_stop', why, r, after, own), ...(own ? [' ', own] : []));
     },
   };
 }

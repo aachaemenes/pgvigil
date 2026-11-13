@@ -60,6 +60,7 @@ import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
+import { mssqlPoolView } from './pools';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlAuditView } from './mssql_audit';
 import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
@@ -67,6 +68,7 @@ import { pgDbOptionsFleetView, pgDbOptionsView } from './pg_dboptions';
 import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
 import { mssqlProcsView } from './mssql_procs';
 import { mssqlPlanCacheView } from './mssql_plancache';
+import { mssqlQueriesView } from './mssql_queries';
 import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
@@ -101,11 +103,11 @@ const mssqlPages: Record<string, Render> = {
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
-  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
+  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
-  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
+  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
   mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
   customreports: customReportsView, community: communityView,
   ...reportPages,
@@ -193,7 +195,9 @@ function refreshSecs(): number { const v = Number(lsGet('pgvigil.refresh') ?? '3
 function refreshSelect(live: boolean): HTMLElement {
   // a page that never reads again by itself (history, a snapshot, a page without live state) shows the choice disabled
   const why = live ? 'Auto refresh of a live page' : 'This page does not refresh by itself (a past range, a snapshot, or not a live page)';
-  const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '' }) }) as HTMLSelectElement;
+  // (off: a form field stays natively disabled, and is described by the footer's own visible sentence, 'auto refresh
+  // not on this page')
+  const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '', 'aria-describedby': 'status-refresh' }) }) as HTMLSelectElement;
   for (const [k, label] of refreshChoices) sel.append(el('option', { value: k, ...(Number(k) === refreshSecs() ? { selected: '' } : {}) }, 'Auto refresh: ' + label));
   sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
   return sel;
@@ -252,10 +256,15 @@ async function statusLine(ctx: Ctx, live: boolean) {
       n('failing') ? el('a', { href: href(ctx, { tab: 'checks', instance: undefined, tag: undefined }) }, `${n('failing')} failing`) : '0 failing',
       `, ${n('stale')} stale, ${n('not_collected')} not collected`, n('no_permission') ? `; ${n('no_permission')} without a permission` : ''),
     el('span', { 'data-part': 'repository' }, `repository ${fmtBytes(statusRow.repository_bytes)}`),
-    el('span', { 'data-part': 'seat' }, `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
+    // a demo serve's seat: whose door this is, said once on every page (task B7)
+    el('span', { 'data-part': 'seat' }, statusRow.door
+      ? `demo: changes to the demo's own instances are saved as user ${String(statusRow.door)}; nothing reaches a server`
+      : `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
     el('span', { 'data-part': 'newest' }, statusRow.newest_read ? `newest read ${fmtClock(new Date(String(statusRow.newest_read)))}` : 'no read yet'),
-    el('span', { 'data-part': 'refresh' }, `auto refresh ${refresh}`),
-  ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr)];
+    el('span', { 'data-part': 'refresh', id: 'status-refresh' }, `auto refresh ${refresh}`),
+  ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr),
+    // the Auto refresh select of a page that is not live is described by these words: they stand in this branch too
+    el('span', { 'data-part': 'refresh', id: 'status-refresh' }, `auto refresh ${refresh}`)];
   foot.replaceChildren(...items.flatMap((x, i) => i ? [' \u00b7 ', x] : [x]));
 }
 

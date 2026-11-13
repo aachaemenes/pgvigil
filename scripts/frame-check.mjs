@@ -6,6 +6,8 @@
 // marked on its instance's charts, clickable slices with a Top N and a pie menu, Pick series, the range's steps and its
 // typed form, the footer's status line, a second y axis and a server limit, the full-window view, the partial-window note.
 //   node scripts/frame-check.mjs <cdp port> <base url/> <download folder>
+//   FRAME_EXPECT_DOOR=<user>  the server is a demo serve with its write door, saving as this user (proof-frame.sh
+//                             passes 'demo'); unset = a server without a door. Case X judges the footer against it.
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base, dl] = process.argv.slice(2);
 const fs = await import('node:fs');
@@ -592,13 +594,17 @@ const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()
   await ev(`document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'`); await sleep(700);
   const k1 = await params();
   await go('#/summary?w=1h');
-  const dis = await ev(`document.querySelector('#bar .range button[aria-label^="Later"]').disabled`);
+  // Later on a range that ends now: off in its place - aria-disabled and focusable, never the disabled attribute - with
+  // its reason as its description and its title
+  const dis = await ev(`(() => { const b = document.querySelector('#bar .range button[aria-label^="Later"]'); const n = b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+    return { off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled, described: n ? n.textContent.trim() : '', title: b.title, tab: b.tabIndex }; })()`);
   const zp = await press('Zoom out');
   await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true })); 'ok'`); await sleep(500);
   const kp = await params();
   check('V range steps', e1[0] === at('11:00') && e1[1] === at('12:00') && l1[0] === at('12:00') && l1[1] === at('13:00') && z1[0] === at('11:30') && z1[1] === at('13:30')
-    && Date.parse(k1.get('from')) === at('11:00') && dis === true && zp[2] === '4h' && kp.get('w') === '4h',
-    `Earlier ${new Date(e1[0]).toISOString()}-${new Date(e1[1]).toISOString()}; Later ${new Date(l1[0]).toISOString()}-${new Date(l1[1]).toISOString()}; Zoom out ${new Date(z1[0]).toISOString()}-${new Date(z1[1]).toISOString()}; key [ from ${k1.get('from')}; on 1h: Later disabled ${dis}, Zoom out w=${zp[2]}, key ] w=${kp.get('w')}`);
+    && Date.parse(k1.get('from')) === at('11:00') && dis.off && !dis.disabledAttr && dis.tab === 0 && dis.described === 'the range already ends now' && dis.title === 'the range already ends now'
+    && zp[2] === '4h' && kp.get('w') === '4h',
+    `Earlier ${new Date(e1[0]).toISOString()}-${new Date(e1[1]).toISOString()}; Later ${new Date(l1[0]).toISOString()}-${new Date(l1[1]).toISOString()}; Zoom out ${new Date(z1[0]).toISOString()}-${new Date(z1[1]).toISOString()}; key [ from ${k1.get('from')}; on 1h: Later off ${JSON.stringify(dis)}, Zoom out w=${zp[2]}, key ] w=${kp.get('w')}`);
 }
 
 // W. the typed range: 'now-6h' previews 'follows now' and Enter makes w=6h; 'now-1d/d to now/d' is yesterday (24 h, from
@@ -633,12 +639,20 @@ const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()
   // refuses or not; the frame routes refuse a missing instance and a window over 31 days (400)
   const ack = await (await fetch(`${base}api/ack?part=acks`)).json();
   const seatWant = `${ack.writable ? 'read-write' : 'read only'}, actions `;
+  // what the footer's seat must read is the CALLER's to say (FRAME_EXPECT_DOOR), never the server's own word for it:
+  // under it the acknowledgement route must name that door's user and the seat says once whose door it is (a demo
+  // serve, task B7); without it the server must name no door and the seat reads its seat and the actions door (that
+  // plain footer is also read by proof-demodoor's R10, on a serve -no-login)
+  const expectDoor = process.env.FRAME_EXPECT_DOOR ?? '';
+  const seatOk = expectDoor
+    ? ack.door?.user === expectDoor && sum.seat === `demo: changes to the demo's own instances are saved as user ${expectDoor}; nothing reaches a server`
+    : !ack.door && sum.seat.startsWith(seatWant) && /actions (on|off)$/.test(sum.seat);
   const noInst = (await fetch(`${base}api/frame/events`)).status;
   const tooLong = (await fetch(`${base}api/frame/events?instance=1&from=2026-01-01T00:00:00Z&to=2026-02-02T00:00:00Z`)).status;
   check('X footer', sum.landmark === 'FOOTER' && sum.inst.startsWith(`${inst.rows.length} instances (`) && /^collections: \d+ healthy, /.test(sum.col) && /^repository \d/.test(sum.repo)
-    && sum.seat.startsWith(seatWant) && /actions (on|off)$/.test(sum.seat) && sum.newest.startsWith('newest read ') && sum.refresh === 'auto refresh every 30 s' && perf === 'auto refresh not on this page'
+    && seatOk && sum.newest.startsWith('newest read ') && sum.refresh === 'auto refresh every 30 s' && perf === 'auto refresh not on this page'
     && noInst === 400 && tooLong === 400,
-    `${sum.inst} · ${sum.col} · ${sum.repo} · ${sum.seat} (the ack route: writable ${ack.writable}) · ${sum.newest} · ${sum.refresh}; Performance: '${perf}'; /api/frame/events without an instance ${noInst}, over 32 days ${tooLong}`);
+    `${sum.inst} · ${sum.col} · ${sum.repo} · ${sum.seat} (expected: ${expectDoor ? `the door of user ${expectDoor}` : 'a server without a door'}; the ack route: writable ${ack.writable}${ack.door ? `, door user ${ack.door.user}` : ', no door'}) · ${sum.newest} · ${sum.refresh}; Performance: '${perf}'; /api/frame/events without an instance ${noInst}, over 32 days ${tooLong}`);
 }
 
 // Y. a second y axis and a server limit: erp01's Transactions chart draws three axes, the right one written

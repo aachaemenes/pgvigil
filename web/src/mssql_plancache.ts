@@ -5,6 +5,7 @@
 // /api/mssql/plancache; the route and the tab's entry are the shell's.
 import { get, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { queryHistory } from './mssql_queries';
 import { compareSection } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
@@ -84,6 +85,16 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'query_store_on', label: 'Query Store', fmt: v => v == null ? 'not read' : v ? 'on' : 'off' },
         { key: 'object_name', label: 'module' },
         { key: 'query', label: 'statement', fmt: text, wide: true },
+        // PerformanceMonitor's History per row (D10): the query's average CPU and duration per execution over the range
+        { key: 'history', label: 'history', fmt: (_, r) => {
+          const b = el('button', { type: 'button', class: 'link', 'aria-label': `History of ${String(r.query_key)}` }, 'History');
+          b.addEventListener('click', () => {
+            hist.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Reading the history ...'));
+            queryHistory(ctx, r.database_id, r.query_key, `${String(r.database)} ${String(r.query_key)}`)
+              .then(h => { hist.replaceChildren(h); hist.scrollIntoView({ block: 'nearest' }); }).catch(e => hist.replaceChildren(errorBox(e)));
+          });
+          return b;
+        } },
         { key: 'executions', num: true },
         { key: 'cpu_ms', label: 'CPU (sec)', num: true, fmt: secs },
         { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
@@ -106,11 +117,12 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'sql_handle', label: 'SQL handle (cached now)' },
         { key: 'plan_handle', label: 'plan handle (cached now)' },
       ];
+      const hist = el('div', { class: 'pc-history' });
       const at = top.find(r => r.handles_at != null)?.handles_at;
       out.push(el('p', { class: 'meta' }, `${top.length >= LIMIT ? `The ${fmtNum(LIMIT)} with the most CPU.` : `${fmtNum(top.length)} statements, the most CPU first.`} `
         + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled. `
         + `The hashes and handles are the query's statements in the cache at the last read${at ? ' (' + fmtTime(at) + ')' : ''}, one of each (PerformanceMonitor's): none for a query no longer cached.`),
-        grid(top, cols),
+        grid(top, cols), hist,
         compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
     }
 

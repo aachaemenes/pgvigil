@@ -49,6 +49,8 @@ type Server struct {
 	tags TagsUI
 	// version is this binary's version line for the About page (GET /api/health); "" = not said.
 	version string
+	// demo is the demo's write door (demodoor.go); nil on every serve.
+	demo *demoDoor
 }
 
 // Options shape a Server beyond its repository connection.
@@ -70,6 +72,8 @@ type Options struct {
 	AppName string
 	// Version is this binary's version line (`pgvigil version`): the About page shows it and puts it into a problem report's mail.
 	Version string
+	// DemoDoor opens the demo's write door (demodoor.go): only `pgvigil demo -serve` sets it; nil on every serve.
+	DemoDoor *DemoDoor
 }
 
 // Expected is the interval map of the stale check.
@@ -170,11 +174,18 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	} else if o.Actions != nil && s.actions.off != "" {
 		log.Warn("actions are off", "reason", s.actions.off)
 	}
+	if o.DemoDoor != nil {
+		if s.demo, err = newDemoDoor(ctx, s, o.DemoDoor); err != nil {
+			s.actions.Close()
+			pool.Close()
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
 // Close releases the audit pool and the pool.
-func (s *Server) Close() { s.actions.Close(); s.pool.Close() }
+func (s *Server) Close() { s.actions.Close(); s.demo.close(); s.pool.Close() }
 
 // Handler returns the routes: /api/... (behind the login when it is on) and the embedded frontend.
 // The shell and its assets are public: they hold no data.
@@ -284,6 +295,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/community/params", s.CommunityParams)
 	api.HandleFunc("POST /api/community/run", s.CommunityRun)
 	api.HandleFunc("POST /api/community/glenn/parse", s.CommunityGlennParse)
+	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
 	api.HandleFunc("GET /api/extensions", s.Extensions)
 	api.HandleFunc("GET /api/roles", s.Roles)
 	api.HandleFunc("GET /api/versions", s.Versions)
@@ -313,6 +325,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/querystore/plan.sqlplan", s.MSSQLQueryStorePlan)
 	api.HandleFunc("GET /api/mssql/rowversions", s.MSSQLRowVersions)
 	api.HandleFunc("GET /api/mssql/config", s.MSSQLConfig)
+	api.HandleFunc("GET /api/mssql/pool", s.MSSQLPool)
 	api.HandleFunc("GET /api/mssql/properties", s.MSSQLProperties)
 	api.HandleFunc("GET /api/mssql/state", s.MSSQLState)
 	api.HandleFunc("GET /api/mssql/checks", s.MSSQLChecks)

@@ -70,12 +70,50 @@ func TestDMSResourceIDIsPartitionFree(t *testing.T) {
 	}
 }
 
-// No Go source of pgvigil names an AWS endpoint, a partition or a region: a government fleet's regions
-// come from the config alone. The scan covers every non-test .go file under the module root except
-// internal/demo, whose synthetic fleet carries example ARNs and regions as data (web/, docs/ and the built
-// internal/web/dist hold no Go; the skips are by path, so internal/web's Go is scanned).
+// No Go source of pgvigil and no migration names an AWS endpoint, a partition or a region: a government fleet's
+// regions come from the config alone, and a name table moved into SQL is the same knowledge (task 205's review). The
+// scan covers every non-test .go file under the module root except internal/demo, whose synthetic fleet carries
+// example ARNs and regions as data, and every .sql file under internal/repo/sql (web/, docs/ and the built
+// internal/web/dist hold neither; the skips are by path, so internal/web's Go is scanned).
 func TestNoHardCodedAWSPartition(t *testing.T) {
-	root := filepath.Join("..", "..")
+	hits, err := hardCodedAWS(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) > 0 {
+		t.Fatalf("AWS partition, endpoint or region written into the code:\n  %s", strings.Join(hits, "\n  "))
+	}
+}
+
+// The scan itself finds what it is for: a planted migration and a planted Go file are hits, a test file and a
+// demo file are not.
+func TestHardCodedAWSScanFinds(t *testing.T) {
+	root := t.TempDir()
+	plant := func(rel, text string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant("internal/repo/sql/0999_x.sql", "SELECT CASE WHEN r LIKE 'us-gov-%' THEN 1 END;\n")
+	plant("internal/x/x.go", "package x\n\nconst host = \".amazonaws.com\"\n")
+	plant("internal/x/x_test.go", "package x\n\nconst r = \"us-east-1\"\n")
+	plant("internal/demo/d.go", "package demo\n\nconst r = \"us-east-2\"\n")
+	hits, err := hardCodedAWS(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(hits, "; ")
+	if len(hits) != 2 || !strings.Contains(got, "0999_x.sql: us-gov-") || !strings.Contains(got, "x.go: .amazonaws.com") {
+		t.Fatalf("the scan found %q, want the planted migration's us-gov- and x.go's .amazonaws.com only", got)
+	}
+}
+
+// hardCodedAWS lists each scanned file under root that holds a forbidden name, as "<path>: <name>".
+func hardCodedAWS(root string) ([]string, error) {
 	forbidden := []string{"arn:aws:", "arn:aws-us-gov:", ".amazonaws.com", "us-east-1", "us-east-2", "us-west-", "us-gov-"}
 	var hits []string
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -90,7 +128,9 @@ func TestNoHardCodedAWSPartition(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+		rel, _ := filepath.Rel(root, p)
+		sqlFile := strings.HasSuffix(p, ".sql") && filepath.ToSlash(filepath.Dir(rel)) == "internal/repo/sql"
+		if !sqlFile && (!strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go")) {
 			return nil
 		}
 		b, err := os.ReadFile(p)
@@ -104,10 +144,5 @@ func TestNoHardCodedAWSPartition(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(hits) > 0 {
-		t.Fatalf("AWS partition, endpoint or region written into the code:\n  %s", strings.Join(hits, "\n  "))
-	}
+	return hits, err
 }

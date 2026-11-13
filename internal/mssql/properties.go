@@ -342,6 +342,8 @@ func powerPlan(ctx context.Context, conn *sql.Conn, info Info, platform string, 
 		return nil, "not read: Amazon RDS runs the host; its power plan is not the customer's to read"
 	case info.Kind == KindAzureMI:
 		return nil, "not read: Azure SQL Managed Instance runs the host; it has no power plan to read"
+	case info.Kind == KindCloudSQL:
+		return nil, "not read: Google Cloud SQL runs the host (SQL Server on Linux there); it has no power plan to read"
 	case !hostRead:
 		return nil, "not read: the host's platform is not known (" + strings.TrimPrefix(hostWhy, "not read: ") + ")"
 	case platform != "Windows":

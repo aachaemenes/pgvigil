@@ -16,7 +16,7 @@ import { badge, Col, copyText, el, errorBox, fmtTime, grid, props } from './ui';
 import { lineChart } from './chart';
 import { fmtMetric } from './alert_rules';
 import { exportButtons } from './export';
-import { loadAckSafe, AckData, writeButton } from './ack';
+import { loadAckSafe, AckData, offBeside, writeButton } from './ack';
 import { whatIsThis } from './sqlview';
 
 interface AlertPageData { card: Table | null; occurrences: Table | null; sends: Table | null; notes: Table | null }
@@ -238,8 +238,14 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
   const linksBox = el('div', {});
   const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Read the instance at' });
   const bFiring = el('button', { type: 'button', class: 'toggle' }, 'at the firing'), bNow = el('button', { type: 'button', class: 'toggle' }, 'now');
-  if (!o) bFiring.disabled = true;
   seg.append(bFiring, bNow);
+  // an alert that was never sent has no firing to read the instance at: off, with that reason after the pair
+  if (!o) {
+    const why = 'no firing of this alert is in the store (not sent yet, or its rows purged): there is no firing to read at';
+    const said = el('span', { class: 'off-reason' }, why);
+    offBeside(bFiring, why, said);
+    seg.append(' ', said);
+  }
   const win = o ? firingWindow(o.fired_at, o.cleared_at) : null;
   const drawLinks = () => {
     bFiring.setAttribute('aria-pressed', String(view === 'firing')); bNow.setAttribute('aria-pressed', String(view === 'now'));
@@ -278,7 +284,7 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
   else if (instanceId) sec.append(el('p', { class: 'meta' }, 'No evidence drawn: the instance is no longer in the repository (its reads went with it).'));
   if (card?.fix) sec.append(fixLine(card.fix));
   else if (card) sec.append(el('p', { class: 'meta' }, 'No fix statement: the detail says what to do (a fix statement is given for a PostgreSQL setting with a one-word suggested value, and for a maintenance statement the detail spells out).'));
-  sec.append(dismissBar(door, key, dismissed));
+  sec.append(dismissBar(door, key, dismissed, instanceId || null, String(head.instance ?? '') || undefined));
 
   const occCols: Col[] = [
     { key: 'fired_at', label: 'fired', fmt: (v, r) => el('a', { href: alertHref(key, v, ctx), title: `firing ${String(r.occurrence)}` }, fmtTime(v)) },
@@ -324,12 +330,13 @@ function copyLinkButton(): HTMLElement {
 }
 
 // dismissBar: dismiss the alert with a reason, or end its dismissal
-function dismissBar(door: AckData, key: string, dismissed: Row | undefined): HTMLElement {
+function dismissBar(door: AckData, key: string, dismissed: Row | undefined, instanceId: number | null, name?: string): HTMLElement {
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const bar = el('div', { class: 'seg' });
-  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }));
-  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw)));
+  // by the alert's own instance: on a demo serve the door writes for the demo's instances and for no other
+  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }, { instance: instanceId, name }));
+  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw), { instance: instanceId, name }));
   return el('div', {}, bar, said);
 }
 

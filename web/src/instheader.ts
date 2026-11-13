@@ -22,8 +22,8 @@
 // interval (the footer's rule, q_frame.go), where PerformanceMonitor counts no success in 24 hours and a 2-minute
 // cadence; an acknowledged check does not make the band (the Summary's rule).
 import { Row, rowsOf, Table } from './api';
-import { AckData, ackDialog, ackHolds, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
-import { Cell, cells, cellText, Fleet, fleet, groups, sinceState } from './fleet';
+import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
+import { Cell, cells, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
 import { Ctx, href } from './router';
 import { el, fmtTime, pill } from './ui';
 
@@ -178,7 +178,7 @@ export function instBand(f: Fleet, r: Row, ad: AckData, live: Row | undefined, n
   const notOk = groups.filter(g => !c[g.key].none && c[g.key].level > 0
     && !(acks.get(`${String(r.instance_id)}|${g.key}`) && ackHolds(acks.get(`${String(r.instance_id)}|${g.key}`), cellState(c[g.key], g.key))));
   const level = Math.max(0, ...notOk.map(g => c[g.key].level));
-  const reasons = notOk.sort((a, b) => c[b.key].level - c[a.key].level).map(g => `${g.label} ${cellText(c[g.key])}`);
+  const reasons = notOk.sort((a, b) => c[b.key].level - c[a.key].level).map(g => `${labelOf(g, r.engine !== 'sqlserver')} ${cellText(c[g.key])}`);
   if (freshness(live, now) === 'offline') return { level: 2, word: 'Offline', cls: 'none', reasons: ['Offline - no recent collection', ...reasons] };
   return { level, word: ['OK', 'Warning', 'Critical'][level], cls: ['ok', 'warn', 'crit'][level], reasons };
 }
@@ -205,15 +205,16 @@ export function silenceButton(ad: AckData, r: Row, live: Row | undefined, after:
     const b = endButton(Number(live.silence_id), `Unsilence '${name}'`, after, 'Unsilence');
     b.classList.add('silence-btn');
     b.title = 'Unsilence this server';
-    if (!ad.writable) { b.disabled = true; b.title = ad.reason ?? 'acknowledgements are off'; }
+    const why = ackWhy(ad, Number(r.instance_id), name);
+    if (why) offBeside(b, why, pageNote(ad));
     return b;
   }
   const b = writeButton(ad, 'Silence', `Silence all alerts for '${name}'`, () => ackDialog({
     title: `Silence all alerts for '${name}'?`,
     what: 'This holds every alert of the server; the held alerts are still logged (Held sends). Unsilence removes it.',
-    body: { kind: 'silence', instance_id: Number(r.instance_id) }, expiry: true, noteField: 'optional', after }));
+    body: { kind: 'silence', instance_id: Number(r.instance_id) }, expiry: true, noteField: 'optional', after }), { instance: Number(r.instance_id), name });
   b.classList.add('silence-btn');
-  if (ad.writable) b.title = 'Silence This Server';
+  if (ackOn(ad, Number(r.instance_id))) b.title = 'Silence This Server';
   return b;
 }
 

@@ -17,6 +17,9 @@ package web
 //	                                            audited like any run)
 //	POST /api/community/run                     {instance_id, tool, database, params, timeout_secs, text, query_name}
 //	POST /api/community/glenn/parse             {text: the script}: its queries {n, name, about, text}
+//	GET  /api/community/sample?instance=N&tool=T a demo instance's stored sample of the tool (internal/demo/community):
+//	                                            the answer a run of it gave on a test server built for the capture,
+//	                                            marked as that - never a run, never audited, never in the instance's log
 //
 // pgvigil never installs a procedure: a missing one says where to get it. A run goes through the instance's read
 // login (SQL Server: refused for a sysadmin; PostgreSQL: the monitoring login, refused for a superuser or a member of
@@ -47,6 +50,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	mssqldb "github.com/microsoft/go-mssqldb"
+
+	"github.com/aachaemenes/pgvigil/internal/demo/community"
 )
 
 // communityTool is one entry of the catalogue.
@@ -349,6 +354,13 @@ func msArg(p procParam, v string) (any, error) {
 }
 
 // communityInstance is an instance's name and engine.
+// communityPlatform: the instance's platform as the repository holds it - a demo instance's sample line names it where
+// it is not the test server's.
+func (s *Server) communityPlatform(ctx context.Context, id int) (platform string, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT platform FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&platform)
+	return platform, err
+}
+
 func (s *Server) communityInstance(ctx context.Context, id int) (name, engine string, err error) {
 	err = s.pool.QueryRow(ctx, `SELECT name, engine FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name, &engine)
 	return name, engine, err
@@ -371,6 +383,92 @@ type toolState struct {
 	// form values the page fills in before the click (a parameter's name with its @): the run the procedure's own
 	// defaults would make is one it declines or one that reads nothing here
 	Preset map[string]string `json:"preset,omitempty"`
+	// a demo instance only: the tool's stored sample (GET /api/community/sample has its result sets)
+	Sample *sampleMark `json:"sample,omitempty"`
+}
+
+// sampleMark says what a stored sample is, wherever it is shown: the kit and version that produced it, when and on
+// what test server, the page of this instance that holds the same subject from its own data, and the line the page
+// prints above it.
+type sampleMark struct {
+	Kit         string    `json:"kit"`
+	Version     string    `json:"version"`
+	VersionDate string    `json:"version_date,omitempty"`
+	CapturedAt  time.Time `json:"captured_at"`
+	Server      string    `json:"server"`
+	Page        string    `json:"page,omitempty"` // an instance tab (web/src/router.ts) of the same subject
+	Line        string    `json:"line"`           // '<kit> <version> output, captured <date> on a test server (...); ...; not <instance>.'
+	Mark        string    `json:"mark"`           // the short form an exported or mailed grid carries
+}
+
+// samplePage: the instance tab that shows each tool's subject from the instance's own collected (on the demo: seeded)
+// data - the link under a sample, so the demo shows the instance's real page beside the kit's labelled output.
+var samplePage = map[string]string{
+	"sp_WhoIsActive": "mssql_running", "sp_BlitzWho": "mssql_running", "sp_Blitz": "findings", "sp_BlitzFirst": "mssql_waits",
+	"sp_BlitzCache": "mssqlplancache", "sp_BlitzIndex": "mssqlindexes", "sp_IndexCleanup": "mssqlindexes", "sp_BlitzLock": "mssql_deadlocks",
+	"sp_PressureDetector": "mssqlmemory", "sp_QuickieStore": "mssqlqs", "sp_HumanEventsBlockViewer": "mssql_blocked",
+	"sp_HealthParser": "mssqlhealth", "sp_LogHunter": "mssqlerrorlog",
+	"pg_running": "activity", "pg_blocking": "waiting", "pg_top_statements": "statements", "pg_table_sizes": "tables",
+	"pg_unused_indexes": "indexes", "pg_duplicate_indexes": "indexes", "pg_invalid_indexes": "indexes", "pg_xmin_horizon": "vacuum",
+	"pg_settings_changed": "config", "pg_sequences": "schema",
+}
+
+// noSample lists the catalogue's tools that have no stored sample, with why (a test fails on a tool with neither).
+var noSample = map[string]string{
+	"glenn_berry": "nothing of Glenn Berry's script is stored (his queries are his own text, all rights reserved): picking the file and running a query need a live install",
+}
+
+// kitLicense: the words a sample line says about whose words its findings are.
+var kitLicense = map[string]string{
+	"First Responder Kit": "the findings' words and links are the First Responder Kit's own (MIT, (c) Brent Ozar Unlimited; portions (c) Microsoft, tigertoolbox)",
+	"DarlingData":         "the findings' words and links are DarlingData's own (MIT, (c) 2026 Darling Data, LLC)",
+	"sp_WhoIsActive":      "its rows are that test server's sessions (sp_WhoIsActive is GPL-3.0, (C) 2007-2026 Adam Machanic; none of its own text is stored)",
+}
+
+// testPlatform: the platform of the test servers the samples were captured on (a SQL Server container, a PostgreSQL
+// cluster of the capture's own), per engine as pgvigil.instances.platform names it.
+var testPlatform = map[string]string{"sqlserver": "sqlserver", "postgres": "onprem"}
+
+// platformWords: how a sample line names a demo instance's platform where it is not the test server's - the same run
+// there returns other rows (other paths, settings and host words), so the line says so (review 20261112-222929 D2).
+var platformWords = map[string]string{
+	"sqlserver/azuresqlmi": "an Azure SQL Managed Instance",
+	"postgres/aurora":      "an Aurora PostgreSQL instance",
+	"postgres/rds":         "an Amazon RDS for PostgreSQL instance",
+	"postgres/azure":       "an Azure Database for PostgreSQL server",
+	"postgres/cloudsql":    "a Cloud SQL for PostgreSQL instance",
+}
+
+// markOf: the sample's mark as instance (of platform, pgvigil.instances.platform) shows it. The day is the capture's
+// UTC day and says so; an instance on another platform than the test server's is named with its platform.
+func markOf(t *communityTool, sm *community.Sample, instance, platform string) *sampleMark {
+	day := sm.CapturedAt.UTC().Format("2006-01-02") + " UTC"
+	notLine, notMark := instance+".", instance
+	if w := platformWords[t.Engine+"/"+platform]; w != "" && platform != testPlatform[t.Engine] {
+		notLine = instance + ", " + w + ", where the same run returns other rows."
+		notMark = instance + " (" + w + ")"
+	}
+	var line string
+	switch sm.Kit {
+	case "pgvigil":
+		line = fmt.Sprintf("pgvigil's own read, captured %s on a test server (%s) loaded with the demo's invented schema; not %s", day, sm.Server, notLine)
+	case "DarlingData":
+		// each DarlingData procedure has a version of its own: the procedure first, the kit and its release beside it
+		rel := "DarlingData"
+		if sm.VersionDate != "" {
+			rel += ", " + sm.VersionDate
+		}
+		line = fmt.Sprintf("%s %s (%s) output, captured %s on a test server (%s); %s; not %s", t.Name, sm.Version, rel, day, sm.Server, kitLicense[sm.Kit], notLine)
+	default:
+		of := " (" + t.Name + ")"
+		if sm.Kit == t.Name {
+			of = ""
+		}
+		line = fmt.Sprintf("%s %s output%s, captured %s on a test server (%s); %s; not %s", sm.Kit, sm.Version, of, day, sm.Server, kitLicense[sm.Kit], notLine)
+	}
+	return &sampleMark{Kit: sm.Kit, Version: sm.Version, VersionDate: sm.VersionDate, CapturedAt: sm.CapturedAt, Server: sm.Server,
+		Page: samplePage[t.ID], Line: line,
+		Mark: fmt.Sprintf("stored sample of %s (%s %s, captured %s on a test server, %s), not %s", t.Name, sm.Kit, sm.Version, day, sm.Server, notMark)}
 }
 
 // toolNeed is one thing a tool lacks before it can run here, in the page's words: what is missing and the way to get
@@ -995,8 +1093,8 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
-	var demo bool
-	if err := s.pool.QueryRow(ctx, `SELECT 'demo' = ANY (tags) FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&demo); err != nil {
+	demo, err := s.demoWithoutDoor(ctx, id, name, engine)
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -1024,10 +1122,15 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		out.Database = msDB(db)
 	}
 	var c *communityCheck
+	var platform string
 	switch {
-	case demo && door == "":
+	case demo:
 		// a demo instance: invented by pgvigil demo, no server behind it (its tag and no login; never the process)
 		out.Demo = true
+		if platform, err = s.communityPlatform(ctx, id); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 		out.Needs = append(out.Needs, toolNeed{What: name + " is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here.",
 			How: "on a real install each tool runs on the instance's read login (docs/customreports.md)", Hard: true, State: "demo", Source: "repository"})
 	case door == "":
@@ -1035,6 +1138,12 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		// configuration line would be false there (the actions door keeps the logins only behind the login)
 		if n := s.communityOff(); n != nil {
 			out.Needs = append(out.Needs, *n)
+			break
+		}
+		if _, listed := s.mssqlDoor().doors[name]; engine == "sqlserver" && listed {
+			// listed in the configuration file, but its dsn (env:, file: or dpapi:) resolved to nothing on this server
+			out.Needs = append(out.Needs, hardNeed("a read login for "+name+": its dsn in the configuration file (env:, file: or dpapi:) resolved to an empty string on this server",
+				"set the variable, or make the file readable, for the account pgvigil serve runs as, and serve again (docs/configuration.md)", "configuration"))
 			break
 		}
 		login := "read login"
@@ -1067,6 +1176,18 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range out.Tools {
 		t := &out.Tools[i]
+		if out.Demo {
+			// the tool's stored sample, said per tool; a tool without one says why beside it
+			if sm, err := community.Get(t.ID); err == nil {
+				t.Sample = markOf(&t.communityTool, sm, name, platform)
+			} else {
+				why := noSample[t.ID]
+				if why == "" {
+					why = "no stored sample for this tool"
+				}
+				t.Needs = append(t.Needs, noteNeed(why, "", "repository"))
+			}
+		}
 		if c != nil {
 			if n := c.Tools[t.ID]; n != nil { // a procedure's id is its name
 				t.Needs = n
@@ -1101,6 +1222,99 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	out.Enabled = out.Reason == ""
 	out.Log, err = s.query(ctx, sqlCommunityLog, id)
 	s.reply(w, r, out, err)
+}
+
+// seeded: id (in, as the door's lookup reads it) is one of this demo's instances - seeded by this running pgvigil
+// demo, still tagged demo, still under the demo's name prefix. The demo door's allow (demodoor.go) and the Community
+// page's demo instance are this one rule (review 20261112-222929 finding 1); nil (a serve) seeds none.
+func (d *demoDoor) seeded(id int, in doorInstance) bool {
+	return d != nil && d.ids[id] && in.DemoTag && strings.HasPrefix(in.Name, d.prefix)
+}
+
+// demoWithoutDoor: id is a demo instance - one this running pgvigil demo seeded (seeded) - with no login for it on
+// this server. A plain serve never has a demo instance, whatever an instance's tags: a real instance tagged demo gets
+// its ordinary lines, never the demo's words or a sample.
+func (s *Server) demoWithoutDoor(ctx context.Context, id int, name, engine string) (bool, error) {
+	if s.demo == nil {
+		return false, nil
+	}
+	in, ok, err := s.demo.look.instance(ctx, id)
+	if err != nil || !ok {
+		return false, err
+	}
+	door := s.pgDoorDSN(name)
+	if engine == "sqlserver" {
+		door = s.msDoorDSN(name)
+	}
+	return s.demo.seeded(id, in) && door == "", nil
+}
+
+// CommunitySample is GET /api/community/sample?instance=N&tool=T: a demo instance's stored sample of the tool - a read
+// of the samples built into pgvigil (internal/demo/community), never a run: nothing is sent to any server, no audit
+// row is written, and it never appears under the instance's runs. An instance that is not a demo instance without a
+// login answers 404 (its tools run on its server), as does a tool without a stored sample (with why).
+func (s *Server) CommunitySample(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	t := findTool(r.URL.Query().Get("tool"))
+	if t == nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("no community tool %q", r.URL.Query().Get("tool")))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	name, engine, err := s.communityInstance(ctx, id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
+		return
+	}
+	if engine != t.Engine {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s is a %s tool and instance %s is %s", t.Name, t.Engine, name, engine))
+		return
+	}
+	demo, err := s.demoWithoutDoor(ctx, id, name, engine)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !demo {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("%s is not a demo instance without a login: its tools run on its server, and no stored sample is shown for it", name))
+		return
+	}
+	platform, err := s.communityPlatform(ctx, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	sm, err := community.Get(t.ID)
+	if errors.Is(err, community.ErrNone) {
+		why := noSample[t.ID]
+		if why == "" {
+			why = community.ErrNone.Error()
+		}
+		writeErr(w, http.StatusNotFound, errors.New(why))
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.reply(w, r, struct {
+		Tool     string `json:"tool"`
+		Name     string `json:"name"`
+		Instance string `json:"instance"`
+		*sampleMark
+		Database string               `json:"database,omitempty"`
+		Params   map[string]string    `json:"params"`
+		ParamDoc []community.ParamDoc `json:"param_doc"`
+		Dropped  []string             `json:"dropped"`
+		Cut      []string             `json:"cut"`
+		Scrubbed []string             `json:"scrubbed"`
+		Sets     []community.Set      `json:"sets"`
+	}{t.ID, t.Name, name, markOf(t, sm, name, platform), sm.Database, sm.Params, sm.ParamDoc, sm.Dropped, sm.Cut, sm.Scrubbed, sm.Sets}, nil)
 }
 
 type communityBody struct {
@@ -1177,7 +1391,12 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	dbc, conn, why, err := openMS(ctx, s.msDoorDSN(name), "pgvigil-community")
+	dsn, no := s.msRunLogin(name)
+	if no != "" {
+		writeErr(w, http.StatusForbidden, errors.New(no))
+		return
+	}
+	dbc, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
 	if why != "" {
 		writeErr(w, http.StatusForbidden, errors.New(why))
 		return
@@ -1230,6 +1449,22 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, out, nil)
 }
 
+// msRunLogin is a SQL Server instance's read login for a run, or why a run is refused before anything is sent: this
+// server's configuration file does not list the instance (the logins come from that file alone - an instance added in
+// Admin > Instances has none here; a plain serve has no demo instance, so the demo's own instances are such instances
+// there), or the configured dsn (env:, file: or dpapi:) resolved to an empty string on this server. A custom report's
+// run, a community tool's run and its form (POST /api/community/params) use the same words.
+func (s *Server) msRunLogin(name string) (dsn, why string) {
+	d, ok := s.mssqlDoor().doors[name]
+	switch {
+	case !ok:
+		return "", "instance " + name + " has no read login in this server's configuration file"
+	case d.Monitor == "":
+		return "", "instance " + name + ": its read login's dsn (env:, file: or dpapi:) resolved to an empty string on this server"
+	}
+	return d.Monitor, ""
+}
+
 // CommunityRun is POST /api/community/run.
 func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	in, user, name, t, ok := s.communityGate(w, r)
@@ -1240,6 +1475,15 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := s.mayAudit(ctx); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	// a demo instance has no server behind it: refused before anything is sent - never answered with its stored sample
+	// (that is GET /api/community/sample, which runs nothing). pgvigil demo -serve runs without the UI login, so its gate
+	// refuses a run first (403); this line holds for a signed-in serve with a demo door, should one ever exist
+	if demo, err := s.demoWithoutDoor(ctx, in.InstanceID, name, t.Engine); err == nil && demo {
+		s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}},
+			fmt.Errorf("%s is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here", name))
 		return
 	}
 	timeout := time.Duration(in.TimeoutSecs) * time.Second
@@ -1301,10 +1545,19 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		if in.Database != "" {
 			stmt = "USE " + msQuote(in.Database) + ";\n" + text
 		}
-		sets, why, err := runMS(ctx, s.msDoorDSN(name), stmt, nil, timeout, 5000, true)
+		dsn, no := s.msRunLogin(name)
+		if no != "" {
+			run.finish(t0, nil, no, nil)
+			break
+		}
+		sets, why, err := runMS(ctx, dsn, stmt, nil, timeout, 5000, true)
 		run.finish(t0, sets, why, err)
 	default:
-		dsn := s.msDoorDSN(name)
+		dsn, no := s.msRunLogin(name)
+		if no != "" {
+			run.finish(t0, nil, no, nil)
+			break
+		}
 		db, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
 		if err != nil || why != "" {
 			run.finish(t0, nil, why, err)

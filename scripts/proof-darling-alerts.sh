@@ -213,7 +213,9 @@ for (const p of pages) {
     const r = await ev(`(async () => { const KIND = ${KIND}; const el = [...document.querySelectorAll('main a[href], main button')].find(x => KIND(x) === ${JSON.stringify(kind)}); if (!el) return { gone: true };
       const what = (el.getAttribute('aria-label') || el.textContent || el.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80), tag = el.tagName;
       if (tag === 'A') { const h = el.getAttribute('href'); return { tag, what, href: h, kind: h.startsWith('#/') ? 'link' : 'outside' }; }
-      if (el.disabled) return { tag, what, kind: 'disabled', why: el.title || '' };
+      // off is the disabled attribute or aria-disabled (ui.ts offControl: reachable by keyboard, a click does nothing,
+      // its reason its title and the words it is described by)
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') return { tag, what, kind: 'disabled', why: el.title || '' };
       const statText = () => [...document.querySelectorAll('main [role=status]')].map(s => s.textContent.trim()).join(' | ');
       const pressed = el.getAttribute('aria-pressed'), expanded = el.getAttribute('aria-expanded'), before = location.hash, size = document.querySelector('main').innerHTML.length, stat0 = statText();
       await new Promise(r => setTimeout(r, 400));

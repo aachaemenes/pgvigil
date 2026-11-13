@@ -122,10 +122,32 @@
 #     GrayText under forced colours; the DOM check's self-test counts its planted button; 12 pages (6 signed in, 6
 #     -no-login) and the bar's Mail... dialog (at least one off) with no off control without a visible reason (a badge word
 #     alone is none; the self-test plants 4 ways to miss one); the -no-login click sends nothing and its descriptions
-#     are the reasons; state (c): system_health filled with its note, done; the demo: 14 and 10 tools off with the demo
-#     line in both themes, the fleet picker the same, the real instance beside it its own -no-login state with every
-#     tool off, never the demo line. The DOM check reads buttons, inputs, selects and textareas in main and dialogs: a
-#     link or a role=button control is outside it (B2's list holds the other pages).
+#     are the reasons; state (c): system_health filled with its note, done; the real instance beside the demo its own
+#     -no-login state with every tool off, never the demo line. The DOM check reads buttons, inputs, selects and
+#     textareas in main and dialogs: a link or a role=button control is outside it (B2's list holds the other pages).
+#  S. [B3 DONE-2] the demo's stored samples (pgvigil demo -serve -config, beside the real instances), clicked in Chromium
+#     on the first demo SQL Server and PostgreSQL instance in both themes and through the fleet picker: 14 and 10 tool
+#     names, none off; each opens its panel (light): the sample line of the API's own mark naming the kit of its group,
+#     its version, the test server's engine (SQL Server 2022 / PostgreSQL) and 'not <that instance>.', at least one
+#     grid with rows inside the mark (data-sample), Run off with the demo line as its visible description, the link to
+#     the instance's own tab of the subject; Glenn's panel: no sample, no file input, why nothing of it is stored; the
+#     last panel's Run: the DOM check, the accessibility tree's description, a mouse click sends nothing; one link
+#     followed lands on that tab; the address's tool=sp_Blitz opens its sample as the page loads, and Export .xlsx
+#     (the Summary sheet's note) and Export CSV (the sample's file's first line) carry the mark; no custom_report_log row
+#     from any of it; the real instance: no sample in its tools, GET /api/community/sample 404; POST /api/community/run
+#     of the demo's SQL Server instance, never answered with a sample: on the signed-in plain serve (an instance without
+#     a login there: a plain serve has no demo instance) refused in its run row ('instance <name> has no read login
+#     in this server's configuration file', nothing sent), a procedure's run and Glenn Berry's script's (one query's text) alike;
+#     on the demo serve 403 ('Running a tool needs a signed-in user ...').
+#     [the fold of review 20261112-222929] a real PostgreSQL instance tagged demo on the plain -no-login serve: its
+#     ordinary line, no demo words, GET /api/community/sample 404 (only an instance this pgvigil demo seeded is a demo
+#     instance); the panels' instances are the first demo SQL Server and PostgreSQL instance
+#     on another platform than the test server's (azuresqlmi, aurora): each line ends 'not <instance>, <its platform's
+#     words>, where the same run returns other rows.' and the mark '(<words>)'; the picker's are on the test server's
+#     platform (sqlserver, onprem): 'not <instance>.' with no clause; every line and mark says 'captured <day> UTC';
+#     the sample grid's menu 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark
+#     first (the tools' grid's copy carries none); the exported sample CSV opened by the bar's Tools > Open Grid or
+#     Data Set reads as the sample's own columns and rows, its note starting with the mark.
 #  U3. [B3] each state as the page draws it: threshold 0 (read live): sp_HumanEventsBlockViewer on with its note, the
 #     default click fills system_health, done; the procedures' refusals drawn as notes 'declined' with their words and no
 #     error box (sp_HumanEventsBlockViewer on a typed session at 0, sp_IndexCleanup on a missing database); a real
@@ -860,7 +882,10 @@ ws.addEventListener('message', m => {
   const d = JSON.parse(m.data);
   if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); }
   if (d.method === 'Network.requestWillBeSent') reqs.push(d.params.request.url);
+  if (d.method === 'Page.fileChooserOpened' && chooserWait) { chooserWait(d.params); chooserWait = null; }
 });
+let chooserWait = null;
+const chooser = () => new Promise(r => { chooserWait = r; });
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const ev = async (expr) => {
   const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
@@ -1118,30 +1143,180 @@ if (mode === 'live') {
     out.steps.push(o);
   }
 } else {
-  const [U4, dms, dpg, realMsr, shots] = a;
+  const [U4, dms, dpg, realMsr, shots, dl, dms2, dpg2] = a;
+  if (dl) {
+    const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+    const bws = new WebSocket(ver.webSocketDebuggerUrl);
+    await new Promise(r => bws.addEventListener('open', r));
+    bws.send(JSON.stringify({ id: 1, method: 'Browser.setDownloadBehavior', params: { behavior: 'allow', downloadPath: dl } }));
+    await new Promise(r => bws.addEventListener('message', r));
+  }
+  // a tool's panel (community.ts demoPanel) and what it shows
+  const panel = (name) => `[...document.querySelectorAll('main section > h3')].find(h => h.textContent === ${JSON.stringify(name)})?.closest('section')`;
+  const readPanel = (name) => ev(`(() => { const sec = ${panel(name)}; if (!sec) return null;
+    const run = [...sec.querySelectorAll('button')].find(b => /^Run /.test(b.textContent));
+    const desc = run ? (run.getAttribute('aria-describedby') || '').split(/\\s+/).map(i => document.getElementById(i)?.textContent ?? '').join(' ') : '';
+    const box = sec.querySelector('.sample'); const link = [...sec.querySelectorAll('a')].find(x => /^#\\//.test(x.getAttribute('href') || ''));
+    return { line: sec.querySelector('.sample-line')?.textContent ?? '', mark: box?.getAttribute('data-sample') ?? '',
+      grids: box ? box.querySelectorAll('table.grid').length : 0, rows: box ? box.querySelectorAll('table.grid tbody tr').length : 0,
+      runOff: run?.getAttribute('aria-disabled') === 'true', runDesc: desc, file: !!sec.querySelector('input[type=file]'),
+      link: link?.getAttribute('href') ?? '', ext: [...sec.querySelectorAll('a[href^="http"]')].map(x => x.getAttribute('href')),
+      notes: [...sec.querySelectorAll('[role=note]')].map(p => p.textContent).join(' ').slice(0, 400),
+      error: sec.querySelector('.error')?.textContent?.slice(0, 300) ?? '' }; })()`);
+  const clickTool = (name) => ev(`(() => { const b = [...document.querySelectorAll('main table.grid button.link')].find(b => b.textContent.trim() === ${JSON.stringify(name)}); if (!b) return false; b.click(); return true; })()`);
+  // the accessibility tree's description of the controls sel matches, beside the page's own described text
+  const axSel = async (sel) => {
+    const doc = await cmd('DOM.getDocument', { depth: -1 });
+    const q = await cmd('DOM.querySelectorAll', { nodeId: doc.result.root.nodeId, selector: sel });
+    const page = await ev(`[...document.querySelectorAll(${JSON.stringify(sel)})].map(b => ({ name: b.textContent.trim(),
+      desc: (b.getAttribute('aria-describedby') || '').split(/\\s+/).map(i => document.getElementById(i)?.textContent ?? '').join(' ') }))`);
+    const rows = [];
+    for (let i = 0; i < q.result.nodeIds.length; i++) {
+      const ax = await cmd('Accessibility.getPartialAXTree', { nodeId: q.result.nodeIds[i], fetchRelatives: false });
+      const n = (ax.result?.nodes ?? []).find(x => x.role?.value === 'button') ?? ax.result?.nodes?.[0] ?? {};
+      const squash = v => String(v ?? '').replace(/\s+/g, '');
+      rows.push({ name: page[i]?.name, same: squash(n.description?.value) === squash(page[i]?.desc) && squash(page[i]?.desc).length > 0, axDesc: String(n.description?.value ?? '').slice(0, 100) });
+    }
+    return rows;
+  };
   out.demo = [];
   for (const t of ['light', 'dark']) {
     await open(U4 + '#/summary', `!!document.querySelector('main')`); await theme(t);
     for (const [inst, label] of [[dms, 'sqlserver'], [dpg, 'postgres']]) {
       await open(U4 + `#/community?i=${inst}`, communityReady);
       const s = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')];
-        const desc = b => (b.getAttribute('aria-describedby') || '').split(/\\s+/).map(i => document.getElementById(i)?.textContent ?? '').join(' ');
-        return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true' && /is a demo instance/.test(desc(b))).length,
+        return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true').length,
           box: document.querySelector('main .needs')?.textContent?.slice(0, 200) ?? '', error: !!document.querySelector('main .error'), nologin: /-no-login/.test(document.querySelector('main')?.textContent ?? '') }; })()`);
-      s.label = `${t} ${label}`;
-      if (t === 'light') { s.click = await clickOff('main table.grid button.link[aria-disabled="true"]'); s.ax = (await axOff()).slice(0, 2); s.dom = await offCheck(`demo ${label}`); }
+      s.label = `${t} ${label}`; s.id = inst;
+      if (t === 'dark') {
+        // a sample panel in the dark theme (its shot)
+        const first = label === 'sqlserver' ? 'sp_Blitz' : 'Largest tables';
+        await clickTool(first); await until(`!!(${panel(first)}?.querySelector('.sample table.grid'))`);
+        s.dark = await readPanel(first);
+        s.dark.bg = await ev(`getComputedStyle(document.body).backgroundColor`);
+      }
+      if (t === 'light') {
+        const api = await ev(`fetch('/api/community?instance=${inst}').then(r => r.json()).then(d => ({ instance: d.instance, engine: d.engine, tools: d.tools.map(x => ({ id: x.id, name: x.name, group: x.group, kind: x.kind, sample: x.sample ?? null })) }))`);
+        s.instance = api.instance; s.engine = api.engine; s.tools = [];
+        for (const tool of api.tools) {
+          await clickTool(tool.name);
+          const ready = await until(`!!(${panel(tool.name)}?.querySelector('.demo-why'))`, 20000);
+          s.tools.push({ ...tool, ready, ...(await readPanel(tool.name) ?? {}) });
+        }
+        // the last panel open: its Run off with its reason (the DOM check, the accessibility tree), a click sends nothing
+        s.dom = await offCheck(`demo ${label} panel`);
+        s.ax = await axSel('main section .toolbar button[aria-disabled="true"]');
+        s.click = await clickOff('main section .toolbar button[aria-disabled="true"]');
+        // one sample's link followed: this instance's own page of the subject
+        const withPage = api.tools.find(x => x.sample?.page);
+        await clickTool(withPage.name);
+        await until(`!!(${panel(withPage.name)}?.querySelector('.sample-line'))`);
+        await ev(`(${panel(withPage.name)}).querySelector('a[href^="#/"]').click(); 1`);
+        await until(`location.hash.startsWith('#/${withPage.sample.page}')`, 10000); await sleep(1500);
+        s.followed = { want: withPage.sample.page, hash: await ev(`location.hash`), h2: await ev(`document.querySelector('main h2')?.textContent ?? ''`), error: await ev(`!!document.querySelector('main .error')`) };
+      }
       out.demo.push(s);
       await shot(shots, `demo-${label}-${t}`);
     }
   }
-  // the fleet page's picker reaches the same state
-  await open(U4 + '#/community', `!!document.querySelector('main select')`);
-  await ev(`(() => { const s = document.querySelector('main select'); s.value = ${JSON.stringify(String(dms))}; s.dispatchEvent(new Event('change')); return 1; })()`);
-  await until(communityReady);
-  out.picker = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')]; return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true').length, box: document.querySelector('main .needs')?.textContent?.slice(0, 120) ?? '' }; })()`);
-  // the real instance served beside the demo's: its own state, never the demo line
+  // the address's tool= opens the sample as the page loads; the bar's exports carry its mark
+  await open(U4 + '#/summary', `!!document.querySelector('main')`); await theme('light');
+  await open(U4 + `#/community?i=${dms}&tool=sp_Blitz`, `!!document.querySelector('main .sample table.grid')`);
+  out.deep = await readPanel('sp_Blitz');
+  await shot(shots, 'demo-sample-sp_Blitz');
+  out.files = {};
+  if (dl) {
+    for (const [kind, label, re] of [['xlsx', 'Export .xlsx', /\.xlsx$/], ['csv', 'Export CSV', /\.csv(\.zip)?$/]]) {
+      const before = new Set(fs.readdirSync(dl));
+      await ev(`[...document.querySelectorAll('#bar button')].find(b => b.textContent.trim() === ${JSON.stringify(label)}).click(); 1`);
+      for (let i = 0; i < 100 && !out.files[kind]; i++) { await sleep(200); const f = fs.readdirSync(dl).find(x => !before.has(x) && re.test(x)); if (f) out.files[kind] = f; }
+    }
+  }
+  // the grid menu's two copies of the sample grid and of the tools' grid: what the page hands the clipboard, recorded
+  await ev(`(() => { window.__clips = [];
+    navigator.clipboard.writeText = async t => { window.__clips.push({ kind: 'text', text: t }); };
+    navigator.clipboard.write = async items => { for (const it of items) window.__clips.push({ kind: 'item', plain: await (await it.getType('text/plain')).text(), html: await (await it.getType('text/html')).text() }); };
+    return 1; })()`);
+  // cell: a JS expression for the cell the menu opens on
+  // the cell is scrolled to first and left to settle (two frames, then 300 ms) so the scroll's own event has passed; then
+  // the right-click and the item's click in ONE evaluate: the page closes an open menu on any scroll (ui.ts dropMenu) and
+  // the grid's contextmenu builds its menu synchronously (showMenu), so no scroll can fall between the two
+  const copyFrom = async (cell, item) => {
+    const n = await ev(`window.__clips.length`);
+    const there = await ev(`(() => { const td = ${cell}; if (!td) return false; td.scrollIntoView({ block: 'center' }); return true; })()`);
+    if (!there) return { error: 'no cell ' + cell };
+    await ev(`new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`);
+    await sleep(300);
+    const miss = await ev(`(() => { const td = ${cell}; if (!td) return 'the cell went away after the scroll';
+      const r = td.getBoundingClientRect();
+      td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
+      const bs = [...document.querySelectorAll('.menu [role=menuitem]')];
+      if (!bs.length) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
+      const b = bs.find(x => x.textContent.trim() === ${JSON.stringify(item)});
+      if (!b) return ${JSON.stringify(item)} + ' not among: ' + bs.map(x => x.textContent.trim()).join(' | ');
+      b.click(); return ''; })()`);
+    if (miss) return { error: miss };
+    if (!await until(`window.__clips.length > ${n}`, 5000)) return { error: 'nothing reached the clipboard in 5 s after ' + item };
+    return await ev(`window.__clips[${n}]`);
+  };
+  out.clip = {
+    md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as Markdown'),
+    html: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as HTML with the colours'),
+    tools: await copyFrom(`[...document.querySelectorAll('main table.grid tbody td')].find(td => !td.closest('[data-sample]') && td.closest('table').querySelector('button.link'))`, 'Copy the rows as Markdown'),
+  };
+  // the exported sample CSV opened by the bar's Tools > Open Grid or Data Set: the sample's own columns and rows
+  out.reopen = null;
+  if (dl && out.files.csv) {
+    const { spawnSync } = await import('node:child_process');
+    const one = `${dl}/reopen-sp_Blitz-sample.csv`;
+    const x = spawnSync('python3', ['-I', '-c', 'import sys, zipfile\nz = zipfile.ZipFile(sys.argv[1])\nn = [x for x in z.namelist() if x.endswith("sp_Blitz-sample.csv")]\nopen(sys.argv[2], "wb").write(z.read(n[0]))', `${dl}/${out.files.csv}`, one]);
+    if (x.status !== 0) out.reopen = { error: String(x.stderr).slice(0, 300) };
+    else {
+      const shown = await ev(`(() => { const g = ${panel('sp_Blitz')}.querySelector('.sample table.grid'); return { cols: g.querySelectorAll('thead th').length, rows: g.querySelectorAll('tbody tr').length }; })()`);
+      await cmd('Page.setInterceptFileChooserDialog', { enabled: true });
+      const fc = chooser();
+      await ev(`[...document.querySelectorAll('#bar button')].find(b => b.textContent.trim() === 'Tools').click(); 1`);
+      const menuUp = await until(`[...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent.startsWith('Open Grid or Data Set'))`, 5000);
+      // a file input opens its chooser only on a user's activation (filedrop.ts pick: input.click()): the item's click is
+      // evaluated as a user gesture, as menu-check's evaluates are, or no chooser opens and fileChooserOpened never comes
+      const clicked = menuUp ? await cmd('Runtime.evaluate', { expression: `[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent.startsWith('Open Grid or Data Set')).click(); 1`,
+        returnByValue: true, userGesture: true }) : null;
+      const thrown = clicked?.result?.exceptionDetails;
+      const got = menuUp && !thrown ? await Promise.race([fc, sleep(10000).then(() => null)]) : null;
+      if (!menuUp) out.reopen = { error: "the Tools menu showed no 'Open Grid or Data Set' item in 5 s" };
+      else if (thrown) out.reopen = { error: 'the Tools item threw in the page: ' + JSON.stringify(thrown).slice(0, 300) };
+      else if (!got) out.reopen = { error: 'no file chooser opened' };
+      else {
+        await cmd('DOM.setFileInputFiles', { files: [one], backendNodeId: got.backendNodeId });
+        await until(`!!document.querySelector('dialog.fd-viewer[open] table.grid')`, 10000);
+        out.reopen = await ev(`(() => { const d = document.querySelector('dialog.fd-viewer[open]'); const g = d?.querySelector('table.grid');
+          return { title: d?.getAttribute('aria-label') ?? '', note: [...(d?.querySelectorAll('p') ?? [])].map(p => p.textContent).join(' | ').slice(0, 400),
+            cols: g ? g.querySelectorAll('thead th').length : 0, rows: g ? g.querySelectorAll('tbody tr').length : 0,
+            heads: g ? [...g.querySelectorAll('thead th')].slice(0, 4).map(h => h.textContent.trim()) : [] }; })()`);
+        out.reopen.shown = shown;
+        await shot(shots, 'demo-sample-csv-reopened');
+        await ev(`document.querySelector('dialog.fd-viewer[open]')?.close(); 1`);
+      }
+      await cmd('Page.setInterceptFileChooserDialog', { enabled: false });
+    }
+  }
+  // the fleet page's picker, per engine: the picked instance's own panel (its line, mark and link name that instance)
+  out.picker = [];
+  for (const [inst, tool] of [[dms2 || dms, 'sp_BlitzLock'], [dpg2 || dpg, 'What holds back vacuum']]) {
+    await open(U4 + '#/community', `!!document.querySelector('main select')`);
+    await ev(`(() => { const s = document.querySelector('main select'); s.value = ${JSON.stringify(String(inst))}; s.dispatchEvent(new Event('change')); return 1; })()`);
+    await until(communityReady);
+    const pk = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')]; return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true').length, box: document.querySelector('main .needs')?.textContent?.slice(0, 120) ?? '' }; })()`);
+    await clickTool(tool);
+    await until(`!!(${panel(tool)}?.querySelector('.sample table.grid'))`);
+    pk.id = inst; pk.tool = tool; pk.panel = await readPanel(tool);
+    out.picker.push(pk);
+  }
+  // the real instance served beside the demo's: its own state, never the demo line, no sample
   await open(U4 + `#/community?i=${realMsr}`, communityReady);
   out.real = await ev(`(() => { const m = document.querySelector('main')?.textContent ?? ''; return { demoLine: /is a demo instance/.test(m), nologin: /-no-login/.test(m), off: [...document.querySelectorAll('main table.grid button.link')].filter(b => b.getAttribute('aria-disabled') === 'true').length }; })()`);
+  out.real.samples = await ev(`fetch('/api/community?instance=${realMsr}').then(r => r.json()).then(d => d.tools.filter(x => x.sample).length)`);
+  out.real.sampleStatus = await ev(`fetch('/api/community?instance=${realMsr}').then(r => r.json()).then(d => fetch('/api/community/sample?instance=${realMsr}&tool=' + (d.engine === 'sqlserver' ? 'sp_Blitz' : 'pg_running'))).then(r => r.status)`);
 }
 console.log(JSON.stringify(out));
 ws.close(); process.exit(0);
@@ -1293,29 +1468,142 @@ if len(steps) > 2:
     assert nc['off'] and 'pg_stat_statements is not created in the database pgcr_nx' in nc['desc'], f"U3: not created: {nc}"
     print(f"ok   U3: Top statements off on the cluster without the library: 'created in postgres but not loaded' (55000) beside 'not created in the database pgcr_nx', each its description")
 PY
+  # [fold 2: review 20261112-222929 finding 1] a REAL instance tagged demo on a plain serve (-no-login: it keeps no
+  # PostgreSQL door) is never a demo instance - only one this running pgvigil demo seeded is: its ordinary line, no
+  # demo words, no sample (before the fold the tag alone decided: 'is a demo instance' and the samples)
+  q "update pgvigil.instances set tags = array_append(tags, 'demo') where instance_id = $AID and not 'demo' = any (tags)" >/dev/null
+  tick; C1=$(code "$U2/api/community?instance=$AID"); cp "$WORK/body" "$WORK/real-demo-tag.json"
+  T1=$(js "'is a demo instance' in json.dumps(d) or any(t.get('sample') for t in d.get('tools', []))"); N1=$(js "(d.get('needs') or [{}])[0].get('what', '')")
+  tick; S1=$(code "$U2/api/community/sample?instance=$AID&tool=pg_running")
+  q "update pgvigil.instances set tags = array_remove(tags, 'demo') where instance_id = $AID" >/dev/null
+  [[ $C1 == 200 && $T1 == False && $S1 == 404 && -n $N1 ]] || fail "S: a real instance tagged demo on a plain -no-login serve: answered $C1, demo words or a sample: $T1, the sample $S1, its line '$N1'"
+  ok "S: a real PostgreSQL instance tagged demo on a plain -no-login serve: its ordinary line ('${N1:0:90}...'), no demo words, no sample (GET /api/community/sample 404)"
   # the demo seeded into this proof's repository beside its real instances, served by pgvigil demo (no login, no doors)
   PORT4=$(freeport); U4="http://127.0.0.1:$PORT4"
   "$BIN" demo -config "$CFG" -days 1 -serve -listen "127.0.0.1:$PORT4" > "$WORK/demo.log" 2>&1 & SRV4=$!
   for _ in $(seq 1 300); do grep -q 'pgvigil demo serving' "$WORK/demo.log" && break; kill -0 "$SRV4" 2>/dev/null || fail "U2: the demo serve died: $(tail -5 "$WORK/demo.log")"; sleep 1; done
   grep -q 'pgvigil demo serving' "$WORK/demo.log" || fail "U2: the demo did not come up in 300 s: $(tail -3 "$WORK/demo.log")"
-  DMS=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
-  DPG=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'postgres' order by name limit 1")
-  [[ -n $DMS && -n $DPG ]] || fail "U2: the demo seeded no SQL Server or no PostgreSQL instance"
-  timeout 900 node "$WORK/buttons.mjs" demo "$CDP" "$U4/" "$DMS" "$DPG" "${MRID:-$AID}" "$SHOTS" > "$WORK/demo.json" 2>"$WORK/demo.err" || fail "U2: the demo driver: $(tail -5 "$WORK/demo.err")"
-  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" <<'PY' || fail "U2: see above"
-import json, sys
-d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'
+  # the panels on an instance of another platform than the test server's, the picker on one of the test server's own
+  DMS=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' and platform <> 'sqlserver' order by name limit 1")
+  DPG=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'postgres' and platform <> 'onprem' order by name limit 1")
+  DMS2=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' and platform = 'sqlserver' order by name limit 1")
+  DPG2=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'postgres' and platform = 'onprem' order by name limit 1")
+  [[ -n $DMS && -n $DPG && -n $DMS2 && -n $DPG2 ]] || fail "U2: the demo seeded no instance of each engine on and off the test server's platform ($DMS $DPG $DMS2 $DPG2)"
+  ident() { q "select instance_id || '=' || name || '=' || platform from pgvigil.instances where instance_id = $1"; }
+  DMSN=$(q "select name from pgvigil.instances where instance_id = $DMS"); DPGN=$(q "select name from pgvigil.instances where instance_id = $DPG")
+  LOG0=$(q "select count(*) from pgvigil.custom_report_log")
+  rm -rf "$WORK/dl"; mkdir -p "$WORK/dl"
+  timeout 900 node "$WORK/buttons.mjs" demo "$CDP" "$U4/" "$DMS" "$DPG" "${MRID:-$AID}" "$SHOTS" "$WORK/dl" "$DMS2" "$DPG2" > "$WORK/demo.json" 2>"$WORK/demo.err" || fail "S: the demo driver: $(tail -5 "$WORK/demo.err")"
+  LOG1=$(q "select count(*) from pgvigil.custom_report_log")
+  # a run asked of the demo's SQL Server instance, never a sample (only the demo serve's own seeded instances are
+  # demo instances): on the signed-in plain serve (the same repository) it is an instance without a login there, its
+  # run refused in the custom report's words before anything is sent (a run row, so a tick); on the demo serve (no
+  # login) the gate refuses the POST first (403, no row)
+  tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}") == 200 ]] || fail "S: a run asked of the demo's instance on the signed-in serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run.json"
+  tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"glenn_berry\",\"text\":\"SELECT 1\"}") == 200 ]] || fail "S: a script run asked of the demo's instance on the signed-in serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run-script.json"
+  [[ $(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}" "$U4/api/community/run") == 403 ]] || fail "S: a run asked of a demo instance on the demo serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run4.json"
+  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$(ident $DMS)" "$(ident $DPG)" "$(ident $DMS2)" "$(ident $DPG2)" "$WORK/demo-run4.json" "$WORK/demo-run-script.json" <<'PY' || fail "S: see above"
+import json, sys, zipfile, os, re, html
+d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'; dl = sys.argv[3]
+# each instance's name and platform as the repository holds them (never the name the page's own API answered)
+ids = [a.split('=', 2) for a in sys.argv[7:11]]
+names = {i: n for i, n, _ in ids}; plat = {i: p for i, _, p in ids}
+# the line's end and the mark's as review 20261112-222929 D2 words them: an instance off the test server's platform is
+# named with its platform; the test server's own (a SQL Server container, a PostgreSQL cluster: sqlserver, onprem) not
+words = {('sqlserver', 'azuresqlmi'): 'an Azure SQL Managed Instance', ('postgres', 'aurora'): 'an Aurora PostgreSQL instance',
+         ('postgres', 'rds'): 'an Amazon RDS for PostgreSQL instance', ('postgres', 'azure'): 'an Azure Database for PostgreSQL server',
+         ('postgres', 'cloudsql'): 'a Cloud SQL for PostgreSQL instance'}
+test = {'sqlserver': 'sqlserver', 'postgres': 'onprem'}
+def ends(eng, i):
+    w = words.get((eng, plat[i])) if plat[i] != test[eng] else None
+    return (f"not {names[i]}, {w}, where the same run returns other rows.", f"not {names[i]} ({w})") if w else (f"not {names[i]}.", f"not {names[i]}")
+(dms, _, pms), (dpg, _, ppg), (dms2, _, pms2), (dpg2, _, ppg2) = ids
+assert pms != 'sqlserver' and ppg != 'onprem' and pms2 == 'sqlserver' and ppg2 == 'onprem' and (('sqlserver', pms) in words) and (('postgres', ppg) in words), f"S: the instances do not cover both cases: {ids}"
+print(f"ok   S: the panels on {names[dms]} ({pms}) and {names[dpg]} ({ppg}), off the test server's platform; the picker on {names[dms2]} ({pms2}) and {names[dpg2]} ({ppg2}), on it")
+kit_of = {'First Responder Kit': 'First Responder Kit', 'Darling Data': 'DarlingData', 'sp_WhoIsActive': 'sp_WhoIsActive', 'pgvigil reads': 'pgvigil', 'Glenn Berry': None}
 for s in d['demo']:
     want = 14 if s['label'].endswith('sqlserver') else 10
-    assert s['n'] == want and s['off'] == want and 'is a demo instance' in s['box'] and not s['error'] and not s['nologin'], f"U2: demo {s['label']}: {s}"
-    if 'click' in s:
-        assert s['click']['sent'] == 0 and all(x['same'] for x in s['ax']) and not s['dom']['bad'], f"U2: demo {s['label']}: click {s['click']}, ax {s['ax']}, dom {s['dom']}"
-    print(f"ok   U2: demo {s['label']}: {s['off']} of {s['n']} tools off with the demo line beside them and as their description; no error box" + (f"; a click sent nothing" if 'click' in s else ''))
-p = d['picker']; assert p['n'] == 14 and p['off'] == 14 and 'is a demo instance' in p['box'], f"U2: the fleet page's picker on the demo: {p}"
-print(f"ok   U2: demo fleet page, picker: the same 14 off with the demo line")
+    assert s['n'] == want and s['off'] == 0 and 'is a demo instance' in s['box'] and not s['error'] and not s['nologin'], f"S: demo {s['label']}: {s}"
+    if 'tools' not in s:
+        k = s.get('dark') or {}
+        rgb = [int(x) for x in re.findall(r'\d+', k.get('bg', ''))[:3]] or [255, 255, 255]
+        assert k.get('rows', 0) >= 1 and k.get('runOff') and sum(rgb) / 3 < 80, f"S: demo {s['label']}: the sample panel in the dark theme: {k}"
+        print(f"ok   S: demo {s['label']}: {s['n']} tool names, none off (each opens its sample), the demo line above them; a sample panel ({k['rows']} rows, Run off)"); continue
+    inst = names[str(s['id'])]; eng = 'SQL Server 2022 ' if s['engine'] == 'sqlserver' else 'PostgreSQL '; tl, tm = ends(s['engine'], str(s['id']))
+    assert len(s['tools']) == want, f"S: {inst}: {len(s['tools'])} tools"
+    for t in s['tools']:
+        tag = f"S: {inst} {t['name']}"
+        assert t['ready'] and not t.get('error') and t.get('runOff') and 'is a demo instance' in t.get('runDesc', ''), f"{tag}: the panel {t}"
+        if t['kind'] == 'script':
+            assert not t['sample'] and not t['file'] and "Nothing of Glenn Berry's script is stored" in t['notes'] and any('glennsqlperformance.com' in x for x in t['ext']), f"{tag}: {t}"
+            print(f"ok   {tag}: no sample, no file input, why nothing of it is stored, the script's download link; Run off with the demo line"); continue
+        sm = t['sample']; assert sm, f"{tag}: no sample mark in the API"
+        assert sm['kit'] == kit_of[t['group']], f"{tag}: kit {sm['kit']} in the group {t['group']}"
+        line = t['line']
+        assert line.endswith(sm['line']) and line.rstrip().endswith(tl) and (eng in line) and (sm['kit'] == 'pgvigil' or sm['version'] in line) and re.search(r'captured \d{4}-\d\d-\d\d UTC on a test server', line), f"{tag}: the line {line!r} / {sm} (want the end {tl!r})"
+        assert t['grids'] >= 1 and t['rows'] >= 1 and t['mark'].endswith(tm) and re.search(r'captured \d{4}-\d\d-\d\d UTC on a test server', t['mark']) and 'stored sample of ' + t['name'] in t['mark'], f"{tag}: grids {t['grids']}, rows {t['rows']}, mark {t['mark']!r} (want the end {tm!r})"
+        assert t['link'] == f"#/{sm['page']}?i={s['id']}", f"{tag}: the link {t['link']}"
+        print(f"ok   {tag}: {sm['kit']} {sm['version']}, {line[line.index('captured'):][:40]}... {line[-len(tl):]}; {t['grids']} grid(s), {t['rows']} rows in the mark; Run off with the demo line; link {t['link']}")
+    assert not s['dom']['bad'] and s['dom']['off'] >= 1 and s['ax'] and all(x['same'] for x in s['ax']) and s['click']['sent'] == 0, f"S: {inst}: dom {s['dom']}, ax {s['ax']}, click {s['click']}"
+    f = s['followed']; assert f['hash'].startswith('#/' + f['want'] + '?') and f['h2'] and not f['error'], f"S: {inst}: the link followed: {f}"
+    print(f"ok   S: {inst}: the last panel's Run off: its accessibility-tree description is the demo line, a click sent nothing, the DOM check 0; the link to {f['want']} lands there ({f['h2']!r})")
+p = d['deep']; assert p and p['rows'] >= 1 and 'stored sample of sp_Blitz' in p['mark'], f"S: tool=sp_Blitz: {p}"
+print(f"ok   S: the address's tool=sp_Blitz opens its sample as the page loads ({p['rows']} rows)")
+fx = d['files']; assert fx.get('xlsx') and fx.get('csv'), f"S: the downloads: {fx}"
+# the Summary sheet (sheet1, its text inline): each sheet's row - the sp_Blitz panel's sheets carry the mark in their
+# note, the tools' grids and the log never
+def summary_rows(xml):
+    out = {}
+    for r, body in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', xml):
+        cells = {c: html.unescape(re.sub(r'<[^>]+>', '', t)) for c, t in re.findall(r'<c r="([A-Z]+)\d+"[^>]*>(.*?)</c>', body)}
+        if int(r) >= 12 and cells.get('A'): out[cells['A']] = cells.get('C', '')
+    return out
+z = zipfile.ZipFile(os.path.join(dl, fx['xlsx'])); rows = summary_rows(z.read('xl/worksheets/sheet1.xml').decode())
+bad = [(n, p['mark'] in note) for n, note in rows.items() if (p['mark'] in note) != n.startswith('sp_Blitz')]
+assert rows and not bad and sum(1 for n in rows if n.startswith('sp_Blitz')) == 2, f"S: the workbook's Summary: {rows} (wrong: {bad})"
+print(f"ok   S: Export .xlsx: the Summary sheet's notes carry the mark on exactly the panel's 2 sheets ({', '.join(n for n in rows if n.startswith('sp_Blitz'))}), none of the other {len(rows) - 2}")
+cpath = os.path.join(dl, fx['csv'])
+assert cpath.endswith('.zip'), f"S: one CSV for a page of several grids: {fx['csv']}"
+zc = zipfile.ZipFile(cpath)
+firsts = {n: zc.read(n).decode('utf-8-sig').split('\r\n', 1)[0].strip('"') for n in zc.namelist()}
+bad = [n for n, f in firsts.items() if (f == p['mark']) != ('sp_Blitz' in n)]
+assert not bad and sum(1 for n in firsts if 'sp_Blitz' in n) == 2, f"S: the CSV files' first lines: {[(n, f[:60]) for n, f in firsts.items()]} (wrong: {bad})"
+print(f"ok   S: Export CSV: exactly the panel's 2 files start with the mark ({', '.join(n for n in firsts if 'sp_Blitz' in n)}), none of the other {len(firsts) - 2}")
+# the grid menu's copies (review 20261112-222929 finding 2): the sample's mark first in both, the tools' grid's none
+c = d.get('clip') or {}; md, hc, tc = c.get('md') or {}, c.get('html') or {}, c.get('tools') or {}
+unmd = re.sub(r'\\([\\|*_`<\[\]])', r'\1', md.get('text', ''))
+assert unmd.startswith(p['mark'] + '\n\n') and '|' in unmd.split('\n\n', 1)[1], f"S: Copy the rows as Markdown: {md}"
+assert hc.get('plain', '').startswith(p['mark'] + '\n') and hc.get('html', '').startswith('<p>') and html.unescape(re.sub(r'<[^>]+>', '', hc['html'].split('</p>', 1)[0])) == p['mark'] and '<table' in hc['html'], f"S: Copy the rows as HTML: {str(hc)[:400]}"
+assert tc.get('kind') == 'text' and 'stored sample of' not in tc.get('text', '') and '|' in tc.get('text', ''), f"S: the tools' grid's copy: {str(tc)[:300]}"
+print(f"ok   S: the sample grid's menu: 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark first (Markdown {len(md['text'])} chars, HTML {len(hc['html'])}); the tools' grid's copy carries none")
+# the exported sample CSV opened by Tools > Open Grid or Data Set (finding 3): the sample's own columns and rows, the mark in the note
+ro = d.get('reopen') or {}
+assert ro and not ro.get('error') and ro['cols'] == ro['shown']['cols'] and ro['rows'] == ro['shown']['rows'] and ro['cols'] > 1 \
+    and (p['mark'] + f". {ro['rows']} rows, {ro['cols']} columns.") in ro['note'], f"S: the sample CSV opened again: {ro}"
+print(f"ok   S: the exported sp_Blitz sample CSV opened by Tools > Open Grid or Data Set: {ro['rows']} rows, {ro['cols']} columns as the panel shows them ({', '.join(ro['heads'])} ...), its note starting with the mark")
+for q in d['picker']:
+    nm = names[str(q['id'])]; x = q['panel'] or {}; want = 14 if q['tool'] == 'sp_BlitzLock' else 10
+    tl, tm = ends('sqlserver' if want == 14 else 'postgres', str(q['id']))
+    assert q['n'] == want and q['off'] == 0 and 'is a demo instance' in q['box'] and x.get('rows', 0) >= 1 and x.get('runOff') \
+        and x['line'].rstrip().endswith(tl) and x['mark'].endswith(tm) and x['link'].endswith(f"?i={q['id']}"), f"S: the fleet page's picker for {nm}: {q} (want {tl!r} / {tm!r})"
+    print(f"ok   S: the fleet page's picker, {nm} ({plat[str(q['id'])]}): {q['n']} tool names, none off; {q['tool']}'s sample ({x['rows']} rows) ends {tl!r}, its mark {tm!r}, its link {x['link']}, Run off")
+assert sys.argv[4] == sys.argv[5], f"S: custom_report_log {sys.argv[4]} -> {sys.argv[5]}: opening samples wrote audit rows"
+print(f"ok   S: no audit row from any sample opened (custom_report_log {sys.argv[4]} before and after)")
+rr = json.load(open(sys.argv[6])); runs = rr.get('runs') or []; dname = ids[0][1]
+want = f"instance {dname} has no read login in this server's configuration file"
+assert len(runs) == 1 and runs[0].get('outcome') == 'refused' and runs[0].get('error') == want and runs[0].get('sets') == [] \
+    and runs[0].get('rows') == 0 and 'sample' not in json.dumps(rr), f"S: a run asked of the demo's instance on the signed-in serve: {str(rr)[:300]}"
+print(f"ok   S: POST /api/community/run on {dname} from the signed-in plain serve: an instance without a login there, refused before anything is sent ('{want}') - never a sample")
+rs = json.load(open(sys.argv[12])); runs = rs.get('runs') or []
+assert len(runs) == 1 and runs[0].get('outcome') == 'refused' and runs[0].get('error') == want and runs[0].get('sets') == [] \
+    and runs[0].get('rows') == 0, f"S: a script run (Glenn Berry's, one query's text) asked of the demo's instance on the signed-in serve: {str(rs)[:300]}"
+print(f"ok   S: POST /api/community/run of Glenn Berry's script (one query's text) on {dname} from the signed-in plain serve: refused the same way before anything is sent")
+r4 = json.load(open(sys.argv[11])); e4 = r4.get('error', '')
+assert set(r4) == {'error'} and e4.startswith('Running a tool needs a signed-in user') and 'pgvigil demo -serve' in e4, f"S: a run asked of a demo instance on the demo serve: {str(r4)[:300]}"
+print(f"ok   S: POST /api/community/run on {dname} from the demo serve: 403 ('{e4[:70]}...') - never a sample")
 r = d['real']
-assert not r['demoLine'] and r['nologin'] and r['off'] == (14 if real_ms else 10), f"U2: the real instance served beside the demo: {r}"
-print(f"ok   U2: pgvigil demo -serve -config: the real instance shows its own state (-no-login, {r['off']} off), never the demo line")
+assert not r['demoLine'] and r['nologin'] and r['off'] == (14 if real_ms else 10) and r['samples'] == 0 and r['sampleStatus'] == 404, f"S: the real instance served beside the demo: {r}"
+print(f"ok   S: pgvigil demo -serve -config: the real instance shows its own state (-no-login, {r['off']} off), never the demo line, no sample (GET /api/community/sample 404)")
 PY
 fi
 

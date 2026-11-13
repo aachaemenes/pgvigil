@@ -22,6 +22,7 @@ import { actionsCol, actionsState } from './actions';
 import { planLink } from './plan';
 import { Ctx, href, isLive, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { offBeside } from './ack';
 import { longRunsSection } from './window';
 import { pgBlockingHistory } from './blocking_history';
 import { sqlCell, whatIsThis } from './sqlview';
@@ -179,13 +180,15 @@ export function foldedGrid(f: Fold): HTMLElement {
 
 // ---- the snapshot row: Earlier, the time, Later, Latest, and the picker
 
-interface Steps { shown?: unknown; earlier?: unknown; later?: unknown; latest?: unknown }
+// unread: the snapshot list could not be read (Earlier and Later are then off for THAT reason, not for 'none')
+interface Steps { shown?: unknown; earlier?: unknown; later?: unknown; latest?: unknown; unread?: boolean }
 
 function snapshotBar(ctx: Ctx, at: string | undefined, steps: Steps): HTMLElement {
   const go = (t?: string) => { location.hash = href(ctx, { tab: TAB, at: t }); };
-  const step = (label: string, to: unknown, title: string) => {
+  // a step with nowhere to go is off for its own state, said beside it
+  const step = (label: string, to: unknown, title: string, none: string) => {
     const b = el('button', { type: 'button', title }, label);
-    if (to == null) b.disabled = true; else b.addEventListener('click', () => go(String(to)));
+    if (to == null) offBeside(b, none); else b.addEventListener('click', () => go(String(to)));
     return b;
   };
   const input = el('input', { type: 'datetime-local', step: '1', 'aria-label': 'snapshot at or before' });
@@ -200,9 +203,9 @@ function snapshotBar(ctx: Ctx, at: string | undefined, steps: Steps): HTMLElemen
   const newest = steps.shown != null && steps.shown === steps.latest;
   const hist = ctx.at ? 'history: auto refresh off' : at ? 'the end of the custom range: auto refresh off' : '';
   return el('div', { class: 'picker' },
-    step('Earlier', steps.earlier, 'The snapshot before this one'), ' ',
+    step('Earlier', steps.earlier, 'The snapshot before this one', steps.unread ? 'the snapshot list could not be read' : 'no earlier snapshot'), ' ',
     el('b', { class: 'snap-time' }, steps.shown == null ? 'no snapshot' : 'Snapshot ' + fmtTime(steps.shown)), ' ',
-    step('Later', steps.later, 'The snapshot after this one'), ' ', latest,
+    step('Later', steps.later, 'The snapshot after this one', steps.unread ? 'the snapshot list could not be read' : 'no later snapshot'), ' ', latest,
     el('label', {}, ' at or before ', input),
     hist ? el('span', { class: 'meta' }, ` (${hist}${newest ? '; this is the newest' : ''})`) : null);
 }
@@ -216,9 +219,9 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   // the steps around the snapshot the activity read chose, read after it (two parallel reads of 'the newest' can
   // straddle a new minute's snapshot); a convenience: a server without the endpoint leaves the buttons off
   const stepsT = a.snapshot_at
-    ? await get<{ steps: Table | null }>('running/snapshots', { instance: ctx.instance, at: a.snapshot_at }).catch(() => ({ steps: null }))
+    ? await get<{ steps: Table | null }>('running/snapshots', { instance: ctx.instance, at: a.snapshot_at }).catch(() => ({ steps: null, unread: true }))
     : { steps: null };
-  const steps: Steps = rowsOf(stepsT.steps)[0] ?? { shown: a.snapshot_at };
+  const steps: Steps = rowsOf(stepsT.steps)[0] ?? { shown: a.snapshot_at, unread: 'unread' in stepsT };
   // the pooler read of the same minute, where the instance has a pooler (task 128); a failed read leaves the page as it was
   // only a read within two minutes of the snapshot: an older one says nothing of these sessions (pids are reused)
   const pcAny = a.snapshot_at && await poolerKnown(ctx.instance).catch(() => false)
@@ -263,6 +266,9 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
 
   const after = () => { location.hash = href(ctx, { tab: TAB, at: undefined }); };
   const actions = actionsCol(ctx, act, after);
+  // Cancel and Terminate off for the whole instance: one sentence above the grids, and every off button points at it
+  // (placed only where a session of this read draws the pair: with no session the sentence would point at nothing)
+  if (!act.enabled && sessions.length) { act.note = el('p', { class: 'meta' }, `Cancel and Terminate are off for this instance: ${act.reason || 'actions are off for this instance'}`); sec.append(act.note); }
   const waitCell = (_v: unknown, r: Row) => r.wait_event_type == null ? ''
     : r.wait_event_type === 'Lock' ? badge(`Lock: ${String(r.wait_event ?? '')}`, 'warn') : `${String(r.wait_event_type)}: ${String(r.wait_event ?? '')}`;
   const stmtCell = (v: unknown, r: Row) => sqlCell(v, { heading: `pid ${String(r.pid)}: ${isIdle(r) ? 'last statement' : 'statement'}`, title: isIdle(r) ? idleNote : undefined });

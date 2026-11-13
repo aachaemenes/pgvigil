@@ -120,6 +120,7 @@ Each piece below is named in a comment beside it in the file. Where only a shape
 | The performance counter list and its storage per series (a cumulative counter as its rate and its total), the CPU details, the thread row with its runnable line and THREADPOOL waits, the scheduler pressure line beside pgvigil's own level, the sessions by application, host and database with their totals, tempdb space per session, SLEEP_TASK kept at an average of 1,000 ms or more, the remote admin connections line, and the findings on other processes holding the CPU, a long open transaction and slow data file writes | DarlingData (darlingdata-20261101): sp_PressureDetector (its perfmon list, CPU and thread usage sections, tempdb per session); PerformanceMonitor 3.12.0: PerfmonStatsCollector, CpuSchedulerStatsCollector, SessionStatsCollector, SessionSummaryStatsCollector, ClassifyCpuSchedulerPressure, the perfmon panel's and the Activity tab's columns | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/cpu.go, internal/mssql/activity.go, internal/mssql/waits.go (sleepTaskSpills), internal/mssql/checks.go, internal/repo/sql/0124_darling_cpu.sql, web/src/mssql_perf.ts, web/src/metrics.ts |
 | PerformanceMonitor's alert defaults as findings (dead tuples, replay lag, slot WAL, a volume under 5 / 2 GB free, AG secondary 300 s, runnable queue 8 / 16 per scheduler, long-running requests at 30 min with its exclusions as data, Server Unreachable on any failed connect) and the Admin page's five tabs | PerformanceMonitor 3.12.0: CustomAlertTemplates.cs, DarlingConfig.cs, RunnableQueueEvaluator.cs, DarlingAlertReadAdapter.cs, LongRunningQueryExclusions.cs, ConnectionAlertPolicy.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/repo/sql/0118_darling_alerts.sql, web/src/alerts.ts (builtIn, adminView) |
 | The Query Store regression tests (cost: Regular CPU per run more than 25 % above the baseline's adding at least 1,000 ms over the window; timeouts / errors: at least 3 Aborted / Exception runs at twice the baseline's per-hour rate, or any where the baseline had none), the 7-day baseline, a row placed by its last run, the severity bands, the order and the 200-row cap with the failures' third; the compare picks (Previous period, Yesterday, Last week) and their column labels; the plan cache's hashes and handles and the procedures' spilled pages | PerformanceMonitor 3.12.0: QueryStoreRegressionRules.cs, PerformanceMonitor.Darling.Storage/QueryStoreRegressionBaseline.cs, top-compare.js, server-tabs.js, DarlingDataReader.cs, DarlingMcpDataTools.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_querystore.go (qsRegBase, sqlMSSQLQSRegressed, sqlMSSQLQSCompare), internal/web/q_mssql_plancache.go (sqlMSSQLPCCompare), internal/web/q_mssql_procs.go (sqlMSSQLProcCompare, sqlMSSQLProcs), internal/web/q_mssql_plancache.go (sqlMSSQLPCTop), web/src/mssql_querystore.ts, web/src/mssql_plancache.ts, web/src/mssql_procs.ts |
+| The Queries view's section order, the query heatmap (its bins aiming at 144 columns, seven log10 buckets per metric, eight log-scale shades, its legend, cell words and 'Show as table', 'Show Active Queries at This Time' at the bin's middle, the 7-day reach), the time strips over Active queries and the Query Store grid with a row's overlay, the wait filter's words, the per-query trend and the procedure history's four metrics, the Query Store overhead's sleep waits and its memory clerk line | PerformanceMonitor 3.12.0: server-tabs.js, query-heatmap.js, query-heatmap-model.js, time-slicer.js, stats-history.js, charts.js, DarlingQueryHeatmapReader.cs, DarlingMcpQueryHeatmapTools.cs, DarlingMcpTrendTools.cs, ViewerDataService.QueryStoreClutter.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_plancache.go, web/src/mssql_queries.ts, web/src/mssql_querystore.ts, web/src/timestrip.ts, and the wiring's mssql_running.ts, mssql_procs.ts |
 
 The MIT licence of each of these sources, with its copyright line above:
 
@@ -128,6 +129,65 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## The demo's stored samples of the community tools
+
+On a demo instance (`pgvigil demo`: no server stands behind it) the Community tools page opens each tool's stored sample: the result sets a run of the tool returned on a test server built for the capture (scripts/capture-community-samples.sh), marked as that test server's wherever it is shown, exported or mailed. The findings' names, details and URLs in them are the kits' own words as the procedures returned them. No code of any kit is stored: the reads of the plan cache and of Query Store run first, in the test server's user database only, and the capture stops when the rows of a tool that reads statements hold a kit's own statement.
+
+| What | From | Licence | Where |
+|---|---|---|---|
+| Stored result sets of sp_Blitz, sp_BlitzFirst, sp_BlitzCache, sp_BlitzIndex, sp_BlitzLock and sp_BlitzWho (their findings' words and links as the procedures returned them on a test server; plan XML left out), and their parameters' names and help text, for the demo only | SQL Server First Responder Kit 8.34 (2026-07-02) | MIT; its licence whole below (it names further MIT portions) | internal/demo/community/samples/sp_Blitz*.json.gz |
+| Stored result sets of sp_PressureDetector 6.11, sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11, sp_HealthParser 3.11, sp_LogHunter 3.11 and sp_IndexCleanup 2.11 (their findings' words and links as the procedures returned them on a test server; plan XML left out), and their parameters' names and help text, for the demo only | DarlingData (2026-11-01) | MIT, Copyright 2026 Darling Data, LLC (the MIT licence above) | internal/demo/community/samples/ (the six files named for them) |
+| Stored result rows of sp_WhoIsActive v2200.20260409: the test server's own sessions as it listed them, and its parameters' names; none of its own text (its @help output and its parameters' descriptions are not stored) | sp_WhoIsActive, (C) 2007-2026 Adam Machanic | GPL-3.0: the rows are the server's data, the program's output, not a copy of the program | internal/demo/community/samples/sp_WhoIsActive.json.gz |
+
+Glenn Berry's SQL Server Diagnostic Queries: nothing of them is stored (his script's header reserves all rights); the demo says what the tool does and where to download the script.
+
+The First Responder Kit's licence, whole (LICENSE.md of its repository, read 2026-11-12):
+
+```text
+MIT License
+
+Copyright for portions of sp_Blitz are held by Microsoft as part of project 
+tigertoolbox and are provided under the MIT license:
+https://github.com/Microsoft/tigertoolbox
+All other copyrights for sp_Blitz are held by Brent Ozar Unlimited, 2022 as
+described below.
+
+Copyright for portions of DatabaseRestore are held by GregWhiteDBA as part
+of project MSSQLAutoRestore and are provided under the MIT license:
+https://github.com/GregWhiteDBA/MSSQLAutoRestore
+All other copyrights for DatabaseRestore are held by Brent Ozar Unlimited, 2022
+as described below.
+
+Copyright for sp_BlitzInMemoryOLTP are held by Ned Otter and Konstantin
+Taranov as part of project sqlserver-kit and are provided under the MIT license:
+https://github.com/ktaranov/sqlserver-kit
+
+Copyright for SqlServerVersionScript are held by Josh Darnell as part of
+project SqlServerVersionScript and are provided under the MIT license:
+https://github.com/jadarnel27/SqlServerVersionScript
+
+
+Copyright (c) 2022 Brent Ozar Unlimited
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Read, not copied
 

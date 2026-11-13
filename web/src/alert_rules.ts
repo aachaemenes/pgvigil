@@ -14,8 +14,11 @@ import { fleet, tagsOf } from './fleet';
 import { Ctx, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, showMenu } from './ui';
+import { offBeside } from './ack';
 
-export interface RulesDoor { writable: boolean; reason?: string; user: string }
+// note: the page's one visible sentence where rules cannot be written here - every off control of the page shares that
+// reason and points at it (the page that draws the sentence sets it); without one an off control says the reason beside itself
+export interface RulesDoor { writable: boolean; reason?: string; user: string; note?: HTMLElement }
 interface RulesData extends RulesDoor {
   rules?: Table | null; state?: Table | null; log?: Table | null; catalog?: Table | null; sender?: Table | null;
   inforce?: Table | null;
@@ -125,10 +128,11 @@ function starterButton(door: RulesDoor, after: () => void): HTMLElement {
   return b;
 }
 
-// ruleButton: a button that opens the rule dialog, disabled with the reason when rules cannot be written here
+// ruleButton: a button that opens the rule dialog; where rules cannot be written here it is off with the reason in
+// words on the page (the page's sentence, door.note, or beside itself)
 export function ruleButton(door: RulesDoor, label: string, aria: string, open: () => void): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
-  if (!door.writable) { b.disabled = true; b.title = door.reason ?? 'alert rules are read only here'; }
+  if (!door.writable) offBeside(b, door.reason || 'alert rules are read only here', door.note);
   else b.addEventListener('click', open);
   return b;
 }
@@ -319,7 +323,8 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
   // the rules in force as one sentence (PerformanceMonitor's 'will alert when' summary over its active rules)
   const on = live.filter(r => r.enabled);
   if (on.length) sec.append(el('p', { class: 'will-alert' }, willAlert(on, r => String(r.name ?? `${String(r.family_label ?? '')}: ${String(r.label ?? r.metric)}`), noChannel)));
-  if (!d.writable) sec.append(el('p', { class: 'meta' }, `Alert rules are read only here: ${d.reason ?? ''}`));
+  // the page's one sentence where rules cannot be written here: every off control below points at it
+  if (!d.writable) { d.note = el('p', { class: 'meta' }, `Alert rules are read only here: ${d.reason ?? ''}`); sec.append(d.note); }
   if (!live.length) {
     sec.append(el('div', { class: 'empty' },
       el('h3', {}, 'Alert on any metric you can chart'),
@@ -337,7 +342,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'enabled', label: 'on', fmt: (v, r) => {
         if (!r.live) return 'ended';
         const b = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(!!v), 'aria-label': `rule ${String(r.rule_id)} ${label(r)}: ${v ? 'on' : 'off'}` }, v ? 'on' : 'off');
-        if (!d.writable) { b.disabled = true; b.title = d.reason ?? ''; }
+        if (!d.writable) offBeside(b, d.reason || 'alert rules are read only here', d.note);
         else b.addEventListener('click', () => confirmWrite(v ? `Switch rule ${String(r.rule_id)} off?` : `Switch rule ${String(r.rule_id)} on?`,
           v ? 'A rule switched off is in force nowhere: a wider rule on the same metric takes its place, and an alert it raised resolves. The row stays.' : 'The alert sender judges the rule again from its next pass.',
           v ? 'Switch off' : 'Switch on', () => post<RuleResult>('alertrules', { op: v ? 'disable' : 'enable', rule_id: Number(r.rule_id) }), redraw));

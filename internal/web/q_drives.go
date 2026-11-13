@@ -124,19 +124,11 @@ func (s *Server) Drives(w http.ResponseWriter, r *http.Request) {
 // attempt is 409 with its reason. The same doors as the other threshold writes: the X-Pgvigil header, a signed-in
 // user, the actions configuration's audit login.
 func (s *Server) DriveThresholdWrite(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, strings.Replace(s.ackOff(), "acknowledgements", "thresholds", 1))
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(strings.Replace(why, "acknowledgements", "thresholds", 1)))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 4097))
 	if err != nil || len(raw) > 4096 {
 		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 4 KB"))
@@ -151,7 +143,7 @@ func (s *Server) DriveThresholdWrite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
 		return
 	}
-	pay := map[string]any{"ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"ui_user": user, "client": seat.client}
 	for _, k := range []string{"op", "level", "instance_id", "tag", "drive", "warn", "crit"} {
 		if v, ok := in[k]; ok && v != nil {
 			if f, isNum := v.(float64); isNum {
@@ -164,7 +156,11 @@ func (s *Server) DriveThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	var out []byte
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_drive_threshold($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	pool, ok := seat.poolFor(wctx, w, scopeOfLevel(doorDriveThreshold, pay))
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.import_drive_threshold($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("drive threshold: not written", "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return
@@ -273,12 +269,14 @@ SELECT i.instance_id, i.name AS instance, i.engine, x.allocated_bytes, x.used_by
 
 // sqlDBSpaceDatabases: one instance's databases now. $1 the instance.
 const sqlDBSpaceDatabases = `
-SELECT d.datname AS database, d.size_bytes AS allocated_bytes, NULL::bigint AS used_bytes, NULL::bigint AS data_bytes, NULL::bigint AS log_bytes, d.snapshot_at
+SELECT d.datname AS database, d.size_bytes AS allocated_bytes, NULL::bigint AS used_bytes, NULL::bigint AS data_bytes, NULL::bigint AS log_bytes, d.snapshot_at,
+       d.dbid
   FROM pgvigil.databases d JOIN pgvigil.instances i USING (instance_id)
  WHERE d.instance_id = $1 AND d.is_present AND i.engine = 'postgres'
 UNION ALL
 SELECT f.database_name, sum(f.size_bytes), CASE WHEN bool_and(f.used_read) THEN sum(f.used_bytes) END,
-       coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc <> 'LOG'), 0), coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc = 'LOG'), 0), max(f.snapshot_at)
+       coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc <> 'LOG'), 0), coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc = 'LOG'), 0), max(f.snapshot_at),
+       NULL::bigint
   FROM pgvigil.mssql_files f JOIN pgvigil.instances i USING (instance_id)
  WHERE f.instance_id = $1 AND f.is_present AND i.engine = 'sqlserver'
  GROUP BY f.database_name

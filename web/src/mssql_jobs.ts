@@ -15,8 +15,9 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { jsonRows, mssqlFindingCols } from './mssql_hadr';
-import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
-import { jobAckCell, jobAcks, loadAckSafe } from './ack';
+import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
+import { AckData, ackOn, ackWhy, jobAckCell, jobAcks, loadAckSafe, onDoor, seatWhy } from './ack';
+import { fleet } from './fleet';
 import { jobChartSection } from './jobs_chart';
 import { definitionCompare, definitionView, diffCounts, lineDiff, textDiffView } from './diff';
 import { mssqlJobCol } from './mssql_actions';
@@ -172,7 +173,7 @@ function versions(rows: Row[], jobName: string): HTMLElement {
 }
 
 // ---- thresholds at three levels (DBA Dash's Agent Job Thresholds: Job Level, Instance Level, Root Level, Inherit)
-export interface Thresholds { writable: boolean; reason?: string; levels?: Table | null; status?: Table | null }
+export interface Thresholds { writable: boolean; reason?: string; demo?: boolean; levels?: Table | null; status?: Table | null }
 // a server without the route (an older one, or the demo) has no thresholds: the grid then has no status column
 export async function loadThresholds(instance: number): Promise<Thresholds | null> {
   if (!instance) return null;
@@ -194,7 +195,17 @@ const thresholdRows: [string, string, string][] = [
 // thresholdsDialog: one job's thresholds at its three levels. A level with a row of its own applies whole; a level
 // without one inherits the level above (the root inherits the built-in rule: the last run failed = critical).
 // Save writes the level's row (the old one is ended and kept), Inherit ends it. Nothing is written on a bare click.
-export function thresholdsDialog(instance: number, jobName: string, th: Thresholds, after: () => void) {
+// ad, instName: the acknowledgement seat (GET /api/ack) and the instance as the page names it - on a demo serve the door
+// writes this instance's own levels (job, instance) for one of its instances, never the root (B7 DONE-3); a level it
+// does not carry is off in words before any request, the fields too
+let thOffSeq = 0;
+export function thresholdsDialog(instance: number, jobName: string, th: Thresholds, after: () => void, ad?: AckData, instName?: string) {
+  const levelWhy = (lv: Level): string | null => th.writable ? null
+    : ad && onDoor(ad) ? seatWhy(ad, 'thresholds', lv === 'root' ? undefined : instance, instName)
+    // a demo serve whose door was not read (GET /api/ack failed): that is the reason, never the door's own words
+    : th.demo ? `the demo door's instances were not read: ${ad?.reason || 'the acknowledgement read did not answer'}`
+    : th.reason ?? 'thresholds cannot be written on this server';
+  const offP = el('p', { class: 'meta', id: `th-off-${++thOffSeq}` });
   const levels = rowsOf(th.levels);
   const rowAt = (lv: Level) => levels.find(r => r.level === lv && (lv !== 'job' || r.job_name === jobName));
   let level: Level = 'job';
@@ -220,10 +231,17 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
       : level === 'instance' ? (rowAt('root') ? "the root's thresholds" : 'the built-in rule (the last run failed = critical)') : 'the built-in rule (the last run failed = critical)';
     state.textContent = r ? `This level has thresholds of its own, set by ${String(r.created_by)} on ${fmtTime(r.created_at)}; they apply whole.`
       : `This level has none of its own: it inherits ${above}.`;
-    inherit.disabled = !th.writable || !r;
-    save.disabled = !th.writable;
-    for (const i of inputs.values()) i.disabled = !th.writable;
-    lastFail.disabled = !th.writable;
+    // every control of the level that is off says why: the level's own reason in the dialog's one sentence (Save, the
+    // fields), Inherit with no row of its own by the line that says it inherits
+    const w = levelWhy(level);
+    offP.hidden = !w;
+    offP.replaceChildren(...(w ? [badge('read only', 'warn'), ' ', `${names[level]}: ${w}`] : []));
+    offControl(save, w, offP);
+    offControl(inherit, w ?? (r ? null : 'this level has no thresholds of its own: it already inherits the level above'), w ? offP : state);
+    for (const i of [...inputs.values(), lastFail]) {
+      i.disabled = !!w;
+      if (w) i.setAttribute('aria-describedby', offP.id); else i.removeAttribute('aria-describedby');
+    }
   };
   const seg = el('fieldset', { class: 'filters' }, el('legend', {}, 'Level'), ...(['job', 'instance', 'root'] as Level[]).map(lv => {
     const rb = el('input', { type: 'radio', name: 'th-level', id: 'th-level-' + lv, value: lv });
@@ -233,7 +251,7 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
   }));
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Job thresholds: ${jobName}`),
     el('p', {}, 'A job is judged by the most specific level that has thresholds: its own, else the instance\'s, else the root\'s. An empty box is not judged.'),
-    seg, state, table, th.writable ? '' : el('p', { class: 'meta' }, badge('read only', 'warn'), ' ', th.reason ?? 'thresholds cannot be written on this server'),
+    seg, state, table, offP,
     msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', no));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:46rem', 'aria-label': `Job thresholds: ${jobName}` }, form);
   let done = false;
@@ -253,10 +271,11 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
       msg.replaceChildren(badge(r.outcome, 'ok'), ` ${r.detail}. Close to see the jobs judged again.`);
     } catch (e) {
       msg.replaceChildren(badge('not saved', 'crit'), ' ', e instanceof Error ? e.message : String(e));
-      save.disabled = !th.writable; inherit.disabled = !th.writable || !rowAt(level);
+      save.disabled = false; inherit.disabled = false;   // a level that is off stays off the B7 way (fill set it)
     }
   };
-  form.addEventListener('submit', ev => { ev.preventDefault(); void send('set'); });
+  // off is off: Enter in a field submits the form too
+  form.addEventListener('submit', ev => { ev.preventDefault(); if (!levelWhy(level)) void send('set'); });
   inherit.addEventListener('click', () => { void send('inherit'); });
   document.body.append(dlg);
   fill();
@@ -270,7 +289,28 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const box = el('div');
   const d = await get<Record<'jobs', Table | null>>('jobs/history', { engine, instance: ctx.instance, ...w });
   const jobs = rowsOf(d.jobs);
+  // a column that decides something from the page's rows (the PostgreSQL page's Run now: is its sentence needed) gets
+  // them before the grid draws - a long grid draws its first page only
+  for (const c of extra) (c as Col & { rows?: (all: Row[]) => void }).rows?.(jobs);
   const ad = await loadAckSafe(['acks']);
+  // the grid's Acknowledge buttons share one reason when they are off - a server that writes nothing at all, or on a
+  // demo serve an instance that is not the demo's: said once above the grid, and every button points at that sentence
+  // (given to each cell: where a door stands the page's note is not a control's default)
+  // (drawn where a button will point at it: a failed job not yet acknowledged for that failure)
+  const ackIsOff = !ackOn(ad, Number(ctx.instance)) && jobs.some(j => {
+    if (j.last_failed_at == null || j.last_failed_at === '') return false;
+    const a = jobAcks(ad).get(`${String(ctx.instance)}|${String(j.name)}`);
+    return !(a && String(a.seen_state) === String(j.last_failed_at));
+  });
+  // the instance's name is read only where the sentence names it (a demo serve, an instance that is not the demo's);
+  // a failed read of the instance list leaves the sentence with 'this instance', never the page without its grid
+  const ackName = ackIsOff && ad.door
+    ? await fleet().then(f => String(f.instances.find(r => Number(r.instance_id) === Number(ctx.instance))?.name ?? 'this instance'), () => undefined) : undefined;
+  const ackWhyNot = ackIsOff ? ackWhy(ad, Number(ctx.instance), ackName) : null;
+  // the instance's name for the thresholds dialog on a demo serve (its words name the instance)
+  const doorName = ad.door ? ackName ?? await fleet().then(f => String(f.instances.find(r => Number(r.instance_id) === Number(ctx.instance))?.name ?? 'this instance'), () => undefined) : undefined;
+  const ackOffP = ackWhyNot ? el('p', { class: 'meta' }, `Acknowledge is off: ${ackWhyNot}`) : null;
+  if (ackOffP && !ad.door) ad.note = ackOffP;
   const ackRedraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   const th = await loadThresholds(Number(ctx.instance));
   const statusOf = new Map(rowsOf(th?.status).map(r => [`${String(r.scheduler)}|${String(r.job_id)}`, r]));
@@ -320,7 +360,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
       const x = st(r);
       if (r.dropped_at || !x) return '';
       const b = el('button', { class: 'link', type: 'button', 'aria-label': `Thresholds of ${String(r.name)}` }, 'Thresholds');
-      b.addEventListener('click', () => thresholdsDialog(Number(ctx.instance), String(r.name), t, ackRedraw));
+      b.addEventListener('click', () => thresholdsDialog(Number(ctx.instance), String(r.name), t, ackRedraw, ad, doorName));
       return el('span', { style: 'white-space:nowrap' },
         el('span', { title: x.reason ? String(x.reason) : `judged by the ${String(x.level)} level` }, statusWord(x) + (x.reason ? `: ${String(x.reason)}` : '')), ' ', b);
     },
@@ -340,7 +380,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     ...(th ? [statusCol(th)] : []),
     { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
-    { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), r.last_failed_at, ackRedraw) },
+    { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), r.last_failed_at, ackRedraw, ackOffP ?? undefined, ackName) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
     { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : 'status ok',
@@ -350,7 +390,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'changes', label: 'changed', num: true, fmt: (v, r) => Number(v) > 0 ? `${fmtNum(v)} (${fmtTime(r.last_change_at)})` : '' },
     ...extra,
   ];
-  box.append(grid(jobs, cols, 'No job on this server.'), detail);
+  box.append(...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
   if (jobs.length) detail.append(el('p', { class: 'meta' }, 'Pick a job for its history and its versions (the script, the diff, the job as it was).'));
   return box;
 }
@@ -409,9 +449,13 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     const findings = rowsOf(d.findings);
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
     if (running.length) sec.append(el('h3', {}, 'Running now'), grid(running, runningCols));
-    // Start and Stop ride the actions door: off, with the reason on the button, where the instance has none
+    // Start and Stop ride the actions door: where the instance has none they are off, with the reason said once above
+    // the grid (the column's offNote) and each button pointing at it
     const act = await mssqlJobCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange')));
-    sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]));
+    // the panel hands the column its rows before it draws: the sentence is read after it, so it stands only where a
+    // job's Start and Stop point at it
+    const jobsBox = await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]);
+    sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), ...(act.offNote ? [act.offNote] : []), jobsBox);
     sec.append(el('h3', {}, 'Failed runs in this range'), grid(failed, failedCols, 'No job failed in this range.'));
     // the steps of each job as last read, one disclosure per job: reachable by keyboard, named by the job
     const withSteps = jobs.filter(j => jsonRows(j.steps).length);

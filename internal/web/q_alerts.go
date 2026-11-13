@@ -245,22 +245,14 @@ func doorBody(r *http.Request, into any) error {
 // (at, payload) and answering {outcome, detail, <id>}; build adds the request's fields to the payload (an error = 400,
 // nothing called). The answer: 200 done, 409 refused (the store's reason), as /api/ack.
 func (s *Server) alertDoor(w http.ResponseWriter, r *http.Request, fn string, build func(ctx context.Context, pay map[string]any) error) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, s.ackOff())
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(why))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	pay := map[string]any{"ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"ui_user": user, "client": seat.client}
 	if err := build(ctx, pay); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -270,7 +262,11 @@ func (s *Server) alertDoor(w http.ResponseWriter, r *http.Request, fn string, bu
 	// the write outlives a client that hangs up (its audit row is kept), never the 15 s
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.`+fn+`($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	pool, ok := seat.poolFor(wctx, w, scopeOfAlertFn(fn, pay))
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.`+fn+`($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("alerts: not written", "fn", fn, "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return

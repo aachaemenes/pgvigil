@@ -95,11 +95,11 @@ func mustEvent(t *testing.T, doc string) *xeEvent {
 
 var fullCtx = xeContext{source: "product", session: "pgvigil_t_x", queryText: "full"}
 
-// Every event the printed script adds has a parser, in all three forms: a misspelt event name fails here instead of
+// Every event the printed script adds has a parser, in all four forms: a misspelt event name fails here instead of
 // dropping every event of that kind at the read.
 func TestXEScriptEventsHaveParsers(t *testing.T) {
 	added := regexp.MustCompile(`ADD EVENT sqlserver\.([a-z_]+)`)
-	for _, form := range []string{XEFormServer, XEFormAzureMI, XEFormAzureDB} {
+	for _, form := range []string{XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL} {
 		script, err := XEScript("t1", form)
 		if err != nil {
 			t.Fatal(err)
@@ -139,12 +139,21 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 		if strings.Count(script, "] "+scope+"\n") != 4 {
 			t.Errorf("%s: want four sessions created %s", form, scope)
 		}
-		if (form == XEFormServer) != strings.Contains(script, "package0.event_file") {
-			t.Errorf("%s: only the server form writes an event file", form)
+		if (form == XEFormServer || form == XEFormCloudSQL) != strings.Contains(script, "package0.event_file") {
+			t.Errorf("%s: only the server and Cloud SQL forms write an event file", form)
 		}
-		// the Managed Instance form is written from the documentation; the Azure SQL Database form is proven (scripts/proof-mssql-azuresqldb.sh)
-		if (form == XEFormAzureMI) != strings.Contains(script, "NOT PROVEN") {
-			t.Errorf("%s: only the Managed Instance form is marked not proven", form)
+		// Cloud SQL's file goes to the folder Google names; the server form's has no path (the server's log directory)
+		if (form == XEFormCloudSQL) != strings.Contains(script, "filename=N''/var/opt/mssql/xevents/pgvigil_t1_slow.xel''") {
+			t.Errorf("%s: the event file's path", form)
+		}
+		// Cloud SQL has no sp_configure and no database flag for the threshold: its advice says the session stays empty
+		if (form == XEFormCloudSQL) != strings.Contains(script, "offer no blocked process threshold, so this session stays empty there") ||
+			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") {
+			t.Errorf("%s: the blocked process threshold's advice", form)
+		}
+		// the Managed Instance and Cloud SQL forms are written from the documentation; the Azure SQL Database form is proven (scripts/proof-mssql-azuresqldb.sh)
+		if (form == XEFormAzureMI || form == XEFormCloudSQL) != strings.Contains(script, "NOT PROVEN") {
+			t.Errorf("%s: only the Managed Instance and Cloud SQL forms are marked not proven", form)
 		}
 		// Azure SQL Database has no server_principal_name action (Msg 25744): its form names the login by username
 		if (form == XEFormAzureDB) == strings.Contains(script, "server_principal_name") || (form == XEFormAzureDB) != strings.Contains(script, "sqlserver.username") {

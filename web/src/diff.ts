@@ -14,7 +14,7 @@ import type { Ctx } from './router';
 import { href, window_ } from './router';
 import { fleet } from './fleet';
 import { hashParam } from './dbinfo';
-import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 
 type Mode = 'i' | 't' | 'd';
 interface Picks { m: Mode; a?: number; b?: number; dba?: string; dbb?: string; ta?: string; tb?: string; all: boolean }
@@ -491,21 +491,25 @@ export function textDiffView(prev: string | undefined, cur: string, left: string
   const body = el('div');
   const draw = () => body.replaceChildren(mode === 'code' ? codeTable(cur) : mode === 'inline' ? inlineTable(d, left, right) : sideTable(d, left, right));
   const name = `tdiff-mode-${++diffSeq}`;
+  // the first version has nothing before it: 'side by side' and Copy left are off for that one reason, said once in
+  // the toolbar; both are described by it (the radio stays natively disabled: a form field)
+  const firstNote = prev === undefined ? el('span', { class: 'off-reason' }, 'the first version has nothing before it') : undefined;
   const seg = el('fieldset', { class: 'filters seg' }, el('legend', {}, 'View'), ...modeLabels.map(([k, label]) => {
     const id = `${name}-${k}`, rb = el('input', { type: 'radio', name, id, value: k });
     rb.checked = mode === k;
-    if (k === 'side' && prev === undefined) { rb.disabled = true; rb.title = 'the first version has nothing before it'; }
+    if (k === 'side' && firstNote) { offControl(rb, 'the first version has nothing before it', firstNote); rb.removeAttribute('aria-disabled'); rb.disabled = true; }
     rb.addEventListener('change', () => { if (!rb.checked) return; mode = k; try { localStorage.setItem(modeKey, k); } catch { /* private window */ } draw(); });
     return el('label', { for: id }, rb, ' ' + label);
   }));
   const said = el('span', { class: 'meta', role: 'status' });
   const copy = (label: string, text: string | undefined) => {
     const b = el('button', { type: 'button' }, label);
-    if (text === undefined) { b.disabled = true; b.title = 'the first version has nothing before it'; }
+    if (text === undefined && firstNote) offControl(b, 'the first version has nothing before it', firstNote);
+    else if (text === undefined) b.disabled = true;
     else b.addEventListener('click', () => { void copyText(text).then(ok => { said.textContent = ok ? `${label}: copied.` : `${label}: the browser refused the copy.`; }); });
     return b;
   };
-  box.append(el('div', { class: 'toolbar' }, seg, copy('Copy left', prev), copy('Copy right', cur),
+  box.append(el('div', { class: 'toolbar' }, seg, copy('Copy left', prev), copy('Copy right', cur), ...(firstNote ? [firstNote] : []),
     el('span', { class: 'meta' }, prev === undefined ? `${fmtNum(n.added)} line(s)` : n.added + n.removed === 0 ? 'the two scripts are the same'
       : `${fmtNum(n.added)} line(s) added, ${fmtNum(n.removed)} removed`), said), body);
   draw();

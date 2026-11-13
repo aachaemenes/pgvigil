@@ -42,6 +42,13 @@ const dbadash = {
   'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
   'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
   'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
+  // PostgreSQL's own names of five of DBA Dash's columns (B7 DONE-3, the pgLabel item: web/src/fleet.ts labelOf): a
+  // PostgreSQL row's cell is named so (its aria-label) on every scope, and a scope with no SQL Server names its column so
+  'Crash restarts':      { postgres: ['pgstate'], dd: 'Memory Dump (PostgreSQL: its crash restarts) -> the instance\'s Server state' },
+  'Last amcheck':        { postgres: ['corruption'], dd: 'Last Good Check DB (PostgreSQL: amcheck) -> the Corruption page' },
+  'WAL archive':         { postgres: ['backups'], dd: 'Backup LOG (PostgreSQL: the WAL archiver) -> HA/DR > Backups' },
+  'Jobs':                { postgres: ['jobsreport', 'jobs'], dd: 'Agent Jobs (PostgreSQL: pg_cron and pgAgent) -> Jobs > Job Status' },
+  'Replication':         { postgres: ['replication'], dd: 'Availability Groups (PostgreSQL: replication) -> HA/DR' },
   // QS is SQL Server's Query Store alone (a QS link on a PostgreSQL instance FAILS: 'the column has no read there');
   // PostgreSQL's statement store has its own column, which SQL Server has no cell in
   'QS':                  { sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS' },
@@ -58,13 +65,15 @@ const dbadash = {
 // the differences named (pgvigil lands elsewhere, argued in the report): column -> words
 const named = {};
 // DBA Dash's cells that are text, not links (Checks/Summary.cs: no tab, no dialog)
-const plainColumns = ['Memory Dump', 'Is Agent Running', 'DB Mail'];
+const plainColumns = ['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB Mail'];
 // Instance Uptime: DBA Dash's Summary opens the Instance Uptime threshold dialog over the grid; the click must too
 const dialogColumns = new Set(['Instance Uptime']);
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
   'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
-  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom' };
+  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
+  // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
+  'Last amcheck': 'corruption', 'WAL archive': 'backups', 'Jobs': 'jobs', 'Replication': 'pgreplication' };
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
 const ddOrder = ['Instance', 'Memory Dump', 'Corruption', 'Last Good Check DB', 'SQL Agent Alerts', 'Backup FULL', 'Backup DIFF', 'Backup LOG', 'Drive Space',
   'Agent Jobs', 'Is Agent Running', 'Log Shipping', 'Mirroring', 'Availability Groups', 'Log Space', 'File Space', '% Max Size', 'Elastic Pool Storage', 'QS',
@@ -396,7 +405,8 @@ for (const s of storageScopes.slice(2)) {
 }
 
 // P (task 177 D29): PerformanceMonitor's links and buttons on pgvigil - the instance header's name, the Summary
-// row's Silence button (the demo serves without the UI login: it is drawn off, with why), the calendar's month
+// row's Silence button (on for an instance the demo's write door carries: its confirm opens; anywhere else it is off -
+// aria-disabled, never the disabled attribute - with its reason as visible words it is described by), the calendar's month
 // buttons, a day and its drills (each to its page over that UTC day), Show as table, and the Performance page's zoom
 // chip (its x back to the range before the zoom), on an instance of each engine
 const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: 'pm', column, engine, link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
@@ -405,11 +415,14 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const sb = await ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => t.querySelector('td')?.textContent.trim() === ${JSON.stringify(pg.name)});
       const b = tr && [...tr.querySelectorAll('button')].find(x => /^(Silence|Unsilence)$/.test(x.textContent));
       if (!b) return null; const was = location.hash; b.click(); const d = document.querySelector('dialog[open]');
-      const out = { text: b.textContent, aria: b.getAttribute('aria-label'), disabled: b.disabled, title: b.title, dialog: d ? (d.querySelector('h3,h2')?.textContent ?? d.textContent.slice(0, 80)) : '', moved: location.hash !== was };
+      // off = aria-disabled (ui.ts offControl), its reason the visible words it is described by; a click on it does nothing
+      const n = b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+      const out = { text: b.textContent, aria: b.getAttribute('aria-label'), off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled,
+        words: n && n.offsetParent !== null ? n.textContent.trim() : '', dialog: d ? (d.querySelector('h3,h2')?.textContent ?? d.textContent.slice(0, 80)) : '', moved: location.hash !== was };
       if (d) { d.close(); d.remove(); } return out; })()`);
-    pm('root', 'Silence (Summary row)', 'postgres', sb ? `${sb.text}: ${sb.disabled ? `off - ${sb.title}` : `dialog '${sb.dialog}'`}` : 'no button',
-      !!sb && !sb.moved && sb.aria === `Silence all alerts for '${pg.name}'` && (sb.disabled ? sb.title.length > 0 : sb.dialog.startsWith(`Silence all alerts for '${pg.name}'?`)),
-      "PerformanceMonitor's Silence on the server's row: its confirm, or off with why");
+    pm('root', 'Silence (Summary row)', 'postgres', sb ? `${sb.text}: ${sb.off ? `off - ${sb.words || 'NO words on the page'}` : `dialog '${sb.dialog}'`}${sb.disabledAttr ? ' (the disabled attribute is set)' : ''}` : 'no button',
+      !!sb && !sb.moved && !sb.disabledAttr && sb.aria === `Silence all alerts for '${pg.name}'` && (sb.off ? sb.words.length > 0 && sb.dialog === '' : sb.dialog.startsWith(`Silence all alerts for '${pg.name}'?`)),
+      "PerformanceMonitor's Silence on the server's row: its confirm, or off (aria-disabled) with its reason in words");
   } else pm('root', 'Silence (Summary row)', 'postgres', 'the Summary did not draw', false, 'the Summary did not draw');
   for (const [inst, eng] of [[ms, 'sqlserver'], [pg, 'postgres']]) {
     const home = `#/summary?i=${inst.instance_id}`;
@@ -426,13 +439,17 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const monthOf = () => ev(`document.querySelector('main .healthcal-month')?.textContent ?? ''`);
     const clickNav = async (name) => { await ev(`[...document.querySelectorAll('main .healthcal-nav button')].find(b => (b.getAttribute('aria-label') ?? b.textContent) === ${JSON.stringify(name)})?.click()`); for (let i = 0; i < 30 && await ev(`!!document.querySelector('main .healthcal-body p.meta') && /^Loading/.test(document.querySelector('main .healthcal-body p.meta').textContent)`); i++) await sleep(100); await sleep(200); };
     const m0 = await monthOf();
-    const nextOff = await ev(`[...document.querySelectorAll('main .healthcal-nav button')].find(b => b.getAttribute('aria-label') === 'Next month')?.disabled ?? null`);
+    // Next month on the current month: off - aria-disabled, never the disabled attribute - and described by visible words
+    const nextOff = await ev(`(() => { const b = [...document.querySelectorAll('main .healthcal-nav button')].find(x => x.getAttribute('aria-label') === 'Next month'); if (!b) return null;
+      const n = b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+      return { off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled, words: n && n.offsetParent !== null ? n.textContent.trim() : '' }; })()`);
     await clickNav('Previous month'); const m1 = await monthOf();
     const back = await ev(`!![...document.querySelectorAll('main .healthcal-nav button')].find(b => b.getAttribute('aria-label') === 'Back to this month')`);
     await clickNav('Next month'); const m2 = await monthOf();
     await clickNav('Previous month'); await clickNav('Back to this month'); const m3 = await monthOf();
-    pm(`${eng} ${inst.name}`, 'calendar months', eng, `${m0} -> ${m1} -> ${m2}; This month -> ${m3}`, nextOff === true && m1 !== m0 && back && m2 === m0 && m3 === m0,
-      'Previous / Next month (Next off on this month), This month only away from it');
+    pm(`${eng} ${inst.name}`, 'calendar months', eng, `${m0} -> ${m1} -> ${m2}; This month -> ${m3}; Next on this month: ${JSON.stringify(nextOff)}`,
+      !!nextOff && nextOff.off && !nextOff.disabledAttr && nextOff.words === 'this is the current month' && m1 !== m0 && back && m2 === m0 && m3 === m0,
+      "Previous / Next month (Next off on this month, saying 'this is the current month'), This month only away from it");
     await clickNav('Show as table');
     const tb = await ev(`({ grid: !!document.querySelector('main .healthcal-body table.grid, main .healthcal-body p.empty'), next: [...document.querySelectorAll('main .healthcal-nav button')].find(b => /Show as/.test(b.textContent))?.textContent })`);
     await clickNav('Show as calendar');
