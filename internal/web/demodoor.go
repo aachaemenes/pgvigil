@@ -10,8 +10,8 @@ package web
 //	         another instance of the same repository, whatever its tags say
 //	what     an acknowledgement, a note, a close, a silence, a blackout, a mute or a known pattern of ONE instance or
 //	         ONE alert, a dismiss, and a threshold or a job exclusion at the instance level or below
-//	never    a write wider than one instance (a root or tag level, a rule on every instance), Send test, and every
-//	         route this file does not name - each refused in words
+//	never    a write wider than one instance (a root or tag level, a rule on every instance), a level its route does
+//	         not write at, Send test, and every route this file does not name - each refused in words
 //
 // One path: the door calls the same import_ functions with the same payloads as a serve does, on a small pool of its
 // own on the demo's repository login. A handler asks seat() who writes, then asks that seat for the pool with the
@@ -46,7 +46,10 @@ const (
 	doorClient = "demo door"
 	// doorOff is what the UI is told where it asks whether writes are possible: on a demo serve 'writable' stays
 	// false with these words, and the door's instances are named beside them
-	doorOff = "this is pgvigil demo -serve: acknowledgements are saved as user demo on the demo's own instances; anything else needs pgvigil serve with a signed-in user"
+	doorOff = "this is pgvigil demo -serve: acknowledgements are saved as user demo, on the demo's own instances only; a change wider than one instance, or one that reaches a server, needs pgvigil serve with a signed-in user"
+	// doorNoInstance: an alert whose alert_state row names no instance - a repository-wide alert, or one whose instance
+	// was removed (the delete nulls its id)
+	doorNoInstance = "this alert names no instance that exists (a repository-wide alert, or one whose instance was removed): it is not changed through the demo"
 )
 
 // doorRoute names a write route for the door's allow-list.
@@ -98,9 +101,12 @@ type doorRow struct {
 type doorLookup interface {
 	instance(ctx context.Context, id int) (doorInstance, bool, error)
 	instanceByName(ctx context.Context, name string) (int, bool, error)
-	// findingInstance: the instance of an alert by its key; (0, true) = an alert of no instance (repository-wide)
+	// findingInstance: the instance of an alert by its key; (0, true) = an alert of no instance (repository-wide, or
+	// its instance was removed)
 	findingInstance(ctx context.Context, key string) (int, bool, error)
 	row(ctx context.Context, ref doorRowRef) (doorRow, bool, error)
+	// demoInstances: of ids, those that still carry the tag 'demo' and a name under prefix, in ascending order
+	demoInstances(ctx context.Context, ids []int, prefix string) ([]int, error)
 }
 
 type demoDoor struct {
@@ -108,6 +114,16 @@ type demoDoor struct {
 	ids    map[int]bool
 	prefix string
 	look   doorLookup
+}
+
+// doorLevels: the levels a threshold or an exclusion is written at through the door, by route - one instance or
+// below it, from each function's own list (0111, 0117, 0094, 0102) without its root and tag. A level this list does
+// not name for its route is refused: another case, a level of another route, none.
+var doorLevels = map[doorRoute][]string{
+	doorDriveThreshold: {"instance", "drive"},
+	doorPgThreshold:    {"instance", "database"},
+	doorJobThreshold:   {"instance", "job"},
+	doorJobExclusion:   {"instance"},
 }
 
 func doorWide(what string) string {
@@ -132,6 +148,20 @@ func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 	case "tag":
 		return doorWide("a tag '" + sc.Tag + "'"), nil
 	}
+	// a threshold or an exclusion written by its level (an exclusion's end goes by its row): the level is one of the
+	// route's own, and such a level names an instance
+	if levels, byLevel := doorLevels[sc.Route]; byLevel && sc.Row == nil {
+		known := false
+		for _, l := range levels {
+			known = known || l == sc.Level
+		}
+		if !known {
+			return fmt.Sprintf("'%s' is not a level the demo writes at (%s): nothing was written", sc.Level, strings.Join(levels, ", ")), nil
+		}
+		if sc.InstanceID <= 0 {
+			return "a " + sc.Level + " level names one instance: instance_id is missing or not a number, nothing was written", nil
+		}
+	}
 	want := map[int]bool{}
 	if sc.InstanceID > 0 {
 		want[sc.InstanceID] = true
@@ -144,7 +174,7 @@ func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 		case !ok:
 			return "no alert has this key: nothing was written", nil
 		case id == 0:
-			return doorWide("a repository-wide"), nil
+			return doorNoInstance, nil
 		case sc.InstanceID > 0 && id != sc.InstanceID:
 			return "the alert belongs to another instance than the one named: nothing was written", nil
 		}
@@ -214,7 +244,7 @@ func (d *demoDoor) rowInstances(ctx context.Context, r doorRow, want map[int]boo
 		case err != nil:
 			return "", err
 		case ok && id == 0:
-			return doorWide("a repository-wide"), nil
+			return doorNoInstance, nil
 		case ok:
 			want[id] = true
 			n++
@@ -337,8 +367,10 @@ func (d *demoDoor) close() {
 	}
 }
 
-// doorInfo is what the UI is told of the door: its user and its instances; nil on a serve.
-func (s *Server) doorInfo() map[string]any {
+// doorInfo is what the UI is told of the door: its user and the instances it would write for now - seeded by this
+// process AND still tagged demo AND still under the demo's prefix, the rule of allow, so a control is never on for an
+// instance the door would refuse. A store that does not answer names none. nil on a serve.
+func (s *Server) doorInfo(ctx context.Context) map[string]any {
 	if s.demo == nil {
 		return nil
 	}
@@ -347,7 +379,15 @@ func (s *Server) doorInfo() map[string]any {
 		ids = append(ids, id)
 	}
 	sort.Ints(ids)
-	return map[string]any{"user": doorUser, "instances": ids}
+	live, err := s.demo.look.demoInstances(ctx, ids, s.demo.prefix)
+	if err != nil {
+		s.log.Error("demo door: its instances were not read", "err", err)
+		live = nil
+	}
+	if live == nil {
+		live = []int{}
+	}
+	return map[string]any{"user": doorUser, "instances": live}
 }
 
 // writeSeat is who writes for one request.
@@ -443,6 +483,15 @@ func (l pgDoorLookup) findingInstance(ctx context.Context, key string) (int, boo
 		return 0, true, nil
 	}
 	return *id, true, nil
+}
+
+func (l pgDoorLookup) demoInstances(ctx context.Context, ids []int, prefix string) ([]int, error) {
+	rows, err := l.pool.Query(ctx, `SELECT instance_id FROM pgvigil.instances
+ WHERE instance_id = ANY ($1::int[]) AND 'demo' = ANY (tags) AND starts_with(name, $2) ORDER BY instance_id`, ids, prefix)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int])
 }
 
 func (l pgDoorLookup) row(ctx context.Context, ref doorRowRef) (doorRow, bool, error) {

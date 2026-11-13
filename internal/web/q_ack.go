@@ -324,7 +324,7 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 	if s.auth != nil {
 		out["user"] = s.sessionUser(r)
 	}
-	if d := s.doorInfo(); d != nil {
+	if d := s.doorInfo(r.Context()); d != nil {
 		// a demo serve: writable stays false, and the door names its user and the instances it writes for
 		out["door"] = d
 	}

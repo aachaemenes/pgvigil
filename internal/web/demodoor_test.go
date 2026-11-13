@@ -2,10 +2,16 @@ package web
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // fakeDoorStore is the repository as the door's scope rule reads it: instances, the open alerts' keys and the stored
@@ -14,14 +20,23 @@ type fakeDoorStore struct {
 	inst    map[int]doorInstance
 	finding map[string]int
 	rows    map[doorRowRef]doorRow
+	fail    string // the lookup that cannot be read: its name, "" = none
 }
 
+var errStoreDown = errors.New("the store did not answer")
+
 func (f fakeDoorStore) instance(_ context.Context, id int) (doorInstance, bool, error) {
+	if f.fail == "instance" {
+		return doorInstance{}, false, errStoreDown
+	}
 	i, ok := f.inst[id]
 	return i, ok, nil
 }
 
 func (f fakeDoorStore) instanceByName(_ context.Context, name string) (int, bool, error) {
+	if f.fail == "instanceByName" {
+		return 0, false, errStoreDown
+	}
 	for id, i := range f.inst {
 		if i.Name == name {
 			return id, true, nil
@@ -31,13 +46,32 @@ func (f fakeDoorStore) instanceByName(_ context.Context, name string) (int, bool
 }
 
 func (f fakeDoorStore) findingInstance(_ context.Context, key string) (int, bool, error) {
+	if f.fail == "findingInstance" {
+		return 0, false, errStoreDown
+	}
 	id, ok := f.finding[key]
 	return id, ok, nil
 }
 
 func (f fakeDoorStore) row(_ context.Context, ref doorRowRef) (doorRow, bool, error) {
+	if f.fail == "row" {
+		return doorRow{}, false, errStoreDown
+	}
 	r, ok := f.rows[ref]
 	return r, ok, nil
+}
+
+func (f fakeDoorStore) demoInstances(_ context.Context, ids []int, prefix string) ([]int, error) {
+	if f.fail == "demoInstances" {
+		return nil, errStoreDown
+	}
+	out := []int{}
+	for _, id := range ids {
+		if i, ok := f.inst[id]; ok && i.DemoTag && strings.HasPrefix(i.Name, prefix) {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 func intp(i int) *int { return &i }
@@ -66,6 +100,7 @@ func TestDemoDoorScope(t *testing.T) {
 			{"acks", 14}:             {InstanceName: "gone-server"},                      // its instance was removed
 			{"acks", 15}:             {InstanceID: intp(1), FindingKey: "k-prod"},        // a demo id on a real instance's alert
 			{"acks", 16}:             {InstanceID: intp(1), FindingKey: "k-cleared"},     // its alert is no longer in alert_state
+			{"acks", 17}:             {InstanceID: intp(1), FindingKey: "k-repo"},        // a demo id on an alert of no instance
 			{"alert_dismissals", 20}: {FindingKey: "k-demo1"},
 			{"alert_dismissals", 21}: {FindingKey: "k-prod"},
 			{"job_exclusions", 30}:   {InstanceID: intp(2)},
@@ -74,6 +109,7 @@ func TestDemoDoorScope(t *testing.T) {
 	}
 	d := &demoDoor{ids: map[int]bool{1: true, 2: true, 5: true, 6: true}, prefix: "demo-", look: store}
 	const notDemo, wide = "is not one of this demo's instances", "would reach past the demo's instances"
+	const noInstance, noLevel, oneInstance = "names no instance that exists", "is not a level the demo writes at", "level names one instance: instance_id is missing or not a number"
 	for _, c := range []struct {
 		name string
 		sc   writeScope
@@ -90,7 +126,7 @@ func TestDemoDoorScope(t *testing.T) {
 		{"the key and the instance agree", writeScope{Route: doorAck, InstanceID: 1, FindingKey: "k-demo1"}, ""},
 		{"a real instance's alert key with a demo instance id", writeScope{Route: doorAck, InstanceID: 1, FindingKey: "k-prod"}, "belongs to another instance"},
 		{"a real instance's alert key alone", writeScope{Route: doorDismiss, FindingKey: "k-prod"}, "prod-db1 " + notDemo},
-		{"an alert of no instance (repository-wide)", writeScope{Route: doorAck, FindingKey: "k-repo"}, "a repository-wide change " + wide},
+		{"an alert of no instance (repository-wide, or its instance removed)", writeScope{Route: doorAck, FindingKey: "k-repo"}, noInstance},
 		{"a key no alert holds", writeScope{Route: doorDismiss, FindingKey: "k-nothing"}, "no alert has this key"},
 		{"a rule that names no instance and no alert", writeScope{Route: doorAck}, "an every-instance change " + wide},
 		{"a rule by tag", writeScope{Route: doorAck, Tag: "env:prod"}, "a tag 'env:prod' change " + wide},
@@ -101,7 +137,14 @@ func TestDemoDoorScope(t *testing.T) {
 		{"an instance threshold", writeScope{Route: doorDriveThreshold, Level: "instance", InstanceID: 1}, ""},
 		{"a drive threshold", writeScope{Route: doorDriveThreshold, Level: "drive", InstanceID: 2}, ""},
 		{"a database threshold on a real instance", writeScope{Route: doorPgThreshold, Level: "database", InstanceID: 3}, "prod-db1 " + notDemo},
-		{"a threshold level that names no instance", writeScope{Route: doorJobThreshold, Level: "job"}, "an every-instance change " + wide},
+		{"a threshold level that names no instance", writeScope{Route: doorJobThreshold, Level: "job"}, "a job " + oneInstance},
+		{"a level of another route (a drive level on a job threshold)", writeScope{Route: doorJobThreshold, Level: "drive", InstanceID: 1}, "'drive' " + noLevel},
+		{"a level in another case", writeScope{Route: doorDriveThreshold, Level: "Root", InstanceID: 1}, "'Root' " + noLevel},
+		{"a level no function knows", writeScope{Route: doorPgThreshold, Level: "fleet", InstanceID: 1}, "'fleet' " + noLevel},
+		{"a threshold without a level", writeScope{Route: doorDriveThreshold, InstanceID: 1}, "'' " + noLevel},
+		{"a database threshold on a seeded instance", writeScope{Route: doorPgThreshold, Level: "database", InstanceID: 2}, ""},
+		{"a job threshold on a seeded instance", writeScope{Route: doorJobThreshold, Level: "job", InstanceID: 1}, ""},
+		{"a job level on an exclusion (root or instance only)", writeScope{Route: doorJobExclusion, Level: "job", InstanceID: 1}, "'job' " + noLevel},
 		{"a root job exclusion", writeScope{Route: doorJobExclusion, Level: "root"}, "a root change " + wide},
 		{"an instance's job exclusion", writeScope{Route: doorJobExclusion, Level: "instance", InstanceID: 2}, ""},
 		{"the end of a seeded instance's row", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 10}}, ""},
@@ -112,6 +155,7 @@ func TestDemoDoorScope(t *testing.T) {
 		{"the end of a row with a demo id on a real alert", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 15}}, "prod-db1 " + notDemo},
 		{"the end of a row whose alert is gone", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 16}}, ""},
 		{"the end of a row that does not exist", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 404}}, "no such row 404"},
+		{"the end of a row with a demo id on an alert of no instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 17}}, noInstance},
 		{"an undismiss of a seeded instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 20}}, ""},
 		{"an undismiss of a real instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 21}}, "prod-db1 " + notDemo},
 		{"the end of an instance's exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 30}}, ""},
@@ -193,6 +237,16 @@ func TestSeatOnDemo(t *testing.T) {
 	if _, why, err := seat.pool(context.Background(), writeScope{Route: doorAck, InstanceID: 1}); err != nil || why != "" {
 		t.Errorf("a seeded instance through the demo's seat: why %q, err %v", why, err)
 	}
+	// the door's pool is its own: with an actions door standing beside it (two pools never opened, told apart by their
+	// address) an allowed write gets the door's and a refused one gets none - never the audit login's
+	audit, door := new(pgxpool.Pool), new(pgxpool.Pool)
+	s.actions, s.demo.pool = &Actions{audit: audit}, door
+	if p, why, err := seat.pool(context.Background(), writeScope{Route: doorAck, InstanceID: 1}); p != door || why != "" || err != nil {
+		t.Errorf("an allowed write's pool: the door's own %v (the audit login's %v), why %q, err %v", p == door, p == audit, why, err)
+	}
+	if p, _, _ := seat.pool(context.Background(), writeScope{Route: doorAck, InstanceID: 3}); p != nil {
+		t.Errorf("a refused write got a pool (the audit login's: %v)", p == audit)
+	}
 	if _, why, _ := seat.pool(context.Background(), writeScope{}); why == "" {
 		t.Error("a write that names no route and no scope got the demo's pool")
 	}
@@ -236,5 +290,68 @@ func TestDoorScopeReaders(t *testing.T) {
 		if g != c.want || gr != c.row {
 			t.Errorf("%s: got %+v row %+v, want %+v row %+v", c.name, g, gr, c.want, c.row)
 		}
+	}
+}
+
+// TestDoorStoreError: a scope that cannot be read is never an allowed write - each of the door's lookups failing gives
+// an error and no pool, and the handler's poolFor answers 500 'nothing was written'.
+func TestDoorStoreError(t *testing.T) {
+	base := fakeDoorStore{
+		inst:    map[int]doorInstance{1: {Name: "demo-pg01", DemoTag: true}},
+		finding: map[string]int{"k-demo1": 1},
+		rows:    map[doorRowRef]doorRow{{"acks", 10}: {InstanceID: intp(1)}, {"acks", 13}: {InstanceName: "demo-pg01", FindingKey: "k-demo1"}},
+	}
+	for _, c := range []struct {
+		fail string
+		sc   writeScope // a scope the door allows when the store answers, and that reads the failing lookup
+	}{
+		{"instance", writeScope{Route: doorAck, InstanceID: 1}},
+		{"findingInstance", writeScope{Route: doorAck, FindingKey: "k-demo1"}},
+		{"row", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 10}}},
+		{"instanceByName", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 13}}},
+		{"findingInstance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 13}}},
+	} {
+		up := &demoDoor{ids: map[int]bool{1: true}, prefix: "demo-", look: base, pool: new(pgxpool.Pool)}
+		if why, err := up.allow(context.Background(), c.sc); why != "" || err != nil {
+			t.Errorf("%s: the scope is refused while the store answers (%q, %v): the row proves nothing", c.fail, why, err)
+			continue
+		}
+		down := base
+		down.fail = c.fail
+		s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil)), demo: &demoDoor{ids: map[int]bool{1: true}, prefix: "demo-", look: down, pool: new(pgxpool.Pool)}}
+		if why, err := s.demo.allow(context.Background(), c.sc); err == nil {
+			t.Errorf("%s down: allow answered %q without an error", c.fail, why)
+		}
+		seat := writeSeat{s: s, user: doorUser, client: doorClient}
+		if p, why, err := seat.pool(context.Background(), c.sc); p != nil || why != "" || !errors.Is(err, errStoreDown) {
+			t.Errorf("%s down: a pool %v, why %q, err %v (want no pool and the store's error)", c.fail, p != nil, why, err)
+		}
+		w := httptest.NewRecorder()
+		if p, ok := seat.poolFor(context.Background(), w, c.sc); ok || p != nil || w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "nothing was written") {
+			t.Errorf("%s down: poolFor ok %v, %d %s (want 500 'nothing was written')", c.fail, ok, w.Code, strings.TrimSpace(w.Body.String()))
+		}
+	}
+}
+
+// TestDoorInfo: the page is told only the instances the door would write for now - seeded here AND still tagged demo
+// AND still under the demo's prefix; a store that does not answer names none (every control off, in words).
+func TestDoorInfo(t *testing.T) {
+	store := fakeDoorStore{inst: map[int]doorInstance{
+		1: {Name: "demo-pg01", DemoTag: true}, 2: {Name: "demo-pg02", DemoTag: true},
+		5: {Name: "demo-pg05", DemoTag: false}, // claimed by a real collector since
+		6: {Name: "erp-main", DemoTag: true},   // renamed since
+		7: {Name: "demo-pg07", DemoTag: true},  // never seeded by this process
+	}}
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil)), demo: &demoDoor{ids: map[int]bool{1: true, 2: true, 5: true, 6: true}, prefix: "demo-", look: store}}
+	if got := s.doorInfo(context.Background()); got["user"] != "demo" || !reflect.DeepEqual(got["instances"], []int{1, 2}) {
+		t.Errorf("the door as the page is told: %v (want user demo, instances [1 2])", got)
+	}
+	store.fail = "demoInstances"
+	s.demo.look = store
+	if got := s.doorInfo(context.Background()); !reflect.DeepEqual(got["instances"], []int{}) {
+		t.Errorf("the store down: the page is told %v (want no instance)", got["instances"])
+	}
+	if got := (&Server{}).doorInfo(context.Background()); got != nil {
+		t.Errorf("a serve is told of a door: %v", got)
 	}
 }
