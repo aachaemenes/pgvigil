@@ -333,7 +333,7 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
     // a size column of one unit (E2-15): every size in it a number of that unit under '0.0" MB"' (as many decimals as the
     // page writes); a column the page writes in more than one unit keeps its words (a sum over mixed units is wrong)
     for (let j = 0; j < head.length; j++) {
-      const at = rows.map((r, i) => i).filter(i => rows[i][j] && String(rows[i][j].v) !== '');
+      const at = rows.map((_, i) => i).filter(i => rows[i][j] && String(rows[i][j].v) !== '');
       const sz = at.map(i => sizes[i][j] !== undefined ? sizeOf(String(rows[i][j].v)) : undefined);
       if (!at.length || sz.some(s => !s) || new Set(sz.map(s => s!.unit)).size !== 1) continue;
       at.forEach((i, n) => {
