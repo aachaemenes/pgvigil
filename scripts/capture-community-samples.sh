@@ -315,7 +315,7 @@ sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS n
 echo "ok   the chain released"
 ms sp_Blitz "" '{"@CheckServerInfo":"1"}' "$FRK"
 ms sp_BlitzCache "" '{}' "$FRK"
-ms sp_BlitzIndex "" '{"@DatabaseName":"Sales"}' "$FRK"
+ms sp_BlitzIndex "" '{"@DatabaseName":"Sales","@Mode":"4"}' "$FRK"
 ms sp_BlitzLock "" '{}' "$FRK"
 ms sp_QuickieStore "" '{"@database_name":"Sales"}' "$(dar sp_QuickieStore)"
 ms sp_HealthParser "" '{}' "$(dar sp_HealthParser)"
