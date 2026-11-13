@@ -8,13 +8,15 @@
 // page sets side by side (two charts, a card beside a grid) are stacked, and a line says so.
 // A block the page does not show (display none, visibility hidden, a visually-hidden note, a closed disclosure's
 // content) is not on this sheet; a grid in it keeps its own sheet (export.ts walk).
-import type { Cell, Look, Meta } from './export';
-import { cellWords, headingText, textPx, timeZone, typed } from './export';
+import type { Cell, Look, Meta, Section } from './export';
+import { cellWords, chartSection, headingText, textPx, timeZone, typed } from './export';
+import { pictureOf, pngBytes, SCALE } from './export_chart';
+import type { Placed } from './export_chart';
 import { stamp } from './tz';
 import { borderLeftOf, paintOf, textLook } from './export_colours';
 import { gridModel } from './ui';
 
-export interface PageSheet { name: string; rows: Cell[][]; widths: number[]; freeze: number }
+export interface PageSheet { name: string; rows: Cell[][]; widths: number[]; freeze: number; pictures: Placed[]; charts: Section[] }   // charts: each picture's numbers, the sheets after the grids'
 
 const flat = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 const CONTROL = 'button, input, select, textarea, label, nav, form, [role=tablist], [role=toolbar], .seg, .subtabs, .filter-btn, .whatis, .chart-menu, .toolbar';
@@ -34,6 +36,21 @@ function seen(e: Element): 'no' | 'yes' | 'contents' {
 
 // ---- a cell's look: the page's CSS for the cell and its marks ------------------------------------------------
 const BADGE = '.badge';
+// pageLines: the lines the page draws an element's words on - its text nodes' own line boxes, grouped by their place
+// (a td's box is as tall as its row, so its height says nothing of its words)
+export function pageLines(e: Element): number {
+  const doc = e.ownerDocument, w = doc.createTreeWalker(e, 4);   // NodeFilter.SHOW_TEXT
+  const rs: DOMRect[] = [];
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    if (!n.textContent?.trim()) continue;
+    const r = doc.createRange(); r.selectNodeContents(n);
+    rs.push(...[...r.getClientRects()].filter(x => x.width > 0 && x.height > 0));
+  }
+  rs.sort((a, b) => a.top - b.top);
+  let lines = 0, bottom = -Infinity;
+  for (const x of rs) if (x.top >= bottom - 2) { lines++; bottom = x.bottom; } else bottom = Math.max(bottom, x.bottom);
+  return lines;
+}
 // firstText: the element holding the first words the cell shows (the one the eye reads), the cell itself when its own
 // text comes first
 function firstText(td: Element): Element {
@@ -89,11 +106,11 @@ export function cellLook(td: Element, table: Element, cache?: LookCache): CellLo
   cache?.set(key, out);
   return out;
 }
-// headLook: a header cell's look (the page's th: its fill, white text, its weight), wrapped as the page wraps it, in the
+// headLook: a header cell's look (the page's th: its fill, white text, its weight), wrapped when the page wraps it, in the
 // middle of its row as the page sets it (app.css '.grid > thead th' vertical-align: middle)
 export function headLook(th: Element, table: Element): Look {
   const p = paintOf(th, table), l = textLook(th.querySelector('.th-label') ?? th, th);
-  return { ...(p.fill ? { fill: p.fill } : {}), color: p.text, ...(l.bold ? { bold: true } : {}), wrap: true, valign: 'middle' };
+  return { ...(p.fill ? { fill: p.fill } : {}), color: p.text, ...(l.bold ? { bold: true } : {}), ...(pageLines(th.querySelector('.th-label') ?? th) > 1 ? { wrap: true } : {}), valign: 'middle' };
 }
 // gridHeadLook: the look the page gives a grid's header cell, for a sheet whose header row is the export's own (a
 // property card's 'item | value': the page draws no header over a card): a probe header in the page, read and removed
@@ -201,7 +218,7 @@ function flow(row: Cell[], widths: number[]): Cell[] {
 }
 
 // ---- the walk ----------------------------------------------------------------------------------------------
-interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[] }; flow?: boolean; cards?: number[]; label?: number }
+interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[] }; flow?: boolean; cards?: number[]; label?: number; pic?: Omit<Placed, 'row' | 'col'> }
 const txt = (v: string, look: Look = {}): Cell => ({ v, kind: 'text', text: v, look });
 
 // pageSheet: the page sheet of #main (root), for the grids `grids` (export.ts walk's elements, in sheet order:
@@ -209,6 +226,7 @@ const txt = (v: string, look: Look = {}): Cell => ({ v, kind: 'text', text: v, l
 // by `sheets` (export.ts resolves both once the sheets are named)
 export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new Map<Element, LookCache>()): PageSheet {
   const blocks: Block[] = [];
+  const charts: Section[] = [];
   const muted = (e: Element) => paintOf(e, root).text;
   // the page's muted text colour (--text-muted), read from a probe in the page and removed in the same task
   const probe = root.ownerDocument.createElement('span');
@@ -237,9 +255,7 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
         const v: Cell = ty.kind === 'int' || ty.kind === 'dec' ? { v: ty.v, kind: ty.kind, text: words } : { v: words, kind: 'text', text: words };
         const l = cellLook(td, t, lc);
         // a cell the page shows on more than one line wraps on the sheet too (its row as tall as its lines)
-        const cs = getComputedStyle(td), lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
-        const inner = td.getBoundingClientRect().height - parseFloat(cs.paddingTop || '0') - parseFloat(cs.paddingBottom || '0');
-        return withDot({ ...v, look: inner > lh * 1.5 ? { ...l.look, wrap: true } : l.look }, l);
+        return withDot({ ...v, look: pageLines(td) > 1 ? { ...l.look, wrap: true } : l.look }, l);
       });
     });
     const out: Cell[][] = [head, ...rows];
@@ -261,7 +277,7 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
     const cell = (x: Element | null) => {
       if (!x) return txt('');
       const l = cellLook(x, t), w = cellWords(x);
-      return withDot({ ...txt(w), look: l.look }, l);
+      return withDot({ ...txt(w), look: pageLines(x) > 1 ? { ...l.look, wrap: true } : l.look }, l);
     };
     return [cell(th), cell(td)];
   });
@@ -283,15 +299,16 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
       const cols = band.items.sort((a, b) => a.r.left - b.r.left).map(({ x, r }, j) => {
         cardW[j] = Math.max(cardW[j] ?? 0, Math.min(40, Math.max(12, Math.round(r.width / 7 * 100) / 100)));
         const card = paintOf(x, x.parentElement), stripe = borderLeftOf(x);
-        const frame: Look = { ...(card.fill ? { fill: card.fill } : {}), ...(stripe ? { border: stripe } : {}), wrap: true };
+        const frame: Look = { ...(card.fill ? { fill: card.fill } : {}), ...(stripe ? { border: stripe } : {}) };
         const parts = [...x.children].filter(c => seen(c) === 'yes' && !c.matches(CONTROL)).map(c => ({ c, r: c.getBoundingClientRect() }))
           .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
         const lines: Cell[] = [];
-        if (!parts.length) { const w = flat(x.textContent); lines.push({ ...txt(w), look: { ...frame, color: card.text } }); }
+        if (!parts.length) { const w = flat(x.textContent); lines.push({ ...txt(w), look: { ...frame, color: card.text, ...(pageLines(x) > 1 ? { wrap: true } : {}) } }); }
         for (const { c } of parts) {
           const cs = c.matches(BADGE) ? [badgeCell(c, x)] : lineCells(c, x);
+          const wraps = !c.matches(BADGE) && pageLines(c) > 1;
           // a line's badge (a tile's pill) keeps its tint; its words keep their colour, size and weight, on the card's fill
-          for (const one of cs) lines.push({ ...one, look: { ...frame, ...one.look, fill: one.look?.fill ?? frame.fill, border: stripe } });
+          for (const one of cs) lines.push({ ...one, look: { ...frame, ...one.look, fill: one.look?.fill ?? frame.fill, border: stripe, ...(wraps ? { wrap: true } : {}) } });
         }
         return lines;
       });
@@ -322,9 +339,27 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
       return;
     }
     if (e.matches('.chart')) {
-      const h = e.querySelector('h3, h4');
-      const title = h ? headingText(h) : flat(e.textContent).slice(0, 80);
-      line(e, [[txt(`Chart: ${title}`, { color: paintOf(h ?? e, root).text, bold: true }), txt('(its picture comes in the next step; its numbers: the chart\'s menu, Export Excel)', { color: quiet, italic: true })]]);
+      // the chart's title as the page words it, without its buttons, its menu's status words or its select
+      const h = e.querySelector('h3, h4'), hc = h?.cloneNode(true) as Element | undefined;
+      hc?.querySelectorAll('button, select, .chart-note, .whatis, .filter-btn').forEach(b => b.remove());
+      const title = hc ? flat(hc.textContent) : flat(e.textContent).slice(0, 80);
+      const head = txt(`Chart: ${title}`, { color: paintOf(h ?? e, root).text, bold: true });
+      // the chart drawn again (export_chart.ts): its picture under its line, as wide as the chart on the page, the rows
+      // under it kept for its height (15 pt each), its numbers on a sheet of their own after the grids'
+      const pic = pictureOf(e), d = pic?.draw(SCALE);
+      if (pic && d) {
+        const k = grids.length + charts.length;
+        charts.push(chartSection(title, pic.numbers()));
+        const span = pic.first !== undefined && pic.last !== undefined ? `; ${stamp(new Date(pic.first))} to ${stamp(new Date(pic.last))}` : '';
+        const descr = `${title}: ${pic.series().join(', ')}${span}; numbers on sheet {sheet:${k}}`;
+        const n = Math.ceil(d.h * 0.75 / 15);
+        add(e, [[head, { ...txt('(its numbers: sheet {sheet})', { color: quiet, italic: true, underline: true }), jump: k }], ...Array.from({ length: n }, (): Cell[] => [])],
+          undefined, { flow: true, pic: { png: pngBytes(d.png), w: d.w, h: d.h, name: `Chart ${charts.length}: ${title}`, descr } });
+        return;
+      }
+      // no picture: the page's own words in the chart's place (one read, no data), else why
+      const st = e.querySelector('.chart-state');
+      line(e, [[head, txt(st ? flat(st.textContent) : e.querySelector('.uplot') ? '(no picture: this build cannot draw it again; its numbers: the chart\'s menu, Export Excel)' : '(not drawn when exported)', { color: quiet, italic: true })]]);
       return;
     }
     if (e.matches('.grid-more')) return;   // its grid writes it, with the grid's sheet to go to
@@ -339,7 +374,8 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
       return;
     }
     if (e.tagName === 'TABLE') { add(e, tableBlock(e)); return; }
-    if (e.matches('.tiles, .tile-wall, .chips')) { const cr = cardsBlock([...e.children]); add(e, cr, undefined, { cards: cardW }); return; }
+    // a row of tiles or chips: cards side by side (the tile wall, a heading over rows of tiles, is walked into)
+    if (e.matches('.tiles, .chips')) { const cr = cardsBlock([...e.children]); add(e, cr, undefined, { cards: cardW }); return; }
     if (e.matches('.tile, .chip')) { const cr = cardsBlock([e]); add(e, cr, undefined, { cards: cardW }); return; }
     if (e.matches('.healthcal-grid')) { const cr = cardsBlock([...e.children]); add(e, cr, undefined, { cards: cardW }); return; }
     if (e.matches('canvas, svg, figure, img, .u-wrap')) { add(e, [[txt('Picture (the next step)', { color: quiet, italic: true })]]); return; }
@@ -375,21 +411,25 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
   for (const b of blocks) if (b.label) widths[0] = Math.max(widths[0] ?? 0, b.label);
   for (const b of blocks) if (b.cards) b.cards.forEach((w, j) => { if (j >= gridCols) widths[j] = Math.max(widths[j] ?? 0, w); });
   for (let j = 0; j < widths.length; j++) if (widths[j] === undefined) widths[j] = 0;
-  // a grid's or a property card's words wider than their column at these widths wrap (the cap of 40 would cut them
-  // otherwise): no text the page shows whole is cut on this sheet
-  for (const b of blocks) if (b.grid || b.label !== undefined) for (const r of b.rows) r.forEach((c, j) => {
-    if (!c || typeof c.v === 'number' || c.look?.wrap) return;
+  // a grid's, a property card's or a card's words wider than their column at these widths wrap when a cell with words
+  // or a fill is to their right on the row (else it would cut them); with nothing to their right they run over the
+  // empty cells as the page's one line does (E2 1b, b1): only the page's own wrap wraps them
+  const something = (c: Cell | undefined) => !!c && (String(c.v) !== '' || !!c.look?.fill || !!c.look?.border);
+  for (const b of blocks) if (b.grid || b.label !== undefined || b.cards) for (const r of b.rows) r.forEach((c, j) => {
+    if (!c || typeof c.v === 'number' || c.look?.wrap || !r.slice(j + 1).some(something)) return;
     const t = c.runs ? c.runs.map(x => x.text).join('') : c.v;
     if (t && measured(t, !!c.look?.bold, c.look?.pt) > colPx(widths[j])) r[j] = { ...c, look: { ...c.look, wrap: true } };
   });
   // the title rows' scope line flows too (its band word a badge)
   rows[1] = flow(rows[1], widths);
   let prev: DOMRect | undefined;
+  const pictures: Placed[] = [];
   for (const b of blocks) {
     if (prev && b.rect.top < prev.bottom - 4 && b.rect.left >= prev.right - 4 && b.rect.height > 0)
       rows.push([txt('(beside the block above on the page)', { color: quiet, italic: true })]);
+    if (b.pic) pictures.push({ ...b.pic, row: rows.length + 1, col: 0 });   // under the block's first row (its line)
     rows.push(...(b.flow ? b.rows.map(r => flow(r, widths)) : b.rows));
     prev = b.rect;
   }
-  return { name: m.tab, rows, widths, freeze: 3 };
+  return { name: m.tab, rows, widths, freeze: 3, pictures, charts };
 }

@@ -19,6 +19,8 @@ import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, roo
 import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
 import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showMenu } from './ui';
 import { readRows } from './export_colours';
+import { drawingRels, drawingXml } from './export_chart';
+import type { ChartNumbers } from './export_chart';
 import { cellLook, gridHeadLook, headLook, pageSheet, withDot } from './export_page';
 import type { LookCache, PageSheet } from './export_page';
 
@@ -443,7 +445,7 @@ export function colWidth(cells: { text: string; head: boolean }[]): number {
 // Sheet: a grid's sheet (data: its header row, then its rows; table: the id of its Excel table part), the one-grid
 // workbook's Summary sheet, or the page sheet (page: its rows written as they are from row 1, no header row); heads: the
 // header cells' looks as the page draws them; freeze: the rows that stay on screen; widths: the columns' widths as given
-interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number; heads?: Look[]; page?: boolean; freeze?: number; widths?: number[] }
+interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number; heads?: Look[]; page?: boolean; freeze?: number; widths?: number[]; drawing?: boolean }   // drawing: the page sheet's pictures (rId1 of its rels)
 
 // Shared: the workbook's shared strings. Only a table's header cells use them: Excel matches a table's column names
 // against its header cells, and every writer Excel is known to accept (its own, DBA Dash's) stores those as shared
@@ -554,6 +556,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
     + `<sheetData>${rows.join('')}</sheetData>`
     + (!sh.page && !sh.table && sh.data ? `<autoFilter ref="A1:${last}"/>` : '')
     + (jumps.length ? `<hyperlinks>${jumps.join('')}</hyperlinks>` : '')
+    + (sh.drawing ? '<drawing r:id="rId1"/>' : '')
     + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : '')
     + '</worksheet>';
 }
@@ -599,7 +602,8 @@ export function workbook(meta: Meta, secs: Section[], page?: PageSheet): { name:
     [t('Exported at'), d(meta.at)], [t('Time zone'), t(timeZone(meta.at))], [t('Source'), t('pgvigil')], [t(''), t('')], [h('Sheet'), h('Rows'), h('Note')],
     ...secs.map((s, i) => [t(names[i]), { v: s.rows.length, kind: 'int' as Kind, text: '' }, t(s.note ?? '')]),
   ];
-  const sheets: Sheet[] = [page ? { name: first, head: [], rows: page.rows, data: false, page: true, freeze: page.freeze, widths: page.widths }
+  const pics = page?.pictures ?? [];
+  const sheets: Sheet[] = [page ? { name: first, head: [], rows: page.rows, data: false, page: true, freeze: page.freeze, widths: page.widths, drawing: pics.length > 0 }
     : { name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, data: false },
     ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true, ...(s.heads ? { heads: s.heads } : {}), ...(page ? { freeze: 1 } : {}) }))];
   const all = sheets.map(sh => sh.name);
@@ -615,11 +619,22 @@ export function workbook(meta: Meta, secs: Section[], page?: PageSheet): { name:
     { name: `xl/tables/table${sh.table}.xml`, data: enc.encode(tableXml(sh.table, tableHead(sh.head, ncolOf(sh)), sh.rows.length)) },
     { name: `xl/worksheets/_rels/sheet${i + 1}.xml.rels`, data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
       + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${sh.table}.xml"/></Relationships>`) }] : []);
+  // the page sheet's pictures (export_chart.ts): one drawing, its pictures in xl/media, each one's alt text naming its
+  // numbers sheet by name
+  const named = (s: string) => s.replace(/\{sheet:(\d+)\}/g, (_, k) => all[Number(k) + 1] ?? '');
+  const drawFiles = pics.length ? [
+    { name: 'xl/worksheets/_rels/sheet1.xml.rels', data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>') },
+    { name: 'xl/drawings/drawing1.xml', data: enc.encode(drawingXml(pics.map(p => ({ ...p, descr: named(p.descr) })))) },
+    { name: 'xl/drawings/_rels/drawing1.xml.rels', data: enc.encode(drawingRels(pics, 1)) },
+    ...pics.map((p, i) => ({ name: `xl/media/image${i + 1}.png`, data: p.png })),
+  ] : [];
   const filters = sheets.map((sh, i) => sh.data && !sh.table
     ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${esc(sh.name.replace(/'/g, "''"))}'!$A$1:$${colName(Math.max(sh.head.length, 1) - 1)}$${sh.rows.length + 1}</definedName>` : '').join('');
   return [
     { name: '[Content_Types].xml', data: enc.encode(x + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
       + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+      + (pics.length ? '<Default Extension="png" ContentType="image/png"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>' : '')
       + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
       + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
       + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')
@@ -638,7 +653,7 @@ export function workbook(meta: Meta, secs: Section[], page?: PageSheet): { name:
       + '</Relationships>') },
     { name: 'xl/styles.xml', data: enc.encode(st.xml()) },   // after the sheets: they register the styles they use
     ...(sst.size ? [{ name: 'xl/sharedStrings.xml', data: enc.encode(sst.xml()) }] : []),
-    ...files, ...tableFiles,
+    ...files, ...tableFiles, ...drawFiles,
   ];
 }
 
@@ -773,17 +788,23 @@ export async function exportGrid(g: Element, name?: string, ctx: Ctx = parse()):
   return oneFile(m, name ? { ...found, name } : found);
 }
 
-// exportChart: a chart's numbers as a workbook (a chart's menu: Export Excel; chart.ts): one sheet named by the chart's
-// title, a time as a time ('yyyy-MM-dd HH:mm'), a number as a number, a share (kind 'pct', the fraction) as '0.0%'
-export async function exportChart(title: string, cols: string[], rows: (string | number | Date | null | undefined)[][], kinds: (Kind | undefined)[] = [], ctx: Ctx = parse()): Promise<string> {
-  const m = await metaOf(ctx);
+// chartSection: a chart's numbers as a sheet (its Export Excel's and the page export's numbers sheet): a time as a time,
+// a number as a number, a share (kind 'pct', the fraction) as '0.0%'
+export function chartSection(title: string, n: ChartNumbers): Section {
+  const kinds = n.kinds ?? [];
   const cell = (v: string | number | Date | null | undefined, j: number): Cell => {
     if (v instanceof Date) return { v: excelDate(v), kind: 'date', text: '', stamp: localStamp(v) };
     if (typeof v === 'number' && isFinite(v)) return { v, kind: kinds[j] ?? (Number.isInteger(v) ? 'int' : 'dec'), text: String(v) };
     const t = v == null || typeof v === 'number' ? '' : v;
     return { v: t, kind: 'text', text: t };
   };
-  return oneFile(m, { name: title || 'Chart', cols, rows: rows.map(r => r.map(cell)) });
+  return { name: title || 'Chart', cols: n.cols, rows: n.rows.map(r => r.map(cell)) };
+}
+// exportChart: a chart's numbers as a workbook (a chart's menu: Export Excel; chart.ts): one sheet named by the chart's
+// title, a time as a time ('yyyy-MM-dd HH:mm'), a number as a number, a share (kind 'pct', the fraction) as '0.0%'
+export async function exportChart(title: string, cols: string[], rows: (string | number | Date | null | undefined)[][], kinds: (Kind | undefined)[] = [], ctx: Ctx = parse()): Promise<string> {
+  const m = await metaOf(ctx);
+  return oneFile(m, chartSection(title, { cols, rows: rows.map(r => r.map(v => v ?? null)), kinds }));
 }
 
 // tell: a word in the grid's own count line for a moment (ui.ts grid: the 'n of m rows' line above it)
@@ -832,6 +853,14 @@ function summaryExport(ctx: Ctx, root: () => HTMLElement | null, note: HTMLEleme
   return b;
 }
 
+// chartsDrawn: a chart of the page drawn by the time its picture is asked for - a box that is neither drawn (no
+// picture to give, chart.ts) nor in a state of its own ('one read', 'no data') is waited for, 3 s at most; one still
+// not drawn then says so on the page sheet
+async function chartsDrawn(r: Element | null): Promise<void> {
+  if (!r) return;
+  const pending = () => [...r.querySelectorAll('.chart')].some(b => !(b as HTMLElement & { pgvPicture?: unknown }).pgvPicture && !b.querySelector('.chart-state') && !!b.querySelector('.uplot, div:empty'));
+  for (let t = 0; t < 30 && pending(); t++) await new Promise(res => setTimeout(res, 100));
+}
 // exportButtons: the bar's two buttons for the page under them (#main): the workbook and the CSV. The grid tools
 // (gridtools.ts: the column chooser, the copies with the colours, the selection's sums, the groups, the data bars)
 // start with the bar: they answer the grids' own menu and touch nothing until asked.
@@ -843,16 +872,25 @@ export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => d
     b.disabled = true; note.textContent = '';
     try {
       const m = await metaOf(ctx);
+      if (kind === 'xlsx') await chartsDrawn(root());
       // every read of the page from here to the workbook's parts runs in one task, after the last await (nothing is
-      // painted between: the hidden copy of a grid's rows past its page and the colour probe come and go unseen)
+      // painted between: the hidden copy of a grid's rows past its page, the colour probe and the charts drawn again
+      // come and go unseen), under the light theme (E2-16: the file is light whatever the screen; 'auto' restored by
+      // removing the attribute)
       const r = root();
-      const found = r ? walk(r, m.tab, true) : [];
+      const html = document.documentElement, was = html.getAttribute('data-theme');
+      html.setAttribute('data-theme', 'light');
+      let found: ReturnType<typeof walk> = [], page: PageSheet | undefined;
+      try {
+        found = r ? walk(r, m.tab, true) : [];
+        // sheet 1 is the page as it shows (export_page.ts); a page without a grid still has it
+        if (kind === 'xlsx' && r) page = pageSheet(r, m, found.map(f => f.el));
+      } finally { if (was === null) html.removeAttribute('data-theme'); else html.setAttribute('data-theme', was); }
       const secs = found.map(f => f.sec);
       if (kind === 'xlsx') {
-        // sheet 1 is the page as it shows (export_page.ts); a page without a grid still has it
-        const page = r ? pageSheet(r, m, found.map(f => f.el)) : undefined;
         if (!page && secs.length === 0) { note.textContent = 'Nothing to export: no grid on this page.'; return; }
-        const parts = workbook(m, secs, page);
+        // the charts' numbers sheets after the grids' (the page sheet names them by that place)
+        const parts = workbook(m, [...secs, ...(page?.charts ?? [])], page);
         const z = await zip(parts, m.at);
         save(new Blob([z], { type: XLSX }), exportName(m, 'xlsx'));
       } else if (secs.length === 0) {

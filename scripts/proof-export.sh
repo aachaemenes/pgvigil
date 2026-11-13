@@ -299,6 +299,32 @@ const SCREEN = `(() => {
       status: [...new Set(cells.flat().map(c => c.s).filter(k => k && k !== 'ack'))], tests: !!e.closest('.tests'), att: !!e.closest('.attention') };
   });
 })()`;
+// PAGELOOK (E2 step 2, a, b1 and the charts): read on the page's own terms - every visible tile's label, value and pill as the page
+// draws them, and the words of every cell, header label, tile line and chip line the page draws on more than one line
+// (its content's height over its line height; not the box's: a td is as tall as its row)
+const PAGELOOK = `(() => {
+  const main = document.getElementById('main') || document.querySelector('main');
+  const flat = s => (s || '').replace(/\\s+/g, ' ').trim();
+  const vis = e => e.checkVisibility ? e.checkVisibility({ contentVisibilityAuto: true, opacityProperty: true, visibilityProperty: true }) : e.getClientRects().length > 0;
+  const tiles = [...main.querySelectorAll('.tile')].filter(vis).map(t => ({ l: flat(t.querySelector('.tile-l')?.textContent), v: flat(t.querySelector('.tile-v')?.textContent), p: flat(t.querySelector(':scope > .pill, :scope > .badge')?.textContent) }));
+  const wraps = e => {
+    const r = document.createRange(); r.selectNodeContents(e); const b = r.getBoundingClientRect();
+    const cs = getComputedStyle(e); const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+    return b.height > lh * 1.5;
+  };
+  const wrapped = [...main.querySelectorAll('td, th, .th-label, .tile > *, .chip > *')].filter(vis).filter(e => flat(e.textContent) && wraps(e)).map(e => flat(e.textContent));
+  // the charts: each one's title, its plot's CSS width, its legend's series (shown or off) and its own state words
+  const charts = [...main.querySelectorAll('.chart')].filter(vis).map(b => {
+    const h = b.querySelector('h3, h4'), cv = b.querySelector('.uplot canvas');
+    const hc = h ? h.cloneNode(true) : null; if (hc) hc.querySelectorAll('button, select, .chart-note, .whatis, .filter-btn').forEach(x => x.remove());
+    return { title: flat(hc ? hc.textContent : ''), w: cv ? cv.getBoundingClientRect().width : null,
+             series: [...b.querySelectorAll('.u-legend .u-series')].slice(1).map(s => ({ label: flat(s.querySelector('.u-label')?.textContent ?? s.textContent), on: !s.classList.contains('u-off') })),
+             state: flat(b.querySelector('.chart-state')?.textContent) };
+  });
+  const css = getComputedStyle(document.documentElement);
+  const palette = [1, 2, 3, 4, 5, 6, 7, 8].map(i => css.getPropertyValue('--s' + i).trim());
+  return { tiles, wrapped: [...new Set(wrapped)], charts, palette, card: css.getPropertyValue('--card').trim(), theme: document.documentElement.getAttribute('data-theme') };
+})()`;
 // SECTIONS (E2-1): the page's visible sections in page order, read on the page's own terms (not by export.ts's walk):
 // every block of #main the eye sees - a heading, a grid (an empty grid's header-only table too), a property card, a
 // chart (a chart box, a canvas, an SVG), tiles, chips, a disclosure's summary line, the attention strip, the health
@@ -377,7 +403,8 @@ const page = async (hash, sortBy, filterNone) => {
   }
   const grids = await ev(SCREEN);
   const sections = await ev(SECTIONS);
-  return { hash, grids, order, before, sections, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
+  const pagelook = await ev(PAGELOOK);
+  return { hash, grids, order, before, sections, pagelook, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
 };
 // the grid tools on the fleet Backups grid, through the grid's own menu (ui.ts adds the tools' lines when it sends
 // 'pgvigil:gridmenu'); what each does is read back from the page for the checker
@@ -560,6 +587,19 @@ for (const hash of ['#/dbspace?w=2h', `#/summary?i=${one.instance_id}&w=2h`, `#/
     await sleep(300);
     const said = await ev(`document.querySelectorAll('main button.chart-menu[aria-haspopup=menu]')[${m.i}].closest('h3')?.parentElement?.querySelector('.chart-note')?.textContent ?? ''`);
     charts[kind] = { hash, title: m.title, items: its, xlsx, said };
+    if (kind === 'line') {
+      // the page's own export beside the chart's (its numbers sheet = this workbook), then the same page loaded fresh in
+      // the dark theme and exported (E2-16: the file is light; the screen dark again after it)
+      charts.line.look = await ev(PAGELOOK);
+      charts.line.page = await press('Export .xlsx', ['.xlsx']);
+      await ev(`localStorage.setItem('pgvigil.theme', 'dark'); true`);
+      await cmd('Page.navigate', { url: 'about:blank' }); await sleep(300); await go(hash); await sleep(700);
+      charts.line.darkTheme = await ev(`document.documentElement.getAttribute('data-theme')`);
+      charts.line.dark = await press('Export .xlsx', ['.xlsx']);
+      charts.line.after = await ev(`document.documentElement.getAttribute('data-theme')`);
+      await ev(`localStorage.setItem('pgvigil.theme', 'light'); true`);
+      await cmd('Page.navigate', { url: 'about:blank' }); await sleep(300); await go(hash); await sleep(500);
+    }
   }
 }
 out.charts = charts;
@@ -820,7 +860,7 @@ def xfs(z):
         f = re.search(r'rgb="(\w+)"', fills[g('fillId')])
         fo = fonts[g('fontId')]; c = re.search(r'rgb="(\w+)"', fo)
         sz = re.search(r'<sz val="([\d.]+)"/>', fo)
-        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'wrap': 'wrapText="1"' in al, 'valign': (re.search(r'vertical="(\w+)"', al) or [None, 'bottom'])[1], 'sz': float(sz.group(1)) if sz else 11.0})
+        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'border': g('borderId') != 0, 'wrap': 'wrapText="1"' in al, 'valign': (re.search(r'vertical="(\w+)"', al) or [None, 'bottom'])[1], 'sz': float(sz.group(1)) if sz else 11.0})
     return st, out
 def grids(page):
     head, out = '', []
@@ -947,6 +987,120 @@ def tall_audit(x, cx, sst):
             low.append(f"{colname(j)}{r} '{tx[(r, j)][1][:24]}' in a {hts[r]} pt row")
     over = [f"row {r} {h} pt, its lines {need.get(r, 15)}" for r, h in sorted(hts.items()) if h > need.get(r, 15.0) + 1]
     return over, low
+def tiles_audit(x, sst, tiles):
+    # (step 2 a) each tile the page shows is a card on the page sheet: its label in a cell, its value in a cell of the
+    # same column within the next four rows, its pill (if any) in that column between them; and no cell holds a tile's
+    # value and its label run together. Returns (tiles found, missing, run together).
+    tx = texts_of(x, sst); ns = lambda s: re.sub(r'\s+', '', s or '')
+    at = {}
+    for (r, j), (sid, t, segs) in tx.items(): at.setdefault(ns(t), []).append((r, j))
+    found, missing, runs = 0, [], []
+    for t in tiles:
+        if not t.get('l') or not t.get('v'): continue
+        ok = False
+        for (r, j) in at.get(ns(t['l']), []):
+            below = {ns(tx[(rr, j)][1]): rr for rr in range(r + 1, r + 5) if (rr, j) in tx}
+            if ns(t['v']) in below and (not t.get('p') or ns(t['p']) in below): ok = True; break
+        if ok: found += 1
+        else: missing.append(f"{t['l'][:20]} / {t['v'][:12]}{' / ' + t['p'] if t.get('p') else ''}")
+        for (r, j), (sid, s, segs) in tx.items():
+            if ns(s) in (ns(t['v']) + ns(t['l']), ns(t['l']) + ns(t['v'])): runs.append(f"{colname(j)}{r} '{s[:30]}'")
+    return found, missing, runs
+def wrap_audit(x, cx, sst, wrapped):
+    # (step 2 b1) a wrapped text cell with nothing to its right on its row (no cell with words, a number, a fill or a
+    # border) is a text the page itself draws on more than one line; anything else runs over the empty cells as the
+    # page's one line does. Returns the cells wrapped where the page has one line.
+    tx = texts_of(x, sst); ns = lambda s: re.sub(r'\s+', ' ', s or '').strip()
+    pw = [ns(w)[:40] for w in wrapped]
+    right = {}
+    for m in re.finditer(r'<c r="([A-Z]+)(\d+)" s="(\d+)"(?: t="(\w+)")?(?:/>|>(.*?)</c>)', x, re.S):
+        r, j, sid = int(m.group(2)), colidx(m.group(1)), int(m.group(3))
+        st_ = cx[sid] if sid < len(cx) else {}
+        has = bool(st_.get('fill')) or bool(st_.get('border')) or re.search(r'<v>|<t[^>]*>[^<]', m.group(5) or '') is not None
+        if has: right[r] = max(right.get(r, -1), j)
+    bad = []
+    for (r, j), (sid, t, segs) in tx.items():
+        st_ = cx[sid] if sid < len(cx) else {}
+        if not t or not st_.get('wrap') or right.get(r, -1) > j: continue
+        k = ns(t)[:40]
+        if not any(w.startswith(k) or k.startswith(w) for w in pw if w): bad.append(f"{colname(j)}{r} '{t[:36]}'")
+    return bad
+def png_rgba(b):
+    # a PNG's size and pixels (8-bit RGB or RGBA, not interlaced: what a canvas's toDataURL writes), zlib only
+    import struct, zlib
+    if b[:8] != b'\x89PNG\r\n\x1a\n': return 0, 0, 4, b''
+    pos, idat, w, h, ct = 8, b'', 0, 0, 6
+    while pos + 8 <= len(b):
+        n = struct.unpack('>I', b[pos:pos + 4])[0]; t = b[pos + 4:pos + 8]; dta = b[pos + 8:pos + 8 + n]; pos += 12 + n
+        if t == b'IHDR': w, h, _, ct = struct.unpack('>IIBB', dta[:10])
+        elif t == b'IDAT': idat += dta
+        elif t == b'IEND': break
+    bpp = 4 if ct == 6 else 3; stride = w * bpp; raw = zlib.decompress(idat); out = bytearray(); prev = bytearray(stride); i = 0
+    for _ in range(h):
+        f = raw[i]; ln = bytearray(raw[i + 1:i + 1 + stride]); i += 1 + stride
+        if f == 1:
+            for x in range(bpp, stride): ln[x] = (ln[x] + ln[x - bpp]) & 255
+        elif f == 2:
+            for x in range(stride): ln[x] = (ln[x] + prev[x]) & 255
+        elif f == 3:
+            for x in range(stride): ln[x] = (ln[x] + (((ln[x - bpp] if x >= bpp else 0) + prev[x]) >> 1)) & 255
+        elif f == 4:
+            for x in range(stride):
+                a = ln[x - bpp] if x >= bpp else 0; up = prev[x]; c = prev[x - bpp] if x >= bpp else 0
+                p_ = a + up - c; pa, pb, pc = abs(p_ - a), abs(p_ - up), abs(p_ - c)
+                ln[x] = (ln[x] + (a if pa <= pb and pa <= pc else up if pb <= pc else c)) & 255
+        out += ln; prev = ln
+    return w, h, bpp, bytes(out)
+def rgb_of(s):
+    s = (s or '').strip()
+    m = re.fullmatch(r'#([0-9a-fA-F]{6})', s)
+    if m: return tuple(int(m.group(1)[k:k + 2], 16) for k in (0, 2, 4))
+    m = re.fullmatch(r'#([0-9a-fA-F]{3})', s)
+    if m: return tuple(int(c * 2, 16) for c in m.group(1))
+    m = re.match(r'rgba?\((\d+),\s*(\d+),\s*(\d+)', s)
+    return tuple(int(m.group(k)) for k in (1, 2, 3)) if m else None
+def pictures_of(z):
+    # the page sheet's pictures in drawing order: (width and height in CSS px from the anchor's EMU, alt text, PNG bytes)
+    if 'xl/drawings/drawing1.xml' not in z.namelist(): return []
+    dx = z.read('xl/drawings/drawing1.xml').decode(); rels = z.read('xl/drawings/_rels/drawing1.xml.rels').decode()
+    tg = dict(re.findall(r'Id="(rId\d+)"[^>]*Target="\.\./media/([^"]+)"', rels))
+    out = []
+    for a in re.findall(r'<xdr:oneCellAnchor>(.*?)</xdr:oneCellAnchor>', dx, re.S):
+        e = re.search(r'<xdr:ext cx="(\d+)" cy="(\d+)"/>', a); ds = re.search(r'descr="([^"]*)"', a); rid = re.search(r'r:embed="(rId\d+)"', a)
+        row_ = re.search(r'<xdr:row>(\d+)</xdr:row>', a)
+        out.append({'w': int(e.group(1)) / 9525, 'h': int(e.group(2)) / 9525, 'descr': unesc(ds.group(1)) if ds else '', 'row': int(row_.group(1)) if row_ else -1,
+                    'png': z.read('xl/media/' + tg[rid.group(1)]) if rid and rid.group(1) in tg else b''})
+    return out
+def chart_audit(key, z, names, sst, look, light=None):
+    # (E2-8, the lead 19:22) each chart the page draws is a picture on the page sheet: as wide in the sheet as its plot
+    # on the page (within 2 px), its pixels 2x that; its alt text names the title, the series shown and a numbers sheet
+    # that exists, whose header is 'time' and those series and which holds points; its pixels hold every shown series'
+    # colour of the light palette and the light card colour behind the title, not blank. light: the light page's facts
+    # (palette, card) for an export made in the dark theme
+    lk = light or look
+    drawn = [c for c in look.get('charts') or [] if c.get('w')]
+    pics = pictures_of(z)
+    check(len(pics) == len(drawn), f"{key}: {len(drawn)} chart(s) drawn on the page, {len(pics)} picture(s) on the page sheet")
+    pal = [rgb_of(c) for c in lk.get('palette') or []]; card = rgb_of(lk.get('card'))
+    for c, p in zip(drawn, pics):
+        w, h, bpp, px = png_rgba(p['png'])
+        check(abs(p['w'] - c['w']) <= 2 and abs(w - 2 * p['w']) <= 1, f"{key}: chart '{c['title']}' {round(p['w'], 1)} CSS px wide in the sheet for {round(c['w'], 1)} on the page; its picture {w} x {h} px = 2x")
+        shown = [s['label'] for s in c['series'] if s['on']]
+        m = re.search(r'numbers on sheet (.+)$', p['descr']); sn = m.group(1) if m else ''
+        check(p['descr'].startswith(c['title'] + ':') and all(s in p['descr'] for s in shown) and sn in names[1:], f"{key}: chart '{c['title']}' alt text '{p['descr'][:120]}' names its series {shown} and its numbers sheet ('{sn}' {'found' if sn in names else 'missing'})")
+        if sn in names:
+            x, n = sheet_rows(z, names.index(sn) + 1); t1 = texts_of(x, sst)
+            hd = [t1[(1, j)][1] for j in range(len(shown) + 1) if (1, j) in t1]
+            check(hd == ['time'] + shown and n >= 2, f"{key}: chart '{c['title']}' numbers sheet '{sn}': header {hd}, {n} points")
+        at = lambda xx, yy: tuple(px[(yy * w + xx) * bpp:(yy * w + xx) * bpp + 3]) if w and h else None
+        near = lambda q, r_, d=24: q and r_ and all(abs(q[k] - r_[k]) <= d for k in range(3))
+        cols = {}
+        for i in range(0, len(px), bpp * 7): cols[px[i:i + 3]] = cols.get(px[i:i + 3], 0) + 1
+        idx = [i for i, s in enumerate(c['series']) if s['on']]
+        found = [sum(v for q, v in cols.items() if near(tuple(q), pal[i] if i < len(pal) else None)) for i in idx]
+        check(w > 0 and near(at(w - 1, 0), card, 2) and len(cols) >= 8 and all(f_ >= 3 for f_ in found),
+              f"{key}: chart '{c['title']}' picture: the card colour {lk.get('card')} behind its title ({at(w - 1, 0) if w else None}), {len(cols)} colours sampled, each shown series' colour found {found}")
+    return pics
 def width_audit(x, cx, sst):
     # every column: the width the rule gives its cells (row 1, the header, measured as DBA Dash's bold header: the
     # rule's own place, not the cell's font - the page's header is not bold, and a bold badge cell is no header),
@@ -986,6 +1140,35 @@ _cx2 = _cx + [{'fmt': 0, 'bold': False, 'wrap': True, 'sz': 15.0, 'valign': 'top
 _tile = lambda ht, s: f'<cols><col min="1" max="2" width="20" customWidth="1"/></cols><sheetData><row r="1" ht="{ht}" customHeight="1"><c r="A1" s="2" t="inlineStr"><is><r><rPr><sz val="15"/></rPr><t xml:space="preserve">13</t></r><r><rPr><sz val="11"/></rPr><t xml:space="preserve">xmin horizon age</t></r></is></c><c r="B1" s="{s}" t="inlineStr"><is><t>version</t></is></c></row></sheetData>'
 check(tall_audit(_tile(21, 4), _cx2, []) == ([], []) and len(tall_audit(_tile(41, 4), _cx2, [])[0]) == 1 and len(tall_audit(_tile(21, 3), _cx2, [])[1]) == 1 and fit_audit(_tile(21, 4), _cx2, []) == [],
       f"tall: self-test - a tile's 15 pt value and 11 pt label on one line: a 21 pt row whole and not over, the 41 pt of the count at one size found over ({tall_audit(_tile(41, 4), _cx2, [])[0]}), a label at the bottom of the tall row found ({tall_audit(_tile(21, 3), _cx2, [])[1]})")
+_tl = [{'l': 'xmin horizon age', 'v': '10', 'p': 'WARN'}]
+_tx1 = '<sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><t>10xmin horizon age</t></is></c></row><row r="2"><c r="A2" s="0" t="inlineStr"><is><t>WARN</t></is></c></row></sheetData>'
+_tx2 = '<sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><t>xmin horizon age</t></is></c></row><row r="2"><c r="A2" s="0" t="inlineStr"><is><t>WARN</t></is></c></row><row r="3"><c r="A3" s="0" t="inlineStr"><is><t>10</t></is></c></row></sheetData>'
+_cx3 = _cx + [{'fmt': 0, 'fill': 'FFEEEEEE', 'border': False, 'bold': False, 'wrap': False, 'sz': 11.0}]
+_wx = lambda after: f'<sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>{_lab}</t></is></c>{after}</row></sheetData>'
+check(tiles_audit(_tx1, [], _tl)[1:] == (['xmin horizon age / 10 / WARN'], ["A1 '10xmin horizon age'"]) and tiles_audit(_tx2, [], _tl) == (1, [], [])
+      and len(wrap_audit(_wx(''), _cx3, [], [])) == 1 and wrap_audit(_wx(''), _cx3, [], [_lab]) == [] and wrap_audit(_wx('<c r="B1" s="2"/>'), _cx3, [], []) == [],
+      f"tiles and wraps: self-test - a tile's value and label in one cell found ({tiles_audit(_tx1, [], _tl)[1:]}), label / pill / value down one column found whole; a wrapped cell with nothing to its right found when the page has one line, whole when the page wraps it or a filled cell is to its right")
+def _png(w, h, px, filters):
+    # a planted PNG: rows filtered as given (0 none, 1 sub, 2 up, 4 Paeth), RGBA
+    import struct, zlib
+    raw = b''; prev = bytes(w * 4)
+    for y in range(h):
+        ln = px[y * w * 4:(y + 1) * w * 4]; f = filters[y]; enc = bytearray()
+        for x in range(w * 4):
+            a = ln[x - 4] if x >= 4 else 0; up = prev[x]; c = prev[x - 4] if x >= 4 else 0
+            if f == 0: pr = 0
+            elif f == 1: pr = a
+            elif f == 2: pr = up
+            else:
+                p_ = a + up - c; pa, pb, pc = abs(p_ - a), abs(p_ - up), abs(p_ - c); pr = a if pa <= pb and pa <= pc else up if pb <= pc else c
+            enc.append((ln[x] - pr) & 255)
+        raw += bytes([f]) + bytes(enc); prev = ln
+    ch = lambda t, dta: struct.pack('>I', len(dta)) + t + dta + struct.pack('>I', zlib.crc32(t + dta) & 0xffffffff)
+    return b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b'')
+_pp = bytes((x * 37 + y * 91 + k * 13) % 256 for y in range(4) for x in range(5) for k in range(4))
+_dec = png_rgba(_png(5, 4, _pp, [0, 1, 2, 4]))
+check(_dec == (5, 4, 4, _pp) and rgb_of('#2a6fd6') == (42, 111, 214) and rgb_of('rgb(255, 255, 255)') == (255, 255, 255),
+      f"charts: self-test - a planted 5 x 4 PNG with rows filtered none / sub / up / Paeth decoded to its own pixels ({_dec[:3]}, {'equal' if _dec[3] == _pp else 'DIFFERENT'}); colours read from #hex and rgb()")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
@@ -1163,6 +1346,13 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     check(not cut1, f"{key}: every text on the page sheet whole ({len(texts_of(first, sst))} text cells; {len(cut1)} cut {cut1[:3]})")
     over, low = tall_audit(first, cx, sst)
     check(not over and not low, f"{key}: the page sheet: no row taller than its lines, no cell at the bottom of a tall row ({len(over)} over {over[:2]}; {len(low)} at the bottom {low[:2]})")
+    pl = p.get('pagelook') or {}
+    if pl.get('tiles'):
+        tf, tm, tr = tiles_audit(first, sst, pl['tiles'])
+        check(not tm and not tr, f"{key}: the page's {len(pl['tiles'])} tiles are cards on the page sheet - label, pill, value in one column: {tf} found (missing {tm[:3]}); no value and label in one cell ({tr[:3]})")
+    if pl.get('charts'): chart_audit(key, z, names, sst, pl)
+    wb1 = wrap_audit(first, cx, sst, pl.get('wrapped') or [])
+    check('wrapped' in pl and not wb1, f"{key}: the page sheet wraps a cell with nothing to its right only where the page wraps it ({len(pl.get('wrapped') or [])} texts the page wraps; {len(wb1)} wrapped where the page has one line {wb1[:3]})")
     # (fault 5) row 2 says the scope in the page's words: no engine or platform key ('sqlserver', 'onprem')
     r2 = [ptext(2, j) for j in range(12) if ptext(2, j)]
     keys_ = {'postgres', 'sqlserver', 'auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb', 'azuresqldb', 'azuremi', 'azuresqlmi'}
@@ -1280,6 +1470,25 @@ if tg and sm.get('tests'):
 if ig and sm.get('summary'):
     one_book('instancesummary', sm['summary'], 'fleet', 'Summary', 'Instance Summary', ig[-1])
 ch = d.get('charts') or {}
+cl = ch.get('line') or {}
+if cl.get('page') and cl.get('look'):
+    zp = zipfile.ZipFile(f"{dl}/{cl['page']}"); np_ = sheets_of(zp); sp = shared(zp)
+    pics = chart_audit('charts: the line chart\'s page', zp, np_, sp, cl['look'])
+    zm = zipfile.ZipFile(f"{dl}/{cl['xlsx']}"); nm = sheets_of(zm); sm_ = shared(zm)
+    pic = next((p for p in pics if p['descr'].startswith(cl['title'] + ':')), None)
+    sn = (re.search(r'numbers on sheet (.+)$', pic['descr']) or [None, ''])[1] if pic else ''
+    a_ = cells_of(sheet_rows(zp, np_.index(sn) + 1)[0], sp) if sn in np_ else {}
+    b_ = cells_of(sheet_rows(zm, 2)[0], sm_) if len(nm) > 1 else {}
+    vals = lambda cs: {k: (v[1], v[2]) for k, v in cs.items()}
+    check(bool(a_) and vals(a_) == vals(b_), f"charts: the line chart '{cl['title']}': its numbers sheet '{sn}' in the page's workbook equals its own Export Excel's sheet cell by cell ({len(a_)} | {len(b_)} cells)")
+if cl.get('dark') and cl.get('look'):
+    zd = zipfile.ZipFile(f"{dl}/{cl['dark']}"); nd = sheets_of(zd); sd = shared(zd)
+    check(cl.get('darkTheme') == 'dark' and cl.get('after') == 'dark', f"charts: the page drawn dark ({cl.get('darkTheme')}) and dark again after its export ({cl.get('after')})")
+    chart_audit('charts: the line chart\'s page exported in the DARK theme', zd, nd, sd, cl['look'], light=cl['look'])
+    if cl.get('page'):
+        fl = lambda zz: sorted(set(re.findall(r'rgb="(\w+)"', zz.read('xl/styles.xml').decode())))
+        check(fl(zd) == fl(zipfile.ZipFile(f"{dl}/{cl['page']}")), f"charts: the dark export's colours are the light export's (E2-16) ({len(fl(zd))} colours)")
+
 for kind in ('line', 'ring'):
     c = ch.get(kind)
     check(bool(c), f"charts: a {kind} chart's menu was found and its Export Excel clicked ({sorted(ch)})")
