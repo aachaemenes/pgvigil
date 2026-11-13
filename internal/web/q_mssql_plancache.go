@@ -250,8 +250,8 @@ SELECT f.severity, f.check_name, f.object, f.at, f.detail
 // (PerformanceMonitor's four, :124-128); the value falls in one of PerformanceMonitor's seven log10 buckets
 // (:207-215), found in integer arithmetic: value < 10^k is x < u * 10^k with x the whole milliseconds (duration, cpu),
 // the writes or the executions and u the executions (1 for 'executions'), exact as u * 10^k is whole; no numeric per
-// row (s177j-spike6: the bucket compared in bigints ran 10.8 % under the numeric value, within date_bin's noise, at
-// 3,000 rows a read over 7 days); bigint room to 9.2e13 executions in one read; in bins of $6 minutes cut from the
+// row (s177j-26, 3,000 rows a read over 7 days, eight rounds: this form 14.0 % under the numeric value, within
+// date_bin's noise); bigint room to 9.2e13 executions in one read; in bins of $6 minutes cut from the
 // UTC epoch (:190; floor arithmetic on epoch seconds, as the history and the migrations bin: date_bin is PostgreSQL
 // 14+, the repository's floor is 13). A cell counts the distinct (database, query key)
 // with a sample in it: PerformanceMonitor's own words for the count ('Distinct queries in the cell, NOT

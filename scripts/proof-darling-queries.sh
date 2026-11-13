@@ -54,8 +54,9 @@
 #     the plan cache's totals in pg_stat_statements where the box preloads it (else NOT PROVEN, said).
 #  G. the pages in headless Chromium (light): the Query Store's Top with its compare grid (= the API's rows), Regressed
 #     with q_to's and q_err's rows, Plan cache and Procedures with their compare and new columns; no error box.
-#  H. DONE-2's reads (PostgreSQL only, on F's seed and synthetic rows): the heatmap's cells (duration and executions,
-#     24 h, 10-minute bins) = a hand count of the stored samples (distinct (database, query) per cell, the most-executed
+#  H. DONE-2's reads (PostgreSQL only, on F's seed and synthetic rows): the heatmap's cells (duration, cpu, writes and
+#     executions, 24 h, 10-minute bins, 23 samples on and just under the bucket lines) = a hand count of the stored
+#     samples in integers (distinct (database, query) per cell, the most-executed
 #     by executions summed, the newest 1,000, n_cells all), and equal on a PostgreSQL 13 repository (a throwaway
 #     postgres:13 container, where date_bin is refused); the heatmap at 24 h and 7 days at 761 and 3,000 rows a read
 #     under 10 s (eight runs each); 8 days refused 400 with 'pick 7 days or less'; one query's and one procedure's history
@@ -734,32 +735,47 @@ else
 fi
 
 echo "== H. DONE-2's reads: the heatmap, the histories, the Query Store overhead =="
-# H1. the heatmap's cells = a hand count of the stored samples (F's seed at 761 rows a read, 24 hours: 10-minute bins)
+# H1. the heatmap's cells = a hand count of the stored samples (F's seed at 761 rows a read, 24 hours: 10-minute bins),
+# the four metrics, with samples ON each bucket line and one below it (a value of exactly 10^k goes to bucket k + 1):
+# duration and cpu 1000 * E * 10^k us and 1 us less, writes E * 10^k and 1 less (E = 3); executions 10^k and 10^k - 1;
+# each its own query, two hours back (H3 reads the last hour's most-executed query)
 NOW=$(( $(date -u +%s) / 60 * 60 )); HF=$(iso $((NOW - 86400))); HT=$(iso "$NOW")   # one clock read, on the minute
-for metric in duration executions; do
+pq "INSERT INTO pgvigil.mssql_pc_sample (instance_id, snapshot_at, database_id, query_key, database_name, executions, cpu_us, duration_us,
+      logical_reads, physical_reads, logical_writes, row_count, spills, plans, interval_secs)
+    SELECT $IID_761, to_timestamp($NOW - 7200 - row_number() OVER (ORDER BY v.e, v.d, v.w)), 5, '0xb' || lpad((row_number() OVER (ORDER BY v.e, v.d, v.w))::text, 15, '0'),
+           'db5', v.e, v.d, v.d, 0, 0, v.w, v.e, 0, 1, 300
+      FROM (SELECT 3::bigint AS e, 3000 * (10::bigint ^ k)::bigint + o AS d, 3 * (10::bigint ^ k)::bigint + o AS w
+              FROM generate_series(0, 5) k, (VALUES (0), (-1)) x(o)
+            UNION ALL
+            SELECT (10::bigint ^ k)::bigint + o, 1000 * ((10::bigint ^ k)::bigint + o), (10::bigint ^ k)::bigint + o
+              FROM generate_series(0, 5) k, (VALUES (0), (-1)) x(o) WHERE (10::bigint ^ k)::bigint + o > 0) v" >/dev/null
+NL=$(pq "SELECT count(*) FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID_761 AND query_key LIKE '0xb%' AND snapshot_at > '$HF' AND snapshot_at <= '$HT'")
+[[ "$NL" == 23 ]] || fail "H: $NL samples on the bucket lines in H1's window (23 wanted)"
+for metric in duration cpu writes executions; do
   api "mssql/plancache?instance=$IID_761&from=$HF&to=$HT&part=heatmap&metric=$metric" "h-$metric.json"
 done
-psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "COPY (SELECT floor(extract(epoch FROM snapshot_at))::bigint, database_id, query_key, executions, duration_us
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "COPY (SELECT floor(extract(epoch FROM snapshot_at))::bigint, database_id, query_key, executions, duration_us, cpu_us, logical_writes
     FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID_761 AND snapshot_at > '$HF' AND snapshot_at <= '$HT' AND executions > 0) TO STDOUT WITH CSV" > "$TMPD/h.csv"
 python3 - "$TMPD" <<'PYEND' || fail "H: the heatmap's cells differ from the hand count (above)"
 import sys, csv, json
 from datetime import datetime
 d = sys.argv[1]
-rows = [(int(a), int(b), c, int(e), int(u)) for a, b, c, e, u in csv.reader(open(f"{d}/h.csv"))]
+rows = [(int(a), int(b), c, int(e), int(u), int(p), int(w)) for a, b, c, e, u, p, w in csv.reader(open(f"{d}/h.csv"))]
 def bucket(num, den):   # PerformanceMonitor's seven log10 buckets of num / den, in integers (no float edge)
     for k, lim in enumerate((1, 10, 100, 1000, 10000, 100000)):
         if num < lim * den: return k
     return 6
-for metric in ('duration', 'executions'):
+for metric in ('duration', 'cpu', 'writes', 'executions'):
     j = json.load(open(f"{d}/h-{metric}.json"))['heatmap']
     api = [dict(zip(j['columns'], r)) for r in j['rows']]
     if not api: print(f"DIFF {metric}: no cell"); sys.exit(1)
     binm = api[0]['bin_minutes']
     if binm != 10: print(f"DIFF {metric}: bin {binm} min, PerformanceMonitor's at 24 h is 10"); sys.exit(1)
     cells = {}
-    for ts, db, key, e, dur in rows:
+    for ts, db, key, e, dur, cpu, wr in rows:
         b = ts // 600 * 600
-        k = bucket(dur, 1000 * e) if metric == 'duration' else bucket(e, 1)
+        k = {'duration': lambda: bucket(dur, 1000 * e), 'cpu': lambda: bucket(cpu, 1000 * e),
+             'writes': lambda: bucket(wr, e), 'executions': lambda: bucket(e, 1)}[metric]()
         c = cells.setdefault((b, k), {})
         c[(db, key)] = c.get((db, key), 0) + e
     hand = {}
@@ -776,7 +792,7 @@ for metric in ('duration', 'executions'):
               [(got.get(x), hand.get(x)) for x in bad[:3]]); sys.exit(1)
     print(f"H {metric}: {len(got)} cells of {n_cells} = the hand count over {len(rows)} stored samples (distinct queries {sum(v[0] for v in hand.values())})")
 PYEND
-echo "ok   H: the heatmap's cells (duration and executions, 24 h, 10-minute bins) = a hand count of the stored samples: distinct (database, query) per cell, the most-executed by executions summed, the newest 1,000"
+echo "ok   H: the heatmap's cells (duration, cpu, writes and executions, 24 h, 10-minute bins, $NL samples on and just under the bucket lines) = a hand count of the stored samples: distinct (database, query) per cell, the most-executed by executions summed, the newest 1,000"
 # H1 on a PostgreSQL 13 repository (the repository's floor; the join review d10b, a1): a throwaway postgres:13 container
 # migrated by this binary, H1's samples copied in, served on its own port without the login: its heatmap cells = the
 # box's (PostgreSQL 18), and date_bin (14+) is refused there, so the row would have caught the old binning
@@ -804,7 +820,7 @@ W13=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); pr
 PGPASSWORD="$P13PW" "$TMPD/pgvigil" serve -config "$TMPD/m13.yaml" -no-login -listen "127.0.0.1:$W13" >"$TMPD/serve13.out" 2>&1 & S13=$!; BG+=($S13)
 for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$W13/api/session" 2>/dev/null && break; sleep 0.1; done
 kill -0 "$S13" 2>/dev/null || { cat "$TMPD/serve13.out" >&2; fail "H: serve on PostgreSQL $V13 exited"; }
-for metric in duration executions; do
+for metric in duration cpu writes executions; do
   c=$(curl -s --max-time 30 -o "$TMPD/h13-$metric.json" -w '%{http_code}' -H 'X-Pgvigil: 1' "http://127.0.0.1:$W13/api/mssql/plancache?instance=$I13&from=$HF&to=$HT&part=heatmap&metric=$metric")
   [[ "$c" == 200 ]] || fail "H: the heatmap ($metric) on PostgreSQL $V13 answered $c: $(head -c 300 "$TMPD/h13-$metric.json")"
   nonempty "$TMPD/h13-$metric.json" heatmap || fail "H: the heatmap ($metric) on PostgreSQL $V13 has no cell"
@@ -812,7 +828,7 @@ for metric in duration executions; do
     || { diff <(jq -c '.heatmap.rows[]' "$TMPD/h-$metric.json") <(jq -c '.heatmap.rows[]' "$TMPD/h13-$metric.json") | head -6 >&2; fail "H: the heatmap ($metric) on PostgreSQL $V13 differs from PostgreSQL 18's (above)"; }
 done
 kill "$S13" 2>/dev/null || true; docker rm -f -v "$PG13" >/dev/null 2>&1 || true
-echo "ok   H: on PostgreSQL $V13 (date_bin refused there) the heatmap's cells over the same $N13 samples = PostgreSQL 18's, duration and executions ($(jq '.heatmap.rows | length' "$TMPD/h13-duration.json") and $(jq '.heatmap.rows | length' "$TMPD/h13-executions.json") cells)"
+echo "ok   H: on PostgreSQL $V13 (date_bin refused there) the heatmap's cells over the same $N13 samples = PostgreSQL 18's, duration, cpu, writes and executions ($(for m in duration cpu writes executions; do jq '.heatmap.rows | length' "$TMPD/h13-$m.json"; done | paste -sd/) cells)"
 # H2. the heatmap timed at 24 h and 7 days at 761 and 3,000 rows a read (eight runs each: past the fifth, where a
 # prepared statement may turn generic), the fail line 10 s
 TH=""; HSLOW=""; HEMPTY=""   # a slow run or an empty read fails H after the last timing (one run names them all)
