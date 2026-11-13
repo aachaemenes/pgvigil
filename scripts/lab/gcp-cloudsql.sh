@@ -147,10 +147,12 @@ down)
   done
   echo "read back: instances named $GCS_INSTANCE or labelled pgvigil-proof=$PGVIGIL_LAB_PROOF $LEFT"
   [ "$LEFT" = 0 ] || fail "an instance is left (above): the state file $STATE stays"
-  # gcloud refuses to disable a service enabled in the last 3 days or used in the last 30 unless told to bypass
-  # that check (services disable --bypass-api-usage-check); a refusal keeps the state file, so down runs again
+  # a plain disable (gcloud 593 took it minutes after the enable, G1 2026-11-13; that gcloud has no
+  # --bypass-api-usage-check). A refusal for recent use keeps the state file and names the undo: --force, which also
+  # disables any service that depends on this one - none is expected for the Cloud SQL Admin API; read the enabled
+  # list before and after
   if [ "${API_ENABLED_HERE:-0}" = 1 ]; then
-    g services disable "$API" --bypass-api-usage-check || fail "the project's $API stays enabled (undo: gcloud services disable $API --bypass-api-usage-check --project $PGVIGIL_LAB_GCP_PROJECT): the state file $STATE stays"
+    g services disable "$API" || fail "the project's $API stays enabled (undo: gcloud services disable $API --project $PGVIGIL_LAB_GCP_PROJECT, with --force if gcloud refuses it for recent use; --force also disables services that depend on it): the state file $STATE stays"
     echo "undone: the project's $API disabled again"
   fi
   rm -f "$STATE"
