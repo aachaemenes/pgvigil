@@ -61,7 +61,7 @@
 #     the run: the separate data-directory row is gone, it counted pg_default's bytes twice]; /api/collectiondates: one row per active instance and collection, each status critical, warning,
 #     ok or disabled, critical exactly where the last run failed; ?instance=<sql01> its own rows only.
 #  C adds: Collection opens Collection dates on both engines; Database state opens Database options (PostgreSQL
-#     pgdboptions; SQL Server the Checks page with cv=databases); QS opens pgstate / mssqlqs; Uptime opens the dialog
+#     pgdboptions; SQL Server the Checks page with cv=databases); QS (SQL Server alone) opens mssqlqs, pg_stat_statements (PostgreSQL alone) pgstate; Uptime opens the dialog
 #     over the Summary (the address unchanged, the dialog names the instance and 'In force: warning under .. hours,
 #     critical under .. hours'), on both engines; no named difference is left for those four; each drive's Files link
 #     under erp01 and sql01 opens 'Files on <drive>' listing only that drive's files; the PostgreSQL strip holds Temp.
@@ -360,10 +360,12 @@ for s in ('root', 'tag ' + d['tag'], 'PostgreSQL ' + d['pg'], 'SQL Server ' + d[
     if len(t) < 6: bad.append('%d Storage tabs at %s' % (len(t), s))
 # task 176b: the four landings DBA Dash's map now holds, the Uptime dialog, a drive's Files, the PostgreSQL Temp tab
 for e in ('postgres', 'sqlserver'):
-    for c in ('Snapshot Age', 'Database State', 'QS', 'Instance Uptime'):
+    # QS is SQL Server's Query Store alone; PostgreSQL's statement store is its own column (Allen 2026-11-12)
+    for c in ('Snapshot Age', 'Database State', 'QS' if e == 'sqlserver' else 'pg_stat_statements', 'Instance Uptime'):
         got = has(scope='root', kind='cell', column=c, engine=e)
         if not got: bad.append('no %s cell of %s at the root' % (c, e))
         elif any('named difference' in x['verdict'] for x in got): bad.append('%s of %s still a named difference' % (c, e))
+    if has(scope='root', kind='cell', column='pg_stat_statements' if e == 'sqlserver' else 'QS', engine=e): bad.append('a %s cell is a link on %s' % ('pg_stat_statements' if e == 'sqlserver' else 'QS', e))
     if not [x for x in r if x['kind'] == 'cell' and x['column'] == 'Instance Uptime' and x['engine'] == e and 'dialog over the Summary' in x['landed']]: bad.append('no Instance Uptime dialog clicked on ' + e)
 for s in ('PostgreSQL ' + d['pg'], 'SQL Server ' + d['ms']):
     if not [x for x in has(scope=s, kind='drive-files') if x['verdict'].startswith('ok')]: bad.append('no drive Files link checked at ' + s)
