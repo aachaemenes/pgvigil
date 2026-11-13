@@ -7,7 +7,9 @@
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database
 #   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 240; a loaded machine seeds slower)
 #   PGVIGIL_A11Y_MAX   the most violation nodes allowed (default 0)
-# Expected: every page renders and axe runs on it (the check's exit 0); 0 violation nodes under the
+# Expected: every page renders and axe runs on it (the check's exit 0); every off control (disabled or aria-disabled)
+# on Community tools, Custom reports and Report mail has a visible reason as its description (other pages' are
+# listed 'b2', not failed; a planted one is counted first); 0 violation nodes under the
 # WCAG 2.1 A / AA rules in both themes (the rules axe can judge; keyboard order, focus visibility and
 # screen-reader behaviour need a hand pass and are not claimed here). axe-core 4.14.0 is installed into
 # the proof's temporary folder from npm.
@@ -44,7 +46,11 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 
 echo "== the check"
-node scripts/a11y-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$AXE" "${PGVIGIL_A11Y_OUT:-$WORK/a11y.json}" | tee "$WORK/a11y.txt" || fail "a page did not render or axe did not run on it"
+node scripts/a11y-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$AXE" "${PGVIGIL_A11Y_OUT:-$WORK/a11y.json}" | tee "$WORK/a11y.txt" || {
+  grep -q '^off-reason: [1-9]' "$WORK/a11y.txt" && fail "an off control on Community tools, Custom reports or Report mail has no visible reason (the 'off' lines above)"
+  grep -q '^off-reason self-test:' "$WORK/a11y.txt" && ! grep -q '^off-reason self-test: planted off buttons without a reason counted 4 of 4$' "$WORK/a11y.txt" \
+    && fail "the off-reason check's self-test did not count its 4 planted buttons"
+  fail "a page did not render or axe did not run on it"; }
 # the demo has SQL Server instances: a check that walked none of their pages has not checked them
 sqlp=$(sed -n 's/^SQL Server pages in the check: \([0-9]*\)$/\1/p' "$WORK/a11y.txt"); (( ${sqlp:-0} > 0 )) || fail "no SQL Server page was in the check"
 nodes=$(sed -n 's/^total: [0-9]* rule(s), \([0-9]*\) node(s).*/\1/p' "$WORK/a11y.txt")
