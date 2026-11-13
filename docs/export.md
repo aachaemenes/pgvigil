@@ -14,9 +14,9 @@ same way as any browser.
 ## The workbook
 
 - **Summary** is the first sheet: the instance (or `fleet`, or the tag), the tab, the time window (its label,
-  its start and its end), the export time, the time zone the times in the file are written in (the display time zone: the browser's unless the range panel names another, as
+  its start and its end; and, when parts of the page read only the newest part of a long window - each part reads its own reach of it, 31 days and an hour unless it reads further - a 'Read' row with what they read), the export time, the time zone the times in the file are written in (the display time zone: the browser's unless the range panel names another, as
   `America/Los_Angeles (UTC-08:00 at export)`; each time carries its own date's offset, so a window across a
-  daylight-saving change holds two), and one line per data sheet with its row count and, when the page said
+  daylight-saving change holds two), and one line per data sheet with its row count and its note: what the list read when its part was cut to its reach ('This list reads the newest 31 days of this window: <from> to <to>.', also the first line of its CSV), and, when the page said
   it shows only the newest N of M rows (the Running queries samples), that note, or, for a grid with no row, the
   page's own empty message. Its header row and the
   heading of its list of sheets carry the same blue as every data sheet's header.
