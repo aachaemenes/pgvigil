@@ -1,10 +1,12 @@
 // The demo's write door in a browser that CLICKS (task B7; run by scripts/proof-demodoor.sh).
-//   node scripts/demodoor-check.mjs <cdp port> <base url> <the real instance's name> [<folder for the shots>]
+//   node scripts/demodoor-check.mjs <cdp port> <base url> <the real instance's name> [<folder for the shots> [<failed jobs, JSON>]]
 // It drives the page as a visitor of `pgvigil demo -serve` would: a click, the dialog's Save, the page after it - and
 // reads the acknowledge log beside it. Every line is 'ok   <row>: ...' or 'FAIL <row>: ...'; a row that cannot find
 // its control says what the page held instead. Exit 1 when any row failed.
 import { mkdirSync, writeFileSync } from 'node:fs';
-const [port, U, REAL, SHOTS] = process.argv.slice(2);
+const [port, U, REAL, SHOTS, JOBS] = process.argv.slice(2);
+// the demo instances with a failed job run, as the proof read them from the repository: [{ id, name, tab }]
+const failedJobs = JOBS ? JSON.parse(JOBS) : [];
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -71,6 +73,8 @@ const strip = await ev(`[...document.querySelectorAll('.attention-row')].map(r =
   const m = /[?&]i=(\\d+)/.exec(r.querySelector('strong a')?.getAttribute('href') ?? '');
   return { name: r.querySelector('strong')?.textContent.trim() ?? '', id: m ? Number(m[1]) : 0, btn: !!b, off: b?.getAttribute('aria-disabled') === 'true' || !!b?.disabled }; })`);
 await shot('1-summary-before');
+// what Allen saw under the strip at 19:03: 'Acknowledge is off: acknowledgements need the UI login: this server runs with -no-login'
+const offSaid = await ev(`(/Acknowledge is off[^.]*/.exec(document.querySelector('main')?.textContent ?? '') ?? [''])[0]`);
 const line = (strip ?? []).find(r => r.btn && !r.off && r.name !== REAL);
 const ackCells = () => ev(`document.querySelectorAll('main .ack').length`);
 let acked = '';
@@ -86,28 +90,66 @@ else {
   const listed = await ev(`[...document.querySelectorAll('main details li')].filter(li => li.textContent.includes(${JSON.stringify(line.name)}) && /acknowledged by demo/.test(li.textContent)).length`);
   const log = await lastLog();
   acked = line.name;
-  judge('R1', d.opened && /saved/.test(d.answer) && !still && after > before && listed > 0 && log.ui_user === 'demo' && log.outcome === 'done' && log.client === 'demo door',
-    `${line.name}: the dialog '${d.title}' answered '${d.answer}'; its line left the strip (${!still}); acknowledged cells ${before} -> ${after}; ${listed} of its checks listed 'acknowledged by demo'; the log's newest row ${log.ui_user} / ${log.client} / ${log.op} / ${log.outcome}`);
+  judge('R1', !offSaid && d.opened && /saved/.test(d.answer) && !still && after > before && listed > 0 && log.ui_user === 'demo' && log.outcome === 'done' && log.client === 'demo door',
+    `${line.name}: the page says 'Acknowledge is off' nowhere (${offSaid ? `it says '${offSaid}'` : 'true'}); the dialog '${d.title}' answered '${d.answer}'; its line left the strip (${!still}); acknowledged cells ${before} -> ${after}; ${listed} of its checks listed 'acknowledged by demo'; the log's newest row ${log.ui_user} / ${log.client} / ${log.op} / ${log.outcome}`);
 }
 
-// ---- R1b an instance's own page (a DEMO instance): Acknowledge there
+// ---- R1b a DEMO instance's own pages. An instance's own Summary page draws no Acknowledge (the strip with it is the
+// fleet Summary's; vis-b7a printed that page's buttons), so the row clicks what an instance's pages do offer:
+// (a) the header's Silence, then Unsilence, on its Summary page; (b) the Acknowledge of a failed job on its Jobs page.
+// The instance is one with a failed job run, another than R1's where there is one.
 {
-  const other = (strip ?? []).find(r => r.btn && !r.off && r.name !== REAL && r.name !== acked && r.id > 0);
-  if (!other) fail('R1b', `no second line of the strip with an Acknowledge that is on and an instance link: ${JSON.stringify((strip ?? []).slice(0, 6))}`);
+  const inst = failedJobs.find(j => j.name !== acked) ?? failedJobs[0];
+  if (!inst) fail('R1b', `the repository holds no demo instance with a failed job run (the proof's own read: ${JSON.stringify(failedJobs)}): no Acknowledge under an instance to click`);
   else {
-    await go(`#/summary?i=${other.id}`);
+    const head = () => ev(`(() => { const h = document.querySelector('.inst-header'); if (!h) return { found: false, hash: location.hash };
+      const b = h.querySelector('button.silence-btn');
+      return { found: true, hash: location.hash, name: h.querySelector('.inst-name')?.textContent.trim() ?? '', btn: b ? b.textContent.trim() : '',
+        off: !b || b.getAttribute('aria-disabled') === 'true' || b.disabled, bell: !!h.querySelector('.silenced-bell') }; })()`);
+    const headClick = (text) => ev(`(() => { const b = document.querySelector('.inst-header button.silence-btn');
+      if (!b || b.textContent.trim() !== ${JSON.stringify(text)} || b.getAttribute('aria-disabled') === 'true' || b.disabled) return false; b.click(); return true; })()`);
+    const logLine = (l) => `${l.ui_user} / ${l.client} / ${l.kind} / ${l.op} / ${l.outcome} / ${l.instance}`;
+    const byDoor = (l, kind, op) => l.ui_user === 'demo' && l.client === 'demo door' && l.kind === kind && l.op === op && l.outcome === 'done' && l.instance === inst.name;
+    // (a) the header of the instance's own Summary page
+    await go(`#/summary?i=${inst.id}`);
     await shot('4-instance-page-before');
-    const here = await ev(`(() => { const rows = [...document.querySelectorAll('main .attention-row')]; const b = rows.map(r => r.querySelector('button[aria-label^="Acknowledge "]')).find(x => x && x.getAttribute('aria-disabled') !== 'true' && !x.disabled);
-      if (!b) return { clicked: false, hash: location.hash, h2: document.querySelector('main h2')?.textContent ?? '', buttons: [...document.querySelectorAll('main button')].map(x => x.textContent.trim()).filter(Boolean).slice(0, 40) };
-      b.click(); return { clicked: true, hash: location.hash, h2: document.querySelector('main h2')?.textContent ?? '' }; })()`);
-    if (!here.clicked) fail('R1b', `${other.name}'s page (${here.hash}, '${here.h2}') has no Acknowledge that is on; its buttons: ${JSON.stringify(here.buttons)}`);
+    const h0 = await head();
+    if (!h0.found || h0.name !== inst.name || h0.off || !['Silence', 'Unsilence'].includes(h0.btn))
+      fail('R1b-a', `${inst.name}'s own page (#/summary?i=${inst.id}): the header's Silence is not there, or off: ${JSON.stringify(h0)}`);
     else {
-      const d = await saveDialog('demo door proof, the instance page');
-      await shot('5-instance-page-after-acknowledge');
-      const still = await ev(`[...document.querySelectorAll('main .attention-row strong')].some(s => s.textContent.trim() === ${JSON.stringify(other.name)})`);
+      const steps = [];
+      for (const want of (h0.btn === 'Silence' ? ['Silence', 'Unsilence'] : ['Unsilence', 'Silence'])) {
+        const clicked = await headClick(want);
+        const d = clicked ? await saveDialog(want === 'Silence' ? 'demo door proof, the instance page' : undefined) : { opened: false, answer: '' };
+        const log = await lastLog(), h = await head();
+        await shot(want === 'Silence' ? '4b-instance-page-silenced' : '4c-instance-page-unsilenced');
+        steps.push({ want, clicked, answer: d.answer, log: logLine(log), bell: !!h.bell, next: h.btn,
+          good: clicked && d.opened && (want === 'Silence' ? /saved/.test(d.answer) && byDoor(log, 'silence', 'add') && h.bell === true && h.btn === 'Unsilence'
+            : /ended/.test(d.answer) && byDoor(log, 'silence', 'end') && h.bell === false && h.btn === 'Silence') });
+      }
+      judge('R1b-a', steps.every(x => x.good), `${inst.name}'s own page (${h0.hash}), the header: ` + steps.map(x =>
+        `'${x.want}' clicked ${x.clicked}, answered '${x.answer}', the header then ${x.bell ? 'with' : 'without'} the silenced mark and '${x.next}', the log ${x.log}`).join('; '));
+    }
+    // (b) the Acknowledge of a failed job on the instance's own Jobs page
+    await go(`#/${inst.tab}?i=${inst.id}`);
+    const jobBtn = `[...document.querySelectorAll('main button[aria-label^="Acknowledge "]')].find(x => x.textContent.trim() === 'Acknowledge' && x.getAttribute('aria-disabled') !== 'true' && !x.disabled)`;
+    await until(`!!(${jobBtn})`, 15000);
+    await shot('5-instance-jobs-before');
+    const job = await ev(`(() => { const b = ${jobBtn};
+      if (!b) return { clicked: false, hash: location.hash, h2: document.querySelector('main h2')?.textContent ?? '', buttons: [...document.querySelectorAll('main button')].map(x => x.textContent.trim() + (x.getAttribute('aria-disabled') === 'true' || x.disabled ? ' (off)' : '')).filter(Boolean).slice(0, 40) };
+      const label = b.getAttribute('aria-label'); b.click(); return { clicked: true, hash: location.hash, label }; })()`);
+    if (!job.clicked) fail('R1b-b', `${inst.name}'s Jobs page (${job.hash}, '${job.h2}') has no Acknowledge that is on; its buttons: ${JSON.stringify(job.buttons)}`);
+    else {
+      await sleep(300); await shot('5b-instance-jobs-acknowledge-dialog');
+      const d = await saveDialog();
+      const clear = 'Clear the acknowledgement of ' + job.label.replace(/^Acknowledge /, '');
+      const cell = await until(`(() => { const c = [...document.querySelectorAll('main button[aria-label]')].find(x => x.getAttribute('aria-label') === ${JSON.stringify(clear)});
+        return c ? { text: c.parentElement.textContent.trim(), clearOn: c.getAttribute('aria-disabled') !== 'true' && !c.disabled } : null; })()`, 10000);
+      const again = await ev(`[...document.querySelectorAll('main button[aria-label]')].some(x => x.getAttribute('aria-label') === ${JSON.stringify(job.label)})`);
+      await shot('5c-instance-jobs-acknowledged');
       const log = await lastLog();
-      judge('R1b', d.opened && /saved/.test(d.answer) && !still && log.ui_user === 'demo' && log.outcome === 'done' && log.instance === other.name,
-        `${other.name}'s own page (${here.hash}): '${d.title}' answered '${d.answer}'; its line left (${!still}); the log's newest row ${log.ui_user} / ${log.instance} / ${log.op} / ${log.outcome}`);
+      judge('R1b-b', d.opened && /saved/.test(d.answer) && !!cell && cell.clearOn && /^acknowledged /.test(cell.text) && !again && byDoor(log, 'job', 'add'),
+        `${inst.name}'s Jobs page (${job.hash}): '${job.label}' clicked, '${d.title}' answered '${d.answer}'; its cell then reads '${cell?.text ?? ''}' (Clear on: ${cell?.clearOn ?? false}), the Acknowledge button gone (${!again}); the log ${logLine(log)}`);
     }
     await go('#/summary');
   }
@@ -149,6 +191,10 @@ if (acked) {
     const b = rows.map(tr => tr.querySelector('button.silence-btn')).find(Boolean);
     return b ? { found: true, off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled, words: off(b), label: b.textContent.trim() } : { found: false, rows: rows.length }; })()`);
   await shot('6-summary-mixed-store');
+  // the real instance's row brought into view: where its off Silence and the words beside it land on the page
+  await ev(`(() => { const rows = [...document.querySelectorAll('main tr')].filter(tr => [...tr.querySelectorAll('td, th')].some(c => c.textContent.trim() === ${JSON.stringify(REAL)}));
+    const b = rows.map(tr => tr.querySelector('button.silence-btn')).find(Boolean); if (b) b.scrollIntoView({ block: 'center', inline: 'nearest' }); })()`);
+  await sleep(300); await shot('6b-summary-real-instance-silence-off');
   const demoRow = await ev(`(() => { const b = [...document.querySelectorAll('main button.silence-btn')].find(x => x.getAttribute('aria-disabled') !== 'true' && !x.disabled); return b ? b.getAttribute('aria-label') : ''; })()`);
   judge('R7', real?.found && real.off && !real.disabledAttr && real.words.includes(`${REAL} is not one of this demo's instances`) && !!demoRow,
     `${REAL}'s Silence on the Summary: ${JSON.stringify(real)}; a demo instance's Silence is on ('${demoRow}')`);
