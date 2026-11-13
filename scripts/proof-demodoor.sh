@@ -154,7 +154,7 @@ for pair in "$REAL:prod-db1" "$TAGGED:prod-db2"; do
 done
 if [[ $(q "select (select count(*) from pgvigil.acks where instance_id in ($REAL, $TAGGED) or instance_name in ('prod-db1', 'prod-db2')) + (select count(*) from pgvigil.ack_log where instance_name in ('prod-db1', 'prod-db2'))") == 0 ]]; then ok "A nothing written for prod-db1 or prod-db2 (by id or by name, the log too)"; else fail "A a row was written for a real instance"; fi
 post drives/thresholds '{"op":"set","level":"root","warn":20,"crit":10}' "${H[@]}"; want "a root drive threshold" 403 "a root change would reach past the demo's instances"
-post jobs/exclusions '{"op":"add","level":"root","pattern":"x"}' "${H[@]}"; want "a root job exclusion" 403 "a root change would reach past the demo's instances"
+post jobs/exclusions '{"op":"add","level":"root","pattern":"x"}' "${H[@]}"; want "a job exclusion (its page is not taught the door: the route is not the door's)" 403 "this change is not made through the demo"
 post ack '{"kind":"mute","match_text":"jit","note":"x"}' "${H[@]}"; want "a mute on every instance" 403 "an every-instance change would reach past the demo's instances"
 post drives/thresholds "{\"op\":\"set\",\"level\":\"instance\",\"instance_id\":$D1,\"warn\":20,\"crit\":10}" "${H[@]}"; want "an instance's drive threshold" 200 '"outcome":"done"'
 [[ $(q "select created_by from pgvigil.drive_thresholds where instance_id = $D1 order by threshold_id desc limit 1") == demo ]] && ok "A its row is demo's" || fail "A the threshold's created_by"
