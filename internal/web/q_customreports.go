@@ -339,6 +339,21 @@ type instanceRun struct {
 	Rows       int         `json:"rows"`
 	Sets       []resultSet `json:"sets"`
 	Statement  string      `json:"-"`
+	// the door the run used: 'file' (pgvigil.yaml's instance), 'page' (Admin > Instances') or 'store' (the
+	// repository), and the inventory generation its door set was built from - the audit row names both
+	Door    string `json:"-"`
+	DoorGen int64  `json:"-"`
+}
+
+// audit adds the run's door to its audit row (custom_report_log door, door_generation: 0131)
+func (run *instanceRun) audit(row map[string]any) map[string]any {
+	if run.Door != "" {
+		row["door"] = run.Door
+		if run.Door != "store" {
+			row["door_generation"] = run.DoorGen
+		}
+	}
+	return row
 }
 
 const (
@@ -1045,6 +1060,11 @@ func (s *Server) auditRun(ctx context.Context, row map[string]any) error {
 // refuseRun answers a run refused before anything was sent (a parameter value, the target, a parameter that writes),
 // with its audit row: outcome refused, the reason as its detail.
 func (s *Server) refuseRun(w http.ResponseWriter, r *http.Request, row map[string]any, why error) {
+	s.refuseRunStatus(w, r, row, why, http.StatusBadRequest)
+}
+
+// refuseRunStatus is refuseRun with the answer's status (403 for a form refused for its login: SF4)
+func (s *Server) refuseRunStatus(w http.ResponseWriter, r *http.Request, row map[string]any, why error, status int) {
 	row["outcome"], row["detail"] = "refused", why.Error()
 	actx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
 	defer cancel()
@@ -1052,19 +1072,8 @@ func (s *Server) refuseRun(w http.ResponseWriter, r *http.Request, row map[strin
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("%v; the refusal's audit row could not be written: %v", why, err))
 		return
 	}
-	writeErr(w, http.StatusBadRequest, why)
+	writeErr(w, status, why)
 }
-
-// pgDoorDSN is a PostgreSQL instance's monitoring login, "" = none configured here.
-func (s *Server) pgDoorDSN(name string) string {
-	if s.actions == nil {
-		return ""
-	}
-	return s.actions.doors[name].Monitor
-}
-
-// msDoorDSN is a SQL Server instance's read login, "" = none configured here.
-func (s *Server) msDoorDSN(name string) string { return s.mssqlDoor().doors[name].Monitor }
 
 // CustomReportRun is POST /api/customreports/run.
 func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
@@ -1153,7 +1162,7 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		for k, v := range given {
 			args[k] = v
 		}
-		run := instanceRun{Instance: "store", Engine: "store", Statement: stmt}
+		run := instanceRun{Instance: "store", Engine: "store", Statement: stmt, Door: "store"}
 		if in.Target == "instance" {
 			run.InstanceID = targets[0].id
 		}
@@ -1180,6 +1189,7 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		runs = make([]instanceRun, len(mine))
+		ds := s.doorsNow() // one door set for every target of the run
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 4)
 		for i, t := range mine {
@@ -1188,7 +1198,7 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				runs[i] = s.runOnInstance(ctx, d, t, stmt, given, from, to, timeout)
+				runs[i] = s.runOnInstance(ctx, ds, d, t, stmt, given, from, to, timeout)
 			}(i, t)
 		}
 		wg.Wait()
@@ -1202,7 +1212,7 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		if run.InstanceID > 0 {
 			row["instance_id"] = run.InstanceID
 		}
-		if err := s.auditRun(actx, row); err != nil {
+		if err := s.auditRun(actx, run.audit(row)); err != nil {
 			s.log.Error("custom report: the run's audit row was not written", "report", d.ID, "instance", run.Instance, "user", user, "err", err)
 			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the run's audit row could not be written (%v): its rows are withheld", err))
 			return
@@ -1238,16 +1248,17 @@ func (run *instanceRun) finish(t0 time.Time, sets []resultSet, why string, err e
 	}
 }
 
-// runOnInstance runs a report on one monitored instance through its own login.
-func (s *Server) runOnInstance(ctx context.Context, d *reportDef, t runTarget, stmt string, given map[string]any, from, to time.Time, timeout time.Duration) instanceRun {
-	run := instanceRun{InstanceID: t.id, Instance: t.name, Engine: t.engine, Statement: stmt}
+// runOnInstance runs a report on one monitored instance through its own read login on ds (the request's door set).
+func (s *Server) runOnInstance(ctx context.Context, ds *doorSet, d *reportDef, t runTarget, stmt string, given map[string]any, from, to time.Time, timeout time.Duration) instanceRun {
+	run := instanceRun{InstanceID: t.id, Instance: t.name, Engine: t.engine, Statement: stmt, DoorGen: ds.Gen}
 	t0 := time.Now()
+	dsn, kind, no := ds.readLogin(t.engine, t.name)
+	run.Door = kind
+	if no.Why != "" {
+		run.finish(t0, nil, no.Why, nil)
+		return run
+	}
 	if t.engine == "sqlserver" {
-		dsn, no := s.msRunLogin(t.name)
-		if no != "" {
-			run.finish(t0, nil, no, nil)
-			return run
-		}
 		args := []any{sql.Named("from", from), sql.Named("to", to)}
 		for _, p := range d.Params {
 			if v := given[p.Name]; v != nil || d.Kind == "sql" {
@@ -1256,11 +1267,6 @@ func (s *Server) runOnInstance(ctx context.Context, d *reportDef, t runTarget, s
 		}
 		sets, why, err := runMS(ctx, dsn, stmt, args, timeout, d.MaxRows, true)
 		run.finish(t0, sets, why, err)
-		return run
-	}
-	dsn := s.pgDoorDSN(t.name)
-	if dsn == "" {
-		run.finish(t0, nil, "instance "+t.name+" has no monitoring login configured on this server", nil)
 		return run
 	}
 	cfg, err := pgx.ParseConfig(dsn)

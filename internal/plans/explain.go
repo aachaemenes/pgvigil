@@ -22,8 +22,12 @@ const MaxStatement = 100000
 const GenericNote = "the generic plan (PREPARE + plan_cache_mode = force_generic_plan): the parameters stay $n, as an application's prepared statement is planned after its fifth execution"
 
 // Connect opens a short-lived connection for a plan: dsn with its database replaced by datname when given, a read-only
-// default, a statement timeout and a short lock timeout, the application name app.
+// default, a statement timeout and a short lock timeout, the application name app. An empty dsn is refused: pgx would
+// fill it from serve's own environment and sign in as serve (as openMS refuses one for SQL Server).
 func Connect(ctx context.Context, dsn, datname, app string, timeout time.Duration) (*pgx.Conn, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("no login for this instance on this server: its dsn is empty")
+	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("the dsn does not parse")

@@ -191,6 +191,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	srv.SetInstancesAdmin(web.InstancesAdmin{ConfigPath: *path, File: cfg.Instances, DBADash: dd})
 	go srv.RunInstanceSync(ctx)
+	// the read doors of each inventory generation (pgvigil.yaml's, and Admin > Instances' when doors.page_instance_reads
+	// is on), after every Set* call above: serve alone watches (demo and mcp keep the file's doors)
+	go srv.WatchDoors(ctx, log, cfg, web.DoorEvery)
 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
 	go srv.RunReportMail(ctx)
 

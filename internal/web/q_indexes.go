@@ -168,8 +168,14 @@ func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", in.InstanceID))
 		return
 	}
-	door, ok := a.doors[name]
-	if !ok || strings.TrimSpace(door.Monitor) == "" {
+	ds := s.doorsNow()
+	door, ok := ds.PG[name]
+	switch {
+	case ok && door.Page:
+		// the index advisor stays on pgvigil.yaml's instances (SF1)
+		writeErr(w, http.StatusConflict, errors.New(fileOnly(name)))
+		return
+	case !ok || strings.TrimSpace(door.Monitor) == "":
 		writeErr(w, http.StatusConflict, fmt.Errorf("instance %s is not in this server's configuration", name))
 		return
 	}

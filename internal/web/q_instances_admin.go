@@ -518,8 +518,14 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 		// the row names the new file now (or no file: a remove); the old one goes after the collector's next read
 		s.removeSecretLater(a.secretDir(), previous, name)
 	}
+	var extra map[string]any
+	if ans.Outcome == "done" {
+		if d := s.doorsAfterWrite(ctx); d != "" {
+			extra = map[string]any{"doors": d}
+		}
+	}
 	s.log.Info("admin instance", "op", op, "name", name, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
-	s.answer(w, ans, raw, nil)
+	s.answer(w, ans, raw, extra)
 }
 
 func slicesContains(l []string, v string) bool {

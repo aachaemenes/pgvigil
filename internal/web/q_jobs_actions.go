@@ -55,13 +55,8 @@ func (s *Server) SetPgJobActions(allow map[string][]string) {
 	pgJobAllow.Store(s, m)
 }
 
-func (s *Server) pgJobAllowed(instance, kind string) bool {
-	v, ok := pgJobAllow.Load(s)
-	if !ok {
-		return false
-	}
-	return v.(map[string]map[string]bool)[instance][kind]
-}
+// pgJobAllowed: the instance's actions: list in pgvigil.yaml names the job action (the set's copy of the lists)
+func (ds *doorSet) pgJobAllowed(instance, kind string) bool { return ds.PgJobs[instance][kind] }
 
 // pgJobAuditOff is why the audit cannot take a job action's row, or "" when it can.
 func (s *Server) pgJobAuditOff(ctx context.Context) string {
@@ -76,7 +71,7 @@ func (s *Server) pgJobAuditOff(ctx context.Context) string {
 
 // pgJobOff is why a job action is off on an instance, or "" when it is on; auditOff is pgJobAuditOff's answer, read once
 // per request.
-func (s *Server) pgJobOff(instance, kind, auditOff string) string {
+func (s *Server) pgJobOff(ds *doorSet, instance, kind, auditOff string) string {
 	a := s.actions
 	switch {
 	case a == nil:
@@ -84,10 +79,10 @@ func (s *Server) pgJobOff(instance, kind, auditOff string) string {
 	case a.off != "":
 		return a.off
 	}
-	if off := a.doors[instance].Off(instance); off != "" {
+	if off := ds.PG[instance].Off(instance); off != "" {
 		return strings.Replace(off, "cancel and terminate are off", "job actions are off", 1)
 	}
-	if !s.pgJobAllowed(instance, kind) {
+	if !ds.pgJobAllowed(instance, kind) {
 		return fmt.Sprintf("instance %s's actions: list does not name %s: the job actions are off by default (add it to the instance's actions: in the config)", instance, kind)
 	}
 	return auditOff
@@ -129,8 +124,9 @@ func (s *Server) JobsRunning(w http.ResponseWriter, r *http.Request) {
 	if s.actions != nil && s.actions.off == "" {
 		auditOff = s.pgJobAuditOff(ctx)
 	}
+	ds := s.doorsNow()
 	for _, k := range []string{collect.JobStop, collect.JobStart} {
-		why := s.pgJobOff(name, k, auditOff)
+		why := s.pgJobOff(ds, name, k, auditOff)
 		acts[k] = state{On: why == "", Reason: why}
 	}
 	out["actions"] = acts
@@ -229,14 +225,18 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 	case in.Scheduler == "pg_cron" && in.PID > 0:
 		would = fmt.Sprintf("SELECT pg_cancel_backend(%d)", in.PID)
 	}
+	ds := s.doorsNow() // the request's one door set
 	switch {
-	case !s.pgJobAllowed(name, kind):
+	case ds.PG[name].Page:
+		// an instance added in Admin > Instances: no action of any kind (SF5)
+		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: actions.PageOff(name)}
+	case !ds.pgJobAllowed(name, kind):
 		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would,
 			Detail: fmt.Sprintf("instance %s's actions: list does not name %s: the job actions are off by default", name, kind)}
 	case strings.TrimSpace(in.Confirm) != strings.TrimSpace(in.JobName) || strings.TrimSpace(in.JobName) == "":
 		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: "the typed confirmation is not the job's name"}
 	default:
-		res = pgJobRun(ctx, a.doors[name], req)
+		res = pgJobRun(ctx, ds.PG[name], req)
 	}
 	at := time.Now()
 	// the audit row outlives a client that hangs up, never 15 s
