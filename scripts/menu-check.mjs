@@ -17,7 +17,8 @@
 //   R2 refresh        on About (no live page): no /api/instances read in 1.5 s alone, a new one after Refresh (run 3)
 //   R3 add            Add Connections: name sql09, SQL Server, env PGVIGIL_DSN_SQL09 -> the lines '  - name: sql09',
 //                     '    engine: sqlserver', '    dsn: env:PGVIGIL_DSN_SQL09'; SQL Server's platforms
-//                     'auto,onprem,rds,azuresqldb,azuresqlmi'; a name already in the fleet said so (run 3)
+//                     'auto,onprem,rds,azuresqldb,azuresqlmi,cloudsql' (cloudsql: Google Cloud SQL for SQL Server,
+//                     config.go's SQL Server platforms); a name already in the fleet said so (run 3)
 //   R4 find           'a' refused (two characters); 'erp' and 'sales': exactly the search API's database rows plus the
 //                     SQL Server databases read by hand from each instance's storage read, every link holding the text,
 //                     'sales' with a link to a SQL Server instance's Database files; 'billing', one exact name: its page
@@ -228,7 +229,7 @@ await guard('R3 add', async () => {
     return { yaml: document.querySelector('dialog[open] pre.tm-yaml').textContent, plats, taken }; })()`);
   await shot('add-connections-light');
   check('R3 add', t.yaml.includes('  - name: sql09\n') && t.yaml.includes('    engine: sqlserver\n') && t.yaml.includes('    dsn: env:PGVIGIL_DSN_SQL09')
-    && t.plats === 'auto,onprem,rds,azuresqldb,azuresqlmi' && /in the fleet already/.test(t.taken),
+    && t.plats === 'auto,onprem,rds,azuresqldb,azuresqlmi,cloudsql' && /in the fleet already/.test(t.taken),
     `${JSON.stringify(t.yaml.split('\n').slice(0, 4))}; SQL Server platforms ${t.plats}; a taken name: '${t.taken}'`);
   await closeDialogs();
 });
