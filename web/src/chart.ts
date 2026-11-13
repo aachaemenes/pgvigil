@@ -60,7 +60,7 @@ const minute = 60000;
 function pageWindow(): { from: number; to: number } {
   if (!pageWin || pageWin.key !== location.hash) {
     const w = window_(parse()), to = Math.ceil(Date.parse(w.to) / minute) * minute;
-    // whole minutes outward, then cut to the server's longest again (a 31-day window with ends inside a minute)
+    // whole minutes outward, then cut to the server's longest again (a year's window with ends inside a minute)
     pageWin = { key: location.hash, from: Math.max(Math.floor(Date.parse(w.from) / minute) * minute, to - MAX_RANGE_MS), to };
   }
   return pageWin;
@@ -80,7 +80,7 @@ function frameRead(instance: number, from: number, to: number): Promise<FrameRea
   return p;
 }
 // the window a chart's frame read covers: the page's, or the chart's own span when the chart draws a longer one (the
-// Storage tab's days): its last 31 days at most, the server's longest
+// Storage tab's days): its last year at most, the server's longest (the frame's events read their reach of it, the newest)
 function chartWindow(xs: number[]): { from: number; to: number } {
   const w = pageWindow(), a = xs[0] * 1000, b = xs[xs.length - 1] * 1000;
   if (a >= w.from - 0.1 * (w.to - w.from)) return w;

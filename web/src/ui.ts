@@ -1,4 +1,5 @@
 // DOM helpers and formatters. Data is always set as text, never parsed as HTML.
+import { ReadWindow, readWindowOf } from './api';
 import { fmt } from './tz';
 
 export function el<K extends keyof HTMLElementTagNameMap>(
@@ -208,11 +209,20 @@ export function narrowGrid(box: Element, keep?: (r: Record<string, unknown>) => 
   return !!set;
 }
 
+// readWindowWords: what a list or a page read of a window longer than its reach, in words ('the newest 31 days of
+// this window: <from> to <to>')
+export function readWindowWords(rw: ReadWindow): string {
+  const days = Math.round((Date.parse(rw.to) - Date.parse(rw.from)) / 86400e3);
+  return `the newest ${days} days of this window: ${fmt(new Date(rw.from))} to ${fmt(new Date(rw.to))}`;
+}
+const readWindowNote = (rw: ReadWindow) => el('p', { class: 'meta read-window' }, `This list reads ${readWindowWords(rw)}.`);
+
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
   // an empty grid is DBA Dash's: its header row alone (G08, task P08), drawn only (aria-hidden, not a .grid: the export,
   // the copy and the report mail still find the one p.empty and its data-cols), in a box that never scrolls; the words
   // stay for a screen reader and the proofs
-  if (rows.length === 0) return el('div', { class: 'empty-grid' },
+  const rw = readWindowOf(rows);
+  if (rows.length === 0) return el('div', { class: 'empty-grid' }, ...(rw ? [readWindowNote(rw)] : []),
     el('table', { class: 'grid-empty', 'aria-hidden': 'true' }, el('thead', {}, el('tr', {}, ...cols.map(c => el('th', {}, el('span', { class: 'th-label' }, c.label ?? c.key)))))),
     el('p', { class: 'empty visually-hidden', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty));
   let sortKey = '', asc = true;
@@ -351,7 +361,10 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;
     showMenu(x, y, items, (td as HTMLElement | null) ?? wrap);
   });
-  const box = el('div', { class: 'grid-box' }, count, wrap, more);
+  // a list whose part read only the newest part of a long window says so above itself, and its table carries the read
+  // window for the export's sheet note (export.ts)
+  if (rw) { table.dataset.readFrom = rw.from; table.dataset.readTo = rw.to; }
+  const box = el('div', { class: 'grid-box' }, ...(rw ? [readWindowNote(rw)] : []), count, wrap, more);
   scopes.set(box, (keep, note = '') => { scope = keep; scopeNote = note; draw(); });
   return box;
 }

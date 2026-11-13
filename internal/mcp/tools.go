@@ -70,7 +70,7 @@ var (
 	argInstance = arg{name: "instance", typ: "string", desc: "the instance's name (as fleet_summary lists it) or its instance_id", required: true}
 	argFrom     = arg{name: "from", typ: "string", desc: "window start, RFC 3339 (e.g. 2026-11-09T08:00:00Z); default: hours before to"}
 	argTo       = arg{name: "to", typ: "string", desc: "window end, RFC 3339; default now"}
-	argHours    = arg{name: "hours", typ: "integer", desc: "window length in hours when from is not given (1..744)"}
+	argHours    = arg{name: "hours", typ: "integer", desc: "window length in hours when from is not given (1..8785: a year, a leap day and an hour; a part reads its own reach of a long window and says so in read_from / read_to)"}
 )
 
 func tools() []tool {
@@ -98,7 +98,7 @@ func tools() []tool {
 			args: []arg{{name: "plan_id", typ: "integer", desc: "the plan to read; without it, instance lists the plans in the window"},
 				{name: "instance", typ: "string", desc: "with no plan_id: the instance whose plans to list"},
 				{name: "queryid", typ: "string", desc: "with instance: only this statement's plans (any age)"},
-				argFrom, argTo, {name: "hours", typ: "integer", desc: "window length in hours when from is not given (1..744, default 24)"}},
+				argFrom, argTo, {name: "hours", typ: "integer", desc: "window length in hours when from is not given (1..8785, default 24; a part reads its own reach of a long window and says so in read_from / read_to)"}},
 			run: planFindings},
 		{Name: "table_state", Title: "Table state",
 			Description: "One table's latest state on an instance: sizes (heap, TOAST, indexes), live and dead tuples, bloat, visibility, vacuum and analyze times and counts, scans, XID age and the table checks it fails, with its database's summary.",
@@ -171,6 +171,19 @@ func integer(a map[string]any, k string, def, lo, hi int) (int, error) {
 }
 
 // window turns from / to / hours into the API's from and to (RFC 3339); the API checks the rest.
+// maxHours is the API's longest window in hours (internal/web maxWindow: 366 days and an hour).
+const maxHours = 366*24 + 1
+
+// readNote adds what a reply read when its window was cut to a part's reach (the API's read_from / read_to beside the
+// table's columns and rows) to an MCP reply, so a caller never takes a month's numbers for a year's.
+func readNote(out map[string]any, t any) map[string]any {
+	if rf, ok := field(t, "read_from").(string); ok && rf != "" {
+		out["read_from"], out["read_to"] = rf, field(t, "read_to")
+		out["read_note"] = "the window was longer than this part reads: the numbers are of read_from to read_to, the newest part of the window"
+	}
+	return out
+}
+
 func window(a map[string]any, defHours int) (url.Values, error) {
 	q := url.Values{}
 	from, err := str(a, "from")
@@ -181,7 +194,7 @@ func window(a map[string]any, defHours int) (url.Values, error) {
 	if err != nil {
 		return nil, err
 	}
-	hours, err := integer(a, "hours", defHours, 1, 744)
+	hours, err := integer(a, "hours", defHours, 1, maxHours)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +413,7 @@ func topStatements(ctx context.Context, s *Server, a map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"instance": in, "from": q.Get("from"), "to": q.Get("to"), "order": order, "statements": records(v)}, nil
+	return readNote(map[string]any{"instance": in, "from": q.Get("from"), "to": q.Get("to"), "order": order, "statements": records(v)}, v), nil
 }
 
 func planFindings(ctx context.Context, s *Server, a map[string]any) (any, error) {
@@ -443,7 +456,7 @@ func planFindings(ctx context.Context, s *Server, a map[string]any) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"instance": in, "from": q.Get("from"), "to": q.Get("to"), "plans": records(field(v, "plans"))}, nil
+	return readNote(map[string]any{"instance": in, "from": q.Get("from"), "to": q.Get("to"), "plans": records(field(v, "plans"))}, field(v, "plans")), nil
 }
 
 func tableState(ctx context.Context, s *Server, a map[string]any) (any, error) {

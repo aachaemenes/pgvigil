@@ -1,7 +1,7 @@
 // The shell: a header (brand, where you are, the time range, refresh, theme, the user), the instance
 // tree on the left, a tab strip (root tabs for the fleet or a tag, instance tabs for one instance)
 // and the page under it.
-import { get, LoginRequired, post, Row, rowsOf, Session, Table } from './api';
+import { get, LoginRequired, onCutRead, post, Row, rowsOf, Session, startReads, Table } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget, tagsOf } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
@@ -39,7 +39,7 @@ import { schemaView } from './schema';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { closeRange, rangePicker } from './rangepicker';
-import { fmtClock } from './tz';
+import { fmt, fmtClock } from './tz';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
@@ -78,7 +78,7 @@ import { installTreeMenu } from './treemenu';
 import { installFileDrop, toolsButton } from './filedrop';
 import { retentionView } from './retention';
 import { dropMenu, el, fmtBytes } from './ui';
-import { exportButtons } from './export';
+import { cutWords, exportButtons } from './export';
 import { mailButton, mailRenderBoot, reportMailView } from './reportmail';
 import { connectionsView } from './connections';
 import { dbChangesView } from './dbchanges';
@@ -192,13 +192,25 @@ window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',
 // ---- auto refresh: how often a live page reads again (Darling's interval select; Off pauses it), remembered per browser
 const refreshChoices: [string, string][] = [['30', '30 s'], ['60', '1 min'], ['300', '5 min'], ['900', '15 min'], ['0', 'Off (paused)']];
 function refreshSecs(): number { const v = Number(lsGet('pgvigil.refresh') ?? '30'); return refreshChoices.some(([k]) => Number(k) === v) ? v : 30; }
-function refreshSelect(live: boolean): HTMLElement {
+// a window over a day reads again at most every 5 minutes: a year read again twice a minute is a heavy page for nothing
+// new (the choice kept stays the reader's; a shorter window takes it again)
+const LONG_FLOOR_S = 300;
+const longWindow = (ctx: Ctx) => { const w = window_(ctx); return Date.parse(w.to) - Date.parse(w.from) > 86400e3; };
+function refreshEvery(ctx: Ctx): number { const v = refreshSecs(); return v > 0 && longWindow(ctx) ? Math.max(v, LONG_FLOOR_S) : v; }
+const longWhy = 'a window over a day reads again at most every 5 minutes';
+function refreshSelect(live: boolean, long = false): HTMLElement {
   // a page that never reads again by itself (history, a snapshot, a page without live state) shows the choice disabled
   const why = live ? 'Auto refresh of a live page' : 'This page does not refresh by itself (a past range, a snapshot, or not a live page)';
   // (off: a form field stays natively disabled, and is described by the footer's own visible sentence, 'auto refresh
   // not on this page')
   const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '', 'aria-describedby': 'status-refresh' }) }) as HTMLSelectElement;
-  for (const [k, label] of refreshChoices) sel.append(el('option', { value: k, ...(Number(k) === refreshSecs() ? { selected: '' } : {}) }, 'Auto refresh: ' + label));
+  // over a day the 30 s and 1 min choices are off with the reason, and the choice in force (5 min) is the one shown
+  const shown = long && refreshSecs() > 0 ? Math.max(refreshSecs(), LONG_FLOOR_S) : refreshSecs();
+  for (const [k, label] of refreshChoices) {
+    const off = long && Number(k) > 0 && Number(k) < LONG_FLOOR_S;
+    sel.append(el('option', { value: k, ...(Number(k) === shown ? { selected: '' } : {}), ...(off ? { disabled: '', title: longWhy } : {}) }, 'Auto refresh: ' + label + (off ? ` (off: ${longWhy})` : '')));
+  }
+  if (live && long) { sel.title = `${why}; ${longWhy}`; sel.setAttribute('aria-label', `${why}; ${longWhy}`); }
   sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
   return sel;
 }
@@ -249,7 +261,8 @@ async function statusLine(ctx: Ctx, live: boolean) {
   }
   if (loginShown) return;
   const n = (k: string) => Number(statusRow?.[k] ?? 0);
-  const refresh = live ? (refreshSecs() > 0 ? 'every ' + (refreshChoices.find(([k]) => Number(k) === refreshSecs())?.[1] ?? refreshSecs() + ' s') : 'paused') : 'not on this page';
+  const every = refreshEvery(ctx);
+  const refresh = live ? (every > 0 ? 'every ' + (refreshChoices.find(([k]) => Number(k) === every)?.[1] ?? every + ' s') + (every !== refreshSecs() ? ' (a window over a day)' : '') : 'paused') : 'not on this page';
   const items: (Node | string)[] = statusRow ? [
     el('span', { 'data-part': 'instances' }, `${n('instances')} instances (${n('postgres')} PostgreSQL, ${n('sqlserver')} SQL Server)`),
     el('span', { 'data-part': 'collections' }, 'collections: ', `${n('healthy')} healthy, `,
@@ -316,10 +329,56 @@ async function signOut() {
 
 let shownPage = '';   // the page main shows or is loading: the whole hash (tab, instance, tag, range, filters)
 let shownPath = '';   // its tab, instance and tag alone: another of them opens at the page's top (a range or a filter keeps the place)
+// ---- the range's words under the bar (task RANGE): what the page's parts read of a window longer than they reach (the
+// server's X-Pgvigil-Read-* headers, api.ts; a part read after the page was placed adds its line), and, when the
+// window starts before what the repository keeps, what it keeps (GET /api/stored, read at most every 5 minutes): the
+// row-trimmed summaries from the last purge run's age, the partitioned history from its oldest partition - each class
+// with its own date, nothing clipped (B5)
+let storedRead: { at: number; row: Row | null } | undefined;
+async function storedRow(): Promise<Row | null> {
+  if (!storedRead || Date.now() - storedRead.at > 300000) {
+    let row: Row | null = null;
+    try { row = rowsOf(await get('stored'))[0] ?? null; } catch { row = null; }
+    storedRead = { at: Date.now(), row };
+  }
+  return storedRead.row;
+}
+const utcWords = (ms: number, o: Intl.DateTimeFormatOptions) => new Date(ms).toLocaleDateString(undefined, { ...o, timeZone: 'UTC' });
+function rangeNote(ctx: Ctx, gen: number): HTMLElement {
+  const note = el('div', { class: 'range-note', role: 'status' });
+  const from = Date.parse(window_(ctx).from);
+  let storedWords = '';
+  const draw = () => {
+    const kids: Node[] = [];
+    const cut = cutWords();
+    if (cut) kids.push(el('p', { class: 'meta range-cut' }, cut + '.'));
+    if (storedWords) kids.push(el('p', { class: 'meta range-stored' }, storedWords + ' ', el('a', { href: href(ctx, { tab: 'retention', instance: undefined }) }, 'Data retention')));
+    note.replaceChildren(...kids);
+    note.hidden = kids.length === 0;
+  };
+  onCutRead(() => { if (gen === generation) draw(); });
+  void storedRow().then(row => {
+    if (gen !== generation || !row) return;
+    const at = (k: string) => (row[k] == null ? NaN : Date.parse(String(row[k])));
+    const rows = at('rows_from'), months = at('months_from'), days = at('days_from');
+    const kept = [rows, months, days].filter(x => !Number.isNaN(x));
+    if (!kept.length || from >= Math.max(...kept)) return;
+    const bits: string[] = [];
+    if (!Number.isNaN(rows)) bits.push(`the per-snapshot summaries from ${fmt(new Date(rows))} (pgvigil purge -days ${String(row.purge_days)}, last run ${fmt(new Date(String(row.purge_at)))})`);
+    if (!Number.isNaN(months)) bits.push(`the monthly history from ${utcWords(months, { month: 'long', year: 'numeric' })}`);
+    if (!Number.isNaN(days)) bits.push(`the daily history from ${utcWords(days, { day: 'numeric', month: 'long', year: 'numeric' })} (UTC)`);
+    storedWords = `This window starts ${fmt(new Date(from))}, before what the repository keeps: ${bits.join('; ')}.`;
+    draw();
+  }).catch(() => undefined);
+  draw();
+  return note;
+}
+
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
   const gen = ++generation;
+  startReads();   // the cut reads said under the range bar are this draw's
   dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
   const ctx = parse();
   rememberInstance(ctx.instance);
@@ -373,7 +432,7 @@ async function render(force = false) {
   const range = rangePicker(ctx, () => { void render(); });
   if (bar.firstChild !== range) bar.replaceChildren(range);
   while (range.nextSibling) range.nextSibling.remove();
-  bar.append(refresh, refreshSelect(livePage), exportButtons(ctx), mailButton(ctx), toolsButton(),
+  bar.append(refresh, refreshSelect(livePage, longWindow(ctx)), exportButtons(ctx), mailButton(ctx), toolsButton(),
     el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + fmtClock(new Date())),
     statusStyleButton(), themeButton(), aboutLink(ctx));
   if (session.login && session.user) {
@@ -424,6 +483,7 @@ async function render(force = false) {
   }
   if (gen !== generation) return;
   destroyCharts();
+  if (view.tagName !== 'P') view.prepend(rangeNote(ctx, gen));   // not into an error line
   // the page is placed the moment it is built and the header follows when its read ends (before the first paint when
   // it ended first; a refresh of the same page keeps the old header until then), never on a page the reader has left;
   // a header read that hangs holds nothing up
@@ -444,7 +504,7 @@ async function render(force = false) {
   void statusLine(ctx, livePage);
   const live = ctx.instance ? liveInstance : liveRoot;
   if (live.has(ctx.tab) && isLive(ctx) && !ctx.at && refreshSecs() > 0) {
-    timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, refreshSecs() * 1000);
+    timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, refreshEvery(ctx) * 1000);
   }
 }
 

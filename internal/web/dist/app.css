@@ -397,7 +397,7 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 /* ---------- 9. the range control (rangepicker.ts) and the time strip (timestrip.ts) ---------- */
 .range-btn::after { content: ' \25BE' / ''; color: var(--text-muted); }
 .range-zone-tag { white-space: nowrap; }
-.range-panel { position: absolute; top: calc(100% + var(--sp-1)); left: 0; z-index: 40; width: min(36rem, calc(100vw - 1rem)); display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2) var(--sp-4);
+.range-panel { position: absolute; top: calc(100% + var(--sp-1)); left: 0; z-index: 40; width: min(44rem, calc(100vw - 1rem)); display: grid; grid-template-columns: 2fr 1fr; gap: var(--sp-2) var(--sp-4);
                padding: var(--sp-3) var(--sp-4); background: var(--surface-raised); color: var(--text); border: var(--bw) solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-raised); }
 .range-panel fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .range-panel legend { padding: 0; margin-bottom: var(--sp-1); font-size: var(--fs-xs); font-weight: var(--fw-strong); letter-spacing: var(--caps-tracking); text-transform: uppercase; color: var(--text-muted); }
@@ -406,6 +406,12 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 .range-item { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-4); width: 100%; padding: var(--sp-1) var(--sp-2); border: var(--bw) solid transparent; background: none; color: inherit; text-align: left; }
 .range-item:hover, .range-item:focus-visible { background: var(--surface-hover); }
 .range-item[aria-pressed="true"] { border-color: var(--accent); }
+/* DBA Dash's twenty lengths in two columns, so the panel stays inside a 900-px-high window; Date and Month under the
+   calendar periods, each a select under its label */
+.range-panel .range-quick { display: grid; grid-template-columns: 1fr 1fr; column-gap: var(--sp-2); }
+.range-daymonth-label { display: block; margin-top: var(--sp-2); padding: 0 var(--sp-2); }
+.range-daymonth-label .meta { display: block; font-size: var(--fs-xs); }
+.range-daymonth { max-width: 100%; }
 @media (max-width: 34rem) { .range-panel { grid-template-columns: 1fr; } }
 /* sixty steps over the window, each filled from the bottom by its share of the busiest step; a drag, a click or the
    keyboard narrows the grid to a stretch and dims the steps outside it */

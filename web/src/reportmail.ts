@@ -10,7 +10,7 @@
 // drawn, builds the same mail and posts it back (POST /api/reportmail/rendered). The mail is sent by the alert sender
 // (pgvigil run) through an smtp channel of the alerts: block; this page shows each send's answer.
 import { get, post, Row, rowsOf, Table } from './api';
-import { Meta, Section, exportName, sections, timeZone, workbook, zip } from './export';
+import { cutWords, Meta, Section, exportName, sections, timeZone, workbook, zip } from './export';
 import { fleet } from './fleet';
 import { toHtml } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
@@ -44,7 +44,7 @@ async function metaOf(ctx: Ctx): Promise<Meta> {
   }
   const w = window_(ctx);
   const tab = (ctx.instance ? instanceTabs[ctx.tab] ?? mssqlInstanceTabs[ctx.tab] ?? drillTabs[ctx.tab] : rootTabs[ctx.tab]) ?? ctx.tab;
-  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date() };
+  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date(), read: cutWords() };
 }
 
 // numbers: per grid of root, in sections()' order, which of its shown columns are number columns (right-aligned in
@@ -63,7 +63,7 @@ export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: str
   const line = (k: string, v: string) => `<tr><th style="${cell};background:#0063a3;color:#ffffff;font-weight:bold;text-align:left">${esc(k)}</th><td style="${cell};color:#1d1d1f">${esc(v)}</td></tr>`;
   const head = '<table role="presentation" style="border-collapse:collapse;margin:0 0 10px 0">'
     + line('Instance', m.instance) + line('Page', m.tab) + line('Window', m.window)
-    + line('Window from', stamp(m.from)) + line('Window to', stamp(m.to)) + line('Made at', stamp(m.at))
+    + line('Window from', stamp(m.from)) + line('Window to', stamp(m.to)) + (m.read ? line('Read', m.read) : '') + line('Made at', stamp(m.at))
     + line('Time zone', timeZone(m.at)) + '</table>';
   const parts = secs.map((s, i) => {
     const h = `<h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;${FONT};color:#0063a3">${esc(s.name)}</h3>`;
