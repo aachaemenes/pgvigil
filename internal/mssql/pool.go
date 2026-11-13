@@ -64,16 +64,31 @@ const poolStatsSQL = `SELECT CONVERT(varchar(27), end_time, 126) AS end_time,
   CONVERT(varchar(27), SYSUTCDATETIME(), 126) AS server_utc
 FROM sys.dm_elastic_pool_resource_stats`
 
+// poolName chooses the pool's name: the database's own answer (sys.database_service_objectives) when the login may
+// read it, the instance's tag pool:<name> when not; a tag that names another pool than the database's own answer is a
+// skip (a database moved between pools would otherwise write its new pool's figures under the old name, mixed minute
+// by minute with the old pool's real ones).
+func poolName(tag, objectives string) (pool, from string, err error) {
+	tag, objectives = strings.TrimSpace(tag), strings.TrimSpace(objectives)
+	switch {
+	case objectives != "" && tag != "" && !strings.EqualFold(tag, objectives):
+		return "", "", fmt.Errorf("the instance's tag pool:%s names another pool than the database's own, %s (sys.database_service_objectives): fix the tag: %w", tag, objectives, collect.ErrSkip)
+	case objectives != "":
+		return objectives, "service objectives", nil
+	case tag != "":
+		return tag, "tag", nil
+	}
+	return "", "", fmt.Errorf("the pool's name is unknown to this login (sys.database_service_objectives answers the database's creator or owner, or dbManager): tag the instance pool:<name>: %w", collect.ErrSkip)
+}
+
 func (poolCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
-	pool, from := strings.TrimSpace(info.PoolTag), "tag"
-	if pool == "" {
-		from = "service objectives"
-		if rows, err := QueryRows(ctx, conn, poolNameSQL); err == nil && len(rows) == 1 {
-			pool, _ = rows[0]["pool"].(string)
-		}
-		if pool == "" {
-			return nil, fmt.Errorf("the pool's name is unknown to this login (sys.database_service_objectives answers the database's creator or owner, or dbManager): tag the instance pool:<name>: %w", collect.ErrSkip)
-		}
+	var objectives string
+	if rows, err := QueryRows(ctx, conn, poolNameSQL); err == nil && len(rows) == 1 {
+		objectives, _ = rows[0]["pool"].(string)
+	}
+	pool, from, err := poolName(info.PoolTag, objectives)
+	if err != nil {
+		return nil, err
 	}
 	raw, err := QueryRows(ctx, conn, poolStatsSQL)
 	if err != nil {
@@ -169,18 +184,29 @@ type poolMinute struct {
 	maxCPU  *float64
 }
 
-// poolMinutes groups the samples by the minute their interval ends in and keeps the complete minutes: those before
-// the server's current minute.
+// poolGrace is how long after a minute's end its last rows may still arrive (Microsoft: a row 'every few seconds';
+// the store keeps the first reader's minute for good, so a minute is stored only once this has passed).
+const poolGrace = 30 * time.Second
+
+// poolMinutes groups the samples by the minute their interval ends in and keeps the complete minutes: those that
+// ended at least poolGrace before the server's clock, and never the oldest minute of the read (the view keeps about
+// 40 minutes, so its oldest minute may have lost its first rows - after a start or an outage it would be stored short
+// for good).
 func poolMinutes(samples []poolSample, serverNow time.Time) []poolMinute {
-	cur := serverNow.Truncate(time.Minute)
+	cur := serverNow.Add(-poolGrace).Truncate(time.Minute)
 	by := map[time.Time][]poolSample{}
+	var oldest time.Time
 	for _, s := range samples {
 		m := s.end.Add(-time.Nanosecond).Truncate(time.Minute) // an interval ending at 12:01:00.000 belongs to 12:00
+		if oldest.IsZero() || m.Before(oldest) {
+			oldest = m
+		}
 		if !m.Before(cur) {
 			continue
 		}
 		by[m] = append(by[m], s)
 	}
+	delete(by, oldest)
 	out := make([]poolMinute, 0, len(by))
 	for m, ss := range by {
 		sort.Slice(ss, func(i, j int) bool { return ss[i].end.Before(ss[j].end) })

@@ -15,7 +15,9 @@ import (
 //   - two databases of one pool send the same minutes: one row a minute, the first reader's (its figures, read_by);
 //     each database's pool is recorded;
 //   - the storage status, DBA Dash's strict '>': 79 and 80 OK, 90 Warning, 91 Critical at the default 0.8 / 0.9; a
-//     pool's own row with NULL thresholds N/A; a newest minute over 5 minutes old N/A.
+//     pool's own row with NULL thresholds N/A, with warning 0.8 and a NULL critical Warning at 91 and OK at 79 (DBA
+//     Dash's view: N/A only for a NULL warning); a newest minute over 5 minutes old N/A (pgvigil's own); a member not
+//     read for over 10 minutes no status at all.
 func TestPoolOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -102,5 +104,24 @@ func TestPoolOnAStore(t *testing.T) {
 	}
 	if got := status(base.Add(14 * time.Minute)); got != "N/A" {
 		t.Errorf("the pool's own NULL thresholds at 91%%: %s, want N/A", got)
+	}
+	// DBA Dash's view: N/A only for a NULL warning threshold; a NULL critical one compares as false
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.mssql_pool_thresholds SET warning = 0.8 WHERE server = $1 AND pool = $2`, server, poolName); err != nil {
+		t.Fatal(err)
+	}
+	if got := status(base.Add(14 * time.Minute)); got != "Warning" {
+		t.Errorf("warning 0.8, critical NULL at 91%%: %s, want Warning (DBA Dash's view)", got)
+	}
+	send(a, 1, 79, 15)
+	if got := status(base.Add(16 * time.Minute)); got != "OK" {
+		t.Errorf("warning 0.8, critical NULL at 79%%: %s, want OK (DBA Dash's view)", got)
+	}
+	// a database not read in a pool for over 10 minutes (it left the pool) shows no pool status
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.mssql_pool_member SET seen_at = $2 WHERE instance_id = $1`, a, base); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.mssql_pool_storage_status($1, $2)`, a, base.Add(16*time.Minute)).Scan(&left); err != nil || left != 0 {
+		t.Errorf("a member last read 16 minutes before: %d status rows, %v; want none", left, err)
 	}
 }

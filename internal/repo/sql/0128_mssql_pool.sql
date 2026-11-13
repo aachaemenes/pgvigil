@@ -16,7 +16,9 @@
 --
 -- mssql_pool_storage_status(instance_id): DBA Dash's AzureDBElasticPoolStorageStatus on the instance's pool's newest
 -- minute - allocated_storage_percent > critical x 100 Critical, else > warning x 100 Warning (a strict '>': 80 is
--- OK at 0.8), else a NULL threshold N/A, else OK; N/A too when the pool has no minute in the last 5 minutes.
+-- OK at 0.8), else a NULL WARNING threshold N/A, else OK (DBA Dash's view line for line: a NULL critical threshold or
+-- percentage compares as false); pgvigil's own: N/A when the pool has no minute in the last 5 minutes, and no row
+-- at all for a database not read in a pool for over 10 minutes (it left the pool: its member row stays behind).
 -- The partition parent for purge() (the join adds it): mssql_pool_minute.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_pool_minute (
@@ -99,7 +101,8 @@ END $$;
 CREATE OR REPLACE FUNCTION pgvigil.mssql_pool_storage_status(p_instance_id int, p_now timestamptz DEFAULT now())
 RETURNS TABLE (status text, allocated_storage_percent numeric, minute timestamptz, server text, pool text, warning numeric, critical numeric)
 LANGUAGE sql STABLE AS $$
-  WITH m AS (SELECT mb.server, mb.pool FROM pgvigil.mssql_pool_member mb WHERE mb.instance_id = p_instance_id),
+  WITH m AS (SELECT mb.server, mb.pool FROM pgvigil.mssql_pool_member mb
+              WHERE mb.instance_id = p_instance_id AND mb.seen_at > p_now - interval '10 minutes'),
   t AS (SELECT th.warning, th.critical FROM m JOIN pgvigil.mssql_pool_thresholds th
           ON (th.server, th.pool) = (m.server, m.pool) OR (th.server, th.pool) = ('', '')
         ORDER BY th.server = '' LIMIT 1),
@@ -108,7 +111,7 @@ LANGUAGE sql STABLE AS $$
   SELECT CASE WHEN n.minute IS NULL OR n.minute < p_now - interval '5 minutes' THEN 'N/A'
               WHEN n.allocated_storage_percent > t.critical * 100 THEN 'Critical'
               WHEN n.allocated_storage_percent > t.warning * 100 THEN 'Warning'
-              WHEN t.warning IS NULL OR t.critical IS NULL OR n.allocated_storage_percent IS NULL THEN 'N/A'
+              WHEN t.warning IS NULL THEN 'N/A'
               ELSE 'OK' END,
          n.allocated_storage_percent, n.minute, m.server, m.pool, t.warning, t.critical
     FROM m LEFT JOIN t ON true LEFT JOIN n ON true
