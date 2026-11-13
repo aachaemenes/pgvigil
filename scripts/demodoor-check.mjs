@@ -169,6 +169,8 @@ else {
     await go(`#/${inst.tab}?i=${inst.id}`);
     const jobBtn = `[...document.querySelectorAll('main button[aria-label^="Acknowledge "]')].find(x => x.textContent.trim() === 'Acknowledge' && x.getAttribute('aria-disabled') !== 'true' && !x.disabled)`;
     await until(`!!(${jobBtn})`, 15000);
+    // the grid is wider than the window: the job's cell is brought into view for the shot
+    await ev(`(${jobBtn})?.scrollIntoView({ block: 'center', inline: 'center' })`); await sleep(200);
     await shot('5-instance-jobs-before');
     const m0 = await mark();
     const job = await ev(`(() => { const b = ${jobBtn};
@@ -182,6 +184,7 @@ else {
       const cell = await until(`(() => { const c = [...document.querySelectorAll('main button[aria-label]')].find(x => x.getAttribute('aria-label') === ${JSON.stringify(clear)});
         return c ? { text: c.parentElement.textContent.trim(), clearOn: c.getAttribute('aria-disabled') !== 'true' && !c.disabled } : null; })()`, 10000);
       const again = await hasLabel(job.label);
+      await ev(`[...document.querySelectorAll('main button[aria-label]')].find(x => x.getAttribute('aria-label') === ${JSON.stringify(clear)})?.scrollIntoView({ block: 'center', inline: 'center' })`); await sleep(200);
       await shot('5c-instance-jobs-acknowledged');
       const log = await wrote(m0);
       judge('R1b-b', d.opened && saved(d.answer) && !!cell && cell.clearOn && /^acknowledged /.test(cell.text) && !again && byDoor(log, 'job', 'add', inst.name),
@@ -233,7 +236,9 @@ if (acked) {
   await shot('6-summary-mixed-store');
   // the real instance's row brought into view: where its off Silence and the words beside it land on the page
   await ev(`(() => { const rows = [...document.querySelectorAll('main tr')].filter(tr => [...tr.querySelectorAll('td, th')].some(c => c.textContent.trim() === ${JSON.stringify(REAL)}));
-    const b = rows.map(tr => tr.querySelector('button.silence-btn')).find(Boolean); if (b) b.scrollIntoView({ block: 'center', inline: 'nearest' }); })()`);
+    const b = rows.map(tr => tr.querySelector('button.silence-btn')).find(Boolean);
+    const n = b && b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+    if (b) (n ?? b).scrollIntoView({ block: 'center', inline: 'end' }); })()`);
   await sleep(300); await shot('6b-summary-real-instance-silence-off');
   // a Silence (not an Unsilence) that is on, in the row of an instance the door names
   const demoRow = await ev(`(() => { const ids = ${JSON.stringify(doorIds)};
