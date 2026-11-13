@@ -59,7 +59,13 @@
 #     on the Summary, the Alerts page and a Jobs page with a failed job every off control has a description, no two
 #     of a page's reason sentences say the same words, the sentence's words stand once in the page's text and in no
 #     grid cell - the reason is said once per page; an instance's header is its own and read apart) [both added at the
-#     review's fold], 'demodoor-check: every row ok', then 'ok B the seed's own silence ... is ended in the store, by
+#     review's fold], and DONE-2's rows: 'ok R12' (every page of the mixed store - the root and four instances, the real
+#     one among them - walked: no control that is off and shown lacks its reason as visible words), 'ok R13' (the
+#     threshold dialogs: a level wider than one instance is off in words before any request, one demo instance's own
+#     level is on), 'ok R14' (a bulk action over a mixed scope: an alert of a demo instance and the real instance's
+#     alert ticked, Acknowledge alerts: 'partly done 1 of 2 saved; 1 refused: prod-db1 is not one of this demo's
+#     instances ...', the log's new row the demo alert's), 'demodoor-check: every row ok', then 'ok B nothing was
+#     written for prod-db1 or its alert by the page', then 'ok B the seed's own silence ... is ended in the store, by
 #     demo' (read from the repository). Shots are kept of R1, R1b, R7, R4, R6b and R10's Summary (14: DOOR_SHOTS,
 #     default .vis/door-shots, emptied of earlier pictures first; one that could not be taken is a FAIL line).
 # Last line: 'proof-demodoor: OK'.
@@ -180,6 +186,9 @@ if [[ "${PROOF_DOOR_ONLY:-}" == A ]]; then
   echo "proof-demodoor: part A OK (part B, the page by clicks, not run: PROOF_DOOR_ONLY=A)"; exit 0
 fi
 echo "== B. the page, by clicks"
+# R14's ground: one open alert of the REAL instance in the store (the bulk row ticks it beside a demo alert)
+q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, severity, source, setting, value, first_sent_at, last_sent_at)
+   values ('demo-spool', 'door-proof-real-1', $REAL, 'prod-db1', 'critical', 'pgvigil', 'door proof', 'a real instance''s alert', now(), now())" >/dev/null
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
 CHR=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.2; done
@@ -199,6 +208,9 @@ RIG=$(python3 -c 'import json,sys; print(json.dumps({"jobs": json.loads(sys.argv
 timeout 900 node scripts/demodoor-check.mjs "$CDP" "$U" prod-db1 "$SHOTS" "$RIG" || { echo "FAIL the click script ended with exit $? (124 = cut at 900 s)"; FAILS=$((FAILS + 1)); }
 echo "shots: $(ls "$SHOTS" 2>/dev/null | wc -l) in $SHOTS"
 # R6b's other half, read from the store: the seed's own silence (client 'demo seed') was ended, by demo
+# R14's other half, read from the store: the page wrote nothing for the real instance
+RW=$(q "select count(*) from pgvigil.acks where instance_id = $REAL or instance_name = 'prod-db1' or finding_key = 'door-proof-real-1'")
+if [[ "$RW" == 0 ]]; then ok "B nothing was written for prod-db1 or its alert by the page"; else fail "B $RW row(s) written for prod-db1 or its alert"; fi
 SE=$(q "select coalesce(string_agg(coalesce(ended_by, 'not ended'), ','), 'no such row') from pgvigil.acks where kind = 'silence' and client = 'demo seed'")
 if [[ "$SE" == demo ]]; then ok "B the seed's own silence (${SS##*| }) is ended in the store, by demo"; else fail "B the seed's own silence: $SE (want ended by demo)"; fi
 

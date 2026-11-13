@@ -219,7 +219,7 @@ if (acked) {
   const m2 = m1 === true ? await menuClick('/^Acknowledge Dumps/') : null;
   const said = m2 === true ? await until(`(() => { const t = [...document.querySelectorAll('main p, main span')].map(x => x.textContent).find(x => /Memory dumps acknowledged on|No Memory dumps cell|Acknowledge is off/.test(x)); return t || ''; })()`, 15000) : '';
   const log = await wrote(m0);
-  judge('R2', /Memory dumps acknowledged on [1-9]/.test(said ?? '') && !/not saved/.test(said ?? '') && log.ui_user === 'demo' && log.client === 'demo door' && log.kind === 'ack' && log.op === 'add' && log.outcome === 'done' && doorNames.includes(String(log.instance)),
+  judge('R2', /Memory dumps acknowledged on [1-9]/.test(said ?? '') && !/not saved|refused/.test(said ?? '') && log.ui_user === 'demo' && log.client === 'demo door' && log.kind === 'ack' && log.op === 'add' && log.outcome === 'done' && doorNames.includes(String(log.instance)),
     `Options > Memory Dumps > Acknowledge Dumps: the page said '${said}' (menus: Options ${opened}, ${JSON.stringify(m1)}, ${JSON.stringify(m2)}); the log's new row ${logLine(log)}`);
 }
 
@@ -306,6 +306,26 @@ if (acked) {
     judge('R6b', d.opened && ended(d.answer) && !still && byDoor(log, 'silence', 'end', SEED),
       `the Alerts page's list of silenced servers: '${label}' clicked, answered '${d.answer}', its button gone (${!still}); the log's new row ${logLine(log)}`);
   }
+}
+
+// ---- R14 (DONE-2) a bulk action over a MIXED scope says how many were done and how many were refused, with the reason:
+// on the Alerts page one alert of a demo instance and the real instance's alert (the proof put it into the store)
+// ticked, Acknowledge alerts, Save - one saved, one refused by name, the log's new row the demo alert's
+{
+  await go('#/alerts');
+  const picked = await ev(`(() => { const names = ${JSON.stringify(doorNames)}; const out = { real: false, demo: '' };
+    for (const tr of document.querySelectorAll('main table tbody tr')) { const c = tr.querySelector('input[type=checkbox]'); if (!c) continue;
+      const cells = [...tr.querySelectorAll('td')].map(td => td.textContent.trim());
+      if (!out.real && cells.includes(${JSON.stringify(REAL)})) { c.click(); out.real = true; continue; }
+      const n = cells.find(t => names.includes(t));
+      if (!out.demo && n && !cells.some(t => /acknowledged|held by/i.test(t))) { c.click(); out.demo = n; } }
+    return out; })()`);
+  const m0 = await mark();
+  const btn = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Acknowledge alerts'); if (!b) return 'absent'; if (b.getAttribute('aria-disabled') === 'true' || b.disabled) return 'off'; b.click(); return 'clicked'; })()`);
+  const d = btn === 'clicked' ? await saveDialog() : { opened: false, answer: '' };
+  const log = await wrote(m0);
+  judge('R14', picked.real && !!picked.demo && d.opened && /^partly done 1 of 2 saved; 1 refused: /.test(d.answer) && d.answer.includes(`${REAL} is not one of this demo's instances`) && byDoor(log, 'alert_ack', 'add', picked.demo),
+    `the Alerts page: ${REAL}'s alert ticked ${picked.real}, an alert of ${picked.demo || 'no demo instance'} ticked, 'Acknowledge alerts' ${btn}: '${d.title}' answered '${d.answer}'; the log's new row ${logLine(log)}`);
 }
 
 // ---- R10 a server that writes nothing at all (pgvigil serve -no-login on the same repository): a page says the reason

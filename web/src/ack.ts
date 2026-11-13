@@ -216,7 +216,7 @@ export function ackDialog(o: AckDialog) {
     }
     if (done === 0) throw new Error(refused[0] ?? 'refused');
     return { outcome: refused.length ? 'partly done' : 'done',
-      detail: `${done} of ${rows.length} saved` + (refused.length ? `; refused: ${refused.join('; ')}` : '') };
+      detail: `${done} of ${rows.length} saved` + (refused.length ? `; ${refused.length} refused: ${[...new Set(refused)].join('; ')}` : '') };
   }, o.after, fields, valid, [note]);
 }
 
