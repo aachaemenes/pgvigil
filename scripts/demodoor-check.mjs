@@ -555,6 +555,77 @@ if (NOLOGIN) {
     + `; the footer's seat: '${seatPlain}' (want 'read only, actions off'); the Summary's dump dialog (${dumpMenus}), Clear: ${JSON.stringify(clearPlain)}`);
 }
 
+// ---- R18 (DONE-3, the pgLabel item: Item 6 of the drives-range review) PostgreSQL's own words for its checks. On a
+// scope with NO SQL Server instance (the demo's tag 'aurora': its PostgreSQL instances alone) the Summary's column
+// headers, its tests and its cells' accessible names say 'Crash restarts', 'Last amcheck', 'Replication', 'Jobs',
+// 'WAL archive' - never DBA Dash's 'Memory Dump', 'Last Good Check DB', 'Availability Groups', 'Agent Jobs', 'Backup
+// LOG' - and its Options menu says 'Crash Restarts'; a PostgreSQL instance's own Summary page ('Not OK:' links) and its
+// band dot's title use them too; the mixed root keeps DBA Dash's names (a scope that holds SQL Server). At the review of
+// DONE-3 (items 1 and 7): the scope is first read to hold PostgreSQL instances alone; the acknowledged list's items are
+// read with the rest; the instance page is one whose counts line names a PostgreSQL group (never 'Every check group is
+// OK.' alone); and the scope's Options > Crash Restarts > Configure Thresholds is titled 'Crash Restart Thresholds' and
+// its Clear and the date beside it know only the scope's acknowledgements - prod-db2's Memory Dump acknowledgement
+// (the proof's own, tagged demo, not aurora) is not this scope's: Clear off as 'no crash restart acknowledgement is in
+// force on this scope's instances', the date 'Not acknowledged' with no count of instances left alone
+{
+  const dd = ['Memory Dump', 'Last Good Check DB', 'Availability Groups', 'Agent Jobs', 'Backup LOG'];
+  const pgw = ['Crash restarts', 'Last amcheck', 'Replication', 'Jobs', 'WAL archive'];
+  // the words a page shows in the places the item names: the instance grid's column headers, the tests grid's names,
+  // the cells' aria-labels, the Needs-attention line, the instance page's counts line, the band dot's title, the menu
+  const readJS = `(() => { const m = document.querySelector('main'); if (!m) return null;
+    const heads = [...m.querySelectorAll('.summary-instances thead th')].map(t => t.textContent.trim());
+    const tests = [...m.querySelectorAll('table.grid tbody tr td:first-child')].map(t => t.textContent.trim());
+    const cells = [...m.querySelectorAll('a.cell-link[aria-label]')].map(a => a.getAttribute('aria-label').replace(/:.*/, ''));
+    const strip = [...m.querySelectorAll('.attention-row')].map(r => r.textContent);
+    const counts = m.querySelector('p.counts')?.textContent ?? '';
+    const dot = document.querySelector('#crumb .band-dot')?.title ?? '';
+    const acked = [...m.querySelectorAll('details li')].map(l => l.textContent.trim());
+    return { heads, tests, cells, strip, counts, dot, acked }; })()`;
+  const words = (r) => r ? [...r.heads, ...r.tests, ...r.cells, ...r.strip, ...r.acked, r.counts, r.dot].join(' | ') : '';
+  const hits = (text, list) => list.filter(w => text.includes(w));
+  // a column header that names a word (its text may carry more after it: a unit, a mark)
+  const headed = (heads, w) => (heads ?? []).some(h => h === w || h.startsWith(w + ' '));
+  // the PostgreSQL-only scope: its instances read from the API first (a seed that ever tagged a SQL Server instance
+  // 'aurora' is said as that, never judged as the page's words)
+  const auroraInsts = tbl(await api('instances')).filter(i => Array.isArray(i.tags) && i.tags.includes('aurora'));
+  const engines = [...new Set(auroraInsts.map(i => String(i.engine)))];
+  const scopeOk = auroraInsts.length > 0 && engines.length === 1 && engines[0] === 'postgres';
+  await go('#/summary?tag=aurora');
+  const pg = await reach(() => ev(readJS), v => !!v && v.heads.length > 0);
+  const menu = await ev(`(() => { const b = [...document.querySelectorAll('button.tb-btn')].find(x => x.textContent.trim() === 'Options'); if (!b) return []; b.click(); return [...document.querySelectorAll('[role=menu] [role=menuitem]')].map(x => x.textContent.trim()); })()`) ?? [];
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  const pgText = words(pg);
+  // the scope's crash-restart dialog: its title, its Clear and the date beside it (the dialog of this scope alone)
+  const crashDlg = `document.querySelector('dialog.act-dialog[open][aria-label="Crash Restart Thresholds"]')`;
+  const cw = await menuWalk('/^Crash Restarts/', '/^Configure Thresholds/');
+  const crashOpen = cw.ok ? !!(await until(`!!${crashDlg}`, 5000)) : false;
+  const crash = crashOpen ? await ev(`(() => { const off = ${offWordsJS}; const d = ${crashDlg}; const b = [...d.querySelectorAll('button')].find(x => x.textContent.trim() === 'Clear');
+    return { title: d.querySelector('h3')?.textContent.trim() ?? '', text: d.textContent, clear: b ? { off: b.getAttribute('aria-disabled') === 'true', words: off(b), date: b.parentElement?.previousElementSibling?.textContent.trim() ?? '' } : null }; })()`) : null;
+  if (crashOpen) { await ev(`${crashDlg}?.querySelector('button[aria-label=Close]')?.click()`); await until(`!${crashDlg}`, 5000); }
+  const crashOk = !!crash && crash.title === 'Crash Restart Thresholds' && hits(crash.text, ['Memory Dump']).length === 0 && !!crash.clear && crash.clear.off
+    && /no crash restart acknowledgement is in force on this scope's instances/.test(crash.clear.words) && crash.clear.date === 'Not acknowledged';
+  // a PostgreSQL instance's own Summary page: the first of the scope's instances whose counts line names one of the
+  // PostgreSQL groups (a check not OK or not read), so the instance half never passes on 'Every check group is OK.' alone
+  const pgIds = (await ev(`(() => [...document.querySelectorAll('.summary-instances tbody tr a[href*="i="]')].map(a => (/[?&]i=(\\d+)/.exec(a.getAttribute('href')) ?? [])[1]).filter(Boolean))()`) ?? []);
+  let inst = null, pgInst = null;
+  for (const id of [...new Set(pgIds)].slice(0, 8)) {
+    await go(`#/summary?i=${id}`);
+    const r = await reach(() => ev(readJS), v => !!v && v.counts.length > 0 && v.dot !== '');
+    if (r && pgw.some(w => r.counts.includes(w))) { inst = r; pgInst = id; break; }
+  }
+  const instText = inst ? [inst.counts, inst.dot].join(' | ') : '';
+  // the mixed root: DBA Dash's names
+  await go('#/summary');
+  const mixed = await reach(() => ev(readJS), v => !!v && v.heads.length > 0);
+  const ddAtRoot = dd.filter(w => headed(mixed?.heads, w));
+  judge('R18', scopeOk && crashOk && !!pg && hits(pgText, dd).length === 0 && pgw.filter(w => headed(pg.heads, w)).length === pgw.length && menu.some(t => /^Crash Restarts/.test(t)) && !menu.some(t => /^Memory Dumps/.test(t))
+    && !!inst && hits(instText, dd).length === 0 && ddAtRoot.length === dd.length,
+    `the scope (tag aurora): ${auroraInsts.length} instance(s), engines ${JSON.stringify(engines)} (want postgres alone); its crash-restart dialog (${cw.said}; open ${crashOpen}): ${JSON.stringify(crash && { title: crash.title, clear: crash.clear })} (want 'Crash Restart Thresholds', no 'Memory Dump', Clear off as no crash restart acknowledgement in force on this scope's instances, 'Not acknowledged'); `
+    + `the PostgreSQL-only scope's page: DBA Dash's words found ${JSON.stringify(hits(pgText, dd))} (want none), PostgreSQL's headers ${JSON.stringify(pgw.filter(w => headed(pg?.heads, w)))} (want all five), the Options menu ${JSON.stringify(menu.slice(0, 4))}; `
+    + `a PostgreSQL instance's own page (#/summary?i=${pgInst ?? 'none'}): its counts line '${(inst?.counts ?? '').slice(0, 120)}', its band dot '${(inst?.dot ?? '').replace(/\n/g, '; ').slice(0, 120)}', DBA Dash's words there ${JSON.stringify(hits(instText, dd))} (want none); `
+    + `the mixed root's headers hold DBA Dash's ${ddAtRoot.length} of ${dd.length}`);
+}
+
 // ---- R12 (DONE-2) every page of the MIXED store: a control that is off says why in words on the page. The walk is
 // the tab strip's own list (as scripts/a11y-check.mjs reads it) at the root and on four instances - a PostgreSQL demo
 // instance on premises, the demo's Aurora instance with a failed job, the demo's SQL Server primary, and the real
@@ -729,6 +800,69 @@ if (NOLOGIN) {
     `Drives at the root: the toolbar's Configure ${JSON.stringify(drv.root)}; ${drv.on} of ${drv.drives} drives' own Configure on, one clicked: '${drvOpened}'. `
     + `Thresholds: ${thr.rootsOff} of ${thr.roots} root Change buttons off ('${(thr.words ?? '').slice(0, 70)}...'); Set... on ${thr.setOn} (levels ${JSON.stringify(thr.levels)}); a tag picked: '${tagSaid}' (a dialog: '${tagOpened}'); a demo instance picked (id ${instPicked || 'none'}): '${instOpened}', its submit ${JSON.stringify(instSubmit)}. `
     + `Options > Memory Dumps > Configure Thresholds: '${dump.title}' Update ${JSON.stringify(dump.update)} (menus ${JSON.stringify(dump.menus)}); Options > Instance Uptime > Configure Thresholds: '${upt.title}' Update ${JSON.stringify(upt.update)} (menus ${JSON.stringify(upt.menus)})`);
+}
+
+// ---- R17 (DONE-3) the two job pages taught the door: on a demo instance's Jobs page the job thresholds dialog writes
+// the job's and the instance's own levels (Save on) and says its root level is off in words before any request; the
+// exclusions form adds this instance's exclusions and offers 'every instance' natively disabled, its reason in words
+// beside the form (the level field described by it) before any click (the lead 09:28, the review's nit 9); on the real instance's Jobs page the dialog's Save is off in its words and no form is offered - the page says
+// why instead. Nothing is saved by a click here (part A writes both at the API). Two requests come from controls that
+// are ON (the review of DONE-3, item 2): the job level saved with every box empty and an exclusion of pattern '*' on
+// this instance - the door passes the page's own payloads and the functions refuse them in their own words (409), so
+// a door that read the page's body wrongly fails here; part B's table count still finds nothing written.
+{
+  const pgJob = failedJobs.find(j => j.tab === 'jobs');
+  const dlgSel = `document.querySelector('dialog.act-dialog[open][aria-label^="Job thresholds: "]')`;
+  const readDlg = (lv) => ev(`(() => { const d = ${dlgSel}; if (!d) return null; const rb = d.querySelector('#th-level-${lv}'); if (rb) { rb.checked = true; rb.dispatchEvent(new Event('change', { bubbles: true })); }
+    const off = ${offWordsJS}; const save = d.querySelector('button[type=submit]'); const f = d.querySelector('input[type=number]');
+    return { save: save ? { off: save.getAttribute('aria-disabled') === 'true', disabledAttr: save.disabled, words: off(save) } : null, field: f ? f.disabled : null }; })()`);
+  // the job level, every box emptied, Save clicked (only where it is on): what the dialog's status line answers
+  const saveEmpty = async () => {
+    const clicked = await ev(`(() => { const d = ${dlgSel}; if (!d) return 'no dialog'; const rb = d.querySelector('#th-level-job'); if (rb) { rb.checked = true; rb.dispatchEvent(new Event('change', { bubbles: true })); }
+      d.querySelectorAll('input[type=number]').forEach(i => { i.value = ''; }); const lf = d.querySelector('#th-lastfail'); if (lf) lf.value = '';
+      const b = d.querySelector('button[type=submit]'); if (!b) return 'absent'; if (b.disabled || b.getAttribute('aria-disabled') === 'true') return 'off'; b.click(); return 'clicked'; })()`);
+    if (clicked !== 'clicked') return clicked;
+    return await until(`(() => { const t = ${dlgSel}?.querySelector('p[role=status]')?.textContent.trim() ?? ''; return t && t !== 'Saving...' ? t : ''; })()`, 8000) ?? 'no answer';
+  };
+  const thresholdsOn = async (hash, tryEmpty = false) => {
+    await go(hash);
+    const opened = await until(`(() => { const b = [...document.querySelectorAll('main button[aria-label^="Thresholds of "]')][0]; if (!b) return false; b.click(); return true; })()`);
+    if (!opened || !(await until(`!!${dlgSel}`, 5000))) return null;
+    const out = { job: await readDlg('job'), instance: await readDlg('instance'), root: await readDlg('root') };
+    if (tryEmpty) out.empty = await saveEmpty();
+    await ev(`${dlgSel}?.close()`); await until(`!${dlgSel}`, 5000);
+    return out;
+  };
+  // the form's answer to one Add: its status line emptied first, then the level and the pattern set and Add clicked
+  const addOnce = async (lv, pattern) => {
+    await ev(`(() => { const f = document.querySelector('main form.excl-form'); f.querySelector('[role=status]').textContent = ''; f.querySelector('input[aria-label=pattern]').value = ${JSON.stringify(pattern)};
+      const l = f.querySelector('select[aria-label=level]'); l.value = ${JSON.stringify(lv)}; l.dispatchEvent(new Event('change', { bubbles: true })); f.querySelector('button[type=submit]').click(); return 1; })()`);
+    return await until(`(() => { const t = document.querySelector('main form.excl-form [role=status]')?.textContent.trim() ?? ''; return t && t !== 'Writing...' ? t : ''; })()`, 8000) ?? '';
+  };
+  const formOn = async (tryWild = false) => {
+    const f = await until(`!!document.querySelector('main form.excl-form')`, 8000);
+    if (!f) return { form: false, said: await ev(`[...document.querySelectorAll('main p.meta')].map(p => p.textContent.trim()).find(t => /^Exclusions cannot be written here: /.test(t)) ?? ''`) };
+    // 'every instance': natively disabled, and the words the level field is described by (visible)
+    const root = await ev(`(() => { const off = ${offWordsJS}; const l = document.querySelector('main form.excl-form select[aria-label=level]'); const o = l && [...l.options].find(x => x.value === 'root');
+      return o ? { off: o.disabled, words: off(l) } : null; })()`);
+    return tryWild ? { form: true, root, wild: await addOnce('instance', '*') } : { form: true, root };
+  };
+  const m0 = await mark();
+  const demoTh = pgJob ? await thresholdsOn(`#/jobs?i=${pgJob.id}`, true) : null;
+  const demoForm = pgJob ? await formOn(true) : { form: false, said: '' };
+  const realTh = REAL_ID ? await thresholdsOn(`#/jobs?i=${REAL_ID}`) : null;
+  const realForm = REAL_ID ? await formOn() : { form: false, said: '' };
+  const logs = await wrote(m0, 0);
+  const on = (x) => !!x && !!x.save && !x.save.off && x.field === false;
+  const offWith = (x, re) => !!x && !!x.save && x.save.off && !x.save.disabledAttr && re.test(x.save.words) && x.field === true;
+  judge('R17', !!demoTh && on(demoTh.job) && on(demoTh.instance) && offWith(demoTh.root, /this change would reach past the demo's instances/)
+    && /^not saved no threshold is set: to take the level above, inherit/.test(demoTh.empty ?? '')
+    && demoForm.form && !!demoForm.root && demoForm.root.off && /^Every instance: this change would reach past the demo's instances/.test(demoForm.root.words)
+    && /^not added a pattern of wildcards alone would leave every job out of the checks/.test(demoForm.wild ?? '')
+    && !!realTh && offWith(realTh.job, new RegExp(`${REAL} is not one of this demo's instances`)) && offWith(realTh.root, /reach past/)
+    && !realForm.form && realForm.said.startsWith(`Exclusions cannot be written here: ${REAL} is not one of this demo's instances`) && logs.length === 0,
+    `${pgJob?.name ?? 'no PostgreSQL instance with a failed job'}'s Jobs page: the thresholds dialog's levels ${JSON.stringify(demoTh)}; the exclusions form's 'every instance' ${JSON.stringify(demoForm.root ?? null)}, 'this instance' and the pattern '*': '${demoForm.wild ?? ''}'; `
+    + `${REAL}'s Jobs page: the dialog ${JSON.stringify(realTh)}, a form offered ${realForm.form} ('${realForm.said.slice(0, 120)}'); ${logSaid(logs)} (want 0)`);
 }
 
 if (shotsMissed.length) fail('shots', `not taken: ${shotsMissed.join(', ')}`);
