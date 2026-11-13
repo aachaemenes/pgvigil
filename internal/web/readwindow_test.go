@@ -17,7 +17,7 @@ func TestReadWindow(t *testing.T) {
 		var got time.Time
 		var rw *readWindow
 		var err error
-		h := withReadWindow(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := withReadWindow(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			_, got, _, err = paramsReach(r, true, reach)
 			rw = readWindowOf(r)
 		}))
