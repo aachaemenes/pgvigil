@@ -21,13 +21,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 
 const [mode, port, base] = process.argv.slice(2, 5);
 if (!['list', 'walk'].includes(mode) || !port || !base) { console.error('usage: node scripts/clickthrough.mjs list <cdp port> <base url/> <pages.json> <shards> | walk <cdp port> <base url/> <shard.json> <out.json> <shots dir> <work dir>'); process.exit(2); }
 const U = base.endsWith('/') ? base : base + '/';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const [a5, a6, a7, a8] = process.argv.slice(5);
-const work = mode === 'walk' ? a8 : path.dirname(path.resolve(a5));
+const work = mode === 'walk' ? a8 : fs.mkdtempSync(path.join(os.tmpdir(), 'clickthrough-list-'));
 if (!work) { console.error('walk needs <work dir>'); process.exit(2); }
 fs.mkdirSync(work, { recursive: true });
 const label = mode === 'walk' ? path.basename(a5, '.json') : 'list';
@@ -117,12 +118,18 @@ const BUSY = `[...document.querySelectorAll('main p, main [role=status]')].some(
 const settled = async (cap = 20000) => {
   for (const t = Date.now(); Date.now() - t < cap; await sleep(200)) {
     if (lost) return false;
-    const ok = await ev(`(() => { const m = document.querySelector('main'); return !!m && m.children.length > 0 && !(${BUSY}) && !(/[?&]i=/.test(location.hash) && !m.querySelector('.inst-header')); })()`).catch(() => false);
-    if (ok) { await sleep(400); return true; }
+    const ok = await ev(`(() => { const m = document.querySelector('main'); return !!m && m.children.length > 0 && !(${BUSY}); })()`).catch(() => false);
+    if (ok) {
+      for (let i = 0; i < 50 && await ev(`/[?&]i=/.test(location.hash) && !document.querySelector('main .inst-header')`).catch(() => false); i++) await sleep(100);
+      await sleep(400); return true;
+    }
   }
   return false;
 };
-const fresh = async hash => { await ensure(); await cmd('Page.navigate', { url: 'about:blank' }); await sleep(100); net = []; exc = []; dlgs = []; held = []; chooser = []; await cmd('Page.navigate', { url: U + hash }); await sleep(250); return settled(); };
+const fresh = async hash => { await ensure(); await cmd('Page.navigate', { url: 'about:blank' }); await sleep(100); net = []; exc = []; dlgs = []; held = []; chooser = []; await cmd('Page.navigate', { url: U + hash }); await sleep(250);
+  // a click of the bar may have switched the theme: every page starts light
+  await ev(`(() => { try { localStorage.setItem('pgvigil.theme', 'light'); } catch (e) {} document.documentElement.setAttribute('data-theme', 'light'); })()`).catch(() => {});
+  return settled(); };
 const tabsOf = async hash => { await fresh(hash); return await ev(`(() => { const t = document.querySelector('#tabs'); return t?.dataset.all ? JSON.parse(t.dataset.all) : [...(t?.querySelectorAll('a') ?? [])].map(a => a.getAttribute('href')); })()`) ?? []; };
 
 // ---- list -----------------------------------------------------------------------------------------------------------
@@ -212,14 +219,10 @@ const act = async (sig, step) => {
     await cmd('DOM.setFileInputFiles', { objectId: oid, files: [fixtureFor(acc)] }); return 'ok';
   }
   if (step && step.opt !== undefined) { await cmd('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: 'function (v) { this.value = v; this.dispatchEvent(new Event("change", { bubbles: true })); }', arguments: [{ value: step.opt }] }); return 'ok'; }
-  await cmd('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: 'function () { this.scrollIntoView({ block: "center" }); }' });
-  await sleep(150);
-  // a real click (a user's gesture: a file chooser opens only on one) at the control's centre
-  const box = (await cmd('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: 'function () { if (this.disabled) return null; const r = this.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2, r.width, r.height]; }', returnByValue: true })).result?.result?.value;
-  if (!box) return 'disabled';
-  if (box[2] < 1 || box[3] < 1) { await cmd('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: 'function () { this.click(); }' }); return 'ok'; }
-  for (const type of ['mousePressed', 'mouseReleased']) await cmd('Input.dispatchMouseEvent', { type, x: box[0], y: box[1], button: 'left', clickCount: 1 });
-  return 'ok';
+  // the click as a user's gesture (a file chooser opens only on one: menu-check's userGesture), with no scroll first:
+  // the page closes an open grid menu on any scroll (ui.ts dropMenu)
+  const r = await cmd('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: 'function () { if (this.disabled) return "disabled"; this.click(); return "ok"; }', returnByValue: true, userGesture: true });
+  return r.result?.result?.value ?? 'ok';
 };
 const shot = async name => { const d = await cmd('Page.captureScreenshot', { format: 'png' }).catch(() => null); if (d?.result?.data) fs.writeFileSync(path.join(shots, name + '.png'), Buffer.from(d.result.data, 'base64')); };
 const shotName = p => `${p.scope}-${p.hash.slice(2).replace(/[^\w=-]+/g, '_').slice(0, 80)}`;
@@ -251,7 +254,8 @@ const verdict = (row, before, after, dl0) => {
 };
 const pagesOf = shard.pages;
 const chromePage = shard.chrome ? [{ scope: 'root', engine: null, hash: '#/summary', tab: 'bar', bar: true, cap: 60 }] : [];
-for (const pg of [...chromePage, ...pagesOf]) {
+// the bar last: what its clicks keep (a theme, a range) never reaches another page's rows
+for (const pg of [...pagesOf, ...chromePage]) {
   let queue;
   try {
     const okLoad = await fresh(pg.hash);
@@ -317,41 +321,58 @@ for (const pg of [...chromePage, ...pagesOf]) {
   console.error(`${label} ${pg.scope} ${pg.hash}: ${out.clicks.filter(x => x.hash === pg.hash).length} clicks${capped ? `, ${capped} over the cap` : ''}, ${Math.round((Date.now() - t0) / 1000)} s`);
 }
 
-// ---- the tree (the chrome shard): each scope's own nodes - the fleet's root, its folders and one tag folder per
-// engine; the picked instance's own subtree - every caret clicked once and every leaf clicked from a fresh page --------
-const treeScopes = shard.chrome ? [{ scope: 'root', hash: '#/summary' }, ...(shard.pg ? [{ scope: 'pg', hash: `#/summary?i=${shard.pg.id}`, id: shard.pg.id, inst: shard.pg.name }] : []), ...(shard.ms ? [{ scope: 'ms', hash: `#/summary?i=${shard.ms.id}`, id: shard.ms.id, inst: shard.ms.name }] : [])] : [];
-function treeNodes(sc) {
-  const tree = document.querySelector('#tree'); if (!tree) return { carets: [], leaves: [] };
-  const mine = a => { const m = /[?&]i=(\d+)/.exec(a.getAttribute('href') || ''); return sc.id ? m?.[1] === sc.id : !m; };
-  const carets = [...tree.querySelectorAll('button.caret')].map(b => b.getAttribute('aria-label') || '').filter(l => sc.id ? /^(open|close) /.test(l) : /^(expand|collapse) /.test(l));
-  const leaves = [...new Map([...tree.querySelectorAll('a[href]')].filter(mine).map(a => [a.getAttribute('href'), (a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60)])).entries()];
-  return { carets: [...new Set(carets)], leaves };
+// ---- the tree (the chrome shard): the fleet root's own folders (data-key r/...) opened and the tag folders' carets
+// (f:...) each clicked once; the picked instance's own subtree (i<id>, i<id>/<folder>, its first database and that
+// database's tables) opened; every caret of those clicked once and every leaf clicked from a fresh page, one leaf per
+// route and parameter names (a database's or a table's leaf once) --------------------------------------------------
+// the root last: its tag folders' carets close folders the instances' subtrees sit in
+const treeScopes = shard.chrome ? [...(shard.pg ? [{ scope: 'pg', hash: `#/summary?i=${shard.pg.id}`, id: shard.pg.id }] : []), ...(shard.ms ? [{ scope: 'ms', hash: `#/summary?i=${shard.ms.id}`, id: shard.ms.id }] : []), { scope: 'root', hash: '#/summary' }] : [];
+// the carets of a scope, by data-key: open = to be opened by openAll; all = to be clicked once
+function caretKeys(sc) {
+  const keys = [...document.querySelectorAll('#tree button.caret')].map(b => b.dataset.key || '');
+  if (!sc.id) return { open: keys.filter(k => k.startsWith('r/')), all: keys.filter(k => k.startsWith('r/') || k.startsWith('f:')) };
+  const own = keys.filter(k => k === 'i' + sc.id || k.startsWith('i' + sc.id + '/'));
+  const firstDb = own.map(k => (new RegExp('^i' + sc.id + '/db/(\\d+)').exec(k) ?? [])[1]).find(Boolean);
+  const ok = k => { const m = new RegExp('^i' + sc.id + '/db/(\\d+)').exec(k); return !m || m[1] === firstDb; };
+  const mine = own.filter(ok);
+  return { open: mine, all: mine };
+}
+function treeLeaves(sc) {
+  const fold = h => h.replace(/=[^&]*/g, '=');
+  const seen = new Map();
+  for (const a of document.querySelectorAll('#tree a[href]')) {
+    const h = a.getAttribute('href') || ''; const m = /[?&]i=(\d+)/.exec(h);
+    if (sc.id ? m?.[1] !== sc.id : !!m) continue;
+    if (!seen.has(fold(h))) seen.set(fold(h), [h, (a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60)]);
+  }
+  return [...seen.values()];
 }
 const openAll = async sc => {
   for (let round = 0; round < 6; round++) {
-    const n = await ev(`(() => { let n = 0; for (const b of document.querySelectorAll('#tree button.caret')) { const l = b.getAttribute('aria-label') || ''; if (b.getAttribute('aria-expanded') === 'false' && ${sc.id ? `/^open /.test(l)` : `/^expand /.test(l)`}) { b.click(); n++; } } return n; })()`).catch(() => 0);
+    const want = (await call(caretKeys, sc).catch(() => ({ open: [] }))).open;
+    const n = await ev(`(() => { const want = new Set(${JSON.stringify(want)}); let n = 0; for (const b of document.querySelectorAll('#tree button.caret')) if (want.has(b.dataset.key) && b.getAttribute('aria-expanded') === 'false') { b.click(); n++; } return n; })()`).catch(() => 0);
     if (!n) break; await sleep(700);
   }
 };
 for (const sc of treeScopes) {
-  let nodes;
-  try { await fresh(sc.hash); await openAll(sc); nodes = await call(treeNodes, sc); out.tree.push({ scope: sc.scope, carets: nodes.carets.length, leaves: nodes.leaves.length }); }
-  catch (e) { out.tree.push({ scope: sc.scope, kind: 'driver error', why: e.message }); await ensure().catch(() => {}); continue; }
-  for (const lab of nodes.carets) {
-    const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree caret ' + lab.replace(/^(open|close|expand|collapse) /, '')], tag: 'BUTTON', what: lab };
+  let carets, leaves;
+  try { await fresh(sc.hash); await openAll(sc); carets = (await call(caretKeys, sc)).all; leaves = await call(treeLeaves, sc); out.tree.push({ scope: sc.scope, carets: carets.length, leaves: leaves.length }); }
+  catch (e) { out.tree.push({ scope: sc.scope, page: 'tree', hash: sc.hash, path: ['(the tree)'], kind: 'driver error', why: e.message }); await ensure().catch(() => {}); continue; }
+  for (const key of carets) {
+    const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree caret ' + key.replace(/\d+/g, '#')], tag: 'BUTTON', what: key };
     try {
       await fresh(sc.hash); await openAll(sc); await ev('window.__walk = 1');
       const before = await ev(state); const dl0 = fs.readdirSync(dl).length; net = []; exc = []; dlgs = []; held = []; chooser = [];
-      const ok = await ev(`(() => { const want = ${JSON.stringify(lab.replace(/^(open|close|expand|collapse) /, ''))}; const b = [...document.querySelectorAll('#tree button.caret')].find(b => (b.getAttribute('aria-label') || '').replace(/^(open|close|expand|collapse) /, '') === want); if (!b) return false; b.click(); return true; })()`);
-      if (!ok) { row.kind = 'not reached'; row.why = 'gone'; out.tree.push(row); continue; }
-      await sleep(500);
+      const lab = await ev(`(() => { const b = [...document.querySelectorAll('#tree button.caret')].find(b => b.dataset.key === ${JSON.stringify(key)}); if (!b) return null; const l = b.getAttribute('aria-label'); b.click(); return l; })()`);
+      if (lab === null) { row.kind = 'not reached'; row.why = 'gone'; out.tree.push(row); continue; }
+      row.what = lab; await sleep(500);
       const after = await ev(state); row.api = [...net]; row.exc = [...exc]; row.jsDialogs = [...dlgs]; row.held = [...new Set(held)]; row.chooser = [...chooser];
       row.kind = verdict(row, before, after, dl0); row.api = row.api.filter(x => x.status >= 400 || x.status === 0);
     } catch (e) { row.kind = lost ? 'browser lost' : 'driver error'; row.why = e.message; await ensure().catch(() => {}); }
     out.tree.push(row);
   }
-  for (const [href, what] of nodes.leaves) {
-    const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree A ' + href.replace(/=\d+/g, '=#')], tag: 'A', what, href };
+  for (const [href, what] of leaves) {
+    const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree A ' + href.replace(/=[^&]*/g, '=')], tag: 'A', what, href };
     try {
       await fresh(sc.hash); await openAll(sc); net = []; exc = [];
       const clicked = await ev(`(() => { const a = [...document.querySelectorAll('#tree a[href]')].find(a => a.getAttribute('href') === ${JSON.stringify(href)}); if (!a) return false; a.click(); return true; })()`);
