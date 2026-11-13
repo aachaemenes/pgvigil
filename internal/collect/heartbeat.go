@@ -47,6 +47,7 @@ type runAgg struct {
 
 type loadAgg struct {
 	attempts, opened, runs, failures, auth int
+	every                                  time.Duration // the fastest configured interval of the runs counted (0: none known)
 }
 
 type streak struct {
@@ -76,8 +77,16 @@ var current atomic.Pointer[Heartbeat]
 // RecordRun counts one run of a collection on an instance (sched's loop calls it after each run, never for a run its
 // stop cut short); nothing when no heartbeat runs (`pgvigil collect`, a test).
 func RecordRun(instance, engine, collection string, res Result) {
+	RecordRunEvery(instance, engine, collection, res, 0)
+}
+
+// RecordRunEvery is RecordRun with the collection's configured interval on that instance (task 201 DONE-2 N3): the
+// minute's load row carries the fastest one counted, and the repository reads the collector's span from them
+// (collector_span_take, 0121) - how far apart one instance's written minutes may lie, so a host whose collections all
+// run every 5 minutes is not read as a late 1-minute one. every 0 = not known.
+func RecordRunEvery(instance, engine, collection string, res Result, every time.Duration) {
 	if h := current.Load(); h != nil {
-		h.record(instance, engine, collection, res, time.Now())
+		h.record(instance, engine, collection, res, time.Now(), every)
 	}
 }
 
@@ -253,7 +262,7 @@ func bucket(d time.Duration) int {
 	return min(bits.Len64(uint64(ms)), histBuckets-1)
 }
 
-func (h *Heartbeat) record(instance, engine, collection string, res Result, now time.Time) {
+func (h *Heartbeat) record(instance, engine, collection string, res Result, now time.Time, every time.Duration) {
 	if cutShort(res) {
 		return
 	}
@@ -268,6 +277,9 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 		return
 	}
 	l := h.loadOf(instance)
+	if every > 0 && (l.every == 0 || every < l.every) {
+		l.every = every
+	}
 	failed := res.Err != nil
 	l.runs++
 	if failed {
@@ -333,6 +345,8 @@ type beatLoad struct {
 	Runs     int    `json:"runs"`
 	Failures int    `json:"failures"`
 	Auth     int    `json:"auth"`
+	// IntervalS: the fastest configured interval, in seconds, of the minute's runs of the instance (none known: left out)
+	IntervalS int `json:"interval_s,omitempty"`
 }
 
 type beatStreak struct {
@@ -368,7 +382,8 @@ func (h *Heartbeat) take() beat {
 	}
 	now := time.Now()
 	for name, l := range h.load {
-		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth})
+		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth,
+			IntervalS: int(l.every / time.Second)})
 		if h.seen == nil {
 			h.seen = map[string]time.Time{}
 		}

@@ -55,14 +55,14 @@ func TestRecordTake(t *testing.T) {
 	defer current.Store(nil)
 	now := time.Now()
 	CountConnect("t1", nil)
-	h.record("t1", "postgres", "activity", Result{Rows: 5, Duration: 3 * time.Millisecond}, now)
+	h.record("t1", "postgres", "activity", Result{Rows: 5, Duration: 3 * time.Millisecond}, now, 0)
 	CountConnect("t1", fmt.Errorf("connect t1: %w", &pgconn.PgError{Code: "28P01"}))
-	h.record("t1", "postgres", "activity", Result{Duration: 20 * time.Millisecond, Err: errors.New("connect t1: refused")}, now)
+	h.record("t1", "postgres", "activity", Result{Duration: 20 * time.Millisecond, Err: errors.New("connect t1: refused")}, now, 0)
 	CountConnect("t1", nil)                            // the run of tables
 	CountConnect("t1", &pgconn.PgError{Code: "28000"}) // its per-database connect refused by pg_hba
-	h.record("t1", "postgres", "logs", Result{Note: " (skipped: no log door)"}, now)
+	h.record("t1", "postgres", "logs", Result{Note: " (skipped: no log door)"}, now, 0)
 	CountConnect("t2", nil)
-	h.record("t2", "sqlserver", "activity", Result{Rows: 2, Duration: time.Millisecond}, now)
+	h.record("t2", "sqlserver", "activity", Result{Rows: 2, Duration: time.Millisecond}, now, 0)
 	b := h.take()
 	if len(b.Runs) != 2 || len(b.Load) != 2 || b.Instances != 2 {
 		t.Fatalf("take: runs %d, load %d, instances %d", len(b.Runs), len(b.Load), b.Instances)
@@ -92,11 +92,11 @@ func TestRecordTake(t *testing.T) {
 	if b2 := h.take(); len(b2.Runs) != 0 || len(b2.Streaks) != 0 || len(b2.Load) != 0 {
 		t.Errorf("an empty minute sent %+v", b2)
 	}
-	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
+	h.record("t1", "postgres", "activity", Result{Rows: 1}, now, 0)
 	if b3 := h.take(); len(b3.Streaks) != 1 || b3.Streaks[0].Fails != 0 {
 		t.Errorf("the reset: %+v", b3.Streaks)
 	}
-	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
+	h.record("t1", "postgres", "activity", Result{Rows: 1}, now, 0)
 	if b4 := h.take(); len(b4.Streaks) != 0 {
 		t.Errorf("a success after a success was sent: %+v", b4.Streaks)
 	}
@@ -115,9 +115,9 @@ func TestStreakAfterRestart(t *testing.T) {
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{
 		{"t1", "activity"}: {fails: 5, fresh: true}, {"t1", "dbstats"}: {fails: 5, fresh: true}}}
 	now := time.Now()
-	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
-	h.record("t1", "postgres", "dbstats", Result{Err: errors.New("down")}, now)
-	h.record("t2", "postgres", "activity", Result{Rows: 1}, now) // never failed: its first result is sent once (0)
+	h.record("t1", "postgres", "activity", Result{Rows: 1}, now, 0)
+	h.record("t1", "postgres", "dbstats", Result{Err: errors.New("down")}, now, 0)
+	h.record("t2", "postgres", "activity", Result{Rows: 1}, now, 0) // never failed: its first result is sent once (0)
 	got := map[string]int{}
 	for _, s := range h.take().Streaks {
 		got[s.Instance+"/"+s.Collection] = s.Fails
@@ -125,7 +125,7 @@ func TestStreakAfterRestart(t *testing.T) {
 	if len(got) != 3 || got["t1/activity"] != 0 || got["t1/dbstats"] != 6 || got["t2/activity"] != 0 {
 		t.Errorf("after the restart: %v", got)
 	}
-	h.record("t2", "postgres", "activity", Result{Rows: 1}, now)
+	h.record("t2", "postgres", "activity", Result{Rows: 1}, now, 0)
 	if b := h.take(); len(b.Streaks) != 0 {
 		t.Errorf("a second success was sent: %+v", b.Streaks)
 	}
@@ -149,11 +149,11 @@ func TestEmptyBeatJSON(t *testing.T) {
 func TestStopCutRun(t *testing.T) {
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
 	now := time.Now()
-	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.Canceled)}, now)
+	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.Canceled)}, now, 0)
 	if b := h.take(); len(b.Runs) != 0 || len(b.Load) != 0 || len(b.Streaks) != 0 {
 		t.Fatalf("a cut run was counted: runs %d, load %d, streaks %d", len(b.Runs), len(b.Load), len(b.Streaks))
 	}
-	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.DeadlineExceeded)}, now)
+	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.DeadlineExceeded)}, now, 0)
 	if b := h.take(); len(b.Runs) != 1 || b.Runs[0].Failures != 1 {
 		t.Errorf("a timeout is a failure: %+v", b.Runs)
 	}
@@ -166,10 +166,10 @@ func TestSkipEndsStreak(t *testing.T) {
 		{"t2", "host"}: {fails: 7, lastErr: "refused", fresh: true}}}
 	now := time.Now()
 	skip := Result{Note: " (skipped: no system_stats)"}
-	h.record("t2", "postgres", "host", skip, now)
-	h.record("t2", "postgres", "jobs", Result{Err: errors.New("connect t2: refused")}, now)
-	h.record("t2", "postgres", "jobs", skip, now)
-	h.record("t1", "postgres", "host", skip, now)
+	h.record("t2", "postgres", "host", skip, now, 0)
+	h.record("t2", "postgres", "jobs", Result{Err: errors.New("connect t2: refused")}, now, 0)
+	h.record("t2", "postgres", "jobs", skip, now, 0)
+	h.record("t1", "postgres", "host", skip, now, 0)
 	b := h.take()
 	got := map[string]int{}
 	for _, s := range b.Streaks {
@@ -192,9 +192,9 @@ func TestConnectFailNoStreak(t *testing.T) {
 	refused := &pgconn.PgError{Code: "28P01", Message: "password authentication failed"}
 	for _, c := range []string{"activity", "jobs", "host", "waits"} {
 		err := h.instanceConnect("t2", refused, now)
-		h.record("t2", "postgres", c, Result{Err: fmt.Errorf("connect t2: %w", err)}, now)
+		h.record("t2", "postgres", c, Result{Err: fmt.Errorf("connect t2: %w", err)}, now, 0)
 	}
-	h.record("t1", "postgres", "activity", Result{Err: errors.New("activity on t1: relation missing")}, now)
+	h.record("t1", "postgres", "activity", Result{Err: errors.New("activity on t1: relation missing")}, now, 0)
 	b := h.take()
 	got := map[string]int{}
 	for _, s := range b.Streaks {
@@ -252,17 +252,17 @@ func TestStreakSince(t *testing.T) {
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
 	t0 := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
 	boom := Result{Err: errors.New("waits on t1: boom")}
-	h.record("t1", "postgres", "waits", boom, t0)
+	h.record("t1", "postgres", "waits", boom, t0, 0)
 	if b := h.take(); len(b.Streaks) != 1 || b.Streaks[0].Since == nil || !b.Streaks[0].Since.Equal(t0) {
 		t.Fatalf("first beat: %+v (want since %s)", b.Streaks, t0)
 	}
-	h.record("t1", "postgres", "waits", boom, t0.Add(30*time.Second))
-	h.record("t1", "postgres", "waits", boom, t0.Add(70*time.Second))
+	h.record("t1", "postgres", "waits", boom, t0.Add(30*time.Second), 0)
+	h.record("t1", "postgres", "waits", boom, t0.Add(70*time.Second), 0)
 	b := h.take()
 	if len(b.Streaks) != 1 || b.Streaks[0].Fails != 3 || b.Streaks[0].Since == nil || !b.Streaks[0].Since.Equal(t0) {
 		t.Errorf("second beat: %+v (want 3 fails since %s)", b.Streaks, t0)
 	}
-	h.record("t1", "postgres", "waits", Result{Rows: 1}, t0.Add(90*time.Second))
+	h.record("t1", "postgres", "waits", Result{Rows: 1}, t0.Add(90*time.Second), 0)
 	if b := h.take(); len(b.Streaks) != 1 || b.Streaks[0].Fails != 0 || b.Streaks[0].Since != nil {
 		t.Errorf("after a success: %+v (want 0 fails, no since)", b.Streaks)
 	}
@@ -344,5 +344,37 @@ func TestWatchdogStarting(t *testing.T) {
 	SetWatchdogOff("the alerts login: no answer")
 	if got := WatchdogStatus(); got != "off: the alerts login: no answer" {
 		t.Fatalf("after SetWatchdogOff the status is %q", got)
+	}
+}
+
+// TestRecordInterval (task 201 DONE-2 N3): an instance's minute carries the fastest configured interval of the runs it
+// counted - the span's input (0121 collector_span_take); a run recorded without one (RecordRun) never lowers a known
+// one, and an instance with none sends no interval_s at all (the repository keeps NULL: unknown, not 0).
+func TestRecordInterval(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
+	RecordRunEvery("t1", "postgres", "activity", Result{Rows: 1}, 5*time.Minute)
+	RecordRunEvery("t1", "postgres", "waits", Result{Rows: 1}, time.Minute)
+	RecordRun("t1", "postgres", "tables", Result{Rows: 1})
+	RecordRunEvery("t2", "postgres", "indexes", Result{Err: errors.New("boom")}, 5*time.Minute)
+	RecordRun("t3", "postgres", "activity", Result{Rows: 1})
+	RecordRunEvery("t4", "postgres", "logs", Result{Note: " (skipped: no log door)"}, time.Minute)
+	got := map[string]int{}
+	for _, l := range h.take().Load {
+		got[l.Instance] = l.IntervalS
+	}
+	if len(got) != 3 || got["t1"] != 60 || got["t2"] != 300 || got["t3"] != 0 {
+		t.Errorf("intervals: %v (want t1 60, t2 300, t3 0; t4's skip counts no run)", got)
+	}
+	body, err := json.Marshal(beatLoad{Instance: "t3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "interval_s") {
+		t.Errorf("an unknown interval was sent: %s", body)
+	}
+	if b2 := h.take(); len(b2.Load) != 0 {
+		t.Errorf("the next minute kept a load row: %+v", b2.Load)
 	}
 }

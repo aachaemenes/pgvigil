@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat (
   mem_bytes     bigint,                           -- the Go runtime's memory from the OS (runtime.MemStats.Sys)
   goroutines    int,
   instances     int,                              -- instances it ran a collection on in the last minute
-  repo_conns    int                               -- the repository's sessions named pgvigil* at the beat (every pgvigil process)
+  repo_conns    int,                              -- the repository's sessions named pgvigil* at the beat (every pgvigil process)
+  span_s        int                               -- the host's span at this run's newest beat (collector_span_take); NULL: no interval known
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.collector_beats (
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
   runs          int NOT NULL,
   failures      int NOT NULL,
   auth_failures int NOT NULL,                     -- the server refused the login (28P01 / 28000, SQL Server 18456)
+  interval_s    int,                              -- the fastest configured interval of the minute's runs of it (NULL: not known)
   PRIMARY KEY (minute, instance_id, collector_id)
 );
 
@@ -198,9 +200,25 @@ BEGIN
   DO UPDATE SET last = greatest(collector_spells.last, EXCLUDED.last), since = least(collector_spells.since, EXCLUDED.since);
 END $$;
 
+-- collector_span_take: run p_id's host's span after its load rows of p_minute are written (the beat calls it): the
+-- least configured interval of the instances the host read in the 15 minutes up to p_minute, 1 minute at least and 5
+-- at most, in seconds on the run's heartbeat row; no interval known = NULL (collector_span then says 1 minute). The
+-- configured interval, never the gaps between written minutes: a 5-minute band that straddles the beat's minute edge
+-- writes two minutes in a row.
+CREATE OR REPLACE FUNCTION pgvigil.collector_span_take(p_id text, p_minute timestamptz)
+RETURNS void LANGUAGE sql AS $$
+  UPDATE pgvigil.collector_heartbeat c
+     SET span_s = (SELECT CASE WHEN x.m IS NOT NULL THEN greatest(60, least(300, x.m)) END
+                     FROM (SELECT min(l.interval_s) AS m
+                             FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                            WHERE h.host = c.host AND l.minute > p_minute - interval '15 minutes' AND l.minute <= p_minute
+                              AND l.interval_s > 0) x)
+   WHERE c.collector_id = p_id
+$$;
+
 -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
 --   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints]}],
---   load: [{instance, attempts, opened, runs, failures, auth}],
+--   load: [{instance, attempts, opened, runs, failures, auth, interval_s}],  (interval_s: the fastest configured interval, absent when not known)
 --   streaks: [{instance, collection, fails, error, at, since}]}  (instances by name; an unknown name is skipped; since =
 --   the streak's first failure, absent when the collector carried the count from the repository)
 -- p_minute: the minute the runs belong to. Returns false when the collector has no row (its claim never written: it
@@ -233,15 +251,17 @@ BEGIN
          rows_written = collector_runs.rows_written + EXCLUDED.rows_written, dur_ms_sum = collector_runs.dur_ms_sum + EXCLUDED.dur_ms_sum,
          dur_ms_max = greatest(collector_runs.dur_ms_max, EXCLUDED.dur_ms_max),
          dur_hist = ARRAY(SELECT coalesce(a, 0) + coalesce(b, 0) FROM unnest(collector_runs.dur_hist, EXCLUDED.dur_hist) AS u(a, b));
-  INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures)
-  SELECT p_minute, i.instance_id, p_id, l.attempts, l.opened, l.runs, l.failures, l.auth
-    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text, attempts int, opened int, runs int, failures int, auth int)
+  INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures, interval_s)
+  SELECT p_minute, i.instance_id, p_id, l.attempts, l.opened, l.runs, l.failures, l.auth, nullif(l.interval_s, 0)
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text, attempts int, opened int, runs int, failures int, auth int, interval_s int)
     JOIN pgvigil.instances i ON i.name = l.instance
   ON CONFLICT (minute, instance_id, collector_id) DO UPDATE
      SET attempts = collector_load.attempts + EXCLUDED.attempts, opened = collector_load.opened + EXCLUDED.opened,
          runs = collector_load.runs + EXCLUDED.runs,
-         failures = collector_load.failures + EXCLUDED.failures, auth_failures = collector_load.auth_failures + EXCLUDED.auth_failures;
+         failures = collector_load.failures + EXCLUDED.failures, auth_failures = collector_load.auth_failures + EXCLUDED.auth_failures,
+         interval_s = least(collector_load.interval_s, EXCLUDED.interval_s);
   PERFORM pgvigil.collector_spells_take(p_id, p_minute);
+  PERFORM pgvigil.collector_span_take(p_id, p_minute);
   -- the beat names the instances it loaded (collector_instances): seen at the minute's end
   INSERT INTO pgvigil.collector_instances (collector_id, instance, seen_at)
   SELECT p_id, l.instance, p_minute + interval '1 minute'
@@ -381,12 +401,15 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT p_n >= 5 OR (p_n >= 3 AND p_n * 2 > p_ran)
 $$;
 
--- collector_span: the host's span - how far apart its written minutes of one instance may lie (N3 gives it the
--- instance's configured interval; 1 minute until then). A cohort's window and a spell's 'still read' are span + 3
--- minutes, the in-window reach span + 4.
+-- collector_span: the host's span - how far apart its written minutes of one instance may lie: the least configured
+-- interval of the instances it read in the last 15 minutes, 1 to 5 minutes (collector_span_take, at each beat; the
+-- newest run of the host that has one); 1 minute while none is known. A cohort's window and a spell's 'still read' are
+-- span + 3 minutes, the in-window reach span + 4, forming's newest minute and novelty span + 1. A host slower than 5
+-- minutes keeps the early alerts.
 CREATE OR REPLACE FUNCTION pgvigil.collector_span(p_host text)
 RETURNS interval LANGUAGE sql STABLE AS $$
-  SELECT interval '1 minute'
+  SELECT coalesce((SELECT make_interval(secs => h.span_s) FROM pgvigil.collector_heartbeat h
+                    WHERE h.host = p_host AND h.span_s IS NOT NULL ORDER BY h.beat_at DESC LIMIT 1), interval '1 minute')
 $$;
 
 -- collector_cohorts: per collector (host), the instances whose failures BEGAN together. A cohort starts at a 'dead'
@@ -516,14 +539,16 @@ $$;
 -- failure is never new (a refused login an hour old, a 5-minute collection failing every run), however many
 -- instances carry one. alert_due holds the NEW alerts of the counted instances (collector_shared_cause) until the
 -- next minute is written; nothing waits longer than span + 3 minutes after its own trouble began - the cap is the
--- clock. A minute older than 2 minutes is not newest (a late collector); the repository's current minute counts (a
+-- clock. A minute older than span + 1 minutes is not newest (a late collector); the repository's current minute counts (a
 -- beat writes a minute once it ended on the collector's clock, which may run ahead).
 CREATE OR REPLACE VIEW pgvigil.collector_forming AS
 WITH hn AS (
-  SELECT h.host, max(l.minute) AS newest, pgvigil.collector_span(h.host) + interval '1 minute' AS age
-    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-   WHERE l.minute >= date_trunc('minute', now()) - interval '2 minutes' AND h.retired_at IS NULL
-   GROUP BY h.host
+  SELECT x.host, x.newest, x.age
+    FROM (SELECT h.host, max(l.minute) AS newest, pgvigil.collector_span(h.host) + interval '1 minute' AS age
+            FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+           WHERE l.minute >= date_trunc('minute', now()) - interval '6 minutes' AND h.retired_at IS NULL
+           GROUP BY h.host) x
+   WHERE x.newest >= date_trunc('minute', now()) - x.age
 ), m AS (
   SELECT hn.host, hn.newest, hn.age, l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
     FROM hn
