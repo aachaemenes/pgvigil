@@ -773,7 +773,8 @@ func (s *Server) quickieStorePreset(ctx context.Context, conn *sql.Conn, c *comm
 	if err := s.pool.QueryRow(ctx, `SELECT count(*), max(snapshot_at) FROM pgvigil.mssql_qs_store WHERE instance_id = $1`, id).Scan(&stores, &last); err == nil && stores > 0 {
 		readAt = last
 		rows, err := s.pool.Query(ctx, `SELECT database_name FROM pgvigil.mssql_qs_store
- WHERE instance_id = $1 AND actual_state IN ('READ_WRITE', 'READ_ONLY') ORDER BY database_name`, id)
+ WHERE instance_id = $1 AND actual_state IN ('READ_WRITE', 'READ_ONLY') AND database_name NOT IN ('master', 'model', 'msdb', 'tempdb')
+ ORDER BY database_name`, id)
 		if err == nil {
 			on, err = pgx.CollectRows(rows, pgx.RowTo[string])
 		}
@@ -783,7 +784,7 @@ func (s *Server) quickieStorePreset(ctx context.Context, conn *sql.Conn, c *comm
 		}
 	} else {
 		src = "live"
-		rows, err := conn.QueryContext(ctx, `SELECT name FROM sys.databases WHERE is_query_store_on = 1 AND state = 0 ORDER BY name`)
+		rows, err := conn.QueryContext(ctx, `SELECT name FROM sys.databases WHERE is_query_store_on = 1 AND state = 0 AND database_id > 4 ORDER BY name`)
 		if err == nil {
 			for rows.Next() {
 				var n string

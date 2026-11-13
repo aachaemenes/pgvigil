@@ -475,7 +475,7 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   # blocked process threshold 0 (a new container): system_health preset, a note, the tool on
   [[ $(tl "t['sp_HumanEventsBlockViewer']['state']") == note && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" \
      && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == *"blocked process threshold 0"*system_health* ]] || fail "N: sp_HumanEventsBlockViewer at threshold 0: $(tl "t['sp_HumanEventsBlockViewer']")"
-  qsdb=$(sq "SELECT TOP (1) name FROM sys.databases WHERE is_query_store_on = 1 AND state = 0 ORDER BY name")
+  qsdb=$(sq "SELECT TOP (1) name FROM sys.databases WHERE is_query_store_on = 1 AND state = 0 AND database_id > 4 ORDER BY name")
   if [[ -n $qsdb ]]; then
     [[ $(tl "t['sp_QuickieStore']['state']") == note && $(tl "t['sp_QuickieStore']['preset']") == "{'@database_name': '$qsdb'}" ]] || fail "N: sp_QuickieStore's preset ($qsdb has Query Store on): $(tl "t['sp_QuickieStore']")"
   else
@@ -487,7 +487,8 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   # declined: the procedure's own refusal is a failed run in the audit, declined in the answer, never 'refused'
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == failed && $(js "d['runs'][0].get('declined')") == True \
      && $(js "d['runs'][0]['error']") == "sp_LogHunter declined: Current user does not have EXECUTE permission on xp_readerrorlog"*"(msg 50000, severity 11)" ]] || fail "N: sp_LogHunter declined: $(head -c 600 "$WORK/body")"
-  [[ $(q "select outcome || '|' || left(detail, 26) from pgvigil.custom_report_log where op = 'community_run' and tool = 'sp_LogHunter' order by log_id desc limit 1") == "failed|sp_LogHunter declined: Curr" ]] || fail "N: the declined run's log row"
+  row=$(q "select outcome || '|' || detail from pgvigil.custom_report_log where op = 'community_run' and tool = 'sp_LogHunter' order by log_id desc limit 1")
+  [[ $row == "failed|sp_LogHunter declined: Current user does not have EXECUTE permission on xp_readerrorlog"* ]] || fail "N: the declined run's log row: $row"
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"pgcr_none\"}}") == 200 && $(js "d['runs'][0].get('declined')") == True \
      && $(js "d['runs'][0]['error']") == *"lousy version in system_health"* ]] || fail "N: sp_HumanEventsBlockViewer on a session at threshold 0: $(head -c 600 "$WORK/body")"
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_HumanEventsBlockViewer with its preset: $(head -c 600 "$WORK/body")"
@@ -503,6 +504,7 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   ok "N: a real failure inside sp_BlitzIndex stays an error: $red"
   # the sibling pairs (the lead 15:50): EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
   # list says hard (a default run fails) or a note (it ends done) - a pair the run contradicts fails here
+  hard=(); disagree=()
   for pair in sp_Blitz/sp_BlitzBackups sp_Blitz/sp_BlitzCache sp_Blitz/sp_BlitzFirst sp_Blitz/sp_BlitzIndex sp_Blitz/sp_BlitzLock sp_Blitz/sp_BlitzWho \
               sp_Blitz/sp_DatabaseRestore sp_Blitz/sp_ineachdb sp_BlitzFirst/sp_BlitzWho sp_BlitzFirst/sp_BlitzCache sp_BlitzIndex/sp_BlitzCache; do
     tool=${pair%/*}; sib=${pair#*/}
@@ -514,11 +516,13 @@ if [[ -z "$SKIP_MSSQL" ]]; then
     sq "GRANT EXECUTE ON dbo.$sib TO pgcr_reader;" >/dev/null || fail "N: grant $sib back"
     echo "rec  N: pair $tool / $sib: the code says $code_says; the default run $ran $why"
     case "$code_says|$ran" in
-      "[True]|failed"|"[False]|done") ;;
-      *) fail "N: the pair $tool / $sib: the code says $code_says (hard = [True]) but the default run ended $ran: $why" ;;
+      "[True]|failed") hard+=("$pair") ;;
+      "[False]|done") ;;
+      *) disagree+=("$pair: the code says $code_says (hard = [True]), the default run ended $ran $why") ;;
     esac
   done
-  ok "N: 11 sibling pairs: each one's hard / note agrees with a default run with the right revoked"
+  [[ ${#disagree[@]} == 0 ]] || fail "N: sibling pairs the code's list gets wrong: $(printf '%s; ' "${disagree[@]}")"
+  ok "N: 11 sibling pairs agree with a default run with the right revoked; hard: ${hard[*]:-none}"
   # threshold 5, no session capturing the report: system_health preset with its note; a session made: its name preset
   sq "EXEC sys.sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || fail "N: threshold 5"
   [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" \
@@ -780,8 +784,9 @@ const shot = async (dir, name) => {
 // every control that is off and shown has a visible, non-empty description (aria-describedby)
 const offCheck = (label) => ev(`(() => {
   const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+  // the instance header (instheader.ts, on every instance page) is not this page's: left to its own proof
   const ctl = [...document.querySelectorAll('main button, main input, main select, main textarea, dialog button')]
-    .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+    .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e) && !e.closest('.inst-header'));
   const bad = ctl.filter(e => { const ids = (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean);
     return !ids.some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.trim().length > 0; }); });
   return { label: ${JSON.stringify(label)}, off: ctl.length, bad: bad.map(e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 80)) };
