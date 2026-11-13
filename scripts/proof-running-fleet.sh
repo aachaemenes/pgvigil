@@ -307,7 +307,12 @@ for (const theme of ['light', 'dark']) {
   const snap = await ev(`document.querySelector('.snap-time')?.textContent ?? ''`);
   const btn = l => `[...document.querySelectorAll('.picker button')].find(b => b.textContent === ${JSON.stringify(l)})`;
   const want = await ev(`new Date(${JSON.stringify(a.s)}).toLocaleString(undefined, { hour12: false })`);
-  check(snap === 'Snapshot ' + want && await ev(`!${btn('Earlier')}.disabled && ${btn('Later')}.disabled`), T + `D: '${snap}', Earlier on, Later off`);
+  // off = aria-disabled (the snapshot bar's step with nowhere to go stays reachable and says why beside itself, the words
+  // it is described by), never the disabled attribute
+  const offJS = b => `(${b}.getAttribute('aria-disabled') === 'true')`;
+  const laterWords = await ev(`(() => { const b = ${btn('Later')}; const n = b && b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null; return n && n.offsetParent !== null ? n.textContent.trim() : ''; })()`);
+  check(snap === 'Snapshot ' + want && await ev(`!${offJS(btn('Earlier'))} && !${btn('Earlier')}.disabled && ${offJS(btn('Later'))} && !${btn('Later')}.disabled`) && laterWords === 'no later snapshot',
+    T + `D: '${snap}', Earlier on, Later off (aria-disabled, saying '${laterWords}')`);
   const sr = await rowsOf('.folded table');
   check(sr && sr.n === 9 && sr.max <= 40, T + `D: sessions ${sr?.n} rows, the tallest ${sr?.max} px`);
   const tree = await ev(`[...document.querySelectorAll('.chain-tree tbody tr')].map(r => [r.cells[0].textContent.replace(/[^0-9]/g, ''), r.cells[1].textContent, r.cells[2].textContent].join('|'))`);

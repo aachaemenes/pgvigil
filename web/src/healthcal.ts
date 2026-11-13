@@ -18,6 +18,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Band, blockingBand, deadlockBand } from './instheader';
 import { Ctx, href } from './router';
 import { el, grid, Col } from './ui';
+import { offBeside } from './ack';
 
 type DayBand = Band | 'nodata' | 'future';
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -94,15 +95,15 @@ export function healthCalendar(ctx: Ctx, engine: unknown): HTMLElement {
   const draw = async () => {
     const atCurrent = view.y === cur.y && view.m === cur.m;
     const label = `${MONTHS[view.m]} ${view.y} (UTC)`;
-    const btn = (text: string, aria: string, go: () => void, disabled = false) => {
+    // off = the button's own state (no month after the current one), said in words beside it
+    const btn = (text: string, aria: string, go: () => void, off = '') => {
       const b = el('button', { type: 'button', class: 'tb-btn', 'aria-label': aria }, text);
-      b.disabled = disabled;
-      b.addEventListener('click', go);
+      if (off) offBeside(b, off); else b.addEventListener('click', go);
       return b;
     };
     const step = (k: number) => () => { const t = new Date(Date.UTC(view.y, view.m + k, 1)); view.y = t.getUTCFullYear(); view.m = t.getUTCMonth(); detail.replaceChildren(); void draw(); };
     const nav = el('div', { class: 'toolbar healthcal-nav' },
-      btn('‹', 'Previous month', step(-1)), el('span', { class: 'healthcal-month' }, label), btn('›', 'Next month', step(1), atCurrent),
+      btn('‹', 'Previous month', step(-1)), el('span', { class: 'healthcal-month' }, label), btn('›', 'Next month', step(1), atCurrent ? 'this is the current month' : ''),
       atCurrent ? '' : btn('This month', 'Back to this month', () => { view.y = cur.y; view.m = cur.m; detail.replaceChildren(); void draw(); }),
       // its words are its name (label-in-name); PerformanceMonitor's longer wording is its title
       (() => { const b = el('button', { type: 'button', class: 'tb-btn', title: asTable ? 'Show the month as a calendar' : 'Show the month as a table' }, asTable ? 'Show as calendar' : 'Show as table');

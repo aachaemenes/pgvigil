@@ -8,8 +8,8 @@
 #   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 240; a loaded machine seeds slower)
 #   PGVIGIL_A11Y_MAX   the most violation nodes allowed (default 0)
 # Expected: every page renders and axe runs on it (the check's exit 0); every off control (disabled or aria-disabled)
-# on Community tools, Custom reports and Report mail has a visible reason as its description (other pages' are
-# listed 'b2', not failed; a planted one is counted first); 0 violation nodes under the
+# on EVERY page has a visible reason as its description (task B7 DONE-2: the rule began on Community tools, Custom
+# reports and Report mail with other pages listed 'b2'; a planted one is counted first); 0 violation nodes under the
 # WCAG 2.1 A / AA rules in both themes (the rules axe can judge; keyboard order, focus visibility and
 # screen-reader behaviour need a hand pass and are not claimed here). axe-core 4.14.0 is installed into
 # the proof's temporary folder from npm.
@@ -47,9 +47,9 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 
 echo "== the check"
 node scripts/a11y-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$AXE" "${PGVIGIL_A11Y_OUT:-$WORK/a11y.json}" | tee "$WORK/a11y.txt" || {
-  grep -q '^off-reason: [1-9]' "$WORK/a11y.txt" && fail "an off control on Community tools, Custom reports or Report mail has no visible reason (the 'off' lines above)"
-  grep -q '^off-reason self-test:' "$WORK/a11y.txt" && ! grep -q '^off-reason self-test: planted off buttons without a reason counted 4 of 4$' "$WORK/a11y.txt" \
-    && fail "the off-reason check's self-test did not count its 4 planted buttons"
+  grep -q '^off-reason: [1-9]' "$WORK/a11y.txt" && fail "an off control has no visible reason on a page (the 'off' lines above; every page is held to it)"
+  grep -q '^off-reason self-test:' "$WORK/a11y.txt" && ! grep -q '^off-reason self-test: planted off buttons without a reason counted 5 of 5$' "$WORK/a11y.txt" \
+    && fail "the off-reason check's self-test did not count its 5 planted buttons"
   echo "chromium alive: $(kill -0 $CHR 2>/dev/null && echo yes || echo no); its log's last lines:"; tail -15 "$WORK/chrome.log" | cut -c1-300
   fail "a page did not render or axe did not run on it"; }
 # the demo has SQL Server instances: a check that walked none of their pages has not checked them

@@ -18,6 +18,7 @@
 // there is none. The tree's folders ('Imported: <repository>') are dbadashFolders, drawn by tree.ts.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { mssqlJobCol, mssqlKillCol } from './mssql_actions';
+import { offBeside } from './ack';
 import { Ctx, href, mssqlInstanceGroups, mssqlInstanceTabs, window_ } from './router';
 import { hashParam } from './dbinfo';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtTime, grid, props, tile } from './ui';
@@ -479,11 +480,15 @@ async function screenInto(sec: HTMLElement, ctx: Ctx, m: Mode, page: string, sna
     const label = page === 'sessions' ? 'Kill' : 'Start / Stop';
     if (!why && pg) {
       const actx = { ...ctx, instance: Number(pg.instance_id) };
-      actCol = page === 'sessions' ? await mssqlKillCol(actx, after) : await mssqlJobCol(actx, after);
+      const ac = page === 'sessions' ? await mssqlKillCol(actx, after) : await mssqlJobCol(actx, after);
+      actCol = ac;
+      if (ac.offNote) sec.append(ac.offNote);   // off for the whole instance: its one sentence, the off buttons point at it
       sec.append(el('p', { class: 'meta' }, `Actions go through the actions door of pgvigil's own instance ${String(pg.name)}${Number(pg.matches) > 1 ? ` (one of ${String(pg.matches)} with this server name)` : ''}; every attempt is kept in its Actions log.`));
     } else {
-      actCol = { key: '_actions', label: 'action', fmt: () => { const b = el('button', { type: 'button', 'aria-disabled': 'true', style: 'font-size:12px;padding:0 .4rem;opacity:.55;cursor:not-allowed', title: why }, label); b.setAttribute('aria-label', `${label}: off. ${why}`); return b; } };
-      sec.append(el('p', { class: 'meta' }, `No action from this page: ${why}.`));
+      // off for the whole page: its one sentence, and every row's button is described by it (not a title alone)
+      const noAction = el('p', { class: 'meta' }, `No action from this page: ${why}.`);
+      actCol = { key: '_actions', label: 'action', fmt: () => { const b = el('button', { type: 'button', style: 'font-size:12px;padding:0 .4rem;opacity:.55;cursor:not-allowed' }, label); offBeside(b, why, noAction); return b; } };
+      sec.append(noAction);
     }
   }
   if (!d.results.length) sec.append(el('p', { class: 'empty' }, 'The procedure returned no result set.'));

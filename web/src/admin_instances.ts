@@ -7,7 +7,22 @@
 // takes a change within 15 s, without a restart. The route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
-import { badge, Col, el, fmtTime, grid } from './ui';
+import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+
+// the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
+// described by that sentence (its id), so the reason is words on the page for each of them
+const READ_ONLY_ID = 'admin-instances-read-only';
+// offRead: a control that cannot write here. A BUTTON is off the B7 way - aria-disabled, in the tab order, a click does
+// nothing, its reason its title and the page's sentence it is described by (offControl, given a stand-in that carries
+// the sentence's id: the sentence itself may not be on the page yet when a cell is built); a FIELD stays natively
+// disabled (aria-disabled would still take typing), described by the same sentence
+const roRef = el('span', { id: READ_ONLY_ID });
+function offRead(c: Element, why: string): void {
+  if (c instanceof HTMLButtonElement) { offControl(c, why, roRef); return; }
+  (c as HTMLInputElement).disabled = true;
+  (c as HTMLElement).title = why;
+  c.setAttribute('aria-describedby', READ_ONLY_ID);
+}
 
 interface AdminData {
   file: Table | null; page: Table | null; sources: Table | null; proposals: Table | null; audit: Table | null;
@@ -62,7 +77,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
         'A change reaches the collector within 15 seconds, without a restart (inventory generation ', String(d.generation), '). ',
         d.secret_dir ? `Credentials are written to their own files in ${d.secret_dir}; the repository keeps only each file's name.` : ''),
       // read only on this server: a note, not an error (the page works; the join's w9c)
-      d.writable ? '' : el('p', { class: 'meta', role: 'note' }, `Read only: ${d.why_not}.`),
+      d.writable ? '' : el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${d.why_not}.`),
       status,
       instanceForm(d),
       el('h3', {}, 'Instances added here'),
@@ -88,12 +103,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   // never brings an enabled write button back under the read-only note
   let whyNot = '';
   function lock(cell: HTMLElement): HTMLElement {
-    if (whyNot) {
-      for (const b of cell.querySelectorAll('button')) {
-        b.disabled = true;
-        b.title = whyNot;
-      }
-    }
+    if (whyNot) for (const b of cell.querySelectorAll('button')) offRead(b, whyNot);
     return cell;
   }
 
@@ -101,10 +111,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   // grids' own filters and 'Show more' only read, and stay as they are (as ack.ts and alert_rules.ts do)
   function readOnly(d: AdminData): void {
     if (d.writable) return;
-    for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) {
-      (c as HTMLButtonElement).disabled = true;
-      (c as HTMLElement).title = d.why_not;
-    }
+    for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) offRead(c, d.why_not);
   }
 
   async function act(path: string, data: Record<string, unknown>, done: string): Promise<boolean> {
@@ -162,7 +169,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       el('div', {}, field('Engine', engine), field('Name', name), field('Host', host), field('Port', port), field('Database', dbname), field('Platform', platform)),
       el('div', {}, field('Authentication', auth), field('Login', login), field('Password', password), field('Driver options', options), field('Tags (space-separated)', tags)),
       el('div', {}, submit, ' ', test, ' ', cancel)));
-    if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) (c as HTMLInputElement).disabled = true;
+    if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) offRead(c, d.why_not);
     return f;
   }
   let formRef: (HTMLFormElement & { fill?: (r: Row) => void }) | null = null;
@@ -394,7 +401,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       el('div', {}, el('span', { class: 'meta' }, 'The login an approved server is read with: '), field('Authentication', credAuth), field('Login', credLogin), field('Password', credPw), field('Driver options', credOpt)),
       el('p', { class: 'meta' }, 'The add reads the source once while you wait (50 seconds at most): a large estate may not finish in that time - then the hourly read follows by itself. Cloud tags come in only for the keys you allow (Edit, after the first read lists the keys it saw).'),
       el('div', {}, el('button', { type: 'submit' }, 'Add the source'))));
-    if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) (c as HTMLInputElement).disabled = true;
+    if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) offRead(c, d.why_not);
     return f;
   }
 

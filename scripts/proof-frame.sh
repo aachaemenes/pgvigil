@@ -61,7 +61,8 @@
 #   U pick series 2 or more ticks; the first unticked turns only its legend entry off, kept after a redraw; All then Done:
 #                 the panel closed, the focus on the menu button, every series on
 #   V steps       on 12:00-13:00 UTC: Earlier 11:00-12:00, Later 12:00-13:00, Zoom out 11:30-13:30, the key [ from 11:00; on
-#                 the preset 1h: Later disabled, Zoom out w=4h, then the key ] leaves w=4h
+#                 the preset 1h: Later off in its place - aria-disabled and focusable, never the disabled attribute, its
+#                 description and its title 'the range already ends now' - Zoom out w=4h, then the key ] leaves w=4h
 #   W typed range 'now-6h' previews '..., follows now' and gives w=6h; 'now-1d/d to now/d' previews '... (1d)' and gives a
 #                 fixed range of 24 h ending at the zone's midnight, no w=; 'soon' previews 'not a time', the address unchanged
 #   X footer      on the Summary: the instances as /api/instances counts them, 'collections: n healthy, ...', the

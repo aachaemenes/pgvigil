@@ -594,13 +594,17 @@ const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()
   await ev(`document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'`); await sleep(700);
   const k1 = await params();
   await go('#/summary?w=1h');
-  const dis = await ev(`document.querySelector('#bar .range button[aria-label^="Later"]').disabled`);
+  // Later on a range that ends now: off in its place - aria-disabled and focusable, never the disabled attribute - with
+  // its reason as its description and its title
+  const dis = await ev(`(() => { const b = document.querySelector('#bar .range button[aria-label^="Later"]'); const n = b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+    return { off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled, described: n ? n.textContent.trim() : '', title: b.title, tab: b.tabIndex }; })()`);
   const zp = await press('Zoom out');
   await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true })); 'ok'`); await sleep(500);
   const kp = await params();
   check('V range steps', e1[0] === at('11:00') && e1[1] === at('12:00') && l1[0] === at('12:00') && l1[1] === at('13:00') && z1[0] === at('11:30') && z1[1] === at('13:30')
-    && Date.parse(k1.get('from')) === at('11:00') && dis === true && zp[2] === '4h' && kp.get('w') === '4h',
-    `Earlier ${new Date(e1[0]).toISOString()}-${new Date(e1[1]).toISOString()}; Later ${new Date(l1[0]).toISOString()}-${new Date(l1[1]).toISOString()}; Zoom out ${new Date(z1[0]).toISOString()}-${new Date(z1[1]).toISOString()}; key [ from ${k1.get('from')}; on 1h: Later disabled ${dis}, Zoom out w=${zp[2]}, key ] w=${kp.get('w')}`);
+    && Date.parse(k1.get('from')) === at('11:00') && dis.off && !dis.disabledAttr && dis.tab === 0 && dis.described === 'the range already ends now' && dis.title === 'the range already ends now'
+    && zp[2] === '4h' && kp.get('w') === '4h',
+    `Earlier ${new Date(e1[0]).toISOString()}-${new Date(e1[1]).toISOString()}; Later ${new Date(l1[0]).toISOString()}-${new Date(l1[1]).toISOString()}; Zoom out ${new Date(z1[0]).toISOString()}-${new Date(z1[1]).toISOString()}; key [ from ${k1.get('from')}; on 1h: Later off ${JSON.stringify(dis)}, Zoom out w=${zp[2]}, key ] w=${kp.get('w')}`);
 }
 
 // W. the typed range: 'now-6h' previews 'follows now' and Enter makes w=6h; 'now-1d/d to now/d' is yesterday (24 h, from

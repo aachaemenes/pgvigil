@@ -271,6 +271,9 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const box = el('div');
   const d = await get<Record<'jobs', Table | null>>('jobs/history', { engine, instance: ctx.instance, ...w });
   const jobs = rowsOf(d.jobs);
+  // a column that decides something from the page's rows (the PostgreSQL page's Run now: is its sentence needed) gets
+  // them before the grid draws - a long grid draws its first page only
+  for (const c of extra) (c as Col & { rows?: (all: Row[]) => void }).rows?.(jobs);
   const ad = await loadAckSafe(['acks']);
   // the grid's Acknowledge buttons share one reason when they are off - a server that writes nothing at all, or on a
   // demo serve an instance that is not the demo's: said once above the grid, and every button points at that sentence
@@ -426,9 +429,13 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     const findings = rowsOf(d.findings);
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
     if (running.length) sec.append(el('h3', {}, 'Running now'), grid(running, runningCols));
-    // Start and Stop ride the actions door: off, with the reason on the button, where the instance has none
+    // Start and Stop ride the actions door: where the instance has none they are off, with the reason said once above
+    // the grid (the column's offNote) and each button pointing at it
     const act = await mssqlJobCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange')));
-    sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]));
+    // the panel hands the column its rows before it draws: the sentence is read after it, so it stands only where a
+    // job's Start and Stop point at it
+    const jobsBox = await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]);
+    sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), ...(act.offNote ? [act.offNote] : []), jobsBox);
     sec.append(el('h3', {}, 'Failed runs in this range'), grid(failed, failedCols, 'No job failed in this range.'));
     // the steps of each job as last read, one disclosure per job: reachable by keyboard, named by the job
     const withSteps = jobs.filter(j => jsonRows(j.steps).length);

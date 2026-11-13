@@ -430,13 +430,17 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const monthOf = () => ev(`document.querySelector('main .healthcal-month')?.textContent ?? ''`);
     const clickNav = async (name) => { await ev(`[...document.querySelectorAll('main .healthcal-nav button')].find(b => (b.getAttribute('aria-label') ?? b.textContent) === ${JSON.stringify(name)})?.click()`); for (let i = 0; i < 30 && await ev(`!!document.querySelector('main .healthcal-body p.meta') && /^Loading/.test(document.querySelector('main .healthcal-body p.meta').textContent)`); i++) await sleep(100); await sleep(200); };
     const m0 = await monthOf();
-    const nextOff = await ev(`[...document.querySelectorAll('main .healthcal-nav button')].find(b => b.getAttribute('aria-label') === 'Next month')?.disabled ?? null`);
+    // Next month on the current month: off - aria-disabled, never the disabled attribute - and described by visible words
+    const nextOff = await ev(`(() => { const b = [...document.querySelectorAll('main .healthcal-nav button')].find(x => x.getAttribute('aria-label') === 'Next month'); if (!b) return null;
+      const n = b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+      return { off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled, words: n && n.offsetParent !== null ? n.textContent.trim() : '' }; })()`);
     await clickNav('Previous month'); const m1 = await monthOf();
     const back = await ev(`!![...document.querySelectorAll('main .healthcal-nav button')].find(b => b.getAttribute('aria-label') === 'Back to this month')`);
     await clickNav('Next month'); const m2 = await monthOf();
     await clickNav('Previous month'); await clickNav('Back to this month'); const m3 = await monthOf();
-    pm(`${eng} ${inst.name}`, 'calendar months', eng, `${m0} -> ${m1} -> ${m2}; This month -> ${m3}`, nextOff === true && m1 !== m0 && back && m2 === m0 && m3 === m0,
-      'Previous / Next month (Next off on this month), This month only away from it');
+    pm(`${eng} ${inst.name}`, 'calendar months', eng, `${m0} -> ${m1} -> ${m2}; This month -> ${m3}; Next on this month: ${JSON.stringify(nextOff)}`,
+      !!nextOff && nextOff.off && !nextOff.disabledAttr && nextOff.words === 'this is the current month' && m1 !== m0 && back && m2 === m0 && m3 === m0,
+      "Previous / Next month (Next off on this month, saying 'this is the current month'), This month only away from it");
     await clickNav('Show as table');
     const tb = await ev(`({ grid: !!document.querySelector('main .healthcal-body table.grid, main .healthcal-body p.empty'), next: [...document.querySelectorAll('main .healthcal-nav button')].find(b => /Show as/.test(b.textContent))?.textContent })`);
     await clickNav('Show as calendar');

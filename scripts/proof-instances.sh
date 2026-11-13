@@ -42,7 +42,8 @@
 #      Server page instance never collected (A's container stopped) -> its row at the add and 'server unreachable'
 #   L. the page on a serve with no UI login (-no-login, the join's w9c): the list renders read only, a plain note in the
 #      page's own words ('adding and changing instances needs the UI login: ...'), no error box, every control that
-#      writes disabled saying why on hover, the grids' filters still usable; an add through the API refused with the
+#      writes off - a field natively disabled, a button aria-disabled (B7 DONE-2: in the tab order, a click does
+#      nothing) - saying why on hover, the grids' filters still usable; an add through the API refused with the
 #      same words; L2: the same on a serve with the UI login whose repository login is the UI's read-only one (IN ROLE
 #      pgvigil_reader, pgvigil_auth: docs/app.md), so the actions door's audit login is off ('... goes through the
 #      actions door's audit login, and it is off: the audit login may not write the actions log ...'); the third
@@ -582,15 +583,17 @@ await sleep(500);
 console.log(`ready ${ok}`);
 console.log(`errors ${await ev(`document.querySelectorAll('main .error:not([role=status])').length`)}`);
 console.log(`note ${JSON.stringify(await ev(`document.querySelector('main [role=note]')?.textContent ?? ''`))}`);
-console.log(`enabled ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled).length`)}`);
+// a control that writes is off when it is natively disabled (a field) or aria-disabled (a button, B7: reachable by
+// keyboard, a click does nothing); 'titles' reads both
+console.log(`enabled ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled && c.getAttribute('aria-disabled') !== 'true').length`)}`);
 console.log(`filters ${await ev(`[...document.querySelectorAll('main .filter-btn')].filter(b => !b.disabled && (b.title ?? '').startsWith('Filter ')).length`)}`);
-console.log(`titles ${await ev(`[...new Set([...document.querySelectorAll('main button:disabled')].map(b => b.title))].join(' | ')`)}`);
+console.log(`titles ${await ev(`[...new Set([...document.querySelectorAll('main button:disabled, main button[aria-disabled="true"]')].map(b => b.title))].join(' | ')`)}`);
 console.log(`rows ${await ev(`document.querySelectorAll('main table tbody tr').length`)}`);
 // a sort redraws a grid's rows through its columns' formats (the join's w9e, finding 5): each grid's first header
 // clicked, then the controls that write counted again
 console.log(`sorted ${await ev(`[...document.querySelectorAll('main table.grid thead tr:first-child th:first-child')].map(th => (th.click(), 1)).length`)}`);
 await sleep(500);
-console.log(`enabled2 ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled).length`)}`);
+console.log(`enabled2 ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled && c.getAttribute('aria-disabled') !== 'true').length`)}`);
 console.log(`actions2 ${await ev(`document.querySelectorAll('main .actions button').length`)}`);
 ws.close(); process.exit(0);
 JS

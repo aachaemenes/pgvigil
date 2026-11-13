@@ -21,6 +21,7 @@ export async function jobsPgView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Jobs (${rangeLabel(ctx)})`));
   if (!ctx.instance) { sec.append(el('p', { class: 'empty' }, 'Pick an instance.')); return sec; }
   try {
+    const run = await pgJobActionCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange')));
     const extra: Col[] = [
       { key: 'scheduler' },
       { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
@@ -28,10 +29,12 @@ export async function jobsPgView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'job_id', label: 'page', fmt: (v, r: Row) => jobLink(ctx, `#${String(v)}`, r.scheduler, Number(v)) },
       // task 161: the pg_cron schedule in words, Run now on a pgAgent job
       { key: '_schedule_words', label: 'schedule in words (cron.timezone)', fmt: (_v, r: Row) => r.scheduler === 'pg_cron' ? cronInWords(r.schedule) : '' },
-      await pgJobActionCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange'))),
+      run,
     ];
-    sec.append(await jobsPanel(ctx, 'pg', extra));
-    sec.append(await jobsRunningPanel(ctx));
+    const panel = await jobsPanel(ctx, 'pg', extra);
+    if (run.offNote) sec.append(run.offNote);   // Run now off for the whole instance, where a pgAgent job shows the button
+    sec.append(panel);
+    sec.append(await jobsRunningPanel(ctx, run.stopNote));   // one sentence above for Run now AND Stop: not said again below
     const d = await get<Record<'runs', Table | null>>('jobs', { instance: ctx.instance, ...window_(ctx), part: 'runs' });
     const runCols: Col[] = [
       { key: 'start_time', label: 'start', fmt: fmtTime },

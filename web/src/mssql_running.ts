@@ -16,7 +16,7 @@
 // Data from /api/mssql/running; the route and the tab's entry are the shell's.
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
 import { foldedGrid } from './running';
 import { firstChars, sqlCell, whatIsThis } from './sqlview';
 import { mssqlBlockingTrend } from './blocking_history';
@@ -288,8 +288,10 @@ function guarded(ctx: Ctx, kill: Col): Col {
       void (async () => {
         const why = await notTheRow(ctx, r);
         if (why) {
-          b.setAttribute('aria-disabled', 'true'); b.title = why; b.style.opacity = '.55'; b.style.cursor = 'not-allowed';
-          cell.append(el('span', { class: 'meta kill-moved', role: 'status' }, ' ' + why));
+          // off from now on, described by the words it says beside itself (offControl: aria-disabled, its title, the guard)
+          const said = el('span', { class: 'meta kill-moved', role: 'status' }, ' ' + why);
+          cell.append(said);
+          offControl(b, why, said); b.style.opacity = '.55'; b.style.cursor = 'not-allowed';
           return;
         }
         pass = true;
@@ -335,11 +337,16 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     widened = true; win = hourUpTo(at);
     d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
   }
-  const kill = live && !widened ? guarded(ctx, await mssqlKillCol(ctx, redraw(ctx))) : null;
+  const killCol = live && !widened ? await mssqlKillCol(ctx, redraw(ctx)) : null;
+  const kill = killCol ? guarded(ctx, killCol) : null;
   const share = headShare(ctx, win);   // read beside the snapshot; drawn below it
   const sec = el('section', {}, el('h2', {}, `Running queries (${widened ? 'the hour up to ' + fmtTime(at) : rangeLabel(ctx)})`));
   const st = rowsOf(d.state)[0];
   if (st && st.status !== 'ok') sec.append(el('p', { class: 'meta' }, `The mssql_requests collection's last run: ${String(st.status)}${st.note ? ' (' + String(st.note) + ')' : ''}.`));
+  // Kill off for the whole instance: its one sentence, which every off Kill below points at - placed only where a user
+  // session of this read will draw a Kill (the column learns the rows first)
+  killCol?.rows?.(rowsOf(d.rows));
+  if (killCol?.offNote) sec.append(killCol.offNote);
   const snaps = rowsOf(d.snapshots).reverse();   // oldest first: the slider runs left to right in time
   // the stop the page opens on: the newest, or with at= the newest at or before it (the one the API returned)
   let start = snaps.length - 1;

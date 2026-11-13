@@ -7,7 +7,7 @@ import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Gro
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
-import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, showMenu, tile } from './ui';
+import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, showMenu, tile } from './ui';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
@@ -423,6 +423,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const lower = el('div', { class: 'summary-instances' });
   // DBA Dash's toolbar button: enabled while a filter is set
   const clear = el('button', { type: 'button', class: 'clear-filter' }, 'Clear Filter');
+  // off while no count is picked: its own state, said in words beside it (never the disabled attribute alone)
+  const clearNote = el('span', { class: 'off-reason' });
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const note = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'N/A', ack: 'acknowledged', bad: 'warning or critical' };
@@ -449,7 +451,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     if (pick && !live.some(g => g.key === pick!.key) && pick.b !== 'na') setPick(null);   // its test is not on the page (the focused view, a new scope)
     if (pick) shown = rows.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
     for (const [k, b] of countBtns) b.setAttribute('aria-pressed', String(!!pick && k === pick.key + '|' + pick.b));
-    clear.disabled = !pick;
+    clearNote.textContent = pick ? '' : 'no count is picked';
+    offControl(clear, pick ? null : 'No count is picked: there is no filter to clear', clearNote);
     said.replaceChildren(pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}.` : focus ? `${inFocus} of ${rows.length} instance(s) need a look.` : `${rows.length} instance(s).`);
     // a picked test: its column alone among the status columns (DBA Dash's FilterByStatus hides the others)
     const shownCols = cols.filter(c => !c.key.startsWith('g_') || (pick ? c.key === 'g_' + pick.key : keep.has(c.key)));
@@ -619,7 +622,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   drawStrip(); drawUpper(); drawLower();
   return el('section', { class: 'fleet-summary' }, el('h2', {}, 'Summary' + scopeLabel(ctx)),
     el('div', { class: 'toolbar summary-toolbar', style: 'display:flex;flex-wrap:wrap;gap:.4rem;align-items:center' },
-      refresh, view, options, clear, el('label', {}, 'Sort ', sortSel), filterBar, refreshTime),
+      refresh, view, options, clear, clearNote, el('label', {}, 'Sort ', sortSel), filterBar, refreshTime),
     note,
     tiles,
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
