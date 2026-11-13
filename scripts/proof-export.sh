@@ -34,13 +34,15 @@
 #              on it in page order by its header row, its drawn rows under it with each cell in the page's look (the
 #              colours row's rule), and under a grid past 200 rows the page's 'The first 200 of n rows' line with an
 #              internal link to the grid's sheet; the Running queries page's 'the newest 500 of N' line on it
-#   table      every data sheet with rows is an Excel table: the sheet names one table part (no sheet autoFilter beside
+#   table      every data sheet is an Excel table (P1; an empty grid's over its header and ONE empty row, P2, as DBA
+#              Dash writes it): the sheet names one table part (no sheet autoFilter beside
 #              it), the part's ref and its autoFilter's cover the sheet (A1 to the last column and row, = the sheet's
 #              dimension), its column names are unique whatever the case, none empty, and equal to the header cells in
 #              order, which are shared strings (xl/sharedStrings.xml, as Excel stores a table's header); its tableStyleInfo
 #              DBA Dash's (no style name, showRowStripes 1: no stripe drawn);
 #              ids and names unique in the workbook; the part in [Content_Types].xml. A grid a filter leaves
-#              without rows (the Table Size tab's second grid, filtered to nothing) keeps the plain sheet filter and no table
+#              without rows (the Table Size tab's second grid, filtered to nothing) is a table of its header and one empty
+#              row, no sheet filter, no _FilterDatabase (changed by P2: it kept the plain sheet filter and no table)
 #   colours    (E2-4') every cell of every row the page draws (a grid draws its first 200 rows; the read must return
 #              exactly those), against the page: its fill, its text colour and its weight in the file = the look the page's
 #              CSS gives it, read by the driver's own code (not export_colours.ts): the cell's fill, else a badge's in it,
@@ -814,6 +816,7 @@ def cells_of(x, sst=()):
         body = m.group(5) or ''
         v = re.search(r'<v>([^<]*)</v>', body); t = re.search(r'<t[^>]*>([^<]*)</t>', body)
         if m.group(4) == 's': val, text = None, (sst[int(v.group(1))] if v and int(v.group(1)) < len(sst) else None)
+        elif m.group(4) == 'b': val, text = None, ('TRUE' if v and v.group(1) == '1' else 'FALSE')   # (P3) as Excel draws it
         else: val, text = (float(v.group(1)) if v else None), (unesc(t.group(1)) if t else None)
         out[(int(m.group(2)), colidx(m.group(1)))] = (int(m.group(3)), val, text)
     return out
@@ -882,7 +885,7 @@ def xfs(z):
         f = re.search(r'rgb="(\w+)"', fills[g('fillId')])
         fo = fonts[g('fontId')]; c = re.search(r'rgb="(\w+)"', fo)
         sz = re.search(r'<sz val="([\d.]+)"/>', fo)
-        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'border': g('borderId') != 0, 'wrap': 'wrapText="1"' in al, 'valign': (re.search(r'vertical="(\w+)"', al) or [None, 'bottom'])[1], 'sz': float(sz.group(1)) if sz else 11.0, 'halign': (re.search(r'horizontal="(\w+)"', al) or [None, None])[1]})
+        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'border': g('borderId') != 0, 'wrap': 'wrapText="1"' in al, 'valign': (re.search(r'vertical="(\w+)"', al) or [None, 'bottom'])[1], 'sz': float(sz.group(1)) if sz else 11.0, 'halign': (re.search(r'horizontal="(\w+)"', al) or [None, None])[1], 'u': '<u/>' in fo})
     return st, out
 def grids(page):
     head, out = '', []
@@ -1305,16 +1308,19 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         counts, cells = audit(key, names[i + 1], x, cx, g, sst)
         classed += counts['class']
         rels = f'xl/worksheets/_rels/sheet{i + 2}.xml.rels'
+        # (changed by P1 / P2, the lead 22:34: an empty grid's sheet held the plain filter and no table; now, as DBA Dash
+        # writes it, every grid sheet is one table and an empty grid's covers its header and ONE empty row)
         if g['rows'] == 0:
-            check('<autoFilter ref="A1:' in x and '<tableParts' not in x and rels not in z.namelist() and '_xlnm._FilterDatabase' in wbx, f"{key}: sheet '{names[i + 1]}' has no rows: the plain filter, no Excel table")
-        else:
+            check('<tableParts count="1">' in x and '<autoFilter' not in x and rels in z.namelist() and '_xlnm._FilterDatabase' not in wbx and '<row r="2"' not in x,
+                  f"{key}: sheet '{names[i + 1]}' has no rows: one Excel table over its header and one empty row, no sheet filter, no _FilterDatabase (P2)")
+        if True:
             rel = z.read(rels).decode() if rels in z.namelist() else ''
             m = re.search(r'Target="\.\./tables/(table\d+\.xml)"', rel)
             tx = z.read('xl/tables/' + m.group(1)).decode() if m and 'xl/tables/' + m.group(1) in z.namelist() else ''
             check('<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' in x and '<autoFilter' not in x and bool(tx), f"{key}: sheet '{names[i + 1]}' names one table part, no sheet filter beside it")
             check('<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>' in tx and 'tableStyleInfo name=' not in tx, f"{key}: sheet '{names[i + 1]}' its table has DBA Dash's style info (no style name, row stripes 1: none drawn)")
             ncol = max([len(g['head'])] + [len(r) for r in g['cells']])
-            ref = f"A1:{colname(ncol - 1)}{g['rows'] + 1}"
+            ref = f"A1:{colname(ncol - 1)}{max(g['rows'], 1) + 1}"
             got = [(re.search(a, b) or [None, None])[1] for a, b in ((r'<table [^>]*\bref="([^"]+)"', tx), (r'<autoFilter ref="([^"]+)"', tx), (r'<dimension ref="([^"]+)"', x))]
             check(got == [ref, ref, ref], f"{key}: sheet '{names[i + 1]}' the table's ref, its filter's and the sheet's dimension are {ref} ({got})")
             cols = [unesc(c) for c in re.findall(r'<tableColumn id="\d+" name="([^"]*)"', tx)]
@@ -1340,6 +1346,30 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             off = [(a, b) for a, b in seen if a is None or b[1] is None or cx[b[0]]['fmt'] != 167 or abs(b[1] * 100 - a) > 0.006]
             check(len(seen) >= 1 and not off and 'numFmtId="167" formatCode="0.0%"' in st, f"storage: sheet '{names[i + 1]}' {len(seen)} 'free' cells, each the screen's percent / 100 under numFmt 167 '0.0%' (DBA Dash's) ({off[:2]})")
     check(len(set(tabs)) == len(tabs) and all(re.fullmatch(r'\d+\|Table\d+', t) for t in tabs), f"{key}: {len(tabs)} table(s), ids and names unique in the workbook")
+    # (P1) one table on every grid sheet, no sheet filter and no _FilterDatabase anywhere
+    check(len(tabs) == len(gs) and '_FilterDatabase' not in wbx, f"{key}: every grid sheet one Excel table (P1): {len(tabs)} table(s) for {len(gs)} grid(s), no _FilterDatabase")
+    # (P3) a boolean the page holds: an Excel boolean on its grid sheet, the page's words on the page sheet; no grid column
+    # holds both a boolean and the words yes / no / true / false (a boolean the export missed)
+    nbool, mixed = 0, []
+    for i, g in enumerate(gs):
+        xg = z.read(f'xl/worksheets/sheet{i + 2}.xml').decode(); cg = cells_of(xg, sst)
+        bc = {colidx(c) for c in re.findall(r'<c r="([A-Z]+)\d+" s="\d+" t="b"', xg)}; nbool += len(re.findall(r' t="b"', xg))
+        for j in bc:
+            if any(r_ >= 2 and c_ == j and (tx_ or '') in ('yes', 'no', 'true', 'false', 'Yes', 'No') for (r_, c_), (_, _, tx_) in cg.items()): mixed.append(f"{names[i + 1]} {colname(j)}")
+    check(' t="b"' not in z.read('xl/worksheets/sheet1.xml').decode() and not mixed and (nbool >= 1 or key != 'roles'), f"{key}: booleans (P3): {nbool} Excel boolean cell(s) on the grid sheets, none on the page sheet; no column mixing a boolean with its words ({mixed[:3]})")
+    # (P4, E2-11) no underlined cell without a hyperlink behind it, and no hyperlink leaving the workbook (the sheet jumps
+    # are location links; a link to the app's own routes keeps its colour, not its underline)
+    ulb, ext = [], [n for n in z.namelist() if n.endswith('.rels') and 'TargetMode="External"' in z.read(n).decode()]
+    for i in range(len(names)):
+        xs = z.read(f'xl/worksheets/sheet{i + 1}.xml').decode(); hl = set(re.findall(r'<hyperlink ref="([A-Z]+\d+)"', xs))
+        if re.search(r'<hyperlink [^>]*r:id=', xs): ext.append(names[i])
+        for m in re.finditer(r'<c r="([A-Z]+\d+)" s="(\d+)"(?: t="(\w+)")?(?:/>|>(.*?)</c>)', xs, re.S):
+            sid = int(m.group(2)); body = m.group(4) or ''
+            if body and ((sid < len(cx) and cx[sid].get('u')) or '<u/>' in body) and m.group(1) not in hl: ulb.append(f"{names[i]}!{m.group(1)}")
+    check(not ulb and not ext, f"{key}: no underlined cell without a hyperlink, no hyperlink leaving the workbook (P4, E2-11) ({len(ulb)} underlined without one {ulb[:3]}; leaving {ext[:3]})")
+    # (P5) a sheet's name is the grid's own title: no read time in it
+    p5 = [n for n in names if re.search(r'\(read |\b\d{1,2} \d{1,2} \d{4}\b', n)]
+    check(not p5, f"{key}: sheet names without a read time (P5) ({p5[:3]})")
     if key == 'summary':
         check(linked, "summary: a grid with link cells (the instance names) was graded for the link's look and the plain cells'")
         check(names == ['Summary', 'Summary (2)', 'Summary (3)'], f"summary: the two grids are named by the page's own heading, not by the Needs attention strip's ({names})")
@@ -1403,7 +1433,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     # each sheet named by the heading above its grid (h2, h3 or h4): the name starts with the heading's first words
     # (cut at 31 characters, a repeat numbered; the Summary grid's heading meets the export's own Summary sheet)
     # (the export's rule: a character Excel refuses becomes a space, then each run of spaces one space)
-    hs = [re.sub(r'\s+', ' ', re.sub(r'[\\/?*\[\]:]', ' ', g['name'])).strip()[:24].rstrip() for g in gs]
+    # (changed by P5, the lead 22:34: a time the heading carries in brackets is left out of the sheet's name)
+    hs = [re.sub(r'\s+', ' ', re.sub(r'[\\/?*\[\]:]', ' ', re.sub(r'\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)', '', g['name']).strip() or g['name'])).strip()[:24].rstrip() for g in gs]
     check(all(n.startswith(h) for n, h in zip(names[1:], hs)), f"{key}: sheet names {names[1:]} follow the screen's headings {[g['name'] for g in gs]}")
     if key == 'roles':
         check(any(g['name'].endswith('privileges') or 'privileges' in g['name'] for g in gs), "roles: a grid under a privileges (h4) heading on screen")

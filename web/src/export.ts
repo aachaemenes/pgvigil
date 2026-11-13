@@ -25,7 +25,7 @@ import { cellLook, gridHeadLook, headLook, pageSheet, withDot } from './export_p
 import type { LookCache, PageSheet } from './export_page';
 
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
-export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
+export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date' | 'bool';   // bool: v 1 or 0, written as an Excel boolean (P3)
 export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
   look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
   runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
@@ -62,6 +62,9 @@ const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'stamp'> {
   if (text === '') return { v: '', kind: 'text' };
+  // (P3, the lead 22:34) a boolean the page writes as its yes / no or true / false: an Excel boolean on a grid sheet
+  // (DBA Dash's file: TRUE / FALSE cells); the page sheet keeps the page's words (export_page.ts gridBlock)
+  if (typeof raw === 'boolean' && [raw ? 'yes' : 'no', String(raw)].includes(text.toLowerCase())) return { v: raw ? 1 : 0, kind: 'bool' };
   if (typeof raw === 'string' && isoTime.test(raw) && norm(fmtTime(raw)) === text) {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) return { v: excelDate(d), kind: 'date', stamp: localStamp(d) };
@@ -336,7 +339,7 @@ export const linkFill = 'FFF1F1F6', linkFont = 'FF004F83';   // DBA Dash's link 
 // numFmt ids: 0 is General (DBA Dash writes a count or a decimal so); 165 on are this file's own: a share and a time in
 // DBA Dash's formats (its P1 percent, its date), a size, a duration in pgvigil's units (the screen shows the unit; DBA Dash
 // has no such kind)
-const fmtId: Record<Kind, number> = { text: 0, int: 0, dec: 0, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
+const fmtId: Record<Kind, number> = { text: 0, int: 0, dec: 0, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170, bool: 0 };
 // fmtOf: a cell's number format. A count of 12 digits or more (a PostgreSQL counter: blocks hit, tuples returned) under
 // Excel's built-in '0' (1): General would show it as 9.87654E+11, six digits of it; DBA Dash's writer has no such count
 const fmtOf = (c: Cell) => c.kind === 'int' && typeof c.v === 'number' && Math.abs(c.v) >= 1e11 ? 1 : fmtId[c.kind];
@@ -467,6 +470,7 @@ export function shown(c: Cell): string {
   const n = c.v;
   switch (c.kind) {
     case 'date': return (c.stamp ?? '').slice(0, 16);
+    case 'bool': return n ? 'TRUE' : 'FALSE';   // as Excel draws a boolean
     case 'pct': return (n * 100).toFixed(1) + '%';
     case 'bytes': return Math.round(n).toLocaleString('en-US') + ' B';
     case 'nsecs': return Math.round(n).toLocaleString('en-US') + ' s';
@@ -519,8 +523,9 @@ export function tableHead(head: string[], ncol: number): string[] {
 }
 
 // tableXml: the grid as a real Excel table (sortable, filterable, named), with no table style: the cells keep their own colours.
+// (P2) an empty grid's table holds its header and ONE empty row (a table needs a data row; DBA Dash writes the same)
 function tableXml(id: number, head: string[], nrow: number): string {
-  const ref = `A1:${colName(head.length - 1)}${nrow + 1}`;
+  const ref = `A1:${colName(head.length - 1)}${Math.max(nrow, 1) + 1}`;
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     + `<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="Table${id}" displayName="Table${id}" ref="${ref}" totalsRowShown="0">`
     + `<autoFilter ref="${ref}"/><tableColumns count="${head.length}">${head.map((h, j) => `<tableColumn id="${j + 1}" name="${esc(h)}"/>`).join('')}</tableColumns>`
@@ -535,6 +540,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
   const name = (c: Cell, s: string) => s.replace(/\{sheet(?::(\d+))?\}/g, (_, k) => names[(k !== undefined ? Number(k) : c.jump ?? -1) + 1] ?? '');
   const runXml = (r: NonNullable<Cell['runs']>[number]) => `<r><rPr>${r.bold ? '<b/>' : ''}${r.italic ? '<i/>' : ''}${r.underline ? '<u/>' : ''}<sz val="${r.pt ?? 11}"/>${r.color ? `<color rgb="FF${r.color}"/>` : ''}<rFont val="Calibri"/></rPr><t xml:space="preserve">${esc(r.text)}</t></r>`;
   const cell = (ref: string, c: Cell, s: number) => {
+    if (c.kind === 'bool' && typeof c.v === 'number') return `<c r="${ref}" s="${s}" t="b"><v>${c.v ? 1 : 0}</v></c>`;
     if (typeof c.v === 'number') return `<c r="${ref}" s="${s}"><v>${String(c.v).toUpperCase()}</v></c>`;
     if (c.v === '') return s ? `<c r="${ref}" s="${s}"/>` : '';
     if (c.runs?.length) return `<c r="${ref}" s="${s}" t="inlineStr"><is>${c.runs.map(r => runXml({ ...r, text: name(c, r.text) })).join('')}</is></c>`;
@@ -585,7 +591,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
       return cell(colName(j) + n, c, styleOf(c));
     }).join('')}</row>`);
   });
-  const last = `${colName(ncol - 1)}${Math.max(sh.rows.length + first - 1, 1)}`;
+  const last = `${colName(ncol - 1)}${Math.max(sh.rows.length + first - 1, sh.table ? 2 : 1)}`;   // an empty table's one empty row (P2)
   const pane = sh.freeze ? `<pane ySplit="${sh.freeze}" topLeftCell="A${sh.freeze + 1}" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A${sh.freeze + 1}" sqref="A${sh.freeze + 1}"/>` : '';
   const cols = widths.map((w, j) => w > 0 ? `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>` : '').join('');
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
@@ -609,7 +615,10 @@ export function sheetNames(names: string[], first = 'Summary'): string[] {
   const used = new Set([first.toLowerCase(), 'history']);
   const cut = (s: string, n: number) => s.slice(0, n).replace(/[\s']+$/, '');
   return names.map(n => {
-    const base = cut(n.replace(/[\\/?*[\]:]/g, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim(), 31) || 'Sheet';
+    // (P5, the lead 22:34) a time the heading carries in brackets ('Jobs (read 11/13/2026, 05:25:00)', a chart's
+    // '(11/6/2026, 04:42:56 to ...)') is left out of the sheet's name: the grid's own title
+    const title = n.replace(/\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)/g, '').trim() || n;
+    const base = cut(title.replace(/[\\/?*[\]:]/g, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim(), 31) || 'Sheet';
     let s = base;
     for (let i = 2; used.has(s.toLowerCase()); i++) s = cut(base, 31 - ` (${i})`.length) + ` (${i})`;
     used.add(s.toLowerCase());
@@ -648,9 +657,10 @@ export function workbook(meta: Meta, secs: Section[], page?: PageSheet): { name:
     : { name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, data: false },
     ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true, ...(s.heads ? { heads: s.heads } : {}), ...(page ? { freeze: 1 } : {}) }))];
   const all = sheets.map(sh => sh.name);
-  // every grid with rows is an Excel table (a table needs a data row: an empty grid keeps the plain filter)
+  // (P1, the lead 22:34) every grid sheet is one Excel table over the grid, an empty grid's too (P2: its header and one
+  // empty row), as DBA Dash writes each sheet
   let tables = 0;
-  for (const sh of sheets) if (sh.data && sh.rows.length > 0) sh.table = ++tables;
+  for (const sh of sheets) if (sh.data) sh.table = ++tables;
   const st = new Styles(), sst = new Shared();
   const enc = new TextEncoder();
   const files = sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh, st, sst, all)) }));
@@ -708,6 +718,7 @@ export function csv(s: Section): string {
   const val = (c: Cell): string => {
     if (typeof c.v === 'number') {
       if (c.kind === 'date') return c.stamp ?? '';
+      if (c.kind === 'bool') return c.text;   // the CSV keeps the page's word for a boolean
       if (c.kind === 'secs') return String(Math.round(c.v * 86400 * 1000) / 1000);
       if (c.kind === 'msecs') return String(c.v);   // the milliseconds, as the raw value
       if (c.kind === 'pct') return String(Math.round(c.v * 1e12) / 1e10);   // the percent figure (the cell holds the share): 12.5, not 0.125; ten decimals kept

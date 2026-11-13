@@ -116,7 +116,10 @@ export function cellLook(td: Element, table: Element, cache?: LookCache): CellLo
     const l = textLook(r, td);
     look.color = r === td ? p.text : paintOf(r, table).text;
     if (l.bold) look.bold = true;
-    if (l.underline) look.underline = true;
+    // (P4, E2-11) a link to the app's own routes keeps its colour but not its underline: the file holds no hyperlink to
+    // the app (its host, port and instance ids would leave with the file), and an underline with nothing behind it is
+    // a link that does not work; the export's own jumps to a sheet are real hyperlinks and set their underline themselves
+    if (l.underline && !r.closest('a[href]')) look.underline = true;
   }
   if (!look.fill) delete look.fill;
   const ha = alignOf(td);
@@ -189,7 +192,7 @@ function lineCells(e: Element, base: Element): Cell[] {
       mark = false;
       if (!s) return;
       const l = textLook(p, e);
-      runs.push({ text: s, color: paintOf(p, base).text, ...(l.bold ? { bold: true } : {}), ...(l.italic ? { italic: true } : {}), ...(l.underline ? { underline: true } : {}), ...(l.pt ? { pt: l.pt } : {}) });
+      runs.push({ text: s, color: paintOf(p, base).text, ...(l.bold ? { bold: true } : {}), ...(l.italic ? { italic: true } : {}), ...(l.underline && !p.closest('a[href]') ? { underline: true } : {}), ...(l.pt ? { pt: l.pt } : {}) });
       return;
     }
     if (n.nodeType !== 1) return;
