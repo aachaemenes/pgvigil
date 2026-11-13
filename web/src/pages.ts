@@ -29,7 +29,7 @@ import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
-import { AckBody, AckData, ackDialog, ackHolds, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
+import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
 import { bandClass, cellState, Chip, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
@@ -265,6 +265,11 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // the acknowledgements in force and the Needs-attention rates (task 118); a server without them: no ack, no rate
   // the live read (task 177 D29) apart: a failure there never takes the acknowledgements and the rates with it
   const [f, , ad, lvd] = await Promise.all([fleet(), tagUI(), loadAckSafe(['acks', 'attention']), loadAckSafe(['live'])]);
+  // the page's one sentence where no acknowledgement can be written at all: every off control of the page points at
+  // it (the strip's Acknowledge, the grid's Silence). On a demo serve the door writes for the demo's own instances, and
+  // a control of another instance says its own reason beside itself.
+  const offP = ad.writable || ad.door ? null : el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`);
+  ad.note = offP ?? undefined;
   const acks = checkAcks(ad);
   const rates = new Map(rowsOf(ad.attention).map(r => [Number(r.instance_id), r]));
   // PerformanceMonitor's live figures per instance (task 177 D29, instheader.ts): the chips as columns, the freshness
@@ -545,18 +550,18 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
           title: `Acknowledge ${String(r.name)}`,
           what: `${open.map(g => `${g.label} (${cellText(c[g.key])})`).join(', ')}: each cell loses its colour and is counted as acknowledged. Who and when are kept.`,
           body, expiry: true, untilChange: true, noteField: 'optional', after: redraw,
-        })));
+        }), { instance: Number(r.instance_id), name: String(r.name), note: offP ?? undefined }));
     });
     const ackList = rows.flatMap(r => Object.entries(r._acked as Acked).map(([k, a]) => {
       const g = groups.find(x => x.key === k)!;
       return el('li', {}, `${String(r.name)}: ${g.label} (${cellText(cellsOf(r)[k])}), ${ackWords(a)} `,
-        ad.writable ? endButton(Number(a.ack_id), `Unacknowledge ${String(r.name)} ${g.label}`, redraw, 'Unacknowledge') : null);
+        ackOn(ad, Number(r.instance_id)) ? endButton(Number(a.ack_id), `Unacknowledge ${String(r.name)} ${g.label}`, redraw, 'Unacknowledge') : null);
     }));
     strip.replaceChildren(...[el('h3', {}, 'Needs attention ', whatIsThis('One line per instance with a warning or a critical cell that is not acknowledged: blocking and deadlocks of the last 15 minutes as a count and a rate per hour, then the cells. Acknowledge takes the line\'s cells out of the colour until a time or until the cell changes; they are counted under Instance Count Acknowledged.', 'Needs attention')),
       lines.length ? el('div', {}, ...(allLines ? lines : lines.slice(0, 8)),
         lines.length > 8 ? (() => { const b = el('button', { type: 'button', class: 'link', 'aria-expanded': String(allLines) }, allLines ? 'Show the first 8' : `Show all ${lines.length}`); b.addEventListener('click', () => { allLines = !allLines; drawStrip(); }); return b; })() : null) : el('p', { class: 'empty' }, rows.length ? 'Nothing needs attention: no warning or critical cell that is not acknowledged.' : 'No instances yet.'),
       ackList.length ? el('details', {}, el('summary', {}, `${ackList.length} acknowledged check(s)`), el('ul', {}, ...ackList)) : null,
-      ad.writable ? null : el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`)].filter((x): x is NonNullable<typeof x> => x !== null));
+      ad.writable ? null : ad.door ? el('p', { class: 'meta', 'data-part': 'demo-door' }, `Demo: what you acknowledge here is saved as user ${ad.door.user}, on the demo's own instances only; nothing reaches a server.`) : offP].filter((x): x is NonNullable<typeof x> => x !== null));
   };
   sortSel.addEventListener('change', () => {
     sortBy = sortSel.value as SortBy;
@@ -569,7 +574,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // it answers what it did (the dialogs show it: the page's note sits behind their modal)
   const ackAll = async (key: 'dumps' | 'uptime', what: string): Promise<{ done: number; text: string }> => {
     const said = (done: number, text: string) => { note.textContent = text; return { done, text }; };
-    if (!ad.writable) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
+    if (!ad.writable && !ad.door) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
     const todo = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
     if (!todo.length) return said(0, `No ${what} cell with a warning or a critical to acknowledge.`);
     let done = 0;

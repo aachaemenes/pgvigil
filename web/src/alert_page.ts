@@ -278,7 +278,7 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
   else if (instanceId) sec.append(el('p', { class: 'meta' }, 'No evidence drawn: the instance is no longer in the repository (its reads went with it).'));
   if (card?.fix) sec.append(fixLine(card.fix));
   else if (card) sec.append(el('p', { class: 'meta' }, 'No fix statement: the detail says what to do (a fix statement is given for a PostgreSQL setting with a one-word suggested value, and for a maintenance statement the detail spells out).'));
-  sec.append(dismissBar(door, key, dismissed));
+  sec.append(dismissBar(door, key, dismissed, instanceId || null, String(head.instance ?? '') || undefined));
 
   const occCols: Col[] = [
     { key: 'fired_at', label: 'fired', fmt: (v, r) => el('a', { href: alertHref(key, v, ctx), title: `firing ${String(r.occurrence)}` }, fmtTime(v)) },
@@ -324,12 +324,13 @@ function copyLinkButton(): HTMLElement {
 }
 
 // dismissBar: dismiss the alert with a reason, or end its dismissal
-function dismissBar(door: AckData, key: string, dismissed: Row | undefined): HTMLElement {
+function dismissBar(door: AckData, key: string, dismissed: Row | undefined, instanceId: number | null, name?: string): HTMLElement {
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const bar = el('div', { class: 'seg' });
-  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }));
-  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw)));
+  // by the alert's own instance: on a demo serve the door writes for the demo's instances and for no other
+  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }, { instance: instanceId, name }));
+  else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw), { instance: instanceId, name }));
   return el('div', {}, bar, said);
 }
 

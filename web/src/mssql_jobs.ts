@@ -271,6 +271,10 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const d = await get<Record<'jobs', Table | null>>('jobs/history', { engine, instance: ctx.instance, ...w });
   const jobs = rowsOf(d.jobs);
   const ad = await loadAckSafe(['acks']);
+  // a server that writes nothing at all: the grid's Acknowledge buttons share one reason, said once above the grid
+  const ackOffP = !ad.writable && !ad.door && jobs.some(j => j.last_failed_at != null && j.last_failed_at !== '')
+    ? el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`) : null;
+  if (ackOffP) ad.note = ackOffP;
   const ackRedraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   const th = await loadThresholds(Number(ctx.instance));
   const statusOf = new Map(rowsOf(th?.status).map(r => [`${String(r.scheduler)}|${String(r.job_id)}`, r]));
@@ -350,7 +354,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'changes', label: 'changed', num: true, fmt: (v, r) => Number(v) > 0 ? `${fmtNum(v)} (${fmtTime(r.last_change_at)})` : '' },
     ...extra,
   ];
-  box.append(grid(jobs, cols, 'No job on this server.'), detail);
+  box.append(...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
   if (jobs.length) detail.append(el('p', { class: 'meta' }, 'Pick a job for its history and its versions (the script, the diff, the job as it was).'));
   return box;
 }

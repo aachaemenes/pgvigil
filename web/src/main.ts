@@ -252,7 +252,10 @@ async function statusLine(ctx: Ctx, live: boolean) {
       n('failing') ? el('a', { href: href(ctx, { tab: 'checks', instance: undefined, tag: undefined }) }, `${n('failing')} failing`) : '0 failing',
       `, ${n('stale')} stale, ${n('not_collected')} not collected`, n('no_permission') ? `; ${n('no_permission')} without a permission` : ''),
     el('span', { 'data-part': 'repository' }, `repository ${fmtBytes(statusRow.repository_bytes)}`),
-    el('span', { 'data-part': 'seat' }, `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
+    // a demo serve's seat: whose door this is, said once on every page (task B7)
+    el('span', { 'data-part': 'seat' }, statusRow.door
+      ? `demo: changes to the demo's own instances are saved as user ${String(statusRow.door)}; nothing reaches a server`
+      : `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
     el('span', { 'data-part': 'newest' }, statusRow.newest_read ? `newest read ${fmtClock(new Date(String(statusRow.newest_read)))}` : 'no read yet'),
     el('span', { 'data-part': 'refresh' }, `auto refresh ${refresh}`),
   ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr)];

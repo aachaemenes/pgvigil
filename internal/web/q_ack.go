@@ -21,7 +21,10 @@ import (
 
 // sqlAckRows: every row in force now and every row ended or expired in the last 7 days, newest first
 const sqlAckRows = `
-SELECT a.ack_id, a.kind, a.instance_id, a.instance_name AS instance, a.check_key, a.finding_key, a.job_name, a.tag,
+SELECT a.ack_id, a.kind,
+       -- a row stored by its instance's name alone (the demo's seed writes them so) is listed under that instance's id
+       coalesce(a.instance_id, (SELECT i.instance_id FROM pgvigil.instances i WHERE i.name = a.instance_name)) AS instance_id,
+       a.instance_name AS instance, a.check_key, a.finding_key, a.job_name, a.tag,
        a.match_text, a.note, a.seen_state, a.starts_at, a.until, a.until_change, a.created_by, a.created_at, a.client,
        a.ended_by, a.ended_at, pgvigil.ack_live(a.ended_at, a.starts_at, a.until, $1) AS live,
        (SELECT count(*) FROM pgvigil.ack_suppressed x WHERE x.ack_id = a.ack_id) AS held_alerts,
@@ -324,6 +327,10 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 	if s.auth != nil {
 		out["user"] = s.sessionUser(r)
 	}
+	if d := s.doorInfo(r.Context()); d != nil {
+		// a demo serve: writable stays false, and the door names its user and the instances it writes for
+		out["door"] = d
+	}
 	for _, p := range ps {
 		t, err := s.query(r.Context(), p.sql, p.args...)
 		if err != nil {
@@ -339,6 +346,9 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 // audit login and the UI login.
 func (s *Server) ackOff() string {
 	switch {
+	case s.demo != nil:
+		// a demo serve: 'writable' stays false with the door's words, and the door's instances are named beside them (demodoor.go)
+		return doorOff
 	case s.auth == nil:
 		return "acknowledgements need the UI login: this server runs with -no-login"
 	case s.actions == nil:
@@ -379,19 +389,11 @@ func (s *Server) AckAdd(w http.ResponseWriter, r *http.Request) { s.ackWrite(w, 
 func (s *Server) AckEnd(w http.ResponseWriter, r *http.Request) { s.ackWrite(w, r, "end") }
 
 func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, s.ackOff())
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(why))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 8193))
 	if err != nil || len(raw) > 8192 {
 		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 8 KB"))
@@ -408,19 +410,23 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"op": op, "ui_user": user, "client": seat.client}
+	sc := writeScope{Route: doorAck, InstanceID: in.InstanceID, FindingKey: in.FindingKey, Tag: in.Tag}
 	if op == "end" {
 		if in.AckID <= 0 {
 			writeErr(w, http.StatusBadRequest, errors.New("ack_id must be a positive ack_id"))
 			return
 		}
 		pay["ack_id"] = in.AckID
+		sc = writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", in.AckID}}
 	} else {
 		if !ackKinds[in.Kind] {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("kind must be one of ack, alert_ack, note, close, blackout, job, silence, mute, noise"))
 			return
 		}
 		pay["kind"] = in.Kind
+		// only a mute and a known pattern may be a rule on every instance; every other kind names one instance or one alert
+		sc.OneInstance = in.Kind != "mute" && in.Kind != "noise"
 		if in.InstanceID > 0 {
 			var name string
 			if err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, in.InstanceID).Scan(&name); err != nil {
@@ -453,7 +459,12 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 	// the write outlives a client that hangs up (its audit row is kept), never the 15 s
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_ack($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	// who writes and on which pool: the audit login on a serve; on a demo serve the door's own, and only for a scope it allows
+	pool, ok := seat.poolFor(wctx, w, sc)
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.import_ack($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("ack: not written", "op", op, "kind", in.Kind, "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return

@@ -209,19 +209,11 @@ func (s *Server) PgThresholds(w http.ResponseWriter, r *http.Request) {
 // PgThresholdWrite is POST /api/pg/thresholds: one attempt to set a level's threshold for a key or to make it inherit.
 // The function checks every value and answers done or refused; a refused attempt is 409 with its reason.
 func (s *Server) PgThresholdWrite(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, strings.Replace(s.ackOff(), "acknowledgements", "thresholds", 1))
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(strings.Replace(why, "acknowledgements", "thresholds", 1)))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 4097))
 	if err != nil || len(raw) > 4096 {
 		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 4 KB"))
@@ -237,7 +229,7 @@ func (s *Server) PgThresholdWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// only the named keys travel on; who and from where are the server's to say
-	pay := map[string]any{"ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"ui_user": user, "client": seat.client}
 	for _, k := range []string{"op", "key", "level", "instance_id", "tag", "datname", "warn", "crit"} {
 		if v, ok := in[k]; ok && v != nil {
 			// a number is passed on as its text: the function checks the shape before it casts
@@ -251,7 +243,11 @@ func (s *Server) PgThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	var out []byte
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_pg_threshold($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	pool, ok := seat.poolFor(wctx, w, scopeOfLevel(doorPgThreshold, pay))
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.import_pg_threshold($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("pg threshold: not written", "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return

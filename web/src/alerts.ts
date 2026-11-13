@@ -13,7 +13,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
-import { AckData, ackDialog, addAck, endAck, endButton, liveRows, loadAckSafe, writeButton } from './ack';
+import { AckData, ackDialog, ackOn, addAck, endAck, endButton, liveRows, loadAckSafe, writeButton } from './ack';
 import { fleet, tagsOf } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
@@ -58,7 +58,7 @@ function testCell(ad: AckData, r: Row, redraw: () => void): HTMLElement {
       said.textContent = ' ' + res.detail;
       window.setTimeout(redraw, 2000);
     } catch (e) { said.textContent = ' not asked: ' + (e instanceof Error ? e.message : String(e)); b.disabled = false; }
-  });
+  }, { why: ad.door ? 'Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here' : undefined });
   if (!r.is_configured) { b.disabled = true; if (ad.writable) b.title = 'the configuration no longer names this channel'; }
   const last = r.last_test_at == null ? '' : ` last: ${String(r.last_test_outcome)} ${fmtTime(r.last_test_done ?? r.last_test_at)} (${String(r.last_test_by ?? '')})` + (r.last_test_error ? `: ${String(r.last_test_error)}` : '');
   return el('span', { style: 'white-space:nowrap' }, b, last ? el('span', { class: 'meta' }, last) : '', said);
@@ -135,6 +135,12 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   }
   const notRead = (p: string) => missing[p] ? el('p', { class: 'meta' }, `Not read: ${missing[p]}`) : '';
   const ad = await loadAckSafe(['acks', 'alerts', 'suppressed', 'log'], window_(ctx));
+  // the page's one sentence where its writes are off: on a server that writes nothing every off control of the page
+  // points at it (ad.note); on a demo serve it says whose door this is, and a control that is off says its own reason
+  const offP = ad.writable ? null : el('p', { class: 'meta' }, ad.door
+    ? `Demo: an acknowledgement, a note, a mute, a silence or a dismissal here is saved as user ${ad.door.user}, on the demo's own instances only. A change that reaches past one instance, and Send test, stay off: they need pgvigil serve with a signed-in user.`
+    : `Acknowledge, notes, mute, dismiss and Send test are read only here: ${ad.reason ?? ''}`);
+  if (offP && !ad.door) ad.note = offP;
   const f = await fleet().catch(() => null);
   const chans = rowsOf(d.channels), open = rowsOf(d.open), log = rowsOf(d.log);
   const fixes = new Map(rowsOf(d.fixes).filter(r => r.fix != null).map(r => [String(r.finding_key), String(r.fix)]));
@@ -154,7 +160,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   if (configured.length) sec.append(el('p', { class: 'meta' }, base
     ? `Every sent alert carries the address of its own page: ${String(base)}/#/alert?k=...`
     : 'The sent alerts carry no link to their page: alerts_base_url (the UI\'s address as a reader opens it) is not set in the configuration.'));
-  if (!ad.writable) sec.append(el('p', { class: 'meta' }, `Acknowledge, notes, mute, dismiss and Send test are read only here: ${ad.reason ?? ''}`));
+  if (offP) sec.append(offP);
   // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
   sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
     el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
@@ -243,12 +249,18 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
   const drawnKeys = () => new Set(boxes().map(b => String(b.dataset.key)));
   const wrap = el('div', {});
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  // on a demo serve the list's one sentence for 'Mute similar' (a rule on every instance: off in every row for the
+  // same reason); a button off for its own reason says it beside itself. A server that writes nothing has the page's
+  // one sentence (ad.note), and every off button points at that.
+  const muteOff = !ad.writable && ad.door
+    ? el('p', { class: 'meta' }, "Mute similar is off here: a rule on every instance would reach past the demo's instances (use Mute this alert, or pgvigil serve with a signed-in user).")
+    : undefined;
   // an action takes the ticked rows still drawn: a row hidden since by a filter or a Show toggle is left alone
   const pickedRows = () => { const on = drawnKeys(); return all.filter(r => picked.has(String(r.finding_key)) && on.has(String(r.finding_key))); };
   const act = (label: string, run: () => void) => writeButton(ad, label, label + ' (the ticked alerts)', () => {
     if (!pickedRows().length) { said.textContent = 'Tick one or more alerts first.'; return; }
     run();
-  });
+  }, { instance: 'any' });
   const ackSel = act('Acknowledge alerts', () => ackDialog({
     title: `Acknowledge ${picked.size} alert(s)`,
     what: 'An acknowledged alert is not sent again on its repeat interval; a rise in its severity is still sent. Who and when are kept.',
@@ -318,13 +330,14 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
       { key: '_mute', label: 'mute', fmt: (_v, r) => el('span', { style: 'white-space:nowrap' },
         writeButton(ad, 'Mute this alert', `Mute this alert: ${String(r.instance)} ${String(r.setting ?? '')}`, () => ackDialog({
           title: 'Mute this alert', what: `${String(r.instance)}: ${String(r.source ?? '')} ${String(r.setting ?? '')}. Its sends are held while the mute stands and logged under Held sends.`,
-          body: { kind: 'mute', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) }, expiry: true, noteField: 'optional', after: redraw })),
+          body: { kind: 'mute', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) }, expiry: true, noteField: 'optional', after: redraw }),
+          { instance: Number(r.instance_id) || null, name: String(r.instance ?? '') }),
         ' · ',
         writeButton(ad, 'Mute similar', `Mute similar: ${String(r.setting ?? r.source ?? '')} on every instance`, () => ackDialog({
           title: 'Mute similar alerts', what: 'Every alert matching the fields below is held while the rule stands (every instance unless one is named), and logged under Held sends.',
-          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }))) },
+          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }), { note: muteOff })) },
     ];
-    wrap.replaceChildren(grid(rows, cols, all.length ? 'Every open alert is closed or dismissed: Show closed and Show dismissed list them.' : 'No open alert: nothing sent is still standing.'));
+    wrap.replaceChildren(...(muteOff ? [muteOff] : []), grid(rows, cols, all.length ? 'Every open alert is closed or dismissed: Show closed and Show dismissed list them.' : 'No open alert: nothing sent is still standing.'));
     syncAll();
   };
   // a filter or sort of the grid redraws its rows: the box follows what is drawn
@@ -369,11 +382,11 @@ function serversView(ad: AckData, insts: Row[], redraw: () => void): HTMLElement
   const silence = writeButton(ad, 'Silence', 'Silence the instance picked', () => ackDialog({
     title: `Silence all alerts for '${String(pick()?.name ?? '')}'?`,
     what: 'This holds every alert of the server; the held alerts are still logged (Held sends). Unsilence removes it.',
-    body: { kind: 'silence', instance_id: Number(sel.value) }, expiry: true, noteField: 'optional', after: redraw }));
+    body: { kind: 'silence', instance_id: Number(sel.value) }, expiry: true, noteField: 'optional', after: redraw }), { instance: 'any' });
   const blackout = writeButton(ad, 'Blackout', 'A blackout window for the instance picked', () => ackDialog({
     title: `Blackout '${String(pick()?.name ?? '')}'`,
     what: 'From the start to the end the server\'s alerts are held (still logged) and flagged blackout.',
-    body: { kind: 'blackout', instance_id: Number(sel.value) }, expiry: false, blackout: true, noteField: 'optional', after: redraw }));
+    body: { kind: 'blackout', instance_id: Number(sel.value) }, expiry: false, blackout: true, noteField: 'optional', after: redraw }), { instance: 'any' });
   const cols: Col[] = [
     { key: 'kind', fmt: v => v === 'silence' ? 'silenced' : 'blackout' },
     { key: 'instance' },
@@ -382,7 +395,7 @@ function serversView(ad: AckData, insts: Row[], redraw: () => void): HTMLElement
     { key: 'note', wide: true },
     { key: 'held_alerts', label: 'alerts held', num: true },
     { key: 'held_last', label: 'last held', fmt: fmtTime },
-    { key: '_end', label: '', fmt: (_v, r) => ad.writable ? endButton(Number(r.ack_id), `${r.kind === 'silence' ? 'Unsilence' : 'End the blackout of'} ${String(r.instance)}`, redraw, r.kind === 'silence' ? 'Unsilence' : 'End') : '' },
+    { key: '_end', label: '', fmt: (_v, r) => ackOn(ad, Number(r.instance_id) || null) ? endButton(Number(r.ack_id), `${r.kind === 'silence' ? 'Unsilence' : 'End the blackout of'} ${String(r.instance)}`, redraw, r.kind === 'silence' ? 'Unsilence' : 'End') : '' },
   ];
   return el('div', {}, el('h3', {}, 'Silenced servers and blackouts'),
     el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel), el('div', { class: 'seg' }, silence, blackout)),
@@ -395,7 +408,7 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
   const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', kind === 'mute' ? 'New mute rule' : 'New known pattern', () => ackDialog({
     title: kind === 'mute' ? 'New mute rule' : 'New known pattern',
     what: kind === 'mute' ? 'Alerts matching every field filled are held while the rule stands; the held sends are logged.' : 'Alerts matching every field filled carry the label; nothing is held.',
-    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }));
+    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: 'any' });
   const cols: Col[] = [
     { key: 'check_key', label: 'check' },
     { key: 'instance' },
@@ -405,7 +418,7 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
     { key: 'note', label: kind === 'noise' ? 'label' : 'note', wide: true },
     ...whenCols,
     ...(kind === 'mute' ? [{ key: 'held_alerts', label: 'alerts held', num: true }, { key: 'held_last', label: 'last held', fmt: fmtTime }] as Col[] : []),
-    { key: '_end', label: '', fmt: (_v, r) => ad.writable ? endButton(Number(r.ack_id), `Remove the ${kind === 'mute' ? 'mute rule' : 'known pattern'} ${String(r.ack_id)}`, redraw, 'Remove') : '' },
+    { key: '_end', label: '', fmt: (_v, r) => ackOn(ad, Number(r.instance_id) || null) ? endButton(Number(r.ack_id), `Remove the ${kind === 'mute' ? 'mute rule' : 'known pattern'} ${String(r.ack_id)}`, redraw, 'Remove') : '' },
   ];
   return el('div', {}, el('h3', {}, kind === 'mute' ? 'Mute rules' : 'Known patterns'),
     el('div', { class: 'seg' }, mk),
@@ -418,7 +431,7 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
   const rows = all.filter(r => r.kind === kind);
   let showEnded = false;
   const word = kind === 'mute' ? 'mute rule' : 'known pattern';
-  const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', `New ${word}`, () => muteDialog({ kind, insts, after: redraw }));
+  const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', `New ${word}`, () => muteDialog({ kind, insts, after: redraw }), { instance: 'any' });
   const endedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, 'Show ended (7 days)');
   const wrap = el('div', {});
   const change = (r: Row, op: 'pause' | 'resume') => async () => {
@@ -441,11 +454,11 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
       { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces ${String(r.replaces)})` : '') },
       ...(kind === 'mute' ? [{ key: 'held_alerts', label: 'alerts held', num: true }, { key: 'held_last', label: 'last held', fmt: fmtTime }] as Col[] : []),
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` + (r.replaced_by != null ? ` (edited: rule ${String(r.replaced_by)})` : '') },
-      { key: '_act', label: '', fmt: (_v, r) => r.state === 'ended' || r.state === 'expired' || !ad.writable ? '' : el('span', { style: 'white-space:nowrap' },
-        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts, rule: r, after: redraw })), ' \u00b7 ',
+      { key: '_act', label: '', fmt: (_v, r) => r.state === 'ended' || r.state === 'expired' || !ackOn(ad, Number(r.instance_id) || null) ? '' : el('span', { style: 'white-space:nowrap' },
+        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts, rule: r, after: redraw }), { instance: Number(r.instance_id) || null }), ' \u00b7 ',
         ...(kind === 'mute' ? [r.paused_at != null
-          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'))
-          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause')), ' \u00b7 '] : []),
+          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'), { instance: Number(r.instance_id) || null })
+          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause'), { instance: Number(r.instance_id) || null }), ' \u00b7 '] : []),
         endButton(Number(r.ack_id), `Remove the ${word} ${String(r.ack_id)}`, redraw, 'Remove')) },
     ];
     wrap.replaceChildren(grid(vis, cols, kind === 'mute' ? 'No mute rule: a quiet send log is genuine, not muted.' : 'No known pattern.'));

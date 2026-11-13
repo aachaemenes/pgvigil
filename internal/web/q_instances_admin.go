@@ -265,6 +265,8 @@ func keys(m map[string]string) []string {
 // do (ackOff), but an acknowledgement's wording would be wrong here (the join's w9c: proof-upgrade, proof-darling-alerts C).
 func (s *Server) instancesOff() string {
 	switch {
+	case s.demo != nil:
+		return "adding and changing instances writes connection secrets and connects to servers: it needs pgvigil serve with a signed-in user (this is pgvigil demo -serve)"
 	case s.auth == nil:
 		return "adding and changing instances needs the UI login: this server runs with -no-login"
 	case s.actions == nil:
