@@ -1310,6 +1310,40 @@ func nameFor(server string) string {
 }
 
 // ProposalsAdminWrite is POST /api/admin/proposals.
+// approveLogin: the authentication, login and password an approved (or tested) proposal's server is read with. A
+// login typed at the approve stands for the source's (cred holds it already); else the source's, else the
+// proposal's own. The source's authentication unless one is typed, mapped to the engine's: a cloud source's one
+// login is a password login on its PostgreSQL servers, and SQL Server never takes password / pgpass. With
+// entra-identity (this host's managed identity, CLOUDSQL C1) no secret is used, and the login is a user-assigned
+// identity's client id - typed at the approve, or the source's own when the source signs in that way; never a SQL
+// login of the source or the proposal (a typed password reaches BuildDSN, which refuses it in its own words).
+func approveLogin(engine, srcAuth, typedAuth, typedLogin, typedPassword string, cred sourceCred, proposalLogin string) (auth, login, password string) {
+	login, password = cred.Login, cred.Password
+	if login == "" {
+		login = proposalLogin
+	}
+	auth = srcAuth
+	if typedAuth != "" {
+		auth = typedAuth
+	}
+	switch {
+	case engine == config.EnginePostgres && (auth == "sql" || auth == "entra" || auth == "entra-identity"):
+		auth = "password" // a cloud source's one login is a password login on its PostgreSQL servers
+	case engine == config.EngineSQLServer && (auth == "password" || auth == "pgpass"):
+		auth = "sql"
+	}
+	if auth == "password" && password == "" {
+		auth = "pgpass"
+	}
+	if auth == "entra-identity" {
+		login, password = typedLogin, typedPassword
+		if login == "" && srcAuth == "entra-identity" {
+			login = cred.Login
+		}
+	}
+	return auth, login, password
+}
+
 func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	user, in, ok := s.adminBody(w, r)
 	if !ok {
@@ -1372,23 +1406,8 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 				dsn += " password=" + config.QuoteValue(cred.Password)
 			}
 		} else {
-			l := cred.Login
-			if l == "" {
-				l = orZero(login)
-			}
-			auth := sr.Auth
-			if v := str(in, "auth"); v != "" {
-				auth = v
-			}
-			switch {
-			case engine == config.EnginePostgres && (auth == "sql" || auth == "entra"):
-				auth = "password" // a cloud source's one login is a password login on its PostgreSQL servers
-			case engine == config.EngineSQLServer && (auth == "password" || auth == "pgpass"):
-				auth = "sql"
-			}
-			if auth == "password" && cred.Password == "" {
-				auth = "pgpass"
-			}
+			auth, l, pw := approveLogin(engine, sr.Auth, str(in, "auth"), str(in, "login"), rawStr(in, "password"), cred, orZero(login))
+			cred.Password = pw
 			pay["auth"] = auth
 			pay["login_used"] = l
 			extra := cred.Extra

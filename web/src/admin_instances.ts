@@ -264,7 +264,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     const safe = String(r.display_name ?? r.server).replace(/ \((writer|reader|replica|primary|secondary|read_pool)\)$/, '')
       .replace(/[^A-Za-z0-9_.@-]+/g, '-').replace(/^[-._@]+|[-._@]+$/g, '').slice(0, 63);
     const name = input('name', { value: safe, maxlength: '63' });
-    const auth = select('auth', sql ? [['sql', 'SQL login'], ['entra', 'Entra service principal']] : [['password', 'PostgreSQL login'], ['pgpass', '.pgpass']]);
+    const auth = select('auth', sql ? [['sql', 'SQL login'], ['entra', 'Entra service principal'], ['entra-identity', 'Entra managed identity (this host\'s own, no secret)']] : [['password', 'PostgreSQL login'], ['pgpass', '.pgpass']]);
     const login = input('login', { placeholder: 'empty: the source\'s login' }), pw = el('input', { name: 'password', type: 'password', autocomplete: 'new-password' });
     const test = el('button', { type: 'button', 'aria-label': `Test the connection to ${s}` }, 'Test the connection');
     const ok = el('button', { type: 'button', 'aria-label': `Approve ${s} now` }, 'Approve');
@@ -273,8 +273,11 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     const box = el('span', { class: 'actions' }, field('Instance name', name), field('Authentication', auth), field('Login', login), field('Password', pw), ' ', test, ' ', ok, ' ', cancel, ticks);
     const body = (): Record<string, unknown> | null => {
       if (!login.value.trim() && pw.value) { say('A password needs its login: type the login too, or leave both empty for the source\'s.', true); return null; }
+      if (auth.value === 'entra-identity' && pw.value) { say('A managed identity signs in with this host\'s own Azure identity: leave the password empty (the login is a user-assigned identity\'s client id, or empty for the host\'s own).', true); return null; }
       const b: Record<string, unknown> = { proposal_id: id, name: name.value.trim() };
       if (login.value.trim()) Object.assign(b, { login: login.value.trim(), password: pw.value, auth: auth.value });
+      // the managed identity is chosen here even with no login typed: neither the source's login nor its password is used
+      else if (sql && auth.value === 'entra-identity') b.auth = auth.value;
       for (const [need, cb] of shown) if (cb.checked) b[need] = true;
       return b;
     };
@@ -358,7 +361,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     const cmsLogin = input('cms_login'), cmsPw = el('input', { name: 'cms_password', type: 'password', autocomplete: 'new-password' }), cmsOpt = input('cms_options', { placeholder: 'TrustServerCertificate=true' });
     const ref = input('ref', { placeholder: '/etc/pgvigil/servers.csv' });
     const repo = select('repo', d.dbadash.map(n => [n, n] as [string, string]));
-    const credAuth = select('auth', [['sql', 'SQL login'], ['windows', 'Windows account'], ['entra', 'Entra service principal'], ['password', 'PostgreSQL login'], ['pgpass', '.pgpass']]);
+    const credAuth = select('auth', [['sql', 'SQL login'], ['windows', 'Windows account'], ['entra', 'Entra service principal'], ['entra-identity', 'Entra managed identity (this host\'s own, no secret)'], ['password', 'PostgreSQL login'], ['pgpass', '.pgpass']]);
     const credLogin = input('cred_login'), credPw = el('input', { name: 'cred_password', type: 'password', autocomplete: 'new-password' }), credOpt = input('cred_options');
     // the cloud reads: read-only credentials (docs/discovery.md), kept in the source's own file, never shown again
     const awsProfile = input('aws_profile', { placeholder: 'empty: the default chain' }), awsRegions = input('aws_regions', { placeholder: 'empty: swept once from the profile\'s region' });

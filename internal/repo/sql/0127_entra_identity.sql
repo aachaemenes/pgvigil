@@ -2,10 +2,14 @@
 -- collector host's own Azure managed identity (fedauth=ActiveDirectoryManagedIdentity, internal/mssqlopen), no secret
 -- stored anywhere. admin_instances' auth CHECK and import_admin_instance's two auth lines take it; the function is
 -- otherwise 0122's, line for line (internal/repo TestAdmin0127IsAdmin0122PlusEntraIdentity holds the two equal: an
--- edit of 0122's import_admin_instance is made here too). Sources keep their auth list (205's 0123 owns
--- import_admin_source).
+-- edit of 0122's import_admin_instance is made here too). A source takes it too (admin_sources' auth CHECK below):
+-- the servers approved from it sign in the same way, and a SQL Server source with it needs no credential file
+-- (205's 0123 owns import_admin_source and the approve, and says so there).
 ALTER TABLE pgvigil.admin_instances DROP CONSTRAINT IF EXISTS admin_instances_auth_check;
 ALTER TABLE pgvigil.admin_instances ADD CONSTRAINT admin_instances_auth_check
+  CHECK (auth IN ('sql', 'windows', 'entra', 'entra-identity', 'password', 'pgpass'));
+ALTER TABLE pgvigil.admin_sources DROP CONSTRAINT IF EXISTS admin_sources_auth_check;
+ALTER TABLE pgvigil.admin_sources ADD CONSTRAINT admin_sources_auth_check
   CHECK (auth IN ('sql', 'windows', 'entra', 'entra-identity', 'password', 'pgpass'));
 
 CREATE OR REPLACE FUNCTION pgvigil.import_admin_instance(p_at timestamptz, p_payload jsonb)

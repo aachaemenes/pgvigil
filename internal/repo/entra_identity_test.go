@@ -105,3 +105,82 @@ func TestEntraIdentityOnAStore(t *testing.T) {
 		t.Fatalf("the row's auth %q, %v", auth, err)
 	}
 }
+
+// On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it), C1's wiring of 205's sources and approve: 0127
+// replaced admin_sources' auth CHECK too (one CHECK, taking entra-identity); a SQL Server source with auth
+// entra-identity needs no credential file (as windows), one with auth sql still does; an Entra-only server's proposal
+// is approved with entra-identity, and a SQL login is refused there in 0123's words.
+func TestEntraIdentitySourceOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var checks int
+	var def string
+	if err := pool.QueryRow(ctx, `SELECT count(*), coalesce(max(pg_get_constraintdef(oid)), '') FROM pg_constraint
+	                               WHERE conrelid = 'pgvigil.admin_sources'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%auth%'`).Scan(&checks, &def); err != nil {
+		t.Fatal(err)
+	}
+	if checks != 1 || !strings.Contains(def, "entra-identity") {
+		t.Fatalf("admin_sources has %d CHECKs on auth (%s), want 1 taking entra-identity (0127's)", checks, def)
+	}
+	n := time.Now().UnixNano() % 1000000000
+	src, inst := fmt.Sprintf("mi-src-%d", n), fmt.Sprintf("mi-inst-%d", n)
+	defer func() {
+		for _, q := range []string{`DELETE FROM pgvigil.instances WHERE name = $1`, `DELETE FROM pgvigil.admin_instances WHERE name = $1`} {
+			if _, err := pool.Exec(context.Background(), q, inst); err != nil {
+				t.Error(err)
+			}
+		}
+		for _, s := range []string{src, src + "-sql"} {
+			if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_sources WHERE name = $1`, s); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	call := func(fn, payload string) (string, string) {
+		t.Helper()
+		var outcome, detail string
+		if err := pool.QueryRow(ctx, `SELECT r->>'outcome', coalesce(r->>'detail', '') FROM pgvigil.`+fn+`(now(), $1::jsonb) AS t(r)`, payload).Scan(&outcome, &detail); err != nil {
+			t.Fatal(err)
+		}
+		return outcome, detail
+	}
+	add := func(name, auth string) (string, string) {
+		return call("import_admin_source", fmt.Sprintf(`{"op":"add","ui_user":"test","name":%q,"kind":"sqlserver_list","ref":"/etc/pgvigil/servers.csv","auth":%q,"every_s":"3600"}`, name, auth))
+	}
+	if o, d := add(src+"-sql", "sql"); o != "refused" || !strings.Contains(d, "or auth windows or entra-identity") {
+		t.Fatalf("a sql source without a credential: %s %q", o, d)
+	}
+	if o, d := add(src, "entra-identity"); o != "done" {
+		t.Fatalf("an entra-identity source without a credential: %s %q", o, d)
+	}
+	var id int64
+	if err := pool.QueryRow(ctx, `INSERT INTO pgvigil.admin_proposals (source, server, engine, host, port, dbname, login, entra_only, note)
+	                               VALUES ($1, 'srv1/db1', 'sqlserver', 'srv1.database.windows.net', 1433, 'db1', 'admin1', true,
+	                                       'Microsoft Entra-only authentication: a SQL login cannot sign in (approve with an Entra login)')
+	                               RETURNING proposal_id`, src).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	approve := func(auth string) (string, string) {
+		return call("import_admin_decision", fmt.Sprintf(`{"op":"approve","ui_user":"test","proposal_id":"%d","name":%q,"dsn_ref":"file:/x/%s.dsn","auth":%q}`, id, inst, inst, auth))
+	}
+	if o, d := approve("sql"); o != "refused" || !strings.HasSuffix(d, "approve it with an Entra login (a service principal, or this host's managed identity)") {
+		t.Fatalf("an Entra-only server with a SQL login: %s %q", o, d)
+	}
+	if o, d := approve("entra-identity"); o != "done" {
+		t.Fatalf("an Entra-only server with entra-identity: %s %q", o, d)
+	}
+	var auth, state string
+	if err := pool.QueryRow(ctx, `SELECT i.auth, p.state FROM pgvigil.admin_instances i JOIN pgvigil.admin_proposals p ON p.instance_name = i.name
+	                               WHERE i.name = $1`, inst).Scan(&auth, &state); err != nil || auth != "entra-identity" || state != "approved" {
+		t.Fatalf("the approved row: auth %q, proposal %q, %v", auth, state, err)
+	}
+}

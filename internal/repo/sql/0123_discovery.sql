@@ -76,8 +76,8 @@ BEGIN
     v_why := 'a cloud source''s ref is the file serve wrote for its settings and credential (file: or dpapi:)';
   ELSIF v_op = 'add' AND v_cred IS NOT NULL AND v_cred !~ '^(file|dpapi):' THEN
     v_why := 'credential_ref is a file serve wrote (file: or dpapi:)';
-  ELSIF v_op = 'add' AND v_kind IN ('cms', 'dbadash', 'sqlserver_list') AND v_cred IS NULL AND coalesce(p_payload->>'auth', 'sql') <> 'windows' THEN
-    v_why := 'a SQL Server source needs the login its approved servers are read with (credential_ref), or auth windows';
+  ELSIF v_op = 'add' AND v_kind IN ('cms', 'dbadash', 'sqlserver_list') AND v_cred IS NULL AND coalesce(p_payload->>'auth', 'sql') NOT IN ('windows', 'entra-identity') THEN
+    v_why := 'a SQL Server source needs the login its approved servers are read with (credential_ref), or auth windows or entra-identity (no secret: the service''s own account, or this host''s managed identity)';
   ELSIF v_op = 'add' AND coalesce(p_payload->>'every_s', '3600') !~ '^[0-9]{2,6}$' THEN
     v_why := 'every_s is a number of seconds from 60 to 604800';
   ELSIF v_op = 'add' AND (coalesce(p_payload->>'every_s', '3600'))::int NOT BETWEEN 60 AND 604800 THEN
@@ -172,8 +172,8 @@ BEGIN
   -- its resource id), needs a tick. 'needs' names the tick the page asks for.
   ELSIF v_op = 'approve' AND v_p.entra_only AND v_p.engine = 'postgres' THEN
     v_why := 'the server takes Microsoft Entra sign-ins only (' || coalesce(v_p.note, 'Entra only') || '), and pgvigil signs in to PostgreSQL with a password: it cannot be monitored until its password authentication is on';
-  ELSIF v_op = 'approve' AND v_p.entra_only AND coalesce(p_payload->>'auth', v_s.auth) <> 'entra' THEN
-    v_why := 'the server takes Microsoft Entra sign-ins only (' || coalesce(v_p.note, 'Entra only') || '): approve it with an Entra login';
+  ELSIF v_op = 'approve' AND v_p.entra_only AND coalesce(p_payload->>'auth', v_s.auth) NOT IN ('entra', 'entra-identity') THEN
+    v_why := 'the server takes Microsoft Entra sign-ins only (' || coalesce(v_p.note, 'Entra only') || '): approve it with an Entra login (a service principal, or this host''s managed identity)';
   ELSIF v_op = 'approve' AND v_p.master_user IS NOT NULL AND lower(coalesce(p_payload->>'login_used', '')) = lower(v_p.master_user)
         AND (p_payload->>'confirm_master')::boolean IS NOT TRUE THEN
     v_need := 'confirm_master';
