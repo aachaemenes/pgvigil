@@ -31,6 +31,9 @@ type Config struct {
 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
 	// collects nothing from SQL Server itself.
 	DBADash []DBADashRepo `yaml:"dbadash"`
+	// Doors holds the switches of serve's doors that only this file turns on, never the page (pagedoor.go):
+	// doors: page_instance_reads: on lets Community tools and custom reports run on instances added in Admin > Instances.
+	Doors Doors `yaml:"doors"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
