@@ -13,7 +13,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
-import { AckData, ackDialog, ackOn, addAck, endAck, endButton, liveRows, loadAckSafe, writeButton } from './ack';
+import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
 import { fleet, tagsOf } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
@@ -59,7 +59,9 @@ function testCell(ad: AckData, r: Row, redraw: () => void): HTMLElement {
       window.setTimeout(redraw, 2000);
     } catch (e) { said.textContent = ' not asked: ' + (e instanceof Error ? e.message : String(e)); b.disabled = false; }
   }, { why: ad.door ? 'Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here' : undefined });
-  if (!r.is_configured) { b.disabled = true; if (ad.writable) b.title = 'the configuration no longer names this channel'; }
+  // a channel the configuration no longer names: off with that reason in words where the button was on (a button
+  // already off keeps the reason it has); never the disabled attribute, which takes it out of the tab order
+  if (!r.is_configured && b.getAttribute('aria-disabled') !== 'true') offBeside(b, 'the configuration no longer names this channel');
   const last = r.last_test_at == null ? '' : ` last: ${String(r.last_test_outcome)} ${fmtTime(r.last_test_done ?? r.last_test_at)} (${String(r.last_test_by ?? '')})` + (r.last_test_error ? `: ${String(r.last_test_error)}` : '');
   return el('span', { style: 'white-space:nowrap' }, b, last ? el('span', { class: 'meta' }, last) : '', said);
 }
@@ -373,20 +375,30 @@ const whenCols: Col[] = [
   { key: 'until', label: 'until', fmt: v => v == null ? 'no expiry' : fmtTime(v) },
 ];
 
+// noDoorPick: why a demo serve's picker has nothing to pick (its controls are then off with these words)
+const noDoorPick = "none of this demo's instances can be picked here: the instance list could not be read, or holds none of them";
+
 // serversView: the servers silenced (Darling's Silence: every alert of the server held, still logged) and the
 // blackouts (a window on one instance: its alerts are held and flagged blackout)
 function serversView(ad: AckData, insts: Row[], redraw: () => void): HTMLElement {
   const rows = liveRows(ad).filter(r => r.kind === 'silence' || r.kind === 'blackout').concat(rowsOf(ad.acks).filter(r => r.kind === 'blackout' && !r.live && !r.ended_at && r.starts_at && Date.parse(String(r.starts_at)) > Date.now()));
-  const sel = el('select', { 'aria-label': 'instance' }, ...insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
-  const pick = () => insts.find(i => String(i.instance_id) === sel.value);
+  // on a demo serve the list holds the door's instances alone (the first one picked): Silence and Blackout are never
+  // on for an instance the door would refuse
+  const pickable = doorRows(ad, insts);
+  const sel = el('select', { 'aria-label': 'instance' }, ...pickable.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
+  const pick = () => pickable.find(i => String(i.instance_id) === sel.value);
+  // a demo serve whose list holds none of the door's instances (the instance list could not be read, or none of them
+  // is the demo's any more): nothing can be picked, so both buttons are off for that one reason, said once beside them
+  const noneP = onDoor(ad) && !pickable.length ? el('span', { class: 'off-reason' }, noDoorPick) : undefined;
+  const at = noneP ? { instance: null, why: noDoorPick, note: noneP } : { instance: 'any' as const };
   const silence = writeButton(ad, 'Silence', 'Silence the instance picked', () => ackDialog({
     title: `Silence all alerts for '${String(pick()?.name ?? '')}'?`,
     what: 'This holds every alert of the server; the held alerts are still logged (Held sends). Unsilence removes it.',
-    body: { kind: 'silence', instance_id: Number(sel.value) }, expiry: true, noteField: 'optional', after: redraw }), { instance: 'any' });
+    body: { kind: 'silence', instance_id: Number(sel.value) }, expiry: true, noteField: 'optional', after: redraw }), at);
   const blackout = writeButton(ad, 'Blackout', 'A blackout window for the instance picked', () => ackDialog({
     title: `Blackout '${String(pick()?.name ?? '')}'`,
     what: 'From the start to the end the server\'s alerts are held (still logged) and flagged blackout.',
-    body: { kind: 'blackout', instance_id: Number(sel.value) }, expiry: false, blackout: true, noteField: 'optional', after: redraw }), { instance: 'any' });
+    body: { kind: 'blackout', instance_id: Number(sel.value) }, expiry: false, blackout: true, noteField: 'optional', after: redraw }), at);
   const cols: Col[] = [
     { key: 'kind', fmt: v => v === 'silence' ? 'silenced' : 'blackout' },
     { key: 'instance' },
@@ -398,7 +410,7 @@ function serversView(ad: AckData, insts: Row[], redraw: () => void): HTMLElement
     { key: '_end', label: '', fmt: (_v, r) => ackOn(ad, Number(r.instance_id) || null) ? endButton(Number(r.ack_id), `${r.kind === 'silence' ? 'Unsilence' : 'End the blackout of'} ${String(r.instance)}`, redraw, r.kind === 'silence' ? 'Unsilence' : 'End') : '' },
   ];
   return el('div', {}, el('h3', {}, 'Silenced servers and blackouts'),
-    el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel), el('div', { class: 'seg' }, silence, blackout)),
+    el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel), el('div', { class: 'seg' }, silence, blackout), ...(noneP ? [noneP] : [])),
     grid(rows, cols, 'No server is silenced and no blackout is set.'));
 }
 
@@ -408,7 +420,9 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
   const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', kind === 'mute' ? 'New mute rule' : 'New known pattern', () => ackDialog({
     title: kind === 'mute' ? 'New mute rule' : 'New known pattern',
     what: kind === 'mute' ? 'Alerts matching every field filled are held while the rule stands; the held sends are logged.' : 'Alerts matching every field filled carry the label; nothing is held.',
-    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: 'any' });
+    // its dialog has no instance field: on a demo serve every rule it makes would be one on every instance, which the
+    // door refuses - off there, in ackWhy's words
+    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: onDoor(ad) ? null : 'any' });
   const cols: Col[] = [
     { key: 'check_key', label: 'check' },
     { key: 'instance' },
@@ -431,7 +445,11 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
   const rows = all.filter(r => r.kind === kind);
   let showEnded = false;
   const word = kind === 'mute' ? 'mute rule' : 'known pattern';
-  const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', `New ${word}`, () => muteDialog({ kind, insts, after: redraw }), { instance: 'any' });
+  // on a demo serve the dialogs offer the door's instances alone and no 'any instance'
+  const dlgInsts = doorRows(ad, insts), door = onDoor(ad);
+  // a door whose list holds none of its instances: the dialog could name no instance, so New is off with that reason
+  const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', `New ${word}`, () => muteDialog({ kind, insts: dlgInsts, door, after: redraw }),
+    door && !dlgInsts.length ? { instance: null, why: noDoorPick } : { instance: 'any' });
   const endedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, 'Show ended (7 days)');
   const wrap = el('div', {});
   const change = (r: Row, op: 'pause' | 'resume') => async () => {
@@ -455,7 +473,7 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
       ...(kind === 'mute' ? [{ key: 'held_alerts', label: 'alerts held', num: true }, { key: 'held_last', label: 'last held', fmt: fmtTime }] as Col[] : []),
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` + (r.replaced_by != null ? ` (edited: rule ${String(r.replaced_by)})` : '') },
       { key: '_act', label: '', fmt: (_v, r) => r.state === 'ended' || r.state === 'expired' || !ackOn(ad, Number(r.instance_id) || null) ? '' : el('span', { style: 'white-space:nowrap' },
-        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts, rule: r, after: redraw }), { instance: Number(r.instance_id) || null }), ' \u00b7 ',
+        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts: dlgInsts, door, rule: r, after: redraw }), { instance: Number(r.instance_id) || null }), ' \u00b7 ',
         ...(kind === 'mute' ? [r.paused_at != null
           ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'), { instance: Number(r.instance_id) || null })
           : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause'), { instance: Number(r.instance_id) || null }), ' \u00b7 '] : []),
@@ -468,7 +486,8 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
   return el('div', {}, el('h3', {}, kind === 'mute' ? 'Mute rules' : 'Known patterns'), el('div', { class: 'seg' }, mk, endedBtn), wrap);
 }
 
-interface MuteDialog { kind: 'mute' | 'noise'; insts: Row[]; rule?: Row; after: () => void }
+// door: a demo serve's dialog - insts are the door's instances, and 'any instance' is not offered (the first one is picked)
+interface MuteDialog { kind: 'mute' | 'noise'; insts: Row[]; door?: boolean; rule?: Row; after: () => void }
 
 const untilHours: [string, number][] = [['no expiry', 0], ['1 hour after the start', 1], ['4 hours after the start', 4], ['1 day after the start', 24], ['7 days after the start', 168], ['a time ...', -1]];
 
@@ -480,7 +499,7 @@ function muteDialog(o: MuteDialog) {
   const word = o.kind === 'mute' ? 'mute rule' : 'known pattern';
   const text = (v: unknown, label: string) => el('input', { type: 'text', maxlength: '200', 'aria-label': label, value: v == null ? '' : String(v) });
   const check = text(r?.check_key, 'check'), tag = text(r?.tag, 'tag'), match = text(r?.match_text, 'text');
-  const inst = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'any instance'),
+  const inst = el('select', { 'aria-label': 'instance' }, ...(o.door ? [] : [el('option', { value: '' }, 'any instance')]),
     ...o.insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
   // the rule's own instance stays picked even when the instance list lacks it (removed since, or the list not read):
   // an edit never widens a rule to every instance unless 'any instance' is picked by hand
