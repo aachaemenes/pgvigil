@@ -1237,16 +1237,20 @@ if (mode === 'live') {
     navigator.clipboard.write = async items => { for (const it of items) window.__clips.push({ kind: 'item', plain: await (await it.getType('text/plain')).text(), html: await (await it.getType('text/html')).text() }); };
     return 1; })()`);
   // cell: a JS expression for the cell the menu opens on
+  // the cell is scrolled to first and the right-click comes after the scroll's own event: the page closes an open menu
+  // on any scroll (ui.ts dropMenu), so a menu opened in the same turn as the scroll is gone a frame later (buttons-b3f-6)
   const copyFrom = async (cell, item) => {
     const n = await ev(`window.__clips.length`);
-    const opened = await ev(`(() => { const td = ${cell}; if (!td) return false; td.scrollIntoView({ block: 'center' }); const r = td.getBoundingClientRect();
-      td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 })); return true; })()`);
-    if (!opened) return { error: 'no cell ' + cell };
-    await until(`!!document.querySelector('.menu [role=menuitem]')`, 5000);
-    const hit = await ev(`(() => { const b = [...document.querySelectorAll('.menu [role=menuitem]')].find(x => x.textContent.trim() === ${JSON.stringify(item)}); if (!b) return [...document.querySelectorAll('.menu [role=menuitem]')].map(x => x.textContent.trim()).join(' | '); b.click(); return ''; })()`);
-    if (hit) return { error: 'no item ' + item + ' among ' + hit };
-    await until(`window.__clips.length > ${n}`, 5000);
-    return await ev(`window.__clips[${n}] ?? null`);
+    const there = await ev(`(() => { const td = ${cell}; if (!td) return false; td.scrollIntoView({ block: 'center' }); return true; })()`);
+    if (!there) return { error: 'no cell ' + cell };
+    await sleep(500);
+    await ev(`(() => { const td = ${cell}; const r = td.getBoundingClientRect();
+      td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 })); return 1; })()`);
+    if (!await until(`!!document.querySelector('.menu [role=menuitem]')`, 5000)) return { error: 'no menu opened on ' + cell };
+    const hit = await ev(`(() => { const bs = [...document.querySelectorAll('.menu [role=menuitem]')], b = bs.find(x => x.textContent.trim() === ${JSON.stringify(item)}); if (!b) return 'not among: ' + bs.map(x => x.textContent.trim()).join(' | '); b.click(); return ''; })()`);
+    if (hit) return { error: item + ' ' + hit };
+    if (!await until(`window.__clips.length > ${n}`, 5000)) return { error: 'nothing reached the clipboard in 5 s after ' + item };
+    return await ev(`window.__clips[${n}]`);
   };
   out.clip = {
     md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as Markdown'),
