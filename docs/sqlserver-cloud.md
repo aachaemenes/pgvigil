@@ -84,6 +84,18 @@ The database's own resource use (`sys.dm_db_resource_stats`), its files and its 
 
 `pgvigil mssql-xe -print -form azuresqldb -install-id <id>` prints the four database-scoped sessions (ring buffer targets); the database's admin runs it in the monitored database. The collector only reads them.
 
+## Azure SQL Database elastic pools
+
+A database in an elastic pool is an Azure SQL Database instance like any other; `mssql_pool` adds its pool's figures, a row a minute, and the Elastic pool page (DBA Dash's Azure Summary pool grid and its pool's Pool tab).
+
+- **Where the figures come from:** `sys.dm_elastic_pool_resource_stats` in the pooled database itself. Microsoft: it "returns the same data in any database in the same elastic pool", a row "every few seconds", kept "approximately 40 minutes", and needs VIEW SERVER STATE (on Azure SQL Database the server-level role `##MS_ServerStateReader##`, added in master by the server admin or the Entra admin). DBA Dash reads master's `sys.elastic_pool_resource_stats` instead (14 days, but it needs `dbmanager`, which also creates and alters databases); pgvigil asks for no master login.
+- **A minute:** the average of the view's few-second averages (CPU, data IO, log write, eDTU on a DTU pool, the instance's CPU and memory), the largest of its maxima (workers, sessions), the largest average CPU as the minute's maximum CPU, and the storage figures as the minute ended (used, allocated, the pool's maximum data size). The current minute waits for the next read. Every pooled database pgvigil reads sends what it saw; a minute is stored once per pool, by the first database read. A collector outage longer than about 40 minutes leaves a gap.
+- **The pool's name:** the view names none. pgvigil takes the instance's tag `pool:<name>`, else `sys.database_service_objectives` where the login may read it (Microsoft: dbManager in master, or the database's creator or owner), else the run is skipped and says so. A tag is trusted as given: a database moved to another pool keeps writing under the tag's name until the tag changes.
+- **Limits:** the view gives the pool's maximum data size and its percentages of the pool's other limits, not the DTU or vCore limit itself; the page shows percentages.
+- **Elastic Pool Storage:** DBA Dash's cell, the pool's allocated storage as a percentage of its maximum data size against warning 80 % and critical 90 % (DBA Dash's defaults; `pgvigil.mssql_pool_thresholds` holds a pool's own, the row with an empty server and pool is the default). DBA Dash compares with a strict "over": 80 % is OK, 90 % is Warning, 91 % is Critical; a missing threshold is N/A, and so is a pool with no minute in the last 5 minutes. pgvigil shows it on each pooled database.
+
+Not proven against a live pool in this release: every row here is proven on recorded rows and on a store; the read itself, the role's reach into a database with no user of the login's, and the cell against master's own view need an Azure pool.
+
 ## Google Cloud SQL for SQL Server
 
 Google's own SQL Server instances: SQL Server on Linux that Google runs, the customer's highest login being the `sqlserver` user (no sysadmin). DBA Dash has no Cloud SQL detection; this is pgvigil's own reading of Google's pages, run so far only against a simulation (below).
@@ -199,6 +211,6 @@ These results are for this release's code, which includes the collector and page
 
 ## Not proven, not in this release
 
-- Azure SQL Database: the Basic, S0 and S1 tiers and elastic pools (their rights differ, above), Microsoft Entra sign-in against a live server (`entra-identity` and `entra` are built: above), a geo-replica.
+- Azure SQL Database: the Basic, S0 and S1 tiers and a live elastic pool (their rights differ, above; the pool's reads are built and proven on recorded rows only), Microsoft Entra sign-in against a live server (`entra-identity` and `entra` are built: above), a geo-replica.
 - Amazon RDS: editions other than Express (Web, Standard, Enterprise: SQL Server Agent and its jobs, Multi-AZ with Always On or mirroring), Windows authentication through AWS Managed Microsoft AD, RDS Custom.
 - Not in this release: Azure SQL Managed Instance, Google Cloud SQL for SQL Server (only its simulation, above) and AlloyDB are not proven against a real instance; a Managed Instance is detected and read like a server, with no collection switched off by its kind.
