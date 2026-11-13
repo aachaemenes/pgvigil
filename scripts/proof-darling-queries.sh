@@ -1303,6 +1303,12 @@ if (wl) { await must(wl); console.log(`waitlink ${wl} ${await ev(`document.query
 await must(pages.queries); await allParts();
 const hc = JSON.parse(await ev(`(() => { const c = document.querySelector('.heatmap-cell[data-n]'); if (!c) return JSON.stringify({ href: 'no cell' }); c.click();
   const a = [...document.querySelectorAll('.heatmap-detail a')].find(x => x.textContent === 'Show Active Queries at This Time'); return JSON.stringify({ t: Number(c.dataset.t), href: a ? a.getAttribute('href') : 'no link' }); })()`));
+// 'Show as table': the picture hidden and the table shown, pressed; again: back to the picture
+await must(pages.queries); await allParts();
+const tg = await ev(`(() => { const h = document.querySelector('[data-part=heatmap]'); const b = h?.querySelector('button.heatmap-toggle'); if (!b) return JSON.stringify({ toggle: false });
+  const st = () => ({ pressed: b.getAttribute('aria-pressed'), grid: !h.querySelector('.heatmap-view').hidden, table: !h.querySelector('.heatmap-table').hidden, rows: h.querySelectorAll('.heatmap-table tbody tr').length });
+  const a = st(); b.click(); const t = st(); b.click(); return JSON.stringify({ toggle: true, before: a, table: t, back: st() }); })()`);
+console.log(`heattoggle ${tg}`);
 if (hc.href.startsWith('#')) { await must(hc.href); console.log(`heatcell ${JSON.stringify({ ...hc, landed: JSON.parse(await ev(`JSON.stringify({ hash: location.hash, title: document.querySelector('main h2')?.textContent ?? '' })`)) })}`); } else console.log(`heatcell ${JSON.stringify(hc)}`);
 // the click table: every link and every control of the Queries page, each clicked once, with its landing
 await must(pages.queries); await allParts();
@@ -1501,6 +1507,11 @@ sc = one('slowcause')
 if sc != 'slowcause heatmap: ERROR: canceling statement due to statement timeout;': bad.append(f'the heatmap read\'s cause in the serve log: {sc!r}')
 sb = one('slowback').split()
 if len(sb) != 3 or sb[1] != sb[2] or sb[1] in ('0', 'null'): bad.append(f'the heatmap after the table was put back (cells before, after): {sb}')
+# 'Show as table' (PerformanceMonitor's toggle): the picture first at this width, the table pressed, then back
+tg = one('heattoggle'); tgj = json.loads(tg.split(' ', 1)[1]) if tg else {}
+if not tgj.get('toggle') or tgj.get('before') != {'pressed': 'false', 'grid': True, 'table': False, 'rows': heat} \
+        or tgj.get('table') != {'pressed': 'true', 'grid': False, 'table': True, 'rows': heat} or tgj.get('back') != tgj.get('before'):
+    bad.append(f'the heatmap toggle: {tg} (want the picture, then the table of {heat} cells pressed, then the picture)')
 clicks = [l for l in out if l.startswith('click ')]
 cbad = [l for l in clicks if ('errors=0' not in l and 'not followed' not in l and not l.endswith(' gone')) or 'rendered=false' in l]
 if not clicks: bad.append('no click table')
@@ -1511,5 +1522,5 @@ print(f"I: {len(clicks)} clicks in the click table; heads by rows: " + ', '.join
       + f"; the heatmap {len(hcells)} cells; the wait filter {n_wf} of {n_all}")
 sys.exit(1 if bad else 0)
 PYEND
-echo "ok   I: the Queries page in PerformanceMonitor's section order, each head = its tab's API head row by row in order (Running, Plan cache, Query Store, Regressed; Slow queries and Tuning by the counts printed above, empty when 0), the heatmap's table and picture = the API's cells (time, bucket, queries), light and dark, no error box; the Query Store strip re-reads its grid and draws a query's line; the plan cache's History and a procedure's chart in PerformanceMonitor's four metrics with its line on the strip; Running's strip steps the slider; wait=WAITFOR shows the API's WAITFOR rows alone of the snapshot's requests on two waits, and its way back shows them all; the Waits page's link; a heatmap cell opens Running at its bin's middle; a heatmap read held past the pool's 15 s statement timeout says the plain line (no error box, no grid; the serve log's cause the statement timeout) and reads again once the table is back; $(grep -c . "$SHOTS/d10-click-table.txt") clicks in the click table; shots in $SHOTS"
+echo "ok   I: the Queries page in PerformanceMonitor's section order, each head = its tab's API head row by row in order (Running, Plan cache, Query Store, Regressed; Slow queries and Tuning by the counts printed above, empty when 0), the heatmap's table and picture = the API's cells (time, bucket, queries), light and dark, no error box; the Query Store strip re-reads its grid and draws a query's line; the plan cache's History and a procedure's chart in PerformanceMonitor's four metrics with its line on the strip; Running's strip steps the slider; wait=WAITFOR shows the API's WAITFOR rows alone of the snapshot's requests on two waits, and its way back shows them all; the Waits page's link; a heatmap cell opens Running at its bin's middle; 'Show as table' switches the picture for the table of every cell and back; a heatmap read held past the pool's 15 s statement timeout says the plain line (no error box, no grid; the serve log's cause the statement timeout) and reads again once the table is back; $(grep -c . "$SHOTS/d10-click-table.txt") clicks in the click table; shots in $SHOTS"
 echo "PROOF OK: D10 DONE-1 and DONE-2"

@@ -84,6 +84,11 @@ function heatmapCellText(when: string, label: string, count: number, metricWord:
 }
 const oneLine = (t: unknown, max: number) => { const f = text(t).replace(/\s+/g, ' ').trim(); return f.length > max ? f.slice(0, max) + '...' : f; };
 
+// PerformanceMonitor's 'Show as table' (query-heatmap.js:21-28, :122-133): the pick kept across draws, null until the
+// reader picks; until then a phone-width window opens on the table
+let heatView: 'grid' | 'table' | null = null;
+const narrowScreen = () => typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 600px)').matches;
+
 // the Running queries page at a time, the range t +- 30 minutes (PerformanceMonitor's charts.js:1338, 1364)
 export function runningAt(ctx: Ctx, t: number): string {
   return `${href(ctx, { tab: 'mssql_running', range: { from: iso(t - 1800e3), to: iso(t + 1800e3) } })}&at=${encodeURIComponent(iso(t))}`;
@@ -145,9 +150,10 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
         el('code', {}, text(r.query_key)), ` (${fmtNum(r.top_executions)} executions) ${text(r.top_query)} `,
         el('a', { href: runningAt(ctx, t + binMs / 2) }, AT_QUERIES)));
     };
-    // the picture: a column per bin, a row per bucket (the largest at the top); a mouse picks a cell, the table below
-    // carries every cell for a keyboard and a screen reader
-    const pic = el('div', { class: 'heatmap-grid', 'aria-hidden': 'true' });
+    // the picture: a column per bin, a row per bucket (the largest at the top); a mouse picks a cell; 'Show as table'
+    // switches to the table of every cell, for a keyboard, a screen reader and a phone (PerformanceMonitor's words)
+    const pic = el('div', { class: 'heatmap-grid', role: 'img',
+      'aria-label': `Query Heatmap by ${word}: ${rows.length} cells across ${cols} time bins of ${binMin} minutes. A picture; use Show as table for the values.` });
     pic.style.cssText = `display:grid;grid-template-columns:5.5rem repeat(${cols},minmax(2px,1fr));gap:1px;font-size:var(--fs-sm)`;
     for (let b = 6; b >= 0; b--) {
       pic.append(el('span', { class: 'meta' }, labels[b]));
@@ -171,7 +177,7 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
       s.style.cssText = `display:inline-block;width:0.9rem;height:0.9rem;margin:0 1px;vertical-align:middle;border-radius:1px;${style}`; return s; };
     const legend = el('p', { class: 'meta heatmap-legend' }, swatch(NO_QUERY), ' none \u00a0 1 ', ...[1, 2, 3, 4, 5, 6, 7, 8].map(s => swatch(shadeFill(s))),
       ` ${max.toLocaleString('en-US')} queries (log scale). Each column is ${binMin} minutes; ${top} are at the top.`);
-    const notes: HTMLElement[] = [legend, el('p', { class: 'meta' }, `From the plan cache's stored reads. ${HEATMAP_LEGEND}`)];
+    const notes: HTMLElement[] = [el('p', { class: 'meta' }, `From the plan cache's stored reads. ${HEATMAP_LEGEND}`)];
     const binsCut = Number(rows[0].bins_cut);
     if (binsCut > 0) notes.push(el('p', { class: 'meta heatmap-cut' }, `The oldest ${fmtNum(binsCut)} ${binsCut === 1 ? 'column' : 'columns'}, before ${fmtTime(text(rows[0].drawn_from))}, `
       + `are not drawn: ${fmtNum(nCells)} cells in all, 1,000 at most. Pick a shorter range to see them.`));
@@ -186,7 +192,17 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
       { key: 'database', label: 'database' },
       { key: 'at', label: 'Running', fmt: (_, r) => el('a', { href: runningAt(ctx, Date.parse(text(r.time_bin)) + binMs / 2) }, AT_QUERIES) },
     ]);
-    out.replaceChildren(...notes, pic, detail, table);
+    const gridView = el('div', { class: 'heatmap-view' }, legend, pic, detail), tableView = el('div', { class: 'heatmap-table' }, table);
+    const asTable = heatView === 'table' || (heatView == null && narrowScreen());
+    gridView.hidden = asTable; tableView.hidden = !asTable;
+    const toggle = el('button', { type: 'button', class: 'toggle heatmap-toggle', 'aria-pressed': String(asTable) }, 'Show as table');
+    toggle.addEventListener('click', () => {
+      const toTable = toggle.getAttribute('aria-pressed') !== 'true';
+      heatView = toTable ? 'table' : 'grid';
+      toggle.setAttribute('aria-pressed', String(toTable));
+      gridView.hidden = toTable; tableView.hidden = !toTable;
+    });
+    out.replaceChildren(el('p', {}, toggle), ...notes, gridView, tableView);
   };
   pick.addEventListener('change', () => { void draw(); });
   void draw();
