@@ -83,6 +83,7 @@ type writeScope struct {
 	FindingKey  string      // an alert's key: its instance comes from alert_state, never from the request
 	Row         *doorRowRef // the stored row the request acts on
 	AnyInstance bool        // an edit that asks for every instance
+	OneInstance bool        // a kind that is never a rule on every instance (a silence, a cell's or a job's acknowledgement ...)
 }
 
 type doorInstance struct {
@@ -195,6 +196,10 @@ func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 		}
 	}
 	if len(want) == 0 {
+		if sc.OneInstance {
+			// a request that names its instance in a way the server does not read (a name alone, a malformed id)
+			return "this change names one instance or one alert, and the request names neither (instance_id, finding_key): nothing was written", nil
+		}
 		if sc.Tag != "" {
 			return doorWide("a tag '" + sc.Tag + "'"), nil
 		}

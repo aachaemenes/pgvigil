@@ -425,6 +425,8 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 			return
 		}
 		pay["kind"] = in.Kind
+		// only a mute and a known pattern may be a rule on every instance; every other kind names one instance or one alert
+		sc.OneInstance = in.Kind != "mute" && in.Kind != "noise"
 		if in.InstanceID > 0 {
 			var name string
 			if err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, in.InstanceID).Scan(&name); err != nil {

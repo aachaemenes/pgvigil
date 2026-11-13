@@ -130,6 +130,8 @@ func TestDemoDoorScope(t *testing.T) {
 		{"an alert of no instance (repository-wide, or its instance removed)", writeScope{Route: doorAck, FindingKey: "k-repo"}, noInstance},
 		{"a key no alert holds", writeScope{Route: doorDismiss, FindingKey: "k-nothing"}, "no alert has this key"},
 		{"a rule that names no instance and no alert", writeScope{Route: doorAck}, "an every-instance change " + wide},
+		{"a silence that names no instance (a name alone is not read)", writeScope{Route: doorAck, OneInstance: true}, "names one instance or one alert"},
+		{"a silence of a seeded instance", writeScope{Route: doorAck, OneInstance: true, InstanceID: 1}, ""},
 		{"a rule by tag", writeScope{Route: doorAck, Tag: "env:prod"}, "a tag 'env:prod' change " + wide},
 		{"a rule by tag on one seeded instance", writeScope{Route: doorAck, Tag: "env:prod", InstanceID: 2}, ""},
 		{"a root threshold", writeScope{Route: doorDriveThreshold, Level: "root"}, "a root change " + wide},
