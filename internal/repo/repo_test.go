@@ -155,8 +155,21 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 	if defines == "" {
 		t.Fatal("no embedded migration creates pgvigil.schema_missing")
 	}
-	t.Cleanup(func() { // whatever failed above, the store ends with the function and the file's row
+	// the rows of the files after the one that creates schema_missing: taken out to make a store from before it (its
+	// newest row below that file, as schema_latest() reads it), put back as they were - never run a second time
+	type versionRow struct {
+		version string
+		at      time.Time
+	}
+	var later []versionRow
+	putBack := func(c context.Context) {
+		for _, v := range later {
+			_, _ = r.pool.Exec(c, `INSERT INTO pgvigil.schema_version (version, applied_at) VALUES ($1, $2) ON CONFLICT (version) DO NOTHING`, v.version, v.at)
+		}
+	}
+	t.Cleanup(func() { // whatever failed above, the store ends with every later row, the function and the file's row
 		c := context.Background()
+		putBack(c)
 		var gone bool
 		if err := r.pool.QueryRow(c, `SELECT to_regprocedure('pgvigil.schema_missing(text[])') IS NULL`).Scan(&gone); err == nil && gone {
 			_, _ = r.pool.Exec(c, `DELETE FROM pgvigil.schema_version WHERE version = $1`, defines)
@@ -169,12 +182,31 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 			t.Fatalf("%s: %v", sql, err)
 		}
 	}
-	// a store from before the file
-	exec(`DROP FUNCTION pgvigil.schema_missing(text[])`)
-	exec(`DELETE FROM pgvigil.schema_version WHERE version = $1`, defines)
-	if ok, name, err := r.SchemaCurrent(ctx); err != nil || ok || name != latest {
-		t.Fatalf("before %s: SchemaCurrent = %v, %q, %v; want false, %s (the newest)", defines, ok, name, err, latest)
+	// a store from before the file: no schema_version row at or above it. Taking out the file's row alone left the
+	// later files' rows, so schema_latest() read the newest of them and the check took the 'recorded without the
+	// function' path (red once any file after it existed).
+	rows, err := r.pool.Query(ctx, `SELECT version, applied_at FROM pgvigil.schema_version WHERE version > $1 ORDER BY version`, defines)
+	if err != nil {
+		t.Fatal(err)
 	}
+	for rows.Next() {
+		var v versionRow
+		if err := rows.Scan(&v.version, &v.at); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		later = append(later, v)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	exec(`DROP FUNCTION pgvigil.schema_missing(text[])`)
+	exec(`DELETE FROM pgvigil.schema_version WHERE version >= $1`, defines)
+	if ok, name, err := r.SchemaCurrent(ctx); err != nil || ok || name != latest {
+		t.Fatalf("before %s (%d later rows out): SchemaCurrent = %v, %q, %v; want false, %s (the newest)", defines, len(later), ok, name, err, latest)
+	}
+	putBack(ctx) // the later files stay applied: only the file that creates schema_missing runs again
 	if n, err := r.Migrate(ctx); err != nil || n < 1 {
 		t.Fatalf("migrate after taking %s out: %d applied, %v", defines, n, err)
 	}
