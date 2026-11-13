@@ -4,7 +4,7 @@
 //   node web/src/export_colours.test.mjs <tmp>/export_colours.mjs
 // scripts/proof-export.sh runs both first. Every row prints 'ok' or 'FAIL'; the exit is 1 when any failed.
 const m = await import(new URL(process.argv[2], 'file://' + process.cwd() + '/').href);
-const { parseColour, over, hex, paintOf } = m;
+const { parseColour, over, hex, paintOf, readRows } = m;
 let bad = 0, n = 0;
 const eq = (what, got, want) => {
   n++;
@@ -78,6 +78,58 @@ eq('an explicit base of null: the canvas white is the base',
   paintOf(node('td', 'rgb(240, 241, 246)', 'rgb(0, 79, 131)', L.tr), null, style), { fill: 'F0F1F6', text: '004F83', under: 'FFFFFF' });
 eq('an unreadable text colour: black',
   paintOf(node('td', CLEAR, 'oklch(0.5 0.1 200)', L.tr), undefined, style), { text: '000000', under: 'FFFFFF' });
+
+// readRows on a stand-in DOM: a row not in the page is read inside a hidden shell set right after the grid's table in
+// the grid's own parent, a batch at a time; a drawn row where it is; nothing left behind, also after a throw
+class El {
+  constructor(tag, attrs = {}) { this.tagName = tag.toUpperCase(); this.attrs = { ...attrs }; this.children = []; this.parentElement = null; this.props = {}; this.root = false;
+    this.style = { setProperty: (k, v, p) => { this.props[k] = v + (p ? ' !' + p : ''); } }; this.ownerDocument = { createElement: t => new El(t) }; }
+  get isConnected() { let x = this; while (x.parentElement) x = x.parentElement; return x.root; }
+  get nextSibling() { const p = this.parentElement; return p ? p.children[p.children.indexOf(this) + 1] ?? null : null; }
+  append(...ns) { for (const c of ns) { c.remove(); c.parentElement = this; this.children.push(c); } }
+  insertBefore(c, ref) { c.remove(); c.parentElement = this; const i = ref ? this.children.indexOf(ref) : -1; if (i < 0) this.children.push(c); else this.children.splice(i, 0, c); }
+  remove() { const p = this.parentElement; if (p) { p.children.splice(p.children.indexOf(this), 1); this.parentElement = null; } }
+  cloneNode(deep) { if (deep) throw new Error('deep clone not expected'); return new El(this.tagName, this.attrs); }
+  setAttribute(k, v) { this.attrs[k] = v; } removeAttribute(k) { delete this.attrs[k]; }
+  querySelector(sel) { return sel === ':scope > tbody' ? this.children.find(c => c.tagName === 'TBODY') ?? null : null; }
+}
+const page = () => {
+  const doc = new El('html'); doc.root = true;
+  const wrap = new El('div', { class: 'grid-wrap' }); doc.append(wrap);
+  const table = new El('table', { class: 'grid', id: 'g1', 'data-rows': '5' }), tb = new El('tbody', { class: 'b' });
+  table.append(tb); wrap.append(table, new El('p', { class: 'after' }));
+  const drawn = [new El('tr', { n: 'd0' }), new El('tr', { n: 'd1' })]; tb.append(...drawn);
+  return { wrap, table, tb, drawn };
+};
+const P1 = page();
+const loose = ['x0', 'x1', 'x2', 'x3', 'x4'].map(n => new El('tr', { n }));
+const seen = [];
+const got = readRows(P1.table, [P1.drawn[0], loose[0], P1.drawn[1], ...loose.slice(1)], tr => {
+  const body = tr.parentElement, shell = body?.parentElement;
+  seen.push({ n: tr.attrs.n, connected: tr.isConnected, inShell: shell !== P1.table, batch: body.children.length, shell: shell === P1.table ? null
+    : { cls: shell.attrs.class, id: shell.attrs.id ?? null, hidden: shell.attrs['aria-hidden'], body: body.attrs.class, after: P1.wrap.children.indexOf(shell) === P1.wrap.children.indexOf(P1.table) + 1, props: shell.props } });
+  return tr.attrs.n;
+}, 2);
+eq('readRows: one result per row, in the rows\' order', got, ['d0', 'x0', 'd1', 'x1', 'x2', 'x3', 'x4']);
+eq('readRows: every row is in the page when it is read', seen.every(s => s.connected), true);
+eq('readRows: a drawn row is read where it is (not in a shell)', seen.filter(s => !s.inShell).map(s => s.n), ['d0', 'd1']);
+const sh = seen.find(s => s.inShell)?.shell;
+eq("readRows: the shell is the table's own classes and attributes (no id), its tbody's class, aria-hidden, right after the table",
+  sh && { cls: sh.cls, id: sh.id, hidden: sh.hidden, body: sh.body, after: sh.after }, { cls: 'grid', id: null, hidden: 'true', body: 'b', after: true });
+eq('readRows: the shell is hidden and fixed out of the view (visibility changes no colour)', sh?.props,
+  { visibility: 'hidden !important', position: 'fixed !important', left: '-100000px !important', top: '0 !important' });
+eq('readRows: batch 2 - at most two rows in the shell at a read (2, 2, 1)', seen.filter(s => s.inShell).map(s => s.batch), [2, 2, 2, 2, 1]);
+eq('readRows: after - the shell removed, the page as before (table, p.after), the drawn rows in place',
+  [P1.wrap.children.map(c => c.tagName), P1.tb.children.map(c => c.attrs.n)], [['TABLE', 'P'], ['d0', 'd1']]);
+eq('readRows: after - the undrawn rows detached again', loose.every(r => r.parentElement === null), true);
+const P2 = page();
+let threw = '';
+try { readRows(P2.table, [new El('tr', { n: 'y0' })], () => { throw new Error('read failed'); }); } catch (e) { threw = e.message; }
+eq('readRows: a read that throws - the error passes on, the shell is removed', [threw, P2.wrap.children.map(c => c.tagName)], ['read failed', ['TABLE', 'P']]);
+const off = new El('table', { class: 'grid' }); off.append(new El('tbody'));
+const offSeen = [];
+eq('readRows: a table not in the page - every row read as it is, no shell', readRows(off, [new El('tr', { n: 'z0' })], tr => { offSeen.push(tr.parentElement); return tr.attrs.n; }), ['z0']);
+eq('readRows: no shell was made for it', [offSeen[0], off.children.length], [null, 1]);
 
 console.log(`${n - bad} of ${n} unit tests passed`);
 process.exit(bad ? 1 : 0);

@@ -72,3 +72,43 @@ export function paintOf(e: Element, base?: Element | null, style: StyleOf = comp
   const t = parseColour(style(e).color) ?? [0, 0, 0, 1];
   return { fill, text: hex(over(t, at)), under: hex(under) };
 }
+
+// readRows: what `read` gives for each row of a grid, the rows the screen does not draw included. Past its page a grid
+// draws no row (ui.ts GRID_PAGE), and ui.ts's allRows() builds those rows detached (the same classes and content as a
+// drawn row); a detached element has no computed style. A row not in the page is so read in a shell: an empty copy of
+// the grid's table (its own classes and attributes) set right after the table in the grid's own parent - the same
+// ancestors, so every rule that colours a drawn cell applies to it - hidden (visibility hidden changes no colour) and
+// fixed out of the view (no scroll, no shift of the page), `batch` rows at a time, each batch taken out after its read;
+// the shell is removed at the end, also when `read` throws. A row in the page (a drawn row) is read where it is. All in
+// one task: nothing is painted with the shell in the page. A table with no parent (itself not in the page) reads
+// every row as it is.
+export function readRows<T>(table: Element, rows: Element[], read: (tr: Element) => T, batch = 200): T[] {
+  const parent = table.parentElement;
+  if (!parent || !table.isConnected) return rows.map(read);
+  let shell: HTMLElement | null = null, body: Element | null = null;
+  const out: T[] = new Array(rows.length);
+  try {
+    const away: number[] = [];
+    rows.forEach((tr, i) => { if (tr.isConnected) out[i] = read(tr); else away.push(i); });
+    for (let k = 0; k < away.length; k += Math.max(1, batch)) {
+      if (!shell) {
+        shell = table.cloneNode(false) as HTMLElement;
+        shell.removeAttribute('id');
+        shell.setAttribute('aria-hidden', 'true');
+        shell.style.setProperty('visibility', 'hidden', 'important');
+        shell.style.setProperty('position', 'fixed', 'important');
+        shell.style.setProperty('left', '-100000px', 'important');
+        shell.style.setProperty('top', '0', 'important');
+        body = (table.querySelector(':scope > tbody')?.cloneNode(false) as Element | undefined) ?? table.ownerDocument.createElement('tbody');
+        shell.append(body);
+        parent.insertBefore(shell, table.nextSibling);
+      }
+      const part = away.slice(k, k + Math.max(1, batch));
+      body!.append(...part.map(i => rows[i]));
+      try { for (const i of part) out[i] = read(rows[i]); } finally { for (const i of part) rows[i].remove(); }
+    }
+  } finally {
+    (shell as HTMLElement | null)?.remove();
+  }
+  return out;
+}

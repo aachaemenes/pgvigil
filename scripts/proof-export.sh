@@ -102,6 +102,21 @@
 #              disclosure's summary line, an open disclosure's summary and its grid, an unknown element's text as
 #              'other'), and none of the planted hidden ones (a closed disclosure's grid, display none, a visually-hidden
 #              note, visibility hidden) is read; the planted sections removed after
+#   offpage    (E2-4's reader, the rows a grid does not draw: readRows) the fleet Findings' grid has over 200 rows, 200 drawn
+#              before its 'Show all' and every row after; each drawn row's cells read where they are (paintOf: the cell,
+#              and the badge, pill, dot or link in it) equal the same cells read through readRows' shell from detached
+#              copies of the rows (as ui.ts's allRows() builds the rows past the page: rowEl's classes and content), every
+#              row, the rows past 200 included and coloured ones among them; the shell was the table's own classes, hidden,
+#              fixed, right after the table, and left nothing behind (the page's height, the grid's rows and its
+#              parent's children as before); self-test: the same copies read bare (detached: no computed style) differ
+#   routes     (E2-1's inventory over the whole app; the first language only) every route of the app's route tables
+#              (web/src/router.ts, read as scripts/proof-darling-alerts.sh reads them: rootTabs, instanceTabs,
+#              mssqlInstanceTabs, drillTabs) is opened - rootTabs at the fleet, instanceTabs on the demo's PostgreSQL
+#              instance, mssqlInstanceTabs on its SQL Server instance, each drill page by the first link to it on the
+#              pages walked - and renders (no Loading note left in 15 s) with at least one visible section (SECTIONS);
+#              a line per page (its sections by kind), and as said, not graded: the pages that show an error box and the
+#              pages without the bar's export; with PGVIGIL_EXPORT_OUT the inventory is kept there as
+#              sections-inventory.json (the list E3's page sheet is graded against)
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so)
 #   gridmenu   (P03) the fleet Backups grid's menu has one Export Excel line (no other line starting so: task 172's
@@ -150,6 +165,19 @@ ok "colour reader: $(tail -1 "$WORK/colours-unit.out")"
 # the same module as a script for the page (the driver runs it there: window.__pgvColours)
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
 
+# the app's route tables (web/src/router.ts), read as scripts/proof-darling-alerts.sh reads them, for the route walk
+python3 -I - web/src/router.ts > "$WORK/routes.json" <<'PY' || fail "web/src/router.ts: its route tables could not be read"
+import json, re, sys
+src = open(sys.argv[1], encoding='utf-8').read()
+tables = {}
+for m in re.finditer(r'export const (\w+Tabs)\b[^=]*= \{(.*?)\};', src, re.S):
+    seen = []
+    for k in re.findall(r"""(?:^|[{,\s])([a-z_][a-z0-9_]*)\s*:\s*['"`]""", m.group(2)):
+        if k not in seen: seen.append(k)
+    tables[m.group(1)] = seen
+print(json.dumps(tables))
+PY
+
 echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null
@@ -160,7 +188,7 @@ grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; f
 
 # the driver: open a page, count each grid's rows and read the headings, press a button, wait for the download
 cat > "$WORK/drive.mjs" <<'JS'
-const [port, U, dl, colourFile] = process.argv.slice(2);
+const [port, U, dl, colourFile, routesFile] = process.argv.slice(2);
 const fs = await import('node:fs');
 const inst = await (await fetch(U + 'api/instances')).json();
 const rows = inst.rows.map(r => Object.fromEntries(inst.columns.map((c, i) => [c, r[i]])));
@@ -584,6 +612,79 @@ out.sectionsSelfTest = await ev(`(() => {
   main.querySelectorAll('[data-plant]').forEach(e => e.remove());
   return { ...r, removed: main.querySelectorAll('[data-plant]').length === 0 };
 })()`);
+// readRows (the reader for the rows a grid does not draw) on the fleet Findings' grid, its longest: 'Show all' draws
+// every row, each drawn row's cells read where they are; then detached copies of the rows (as ui.ts's allRows() builds
+// the rows past the page: rowEl's classes and content, which draw() also uses) read through readRows' shell, and the
+// same copies read bare (the self-test: a detached element has no computed style). One evaluation (no redraw between)
+await go('#/findings?w=2h');
+await ev(fs.readFileSync(colourFile, 'utf8') + '; true');
+out.offPage = await ev(`(() => {
+  const C = window.__pgvColours, main = document.getElementById('main');
+  const t = [...main.querySelectorAll('table.grid')].sort((a, b) => Number(b.dataset.rows || 0) - Number(a.dataset.rows || 0))[0];
+  if (!t) return { none: true };
+  const body = () => [...t.querySelectorAll(':scope > tbody > tr')];
+  const total = Number(t.dataset.rows || 0), before = body().length;
+  const all = [...(t.closest('.grid-box')?.querySelectorAll('.grid-more button') ?? [])].find(b => b.textContent.startsWith('Show all'));
+  if (all) all.click();
+  const drawn = body();
+  const MARK = '.badge, .pill, .dot, a[href]';
+  const pc = p => (p.fill ?? '-') + '/' + p.text;
+  const cellsOf = tr => [...tr.children].map(td => { const m = td.querySelector(MARK); return pc(C.paintOf(td)) + (m ? '|' + pc(C.paintOf(m, tr.closest('table'))) : ''); });
+  const onScreen = drawn.map(cellsOf);
+  const wrap = t.parentElement, h0 = document.scrollingElement.scrollHeight, kids0 = wrap.children.length;
+  const copies = drawn.map(tr => tr.cloneNode(true));
+  let shell = null;
+  const viaShell = C.readRows(t, copies, tr => {
+    const s = tr.closest('table');
+    if (!shell) { const cs = getComputedStyle(s); shell = { same: s === t, cls: s.className, visibility: cs.visibility, position: cs.position, next: t.nextElementSibling === s, hidden: s.getAttribute('aria-hidden'), h: document.scrollingElement.scrollHeight }; }
+    return cellsOf(tr);
+  });
+  const bare = copies.map(cellsOf);
+  return { total, before, after: drawn.length, cols: [...t.querySelectorAll(':scope > thead > tr:first-child > th')].map(h => h.textContent.trim()), onScreen, viaShell, bare, shell,
+    h0, h1: document.scrollingElement.scrollHeight, kids0, kids1: wrap.children.length, drawnAfter: body().length, copiesLoose: copies.every(c => c.parentElement === null),
+    left: main.querySelectorAll('table[aria-hidden="true"].grid').length };
+})()`);
+// the route walk (E2-1's inventory over the whole app; the first language only): every route of the app's route
+// tables opened - rootTabs at the fleet, instanceTabs on the demo's PostgreSQL instance, mssqlInstanceTabs on its SQL
+// Server instance, each drill page by the first link to it on the pages walked - and read by SECTIONS. A page renders
+// when #main has content and no Loading note is left (not the bar's export: a page without it is said, not waited for)
+if (out.lang.startsWith('en')) {
+  const R = JSON.parse(fs.readFileSync(routesFile, 'utf8'));
+  const pgI = rows.find(r => (r.engine ?? 'postgres') === 'postgres' && r.platform === 'onprem') ?? rows.find(r => (r.engine ?? 'postgres') === 'postgres');
+  const sqI = rows.find(r => r.engine === 'sqlserver');
+  const walk = { tables: Object.fromEntries(Object.entries(R).map(([k, v]) => [k, v.length])), pg: pgI?.name ?? null, sql: sqI?.name ?? null, pages: [], drill: {} };
+  const shown = async () => {
+    for (const t = Date.now(); Date.now() - t < 15000; await sleep(150)) {
+      if (await ev(`(() => { const m = document.querySelector('main'); return !!m && m.children.length > 0 && !m.querySelector('.state.loading') && ![...m.querySelectorAll('p.empty')].some(e => /^Loading/.test(e.textContent)); })()`)) { await sleep(400); return true; }
+    }
+    return false;
+  };
+  const visit = async (table, route, hash) => {
+    await cmd('Page.navigate', { url: U + hash }); await sleep(300);
+    const r = { table, route, hash, rendered: await shown() };
+    if (r.rendered) {
+      const s = await ev(SECTIONS);
+      r.sections = s.sections.map(x => ({ kind: x.kind, text: x.text.slice(0, 80), ...(x.cols ? { cols: x.cols, rows: x.rows } : {}) }));
+      r.hidden = s.hidden;
+      r.errors = await ev(`[...document.querySelectorAll('main .error')].filter(e => e.getBoundingClientRect().height > 0).map(e => e.textContent.trim().slice(0, 160))`);
+      r.exportBar = await ev(`!!document.querySelector('#bar .export')`);
+      r.at = await ev('location.hash');
+      for (const d of R.drillTabs ?? []) if (!walk.drill[d]) {
+        const h = await ev(`(document.querySelector('main a[href*="#/${d}?"]') || {}).getAttribute?.('href') ?? null`);
+        if (h) walk.drill[d] = h.slice(h.indexOf('#'));
+      }
+    }
+    walk.pages.push(r);
+  };
+  for (const t of R.rootTabs ?? []) await visit('rootTabs', t, `#/${t}`);
+  if (pgI) for (const t of R.instanceTabs ?? []) await visit('instanceTabs', t, `#/${t}?i=${pgI.instance_id}`);
+  if (sqI) for (const t of R.mssqlInstanceTabs ?? []) await visit('mssqlInstanceTabs', t, `#/${t}?i=${sqI.instance_id}`);
+  for (const t of R.drillTabs ?? []) {
+    if (walk.drill[t]) await visit('drillTabs', t, walk.drill[t]);
+    else walk.pages.push({ table: 'drillTabs', route: t, hash: null, rendered: false, why: 'no link to it on the pages walked' });
+  }
+  out.walk = walk;
+}
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
@@ -1132,6 +1233,64 @@ for key, pg in d.items():
         n_ = {}
         for x in ss: n_[x['kind']] = n_.get(x['kind'], 0) + 1
         print(f"sections {pg.get('hash')}: {len(ss)} - " + ', '.join(f'{k} {v}' for k, v in sorted(n_.items())))
+
+# readRows: the rows a grid does not draw, read through the shell, against the same rows drawn
+op = d.get('offPage') or {}
+tot, scr, via, bare_ = op.get('total') or 0, op.get('onScreen') or [], op.get('viaShell') or [], op.get('bare') or []
+check(tot > 200 and op.get('before') == 200 and op.get('after') == tot and len(scr) == tot,
+      f"offpage: the fleet Findings' longest grid has {tot} rows (over 200 needed), {op.get('before')} drawn before 'Show all', {op.get('after')} after ({op.get('cols')})")
+cells = [(i, j) for i, r in enumerate(scr) for j in range(len(r))]
+same = [(i, j) for i, j in cells if i < len(via) and j < len(via[i]) and via[i][j] == scr[i][j]]
+past = [(i, j) for i, j in cells if i >= 200]
+coloured = [(i, j) for i, j in past if not re.fullmatch(r'-/1B2230', scr[i][j])]
+sset = set(same)
+diff = [(i, j, scr[i][j], via[i][j] if i < len(via) and j < len(via[i]) else None) for i, j in cells if (i, j) not in sset]
+check(len(scr) > 0 and len(via) == len(scr) and len(same) == len(cells) and len(coloured) > 0,
+      f"offpage: every row's cells read through readRows' shell from detached copies = the drawn rows' computed colours: {len(same)} of {len(cells)} cells; "
+      f"rows 201-{tot}: {len([c for c in past if c in sset])} of {len(past)}, {len(coloured)} of them coloured (a fill, a mark or a text other than plain 1B2230; "
+      f"e.g. {sorted({scr[i][j] for i, j in coloured})[:4]}) (differ: {diff[:3]})")
+sh = op.get('shell') or {}
+check(sh.get('same') is False and 'grid' in (sh.get('cls') or '').split() and sh.get('visibility') == 'hidden' and sh.get('position') == 'fixed' and sh.get('next') is True and sh.get('hidden') == 'true'
+      and sh.get('h') == op.get('h0') == op.get('h1') and op.get('kids0') == op.get('kids1') and op.get('drawnAfter') == tot and op.get('copiesLoose') is True and op.get('left') == 0,
+      f"offpage: the shell was the table's own classes, hidden, fixed, right after the table, and left nothing behind (page height {op.get('h0')} / {sh.get('h')} / {op.get('h1')}, "
+      f"the wrap's children {op.get('kids0')} / {op.get('kids1')}, drawn rows {op.get('drawnAfter')}, copies detached {op.get('copiesLoose')}, shells left {op.get('left')}) ({sh})")
+nb = len([(i, j) for i, j in cells if i < len(bare_) and j < len(bare_[i]) and bare_[i][j] != scr[i][j]])
+check(nb > 0, f"offpage: self-test - the same copies read bare (detached: no computed style) differ from the screen on {nb} of {len(cells)} cells (e.g. {bare_[0][:2] if bare_ else None} against {scr[0][:2] if scr else None})")
+
+# the route walk (the first language only): every route of the app's route tables opened, rendered, read
+w = d.get('walk')
+lang = sys.argv[3]   # the language this run checks ('want' is reused above as the planted sections' kinds)
+if lang.startswith('en'):
+    w = w or {}
+    pages = w.get('pages') or []
+    tabs = w.get('tables') or {}
+    check(sorted(tabs) == ['drillTabs', 'instanceTabs', 'mssqlInstanceTabs', 'rootTabs'] and all(tabs.values()) and w.get('pg') and w.get('sql'),
+          f"routes: the app's route tables read from web/src/router.ts: {sorted(tabs.items())}; walked on the PostgreSQL instance {w.get('pg')!r} and the SQL Server instance {w.get('sql')!r}")
+    by = {}
+    for p in pages: by.setdefault(p['table'], []).append(p)
+    notr = [(p['table'], p['route'], p.get('why') or p.get('hash')) for p in pages if not p.get('rendered')]
+    check(sum(tabs.values()) > 0 and all(len(by.get(k, [])) == n for k, n in tabs.items()) and not notr,
+          f"routes: every route opened and rendered: {len(pages) - len(notr)} of {sum(tabs.values())} pages ({', '.join(f'{k} {len(by.get(k, []))} of {n}' for k, n in sorted(tabs.items()))}; drill pages by {w.get('drill')}) (not: {notr[:8]})")
+    nosec = [(p['table'], p['route']) for p in pages if p.get('rendered') and not p.get('sections')]
+    check(not nosec and len(pages) > 0, f"routes: every rendered page has at least one visible section (none: {nosec[:8]})")
+    tally = {}
+    for p in pages:
+        for x in p.get('sections') or []: tally[x['kind']] = tally.get(x['kind'], 0) + 1
+    print(f"routes: {sum(len(p.get('sections') or []) for p in pages)} sections over {len(pages)} pages - " + ', '.join(f'{k} {v}' for k, v in sorted(tally.items())))
+    errs = [(p['table'], p['route'], p['errors'][0][:60]) for p in pages if p.get('errors')]
+    print(f"routes (said, not graded): {len(errs)} pages show an error box: {errs}")
+    nobar = [(p['table'], p['route']) for p in pages if p.get('rendered') and not p.get('exportBar')]
+    print(f"routes (said, not graded): {len(nobar)} pages without the bar's export: {nobar}")
+    for p in pages:
+        n_ = {}
+        for x in p.get('sections') or []: n_[x['kind']] = n_.get(x['kind'], 0) + 1
+        print(f"route {p['table']} {p['route']} {p.get('at') or p.get('hash')}: {len(p.get('sections') or [])} - " + ', '.join(f'{k} {v}' for k, v in sorted(n_.items())))
+    if os.environ.get('PGVIGIL_EXPORT_OUT'):
+        os.makedirs(os.environ['PGVIGIL_EXPORT_OUT'], exist_ok=True)
+        json.dump(w, open(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], 'sections-inventory.json'), 'w'), indent=1)
+        print(f"routes: the inventory kept in {os.environ['PGVIGIL_EXPORT_OUT']}/sections-inventory.json")
+else:
+    print(f"routes: walked in the first language only ({lang}: not walked)")
 sys.exit(1 if bad else 0)
 PY
 
@@ -1145,7 +1304,7 @@ for L in en-US fr-FR; do
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
   echo "== the downloads ($L)"
-  node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$DL" "$WORK/export_colours.js" > "$WORK/drive-$L.json" || fail "the driver failed ($L)"
+  node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$DL" "$WORK/export_colours.js" "$WORK/routes.json" > "$WORK/drive-$L.json" || fail "the driver failed ($L)"
   ok "downloaded ($L): $(cd "$DL" && ls | tr '\n' ' ')"
   echo "== the files read back ($L)"
   python3 -I "$WORK/check.py" "$WORK/drive-$L.json" "$DL" "$L" || fail "a file did not match its page ($L)"
