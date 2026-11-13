@@ -185,7 +185,9 @@ What decides it, and where pgvigil reads it:
   row of its function (created but not loaded: it goes in `shared_preload_libraries` and needs a restart), and
   `pg_read_all_stats` for other users' statement text (a note).
 - the repository, with the time of its read: the databases with Query Store on (`mssql_qs_store`), read live only when
-  no collection holds them yet; the blocked process threshold only when the live read finds none.
+  no collection holds them yet; the blocked process threshold only when the live read finds none (the collection reads
+  it hourly, so a threshold set since would be read as the old value and the form would preset a click the procedure
+  declines).
 
 The form fills in what the server makes the procedure's own default wrong: sp_HumanEventsBlockViewer reads its
 default session `keeper_HumanEvents_blocking` when it runs; otherwise another running session that captures the
