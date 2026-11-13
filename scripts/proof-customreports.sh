@@ -111,7 +111,7 @@ UIUSER=pgcrui; UIPW=u$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
 INSTA=pgcr-a-$N; INSTS=pgcr-su-$N; INSTL=pgcr-long-instance-name-$N; MSR=pgcr-msr-$N; MSA=pgcr-msa-$N; MSN=pgcr-msn-$N; INSTD=pgcr-down-$N
 CT=pgcr-mssql-$N
 WORK=$(mktemp -d)
-SRV=""; SRV2=""; SRV3=""; CHR=""; MADE_CT=""
+SRV=""; SRV2=""; SRV3=""; SRV4=""; CHR=""; MADE_CT=""
 # the runs this proof makes, one line each: a counter in a file (run and crun are called inside $(...), a subshell)
 tick() { echo r >> "$WORK/runs"; }
 nruns() { [[ -f "$WORK/runs" ]] && wc -l < "$WORK/runs" | tr -d ' ' || echo 0; }
@@ -119,7 +119,7 @@ NOTPROVEN=()
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 cleanup() {
-  for p in "$SRV" "$SRV2" "$SRV3" "$CHR"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
+  for p in "$SRV" "$SRV2" "$SRV3" "$SRV4" "$CHR"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   [[ -n "$MADE_CT" ]] && docker rm -f -v "$CT" >/dev/null 2>&1 || true
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO with (force)" \
@@ -733,6 +733,266 @@ try:
 except ImportError:
     print('note U: openpyxl is not installed here: the workbook open is not checked by it')
 if bad: sys.exit(1)
+PY
+  # ---- U2 (B3 DONE-1): every tool clicked and run, keyboard and accessibility tree, the off look, the DOM check, the demo
+  cat > "$WORK/buttons.mjs" <<'JS'
+// B3 DONE-1's page rows (headless Chromium over CDP; written by proof-customreports.sh part U2 and run twice):
+//   live <port> <U signed in> <cookie> <U2 -no-login> <msr> <msa> <pga> <report id> <glenn file> <shots dir>
+//   demo <port> <U4 the demo serve> <demo SQL Server id> <demo PostgreSQL id> <the real msr id> <shots dir>
+// Prints one JSON object; the shell grades it.
+const [mode, port, ...a] = process.argv.slice(2);
+const fs = await import('node:fs');
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map(); const reqs = [];
+ws.addEventListener('message', m => {
+  const d = JSON.parse(m.data);
+  if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); }
+  if (d.method === 'Network.requestWillBeSent') reqs.push(d.params.request.url);
+});
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
+  return d.result?.result?.value;
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const until = async (expr, ms = 20000) => { for (const t = Date.now(); Date.now() - t < ms; await sleep(200)) if (await ev(expr)) return true; return false; };
+await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable'); await cmd('DOM.enable'); await cmd('Accessibility.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
+const out = { mode, dom: [], selftest: null, rows: [] };
+const open = async (url, ready) => {
+  await cmd('Page.navigate', { url }); await sleep(300);
+  if (!await until(ready, 30000)) throw new Error('the page did not render: ' + url + ' ' + await ev(`document.querySelector('main')?.innerText.slice(0, 300)`));
+  await sleep(400);
+};
+const theme = async (t, U) => {
+  await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(t)}); 1`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: t }] });
+};
+const shot = async (dir, name) => {
+  if (!dir) return;
+  fs.mkdirSync(dir, { recursive: true });
+  const s = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+  fs.writeFileSync(`${dir}/${name}.png`, Buffer.from(s.result.data, 'base64'));
+};
+// every control that is off and shown has a visible, non-empty description (aria-describedby)
+const offCheck = (label) => ev(`(() => {
+  const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+  const ctl = [...document.querySelectorAll('main button, main input, main select, main textarea, dialog button')]
+    .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+  const bad = ctl.filter(e => { const ids = (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean);
+    return !ids.some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.trim().length > 0; }); });
+  return { label: ${JSON.stringify(label)}, off: ctl.length, bad: bad.map(e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 80)) };
+})()`);
+// the off tool buttons of a community page: text, described text, and what the accessibility tree reports
+const axOff = async () => {
+  const doc = await cmd('DOM.getDocument', { depth: -1 });
+  const q = await cmd('DOM.querySelectorAll', { nodeId: doc.result.root.nodeId, selector: 'main table.grid button.link[aria-disabled="true"]' });
+  const page = await ev(`[...document.querySelectorAll('main table.grid button.link[aria-disabled="true"]')].map(b => ({ name: b.textContent.trim(),
+    desc: (b.getAttribute('aria-describedby') || '').split(/\\s+/).map(i => document.getElementById(i)?.textContent ?? '').join(' ') }))`);
+  const rows = [];
+  for (let i = 0; i < q.result.nodeIds.length; i++) {
+    const ax = await cmd('Accessibility.getPartialAXTree', { nodeId: q.result.nodeIds[i], fetchRelatives: false });
+    const n = (ax.result?.nodes ?? []).find(x => x.role?.value === 'button') ?? ax.result?.nodes?.[0] ?? {};
+    const squash = s => String(s ?? '').replace(/\\s+/g, '');
+    rows.push({ name: page[i]?.name, axName: n.name?.value ?? '', same: squash(n.description?.value) === squash(page[i]?.desc) && squash(page[i]?.desc).length > 0, axDesc: String(n.description?.value ?? '').slice(0, 100) });
+  }
+  return rows;
+};
+const tabWalk = async (max) => {
+  // from the page's own heading (the bar and the tree come first in the document: not this page's controls)
+  await ev(`(() => { const h = document.querySelector('main h2'); h.setAttribute('tabindex', '-1'); h.focus(); return 1; })()`);
+  const reached = new Set();
+  for (let i = 0; i < max; i++) {
+    await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+    await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+    const x = await ev(`(() => { const e = document.activeElement; return e && e.matches && e.matches('main table.grid button.link[aria-disabled="true"]') ? e.textContent.trim() : ''; })()`);
+    if (x) reached.add(x);
+  }
+  return [...reached];
+};
+// a real mouse click on an off control: the page's requests to the community API before and after
+const clickOff = async (sel) => {
+  const r = await ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return null; b.scrollIntoView({ block: 'center' }); const q = b.getBoundingClientRect(); return { x: q.x + q.width / 2, y: q.y + q.height / 2, t: b.textContent.trim() }; })()`);
+  if (!r) return { clicked: null, sent: -1 };
+  const n0 = reqs.filter(u => /\/api\/community\//.test(u)).length;
+  for (const type of ['mousePressed', 'mouseReleased']) await cmd('Input.dispatchMouseEvent', { type, x: r.x, y: r.y, button: 'left', clickCount: 1 });
+  await sleep(1000);
+  return { clicked: r.t, sent: reqs.filter(u => /\/api\/community\//.test(u)).length - n0, error: await ev(`!!document.querySelector('main .error')`) };
+};
+const look = (sel) => ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return null; const cs = getComputedStyle(b);
+  const p = document.createElement('span'); p.style.color = 'var(--accent)'; document.body.append(p); const accent = getComputedStyle(p).color; p.style.color = 'GrayText'; const gray = getComputedStyle(p).color; p.remove();
+  return { color: cs.color, deco: cs.textDecorationLine, cursor: cs.cursor, accent, gray }; })()`);
+const communityReady = `!!document.querySelector('main table.grid button.link')`;
+
+if (mode === 'live') {
+  const [U, cookie, U2, msr, msa, pga, srep, glennFile, shots] = a;
+  await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
+  await open(U + '#/customreports', `!!document.querySelector('main h2')`); await theme('light');
+  // (1) every tool clicked and run on the reader's SQL Server page and the PostgreSQL page (the 19 of B1 and its four)
+  for (const [inst, label] of [[msr, 'sqlserver'], [pga, 'postgres']]) {
+    await open(U + `#/community?i=${inst}`, communityReady);
+    const names = await ev(`[...document.querySelectorAll('main table.grid button.link')].map(b => b.textContent.trim())`);
+    for (const name of names) {
+      const row = { inst: label, tool: name };
+      const off = await ev(`(() => { const b = [...document.querySelectorAll('main table.grid button.link')].find(x => x.textContent.trim() === ${JSON.stringify(name)}); return b.getAttribute('aria-disabled') === 'true' ? b.title : ''; })()`);
+      if (off) { row.result = 'off'; row.why = off.slice(0, 160); out.rows.push(row); continue; }
+      await ev(`[...document.querySelectorAll('main table.grid button.link')].find(x => x.textContent.trim() === ${JSON.stringify(name)}).click(); 1`);
+      if (name === 'SQL Server Diagnostic Queries') {
+        if (!await until(`!!document.querySelector('main input[type=file]')`)) { row.result = 'no panel'; out.rows.push(row); continue; }
+        const doc = await cmd('DOM.getDocument', { depth: -1 });
+        const f = await cmd('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: 'main input[type=file]' });
+        await cmd('DOM.setFileInputFiles', { files: [glennFile], nodeId: f.result.nodeId });
+        if (!await until(`[...document.querySelectorAll('main button.link')].some(b => b.textContent === 'Database List')`)) { row.result = 'no queries'; row.text = await ev(`document.querySelector('main [role=status]')?.textContent`); out.rows.push(row); continue; }
+        row.queries = [];
+        for (const qn of ['Version Info', 'Database List']) {
+          await ev(`[...document.querySelectorAll('main button.link')].find(b => b.textContent === ${JSON.stringify(qn)}).click(); 1`);
+          const done = await until(`[...document.querySelectorAll('main summary')].some(s => /^Query \\d+: the text sent/.test(s.textContent)) && !!document.querySelector('main .report-result') && !/^Running query/.test(document.querySelector('main .report-result')?.closest('div')?.textContent ?? '')`, 60000);
+          row.queries.push({ q: qn, done, badge: await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`), grid: await ev(`!!document.querySelector('main .report-result table.grid')`), error: await ev(`!!document.querySelector('main .report-result .error')`) });
+        }
+        row.result = row.queries.every(x => x.done && x.badge === 'done' && x.grid && !x.error) ? 'ran' : 'not ran';
+        out.rows.push(row); continue;
+      }
+      const runLabel = 'Run ' + name;
+      if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === ${JSON.stringify(runLabel)})`, 30000)) { row.result = 'no form'; row.text = await ev(`document.querySelector('main .error')?.textContent ?? ''`); out.rows.push(row); continue; }
+      row.filled = await ev(`document.querySelector('main .preset')?.textContent ?? ''`);
+      row.sessionInput = await ev(`[...document.querySelectorAll('main input')].find(i => /^@session_name/.test(i.getAttribute('aria-label') || ''))?.value ?? null`);
+      await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent === ${JSON.stringify(runLabel)}).click(); 1`);
+      const ran = await until(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') || !!document.querySelector('main section .error')`, 75000);
+      row.result = ran ? await ev(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') ? 'ran' : 'error'`) : 'timeout';
+      row.badge = await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`);
+      row.error = await ev(`document.querySelector('main section .error')?.textContent?.slice(0, 160) ?? ''`);
+      row.note = await ev(`document.querySelector('main .report-result .refused')?.textContent?.slice(0, 160) ?? ''`);
+      out.rows.push(row);
+    }
+    await shot(shots, `live-${label}-light`);
+  }
+  // (2) the sa page: every tool off; keyboard reach, the accessibility tree's description, a mouse click sends nothing; the look
+  await open(U + `#/community?i=${msa}`, communityReady);
+  out.msaTab = await tabWalk(220);
+  out.msaAx = await axOff();
+  out.msaClick = await clickOff('main table.grid button.link[aria-disabled="true"]');
+  out.look = { light: await look('main table.grid button.link[aria-disabled="true"]') };
+  await shot(shots, 'live-msa-light');
+  await theme('dark'); await open(U + `#/community?i=${msa}`, communityReady);
+  out.look.dark = await look('main table.grid button.link[aria-disabled="true"]');
+  await shot(shots, 'live-msa-dark');
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'forced-colors', value: 'active' }] });
+  await sleep(400);
+  out.look.forced = await look('main table.grid button.link[aria-disabled="true"]');
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] }); await theme('light');
+  // (3) the DOM check: wave 4's pages, signed in and on the -no-login serve; the self-test first
+  await open(U + `#/community?i=${msa}`, communityReady);
+  const before = await offCheck('selftest');
+  await ev(`(() => { const b = document.createElement('button'); b.textContent = 'planted'; b.setAttribute('aria-disabled', 'true'); document.querySelector('main').append(b); return 1; })()`);
+  const planted = await offCheck('selftest');
+  out.selftest = { before: before.bad.length, after: planted.bad.length, names: planted.bad };
+  for (const [base, tag] of [[U, 'signed in'], [U2, '-no-login']]) {
+    for (const [hash, ready] of [['#/customreports', `!!document.querySelector('main h2')`], [`#/customreports?report=${srep}`, `[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run')`],
+      [`#/community?i=${msr}`, communityReady], [`#/community?i=${msa}`, communityReady], [`#/community?i=${pga}`, communityReady], ['#/reportmail', `[...document.querySelectorAll('main button')].some(b => /New schedule/.test(b.textContent))`]]) {
+      await open(base + hash, ready);
+      out.dom.push(await offCheck(`${tag} ${hash}`));
+    }
+  }
+  await open(U2 + `#/community?i=${msr}`, communityReady);
+  out.nologinClick = await clickOff('main table.grid button.link[aria-disabled="true"]');
+  out.nologinAx = (await axOff()).slice(0, 3);
+  await shot(shots, 'nologin-msr-light');
+} else {
+  const [U4, dms, dpg, realMsr, shots] = a;
+  out.demo = [];
+  for (const t of ['light', 'dark']) {
+    await open(U4 + '#/summary', `!!document.querySelector('main')`); await theme(t);
+    for (const [inst, label] of [[dms, 'sqlserver'], [dpg, 'postgres']]) {
+      await open(U4 + `#/community?i=${inst}`, communityReady);
+      const s = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')];
+        const desc = b => (b.getAttribute('aria-describedby') || '').split(/\\s+/).map(i => document.getElementById(i)?.textContent ?? '').join(' ');
+        return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true' && /is a demo instance/.test(desc(b))).length,
+          box: document.querySelector('main .needs')?.textContent?.slice(0, 200) ?? '', error: !!document.querySelector('main .error'), nologin: /-no-login/.test(document.querySelector('main')?.textContent ?? '') }; })()`);
+      s.label = `${t} ${label}`;
+      if (t === 'light') { s.click = await clickOff('main table.grid button.link[aria-disabled="true"]'); s.ax = (await axOff()).slice(0, 2); s.dom = await offCheck(`demo ${label}`); }
+      out.demo.push(s);
+      await shot(shots, `demo-${label}-${t}`);
+    }
+  }
+  // the fleet page's picker reaches the same state
+  await open(U4 + '#/community', `!!document.querySelector('main select')`);
+  await ev(`(() => { const s = document.querySelector('main select'); s.value = ${JSON.stringify(String(dms))}; s.dispatchEvent(new Event('change')); return 1; })()`);
+  await until(communityReady);
+  out.picker = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')]; return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true').length, box: document.querySelector('main .needs')?.textContent?.slice(0, 120) ?? '' }; })()`);
+  // the real instance served beside the demo's: its own state, never the demo line
+  await open(U4 + `#/community?i=${realMsr}`, communityReady);
+  out.real = await ev(`(() => { const m = document.querySelector('main')?.textContent ?? ''; return { demoLine: /is a demo instance/.test(m), nologin: /-no-login/.test(m), off: [...document.querySelectorAll('main table.grid button.link')].filter(b => b.getAttribute('aria-disabled') === 'true').length }; })()`);
+}
+console.log(JSON.stringify(out));
+ws.close(); process.exit(0);
+JS
+  SHOTS=${PGVIGIL_SHOTS:-$WORK/shots}
+  if [[ -z "$SKIP_MSSQL" ]]; then
+    timeout 1500 node "$WORK/buttons.mjs" live "$CDP" "$U/" "$COOKIE" "$U2/" "$MRID" "$MAID" "$AID" "$SREP" "$WORK/glenn.sql" "$SHOTS" > "$WORK/buttons.json" 2>"$WORK/buttons.err" || fail "U2: the live driver: $(tail -5 "$WORK/buttons.err")"
+    python3 - "$WORK/buttons.json" <<'PY' || fail "U2: see above"
+import json, sys
+d = json.load(open(sys.argv[1])); rows = d['rows']; bad = []
+for r in rows:
+    tag = f"{r['inst']} {r['tool']}"
+    good = r.get('result') == 'ran' and (r['tool'] == 'SQL Server Diagnostic Queries' or (r.get('badge') == 'done' and not r.get('error')))
+    extra = json.dumps(r['queries']) if r.get('queries') else (r.get('error') or r.get('note') or r.get('why') or '')[:140]
+    print(('ok   ' if good else 'FAIL ') + f"U2: {tag}: {r.get('result')} {r.get('badge', '')} {extra}")
+    if not good: bad.append(tag)
+n_ms = sum(1 for r in rows if r['inst'] == 'sqlserver'); n_pg = sum(1 for r in rows if r['inst'] == 'postgres')
+assert n_ms == 14 and n_pg == 10, f"U2: {n_ms} SQL Server and {n_pg} PostgreSQL tools on the pages, not 14 and 10"
+assert not bad, f"U2: {len(bad)} tool(s) did not end 'Ran at' with done: {bad}"
+print(f"ok   U2: all {n_ms + n_pg} tools clicked and run on the rig: each ended 'Ran at' with done (Glenn's two fixture queries with their grids)")
+bv = next(r for r in rows if r['tool'] == 'sp_HumanEventsBlockViewer')
+assert bv.get('sessionInput') == 'system_health' and 'system_health' in (bv.get('filled') or ''), f"U2: sp_HumanEventsBlockViewer's default click: {bv}"
+print(f"ok   U2: sp_HumanEventsBlockViewer's default click (threshold 0): @session_name filled system_health, said ('{bv['filled'][:90]}'), done")
+ax, tab = d['msaAx'], d['msaTab']
+assert len(ax) == 14 and all(x['same'] for x in ax), f"U2: the sa page's off tools in the accessibility tree: {[(x['name'], x['same'], x['axDesc'][:60]) for x in ax]}"
+assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: Tab reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
+print(f"ok   U2: pgcr-msa: Tab reaches all {len(tab)} off tools; each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
+c = d['msaClick']; assert c['clicked'] and c['sent'] == 0 and not c['error'], f"U2: a mouse click on an off tool: {c}"
+lk = d['look']
+for t in ('light', 'dark'):
+    x = lk[t]; assert x['deco'] == 'none' and x['color'] != x['accent'] and x['cursor'] == 'not-allowed', f"U2: the off look in {t}: {x}"
+assert lk['forced']['color'] == lk['forced']['gray'], f"U2: under forced colours the off tool is {lk['forced']['color']}, GrayText is {lk['forced']['gray']}"
+print(f"ok   U2: a mouse click on {c['clicked']} sent nothing; off drawn muted, no underline, not-allowed (light {lk['light']['color']}, dark {lk['dark']['color']}), GrayText under forced colours ({lk['forced']['color']})")
+st = d['selftest']; assert st['after'] == st['before'] + 1 and any('planted' in n for n in st['names']), f"U2: the self-test: {st}"
+print(f"ok   U2: the DOM check's self-test: a planted off button without a reason counted ({st['before']} -> {st['after']})")
+for p in d['dom']:
+    print(('ok   ' if not p['bad'] else 'FAIL ') + f"U2: DOM {p['label']}: {p['off']} off control(s), {len(p['bad'])} without a visible reason {p['bad'][:4]}")
+domBad = [p for p in d['dom'] if p['bad']]
+nl = [p for p in d['dom'] if p['label'].startswith('-no-login')]
+assert all(p['off'] > 0 for p in nl), f"U2: a -no-login page with no off control: {[(p['label'], p['off']) for p in nl]}"
+c = d['nologinClick']; assert c['clicked'] and c['sent'] == 0, f"U2: a click on the -no-login serve: {c}"
+assert not domBad, f"U2: {len(domBad)} page(s) with an off control without its reason"
+print(f"ok   U2: -no-login: a click on {c['clicked']} sent nothing")
+PY
+  else NOTPROVEN+=("U2: the live page rows need the SQL Server part"); fi
+  # the demo seeded into this proof's repository beside its real instances, served by pgvigil demo (no login, no doors)
+  PORT4=$(freeport); U4="http://127.0.0.1:$PORT4"
+  "$BIN" demo -config "$CFG" -days 1 -serve -listen "127.0.0.1:$PORT4" > "$WORK/demo.log" 2>&1 & SRV4=$!
+  for _ in $(seq 1 300); do grep -q 'pgvigil demo serving' "$WORK/demo.log" && break; kill -0 "$SRV4" 2>/dev/null || fail "U2: the demo serve died: $(tail -5 "$WORK/demo.log")"; sleep 1; done
+  grep -q 'pgvigil demo serving' "$WORK/demo.log" || fail "U2: the demo did not come up in 300 s: $(tail -3 "$WORK/demo.log")"
+  DMS=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
+  DPG=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'postgres' order by name limit 1")
+  [[ -n $DMS && -n $DPG ]] || fail "U2: the demo seeded no SQL Server or no PostgreSQL instance"
+  timeout 900 node "$WORK/buttons.mjs" demo "$CDP" "$U4/" "$DMS" "$DPG" "${MRID:-$AID}" "$SHOTS" > "$WORK/demo.json" 2>"$WORK/demo.err" || fail "U2: the demo driver: $(tail -5 "$WORK/demo.err")"
+  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" <<'PY' || fail "U2: see above"
+import json, sys
+d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'
+for s in d['demo']:
+    want = 14 if s['label'].endswith('sqlserver') else 10
+    assert s['n'] == want and s['off'] == want and 'is a demo instance' in s['box'] and not s['error'] and not s['nologin'], f"U2: demo {s['label']}: {s}"
+    if 'click' in s:
+        assert s['click']['sent'] == 0 and all(x['same'] for x in s['ax']) and not s['dom']['bad'], f"U2: demo {s['label']}: click {s['click']}, ax {s['ax']}, dom {s['dom']}"
+    print(f"ok   U2: demo {s['label']}: {s['off']} of {s['n']} tools off with the demo line beside them and as their description; no error box" + (f"; a click sent nothing" if 'click' in s else ''))
+p = d['picker']; assert p['n'] == 14 and p['off'] == 14 and 'is a demo instance' in p['box'], f"U2: the fleet page's picker on the demo: {p}"
+print(f"ok   U2: demo fleet page, picker: the same 14 off with the demo line")
+r = d['real']
+assert not r['demoLine'] and r['nologin'], f"U2: the real instance served beside the demo: {r}"
+print(f"ok   U2: pgvigil demo -serve -config: the real instance shows its own state (-no-login, {r['off']} off), never the demo line")
 PY
 fi
 

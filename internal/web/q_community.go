@@ -488,10 +488,18 @@ func (s *Server) checks(ctx context.Context, k checkKey, name string, fresh bool
 		go func(e *checkEntry) {
 			cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkMax)
 			defer cancel()
-			res := run(cctx)
-			res.At = time.Now().UTC()
-			e.res = res
-			close(e.done)
+			var res *communityCheck
+			defer func() {
+				// a check that breaks says so on the page and never takes the server down with it
+				if p := recover(); p != nil {
+					s.log.Error("community tools: a check broke", "instance", name, "panic", p)
+					res = &communityCheck{DB: k.db, Tools: map[string][]toolNeed{}, Inst: []toolNeed{notChecked(fmt.Sprintf("the checks of %s broke (%v): serve's log has it", name, p))}}
+				}
+				res.At = time.Now().UTC()
+				e.res = res
+				close(e.done)
+			}()
+			res = run(cctx)
 		}(e)
 	}
 	communityCache.Unlock()
@@ -567,11 +575,11 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 		c.Inst = append(c.Inst, notChecked("the connection to "+name+" on its read login failed: "+err.Error()))
 		return c
 	}
-	defer func() { _ = conn.Close(); _ = dbc.Close() }()
-	if why != "" {
+	if why != "" { // a sysadmin: openMS closed the connection itself and hands back none
 		c.Inst = append(c.Inst, hardNeed(why, "give the instance a read login that is not a sysadmin (docs/sqlserver.md)", "live"))
 		return c
 	}
+	defer func() { _ = conn.Close(); _ = dbc.Close() }()
 	var edition, major int
 	var current, login string
 	if err := conn.QueryRowContext(ctx, `SELECT CAST(SERVERPROPERTY('EngineEdition') AS int),
@@ -951,8 +959,8 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		if engine == "postgres" {
 			login = "monitoring login"
 		}
-		out.Needs = append(out.Needs, hardNeed("a "+login+" for "+name+": none is configured on this server (its configuration file names none for this instance)",
-			"give the instance a dsn in the configuration file with a login that is not a sysadmin or superuser (docs/sqlserver.md, docs/configuration.md)", "configuration"))
+		out.Needs = append(out.Needs, hardNeed("a "+login+" for "+name+": this server holds none for it (pgvigil serve takes each instance's login from its configuration file)",
+			"give the instance a dsn in the configuration file with a login that is not a sysadmin or superuser, and serve with that file (docs/sqlserver.md, docs/configuration.md)", "configuration"))
 	default:
 		if n := s.communityOff(); n != nil {
 			out.Needs = append(out.Needs, *n)
