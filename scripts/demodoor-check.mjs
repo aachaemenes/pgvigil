@@ -371,12 +371,23 @@ if (NOLOGIN) {
       if (!seen.has(h)) { seen.add(h); pages.push([what, h]); }
     }
   }
+  // a shot of the first page of each kind whose off controls say why since DONE-2 (how the words sit on the page),
+  // its first off control brought into view
+  const shotOf = [[/^#\/alertrules\b/, '12a-alert-rules'], [/^#\/admin_instances\b/, '12b-admin-instances'], [/^#\/activity\?/, '12c-activity'],
+    [/^#\/counters\?/, '12d-counters'], [/^#\/plans\?/, '12e-plans'], [/^#\/mssql_running\?/, '12f-sqlserver-running'], [/^#\/mssqljobs\?/, '12g-sqlserver-jobs']];
+  const shotDone = new Set();
   let offSeen = 0; const bad = [], unrendered = [];
   for (const [what, h] of pages) {
     await cmd('Page.navigate', { url: U + h }); await sleep(250);
     if (!(await settled())) { unrendered.push(h); continue; }
     await sleep(250);
     const r = await offOnPage();
+    const sh = shotOf.find(([re, name]) => re.test(h) && !shotDone.has(name));
+    if (sh && r.off > 0) {
+      shotDone.add(sh[1]);
+      await ev(`[...document.querySelectorAll('main button')].find(b => b.getAttribute('aria-disabled') === 'true' || b.disabled)?.scrollIntoView({ block: 'center', inline: 'center' })`);
+      await sleep(250); await shot(sh[1]);
+    }
     offSeen += r.off;
     if (r.bad.length) bad.push(`${h} (${what}): ${r.bad.length} - ${[...new Set(r.bad)].slice(0, 5).join('; ')}`);
   }
