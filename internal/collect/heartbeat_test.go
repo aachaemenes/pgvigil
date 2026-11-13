@@ -301,3 +301,33 @@ func TestChannelBackoff(t *testing.T) {
 		t.Fatal("a failure after a success waits 1 minute again, not the old wait")
 	}
 }
+
+// TestSeenDue: the heartbeat names an instance in the repository at its first connect in a run and again when its name
+// was not written for seenEvery (an instance read once an hour), never at every connect; a write that failed is due
+// again at the next connect; a beat names what it loads, so an instance read every minute is never due between beats.
+func TestSeenDue(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	t0 := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	if !h.seenDue("t1", t0) {
+		t.Fatal("the first connect of an instance in a run must name it")
+	}
+	if h.seenDue("t1", t0.Add(seenEvery-time.Second)) {
+		t.Fatal("named again before seenEvery passed")
+	}
+	if !h.seenDue("t2", t0.Add(time.Second)) {
+		t.Fatal("another instance's first connect must name it")
+	}
+	if !h.seenDue("t1", t0.Add(seenEvery)) {
+		t.Fatal("not named again after seenEvery")
+	}
+	h.seenFailed("t1")
+	if !h.seenDue("t1", t0.Add(seenEvery+time.Second)) {
+		t.Fatal("a failed write must be due again at the next connect")
+	}
+	// the beat names what it loads
+	h.loadOf("t3")
+	h.take()
+	if h.seenDue("t3", time.Now().Add(time.Minute)) {
+		t.Fatal("an instance the beat just named is due again a minute later")
+	}
+}

@@ -27,10 +27,11 @@ function serviceState(rows: Row[], findings: Row[] = []): { word: string; kind: 
   const live = rows.filter(r => r.state === 'up');
   if (live.length > 1) return { word: `${live.length} up`, kind: 'ok', sub: live.map(r => String(r.host)).join(', ') };
   if (live.length === 1) return { word: 'Up', kind: 'ok', sub: `beat ${fmtSecs(live[0].beat_age_secs)} ago` };
-  const last = rows.reduce<Row | undefined>((a, r) => a == null || String(r.beat_at) > String(a.beat_at) ? r : a, undefined);   // the newest run
+  const newest = (rs: Row[]) => rs.reduce<Row | undefined>((a, r) => a == null || String(r.beat_at) > String(a.beat_at) ? r : a, undefined);
+  // the newest run among those not retired; only when every run is retired - each host's collector uninstalled with the
+  // repository kept (import_collector_retire) - does the tile say so: no alert stands, and nothing writes here
+  const last = newest(rows.filter(r => r.state !== 'retired')) ?? newest(rows);
   if (!last) return { word: 'Never seen', kind: 'crit', sub: 'no collector has beaten on this repository' };
-  // a host whose collector was uninstalled with the repository kept (import_collector_retire): no alert stands for it,
-  // and with no other collector up nothing writes to this repository
   if (last.state === 'retired') return { word: 'Retired', kind: 'crit', sub: `the collector on ${last.host} was uninstalled ${fmtTime(last.retired_at)}; no collector writes here` };
   if (last.state === 'stopped') return { word: 'Stopped', kind: 'crit', sub: `stopped ${fmtTime(last.stopped_at)}` };
   return { word: `Not seen for ${fmtSecs(last.beat_age_secs)}`, kind: 'crit', sub: `the last beat ${fmtTime(last.beat_at)}` };

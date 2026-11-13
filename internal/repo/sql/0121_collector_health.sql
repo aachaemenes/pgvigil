@@ -96,6 +96,18 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_streaks (
   PRIMARY KEY (instance_id, collection)
 );
 
+-- per run and instance NAME: the instances a run reads - written at an instance's own connect (its first in the run,
+-- and again when it was not written for 10 minutes: heartbeat.go's name) and by every beat for what it loaded. By
+-- name: an instance never reached has no row in pgvigil.instances until its first failed read is recorded. seen_at
+-- is on the collector's clock, as the load's minute and a read's snapshot_at are. collector_covers reads it.
+CREATE TABLE IF NOT EXISTS pgvigil.collector_instances (
+  collector_id  text NOT NULL,
+  instance      text NOT NULL,
+  seen_at       timestamptz NOT NULL,
+  PRIMARY KEY (collector_id, instance)
+);
+CREATE INDEX IF NOT EXISTS collector_instances_name ON pgvigil.collector_instances (instance, seen_at);
+
 CREATE TABLE IF NOT EXISTS pgvigil.purge_runs (
   run_id              bigserial PRIMARY KEY,
   started_at          timestamptz NOT NULL,
@@ -113,6 +125,14 @@ RETURNS void LANGUAGE sql AS $$
   INSERT INTO pgvigil.collector_heartbeat (collector_id, host, os, runs_as, version, pid, started_at, beat_at)
   VALUES (p_id, p_host, p_os, p_runs_as, p_version, p_pid, now(), now())
   ON CONFLICT (collector_id) DO UPDATE SET beat_at = now(), stopped_at = NULL, retired_at = NULL;
+$$;
+
+-- import_collector_seen: the run p_id reads the instance named p_instance, at p_at on the collector's clock (the
+-- heartbeat calls it inside the instance's own connect, before that connect's failure is recorded)
+CREATE OR REPLACE FUNCTION pgvigil.import_collector_seen(p_id text, p_instance text, p_at timestamptz)
+RETURNS void LANGUAGE sql AS $$
+  INSERT INTO pgvigil.collector_instances (collector_id, instance, seen_at) VALUES (p_id, p_instance, p_at)
+  ON CONFLICT (collector_id, instance) DO UPDATE SET seen_at = greatest(collector_instances.seen_at, EXCLUDED.seen_at)
 $$;
 
 -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
@@ -135,7 +155,10 @@ BEGIN
   UPDATE pgvigil.collector_heartbeat
      SET beat_at = now(), mem_bytes = (p_beat->>'mem_bytes')::bigint, goroutines = (p_beat->>'goroutines')::int,
          instances = (p_beat->>'instances')::int, repo_conns = v_conns,
-         retired_at = NULL                        -- a run that beats is not retired, whatever was marked by hand
+         -- a run still beating 2 minutes after it was retired was retired by mistake (a second host of that name, the
+         -- door run for a host that is not gone): the mark goes. A beat sooner than that is a stopping service's last
+         -- one and must not undo its uninstall's retire
+         retired_at = CASE WHEN retired_at < now() - interval '2 minutes' THEN NULL ELSE retired_at END
    WHERE collector_id = p_id;
   INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist)
   SELECT p_minute, p_id, coalesce(nullif(r.engine, ''), 'postgres'), r.collection, r.runs, r.failures, r.rows, r.dur_sum, r.dur_max,
@@ -155,6 +178,12 @@ BEGIN
      SET attempts = collector_load.attempts + EXCLUDED.attempts, opened = collector_load.opened + EXCLUDED.opened,
          runs = collector_load.runs + EXCLUDED.runs,
          failures = collector_load.failures + EXCLUDED.failures, auth_failures = collector_load.auth_failures + EXCLUDED.auth_failures;
+  -- the beat names the instances it loaded (collector_instances): seen at the minute's end
+  INSERT INTO pgvigil.collector_instances (collector_id, instance, seen_at)
+  SELECT p_id, l.instance, p_minute + interval '1 minute'
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text)
+   WHERE l.instance IS NOT NULL
+  ON CONFLICT (collector_id, instance) DO UPDATE SET seen_at = greatest(collector_instances.seen_at, EXCLUDED.seen_at);
   -- a streak whose beat carries its first failure ('since') takes it, whatever start is stored (a streak that ended
   -- and began again inside one beat never wrote its 0)
   UPDATE pgvigil.collector_streaks cs SET failing_since = NULL
@@ -177,6 +206,7 @@ BEGIN
   DELETE FROM pgvigil.collector_beats WHERE at < now() - interval '8 days';
   DELETE FROM pgvigil.collector_runs WHERE minute < now() - interval '8 days';
   DELETE FROM pgvigil.collector_load WHERE minute < now() - interval '8 days';
+  DELETE FROM pgvigil.collector_instances WHERE seen_at < now() - interval '8 days';
   DELETE FROM pgvigil.collector_heartbeat WHERE beat_at < now() - interval '8 days';
   RETURN true;
 END $$;
@@ -190,15 +220,16 @@ RETURNS TABLE (instance text, collection text, fail_streak int, last_error text)
 $$;
 
 -- import_collector_retire: the host's collector is uninstalled and its repository kept (uninstall calls it; the
--- repository owner may, for a host that is gone): every run of the host is marked retired, and stopped when it left no
--- stop mark. collector_hosts leaves such runs out, so the host raises no 'collector not seen', holds no alert and no
--- longer keeps serve's watchdog on - without it the host would stand as not seen until its load is trimmed, and for
--- good while another collector's beat keeps trimming nothing of it. A new run on that host claims a fresh row and is
--- back; a retired run that beats again loses the mark. Returns the runs it marked.
+-- repository owner may, for a host that is gone): every run of the host is marked retired. collector_hosts and
+-- collector_live leave such runs out, so the host raises no 'collector not seen', holds no alert and no longer keeps
+-- serve's watchdog on - without it the host would stand as not seen for good. The stop mark is not touched: a run of
+-- that host name still beating (a second host of the name, the door run by mistake) loses the retire at its first beat
+-- 2 minutes on and reads 'up' again, never 'stopped'. A new run on the host claims a fresh row and is back. Returns
+-- the runs it marked.
 CREATE OR REPLACE FUNCTION pgvigil.import_collector_retire(p_host text)
 RETURNS int LANGUAGE sql AS $$
   WITH u AS (
-    UPDATE pgvigil.collector_heartbeat SET retired_at = now(), stopped_at = coalesce(stopped_at, now())
+    UPDATE pgvigil.collector_heartbeat SET retired_at = now()
      WHERE host = p_host AND retired_at IS NULL RETURNING 1)
   SELECT count(*)::int FROM u
 $$;
@@ -347,19 +378,23 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
       OR (p_source = 'pgvigil indexes' AND p_setting = 'unused index'), false)
 $$;
 
--- collector_covers: does a collector that beats cover the instance's failed read at p_at - a run not retired wrote a
--- load row of the instance in (p_at - 20 minutes, p_at + 2 minutes]? Then the instance's connect failures are this
+-- collector_covers: does a collector that beats cover the instance's failed read at p_at - has a run not retired
+-- NAMED the instance (collector_instances) after p_at - 20 minutes? Then the instance's connect failures are this
 -- file's to report ('authentication failing', 'server unreachable': they carry the streak, its start and the
 -- failing-together window), and the findings view (0190) leaves 0118's own 'server unreachable' out for it: an
--- instance has ONE. Tied to the failed read's own time, not to now: an instance moved to a `pgvigil collect` on a
--- schedule (no heartbeat) keeps 0118's finding, and a stopped collector's instances stay covered for as long as
--- 0118's row lives. A read failing in the minute before the collector's first beat names the instance is not covered
--- yet (the load row is written at the beat).
+-- instance has ONE. A run names an instance inside the instance's own connect, before that connect's failure is
+-- recorded, and at every beat - so a collector back after a long stop, an instance read once an hour and one never
+-- reached are covered at their first failed read, which a load row (written only at the next beat) is not. Tied to
+-- the failed read's own time: an instance moved to a `pgvigil collect` on a schedule (no heartbeat) is named no more
+-- and has 0118's finding back 20 minutes after its last name; a stopped collector's instances stay covered for the
+-- reads it made.
 CREATE OR REPLACE FUNCTION pgvigil.collector_covers(p_instance_id int, p_at timestamptz)
 RETURNS boolean LANGUAGE sql STABLE AS $$
-  SELECT EXISTS (SELECT 1 FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                  WHERE l.instance_id = p_instance_id AND h.retired_at IS NULL
-                    AND l.minute > p_at - interval '20 minutes' AND l.minute <= p_at + interval '2 minutes')
+  SELECT EXISTS (SELECT 1 FROM pgvigil.instances i
+                   JOIN pgvigil.collector_instances ci ON ci.instance = i.name
+                   JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                  WHERE i.instance_id = p_instance_id AND h.retired_at IS NULL
+                    AND ci.seen_at > p_at - interval '20 minutes')
 $$;
 
 -- alert_key: an alert's key. The repository-wide 'collector or network' is keyed on its value AS IT IS - the value

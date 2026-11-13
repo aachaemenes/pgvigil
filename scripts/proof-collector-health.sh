@@ -215,6 +215,10 @@ if waitfor 200 "SELECT count(*) >= 2 FROM pgvigil.collector_beats b JOIN pgvigil
 else
   fail "A heartbeat: no two beats from pgvigil-svc in 200 s: $(docker exec "$SVC" journalctl -u pgvigil -n 15 --no-pager 2>&1 | tr '\n' ' ' | cut -c1-900)"
 fi
+# the run names the instances it reads (collector_instances: written inside each instance's own connect and by every
+# beat) - what makes the stored reads' own 'server unreachable' stand back for them
+a_names=$(q "SELECT count(DISTINCT ci.instance) FROM pgvigil.collector_instances ci JOIN pgvigil.collector_live l USING (collector_id) WHERE l.host = 'pgvigil-svc' AND ci.instance IN ('t1','t2','t3','t4') AND ci.seen_at > now() - interval '5 minutes'")
+[[ "$a_names" == 4 ]] && ok "A names: the live run on pgvigil-svc names its 4 instances, each seen in the last 5 minutes" || fail "A names: $a_names of the 4 instances named by the live run in the last 5 minutes"
 
 # ---- E a login refused ---------------------------------------------------------------------------------------------
 PER="authentication failing|collection failing|server unreachable"
