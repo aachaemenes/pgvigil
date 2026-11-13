@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,5 +46,16 @@ func TestReadWindow(t *testing.T) {
 	// the multi part that read the window carries it; one that did not (no time argument equal to its start) does not
 	if !readArgs([]any{1, end.Add(-defaultReach), end}, end.Add(-defaultReach)) || readArgs([]any{1}, end.Add(-defaultReach)) {
 		t.Fatal("readArgs: a part's window start not told apart")
+	}
+}
+
+// TestRunWindow: a custom report's run window takes up to a year (maxWindow) and words its limit as the API does.
+func TestRunWindow(t *testing.T) {
+	if _, _, err := runWindow("2025-11-13T20:00:00Z", "2026-11-13T20:00:00Z"); err != nil {
+		t.Fatalf("a year: %v; want taken", err)
+	}
+	_, _, err := runWindow("2024-11-13T20:00:00Z", "2026-11-13T20:00:00Z")
+	if err == nil || !strings.Contains(err.Error(), "at most a year") {
+		t.Fatalf("two years: %v; want 'at most a year'", err)
 	}
 }
