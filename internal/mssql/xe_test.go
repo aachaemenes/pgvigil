@@ -752,8 +752,8 @@ func TestXMLCleanKeepsTheRead(t *testing.T) {
 // Cloud SQL's trigger TRG_EnforceXEventSessionParams4 refuses a CREATE EVENT SESSION that holds "max_memory=" more than
 // once (G1 on a real instance, 2026-11-13: Msg 50000 'The command must not contain more than one occurrence of
 // "max_memory="') and fails (Msg 537) when the one it finds is a ring buffer's: each of the cloudsql form's CREATEs
-// holds it once, as the session's MAX_MEMORY=<the capture's size> KB; the other forms keep the session's MAX_MEMORY
-// beside a ring buffer's max_memory.
+// holds it once, as the session's MAX_MEMORY=<the capture's size within 4-8 MB> KB (the trigger: 'max_memory value must
+// be between 4MB and 8MB'); the other forms keep the session's MAX_MEMORY beside a ring buffer's max_memory.
 func TestXECloudSQLOneMaxMemory(t *testing.T) {
 	re := regexp.MustCompile(`(?i)max_memory=`)
 	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2} {
@@ -775,7 +775,7 @@ func TestXECloudSQLOneMaxMemory(t *testing.T) {
 				t.Errorf("%s: CREATE %d holds max_memory= %d times, want %d", form, i+1, got, want)
 			}
 			// the trigger parses the one it finds as the session's 'MAX_MEMORY=<n> KB' (Msg 537 on the ring buffer's)
-			if form == XEFormCloudSQL && (strings.Contains(p, "ring_buffer(SET") || !regexp.MustCompile(`MAX_MEMORY=' \+ CAST\(@[a-z_]+ AS nvarchar\(20\)\) \+ N' KB`).MatchString(p)) {
+			if form == XEFormCloudSQL && (strings.Contains(p, "ring_buffer(SET") || !regexp.MustCompile(`MAX_MEMORY=' \+ CAST\(CASE WHEN (@[a-z_]+) < 4096 THEN 4096 WHEN @[a-z_]+ > 8192 THEN 8192 ELSE @[a-z_]+ END AS nvarchar\(20\)\) \+ N' KB`).MatchString(p)) {
 				t.Errorf("%s: CREATE %d: the one max_memory= is not the session's MAX_MEMORY=<the capture's size> KB", form, i+1)
 			}
 		}

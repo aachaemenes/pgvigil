@@ -178,11 +178,14 @@ func XEScript(installID, form string) (string, error) {
 	}
 	// a ring-buffer session's target and options. On Cloud SQL Google's trigger TRG_EnforceXEventSessionParams4 refuses
 	// a CREATE EVENT SESSION holding "max_memory=" more than once, and fails on its own (Msg 537) when the one it finds
-	// is not the session's 'MAX_MEMORY=<n> KB' (G1, a real instance, 2026-11-13): there the ring buffer takes no
-	// max_memory of its own and the session's MAX_MEMORY is the capture's size
+	// is not the session's 'MAX_MEMORY=<n> KB', and it takes 4 to 8 MB only (G1, a real instance, 2026-11-13): there
+	// the ring buffer takes no max_memory of its own and the session's MAX_MEMORY is the capture's size within 4-8 MB
+	cloudMem := func(kbVar string) string {
+		return "MAX_MEMORY=' + CAST(CASE WHEN " + kbVar + " < 4096 THEN 4096 WHEN " + kbVar + " > 8192 THEN 8192 ELSE " + kbVar + " END AS nvarchar(20)) + N' KB"
+	}
 	ringOf := func(kbVar string) (string, string) {
 		if form == XEFormCloudSQL {
-			return "ADD TARGET package0.ring_buffer", strings.Replace(opts, "MAX_MEMORY=4096 KB", "MAX_MEMORY=' + CAST("+kbVar+" AS nvarchar(20)) + N' KB", 1)
+			return "ADD TARGET package0.ring_buffer", strings.Replace(opts, "MAX_MEMORY=4096 KB", cloudMem(kbVar), 1)
 		}
 		return ring(kbVar), opts
 	}
@@ -209,8 +212,12 @@ func XEScript(installID, form string) (string, error) {
 		if form == XEFormCloudSQL {
 			dir = xeCloudSQLDir
 		}
+		mem := "MAX_MEMORY=' + CAST(@slow_memory_kb AS nvarchar(20)) + N' KB"
+		if form == XEFormCloudSQL {
+			mem = cloudMem("@slow_memory_kb")
+		}
 		slow += "ADD TARGET package0.event_file(SET filename=N''" + dir + name(xeSlow) + ".xel'', max_file_size=(' + CAST(@slow_file_mb AS nvarchar(20)) + N'), max_rollover_files=(' + CAST(@slow_files AS nvarchar(20)) + N'))\n" +
-			strings.Replace(opts, "MAX_MEMORY=4096 KB", "MAX_MEMORY=' + CAST(@slow_memory_kb AS nvarchar(20)) + N' KB", 1)
+			strings.Replace(opts, "MAX_MEMORY=4096 KB", mem, 1)
 	} else {
 		st, sw := ringOf("@slow_kb")
 		slow += st + "\n" + sw
