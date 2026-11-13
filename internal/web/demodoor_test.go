@@ -106,15 +106,13 @@ func TestDemoDoorScope(t *testing.T) {
 			{"alert_dismissals", 20}: {FindingKey: "k-demo1"},
 			{"alert_dismissals", 21}: {FindingKey: "k-prod"},
 			{"job_exclusions", 30}:   {InstanceID: intp(2)},
-			{"job_exclusions", 31}:   {}, // a root-level exclusion
+			{"job_exclusions", 31}:   {},                    // a root-level exclusion
+			{"job_exclusions", 32}:   {InstanceID: intp(3)}, // a real instance's exclusion
 		},
 	}
 	d := &demoDoor{ids: map[int]bool{1: true, 2: true, 5: true, 6: true}, prefix: "demo-", look: store}
 	const notDemo, wide = "is not one of this demo's instances", "would reach past the demo's instances"
 	const noInstance, noLevel, oneInstance = "names no instance that exists", "is not a level the demo writes at", "level names one instance: instance_id is missing or not a number"
-	// a job's thresholds and the job exclusions are NOT the door's until their pages are taught it: the server then does
-	// what those pages say ('this page's ... are off on pgvigil demo -serve')
-	const notDoor = "is not made through the demo"
 	for _, c := range []struct {
 		name string
 		sc   writeScope
@@ -150,11 +148,16 @@ func TestDemoDoorScope(t *testing.T) {
 		{"a level no function knows", writeScope{Route: doorPgThreshold, Level: "fleet", InstanceID: 1}, "'fleet' " + noLevel},
 		{"a threshold without a level", writeScope{Route: doorDriveThreshold, InstanceID: 1}, "'' " + noLevel},
 		{"a database threshold on a seeded instance", writeScope{Route: doorPgThreshold, Level: "database", InstanceID: 2}, ""},
-		{"a job's threshold on a seeded instance (its page is not taught the door)", writeScope{Route: doorJobThreshold, Level: "job", InstanceID: 1}, notDoor},
-		{"an instance's job threshold on a seeded instance", writeScope{Route: doorJobThreshold, Level: "instance", InstanceID: 1}, notDoor},
-		{"a root job threshold", writeScope{Route: doorJobThreshold, Level: "root"}, notDoor},
-		{"a root job exclusion", writeScope{Route: doorJobExclusion, Level: "root"}, notDoor},
-		{"an instance's job exclusion on a seeded instance", writeScope{Route: doorJobExclusion, Level: "instance", InstanceID: 2}, notDoor},
+		// a job's thresholds and the job exclusions are the door's again with their pages (B7 DONE-3): one instance or below
+		{"a job's threshold on a seeded instance", writeScope{Route: doorJobThreshold, Level: "job", InstanceID: 1}, ""},
+		{"an instance's job threshold on a seeded instance", writeScope{Route: doorJobThreshold, Level: "instance", InstanceID: 1}, ""},
+		{"a job's threshold on a real instance", writeScope{Route: doorJobThreshold, Level: "job", InstanceID: 3}, "prod-db1 " + notDemo},
+		{"a root job threshold", writeScope{Route: doorJobThreshold, Level: "root"}, "a root change " + wide},
+		{"a job threshold level that names no instance", writeScope{Route: doorJobThreshold, Level: "job"}, "a job " + oneInstance},
+		{"a level of another route (a drive level on a job threshold)", writeScope{Route: doorJobThreshold, Level: "drive", InstanceID: 1}, "'drive' " + noLevel},
+		{"a job level on an exclusion (root or instance only)", writeScope{Route: doorJobExclusion, Level: "job", InstanceID: 1}, "'job' " + noLevel},
+		{"a root job exclusion", writeScope{Route: doorJobExclusion, Level: "root"}, "a root change " + wide},
+		{"an instance's job exclusion on a seeded instance", writeScope{Route: doorJobExclusion, Level: "instance", InstanceID: 2}, ""},
 		{"the end of a seeded instance's row", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 10}}, ""},
 		{"the end of a real user's row on a real instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 11}}, "prod-db1 " + notDemo},
 		{"the end of a rule on every instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 12}}, "an every-instance change " + wide},
@@ -167,8 +170,9 @@ func TestDemoDoorScope(t *testing.T) {
 		{"the end of a row with a demo id on an alert of no instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 17}}, noInstance},
 		{"an undismiss of a seeded instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 20}}, ""},
 		{"an undismiss of a real instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 21}}, "prod-db1 " + notDemo},
-		{"the end of a seeded instance's exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 30}}, notDoor},
-		{"the end of a root exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 31}}, notDoor},
+		{"the end of a seeded instance's exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 30}}, ""},
+		{"the end of a root exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 31}}, "an every-instance change " + wide},
+		{"the end of a real instance's exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 32}}, "prod-db1 " + notDemo},
 		{"a pause of a seeded instance's mute", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}}, ""},
 		{"an edit that asks for every instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, AnyInstance: true}, "an every-instance change " + wide},
 		{"an edit that moves the rule to a real instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, InstanceID: 3}, "prod-db1 " + notDemo},
@@ -232,8 +236,8 @@ func TestSeatOnDemo(t *testing.T) {
 	if got := s.ackOff(); !strings.Contains(got, "pgvigil demo -serve") || strings.Contains(got, "-no-login") {
 		t.Errorf("ackOff on a demo serve = %q: it names pgvigil demo -serve and never -no-login", got)
 	}
-	// a page whose controls the door does not reach yet says that they are off, never 'saved as user demo' beside them
-	if got := s.offWords(s.ackOff(), "job exclusions"); !strings.Contains(got, "this page's job exclusions are off on pgvigil demo -serve") || strings.Contains(got, "saved as user demo") {
+	// a page's words on a demo serve are the door's, under the page's noun (its controls are taught the door, B7 DONE-3)
+	if got := s.offWords(s.ackOff(), "job exclusions"); !strings.Contains(got, "pgvigil demo -serve: job exclusions are saved as user demo") || strings.Contains(got, "-no-login") {
 		t.Errorf("a page's off words on a demo serve = %q", got)
 	}
 	r := httptest.NewRequest(http.MethodPost, "/api/ack", strings.NewReader("{}"))
