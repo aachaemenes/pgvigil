@@ -440,10 +440,10 @@ def profile(book):
         for c in s['cells']:
             x, f = c['xf'], c['xf']['font']
             if c['row'] == 1:
-                heads.add('fill %s text %s bold %s size %s align %s' % (x['fill'], f.get('colour'), f.get('bold'), f.get('size'), x['halign']))
+                heads.add('fill %s text %s bold %s size %s align %s' % (x['fill'], f.get('colour'), f.get('bold'), f.get('size'), x['halign'] or 'general'))   # no alignment draws as general
                 continue
             key = '%s/%s' % (x['fill'], f.get('colour'))
-            if x['fill'] or f.get('colour'):
+            if x['fill'] or f.get('colour') not in PLAIN_TEXT:   # a plain cell is no pair
                 pairs[key] = pairs.get(key, 0) + 1
         hdr = {c['col']: str(c['v'] or '').strip() for c in s['cells'] if c['row'] == 1}
         for c in s['cells']:
