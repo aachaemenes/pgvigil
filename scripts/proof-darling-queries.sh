@@ -3,7 +3,7 @@
 # the procedures' spills, the plan cache's handles), the compare of a window with an earlier one on the Query Store,
 # Plan cache and Procedures grids (PerformanceMonitor's top-compare.js), and Regressed in PerformanceMonitor's tests
 # (QueryStoreRegressionRules.cs) beside pgvigil's duration test - against hand reads of the same SQL Server.
-# Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest), go, psql, curl, python3, node, npm, chromium, and:
+# Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:13), go, psql, curl, python3, node, npm, chromium, and:
 #   ADMIN_DSN       a superuser connection to a PostgreSQL sandbox in KEYWORD form (default 'host=127.0.0.1 port=5432
 #                   user=postgres dbname=postgres'), with no password= in it (it rides on command lines: the password,
 #                   if any, comes from ~/.pgpass or PGPASSWORD); the proof makes its own repository databases and drops them.
@@ -47,12 +47,17 @@
 #     its sixth run the server may keep a generic plan, which took 18-20 s here, s177j-spike4), every one under 10 s or
 #     FAIL: the plan-cache compare (compare=week over a 7-day window, 14 days stored) at 761 and 3,000 rows a read; the
 #     Query Store compare (compare=week, 7 days) and Regressed's default (a 1-hour window against PerformanceMonitor's 7
-#     days) over 14 days of 1-minute intervals at 250 kept plans each (the collector's ceiling: 5 lists of 50).
+#     days) over 14 days of 1-minute intervals at 250 kept plans each (the collector's ceiling: 5 lists of 50); every
+#     timed part returns rows, run 3's compare = run 8's, the box's load printed beside each timing list. PostgreSQL's
+#     rule on the compare's SQL (PREPAREd in psql under PGOPTIONS): generic|custom 0|7 under force_custom_plan, a
+#     generic plan under auto. The UI pool's own setting: go test's TestUIPoolConfig; through serve, plans = calls for
+#     the plan cache's totals in pg_stat_statements where the box preloads it (else NOT PROVEN, said).
 #  G. the pages in headless Chromium (light): the Query Store's Top with its compare grid (= the API's rows), Regressed
 #     with q_to's and q_err's rows, Plan cache and Procedures with their compare and new columns; no error box.
 #  H. DONE-2's reads (PostgreSQL only, on F's seed and synthetic rows): the heatmap's cells (duration and executions,
 #     24 h, 10-minute bins) = a hand count of the stored samples (distinct (database, query) per cell, the most-executed
-#     by executions summed, the newest 1,000, n_cells all); the heatmap at 24 h and 7 days at 761 and 3,000 rows a read
+#     by executions summed, the newest 1,000, n_cells all), and equal on a PostgreSQL 13 repository (a throwaway
+#     postgres:13 container, where date_bin is refused); the heatmap at 24 h and 7 days at 761 and 3,000 rows a read
 #     under 10 s (eight runs each); 8 days refused 400 with 'pick 7 days or less'; one query's and one procedure's history
 #     sum their executions = a hand sum, about 120 steps, under 10 s over 7 days; the Query Store overhead lists the
 #     QDS_* waits but PerformanceMonitor's sleep waits, per hour over the measured seconds; the memory clerk's captures,
@@ -68,6 +73,7 @@ SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 SQL=pgvq-sql-$SUF; LBL=pgvigil-proof=d10
 PGDB=pgv_q_$SUF; PGDB2=pgv_q0126_$SUF; MON=pgv_qmon_$SUF; USR=proofdba$SUF
+PG13=pgv13-$SUF; IMG_PG13=postgres:13
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
@@ -79,7 +85,7 @@ cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill -- "-$CHRPID" 2>/dev/null || kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
   for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true; done
-  docker rm -f -v "$SQL" >/dev/null 2>&1 || { docker inspect "$SQL" >/dev/null 2>&1 && echo "CLEANUP: container $SQL not removed" >&2; }
+  for c in "$SQL" "$PG13"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
   for d in "$PGDB" "$PGDB2"; do psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $d WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $d not dropped" >&2; done
   rm -rf "$TMPD"
 }
@@ -97,6 +103,10 @@ sqtn() { printf 'SET NOCOUNT ON;\n%s\n' "$2" | timeout 600 docker exec -i --env-
 pq() { psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 # objs <file> <part>: an API part ({columns, rows}) as a JSON array of objects
 objs() { jq -c --arg p "$2" '.[$p] | .columns as $c | [(.rows // [])[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
+# ld: the box's load, beside every timing (a slow run is read against it)
+ld() { printf 'load %s on %s cpus' "$(cut -d' ' -f1-3 /proc/loadavg)" "$(nproc)"; }
+# nonempty <file> <part>: the API part holds a row (a fast empty 200 is not a timing)
+nonempty() { jq -e --arg p "$2" '(.[$p].rows // []) | length > 0' "$1" >/dev/null 2>&1; }
 urlq() { URLQ_V="$1" python3 -c 'import os,urllib.parse as u; print(u.quote(os.environ["URLQ_V"], safe=""))'; }
 for t in docker go psql curl python3 node npm chromium setsid jq patch; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
@@ -193,6 +203,12 @@ sqok "A: the monitor login" "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHEC
 echo "ok   A: SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))"), pgvq's Query Store $(sq "SELECT actual_state_desc + ' ' + CAST(interval_length_minutes AS varchar(5)) + ' min' FROM sys.database_query_store_options" pgvq)"
 
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
+# the join review d10b, b1 (ii): when the box's PostgreSQL preloads pg_stat_statements, the proof's database tracks
+# planning (set before serve connects), so F reads whether serve's pool planned every run of a named part
+PSS=$(psql "$ADMIN_DSN" -XAtqc "SHOW shared_preload_libraries")
+if [[ ",${PSS// /}," == *",pg_stat_statements,"* ]]; then
+  psql "$ADMIN_DSN" -Xqc "ALTER DATABASE $PGDB SET pg_stat_statements.track_planning = on" >/dev/null; PSS=on
+else PSS=off; fi
 PGDSN=$(dsnfor "$PGDB")
 export PGV_Q_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
 cat > "$TMPD/m.yaml" <<EOF
@@ -449,20 +465,26 @@ CUT=$(objs "$TMPD/ccmpw2.json" compare_windows | jq -r '.[0].before_cut_reads')
 [[ "$L2/$CUT" == "not kept before/1" ]] || fail "E: with R1 cut, q_new reads '$L2' with $CUT cut read(s) before (want 'not kept before' and 1)"
 pq "UPDATE pgvigil.mssql_pc_read SET capped = false WHERE instance_id = $SB AND snapshot_at = '$R1'" >/dev/null
 echo "ok   E: mssql_pc_handles = the DMV's sql_handle and query_plan_hash for every cached statement of q_cost; with R1 cut q_new reads 'not kept before' and the windows part 1 cut read"
-# E. a restart read (the join review d10a, finding 2): 0092's restart path empties mssql_pc_last and, by the cascade,
-# mssql_pc_handles; after it the handles are exactly the read's statements (each carries a handle on 2022), none older
+# E. a restart read (the join review d10a, finding 2): the end state - after it the handles are exactly the read's
+# statements (each carries a handle on 2022), none older. 0092's per-read delete alone gives that end state too, so the
+# import's restart detection is read apart (the join review d10b, b6): mssql_pc_state.server_start must change
+SS0=$(pq "SELECT coalesce(server_start::text, 'null') FROM pgvigil.mssql_pc_state WHERE instance_id = $SB")
 OLDMAX=$(pq "SELECT max(creation_time) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
 RB=$(pq "SELECT count(*) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
-docker restart "$SQL" >/dev/null || fail "E: docker restart of the SQL Server container"
+timeout 120 docker restart "$SQL" >/dev/null || { docker logs --tail 40 "$SQL" >&2 2>&1 || true; fail "E: docker restart of the SQL Server container (120 s)"; }
 # a restarted container publishes 1433 on a new host port (-p 127.0.0.1::1433): the monitor DSN follows it
 PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 export PGV_Q_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
-for _ in $(seq 1 120); do sq "SELECT 1" master 10 >/dev/null 2>&1 && break; sleep 1; done
-sqok "E: SQL Server back after the restart" "SELECT 1" master
+# waitdb <db>: until the database takes a login, 180 s at most (each try 10 s at most), the container's log on a failure
+waitdb() { local end=$((SECONDS + 180)); until sq "SELECT 1" "$1" 10 >/dev/null 2>&1; do
+    (( SECONDS < end )) || { docker logs --tail 40 "$SQL" >&2 2>&1 || true; fail "E: $1 not back 180 s after the restart"; }; sleep 1; done; }
+waitdb master
 # master answers before pgvq has run its recovery: wait for pgvq itself to take a login
-for _ in $(seq 1 120); do sq "SELECT 1" pgvq 10 >/dev/null 2>&1 && break; sleep 1; done
+waitdb pgvq
 sqok "E: q_cost after the restart" "$Q_COST 1;" pgvq
 col mssql_plancache
+SS1=$(pq "SELECT coalesce(server_start::text, 'null') FROM pgvigil.mssql_pc_state WHERE instance_id = $SB")
+[[ "$SS0" != null && "$SS1" != null && "$SS1" != "$SS0" ]] || fail "E: mssql_pc_state.server_start $SS0 before the restart, $SS1 after (want a change: the import saw no restart)"
 read -r NL NH NORPH NOLD NMATCH <<<"$(pq "SELECT (SELECT count(*) FROM pgvigil.mssql_pc_last WHERE instance_id = $SB),
     (SELECT count(*) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB),
     (SELECT count(*) FROM pgvigil.mssql_pc_handles h WHERE h.instance_id = $SB AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_pc_last l
@@ -472,7 +494,7 @@ read -r NL NH NORPH NOLD NMATCH <<<"$(pq "SELECT (SELECT count(*) FROM pgvigil.m
         WHERE h.instance_id = l.instance_id AND h.plan_handle = l.plan_handle AND h.stmt_start = l.stmt_start AND h.stmt_end = l.stmt_end AND h.creation_time = l.creation_time))" | tr '|' ' ')"
 [[ "$RB" -gt 0 && "$NL" -gt 0 && "$NH" == "$NL" && "$NMATCH" == "$NL" && "$NORPH" == 0 && "$NOLD" == 0 ]] \
   || fail "E: after the restart read mssql_pc_last holds $NL statements, mssql_pc_handles $NH ($NMATCH matched, $NORPH orphaned, $NOLD from before the restart; $RB before it)"
-echo "ok   E: after a restart read mssql_pc_handles holds exactly the read's $NL statements ($RB before the restart, none of them left, none orphaned)"
+echo "ok   E: the import saw the restart (server_start $SS0 -> $SS1); after its read mssql_pc_handles holds exactly the read's $NL statements ($RB before the restart, none of them left, none orphaned)"
 
 # D. q_err's baseline rows in the pre-0126 shape: the failure test is not applied, the cells say so
 QE=$(jq -r '.q_err' "$TMPD/hashof.json")
@@ -539,33 +561,35 @@ for spec in "761" "3000"; do
   eval "IID_$spec=$IID"
 done
 psql "$PGDSN" -Xqc "VACUUM (ANALYZE) pgvigil.mssql_pc_sample, pgvigil.mssql_pc_read" >/dev/null
-TF=""
+TF=""; SLOW=""; EMPTY=""   # every part is timed; a part past the 10 s line or with no row fails F after the last of them
 for spec in 761 3000; do
   eval "IID=\$IID_$spec"
-  F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  NOW=$(date -u +%s); F7=$(iso $((NOW - 604800))); T7=$(iso "$NOW")   # one clock read for both edges
   for run in 1 2 3 4 5 6 7 8; do
-    tt=$(curl -s -o "$TMPD/f-$spec-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$F7&to=$T7&compare=week&part=compare")
+    tt=$(curl -s --max-time 30 -o "$TMPD/f-$spec-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$F7&to=$T7&compare=week&part=compare")
     [[ "${tt%% *}" == 200 ]] || fail "F: the compare at $spec rows a read answered ${tt%% *}: $(head -c 300 "$TMPD/f-$spec-$run.json")"
-    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the compare at $spec rows a read took ${tt##* } s (the fail line is 10 s)"
+    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || SLOW+=" plancache/compare-$spec:${tt##* }"
     TF+=" ${spec}:${tt##* }"
   done
-  n=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-3.json"); n8=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-8.json")
-  [[ "$n" -ge 100 && "$n8" == "$n" ]] || fail "F: the compare at $spec returned $n rows on run 3 and $n8 on run 8"
+  n=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-3.json")
+  [[ "$n" -ge 100 ]] || fail "F: the compare at $spec returned $n rows on run 3 (100 or more wanted)"
+  cmp -s <(jq -S .compare "$TMPD/f-$spec-3.json") <(jq -S .compare "$TMPD/f-$spec-8.json") || fail "F: run 3's compare differs from run 8's at $spec"
 done
-echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, eight runs each; run 3's rows = run 8's):$TF"
+echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, eight runs each; run 3's rows = run 8's, $(ld)):$TF"
 # the plan cache's other windowed parts at 3,000 rows a read over 7 days (the join review d10a, finding 1): named,
 # cached statements, so the UI pool's plan_cache_mode = force_custom_plan (web.go) alone keeps them planned with their
 # window's values; and the compare's windows part (finding 3)
-TP=""; SLOW=""   # every part is timed; a part past the 10 s line fails F after the last of them (one run names every slow part)
+TP=""
 for what in "totals:part=totals" "top:part=top" "series:part=series" "cwin:compare=week&part=compare_windows"; do
   for run in 1 2 3 4 5 6 7 8; do
-    tt=$(curl -s -o "$TMPD/fp.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_3000&from=$F7&to=$T7&${what#*:}")
+    tt=$(curl -s --max-time 30 -o "$TMPD/fp.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_3000&from=$F7&to=$T7&${what#*:}")
     [[ "${tt%% *}" == 200 ]] || fail "F: the plan cache ${what%%:*} at 3000 answered ${tt%% *}: $(head -c 300 "$TMPD/fp.json")"
     python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || SLOW+=" plancache/${what%%:*}:${tt##* }"
     TP+=" ${what%%:*}:${tt##* }"
   done
+  nonempty "$TMPD/fp.json" "${what##*part=}" || EMPTY+=" plancache/${what%%:*}"
 done
-echo "     F: the plan cache's totals, top, series and compare_windows at 3,000 rows a read over 7 days (s, eight runs each):$TP"
+echo "     F: the plan cache's totals, top, series and compare_windows at 3,000 rows a read over 7 days (s, eight runs each, $(ld)):$TP"
 # the procedures at scale: 1,000 procedures a read, every five minutes, 14 days; every windowed part over 7 days
 PRI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tpr', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
 for back in 15 8 0; do pq "SELECT pgvigil.ensure_month_partition('mssql_proc_sample', now() - interval '$back days'), pgvigil.ensure_month_partition('mssql_proc_read', now() - interval '$back days')" >/dev/null; done
@@ -580,14 +604,18 @@ NP=$(pq "SELECT count(*) FROM pgvigil.mssql_proc_sample WHERE instance_id = $PRI
 TR=""
 for what in "totals:part=totals" "databases:part=databases" "procs:part=procs" "series:part=series" "intervals:db_id=6&object=1001&part=intervals" "compare:compare=week&part=compare" "cwin:compare=week&part=compare_windows"; do
   for run in 1 2 3 4 5 6 7 8; do
-    tt=$(curl -s -o "$TMPD/fr-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/procs?instance=$PRI&from=$F7&to=$T7&${what#*:}")
+    tt=$(curl -s --max-time 30 -o "$TMPD/fr-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/procs?instance=$PRI&from=$F7&to=$T7&${what#*:}")
     [[ "${tt%% *}" == 200 ]] || fail "F: the procedures ${what%%:*} answered ${tt%% *}: $(head -c 300 "$TMPD/fr-$run.json")"
     python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || SLOW+=" procs/${what%%:*}:${tt##* }"
     TR+=" ${what%%:*}:${tt##* }"
   done
-  [[ "${what%%:*}" == compare ]] && { c3=$(jq '(.compare.rows // []) | length' "$TMPD/fr-3.json"); c8=$(jq '(.compare.rows // []) | length' "$TMPD/fr-8.json"); [[ "$c3" -ge 100 && "$c8" == "$c3" ]] || fail "F: the procedures compare returned $c3 rows on run 3 and $c8 on run 8"; }
+  nonempty "$TMPD/fr-8.json" "${what##*part=}" || EMPTY+=" procs/${what%%:*}"
+  if [[ "${what%%:*}" == compare ]]; then
+    c3=$(jq '(.compare.rows // []) | length' "$TMPD/fr-3.json"); [[ "$c3" -ge 100 ]] || fail "F: the procedures compare returned $c3 rows on run 3 (100 or more wanted)"
+    cmp -s <(jq -S .compare "$TMPD/fr-3.json") <(jq -S .compare "$TMPD/fr-8.json") || fail "F: run 3's procedures compare differs from run 8's"
+  fi
 done
-echo "     F: the procedures over $NP stored rows (1,000 a read, 14 days), 7 days through the API (s, eight runs each):$TR"
+echo "     F: the procedures over $NP stored rows (1,000 a read, 14 days), 7 days through the API (s, eight runs each, $(ld)):$TR"
 # the Query Store at its ceiling: 1-minute intervals, 250 kept plans each (5 lists of 50), 14 days; 1 % of the rows
 # with failures, split as 0126 stores them
 QI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tqs', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
@@ -609,23 +637,28 @@ pq "INSERT INTO pgvigil.mssql_qs_runtime (instance_id, snapshot_at, interval_end
 psql "$PGDSN" -Xqc "VACUUM (ANALYZE) pgvigil.mssql_qs_runtime, pgvigil.mssql_qs_interval" >/dev/null
 NQ=$(pq "SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = $QI")
 TQ=""
-F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); F1=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+NOW=$(date -u +%s); F7=$(iso $((NOW - 604800))); F1=$(iso $((NOW - 3600))); T7=$(iso "$NOW")   # one clock read for every edge
 for what in "totals:from=$F7&to=$T7&part=totals" "compare:from=$F7&to=$T7&compare=week&part=compare" "regressed:from=$F1&to=$T7&part=regressed" "skipped:from=$F1&to=$T7&part=regressed_skipped" "cwin:from=$F7&to=$T7&compare=week&part=compare_windows"; do
   for run in 1 2 3 4 5 6 7 8; do
-    tt=$(curl -s -o "$TMPD/fq-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/querystore?instance=$QI&${what#*:}")
+    tt=$(curl -s --max-time 30 -o "$TMPD/fq-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/querystore?instance=$QI&${what#*:}")
     [[ "${tt%% *}" == 200 ]] || fail "F: the Query Store ${what%%:*} answered ${tt%% *}: $(head -c 300 "$TMPD/fq-$run.json")"
     python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || SLOW+=" querystore/${what%%:*}:${tt##* }"
     TQ+=" ${what%%:*}:${tt##* }"
   done
+  nonempty "$TMPD/fq-8.json" "${what##*part=}" || EMPTY+=" querystore/${what%%:*}"
 done
-echo "     F: the Query Store over $NQ stored rows (14 days, 1-minute intervals, 250 kept plans each), through the API (s, eight runs each):$TQ"
-[[ -z "$SLOW" ]] || fail "F: past the 10 s line:$SLOW (every timing above)"
-echo "ok   F: every timed part under 10 s (above)"
-# plan_cache_mode itself (the join review d10a's proof of (a)): one psql session PREPAREs the plan-cache compare's own
-# SQL (read from the Go source), EXECUTEs it six times over 7 days at 761 rows a read and once at 3,000, and
-# reads pg_prepared_statements (PostgreSQL 14 on): no generic plan under force_custom_plan, one or more under auto (the
-# row fails if the setting changes nothing); then the planning cost under it: EXPLAIN (SUMMARY) of the Findings page's
-# own read of the 16-arm findings view, three times
+echo "     F: the Query Store over $NQ stored rows (14 days, 1-minute intervals, 250 kept plans each), through the API (s, eight runs each, $(ld)):$TQ"
+[[ -z "$SLOW" ]] || fail "F: past the 10 s line:$SLOW (every timing above; $(ld))"
+[[ -z "$EMPTY" ]] || fail "F: a timed part returned no row:$EMPTY"
+echo "ok   F: every timed part under 10 s and each with rows (above)"
+# PostgreSQL's rule on the compare's SQL (not the proof of the UI pool's setting: these sessions set plan_cache_mode
+# themselves through PGOPTIONS, and the product sends the compare under planEach; the pool's own configuration is
+# TestUIPoolConfig's (go test internal/web) and, where pg_stat_statements is preloaded, the plans = calls row below):
+# one psql session PREPAREs the plan-cache compare's own SQL (read from the Go source; its highest parameter must be
+# the six the PREPARE declares), EXECUTEs it six times over 7 days at 761 rows a read and once at 3,000, and reads
+# pg_prepared_statements: no generic plan under force_custom_plan, one or more under auto (on a failure the generic and
+# the custom plan's costs are printed); then the planning cost under force_custom_plan: EXPLAIN (SUMMARY) of the
+# Findings page's own read of the 16-arm findings view, three times
 python3 - "$TMPD" <<'PYEND' || fail "F: the SQL could not be read from the Go source"
 import re, sys
 d = sys.argv[1]
@@ -645,7 +678,11 @@ def lit(src, name):
         if src[k] == '+': i = k + 1; continue
         return ''.join(out)
 pc = open('internal/web/q_mssql_plancache.go').read()
-open(f'{d}/pcc.sql', 'w').write(lit(pc, 'sqlMSSQLPCCompare'))
+pcc = lit(pc, 'sqlMSSQLPCCompare')
+mx = max(int(x) for x in re.findall(r'\$(\d+)', pcc))
+if mx != 6: raise SystemExit(f'sqlMSSQLPCCompare: highest parameter ${mx}, the PREPARE declares 6')
+open(f'{d}/pcc.sql', 'w').write(pcc)
+open(f'{d}/totals.sql', 'w').write(lit(pc, 'sqlMSSQLPCTotals'))
 open(f'{d}/findings.sql', 'w').write(lit(open('internal/web/queries.go').read(), 'sqlFindings'))
 PYEND
 for mode in force_custom_plan auto; do
@@ -659,19 +696,40 @@ done
 PCM_F=$(PGOPTIONS='-c plan_cache_mode=force_custom_plan -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pcm-force_custom_plan.sql") || fail "F: the PREPARE session under force_custom_plan"
 PCM_A=$(PGOPTIONS='-c plan_cache_mode=auto -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pcm-auto.sql") || fail "F: the PREPARE session under auto"
 [[ "$PCM_F" == "0|7" ]] || fail "F: under force_custom_plan pg_prepared_statements reads generic|custom $PCM_F (want 0|7)"
-[[ "${PCM_A%%|*}" -ge 1 ]] || fail "F: under auto the compare stayed custom ($PCM_A generic|custom): the row cannot tell the setting does anything"
+# pcost <mode>: the top node's cost of the compare at 7 days and 761 a read, planned under <mode>
+pcost() { { echo "SET plan_cache_mode = $1;"; echo "PREPARE pcc (int, timestamptz, timestamptz, int, boolean, float8) AS"; cat "$TMPD/pcc.sql"; echo ";"
+    echo "EXPLAIN EXECUTE pcc($IID_761, now() - interval '7 days', now(), NULL, false, 604800);"; } \
+    | PGOPTIONS='-c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f - 2>&1 | head -1 | grep -o 'cost=[0-9.]*\.\.[0-9.]*' || echo 'no cost read'; }
+[[ "${PCM_A%%|*}" -ge 1 ]] || fail "F: under auto the compare stayed custom ($PCM_A generic|custom): the row cannot tell the setting does anything (generic plan $(pcost force_generic_plan), custom plan $(pcost force_custom_plan))"
 { echo "PREPARE pf (int) AS"; cat "$TMPD/findings.sql"; echo ";"; for _ in 1 2 3; do echo "EXPLAIN (SUMMARY ON) EXECUTE pf(NULL);"; done; } > "$TMPD/pf.sql"
-PT=$(PGOPTIONS='-c plan_cache_mode=force_custom_plan -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pf.sql" | grep -o 'Planning Time: [0-9.]* ms' | sed 's/Planning Time: //' | tr '\n' ' ')
+PT=$(PGOPTIONS='-c plan_cache_mode=force_custom_plan -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pf.sql" | grep -o 'Planning Time: [0-9.]* ms' | sed 's/Planning Time: //' | tr '\n' ' ') \
+  || fail "F: no Planning Time from EXPLAIN (SUMMARY) of the findings read"
 [[ -n "$PT" ]] || fail "F: no Planning Time from EXPLAIN (SUMMARY) of the findings read"
-echo "ok   F: plan_cache_mode: the plan-cache compare PREPAREd and run 6 x 7 days at 761 + 1 x 7 days at 3,000 reads generic|custom $PCM_F under force_custom_plan and $PCM_A under auto; the Findings page's read plans in $PT under it (each read pays it)"
+echo "ok   F: PostgreSQL's rule on the compare's SQL: PREPAREd and run 6 x 7 days at 761 + 1 x 7 days at 3,000 it reads generic|custom $PCM_F under force_custom_plan and $PCM_A under auto; the Findings page's read plans in $PT under force_custom_plan (each read pays it)"
+# the UI pool's own setting through serve (the join review d10b, b1 (ii)): F's eight totals runs at 3,000 (and every
+# earlier totals read) were planned once each - plans = calls in pg_stat_statements for the totals' SQL as Go holds it.
+# A pool on auto fails it only where a generic plan was kept (the configuration itself is TestUIPoolConfig's)
+if [[ "$PSS" == on ]]; then
+  psql "$PGDSN" -Xqc "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" >/dev/null
+  CP=$(psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -v sql="$(cat "$TMPD/totals.sql")" <<'PSQLEND'
+SELECT coalesce(sum(calls), 0) || '|' || coalesce(sum(plans), 0) FROM pg_stat_statements
+ WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+   AND btrim(regexp_replace(query, '\s+', ' ', 'g')) = btrim(regexp_replace(:'sql', '\s+', ' ', 'g'));
+PSQLEND
+) || fail "F: the pg_stat_statements read"
+  [[ "${CP%%|*}" -ge 8 && "${CP%%|*}" == "${CP##*|}" ]] || fail "F: serve's totals read calls|plans $CP in pg_stat_statements (want 8 or more calls, each planned)"
+  echo "ok   F: the UI pool through serve: the plan cache's totals ran $CP calls|plans (pg_stat_statements, track_planning on): every run planned"
+else
+  echo "     F: NOT PROVEN: plans = calls through serve's pool (pg_stat_statements is not in the box's shared_preload_libraries); the pool's configuration is TestUIPoolConfig's"
+fi
 
 echo "== H. DONE-2's reads: the heatmap, the histories, the Query Store overhead =="
 # H1. the heatmap's cells = a hand count of the stored samples (F's seed at 761 rows a read, 24 hours: 10-minute bins)
-HF=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:00Z); HT=$(date -u +%Y-%m-%dT%H:%M:00Z)
+NOW=$(( $(date -u +%s) / 60 * 60 )); HF=$(iso $((NOW - 86400))); HT=$(iso "$NOW")   # one clock read, on the minute
 for metric in duration executions; do
   api "mssql/plancache?instance=$IID_761&from=$HF&to=$HT&part=heatmap&metric=$metric" "h-$metric.json"
 done
-psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "COPY (SELECT extract(epoch FROM snapshot_at)::bigint, database_id, query_key, executions, duration_us
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "COPY (SELECT floor(extract(epoch FROM snapshot_at))::bigint, database_id, query_key, executions, duration_us
     FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID_761 AND snapshot_at > '$HF' AND snapshot_at <= '$HT' AND executions > 0) TO STDOUT WITH CSV" > "$TMPD/h.csv"
 python3 - "$TMPD" <<'PYEND' || fail "H: the heatmap's cells differ from the hand count (above)"
 import sys, csv, json
@@ -709,38 +767,74 @@ for metric in ('duration', 'executions'):
     print(f"H {metric}: {len(got)} cells of {n_cells} = the hand count over {len(rows)} stored samples (distinct queries {sum(v[0] for v in hand.values())})")
 PYEND
 echo "ok   H: the heatmap's cells (duration and executions, 24 h, 10-minute bins) = a hand count of the stored samples: distinct (database, query) per cell, the most-executed by executions summed, the newest 1,000"
+# H1 on a PostgreSQL 13 repository (the repository's floor; the join review d10b, a1): a throwaway postgres:13 container
+# migrated by this binary, H1's samples copied in, served on its own port without the login: its heatmap cells = the
+# box's (PostgreSQL 18), and date_bin (14+) is refused there, so the row would have caught the old binning
+printf 'POSTGRES_PASSWORD=%s\n' "$(pw)" > "$TMPD/pg13.env"
+P13PW=$(sed 's/^POSTGRES_PASSWORD=//' "$TMPD/pg13.env")
+docker run -d --name "$PG13" --label "$LBL" --memory 1g --env-file "$TMPD/pg13.env" -p 127.0.0.1::5432 "$IMG_PG13" >/dev/null || fail "H: the PostgreSQL 13 container ($IMG_PG13)"
+PORT13=$(docker port "$PG13" 5432/tcp | head -1 | sed 's/.*://')
+DSN13="host=127.0.0.1 port=$PORT13 user=postgres dbname=postgres"
+p13() { PGPASSWORD="$P13PW" psql "$DSN13" -XAtq -v ON_ERROR_STOP=1 "$@"; }
+end=$((SECONDS + 120)); until p13 -c "SELECT 1" >/dev/null 2>&1; do
+  (( SECONDS < end )) || { docker logs --tail 40 "$PG13" >&2 2>&1 || true; fail "H: PostgreSQL 13 did not take a login in 120 s"; }; sleep 1; done
+V13=$(p13 -c "SHOW server_version_num")
+[[ "$V13" -ge 130000 && "$V13" -lt 140000 ]] || fail "H: the PostgreSQL 13 container reports server_version_num $V13"
+if p13 -c "SELECT date_bin('10 minutes', now(), TIMESTAMPTZ '1970-01-01 00:00:00+00')" >"$TMPD/db13.out" 2>&1; then fail "H: date_bin answered on PostgreSQL $V13"; fi
+grep -q 'does not exist' "$TMPD/db13.out" || { cat "$TMPD/db13.out" >&2; fail "H: date_bin on PostgreSQL $V13 failed, not as missing"; }
+printf 'repository:\n  dsn: "%s"\ninstances: []\n' "$DSN13" > "$TMPD/m13.yaml"
+PGPASSWORD="$P13PW" "$TMPD/pgvigil" migrate -config "$TMPD/m13.yaml" >"$TMPD/migrate13.out" 2>&1 || { tail -20 "$TMPD/migrate13.out" >&2; fail "H: migrate on PostgreSQL $V13"; }
+I13=$(p13 -c "SELECT pgvigil.ensure_instance('pgvq-t761', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+p13 -c "SELECT pgvigil.ensure_month_partition('mssql_pc_sample', '$HF'), pgvigil.ensure_month_partition('mssql_pc_sample', '$HT')" >/dev/null
+PC_COLS="snapshot_at, database_id, query_key, database_name, executions, cpu_us, duration_us, logical_reads, physical_reads, logical_writes, row_count, spills, plans, interval_secs"
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "COPY (SELECT $I13, $PC_COLS FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID_761 AND snapshot_at > '$HF' AND snapshot_at <= '$HT') TO STDOUT" \
+  | p13 -c "COPY pgvigil.mssql_pc_sample (instance_id, $PC_COLS) FROM STDIN" || fail "H: H1's samples into PostgreSQL $V13"
+N13=$(p13 -c "SELECT count(*) FROM pgvigil.mssql_pc_sample WHERE instance_id = $I13")
+W13=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+PGPASSWORD="$P13PW" "$TMPD/pgvigil" serve -config "$TMPD/m13.yaml" -no-login -listen "127.0.0.1:$W13" >"$TMPD/serve13.out" 2>&1 & S13=$!; BG+=($S13)
+for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$W13/api/session" 2>/dev/null && break; sleep 0.1; done
+kill -0 "$S13" 2>/dev/null || { cat "$TMPD/serve13.out" >&2; fail "H: serve on PostgreSQL $V13 exited"; }
+for metric in duration executions; do
+  c=$(curl -s --max-time 30 -o "$TMPD/h13-$metric.json" -w '%{http_code}' -H 'X-Pgvigil: 1' "http://127.0.0.1:$W13/api/mssql/plancache?instance=$I13&from=$HF&to=$HT&part=heatmap&metric=$metric")
+  [[ "$c" == 200 ]] || fail "H: the heatmap ($metric) on PostgreSQL $V13 answered $c: $(head -c 300 "$TMPD/h13-$metric.json")"
+  nonempty "$TMPD/h13-$metric.json" heatmap || fail "H: the heatmap ($metric) on PostgreSQL $V13 has no cell"
+  cmp -s <(jq -S .heatmap "$TMPD/h-$metric.json") <(jq -S .heatmap "$TMPD/h13-$metric.json") \
+    || { diff <(jq -c '.heatmap.rows[]' "$TMPD/h-$metric.json") <(jq -c '.heatmap.rows[]' "$TMPD/h13-$metric.json") | head -6 >&2; fail "H: the heatmap ($metric) on PostgreSQL $V13 differs from PostgreSQL 18's (above)"; }
+done
+kill "$S13" 2>/dev/null || true; docker rm -f -v "$PG13" >/dev/null 2>&1 || true
+echo "ok   H: on PostgreSQL $V13 (date_bin refused there) the heatmap's cells over the same $N13 samples = PostgreSQL 18's, duration and executions ($(jq '.heatmap.rows | length' "$TMPD/h13-duration.json") and $(jq '.heatmap.rows | length' "$TMPD/h13-executions.json") cells)"
 # H2. the heatmap timed at 24 h and 7 days at 761 and 3,000 rows a read (eight runs each: past the fifth, where a
 # prepared statement may turn generic), the fail line 10 s
-TH=""
+TH=""; HSLOW=""; HEMPTY=""   # a slow run or an empty read fails H after the last timing (one run names them all)
 for spec in 761 3000; do
   eval "IID=\$IID_$spec"
   for span in 24h 7d; do
-    [[ $span == 24h ]] && HF=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:%SZ) || HF=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ)
-    HT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    NOW=$(date -u +%s); [[ $span == 24h ]] && HF=$(iso $((NOW - 86400))) || HF=$(iso $((NOW - 604800))); HT=$(iso "$NOW")   # one clock read
     for run in 1 2 3 4 5 6 7 8; do
-      tt=$(curl -s -o "$TMPD/hh.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$HF&to=$HT&part=heatmap")
+      tt=$(curl -s --max-time 30 -o "$TMPD/hh.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$HF&to=$HT&part=heatmap")
       [[ "${tt%% *}" == 200 ]] || fail "H: the heatmap at $spec rows a read over $span answered ${tt%% *}: $(head -c 300 "$TMPD/hh.json")"
-      python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "H: the heatmap at $spec rows a read over $span took ${tt##* } s (the fail line is 10 s)"
+      python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || HSLOW+=" heatmap/$spec/$span:${tt##* }"
       TH+=" $spec/$span:${tt##* }"
     done
+    nonempty "$TMPD/hh.json" heatmap || HEMPTY+=" heatmap/$spec/$span"
   done
 done
-echo "ok   H: the heatmap through the API (s, eight runs each):$TH"
+echo "     H: the heatmap through the API (s, eight runs each, $(ld)):$TH"
 # a range past PerformanceMonitor's 168 h reach is refused with its words
 c=$(curl -s -o "$TMPD/h8.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_761&from=$(date -u -d '-8 days' +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)&part=heatmap")
 [[ "$c" == 400 ]] && grep -q 'pick 7 days or less' "$TMPD/h8.json" || fail "H: 8 days answered $c: $(head -c 200 "$TMPD/h8.json")"
 echo "ok   H: 8 days answered 400 'the heatmap reaches 7 days: pick 7 days or less'"
 # H3. one query's history (plan cache) and one procedure's history: their executions = a hand sum; 7 days timed
-F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+NOW=$(date -u +%s); F7=$(iso $((NOW - 604800))); T7=$(iso "$NOW")   # one clock read
 # (the procedures' seed is F's: 1,000 a read, 14 days)
 TY=""
 for spec in 761 3000; do
   eval "IID=\$IID_$spec"
   read -r KDB KEY <<<"$(pq "SELECT database_id, query_key FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID AND snapshot_at > now() - interval '1 hour' ORDER BY executions DESC, query_key LIMIT 1" | tr '|' ' ')"
   for run in 1 2 3 4 5 6 7 8; do
-    tt=$(curl -s -o "$TMPD/y1.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$F7&to=$T7&db_id=$KDB&key=$KEY&part=history")
+    tt=$(curl -s --max-time 30 -o "$TMPD/y1.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$F7&to=$T7&db_id=$KDB&key=$KEY&part=history")
     [[ "${tt%% *}" == 200 ]] || fail "H: the plan cache history at $spec answered ${tt%% *}: $(head -c 300 "$TMPD/y1.json")"
-    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "H: the plan cache history at $spec took ${tt##* } s (the fail line is 10 s)"
+    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || HSLOW+=" history/query/$spec:${tt##* }"
     TY+=" query/$spec:${tt##* }"
   done
   hand=$(pq "SELECT coalesce(sum(executions), 0) FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID AND database_id = $KDB AND query_key = '$KEY' AND snapshot_at > '$F7' AND snapshot_at <= '$T7'")
@@ -749,11 +843,14 @@ for spec in 761 3000; do
   steps=$(jq '.history.rows | length' "$TMPD/y1.json"); [[ $steps -ge 100 && $steps -le 130 ]] || fail "H: the history has $steps steps (about 120 wanted)"
 done
 for run in 1 2 3 4 5 6 7 8; do
-  tt=$(curl -s -o "$TMPD/y2.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/procs?instance=$PRI&from=$F7&to=$T7&db_id=6&object=1001&part=history")
+  tt=$(curl -s --max-time 30 -o "$TMPD/y2.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/procs?instance=$PRI&from=$F7&to=$T7&db_id=6&object=1001&part=history")
   [[ "${tt%% *}" == 200 ]] || fail "H: the procedure history answered ${tt%% *}: $(head -c 300 "$TMPD/y2.json")"
-  python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "H: the procedure history took ${tt##* } s (the fail line is 10 s)"
+  python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || HSLOW+=" history/procedure:${tt##* }"
   TY+=" procedure:${tt##* }"
 done
+[[ -z "$HSLOW" ]] || fail "H: past the 10 s line:$HSLOW (every timing above; $(ld))"
+[[ -z "$HEMPTY" ]] || fail "H: a timed heatmap read held no cell:$HEMPTY"
+echo "ok   H: every heatmap and history timing under 10 s, each heatmap read with cells (above)"
 hand=$(pq "SELECT sum(executions) FROM pgvigil.mssql_proc_sample WHERE instance_id = $PRI AND database_id = 6 AND object_id = 1001 AND snapshot_at > '$F7' AND snapshot_at <= '$T7'")
 python3 - "$TMPD/y2.json" "$hand" <<'PYEND' || fail "H: the procedure history (above)"
 import sys, json
@@ -767,7 +864,7 @@ for r in rows:
         print('DIFF step', r); sys.exit(1)
 print(f"H procedure history: {len(rows)} steps, {got} executions = the hand sum; Avg Duration 1 ms, Avg CPU 0.7 ms, Duration (ms/s) = Executions (per second) at 1 ms each")
 PYEND
-echo "ok   H: the histories' executions = the hand sums (one query at 761 and 3,000 rows a read, one procedure of 1,000 a read), 7 days through the API (s, eight runs each):$TY"
+echo "ok   H: the histories' executions = the hand sums (one query at 761 and 3,000 rows a read, one procedure of 1,000 a read), 7 days through the API (s, eight runs each, $(ld)):$TY"
 # H4. the Query Store overhead and memory clerk on synthetic reads: one an hour of one-minute wait reads, QDS_STMT
 # 100 ms and 2 tasks in each, QDS_DB_DISK 50 ms in 30 of them, two of PerformanceMonitor's sleep waits and a
 # PAGEIOLATCH_SH left out; three clerk reads, MEMORYCLERK_QUERYDISKSTORE 2 MB then 4 MB, then out of the top 25
