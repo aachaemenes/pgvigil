@@ -40,7 +40,12 @@
 #      and serve's watchdog sends it (the collector that would is the one stopped); started again: up, cleared
 #   G  purge: 'purge not run in 2 days' on an instance seen 3 days ago; `pgvigil purge` records its run (an old
 #      partition dropped and named); the finding gone
-# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G); unset = all.
+#   SC the scale arm (task 201 DONE-2), last: eight more databases and logins on the target server (t5-t12), the
+#      service restarted on 12 instances, each with 'activity' every 10 s:
+#      SC5  5 of 12 cut (under half: only the 5-or-more arm can raise the parent): the parent once on U and S, its
+#           text '5 of the 12', the five's own alerts 0; after the lift the parent resolved once, the five nothing.
+#      SC4  4 of 12 cut: no parent, nothing held; 'authentication failing' once each (S: t1 once); resolved once each.
+# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G SC5 SC4); unset = all.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .vis/spool-evidence .vis/collector-shots   # fetched back by the box job even when no case wrote to them
@@ -501,6 +506,65 @@ page=$(api '' | jget repository | python3 -c "import json,sys; r=json.load(sys.s
 [[ "$before" == never && -n "$row" && "$row" == *"wait_sample_$old"* && "$after" == 0 && "${page%% *}" == True ]] \
   && ok "G purge: the finding said '$before'; the run: $row; the page: $page; the finding gone" \
   || fail "G purge: finding before '$before', run '$row', after $after, page '$page': $(tail -2 "$WORK/purge.out" | tr '\n' ' ')"
+
+fi
+
+# ---- SC the scale arm (the last cases: they change the service's instance list) ------------------------------------
+if want SC5 || want SC4; then
+for n in 5 6 7 8 9 10 11 12; do psql "$TDSN" -Xq -v ON_ERROR_STOP=1 -c "create role l$n login password 'p$n' in role pg_monitor" -c "create database db$n owner l$n" >/dev/null; done
+instances12() { # $1 host, $2 port: t1-t12, each with 'activity' every 10 s (a cut at :20 reaches every cut instance in its first minute)
+  local n; for n in $(seq 1 12); do printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n    schedules: {activity: 10s}\n' "$n" "$1" "$2" "$n" "$n" "$n"; done
+}
+{ printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\ninstances:\n' "$PW"; instances12 target 5432; alerts_of /work; } > "$WORK/svc12.yaml"
+docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc12.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
+ALL12="t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12"; CUT5="t1|t2|t3|t4|t5"; CUT4="t1|t2|t3|t4"
+# the 12 collected by the restarted service: two written minutes each in the last 3
+waitfor 300 "SELECT count(*) = 12 FROM (SELECT l.instance_id FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name ~ '^t([1-9]|1[0-2])\$' AND l.minute > now() - interval '3 minutes' AND l.runs > 0 GROUP BY l.instance_id HAVING count(*) >= 2) x" \
+  || fail "SC: the 12 instances not all collected 300 s after the restart: $(q "SELECT count(DISTINCT l.instance_id) FROM pgvigil.collector_load l WHERE l.minute > now() - interval '3 minutes'") seen"
+# sc_clean: every login back, no parent, nothing held, no refusal standing, a pass after it; the spools emptied
+sc_clean() { # shellcheck disable=SC2086
+  logins login $ALL12; waitfor 600 "$NOPARENT" || fail "SC: not clean 600 s after the logins came back"; sleep 70; rm -f "$WORK"/spool*/*; }
+# sc_k NAMES EPOCH: how many of the instances NAMES ('a|b') had a failed run in the minute of EPOCH
+sc_k() { q "SELECT count(DISTINCT l.instance_id) FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name ~ '^($1)\$' AND l.failures > 0 AND l.minute = date_trunc('minute', to_timestamp($2))"; }
+
+if want SC5; then
+  sc_clean; pin_at 20; logins nologin t1 t2 t3 t4 t5; sc_t0=$SECONDS; sc_c0=$(date -u +%s)
+  sc_tp=$(within 185 "$WORK/spool" firing "$PAR" "")
+  sc_left=$(( 300 - (SECONDS - sc_t0) )); if (( sc_left > 0 )); then sleep "$sc_left"; fi
+  snap SC5; sc_L=$WORK/SC5.lst
+  sc_up=$(cnt "$WORK/spool" firing "$PAR" ""); sc_sp=$(cnt "$WORK/spool2" firing "$PAR" "")
+  sc_pr=$(per "$WORK/spool" firing "$CUT5"); sc_pr2=$(per "$WORK/spool2" firing t1)
+  sc_k5=$(sc_k "$CUT5" "$sc_c0")
+  sc_det=$(q "SELECT coalesce(max(split_part(detail, ' in the minute', 1)), '-') FROM pgvigil.collector_parent WHERE why = 'instances failing together'")
+  logins login t1 t2 t3 t4 t5
+  waitfor 480 "$NOPARENT" || fail "SC5: the parent still standing 480 s after the lift"
+  SKIP=$sc_L within 240 "$WORK/spool" resolved "$PAR" "" >/dev/null; SKIP=$sc_L within 60 "$WORK/spool2" resolved "$PAR" "" >/dev/null
+  sleep 60   # one more pass: nothing of the five may follow the parent's recovery
+  sc_ur=$(SKIP=$sc_L cnt "$WORK/spool" resolved "$PAR" ""); sc_sr=$(SKIP=$sc_L cnt "$WORK/spool2" resolved "$PAR" "")
+  sc_af=$(SKIP=$sc_L per "$WORK/spool" firing "$CUT5"); sc_ar=$(per "$WORK/spool" resolved "$CUT5")
+  keep SC5
+  if [[ "$sc_tp" -ge 0 && "$sc_up" == 1 && "$sc_sp" == 1 && "$sc_k5" == 5 && "$sc_pr" == 0 && "$sc_pr2" == 0 && "$sc_det" == "5 of the 12 instance(s) pgvigil-svc ran failed every run" && "$sc_ur" == 1 && "$sc_sr" == 1 && "$sc_af" == 0 && "$sc_ar" == 0 ]]; then
+    ok "SC5: 5 of 12 cut (t1-t5, under half) at :20 for 5 min - 'collector or network' sent $sc_tp s after the cut, once on U and once on S, its text '$sc_det'; $sc_k5 of the five failed a run in the cut's minute and their own alerts are $sc_pr (S: t1 $sc_pr2); after the lift the parent resolved once on each, the five sent $sc_af, resolved $sc_ar"
+  else
+    fail "SC5: parent $sc_tp s after the cut (want 0-185), U $sc_up / S $sc_sp (want 1 / 1), text '$sc_det' (want '5 of the 12 instance(s) pgvigil-svc ran failed every run'), $sc_k5 of the five failed in the cut's minute (want 5), their own alerts $sc_pr / S $sc_pr2 (want 0 / 0); after the lift: parent resolved U $sc_ur / S $sc_sr (want 1 / 1), the five sent $sc_af resolved $sc_ar (want 0 0): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-700)"
+  fi
+fi
+if want SC4; then
+  sc_clean; pin_at 20; logins nologin t1 t2 t3 t4; sc_t0=$SECONDS; sc_tw=-1
+  while (( SECONDS - sc_t0 < 125 )); do [[ "$(cnt "$WORK/spool" firing "authentication failing" "$CUT4")" == 4 ]] && { sc_tw=$((SECONDS - sc_t0)); break; }; sleep 5; done
+  sc_left=$(( 240 - (SECONDS - sc_t0) )); if (( sc_left > 0 )); then sleep "$sc_left"; fi   # the cut stands 4 min: nothing more goes out
+  sc_a=$(cnt "$WORK/spool" firing "authentication failing" "$CUT4"); sc_c=$(cnt "$WORK/spool" firing "collection failing|server unreachable" "$CUT4" "$(plain)")
+  sc_p=$(cnt "$WORK/spool" firing "$PAR" ""); sc_h=$(q "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances)"); sc_s=$(cnt "$WORK/spool2" firing "authentication failing" t1)
+  logins login t1 t2 t3 t4; waitfor 300 "$NOPARENT" || true
+  within 240 "$WORK/spool" resolved "authentication failing" "$CUT4" 4 >/dev/null; within 60 "$WORK/spool2" resolved "authentication failing" t1 >/dev/null
+  sc_r=$(cnt "$WORK/spool" resolved "authentication failing" "$CUT4"); sc_rs=$(cnt "$WORK/spool2" resolved "authentication failing" t1)
+  keep SC4
+  [[ "$sc_tw" -ge 0 && "$sc_a" == 4 && "$sc_c" == 0 && "$sc_p" == 0 && "$sc_h" == f && "$sc_s" == 1 && "$sc_r" == 4 && "$sc_rs" == 1 ]] \
+    && ok "SC4: 4 of 12 cut (t1-t4) at :20 for 4 min - no parent, nothing held; 'authentication failing' once each within $sc_tw s of the cut (S: t1 once), no 'collection failing' / 'server unreachable'; resolved once each after (S: t1 once)" \
+    || fail "SC4: the four auth after $sc_tw s (want 0-125), U auth $sc_a (want 4), collection / unreachable $sc_c (want 0), parent $sc_p (want 0), held $sc_h (want f), S auth $sc_s (want 1); resolved U $sc_r (want 4), S $sc_rs (want 1): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-500)"
+fi
+# shellcheck disable=SC2086
+logins login $ALL12
 
 fi
 
