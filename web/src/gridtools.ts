@@ -282,9 +282,10 @@ export function toMarkdown(s: Sheet): string {
 const rgb = (argb: string) => '#' + argb.slice(2).toLowerCase();
 const html = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // toHtml: a table that carries its colours in each cell's own style, so a mail, a document or a spreadsheet it is
-// pasted into shows them: the export's header blue, each status fill with its text colour, a link cell's light fill and blue
+// pasted into shows them: the export's header blue, each status fill with its text colour, a link cell's light fill and blue;
+// no cell border (DBA Dash's copy draws none)
 export function toHtml(s: Sheet): string {
-  const base = 'border:1px solid #c8ccd4;padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap';
+  const base = 'padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap';
   const th = (c: string) => `<th style="${base};background:${rgb(headFill)};color:#ffffff;font-weight:bold;text-align:left">${html(c)}</th>`;
   const td = (c: Cell | undefined, j: number) => {
     const st: Status | undefined = c?.status;
