@@ -84,12 +84,9 @@ type Expected struct {
 // DefaultStaleSecs is the age after which a collection with no known interval is stale.
 const DefaultStaleSecs = 3 * 3600
 
-// Open connects to the repository read-only and, with o.Login, checks that the login can work:
-// the serve login must hold pgvigil_auth and the schema must carry 0015.
-func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server, error) {
-	if strings.TrimSpace(dsn) == "" {
-		return nil, errors.New("repository dsn is empty")
-	}
+// uiPoolConfig is the UI pool's configuration: the session settings serve sends at every connect and the pool's
+// size. Open connects with it; TestUIPoolConfig reads it, so a setting dropped here fails a test.
+func uiPoolConfig(dsn string, o Options) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("repository dsn: %w", err)
@@ -103,8 +100,10 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	rp["statement_timeout"] = "15000"
 	// every run of a statement planned with its own values (the join review d10a, verdict (a)): pgx prepares each
 	// statement once per connection, and from its sixth run the server may keep a generic plan, which for a 7-day
-	// window at 3,000 plan-cache rows a read took 18-20 s against 2.6 s (s177j-spike4), past the 15 s above; behind
-	// PgBouncer in transaction mode it needs track_extra_parameters, as statement_timeout, jit and lock_timeout do
+	// window at 3,000 plan-cache rows a read took 18-20 s against 2.6 s (s177j-spike4), past the 15 s above. Behind
+	// PgBouncer (any pool mode) every startup setting set here must be listed in its track_extra_parameters (1.20+):
+	// one in neither that list nor ignore_startup_parameters refuses the connection, one in ignore_startup_parameters
+	// is dropped silently (the README's serve section says what to set before 1.20)
 	rp["plan_cache_mode"] = "force_custom_plan"
 	rp["jit"] = "off" // the findings view (sixteen UNION arms of CASE-heavy rules) crosses jit_above_cost: LLVM compiled 1,289 functions per read, 147 s against 3 s without (2026-11-09)
 	rp["lock_timeout"] = "2000"
@@ -116,6 +115,19 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	// by uninstall -drop-repository's session check, as docs/uninstall.md says (the join review w9e, finding 8)
 	if cfg.MinConns < 1 {
 		cfg.MinConns = 1
+	}
+	return cfg, nil
+}
+
+// Open connects to the repository read-only and, with o.Login, checks that the login can work:
+// the serve login must hold pgvigil_auth and the schema must carry 0015.
+func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("repository dsn is empty")
+	}
+	cfg, err := uiPoolConfig(dsn, o)
+	if err != nil {
+		return nil, err
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 )
 
 // The Collector page (task 201, migration 0121; PerformanceMonitor's Collection Health as pgvigil's own page): the
-// service (each run of a collector seen in the last 8 days: up, stopped or not seen; serve's watchdog on or off), the
+// service (each run of a collector seen in the last 8 days: up, stopped, not seen, or retired - its host's collector uninstalled; serve's watchdog on or off), the
 // findings of the collectors and the repository, each collection's runs over 24 h (failures, p50 / p95 duration from
 // the beat's histograms, rows written, the read-to-store lag), the runs per minute, pgvigil's own load on each
 // monitored server (connection attempts and connections opened per minute, logins refused), and the repository (size, growth per day, rows written per minute, the largest
@@ -16,9 +16,9 @@ import (
 // sqlCollectors: every run of a collector seen in the last 8 days, the live ones first
 const sqlCollectors = `
 SELECT s.collector_id, s.host, s.os, s.runs_as, s.version, s.pid, s.started_at, s.beat_at, s.beat_age_secs, s.state,
-       s.stopped_at, s.mem_bytes, s.goroutines, s.instances, s.repo_conns
+       s.stopped_at, s.retired_at, s.mem_bytes, s.goroutines, s.instances, s.repo_conns
   FROM pgvigil.collector_status s
- ORDER BY CASE s.state WHEN 'up' THEN 1 WHEN 'not seen' THEN 2 ELSE 3 END, s.beat_at DESC`
+ ORDER BY CASE s.state WHEN 'up' THEN 1 WHEN 'not seen' THEN 2 WHEN 'retired' THEN 4 ELSE 3 END, s.beat_at DESC`
 
 // sqlWatchdog: serve's watchdog ($1: on, off: <why>; empty outside serve)
 const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`

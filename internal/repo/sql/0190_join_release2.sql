@@ -143,7 +143,12 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_memory', at FROM pgvigil.mssql_memory_findings
     UNION ALL
     -- task 177 D30 (0118): Darling's alert thresholds (PerformanceMonitor's alert set) over the stored reads
-    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.darling_alert_findings
+    SELECT d.instance_id, d.severity, d.setting, d.value, d.is_set, d.suggested, d.platforms, d.detail, d.source, d.at FROM pgvigil.darling_alert_findings d
+     -- task 201 (the join fold): an instance has ONE 'server unreachable'. Where a collector that beats covers the failed
+     -- read (0121's collector_covers) the connect failure is 0121's to report - 'authentication failing' for a refused
+     -- login, 'server unreachable' after 3 failed connects in a row - with its streak and its place under 'collector or
+     -- network'; 0118's own stays for an instance no heartbeat covers (a `pgvigil collect` on a schedule)
+     WHERE NOT (d.source = 'collector' AND d.setting = 'server unreachable' AND pgvigil.collector_covers(d.instance_id, d.at))
     UNION ALL
     -- task 177 D14 (0124): other processes holding the CPU, a transaction open for a long time, slow data file writes
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_cpu', at FROM pgvigil.mssql_cpu_findings
@@ -413,9 +418,10 @@ END $$;
 
 -- task 201 (0121): alert_findings with the repository-wide findings (source 'pgvigil repository', no instance: each
 -- collector's 'collector or network', 'purge not run in 2 days'), keyed as instance 0 (alert_finding_key of a NULL
--- instance is NULL) and named 'pgvigil'.
+-- instance is NULL) and named 'pgvigil'. The key is pgvigil.alert_key (0121): 0059's, but for 'collector or network',
+-- whose value names a host and keeps its digits (the parents of 'pgv-1' and 'pgv-2' shared one key).
 CREATE OR REPLACE VIEW pgvigil.alert_findings AS
-SELECT pgvigil.alert_finding_key(coalesce(f.instance_id, 0), f.source, f.setting, f.value) AS finding_key,
+SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding_key,
        f.instance_id, coalesce(i.name, 'pgvigil') AS instance, coalesce(t.tags, '{}'::text[]) AS tags,
        f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at
   FROM (SELECT x.instance_id, x.severity, x.setting, x.value, x.suggested, x.detail, x.source, x.at FROM pgvigil.findings x
@@ -498,4 +504,21 @@ LANGUAGE sql STABLE SET jit = off AS $$
               AND EXISTS (SELECT 1 FROM pgvigil.collection_dates d
                            WHERE d.instance_id = s.instance_id AND d.status = 'ok' AND d.snapshot_at > s.missing_since)))
   ORDER BY 1, 2, 6, 5
+$$;
+
+-- task 201, the join fold (review 201a finding 5): a rule that names an instance never matches a repository-wide
+-- alert. Those rows have no instance (source 'pgvigil repository': each collector's 'collector or network', 'purge not
+-- run in 2 days') and are shown under the name 'pgvigil', which a real instance may carry too - the repository's own
+-- server, monitored: a blackout for its maintenance held the parent on every channel. No name is impossible for an
+-- instance of pgvigil.yaml but a blank one, so the test is bound to the row, not to a name. 0073's function with that
+-- one change; alert_due, ack_hold and the alert page's matches all go through it.
+CREATE OR REPLACE FUNCTION pgvigil.ack_rule_matches(a pgvigil.acks, p_instance text, p_tags text[], p_finding_key text,
+                                                    p_source text, p_setting text, p_value text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT (a.instance_name IS NULL OR (a.instance_name = p_instance AND p_source IS DISTINCT FROM 'pgvigil repository'))
+     AND (a.tag IS NULL OR a.tag = ANY (coalesce(p_tags, '{}')))
+     AND (a.finding_key IS NULL OR a.finding_key = p_finding_key)
+     AND (a.check_key IS NULL OR lower(a.check_key) = lower(coalesce(p_source, '')) OR lower(a.check_key) = lower(coalesce(p_setting, '')))
+     AND (a.match_text IS NULL
+          OR strpos(lower(concat_ws(' ', p_source, p_setting, p_value)), lower(a.match_text)) > 0)
 $$;
