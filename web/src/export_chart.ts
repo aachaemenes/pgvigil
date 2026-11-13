@@ -15,7 +15,9 @@ export interface ChartPicture {
   // draw: the picture at `scale` times its CSS size (w x h CSS px), a PNG data URL; null when it cannot be drawn
   draw(scale: number): { png: string; w: number; h: number } | null;
 }
-export type PictureBox = HTMLElement & { pgvPicture?: ChartPicture };
+// pgvNumbers: an SVG chart's numbers as its own menu's Export Excel writes them (the rings: every slice), for a chart whose
+// page shows no 'numbers as a table' of its own
+export type PictureBox = HTMLElement & { pgvPicture?: ChartPicture; pgvNumbers?: () => ChartNumbers };
 export const pictureOf = (e: Element): ChartPicture | undefined => (e as PictureBox).pgvPicture;
 
 // SCALE: a picture's pixels per CSS pixel (the lead 19:22, C2 (A): 2x on any screen; it cannot be redrawn by Excel)
@@ -32,7 +34,46 @@ export function pngBytes(url: string): Uint8Array {
 
 // Placed: a picture on the page sheet - its anchor (the row and column of its top left corner, 0-based), its size in CSS
 // px (the anchor's extent), its PNG, its name and alt text ('{sheet:k}' in it: sheet k's name, resolved by the writer)
-export interface Placed { row: number; col: number; w: number; h: number; png: Uint8Array; name: string; descr: string }
+// svg: an SVG chart's picture, its source and its background, rasterized after the page's reads (png empty until then)
+export interface Placed { row: number; col: number; w: number; h: number; png: Uint8Array; name: string; descr: string; svg?: { src: string; bg: string } }
+
+// the custom properties a chart's own SVG takes its colours from (mssql_waits.ts paletteNow: the series palette, the
+// neutral), read under the screen's theme and under the light one: an SVG drawn dark is mapped colour for colour
+export const THEME_COLOURS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8', '--muted'];
+export const themeColours = (): string[] => {
+  const css = getComputedStyle(document.documentElement);
+  return THEME_COLOURS.map(n => css.getPropertyValue(n).trim().toLowerCase());
+};
+// svgSource: an SVG chart (a page's own builder: SQL Server Waits, the rings) as a standalone picture - its CSS size,
+// its words in the page's font and the light theme's text colour ('currentColor' resolved), each palette colour of the
+// screen's theme as the light theme's, its hover titles left out
+export function svgSource(svg: SVGSVGElement, screen: string[], light: string[]): { src: string; w: number; h: number } {
+  const r = svg.getBoundingClientRect(), cs = getComputedStyle(svg);
+  const c = svg.cloneNode(true) as SVGSVGElement;
+  c.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  c.setAttribute('width', String(r.width)); c.setAttribute('height', String(r.height));
+  c.setAttribute('style', `font-family:${cs.fontFamily};color:${cs.color}`);
+  c.querySelectorAll('title').forEach(t => t.remove());
+  let s = new XMLSerializer().serializeToString(c).replace(/currentColor/g, cs.color);
+  const map = new Map(screen.map((col, i) => [col, light[i]] as [string, string]).filter(([a, b]) => a && b && a !== b));
+  if (map.size) s = s.replace(new RegExp([...map.keys()].map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi'), m => map.get(m.toLowerCase()) ?? m);
+  return { src: s, w: r.width, h: r.height };
+}
+// rasterize: an SVG source drawn at `scale` on its background, a PNG
+export function rasterize(src: string, w: number, h: number, scale: number, bg: string): Promise<Uint8Array | null> {
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+      const g = c.getContext('2d');
+      if (!g) { res(null); return; }
+      g.fillStyle = bg; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+      res(pngBytes(c.toDataURL('image/png')));
+    };
+    img.onerror = () => res(null);
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(src);
+  });
+}
 
 const esc = (s: string) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

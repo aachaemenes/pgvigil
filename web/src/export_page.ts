@@ -10,7 +10,8 @@
 // content) is not on this sheet; a grid in it keeps its own sheet (export.ts walk).
 import type { Cell, Look, Meta, Section } from './export';
 import { cellWords, chartSection, headingText, textPx, timeZone, typed } from './export';
-import { pictureOf, pngBytes, SCALE } from './export_chart';
+import { pictureOf, pngBytes, SCALE, svgSource, themeColours } from './export_chart';
+import type { PictureBox } from './export_chart';
 import type { Placed } from './export_chart';
 import { stamp } from './tz';
 import { borderLeftOf, paintOf, textLook } from './export_colours';
@@ -224,9 +225,11 @@ const txt = (v: string, look: Look = {}): Cell => ({ v, kind: 'text', text: v, l
 // pageSheet: the page sheet of #main (root), for the grids `grids` (export.ts walk's elements, in sheet order:
 // sheet k + 2 is grids[k]); a jump to grid k is the cell's `jump`, a closed disclosure's line names its grids' sheets
 // by `sheets` (export.ts resolves both once the sheets are named)
-export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new Map<Element, LookCache>()): PageSheet {
+// screen: the chart colours under the screen's theme (export_chart.ts themeColours), read before the light theme is set
+export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new Map<Element, LookCache>(), screen: string[] = []): PageSheet {
   const blocks: Block[] = [];
   const charts: Section[] = [];
+  let pics = 0;   // the SVG charts' pictures (a uPlot chart's count is its numbers sheet's)
   const muted = (e: Element) => paintOf(e, root).text;
   // the page's muted text colour (--text-muted), read from a probe in the page and removed in the same task
   const probe = root.ownerDocument.createElement('span');
@@ -346,6 +349,7 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
       const head = txt(`Chart: ${title}`, { color: paintOf(h ?? e, root).text, bold: true });
       // the chart drawn again (export_chart.ts): its picture under its line, as wide as the chart on the page, the rows
       // under it kept for its height (15 pt each), its numbers on a sheet of their own after the grids'
+      const rest = (plot: Element) => { for (const c of e.children) if (c !== h && c !== plot && !c.contains(plot)) visit(c); };   // its notes, its legend
       const pic = pictureOf(e), d = pic?.draw(SCALE);
       if (pic && d) {
         const k = grids.length + charts.length;
@@ -354,9 +358,35 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
         const descr = `${title}: ${pic.series().join(', ')}${span}; numbers on sheet {sheet:${k}}`;
         const n = Math.ceil(d.h * 0.75 / 15);
         add(e, [[head, { ...txt('(its numbers: sheet {sheet})', { color: quiet, italic: true, underline: true }), jump: k }], ...Array.from({ length: n }, (): Cell[] => [])],
-          undefined, { flow: true, pic: { png: pngBytes(d.png), w: d.w, h: d.h, name: `Chart ${charts.length}: ${title}`, descr } });
+          undefined, { flow: true, pic: { png: pngBytes(d.png), w: d.w, h: d.h, name: `Chart ${charts.length + pics}: ${title}`, descr } });
+        const plot = e.querySelector('.uplot');
+        if (plot) rest(plot);
         return;
       }
+      // a chart the page draws as an SVG of its own (SQL Server Waits' bars, the rings): the SVG as its picture, its
+      // numbers the grid of the page's 'numbers as a table' after it (E2-8: one, not two), its legend and notes after
+      const sv = e.querySelector<SVGSVGElement>('svg[role=img]');
+      if (sv && seen(sv) !== 'no' && sv.getBoundingClientRect().width > 0) {
+        const s = svgSource(sv, screen.length ? screen : themeColours(), themeColours());
+        let tab: Element | null = null;
+        for (let a: Element | null = e; a && a !== root && !tab; a = a.parentElement) {
+          const nx = a.nextElementSibling;
+          if (nx?.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) tab = nx.querySelector('table.grid, p.empty[data-cols]');
+        }
+        const nf = (e as PictureBox).pgvNumbers;
+        if (!tab && nf) charts.push(chartSection(title, nf()));
+        const k = tab ? indexOf(tab) : nf ? grids.length + charts.length - 1 : undefined;
+        const series = [...e.querySelectorAll('.swatch')].map(sw => flat(sw.nextSibling?.textContent)).filter(Boolean);
+        const descr = `${title}${series.length ? ': ' + series.join(', ') : ''}${k !== undefined ? `; numbers on sheet {sheet:${k}}` : ''}`;
+        const n = Math.ceil(s.h * 0.75 / 15);
+        pics++;
+        add(e, [[head, ...(k !== undefined ? [{ ...txt('(its numbers: sheet {sheet})', { color: quiet, italic: true, underline: true }), jump: k }] : [])], ...Array.from({ length: n }, (): Cell[] => [])],
+          undefined, { flow: true, pic: { png: new Uint8Array(0), svg: { src: s.src, bg: getComputedStyle(root.ownerDocument.documentElement).getPropertyValue('--card').trim() || '#ffffff' }, w: s.w, h: s.h, name: `Chart ${charts.length + pics}: ${title}`, descr } });
+        rest(sv);
+        return;
+      }
+      // a chart the page draws in HTML (the Drives page's volume bars: a table): its line, then its content as any block
+      if (!e.querySelector('.uplot, svg, canvas, .chart-state') && e.querySelector('table')) { line(e, [[head]]); for (const c of e.children) if (c !== h) visit(c); return; }
       // no picture: the page's own words in the chart's place (one read, no data), else why
       const st = e.querySelector('.chart-state');
       line(e, [[head, txt(st ? flat(st.textContent) : e.querySelector('.uplot') ? '(no picture: this build cannot draw it again; its numbers: the chart\'s menu, Export Excel)' : '(not drawn when exported)', { color: quiet, italic: true })]]);

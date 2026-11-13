@@ -19,7 +19,7 @@ import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, roo
 import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
 import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showMenu } from './ui';
 import { readRows } from './export_colours';
-import { drawingRels, drawingXml } from './export_chart';
+import { drawingRels, drawingXml, rasterize, SCALE, themeColours } from './export_chart';
 import type { ChartNumbers } from './export_chart';
 import { cellLook, gridHeadLook, headLook, pageSheet, withDot } from './export_page';
 import type { LookCache, PageSheet } from './export_page';
@@ -879,16 +879,22 @@ export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => d
       // removing the attribute)
       const r = root();
       const html = document.documentElement, was = html.getAttribute('data-theme');
+      const screen = themeColours();   // an SVG chart's colours as drawn, mapped to the light theme's (export_chart.ts)
       html.setAttribute('data-theme', 'light');
       let found: ReturnType<typeof walk> = [], page: PageSheet | undefined;
       try {
         found = r ? walk(r, m.tab, true) : [];
         // sheet 1 is the page as it shows (export_page.ts); a page without a grid still has it
-        if (kind === 'xlsx' && r) page = pageSheet(r, m, found.map(f => f.el));
+        if (kind === 'xlsx' && r) page = pageSheet(r, m, found.map(f => f.el), undefined, screen);
       } finally { if (was === null) html.removeAttribute('data-theme'); else html.setAttribute('data-theme', was); }
       const secs = found.map(f => f.sec);
       if (kind === 'xlsx') {
         if (!page && secs.length === 0) { note.textContent = 'Nothing to export: no grid on this page.'; return; }
+        // an SVG chart's picture drawn from its source taken above (no read of the page); one that cannot be drawn is left out
+        if (page) {
+          for (const p of page.pictures) if (p.svg) p.png = await rasterize(p.svg.src, p.w, p.h, SCALE, p.svg.bg) ?? new Uint8Array(0);
+          page.pictures = page.pictures.filter(p => p.png.length > 0);
+        }
         // the charts' numbers sheets after the grids' (the page sheet names them by that place)
         const parts = workbook(m, [...secs, ...(page?.charts ?? [])], page);
         const z = await zip(parts, m.at);

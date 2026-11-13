@@ -315,10 +315,12 @@ const PAGELOOK = `(() => {
   const wrapped = [...main.querySelectorAll('td, th, .th-label, .tile > *, .chip > *')].filter(vis).filter(e => flat(e.textContent) && wraps(e)).map(e => flat(e.textContent));
   // the charts: each one's title, its plot's CSS width, its legend's series (shown or off) and its own state words
   const charts = [...main.querySelectorAll('.chart')].filter(vis).map(b => {
-    const h = b.querySelector('h3, h4'), cv = b.querySelector('.uplot canvas');
+    const h = b.querySelector('h3, h4'), sv = b.querySelector('.uplot') ? null : b.querySelector('svg[role=img]'), cv = b.querySelector('.uplot canvas') ?? sv;
     const hc = h ? h.cloneNode(true) : null; if (hc) hc.querySelectorAll('button, select, .chart-note, .whatis, .filter-btn').forEach(x => x.remove());
     return { title: flat(hc ? hc.textContent : ''), w: cv ? cv.getBoundingClientRect().width : null,
-             series: [...b.querySelectorAll('.u-legend .u-series')].slice(1).map(s => ({ label: flat(s.querySelector('.u-label')?.textContent ?? s.textContent), on: !s.classList.contains('u-off') })),
+             series: sv ? [...b.querySelectorAll('.swatch')].map(s => ({ label: flat(s.nextSibling?.textContent), on: true }))
+               : [...b.querySelectorAll('.u-legend .u-series')].slice(1).map(s => ({ label: flat(s.querySelector('.u-label')?.textContent ?? s.textContent), on: !s.classList.contains('u-off') })),
+             svg: !!sv, table: !!sv && (() => { for (let a = b; a && a !== main; a = a.parentElement) { const nx = a.nextElementSibling; if (nx && nx.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) return true; } return false; })(), fills: sv ? [...new Set([...sv.querySelectorAll('rect[fill], path[fill], circle[stroke]')].filter(x => { const r = x.getBoundingClientRect(); return r.width >= 1 && r.height >= 1; }).map(x => (x.getAttribute('fill') || x.getAttribute('stroke') || '').toLowerCase()).filter(f => /^#[0-9a-f]{6}$/.test(f)))] : [],
              state: flat(b.querySelector('.chart-state')?.textContent) };
   });
   const css = getComputedStyle(document.documentElement);
@@ -593,7 +595,9 @@ for (const hash of ['#/dbspace?w=2h', `#/summary?i=${one.instance_id}&w=2h`, `#/
       charts.line.look = await ev(PAGELOOK);
       charts.line.page = await press('Export .xlsx', ['.xlsx']);
       await ev(`localStorage.setItem('pgvigil.theme', 'dark'); true`);
-      await cmd('Page.navigate', { url: 'about:blank' }); await sleep(300); await go(hash); await sleep(700);
+      // under another window: the file's name holds the window, and the driver refuses a download that replaces one
+      const hashD = hash.replace(/w=2h/, 'w=3h');
+      await cmd('Page.navigate', { url: 'about:blank' }); await sleep(300); await go(hashD); await sleep(700);
       charts.line.darkTheme = await ev(`document.documentElement.getAttribute('data-theme')`);
       charts.line.dark = await press('Export .xlsx', ['.xlsx']);
       charts.line.after = await ev(`document.documentElement.getAttribute('data-theme')`);
@@ -1088,7 +1092,7 @@ def chart_audit(key, z, names, sst, look, light=None):
         shown = [s['label'] for s in c['series'] if s['on']]
         m = re.search(r'numbers on sheet (.+)$', p['descr']); sn = m.group(1) if m else ''
         check(p['descr'].startswith(c['title'] + ':') and all(s in p['descr'] for s in shown) and sn in names[1:], f"{key}: chart '{c['title']}' alt text '{p['descr'][:120]}' names its series {shown} and its numbers sheet ('{sn}' {'found' if sn in names else 'missing'})")
-        if sn in names:
+        if sn in names and not c.get('svg'):
             x, n = sheet_rows(z, names.index(sn) + 1); t1 = texts_of(x, sst)
             hd = [t1[(1, j)][1] for j in range(len(shown) + 1) if (1, j) in t1]
             check(hd == ['time'] + shown and n >= 2, f"{key}: chart '{c['title']}' numbers sheet '{sn}': header {hd}, {n} points")
@@ -1097,7 +1101,8 @@ def chart_audit(key, z, names, sst, look, light=None):
         cols = {}
         for i in range(0, len(px), bpp * 7): cols[px[i:i + 3]] = cols.get(px[i:i + 3], 0) + 1
         idx = [i for i, s in enumerate(c['series']) if s['on']]
-        found = [sum(v for q, v in cols.items() if near(tuple(q), pal[i] if i < len(pal) else None)) for i in idx]
+        want = [rgb_of(f_) for f_ in c.get('fills') or []] if c.get('svg') else [pal[i] if i < len(pal) else None for i in idx]
+        found = [sum(v for q, v in cols.items() if near(tuple(q), wc)) for wc in want]
         check(w > 0 and near(at(w - 1, 0), card, 2) and len(cols) >= 8 and all(f_ >= 3 for f_ in found),
               f"{key}: chart '{c['title']}' picture: the card colour {lk.get('card')} behind its title ({at(w - 1, 0) if w else None}), {len(cols)} colours sampled, each shown series' colour found {found}")
     return pics
@@ -1179,7 +1184,9 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
     names = sheets_of(z)
     # (changed by the E2 answer, E2-2': sheet 1 is the page sheet named by the tab, no longer the export's Summary sheet)
-    check(re.sub(r'[^A-Za-z0-9._-]+', '-', names[0]) == tab and len(names) == len(gs) + 1, f"{key}: sheets {names} = the page sheet '{names[0]}' + {len(gs)} grid(s)")
+    # (changed by E2-8: a drawn chart's numbers sheet after the grids' - a chart whose numbers are the page's own table has none)
+    nch = len([c for c in (p.get('pagelook') or {}).get('charts') or [] if c.get('w') and not (c.get('svg') and c.get('table'))])
+    check(re.sub(r'[^A-Za-z0-9._-]+', '-', names[0]) == tab and len(names) == len(gs) + 1 + nch, f"{key}: sheets {names} = the page sheet '{names[0]}' + {len(gs)} grid(s) + {nch} chart numbers sheet(s)")
     st, cx = xfs(z)
     ct = z.read('[Content_Types].xml').decode(); wbx = z.read('xl/workbook.xml').decode(); tabs = []; linked = False; classed = 0; sst = shared(z)
     for i, g in enumerate(gs):
@@ -1268,7 +1275,7 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     if openpyxl is not None:
         try:
             wb = openpyxl.load_workbook(f"{dl}/{p['xlsx']}")
-            check(wb.sheetnames == names and sum(len(ws.tables) for ws in wb.worksheets) == len(tabs), f"{key}: openpyxl {openpyxl.__version__} opens the workbook: {len(wb.sheetnames)} sheets, {len(tabs)} table(s)")
+            check(wb.sheetnames == names and sum(len(ws.tables) for ws in wb.worksheets) == len(tabs) + nch, f"{key}: openpyxl {openpyxl.__version__} opens the workbook: {len(wb.sheetnames)} sheets, {len(tabs)} grid table(s) + {nch} chart numbers table(s)")
         except Exception as e:
             check(False, f"{key}: openpyxl could not open {p['xlsx']}: {type(e).__name__}: {e}")
     for i, g in enumerate(gs):
