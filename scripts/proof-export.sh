@@ -320,7 +320,7 @@ const PAGELOOK = `(() => {
   const charts = [...main.querySelectorAll('.chart')].filter(vis).map(b => {
     const h = b.querySelector('h3, h4'), sv = b.querySelector('.uplot') ? null : b.querySelector('svg[role=img]'), cv = b.querySelector('.uplot canvas') ?? sv;
     const hc = h ? h.cloneNode(true) : null; if (hc) hc.querySelectorAll('button, select, .chart-note, .whatis, .filter-btn').forEach(x => x.remove());
-    return { title: flat(hc ? hc.textContent : ''), w: cv ? cv.getBoundingClientRect().width : null,
+    return { title: flat(hc ? hc.textContent : ''), w: cv ? cv.getBoundingClientRect().width : null, h: cv ? cv.getBoundingClientRect().height : null,
              series: sv ? [...b.querySelectorAll('.swatch')].map(s => ({ label: flat(s.nextSibling?.textContent), on: true }))
                : [...b.querySelectorAll('.u-legend .u-series')].slice(1).map(s => ({ label: flat(s.querySelector('.u-label')?.textContent ?? s.textContent), on: !s.classList.contains('u-off') })),
              svg: !!sv, table: !!sv && (() => { for (let a = b; a && a !== main; a = a.parentElement) { const nx = a.nextElementSibling; if (nx && nx.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) return true; } return false; })(), fills: sv ? [...new Set([...sv.querySelectorAll('rect[fill], path[fill], circle[stroke]')].filter(x => { const r = x.getBoundingClientRect(); return r.width >= 1 && r.height >= 1; }).map(x => (x.getAttribute('fill') || x.getAttribute('stroke') || '').toLowerCase()).filter(f => /^#[0-9a-f]{6}$/.test(f)))] : [],
@@ -1176,7 +1176,20 @@ def chart_audit(key, z, names, sst, look, light=None):
         want = [rgb_of(f_) for f_ in c.get('fills') or []] if c.get('svg') else [pal[i] if i < len(pal) else None for i in idx]
         found = [sum(v for q, v in cols.items() if near(tuple(q), wc)) for wc in want]
         check(w > 0 and near(at(w - 1, 0), card, 2) and len(cols) >= 8 and all(f_ >= 3 for f_ in found),
-              f"{key}: chart '{c['title']}' picture: the card colour {lk.get('card')} behind its title ({at(w - 1, 0) if w else None}), {len(cols)} colours sampled, each shown series' colour found {found}")
+              f"{key}: chart '{c['title']}' picture: the card colour {lk.get('card')} at its top right ({at(w - 1, 0) if w else None}), {len(cols)} colours sampled, each shown series' colour found {found}")
+        if not c.get('svg') and c.get('h'):
+            # (F6) no title of its own: the picture is the plot and its legend's lines (20 CSS px each), the sheet's line
+            # above it names the chart; (F7) each shown series' legend mark a short bar as the page's (14 x 4 CSS px)
+            extra = p['h'] - c['h']; nl = round(extra / 20)
+            check(nl >= 1 and abs(extra - 20 * nl) <= 1, f"{key}: chart '{c['title']}' picture without a title of its own (F6): {round(p['h'], 1)} CSS px high = the plot's {round(c['h'], 1)} + {nl} legend line(s) of 20 px ({round(extra, 1)})")
+            y0 = int(round(c['h'] * 2)); boxes = []
+            for wc in want:
+                xs_, ys_ = [], []
+                for yy in range(y0, h):
+                    for xx in range(w):
+                        if near(at(xx, yy), wc, 24): xs_.append(xx); ys_.append(yy)
+                boxes.append((max(xs_) - min(xs_) + 1, max(ys_) - min(ys_) + 1) if xs_ else (0, 0))
+            check(bool(boxes) and all(bw >= 2.5 * bh and 0 < bh <= 12 for bw, bh in boxes), f"{key}: chart '{c['title']}' legend marks as short bars like the page's (F7): each shown series' mark w x h px at 2x {boxes}")
         if c.get('svg') and c.get('legend'):
             # its legend (an HTML swatch legend or the ring's legend table): each colour square a '■' in the light
             # page's colour before its name (light: the light page's swatches for an export made dark)
