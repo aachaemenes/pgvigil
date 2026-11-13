@@ -30,10 +30,11 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
   look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
   runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
   jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
+  fmt?: string;   // the page sheet (E2-15, F2): the number format that shows the value as the page's words ('#,##0.0', a size's unit, the page's date form)
   sheets?: number[] }   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
-export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle' }   // valign: as the page aligns the cell (a cell with a look and none: top)
+export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
 export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[] }   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them
 
 // ---- reading the page -----------------------------------------------------------------------------------
@@ -123,6 +124,38 @@ export function fromText(text: string): Pick<Cell, 'v' | 'kind'> {
 // the floor).
 export function excelDate(d: Date): number {
   return (Math.floor(d.getTime() / 1000) * 1000 + offsetMin(d) * 60000) / 86400000 + 25569;
+}
+
+// ---- the page sheet's number formats (E2-15, F2): a number shows the page's own words ------------------------
+// numFmtOf: a count or a decimal as the page writes it - the locale's grouping where the page groups (a number of 1,000
+// or more written with more than its digits), its decimals as many as the page shows; Excel and LibreOffice put the
+// viewer's own grouping and decimal marks in place of ',' and '.'
+export function numFmtOf(n: number, text: string): string {
+  const dm = new RegExp('\\' + sep.dec + '(\\d+)$').exec(text.replace(/\s/g, ''));
+  const k = dm ? dm[1].length : 0;
+  const grouped = Math.abs(n) >= 1000 && !/^-?\d+$/.test(text.split(sep.dec)[0]);
+  return (grouped ? '#,##0' : '0') + (k ? '.' + '0'.repeat(k) : '');
+}
+// sizeOf: a size as fmtBytes writes it ('312.6 MB', '7 B': a '.' decimal whatever the locale, ui.ts:29) - its unit,
+// its power of 1024 and its decimals; undefined for other words
+const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+export function sizeOf(text: string): { unit: string; pow: number; k: number } | undefined {
+  const m = /^-?\d+(?:\.(\d+))?\s(B|KB|MB|GB|TB|PB)$/.exec(text);
+  return m ? { unit: m[2], pow: UNITS.indexOf(m[2]), k: m[1]?.length ?? 0 } : undefined;
+}
+// dateFmt: the page's date-and-time form (tz.ts fmt: toLocaleString with hour12 false) as an Excel format code, read
+// from the locale's own parts of a date whose month, day and hour are one digit (a part written with two digits there
+// is padded: 'mm', else 'm'); the zone does not change the parts' order
+let dateCode = '';
+export function dateFmt(): string {
+  if (dateCode) return dateCode;
+  const sample = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+  const parts = new Intl.DateTimeFormat(undefined, { hour12: false, year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', timeZone: 'UTC' }).formatToParts(sample);
+  const code: Record<string, (v: string) => string> = { year: v => v.length === 2 ? 'yy' : 'yyyy', month: v => v.length === 2 ? 'mm' : 'm', day: v => v.length === 2 ? 'dd' : 'd',
+    hour: v => v.length === 2 ? 'hh' : 'h', minute: () => 'mm', second: () => 'ss' };
+  // a literal of separators only ('/', ':', ', ', ' ', '.', '-') stands bare; any other is quoted
+  dateCode = parts.map(p => code[p.type] ? code[p.type](p.value) : /^[/:,. -]*$/.test(p.value) ? p.value : '"' + p.value.replace(/"/g, '') + '"').join('');
+  return dateCode;
 }
 
 const statuses: Status[] = ['crit', 'warn', 'ok', 'none'];
@@ -348,8 +381,8 @@ class Styles {
     if (i === undefined) { i = this.borders.push(`<border><left style="thick"><color rgb="${argb}"/></left><right/><top/><bottom/><diagonal/></border>`) - 1; this.borderIds.set(argb, i); }
     return i;
   }
-  // al: the cell's alignment - '' none (a cell of the export's own: Excel's bottom), 't' top, 'm' middle, a 'w' after
-  // either when it wraps
+  // al: the cell's alignment - '' none (a cell of the export's own: Excel's bottom), 't' top, 'm' middle, then 'r' right
+  // or 'c' centred as the page aligns it (F2), then a 'w' when it wraps
   private xf(fmt: number, fill: number, font: number, border: number, al: string): number {
     const k = `${fmt}|${fill}|${font}|${border}|${al}`;
     let i = this.xfs.get(k);
@@ -366,17 +399,24 @@ class Styles {
     const fill = l.fill ? this.fill('FF' + l.fill) : 0;
     const plain = !l.color && !l.bold && !l.italic && !l.underline && !l.pt;
     const font = plain ? 0 : this.font(l.color ? 'FF' + l.color : '', !!l.bold, !!l.italic, !!l.underline, l.pt ?? 11);
-    return this.xf(fmt, fill, font, l.border ? this.border('FF' + l.border) : 0, (l.valign === 'middle' ? 'm' : 't') + (l.wrap ? 'w' : ''));
+    return this.xf(fmt, fill, font, l.border ? this.border('FF' + l.border) : 0, (l.valign === 'middle' ? 'm' : 't') + (l.halign === 'right' ? 'r' : l.halign === 'center' ? 'c' : '') + (l.wrap ? 'w' : ''));
+  }
+  // code: a number format of the page sheet's own (F2): its id, 171 on (165-170 are the fixed ones)
+  private codes = new Map<string, number>();
+  code(f: string): number {
+    let i = this.codes.get(f);
+    if (i === undefined) { i = 171 + this.codes.size; this.codes.set(f, i); }
+    return i;
   }
   xml(): string {
     const xfs = [...this.xfs.keys()].map(k => {
       const [n, f, t, b, a] = k.split('|');
       return `<xf numFmtId="${n}" fontId="${t}" fillId="${f}" borderId="${b}" xfId="0"${n !== '0' ? ' applyNumberFormat="1"' : ''}${f !== '0' ? ' applyFill="1"' : ''}${t !== '0' ? ' applyFont="1"' : ''}${b !== '0' ? ' applyBorder="1"' : ''}`
-        + (a ? ` applyAlignment="1"><alignment vertical="${a.startsWith('m') ? 'center' : 'top'}"${a.endsWith('w') ? ' wrapText="1"' : ''}/></xf>` : '/>');
+        + (a ? ` applyAlignment="1"><alignment${a[1] === 'r' ? ' horizontal="right"' : a[1] === 'c' ? ' horizontal="center"' : ''} vertical="${a.startsWith('m') ? 'center' : 'top'}"${a.endsWith('w') ? ' wrapText="1"' : ''}/></xf>` : '/>');
     });
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
       + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-      + `<numFmts count="${customFmts.length}">${customFmts.map(([i, f]) => `<numFmt numFmtId="${i}" formatCode="${esc(f)}"/>`).join('')}</numFmts>`
+      + `<numFmts count="${customFmts.length + this.codes.size}">${[...customFmts, ...[...this.codes].map(([f, i]) => [i, f] as [number, string])].map(([i, f]) => `<numFmt numFmtId="${i}" formatCode="${esc(f)}"/>`).join('')}</numFmts>`
       + `<fonts count="${this.fonts.length}">${this.fonts.join('')}</fonts>`
       + `<fills count="${this.fills.length}">${this.fills.join('')}</fills>`
       + `<borders count="${this.borders.length}">${this.borders.join('')}</borders>`
@@ -503,7 +543,8 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
     const v = t.length > 32767 ? t.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : t;
     return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
-  const styleOf = (c: Cell) => c.look ? st.look(fmtOf(c), c.look) : st.id(fmtOf(c), c.status, !!c.head, c.link);
+  const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt) : fmtOf(c);
+  const styleOf = (c: Cell) => c.look ? st.look(fmtFor(c), c.look) : st.id(fmtFor(c), c.status, !!c.head, c.link);
   // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
   // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
   // measures a cell, a line 1.36 x the font's points); a row of 11-point single lines keeps the default (no height)

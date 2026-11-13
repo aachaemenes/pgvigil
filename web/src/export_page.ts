@@ -9,7 +9,7 @@
 // A block the page does not show (display none, visibility hidden, a visually-hidden note, a closed disclosure's
 // content) is not on this sheet; a grid in it keeps its own sheet (export.ts walk).
 import type { Cell, Look, Meta, Section } from './export';
-import { cellWords, chartSection, headingText, textPx, timeZone, typed } from './export';
+import { cellWords, chartSection, dateFmt, headingText, numFmtOf, sizeOf, textPx, timeZone, typed } from './export';
 import { pictureOf, pngBytes, SCALE, svgSource, themeColours } from './export_chart';
 import type { PictureBox } from './export_chart';
 import type { Placed } from './export_chart';
@@ -89,6 +89,12 @@ function shape(td: Element): string {
   return k;
 }
 export type LookCache = Map<string, CellLook>;
+// alignOf (F2): the page's horizontal alignment of a cell or a header ('right' or 'center'; left, start and justify are
+// the sheet's default)
+function alignOf(e: Element): Look['halign'] {
+  const a = getComputedStyle(e).textAlign;
+  return a === 'right' || a === 'end' || a === '-webkit-right' ? 'right' : a === 'center' || a === '-webkit-center' ? 'center' : undefined;
+}
 export interface CellLook { look: Look; dot?: { color: string; name: string; glyph?: string } }
 // cellLook: a grid cell's fill, text colour, weight and underline (E2-4', E2-5'): the cell's own fill; else the fill of a
 // badge or pill in it (the whole cell takes the badge's tint and its text colour, bold as the badge is); the text colour
@@ -113,6 +119,8 @@ export function cellLook(td: Element, table: Element, cache?: LookCache): CellLo
     if (l.underline) look.underline = true;
   }
   if (!look.fill) delete look.fill;
+  const ha = alignOf(td);
+  if (ha) look.halign = ha;
   const d = td.querySelector('.dot, ' + SWATCH);
   let dot: CellLook['dot'];
   if (d && seen(d) === 'yes') {
@@ -127,7 +135,8 @@ export function cellLook(td: Element, table: Element, cache?: LookCache): CellLo
 // middle of its row as the page sets it (app.css '.grid > thead th' vertical-align: middle)
 export function headLook(th: Element, table: Element): Look {
   const p = paintOf(th, table), l = textLook(th.querySelector('.th-label') ?? th, th);
-  return { ...(p.fill ? { fill: p.fill } : {}), color: p.text, ...(l.bold ? { bold: true } : {}), ...(pageLines(th.querySelector('.th-label') ?? th) > 1 ? { wrap: true } : {}), valign: 'middle' };
+  const ha = alignOf(th);
+  return { ...(p.fill ? { fill: p.fill } : {}), color: p.text, ...(l.bold ? { bold: true } : {}), ...(pageLines(th.querySelector('.th-label') ?? th) > 1 ? { wrap: true } : {}), valign: 'middle', ...(ha ? { halign: ha } : {}) };
 }
 // gridHeadLook: the look the page gives a grid's header cell, for a sheet whose header row is the export's own (a
 // property card's 'item | value': the page draws no header over a card): a probe header in the page, read and removed
@@ -242,8 +251,31 @@ function flow(row: Cell[], widths: number[]): Cell[] {
   return Array.from(out) as Cell[];
 }
 
+// placeItems (F1): rows of items in columns the rows share - item k starts where the widest item k - 1 of any row
+// ends - so one kind of item (a badge) sits in one column on every row, as the page sets them; an item's cells follow
+// one another as flow places them
+function placeItems(rows: Cell[][][], widths: number[]): Cell[][] {
+  const end = (cs: Cell[], at: number) => {
+    let j = at;
+    for (const c of cs) {
+      const s = j;
+      let need = measured(c.runs ? c.runs.map(r => r.text).join('') : String(c.v), !!c.look?.bold, c.look?.pt);
+      while (need > 0) { need -= colPx(widths[j]); j++; }
+      j = Math.max(j, s + 1);
+    }
+    return j;
+  };
+  const n = Math.max(0, ...rows.map(r => r.length)), start = [0];
+  for (let k = 1; k < n; k++) start[k] = Math.max(start[k - 1] + 1, ...rows.map(r => r[k - 1] ? end(r[k - 1], start[k - 1]) : 0));
+  return rows.map(r => {
+    const out: Cell[] = [];
+    r.forEach((cs, k) => { let j = start[k]; for (const c of cs) { out[j] = c; j = end([c], j); } });
+    return Array.from(out) as Cell[];
+  });
+}
+
 // ---- the walk ----------------------------------------------------------------------------------------------
-interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[] }; flow?: boolean; cards?: number[]; label?: number; table?: boolean; pic?: Omit<Placed, 'row' | 'col'> }
+interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[]; wraps?: boolean[] }; flow?: boolean; cards?: number[]; label?: number; table?: boolean; items?: Cell[][][]; pic?: Omit<Placed, 'row' | 'col'> }
 const txt = (v: string, look: Look = {}): Cell => ({ v, kind: 'text', text: v, look });
 
 // pageSheet: the page sheet of #main (root), for the grids `grids` (export.ts walk's elements, in sheet order:
@@ -274,21 +306,41 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
     const model = gridModel(t), data = model?.rows(), cols = model?.cols;
     const trs = [...t.querySelectorAll<HTMLTableRowElement>(':scope > tbody > tr')].filter(tr => !tr.classList.contains('trend-row'));
     const lc = lookCache(t);
+    const sizes: (number | undefined)[][] = [];   // a size cell's raw bytes, by row and column (E2-15)
+    const wraps: boolean[] = [];   // (F4) a column with a cell the page draws on more than one line
     const rows = trs.filter(tr => seen(tr) !== 'no').map(tr => {
-      const i = trs.indexOf(tr);
+      const i = trs.indexOf(tr), ri: (number | undefined)[] = [];
+      sizes.push(ri);
       return [...tr.children].filter((_, j) => keep[j] ?? true).map(td => {
         const j = [...tr.children].indexOf(td);
         const words = cellWords(td);
         const raw = data && cols && cols.length === ths.length && i < data.length ? data[i][cols[j].key] : undefined;
         const ty = raw !== undefined ? typed(raw, words) : { v: words, kind: 'text' as const };
-        // the page sheet is the view: a count or a decimal stays a number, every other kind is the words the page
-        // shows (a size, a time, a duration, a share as their text; their formats are the next step)
-        const v: Cell = ty.kind === 'int' || ty.kind === 'dec' ? { v: ty.v, kind: ty.kind, text: words } : { v: words, kind: 'text', text: words };
+        // the page sheet is the view (E2-15, F2): a count or a decimal a number in the page's form (its grouping, its
+        // decimals), a time an Excel date in the page's date form; a size a number only when its whole column shares
+        // one unit (set below); a duration, a share and every other kind the words the page shows
+        const v: Cell = ty.kind === 'int' || ty.kind === 'dec' ? { v: ty.v, kind: ty.kind, text: words, fmt: numFmtOf(Number(ty.v), words) }
+          : ty.kind === 'date' ? { v: ty.v, kind: 'date', text: words, fmt: dateFmt() }
+          : { v: words, kind: 'text', text: words };
+        ri.push(ty.kind === 'bytes' && sizeOf(words) ? Number(raw) : undefined);
         const l = cellLook(td, t, lc);
         // a cell the page shows on more than one line wraps on the sheet too (its row as tall as its lines)
-        return withDot({ ...v, look: pageLines(td) > 1 ? { ...l.look, wrap: true } : l.look }, l);
+        const many = pageLines(td) > 1;
+        if (many) wraps[ri.length - 1] = true;
+        return withDot({ ...v, look: many ? { ...l.look, wrap: true } : l.look }, l);
       });
     });
+    // a size column of one unit (E2-15): every size in it a number of that unit under '0.0" MB"' (as many decimals as the
+    // page writes); a column the page writes in more than one unit keeps its words (a sum over mixed units is wrong)
+    for (let j = 0; j < head.length; j++) {
+      const at = rows.map((r, i) => i).filter(i => rows[i][j] && String(rows[i][j].v) !== '');
+      const sz = at.map(i => sizes[i][j] !== undefined ? sizeOf(String(rows[i][j].v)) : undefined);
+      if (!at.length || sz.some(s => !s) || new Set(sz.map(s => s!.unit)).size !== 1) continue;
+      at.forEach((i, n) => {
+        const s = sz[n]!;
+        rows[i][j] = { ...rows[i][j], v: sizes[i][j]! / Math.pow(1024, s.pow), kind: 'dec', fmt: `${s.k ? '0.' + '0'.repeat(s.k) : '0'}" ${s.unit}"` };
+      });
+    }
     const out: Cell[][] = [head, ...rows];
     // the page's 'The first 200 of n rows' line under the grid: its words, and the grid's own sheet to go to
     const more = t.closest('.grid-box')?.querySelector(':scope > .grid-more');
@@ -297,7 +349,7 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
       const w = flat([...more.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' '));
       out.push([{ ...txt(w + (k !== undefined ? ' Every row: sheet {sheet}' : ''), { color: muted(more), underline: k !== undefined }), ...(k !== undefined ? { jump: k } : {}) }]);
     }
-    return { rows: out, th: ths.filter((_, j) => keep[j]).map(th => th.getBoundingClientRect().width) };
+    return { rows: out, th: ths.filter((_, j) => keep[j]).map(th => th.getBoundingClientRect().width), wraps: Array.from(wraps, w => !!w) };
   };
   const emptyGridBlock = (t: Element) => {
     const ths = [...t.querySelectorAll('th')];
@@ -349,8 +401,41 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
     return out;
   };
 
-  const add = (e: Element, rows: Cell[][], grid?: { th: number[] }, more: Partial<Block> = {}) => { if (rows.length) blocks.push({ rows, rect: e.getBoundingClientRect(), ...(grid ? { grid } : {}), ...more }); };
+  const add = (e: Element, rows: Cell[][], grid?: { th: number[]; wraps?: boolean[] }, more: Partial<Block> = {}) => { if (rows.length) blocks.push({ rows, rect: e.getBoundingClientRect(), ...(grid ? { grid } : {}), ...more }); };
   const line = (e: Element, rows: Cell[][]) => add(e, rows, undefined, { flow: true });
+  // itemRows (F1): a box whose lines are each a flex row of items side by side, every item words and marks only (the
+  // fleet Summary's 'Needs attention': a dot, the instance's name, its reasons, its badge): each row's items, each
+  // item its own cells - a badge its badge cell, a dot a run before the item after it, else its words; null when the
+  // box is not such rows or the rows hold different counts of items
+  const itemRows = (e: Element): Cell[][][] | null => {
+    const rs = [...e.children].filter(c => seen(c) === 'yes' && !c.matches(CONTROL));
+    if (rs.length < 2) return null;
+    const out: Cell[][][] = [];
+    for (const r of rs) {
+      const cs = getComputedStyle(r);
+      if (!/flex/.test(cs.display) || !cs.flexDirection.startsWith('row') || cs.flexWrap === 'wrap') return null;
+      const its = [...r.children].filter(c => seen(c) === 'yes' && !c.matches(CONTROL));
+      const inline = (c: Element) => [...c.querySelectorAll('*')].every(d => seen(d) === 'no' || d.matches(CONTROL) || ['inline', 'inline-block', 'inline-flex'].includes(getComputedStyle(d).display));
+      if (its.length < 2 || !its.every(inline)) return null;
+      const row: Cell[][] = [];
+      let mark: NonNullable<Cell['runs']>[number] | undefined;
+      for (const it of its) {
+        if (it.matches('.dot')) { const q = paintOf(it, root); mark = { text: '● ', color: q.fill ?? q.text }; continue; }
+        let cells = it.matches(BADGE) ? [badgeCell(it, root)] : lineCells(it, root);
+        if (mark && cells[0]) {
+          const c0 = cells[0], own = c0.runs ?? [{ text: String(c0.v), color: c0.look?.color, bold: c0.look?.bold, underline: c0.look?.underline }];
+          cells = [{ ...c0, v: mark.text + String(c0.v), runs: [mark, ...own] }, ...cells.slice(1)];
+          mark = undefined;
+        }
+        if (cells.length) row.push(cells);
+      }
+      // the row's stripe at its left (its status edge) on its first cell, as lineCells puts it
+      const stripe = borderLeftOf(r);
+      if (stripe && row[0]?.[0]) row[0][0] = { ...row[0][0], look: { ...row[0][0].look, border: stripe } };
+      out.push(row);
+    }
+    return out.every(r => r.length === out[0].length) ? out : null;
+  };
   const visit = (e: Element): void => {
     const s = seen(e);
     if (s === 'no') return;
@@ -425,7 +510,7 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
     }
     if (e.matches('.grid-more')) return;   // its grid writes it, with the grid's sheet to go to
     if (/^H[1-6]$/.test(e.tagName)) { line(e, [lineCells(e, root)]); return; }
-    if (e.matches('table.grid')) { const g = gridBlock(e as HTMLTableElement); add(e, g.rows, { th: g.th }); return; }
+    if (e.matches('table.grid')) { const g = gridBlock(e as HTMLTableElement); add(e, g.rows, { th: g.th, wraps: g.wraps }); return; }
     if (e.matches('table.grid-empty')) { const g = emptyGridBlock(e); add(e, g.rows, { th: g.th }); return; }
     if (e.matches('table.props')) {
       // a property card's label column: as wide as its longest label (cap 40)
@@ -441,6 +526,9 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
     if (e.matches('.healthcal-grid')) { const cr = cardsBlock([...e.children]); add(e, cr, undefined, { cards: cardW }); return; }
     if (e.matches('canvas, svg, figure, img, .u-wrap')) { add(e, [[txt('Picture (the next step)', { color: quiet, italic: true })]]); return; }
     if (e.matches('ul, ol')) { line(e, [...e.children].filter(li => seen(li) === 'yes').map(li => lineCells(li, root))); return; }
+    // lines of items side by side (F1): each item its own cell, the items in columns the lines share
+    const ir = itemRows(e);
+    if (ir) { add(e, ir.map(r => r.flat()), undefined, { items: ir }); return; }
     // a block whose content is words and inline marks only (no block of its own inside): one line
     const blockKids = [...e.children].filter(c => seen(c) !== 'no' && !c.matches(CONTROL) && !['inline', 'inline-block', 'inline-flex'].includes(getComputedStyle(c).display) && !c.matches(BADGE + ', .dot, a, span, b, strong, em, code, abbr, time'));
     if (!blockKids.length) { const cs = lineCells(e, root); if (cs.length) line(e, [cs]); return; }
@@ -465,9 +553,15 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
     [],
   ];
   // the widths: a grid's columns from its header cells' page widths (cap 40); a property card's label column as wide as
-  // its longest label; the columns no grid reaches from the cards' own page widths (min 12, cap 40)
+  // its longest label; the columns no grid reaches from the cards' own page widths (min 12, cap 40). (F4) A grid column
+  // the page wraps words in, where no card or tile stands (past every row of cards and a property card's two columns),
+  // is as wide as the page draws it (cap 150, DBA Dash's): the sheet then wraps them in no more lines than the page
+  const cardCols = Math.max(0, ...blocks.map(b => b.cards ? b.cards.length : b.label !== undefined ? 2 : 0));
   const widths: number[] = [];
-  for (const b of blocks) if (b.grid) b.grid.th.forEach((px, j) => { widths[j] = Math.max(widths[j] ?? 0, Math.min(40, Math.round(px / 7 * 100) / 100)); });
+  for (const b of blocks) if (b.grid) b.grid.th.forEach((px, j) => {
+    const cap = b.grid!.wraps?.[j] && j >= cardCols ? 150 : 40;
+    widths[j] = Math.max(widths[j] ?? 0, Math.min(cap, Math.round(px / 7 * 100) / 100));
+  });
   const gridCols = widths.length;
   for (const b of blocks) if (b.label) widths[0] = Math.max(widths[0] ?? 0, b.label);
   for (const b of blocks) if (b.cards) b.cards.forEach((w, j) => { if (j >= gridCols) widths[j] = Math.max(widths[j] ?? 0, w); });
@@ -476,6 +570,11 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
   // widths wrap when a cell with words or a fill is to their right on the row (else it would cut them); with nothing to
   // their right they run over the empty cells as the page's one line does (E2 1b, b1): only the page's own wrap wraps them
   const something = (c: Cell | undefined) => !!c && (String(c.v) !== '' || !!c.look?.fill || !!c.look?.border);
+  // (F2) a number or a date wider than its column at these widths would draw as '####' (a number never wraps): it keeps
+  // the page's words as text, which wrap as any text does
+  for (const b of blocks) if (b.grid) for (const r of b.rows) r.forEach((c, j) => {
+    if (c && typeof c.v === 'number' && c.fmt && c.text && measured(c.text, !!c.look?.bold, c.look?.pt) > colPx(widths[j])) r[j] = { ...c, v: c.text, kind: 'text', fmt: undefined };
+  });
   for (const b of blocks) if (b.grid || b.label !== undefined || b.cards || b.table) for (const r of b.rows) r.forEach((c, j) => {
     if (!c || typeof c.v === 'number' || c.look?.wrap || !r.slice(j + 1).some(something)) return;
     const t = c.runs ? c.runs.map(x => x.text).join('') : c.v;
@@ -489,7 +588,7 @@ function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, L
     if (prev && b.rect.top < prev.bottom - 4 && b.rect.left >= prev.right - 4 && b.rect.height > 0)
       rows.push([txt('(beside the block above on the page)', { color: quiet, italic: true })]);
     if (b.pic) pictures.push({ ...b.pic, row: rows.length + 1, col: 0 });   // under the block's first row (its line)
-    rows.push(...(b.flow ? b.rows.map(r => flow(r, widths)) : b.rows));
+    rows.push(...(b.items ? placeItems(b.items, widths) : b.flow ? b.rows.map(r => flow(r, widths)) : b.rows));
     prev = b.rect;
   }
   return { name: m.tab, rows, widths, freeze: 3, pictures, charts };

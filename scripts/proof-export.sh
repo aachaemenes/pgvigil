@@ -271,8 +271,10 @@ const SCREEN = `(() => {
     const t = rgb(getComputedStyle(src).color) || [0, 0, 0, 1];
     return [fill, hx(ov(t, under)), Number(getComputedStyle(src).fontWeight) >= 600];
   };
+  // (F2) a cell's or a header's horizontal alignment as the page computes it: 'right', 'center' or null (left / start)
+  const al = e => { const a = getComputedStyle(e).textAlign; return a === 'right' || a === 'end' || a === '-webkit-right' ? 'right' : a === 'center' || a === '-webkit-center' ? 'center' : null; };
   // b: the colour is the page's own class on the cell itself (a Col's cls without 'status'), no status cell or mark
-  const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'), p: look(td, td.closest('table')),
+  const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'), p: look(td, td.closest('table')), a: al(td),
     b: !td.classList.contains('status') && !td.querySelector(KNOWN) && ['crit', 'warn', 'ok'].some(k => td.classList.contains(k)) });
   // a heading inside a region of its own (the Summary's Needs attention strip) names only the grids of that region
   let outer = '', inner = null;
@@ -296,6 +298,7 @@ const SCREEN = `(() => {
       const r = look(w.querySelector('th'), w.querySelector('table')); w.remove(); return r; };
     const th0 = grid ? e.querySelector(':scope > thead > tr:first-child > th') : null;
     return { named, rows: e.dataset.rows ? Number(e.dataset.rows) : cells.length, head: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(head) : ['item', 'value'], cells, hl: th0 ? look(th0, e) : probe(),
+      ha: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(al) : null,
       status: [...new Set(cells.flat().map(c => c.s).filter(k => k && k !== 'ack'))], tests: !!e.closest('.tests'), att: !!e.closest('.attention') };
   });
 })()`;
@@ -325,9 +328,12 @@ const PAGELOOK = `(() => {
              swatches: sv ? [...b.querySelectorAll('.swatch')].filter(vis).map(s => ({ label: flat(s.nextSibling?.textContent), colour: getComputedStyle(s).backgroundColor })) : [],
              state: flat(b.querySelector('.chart-state')?.textContent) };
   });
+  // (F1) the fleet Summary's 'Needs attention' lines: each one's instance name (its link), its reasons, its badge
+  const attention = [...main.querySelectorAll('.attention-row')].filter(vis).map(r => ({ name: flat(r.querySelector('a')?.textContent),
+    text: flat([...r.children].find(c => c.tagName === 'SPAN' && !c.matches('.dot, .badge'))?.textContent), badge: flat(r.querySelector('.badge')?.textContent) }));
   const css = getComputedStyle(document.documentElement);
   const palette = [1, 2, 3, 4, 5, 6, 7, 8].map(i => css.getPropertyValue('--s' + i).trim());
-  return { tiles, wrapped: [...new Set(wrapped)], charts, palette, card: css.getPropertyValue('--card').trim(), theme: document.documentElement.getAttribute('data-theme') };
+  return { tiles, attention, wrapped: [...new Set(wrapped)], charts, palette, card: css.getPropertyValue('--card').trim(), theme: document.documentElement.getAttribute('data-theme') };
 })()`;
 // SECTIONS (E2-1): the page's visible sections in page order, read on the page's own terms (not by export.ts's walk):
 // every block of #main the eye sees - a heading, a grid (an empty grid's header-only table too), a property card, a
@@ -868,6 +874,7 @@ def xfs(z):
     st = z.read('xl/styles.xml').decode()
     fills = re.findall(r'<fill>(.*?)</fill>', re.search(r'<fills[^>]*>(.*?)</fills>', st).group(1))
     cx = re.findall(r'<xf ([^>]*?)\s*/?>(?:(<alignment[^>]*/>)</xf>)?', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st).group(1))
+    FMT_CODES.update({int(i): unesc(c) for i, c in re.findall(r'<numFmt numFmtId="(\d+)" formatCode="([^"]*)"/>', st)})
     fonts = re.findall(r'<font>(.*?)</font>', re.search(r'<fonts[^>]*>(.*?)</fonts>', st).group(1))
     out = []
     for a, al in cx:
@@ -875,7 +882,7 @@ def xfs(z):
         f = re.search(r'rgb="(\w+)"', fills[g('fillId')])
         fo = fonts[g('fontId')]; c = re.search(r'rgb="(\w+)"', fo)
         sz = re.search(r'<sz val="([\d.]+)"/>', fo)
-        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'border': g('borderId') != 0, 'wrap': 'wrapText="1"' in al, 'valign': (re.search(r'vertical="(\w+)"', al) or [None, 'bottom'])[1], 'sz': float(sz.group(1)) if sz else 11.0})
+        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'border': g('borderId') != 0, 'wrap': 'wrapText="1"' in al, 'valign': (re.search(r'vertical="(\w+)"', al) or [None, 'bottom'])[1], 'sz': float(sz.group(1)) if sz else 11.0, 'halign': (re.search(r'horizontal="(\w+)"', al) or [None, None])[1]})
     return st, out
 def grids(page):
     head, out = '', []
@@ -904,9 +911,33 @@ def tpx(t, bold, cap=True):
         if cap and u * 11 * 96 / 72 / 2048 > 1200: break
     return u * 11 * 96 / 72 / 2048
 import datetime
+FMT_CODES = {}
+def render_code(val, code, group=',', dec='.'):
+    # (F2, E2-15) a number under one of the page sheet's own formats (export.ts numFmtOf, sizeOf, dateFmt) as a
+    # spreadsheet draws it, with the given grouping and decimal marks: '#,##0', '0.000', '0.0" MB"', a date form
+    bare = re.sub(r'"[^"]*"', '', code)
+    if re.search(r'[ymdhs]', bare):
+        tm = datetime.datetime(1899, 12, 30) + datetime.timedelta(seconds=round(val * 86400))
+        toks = re.findall(r'"[^"]*"|yyyy|yy|mm|m|dd|d|hh|h|ss|.', code)
+        codes = [i for i, x in enumerate(toks) if re.fullmatch(r'y+|m+|d+|h+|s+', x)]
+        out = []
+        for i, x in enumerate(toks):
+            if x.startswith('"'): out.append(x[1:-1]); continue
+            if i not in codes: out.append(x); continue
+            k = codes.index(i); prev = toks[codes[k - 1]] if k else ''; nxt = toks[codes[k + 1]] if k + 1 < len(codes) else ''
+            if x[0] == 'm' and (prev.startswith('h') or nxt.startswith('s')): out.append(f'{tm.minute:02d}' if x == 'mm' else str(tm.minute)); continue
+            v = {'y': tm.year, 'm': tm.month, 'd': tm.day, 'h': tm.hour, 's': tm.second}[x[0]]
+            out.append(str(v)[-2:] if x == 'yy' else f'{v:02d}' if len(x) == 2 else str(v))
+        return ''.join(out)
+    m = re.fullmatch(r'(#,##0|0)(?:\.(0+))?(?:"([^"]*)")?', code)
+    if not m: return js_num(val)
+    k = len(m.group(2) or ''); s = f'{abs(val):,.{k}f}' if m.group(1) == '#,##0' else f'{abs(val):.{k}f}'
+    s = s.replace(',', '\0').replace('.', dec).replace('\0', group)
+    return ('-' if val < 0 and float(f'{abs(val):.{k}f}') != 0 else '') + s + (m.group(3) or '')
 def shown_py(val, text, fmt):
     if text is not None: return max(re.split(r'\r?\n', text), key=len) if text else ''
     if val is None: return ''
+    if fmt >= 171 and fmt in FMT_CODES: return render_code(val, FMT_CODES[fmt])
     if fmt == 168: return (datetime.datetime(1899, 12, 30) + datetime.timedelta(seconds=round(val * 86400))).strftime('%Y-%m-%d %H:%M')
     if fmt == 167: return f'{val * 100:.1f}%'
     if fmt == 165: return f'{round(val):,} B'
@@ -1091,6 +1122,19 @@ def legend_audit(cells, swatches):
         if not any(rs[k][0].strip() == '■' and (rs[k][1] or '').upper() == want and k + 1 < len(rs) and rs[k + 1][0].strip().startswith(s['label'])
                    for rs in cells for k in range(len(rs))): wrong.append(s['label'])
     return wrong
+def attention_audit(x, sst, att):
+    # (F1) each 'Needs attention' line on the page sheet: a cell whose words after its dot are the line's name (the
+    # link's text), its reasons a cell of their own on that row, its badge a cell of its own; the badges' columns
+    tx = texts_of(x, sst); cols, bad = set(), []
+    for a in att:
+        hit = sorted(r_ for (r_, c_), (_, t_, _) in tx.items() if re.sub(r'^● ', '', t_) == a['name'])
+        if not hit: bad.append(a['name'] + ': no cell of its name alone'); continue
+        row_ = {c_: t_ for (r_, c_), (_, t_, _) in tx.items() if r_ == hit[0]}
+        if a['text'] and a['text'] not in row_.values(): bad.append(a['name'] + ': its reasons not a cell of their own')
+        bc = sorted(c_ for c_, t_ in row_.items() if t_ == a['badge'])
+        if bc: cols.add(bc[0])
+        else: bad.append(a['name'] + ': no badge cell')
+    return cols, bad
 def pictures_of(z):
     # the page sheet's pictures in drawing order: (width and height in CSS px from the anchor's EMU, alt text, PNG bytes)
     if 'xl/drawings/drawing1.xml' not in z.namelist(): return []
@@ -1213,6 +1257,12 @@ _lg = lambda col: f'<sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><r><
 _sw = [{'label': 'WRITELOG', 'colour': 'rgb(42, 111, 214)'}]
 _lg_ok, _lg_other = legend_audit(colour_runs(_lg('<color rgb="FF2A6FD6"/>')), _sw), legend_audit(colour_runs(_lg('<color rgb="FFC4511A"/>')), _sw)
 _lg_none = legend_audit(colour_runs('<sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><t>WRITELOG</t></is></c></row></sheetData>'), _sw)
+_at = [{'name': 'db1', 'text': 'Agent Jobs 2 critical', 'badge': 'Critical'}, {'name': 'db22', 'text': 'Roles 1 warning', 'badge': 'Warning'}]
+_ax = lambda b2: f'<sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><t>● db1</t></is></c><c r="B1" s="0" t="inlineStr"><is><t>Agent Jobs 2 critical</t></is></c><c r="E1" s="0" t="inlineStr"><is><t>Critical</t></is></c></row><row r="2"><c r="A2" s="0" t="inlineStr"><is><t>● db22</t></is></c><c r="B2" s="0" t="inlineStr"><is><t>Roles 1 warning</t></is></c><c r="{b2}2" s="0" t="inlineStr"><is><t>Warning</t></is></c></row></sheetData>'
+_at_ok, _at_two = attention_audit(_ax('E'), [], _at), attention_audit(_ax('D'), [], _at)
+_at_run = attention_audit(_ax('E').replace('<t>● db1</t></is></c><c r="B1" s="0" t="inlineStr"><is><t>Agent Jobs 2 critical</t>', '<t>● db1Agent Jobs 2 critical</t></is></c><c r="B1" s="0" t="inlineStr"><is><t>x</t>'), [], _at)
+check(len(_at_ok[0]) == 1 and not _at_ok[1] and len(_at_two[0]) == 2 and _at_run[1],
+      f"attention: self-test - two lines with their badges in one column found right ({sorted(_at_ok[0])}), in two columns found ({sorted(_at_two[0])}), a name run into its reasons found ({_at_run[1][:1]})")
 check(_lg_ok == [] and _lg_other == ['WRITELOG'] and _lg_none == ['WRITELOG'],
       f"charts: self-test - a legend's ■ in its swatch's colour before its name found ({_lg_ok}); a ■ in another colour ({_lg_other}) and a name without its ■ ({_lg_none}) found wrong")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
@@ -1399,6 +1449,9 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         tf, tm, tr = tiles_audit(first, sst, pl['tiles'])
         check(not tm and not tr, f"{key}: the page's {len(pl['tiles'])} tiles are cards on the page sheet - label, pill, value in one column: {tf} found (missing {tm[:3]}); no value and label in one cell ({tr[:3]})")
     if pl.get('charts'): chart_audit(key, z, names, sst, pl)
+    if pl.get('attention') or (key == 'summary' and 'attention' in pl):
+        acols, abad = attention_audit(first, sst, pl['attention'])
+        check(len(pl['attention']) >= 1 and len(acols) == 1 and not abad, f"{key}: 'Needs attention' - {len(pl['attention'])} line(s) on the page sheet, each name a cell of its own (its words after the dot = the link's text), its reasons their own, every badge in ONE column ({sorted(colname(c) for c in acols)}; wrong {abad[:3]})")
     # E2-8: a page's workbook, pictures and all, fits the report mail's attachment cap (internal/reportmail/reportmail.go:30 MaxXLSX = 8 << 20)
     sz_ = os.path.getsize(f"{dl}/{p['xlsx']}")
     check(sz_ <= 8 << 20, f"{key}: its workbook {sz_:,} bytes, under the report mail's cap MaxXLSX 8 MiB ({len(pictures_of(z))} picture(s))")
@@ -1418,6 +1471,31 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         found += 1; pos = r + 1
         if g.get('empty'): continue
         audit(key, f"{names[0]}' at row {r}, grid '{g['name']}", first, cx, g, sst, first=r + 1)
+        # (F2) every header and drawn cell of the grid aligned as the page aligns it (a numeric column's header with its
+        # values); (E2-15, F2) every number cell shows the page's words under its format, in the page's marks (a size's
+        # decimal is fmtBytes' '.' on the page whatever the locale: compared on its digits)
+        grp = ' ' if re.match(r'1\s234', d['sample']) else d['sample'][1]; dmk = ',' if grp != ',' else '.'
+        alb, nb, nn, kinds = [], [], 0, {}; ws1 = widths_of(first)
+        for j, a in enumerate(g.get('ha') or []):
+            sid = f1.get((r, j), (0,))[0]; ga = cx[sid].get('halign') if sid < len(cx) else '?'
+            if ga != a: alb.append(f"{colname(j)}{r} header '{g['head'][j][:14]}' file {ga} page {a}")
+        for i, row_ in enumerate(g['cells']):
+            for j, c in enumerate(row_):
+                sid, val, text = f1.get((r + 1 + i, j), (0, None, None))
+                ga = cx[sid].get('halign') if sid < len(cx) else '?'
+                if g.get('ha') is not None and ga != c.get('a'): alb.append(f"{colname(j)}{r + 1 + i} '{c['t'][:14]}' file {ga} page {c.get('a')}")
+                if val is None or text is not None: continue
+                nn += 1; code = FMT_CODES.get(cx[sid]['fmt'], '') if sid < len(cx) else ''
+                kinds[('date' if re.search(r'[ymdhs]', re.sub(r'"[^"]*"', '', code)) else 'size' if '"' in code else 'number')] = kinds.get('date' if re.search(r'[ymdhs]', re.sub(r'"[^"]*"', '', code)) else 'size' if '"' in code else 'number', 0) + 1
+                got = render_code(val, code, grp, dmk) if code else js_num(val)
+                want = c['t']
+                if '"' in code: got, want = got.replace(dmk, '.'), want.replace(dmk, '.')
+                if got != want: nb.append(f"{colname(j)}{r + 1 + i} file {got!r} ({code or 'General'}) page {want!r}")
+                # a number wider than its column draws as '####' (it never wraps)
+                wj = ws1.get(j, 0); room = round((wj if wj > 0 else 8.43) * 7) + 5
+                if 1.0738 * tpx(got, bool(cx[sid]['bold']) if sid < len(cx) else False) + 6 > room: nb.append(f"{colname(j)}{r + 1 + i} {got!r} wider than its column ({room} px): '####'")
+        check(not alb, f"{key}: grid '{g['name']}' on the page sheet: every header and cell aligned as the page aligns it ({len(g.get('ha') or [])} headers, {sum(len(x) for x in g['cells'])} cells; {len(alb)} wrong {alb[:3]})")
+        check(not nb, f"{key}: grid '{g['name']}' on the page sheet: every number cell shows the page's words under its format ({nn} numbers {kinds}; {len(nb)} wrong {nb[:3]})")
         if g['rows'] > 200:
             rr = r + 1 + min(g['rows'], 200)
             lk = re.search(r'<hyperlink ref="A' + str(rr) + r'" location="\'([^\']*)\'!A1"', first)
