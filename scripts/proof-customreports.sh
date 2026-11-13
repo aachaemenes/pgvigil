@@ -481,9 +481,10 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   else
     [[ $(tl "t['sp_QuickieStore']['state']") == note && $(tl "t['sp_QuickieStore']['needs'][0]['what']") == *"Query Store is on in no database"* ]] || fail "N: sp_QuickieStore with no Query Store: $(tl "t['sp_QuickieStore']")"
   fi
-  [[ $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['sp_HumanEventsBlockViewer', 'sp_LogHunter', 'sp_QuickieStore']" ]] || fail "N: other tools with a need: $(tl "[(x['id'], x['needs']) for x in d['tools'] if x['needs']]")"
+  [[ $(tl "t['sp_IndexCleanup']['state']") == note && $(tl "t['sp_IndexCleanup']['preset']") == "{'@database_name': 'pgcr_seed'}" ]] || fail "N: sp_IndexCleanup's preset (installed in master, which it skips): $(tl "t['sp_IndexCleanup']")"
+  [[ $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['sp_HumanEventsBlockViewer', 'sp_IndexCleanup', 'sp_LogHunter', 'sp_QuickieStore']" ]] || fail "N: other tools with a need: $(tl "[(x['id'], x['needs']) for x in d['tools'] if x['needs']]")"
   [[ $(tl "sorted(x['id'] for x in d['tools'] if not x['on'])") == "['sp_LogHunter']" ]] || fail "N: tools off: $(tl "sorted(x['id'] for x in d['tools'] if not x['on'])")"
-  ok "N: $MSR: sp_LogHunter off (xp_readerrorlog, the GRANT line); sp_HumanEventsBlockViewer preset system_health at threshold 0; sp_QuickieStore preset ${qsdb:-none}; 13 on"
+  ok "N: $MSR: sp_LogHunter off (xp_readerrorlog, the GRANT line); sp_HumanEventsBlockViewer preset system_health at threshold 0; sp_QuickieStore preset ${qsdb:-none}; sp_IndexCleanup preset pgcr_seed; 13 on"
   # declined: the procedure's own refusal is a failed run in the audit, declined in the answer, never 'refused'
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == failed && $(js "d['runs'][0].get('declined')") == True \
      && $(js "d['runs'][0]['error']") == "sp_LogHunter declined: Current user does not have EXECUTE permission on xp_readerrorlog"*"(msg 50000, severity 11)" ]] || fail "N: sp_LogHunter declined: $(head -c 600 "$WORK/body")"
@@ -495,11 +496,12 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   c=$(crun "{\"instance_id\":$MRID,\"tool\":\"sp_IndexCleanup\",\"params\":{\"@database_name\":\"pgcr_nosuchdb_$N\"}}")
   [[ $c == 200 && $(js "d['runs'][0].get('declined')") == True && $(js "d['runs'][0]['error']") == "sp_IndexCleanup declined: No valid databases found to process. (msg 50000, severity 16)" ]] || fail "N: sp_IndexCleanup on a database it cannot find: $(head -c 600 "$WORK/body")"
   ok "N: declined in the procedures' own words (sp_LogHunter severity 11, sp_IndexCleanup 16, sp_HumanEventsBlockViewer): outcome failed with the words, declined true; the preset run done"
-  # a real failure inside a kit stays an error: SELECT on the index usage DMV denied in pgcr_seed, sp_BlitzIndex reads it
-  sq "DENY SELECT ON sys.dm_db_index_usage_stats TO pgcr_reader;" pgcr_seed >/dev/null && sq "DENY SELECT ON sys.dm_db_index_usage_stats TO pgcr_reader;" >/dev/null || fail "N: the DENY"
+  # a real failure inside a kit stays an error: the index usage DMV denied (a server-scoped view: denied in master) and
+  # VIEW DATABASE STATE denied in pgcr_seed, both of which sp_BlitzIndex reads through
+  sq "DENY SELECT ON sys.dm_db_index_usage_stats TO pgcr_reader;" >/dev/null && sq "DENY VIEW DATABASE STATE TO pgcr_reader;" pgcr_seed >/dev/null || fail "N: the DENY"
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_BlitzIndex\",\"params\":{\"@DatabaseName\":\"pgcr_seed\"}}") == 200 ]] || fail "N: sp_BlitzIndex with the DMV denied: $(head -c 400 "$WORK/body")"
   red=$(js "(d['runs'][0]['outcome'], bool(d['runs'][0].get('declined')), (d['runs'][0].get('error') or '')[:160])")
-  sq "REVOKE SELECT ON sys.dm_db_index_usage_stats FROM pgcr_reader;" pgcr_seed >/dev/null && sq "REVOKE SELECT ON sys.dm_db_index_usage_stats FROM pgcr_reader;" >/dev/null || fail "N: the REVOKE of the DENY"
+  sq "REVOKE SELECT ON sys.dm_db_index_usage_stats FROM pgcr_reader;" >/dev/null && sq "REVOKE VIEW DATABASE STATE FROM pgcr_reader;" pgcr_seed >/dev/null || fail "N: the REVOKE of the DENYs"
   [[ $red == "('failed', False, "* ]] || fail "N: a real failure inside sp_BlitzIndex is not an error: $red"
   ok "N: a real failure inside sp_BlitzIndex stays an error: $red"
   # the sibling pairs (the lead 15:50): EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
@@ -588,7 +590,7 @@ fi
 ok "N: $INSTS: the superuser named before the click"
 # the keep: a second GET within 60 s answers the same checked_at, fresh=1 a newer one
 getc "community?instance=$AID" >/dev/null; k1=$(tl "d['checked_at']"); getc "community?instance=$AID" >/dev/null; k2=$(tl "d['checked_at']"); fresh "$AID" >/dev/null; k3=$(tl "d['checked_at']")
-[[ $k1 == "$k2" && $k3 > $k2 ]] || fail "N: the keep: $k1 / $k2 / $k3"
+[[ $k1 == "$k2" && $(date -d "$k3" +%s%N) -gt $(date -d "$k2" +%s%N) ]] || fail "N: the keep: $k1 / $k2 / $k3"
 ok "N: kept 60 s (two GETs, one checked_at $k1), fresh=1 checks again ($k3)"
 
 # ---- A: the audit --------------------------------------------------------------------------------------------------------

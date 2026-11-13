@@ -666,14 +666,15 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 	}
 	// the server's rights and settings, live: what this login may read, and what it reaches
 	var canRead, rds, secAdmin, reach, liveThreshold int
-	var masterUser string
+	var masterUser, firstUserDB string
 	err = conn.QueryRowContext(ctx, `SELECT ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.xp_readerrorlog', N'OBJECT', N'EXECUTE'), 0),
        CASE WHEN OBJECT_ID(N'rdsadmin.dbo.rds_read_error_log', N'P') IS NULL THEN 0 ELSE 1 END,
        ISNULL((SELECT TOP (1) name FROM master.sys.database_principals WHERE sid = SUSER_SID()), N''),
        ISNULL(IS_SRVROLEMEMBER(N'securityadmin'), 0),
        (SELECT COUNT(*) FROM sys.databases WHERE database_id > 4 AND state = 0 AND HAS_DBACCESS(name) = 1),
-       ISNULL((SELECT CONVERT(int, c.value_in_use) FROM sys.configurations AS c WHERE c.name = N'blocked process threshold (s)'), -1)`).Scan(
-		&canRead, &rds, &masterUser, &secAdmin, &reach, &liveThreshold)
+       ISNULL((SELECT CONVERT(int, c.value_in_use) FROM sys.configurations AS c WHERE c.name = N'blocked process threshold (s)'), -1),
+       ISNULL((SELECT TOP (1) name FROM sys.databases WHERE database_id > 4 AND state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name), N'')`).Scan(
+		&canRead, &rds, &masterUser, &secAdmin, &reach, &liveThreshold, &firstUserDB)
 	if err != nil {
 		for _, p := range []string{"sp_LogHunter", "sp_IndexCleanup", "sp_HumanEventsBlockViewer"} {
 			add(p, notChecked("reading the read login's rights on "+name+" failed: "+err.Error()))
@@ -688,13 +689,28 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 	case rds == 0 && secAdmin == 0:
 		add("sp_LogHunter", noteNeed("reads the current error log only: the archived logs are listed through sp_enumerrorlogs, which needs securityadmin", "", "live"))
 	}
-	if reach == 0 {
+	switch {
+	case reach == 0:
 		add("sp_IndexCleanup", hardNeed("a user database the read login can reach: "+name+" has none online with access for "+login,
 			"give the read login access to the databases to check (CONNECT ANY DATABASE, or a user in each)", "live"))
+	case isSystemDB(c.DB):
+		// its own default reads the database it is installed in and skips a system database: a default click from
+		// there is always declined ('No valid databases found to process.')
+		c.Preset["sp_IndexCleanup"] = map[string]string{"@database_name": firstUserDB}
+		add("sp_IndexCleanup", noteNeed("sp_IndexCleanup's own default reads the database it is installed in ("+c.DB+"), a system database it skips: the form reads "+firstUserDB+"; @get_all_databases = 1 reads every database the login reaches", "", "live"))
 	}
 	s.blockViewerPreset(ctx, conn, c, id, liveThreshold, add)
 	s.quickieStorePreset(ctx, conn, c, id, name, add)
 	return c
+}
+
+// isSystemDB: the four system databases (and Amazon RDS's rdsadmin), which sp_IndexCleanup skips.
+func isSystemDB(db string) bool {
+	switch strings.ToLower(db) {
+	case "master", "model", "msdb", "tempdb", "rdsadmin":
+		return true
+	}
+	return false
 }
 
 // blockViewerPreset: sp_HumanEventsBlockViewer's form follows what exists, so a click with it is never one the

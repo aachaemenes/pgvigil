@@ -183,7 +183,8 @@ The form fills in what the server makes the procedure's own default wrong: sp_Hu
 default session `keeper_HumanEvents_blocking` when it runs; otherwise another running session that captures the
 blocked process report; otherwise, and whenever the blocked process threshold is 0, `system_health` (which holds only
 the blocking `sp_server_diagnostics` recorded in it), with a note saying so. sp_QuickieStore gets the first database
-with Query Store on. A value you type over a filled one is sent as typed.
+with Query Store on; sp_IndexCleanup, installed in a system database (its own default reads that database and skips it),
+the first user database the login reaches. A value you type over a filled one is sent as typed.
 
 A tool that is off stays in the keyboard order with its reason beside it, read out as its description and shown on
 hover; a click on it sends nothing.
