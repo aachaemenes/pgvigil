@@ -197,3 +197,44 @@ func TestSeatOnDemo(t *testing.T) {
 		t.Error("a write that names no route and no scope got the demo's pool")
 	}
 }
+
+// TestDoorScopeReaders: a handler's payload read into a scope as its import_ function will read it - the level names
+// the scope, an instance_id counts only in the shape the function accepts, an end goes by its row, and alertDoor's
+// list gives a route only to the functions it names.
+func TestDoorScopeReaders(t *testing.T) {
+	row := func(sc writeScope) doorRowRef {
+		if sc.Row == nil {
+			return doorRowRef{}
+		}
+		return *sc.Row
+	}
+	for _, c := range []struct {
+		name string
+		got  writeScope
+		want writeScope
+		row  doorRowRef
+	}{
+		{"a root level", scopeOfLevel(doorDriveThreshold, map[string]any{"level": "root", "instance_id": "7"}), writeScope{Route: doorDriveThreshold, Level: "root", InstanceID: 7}, doorRowRef{}},
+		{"a tag level", scopeOfLevel(doorPgThreshold, map[string]any{"level": "tag", "tag": "env:prod"}), writeScope{Route: doorPgThreshold, Level: "tag", Tag: "env:prod"}, doorRowRef{}},
+		{"an instance id as a JSON number", scopeOfLevel(doorJobThreshold, map[string]any{"level": "instance", "instance_id": float64(7)}), writeScope{Route: doorJobThreshold, Level: "instance", InstanceID: 7}, doorRowRef{}},
+		{"an instance id as text", scopeOfLevel(doorDriveThreshold, map[string]any{"level": "drive", "instance_id": "12"}), writeScope{Route: doorDriveThreshold, Level: "drive", InstanceID: 12}, doorRowRef{}},
+		{"an instance id the function would not read", scopeOfLevel(doorDriveThreshold, map[string]any{"level": "instance", "instance_id": "7.5"}), writeScope{Route: doorDriveThreshold, Level: "instance"}, doorRowRef{}},
+		{"an instance id of ten digits", scopeOfLevel(doorDriveThreshold, map[string]any{"level": "instance", "instance_id": "1234567890"}), writeScope{Route: doorDriveThreshold, Level: "instance"}, doorRowRef{}},
+		{"an exclusion's add", scopeOfExclusion(map[string]any{"op": "add", "level": "instance", "instance_id": float64(2), "exclusion_id": float64(31)}), writeScope{Route: doorJobExclusion, Level: "instance", InstanceID: 2}, doorRowRef{}},
+		{"an exclusion's end", scopeOfExclusion(map[string]any{"op": "end", "exclusion_id": float64(31), "level": "instance", "instance_id": float64(2)}), writeScope{Route: doorJobExclusion}, doorRowRef{"job_exclusions", 31}},
+		{"Send test", scopeOfAlertFn("import_alert_test", map[string]any{"channel": "ops"}), writeScope{Route: doorAlertTest}, doorRowRef{}},
+		{"a dismiss", scopeOfAlertFn("import_alert_dismiss", map[string]any{"op": "add", "finding_key": "abc"}), writeScope{Route: doorDismiss, FindingKey: "abc"}, doorRowRef{}},
+		{"an undismiss", scopeOfAlertFn("import_alert_dismiss", map[string]any{"op": "end", "dismiss_id": int64(20)}), writeScope{Route: doorDismiss}, doorRowRef{"alert_dismissals", 20}},
+		{"a pause", scopeOfAlertFn("import_ack_change", map[string]any{"op": "pause", "ack_id": int64(10)}), writeScope{Route: doorMuteChange}, doorRowRef{"acks", 10}},
+		{"an edit to every instance", scopeOfAlertFn("import_ack_change", map[string]any{"op": "edit", "ack_id": int64(10), "any_instance": true}), writeScope{Route: doorMuteChange, AnyInstance: true}, doorRowRef{"acks", 10}},
+		{"an edit to another instance", scopeOfAlertFn("import_ack_change", map[string]any{"op": "edit", "ack_id": int64(10), "instance_id": 3, "tag": "x"}), writeScope{Route: doorMuteChange, InstanceID: 3, Tag: "x"}, doorRowRef{"acks", 10}},
+		{"a function alertDoor's list does not name", scopeOfAlertFn("import_alert_channels", map[string]any{"instance_id": 1}), writeScope{}, doorRowRef{}},
+	} {
+		g := c.got
+		gr := row(g)
+		g.Row = nil
+		if g != c.want || gr != c.row {
+			t.Errorf("%s: got %+v row %+v, want %+v row %+v", c.name, g, gr, c.want, c.row)
+		}
+	}
+}

@@ -4,11 +4,15 @@
 // X-Pgvigil header; api.post). Nothing writes on a bare click: every write opens a dialog that says what it does, and
 // the server answers with the row's id or the reason it refused. Who and when are the server's (the session's user).
 import { get, post, Row, rowsOf, Table } from './api';
-import { badge, el, fmtTime } from './ui';
+import { badge, el, fmtTime, offControl } from './ui';
 import { fromInput, toInput } from './tz';
 
+// AckDoor: the demo's write door (pgvigil demo -serve, task B7): the server's own writes stay off there (writable
+// false with the reason), and the door writes as its user for the instances it names and for no other.
+export interface AckDoor { user: string; instances: number[] }
+
 export interface AckData {
-  writable: boolean; reason?: string; user: string;
+  writable: boolean; reason?: string; user: string; door?: AckDoor | null;
   acks?: Table | null; log?: Table | null; suppressed?: Table | null; alerts?: Table | null; attention?: Table | null;
 }
 
@@ -30,6 +34,20 @@ export async function loadAckSafe(parts: string[], params: Record<string, string
   try { return await loadAck(parts, params); } catch (e) {
     return { writable: false, reason: e instanceof Error ? e.message : String(e), user: '' };
   }
+}
+
+// ackOn: can a write for this instance be made here? Yes on a server that writes (a signed-in serve), and on a demo
+// serve for an instance of the demo's door. No instance = a write that names none (a rule on every instance, a root or
+// tag level): the door never carries it.
+export const ackOn = (d: AckData, instanceId?: number | null): boolean =>
+  d.writable || (instanceId != null && !!d.door && d.door.instances.includes(Number(instanceId)));
+
+// ackWhy: the words of a control that is off, null when it is on. name: the instance as the page shows it.
+export function ackWhy(d: AckData, instanceId?: number | null, name?: string): string | null {
+  if (ackOn(d, instanceId)) return null;
+  if (d.door && instanceId != null) return `${name ?? 'this instance'} is not one of this demo's instances: changing it needs pgvigil serve with a signed-in user`;
+  if (d.door) return "this change would reach past the demo's instances: set it on one demo instance here, or use pgvigil serve with a signed-in user";
+  return d.reason ?? 'acknowledgements are off';
 }
 
 export interface AckResult { outcome: string; detail: string; ack_id?: number | null }
@@ -79,7 +97,7 @@ export function jobAckCell(d: AckData, instanceId: number, jobName: string, last
   const a = jobAcks(d).get(`${instanceId}|${jobName}`);
   if (a && String(a.seen_state) === String(lastFail)) {
     span.append(el('span', { title: ackWords(a) }, `acknowledged ${fmtTime(a.created_at)}`), ' ');
-    if (d.writable) span.append(endButton(Number(a.ack_id), `Clear the acknowledgement of ${jobName}`, after, 'Clear'));
+    if (ackOn(d, instanceId)) span.append(endButton(Number(a.ack_id), `Clear the acknowledgement of ${jobName}`, after, 'Clear'));
     return span;
   }
   span.append(writeButton(d, 'Acknowledge', `Acknowledge ${jobName}`, () => ackDialog({
@@ -87,15 +105,20 @@ export function jobAckCell(d: AckData, instanceId: number, jobName: string, last
     what: `Its failure of ${fmtTime(lastFail)} is acknowledged: the cell loses its colour until the job fails again. Who and when are kept.`,
     body: { kind: 'job', instance_id: instanceId, job_name: jobName, seen_state: String(lastFail) },
     expiry: false, after,
-  })));
+  }), instanceId));
   return span;
 }
 
-// writeButton: a button that opens a dialog, disabled with the reason when writes are off
-export function writeButton(d: AckData, label: string, aria: string, open: () => void): HTMLButtonElement {
+// writeButton: a button that opens a write's dialog; where the write cannot be made it is off with its reason in
+// words on the page (ui.ts offControl: aria-disabled, the reason its description and visible text). instanceId: the
+// instance the write names (none = a write wider than one instance). note: the page's own visible sentence when it
+// says this reason already; without one the reason is put beside the button once the caller has placed it.
+export function writeButton(d: AckData, label: string, aria: string, open: () => void, instanceId?: number | null, note?: HTMLElement, name?: string): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
-  if (!d.writable) { b.disabled = true; b.title = d.reason ?? 'acknowledgements are off'; }
-  else b.addEventListener('click', open);
+  const why = ackWhy(d, instanceId, name);
+  if (!why) { b.addEventListener('click', open); return b; }
+  const made = offControl(b, why, note);
+  if (!note) queueMicrotask(() => { if (b.parentNode && !made.parentNode) b.after(' ', made); });
   return b;
 }
 

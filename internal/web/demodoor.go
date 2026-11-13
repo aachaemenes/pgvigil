@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -225,6 +227,82 @@ func (d *demoDoor) rowInstances(ctx context.Context, r doorRow, want map[int]boo
 		return doorWide("an every-instance"), nil
 	}
 	return "", nil
+}
+
+// payText is a payload value as the text its import_ function reads with ->>.
+func payText(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case bool:
+		return strconv.FormatBool(x)
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	}
+	return fmt.Sprint(v)
+}
+
+var (
+	payInstanceRE = regexp.MustCompile(`^[0-9]{1,9}$`)  // as the functions read an instance_id
+	payRowRE      = regexp.MustCompile(`^[0-9]{1,18}$`) // as they read a row's id
+)
+
+// payInstance is a payload's instance id as its function will read it; 0 = none.
+func payInstance(v any) int {
+	t := payText(v)
+	if !payInstanceRE.MatchString(t) {
+		return 0
+	}
+	n, _ := strconv.Atoi(t)
+	return n
+}
+
+func payRow(v any) int64 {
+	t := payText(v)
+	if !payRowRE.MatchString(t) {
+		return 0
+	}
+	n, _ := strconv.ParseInt(t, 10, 64)
+	return n
+}
+
+// scopeOfLevel reads a threshold write's scope from the payload its function is given: the functions bind the scope
+// by 'level' alone - root and tag name no instance, every other level needs one (0111, 0117, 0094, 0102).
+func scopeOfLevel(route doorRoute, pay map[string]any) writeScope {
+	return writeScope{Route: route, Level: payText(pay["level"]), Tag: payText(pay["tag"]), InstanceID: payInstance(pay["instance_id"])}
+}
+
+// scopeOfExclusion: a job exclusion's end goes by its row, an add by its level.
+func scopeOfExclusion(pay map[string]any) writeScope {
+	if payText(pay["op"]) == "end" {
+		return writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", payRow(pay["exclusion_id"])}}
+	}
+	return scopeOfLevel(doorJobExclusion, pay)
+}
+
+// scopeOfAlertFn is alertDoor's route list: the scope of a write by the import_ function it calls. A function this
+// list does not name has no route, and the door refuses it.
+func scopeOfAlertFn(fn string, pay map[string]any) writeScope {
+	switch fn {
+	case "import_alert_test":
+		return writeScope{Route: doorAlertTest}
+	case "import_alert_dismiss":
+		if payText(pay["op"]) == "end" {
+			return writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", payRow(pay["dismiss_id"])}}
+		}
+		return writeScope{Route: doorDismiss, FindingKey: payText(pay["finding_key"])}
+	case "import_ack_change":
+		anyInstance, _ := pay["any_instance"].(bool)
+		return writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", payRow(pay["ack_id"])}, AnyInstance: anyInstance,
+			InstanceID: payInstance(pay["instance_id"]), Tag: payText(pay["tag"])}
+	}
+	return writeScope{}
 }
 
 // newDemoDoor connects the door's own pool. The lookups read through the UI's read-only pool.

@@ -323,6 +323,10 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 	if s.auth != nil {
 		out["user"] = s.sessionUser(r)
 	}
+	if d := s.doorInfo(); d != nil {
+		// a demo serve: writable stays false, and the door names its user and the instances it writes for
+		out["door"] = d
+	}
 	for _, p := range ps {
 		t, err := s.query(r.Context(), p.sql, p.args...)
 		if err != nil {
@@ -381,19 +385,11 @@ func (s *Server) AckAdd(w http.ResponseWriter, r *http.Request) { s.ackWrite(w, 
 func (s *Server) AckEnd(w http.ResponseWriter, r *http.Request) { s.ackWrite(w, r, "end") }
 
 func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, s.ackOff())
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(why))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 8193))
 	if err != nil || len(raw) > 8192 {
 		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 8 KB"))
@@ -410,13 +406,15 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"op": op, "ui_user": user, "client": seat.client}
+	sc := writeScope{Route: doorAck, InstanceID: in.InstanceID, FindingKey: in.FindingKey, Tag: in.Tag}
 	if op == "end" {
 		if in.AckID <= 0 {
 			writeErr(w, http.StatusBadRequest, errors.New("ack_id must be a positive ack_id"))
 			return
 		}
 		pay["ack_id"] = in.AckID
+		sc = writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", in.AckID}}
 	} else {
 		if !ackKinds[in.Kind] {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("kind must be one of ack, alert_ack, note, close, blackout, job, silence, mute, noise"))
@@ -455,7 +453,12 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 	// the write outlives a client that hangs up (its audit row is kept), never the 15 s
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_ack($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	// who writes and on which pool: the audit login on a serve; on a demo serve the door's own, and only for a scope it allows
+	pool, ok := seat.poolFor(wctx, w, sc)
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.import_ack($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("ack: not written", "op", op, "kind", in.Kind, "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return
