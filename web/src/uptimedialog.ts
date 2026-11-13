@@ -159,10 +159,13 @@ export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Pr
   f.show(root ? warn : inherit.box);
 }
 
-// openDumpDialog: DBA Dash's 'Memory Dump Thresholds' (the root's); acknowledge is the Summary's Acknowledge Dumps
-export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
+// openDumpDialog: DBA Dash's 'Memory Dump Thresholds' (the root's); acknowledge is the Summary's Acknowledge Dumps. pg:
+// opened from a scope with no SQL Server instance - the same thresholds in PostgreSQL's words ('Crash Restart Thresholds').
+// scope: the ids of the instances the Summary shows - Clear and the date beside it are of their acknowledgements alone,
+// as Acknowledge is (never a SQL Server instance's under PostgreSQL's title); none given: every instance
+export async function openDumpDialog(acknowledge?: Acked, pg = false, scope?: number[]): Promise<void> {
   const r = await rootOf('crash');
-  const f = frame('Memory Dump Thresholds', -1);
+  const f = frame(pg ? 'Crash Restart Thresholds' : 'Memory Dump Thresholds', -1);
   // the root's thresholds: wider than one instance - off where the server writes nothing and on a demo serve, in words
   const ad = await loadAckSafe(['acks']);
   const updWhy = seatWhy(ad, 'thresholds');
@@ -175,10 +178,11 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
   critOn.box.setAttribute('aria-label', 'Critical Threshold (Hrs): judged'); warnOn.box.setAttribute('aria-label', 'Warning Threshold (Hrs): judged');
   const sync = () => { crit.disabled = !critOn.box.checked; warn.disabled = !warnOn.box.checked; };
   critOn.box.addEventListener('change', sync); warnOn.box.addEventListener('change', sync); sync();
-  // DBA Dash's {AckDate}: the newest acknowledgement of a Memory Dump cell still in force; Clear ends them all - on a
-  // demo serve those of the door's instances alone: the others are left alone (never asked for, the door would refuse
-  // each) and counted in the answer
-  const allAcks = liveRows(ad, 'ack').filter(a => a.check_key === 'dumps');
+  // DBA Dash's {AckDate}: the newest acknowledgement of a Memory Dump cell still in force in the scope; Clear ends
+  // them all - on a demo serve those of the door's instances alone: the others are left alone (never asked for, the
+  // door would refuse each) and counted in the answer
+  const inScope = scope ? new Set(scope) : null;
+  const allAcks = liveRows(ad, 'ack').filter(a => a.check_key === 'dumps' && (!inScope || inScope.has(Number(a.instance_id))));
   // what this server may end: all of them where it writes; the door's instances' on a demo serve; none elsewhere
   const ackRows = ad.writable ? allAcks : allAcks.filter(a => ackOn(ad, Number(a.instance_id) || null));
   const alone = onDoor(ad) && allAcks.length > ackRows.length ? `; ${allAcks.length - ackRows.length} acknowledgement(s) of instances not the demo's left alone` : '';
@@ -194,9 +198,9 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
     : onDoor(ad) ? "the acknowledgements in force are of instances that are not the demo's: ending them needs pgvigil serve with a signed-in user"
     : ackWhy(ad) ?? 'acknowledgements are off';
   // nothing in force at all: Clear is off with those words (the date beside it reads 'Not acknowledged')
-  if (clearWhy || !allAcks.length) offBeside(clearLink, clearWhy ?? 'no Memory Dump acknowledgement is in force');
+  if (clearWhy || !allAcks.length) offBeside(clearLink, clearWhy ?? `no ${pg ? 'crash restart' : 'Memory Dump'} acknowledgement is in force on this scope's instances`);
   const ackLink = el('button', { type: 'button', class: 'link' }, 'Acknowledge');
-  if (!acknowledge) offBeside(ackLink, "opened without the Summary: Acknowledge is the Summary's Options > Memory Dumps > Acknowledge Dumps");
+  if (!acknowledge) offBeside(ackLink, `opened without the Summary: Acknowledge is the Summary's Options > ${pg ? 'Crash Restarts > Acknowledge Crashes' : 'Memory Dumps > Acknowledge Dumps'}`);
   const update = el('button', { type: 'submit' }, 'Update'), cancel = el('button', { type: 'button' }, 'Cancel');
   // DBA Dash's order (MemoryDumpThresholdsConfig.Designer.cs): Warning, then Critical, each label | box | check box;
   // Acknowledge | the acknowledge date | Clear; Cancel, Update. No acknowledgement: DBA Dash shows its stored
@@ -226,7 +230,7 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
     clearLink.disabled = true;
     const failed: string[] = [];
     for (const a of ackRows) { try { await endAck(Number(a.ack_id)); } catch (e) { failed.push(e instanceof Error ? e.message : String(e)); } }
-    f.said(!failed.length, failed.length ? `${failed.join('; ')}${alone}` : `${ackRows.length} acknowledgement(s) ended: the dumps show again${alone}.`);
+    f.said(!failed.length, failed.length ? `${failed.join('; ')}${alone}` : `${ackRows.length} acknowledgement(s) ended: the ${pg ? 'crash restarts' : 'dumps'} show again${alone}.`);
     f.done();
   });
   f.form.addEventListener('submit', async ev => {

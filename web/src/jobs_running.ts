@@ -12,7 +12,8 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, props } from './ui';
-import { offBeside } from './ack';
+import { loadAckSafe, offBeside, onDoor, seatWhy } from './ack';
+import { fleet } from './fleet';
 
 type Kind = 'job_stop' | 'job_start';
 interface OnOff { on: boolean; reason?: string }
@@ -226,16 +227,18 @@ async function stepLog(ctx: Ctx, jobId: string, box: HTMLElement) {
   }
 }
 
-// offNote: the page's sentence that says why exclusions cannot be written here; an off End points at it
-const exclCols = (writable: boolean, after: () => void, offNote?: HTMLElement): Col[] => [
+// endWhy: why a row's End is off ('' = on): its level's reason (an instance's row by the instance's, a row on every
+// instance by the root's); noteOf: the page's sentence that says that reason (an off End points at it)
+const exclCols = (endWhy: (r: Row) => string, after: () => void, noteOf: (r: Row) => HTMLElement | undefined): Col[] => [
   { key: 'level', fmt: v => v === 'root' ? 'every instance' : 'this instance' },
   { key: 'match_on', label: 'on' }, { key: 'pattern', fmt: v => el('code', {}, text(v)) },
   { key: 'jobs_taken', label: 'jobs it takes here', num: true, fmt: fmtNum }, { key: 'jobs', label: 'which', wide: true },
   { key: 'note', wide: true }, { key: 'created_by', label: 'by' }, { key: 'created_at', label: 'since', fmt: fmtTime },
   {
-    key: 'exclusion_id', label: 'end', fmt: v => {
+    key: 'exclusion_id', label: 'end', fmt: (v, r) => {
       const b = el('button', { type: 'button', style: 'font-size:12px;padding:0 .4rem' }, 'End');
-      if (!writable) { offBeside(b, 'exclusions cannot be written on this server', offNote); return b; }
+      const why = endWhy(r);
+      if (why) { offBeside(b, why, noteOf(r)); return b; }
       b.setAttribute('aria-label', `End exclusion ${text(v)}`);
       b.addEventListener('click', async () => {
         b.textContent = '...';
@@ -247,16 +250,24 @@ const exclCols = (writable: boolean, after: () => void, offNote?: HTMLElement): 
 ];
 
 // the form that adds an exclusion
-function exclusionForm(ctx: Ctx, after: () => void): HTMLElement {
-  const level = el('select', { 'aria-label': 'level' }, el('option', { value: 'instance' }, 'this instance'), el('option', { value: 'root' }, 'every instance'));
+// rootWhy: why an exclusion on every instance is not added here ('' = it is). Then 'every instance' is natively
+// disabled and that reason stands beside the form in words, the level field described by it - a control works or is
+// off with its reason before any click (a demo serve carries one instance's own exclusions, B7 DONE-3; the lead 09:28)
+let exclRootSeq = 0;
+function exclusionForm(ctx: Ctx, after: () => void, rootWhy = ''): HTMLElement {
+  const level = el('select', { 'aria-label': 'level' }, el('option', { value: 'instance' }, 'this instance'),
+    el('option', { value: 'root', ...(rootWhy ? { disabled: '' } : {}) }, 'every instance'));
+  const rootNote = rootWhy ? el('p', { class: 'meta', id: `excl-root-off-${++exclRootSeq}` }, `Every instance: ${rootWhy}`) : null;
+  if (rootNote) level.setAttribute('aria-describedby', rootNote.id);
   const on = el('select', { 'aria-label': 'match on' }, el('option', { value: 'name' }, 'the job\'s name'), el('option', { value: 'command' }, 'the job\'s command'));
   const pat = el('input', { type: 'text', maxlength: '300', 'aria-label': 'pattern', placeholder: 'tmp_* or *VACUUM*', autocomplete: 'off' });
   const note = el('input', { type: 'text', maxlength: '500', 'aria-label': 'note', placeholder: 'why (optional)' });
   const add = el('button', { type: 'submit' }, 'Leave out of the checks');
   const msg = el('span', { class: 'meta', role: 'status' });
-  const f = el('form', { class: 'excl-form' }, 'Leave jobs whose ', on, ' is like ', pat, ' on ', level, ' ', note, ' ', add, ' ', msg);
+  const f = el('form', { class: 'excl-form' }, 'Leave jobs whose ', on, ' is like ', pat, ' on ', level, ' ', note, ' ', add, ' ', msg, rootNote ?? '');
   f.addEventListener('submit', async ev => {
     ev.preventDefault();
+    if (level.value === 'root' && rootWhy) { msg.replaceChildren(badge('not added', 'warn'), ' ', rootWhy); return; }   // off is off, however picked
     msg.textContent = 'Writing...';
     try {
       await post('jobs/exclusions', { op: 'add', level: level.value, instance_id: ctx.instance, match_on: on.value, pattern: pat.value, note: note.value });
@@ -283,10 +294,11 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
   const redraw = () => { void jobsRunningPanel(ctx, stopNote).then(n => box.replaceWith(n)); };
   try {
     // each part on its own: a failed exclusions or jobs read never hides Running now and its Stop buttons
-    const [st, exR, jobsR] = await Promise.all([
+    const [st, exR, jobsR, ad] = await Promise.all([
       runningState(ctx.instance),
-      get<{ writable: boolean; reason?: string; exclusions: Table | null }>('jobs/exclusions', { instance: ctx.instance }).then(v => ({ v }), (e: unknown) => ({ e })),
+      get<{ writable: boolean; reason?: string; demo?: boolean; exclusions: Table | null }>('jobs/exclusions', { instance: ctx.instance }).then(v => ({ v }), (e: unknown) => ({ e })),
       get<Record<'jobs', Table | null>>('jobs/history', { instance: ctx.instance, ...window_(ctx), engine: 'pg', part: 'jobs' }).then(v => ({ v }), (e: unknown) => ({ e })),
+      loadAckSafe(['acks']),
     ]);
     const running = rowsOf(st.running);
     const cols: Col[] = [
@@ -345,12 +357,26 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
     } else {
     const ex = exR.v;
     const ex_ = rowsOf(ex.exclusions);
-    // exclusions cannot be written here: the page's one sentence, placed under the grid; an off End points at it
-    const exclOff = ex.writable ? undefined : el('p', { class: 'meta' }, `Exclusions cannot be written here: ${ex.reason || 'exclusions are off on this server'}`);
+    // who may write here: a signed-in serve every level; a demo serve the door's - this instance's own exclusions for
+    // one of its instances, never one on every instance (B7 DONE-3); a server that writes nothing none
+    const door = onDoor(ad);
+    const instName = door ? await fleet().then(f => String(f.instances.find(r => Number(r.instance_id) === Number(ctx.instance))?.name ?? 'this instance'), () => undefined) : undefined;
+    // a demo serve whose door was not read (GET /api/ack failed) says that, never the door's own words
+    const instWhy = ex.writable ? '' : door ? seatWhy(ad, 'job exclusions', ctx.instance, instName) ?? ''
+      : ex.demo ? `the demo door's instances were not read: ${ad.reason || 'the acknowledgement read did not answer'}`
+      : ex.reason || 'exclusions are off on this server';
+    const rootWhy = ex.writable ? '' : door ? seatWhy(ad, 'job exclusions') ?? '' : instWhy;
+    // the page's sentences, each placed only where a control points at it: this instance's (the form is not offered),
+    // and on a demo serve the one of the exclusions on every instance (their End)
+    const exclOff = instWhy ? el('p', { class: 'meta' }, `Exclusions cannot be written here: ${instWhy}`) : undefined;
+    const rootOff = door && rootWhy && rootWhy !== instWhy && ex_.some(r => r.level === 'root') ? el('p', { class: 'meta' }, `An exclusion on every instance is not ended here: ${rootWhy}`) : undefined;
+    const endWhy = (r: Row) => r.level === 'root' ? rootWhy : instWhy;
+    const noteOf = (r: Row) => r.level === 'root' && rootOff ? rootOff : exclOff;
     box.append(
       el('p', { class: 'meta' }, 'A job whose name or command is like a pattern (* any text, ? one character, any case) is left out of the job checks: its status, the Summary\'s Jobs cell, the overview\'s failed-job check and the job findings. The grids still list it and its runs.'),
-      grid(ex_, exclCols(ex.writable, redraw, exclOff), 'No exclusion: every pg_cron and pgAgent job is checked.'),
-      ex.writable ? exclusionForm(ctx, redraw) : exclOff!);
+      grid(ex_, exclCols(endWhy, redraw, noteOf), 'No exclusion: every pg_cron and pgAgent job is checked.'),
+      ...(rootOff ? [rootOff] : []),
+      instWhy ? exclOff! : exclusionForm(ctx, redraw, rootWhy));
     }
     const log = rowsOf(st.log);
     if (log.length) box.append(el('h3', {}, 'Job actions (the audit, newest 200)'), grid(log, logCols));

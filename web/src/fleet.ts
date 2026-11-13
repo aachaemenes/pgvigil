@@ -51,26 +51,32 @@ export function forget() { cache = null; }
 // dd: one of DBA Dash's Summary tests (task P08: its name, its column order, Checks/Summary.Designer.cs); the others are
 // pgvigil's own, after them. plain: DBA Dash's cell is text, not a link (Memory Dump, Is Agent Running, DB Mail).
 // both: read for either engine from the collect part (Snapshot Age, Collection Errors (24hrs)).
-export interface Group { key: string; label: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?, string?]; mssqlOnly?: boolean; names?: (checkName: string, checkGroup: string) => boolean; dd?: boolean; plain?: boolean; both?: boolean; cv?: string }   // kind: the Metrics family a PostgreSQL cell opens; cv: the view of a PostgreSQL tab
+// pgLabel: the group's name in PostgreSQL's words where DBA Dash's is SQL Server's (Memory Dump on PostgreSQL's crash
+// restarts, Last Good Check DB on amcheck ...): labelOf picks it for a PostgreSQL row, page or scope
+export interface Group { key: string; label: string; pgLabel?: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?, string?]; mssqlOnly?: boolean; names?: (checkName: string, checkGroup: string) => boolean; dd?: boolean; plain?: boolean; both?: boolean; cv?: string }   // kind: the Metrics family a PostgreSQL cell opens; cv: the view of a PostgreSQL tab
 // PostgreSQL's Backup FULL takes the base backups and the managed service's snapshots and retention (0103 names the
 // retention row by its threshold: 'retention under <n> days', 'retention at or under <n> days'); Backup LOG the
 // archiver (WAL)
 const fullBackupCheck = (n: string) => n.startsWith('retention ') || n === 'no snapshot in 24 h';
+// labelOf: a group's name for a PostgreSQL row, page or scope (pg true: its pgLabel where it has one) or for SQL Server
+// or a scope that holds SQL Server (DBA Dash's name). Item 6 of the drives-range review: the Summary's column headers
+// and tests by the scope, a row's places by its own engine, an instance's page by the instance's
+export const labelOf = (g: { label: string; pgLabel?: string }, pg: boolean): string => (pg && g.pgLabel) || g.label;
 export const groups: Group[] = [
   // DBA Dash's Summary tests in its column order (Instance, then MemoryDumpStatus ... UptimeStatus)
-  { key: 'dumps', label: 'Memory Dump', checks: ['crashes'], tab: 'pgstate', mssql: ['dumps', 'summary', 'Memory dumps'], dd: true, plain: true },
+  { key: 'dumps', label: 'Memory Dump', pgLabel: 'Crash restarts', checks: ['crashes'], tab: 'pgstate', mssql: ['dumps', 'summary', 'Memory dumps'], dd: true, plain: true },
   { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption', mssql: ['corruption', 'mssqlchecks', 'Suspect pages', 'build'], dd: true },
-  { key: 'checkdb', label: 'Last Good Check DB', checks: ['amcheck age'], tab: 'corruption', mssql: ['checkdb', 'mssqlchecks', 'Last good CHECKDB', 'databases'], dd: true },
+  { key: 'checkdb', label: 'Last Good Check DB', pgLabel: 'Last amcheck', checks: ['amcheck age'], tab: 'corruption', mssql: ['checkdb', 'mssqlchecks', 'Last good CHECKDB', 'databases'], dd: true },
   { key: 'alerts', label: 'SQL Agent Alerts', checks: [], tab: 'summary', mssql: ['alerts', 'mssqlchecks', 'Agent alerts', 'alerts'], mssqlOnly: true, dd: true },
   { key: 'full', label: 'Backup FULL', checks: ['base backups', 'backups'], names: (n, grp) => grp === 'base backups' || fullBackupCheck(n), tab: 'backups', mssql: ['full', 'mssqlbackups', 'Full backups'], dd: true },
   { key: 'diff', label: 'Backup DIFF', checks: [], tab: 'summary', mssql: ['diff', 'mssqlbackups', 'Differential backups'], mssqlOnly: true, dd: true },
-  { key: 'log', label: 'Backup LOG', checks: ['backups'], names: n => !fullBackupCheck(n), tab: 'backups', mssql: ['log', 'mssqlbackups', 'Log backups'], dd: true },
+  { key: 'log', label: 'Backup LOG', pgLabel: 'WAL archive', checks: ['backups'], names: n => !fullBackupCheck(n), tab: 'backups', mssql: ['log', 'mssqlbackups', 'Log backups'], dd: true },
   { key: 'disk', label: 'Drive Space', checks: ['disk', 'storage'], tab: 'drives', mssql: ['disk', 'drives', 'Drive space'], dd: true },
-  { key: 'jobs', label: 'Agent Jobs', checks: ['jobs', 'jobs report'], tab: 'jobsreport', mssql: ['jobs', 'mssqljobs'], dd: true },
+  { key: 'jobs', label: 'Agent Jobs', pgLabel: 'Jobs', checks: ['jobs', 'jobs report'], tab: 'jobsreport', mssql: ['jobs', 'mssqljobs'], dd: true },
   { key: 'agent', label: 'Is Agent Running', checks: [], tab: 'summary', mssql: ['agent', 'mssqljobs', 'SQL Server Agent'], mssqlOnly: true, dd: true, plain: true },
   { key: 'logship', label: 'Log Shipping', checks: ['log shipping'], tab: 'pgbackups', mssql: ['logship', 'availability', 'Log shipping'], dd: true },
   { key: 'mirroring', label: 'Mirroring', checks: [], tab: 'summary', mssql: ['mirroring', 'availability', 'Mirroring'], mssqlOnly: true, dd: true },
-  { key: 'replication', label: 'Availability Groups', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'], dd: true },
+  { key: 'replication', label: 'Availability Groups', pgLabel: 'Replication', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'], dd: true },
   { key: 'logspace', label: 'Log Space', checks: [], tab: 'summary', mssql: ['logspace', 'dbfiles', 'Log space'], mssqlOnly: true, dd: true },
   { key: 'filespace', label: 'File Space', checks: [], tab: 'summary', mssql: ['filespace', 'dbfiles', 'File space'], mssqlOnly: true, dd: true },
   { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlOnly: true, dd: true },

@@ -458,13 +458,13 @@ function executeJob(n: Extract<TNode, { kind: 'job' }>, back: HTMLElement | null
 }
 
 async function jobThresholds(n: Extract<TNode, { kind: 'job' }>, back: HTMLElement | null) {
-  const th = await loadThresholds(n.id);
+  const [th, ad, f] = await Promise.all([loadThresholds(n.id), loadAckSafe(['acks']), fleet().catch(() => null)]);
   if (!th) {
     const { body } = dialog(`Job thresholds: ${n.name}`, back);
     body.append(el('p', {}, 'This server has no job thresholds (an older repository, or the demo).'));
     return;
   }
-  thresholdsDialog(n.id, n.name, th, () => refreshAll(`i${n.id}/jobs`));
+  thresholdsDialog(n.id, n.name, th, () => refreshAll(`i${n.id}/jobs`), ad, f ? String(f.instances.find(r => Number(r.instance_id) === n.id)?.name ?? 'this instance') : undefined);
 }
 
 // ---- a folder's filter (Jobs, Databases) -------------------------------------------------------------------------
