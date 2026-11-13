@@ -18,8 +18,8 @@ cadence, judged against thresholds) stay as they are: a custom report is the sid
 ## Who may save and run
 
 Saving, moving, deleting and running are behind the UI login, through the actions door's audit login (the
-repository dsn of the configuration, a login in `pgvigil_collector`): a server started with `-no-login`, or without
-the audit login, shows the reports and says why nothing can be saved or run. Every save, move, delete, folder change
+repository dsn of the configuration, a login in `pgvigil_collector`): a server without the UI login (`pgvigil serve
+-no-login`, or `pgvigil demo -serve`), or without the audit login, shows the reports and says why nothing can be saved or run. Every save, move, delete, folder change
 and run is written to `pgvigil.custom_report_log` (who, from where, the report or tool, the instance, the statement
 sent, the outcome, the rows and the time it took), shown at the bottom of each page. A run whose log row cannot be
 written answers an error and does not show its rows; nothing runs when the audit login may not write the row (run
@@ -142,7 +142,9 @@ A run that fails part-way shows the rows it read before the error, and the error
 
 Some procedures do more with more rights: sp_Blitz skips the checks a non-sysadmin cannot run and says so; sp_LogHunter
 reads the error log through `xp_readerrorlog` (`GRANT EXECUTE ON sys.xp_readerrorlog` in master, as the error log
-reader asks: [readers](sqlserver-readers.md)), and lists the archived logs only for a member of securityadmin;
+reader asks: [readers](sqlserver-readers.md)), and lists the archived logs through `sp_enumerrorlogs`: for a member of
+securityadmin, and from SQL Server 2022 for a login with `VIEW SERVER STATE` or `VIEW ANY ERROR LOG` (a note on the
+page otherwise);
 sp_HumanEventsBlockViewer reads an Extended Events session that captures the blocked process report; sp_QuickieStore
 reads Query Store of one database, which is never on in master.
 
@@ -161,23 +163,29 @@ list what stops every tool there, each with the way to get it:
 
 What decides it, and where pgvigil reads it:
 
-- the server: started with `-no-login` (sign in: serve without it and add a user with `pgvigil user add`), no actions
-  door or its audit login not connected; each page names it in its own words (Running a tool / Saving or running a
+- the server: without the UI login (`pgvigil serve -no-login`, or `pgvigil demo -serve`; sign in: serve with the
+  configuration file, without `-no-login`, and add a user with `pgvigil user add`), no actions door or its audit login
+  not connected (then a PostgreSQL instance's own login is not asked about: the server's line is the reason); each page names it in its own words (Running a tool / Saving or running a
   report / Sending or scheduling a mail needs ...).
 - the configuration file: no read login (SQL Server) or monitoring login (PostgreSQL) for the instance.
-- live, on the instance's own login, within 5 s for the instance and the database named, kept 60 s (Look again checks
-  at once): a sysadmin or superuser login (refused); each procedure in the database named (not there: name the
-  database they are installed in, or install it); `EXECUTE` on it (off, with the `GRANT` line, and `CREATE USER` when
-  the login has no user in that database); `EXECUTE` on a procedure of its kit it runs itself (sp_Blitz's version
-  check runs every First Responder Kit procedure installed beside it, and its database checks run sp_ineachdb: off
-  without it; sp_BlitzFirst's sp_BlitzWho and sp_BlitzCache, sp_BlitzIndex's sp_BlitzCache: a note); sp_LogHunter's
-  own test of `xp_readerrorlog` (`HAS_PERMS_BY_NAME`; Amazon RDS's own reader needs no grant; Azure SQL Database: the
-  procedure does not run there); a user database the login can reach (sp_IndexCleanup); the running Extended Events
-  sessions; on PostgreSQL `pg_stat_statements` read as a run would read it, in the run's database: not created there
-  (a superuser-class role runs `CREATE EXTENSION`; the monitoring login cannot) or created but not loaded (it goes in
-  `shared_preload_libraries` and needs a restart), and `pg_read_all_stats` for other users' statement text (a note).
-- the repository, with the time of its read: the blocked process threshold (`mssql_config`) and the databases with
-  Query Store on (`mssql_qs_store`), read live only when no collection holds them yet.
+- live, on the instance's own login, within 5 s for the instance and the database named, kept 60 s (Look again checks at
+  once, except that it first shows the answer of a check that outran the 5 s; at most 16 checks run at once): a sysadmin
+  or superuser login (refused); each procedure in the database named as the login sees it (not there: name the database
+  they are installed in, or install it; a login without `EXECUTE` or `VIEW DEFINITION` on a procedure does not see it);
+  `EXECUTE` on it (off, with the `GRANT` line, and `CREATE USER` when the login has no user in that database); `EXECUTE`
+  on a procedure of its kit it runs itself (sp_Blitz's version check runs every First Responder Kit procedure installed
+  beside it, and its database checks run sp_ineachdb: off without it; sp_BlitzFirst's sp_BlitzWho and sp_BlitzCache,
+  sp_BlitzIndex's sp_BlitzCache: a note); sp_LogHunter's own test of `xp_readerrorlog` (`HAS_PERMS_BY_NAME`; Amazon
+  RDS's own reader needs no grant; Azure SQL Database: the procedure does not run there); a user database the login can
+  reach, online, writable and not in standby (sp_IndexCleanup skips read-only and standby databases); the compatibility
+  level of the database named (sp_BlitzCache cannot run from one below 130) and SQL Server 2016 or later for
+  sp_BlitzCache; the blocked process threshold (`sys.configurations`); the running Extended Events sessions; on
+  PostgreSQL `pg_stat_statements` in the run's database: not created there (a superuser-class role runs `CREATE
+  EXTENSION`; the monitoring login cannot), its view read with `LIMIT 0` (refused: the `GRANT SELECT` line), then one
+  row of its function (created but not loaded: it goes in `shared_preload_libraries` and needs a restart), and
+  `pg_read_all_stats` for other users' statement text (a note).
+- the repository, with the time of its read: the databases with Query Store on (`mssql_qs_store`), read live only when
+  no collection holds them yet; the blocked process threshold only when the live read finds none.
 
 The form fills in what the server makes the procedure's own default wrong: sp_HumanEventsBlockViewer reads its
 default session `keeper_HumanEvents_blocking` when it runs; otherwise another running session that captures the
@@ -224,9 +232,9 @@ Samokhvalov) and pghero's sequence and index checks (MIT, Andrew Kane); no text 
 | `GET /api/customreports?report=N` | one report and its 100 latest log rows |
 | `POST /api/customreports` | `{op: add, edit, delete, move, folder_add, folder_rename, folder_delete, ...}` |
 | `POST /api/customreports/run` | `{report_id, target: fleet (repository reports only), tag or instance, instance_id, tag, from, to, params}` |
-| `GET /api/community?instance=N&database=D` | the tools for the instance's engine, whether each is installed, the instance's log |
+| `GET /api/community?instance=N&database=D[&fresh=1]` | the tools for the instance's engine, each with its state (ready, note, needs, not_checked, demo), its needs and notes with the way to get each, its form's preset values; the instance's own needs; `checked_at` (kept 60 s; `fresh=1` is Look again); the instance's log |
 | `POST /api/community/params` | `{instance_id, tool, database}`: a procedure's form and help |
-| `POST /api/community/run` | `{instance_id, tool, database, params, timeout_secs, text, query_name}` |
+| `POST /api/community/run` | `{instance_id, tool, database, params, timeout_secs, text, query_name}`; each run's `declined` is true when the procedure turned it down in its own listed words (stored `failed`) |
 | `POST /api/community/glenn/parse` | `{text}`: the queries of a diagnostic script |
 
 A POST carries the `X-Pgvigil` header (a cross-site form cannot set it) and the session cookie. A run on a tag goes to

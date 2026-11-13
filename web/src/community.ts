@@ -11,7 +11,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
-import { InstanceRun, resultView, ResultSet, setGrid } from './customreports';
+import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 
 // a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
 // state: needs | note | not_checked | demo; source: where the server read it (server, configuration, repository, live)
@@ -32,7 +32,7 @@ const logCols: Col[] = [
   { key: 'op', label: 'what', fmt: v => v === 'community_help' ? 'help' : 'run' },
   { key: 'tool' },
   // a run the procedure declined in its own words is stored failed (it reached the server) and shown as declined
-  { key: 'outcome', fmt: (v, r) => { const o = String(v ?? ''), dec = o === 'failed' && / declined: /.test(String(r.detail ?? '')); return badge(dec ? 'declined' : o, o === 'done' ? 'ok' : o === 'refused' || dec ? 'warn' : 'crit'); } },
+  { key: 'outcome', fmt: logOutcome },
   { key: 'rows', num: true },
   { key: 'duration_ms', label: 'took (ms)', num: true },
   { key: 'detail', wide: true },
@@ -88,7 +88,14 @@ async function instanceTools(instance: number, database = '', fresh = false): Pr
   const db = el('input', { type: 'text', value: d.database ?? '', 'aria-label': d.engine === 'sqlserver' ? 'Database the procedures are installed in' : 'Database the reads run in', size: '16' }) as HTMLInputElement;
   again.addEventListener('click', async () => {
     offControl(again, 'looking...', checked); checked.textContent = 'Looking again...';
-    try { box.replaceWith(await instanceTools(instance, db.value, true)); } catch (e) { checked.replaceChildren(errorBox(e)); offControl(again, null, checked); }
+    try {
+      // the database as the page was opened ('' = the default) while the box still names the one the server answered
+      // with: the default and that database named are one check, never two answers side by side
+      const nb = await instanceTools(instance, db.value.trim() === (d.database ?? '') ? database : db.value, true);
+      box.replaceWith(nb);
+      // the keyboard stays where it was: on the new box's Look again
+      [...nb.querySelectorAll('button')].find(x => x.textContent === 'Look again')?.focus();
+    } catch (e) { checked.replaceChildren(errorBox(e)); offControl(again, null, checked); }
   });
   if (!d.demo) box.append(el('div', { class: 'toolbar' }, el('label', {}, d.engine === 'sqlserver' ? 'Procedures installed in the database ' : 'Reads run in the database ', db), again, checked));
   const groups = [...new Set(d.tools.map(t => t.group))];
@@ -234,12 +241,14 @@ function glennPanel(t: Tool, instance: number, database: string): HTMLElement {
   const runButton = (q: GlennQuery) => {
     const b = el('button', { type: 'button', class: 'link' }, q.name);
     b.addEventListener('click', async () => {
-      res.replaceChildren(el('p', { class: 'meta' }, `Running query ${q.n} (${q.name})...`));
+      const busy = el('p', { class: 'meta' }, `Running query ${q.n} (${q.name})...`);
+      res.replaceChildren(busy);
+      offControl(b, 'running', busy);   // one run at a time from this button
       try {
         const r = await post<{ runs: InstanceRun[] }>('community/run', { instance_id: instance, tool: t.id, database: db.value, text: q.text, query_name: `${q.n} ${q.name}` });
         res.replaceChildren(el('details', {}, el('summary', {}, `Query ${q.n}: the text sent`), el('pre', { class: 'sql', tabindex: '0' }, q.text)),
           resultView(r.runs, undefined, `Query ${q.n} ${q.name}`));
-      } catch (e) { res.replaceChildren(errorBox(e)); }
+      } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); }
     });
     return b;
   };

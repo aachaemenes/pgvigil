@@ -486,7 +486,7 @@ func serveContext() context.Context {
 // the grid tools' localStorage entries, or ""), and waits for the page's mail. slot: the browser slot it takes.
 func (s *Server) renderPage(ctx context.Context, user, route, tz, prefs string, slot chan struct{}) (mailRequest, error) {
 	if s.auth == nil {
-		return mailRequest{}, errors.New("report mail is behind the UI login: this server runs with -no-login")
+		return mailRequest{}, errors.New("report mail is behind the UI login: this server runs without it (pgvigil serve -no-login, or pgvigil demo -serve)")
 	}
 	if err := reportmail.CheckRoute(route); err != nil {
 		return mailRequest{}, err

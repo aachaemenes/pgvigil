@@ -206,13 +206,20 @@ async function instances(): Promise<Inst[]> {
   return rowsOf(t).map(r => ({ id: Number(r.instance_id), name: String(r.name), engine: String(r.engine ?? 'postgres'), tags: Array.isArray(r.tags) ? (r.tags as unknown[]).map(String) : [] }));
 }
 
+// logOutcome: a log row's outcome; a community run the procedure declined in its own words is stored failed (it reached
+// the server) and shown as declined, a note, on every log that lists it
+export function logOutcome(v: unknown, r: Row): HTMLElement {
+  const o = String(v ?? ''), dec = o === 'failed' && / declined: /.test(String(r.detail ?? ''));
+  return badge(dec ? 'declined' : o, o === 'done' ? 'ok' : o === 'refused' || dec ? 'warn' : 'crit');
+}
+
 const logCols: Col[] = [
   { key: 'at', label: 'when', fmt: fmtTime },
   { key: 'ui_user', label: 'who' },
   { key: 'op', label: 'what' },
   { key: 'report_name', label: 'report' },
   { key: 'instance', label: 'ran on' },
-  { key: 'outcome', fmt: v => badge(String(v ?? ''), v === 'done' ? 'ok' : v === 'refused' ? 'warn' : 'crit') },
+  { key: 'outcome', fmt: logOutcome },
   { key: 'rows', num: true },
   { key: 'duration_ms', label: 'took (ms)', num: true },
   { key: 'detail', wide: true },
@@ -378,14 +385,18 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
 
   const inputs = def.params.map(p => paramInput(p, q));
   const runBtn = el('button', { type: 'button' }, 'Run');
-  const runOff = el('p', { class: 'meta off-reason' }, d.state.enabled ? '' : (d.state.reason || 'Running a report is off on this server.'));
-  if (!d.state.enabled) offControl(runBtn, runOff.textContent, runOff);
+  // off with the page's own words: the server's door, or (an instance report) no active instance of its engine to run on
+  const noInst = def.engine !== 'store' && !mine.length;
+  const runWhy = !d.state.enabled ? (d.state.reason || 'Running a report is off on this server.')
+    : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance to run it on.` : '';
+  const runOff = el('p', { class: 'meta off-reason' }, runWhy);
+  if (runWhy) offControl(runBtn, runWhy, runOff);
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
     ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);
   sec.append(form);
-  if (!d.state.enabled) sec.append(runOff);
-  if (!mine.length) sec.append(el('p', { class: 'empty' }, `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance to run it on.`));
+  if (runWhy) sec.append(runOff);
+  if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, 'No active instance: a run reads none.'));
   const status = el('p', { class: 'meta', role: 'status' });
   const out = el('div', {});
   sec.append(status, out);
@@ -406,7 +417,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
       out.replaceChildren(errorBox(e));
       status.textContent = '';
     } finally {
-      if (d.state.enabled) offControl(runBtn, null, status);
+      offControl(runBtn, runWhy || null, runWhy ? runOff : status);
     }
   };
   runBtn.addEventListener('click', () => { void run(); });

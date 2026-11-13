@@ -402,9 +402,11 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
   add.addEventListener('click', () => { void scheduleDialog({}); });
   box.append(el('p', {}, add));
 
-  const button = (label: string, aria: string, run: () => void) => {
+  // a schedule's action: off with the door's reason, or its own (offWhy: a test needs the server's headless browser)
+  const button = (label: string, aria: string, offWhy: string | null, run: () => void) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
-    if (!door0.writable) offControl(b, door0.reason || 'report mail is off on this server', doorLine); else b.addEventListener('click', run);
+    const why = !door0.writable ? (door0.reason || 'report mail is off on this server') : offWhy;
+    if (why) offControl(b, why, doorLine); else b.addEventListener('click', run);
     return b;
   };
   const confirmAct = (title: string, what: string, go: string, op: string, id: unknown) => dialog(title, what, go, [], () => act(op, id, go), () => '', [], redraw);
@@ -422,15 +424,15 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'last_outcome', label: 'last outcome', fmt: v => v == null ? '' : outcomeBadge(String(v)) },
     { key: 'last_error', label: 'last error', wide: true },
     { key: 'schedule_id', label: 'actions', fmt: (v, r) => el('span', {},
-      button('Edit', `Change schedule ${String(r.name)}`, () => { void scheduleDialog({ schedule: r }); }), ' ',
-      button('Send test', `Send a test of schedule ${String(r.name)} now`, () => {
+      button('Edit', `Change schedule ${String(r.name)}`, null, () => { void scheduleDialog({ schedule: r }); }), ' ',
+      button('Send test', `Send a test of schedule ${String(r.name)} now`, door0.browser ? null : (door0.browser_reason || 'no headless browser on this server: a test is drawn on the server'), () => {
         dialog(`Send a test of ${String(r.name)}`, `The page is drawn now on the server as you and mailed to ${String(r.recipients)} with [test] in its subject.`, 'Send test', [],
           async () => (await post<WriteResult>('reportmail/test', { schedule_id: Number(v) })).detail, () => '', [], redraw);
       }), ' ',
-      button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, () => {
+      button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, null, () => {
         confirmAct(`${r.enabled ? 'Turn off' : 'Turn on'} ${String(r.name)}`, r.enabled ? 'No mail goes out until it is turned on again.' : 'The next send is the cron line\'s next time.', r.enabled ? 'Turn off' : 'Turn on', r.enabled ? 'disable' : 'enable', v);
       }), ' ',
-      button('End', `End schedule ${String(r.name)}`, () => { confirmAct(`End ${String(r.name)}`, 'The schedule ends for good; its sends stay in the log.', 'End', 'end', v); })) },
+      button('End', `End schedule ${String(r.name)}`, null, () => { confirmAct(`End ${String(r.name)}`, 'The schedule ends for good; its sends stay in the log.', 'End', 'end', v); })) },
   ];
   box.append(el('h3', {}, 'Schedules'), grid(rowsOf(d.schedules), sched, 'No schedule yet: open a page, press Mail... and Schedule this page, or New schedule above.'));
 

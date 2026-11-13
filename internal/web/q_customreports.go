@@ -733,7 +733,7 @@ func (s *Server) customReportsOff() string {
 func (s *Server) serverOff() string {
 	switch {
 	case s.auth == nil:
-		return "a signed-in user: this server was started with -no-login"
+		return "a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)"
 	case s.actions == nil:
 		return "the actions door: this server runs without one"
 	case s.actions.audit == nil:
