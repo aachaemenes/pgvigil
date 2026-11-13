@@ -1492,7 +1492,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     # '…' and the words where they part; a name taken in full goes under the heading above it: export_names.ts)
     def title_of(t):
         t2 = re.sub(r'\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)', '', t)
-        t2 = re.sub(r'\s*(?:\b(?:since|from|until|to|at|as of|read)\s+)?\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}(?:,?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)?', '', t2, flags=re.I).strip() or t
+        t2 = re.sub(r'\s*(?:\b(?:since|from|until|to|at|as of|read)\s+)?\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}(?:,?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)?', '', t2, flags=re.I).strip()
+        t2 = re.sub(r'\s*\(\d[\d,.\s\u202f\u00a0]*\)$', '', t2).strip() or t   # a bare count in brackets out too ('Findings (16)')
         return re.sub(r'\s+', ' ', re.sub(r"^'+|'+$", '', re.sub(r'[\\/?*\[\]:]', ' ', t2))).strip()
     full = [title_of(g['name']) for g in gs]
     hs = [f[:24].rstrip() for f in full]

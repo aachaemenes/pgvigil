@@ -16,12 +16,15 @@ const REFUSED = /[\\/?*[\]:]/g;
 // 11/6/2026, 20:22'), in any locale's order of day, month and year, a clock time after it
 const READ_TIME = /\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)/g;
 const AT_TIME = /\s*(?:\b(?:since|from|until|to|at|as of|read)\s+)?\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}(?:,?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)?/gi;
+// a bare count the heading carries in brackets ('Findings (16)': its rows, which 'About' holds) reads as a numbered repeat
+// in a sheet's name (X2) and is left out too; a count with its word stays ('Fastest-growing tables (7 days)')
+const COUNT = /\s*\(\d[\d,.\s\u202f\u00a0]*\)$/;
 const SEP = /[\s_.-]/;
 
-// sheetTitle: the heading's words as a sheet name may hold them, not cut: the time in brackets out, each character Excel
+// sheetTitle: the heading's words as a sheet name may hold them, not cut: a time and a bare count out, each character Excel
 // refuses a space, the quotes at either end off, each run of spaces one space
 export function sheetTitle(n: string): string {
-  const t = n.replace(READ_TIME, '').replace(AT_TIME, '').trim() || n;
+  const t = n.replace(READ_TIME, '').replace(AT_TIME, '').trim().replace(COUNT, '').trim() || n;
   return t.replace(REFUSED, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim();
 }
 

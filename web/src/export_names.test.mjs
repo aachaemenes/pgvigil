@@ -21,7 +21,9 @@ eq('title: a time after a word out (de-DE), the words after it kept', sheetTitle
 eq('title: a time after a word out (fr-FR, no comma)', sheetTitle('Per day since 06/11/2026 20:22'), 'Per day');
 eq('title: a refused character a space, runs of spaces one', sheetTitle('a/b:  c'), 'a b c');
 eq('title: the quotes at either end off', sheetTitle("'quoted'"), 'quoted');
-eq('title: a count in brackets stays', sheetTitle('Fastest-growing tables (7 days)'), 'Fastest-growing tables (7 days)');
+eq('title: a count with its word stays', sheetTitle('Fastest-growing tables (7 days)'), 'Fastest-growing tables (7 days)');
+eq('title: a bare count in brackets out (it reads as a numbered repeat)', sheetTitle('Findings (16)'), 'Findings');
+eq('title: a bare count in the locale grouping out', sheetTitle('Findings (1,234)'), 'Findings');
 
 // one name: as the heading, cut at 31
 eq('a heading as it is', sheetNames(['Backups']), ['Backups']);
