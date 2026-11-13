@@ -159,6 +159,12 @@ PROBES = [
     ('X8 a message that starts with a time', 'X8', 'PASS', lambda: set_b2(base(), '11/13/2026, 02:10:00 step 2 merge into orders: failed')),
     ('X8 a range of two times', 'X8', 'PASS', lambda: set_b2(base(), '11/12/2026, 16:15:13 to 11/12/2026, 17:15:13')),
     ('X8 a version string', 'X8', 'PASS', lambda: set_b2(base(), '16.0.4325.4')),
+    ('X8 a cs-CZ date-time as text', 'X8', 'FAIL', lambda: set_b2(base(), '13. 11. 2026 21:05:35')),
+    ('X8 a hu-HU date-time as text', 'X8', 'FAIL', lambda: set_b2(base(), '2026. 11. 13. 21:05:35')),
+    ('X8 a hr-HR date-time as text', 'X8', 'FAIL', lambda: set_b2(base(), '13. 11. 2026. 21:05:35')),
+    ('X8 an nl-NL day as text', 'X8', 'FAIL', lambda: set_b2(base(), '13-11-2026')),
+    ('X8 a ja-JP day as text', 'X8', 'FAIL', lambda: set_b2(base(), '2026/11/13')),
+    ('X8 an address', 'X8', 'PASS', lambda: set_b2(base(), '10.1.2.30')),
     ('X8 a duration in days', 'X8', 'PASS', lambda: set_b2(base(), '233.3 days')),
     # X9: a boolean stored as text
     ('X9 true as text', 'X9', 'FAIL', lambda: set_b2(base(), 'true')),
@@ -180,6 +186,14 @@ PROBES = [
     ('X0 text colour index 64 (system)', 'X0', 'PASS', lambda: styled_b2(font='<font><sz val="11"/><color indexed="64"/><name val="Calibri"/></font>')),
     ('X0 text colour automatic', 'X0', 'PASS', lambda: styled_b2(font='<font><sz val="11"/><color auto="1"/><name val="Calibri"/></font>')),
     ('X0 a pattern fill none', 'X0', 'PASS', lambda: styled_b2(fill='<fill><patternFill patternType="none"/></fill>')),
+    ('X0 a named pair\'s fill with a tint', 'X0', 'FAIL', lambda: styled_b2(fill='<fill><patternFill patternType="solid"><fgColor rgb="FF006638" tint="0.8"/></patternFill></fill>',
+                                                                   font='<font><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>')),
+    ('X0 black text with a tint (grey)', 'X0', 'FAIL', lambda: styled_b2(font='<font><sz val="11"/><color rgb="FF000000" tint="0.59"/><name val="Calibri"/></font>')),
+    ('X0 text theme 1 with a tint', 'X0', 'FAIL', lambda: styled_b2(font='<font><sz val="11"/><color theme="1" tint="0.5"/><name val="Calibri"/></font>')),
+    ('X0 a body cell in Arial', 'X0', 'FAIL', lambda: styled_b2(font='<font><sz val="11"/><name val="Arial"/></font>')),
+    ('X0 a body cell struck through', 'X0', 'FAIL', lambda: styled_b2(font='<font><strike/><sz val="11"/><name val="Calibri"/></font>')),
+    ('X0 a conditional format on a grid sheet', 'X0', 'FAIL', lambda: sub(base(), 'xl/worksheets/sheet1.xml', '<!--MERGE-->',
+     '<!--MERGE--><conditionalFormatting sqref="B2:B3"><cfRule type="cellIs" dxfId="0" priority="1" operator="greaterThan"><formula>1</formula></cfRule></conditionalFormatting>')),
     # X0: a style index past its list
     ('X0 a cell style past cellXfs', 'X0', 'FAIL', lambda: set_b2(base(), 1.5, 99)),
     ('X0 a font index past fonts', 'X0', 'FAIL', lambda: styled_b2(xf_attrs='numFmtId="0" fontId="77" fillId="0" borderId="0"')),
@@ -204,6 +218,10 @@ PROBES = [
     ('X5 a table named like a cell', 'X5', 'FAIL', lambda: sub(base(), 'xl/tables/table2.xml', 'name="Table2" displayName="Table2"', 'name="A1" displayName="A1"')),
     ('X5 a table name with a space', 'X5', 'FAIL', lambda: sub(base(), 'xl/tables/table2.xml', 'name="Table2" displayName="Table2"', 'name="Table 2" displayName="Table 2"')),
     ('X5 two table columns with id 1', 'X5', 'FAIL', lambda: sub(base(), 'xl/tables/table1.xml', '<tableColumn id="2"', '<tableColumn id="1"')),
+    ('X5 a table named in Japanese', 'X5', 'PASS', lambda: sub(base(), 'xl/tables/table2.xml', 'name="Table2" displayName="Table2"', 'name="テーブル2" displayName="テーブル2"')),
+    ('X5 a table named past column XFD', 'X5', 'PASS', lambda: sub(base(), 'xl/tables/table2.xml', 'name="Table2" displayName="Table2"', 'name="ZZZ1" displayName="ZZZ1"')),
+    ('X5 a table named like the last column', 'X5', 'FAIL', lambda: sub(base(), 'xl/tables/table2.xml', 'name="Table2" displayName="Table2"', 'name="XFD1" displayName="XFD1"')),
+    ('X5 a table name over 255 characters', 'X5', 'FAIL', lambda: sub(base(), 'xl/tables/table2.xml', 'name="Table2" displayName="Table2"', 'name="T%s" displayName="T%s"' % ('a' * 255, 'a' * 255))),
     ('X5 a merged range in a table', 'X5', 'FAIL', lambda: sub(base(), 'xl/worksheets/sheet1.xml', '<!--MERGE-->', '<mergeCells count="1"><mergeCell ref="A2:B3"/></mergeCells>')),
     # X2: a time in a sheet name, not an address
     ('X2 a compact stamp in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Findings 20261112-1615')),
@@ -211,6 +229,8 @@ PROBES = [
     ('X2 a day and a clock in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Backups 2026-11-12 16 15')),
     ('X2 a locale day and a clock in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Jobs 11 13 2026, 05 25 00')),
     ('X2 a day alone in a name (a job of its own words)', 'X2', 'PASS', lambda: rename(base(), 0, 'Purge 2026-01-01')),
+    ('X2 a day and a clock without seconds', 'X2', 'FAIL', lambda: rename(base(), 0, 'Per day since 11 6 2026, 20 22')),
+    ('X2 a cs-CZ day and a clock', 'X2', 'FAIL', lambda: rename(base(), 0, 'Per day since 6. 11. 2026 20 22')),
     ('X2 a numbered repeat', 'X2', 'FAIL', lambda: rename(base(), 1, 'Grid (2)')),
     ('X2 a host address in a name', 'X2', 'PASS', lambda: rename(base(), 0, 'Host 10.1.2.30')),
     ('X2 a version in a name', 'X2', 'PASS', lambda: rename(base(), 0, 'Release 1.2.3 notes')),
@@ -294,10 +314,14 @@ def same_pairs(tmp):
             "SAME 'DB Space' column 'total wait (ms/s)' types: number", "MATCHED 'DB Space': 3 of 3 columns",
             "MATCHED 'DB Space (allocated)': 1 of 2 columns"]
     miss = [w for w in want if w not in out.splitlines()]
-    if r.returncode == 0 and not miss:
-        print("ok 'same' pairs sheets and columns (units spelled alike)")
+    ref2 = write(base([('Agent Jobs', ['name', 'status', 'last run'], [['a', 'ok', 1]])], about=False), os.path.join(tmp, 'ref2.xlsx'))
+    mine2 = write(base([('Agent jobs (last 1h)', ['Item', 'Value', 'Status'], [['jobs', 3, '']]), ('Jobs', ['name', 'status', 'took (s)'], [['a', 'ok', 2]])]), os.path.join(tmp, 'mine2.xlsx'))
+    r2 = subprocess.run([sys.executable, '-I', CHECK, 'same', ref2, mine2], capture_output=True, text=True)
+    miss += [w for w in ["PAIR 'Agent Jobs' = 'Jobs'", "MATCHED 'Agent Jobs': 2 of 3 columns"] if w not in r2.stdout.splitlines()]
+    if r.returncode == 0 and r2.returncode == 0 and not miss:
+        print("ok 'same' pairs sheets and columns (units spelled alike; a grid with the grid that shares most columns, not a tiles sheet)")
         return 0
-    print("FAIL 'same' pairs sheets and columns: rc %d, missing %s" % (r.returncode, miss))
+    print("FAIL 'same' pairs sheets and columns: rc %d / %d, missing %s" % (r.returncode, r2.returncode, miss))
     return 1
 
 

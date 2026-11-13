@@ -15,7 +15,8 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
       weight, slant, underline, size, border, alignment or wrap; no row of a custom height (plain = no fill and no
       text colour of its own or black FF000000; a fill by theme, index, pattern or gradient is never plain, a text
       colour by theme or index is plain only as Excel's default text: theme 1, index 8 or 64, automatic); a column's or
-      a row's own style (drawn on its empty cells) is plain too; a style, font, fill or border index past its list fails
+      a row's own style (drawn on its empty cells) is plain too; a colour with a tint is never one named; a body cell is
+      Calibri, not struck; no conditional format; a style, font, fill or border index past its list fails
   X1  the workbook opens on a grid sheet: sheet 1 holds one Excel table and is not 'About' (a page's first section may be
       its tiles or a card as an Item | Value | Status table: a grid sheet like any other), activeTab 0
   X2  sheet names: 1-31 characters, none of \\ / ? * [ ] :, unique ignoring case, no read time (a day with a clock, the
@@ -25,14 +26,16 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X5  one Excel table per grid sheet over the whole grid (an empty grid: header + one empty row), autofilter = its ref,
       no table style name, no sheet autofilter, no _FilterDatabase; Excel's repair rules: column names = header texts,
       non-empty, unique ignoring case, as many as the header's cells, column ids unique; table ids and names unique in
-      the workbook (names ignoring case), a name of letters, digits, '_' and '.' that starts with a letter, '_' or '\\'
-      and is not a cell reference; no merged range over a table
+      the workbook (names ignoring case), a name of at most 255 letters (any script), digits, '_' and '.' that starts with a
+      letter, '_' or '\\' and is not a cell reference (A1 .. XFD1048576, R1C1); no merged range over a table
   X6  no pane on any sheet
   X7  each cell's number format is General (id 0 or an empty code), '0', '0.0%', '0.00%', 'yyyy-MM-dd HH:mm' or, for a
       day alone (a chart's per-day column), 'yyyy-MM-dd'
   X8  no text cell whose whole value reads as a date-time or a day, ISO or a page's locale form ('10/3/2026, 21:05:00',
-      '13/11/2026 21:05:35', '2026-11-11'): a date is a number under its format; a column's empty value may be text; a
-      message that starts with a time, or a range of two times, is words
+      '13/11/2026 21:05:35', '13.11.2026, 21:05:35', '13. 11. 2026 21:05:35', '2026. 11. 13. 21:05:35', 12-hour; a day
+      '2026-11-11', '13-11-2026', '2026/11/13'): a date is a number under its format; a column's empty value may be text; a
+      message that starts with a time, or a range of two times, is words. Not read as a date: a clock before its day (vi-VN),
+      'klo' (fi-FI), '21 h 05 min' (fr-CA), Greek day halves - the proof's browsers run en-US and fr-FR
   X9  no text cell whose whole value is true / false / yes / no (on / off are setting values, not booleans)
   X10 every column holding a value has a custom width of at most 150 characters (stored 150.71 with the padding); a numeric column at least as wide as its widest
       shown number (a digit one unit, any other character half)
@@ -77,16 +80,27 @@ PLAIN_TEXT = {None, 'FF000000', 'auto', 'theme:1', 'indexed:8', 'indexed:64'}
 MAX_WIDTH = 150 + 5 / 7 + 1e-6   # 150 characters and Excel's 5 px of padding: DBA Dash's capped column is stored 150.71
 RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12']
 # a whole cell that reads as one date-time or one day (a message that starts with a time, or a range of two, is words)
+SEP_ = r'(?:[/-]|\.\s?)'   # a day's separator: '/', '-', '.' or '. ' (cs-CZ, hu-HU, hr-HR)
 DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?'   # ISO
-                       r'|\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4},?(?:\s+|T)\d{1,2}[:h.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?'   # a locale date-time
-                       r'|\d{1,2}[/.]\d{1,2}[/.]\d{4})\s*$')                                                         # a locale day
+                       r'|\d{1,4}' + SEP_ + r'\d{1,2}' + SEP_ + r'\d{1,4}\.?,?(?:\s+|T)\d{1,2}[:h.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?'   # a locale date-time
+                       r'|\d{1,2}' + SEP_ + r'\d{1,2}' + SEP_ + r'\d{4}\.?|\d{4}/\d{1,2}/\d{1,2})\s*$')                     # a locale day
 BOOL_TEXT = re.compile(r'\s*(true|false|yes|no)\s*', re.I)
 # a read time in a sheet name: a day with a 4-digit year and a clock after it (its ':' refused, a space or a dot), the
 # export's compact stamp, a clock of hours, minutes and seconds; not an address, a version or a day alone (a job's own words)
-READ_TIME = re.compile(r'\b(?:\d{4}[ ./-]\d{1,2}[ ./-]\d{1,2}|\d{1,2}[ ./-]\d{1,2}[ ./-]\d{4}),?[ T]+\d{1,2}[ .:]\d{2}\b'
+READ_TIME = re.compile(r'\b(?:\d{4}(?:[ /-]|\.\s?)\d{1,2}(?:[ /-]|\.\s?)\d{1,2}|\d{1,2}(?:[ /-]|\.\s?)\d{1,2}(?:[ /-]|\.\s?)\d{4})\.?,?[ T]+\d{1,2}[ .:]\d{2}\b'
                        r'|\b\d{8}[-_ ]?\d{4}\b|\b\d{1,2} \d{2} \d{2}\b|\b\d{1,2}:\d{2}\b')
-TABLE_NAME = re.compile(r'[A-Za-z_\\][A-Za-z0-9_.]*$')
-CELL_LIKE = re.compile(r'(?:[A-Za-z]{1,3}\d+|[RrCc]|[Rr]\d*[Cc]\d*)$')
+TABLE_NAME = re.compile(r'(?:[^\W\d]|\\)[\w.]*$')   # a letter (any script), '_' or '\\' first, then letters, digits, '_', '.'
+
+
+def cell_like(n):
+    """a table name Excel reads as a cell or a range reference: A1 .. XFD1048576, R / C, R1C1"""
+    m = re.fullmatch(r'([A-Za-z]{1,3})(\d+)', n)
+    if m:
+        col = 0
+        for ch in m.group(1).upper():
+            col = col * 26 + ord(ch) - 64
+        return col <= 16384 and 1 <= int(m.group(2)) <= 1048576
+    return re.fullmatch(r'[RrCc]|[Rr]\d*[Cc]\d*', n) is not None
 
 
 def xml(zf, part):
@@ -112,6 +126,8 @@ def colour(el):
     """an RGB value, or a marker for a colour given another way ('theme:N', 'indexed:N', 'auto'); None = no colour"""
     if el is None:
         return None
+    if el.get('tint') not in (None, '') and float(el.get('tint')) != 0:   # a tint draws another colour than the one named
+        return '%s+tint' % (el.get('rgb') or el.get('theme') or el.get('indexed') or 'auto')
     if el.get('rgb'):
         return el.get('rgb').upper()
     for k in ('theme', 'indexed'):
@@ -170,6 +186,7 @@ class Book:
                           'bold': f.find('m:b', NS) is not None and f.find('m:b', NS).get('val', '1') not in ('0', 'false'),
                           'italic': f.find('m:i', NS) is not None and f.find('m:i', NS).get('val', '1') not in ('0', 'false'),
                           'underline': u is not None and u.get('val', 'single') != 'none',
+                          'strike': f.find('m:strike', NS) is not None and f.find('m:strike', NS).get('val', '1') not in ('0', 'false'),
                           'size': float(sz.get('val')) if sz is not None else 11.0,
                           'name': (f.find('m:name', NS).get('val') if f.find('m:name', NS) is not None else None)})
         fills = [fill_of(f) for f in (st.findall('m:fills/m:fill', NS) if st is not None else [])]
@@ -233,7 +250,7 @@ class Book:
     def read_sheet(self, name, part):
         root = xml(self.zf, part) if part else None
         s = {'name': name, 'part': part, 'cells': [], 'rows': {}, 'cols': [], 'pane': False, 'autofilter': None,
-             'hyperlinks': [], 'tables': [], 'drawing': False, 'merges': [], 'styled': []}
+             'hyperlinks': [], 'tables': [], 'drawing': False, 'merges': [], 'styled': [], 'cf': 0}
         if root is None:
             return s
         srels = rels(self.zf, part)
@@ -257,6 +274,7 @@ class Book:
                 val = self.text(c)
                 s['cells'].append({'ref': ref, 'row': row_index(ref), 'col': col_index(ref), 't': t, 'v': val, 'xf': self.xf(c.get('s'))})
         s['merges'] = [m.get('ref') for m in root.findall('m:mergeCells/m:mergeCell', NS)]
+        s['cf'] = len(root.findall('m:conditionalFormatting', NS))
         for h in root.findall('m:hyperlinks/m:hyperlink', NS):
             r = srels.get(h.get(RID), {}) if h.get(RID) else {}
             s['hyperlinks'].append({'ref': h.get('ref'), 'location': h.get('location'), 'target': r.get('target'), 'ext': r.get('ext', False)})
@@ -311,10 +329,12 @@ def body_problems(x):
     fill, text = x['fill'], f.get('colour')
     ok = text in PLAIN_TEXT if fill is None else text in PAIRS.get(fill, set())
     bad = list(x.get('past', [])) + ([] if ok else ['fill %s text %s' % (fill, text)])
-    if f.get('bold') or f.get('italic') or f.get('underline'):
-        bad.append('bold / italic / underlined')
+    if f.get('bold') or f.get('italic') or f.get('underline') or f.get('strike'):
+        bad.append('bold / italic / underlined / struck')
     if f.get('size', 11) != 11:
         bad.append('size %s' % f.get('size'))
+    if f and f.get('name') != 'Calibri':
+        bad.append('font %s' % f.get('name'))
     if x['border'] or x['wrap'] or x['halign'] not in (None, 'general') or x['valign'] not in (None, 'bottom'):
         bad.append('border / wrap / alignment %s %s' % (x['halign'], x['valign']))
     return bad
@@ -424,6 +444,8 @@ def check(book):
             # X3
             if fill == 'FFE49325' and text not in PAIRS['FFE49325']:
                 out['X3'].append("'%s'!%s Warning with text %s" % (nm, c['ref'], text))
+        if s['cf']:
+            out['X0'].append("'%s' has %d conditional format(s): a colour the cells do not hold" % (nm, s['cf']))
         for where, x in s['styled']:
             bad = body_problems(x)
             if bad:
@@ -497,7 +519,7 @@ def check(book):
         ids.setdefault(t['id'], []).append(t['sheet'])
         for k in ('name', 'display'):
             n = t.get(k) or ''
-            if not TABLE_NAME.match(n) or CELL_LIKE.match(n):
+            if len(n) > 255 or not TABLE_NAME.match(n) or cell_like(n):
                 out['X5'].append("'%s' table %s '%s' is not a name Excel accepts" % (t['sheet'], k, n))
         for n in {(t.get('name') or '').lower(), (t.get('display') or '').lower()}:
             names.setdefault(n, []).append(t['sheet'])
@@ -579,18 +601,29 @@ def profile(book):
     return p, sheets
 
 
-def pair_sheets(ref_names, file_names):
-    """the reference's grid sheets paired with the file's: by name ignoring case first, then the rest in order"""
-    left = list(file_names)
+ITEMS = ['item', 'value', 'status']
+
+
+def pair_sheets(ref, mine):
+    """the reference's grid sheets paired with the file's (each a {name: {column: ...}}): by name ignoring case first, then
+    each one left with the sheet left that shares the most columns (order breaks a tie); a grid never with an Item | Value |
+    Status sheet unless the reference's is one too"""
+    left = list(mine)
     pairs = []
-    for n in ref_names:
+    for n in ref:
         m = next((x for x in left if x.lower() == n.lower()), None)
         if m is not None:
             left.remove(m)
         pairs.append([n, m])
     for pr in pairs:
-        if pr[1] is None and left:
-            pr[1] = left.pop(0)
+        if pr[1] is not None:
+            continue
+        items = list(ref[pr[0]])[:3] == ITEMS
+        cands = [(sum(1 for k in ref[pr[0]] if k in mine[x]), -i, x) for i, x in enumerate(left) if (list(mine[x])[:3] == ITEMS) == items]
+        best = max(cands) if cands else None
+        if best and best[0] > 0:
+            pr[1] = best[2]
+            left.remove(best[2])
     return pairs + [[None, x] for x in left]
 
 
@@ -605,7 +638,7 @@ def same(ref_path, file_path):
     (a, asheets), (b, bsheets) = books
     for k in a:
         print(('SAME %s: %s' % (k, a[k])) if a[k] == b[k] else ('DIFF %s: %s | %s' % (k, a[k], b[k])))
-    for rn, fn in pair_sheets(list(asheets), list(bsheets)):
+    for rn, fn in pair_sheets(asheets, bsheets):
         print('PAIR %s = %s' % ("'%s'" % rn if rn is not None else 'none', "'%s'" % fn if fn is not None else 'none'))
         if rn is None or fn is None:
             continue
