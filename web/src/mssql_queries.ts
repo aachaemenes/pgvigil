@@ -87,7 +87,7 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
   box.append(el('p', {}, el('label', { for: 'heat-metric' }, 'Metric '), pick), out);
   const draw = async () => {
     const win = window_(ctx), from = Date.parse(win.from), to = Date.parse(win.to);
-    if (to - from > REACH_MS + 60e3) {
+    if (to - from > REACH_MS) {   // the server's own limit (q_mssql_plancache.go heatmapReachSecs), no slack
       out.replaceChildren(el('p', { class: 'empty' }, 'The heatmap reaches 7 days (PerformanceMonitor\'s reach): pick 7 days or less.'));
       return;
     }
@@ -116,7 +116,10 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
       return;
     }
     const binMin = Number(rows[0].bin_minutes), binMs = binMin * 60e3, nCells = Number(rows[0].n_cells);
-    const start = Math.floor(from / binMs) * binMs, cols = Math.max(1, Math.ceil((to - start) / binMs));
+    // a cut window starts at the oldest bin kept (no column of a cut bin is drawn, not even empty); a bin starting at
+    // 'to' itself (a read stamped on the edge, inside the window) has its column
+    const start = Number(rows[0].bins_cut) > 0 ? Date.parse(text(rows[0].drawn_from)) : Math.floor(from / binMs) * binMs;
+    const cols = Math.max(1, Math.floor((to - start) / binMs) + 1);
     const max = Math.max(...rows.map(r => Number(r.queries)));
     const cell = new Map<string, Row>();
     for (const r of rows) cell.set(`${Math.round((Date.parse(text(r.time_bin)) - start) / binMs)}:${r.bucket}`, r);

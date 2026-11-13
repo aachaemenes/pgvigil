@@ -100,7 +100,8 @@ export function timeStrip(title: string, t0: number, t1: number, times: number[]
     lo = Math.min(a, b); hi = Math.max(a, b);
     paint(lo, hi);
     whole.hidden = false; asRange.hidden = false;
-    said.textContent = `${words(lo, hi)}: ${unit(rowsIn(lo, hi))} of ${unit(inWindow)}.`;
+    // without a unit the strip keeps its sentence ('12 of 40 rows.'); an amount words both ends
+    said.textContent = o.unit ? `${words(lo, hi)}: ${unit(rowsIn(lo, hi))} of ${unit(inWindow)}.` : `${words(lo, hi)}: ${rowsIn(lo, hi)} of ${inWindow} rows.`;
     // the last step takes a row stamped at the window's very end
     const from = edge(lo), to = hi === STEPS - 1 ? t1 + 1 : edge(hi + 1);
     kept.set(keyOf(title), [from, to]);
