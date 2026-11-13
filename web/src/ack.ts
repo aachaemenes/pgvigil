@@ -87,6 +87,13 @@ export function ackWords(a: Row): string {
   return `acknowledged by ${String(a.created_by)} ${fmtTime(a.created_at)}${[until, change].filter(Boolean).map(x => ', ' + x).join('')}`;
 }
 
+// seatWhy: ackWhy for a write of the same family under another noun (a threshold, a job exclusion: the server asks the
+// same seat and says the same sentence with its own noun) - null when the control is on
+export function seatWhy(d: AckData, noun: string, instanceId?: AckInstance, name?: string): string | null {
+  const w = ackWhy(d, instanceId, name);
+  return w == null ? null : w.replace('acknowledgements', noun);
+}
+
 // jobAcks: the job acknowledgements in force, by 'instance_id|job_name'
 export function jobAcks(d: AckData): Map<string, Row> {
   const m = new Map<string, Row>();

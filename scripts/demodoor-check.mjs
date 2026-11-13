@@ -396,6 +396,68 @@ if (NOLOGIN) {
   for (const b of bad) console.log(`     R12 ${b}`);
 }
 
+// ---- R13 (DONE-2) the threshold dialogs on a demo serve: a level wider than one instance is OFF in words BEFORE a
+// request is made (never a control that is on and then answers 403), and one demo instance's own level is on
+{
+  const stJS = `(b) => b ? { found: true, off: b.getAttribute('aria-disabled') === 'true' || b.disabled, words: (${offWordsJS})(b) } : { found: false, off: false, words: '' }`;
+  const openTitle = () => ev(`document.querySelector('dialog.act-dialog[open]')?.getAttribute('aria-label') ?? ''`);
+  const closeDialog = async () => { await ev(`document.querySelector('dialog.act-dialog[open]')?.close()`); await sleep(200); };
+  // (a) Drives at the root: the toolbar's Configure sets the ROOT's level - off; a demo drive's own Configure is on
+  await go('#/drives');
+  const drv = await ev(`(() => { const st = ${stJS}; const isOn = b => b.getAttribute('aria-disabled') !== 'true' && !b.disabled;
+    const tb = [...document.querySelectorAll('main .toolbar button')].find(b => b.textContent.trim() === 'Configure');
+    const own = [...document.querySelectorAll('main button[aria-label^="Configure the thresholds of "]')];
+    const on = own.find(isOn); if (on) on.click();
+    return { root: st(tb), drives: own.length, on: own.filter(isOn).length }; })()`);
+  await sleep(400);
+  const drvOpened = await openTitle(); await closeDialog();
+  // (b) the Thresholds page: the root's Change buttons off for the page's one sentence; 'Set...' on - a tag picked is
+  // answered in words beside the button and no dialog opens, a demo instance picked opens the dialog
+  await go('#/pgthresholds');
+  const thr = await ev(`(() => { const off = ${offWordsJS};
+    const roots = [...document.querySelectorAll('main button[aria-label$=" at the root"]')];
+    const set = [...document.querySelectorAll('main button')].find(b => b.textContent.trim() === 'Set...');
+    return { roots: roots.length, rootsOff: roots.filter(b => b.getAttribute('aria-disabled') === 'true').length, words: roots[0] ? off(roots[0]) : '',
+      setOn: !!set && set.getAttribute('aria-disabled') !== 'true' && !set.disabled,
+      levels: [...(document.querySelector('main select[aria-label="level"]')?.options ?? [])].map(o => o.value) }; })()`);
+  const pickLevel = (lv) => ev(`(() => { const l = document.querySelector('main select[aria-label="level"]'); if (!l || ![...l.options].some(o => o.value === ${JSON.stringify(lv)})) return false;
+    l.value = ${JSON.stringify(lv)}; l.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  const clickSet = () => ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Set...'); if (b) b.click(); return !!b; })()`);
+  let tagSaid = '', tagOpened = '', instOpened = '';
+  if (await pickLevel('tag')) {
+    await clickSet(); await sleep(400);
+    tagSaid = await ev(`[...document.querySelectorAll('main [role=status]')].map(x => x.textContent.trim()).find(t => /^Not set:/.test(t)) ?? ''`);
+    tagOpened = await openTitle(); await closeDialog();
+  }
+  if (await pickLevel('instance')) {
+    await ev(`(() => { const p = document.querySelector('main select[aria-label="where"]'); const o = p && [...p.options].find(x => ${JSON.stringify(doorIds)}.includes(Number(x.value)));
+      if (o) { p.value = o.value; p.dispatchEvent(new Event('change', { bubbles: true })); } })()`);
+    await clickSet(); await sleep(400);
+    instOpened = await openTitle(); await closeDialog();
+  }
+  // (c) the root's two dialogs from the Summary's Options menu: Update off, its reason words in the dialog
+  const viaOptions = async (first, second) => {
+    await go('#/summary');
+    const item = (re) => ev(`(() => { const b = [...document.querySelectorAll('[role=menu] [role=menuitem]')].find(x => ${re}.test(x.textContent)); if (!b) return false; b.click(); return true; })()`);
+    const o = await ev(`(() => { const b = [...document.querySelectorAll('button.tb-btn')].find(x => x.textContent.trim() === 'Options'); if (!b) return false; b.click(); return true; })()`);
+    await sleep(300); const a = o && await item(first); await sleep(300); const b = a && await item(second); await sleep(600);
+    const r = await ev(`(() => { const st = ${stJS}; const d = document.querySelector('dialog.act-dialog[open]'); if (!d) return { open: false, title: '', update: st(null) };
+      return { open: true, title: d.getAttribute('aria-label') ?? '', update: st([...d.querySelectorAll('button')].find(x => x.textContent.trim() === 'Update')) }; })()`);
+    await closeDialog();
+    return { menus: [o, a, b], ...r };
+  };
+  const dump = await viaOptions('/^Memory Dumps/', '/^Configure Thresholds/');
+  const upt = await viaOptions('/^Instance Uptime/', '/^Configure Thresholds/');
+  const wide = (w) => /reach past the demo's instances/.test(w ?? '');
+  judge('R13', drv.root.found && drv.root.off && wide(drv.root.words) && drv.on > 0 && /^Drive space thresholds: the drive /.test(drvOpened)
+    && thr.roots > 0 && thr.rootsOff === thr.roots && /^Demo: a threshold is set here for one demo instance/.test(thr.words) && thr.setOn
+    && /^Not set: /.test(tagSaid) && wide(tagSaid) && !tagOpened && /^Threshold /.test(instOpened)
+    && dump.open && dump.update.off && wide(dump.update.words) && upt.open && upt.update.off && wide(upt.update.words),
+    `Drives at the root: the toolbar's Configure ${JSON.stringify(drv.root)}; ${drv.on} of ${drv.drives} drives' own Configure on, one clicked: '${drvOpened}'. `
+    + `Thresholds: ${thr.rootsOff} of ${thr.roots} root Change buttons off ('${(thr.words ?? '').slice(0, 70)}...'); Set... on ${thr.setOn} (levels ${JSON.stringify(thr.levels)}); a tag picked: '${tagSaid}' (a dialog: '${tagOpened}'); a demo instance picked: '${instOpened}'. `
+    + `Options > Memory Dumps > Configure Thresholds: '${dump.title}' Update ${JSON.stringify(dump.update)} (menus ${JSON.stringify(dump.menus)}); Options > Instance Uptime > Configure Thresholds: '${upt.title}' Update ${JSON.stringify(upt.update)} (menus ${JSON.stringify(upt.menus)})`);
+}
+
 if (shotsMissed.length) fail('shots', `not taken: ${shotsMissed.join(', ')}`);
 ws.close();
 console.log(fails ? `demodoor-check: ${fails} row(s) FAILED` : 'demodoor-check: every row ok');
