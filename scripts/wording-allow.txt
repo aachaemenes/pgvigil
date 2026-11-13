@@ -1,0 +1,11 @@
+# The wording walk's allow rows: a place where the other engine's word is right. A row: page | kind | pattern | reason
+#   page     a JavaScript regular expression over the page's address after '#/' ('*' = every page)
+#   kind     the element kind the walk read (prose, label, cell, option, attr; '*' = every kind)
+#   pattern  a JavaScript regular expression over the element's text (without case)
+# Never a page skipped whole: each row names what it allows and why. The matcher's own rules come first (A1: a
+# sentence of prose that names the word's own engine; A2: a sentence of prose that names this page's engine with no /
+# not / none / without / never / n/a); these rows are A4 (a page that names the other engine on purpose) and A5 (a
+# stated analogy).
+* | option | . | A4: a form's options list what can be chosen (an engine, a login kind: 'SQL login' on Admin > Instances)
+dbadash | * | \bSQL Server\b|\bDBA Dash\b | A4: the Doors page imports DBA Dash's SQL Server repository by design
+* | prose | PostgreSQL's TempDB | A5: an analogy the Temp tab states as one (drives.ts; review Item 7: fine)

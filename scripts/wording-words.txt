@@ -1,0 +1,75 @@
+# The wording walk's words: each one names a thing only one engine has under that name, so on a page of the other
+# engine it is a red (scripts/wording-match.mjs; the design: a word is listed when the other engine has no such thing
+# under that name). A row: engine | word | pattern | source.
+#   engine   the engine that owns the word: sqlserver or postgres (the word is a red on the other engine's pages)
+#   pattern  empty: the word itself, whole words, without case; 'cs:' first: with case (an abbreviation); else a
+#            JavaScript regular expression (whole words are the pattern's own business), matched without case
+# Left out on purpose (both engines own them, or plain English that ordinary text holds): Backup FULL and Backup DIFF
+# (pgBackRest's backup types are full, diff and incr), Log Shipping (PostgreSQL's docs: 'Log-Shipping Standby
+# Servers'), Identity Columns (PostgreSQL 10+), Logins / Failed Logins (a role's LOGIN attribute), Log Space, File
+# Space, % Max Size, Kill, Server Services, Jobs, Backups, Deadlocks, Waits, Blocking, Sequences, Indexes, Roles,
+# Schema, Statistics; bloat alone (SQL Server's Memory page: 'plan cache bloat'); Entra (Azure Database for
+# PostgreSQL authenticates Entra users too); Windows account (PostgreSQL on Windows: SSPI).
+sqlserver | Query Store | | Microsoft Learn 'Monitor performance by using the Query Store'; fleet.ts qs (mssqlOnly)
+sqlserver | QS | cs:\bQS\b | Query Store's abbreviation (fleet.ts qs; the owner's 18:50 find)
+sqlserver | Forced Plans | \bforced plans?\b | Query Store plan forcing (sys.query_store_plan.is_forced_plan)
+sqlserver | plan cache | | SQL Server's shared plan cache (sys.dm_exec_cached_plans); PostgreSQL plans per session
+sqlserver | Flushed Plans | \bflushed plans?\b | the plan cache flushed (rp_flushed)
+sqlserver | Memory Dump | \bmemory dumps?\b | sys.dm_server_memory_dumps (fleet.ts dumps; PostgreSQL's check is crashes)
+sqlserver | CHECKDB | | DBCC CHECKDB
+sqlserver | Last Good Check DB | \blast good check ?db\b | fleet.ts checkdb (PostgreSQL's is amcheck age)
+sqlserver | DBCC | cs:\bDBCC\b | the DBCC commands
+sqlserver | Availability Group | \bavailability groups?\b | Always On availability groups (fleet.ts replication's label)
+sqlserver | Always On | \balways ?on\b | Always On
+sqlserver | AG | cs:\bAGs?\b | an availability group's abbreviation
+sqlserver | Mirroring | \bmirroring\b | database mirroring (fleet.ts mirroring, mssqlOnly)
+sqlserver | SQL Agent | \bsql (server )?agent\b | SQL Server Agent (fleet.ts alerts, agent)
+sqlserver | Agent Jobs | \bagent jobs?\b | SQL Server Agent's jobs (fleet.ts jobs' label; a whole word: never 'pgAgent jobs')
+sqlserver | Agent Alerts | \bagent alerts?\b | SQL Server Agent's alerts (fleet.ts alerts)
+sqlserver | Is Agent Running | \bis agent running\b | fleet.ts agent (mssqlOnly)
+sqlserver | Database Mail | \b(database|db) mail\b | Database Mail (fleet.ts dbmail, mssqlOnly)
+sqlserver | Service Broker | | Service Broker (fleet.ts servicebroker, mssqlOnly)
+sqlserver | Elastic Pool | \belastic pools?\b | Azure SQL Database's elastic pools (Azure Database for PostgreSQL's word is elastic clusters)
+sqlserver | tempdb | | SQL Server's system database (PostgreSQL: temp files, temp_tablespaces)
+sqlserver | msdb | | SQL Server's system database
+sqlserver | master database | \bmaster database\b | SQL Server's system database
+sqlserver | Backup LOG | \b(backup log|log backups?)\b | transaction log backups (fleet.ts log; PostgreSQL's is WAL archiving)
+sqlserver | Linked Server | \blinked servers?\b | linked servers (PostgreSQL: foreign data wrappers)
+sqlserver | Filegroup | \bfilegroups?\b | filegroups (PostgreSQL: tablespaces)
+sqlserver | Recovery model | \brecovery models?\b | a database's recovery model
+sqlserver | Compatibility level | \bcompatibility levels?\b | a database's compatibility level
+sqlserver | SPID | cs:\bSPIDs?\b | a session's id on SQL Server
+sqlserver | SQL Login | \bsql logins?\b | SQL Server authentication's login
+sqlserver | Extended Properties | \bextended propert(y|ies)\b | sys.extended_properties (PostgreSQL: COMMENT ON)
+sqlserver | mssql_ | \bmssql_\w+ | pgvigil's SQL Server names (reports.ts qsNote 'mssql_plancache')
+sqlserver | sys. | \bsys\.\w+ | SQL Server's catalog views (reports.ts 'sys.extended_properties')
+sqlserver | PAGELATCH | cs:\bPAGE(IO)?LATCH\w* | SQL Server's latch waits (running_fleet.ts)
+sqlserver | PFS GAM SGAM | cs:\b(PFS|GAM|SGAM)\b | SQL Server's allocation pages (running_fleet.ts)
+sqlserver | In-Memory OLTP | \bin-memory oltp\b | SQL Server's memory-optimized tables
+sqlserver | Extended Events | \bextended events\b | SQL Server's event sessions
+sqlserver | default trace | \bdefault trace\b | SQL Server's default trace
+sqlserver | Managed Instance | \bmanaged instances?\b | Azure SQL Managed Instance
+postgres | vacuum | \b(auto)?vacuum\w*\b | PostgreSQL's routine vacuuming (SQL Server: ghost cleanup)
+postgres | WAL | cs:\bWAL\b | the UI word for PostgreSQL's log (SQL Server's: the transaction log)
+postgres | pg_ | \bpg_\w+ | PostgreSQL's catalog, views, functions and extensions
+postgres | xmin | \b(xmin|xid|wraparound)\b | PostgreSQL's transaction ids
+postgres | table bloat | \b(table|index|dead[- ]tuple) bloat\b | PostgreSQL's bloat (bloat alone is out: 'plan cache bloat' on SQL Server)
+postgres | amcheck | | PostgreSQL's amcheck
+postgres | replication slot | \breplication slots?\b | PostgreSQL's replication slots
+postgres | tablespace | \btablespaces?\b | PostgreSQL's tablespaces (SQL Server: filegroups)
+postgres | TOAST | cs:\bTOAST\b | PostgreSQL's TOAST
+postgres | settings | \b(shared_buffers|work_mem|maintenance_work_mem|autovacuum_\w+|wal_\w+|track_io_timing)\b | PostgreSQL's settings
+postgres | PgBouncer | \bpgbouncer\b | PostgreSQL's pooler
+postgres | pooler | \bpoolers?\b | the Pooler tab (PgBouncer, RDS Proxy)
+postgres | pgaudit | \bpgaudit\b | PostgreSQL's audit extension
+postgres | pgAgent | \bpgagent\b | PostgreSQL's job scheduler
+postgres | pgBackRest | \bpgbackrest\b | PostgreSQL's backup tool
+postgres | COMMENT ON | cs:\bCOMMENT ON\b | PostgreSQL's object comments
+postgres | VALID UNTIL | cs:\bVALID UNTIL\b | a PostgreSQL role's password expiry
+postgres | SLRU | cs:\bSLRU\b | PostgreSQL's SLRU caches
+postgres | backends | \bbackends?\b | PostgreSQL's server processes ('Waiting backends')
+postgres | idle in transaction | \bidle in transaction\b | a PostgreSQL session state
+postgres | pid | cs:\bpids?\b | PostgreSQL's process id (SQL Server: session_id, SPID)
+postgres | Aurora | \baurora\b | Aurora has no SQL Server engine
+postgres | ACU | cs:\bACUs?\b | Aurora Serverless v2 capacity units
+postgres | Serverless v2 | \bserverless v2\b | Aurora Serverless v2
