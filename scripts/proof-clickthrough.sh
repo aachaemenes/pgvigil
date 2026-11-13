@@ -16,16 +16,17 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the third run: the second run's 107 rows outside the file read - 18 the driver's own (a button in a grid cell
-# named by its text, live data that changes between snapshots; a checked radio clicked), fixed; 89 findings, listed by
-# cause; written before it):
-#   the grader's self-test: 9 of 9 cases; the expected file: 8 rows
+# Expected (the third run, on a tree joined with the release's tip: its threshold dialogs' Inherit, the calendar's
+# Next month and the job thresholds dialog's controls now carry their reasons in words, so their three rows left the
+# expected file; the second run's 18 driver rows fixed; written before it):
+#   the grader's self-test: 9 of 9 cases; the expected file: 5 rows
 #   the click map: its own verdict line (the second run: 524 links, 0 FAIL)
-#   listed: 180 pages as the second run (root 62, PostgreSQL demo-onprem-erp01 64 with the Pooler of
-#     demo-aurora-crm01, SQL Server demo-onprem-sql01 54) in 4 shards; 181 with the bar; every page settled
-#   the walk: the longest driver about the second run's 3012 s or less (a grid cell's buttons now one per column)
-#   the grade: every FAIL row listed: 'click-through: OK (<n> FAIL row(s), each listed; <m> expected row(s) not
-#     seen)' - the second run's FAIL rows by row: 21 + 89; a row NEW now is a finding or the driver's own, read first
+#   listed: the second run's 180 pages and the joined tree's new tabs (mssql_queries, pools) in 4 shards; every page
+#     settled
+#   the walk: the longest driver about the second run's 3012 s or less
+#   the grade: every FAIL row listed: 'click-through: OK (<n> FAIL row(s), each listed; 0 expected row(s) not seen)';
+#     no 'off without words' row (Inherit, Next month, the job dialog's Save / Inherit / fields: 'disabled' with the
+#     words); a row NEW now is the joined tree's (42 UI files changed) or the driver's own, read first
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=()
