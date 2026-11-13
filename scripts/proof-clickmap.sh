@@ -366,7 +366,7 @@ for s in ('root', 'tag ' + d['tag'], 'PostgreSQL ' + d['pg'], 'SQL Server ' + d[
     if len(t) < 6: bad.append('%d Storage tabs at %s' % (len(t), s))
 # task 176b: the four landings DBA Dash's map now holds, the Uptime dialog, a drive's Files, the PostgreSQL Temp tab
 for e in ('postgres', 'sqlserver'):
-    # QS is SQL Server's Query Store alone; PostgreSQL's statement store is its own column (Allen 2026-11-12)
+    # QS is SQL Server's Query Store alone; PostgreSQL's statement store is its own column
     for c in ('Snapshot Age', 'Database State', 'QS' if e == 'sqlserver' else 'pg_stat_statements', 'Instance Uptime'):
         got = has(scope='root', kind='cell', column=c, engine=e)
         if not got: bad.append('no %s cell of %s at the root' % (c, e))

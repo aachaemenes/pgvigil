@@ -31,7 +31,7 @@
 #  Before F: the staged finding is the instance's only critical one (else other findings would page too: fail first).
 #  On every exit after F the cleanup sends PagerDuty a resolve for every dedup key the run's pd channel used (a resolve
 #  of a resolved incident is a no-op), so no lab incident stays open; the key goes to curl on stdin, never argv.
-#  On the far side (Allen looks): one mail 'pgvigil: 1 new (1 critical)' and one '... resolved'; a Teams card and a Slack
+#  On the far side (the channels' owner looks): one mail 'pgvigil: 1 new (1 critical)' and one '... resolved'; a Teams card and a Slack
 #  line for each; one PagerDuty incident opened then resolved, both events under the dedup key
 #  pgvigil:<instance>:<finding key>.
 set -euo pipefail

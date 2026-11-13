@@ -9,7 +9,7 @@
 #                   if any, comes from ~/.pgpass or PGPASSWORD); the proof makes its own repository databases and drops them.
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-darling-queries-wiring.patch (DONE-2's: router.ts, main.ts,
 #                   mssql_plancache.ts, mssql_procs.ts, mssql_running.ts, mssql_waits.ts, q_mssql_running.go,
-#                   docs/sqlserver-querystore.md: the lead's files) to this copy when the tree lacks it; 0 = the tree as
+#                   docs/sqlserver-querystore.md: files outside this proof's change) to this copy when the tree lacks it; 0 = the tree as
 #                   it is.
 #   PGVIGIL_SHOTS   where step I's page shots and click table go (default: a folder of the run, removed with it)
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every

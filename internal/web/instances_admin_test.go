@@ -32,7 +32,7 @@ func TestListPathOK(t *testing.T) {
 	}
 }
 
-// The page's five read-only reasons in its own words (the join's w9c; the lead's 12:59: each reason a proof row):
+// The page's five read-only reasons in its own words (each reason a proof row):
 // a demo serve (the join's demo door: proof-demodoor), -no-login (proof-instances L), the audit login off (L2), the
 // audit login not connected, and no actions door at all, which serve never has (it always builds the door) - so this
 // test is that reason's row. Each answers every write 403 with the words before any login is asked: an instance add,

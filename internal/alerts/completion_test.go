@@ -358,8 +358,8 @@ func TestTestMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 11, 11, 23, 0, 0, 0, time.UTC)
-	pd := testAlerts(&st.Channels[0], testRequest{id: 7, channel: "pd", by: "allen", at: at})
-	fd := testAlerts(&st.Channels[1], testRequest{id: 8, channel: "d", by: "allen", at: at})
+	pd := testAlerts(&st.Channels[0], testRequest{id: 7, channel: "pd", by: "ops", at: at})
+	fd := testAlerts(&st.Channels[1], testRequest{id: 8, channel: "d", by: "ops", at: at})
 	if len(pd) != 2 || pd[0].Event != "test" || pd[1].Event != "resolved" || pd[0].FindingKey != "test-7" || pd[1].FindingKey != "test-7" {
 		t.Errorf("pagerduty's test: %+v", pd)
 	}
@@ -367,7 +367,7 @@ func TestTestMessage(t *testing.T) {
 		t.Errorf("file's test: %d alerts", len(fd))
 	}
 	l := fd[0].Line()
-	if !strings.HasPrefix(l, "[TEST] pgvigil: a test message on channel d, asked by allen at 2026-11-11 23:00:00 UTC") || !strings.HasSuffix(l, " https://p.example.org/#/alerts") {
+	if !strings.HasPrefix(l, "[TEST] pgvigil: a test message on channel d, asked by ops at 2026-11-11 23:00:00 UTC") || !strings.HasSuffix(l, " https://p.example.org/#/alerts") {
 		t.Errorf("test line %q", l)
 	}
 	if s := (Message{Alerts: fd}).Summary(); s != "pgvigil: test message" {

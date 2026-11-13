@@ -257,7 +257,7 @@ func ec2Regions(ctx context.Context, c regionsAPI) (map[string]bool, error) {
 }
 
 // regionsAPI is the one EC2 call discovery makes (an optional right: every partition has EC2, the account service
-// only two - task 205, the lead's 12:28).
+// only two).
 type regionsAPI interface {
 	DescribeRegions(context.Context, *ec2.DescribeRegionsInput, ...func(*ec2.Options)) (*ec2.DescribeRegionsOutput, error)
 }

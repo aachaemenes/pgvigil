@@ -56,7 +56,7 @@
 #      backup_status c1 restorable_age_s = 600 (latest restorable 10 min before the read).
 #  D.  go test -run Backups ./internal/collect: PASS. LAB=1: backup_state cloud|dba-lab-pg (resource_kind cluster,
 #      retention_days >= 1, latest_restorable_time within a day) and at least one automated snapshot row; not run
-#      without LAB=1 (the lab's session is Allen's `aws login`).
+#      without LAB=1 (the lab's session is its owner's `aws login`).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"

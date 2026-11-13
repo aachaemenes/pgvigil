@@ -11,7 +11,7 @@
 # properties; every module of a package `go list -deps` reports for ./cmd/pgvigil (the standard library aside) is a
 # component with a pkg:golang purl and a version; no component is without a purl; a dependency graph is
 # present; the licence evidence covers the modules, every licence is one of MIT, Apache-2.0, BSD-2-Clause,
-# BSD-3-Clause and MPL-2.0, each of them linked (a new one is the lead's word, never a silent addition; one no longer
+# BSD-3-Clause and MPL-2.0, each of them linked (a new one is a reviewed change, never a silent addition; one no longer
 # linked leaves the set), and each MPL-2.0 module has its source line in
 # docs/notices.md (MPL-2.0 section 3.2(a): the module, its exact version, its source archive's URL).
 set -euo pipefail
@@ -60,7 +60,7 @@ lic = sum(1 for c in comps if c.get("licenses") or (c.get("evidence") or {}).get
 ids = sorted({l.get("license", {}).get("id") or l.get("license", {}).get("name") or l.get("expression") for c in comps for l in ((c.get("evidence") or {}).get("licenses") or c.get("licenses") or [])} - {None})
 allowed = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "MPL-2.0"}
 outside = [i for i in ids if i not in allowed]
-assert not outside, "licences outside %s (a new one is the lead's word): %s" % (", ".join(sorted(allowed)), outside)
+assert not outside, "licences outside %s (a new one is a reviewed change): %s" % (", ".join(sorted(allowed)), outside)
 unused = sorted(allowed - set(ids))
 assert not unused, "the allowed set names a licence no linked module carries (take it out): %s" % unused
 notices = open(sys.argv[3]).read()

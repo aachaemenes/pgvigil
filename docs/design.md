@@ -83,8 +83,8 @@ read by chart.ts in that order, assigned in order and never cycled (a ninth seri
 Every chart goes through chart.ts (`lineChart`, `donutChart`, `ringChart`, `volumeBars`), which draws with
 web/src/chartkit.ts; a page never styles a chart itself.
 - The chart a measure takes (`lineChart`'s `measure`, `chartKind`): a rate or a level over time is a line; a share of a
-  whole over time is stacked areas (`measure: 'share'`), a share at one moment DBA Dash's pie or ring where Allen ordered
-  one; a distribution over time, a count per step, is bars (`measure: 'distribution'`). One value axis: a second measure of another scale is its own chart (`y2` stays only where a
+  whole over time is stacked areas (`measure: 'share'`), a share at one moment DBA Dash's pie or ring where a page
+  asks for one; a distribution over time, a count per step, is bars (`measure: 'distribution'`). One value axis: a second measure of another scale is its own chart (`y2` stays only where a
   page already uses it).
 - The look (`chartLook`, `axisLook`): axis values in `--fs-xs` and `--text-muted`, grid lines in `--line`, short ticks,
   about five values up a 220 px chart and seven along a 560 px one; the series in `--s1` ... `--s8` order.
