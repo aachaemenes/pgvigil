@@ -75,7 +75,8 @@ export const groups: Group[] = [
   { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlOnly: true, dd: true },
   // Azure SQL Database's elastic pools and Service Broker: pgvigil reads neither yet, so both stay N/A and hidden
   { key: 'elasticpool', label: 'Elastic Pool Storage', checks: [], tab: 'summary', mssqlOnly: true, dd: true },
-  { key: 'qs', label: 'QS', checks: ['statement store'], tab: 'pgstate', mssql: ['qs', 'mssqlqs', 'Query Store'], dd: true },
+  // QS is SQL Server's Query Store alone: PostgreSQL has none, its statement store is the column pg_stat_statements below
+  { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true, dd: true },
   { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', dd: true },
   { key: 'errors', label: 'Collection Errors (24hrs)', checks: ['collection failing'], tab: 'collectiondates', mssql: ['errors', 'collectiondates', 'Collection errors'], dd: true, both: true },
   { key: 'snapshot', label: 'Snapshot Age', checks: ['collection stale'], tab: 'collectiondates', mssql: ['snapshot', 'collectiondates', 'Collection'], dd: true, both: true },
@@ -88,6 +89,8 @@ export const groups: Group[] = [
   { key: 'activity', label: 'Activity', checks: [], tab: 'activity', mssql: ['blocking', 'mssql_running', 'Blocking'] },
   { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters', kind: 'database', mssql: ['events', 'mssql_deadlocks', 'Deadlocks and blocked reports'] },
   { key: 'audit', label: 'Audit', checks: [], tab: 'audit', mssql: ['audit', 'mssqlaudit', 'SQL Server Audit'] },
+  // PostgreSQL's statement store (pg_stat_statements: tracking off, entries evicted), under its own name
+  { key: 'pgss', label: 'pg_stat_statements', checks: ['statement store'], tab: 'pgstate' },
   { key: 'dms', label: 'DMS', checks: ['dms'], tab: 'dms' },
   { key: 'tables', label: 'Tables', checks: ['tables'], tab: 'tables' },
   { key: 'vacuum', label: 'Vacuum', checks: ['vacuum'], tab: 'vacuum' },

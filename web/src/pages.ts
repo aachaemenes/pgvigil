@@ -635,7 +635,9 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
   // one line of statuses where two rows of tiles stood: only the groups that are not OK are named, each a link
   // to its tab; the session figures are rows of the Instance list below
   const notOk = groups.filter(g => !c[g.key].none && c[g.key].level > 0);
-  sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? (groups.some(g => c[g.key].none) ? `No warning or critical; no sample for: ${groups.filter(g => c[g.key].none).map(g => g.label).join(', ')}.` : 'Every check group is OK.') : 'Not OK: ',
+  // a cell without a read is named; an n/a cell is not (the other engine's check: QS, SQL Agent Alerts ... on PostgreSQL)
+  const noRead = groups.filter(g => c[g.key].none && c[g.key].text !== 'n/a');
+  sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? (noRead.length ? `No warning or critical; no sample for: ${noRead.map(g => g.label).join(', ')}.` : 'Every check group is OK.') : 'Not OK: ',
     ...notOk.flatMap((g, i) => {
       const x = c[g.key];
       const a = el('a', { class: cellClass(x), href: href(ctx, { tab: g.tab }) }, `${g.label} ${cellText(x)}`);

@@ -151,6 +151,15 @@ button { cursor: pointer; }
 button:hover, select:hover { background: var(--surface-hover); }
 input { font: inherit; padding: var(--sp-half) var(--sp-2); background: var(--surface-panel); color: var(--text); border: var(--bw) solid var(--line-strong); border-radius: var(--r-sm); }
 button.link { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }
+/* a control that is off looks off, never like one that works; its reason is the visible text beside it (ui.ts offControl) */
+button.link:disabled, button.link[aria-disabled="true"] { color: var(--text-muted); text-decoration: none; cursor: not-allowed; }
+button:not(.link):disabled, button:not(.link)[aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
+button:not(.link)[aria-disabled="true"]:hover, .toolbar button:not(.link)[aria-disabled="true"]:hover,
+#bar button:not(.range-item, .link)[aria-disabled="true"]:hover { background: var(--surface-panel); }
+/* the Silence button is muted and bordered when on as well: off, it keeps a dimmed look of its own */
+button.link.silence-btn:disabled, button.link.silence-btn[aria-disabled="true"] { opacity: .6; }
+.off-reason { color: var(--text-muted); font-size: var(--fs-sm); }
+@media (forced-colors: active) { button:disabled, button[aria-disabled="true"] { color: GrayText !important; border-color: GrayText !important; opacity: 1 !important; } }  /* important: a more specific off colour (button.link, .grid td.status, .silence-btn) is no system colour, so forced colours would turn it back to ButtonText */
 .range { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; position: relative; }
 .range .custom { display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
 .picker { margin-bottom: var(--sp-2); color: var(--text-muted); }
@@ -419,8 +428,7 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 @media (forced-colors: active) { .silenced-bell { forced-color-adjust: none; background-color: CanvasText; } }
 /* Silence / Unsilence bordered as PerformanceMonitor's .silence-btn */
 button.link.silence-btn { border: var(--bw) solid var(--line); border-radius: var(--r-sm); padding: 0 var(--sp-2); color: var(--text-muted); text-decoration: none; font-size: var(--fs-sm); line-height: var(--lh); }
-button.link.silence-btn:hover:not([disabled]) { color: var(--text); }
-button.link.silence-btn[disabled] { cursor: default; opacity: .6; }
+button.link.silence-btn:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--text); }
 .counts .offline-count.muted { color: var(--text-muted); }
 /* task 177 D29: the daily health calendar - a day on its state's tint (--ok-bg / --warn-bg / --crit-bg: --text on them
    13.0-14.3:1 light, 11.9-12.8:1 dark; the state's border on its tint 4.7-4.9:1 light, 5.8-7.2:1 dark), no data

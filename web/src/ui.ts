@@ -366,6 +366,36 @@ export function pill(text: string, kind: string): HTMLElement {
   return el('span', { class: 'badge pill ' + kind }, text);
 }
 
+// offControl: a control that cannot act here says why in words (a control does its work, or it is off with its reason
+// beside it). It stays in the tab order (aria-disabled, never the disabled attribute), a click on it (Enter and Space
+// click too) does nothing, its reason is visible text and its description (aria-describedby), and title repeats it for
+// a mouse. reasonEl: the visible text that already says it (a needs cell, a note above); none = a note made here,
+// returned for the caller to place beside the control. reason null = on again.
+let offSeq = 0;
+export function offControl(c: HTMLElement, reason: string | null, reasonEl?: HTMLElement): HTMLElement {
+  const made = c.dataset.offNote ? document.getElementById(c.dataset.offNote) : null;
+  const note = reasonEl ?? (made && made.classList.contains('off-reason') ? made : el('span', { class: 'off-reason' }));
+  if (!note.id) note.id = 'off-' + String(++offSeq);
+  c.dataset.offNote = note.id;
+  if (!c.dataset.offGuard) {
+    c.dataset.offGuard = '1';
+    c.addEventListener('click', e => { if (c.getAttribute('aria-disabled') === 'true') { e.preventDefault(); e.stopImmediatePropagation(); } }, { capture: true });
+  }
+  c.removeAttribute('disabled');
+  if (reason) {
+    c.setAttribute('aria-disabled', 'true');
+    c.setAttribute('aria-describedby', note.id);
+    c.title = reason;
+    if (!reasonEl) note.textContent = reason;
+  } else {
+    c.removeAttribute('aria-disabled');
+    c.removeAttribute('aria-describedby');
+    c.removeAttribute('title');
+    if (!reasonEl) note.textContent = '';
+  }
+  return note;
+}
+
 export function errorBox(e: unknown): HTMLElement {
   return el('p', { class: 'error' }, 'Error: ' + (e instanceof Error ? e.message : String(e)));
 }

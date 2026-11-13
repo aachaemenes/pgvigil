@@ -42,7 +42,10 @@ const dbadash = {
   'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
   'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
   'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
-  'QS':                  { postgres: ['pgstate'], sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS (PostgreSQL: the statement store on Server state)' },
+  // QS is SQL Server's Query Store alone (a QS link on a PostgreSQL instance FAILS: 'the column has no read there');
+  // PostgreSQL's statement store has its own column, which SQL Server has no cell in
+  'QS':                  { sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS' },
+  'pg_stat_statements':  { postgres: ['pgstate'], dd: 'no DBA Dash column: PostgreSQL has no Query Store, its statement store is on Server state' },
   'Custom Checks':       { postgres: ['custom'], dd: 'Custom Checks -> Checks > Custom Checks' },
   'Snapshot Age':        { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'Snapshot Age -> Checks > Collection Dates' },
   'Identity Columns':    { sqlserver: ['mssqlchecks'], cv: { sqlserver: 'identity' }, dd: 'Identity Columns -> Checks > Identity Columns' },
