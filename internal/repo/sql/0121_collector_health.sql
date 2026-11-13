@@ -93,15 +93,19 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
   PRIMARY KEY (minute, instance_id, collector_id)
 );
 
--- per instance and collection: the failed runs in a row now
+-- per instance, collection and collector (host): the failed runs in a row now. By host: two hosts reading one
+-- instance (a move, a second collector) each keep their own count, and the lowest of the hosts still reading speaks
+-- (collector_streaks_now). A renamed host starts at 0. Trimmed by the beat when its host has not named the instance
+-- for 8 days.
 CREATE TABLE IF NOT EXISTS pgvigil.collector_streaks (
   instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   collection    text NOT NULL,
+  host          text NOT NULL,
   fail_streak   int NOT NULL,
   last_error    text,
   last_run_at   timestamptz NOT NULL,
   failing_since timestamptz,
-  PRIMARY KEY (instance_id, collection)
+  PRIMARY KEY (instance_id, collection, host)
 );
 
 -- per run and instance NAME: the instances a run reads - written at an instance's own connect (its first in the run,
@@ -112,6 +116,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_instances (
   collector_id  text NOT NULL,
   instance      text NOT NULL,
   seen_at       timestamptz NOT NULL,
+  interval_s    int,                              -- the fastest configured interval of its newest loaded minute (collector_reading's allowance)
   PRIMARY KEY (collector_id, instance)
 );
 CREATE INDEX IF NOT EXISTS collector_instances_name ON pgvigil.collector_instances (instance, seen_at);
@@ -227,8 +232,10 @@ CREATE OR REPLACE FUNCTION pgvigil.import_collector_beat(p_id text, p_minute tim
 RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
   v_conns int;
+  v_host  text;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat WHERE collector_id = p_id) THEN
+  SELECT host INTO v_host FROM pgvigil.collector_heartbeat WHERE collector_id = p_id;
+  IF v_host IS NULL THEN
     RETURN false;
   END IF;
   SELECT count(*) INTO v_conns FROM pg_stat_activity
@@ -263,22 +270,23 @@ BEGIN
   PERFORM pgvigil.collector_spells_take(p_id, p_minute);
   PERFORM pgvigil.collector_span_take(p_id, p_minute);
   -- the beat names the instances it loaded (collector_instances): seen at the minute's end
-  INSERT INTO pgvigil.collector_instances (collector_id, instance, seen_at)
-  SELECT p_id, l.instance, p_minute + interval '1 minute'
-    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text)
+  INSERT INTO pgvigil.collector_instances (collector_id, instance, seen_at, interval_s)
+  SELECT p_id, l.instance, p_minute + interval '1 minute', nullif(l.interval_s, 0)
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text, interval_s int)
    WHERE l.instance IS NOT NULL
-  ON CONFLICT (collector_id, instance) DO UPDATE SET seen_at = greatest(collector_instances.seen_at, EXCLUDED.seen_at);
+  ON CONFLICT (collector_id, instance) DO UPDATE SET seen_at = greatest(collector_instances.seen_at, EXCLUDED.seen_at),
+                                                    interval_s = coalesce(EXCLUDED.interval_s, collector_instances.interval_s);
   -- a streak whose beat carries its first failure ('since') takes it, whatever start is stored (a streak that ended
   -- and began again inside one beat never wrote its 0)
   UPDATE pgvigil.collector_streaks cs SET failing_since = NULL
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'streaks') = 'array' THEN p_beat->'streaks' ELSE '[]'::jsonb END)) AS s(instance text, collection text, since timestamptz)
     JOIN pgvigil.instances i ON i.name = s.instance
-   WHERE cs.instance_id = i.instance_id AND cs.collection = s.collection AND s.since IS NOT NULL;
-  INSERT INTO pgvigil.collector_streaks (instance_id, collection, fail_streak, last_error, last_run_at, failing_since)
-  SELECT i.instance_id, s.collection, s.fails, nullif(s.error, ''), s.at, CASE WHEN s.fails > 0 THEN coalesce(s.since, s.at) END
+   WHERE cs.instance_id = i.instance_id AND cs.collection = s.collection AND cs.host = v_host AND s.since IS NOT NULL;
+  INSERT INTO pgvigil.collector_streaks (instance_id, collection, host, fail_streak, last_error, last_run_at, failing_since)
+  SELECT i.instance_id, s.collection, v_host, s.fails, nullif(s.error, ''), s.at, CASE WHEN s.fails > 0 THEN coalesce(s.since, s.at) END
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'streaks') = 'array' THEN p_beat->'streaks' ELSE '[]'::jsonb END)) AS s(instance text, collection text, fails int, error text, at timestamptz, since timestamptz)
     JOIN pgvigil.instances i ON i.name = s.instance
-  ON CONFLICT (instance_id, collection) DO UPDATE
+  ON CONFLICT (instance_id, collection, host) DO UPDATE
      SET fail_streak = EXCLUDED.fail_streak, last_error = EXCLUDED.last_error, last_run_at = EXCLUDED.last_run_at,
          failing_since = CASE WHEN EXCLUDED.fail_streak = 0 THEN NULL
                               ELSE coalesce(collector_streaks.failing_since, EXCLUDED.failing_since) END;
@@ -292,16 +300,25 @@ BEGIN
   DELETE FROM pgvigil.collector_load WHERE minute < now() - interval '8 days';
   DELETE FROM pgvigil.collector_spells WHERE coalesce(ended_at, last) < now() - interval '8 days';
   DELETE FROM pgvigil.collector_instances WHERE seen_at < now() - interval '8 days';
+  -- this host's streaks of an instance it has not named for 8 days, written 8 days ago or more (never by the streak's
+  -- own time alone: a streak at 0 is not written again while it stays 0, and a host still reading must keep counting
+  -- as 0; never by the naming alone: a streak just written stays)
+  DELETE FROM pgvigil.collector_streaks s
+   WHERE s.host = v_host AND s.last_run_at < now() - interval '8 days'
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_instances ci JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                       JOIN pgvigil.instances i ON i.name = ci.instance
+                      WHERE h.host = s.host AND i.instance_id = s.instance_id);
   DELETE FROM pgvigil.collector_heartbeat WHERE beat_at < now() - interval '8 days';
   RETURN true;
 END $$;
 
--- import_collector_streaks: the failed runs in a row the repository holds (a restarted collector counts on from them)
-CREATE OR REPLACE FUNCTION pgvigil.import_collector_streaks()
+-- import_collector_streaks: the failed runs in a row the repository holds for host p_host (a collector started again
+-- on that host counts on from them; a collector on another host never takes them)
+CREATE OR REPLACE FUNCTION pgvigil.import_collector_streaks(p_host text)
 RETURNS TABLE (instance text, collection text, fail_streak int, last_error text) LANGUAGE sql STABLE AS $$
   SELECT i.name, s.collection, s.fail_streak, s.last_error
     FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
-   WHERE i.is_active AND s.fail_streak > 0
+   WHERE i.is_active AND s.fail_streak > 0 AND s.host = p_host
 $$;
 
 -- import_collector_retire: the host's collector is uninstalled and its repository kept (uninstall calls it; the
@@ -561,7 +578,7 @@ WITH hn AS (
                   WHERE s.host = m.host AND s.instance_id = m.instance_id AND s.kind = 'noconn' AND s.ended_at IS NULL
                     AND s.last = m.newest AND s.since >= m.newest - m.age)
          OR (m.failures > 0 AND EXISTS (SELECT 1 FROM pgvigil.collector_streaks t
-                                         WHERE t.instance_id = m.instance_id AND t.fail_streak > 0
+                                         WHERE t.instance_id = m.instance_id AND t.host = m.host AND t.fail_streak > 0
                                            AND t.failing_since >= m.newest - m.age)) AS counts
     FROM m
 ), f AS (
@@ -609,6 +626,34 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT EXISTS (SELECT 1 FROM pgvigil.collector_parent WHERE why = 'collector not seen')
 $$;
 
+-- collector_reading: the hosts still reading each instance - a host reads it while its newest naming of it (the beat
+-- names what it loaded, at the minute's end; the instance's own connect names it too) is no older than the host's own
+-- newest naming of any instance less the instance's interval and a beat. Judged against the host's OWN beat, never
+-- another host's newest row: a host that stopped beating still reads what it read at its last beat (collector_covers
+-- ends that after 20 minutes).
+CREATE OR REPLACE VIEW pgvigil.collector_reading AS
+WITH n AS (
+  SELECT h.host, ci.instance, max(ci.seen_at) AS seen, max(ci.interval_s) AS interval_s
+    FROM pgvigil.collector_instances ci JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE h.retired_at IS NULL
+   GROUP BY h.host, ci.instance
+), hs AS (
+  SELECT n.host, max(n.seen) AS newest FROM n GROUP BY n.host
+)
+SELECT n.host, i.instance_id
+  FROM n JOIN hs USING (host) JOIN pgvigil.instances i ON i.name = n.instance
+ WHERE n.seen >= hs.newest - make_interval(secs => coalesce(n.interval_s, 60)) - interval '1 minute';
+
+-- collector_streaks_now: per instance and collection the streak that speaks - the LOWEST among the hosts still reading
+-- the instance (collector_reading); a host with no streak of that collection (it has it off) is left out, never counted
+-- as 0. One host failing beside another reading fine is no finding: the instance is being read ('collected by more
+-- than one collector' already says two read it).
+CREATE OR REPLACE VIEW pgvigil.collector_streaks_now AS
+SELECT DISTINCT ON (s.instance_id, s.collection) s.instance_id, s.collection, s.host, s.fail_streak, s.last_error, s.last_run_at, s.failing_since
+  FROM pgvigil.collector_streaks s
+  JOIN pgvigil.collector_reading r ON r.host = s.host AND r.instance_id = s.instance_id
+ ORDER BY s.instance_id, s.collection, s.fail_streak, s.last_run_at DESC;
+
 -- collector_findings: the findings shape (pgvigil.findings' arms). Source 'pgvigil repository' marks the
 -- repository-wide ones (no instance: every channel past its severity floor takes them); 'pgvigil collector' an
 -- instance's.
@@ -637,7 +682,7 @@ UNION ALL
 SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the collection runs', 'all',
        format('%s runs in a row failed since %s: %s', s.fail_streak, s.failing_since, coalesce(s.last_error, 'no error text')),
        'pgvigil collector', s.last_run_at
-  FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
+  FROM pgvigil.collector_streaks_now s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.collection <> '(connect)' AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
    -- it stands during an outage too (the page shows it); alert_due (0190) decides the send: held while 'collector or
    -- network' stands, and after it one failed run past its window (collector_in_window)
@@ -652,7 +697,7 @@ UNION ALL
 SELECT s.instance_id, 'critical', 'server unreachable', 'no connection', true, 'the server answering the collector', 'all',
        format('%s connection attempts in a row failed since %s: %s', s.fail_streak, s.failing_since, coalesce(s.last_error, 'no error text')),
        'pgvigil collector', s.last_run_at
-  FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
+  FROM pgvigil.collector_streaks_now s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.collection = '(connect)' AND s.fail_streak >= 3
    AND s.last_run_at - s.failing_since >= interval '60 seconds' AND s.last_run_at > now() - interval '1 day'
    -- while a beating collector names the instance (as 'collection failing'); past that 0118's own speaks for it (0190
@@ -661,16 +706,24 @@ SELECT s.instance_id, 'critical', 'server unreachable', 'no connection', true, '
    -- again by 0118's (another source: the docs say it)
    AND pgvigil.collector_covers(s.instance_id, now())
 UNION ALL
-SELECT l.instance_id, 'critical', 'authentication failing', 'login refused', true, 'the login the collector uses works', 'all',
+-- per host it stands until a minute after the last refusal opened a connection (the login works again); the instance's
+-- finding stands at the LOWEST of the hosts still reading it, as the streaks' (a host refused beside one reading fine
+-- is no finding)
+SELECT a.instance_id, 'critical', 'authentication failing', 'login refused', true, 'the login the collector uses works', 'all',
        format('%s login(s) refused in 15 minutes (a per-database connect included): a changed password or pg_hba? each run retries it and can lock the login out',
-              sum(l.auth_failures)),
-       'pgvigil collector', max(l.minute) FILTER (WHERE l.auth_failures > 0)
-  FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id)
- WHERE i.is_active AND l.minute > now() - interval '15 minutes'
- GROUP BY l.instance_id
--- it stands until a minute after the last refusal opened a connection (the login works again)
-HAVING sum(l.auth_failures) > 0
-   AND max(l.minute) FILTER (WHERE l.auth_failures > 0) >= coalesce(max(l.minute) FILTER (WHERE l.opened > 0 AND l.auth_failures = 0), '-infinity')
+              min(a.n)),
+       'pgvigil collector', max(a.at)
+  FROM (SELECT h.host, l.instance_id,
+               CASE WHEN sum(l.auth_failures) > 0
+                     AND max(l.minute) FILTER (WHERE l.auth_failures > 0) >= coalesce(max(l.minute) FILTER (WHERE l.opened > 0 AND l.auth_failures = 0), '-infinity')
+                    THEN sum(l.auth_failures) ELSE 0 END AS n,
+               max(l.minute) FILTER (WHERE l.auth_failures > 0) AS at
+          FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id) JOIN pgvigil.instances i USING (instance_id)
+         WHERE i.is_active AND l.minute > now() - interval '15 minutes'
+         GROUP BY h.host, l.instance_id) a
+  JOIN pgvigil.collector_reading r ON r.host = a.host AND r.instance_id = a.instance_id
+ GROUP BY a.instance_id
+HAVING min(a.n) > 0
 UNION ALL
 -- two runs of `pgvigil run` live at once collecting one instance in the same minute, in at least 2 of the last 10
 -- complete minutes: both write every collection, cursor imports twice. A run whose stop mark is at or before the

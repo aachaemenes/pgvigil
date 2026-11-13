@@ -476,7 +476,8 @@ func (h *Heartbeat) claim(ctx context.Context) error {
 func (h *Heartbeat) loadStreaks(ctx context.Context) {
 	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rows, err := h.pool.Query(lctx, `SELECT instance, collection, fail_streak, coalesce(last_error, '') FROM pgvigil.import_collector_streaks()`)
+	// this host's own (task 201 DONE-2 N5: streaks are kept by host; a collector on another host never takes them)
+	rows, err := h.pool.Query(lctx, `SELECT instance, collection, fail_streak, coalesce(last_error, '') FROM pgvigil.import_collector_streaks($1)`, h.host)
 	if err != nil {
 		h.log.Warn("heartbeat: the stored streaks were not read (counted from 0)", "err", err)
 		return

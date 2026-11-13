@@ -99,10 +99,11 @@ SELECT i.instance_id, i.name AS instance, i.engine,
  GROUP BY i.instance_id, i.name, i.engine
  ORDER BY sum(l.auth_failures) DESC, avg(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour') DESC NULLS LAST, i.name`
 
-// sqlCollectorStreaks: the collections failing now ($1 the instance, 0 = all)
+// sqlCollectorStreaks: the collections failing now ($1 the instance, 0 = all) - per instance and collection the
+// streak that speaks (collector_streaks_now: the lowest of the hosts still reading it, as the findings)
 const sqlCollectorStreaks = `
 SELECT s.instance_id, i.name AS instance, s.collection, s.fail_streak, s.failing_since, s.last_run_at, s.last_error
-  FROM pgvigil.collector_streaks s
+  FROM pgvigil.collector_streaks_now s
   JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
  WHERE s.fail_streak > 0 AND ($1::int = 0 OR s.instance_id = $1)
  ORDER BY s.fail_streak DESC, i.name, s.collection`
