@@ -29,6 +29,7 @@ import (
 	mssql "github.com/microsoft/go-mssqldb"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // MaxInstanceID is the largest DBADash InstanceID (an int column).
@@ -229,7 +230,7 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 	}
 	ctx, cancel := context.WithTimeout(ctx, PageTimeout)
 	defer cancel()
-	db, err := sql.Open("sqlserver", withAppName(dsn))
+	db, err := mssqlopen.Open(withAppName(dsn))
 	if err != nil {
 		return PageReply{}, fmt.Errorf("dsn: %w", err)
 	}

@@ -3,7 +3,7 @@
 // periods, a start / end picker and the display time-zone chooser (tz.ts). The control is ONE node for the life of the
 // page (main.ts keeps it in the bar), so a refresh while the panel is open neither closes it nor takes the focus.
 import { capRange, Ctx, href, MAX_RANGE_MS, periods, periodStart, presets, Range, window_ } from './router';
-import { el } from './ui';
+import { el, offControl } from './ui';
 import { browserZone, fmt, fromInput, offsetLabel, parts, setZone, toInput, zonedToUtc, zoneChoice, zoneName, zones } from './tz';
 
 // Task 152 (K09.02): besides the panel, the control has Earlier and Later buttons that move the window by its own length
@@ -110,7 +110,7 @@ function label(ctx: Ctx): string {
   return `${short(new Date(ctx.range.from ?? ''))} - ${short(new Date(ctx.range.to ?? ''))}`;
 }
 
-let root: HTMLElement | undefined, btn: HTMLButtonElement, zoneTag: HTMLElement, earlier: HTMLButtonElement, later: HTMLButtonElement, zoomOut: HTMLButtonElement;
+let root: HTMLElement | undefined, btn: HTMLButtonElement, zoneTag: HTMLElement, earlier: HTMLButtonElement, later: HTMLButtonElement, zoomOut: HTMLButtonElement, laterWhy: HTMLElement;
 let panel: HTMLElement | undefined;
 let cur: Ctx;
 let zoneChanged: () => void = () => { /* rangePicker sets it */ };
@@ -132,7 +132,9 @@ export function rangePicker(ctx: Ctx, onZone: () => void): HTMLElement {
     earlier = stepBtn('\u2039', '[', 'Earlier: the window before this one', -1);
     later = stepBtn('\u203A', ']', 'Later: the window after this one', 1);
     zoomOut = stepBtn('\u2212', '-', 'Zoom out: twice the window', 0);
-    const r = root = el('div', { class: 'range' }, earlier, btn, later, zoomOut, zoneTag);
+    // why Later is off while the range ends now: the button's description (and its title) - the bar itself gains no words
+    laterWhy = el('span', { id: 'range-later-why', hidden: '' }, 'the range already ends now');
+    const r = root = el('div', { class: 'range' }, earlier, btn, later, zoomOut, zoneTag, laterWhy);
     // the keys, anywhere on the page but in a field (a typed '-' or '[' stays the field's)
     document.addEventListener('keydown', e => {
       if (!r.isConnected || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
@@ -166,8 +168,12 @@ function step(dir: -1 | 0 | 1) {
 
 function sync() {
   const w = window_(cur);
-  // Later has nothing to show while the window ends now
-  later.disabled = !stepRange(cur, 1);
+  // Later has nowhere to go while the range ends now. It stays in its place - hidden, the bar's buttons would move
+  // under the pointer whenever a fixed range is picked - focusable and aria-disabled, never natively disabled without
+  // a word: its reason is its description and its title (a pager's end)
+  const ends = !stepRange(cur, 1);
+  offControl(later, ends ? 'the range already ends now' : null, laterWhy);
+  if (!ends) later.title = 'Later: the window after this one (])';
   btn.textContent = 'Range: ' + label(cur);
   btn.title = `${fmt(new Date(w.from))} to ${fmt(new Date(w.to))}${cur.range.preset ? ' (follows now)' : ''}`;
   zoneTag.textContent = offsetLabel(new Date());

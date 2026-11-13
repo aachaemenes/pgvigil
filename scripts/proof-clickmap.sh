@@ -341,13 +341,16 @@ python3 - "${PGVIGIL_CLICK_OUT:-$WORK/click.json}" <<'PY' || fail "the click map
 import json, os, sys
 d = json.load(open(sys.argv[1])); r = d['results']; bad = []
 has = lambda **k: [x for x in r if all(x.get(a) == b for a, b in k.items())]
+pg_name = {'Memory Dump': 'Crash restarts', 'Last Good Check DB': 'Last amcheck', 'Availability Groups': 'Replication', 'Agent Jobs': 'Jobs', 'Backup LOG': 'WAL archive'}
 # task P08: DBA Dash's columns: each with a link on the engines that read it, at the root
 for c, engines in (('Drive Space', ('postgres', 'sqlserver')), ('Backup FULL', ('postgres', 'sqlserver')), ('Agent Jobs', ('postgres', 'sqlserver')),
                    ('Last Good Check DB', ('postgres', 'sqlserver')), ('SQL Agent Alerts', ('sqlserver',)), ('Corruption', ('sqlserver',)),
                    ('Identity Columns', ('sqlserver',)), ('Log Space', ('sqlserver',)), ('Availability Groups', ('postgres', 'sqlserver')),
                    ('Snapshot Age', ('postgres', 'sqlserver')), ('Collection Errors (24hrs)', ('postgres', 'sqlserver'))):
     for e in engines:
-        if not has(scope='root', kind='cell', column=c, engine=e): bad.append('no %s cell of %s at the root' % (c, e))
+        # a PostgreSQL row's cell carries PostgreSQL's name where DBA Dash's is SQL Server's (B7 DONE-3: fleet.ts labelOf)
+        n = pg_name.get(c, c) if e == 'postgres' else c
+        if not has(scope='root', kind='cell', column=n, engine=e): bad.append('no %s cell of %s at the root' % (n, e))
 for c in ('Drive Space', 'Backup FULL', 'Snapshot Age'):
     if not has(scope='root', kind='test', column=c): bad.append('no %s test link at the root' % c)
 shape = has(scope='root', kind='shape')

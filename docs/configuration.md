@@ -101,7 +101,7 @@ repository named under `dbadash:`, a server list file, a `pg_service.conf` and a
 marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
 15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
 checks until it is enabled. An instance enabled, or added (again), while its server is down is reported at its first
-read: 'server unreachable' and a failing collection, as for any instance that cannot be reached; so is an instance of `pgvigil.yaml` whose server has never answered (its row is made at that first read, with the file's engine, platform and tags). Removing a page instance no read ever reached (and `pgvigil import dbadash` never filled) removes its row too, so the name can be added again with the other engine; an instance read once, or imported, keeps its row and its history. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
+read: 'server unreachable' and a failing collection, as for any instance that cannot be reached; so is an instance of `pgvigil.yaml` whose server has never answered (its row is made at that first read, with the file's engine, platform and tags). Until a read of an added instance connects, Admin > Servers, the fleet list, its Summary card and `pgvigil report` say 'not read yet (added <time>)': beside its name on the fleet list (which shows no last-seen time), in place of a last-seen time elsewhere; its 'history from' (the Diff page) is that first read. Removing a page instance no read ever reached (and `pgvigil import dbadash` never filled) removes its row too, so the name can be added again with the other engine; an instance read once, or imported, keeps its row and its history. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
 Linux and macOS so is a file only its owner may read (a server list is 0644), so no credential file is read into the
 page.
 
@@ -132,5 +132,8 @@ folders; on Windows a DPAPI machine-scope blob in a folder whose access list is 
 account. The repository keeps only each file's name, so `pgvigil serve` and `pgvigil run` must share the configuration
 folder (one host). Every change is audited (the page's Changes grid).
 
-Not in this release: Entra (Azure AD) sign-in for an instance added here. The page can build such a connection, but the
-collector does not sign in with it yet; its test says so.
+A SQL Server added here signs in by `sql` (a login and its password), `windows` (the service's own account on Windows;
+off Windows Kerberos, the login the principal and the driver options naming the keytab or credential cache), `entra`
+(an Entra service principal and its secret) or `entra-identity` (the host's Azure managed identity, no secret): which
+works where is [SQL Server in the cloud](sqlserver-cloud.md#signing-in-without-a-stored-password). Entra and Kerberos
+are not proven against a live server in this release.

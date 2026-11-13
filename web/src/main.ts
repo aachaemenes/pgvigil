@@ -60,6 +60,7 @@ import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
+import { hasPool, mssqlPoolView } from './pools';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlAuditView } from './mssql_audit';
 import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
@@ -67,6 +68,7 @@ import { pgDbOptionsFleetView, pgDbOptionsView } from './pg_dboptions';
 import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
 import { mssqlProcsView } from './mssql_procs';
 import { mssqlPlanCacheView } from './mssql_plancache';
+import { mssqlQueriesView } from './mssql_queries';
 import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
@@ -101,11 +103,11 @@ const mssqlPages: Record<string, Render> = {
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
-  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
+  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
-  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
+  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
   mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
   customreports: customReportsView, community: communityView,
   ...reportPages,
@@ -193,7 +195,9 @@ function refreshSecs(): number { const v = Number(lsGet('pgvigil.refresh') ?? '3
 function refreshSelect(live: boolean): HTMLElement {
   // a page that never reads again by itself (history, a snapshot, a page without live state) shows the choice disabled
   const why = live ? 'Auto refresh of a live page' : 'This page does not refresh by itself (a past range, a snapshot, or not a live page)';
-  const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '' }) }) as HTMLSelectElement;
+  // (off: a form field stays natively disabled, and is described by the footer's own visible sentence, 'auto refresh
+  // not on this page')
+  const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '', 'aria-describedby': 'status-refresh' }) }) as HTMLSelectElement;
   for (const [k, label] of refreshChoices) sel.append(el('option', { value: k, ...(Number(k) === refreshSecs() ? { selected: '' } : {}) }, 'Auto refresh: ' + label));
   sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
   return sel;
@@ -257,8 +261,10 @@ async function statusLine(ctx: Ctx, live: boolean) {
       ? `demo: changes to the demo's own instances are saved as user ${String(statusRow.door)}; nothing reaches a server`
       : `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
     el('span', { 'data-part': 'newest' }, statusRow.newest_read ? `newest read ${fmtClock(new Date(String(statusRow.newest_read)))}` : 'no read yet'),
-    el('span', { 'data-part': 'refresh' }, `auto refresh ${refresh}`),
-  ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr)];
+    el('span', { 'data-part': 'refresh', id: 'status-refresh' }, `auto refresh ${refresh}`),
+  ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr),
+    // the Auto refresh select of a page that is not live is described by these words: they stand in this branch too
+    el('span', { 'data-part': 'refresh', id: 'status-refresh' }, `auto refresh ${refresh}`)];
   foot.replaceChildren(...items.flatMap((x, i) => i ? [' \u00b7 ', x] : [x]));
 }
 
@@ -329,13 +335,19 @@ async function render(force = false) {
     shownPage = pageKey;
   }
   // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
-  const engine = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance)?.engine : undefined;
+  const fleetRow = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
+  const engine = fleetRow?.engine;
   let tabs = ctx.instance ? tabsFor(engine) : rootTabs;
   // an imported server (pgvigil import dbadash, not collected by pgvigil): every SQL Server tab, each from dbadash.ts
   const imported = ctx.instance !== undefined && isMssql(engine) && await isImported(ctx.instance);
+  const offStrip = new Set<string>();
   if (ctx.instance && isMssql(engine)) {
     // the Availability tab only where one of its collections has stored a read (an imported server keeps it: its line says why it is not read)
     if (!imported && !(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+    // the Elastic pool tab in the strip only where the database is in a pool now (an imported server has no pgvigil read
+    // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
+    // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)
+    if (imported || fleetRow?.platform !== 'azuresqldb' || !(await hasPool(ctx.instance).catch(() => false))) offStrip.add('mssqlpool');
   } else if (ctx.instance) {
     // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
@@ -349,7 +361,7 @@ async function render(force = false) {
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
-  const strip = group.tabs.filter(k => tabs[k]);
+  const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab));
   // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(

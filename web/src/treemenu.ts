@@ -22,7 +22,7 @@ import { fleet, forget } from './fleet';
 import { Cell, fromText, typed } from './export';
 import { Ctx, href, isMssql, parse } from './router';
 import { hrefWith } from './dbinfo';
-import { badge, cellText, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, props } from './ui';
+import { badge, cellText, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, offControl, props } from './ui';
 import { reloadTree } from './tree';
 import { loadThresholds, thresholdsDialog } from './mssql_jobs';
 import { confirmJobAction, runningState } from './jobs_running';
@@ -280,7 +280,7 @@ function addConnections(back: HTMLElement | null) {
   const name = el('input', { id: 'tm-ac-name', placeholder: 'sql02', autocomplete: 'off' }) as HTMLInputElement;
   const engine = el('select', { id: 'tm-ac-engine' }, el('option', { value: 'postgres' }, 'PostgreSQL'), el('option', { value: 'sqlserver' }, 'SQL Server')) as HTMLSelectElement;
   // the platforms the config accepts for each engine (config.Validate): another pair stops the collector at start
-  const platforms: Record<string, string[]> = { postgres: ['auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb'], sqlserver: ['auto', 'onprem', 'rds', 'azuresqldb', 'azuresqlmi'] };
+  const platforms: Record<string, string[]> = { postgres: ['auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb'], sqlserver: ['auto', 'onprem', 'rds', 'azuresqldb', 'azuresqlmi', 'cloudsql'] };
   const platform = el('select', { id: 'tm-ac-platform' }) as HTMLSelectElement;
   const fillPlatforms = () => { const was = platform.value; platform.replaceChildren(...platforms[engine.value].map(p => el('option', { value: p }, p))); if (platforms[engine.value].includes(was)) platform.value = was; };
   const taken = el('p', { class: 'error', role: 'status', 'aria-live': 'polite' });
@@ -436,7 +436,9 @@ function executeJob(n: Extract<TNode, { kind: 'job' }>, back: HTMLElement | null
     const job = jobs.find(r => String(r.job_id) === n.job && String(r.scheduler) === n.scheduler) ?? { job_id: n.job, scheduler: n.scheduler, job_name: n.name };
     const run = rowsOf(st.running).find(r => String(r.job_id) === n.job && String(r.scheduler) === n.scheduler);
     const start = el('button', { type: 'button' }, 'Start'), stop = el('button', { type: 'button' }, 'Stop');
-    const why = (b: HTMLButtonElement, reason: string) => { b.setAttribute('aria-disabled', 'true'); b.title = reason; b.classList.add('tm-off'); b.setAttribute('aria-label', `${b.textContent}: ${reason}`); };
+    // an off Start or Stop: aria-disabled, described by the popup's own line that says why (offP, below the buttons)
+    const offP = el('p', { class: 'meta' });
+    const why = (b: HTMLButtonElement, reason: string) => { offControl(b, reason, offP); b.classList.add('tm-off'); };
     const startWhy = n.scheduler !== 'pgagent' ? 'pg_cron runs a job at its schedule only: it has no run-now call'
       : job.active === false ? 'the job is disabled: pgAgent runs no disabled job' : !st.actions?.job_start?.on ? (st.actions?.job_start?.reason || 'job actions are off for this instance') : '';
     const stopWhy = !run ? 'the job is not running at the newest read' : !st.actions?.job_stop?.on ? (st.actions?.job_stop?.reason || 'job actions are off for this instance') : '';
@@ -448,7 +450,7 @@ function executeJob(n: Extract<TNode, { kind: 'job' }>, back: HTMLElement | null
         ['Last run', `${fmtTime(job.last_start)}${job.last_status ? ' (' + String(job.last_status) + ')' : ''}`],
         ['Running now', run ? `since ${fmtTime(run.start_time)}, ${fmtSecs(run.running_secs)}${run.current_step ? ', step ' + String(run.current_step) : ''}` : 'no']]),
       el('p', {}, start, ' ', stop),
-      el('p', { class: 'meta' }, startWhy ? `Start: ${startWhy}. ` : '', stopWhy ? `Stop: ${stopWhy}.` : ''),
+      (offP.replaceChildren(startWhy ? `Start: ${startWhy}. ` : '', stopWhy ? `Stop: ${stopWhy}.` : ''), offP),
       status);
     status.textContent = '';
   };
@@ -456,13 +458,13 @@ function executeJob(n: Extract<TNode, { kind: 'job' }>, back: HTMLElement | null
 }
 
 async function jobThresholds(n: Extract<TNode, { kind: 'job' }>, back: HTMLElement | null) {
-  const th = await loadThresholds(n.id);
+  const [th, ad, f] = await Promise.all([loadThresholds(n.id), loadAckSafe(['acks']), fleet().catch(() => null)]);
   if (!th) {
     const { body } = dialog(`Job thresholds: ${n.name}`, back);
     body.append(el('p', {}, 'This server has no job thresholds (an older repository, or the demo).'));
     return;
   }
-  thresholdsDialog(n.id, n.name, th, () => refreshAll(`i${n.id}/jobs`));
+  thresholdsDialog(n.id, n.name, th, () => refreshAll(`i${n.id}/jobs`), ad, f ? String(f.instances.find(r => Number(r.instance_id) === n.id)?.name ?? 'this instance') : undefined);
 }
 
 // ---- a folder's filter (Jobs, Databases) -------------------------------------------------------------------------

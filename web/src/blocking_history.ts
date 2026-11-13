@@ -154,9 +154,9 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
         [{ key: 'longest_wait_s', label: 'longest wait' }, { key: 'summed_wait_s', label: 'summed wait (one snapshot)' }], v => fmtSecs(Math.floor(v))),
       lineChart(`Blocked-process reports (per ${per})`, trend, [{ key: 'reports', label: 'reports' }, { key: 'blocked_transactions', label: 'blocked transactions' }])));
     const pairs = rowsOf(p.pairs);
-    sec.append(el('h4', {}, 'Who blocked whom (the minute snapshots)'),
-      el('p', { class: 'meta' }, 'One row per blocked session and the session that blocked it, from the Running queries snapshots of the range: '
-        + 'how often a snapshot saw the pair, first and last, the longest wait. A block shorter than a minute can fall between two snapshots.'),
+    // the note is the title of a 'what is this' link, as the page's other notes (mssql_running.ts): a page is its grids
+    sec.append(el('h4', {}, 'Who blocked whom (the minute snapshots) ', whatIsThis('One row per blocked session and the session that blocked it, from the Running queries snapshots of the range: '
+        + 'how often a snapshot saw the pair, first and last, the longest wait. A block shorter than a minute can fall between two snapshots.', 'Who blocked whom')),
       grid(pairs, [
         { key: 'blocked_session_id', label: 'blocked session', num: true, fmt: v => String(v) },
         { key: 'blocking_session_id', label: 'blocking session', num: true, fmt: v => String(v) },

@@ -358,7 +358,29 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 
 /* ---------- 8. the rings, the legend, the volume bars ---------- */
 .donut-body { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
-.donut-body svg { width: 150px; height: 150px; flex: none; }
+/* P0 (the pies design's per-caller table): a pie in a row of several is 150-200 px; a big pie (DB Space beside its grid,
+   the PostgreSQL Storage's alone in its row) fills its room, 300-520 px, never wider than its box */
+.donut-body svg { width: clamp(150px, 12vw, 200px); height: auto; aspect-ratio: 1; flex: none; }
+.donut { position: relative; }
+.donut.big .donut-body svg { width: min(clamp(300px, 34vw, 520px), 100%); }
+/* DBA Dash's pies (dbadash-pies/): the hovered slice pops out - a class only, so no serialized copy of the picture (the
+   menu's image, the workbook's) carries it; a slice with a page has the hand */
+.donut-body svg path, .donut-body svg circle, .donut-body svg text { transition: transform .12s ease-out; }
+.donut-body svg .pop { transform: translate(var(--dx, 0), var(--dy, 0)); }
+.donut-body svg .go { cursor: pointer; }
+/* the box beside the pointer: every slice's square, name, size and share, the hovered row marked; never hoverable (the
+   line charts' .u-tip, WCAG 1.4.13 by the legend table and the picture's label) */
+.pie-tip { position: absolute; z-index: 20; pointer-events: none; display: grid; grid-template-columns: auto auto auto; max-height: calc(100vh - 8px); overflow: hidden;
+  padding: var(--sp-1); font-size: var(--fs-sm); white-space: nowrap; font-variant-numeric: var(--num);
+  background: var(--surface-raised); color: var(--text); border: var(--bw) solid var(--line); border-radius: var(--r-sm); box-shadow: var(--shadow-tip); }
+.pie-tip-row { display: contents; }
+.pie-tip-row > span { padding: var(--sp-half) var(--sp-2); }
+.pie-tip-row > span.num { text-align: right; }
+.pie-tip-row.hot > span { background: var(--accent); color: var(--on-accent); font-weight: var(--fw-strong); }
+.pie-tip-sq { display: inline-block; width: .75em; height: .75em; margin-right: .4em; vertical-align: -.05em; border-radius: 2px; }
+.pie-tip-more { grid-column: 1 / -1; padding: var(--sp-half) var(--sp-2); color: var(--text-muted); }
+.legend tbody tr.hot td { background: var(--surface-hover); }
+.legend .show-all::after { content: 'show all'; }
 .donut-total { fill: var(--text); font-size: var(--fs-xs); font-weight: var(--fw-strong); }
 .legend { border-collapse: collapse; font-size: var(--fs-md); }
 .legend th { text-align: left; font-weight: var(--fw-strong); color: var(--text-muted); padding: var(--sp-half) var(--sp-3) var(--sp-1) 0; }

@@ -7,7 +7,22 @@
 // takes a change within 15 s, without a restart. The route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
-import { badge, Col, el, fmtTime, grid } from './ui';
+import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+
+// the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
+// described by that sentence (its id), so the reason is words on the page for each of them
+const READ_ONLY_ID = 'admin-instances-read-only';
+// offRead: a control that cannot write here. A BUTTON is off the B7 way - aria-disabled, in the tab order, a click does
+// nothing, its reason its title and the page's sentence it is described by (offControl, given a stand-in that carries
+// the sentence's id: the sentence itself may not be on the page yet when a cell is built); a FIELD stays natively
+// disabled (aria-disabled would still take typing), described by the same sentence
+const roRef = el('span', { id: READ_ONLY_ID });
+function offRead(c: Element, why: string): void {
+  if (c instanceof HTMLButtonElement) { offControl(c, why, roRef); return; }
+  (c as HTMLInputElement).disabled = true;
+  (c as HTMLElement).title = why;
+  c.setAttribute('aria-describedby', READ_ONLY_ID);
+}
 
 interface AdminData {
   file: Table | null; page: Table | null; sources: Table | null; proposals: Table | null; audit: Table | null;
@@ -39,10 +54,11 @@ function select(name: string, opts: [string, string][], value = ''): HTMLSelectE
   return s;
 }
 const authOpts = (engine: string): [string, string][] => engine === 'sqlserver'
-  ? [['sql', 'SQL login'], ['windows', 'Windows account (the service\'s own)'], ['entra', 'Entra service principal']]
+  ? [['sql', 'SQL login'], ['windows', 'Windows account (the service\'s own; off Windows a Kerberos keytab or cache)'], ['entra', 'Entra service principal'],
+    ['entra-identity', 'Entra managed identity (this host\'s own, no secret)']]
   : [['password', 'login and password'], ['pgpass', 'the service account\'s .pgpass']];
 const platOpts = (engine: string): [string, string][] => engine === 'sqlserver'
-  ? [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['azuresqldb', 'Azure SQL Database'], ['azuresqlmi', 'Azure SQL Managed Instance']]
+  ? [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['azuresqldb', 'Azure SQL Database'], ['azuresqlmi', 'Azure SQL Managed Instance'], ['cloudsql', 'Google Cloud SQL']]
   : [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['aurora', 'Aurora'], ['azure', 'Azure'], ['cloudsql', 'Cloud SQL'], ['alloydb', 'AlloyDB']];
 
 export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
@@ -61,7 +77,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
         'A change reaches the collector within 15 seconds, without a restart (inventory generation ', String(d.generation), '). ',
         d.secret_dir ? `Credentials are written to their own files in ${d.secret_dir}; the repository keeps only each file's name.` : ''),
       // read only on this server: a note, not an error (the page works; the join's w9c)
-      d.writable ? '' : el('p', { class: 'meta', role: 'note' }, `Read only: ${d.why_not}.`),
+      d.writable ? '' : el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${d.why_not}.`),
       status,
       instanceForm(d),
       el('h3', {}, 'Instances added here'),
@@ -87,12 +103,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   // never brings an enabled write button back under the read-only note
   let whyNot = '';
   function lock(cell: HTMLElement): HTMLElement {
-    if (whyNot) {
-      for (const b of cell.querySelectorAll('button')) {
-        b.disabled = true;
-        b.title = whyNot;
-      }
-    }
+    if (whyNot) for (const b of cell.querySelectorAll('button')) offRead(b, whyNot);
     return cell;
   }
 
@@ -100,10 +111,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   // grids' own filters and 'Show more' only read, and stay as they are (as ack.ts and alert_rules.ts do)
   function readOnly(d: AdminData): void {
     if (d.writable) return;
-    for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) {
-      (c as HTMLButtonElement).disabled = true;
-      (c as HTMLElement).title = d.why_not;
-    }
+    for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) offRead(c, d.why_not);
   }
 
   async function act(path: string, data: Record<string, unknown>, done: string): Promise<boolean> {
@@ -161,7 +169,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       el('div', {}, field('Engine', engine), field('Name', name), field('Host', host), field('Port', port), field('Database', dbname), field('Platform', platform)),
       el('div', {}, field('Authentication', auth), field('Login', login), field('Password', password), field('Driver options', options), field('Tags (space-separated)', tags)),
       el('div', {}, submit, ' ', test, ' ', cancel)));
-    if (!d.writable) for (const c of f.querySelectorAll('input, select, button')) (c as HTMLInputElement).disabled = true;
+    if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) offRead(c, d.why_not);
     return f;
   }
   let formRef: (HTMLFormElement & { fill?: (r: Row) => void }) | null = null;
@@ -185,7 +193,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     { key: 'disabled', label: 'state', fmt: v => badge(v ? 'disabled' : 'collected', v ? 'warn' : '') },
     { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
     { key: 'last_collected', label: 'last collected', fmt: fmtTime },
-    { key: 'source' },
+    { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },
     { key: 'actions', fmt: (_v, r) => {
       const n = String(r.name);
       const test = el('button', { type: 'button', class: 'link', 'aria-label': `Test ${n}` }, 'Test');
@@ -206,28 +214,130 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   const sourceCols: Col[] = [
     { key: 'name' }, { key: 'kind' }, { key: 'ref', label: 'reads', wide: true }, { key: 'every_s', label: 'every (min)', num: true, fmt: v => String(Math.round(Number(v) / 60)) },
     { key: 'enabled', fmt: v => badge(v ? 'on' : 'off', v ? '' : 'warn') }, { key: 'last_ok', label: 'last read', fmt: fmtTime }, { key: 'last_count', label: 'servers', num: true },
-    { key: 'last_error', label: 'last error', wide: true },
+    { key: 'last_error', label: 'last error', wide: true }, { key: 'last_notes', label: 'not seen', wide: true },
+    { key: 'regions', label: 'regions read', wide: true, fmt: (v, r) => r.kind !== 'aws' ? '' : v ? `${String(v)}${r.regions_read_at ? ` (swept ${fmtTime(r.regions_read_at)})` : ''}` : 'swept at the next read' },
+    { key: 'tag_keys', label: 'cloud tags taken', wide: true, fmt: (v, r) => ['aws', 'azure', 'gcp'].includes(String(r.kind))
+      ? `${v ? String(v) : 'none'}${r.seen_tag_keys ? ` (seen: ${String(r.seen_tag_keys)})` : ''}` : '' },
+    { key: 'reading', label: 'now', fmt: v => v ? badge('a read is running', 'info') : '' },
     { key: 'actions', fmt: (_v, r) => {
-      const n = String(r.name);
+      const n = String(r.name), cloud = ['aws', 'azure', 'gcp'].includes(String(r.kind));
       const sync = el('button', { type: 'button', class: 'link', 'aria-label': `Read ${n} now` }, 'Read now');
       sync.addEventListener('click', () => { void act('admin/sources', { op: 'sync', name: n }, `${n} read.`); });
+      const extra: (HTMLElement | string)[] = [];
+      if (r.kind === 'aws') {
+        const sweep = el('button', { type: 'button', class: 'link', 'aria-label': `Read the regions of ${n} again` }, 'Read the regions again');
+        sweep.addEventListener('click', () => { void act('admin/sources', { op: 'sweep', name: n }, `${n}: every region read again.`); });
+        extra.push(' ', sweep);
+      }
+      if (cloud) {
+        const edit = el('button', { type: 'button', class: 'link', 'aria-label': r.kind === 'aws' ? `Edit ${n}'s regions and cloud tags` : `Edit ${n}'s cloud tags` }, 'Edit');
+        edit.addEventListener('click', () => {
+          const regions = input('regions', { value: String(r.regions ?? ''), size: '30', placeholder: 'us-east-2 us-west-2' });
+          const keys = input('tag_keys', { value: String(r.tag_keys ?? ''), size: '30', placeholder: String(r.seen_tag_keys ?? 'env team') });
+          const save = el('button', { type: 'button', 'aria-label': `Save ${n}'s ${r.kind === 'aws' ? 'regions and ' : ''}cloud tags` }, 'Save');
+          const cancel = el('button', { type: 'button', class: 'link', 'aria-label': `Cancel the edit of ${n}` }, 'Cancel');
+          const box = el('span', { class: 'actions' }, r.kind === 'aws' ? field('Regions', regions) : '', field('Cloud tag keys taken in', keys), ' ', save, ' ', cancel);
+          save.addEventListener('click', () => {
+            const data: Record<string, unknown> = { op: 'edit', name: n, tag_keys: keys.value.trim() };
+            if (r.kind === 'aws') data.regions = regions.value.trim();
+            void act('admin/sources', data, `${n}: kept; the next read applies it.`);
+          });
+          cancel.addEventListener('click', () => { void draw(); });
+          edit.closest('span.actions')?.replaceWith(box);
+          (r.kind === 'aws' ? regions : keys).focus();
+        });
+        extra.push(' ', edit);
+      }
       const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.enabled ? 'Turn off' : 'Turn on'} ${n}` }, r.enabled ? 'Turn off' : 'Turn on');
       toggle.addEventListener('click', () => { void act('admin/sources', { op: r.enabled ? 'disable' : 'enable', name: n }, `${n} turned ${r.enabled ? 'off' : 'on'}.`); });
       const rm = removeButton(`source ${n}`, () => { void act('admin/sources', { op: 'remove', name: n }, `Source ${n} removed with its proposals; the instances approved from it stay.`); });
-      return lock(el('span', { class: 'actions' }, sync, ' ', toggle, ' ', rm));
+      return lock(el('span', { class: 'actions' }, sync, ...extra, ' ', toggle, ' ', rm));
     } },
   ];
 
+  // approve (and its Test) for one proposal: the instance's name (prefilled from the proposal's name), a login and its
+  // kind typed here stand for the source's (a cloud proposal carries none: its master user is information only); a
+  // refusal that names a tick (the master user, an auto-pause, a server already an instance) shows it once with its
+  // reason, and Approve again sends what is ticked. One request at a time, as act() does.
+  function approvePanel(r: Row, at: HTMLElement): void {
+    const id = String(r.proposal_id), s = String(r.server), sql = r.engine === 'sqlserver';
+    const safe = String(r.display_name ?? r.server).replace(/ \((writer|reader|replica|primary|secondary|read_pool)\)$/, '')
+      .replace(/[^A-Za-z0-9_.@-]+/g, '-').replace(/^[-._@]+|[-._@]+$/g, '').slice(0, 63);
+    const name = input('name', { value: safe, maxlength: '63' });
+    // the first choice is the source's own sign-in; any other is sent as picked (the join's review 3c)
+    const auth = select('auth', [['', 'as the source signs in'], ...(sql ? [['sql', 'SQL login'], ['entra', 'Entra service principal'], ['entra-identity', 'Entra managed identity (this host\'s own, no secret)'], ['windows', 'Windows account (the service\'s own; off Windows a Kerberos keytab or cache)']] as [string, string][] : [['password', 'PostgreSQL login'], ['pgpass', '.pgpass']] as [string, string][])]);
+    const login = input('login', { placeholder: 'empty: the source\'s login' }), pw = el('input', { name: 'password', type: 'password', autocomplete: 'new-password' });
+    const test = el('button', { type: 'button', 'aria-label': `Test the connection to ${s}` }, 'Test the connection');
+    const ok = el('button', { type: 'button', 'aria-label': `Approve ${s} now` }, 'Approve');
+    const cancel = el('button', { type: 'button', class: 'link', 'aria-label': `Cancel the approve of ${s}` }, 'Cancel');
+    const ticks = el('span', {}), shown = new Map<string, HTMLInputElement>();
+    const box = el('span', { class: 'actions' }, field('Instance name', name), field('Authentication', auth), field('Login', login), field('Password', pw), ' ', test, ' ', ok, ' ', cancel, ticks);
+    const body = (): Record<string, unknown> | null => {
+      if (!login.value.trim() && pw.value) { say('A password needs its login: type the login too, or leave both empty for the source\'s.', true); return null; }
+      if (auth.value === 'entra-identity' && pw.value) { say('A managed identity signs in with this host\'s own Azure identity: leave the password empty (the login is a user-assigned identity\'s client id, or empty for the host\'s own).', true); return null; }
+      const b: Record<string, unknown> = { proposal_id: id, name: name.value.trim() };
+      // a picked Authentication is always sent, a login typed or not: the server takes the source's own login with it when
+      // it fits, or refuses in words naming what is missing - never a silent drop (the join's review 3c)
+      if (auth.value) b.auth = auth.value;
+      if (login.value.trim()) Object.assign(b, { login: login.value.trim(), password: pw.value });
+      for (const [need, cb] of shown) if (cb.checked) b[need] = true;
+      return b;
+    };
+    const busy = (on: boolean) => { for (const c of [test, ok, cancel] as HTMLButtonElement[]) c.disabled = on; };
+    test.addEventListener('click', async () => {
+      const b = body(); if (!b) return;
+      busy(true); say(`Connecting to ${s}…`);
+      try {
+        const res = await send('admin/proposals', { op: 'test', ...b });
+        if (res.ok) say(res.body.ok ? `${s}: ${String(res.body.detail)}` : `${s}: the connection failed: ${String(res.body.detail)}`, !res.body.ok); else say(`Not tested: ${why(res.body)}`, true);
+      } catch (e) { say(`Not tested: ${(e as Error).message}`, true); } finally { busy(false); }
+    });
+    ok.addEventListener('click', async () => {
+      const b = body(); if (!b) return;
+      busy(true); say('Working…');
+      try {
+        const res = await send('admin/proposals', { op: 'approve', ...b });
+        const need = String(res.body.needs ?? '');
+        if (!res.ok && need) {
+          let cb = shown.get(need);
+          if (!cb) {
+            cb = el('input', { type: 'checkbox', name: need, 'aria-label': `Tick: ${need.replace('confirm_', '')} for ${s}` }) as HTMLInputElement;
+            shown.set(need, cb);
+            ticks.append(el('label', { class: 'meta' }, ' ', cb, ` ${why(res.body)}`));
+          }
+          ok.textContent = 'Approve again';
+          say(`Not approved yet: ${why(res.body)}`, true);
+          busy(false); cb.focus();
+          return;
+        }
+        if (!res.ok) { say(`Not done: ${why(res.body)}`, true); busy(false); return; }
+        await draw();
+        say(`${s} approved as ${String(b.name || 'its name')}: collected within 15 seconds.`);
+      } catch (e) { say(`Not done: ${(e as Error).message}`, true); busy(false); }
+    });
+    cancel.addEventListener('click', () => { void draw(); });
+    at.replaceWith(box);
+    name.focus();
+  }
+
   const proposalCols: Col[] = [
-    { key: 'source' }, { key: 'server' }, { key: 'display_name', label: 'name' }, { key: 'engine' }, { key: 'tags', wide: true },
+    { key: 'source' }, { key: 'server' }, { key: 'display_name', label: 'name' }, { key: 'engine' },
+    { key: 'host', fmt: (v, r) => r.alt_host ? `${String(v)} (also ${String(r.alt_host)})` : String(v ?? '') },
+    { key: 'master_user', label: 'master user (information)' }, { key: 'tags', wide: true },
+    { key: 'note', label: 'note', wide: true, fmt: (v, r) => {
+      const parts: (HTMLElement | string)[] = [];
+      if (r.entra_only) parts.push(badge(String(v ?? 'Entra only'), 'warn'));
+      if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'info'));
+      return parts.length ? el('span', {}, ...parts.flatMap((x, i) => i ? [' ', x] : [x])) : '';
+    } },
     { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : badge(String(v), v === 'proposed' ? 'info' : '') },
-    { key: 'instance_name', label: 'instance' }, { key: 'last_seen', label: 'last seen', fmt: fmtTime }, { key: 'gone_at', label: 'gone since', fmt: fmtTime },
+    { key: 'instance_name', label: 'instance' }, { key: 'last_seen', label: 'last listed by the source', fmt: fmtTime }, { key: 'gone_at', label: 'gone since', fmt: fmtTime },
     { key: 'actions', fmt: (_v, r) => {
       const id = String(r.proposal_id), s = String(r.server);
       const out = el('span', { class: 'actions' });
       if (r.state === 'proposed' && !r.gone) {
         const ap = el('button', { type: 'button', class: 'link', 'aria-label': `Approve ${s}` }, 'Approve');
-        ap.addEventListener('click', () => { void act('admin/proposals', { op: 'approve', proposal_id: id }, `${s} approved: collected within 15 seconds.`); });
+        ap.addEventListener('click', () => { const at = ap.closest('span.actions'); if (at) approvePanel(r, at as HTMLElement); });
         const ig = el('button', { type: 'button', class: 'link', 'aria-label': `Ignore ${s}` }, 'Ignore');
         ig.addEventListener('click', () => { void act('admin/proposals', { op: 'ignore', proposal_id: id }, `${s} ignored.`); });
         out.append(ap, ' ', ig);
@@ -246,34 +356,57 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   function sourceForm(d: AdminData): HTMLElement {
     const f = el('form', { class: 'admin-form', 'aria-label': 'Add a sync source' });
     const kind = select('kind', [['cms', 'SQL Server Central Management Server'], ['dbadash', 'a DBA Dash repository (pgvigil.yaml dbadash:)'], ['sqlserver_list', 'a SQL Server list file (CSV or one server per line)'],
-      ['pg_service', 'a pg_service.conf'], ['pg_csv', 'a PostgreSQL list file (CSV or one server per line)']]);
+      ['pg_service', 'a pg_service.conf'], ['pg_csv', 'a PostgreSQL list file (CSV or one server per line)'],
+      ['aws', 'AWS: RDS and Aurora DB instances (each by its own endpoint)'], ['azure', 'Azure: SQL Database, Managed Instance, PostgreSQL flexible server'], ['gcp', 'GCP: Cloud SQL and AlloyDB']]);
     const name = input('name', { required: '', maxlength: '51' }), every = input('every_min', { inputmode: 'numeric', size: '6', value: '60' });
     const cmsHost = input('cms_host'), cmsPort = input('cms_port', { inputmode: 'numeric', size: '6' }), cmsAuth = select('cms_auth', authOpts('sqlserver'));
     const cmsLogin = input('cms_login'), cmsPw = el('input', { name: 'cms_password', type: 'password', autocomplete: 'new-password' }), cmsOpt = input('cms_options', { placeholder: 'TrustServerCertificate=true' });
     const ref = input('ref', { placeholder: '/etc/pgvigil/servers.csv' });
     const repo = select('repo', d.dbadash.map(n => [n, n] as [string, string]));
-    const credAuth = select('auth', [['sql', 'SQL login'], ['windows', 'Windows account'], ['entra', 'Entra service principal'], ['password', 'PostgreSQL login'], ['pgpass', '.pgpass']]);
+    const credAuth = select('auth', [['sql', 'SQL login'], ['windows', 'Windows account'], ['entra', 'Entra service principal'], ['entra-identity', 'Entra managed identity (this host\'s own, no secret)'], ['password', 'PostgreSQL login'], ['pgpass', '.pgpass']]);
     const credLogin = input('cred_login'), credPw = el('input', { name: 'cred_password', type: 'password', autocomplete: 'new-password' }), credOpt = input('cred_options');
+    // the cloud reads: read-only credentials (docs/discovery.md), kept in the source's own file, never shown again
+    const awsProfile = input('aws_profile', { placeholder: 'empty: the default chain' }), awsRegions = input('aws_regions', { placeholder: 'empty: swept once from the profile\'s region' });
+    const azCloud = select('azure_cloud', [['public', 'Azure (public)'], ['usgov', 'Azure Government (not proven)'], ['china', 'Azure China (not proven)']]);
+    const azSubs = input('azure_subscriptions', { placeholder: 'empty: every one it may read; else ids, space- or comma-separated' }), azAuth = select('azure_auth', [['secret', 'a service principal'], ['identity', 'this server\'s managed identity'], ['token', 'an access token (one read)']]);
+    const azTenant = input('azure_tenant'), azClient = input('azure_client_id'), azSecret = el('input', { name: 'azure_client_secret', type: 'password', autocomplete: 'new-password' });
+    const gcpProjects = input('gcp_projects', { placeholder: 'project ids, space- or comma-separated' }), gcpAuth = select('gcp_auth', [['key', 'a service account key'], ['metadata', 'this server\'s Compute Engine account'], ['token', 'an access token (one read)']]);
+    const gcpKey = el('textarea', { name: 'gcp_key', rows: '2', cols: '40', autocomplete: 'off', spellcheck: 'false', placeholder: 'the key file\'s JSON' }), cloudToken = el('input', { name: 'cloud_token', type: 'password', autocomplete: 'off' });
+    const awsRow = el('div', { hidden: '' }, field('Profile', awsProfile), field('Regions', awsRegions),
+      el('p', { class: 'meta' }, 'With no region named, the first read sweeps the partition from the profile\'s own region (or AWS_REGION): rds:DescribeSourceRegions there lists the regions, and those that answered are kept; without that right only the profile\'s region is read and kept, and with no region configured at all the read fails until you name one. The hourly read reads only the kept regions (Edit, or Read the regions again). One source reads one partition: GovCloud and China regions are not proven (no lab).'));
+    const azRow = el('div', { hidden: '' }, field('Cloud', azCloud), field('Subscriptions', azSubs), field('Credential', azAuth), field('Tenant', azTenant), field('Client id', azClient), field('Client secret', azSecret),
+      el('p', { class: 'meta' }, 'Azure Government and Azure China are not proven (no lab); whether Resource Graph answers there is not confirmed.'));
+    const gcpRow = el('div', { hidden: '' }, field('Projects', gcpProjects), field('Credential', gcpAuth), field('Service account key', gcpKey),
+      el('p', { class: 'meta' }, 'A service account key is a long-lived secret (Google calls keys a security risk, and new organisations refuse them by default): prefer this server\'s own account. Workload identity federation is not supported yet.'));
+    const tokenRow = el('div', { hidden: '' }, field('Access token', cloudToken),
+      el('p', { class: 'meta' }, 'A token carries every right of whoever it belongs to: use one of an identity that holds the list-only role only, for the source\'s own cloud (Azure: az cloud set to it first). It is used for this read only and never kept.'));
     const cms = el('div', {}, field('CMS host', cmsHost), field('Port', cmsPort), field('Authentication', cmsAuth), field('Login', cmsLogin), field('Password', cmsPw), field('Driver options', cmsOpt));
     const fileRow = el('div', { hidden: '' }, field('The file\'s path on this server', ref));
     const repoRow = el('div', { hidden: '' }, field('Repository', repo));
     const show = () => { cms.hidden = kind.value !== 'cms'; fileRow.hidden = !['sqlserver_list', 'pg_service', 'pg_csv'].includes(kind.value); repoRow.hidden = kind.value !== 'dbadash';
-      credAuth.value = kind.value.startsWith('pg') ? 'password' : 'sql'; };
-    kind.addEventListener('change', show);
+      awsRow.hidden = kind.value !== 'aws'; azRow.hidden = kind.value !== 'azure'; gcpRow.hidden = kind.value !== 'gcp';
+      tokenRow.hidden = !((kind.value === 'azure' && azAuth.value === 'token') || (kind.value === 'gcp' && gcpAuth.value === 'token')); };
+    // the login kind follows the source's kind only; changing the cloud credential keeps the login chosen below
+    kind.addEventListener('change', () => { show(); credAuth.value = kind.value.startsWith('pg') ? 'password' : 'sql'; });
+    azAuth.addEventListener('change', show); gcpAuth.addEventListener('change', show);
     f.addEventListener('submit', async ev => {
       ev.preventDefault();
       const ok = await act('admin/sources', { op: 'add', kind: kind.value, name: name.value.trim(), every_s: String(Math.round(Number(every.value || '60') * 60)),
         cms_host: cmsHost.value.trim(), cms_port: cmsPort.value.trim(), cms_auth: cmsAuth.value, cms_login: cmsLogin.value.trim(), cms_password: cmsPw.value, cms_options: cmsOpt.value.trim(),
-        ref: kind.value === 'dbadash' ? repo.value : ref.value.trim(), auth: credAuth.value, cred_login: credLogin.value.trim(), cred_password: credPw.value, cred_options: credOpt.value.trim() },
+        ref: kind.value === 'dbadash' ? repo.value : ref.value.trim(), auth: credAuth.value, cred_login: credLogin.value.trim(), cred_password: credPw.value, cred_options: credOpt.value.trim(),
+        aws_profile: awsProfile.value.trim(), aws_regions: awsRegions.value.trim(), azure_cloud: azCloud.value, azure_subscriptions: azSubs.value.trim(), azure_tenant: azTenant.value.trim(),
+        azure_client_id: azClient.value.trim(), azure_client_secret: azSecret.value, gcp_projects: gcpProjects.value.trim(), gcp_key: gcpKey.value,
+        cloud_auth: kind.value === 'azure' ? azAuth.value : kind.value === 'gcp' ? gcpAuth.value : '', cloud_token: cloudToken.value },
         `Source ${name.value.trim()} added and read.`);
       if (ok) f.reset();
     });
     f.append(el('fieldset', {}, el('legend', {}, 'Add a sync source'),
       el('div', {}, field('Kind', kind), field('Name', name), field('Read every (minutes)', every)),
-      cms, fileRow, repoRow,
+      cms, fileRow, repoRow, awsRow, azRow, gcpRow, tokenRow,
       el('div', {}, el('span', { class: 'meta' }, 'The login an approved server is read with: '), field('Authentication', credAuth), field('Login', credLogin), field('Password', credPw), field('Driver options', credOpt)),
+      el('p', { class: 'meta' }, 'The add reads the source once while you wait (50 seconds at most): a large estate may not finish in that time - then the hourly read follows by itself. Cloud tags come in only for the keys you allow (Edit, after the first read lists the keys it saw).'),
       el('div', {}, el('button', { type: 'submit' }, 'Add the source'))));
-    if (!d.writable) for (const c of f.querySelectorAll('input, select, button')) (c as HTMLInputElement).disabled = true;
+    if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) offRead(c, d.why_not);
     return f;
   }
 

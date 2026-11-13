@@ -196,8 +196,10 @@ func TestCommunitySamples(t *testing.T) {
 		if page == "" || !regexp.MustCompile(`[{ ,\n]`+regexp.QuoteMeta(page)+`: '`).MatchString(in) {
 			t.Errorf("%s: its page %q is not an instance tab of %s", tool.ID, page, tool.Engine)
 		}
-		m := markOf(&tool, sm, "demo-x01")
-		for _, want := range []string{sm.Version, sm.Server, "captured " + sm.CapturedAt.UTC().Format("2006-01-02"), "not demo-x01."} {
+		// on the test server's own platform: the line ends 'not <instance>.'; the day names its zone
+		m := markOf(&tool, sm, "demo-x01", testPlatform[tool.Engine])
+		day := "captured " + sm.CapturedAt.UTC().Format("2006-01-02") + " UTC on a test server"
+		for _, want := range []string{sm.Version, sm.Server, day} {
 			if sm.Kit == "pgvigil" && want == sm.Version {
 				continue
 			}
@@ -205,11 +207,30 @@ func TestCommunitySamples(t *testing.T) {
 				t.Errorf("%s: the line %q lacks %q", tool.ID, m.Line, want)
 			}
 		}
-		if !strings.Contains(m.Mark, "not demo-x01") || !strings.Contains(m.Mark, "stored sample") {
-			t.Errorf("%s: the mark %q", tool.ID, m.Mark)
+		if !strings.HasSuffix(m.Line, "; not demo-x01.") || !strings.HasSuffix(m.Mark, ", not demo-x01") || !strings.Contains(m.Mark, "stored sample") || !strings.Contains(m.Mark, sm.CapturedAt.UTC().Format("2006-01-02")+" UTC") {
+			t.Errorf("%s: on the test server's platform: the line %q, the mark %q", tool.ID, m.Line, m.Mark)
+		}
+		// on every other platform the demo seeds for this engine: the line and the mark name it
+		for key, w := range platformWords {
+			engine, platform, _ := strings.Cut(key, "/")
+			if engine != tool.Engine {
+				continue
+			}
+			m := markOf(&tool, sm, "demo-x01", platform)
+			if !strings.HasSuffix(m.Line, "; not demo-x01, "+w+", where the same run returns other rows.") || !strings.HasSuffix(m.Mark, ", not demo-x01 ("+w+")") {
+				t.Errorf("%s on %s: the line %q, the mark %q", tool.ID, platform, m.Line, m.Mark)
+			}
 		}
 		if sm.Kit != "pgvigil" && kitLicense[sm.Kit] == "" {
 			t.Errorf("%s: no license words for the kit %q", tool.ID, sm.Kit)
+		}
+	}
+	// every platform the demo seeds (internal/demo/fleet.go: onprem, rds, aurora, azure, cloudsql; sqlserver, azuresqlmi)
+	// is the test server's or has its words
+	for _, p := range []string{"postgres/onprem", "postgres/rds", "postgres/aurora", "postgres/azure", "postgres/cloudsql", "sqlserver/sqlserver", "sqlserver/azuresqlmi"} {
+		engine, platform, _ := strings.Cut(p, "/")
+		if platform != testPlatform[engine] && platformWords[p] == "" {
+			t.Errorf("the demo's platform %s has no words for the sample line", p)
 		}
 	}
 	for id := range noSample {

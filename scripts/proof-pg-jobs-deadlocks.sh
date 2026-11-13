@@ -310,8 +310,16 @@ run_major() {
   [ -n "$I" ] && [ -n "$IOFF" ] || fail "setup: the instances were not registered"
   SPORT=$((31000 + RANDOM % 9000)); U="http://127.0.0.1:$SPORT"; CJ=$WORK/cj-$V
   "$BIN" serve -config "$CFG" -listen "127.0.0.1:$SPORT" >"$WORK/serve-$V.log" 2>&1 & SRVPID=$!
-  for _ in $(seq 1 60); do curl -fs "$U/api/health" >/dev/null 2>&1 && break; sleep 0.5; done
-  [ "$(curl -s -o "$WORK/b" -w '%{http_code}' -c "$CJ" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "{\"username\":\"$USR\",\"password\":\"$UPW\"}" "$U/api/login")" = 200 ] || fail "setup: the UI login: $(cat "$WORK/b")"
+  # the serve answers within 90 s (w9o 2026-11-13: under two groups' load the login met no serve in 30 s, and the fail
+  # line printed the previous version's body - the body file is now emptied before each login). Any HTTP answer counts:
+  # with the UI login on, /api/health itself wants the login (401), so 'curl -f' never passed and the old 30 s loop
+  # always ran out silently.
+  local HC=000
+  for _ in $(seq 1 180); do HC=$(curl -s -o /dev/null -w '%{http_code}' "$U/api/health" 2>/dev/null || true); [ "$HC" != 000 ] && break; sleep 0.5; done
+  [ "$HC" != 000 ] || { tail -5 "$WORK/serve-$V.log"; fail "setup: serve on $SPORT did not answer at all in 90 s"; }
+  : > "$WORK/b"; local LC
+  LC=$(curl -s -o "$WORK/b" -w '%{http_code}' -c "$CJ" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "{\"username\":\"$USR\",\"password\":\"$UPW\"}" "$U/api/login" || true)
+  [ "$LC" = 200 ] || fail "setup: the UI login: HTTP $LC: $(cat "$WORK/b")"
   api() { curl -s -o "$WORK/b" -w '%{http_code}' -b "$CJ" "$U/api/$1"; }
   postj() { curl -s -o "$WORK/b" -w '%{http_code}' -b "$CJ" ${3:+-H 'X-Pgvigil: 1'} -H 'Content-Type: application/json' --data "$2" "$U/api/$1"; }
   js() { python3 -c "import json,sys; d=json.load(open('$WORK/b')); print($1)"; }
