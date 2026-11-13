@@ -1034,7 +1034,14 @@ SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
 ( sq "WAITFOR DELAY '00:00:45';" pgvq 90 >/dev/null 2>&1 ) & BG+=($!)
 # a short WAITFOR ends between the two wait reads, so the Waits page lists WAITFOR (a wait counts when it ends)
 sleep 3; col mssql_requests mssql_waits; sqok "I: a short WAITFOR" "WAITFOR DELAY '00:00:02';" pgvq; col mssql_requests mssql_waits
-IF=$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:00Z); IT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:00Z)
+# the page window starts a minute before this run's first plan-cache read, so the plan cache's charts and History hold
+# every read the run took however long the earlier steps ran; a chart needs reads in two of its steps (5 minutes at least)
+IF=$(pq "SELECT to_char((date_trunc('minute', min(snapshot_at)) - interval '1 minute') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:00\"Z\"') FROM pgvigil.mssql_pc_read WHERE instance_id = $SB")
+IT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:00Z)
+[[ "$IF" =~ ^20[0-9-]+T[0-9:]+Z$ ]] || fail "I: no plan-cache read of this run to anchor the page window ('$IF')"
+NPS=$(pq "SELECT count(DISTINCT floor(extract(epoch FROM snapshot_at) / 300)) FROM pgvigil.mssql_pc_read WHERE instance_id = $SB AND snapshot_at > '$IF' AND snapshot_at <= '$IT'")
+[[ "$NPS" -ge 2 ]] || fail "I: the page window $IF .. $IT holds plan-cache reads in $NPS five-minute step(s); a chart needs two"
+echo "     I: the page window $IF .. $IT: plan-cache reads in $NPS five-minute steps"
 IW="instance=$SB&from=$IF&to=$IT"
 api "mssql/running?$IW" i-run.json
 api "mssql/plancache?$IW&part=top" i-top.json
