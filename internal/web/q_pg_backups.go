@@ -10,7 +10,7 @@ package web
 //	POST /api/pg/thresholds         s.PgThresholdWrite    one attempt through pgvigil.import_pg_threshold (the UI login,
 //	                                                      the X-Pgvigil header, the actions door's audit pool, as q_ack.go)
 // The overview checks below feed the Summary: 'base backups' and 'log shipping' (the Backups column), 'crashes' (the
-// Memory dumps column, its PostgreSQL twin), 'statement store' (the QS column), 'uptime' and 'amcheck age' (the
+// Memory dumps column, its PostgreSQL twin), 'statement store' (the pg_stat_statements column: PostgreSQL has no Query Store), 'uptime' and 'amcheck age' (the
 // Corruption column); each is pgvigil.pg_backups_checks for its check_group.
 
 import (

@@ -18,6 +18,7 @@
 #   PGVIGIL_SKIP_MSSQL=1    no SQL Server part (M, G, the SQL Server pages): printed NOT PROVEN ON SQL SERVER.
 #   PGVIGIL_SKIP_PAGES=1    no page part (U): printed NOT PROVEN (PAGES).
 #   PGVIGIL_PYLIB           a folder holding openpyxl when python3 has none (U's workbook open); none = said.
+#   PGVIGIL_SHOTS           a folder for the pages' screenshots (U2, U3); default: the proof's own work folder.
 #   Needs: psql, curl, python3, ss, go (without PGVIGIL_BIN); docker (M, G); chromium, node, npm (U, axe-core 4.14.0).
 #
 # What it makes on SQL Server (a container of its own, removed at the end with its volume; a throwaway sa password made
@@ -26,7 +27,12 @@
 # on the community procedures and pgcr_proc, db_datareader in msdb and pgcr_seed: docs/sqlserver.md's read login plus the
 # grants docs/customreports.md names: EXECUTE on every procedure the kits installed in master). Instances: pgcr-a (the monitoring login pgcr_mon_<n>, pg_monitor, SELECT on the
 # target's t), pgcr-su (the superuser), pgcr-long-instance-name-<n> (pg_monitor again: its long name is the colour
-# rule's crit row), mssql pgcr-msr (the reader) and pgcr-msa (sa); tags env:pgcr on pgcr-a and pgcr-su.
+# rule's crit row), mssql pgcr-msr (the reader), pgcr-msa (sa) and pgcr-msn (the login pgcr_narrow: VIEW SERVER STATE and
+# VIEW ANY DEFINITION only), pgcr-down (nothing listens on its port; registered by ensure_instance) and pgcr-np (a cluster
+# of its own started here without pg_stat_statements in shared_preload_libraries: the extension created in postgres, a
+# database pgcr_nx without it; NOT PROVEN with the reason when initdb is missing or refuses); tags env:pgcr on pgcr-a and
+# pgcr-su. U2 makes an Extended Events session pgcr_bpr_<n> capturing the blocked process report; U2's demo part a
+# `pgvigil demo -serve` seeded into this proof's repository.
 #
 # Expected (written before the first run):
 #  R. roles: the collector login may EXECUTE import_custom_report and import_custom_report_run; an INSERT into
@@ -85,7 +91,51 @@
 #     styles carry the crit fill FFAB1F26 and the ok fill FF006638, the long row's name length cell styled with the
 #     crit fill and the others with the ok fill (openpyxl opens it where it is installed); axe-core (WCAG 2.1 A and
 #     AA) finds 0 violations on the tree, the report page with its result, the editor, and the community page of
-#     pgcr-msr with sp_WhoIsActive's form open and of pgcr-a, light and dark.
+#     pgcr-msr with sp_WhoIsActive's form open and of pgcr-a, light and dark. [B3] On pgcr-msa's community page (sa):
+#     the box 'Before a tool can run on pgcr-msa-<n>:' names sysadmin, every tool button is disabled with 'sysadmin'
+#     in its hover text, and a disabled link button is drawn off (no underline, not the accent colour: the wiring's
+#     app.css line); on pgcr-msr's: the column 'before it runs', sp_WhoIsActive 'ready'.
+#  N. [B3] before the click (GET /api/community says what a tool lacks here and how to get it; nothing is run for it):
+#     pgcr-msr: no instance need, enabled; sp_LogHunter off, one hard need naming xp_readerrorlog with 'USE [master];
+#     GRANT EXECUTE ON sys.xp_readerrorlog TO [pgcr_reader];'; sp_HumanEventsBlockViewer a note naming 'blocked process
+#     threshold 0', preset system_health; sp_QuickieStore and sp_IndexCleanup preset pgcr_seed (notes); 13 on. Declined
+#     runs (the procedure's own refusal): outcome failed, declined true, the words and '(msg 50000, severity n)', the log
+#     row failed with the words - sp_LogHunter 11, sp_IndexCleanup 16 on a missing database, sp_HumanEventsBlockViewer on
+#     a session at threshold 0; a real failure inside sp_BlitzIndex (the index usage view denied): failed, not declined.
+#     A read-only database the reader reaches, sorted before pgcr_seed: sp_IndexCleanup's preset still pgcr_seed. master
+#     at compatibility level 120: sp_BlitzCache off naming the level, on again at the old level. The 11 sibling pairs
+#     (the code's toolSiblings, compared): each with EXECUTE revoked on the sibling and a default run - hard where the run
+#     fails on the sibling's EXECUTE, a note where it ends done. Threshold 5 collected: system_health preset; a running
+#     session capturing the report: its name preset; a typed missing session declined. The grant: sp_LogHunter on with
+#     no archived-log note (VIEW SERVER STATE on 2022), the note with it revoked. pgcr-msn: 13 procedures off with GRANT lines, sp_IndexCleanup without a reachable database,
+#     Glenn's on. pgcr-msa (sa): enabled false, one hard need naming sysadmin, its way 'a read login that is not a
+#     sysadmin', every tool off. The -no-login serve: each page's own words. pgcr-msr paused: answered within 6 s, 14 of
+#     14 'not checked: the checks of pgcr-msr-<n> took over 5 s', none on; unpaused: sp_WhoIsActive ready again.
+#     pgcr-down: within 6 s, 10 of 10 'not checked: the connection to ...', none on. pgcr-a: Top statements off ('not
+#     created in the database'), created: ready, done. pgcr-np: Top statements off, 'created in postgres but not loaded'
+#     (55000) with the shared_preload_libraries way; in pgcr_nx 'not created'. pgcr-su: the superuser named. The keep:
+#     a second GET within 60 s the same checked_at in under 50 ms, fresh=1 a newer one.
+#  U2. [B3] the pages, clicked in Chromium: all 24 tools on pgcr-msr's and pgcr-a's pages run, each 'Ran at' with done
+#     (Glenn's two fixture queries with their grids); sp_HumanEventsBlockViewer's default click in state (b) fills the
+#     running session; pgcr-msa: Tab reaches all 14 off tools, each one's accessibility-tree description is the reason
+#     beside it, a mouse click sends nothing, the off look muted / no underline / not-allowed in light and dark and
+#     GrayText under forced colours; the DOM check's self-test counts its planted button; 12 pages (6 signed in, 6
+#     -no-login) and the bar's Mail... dialog (at least one off) with no off control without a visible reason (a badge word
+#     alone is none; the self-test plants 4 ways to miss one); the -no-login click sends nothing and its descriptions
+#     are the reasons; state (c): system_health filled with its note, done; the demo: 14 and 10 tools off with the demo
+#     line in both themes, the fleet picker the same, the real instance beside it its own -no-login state with every
+#     tool off, never the demo line. The DOM check reads buttons, inputs, selects and textareas in main and dialogs: a
+#     link or a role=button control is outside it (B2's list holds the other pages).
+#  U3. [B3] each state as the page draws it: threshold 0 (read live): sp_HumanEventsBlockViewer on with its note, the
+#     default click fills system_health, done; the procedures' refusals drawn as notes 'declined' with their words and no
+#     error box (sp_HumanEventsBlockViewer on a typed session at 0, sp_IndexCleanup on a missing database); a real
+#     failure inside sp_BlitzIndex drawn red (badge failed, the error box); sp_BlitzWho without EXECUTE: sp_Blitz off with
+#     the GRANT line as its description, sp_BlitzFirst on with its note; pgcr-msr paused: Look again and the fleet
+#     page's picker each within 6.5 s, 14 tools off described 'not checked: ... took over 5 s'; unpaused: on again within
+#     6 Look again clicks; pgcr-down on its page and on the picker: 10 tools off described 'not checked: the connection
+#     to ...'; pgcr-np: Top statements off 'created in postgres but not loaded' beside 'not created in the database
+#     pgcr_nx', each its description. The paused instance is the check that times out (it accepts the connection and
+#     never answers, as a hanging listener does).
 #  A. the audit: the log's run rows (run, community_run, community_help) = the runs this proof made.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -95,10 +145,10 @@ N=$RANDOM$RANDOM
 REPO=pgcr_repo_$N; TGT=pgcr_tgt_$N; COL=pgcr_col_$N; RDR=pgcr_rdr_$N; MON=pgcr_mon_$N
 PW=p$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
 UIUSER=pgcrui; UIPW=u$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
-INSTA=pgcr-a-$N; INSTS=pgcr-su-$N; INSTL=pgcr-long-instance-name-$N; MSR=pgcr-msr-$N; MSA=pgcr-msa-$N
+INSTA=pgcr-a-$N; INSTS=pgcr-su-$N; INSTL=pgcr-long-instance-name-$N; MSR=pgcr-msr-$N; MSA=pgcr-msa-$N; MSN=pgcr-msn-$N; INSTD=pgcr-down-$N; INSTNP=pgcr-np-$N
 CT=pgcr-mssql-$N
 WORK=$(mktemp -d)
-SRV=""; SRV2=""; SRV3=""; CHR=""; MADE_CT=""
+SRV=""; SRV2=""; SRV3=""; SRV4=""; CHR=""; MADE_CT=""; NPD=""; PGCTL=""
 # the runs this proof makes, one line each: a counter in a file (run and crun are called inside $(...), a subshell)
 tick() { echo r >> "$WORK/runs"; }
 nruns() { [[ -f "$WORK/runs" ]] && wc -l < "$WORK/runs" | tr -d ' ' || echo 0; }
@@ -106,9 +156,10 @@ NOTPROVEN=()
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 cleanup() {
-  for p in "$SRV" "$SRV2" "$SRV3" "$CHR"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
+  for p in "$SRV" "$SRV2" "$SRV3" "$SRV4" "$CHR"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   [[ -n "$MADE_CT" ]] && docker rm -f -v "$CT" >/dev/null 2>&1 || true
+  [[ -n "$NPD" ]] && "$PGCTL" -D "$NPD" -m immediate stop >/dev/null 2>&1 || true
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO with (force)" \
     -c "drop database if exists $TGT with (force)" -c "drop role if exists $COL" -c "drop role if exists $RDR" \
     -c "drop role if exists $MON" >/dev/null 2>&1 || true
@@ -144,6 +195,7 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create ro
 tq "grant select on t to $MON"
 as_dsn() { echo "$PGVIGIL_ADMIN_DSN dbname=$1 user=$2 password=$PW"; }   # the admin's own route to the server, as another login
 export TGT_MON; TGT_MON=$(as_dsn "$TGT" "$MON")
+export TGT_DOWN; TGT_DOWN="host=127.0.0.1 port=$(freeport) dbname=postgres user=$MON password=$PW connect_timeout=2"   # nothing listens there
 
 SKIP_MSSQL=${PGVIGIL_SKIP_MSSQL:-}
 if [[ -z "$SKIP_MSSQL" ]] && ! command -v docker >/dev/null; then SKIP_MSSQL=1; NOTPROVEN+=("SQL Server: docker is not on this machine"); fi
@@ -180,12 +232,34 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   sq "CREATE USER pgcr_reader FOR LOGIN pgcr_reader; ALTER ROLE db_datareader ADD MEMBER pgcr_reader;" msdb >/dev/null   # docs/sqlserver.md's read login reads msdb
   # EXECUTE on every procedure the kits installed, not only the ones pgvigil lists: sp_Blitz runs sp_BlitzBackups
   sq "DECLARE @s nvarchar(max) = N''; SELECT @s += N'GRANT EXECUTE ON dbo.' + QUOTENAME(name) + N' TO pgcr_reader; ' FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1; EXEC (@s);" >/dev/null
+  # the narrow login (B3): the read login's server rights but no CONNECT ANY DATABASE, a user in master only, no EXECUTE
+  NPW="Nr$(od -An -N10 -tx1 /dev/urandom | tr -d ' \n')!c3"
+  sq "CREATE LOGIN pgcr_narrow WITH PASSWORD = '$NPW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO pgcr_narrow; GRANT VIEW ANY DEFINITION TO pgcr_narrow;" >/dev/null
+  sq "CREATE USER pgcr_narrow FOR LOGIN pgcr_narrow;" >/dev/null
+  export MS_N="sqlserver://pgcr_narrow:$NPW@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
   export MS_R="sqlserver://pgcr_reader:$RPW@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
   export MS_SA="sqlserver://sa:$MSSQL_SA_PASSWORD@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
-  mssql_cfg=$(printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_R\n  - name: %s\n    engine: sqlserver\n    dsn: env:MS_SA\n' "$MSR" "$MSA")
+  mssql_cfg=$(printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_R\n  - name: %s\n    engine: sqlserver\n    dsn: env:MS_SA\n  - name: %s\n    engine: sqlserver\n    dsn: env:MS_N\n' "$MSR" "$MSA" "$MSN")
 else
   NOTPROVEN+=("NOT PROVEN ON SQL SERVER (PGVIGIL_SKIP_MSSQL or no docker): parts M, G and the SQL Server pages")
 fi
+
+# a PostgreSQL cluster of its own without pg_stat_statements in shared_preload_libraries: the extension created in
+# postgres but its library not loaded at start (55000 on a run), and a database pgcr_nx without it (not created)
+np_cfg=""
+INITDB=$(command -v initdb || ls /usr/lib/postgresql/*/bin/initdb 2>/dev/null | sort -V | tail -1)
+if [[ -x "$INITDB" && -x "$(dirname "$INITDB")/pg_ctl" ]]; then
+  PGCTL=$(dirname "$INITDB")/pg_ctl; NPP=$(freeport)
+  if "$INITDB" -D "$WORK/np" -U postgres -A trust >"$WORK/np-initdb.log" 2>&1 \
+     && "$PGCTL" -D "$WORK/np" -o "-p $NPP -k '' -c listen_addresses=127.0.0.1 -c shared_buffers=16MB" -l "$WORK/np.log" -w start >/dev/null 2>&1; then
+    NPD=$WORK/np
+    psql "host=127.0.0.1 port=$NPP user=postgres dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create extension pg_stat_statements" \
+      -c "create role $MON login password '$PW' in role pg_monitor" -c "create database pgcr_nx" >/dev/null || fail "the cluster without the library: its extension, login, database"
+    export TGT_NP="host=127.0.0.1 port=$NPP dbname=postgres user=$MON password=$PW"
+    np_cfg="  - name: $INSTNP
+    dsn: env:TGT_NP"
+  else NOTPROVEN+=("N, U3: 55000 (created but not loaded): the cluster without the library did not start: $(tail -2 "$WORK/np-initdb.log" "$WORK/np.log" 2>/dev/null | tr '\n' ' ' | cut -c1-200)"); fi
+else NOTPROVEN+=("N, U3: 55000 (created but not loaded): initdb / pg_ctl are not on this machine"); fi
 
 cat > "$WORK/cfg.yaml" <<EOF
 repository:
@@ -199,6 +273,9 @@ instances:
     tags: [env:pgcr]
   - name: $INSTL
     dsn: env:TGT_MON
+  - name: $INSTD
+    dsn: env:TGT_DOWN
+$np_cfg
 $mssql_cfg
 EOF
 CFG=$WORK/cfg.yaml
@@ -224,7 +301,11 @@ ok "R: the collector writes only through the imports; the reader reads"
 id_of() { q "select instance_id from pgvigil.instances where name = '$1'"; }
 AID=$(id_of "$INSTA"); SID=$(id_of "$INSTS"); LID=$(id_of "$INSTL")
 [[ -n $AID && -n $SID && -n $LID ]] || fail "the PostgreSQL instances are not registered: $(tail -5 "$WORK/collect.log")"
-if [[ -z "$SKIP_MSSQL" ]]; then MRID=$(id_of "$MSR"); MAID=$(id_of "$MSA"); [[ -n $MRID && -n $MAID ]] || fail "the SQL Server instances are not registered: $(tail -5 "$WORK/collect.log")"; fi
+if [[ -z "$SKIP_MSSQL" ]]; then MRID=$(id_of "$MSR"); MAID=$(id_of "$MSA"); MNID=$(id_of "$MSN"); [[ -n $MRID && -n $MAID && -n $MNID ]] || fail "the SQL Server instances are not registered: $(tail -5 "$WORK/collect.log")"; fi
+DID=$(id_of "$INSTD")
+# a collection never reached it (nothing listens on its port), so it registers it the way a collection would
+[[ -n $DID ]] || DID=$(q "select pgvigil.ensure_instance('$INSTD', 'onprem', null, null, false, '{}')")
+NPID=""; [[ -n "$np_cfg" ]] && { NPID=$(id_of "$INSTNP"); [[ -n $NPID ]] || fail "the cluster without the library ($INSTNP) is not registered: $(tail -5 "$WORK/collect.log")"; }
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add"
 export UI_DSN; UI_DSN=$(as_dsn "$REPO" "$RDR")
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
@@ -242,7 +323,7 @@ for pair in "$SRV $U serve.log" "$SRV2 $U2 serve2.log" "$SRV3 $U3 serve3.log"; d
   done
 done
 JAR=$WORK/jar; JAR3=$WORK/jar3
-code() { curl -s -o "$WORK/body" -w '%{http_code}' "$@"; }
+code() { curl -s --max-time 40 -o "$WORK/body" -w '%{http_code}' "$@"; }
 for pair in "$U $JAR" "$U3 $JAR3"; do read -r url jar <<<"$pair"
   curl -s -c "$jar" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$url/api/login" >/dev/null
   [[ -n $(awk '$6 == "pgvigil_session" {print $7}' "$jar") ]] || fail "no session cookie from $url"
@@ -442,6 +523,180 @@ fi
 [[ $(crun "{\"instance_id\":$SID,\"tool\":\"pg_running\"}") == 200 && $(js "d['runs'][0]['outcome']") == refused && $(js "d['runs'][0]['error']") == *superuser* ]] || fail "Q: the superuser: $(cat "$WORK/body")"
 ok "Q: 10 reads; running, settings, table sizes (t); the superuser refused"
 
+# ---- N: before the click (task B3 DONE-1) ----------------------------------------------------------------------------------
+tl() { python3 -c "import json; d=json.load(open('$WORK/body')); t={x['id']: x for x in d['tools']}; print($1)"; }
+fresh() { getc "community?instance=$1&fresh=1${2:+&database=$2}"; }   # past the 60 s keep: the checks run again
+if [[ -z "$SKIP_MSSQL" ]]; then
+  [[ $(fresh "$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True && $(tl "d['checked_at'] is not None") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
+  [[ $(tl "[(n['hard'], n['state']) for n in t['sp_LogHunter']['needs']]") == "[(True, 'needs')]" && $(tl "t['sp_LogHunter']['state']") == needs && $(tl "t['sp_LogHunter']['on']") == False \
+     && $(tl "t['sp_LogHunter']['needs'][0]['what']") == *xp_readerrorlog* && $(tl "t['sp_LogHunter']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON sys.xp_readerrorlog TO [pgcr_reader];" ]] \
+     || fail "N: sp_LogHunter's need (the reader has a user in master: no CREATE USER): $(tl "t['sp_LogHunter']['needs']")"
+  # blocked process threshold 0 (a new container): system_health preset, a note, the tool on
+  [[ $(tl "t['sp_HumanEventsBlockViewer']['state']") == note && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" \
+     && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == *"blocked process threshold 0"*system_health* ]] || fail "N: sp_HumanEventsBlockViewer at threshold 0: $(tl "t['sp_HumanEventsBlockViewer']")"
+  qsdb=$(sq "SELECT TOP (1) name FROM sys.databases WHERE is_query_store_on = 1 AND state = 0 AND database_id > 4 ORDER BY name")
+  if [[ -n $qsdb ]]; then
+    [[ $(tl "t['sp_QuickieStore']['state']") == note && $(tl "t['sp_QuickieStore']['preset']") == "{'@database_name': '$qsdb'}" ]] || fail "N: sp_QuickieStore's preset ($qsdb has Query Store on): $(tl "t['sp_QuickieStore']")"
+  else
+    [[ $(tl "t['sp_QuickieStore']['state']") == note && $(tl "t['sp_QuickieStore']['needs'][0]['what']") == *"Query Store is on in no database"* ]] || fail "N: sp_QuickieStore with no Query Store: $(tl "t['sp_QuickieStore']")"
+  fi
+  [[ $(tl "t['sp_IndexCleanup']['state']") == note && $(tl "t['sp_IndexCleanup']['preset']") == "{'@database_name': 'pgcr_seed'}" ]] || fail "N: sp_IndexCleanup's preset (installed in master, which it skips): $(tl "t['sp_IndexCleanup']")"
+  [[ $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['sp_HumanEventsBlockViewer', 'sp_IndexCleanup', 'sp_LogHunter', 'sp_QuickieStore']" ]] || fail "N: other tools with a need: $(tl "[(x['id'], x['needs']) for x in d['tools'] if x['needs']]")"
+  [[ $(tl "sorted(x['id'] for x in d['tools'] if not x['on'])") == "['sp_LogHunter']" ]] || fail "N: tools off: $(tl "sorted(x['id'] for x in d['tools'] if not x['on'])")"
+  ok "N: $MSR: sp_LogHunter off (xp_readerrorlog, the GRANT line); sp_HumanEventsBlockViewer preset system_health at threshold 0; sp_QuickieStore preset ${qsdb:-none}; sp_IndexCleanup preset pgcr_seed; 13 on"
+  # declined: the procedure's own refusal is a failed run in the audit, declined in the answer, never 'refused'
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == failed && $(js "d['runs'][0].get('declined')") == True \
+     && $(js "d['runs'][0]['error']") == "sp_LogHunter declined: Current user does not have EXECUTE permission on xp_readerrorlog"*"(msg 50000, severity 11)" ]] || fail "N: sp_LogHunter declined: $(head -c 600 "$WORK/body")"
+  row=$(q "select outcome || '|' || detail from pgvigil.custom_report_log where op = 'community_run' and tool = 'sp_LogHunter' order by log_id desc limit 1")
+  [[ $row == "failed|sp_LogHunter declined: Current user does not have EXECUTE permission on xp_readerrorlog"* ]] || fail "N: the declined run's log row: $row"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"pgcr_none\"}}") == 200 && $(js "d['runs'][0].get('declined')") == True \
+     && $(js "d['runs'][0]['error']") == *"lousy version in system_health"* ]] || fail "N: sp_HumanEventsBlockViewer on a session at threshold 0: $(head -c 600 "$WORK/body")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_HumanEventsBlockViewer with its preset: $(head -c 600 "$WORK/body")"
+  c=$(crun "{\"instance_id\":$MRID,\"tool\":\"sp_IndexCleanup\",\"params\":{\"@database_name\":\"pgcr_nosuchdb_$N\"}}")
+  [[ $c == 200 && $(js "d['runs'][0].get('declined')") == True && $(js "d['runs'][0]['error']") == "sp_IndexCleanup declined: No valid databases found to process. (msg 50000, severity 16)" ]] || fail "N: sp_IndexCleanup on a database it cannot find: $(head -c 600 "$WORK/body")"
+  ok "N: declined in the procedures' own words (sp_LogHunter severity 11, sp_IndexCleanup 16, sp_HumanEventsBlockViewer): outcome failed with the words, declined true; the preset run done"
+  # a real failure inside a kit stays an error: the index usage DMV denied (a server-scoped view: denied in master) and
+  # VIEW DATABASE STATE denied in pgcr_seed, both of which sp_BlitzIndex reads through
+  sq "DENY SELECT ON sys.dm_db_index_usage_stats TO pgcr_reader;" >/dev/null && sq "DENY VIEW DATABASE STATE TO pgcr_reader;" pgcr_seed >/dev/null || fail "N: the DENY"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_BlitzIndex\",\"params\":{\"@DatabaseName\":\"pgcr_seed\"}}") == 200 ]] || fail "N: sp_BlitzIndex with the DMV denied: $(head -c 400 "$WORK/body")"
+  red=$(js "(d['runs'][0]['outcome'], bool(d['runs'][0].get('declined')), (d['runs'][0].get('error') or '')[:160])")
+  sq "REVOKE SELECT ON sys.dm_db_index_usage_stats FROM pgcr_reader;" >/dev/null && sq "REVOKE VIEW DATABASE STATE FROM pgcr_reader;" pgcr_seed >/dev/null || fail "N: the REVOKE of the DENYs"
+  [[ $red == "('failed', False, "* ]] || fail "N: a real failure inside sp_BlitzIndex is not an error: $red"
+  ok "N: a real failure inside sp_BlitzIndex stays an error: $red"
+  # sp_IndexCleanup skips read-only and standby databases: a read-only one the reader reaches, sorted before pgcr_seed,
+  # is never its preset (the old reach / first-database read took it)
+  ro=pgcr_a_ro_$N
+  sq "CREATE DATABASE [$ro];" >/dev/null && sq "ALTER DATABASE [$ro] SET READ_ONLY;" >/dev/null || fail "N: the read-only database"
+  [[ $(sq "EXECUTE AS LOGIN = N'pgcr_reader'; SELECT HAS_DBACCESS(N'$ro'); REVERT;") == 1 ]] || fail "N: pgcr_reader does not reach $ro (the row would pass either way)"
+  [[ $(fresh "$MRID") == 200 ]]; icp=$(tl "t['sp_IndexCleanup']['preset']")
+  sq "DROP DATABASE [$ro];" >/dev/null || fail "N: drop $ro"
+  [[ $icp == "{'@database_name': 'pgcr_seed'}" ]] || fail "N: sp_IndexCleanup's preset beside the read-only $ro: $icp"
+  ok "N: sp_IndexCleanup's preset stays pgcr_seed beside the read-only $ro (sorted first, reached by the reader; the procedure skips it)"
+  # sp_BlitzCache cannot run from a database below compatibility level 130: off before the click, with the level; a run
+  # anyway is recorded (8.34's OPENJSON does not compile there: Msg 102 before its own check); master back at once
+  cl=$(sq "SELECT compatibility_level FROM sys.databases WHERE name = N'master'")
+  sq "ALTER DATABASE master SET COMPATIBILITY_LEVEL = 120;" >/dev/null || fail "N: master at 120"
+  [[ $(fresh "$MRID") == 200 ]]; bc=$(tl "(t['sp_BlitzCache']['on'], t['sp_BlitzCache']['state'], [n['what'] for n in t['sp_BlitzCache']['needs']])")
+  crun "{\"instance_id\":$MRID,\"tool\":\"sp_BlitzCache\",\"params\":{}}" >/dev/null; bcr=$(js "(d['runs'][0]['outcome'], bool(d['runs'][0].get('declined')), (d['runs'][0].get('error') or '')[:100])" 2>/dev/null)
+  sq "ALTER DATABASE master SET COMPATIBILITY_LEVEL = $cl;" >/dev/null && [[ $(sq "SELECT compatibility_level FROM sys.databases WHERE name = N'master'") == "$cl" ]] || fail "N: master back at $cl"
+  [[ $bc == "(False, 'needs', ['sp_BlitzCache cannot run from a database below compatibility level 130: master is at 120'])" ]] || fail "N: sp_BlitzCache with master at 120: $bc"
+  echo "rec  N: sp_BlitzCache run anyway with master at 120: $bcr"
+  [[ $(fresh "$MRID") == 200 && $(tl "t['sp_BlitzCache']['on']") == True ]] || fail "N: sp_BlitzCache with master back at $cl: $(tl "t['sp_BlitzCache']")"
+  ok "N: master at compatibility level 120: sp_BlitzCache off before the click with the level named; master back at $cl, on again"
+  # the sibling pairs (the lead 15:50): EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
+  # list says hard (a default run fails) or a note (it ends done) - a pair the run contradicts fails here
+  hard=(); disagree=()
+  # the pairs are the code's own list (toolSiblings in q_community.go): a pair added there and not here fails
+  code_pairs=$(awk '/^var toolSiblings/,/^}/' "$ROOT/internal/web/q_community.go" | awk '
+    match($0, /^\t"sp_[A-Za-z_]+": \{/) { k = substr($0, 3); cur = substr(k, 1, index(k, "\"") - 1) }
+    { s = $0; while (match(s, /\{"sp_[A-Za-z_]+", (true|false),/)) { x = substr(s, RSTART + 2); print cur "/" substr(x, 1, index(x, "\"") - 1); s = substr(s, RSTART + RLENGTH) } }' | sort | tr '\n' ' ' | sed 's/ $//')
+  here_pairs="sp_Blitz/sp_BlitzBackups sp_Blitz/sp_BlitzCache sp_Blitz/sp_BlitzFirst sp_Blitz/sp_BlitzIndex sp_Blitz/sp_BlitzLock sp_Blitz/sp_BlitzWho sp_Blitz/sp_DatabaseRestore sp_Blitz/sp_ineachdb sp_BlitzFirst/sp_BlitzWho sp_BlitzFirst/sp_BlitzCache sp_BlitzIndex/sp_BlitzCache"
+  [[ $code_pairs == "$(tr ' ' '\n' <<<"$here_pairs" | sort | tr '\n' ' ' | sed 's/ $//')" ]] || fail "N: the proof's sibling pairs are not the code's: code [$code_pairs], here [$here_pairs]"
+  for pair in sp_Blitz/sp_BlitzBackups sp_Blitz/sp_BlitzCache sp_Blitz/sp_BlitzFirst sp_Blitz/sp_BlitzIndex sp_Blitz/sp_BlitzLock sp_Blitz/sp_BlitzWho \
+              sp_Blitz/sp_DatabaseRestore sp_Blitz/sp_ineachdb sp_BlitzFirst/sp_BlitzWho sp_BlitzFirst/sp_BlitzCache sp_BlitzIndex/sp_BlitzCache; do
+    tool=${pair%/*}; sib=${pair#*/}
+    sq "REVOKE EXECUTE ON dbo.$sib FROM pgcr_reader;" >/dev/null || fail "N: revoke $sib"
+    [[ $(fresh "$MRID") == 200 ]] || fail "N: GET with $sib revoked"
+    code_says=$(tl "[n['hard'] for n in t['$tool']['needs'] if '$sib ' in n['what']]")
+    [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"$tool\",\"params\":{}}") == 200 ]] || fail "N: $tool with $sib revoked answered: $(head -c 300 "$WORK/body")"
+    ran=$(js "d['runs'][0]['outcome']"); why=$(js "(d['runs'][0].get('error') or '')[:120]")
+    sq "GRANT EXECUTE ON dbo.$sib TO pgcr_reader;" >/dev/null || fail "N: grant $sib back"
+    echo "rec  N: pair $tool / $sib: the code says $code_says; the default run $ran $why"
+    case "$code_says|$ran" in
+      "[True]|failed") [[ $why == *"'$sib'"* ]] && hard+=("$pair") || disagree+=("$pair: failed, but not on $sib: $why") ;;
+      "[False]|done") ;;
+      *) disagree+=("$pair: the code says $code_says (hard = [True]), the default run ended $ran $why") ;;
+    esac
+  done
+  [[ ${#disagree[@]} == 0 ]] || fail "N: sibling pairs the code's list gets wrong: $(printf '%s; ' "${disagree[@]}")"
+  ok "N: 11 sibling pairs agree with a default run with the right revoked; hard: ${hard[*]:-none}"
+  # threshold 5, no session capturing the report: system_health preset with its note; a session made: its name preset
+  sq "EXEC sys.sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || fail "N: threshold 5"
+  # the page reads the threshold from the repository (the instance collection's sys.configurations, with its time): collect it
+  "$BIN" collect -config "$CFG" -once mssql_instance >>"$WORK/collect.log" 2>&1 || true
+  [[ $(q "select value_in_use from pgvigil.mssql_config where instance_id = $MRID and name = 'blocked process threshold (s)'") == 5 ]] || fail "N: the collection did not read threshold 5"
+  [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" \
+     && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == "no running session captures the blocked process report"* ]] || fail "N: threshold 5 without a session: $(tl "t['sp_HumanEventsBlockViewer']")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: the state (c) default click: $(head -c 400 "$WORK/body")"
+  XES=pgcr_bpr_$N
+  sq "CREATE EVENT SESSION [$XES] ON SERVER ADD EVENT sqlserver.blocked_process_report ADD TARGET package0.ring_buffer; ALTER EVENT SESSION [$XES] ON SERVER STATE = START;" >/dev/null || fail "N: the session $XES"
+  [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': '$XES'}" && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == *"the form reads $XES"* ]] || fail "N: the state (b) preset: $(tl "t['sp_HumanEventsBlockViewer']")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"$XES\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: the state (b) click: $(head -c 400 "$WORK/body")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"pgcr_none\"}}") == 200 && $(js "d['runs'][0].get('declined')") == True \
+     && $(js "d['runs'][0]['error']") == *"A session with the name pgcr_none does not exist or is not currently active."* ]] || fail "N: a typed session that does not exist: $(head -c 400 "$WORK/body")"
+  ok "N: sp_HumanEventsBlockViewer: threshold 5 (collected) with no session = system_health preset and its note, run done; a session made = its name preset, run done; a typed session that does not exist declined (the session stays for U2's state (b) click)"
+  # the grant: sp_LogHunter's need gone; SQL Server 2022 lists the archived logs (sp_enumerrorlogs) for a login with VIEW
+  # SERVER STATE, which the reader holds: no note; without it, the note (the mssql sandbox: 27219 with neither right)
+  sq "GRANT EXECUTE ON sys.xp_readerrorlog TO pgcr_reader;" >/dev/null || fail "N: the grant"
+  [[ $(fresh "$MRID") == 200 && $(tl "t['sp_LogHunter']['needs']") == "[]" && $(tl "t['sp_LogHunter']['state']") == ready ]] || fail "N: sp_LogHunter after the grant (VIEW SERVER STATE on 2022: no note): $(tl "t['sp_LogHunter']")"
+  sq "REVOKE VIEW SERVER STATE FROM pgcr_reader;" >/dev/null || fail "N: revoke VIEW SERVER STATE"
+  [[ $(fresh "$MRID") == 200 ]]; lh=$(tl "[(n['hard'], n['what']) for n in t['sp_LogHunter']['needs']]")
+  sq "GRANT VIEW SERVER STATE TO pgcr_reader;" >/dev/null || fail "N: VIEW SERVER STATE back"
+  [[ $lh == "[(False, 'reads the current error log only: the archived logs are listed through sp_enumerrorlogs, which needs VIEW SERVER STATE, VIEW ANY ERROR LOG or securityadmin')]" ]] || fail "N: sp_LogHunter without VIEW SERVER STATE: $lh"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_LogHunter with the right: $(head -c 600 "$WORK/body")"
+  ok "N: granted: sp_LogHunter ready, done; no archived-log note while the reader holds VIEW SERVER STATE (2022), the note without it"
+  # the narrow login (no CONNECT ANY DATABASE, a user in master only, no EXECUTE): every procedure off with its GRANT line,
+  # sp_IndexCleanup also without a reachable user database; Glenn's file tool on
+  [[ $(fresh "$MNID") == 200 && $(tl "sorted(x['id'] for x in d['tools'] if x['on'])") == "['glenn_berry']" \
+     && $(tl "t['sp_Blitz']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON dbo.[sp_Blitz] TO [pgcr_narrow];" \
+     && $(tl "any('a user database the read login can reach' in n['what'] for n in t['sp_IndexCleanup']['needs'])") == True ]] || fail "N: the narrow login: $(tl "[(x['id'], x['state'], [n['what'][:60] for n in x['needs']]) for x in d['tools']]")"
+  ok "N: $MSN (narrow login): 13 procedures off, each with its GRANT line; sp_IndexCleanup without a reachable database; Glenn's on"
+  [[ $(fresh "$MAID") == 200 && $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" && $(tl "d['needs'][0]['what']") == *sysadmin* \
+     && $(tl "d['needs'][0]['how']") == *"not a sysadmin"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the sa instance: $(tl "d['needs']")"
+  [[ $(code "$U2/api/community?instance=$MRID") == 200 && $(tl "d['needs'][0]['what']") == "Running a tool needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)." \
+     && $(tl "d['needs'][0]['how']") == *"pgvigil user add"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the -no-login serve: $(head -c 600 "$WORK/body")"
+  [[ $(code "$U2/api/customreports") == 200 && $(js "d['state']['reason']") == "Saving or running a report needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)." ]] || fail "N: custom reports' words: $(head -c 300 "$WORK/body")"
+  [[ $(code "$U2/api/reportmail") == 200 && $(js "d['door']['reason']") == "Sending or scheduling a mail needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)." ]] || fail "N: report mail's words: $(head -c 300 "$WORK/body")"
+  # a PostgreSQL instance on the -no-login serve: the server's reason alone (no door is kept for it there, so a line
+  # about its configuration login would be false)
+  [[ $(code "$U2/api/community?instance=$AID") == 200 && $(js "len(d['needs'])") == 1 && $(js "d['needs'][0]['what']") == "Running a tool needs a signed-in user: "* \
+     && $(js "'holds none' in json.dumps(d)") == False ]] || fail "N: a PostgreSQL instance on the -no-login serve: $(head -c 600 "$WORK/body")"
+  ok "N: sa: every tool off naming sysadmin; -no-login (pgvigil serve -no-login, or pgvigil demo -serve): each page's own words (Running a tool / Saving or running a report / Sending or scheduling a mail); a PostgreSQL instance there the server's reason alone"
+  # the instance paused: the checks answer within the budget, every tool 'not checked', none on; unpaused: ready again
+  docker pause "$CT" >/dev/null || fail "N: docker pause"
+  t0=$(date +%s%N); c=$(fresh "$MRID") || c="curl: $?"; ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+  docker unpause "$CT" >/dev/null || fail "N: docker unpause"
+  # the budget is 5 s: the answer within 6 s (D1.1), its words naming the 5 s
+  [[ $c == 200 && $ms -le 6000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 \
+     && $(tl "len(d['tools'])") == 14 && $(tl "d['needs'][0]['what']") == "not checked: the checks of $MSR took over 5 s"* ]] || fail "N: the paused instance ($ms ms): $(tl "[(x['id'], x['state']) for x in d['tools']][:4]"), $(tl "d['needs']")"
+  ok "N: $MSR paused: answered in $ms ms, 14 of 14 tools 'not checked' ($(tl "d['needs'][0]['what'][:90]")), none on"
+  for _ in $(seq 1 25); do [[ $(fresh "$MRID") == 200 && $(tl "t['sp_WhoIsActive']['state']") == ready ]] && break; sleep 2; done
+  [[ $(tl "t['sp_WhoIsActive']['state']") == ready ]] || fail "N: $MSR unpaused is not ready again: $(tl "t['sp_WhoIsActive']")"
+  ok "N: unpaused: sp_WhoIsActive ready again"
+fi
+t0=$(date +%s%N); c=$(fresh "$DID") || c="curl: $?"; ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+[[ $c == 200 && $ms -le 6000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "len(d['tools'])") == 10 \
+   && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 && $(tl "d['needs'][-1]['what']") == "not checked: the connection to $INSTD"* ]] || fail "N: the stopped instance ($c, $ms ms): $(head -c 600 "$WORK/body")"
+ok "N: $INSTD (nothing listens on its port): answered in $ms ms, $(tl "len(d['tools'])") of 10 tools 'not checked', $(tl "sum(1 for x in d['tools'] if x['on'])") on"
+[[ $(fresh "$AID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "[n['hard'] for n in t['pg_top_statements']['needs']]") == "[True]" \
+   && $(tl "t['pg_top_statements']['needs'][0]['what']") == "pg_stat_statements is not created in the database $TGT" && $(tl "t['pg_top_statements']['needs'][0]['how']") == *"superuser-class role"*"CREATE EXTENSION pg_stat_statements"* \
+   && $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['pg_top_statements']" ]] || fail "N: $INSTA's needs: $(tl "(d['needs'], [(x['id'], x['needs']) for x in d['tools'] if x['needs']])")"
+tq "create extension if not exists pg_stat_statements" || fail "N: create extension pg_stat_statements in $TGT"
+[[ $(fresh "$AID") == 200 ]] || fail "N: GET after the extension"
+if [[ $(tl "t['pg_top_statements']['state']") == ready ]]; then
+  [[ $(crun "{\"instance_id\":$AID,\"tool\":\"pg_top_statements\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: Top statements with the extension: $(head -c 600 "$WORK/body")"
+  ok "N: $INSTA: Top statements off (not created in $TGT, ask a superuser-class role); created: ready, done (schema-qualified)"
+elif [[ $(tl "t['pg_top_statements']['needs'][0]['what']") == *"but not loaded"* ]]; then
+  NOTPROVEN+=("N: this cluster does not load pg_stat_statements (55000 named: $(tl "t['pg_top_statements']['needs'][0]['what'][:120]")): Top statements' run")
+else
+  fail "N: Top statements after CREATE EXTENSION: $(tl "t['pg_top_statements']")"
+fi
+if [[ -n "$NPID" ]]; then
+  # 55000 beside 42P01 on the cluster that does not load the library: created in postgres but not loaded, not created in pgcr_nx
+  [[ $(fresh "$NPID") == 200 && $(tl "t['pg_top_statements']['on']") == False && $(tl "t['pg_top_statements']['needs'][0]['what']") == "pg_stat_statements is created in postgres but not loaded: "*shared_preload_libraries* \
+     && $(tl "t['pg_top_statements']['needs'][0]['how']") == *"shared_preload_libraries and restart"* ]] || fail "N: $INSTNP (created, not loaded): $(tl "t['pg_top_statements']")"
+  [[ $(fresh "$NPID" pgcr_nx) == 200 && $(tl "t['pg_top_statements']['on']") == False && $(tl "t['pg_top_statements']['needs'][0]['what']") == "pg_stat_statements is not created in the database pgcr_nx" ]] || fail "N: $INSTNP in pgcr_nx (not created): $(tl "t['pg_top_statements']")"
+  ok "N: $INSTNP (shared_preload_libraries without it): Top statements off - created in postgres but not loaded (55000) beside not created in pgcr_nx"
+fi
+[[ $(fresh "$SID") == 200 && $(tl "d['enabled']") == False && $(tl "d['needs'][0]['what']") == *superuser* && $(tl "d['needs'][0]['hard']") == True ]] || fail "N: the superuser instance's need: $(tl "d['needs']")"
+ok "N: $INSTS: the superuser named before the click"
+# the keep: a second GET within 60 s answers the same checked_at, fresh=1 a newer one
+getc "community?instance=$AID" >/dev/null; k1=$(tl "d['checked_at']")
+t0=$(date +%s%N); getc "community?instance=$AID" >/dev/null; k2ms=$(( ($(date +%s%N) - t0) / 1000000 )); k2=$(tl "d['checked_at']")
+fresh "$AID" >/dev/null; k3=$(tl "d['checked_at']")
+[[ $k1 == "$k2" && $k2ms -lt 50 && $(date -d "$k3" +%s%N) -gt $(date -d "$k2" +%s%N) ]] || fail "N: the keep: $k1 / $k2 ($k2ms ms) / $k3"
+ok "N: kept 60 s (two GETs, one checked_at $k1, the second in $k2ms ms), fresh=1 checks again ($k3)"
+
 # ---- A: the audit --------------------------------------------------------------------------------------------------------
 [[ $(runlog) == "$(nruns)" ]] || fail "A: $(runlog) run rows for $(nruns) runs"
 ok "A: $(nruns) runs, $(nruns) run rows in the log"
@@ -456,7 +711,7 @@ if [[ -n "${PGVIGIL_SKIP_PAGES:-}" ]]; then NOTPROVEN+=("NOT PROVEN (PAGES): PGV
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   COOKIE=$(awk '$6 == "pgvigil_session" {print $7}' "$JAR")
   cat > "$WORK/pages.mjs" <<'JS'
-const [port, U, axePath, dl, cookie, srep, msr, pga] = process.argv.slice(2);
+const [port, U, axePath, dl, cookie, srep, msr, pga, msa] = process.argv.slice(2);
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
@@ -513,6 +768,16 @@ for (const theme of ['light', 'dark']) {
     if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run sp_WhoIsActive')`)) throw new Error('the sp_WhoIsActive form did not open');
     await axe(`${theme} community sqlserver`);
   }
+  if (msa && theme === 'light') {
+    // B3: before the click - the reader's page has the 'before it runs' column; the sa page says why every tool is off
+    await open(`#/community?i=${msr}`, `[...document.querySelectorAll('main th')].some(h => /before it runs/.test(h.textContent))`);
+    out.msrReady = await ev(`(() => { const b = [...document.querySelectorAll('main button.link')].find(x => x.textContent === 'sp_WhoIsActive'); return b?.closest('tr')?.lastElementChild?.textContent.trim() ?? null; })()`);
+    await open(`#/community?i=${msa}`, `!!document.querySelector('main .needs')`);
+    out.msa = await ev(`(() => { const btns = [...document.querySelectorAll('main table.grid button.link')]; const cs = btns[0] ? getComputedStyle(btns[0]) : null;
+      const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
+      return { box: document.querySelector('main .needs')?.textContent ?? '', n: btns.length, off: btns.filter(b => b.getAttribute('aria-disabled') === 'true' && /sysadmin/.test(b.title)).length,
+        deco: cs?.textDecorationLine ?? '', color: cs?.color ?? '', accent }; })()`);
+  }
   await open(`#/community?i=${pga}`, `[...document.querySelectorAll('main h3')].some(h => h.textContent === 'pgvigil reads')`);
   await axe(`${theme} community postgres`);
 }
@@ -520,13 +785,19 @@ console.log(JSON.stringify(out));
 // the two CDP sockets keep node alive after the last line (Node 26's WebSocket): close them and exit, or the proof waits forever
 ws.close(); bws.close(); process.exit(0);
 JS
-  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
+  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" "${MAID:-}" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
   python3 - "$WORK/pages.json" "$WORK/dl" "$INSTL" "${PGVIGIL_PYLIB:-}" <<'PY' || fail "U: see above"
 import json, sys, zipfile, re, os
 d = json.load(open(sys.argv[1])); dl = sys.argv[2]; long_name = sys.argv[3]; pylib = sys.argv[4]
 bad = [p for p in d['pages'] if p['violations']]
 for p in d['pages']:
     print(('viol ' if p['violations'] else 'ok   ') + 'U: axe ' + p['label'] + ': ' + (json.dumps(p['violations']) if p['violations'] else '0 violations'))
+m = d.get('msa')
+if m is not None:
+    assert m['n'] == 14 and m['off'] == 14 and 'sysadmin' in m['box'] and m['box'].startswith('Before a tool can run on'), f"U: the sa page: {m['off']} of {m['n']} tool buttons off with 'sysadmin' on hover; its box: {m['box'][:200]!r}"
+    assert m['deco'] == 'none' and m['color'] != m['accent'], f"U: a disabled tool button is drawn like a link: text-decoration {m['deco']!r}, colour {m['color']} (accent {m['accent']}) - the wiring's app.css line"
+    assert (d.get('msrReady') or '').startswith('ready'), f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
+    print(f"ok   U: [B3] pgcr-msa: 'Before a tool can run' names sysadmin, {m['off']} of {m['n']} tool buttons off with it on hover, drawn off ({m['color']}, no underline); pgcr-msr: sp_WhoIsActive 'ready'")
 cells = d['cells'] or []
 assert cells, 'U: no rows read from the report grid'
 for c in cells:
@@ -572,6 +843,479 @@ try:
 except ImportError:
     print('note U: openpyxl is not installed here: the workbook open is not checked by it')
 if bad: sys.exit(1)
+PY
+  # ---- U2 (B3 DONE-1): every tool clicked and run, keyboard and accessibility tree, the off look, the DOM check, the demo
+  cat > "$WORK/buttons.mjs" <<'JS'
+// B3 DONE-1's page rows (headless Chromium over CDP; written by proof-customreports.sh part U2 and run twice):
+//   live <port> <U signed in> <cookie> <U2 -no-login> <msr> <msa> <pga> <report id> <glenn file> <shots dir>
+//   demo <port> <U4 the demo serve> <demo SQL Server id> <demo PostgreSQL id> <the real msr id> <shots dir>
+// Prints one JSON object; the shell grades it.
+const [mode, port, ...a] = process.argv.slice(2);
+const fs = await import('node:fs');
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map(); const reqs = [];
+ws.addEventListener('message', m => {
+  const d = JSON.parse(m.data);
+  if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); }
+  if (d.method === 'Network.requestWillBeSent') reqs.push(d.params.request.url);
+});
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
+  return d.result?.result?.value;
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const until = async (expr, ms = 20000) => { for (const t = Date.now(); Date.now() - t < ms; await sleep(200)) if (await ev(expr)) return true; return false; };
+await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable'); await cmd('DOM.enable'); await cmd('Accessibility.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
+const out = { mode, dom: [], selftest: null, rows: [] };
+const open = async (url, ready) => {
+  await cmd('Page.navigate', { url }); await sleep(300);
+  if (!await until(ready, 30000)) throw new Error('the page did not render: ' + url + ' ' + await ev(`document.querySelector('main')?.innerText.slice(0, 300)`));
+  await sleep(400);
+};
+const theme = async (t, U) => {
+  await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(t)}); 1`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: t }] });
+};
+const shot = async (dir, name) => {
+  if (!dir) return;
+  fs.mkdirSync(dir, { recursive: true });
+  const s = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+  fs.writeFileSync(`${dir}/${name}.png`, Buffer.from(s.result.data, 'base64'));
+};
+// every control that is off and shown has a visible, non-empty description (aria-describedby)
+const offCheck = (label) => ev(`(() => {
+  const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+  // the instance header (instheader.ts, on every instance page) is not this page's: left to its own proof
+  const ctl = [...document.querySelectorAll('main button, main input, main select, main textarea, dialog button')]
+    .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e) && !e.closest('.inst-header'));
+  const bad = ctl.filter(e => { const ids = (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean);
+    // a reason is words: a badge word alone ('off', 'not checked', ...) is none
+    return !ids.some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.replace(/^\\s*(off|not checked|demo|note|on|declined)\\b/i, '').trim().length > 0; }); });
+  return { label: ${JSON.stringify(label)}, off: ctl.length, bad: bad.map(e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 80)) };
+})()`);
+// the off tool buttons of a community page: text, described text, and what the accessibility tree reports
+const axOff = async () => {
+  const doc = await cmd('DOM.getDocument', { depth: -1 });
+  const q = await cmd('DOM.querySelectorAll', { nodeId: doc.result.root.nodeId, selector: 'main table.grid button.link[aria-disabled="true"]' });
+  const page = await ev(`[...document.querySelectorAll('main table.grid button.link[aria-disabled="true"]')].map(b => ({ name: b.textContent.trim(),
+    desc: (b.getAttribute('aria-describedby') || '').split(/\\s+/).map(i => document.getElementById(i)?.textContent ?? '').join(' ') }))`);
+  const rows = [];
+  for (let i = 0; i < q.result.nodeIds.length; i++) {
+    const ax = await cmd('Accessibility.getPartialAXTree', { nodeId: q.result.nodeIds[i], fetchRelatives: false });
+    const n = (ax.result?.nodes ?? []).find(x => x.role?.value === 'button') ?? ax.result?.nodes?.[0] ?? {};
+    const squash = s => String(s ?? '').replace(/\\s+/g, '');
+    rows.push({ name: page[i]?.name, axName: n.name?.value ?? '', same: squash(n.description?.value) === squash(page[i]?.desc) && squash(page[i]?.desc).length > 0, axDesc: String(n.description?.value ?? '').slice(0, 100) });
+  }
+  return rows;
+};
+const tabWalk = async (max) => {
+  // from the page's own heading (the bar and the tree come first in the document: not this page's controls)
+  await ev(`(() => { const h = document.querySelector('main h2'); h.setAttribute('tabindex', '-1'); h.focus(); return 1; })()`);
+  const reached = new Set();
+  for (let i = 0; i < max; i++) {
+    await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+    await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+    const x = await ev(`(() => { const e = document.activeElement; return e && e.matches && e.matches('main table.grid button.link[aria-disabled="true"]') ? e.textContent.trim() : ''; })()`);
+    if (x) reached.add(x);
+  }
+  return [...reached];
+};
+// a real mouse click on an off control: the page's requests to the community API before and after
+const clickOff = async (sel) => {
+  const r = await ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return null; b.scrollIntoView({ block: 'center' }); const q = b.getBoundingClientRect(); return { x: q.x + q.width / 2, y: q.y + q.height / 2, t: b.textContent.trim() }; })()`);
+  if (!r) return { clicked: null, sent: -1 };
+  const n0 = reqs.filter(u => /\/api\/community\//.test(u)).length;
+  for (const type of ['mousePressed', 'mouseReleased']) await cmd('Input.dispatchMouseEvent', { type, x: r.x, y: r.y, button: 'left', clickCount: 1 });
+  await sleep(1000);
+  return { clicked: r.t, sent: reqs.filter(u => /\/api\/community\//.test(u)).length - n0, error: await ev(`!!document.querySelector('main .error')`) };
+};
+const look = (sel) => ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return null; const cs = getComputedStyle(b);
+  const p = document.createElement('span'); p.style.color = 'var(--accent)'; document.body.append(p); const accent = getComputedStyle(p).color; p.style.color = 'GrayText'; const gray = getComputedStyle(p).color; p.remove();
+  return { color: cs.color, deco: cs.textDecorationLine, cursor: cs.cursor, accent, gray }; })()`);
+const communityReady = `!!document.querySelector('main table.grid button.link')`;
+
+if (mode === 'live') {
+  const [U, cookie, U2, msr, msa, pga, srep, glennFile, shots] = a;
+  await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
+  await open(U + '#/customreports', `!!document.querySelector('main h2')`); await theme('light');
+  // (1) every tool clicked and run on the reader's SQL Server page and the PostgreSQL page (the 19 of B1 and its four)
+  for (const [inst, label] of [[msr, 'sqlserver'], [pga, 'postgres']]) {
+    await open(U + `#/community?i=${inst}`, communityReady);
+    const names = await ev(`[...document.querySelectorAll('main table.grid button.link')].map(b => b.textContent.trim())`);
+    for (const name of names) {
+      const row = { inst: label, tool: name };
+      const off = await ev(`(() => { const b = [...document.querySelectorAll('main table.grid button.link')].find(x => x.textContent.trim() === ${JSON.stringify(name)}); return b.getAttribute('aria-disabled') === 'true' ? b.title : ''; })()`);
+      if (off) { row.result = 'off'; row.why = off.slice(0, 160); out.rows.push(row); continue; }
+      await ev(`[...document.querySelectorAll('main table.grid button.link')].find(x => x.textContent.trim() === ${JSON.stringify(name)}).click(); 1`);
+      if (name === 'SQL Server Diagnostic Queries') {
+        if (!await until(`!!document.querySelector('main input[type=file]')`)) { row.result = 'no panel'; out.rows.push(row); continue; }
+        const doc = await cmd('DOM.getDocument', { depth: -1 });
+        const f = await cmd('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: 'main input[type=file]' });
+        await cmd('DOM.setFileInputFiles', { files: [glennFile], nodeId: f.result.nodeId });
+        if (!await until(`[...document.querySelectorAll('main button.link')].some(b => b.textContent === 'Database List')`)) { row.result = 'no queries'; row.text = await ev(`document.querySelector('main [role=status]')?.textContent`); out.rows.push(row); continue; }
+        row.queries = [];
+        for (const qn of ['Version Info', 'Database List']) {
+          await ev(`[...document.querySelectorAll('main button.link')].find(b => b.textContent === ${JSON.stringify(qn)}).click(); 1`);
+          const done = await until(`[...document.querySelectorAll('main summary')].some(s => /^Query \\d+: the text sent/.test(s.textContent)) && !!document.querySelector('main .report-result') && !/^Running query/.test(document.querySelector('main .report-result')?.closest('div')?.textContent ?? '')`, 60000);
+          row.queries.push({ q: qn, done, badge: await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`), grid: await ev(`!!document.querySelector('main .report-result table.grid')`), error: await ev(`!!document.querySelector('main .report-result .error')`) });
+        }
+        row.result = row.queries.every(x => x.done && x.badge === 'done' && x.grid && !x.error) ? 'ran' : 'not ran';
+        out.rows.push(row); continue;
+      }
+      const runLabel = 'Run ' + name;
+      if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === ${JSON.stringify(runLabel)})`, 30000)) { row.result = 'no form'; row.text = await ev(`document.querySelector('main .error')?.textContent ?? ''`); out.rows.push(row); continue; }
+      row.filled = await ev(`document.querySelector('main .preset')?.textContent ?? ''`);
+      row.sessionInput = await ev(`[...document.querySelectorAll('main input')].find(i => /^@session_name/.test(i.getAttribute('aria-label') || ''))?.value ?? null`);
+      await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent === ${JSON.stringify(runLabel)}).click(); 1`);
+      // the panel's own status line (every grid has a role=status count of its own: ui.ts filter-count)
+      const st = `([...document.querySelectorAll('main button')].find(b => b.textContent === ${JSON.stringify(runLabel)})?.closest('section')?.querySelector('p[role=status]:not(.filter-count)')?.textContent ?? '')`;
+      const ran = await until(`/^Ran at/.test(${st}) || [...document.querySelectorAll('main section .error')].some(e => !e.closest('details'))`, 75000);
+      row.result = ran ? await ev(`/^Ran at/.test(${st}) ? 'ran' : 'error'`) : 'timeout';
+      row.badge = await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`);
+      row.error = await ev(`[...document.querySelectorAll('main section .error')].find(e => !e.closest('details'))?.textContent?.slice(0, 160) ?? ''`);
+      row.note = await ev(`document.querySelector('main .report-result .refused')?.textContent?.slice(0, 160) ?? ''`);
+      out.rows.push(row); console.error(JSON.stringify(row));
+    }
+    await shot(shots, `live-${label}-light`);
+  }
+  // (2) the sa page: every tool off; keyboard reach, the accessibility tree's description, a mouse click sends nothing; the look
+  await open(U + `#/community?i=${msa}`, communityReady);
+  out.msaTab = await tabWalk(220);
+  out.msaAx = await axOff();
+  out.msaClick = await clickOff('main table.grid button.link[aria-disabled="true"]');
+  out.look = { light: await look('main table.grid button.link[aria-disabled="true"]') };
+  await shot(shots, 'live-msa-light');
+  await theme('dark'); await open(U + `#/community?i=${msa}`, communityReady);
+  out.look.dark = await look('main table.grid button.link[aria-disabled="true"]');
+  await shot(shots, 'live-msa-dark');
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'forced-colors', value: 'active' }] });
+  await sleep(400);
+  out.look.forced = await look('main table.grid button.link[aria-disabled="true"]');
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] }); await theme('light');
+  // (3) the DOM check: wave 4's pages, signed in and on the -no-login serve; the self-test first
+  await open(U + `#/community?i=${msa}`, communityReady);
+  const before = await offCheck('selftest');
+  // four off buttons without a reason, each a way to miss one: no description, one naming no element, a hidden one, a
+  // badge word alone
+  await ev(`(() => { const m = document.querySelector('main');
+    const mk = (t, d) => { const b = document.createElement('button'); b.textContent = 'planted ' + t; b.setAttribute('aria-disabled', 'true'); if (d) b.setAttribute('aria-describedby', d); m.append(b); };
+    const span = (id, text, hidden) => { const s = document.createElement('span'); s.id = id; s.textContent = text; s.hidden = hidden; m.append(s); };
+    span('planted-hidden', 'a reason', true); span('planted-word', 'off', false);
+    mk('none'); mk('missing', 'planted-missing'); mk('hidden', 'planted-hidden'); mk('word', 'planted-word'); return 1; })()`);
+  const planted = await offCheck('selftest');
+  out.selftest = { before: before.bad.length, after: planted.bad.length, names: planted.bad };
+  for (const [base, tag] of [[U, 'signed in'], [U2, '-no-login']]) {
+    for (const [hash, ready] of [['#/customreports', `!!document.querySelector('main h2')`], [`#/customreports?report=${srep}`, `[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run')`],
+      [`#/community?i=${msr}`, communityReady], [`#/community?i=${msa}`, communityReady], [`#/community?i=${pga}`, communityReady], ['#/reportmail', `[...document.querySelectorAll('main button')].some(b => /New schedule/.test(b.textContent))`]]) {
+      await open(base + hash, ready);
+      out.dom.push(await offCheck(`${tag} ${hash}`));
+    }
+  }
+  // the bar's Mail... dialog (Report mail's controls inside a dialog: Send now is off until an address is typed)
+  await open(U + '#/customreports', `!!document.querySelector('main h2')`);
+  const mailLabel = "signed in the bar's Mail... dialog";
+  if (await ev(`(() => { const b = [...document.querySelectorAll('#bar button')].find(x => x.textContent === 'Mail...'); if (!b) return false; b.click(); return true; })()`)
+      && await until(`!!document.querySelector('dialog[open]')`, 15000)) {
+    await sleep(300);
+    out.dom.push(await offCheck(mailLabel));
+    await shot(shots, 'mail-dialog-light');
+    await ev(`document.querySelector('dialog[open]').close(); 1`);
+  } else out.dom.push({ label: mailLabel, off: 0, bad: ['the dialog did not open'] });
+  await open(U2 + `#/community?i=${msr}`, communityReady);
+  out.nologinClick = await clickOff('main table.grid button.link[aria-disabled="true"]');
+  out.nologinAx = (await axOff()).slice(0, 3);
+  await shot(shots, 'nologin-msr-light');
+} else if (mode === 'bv') {
+  const [U, cookie, msr, shots] = a;
+  await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
+  await open(U + `#/community?i=${msr}`, communityReady);
+  await ev(`[...document.querySelectorAll('main table.grid button.link')].find(x => x.textContent.trim() === 'sp_HumanEventsBlockViewer').click(); 1`);
+  const b = {};
+  if (await until(`[...document.querySelectorAll('main button')].some(x => x.textContent === 'Run sp_HumanEventsBlockViewer')`, 30000)) {
+    b.filled = await ev(`document.querySelector('main .preset')?.textContent ?? ''`);
+    b.sessionInput = await ev(`[...document.querySelectorAll('main input')].find(i => /^@session_name/.test(i.getAttribute('aria-label') || ''))?.value ?? null`);
+    await ev(`[...document.querySelectorAll('main button')].find(x => x.textContent === 'Run sp_HumanEventsBlockViewer').click(); 1`);
+    const st = `([...document.querySelectorAll('main button')].find(x => x.textContent === 'Run sp_HumanEventsBlockViewer')?.closest('section')?.querySelector('p[role=status]:not(.filter-count)')?.textContent ?? '')`;
+    const ran = await until(`/^Ran at/.test(${st}) || [...document.querySelectorAll('main section .error')].some(e => !e.closest('details'))`, 75000);
+    b.result = ran ? await ev(`/^Ran at/.test(${st}) ? 'ran' : 'error'`) : 'timeout';
+    b.badge = await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`);
+    b.error = await ev(`[...document.querySelectorAll('main section .error')].find(e => !e.closest('details'))?.textContent?.slice(0, 160) ?? ''`);
+    await shot(shots, 'live-blockviewer-state-c');
+  } else b.result = 'no form';
+  out.bv = b;
+} else if (mode === 'state') {
+  // U3: each step opens a community page (or the fleet page and its picker), optionally types the database and clicks
+  // Look again (until a tool is on, when asked), then reads every tool: on or off, the reason it is described by, the
+  // 'before it runs' cell; and optionally clicks a tool, fills its parameters, runs it and reads what the page drew
+  const [U, cookie, specFile, shots] = a;
+  await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
+  const spec = JSON.parse(fs.readFileSync(specFile, 'utf8'));
+  out.steps = [];
+  const tools = () => ev(`[...document.querySelectorAll('main table.grid button.link')].map(b => ({ name: b.textContent.trim(), off: b.getAttribute('aria-disabled') === 'true',
+    desc: (b.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent ?? '').join(' ').replace(/\\s+/g, ' ').trim().slice(0, 400),
+    cell: (b.closest('tr')?.cells?.[2]?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 400) }))`);
+  const lookAgain = async () => {
+    const t0 = Date.now();
+    await ev(`(() => { window.__old = document.querySelector('main table.grid'); [...document.querySelectorAll('main button')].find(b => b.textContent === 'Look again').click(); return 1; })()`);
+    const ready = await until(`!!document.querySelector('main table.grid') && document.querySelector('main table.grid') !== window.__old`, 40000);
+    await sleep(300);
+    return { ready, ms: Date.now() - t0 };
+  };
+  for (const s of spec) {
+    const o = { label: s.label };
+    await open(U + '#/customreports', `!!document.querySelector('main h2')`);   // a hash of its own between steps: each page renders anew
+    if (s.picker) {
+      await open(U + '#/community', `!!document.querySelector('main select')`);
+      o.option = await ev(`[...document.querySelectorAll('main select option')].some(x => x.value === ${JSON.stringify(String(s.picker))})`);
+      const t0 = Date.now();
+      await ev(`(() => { const p = document.querySelector('main select'); p.value = ${JSON.stringify(String(s.picker))}; p.dispatchEvent(new Event('change')); return 1; })()`);
+      o.ready = await until(communityReady, 40000); o.ms = Date.now() - t0;
+    } else {
+      await open(U + s.hash, s.ready || communityReady);
+    }
+    if (s.read) o.read = await ev(s.read);
+    if (s.db !== undefined) await ev(`(() => { const i = [...document.querySelectorAll('main input')].find(x => /^Database the/.test(x.getAttribute('aria-label') || '')); i.value = ${JSON.stringify(s.db)}; return 1; })()`);
+    if (s.fresh) { const r = await lookAgain(); o.ready = r.ready; o.ms = r.ms; o.looks = 1; }
+    if (s.freshUntilOn) {
+      for (o.looks = 0; o.looks < 6; ) {
+        const on = await ev(`[...document.querySelectorAll('main table.grid button.link')].some(b => b.textContent.trim() === ${JSON.stringify(s.freshUntilOn)} && b.getAttribute('aria-disabled') !== 'true')`);
+        if (on) break;
+        await sleep(2000); await lookAgain(); o.looks++;
+      }
+    }
+    o.tools = await tools();
+    o.box = await ev(`document.querySelector('main .needs')?.textContent?.replace(/\\s+/g, ' ').slice(0, 400) ?? ''`);
+    if (s.run) {
+      const r = s.run, runName = 'Run ' + r.tool;
+      await ev(`[...document.querySelectorAll('main table.grid button.link')].find(x => x.textContent.trim() === ${JSON.stringify(r.tool)}).click(); 1`);
+      const secX = `[...document.querySelectorAll('main button')].find(x => x.textContent === ${JSON.stringify(runName)})?.closest('section')`;
+      if (!await until(`!!(${secX})`, 30000)) o.result = 'no form';
+      else {
+        o.filled = await ev(`${secX}.querySelector('.preset')?.textContent ?? ''`);
+        o.inputs = await ev(`Object.fromEntries([...${secX}.querySelectorAll('input')].filter(i => /^@/.test(i.getAttribute('aria-label') || '')).map(i => [i.getAttribute('aria-label').split(' ')[0], i.value]))`);
+        for (const [k, v] of Object.entries(r.params || {})) {
+          const done = await ev(`(() => { const i = [...${secX}.querySelectorAll('input')].find(x => (x.getAttribute('aria-label') || '').split(' ')[0].toLowerCase() === ${JSON.stringify(k.toLowerCase())}); if (!i) return false; i.value = ${JSON.stringify(v)}; return true; })()`);
+          if (!done) throw new Error(`${r.tool}: no input ${k}`);
+        }
+        await ev(`[...document.querySelectorAll('main button')].find(x => x.textContent === ${JSON.stringify(runName)}).click(); 1`);
+        const st = `(${secX}?.querySelector('p[role=status]:not(.filter-count)')?.textContent ?? '')`;
+        // a run's own error box, never the help's inside its closed details
+        const errX = `[...(${secX}?.querySelectorAll('.error') ?? [])].filter(e => !e.closest('details'))`;
+        const ran = await until(`/^Ran at/.test(${st}) || ${errX}.length > 0`, 90000);
+        o.result = ran ? await ev(`/^Ran at/.test(${st}) ? 'ran' : 'error'`) : 'timeout';
+        o.badge = await ev(`${secX}?.querySelector('.report-result .badge')?.textContent ?? ''`);
+        o.note = await ev(`${secX}?.querySelector('.report-result .refused')?.textContent?.slice(0, 300) ?? ''`);
+        o.error = await ev(`${errX}.map(e => e.textContent).join(' ').slice(0, 300)`);
+      }
+    }
+    if (s.shot) await shot(shots, s.shot);
+    console.error(JSON.stringify({ label: o.label, ms: o.ms, result: o.result }));
+    out.steps.push(o);
+  }
+} else {
+  const [U4, dms, dpg, realMsr, shots] = a;
+  out.demo = [];
+  for (const t of ['light', 'dark']) {
+    await open(U4 + '#/summary', `!!document.querySelector('main')`); await theme(t);
+    for (const [inst, label] of [[dms, 'sqlserver'], [dpg, 'postgres']]) {
+      await open(U4 + `#/community?i=${inst}`, communityReady);
+      const s = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')];
+        const desc = b => (b.getAttribute('aria-describedby') || '').split(/\\s+/).map(i => document.getElementById(i)?.textContent ?? '').join(' ');
+        return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true' && /is a demo instance/.test(desc(b))).length,
+          box: document.querySelector('main .needs')?.textContent?.slice(0, 200) ?? '', error: !!document.querySelector('main .error'), nologin: /-no-login/.test(document.querySelector('main')?.textContent ?? '') }; })()`);
+      s.label = `${t} ${label}`;
+      if (t === 'light') { s.click = await clickOff('main table.grid button.link[aria-disabled="true"]'); s.ax = (await axOff()).slice(0, 2); s.dom = await offCheck(`demo ${label}`); }
+      out.demo.push(s);
+      await shot(shots, `demo-${label}-${t}`);
+    }
+  }
+  // the fleet page's picker reaches the same state
+  await open(U4 + '#/community', `!!document.querySelector('main select')`);
+  await ev(`(() => { const s = document.querySelector('main select'); s.value = ${JSON.stringify(String(dms))}; s.dispatchEvent(new Event('change')); return 1; })()`);
+  await until(communityReady);
+  out.picker = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')]; return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true').length, box: document.querySelector('main .needs')?.textContent?.slice(0, 120) ?? '' }; })()`);
+  // the real instance served beside the demo's: its own state, never the demo line
+  await open(U4 + `#/community?i=${realMsr}`, communityReady);
+  out.real = await ev(`(() => { const m = document.querySelector('main')?.textContent ?? ''; return { demoLine: /is a demo instance/.test(m), nologin: /-no-login/.test(m), off: [...document.querySelectorAll('main table.grid button.link')].filter(b => b.getAttribute('aria-disabled') === 'true').length }; })()`);
+}
+console.log(JSON.stringify(out));
+ws.close(); process.exit(0);
+JS
+  SHOTS=${PGVIGIL_SHOTS:-$WORK/shots}
+  if [[ -z "$SKIP_MSSQL" ]]; then
+    timeout 1500 node "$WORK/buttons.mjs" live "$CDP" "$U/" "$COOKIE" "$U2/" "$MRID" "$MAID" "$AID" "$SREP" "$WORK/glenn.sql" "$SHOTS" > "$WORK/buttons.json" 2>"$WORK/buttons.err" || { rc=$?; fail "U2: the live driver ended $rc$([[ $rc == 124 ]] && echo ' (killed at its 1500 s cap)'): $(tail -5 "$WORK/buttons.err")"; }
+    python3 - "$WORK/buttons.json" "$XES" <<'PY' || fail "U2: see above"
+import json, sys
+d = json.load(open(sys.argv[1])); rows = d['rows']; bad = []
+for r in rows:
+    tag = f"{r['inst']} {r['tool']}"
+    good = r.get('result') == 'ran' and (r['tool'] == 'SQL Server Diagnostic Queries' or (r.get('badge') == 'done' and not r.get('error')))
+    extra = json.dumps(r['queries']) if r.get('queries') else (r.get('error') or r.get('note') or r.get('why') or '')[:140]
+    print(('ok   ' if good else 'FAIL ') + f"U2: {tag}: {r.get('result')} {r.get('badge', '')} {extra}")
+    if not good: bad.append(tag)
+n_ms = sum(1 for r in rows if r['inst'] == 'sqlserver'); n_pg = sum(1 for r in rows if r['inst'] == 'postgres')
+assert n_ms == 14 and n_pg == 10, f"U2: {n_ms} SQL Server and {n_pg} PostgreSQL tools on the pages, not 14 and 10"
+assert not bad, f"U2: {len(bad)} tool(s) did not end 'Ran at' with done: {bad}"
+print(f"ok   U2: all {n_ms + n_pg} tools clicked and run on the rig: each ended 'Ran at' with done (Glenn's two fixture queries with their grids)")
+bv = next(r for r in rows if r['tool'] == 'sp_HumanEventsBlockViewer'); xes = sys.argv[2]
+assert bv.get('sessionInput') == xes and xes in (bv.get('filled') or ''), f"U2: sp_HumanEventsBlockViewer's default click in state (b): {bv}"
+print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (b): @session_name filled {xes} (the running session with the blocked process report), said, done")
+ax, tab = d['msaAx'], d['msaTab']
+assert len(ax) == 14 and all(x['same'] for x in ax), f"U2: the sa page's off tools in the accessibility tree: {[(x['name'], x['same'], x['axDesc'][:60]) for x in ax]}"
+assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: Tab reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
+print(f"ok   U2: pgcr-msa: Tab reaches all {len(tab)} off tools; each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
+c = d['msaClick']; assert c['clicked'] and c['sent'] == 0 and not c['error'], f"U2: a mouse click on an off tool: {c}"
+lk = d['look']
+for t in ('light', 'dark'):
+    x = lk[t]; assert x['deco'] == 'none' and x['color'] != x['accent'] and x['cursor'] == 'not-allowed', f"U2: the off look in {t}: {x}"
+assert lk['forced']['color'] == lk['forced']['gray'], f"U2: under forced colours the off tool is {lk['forced']['color']}, GrayText is {lk['forced']['gray']}"
+print(f"ok   U2: a mouse click on {c['clicked']} sent nothing; off drawn muted, no underline, not-allowed (light {lk['light']['color']}, dark {lk['dark']['color']}), GrayText under forced colours ({lk['forced']['color']})")
+st = d['selftest']; assert st['after'] == st['before'] + 4 and sum('planted' in n for n in st['names']) == 4, f"U2: the self-test: {st}"
+print(f"ok   U2: the DOM check's self-test: 4 planted off buttons without a reason counted - none, a missing id, hidden, a badge word alone ({st['before']} -> {st['after']})")
+for p in d['dom']:
+    print(('ok   ' if not p['bad'] else 'FAIL ') + f"U2: DOM {p['label']}: {p['off']} off control(s), {len(p['bad'])} without a visible reason {p['bad'][:4]}")
+domBad = [p for p in d['dom'] if p['bad']]
+nl = [p for p in d['dom'] if p['label'].startswith('-no-login')]
+md = [p for p in d['dom'] if 'Mail... dialog' in p['label']]
+assert md and md[0]['off'] > 0, f"U2: the bar's Mail... dialog showed no off control (Send now is off until an address is typed): {md}"
+assert all(p['off'] > 0 for p in nl), f"U2: a -no-login page with no off control: {[(p['label'], p['off']) for p in nl]}"
+c = d['nologinClick']; assert c['clicked'] and c['sent'] == 0, f"U2: a click on the -no-login serve: {c}"
+ax = d['nologinAx']; assert ax and all(x['same'] for x in ax), f"U2: the -no-login page's off tools in the accessibility tree: {ax}"
+assert not domBad, f"U2: {len(domBad)} page(s) with an off control without its reason"
+print(f"ok   U2: -no-login: a click on {c['clicked']} sent nothing; its off tools' accessibility-tree descriptions are their reasons")
+PY
+    # state (c): the session dropped (threshold still 5): the default click reads system_health and says why
+    sq "ALTER EVENT SESSION [$XES] ON SERVER STATE = STOP; DROP EVENT SESSION [$XES] ON SERVER;" >/dev/null || fail "U2: the session dropped"
+    [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" ]] || fail "U2: state (c) after the drop: $(tl "t['sp_HumanEventsBlockViewer']")"
+    timeout 300 node "$WORK/buttons.mjs" bv "$CDP" "$U/" "$COOKIE" "$MRID" "$SHOTS" > "$WORK/bv.json" 2>"$WORK/bv.err" || fail "U2: the state (c) driver: $(tail -5 "$WORK/bv.err")"
+    python3 - "$WORK/bv.json" <<'PY' || fail "U2: see above"
+import json, sys
+b = json.load(open(sys.argv[1]))['bv']
+assert b['sessionInput'] == 'system_health' and 'no running session captures the blocked process report' in b['filled'] and b['result'] == 'ran' and b['badge'] == 'done' and not b['error'], f"U2: the state (c) default click: {b}"
+print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (c) (threshold 5, no session): system_health filled, the note shown ('{b['filled'][:80]}...'), Ran at, done")
+PY
+    # ---- U3: each state of the checks as the page draws it (the lead's item 8): clicks in Chromium on the instance's
+    # page, and on the fleet page's picker for the states a picker could get wrong
+    state() { timeout 400 node "$WORK/buttons.mjs" state "$CDP" "$U/" "$COOKIE" "$WORK/spec.json" "$SHOTS" > "$WORK/state-$1.json" 2>"$WORK/state-$1.err" || fail "U3: the driver ($1): $(tail -5 "$WORK/state-$1.err")"; }
+    # threshold 0 (read live, no collection after the change): the default click; the procedure's own refusals drawn as
+    # notes beside a real failure inside a kit drawn red
+    sq "EXEC sys.sp_configure 'blocked process threshold (s)', 0; RECONFIGURE;" >/dev/null || fail "U3: threshold 0"
+    cat > "$WORK/spec.json" <<EOF
+[{"label": "threshold 0: the default click", "hash": "#/community?i=$MRID", "fresh": true, "run": {"tool": "sp_HumanEventsBlockViewer"}, "shot": "u3-blockviewer-threshold0"},
+ {"label": "a typed session at threshold 0", "hash": "#/community?i=$MRID", "run": {"tool": "sp_HumanEventsBlockViewer", "params": {"@session_name": "pgcr_none"}}},
+ {"label": "a database that does not exist", "hash": "#/community?i=$MRID", "run": {"tool": "sp_IndexCleanup", "params": {"@database_name": "pgcr_nosuchdb_$N"}}, "shot": "u3-declined"},
+ {"label": "Custom reports' Recent activity", "hash": "#/customreports", "ready": "!!document.querySelector('main h2')", "read": "[...document.querySelectorAll('main table.grid tr')].filter(r => / declined: /.test(r.textContent)).map(r => [...r.querySelectorAll('.badge')].map(b => b.textContent).join(' '))"}]
+EOF
+    state declined
+    sq "DENY SELECT ON sys.dm_db_index_usage_stats TO pgcr_reader;" >/dev/null && sq "DENY VIEW DATABASE STATE TO pgcr_reader;" pgcr_seed >/dev/null || fail "U3: the DENY"
+    cat > "$WORK/spec.json" <<EOF
+[{"label": "the index usage view denied", "hash": "#/community?i=$MRID", "run": {"tool": "sp_BlitzIndex", "params": {"@DatabaseName": "pgcr_seed"}}, "shot": "u3-real-failure"}]
+EOF
+    state failed
+    sq "REVOKE SELECT ON sys.dm_db_index_usage_stats FROM pgcr_reader;" >/dev/null && sq "REVOKE VIEW DATABASE STATE FROM pgcr_reader;" pgcr_seed >/dev/null || fail "U3: the REVOKE of the DENYs"
+    # a kit sibling without EXECUTE: sp_Blitz off with the GRANT line (hard), sp_BlitzFirst on with its note
+    sq "REVOKE EXECUTE ON dbo.sp_BlitzWho FROM pgcr_reader;" >/dev/null || fail "U3: revoke sp_BlitzWho"
+    cat > "$WORK/spec.json" <<EOF
+[{"label": "sp_BlitzWho without EXECUTE", "hash": "#/community?i=$MRID", "fresh": true, "shot": "u3-sibling"}]
+EOF
+    state sibling
+    sq "GRANT EXECUTE ON dbo.sp_BlitzWho TO pgcr_reader;" >/dev/null || fail "U3: grant sp_BlitzWho back"
+    # the instance paused: Look again, then the fleet page's picker, answered within the budget with every tool off and
+    # 'not checked'; unpaused: Look again until the tools are on
+    docker pause "$CT" >/dev/null || fail "U3: docker pause"
+    cat > "$WORK/spec.json" <<EOF
+[{"label": "paused: Look again", "hash": "#/community?i=$MRID", "fresh": true, "shot": "u3-paused"},
+ {"label": "paused: the fleet page's picker", "picker": $MRID}]
+EOF
+    state paused
+    docker unpause "$CT" >/dev/null || fail "U3: docker unpause"
+    cat > "$WORK/spec.json" <<EOF
+[{"label": "unpaused: Look again", "hash": "#/community?i=$MRID", "freshUntilOn": "sp_WhoIsActive"}]
+EOF
+    state unpaused
+    python3 - "$WORK" "$MSR" "$N" <<'PY' || fail "U3: see above"
+import json, sys
+w, msr, n = sys.argv[1:4]
+st = lambda f: json.load(open(f'{w}/state-{f}.json'))['steps']
+T = lambda o: {t['name']: t for t in o['tools']}
+a, b, c, ra = st('declined')
+assert a['ready'] and T(a)['sp_HumanEventsBlockViewer']['off'] is False and 'blocked process threshold 0' in T(a)['sp_HumanEventsBlockViewer']['cell'], f"U3: threshold 0 before the click: {T(a).get('sp_HumanEventsBlockViewer')}"
+assert a['inputs'].get('@session_name') == 'system_health' and 'system_health' in a['filled'] and a['result'] == 'ran' and a['badge'] == 'done' and not a['error'], f"U3: the default click at threshold 0: {a}"
+print(f"ok   U3: threshold 0 (read live): sp_HumanEventsBlockViewer on with its note, the default click filled system_health ('{a['filled'][:70]}...'), Ran at, done")
+for x, words in ((b, 'lousy version in system_health'), (c, 'No valid databases found to process.')):
+    assert x['result'] == 'ran' and x['badge'] == 'declined' and words in x['note'] and not x['error'], f"U3: {x['label']}: {x}"
+assert ra['read'] and all(x == 'declined' for x in ra['read']), f"U3: Custom reports' Recent activity on the declined runs: {ra['read']}"
+print(f"ok   U3: Custom reports' Recent activity draws the {len(ra['read'])} declined community runs 'declined', not failed")
+print(f"ok   U3: the procedures' own refusals drawn as notes 'declined' with their words, no error box (sp_HumanEventsBlockViewer: '{b['note'][:60]}...'; sp_IndexCleanup: '{c['note'][:60]}')")
+(f,) = st('failed')
+assert f['badge'] == 'failed' and 'SELECT permission was denied' in f['error'] and not f['note'], f"U3: the real failure: {f}"
+print(f"ok   U3: a real failure inside sp_BlitzIndex drawn red beside them: badge failed, the error box '{f['error'][:90]}'")
+(g,) = st('sibling'); t = T(g)
+assert t['sp_Blitz']['off'] and 'sp_BlitzWho' in t['sp_Blitz']['desc'] and 'GRANT EXECUTE ON dbo.[sp_BlitzWho]' in t['sp_Blitz']['desc'], f"U3: sp_Blitz with sp_BlitzWho revoked: {t['sp_Blitz']}"
+assert not t['sp_BlitzFirst']['off'] and 'note' in t['sp_BlitzFirst']['cell'] and 'sp_BlitzWho' in t['sp_BlitzFirst']['cell'], f"U3: sp_BlitzFirst with sp_BlitzWho revoked: {t['sp_BlitzFirst']}"
+print(f"ok   U3: sp_BlitzWho without EXECUTE: sp_Blitz off with the GRANT line as its description, sp_BlitzFirst on with its note")
+for x in st('paused'):
+    ts = x['tools']
+    assert x.get('option', True) and x['ready'] and x['ms'] <= 6500 and len(ts) == 14 and all(t['off'] for t in ts) and all('not checked: the checks of ' + msr + ' took over 5 s' in t['desc'] for t in ts), f"U3: {x['label']}: {x['ms']} ms, {[(t['name'], t['off'], t['desc'][:60]) for t in ts][:3]}"
+    print(f"ok   U3: {x['label']}: answered in {x['ms']} ms, 14 of 14 tools off, each described 'not checked: the checks of {msr} took over 5 s ...'")
+(u,) = st('unpaused')
+assert not T(u)['sp_WhoIsActive']['off'] and u['looks'] < 6, f"U3: unpaused: {u['looks']} Look again clicks, {T(u)['sp_WhoIsActive']}"
+print(f"ok   U3: unpaused: sp_WhoIsActive on again after {u['looks']} Look again click(s)")
+PY
+    sq "EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || true
+  else NOTPROVEN+=("U2: the live page rows need the SQL Server part"); fi
+  # U3 on PostgreSQL: the stopped instance on its page and on the picker; 55000 beside 42P01 on the cluster that does not
+  # load pg_stat_statements
+  npsteps=""
+  [[ -n "${NPID:-}" ]] && npsteps=",
+ {\"label\": \"created, not loaded\", \"hash\": \"#/community?i=$NPID\", \"fresh\": true, \"shot\": \"u3-not-loaded\"},
+ {\"label\": \"not created\", \"hash\": \"#/community?i=$NPID\", \"db\": \"pgcr_nx\", \"fresh\": true}"
+  cat > "$WORK/spec.json" <<EOF
+[{"label": "stopped: Look again", "hash": "#/community?i=$DID", "fresh": true, "shot": "u3-stopped"},
+ {"label": "stopped: the fleet page's picker", "picker": $DID}$npsteps]
+EOF
+  timeout 400 node "$WORK/buttons.mjs" state "$CDP" "$U/" "$COOKIE" "$WORK/spec.json" "$SHOTS" > "$WORK/state-pg.json" 2>"$WORK/state-pg.err" || fail "U3: the driver (pg): $(tail -5 "$WORK/state-pg.err")"
+  python3 - "$WORK/state-pg.json" "$INSTD" <<'PY' || fail "U3: see above"
+import json, sys
+steps = json.load(open(sys.argv[1]))['steps']; down = sys.argv[2]
+for x in steps[:2]:
+    ts = x['tools']
+    assert x.get('option', True) and x['ready'] and len(ts) == 10 and all(t['off'] for t in ts) and all(f'not checked: the connection to {down}' in t['desc'] for t in ts), f"U3: {x['label']}: {[(t['name'], t['off'], t['desc'][:60]) for t in ts][:3]}"
+    print(f"ok   U3: {x['label']}: answered in {x['ms']} ms, 10 of 10 tools off, each described 'not checked: the connection to {down} ...'")
+if len(steps) > 2:
+    nl = {t['name']: t for t in steps[2]['tools']}['Top statements']; nc = {t['name']: t for t in steps[3]['tools']}['Top statements']
+    assert nl['off'] and 'pg_stat_statements is created in postgres but not loaded' in nl['desc'] and 'shared_preload_libraries' in nl['desc'], f"U3: created, not loaded: {nl}"
+    assert nc['off'] and 'pg_stat_statements is not created in the database pgcr_nx' in nc['desc'], f"U3: not created: {nc}"
+    print(f"ok   U3: Top statements off on the cluster without the library: 'created in postgres but not loaded' (55000) beside 'not created in the database pgcr_nx', each its description")
+PY
+  # the demo seeded into this proof's repository beside its real instances, served by pgvigil demo (no login, no doors)
+  PORT4=$(freeport); U4="http://127.0.0.1:$PORT4"
+  "$BIN" demo -config "$CFG" -days 1 -serve -listen "127.0.0.1:$PORT4" > "$WORK/demo.log" 2>&1 & SRV4=$!
+  for _ in $(seq 1 300); do grep -q 'pgvigil demo serving' "$WORK/demo.log" && break; kill -0 "$SRV4" 2>/dev/null || fail "U2: the demo serve died: $(tail -5 "$WORK/demo.log")"; sleep 1; done
+  grep -q 'pgvigil demo serving' "$WORK/demo.log" || fail "U2: the demo did not come up in 300 s: $(tail -3 "$WORK/demo.log")"
+  DMS=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
+  DPG=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'postgres' order by name limit 1")
+  [[ -n $DMS && -n $DPG ]] || fail "U2: the demo seeded no SQL Server or no PostgreSQL instance"
+  timeout 900 node "$WORK/buttons.mjs" demo "$CDP" "$U4/" "$DMS" "$DPG" "${MRID:-$AID}" "$SHOTS" > "$WORK/demo.json" 2>"$WORK/demo.err" || fail "U2: the demo driver: $(tail -5 "$WORK/demo.err")"
+  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" <<'PY' || fail "U2: see above"
+import json, sys
+d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'
+for s in d['demo']:
+    want = 14 if s['label'].endswith('sqlserver') else 10
+    assert s['n'] == want and s['off'] == want and 'is a demo instance' in s['box'] and not s['error'] and not s['nologin'], f"U2: demo {s['label']}: {s}"
+    if 'click' in s:
+        assert s['click']['sent'] == 0 and all(x['same'] for x in s['ax']) and not s['dom']['bad'], f"U2: demo {s['label']}: click {s['click']}, ax {s['ax']}, dom {s['dom']}"
+    print(f"ok   U2: demo {s['label']}: {s['off']} of {s['n']} tools off with the demo line beside them and as their description; no error box" + (f"; a click sent nothing" if 'click' in s else ''))
+p = d['picker']; assert p['n'] == 14 and p['off'] == 14 and 'is a demo instance' in p['box'], f"U2: the fleet page's picker on the demo: {p}"
+print(f"ok   U2: demo fleet page, picker: the same 14 off with the demo line")
+r = d['real']
+assert not r['demoLine'] and r['nologin'] and r['off'] == (14 if real_ms else 10), f"U2: the real instance served beside the demo: {r}"
+print(f"ok   U2: pgvigil demo -serve -config: the real instance shows its own state (-no-login, {r['off']} off), never the demo line")
 PY
 fi
 

@@ -27,7 +27,9 @@
 #     T8 every live row ended (inherit) before the clicks: drives_now back at the default on every drive.
 #  R. the reads (a -no-login serve of the demo): GET /api/drives: counts.drives = drives_now's rows; status=critical,
 #     warning gives exactly the drives in those states; instance=<erp01> only its drives; instances=0 none; status=bogus
-#     400. /api/drives/history for erp01's data volume: 2 points at least. /api/dbspace: one row per active instance
+#     400. /api/drives/history for erp01's data volume: 2 points at least; its windows: minutes=525600 (a year) 2 points
+#     at least, minutes=5 answers with one point at most and 'newest' = the drive's 5 newest reads (the newest one's
+#     used bytes = host_disk_history's), days=90 still taken, minutes=7 and days=45 400. /api/dbspace: one row per active instance
 #     with databases (15); a SQL Server row's used is the files' used summed where every file's was read and none
 #     where one was not (the demo's database the login cannot enter) [fixed after s176-c2: it said 'each with used read'];
 #     instance=<sql01>: databases 1+ and history 2+ points.
@@ -59,7 +61,7 @@
 #     the run: the separate data-directory row is gone, it counted pg_default's bytes twice]; /api/collectiondates: one row per active instance and collection, each status critical, warning,
 #     ok or disabled, critical exactly where the last run failed; ?instance=<sql01> its own rows only.
 #  C adds: Collection opens Collection dates on both engines; Database state opens Database options (PostgreSQL
-#     pgdboptions; SQL Server the Checks page with cv=databases); QS opens pgstate / mssqlqs; Uptime opens the dialog
+#     pgdboptions; SQL Server the Checks page with cv=databases); QS (SQL Server alone) opens mssqlqs, pg_stat_statements (PostgreSQL alone) pgstate; Uptime opens the dialog
 #     over the Summary (the address unchanged, the dialog names the instance and 'In force: warning under .. hours,
 #     critical under .. hours'), on both engines; no named difference is left for those four; each drive's Files link
 #     under erp01 and sql01 opens 'Files on <drive>' listing only that drive's files; the PostgreSQL strip holds Temp.
@@ -291,6 +293,18 @@ N=$(q "select count(*) from pgvigil.drives_now")
 DATA=$(q "select mount_point from pgvigil.host_disks where instance_id = $ERP and is_present order by holds_data desc nulls last limit 1")
 H=$(js "drives/history?instance=$ERP&drive=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$DATA")" "print(len(rows('history')))")
 (( H >= 2 )) || fail "R: drives/history of $DATA: $H points"
+DQ=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$DATA")
+HY=$(js "drives/history?instance=$ERP&drive=$DQ&minutes=525600" "print(len(rows('history')))"); (( HY >= 2 )) || fail "R: drives/history over a year: $HY points"
+# the newest read's bytes are read from the repository before and after the API call: a read stored between the two is no fault
+U5Q="select used_bytes from pgvigil.host_disk_history where instance_id = $ERP and mount_point = \$\$$DATA\$\$ order by snapshot_at desc limit 1"
+U5A=$(q "$U5Q")
+H5=$(js "drives/history?instance=$ERP&drive=$DQ&minutes=5" "n=rows('newest'); print(len(rows('history')), len(n), int(n[0]['used_bytes']))")
+U5B=$(q "$U5Q")
+[[ "$H5" =~ ^[0-1]\ 5\ ($U5A|$U5B)$ ]] || fail "R: drives/history over 5 minutes: '$H5' (points: one at most, a PostgreSQL volume is stored every 15 minutes; the 5 newest reads; the newest read's used bytes, the repository's $U5A / $U5B)"
+(( $(js "drives/history?instance=$ERP&drive=$DQ&days=90" "print(len(rows('history')))") >= 2 )) || fail "R: drives/history days=90"
+for bad in minutes=7 days=45 minutes=x; do
+  [[ $(curl -s -o /dev/null -w '%{http_code}' "$U/api/drives/history?instance=$ERP&drive=$DQ&$bad") == 400 ]] || fail "R: drives/history $bad is not refused"
+done
 NI=$(js dbspace "print(len(rows('instances')))"); [[ "$NI" == $(q "select count(*) from pgvigil.instances where is_active") ]] || fail "R: dbspace rows $NI"
 USED=$(q "select coalesce(string_agg(i.name || ':' || coalesce(x.u::text, 'none'), ',' order by i.name), '') from pgvigil.instances i cross join lateral (select case when bool_and(f.used_read) then sum(f.used_bytes) end u from pgvigil.mssql_files f where f.instance_id = i.instance_id and f.is_present) x where i.is_active and i.engine = 'sqlserver'")
 [[ $(js dbspace "print(','.join(sorted(r['instance'] + ':' + (str(int(r['used_bytes'])) if r['used_bytes'] is not None else 'none') for r in rows('instances') if r['engine'] == 'sqlserver')))") == "$USED" ]] || fail "R: SQL Server used [$USED] differs from dbspace's"
@@ -313,7 +327,7 @@ VOLS=$(q "select string_agg(volume, '|') from pgvigil.mssql_volumes where instan
 [[ $(VOLS="$VOLS" js "driveperf?instance=$SQL1" "v=set(os.environ['VOLS'].split('|'))|{'drive not read'}; r=rows('series'); print(int(len(r) >= 1 and all(x['drive'] in v for x in r)))") == 1 ]] || fail "R: driveperf of sql01"
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' "$U/api/drives/thresholds") == 403 ]] || fail "R: a write without the header"
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/drives/thresholds") == 403 ]] || fail "R: a write without the login"
-ok "R: drives, history ($H points), dbspace ($NI instances), dbfiles (sql01 on $EVOL, erp01's pg_wal on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
+ok "R: drives, history ($H points; a year $HY; 5 minutes '$H5'; a window off the list refused), dbspace ($NI instances), dbfiles (sql01 on $EVOL, erp01's pg_wal on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
 
 echo "== C the click map (headless Chromium on CDP $CDP)"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
@@ -349,10 +363,12 @@ for s in ('root', 'tag ' + d['tag'], 'PostgreSQL ' + d['pg'], 'SQL Server ' + d[
     if len(t) < 6: bad.append('%d Storage tabs at %s' % (len(t), s))
 # task 176b: the four landings DBA Dash's map now holds, the Uptime dialog, a drive's Files, the PostgreSQL Temp tab
 for e in ('postgres', 'sqlserver'):
-    for c in ('Snapshot Age', 'Database State', 'QS', 'Instance Uptime'):
+    # QS is SQL Server's Query Store alone; PostgreSQL's statement store is its own column (Allen 2026-11-12)
+    for c in ('Snapshot Age', 'Database State', 'QS' if e == 'sqlserver' else 'pg_stat_statements', 'Instance Uptime'):
         got = has(scope='root', kind='cell', column=c, engine=e)
         if not got: bad.append('no %s cell of %s at the root' % (c, e))
         elif any('named difference' in x['verdict'] for x in got): bad.append('%s of %s still a named difference' % (c, e))
+    if has(scope='root', kind='cell', column='pg_stat_statements' if e == 'sqlserver' else 'QS', engine=e): bad.append('a %s cell is a link on %s' % ('pg_stat_statements' if e == 'sqlserver' else 'QS', e))
     if not [x for x in r if x['kind'] == 'cell' and x['column'] == 'Instance Uptime' and x['engine'] == e and 'dialog over the Summary' in x['landed']]: bad.append('no Instance Uptime dialog clicked on ' + e)
 for s in ('PostgreSQL ' + d['pg'], 'SQL Server ' + d['ms']):
     if not [x for x in has(scope=s, kind='drive-files') if x['verdict'].startswith('ok')]: bad.append('no drive Files link checked at ' + s)

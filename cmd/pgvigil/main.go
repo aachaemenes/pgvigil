@@ -325,6 +325,12 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	if !ok {
 		return fmt.Errorf("repository schema is behind this binary (needs %s): run 'pgvigil migrate' as the repository owner", latest)
 	}
+	// task 201: the heartbeat (the Collector page; many collectors may share a repository, one per host)
+	waitBeat, err := collect.StartHeartbeat(ctx, log, cfg.Repository.DSN(), collect.HeartbeatInfo{Version: version})
+	if err != nil {
+		return err
+	}
+	defer waitBeat() // the last minute and the stop mark are written before the process ends
 	go func() {
 		if err := dbadash.Run(ctx, log, cfg.Repository.DSN(), cfg.DBADash); err != nil {
 			log.Warn("dbadash door stopped", "err", err)

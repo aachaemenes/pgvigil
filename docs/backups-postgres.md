@@ -56,7 +56,9 @@ Instances are grouped into clusters by system identifier: per cluster the primar
 
 A crash restart is read from the server log's crash events (the [log reader](logs.md): a backend killed by a signal, the restart of the others, the kernel's kill -9 of a backend): one row per restart, the first event with no other in the minute before it, its signal and message. The Summary cell is critical while the newest crash not acknowledged is within 48 hours, warning within 168 (the `crash` thresholds), and OK after. **Acknowledge** (the Server state tab, or the Summary's own) clears every crash up to then; a newer crash colours the cell again. Without the log reader nothing is seen: the cell then says OK with nothing read, the Logs tab says why.
 
-## The statement store (the QS column)
+## The statement store (the pg_stat_statements column)
+
+PostgreSQL has no Query Store: the Summary's QS column is SQL Server's alone and reads n/a on a PostgreSQL instance. PostgreSQL's statement store has its own Summary column, `pg_stat_statements`, which reads n/a on SQL Server.
 
 `pg_stat_statements` per instance: available, preloaded, created in a database read, `track`, `max`, the entries kept against `max`, the evictions (`pg_stat_statements_info.dealloc`, PostgreSQL 14 and later) in 24 hours and since the last reset, the last reset. The cell warns on evictions in 24 hours (raise `pg_stat_statements.max`) and on `track = none`; not available, not preloaded and not created are the extensions collection's findings.
 

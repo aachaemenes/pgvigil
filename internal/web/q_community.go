@@ -8,8 +8,10 @@ package web
 // "(Query n) (name)" lines and runs the query the DBA picks); and on a PostgreSQL instance pgvigil's own diagnostic
 // reads (written after the ideas of the tools docs/customreports.md names).
 //
-//	GET  /api/community?instance=N&database=D   the tools for the instance's engine, each with installed (SQL Server:
-//	                                            the procedure in database D, default master), and the instance's log
+//	GET  /api/community?instance=N&database=D   the tools for the instance's engine, each with its state before any
+//	     [&fresh=1]                             click (ready, a note, what it lacks and how to get it, not checked, a
+//	                                            demo instance), the form values it presets, and the instance's log;
+//	                                            the checks answer within 5 s and are kept 60 s (fresh=1: again)
 //	POST /api/community/params                  {instance_id, tool, database}: the procedure's parameters, its @help
 //	                                            result sets and the parameters pgvigil leaves out (a run of @help = 1 is
 //	                                            audited like any run)
@@ -38,10 +40,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	mssqldb "github.com/microsoft/go-mssqldb"
 )
 
 // communityTool is one entry of the catalogue.
@@ -358,9 +363,620 @@ type toolState struct {
 	communityTool
 	Installed *bool  `json:"installed"`
 	Where     string `json:"where,omitempty"`
+	// the tool's state here, said before any click: ready | note (it runs, a note beside it) | needs (off: what it
+	// lacks) | not_checked (off: a check failed or ran out of time) | demo (off: a demo instance has no server)
+	State string     `json:"state"`
+	On    bool       `json:"on"`
+	Needs []toolNeed `json:"needs"`
+	// form values the page fills in before the click (a parameter's name with its @): the run the procedure's own
+	// defaults would make is one it declines or one that reads nothing here
+	Preset map[string]string `json:"preset,omitempty"`
 }
 
-// Community is GET /api/community?instance=N&database=D.
+// toolNeed is one thing a tool lacks before it can run here, in the page's words: what is missing and the way to get
+// it. A hard need keeps the tool off (its words beside it and as its description); a note sits beside a tool that
+// still runs. How is a field of its own (a GRANT line, a configuration key, the login's name): what to ask the
+// administrator of the server for, never a statement pgvigil runs.
+type toolNeed struct {
+	What   string     `json:"what"`
+	How    string     `json:"how,omitempty"`
+	Hard   bool       `json:"hard"`
+	State  string     `json:"state"`            // needs | note | not_checked | demo
+	Source string     `json:"source,omitempty"` // server | configuration | repository | live: where the fact was read
+	ReadAt *time.Time `json:"read_at,omitempty"`
+}
+
+func hardNeed(what, how, source string) toolNeed {
+	return toolNeed{What: what, How: how, Hard: true, State: "needs", Source: source}
+}
+
+func noteNeed(what, how, source string) toolNeed {
+	return toolNeed{What: what, How: how, State: "note", Source: source}
+}
+
+// notChecked: a check that failed, was refused or ran out of time; the tool stays off (never ready on a guess).
+func notChecked(what string) toolNeed {
+	return toolNeed{What: "not checked: " + what, Hard: true, State: "not_checked", Source: "live"}
+}
+
+// communityOff is what this server lacks for any community tool to run, with the way to get it; nil = nothing.
+func (s *Server) communityOff() *toolNeed {
+	w := s.communityOffWords()
+	if w == "" {
+		return nil
+	}
+	how := "the repository dsn of the configuration, a login in pgvigil_collector (docs/customreports.md); serve's log names why it did not connect"
+	switch {
+	case s.auth == nil:
+		how = "run pgvigil serve with the configuration file and without -no-login, and add a user with 'pgvigil user add <name>' (pgvigil demo -serve has no login)"
+	case s.actions == nil:
+		how = "serve with the configuration file: its repository dsn is the actions door's audit login (docs/customreports.md)"
+	}
+	n := hardNeed(w, how, "server")
+	return &n
+}
+
+// communityOffWords is serverOff in the Community tools page's words, "" = nothing missing.
+func (s *Server) communityOffWords() string {
+	if w := s.serverOff(); w != "" {
+		return "Running a tool needs " + w + "."
+	}
+	return ""
+}
+
+// checkBudget: the GET waits this long for the checks of one instance and database (a var for the unit tests only)
+var checkBudget = 5 * time.Second
+
+const (
+	checkKeep = 60 * time.Second // their answer is kept this long
+	checkMax  = 30 * time.Second // a check that outlives the GET ends in the background within this
+)
+
+// communityCheck is what the checks of one instance and database found.
+type communityCheck struct {
+	At        time.Time
+	DB        string                       // the database the tools are looked for in (SQL Server: master by default)
+	Inst      []toolNeed                   // what stops every tool here
+	Tools     map[string][]toolNeed        // each tool's own needs and notes
+	Installed map[string]bool              // SQL Server: the procedures found in DB (nil = not read)
+	Preset    map[string]map[string]string // each tool's form values
+}
+
+type checkKey struct {
+	s  *Server
+	id int
+	db string
+}
+
+type checkEntry struct {
+	done  chan struct{} // closed once res and end are set
+	res   *communityCheck
+	start time.Time // monotonic, as end: a clock step never stretches the keep
+	end   time.Time
+	seen  bool // a GET was answered with res (under communityCache's lock)
+}
+
+// communityCache keeps each instance's and database's checks checkKeep; one check at a time per instance and database.
+var communityCache = struct {
+	sync.Mutex
+	m map[checkKey]*checkEntry
+}{m: map[checkKey]*checkEntry{}}
+
+// checkRunMax bounds the checks running at once (each holds a connection to a monitored instance): a GET that would
+// start one more is answered 'not checked'.
+const checkRunMax = 16
+
+// checks answers the checks of an instance and database within checkBudget: a kept answer younger than checkKeep,
+// the answer of the check already running, or a new check's. fresh (Look again) starts a new check unless the kept
+// answer was never shown (a check that outlived an earlier GET's budget: its answer is the one Look again was asked
+// for). A check that outlives the budget gives 'not checked' now and keeps its own answer for the next view when it
+// ends; a second check never starts while one runs.
+func (s *Server) checks(ctx context.Context, k checkKey, name string, fresh bool, run func(context.Context) *communityCheck) *communityCheck {
+	communityCache.Lock()
+	e := communityCache.m[k]
+	start := e == nil
+	if e != nil {
+		select {
+		case <-e.done:
+			start = time.Since(e.end) > checkKeep || (fresh && e.seen)
+		default: // running: its answer, never a second check of the same instance - unless it outlived its own cap
+			start = time.Since(e.start) > checkMax+checkBudget
+		}
+	}
+	if start {
+		running := 0
+		for key, x := range communityCache.m {
+			select {
+			case <-x.done:
+				if time.Since(x.end) > checkKeep {
+					delete(communityCache.m, key)
+				}
+			default:
+				if time.Since(x.start) <= checkMax+checkBudget {
+					running++
+				}
+			}
+		}
+		if running >= checkRunMax {
+			communityCache.Unlock()
+			return &communityCheck{At: time.Now().UTC(), DB: k.db, Tools: map[string][]toolNeed{},
+				Inst: []toolNeed{notChecked(fmt.Sprintf("pgvigil is running %d checks of community tools already: Look again in a moment", running))}}
+		}
+		e = &checkEntry{done: make(chan struct{}), start: time.Now()}
+		communityCache.m[k] = e
+		go func(e *checkEntry) {
+			cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkMax)
+			defer cancel()
+			var res *communityCheck
+			defer func() {
+				// a check that breaks says so on the page and never takes the server down with it
+				if p := recover(); p != nil {
+					s.log.Error("community tools: a check broke", "instance", name, "panic", p)
+					res = &communityCheck{DB: k.db, Tools: map[string][]toolNeed{}, Inst: []toolNeed{notChecked(fmt.Sprintf("the checks of %s broke (%v): serve's log has it", name, p))}}
+				}
+				e.end = time.Now()
+				res.At = e.end.UTC()
+				e.res = res
+				close(e.done)
+			}()
+			res = run(cctx)
+		}(e)
+	}
+	communityCache.Unlock()
+	t := time.NewTimer(checkBudget)
+	defer t.Stop()
+	select {
+	case <-e.done:
+		communityCache.Lock()
+		e.seen = true
+		communityCache.Unlock()
+		return e.res
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return &communityCheck{At: time.Now().UTC(), DB: k.db, Tools: map[string][]toolNeed{},
+		Inst: []toolNeed{notChecked(fmt.Sprintf("the checks of %s took over %d s; they go on in the background: Look again in a moment", name, int(checkBudget/time.Second)))}}
+}
+
+// frkProcs are the First Responder Kit's procedures (8.34, 2026-07-02) sp_Blitz's version check runs when they are
+// installed beside it (its FRKComponents list), looked for with the tools.
+var frkProcs = []string{"sp_Blitz", "sp_BlitzBackups", "sp_BlitzCache", "sp_BlitzFirst", "sp_BlitzIndex", "sp_BlitzLock", "sp_BlitzWho", "sp_DatabaseRestore", "sp_ineachdb"}
+
+// sibling is a procedure a tool runs itself. Hard: a run with the form's defaults fails without EXECUTE on it (each
+// pair decided by a run with the right revoked: scripts/proof-customreports.sh part N); otherwise a note.
+type sibling struct {
+	Proc string
+	Hard bool
+	How  string // where the tool runs it
+}
+
+// toolSiblings: First Responder Kit 8.34 (2026-07-02), read from its source: sp_Blitz's version check runs each FRK
+// procedure installed beside it with @VersionCheckMode = 1 and its database checks run sp_ineachdb; sp_BlitzFirst runs
+// sp_BlitzWho and sp_BlitzCache, sp_BlitzIndex runs sp_BlitzCache. DarlingData's tools (*.11, 2026-11-01) run none.
+var toolSiblings = map[string][]sibling{
+	"sp_Blitz": {
+		{"sp_BlitzBackups", true, "its version check"}, {"sp_BlitzCache", true, "its version check"},
+		{"sp_BlitzFirst", true, "its version check"}, {"sp_BlitzIndex", true, "its version check"},
+		{"sp_BlitzLock", true, "its version check"}, {"sp_BlitzWho", true, "its version check"},
+		{"sp_DatabaseRestore", true, "its version check"}, {"sp_ineachdb", true, "its version check and its database checks"},
+	},
+	"sp_BlitzFirst": {{"sp_BlitzWho", false, "with @ExpertMode or an output table"}, {"sp_BlitzCache", false, "with @ExpertMode or an output table"}},
+	"sp_BlitzIndex": {{"sp_BlitzCache", false, "for its sp_BlitzCache sort"}},
+}
+
+const sessionKeeper = "keeper_HumanEvents_blocking" // sp_HumanEventsBlockViewer's default @session_name
+
+// grantLine is what to ask for so user (the login's user in db, "" = none there) may EXECUTE proc in db.
+func grantLine(db, user, login, proc string) string {
+	s := "USE " + msQuote(db) + "; "
+	if user == "" {
+		s += "CREATE USER " + msQuote(login) + " FOR LOGIN " + msQuote(login) + "; "
+		user = login
+	}
+	return s + "GRANT EXECUTE ON " + proc + " TO " + msQuote(user) + ";"
+}
+
+// msChecks reads on the instance's read login what the SQL Server tools need: the login's own rights, the server's
+// state and its settings live; the databases with Query Store on from the repository when a collection holds them
+// (their read's time beside them). A read that fails leaves the tools it decides 'not checked', off.
+func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *communityCheck {
+	c := &communityCheck{DB: msDB(db), Tools: map[string][]toolNeed{}, Preset: map[string]map[string]string{}}
+	add := func(tool string, n toolNeed) { c.Tools[tool] = append(c.Tools[tool], n) }
+	procTools := []string{}
+	for _, t := range communityTools {
+		if t.Engine == "sqlserver" && t.Kind == "proc" {
+			procTools = append(procTools, t.Name)
+		}
+	}
+	allTools := func(n toolNeed) {
+		for _, p := range procTools {
+			add(p, n)
+		}
+	}
+	dbc, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
+	if err != nil {
+		c.Inst = append(c.Inst, notChecked("the connection to "+name+" on its read login failed: "+err.Error()))
+		return c
+	}
+	if why != "" { // a sysadmin: openMS closed the connection itself and hands back none
+		c.Inst = append(c.Inst, hardNeed(why, "give the instance a read login that is not a sysadmin (docs/sqlserver.md)", "live"))
+		return c
+	}
+	defer func() { _ = conn.Close(); _ = dbc.Close() }()
+	var edition, major int
+	var current, login string
+	if err := conn.QueryRowContext(ctx, `SELECT CAST(SERVERPROPERTY('EngineEdition') AS int),
+       CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), 4) AS int), DB_NAME(), SUSER_SNAME()`).Scan(&edition, &major, &current, &login); err != nil {
+		allTools(notChecked("reading the edition and version of " + name + " failed: " + err.Error()))
+		return c
+	}
+	azure := edition == 5
+	if azure { // Azure SQL Database refuses a three-part name (Msg 40515): the database the connection opens
+		c.DB = current
+	}
+	// the kits' procedures in DB, EXECUTE on each for this login, and the login's user there
+	seen, names := map[string]bool{}, []string{}
+	for _, p := range append(append([]string{}, procTools...), frkProcs...) {
+		if !seen[p] {
+			seen[p] = true
+			names = append(names, "N'"+p+"'") // the catalogue's own names: letters and _ only
+		}
+	}
+	from := msQuote(c.DB) + ".sys.procedures AS p JOIN " + msQuote(c.DB) + ".sys.schemas AS s ON s.schema_id = p.schema_id"
+	obj := "N'" + strings.ReplaceAll(msQuote(c.DB), "'", "''") + ".[dbo].' + QUOTENAME(p.name)"
+	user := "(SELECT name FROM " + msQuote(c.DB) + ".sys.database_principals WHERE sid = SUSER_SID())"
+	if azure {
+		from, obj, user = "sys.procedures AS p JOIN sys.schemas AS s ON s.schema_id = p.schema_id", "N'[dbo].' + QUOTENAME(p.name)", "USER_NAME()"
+	}
+	q := `SELECT p.name, ISNULL(HAS_PERMS_BY_NAME(` + obj + `, N'OBJECT', N'EXECUTE'), 0), ISNULL(` + user + `, N'')
+  FROM ` + from + ` WHERE s.name = N'dbo' AND p.name IN (` + strings.Join(names, ", ") + `)`
+	installed, canExec, dbUser := map[string]bool{}, map[string]bool{}, ""
+	rows, err := conn.QueryContext(ctx, q)
+	if err == nil {
+		for rows.Next() {
+			var n, u string
+			var x int
+			if err = rows.Scan(&n, &x, &u); err != nil {
+				break
+			}
+			installed[strings.ToLower(n)], canExec[strings.ToLower(n)], dbUser = true, x == 1, u
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		_ = rows.Close()
+	}
+	if err != nil {
+		allTools(notChecked("reading the procedures of " + c.DB + " failed: " + err.Error()))
+		return c
+	}
+	c.Installed = installed
+	for _, t := range communityTools {
+		if t.Engine != "sqlserver" || t.Kind != "proc" {
+			continue
+		}
+		key := strings.ToLower(t.Name)
+		switch {
+		case !installed[key]:
+			add(t.Name, hardNeed(t.Name+" is not in "+c.DB+" as the read login sees it: name the database it is installed in above, or install it from "+t.URL+" (pgvigil never installs one); a login without EXECUTE or VIEW DEFINITION on a procedure does not see it", "", "live"))
+		case !canExec[key]:
+			add(t.Name, hardNeed("EXECUTE on "+c.DB+".dbo."+t.Name+" for the read login "+login+": it has none", grantLine(c.DB, dbUser, login, "dbo."+msQuote(t.Name)), "live"))
+		}
+		for _, sb := range toolSiblings[t.Name] {
+			k := strings.ToLower(sb.Proc)
+			if !installed[k] || canExec[k] {
+				continue
+			}
+			what := t.Name + " runs " + sb.Proc + " (" + sb.How + ") and the read login " + login + " has no EXECUTE on it"
+			if sb.Hard {
+				add(t.Name, hardNeed(what+": a run fails there", grantLine(c.DB, dbUser, login, "dbo."+msQuote(sb.Proc)), "live"))
+			} else {
+				add(t.Name, noteNeed(what+": a run that reaches it fails", grantLine(c.DB, dbUser, login, "dbo."+msQuote(sb.Proc)), "live"))
+			}
+		}
+	}
+	// sp_BlitzCache cannot run from a database below compatibility level 130: its own check refuses there (frk 8.34
+	// L14536), and in 8.34 its OPENJSON does not even compile there first (Msg 102, L19554: the mssql sandbox at 120)
+	if installed["sp_blitzcache"] {
+		var compat int
+		if err := conn.QueryRowContext(ctx, `SELECT ISNULL((SELECT CONVERT(int, compatibility_level) FROM sys.databases WHERE name = @p1), -1)`, c.DB).Scan(&compat); err != nil {
+			add("sp_BlitzCache", notChecked("reading the compatibility level of "+c.DB+" failed: "+err.Error()))
+		} else if compat >= 0 && compat < 130 {
+			add("sp_BlitzCache", hardNeed("sp_BlitzCache cannot run from a database below compatibility level 130: "+c.DB+" is at "+strconv.Itoa(compat),
+				"install sp_BlitzCache in master (the kit's own advice), or raise "+c.DB+"'s compatibility level", "live"))
+		}
+	}
+	if azure {
+		add("sp_LogHunter", hardNeed("sp_LogHunter does not run on Azure SQL Database: the procedure refuses the platform", "", "live"))
+		add("sp_HealthParser", hardNeed("sp_HealthParser does not run on Azure SQL Database: the procedure refuses the platform", "", "live"))
+		add("sp_HumanEventsBlockViewer", notChecked("the blocked process report's sessions are not read on Azure SQL Database"))
+		add("sp_IndexCleanup", noteNeed("on Azure SQL Database sp_IndexCleanup refuses @get_all_databases: name a database in @database_name", "", "live"))
+		return c
+	}
+	if major > 0 && major < 11 {
+		for _, p := range []string{"sp_IndexCleanup", "sp_BlitzLock"} {
+			add(p, hardNeed(p+" needs SQL Server 2012 or later; "+name+" is version "+strconv.Itoa(major), "", "live"))
+		}
+	}
+	if major > 0 && major < 13 { // sp_BlitzCache prints 'doesn't work on versions of SQL prior to 2016' and returns nothing
+		add("sp_BlitzCache", hardNeed("sp_BlitzCache needs SQL Server 2016 or later; "+name+" is version "+strconv.Itoa(major), "", "live"))
+	}
+	// the server's rights and settings, live: what this login may read, and what it reaches
+	var canRead, rds, secAdmin, viewState, viewErrorLog, reach, liveThreshold int
+	var masterUser, firstUserDB string
+	err = conn.QueryRowContext(ctx, `SELECT ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.xp_readerrorlog', N'OBJECT', N'EXECUTE'), 0),
+       CASE WHEN OBJECT_ID(N'rdsadmin.dbo.rds_read_error_log', N'P') IS NULL THEN 0 ELSE 1 END,
+       ISNULL((SELECT TOP (1) name FROM master.sys.database_principals WHERE sid = SUSER_SID()), N''),
+       ISNULL(IS_SRVROLEMEMBER(N'securityadmin'), 0),
+       ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, N'VIEW SERVER STATE'), 0), ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, N'VIEW ANY ERROR LOG'), 0),
+       (SELECT COUNT(*) FROM sys.databases WHERE database_id > 4 AND state = 0 AND is_read_only = 0 AND is_in_standby = 0 AND HAS_DBACCESS(name) = 1),
+       ISNULL((SELECT CONVERT(int, c.value_in_use) FROM sys.configurations AS c WHERE c.name = N'blocked process threshold (s)'), -1),
+       ISNULL((SELECT TOP (1) name FROM sys.databases WHERE database_id > 4 AND state = 0 AND is_read_only = 0 AND is_in_standby = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name), N'')`).Scan(
+		&canRead, &rds, &masterUser, &secAdmin, &viewState, &viewErrorLog, &reach, &liveThreshold, &firstUserDB)
+	if err != nil {
+		for _, p := range []string{"sp_LogHunter", "sp_IndexCleanup", "sp_HumanEventsBlockViewer", "sp_QuickieStore"} {
+			add(p, notChecked("reading the read login's rights on "+name+" failed: "+err.Error()))
+		}
+		return c
+	}
+	// the archived logs are listed through sp_enumerrorlogs: securityadmin, and from SQL Server 2022 VIEW SERVER STATE or
+	// VIEW ANY ERROR LOG (the mssql sandbox, 16.0: either lists them, neither is refused 27219)
+	listsArchives := secAdmin == 1 || (major >= 16 && (viewState == 1 || viewErrorLog == 1))
+	// sp_LogHunter's own test (HAS_PERMS_BY_NAME, NULL as no; Amazon RDS's reader excepted)
+	switch {
+	case canRead == 0 && rds == 0:
+		add("sp_LogHunter", hardNeed("EXECUTE on xp_readerrorlog for the read login "+login+": sp_LogHunter reads the error log through it and refuses without it",
+			grantLine("master", masterUser, login, "sys.xp_readerrorlog"), "live"))
+	case rds == 0 && !listsArchives:
+		way := "securityadmin"
+		if major >= 16 {
+			way = "VIEW SERVER STATE, VIEW ANY ERROR LOG or securityadmin"
+		}
+		add("sp_LogHunter", noteNeed("reads the current error log only: the archived logs are listed through sp_enumerrorlogs, which needs "+way, "", "live"))
+	}
+	switch {
+	case reach == 0:
+		add("sp_IndexCleanup", hardNeed("a user database the read login can reach: "+name+" has none online, writable and not in standby with access for "+login+" (sp_IndexCleanup skips read-only and standby databases)",
+			"give the read login access to the databases to check (CONNECT ANY DATABASE, or a user in each)", "live"))
+	case isSystemDB(c.DB):
+		// its own default reads the database it is installed in and skips a system database: a default click from
+		// there is always declined ('No valid databases found to process.')
+		c.Preset["sp_IndexCleanup"] = map[string]string{"@database_name": firstUserDB}
+		add("sp_IndexCleanup", noteNeed("sp_IndexCleanup's own default reads the database it is installed in ("+c.DB+"), a system database it skips: the form reads "+firstUserDB+"; @get_all_databases = 1 reads every database the login reaches", "", "live"))
+	}
+	s.blockViewerPreset(ctx, conn, c, id, liveThreshold, add)
+	s.quickieStorePreset(ctx, conn, c, id, name, add)
+	return c
+}
+
+// isSystemDB: the four system databases (and Amazon RDS's rdsadmin), which sp_IndexCleanup skips.
+func isSystemDB(db string) bool {
+	switch strings.ToLower(db) {
+	case "master", "model", "msdb", "tempdb", "rdsadmin":
+		return true
+	}
+	return false
+}
+
+// blockViewerPreset: sp_HumanEventsBlockViewer's form follows what exists, so a click with it is never one the
+// procedure declines: the blocked process report off (threshold 0) or no running session capturing it = system_health
+// with a note; its default session running = its own default; another running session capturing it = that one.
+func (s *Server) blockViewerPreset(ctx context.Context, conn *sql.Conn, c *communityCheck, id, liveThreshold int, add func(string, toolNeed)) {
+	const tool = "sp_HumanEventsBlockViewer"
+	// the live value read with the login's rights wins (the collection reads it hourly: a change since would turn the
+	// preset into a declined click); the repository's only when the live read found none
+	threshold, src := liveThreshold, "live"
+	var readAt *time.Time
+	var v int64
+	var at time.Time
+	if threshold < 0 && s.pool.QueryRow(ctx, `SELECT value_in_use, snapshot_at FROM pgvigil.mssql_config
+ WHERE instance_id = $1 AND name = 'blocked process threshold (s)' AND is_present AND value_in_use IS NOT NULL`, id).Scan(&v, &at) == nil {
+		threshold, src, readAt = int(v), "repository", &at
+	}
+	if threshold < 0 {
+		add(tool, notChecked("the blocked process threshold could not be read"))
+		return
+	}
+	const health = "system_health holds only the blocking sp_server_diagnostics recorded in it (the procedure calls it 'the lousy version')"
+	if threshold == 0 {
+		c.Preset[tool] = map[string]string{"@session_name": "system_health"}
+		n := noteNeed("the blocked process report is off on this server (blocked process threshold 0): the form reads system_health, and "+health,
+			"a DBA turns it on: EXECUTE sys.sp_configure 'show advanced options', 1; EXECUTE sys.sp_configure 'blocked process threshold', 5; RECONFIGURE; and runs a session that captures the blocked process report", src)
+		n.ReadAt = readAt
+		add(tool, n)
+		return
+	}
+	rows, err := conn.QueryContext(ctx, `SELECT ses.name, CASE WHEN EXISTS (SELECT 1 FROM sys.server_event_session_events AS e
+         WHERE e.event_session_id = ses.event_session_id AND e.name = N'blocked_process_report') THEN 1 ELSE 0 END
+  FROM sys.server_event_sessions AS ses JOIN sys.dm_xe_sessions AS dxs ON dxs.name = ses.name
+ WHERE dxs.create_time IS NOT NULL ORDER BY ses.name`)
+	keeper, other := false, ""
+	if err == nil {
+		for rows.Next() {
+			var n string
+			var bpr int
+			if err = rows.Scan(&n, &bpr); err != nil {
+				break
+			}
+			switch {
+			case n == sessionKeeper:
+				keeper = true
+			case bpr == 1 && other == "" && !strings.EqualFold(n, "system_health"):
+				other = n
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		_ = rows.Close()
+	}
+	switch {
+	case err != nil:
+		add(tool, notChecked("reading the running Extended Events sessions failed: "+err.Error()))
+	case keeper: // the procedure's own default
+	case other != "":
+		c.Preset[tool] = map[string]string{"@session_name": other}
+		add(tool, noteNeed(sessionKeeper+" (the procedure's default session) is not running: the form reads "+other+", a running session that captures the blocked process report", "", "live"))
+	default:
+		c.Preset[tool] = map[string]string{"@session_name": "system_health"}
+		add(tool, noteNeed("no running session captures the blocked process report: name one in @session_name or ask the DBA to create one; until then the form reads system_health, and "+health,
+			"a DBA creates and starts a session with the event sqlserver.blocked_process_report (sp_HumanEvents @event_type = 'blocking', @keep_alive = 1 makes "+sessionKeeper+")", "live"))
+	}
+}
+
+// quickieStorePreset: sp_QuickieStore reads Query Store of one database (its own by default: where it is installed,
+// where Query Store is never on in master); the form names a database where it is on, from the repository's read.
+func (s *Server) quickieStorePreset(ctx context.Context, conn *sql.Conn, c *communityCheck, id int, name string, add func(string, toolNeed)) {
+	const tool = "sp_QuickieStore"
+	var on []string
+	var readAt *time.Time
+	var stores int
+	var last *time.Time
+	src := "repository"
+	if err := s.pool.QueryRow(ctx, `SELECT count(*), max(snapshot_at) FROM pgvigil.mssql_qs_store WHERE instance_id = $1`, id).Scan(&stores, &last); err == nil && stores > 0 {
+		readAt = last
+		rows, err := s.pool.Query(ctx, `SELECT database_name FROM pgvigil.mssql_qs_store
+ WHERE instance_id = $1 AND actual_state IN ('READ_WRITE', 'READ_ONLY') AND database_name NOT IN ('master', 'model', 'msdb', 'tempdb')
+ ORDER BY database_name`, id)
+		if err == nil {
+			on, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		}
+		if err != nil {
+			add(tool, noteNeed("where Query Store is on was not read: "+err.Error(), "", "repository"))
+			return
+		}
+	} else {
+		src = "live"
+		rows, err := conn.QueryContext(ctx, `SELECT name FROM sys.databases WHERE is_query_store_on = 1 AND state = 0 AND database_id > 4 ORDER BY name`)
+		if err == nil {
+			for rows.Next() {
+				var n string
+				if err = rows.Scan(&n); err != nil {
+					break
+				}
+				on = append(on, n)
+			}
+			if err == nil {
+				err = rows.Err()
+			}
+			_ = rows.Close()
+		}
+		if err != nil {
+			add(tool, noteNeed("where Query Store is on was not read: "+err.Error(), "", "live"))
+			return
+		}
+	}
+	for _, d := range on {
+		if strings.EqualFold(d, c.DB) {
+			return
+		}
+	}
+	var n toolNeed
+	if len(on) == 0 {
+		n = noteNeed("Query Store is on in no database of "+name+": sp_QuickieStore answers 'Query Store not enabled'", "a DBA turns it on per database: ALTER DATABASE [<db>] SET QUERY_STORE = ON;", src)
+	} else {
+		c.Preset[tool] = map[string]string{"@database_name": on[0]}
+		n = noteNeed("Query Store is on in "+strings.Join(on, ", ")+", not in "+c.DB+": the form reads "+on[0], "", src)
+	}
+	n.ReadAt = readAt
+	add(tool, n)
+}
+
+// pgChecks connects as the monitoring login to the database a run would use (read-only, as a run does) and reads
+// what the reads need: a login a run would refuse (a superuser or a server-file role) is the instance's need; Top
+// statements needs pg_stat_statements created in that database (pg_extension, schema-qualified), its view readable
+// (42501) and its library loaded at start (55000, met only by running its function), and pg_read_all_stats for other
+// users' text. A failed read is 'not checked'.
+func (s *Server) pgChecks(ctx context.Context, name, dsn, db string) *communityCheck {
+	c := &communityCheck{DB: db, Tools: map[string][]toolNeed{}, Preset: map[string]map[string]string{}}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		c.Inst = append(c.Inst, hardNeed("the monitoring login's dsn for "+name+" does not parse", "correct the instance's dsn in the configuration file", "configuration"))
+		return c
+	}
+	if db != "" {
+		cfg.Database = db
+	}
+	cfg.ConnectTimeout = checkBudget
+	cfg.RuntimeParams["application_name"] = "pgvigil-community"
+	cfg.RuntimeParams["default_transaction_read_only"] = "on"
+	cfg.RuntimeParams["statement_timeout"] = "4000"
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		c.Inst = append(c.Inst, notChecked("the connection to "+name+" on its monitoring login failed: "+err.Error()))
+		return c
+	}
+	// the close and the rollback have their own deadline: a server that hangs between statements never holds the
+	// check's goroutine and its socket past it
+	defer func() {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkBudget)
+		defer cancel()
+		_ = conn.Close(cctx)
+	}()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		c.Inst = append(c.Inst, notChecked("a read-only transaction on "+name+" failed: "+err.Error()))
+		return c
+	}
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkBudget)
+		defer cancel()
+		_ = tx.Rollback(rctx)
+	}()
+	why, err := pgRefusal(ctx, tx)
+	if err != nil {
+		c.Inst = append(c.Inst, notChecked(err.Error()))
+		return c
+	}
+	if why != "" {
+		c.Inst = append(c.Inst, hardNeed("a monitoring login a run accepts: "+why, "give the instance a login in pg_monitor without those roles", "live"))
+		return c
+	}
+	const tool = "pg_top_statements"
+	var cur string
+	var stats bool
+	var schema *string
+	if err := tx.QueryRow(ctx, `SELECT current_database(), pg_has_role(current_user, 'pg_read_all_stats', 'USAGE'),
+       (SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_stat_statements')`).Scan(&cur, &stats, &schema); err != nil {
+		c.Tools[tool] = []toolNeed{notChecked("reading the extensions of " + name + " failed: " + err.Error())}
+		return c
+	}
+	c.DB = cur
+	ask := "ask a superuser-class role (superuser, rds_superuser, azure_pg_admin, cloudsqlsuperuser) to run CREATE EXTENSION pg_stat_statements; in " + cur + " (the monitoring login cannot)"
+	if schema == nil {
+		c.Tools[tool] = []toolNeed{hardNeed("pg_stat_statements is not created in the database "+cur, ask, "live")}
+		return c
+	}
+	// two probes: the view with LIMIT 0 meets its SELECT right (42501) without running its function; the function
+	// itself, one row, meets the library not loaded at start (55000), which a LIMIT 0 read of the view never runs into
+	_, err = tx.Exec(ctx, `SAVEPOINT pgvigil_probe`)
+	if err == nil {
+		_, err = tx.Exec(ctx, `SELECT 1 FROM `+pgx.Identifier{*schema, "pg_stat_statements"}.Sanitize()+` LIMIT 0`)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `SELECT 1 FROM `+pgx.Identifier{*schema, "pg_stat_statements"}.Sanitize()+`(false) LIMIT 1`)
+	}
+	var pe *pgconn.PgError
+	switch {
+	case err == nil:
+	case errors.As(err, &pe) && pe.Code == "55000":
+		c.Tools[tool] = []toolNeed{hardNeed("pg_stat_statements is created in "+cur+" but not loaded: "+pe.Message,
+			"ask the DBA to add pg_stat_statements to shared_preload_libraries and restart the server (Amazon RDS: the DB parameter group; Azure flexible server: azure.extensions and shared_preload_libraries, then a restart)", "live")}
+		return c
+	case errors.As(err, &pe) && pe.Code == "42501":
+		c.Tools[tool] = []toolNeed{hardNeed("reading "+*schema+".pg_stat_statements is refused to the monitoring login: "+pe.Message, "GRANT SELECT ON "+pgx.Identifier{*schema, "pg_stat_statements"}.Sanitize()+" TO <the monitoring login>; (and EXECUTE on its function pg_stat_statements(boolean), PUBLIC by default)", "live")}
+		return c
+	default:
+		c.Tools[tool] = []toolNeed{notChecked("reading " + *schema + ".pg_stat_statements failed: " + err.Error())}
+		return c
+	}
+	if !stats {
+		c.Tools[tool] = []toolNeed{noteNeed("other users' statements show no text: the monitoring login is not in pg_read_all_stats (pg_monitor holds it)", "GRANT pg_read_all_stats TO <the monitoring login>; (a DBA)", "live")}
+	}
+	return c
+}
+
+// Community is GET /api/community?instance=N&database=D[&fresh=1].
 func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	id, _, _, err := params(r, true)
 	if err != nil {
@@ -379,95 +995,112 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
+	var demo bool
+	if err := s.pool.QueryRow(ctx, `SELECT 'demo' = ANY (tags) FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&demo); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	out := struct {
 		Enabled  bool        `json:"enabled"`
 		Reason   string      `json:"reason,omitempty"`
 		Instance string      `json:"instance"`
 		Engine   string      `json:"engine"`
 		Database string      `json:"database,omitempty"`
-		Error    string      `json:"error,omitempty"`
+		Demo     bool        `json:"demo"`
 		Tools    []toolState `json:"tools"`
 		Log      *table      `json:"log"`
-	}{Instance: name, Engine: engine, Tools: []toolState{}}
-	out.Reason = s.customReportsOff()
+		// what every tool here lacks before it can run (the server's state, the instance's login), with the way to get it
+		Needs     []toolNeed `json:"needs"`
+		CheckedAt *time.Time `json:"checked_at,omitempty"`
+	}{Instance: name, Engine: engine, Tools: []toolState{}, Needs: []toolNeed{}}
 	for _, t := range communityTools {
 		if t.Engine == engine {
-			out.Tools = append(out.Tools, toolState{communityTool: t})
+			out.Tools = append(out.Tools, toolState{communityTool: t, Needs: []toolNeed{}})
 		}
 	}
+	door := s.pgDoorDSN(name)
+	if engine == "sqlserver" {
+		door = s.msDoorDSN(name)
+		out.Database = msDB(db)
+	}
+	var c *communityCheck
 	switch {
-	case engine == "sqlserver":
-		db = msDB(db)
-		out.Database = db
-		dsn := s.msDoorDSN(name)
-		if dsn == "" {
-			out.Reason = firstNonEmpty(out.Reason, "instance "+name+" has no read login configured on this server")
+	case demo && door == "":
+		// a demo instance: invented by pgvigil demo, no server behind it (its tag and no login; never the process)
+		out.Demo = true
+		out.Needs = append(out.Needs, toolNeed{What: name + " is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here.",
+			How: "on a real install each tool runs on the instance's read login (docs/customreports.md)", Hard: true, State: "demo", Source: "repository"})
+	case door == "":
+		// the server's own state first: without the UI login no door is kept for a PostgreSQL instance either, so the
+		// configuration line would be false there (the actions door keeps the logins only behind the login)
+		if n := s.communityOff(); n != nil {
+			out.Needs = append(out.Needs, *n)
 			break
 		}
-		dbc, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
-		if err != nil || why != "" {
-			out.Reason = firstNonEmpty(out.Reason, why)
-			if err != nil {
-				out.Error = err.Error()
+		login := "read login"
+		if engine == "postgres" {
+			login = "monitoring login"
+		}
+		out.Needs = append(out.Needs, hardNeed("a "+login+" for "+name+": this server holds none for it (pgvigil serve takes each instance's login from its configuration file)",
+			"give the instance a dsn in the configuration file with a login that is not a sysadmin or superuser, and serve with that file (docs/sqlserver.md, docs/configuration.md)", "configuration"))
+	default:
+		if n := s.communityOff(); n != nil {
+			out.Needs = append(out.Needs, *n)
+		}
+		// the cache's database is the one the checks read: on SQL Server '' (the default) and master are one entry
+		kdb := db
+		if engine == "sqlserver" {
+			kdb = msDB(db)
+		}
+		c = s.checks(ctx, checkKey{s, id, kdb}, name, r.URL.Query().Get("fresh") == "1", func(cctx context.Context) *communityCheck {
+			if engine == "sqlserver" {
+				return s.msChecks(cctx, id, name, door, db)
 			}
-			break
+			return s.pgChecks(cctx, name, door, db)
+		})
+		at := c.At
+		out.CheckedAt = &at
+		out.Needs = append(out.Needs, c.Inst...)
+		if c.DB != "" {
+			out.Database = c.DB
 		}
-		names := []string{}
-		for _, t := range out.Tools {
-			if t.Kind == "proc" {
-				names = append(names, "N'"+t.Name+"'") // the catalogue's own names: letters and _ only
+	}
+	for i := range out.Tools {
+		t := &out.Tools[i]
+		if c != nil {
+			if n := c.Tools[t.ID]; n != nil { // a procedure's id is its name
+				t.Needs = n
 			}
-		}
-		found := map[string]bool{}
-		// Azure SQL Database refuses a three-part name (Msg 40515): there the tools are looked for in the database the
-		// connection opens, whatever database the page asked for
-		q := `SELECT name FROM ` + msQuote(db) + `.sys.procedures WHERE name IN (` + strings.Join(names, ", ") + `)`
-		var edition int
-		var current string
-		if conn.QueryRowContext(ctx, `SELECT CAST(SERVERPROPERTY('EngineEdition') AS int), DB_NAME()`).Scan(&edition, &current) == nil && edition == 5 {
-			db = current
-			out.Database = db
-			q = `SELECT name FROM sys.procedures WHERE name IN (` + strings.Join(names, ", ") + `)`
-		}
-		rows, err := conn.QueryContext(ctx, q)
-		if err == nil {
-			for rows.Next() {
-				var n string
-				if rows.Scan(&n) == nil {
-					found[strings.ToLower(n)] = true
-				}
-			}
-			err = rows.Err()
-			_ = rows.Close()
-		}
-		_ = conn.Close()
-		_ = dbc.Close()
-		if err != nil {
-			out.Error = "the procedures of " + db + " could not be read: " + err.Error()
-			break
-		}
-		for i := range out.Tools {
-			if out.Tools[i].Kind == "proc" {
-				yes := found[strings.ToLower(out.Tools[i].Name)]
-				out.Tools[i].Installed = &yes
+			if c.Installed != nil && t.Kind == "proc" {
+				yes := c.Installed[strings.ToLower(t.Name)]
+				t.Installed = &yes
 				if yes {
-					out.Tools[i].Where = db + ".dbo"
+					t.Where = out.Database + ".dbo"
 				}
 			}
+			t.Preset = c.Preset[t.ID]
 		}
-	case s.pgDoorDSN(name) == "":
-		out.Reason = firstNonEmpty(out.Reason, "instance "+name+" has no monitoring login configured on this server")
+		t.State = "ready"
+		for _, n := range append(append([]toolNeed{}, out.Needs...), t.Needs...) {
+			if n.Hard {
+				t.State = n.State
+				break
+			}
+			if n.State == "note" {
+				t.State = "note"
+			}
+		}
+		t.On = t.State == "ready" || t.State == "note"
+	}
+	for _, n := range out.Needs {
+		if n.Hard {
+			out.Reason = n.What
+			break
+		}
 	}
 	out.Enabled = out.Reason == ""
 	out.Log, err = s.query(ctx, sqlCommunityLog, id)
 	s.reply(w, r, out, err)
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
 
 type communityBody struct {
@@ -482,7 +1115,7 @@ type communityBody struct {
 
 // communityGate is a POST's shared part: the gate, the body, the tool, the instance of the tool's engine.
 func (s *Server) communityGate(w http.ResponseWriter, r *http.Request) (in communityBody, user, name string, t *communityTool, ok bool) {
-	user, raw, ok := s.reportGate(w, r, 256<<10)
+	user, raw, ok := s.gate(w, r, 256<<10, s.communityOffWords)
 	if !ok {
 		return in, "", "", nil, false
 	}
@@ -642,6 +1275,19 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 			args[p.Name] = x
 		}
 		stmt = t.SQL
+		if t.ID == "pg_top_statements" {
+			// the view in the schema the extension was created in, whatever the login's search path
+			schema, err := pgExtSchema(ctx, cfg, "pg_stat_statements")
+			if err != nil {
+				run.finish(t0, nil, "", err)
+				break
+			}
+			if schema == "" {
+				run.finish(t0, nil, "pg_stat_statements is not created in this database: a superuser-class role runs CREATE EXTENSION pg_stat_statements there", nil)
+				break
+			}
+			stmt = strings.Replace(stmt, "FROM pg_stat_statements s", "FROM "+pgx.Identifier{schema, "pg_stat_statements"}.Sanitize()+" s", 1)
+		}
 		sets, why, err := runPG(ctx, cfg, stmt, args, timeout, 5000)
 		run.finish(t0, sets, why, err)
 	case "script":
@@ -731,6 +1377,13 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		_ = db.Close()
 		run.finish(t0, sets, "", err)
+		// the procedure looked at this server and said no in one of its own listed messages, before any result set:
+		// still a failed run in the audit (the statement reached the server), drawn as a note
+		var me mssqldb.Error
+		if errors.As(err, &me) && len(sets) == 0 && declinedBy(t.Name, me) {
+			run.Declined = true
+			run.Error = fmt.Sprintf("%s declined: %s (msg %d, severity %d)", t.Name, strings.TrimSpace(me.Message), me.Number, me.Class)
+		}
 	}
 	run.Statement = stmt
 	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
@@ -748,6 +1401,64 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		RanAt time.Time     `json:"ran_at"`
 		Runs  []instanceRun `json:"runs"`
 	}{t.ID, time.Now().UTC(), []instanceRun{run}}, nil)
+}
+
+// declineMsg is one of a procedure's own refusal messages: its text starts with prefix and ends with suffix (a
+// message with a %s in its middle).
+type declineMsg struct{ prefix, suffix string }
+
+// declines are each kit's own refusal messages, exact from its source with the kit's version beside them: the
+// procedure looked at this server (a right, a setting, the platform, nothing to read) and said no before it returned
+// anything. Matched only with message 50000 and when no result set was read, only in a procedure's run; anything else
+// is a failed run - every RAISERROR with a string is message 50000, and sp_BlitzIndex re-raises any error it catches
+// that way (a lock timeout, a deadlock, a permission error inside it stays an error).
+var declines = map[string][]declineMsg{
+	// DarlingData sp_LogHunter 3.11 (2026-11-01)
+	"sp_LogHunter": {{"Current user does not have EXECUTE permission on xp_readerrorlog", ""}, {"This will not run on Azure SQL DB", ""}},
+	// DarlingData sp_HumanEventsBlockViewer 5.11 (2026-11-01)
+	"sp_HumanEventsBlockViewer": {
+		{"Unless you want to use the lousy version in system_health, the blocked process report needs to be enabled", ""},
+		{"A session with the name ", "does not exist or is not currently active."},
+	},
+	// DarlingData sp_IndexCleanup 2.11 (2026-11-01)
+	"sp_IndexCleanup": {{"No valid databases found to process.", ""}, {"This procedure requires SQL Server 2012", ""}, {"@get_all_databases is not supported on Azure SQL Database", ""}},
+	// DarlingData sp_HealthParser 3.11 (2026-11-01)
+	"sp_HealthParser": {{"This won't work in Azure", ""}},
+	// DarlingData sp_QuickieStore 6.11 (2026-11-01)
+	"sp_QuickieStore": {{"Not all Azure offerings are supported", ""}},
+}
+
+// declinedBy: proc's run ended in one of its own listed refusals.
+func declinedBy(proc string, me mssqldb.Error) bool {
+	if me.Number != 50000 {
+		return false
+	}
+	m := strings.TrimSpace(me.Message)
+	for _, d := range declines[proc] {
+		if strings.HasPrefix(m, d.prefix) && strings.HasSuffix(m, d.suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// pgExtSchema is the schema extension ext was created in, in cfg's database ("" = not created there).
+func pgExtSchema(ctx context.Context, cfg *pgx.ConnConfig, ext string) (string, error) {
+	cfg = cfg.Copy()
+	cfg.ConnectTimeout = 10 * time.Second
+	cfg.RuntimeParams["application_name"] = "pgvigil-community"
+	cfg.RuntimeParams["default_transaction_read_only"] = "on"
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	var schema string
+	err = conn.QueryRow(ctx, `SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1`, ext).Scan(&schema)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return schema, err
 }
 
 // glennQuery is one query of a Glenn Berry diagnostic script.
@@ -829,7 +1540,7 @@ func parseGlenn(b []byte) []glennQuery {
 // CommunityGlennParse is POST /api/community/glenn/parse: the script's text in, its queries out. Nothing is stored and
 // nothing is run.
 func (s *Server) CommunityGlennParse(w http.ResponseWriter, r *http.Request) {
-	_, raw, ok := s.reportGate(w, r, 6<<20)
+	_, raw, ok := s.gate(w, r, 6<<20, s.communityOffWords)
 	if !ok {
 		return
 	}

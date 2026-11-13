@@ -208,6 +208,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/dbfiles", s.DBFiles)
 	api.HandleFunc("GET /api/driveperf", s.DrivePerf)
 	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
+	api.HandleFunc("GET /api/collector", s.Collector) // task 201
 	// task 204: Admin > Instances (q_instances_admin.go)
 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
 	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)

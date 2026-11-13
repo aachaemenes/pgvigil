@@ -317,6 +317,9 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 	}
 	run := func() {
 		res := engines.RunOnce(ctx, log, r, in, name)
+		if res.Err == nil || ctx.Err() == nil { // task 201: the heartbeat counts the run, never one the stop cut short
+			collect.RecordRun(in.Name, in.Engine, name, res)
+		}
 		if res.Err != nil && ctx.Err() == nil {
 			log.Warn("collection failed", "instance", in.Name, "collection", name, "err", res.Err)
 		}

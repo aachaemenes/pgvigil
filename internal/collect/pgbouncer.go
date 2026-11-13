@@ -109,7 +109,7 @@ func (pgBouncerCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platfo
 	}
 	ctx, cancel := context.WithTimeout(ctx, pgBouncerTimeout)
 	defer cancel()
-	conn, err := pgx.ConnectConfig(ctx, cfg)
+	conn, err := connectCounted(ctx, in.Name, cfg)
 	if err != nil {
 		return fail(fmt.Errorf("connect to the pooler: %w", err))
 	}
