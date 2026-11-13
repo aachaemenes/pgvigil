@@ -484,6 +484,22 @@ func TestSuspectPageRows(t *testing.T) {
 	}
 }
 
+// TestAgentAlertsManagedInstance: Microsoft says SQL Server Agent alerts are not supported on Azure SQL Managed
+// Instance, so the area is a row with that reason, no finding asks for an alert, and nothing is read (the nil
+// connection: a query would panic).
+func TestAgentAlertsManagedInstance(t *testing.T) {
+	c := &checksRun{}
+	runAgentAlerts(t.Context(), nil, Info{Kind: KindAzureMI, EngineEdition: 8, MsdbAccess: true}, c)
+	if len(c.rows) != 1 {
+		t.Fatalf("Managed Instance: %d rows, want the one area row: %v", len(c.rows), c.rows)
+	}
+	r := c.rows[0]
+	note, _ := r["note"].(string)
+	if r["kind"] != "area" || r["area"] != AreaAlerts || r["read"] != b2i(false) || !strings.Contains(note, "does not support SQL Server Agent alerts") {
+		t.Errorf("Managed Instance: %v", r)
+	}
+}
+
 func TestAgentAlertFindings(t *testing.T) {
 	names := func(fs []checkFinding) string {
 		var s []string

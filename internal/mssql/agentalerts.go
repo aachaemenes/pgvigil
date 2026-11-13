@@ -59,6 +59,11 @@ func runAgentAlerts(ctx context.Context, conn *sql.Conn, info Info, c *checksRun
 	case info.EngineEdition == 4:
 		c.add(areaRow(AreaAlerts, false, "SQL Server Express has no SQL Server Agent: there are no alerts to read"))
 		return
+	case info.Kind == KindAzureMI:
+		// Microsoft's T-SQL differences page for Managed Instance, SQL Server Agent: "Alerts aren't yet supported."
+		// The severity and corruption-error findings would ask for something the service does not offer.
+		c.add(areaRow(AreaAlerts, false, "Azure SQL Managed Instance does not support SQL Server Agent alerts yet: there are no alerts to read"))
+		return
 	case !info.MsdbAccess:
 		c.unread(AreaAlerts, "msdb.dbo.sysalerts", "the login has no access to msdb: the Agent's alerts and operators were not read")
 		return
