@@ -330,6 +330,9 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 	noAccess, entered := 0, 0
 	for _, d := range dbs {
 		name, _ := d["database_name"].(string)
+		if platformOwnDatabase(info.Kind, name) {
+			continue
+		}
 		quoted, _ := d["quoted_name"].(string)
 		id, _ := d["database_id"].(int64)
 		state := collect.Row{"kind": "store", "database_id": d["database_id"], "database_name": name, "database_state": d["database_state"],

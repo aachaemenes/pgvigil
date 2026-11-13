@@ -150,9 +150,10 @@ func (d dbFacts) name() string     { return d.text("database_name") }
 func (d dbFacts) online() bool     { return d.text("state") == "ONLINE" }
 func (d dbFacts) snapshot() bool   { return d.on("is_snapshot") }
 
-// user: a database someone made, online, not a snapshot and not the platform's own: the option rules judge these.
+// user: a database someone made, online, not a snapshot and not the platform's own (RDS's rdsadmin, Cloud SQL's
+// gcloud_cloudsqladmin: platformOwnDatabase, here by name alone): the option rules judge these.
 func (d dbFacts) user() bool {
-	return d.id() > 4 && d.online() && !d.snapshot() && !strings.EqualFold(d.name(), "rdsadmin")
+	return d.id() > 4 && d.online() && !d.snapshot() && !strings.EqualFold(d.name(), "rdsadmin") && !strings.EqualFold(d.name(), "gcloud_cloudsqladmin")
 }
 
 // serverFacts is what a database is weighed against.
@@ -717,7 +718,7 @@ const (
 	identityCritPct = 90
 )
 
-func (identityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
+func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	dbs, err := QueryRows(ctx, conn, identityDatabasesSQL)
 	if err != nil {
 		return nil, err
@@ -728,6 +729,9 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
 	stop, hasStop := ctx.Deadline()
 	for _, db := range dbs {
 		name, _ := db["database_name"].(string)
+		if platformOwnDatabase(info.Kind, name) {
+			continue
+		}
 		scan := collect.Row{"kind": "identity_scan", "database_name": name, "scanned": 0, "columns_total": nil, "listed": 0, "note": nil}
 		quoted, _ := db["quoted_name"].(string)
 		switch {

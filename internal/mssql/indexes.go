@@ -140,6 +140,15 @@ type userDB struct {
 	row       collect.Row // what the database's 'db' row starts from
 }
 
+// platformOwnDatabase: the database a cloud service keeps for itself - Amazon RDS's rdsadmin, Google Cloud SQL's
+// gcloud_cloudsqladmin (owner CloudDbSqlRoot; the only user database of a new instance, G1 2026-11-13). Its tables
+// are not the DBA's and no monitor login can be given a way in (RDS's master user cannot grant SELECT there; Cloud
+// SQL's sqlserver user cannot grant CONNECT ANY DATABASE), so no per-database read counts it: it would leave each of
+// them partial on every such server. dboptions.go's user() leaves both out by name too.
+func platformOwnDatabase(kind Kind, name string) bool {
+	return (kind == KindRDS && strings.EqualFold(name, "rdsadmin")) || (kind == KindCloudSQL && strings.EqualFold(name, "gcloud_cloudsqladmin"))
+}
+
 // userDatabases reads the databases of a per-database pass. restoreRead says whether msdb's restore history was
 // read (false: the login may not, and every row's last_restore is empty for that reason).
 func userDatabases(ctx context.Context, conn *sql.Conn, info Info) (dbs []userDB, restoreRead bool, err error) {
@@ -158,9 +167,7 @@ func userDatabases(ctx context.Context, conn *sql.Conn, info Info) (dbs []userDB
 			continue
 		}
 		name, _ := r["database_name"].(string)
-		if info.Kind == KindRDS && strings.EqualFold(name, "rdsadmin") {
-			// the service's own database (as dboptions.go's user() judges it): its tables are not the DBA's, and the
-			// master user cannot give a login SELECT there, so its statistics would leave every RDS read partial
+		if platformOwnDatabase(info.Kind, name) {
 			continue
 		}
 		quoted, _ := r["quoted_name"].(string)

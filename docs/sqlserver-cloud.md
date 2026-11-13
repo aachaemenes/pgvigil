@@ -109,31 +109,28 @@ Google's own mark is the server role `CustomerDbRootRole` (the `sqlserver` user 
 Made in T-SQL by the `sqlserver` user (a user made through gcloud or the console gets the `sqlserver` user's own rights, more than a monitor needs):
 
 ```sql
--- in master, as the sqlserver user
+-- in master, as the sqlserver user: the grant option is CustomerDbRootRole's, so each grant names the role
 CREATE LOGIN [pgvigil_monitor] WITH PASSWORD = '<a long random password>';
-GRANT VIEW SERVER STATE TO [pgvigil_monitor];
-GRANT VIEW ANY DEFINITION TO [pgvigil_monitor];
--- in msdb
-CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
-ALTER ROLE db_datareader ADD MEMBER [pgvigil_monitor];
+GRANT VIEW SERVER STATE TO [pgvigil_monitor] AS [CustomerDbRootRole];
+GRANT VIEW ANY DEFINITION TO [pgvigil_monitor] AS [CustomerDbRootRole];
 ```
 
-Whether the `sqlserver` user may grant each of these (Google's pages show its own rights, not which it may pass on) is settled only against a real instance, and so is the msdb part: Google protects msdb from users created through SQL Server directly (its Managed Microsoft AD page, on SQL Server Agent), so the two msdb lines may be refused and the jobs then not read. Google offers no IAM sign-in for SQL Server; the password-free way is Windows authentication through Managed Service for Microsoft Active Directory (above).
+On a real instance (SQL Server 2022 Express): the `sqlserver` login itself holds only CONNECT SQL; its role `CustomerDbRootRole` holds VIEW SERVER STATE and VIEW ANY DEFINITION with the grant option, so a plain `GRANT` is refused (Msg 4613, "Grantor does not have GRANT permission") and the grant `AS [CustomerDbRootRole]` is taken. It cannot add a login to the fixed roles `##MS_ServerStateReader##` or `##MS_DefinitionReader##`, and cannot grant CONNECT ANY DATABASE. msdb is closed to it: no user can be made there (Msg 15247), so SQL Server Agent's jobs and log shipping are not read (Google: users created through SQL Server directly cannot use SQL Server Agent). Google offers no IAM sign-in for SQL Server: the password-free way is Windows authentication through Managed Microsoft AD (above).
 
 ### What runs
 
 The collections run as on a server someone runs, with these differences:
 
-- SQL Server Agent's jobs: read when msdb lets the login in; otherwise skipped with Google's reason (msdb is protected from logins made in T-SQL; a user made through the console or gcloud carries `CustomerDbRootRole`'s rights, more than a monitor needs). Not settled until a real instance answers.
+- SQL Server Agent's jobs and log shipping: skipped, naming msdb (msdb is protected from logins made in T-SQL; a user made through the console or gcloud carries `CustomerDbRootRole`'s rights, more than a monitor needs).
 - The Windows power plan: not read (Google runs the host; SQL Server on Linux there).
-- Extended Events: `pgvigil mssql-xe -print -form cloudsql` writes the slow capture's event file under `/var/opt/mssql/xevents/`, the folder Google names. Cloud SQL has no `sp_configure` and its database flags offer no blocked process threshold, so the blocked-process session stays empty there; deadlocks, slow queries and attention still capture.
+- Extended Events: `pgvigil mssql-xe -print -form cloudsql`, run by the `sqlserver` user, makes and starts the four sessions, the slow capture's event file under `/var/opt/mssql/xevents/`, the folder Google names. Google's trigger on CREATE EVENT SESSION takes one `max_memory=` per command, read as the session's `MAX_MEMORY`, of 4 to 8 MB: in this form the ring buffers set no size of their own and each session's MAX_MEMORY is its capture's size kept within 4-8 MB. Cloud SQL has no `sp_configure` and its database flags offer no blocked process threshold, so the blocked-process session stays empty there; deadlocks, slow queries and attention still capture.
 - Trace flags: the Checks page advises the trace flags a server someone runs should have on (3226, 7745) only on such a server; on Cloud SQL a trace flag is Google's database flag, not advised.
 
-Not settled until a real instance answers: SQL Server Agent's jobs (above), the blocked process threshold (no flag found), the error log (Google sends it to Cloud Logging; whether `sp_readerrorlog` answers the monitoring login), the default trace, Extended Events sessions made by a login other than the `sqlserver` user, Database Mail, Resource Governor and server triggers (Google lists them as unavailable), and how a high-availability instance or a read replica shows itself in T-SQL.
+Read on a real instance by the login above: the error log, the default trace, the Extended Events sessions (made by the `sqlserver` user), and every other collection. Google's own database `gcloud_cloudsqladmin` (owner CloudDbSqlRoot, the only user database of a new instance) is left out of the user databases, as Amazon RDS's `rdsadmin` is: no monitor login can be given a way in (the `sqlserver` user cannot grant CONNECT ANY DATABASE), and the per-database reads would otherwise end partial on every Cloud SQL server. Not settled: the blocked process threshold (no flag found), Extended Events sessions made by a login other than the `sqlserver` user, Database Mail, Resource Governor and server triggers (Google lists them as unavailable), and how a high-availability instance or a read replica shows itself in T-SQL.
 
 ### Proof
 
-`scripts/proof-cloudsql-sim.sh` is a SIMULATION: a SQL Server 2022 container on Linux wearing Cloud SQL's role. A login with exactly the grants above is stored as `cloudsqlsqlserver`; without VIEW ANY DEFINITION the role is invisible and the instance is a server, until `platform: cloudsql` names it; every collection ends as it ends on the same server and login with `platform: onprem`. Against a real Cloud SQL instance: not proven in this release.
+`scripts/proof-cloudsql-sim.sh` is a SIMULATION: a SQL Server 2022 container on Linux wearing Cloud SQL's role. A login with exactly the grants above is stored as `cloudsqlsqlserver`; without VIEW ANY DEFINITION the role is invisible and the instance is a server, until `platform: cloudsql` names it; every collection ends as it ends on the same server and login with `platform: onprem`. Against a real Cloud SQL instance (SQL Server 2022 Express, one vCPU): the login above with its grants AS the role, the platform stored as `cloudsqlsqlserver`, every collection's outcome (all ok but the jobs and log shipping, skipped for msdb, and the four per-database reads, partial on Google's `gcloud_cloudsqladmin` before it was left out of the user databases; not run against an instance since), and the four Extended Events sessions made, started and read.
 
 ## Amazon RDS for SQL Server
 
@@ -213,4 +210,4 @@ These results are for this release's code, which includes the collector and page
 
 - Azure SQL Database: the Basic, S0 and S1 tiers as single databases (their rights differ, above; a Basic elastic pool is proven live: the elastic pools section), a vCore elastic pool, Microsoft Entra sign-in against a live server (`entra-identity` and `entra` are built: above), a geo-replica.
 - Amazon RDS: editions other than Express (Web, Standard, Enterprise: SQL Server Agent and its jobs, Multi-AZ with Always On or mirroring), Windows authentication through AWS Managed Microsoft AD, RDS Custom.
-- Not in this release: Azure SQL Managed Instance, Google Cloud SQL for SQL Server (only its simulation, above) and AlloyDB are not proven against a real instance; a Managed Instance is detected and read like a server, with no collection switched off by its kind.
+- Not in this release: Azure SQL Managed Instance and AlloyDB are not proven against a real instance (Google Cloud SQL for SQL Server is: Express, the login above, above); a Managed Instance is detected and read like a server, with no collection switched off by its kind.
