@@ -14,6 +14,8 @@ import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { fleet, tagsOf } from './fleet';
 import { donutChart, lineChart } from './chart';
+import { hrefWith } from './dbinfo';
+import { mssqlFilesTab } from './mssql_storage';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid } from './ui';
 import { loadAckSafe, offBeside, onDoor, pageNote, seatWhy } from './ack';
 
@@ -320,6 +322,14 @@ async function driveHistory(id: number, drive: string, inst: string, marked: boo
 }
 
 // ---- DB Space
+// dbSlice: where a database of the instance's DB Space opens, by the instance's engine - a PostgreSQL database's own
+// page (#/db, by its id), a SQL Server database's files (#/mssqlfiles, by its name); none when neither is known
+function dbSlice(ctx: Ctx, engine: unknown, r: Row): string | undefined {
+  if (engine === 'postgres' && r.dbid != null) return hrefWith(ctx, 'db', { db: String(r.dbid) });
+  if (engine === 'sqlserver' && r.database != null) return hrefWith(ctx, mssqlFilesTab, { db: String(r.database) });
+  return undefined;
+}
+
 export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'DB Space'));
   const body = el('div');
@@ -351,12 +361,13 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
           + 'Used: the space used inside SQL Server\'s files where every file\'s was read; a PostgreSQL file holds no unallocated space to read, so it is not given there.'),
         el('div', { class: 'cards', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
           grid(rows, cols, 'No database size read yet.'),
-          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10)));
+          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })));
       return;
     }
-    const dbs = rowsOf(d.databases), hist = rowsOf(d.history);
+    const dbs = rowsOf(d.databases), hist = rowsOf(d.history), engine = rowsOf(d.instances)[0]?.engine;
     const cols: Col[] = [
-      { key: 'database' },
+      // the name opens the database, as its slice does (DBA Dash's Name drill)
+      { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
       { key: 'allocated_bytes', label: 'allocated', num: true, fmt: fmtBytes }, { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
       { key: 'data_bytes', label: 'data files', num: true, fmt: fmtBytes }, { key: 'log_bytes', label: 'log files', num: true, fmt: fmtBytes },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
@@ -364,7 +375,8 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
     body.replaceChildren(
       el('div', { style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
         grid(dbs, cols, 'No database size read yet.'),
-        donutChart('DB Space by database', dbs.map(r => ({ label: String(r.database), value: Number(r.allocated_bytes ?? 0) })), v => fmtBytes(v), 10)),
+        // a database opens its own page: PostgreSQL's database page, SQL Server's files of that database (dbSlice)
+        donutChart('DB Space by database', dbs.map(r => ({ label: String(r.database), value: Number(r.allocated_bytes ?? 0), href: dbSlice(ctx, engine, r) })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })),
       lineChart(`History: the databases' space over ${day} days`, hist, [{ key: 'allocated_bytes', label: 'allocated' }, { key: 'used_bytes', label: 'used' }], v => fmtBytes(v)));
   }
   daySel.addEventListener('change', () => { day = Number(daySel.value); lsSet('pgvigil.dbspaceDays', String(day)); void draw(); });

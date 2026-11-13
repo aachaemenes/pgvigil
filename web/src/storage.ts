@@ -6,7 +6,7 @@
 // /api/storage/fleet.
 import { get, Row, rowsOf, Table } from './api';
 import { donutChart, lineChart, volumeBars } from './chart';
-import { series } from './dbinfo';
+import { hrefWith, series } from './dbinfo';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
 
@@ -60,7 +60,8 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
   const bars = volumeBars('Volumes', vols.filter(v => v.used_bytes != null && v.free_bytes != null)
     .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes), note: v.holds_data ? '(data)' : undefined, status: v.status == null ? undefined : String(v.status) })), fmtBytes);
   pies.append(donutChart('Databases by size',
-    rowsOf(d.databases).map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0) })), fmtBytes));
+    rowsOf(d.databases).map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0),
+      href: r.dbid == null ? undefined : hrefWith(ctx, 'db', { db: String(r.dbid) }) })), fmtBytes, 8, false, 'Nothing to show yet.', { big: true }));
   sec.append(el('h3', {}, 'Space at a glance'), bars, pies, growthPanel(ctx));
 
   const checks = rowsOf(d.checks);
@@ -144,6 +145,7 @@ function growthPanel(ctx: Ctx): HTMLElement {
     }
     if (mine !== asked) return;          // a later click answered first
     const ds = series(rowsOf(d.db_series), r => String(r.datname), 'size_bytes');
+    const dbids = new Map(rowsOf(d.db_series).filter(r => r.dbid != null).map(r => [String(r.datname), String(r.dbid)]));   // a slice's page
     if (ds.rows.length < 2) { out.replaceChildren(el('p', { class: 'empty' }, 'Not enough size history yet: the databases collection runs hourly.')); return; }
     const t0 = Date.parse(String(ds.rows[0].snapshot_at)), t1 = Date.parse(String(ds.rows[ds.rows.length - 1].snapshot_at));
     const span = Math.max((t1 - t0) / 86400e3, 1 / 24);
@@ -157,7 +159,8 @@ function growthPanel(ctx: Ctx): HTMLElement {
         + (span < n - 1 ? ` (the ${n}-day window holds no more yet)` : '') + '. Grown: the newest size minus the oldest of the window.'),
       el('div', { class: 'charts' },
         lineChart(`Database sizes, ${n} days`, ds.rows, ds.series, v => fmtBytes(v), { ownSpan: true }),
-        donutChart(`Growth by database, ${n} days`, rows.map(r => ({ label: String(r.datname), value: Number(r.grown_bytes) })), fmtBytes,
+        donutChart(`Growth by database, ${n} days`, rows.map(r => ({ label: String(r.datname), value: Number(r.grown_bytes),
+          href: dbids.has(String(r.datname)) ? hrefWith(ctx, 'db', { db: dbids.get(String(r.datname)) }) : undefined })), fmtBytes,
           8, false, 'No database grew in this window.')),
       el('h4', {}, `Database growth, ${n} days`),
       grid(rows, [
