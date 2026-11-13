@@ -748,3 +748,31 @@ func TestXMLCleanKeepsTheRead(t *testing.T) {
 		t.Errorf("a file event with a control character: %v", err)
 	}
 }
+
+// Cloud SQL's trigger TRG_EnforceXEventSessionParams4 refuses a CREATE EVENT SESSION that holds "max_memory=" more than
+// once (G1 on a real instance, 2026-11-13: Msg 50000 'The command must not contain more than one occurrence of
+// "max_memory="'): each of the cloudsql form's CREATEs holds it once; the other forms keep the session's MAX_MEMORY
+// beside a ring buffer's max_memory.
+func TestXECloudSQLOneMaxMemory(t *testing.T) {
+	re := regexp.MustCompile(`(?i)max_memory=`)
+	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2} {
+		s, err := XEScript("g1", form)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := strings.Split(s, "CREATE EVENT SESSION")[1:]
+		if len(parts) != 4 {
+			t.Fatalf("%s: %d CREATE EVENT SESSION, want 4", form, len(parts))
+		}
+		for i, p := range parts {
+			p = p[:strings.Index(p, "EXEC sys.sp_executesql")]
+			got := len(re.FindAllString(p, -1))
+			if form == "server" && strings.Contains(p, "event_file") {
+				continue // the slow session's file target has no max_memory of its own
+			}
+			if got != want {
+				t.Errorf("%s: CREATE %d holds max_memory= %d times, want %d", form, i+1, got, want)
+			}
+		}
+	}
+}
