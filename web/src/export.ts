@@ -642,7 +642,7 @@ const plainCell = (c: Cell): Cell => ({ v: c.v, kind: c.kind, text: c.text, ...(
 // gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
 // writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
 // with its time unit ('took (s)'). X8: a duration the page writes in mixed units ('1m 5s', ui.ts fmtSecs) stays the
-// page's words (DBA Dash keeps its 'dd hh:mm:ss' as text). The page's header looks go too (X4: the one header style).
+// page's words (DBA Dash keeps its 'dd hh:mm:ss' as text); a seconds column in one unit is numbers as above. The page's header looks go too (X4: the one header style).
 export function gridSection(s: Section): Section {
   const rows = s.rows.map(r => r.map(plainCell));
   const cols = [...s.cols];
@@ -662,7 +662,16 @@ export function gridSection(s: Section): Section {
       for (const c of nums) if (c.kind === 'msecs') { c.v = (c.v as number) / DUR[unit]; c.kind = 'dec'; }
       if (j < cols.length) cols[j] = `${cols[j]} (${unit})`;
     }
-    for (const r of rows) { const c = r[j]; if (c && (c.kind === 'secs' || c.kind === 'nsecs')) { c.v = c.text; c.kind = 'text'; } }
+    // a seconds column (fmtSecs): every cell in one unit ('12.2 s') -> numbers as the millisecond column; a cell in mixed
+    // units ('1m 5s') keeps the whole column in the page's words
+    const secs = nums.filter(c => c.kind === 'secs' || c.kind === 'nsecs');
+    if (secs.length && secs.every(c => durParse(c.text))) {
+      const ms = (c: Cell) => c.kind === 'secs' ? (c.v as number) * 86400000 : (c.v as number) * 1000;
+      const top = secs.reduce((a, c) => Math.abs(ms(c)) > Math.abs(ms(a)) ? c : a);
+      const unit = /\s(ms|s|min)$/.exec(top.text)?.[1] ?? 's';
+      for (const c of secs) { c.v = ms(c) / DUR[unit]; c.kind = 'dec'; }
+      if (j < cols.length && !long) cols[j] = `${cols[j]} (${unit})`;
+    } else for (const c of secs) { c.v = c.text; c.kind = 'text'; }
   }
   const { heads: _heads, ...rest } = s;
   return { ...rest, cols, rows };

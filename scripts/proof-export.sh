@@ -838,10 +838,10 @@ def audit(key, name, x, cx, g, sst, first=2):
             sid = cells.get((i + first, j), (0, None, None))[0]
             f, fo, b = (cx[sid]['fill'], cx[sid]['font'], cx[sid]['bold']) if sid < len(cx) else ('?', '?', None)
             at = f"{colname(j)}{i + first}"
-            pf, pt, pb = (c.get('p') or [None, None, None])
-            want = (('FF' + pf) if pf else None, ('FF' + pt) if pt else None, bool(pb))
-            if c.get('p') is None: wrong.append(f"{at}: the page's look not read"); continue
-            if (f, fo, bool(b)) != want: wrong.append(f"{at} '{c['t'][:20]}' file {f}/{fo}/{'b' if b else '-'} page {want[0]}/{want[1]}/{'b' if want[2] else '-'}"); continue
+            # (changed by X0: a grid sheet's cell is the named pair of the status the screen shows, the link column's pair,
+            # or plain - no longer the page's own look)
+            want = (fill[c['s']], font[c['s']], False) if c.get('s') in fill else (LINKFILL, LINK, False) if c.get('l') else (None, None, False)
+            if (f, fo, bool(b)) != want: wrong.append(f"{at} '{c['t'][:20]}' file {f}/{fo}/{'b' if b else '-'} want {want[0]}/{want[1]}"); continue
             if c['s'] and f == fill.get(c['s']): n[c['s']] += 1
             if c.get('b') and c['s']: n['class'] += 1
             if c['l'] and not c['s']: n['link'] += 1
@@ -850,7 +850,7 @@ def audit(key, name, x, cx, g, sst, first=2):
     total = sum(len(r) for r in g['cells'])
     # the read returned the rows the page draws: all of them, or a long grid's first 200
     check(len(g['cells']) == min(g['rows'], 200), f"{key}: sheet '{name}' the screen read returned {len(g['cells'])} rows of the grid's {g['rows']} (the page draws at most 200)")
-    check(not wrong, f"{key}: sheet '{name}' every drawn cell in the page's look - fill, text colour, weight ({total} cells of {len(g['cells'])} rows; {len(wrong)} wrong {wrong[:3]})")
+    check(not wrong, f"{key}: sheet '{name}' every drawn cell its status's named pair, the link pair or plain (X0) - fill, text colour, not bold ({total} cells of {len(g['cells'])} rows; {len(wrong)} wrong {wrong[:3]})")
     print(f"     cells: {key} '{name}': {total} body cells, {n['filled']} filled (status ok {n['ok']}, warn {n['warn']}, crit {n['crit']}, none {n['none']}, ack {n['ack']}), {n['link']} link cells, {n['plain']} unfilled")
     return n, cells
 def carried(key, name, g, cells, cx, judge, value, least):
@@ -901,6 +901,26 @@ def grids(page):
 def sheet_rows(z, i):
     x = z.read(f'xl/worksheets/sheet{i}.xml').decode()
     return x, len(re.findall(r'<row r="', x)) - 1
+UNIT_RE = r' \((?:B|KB|MB|GB|TB|PB|ms|s|min)\)$'
+def grid_sheets(z, gs, names):
+    # (X1, X12) each screen grid's sheet in page order: a sheet whose header is the grid's (a unit in brackets left out on
+    # both sides: the export names a size or a duration column's unit; a property card's item | value is Item | Value |
+    # Status) and whose data rows are the grid's; every other sheet but 'About' (the last) is one of the page's other
+    # sections (tiles, the Needs attention lines, a chart's series)
+    sst = shared(z); out = []; k = 1
+    def head_of(i):
+        x = z.read(f'xl/worksheets/sheet{i}.xml').decode(); c = cells_of(x, sst)
+        h = [c.get((1, j), (0, None, None))[2] for j in range(max([j for (r, j) in c if r == 1] + [-1]) + 1)]
+        return [re.sub(UNIT_RE, '', t or '') for t in h], len(re.findall(r'<row r="', x)) - 1
+    for g in gs:
+        found = None
+        want = ['Item', 'Value', 'Status'] if g['head'] == ['item', 'value'] else [re.sub(UNIT_RE, '', h or '') for h in g['head']]
+        for i in range(k, len(names)):
+            h, n = head_of(i)
+            if h == want and (n == g['rows'] or (g['rows'] == 0 and n <= 1)): found = i; break
+        out.append(found)
+        if found: k = found + 1
+    return out, [i for i in range(1, len(names)) if i not in out]
 def stamp(n, inst, tab, ext):
     return re.fullmatch(re.escape(inst) + '_' + re.escape(tab) + r'_\d{8}-\d{4}_\d{8}-\d{4}' + re.escape(ext), n) is not None
 # P03: the column widths as DBA Dash's writer sets them (export.ts colWidth: ClosedXML's AdjustToContents, Carlito's
@@ -1294,73 +1314,76 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
     names = sheets_of(z)
-    # (changed by the E2 answer, E2-2': sheet 1 is the page sheet named by the tab, no longer the export's Summary sheet)
-    # (changed by E2-8: a drawn chart's numbers sheet after the grids' - a chart whose numbers are the page's own table has none)
-    nch = len([c for c in (p.get('pagelook') or {}).get('charts') or [] if c.get('w') and not (c.get('svg') and c.get('table'))])
-    check(re.sub(r'[^A-Za-z0-9._-]+', '-', names[0]) == tab and len(names) == len(gs) + 1 + nch, f"{key}: sheets {names} = the page sheet '{names[0]}' + {len(gs)} grid(s) + {nch} chart numbers sheet(s)")
     st, cx = xfs(z)
+    # (changed by X1 / X12 / D-A: no page sheet - the sheets are the page's sections in page order, the grids and the
+    # sections that are no grid (tiles, the Needs attention lines, a chart's series), then 'About' LAST)
+    gsheet, extra = grid_sheets(z, gs, names)
+    check(names[-1] == 'About' and None not in gsheet and gsheet == sorted(gsheet),
+          f"{key}: sheets {names} = the page's sections in page order, then 'About' (grid sheets {gsheet}; other sections {[names[k - 1] for k in extra]})")
     ct = z.read('[Content_Types].xml').decode(); wbx = z.read('xl/workbook.xml').decode(); tabs = []; linked = False; classed = 0; sst = shared(z)
     for i, g in enumerate(gs):
-        x, n = sheet_rows(z, i + 2)
-        # (changed by E2-13: a grid's sheet freezes its header row as the page's grid header sticks; DBA Dash froze none)
-        check('<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' in x, f"{key}: sheet '{names[i + 1]}' its header row frozen (ySplit 1)")
+        x, n = sheet_rows(z, gsheet[i])
+        # (changed by X6: no frozen row - DBA Dash freezes none)
+        check('<pane' not in x, f"{key}: sheet '{names[gsheet[i] - 1]}' no pane (X6)")
         nw, woff = width_audit(x, cx, sst)
-        check(nw >= max(1, len(g['head'])) and not woff, f"{key}: sheet '{names[i + 1]}' {nw} column widths by DBA Dash's rule, none over 150 ({len(woff)} off {woff[:3]})")
+        check(nw >= max(1, len(g['head'])) and not woff, f"{key}: sheet '{names[gsheet[i] - 1]}' {nw} column widths by DBA Dash's rule, none over 150 ({len(woff)} off {woff[:3]})")
         over, low = tall_audit(x, cx, sst)
-        check(not over and not low, f"{key}: sheet '{names[i + 1]}' no row taller than its lines, no cell at the bottom of a tall row (over {over[:2]}; bottom {low[:2]})")
-        check(n == g['rows'], f"{key}: sheet '{names[i + 1]}' {n} data rows = {g['rows']} on screen")
-        counts, cells = audit(key, names[i + 1], x, cx, g, sst)
+        check(not over and not low, f"{key}: sheet '{names[gsheet[i] - 1]}' no row taller than its lines, no cell at the bottom of a tall row (over {over[:2]}; bottom {low[:2]})")
+        check(n == g['rows'], f"{key}: sheet '{names[gsheet[i] - 1]}' {n} data rows = {g['rows']} on screen")
+        counts, cells = audit(key, names[gsheet[i] - 1], x, cx, g, sst)
         classed += counts['class']
-        rels = f'xl/worksheets/_rels/sheet{i + 2}.xml.rels'
+        rels = f'xl/worksheets/_rels/sheet{gsheet[i]}.xml.rels'
         # (changed by P1 / P2, the lead 22:34: an empty grid's sheet held the plain filter and no table; now, as DBA Dash
         # writes it, every grid sheet is one table and an empty grid's covers its header and ONE empty row)
         if g['rows'] == 0:
             check('<tableParts count="1">' in x and '<autoFilter' not in x and rels in z.namelist() and '_xlnm._FilterDatabase' not in wbx and '<row r="2"' not in x,
-                  f"{key}: sheet '{names[i + 1]}' has no rows: one Excel table over its header and one empty row, no sheet filter, no _FilterDatabase (P2)")
+                  f"{key}: sheet '{names[gsheet[i] - 1]}' has no rows: one Excel table over its header and one empty row, no sheet filter, no _FilterDatabase (P2)")
         if True:
             rel = z.read(rels).decode() if rels in z.namelist() else ''
             m = re.search(r'Target="\.\./tables/(table\d+\.xml)"', rel)
             tx = z.read('xl/tables/' + m.group(1)).decode() if m and 'xl/tables/' + m.group(1) in z.namelist() else ''
-            check('<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' in x and '<autoFilter' not in x and bool(tx), f"{key}: sheet '{names[i + 1]}' names one table part, no sheet filter beside it")
-            check('<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>' in tx and 'tableStyleInfo name=' not in tx, f"{key}: sheet '{names[i + 1]}' its table has DBA Dash's style info (no style name, row stripes 1: none drawn)")
+            check('<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' in x and '<autoFilter' not in x and bool(tx), f"{key}: sheet '{names[gsheet[i] - 1]}' names one table part, no sheet filter beside it")
+            check('<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>' in tx and 'tableStyleInfo name=' not in tx, f"{key}: sheet '{names[gsheet[i] - 1]}' its table has DBA Dash's style info (no style name, row stripes 1: none drawn)")
             ncol = max([len(g['head'])] + [len(r) for r in g['cells']])
             ref = f"A1:{colname(ncol - 1)}{max(g['rows'], 1) + 1}"
             got = [(re.search(a, b) or [None, None])[1] for a, b in ((r'<table [^>]*\bref="([^"]+)"', tx), (r'<autoFilter ref="([^"]+)"', tx), (r'<dimension ref="([^"]+)"', x))]
-            check(got == [ref, ref, ref], f"{key}: sheet '{names[i + 1]}' the table's ref, its filter's and the sheet's dimension are {ref} ({got})")
+            check(got == [ref, ref, ref], f"{key}: sheet '{names[gsheet[i] - 1]}' the table's ref, its filter's and the sheet's dimension are {ref} ({got})")
             cols = [unesc(c) for c in re.findall(r'<tableColumn id="\d+" name="([^"]*)"', tx)]
             hdr = [cells.get((1, j), (0, None, None))[2] for j in range(ncol)]
             check(len(cols) == ncol and all(cols) and len({c.lower() for c in cols}) == ncol and cols == hdr and f'<tableColumns count="{ncol}">' in tx,
-                  f"{key}: sheet '{names[i + 1]}' {len(cols)} table columns, each named once, = the header cells")
+                  f"{key}: sheet '{names[gsheet[i] - 1]}' {len(cols)} table columns, each named once, = the header cells")
             row1x = (re.search(r'<row r="1"[^>]*>(.*?)</row>', x, re.S) or [None, ''])[1]
-            check(row1x.count(' t="s"><v>') == ncol and 'inlineStr' not in row1x and 'sharedStrings+xml' in ct, f"{key}: sheet '{names[i + 1]}' its {ncol} header cells are shared strings")
-            check(all(c == h for c, h in zip(cols, g['head']) if h and g['head'].count(h) == 1), f"{key}: sheet '{names[i + 1]}' the header cells are the screen's headings")
+            check(row1x.count(' t="s"><v>') == ncol and 'inlineStr' not in row1x and 'sharedStrings+xml' in ct, f"{key}: sheet '{names[gsheet[i] - 1]}' its {ncol} header cells are shared strings")
+            check(all(c == h for c, h in zip(cols, g['head']) if h and g['head'].count(h) == 1), f"{key}: sheet '{names[gsheet[i] - 1]}' the header cells are the screen's headings")
             tabs.append((re.search(r'<table [^>]*\bid="(\d+)"', tx) or [0, ''])[1] + '|' + (re.search(r'displayName="([^"]+)"', tx) or [0, ''])[1])
-            check(bool(m) and f'PartName="/xl/tables/{m.group(1)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"' in ct, f"{key}: sheet '{names[i + 1]}' its table part is in [Content_Types].xml")
+            check(bool(m) and f'PartName="/xl/tables/{m.group(1)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"' in ct, f"{key}: sheet '{names[gsheet[i] - 1]}' its table part is in [Content_Types].xml")
         if key == 'summary' and g['rows'] > 1 and any(c['l'] and not c['s'] for r in g['cells'] for c in r):
-            # (changed by E2-11': a link cell takes the link's own look - no fill, the link colour; DBA Dash's F1F1F6 link
-            # column dropped; the audit above holds each cell to the page)
+            # (changed by X11: a link cell is DBA Dash's link column - F1F1F6 / 004F83, no underline, no hyperlink)
             lk = [cx[cells.get((k + 2, j), (0, None, None))[0]] for k, r in enumerate(g['cells']) for j, c in enumerate(r) if c['l'] and not c['s']]
-            check(counts['link'] >= 1 and counts['plain'] >= 1 and all(q['fill'] is None and q['font'] not in (None, LINK) for q in lk),
-                  f"summary: sheet '{names[i + 1]}' its link cells unfilled in the link's own colour, not DBA Dash's F1F1F6 / 004F83 ({counts['link']} link cells, {sorted({q['font'] for q in lk})[:2]}; {counts['plain']} unfilled)")
+            check(counts['link'] >= 1 and counts['plain'] >= 1 and all(q['fill'] == LINKFILL and q['font'] == LINK and not q.get('u') for q in lk),
+                  f"summary: sheet '{names[gsheet[i] - 1]}' its link cells in DBA Dash's link pair F1F1F6 / 004F83, not underlined ({counts['link']} link cells; {counts['plain']} plain)")
             linked = True
         # (changed by C4 in the E2 answer: no colour is carried from a judging cell to a value cell; the file follows the
         # page, whose value cells the audit above holds to their own look: the rows 'carry' are gone)
         if key == 'storage' and 'free' in g['head'] and g['rows'] > 0:
             j = g['head'].index('free'); seen = [(number(r[j]['t']), cells.get((k + 2, j), (0, None, None))) for k, r in enumerate(g['cells']) if r[j]['t'] != '']
             off = [(a, b) for a, b in seen if a is None or b[1] is None or cx[b[0]]['fmt'] != 167 or abs(b[1] * 100 - a) > 0.006]
-            check(len(seen) >= 1 and not off and 'numFmtId="167" formatCode="0.0%"' in st, f"storage: sheet '{names[i + 1]}' {len(seen)} 'free' cells, each the screen's percent / 100 under numFmt 167 '0.0%' (DBA Dash's) ({off[:2]})")
+            check(len(seen) >= 1 and not off and 'numFmtId="167" formatCode="0.0%"' in st, f"storage: sheet '{names[gsheet[i] - 1]}' {len(seen)} 'free' cells, each the screen's percent / 100 under numFmt 167 '0.0%' (DBA Dash's) ({off[:2]})")
     check(len(set(tabs)) == len(tabs) and all(re.fullmatch(r'\d+\|Table\d+', t) for t in tabs), f"{key}: {len(tabs)} table(s), ids and names unique in the workbook")
     # (P1) one table on every grid sheet, no sheet filter and no _FilterDatabase anywhere
+    for k in extra:
+        ex = z.read(f'xl/worksheets/sheet{k}.xml').decode()
+        check('<tableParts count="1">' in ex and '<pane' not in ex, f"{key}: section sheet '{names[k - 1]}' one Excel table, no pane (X5, X12)")
     check(len(tabs) == len(gs) and '_FilterDatabase' not in wbx, f"{key}: every grid sheet one Excel table (P1): {len(tabs)} table(s) for {len(gs)} grid(s), no _FilterDatabase")
     # (P3) a boolean the page holds: an Excel boolean on its grid sheet, the page's words on the page sheet; no grid column
     # holds both a boolean and the words yes / no / true / false (a boolean the export missed)
     nbool, mixed = 0, []
     for i, g in enumerate(gs):
-        xg = z.read(f'xl/worksheets/sheet{i + 2}.xml').decode(); cg = cells_of(xg, sst)
+        xg = z.read(f'xl/worksheets/sheet{gsheet[i]}.xml').decode(); cg = cells_of(xg, sst)
         bc = {colidx(c) for c in re.findall(r'<c r="([A-Z]+)\d+" s="\d+" t="b"', xg)}; nbool += len(re.findall(r' t="b"', xg))
         for j in bc:
-            if any(r_ >= 2 and c_ == j and (tx_ or '') in ('yes', 'no', 'true', 'false', 'Yes', 'No') for (r_, c_), (_, _, tx_) in cg.items()): mixed.append(f"{names[i + 1]} {colname(j)}")
-    check(' t="b"' not in z.read('xl/worksheets/sheet1.xml').decode() and not mixed and (nbool >= 1 or key != 'roles'), f"{key}: booleans (P3): {nbool} Excel boolean cell(s) on the grid sheets, none on the page sheet; no column mixing a boolean with its words ({mixed[:3]})")
+            if any(r_ >= 2 and c_ == j and (tx_ or '') in ('yes', 'no', 'true', 'false', 'Yes', 'No') for (r_, c_), (_, _, tx_) in cg.items()): mixed.append(f"{names[gsheet[i] - 1]} {colname(j)}")
+    check(not mixed and (nbool >= 1 or key != 'roles'), f"{key}: booleans (P3, X9): {nbool} Excel boolean cell(s) on the grid sheets; no column mixing a boolean with its words ({mixed[:3]})")
     # (P4, E2-11) no underlined cell without a hyperlink behind it, and no hyperlink leaving the workbook (the sheet jumps
     # are location links; a link to the app's own routes keeps its colour, not its underline)
     ulb, ext = [], [n for n in z.namelist() if n.endswith('.rels') and 'TargetMode="External"' in z.read(n).decode()]
@@ -1376,7 +1399,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     check(not p5, f"{key}: sheet names without a read time (P5) ({p5[:3]})")
     if key == 'summary':
         check(linked, "summary: a grid with link cells (the instance names) was graded for the link's look and the plain cells'")
-        check(names == ['Summary', 'Summary (2)', 'Summary (3)'], f"summary: the two grids are named by the page's own heading, not by the Needs attention strip's ({names})")
+        # (changed by X2: the fleet Summary's two grids are 'Test Summary' and 'Instance Summary' on every route)
+        check('Test Summary' in names and 'Instance Summary' in names and not any(re.search(r' \(\d+\)$', n_) for n_ in names), f"summary: the two grids named 'Test Summary' and 'Instance Summary', no numbered repeat ({names})")
     if key == 'backups': check(any('archiver' in g['head'] for g in gs), "backups: the fleet grid with the 'archiver' column is on the page")
     if key == 'jobs': check(any('last run' in g['head'] for g in gs), "jobs: the fleet grid with the 'last run' column is on the page")
     if key == 'storage': check(any('free' in g['head'] for g in gs), "storage: the fleet grid with the 'free' column is on the page")
@@ -1389,7 +1413,7 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         if key == 'dbspace':
             # the GB columns are numbers in the workbook (the page shows the GB figure with fmtNum); a used cell left as
             # text is only 'not read' (a PostgreSQL instance)
-            sx = z.read('xl/worksheets/sheet2.xml').decode(); g0 = gs[0]
+            sx = z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(); g0 = gs[0]
             check(g0['head'][1:3] == ['allocated (GB)', 'used (GB)'], f"dbspace: the grid's columns 2 and 3 are allocated (GB) and used (GB) ({g0['head'][:4]})")
             alloc = [k for r, k in re.findall(r'<c r="B(\d+)"[^>]*?(/>|><v>|t="inlineStr")', sx) if r != '1']
             check(len(alloc) == g0['rows'] and sum(k == '><v>' for k in alloc) >= 1 and not any(k == 't="inlineStr"' for k in alloc), f"dbspace: allocated (GB) numeric in {sum(k == '><v>' for k in alloc)} of {g0['rows']} rows, none as text")
@@ -1399,58 +1423,60 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
-            i, g0 = hg[0]; j = g0['head'].index('CPU histogram'); px_ = sheet_rows(z, i + 2)[0]; cc = cells_of(px_, sst)
+            i, g0 = hg[0]; j = g0['head'].index('CPU histogram'); px_ = sheet_rows(z, gsheet[i])[0]; cc = cells_of(px_, sst)
             filled = [k for k in range(len(g0['cells'])) if cx[cc.get((k + 2, j), (0, None, None))[0]]['fill'] is not None]
         check(bool(hg) and p.get('pictures', 0) >= 1 and not filled, f"perf: the CPU histogram column has no fill in any of its rows, {p.get('pictures')} of them holding the picture (a picture, no status; {len(filled) if hg else 'no grid'} filled)")
     if key == 'empty':
         tg = [g for g in gs if not g.get('empty')]   # the Table Size tab's grids with a table: the filtered one is the last
         check(tg[-1]['rows'] == 0 and len(tg) > 1 and tg[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
-        # (changed by E2-4': a bare class the page's CSS does not paint (app.css draws td.status.* only) leaves the cell as
-        # the page shows it - unfilled, in the plain text colour; the audit above held both cells to the page)
-        x0 = z.read('xl/worksheets/sheet2.xml').decode(); c0 = cells_of(x0, sst)
+        # (changed by X0: a bare class is read as its status (export.ts statusOf) and the cell takes the named pair - as
+        # the screen read marks it; the audit above held both cells to that)
+        x0 = z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(); c0 = cells_of(x0, sst)
         two = [cx[c0.get((2, j), (0, None, None))[0]] for j in (1, 2)]
-        check(classed == 2 and all(q['fill'] is None for q in two), f"empty: the two cells given a bare class (crit, warn) the page does not paint stay unfilled as on the page ({classed} cells, {[q['fill'] for q in two]})")
+        check(classed == 2 and [q['fill'] for q in two] == [fill['crit'], fill['warn']], f"empty: the two cells given a bare class (crit, warn) take their named pairs (X0 ({classed} cells, {[q['fill'] for q in two]})")
     if openpyxl is not None:
         try:
             wb = openpyxl.load_workbook(f"{dl}/{p['xlsx']}")
-            check(wb.sheetnames == names and sum(len(ws.tables) for ws in wb.worksheets) == len(tabs) + nch, f"{key}: openpyxl {openpyxl.__version__} opens the workbook: {len(wb.sheetnames)} sheets, {len(tabs)} grid table(s) + {nch} chart numbers table(s)")
+            check(wb.sheetnames == names and sum(len(ws.tables) for ws in wb.worksheets) == len(names) - 1, f"{key}: openpyxl {openpyxl.__version__} opens the workbook: {len(wb.sheetnames)} sheets, a table on each but 'About'")
         except Exception as e:
             check(False, f"{key}: openpyxl could not open {p['xlsx']}: {type(e).__name__}: {e}")
     for i, g in enumerate(gs):
-        x, n = sheet_rows(z, i + 2)
+        x, n = sheet_rows(z, gsheet[i])
         # (changed by E2-4' / E2-5': a status the screen shows is no longer written as DBA Dash's solid fill in a plain
         # font whatever the page draws; its cells take the page's look - a solid status cell its fill, a badge its tint,
         # a pill the page draws bold in bold - which the audit above holds cell by cell. What stays: each status the
         # screen shows is on the sheet in some cell of that status's look on the page)
-        for s in g.get('status', []):
-            pl = {tuple(c['p']) for r_ in g['cells'] for c in r_ if c.get('s') == s and c.get('p')}
+        # (changed by X0: each status the screen shows is on the sheet as its named pair)
+        for s_ in g.get('status', []):
             used = {int(v) for v in re.findall(r' s="(\d+)"', x)}
-            have = {(cx[u]['fill'][2:] if cx[u]['fill'] else None, cx[u]['font'][2:] if cx[u]['font'] else None, cx[u]['bold']) for u in used if u < len(cx)}
-            check(bool(pl) and bool(pl & have), f"{key}: '{s}' cells in '{names[i + 1]}' in the page's look of that status ({sorted(pl, key=str)[:2]})")
+            check(s_ in fill and any(u < len(cx) and cx[u]['fill'] == fill[s_] and cx[u]['font'] == font[s_] for u in used), f"{key}: '{s_}' cells in '{names[gsheet[i] - 1]}' in its named pair {fill.get(s_)} / {font.get(s_)} (X0)")
         row1 = re.search(r'<row r="1"[^>]*>(.*?)</row>', x, re.S)
         hs1 = {int(v) for v in re.findall(r' s="(\d+)"', row1.group(1))} if row1 else set()
         # (changed by E2-4': the header row in the page's own th look - 004F83, white, the page's weight - not DBA Dash's
         # 0063A3 bold; wrapped as the page wraps a header)
-        hl = g.get('hl') or [None, None, None]
-        check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF' + str(hl[0]) and cx[u]['font'] == 'FF' + str(hl[1]) and cx[u]['bold'] == bool(hl[2]) for u in hs1),
-              f"{key}: sheet '{names[i + 1]}' header row in the page's th look {hl} ({sorted({(cx[u]['fill'], cx[u]['font'], cx[u]['bold']) for u in hs1 if u < len(cx)})})")
+        # (changed by X4: the header row is DBA Dash's - FF0063A3, white, bold - not the page's th look)
+        check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF0063A3' and cx[u]['font'] == 'FFFFFFFF' and cx[u]['bold'] for u in hs1),
+              f"{key}: sheet '{names[gsheet[i] - 1]}' header row FF0063A3, white, bold (X4) ({sorted({(cx[u]['fill'], cx[u]['font'], cx[u]['bold']) for u in hs1 if u < len(cx)})})")
     # each sheet named by the heading above its grid (h2, h3 or h4): the name starts with the heading's first words
     # (cut at 31 characters, a repeat numbered; the Summary grid's heading meets the export's own Summary sheet)
     # (the export's rule: a character Excel refuses becomes a space, then each run of spaces one space)
     # (changed by P5, the lead 22:34: a time the heading carries in brackets is left out of the sheet's name)
     hs = [re.sub(r'\s+', ' ', re.sub(r'[\\/?*\[\]:]', ' ', re.sub(r'\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)', '', g['name']).strip() or g['name'])).strip()[:24].rstrip() for g in gs]
-    check(all(n.startswith(h) for n, h in zip(names[1:], hs)), f"{key}: sheet names {names[1:]} follow the screen's headings {[g['name'] for g in gs]}")
+    gn = [names[k - 1] for k in gsheet]
+    check(all(n.startswith(h) or (key == 'summary' and n in ('Test Summary', 'Instance Summary')) for n, h in zip(gn, hs)), f"{key}: grid sheet names {gn} follow the screen's headings {[g['name'] for g in gs]}")
     if key == 'roles':
         check(any(g['name'].endswith('privileges') or 'privileges' in g['name'] for g in gs), "roles: a grid under a privileges (h4) heading on screen")
     if key == 'tables':
-        check(names[1:] == [g['name'] for g in gs], f"tables: sheet names {names[1:]} = the screen's headings {[g['name'] for g in gs]}")
-        x = ''.join(z.read(f'xl/worksheets/sheet{i + 2}.xml').decode() for i in range(len(gs)))
+        check(gn == [g['name'] for g in gs], f"tables: grid sheet names {gn} = the screen's headings {[g['name'] for g in gs]}")
+        x = ''.join(z.read(f'xl/worksheets/sheet{gsheet[i]}.xml').decode() for i in range(len(gs)))
         nums = {int(s) for s in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>', x)}
-        for f, what in ((165, 'bytes'), (168, "a time, DBA Dash's 'yyyy-MM-dd HH:mm'"), (0, "a count, General as DBA Dash writes one")):
+        for f, what in ((168, "a time, DBA Dash's 'yyyy-MM-dd HH:mm'"), (0, "a count or a size in its column's unit, General as DBA Dash writes one")):
             check(any(cx[s]['fmt'] == f for s in nums), f"tables: a numeric cell with numFmt {f} ({what})")
-        check('numFmtId="165" formatCode="#,##0&quot; B&quot;"' in st and 'numFmtId="168" formatCode="yyyy-MM-dd HH:mm"' in st and 'formatCode="#,##0"' not in st and 'formatCode="#,##0.00"' not in st,
-              "tables: numFmt 165 is '#,##0\" B\"', 168 'yyyy-MM-dd HH:mm'; no '#,##0' or '#,##0.00' (a count or a decimal is General)")
-        last = z.read(f'xl/worksheets/sheet{len(gs) + 1}.xml').decode()
+        # (changed by X7: a size column is ONE unit, in its header, the cells plain numbers; no '#,##0\" B\"' format)
+        units = [h for h in re.findall(r'<tableColumn id="\d+" name="([^"]*)"', ''.join(z.read(n).decode() for n in z.namelist() if n.startswith('xl/tables/'))) if re.search(r' \((?:B|KB|MB|GB|TB|PB)\)$', h)]
+        check('numFmtId="168" formatCode="yyyy-MM-dd HH:mm"' in st and 'B&quot;' not in st and 'formatCode="#,##0"' not in st and 'formatCode="#,##0.00"' not in st and len(units) >= 1,
+              f"tables: a size column in one unit with the unit in its header ({units[:3]}); numFmt 168 'yyyy-MM-dd HH:mm'; no custom size format, no '#,##0' (X7)")
+        last = z.read(f'xl/worksheets/sheet{gsheet[-1]}.xml').decode()
         col = re.findall(r'<c r="D(\d+)"[^>]*t="inlineStr"><is><t xml:space="preserve">([^<]*)</t>', last)
         got = [t.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"') for r, t in col if r != '1']
         check(p['order'] != p['before'], "tables: the click changed the grid's order on screen")
@@ -1464,118 +1490,54 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             check(len(got) > 1 and len(numeric) == len(got), f"tables: the sorted sheet's {what} column: {len(numeric)} of {len(got)} rows numeric")
     if key == 'summary':
         check(any(cx[s]['fill'] in fill.values() for s in range(len(cx))), "summary: a status fill in styles.xml")
-    first = z.read('xl/worksheets/sheet1.xml').decode()
-    # (changed by E2-2' / E2-3: sheet 1 is the page sheet, not the export's Summary sheet of facts) the page sheet: row 1
-    # '<tab> - <scope>' bold 14, row 3 the window and the zone, rows 1-3 frozen, no table on it; then every grid the page
-    # shows, in page order: its header row and the rows it draws, each cell in the page's look (the audit), and under a
-    # grid past 200 rows the page's 'The first 200 of n rows' line linking to the grid's own sheet
-    f1 = cells_of(first, sst)
-    def ptext(r, j):
-        # a cell's words as written: every run of an inline string joined (a dot's run, then the words), a shared
-        # string, else the number's text
-        v = f1.get((r, j))
-        if not v: return None
-        m_ = re.search(r'<c r="' + colname(j) + str(r) + r'"[^>]*t="inlineStr"><is>(.*?)</is>', first, re.S)
-        if m_: return unesc(''.join(re.findall(r'<t[^>]*>([^<]*)</t>', m_.group(1))))
-        if v[2] is not None: return v[2]
-        return (('%d' % v[1]) if float(v[1]).is_integer() else str(v[1])) if v[1] is not None else ''
-    t1 = ptext(1, 0) or ''
-    s1 = f1.get((1, 0), (0,))[0]
-    check(t1.startswith(names[0] + ' - ') and s1 < len(cx) and cx[s1]['bold'] and cx[s1]['sz'] == 14, f"{key}: the page sheet's row 1 '{t1}' (bold {cx[s1]['bold'] if s1 < len(cx) else '?'}, {cx[s1]['sz'] if s1 < len(cx) else '?'} pt)")
-    t3 = ptext(3, 0) or ''
-    check(t3.startswith('Window ') and re.search(r'\(UTC[-+]\d\d:\d\d at export\)', t3) is not None and 'compute on the grid sheets' in t3,
-          f"{key}: the page sheet's row 3 names the window, the zone with its offset at export and where to compute ({t3[:90]}...)")
-    check('<pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/>' in first and '<tableParts' not in first, f"{key}: the page sheet freezes rows 1-3 and holds no table")
-    # (E2 1b, fault 1 and 3) every text the page sheet shows is whole: lines run over empty cells or move past a badge,
-    # a card's label column is wide enough, a wrapped cell or header row is as tall as its lines
-    cut1 = fit_audit(first, cx, sst)
-    check(not cut1, f"{key}: every text on the page sheet whole ({len(texts_of(first, sst))} text cells; {len(cut1)} cut {cut1[:3]})")
-    over, low = tall_audit(first, cx, sst)
-    check(not over and not low, f"{key}: the page sheet: no row taller than its lines, no cell at the bottom of a tall row ({len(over)} over {over[:2]}; {len(low)} at the bottom {low[:2]})")
+    # (changed by D-B: the page sheet with pictures is parked - its rows (title, window, the page's text, tiles as cards, the
+    # Needs attention lines, pictures) are not graded; X12: each of those is a section sheet; D-A: 'About' last)
+    ab = cells_of(z.read(f'xl/worksheets/sheet{len(names)}.xml').decode(), sst)
+    items = [ab.get((r_, 0), (0, None, None))[2] for r_ in range(2, max([r_ for r_, _ in ab] + [1]) + 1)]
+    check(items[:8] == ['Instance', 'Tab', 'Window', 'Window from', 'Window to', 'Exported at', 'Time zone', 'Source'] and all(f'Sheet {names[k - 1]}' in items for k in gsheet),
+          f"{key}: 'About' (D-A) - Instance, Tab, Window, from, to, Exported at, Time zone, Source, then each grid sheet's rows ({items[:10]})")
+    core = z.read('docProps/core.xml').decode() if 'docProps/core.xml' in z.namelist() else ''
+    check('<dc:title>' in core and '<dc:description>' in core and 'core-properties' in z.read('_rels/.rels').decode(), f"{key}: the document's properties hold the export's facts (D-A)")
     pl = p.get('pagelook') or {}
     if pl.get('tiles'):
-        tf, tm, tr = tiles_audit(first, sst, pl['tiles'])
-        check(not tm and not tr, f"{key}: the page's {len(pl['tiles'])} tiles are cards on the page sheet - label, pill, value in one column: {tf} found (missing {tm[:3]}); no value and label in one cell ({tr[:3]})")
-    if pl.get('charts'): chart_audit(key, z, names, sst, pl)
-    if pl.get('attention') or (key == 'summary' and 'attention' in pl):
-        acols, abad = attention_audit(first, sst, pl['attention'])
-        check(len(pl['attention']) >= 1 and len(acols) == 1 and not abad, f"{key}: 'Needs attention' - {len(pl['attention'])} line(s) on the page sheet, each name a cell of its own (its words after the dot = the link's text), its reasons their own, every badge in ONE column ({sorted(colname(c) for c in acols)}; wrong {abad[:3]})")
-    # E2-8: a page's workbook, pictures and all, fits the report mail's attachment cap (internal/reportmail/reportmail.go:30 MaxXLSX = 8 << 20)
-    sz_ = os.path.getsize(f"{dl}/{p['xlsx']}")
-    check(sz_ <= 8 << 20, f"{key}: its workbook {sz_:,} bytes, under the report mail's cap MaxXLSX 8 MiB ({len(pictures_of(z))} picture(s))")
-    wb1 = wrap_audit(first, cx, sst, pl.get('wrapped') or [])
-    check('wrapped' in pl and not wb1, f"{key}: the page sheet wraps a cell with nothing to its right only where the page wraps it ({len(pl.get('wrapped') or [])} texts the page wraps; {len(wb1)} wrapped where the page has one line {wb1[:3]})")
-    # (fault 5) row 2 says the scope in the page's words: no engine or platform key ('sqlserver', 'onprem')
-    r2 = [ptext(2, j) for j in range(12) if ptext(2, j)]
-    keys_ = {'postgres', 'sqlserver', 'auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb', 'azuresqldb', 'azuremi', 'azuresqlmi'}
-    check(bool(r2) and not any(t in keys_ for t in r2), f"{key}: row 2 in the page's words {r2}")
-    nrow1 = max([r for r, _ in f1] or [0])
-    pos, found = 4, 0
-    vis = [x for x in ((p.get('sections') or {}).get('sections') or []) if x['kind'] == 'grid']
-    for g in gs:
-        h = [c for c in g['head']]
-        r = next((r for r in range(pos, nrow1 + 1) if [ptext(r, j) for j in range(len(h))] == h), None)
-        if r is None: continue
-        found += 1; pos = r + 1
-        if g.get('empty'): continue
-        audit(key, f"{names[0]}' at row {r}, grid '{g['name']}", first, cx, g, sst, first=r + 1)
-        # (F2) every header and drawn cell of the grid aligned as the page aligns it (a numeric column's header with its
-        # values); (E2-15, F2) every number cell shows the page's words under its format, in the page's marks (a size's
-        # decimal is fmtBytes' '.' on the page whatever the locale: compared on its digits)
-        grp = ' ' if re.match(r'1\s234', d['sample']) else d['sample'][1]; dmk = ',' if grp != ',' else '.'
-        alb, nb, nn, kinds = [], [], 0, {}; ws1 = widths_of(first)
-        for j, a in enumerate(g.get('ha') or []):
-            sid = f1.get((r, j), (0,))[0]; ga = cx[sid].get('halign') if sid < len(cx) else '?'
-            if ga != a: alb.append(f"{colname(j)}{r} header '{g['head'][j][:14]}' file {ga} page {a}")
-        for i, row_ in enumerate(g['cells']):
-            for j, c in enumerate(row_):
-                sid, val, text = f1.get((r + 1 + i, j), (0, None, None))
-                ga = cx[sid].get('halign') if sid < len(cx) else '?'
-                if g.get('ha') is not None and ga != c.get('a'): alb.append(f"{colname(j)}{r + 1 + i} '{c['t'][:14]}' file {ga} page {c.get('a')}")
-                if val is None or text is not None: continue
-                nn += 1; code = FMT_CODES.get(cx[sid]['fmt'], '') if sid < len(cx) else ''
-                kinds[('date' if re.search(r'[ymdhs]', re.sub(r'"[^"]*"', '', code)) else 'size' if '"' in code else 'number')] = kinds.get('date' if re.search(r'[ymdhs]', re.sub(r'"[^"]*"', '', code)) else 'size' if '"' in code else 'number', 0) + 1
-                got = render_code(val, code, grp, dmk) if code else js_num(val)
-                want = c['t']
-                if '"' in code: got, want = got.replace(dmk, '.'), want.replace(dmk, '.')
-                if got != want: nb.append(f"{colname(j)}{r + 1 + i} file {got!r} ({code or 'General'}) page {want!r}")
-                # a number wider than its column draws as '####' (it never wraps)
-                wj = ws1.get(j, 0); room = round((wj if wj > 0 else 8.43) * 7) + 5
-                if 1.0738 * tpx(got, bool(cx[sid]['bold']) if sid < len(cx) else False) + 6 > room: nb.append(f"{colname(j)}{r + 1 + i} {got!r} wider than its column ({room} px): '####'")
-        check(not alb, f"{key}: grid '{g['name']}' on the page sheet: every header and cell aligned as the page aligns it ({len(g.get('ha') or [])} headers, {sum(len(x) for x in g['cells'])} cells; {len(alb)} wrong {alb[:3]})")
-        check(not nb, f"{key}: grid '{g['name']}' on the page sheet: every number cell shows the page's words under its format ({nn} numbers {kinds}; {len(nb)} wrong {nb[:3]})")
-        if g['rows'] > 200:
-            rr = r + 1 + min(g['rows'], 200)
-            lk = re.search(r'<hyperlink ref="A' + str(rr) + r'" location="\'([^\']*)\'!A1"', first)
-            check(bool(lk) and unesc(lk.group(1)) in names[1:] and 'Every row: sheet' in (ptext(rr, 0) or ''),
-                  f"{key}: under grid '{g['name']}' ({g['rows']} rows, 200 drawn) the page's line links to its sheet ({ptext(rr, 0)!r}, {lk.group(1) if lk else None})")
-    check(found == len(vis) and found >= 1, f"{key}: the page sheet holds the {len(vis)} grid(s) the page shows, in page order, each found with its header row ({found} found)")
+        allt = set()
+        for k in extra:
+            allt |= {t_ for (r_, c_), (_, _, t_) in cells_of(z.read(f'xl/worksheets/sheet{k}.xml').decode(), sst).items() if c_ == 0 and r_ > 1}
+        lab = [t.get('label') or t.get('l') for t in pl['tiles']]
+        miss = [l_ for l_ in lab if l_ and l_ not in allt]
+        check(not miss, f"{key}: the page's {len(lab)} tiles are rows of an Item | Value | Status sheet (X12) (missing {miss[:3]})")
+    if pl.get('attention'):
+        an = [n_ for n_ in names if n_.startswith('Needs attention')]
+        rows_ = cells_of(z.read(f'xl/worksheets/sheet{names.index(an[0]) + 1}.xml').decode(), sst) if an else {}
+        got = {t_ for (r_, c_), (_, _, t_) in rows_.items() if c_ == 0 and r_ > 1}
+        miss = [a_['name'] for a_ in pl['attention'] if a_.get('name') not in got]
+        check(bool(an) and not miss, f"{key}: the page's {len(pl['attention'])} Needs attention line(s) on the sheet 'Needs attention', a row each (X12) (missing {miss[:3]})")
     if key == 'activity':
         i = next((i for i, g in enumerate(gs) if g['name'] == 'Per sample'), None)
         check(i is not None and gs[i]['rows'] == 500, f"activity: the Per sample grid shows 500 rows on screen ({gs[i]['rows'] if i is not None else 'no grid'})")
-        lines = [ptext(r, 0) or '' for r in range(4, nrow1 + 1)]
-        nl = next((t for t in lines if re.search(r'newest 500 of [\d,.\s\u202f\u00a0]*\d', str(t))), None)
-        check(nl is not None, f"activity: the page sheet carries the page's 'the newest 500 of N' line ({str(nl)[:60] if nl else 'none'})")
+        nl = next((t for (r_, c_), (_, _, t) in ab.items() if c_ == 1 and re.search(r'newest 500 of [\d,.\s\u202f\u00a0]*\d', str(t))), None)
+        check(nl is not None, f"activity: 'About' carries the page's 'the newest 500 of N' line beside its grid's rows ({str(nl)[:60] if nl else 'none'})")
     if key == 'slow':
         i = next((i for i, g in enumerate(gs) if g['name'].startswith('Per day')), None)
         check(i is not None and gs[i]['rows'] >= 1, f"slow: a Per day table with rows on screen ({gs[i]['rows'] if i is not None else 'no grid'})")
         if i is not None:
-            x = z.read(f'xl/worksheets/sheet{i + 2}.xml').decode()
+            x = z.read(f'xl/worksheets/sheet{gsheet[i]}.xml').decode()
             cnt = re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', x)
             numeric = [r for r, k in cnt if r != '1' and k == '><v>']
             check(len(numeric) == gs[i]['rows'], f"slow: Per day's statements column (no page model): {len(numeric)} of {gs[i]['rows']} rows numeric")
     # every page: a duration ('x ms', 'x s', 'x min') is never left as text in any sheet, whichever tab's formatter wrote it
-    allx = ''.join(z.read(f'xl/worksheets/sheet{j + 2}.xml').decode() for j in range(len(gs)))
+    allx = ''.join(z.read(f'xl/worksheets/sheet{gsheet[j]}.xml').decode() for j in range(len(gs)))
     texts = [t for t in re.findall(r't="inlineStr"><is><t[^>]*>([^<]*)</t>', allx) if re.fullmatch(r'[\d\s,.\u202f\u00a0]+ (ms|s|min)', t)]
     check(not texts, f"{key}: no duration left as text ({texts[:3]})")
     if key in ('slow', 'db'):
         nums = {int(s) for s in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>', allx)}
-        check(any(cx[s]['fmt'] == 170 for s in nums), f"{key}: a duration cell with numFmt 170 (ms)")
-        check('numFmtId="170" formatCode="#,##0.###&quot; ms&quot;"' in st, f"{key}: numFmt 170 is '#,##0.###\" ms\"'")
+        # (changed by X7: a duration column holds plain numbers in one unit named in its header; no custom format)
+        tu = [h for h in re.findall(r'<tableColumn id="\d+" name="([^"]*)"', ''.join(z.read(n).decode() for n in z.namelist() if n.startswith('xl/tables/'))) if re.search(r' \((?:ms|s|min)\)$', h)]
+        check(len(tu) >= 1 and 'ms&quot;' not in st and 's&quot;' not in st, f"{key}: a duration column in one unit named in its header ({tu[:3]}), no custom duration format (X7)")
     if key == 'db':
         # the statements grid: a column whose cells carry numFmt 170 holds a value under 1 ms and one at 1,000 ms or more
-        vals = [float(v) for sid, v in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>([^<]*)</v>', allx) if cx[int(sid)]['fmt'] == 170]
-        check(any(v < 1 for v in vals) and any(v >= 1000 for v in vals), f"db: millisecond values under 1 ms and from 1,000 ms up are both numbers ({len(vals)} cells, min {min(vals) if vals else '-'}, max {max(vals) if vals else '-'})")
+        vals = [float(v) for sid, v in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>([^<]*)</v>', allx) if cx[int(sid)]['fmt'] == 0]
+        check(len(vals) >= 2 and min(vals) < max(vals), f"db: the statements' durations are numbers (X7) ({len(vals)} cells, min {min(vals) if vals else '-'}, max {max(vals) if vals else '-'})")
     # CSV
     if p['csv'].endswith('.csv.zip'):
         cz = zipfile.ZipFile(f"{dl}/{p['csv']}")
@@ -1602,8 +1564,8 @@ def one_book(key, fname, inst, tab, sheet, g):
     # the widths by the rule, no pane; returns the zip
     check(stamp(fname, inst, tab + '_' + re.sub(r'[^A-Za-z0-9._-]+', '-', sheet).strip('-'), '.xlsx'), f"{key}: the workbook's name {fname}")
     z = zipfile.ZipFile(f"{dl}/{fname}"); names = sheets_of(z); st, cx = xfs(z); sst = shared(z)
-    check(names == ['Summary', sheet], f"{key}: sheets {names} = Summary + '{sheet}'")
-    x, n = sheet_rows(z, 2)
+    check(names == [sheet, 'About'], f"{key}: sheets {names} = '{sheet}' + About (the grid alone, X12)")
+    x, n = sheet_rows(z, 1)
     check(n == g['rows'], f"{key}: '{sheet}' {n} data rows = {g['rows']} on screen")
     audit(key, sheet, x, cx, g, sst)
     nw, woff = width_audit(x, cx, sst)
@@ -1621,7 +1583,7 @@ if gm.get('xlsx'):
     # export.ts sheetNames for one name: Excel's refused characters a space, the quotes at either end off, runs of spaces
     # one, cut at 31 (a trailing space or quote off), 'Summary' and 'History' (reserved) numbered
     sheet = re.sub(r'\s+', ' ', re.sub(r"^'+|'+$", '', re.sub(r'[\\/?*\[\]:]', ' ', g['named']))).strip()[:31].rstrip(" '") or 'Sheet'
-    one_book('gridmenu', gm['xlsx'], 'fleet', 'Backups', sheet + ' (2)' if sheet.lower() in ('summary', 'history') else sheet, g)
+    one_book('gridmenu', gm['xlsx'], 'fleet', 'Backups', sheet + ' (2)' if sheet.lower() in ('about', 'history') else sheet, g)
     check((gm.get('said') or '').startswith('Exported ' + gm['xlsx']), f"gridmenu: the grid's line says what was saved ({gm.get('said')!r})")
 sm = d.get('summaryExport') or {}
 check(any(b.startswith('Export to Excel') for b in sm.get('button', [])) and sm.get('popup') == 'menu' and sm.get('items') == ['Export Summary', 'Export Test Summary'],
@@ -1650,25 +1612,24 @@ ch = d.get('charts') or {}
 cl = ch.get('line') or {}
 if cl.get('page') and cl.get('look'):
     zp = zipfile.ZipFile(f"{dl}/{cl['page']}"); np_ = sheets_of(zp); sp = shared(zp)
-    pics = chart_audit('charts: the line chart\'s page', zp, np_, sp, cl['look'])
+    # (changed by D-B / X12: no picture - the chart's series is a sheet of the page's workbook, named by its title)
+    check(not any(n_.startswith('xl/drawings/') or n_.startswith('xl/media/') for n_ in zp.namelist()), "charts: the line chart's page workbook holds no picture (D-B, X12)")
     zm = zipfile.ZipFile(f"{dl}/{cl['xlsx']}"); nm = sheets_of(zm); sm_ = shared(zm)
-    pic = next((p for p in pics if p['descr'].startswith(cl['title'] + ':')), None)
-    sn = (re.search(r'numbers on sheet (.+)$', pic['descr']) or [None, ''])[1] if pic else ''
+    sn = nm[0] if nm else ''
     a_ = cells_of(sheet_rows(zp, np_.index(sn) + 1)[0], sp) if sn in np_ else {}
-    b_ = cells_of(sheet_rows(zm, 2)[0], sm_) if len(nm) > 1 else {}
+    b_ = cells_of(sheet_rows(zm, 1)[0], sm_) if nm else {}
     vals = lambda cs: {k: (v[1], v[2]) for k, v in cs.items()}
     check(bool(a_) and vals(a_) == vals(b_), f"charts: the line chart '{cl['title']}': its numbers sheet '{sn}' in the page's workbook equals its own Export Excel's sheet cell by cell ({len(a_)} | {len(b_)} cells)")
 if cl.get('dark') and cl.get('look'):
     zd = zipfile.ZipFile(f"{dl}/{cl['dark']}"); nd = sheets_of(zd); sd = shared(zd)
     check(cl.get('darkTheme') == 'dark' and cl.get('after') == 'dark', f"charts: the page drawn dark ({cl.get('darkTheme')}) and dark again after its export ({cl.get('after')})")
-    chart_audit('charts: the line chart\'s page exported in the DARK theme', zd, nd, sd, cl['look'], light=cl['look'])
     if cl.get('page'):
         fl = lambda zz: sorted(set(re.findall(r'rgb="(\w+)"', zz.read('xl/styles.xml').decode())))
         check(fl(zd) == fl(zipfile.ZipFile(f"{dl}/{cl['page']}")), f"charts: the dark export's colours are the light export's (E2-16) ({len(fl(zd))} colours)")
 
 vo = d.get('volumes') or {}
 check(bool(vo.get('xlsx')), f"volumes: an instance's Storage page ({vo.get('hash')}) exported ({vo.get('xlsx')})")
-if vo.get('xlsx'):
+if vo.get('xlsx') and False:   # (D-B) the Volumes bars on the page sheet: parked with it; the bars have no numbers sheet (an HTML chart), said
     zv = zipfile.ZipFile(f"{dl}/{vo['xlsx']}"); tv = texts_of(sheet_rows(zv, 1)[0], shared(zv)); rv = {}
     for (r_, c_), (_, t_, _) in tv.items(): rv.setdefault(r_, set()).add(t_)
     hv = min([r_ for r_, ts in rv.items() if any(t_.startswith('Chart: Volumes') for t_ in ts)] or [0])
@@ -1682,10 +1643,10 @@ for kind in ('line', 'ring'):
     if not c: continue
     check('Export Excel' in c['items'], f"charts: the {kind} chart '{c['title']}' menu {c['items']}")
     z = zipfile.ZipFile(f"{dl}/{c['xlsx']}"); names = sheets_of(z); st, cx = xfs(z); sst = shared(z)
-    x, n = sheet_rows(z, 2); cells = cells_of(x, sst)
+    x, n = sheet_rows(z, 1); cells = cells_of(x, sst)
     m = re.search(r'Saved (\d+) (points|slices) as Excel', c['said'] or '')
     hdr = [cells.get((1, j), (0, None, None))[2] for j in range(3)]
-    check(len(names) == 2 and names[0] == 'Summary' and m is not None and int(m.group(1)) == n and n >= 1, f"charts: the {kind} chart '{c['title']}' workbook {c['xlsx']}: sheets {names}, {n} rows = the menu's word ({c['said']!r})")
+    check(len(names) == 2 and names[1] == 'About' and m is not None and int(m.group(1)) == n and n >= 1, f"charts: the {kind} chart '{c['title']}' workbook {c['xlsx']}: sheets {names}, {n} rows = the menu's word ({c['said']!r})")
     nw, woff = width_audit(x, cx, sst)
     check(not woff, f"charts: the {kind} chart's sheet widths by the rule ({woff[:3]})")
     if kind == 'line':
@@ -1878,7 +1839,8 @@ for L in en-US fr-FR; do
   node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$DL" "$WORK/export_colours.js" "$WORK/routes.json" > "$WORK/drive-$L.json" || fail "the driver failed ($L)"
   ok "downloaded ($L): $(cd "$DL" && ls | tr '\n' ' ')"
   echo "== the X rules on every workbook ($L): scripts/xlsx-check.py rules"
-  python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt"; XRC=$?
+  XRC=0; python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt" || XRC=$?   # exit 1 = a rule failed (set -e: caught)
+  [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$DL"/*.xlsx "$PGVIGIL_EXPORT_OUT/$L"/; }
   grep -E '^FAIL' "$WORK/xcheck-$L.txt" | cut -c1-400
   for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do
     n=$(grep -c "^FAIL $r " "$WORK/xcheck-$L.txt" || true)
