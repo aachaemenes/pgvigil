@@ -97,10 +97,10 @@ up)
     [ -z "$R" ] || fail "the region $PGVIGIL_LAB_AZ_REGION restricts $VM_SIZE for this subscription: $R"
     # a size without restrictions can still have a family quota of 0 (QuotaExceeded at the VM's create, after the
     # server and the pool were made): the family's and the region's free cores are read before anything is made
-    read -r FAM NEED < <(az_ vm list-skus -l "$PGVIGIL_LAB_AZ_REGION" --size "$VM_SIZE" --query "[?name=='$VM_SIZE'] | [0].[[family, capabilities[?name=='vCPUs'].value | [0]]]" -o tsv)
+    read -r FAM NEED < <(az_ vm list-skus -l "$PGVIGIL_LAB_AZ_REGION" --size "$VM_SIZE" --query "[?name=='$VM_SIZE'] | [0].[[family, capabilities[?name=='vCPUs'].value | [0]]]" -o tsv) || true
     [ -n "${FAM:-}" ] && [[ ${NEED:-} =~ ^[0-9]+$ ]] || fail "the family and vCPUs of $VM_SIZE were not read"
     for q in "$FAM" cores; do
-      read -r USED LIMIT < <(az_ vm list-usage -l "$PGVIGIL_LAB_AZ_REGION" --query "[?name.value=='$q'] | [0].[[currentValue, limit]]" -o tsv)
+      USED= LIMIT=; read -r USED LIMIT < <(az_ vm list-usage -l "$PGVIGIL_LAB_AZ_REGION" --query "[?name.value=='$q'] | [0].[[currentValue, limit]]" -o tsv) || true
       [[ ${USED:-} =~ ^[0-9]+$ && ${LIMIT:-} =~ ^[0-9]+$ ]] || fail "the quota $q in $PGVIGIL_LAB_AZ_REGION was not read"
       [ $((LIMIT - USED)) -ge "$NEED" ] || fail "the quota $q in $PGVIGIL_LAB_AZ_REGION has $((LIMIT - USED)) of $LIMIT cores free, $VM_SIZE needs $NEED: nothing made (a quota request, or another PGVIGIL_LAB_AZ_VM_SIZE)"
     done

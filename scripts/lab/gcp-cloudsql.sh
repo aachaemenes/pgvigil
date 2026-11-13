@@ -147,8 +147,8 @@ down)
   done
   echo "read back: instances named $GCS_INSTANCE or labelled pgvigil-proof=$PGVIGIL_LAB_PROOF $LEFT"
   [ "$LEFT" = 0 ] || fail "an instance is left (above): the state file $STATE stays"
-  # a plain disable (gcloud 593 took it minutes after the enable, G1 2026-11-13; that gcloud has no
-  # --bypass-api-usage-check). A refusal for recent use keeps the state file and names the undo: --force, which also
+  # a plain disable (gcloud's services disable takes --async and --force only: no --bypass-api-usage-check). A refusal
+  # for recent use keeps the state file and names the undo: --force, which also
   # disables any service that depends on this one - none is expected for the Cloud SQL Admin API; read the enabled
   # list before and after
   if [ "${API_ENABLED_HERE:-0}" = 1 ]; then

@@ -15,15 +15,17 @@
 #  M0 `collect -once mssql_instance` as pgv_monitor: ok, platform azuresqlmi (EngineEdition 8).
 #  M1 every mssql_ collection once as pgv_monitor: a row for each listed collection, each ok or skipped (a 'partial' or
 #     an 'error' is a finding, listed); mssql_mirroring and mssql_logshipping skipped with C5's words ('Azure SQL Managed
-#     Instance does not support database mirroring', '... has no log shipping ...'); the checks' alerts area not read
-#     with C5's words ('... does not support SQL Server Agent alerts yet: only the operators are read').
+#     Instance does not support database mirroring', '... has no log shipping ...'); the checks' alerts area READ (its
+#     operators: is_read true) with C5's words ('... does not support SQL Server Agent alerts yet: only the operators are
+#     read').
 #  M2 backups: msdb.dbo.backupset as the admin for the lab's database pgvproof and for master / model / msdb (counts by
 #     type, RECORDED: whether the service's automatic backups have rows there); pgvigil's mssql_backup_judged: master,
 #     model and msdb not judged with 0129's two reasons.
 #  M3 the availability reads (mssql_ag) on General Purpose: the status and note RECORDED (no readable replica there).
 #  M4 the error log (mssql_errorlog) as pgv_monitor: ok, or skipped / partial with its words, RECORDED.
-#  M5 the -form azuresqlmi script run by the admin: four sessions made and started (sys.dm_xe_sessions: 4, ring buffers
-#     only), mssql_xe as pgv_monitor ends ok with the four stored running; then dropped.
+#  M5 the -form azuresqlmi script run by the admin: four sessions made and started (sys.dm_xe_sessions: 4; targets other
+#     than ring_buffer in sys.dm_xe_session_targets: 0), mssql_xe as pgv_monitor ends ok with the four stored running;
+#     then dropped.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
@@ -81,9 +83,9 @@ for want in "mssql_mirroring|skipped|Azure SQL Managed Instance does not support
   c=${want%%|*}; got=$(q "select d.status || '|' || coalesce(d.note, '') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = '$c'")
   [[ "$got" == "${want#*|}"* ]] && echo "ok   M1: $c skipped with C5's words" || { VERDICT=FAIL; echo "FAIL M1: $c = '$got'"; }
 done
-AL=$(q "select coalesce(a.note, '') from pgvigil.mssql_check_area a join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and a.area = 'alerts'")
+AL=$(q "select a.is_read || '|' || coalesce(a.note, '') from pgvigil.mssql_check_area a join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and a.area = 'alerts'")
 echo "   M1: the checks' alerts area: '$AL'"
-[[ "$AL" == "Azure SQL Managed Instance does not support SQL Server Agent alerts yet"* ]] && echo "ok   M1: the alerts area not read, in C5's words" || { VERDICT=FAIL; echo "FAIL M1: the alerts area's note is not C5's"; }
+[[ "$AL" == "true|Azure SQL Managed Instance does not support SQL Server Agent alerts yet"* ]] && echo "ok   M1: the alerts area read (the operators), with C5's words" || { VERDICT=FAIL; echo "FAIL M1: the alerts area is not 'read, with C5's words'"; }
 
 echo "== M2: backups"
 sq msdb "$ADMIN_USER" ADMIN_PW <<SQL | sed 's/^/   msdb as the admin: /'
@@ -112,6 +114,13 @@ SQL
 sed 's/^/   running: /' "$WORK/xe-running.txt"
 NRUN=$(grep -c "^pgvigil_${XEID}_" "$WORK/xe-running.txt" || true)
 [ "$NRUN" = 4 ] && echo "ok   M5: 4 sessions running" || { VERDICT=FAIL; echo "FAIL M5: $NRUN session(s) running, want 4"; }
+NOTRB=$(sq master "$ADMIN_USER" ADMIN_PW <<SQL 2>&1 | tr -d '[:space:]'
+SET NOCOUNT ON;
+SELECT COUNT(*) FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+WHERE s.name LIKE N'pgvigil[_]$XEID[_]%' AND t.target_name <> N'ring_buffer';
+SQL
+)
+[ "$NOTRB" = 0 ] && echo "ok   M5: ring buffers only (no other target)" || { VERDICT=FAIL; echo "FAIL M5: targets other than ring_buffer: '$NOTRB'"; }
 "$WORK/pgvigil" collect -config "$WORK/cfg.yaml" -once mssql_xe -instance mi-live > "$WORK/xe-collect.out" 2>&1 || true
 XST=$(q "select d.status || '|' || coalesce(d.note, '') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = 'mssql_xe'")
 NST=$(q "select count(*) from pgvigil.mssql_xe_state s join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and s.state = 'running' and s.session_name like 'pgvigil\_${XEID}\_%'")

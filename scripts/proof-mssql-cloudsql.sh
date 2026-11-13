@@ -69,8 +69,8 @@ step() { local db=$1 what=$2 sql=$3 out
   if out=$(printf 'SET NOCOUNT ON;\n%s\n' "$sql" | sq "$db" "$ROOT_USER" ROOT_PW -b 2>&1); then echo "   ok      $what"; L_OK+=("$what")
   else echo "   refused $what: $(tr -s '\r\n' ' ' <<<"$out" | cut -c1-220)"; fi; }
 step master 'CREATE LOGIN' "IF SUSER_ID(N'$MON_USER') IS NULL CREATE LOGIN [$MON_USER] WITH PASSWORD = N'$MON_PW';"
-# the sqlserver user holds these WITH GRANT OPTION through its role only (CustomerDbRootRole): a plain GRANT is
-# refused (Msg 4613, Grantor does not have GRANT permission, G1's first run); the grant names the role
+# the sqlserver user holds these WITH GRANT OPTION through its role only (CustomerDbRootRole): Cloud SQL refuses a
+# plain GRANT (Msg 4613, Grantor does not have GRANT permission); the grant names the role
 step master 'VIEW SERVER STATE' "GRANT VIEW SERVER STATE TO [$MON_USER] AS [CustomerDbRootRole];"
 step master 'VIEW ANY DEFINITION' "GRANT VIEW ANY DEFINITION TO [$MON_USER] AS [CustomerDbRootRole];"
 step msdb 'msdb user' "IF USER_ID(N'$MON_USER') IS NULL CREATE USER [$MON_USER] FOR LOGIN [$MON_USER];"

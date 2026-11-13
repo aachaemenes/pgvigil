@@ -25,7 +25,9 @@
 # intent policy); this script adds no inbound rule until 'allow' (port 3342 from one address) - and the instance
 # (free offer, public data endpoint on, a system-assigned identity, TLS 1.2). Its stop / start schedule (on by
 # default: 9 a.m. to 5 p.m. on weekdays) is deleted right after the create and read back gone, and a stopped instance
-# is started. The admin's password and the monitor's are made here from /dev/urandom and written only to the mode-600
+# is started; with no schedule the instance spends the offer's 720 vCore-hours a month in about 7.5 days at 4 vCores,
+# then stops itself ('Stopped - Insufficient credit', no charge) and is not started again: take it down the same day.
+# The admin's password and the monitor's are made here from /dev/urandom and written only to the mode-600
 # state file <dir>/azure-mi.env; the admin's reaches az through a mode-600 file (az's @file form), removed right
 # after, never a command line. down deletes the instance, waits for its virtual cluster to be removed (Microsoft: up to
 # 1.5 hours after the last instance), deletes the VNet, the NSG and the route table, and reads back by name and tag; the
@@ -101,27 +103,44 @@ EOF
     --backup-storage-redundancy Local --tags "$(TAG)" --no-wait -o none
   rm -f "$PWF"
   echo "accepted: managed instance $MI_NAME (free offer, GP Gen5 4 vCores, 64 GB) - waiting until it is Ready (Microsoft: 'a while'; checked every minute, 6 h at most)"
-  st=
+  # a create that ends early goes from Provisioning to FailedToCreate (Microsoft's management-operations-cancel page):
+  # both the state and the provisioning state are read, and any failed or cancelled word in either ends the wait
+  st= pst=
   for _ in $(seq 1 360); do
-    st=$(az_ sql mi show -g "$(g)" -n "$MI_NAME" --query state -o tsv 2>/dev/null || true)
-    case $st in Ready) break ;; Failed|Canceled) fail "the create of $MI_NAME ended '$st' (down removes what was made)" ;; esac
+    st= pst=
+    read -r st pst < <(az_ sql mi show -g "$(g)" -n "$MI_NAME" --query '[[state, provisioningState]]' -o tsv 2>/dev/null) || true
+    [ "$st" = Ready ] && break
+    case "$st $pst" in *[Ff]ail*|*[Cc]ancel*) fail "the create of $MI_NAME ended '$st' / '$pst' (down removes what was made)" ;; esac
     sleep 60
   done
-  [ "$st" = Ready ] || fail "$MI_NAME is not Ready after 6 h (state '${st:-none}'); down removes it"
-  read -r MI_FQDN MI_ZONE MI_PRINCIPAL < <(az_ sql mi show -g "$(g)" -n "$MI_NAME" --query '[[fullyQualifiedDomainName, dnsZone, identity.principalId]]' -o tsv)
+  [ "$st" = Ready ] || fail "$MI_NAME is not Ready after 6 h (state '${st:-none}', provisioning '${pst:-none}'); down removes it"
+  read -r MI_FQDN MI_ZONE MI_PRINCIPAL < <(az_ sql mi show -g "$(g)" -n "$MI_NAME" --query '[[fullyQualifiedDomainName, dnsZone, identity.principalId]]' -o tsv) || true
   [ -n "${MI_FQDN:-}" ] && [ -n "${MI_ZONE:-}" ] || fail "the instance's host name was not read back"
   # the public endpoint's host: <name>.public.<dnszone>.database.windows.net, port 3342 (Microsoft's public-endpoint page)
   MI_PUBLIC=${MI_FQDN/.$MI_ZONE./.public.$MI_ZONE.}
   ( umask 077; printf 'MI_FQDN=%s\nMI_PUBLIC=%s\nMI_PRINCIPAL=%s\n' "$MI_FQDN" "$MI_PUBLIC" "${MI_PRINCIPAL:-}" >> "$STATE" )
   echo "made: managed instance $MI_NAME ($MI_FQDN; public endpoint $MI_PUBLIC,3342; system-assigned identity ${MI_PRINCIPAL:-none read}), tag $(TAG)"
   # the free offer's stop / start schedule (on by default, weekdays 9-5): deleted, read back, and a stopped instance started
-  az_ sql mi start-stop-schedule delete --mi "$MI_NAME" -g "$(g)" --yes -o none 2>/dev/null || true
-  N=$(az_ sql mi start-stop-schedule list --mi "$MI_NAME" -g "$(g)" --query 'length(@)' -o tsv) || fail "the stop schedule was not read back"
+  # the delete's own error is shown (the read-back decides); a list that answers 'not found' after it counts as none
+  az_ sql mi start-stop-schedule delete --mi "$MI_NAME" -g "$(g)" --yes -o none || echo "note: the schedule's delete answered an error (above): the read-back decides"
+  if OUT=$(az_ sql mi start-stop-schedule list --mi "$MI_NAME" -g "$(g)" --query 'length(@)' -o tsv 2>&1); then N=$OUT
+  elif grep -qiE 'NotFound|was not found|could not be found' <<<"$OUT"; then N=0
+  else fail "the stop schedule was not read back ($OUT)"; fi
   [ "$N" = 0 ] || fail "$MI_NAME keeps a stop schedule ($N): the proof could be cut by it"
   echo "removed: $MI_NAME's stop / start schedule (read back: none)"
-  if [ "$(az_ sql mi show -g "$(g)" -n "$MI_NAME" --query state -o tsv)" = Stopped ]; then
-    az_ sql mi start -g "$(g)" --mi "$MI_NAME" -o none; echo "started: $MI_NAME (the schedule had stopped it)"
-  fi
+  # an instance the schedule was stopping or starting is waited for; one stopped (by the schedule, or out of the free
+  # offer's hours: 'Stopped - Insufficient credit') is started, and a refused start ends up with the reason
+  st=
+  for _ in $(seq 1 30); do
+    st=$(az_ sql mi show -g "$(g)" -n "$MI_NAME" --query state -o tsv) || fail "the instance's state was not read"
+    case $st in Stopping|Starting) sleep 60 ;; *) break ;; esac
+  done
+  case $st in
+    Ready) ;;
+    Stopped*) az_ sql mi start -g "$(g)" --mi "$MI_NAME" -o none || fail "$MI_NAME is '$st' and did not start (above): down removes it"
+              echo "started: $MI_NAME (it was '$st')" ;;
+    *) fail "$MI_NAME is '$st' after its schedule was removed: down removes it" ;;
+  esac
   echo "up: $MI_PUBLIC,3342 (the admin's and the monitor's passwords in $STATE, mode 600); no address admitted yet: allow <ip>, then logins"
   ;;
 allow)
@@ -188,14 +207,35 @@ down)
   # with it the VNet, can be deleted only then - waited for here, 3 h at most
   VC=
   for _ in $(seq 1 180); do
-    VC=$(az_ sql virtual-cluster list -g "$(g)" --query "length([?contains(to_string(subnetId), '/virtualNetworks/$MI_VNET/')])" -o tsv) || fail "the virtual clusters were not read: the state file stays"
+    # every virtual cluster of the subscription (its group is the service's choice), matched by the subnet's VNet
+    # without case (an id may come back as /virtualnetworks/)
+    VC=$(az_ sql virtual-cluster list --query '[].subnetId' -o tsv) || fail "the virtual clusters were not read: the state file stays"
+    VC=$(grep -ci "/virtualnetworks/$MI_VNET/" <<<"$VC" || true)
     [ "$VC" = 0 ] && break; sleep 60
   done
   [ "$VC" = 0 ] || fail "the virtual cluster on $MI_VNET is still there after 3 h: run down again later (the state file stays)"
   echo "read back: virtual clusters on $MI_VNET 0"
+  # the subnet's network intent policy ends once no virtual cluster is in it AND its delegation is removed (Microsoft's
+  # subnet-service-aided-configuration page): the delegation first, then each piece with spaced tries
+  if az_ network vnet show -g "$(g)" -n "$MI_VNET" -o none 2>/dev/null; then
+    D=$(az_ network vnet subnet show -g "$(g)" --vnet-name "$MI_VNET" -n "$MI_SUBNET" --query 'length(delegations)' -o tsv 2>/dev/null || echo 0)
+    if [ "${D:-0}" != 0 ]; then
+      az_ network vnet subnet update -g "$(g)" --vnet-name "$MI_VNET" -n "$MI_SUBNET" --remove delegations 0 -o none \
+        || fail "$MI_SUBNET's delegation was not removed (above): the state file stays; run down again later"
+      echo "removed: $MI_SUBNET's delegation"
+    fi
+  fi
   for r in "vnet $MI_VNET" "nsg $MI_NSG" "route-table $MI_RT"; do
     set -- $r
-    if az_ network "$1" show -g "$(g)" -n "$2" -o none 2>/dev/null; then az_ network "$1" delete -g "$(g)" -n "$2" -o none; echo "deleted: $1 $2"; fi
+    if az_ network "$1" show -g "$(g)" -n "$2" -o none 2>/dev/null; then
+      ok=
+      for _ in 1 2 3 4 5; do
+        if az_ network "$1" delete -g "$(g)" -n "$2" -o none; then ok=1; break; fi
+        sleep 120
+      done
+      [ -n "$ok" ] || fail "$1 $2 was not deleted after 5 tries 2 min apart (above): the state file stays; run down again later"
+      echo "deleted: $1 $2"
+    fi
   done
   LEFT=
   for _ in $(seq 1 12); do

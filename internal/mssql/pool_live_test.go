@@ -111,11 +111,18 @@ func TestPoolLive(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatalf("P1 the collector stored no complete minute (the admin's read holds %d samples)", len(samples))
 	}
-	// the name's source as the collector reports it: the database's own sys.database_service_objectives wins over the
-	// tag when the login can read it, the tag otherwise; either way the pool is the one the tag names
+	// the name's source the collector must report, read here by the same login: the database's own
+	// sys.database_service_objectives when it answers a name, the tag when it does not; either way the pool is the one
+	// the tag names
+	wantFrom := "tag"
+	if nr, err := QueryRows(ctx, conn, poolNameSQL); err == nil && len(nr) == 1 {
+		if n, _ := nr[0]["pool"].(string); n != "" {
+			wantFrom = "service objectives"
+		}
+	}
 	from, _ := rows[0]["name_from"].(string)
-	if (from != "service objectives" && from != "tag") || fmt.Sprint(rows[0]["pool"]) != tag {
-		t.Fatalf("P1 the pool's name: %v from %q; want %s from 'service objectives' or 'tag'", rows[0]["pool"], from, tag)
+	if from != wantFrom || fmt.Sprint(rows[0]["pool"]) != tag {
+		t.Fatalf("P1 the pool's name: %v from %q; want %s from %q (this login's own read of sys.database_service_objectives)", rows[0]["pool"], from, tag, wantFrom)
 	}
 	t.Logf("P1 the pool's name %s from %s", tag, from)
 	want := map[string]collect.Row{}
