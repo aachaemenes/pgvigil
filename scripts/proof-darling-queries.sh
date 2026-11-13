@@ -1118,8 +1118,10 @@ sleep 1
 sleep 3; col mssql_requests mssql_waits; sqok "I: a short WAITFOR" "WAITFOR DELAY '00:00:02';" pgvq; col mssql_requests mssql_waits
 # the page window starts a minute before this run's first plan-cache read, so the plan cache's charts and History hold
 # every read the run took however long the earlier steps ran; a chart needs reads in two of its steps (5 minutes at
-# least), and the run's earlier reads can all fall in one: one more read here, minutes after the first
-col mssql_plancache
+# least), and the run's earlier reads can all fall in one: one more read here, minutes after the first; the same for
+# the procedures (a procedure's chart needs its runs in two reads' steps: s177j-32 drew none, R1 and R2 in one step)
+sqtn 3 'EXEC dbo.p_spill;'
+col mssql_plancache mssql_procstats
 IF=$(pq "SELECT to_char((date_trunc('minute', min(snapshot_at)) - interval '1 minute') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:00\"Z\"') FROM pgvigil.mssql_pc_read WHERE instance_id = $SB")
 IT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:00Z)
 [[ "$IF" =~ ^20[0-9-]+T[0-9:]+Z$ ]] || fail "I: no plan-cache read of this run to anchor the page window ('$IF')"
@@ -1274,7 +1276,7 @@ if (pr === 'clicked') {
   await ev(`(() => { const s = document.querySelector('main .proc-history select'); if (!s) return 'no select'; s.value = 'executions_s'; s.dispatchEvent(new Event('change', { bubbles: true })); return 'ok'; })()`);
   await poll("the procedure's chart drawn again for Executions (per second)", `${T}.includes('Executions (per second)')`);
   pr = await ev(`(() => { const h = document.querySelector('main .proc-history'); if (!h) return 'no chart'; const s = h.querySelector('select');
-    return JSON.stringify({ metrics: [...s.options].map(o => o.textContent), before: ${JSON.stringify(t1)}, after: ${T},
+    return JSON.stringify({ metrics: [...s.options].map(o => o.textContent), before: ${JSON.stringify(t1)}, after: ${T}, chart: !!h.querySelector('.uplot'),
       line: !!document.querySelector('main svg.strip-overlay polyline'), errors: document.querySelectorAll('main .error:not([role=status])').length }); })()`);
 }
 console.log(`prochistory ${pr}`);
@@ -1474,7 +1476,7 @@ if 'band ok' not in q or '"said":"The grid holds' not in q or '"line":true' not 
 p = one('pchistory')
 if '"chart":true' not in p or '"errors":0' not in p: bad.append(f'plan cache history: {p}')
 r = one('prochistory')
-if '"Avg Duration (ms)","Avg CPU (ms)","Duration (ms/s)","Executions (per second)"' not in r or '"line":true' not in r or '"errors":0' not in r: bad.append(f'procedure history: {r}')
+if '"Avg Duration (ms)","Avg CPU (ms)","Duration (ms/s)","Executions (per second)"' not in r or '"line":true' not in r or '"chart":true' not in r or '"errors":0' not in r: bad.append(f'procedure history: {r}')
 rs = one('runstrip').split()
 if len(rs) != 4 or rs[2] != 'ok' or rs[3] != '0' or rs[1] == '0': bad.append(f'running strip: {rs}')
 # the wait filter by what it shows: unfiltered = the API's rows (two waits at least), filtered = its WAITFOR rows alone
