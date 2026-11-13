@@ -277,6 +277,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, timeoutNote(sctx, limit, err)), Duration: time.Since(start)}
 	}
+	for _, t := range in.TagPairs() {
+		if t.Key == "pool" {
+			info.PoolTag = t.Value
+		}
+	}
 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
 	ecancel()
