@@ -29,11 +29,14 @@ func TestPlatformOwnDatabase(t *testing.T) {
 	}
 }
 
-// Every per-database read leaves the services' own databases out through platformOwnDatabase: userDatabases (the
-// indexes and statistics), the identity scan and the Query Store's list. A new per-database loop that forgets it
-// fails here.
+// The per-database reads that would count the services' own databases leave them out through platformOwnDatabase:
+// userDatabases (the indexes and statistics), the identity scan, the Query Store's list and the audit's database
+// specifications. What this checks: each of those four files holds the call the stated number of times. It does not
+// find a new loop by itself - a per-database loop added in another file, or a second one in these, is not caught
+// (indexlocks.go, storage.go and reports.go are not in it: they enter only the databases the login can enter, which
+// leaves gcloud_cloudsqladmin out on Cloud SQL - G1's trial).
 func TestPlatformOwnDatabaseInEveryDatabaseLoop(t *testing.T) {
-	for file, want := range map[string]int{"indexes.go": 1, "dboptions.go": 1, "querystore.go": 1} {
+	for file, want := range map[string]int{"indexes.go": 1, "dboptions.go": 1, "querystore.go": 1, "audit.go": 1} {
 		b, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)

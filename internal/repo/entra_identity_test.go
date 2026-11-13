@@ -250,4 +250,27 @@ func TestProposalPlatformOnAStore(t *testing.T) {
 			t.Fatalf("%s approved as platform %q (page) / %q (instances); want %q", c.server, pa, pi, c.want)
 		}
 	}
+	// the import path (the review wire2 6): a proposal read first without a platform (as a store's row from before 3e
+	// was), then with one, then with another - the stored row follows each read through import_admin_proposals' INSERT
+	// and its ON CONFLICT
+	started := time.Now().Add(-time.Hour)
+	for i, c := range []struct{ plat, want string }{{"", "-"}, {"cloudsql", "cloudsql"}, {"rds", "rds"}} {
+		row := `{"server":"imp1","engine":"sqlserver","host":"imp1.example","port":1433}`
+		if c.plat != "" {
+			row = fmt.Sprintf(`{"server":"imp1","engine":"sqlserver","host":"imp1.example","port":1433,"platform":%q}`, c.plat)
+		}
+		var out, detail string
+		if err := pool.QueryRow(ctx, `SELECT r->>'outcome', coalesce(r->>'detail', '') FROM pgvigil.import_admin_proposals($1, now(), $2::jsonb, NULL, NULL, $3, 'test', 'h1') AS r`,
+			src, "["+row+"]", started.Add(time.Duration(i)*time.Minute)).Scan(&out, &detail); err != nil || out != "done" {
+			t.Fatalf("read %d: %s %q %v", i+1, out, detail, err)
+		}
+		var got string
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT coalesce(max(platform), '-'), count(*) FROM pgvigil.admin_proposals WHERE source = $1 AND server = 'imp1'`, src).Scan(&got, &n); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want || n != 1 {
+			t.Fatalf("after read %d (platform %q) the proposal holds %q in %d row(s); want %q in one", i+1, c.plat, got, n, c.want)
+		}
+	}
 }

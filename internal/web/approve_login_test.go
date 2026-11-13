@@ -58,6 +58,20 @@ func TestApproveLogin(t *testing.T) {
 			cred: sqlSrc, auth: "sql", login: "pgv_reader", password: "s3cret", dsnHas: []string{"pgv_reader:s3cret@"}},
 		{name: "entra source, nothing typed", engine: config.EngineSQLServer, srcAuth: "entra", cred: sourceCred{Login: client, Password: "spsecret"},
 			auth: "entra", login: client, password: "spsecret", dsnHas: []string{"fedauth=ActiveDirectoryServicePrincipal"}},
+		{name: "wire2 1: .pgpass picked, no login typed, the source a password login: its login, no password sent", engine: config.EnginePostgres, srcAuth: "password", typedAuth: "pgpass",
+			cred: sourceCred{Login: "pguser", Password: "s3cret"}, auth: "pgpass", login: "pguser", dsnHas: []string{"user=pguser"}, dsnLacks: []string{"s3cret", "password="}},
+		{name: "wire2 1: .pgpass picked, no login typed, a cloud source's SQL login on its PostgreSQL server: its login, no password sent", engine: config.EnginePostgres, srcAuth: "sql", typedAuth: "pgpass",
+			cred: sqlSrc, auth: "pgpass", login: "pgv_reader", dsnHas: []string{"user=pgv_reader"}, dsnLacks: []string{"s3cret", "password="}},
+		{name: "wire2 2: SQL login picked, no login typed, the source's one login stored as a PostgreSQL login: that login", engine: config.EngineSQLServer, srcAuth: "password", typedAuth: "sql",
+			cred: sqlSrc, auth: "sql", login: "pgv_reader", password: "s3cret", dsnHas: []string{"pgv_reader:s3cret@"}},
+		{name: "wire2 2: PostgreSQL login picked, no login typed, the source's one login stored as a SQL login: that login", engine: config.EnginePostgres, srcAuth: "sql", typedAuth: "password",
+			cred: sqlSrc, auth: "password", login: "pgv_reader", password: "s3cret", dsnHas: []string{"user=pgv_reader"}},
+		{name: "wire2 2: SQL login picked, no login typed, the source .pgpass (no password held): still refused", engine: config.EngineSQLServer, srcAuth: "pgpass", typedAuth: "sql",
+			cred: sourceCred{Login: "pguser"}, err: "a SQL login needs its name and password: the source signs in as pgpass"},
+		{name: "wire2 3: a SQL login typed, Authentication left as the source signs in, the source a service principal: refused, never an Entra sign-in", engine: config.EngineSQLServer, srcAuth: "entra",
+			typedLogin: "sqluser", typedPassword: "pw1", cred: sourceCred{Login: "sqluser", Password: "pw1"}, err: "pick SQL login"},
+		{name: "wire2 3: a SQL login typed with SQL login picked, the source a service principal: that SQL login", engine: config.EngineSQLServer, srcAuth: "entra", typedAuth: "sql",
+			typedLogin: "sqluser", typedPassword: "pw1", cred: sourceCred{Login: "sqluser", Password: "pw1"}, auth: "sql", login: "sqluser", password: "pw1", dsnHas: []string{"sqluser:pw1@"}, dsnLacks: []string{"fedauth"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			auth, login, pw, err := approveLogin(c.engine, c.srcAuth, c.typedAuth, c.typedLogin, c.typedPassword, c.cred, c.proposalLogin, "srv1")
@@ -92,6 +106,39 @@ func TestApproveLogin(t *testing.T) {
 				if strings.Contains(dsn, s) {
 					t.Errorf("the DSN holds %q", s)
 				}
+			}
+		})
+	}
+}
+
+// The pg_service source's sign-in (wire2's note outside its diff, the 3a rule): a source that signs in as an Entra
+// application or identity never puts its secret into a PostgreSQL DSN; with nothing typed it is refused in words.
+func TestPgServiceDSN(t *testing.T) {
+	for _, c := range []struct {
+		name, srcAuth   string
+		typed           bool
+		cred            sourceCred
+		has, lacks, err string
+	}{
+		{name: "password source: its login and password", srcAuth: "password", cred: sourceCred{Login: "u1", Password: "p1"}, has: "user=u1 password=p1"},
+		{name: "no credential: the service file alone", srcAuth: "pgpass", has: "servicefile=/etc/pgvigil/pg_service.conf", lacks: "user="},
+		{name: "entra source, nothing typed: refused", srcAuth: "entra", cred: sourceCred{Login: "app", Password: "spsecret"}, err: "type a PostgreSQL login for svc1"},
+		{name: "entra-identity source, nothing typed: refused", srcAuth: "entra-identity", cred: sourceCred{Login: "client"}, err: "type a PostgreSQL login for svc1"},
+		{name: "entra source, a PostgreSQL login typed: that login", srcAuth: "entra", typed: true, cred: sourceCred{Login: "pgreader", Password: "pw1"}, has: "user=pgreader password=pw1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dsn, err := pgServiceDSN("svc1", "/etc/pgvigil/pg_service.conf", c.srcAuth, c.typed, c.cred)
+			if c.err != "" {
+				if err == nil || !strings.Contains(err.Error(), c.err) {
+					t.Fatalf("pgServiceDSN: %v (%q); want the words %q", err, dsn, c.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(dsn, c.has) || (c.lacks != "" && strings.Contains(dsn, c.lacks)) || strings.Contains(dsn, "spsecret") {
+				t.Fatalf("pgServiceDSN = %q; want %q in it and not %q", dsn, c.has, c.lacks)
 			}
 		})
 	}

@@ -1011,6 +1011,9 @@ func (auditCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info,
 		}
 		for i, d := range dbs {
 			name := rowText(d, "database_name")
+			if platformOwnDatabase(info.Kind, name) {
+				continue // the service's own database (RDS's rdsadmin, Cloud SQL's gcloud_cloudsqladmin): never listed as skipped
+			}
 			if can, _ := asInt(d["can_enter"]); can != 1 {
 				dbSkipped = append(dbSkipped, name)
 				continue
