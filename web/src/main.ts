@@ -210,7 +210,7 @@ function refreshSelect(live: boolean, long = false): HTMLElement {
     const off = long && Number(k) > 0 && Number(k) < LONG_FLOOR_S;
     sel.append(el('option', { value: k, ...(Number(k) === shown ? { selected: '' } : {}), ...(off ? { disabled: '', title: longWhy } : {}) }, 'Auto refresh: ' + label + (off ? ` (off: ${longWhy})` : '')));
   }
-  if (live && long) { sel.title = `${why}; ${longWhy}`; sel.setAttribute('aria-label', `${why}; ${longWhy}`); }
+  if (live && long) sel.title = `${why}; ${longWhy}`;   // the name stays; the off choices say why in their own words
   sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
   return sel;
 }
