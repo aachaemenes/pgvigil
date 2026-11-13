@@ -174,7 +174,7 @@ THIRD-PARTY-NOTICES.md says); sp_WhoIsActive's sample holds its result rows and 
 never among the instance's runs; its grids carry the line's short form into Export .xlsx (the Summary sheet), Export
 CSV (the file's first line: a program that reads the CSV takes that line as its first record) and report mail; the
 address keeps the tool open (`tool=<id>`), so a page scheduled or linked from there opens the sample again (on a real
-instance `tool=` opens nothing: a tool's form asks the server, which only a click does). Plan XML is left out of the stored copy and said. Glenn Berry's queries
+instance `tool=` opens nothing: a tool's form asks the server, which only a click does). Plan XML is left out of the stored copy and said, and so are the capture login's own statements in Top statements (the monitor's reads are not the demo's subject). Glenn Berry's queries
 are his own text: nothing of them is stored, and the demo says where to get the script.
 
 What decides it, and where pgvigil reads it:

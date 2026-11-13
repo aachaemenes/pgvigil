@@ -1218,18 +1218,29 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, out, err)
 }
 
-// demoWithoutDoor: the instance is one pgvigil demo invented (its demo tag) and this server holds no login for it -
-// decided per instance, never by the process (pgvigil demo -serve -config serves real instances beside the demo's).
+// seeded: id (in, as the door's lookup reads it) is one of this demo's instances - seeded by this running pgvigil
+// demo, still tagged demo, still under the demo's name prefix. The demo door's allow (demodoor.go) and the Community
+// page's demo instance are this one rule (review 20261112-222929 finding 1); nil (a serve) seeds none.
+func (d *demoDoor) seeded(id int, in doorInstance) bool {
+	return d != nil && d.ids[id] && in.DemoTag && strings.HasPrefix(in.Name, d.prefix)
+}
+
+// demoWithoutDoor: id is a demo instance - one this running pgvigil demo seeded (seeded) - with no login for it on
+// this server. A plain serve never has a demo instance, whatever an instance's tags: a real instance tagged demo gets
+// its ordinary lines, never the demo's words or a sample.
 func (s *Server) demoWithoutDoor(ctx context.Context, id int, name, engine string) (bool, error) {
-	var demo bool
-	if err := s.pool.QueryRow(ctx, `SELECT 'demo' = ANY (tags) FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&demo); err != nil {
+	if s.demo == nil {
+		return false, nil
+	}
+	in, ok, err := s.demo.look.instance(ctx, id)
+	if err != nil || !ok {
 		return false, err
 	}
 	door := s.pgDoorDSN(name)
 	if engine == "sqlserver" {
 		door = s.msDoorDSN(name)
 	}
-	return demo && door == "", nil
+	return s.demo.seeded(id, in) && door == "", nil
 }
 
 // CommunitySample is GET /api/community/sample?instance=N&tool=T: a demo instance's stored sample of the tool - a read

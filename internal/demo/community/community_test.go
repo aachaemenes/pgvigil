@@ -1,6 +1,7 @@
 package community
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -47,6 +48,20 @@ func TestStoredSamples(t *testing.T) {
 				for c, v := range row {
 					if v, ok := v.(string); ok && strings.Contains(v, "<ShowPlanXML") {
 						t.Errorf("%s set %d: plan XML in %s", tool, i+1, set.Columns[c])
+					}
+				}
+			}
+		}
+		if col := OwnRows[tool]; col != "" {
+			for i, set := range s.Sets {
+				c := slices.Index(set.Columns, col)
+				if c < 0 {
+					t.Errorf("%s set %d: no column %q to tell the capture's own rows by", tool, i+1, col)
+					continue
+				}
+				for _, row := range set.Rows {
+					if v, ok := row[c].(string); ok && slices.Contains(CaptureLogins, v) {
+						t.Errorf("%s set %d: a row of the capture's own login %s", tool, i+1, v)
 					}
 				}
 			}

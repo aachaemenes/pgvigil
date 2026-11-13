@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -271,6 +272,7 @@ func one(raw string, m meta, t toolMeta) (*community.Sample, error) {
 	}
 	for i, set := range r.Sets {
 		set = dropPlans(set, i, s)
+		set = dropOwn(set, i, t.Tool, s)
 		if len(set.Rows) > maxRows {
 			s.Cut = append(s.Cut, fmt.Sprintf("set %d: the first %d of %d rows", i+1, maxRows, len(set.Rows)))
 			set.Rows = set.Rows[:maxRows]
@@ -305,6 +307,27 @@ func one(raw string, m meta, t toolMeta) (*community.Sample, error) {
 		return nil, fmt.Errorf("no rows in any of its %d result sets (a sample without rows is not a sample)", len(s.Sets))
 	}
 	return s, nil
+}
+
+// dropOwn leaves out the rows the capture's own logins ran (community.OwnRows names the column per tool), and says so.
+func dropOwn(set community.Set, idx int, tool string, s *community.Sample) community.Set {
+	c := slices.Index(set.Columns, community.OwnRows[tool])
+	if community.OwnRows[tool] == "" || c < 0 {
+		return set
+	}
+	keep, n := make([][]any, 0, len(set.Rows)), 0
+	for _, row := range set.Rows {
+		if v, ok := row[c].(string); ok && slices.Contains(community.CaptureLogins, v) {
+			n++
+			continue
+		}
+		keep = append(keep, row)
+	}
+	if n > 0 {
+		s.Cut = append(s.Cut, fmt.Sprintf("set %d: %d rows of the capture's own login (%s)", idx+1, n, strings.Join(community.CaptureLogins, ", ")))
+		set.Rows = keep
+	}
+	return set
 }
 
 // dropPlans leaves out every column of set whose cells hold showplan XML, and says so in the sample.
