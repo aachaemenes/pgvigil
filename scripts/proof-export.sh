@@ -137,6 +137,9 @@
 #              the 2001 page's Export .xlsx: that grid's sheet is its header row without the hidden column
 #   shots      with PGVIGIL_EXPORT_SHOTS: grid-menu, summary-export, chart-menu-line, chart-menu-ring, each -light and -dark
 #   libre      when soffice is on the machine, each .xlsx converts to CSV headless (the file opens); none = said
+#   xcheck     (X0-X12) every downloaded .xlsx passes scripts/xlsx-check.py rules: the file rules DBA Dash's own exports
+#              pass (a grid sheet per grid, the named colour pairs only, the fixed header, one table each, no pane, the
+#              formats General / '0' / '0.0%' / '0.00%' / 'yyyy-MM-dd HH:mm', booleans, widths, no app link, no picture)
 #   languages  all of the above twice: Chromium in en-US and in fr-FR (navigator.language says so; 1234567 shows
 #              without a comma: the locale's grouping space), the numbers numeric in both
 set -euo pipefail
@@ -144,6 +147,7 @@ cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
 WORK=$(mktemp -d); DB="pgvigil_export_$RANDOM"; PORT=$((21000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
+XCHECK="$(cd "$(dirname "$0")" && pwd)/xlsx-check.py"   # the file rules X0-X12 (every downloaded workbook)
 ok() { echo "ok   $*"; }
 cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
@@ -1873,6 +1877,14 @@ for L in en-US fr-FR; do
   echo "== the downloads ($L)"
   node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$DL" "$WORK/export_colours.js" "$WORK/routes.json" > "$WORK/drive-$L.json" || fail "the driver failed ($L)"
   ok "downloaded ($L): $(cd "$DL" && ls | tr '\n' ' ')"
+  echo "== the X rules on every workbook ($L): scripts/xlsx-check.py rules"
+  python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt"; XRC=$?
+  grep -E '^FAIL' "$WORK/xcheck-$L.txt" | cut -c1-400
+  for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do
+    n=$(grep -c "^FAIL $r " "$WORK/xcheck-$L.txt" || true)
+    if [[ "$n" == 0 ]]; then ok "xcheck $r: every workbook ($L, $(ls "$DL"/*.xlsx | wc -l) files)"; else echo "FAIL: xcheck $r: $n workbook(s) ($L)"; fi
+  done
+  [[ $XRC == 0 ]] || fail "a workbook breaks an X rule of scripts/xlsx-check.py ($L)"
   echo "== the files read back ($L)"
   python3 -I "$WORK/check.py" "$WORK/drive-$L.json" "$DL" "$L" || fail "a file did not match its page ($L)"
   if command -v soffice >/dev/null; then
