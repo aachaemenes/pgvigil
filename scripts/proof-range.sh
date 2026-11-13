@@ -69,8 +69,8 @@ for _ in $(seq 1 "${PGVIGIL_DEMO_WAIT_S:-900}"); do grep -q 'pgvigil demo servin
 grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up"; }
 BASE="http://127.0.0.1:$PORT/"
 Q() { psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "$1"; }
-ERP=$(Q "select instance_id from pgvigil.instances where name = 'erp01'")
-[[ -n "$ERP" ]] || fail "the demo has no erp01"
+ERP=$(Q "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
+[[ -n "$ERP" ]] || fail "the demo has no demo-onprem-erp01"
 
 echo "== RA: the API's read window"
 ts() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }

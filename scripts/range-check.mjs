@@ -3,7 +3,7 @@
 // grid's line, the workbook, the CSV, the mail body), Zoom out over the menu and off at a year, the auto refresh floor
 // over a day, and what the repository keeps when the window starts before it.
 //   node scripts/range-check.mjs <cdp port> <base url/> <download folder>
-//   RANGE_ERP the demo's erp01 instance_id; RANGE_ROWS_FROM, RANGE_PURGE_AT, RANGE_MONTHS_FROM (YYYY-MM-DD),
+//   RANGE_ERP the demo's demo-onprem-erp01 instance_id; RANGE_ROWS_FROM, RANGE_PURGE_AT, RANGE_MONTHS_FROM (YYYY-MM-DD),
 //   RANGE_DAYS_FROM (YYYY-MM-DD or empty): the hand reads of what the repository keeps (proof-range.sh, RB)
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base, dl] = process.argv.slice(2);
