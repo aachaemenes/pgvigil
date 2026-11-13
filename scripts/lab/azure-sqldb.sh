@@ -271,7 +271,7 @@ BEGIN
 END
 GRANT VIEW DATABASE STATE TO [$VM_NAME];
 GO
-SELECT 'logins: ' + name + ' (' + type_desc + ', ' + authentication_type_desc + ') in ' + DB_NAME() + ' holds ' +
+SELECT 'logins: ' + name + ' (' + type_desc COLLATE DATABASE_DEFAULT + ', ' + authentication_type_desc COLLATE DATABASE_DEFAULT + ') in ' + DB_NAME() + ' holds ' +
   ISNULL((SELECT STRING_AGG(permission_name, ', ') FROM sys.database_permissions WHERE grantee_principal_id = principal_id AND state = 'G'), 'nothing')
 FROM sys.database_principals WHERE name = N'$VM_NAME';
 SQL

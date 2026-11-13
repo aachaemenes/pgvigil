@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lab: one Amazon RDS for SQL Server instance (Express edition, the smallest class) for the cloud proof
+# Lab: one Amazon RDS for SQL Server instance (Express on the smallest class by default, or Standard: PGVIGIL_LAB_RDS_EDITION) for the cloud proof
 # scripts/proof-mssql-rds.sh, made and removed from the machine that holds the AWS CLI sign-in.
 #
 #   scripts/lab/aws-rds-mssql.sh up                  make the instance, its security group and the state file

@@ -70,7 +70,9 @@ up)
   [ ! -e "$STATE" ] || fail "$STATE exists: this lab is up (status) or was not taken down (down)"
   mkdir -p "$DIR"; chmod 700 "$DIR"; printf '*\n' > "$DIR/.gitignore"
   ENABLED_HERE=0
-  if [ -z "$(g services list --enabled --filter="config.name:$API" --format='value(config.name)')" ]; then
+  # a failed listing is never read as 'off': up would record an API it did not enable, and down would turn it off
+  ON=$(g services list --enabled --filter="config.name:$API" --format='value(config.name)') || fail "the project's enabled services were not read (gcloud above): nothing made"
+  if [ -z "$ON" ]; then
     g services enable "$API"; ENABLED_HERE=1
     echo "made: the project's $API enabled (undo: down disables it)"
   fi
@@ -91,8 +93,9 @@ EOF
   load
   BODY=$(umask 077; mktemp "$DIR/gcp-b.XXXXXX")
   trap 'rm -f "$BODY"' EXIT
-  jq -n --arg n "$GCS_INSTANCE" --arg r "$LAB_REGION" --arg p "$ROOT_PW" --arg l "$PGVIGIL_LAB_PROOF" '{
-    name: $n, region: $r, databaseVersion: "SQLSERVER_2022_EXPRESS", rootPassword: $p,
+  # the password reaches jq through its environment, never its command line (ps shows argv)
+  ROOT_PW="$ROOT_PW" jq -n --arg n "$GCS_INSTANCE" --arg r "$LAB_REGION" --arg l "$PGVIGIL_LAB_PROOF" '{
+    name: $n, region: $r, databaseVersion: "SQLSERVER_2022_EXPRESS", rootPassword: env.ROOT_PW,
     settings: {tier: "db-custom-1-3840", edition: "ENTERPRISE", availabilityType: "ZONAL", dataDiskType: "PD_SSD",
                dataDiskSizeGb: "10", storageAutoResize: false, deletionProtectionEnabled: false,
                backupConfiguration: {enabled: false, pointInTimeRecoveryEnabled: false},
@@ -121,21 +124,35 @@ allow)
 status)
   need
   echo "label pgvigil-proof=$PGVIGIL_LAB_PROOF (the project's Cloud SQL instances):"
-  g sql instances list --filter="settings.userLabels.pgvigil-proof=$PGVIGIL_LAB_PROOF" --format='value(name,databaseVersion,state,ipAddresses[0].ipAddress)' 2>/dev/null | sed 's/^/  /' || echo "  (the API is not enabled: none)"
+  # a failed read is said as failed; only the API's own 'not enabled' answer means none
+  if L=$(g sql instances list --filter="settings.userLabels.pgvigil-proof=$PGVIGIL_LAB_PROOF" --format='value(name,databaseVersion,state,ipAddresses[0].ipAddress)' 2>&1); then
+    [ -z "$L" ] || sed 's/^/  /' <<<"$L"
+  elif grep -qiE 'SERVICE_DISABLED|not (been )?enabled|has not been used' <<<"$L"; then echo "  (the API is not enabled: none)"
+  else fail "the read failed: $L"; fi
   ;;
 down)
   need; load
-  if g sql instances describe "$GCS_INSTANCE" >/dev/null 2>&1; then
+  # only Google's not-found answer means 'absent': any other failed read (a lapsed sign-in, the network) stops here
+  # with nothing deleted and the state file kept, never a silent '0 left'
+  if D=$(g sql instances describe "$GCS_INSTANCE" --format='value(name)' 2>&1); then
     g sql instances delete "$GCS_INSTANCE"; echo "deleted: Cloud SQL instance $GCS_INSTANCE"
+  elif ! grep -qiE 'HTTPError 404|does not exist|not found' <<<"$D"; then
+    fail "the instance $GCS_INSTANCE was not read ($D): nothing deleted, the state file $STATE stays"
   fi
   LEFT=
   for _ in $(seq 1 12); do
-    LEFT=$(g sql instances list --filter="name=$GCS_INSTANCE OR settings.userLabels.pgvigil-proof=$PGVIGIL_LAB_PROOF" --format='value(name)' | grep -c . || true)
+    L=$(g sql instances list --filter="name=$GCS_INSTANCE OR settings.userLabels.pgvigil-proof=$PGVIGIL_LAB_PROOF" --format='value(name)') || fail "the read-back failed (gcloud above): the state file $STATE stays"
+    LEFT=$(grep -c . <<<"$L" || true)
     [ "$LEFT" = 0 ] && break; sleep 10
   done
   echo "read back: instances named $GCS_INSTANCE or labelled pgvigil-proof=$PGVIGIL_LAB_PROOF $LEFT"
   [ "$LEFT" = 0 ] || fail "an instance is left (above): the state file $STATE stays"
-  if [ "${API_ENABLED_HERE:-0}" = 1 ]; then g services disable "$API" && echo "undone: the project's $API disabled again"; fi
+  # gcloud refuses to disable a service enabled in the last 3 days or used in the last 30 unless told to bypass
+  # that check (services disable --bypass-api-usage-check); a refusal keeps the state file, so down runs again
+  if [ "${API_ENABLED_HERE:-0}" = 1 ]; then
+    g services disable "$API" --bypass-api-usage-check || fail "the project's $API stays enabled (undo: gcloud services disable $API --bypass-api-usage-check --project $PGVIGIL_LAB_GCP_PROJECT): the state file $STATE stays"
+    echo "undone: the project's $API disabled again"
+  fi
   rm -f "$STATE"
   echo "down: 0 left"
   ;;
