@@ -402,10 +402,12 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, map[string]any{"instance": name, "engine": engine, "collections": out}, nil)
 }
 
-// sqlStored is GET /api/stored: the last purge run (its age and end) and the oldest partitions held. A row-trimmed
-// table (activity_summary, mssql_requests_summary: 0190:201, 0064:468-469) holds rows from the run's end less its
-// days; a monthly partition is dropped once its whole month is older, so the partitioned tables hold from the oldest
-// month left (up to 31 days more), a daily one from its oldest day. No purge run yet: no rows_from.
+// sqlStored is GET /api/stored: the last purge run (its age and end, for the words) and the oldest partitions held. A
+// row-trimmed table (activity_summary, mssql_requests_summary: 0190:201, 0064:468-469) holds rows from the LATEST cut
+// any run made (a run deletes before its start less its days: an earlier run with fewer days cut deeper than a later
+// one with more, and its cut stands until the newer horizon passes it); a monthly partition is dropped once its whole
+// month is older, so the partitioned tables hold from the oldest month left (up to 31 days more), a daily one from its
+// oldest day. No purge run yet: no rows_from.
 const sqlStored = `
 WITH pr AS (SELECT days, finished_at FROM pgvigil.purge_runs ORDER BY run_id DESC LIMIT 1),
 p AS (
@@ -418,7 +420,7 @@ p AS (
    WHERE n.nspname = 'pgvigil'
 )
 SELECT (SELECT days FROM pr) AS purge_days, (SELECT finished_at FROM pr) AS purge_at,
-       (SELECT finished_at - make_interval(days => days) FROM pr) AS rows_from,
+       (SELECT max(started_at - make_interval(days => days)) FROM pgvigil.purge_runs) AS rows_from,
        (SELECT min(month)::timestamp AT TIME ZONE 'UTC' FROM p) AS months_from,
        (SELECT min(day)::timestamp AT TIME ZONE 'UTC' FROM p) AS days_from`
 

@@ -487,6 +487,7 @@ func (s *Server) query(ctx context.Context, sql string, args ...any) (*table, er
 		}
 		t.Rows = append(t.Rows, v)
 	}
+	markRead(ctx, t, args)
 	return t, rows.Err()
 }
 
@@ -531,7 +532,7 @@ const (
 type readWindowKey struct{}
 
 // readWindow is what a request read of the window it was asked: set by paramsReach when it cut the window to a part's
-// reach; reply() sends it as the X-Pgvigil-Read-* headers and multi() beside each table that read the window.
+// reach; reply() sends it as the X-Pgvigil-Read-* headers and markRead puts it beside each table that read the window.
 type readWindow struct {
 	asked, from, to time.Time
 	set             bool
@@ -545,11 +546,23 @@ func withReadWindow(h http.Handler) http.Handler {
 }
 
 // readWindowOf is the request's read window when a part was cut to its reach, else nil.
-func readWindowOf(r *http.Request) *readWindow {
-	if rw, ok := r.Context().Value(readWindowKey{}).(*readWindow); ok && rw.set {
+func readWindowOf(r *http.Request) *readWindow { return readWindowIn(r.Context()) }
+
+// readWindowIn is readWindowOf for the request whose context ctx is (query and queryTx have the context, not the request).
+func readWindowIn(ctx context.Context) *readWindow {
+	if rw, ok := ctx.Value(readWindowKey{}).(*readWindow); ok && rw.set {
 		return rw
 	}
 	return nil
+}
+
+// markRead puts the cut window beside a table whose query read it (its arguments hold the cut start): every table
+// query and queryTx build, whatever shape the reply has - one table, a multi's parts, a struct's or a map's fields
+// (Plans, Metrics, PerfSummary, PgDepth) - so the page, the exports, the mail and MCP say what each list read.
+func markRead(ctx context.Context, t *table, args []any) {
+	if rw := readWindowIn(ctx); rw != nil && t != nil && readArgs(args, rw.from) {
+		t.ReadFrom, t.ReadTo = &rw.from, &rw.to
+	}
 }
 
 // readArgs tells whether a part's arguments hold the cut window's start: the part read the window.
@@ -597,11 +610,17 @@ func paramsReach(r *http.Request, needInstance bool, reach time.Duration) (id in
 	if to.Sub(from) > maxWindow {
 		return 0, from, to, errors.New("window longer than a year (366 days and an hour)")
 	}
-	if to.Sub(from) > reach {
+	// the reach counts back from the window's end or now, whichever is earlier: a window that ends in the future (a
+	// typed end past now) reads the newest data it holds, not an empty month ahead of now
+	end := to
+	if now := time.Now(); end.After(now) {
+		end = now
+	}
+	if end.Sub(from) > reach {
 		asked := from
-		from = to.Add(-reach)
+		from = end.Add(-reach)
 		if rw, ok := r.Context().Value(readWindowKey{}).(*readWindow); ok {
-			rw.asked, rw.from, rw.to, rw.set = asked, from, to, true
+			rw.asked, rw.from, rw.to, rw.set = asked, from, end, true
 		}
 	}
 	return id, from, to, nil
@@ -940,10 +959,7 @@ func (s *Server) multi(w http.ResponseWriter, r *http.Request, parts []part) {
 			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
 			return
 		}
-		// a part that read a window cut to its reach carries what it read beside its columns and rows
-		if rw := readWindowOf(r); rw != nil && readArgs(p.args, rw.from) {
-			t.ReadFrom, t.ReadTo = &rw.from, &rw.to
-		}
+		// a part that read a window cut to its reach carries what it read beside its columns and rows (query's markRead)
 		out[p.name] = t
 	}
 	s.reply(w, r, out, nil)

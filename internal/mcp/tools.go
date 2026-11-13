@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -176,12 +177,25 @@ const maxHours = 366*24 + 1
 
 // readNote adds what a reply read when its window was cut to a part's reach (the API's read_from / read_to beside the
 // table's columns and rows) to an MCP reply, so a caller never takes a month's numbers for a year's.
+// The note is the page's own words for a cut list (web/src/ui.ts readWindowWords): 'This list reads the newest N days
+// of this window: <read_from> to <read_to>.'
 func readNote(out map[string]any, t any) map[string]any {
 	if rf, ok := field(t, "read_from").(string); ok && rf != "" {
-		out["read_from"], out["read_to"] = rf, field(t, "read_to")
-		out["read_note"] = "the window was longer than this part reads: the numbers are of read_from to read_to, the newest part of the window"
+		rt, _ := field(t, "read_to").(string)
+		out["read_from"], out["read_to"] = rf, rt
+		out["read_note"] = fmt.Sprintf("This list reads the newest %d days of this window: %s to %s.", readDays(rf, rt), rf, rt)
 	}
 	return out
+}
+
+// readDays is a read window's length in whole days, rounded as the page rounds it (31 days and an hour = 31).
+func readDays(from, to string) int {
+	f, err1 := time.Parse(time.RFC3339, from)
+	t, err2 := time.Parse(time.RFC3339, to)
+	if err1 != nil || err2 != nil {
+		return 0
+	}
+	return int(math.Round(t.Sub(f).Hours() / 24))
 }
 
 func window(a map[string]any, defHours int) (url.Values, error) {

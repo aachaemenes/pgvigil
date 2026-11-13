@@ -104,7 +104,8 @@ const tablesTopMaxWindow = 7 * 24 * time.Hour
 
 // TablesTop is one instance's busiest tables over the window.
 func (s *Server) TablesTop(w http.ResponseWriter, r *http.Request) {
-	id, from, to, err := params(r, true)
+	// its reach is tablesTopMaxWindow: a longer window reads its newest 7 days and the reply says so (paramsReach)
+	id, from, to, err := paramsReach(r, true, tablesTopMaxWindow)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -115,9 +116,6 @@ func (s *Server) TablesTop(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("n must be 1 to 50"))
 			return
 		}
-	}
-	if to.Sub(from) > tablesTopMaxWindow {
-		from = to.Add(-tablesTopMaxWindow)
 	}
 	s.multi(w, r, []part{
 		{"tables", `SELECT * FROM pgvigil.table_activity_top($1, $2, $3, $4)`, []any{id, from, to, n}},

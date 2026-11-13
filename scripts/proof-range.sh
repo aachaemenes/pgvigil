@@ -12,9 +12,12 @@
 #                  the asked start, its JSON read_from the same instant; over 20 days: 200 and no read header, no read_from;
 #                  over 366 days, an hour and a second: 400 'window longer than a year'; dbinfo's db_series over 365 days:
 #                  200, no read header (its reach is a year); replication over 365 days: 'series' carries read_from,
-#                  'latest' and 'checks' (no window argument) do not
-#   RB stored      after the purge: /api/stored = purge_runs' last row (days 10, rows_from = its finished_at less 10
-#                  days) and the oldest monthly / daily partition by the catalogue's names, each = a psql hand read
+#                  'latest' and 'checks' (no window argument) do not; /api/plans' 'plans' and /api/perfsummary's 'pg'
+#                  over 365 days carry read_from too; tables/top over 60 days reads its 7 days and says 7 (X-Pgvigil-Read-From)
+#   RB stored      after 'purge -days 8' then 'purge -days 10': /api/stored = the last run's days 10 and end, rows_from =
+#                  the LATEST cut of any run (the first run's start less 8 days, not the last run's end less 10: the
+#                  rows the 8-day run deleted stay gone), the oldest monthly / daily partition by the catalogue's
+#                  names, each = a psql hand read (red on c5c7e83, whose rows_from was the last run's end less 10 days)
 #   R1 menu        the panel: the twenty quick ranges in DBA Dash's order in pgvigil's words, 'Last 5 minutes' to 'Last
 #                  year'; the Date select 15 days ('YYYY-MM-DD (Ddd - Today)', '- Yesterday)', '- 2 days ago)' ...
 #                  '- 14 days ago)') and the Month select 13 months ('Mon YYYY (This Month)', '(Last Month)', '(2 months
@@ -93,12 +96,25 @@ c4=$(hdr "api/dbinfo?instance=$ERP&part=db_series&from=$y365&to=$now")
 c5=$(hdr "api/replication?instance=$ERP&from=$y365&to=$now")
 parts=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join(k+("=cut" if isinstance(v,dict) and v.get("read_from") else "") for k,v in sorted(d.items())))' "$WORK/b.json")
 [[ "$c5" == 200 && " $parts " == *" series=cut "* && " $parts " == *" latest "* && " $parts " == *" checks "* ]] || fail "RA: replication over 365 days: $c5, parts '$parts'"
-echo "ok   RA api: 365 days 200 read from $want_from of $y365 (JSON the same); 20 days whole; 366 d 1 h 1 s 400; db_series a year whole; replication '$parts'"
+# a reply that is not one table (a struct, a map): each table that read the cut window carries it (red on c5c7e83)
+c6=$(hdr "api/plans?instance=$ERP&from=$y365&to=$now")
+pf=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("plans") or {}).get("read_from",""))' "$WORK/b.json")
+c7=$(hdr "api/perfsummary?from=$y365&to=$now&part=pg")
+pg=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("pg") or {}).get("read_from",""))' "$WORK/b.json")
+[[ "$c6" == 200 && "$pf" == "$want_from" && "$c7" == 200 && "$pg" == "$want_from" ]] \
+  || fail "RA: plans over 365 days: $c6, plans.read_from '$pf'; perfsummary pg: $c7, pg.read_from '$pg' (want $want_from)"
+# a part with its own 7-day reach says 7 days, not the default's 31 (red on c5c7e83: it said 745 h and read 7 days)
+d60=$(ts $((N - 60 * 86400))); want7=$(ts $((N - 7 * 86400)))
+c8=$(hdr "api/tables/top?instance=$ERP&from=$d60&to=$now")
+[[ "$c8" == 200 && "$(h X-Pgvigil-Read-From)" == "$want7" ]] || fail "RA: tables/top over 60 days: $c8, read from '$(h X-Pgvigil-Read-From)' (want $want7)"
+echo "ok   RA api: 365 days 200 read from $want_from of $y365 (JSON the same); plans and perfsummary tables the same; tables/top 7 days; 20 days whole; 366 d 1 h 1 s 400; db_series a year whole; replication '$parts'"
 
-echo "== RB: what the repository keeps after 'pgvigil purge -days 10'"
+echo "== RB: what the repository keeps after 'pgvigil purge -days 8', then 'pgvigil purge -days 10'"
 CFG="$WORK/repo.yaml"; printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
-PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB" "$WORK/pgvigil" purge -config "$CFG" -days 10 > "$WORK/purge.out" 2>&1 || { cat "$WORK/purge.out"; fail "RB: the purge failed"; }
-hand=$(Q "select days, to_char(finished_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), to_char((finished_at - make_interval(days => days)) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') from pgvigil.purge_runs order by run_id desc limit 1")
+for d in 8 10; do
+  PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB" "$WORK/pgvigil" purge -config "$CFG" -days $d > "$WORK/purge.out" 2>&1 || { cat "$WORK/purge.out"; fail "RB: the purge -days $d failed"; }
+done
+hand=$(Q "select days, to_char(finished_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), (select to_char(max(started_at - make_interval(days => days)) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') from pgvigil.purge_runs) from pgvigil.purge_runs order by run_id desc limit 1")
 hm=$(Q "select coalesce(to_char(min(to_date(right(k.relname, 6) || '01', 'YYYYMMDD')), 'YYYY-MM-DD'), '') from pg_inherits i join pg_class k on k.oid = i.inhrelid join pg_class t on t.oid = i.inhparent join pg_namespace n on n.oid = t.relnamespace where n.nspname = 'pgvigil' and k.relname ~ '_[0-9]{6}\$'")
 hd=$(Q "select coalesce(to_char(min(to_date(right(k.relname, 8), 'YYYYMMDD')), 'YYYY-MM-DD'), '') from pg_inherits i join pg_class k on k.oid = i.inhrelid join pg_class t on t.oid = i.inhparent join pg_namespace n on n.oid = t.relnamespace where n.nspname = 'pgvigil' and k.relname ~ '_[0-9]{8}\$'")
 IFS='|' read -r hdays hat hrows <<< "$hand"

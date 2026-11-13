@@ -10,10 +10,11 @@ import (
 
 // TestReadWindow: a window up to a year is taken; a part reads its reach of it (the default 31 days and an hour), the
 // newest end, and the request keeps what was asked and what was read; a window inside the reach is read whole and
-// leaves no read window; a part with a year's reach reads a year whole; past a year and an hour is refused.
+// leaves no read window; a part with a year's reach reads a year whole; past a year and an hour is refused; a window
+// that ends in the future reads its reach back from now.
 func TestReadWindow(t *testing.T) {
-	end := time.Date(2026, 11, 13, 20, 0, 0, 0, time.UTC)
-	call := func(from time.Time, reach time.Duration) (time.Time, *readWindow, error) {
+	end := time.Now().UTC().Truncate(time.Second).Add(-time.Hour) // an end in the past, as the API's window takes it (seconds)
+	callTo := func(from, to time.Time, reach time.Duration) (time.Time, *readWindow, error) {
 		var got time.Time
 		var rw *readWindow
 		var err error
@@ -21,9 +22,12 @@ func TestReadWindow(t *testing.T) {
 			_, got, _, err = paramsReach(r, true, reach)
 			rw = readWindowOf(r)
 		}))
-		u := "/api/x?instance=1&from=" + from.Format(time.RFC3339) + "&to=" + end.Format(time.RFC3339)
+		u := "/api/x?instance=1&from=" + from.Format(time.RFC3339) + "&to=" + to.Format(time.RFC3339)
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, u, nil))
 		return got, rw, err
+	}
+	call := func(from time.Time, reach time.Duration) (time.Time, *readWindow, error) {
+		return callTo(from, end, reach)
 	}
 	year := end.Add(-365 * 24 * time.Hour)
 	from, rw, err := call(year, defaultReach)
@@ -42,6 +46,13 @@ func TestReadWindow(t *testing.T) {
 	}
 	if _, _, err = call(end.Add(-maxWindow-time.Second), maxWindow); err == nil {
 		t.Fatal("366 days, an hour and a second: no error; want 'window longer than a year'")
+	}
+	// a window ending 30 days ahead of now: its default reach ends now, never in the empty month ahead
+	before := time.Now()
+	from, rw, err = callTo(end.Add(-300*24*time.Hour), end.Add(30*24*time.Hour), defaultReach)
+	after := time.Now()
+	if err != nil || rw == nil || rw.to.Before(before) || rw.to.After(after) || !from.Equal(rw.to.Add(-defaultReach)) {
+		t.Fatalf("an end 30 days ahead: from %v, read window %+v, err %v; want the reach back from now (%v)", from, rw, err, before)
 	}
 	// the multi part that read the window carries it; one that did not (no time argument equal to its start) does not
 	if !readArgs([]any{1, end.Add(-defaultReach), end}, end.Add(-defaultReach)) || readArgs([]any{1}, end.Add(-defaultReach)) {
