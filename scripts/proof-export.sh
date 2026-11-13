@@ -87,7 +87,9 @@
 #              the Instance Summary's ages as DBA Dash's Summary writes them, a Files growth column holding a percent);
 #              every column whose header names a unit the export added holds the screen's figure converted into it, within
 #              the figure's shown precision (1024 steps for sizes, 1000 / 60 for times), a cell the screen shows with no
-#              number empty in a column of days or of a rate; a size chart's series named with its unit
+#              number empty in a column of days or of a rate; a chart's first figures in the unit its axis draws, named
+#              and converted (one unit per axis); no bare number left as text on any grid or chart sheet (a column headed
+#              'version' and '0042' aside); the instance Storage page graded as every page
 #   values     (X7-X9) an Item | Value | Status sheet's Value is typed by its content: no bare number left as text
 #   db         a database's drill page: its statements' durations (the columns headed ' (ms)' / ' (s)' / ' (min)') are
 #              numbers under General (X7), two at least and not all equal
@@ -362,7 +364,10 @@ const PAGELOOK = `(() => {
     // menu's Export Excel writes (chart.ts pgvNumbers), null for a chart that has none
     const tbl = (() => { for (let a = b; a && a !== main; a = a.parentElement) { const nx = a.nextElementSibling; if (nx && nx.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) return true; } return false; })();
     let nums = null; try { nums = typeof b.pgvNumbers === 'function' ? (b.pgvNumbers().rows || []).length : null; } catch { nums = null; }
-    return { title: flat(hc ? hc.textContent : ''), tbl, nums, w: cv ? cv.getBoundingClientRect().width : null, h: cv ? cv.getBoundingClientRect().height : null,
+    // first: the first row with a figure, each figure as the chart's own axis formatter draws it (chart.ts pgvNumbers fmts)
+    let first = null; try { if (typeof b.pgvNumbers === 'function') { const n = b.pgvNumbers(); const i = (n.rows || []).findIndex(r => r.some((v, j) => j > 0 && typeof v === 'number'));
+      if (i >= 0) first = { i, texts: n.rows[i].map((v, j) => typeof v === 'number' && n.fmts && n.fmts[j] ? n.fmts[j](v) : null) }; } } catch { first = null; }
+    return { title: flat(hc ? hc.textContent : ''), tbl, nums, first, w: cv ? cv.getBoundingClientRect().width : null, h: cv ? cv.getBoundingClientRect().height : null,
              series: sv ? [...b.querySelectorAll('.swatch')].map(s => ({ label: flat(s.nextSibling?.textContent), on: true }))
                : [...b.querySelectorAll('.u-legend .u-series')].slice(1).map(s => ({ label: flat(s.querySelector('.u-label')?.textContent ?? s.textContent), on: !s.classList.contains('u-off') })),
              svg: !!sv, table: !!sv && (() => { for (let a = b; a && a !== main; a = a.parentElement) { const nx = a.nextElementSibling; if (nx && nx.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) return true; } return false; })(), fills: sv ? [...new Set([...sv.querySelectorAll('rect[fill], path[fill], circle[stroke]')].filter(x => { const r = x.getBoundingClientRect(); return r.width >= 1 && r.height >= 1; }).map(x => (x.getAttribute('fill') || x.getAttribute('stroke') || '').toLowerCase()).filter(f => /^#[0-9a-f]{6}$/.test(f)))] : [],
@@ -675,10 +680,11 @@ out.charts = charts;
 // a chart the page draws in HTML (chart.ts volumeBars: the Volumes bars of an instance's Storage page, a table): the
 // bars' rows as the page draws them, then the page's export (its rows on the page sheet after the chart's line)
 {
+  // (the review's fold) graded as every page here too: its days, its rates, its Volumes
   const hashV = `#/storage?i=${one.instance_id}&w=24h`;
   await go(hashV); await sleep(700);
   const bars = await ev(`[...document.querySelectorAll('main .chart.bars tbody tr')].map(tr => [...tr.children].map(td => (td.textContent || '').replace(/\\s+/g, ' ').trim()))`);
-  out.volumes = { hash: hashV, bars, xlsx: await press('Export .xlsx', ['.xlsx']) };
+  out.volumes = { ...(await page(hashV)), bars };
 }
 // an empty grid's sheet without the column the grid tools hide: a grid with rows over 24 h that is an empty grid's
 // note (no table to mark) in a window of 2001, under the same heading with the same columns, found on the first
@@ -986,12 +992,12 @@ def grid_sheets(z, gs, names):
 DAY_ = r'(?:\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{4})'
 CLOCK_ = r',?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?'
 def clean_(t):
-    t = re.sub(r'(\S)/(s|sec|min|h|hr|day)\b', r'\1 per \2', t)
+    t = re.sub(r'(\S)\s*/\s*(s|sec|min|h|hr|day)\b', r'\1 per \2', t)
     return re.sub(r"^[\s']+|[\s']+$", '', re.sub(r'\s+', ' ', re.sub(r'[\\/?*\[\]:]', ' ', t)))
 def title_of(t):
     t2 = re.sub(r'\s*\((?:read\s+)?[^()]*' + DAY_ + CLOCK_ + r'[^()]*\)', '', t)
     t2 = re.sub(r'\s*(?:\b(?:since|from|until|to|at|as of|read|of)\s+)?' + DAY_ + CLOCK_, '', t2, flags=re.I).strip()
-    t2 = re.sub(r'\s*\(\d{1,3}(?:[,.\s\u202f\u00a0]\d{3})*\)$', '', t2).strip() or t   # a bare count in brackets out too ('Findings (16)')
+    t2 = re.sub(r'\s*\(\d+(?:[,.\s\u202f\u00a0]\d{3})*\)$', '', t2).strip() or t   # a bare count in brackets out too ('Findings (16)', '(1000)')
     return clean_(t2)
 def name_of(g):
     # the title a grid's sheet starts from: a data-sheet's own name kept whole ('alone'); one holding its own heading
@@ -1003,18 +1009,28 @@ def under_(up, t):
     both = f'{up} {t}'
     if len(both) <= 31: return clean_(both)
     return clean_(re.sub(r"[\s'_.-]+$", '', up[:31 - 2 - len(t)]) + '… ' + t if len(t) <= 25 else re.sub(r"[\s']+$", '', both[:31]))
+def close_cut(c):
+    # export_names.ts closeCut: a name a cut left inside a bracket loses that bracket's start
+    i = c.rfind('(')
+    if i < 0 or c.find(')', i) >= 0: return c
+    e = c.find('…', i)
+    return (c[:i].rstrip() + (c[e:] if e >= 0 else '')) or c
 def named_by(n, f, up):
     # a sheet's name made from its title f (export_names.ts sheetNames): the title cut at 31 (a bracket the cut lands in
-    # left out), its start then '…' and the words where it parts from another, or under the heading above it
-    h = f[:24].rstrip()
-    if n.startswith(h): return True
-    if len(f) > 31 and n == re.sub(r'\s\([^)]*$', '', re.sub(r"[\s']+$", '', f[:31])): return True
-    if up and n == under_(title_of(up), f): return True
+    # left out), its start then '…' and the words where it parts from another, or under the heading above it; never a name
+    # that ends inside a bracket it cut
+    if re.search(r'\([^)]*$', n): return False
+    cut31 = re.sub(r"[\s']+$", '', f[:31])
+    if len(f) > 31 and re.search(r'\([^)]*$', cut31):
+        if n == clean_(close_cut(cut31)): return True
+    elif n.startswith(f[:24].rstrip()): return True
+    if up and n == clean_(close_cut(under_(title_of(up), f))): return True
     if '…' in n:
         a_, b_ = n.split('…', 1)
         return f.startswith(a_.rstrip(" '_.-")) and (f.endswith(b_.strip()) or (a_ == '' and b_.strip() in f))
     return n.endswith(' ' + f[:31 - 2]) or n.endswith(' ' + f)
 def safe_(n): return re.sub(r'[^A-Za-z0-9._-]+', '-', n).strip('-') or 'x'
+def norm_(t): return re.sub(r'\s+', ' ', t or '').strip()   # the page's text as the export reads it (a locale's narrow space one space)
 # (X7, the lead 13:44 (2)) a number with a unit as the pages write it: a size, a duration (fmtSecs's '1d 2h' too), a
 # rate, a count of days
 UNIT_TEXT = re.compile(r'-?[\d\s,.\u202f\u00a0]*\d ?(?:B|KB|MB|GB|TB|PB|ms|s|min|h|d|days?|hours?)(?: ?/ ?(?:day|h|s))?|-?\d+[dhm](?: \d+[hms])?|off \(\d+ days?\)')
@@ -1444,6 +1460,7 @@ CONVERTED = [0]
 # (decision (b)) the SQL Server instance's Jobs tab, when the demo has a SQL Server instance
 PAGES = [('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('drives', 'Drives', 'fleet'), ('dbspace', 'DB-Space', 'fleet'), ('dbfiles', 'Files', 'fleet'), ('tables', 'Table-Size', iname), ('roles', 'Roles', iname),
          ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('perf', 'Performance-summary', 'fleet'), ('db', 'Database', iname), ('empty', 'Table-Size', iname)]
+if (d.get('volumes') or {}).get('grids') is not None: PAGES.append(('volumes', 'Storage', iname))   # the instance Storage page (days, rates, Volumes)
 if d.get('sqljobs') and not d['sqljobs'].get('none'): PAGES.append(('sqljobs', 'Jobs', re.sub(r'[^A-Za-z0-9._-]+', '-', d['sqljobs']['instance'])))
 elif d.get('sqljobs'): print(f"not checked: sqljobs: the SQL Server instance {d['sqljobs']['instance']}'s Jobs tab shows no grid ({d['sqljobs']['none'][:100]})")
 else: print("not checked: sqljobs: the demo has no SQL Server instance (its Jobs tab's step grids)")
@@ -1559,7 +1576,7 @@ for key, tab, inst in PAGES:
         print(f"not checked: {key}: the section sheets' count (the driver reads no tile rows)")
     # (X7-X9, the lead 13:44 (1)) an Item | Value | Status sheet's Value typed by its content: no bare number in the page's
     # locale left as text (a version - its Item names one - is no number)
-    BARE = r'-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?' if want.startswith('en') else r'-?\d{1,3}(?:[\u202f\u00a0 ]\d{3})*(?:,\d+)?|-?\d+(?:,\d+)?'
+    BARE = r'-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?' if want.startswith('en') else r'-?\d{1,3}(?:[\u202f\u00a0 ]\d{3})+(?:,\d+)?|-?\d+(?:,\d+)?'
     vt = []
     for k in extra + [k_ for k_ in gsheet if k_]:
         cv = cells_of(z.read(f'xl/worksheets/sheet{k}.xml').decode(), sst)
@@ -1567,6 +1584,34 @@ for key, tab, inst in PAGES:
         for (r_, c_), (_, v_, t_) in cv.items():
             if r_ > 1 and c_ == 1 and v_ is None and t_ and re.fullmatch(BARE, t_) and not re.search(r'\bversion\b', cv.get((r_, 0), (0, None, ''))[2] or '', re.I): vt.append(f"{names[k - 1]}!B{r_} '{t_}'")
     check(not vt, f"{key}: no Value cell a bare number left as text (the lead 13:44 (1)) ({vt[:3]})")
+    # (X7, the review's second pass) no bare number in the page's locale left as text on any grid or chart sheet: a count,
+    # a figure the page rounds; a column headed 'version' and a text the writer keeps by design ('0042', '+5') aside
+    gt = []
+    for k in [k_ for k_ in gsheet if k_] + extra:
+        cv = cells_of(z.read(f'xl/worksheets/sheet{k}.xml').decode(), sst); hd_ = {c_: t_ or '' for (r_, c_), (_, _, t_) in cv.items() if r_ == 1}
+        if [hd_.get(j) for j in range(3)] == ['Item', 'Value', 'Status']: continue   # the Value row above
+        for (r_, c_), (_, v_, t_) in cv.items():
+            if r_ > 1 and v_ is None and t_ and re.fullmatch(BARE, t_) and not re.match(r'[+0]\d', t_) and 'version' not in hd_.get(c_, '').lower():
+                gt.append(f"{names[k - 1]}!{colname(c_)}{r_} '{hd_.get(c_)}' '{t_}'")
+    check(not gt, f"{key}: no bare number left as text on a grid or a chart's sheet ({len(gt)}: {gt[:3]})")
+    # (the lead 13:44 (3)) each chart's sheet holds its first figures in the unit its axis draws: a series whose axis shows
+    # a size or a duration names its unit, and its value is the axis's figure converted, within the shown precision
+    if 'tileRows' in pl:
+        cf_ = []; ncf = 0
+        for c, k in zip(drawn_ch, at_):
+            fi = c.get('first')
+            if not fi or not k: continue
+            cv = cells_of(z.read(f'xl/worksheets/sheet{k}.xml').decode(), sst); hd_ = {c_: t_ or '' for (r_, c_), (_, _, t_) in cv.items() if r_ == 1}
+            for j, txt in enumerate(fi['texts']):
+                if not txt or not re.search(r'\d\s?(?:B|KB|MB|GB|TB|PB|ms|s|min)$', norm_(txt)): continue
+                mu = re.search(r' \(([^()]+)\)$', hd_.get(j, ''))
+                v_ = cv.get((fi['i'] + 2, j), (0, None, None))[1]
+                e_ = converted(mu.group(1), norm_(txt)) if mu else None
+                ncf += 1
+                if not mu: cf_.append(f"{names[k - 1]} '{hd_.get(j)}': no unit for '{txt}'")
+                elif not isinstance(e_, tuple) or v_ is None or abs(v_ - e_[0]) > e_[1] + abs(e_[0]) * 1e-9: cf_.append(f"{names[k - 1]} '{hd_.get(j)}' {v_} for '{txt}'")
+        if ncf or cf_:
+            check(not cf_, f"{key}: {ncf} chart figure(s) in the unit their axis draws, named, converted within the shown precision ({cf_[:3]})")
     # (P1) one table on every grid sheet, no sheet filter and no _FilterDatabase anywhere
     for k in extra:
         ex = z.read(f'xl/worksheets/sheet{k}.xml').decode()

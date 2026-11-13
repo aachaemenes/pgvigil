@@ -82,6 +82,9 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
   const n = numeric(raw);
   if (n !== undefined) {
     if (norm(fmtBytes(raw)) === text) return { v: n, kind: 'bytes' };
+    // a size a page writes in its own unit with the locale's number ('1,536 MB', '100,5 MB': fmtNum(v) + ' MB'): bytes
+    const sw = /^(.+) (B|KB|MB|GB|TB|PB)$/.exec(text);
+    if (sw && norm(fmtNum(n)) === sw[1]) return { v: n * 1024 ** UNITS.indexOf(sw[2]), kind: 'bytes' };
     if (norm(fmtSecs(raw)) === text) return n >= 0 ? { v: n / 86400, kind: 'secs' } : { v: n, kind: 'nsecs' };
     const dur = durParse(text);
     // a duration kept in seconds and shown under a minute as '12.2 s' (the Jobs tabs; a longer one is fmtSecs's '1m 5s'):
@@ -102,6 +105,14 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
     const rm = /^(.+) \/ day$/.exec(text);
     if (rm && norm(n < 0 ? '-' + fmtBytes(-n) : fmtBytes(n)) === rm[1]) return { v: n, kind: 'bytes', per: 'day' };
     if (norm(fmtNum(raw)) === text || String(raw) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
+    // a figure the page rounds to a whole number first ('61,075' for 61074.6: fmtNum(Math.round(v))): the raw value
+    if (norm(fmtNum(Math.round(n))) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
+  }
+  // a status grid's cell whose model is an object (the fleet Summary's) and whose words are a bare number in the locale
+  // ('2' collection errors): that number, as DBA Dash writes its 'DBA Dash Errors (24hrs)'
+  if (raw !== null && typeof raw === 'object') {
+    const d = digitsOf(text);
+    if (d && (norm(fmtNum(Number(d))) === text || /^\d+$/.test(text))) { const k = Number(d); return { v: k, kind: Number.isInteger(k) ? 'int' : 'dec' }; }
   }
   return { v: text, kind: 'text' };
 }
@@ -783,7 +794,7 @@ export function gridSection(s: Section): Section {
       const ms = (c: Cell) => c.kind === 'secs' ? (c.v as number) * 86400000 : (c.v as number) * 1000;
       const top = secs.reduce((a, c) => Math.abs(ms(c)) > Math.abs(ms(a)) ? c : a);
       const unit = secs.every(c => durParse(c.text)) ? /\s(ms|s|min)$/.exec(top.text)?.[1] ?? 's' : 's';
-      for (const c of secs) { c.v = Math.round(ms(c) / DUR[unit] * 1e9) / 1e9; c.kind = 'dec'; }   // no float noise: 11 s, not 10.999999999999998
+      for (const c of secs) { c.v = Number((ms(c) / DUR[unit]).toPrecision(15)); c.kind = 'dec'; }   // no float noise: 11 s, not 10.999999999999998, at any size
       if (j < cols.length && !long) cols[j] = `${cols[j]} (${unit})`;
     }
   }
@@ -1043,7 +1054,23 @@ export function chartSection(title: string, n: ChartNumbers): Section {
     const d = dayCell(t);
     return d ? { ...d, text: t } : { v: t, kind: 'text', text: t };
   };
-  return { name: title || 'Chart', cols: n.cols, rows: n.rows.map(r => r.map(cell)) };
+  const rows = n.rows.map(r => r.map(cell)), cols = [...n.cols];
+  // (the lead 13:44 (3)) the series one axis draws (one formatter) share its unit: the largest value's, as the axis shows it,
+  // named in each series' header ('erp (GB)', 'postgres (GB)'), not a unit per series
+  for (const f of new Set(fmts.filter((x): x is ((v: number) => string) => !!x))) {
+    const js = cols.map((_, j) => j).filter(j => fmts[j] === f);
+    const at = js.flatMap(j => rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number'));
+    for (const [k, read] of [['bytes', (c: Cell) => sizeOf(c.text)?.unit], ['msecs', (c: Cell) => /\s(ms|s|min)$/.exec(c.text)?.[1]]] as [Kind, (c: Cell) => string | undefined][]) {
+      const cs = at.filter(c => c.kind === k);
+      if (!cs.length) continue;
+      const top = cs.reduce((a, c) => Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a);
+      const unit = read(top) ?? (k === 'bytes' ? sizeUnit(top.v as number) : 'ms');
+      const div = k === 'bytes' ? 1024 ** UNITS.indexOf(unit) : DUR[unit];
+      for (const c of cs) { c.v = (c.v as number) / div; c.kind = 'dec'; }
+      for (const j of js) if (rows.some(r => r[j] && cs.includes(r[j]))) cols[j] = `${cols[j]} (${unit})`;
+    }
+  }
+  return { name: title || 'Chart', cols, rows };
 }
 // exportChart: a chart's numbers as a workbook (a chart's menu: Export Excel; chart.ts): one sheet named by the chart's
 // title, a time as a time ('yyyy-MM-dd HH:mm'), a number as a number, a share (kind 'pct', the fraction) as '0.0%'
@@ -1069,7 +1096,7 @@ export function valueCell(v: string, item = ''): Cell {
   if (yn) return { ...yn, text: v };
   if (tm) return { ...tm, text: v };
   const d = digitsOf(v);
-  if (d && norm(fmtNum(Number(d))) === v && !/^[+0]\d/.test(v)) { const n = Number(d); return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec', text: v }; }
+  if (d && (norm(fmtNum(Number(d))) === v || /^-?\d+$/.test(v)) && !/^[+0]\d/.test(v)) { const n = Number(d); return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec', text: v }; }   // '5432' too
   return text;
 }
 function itemSection(name: string, items: { item: string; value: string; status?: Status }[]): Section {

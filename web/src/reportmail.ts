@@ -99,7 +99,7 @@ export function routeOf(hash = location.hash): string {
 // pairs them. A page whose grids are all empty is mailed too.
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {
   const m = await metaOf(ctx);
-  const book = (await pageBook(ctx, root, m.tab)).items.map(f => f.sec);
+  const pb = await pageBook(ctx, root, m.tab), book = pb.items.map(f => f.sec);
   if (!book.length) throw new Error('nothing to mail: no grid on this page');
   const secs = sections(root!, m.tab);
   const nums = numbers(root!);
@@ -110,7 +110,7 @@ export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<Mai
   return {
     name: title, route: routeOf(), subject: `pgvigil: ${title} - ${win}`, window: win,
     html: mailHtml(m, secs, nums, title), xlsx, xlsx_name: exportName(m, 'xlsx'),
-    grids: book.length, rows: book.reduce((n, s) => n + s.rows.length, 0),
+    grids: pb.found.length, rows: pb.found.reduce((n, f) => n + f.sec.rows.length, 0),   // the page's grids, as before: no tiles, cards' or charts' rows
   };
 }
 

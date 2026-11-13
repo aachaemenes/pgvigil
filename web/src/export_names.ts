@@ -19,11 +19,11 @@ const DAY = String.raw`(?:\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-]
 const CLOCK = String.raw`,?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?`;
 const READ_TIME = new RegExp(String.raw`\s*\((?:read\s+)?[^()]*${DAY}${CLOCK}[^()]*\)`, 'g');
 const AT_TIME = new RegExp(String.raw`\s*(?:\b(?:since|from|until|to|at|as of|read|of)\s+)?${DAY}${CLOCK}`, 'gi');
-// a rate's slash (Excel refuses '/' in a name): 'Transactions/s' reads 'Transactions per s'
-const PER = /(\S)\/(s|sec|min|h|hr|day)\b/g;
+// a rate's slash (Excel refuses '/' in a name): 'Transactions / s' (the pages' own form) reads 'Transactions per s'
+const PER = /(\S)\s*\/\s*(s|sec|min|h|hr|day)\b/g;
 // a bare count the heading carries in brackets ('Findings (16)': its rows, which 'About' holds) reads as a numbered repeat
 // in a sheet's name (X2) and is left out too; a count with its word stays ('Fastest-growing tables (7 days)')
-const COUNT = /\s*\(\d{1,3}(?:[,.\s\u202f\u00a0]\d{3})*\)$/;   // '(16)', '(1,234)', '(1 234)'; not an address '(10.0.0.5)'
+const COUNT = /\s*\(\d+(?:[,.\s\u202f\u00a0]\d{3})*\)$/;   // '(16)', '(1000)', '(1,234)', '(1 234)'; not an address '(10.0.0.5)'
 const SEP = /[\s_.-]/;
 
 // clean: each character Excel refuses a space, each run of spaces one space, spaces and quotes at either end off (Excel
@@ -47,6 +47,14 @@ export function ownName(own: string, heading: string): string {
 // off; head: the same before an ellipsis, a separator at the end off too
 const upTo = (s: string, n: number) => { let k = Math.min(n, s.length); if (k < s.length && /[\uD800-\uDBFF]/.test(s[k - 1] ?? '')) k--; return s.slice(0, k); };
 const cut = (s: string, n: number) => upTo(s, n).replace(/[\s']+$/, '');
+// closeCut: a name a cut left inside a bracket loses that bracket's start ('Default privileges (AL… History' -> 'Default
+// privileges… History', '…FULL Step runs (the newest 1,0' -> '…FULL Step runs')
+const closeCut = (c: string): string => {
+  const i = c.lastIndexOf('(');
+  if (i < 0 || c.indexOf(')', i) >= 0) return c;
+  const e = c.indexOf('…', i);
+  return (c.slice(0, i).replace(/\s+$/, '') + (e >= 0 ? c.slice(e) : '')) || c;
+};
 const head = (s: string, n: number) => upTo(s, n).replace(/[\s'_.-]+$/, '');
 
 // parted: a title longer than a sheet holds, against the others its cut meets: its start, then '…' and the words where it
@@ -99,7 +107,7 @@ export function sheetNames(names: string[], taken: string[] = [], within: (strin
     cands.push(first[i]);
     const up = sheetTitle(within[i] ?? '');
     if (up && up.toLowerCase() !== t.toLowerCase()) cands.push(under(up, t));
-    let s = cands.find(c => !used.has(c.toLowerCase()));
+    let s = cands.map(c => clean(closeCut(c))).find(c => c && !used.has(c.toLowerCase()));
     // the last resort: two headings equal in full under one heading (the X rules fail it: name the page)
     for (let k = 2; !s; k++) { const c = cut(first[i], SHEET_MAX - ` (${k})`.length) + ` (${k})`; if (!used.has(c.toLowerCase())) s = c; }
     used.add(s.toLowerCase());

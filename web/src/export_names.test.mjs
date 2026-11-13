@@ -28,7 +28,7 @@ eq('title: a bare count in the locale grouping out', sheetTitle('Findings (1,234
 // one name: as the heading, cut at 31
 eq('a heading as it is', sheetNames(['Backups']), ['Backups']);
 eq('cut at 31 inside a bracket at the end: the bracket out', sheetNames(['Top statements by total time (last 1h)']), ['Top statements by total time']);
-eq('cut at 31, a trailing space off', sheetNames(['Top statements by total time for the fleet']), ['Top statements by total time fo']);
+eq('cut at 31, a trailing space off', sheetNames(['Top statements by total time a fleet']), ['Top statements by total time a']);
 eq('a time left out of the name', sheetNames(['Jobs (read 11/13/2026, 05:25:00)']), ['Jobs']);
 
 // two headings equal after the cut: the start and the words where they part, never a number
@@ -49,7 +49,7 @@ eq('parted: no word parts two equal titles', parted('Steps', ['Steps']), '');
 eq("the reserved 'History' under its heading", sheetNames(['History'], [], ['Trace flags']), ['Trace flags History']);
 eq("the export's own 'About' under its heading", sheetNames(['About'], [], ['Server']), ['Server About']);
 eq('two equal headings under two headings: the second with its own', sheetNames(['Findings', 'Findings'], [], ['Jobs', 'Roles']), ['Findings', 'Roles Findings']);
-eq('a long heading above: cut before an ellipsis', sheetNames(['History'], [], ['Default privileges (ALTER DEFAULT PRIVILEGES)']), ['Default privileges (AL… History']);
+eq('a long heading above: cut before an ellipsis, a bracket it cut out', sheetNames(['History'], [], ['Default privileges (ALTER DEFAULT PRIVILEGES)']), ['Default privileges… History']);
 eq('a name the workbook holds already (a page sheet) under its heading', sheetNames(['Storage'], ['Storage'], ['Fleet']), ['Fleet Storage']);
 
 // the last resort, said: two headings equal in full under one heading (xlsx-check.py X2 fails it)
@@ -65,6 +65,9 @@ eq('title: a day without a clock stays', sheetTitle('Archive 2024-01-15 FULL'), 
 eq('title: a time after "of" out', sheetTitle('The deadlock of 11/13/2026, 05:25:00'), 'The deadlock');
 eq('title: a range in brackets out', sheetTitle('Sessions (11/6/2026, 04:42:56 to 11/13/2026, 04:42:56)'), 'Sessions');
 eq("title: a rate's slash reads 'per'", sheetTitle('Transactions/s'), 'Transactions per s');
+eq("title: a rate's slash with spaces reads 'per' (the pages' own ' / s')", sheetTitle('Transactions / s'), 'Transactions per s');
+eq('title: a bare count of four digits out', sheetTitle('Suspect pages (1000)'), 'Suspect pages');
+eq('title: a grouped bare count out', sheetTitle('Suspect pages (1,000)'), 'Suspect pages');
 eq('three jobs that differ by an address keep it', sheetNames(['Backup (10.0.0.5)', 'Backup (10.0.0.6)', 'Backup (10.0.0.7)']),
   ['Backup (10.0.0.5)', 'Backup (10.0.0.6)', 'Backup (10.0.0.7)']);
 eq('three jobs that differ by a day keep it', sheetNames(['Purge 2024-01-01', 'Purge 2025-01-01', 'Purge 2026-01-01']),
@@ -82,6 +85,14 @@ const P = 'Maintenance plan - nightly run ', S = ' to the archive share and veri
 const three = sheetNames([P + 'alpha' + S, P + 'beta' + S, P + 'gamma' + S]);
 eq('three long titles parting early keep the word that differs', three.map(x => ['alpha', 'beta', 'gamma'].find(w => x.includes(w)) ?? x), ['alpha', 'beta', 'gamma']);
 
+// a shortened or parted name never ends inside a bracket it cut
+eq('long job names: no sheet ends inside a cut bracket', sheetNames(['alpha', 'beta', 'gamma'].flatMap(j =>
+  [ownName('nightly_maintenance_full_backup_' + j, 'Steps'), ownName('nightly_maintenance_full_backup_' + j, 'Step runs (the newest 1,000)')]), [], [], [true, true, true, true, true, true])
+  .filter(x => /\([^)]*$/.test(x)), []);
+eq('Ola jobs with their steps: no sheet ends inside a cut bracket', sheetNames(['FULL', 'LOG'].flatMap(j =>
+  [ownName('DatabaseBackup - USER_DATABASES - ' + j, 'Steps'), ownName('DatabaseBackup - USER_DATABASES - ' + j, 'Step runs (the newest 1,000)')]), [], [], [true, true, true, true])
+  .filter(x => /\([^)]*$/.test(x)), []);
+
 // no quote at either end, a refused character beside it too; no character split at the cut
 eq('title: quotes inside refused characters off', sheetTitle("/'abc'/"), 'abc');
 eq('a refused character then a quote: the quote off', sheetNames(["*'abc"]), ['abc']);
@@ -89,8 +100,8 @@ eq('under a heading: no quote at the end', sheetNames(["Settings for 'x'"], ["Se
 eq('a character past the BMP at the cut is not split', sheetNames(['A'.repeat(30) + '\u{1F600}…']).map(x => /[\uD800-\uDBFF]$/.test(x)), [false]);
 
 // every name made above: 1 to 31 characters, no character Excel refuses, no quote at either end, no lone surrogate
-const wrong = all.filter(s => typeof s === 'string' && (s.length < 1 || s.length > SHEET_MAX || /[\\/?*[\]:]/.test(s) || /^'|'$/.test(s) || /[\uD800-\uDBFF]$/.test(s)));
-eq(`every name 1-${SHEET_MAX} characters, no refused character, no quote at an end, no lone surrogate (${all.length} names)`, wrong, []);
+const wrong = all.filter(s => typeof s === 'string' && (s.length < 1 || s.length > SHEET_MAX || /[\\/?*[\]:]/.test(s) || /^'|'$/.test(s) || /[\uD800-\uDBFF]$/.test(s) || /\([^)]*$/.test(s)));
+eq(`every name 1-${SHEET_MAX} characters, no refused character, no quote at an end, no lone surrogate, no cut bracket (${all.length} names)`, wrong, []);
 
 console.log(`${n - bad} of ${n} ok`);
 process.exit(bad ? 1 : 0);
