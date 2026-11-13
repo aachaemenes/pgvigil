@@ -257,7 +257,7 @@ SQL
 SET NOCOUNT ON;
 IF USER_ID(N'$POOL_USER') IS NULL CREATE USER [$POOL_USER] FOR LOGIN [$POOL_USER];
 GO
-SELECT 'logins: ' + DB_NAME() + ' users ' + STRING_AGG(name + ' (' + authentication_type_desc + ')', ', ') WITHIN GROUP (ORDER BY name)
+SELECT 'logins: ' + DB_NAME() + ' users ' + STRING_AGG((name + ' (' + authentication_type_desc + ')') COLLATE DATABASE_DEFAULT, ', ') WITHIN GROUP (ORDER BY name)
 FROM sys.database_principals WHERE type IN ('S', 'E', 'X') AND principal_id > 4;
 SQL
     done
