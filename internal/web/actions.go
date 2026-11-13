@@ -171,7 +171,7 @@ func (a *Actions) act(w http.ResponseWriter, r *http.Request, kind actions.Kind)
 	} else if req.BackendStart = bs; strings.TrimSpace(in.Confirm) != strconv.Itoa(in.PID) {
 		res = actions.Result{Outcome: actions.Refused, Detail: fmt.Sprintf("the typed confirmation is not the pid %d", in.PID)}
 	} else {
-		res = a.run(ctx, a.doors[name], req)
+		res = a.run(ctx, a.s.doorsNow().PG[name], req) // the door read once, here
 	}
 	at := time.Now()
 	payload, err := actions.Payload(actions.Row(at, req, res))
@@ -234,7 +234,7 @@ func (a *Actions) Log(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
-	door := a.doors[name]
+	door := a.s.doorsNow().PG[name]
 	switch {
 	case a.off != "":
 		out.Reason = a.off
