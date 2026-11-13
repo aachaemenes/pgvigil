@@ -381,7 +381,7 @@ export const linkFill = 'FFF1F1F6', linkFont = 'FF004F83';   // DBA Dash's link 
 // DBA Dash's formats (its P1 percent, its date), a size, a duration in pgvigil's units (the screen shows the unit; DBA Dash
 // has no such kind)
 // (X7, X8) a grid sheet carries DBA Dash's formats only: General, '0', '0.0%' / '0.00%' and its date; a size or a
-// millisecond column reaches the writer as plain numbers in one unit (gridSection), a duration as the page's words
+// millisecond or seconds column reaches the writer as plain numbers in one unit (gridSection)
 const fmtId: Record<Kind, number> = { text: 0, int: 0, dec: 0, bytes: 0, secs: 0, pct: 167, date: 168, nsecs: 0, msecs: 0, bool: 0 };
 // a share the page shows with two decimals ('12.50 %'): Excel's built-in '0.00%' (10), DBA Dash's P2
 const twoPlaces = (c: Cell) => /\d[.,]\d\d\s*%$/.test(c.text);
@@ -663,8 +663,9 @@ const sizeUnit = (n: number) => { let i = 0; for (let a = Math.abs(n); a >= 1024
 const plainCell = (c: Cell): Cell => ({ v: c.v, kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}) });
 // gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
 // writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
-// with its time unit ('took (s)'). X8: a duration the page writes in mixed units ('1m 5s', ui.ts fmtSecs) stays the
-// page's words (DBA Dash keeps its 'dd hh:mm:ss' as text); a seconds column in one unit is numbers as above. The page's header looks go too (X4: the one header style).
+// with its time unit ('took (s)'). X8: a seconds column is numbers - in its one unit, or in seconds when the page mixes
+// units ('4.4 s' beside ui.ts fmtSecs's '1m 5s'), as DBA Dash writes a seconds column; a duration the page shows only as
+// text stays text. The page's header looks go too (X4: the one header style).
 export function gridSection(s: Section): Section {
   const rows = s.rows.map(r => r.map(plainCell));
   const cols = [...s.cols];
@@ -684,16 +685,17 @@ export function gridSection(s: Section): Section {
       for (const c of nums) if (c.kind === 'msecs') { c.v = (c.v as number) / DUR[unit]; c.kind = 'dec'; }
       if (j < cols.length) cols[j] = `${cols[j]} (${unit})`;
     }
-    // a seconds column (fmtSecs): every cell in one unit ('12.2 s') -> numbers as the millisecond column; a cell in mixed
-    // units ('1m 5s') keeps the whole column in the page's words
+    // a seconds column (fmtSecs, the Jobs tabs' '12.2 s'): numbers in one unit named in the header (X7, X8) - every cell
+    // in one unit ('12.2 s'): that unit, as the millisecond column; units mixed ('4.4 s' beside fmtSecs's '3m 0s', which
+    // also cuts its seconds off past an hour): seconds, the stored value, as DBA Dash writes a seconds column
     const secs = nums.filter(c => c.kind === 'secs' || c.kind === 'nsecs');
-    if (secs.length && secs.every(c => durParse(c.text))) {
+    if (secs.length) {
       const ms = (c: Cell) => c.kind === 'secs' ? (c.v as number) * 86400000 : (c.v as number) * 1000;
       const top = secs.reduce((a, c) => Math.abs(ms(c)) > Math.abs(ms(a)) ? c : a);
-      const unit = /\s(ms|s|min)$/.exec(top.text)?.[1] ?? 's';
+      const unit = secs.every(c => durParse(c.text)) ? /\s(ms|s|min)$/.exec(top.text)?.[1] ?? 's' : 's';
       for (const c of secs) { c.v = ms(c) / DUR[unit]; c.kind = 'dec'; }
       if (j < cols.length && !long) cols[j] = `${cols[j]} (${unit})`;
-    } else for (const c of secs) { c.v = c.text; c.kind = 'text'; }
+    }
   }
   const { heads: _heads, ...rest } = s;
   return { ...rest, cols, rows };

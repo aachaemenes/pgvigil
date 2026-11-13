@@ -19,21 +19,19 @@
 # Expected:
 #   names      fleet_Summary_<yyyymmdd-hhmm>_<yyyymmdd-hhmm>.xlsx and .csv; <instance>_Table-Size_<from>_<to>.xlsx and
 #              .csv.zip (the Table Size tab has two grids), the instance named as in the tree
-#   summary    (the E2 answer changed this part: notes/teams/pdfp-relw2c-s2-report.md 'E2 LINES REWRITTEN') sheets: the
-#              page sheet first, named by the tab, then one per grid named by the heading above it ('Summary' repeated is
-#              'Summary (2)', 'Summary (3)': the heading inside the Needs attention strip names no grid outside the strip);
-#              every data sheet: its header row frozen (E2-13; DBA Dash froze none), each column's width the rule's
-#              (export.ts colWidth, DBA Dash's AdjustToContents: Carlito widths, header 1.0286 x bold + 22.19 px, a cell
-#              1.0738 x + 0.52 px, (px - 0.025625) / 7, at most 150) within a pixel; styles.xml carries a solid fill in
-#              each status colour the Summary grid shows on screen (ok FF006638 white, warn FFE49325 dark FF1D1300, crit
-#              FFAB1F26 white, 'no sample' FFE0E1E9 FF004F83: the page's own) and a cell of that sheet is styled with it, in
-#              a plain font; the header row of every data sheet in the page's th look (fill, text colour, weight: 004F83,
-#              white, normal - not DBA Dash's 0063A3 bold); each sheet's data rows = the grid's rows on screen
-#   page       the page sheet: row 1 '<tab> - <scope>' bold 14, row 3 'Window ... (UTC+hh:mm at export) ... compute on
-#              the grid sheets ...', rows 1-3 frozen, no table; every grid the page shows (SECTIONS' visible grids) found
-#              on it in page order by its header row, its drawn rows under it with each cell in the page's look (the
-#              colours row's rule), and under a grid past 200 rows the page's 'The first 200 of n rows' line with an
-#              internal link to the grid's sheet; the Running queries page's 'the newest 500 of N' line on it
+#   summary    sheets: the page's sections in page order - each grid (a sheet named by the heading above it, h2 to h5, or
+#              by the name the page gives it: data-sheet, a tile row's aria-label), each property card, tile row and the
+#              Needs attention lines as an Item | Value | Status table, a chart's series - then 'About' LAST (D-A: the
+#              window, the zone, the export's time, the source, each sheet's rows; also the document's properties); no
+#              name a numbered repeat (X2: two headings equal after the cut keep their start, an ellipsis and the words
+#              where they part; a name taken goes under the heading above it; sections sharing a heading take 'tiles' or
+#              'properties'); no pane (X6); each column's width the rule's (export.ts colWidth, DBA Dash's AdjustToContents:
+#              Carlito widths, header 1.0286 x bold + 22.19 px, a cell 1.0738 x + 0.52 px, (px - 0.025625) / 7, at most
+#              150) within a pixel; the header row DBA Dash's (FF0063A3, white, bold: X4); every cell the named pair of the
+#              status the screen shows or plain (X0: OK FF006638 / white, Warning FFE49325 / dark FF1D1300 (X3), Critical
+#              FFAB1F26 / white, N/A FFE0E1E9 / FF004F83, Acknowledged FF1B6AA3 / white, a link cell FFF1F1F6 / FF004F83);
+#              the two grids named 'Test Summary' and 'Instance Summary'; each sheet's data rows = the grid's rows on screen
+#   page       (D-B) the page sheet with pictures is parked: no page sheet, no drawing, no picture in any workbook (X12)
 #   table      every data sheet is an Excel table (P1; an empty grid's over its header and ONE empty row, P2, as DBA
 #              Dash writes it): the sheet names one table part (no sheet autoFilter beside
 #              it), the part's ref and its autoFilter's cover the sheet (A1 to the last column and row, = the sheet's
@@ -43,13 +41,12 @@
 #              ids and names unique in the workbook; the part in [Content_Types].xml. A grid a filter leaves
 #              without rows (the Table Size tab's second grid, filtered to nothing) is a table of its header and one empty
 #              row, no sheet filter, no _FilterDatabase (changed by P2: it kept the plain sheet filter and no table)
-#   colours    (E2-4') every cell of every row the page draws (a grid draws its first 200 rows; the read must return
-#              exactly those), against the page: its fill, its text colour and its weight in the file = the look the page's
-#              CSS gives it, read by the driver's own code (not export_colours.ts): the cell's fill, else a badge's in it,
-#              the colour of its first words; a link cell unfilled in the link's colour (DBA Dash's F1F1F6 link column
-#              dropped, E2-11'); the two Table Size cells the driver gives a bare class (crit, warn) the page's CSS does not
-#              paint stay unfilled as on the page. Counted per sheet (the lines 'cells:'). No colour is carried from a
-#              judging cell to a value cell (C4: the file follows the page; the old 'carry' rows are gone)
+#   colours    (X0) every cell of every row the page draws (a grid draws its first 200 rows; the read must return
+#              exactly those), against the page: the status the screen shows on it (read by the driver's own code, not
+#              export_colours.ts: the cell's status, else a badge's in it, a link) is its named pair in the file, any
+#              other cell plain - no fill, no text colour of its own, not bold; the two Table Size cells the driver gives
+#              a bare class (crit, warn) take their named pairs (export.ts statusOf reads a bare class as its status).
+#              Counted per sheet (the lines 'cells:')
 #   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0%', DBA Dash's P1) whose value is the screen's percent / 100;
 #              its CSV keeps the percent figure itself (12.5, not 0.125)
 #   drives     the Storage folder's grids at the root (task 176): Drives (its metrics grid, every status), DB Space and
@@ -68,21 +65,23 @@
 #              'Hide column platform' hides it, keeps the choice in localStorage and after a reload it is still
 #              hidden, frozen and barred; the workbook exported then has no platform column (one column fewer, the
 #              table too); 'Columns...' lists every column and 'Reset this grid' brings all back and forgets the choice
-#   tables     sheets: Summary, Tables, Biggest tables (the screen's headings); Biggest tables sorted by 'total'
-#              on screen first (the click changes the order), its sheet's 'table' column in the screen's order and
-#              every 'total' and 'live rows' still a number
-#              (a page model out of step with the sort turns them to text); a numeric cell (<v>, no t=) styled
-#              with a number format (numFmtId 165 bytes, '#,##0" B"'), a time cell with 168 ('yyyy-MM-dd HH:mm', DBA
-#              Dash's) and a count with 0 (General, as DBA Dash writes one); no '#,##0' or '#,##0.00' in styles.xml
+#   tables     sheets: the screen's sections, Tables and Biggest tables named by their headings; Biggest tables sorted
+#              by 'total' on screen first (the click changes the order), its sheet's 'table' column in the screen's order
+#              and every 'total' and 'live rows' still a number (a page model out of step with the sort turns them to
+#              text); a time cell with numFmt 168 ('yyyy-MM-dd HH:mm', DBA Dash's), a count or a size with 0 (General, as
+#              DBA Dash writes one); a size column in ONE unit named in its header ('size (GB)'), the cells plain numbers
+#              (X7: no '#,##0" B"' or other custom format)
 #   roles      the instance's Roles tab: the privilege grids sit under h4 headings; every sheet's name follows the
-#              heading above its grid (no 'Memberships (2)' for 'Database privileges')
-#   activity   the instance's Running queries tab over 7 days: Per sample shows 500 rows; the Summary sheet's row for it
-#              carries 'the newest 500 of N samples'; every workbook's Summary sheet has a Time zone row ('<zone> (UTC+hh:mm at export)')
-#   slow       the fleet's Slow queries tab (24 h): the hand-built Per day table's statements column numeric, a
-#              duration cell with numFmt 170 ('#,##0.###" ms"'); on EVERY page no 'x ms / x s / x min' text is left in
-#              any sheet (each tab rounds its milliseconds its own way)
-#   db         a database's drill page: its statements grid's millisecond column holds a value under 1 ms and one
-#              at 1,000 ms or more, both numbers with numFmt 170
+#              heading above its grid, none a numbered repeat (the tiles 'Roles tiles', the grid 'Roles')
+#   activity   the instance's Running queries tab over 7 days: Per sample shows 500 rows; 'About' carries 'the newest
+#              500 of N samples' beside its rows; every workbook's 'About' has a Time zone row ('<zone> (UTC+hh:mm at
+#              export)')
+#   slow       the fleet's Slow queries tab (24 h): the hand-built Per day table's statements column numeric (its sheet
+#              'Per day': the time in its heading left out); a duration column plain numbers in one unit named in its
+#              header (X7, X8: no custom format); on EVERY page no 'x ms / x s / x min' text is left in any sheet (each tab
+#              rounds its milliseconds its own way)
+#   db         a database's drill page: its statements' durations are numbers under General (X7), two at least and not
+#              all equal
 #   perf       (P03) the fleet's Performance summary: graded as every page here; its CPU histogram column (a picture of
 #              bars, the top bucket painted critical even when empty) has no fill in any row
 #   reader     the screen's colour of a cell is read on its own terms, not by export.ts's rule: a status cell, else the
@@ -121,17 +120,19 @@
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so)
 #   gridmenu   (P03) the fleet Backups grid's menu has one Export Excel line (no other line starting so: task 172's
 #              'Export Excel (this grid)' out of treemenu.ts, P03's WIRING BLOCK), right after its copies (DBA Dash's grid
-#              menu: Copy, then Export Excel); clicked, it downloads fleet_Backups_<sheet>_<from>_<to>.xlsx: Summary + that grid's
-#              sheet, its rows, every cell in the screen's colour, the widths by the rule; the grid's line says 'Exported <file>'
+#              menu: Copy, then Export Excel); clicked, it downloads fleet_Backups_<sheet>_<from>_<to>.xlsx: that grid's
+#              sheet, then 'About' (X12: the grid alone), its rows, every cell its named pair or plain, the widths by the
+#              rule; the grid's line says 'Exported <file>'
 #   summary drop-down (P03) the fleet Summary's bar has Export to Excel (aria-haspopup menu) with Export Summary and
-#              Export Test Summary; each downloads one grid's workbook (sheets Summary + 'Instance Summary' / 'Test
-#              Summary'), graded as above; the Test Summary by DBA Dash's rule (summary-1.xlsx holds it too): a count 0
+#              Export Test Summary; each downloads one grid's workbook ('Instance Summary' / 'Test Summary', then
+#              'About'), graded as above; the Test Summary by DBA Dash's rule (summary-1.xlsx holds it too): a count 0
 #              green, above 0 in its column's status, a test's name in its row's worst of critical and warning else green,
 #              the counts General
 #   charts     (P03) a line chart's and a ring's menu (the root DB Space first, else an instance's pages) has Export
-#              Excel; each downloads Summary + a sheet of the chart's numbers, its rows = the menu's 'Saved N points /
+#              Excel; each downloads the chart's numbers as a sheet, then 'About', its rows = the menu's 'Saved N points /
 #              slices as Excel'; the line's first column 'time', every point under 'yyyy-MM-dd HH:mm'; the ring's name /
-#              size / share, every share under '0.0%', the shares adding up to 1
+#              size / share, every share under '0.0%', the shares adding up to 1; the page's own workbook holds the line
+#              chart's numbers sheet equal to it cell by cell, and no picture (D-B, X12)
 #   emptyhidden (P03) a grid with rows over 24 h that is an empty grid's note in a 2001 window under the same heading
 #              and columns (the first of seven candidate pages that has one); a column hidden with its menu over 24 h;
 #              the 2001 page's Export .xlsx: that grid's sheet is its header row without the hidden column
@@ -909,6 +910,14 @@ def sheet_rows(z, i):
     x = z.read(f'xl/worksheets/sheet{i}.xml').decode()
     return x, len(re.findall(r'<row r="', x)) - 1
 UNIT_RE = r' \((?:B|KB|MB|GB|TB|PB|ms|s|min)\)$'
+def table_head(head):
+    # export.ts tableHead: each column named once (case ignored): an empty heading 'Column n', a repeat ' (2)'
+    used, out = set(), []
+    for j, h in enumerate(head):
+        base = (h or '')[:250] or f'Column {j + 1}'; t = base; i = 2
+        while t.lower() in used: t = f'{base} ({i})'; i += 1
+        used.add(t.lower()); out.append(t)
+    return out
 def grid_sheets(z, gs, names):
     # (X1, X12) each screen grid's sheet in page order: a sheet whose header is the grid's (a unit in brackets left out on
     # both sides: the export names a size or a duration column's unit; a property card's item | value is Item | Value |
@@ -921,7 +930,8 @@ def grid_sheets(z, gs, names):
         return [re.sub(UNIT_RE, '', t or '') for t in h], len(re.findall(r'<row r="', x)) - 1
     for g in gs:
         found = None
-        want = ['Item', 'Value', 'Status'] if g['head'] == ['item', 'value'] else [re.sub(UNIT_RE, '', h or '') for h in g['head']]
+        # export.ts tableHead: an empty heading is 'Column n' in the file (an Excel table names every column), a repeat ' (2)'
+        want = ['Item', 'Value', 'Status'] if g['head'] == ['item', 'value'] else table_head([re.sub(UNIT_RE, '', h or '') for h in g['head']])
         for i in range(k, len(names)):
             h, n = head_of(i)
             if h == want and (n == g['rows'] or (g['rows'] == 0 and n <= 1)): found = i; break
@@ -1326,7 +1336,10 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     # sections that are no grid (tiles, the Needs attention lines, a chart's series), then 'About' LAST)
     gsheet, extra = grid_sheets(z, gs, names)
     check(names[-1] == 'About' and None not in gsheet and gsheet == sorted(gsheet),
-          f"{key}: sheets {names} = the page's sections in page order, then 'About' (grid sheets {gsheet}; other sections {[names[k - 1] for k in extra]})")
+          f"{key}: sheets {names} = the page's sections in page order, then 'About' (grid sheets {gsheet}; other sections {[names[k - 1] for k in extra]})"
+          + ''.join(f"; no sheet for the screen's grid '{g['name']}' ({' | '.join(g['head'][:8])}; {g['rows']} rows)" for g, k in zip(gs, gsheet) if k is None))
+    if None in gsheet:
+        continue   # a grid with no sheet: the page fails on the row above; its other rows cannot be read
     ct = z.read('[Content_Types].xml').decode(); wbx = z.read('xl/workbook.xml').decode(); tabs = []; linked = False; classed = 0; sst = shared(z)
     for i, g in enumerate(gs):
         x, n = sheet_rows(z, gsheet[i])
@@ -1351,7 +1364,10 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             tx = z.read('xl/tables/' + m.group(1)).decode() if m and 'xl/tables/' + m.group(1) in z.namelist() else ''
             check('<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' in x and '<autoFilter' not in x and bool(tx), f"{key}: sheet '{names[gsheet[i] - 1]}' names one table part, no sheet filter beside it")
             check('<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>' in tx and 'tableStyleInfo name=' not in tx, f"{key}: sheet '{names[gsheet[i] - 1]}' its table has DBA Dash's style info (no style name, row stripes 1: none drawn)")
-            ncol = max([len(g['head'])] + [len(r) for r in g['cells']])
+            # (changed by X12: a property card's sheet is an Item | Value | Status table, three columns)
+            card = g['head'] == ['item', 'value']
+            gh = ['Item', 'Value', 'Status'] if card else g['head']
+            ncol = 3 if card else max([len(g['head'])] + [len(r) for r in g['cells']])
             ref = f"A1:{colname(ncol - 1)}{max(g['rows'], 1) + 1}"
             got = [(re.search(a, b) or [None, None])[1] for a, b in ((r'<table [^>]*\bref="([^"]+)"', tx), (r'<autoFilter ref="([^"]+)"', tx), (r'<dimension ref="([^"]+)"', x))]
             check(got == [ref, ref, ref], f"{key}: sheet '{names[gsheet[i] - 1]}' the table's ref, its filter's and the sheet's dimension are {ref} ({got})")
@@ -1361,7 +1377,11 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
                   f"{key}: sheet '{names[gsheet[i] - 1]}' {len(cols)} table columns, each named once, = the header cells")
             row1x = (re.search(r'<row r="1"[^>]*>(.*?)</row>', x, re.S) or [None, ''])[1]
             check(row1x.count(' t="s"><v>') == ncol and 'inlineStr' not in row1x and 'sharedStrings+xml' in ct, f"{key}: sheet '{names[gsheet[i] - 1]}' its {ncol} header cells are shared strings")
-            check(all(c == h for c, h in zip(cols, g['head']) if h and g['head'].count(h) == 1), f"{key}: sheet '{names[gsheet[i] - 1]}' the header cells are the screen's headings")
+            # (changed by X7: a size or a duration column's header carries its unit, ' (GB)', ' (s)': left out on both sides - the
+            # screen may name it too - its own rows check it)
+            nu = lambda t: re.sub(UNIT_RE, '', t or '')
+            check(all(nu(c) == nu(h) for c, h in zip(cols, gh) if h and gh.count(h) == 1),
+                  f"{key}: sheet '{names[gsheet[i] - 1]}' the header cells are the screen's headings ({[(c, h) for c, h in zip(cols, gh) if h and gh.count(h) == 1 and nu(c) != nu(h)][:3]})")
             tabs.append((re.search(r'<table [^>]*\bid="(\d+)"', tx) or [0, ''])[1] + '|' + (re.search(r'displayName="([^"]+)"', tx) or [0, ''])[1])
             check(bool(m) and f'PartName="/xl/tables/{m.group(1)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"' in ct, f"{key}: sheet '{names[gsheet[i] - 1]}' its table part is in [Content_Types].xml")
         if key == 'summary' and g['rows'] > 1 and any(c['l'] and not c['s'] for r in g['cells'] for c in r):
@@ -1556,7 +1576,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         tu = [h for h in re.findall(r'<tableColumn id="\d+" name="([^"]*)"', ''.join(z.read(n).decode() for n in z.namelist() if n.startswith('xl/tables/'))) if re.search(r' \((?:ms|s|min)\)$', h)]
         check(len(tu) >= 1 and 'ms&quot;' not in st and 's&quot;' not in st, f"{key}: a duration column in one unit named in its header ({tu[:3]}), no custom duration format (X7)")
     if key == 'db':
-        # the statements grid: a column whose cells carry numFmt 170 holds a value under 1 ms and one at 1,000 ms or more
+        # (changed by X7: the statements' durations are plain numbers under General, two at least and not all equal; no
+        # numFmt 170 any more)
         vals = [float(v) for sid, v in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>([^<]*)</v>', allx) if cx[int(sid)]['fmt'] == 0]
         check(len(vals) >= 2 and min(vals) < max(vals), f"db: the statements' durations are numbers (X7) ({len(vals)} cells, min {min(vals) if vals else '-'}, max {max(vals) if vals else '-'})")
     # CSV
@@ -1581,8 +1602,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
 
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
-    # a workbook of one grid: its name, Summary + one sheet named so, the grid's rows, every cell in the screen's colour,
-    # the widths by the rule, no pane; returns the zip
+    # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
+    # pair or plain (X0), the widths by the rule, no pane; returns the zip
     check(stamp(fname, inst, tab + '_' + re.sub(r'[^A-Za-z0-9._-]+', '-', sheet).strip('-'), '.xlsx'), f"{key}: the workbook's name {fname}")
     z = zipfile.ZipFile(f"{dl}/{fname}"); names = sheets_of(z); st, cx = xfs(z); sst = shared(z)
     check(names == [sheet, 'About'], f"{key}: sheets {names} = '{sheet}' + About (the grid alone, X12)")
@@ -1745,9 +1766,17 @@ else:
     af = t['after']
     check(af['hidden'] == hd and af['frozen']['on'] and af['frozen']['classes'] == ['gt-f1', 'gt-f3'] and bars_ok(af['bars']),
           f"tools: after a reload the column is still hidden, the first two shown columns frozen ({af['frozen']['classes']}) and the bars drawn")
-    z2 = zipfile.ZipFile(f"{dl}/{t['xlsx']}"); x2 = z2.read('xl/worksheets/sheet2.xml').decode(); c2 = cells_of(x2, shared(z2))
-    hdr2 = [c2.get((1, j), (0, None, None))[2] for j in range(len(head))]
-    tx2 = z2.read('xl/tables/table1.xml').decode()
+    # (changed by X12: the page's sections come first - the tiles' sheet before the grid's: the grid's sheet is the one whose
+    # header begins 'instance', its table the one its relationship names; X7: a unit in a header left out)
+    z2 = zipfile.ZipFile(f"{dl}/{t['xlsx']}"); s2 = shared(z2); hdr2, tx2 = [], ''
+    for k_ in range(1, len(sheets_of(z2)) + 1):
+        c2 = cells_of(z2.read(f'xl/worksheets/sheet{k_}.xml').decode(), s2)
+        if c2.get((1, 0), (0, None, None))[2] == head[0]:
+            hdr2 = [re.sub(UNIT_RE, '', h_) if h_ else h_ for h_ in (c2.get((1, j), (0, None, None))[2] for j in range(len(head)))]
+            rl = f'xl/worksheets/_rels/sheet{k_}.xml.rels'
+            m_ = re.search(r'Target="\.\./tables/(table\d+\.xml)"', z2.read(rl).decode()) if rl in z2.namelist() else None
+            tx2 = z2.read('xl/tables/' + m_.group(1)).decode() if m_ else ''
+            break
     check('platform' in head and hdr2 == [x for x in head if x != 'platform'] + [None] and f'<tableColumns count="{len(head) - 1}">' in tx2 and 'name="platform"' not in tx2,
           f"tools: the workbook exported with the column hidden has no platform column ({len([x for x in hdr2 if x])} of the grid's {len(head)} columns, the table too)")
     ch = t.get('chooser') or {}
@@ -1863,7 +1892,7 @@ for L in en-US fr-FR; do
   ok "downloaded ($L): $(cd "$DL" && ls | tr '\n' ' ')"
   echo "== the X rules on every workbook ($L): scripts/xlsx-check.py rules"
   XRC=0; python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt" || XRC=$?   # exit 1 = a rule failed (set -e: caught)
-  [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$DL"/*.xlsx "$PGVIGIL_EXPORT_OUT/$L"/; }
+  [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$WORK/drive-$L.json" "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; }
   { grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true; } | cut -c1-400   # no FAIL line: grep's exit 1 must not end the proof (pipefail)
   for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do
     n=$(grep -c "^FAIL $r " "$WORK/xcheck-$L.txt" || true)
