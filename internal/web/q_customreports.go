@@ -325,11 +325,14 @@ type resultSet struct {
 
 // instanceRun is one run on one instance (or the store).
 type instanceRun struct {
-	InstanceID int         `json:"instance_id,omitempty"`
-	Instance   string      `json:"instance"`
-	Engine     string      `json:"engine"`
-	Outcome    string      `json:"outcome"` // done | refused | failed
-	Error      string      `json:"error,omitempty"`
+	InstanceID int    `json:"instance_id,omitempty"`
+	Instance   string `json:"instance"`
+	Engine     string `json:"engine"`
+	Outcome    string `json:"outcome"` // done | refused | failed
+	Error      string `json:"error,omitempty"`
+	// a community procedure looked at this server and said no in its own words (q_community.go declines): the
+	// outcome stays failed (the statement reached the server), the page draws a note instead of an error box
+	Declined   bool        `json:"declined,omitempty"`
 	DurationMS int         `json:"duration_ms"`
 	Rows       int         `json:"rows"`
 	Sets       []resultSet `json:"sets"`
@@ -718,16 +721,26 @@ func runMS(ctx context.Context, dsn, stmt string, args []any, timeout time.Durat
 
 // customReportsOff is why reports cannot be saved or run on this server; "" = they can.
 func (s *Server) customReportsOff() string {
+	if w := s.serverOff(); w != "" {
+		return "Saving or running a report needs " + w + "."
+	}
+	return ""
+}
+
+// serverOff is what this server lacks for the pages that write and run under the UI login and through the actions
+// door's audit login (Custom reports, Community tools, Report mail), as the words after '<the page's own action>
+// needs ': "" when nothing is missing. Each page puts its own action before it.
+func (s *Server) serverOff() string {
 	switch {
 	case s.auth == nil:
-		return "custom reports are saved and run behind the UI login: this server runs with -no-login"
+		return "a signed-in user: this server was started with -no-login"
 	case s.actions == nil:
-		return "custom reports are off on this server (no actions door)"
+		return "the actions door: this server runs without one"
 	case s.actions.audit == nil:
 		if s.actions.off != "" {
-			return "custom reports are written and audited through the actions door's audit login, and it is off: " + s.actions.off
+			return "the actions door's audit login, and it is off (" + s.actions.off + ")"
 		}
-		return "custom reports are written and audited through the actions door's audit login, and it is not connected"
+		return "the actions door's audit login, and it is not connected"
 	}
 	return ""
 }
@@ -802,11 +815,16 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 
 // reportGate is what every POST shares: the header, the door, the user. ok false = the reply is written.
 func (s *Server) reportGate(w http.ResponseWriter, r *http.Request, limit int64) (user string, raw []byte, ok bool) {
+	return s.gate(w, r, limit, s.customReportsOff)
+}
+
+// gate is reportGate with the page's own words for what the server lacks (off: "" = nothing).
+func (s *Server) gate(w http.ResponseWriter, r *http.Request, limit int64, off func() string) (user string, raw []byte, ok bool) {
 	if r.Header.Get(loginHeader) == "" {
 		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
 		return "", nil, false
 	}
-	if why := s.customReportsOff(); why != "" {
+	if why := off(); why != "" {
 		writeErr(w, http.StatusForbidden, errors.New(why))
 		return "", nil, false
 	}

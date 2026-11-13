@@ -108,7 +108,7 @@ N=$RANDOM$RANDOM
 REPO=pgcr_repo_$N; TGT=pgcr_tgt_$N; COL=pgcr_col_$N; RDR=pgcr_rdr_$N; MON=pgcr_mon_$N
 PW=p$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
 UIUSER=pgcrui; UIPW=u$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
-INSTA=pgcr-a-$N; INSTS=pgcr-su-$N; INSTL=pgcr-long-instance-name-$N; MSR=pgcr-msr-$N; MSA=pgcr-msa-$N
+INSTA=pgcr-a-$N; INSTS=pgcr-su-$N; INSTL=pgcr-long-instance-name-$N; MSR=pgcr-msr-$N; MSA=pgcr-msa-$N; MSN=pgcr-msn-$N; INSTD=pgcr-down-$N
 CT=pgcr-mssql-$N
 WORK=$(mktemp -d)
 SRV=""; SRV2=""; SRV3=""; CHR=""; MADE_CT=""
@@ -157,6 +157,7 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create ro
 tq "grant select on t to $MON"
 as_dsn() { echo "$PGVIGIL_ADMIN_DSN dbname=$1 user=$2 password=$PW"; }   # the admin's own route to the server, as another login
 export TGT_MON; TGT_MON=$(as_dsn "$TGT" "$MON")
+export TGT_DOWN; TGT_DOWN="host=127.0.0.1 port=$(freeport) dbname=postgres user=$MON password=$PW connect_timeout=2"   # nothing listens there
 
 SKIP_MSSQL=${PGVIGIL_SKIP_MSSQL:-}
 if [[ -z "$SKIP_MSSQL" ]] && ! command -v docker >/dev/null; then SKIP_MSSQL=1; NOTPROVEN+=("SQL Server: docker is not on this machine"); fi
@@ -193,9 +194,14 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   sq "CREATE USER pgcr_reader FOR LOGIN pgcr_reader; ALTER ROLE db_datareader ADD MEMBER pgcr_reader;" msdb >/dev/null   # docs/sqlserver.md's read login reads msdb
   # EXECUTE on every procedure the kits installed, not only the ones pgvigil lists: sp_Blitz runs sp_BlitzBackups
   sq "DECLARE @s nvarchar(max) = N''; SELECT @s += N'GRANT EXECUTE ON dbo.' + QUOTENAME(name) + N' TO pgcr_reader; ' FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1; EXEC (@s);" >/dev/null
+  # the narrow login (B3): the read login's server rights but no CONNECT ANY DATABASE, a user in master only, no EXECUTE
+  NPW="Nr$(od -An -N10 -tx1 /dev/urandom | tr -d ' \n')!c3"
+  sq "CREATE LOGIN pgcr_narrow WITH PASSWORD = '$NPW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO pgcr_narrow; GRANT VIEW ANY DEFINITION TO pgcr_narrow;" >/dev/null
+  sq "CREATE USER pgcr_narrow FOR LOGIN pgcr_narrow;" >/dev/null
+  export MS_N="sqlserver://pgcr_narrow:$NPW@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
   export MS_R="sqlserver://pgcr_reader:$RPW@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
   export MS_SA="sqlserver://sa:$MSSQL_SA_PASSWORD@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
-  mssql_cfg=$(printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_R\n  - name: %s\n    engine: sqlserver\n    dsn: env:MS_SA\n' "$MSR" "$MSA")
+  mssql_cfg=$(printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_R\n  - name: %s\n    engine: sqlserver\n    dsn: env:MS_SA\n  - name: %s\n    engine: sqlserver\n    dsn: env:MS_N\n' "$MSR" "$MSA" "$MSN")
 else
   NOTPROVEN+=("NOT PROVEN ON SQL SERVER (PGVIGIL_SKIP_MSSQL or no docker): parts M, G and the SQL Server pages")
 fi
@@ -212,6 +218,8 @@ instances:
     tags: [env:pgcr]
   - name: $INSTL
     dsn: env:TGT_MON
+  - name: $INSTD
+    dsn: env:TGT_DOWN
 $mssql_cfg
 EOF
 CFG=$WORK/cfg.yaml
@@ -237,7 +245,8 @@ ok "R: the collector writes only through the imports; the reader reads"
 id_of() { q "select instance_id from pgvigil.instances where name = '$1'"; }
 AID=$(id_of "$INSTA"); SID=$(id_of "$INSTS"); LID=$(id_of "$INSTL")
 [[ -n $AID && -n $SID && -n $LID ]] || fail "the PostgreSQL instances are not registered: $(tail -5 "$WORK/collect.log")"
-if [[ -z "$SKIP_MSSQL" ]]; then MRID=$(id_of "$MSR"); MAID=$(id_of "$MSA"); [[ -n $MRID && -n $MAID ]] || fail "the SQL Server instances are not registered: $(tail -5 "$WORK/collect.log")"; fi
+if [[ -z "$SKIP_MSSQL" ]]; then MRID=$(id_of "$MSR"); MAID=$(id_of "$MSA"); MNID=$(id_of "$MSN"); [[ -n $MRID && -n $MAID && -n $MNID ]] || fail "the SQL Server instances are not registered: $(tail -5 "$WORK/collect.log")"; fi
+DID=$(id_of "$INSTD")
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add"
 export UI_DSN; UI_DSN=$(as_dsn "$REPO" "$RDR")
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
@@ -455,38 +464,128 @@ fi
 [[ $(crun "{\"instance_id\":$SID,\"tool\":\"pg_running\"}") == 200 && $(js "d['runs'][0]['outcome']") == refused && $(js "d['runs'][0]['error']") == *superuser* ]] || fail "Q: the superuser: $(cat "$WORK/body")"
 ok "Q: 10 reads; running, settings, table sizes (t); the superuser refused"
 
-# ---- N: before the click (task B3) -------------------------------------------------------------------------------------------
+# ---- N: before the click (task B3 DONE-1) ----------------------------------------------------------------------------------
 tl() { python3 -c "import json; d=json.load(open('$WORK/body')); t={x['id']: x for x in d['tools']}; print($1)"; }
+fresh() { getc "community?instance=$1&fresh=1${2:+&database=$2}"; }   # past the 60 s keep: the checks run again
 if [[ -z "$SKIP_MSSQL" ]]; then
-  [[ $(getc "community?instance=$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
-  [[ $(tl "[n['hard'] for n in t['sp_LogHunter']['needs']]") == "[True]" && $(tl "t['sp_LogHunter']['needs'][0]['what']") == *xp_readerrorlog* \
-     && $(tl "t['sp_LogHunter']['needs'][0]['how']") == *"GRANT EXECUTE ON sys.xp_readerrorlog TO [pgcr_reader]"* ]] || fail "N: sp_LogHunter's need: $(tl "t['sp_LogHunter']['needs']")"
-  [[ $(tl "[n['hard'] for n in t['sp_HumanEventsBlockViewer']['needs']]") == "[False]" && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == *"blocked process threshold"* ]] || fail "N: sp_HumanEventsBlockViewer's note: $(tl "t['sp_HumanEventsBlockViewer']['needs']")"
-  [[ $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['sp_HumanEventsBlockViewer', 'sp_LogHunter']" ]] || fail "N: other tools with a need: $(tl "[(x['id'], x['needs']) for x in d['tools'] if x['needs']]")"
-  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == refused \
-     && $(js "d['runs'][0]['error']") == "sp_LogHunter refused: Current user does not have EXECUTE permission on xp_readerrorlog"* ]] || fail "N: sp_LogHunter without the right: $(head -c 600 "$WORK/body")"
+  [[ $(fresh "$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True && $(tl "d['checked_at'] is not None") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
+  [[ $(tl "[(n['hard'], n['state']) for n in t['sp_LogHunter']['needs']]") == "[(True, 'needs')]" && $(tl "t['sp_LogHunter']['state']") == needs && $(tl "t['sp_LogHunter']['on']") == False \
+     && $(tl "t['sp_LogHunter']['needs'][0]['what']") == *xp_readerrorlog* && $(tl "t['sp_LogHunter']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON sys.xp_readerrorlog TO [pgcr_reader];" ]] \
+     || fail "N: sp_LogHunter's need (the reader has a user in master: no CREATE USER): $(tl "t['sp_LogHunter']['needs']")"
+  # blocked process threshold 0 (a new container): system_health preset, a note, the tool on
+  [[ $(tl "t['sp_HumanEventsBlockViewer']['state']") == note && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" \
+     && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == *"blocked process threshold 0"*system_health* ]] || fail "N: sp_HumanEventsBlockViewer at threshold 0: $(tl "t['sp_HumanEventsBlockViewer']")"
+  qsdb=$(sq "SELECT TOP (1) name FROM sys.databases WHERE is_query_store_on = 1 AND state = 0 ORDER BY name")
+  if [[ -n $qsdb ]]; then
+    [[ $(tl "t['sp_QuickieStore']['state']") == note && $(tl "t['sp_QuickieStore']['preset']") == "{'@database_name': '$qsdb'}" ]] || fail "N: sp_QuickieStore's preset ($qsdb has Query Store on): $(tl "t['sp_QuickieStore']")"
+  else
+    [[ $(tl "t['sp_QuickieStore']['state']") == note && $(tl "t['sp_QuickieStore']['needs'][0]['what']") == *"Query Store is on in no database"* ]] || fail "N: sp_QuickieStore with no Query Store: $(tl "t['sp_QuickieStore']")"
+  fi
+  [[ $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['sp_HumanEventsBlockViewer', 'sp_LogHunter', 'sp_QuickieStore']" ]] || fail "N: other tools with a need: $(tl "[(x['id'], x['needs']) for x in d['tools'] if x['needs']]")"
+  [[ $(tl "sorted(x['id'] for x in d['tools'] if not x['on'])") == "['sp_LogHunter']" ]] || fail "N: tools off: $(tl "sorted(x['id'] for x in d['tools'] if not x['on'])")"
+  ok "N: $MSR: sp_LogHunter off (xp_readerrorlog, the GRANT line); sp_HumanEventsBlockViewer preset system_health at threshold 0; sp_QuickieStore preset ${qsdb:-none}; 13 on"
+  # declined: the procedure's own refusal is a failed run in the audit, declined in the answer, never 'refused'
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == failed && $(js "d['runs'][0].get('declined')") == True \
+     && $(js "d['runs'][0]['error']") == "sp_LogHunter declined: Current user does not have EXECUTE permission on xp_readerrorlog"*"(msg 50000, severity 11)" ]] || fail "N: sp_LogHunter declined: $(head -c 600 "$WORK/body")"
+  [[ $(q "select outcome || '|' || left(detail, 26) from pgvigil.custom_report_log where op = 'community_run' and tool = 'sp_LogHunter' order by log_id desc limit 1") == "failed|sp_LogHunter declined: Curr" ]] || fail "N: the declined run's log row"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"pgcr_none\"}}") == 200 && $(js "d['runs'][0].get('declined')") == True \
+     && $(js "d['runs'][0]['error']") == *"lousy version in system_health"* ]] || fail "N: sp_HumanEventsBlockViewer on a session at threshold 0: $(head -c 600 "$WORK/body")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_HumanEventsBlockViewer with its preset: $(head -c 600 "$WORK/body")"
+  c=$(crun "{\"instance_id\":$MRID,\"tool\":\"sp_IndexCleanup\",\"params\":{\"@database_name\":\"pgcr_nosuchdb_$N\"}}")
+  [[ $c == 200 && $(js "d['runs'][0].get('declined')") == True && $(js "d['runs'][0]['error']") == "sp_IndexCleanup declined: No valid databases found to process. (msg 50000, severity 16)" ]] || fail "N: sp_IndexCleanup on a database it cannot find: $(head -c 600 "$WORK/body")"
+  ok "N: declined in the procedures' own words (sp_LogHunter severity 11, sp_IndexCleanup 16, sp_HumanEventsBlockViewer): outcome failed with the words, declined true; the preset run done"
+  # a real failure inside a kit stays an error: SELECT on the index usage DMV denied in pgcr_seed, sp_BlitzIndex reads it
+  sq "DENY SELECT ON sys.dm_db_index_usage_stats TO pgcr_reader;" pgcr_seed >/dev/null && sq "DENY SELECT ON sys.dm_db_index_usage_stats TO pgcr_reader;" >/dev/null || fail "N: the DENY"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_BlitzIndex\",\"params\":{\"@DatabaseName\":\"pgcr_seed\"}}") == 200 ]] || fail "N: sp_BlitzIndex with the DMV denied: $(head -c 400 "$WORK/body")"
+  red=$(js "(d['runs'][0]['outcome'], bool(d['runs'][0].get('declined')), (d['runs'][0].get('error') or '')[:160])")
+  sq "REVOKE SELECT ON sys.dm_db_index_usage_stats FROM pgcr_reader;" pgcr_seed >/dev/null && sq "REVOKE SELECT ON sys.dm_db_index_usage_stats FROM pgcr_reader;" >/dev/null || fail "N: the REVOKE of the DENY"
+  [[ $red == "('failed', False, "* ]] || fail "N: a real failure inside sp_BlitzIndex is not an error: $red"
+  ok "N: a real failure inside sp_BlitzIndex stays an error: $red"
+  # the sibling pairs (the lead 15:50): EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
+  # list says hard (a default run fails) or a note (it ends done) - a pair the run contradicts fails here
+  for pair in sp_Blitz/sp_BlitzBackups sp_Blitz/sp_BlitzCache sp_Blitz/sp_BlitzFirst sp_Blitz/sp_BlitzIndex sp_Blitz/sp_BlitzLock sp_Blitz/sp_BlitzWho \
+              sp_Blitz/sp_DatabaseRestore sp_Blitz/sp_ineachdb sp_BlitzFirst/sp_BlitzWho sp_BlitzFirst/sp_BlitzCache sp_BlitzIndex/sp_BlitzCache; do
+    tool=${pair%/*}; sib=${pair#*/}
+    sq "REVOKE EXECUTE ON dbo.$sib FROM pgcr_reader;" >/dev/null || fail "N: revoke $sib"
+    [[ $(fresh "$MRID") == 200 ]] || fail "N: GET with $sib revoked"
+    code_says=$(tl "[n['hard'] for n in t['$tool']['needs'] if '$sib ' in n['what']]")
+    [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"$tool\",\"params\":{}}") == 200 ]] || fail "N: $tool with $sib revoked answered: $(head -c 300 "$WORK/body")"
+    ran=$(js "d['runs'][0]['outcome']"); why=$(js "(d['runs'][0].get('error') or '')[:120]")
+    sq "GRANT EXECUTE ON dbo.$sib TO pgcr_reader;" >/dev/null || fail "N: grant $sib back"
+    echo "rec  N: pair $tool / $sib: the code says $code_says; the default run $ran $why"
+    case "$code_says|$ran" in
+      "[True]|failed"|"[False]|done") ;;
+      *) fail "N: the pair $tool / $sib: the code says $code_says (hard = [True]) but the default run ended $ran: $why" ;;
+    esac
+  done
+  ok "N: 11 sibling pairs: each one's hard / note agrees with a default run with the right revoked"
+  # threshold 5, no session capturing the report: system_health preset with its note; a session made: its name preset
+  sq "EXEC sys.sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || fail "N: threshold 5"
+  [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" \
+     && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == "no running session captures the blocked process report"* ]] || fail "N: threshold 5 without a session: $(tl "t['sp_HumanEventsBlockViewer']")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: the state (c) default click: $(head -c 400 "$WORK/body")"
+  XES=pgcr_bpr_$N
+  sq "CREATE EVENT SESSION [$XES] ON SERVER ADD EVENT sqlserver.blocked_process_report ADD TARGET package0.ring_buffer; ALTER EVENT SESSION [$XES] ON SERVER STATE = START;" >/dev/null || fail "N: the session $XES"
+  [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': '$XES'}" && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == *"the form reads $XES"* ]] || fail "N: the state (b) preset: $(tl "t['sp_HumanEventsBlockViewer']")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"$XES\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: the state (b) click: $(head -c 400 "$WORK/body")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"pgcr_none\"}}") == 200 && $(js "d['runs'][0].get('declined')") == True \
+     && $(js "d['runs'][0]['error']") == *"A session with the name pgcr_none does not exist or is not currently active."* ]] || fail "N: a typed session that does not exist: $(head -c 400 "$WORK/body")"
+  sq "ALTER EVENT SESSION [$XES] ON SERVER STATE = STOP; DROP EVENT SESSION [$XES] ON SERVER; EXEC sys.sp_configure 'blocked process threshold (s)', 0; RECONFIGURE;" >/dev/null || fail "N: the session dropped"
+  ok "N: sp_HumanEventsBlockViewer: threshold 5 with no session = system_health preset and its note, run done; a session made = its name preset, run done; a typed session that does not exist declined"
+  # the grant: sp_LogHunter's need gone, a note on the archived logs (no securityadmin), its run done
   sq "GRANT EXECUTE ON sys.xp_readerrorlog TO pgcr_reader;" >/dev/null || fail "N: the grant"
-  [[ $(getc "community?instance=$MRID") == 200 && $(tl "t['sp_LogHunter']['needs']") == "[]" ]] || fail "N: sp_LogHunter's need after the grant: $(tl "t['sp_LogHunter']['needs']")"
+  [[ $(fresh "$MRID") == 200 && $(tl "[(n['hard'], n['state']) for n in t['sp_LogHunter']['needs']]") == "[(False, 'note')]" && $(tl "t['sp_LogHunter']['on']") == True ]] || fail "N: sp_LogHunter after the grant: $(tl "t['sp_LogHunter']['needs']")"
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_LogHunter with the right: $(head -c 600 "$WORK/body")"
-  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_HumanEventsBlockViewer on system_health: $(head -c 600 "$WORK/body")"
-  [[ $(getc "community?instance=$MAID") == 200 && $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" \
-     && $(tl "d['needs'][0]['what']") == *sysadmin* && $(tl "d['needs'][0]['how']") == *"without sysadmin"* ]] || fail "N: the sa instance's need: $(tl "d['needs']")"
-  [[ $(code "$U2/api/community?instance=$MRID") == 200 && $(tl "d['needs'][0]['what']") == *-no-login* && $(tl "d['needs'][0]['how']") == *"pgvigil user add"* && $(tl "d['needs'][0]['hard']") == True ]] || fail "N: the -no-login serve's need: $(head -c 600 "$WORK/body")"
-  ok "N: $MSR: sp_LogHunter needs EXECUTE on xp_readerrorlog (the GRANT line), refused in its own words, granted then done; the blocked process report a note, system_health done; sa and -no-login named before the click"
+  ok "N: granted: sp_LogHunter on with its securityadmin note, done"
+  # the narrow login (no CONNECT ANY DATABASE, a user in master only, no EXECUTE): every procedure off with its GRANT line,
+  # sp_IndexCleanup also without a reachable user database; Glenn's file tool on
+  [[ $(fresh "$MNID") == 200 && $(tl "sorted(x['id'] for x in d['tools'] if x['on'])") == "['glenn_berry']" \
+     && $(tl "t['sp_Blitz']['needs'][0]['how']") == "USE [master]; GRANT EXECUTE ON dbo.[sp_Blitz] TO [pgcr_narrow];" \
+     && $(tl "any('a user database the read login can reach' in n['what'] for n in t['sp_IndexCleanup']['needs'])") == True ]] || fail "N: the narrow login: $(tl "[(x['id'], x['state'], [n['what'][:60] for n in x['needs']]) for x in d['tools']]")"
+  ok "N: $MSN (narrow login): 13 procedures off, each with its GRANT line; sp_IndexCleanup without a reachable database; Glenn's on"
+  [[ $(fresh "$MAID") == 200 && $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" && $(tl "d['needs'][0]['what']") == *sysadmin* \
+     && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the sa instance: $(tl "d['needs']")"
+  [[ $(code "$U2/api/community?instance=$MRID") == 200 && $(tl "d['needs'][0]['what']") == "Running a tool needs a signed-in user: this server was started with -no-login." \
+     && $(tl "d['needs'][0]['how']") == *"pgvigil user add"* && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the -no-login serve: $(head -c 600 "$WORK/body")"
+  [[ $(code "$U2/api/customreports") == 200 && $(js "d['state']['reason']") == "Saving or running a report needs a signed-in user: this server was started with -no-login." ]] || fail "N: custom reports' words: $(head -c 300 "$WORK/body")"
+  [[ $(code "$U2/api/reportmail") == 200 && $(js "d['door']['reason']") == "Sending or scheduling a mail needs a signed-in user: this server was started with -no-login." ]] || fail "N: report mail's words: $(head -c 300 "$WORK/body")"
+  ok "N: sa: every tool off naming sysadmin; -no-login: each page's own words (Running a tool / Saving or running a report / Sending or scheduling a mail)"
+  # the instance paused: the checks answer within the budget, every tool 'not checked', none on; unpaused: ready again
+  docker pause "$CT" >/dev/null || fail "N: docker pause"
+  t0=$(date +%s%N); c=$(fresh "$MRID"); ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+  docker unpause "$CT" >/dev/null || fail "N: docker unpause"
+  [[ $c == 200 && $ms -lt 7000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "sum(1 for x in d['tools'] if x['on'])") == 0 ]] || fail "N: the paused instance ($ms ms): $(tl "[(x['id'], x['state']) for x in d['tools']][:4]"), $(tl "d['needs']")"
+  ok "N: $MSR paused: answered in $ms ms, 14 of 14 tools 'not checked' ($(tl "d['needs'][0]['what'][:90]")), none on"
+  for _ in $(seq 1 25); do [[ $(fresh "$MRID") == 200 && $(tl "t['sp_WhoIsActive']['state']") == ready ]] && break; sleep 2; done
+  [[ $(tl "t['sp_WhoIsActive']['state']") == ready ]] || fail "N: $MSR unpaused is not ready again: $(tl "t['sp_WhoIsActive']")"
+  ok "N: unpaused: sp_WhoIsActive ready again"
 fi
-[[ $(getc "community?instance=$AID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "[n['hard'] for n in t['pg_top_statements']['needs']]") == "[True]" \
-   && $(tl "t['pg_top_statements']['needs'][0]['what']") == *"pg_stat_statements extension in the database $TGT"* && $(tl "t['pg_top_statements']['needs'][0]['how']") == *"CREATE EXTENSION pg_stat_statements"* \
+if [[ -n "${DID:-}" ]]; then
+  t0=$(date +%s%N); c=$(fresh "$DID"); ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+  [[ $c == 200 && $ms -lt 7000 && $(tl "sorted(set(x['state'] for x in d['tools']))") == "['not_checked']" && $(tl "d['needs'][-1]['what']") == "not checked: the connection to $INSTD"* ]] || fail "N: the stopped instance: $(head -c 600 "$WORK/body")"
+  ok "N: $INSTD (nothing listens on its port): answered in $ms ms, 10 of 10 tools 'not checked', none on"
+else
+  NOTPROVEN+=("N: the stopped PostgreSQL instance $INSTD was not registered by the collection, so its page was not read")
+fi
+[[ $(fresh "$AID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "[n['hard'] for n in t['pg_top_statements']['needs']]") == "[True]" \
+   && $(tl "t['pg_top_statements']['needs'][0]['what']") == "pg_stat_statements is not created in the database $TGT" && $(tl "t['pg_top_statements']['needs'][0]['how']") == *"superuser-class role"*"CREATE EXTENSION pg_stat_statements"* \
    && $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['pg_top_statements']" ]] || fail "N: $INSTA's needs: $(tl "(d['needs'], [(x['id'], x['needs']) for x in d['tools'] if x['needs']])")"
 tq "create extension if not exists pg_stat_statements" || fail "N: create extension pg_stat_statements in $TGT"
-[[ $(getc "community?instance=$AID") == 200 ]] || fail "N: GET after the extension"
-if [[ $(tl "t['pg_top_statements']['needs']") == "[]" ]]; then
+[[ $(fresh "$AID") == 200 ]] || fail "N: GET after the extension"
+if [[ $(tl "t['pg_top_statements']['state']") == ready ]]; then
   [[ $(crun "{\"instance_id\":$AID,\"tool\":\"pg_top_statements\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: Top statements with the extension: $(head -c 600 "$WORK/body")"
-  ok "N: $INSTA: Top statements needs pg_stat_statements in $TGT (CREATE EXTENSION); created, the need gone, done"
+  ok "N: $INSTA: Top statements off (not created in $TGT, ask a superuser-class role); created: ready, done (schema-qualified)"
+elif [[ $(tl "t['pg_top_statements']['needs'][0]['what']") == *"but not loaded"* ]]; then
+  NOTPROVEN+=("N: this cluster does not load pg_stat_statements (55000 named: $(tl "t['pg_top_statements']['needs'][0]['what'][:120]")): Top statements' run")
 else
-  NOTPROVEN+=("N: Top statements after CREATE EXTENSION still needs: $(tl "t['pg_top_statements']['needs'][0]['what']") (this cluster does not load pg_stat_statements)")
+  fail "N: Top statements after CREATE EXTENSION: $(tl "t['pg_top_statements']")"
 fi
-[[ $(getc "community?instance=$SID") == 200 && $(tl "d['enabled']") == False && $(tl "d['needs'][0]['what']") == *superuser* && $(tl "d['needs'][0]['hard']") == True ]] || fail "N: the superuser instance's need: $(tl "d['needs']")"
+[[ $(fresh "$SID") == 200 && $(tl "d['enabled']") == False && $(tl "d['needs'][0]['what']") == *superuser* && $(tl "d['needs'][0]['hard']") == True ]] || fail "N: the superuser instance's need: $(tl "d['needs']")"
 ok "N: $INSTS: the superuser named before the click"
+# the keep: a second GET within 60 s answers the same checked_at, fresh=1 a newer one
+getc "community?instance=$AID" >/dev/null; k1=$(tl "d['checked_at']"); getc "community?instance=$AID" >/dev/null; k2=$(tl "d['checked_at']"); fresh "$AID" >/dev/null; k3=$(tl "d['checked_at']")
+[[ $k1 == "$k2" && $k3 > $k2 ]] || fail "N: the keep: $k1 / $k2 / $k3"
+ok "N: kept 60 s (two GETs, one checked_at $k1), fresh=1 checks again ($k3)"
 
 # ---- A: the audit --------------------------------------------------------------------------------------------------------
 [[ $(runlog) == "$(nruns)" ]] || fail "A: $(runlog) run rows for $(nruns) runs"
@@ -566,7 +665,7 @@ for (const theme of ['light', 'dark']) {
     await open(`#/community?i=${msa}`, `!!document.querySelector('main .needs')`);
     out.msa = await ev(`(() => { const btns = [...document.querySelectorAll('main table.grid button.link')]; const cs = btns[0] ? getComputedStyle(btns[0]) : null;
       const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
-      return { box: document.querySelector('main .needs')?.textContent ?? '', n: btns.length, off: btns.filter(b => b.disabled && /sysadmin/.test(b.title)).length,
+      return { box: document.querySelector('main .needs')?.textContent ?? '', n: btns.length, off: btns.filter(b => b.getAttribute('aria-disabled') === 'true' && /sysadmin/.test(b.title)).length,
         deco: cs?.textDecorationLine ?? '', color: cs?.color ?? '', accent }; })()`);
   }
   await open(`#/community?i=${pga}`, `[...document.querySelectorAll('main h3')].some(h => h.textContent === 'pgvigil reads')`);
@@ -587,7 +686,7 @@ m = d.get('msa')
 if m is not None:
     assert m['n'] == 14 and m['off'] == 14 and 'sysadmin' in m['box'] and m['box'].startswith('Before a tool can run on'), f"U: the sa page: {m['off']} of {m['n']} tool buttons off with 'sysadmin' on hover; its box: {m['box'][:200]!r}"
     assert m['deco'] == 'none' and m['color'] != m['accent'], f"U: a disabled tool button is drawn like a link: text-decoration {m['deco']!r}, colour {m['color']} (accent {m['accent']}) - the wiring's app.css line"
-    assert d.get('msrReady') == 'ready', f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
+    assert (d.get('msrReady') or '').startswith('ready'), f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
     print(f"ok   U: [B3] pgcr-msa: 'Before a tool can run' names sysadmin, {m['off']} of {m['n']} tool buttons off with it on hover, drawn off ({m['color']}, no underline); pgcr-msr: sp_WhoIsActive 'ready'")
 cells = d['cells'] or []
 assert cells, 'U: no rows read from the report grid'

@@ -10,13 +10,18 @@
 // (the lead wires the route and the tabs).
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
-import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { InstanceRun, resultView, ResultSet, setGrid } from './customreports';
 
-// a need: what the tool lacks here before it can run and the way to get it (hard = the tool cannot run without it)
-interface Need { what: string; how?: string; hard: boolean }
-interface Tool { id: string; name: string; group: string; engine: string; kind: string; url?: string; description: string; help?: string; installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[]; needs?: Need[] }
-interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; error?: string; tools: Tool[]; log: Table | null; needs?: Need[] }
+// a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
+// state: needs | note | not_checked | demo; source: where the server read it (server, configuration, repository, live)
+interface Need { what: string; how?: string; hard: boolean; state: string; source?: string; read_at?: string }
+interface Tool {
+  id: string; name: string; group: string; engine: string; kind: string; url?: string; description: string; help?: string;
+  installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[];
+  state: string; on: boolean; needs?: Need[]; preset?: Record<string, string>;
+}
+interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string }
 interface ProcParam { name: string; type: string; max_length: number; help?: string }
 interface Params { installed: boolean; params: ProcParam[]; left_out: string[]; help_sets: ResultSet[]; help_error?: string; static_params?: { name: string; type: string; label?: string; default?: string }[] }
 interface GlennQuery { n: number; name: string; about: string; text: string }
@@ -26,7 +31,8 @@ const logCols: Col[] = [
   { key: 'ui_user', label: 'who' },
   { key: 'op', label: 'what', fmt: v => v === 'community_help' ? 'help' : 'run' },
   { key: 'tool' },
-  { key: 'outcome', fmt: v => badge(String(v ?? ''), v === 'done' ? 'ok' : v === 'refused' ? 'warn' : 'crit') },
+  // a run the procedure declined in its own words is stored failed (it reached the server) and shown as declined
+  { key: 'outcome', fmt: (v, r) => { const o = String(v ?? ''), dec = o === 'failed' && / declined: /.test(String(r.detail ?? '')); return badge(dec ? 'declined' : o, o === 'done' ? 'ok' : o === 'refused' || dec ? 'warn' : 'crit'); } },
   { key: 'rows', num: true },
   { key: 'duration_ms', label: 'took (ms)', num: true },
   { key: 'detail', wide: true },
@@ -55,8 +61,17 @@ export async function communityView(ctx: Ctx): Promise<HTMLElement> {
   return sec;
 }
 
-async function instanceTools(instance: number, database = ''): Promise<HTMLElement> {
-  const d = await get<Tools>('community', { instance, database });
+const stateWord: Record<string, [string, string]> = {
+  ready: ['ready', 'ok'], note: ['note', 'warn'], needs: ['off', 'warn'], not_checked: ['not checked', 'crit'], demo: ['demo', 'none'],
+};
+
+// readAt: when a fact was read, for a fact the server took from the repository or a check it keeps
+function readAt(n: Need): string {
+  return n.read_at ? ` (read ${fmtTime(n.read_at)})` : '';
+}
+
+async function instanceTools(instance: number, database = '', fresh = false): Promise<HTMLElement> {
+  const d = await get<Tools>('community', { instance, database, ...(fresh ? { fresh: '1' } : {}) });
   const box = el('div', {});
   const out = el('div', {});
   box.append(el('p', { class: 'meta' }, `On ${d.instance}. `
@@ -64,61 +79,66 @@ async function instanceTools(instance: number, database = ''): Promise<HTMLEleme
       ? 'Each procedure runs as the instance\'s read login (never a sysadmin) with the parameters you give, under the timeout; pgvigil never installs one and never passes a parameter that writes a table.'
       : 'Each read runs on the instance\'s monitoring login in a read-only transaction, under the timeout and a 2 s lock timeout.')
     + ' Every run is audited.'));
-  // what every tool here lacks, said before any click: each need and the way to get it (the server's own state)
+  // what every tool here lacks, said before any click: each need and the way to get it
   const all = d.needs ?? [];
-  if (all.length) box.append(needsBox(`Before a tool can run on ${d.instance}:`, all));
-  else if (!d.enabled) box.append(el('p', { class: 'meta' }, 'Running is off here: ' + (d.reason ?? '')));
-  // an error the server did not turn into a need (the procedures' list could not be read)
-  if (d.error && !all.some(n => n.what.includes(d.error ?? ''))) box.append(errorBox(d.error));
-  if (d.engine === 'sqlserver') {
-    const db = el('input', { type: 'text', value: d.database ?? 'master', 'aria-label': 'Database the procedures are installed in', size: '16' }) as HTMLInputElement;
-    const again = el('button', { type: 'button' }, 'Look again');
-    again.addEventListener('click', async () => { box.replaceWith(await instanceTools(instance, db.value)); });
-    box.append(el('div', { class: 'toolbar' }, el('label', {}, 'Procedures installed in the database ', db), again));
-  }
+  const above = all.length ? needsBox(`Before a tool can run on ${d.instance}:`, all) : null;
+  if (above) box.append(above);
+  const again = el('button', { type: 'button' }, 'Look again');
+  const checked = el('span', { class: 'meta' }, d.checked_at ? `Checked ${fmtTime(d.checked_at)}.` : '');
+  const db = el('input', { type: 'text', value: d.database ?? '', 'aria-label': d.engine === 'sqlserver' ? 'Database the procedures are installed in' : 'Database the reads run in', size: '16' }) as HTMLInputElement;
+  again.addEventListener('click', async () => {
+    offControl(again, 'looking...', checked); checked.textContent = 'Looking again...';
+    try { box.replaceWith(await instanceTools(instance, db.value, true)); } catch (e) { checked.replaceChildren(errorBox(e)); offControl(again, null, checked); }
+  });
+  if (!d.demo) box.append(el('div', { class: 'toolbar' }, el('label', {}, d.engine === 'sqlserver' ? 'Procedures installed in the database ' : 'Reads run in the database ', db), again, checked));
   const groups = [...new Set(d.tools.map(t => t.group))];
   for (const g of groups) {
     const tools = d.tools.filter(t => t.group === g);
+    // each tool's state cell first: its button names it as its description when the tool is off
+    const cells = new Map<string, HTMLElement>(tools.map(t => [t.id, needsCell(t, d)]));
     box.append(el('h3', {}, g));
     box.append(grid(tools as unknown as Row[], [
-      { key: 'name', label: 'tool', fmt: (_v, r) => openButton(r as unknown as Tool, instance, d, out) },
+      { key: 'name', label: 'tool', fmt: (_v, r) => openButton(r as unknown as Tool, instance, d, out, cells.get(String(r.id)), above) },
       { key: 'description', wide: true },
-      { key: 'installed', fmt: (v, r) => v === true ? badge('installed in ' + String(r.where ?? ''), 'ok') : v === false ? notInstalled(r as unknown as Tool) : r.kind === 'proc' ? 'not read' : '' },
-      { key: 'needs', label: 'before it runs', wide: true, fmt: (_v, r) => needsCell(r as unknown as Tool, d) },
+      { key: 'state', label: 'before it runs', wide: true, fmt: (_v, r) => cells.get(String(r.id)) ?? '' },
     ]));
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
   return box;
 }
 
-function notInstalled(t: Tool): HTMLElement {
-  return el('span', {}, badge('not installed', 'warn'), ' get it from ', el('a', { href: t.url ?? '#', rel: 'noopener noreferrer', target: '_blank' }, t.url ?? ''));
-}
-
-// blockers: the words of what keeps a tool from running here (the instance's needs, then the tool's own hard ones)
-function blockers(t: Tool, d: Tools): string[] {
-  const hard = [...(d.needs ?? []), ...(t.needs ?? [])].filter(n => n.hard).map(n => n.what + (n.how ? ' - ' + n.how : ''));
-  if (!hard.length && !d.enabled) hard.push(d.reason || 'running is off on this server');
-  return hard;
+function needLine(n: Need): (Node | string)[] {
+  return [n.what + readAt(n), ...(n.how ? [el('br'), 'How: ' + n.how] : [])];
 }
 
 function needsBox(title: string, needs: Need[]): HTMLElement {
-  return el('div', { class: 'needs', role: 'note' }, el('p', {}, title),
-    el('ul', {}, ...needs.map(n => el('li', {}, n.what, ...(n.how ? [el('br'), 'How: ' + n.how] : [])))));
+  return el('div', { class: 'needs', role: 'note', id: 'community-needs' }, el('p', {}, title),
+    el('ul', {}, ...needs.map(n => el('li', {}, ...needLine(n)))));
 }
 
-// needsCell: the tool's own needs beside it ('ready' when nothing stops it); the instance's are said above the list
-function needsCell(t: Tool, d: Tools): HTMLElement | string {
+// the deciding need: the first hard one (the instance's, then the tool's own)
+function decider(t: Tool, d: Tools): Need | undefined {
+  return [...(d.needs ?? []), ...(t.needs ?? [])].find(n => n.hard);
+}
+
+// needsCell: the tool's state in words beside it - ready (and where it is installed), or why it is off, then its own
+// needs and notes with the way to get each
+function needsCell(t: Tool, d: Tools): HTMLElement {
+  const [word, kind] = stateWord[t.state] ?? [t.state, 'none'];
+  const cell = el('span', { class: 'tool-state' }, badge(word, kind));
+  const dec = decider(t, d);
   const own = t.needs ?? [];
-  if (!own.length) return (d.needs ?? []).some(n => n.hard) || !d.enabled ? 'see above the list' : badge('ready', 'ok');
-  return el('span', {}, ...own.flatMap((n, i) => [...(i ? [el('br')] : []), badge(n.hard ? 'needs' : 'note', n.hard ? 'warn' : ''), ' ' + n.what + (n.how ? '. How: ' + n.how : '')]));
+  if (dec && !own.includes(dec)) cell.append(' ' + dec.what);
+  else if (t.state === 'ready') cell.append(t.where ? ` in ${t.where}` : '');
+  own.forEach((n, i) => cell.append(...(i || (dec && !own.includes(dec)) ? [el('br')] : [' ']), ...(n.hard ? [] : [badge('note', 'warn'), ' ']), ...needLine(n)));
+  return cell;
 }
 
-function openButton(t: Tool, instance: number, d: Tools, out: HTMLElement): HTMLElement {
+function openButton(t: Tool, instance: number, d: Tools, out: HTMLElement, cell: HTMLElement | undefined, above: HTMLElement | null): HTMLElement {
   const b = el('button', { type: 'button', class: 'link' }, t.name);
-  const why = blockers(t, d);
-  // off: the reason on hover and, for a screen reader, in its name; the same words stand beside it (needs)
-  if (why.length) { b.setAttribute('disabled', ''); b.title = why.join('; '); b.setAttribute('aria-label', `${t.name} (off: ${why[0]})`); }
+  const dec = decider(t, d);
+  // off: in the tab order, the reason beside it (its state cell) as its description, on hover too
+  if (!t.on) offControl(b, dec ? dec.what + (dec.how ? ' How: ' + dec.how : '') : 'off here', cell ?? above ?? undefined);
   b.addEventListener('click', async () => {
     out.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
     try { out.replaceChildren(t.kind === 'script' ? glennPanel(t, instance, d.database ?? '') : await toolPanel(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }
@@ -140,15 +160,25 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     }
   }
   const table = el('tbody');
+  // the values the server presets for this instance (a default the procedure would decline here, or one that reads
+  // nothing): filled in and said, the note beside the tool says why
+  const preset = new Map(Object.entries(t.preset ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const filled: string[] = [];
   for (const x of p.params) {
     const i = el('input', { type: 'text', 'aria-label': `${x.name} (${x.type})`, size: '24' }) as HTMLInputElement;
     if (x.help) i.title = x.help;
+    const v = preset.get(x.name.toLowerCase());
+    if (v !== undefined) { i.value = v; filled.push(`${x.name} = ${v}`); }
     inputs.push([x.name, i]);
     table.append(el('tr', {}, el('td', {}, x.name), el('td', {}, x.type + (x.max_length > 0 && /char/i.test(x.type) ? `(${x.max_length < 0 ? 'max' : x.max_length})` : '')), el('td', {}, i), el('td', {}, x.help ?? '')));
   }
   if (p.params.length) {
     sec.append(el('p', { class: 'meta' }, 'Leave a parameter empty to take the procedure\'s own default.'),
       el('div', { class: 'grid-wrap', tabindex: '0' }, el('table', { class: 'props' }, el('thead', {}, el('tr', {}, el('th', {}, 'parameter'), el('th', {}, 'type'), el('th', {}, 'value'), el('th', {}, 'what it does'))), table)));
+  }
+  if (filled.length) {
+    const why = (t.needs ?? []).filter(n => n.state === 'note').map(n => n.what).join(' ');
+    sec.append(el('p', { class: 'meta preset', role: 'note' }, `Filled in for ${d.instance}: ${filled.join(', ')}.` + (why ? ' ' + why : '')));
   }
   if (p.left_out.length) sec.append(el('p', { class: 'meta' }, 'Left out (pgvigil never writes through a procedure, and OUTPUT parameters are not shown): ' + p.left_out.join(', ')));
   const timeout = el('input', { type: 'text', value: '60', size: '3', inputmode: 'numeric', 'aria-label': 'Timeout in seconds (1 to 60)' }) as HTMLInputElement;
@@ -158,7 +188,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
   const status = el('p', { class: 'meta', role: 'status' }), res = el('div', {});
   sec.append(status, res);
   run.addEventListener('click', async () => {
-    status.textContent = 'Running...'; run.setAttribute('disabled', '');
+    status.textContent = 'Running...'; offControl(run, 'running', status);
     const params: Record<string, string> = {};
     for (const [n, i] of inputs) if (i.value.trim() !== '') params[n] = i.value;
     try {
@@ -166,7 +196,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
       res.replaceChildren(resultView(r.runs, undefined, t.name));
       status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
     } catch (e) { res.replaceChildren(errorBox(e)); status.textContent = ''; }
-    finally { run.removeAttribute('disabled'); }
+    finally { offControl(run, null, status); }
   });
   if (p.help_sets.length || p.help_error) {
     const det = el('details', {}, el('summary', {}, `${t.name}'s own help`));
