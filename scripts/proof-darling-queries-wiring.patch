@@ -160,14 +160,14 @@ index db18812..b503c19 100644
        { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
      ];
      const cut = procs.length >= LIMIT;
-+    const gbox = el('div', {}, grid(procs, cols)), said = el('p', { class: 'meta', role: 'status' });
++    const gbox = el('div', {}, grid(procs, cols)), said = el('p', { class: 'meta', role: 'status' }); let pAsked = 0;   // a newer drag's answer wins
 +    const win = window_(ctx);
 +    const pstrip = strip = rereadStrip('Procedure duration', win, series.map(x => ({ t: Date.parse(String(x.snapshot_at)), v: Number(x.duration_ms_s) || 0 })),
-+      n => `${num3(n)} ms/s summed`, 300e3, (from, to, words) => {
-+        void get<Parts>('mssql/procs', { instance: ctx.instance, from: from ?? win.from, to: to ?? win.to, db: database || undefined, part: 'procs' }).then(x => {
++      n => `${num3(n)} ms/s summed`, 300e3, (from, to, words) => { const mine = ++pAsked;
++        void get<Parts>('mssql/procs', { instance: ctx.instance, from: from ?? win.from, to: to ?? win.to, db: database || undefined, part: 'procs' }).then(x => { if (mine !== pAsked) return;
 +          said.textContent = from ? `The grid holds ${words ?? ''}, snapped to the five-minute reads (${fmtTime(from)} to ${fmtTime(to)}).` : '';
 +          gbox.replaceChildren(grid(rowsOf(x.procs), cols));
-+        }).catch(e => gbox.replaceChildren(errorBox(e)));
++        }).catch(e => { if (mine === pAsked) gbox.replaceChildren(errorBox(e)); });
 +      }, 'Every procedure\'s duration per step. Drag across it to read the grid for that stretch; a procedure opened below draws its own on it.');
      out.push(el('h3', {}, cut ? `Procedures (the ${fmtNum(LIMIT)} with the most duration of ${fmtNum(tot.procs)})` : `Procedures (${procs.length}, the most duration first)`),
        el('p', { class: 'meta' }, 'Per second and per minute are over the seconds the range\'s reads cover '
