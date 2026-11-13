@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -257,8 +258,10 @@ SELECT f.severity, f.check_name, f.object, f.at, f.detail
 // with a sample in it: PerformanceMonitor's own words for the count ('Distinct queries in the cell, NOT
 // executions', DarlingMcpQueryHeatmapTools.cs:219), where its SQL counts rows, one per read. A query whose reads
 // fall in two buckets of a bin counts in both. The cell's most-executed query is the one with the most executions
-// summed over the cell. The newest 1,000 cells (PerformanceMonitor's cap, DarlingWebEndpoints.cs:8190); n_cells
-// counts them all. One read over the window's samples, no rollup, as PerformanceMonitor's (H3: 2.05 s over 7 days at
+// summed over the cell. At most 1,000 cells (PerformanceMonitor's cap, DarlingWebEndpoints.cs:8190), cut by whole
+// bins and only when the window holds more: bins are kept newest first while their cells add up to 1,000 or fewer, so
+// the newest bin is always whole and a column is drawn whole or not at all; n_cells counts every cell, bins_cut the
+// bins left out, drawn_from the oldest bin kept. One read over the window's samples, no rollup, as PerformanceMonitor's (H3: 2.05 s over 7 days at
 // 761 rows a read, 7.4 s at 3,000, s177j-spike3).
 const sqlMSSQLPCHeatmap = `
 WITH r AS (
@@ -284,13 +287,20 @@ WITH r AS (
   SELECT DISTINCT ON (q.time_bin, q.bucket) q.time_bin, q.bucket, q.database_id, q.query_key, q.e
     FROM q
    ORDER BY q.time_bin, q.bucket, q.e DESC, q.database_id, q.query_key
+), b AS (
+  SELECT c.time_bin, sum(count(*)) OVER (ORDER BY c.time_bin DESC) AS run, sum(count(*)) OVER () AS n_cells
+    FROM c GROUP BY c.time_bin
+), kb AS (
+  SELECT b.time_bin, b.n_cells, count(*) FILTER (WHERE b.run > 1000) OVER () AS bins_cut, b.run FROM b
 ), k AS (
-  SELECT c.time_bin, c.bucket, c.queries, c.executions, t.database_id, t.query_key, t.e AS top_executions, count(*) OVER () AS n_cells
+  SELECT c.time_bin, c.bucket, c.queries, c.executions, t.database_id, t.query_key, t.e AS top_executions, kb.n_cells, kb.bins_cut,
+         min(c.time_bin) OVER () AS drawn_from
     FROM c JOIN t ON t.time_bin = c.time_bin AND t.bucket = c.bucket
-   ORDER BY c.time_bin DESC, c.bucket
-   LIMIT 1000
+    JOIN kb ON kb.time_bin = c.time_bin
+   WHERE kb.run <= 1000
 )
-SELECT k.time_bin, k.bucket, k.queries, k.executions::bigint AS executions, k.n_cells, $6::int AS bin_minutes,
+SELECT k.time_bin, k.bucket, k.queries, k.executions::bigint AS executions, k.n_cells::bigint AS n_cells, k.bins_cut, k.drawn_from,
+       $6::int AS bin_minutes,
        k.database_id, coalesce(d.database_name, 'database ' || k.database_id) AS database, k.query_key,
        k.top_executions::bigint AS top_executions, left(x.query, 80) AS top_query
   FROM k
@@ -300,6 +310,19 @@ SELECT k.time_bin, k.bucket, k.queries, k.executions::bigint AS executions, k.n_
 
 // heatmapReachSecs: PerformanceMonitor's heatmap reaches 168 hours (DarlingMcpQueryHeatmapTools.cs:101-102).
 const heatmapReachSecs = 168 * 3600
+
+// heatmapMaxSamples: the most stored samples one heatmap read takes, the ceiling the proof times - 2,016 reads (7 days
+// at the 5-minute plan-cache schedule) x 3,000 statements a read (the collector's cap): a median of 8.07 s over eight
+// runs under the 10 s line (s177j-28). The reach is a time; this bounds the size, for any schedule and any cap: a
+// window whose reads stored more is refused before the read (mssql_pc_read.statements = the samples a read stored, those
+// with executions > 0, 0092; summed over the instance and the window, not narrowed by the page's database scope).
+const heatmapMaxSamples = 2016 * 3000
+
+// sqlMSSQLPCHeatmapSamples: the stored samples the heatmap's window holds (heatmapMaxSamples).
+const sqlMSSQLPCHeatmapSamples = `
+SELECT coalesce(sum(r.statements), 0)::bigint
+  FROM pgvigil.mssql_pc_read r
+ WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3`
 
 // heatmapBinMinutes is PerformanceMonitor's bin (query-heatmap-model.js:24-28): five-minute multiples aiming at 144
 // columns over the window, 5 to 1,440 minutes (5 up to 12 hours, 10 at 24 hours, 70 at 7 days).
@@ -383,6 +406,16 @@ func (s *Server) MSSQLPlanCache(w http.ResponseWriter, r *http.Request) {
 		secs := to.Sub(from).Seconds()
 		if secs > heatmapReachSecs {
 			writeErr(w, http.StatusBadRequest, errors.New("the heatmap reaches 7 days: pick 7 days or less"))
+			return
+		}
+		var samples int64
+		if err := s.pool.QueryRow(r.Context(), sqlMSSQLPCHeatmapSamples, id, from, to).Scan(&samples); err != nil {
+			s.reply(w, r, nil, fmt.Errorf("heatmap: %w", err))
+			return
+		}
+		if samples > heatmapMaxSamples {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("this range holds about %.1f million stored plan-cache samples; "+
+				"the heatmap reads at most about 6 million: pick a shorter range", float64(samples)/1e6))
 			return
 		}
 		parts = append(parts, part{"heatmap", sqlMSSQLPCHeatmap, []any{planEach, id, from, to, database, noQS, heatmapBinMinutes(secs), metric}})

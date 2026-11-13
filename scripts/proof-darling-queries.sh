@@ -62,7 +62,9 @@
 #     by executions summed, the newest 1,000, n_cells all), and equal on a PostgreSQL 13 repository (a throwaway
 #     postgres:13 container, where date_bin is refused); the heatmap at 24 h and 7 days at 761 and 3,000 rows a read
 #     under 10 s (eight runs each; at 3,000 / 7 days the median of the eight, a slower run printed); 8 days refused 400
-#     with 'pick 7 days or less'; one query's and one procedure's history
+#     with 'pick 7 days or less'; a window past 6,048,000 stored samples refused 400 with its own count (H2's row at
+#     3,000 a read is the ceiling); the 1,000-cell cut by whole bins (every bucket of 7 days' bins: 142 kept, the rest
+#     counted, H1's 24 h whole); one query's and one procedure's history
 #     sum their executions = a hand sum, about 120 steps, under 10 s over 7 days; the Query Store overhead lists the
 #     QDS_* waits but PerformanceMonitor's sleep waits, per hour over the measured seconds; the memory clerk's captures,
 #     samples, latest and max.
@@ -798,17 +800,22 @@ for metric in ('duration', 'cpu', 'writes', 'executions'):
     for (b, k), qs in cells.items():
         top = sorted(qs.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[0]
         hand[(b, k)] = (len(qs), sum(qs.values()), top[0][0], top[0][1], top[1])
-    want = sorted(hand, key=lambda x: (-x[0], x[1]))[:1000]
+    keep, run = set(), 0   # bins newest first while their cells add up to 1,000 or fewer (whole bins)
+    for b in sorted({x[0] for x in hand}, reverse=True):
+        run += sum(1 for x in hand if x[0] == b)
+        if run > 1000: break
+        keep.add(b)
+    want = [x for x in hand if x[0] in keep]
     got = {(int(datetime.fromisoformat(r['time_bin'].replace('Z', '+00:00')).timestamp()), r['bucket']):
            (r['queries'], r['executions'], r['database_id'], r['query_key'], r['top_executions']) for r in api}
     bad = [x for x in want if got.get(x) != hand[x]] + [x for x in got if x not in hand]
     n_cells = api[0]['n_cells']
-    if bad or len(got) != len(want) or n_cells != len(hand):
+    if bad or len(got) != len(want) or n_cells != len(hand) or api[0]['bins_cut'] != len({x[0] for x in hand}) - len(keep):
         print(f"DIFF {metric}: {len(bad)} cells differ, the API {len(got)} of {n_cells}, the hand {len(want)} of {len(hand)}; first {bad[:3]}",
               [(got.get(x), hand.get(x)) for x in bad[:3]]); sys.exit(1)
     print(f"H {metric}: {len(got)} cells of {n_cells} = the hand count over {len(rows)} stored samples (distinct queries {sum(v[0] for v in hand.values())})")
 PYEND
-echo "ok   H: the heatmap's cells (duration, cpu, writes and executions, 24 h, 10-minute bins, $NL samples on and just under the bucket lines) = a hand count of the stored samples: distinct (database, query) per cell, the most-executed by executions summed, the newest 1,000"
+echo "ok   H: the heatmap's cells (duration, cpu, writes and executions, 24 h, 10-minute bins, $NL samples on and just under the bucket lines) = a hand count of the stored samples: distinct (database, query) per cell, the most-executed by executions summed, whole bins newest first to 1,000 cells"
 # H1 on a PostgreSQL 13 repository (the repository's floor; the join review d10b, a1): a throwaway postgres:13 container
 # migrated by this binary, H1's samples copied in, served on its own port without the login: its heatmap cells = the
 # box's (PostgreSQL 18), and date_bin (14+) is refused there, so the row would have caught the old binning
@@ -878,12 +885,59 @@ for spec in 761 3000; do
   done
 done
 echo "     H: the heatmap through the API (s, eight runs each, $(ld); at 3,000 / 7 days each run @ the 1-minute load at its start):$TH"
-echo "     H: the heatmap at 3,000 rows a read over 7 days: the median of the eight runs $HMED s (the failing line there, 10 s)"
+HMARGIN=$(python3 -c 'import sys; m = float(sys.argv[1]); print(f"{10 - m:.2f} s ({100 - 10 * m:.0f} %)")' "${HMED:-nan}" 2>/dev/null || true)
+echo "     H: the heatmap at 3,000 rows a read over 7 days: the median of the eight runs $HMED s, $HMARGIN under the failing line there (10 s)"
 [[ -z "$HNOTE" ]] || echo "     H: slow run(s) at 3,000 / 7 days, over 10 s (none fails alone: the median above is the line; for a2 in DONE-2):$HNOTE"
 # a range past PerformanceMonitor's 168 h reach is refused with its words
 c=$(curl -s -o "$TMPD/h8.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_761&from=$(date -u -d '-8 days' +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)&part=heatmap")
 [[ "$c" == 400 ]] && grep -q 'pick 7 days or less' "$TMPD/h8.json" || fail "H: 8 days answered $c: $(head -c 200 "$TMPD/h8.json")"
 echo "ok   H: 8 days answered 400 'the heatmap reaches 7 days: pick 7 days or less'"
+# H4. the heatmap's size (a2): a window whose reads stored more samples than the proven ceiling (2,016 reads x 3,000) is
+# refused before the read, with the window's own count; H2's timed row at 3,000 a read is the seed at the ceiling
+IID_BIG=$(pq "SELECT pgvigil.ensure_instance('pgvq-big', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+pq "INSERT INTO pgvigil.mssql_pc_read (instance_id, snapshot_at, interval_secs, statements, capped)
+      SELECT $IID_BIG, t, 300, 3500, false FROM generate_series(now() - interval '7 days' + interval '1 minute', now(), interval '5 minutes') t" >/dev/null
+NOW=$(date -u +%s); BF=$(iso $((NOW - 604800))); BT=$(iso "$NOW")   # one clock read
+NB=$(pq "SELECT coalesce(sum(statements), 0) FROM pgvigil.mssql_pc_read WHERE instance_id = $IID_BIG AND snapshot_at > '$BF' AND snapshot_at <= '$BT'")
+c=$(curl -s --max-time 30 -o "$TMPD/hbig.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_BIG&from=$BF&to=$BT&part=heatmap") || true
+WANT_BIG="this range holds about $(python3 -c 'import sys; print(f"{int(sys.argv[1]) / 1e6:.1f}")' "$NB") million stored plan-cache samples; the heatmap reads at most about 6 million: pick a shorter range"
+[[ "$c" == 400 && "$(jq -r '.error // empty' "$TMPD/hbig.json" 2>/dev/null)" == "$WANT_BIG" ]] \
+  || fail "H: $NB stored samples over 7 days answered $c '$(head -c 300 "$TMPD/hbig.json" 2>/dev/null)' (want 400 '$WANT_BIG')"
+N3=$(pq "SELECT coalesce(sum(statements), 0) FROM pgvigil.mssql_pc_read WHERE instance_id = $IID_3000 AND snapshot_at > now() - interval '7 days'")
+(( NB > 2016 * 3000 && N3 <= 2016 * 3000 )) || fail "H: the seeds do not straddle the ceiling 6,048,000 (past it $NB, at it $N3)"
+echo "ok   H: a2 - $NB stored samples over 7 days (3,500 a read) answered 400 '$WANT_BIG'; H2's timed row at 3,000 a read holds $N3 (the ceiling 6,048,000) and answered 200"
+# H5. the 1,000-cell cut (a4 / b5): every bucket of every 70-minute bin of 7 days holds a query (a sample every 10
+# minutes, one per bucket, and one just inside the window's start): bins are kept newest first while their cells add up
+# to 1,000 or fewer - 142 whole bins, the oldest left out, counted and their end named; H1's 24 h fits (no bin cut)
+IID_CUT=$(pq "SELECT pgvigil.ensure_instance('pgvq-cut', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+NOW=$(date -u +%s); CF=$(iso $((NOW - 604800))); CT=$(iso "$NOW")   # one clock read
+pq "INSERT INTO pgvigil.mssql_pc_sample (instance_id, snapshot_at, database_id, query_key, database_name, executions, cpu_us, duration_us,
+      logical_reads, physical_reads, logical_writes, row_count, spills, plans, interval_secs)
+    SELECT $IID_CUT, t, 5, '0xc' || lpad(k::text, 15, '0'), 'db5', 1, 5 * 10 ^ (k + 2), 5 * 10 ^ (k + 2), 0, 0, 0, 1, 0, 1, 300
+      FROM (SELECT to_timestamp($NOW - n * 600) AS t FROM generate_series(0, 1007) n UNION ALL SELECT to_timestamp($NOW - 604799)) x,
+           generate_series(0, 6) k" >/dev/null
+NBINS=$(pq "SELECT count(DISTINCT floor(extract(epoch FROM snapshot_at) / 4200)) FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID_CUT AND snapshot_at > '$CF' AND snapshot_at <= '$CT'")
+api "mssql/plancache?instance=$IID_CUT&from=$CF&to=$CT&part=heatmap&metric=duration" hcut.json
+python3 - "$TMPD/hcut.json" "$TMPD/h-duration.json" "$NBINS" "$NOW" <<'PYCUT' || fail "H: the 1,000-cell cut (above)"
+import sys, json
+from datetime import datetime
+j = json.load(open(sys.argv[1]))['heatmap']; rows = [dict(zip(j['columns'], r)) for r in j['rows']]
+nbins, now = int(sys.argv[3]), int(sys.argv[4]); bad = []
+bins = sorted({r['time_bin'] for r in rows})
+per = {b: sum(1 for r in rows if r['time_bin'] == b) for b in bins}
+keep = 1000 // 7
+if len(rows) != 7 * keep or len(bins) != keep or set(per.values()) != {7}: bad.append(f'{len(rows)} cells in {len(bins)} bins, per bin {sorted(set(per.values()))} (want {7 * keep} in {keep}, 7 each)')
+r0 = rows[0] if rows else {}
+if r0.get('n_cells') != 7 * nbins or r0.get('bins_cut') != nbins - keep or r0.get('drawn_from') != (bins[0] if bins else None):
+    bad.append(f"n_cells {r0.get('n_cells')} bins_cut {r0.get('bins_cut')} drawn_from {r0.get('drawn_from')} (want {7 * nbins}, {nbins - keep}, {bins[0] if bins else None})")
+newest = max(int(datetime.fromisoformat(b.replace('Z', '+00:00')).timestamp()) for b in bins) if bins else 0
+if newest != now // 4200 * 4200: bad.append(f'the newest bin kept {newest}, want {now // 4200 * 4200}')
+f = json.load(open(sys.argv[2]))['heatmap']; fr = [dict(zip(f['columns'], r)) for r in f['rows']]
+if not fr or fr[0]['bins_cut'] != 0 or fr[0]['n_cells'] != len(fr): bad.append(f"H1's 24 h: bins_cut {fr[0]['bins_cut'] if fr else None}, n_cells {fr[0]['n_cells'] if fr else None} of {len(fr)} rows (want 0, all)")
+if bad: print('DIFF', bad); sys.exit(1)
+print(f"H cut: {len(rows)} cells in {len(bins)} whole bins of {nbins}, n_cells {r0['n_cells']}, bins_cut {r0['bins_cut']}, drawn from {r0['drawn_from']}; H1's 24 h: {len(fr)} cells, none cut")
+PYCUT
+echo "ok   H: a4 / b5 - every bucket of all $NBINS bins of 7 days held a query: 142 whole bins (994 cells, the newest first), n_cells $((NBINS * 7)), $((NBINS - 142)) bins left out and counted, drawn_from the oldest kept; H1's 24 h fits whole (bins_cut 0)"
 # H3. one query's history (plan cache) and one procedure's history: their executions = a hand sum; 7 days timed
 NOW=$(date -u +%s); F7=$(iso $((NOW - 604800))); T7=$(iso "$NOW")   # one clock read
 # (the procedures' seed is F's: 1,000 a read, 14 days)
@@ -1083,6 +1137,18 @@ await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
 console.log(`login ${st}`);
 const w = `i=${sb}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+if (mode === 'heat') {
+  // the heatmap section alone, settled: the refusal's words, the cut note, its drawn cells
+  await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
+  await go(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
+  await ev(`(() => { document.querySelector('[data-part=heatmap]').scrollIntoView(); return 'ok'; })()`);
+  for (let t = 0; t < 60000; t += 500) { const s = await ev(`(() => { const h = document.querySelector('[data-part=heatmap] .queries-body'); return h ? h.textContent : ''; })()`); if (!/Reading|comes into view/.test(s)) break; await sleep(500); }
+  const hs = await ev(`(() => { const h = document.querySelector('[data-part=heatmap]'); return JSON.stringify({ many: h.querySelector('.heatmap-too-many')?.textContent ?? null,
+    cut: h.querySelector('.heatmap-cut')?.textContent ?? null, errors: h.querySelectorAll('.error:not([role=status])').length, cells: h.querySelectorAll('.heatmap-cell[title]').length }); })()`);
+  await shot(`d10-heatmap-${hi}`);
+  console.log(`heat ${hs}`);
+  ws.close(); process.exit(0);
+}
 if (mode === 'slow') {
   // the heatmap's read held past the UI pool's 15 s statement timeout (the caller's view over mssql_pc_sample sleeps
   // 20 s): wait while the section has not started ('comes into view') or still reads, 60 s at most (the page's other
@@ -1188,6 +1254,23 @@ for (let i = 0; i < n; i++) {
 ws.close(); process.exit(0);
 JS
 out=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS") || fail "I: the Chromium walk stopped: $out"
+# the heatmap's size on the page: the refusal's words in the heatmap's place (a2), the cut note naming the columns left
+# out (a4 / b5), and no note where the cells fit (H1's 24 h at 761 a read)
+NOW=$(date -u +%s); FF=$(iso $((NOW - 86400))); FT=$(iso "$NOW")
+HPB=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$BF" "$BT" "$IID_BIG") || fail "I: the heatmap walk (a2) stopped: $HPB"
+HPC=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$CF" "$CT" "$IID_CUT") || fail "I: the heatmap walk (a4 / b5) stopped: $HPC"
+HPF=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$FF" "$FT" "$IID_761") || fail "I: the heatmap walk (fits) stopped: $HPF"
+python3 - "$(printf '%s\n' "$HPB" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPC" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPF" | sed -n 's/^heat //p')" "$WANT_BIG" "$NBINS" <<'PYPAGE' || fail "I: the heatmap's size on the page (above)"
+import sys, json
+b, c, f = (json.loads(x or '{}') for x in sys.argv[1:4]); want, nbins = sys.argv[4], int(sys.argv[5]); bad = []
+if b.get('many') != want[0].upper() + want[1:] + '.' or b.get('cells') or b.get('errors'): bad.append(f'past the ceiling: {b}')
+cut = c.get('cut') or ''
+if not cut.startswith(f'The oldest {nbins - 142} columns, before ') or f'{7 * nbins:,} cells in all, 1,000 at most' not in cut or c.get('cells') != 994 or c.get('errors'): bad.append(f'the cut: {c}')
+if f.get('cut') is not None or f.get('many') is not None or not f.get('cells') or f.get('errors'): bad.append(f'fits: {f}')
+if bad: print('DIFF', bad); sys.exit(1)
+print(f"I heatmap size: past the ceiling '{b['many']}'; the cut '{cut}', {c['cells']} cells drawn; fits: {f['cells']} cells, no note")
+PYPAGE
+echo "ok   I: the heatmap's size on the page: the refusal's words in the heatmap's place (no cell, no error box), the cut note naming the $((NBINS - 142)) oldest columns and where the drawn part starts (994 cells), no note where the cells fit"
 printf '%s\n' "$out" > "$TMPD/i.out"; printf '%s\n' "$out" | grep '^click ' > "$SHOTS/d10-click-table.txt" || true
 echo "$out" | grep -v '^click ' | sed 's/^/  /'
 # the heatmap's read past the UI pool's real 15 s statement timeout: the plain line, no error box, no grid. A lock on

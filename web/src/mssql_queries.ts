@@ -102,7 +102,11 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
       rows = rowsOf(h.heatmap); reads = rowsOf(r.reads)[0] ?? {};
     } catch (e) {
       // the UI pool's 15 s statement timeout cancelled the read: a plain line, never an error box or an empty grid
-      out.replaceChildren(/statement timeout/.test(String((e as Error)?.message ?? e)) ? el('p', { class: 'empty heatmap-too-long' }, HEATMAP_TOO_LONG) : errorBox(e));
+      const msg = String((e as Error)?.message ?? e);
+      // a range past the proven size is refused with its own words (the server's): shown in the heatmap's place
+      out.replaceChildren(/statement timeout/.test(msg) ? el('p', { class: 'empty heatmap-too-long' }, HEATMAP_TOO_LONG)
+        : /the heatmap reads at most about/.test(msg) ? el('p', { class: 'empty heatmap-too-many' }, msg.charAt(0).toUpperCase() + msg.slice(1) + '.')
+        : errorBox(e));
       return;
     }
     if (metric !== pick.value) return;   // a newer pick is reading
@@ -141,7 +145,9 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
       }
     }
     const notes: HTMLElement[] = [el('p', { class: 'meta' }, `${binMin}-minute bins from the plan cache's stored reads, ${top} at the top. ${HEATMAP_LEGEND}`)];
-    if (nCells > rows.length) notes.push(el('p', { class: 'meta' }, `The read returned only the most recent bins (${fmtNum(rows.length)} of ${fmtNum(nCells)} cells); the oldest are cut. Pick a shorter range to see them.`));
+    const binsCut = Number(rows[0].bins_cut);
+    if (binsCut > 0) notes.push(el('p', { class: 'meta heatmap-cut' }, `The oldest ${fmtNum(binsCut)} ${binsCut === 1 ? 'column' : 'columns'}, before ${fmtTime(text(rows[0].drawn_from))}, `
+      + `are not drawn: ${fmtNum(nCells)} cells in all, 1,000 at most. Pick a shorter range to see them.`));
     if (Number(reads.cut_reads) > 0) notes.push(el('p', { class: 'meta' }, `${fmtNum(reads.cut_reads)} of ${fmtNum(reads.reads)} reads were cut at the collector's lists: a query past them is in no cell of those reads.`));
     const table = grid([...rows].reverse(), [
       { key: 'time_bin', label: 'Time Bin', fmt: fmtTime },
