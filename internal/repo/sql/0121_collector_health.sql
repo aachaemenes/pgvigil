@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
   target        text,                             -- the dial target, 'postgres:<host>:<port>' (NULL: not known; collector_server_down)
   PRIMARY KEY (minute, instance_id, collector_id)
 );
+-- an instance's rows in time order (collector_server_down_at: the row before a spell, rows between two minutes)
+CREATE INDEX IF NOT EXISTS collector_load_instance ON pgvigil.collector_load (instance_id, minute);
 
 -- per instance, collection and collector (host): the failed runs in a row now. By host: two hosts reading one
 -- instance (a move, a second collector) each keep their own count, and the lowest of the hosts still reading speaks
@@ -485,57 +487,88 @@ SELECT c.host, c.s0 AS since, c.began, c.ran, c.members,
   FROM cand c
  WHERE pgvigil.collector_together(c.began, c.ran) AND cardinality(c.members) >= 3;
 
--- collector_server_down (task 201 DONE-2 N8): per collector (host) and dial target, a server not answering - ALL FOUR
--- of the design pass's conditions: the instances the host reads on that target (their newest load row of the last 15
--- minutes names it) are ALL in an open 'down' spell read within span + 3 minutes of the host's newest minute (every
--- connect got no answer: no SQLSTATE - a dropped database, a refused login, too many connections are answers), 3 or
--- more of them; their spells began within span + 3 minutes of one another; each opened a connect in the 15 minutes
--- before its spell began (novelty). The identity is the DIAL target, never the server's reported address (a pooler, a
--- container's address, a virtual name). since = the first spell's start; instances = the down set.
+-- collector_server_down_at (task 201 DONE-2 N8, review part D's D-2 as the lead took it 14:08): per dial target, a
+-- server not answering on host p_host in its written minute p_minute. The identity is the DIAL target, never the
+-- server's reported address (a pooler, a container's address, a virtual name).
+--   ON the target: an instance whose newest row of the 15 minutes up to the minute names it; DOWN: that row is a
+--     down minute (it made connects and none got an answer: no SQLSTATE - a dropped database, a refused login, too
+--     many connections are answers).
+--   the QUORUM: 3 or more down members that are NEW (the row before their 'down' spell opened a connect, however old)
+--     and began together (their spell's start within span + 3 minutes of the anchor, or no row of theirs between the
+--     anchor and that start: an instance read every 5 or 60 minutes could not fail earlier); the ANCHOR (since) = the
+--     earliest new down spell's start that gives a quorum.
+--   no instance on the target ANSWERED a connect (attempts > noanswer) at or after the anchor (a row before the outage,
+--     or one with no connect, is no evidence).
+--   instances = every down instance on the target: a standing or never-answered member is held with them, never counted.
+CREATE OR REPLACE FUNCTION pgvigil.collector_server_down_at(p_host text, p_minute timestamptz)
+RETURNS TABLE (target text, since timestamptz, instances int[]) LANGUAGE sql STABLE AS $$
+  WITH k AS (
+    SELECT pgvigil.collector_span(p_host) + interval '3 minutes' AS w
+  ), ids AS (
+    SELECT h.collector_id FROM pgvigil.collector_heartbeat h WHERE h.host = p_host
+  ), rws AS (
+    SELECT l.instance_id, l.minute, l.target, l.attempts, l.noanswer
+      FROM pgvigil.collector_load l
+     WHERE l.collector_id IN (SELECT collector_id FROM ids) AND l.minute > p_minute - interval '15 minutes' AND l.minute <= p_minute
+  ), tgt AS (
+    SELECT DISTINCT ON (r.instance_id) r.instance_id, r.target, r.minute, (r.attempts > 0 AND r.noanswer >= r.attempts) AS down
+      FROM rws r WHERE r.target IS NOT NULL
+     ORDER BY r.instance_id, r.minute DESC
+  ), dn AS (
+    SELECT t.target, t.instance_id, s.since,
+           coalesce((SELECT b.opened > 0 FROM pgvigil.collector_load b
+                      WHERE b.instance_id = t.instance_id AND b.collector_id IN (SELECT collector_id FROM ids) AND b.minute < s.since
+                      ORDER BY b.minute DESC LIMIT 1), false) AS new
+      FROM tgt t
+      JOIN pgvigil.collector_spells s ON s.host = p_host AND s.instance_id = t.instance_id AND s.kind = 'down'
+                                     AND s.since <= t.minute AND s.last >= t.minute
+     WHERE t.down
+  ), anc AS (
+    SELECT a.target, a.since AS s0,
+           (SELECT count(*) FROM dn q
+             WHERE q.target = a.target AND q.new AND q.since >= a.since
+               AND (q.since <= a.since + k.w
+                    OR NOT EXISTS (SELECT 1 FROM pgvigil.collector_load b
+                                    WHERE b.instance_id = q.instance_id AND b.collector_id IN (SELECT collector_id FROM ids)
+                                      AND b.minute > a.since AND b.minute < q.since))) AS quorum
+      FROM dn a CROSS JOIN k
+     WHERE a.new
+  ), pick AS (
+    SELECT DISTINCT ON (a.target) a.target, a.s0 FROM anc a WHERE a.quorum >= 3 ORDER BY a.target, a.s0
+  )
+  SELECT p.target, p.s0, ARRAY(SELECT d.instance_id FROM dn d WHERE d.target = p.target ORDER BY 1)
+    FROM pick p
+   WHERE NOT EXISTS (SELECT 1 FROM tgt t JOIN rws r ON r.instance_id = t.instance_id
+                      WHERE t.target = p.target AND r.target = p.target AND r.minute >= p.s0 AND r.attempts > r.noanswer)
+$$;
+
+-- collector_server_down: the servers not answering now - collector_server_down_at of each collector's (host's) newest
+-- written minute. since = the down set's anchor; instances = the down set.
 CREATE OR REPLACE VIEW pgvigil.collector_server_down AS
 WITH hn AS (
-  SELECT h.host, max(l.minute) AS newest, pgvigil.collector_span(h.host) + interval '3 minutes' AS w
+  SELECT h.host, max(l.minute) AS newest
     FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
    WHERE l.minute > now() - interval '15 minutes' AND h.retired_at IS NULL
    GROUP BY h.host
-), tgt AS (
-  SELECT DISTINCT ON (hn.host, l.instance_id) hn.host, l.instance_id, l.target
-    FROM hn JOIN pgvigil.collector_heartbeat h ON h.host = hn.host
-    JOIN pgvigil.collector_load l ON l.collector_id = h.collector_id AND l.minute > hn.newest - interval '15 minutes'
-   WHERE l.target IS NOT NULL
-   ORDER BY hn.host, l.instance_id, l.minute DESC
-), dn AS (
-  SELECT t.host, t.target, t.instance_id,
-         (SELECT s.since FROM pgvigil.collector_spells s
-           WHERE s.host = t.host AND s.instance_id = t.instance_id AND s.kind = 'down' AND s.ended_at IS NULL
-             AND s.last >= hn.newest - hn.w) AS since
-    FROM tgt t JOIN hn USING (host)
-), agg AS (
-  SELECT d.host, d.target, count(*) AS on_target, count(d.since) AS down, min(d.since) AS first, max(d.since) AS last,
-         array_agg(d.instance_id ORDER BY d.instance_id) FILTER (WHERE d.since IS NOT NULL) AS instances,
-         bool_and(d.since IS NULL OR EXISTS (SELECT 1 FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                                              WHERE h.host = d.host AND l.instance_id = d.instance_id AND l.opened > 0
-                                                AND l.minute >= d.since - interval '15 minutes' AND l.minute < d.since)) AS novel
-    FROM dn d GROUP BY d.host, d.target
 )
-SELECT a.host, a.target, a.first AS since, a.instances
-  FROM agg a JOIN hn USING (host)
- WHERE a.down = a.on_target AND a.down >= 3 AND a.last - a.first <= hn.w AND a.novel;
+SELECT hn.host, d.target, d.since, d.instances
+  FROM hn CROSS JOIN LATERAL pgvigil.collector_server_down_at(hn.host, hn.newest) d;
 
 -- collector_parent: the 'collector or network' conditions now, one row per collector (host) at most:
 --   'collector not seen': no beat for 5 minutes from any run of the host while some of its active instances have not
 --     been read by another host since its newest beat (orphaned; a host whose every instance moved is retired, not
 --     down); its instances = the orphaned ones (held whatever the down host read after its last beat)
---   'instances failing together': a standing cohort of the host (collector_cohorts); server = the dial target when its
---     members are exactly a target's down set (collector_server_down: N8 - the claim then names it); since = its first minute (the
---     earliest when two stand); its instances = the members still failing, of every cohort of the host; event = the
---     start of the host's NEWEST event - a standing cohort with no other standing cohort begun in the span + 3
---     minutes before it (cohorts chained by their windows are one event: a cut spread over a minute's edge makes a
---     second cohort of the same cut). The claim names it (collector_findings), so a new cut on a host whose parent
---     stands is one repeat (alert_due), never silence.
---   'server not answering' (N8, the server's OWN quorum, only where no cohort stands): a target's down set
---     (collector_server_down, all four conditions); server = that target; the newest when two stand
--- instances: the ones the hold reads; since: when the condition began.
+--   'instances failing together': a standing cohort of the host (collector_cohorts); server = the dial target when the
+--     held instances are exactly a target's down set (collector_server_down: N8 - the claim then names it); since = its
+--     first minute (the earliest when two stand)
+--   'server not answering' (N8, the server's OWN quorum, only where no cohort stands): the host's down sets
+--     (collector_server_down); server = the newest one's target; since = the earliest down set's start
+-- instances (both arms, review part D's D-3): every standing cohort's members still failing AND every down set of the
+-- host - a second server down, or a cohort beside a down server, releases nothing. event: the start of the host's
+-- NEWEST event - a standing cohort or down set with no other one begun in the span + 3 minutes before it (chained by
+-- their windows they are one event: a cut spread over a minute's edge makes a second cohort of the same cut). The
+-- claim names it (collector_findings), so a new cut or a second server down on a host whose parent stands is one
+-- repeat (alert_due) that passes an acknowledgement, never silence.
 CREATE OR REPLACE VIEW pgvigil.collector_parent AS
 WITH down AS (
   SELECT c.host, 'collector not seen'::text AS why,
@@ -549,33 +582,50 @@ WITH down AS (
    WHERE c.beat_at < now() - interval '5 minutes' AND cardinality(c.orphaned) > 0
 ), co AS (
   SELECT c.*, pgvigil.collector_span(c.host) + interval '3 minutes' AS w FROM pgvigil.collector_cohorts c
+), sd AS (
+  SELECT d.*, pgvigil.collector_span(d.host) + interval '3 minutes' AS w,
+         (SELECT string_agg(i.name, ', ' ORDER BY i.name) FROM pgvigil.instances i WHERE i.instance_id = ANY (d.instances)) AS names
+    FROM pgvigil.collector_server_down d
+), st AS (
+  SELECT host, since, w FROM co UNION ALL SELECT host, since, w FROM sd
 ), ev AS (
   SELECT c.host, max(c.since) AS event
-    FROM co c
-   WHERE NOT EXISTS (SELECT 1 FROM co o WHERE o.host = c.host AND o.since < c.since AND o.since >= c.since - c.w)
+    FROM st c
+   WHERE NOT EXISTS (SELECT 1 FROM st o WHERE o.host = c.host AND o.since < c.since AND o.since >= c.since - c.w)
    GROUP BY c.host
+), held AS (
+  SELECT x.host, array_agg(DISTINCT x.i ORDER BY x.i) AS instances
+    FROM (SELECT c.host, m AS i FROM co c, unnest(c.members) m UNION ALL SELECT d.host, m FROM sd d, unnest(d.instances) m) x
+   GROUP BY x.host
+), srvs AS (
+  SELECT d.host, string_agg(format('%s (%s)', d.target, d.names), '; ' ORDER BY d.since, d.target) AS text
+    FROM sd d GROUP BY d.host
 ), together AS (
   SELECT DISTINCT ON (c.host) c.host, 'instances failing together'::text AS why,
          format('%s of the %s instance(s) %s ran failed every run in the minutes from %s, their failures beginning together: %s - a shared cause (the network, the collector host, a shared login, storage)%s',
                 c.began, c.ran, c.host, c.since, c.names,
-                CASE WHEN cardinality(c.members) < c.began THEN format(' (%s of them still failing)', cardinality(c.members)) ELSE '' END) AS detail,
+                CASE WHEN cardinality(c.members) < c.began THEN format(' (%s of them still failing)', cardinality(c.members)) ELSE '' END)
+         || coalesce('; servers not answering: ' || (SELECT s.text FROM srvs s WHERE s.host = c.host), '') AS detail,
          (SELECT min(c2.since) FROM co c2 WHERE c2.host = c.host) AS since,
-         (SELECT array_agg(DISTINCT x ORDER BY x) FROM co c3, unnest(c3.members) x WHERE c3.host = c.host) AS instances,
+         (SELECT h.instances FROM held h WHERE h.host = c.host) AS instances,
          (SELECT e.event FROM ev e WHERE e.host = c.host) AS event,
-         (SELECT sd.target FROM pgvigil.collector_server_down sd
-           WHERE sd.host = c.host
-             AND sd.instances = (SELECT array_agg(DISTINCT x ORDER BY x) FROM co c4, unnest(c4.members) x WHERE c4.host = c.host)
+         (SELECT d.target FROM sd d
+           WHERE d.host = c.host AND d.instances = (SELECT h.instances FROM held h WHERE h.host = c.host)
            LIMIT 1) AS server
     FROM co c
    ORDER BY c.host, c.since DESC
 ), srv AS (
-  SELECT DISTINCT ON (sd.host) sd.host, 'server not answering'::text AS why,
+  SELECT DISTINCT ON (d.host) d.host, 'server not answering'::text AS why,
          format('the %s instance(s) %s reads on %s got no answer at their connects in the minutes from %s, their failures beginning together: %s - the server or the network to it, not the collector',
-                cardinality(sd.instances), sd.host, sd.target, sd.since,
-                (SELECT string_agg(i.name, ', ' ORDER BY i.name) FROM pgvigil.instances i WHERE i.instance_id = ANY (sd.instances))) AS detail,
-         sd.since, sd.instances, NULL::timestamptz AS event, sd.target AS server
-    FROM pgvigil.collector_server_down sd
-   ORDER BY sd.host, sd.since DESC
+                cardinality(d.instances), d.host, d.target, d.since, d.names)
+         || CASE WHEN (SELECT count(*) FROM sd o WHERE o.host = d.host) > 1
+                 THEN '; servers not answering: ' || (SELECT s.text FROM srvs s WHERE s.host = d.host) ELSE '' END AS detail,
+         (SELECT min(o.since) FROM sd o WHERE o.host = d.host) AS since,
+         (SELECT h.instances FROM held h WHERE h.host = d.host) AS instances,
+         (SELECT e.event FROM ev e WHERE e.host = d.host) AS event,
+         d.target AS server
+    FROM sd d
+   ORDER BY d.host, d.since DESC, d.target
 )
 SELECT d.*, NULL::timestamptz AS event, NULL::text AS server FROM down d
 UNION ALL
@@ -682,26 +732,59 @@ WITH hn AS (
 SELECT f.instance_id, hn.host, hn.newest AS minute
   FROM hn CROSS JOIN LATERAL pgvigil.collector_forming_at(hn.host, hn.newest) f;
 
+-- collector_stood (review part D's D-4): did a 'collector or network' condition stand on host p_host at one of its
+-- written minutes in [p_from, p_to] - a cohort (a 'dead' spell anchor meeting collector_together, 3 or more of its
+-- members failing at that minute: collector_cohorts' rule) or a server not answering (collector_server_down_at)?
+-- A forming wait that ran into a parent, since cleared, did not end without one.
+CREATE OR REPLACE FUNCTION pgvigil.collector_stood(p_host text, p_from timestamptz, p_to timestamptz)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  WITH k AS (
+    SELECT pgvigil.collector_span(p_host) + interval '3 minutes' AS w
+  ), mins AS (
+    SELECT DISTINCT l.minute FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+     WHERE h.host = p_host AND l.minute BETWEEN p_from AND p_to
+  ), anchor AS (
+    SELECT DISTINCT a.since AS s0, k.w
+      FROM pgvigil.collector_spells a CROSS JOIN k
+     WHERE a.host = p_host AND a.kind = 'dead' AND a.since <= p_to
+       AND EXISTS (SELECT 1 FROM pgvigil.collector_spells c
+                    WHERE c.host = p_host AND c.kind = 'dead' AND c.since BETWEEN a.since AND a.since + k.w AND c.last >= p_from)
+  )
+  SELECT EXISTS (SELECT 1 FROM anchor a
+                  WHERE pgvigil.collector_together(
+                          (SELECT count(DISTINCT c.instance_id) FROM pgvigil.collector_spells c
+                            WHERE c.host = p_host AND c.kind = 'dead' AND c.since BETWEEN a.s0 AND a.s0 + a.w),
+                          (SELECT count(DISTINCT l.instance_id) FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                            WHERE h.host = p_host AND l.minute BETWEEN a.s0 AND a.s0 + a.w AND l.runs > 0))
+                    AND EXISTS (SELECT 1 FROM mins t
+                                 WHERE (SELECT count(DISTINCT c.instance_id) FROM pgvigil.collector_spells c
+                                         WHERE c.host = p_host AND c.kind = 'dead' AND c.since BETWEEN a.s0 AND a.s0 + a.w
+                                           AND c.since <= t.minute AND c.last >= t.minute) >= 3))
+      OR EXISTS (SELECT 1 FROM mins t WHERE EXISTS (SELECT 1 FROM pgvigil.collector_server_down_at(p_host, t.minute)))
+$$;
+
 -- collector_forming_ended (task 201 DONE-2 N7): per collector (host) on which a forming wait ended WITHOUT a parent - no
--- parent stands and nothing forms now, and in one of its written minutes of the last 15 forming held: last_forming =
--- the newest such minute, ended_at = the next written minute (the wait's end: its alerts went out as they came),
--- instances = those it counted. The Collector page says it under the host; a parent's detail never does (a parent
--- that rises later says it in its covers text: collector_forming_stopped).
+-- parent stands, forming does not hold in its newest written minute, and in one of its written minutes of the last 15
+-- forming held: last_forming = the newest such minute, ended_at = the next written minute (the wait's end: its alerts
+-- went out as they came), instances = those it counted. A wait that ran into a parent since cleared (collector_stood
+-- from span + 3 minutes before its last forming minute) is not one (review part D's D-4); the newest minute is judged
+-- by its own forming, not by collector_forming's freshness (a host whose beats come late: nit 8). The Collector page
+-- says it under the host; a parent's detail never does (a parent that rises later says it in its covers text:
+-- collector_forming_stopped).
 CREATE OR REPLACE VIEW pgvigil.collector_forming_ended AS
 WITH hn AS (
-  SELECT h.host, max(l.minute) AS newest
+  SELECT h.host, max(l.minute) AS newest, pgvigil.collector_span(h.host) + interval '3 minutes' AS w
     FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
    WHERE l.minute > now() - interval '16 minutes' AND h.retired_at IS NULL
    GROUP BY h.host
 ), w AS (
-  SELECT hn.host, m.minute, ARRAY(SELECT f.instance_id FROM pgvigil.collector_forming_at(hn.host, m.minute) f ORDER BY 1) AS insts
+  SELECT hn.host, hn.newest, hn.w, m.minute, ARRAY(SELECT f.instance_id FROM pgvigil.collector_forming_at(hn.host, m.minute) f ORDER BY 1) AS insts
     FROM hn
     CROSS JOIN LATERAL (SELECT DISTINCT l.minute FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                         WHERE h.host = hn.host AND l.minute > hn.newest - interval '15 minutes' AND l.minute < hn.newest) m
+                         WHERE h.host = hn.host AND l.minute > hn.newest - interval '15 minutes' AND l.minute <= hn.newest) m
    WHERE NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = hn.host)
-     AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_forming f WHERE f.host = hn.host)
 ), lf AS (
-  SELECT DISTINCT ON (w.host) w.host, w.minute AS last_forming, w.insts
+  SELECT DISTINCT ON (w.host) w.host, w.newest, w.w, w.minute AS last_forming, w.insts
     FROM w WHERE cardinality(w.insts) > 0
    ORDER BY w.host, w.minute DESC
 )
@@ -709,12 +792,15 @@ SELECT lf.host, lf.last_forming,
        (SELECT min(l.minute) FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
          WHERE h.host = lf.host AND l.minute > lf.last_forming) AS ended_at,
        lf.insts AS instances
-  FROM lf;
+  FROM lf
+ WHERE lf.last_forming < lf.newest
+   AND NOT pgvigil.collector_stood(lf.host, lf.last_forming - lf.w, lf.newest);
 
 -- collector_forming_stopped (task 201 DONE-2 N7): for a parent on host p_host since p_since, the written minute at which
 -- a forming wait of the 15 minutes before it stopped without a parent (forming held, then a written minute before
 -- p_since in which it did not): the alerts that went out then are the ones the parent's covers text says went first.
--- NULL when the wait ran into the parent (or none ran).
+-- NULL when the wait ran into this parent, or into an earlier one since cleared (collector_stood before p_since:
+-- review part D's D-4), or none ran.
 CREATE OR REPLACE FUNCTION pgvigil.collector_forming_stopped(p_host text, p_since timestamptz)
 RETURNS timestamptz LANGUAGE sql STABLE AS $$
   WITH m AS (
@@ -722,9 +808,12 @@ RETURNS timestamptz LANGUAGE sql STABLE AS $$
      WHERE h.host = p_host AND l.minute >= p_since - interval '15 minutes' AND l.minute < p_since
   ), f AS (
     SELECT m.minute, EXISTS (SELECT 1 FROM pgvigil.collector_forming_at(p_host, m.minute)) AS forming FROM m
+  ), f1 AS (
+    SELECT max(f.minute) AS last FROM f WHERE f.forming
   )
-  SELECT min(f2.minute) FROM f f2
-   WHERE NOT f2.forming AND f2.minute > (SELECT max(f1.minute) FROM f f1 WHERE f1.forming)
+  SELECT min(f2.minute) FROM f f2, f1
+   WHERE NOT f2.forming AND f2.minute > f1.last
+     AND NOT pgvigil.collector_stood(p_host, f1.last - (pgvigil.collector_span(p_host) + interval '3 minutes'), p_since - interval '1 minute')
 $$;
 
 -- collector_in_window: whether a failure at p_at of the instance lies inside an 'instances failing together' window
@@ -734,9 +823,22 @@ $$;
 -- parent clears, an instance still failing alerts once per finding after one failure past the window, never off a
 -- streak or a refusal from inside it. Anchored to the finding, with no look-back cap: it reads the instance's spells
 -- that overlap the reach and their cohorts only. A spell that began before a cohort is never in its window.
+-- The server arm (review part D's D-1): a written minute of the host in the reach at which the instance's 'down'
+-- spell ran and it was in a server's down set (collector_server_down_at) - the members whose connects fell before a
+-- server came back wait as a cohort's stragglers do; they never go out the minute the first member answers.
 CREATE OR REPLACE FUNCTION pgvigil.collector_in_window(p_instance_id int, p_at timestamptz)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT EXISTS (
+    SELECT 1
+      FROM pgvigil.collector_spells s
+      CROSS JOIN LATERAL (SELECT pgvigil.collector_span(s.host) + interval '4 minutes' AS r) k
+      CROSS JOIN LATERAL (SELECT DISTINCT l.minute FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                           WHERE h.host = s.host AND l.minute > p_at - k.r AND l.minute <= p_at + k.r
+                             AND l.minute >= s.since AND l.minute <= s.last) t
+     WHERE s.instance_id = p_instance_id AND s.kind = 'down'
+       AND s.last > p_at - k.r AND s.since <= p_at + k.r
+       AND EXISTS (SELECT 1 FROM pgvigil.collector_server_down_at(s.host, t.minute) d WHERE p_instance_id = ANY (d.instances)))
+  OR EXISTS (
     SELECT 1
       FROM pgvigil.collector_spells s
       CROSS JOIN LATERAL (SELECT pgvigil.collector_span(s.host) + interval '3 minutes' AS w,
@@ -812,12 +914,14 @@ $$;
 -- one change that passes an acknowledgement of the parent (alert_due, as an escalation does: what the ack covered was
 -- known when it was given; a second outage hidden by it is the worse failure). The old claim names no start ('collector
 -- not seen') or an earlier one: the start times alone are compared (the fixed 'YYYY-MM-DD HH24:MI' form orders as
--- text). A why turning to 'collector not seen', back to an older start when a newer event clears, or a server named or
--- dropped on one event (N8), is no newer event: the ack holds.
+-- text), read from either form - 'instances failing together from <T> UTC' or 'server <target> not answering from <T>
+-- UTC' (review part D's D-3: a second server down is a newer event; a down server's event widening into a cohort of
+-- the same start is not). A why turning to 'collector not seen', back to an older start when a newer event clears, or
+-- a server named or dropped on one event (N8), is no newer event: the ack holds.
 CREATE OR REPLACE FUNCTION pgvigil.collector_claim_newer(p_new text, p_old text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  SELECT coalesce(substring(p_new FROM '^instances failing together from ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}) UTC')
-                  > coalesce(substring(p_old FROM '^instances failing together from ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}) UTC'), ''), false)
+  SELECT coalesce(substring(p_new FROM '^(?:instances failing together|server [^ ]+ not answering) from ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}) UTC')
+                  > coalesce(substring(p_old FROM '^(?:instances failing together|server [^ ]+ not answering) from ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}) UTC'), ''), false)
 $$;
 
 -- collector_findings: the findings shape (pgvigil.findings' arms). Source 'pgvigil repository' marks the
@@ -832,13 +936,15 @@ CREATE OR REPLACE VIEW pgvigil.collector_findings AS
 SELECT NULL::int AS instance_id, 'critical'::text AS severity, 'collector or network'::text AS setting, p.host AS value,
        true AS is_set, 'the collector beating and its instances read'::text AS suggested, 'all'::text AS platforms,
        CASE WHEN p.why = 'server not answering' THEN 'server ' || p.server || ' not answering'
+                 || coalesce(' from ' || to_char(p.event AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', '')
             ELSE p.why || coalesce(' from ' || to_char(p.event AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', '')
                  || coalesce(' on server ' || p.server, '') END || ': '
        || p.detail || '; the alerts of its instances not read since are held until this clears'
        || coalesce((SELECT '; it covers ' || count(*) || ' open alert(s): ' || string_agg(o.x, ', ' ORDER BY o.x)
-                           -- N7: a forming wait that stopped before this parent rose sent these as they came
-                           || coalesce('; the forming wait had stopped at ' || to_char(st.at, 'HH24:MI') || ': '
-                                       || count(*) FILTER (WHERE o.first_sent < coalesce(ps.first, now())) || ' of these went out before this parent', '')
+                           -- N7: a forming wait that stopped before this parent rose sent these as they came - the
+                           -- ones first sent from the wait's stop to the parent's own first send (nit 6), its time in UTC (nit 5)
+                           || coalesce('; the forming wait had stopped at ' || to_char(st.at AT TIME ZONE 'UTC', 'HH24:MI') || ' UTC: '
+                                       || count(*) FILTER (WHERE o.first_sent >= st.at AND o.first_sent < coalesce(ps.first, now())) || ' of these went out before this parent', '')
                       FROM (SELECT format('%s %s (%s)', a.instance_name, a.setting, a.value) AS x, min(a.first_sent_at) AS first_sent
                               FROM pgvigil.alert_state a
                              WHERE a.cleared_at IS NULL AND a.instance_id = ANY (p.instances)   -- held: collector_held_instances

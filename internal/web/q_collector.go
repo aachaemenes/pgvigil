@@ -174,10 +174,10 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 		{"findings", sqlCollectorFindings, []any{id}},
 		{"load", sqlCollectorLoad, []any{id}},
 		{"streaks", sqlCollectorStreaks, []any{id}},
-		{"waits", sqlCollectorWaits, nil},
 	}
-	if id == 0 {
+	if id == 0 { // the Collector page; an instance's Collection dates line reads none of these
 		parts = append(parts,
+			part{"waits", sqlCollectorWaits, nil},
 			part{"collections", sqlCollectorCollections, nil},
 			part{"minutes", sqlCollectorMinutes, nil},
 			part{"repository", sqlCollectorRepository, nil},
