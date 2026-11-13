@@ -22,7 +22,9 @@
 #                                pool of 50 eDTU with two Basic databases in it, the server's Entra admin set to the
 #                                CLI's signed-in user, and one Standard_B2ats_v2 Ubuntu VM with a system-assigned
 #                                managed identity (scripts/proof-mssql-pool.sh: the pool's figures and the
-#                                entra-identity sign-in; Basic pool about USD 0.08 / h, the VM about USD 0.01 / h)
+#                                entra-identity sign-in; Azure's retail prices, westus3, read 2026-11-13: the Basic
+#                                50 eDTU pool USD 2.42 a day (its databases inside it), the VM USD 0.0094 / h, its
+#                                Standard IPv4 USD 0.005 / h, its 30 GB Standard SSD OS disk (E4) USD 2.40 a month)
 #   PGVIGIL_LAB_DIR              the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE         the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
 #   AZ                           the Azure CLI, default az on the PATH
@@ -165,7 +167,7 @@ PY
     VMJ=$(az_ vm create -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" -l "$LAB_REGION" --image Ubuntu2404 --size "$VM_SIZE" \
       --admin-username "$VM_ADMIN" --ssh-key-values "$VM_KEY.pub" --assign-identity '[system]' --nsg "$VM_NAME-nsg" --nsg-rule NONE \
       --public-ip-address "$VM_NAME-ip" --public-ip-sku Standard --vnet-name "$VM_NAME-vnet" --nic-delete-option Delete \
-      --os-disk-delete-option Delete --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" -o json)
+      --os-disk-delete-option Delete --storage-sku StandardSSD_LRS --os-disk-size-gb 30 --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" -o json)
     VM_IP=$(jq -r '.publicIpAddress // empty' <<<"$VMJ"); VM_PRINCIPAL=$(jq -r '.identity.systemAssignedIdentity // empty' <<<"$VMJ")
     [ -n "$VM_IP" ] && [ -n "$VM_PRINCIPAL" ] || fail "the VM's address or identity was not read back (down removes what was made)"
     VM_CLIENT=$("$AZ" ad sp show --id "$VM_PRINCIPAL" --query appId -o tsv --only-show-errors)
