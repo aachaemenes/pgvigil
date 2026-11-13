@@ -10,10 +10,11 @@
 //     for its page whatever it names; the other engine's NAME in a label is a red too ('PostgreSQL options' on a SQL
 //     Server scope)
 //   - prose (a paragraph, a list item, a title, a dialog's text, a cell's text) is split into sentences at . ! ?
-//     outside parentheses, and each sentence into clauses at ';'; a word is the other engine's own when that engine's
-//     name is the nearest engine name before it in its clause (A1: 'SQL Server's Query Store', 'PostgreSQL: the WAL
-//     directory ...'), or absent here when a negation stands right before it and this page's engine is named in its
-//     clause (A2: 'PostgreSQL has no Query Store'); a name or a negation elsewhere attributes nothing
+//     outside parentheses; a word is the other engine's own when that engine's name is the nearest engine name before
+//     it in its sentence (A1: 'SQL Server's Query Store', 'PostgreSQL: the WAL directory ...': 'X:' holds until the
+//     next engine name), or absent here when a negation stands right before it and this page's engine is named in its
+//     clause (the sentence split at ';' outside parentheses; A2: 'PostgreSQL has no Query Store'); a name after the
+//     word or a negation elsewhere attributes nothing
 //   - the allow rows: scripts/wording-allow.txt (page | kind | pattern | reason): a place the other engine's word is
 //     right on purpose (A4) or a stated analogy (A5); never a page skipped whole
 
@@ -93,6 +94,20 @@ export function sentences(text) {
   return out;
 }
 
+// clauses: a sentence split at ';' outside parentheses, each with its offset ('(error 18456; the server logs ...)' stays
+// inside its clause)
+export function clauses(s) {
+  const out = []; let depth = 0, at = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '(' || c === '[') depth++;
+    else if ((c === ')' || c === ']') && depth > 0) depth--;
+    else if (c === ';' && depth === 0) { out.push({ at, text: s.slice(at, i) }); at = i + 1; }
+  }
+  out.push({ at, text: s.slice(at) });
+  return out;
+}
+
 const allowed = (allow, page, kind, text) => (allow ?? []).find(a => (!a.page || a.page.test(page)) && (!a.kind || a.kind === kind) && a.re.test(text));
 
 // check: the reds of one element. el = { text, kind, page }, ctx = { engine (the page's), words, allow, names }.
@@ -114,15 +129,16 @@ export function check(el, ctx) {
     return reds;
   }
   const lastAt = (re, t) => { let at = -1; const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'); for (let m; (m = g.exec(t));) { at = m.index; if (!m[0]) g.lastIndex++; } return at; };
-  for (const s of sentences(text)) for (const c of s.split(/;\s*/).filter(Boolean)) {
-    const engineNamed = NAME[engine].test(c);
+  for (const s of sentences(text)) {
+    const cl = clauses(s);
     for (const w of words) {
       const g = new RegExp(w.re.source, w.re.flags.includes('g') ? w.re.flags : w.re.flags + 'g');
-      for (let m; (m = g.exec(c));) {
+      for (let m; (m = g.exec(s));) {
         if (!m[0]) { g.lastIndex++; continue; }
-        const before = c.slice(0, m.index);
-        if (lastAt(NAME[other], before) > lastAt(NAME[engine], before)) continue;   // A1: its own engine named before it
-        if (engineNamed && NEG_BEFORE.test(before)) continue;                         // A2: 'PostgreSQL has no Query Store'
+        const before = s.slice(0, m.index);
+        if (lastAt(NAME[other], before) > lastAt(NAME[engine], before)) continue;   // A1: its own engine named before it in the sentence
+        const c = cl.find(x => m.index >= x.at && m.index < x.at + x.text.length) ?? { at: 0, text: s };
+        if (NAME[engine].test(c.text) && NEG_BEFORE.test(s.slice(c.at, m.index))) continue;   // A2, in its clause: 'PostgreSQL has no Query Store'
         reds.push({ word: w.word, owner: other, source: w.source, sentence: s, why: 'prose' });
         break;
       }
@@ -212,6 +228,13 @@ export function selfTest() {
     ['postgres', 'summary?tag=aurora', 'prose', 'Agent Jobs and Memory Dump: 0 SQL Server instance(s) in this folder.', ['Agent Jobs', 'Memory Dump']],
     ['postgres', 'rp_flushed?i=3', 'prose', 'PostgreSQL has no plan cache to flush.', []],
     ['postgres', 'summary?i=3', 'prose', 'SQL Server only: Query Store and Agent Jobs.', []],
+    // A1 holds over the whole sentence ('X:' attributes the rest of it until the next engine name); a ';' inside
+    // parentheses ends no clause
+    ['postgres', 'rp_failed?i=3', 'prose', 'SQL Server: the error log\'s "Login failed" lines (error 18456; the server logs failed logins by default), read hourly by the mssql_reports collection, three hours back each time; PostgreSQL: the server log\'s authentication failures.', []],
+    ['sqlserver', 'mssql_slow?i=9', 'attr', 'Both engines: the PostgreSQL server log (a statement that finished; the log names no application, so a drilled event shows the application the activity sampler saw for its pid during the run, marked sampled) and the SQL Server slow capture.', []],
+    ['postgres', 'running?tag=aurora', 'attr', "SQL Server only: the memory grants are those the snapshot's requests hold; a tempdb latch wait is a request waiting at the snapshot for a page latch (PAGELATCH, never PAGEIOLATCH) on a tempdb page, and an allocation page is a PFS, GAM or SGAM page.", []],
+    // a shared label whose first words name the other engine's thing is red, whatever follows it
+    ['postgres', 'pgstate?i=3', 'cell', 'Memory dumps / crashes: time since the newest memory dump (SQL Server) or crash restart (PostgreSQL)', ['Memory Dump']],
     // an element that only holds an allow row's phrase is not cleared whole; the Doors page's row is its page alone
     ['postgres', 'collector?tag=aurora', 'heading', 'Repository the PostgreSQL database pgvigil writes to: tempdb and Query Store', ['tempdb', 'Query Store']],
     ['postgres', 'dbadashx?i=3', 'label', 'SQL Server repository', ['SQL Server']],

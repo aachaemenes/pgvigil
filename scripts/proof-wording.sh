@@ -13,21 +13,17 @@
 #   PGVIGIL_DEMO_WAIT_S   seconds to wait for the seeded demo (default 240)
 #   PGVIGIL_WORDING_OUT   a file that gets the walk's JSON (every page, every red, the grade)
 #   PGVIGIL_WORDING_SHOTS a folder: a shot of each page read
-# Expected (the third run, after the review's fold of the read: the scope's own names, each text node apart, the root's
-# Alerts rows by their instance's name, A1 / A2 by position in a clause, a page read only when settled with no error
-# box and some text; written before it):
-#   the matcher's self-test: 53 of 53 cases (63 words, 4 allow rows, 143 expected rows)
+# Expected (the fourth run: the third run's 13 reds outside the file read - 7 were the matcher's own (a ';' inside
+# parentheses ended a clause, and 'X:' held only to the next ';' where it holds to the next engine name), fixed with
+# their self-test cases; 6 are findings, listed; written before it):
+#   the matcher's self-test: 57 of 57 cases (63 words, 4 allow rows, 149 expected rows)
 #   picked: PostgreSQL demo-onprem-erp01 and demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
-#     demo-onprem-sql01 and demo-azure-sql03; tags aurora (PostgreSQL; 3 instances, before onprem by name) and sales
-#     (SQL Server; 2, before sqlserver by name)
-#   pages: about 359 (the second run: pg-instance 125, ms-instance 107, pg-tag 61, ms-tag 61, root 5), 0 not read; the
-#     root's Alerts page reads its rows (elements above 0); the tree menu read for both engines (items above 0)
-#   the grade: every must-not row gone (8); the must rows listed but the old glued 'Aurora' row (deleted: it was an
-#     instance name); the 27 Alerts grid rows of a tag folder are may (the demo's open alerts decide). The fold unmasks
-#     reds the old read hid - a word beside a tag of another scope ('Aurora', 'Azure SQL'), a word glued to the next
-#     line, a sentence that named an engine or a negation away from the word, the root's Alerts rows - so the expected
-#     verdict is 'wording walk: FAIL (<n> red(s) outside the expected file)' with those NEW lines (each a finding or a
-#     false red: the table's addition, then a fourth run), or OK if none shows; a page not read is a FAIL of its own
+#     demo-onprem-sql01 and demo-azure-sql03; tags aurora (PostgreSQL; 3 instances) and sales (SQL Server; 2)
+#   pages: 357 (the third run: pg-instance 125, ms-instance 107, pg-tag 61, ms-tag 61, root 3), 0 not read (0 not
+#     settled, 0 with 0 elements, 0 with an error box); the tree menu 4 items per engine
+#   the grade: every must row listed (109: the third run's 103 and its 6), every must-not row gone (8), the 32 may
+#     rows reported (the third run: 27 seen, 5 not); no red outside the file: 'wording walk: OK'. A must row missing
+#     now would be the sentence-wide A1 excusing a red the clause rule kept: read before any change to the file
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_wording_$RANDOM"; PORT=$((21000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
