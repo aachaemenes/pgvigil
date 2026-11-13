@@ -39,7 +39,10 @@
 #      and serve's watchdog sends it (the collector that would is the one stopped); started again: up, cleared
 #   G  purge: 'purge not run in 2 days' on an instance seen 3 days ago; `pgvigil purge` records its run (an old
 #      partition dropped and named); the finding gone
-# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G); unset = all.
+#   U  uninstall (the join fold, last: the service is gone after it): `pgvigil uninstall` in the service's container
+#      retires the host in the repository it keeps (pgvigil.import_collector_retire); the page says retired; no
+#      'collector or network' follows (B shows the one a host that only stopped raises)
+# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G U); unset = all.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .vis/spool-evidence .vis/collector-shots   # fetched back by the box job even when no case wrote to them
@@ -212,6 +215,10 @@ if waitfor 200 "SELECT count(*) >= 2 FROM pgvigil.collector_beats b JOIN pgvigil
 else
   fail "A heartbeat: no two beats from pgvigil-svc in 200 s: $(docker exec "$SVC" journalctl -u pgvigil -n 15 --no-pager 2>&1 | tr '\n' ' ' | cut -c1-900)"
 fi
+# the run names the instances it reads (collector_instances: written inside each instance's own connect and by every
+# beat) - what makes the stored reads' own 'server unreachable' stand back for them
+a_names=$(q "SELECT count(DISTINCT ci.instance) FROM pgvigil.collector_instances ci JOIN pgvigil.collector_live l USING (collector_id) WHERE l.host = 'pgvigil-svc' AND ci.instance IN ('t1','t2','t3','t4') AND ci.seen_at > now() - interval '5 minutes'")
+[[ "$a_names" == 4 ]] && ok "A names: the live run on pgvigil-svc names its 4 instances, each seen in the last 5 minutes" || fail "A names: $a_names of the 4 instances named by the live run in the last 5 minutes"
 
 # ---- E a login refused ---------------------------------------------------------------------------------------------
 PER="authentication failing|collection failing|server unreachable"
@@ -500,6 +507,23 @@ page=$(api '' | jget repository | python3 -c "import json,sys; r=json.load(sys.s
 [[ "$before" == never && -n "$row" && "$row" == *"wait_sample_$old"* && "$after" == 0 && "${page%% *}" == True ]] \
   && ok "G purge: the finding said '$before'; the run: $row; the page: $page; the finding gone" \
   || fail "G purge: finding before '$before', run '$row', after $after, page '$page': $(tail -2 "$WORK/purge.out" | tr '\n' ' ')"
+
+fi
+
+# ---- U uninstall retires the host (the last case: the service is gone after it) ------------------------------------
+if want U; then
+waitfor 150 "SELECT count(*) = 1 FROM pgvigil.collector_live" || true
+rm -f "$WORK"/spool/* "$WORK"/spool2/*
+u_out=$(docker exec "$SVC" /usr/local/bin/pgvigil uninstall 2>&1) || true
+u_ret=$(q "SELECT count(*) FROM pgvigil.collector_heartbeat WHERE host = 'pgvigil-svc' AND retired_at IS NOT NULL")
+u_all=$(q "SELECT count(*) FROM pgvigil.collector_heartbeat WHERE host = 'pgvigil-svc'")
+u_st=$(api '' | jget collectors | python3 -c "import json,sys; print(','.join(sorted(set(x['state'] for x in json.load(sys.stdin) if x['host'] == 'pgvigil-svc'))))")
+sleep 400   # past the 5 minutes after which a host not seen raises 'collector or network', and serve's watchdog minute
+u_par=$(q "SELECT count(*) FROM pgvigil.collector_parent"); u_down=$(q "SELECT pgvigil.collector_down()")
+u_sent=$(spool_n firing "collector or network")
+[[ "$u_out" == *"retired as a collector"* && "$u_ret" -ge 1 && "$u_ret" == "$u_all" && "$u_st" == retired && "$u_par" == 0 && "$u_down" == f && "$u_sent" == 0 ]] \
+  && ok "U uninstall: 'pgvigil uninstall' in the service's container retired pgvigil-svc in the repository it keeps ($u_ret of its $u_all run(s)); the page says '$u_st'; 400 s later no 'collector or network' (parent $u_par, collector_down $u_down, sent $u_sent) - B shows the alert a host only stopped raises" \
+  || fail "U uninstall: its output '$(echo "$u_out" | tail -3 | tr '\n' ' ' | cut -c1-400)'; retired $u_ret of $u_all run(s), the page's state '$u_st' (want retired); after 400 s parent $u_par (want 0), collector_down $u_down (want f), sent $u_sent (want 0)"
 
 fi
 

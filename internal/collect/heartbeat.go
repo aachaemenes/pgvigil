@@ -68,6 +68,7 @@ type Heartbeat struct {
 	runs     map[[2]string]*runAgg // engine, collection
 	load     map[string]*loadAgg   // instance name
 	streaks  map[[2]string]*streak // instance name, collection
+	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -125,12 +126,60 @@ const connectStreak = "(connect)"
 // the instance's connect failure (its text unchanged; errors.Is / errors.As see through the mark).
 func InstanceConnect(instance string, err error) error {
 	if h := current.Load(); h != nil {
-		return h.instanceConnect(instance, err, time.Now())
+		now := time.Now()
+		h.name(instance, now) // before the connect's outcome is reported: its failed read finds the instance covered
+		return h.instanceConnect(instance, err, now)
 	}
 	if err == nil {
 		return nil
 	}
 	return &connectError{err}
+}
+
+// seenEvery: how long a name written to the repository stands before the next connect writes it again. The beat names
+// every instance it loads, so only an instance with no activity for that long (read every 20 minutes, hourly) writes
+// its name at a connect.
+const seenEvery = 10 * time.Minute
+
+// seenDue says whether the instance's name is to be written now - its first connect in this run, or seenEvery since
+// the last write - and notes now as written.
+func (h *Heartbeat) seenDue(instance string, now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if t, ok := h.seen[instance]; ok && now.Sub(t) < seenEvery {
+		return false
+	}
+	if h.seen == nil {
+		h.seen = map[string]time.Time{}
+	}
+	h.seen[instance] = now
+	return true
+}
+
+// seenFailed forgets a name whose write failed: the next connect writes it again.
+func (h *Heartbeat) seenFailed(instance string) {
+	h.mu.Lock()
+	delete(h.seen, instance)
+	h.mu.Unlock()
+}
+
+// name tells the repository that this run reads the instance (pgvigil.import_collector_seen), in the instance's own
+// connect and before that connect's failure is recorded anywhere: 'server unreachable' of the stored reads (0118) is
+// left out for an instance a collector that beats covers, and a load row only arrives with the next beat - a
+// collector back after a long stop, an instance read once an hour, or one never reached would send that finding beside
+// this file's own. By name: the instance's row may not exist yet. One short write, at most once in seenEvery.
+func (h *Heartbeat) name(instance string, now time.Time) {
+	if !h.seenDue(instance, now) || h.pool == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := h.pool.Exec(ctx, `SELECT pgvigil.import_collector_seen($1, $2, $3)`, h.id, instance, now); err != nil {
+		h.seenFailed(instance)
+		if h.log != nil {
+			h.log.Debug("heartbeat: the instance was not named", "instance", instance, "err", err)
+		}
+	}
 }
 
 func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) error {
@@ -317,8 +366,13 @@ func (h *Heartbeat) take() beat {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
 			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
 	}
+	now := time.Now()
 	for name, l := range h.load {
 		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth})
+		if h.seen == nil {
+			h.seen = map[string]time.Time{}
+		}
+		h.seen[name] = now // the beat door names what it loads: no write of its own is due
 	}
 	for k, s := range h.streaks {
 		if s.dirty {
@@ -479,6 +533,50 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 		if err := h.claim(ctx); err != nil {
 			h.log.Warn("heartbeat: the collector's row was not written again", "err", err)
 		}
+	}
+}
+
+// ChannelBackoff keeps a failing alert channel out of the next passes, as the collector's own alert loop does
+// (alerts.Run): 1 minute after its first failure, then 2, 4, 8 and 16, then 30 at most; a pass in which it succeeds
+// forgets it. serve's watchdog pass uses it: a collector may be down for long, and a webhook answering 5xx or 429 must
+// not be retried every minute. Not safe for two goroutines: the watchdog calls its pass from one.
+type ChannelBackoff struct {
+	m map[string]*channelBack
+}
+
+type channelBack struct {
+	fails int
+	until time.Time
+}
+
+// Skip names the channels still waiting at now (the skip map of alerts.Pass).
+func (b *ChannelBackoff) Skip(now time.Time) map[string]bool {
+	skip := map[string]bool{}
+	for n, c := range b.m {
+		if now.Before(c.until) {
+			skip[n] = true
+		}
+	}
+	return skip
+}
+
+// Note takes a pass's outcome per channel (nil = it sent): a failure lengthens the channel's wait from now.
+func (b *ChannelBackoff) Note(now time.Time, outcome map[string]error) {
+	for n, e := range outcome {
+		if e == nil {
+			delete(b.m, n)
+			continue
+		}
+		if b.m == nil {
+			b.m = map[string]*channelBack{}
+		}
+		c := b.m[n]
+		if c == nil {
+			c = &channelBack{}
+			b.m[n] = c
+		}
+		c.fails++
+		c.until = now.Add(min(time.Minute<<min(c.fails-1, 5), 30*time.Minute))
 	}
 }
 
