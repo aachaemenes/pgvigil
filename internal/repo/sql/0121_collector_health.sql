@@ -140,6 +140,12 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_spells (
 CREATE UNIQUE INDEX IF NOT EXISTS collector_spells_open ON pgvigil.collector_spells (host, instance_id, kind) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS collector_spells_since ON pgvigil.collector_spells (host, kind, since);
 
+-- alert_state (0059, the alerts owner's; on released stores) gains what was last SENT of a repository-wide alert's
+-- claim - its why ('collector not seen', 'instances failing together') and, where named, the server: alert_record (0190)
+-- fills it at each send, alert_due sends ONE repeat when the parent's claim changes. A column added here, never by an
+-- edit of 0059: a released store has applied 0059 and not this file.
+ALTER TABLE pgvigil.alert_state ADD COLUMN IF NOT EXISTS why text;
+
 CREATE TABLE IF NOT EXISTS pgvigil.purge_runs (
   run_id              bigserial PRIMARY KEY,
   started_at          timestamptz NOT NULL,
@@ -654,13 +660,23 @@ SELECT DISTINCT ON (s.instance_id, s.collection) s.instance_id, s.collection, s.
   JOIN pgvigil.collector_reading r ON r.host = s.host AND r.instance_id = s.instance_id
  ORDER BY s.instance_id, s.collection, s.fail_streak, s.last_run_at DESC;
 
+-- collector_claim: a repository-wide finding's claim - the part of its detail before the first ': ' (the parent's
+-- detail leads with it: '<why>: ...'). alert_record stores it at a send, alert_due compares it, the page reads it.
+CREATE OR REPLACE FUNCTION pgvigil.collector_claim(p_detail text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT nullif(split_part(coalesce(p_detail, ''), ': ', 1), '')
+$$;
+
 -- collector_findings: the findings shape (pgvigil.findings' arms). Source 'pgvigil repository' marks the
 -- repository-wide ones (no instance: every channel past its severity floor takes them); 'pgvigil collector' an
 -- instance's.
 CREATE OR REPLACE VIEW pgvigil.collector_findings AS
-SELECT NULL::int AS instance_id, 'critical'::text AS severity, 'collector or network'::text AS setting, p.why || ': ' || p.host AS value,
+-- the parent: its value is the host alone (one alert per collector, whatever its why: a restart inside the hold, or a
+-- cut that turns into a host not seen, is the same alert, repeated once with its new why - alert_due); the why leads
+-- the detail (collector_claim reads it)
+SELECT NULL::int AS instance_id, 'critical'::text AS severity, 'collector or network'::text AS setting, p.host AS value,
        true AS is_set, 'the collector beating and its instances read'::text AS suggested, 'all'::text AS platforms,
-       p.detail || '; the alerts of its instances not read since are held until this clears'
+       p.why || ': ' || p.detail || '; the alerts of its instances not read since are held until this clears'
        || coalesce((SELECT '; it covers ' || count(*) || ' open alert(s): ' || string_agg(o.x, ', ' ORDER BY o.x)
                       FROM (SELECT DISTINCT format('%s %s (%s)', a.instance_name, a.setting, a.value) AS x
                               FROM pgvigil.alert_state a

@@ -22,8 +22,9 @@ const sevWord: Record<string, string> = { critical: 'Critical', warning: 'Warnin
 // the service's state in words: a collector down (its 'collector or network' finding) first, then the collectors up (one
 // per host), or how long the newest has not been seen
 function serviceState(rows: Row[], findings: Row[] = []): { word: string; kind: string; sub: string } {
-  const down = findings.filter(r => r.setting === 'collector or network' && String(r.value).startsWith('collector not seen'));
-  if (down.length) return { word: down.length === 1 ? 'Down' : `${down.length} down`, kind: 'crit', sub: down.map(r => String(r.value).replace(/^collector not seen: /, '')).join(', ') + ' not seen for 5 minutes' };
+  // the parent's value is its host; its why is a field of its own (the API reads it off the detail)
+  const down = findings.filter(r => r.setting === 'collector or network' && r.why === 'collector not seen');
+  if (down.length) return { word: down.length === 1 ? 'Down' : `${down.length} down`, kind: 'crit', sub: down.map(r => String(r.value)).join(', ') + ' not seen for 5 minutes' };
   const live = rows.filter(r => r.state === 'up');
   if (live.length > 1) return { word: `${live.length} up`, kind: 'ok', sub: live.map(r => String(r.host)).join(', ') };
   if (live.length === 1) return { word: 'Up', kind: 'ok', sub: `beat ${fmtSecs(live[0].beat_age_secs)} ago` };

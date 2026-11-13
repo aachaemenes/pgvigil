@@ -26,7 +26,8 @@ const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 // sqlCollectorFindings: the collector's findings ($1 the instance, 0 = all: an instance sees its own and the
 // repository-wide ones)
 const sqlCollectorFindings = `
-SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at
+SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at,
+       CASE WHEN f.source = 'pgvigil repository' THEN pgvigil.collector_claim(f.detail) END AS why
   FROM pgvigil.collector_findings f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
  WHERE $1::int = 0 OR f.instance_id IS NULL OR f.instance_id = $1
