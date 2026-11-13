@@ -338,6 +338,9 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 // audit login and the UI login.
 func (s *Server) ackOff() string {
 	switch {
+	case s.demo != nil:
+		// a demo serve: 'writable' stays false with the door's words, and the door's instances are named beside them (demodoor.go)
+		return doorOff
 	case s.auth == nil:
 		return "acknowledgements need the UI login: this server runs with -no-login"
 	case s.actions == nil:

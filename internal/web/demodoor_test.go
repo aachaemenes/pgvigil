@@ -1,0 +1,199 @@
+package web
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// fakeDoorStore is the repository as the door's scope rule reads it: instances, the open alerts' keys and the stored
+// rows an end, an edit, a pause or a resume names.
+type fakeDoorStore struct {
+	inst    map[int]doorInstance
+	finding map[string]int
+	rows    map[doorRowRef]doorRow
+}
+
+func (f fakeDoorStore) instance(_ context.Context, id int) (doorInstance, bool, error) {
+	i, ok := f.inst[id]
+	return i, ok, nil
+}
+
+func (f fakeDoorStore) instanceByName(_ context.Context, name string) (int, bool, error) {
+	for id, i := range f.inst {
+		if i.Name == name {
+			return id, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func (f fakeDoorStore) findingInstance(_ context.Context, key string) (int, bool, error) {
+	id, ok := f.finding[key]
+	return id, ok, nil
+}
+
+func (f fakeDoorStore) row(_ context.Context, ref doorRowRef) (doorRow, bool, error) {
+	r, ok := f.rows[ref]
+	return r, ok, nil
+}
+
+func intp(i int) *int { return &i }
+
+// TestDemoDoorScope is the door's scope rule as a table (task B7): a write goes through the demo's door only when
+// every instance it touches was seeded by this process AND still carries the tag 'demo' AND still has the demo's name
+// prefix; a write wider than one instance, a route the door does not carry, an alert key that does not belong to the
+// instance named and a stored row without an instance are refused, each in words.
+func TestDemoDoorScope(t *testing.T) {
+	store := fakeDoorStore{
+		inst: map[int]doorInstance{
+			1: {Name: "demo-pg01", DemoTag: true},  // seeded by this process
+			2: {Name: "demo-pg02", DemoTag: true},  // seeded by this process
+			3: {Name: "prod-db1", DemoTag: false},  // a real instance beside the demo's
+			4: {Name: "prod-db2", DemoTag: true},   // a real instance someone tagged 'demo': never seeded here
+			5: {Name: "demo-pg05", DemoTag: false}, // seeded here, then claimed by a real collector (the tag rewritten)
+			6: {Name: "erp-main", DemoTag: true},   // seeded here, its name no longer the demo's
+			7: {Name: "demo-pg07", DemoTag: true},  // a demo name and tag from an older run, not in this process's list
+		},
+		finding: map[string]int{"k-demo1": 1, "k-demo2": 2, "k-prod": 3, "k-repo": 0},
+		rows: map[doorRowRef]doorRow{
+			{"acks", 10}:             {InstanceID: intp(1), InstanceName: "demo-pg01"},
+			{"acks", 11}:             {InstanceID: intp(3), InstanceName: "prod-db1"},
+			{"acks", 12}:             {},                                                 // a rule by tag or text: every instance
+			{"acks", 13}:             {InstanceName: "demo-pg02", FindingKey: "k-demo2"}, // the seed's shape: a name and a key, no id
+			{"acks", 14}:             {InstanceName: "gone-server"},                      // its instance was removed
+			{"acks", 15}:             {InstanceID: intp(1), FindingKey: "k-prod"},        // a demo id on a real instance's alert
+			{"acks", 16}:             {InstanceID: intp(1), FindingKey: "k-cleared"},     // its alert is no longer in alert_state
+			{"alert_dismissals", 20}: {FindingKey: "k-demo1"},
+			{"alert_dismissals", 21}: {FindingKey: "k-prod"},
+			{"job_exclusions", 30}:   {InstanceID: intp(2)},
+			{"job_exclusions", 31}:   {}, // a root-level exclusion
+		},
+	}
+	d := &demoDoor{ids: map[int]bool{1: true, 2: true, 5: true, 6: true}, prefix: "demo-", look: store}
+	const notDemo, wide = "is not one of this demo's instances", "would reach past the demo's instances"
+	for _, c := range []struct {
+		name string
+		sc   writeScope
+		want string // "" = allowed; else words the refusal must hold
+	}{
+		{"an acknowledgement on a seeded instance", writeScope{Route: doorAck, InstanceID: 1}, ""},
+		{"a real instance beside the demo's", writeScope{Route: doorAck, InstanceID: 3}, "prod-db1 " + notDemo},
+		{"a real instance tagged demo by hand", writeScope{Route: doorAck, InstanceID: 4}, "prod-db2 " + notDemo},
+		{"a seeded id whose tag a collector rewrote", writeScope{Route: doorAck, InstanceID: 5}, "demo-pg05 " + notDemo},
+		{"a seeded id whose name is no longer the demo's", writeScope{Route: doorAck, InstanceID: 6}, "erp-main " + notDemo},
+		{"a demo name and tag this process did not seed", writeScope{Route: doorAck, InstanceID: 7}, "demo-pg07 " + notDemo},
+		{"an instance that does not exist", writeScope{Route: doorAck, InstanceID: 99}, "no instance 99"},
+		{"an alert of a seeded instance by its key", writeScope{Route: doorAck, FindingKey: "k-demo1"}, ""},
+		{"the key and the instance agree", writeScope{Route: doorAck, InstanceID: 1, FindingKey: "k-demo1"}, ""},
+		{"a real instance's alert key with a demo instance id", writeScope{Route: doorAck, InstanceID: 1, FindingKey: "k-prod"}, "belongs to another instance"},
+		{"a real instance's alert key alone", writeScope{Route: doorDismiss, FindingKey: "k-prod"}, "prod-db1 " + notDemo},
+		{"an alert of no instance (repository-wide)", writeScope{Route: doorAck, FindingKey: "k-repo"}, "a repository-wide change " + wide},
+		{"a key no alert holds", writeScope{Route: doorDismiss, FindingKey: "k-nothing"}, "no alert has this key"},
+		{"a rule that names no instance and no alert", writeScope{Route: doorAck}, "an every-instance change " + wide},
+		{"a rule by tag", writeScope{Route: doorAck, Tag: "env:prod"}, "a tag 'env:prod' change " + wide},
+		{"a rule by tag on one seeded instance", writeScope{Route: doorAck, Tag: "env:prod", InstanceID: 2}, ""},
+		{"a root threshold", writeScope{Route: doorDriveThreshold, Level: "root"}, "a root change " + wide},
+		{"a tag threshold", writeScope{Route: doorPgThreshold, Level: "tag", Tag: "demo"}, "a tag 'demo' change " + wide},
+		{"a root threshold that also names a seeded instance", writeScope{Route: doorJobThreshold, Level: "root", InstanceID: 1}, "a root change " + wide},
+		{"an instance threshold", writeScope{Route: doorDriveThreshold, Level: "instance", InstanceID: 1}, ""},
+		{"a drive threshold", writeScope{Route: doorDriveThreshold, Level: "drive", InstanceID: 2}, ""},
+		{"a database threshold on a real instance", writeScope{Route: doorPgThreshold, Level: "database", InstanceID: 3}, "prod-db1 " + notDemo},
+		{"a threshold level that names no instance", writeScope{Route: doorJobThreshold, Level: "job"}, "an every-instance change " + wide},
+		{"a root job exclusion", writeScope{Route: doorJobExclusion, Level: "root"}, "a root change " + wide},
+		{"an instance's job exclusion", writeScope{Route: doorJobExclusion, Level: "instance", InstanceID: 2}, ""},
+		{"the end of a seeded instance's row", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 10}}, ""},
+		{"the end of a real user's row on a real instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 11}}, "prod-db1 " + notDemo},
+		{"the end of a rule on every instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 12}}, "an every-instance change " + wide},
+		{"the end of a seed row (a name and a key, no id)", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 13}}, ""},
+		{"the end of a row whose instance was removed", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 14}}, "gone-server is no longer an instance"},
+		{"the end of a row with a demo id on a real alert", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 15}}, "prod-db1 " + notDemo},
+		{"the end of a row whose alert is gone", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 16}}, ""},
+		{"the end of a row that does not exist", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 404}}, "no such row 404"},
+		{"an undismiss of a seeded instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 20}}, ""},
+		{"an undismiss of a real instance's alert", writeScope{Route: doorDismiss, Row: &doorRowRef{"alert_dismissals", 21}}, "prod-db1 " + notDemo},
+		{"the end of an instance's exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 30}}, ""},
+		{"the end of a root exclusion", writeScope{Route: doorJobExclusion, Row: &doorRowRef{"job_exclusions", 31}}, "an every-instance change " + wide},
+		{"a pause of a seeded instance's mute", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}}, ""},
+		{"an edit that asks for every instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, AnyInstance: true}, "an every-instance change " + wide},
+		{"an edit that moves the rule to a real instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, InstanceID: 3}, "prod-db1 " + notDemo},
+		{"an edit that moves a rule on every instance to a seeded instance (it would end the wide rule)", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 12}, InstanceID: 1}, "an every-instance change " + wide},
+		{"an edit of a real instance's rule", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 11}, InstanceID: 1}, "prod-db1 " + notDemo},
+		{"Send test", writeScope{Route: doorAlertTest}, "pgvigil demo -serve runs no sender"},
+		{"a route the door was never taught", writeScope{Route: "customreports", InstanceID: 1}, "is not made through the demo"},
+		{"no route at all", writeScope{InstanceID: 1}, "is not made through the demo"},
+	} {
+		got, err := d.allow(context.Background(), c.sc)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSeatOnServe pins what a serve answers at a write's door, the demo's door absent: the header first, then the
+// route's own off reason word for word, and no pool without them (a serve is unchanged by the demo's door, -no-login
+// included).
+func TestSeatOnServe(t *testing.T) {
+	s := &Server{} // no login, no demo door: pgvigil serve -no-login
+	const noLogin = "acknowledgements need the UI login: this server runs with -no-login"
+	if got := s.ackOff(); got != noLogin {
+		t.Fatalf("ackOff on a serve without the login = %q, want %q", got, noLogin)
+	}
+	for _, c := range []struct {
+		name   string
+		header bool
+		code   int
+		words  string
+	}{
+		{"no header", false, http.StatusForbidden, "the X-Pgvigil header is required"},
+		{"the header, no login", true, http.StatusForbidden, noLogin},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/api/ack", strings.NewReader("{}"))
+		if c.header {
+			r.Header.Set(loginHeader, "1")
+		}
+		w := httptest.NewRecorder()
+		if _, ok := s.seat(w, r, s.ackOff()); ok {
+			t.Errorf("%s: a seat was given", c.name)
+		}
+		if w.Code != c.code || !strings.Contains(w.Body.String(), c.words) {
+			t.Errorf("%s: %d %s, want %d with %q", c.name, w.Code, strings.TrimSpace(w.Body.String()), c.code, c.words)
+		}
+	}
+}
+
+// TestSeatOnDemo: on a demo serve the header is still the first check, the seat is the door's own user, and the pool
+// comes only with a scope the door allows.
+func TestSeatOnDemo(t *testing.T) {
+	store := fakeDoorStore{inst: map[int]doorInstance{1: {Name: "demo-pg01", DemoTag: true}, 3: {Name: "prod-db1"}}}
+	s := &Server{demo: &demoDoor{ids: map[int]bool{1: true}, prefix: "demo-", look: store}}
+	if got := s.ackOff(); !strings.Contains(got, "pgvigil demo -serve") || strings.Contains(got, "-no-login") {
+		t.Errorf("ackOff on a demo serve = %q: it names pgvigil demo -serve and never -no-login", got)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/ack", strings.NewReader("{}"))
+	w := httptest.NewRecorder()
+	if _, ok := s.seat(w, r, s.ackOff()); ok || w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "the X-Pgvigil header is required") {
+		t.Errorf("no header on a demo serve: ok %v, %d %s", ok, w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	r.Header.Set(loginHeader, "1")
+	w = httptest.NewRecorder()
+	seat, ok := s.seat(w, r, s.ackOff())
+	if !ok || seat.user != "demo" || seat.client != "demo door" {
+		t.Fatalf("the demo's seat: ok %v, user %q, client %q (want demo, demo door)", ok, seat.user, seat.client)
+	}
+	if _, why, err := seat.pool(context.Background(), writeScope{Route: doorAck, InstanceID: 3}); err != nil || !strings.Contains(why, "prod-db1 is not one of this demo's instances") {
+		t.Errorf("a real instance through the demo's seat: why %q, err %v", why, err)
+	}
+	if _, why, err := seat.pool(context.Background(), writeScope{Route: doorAck, InstanceID: 1}); err != nil || why != "" {
+		t.Errorf("a seeded instance through the demo's seat: why %q, err %v", why, err)
+	}
+	if _, why, _ := seat.pool(context.Background(), writeScope{}); why == "" {
+		t.Error("a write that names no route and no scope got the demo's pool")
+	}
+}
