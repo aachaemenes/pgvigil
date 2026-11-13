@@ -166,6 +166,10 @@ echo "== the colour reader's unit tests (web/src/export_colours.ts)"
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=esm --log-level=warning --outfile="$WORK/export_colours.mjs" || fail "esbuild could not compile web/src/export_colours.ts"
 node web/src/export_colours.test.mjs "$WORK/export_colours.mjs" > "$WORK/colours-unit.out" 2>&1 || { cat "$WORK/colours-unit.out"; fail "the colour reader's unit tests"; }
 ok "colour reader: $(tail -1 "$WORK/colours-unit.out")"
+echo "== the sheet names' unit tests (web/src/export_names.ts)"
+web/node_modules/.bin/esbuild web/src/export_names.ts --format=esm --log-level=warning --outfile="$WORK/export_names.mjs" || fail "esbuild could not compile web/src/export_names.ts"
+node web/src/export_names.test.mjs "$WORK/export_names.mjs" > "$WORK/names-unit.out" 2>&1 || { cat "$WORK/names-unit.out"; fail "the sheet names' unit tests"; }
+ok "sheet names: $(tail -1 "$WORK/names-unit.out")"
 # the same module as a script for the page (the driver runs it there: window.__pgvColours)
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
 
@@ -282,15 +286,18 @@ const SCREEN = `(() => {
   // b: the colour is the page's own class on the cell itself (a Col's cls without 'status'), no status cell or mark
   const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'), p: look(td, td.closest('table')), a: al(td),
     b: !td.classList.contains('status') && !td.querySelector(KNOWN) && ['crit', 'warn', 'ok'].some(k => td.classList.contains(k)) });
-  // a heading inside a region of its own (the Summary's Needs attention strip) names only the grids of that region
-  let outer = '', inner = null;
-  return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props, main p.empty[data-cols]')].map(e => {
+  // a heading inside a region of its own (the Summary's Needs attention strip) names only the grids of that region; h2 to
+  // h5 (export.ts headings); a grid inside an element with data-sheet that holds no heading met so far (a disclosure per
+  // job or per check, a totals grid) is named by it
+  let outer = '', inner = null, last = null;
+  return [...document.querySelectorAll('main h2, main h3, main h4, main h5, main table.grid, main table.props, main p.empty[data-cols]')].map(e => {
     if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
       const within = e.closest('[role=region]');
-      if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; }
+      if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; last = e; }
       return { h: head(e) };
     }
-    const named = inner && inner.within.contains(e) ? inner.text : outer;
+    const own = e.closest('[data-sheet]'), ownName = own && !(last && own.contains(last)) ? (own.getAttribute('data-sheet') || '').trim() : '';
+    const named = ownName || (inner && inner.within.contains(e) ? inner.text : outer);
     // a grid with no row (ui.ts grid: its note carries its columns' names): the export's sheet of its header row alone
     // (a note with no column the export leaves out: null, dropped by grids())
     if (e.tagName === 'P') { const cols = JSON.parse(e.dataset.cols || '[]'); const eth = e.parentElement && e.parentElement.querySelector(':scope > table.grid-empty th'); return cols.length ? { named, rows: 0, head: cols, cells: [], status: [], empty: true, hl: eth ? look(eth, eth.closest('table')) : null, tests: !!e.closest('.tests'), att: !!e.closest('.attention') } : null; }
@@ -1457,13 +1464,27 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         # (changed by X4: the header row is DBA Dash's - FF0063A3, white, bold - not the page's th look)
         check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF0063A3' and cx[u]['font'] == 'FFFFFFFF' and cx[u]['bold'] for u in hs1),
               f"{key}: sheet '{names[gsheet[i] - 1]}' header row FF0063A3, white, bold (X4) ({sorted({(cx[u]['fill'], cx[u]['font'], cx[u]['bold']) for u in hs1 if u < len(cx)})})")
-    # each sheet named by the heading above its grid (h2, h3 or h4): the name starts with the heading's first words
-    # (cut at 31 characters, a repeat numbered; the Summary grid's heading meets the export's own Summary sheet)
+    # each sheet named by the heading above its grid (h2 to h5, or the name the page gives it: data-sheet): the name starts
+    # with the heading's first words (cut at 31 characters; the Summary grid's heading meets the export's own Summary sheet)
     # (the export's rule: a character Excel refuses becomes a space, then each run of spaces one space)
     # (changed by P5, the lead 22:34: a time the heading carries in brackets is left out of the sheet's name)
-    hs = [re.sub(r'\s+', ' ', re.sub(r'[\\/?*\[\]:]', ' ', re.sub(r'\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)', '', g['name']).strip() or g['name'])).strip()[:24].rstrip() for g in gs]
+    # (changed by X2: a time after a word too; never a numbered repeat - two headings equal after the cut keep their start,
+    # '…' and the words where they part; a name taken in full goes under the heading above it: export_names.ts)
+    def title_of(t):
+        t2 = re.sub(r'\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)', '', t)
+        t2 = re.sub(r'\s*(?:\b(?:since|from|until|to|at|as of|read)\s+)?\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}(?:,?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)?', '', t2, flags=re.I).strip() or t
+        return re.sub(r'\s+', ' ', re.sub(r"^'+|'+$", '', re.sub(r'[\\/?*\[\]:]', ' ', t2))).strip()
+    full = [title_of(g['name']) for g in gs]
+    hs = [f[:24].rstrip() for f in full]
     gn = [names[k - 1] for k in gsheet]
-    check(all(n.startswith(h) or (key == 'summary' and n in ('Test Summary', 'Instance Summary')) for n, h in zip(gn, hs)), f"{key}: grid sheet names {gn} follow the screen's headings {[g['name'] for g in gs]}")
+    def named_by(n, h, f):
+        if n.startswith(h): return True
+        if '…' in n:
+            a_, b_ = n.split('…', 1)
+            return f.startswith(a_.rstrip(" '_.-")) and f.endswith(b_.strip())
+        return n.endswith(' ' + f[:31 - 2]) or n.endswith(' ' + f)
+    check(all(named_by(n, h, f) or (key == 'summary' and n in ('Test Summary', 'Instance Summary')) for n, h, f in zip(gn, hs, full)) and not any(re.search(r' \(\d+\)$', n) for n in names),
+          f"{key}: grid sheet names {gn} follow the screen's headings {[g['name'] for g in gs]}, none a numbered repeat (X2)")
     if key == 'roles':
         check(any(g['name'].endswith('privileges') or 'privileges' in g['name'] for g in gs), "roles: a grid under a privileges (h4) heading on screen")
     if key == 'tables':
@@ -1580,10 +1601,12 @@ lastcopy = max([i for i, x in enumerate(its) if x.startswith('Copy')] or [-1])
 check('Export Excel' in its and its.index('Export Excel') == lastcopy + 1 and sum(1 for x in its if x.startswith('Export Excel')) == 1, f"gridmenu: the grid's menu has one Export Excel, right after its copies, as DBA Dash's grid menu (red with task 172's 'Export Excel (this grid)' still in web/src/treemenu.ts: P03's WIRING BLOCK takes it out) ({its})")
 if gm.get('xlsx'):
     g = gm['screen']
-    # export.ts sheetNames for one name: Excel's refused characters a space, the quotes at either end off, runs of spaces
-    # one, cut at 31 (a trailing space or quote off), 'Summary' and 'History' (reserved) numbered
+    # export_names.ts sheetNames for one name: Excel's refused characters a space, the quotes at either end off, runs of
+    # spaces one, cut at 31 (a trailing space or quote off); (changed by X2: a name taken - 'About', 'History' - goes under
+    # the heading above it, never numbered: this grid's name is none of them, checked first)
     sheet = re.sub(r'\s+', ' ', re.sub(r"^'+|'+$", '', re.sub(r'[\\/?*\[\]:]', ' ', g['named']))).strip()[:31].rstrip(" '") or 'Sheet'
-    one_book('gridmenu', gm['xlsx'], 'fleet', 'Backups', sheet + ' (2)' if sheet.lower() in ('about', 'history') else sheet, g)
+    check(sheet.lower() not in ('about', 'history'), f"gridmenu: the grid's own name is no name the workbook takes ({sheet})")
+    one_book('gridmenu', gm['xlsx'], 'fleet', 'Backups', sheet, g)
     check((gm.get('said') or '').startswith('Exported ' + gm['xlsx']), f"gridmenu: the grid's line says what was saved ({gm.get('said')!r})")
 sm = d.get('summaryExport') or {}
 check(any(b.startswith('Export to Excel') for b in sm.get('button', [])) and sm.get('popup') == 'menu' and sm.get('items') == ['Export Summary', 'Export Test Summary'],
@@ -1841,14 +1864,16 @@ for L in en-US fr-FR; do
   echo "== the X rules on every workbook ($L): scripts/xlsx-check.py rules"
   XRC=0; python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt" || XRC=$?   # exit 1 = a rule failed (set -e: caught)
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$DL"/*.xlsx "$PGVIGIL_EXPORT_OUT/$L"/; }
-  grep -E '^FAIL' "$WORK/xcheck-$L.txt" | cut -c1-400
+  { grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true; } | cut -c1-400   # no FAIL line: grep's exit 1 must not end the proof (pipefail)
   for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do
     n=$(grep -c "^FAIL $r " "$WORK/xcheck-$L.txt" || true)
     if [[ "$n" == 0 ]]; then ok "xcheck $r: every workbook ($L, $(ls "$DL"/*.xlsx | wc -l) files)"; else echo "FAIL: xcheck $r: $n workbook(s) ($L)"; fi
   done
-  [[ $XRC == 0 ]] || fail "a workbook breaks an X rule of scripts/xlsx-check.py ($L)"
   echo "== the files read back ($L)"
-  python3 -I "$WORK/check.py" "$WORK/drive-$L.json" "$DL" "$L" || fail "a file did not match its page ($L)"
+  # (the X rules' verdict after the read-back: one run shows both)
+  CRC=0; python3 -I "$WORK/check.py" "$WORK/drive-$L.json" "$DL" "$L" || CRC=$?
+  [[ $XRC == 0 ]] || fail "a workbook breaks an X rule of scripts/xlsx-check.py ($L)"
+  [[ $CRC == 0 ]] || fail "a file did not match its page ($L)"
   if command -v soffice >/dev/null; then
     for f in "$DL"/*.xlsx; do
       (cd "$WORK" && timeout 120 soffice --headless -env:UserInstallation=file://$WORK/lo --convert-to csv --outdir "$WORK/lo-out-$L" "$f" >/dev/null 2>&1) || fail "LibreOffice could not open $(basename "$f")"

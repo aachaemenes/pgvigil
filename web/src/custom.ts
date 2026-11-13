@@ -98,7 +98,7 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
 
   sec.append(el('h3', {}, 'Latest rows and SQL'));
   for (const c of checks) {
-    const det = el('details', {}, el('summary', {}, `${String(c.check_name)}: ${c.status ? String(c.status) : 'never run'}, ${fmtNum(c.row_count ?? 0)} rows`));
+    const det = el('details', { 'data-sheet': String(c.check_name) }, el('summary', {}, `${String(c.check_name)}: ${c.status ? String(c.status) : 'never run'}, ${fmtNum(c.row_count ?? 0)} rows`));
     det.append(rowsGrid(c), el('pre', { class: 'sql', tabindex: '0' }, String(c.sql ?? '')));
     sec.append(det);
   }

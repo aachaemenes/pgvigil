@@ -457,13 +457,14 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     const jobsBox = await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]);
     sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), ...(act.offNote ? [act.offNote] : []), jobsBox);
     sec.append(el('h3', {}, 'Failed runs in this range'), grid(failed, failedCols, 'No job failed in this range.'));
-    // the steps of each job as last read, one disclosure per job: reachable by keyboard, named by the job
+    // the steps of each job as last read, one disclosure per job: reachable by keyboard, named by the job (data-sheet: the
+    // job's name names its grid's sheet in an export, export.ts headings)
     const withSteps = jobs.filter(j => jsonRows(j.steps).length);
     if (withSteps.length) {
       sec.append(el('h3', {}, 'Steps'));
       for (const j of withSteps) {
         const steps = jsonRows(j.steps);
-        sec.append(el('details', {}, el('summary', {}, `${String(j.name)} (${steps.length} step${steps.length === 1 ? '' : 's'})`), grid(steps, stepCols)));
+        sec.append(el('details', { 'data-sheet': String(j.name) }, el('summary', {}, `${String(j.name)} (${steps.length} step${steps.length === 1 ? '' : 's'})`), grid(steps, stepCols)));
       }
     }
   } catch (e) {

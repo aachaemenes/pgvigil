@@ -19,6 +19,7 @@ import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, roo
 import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
 import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showMenu } from './ui';
 import { readRows } from './export_colours';
+import { sheetNames, sheetTitle } from './export_names';
 import { drawingRels, drawingXml, pictureOf } from './export_chart';
 import type { ChartNumbers, PictureBox } from './export_chart';
 import { cellLook, gridHeadLook, headLook, withDot } from './export_page';
@@ -35,7 +36,7 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
 export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
-export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[]; sample?: string }   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[]; sample?: string; within?: string }   // within: the heading above the one that names it (export_names.ts sheetNames: a name taken in full falls back on it)   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -284,17 +285,13 @@ export function sections(root: ParentNode, fallback: string, empties = false): S
 
 // walk: sections() with the element each came from (a grid's menu exports the one it was opened on)
 function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Section; el: Element }[] {
-  let outer = fallback, inner: { text: string; within: Element } | undefined;
+  const hs = headings(fallback);
   const out: { sec: Section; el: Element }[] = [];
   let cardHead: Look | undefined;   // a property card's sheet: its 'item | value' header in the page's grid-header look
   const cardHeads = () => { const l = cardHead ??= (root instanceof Element ? gridHeadLook(root) : undefined); return l ? [l, l] : undefined; };
-  for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, table.grid, table.props, p.empty[data-cols]' : 'h2, h3, h4, table.grid, table.props')) {
-    if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
-      const within = e.closest('[role=region]');
-      if (within) inner = { text: headingText(e) || fallback, within }; else { outer = headingText(e) || fallback; inner = undefined; }
-      continue;
-    }
-    const heading = inner && inner.within.contains(e) ? inner.text : outer;
+  for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, h5, table.grid, table.props, p.empty[data-cols]' : 'h2, h3, h4, h5, table.grid, table.props')) {
+    if (e.tagName !== 'TABLE' && e.tagName !== 'P') { hs.see(e); continue; }
+    const { heading, within } = hs.of(e);
     // a grid with no row (ui.ts grid: its note carries its columns' names): a sheet of its header row alone, as DBA Dash
     // exports an empty grid (CommonShared.cs SaveDataGridViewsToXLSX: a sheet per grid, the header row, then the rows)
     if (e.tagName === 'P') {
@@ -308,7 +305,7 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
         const ths = drawn ? [...drawn.querySelectorAll('th')] : [];
         const heads = ths.length === all.length ? ths.map(th => headLook(th, drawn!)).filter((_, j) => !hid.has(j)) : undefined;
         const sample = e.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
-        out.push({ sec: { name: heading, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: [sample, text(e)].filter(Boolean).join('; ') || undefined, sample, ...(heads ? { heads } : {}) }, el: e });
+        out.push({ sec: { name: heading, within, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: [sample, text(e)].filter(Boolean).join('; ') || undefined, sample, ...(heads ? { heads } : {}) }, el: e });
       }
       continue;
     }
@@ -324,9 +321,50 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
     const notes = [sample ?? '', prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;
     const read = t.classList.contains('grid') ? readGrid(t) : { ...readProps(t), ...(cardHeads() ? { heads: cardHeads() } : {}) };
-    out.push({ sec: { name: heading, ...read, note, sample }, el: t });
+    out.push({ sec: { name: heading, within, ...read, note, sample }, el: t });
   }
+  distinct(out);
   return out;
+}
+
+// headings: the headings above a section as the walk meets them (h2 to h5), by level. A section is named by the nearest
+// heading, its 'within' the one above that; a heading inside a region of its own (the Summary's 'Needs attention' strip)
+// names the sections of that region only (the sections after it keep the heading before it); a section the page names
+// itself - inside an element with data-sheet (a disclosure per job or per check under one heading, a totals grid under its
+// grid's heading) that holds no heading the walk met - takes that name, the heading its 'within'
+function headings(fallback: string) {
+  const lv: string[] = [];
+  let outer = fallback, up: string | undefined, last: Element | undefined;
+  let inner: { text: string; within: Element; up: string } | undefined;
+  return {
+    see(e: Element) {
+      const t = headingText(e) || fallback, region = e.closest('[role=region]');
+      if (region) { inner = { text: t, within: region, up: outer }; return; }
+      const n = Number(e.tagName.slice(1));
+      lv.length = n; lv[n] = t; outer = t; up = lv.slice(0, n).filter(Boolean).pop(); inner = undefined; last = e;
+    },
+    of(e: Element): { heading: string; within?: string } {
+      const inR = !!inner && inner.within.contains(e);
+      const heading = inR ? inner!.text : outer, within = inR ? inner!.up : up;
+      const own = e.closest('[data-sheet]');
+      const name = own && !(last && own.contains(last)) ? own.getAttribute('data-sheet')?.trim() : '';
+      return name ? { heading: name, within: heading } : { heading, within };
+    },
+  };
+}
+
+// distinct (X2: a sheet's name says what it holds, never ' (2)'): sections that share a heading, each its own sheet - a
+// property card takes ' properties' after the heading and a row of tiles ' tiles' (a grid keeps the heading, as DBA Dash
+// names a grid by its title); a section the page names itself (a tile row's aria-label, data-sheet) keeps its name
+function distinct(all: { sec: Section; el: Element }[]): void {
+  const key = (f: { sec: Section }) => sheetTitle(f.sec.name).toLowerCase();
+  const n = new Map<string, number>();
+  for (const f of all) n.set(key(f), (n.get(key(f)) ?? 0) + 1);
+  for (const f of all) {
+    if ((n.get(key(f)) ?? 0) < 2 || f.el.matches('[aria-label]') || f.el.closest('[data-sheet]')) continue;
+    const word = f.el.matches('table.props') ? 'properties' : f.el.matches('.tiles') ? 'tiles' : '';
+    if (word) f.sec = { ...f.sec, name: `${f.sec.name} ${word}` };
+  }
 }
 
 // ---- the workbook -----------------------------------------------------------------------------------------
@@ -615,23 +653,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
     + '</worksheet>';
 }
 
-// sheetNames: the screen's heading, cut to Excel's 31 characters without the characters a sheet name refuses,
-// a repeat numbered; 'History' (a name Excel reserves), 'About' (the export's own last sheet) and a page sheet's name
-// (first) are taken before the grids are named (X2: 'Summary' is a grid's name like any other).
-export function sheetNames(names: string[], first = ''): string[] {
-  const used = new Set(['history', 'about', ...(first ? [first.toLowerCase()] : [])]);
-  const cut = (s: string, n: number) => s.slice(0, n).replace(/[\s']+$/, '');
-  return names.map(n => {
-    // (P5, the lead 22:34) a time the heading carries in brackets ('Jobs (read 11/13/2026, 05:25:00)', a chart's
-    // '(11/6/2026, 04:42:56 to ...)') is left out of the sheet's name: the grid's own title
-    const title = n.replace(/\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)/g, '').trim() || n;
-    const base = cut(title.replace(/[\\/?*[\]:]/g, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim(), 31) || 'Sheet';
-    let s = base;
-    for (let i = 2; used.has(s.toLowerCase()); i++) s = cut(base, 31 - ` (${i})`.length) + ` (${i})`;
-    used.add(s.toLowerCase());
-    return s;
-  });
-}
+// sheetNames, sheetTitle: export_names.ts (pure: its unit tests run in Node)
 
 // ---- a grid sheet as DBA Dash writes one (X0, X7, X8) ------------------------------------------------------------
 const DUR: Record<string, number> = { ms: 1, s: 1000, min: 60000 };
@@ -707,7 +729,7 @@ export function timeZone(at: Date): string {
 export function workbook(meta: Meta, given: Section[], page?: PageSheet): { name: string; data: Uint8Array }[] {
   const first = page ? page.name.slice(0, 31).replace(/[\\/?*[\]:]/g, ' ').trim() || 'Page' : '';
   const secs = page ? given : given.map(gridSection);
-  const names = sheetNames(secs.map(s => s.name), first);
+  const names = sheetNames(secs.map(s => s.name), first ? [first] : [], secs.map(s => s.within));
   const t = (v: string): Cell => ({ v, kind: 'text', text: v });
   const d = (v: Date): Cell => ({ v: excelDate(v), kind: 'date', text: '', stamp: localStamp(v) });
   // About (D-A): Item | Value - the scope, the window, the zone with its offset, the export's time, the source, then each
@@ -893,7 +915,7 @@ const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 // <instance>_<tab>_<sheet>_<from>_<to>.xlsx
 async function oneFile(m: Meta, sec: Section): Promise<string> {
   const z = await zip(workbook(m, [sec]), m.at);
-  const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
+  const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name], [], [sec.within])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
   save(new Blob([z], { type: XLSX }), name);
   return name;
 }
@@ -939,7 +961,7 @@ function itemSection(name: string, items: { item: string; value: string; status?
 }
 // asItems: a property card read by readProps (item | value, the value cell in its status) as an Item | Value | Status table
 function asItems(sec: Section): Section {
-  return itemSection(sec.name, sec.rows.map(r => ({ item: String(r[0]?.v ?? ''), value: String(r[1]?.v ?? ''), status: r[1]?.status })));
+  return { ...itemSection(sec.name, sec.rows.map(r => ({ item: String(r[0]?.v ?? ''), value: String(r[1]?.v ?? ''), status: r[1]?.status }))), within: sec.within };
 }
 const shownEl = (e: Element) => !(e.closest('[hidden], details:not([open]) > :not(summary)') || (e as HTMLElement).offsetParent === null && getComputedStyle(e).position !== 'fixed');
 // pageExtras: in page order, each heading's tiles (ui.ts tile: label, value, its pill's status), the fleet Summary's
@@ -948,17 +970,20 @@ const shownEl = (e: Element) => !(e.closest('[hidden], details:not([open]) > :no
 // is that table's sheet already
 function pageExtras(root: Element, fallback: string): { sec: Section; el: Element }[] {
   const out: { sec: Section; el: Element }[] = [];
-  let heading = fallback;
-  for (const e of root.querySelectorAll('h2, h3, h4, .tiles, .attention, .chart')) {
-    if (/^H[234]$/.test(e.tagName)) { if (!e.closest('.chart, .attention')) heading = headingText(e) || fallback; continue; }
+  const hs = headings(fallback);
+  for (const e of root.querySelectorAll('h2, h3, h4, h5, .tiles, .attention, .chart')) {
+    if (/^H[2-5]$/.test(e.tagName)) { if (!e.closest('.chart, .attention')) hs.see(e); continue; }
     if (!shownEl(e)) continue;
+    const { heading, within } = hs.of(e);
     if (e.matches('.tiles')) {
       const items = [...e.querySelectorAll(':scope > .tile')].filter(shownEl).map(x => ({
         item: text(x.querySelector('.tile-l') ?? x),
         value: [x.querySelector('.tile-v'), x.querySelector('.tile-sub')].filter((y): y is Element => !!y).map(text).join('; '),
         status: statuses.find(k => x.classList.contains(k)),
       }));
-      if (items.length) out.push({ sec: itemSection(heading, items), el: e });
+      // a row of tiles the page names (tiles.ts tileRow: its aria-label, 'Instance health') is that sheet's name
+      const own = e.getAttribute('aria-label')?.trim();
+      if (items.length) out.push({ sec: { ...itemSection(own || heading, items), within: own ? heading : within }, el: e });
     } else if (e.matches('.attention')) {
       const items = [...e.querySelectorAll('.attention-row')].map(x => ({
         item: text(x.querySelector('strong') ?? x),
@@ -977,7 +1002,7 @@ function pageExtras(root: Element, fallback: string): { sec: Section; el: Elemen
       }
       const nf = pictureOf(e)?.numbers ?? (table ? undefined : (e as PictureBox).pgvNumbers);
       const n = nf?.();
-      if (n && n.rows.length) out.push({ sec: chartSection(title || heading, n), el: e });
+      if (n && n.rows.length) out.push({ sec: { ...chartSection(title || heading, n), within: title && title !== heading ? heading : within }, el: e });
     }
   }
   return out;
@@ -994,6 +1019,7 @@ function pageSections(ctx: Ctx, root: Element, found: { sec: Section; el: Elemen
     if (inst) inst.sec = { ...inst.sec, name: 'Instance Summary' };
   }
   all.sort((a, b) => a.el === b.el ? 0 : a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+  distinct(all);
   return all.map(f => f.sec);
 }
 
@@ -1087,7 +1113,7 @@ export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => d
       } else if (secs.length === 1) {
         save(new Blob([csv(secs[0])], { type: 'text/csv;charset=utf-8' }), exportName(m, 'csv'));
       } else {
-        const names = sheetNames(secs.map(s => s.name)), enc = new TextEncoder();
+        const names = sheetNames(secs.map(s => s.name), [], secs.map(s => s.within)), enc = new TextEncoder();
         const z = await zip(secs.map((s, i) => ({ name: `${String(i + 1).padStart(2, '0')}_${safe(names[i])}.csv`, data: enc.encode(csv(s)) })), m.at);
         save(new Blob([z], { type: 'application/zip' }), exportName(m, 'csv.zip'));
       }
