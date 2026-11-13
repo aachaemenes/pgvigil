@@ -38,12 +38,14 @@ export async function loadAckSafe(parts: string[], params: Record<string, string
 
 // ackOn: can a write for this instance be made here? Yes on a server that writes (a signed-in serve), and on a demo
 // serve for an instance of the demo's door. No instance = a write that names none (a rule on every instance, a root or
-// tag level): the door never carries it.
-export const ackOn = (d: AckData, instanceId?: number | null): boolean =>
-  d.writable || (instanceId != null && !!d.door && d.door.instances.includes(Number(instanceId)));
+// tag level): the door never carries it. 'any' = a control whose instance is picked later (a bulk action over ticked
+// rows, a dialog with an instance field): on wherever a door stands, and the server answers for each instance.
+export type AckInstance = number | null | 'any';
+export const ackOn = (d: AckData, instanceId?: AckInstance): boolean =>
+  d.writable || (!!d.door && (instanceId === 'any' || (instanceId != null && d.door.instances.includes(Number(instanceId)))));
 
 // ackWhy: the words of a control that is off, null when it is on. name: the instance as the page shows it.
-export function ackWhy(d: AckData, instanceId?: number | null, name?: string): string | null {
+export function ackWhy(d: AckData, instanceId?: AckInstance, name?: string): string | null {
   if (ackOn(d, instanceId)) return null;
   if (d.door && instanceId != null) return `${name ?? 'this instance'} is not one of this demo's instances: changing it needs pgvigil serve with a signed-in user`;
   if (d.door) return "this change would reach past the demo's instances: set it on one demo instance here, or use pgvigil serve with a signed-in user";
@@ -105,21 +107,29 @@ export function jobAckCell(d: AckData, instanceId: number, jobName: string, last
     what: `Its failure of ${fmtTime(lastFail)} is acknowledged: the cell loses its colour until the job fails again. Who and when are kept.`,
     body: { kind: 'job', instance_id: instanceId, job_name: jobName, seen_state: String(lastFail) },
     expiry: false, after,
-  }), instanceId));
+  }), { instance: instanceId }));
   return span;
 }
 
 // writeButton: a button that opens a write's dialog; where the write cannot be made it is off with its reason in
 // words on the page (ui.ts offControl: aria-disabled, the reason its description and visible text). instanceId: the
-// instance the write names (none = a write wider than one instance). note: the page's own visible sentence when it
-// says this reason already; without one the reason is put beside the button once the caller has placed it.
-export function writeButton(d: AckData, label: string, aria: string, open: () => void, instanceId?: number | null, note?: HTMLElement, name?: string): HTMLButtonElement {
+// at.instance: the instance the write names (none = a write wider than one instance; 'any' = picked later); at.name:
+// that instance as the page shows it; at.note: the page's own visible sentence when it says this reason already (without
+// one the reason is put beside the button once the caller has placed it); at.why: the words when the reason is the
+// control's own (Send test on a demo serve).
+export interface WriteAt { instance?: AckInstance; name?: string; note?: HTMLElement; why?: string | null }
+export function writeButton(d: AckData, label: string, aria: string, open: () => void, at: WriteAt = {}): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
-  const why = ackWhy(d, instanceId, name);
-  if (!why) { b.addEventListener('click', open); return b; }
+  const why = at.why ?? ackWhy(d, at.instance, at.name);
+  if (why) offBeside(b, why, at.note); else b.addEventListener('click', open);
+  return b;
+}
+
+// offBeside: a control that is off, its reason in words on the page - the page's own sentence when one is given,
+// else a note put beside the control once the caller has placed it (the caller appends the control in the same turn)
+export function offBeside(b: HTMLElement, why: string, note?: HTMLElement): void {
   const made = offControl(b, why, note);
   if (!note) queueMicrotask(() => { if (b.parentNode && !made.parentNode) b.after(' ', made); });
-  return b;
 }
 
 // endButton: ends one row (unacknowledge, unsilence, remove a rule) after a confirm
