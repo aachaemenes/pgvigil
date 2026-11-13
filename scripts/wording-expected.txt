@@ -1,5 +1,5 @@
 # The wording walk's expected reds (scripts/proof-wording.sh): written before the first run (the design D3 as folded;
-# rel-join-w1 be578e2). A row: status | scope | page | kind | word | source | the smallest fix and its file
+# rel-join-w1 be578e2; each source line as it stands at 42ca98d, the join's tip). A row: status | scope | page | kind | word | source | the smallest fix and its file
 #   status  must      the red shows (on at least one page the page pattern matches, in that scope)
 #           may       the demo's state decides; after the FIRST box run each may row that showed becomes must in
 #                     the same commit as the run's table (the lead 23:13); from then on this file changes only in
@@ -15,21 +15,21 @@
 # are reported either way. A red outside the file is a finding of the run (its table), listed after it.
 
 # --- regressions (fixed by f0c821c before the walk; the design pass found them gone at 0d189b8)
-must-not | pg-instance | ^summary\?i= | prose | QS | pages.ts:639 (n/a cells left out) | -
-must-not | pg-instance | ^summary\?i= | prose | SQL Agent | pages.ts:639 | -
-must-not | pg-instance | ^summary\?i= | prose | Mirroring | pages.ts:639 | -
-must-not | pg-instance | ^summary\?i= | prose | Elastic Pool | pages.ts:639 | -
-must-not | pg-instance | ^summary\?i= | prose | Database Mail | pages.ts:639 | -
-must-not | pg-instance | ^summary\?i= | prose | Service Broker | pages.ts:639 | -
+must-not | pg-instance | ^summary\?i= | prose | QS | pages.ts:648 (n/a cells left out) | -
+must-not | pg-instance | ^summary\?i= | prose | SQL Agent | pages.ts:648 | -
+must-not | pg-instance | ^summary\?i= | prose | Mirroring | pages.ts:648 | -
+must-not | pg-instance | ^summary\?i= | prose | Elastic Pool | pages.ts:648 | -
+must-not | pg-instance | ^summary\?i= | prose | Database Mail | pages.ts:648 | -
+must-not | pg-instance | ^summary\?i= | prose | Service Broker | pages.ts:648 | -
 must-not | pg-instance | ^rp_finder\?i= | th | QS | reports.ts:153 (gated on anyMs) | -
 must-not | pg-instance | ^rp_finder\?i= | th | Forced Plans | reports.ts:155 | -
 
 # --- a PostgreSQL instance's own pages
-may | pg-instance | ^summary\?i= | prose | Memory Dump | pages.ts:641 'Not OK:' links | a pgLabel on Group (web/src/fleet.ts), used at pages.ts:641 (Item 6, the fix pane)
-may | pg-instance | ^summary\?i= | prose | Availability Group | pages.ts:641 | the same pgLabel (Item 6)
-may | pg-instance | ^summary\?i= | prose | Last Good Check DB | pages.ts:641 | the same pgLabel (Item 6)
-may | pg-instance | ^summary\?i= | prose | Agent Jobs | pages.ts:641 | the same pgLabel (Item 6)
-may | pg-instance | ^summary\?i= | prose | Backup LOG | pages.ts:641 | the same pgLabel (Item 6)
+may | pg-instance | ^summary\?i= | prose | Memory Dump | pages.ts:649 'Not OK:' links | a pgLabel on Group (web/src/fleet.ts), used at pages.ts:649 (Item 6, the fix pane)
+may | pg-instance | ^summary\?i= | prose | Availability Group | pages.ts:649 | the same pgLabel (Item 6)
+may | pg-instance | ^summary\?i= | prose | Last Good Check DB | pages.ts:649 | the same pgLabel (Item 6)
+may | pg-instance | ^summary\?i= | prose | Agent Jobs | pages.ts:649 | the same pgLabel (Item 6)
+may | pg-instance | ^summary\?i= | prose | Backup LOG | pages.ts:649 | the same pgLabel (Item 6)
 may | pg-instance | . | attr | Memory Dump | instheader.ts:181 (the band dot's title, every page of the instance) | the pgLabel at instheader.ts:181 (Item 6)
 may | pg-instance | . | attr | Availability Group | instheader.ts:181 | the pgLabel at instheader.ts:181 (Item 6)
 may | pg-instance | . | attr | Last Good Check DB | instheader.ts:181 | the pgLabel at instheader.ts:181 (Item 6)
@@ -52,13 +52,13 @@ must | pg-tag | ^summary\?tag= | cell | Availability Group | pages.ts:463 | the 
 must | pg-tag | ^summary\?tag= | cell | Last Good Check DB | pages.ts:463 | the same
 must | pg-tag | ^summary\?tag= | cell | Agent Jobs | pages.ts:463 | the same
 must | pg-tag | ^summary\?tag= | cell | Backup LOG | pages.ts:463 | the same
-must | pg-tag | ^summary\?tag= | attr | Memory Dump | pages.ts:345 (the cell link's aria-label) | pgLabel at web/src/pages.ts:345 (Item 6)
-may | pg-tag | ^summary\?tag= | prose | Memory Dump | pages.ts:531 (Needs attention: the demo's state) | pgLabel at web/src/pages.ts:531 (Item 6)
-must | pg-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | SQL Server | main.ts:349 ('SQL Server options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:349
-must | pg-tag | ^(drives|dbspace|dbfiles|mssqltempdb|tablesize|disks|storage|growth|dbchanges|indexes)\?tag= | tab | tempdb | main.ts:349 ('TempDB' in the strip) | the same filter, web/src/main.ts:349
-must | pg-tag | ^mssqlrisks\?tag= | heading | SQL Server | the page's h2 'SQL Server options' | unreachable once main.ts:349 filters the strip
-must | pg-tag | ^mssqltempdb\?tag= | heading | tempdb | the page's h2 'TempDB' | unreachable once main.ts:349 filters the strip
-must | pg-tag | ^rp_\w+\?tag= | tab | Flushed Plans | router.ts rootGroups' Reports (rp_flushed) | rp_flushed out of the strip where the scope holds no SQL Server (web/src/main.ts:349's filter by engine)
+must | pg-tag | ^summary\?tag= | attr | Memory Dump | pages.ts:350 (the cell link's aria-label) | pgLabel at web/src/pages.ts:350 (Item 6)
+may | pg-tag | ^summary\?tag= | prose | Memory Dump | pages.ts:536 (Needs attention: the demo's state) | pgLabel at web/src/pages.ts:536 (Item 6)
+must | pg-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | SQL Server | main.ts:352 ('SQL Server options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:352
+must | pg-tag | ^(drives|dbspace|dbfiles|mssqltempdb|tablesize|disks|storage|growth|dbchanges|indexes)\?tag= | tab | tempdb | main.ts:352 ('TempDB' in the strip) | the same filter, web/src/main.ts:352
+must | pg-tag | ^mssqlrisks\?tag= | heading | SQL Server | the page's h2 'SQL Server options' | unreachable once main.ts:352 filters the strip
+must | pg-tag | ^mssqltempdb\?tag= | heading | tempdb | the page's h2 'TempDB' | unreachable once main.ts:352 filters the strip
+must | pg-tag | ^rp_\w+\?tag= | tab | Flushed Plans | router.ts rootGroups' Reports (rp_flushed) | rp_flushed out of the strip where the scope holds no SQL Server (web/src/main.ts:352's filter by engine)
 must | pg-tag | ^rp_flushed\?tag= | prose | plan cache | reports.ts:435 ('Each plan cache flush the server recorded: DBCC FREEPROCCACHE ... default trace') | that sentence only where the scope holds SQL Server, or begun 'SQL Server:' (web/src/reports.ts:435)
 must | pg-tag | ^rp_flushed\?tag= | prose | DBCC | reports.ts:435 | the same
 must | pg-tag | ^rp_flushed\?tag= | prose | default trace | reports.ts:435 | the same
@@ -67,7 +67,7 @@ must | pg-tag | ^running\?tag= | th | tempdb | running_fleet.ts:74-77 ('tempdb l
 
 # --- the reverse: fleet pages on a SQL Server-only tag folder (the first run reads #/pgreplication, #/pgthresholds,
 # #/extensions and #/backups there too: what it finds is a finding)
-must | ms-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | PostgreSQL | main.ts:349 ('PostgreSQL options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:349
-must | ms-tag | ^pgrisks\?tag= | heading | PostgreSQL | pg_dboptions.ts:183 (h2 'PostgreSQL options') | unreachable once main.ts:349 filters the strip
+must | ms-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | PostgreSQL | main.ts:352 ('PostgreSQL options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:352
+must | ms-tag | ^pgrisks\?tag= | heading | PostgreSQL | pg_dboptions.ts:183 (h2 'PostgreSQL options') | unreachable once main.ts:352 filters the strip
 
 # --- allowed, never a red (scripts/wording-allow.txt): "PostgreSQL's TempDB" (drives.ts:443, A5)
