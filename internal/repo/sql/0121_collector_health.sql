@@ -15,16 +15,19 @@
 -- it deleted; 'purge not run in 2 days' is a finding.
 --
 -- 'collector or network' is one alert per collector: its host not seen for 5 minutes (stopped, crashed, or the
--- repository out of its reach) while no other collector reads its instances, or a minute in which the instances that
--- failed every run are a shared cause (collector_together: 5 or more, or at least 3 and over half of those it ran;
--- collector_minutes groups the load for it, and the forming wait and the window read the same two functions).
+-- repository out of its reach) while no other collector reads its instances, or instances whose failures BEGAN
+-- together (collector_cohorts: their 'dead' spells - every run failed - began within one window of each other, and
+-- they are a shared cause by collector_together: 5 or more, or at least 3 and over half of those it ran then). A
+-- failure that stood before is never counted, so standing failures begun apart raise nothing however many there are.
 -- alert_due (0190) holds only what a shared cause explains
 -- (collector_shared_cause: the collector's own kinds and the findings judged by age on data a cut stops refreshing):
--- while the parent stands, those alerts of its instances not read since it began (the instances still read keep
--- alerting; a data finding from the last good read is sent); while one may be forming (collector_forming: in the
+-- while the parent stands, those alerts of its members still failing (an instance read again has left; a standing
+-- failure that began before is no member and alerts as any; a data finding from the last good read is sent); while
+-- one may be forming (collector_forming: in the
 -- newest minute the instances with a failed connect or a newly failed run are a shared cause) their NEW alerts wait
--- for the next minute, 3 minutes at most; after it (collector_in_window) a collector kind needs one failure past its
--- window, for a new alert and for an open one's repeat alike. A refused login
+-- for the next minute, 3 minutes at most; after it (collector_in_window: a minute in which the parent stood with the
+-- instance among its failing members) a collector kind needs one failure past its window, for a new alert and for an
+-- open one's repeat alike. A refused login
 -- or a server not answering at the instance's own connect is the instance's one finding ('authentication failing',
 -- 'server unreachable'), never a 'collection failing' per collection. The repository-wide findings (source 'pgvigil
 -- repository': the parent, the purge) go to every channel that passes its severity floor, scoped channels too.
@@ -128,6 +131,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_spells (
   PRIMARY KEY (host, instance_id, kind, since)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS collector_spells_open ON pgvigil.collector_spells (host, instance_id, kind) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS collector_spells_since ON pgvigil.collector_spells (host, kind, since);
 
 CREATE TABLE IF NOT EXISTS pgvigil.purge_runs (
   run_id              bigserial PRIMARY KEY,
@@ -394,16 +398,56 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT p_n >= 5 OR (p_n >= 3 AND p_n * 2 > p_ran)
 $$;
 
+-- collector_span: the host's span - how far apart its written minutes of one instance may lie (N3 gives it the
+-- instance's configured interval; 1 minute until then). A cohort's window and a spell's 'still read' are span + 3
+-- minutes, the in-window reach span + 4.
+CREATE OR REPLACE FUNCTION pgvigil.collector_span(p_host text)
+RETURNS interval LANGUAGE sql STABLE AS $$
+  SELECT interval '1 minute'
+$$;
+
+-- collector_cohorts: per collector (host), the instances whose failures BEGAN together. A cohort starts at a 'dead'
+-- spell's first minute s0 (an ended spell's too: its first member may have recovered) and holds every dead spell of
+-- the host that began in [s0, s0 + span + 3 min]; it is a shared cause when collector_together(those that began, the
+-- instances the host ran in those minutes) holds, and it STANDS while 3 or more of them still fail every run (their
+-- spell open and read within span + 3 minutes of the host's newest written minute). members = those still failing.
+-- A spell that began before s0 is no member, however long it stands; a cohort that never recovers keeps standing
+-- (a server taken out for good is removed from the configuration or muted).
+CREATE OR REPLACE VIEW pgvigil.collector_cohorts AS
+WITH hn AS (
+  SELECT h.host, max(l.minute) AS newest, pgvigil.collector_span(h.host) + interval '3 minutes' AS w
+    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute > now() - interval '15 minutes' AND h.retired_at IS NULL
+   GROUP BY h.host
+), live AS (
+  SELECT s.host, s.instance_id, s.since, hn.w
+    FROM pgvigil.collector_spells s JOIN hn USING (host)
+   WHERE s.kind = 'dead' AND s.ended_at IS NULL AND s.last >= hn.newest - hn.w
+), anchor AS (
+  SELECT DISTINCT a.host, a.since AS s0, l.w
+    FROM live l
+    JOIN pgvigil.collector_spells a ON a.host = l.host AND a.kind = 'dead' AND a.since BETWEEN l.since - l.w AND l.since
+), cand AS (
+  SELECT a.host, a.s0,
+         (SELECT count(DISTINCT s.instance_id) FROM pgvigil.collector_spells s
+           WHERE s.host = a.host AND s.kind = 'dead' AND s.since BETWEEN a.s0 AND a.s0 + a.w) AS began,
+         (SELECT count(DISTINCT l.instance_id) FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+           WHERE h.host = a.host AND l.minute BETWEEN a.s0 AND a.s0 + a.w AND l.runs > 0) AS ran,
+         ARRAY(SELECT DISTINCT v.instance_id FROM live v WHERE v.host = a.host AND v.since BETWEEN a.s0 AND a.s0 + a.w ORDER BY 1) AS members
+    FROM anchor a
+)
+SELECT c.host, c.s0 AS since, c.began, c.ran, c.members,
+       (SELECT string_agg(i.name, ', ' ORDER BY i.name) FROM pgvigil.instances i WHERE i.instance_id = ANY (c.members)) AS names
+  FROM cand c
+ WHERE pgvigil.collector_together(c.began, c.ran) AND cardinality(c.members) >= 3;
+
 -- collector_parent: the 'collector or network' conditions now, one row per collector (host) at most:
 --   'collector not seen': no beat for 5 minutes from any run of the host while some of its active instances have not
 --     been read by another host since its newest beat (orphaned; a host whose every instance moved is retired, not
 --     down); its instances = the orphaned ones (held whatever the down host read after its last beat)
---   'instances failing together': a minute among the host's last 4 minute stamps (the newest may not be written yet:
---     a beat writes minute M at M+1 min+2 s) in which the instances that failed every run are a shared cause
---     (collector_together: 5 or more, or at least 3 and over half of those it ran; several minutes, so a minute in
---     which hung connects finished few runs does not lift it); since = the
---     first such minute; its instances = the host's, held while they have had no ok collection since
--- instances: the host's instances (the hold reads them); since: when the condition began.
+--   'instances failing together': a standing cohort of the host (collector_cohorts); since = its first minute (the
+--     earliest when two stand); its instances = the members still failing, of every cohort of the host
+-- instances: the ones the hold reads; since: when the condition began.
 CREATE OR REPLACE VIEW pgvigil.collector_parent AS
 WITH down AS (
   SELECT c.host, 'collector not seen'::text AS why,
@@ -415,37 +459,27 @@ WITH down AS (
          c.beat_at AS since, c.orphaned AS instances
     FROM pgvigil.collector_hosts c
    WHERE c.beat_at < now() - interval '5 minutes' AND cardinality(c.orphaned) > 0
-), m AS (    -- the last 4 minute stamps before the current one, per host, minute and instance
-  SELECT c.* FROM pgvigil.collector_minutes(date_trunc('minute', now()) - interval '4 minutes', date_trunc('minute', now())) c
-   WHERE c.minute < date_trunc('minute', now())
-), bad AS (   -- the minutes that qualify
-  SELECT m.host, m.minute,
-         format('%s of the %s instance(s) %s ran failed every run in the minute %s: %s - a shared cause (the network, the collector host, a shared login, storage)',
-                count(*) FILTER (WHERE m.dead), count(*) FILTER (WHERE m.ran), m.host, m.minute,
-                string_agg(i.name, ', ' ORDER BY i.name) FILTER (WHERE m.dead)) AS detail,
-         array_agg(m.instance_id) AS instances
-    FROM m JOIN pgvigil.instances i USING (instance_id)
-   GROUP BY m.host, m.minute
-  HAVING pgvigil.collector_together(count(*) FILTER (WHERE m.dead), count(*) FILTER (WHERE m.ran))
+), co AS (
+  SELECT * FROM pgvigil.collector_cohorts
 ), together AS (
-  SELECT DISTINCT ON (b.host) b.host, 'instances failing together'::text AS why, b.detail,
-         (SELECT min(b2.minute) FROM bad b2 WHERE b2.host = b.host) AS since,
-         (SELECT array_agg(DISTINCT x) FROM bad b3, unnest(b3.instances) x WHERE b3.host = b.host) AS instances
-    FROM bad b
-   ORDER BY b.host, b.minute DESC
+  SELECT DISTINCT ON (c.host) c.host, 'instances failing together'::text AS why,
+         format('%s of the %s instance(s) %s ran failed every run in the minutes from %s, their failures beginning together: %s - a shared cause (the network, the collector host, a shared login, storage)%s',
+                c.began, c.ran, c.host, c.since, c.names,
+                CASE WHEN cardinality(c.members) < c.began THEN format(' (%s of them still failing)', cardinality(c.members)) ELSE '' END) AS detail,
+         (SELECT min(c2.since) FROM co c2 WHERE c2.host = c.host) AS since,
+         (SELECT array_agg(DISTINCT x ORDER BY x) FROM co c3, unnest(c3.members) x WHERE c3.host = c.host) AS instances
+    FROM co c
+   ORDER BY c.host, c.since DESC
 )
 SELECT * FROM down
 UNION ALL
 SELECT * FROM together t WHERE NOT EXISTS (SELECT 1 FROM down d WHERE d.host = t.host);
 
--- collector_held_instances: the instances whose alerts are held - a 'collector or network' of a collector of theirs
--- stands and the instance has had no ok collection since it began (alert_due, 0190, reads it once per pass)
+-- collector_held_instances: the instances whose alerts are held - a member still failing of a standing 'instances
+-- failing together', or an orphaned instance of a collector not seen (alert_due, 0190, reads it once per pass)
 CREATE OR REPLACE VIEW pgvigil.collector_held_instances AS
 SELECT DISTINCT x.instance_id
-  FROM pgvigil.collector_parent p CROSS JOIN LATERAL unnest(p.instances) AS x(instance_id)
- WHERE p.why = 'collector not seen'   -- the orphaned instances: no other host has read them since the down host's last beat
-    OR NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d
-                    WHERE d.instance_id = x.instance_id AND d.status = 'ok' AND d.snapshot_at > p.since);
+  FROM pgvigil.collector_parent p CROSS JOIN LATERAL unnest(p.instances) AS x(instance_id);
 
 -- collector_shared_cause: the findings a shared cause (the network, the collector host, a shared login) explains -
 -- the ones alert_due (0190) holds under 'collector or network' and makes wait while one forms: the collector's own
@@ -527,22 +561,33 @@ SELECT DISTINCT m.instance_id, n.host, n.minute
            AND x.minute >= n.minute - interval '3 minutes' AND x.minute <= n.minute) < 4;
 
 -- collector_in_window: whether a failure at p_at of the instance lies inside an 'instances failing together' window
--- of a host that ran it - a failing-together minute after p_at - 5 minutes in which the instance itself failed every
--- run (the parent leaves collector_parent 5 minutes after its newest such minute). alert_due: a NEW collector kind of
--- the instance whose newest failure (the finding's at) is inside waits - after the parent clears, an instance still
--- failing alerts once per finding after one failure past the window, never off a streak or a refusal from inside it,
--- never after a fresh streak of 3. Anchored to the finding, with no look-back cap: it reads the minutes from p_at - 5
--- min to p_at + 5 min only (a window that holds p_at has a failing-together minute there: one in the 5 minutes before
--- it, or, in the cut's first mixed minute, the first one within the forming cap after it).
+-- of a host that ran it - a minute in (p_at - (span + 4 min), p_at + (span + 4 min)] in which the instance's dead spell
+-- ran and its cohort stood (it began together with a shared cause, and 3 or more of it failed every run then).
+-- alert_due: a NEW collector kind of the instance whose newest failure (the finding's at) is inside waits - after the
+-- parent clears, an instance still failing alerts once per finding after one failure past the window, never off a
+-- streak or a refusal from inside it. Anchored to the finding, with no look-back cap: it reads the instance's spells
+-- that overlap the reach and their cohorts only. A spell that began before a cohort is never in its window.
 CREATE OR REPLACE FUNCTION pgvigil.collector_in_window(p_instance_id int, p_at timestamptz)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT EXISTS (
-    SELECT 1 FROM pgvigil.collector_minutes(p_at - interval '5 minutes', p_at + interval '5 minutes') b
-     WHERE b.instance_id = p_instance_id AND b.dead AND b.minute > p_at - interval '5 minutes'
-       -- the parent's own test of that minute on the host that ran it (the same functions: with 40 of 200 cut the
-       -- window must answer as the parent does, or all 40 alert at the lift)
-       AND (SELECT pgvigil.collector_together(count(*) FILTER (WHERE x.dead), count(*) FILTER (WHERE x.ran))
-              FROM pgvigil.collector_minutes(b.minute, b.minute) x WHERE x.host = b.host))
+    SELECT 1
+      FROM pgvigil.collector_spells s
+      CROSS JOIN LATERAL (SELECT pgvigil.collector_span(s.host) + interval '3 minutes' AS w,
+                                 pgvigil.collector_span(s.host) + interval '4 minutes' AS r) k
+      JOIN pgvigil.collector_spells a ON a.host = s.host AND a.kind = 'dead' AND a.since BETWEEN s.since - k.w AND s.since
+     WHERE s.instance_id = p_instance_id AND s.kind = 'dead'
+       AND s.last > p_at - k.r AND s.since <= p_at + k.r
+       AND pgvigil.collector_together(
+             (SELECT count(DISTINCT c.instance_id) FROM pgvigil.collector_spells c
+               WHERE c.host = s.host AND c.kind = 'dead' AND c.since BETWEEN a.since AND a.since + k.w),
+             (SELECT count(DISTINCT l.instance_id) FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+               WHERE h.host = s.host AND l.minute BETWEEN a.since AND a.since + k.w AND l.runs > 0))
+       AND EXISTS (SELECT 1
+                     FROM generate_series(greatest(s.since, date_trunc('minute', p_at - k.r)), least(s.last, p_at + k.r), interval '1 minute') t
+                    WHERE t > p_at - k.r
+                      AND (SELECT count(DISTINCT c.instance_id) FROM pgvigil.collector_spells c
+                            WHERE c.host = s.host AND c.kind = 'dead' AND c.since BETWEEN a.since AND a.since + k.w
+                              AND c.since <= t AND c.last >= t) >= 3))
 $$;
 
 -- collector_down: a collector not seen for 5 minutes (serve's watchdog runs the alert pass then: the collector that
@@ -562,12 +607,8 @@ SELECT NULL::int AS instance_id, 'critical'::text AS severity, 'collector or net
        || coalesce((SELECT '; it covers ' || count(*) || ' open alert(s): ' || string_agg(o.x, ', ' ORDER BY o.x)
                       FROM (SELECT DISTINCT format('%s %s (%s)', a.instance_name, a.setting, a.value) AS x
                               FROM pgvigil.alert_state a
-                             WHERE a.cleared_at IS NULL AND a.instance_id = ANY (p.instances)
-                               AND pgvigil.collector_shared_cause(a.source, a.setting)
-                               -- held: collector_held_instances' test for this parent
-                               AND (p.why = 'collector not seen'
-                                    OR NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d
-                                                    WHERE d.instance_id = a.instance_id AND d.status = 'ok' AND d.snapshot_at > p.since))) o
+                             WHERE a.cleared_at IS NULL AND a.instance_id = ANY (p.instances)   -- held: collector_held_instances
+                               AND pgvigil.collector_shared_cause(a.source, a.setting)) o
                     HAVING count(*) > 0), '') AS detail,
        'pgvigil repository'::text AS source, p.since AS at
   FROM pgvigil.collector_parent p
