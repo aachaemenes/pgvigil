@@ -275,6 +275,8 @@ async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     sec.append(el('h4', {}, `${t.name} parameters`), grid(s.param_doc.map(x => ({ name: x.name, type: x.type, used: byName.get(x.name.toLowerCase()) ?? '', help: x.help ?? '' })), [
       { key: 'name', label: 'parameter' }, { key: 'type' }, { key: 'used', label: 'in the stored run' }, { key: 'help', label: 'what it does', wide: true },
     ]));
+    // the help text is the kit's own words, stored with the sample (MIT kits only; THIRD-PARTY-NOTICES.md says so)
+    if (s.param_doc.some(x => x.help)) sec.append(el('p', { class: 'meta' }, `'what it does' is ${s.kit}'s own help text for ${t.name}, stored with the sample (MIT).`));
   } else if (used.length) {
     sec.append(el('p', { class: 'meta' }, 'The stored run passed ' + used.map(([k, v]) => `${k} = ${v}`).join(', ') + '.'));
   }

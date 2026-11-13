@@ -354,6 +354,13 @@ func msArg(p procParam, v string) (any, error) {
 }
 
 // communityInstance is an instance's name and engine.
+// communityPlatform: the instance's platform as the repository holds it - a demo instance's sample line names it where
+// it is not the test server's.
+func (s *Server) communityPlatform(ctx context.Context, id int) (platform string, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT platform FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&platform)
+	return platform, err
+}
+
 func (s *Server) communityInstance(ctx context.Context, id int) (name, engine string, err error) {
 	err = s.pool.QueryRow(ctx, `SELECT name, engine FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name, &engine)
 	return name, engine, err
@@ -418,30 +425,50 @@ var kitLicense = map[string]string{
 	"sp_WhoIsActive":      "its rows are that test server's sessions (sp_WhoIsActive is GPL-3.0, (C) 2007-2026 Adam Machanic; none of its own text is stored)",
 }
 
-// markOf: the sample's mark as instance shows it.
-func markOf(t *communityTool, sm *community.Sample, instance string) *sampleMark {
-	day := sm.CapturedAt.UTC().Format("2006-01-02")
+// testPlatform: the platform of the test servers the samples were captured on (a SQL Server container, a PostgreSQL
+// cluster of the capture's own), per engine as pgvigil.instances.platform names it.
+var testPlatform = map[string]string{"sqlserver": "sqlserver", "postgres": "onprem"}
+
+// platformWords: how a sample line names a demo instance's platform where it is not the test server's - the same run
+// there returns other rows (other paths, settings and host words), so the line says so (review 20261112-222929 D2).
+var platformWords = map[string]string{
+	"sqlserver/azuresqlmi": "an Azure SQL Managed Instance",
+	"postgres/aurora":      "an Aurora PostgreSQL instance",
+	"postgres/rds":         "an Amazon RDS for PostgreSQL instance",
+	"postgres/azure":       "an Azure Database for PostgreSQL server",
+	"postgres/cloudsql":    "a Cloud SQL for PostgreSQL instance",
+}
+
+// markOf: the sample's mark as instance (of platform, pgvigil.instances.platform) shows it. The day is the capture's
+// UTC day and says so; an instance on another platform than the test server's is named with its platform.
+func markOf(t *communityTool, sm *community.Sample, instance, platform string) *sampleMark {
+	day := sm.CapturedAt.UTC().Format("2006-01-02") + " UTC"
+	notLine, notMark := instance+".", instance
+	if w := platformWords[t.Engine+"/"+platform]; w != "" && platform != testPlatform[t.Engine] {
+		notLine = instance + ", " + w + ", where the same run returns other rows."
+		notMark = instance + " (" + w + ")"
+	}
 	var line string
 	switch sm.Kit {
 	case "pgvigil":
-		line = fmt.Sprintf("pgvigil's own read, captured %s on a test server (%s) loaded with the demo's invented schema; not %s.", day, sm.Server, instance)
+		line = fmt.Sprintf("pgvigil's own read, captured %s on a test server (%s) loaded with the demo's invented schema; not %s", day, sm.Server, notLine)
 	case "DarlingData":
 		// each DarlingData procedure has a version of its own: the procedure first, the kit and its release beside it
 		rel := "DarlingData"
 		if sm.VersionDate != "" {
 			rel += ", " + sm.VersionDate
 		}
-		line = fmt.Sprintf("%s %s (%s) output, captured %s on a test server (%s); %s; not %s.", t.Name, sm.Version, rel, day, sm.Server, kitLicense[sm.Kit], instance)
+		line = fmt.Sprintf("%s %s (%s) output, captured %s on a test server (%s); %s; not %s", t.Name, sm.Version, rel, day, sm.Server, kitLicense[sm.Kit], notLine)
 	default:
 		of := " (" + t.Name + ")"
 		if sm.Kit == t.Name {
 			of = ""
 		}
-		line = fmt.Sprintf("%s %s output%s, captured %s on a test server (%s); %s; not %s.", sm.Kit, sm.Version, of, day, sm.Server, kitLicense[sm.Kit], instance)
+		line = fmt.Sprintf("%s %s output%s, captured %s on a test server (%s); %s; not %s", sm.Kit, sm.Version, of, day, sm.Server, kitLicense[sm.Kit], notLine)
 	}
 	return &sampleMark{Kit: sm.Kit, Version: sm.Version, VersionDate: sm.VersionDate, CapturedAt: sm.CapturedAt, Server: sm.Server,
 		Page: samplePage[t.ID], Line: line,
-		Mark: fmt.Sprintf("stored sample of %s (%s %s, captured %s on a test server, %s), not %s", t.Name, sm.Kit, sm.Version, day, sm.Server, instance)}
+		Mark: fmt.Sprintf("stored sample of %s (%s %s, captured %s on a test server, %s), not %s", t.Name, sm.Kit, sm.Version, day, sm.Server, notMark)}
 }
 
 // toolNeed is one thing a tool lacks before it can run here, in the page's words: what is missing and the way to get
@@ -1095,10 +1122,15 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		out.Database = msDB(db)
 	}
 	var c *communityCheck
+	var platform string
 	switch {
 	case demo:
 		// a demo instance: invented by pgvigil demo, no server behind it (its tag and no login; never the process)
 		out.Demo = true
+		if platform, err = s.communityPlatform(ctx, id); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 		out.Needs = append(out.Needs, toolNeed{What: name + " is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here.",
 			How: "on a real install each tool runs on the instance's read login (docs/customreports.md)", Hard: true, State: "demo", Source: "repository"})
 	case door == "":
@@ -1141,7 +1173,7 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		if out.Demo {
 			// the tool's stored sample, said per tool; a tool without one says why beside it
 			if sm, err := community.Get(t.ID); err == nil {
-				t.Sample = markOf(&t.communityTool, sm, name)
+				t.Sample = markOf(&t.communityTool, sm, name, platform)
 			} else {
 				why := noSample[t.ID]
 				if why == "" {
@@ -1235,6 +1267,11 @@ func (s *Server) CommunitySample(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("%s is not a demo instance without a login: its tools run on its server, and no stored sample is shown for it", name))
 		return
 	}
+	platform, err := s.communityPlatform(ctx, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	sm, err := community.Get(t.ID)
 	if errors.Is(err, community.ErrNone) {
 		why := noSample[t.ID]
@@ -1260,7 +1297,7 @@ func (s *Server) CommunitySample(w http.ResponseWriter, r *http.Request) {
 		Cut      []string             `json:"cut"`
 		Scrubbed []string             `json:"scrubbed"`
 		Sets     []community.Set      `json:"sets"`
-	}{t.ID, t.Name, name, markOf(t, sm, name), sm.Database, sm.Params, sm.ParamDoc, sm.Dropped, sm.Cut, sm.Scrubbed, sm.Sets}, nil)
+	}{t.ID, t.Name, name, markOf(t, sm, name, platform), sm.Database, sm.Params, sm.ParamDoc, sm.Dropped, sm.Cut, sm.Scrubbed, sm.Sets}, nil)
 }
 
 type communityBody struct {
