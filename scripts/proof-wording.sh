@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of the web UI's wording per engine (the pre-publish walk, DONE-1): no page a PostgreSQL instance reaches shows
+# Proof of the web UI's wording per engine (the pre-publish walk): no page a PostgreSQL instance reaches shows
 # a word only SQL Server has, and no SQL Server page a PostgreSQL word, but where the page says whose word it is.
 # The demo fleet is seeded into a throwaway database and served on loopback (or PGVIGIL_DEMO_URL names a demo another
 # proof already serves), a headless Chromium reads every page of two instances of each engine, the Pooler instance,
@@ -13,30 +13,33 @@
 #   PGVIGIL_DEMO_WAIT_S   seconds to wait for the seeded demo (default 240)
 #   PGVIGIL_WORDING_OUT   a file that gets the walk's JSON (every page, every red, the grade)
 #   PGVIGIL_WORDING_SHOTS a folder: a shot of each page read
-# Expected (the second run, written after walk-w1 - rel-join-w1 42ca98d (merged a1317d8) + the walk's files + walk-w1's
-# table; the first run's expected and its grade are in the commit that added the table):
-#   the matcher's self-test: 41 of 41 cases (63 words, 4 allow rows, 144 expected rows)
+# Expected (the third run, after the review's fold of the read: the scope's own names, each text node apart, the root's
+# Alerts rows by their instance's name, A1 / A2 by position in a clause, a page read only when settled with no error
+# box and some text; written before it):
+#   the matcher's self-test: 53 of 53 cases (63 words, 4 allow rows, 143 expected rows)
 #   picked: PostgreSQL demo-onprem-erp01 and demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
 #     demo-onprem-sql01 and demo-azure-sql03; tags aurora (PostgreSQL; 3 instances, before onprem by name) and sales
 #     (SQL Server; 2, before sqlserver by name)
-#   pages: about 359 read (walk-w1: pg-instance 125, ms-instance 107, pg-tag 61, ms-tag 61, root 5), every one
-#     rendered; the walk about 4-5 minutes after the seed (walk-w1: 270 s)
-#   the grade: every must row listed (131: the 28 written before the run, the 6 may rows that showed in walk-w1, the 97
-#     rows of its table), every must-not row gone (8), the 5 may rows reported seen or not; no red outside the file:
-#     'wording walk: OK' (walk-w1's own 876 reds re-graded on the laptop against these files: 0 outside, 0 must missing,
-#     0 must-not seen). A must row on the Alerts / Alert rules pages of a tag folder rests on the alerts the demo has
-#     open: one missing there is the demo's state, read before any change to the file
+#   pages: about 359 (the second run: pg-instance 125, ms-instance 107, pg-tag 61, ms-tag 61, root 5), 0 not read; the
+#     root's Alerts page reads its rows (elements above 0); the tree menu read for both engines (items above 0)
+#   the grade: every must-not row gone (8); the must rows listed but the old glued 'Aurora' row (deleted: it was an
+#     instance name); the 27 Alerts grid rows of a tag folder are may (the demo's open alerts decide). The fold unmasks
+#     reds the old read hid - a word beside a tag of another scope ('Aurora', 'Azure SQL'), a word glued to the next
+#     line, a sentence that named an engine or a negation away from the word, the root's Alerts rows - so the expected
+#     verdict is 'wording walk: FAIL (<n> red(s) outside the expected file)' with those NEW lines (each a finding or a
+#     false red: the table's addition, then a fourth run), or OK if none shows; a page not read is a FAIL of its own
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_wording_$RANDOM"; PORT=$((21000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
-  [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
-  [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true
-  [[ -z "${PGVIGIL_DEMO_URL:-}" ]] && psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
+  [[ -n "$SRV" ]] && { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; } || true
+  [[ -n "$CHR" ]] && { kill "$CHR" 2>/dev/null; wait "$CHR" 2>/dev/null; } || true
+  [[ -z "${PGVIGIL_DEMO_URL:-}" && -n "${PGVIGIL_ADMIN_DSN:-}" ]] && psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 for t in chromium node curl; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 
 echo "== the matcher's self-test"
@@ -66,8 +69,10 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 
 echo "== the walk"
-node scripts/wording-walk.mjs "$CDP" "$URL" "${PGVIGIL_WORDING_OUT:-$WORK/wording.json}" ${PGVIGIL_WORDING_SHOTS:+"$PGVIGIL_WORDING_SHOTS"} | tee "$WORK/wording.txt"
+# the walk has a limit: a browser that never answers ends the proof, never hangs it
+timeout 1200 node scripts/wording-walk.mjs "$CDP" "$URL" "${PGVIGIL_WORDING_OUT:-$WORK/wording.json}" ${PGVIGIL_WORDING_SHOTS:+"$PGVIGIL_WORDING_SHOTS"} | tee "$WORK/wording.txt"
 rc=${PIPESTATUS[0]}
+(( rc == 124 )) && fail "the walk did not end in 1200 s"
 grep -q '^wording walk: ' "$WORK/wording.txt" || fail "the walk ended without its verdict (rc $rc)"
 (( rc == 0 )) || fail "$(grep '^wording walk: ' "$WORK/wording.txt")"
 echo "PROOF OK: $(grep '^wording walk: ' "$WORK/wording.txt")"

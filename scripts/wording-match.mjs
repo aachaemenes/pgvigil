@@ -1,8 +1,8 @@
-// The wording walk's matcher (the pre-publish walk, DONE-1): does a piece of text a reader sees on a page of one engine
+// The wording walk's matcher (the pre-publish walk): does a piece of text a reader sees on a page of one engine
 // carry a word only the other engine has? Pure functions over strings - the walk (scripts/wording-walk.mjs) reads the
 // pages and hands each element here; the click-through hands each dialog it opens. Usage alone:
 //   node scripts/wording-match.mjs --self-test      the rules against their fixtures (no browser, no server)
-// The rules (notes: the design D1-D2 as folded after its design pass):
+// The rules:
 //   - the words: scripts/wording-words.txt (engine | word | pattern | source); a word of the other engine is a red
 //   - U: the scope's own names (instances, tags, databases, jobs, hosts, logins) are taken out of the text first -
 //     they are the user's data, never the UI's words ('aurora' as a tag on a SQL Server page is no red)
@@ -10,9 +10,10 @@
 //     for its page whatever it names; the other engine's NAME in a label is a red too ('PostgreSQL options' on a SQL
 //     Server scope)
 //   - prose (a paragraph, a list item, a title, a dialog's text, a cell's text) is split into sentences at . ! ?
-//     outside parentheses; a sentence that names the word's own engine attributes it (A1: 'SQL Server's Query
-//     Store', 'PostgreSQL: the WAL directory ...'); a sentence that names this page's engine with no / not / none /
-//     without / never / n/a says it is absent here (A2: 'PostgreSQL has no Query Store')
+//     outside parentheses, and each sentence into clauses at ';'; a word is the other engine's own when that engine's
+//     name is the nearest engine name before it in its clause (A1: 'SQL Server's Query Store', 'PostgreSQL: the WAL
+//     directory ...'), or absent here when a negation stands right before it and this page's engine is named in its
+//     clause (A2: 'PostgreSQL has no Query Store'); a name or a negation elsewhere attributes nothing
 //   - the allow rows: scripts/wording-allow.txt (page | kind | pattern | reason): a place the other engine's word is
 //     right on purpose (A4) or a stated analogy (A5); never a page skipped whole
 
@@ -27,7 +28,8 @@ const NAME = {
   sqlserver: /\b(SQL Server|Azure SQL|MSSQL)\b/i,
   postgres: /\b(PostgreSQL|Postgres)\b/i,
 };
-const NEGATION = /\b(no|not|none|without|never|n\/a|isn't|doesn't|does not|has no|have no)\b/i;
+// A2's negation: right before the word (an article between), never elsewhere in the clause
+const NEG_BEFORE = /(?:^|[^\w])(?:no|not|without|never|none of|n\/a for|(?:doesn't|does not|don't|do not|cannot|can't) (?:have|keep|use|read))\s+(?:(?:a|an|the|any|its|their)\s+)?$/i;
 export const LABEL_KINDS = new Set(['label', 'th', 'tab', 'tree', 'heading', 'button', 'menuitem', 'tile', 'legend']);
 export const PROSE_KINDS = new Set(['prose', 'cell', 'title', 'attr', 'dialog']);
 
@@ -66,6 +68,17 @@ export function stripNames(text, names) {
   return out;
 }
 
+// scopeNames (U): the names a page's scope holds - its instances (one instance, a tag folder's, or the whole fleet at
+// the root) with their tags and each tag's parts - never another scope's: a tag elsewhere that is also a word
+// ('aurora', 'azure') stays a word on this page. scope = { id } | { tag } | {} (the root)
+export function scopeNames(fleet, scope = {}) {
+  const tagsOf = r => (Array.isArray(r.tags) ? r.tags : String(r.tags ?? '').split(/[\s,{}]+/)).filter(Boolean).map(String);
+  const mine = scope.id ? fleet.filter(r => String(r.instance_id) === String(scope.id)) : scope.tag ? fleet.filter(r => tagsOf(r).includes(scope.tag)) : fleet;
+  const out = new Set();
+  for (const r of mine) { out.add(String(r.name)); for (const t of tagsOf(r)) { out.add(t); if (t.includes(':')) for (const p of t.split(':')) out.add(p); } }
+  return [...out];
+}
+
 // sentences: split at . ! ? followed by a space or the end, outside parentheses (a version '16.0.4325.4' or 'e.g.'
 // inside a sentence stays whole when no space follows the dot)
 export function sentences(text) {
@@ -100,10 +113,20 @@ export function check(el, ctx) {
     if (NAME[other].test(text)) reds.push({ word: text.match(NAME[other])[0], owner: other, source: "the other engine's name in a label", sentence: raw, why: 'a label' });
     return reds;
   }
-  for (const s of sentences(text)) {
-    if (NAME[other].test(s)) continue;                               // A1: the word's own engine named
-    if (NAME[engine].test(s) && NEGATION.test(s)) continue;          // A2: absent on this engine, said
-    for (const w of words) if (w.re.test(s)) reds.push({ word: w.word, owner: other, source: w.source, sentence: s, why: 'prose' });
+  const lastAt = (re, t) => { let at = -1; const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'); for (let m; (m = g.exec(t));) { at = m.index; if (!m[0]) g.lastIndex++; } return at; };
+  for (const s of sentences(text)) for (const c of s.split(/;\s*/).filter(Boolean)) {
+    const engineNamed = NAME[engine].test(c);
+    for (const w of words) {
+      const g = new RegExp(w.re.source, w.re.flags.includes('g') ? w.re.flags : w.re.flags + 'g');
+      for (let m; (m = g.exec(c));) {
+        if (!m[0]) { g.lastIndex++; continue; }
+        const before = c.slice(0, m.index);
+        if (lastAt(NAME[other], before) > lastAt(NAME[engine], before)) continue;   // A1: its own engine named before it
+        if (engineNamed && NEG_BEFORE.test(before)) continue;                         // A2: 'PostgreSQL has no Query Store'
+        reds.push({ word: w.word, owner: other, source: w.source, sentence: s, why: 'prose' });
+        break;
+      }
+    }
   }
   return reds;
 }
@@ -179,15 +202,41 @@ export function selfTest() {
     ['sqlserver', 'mssql_slow?i=9', 'prose', 'Sessions idle in transaction hold their locks.', ['idle in transaction']],
     ['sqlserver', 'mssql_slow?i=9', 'prose', 'On PostgreSQL, sessions idle in transaction hold their locks.', []],
     ['postgres', 'host?i=3', 'prose', 'The Sales database on erp is the largest.', []],
-    // the Collector page is pgvigil's own in any folder: its process id and its repository, a PostgreSQL database (walk-w1)
+    // the Collector page is pgvigil's own in any folder: its process id and its repository, a PostgreSQL database
     ['sqlserver', 'collector?tag=sales', 'th', 'pid', []],
     ['sqlserver', 'collector?tag=sales', 'heading', 'Repository the PostgreSQL database pgvigil writes to', []],
+    // an engine's name or a negation elsewhere in the sentence attributes nothing: A1 needs the word's own engine named
+    // before it in its clause, A2 a negation right before the word and this engine named in its clause
+    ['postgres', 'summary?tag=aurora', 'prose', 'PostgreSQL instances: 3 read, Agent Jobs failing on none', ['Agent Jobs']],
+    ['postgres', 'summary?i=3', 'prose', 'No sample on PostgreSQL for Query Store; SQL Agent Alerts off.', ['Query Store', 'SQL Agent', 'Agent Alerts']],
+    ['postgres', 'summary?tag=aurora', 'prose', 'Agent Jobs and Memory Dump: 0 SQL Server instance(s) in this folder.', ['Agent Jobs', 'Memory Dump']],
+    ['postgres', 'rp_flushed?i=3', 'prose', 'PostgreSQL has no plan cache to flush.', []],
+    ['postgres', 'summary?i=3', 'prose', 'SQL Server only: Query Store and Agent Jobs.', []],
+    // an element that only holds an allow row's phrase is not cleared whole; the Doors page's row is its page alone
+    ['postgres', 'collector?tag=aurora', 'heading', 'Repository the PostgreSQL database pgvigil writes to: tempdb and Query Store', ['tempdb', 'Query Store']],
+    ['postgres', 'dbadashx?i=3', 'label', 'SQL Server repository', ['SQL Server']],
+    ['postgres', 'notdbadash?i=3', 'label', 'SQL Server repository', ['SQL Server']],
   ];
   let bad = 0;
   for (const [engine, page, kind, text, want] of cases) {
     const got = check({ text, kind, page }, { engine, words, allow, names }).map(r => r.word);
     const ok = want.length === new Set(got).size && want.every(w => got.includes(w));
     if (!ok) { bad++; console.log(`FAIL self-test: ${engine} ${page} ${kind} ${JSON.stringify(text)}: found [${got.join(', ')}], want [${want.join(', ')}]`); }
+  }
+  // U is the scope's names only: a tag of another scope that is also a word stays a word
+  const fleet = [{ instance_id: 1, name: 'demo-aurora-crm01', engine: 'postgres', tags: ['aurora', 'env:prod', 'demo'] },
+    { instance_id: 9, name: 'demo-onprem-sql01', engine: 'sqlserver', tags: ['sales', 'sqlserver', 'env:prod', 'demo'] },
+    { instance_id: 10, name: 'demo-azure-sql03', engine: 'sqlserver', tags: ['azure', 'demo'] }];
+  const scoped = [
+    ['sqlserver', { tag: 'sales' }, 'summary?tag=sales', 'th', 'Aurora', ['Aurora']],
+    ['postgres', { id: '1' }, 'summary?i=1', 'heading', 'Azure SQL options', ['Azure SQL']],
+    ['postgres', { tag: 'aurora' }, 'summary?tag=aurora', 'heading', 'aurora', []],
+    ['postgres', { tag: 'aurora' }, 'alerts?tag=aurora', 'cell', 'demo-aurora-crm01 env:prod', []],
+  ];
+  for (const [engine, scope, page, kind, text, want] of scoped) {
+    const got = check({ text, kind, page }, { engine, words, allow, names: scopeNames(fleet, scope) }).map(r => r.word);
+    const ok = want.length === new Set(got).size && want.every(w => got.includes(w));
+    if (!ok) { bad++; console.log(`FAIL self-test (scope): ${engine} ${page} ${kind} ${JSON.stringify(text)}: found [${got.join(', ')}], want [${want.join(', ')}]`); }
   }
   // the expected file loads, names only known words; grade: a listed red, a missing must, a must-not seen, one outside
   const expected = loadExpected(fs.readFileSync(path.join(here, 'wording-expected.txt'), 'utf8'));
@@ -205,7 +254,7 @@ export function selfTest() {
   const gOk = !g.ok && g.mustMissing.map(e => e.word).join() === 'tempdb' && g.mustNotSeen.map(e => e.word).join() === 'QS'
     && g.outside.map(r => r.word).join() === 'QS,PostgreSQL' && g.rows[3].hits.length === 0;
   if (!gOk) { bad++; console.log(`FAIL self-test: grade ${JSON.stringify({ missing: g.mustMissing.map(e => e.word), notSeen: g.mustNotSeen.map(e => e.word), outside: g.outside.map(r => r.word) })}`); }
-  console.log(`wording-match self-test: ${cases.length - bad + 2} of ${cases.length + 2} cases right (${words.length} words, ${allow.length} allow rows, ${expected.length} expected rows)`);
+  console.log(`wording-match self-test: ${cases.length + scoped.length - bad + 2} of ${cases.length + scoped.length + 2} cases right (${words.length} words, ${allow.length} allow rows, ${expected.length} expected rows)`);
   return bad === 0;
 }
 

@@ -7,6 +7,6 @@
 # not / none / without / never / n/a); these rows are A4 (a page that names the other engine on purpose) and A5 (a
 # stated analogy).
 * | option | . | A4: a form's options list what can be chosen (an engine, a login kind: 'SQL login' on Admin > Instances)
-dbadash | * | \bSQL Server\b|\bDBA Dash\b | A4: the Doors page imports DBA Dash's SQL Server repository by design
-* | prose | PostgreSQL's TempDB | A5: an analogy the Temp tab states as one (drives.ts; review Item 7: fine)
-^collector(\?|$) | * | ^pid$|\bthe PostgreSQL database pgvigil writes to\b | A4: the Collector page is pgvigil's own in any folder - its process id and its repository, a PostgreSQL database (walk-w1)
+^dbadash(\?|$) | * | \bSQL Server\b|\bDBA Dash\b | A4: the Doors page imports DBA Dash's SQL Server repository by design
+* | prose | PostgreSQL's TempDB | A5: an analogy the Temp tab states as one (drives.ts)
+^collector(\?|$) | * | ^pid$|^Repository the PostgreSQL database pgvigil writes to$ | A4: the Collector page is pgvigil's own in any folder - its process id and its repository, a PostgreSQL database

@@ -11,7 +11,7 @@
 # Schema, Statistics; bloat alone (SQL Server's Memory page: 'plan cache bloat'); Entra (Azure Database for
 # PostgreSQL authenticates Entra users too); Windows account (PostgreSQL on Windows: SSPI).
 sqlserver | Query Store | | Microsoft Learn 'Monitor performance by using the Query Store'; fleet.ts qs (mssqlOnly)
-sqlserver | QS | cs:\bQS\b | Query Store's abbreviation (fleet.ts qs; the owner's 18:50 find)
+sqlserver | QS | cs:\bQS\b | Query Store's abbreviation (fleet.ts qs)
 sqlserver | Forced Plans | \bforced plans?\b | Query Store plan forcing (sys.query_store_plan.is_forced_plan)
 sqlserver | plan cache | | SQL Server's shared plan cache (sys.dm_exec_cached_plans); PostgreSQL plans per session
 sqlserver | Flushed Plans | \bflushed plans?\b | the plan cache flushed (rp_flushed)
