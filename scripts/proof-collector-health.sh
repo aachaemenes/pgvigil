@@ -438,13 +438,13 @@ if want DQ; then
   firstpar() { python3 -c "import glob, json, os, sys; print(min((os.path.basename(f)[:15] for f in glob.glob(sys.argv[1] + '/*-firing-*.json') if json.load(open(f)).get('setting') == 'collector or network'), default=''))" "$1" 2>/dev/null || true; }
   dqt=$(firstpar "$WORK/spool4"); dqu=$(firstpar "$WORK/spool")   # U sends at once: its file before the quiet end shows Q held it
   logins login t1 t2 t3; waitfor 480 "$NOPARENT" || true
-  unset QUIET
+  dqh=$QUIET; unset QUIET   # the quiet channel leaves the configuration; its window kept for the line below
   { printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\ninstances:\n' "$PW"; instances target 5432; alerts_of /work; } > "$WORK/svc.yaml"
   docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
   keep DQ
   [[ "$dq1" == 1 && "$dqo" == 0 && -n "$dqt" && -n "$dqu" && "$dqu" < "$QEND" ]] && ! [[ "$dqt" < "$QEND" ]] \
-    && ok "DQ: quiet hours $QUIET UTC over the cut - the parent once on the quiet channel, its first file at $dqt (the quiet end $QEND; U's at $dqu, before it), t1-t3 0" \
-    || fail "DQ: quiet $QUIET: the parent $dq1 (want 1), first file '$dqt' (want at or after $QEND), U's '$dqu' (want before it), t1-t3 $dqo (want 0): $(ls "$WORK/spool4" | tr '\n' ' ' | cut -c1-500)"
+    && ok "DQ: quiet hours $dqh UTC over the cut - the parent once on the quiet channel, its first file at $dqt (the quiet end $QEND; U's at $dqu, before it), t1-t3 0" \
+    || fail "DQ: quiet $dqh: the parent $dq1 (want 1), first file '$dqt' (want at or after $QEND), U's '$dqu' (want before it), t1-t3 $dqo (want 0): $(ls "$WORK/spool4" | tr '\n' ' ' | cut -c1-500)"
 fi
 logins login t1 t2 t3 t4
 
