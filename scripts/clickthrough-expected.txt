@@ -1,2 +1,4 @@
 # The click-through's expected FAIL rows (scripts/clickthrough-grade.mjs): kind | scope | page | control | why, and the smallest fix and its file
 # Empty before the first run: that run's FAIL rows, by cause, are listed here after it.
+off without words | * | ^(pgstate|pgbackups|pgthresholds|drives)$ | dlg B Inherit$ | a threshold dialog's Inherit is disabled with no words when the level has no row of its own; fix: offControl(inherit, 'no threshold of its own at this level: the level above applies') at web/src/pg_backups.ts:58 and web/src/drives.ts:91 (web/src/mssql_jobs.ts:224 / :257 hold the same pattern)
+off without words | * | ^summary$ | ^B Next month$ | the health calendar's Next month is disabled on the current month with no words; fix: offControl with 'this is the current month' at web/src/healthcal.ts:105

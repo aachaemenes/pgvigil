@@ -126,7 +126,10 @@ const settled = async (cap = 20000) => {
   }
   return false;
 };
-const fresh = async hash => { await ensure(); await cmd('Page.navigate', { url: 'about:blank' }); await sleep(100); net = []; exc = []; dlgs = []; held = []; chooser = []; await cmd('Page.navigate', { url: U + hash }); await sleep(250);
+const ORIGIN = new URL(U).origin;
+// every page starts with no stored state: a click's filter, frozen or hidden column, folder or range never reaches the
+// next row (the page keeps them in its storage)
+const fresh = async hash => { await ensure(); await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Storage.clearDataForOrigin', { origin: ORIGIN, storageTypes: 'local_storage,session_storage' }).catch(() => {}); await sleep(100); net = []; exc = []; dlgs = []; held = []; chooser = []; await cmd('Page.navigate', { url: U + hash }); await sleep(250);
   // a click of the bar may have switched the theme: every page starts light
   await ev(`(() => { try { localStorage.setItem('pgvigil.theme', 'light'); } catch (e) {} document.documentElement.setAttribute('data-theme', 'light'); })()`).catch(() => {});
   return settled(); };
@@ -160,8 +163,9 @@ if (mode === 'list') {
   // the drill pages and the first alert: the first link of each kind a listed page holds, per engine
   const drillSeen = new Set();
   for (const p of [...pages]) {
-    if (!p.engine && p.tab !== 'alerts') continue;
     await fresh(p.hash);
+    p.controls = await ev(`document.querySelectorAll('main a[href], main button, main select, main summary').length`).catch(() => 0);
+    if (!p.engine && p.tab !== 'alerts') continue;
     const found = await ev(`(() => { const o = {}; for (const a of document.querySelectorAll('main a[href^="#/"]')) { const h = a.getAttribute('href'); const m = /^#\\/(db|table|index|job|compare|alert)\\?/.exec(h); if (m && !o[m[1]]) o[m[1]] = h; } return o; })()`).catch(() => ({}));
     for (const [kind, h] of Object.entries(found ?? {})) {
       const key = (p.engine ?? 'root') + ':' + kind;
@@ -170,7 +174,7 @@ if (mode === 'list') {
     }
   }
   // the cost a page is expected to take (Community tools and Custom reports hold most clicks) and the cap
-  for (const p of pages) { p.cap = /^(community|customreports)$/.test(p.tab) ? 140 : 45; p.cost = p.cap; p.ctx = true; }
+  for (const p of pages) { p.cap = /^(community|customreports)$/.test(p.tab) ? 160 : 80; p.cost = 10 + Math.min(p.cap, p.controls ?? p.cap); }
   const bins = Array.from({ length: shards }, (_, k) => ({ k, cost: k === 0 ? 180 : 0, pages: [] }));
   for (const p of [...pages].sort((x, y) => y.cost - x.cost)) { const b = bins.reduce((m, x) => x.cost < m.cost ? x : m); b.pages.push(p); b.cost += p.cost; }
   const stem = outFile.replace(/\.json$/, '');
@@ -187,11 +191,13 @@ if (mode === 'list') {
 const shard = JSON.parse(fs.readFileSync(a5, 'utf8'));
 const [outFile, shots] = [a6, a7];
 fs.mkdirSync(shots, { recursive: true });
-const state = `({ hash: location.hash, h2: document.querySelector('main h2')?.textContent ?? '', html: document.querySelector('main')?.innerHTML.length ?? 0,
-  errors: [...document.querySelectorAll('main .error, dialog[open] .error, #bar .error')].map(e => e.textContent.trim().slice(0, 300)),
+const state = `({ hash: location.hash, h2: document.querySelector('main h2')?.textContent ?? '',
+  html: (() => { const s = (document.querySelector('main')?.innerHTML ?? '') + '|' + [...document.querySelectorAll('dialog[open], #bar')].map(d => d.innerHTML).join('|') + '|' + [...document.querySelectorAll('main input, main select, dialog[open] input, dialog[open] select')].map(i => i.type === 'checkbox' || i.type === 'radio' ? i.checked : i.value).join('|'); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; })(),
+  copied: window.__walkCopied ?? 0, focus: document.activeElement ? document.activeElement.tagName + (document.activeElement.getAttribute('aria-label') || document.activeElement.textContent || '').slice(0, 40) : '',
+  errors: [...document.querySelectorAll('main .error, dialog[open] .error, #bar .error')].map(e => e.textContent.trim().slice(0, 300)).filter(Boolean),
   status: [...document.querySelectorAll('main [role=status], dialog[open] [role=status]')].filter(s => !s.matches('.filter-count')).map(s => s.textContent.trim()).filter(Boolean).join(' | ').slice(0, 300),
   dialog: document.querySelector('dialog[open]') ? (document.querySelector('dialog[open]').getAttribute('aria-label') || document.querySelector('dialog[open]').querySelector('h2, h3')?.textContent || '(untitled dialog)') : null,
-  menu: [...document.querySelectorAll('[role=menu], .menu')].filter(m => m.offsetParent !== null || m.closest('dialog[open]')).map(m => [...m.querySelectorAll('button, [role=menuitem]')].map(b => b.textContent.trim().slice(0, 50))).flat().slice(0, 30),
+  menu: [...document.querySelectorAll('[role=menu], .menu')].filter(m => m.getClientRects().length > 0).map(m => [...m.querySelectorAll('button, [role=menuitem]')].map(b => b.textContent.trim().slice(0, 50))).flat().slice(0, 30),
   mark: window.__walk === 1, open: document.querySelectorAll('details[open], [aria-expanded=true]').length, tree: document.querySelector('#tree')?.innerHTML.length ?? 0 })`;
 // a control's signature: where it is, its tag, its words with numbers folded; a grid cell's link by its column
 const SIG = `(el => { const t = el.tagName, cell = el.closest('td');
@@ -203,12 +209,13 @@ const SIG = `(el => { const t = el.tagName, cell = el.closest('td');
 const CTRL = 'main a[href], main button, main select, main summary, main input[type=file], main input[type=checkbox], main input[type=radio], dialog[open] button, dialog[open] a[href], dialog[open] select, dialog[open] input[type=checkbox], [role=menu] button, [role=menu] [role=menuitem], .menu button';
 const BAR = ', #bar button, #bar a[href], #bar select';
 const controls = withBar => ev(`(() => { const S = ${SIG}; const seen = new Map();
-  for (const el of document.querySelectorAll(${JSON.stringify(CTRL)} + (${withBar} ? ${JSON.stringify(BAR)} : ''))) { if (el.offsetParent === null && el.tagName !== 'INPUT' && !el.closest('dialog[open]')) continue; const s = S(el); if (!seen.has(s)) seen.set(s, { sig: s, n: 0, tag: el.tagName,
+  for (const el of document.querySelectorAll(${JSON.stringify(CTRL)} + (${withBar} ? ${JSON.stringify(BAR)} : ''))) { if (el.getClientRects().length === 0 && el.tagName !== 'INPUT') continue; const s = S(el); if (!seen.has(s)) seen.set(s, { sig: s, n: 0, tag: el.tagName,
     what: (el.getAttribute('aria-label') || el.textContent || el.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80), disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
     reason: [el.title, ...(el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent?.trim() ?? '')].filter(Boolean).join(' | ').slice(0, 240),
-    href: el.getAttribute('href'), type: el.type || '', opts: el.tagName === 'SELECT' ? [...el.options].map(o => o.value) : null }); seen.get(s).n++; }
+    href: el.getAttribute('href'), type: el.type || '', opts: el.tagName === 'SELECT' ? [...el.options].map(o => o.value) : null, cur: el.tagName === 'SELECT' ? el.value : null,
+    on: ['aria-pressed', 'aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') }); seen.get(s).n++; }
   return [...seen.values()]; })()`);
-const offNotes = () => ev(`[...document.querySelectorAll('main p.meta, main p.note, main .note, main .off-reason, main [id^=off-]')].map(p => p.textContent.trim()).filter(t => /off here|is off|read only|read-only|needs|refused|not configured|no read login|no monitoring login|-no-login|disabled|demo/i.test(t)).map(t => t.slice(0, 240))`);
+const offNotes = () => ev(`[...document.querySelectorAll('main p.meta, main p.note, main .note, main .off-reason, main [id^=off-], dialog[open] p')].map(p => p.textContent.trim()).filter(t => /off here|is off|read only|read-only|needs|refused|not configured|no read login|no monitoring login|-no-login|disabled|demo/i.test(t)).map(t => t.slice(0, 240))`);
 // one step: the control by its signature, then a click (or a select's option, or a file input's fixture)
 const act = async (sig, step) => {
   if (sig === 'CTX') return ev(`(() => { const td = document.querySelector('main table.grid tbody td'); if (!td) return 'no grid cell'; const r = td.getBoundingClientRect(); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 5, clientY: r.y + 5, button: 2 })); return 'ok'; })()`);
@@ -250,8 +257,19 @@ const verdict = (row, before, after, dl0) => {
   if (after.html !== before.html || after.tree !== before.tree || (before.dialog && !after.dialog) || (before.menu?.length && !after.menu?.length)) return 'redraws';
   if (grew) return 'download';
   if (row.jsDialogs.length) return 'js-dialog';
+  if ((after.copied ?? 0) > (before.copied ?? 0)) return 'copies';
+  if (row.api.some(x => x.status >= 200 && x.status < 300)) return 'reads';
+  if (row.on) return 'current';
+  if (after.focus !== before.focus) return 'focus';
   return 'NOTHING';
 };
+// the mark (a full reload loses it) and a copy counter: the clipboard's writes are counted in the page, never sent
+const MARK = `(() => { window.__walk = 1; window.__walkCopied = 0; try { const c = navigator.clipboard; if (c && !c.__walk) { c.writeText = () => { window.__walkCopied++; return Promise.resolve(); }; c.write = () => { window.__walkCopied++; return Promise.resolve(); }; c.__walk = 1; } } catch (e) {}
+  if (!document.__walk) { const ex = document.execCommand.bind(document); document.execCommand = (k, ...a) => { if (k === 'copy') window.__walkCopied++; return ex(k, ...a); }; document.__walk = 1; } })()`;
+// the grid's own controls (the same component on every page): each at most GRID_MAX times a driver
+const GRID_MAX = 3;
+const gridKey = sig => { const m = /^(menu B (?:Freeze the columns up to|Filter by value|Exclude value|Hide the column|Sort|Copy|Rows:|Selected Cells|Clear filters|Group by)|B Filter |S The aggregate of each number column|S Group by a column|S Select the cells of a column|B Show every column|CTX)/.exec(sig); return m ? m[1] : null; };
+const gridSeen = new Map();
 const pagesOf = shard.pages;
 const chromePage = shard.chrome ? [{ scope: 'root', engine: null, hash: '#/summary', tab: 'bar', bar: true, cap: 60 }] : [];
 // the bar last: what its clicks keep (a theme, a range) never reaches another page's rows
@@ -265,30 +283,35 @@ for (const pg of [...pagesOf, ...chromePage]) {
     const all = await controls(!!pg.bar);
     queue = all.filter(c => pg.bar ? /^bar /.test(c.sig) : !/^bar /.test(c.sig)).map(c => ({ path: [{ sig: c.sig }], c }));
   } catch (e) { out.pages.push({ scope: pg.scope, tab: pg.tab, hash: pg.hash, settled: false, h2: '', errors: ['(driver) ' + e.message], api: [], exc: [], off: [], lost }); console.error(`${label} ${pg.hash}: load failed: ${e.message}`); await ensure().catch(() => {}); save(); continue; }
-  if (pg.ctx) queue.push({ path: [{ sig: 'CTX' }], c: { sig: 'CTX', tag: 'TD', what: 'right-click on the first grid cell', n: 1 } });
-  const done = new Set(); let budget = pg.cap ?? 45; let capped = 0;
+  if (await ev(`!!document.querySelector('main table.grid tbody td')`).catch(() => false)) queue.push({ path: [{ sig: 'CTX' }], c: { sig: 'CTX', tag: 'TD', what: 'right-click on the first grid cell', n: 1 } });
+  const done = new Set(); let budget = pg.cap ?? 80; let capped = 0, same = 0;
   while (queue.length) {
     const { path: p, c } = queue.shift();
     const key = p.map(s => s.sig + (s.opt !== undefined ? '=' + s.opt : '')).join(' > ');
     if (done.has(key)) continue; done.add(key);
     // the instance header's controls: once per engine (the same header on every page of the instance)
     if (p.length === 1 && /^hdr /.test(c.sig)) { const hk = (pg.engine ?? 'root') + ':' + c.sig; if (hdrSeen.has(hk)) continue; hdrSeen.add(hk); }
+    // the grid's own controls: GRID_MAX times a driver, then counted as the same component
+    const gk = gridKey(c.sig) ?? (p.length > 1 && p[0].sig === 'CTX' ? 'CTX ' + (gridKey(c.sig) ?? c.sig.replace(/\s.*$/, '')) : null);
+    if (gk) { const k = gk + (p[p.length - 1].opt !== undefined ? '=' + p[p.length - 1].opt : ''); const n = gridSeen.get(k) ?? 0; if (n >= GRID_MAX) { same++; continue; } gridSeen.set(k, n + 1); }
     if (budget-- <= 0) { capped++; continue; }
     const last = p[p.length - 1];
-    const row = { scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, count: c.n };
+    const row = { scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, count: c.n, on: !!c.on };
     try {
       if (c.disabled) { row.kind = c.reason ? 'disabled' : 'off without words'; row.why = c.reason; row.off = await offNotes().catch(() => []); if (!c.reason && row.off.length) row.kind = 'disabled'; out.clicks.push(row); continue; }
       if (c.tag === 'A' && last.sig !== 'CTX' && !/^(dlg|menu) /.test(last.sig) && p.length === 1) {
         const h = c.href || '';
-        if (h === '' || h === '#') { row.kind = 'dead link'; row.href = h; out.clicks.push(row); continue; }
-        if (!h.startsWith('#/')) { row.kind = 'outside'; row.href = h; out.clicks.push(row); continue; }
+        if (h !== '' && h !== '#' && !h.startsWith('#/')) { row.kind = 'outside'; row.href = h; out.clicks.push(row); continue; }
+      }
+      if (c.tag === 'A' && last.sig !== 'CTX' && !/^(dlg|menu) /.test(last.sig) && p.length === 1 && (c.href || '').startsWith('#/')) {
+        const h = c.href;
         const okL = await fresh(h); const s = await ev(state).catch(e => ({ errors: [String(e)] }));
         row.href = h; row.landing = { hash: s.hash, h2: s.h2, errors: s.errors, settled: okL }; row.api = net.filter(x => x.status >= 400 || x.status === 0); row.exc = [...exc];
         row.kind = !okL ? 'link-stuck' : (s.errors?.length || row.api.length || row.exc.length) ? 'link-error' : 'link';
         out.clicks.push(row); continue;
       }
       if (c.tag === 'SELECT' && last.opt === undefined) {
-        for (const o of (c.opts || []).slice(0, 5)) queue.unshift({ path: [...p.slice(0, -1), { sig: last.sig, opt: o }], c: { ...c, what: c.what + ' = ' + o } });
+        for (const o of (c.opts || []).filter(o => o !== c.cur).slice(0, 5)) queue.unshift({ path: [...p.slice(0, -1), { sig: last.sig, opt: o }], c: { ...c, what: c.what + ' = ' + o } });
         budget++; continue;
       }
       // replay the path on a fresh page, then act on its last step
@@ -296,7 +319,7 @@ for (const pg of [...pagesOf, ...chromePage]) {
       let replay = 'ok';
       for (const st of p.slice(0, -1)) { replay = await act(st.sig, st); if (replay !== 'ok') break; await sleep(350); await settled(30000); }
       if (replay !== 'ok') { row.kind = 'not reached'; row.why = 'step ' + replay; out.clicks.push(row); continue; }
-      await ev('window.__walk = 1');
+      await ev(MARK);
       const before = await ev(state); const ctl0 = new Set((await controls(!!pg.bar)).map(x => x.sig));
       const dl0 = fs.readdirSync(dl).length; net = []; exc = []; dlgs = []; held = []; chooser = [];
       const r = await act(last.sig, last);
@@ -317,6 +340,7 @@ for (const pg of [...pagesOf, ...chromePage]) {
     } catch (e) { row.kind = lost ? 'browser lost' : 'driver error'; row.why = e.message; out.clicks.push(row); console.error(`${label}: ${row.kind} at ${key}: ${e.message}`); await ensure().catch(err => console.error('ensure: ' + err.message)); }
   }
   if (capped) out.pages[out.pages.length - 1].capped = capped;
+  if (same) out.pages[out.pages.length - 1].same = same;
   save();
   console.error(`${label} ${pg.scope} ${pg.hash}: ${out.clicks.filter(x => x.hash === pg.hash).length} clicks${capped ? `, ${capped} over the cap` : ''}, ${Math.round((Date.now() - t0) / 1000)} s`);
 }
@@ -361,7 +385,7 @@ for (const sc of treeScopes) {
   for (const key of carets) {
     const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree caret ' + key.replace(/\d+/g, '#')], tag: 'BUTTON', what: key };
     try {
-      await fresh(sc.hash); await openAll(sc); await ev('window.__walk = 1');
+      await fresh(sc.hash); await openAll(sc); await ev(MARK);
       const before = await ev(state); const dl0 = fs.readdirSync(dl).length; net = []; exc = []; dlgs = []; held = []; chooser = [];
       const lab = await ev(`(() => { const b = [...document.querySelectorAll('#tree button.caret')].find(b => b.dataset.key === ${JSON.stringify(key)}); if (!b) return null; const l = b.getAttribute('aria-label'); b.click(); return l; })()`);
       if (lab === null) { row.kind = 'not reached'; row.why = 'gone'; out.tree.push(row); continue; }
