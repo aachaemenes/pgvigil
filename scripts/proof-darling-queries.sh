@@ -1089,7 +1089,9 @@ SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
 # a short WAITFOR ends between the two wait reads, so the Waits page lists WAITFOR (a wait counts when it ends)
 sleep 3; col mssql_requests mssql_waits; sqok "I: a short WAITFOR" "WAITFOR DELAY '00:00:02';" pgvq; col mssql_requests mssql_waits
 # the page window starts a minute before this run's first plan-cache read, so the plan cache's charts and History hold
-# every read the run took however long the earlier steps ran; a chart needs reads in two of its steps (5 minutes at least)
+# every read the run took however long the earlier steps ran; a chart needs reads in two of its steps (5 minutes at
+# least), and the run's earlier reads can all fall in one: one more read here, minutes after the first
+col mssql_plancache
 IF=$(pq "SELECT to_char((date_trunc('minute', min(snapshot_at)) - interval '1 minute') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:00\"Z\"') FROM pgvigil.mssql_pc_read WHERE instance_id = $SB")
 IT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:00Z)
 [[ "$IF" =~ ^20[0-9-]+T[0-9:]+Z$ ]] || fail "I: no plan-cache read of this run to anchor the page window ('$IF')"
