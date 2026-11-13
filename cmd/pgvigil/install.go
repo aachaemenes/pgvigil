@@ -171,10 +171,68 @@ func runUninstall(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	// task 201: an uninstall that keeps the repository retires this host in it (pgvigil.import_collector_retire) -
+	// its 'collector not seen' alert would otherwise stand for good, hold its instances' alerts and keep every serve's
+	// watchdog on. The service's own repository login is read now, before the configuration is removed.
+	retire := collectorRetire(o)
 	if o.All {
-		return runUninstallAll(log, o)
+		err = runUninstallAll(log, o)
+	} else {
+		err = uninstallService(log, o)
 	}
-	return uninstallService(log, o)
+	// the retire follows the service, not the whole uninstall: a later step that failed (the configuration's folder,
+	// the binary) leaves a host that collects no more; a refusal that changed nothing leaves the service, and no retire
+	gone := false
+	if upgradeHooksOf != nil {
+		_, still, ierr := upgradeHooksOf.installed()
+		gone = ierr == nil && !still
+	}
+	if err == nil || gone {
+		retire(log)
+	}
+	return err
+}
+
+// collectorRetire returns what retires this host as a collector once its service is gone: nothing with
+// -drop-repository (the repository goes) or -dry-run, nothing where no service was configured. It calls the door on
+// the installed service's own repository login; when that cannot be done it names the statement for the repository
+// owner, and the uninstall stays done.
+func collectorRetire(o installOptions) func(log *slog.Logger) {
+	none := func(*slog.Logger) {}
+	if o.DropRepository || o.DryRun || upgradeHooksOf == nil || uninstallHooksOf == nil {
+		return none
+	}
+	inst, found, err := upgradeHooksOf.installed()
+	if err != nil || !found {
+		inst = o
+	}
+	dsn, configured, derr := uninstallHooksOf.repoDSN(inst)
+	if !configured {
+		return none
+	}
+	host, _ := os.Hostname()
+	return func(log *slog.Logger) {
+		byHand := "this host stays listed as a collector in the repository: as its owner run SELECT pgvigil.import_collector_retire('" +
+			strings.ReplaceAll(host, "'", "''") + "') - until then its 'collector not seen' alert stands"
+		if derr != nil || strings.TrimSpace(dsn) == "" || host == "" {
+			log.Warn(byHand)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		conn, cerr := pgx.Connect(ctx, dsn)
+		if cerr != nil {
+			log.Warn(byHand, "err", cerr)
+			return
+		}
+		defer func() { _ = conn.Close(context.Background()) }()
+		var n int
+		if qerr := conn.QueryRow(ctx, `SELECT pgvigil.import_collector_retire($1)`, host).Scan(&n); qerr != nil {
+			log.Warn(byHand, "err", qerr)
+			return
+		}
+		log.Info("this host is retired as a collector in the repository that stays: no 'collector not seen' alert will stand for it", "host", host, "runs", n)
+	}
 }
 
 // installBinary copies the running executable to dst (mode 0755) through a temporary file in the
