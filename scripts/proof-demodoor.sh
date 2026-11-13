@@ -75,7 +75,10 @@
 #     Memory Dump cell is critical too: 'Memory dumps acknowledged on N instance(s) until a newer dump; 1 instance(s)
 #     not the demo's left alone.', never 'not saved', the log's N new rows acknowledgements of demo instances [B3]),
 #     'ok R2b' (Options > Memory Dumps > Configure Thresholds, Clear: 'done N acknowledgement(s) ended: the dumps show
-#     again; 1 acknowledgement(s) of instances not the demo's left alone.', the log's N new rows ends by demo [B3]), 'ok R7' (prod-db1's
+#     again; 1 acknowledgement(s) of instances not the demo's left alone.', the log's N new rows ends by demo [B3]),
+#     'ok R2c' (the dialog again, only prod-db2's acknowledgement in force: Clear is aria-disabled, never the disabled
+#     attribute, with 'the acknowledgements in force are of instances that are not the demo's: ...' beside it, and the
+#     date beside it reads 'Not acknowledged' [the fold's own review, part A finding 3]), 'ok R7' (prod-db1's
 #     Silence, prod-db2's - a real instance tagged demo by hand - AND demo-proof-stale's [C2] are aria-disabled, never
 #     the disabled attribute, each with its reason as visible text naming it as not one of this demo's instances; a
 #     Silence that is on stands in the row of an instance the door names), 'ok R6' (Silence a demo instance from its
@@ -93,7 +96,9 @@
 #     on the Summary, the Alerts page and a Jobs page with a failed job every off control has a description, no two
 #     of a page's reason sentences say the same words, the sentence's words stand once in the page's text and in no
 #     grid cell - the reason is said once per page; an instance's header is its own and read apart; its footer's seat
-#     reads 'read only, actions off' - the plain footer, which proof-frame's demo serve never draws [C9]) [both added
+#     reads 'read only, actions off' - the plain footer, which proof-frame's demo serve never draws [C9]; its
+#     Summary's dump dialog shows Clear aria-disabled with '... this server runs with -no-login' - an
+#     acknowledgement stands and this server ends none [part A finding 3]) [both added
 #     at the review's fold], 'demodoor-check: every row ok', then, read from the repository: 'ok B the seed's own
 #     silence ... is ended in the store, by demo', 'ok B prod-db2's Memory Dump acknowledgement (the proof's own)
 #     still stands', 'ok B nothing was written by the page for prod-db1, prod-db2 or demo-proof-stale', and 'ok B the

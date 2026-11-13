@@ -128,6 +128,25 @@ const hasLabel = (label) => ev(labelJS(label));
 // the acknowledged cells on the page, -1 while the page is not drawn (a redraw in flight is never read as 'none')
 const ackCells = () => ev(`${drawnJS} ? document.querySelectorAll('main .ack').length : -1`);
 
+// the Summary's toolbar: an item of the open menu, waited for (a submenu is drawn by its parent's click) - true, or the
+// items the menu held; Options itself; and Options > Memory Dumps > Configure Thresholds with its dialog and Clear
+const menuClick = async (re) => {
+  const hit = await until(`(() => { const b = [...document.querySelectorAll('[role=menu] [role=menuitem]')].find(x => ${re}.test(x.textContent)); if (!b) return false; b.click(); return true; })()`, 5000);
+  return hit === true ? true : ev(`[...document.querySelectorAll('[role=menu] [role=menuitem]')].map(x => x.textContent)`);
+};
+const options = () => until(`(() => { const b = [...document.querySelectorAll('button.tb-btn')].find(x => x.textContent.trim() === 'Options'); if (!b) return false; b.click(); return true; })()`, 5000);
+const dumpDlg = `document.querySelector('dialog.act-dialog[open][aria-label="Memory Dump Thresholds"]')`;
+const openDump = async () => {
+  const o = !!(await options());
+  const a = o ? await menuClick('/^Memory Dumps/') : null;
+  const b = a === true ? await menuClick('/^Configure Thresholds/') : null;
+  return { menus: `Options ${o}, ${JSON.stringify(a)}, ${JSON.stringify(b)}`, open: b === true ? !!(await until(`!!${dumpDlg}`)) : false };
+};
+const closeDump = async () => { await ev(`${dumpDlg}?.querySelector('button[aria-label=Close]')?.click()`); await until(`!${dumpDlg}`); };
+// the dialog's Clear as it stands: on or off, how it is off, its words, and the date beside it
+const dumpClear = () => ev(`(() => { const off = ${offWordsJS}; const b = [...(${dumpDlg}?.querySelectorAll('button') ?? [])].find(x => x.textContent.trim() === 'Clear'); if (!b) return null;
+  return { off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled, words: off(b), date: b.parentElement?.previousElementSibling?.textContent.trim() ?? '' }; })()`);
+
 // ---- the door, as the page is told
 const ack0 = await (async () => { await go('#/summary'); return api('ack?part=acks'); })();
 const doorIds = ack0.door?.instances ?? [];
@@ -258,12 +277,6 @@ if (acked) {
 // ---- R2b the same menu's Configure Thresholds, Clear: it ends the demo's acknowledgements of Memory Dump cells and
 // leaves alone the one of the real instance tagged demo by hand (the proof's own row), counted in its answer
 {
-  // an item of the open menu, waited for (a submenu is drawn by its parent's click); true, or the items it held
-  const menuClick = async (re) => {
-    const hit = await until(`(() => { const b = [...document.querySelectorAll('[role=menu] [role=menuitem]')].find(x => ${re}.test(x.textContent)); if (!b) return false; b.click(); return true; })()`, 5000);
-    return hit === true ? true : ev(`[...document.querySelectorAll('[role=menu] [role=menuitem]')].map(x => x.textContent)`);
-  };
-  const options = () => until(`(() => { const b = [...document.querySelectorAll('button.tb-btn')].find(x => x.textContent.trim() === 'Options'); if (!b) return false; b.click(); return true; })()`, 5000);
   const cells0 = await reach(ackCells, v => v >= 0);
   const m0 = await mark();
   const opened = !!(await options());
@@ -276,22 +289,28 @@ if (acked) {
   judge('R2', !!sm && !/not saved|refused/.test(said) && allByDoor(logs, n, 'ack', 'add', doorNames),
     `Options > Memory Dumps > Acknowledge Dumps: the page said '${said}' (menus: Options ${opened}, ${JSON.stringify(m1)}, ${JSON.stringify(m2)}); ${logSaid(logs)} (want ${n}, each an acknowledgement of a demo instance by demo / demo door)`);
   // the page draws itself again a moment after the answer: waited for before the next menu is opened
-  await reach(ackCells, v => v >= cells0 + n && n > 0, n > 0 ? 15000 : 0);
+  const cells1 = await reach(ackCells, v => v >= cells0 + n && n > 0, n > 0 ? 15000 : 0);
 
   const m3 = await mark();
-  const opened2 = !!(await options());
-  const m4 = opened2 ? await menuClick('/^Memory Dumps/') : null;
-  const m5 = m4 === true ? await menuClick('/^Configure Thresholds/') : null;
-  const dumpDlg = `document.querySelector('dialog.act-dialog[open][aria-label="Memory Dump Thresholds"]')`;
-  const dlgOpen = m5 === true ? !!(await until(`!!${dumpDlg}`)) : false;
-  const clear = dlgOpen ? await ev(`(() => { const b = [...${dumpDlg}.querySelectorAll('button')].find(x => x.textContent.trim() === 'Clear'); if (!b) return 'absent'; if (b.disabled || b.getAttribute('aria-disabled') === 'true') return 'off'; b.click(); return 'clicked'; })()`) : 'no dialog';
+  const d1 = await openDump();
+  const clear = d1.open ? await ev(`(() => { const b = [...${dumpDlg}.querySelectorAll('button')].find(x => x.textContent.trim() === 'Clear'); if (!b) return 'absent'; if (b.disabled || b.getAttribute('aria-disabled') === 'true') return 'off'; b.click(); return 'clicked'; })()`) : 'no dialog';
   const answer = clear === 'clicked' ? await until(`${dumpDlg}?.querySelector('p[role=status]')?.textContent.trim() ?? ''`) ?? '' : '';
-  if (dlgOpen) { await ev(`${dumpDlg}?.querySelector('button[aria-label=Close]')?.click()`); await until(`!${dumpDlg}`); }
+  if (d1.open) await closeDump();
   const cm = /^done ([1-9]\d*) acknowledgement\(s\) ended: the dumps show again; 1 acknowledgement\(s\) of instances not the demo's left alone\.$/.exec(answer);
   const k = Number((/^done (\d+) acknowledgement/.exec(answer) ?? [])[1] ?? 0);
   const logs2 = clear === 'clicked' ? await wrote(m3, k) : [];
   judge('R2b', !!cm && allByDoor(logs2, k, 'ack', 'end', doorNames),
-    `Options > Memory Dumps > Configure Thresholds (menus: Options ${opened2}, ${JSON.stringify(m4)}, ${JSON.stringify(m5)}; the dialog open ${dlgOpen}), Clear ${clear}: answered '${answer}'; ${logSaid(logs2)} (want ${k}, each an end of a demo instance's acknowledgement by demo / demo door)`);
+    `Options > Memory Dumps > Configure Thresholds (menus: ${d1.menus}; the dialog open ${d1.open}), Clear ${clear}: answered '${answer}'; ${logSaid(logs2)} (want ${k}, each an end of a demo instance's acknowledgement by demo / demo door)`);
+
+  // ---- R2c the same dialog again. The one Memory Dump acknowledgement still in force is the real instance's (the
+  // proof's own row): Clear has nothing it may end here - off, aria-disabled (never the disabled attribute without
+  // words), its reason in words - and the date beside it is not that instance's acknowledgement
+  await reach(ackCells, v => v >= 0 && v < cells1, k > 0 ? 15000 : 0);   // the page drawn again after Clear
+  const d2 = await openDump();
+  const c2 = d2.open ? await dumpClear() : null;
+  if (d2.open) await closeDump();
+  judge('R2c', !!c2 && c2.off && !c2.disabledAttr && /are of instances that are not the demo's/.test(c2.words) && c2.date === 'Not acknowledged',
+    `the dialog again (menus: ${d2.menus}; open ${d2.open}), only the real instance's acknowledgement in force: Clear ${JSON.stringify(c2)}`);
 }
 
 // ---- R7 the instances that are not the demo's - a real one, a real one tagged demo by hand, and one with the demo's
@@ -471,16 +490,23 @@ if (NOLOGIN) {
   const pagesOff = [['#/summary', 'the Summary', '9-nologin-summary'], ['#/alerts', 'the Alerts page', '']];
   if (fj) pagesOff.push([`#/${fj.tab}?i=${fj.id}`, `${fj.name}'s Jobs page`, '']);
   const got = [];
-  let seatPlain = '';
+  let seatPlain = '', clearPlain = null, dumpMenus = '';
   for (const [hash, what, shotName] of pagesOff) {
     got.push({ what, ...(await read(hash, shotName)) });
+    if (seatPlain) continue;
     // the footer's seat on a serve WITHOUT a door, read on its first page: the plain words (proof-frame serves a demo
     // and so never draws them)
-    if (!seatPlain) seatPlain = await until(seatJS) ?? '';
+    seatPlain = await until(seatJS) ?? '';
+    // and, on that page (the Summary), the dump dialog's Clear: an acknowledgement stands (the proof's own, of the real
+    // instance) and this server ends none - off with the server's reason in words, never on to be refused per row
+    const d = await openDump(); dumpMenus = d.menus;
+    clearPlain = d.open ? await dumpClear() : null;
+    if (d.open) await closeDump();
   }
-  judge('R10', got.every(g => g.off > 0 && g.undescribed === 0 && g.unseen === 0 && g.repeated === 0 && g.noteCells === 0 && g.times === 1 && g.cells === 0) && /^read only, actions off$/.test(seatPlain),
+  judge('R10', got.every(g => g.off > 0 && g.undescribed === 0 && g.unseen === 0 && g.repeated === 0 && g.noteCells === 0 && g.times === 1 && g.cells === 0) && /^read only, actions off$/.test(seatPlain)
+    && !!clearPlain && clearPlain.off && !clearPlain.disabledAttr && /this server runs with -no-login/.test(clearPlain.words),
     'pgvigil serve -no-login on the same repository: ' + got.map(g => `${g.what}: ${g.off} off control(s), ${g.undescribed} without a description, ${g.unseen} pointing at words not on the page, ${g.sentences} sentence(s) of which ${g.repeated} repeated, its words ${g.times} time(s) on the page and in ${g.cells} grid cell(s), ${g.noteCells} note(s) inside a grid cell ('${g.first}')`).join('; ')
-    + `; the footer's seat: '${seatPlain}' (want 'read only, actions off')`);
+    + `; the footer's seat: '${seatPlain}' (want 'read only, actions off'); the Summary's dump dialog (menus: ${dumpMenus}), Clear: ${JSON.stringify(clearPlain)}`);
 }
 
 if (shotsMissed.length) fail('shots', `not taken: ${shotsMissed.join(', ')}`);

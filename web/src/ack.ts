@@ -110,8 +110,9 @@ export function jobAcks(d: AckData): Map<string, Row> {
 // acknowledged: the button again (the old row lapses by itself). lastFail is the job's last failure time as the page
 // has it; no failure = an empty cell. note: the page's one sentence for an Acknowledge that is off on this page (every
 // row of the grid shares the reason - the server writes nothing, or the instance is not the demo's): the button points
-// at it, and the cell - which Copy all and the exports carry - holds the button alone.
-export function jobAckCell(d: AckData, instanceId: number, jobName: string, lastFail: unknown, after: () => void, note?: HTMLElement): HTMLElement {
+// at it, and the cell - which Copy all and the exports carry - holds the button alone. name: the instance as the page
+// shows it (the off button's own title then names it as the sentence does).
+export function jobAckCell(d: AckData, instanceId: number, jobName: string, lastFail: unknown, after: () => void, note?: HTMLElement, name?: string): HTMLElement {
   const span = el('span', { style: 'white-space:nowrap' });
   if (lastFail == null || lastFail === '') return span;
   const a = jobAcks(d).get(`${instanceId}|${jobName}`);
@@ -125,7 +126,7 @@ export function jobAckCell(d: AckData, instanceId: number, jobName: string, last
     what: `Its failure of ${fmtTime(lastFail)} is acknowledged: the cell loses its colour until the job fails again. Who and when are kept.`,
     body: { kind: 'job', instance_id: instanceId, job_name: jobName, seen_state: String(lastFail) },
     expiry: false, after,
-  }), { instance: instanceId, note }));
+  }), { instance: instanceId, name, note }));
   return span;
 }
 
