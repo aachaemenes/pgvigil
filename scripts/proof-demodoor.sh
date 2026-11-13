@@ -11,8 +11,8 @@
 # The ground the proof makes itself, by SQL as the user 'proof' with the client 'proof' (never through the door), so
 # that a refusal is asked where a broken door would write: in the same repository a real instance (prod-db1), a real
 # instance tagged 'demo' by hand (prod-db2) and an instance with the demo's tag AND its name prefix that this demo
-# process did not seed (demo-proof-stale); for prod-db1 a live silence, a live mute rule, an open alert, two crash
-# restarts and the failed jobs of a demo instance; for demo-proof-stale a live silence stored by its NAME alone; for
+# process did not seed (demo-proof-stale); for prod-db1 a live silence, a live mute rule, an open alert with a live
+# dismissal, two crash restarts and the failed jobs of a demo instance; for demo-proof-stale a live silence stored by its NAME alone; for
 # prod-db2 a live acknowledgement of its Memory Dump cell; one alert channel the configuration no longer names.
 # Expected (written before the first run):
 #  A. the API beside the page, on a demo serve with one real instance (prod-db1) and one real instance tagged 'demo' by
@@ -30,14 +30,20 @@
 #     [Added at the fold of the merge's review, C1 and C2:]
 #     - the REAL instance is refused on every route the wiring moved, not on the silence add alone: prod-db1's drive
 #       threshold and PostgreSQL threshold, the end of its silence (made by the proof), the pause of its mute rule
-#       (the proof's), the dismissal of its open alert (the proof's): each 403 'prod-db1 is not one of this demo's
+#       (the proof's), the dismissal of its open alert and the END of that alert's dismissal (the proof's own: the
+#       door finds a dismissal's instance by a lookup of its own): each 403 'prod-db1 is not one of this demo's
 #       instances'
 #     - demo-proof-stale - the demo's tag and its prefix, not seeded by this process: the one case where 'seeded by
 #       this process' is what refuses - a silence by its id: 403 'demo-proof-stale is not one of this demo's
 #       instances'; the end of its silence stored by NAME: the same 403; the door still names as many instances as
 #       the demo seeded
-#     - the proof's own rows stand as it made them (3 live, none paused, no dismissal of the alert), and no row but
-#       the proof's own names prod-db1, prod-db2 or demo-proof-stale (by id or by name, the log too)
+#     - the proof's own rows stand as it made them: '4 of 4 acknowledge rows live' (prod-db1's silence and mute rule,
+#       demo-proof-stale's silence stored by name, prod-db2's Memory Dump acknowledgement: none ended, none paused),
+#       '1 dismissal(s) of the alert, 1 live'; and no row but the proof's own names prod-db1, prod-db2 or
+#       demo-proof-stale (by id or by name, the log too)
+#     - after the counted change the proof ends its own two silences, its mute rule and its dismissal by SQL: 'done
+#       done done done' (part B's pages then show a Silence that is off and prod-db1's alert open)
+#     - every request is bounded (curl --connect-timeout 5 --max-time 60): a server that never answers fails its line
 #     - an instance-level drive threshold on a demo instance: 200 done, its row created_by demo; inherit: 200
 #     - an alert's key of one demo instance with another demo instance's id: 403 'the alert belongs to another instance'
 #     - Send test: 403 '... pgvigil demo -serve runs no sender ...'; an alert rule: 403 '... judged by the alert sender,
@@ -73,9 +79,12 @@
 #     is the fleet Summary's; the row was rewritten for the controls an instance's pages do offer.]), 'ok R3'
 #     (Unacknowledge - one cell back, the log's row end by demo), 'ok R2' (Options > Memory Dumps > Acknowledge Dumps on the MIXED store - prod-db1's
 #     Memory Dump cell is critical too: 'Memory dumps acknowledged on N instance(s) until a newer dump; 1 instance(s)
-#     not the demo's left alone.', never 'not saved', the log's N new rows acknowledgements of demo instances [B3]),
+#     not the demo's left alone.', never 'not saved', the log's N new rows acknowledgements of demo instances; the
+#     same menu item AGAIN finds none left - 'No demo instance has a Memory dumps cell with a warning or a critical to
+#     acknowledge; 1 instance(s) not the demo's left alone.', 0 new log rows [B3]),
 #     'ok R2b' (Options > Memory Dumps > Configure Thresholds, Clear: 'done N acknowledgement(s) ended: the dumps show
-#     again; 1 acknowledgement(s) of instances not the demo's left alone.', the log's N new rows ends by demo [B3]),
+#     again; 1 acknowledgement(s) of instances not the demo's left alone.', the log's k new rows ends by demo, k not
+#     under R2's N [B3]),
 #     'ok R2c' (the dialog again, only prod-db2's acknowledgement in force: Clear is aria-disabled, never the disabled
 #     attribute, with 'the acknowledgements in force are of instances that are not the demo's: ...' beside it, and the
 #     date beside it reads 'Not acknowledged' [the fold's own review, part A finding 3]), 'ok R7' (prod-db1's
@@ -101,7 +110,9 @@
 #     acknowledgement stands and this server ends none [part A finding 3]) [both added
 #     at the review's fold], 'demodoor-check: every row ok', then, read from the repository: 'ok B the seed's own
 #     silence ... is ended in the store, by demo', 'ok B prod-db2's Memory Dump acknowledgement (the proof's own)
-#     still stands', 'ok B nothing was written by the page for prod-db1, prod-db2 or demo-proof-stale', and 'ok B the
+#     still stands', 'ok B nothing was written by the page for prod-db1, prod-db2 or demo-proof-stale', 'ok B outside
+#     the acknowledge store the page's clicks changed nothing', 'ok B the Memory Dump acknowledgements the page made
+#     through the door: N made, 0 still live', and 'ok B the
 #     serve -no-login, written to once: 403 'acknowledgements need the UI login: this server runs with -no-login',
 #     the counts equal before and after' [C1]. Shots are kept of R1, R1b, R7, R4, R15's dialog, R6b, R16's two
 #     pages and R10's Summary (17, in a folder of this run's own under DOOR_SHOTS; one that could not be taken is a
@@ -109,7 +120,7 @@
 # NOT shown: a door whose instance list was read from the repository when it opened (a re-seed removes every instance
 # with the demo's tag and prefix before the door opens, so none can stand there at the start; demo-proof-stale is made
 # after it); Send test's own reason on a signed-in serve whose configuration lost a channel (no such serve is started).
-# Last line: 'proof-demodoor: OK'.
+# Last line: 'proof-demodoor: OK'. A scratch database that could not be dropped is a FAIL line after it and exit 1.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -118,8 +129,8 @@ fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 ok() { echo "ok   $*"; }
 die() { echo "FAIL $*" >&2; exit 1; }
 cleanup() {
-  # nothing in here may fail the run (a failing command in an EXIT trap turns exit 0 into 1) and nothing may wait
-  # without an end: the three processes are asked to end, each given 10 s, then killed outright (a Chromium that does
+  # nothing in here may fail the run by accident (a failing command in an EXIT trap turns exit 0 into 1) and nothing
+  # may wait without an end: the three processes are asked to end, each given 10 s, then killed outright (a Chromium that does
   # not answer must not hold the database and the box job's lease) and waited for before their files go (Chromium
   # writes its profile while it shuts down). The database is dropped only when THIS run made it (a create that
   # failed on a name already there must never drop the other run's database), and one that could not be dropped is
@@ -132,10 +143,13 @@ cleanup() {
     for n in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.2; done
     kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null
   done
+  local left=""
   if [[ -n "$MADE" ]]; then
-    out=$(timeout 60 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" 2>&1) || echo "FAIL the scratch database $DB was not dropped: $out"
+    out=$(timeout 60 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" 2>&1) || { echo "FAIL the scratch database $DB was not dropped: $out"; left=1; }
   fi
   rm -rf "$WORK" || true
+  # the one thing here that fails the run: a database left behind (a runner that grades by the exit code must see it)
+  if [[ -n "$left" ]]; then exit 1; fi
 }
 trap cleanup EXIT
 for t in chromium node psql curl python3 go ss timeout; do command -v $t >/dev/null || die "$t is not on this machine"; done
@@ -146,6 +160,7 @@ node -e 'process.exit(typeof WebSocket === "function" && typeof fetch === "funct
 for _ in $(seq 1 20); do p=$((21000 + RANDOM % 9000)); if ! ss -ltnH "( sport = :$p or sport = :$((p + 1)) )" | grep -q .; then PORT=$p; break; fi; done
 [[ -n "$PORT" ]] || die "no two free ports"; PORT2=$((PORT + 1))
 owns() { ss -ltnpH "sport = :$2" 2>/dev/null | grep -q "pid=$1,"; }   # owns <pid> <port>
+CURL=(curl --connect-timeout 5 --max-time 60)
 
 echo "== build, seed the demo into $DB and serve it on 127.0.0.1:$PORT"
 BIN=${PGVIGIL_BIN:-}
@@ -189,10 +204,13 @@ PN=$(padd "{\"op\":\"add\",\"kind\":\"silence\",\"instance_name\":\"demo-proof-s
 PM=$(padd "{\"op\":\"add\",\"kind\":\"mute\",\"instance_id\":$REAL,\"instance_name\":\"prod-db1\",\"match_text\":\"door proof\",$PW}")
 PD=$(padd "{\"op\":\"add\",\"kind\":\"ack\",\"instance_id\":$TAGGED,\"instance_name\":\"prod-db2\",\"check_key\":\"dumps\",\"seen_state\":\"door proof\",$PW}")
 [[ -n "$PS" && -n "$PN" && -n "$PM" && -n "$PD" ]] || die "the rig: the proof's own rows were not made: silence '$PS', silence by name '$PN', mute '$PM', dumps acknowledgement '$PD'"
-# one open alert of prod-db1 (its key in an alert key's shape, 32 hexadecimal digits)
+# one open alert of prod-db1 (its key in an alert key's shape, 32 hexadecimal digits) and its dismissal (the proof's own,
+# through the function the route calls): the door finds a dismissal's instance by a lookup of its own, asked below
 RKEY=$(q "select md5('door-proof-real-1')")
 q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, severity, source, setting, value, first_sent_at, last_sent_at)
    values ('demo-spool', '$RKEY', $REAL, 'prod-db1', 'critical', 'pgvigil', 'door proof', 'a real instance''s alert', now(), now())" >/dev/null
+PX=$(q "select pgvigil.import_alert_dismiss(now(), '{\"op\":\"add\",\"finding_key\":\"$RKEY\",\"reason\":\"door proof ground\",$PW}'::jsonb)->>'dismiss_id'")
+[[ -n "$PX" ]] || die "the rig: the proof's own dismissal of prod-db1's alert was not made"
 # two crash restarts in prod-db1's log (its Memory Dump cell on the Summary turns critical; its state page lists both)
 q "insert into pgvigil.log_events (instance_id, snapshot_at, kind, pid, detail, source, event_key)
    select $REAL, now() - x.ago, 'crash', 4242, 'server process (PID 4242) was terminated by signal 11: Segmentation fault', 'door proof', 'door-proof-' || x.n
@@ -218,22 +236,24 @@ C0=$(counts)
 
 echo "== A. the API"
 H=(-H 'X-Pgvigil: 1' -H 'Content-Type: application/json')
-post() { local path=$1 body=$2; shift 2; CODE=$(curl -s -o "$WORK/ans" -w '%{http_code}' -X POST "$@" -d "$body" "$U/api/$path"); ANS=$(head -c 600 "$WORK/ans"); }
+# every request of the proof is bounded (CURL): a server that accepts and never answers - the door's pool at its
+# connection limit - must fail a line (code 000), never hold the run, its database and the box job's lease
+post() { local path=$1 body=$2; shift 2; CODE=$("${CURL[@]}" -s -o "$WORK/ans" -w '%{http_code}' -X POST "$@" -d "$body" "$U/api/$path") || true; ANS=$(head -c 600 "$WORK/ans" 2>/dev/null || true); }
 want() { # want <label> <code> <words the answer must hold>
   if [[ "$CODE" == "$2" && "$ANS" == *"$3"* ]]; then ok "A $1: $CODE $(echo "$ANS" | head -c 170)"; else fail "A $1: $CODE $ANS (want $2 with '$3')"; fi; }
-G=$(curl -s "$U/api/ack?part=acks" | python3 -c 'import json,sys; d=json.load(sys.stdin); x=d.get("door") or {}; print(d.get("writable"), "|", x.get("user"), "|", len(x.get("instances") or []), "|", d.get("reason"))')
+G=$("${CURL[@]}" -s "$U/api/ack?part=acks" | python3 -c 'import json,sys; d=json.load(sys.stdin); x=d.get("door") or {}; print(d.get("writable"), "|", x.get("user"), "|", len(x.get("instances") or []), "|", d.get("reason"))')
 if [[ "$G" == "False | demo | $N | "*"pgvigil demo -serve"* && "$G" != *"-no-login"* ]]; then ok "A the door as the page is told: writable False, user demo, $N instances; '${G##*| }'"; else fail "A GET /api/ack: $G (want False | demo | $N | ... pgvigil demo -serve ...)"; fi
 # the seed's silence, read from the store by its client (the oldest, had the seed made several; the proof's own
 # silences stand beside it): GET /api/ack lists it live, under its instance's own id
 SEED=$(q "select instance_name from pgvigil.acks where kind = 'silence' and client = 'demo seed' and ended_at is null order by ack_id limit 1")
 SEEDID=$(q "select coalesce((select instance_id::text from pgvigil.instances where name = '$SEED'), 'no such instance')")
-SS=$(curl -s "$U/api/ack?part=acks" | python3 -c 'import json,sys
+SS=$("${CURL[@]}" -s "$U/api/ack?part=acks" | python3 -c 'import json,sys
 t=json.load(sys.stdin)["acks"]; r=[dict(zip(t["columns"],x)) for x in t["rows"]]
 s=[x for x in r if x["kind"]=="silence" and x["live"] and x["client"]=="demo seed" and x["instance"]==sys.argv[1]]
 print(len(s), "|", ",".join(str(x["instance_id"]) for x in s))' "$SEED")
 if [[ -n "$SEED" && "$SS" == "1 | $SEEDID" ]]; then ok "A the seed's silence ($SEED, read by its client 'demo seed') is listed under its instance's id: $SS"; else fail "A the seed's silence: instance '$SEED', listed '$SS' (want 1 | $SEEDID)"; fi
 for pair in "thresholds:jobs/thresholds?instance=$D1" "job exclusions:jobs/exclusions?instance=$D1"; do
-  G=$(curl -s "$U/api/${pair#*:}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("writable"), "|", d.get("reason"))')
+  G=$("${CURL[@]}" -s "$U/api/${pair#*:}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("writable"), "|", d.get("reason"))')
   if [[ "$G" == "False | this page's ${pair%%:*} are off on pgvigil demo -serve"* && "$G" != *"saved as user demo"* ]]; then ok "A GET /api/${pair#*:}: $G"; else fail "A GET /api/${pair#*:}: $G (want False | this page's ${pair%%:*} are off on pgvigil demo -serve ...)"; fi
 done
 post ack "{\"kind\":\"silence\",\"instance_id\":$D1,\"note\":\"x\"}" -H 'Content-Type: application/json'; want "no header" 403 "the X-Pgvigil header is required"
@@ -252,9 +272,13 @@ post pg/thresholds "{\"op\":\"set\",\"key\":\"uptime\",\"level\":\"instance\",\"
 post ack/end "{\"ack_id\":$PS}" "${H[@]}"; want "the end of prod-db1's silence (the proof's row)" 403 "$NOT1"
 post alerts/mute "{\"op\":\"pause\",\"ack_id\":$PM}" "${H[@]}"; want "the pause of prod-db1's mute rule (the proof's row)" 403 "$NOT1"
 post alerts/dismiss "{\"op\":\"add\",\"finding_key\":\"$RKEY\",\"reason\":\"x\"}" "${H[@]}"; want "the dismissal of prod-db1's open alert (the proof's row)" 403 "$NOT1"
+post alerts/dismiss "{\"op\":\"end\",\"dismiss_id\":$PX}" "${H[@]}"; want "the end of that alert's dismissal (the proof's row)" 403 "$NOT1"
 post ack/end "{\"ack_id\":$PN}" "${H[@]}"; want "the end of demo-proof-stale's silence, stored by its name (the proof's row)" 403 "demo-proof-stale is not one of this demo's instances"
-OWN=$(q "select (select count(*) from pgvigil.acks where ack_id in ($PS, $PN, $PM, $PD) and ended_at is null and paused_at is null) || ' live, ' || (select count(*) from pgvigil.alert_dismissals where finding_key = '$RKEY') || ' dismissal(s)'")
-if [[ "$OWN" == "4 live, 0 dismissal(s)" ]]; then ok "A the proof's own rows stand as it made them: $OWN"; else fail "A the proof's own rows: $OWN (want 4 live, 0 dismissal(s))"; fi
+# the proof's own five rows as it made them: prod-db1's silence and mute rule, demo-proof-stale's silence stored by
+# name, prod-db2's Memory Dump acknowledgement - none ended, none paused - and the one dismissal of prod-db1's alert, live
+OWN=$(q "select (select count(*) from pgvigil.acks where ack_id in ($PS, $PN, $PM, $PD) and ended_at is null and paused_at is null) || ' of 4 acknowledge rows live, '
+  || (select count(*) from pgvigil.alert_dismissals where finding_key = '$RKEY') || ' dismissal(s) of the alert, ' || (select count(*) from pgvigil.alert_dismissals where dismiss_id = $PX and ended_at is null) || ' live'")
+if [[ "$OWN" == "4 of 4 acknowledge rows live, 1 dismissal(s) of the alert, 1 live" ]]; then ok "A the proof's own rows stand as it made them: $OWN"; else fail "A the proof's own rows: $OWN (want 4 of 4 acknowledge rows live, 1 dismissal(s) of the alert, 1 live)"; fi
 NAMES="'prod-db1', 'prod-db2', 'demo-proof-stale'"
 if [[ $(q "select (select count(*) from pgvigil.acks where client is distinct from 'proof' and (instance_id in ($REAL, $TAGGED, $STALE) or instance_name in ($NAMES))) + (select count(*) from pgvigil.ack_log where client is distinct from 'proof' and instance_name in ($NAMES))") == 0 ]]; then ok "A nothing written for prod-db1, prod-db2 or demo-proof-stale (by id or by name, the log too; the proof's own rows apart)"; else fail "A a row was written for an instance that is not the demo's"; fi
 post drives/thresholds '{"op":"set","level":"root","warn":20,"crit":10}' "${H[@]}"; want "a root drive threshold" 403 "a root change would reach past the demo's instances"
@@ -285,10 +309,14 @@ d = {a[i]: int(b[i + 1]) - int(a[i + 1]) for i in range(0, len(a), 2)}
 print(" ".join(f"{k} {v:+d}" for k, v in d.items() if v) or "nothing")' "$C0" "$C1")
 LIVE=$(q "select (select count(*) from pgvigil.drive_thresholds where ended_at is null and created_by = 'demo') || ' live threshold(s) of demo, ' || (select count(*) from pgvigil.acks where client = 'demo door' and instance_id is null) || ' door row(s) without an instance'")
 if [[ "$DELTA" == "acks +1 ack_log +2 drive_thresholds +1" && "$LIVE" == "0 live threshold(s) of demo, 0 door row(s) without an instance" ]]; then ok "A nothing else was written: $DELTA; $LIVE"; else fail "A what part A changed: $DELTA; $LIVE (want acks +1 ack_log +2 drive_thresholds +1; 0 live threshold(s) of demo, 0 door row(s) without an instance)"; fi
-# the proof ends its own silences and its mute rule itself (by SQL, as 'proof'): the pages of part B then show
-# prod-db1 and demo-proof-stale with a Silence that is off, as a visitor meets them; prod-db2's Memory Dump
-# acknowledgement stays for R2b
-for a in $PS $PN $PM; do q "select pgvigil.import_ack(now(), '{\"op\":\"end\",\"ack_id\":$a,$PW}'::jsonb)" >/dev/null; done
+# the proof ends its own silences, its mute rule and its dismissal itself (by SQL, as 'proof'): the pages of part B
+# then show prod-db1 and demo-proof-stale with a Silence that is off and prod-db1's alert open, as a visitor meets
+# them; prod-db2's Memory Dump acknowledgement stays for R2b. An end that is not 'done' is a FAIL line (part B would
+# meet another page than the one its rows name)
+ENDS=""
+for a in $PS $PN $PM; do ENDS+="$(q "select pgvigil.import_ack(now(), '{\"op\":\"end\",\"ack_id\":$a,$PW}'::jsonb)->>'outcome'") "; done
+ENDS+="$(q "select pgvigil.import_alert_dismiss(now(), '{\"op\":\"end\",\"dismiss_id\":$PX,$PW}'::jsonb)->>'outcome'")"
+if [[ "$ENDS" == "done done done done" ]]; then ok "A the proof ended its own two silences, its mute rule and its dismissal: $ENDS"; else fail "A the proof's own ends: '$ENDS' (want done done done done)"; fi
 
 if [[ "${PROOF_DOOR_ONLY:-}" == A ]]; then
   if (( FAILS )); then echo "FAIL: $FAILS"; exit 1; fi
@@ -302,8 +330,8 @@ CHR=$!
 for _ in $(seq 1 150); do [[ -s "$WORK/chrome/DevToolsActivePort" ]] && break; kill -0 $CHR 2>/dev/null || break; sleep 0.2; done
 CDP=$(head -1 "$WORK/chrome/DevToolsActivePort" 2>/dev/null || true)
 [[ "$CDP" =~ ^[0-9]+$ ]] || { tail -3 "$WORK/chrome.log"; die "chromium wrote no debugging port into its profile (DevToolsActivePort)"; }
-for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.2; done
-curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || die "chromium's CDP port $CDP never answered"
+for _ in $(seq 1 50); do curl --max-time 5 -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.2; done
+curl --max-time 5 -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || die "chromium's CDP port $CDP never answered"
 # the shots: a folder of this run's own (named as its database), nothing deleted - an earlier run's picture can
 # neither stand in for a missing one nor be lost to this run
 SHOTS=${DOOR_SHOTS:-$PWD/.vis/door-shots}/$DB
@@ -313,14 +341,16 @@ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/none
 PGVIGIL_REPO_DSN="$DSN" "$BIN" serve -no-login -config "$WORK/none.yaml" -listen "127.0.0.1:$PORT2" > "$WORK/serve.log" 2>&1 &
 SRV2=$!
 U2="http://127.0.0.1:$PORT2"
-for _ in $(seq 1 60); do kill -0 $SRV2 2>/dev/null || break; curl -sf -o /dev/null "$U2/" && break; sleep 0.5; done
+for _ in $(seq 1 60); do kill -0 $SRV2 2>/dev/null || break; curl --max-time 5 -sf -o /dev/null "$U2/" && break; sleep 0.5; done
 # believed only when this run's own process answers on the port (another job's server on it would be read as ours)
-if ! kill -0 $SRV2 2>/dev/null || ! owns "$SRV2" "$PORT2" || ! curl -sf -o /dev/null "$U2/"; then fail "R10 the serve -no-login is not up on its own port $PORT2 (pid $SRV2): $(tail -2 "$WORK/serve.log" | tr '\n' ' ')"; U2=""; fi
+if ! kill -0 $SRV2 2>/dev/null || ! owns "$SRV2" "$PORT2" || ! curl --max-time 5 -sf -o /dev/null "$U2/"; then fail "R10 the serve -no-login is not up on its own port $PORT2 (pid $SRV2): $(tail -2 "$WORK/serve.log" | tr '\n' ' ')"; U2=""; fi
 # the rig as the click script reads it: the instances with a failed job, the instance of the seed's own silence, the
 # real instance tagged demo by hand, the instance with the demo's tag and prefix this process did not seed, prod-db1's
 # id (its own pages), the channel the configuration no longer names, the serve -no-login
 RIG=$(python3 -c 'import json,sys; print(json.dumps({"jobs": json.loads(sys.argv[1]), "seed": sys.argv[2], "tagged": sys.argv[3], "nologin": sys.argv[4], "stale": sys.argv[5], "real_id": int(sys.argv[6]), "gone": sys.argv[7]}))' "$JOBS" "$SEED" prod-db2 "${U2:+$U2/}" demo-proof-stale "$REAL" proof-gone)
+CN0=$(counts)   # the store before the page is clicked: what the clicks may change is the acknowledge store alone
 timeout 900 node scripts/demodoor-check.mjs "$CDP" "$U" prod-db1 "$SHOTS" "$RIG" || { echo "FAIL the click script ended with exit $? (124 = cut at 900 s)"; FAILS=$((FAILS + 1)); }
+CN1=$(counts)
 echo "shots: $(ls "$SHOTS" 2>/dev/null | wc -l) in $SHOTS"
 # R6b's other half, read from the store: the seed's own silence (client 'demo seed') was ended, by demo
 SE=$(q "select coalesce(string_agg(coalesce(ended_by, 'not ended'), ','), 'no such row') from pgvigil.acks where kind = 'silence' and client = 'demo seed' and instance_name = '$SEED'")
@@ -331,11 +361,21 @@ if [[ "$PDL" == live ]]; then ok "B prod-db2's Memory Dump acknowledgement (the 
 # every page row's other half: the page wrote nothing for an instance that is not the demo's
 PGW=$(q "select (select count(*) from pgvigil.acks where client is distinct from 'proof' and (instance_id in ($REAL, $TAGGED, $STALE) or instance_name in ($NAMES) or finding_key = '$RKEY')) + (select count(*) from pgvigil.ack_log where client is distinct from 'proof' and instance_name in ($NAMES))")
 if [[ "$PGW" == 0 ]]; then ok "B nothing was written by the page for prod-db1, prod-db2 or demo-proof-stale (by id or by name, prod-db1's alert, the log too)"; else fail "B $PGW row(s) written by the page for an instance that is not the demo's"; fi
+# and outside the acknowledge store the clicks wrote nothing at all: the threshold tables, the job exclusions, the
+# dismissals, the alert rules and tests and the instances count the same before and after the page
+OTHER=$(python3 -c 'import sys
+a, b = sys.argv[1].split(), sys.argv[2].split()
+d = {a[i]: int(b[i + 1]) - int(a[i + 1]) for i in range(0, len(a), 2) if a[i] not in ("acks", "ack_log")}
+print(" ".join(f"{k} {v:+d}" for k, v in d.items() if v) or "nothing")' "$CN0" "$CN1")
+if [[ "$OTHER" == nothing ]]; then ok "B outside the acknowledge store the page's clicks changed $OTHER (thresholds, job exclusions, dismissals, alert rules and tests, instances)"; else fail "B outside the acknowledge store the page's clicks changed: $OTHER (want nothing)"; fi
+# R2 and R2b's other half: every Memory Dump acknowledgement the page made through the door was ended by Clear
+DL=$(q "select count(*) || ' made, ' || count(*) filter (where ended_at is null) || ' still live' from pgvigil.acks where kind = 'ack' and check_key = 'dumps' and client = 'demo door'")
+if [[ "$DL" =~ ^[1-9][0-9]*\ made,\ 0\ still\ live$ ]]; then ok "B the Memory Dump acknowledgements the page made through the door: $DL (Clear ended each)"; else fail "B the Memory Dump acknowledgements the page made through the door: $DL (want 1 or more made, 0 still live)"; fi
 # the serve -no-login is WRITTEN to once (R10 only read it): refused in the plain serve's own words, and the store's
 # counts equal before and after - a seat that gave a serve without the login the door's user would write here
 if [[ -n "$U2" ]]; then
   CB=$(counts)
-  CODE=$(curl -s -o "$WORK/ans" -w '%{http_code}' -X POST "${H[@]}" -d "{\"kind\":\"silence\",\"instance_id\":$D1,\"note\":\"x\"}" "$U2/api/ack"); ANS=$(head -c 600 "$WORK/ans")
+  CODE=$("${CURL[@]}" -s -o "$WORK/ans" -w '%{http_code}' -X POST "${H[@]}" -d "{\"kind\":\"silence\",\"instance_id\":$D1,\"note\":\"x\"}" "$U2/api/ack") || true; ANS=$(head -c 600 "$WORK/ans" 2>/dev/null || true)
   CA=$(counts)
   if [[ "$CODE" == 403 && "$ANS" == *"acknowledgements need the UI login: this server runs with -no-login"* && "$CB" == "$CA" ]]; then ok "B the serve -no-login, written to once: $CODE $(echo "$ANS" | head -c 120), the counts equal before and after"; else fail "B the serve -no-login, written to once: $CODE $ANS; counts before '$CB', after '$CA' (want 403 'acknowledgements need the UI login: this server runs with -no-login', the counts equal)"; fi
 fi

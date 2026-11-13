@@ -128,19 +128,29 @@ const hasLabel = (label) => ev(labelJS(label));
 // the acknowledged cells on the page, -1 while the page is not drawn (a redraw in flight is never read as 'none')
 const ackCells = () => ev(`${drawnJS} ? document.querySelectorAll('main .ack').length : -1`);
 
-// the Summary's toolbar: an item of the open menu, waited for (a submenu is drawn by its parent's click) - true, or the
-// items the menu held; Options itself; and Options > Memory Dumps > Configure Thresholds with its dialog and Clear
-const menuClick = async (re) => {
-  const hit = await until(`(() => { const b = [...document.querySelectorAll('[role=menu] [role=menuitem]')].find(x => ${re}.test(x.textContent)); if (!b) return false; b.click(); return true; })()`, 5000);
-  return hit === true ? true : ev(`[...document.querySelectorAll('[role=menu] [role=menuitem]')].map(x => x.textContent)`);
+// the Summary's toolbar: Options, then the items named, each clicked once it is drawn (a submenu is drawn by its
+// parent's click). The page's own 30 s refresh drops an open menu: an item that has not appeared in 1.5 s means the
+// menu went away under the walk, and the whole walk is done ONCE more from Options (the last item acts, so a walk
+// that reached it is never repeated). ok, and in words what happened
+const menuWalk = async (...items) => {
+  let said = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const o = await until(`(() => { const b = [...document.querySelectorAll('button.tb-btn')].find(x => x.textContent.trim() === 'Options'); if (!b) return false; b.click(); return true; })()`, 5000);
+    if (!o) { said = 'no Options button in the toolbar'; continue; }
+    let missed = '';
+    for (const re of items) {
+      const hit = await until(`(() => { const b = [...document.querySelectorAll('[role=menu] [role=menuitem]')].find(x => ${re}.test(x.textContent)); if (!b) return false; b.click(); return true; })()`, 1500);
+      if (hit !== true) { missed = `no item ${re} in the menu, which held ${JSON.stringify(await ev(`[...document.querySelectorAll('[role=menu] [role=menuitem]')].map(x => x.textContent)`))}`; break; }
+    }
+    if (!missed) return { ok: true, said: `Options > ${items.length} item(s) clicked${attempt > 1 ? ` on the second walk (the first: ${said})` : ''}` };
+    said = missed;
+  }
+  return { ok: false, said };
 };
-const options = () => until(`(() => { const b = [...document.querySelectorAll('button.tb-btn')].find(x => x.textContent.trim() === 'Options'); if (!b) return false; b.click(); return true; })()`, 5000);
 const dumpDlg = `document.querySelector('dialog.act-dialog[open][aria-label="Memory Dump Thresholds"]')`;
 const openDump = async () => {
-  const o = !!(await options());
-  const a = o ? await menuClick('/^Memory Dumps/') : null;
-  const b = a === true ? await menuClick('/^Configure Thresholds/') : null;
-  return { menus: `Options ${o}, ${JSON.stringify(a)}, ${JSON.stringify(b)}`, open: b === true ? !!(await until(`!!${dumpDlg}`)) : false };
+  const w = await menuWalk('/^Memory Dumps/', '/^Configure Thresholds/');
+  return { menus: w.said, open: w.ok ? !!(await until(`!!${dumpDlg}`)) : false };
 };
 const closeDump = async () => { await ev(`${dumpDlg}?.querySelector('button[aria-label=Close]')?.click()`); await until(`!${dumpDlg}`); };
 // the dialog's Clear as it stands: on or off, how it is off, its words, and the date beside it
@@ -278,18 +288,28 @@ if (acked) {
 // leaves alone the one of the real instance tagged demo by hand (the proof's own row), counted in its answer
 {
   const cells0 = await reach(ackCells, v => v >= 0);
+  // what the page answers to Acknowledge Dumps (its note is made anew with every draw of the page)
+  const ackDumps = async () => {
+    const w = await menuWalk('/^Memory Dumps/', '/^Acknowledge Dumps/');
+    const said = w.ok ? await until(`(() => { const t = [...document.querySelectorAll('main p, main span')].map(x => x.textContent).find(x => /Memory dumps acknowledged on|No Memory dumps cell|No demo instance has a Memory dumps cell|Acknowledge is off/.test(x)); return t || ''; })()`) ?? '' : '';
+    return { menus: w.said, said };
+  };
   const m0 = await mark();
-  const opened = !!(await options());
-  const m1 = opened ? await menuClick('/^Memory Dumps/') : null;
-  const m2 = m1 === true ? await menuClick('/^Acknowledge Dumps/') : null;
-  const said = m2 === true ? await until(`(() => { const t = [...document.querySelectorAll('main p, main span')].map(x => x.textContent).find(x => /Memory dumps acknowledged on|No Memory dumps cell|Acknowledge is off/.test(x)); return t || ''; })()`) ?? '' : '';
+  const a1 = await ackDumps();
+  const said = a1.said;
   const sm = /Memory dumps acknowledged on ([1-9]\d*) instance\(s\) until a newer dump; 1 instance\(s\) not the demo's left alone\./.exec(said);
   const n = Number((/Memory dumps acknowledged on (\d+) instance/.exec(said) ?? [])[1] ?? 0);
   const logs = await wrote(m0, n);
-  judge('R2', !!sm && !/not saved|refused/.test(said) && allByDoor(logs, n, 'ack', 'add', doorNames),
-    `Options > Memory Dumps > Acknowledge Dumps: the page said '${said}' (menus: Options ${opened}, ${JSON.stringify(m1)}, ${JSON.stringify(m2)}); ${logSaid(logs)} (want ${n}, each an acknowledgement of a demo instance by demo / demo door)`);
   // the page draws itself again a moment after the answer: waited for before the next menu is opened
   const cells1 = await reach(ackCells, v => v >= cells0 + n && n > 0, n > 0 ? 15000 : 0);
+  // N is the page's own word: the same item AGAIN must find none left (a walk that stopped early, or said less than it
+  // did, shows here) - the demo's cells are all acknowledged, the real instance's is still left alone, nothing is written
+  const m0b = await mark();
+  const a2 = n > 0 ? await ackDumps() : { menus: 'not clicked', said: '' };
+  const logsB = n > 0 ? await wrote(m0b, 0) : [];
+  const none = a2.said.trim() === "No demo instance has a Memory dumps cell with a warning or a critical to acknowledge; 1 instance(s) not the demo's left alone.";
+  judge('R2', !!sm && !/not saved|refused/.test(said) && allByDoor(logs, n, 'ack', 'add', doorNames) && none && logsB.length === 0,
+    `Options > Memory Dumps > Acknowledge Dumps: the page said '${said}' (${a1.menus}); ${logSaid(logs)} (want ${n}, each an acknowledgement of a demo instance by demo / demo door); the same item again: '${a2.said}' (${a2.menus}), ${logSaid(logsB)} (want 0)`);
 
   const m3 = await mark();
   const d1 = await openDump();
@@ -299,8 +319,10 @@ if (acked) {
   const cm = /^done ([1-9]\d*) acknowledgement\(s\) ended: the dumps show again; 1 acknowledgement\(s\) of instances not the demo's left alone\.$/.exec(answer);
   const k = Number((/^done (\d+) acknowledgement/.exec(answer) ?? [])[1] ?? 0);
   const logs2 = clear === 'clicked' ? await wrote(m3, k) : [];
-  judge('R2b', !!cm && allByDoor(logs2, k, 'ack', 'end', doorNames),
-    `Options > Memory Dumps > Configure Thresholds (menus: ${d1.menus}; the dialog open ${d1.open}), Clear ${clear}: answered '${answer}'; ${logSaid(logs2)} (want ${k}, each an end of a demo instance's acknowledgement by demo / demo door)`);
+  // k is the dialog's own word: it must cover what R2 just acknowledged (N), and the proof reads from the store
+  // afterwards that no acknowledgement the page made through the door is still live
+  judge('R2b', !!cm && k >= n && n > 0 && allByDoor(logs2, k, 'ack', 'end', doorNames),
+    `Options > Memory Dumps > Configure Thresholds (${d1.menus}; the dialog open ${d1.open}), Clear ${clear}: answered '${answer}'; ${logSaid(logs2)} (want ${k}, not under R2's ${n}, each an end of a demo instance's acknowledgement by demo / demo door)`);
 
   // ---- R2c the same dialog again. The one Memory Dump acknowledgement still in force is the real instance's (the
   // proof's own row): Clear has nothing it may end here - off, aria-disabled (never the disabled attribute without
@@ -310,7 +332,7 @@ if (acked) {
   const c2 = d2.open ? await dumpClear() : null;
   if (d2.open) await closeDump();
   judge('R2c', !!c2 && c2.off && !c2.disabledAttr && /are of instances that are not the demo's/.test(c2.words) && c2.date === 'Not acknowledged',
-    `the dialog again (menus: ${d2.menus}; open ${d2.open}), only the real instance's acknowledgement in force: Clear ${JSON.stringify(c2)}`);
+    `the dialog again (${d2.menus}; open ${d2.open}), only the real instance's acknowledgement in force: Clear ${JSON.stringify(c2)}`);
 }
 
 // ---- R7 the instances that are not the demo's - a real one, a real one tagged demo by hand, and one with the demo's
@@ -337,7 +359,7 @@ if (acked) {
     for (const tr of document.querySelectorAll('main tr')) { const b = tr.querySelector('button.silence-btn'); const m = /[?&]i=(\\d+)/.exec(tr.querySelector('a[href*="i="]')?.getAttribute('href') ?? '');
       if (b && m && ids.includes(Number(m[1])) && b.textContent.trim() === 'Silence' && b.getAttribute('aria-disabled') !== 'true' && !b.disabled) return b.getAttribute('aria-label'); }
     return ''; })()`);
-  const offRight = (x, name) => !!x && x.found && x.off && !x.disabledAttr && x.words.includes(`${name} is not one of this demo's instances`);
+  const offRight = (x, name) => !!x && x.found && x.off && !x.disabledAttr && x.label === 'Silence' && x.words.includes(`${name} is not one of this demo's instances`);
   judge('R7', offRight(real, REAL) && (!TAGGED || offRight(tagged, TAGGED)) && (!STALE || offRight(stale, STALE)) && !!demoRow,
     `${REAL}'s Silence on the Summary: ${JSON.stringify(real)}; ${TAGGED || 'no tagged instance'}'s (tagged demo by hand): ${JSON.stringify(tagged)}; ${STALE || 'no stale instance'}'s (the demo's tag and prefix, not seeded by this process): ${JSON.stringify(stale)}; a demo instance's Silence is on ('${demoRow}')`);
 }
@@ -506,7 +528,7 @@ if (NOLOGIN) {
   judge('R10', got.every(g => g.off > 0 && g.undescribed === 0 && g.unseen === 0 && g.repeated === 0 && g.noteCells === 0 && g.times === 1 && g.cells === 0) && /^read only, actions off$/.test(seatPlain)
     && !!clearPlain && clearPlain.off && !clearPlain.disabledAttr && /this server runs with -no-login/.test(clearPlain.words),
     'pgvigil serve -no-login on the same repository: ' + got.map(g => `${g.what}: ${g.off} off control(s), ${g.undescribed} without a description, ${g.unseen} pointing at words not on the page, ${g.sentences} sentence(s) of which ${g.repeated} repeated, its words ${g.times} time(s) on the page and in ${g.cells} grid cell(s), ${g.noteCells} note(s) inside a grid cell ('${g.first}')`).join('; ')
-    + `; the footer's seat: '${seatPlain}' (want 'read only, actions off'); the Summary's dump dialog (menus: ${dumpMenus}), Clear: ${JSON.stringify(clearPlain)}`);
+    + `; the footer's seat: '${seatPlain}' (want 'read only, actions off'); the Summary's dump dialog (${dumpMenus}), Clear: ${JSON.stringify(clearPlain)}`);
 }
 
 if (shotsMissed.length) fail('shots', `not taken: ${shotsMissed.join(', ')}`);
