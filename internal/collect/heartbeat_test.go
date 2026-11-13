@@ -455,6 +455,7 @@ func TestConnectTimeoutKept(t *testing.T) {
 		"host=127.0.0.1 port=1 user=x connect_timeout=3":  3 * time.Second,
 		"host=127.0.0.1 port=1 user=x connect_timeout=60": 60 * time.Second,
 		"host=127.0.0.1 port=1 user=x":                    DefaultConnectTimeout,
+		"host=127.0.0.1 port=1 user=x connect_timeout=0":  DefaultConnectTimeout, // pgx parses 0 as none set (libpq: wait for ever)
 	} {
 		cfg, err := pgx.ParseConfig(dsn)
 		if err != nil {
