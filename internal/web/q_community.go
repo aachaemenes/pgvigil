@@ -719,14 +719,15 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 		}
 		return c
 	}
+	// the archived logs are listed through sp_enumerrorlogs: securityadmin, and from SQL Server 2022 VIEW SERVER STATE or
+	// VIEW ANY ERROR LOG (the mssql sandbox, 16.0: either lists them, neither is refused 27219)
+	listsArchives := secAdmin == 1 || (major >= 16 && (viewState == 1 || viewErrorLog == 1))
 	// sp_LogHunter's own test (HAS_PERMS_BY_NAME, NULL as no; Amazon RDS's reader excepted)
 	switch {
 	case canRead == 0 && rds == 0:
 		add("sp_LogHunter", hardNeed("EXECUTE on xp_readerrorlog for the read login "+login+": sp_LogHunter reads the error log through it and refuses without it",
 			grantLine("master", masterUser, login, "sys.xp_readerrorlog"), "live"))
-	// the archived logs are listed through sp_enumerrorlogs: securityadmin, and from SQL Server 2022 VIEW SERVER STATE or
-	// VIEW ANY ERROR LOG (the mssql sandbox, 16.0: either lists them, neither is refused 27219)
-	case rds == 0 && secAdmin == 0 && !(major >= 16 && (viewState == 1 || viewErrorLog == 1)):
+	case rds == 0 && !listsArchives:
 		way := "securityadmin"
 		if major >= 16 {
 			way = "VIEW SERVER STATE, VIEW ANY ERROR LOG or securityadmin"
