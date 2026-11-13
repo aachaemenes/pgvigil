@@ -63,6 +63,10 @@ func runAgentAlerts(ctx context.Context, conn *sql.Conn, info Info, c *checksRun
 		// Microsoft's T-SQL differences page for Managed Instance, SQL Server Agent: "Alerts aren't yet supported."
 		// and "Pager isn't supported.", while email notification is: the operators are read and judged, the alerts
 		// and the fail-safe operator (it serves alert paging) are not.
+		if !info.MsdbAccess {
+			c.unread(AreaAlerts, "msdb.dbo.sysoperators", "the login has no access to msdb: the Agent's operators were not read")
+			return
+		}
 		ops, err := QueryRows(ctx, conn, agentOperatorsSQL)
 		if err != nil {
 			c.unread(AreaAlerts, "msdb.dbo.sysoperators", "the Agent's operators were not read: "+err.Error())

@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -496,6 +497,12 @@ func TestAgentAlertsManagedInstance(t *testing.T) {
 	}
 	if strings.Join(got, ", ") != "no operator" {
 		t.Errorf("Managed Instance keeps %v of a new server's alert findings, want [no operator]", got)
+	}
+	// a login without msdb: the plain reason, and no query (the nil connection would panic)
+	c := &checksRun{}
+	runAgentAlerts(t.Context(), nil, Info{Kind: KindAzureMI, EngineEdition: 8}, c)
+	if len(c.rows) != 2 || c.rows[0]["read"] != b2i(false) || !strings.Contains(fmt.Sprint(c.rows[0]["note"]), "no access to msdb") {
+		t.Errorf("Managed Instance without msdb: %v", c.rows)
 	}
 }
 
