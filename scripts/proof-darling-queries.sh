@@ -1109,13 +1109,15 @@ await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
 await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
 const kbd = (sel, keys) => ev(`(async () => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return 'no band'; b.focus();
   for (const k of ${JSON.stringify(keys)}) { b.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); await new Promise(r => setTimeout(r, 100)); } return 'ok'; })()`, true);
-// the Query Store strip: Home + Enter reads the grid again for the first step; Draw puts a query's line on it
+// the Query Store strip: Draw puts a query's line on it (clicked on the whole range's grid: the strip's first step can
+// lie before the store's first interval, and its grid then holds no row and no Draw); Home + Enter then reads the grid
+// again for the first step
 await go(pages.qs);
 const qs0 = await ev(`document.querySelector('main .strip-band') ? 'band' : 'none'`);
-const k1 = await kbd('main .strip-band', ['Home', 'Enter']); await sleep(2500);
-const qs1 = await ev(`JSON.stringify({ said: [...document.querySelectorAll('main p[role=status]')].map(p => p.textContent).find(t => t.startsWith('The grid holds')) ?? null, errors: document.querySelectorAll('main .error:not([role=status])').length })`);
 const drew = await ev(`(async () => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent === 'Draw'); if (!b) return 'no Draw'; b.click(); await new Promise(r => setTimeout(r, 2500));
   return JSON.stringify({ line: !!document.querySelector('main svg.strip-overlay polyline'), note: document.querySelector('main .strip-overlay-note')?.textContent ?? null }); })()`, true);
+const k1 = await kbd('main .strip-band', ['Home', 'Enter']); await sleep(2500);
+const qs1 = await ev(`JSON.stringify({ said: [...document.querySelectorAll('main p[role=status]')].map(p => p.textContent).find(t => t.startsWith('The grid holds')) ?? null, stretchEmpty: (document.querySelector('main')?.textContent ?? '').includes("No query ran in the store's intervals of this stretch."), errors: document.querySelectorAll('main .error:not([role=status])').length })`);
 console.log(`qsstrip ${qs0} ${k1} ${qs1} ${drew}`);
 // the plan cache's History
 await go(pages.plancache);
