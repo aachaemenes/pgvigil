@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -376,5 +380,89 @@ func TestRecordInterval(t *testing.T) {
 	}
 	if b2 := h.take(); len(b2.Load) != 0 {
 		t.Errorf("the next minute kept a load row: %+v", b2.Load)
+	}
+}
+
+// TestConnectTimeoutDefault (task 201 DONE-2, N10): an instance connect whose DSN sets no connect_timeout ends in about
+// DefaultConnectTimeout at a server that accepts and never answers (the startup hangs, as at a black-holed address
+// after its SYN), through both connect paths (the instance's own Connect, a collection's connectCounted), and is
+// counted as one failed attempt each - never a run held to its context.
+func TestConnectTimeoutDefault(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, c) // accepted and never answered
+			mu.Unlock()
+		}
+	}()
+	defer func() {
+		mu.Lock()
+		for _, c := range held {
+			_ = c.Close()
+		}
+		mu.Unlock()
+	}()
+	old := DefaultConnectTimeout
+	DefaultConnectTimeout = 300 * time.Millisecond
+	defer func() { DefaultConnectTimeout = old }()
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
+	dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=x dbname=x sslmode=disable", ln.Addr().(*net.TCPAddr).Port)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if c, err := Connect(ctx, config.Instance{Name: "bh1", DSNRaw: dsn}); err == nil {
+		_ = c.Close(ctx)
+		t.Fatal("Connect: connected to a server that never answers")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Connect ended after %v (want about %v)", d.Round(time.Millisecond), DefaultConnectTimeout)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	if c, err := connectCounted(ctx, "bh2", cfg); err == nil {
+		_ = c.Close(ctx)
+		t.Fatal("connectCounted: connected to a server that never answers")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("connectCounted ended after %v (want about %v)", d.Round(time.Millisecond), DefaultConnectTimeout)
+	}
+	for _, n := range []string{"bh1", "bh2"} {
+		if l := h.load[n]; l == nil || l.attempts != 1 || l.opened != 0 || l.auth != 0 {
+			t.Errorf("%s counted %+v (want 1 attempt, none opened, no refused login)", n, l)
+		}
+	}
+}
+
+// TestConnectTimeoutKept (N10): a DSN's own connect_timeout is kept; none gets DefaultConnectTimeout.
+func TestConnectTimeoutKept(t *testing.T) {
+	for dsn, want := range map[string]time.Duration{
+		"host=127.0.0.1 port=1 user=x connect_timeout=3":  3 * time.Second,
+		"host=127.0.0.1 port=1 user=x connect_timeout=60": 60 * time.Second,
+		"host=127.0.0.1 port=1 user=x":                    DefaultConnectTimeout,
+	} {
+		cfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		withConnectTimeout(cfg)
+		if cfg.ConnectTimeout != want {
+			t.Errorf("%q: %v (want %v)", dsn, cfg.ConnectTimeout, want)
+		}
 	}
 }

@@ -224,8 +224,24 @@ func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) e
 	return &connectError{err}
 }
 
-// connectCounted is pgx.ConnectConfig counted for the instance's load.
+// DefaultConnectTimeout bounds an instance connect whose DSN sets no connect_timeout (task 201 DONE-2, N10): pgx then
+// waits on the caller's context alone, so a host that drops packets held each collection to its own deadline. With it
+// the whole connect (dial, TLS, startup, login) ends in about 10 s per host address and is a failed attempt. A DSN's
+// own connect_timeout is kept; connect_timeout=0 parses to the same 0 as none and takes this too. A variable so a test
+// can shorten it.
+var DefaultConnectTimeout = 10 * time.Second
+
+// withConnectTimeout gives a config whose DSN set no connect_timeout DefaultConnectTimeout.
+func withConnectTimeout(cfg *pgx.ConnConfig) {
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = DefaultConnectTimeout
+	}
+}
+
+// connectCounted is pgx.ConnectConfig counted for the instance's load, under DefaultConnectTimeout where the DSN set
+// no connect_timeout.
 func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
+	withConnectTimeout(cfg)
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	CountConnect(instance, err)
 	return conn, err
