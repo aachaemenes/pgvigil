@@ -869,12 +869,14 @@ if (mode === 'live') {
       row.filled = await ev(`document.querySelector('main .preset')?.textContent ?? ''`);
       row.sessionInput = await ev(`[...document.querySelectorAll('main input')].find(i => /^@session_name/.test(i.getAttribute('aria-label') || ''))?.value ?? null`);
       await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent === ${JSON.stringify(runLabel)}).click(); 1`);
-      const ran = await until(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') || !!document.querySelector('main section .error')`, 75000);
-      row.result = ran ? await ev(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') ? 'ran' : 'error'`) : 'timeout';
+      // the panel's own status line (every grid has a role=status count of its own: ui.ts filter-count)
+      const st = `([...document.querySelectorAll('main button')].find(b => b.textContent === ${JSON.stringify(runLabel)})?.closest('section')?.querySelector('p[role=status]:not(.filter-count)')?.textContent ?? '')`;
+      const ran = await until(`/^Ran at/.test(${st}) || !!document.querySelector('main section .error')`, 75000);
+      row.result = ran ? await ev(`/^Ran at/.test(${st}) ? 'ran' : 'error'`) : 'timeout';
       row.badge = await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`);
       row.error = await ev(`document.querySelector('main section .error')?.textContent?.slice(0, 160) ?? ''`);
       row.note = await ev(`document.querySelector('main .report-result .refused')?.textContent?.slice(0, 160) ?? ''`);
-      out.rows.push(row);
+      out.rows.push(row); console.error(JSON.stringify(row));
     }
     await shot(shots, `live-${label}-light`);
   }
@@ -919,8 +921,9 @@ if (mode === 'live') {
     b.filled = await ev(`document.querySelector('main .preset')?.textContent ?? ''`);
     b.sessionInput = await ev(`[...document.querySelectorAll('main input')].find(i => /^@session_name/.test(i.getAttribute('aria-label') || ''))?.value ?? null`);
     await ev(`[...document.querySelectorAll('main button')].find(x => x.textContent === 'Run sp_HumanEventsBlockViewer').click(); 1`);
-    const ran = await until(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') || !!document.querySelector('main section .error')`, 75000);
-    b.result = ran ? await ev(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') ? 'ran' : 'error'`) : 'timeout';
+    const st = `([...document.querySelectorAll('main button')].find(x => x.textContent === 'Run sp_HumanEventsBlockViewer')?.closest('section')?.querySelector('p[role=status]:not(.filter-count)')?.textContent ?? '')`;
+    const ran = await until(`/^Ran at/.test(${st}) || !!document.querySelector('main section .error')`, 75000);
+    b.result = ran ? await ev(`/^Ran at/.test(${st}) ? 'ran' : 'error'`) : 'timeout';
     b.badge = await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`);
     b.error = await ev(`document.querySelector('main section .error')?.textContent?.slice(0, 160) ?? ''`);
     await shot(shots, 'live-blockviewer-state-c');
