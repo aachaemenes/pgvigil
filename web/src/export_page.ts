@@ -9,7 +9,7 @@
 // A block the page does not show (display none, visibility hidden, a visually-hidden note, a closed disclosure's
 // content) is not on this sheet; a grid in it keeps its own sheet (export.ts walk).
 import type { Cell, Look, Meta } from './export';
-import { cellWords, headingText, timeZone, typed } from './export';
+import { cellWords, headingText, textPx, timeZone, typed } from './export';
 import { stamp } from './tz';
 import { borderLeftOf, paintOf, textLook } from './export_colours';
 import { gridModel } from './ui';
@@ -167,11 +167,40 @@ function lineCells(e: Element, base: Element): Cell[] {
   };
   visit(e);
   close();
+  // a line drawn with a stripe at its left (a 'Needs attention' row): the stripe on its first cell
+  const stripe = borderLeftOf(e);
+  if (stripe && out[0]) out[0] = { ...out[0], look: { ...out[0].look, border: stripe } };
   return out;
 }
 
+// the platform as the page's Admin words it (admin_instances.ts platOpts); a key that only names the engine, or 'auto',
+// is no platform word
+const PLATFORM: Record<string, string> = { onprem: 'on premises', rds: 'Amazon RDS', aurora: 'Aurora', azure: 'Azure', cloudsql: 'Cloud SQL',
+  alloydb: 'AlloyDB', azuresqldb: 'Azure SQL Database', azuresqlmi: 'Azure SQL Managed Instance' };
+export const platformWords = (key: string | undefined): string | undefined => key ? PLATFORM[key] : undefined;
+
+// measured: the pixels a cell's words take in the file's font (Calibri 11 at its size; export.ts textPx), with the
+// cell's padding: the width a line of words needs, or the width each wrapped line has
+export const measured = (t: string, bold: boolean, pt = 11): number => 1.0738 * textPx(t, bold, false) * pt / 11 + 6;
+const colPx = (w: number | undefined) => Math.round((w && w > 0 ? w : 8.43) * 7) + 5;   // 0: no width set, Excel's 8.43
+// flow: a line's cells laid left to right as the page sets them, each from the first column past the end of the one
+// before (its words measured), so a badge never cuts the words before it; the last runs over the empty cells after it
+function flow(row: Cell[], widths: number[]): Cell[] {
+  const out: (Cell | undefined)[] = [];
+  let col = 0;
+  row.forEach((c, k) => {
+    out[col] = c;
+    if (k === row.length - 1) return;
+    const t = c.runs ? c.runs.map(r => r.text).join('') : String(c.v);
+    let need = measured(t, !!c.look?.bold, c.look?.pt), j = col;
+    while (need > 0) { need -= colPx(widths[j]); j++; }
+    col = Math.max(j, col + 1);
+  });
+  return Array.from(out) as Cell[];
+}
+
 // ---- the walk ----------------------------------------------------------------------------------------------
-interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[] } }
+interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[] }; flow?: boolean; cards?: number[]; label?: number }
 const txt = (v: string, look: Look = {}): Cell => ({ v, kind: 'text', text: v, look });
 
 // pageSheet: the page sheet of #main (root), for the grids `grids` (export.ts walk's elements, in sheet order:
@@ -206,7 +235,10 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
         // shows (a size, a time, a duration, a share as their text; their formats are the next step)
         const v: Cell = ty.kind === 'int' || ty.kind === 'dec' ? { v: ty.v, kind: ty.kind, text: words } : { v: words, kind: 'text', text: words };
         const l = cellLook(td, t, lc);
-        return withDot({ ...v, look: l.look }, l);
+        // a cell the page shows on more than one line wraps on the sheet too (its row as tall as its lines)
+        const cs = getComputedStyle(td), lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+        const inner = td.getBoundingClientRect().height - parseFloat(cs.paddingTop || '0') - parseFloat(cs.paddingBottom || '0');
+        return withDot({ ...v, look: inner > lh * 1.5 ? { ...l.look, wrap: true } : l.look }, l);
       });
     });
     const out: Cell[][] = [head, ...rows];
@@ -236,7 +268,9 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
     [...tr.children].map(c => { const l = cellLook(c, t); return withDot({ ...txt(cellWords(c)), look: c.tagName === 'TH' ? { ...l.look, bold: true } : l.look }, l); }));
   // cards: items side by side (tiles, chips, the calendar's days), rows of them by their place on the page; each card a
   // column, its lines top to bottom as the page draws them, each with the card's fill and its left stripe
+  let cardW: number[] = [];   // the last cards block's page widths per column (characters)
   const cardsBlock = (items: Element[]): Cell[][] => {
+    cardW = [];
     const vis = items.filter(x => seen(x) === 'yes').map(x => ({ x, r: x.getBoundingClientRect() }));
     const bands: { top: number; items: typeof vis }[] = [];
     for (const it of vis.sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left)) {
@@ -245,7 +279,8 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
     }
     const out: Cell[][] = [];
     for (const band of bands) {
-      const cols = band.items.sort((a, b) => a.r.left - b.r.left).map(({ x }) => {
+      const cols = band.items.sort((a, b) => a.r.left - b.r.left).map(({ x, r }, j) => {
+        cardW[j] = Math.max(cardW[j] ?? 0, Math.min(40, Math.max(12, Math.round(r.width / 7 * 100) / 100)));
         const card = paintOf(x, x.parentElement), stripe = borderLeftOf(x);
         const frame: Look = { ...(card.fill ? { fill: card.fill } : {}), ...(stripe ? { border: stripe } : {}), wrap: true };
         const parts = [...x.children].filter(c => seen(c) === 'yes' && !c.matches(CONTROL)).map(c => ({ c, r: c.getBoundingClientRect() }))
@@ -265,7 +300,8 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
     return out;
   };
 
-  const add = (e: Element, rows: Cell[][], grid?: { th: number[] }) => { if (rows.length) blocks.push({ rows, rect: e.getBoundingClientRect(), ...(grid ? { grid } : {}) }); };
+  const add = (e: Element, rows: Cell[][], grid?: { th: number[] }, more: Partial<Block> = {}) => { if (rows.length) blocks.push({ rows, rect: e.getBoundingClientRect(), ...(grid ? { grid } : {}), ...more }); };
+  const line = (e: Element, rows: Cell[][]) => add(e, rows, undefined, { flow: true });
   const visit = (e: Element): void => {
     const s = seen(e);
     if (s === 'no') return;
@@ -277,33 +313,39 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
       if (!(e as HTMLDetailsElement).open) {
         const ks = [...e.querySelectorAll('table.grid, p.empty[data-cols]')].map(indexOf).filter((k): k is number => k !== undefined);
         line.push({ ...txt(ks.length ? `(closed on the page; its rows on sheet ${ks.map(k => `{sheet:${k}}`).join(', ')})` : '(closed on the page)', { color: quiet, italic: true }), ...(ks.length ? { jump: ks[0], sheets: ks } : {}) });
-        add(e, [line]);
+        add(e, [line], undefined, { flow: true });
         return;
       }
-      add(sum ?? e, [line]);
+      add(sum ?? e, [line], undefined, { flow: true });
       for (const c of e.children) if (c !== sum) visit(c);
       return;
     }
     if (e.matches('.chart')) {
       const h = e.querySelector('h3, h4');
       const title = h ? headingText(h) : flat(e.textContent).slice(0, 80);
-      add(e, [[txt(`Chart: ${title}`, { color: paintOf(h ?? e, root).text, bold: true }), txt('(its picture comes in the next step; its numbers: the chart\'s menu, Export Excel)', { color: quiet, italic: true })]]);
+      line(e, [[txt(`Chart: ${title}`, { color: paintOf(h ?? e, root).text, bold: true }), txt('(its picture comes in the next step; its numbers: the chart\'s menu, Export Excel)', { color: quiet, italic: true })]]);
       return;
     }
     if (e.matches('.grid-more')) return;   // its grid writes it, with the grid's sheet to go to
-    if (/^H[1-6]$/.test(e.tagName)) { add(e, [lineCells(e, root)]); return; }
+    if (/^H[1-6]$/.test(e.tagName)) { line(e, [lineCells(e, root)]); return; }
     if (e.matches('table.grid')) { const g = gridBlock(e as HTMLTableElement); add(e, g.rows, { th: g.th }); return; }
     if (e.matches('table.grid-empty')) { const g = emptyGridBlock(e); add(e, g.rows, { th: g.th }); return; }
-    if (e.matches('table.props')) { add(e, propsBlock(e)); return; }
+    if (e.matches('table.props')) {
+      // a property card's label column: as wide as its longest label (cap 40)
+      const rows = propsBlock(e);
+      const lw = Math.max(0, ...rows.map(r => r[0] ? measured(String(r[0].v), !!r[0].look?.bold) : 0));
+      add(e, rows, undefined, { label: Math.min(40, Math.round((lw + 2) / 7 * 100) / 100) });
+      return;
+    }
     if (e.tagName === 'TABLE') { add(e, tableBlock(e)); return; }
-    if (e.matches('.tiles, .tile-wall, .chips')) { add(e, cardsBlock([...e.children])); return; }
-    if (e.matches('.tile, .chip')) { add(e, cardsBlock([e])); return; }
-    if (e.matches('.healthcal-grid')) { add(e, cardsBlock([...e.children])); return; }
+    if (e.matches('.tiles, .tile-wall, .chips')) { const cr = cardsBlock([...e.children]); add(e, cr, undefined, { cards: cardW }); return; }
+    if (e.matches('.tile, .chip')) { const cr = cardsBlock([e]); add(e, cr, undefined, { cards: cardW }); return; }
+    if (e.matches('.healthcal-grid')) { const cr = cardsBlock([...e.children]); add(e, cr, undefined, { cards: cardW }); return; }
     if (e.matches('canvas, svg, figure, img, .u-wrap')) { add(e, [[txt('Picture (the next step)', { color: quiet, italic: true })]]); return; }
-    if (e.matches('ul, ol')) { add(e, [...e.children].filter(li => seen(li) === 'yes').map(li => lineCells(li, root))); return; }
+    if (e.matches('ul, ol')) { line(e, [...e.children].filter(li => seen(li) === 'yes').map(li => lineCells(li, root))); return; }
     // a block whose content is words and inline marks only (no block of its own inside): one line
     const blockKids = [...e.children].filter(c => seen(c) !== 'no' && !c.matches(CONTROL) && !['inline', 'inline-block', 'inline-flex'].includes(getComputedStyle(c).display) && !c.matches(BADGE + ', .dot, a, span, b, strong, em, code, abbr, time'));
-    if (!blockKids.length) { const cs = lineCells(e, root); if (cs.length) add(e, [cs]); return; }
+    if (!blockKids.length) { const cs = lineCells(e, root); if (cs.length) line(e, [cs]); return; }
     // words of its own beside its blocks: a line of those words first (the rest follows as blocks)
     const own = flat([...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' '));
     if (own) add(e, [[txt(own, { color: paintOf(e, root).text })]]);
@@ -315,7 +357,8 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
   const at = (d: Date) => stamp(d);
   // row 2, the scope: the engine, the platform and the header strip's word (its own tint) on an instance's page
   const word = root.querySelector('.inst-header .band-word');
-  const scope: Cell[] = m.engine ? [txt(m.engine), ...(m.platform ? [txt(m.platform)] : []), ...(word && seen(word) === 'yes' ? [badgeCell(word, root)] : [])]
+  const pw = platformWords(m.platform);
+  const scope: Cell[] = m.engine ? [txt(m.engine), ...(pw ? [txt(pw)] : []), ...(word && seen(word) === 'yes' ? [badgeCell(word, root)] : [])]
     : [txt(m.instance === 'fleet' ? 'Fleet' : m.instance)];
   const rows: Cell[][] = [
     [txt(`${m.tab} - ${m.instance}`, { bold: true, pt: 14 })],
@@ -323,13 +366,28 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
     [txt(`Window ${m.window} (${at(m.from)} - ${at(m.to)}); exported ${at(m.at)}, ${timeZone(m.at)}; colours as the page showed them. This sheet is the view of the page; compute on the grid sheets after it, which are also the tables to read with assistive technology.`, { color: quiet })],
     [],
   ];
+  // the widths: a grid's columns from its header cells' page widths (cap 40); a property card's label column as wide as
+  // its longest label; the columns no grid reaches from the cards' own page widths (min 12, cap 40)
   const widths: number[] = [];
+  for (const b of blocks) if (b.grid) b.grid.th.forEach((px, j) => { widths[j] = Math.max(widths[j] ?? 0, Math.min(40, Math.round(px / 7 * 100) / 100)); });
+  const gridCols = widths.length;
+  for (const b of blocks) if (b.label) widths[0] = Math.max(widths[0] ?? 0, b.label);
+  for (const b of blocks) if (b.cards) b.cards.forEach((w, j) => { if (j >= gridCols) widths[j] = Math.max(widths[j] ?? 0, w); });
+  for (let j = 0; j < widths.length; j++) if (widths[j] === undefined) widths[j] = 0;
+  // a grid's or a property card's words wider than their column at these widths wrap (the cap of 40 would cut them
+  // otherwise): no text the page shows whole is cut on this sheet
+  for (const b of blocks) if (b.grid || b.label !== undefined) for (const r of b.rows) r.forEach((c, j) => {
+    if (!c || typeof c.v === 'number' || c.look?.wrap) return;
+    const t = c.runs ? c.runs.map(x => x.text).join('') : c.v;
+    if (t && measured(t, !!c.look?.bold, c.look?.pt) > colPx(widths[j])) r[j] = { ...c, look: { ...c.look, wrap: true } };
+  });
+  // the title rows' scope line flows too (its band word a badge)
+  rows[1] = flow(rows[1], widths);
   let prev: DOMRect | undefined;
   for (const b of blocks) {
     if (prev && b.rect.top < prev.bottom - 4 && b.rect.left >= prev.right - 4 && b.rect.height > 0)
       rows.push([txt('(beside the block above on the page)', { color: quiet, italic: true })]);
-    rows.push(...b.rows);
-    if (b.grid) b.grid.th.forEach((px, j) => { widths[j] = Math.max(widths[j] ?? 0, Math.min(40, Math.round(px / 7 * 100) / 100)); });
+    rows.push(...(b.flow ? b.rows.map(r => flow(r, widths)) : b.rows));
     prev = b.rect;
   }
   return { name: m.tab, rows, widths, freeze: 3 };

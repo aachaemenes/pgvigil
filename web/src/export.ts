@@ -392,14 +392,15 @@ class Styles {
 const ADV = [463, 667, 821, 1020, 1038, 1464, 1397, 452, 621, 621, 1020, 1020, 511, 627, 517, 791, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 548, 548, 1020, 1020, 1020, 949, 1831, 1185, 1114, 1092, 1260, 1000, 941, 1292, 1276, 516, 653, 1064, 861, 1751, 1322, 1356, 1058, 1378, 1112, 941, 998, 1314, 1162, 1822, 1063, 998, 959, 628, 791, 628, 1020, 1020, 596, 981, 1076, 866, 1076, 1019, 625, 964, 1076, 470, 490, 931, 470, 1636, 1076, 1080, 1076, 1076, 714, 801, 686, 1076, 925, 1464, 887, 927, 809, 644, 943, 644, 1020];
 const ADV_B = [463, 667, 898, 1020, 1038, 1493, 1443, 478, 638, 638, 1020, 1020, 528, 627, 547, 880, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 565, 565, 1020, 1020, 1020, 949, 1840, 1241, 1148, 1084, 1291, 999, 940, 1305, 1292, 546, 678, 1120, 866, 1790, 1349, 1385, 1090, 1405, 1153, 968, 1014, 1337, 1211, 1856, 1128, 1064, 979, 665, 880, 665, 1020, 1020, 615, 1011, 1099, 857, 1099, 1031, 648, 971, 1099, 503, 523, 983, 503, 1666, 1099, 1101, 1099, 1099, 728, 817, 710, 1099, 969, 1526, 941, 970, 814, 704, 973, 704, 1020];
 const MAX_WIDTH = 150, PX = 11 * 96 / 72 / 2048;
-// textPx: the pixels a line of text takes in Calibri 11 (a character past ASCII: Carlito's Latin average, a wide one an em)
-export function textPx(s: string, bold: boolean): number {
+// textPx: the pixels a line of text takes in Calibri 11 (a character past ASCII: Carlito's Latin average, a wide one an em);
+// cap: stop past 1,200 px (the width rule's 150 characters are 1,050 px), off for a wrapped line's count or a flowed segment
+export function textPx(s: string, bold: boolean, cap = true): number {
   const t = bold ? ADV_B : ADV;
   let u = 0;
   for (const ch of s) {
     const c = ch.codePointAt(0) ?? 32;
     u += c >= 32 && c <= 126 ? t[c - 32] : c >= 0x2e80 ? 2048 : bold ? 1030 : 1013;
-    if (u * PX > MAX_WIDTH * 8) break;   // past the cap: the rest changes nothing
+    if (cap && u * PX > MAX_WIDTH * 8) break;   // past the cap: the rest changes nothing to a width
   }
   return u * PX;
 }
@@ -486,6 +487,25 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
     return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
   const styleOf = (c: Cell) => c.look ? st.look(fmtOf(c), c.look) : st.id(fmtOf(c), c.status, !!c.head, c.link);
+  // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
+  // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
+  // measures a cell, a line 1.36 x the font's points); a row of 11-point single lines keeps the default (no height)
+  const colPx = (j: number) => Math.round((widths[j] > 0 ? widths[j] : 8.43) * 7) + 5;
+  const rowHt = (r: (Cell | undefined)[]): number | undefined => {
+    let pt = 11, ht = 15;
+    r.forEach((c, j) => {
+      if (!c) return;
+      const size = c.look?.pt ?? 11;
+      pt = Math.max(pt, size);
+      if (!c.look?.wrap || typeof c.v === 'number') return;
+      const words = c.runs ? c.runs.map(x => x.text).join('') : c.v;
+      const room = Math.max(10, colPx(j) - 6);
+      const lines = String(words).split(/\r?\n/).reduce((n, l) => n + Math.max(1, Math.ceil((1.0738 * textPx(l, !!c.look?.bold, false) * size / 11 + 1) / room)), 0);
+      ht = Math.max(ht, Math.ceil(lines * size * 1.36));
+    });
+    ht = Math.max(ht, Math.ceil(pt * 1.36));
+    return ht > 15 ? ht : undefined;
+  };
   const rows: string[] = [];
   const jumps: string[] = [];
   const first = sh.page ? 1 : 2;
@@ -495,12 +515,14 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
       const l = sh.heads?.[j], s = l ? st.look(0, l) : hs;
       return sh.table ? `<c r="${colName(j)}1" s="${s}" t="s"><v>${sst.id(head[j])}</v></c>` : cell(colName(j) + '1', { v: head[j], kind: 'text', text: head[j] }, s);
     };
-    rows.push(`<row r="1">${head.map((_, j) => hcell(j)).join('')}</row>`);
+    const h1 = rowHt(head.map((h, j): Cell => ({ v: h, kind: 'text', text: h, ...(sh.heads?.[j] ? { look: sh.heads[j] } : {}) })));
+    rows.push(`<row r="1"${h1 ? ` ht="${h1}" customHeight="1"` : ''}>${head.map((_, j) => hcell(j)).join('')}</row>`);
   }
   // a cell has the look the page gives it and no other (DBA Dash bands no rows): a plain cell is unfilled
   sh.rows.forEach((r, i) => {
     const n = i + first;
-    rows.push(`<row r="${n}">${r.map((c, j) => {
+    const ht = rowHt(r);
+    rows.push(`<row r="${n}"${ht ? ` ht="${ht}" customHeight="1"` : ''}>${r.map((c, j) => {
       if (!c) return '';
       if (c.jump !== undefined && names[c.jump + 1]) jumps.push(`<hyperlink ref="${colName(j)}${n}" location="${esc(`'${names[c.jump + 1].replace(/'/g, "''")}'!A1`)}" display="${esc(names[c.jump + 1])}"/>`);
       return cell(colName(j) + n, c, styleOf(c));

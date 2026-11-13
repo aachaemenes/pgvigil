@@ -712,7 +712,7 @@ console.log(JSON.stringify(out));
 process.exit(0);
 JS
 cat > "$WORK/check.py" <<'PY'
-import csv, io, json, os, re, sys, zipfile
+import csv, io, json, math, os, re, sys, zipfile
 d = json.load(open(sys.argv[1])); dl = sys.argv[2]; want = sys.argv[3]
 need = {x.strip() for x in os.environ.get('PGVIGIL_EXPORT_NEED', 'tools').split(',') if x.strip()} - {'none'}
 if os.environ.get('PGVIGIL_PYLIB'): sys.path.append(os.environ['PGVIGIL_PYLIB'])
@@ -841,11 +841,12 @@ def stamp(n, inst, tab, ext):
 SRC = open('web/src/export.ts').read()
 ADV = [int(x) for x in re.search(r'const ADV = \[([^\]]*)\]', SRC).group(1).split(',')]
 ADV_B = [int(x) for x in re.search(r'const ADV_B = \[([^\]]*)\]', SRC).group(1).split(',')]
-def tpx(t, bold):
+def tpx(t, bold, cap=True):
+    # cap as export.ts textPx's: for the width rule only; the fit audit measures the whole text
     a = ADV_B if bold else ADV; u = 0
     for ch in t:
         c = ord(ch); u += a[c - 32] if 32 <= c <= 126 else 2048 if c >= 0x2e80 else (1030 if bold else 1013)
-        if u * 11 * 96 / 72 / 2048 > 1200: break
+        if cap and u * 11 * 96 / 72 / 2048 > 1200: break
     return u * 11 * 96 / 72 / 2048
 import datetime
 def shown_py(val, text, fmt):
@@ -876,6 +877,42 @@ def widths_of(x):
     for a, b, w in re.findall(r'<col min="(\d+)" max="(\d+)" width="([\d.]+)"', x):
         for k in range(int(a), int(b) + 1): out[k - 1] = float(w)
     return out
+def texts_of(x, sst):
+    # every cell's words as written: an inline string's runs joined, a shared string, else none (a number)
+    out = {}
+    for m in re.finditer(r'<c r="([A-Z]+)(\d+)" s="(\d+)"(?: t="(\w+)")?(?:/>|>(.*?)</c>)', x, re.S):
+        body = m.group(5) or ''
+        if m.group(4) == 'inlineStr': t = unesc(''.join(re.findall(r'<t[^>]*>([^<]*)</t>', body)))
+        elif m.group(4) == 's':
+            v = re.search(r'<v>(\d+)</v>', body); t = sst[int(v.group(1))] if v and int(v.group(1)) < len(sst) else ''
+        else: continue
+        out[(int(m.group(2)), colidx(m.group(1)))] = (int(m.group(3)), t)
+    return out
+def fit_audit(x, cx, sst):
+    # (E2 1b, fault 1) every text cell of a sheet is whole: a line of words fits the room it is drawn in - its column and
+    # the empty cells after it in its row (none after it: it runs to the sheet's edge) - measured in the file's font as
+    # the width rule measures a cell (Carlito's advances, 1.0738 x + the cell's padding, at the cell's size); a wrapped cell:
+    # its lines at the column's width fit the row's height (1.36 x the points a line). Returns the cut cells.
+    ws = widths_of(x); hts = {int(r): float(h) for r, h in re.findall(r'<row r="(\d+)" ht="([\d.]+)"', x)}
+    allc = cells_of(x, sst); tx = texts_of(x, sst)
+    px = lambda j: round((ws.get(j, 0) if ws.get(j, 0) > 0 else 8.43) * 7) + 5
+    full = {k for k, v in allc.items() if v[1] is not None or (k in tx and tx[k][1] != '')}
+    cut = []
+    for (r, j), (sid, t) in tx.items():
+        if not t: continue
+        st_ = cx[sid] if sid < len(cx) else {'bold': False, 'sz': 11.0, 'wrap': False}
+        sz = st_.get('sz', 11.0)
+        if st_.get('wrap'):
+            room = max(10, px(j) - 6)
+            lines = sum(max(1, math.ceil((1.0738 * tpx(l, st_['bold'], False) * sz / 11 + 1) / room)) for l in t.split('\n'))
+            if lines * sz * 1.36 > hts.get(r, 15.0) + 0.5: cut.append(f"{colname(j)}{r} '{t[:30]}' needs {lines} lines, row {hts.get(r, 15.0)} pt")
+            continue
+        need = 1.0738 * tpx(t, st_['bold'], False) * sz / 11 + 6
+        after = [k for (rr, k) in full if rr == r and k > j]
+        if not after: continue
+        room = sum(px(k) for k in range(j, min(after)))
+        if need > room + 2: cut.append(f"{colname(j)}{r} '{t[:30]}' needs {round(need)} px, has {room}")
+    return cut
 def width_audit(x, cx, sst):
     # every column: the width the rule gives its cells (row 1, the header, measured as DBA Dash's bold header: the
     # rule's own place, not the cell's font - the page's header is not bold, and a bold badge cell is no header),
@@ -896,6 +933,21 @@ print(f"     browser language {d['lang']}, 1234567 shown as {d['sample']!r}")
 check(d['lang'].lower().startswith(want[:2].lower()), f"the browser runs in {want}")
 if want.startswith('fr'):
     check(',' not in d['sample'], "the fr-FR grouping is not a comma (the locale took)")
+# fit_audit's self-test: a planted long label in a narrow column with a cell after it is cut; the same label with the
+# cell after it empty runs over (whole); a wrapped cell in a row too short for its lines is cut
+_cx = [{'fmt': 0, 'fill': None, 'font': None, 'bold': False, 'wrap': False, 'sz': 11.0}, {'fmt': 0, 'fill': None, 'font': None, 'bold': False, 'wrap': True, 'sz': 11.0}]
+_lab = "msdb's backup history reaches back to"
+_x1 = f'<cols><col min="1" max="1" width="10" customWidth="1"/></cols><sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><t>{_lab}</t></is></c><c r="B1" s="0" t="inlineStr"><is><t>x</t></is></c></row></sheetData>'
+_x2 = _x1.replace('<c r="B1" s="0" t="inlineStr"><is><t>x</t></is></c>', '')
+_x3 = f'<cols><col min="1" max="1" width="10" customWidth="1"/></cols><sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>{_lab} {_lab}</t></is></c></row></sheetData>'
+check(len(fit_audit(_x1, _cx, [])) == 1 and fit_audit(_x2, _cx, []) == [] and len(fit_audit(_x3, _cx, [])) == 1,
+      f"fit: self-test - a planted label cut by the cell after it is found ({fit_audit(_x1, _cx, [])}), the same label running over empty cells is whole, a wrapped cell in a short row is found")
+# a wrapped text past textPx's 1,200 px cap: a row as tall as the capped count's lines is found short, the whole count's is whole
+_long = ' '.join([_lab] * 12)
+_n = lambda cap: max(1, math.ceil((1.0738 * tpx(_long, False, cap) + 1) / (round(150 * 7) + 5 - 6)))
+_x4 = lambda n: f'<cols><col min="1" max="1" width="150" customWidth="1"/></cols><sheetData><row r="1" ht="{math.ceil(n * 11 * 1.36)}" customHeight="1"><c r="A1" s="1" t="inlineStr"><is><t>{_long}</t></is></c></row></sheetData>'
+check(_n(True) < _n(False) and len(fit_audit(_x4(_n(True)), _cx, [])) == 1 and fit_audit(_x4(_n(False)), _cx, []) == [],
+      f"fit: self-test - a wrapped text past the 1,200 px cap ({round(tpx(_long, False, False))} px) in a row of the capped count's {_n(True)} lines is found, in a row of its {_n(False)} lines whole")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
@@ -1065,6 +1117,14 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     check(t3.startswith('Window ') and re.search(r'\(UTC[-+]\d\d:\d\d at export\)', t3) is not None and 'compute on the grid sheets' in t3,
           f"{key}: the page sheet's row 3 names the window, the zone with its offset at export and where to compute ({t3[:90]}...)")
     check('<pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/>' in first and '<tableParts' not in first, f"{key}: the page sheet freezes rows 1-3 and holds no table")
+    # (E2 1b, fault 1 and 3) every text the page sheet shows is whole: lines run over empty cells or move past a badge,
+    # a card's label column is wide enough, a wrapped cell or header row is as tall as its lines
+    cut1 = fit_audit(first, cx, sst)
+    check(not cut1, f"{key}: every text on the page sheet whole ({len(texts_of(first, sst))} text cells; {len(cut1)} cut {cut1[:3]})")
+    # (fault 5) row 2 says the scope in the page's words: no engine or platform key ('sqlserver', 'onprem')
+    r2 = [ptext(2, j) for j in range(12) if ptext(2, j)]
+    keys_ = {'postgres', 'sqlserver', 'auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb', 'azuresqldb', 'azuremi', 'azuresqlmi'}
+    check(bool(r2) and not any(t in keys_ for t in r2), f"{key}: row 2 in the page's words {r2}")
     nrow1 = max([r for r, _ in f1] or [0])
     pos, found = 4, 0
     vis = [x for x in ((p.get('sections') or {}).get('sections') or []) if x['kind'] == 'grid']
