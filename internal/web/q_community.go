@@ -1438,11 +1438,19 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, out, nil)
 }
 
-// msNoLogin: a SQL Server run refused before anything is sent - this server holds no read login for the instance (the
-// words of a custom report's run, q_customreports.go; the PostgreSQL branch says the same of its monitoring login).
-// Since FOLD 2 the demo's own instances meet it on a plain serve: there they are instances without a login.
-func msNoLogin(name string) string {
-	return "instance " + name + " has no read login configured on this server"
+// msRunLogin is a SQL Server instance's read login for a run, or why a run is refused before anything is sent: this
+// server holds no login for the instance (its configuration file does not list it - a plain serve has no demo
+// instance, so the demo's own instances are such instances there), or the configured dsn (env:, file: or dpapi:)
+// resolved to an empty string on this server. A custom report's run and a community tool's run use the same words.
+func (s *Server) msRunLogin(name string) (dsn, why string) {
+	d, ok := s.mssqlDoor().doors[name]
+	switch {
+	case !ok:
+		return "", "instance " + name + " has no read login configured on this server"
+	case d.Monitor == "":
+		return "", "instance " + name + ": its read login's dsn (env:, file: or dpapi:) resolved to an empty string on this server"
+	}
+	return d.Monitor, ""
 }
 
 // CommunityRun is POST /api/community/run.
@@ -1525,17 +1533,17 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		if in.Database != "" {
 			stmt = "USE " + msQuote(in.Database) + ";\n" + text
 		}
-		dsn := s.msDoorDSN(name)
-		if dsn == "" {
-			run.finish(t0, nil, msNoLogin(name), nil)
+		dsn, no := s.msRunLogin(name)
+		if no != "" {
+			run.finish(t0, nil, no, nil)
 			break
 		}
 		sets, why, err := runMS(ctx, dsn, stmt, nil, timeout, 5000, true)
 		run.finish(t0, sets, why, err)
 	default:
-		dsn := s.msDoorDSN(name)
-		if dsn == "" {
-			run.finish(t0, nil, msNoLogin(name), nil)
+		dsn, no := s.msRunLogin(name)
+		if no != "" {
+			run.finish(t0, nil, no, nil)
 			break
 		}
 		db, conn, why, err := openMS(ctx, dsn, "pgvigil-community")

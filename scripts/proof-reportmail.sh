@@ -35,7 +35,7 @@
 #      address, Subject 'pgvigil: <page> - fleet - <window>'. P03: then a page whose grids are all empty (the first of
 #      seven report pages over the window that holds no table and at least one empty grid's note) is mailed the same
 #      way and answered sent (Mail refused it before: 'nothing to mail').
-#   N2 [B3 DONE-2, FOLD 2] the demo's first SQL Server instance on this signed-in plain serve is an instance without a
+#   N2 [B3 DONE-2] the demo's first SQL Server instance on this signed-in plain serve is an instance without a
 #      login there, never a demo instance (pgvigil demo -serve alone has demo instances, and it has no login, so it
 #      mails nothing): GET /api/community demo false, no sample, the read login's reason; GET /api/community/sample 404;
 #      Send now of its Community tools page with tool=sp_Blitz answered sent, its HTML and its workbook's Summary with
@@ -438,7 +438,7 @@ waitsent $EMPTYID || fail "N: the empty page's mail not answered in 3 minutes"
 [[ $(q "select count(*) from pgvigil.report_mail_sends where send_id = $EMPTYID and outcome = 'sent' and kind = 'now'") == 1 ]] || fail "N: the empty page's mail: $(q "select send_id, outcome, error from pgvigil.report_mail_sends where send_id = $EMPTYID")"
 ok "N: $EMPTYR, every grid on it empty ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["empties"])' "$WORK/pick.json") grids), mailed with Send now (mail $EMPTYID), answered sent"
 NOWIDS="$NOWIDS $EMPTYID"
-# ---- N2 (B3 DONE-2, FOLD 2): the demo's SQL Server instance on this signed-in plain serve is an instance without a
+# ---- N2 (B3 DONE-2): the demo's SQL Server instance on this signed-in plain serve is an instance without a
 # login, never a demo instance (only pgvigil demo -serve's own seeded instances are, and that serve has no login, so
 # it mails nothing): no sample, and the mail of its Community tools page with tool=sp_Blitz carries no kit's stored words
 DSID=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
@@ -466,7 +466,8 @@ stored = re.compile(r'captured \d{4}-\d{2}-\d{2} UTC|is a demo instance')
 assert not stored.search(body), f"N2: the mail's body holds stored words: {stored.findall(body)[:3]}"
 xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
 z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
-xml = html.unescape(z.read('xl/worksheets/sheet1.xml').decode())   # the Summary sheet writes its text inline
+# the Summary sheet writes its text inline; the tags go first, so a note split into rich-text runs is read whole
+xml = html.unescape(re.sub(r'<[^>]+>', '', z.read('xl/worksheets/sheet1.xml').decode()))
 assert not stored.search(xml), f"N2: the mail's workbook's Summary holds stored words: {stored.findall(xml)[:3]}"
 print(f"ok   N2: mail {sid}: {name}'s Community tools page (tool=sp_Blitz) from the signed-in plain serve, an instance without a login there: no sample (GET /api/community/sample 404), the mail sent with no kit's stored words in its body or its workbook")
 PY

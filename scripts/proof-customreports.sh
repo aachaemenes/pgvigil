@@ -136,8 +136,9 @@
 #     (the Summary sheet's note) and Export CSV (the sample's file's first line) carry the mark; no custom_report_log row
 #     from any of it; the real instance: no sample in its tools, GET /api/community/sample 404; POST /api/community/run
 #     of the demo's SQL Server instance, never answered with a sample: on the signed-in plain serve (an instance without
-#     a login there since FOLD 2) refused in its run row ('instance <name> has no read login configured on this
-#     server', nothing sent); on the demo serve 403 ('Running a tool needs a signed-in user ...').
+#     a login there: a plain serve has no demo instance) refused in its run row ('instance <name> has no read login
+#     configured on this server', nothing sent), a procedure's run and Glenn Berry's script's (one query's text) alike;
+#     on the demo serve 403 ('Running a tool needs a signed-in user ...').
 #     [the fold of review 20261112-222929] a real PostgreSQL instance tagged demo on the plain -no-login serve: its
 #     ordinary line, no demo words, GET /api/community/sample 404 (only an instance this pgvigil demo seeded is a demo
 #     instance); the panels' instances are the first demo SQL Server and PostgreSQL instance
@@ -1237,18 +1238,24 @@ if (mode === 'live') {
     navigator.clipboard.write = async items => { for (const it of items) window.__clips.push({ kind: 'item', plain: await (await it.getType('text/plain')).text(), html: await (await it.getType('text/html')).text() }); };
     return 1; })()`);
   // cell: a JS expression for the cell the menu opens on
-  // the cell is scrolled to first and the right-click comes after the scroll's own event: the page closes an open menu
-  // on any scroll (ui.ts dropMenu), so a menu opened in the same turn as the scroll is gone a frame later (buttons-b3f-6)
+  // the cell is scrolled to first and left to settle (two frames, then 300 ms) so the scroll's own event has passed; then
+  // the right-click and the item's click in ONE evaluate: the page closes an open menu on any scroll (ui.ts dropMenu) and
+  // the grid's contextmenu builds its menu synchronously (showMenu), so no scroll can fall between the two
   const copyFrom = async (cell, item) => {
     const n = await ev(`window.__clips.length`);
     const there = await ev(`(() => { const td = ${cell}; if (!td) return false; td.scrollIntoView({ block: 'center' }); return true; })()`);
     if (!there) return { error: 'no cell ' + cell };
-    await sleep(500);
-    await ev(`(() => { const td = ${cell}; const r = td.getBoundingClientRect();
-      td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 })); return 1; })()`);
-    if (!await until(`!!document.querySelector('.menu [role=menuitem]')`, 5000)) return { error: 'no menu opened on ' + cell };
-    const hit = await ev(`(() => { const bs = [...document.querySelectorAll('.menu [role=menuitem]')], b = bs.find(x => x.textContent.trim() === ${JSON.stringify(item)}); if (!b) return 'not among: ' + bs.map(x => x.textContent.trim()).join(' | '); b.click(); return ''; })()`);
-    if (hit) return { error: item + ' ' + hit };
+    await ev(`new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`);
+    await sleep(300);
+    const miss = await ev(`(() => { const td = ${cell}; if (!td) return 'the cell went away after the scroll';
+      const r = td.getBoundingClientRect();
+      td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
+      const bs = [...document.querySelectorAll('.menu [role=menuitem]')];
+      if (!bs.length) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
+      const b = bs.find(x => x.textContent.trim() === ${JSON.stringify(item)});
+      if (!b) return ${JSON.stringify(item)} + ' not among: ' + bs.map(x => x.textContent.trim()).join(' | ');
+      b.click(); return ''; })()`);
+    if (miss) return { error: miss };
     if (!await until(`window.__clips.length > ${n}`, 5000)) return { error: 'nothing reached the clipboard in 5 s after ' + item };
     return await ev(`window.__clips[${n}]`);
   };
@@ -1270,7 +1277,10 @@ if (mode === 'live') {
       const fc = chooser();
       await ev(`[...document.querySelectorAll('#bar button')].find(b => b.textContent.trim() === 'Tools').click(); 1`);
       await until(`[...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent.startsWith('Open Grid or Data Set'))`, 5000);
-      await ev(`[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent.startsWith('Open Grid or Data Set')).click(); 1`);
+      // a file input opens its chooser only on a user's activation (filedrop.ts pick: input.click()): the item's click is
+      // evaluated as a user gesture, as menu-check's evaluates are, or no chooser opens and fileChooserOpened never comes
+      await cmd('Runtime.evaluate', { expression: `[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent.startsWith('Open Grid or Data Set')).click(); 1`,
+        returnByValue: true, userGesture: true });
       const got = await Promise.race([fc, sleep(10000).then(() => null)]);
       if (!got) out.reopen = { error: 'no file chooser opened' };
       else {
@@ -1482,13 +1492,14 @@ PY
   rm -rf "$WORK/dl"; mkdir -p "$WORK/dl"
   timeout 900 node "$WORK/buttons.mjs" demo "$CDP" "$U4/" "$DMS" "$DPG" "${MRID:-$AID}" "$SHOTS" "$WORK/dl" "$DMS2" "$DPG2" > "$WORK/demo.json" 2>"$WORK/demo.err" || fail "S: the demo driver: $(tail -5 "$WORK/demo.err")"
   LOG1=$(q "select count(*) from pgvigil.custom_report_log")
-  # a run asked of the demo's SQL Server instance, never a sample (FOLD 2: only the demo serve's own seeded instances are
+  # a run asked of the demo's SQL Server instance, never a sample (only the demo serve's own seeded instances are
   # demo instances): on the signed-in plain serve (the same repository) it is an instance without a login there, its
   # run refused in the custom report's words before anything is sent (a run row, so a tick); on the demo serve (no
   # login) the gate refuses the POST first (403, no row)
   tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}") == 200 ]] || fail "S: a run asked of the demo's instance on the signed-in serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run.json"
+  tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"glenn_berry\",\"text\":\"SELECT 1\"}") == 200 ]] || fail "S: a script run asked of the demo's instance on the signed-in serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run-script.json"
   [[ $(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}" "$U4/api/community/run") == 403 ]] || fail "S: a run asked of a demo instance on the demo serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run4.json"
-  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$(ident $DMS)" "$(ident $DPG)" "$(ident $DMS2)" "$(ident $DPG2)" "$WORK/demo-run4.json" <<'PY' || fail "S: see above"
+  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$(ident $DMS)" "$(ident $DPG)" "$(ident $DMS2)" "$(ident $DPG2)" "$WORK/demo-run4.json" "$WORK/demo-run-script.json" <<'PY' || fail "S: see above"
 import json, sys, zipfile, os, re, html
 d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'; dl = sys.argv[3]
 # each instance's name and platform as the repository holds them (never the name the page's own API answered)
@@ -1580,6 +1591,10 @@ want = f"instance {dname} has no read login configured on this server"
 assert len(runs) == 1 and runs[0].get('outcome') == 'refused' and runs[0].get('error') == want and runs[0].get('sets') == [] \
     and runs[0].get('rows') == 0 and 'sample' not in json.dumps(rr), f"S: a run asked of the demo's instance on the signed-in serve: {str(rr)[:300]}"
 print(f"ok   S: POST /api/community/run on {dname} from the signed-in plain serve: an instance without a login there, refused before anything is sent ('{want}') - never a sample")
+rs = json.load(open(sys.argv[12])); runs = rs.get('runs') or []
+assert len(runs) == 1 and runs[0].get('outcome') == 'refused' and runs[0].get('error') == want and runs[0].get('sets') == [] \
+    and runs[0].get('rows') == 0, f"S: a script run (Glenn Berry's, one query's text) asked of the demo's instance on the signed-in serve: {str(rs)[:300]}"
+print(f"ok   S: POST /api/community/run of Glenn Berry's script (one query's text) on {dname} from the signed-in plain serve: refused the same way before anything is sent")
 r4 = json.load(open(sys.argv[11])); e4 = r4.get('error', '')
 assert set(r4) == {'error'} and e4.startswith('Running a tool needs a signed-in user') and 'pgvigil demo -serve' in e4, f"S: a run asked of a demo instance on the demo serve: {str(r4)[:300]}"
 print(f"ok   S: POST /api/community/run on {dname} from the demo serve: 403 ('{e4[:70]}...') - never a sample")
