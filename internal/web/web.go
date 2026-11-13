@@ -284,6 +284,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/community/params", s.CommunityParams)
 	api.HandleFunc("POST /api/community/run", s.CommunityRun)
 	api.HandleFunc("POST /api/community/glenn/parse", s.CommunityGlennParse)
+	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
 	api.HandleFunc("GET /api/extensions", s.Extensions)
 	api.HandleFunc("GET /api/roles", s.Roles)
 	api.HandleFunc("GET /api/versions", s.Versions)
