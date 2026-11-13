@@ -248,7 +248,8 @@ SELECT f.severity, f.check_name, f.object, f.at, f.detail
 // Each stored sample that ran (one (database, query key) of one read, executions > 0) gives one value: $7 'duration'
 // and 'cpu' ms per execution, 'writes' logical writes per execution, 'executions' the read's executions
 // (PerformanceMonitor's four, :124-128); the value falls in one of PerformanceMonitor's seven log10 buckets
-// (:207-215), in bins of $6 minutes cut from the UTC epoch (:190). A cell counts the distinct (database, query key)
+// (:207-215), in bins of $6 minutes cut from the UTC epoch (:190; floor arithmetic on epoch seconds, as the history
+// and the migrations bin: date_bin is PostgreSQL 14+, the repository's floor is 13). A cell counts the distinct (database, query key)
 // with a sample in it: PerformanceMonitor's own words for the count ('Distinct queries in the cell, NOT
 // executions', DarlingMcpQueryHeatmapTools.cs:219), where its SQL counts rows, one per read. A query whose reads
 // fall in two buckets of a bin counts in both. The cell's most-executed query is the one with the most executions
@@ -257,7 +258,7 @@ SELECT f.severity, f.check_name, f.object, f.at, f.detail
 // 761 rows a read, 7.4 s at 3,000, s177j-spike3).
 const sqlMSSQLPCHeatmap = `
 WITH r AS (
-  SELECT date_bin(make_interval(mins => $6), s.snapshot_at, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS time_bin,
+  SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / ($6 * 60)) * ($6 * 60)) AS time_bin,
          s.database_id, s.query_key, s.executions,
          CASE $7::text WHEN 'cpu' THEN s.cpu_us / 1000.0 / s.executions
                        WHEN 'writes' THEN s.logical_writes::numeric / s.executions
