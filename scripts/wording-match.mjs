@@ -179,6 +179,9 @@ export function selfTest() {
     ['sqlserver', 'mssql_slow?i=9', 'prose', 'Sessions idle in transaction hold their locks.', ['idle in transaction']],
     ['sqlserver', 'mssql_slow?i=9', 'prose', 'On PostgreSQL, sessions idle in transaction hold their locks.', []],
     ['postgres', 'host?i=3', 'prose', 'The Sales database on erp is the largest.', []],
+    // the Collector page is pgvigil's own in any folder: its process id and its repository, a PostgreSQL database (walk-w1)
+    ['sqlserver', 'collector?tag=sales', 'th', 'pid', []],
+    ['sqlserver', 'collector?tag=sales', 'heading', 'Repository the PostgreSQL database pgvigil writes to', []],
   ];
   let bad = 0;
   for (const [engine, page, kind, text, want] of cases) {

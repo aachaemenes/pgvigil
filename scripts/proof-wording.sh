@@ -13,18 +13,19 @@
 #   PGVIGIL_DEMO_WAIT_S   seconds to wait for the seeded demo (default 240)
 #   PGVIGIL_WORDING_OUT   a file that gets the walk's JSON (every page, every red, the grade)
 #   PGVIGIL_WORDING_SHOTS a folder: a shot of each page read
-# Expected (written before the first run, rel-join-w1 42ca98d (merged a1317d8) + the walk's files):
-#   the matcher's self-test: 39 of 39 cases
+# Expected (the second run, written after walk-w1 - rel-join-w1 42ca98d (merged a1317d8) + the walk's files + walk-w1's
+# table; the first run's expected and its grade are in the commit that added the table):
+#   the matcher's self-test: 41 of 41 cases (63 words, 4 allow rows, 144 expected rows)
 #   picked: PostgreSQL demo-onprem-erp01 and demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
 #     demo-onprem-sql01 and demo-azure-sql03; tags aurora (PostgreSQL; 3 instances, before onprem by name) and sales
 #     (SQL Server; 2, before sqlserver by name)
-#   pages: about 350 read (2 x ~59 PostgreSQL instance tabs, 2 x ~50 SQL Server, 2 x ~59 fleet tabs, the drill pages,
-#     the root's two and an alert), every one rendered; in about 6-8 minutes after the seed
-#   the grade: every must row of wording-expected.txt listed (28), every must-not row gone (8), the may rows reported
-#     seen or not (11); the reds outside the file are this run's findings (NEW lines: expected, since the reverse side
-#     and the fleet pages were never read before) - so the first run ends 'wording walk: FAIL (<n> red(s) outside the
-#     expected file)' and its NEW lines are the table of WALK DONE-1; the next run, with them listed, ends
-#     'wording walk: OK'
+#   pages: about 359 read (walk-w1: pg-instance 125, ms-instance 107, pg-tag 61, ms-tag 61, root 5), every one
+#     rendered; the walk about 4-5 minutes after the seed (walk-w1: 270 s)
+#   the grade: every must row listed (131: the 28 written before the run, the 6 may rows that showed in walk-w1, the 97
+#     rows of its table), every must-not row gone (8), the 5 may rows reported seen or not; no red outside the file:
+#     'wording walk: OK' (walk-w1's own 876 reds re-graded on the laptop against these files: 0 outside, 0 must missing,
+#     0 must-not seen). A must row on the Alerts / Alert rules pages of a tag folder rests on the alerts the demo has
+#     open: one missing there is the demo's state, read before any change to the file
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_wording_$RANDOM"; PORT=$((21000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
