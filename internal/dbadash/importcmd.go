@@ -19,8 +19,10 @@ const ImportUsage = `pgvigil import dbadash -config <file> -repo <name> [-instan
 
 // ImportCommand is `pgvigil import dbadash ...` (args are the words after "import"): it reads the DBA Dash
 // repository the configuration's dbadash: list names with -repo, through its dsn (the door's read login), and loads
-// its history into the configuration's pgvigil repository, whose dsn must be the repository owner's (the one
-// 'pgvigil migrate' uses). It prints a line per instance and mapping, and a total.
+// its history into the configuration's pgvigil repository through the import's functions (0134), so the repository's
+// dsn is a login in role pgvigil_collector or the owner's (a dry run: the reader's too). A server moved from DBA Dash
+// on Admin > Instances is imported into its moved instance up to pgvigil's first read of it, whatever -to says. It
+// prints a line per instance and mapping, and a total.
 func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []string) error {
 	if len(args) == 0 || args[0] != "dbadash" {
 		return fmt.Errorf("usage: %s", ImportUsage)
@@ -60,6 +62,7 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 	if src == nil {
 		return fmt.Errorf("no DBA Dash repository named %q in the configuration's dbadash: list", *repo)
 	}
+	opt.Repository = src.Name
 	got, err := Import(ctx, log, src.DSN(), cfg.Repository.DSN(), opt)
 	var source, inserted int64
 	for _, c := range got {

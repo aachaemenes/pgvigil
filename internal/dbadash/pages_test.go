@@ -3,6 +3,8 @@ package dbadash
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,17 +121,41 @@ func TestImportMappings(t *testing.T) {
 		if !contains(m.Rows, " AS at") || !contains(m.Rows, "ORDER BY") {
 			t.Errorf("%s: the rows must alias their time 'at' and come in time order", m.Key)
 		}
-		if !contains(m.Insert, "NOT EXISTS") || !contains(m.Insert, "pgvigil."+m.Table) || !contains(m.Stored, "pgvigil."+m.Table) {
-			t.Errorf("%s: the insert must skip a stored row and write its own table", m.Key)
+		// its function in 0134 skips a stored row and writes its own table; the stored count reads that table
+		body := fnBody(t, sql0134, "pgvigil.import_dbadash_"+m.Key+"(")
+		if !contains(body, "NOT EXISTS") || !contains(body, "INSERT INTO pgvigil."+m.Table) || !contains(body, "dbadash_import_gate(p_instance_id, '"+m.Key+"')") {
+			t.Errorf("%s: import_dbadash_%s must take the gate, skip a stored row and write its own table", m.Key, m.Key)
 		}
-		// insertBatch passes $3 only to an insert that says it takes the facts: the driver refuses a count that differs
-		if contains(m.Insert, "$3") != m.Facts {
-			t.Errorf("%s: the insert uses $3 = %v but Facts = %v", m.Key, contains(m.Insert, "$3"), m.Facts)
+		if !contains(fnBody(t, sql0134, "pgvigil.dbadash_import_stored("), "WHEN '"+m.Key+"' THEN (SELECT count(*) FROM pgvigil."+m.Table+" ") {
+			t.Errorf("%s: dbadash_import_stored does not count pgvigil.%s", m.Key, m.Table)
 		}
 	}
 	if _, err := Import(context.Background(), nil, " ", "x", ImportOptions{}); err == nil {
 		t.Error("an empty source dsn was used")
 	}
+}
+
+// sql0134 is the migration that holds the import's functions.
+var sql0134 = func() string {
+	b, err := os.ReadFile("../repo/sql/0134_dbadash_moves.sql")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}()
+
+// fnBody is one function of a migration: from its CREATE line to the next CREATE.
+func fnBody(t *testing.T, src, head string) string {
+	t.Helper()
+	i := strings.Index(src, "CREATE OR REPLACE FUNCTION "+head)
+	if i < 0 {
+		t.Fatalf("no function %s in 0134", head)
+	}
+	rest := src[i+1:]
+	if j := strings.Index(rest, "CREATE OR REPLACE FUNCTION "); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
 }
 
 func contains(s, sub string) bool {
