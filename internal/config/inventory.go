@@ -44,6 +44,10 @@ type PageInstance struct {
 	DSNRef   string
 	Tags     []string
 	Disabled bool
+	// Auth and Options: the sign-in and the driver options as the page stored them (never a password); serve's page
+	// door reads them for its words (pagedoor.go), the collector does not
+	Auth    string
+	Options string
 }
 
 // InventoryReader is the repository's side: the generation alone (cheap, polled) and the list with its generation.
@@ -155,10 +159,21 @@ func Diff(old, cur []Instance) (stop, start []string) {
 // sched's page_inventory lock). One that does not collects the file's instances only, says so once, and asks again
 // each tick: when the holder ends, the next to take the lock reads the page's list at once.
 func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
+	WatchInventoryRaw(ctx, log, src, hold, file, queryText, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
+}
+
+// WatchInventoryRaw is WatchInventory for serve's doors: apply also gets the page's raw rows (a disabled row and a row
+// Merge left out included: serve's words tell them apart) and the generation they were read at (0: the file's alone);
+// a receive on wake reads at once (serve's own write, so this serve's doors follow before it replies); with reapply,
+// every tick applies the last rows again although the generation did not move (serve re-resolves a page door whose
+// credential could not be read).
+func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
 	if every <= 0 {
 		every = 15 * time.Second
 	}
 	var have int64 = -1
+	var lastAll []Instance
+	var lastPage []PageInstance
 	failing := false
 	held, toldOther := true, false
 	read := func() {
@@ -173,7 +188,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 				}
 				if held || have == -1 { // lost the lock, or never had it: the file's list alone
 					all, _ := Merge(file, nil, queryText)
-					apply(all)
+					apply(all, nil, 0)
 				}
 				held, have, failing = false, -3, false
 				return
@@ -188,6 +203,9 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 			gen, err = src.InventoryGeneration(ctx)
 		}
 		if err == nil && gen == have {
+			if reapply && lastAll != nil {
+				apply(lastAll, lastPage, have)
+			}
 			return
 		}
 		var page []PageInstance
@@ -202,7 +220,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick)
 				have = -2
 				all, _ := Merge(file, nil, queryText)
-				apply(all)
+				apply(all, nil, 0)
 			}
 			return
 		}
@@ -213,7 +231,8 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 		}
 		log.Info("instances: list read", "generation", gen, "from_file", len(file), "from_page", len(all)-len(file))
 		have = gen
-		apply(all)
+		lastAll, lastPage = all, page
+		apply(all, page, gen)
 	}
 	read()
 	t := time.NewTicker(every)
@@ -223,6 +242,8 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			read()
+		case <-wake: // a nil channel never wakes
 			read()
 		}
 	}
