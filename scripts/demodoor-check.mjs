@@ -340,6 +340,51 @@ if (NOLOGIN) {
     'pgvigil serve -no-login on the same repository: ' + got.map(g => `${g.what}: ${g.off} off control(s), ${g.undescribed} without a description, ${g.unseen} pointing at words not on the page, ${g.sentences} sentence(s) of which ${g.repeated} repeated, its words ${g.times} time(s) on the page and in ${g.cells} grid cell(s), ${g.noteCells} note(s) inside a grid cell ('${g.first}')`).join('; '));
 }
 
+// ---- R12 (DONE-2) every page of the MIXED store: a control that is off says why in words on the page. The walk is
+// the tab strip's own list (as scripts/a11y-check.mjs reads it) at the root and on four instances - a PostgreSQL demo
+// instance on premises, the demo's Aurora instance with a failed job, the demo's SQL Server primary, and the real
+// instance beside them - each page once, and on each the rule proof-a11y applies to three pages: every control that
+// is off and shown (the disabled attribute or aria-disabled) has a visible, non-empty description (aria-describedby)
+// that is words, not a badge alone.
+{
+  const offOnPage = () => ev(`(() => {
+    const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+    const ctl = [...document.querySelectorAll('main button, main input, main select, main textarea, dialog button')]
+      .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+    const said = x => x.textContent.replace(/^\\s*(off|not checked|demo|note|on|declined)\\b/i, '').trim().length > 0;
+    const bad = ctl.filter(e => !(e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && said(x); }));
+    return { off: ctl.length, bad: bad.map(e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 40)) }; })()`);
+  const tabsOf = async (hash) => { await go(hash);
+    return ev(`(() => { const t = document.querySelector('#tabs'); if (!t) return []; return t.dataset.all ? JSON.parse(t.dataset.all) : [...t.querySelectorAll('a')].map(a => a.getAttribute('href')); })()`); };
+  const all = tbl(await api('instances'));
+  const pickInst = (pred) => all.find(i => doorNames.includes(String(i.name)) && pred(i));
+  const walk = [['the root', '#/summary', null],
+    ['a PostgreSQL demo instance', null, pickInst(i => i.engine !== 'sqlserver' && i.platform === 'onprem')],
+    ['the demo instance with a failed job', null, all.find(i => String(i.name) === (failedJobs[0]?.name ?? ''))],
+    ['the demo SQL Server primary', null, pickInst(i => i.engine === 'sqlserver' && String(i.name).endsWith('sql01'))],
+    [`the real instance ${REAL}`, null, all.find(i => String(i.name) === REAL)]];
+  const pages = [], seen = new Set();
+  for (const [what, hash, inst] of walk) {
+    if (!hash && !inst) { fail('R12', `the walk found no instance for '${what}'`); continue; }
+    for (const t of await tabsOf(hash ?? `#/summary?i=${inst.instance_id}`)) {
+      const h = inst ? String(t).replace(/i=\d+/, `i=${inst.instance_id}`) : String(t);
+      if (!seen.has(h)) { seen.add(h); pages.push([what, h]); }
+    }
+  }
+  let offSeen = 0; const bad = [], unrendered = [];
+  for (const [what, h] of pages) {
+    await cmd('Page.navigate', { url: U + h }); await sleep(250);
+    if (!(await settled())) { unrendered.push(h); continue; }
+    await sleep(250);
+    const r = await offOnPage();
+    offSeen += r.off;
+    if (r.bad.length) bad.push(`${h} (${what}): ${r.bad.length} - ${[...new Set(r.bad)].slice(0, 5).join('; ')}`);
+  }
+  judge('R12', pages.length > 100 && bad.length === 0 && unrendered.length === 0,
+    `${pages.length} pages of the mixed store walked (${walk.map(w => w[0]).join(', ')}), ${offSeen} off control(s) seen; ${unrendered.length} page(s) did not render${unrendered.length ? ` (${unrendered.slice(0, 5).join(', ')})` : ''}; ${bad.length} page(s) with an off control without its reason in words${bad.length ? ':' : ''}`);
+  for (const b of bad) console.log(`     R12 ${b}`);
+}
+
 if (shotsMissed.length) fail('shots', `not taken: ${shotsMissed.join(', ')}`);
 ws.close();
 console.log(fails ? `demodoor-check: ${fails} row(s) FAILED` : 'demodoor-check: every row ok');
