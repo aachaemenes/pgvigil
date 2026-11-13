@@ -87,7 +87,8 @@
 #     under R2's N [B3]),
 #     'ok R2c' (the dialog again, only prod-db2's acknowledgement in force: Clear is aria-disabled, never the disabled
 #     attribute, with 'the acknowledgements in force are of instances that are not the demo's: ...' beside it, and the
-#     date beside it reads 'Not acknowledged' [the fold's own review, part A finding 3]), 'ok R7' (prod-db1's
+#     date beside it reads 'Not acknowledged (1 instance(s) not the demo's left alone)' [the fold's own review, part A
+#     finding 3; the count beside it: the lead 01:38]), 'ok R7' (prod-db1's
 #     Silence, prod-db2's - a real instance tagged demo by hand - AND demo-proof-stale's [C2] are aria-disabled, never
 #     the disabled attribute, each with its reason as visible text naming it as not one of this demo's instances; a
 #     Silence that is on stands in the row of an instance the door names), 'ok R6' (Silence a demo instance from its
@@ -111,11 +112,16 @@
 #     at the review's fold], and DONE-2's rows: 'ok R14' (a bulk action over a mixed scope: an alert of a demo
 #     instance and the real instance's alert ticked, Acknowledge alerts: 'partly done 1 of 2 saved; 1 refused:
 #     prod-db1 is not one of this demo's instances ...', ONE new log row, the demo alert's), 'ok R12' (every page of
-#     the mixed store - the root and four instances, the real one among them - walked: no control that is off and
-#     shown in a page's main or its dialogs lacks its reason as visible words, no sentence ends at its colon, no page
-#     drew only an error; the top bar and the drill pages behind a row are not walked), 'ok R13' (the threshold
-#     dialogs: a level wider than one instance is off in words before any request, one demo instance's own level is
-#     on), 'demodoor-check: every row ok', then, read from the repository: 'ok B the seed's own
+#     the mixed store - the root and four instances, the real one among them - walked, each read once it is its own
+#     drawing (not the page before it, not the router's 'Loading' note): no control that is off and shown in a page's
+#     main lacks its reason as visible words, no sentence ends at its colon, no page drew only an error (the instance
+#     header beside an error box included), the two rules tried on planted pages first ('self-test ... ok'); no
+#     dialog is opened by the walk (R2c, R7 and R13 read theirs); the top bar's off controls - 'Later' while the range
+#     ends now, the Auto refresh select on a page that is not live - are described, not worded on the page: a pager's
+#     end and a form field, both kinds seen [the lead 01:38]; the drill pages behind a row are not walked), 'ok R13'
+#     (the threshold dialogs: a level wider than one instance is off in words before any request, one demo
+#     instance's own level is on - the instance picked one of the door's, its dialog's Set on; the two root dialogs
+#     known by their own titles), 'demodoor-check: every row ok', then, read from the repository: 'ok B the seed's own
 #     silence ... is ended in the store, by demo', 'ok B prod-db2's Memory Dump acknowledgement (the proof's own)
 #     still stands', 'ok B nothing was written by the page for prod-db1, prod-db2 or demo-proof-stale', 'ok B outside
 #     the acknowledge store the page's clicks changed nothing', 'ok B the Memory Dump acknowledgements the page made
@@ -124,7 +130,9 @@
 #     the counts equal before and after' [C1]. Shots are kept of R1, R1b, R7, R4, R15's dialog, R6b, R16's two
 #     pages, R10's Summary and R12's seven pages whose off controls say why since DONE-2 (24, in a folder of this run's
 #     own under DOOR_SHOTS; one that could not be taken is a FAIL line).
-# NOT shown: a door whose instance list was read from the repository when it opened (a re-seed removes every instance
+# NOT shown: a threshold SAVED through a dialog by a click (R13 opens its dialogs and closes them; part A sets and ends a
+# drive threshold through the API), so the B line 'outside the acknowledge store ... changed nothing' holds by design;
+# a door whose instance list was read from the repository when it opened (a re-seed removes every instance
 # with the demo's tag and prefix before the door opens, so none can stand there at the start; demo-proof-stale is made
 # after it); Send test's own reason on a signed-in serve whose configuration lost a channel (no such serve is started).
 # Last line: 'proof-demodoor: OK'. A scratch database that could not be dropped is a FAIL line after it and exit 1.

@@ -225,23 +225,33 @@ export function ackDialog(o: AckDialog) {
     for (const b of rows) {
       try { await addAck(b); done++; } catch (e) { refused.push(e instanceof Error ? e.message : String(e)); }
     }
-    if (done === 0) throw new Error(refused[0] ?? 'refused');
+    // nothing saved: one row says its reason; several say how many were refused, each distinct reason once
+    if (done === 0) throw new Error(rows.length > 1 ? `0 of ${rows.length} saved; ${refused.length} refused: ${[...new Set(refused)].join('; ')}` : refused[0] ?? 'refused');
     return { outcome: refused.length ? 'partly done' : 'done',
       detail: `${done} of ${rows.length} saved` + (refused.length ? `; ${refused.length} refused: ${[...new Set(refused)].join('; ')}` : '') };
-  }, o.after, fields, valid, [note]);
+  }, o.after, fields, valid, [note], o.noteField === 'label' ? 'a label' : 'a note');
 }
 
 // confirmDialog: a modal with what the write does, its fields, Save / Back, and the answer in place
+// needs: what Save waits for while valid() is false ('a note'): said in words under the fields, and Save is off the B7
+// way meanwhile (aria-disabled, described by those words) - never a Save that is greyed without a word
 function confirmDialog(title: string, what: string, go: string, run: () => Promise<AckResult>, after: () => void,
-  fields: HTMLElement[] = [], valid: () => boolean = () => true, watch: HTMLElement[] = []) {
+  fields: HTMLElement[] = [], valid: () => boolean = () => true, watch: HTMLElement[] = [], needs = '') {
   const ok = el('button', { type: 'submit' }, go);
   const no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const check = () => { ok.disabled = !valid(); };
+  const needP = el('p', { class: 'meta' });
+  let saving = false;
+  const check = () => {
+    if (saving) return;
+    const v = valid();
+    needP.textContent = v ? '' : `Saving needs ${needs || 'the fields above'}.`;
+    offControl(ok, v ? null : `Saving needs ${needs || 'the fields above'}`, needP);
+  };
   for (const w of watch) w.addEventListener('input', check);
   check();
   const form = el('form', { method: 'dialog' }, el('h3', {}, title), el('p', {}, what),
-    ...fields.map(f => el('div', { style: 'margin:.3rem 0' }, f)), msg, el('div', { style: 'margin-top:.6rem' }, ok, ' ', no));
+    ...fields.map(f => el('div', { style: 'margin:.3rem 0' }, f)), needP, msg, el('div', { style: 'margin-top:.6rem' }, ok, ' ', no));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:36rem', 'aria-label': title }, form);
   let done = false;
   const close = () => { dlg.close(); dlg.remove(); if (done) after(); };
@@ -249,6 +259,9 @@ function confirmDialog(title: string, what: string, go: string, run: () => Promi
   dlg.addEventListener('cancel', () => { dlg.remove(); if (done) after(); });
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
+    if (saving || !valid()) return;   // off is off: an Enter in a field submits the form too
+    saving = true;
+    offControl(ok, null, needP);
     ok.disabled = true;
     msg.textContent = 'Saving...';
     try {

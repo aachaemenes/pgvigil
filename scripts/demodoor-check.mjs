@@ -326,12 +326,13 @@ if (acked) {
 
   // ---- R2c the same dialog again. The one Memory Dump acknowledgement still in force is the real instance's (the
   // proof's own row): Clear has nothing it may end here - off, aria-disabled (never the disabled attribute without
-  // words), its reason in words - and the date beside it is not that instance's acknowledgement
+  // words), its reason in words - and the date beside it is not that instance's acknowledgement: it reads 'Not
+  // acknowledged' with the count of the instances left alone, so a mixed store is not read as 'nothing is acknowledged'
   await reach(ackCells, v => v >= 0 && v < cells1, k > 0 ? 15000 : 0);   // the page drawn again after Clear
   const d2 = await openDump();
   const c2 = d2.open ? await dumpClear() : null;
   if (d2.open) await closeDump();
-  judge('R2c', !!c2 && c2.off && !c2.disabledAttr && /are of instances that are not the demo's/.test(c2.words) && c2.date === 'Not acknowledged',
+  judge('R2c', !!c2 && c2.off && !c2.disabledAttr && /are of instances that are not the demo's/.test(c2.words) && c2.date === "Not acknowledged (1 instance(s) not the demo's left alone)",
     `the dialog again (${d2.menus}; open ${d2.open}), only the real instance's acknowledgement in force: Clear ${JSON.stringify(c2)}`);
 }
 
@@ -560,9 +561,15 @@ if (NOLOGIN) {
 // instance beside them - each page once, and on each the rule proof-a11y applies to three pages: every control that
 // is off and shown (the disabled attribute or aria-disabled) has a visible, non-empty description (aria-describedby)
 // that is words, not a badge alone, and not a sentence that ends at its colon ('... are off: ' with no reason after it).
-// A page that drew only an error is NOT walked: it is listed and fails the row. The scope, named in the ok line: the
-// page's main and its open dialogs on the tab strip's pages - not the top bar (its range and refresh controls), not a
-// drill page behind a row (a plan, a diff, one alert).
+// A page that drew only an error is NOT walked: it is listed and fails the row. The TOP BAR is walked on every page
+// under its own rule (the lead 01:38): a control that is off there must be DESCRIBED (aria-describedby naming an
+// element that holds words) - 'Later' while the range ends now by a description and its title, with no words in the
+// bar (a pager's end), the Auto refresh select by the footer's own visible sentence (a form field). The scope, named
+// in the ok line: the page's main and the top bar, on the tab strip's pages - not a drill page behind a row (a plan, a
+// diff, one alert), and no dialog: the walk opens none (R2c, R7, R13 read their dialogs). Each page is read only once
+// it is THIS page's drawing: a mark planted in main before the navigation is gone (render replaced main) and main holds
+// more than the router's own 'Loading' note. The error-page rule skips the instance header (render puts the header
+// before the view's error box). Both rules are tried on planted pages first (the self-test in the ok line).
 {
   const offOnPage = () => ev(`(() => {
     const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
@@ -570,7 +577,28 @@ if (NOLOGIN) {
       .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
     const said = x => { const t = x.textContent.replace(/^\\s*(off|not checked|demo|note|on|declined)\\b/i, '').trim(); return t.length > 0 && !/:\\s*\\.?$/.test(t); };
     const bad = ctl.filter(e => !(e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && said(x); }));
-    return { off: ctl.length, bad: bad.map(e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 40)) }; })()`);
+    // the top bar: off = described (the description need not be shown: no words are added to the bar)
+    const bar = [...document.querySelectorAll('#bar button, #bar select, #bar input')].filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+    const name = e => (e.tagName + ' ' + (e.getAttribute('aria-label') || e.textContent || '').trim()).slice(0, 40);
+    const barBad = bar.filter(e => !(e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return !!x && said(x); }));
+    return { off: ctl.length, bad: bad.map(e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 40)),
+      bar: bar.map(name), barBad: barBad.map(name),
+      // with a top-bar line, what the footer said (a status read that failed takes the refresh words with it)
+      foot: barBad.length ? (document.querySelector('footer')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 120) : '' }; })()`);
+  // THIS page's drawing (finding 3 of DONE-2's review): the old page's main is marked, the mark must be gone (render
+  // replaced main's children) and main must hold more than the router's own note (empty, then 'Loading...')
+  const markJS = `(() => { const m = document.querySelector('main'); if (m) m.append(Object.assign(document.createElement('span'), { hidden: true, className: 'r12-mark' })); return 1; })()`;
+  const ownDrawnJS = `(() => { const m = document.querySelector('main'); if (!m || m.querySelector('.r12-mark')) return false;
+    const k = [...m.children]; return k.length > 0 && !(k.length === 1 && k[0].matches('p.empty[role=status]')); })()`;
+  // a page whose view threw: render puts the instance header first and the error box after it
+  const errJS = `(() => { const m = document.querySelector('main'); const k = m ? [...m.children].filter(c => !c.matches('.inst-header')) : [];
+    return k.length > 0 && k.every(c => c.matches('p.error')) ? k[0].textContent.trim().slice(0, 120) : ''; })()`;
+  // a page reached: by its hash, through about:blank where the browser already shows that hash (no hashchange then)
+  const reach12 = async (h) => {
+    if (await ev('location.hash') === h) { await goTo(U, h); return true; }
+    await ev(markJS); await cmd('Page.navigate', { url: U + h });
+    return !!(await until(ownDrawnJS, 15000));
+  };
   const tabsOf = async (hash) => { await go(hash);
     return ev(`(() => { const t = document.querySelector('#tabs'); if (!t) return []; return t.dataset.all ? JSON.parse(t.dataset.all) : [...t.querySelectorAll('a')].map(a => a.getAttribute('href')); })()`); };
   const all = tbl(await api('instances'));
@@ -593,13 +621,25 @@ if (NOLOGIN) {
   const shotOf = [[/^#\/alertrules\b/, '12a-alert-rules'], [/^#\/admin_instances\b/, '12b-admin-instances'], [/^#\/activity\?/, '12c-activity'],
     [/^#\/counters\?/, '12d-counters'], [/^#\/plans\?/, '12e-plans'], [/^#\/mssql_running\?/, '12f-sqlserver-running'], [/^#\/mssqljobs\?/, '12g-sqlserver-jobs']];
   const shotDone = new Set();
-  let offSeen = 0; const bad = [], unrendered = [], errored = [];
+  let offSeen = 0; const bad = [], unrendered = [], errored = [], barBad = [], barSeen = new Map();
+  // the self-test of the two rules on planted pages (the first instance page of the walk): a main holding only the
+  // router's note is not drawn; an instance header followed by an error box is an error page
+  let selftest = 'not run';
+  const firstInst = pages.find(([, h]) => /[?&]i=\d+/.test(h));
+  if (firstInst && await reach12(firstInst[1]) && await until(`!!document.querySelector('main .inst-header')`, 15000)) {
+    const noteOnly = await ev(`(() => { const m = document.querySelector('main'); const keep = [...m.children]; m.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty', role: 'status', textContent: 'Loading...' }));
+      const v = ${ownDrawnJS}; m.replaceChildren(...keep); return v; })()`);
+    const errPlanted = await ev(`(() => { const m = document.querySelector('main'); const keep = [...m.children]; const hdr = m.querySelector('.inst-header');
+      m.replaceChildren(...(hdr ? [hdr] : []), Object.assign(document.createElement('p'), { className: 'error', textContent: 'planted error' }));
+      const v = ${errJS}; m.replaceChildren(...keep); return v; })()`);
+    selftest = noteOnly === false && errPlanted === 'planted error' ? 'ok' : `FAILED (a note-only main drawn: ${noteOnly}; a planted error page read as '${errPlanted}')`;
+  }
   for (const [what, h] of pages) {
-    await cmd('Page.navigate', { url: U + h }); await sleep(250);
-    if (!(await settled())) { unrendered.push(h); continue; }
-    await sleep(250);
-    // a page whose main is an error box alone was not drawn: it has no control to judge and must not pass as walked
-    const err = await ev(`(() => { const m = document.querySelector('main'); const k = m ? [...m.children] : []; return k.length > 0 && k.every(c => c.matches('p.error')) ? k[0].textContent.trim().slice(0, 120) : ''; })()`);
+    if (!(await reach12(h))) { unrendered.push(h); continue; }
+    await sleep(150);
+    // a page whose view threw (its main the instance header and an error box, or the box alone) was not drawn: it has
+    // no control to judge and must not pass as walked
+    const err = await ev(errJS);
     if (err) { errored.push(`${h}: ${err}`); continue; }
     const r = await offOnPage();
     const sh = shotOf.find(([re, name]) => re.test(h) && !shotDone.has(name));
@@ -609,11 +649,17 @@ if (NOLOGIN) {
       await sleep(250); await shot(sh[1]);
     }
     offSeen += r.off;
+    for (const n of r.bar) { const k = n.replace(/:.*/, ''); barSeen.set(k, (barSeen.get(k) ?? 0) + 1); }
+    if (r.barBad.length) barBad.push(`${h}: ${[...new Set(r.barBad)].join('; ')} (the footer: '${r.foot}')`);
     if (r.bad.length) bad.push(`${h} (${what}): ${r.bad.length} - ${[...new Set(r.bad)].slice(0, 5).join('; ')}`);
   }
-  judge('R12', pages.length > 100 && bad.length === 0 && unrendered.length === 0 && errored.length === 0,
-    `${pages.length} pages of the mixed store walked (${walk.map(w => w[0]).join(', ')}; each page's main and open dialogs - not the top bar, not a drill page behind a row), ${offSeen} off control(s) seen; ${unrendered.length} page(s) did not render${unrendered.length ? ` (${unrendered.slice(0, 5).join(', ')})` : ''}; ${errored.length} page(s) drew only an error; ${bad.length} page(s) with an off control without its reason in words${bad.length ? ':' : ''}`);
+  // a shot of a kind whose page showed no off control is not taken: it is missing, said with the run's other shots
+  for (const [, name] of shotOf) if (!shotDone.has(name)) shotsMissed.push(name);
+  const bothBar = barSeen.has('BUTTON Later') && [...barSeen.keys()].some(k => k.startsWith('SELECT '));
+  judge('R12', selftest === 'ok' && pages.length > 100 && bad.length === 0 && unrendered.length === 0 && errored.length === 0 && barBad.length === 0 && bothBar,
+    `${pages.length} pages of the mixed store walked (${walk.map(w => w[0]).join(', ')}; each page's main and its top bar - no dialog is opened by the walk, not a drill page behind a row), each read once it was its own drawing; the rules' self-test on planted pages ${selftest}; ${offSeen} off control(s) seen; ${unrendered.length} page(s) not drawn in 15 s${unrendered.length ? ` (${unrendered.slice(0, 5).join(', ')})` : ''}; ${errored.length} page(s) drew only an error; ${bad.length} page(s) with an off control without its reason in words; the top bar's off controls (${[...barSeen].map(([n, c]) => `${n} on ${c} page(s)`).join(', ') || 'none seen'}; both kinds seen: ${bothBar}) described, not worded on the page: a pager's end and a form field - ${barBad.length} page(s) with one that is not described${bad.length || barBad.length ? ':' : ''}`);
   for (const b of errored) console.log(`     R12 error page ${b}`);
+  for (const b of barBad.slice(0, 8)) console.log(`     R12 top bar ${b}`);
   for (const b of bad) console.log(`     R12 ${b}`);
 }
 
@@ -646,7 +692,7 @@ if (NOLOGIN) {
   const pickLevel = (lv) => ev(`(() => { const l = document.querySelector('main select[aria-label="level"]'); if (!l || ![...l.options].some(o => o.value === ${JSON.stringify(lv)})) return false;
     l.value = ${JSON.stringify(lv)}; l.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   const clickSet = () => ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Set...'); if (b) b.click(); return !!b; })()`);
-  let tagSaid = '', tagOpened = '', instOpened = '';
+  let tagSaid = '', tagOpened = '', instOpened = '', instPicked = '', instSubmit = null;
   if (await pickLevel('tag')) {
     await clickSet();
     // its own condition: the answer in words beside the button (a dialog that opened instead is read after it)
@@ -654,10 +700,13 @@ if (NOLOGIN) {
     tagOpened = await openTitle(); await closeDialog();
   }
   if (await pickLevel('instance')) {
-    await ev(`(() => { const p = document.querySelector('main select[aria-label="where"]'); const o = p && [...p.options].find(x => ${JSON.stringify(doorIds)}.includes(Number(x.value)));
-      if (o) { p.value = o.value; p.dispatchEvent(new Event('change', { bubbles: true })); } })()`);
+    // the instance picked is one the door carries (said in the line), and its dialog opens with its submit ON
+    instPicked = await ev(`(() => { const p = document.querySelector('main select[aria-label="where"]'); const o = p && [...p.options].find(x => ${JSON.stringify(doorIds)}.includes(Number(x.value)));
+      if (!o) return ''; p.value = o.value; p.dispatchEvent(new Event('change', { bubbles: true })); return o.value; })()`) ?? '';
     await clickSet(); await until(dialogOpenJS, 5000);
-    instOpened = await openTitle(); await closeDialog();
+    instOpened = await openTitle();
+    instSubmit = await ev(`(() => { const st = ${stJS}; const d = document.querySelector('dialog.act-dialog[open]'); return d ? st(d.querySelector('button[type=submit]')) : null; })()`);
+    await closeDialog();
   }
   // (c) the root's two dialogs from the Summary's Options menu: Update off, its reason words in the dialog
   const viaOptions = async (first, second) => {
@@ -674,10 +723,11 @@ if (NOLOGIN) {
   const wide = (w) => /reach past the demo's instances/.test(w ?? '');
   judge('R13', drv.root.found && drv.root.off && wide(drv.root.words) && drv.on > 0 && /^Drive space thresholds: the drive /.test(drvOpened)
     && thr.roots > 0 && thr.rootsOff === thr.roots && /^Demo: a threshold is set here for one demo instance/.test(thr.words) && thr.setOn
-    && /^Not set: /.test(tagSaid) && wide(tagSaid) && !tagOpened && /^Threshold /.test(instOpened)
-    && dump.open && dump.update.off && wide(dump.update.words) && upt.open && upt.update.off && wide(upt.update.words),
+    && /^Not set: /.test(tagSaid) && wide(tagSaid) && !tagOpened && /^Threshold /.test(instOpened) && doorIds.includes(Number(instPicked)) && !!instSubmit && instSubmit.found && !instSubmit.off
+    && dump.open && dump.title === 'Memory Dump Thresholds' && dump.update.off && wide(dump.update.words)
+    && upt.open && /^Uptime Threshold Config \(root\)/.test(upt.title) && upt.update.off && wide(upt.update.words),
     `Drives at the root: the toolbar's Configure ${JSON.stringify(drv.root)}; ${drv.on} of ${drv.drives} drives' own Configure on, one clicked: '${drvOpened}'. `
-    + `Thresholds: ${thr.rootsOff} of ${thr.roots} root Change buttons off ('${(thr.words ?? '').slice(0, 70)}...'); Set... on ${thr.setOn} (levels ${JSON.stringify(thr.levels)}); a tag picked: '${tagSaid}' (a dialog: '${tagOpened}'); a demo instance picked: '${instOpened}'. `
+    + `Thresholds: ${thr.rootsOff} of ${thr.roots} root Change buttons off ('${(thr.words ?? '').slice(0, 70)}...'); Set... on ${thr.setOn} (levels ${JSON.stringify(thr.levels)}); a tag picked: '${tagSaid}' (a dialog: '${tagOpened}'); a demo instance picked (id ${instPicked || 'none'}): '${instOpened}', its submit ${JSON.stringify(instSubmit)}. `
     + `Options > Memory Dumps > Configure Thresholds: '${dump.title}' Update ${JSON.stringify(dump.update)} (menus ${JSON.stringify(dump.menus)}); Options > Instance Uptime > Configure Thresholds: '${upt.title}' Update ${JSON.stringify(upt.update)} (menus ${JSON.stringify(upt.menus)})`);
 }
 
