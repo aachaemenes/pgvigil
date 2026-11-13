@@ -153,6 +153,13 @@ SELECT run_id, started_at, finished_at, round(extract(epoch FROM finished_at - s
        cardinality(partitions_dropped) AS partitions, rows_deleted, total, array_to_string(partitions_dropped, ', ') AS dropped
   FROM pgvigil.purge_runs ORDER BY finished_at DESC LIMIT 10`
 
+// sqlCollectorWaits: a forming wait that ended on a collector without a parent (task 201 DONE-2 N7): its alerts went
+// out as they came. The page says it under the findings; a parent's detail never does.
+const sqlCollectorWaits = `
+SELECT e.host, e.last_forming, e.ended_at, cardinality(e.instances) AS instances
+  FROM pgvigil.collector_forming_ended e
+ ORDER BY e.host`
+
 // Collector is GET /api/collector[?instance=N]: the whole page, or with an instance the parts its Collection dates
 // line reads (collectors, findings, load, streaks).
 func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +174,7 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 		{"findings", sqlCollectorFindings, []any{id}},
 		{"load", sqlCollectorLoad, []any{id}},
 		{"streaks", sqlCollectorStreaks, []any{id}},
+		{"waits", sqlCollectorWaits, nil},
 	}
 	if id == 0 {
 		parts = append(parts,

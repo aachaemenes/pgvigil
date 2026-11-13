@@ -12,10 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/bits"
+	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +50,7 @@ type runAgg struct {
 
 type loadAgg struct {
 	attempts, opened, runs, failures, auth int
+	noanswer                               int           // failed connects the server never answered (NoAnswer: N8)
 	every                                  time.Duration // the fastest configured interval of the runs counted (0: none known)
 }
 
@@ -70,6 +74,7 @@ type Heartbeat struct {
 	load     map[string]*loadAgg   // instance name
 	streaks  map[[2]string]*streak // instance name, collection
 	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
+	targets  map[string]string     // instance name: its dial target (InstanceTarget: N8)
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -116,6 +121,64 @@ func (h *Heartbeat) countConnect(instance string, err error) {
 	} else if AuthFailure(err) {
 		l.auth++
 	}
+	if NoAnswer(err) {
+		l.noanswer++
+	}
+}
+
+// NoAnswer says whether a failed connect got no answer from the server (task 201 DONE-2 N8: the server's own parent
+// counts these alone) - a network error (refused, unreachable, a name not found), a timeout or deadline, a reset or an
+// end of stream in the handshake. Never a failure the server answered (a PostgreSQL SQLSTATE such as 3D000, 28P01 or
+// 53300; a SQL Server error number such as 18456), never a stop's cancel.
+func NoAnswer(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		return false
+	}
+	var ms interface{ SQLErrorNumber() int32 }
+	if errors.As(err, &ms) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne)
+}
+
+// InstanceTarget records the instance's dial target (task 201 DONE-2 N8): what the collector connects to - the engine,
+// the DSN's host and port, lower-cased ('postgres:db1.example:5432'; PgTarget, and the SQL Server connector's own) -
+// sent on the beat's load row. The repository names a server by it, never by the server's reported address (a pooler,
+// a container's address, a virtual name). Nothing when no heartbeat runs.
+func InstanceTarget(instance, target string) {
+	if h := current.Load(); h != nil && target != "" {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.targets == nil {
+			h.targets = map[string]string{}
+		}
+		h.targets[instance] = target
+	}
+}
+
+// PgTarget is a PostgreSQL config's dial target: 'postgres:<host>:<port>', its fallback hosts after it in order, each
+// once (pgx lists a host twice under sslmode=prefer: a try with TLS and one without).
+func PgTarget(cfg *pgx.ConnConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	first := strings.ToLower(cfg.Host) + ":" + strconv.Itoa(int(cfg.Port))
+	t, seen := "postgres:"+first, map[string]bool{first: true}
+	for _, f := range cfg.Fallbacks {
+		if hp := strings.ToLower(f.Host) + ":" + strconv.Itoa(int(f.Port)); !seen[hp] {
+			seen[hp] = true
+			t += "," + hp
+		}
+	}
+	return t
 }
 
 // connectError marks a failure of an instance's own connect (InstanceConnect): the run that meets it builds no
@@ -242,6 +305,7 @@ func withConnectTimeout(cfg *pgx.ConnConfig) {
 // no connect_timeout.
 func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
 	withConnectTimeout(cfg)
+	InstanceTarget(instance, PgTarget(cfg))
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	CountConnect(instance, err)
 	return conn, err
@@ -363,6 +427,9 @@ type beatLoad struct {
 	Auth     int    `json:"auth"`
 	// IntervalS: the fastest configured interval, in seconds, of the minute's runs of the instance (none known: left out)
 	IntervalS int `json:"interval_s,omitempty"`
+	// NoAnswer: the minute's failed connects the server never answered; Target: the instance's dial target (N8)
+	NoAnswer int    `json:"noanswer,omitempty"`
+	Target   string `json:"target,omitempty"`
 }
 
 type beatStreak struct {
@@ -399,7 +466,7 @@ func (h *Heartbeat) take() beat {
 	now := time.Now()
 	for name, l := range h.load {
 		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth,
-			IntervalS: int(l.every / time.Second)})
+			IntervalS: int(l.every / time.Second), NoAnswer: l.noanswer, Target: h.targets[name]})
 		if h.seen == nil {
 			h.seen = map[string]time.Time{}
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -464,6 +465,100 @@ func TestConnectTimeoutKept(t *testing.T) {
 		withConnectTimeout(cfg)
 		if cfg.ConnectTimeout != want {
 			t.Errorf("%q: %v (want %v)", dsn, cfg.ConnectTimeout, want)
+		}
+	}
+}
+
+// TestNoAnswer (task 201 DONE-2 N8): a failed connect the server never answered counts apart - a refused port, no
+// answer in time, an end of stream in the handshake; one the server answered never does (a SQLSTATE, a SQL Server error
+// number), nor a stop's cancel, nor a failure that never dialled (an empty DSN).
+func TestNoAnswer(t *testing.T) {
+	cfg, err := pgx.ParseConfig("host=127.0.0.1 port=1 user=x sslmode=disable connect_timeout=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, refused := pgx.ConnectConfig(context.Background(), cfg)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	cfg2, err := pgx.ParseConfig(fmt.Sprintf("host=127.0.0.1 port=%d user=x sslmode=disable", ln.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg2.ConnectTimeout = 200 * time.Millisecond
+	_, hung := pgx.ConnectConfig(context.Background(), cfg2)
+	for _, c := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"a refused port", refused, true},
+		{"no answer in time", hung, true},
+		{"the instance's connect marked (InstanceConnect)", &connectError{fmt.Errorf("connect t1: %w", refused)}, true},
+		{"an end of stream in the handshake", fmt.Errorf("x: %w", io.EOF), true},
+		{"3D000", &pgconn.PgError{Code: "3D000"}, false},
+		{"28P01", &pgconn.PgError{Code: "28P01"}, false},
+		{"53300", &pgconn.PgError{Code: "53300"}, false},
+		{"SQL Server 18456", msErr{18456}, false},
+		{"a stop's cancel", fmt.Errorf("x: %w", context.Canceled), false},
+		{"no error", nil, false},
+		{"a failure that never dialled", errors.New("connect t1: the dsn resolved to an empty string"), false},
+	} {
+		if got := NoAnswer(c.err); got != c.want {
+			t.Errorf("%s: NoAnswer(%v) = %v (want %v)", c.name, c.err, got, c.want)
+		}
+	}
+}
+
+// TestLoadTarget (task 201 DONE-2 N8): the dial target and the unanswered connects ride on the minute's load row, and
+// a row without them sends neither; PgTarget's forms.
+func TestLoadTarget(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
+	InstanceTarget("t1", "postgres:a:5432")
+	CountConnect("t1", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})
+	CountConnect("t1", nil)
+	CountConnect("t2", &pgconn.PgError{Code: "3D000"})
+	got := map[string]beatLoad{}
+	for _, l := range h.take().Load {
+		got[l.Instance] = l
+	}
+	if l := got["t1"]; l.Attempts != 2 || l.Opened != 1 || l.NoAnswer != 1 || l.Target != "postgres:a:5432" {
+		t.Errorf("t1: %+v (want 2 attempts, 1 opened, 1 unanswered, target postgres:a:5432)", l)
+	}
+	if l := got["t2"]; l.Attempts != 1 || l.NoAnswer != 0 || l.Target != "" {
+		t.Errorf("t2: %+v (want 1 attempt, answered, no target)", l)
+	}
+	body, err := json.Marshal(got["t2"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "noanswer") || strings.Contains(string(body), "target") {
+		t.Errorf("a row with neither sent them: %s", body)
+	}
+	for dsn, want := range map[string]string{
+		"host=DB1.Example port=5433 user=x":         "postgres:db1.example:5433",
+		"host=a,b port=5432,5433 user=x":            "postgres:a:5432,b:5433",
+		"postgres://x@db2:6432/app?sslmode=disable": "postgres:db2:6432",
+	} {
+		cfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := PgTarget(cfg); got != want {
+			t.Errorf("PgTarget(%q) = %q (want %q)", dsn, got, want)
 		}
 	}
 }

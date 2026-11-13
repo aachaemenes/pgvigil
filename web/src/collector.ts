@@ -46,7 +46,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
   let d: Parts;
   try { d = await get<Parts>('collector'); } catch (e) { sec.append(errorBox(e)); return sec; }
   const collectors = rowsOf(d.collectors), findings = rowsOf(d.findings), colls = rowsOf(d.collections), minutes = rowsOf(d.minutes);
-  const load = rowsOf(d.load), streaks = rowsOf(d.streaks), tables = rowsOf(d.tables);
+  const load = rowsOf(d.load), streaks = rowsOf(d.streaks), tables = rowsOf(d.tables), waits = rowsOf(d.waits);
   const repo: Row = rowsOf(d.repository)[0] ?? {};
   const conns = rowsOf(d.connections), purges = rowsOf(d.purges);
   const st = serviceState(collectors, findings), me = collectors.find(r => r.state === 'up') ?? collectors[0];
@@ -82,7 +82,9 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'severity', fmt: v => badge(sevWord[String(v)] ?? String(v), sevKind[String(v)] ?? '') },
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'setting', label: 'check' }, { key: 'value' },
       { key: 'detail', wide: true }, { key: 'at', label: 'since', fmt: fmtTime },
-    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days.'));
+    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days.'),
+    // a forming wait that ended without a parent (task 201 DONE-2 N7): only while no parent stands on that host
+    ...waits.map(r => el('p', { class: 'state' }, `The wait for a shared cause ended on ${r.host} at ${fmtTime(r.ended_at)} without one: new alerts of its ${fmtNum(r.instances)} failing instance(s) are sent as they come.`)));
 
   // the collections over 24 h
   const sum = (k: string) => colls.reduce((a, r) => a + Number(r[k] ?? 0), 0);
