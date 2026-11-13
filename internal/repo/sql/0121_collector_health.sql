@@ -111,6 +111,24 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_instances (
 );
 CREATE INDEX IF NOT EXISTS collector_instances_name ON pgvigil.collector_instances (instance, seen_at);
 
+-- per host, instance and kind: a SPELL is an unbroken run of the instance's written minutes on the host in which it was
+-- 'dead' (it ran and every run failed) or 'noconn' (a connect of it did not open). Kept by the beat
+-- (collector_spells_take) from its own load rows: a minute that shows the kind continues the open spell or starts one; a
+-- written minute of the instance without it ends the spell (ended_at = that minute); a minute with no row of the
+-- instance changes nothing, so a 5-minute instance's bands are one spell. By HOST, not by run: a restart's two runs
+-- write one minute twice, and the spell the newer run continues is not ended by the older run's row. When a failure
+-- BEGAN is read here, never off the newest minutes (a standing failure looks new in every minute). Trimmed at 8 days.
+CREATE TABLE IF NOT EXISTS pgvigil.collector_spells (
+  host          text NOT NULL,
+  instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  kind          text NOT NULL CHECK (kind IN ('dead', 'noconn')),
+  since         timestamptz NOT NULL,             -- its first minute (the collector's clock, as the load's minute)
+  last          timestamptz NOT NULL,             -- its newest minute
+  ended_at      timestamptz,                      -- the written minute without it; NULL = open
+  PRIMARY KEY (host, instance_id, kind, since)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS collector_spells_open ON pgvigil.collector_spells (host, instance_id, kind) WHERE ended_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS pgvigil.purge_runs (
   run_id              bigserial PRIMARY KEY,
   started_at          timestamptz NOT NULL,
@@ -137,6 +155,44 @@ RETURNS void LANGUAGE sql AS $$
   INSERT INTO pgvigil.collector_instances (collector_id, instance, seen_at) VALUES (p_id, p_instance, p_at)
   ON CONFLICT (collector_id, instance) DO UPDATE SET seen_at = greatest(collector_instances.seen_at, EXCLUDED.seen_at)
 $$;
+
+-- collector_spells_take: the spells of run p_id's host after its load rows of p_minute are written (the beat calls it;
+-- beats come in minute order). In the minute an instance's row shows a kind or not: 'dead' = it ran and every run
+-- failed, 'noconn' = a connect did not open. Without the kind: the open spell whose newest minute is older ends here.
+-- With it: a spell another run of the host ended at this very minute takes it back (a restart's overlap, either run
+-- first); else the open spell continues, or a new one starts.
+CREATE OR REPLACE FUNCTION pgvigil.collector_spells_take(p_id text, p_minute timestamptz)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_host text;
+BEGIN
+  SELECT host INTO v_host FROM pgvigil.collector_heartbeat WHERE collector_id = p_id;
+  IF v_host IS NULL THEN
+    RETURN;
+  END IF;
+  UPDATE pgvigil.collector_spells s SET ended_at = p_minute
+    FROM pgvigil.collector_load l
+   WHERE l.minute = p_minute AND l.collector_id = p_id
+     AND s.host = v_host AND s.instance_id = l.instance_id AND s.ended_at IS NULL AND s.last < p_minute
+     AND NOT CASE s.kind WHEN 'dead' THEN l.runs > 0 AND l.failures >= l.runs ELSE l.attempts > l.opened END;
+  WITH k AS (
+    SELECT l.instance_id, x.kind
+      FROM pgvigil.collector_load l
+      CROSS JOIN LATERAL (VALUES ('dead', l.runs > 0 AND l.failures >= l.runs), ('noconn', l.attempts > l.opened)) AS x(kind, hit)
+     WHERE l.minute = p_minute AND l.collector_id = p_id AND x.hit)
+  UPDATE pgvigil.collector_spells s SET ended_at = NULL, last = greatest(s.last, p_minute)
+    FROM k
+   WHERE s.host = v_host AND s.instance_id = k.instance_id AND s.kind = k.kind AND s.ended_at = p_minute
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_spells o
+                      WHERE o.host = v_host AND o.instance_id = k.instance_id AND o.kind = k.kind AND o.ended_at IS NULL);
+  INSERT INTO pgvigil.collector_spells (host, instance_id, kind, since, last)
+  SELECT v_host, l.instance_id, x.kind, p_minute, p_minute
+    FROM pgvigil.collector_load l
+    CROSS JOIN LATERAL (VALUES ('dead', l.runs > 0 AND l.failures >= l.runs), ('noconn', l.attempts > l.opened)) AS x(kind, hit)
+   WHERE l.minute = p_minute AND l.collector_id = p_id AND x.hit
+  ON CONFLICT (host, instance_id, kind) WHERE ended_at IS NULL
+  DO UPDATE SET last = greatest(collector_spells.last, EXCLUDED.last), since = least(collector_spells.since, EXCLUDED.since);
+END $$;
 
 -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
 --   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints]}],
@@ -181,6 +237,7 @@ BEGIN
      SET attempts = collector_load.attempts + EXCLUDED.attempts, opened = collector_load.opened + EXCLUDED.opened,
          runs = collector_load.runs + EXCLUDED.runs,
          failures = collector_load.failures + EXCLUDED.failures, auth_failures = collector_load.auth_failures + EXCLUDED.auth_failures;
+  PERFORM pgvigil.collector_spells_take(p_id, p_minute);
   -- the beat names the instances it loaded (collector_instances): seen at the minute's end
   INSERT INTO pgvigil.collector_instances (collector_id, instance, seen_at)
   SELECT p_id, l.instance, p_minute + interval '1 minute'
@@ -209,6 +266,7 @@ BEGIN
   DELETE FROM pgvigil.collector_beats WHERE at < now() - interval '8 days';
   DELETE FROM pgvigil.collector_runs WHERE minute < now() - interval '8 days';
   DELETE FROM pgvigil.collector_load WHERE minute < now() - interval '8 days';
+  DELETE FROM pgvigil.collector_spells WHERE coalesce(ended_at, last) < now() - interval '8 days';
   DELETE FROM pgvigil.collector_instances WHERE seen_at < now() - interval '8 days';
   DELETE FROM pgvigil.collector_heartbeat WHERE beat_at < now() - interval '8 days';
   RETURN true;
