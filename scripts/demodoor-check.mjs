@@ -1,10 +1,11 @@
 // The demo's write door in a browser that CLICKS (task B7; run by scripts/proof-demodoor.sh).
-//   node scripts/demodoor-check.mjs <cdp port> <base url> <the real instance's name> [<folder for the shots> [<failed jobs, JSON>]]
+//   node scripts/demodoor-check.mjs <cdp port> <base url> <the real instance's name> [<folder for the shots> [<failed jobs, JSON>
+//     [<base url of a pgvigil serve -no-login on the same repository>]]]
 // It drives the page as a visitor of `pgvigil demo -serve` would: a click, the dialog's Save, the page after it - and
 // reads the acknowledge log beside it. Every line is 'ok   <row>: ...' or 'FAIL <row>: ...'; a row that cannot find
 // its control says what the page held instead. Exit 1 when any row failed.
 import { mkdirSync, writeFileSync } from 'node:fs';
-const [port, U, REAL, SHOTS, JOBS] = process.argv.slice(2);
+const [port, U, REAL, SHOTS, JOBS, NOLOGIN] = process.argv.slice(2);
 // the demo instances with a failed job run, as the proof read them from the repository: [{ id, name, tab }]
 const failedJobs = JOBS ? JSON.parse(JOBS) : [];
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
@@ -230,6 +231,47 @@ if (acked) {
     return { test: pick(/^Send test$/), similar: pick(/^Mute similar$/) }; })()`);
   judge('R9a', (!offs.test || (offs.test.off && /runs no sender/.test(offs.test.words))) && !!offs.similar && offs.similar.off && /reach past the demo's instances/.test(offs.similar.words),
     `on the Alerts page: Send test ${JSON.stringify(offs.test)}, Mute similar ${JSON.stringify(offs.similar)}`);
+}
+
+// ---- R6b the demo's OWN seeded silence (stored by the instance's name, without an id) has its Unsilence on the
+// Alerts page's list of silenced servers, and it works (the review's fold: the list drew no button for it)
+{
+  await go('#/alerts');
+  const seeded = await ev(`(() => { const b = [...document.querySelectorAll('main button[aria-label^="Unsilence "]')].find(x => x.textContent.trim() === 'Unsilence' && x.getAttribute('aria-disabled') !== 'true' && !x.disabled);
+    if (!b) return { found: false, silences: [...document.querySelectorAll('main button[aria-label]')].map(x => x.getAttribute('aria-label')).filter(t => /silence|blackout/i.test(t)).slice(0, 8) };
+    const label = b.getAttribute('aria-label'); b.click(); return { found: true, label }; })()`);
+  if (!seeded.found) fail('R6b', `the Alerts page offers no Unsilence that is on for the seed's silence; its silence and blackout buttons: ${JSON.stringify(seeded.silences)}`);
+  else {
+    const d = await saveDialog();
+    const log = await lastLog();
+    const still = await ev(`[...document.querySelectorAll('main button[aria-label]')].some(x => x.getAttribute('aria-label') === ${JSON.stringify(seeded.label)})`);
+    judge('R6b', d.opened && /ended/.test(d.answer) && !still && log.ui_user === 'demo' && log.client === 'demo door' && log.kind === 'silence' && log.op === 'end' && log.outcome === 'done' && seeded.label === `Unsilence ${log.instance}`,
+      `the Alerts page's list of silenced servers: '${seeded.label}' clicked, answered '${d.answer}', its button gone (${!still}); the log ${log.ui_user} / ${log.client} / ${log.kind} / ${log.op} / ${log.outcome} / ${log.instance}`);
+  }
+}
+
+// ---- R10 a server that writes nothing at all (pgvigil serve -no-login on the same repository): a page says the reason
+// ONCE and every off control points at that one sentence - never the same words beside each control, never inside a
+// grid cell (Copy all and the exports carry a cell's text)
+if (NOLOGIN) {
+  const fj = failedJobs[0];
+  const read = async (hash) => {
+    await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: NOLOGIN + hash }); await sleep(400); await settled(); await sleep(800);
+    return ev(`(() => { const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+      const off = [...document.querySelectorAll('main button')].filter(b => b.getAttribute('aria-disabled') === 'true' && vis(b));
+      const ids = off.map(b => b.getAttribute('aria-describedby') || '');
+      const notes = [...new Set(ids.filter(Boolean))].map(i => document.getElementById(i));
+      const texts = notes.map(n => n && vis(n) ? n.textContent.trim() : '');
+      return { off: off.length, undescribed: ids.filter(i => !i).length, unseen: texts.filter(t => !t).length, sentences: texts.filter(Boolean).length,
+        repeated: texts.filter(Boolean).length - new Set(texts.filter(Boolean)).size, inCells: document.querySelectorAll('main td .off-reason').length,
+        first: (texts.find(Boolean) ?? '').slice(0, 110) }; })()`);
+  };
+  const pagesOff = [['#/summary', 'the Summary'], ['#/alerts', 'the Alerts page']];
+  if (fj) pagesOff.push([`#/${fj.tab}?i=${fj.id}`, `${fj.name}'s Jobs page`]);
+  const got = [];
+  for (const [hash, what] of pagesOff) got.push({ what, ...(await read(hash)) });
+  judge('R10', got.every(g => g.off > 0 && g.undescribed === 0 && g.unseen === 0 && g.repeated === 0 && g.inCells === 0),
+    'pgvigil serve -no-login on the same repository: ' + got.map(g => `${g.what}: ${g.off} off control(s), ${g.undescribed} without a description, ${g.unseen} pointing at words not on the page, ${g.sentences} sentence(s) of which ${g.repeated} repeated, ${g.inCells} inside a grid cell ('${g.first}')`).join('; '));
 }
 
 ws.close();

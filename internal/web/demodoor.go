@@ -95,6 +95,7 @@ type doorRow struct {
 	InstanceID   *int
 	InstanceName string
 	FindingKey   string
+	Tag          string // a rule by tag: every instance that carries it
 }
 
 // doorLookup is the repository as the scope rule reads it.
@@ -254,6 +255,9 @@ func (d *demoDoor) rowInstances(ctx context.Context, r doorRow, want map[int]boo
 		}
 	}
 	if n == 0 {
+		if r.Tag != "" {
+			return doorWide("a tag '" + r.Tag + "'"), nil
+		}
 		return doorWide("an every-instance"), nil
 	}
 	return "", nil
@@ -390,6 +394,16 @@ func (s *Server) doorInfo(ctx context.Context) map[string]any {
 	return map[string]any{"user": doorUser, "instances": live}
 }
 
+// offWords is a page's reason where its writes are off, from ackOff's: on a serve the same sentence with the page's
+// own noun, as before. On a demo serve a page that asks this is one whose controls are not taught the door (they
+// stay off): it says so, never 'saved as user demo' beside a control that is off.
+func (s *Server) offWords(why, what string) string {
+	if s.demo != nil {
+		return "this page's " + what + " are off on pgvigil demo -serve: changing them here needs pgvigil serve with a signed-in user"
+	}
+	return strings.Replace(why, "acknowledgements", what, 1)
+}
+
 // writeSeat is who writes for one request.
 type writeSeat struct {
 	s      *Server
@@ -498,16 +512,16 @@ func (l pgDoorLookup) row(ctx context.Context, ref doorRowRef) (doorRow, bool, e
 	var q string
 	switch ref.Table {
 	case "acks":
-		q = `SELECT instance_id, coalesce(instance_name, ''), coalesce(finding_key, '') FROM pgvigil.acks WHERE ack_id = $1`
+		q = `SELECT instance_id, coalesce(instance_name, ''), coalesce(finding_key, ''), coalesce(tag, '') FROM pgvigil.acks WHERE ack_id = $1`
 	case "alert_dismissals":
-		q = `SELECT instance_id, coalesce(instance_name, ''), finding_key FROM pgvigil.alert_dismissals WHERE dismiss_id = $1`
+		q = `SELECT instance_id, coalesce(instance_name, ''), finding_key, '' FROM pgvigil.alert_dismissals WHERE dismiss_id = $1`
 	case "job_exclusions":
-		q = `SELECT instance_id, '', '' FROM pgvigil.job_exclusions WHERE exclusion_id = $1`
+		q = `SELECT instance_id, '', '', '' FROM pgvigil.job_exclusions WHERE exclusion_id = $1`
 	default:
 		return doorRow{}, false, nil
 	}
 	var r doorRow
-	err := l.pool.QueryRow(ctx, q, ref.ID).Scan(&r.InstanceID, &r.InstanceName, &r.FindingKey)
+	err := l.pool.QueryRow(ctx, q, ref.ID).Scan(&r.InstanceID, &r.InstanceName, &r.FindingKey, &r.Tag)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, false, nil
 	}

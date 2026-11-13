@@ -101,6 +101,7 @@ func TestDemoDoorScope(t *testing.T) {
 			{"acks", 15}:             {InstanceID: intp(1), FindingKey: "k-prod"},        // a demo id on a real instance's alert
 			{"acks", 16}:             {InstanceID: intp(1), FindingKey: "k-cleared"},     // its alert is no longer in alert_state
 			{"acks", 17}:             {InstanceID: intp(1), FindingKey: "k-repo"},        // a demo id on an alert of no instance
+			{"acks", 18}:             {Tag: "demo"},                                      // a rule by tag (the seed's own mute): every instance that carries the tag
 			{"alert_dismissals", 20}: {FindingKey: "k-demo1"},
 			{"alert_dismissals", 21}: {FindingKey: "k-prod"},
 			{"job_exclusions", 30}:   {InstanceID: intp(2)},
@@ -150,6 +151,7 @@ func TestDemoDoorScope(t *testing.T) {
 		{"the end of a seeded instance's row", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 10}}, ""},
 		{"the end of a real user's row on a real instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 11}}, "prod-db1 " + notDemo},
 		{"the end of a rule on every instance", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 12}}, "an every-instance change " + wide},
+		{"the end of a rule by tag (its words name the tag)", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 18}}, "a tag 'demo' change " + wide},
 		{"the end of a seed row (a name and a key, no id)", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 13}}, ""},
 		{"the end of a row whose instance was removed", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 14}}, "gone-server is no longer an instance"},
 		{"the end of a row with a demo id on a real alert", writeScope{Route: doorAckEnd, Row: &doorRowRef{"acks", 15}}, "prod-db1 " + notDemo},
@@ -189,6 +191,9 @@ func TestSeatOnServe(t *testing.T) {
 	if got := s.ackOff(); got != noLogin {
 		t.Fatalf("ackOff on a serve without the login = %q, want %q", got, noLogin)
 	}
+	if got := s.offWords(s.ackOff(), "thresholds"); got != "thresholds need the UI login: this server runs with -no-login" {
+		t.Errorf("a page's off words on a serve without the login = %q (the serve's words, the page's noun)", got)
+	}
 	for _, c := range []struct {
 		name   string
 		header bool
@@ -219,6 +224,10 @@ func TestSeatOnDemo(t *testing.T) {
 	s := &Server{demo: &demoDoor{ids: map[int]bool{1: true}, prefix: "demo-", look: store}}
 	if got := s.ackOff(); !strings.Contains(got, "pgvigil demo -serve") || strings.Contains(got, "-no-login") {
 		t.Errorf("ackOff on a demo serve = %q: it names pgvigil demo -serve and never -no-login", got)
+	}
+	// a page whose controls the door does not reach yet says that they are off, never 'saved as user demo' beside them
+	if got := s.offWords(s.ackOff(), "job exclusions"); !strings.Contains(got, "this page's job exclusions are off on pgvigil demo -serve") || strings.Contains(got, "saved as user demo") {
+		t.Errorf("a page's off words on a demo serve = %q", got)
 	}
 	r := httptest.NewRequest(http.MethodPost, "/api/ack", strings.NewReader("{}"))
 	w := httptest.NewRecorder()

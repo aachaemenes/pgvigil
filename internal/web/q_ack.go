@@ -21,7 +21,10 @@ import (
 
 // sqlAckRows: every row in force now and every row ended or expired in the last 7 days, newest first
 const sqlAckRows = `
-SELECT a.ack_id, a.kind, a.instance_id, a.instance_name AS instance, a.check_key, a.finding_key, a.job_name, a.tag,
+SELECT a.ack_id, a.kind,
+       -- a row stored by its instance's name alone (the demo's seed writes them so) is listed under that instance's id
+       coalesce(a.instance_id, (SELECT i.instance_id FROM pgvigil.instances i WHERE i.name = a.instance_name)) AS instance_id,
+       a.instance_name AS instance, a.check_key, a.finding_key, a.job_name, a.tag,
        a.match_text, a.note, a.seen_state, a.starts_at, a.until, a.until_change, a.created_by, a.created_at, a.client,
        a.ended_by, a.ended_at, pgvigil.ack_live(a.ended_at, a.starts_at, a.until, $1) AS live,
        (SELECT count(*) FROM pgvigil.ack_suppressed x WHERE x.ack_id = a.ack_id) AS held_alerts,

@@ -14,7 +14,15 @@ export interface AckDoor { user: string; instances: number[] }
 export interface AckData {
   writable: boolean; reason?: string; user: string; door?: AckDoor | null;
   acks?: Table | null; log?: Table | null; suppressed?: Table | null; alerts?: Table | null; attention?: Table | null;
+  // the page's one visible sentence for a reason EVERY off control of the page shares (a server that writes nothing at
+  // all): the page that draws the sentence sets it here, and an off control without a note of its own points at it
+  // instead of repeating the words beside itself (pageNote). Never used where a door stands: there a control that is
+  // off has a reason of its own.
+  note?: HTMLElement;
 }
+
+// pageNote: the page's shared sentence for an off control, where the page set one and no door stands
+export const pageNote = (d: AckData): HTMLElement | undefined => (d.door ? undefined : d.note);
 
 export type AckKind = 'ack' | 'alert_ack' | 'note' | 'close' | 'blackout' | 'job' | 'silence' | 'mute' | 'noise';
 
@@ -121,7 +129,7 @@ export interface WriteAt { instance?: AckInstance; name?: string; note?: HTMLEle
 export function writeButton(d: AckData, label: string, aria: string, open: () => void, at: WriteAt = {}): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
   const why = at.why ?? ackWhy(d, at.instance, at.name);
-  if (why) offBeside(b, why, at.note); else b.addEventListener('click', open);
+  if (why) offBeside(b, why, at.note ?? pageNote(d)); else b.addEventListener('click', open);
   return b;
 }
 
