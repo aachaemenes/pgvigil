@@ -239,21 +239,30 @@ function lengthWords(ms: number): string {
   const m = ms / 60e3, one = (n: number, unit: string) => `${fmtNum(n)} ${unit}${n === 1 ? '' : 's'}`;
   return m < 90 ? one(Math.max(1, Math.round(m)), 'minute') : m < 2880 ? one(Math.round(m / 6) / 10, 'hour') : one(Math.round(m / 144) / 10, 'day');
 }
-// historyLine: what the window holds. rows: the window's reads, oldest first; newest: the drive's newest two reads
-// whatever the window; marked: the chart marks restarts, failovers and setting changes (an instance's page)
+// historyLine: what the window holds. rows: the window's reads, oldest first, each under its own time; newest: the
+// drive's newest reads whatever the window (five at most); marked: the chart marks restarts, failovers and setting
+// changes (an instance's page)
 function historyLine(rows: Row[], newest: Row[], minutes: number, words: string, marked: boolean): string {
   const at = (r: Row | undefined) => r ? Date.parse(String(r.snapshot_at)) : NaN;
-  const gap = at(newest[0]) - at(newest[1]);   // how far apart the drive's reads are
+  // the drive's read interval: the upper median of the gaps between its newest reads. One read off the cycle (a
+  // collection runs once at each collector start) splits one interval into two short gaps: of four gaps the upper
+  // median is still the interval (16:00, 16:17, 17:00, 18:00, 19:00 -> 17, 43, 60, 60 minutes -> 60)
+  const gaps = newest.slice(1).map((r, i) => at(newest[i]) - at(r)).filter(g => Number.isFinite(g) && g > 0).sort((x, y) => x - y);
+  const gap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : NaN;
+  const last = newest[0], now = Date.now(), age = now - at(last);
+  // reads that stopped: none for over two intervals (an hour's interval taken where one read is all there is)
+  const stopped = Number.isFinite(age) && age > Math.max(2 * (Number.isFinite(gap) ? gap : 3600e3), 30 * 60e3);
+  const stoppedNote = stopped ? ` No read for ${lengthWords(age)}: this drive's collection has stopped.` : '';
   if (rows.length < 2) {
-    const last = newest[0];
-    return `This window holds ${rows.length ? 'one read' : 'no read'}: a line needs two.`
-      + (Number.isFinite(gap) && gap > 0 ? ` This drive is read about every ${lengthWords(gap)}` : last ? ' This drive has been read once' : ' No history is stored for this drive yet')
+    return `This window holds ${rows.length ? 'one read' : 'no read'}, so no line is drawn.`
+      + (Number.isFinite(gap) ? ` This drive ${stopped ? 'was' : 'is'} read about every ${lengthWords(gap)}` : last ? ' This drive has been read once' : ' No history is stored for this drive yet')
       + (last ? `; its newest read, ${fmtTime(last.snapshot_at)}: ${fmtBytes(last.used_bytes)} used, ${fmtBytes(last.free_bytes)} free.` : '.')
-      + (last ? ' Pick a longer window.' : '');
+      + stoppedNote + (Number.isFinite(gap) ? ' Pick a longer window.' : '');
   }
-  const win = minutes * 60e3, span = Date.now() - at(rows[0]), step = Number.isFinite(gap) && gap > 0 ? gap : (at(rows[rows.length - 1]) - at(rows[0])) / (rows.length - 1);
-  return `${fmtNum(rows.length)} reads over ${lengthWords(span)} of history`
-    + (win - span > Math.max(2 * step, 0.05 * win) ? ` (the ${words} window holds no more yet)` : '') + '.'
+  const first = at(rows[0]), end = at(rows[rows.length - 1]), win = minutes * 60e3;
+  const step = Math.max(Number.isFinite(gap) ? gap : 0, (end - first) / (rows.length - 1));
+  return `${fmtNum(rows.length)} reads over ${lengthWords(end - first)} of history`
+    + (first - (now - win) > Math.max(2 * step, 0.05 * win) ? ` (the ${words} window holds no more yet)` : '') + '.' + stoppedNote
     + (marked && minutes > 31 * 1440 ? ' Restarts, failovers and setting changes are marked for the last 31 days only.' : '');
 }
 async function driveHistory(id: number, drive: string, inst: string, marked: boolean, box: HTMLElement) {
@@ -268,10 +277,11 @@ async function driveHistory(id: number, drive: string, inst: string, marked: boo
     try {
       const d = await get<Parts<'history' | 'newest'>>('drives/history', { instance: id, drive, minutes: want });
       if (mine !== seq) return;
-      const rows = rowsOf(d.history);
+      const rows = rowsOf(d.history), title = `${drive} on ${inst}: used and free over ${words}`;
+      // under two reads the line above says why no chart is drawn: the title alone stands under it (no second sentence)
       chart.replaceChildren(el('p', { class: 'meta', role: 'status' }, historyLine(rows, rowsOf(d.newest), want, words, marked)),
-        lineChart(`${drive} on ${inst}: used and free over ${words}`, rows,
-          [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v), { ownSpan: true }));
+        rows.length < 2 ? el('div', { class: 'chart' }, el('h3', {}, title))
+          : lineChart(title, rows, [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v), { ownSpan: true }));
     } catch (e) { if (mine === seq) chart.replaceChildren(errorBox(e)); }
   }
   sel.addEventListener('change', () => { win = Number(sel.value); lsSet('pgvigil.driveHistoryMinutes', String(win)); void draw(); });

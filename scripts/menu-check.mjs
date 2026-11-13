@@ -47,11 +47,18 @@
 //                     '5|15|30|60|360|1440|2880|10080|43200|129600|259200|525600' standing at 43200 and the chart 'over 30
 //                     days'; 90 days picked -> a read of /api/drives/history with minutes=129600, the chart 'over 90 days'
 //                     DRAWN (its first point over 80 % of the window back: the demo holds a year of volume reads) under a
-//                     line 'N reads over ... of history'; 5 minutes -> minutes=5, the chart 'over 5 minutes' and the line
-//                     that says why no line is drawn ('This window holds no read|one read ... read about every ...': a
-//                     SQL Server volume is read hourly); 1 year as 90 days, with minutes=525600; the pick kept in the
+//                     line 'N reads over ... of history'; 5 minutes -> minutes=5, the title 'over 5 minutes' and the line
+//                     that says why no line is drawn ('This window holds no read|one read, so no line is drawn. This
+//                     drive is read about every 60 minutes ...': a SQL Server volume is read hourly, the interval the
+//                     upper median of its newest gaps; said once - no second 'a chart needs two'; two reads in the 5
+//                     minutes, asked of the API first: their chart and '2 reads over'); 1 year as 90 days, with
+//                     minutes=525600 (review fold: each point under its own read time); the pick kept in the
 //                     browser (pgvigil.driveHistoryMinutes = 525600) and READ BACK: the History closed and opened again
 //                     stands at 525600 under 'over 1 year'
+//   W  pg words       a PostgreSQL instance's own Summary (demo-cloudsql-analytics01, the demo's all-OK instance) names
+//                     no SQL Server-only check in its counts line - 'Every check group is OK.' or 'no sample for:' with
+//                     only cells that have no read, never QS, SQL Agent Alerts, Backup DIFF ... (review 20261112-191720:
+//                     the n/a cells of the other engine were listed there)
 //   D  drives         under onprem-sql01's Storage folder one node per volume of /api/mssql/storage (total > 0), each with
 //                     a bar whose width is its used share (within 0.2 %) in the colour of its free share (ok / warn under
 //                     20 % / crit under 10 %), its visible words '... free (n %)', its title '... free of ...' (run 3)
@@ -422,25 +429,43 @@ await guard('D2 drive history', async () => {
   // the History's own line (how much the window holds, or why no line is drawn)
   const line = () => ev(`[...document.querySelectorAll('#main p[role=status]')].map(p => p.textContent).find(t => /of history|This window holds/.test(t)) ?? ''`);
   // pick(minutes, words, drawn): the window picked, its read on the wire, its title; drawn = a chart whose first point
-  // lies over 80 % of the window back and the line 'N reads over ...'; not drawn = the line that says why
+  // lies over 80 % of the window back and the line 'N reads over ...'; 'short' = a chart of the two reads a short
+  // window happens to hold; not drawn = no chart and the line that says why
   const pick = async (m, words, drawn) => {
     await ev(`(() => { const s = document.querySelector('${winSel}'); s.value = '${m}'; s.dispatchEvent(new Event('change')); return true; })()`);
     const t = await titled(words);
     const read = await ev(`performance.getEntriesByType('resource').some(e => e.name.includes('/api/drives/history') && /[?&]minutes=${m}(&|$)/.test(e.name))`);
     const firstAt = await ev(`[...document.querySelectorAll('#main .chart')].find(b => b.querySelector('h3')?.textContent.includes('used and free over ${words}'))?.dataset.first ?? ''`);
     const said = await line();
-    const ok = drawn ? !!firstAt && Date.now() - Date.parse(firstAt) > m * 60e3 * 0.8 && /^\d[\d,.]* reads over .+ of history/.test(said)
-      : !firstAt && /^This window holds (no read|one read)/.test(said) && /read about every/.test(said);
+    const ok = drawn === 'short' ? !!firstAt && /^2 reads over .+ of history/.test(said)
+      : drawn ? !!firstAt && Date.now() - Date.parse(firstAt) > m * 60e3 * 0.8 && /^\d[\d,.]* reads over .+ of history/.test(said)
+        : !firstAt && /^This window holds (no read|one read), so no line is drawn\./.test(said) && /read about every/.test(said) && !/a chart needs two/.test(await ev(`document.querySelector('#main').innerText`));
     return { ok: t && read && ok, said };
   };
-  const p90 = await pick(129600, '90 days', true), p5 = await pick(5, '5 minutes', false), pYear = await pick(525600, '1 year', true);
+  // the demo writes a SQL Server volume read on the hour and one at the seed's end: the 5 minutes hold none or one, or
+  // two when the seed ended just after an hour - asked of the API first, the page must then say or draw exactly that
+  const drive = (await ev(`document.querySelector('${histSel}').getAttribute('aria-label')`)).replace(/^History of /, '').replace(/ on demo-onprem-sql01$/, '');
+  const n5 = await ev(`fetch('/api/drives/history?instance=${sqlId}&minutes=5&drive=' + encodeURIComponent(${JSON.stringify(drive)})).then(r => r.json()).then(d => d.history ? d.history.rows.length : -1)`);
+  const p90 = await pick(129600, '90 days', true), p5 = await pick(5, '5 minutes', n5 >= 2 ? 'short' : false), pYear = await pick(525600, '1 year', true);
   const kept = await ev(`localStorage.getItem('pgvigil.driveHistoryMinutes')`);
   // the stored pick is read back: the History closed and opened again stands at the year
   await ev(`document.querySelector('${histSel}').click()`); await sleep(300);
   await ev(`document.querySelector('${histSel}').click()`);
   const reopened = await titled('1 year') && await ev(`document.querySelector('${winSel}')?.value ?? ''`) === '525600';
   check('D2 drive history', first && opts === '5|15|30|60|360|1440|2880|10080|43200|129600|259200|525600' && at === '43200' && p90.ok && p5.ok && pYear.ok && kept === '525600' && reopened,
-    `opened at 30 days: ${first}; windows '${opts}' at '${at}'; 90 days read and drawn: ${p90.ok} ('${p90.said}'); 5 minutes read and said: ${p5.ok} ('${p5.said}'); 1 year read and drawn: ${pYear.ok} ('${pYear.said}'); kept: ${kept}; reopened at the year: ${reopened}`);
+    `opened at 30 days: ${first}; windows '${opts}' at '${at}'; 90 days read and drawn: ${p90.ok} ('${p90.said}'); 5 minutes (${n5} read(s) by the API) read and said: ${p5.ok} ('${p5.said}'); 1 year read and drawn: ${pYear.ok} ('${pYear.said}'); kept: ${kept}; reopened at the year: ${reopened}`);
+});
+
+// ---- W: a PostgreSQL instance's Summary names no SQL Server-only check ----
+await guard('W pg words', async () => {
+  const pgId = idOf('demo-cloudsql-analytics01');
+  await go(`#/summary?i=${pgId}`);
+  const read = () => ev(`[...document.querySelectorAll('#main p.counts')].map(p => p.textContent).find(t => /^(Not OK|No warning|Every check)/.test(t)) ?? ''`);
+  let line = '';
+  for (let k = 0; k < 40 && !(line = await read()); k++) await sleep(250);
+  const sqlOnly = ['QS', 'SQL Agent Alerts', 'Backup DIFF', 'Is Agent Running', 'Mirroring', 'Log Space', 'File Space', '% Max Size', 'Elastic Pool Storage', 'DB Mail', 'Identity Columns', 'Service Broker'];
+  const hit = sqlOnly.filter(w => new RegExp('(^|[^A-Za-z])' + w + '([^A-Za-z]|$)').test(line));
+  check('W pg words', !!line && hit.length === 0, `demo-cloudsql-analytics01's Summary says '${line.slice(0, 200)}'; SQL Server-only names in it: ${hit.join(', ') || 'none'}; judged on an all-OK instance (where the line lists the cells without a read): ${!/^Not OK/.test(line)}`);
 });
 
 // ---- G: the grid cell menu ----

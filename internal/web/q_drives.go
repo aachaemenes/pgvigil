@@ -191,29 +191,31 @@ func (s *Server) DriveThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
-// sqlDriveHistory: one drive's size, used and free over the last $3 seconds per $4-second bucket (the bucket's last
-// read): a PostgreSQL host's from host_disk_history, a SQL Server's from mssql_volume_sample. $1 the instance, $2 the drive.
+// sqlDriveHistory: one drive's size, used and free over the last $3 seconds, one read per $4-second bucket (the
+// bucket's last read, under its own time: a point never sits before the window or after the drive's newest read): a
+// PostgreSQL host's from host_disk_history, a SQL Server's from mssql_volume_sample. $1 the instance, $2 the drive.
 const sqlDriveHistory = `
-SELECT DISTINCT ON (1) to_timestamp(floor(extract(epoch FROM h.snapshot_at) / $4) * $4) AS snapshot_at, h.total_bytes, h.used_bytes, h.free_bytes,
+SELECT DISTINCT ON (floor(extract(epoch FROM h.snapshot_at) / $4)) h.snapshot_at, h.total_bytes, h.used_bytes, h.free_bytes,
        round(100.0 * h.free_bytes / nullif(h.total_bytes, 0), 1) AS free_pct
   FROM (SELECT x.snapshot_at, x.total_bytes, x.used_bytes, x.free_bytes FROM pgvigil.host_disk_history x
          WHERE x.instance_id = $1 AND x.mount_point = $2 AND x.snapshot_at > now() - make_interval(secs => $3::int)
         UNION ALL
         SELECT v.snapshot_at, v.total_bytes, v.total_bytes - v.free_bytes, v.free_bytes FROM pgvigil.mssql_volume_sample v
          WHERE v.instance_id = $1 AND v.volume = $2 AND v.snapshot_at > now() - make_interval(secs => $3::int)) h
- ORDER BY 1, h.snapshot_at DESC`
+ ORDER BY floor(extract(epoch FROM h.snapshot_at) / $4), h.snapshot_at DESC`
 
-// sqlDriveNewest: the drive's newest two reads whatever the window: when it was last read and how far apart its reads
-// are (a PostgreSQL host's volume is stored every 15 minutes at most, a SQL Server's at each storage collection), so a
-// window too short to hold two reads can say why it draws no line. $1 the instance, $2 the drive.
+// sqlDriveNewest: the drive's newest five reads whatever the window: when it was last read and how far apart its reads
+// are - the median of their gaps, so one read off the cycle (a collection runs once at each collector start) does not
+// set the interval (a PostgreSQL host's volume is stored every 15 minutes at most, a SQL Server's at each storage
+// collection) - so a window too short to hold two reads can say why it draws no line. $1 the instance, $2 the drive.
 const sqlDriveNewest = `
 SELECT h.snapshot_at, h.total_bytes, h.used_bytes, h.free_bytes
   FROM ((SELECT x.snapshot_at, x.total_bytes, x.used_bytes, x.free_bytes FROM pgvigil.host_disk_history x
-          WHERE x.instance_id = $1 AND x.mount_point = $2 ORDER BY x.snapshot_at DESC LIMIT 2)
+          WHERE x.instance_id = $1 AND x.mount_point = $2 ORDER BY x.snapshot_at DESC LIMIT 5)
         UNION ALL
         (SELECT v.snapshot_at, v.total_bytes, v.total_bytes - v.free_bytes, v.free_bytes FROM pgvigil.mssql_volume_sample v
-          WHERE v.instance_id = $1 AND v.volume = $2 ORDER BY v.snapshot_at DESC LIMIT 2)) h
- ORDER BY h.snapshot_at DESC LIMIT 2`
+          WHERE v.instance_id = $1 AND v.volume = $2 ORDER BY v.snapshot_at DESC LIMIT 5)) h
+ ORDER BY h.snapshot_at DESC LIMIT 5`
 
 // driveHistoryMinutes are the windows a drive's History offers, in minutes: 5, 15 and 30 minutes, 1, 6 and 24 hours,
 // 2, 7, 30, 90 and 180 days, one year.
@@ -222,7 +224,7 @@ var driveHistoryMinutes = map[int]bool{5: true, 15: true, 30: true, 60: true, 36
 
 // DriveHistory is GET /api/drives/history?instance=N&drive=..[&minutes=43200]: DBA Dash's drive History over one of
 // driveHistoryMinutes' windows (days=7|30|90|180|365 is still taken where minutes is not given). history: the window's
-// reads, one per bucket (300 buckets at most); newest: the drive's newest two reads whatever the window.
+// reads, one per bucket (300 buckets at most); newest: the drive's newest five reads whatever the window.
 func (s *Server) DriveHistory(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	id, err := strconv.Atoi(q.Get("instance"))

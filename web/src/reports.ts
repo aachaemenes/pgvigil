@@ -138,6 +138,7 @@ const finderView: Render = ctx => {
     const d = await get<{ databases: Table }>('reports', { r: 'finder', ...s.params, top: v['finder-top'], system: v['finder-system'], like: like.value.trim() || undefined });
     const rows = rowsOf(d.databases).map(r => ({ ...r, group: groups.get(Number(r.instance_id)) ?? '' }));
     const ms = (r: Row) => r.engine === 'sqlserver';
+    const anyMs = rows.some(ms);   // QS and Forced Plans are SQL Server's Query Store: no column where no SQL Server database is listed
     const at = (r: Row, tab: string, extra: Record<string, string | number | undefined> = {}) => hrefWith(ctx, tab, extra, Number(r.instance_id));
     const lk = (label: string, to: (r: Row) => string | null): Col => ({ key: 'link_' + label, label, fmt: (_v, r) => { const h = to(r); return h ? el('a', { href: h }, label) : ''; } });
     const cols: Col[] = [instCol(ctx), { key: 'group', label: 'Instance group' }, engCol,
@@ -149,13 +150,13 @@ const finderView: Render = ctx => {
       lk('DB Space', r => ms(r) ? at(r, 'mssqlstorage') : r.dbid != null ? at(r, 'dbinfo', { db: Number(r.dbid) }) : null),
       lk('DB Configuration', r => ms(r) ? at(r, 'mssqlconfig') : at(r, 'config')),
       lk('DB Options', r => ms(r) ? at(r, 'mssqlchecks') : at(r, 'pgdboptions')),
-      lk('QS', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name) }) : null),
+      ...(anyMs ? [lk('QS', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name) }) : null)] : []),
       lk('Top Queries', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name), qs: 'top' }) : at(r, 'statements')),
-      lk('Forced Plans', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name), qs: 'forced' }) : null),
+      ...(anyMs ? [lk('Forced Plans', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name), qs: 'forced' }) : null)] : []),
       { key: 'state', label: 'State' }, { key: 'size_bytes', label: 'Size', num: true, fmt: fmtBytes },
     ];
     out.append(el('p', { class: 'meta' }, `${fmtNum(rows.length)} database(s)${rows.length >= Number(v['finder-top']) ? ` (the first ${fmtNum(rows.length)}: raise Top for more)` : ''}. `
-      + 'Search (LIKE): a name part, or a pattern with % and _. A link opens the database\'s instance on that page (QS: the Query Store of SQL Server; PostgreSQL has none).'),
+      + 'Search (LIKE): a name part, or a pattern with % and _. A link opens the database\'s instance on that page' + (anyMs ? ' (QS: the Query Store of SQL Server; PostgreSQL has none).' : '.')),
     ...section('Database Finder', grid(rows, cols, 'No database matches.')));
   }, [el('label', { for: 'rp-finder-like' }, 'Search (LIKE) ', like), go], r => { redraw = r; });
 };

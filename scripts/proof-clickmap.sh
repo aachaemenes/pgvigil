@@ -28,7 +28,7 @@
 #  R. the reads (a -no-login serve of the demo): GET /api/drives: counts.drives = drives_now's rows; status=critical,
 #     warning gives exactly the drives in those states; instance=<erp01> only its drives; instances=0 none; status=bogus
 #     400. /api/drives/history for erp01's data volume: 2 points at least; its windows: minutes=525600 (a year) 2 points
-#     at least, minutes=5 answers with no more than 2 points and 'newest' = the drive's 2 newest reads (the newest one's
+#     at least, minutes=5 answers with one point at most and 'newest' = the drive's 5 newest reads (the newest one's
 #     used bytes = host_disk_history's), days=90 still taken, minutes=7 and days=45 400. /api/dbspace: one row per active instance
 #     with databases (15); a SQL Server row's used is the files' used summed where every file's was read and none
 #     where one was not (the demo's database the login cannot enter) [fixed after s176-c2: it said 'each with used read'];
@@ -295,9 +295,12 @@ H=$(js "drives/history?instance=$ERP&drive=$(python3 -c "import urllib.parse,sys
 (( H >= 2 )) || fail "R: drives/history of $DATA: $H points"
 DQ=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$DATA")
 HY=$(js "drives/history?instance=$ERP&drive=$DQ&minutes=525600" "print(len(rows('history')))"); (( HY >= 2 )) || fail "R: drives/history over a year: $HY points"
+# the newest read's bytes are read from the repository before and after the API call: a read stored between the two is no fault
+U5Q="select used_bytes from pgvigil.host_disk_history where instance_id = $ERP and mount_point = \$\$$DATA\$\$ order by snapshot_at desc limit 1"
+U5A=$(q "$U5Q")
 H5=$(js "drives/history?instance=$ERP&drive=$DQ&minutes=5" "n=rows('newest'); print(len(rows('history')), len(n), int(n[0]['used_bytes']))")
-U5=$(q "select used_bytes from pgvigil.host_disk_history where instance_id = $ERP and mount_point = \$\$$DATA\$\$ order by snapshot_at desc limit 1")
-[[ "$H5" =~ ^[0-2]\ 2\ $U5$ ]] || fail "R: drives/history over 5 minutes: '$H5' (points, newest rows, the newest read's used bytes; the repository's $U5)"
+U5B=$(q "$U5Q")
+[[ "$H5" =~ ^[0-1]\ 5\ ($U5A|$U5B)$ ]] || fail "R: drives/history over 5 minutes: '$H5' (points: one at most, a PostgreSQL volume is stored every 15 minutes; the 5 newest reads; the newest read's used bytes, the repository's $U5A / $U5B)"
 (( $(js "drives/history?instance=$ERP&drive=$DQ&days=90" "print(len(rows('history')))") >= 2 )) || fail "R: drives/history days=90"
 for bad in minutes=7 days=45 minutes=x; do
   [[ $(curl -s -o /dev/null -w '%{http_code}' "$U/api/drives/history?instance=$ERP&drive=$DQ&$bad") == 400 ]] || fail "R: drives/history $bad is not refused"
