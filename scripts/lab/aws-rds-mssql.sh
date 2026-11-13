@@ -14,9 +14,12 @@
 #   PGVIGIL_LAB_AWS_REGION   the region (required for up, allow, status, down)
 #   PGVIGIL_LAB_DIR          the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE     the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
+#   PGVIGIL_LAB_RDS_EDITION  ex (default): Express on db.t3.micro; se: Standard (license included) on db.m7i.large,
+#                            single AZ (SQL Server Agent, Extended Events; AWS bills it by the hour: see the price line
+#                            the session reads before up)
 #
 # What up makes, each tagged: one security group in the default VPC (no ingress until 'allow'), one DB instance
-# (engine sqlserver-ex, the default engine version, db.t3.micro, 20 GB gp3, single AZ, publicly accessible through
+# (engine and class by PGVIGIL_LAB_RDS_EDITION, the default engine version, 20 GB gp3, single AZ, publicly accessible through
 # that group only, automated backups off, no Performance Insights, no enhanced monitoring, deletion protection off).
 # ONE create call decides: an account plan that refuses it ends 'up' with the refusal's text, and the security group
 # it made first is deleted again. The master password and the collector's password are made here from
@@ -31,6 +34,11 @@ DIR=${PGVIGIL_LAB_DIR:-.lab}
 STATE=$DIR/aws-rds-mssql.env
 SQLCMD_IMAGE=${PGVIGIL_SQLCMD_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 CMD=${1:-}
+case ${PGVIGIL_LAB_RDS_EDITION:-ex} in
+  ex) RDS_ENGINE=sqlserver-ex; RDS_CLASS=db.t3.micro ;;
+  se) RDS_ENGINE=sqlserver-se; RDS_CLASS=db.m7i.large ;;
+  *) echo "FAIL: PGVIGIL_LAB_RDS_EDITION is ex or se" >&2; exit 1 ;;
+esac
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need_aws() {
   : "${PGVIGIL_LAB_PROOF:?the tag value (pgvigil-proof=<value>)}" "${PGVIGIL_LAB_AWS_PROFILE:?the AWS CLI profile}" "${PGVIGIL_LAB_AWS_REGION:?the region}"
@@ -87,7 +95,7 @@ EOF
   python3 - "$REQ" <<PY
 import json, sys
 json.dump({
-  "DBInstanceIdentifier": "$ID", "DBInstanceClass": "db.t3.micro", "Engine": "sqlserver-ex",
+  "DBInstanceIdentifier": "$ID", "DBInstanceClass": "$RDS_CLASS", "Engine": "$RDS_ENGINE",
   "LicenseModel": "license-included", "AllocatedStorage": 20, "StorageType": "gp3",
   "MasterUsername": "$ADMIN_USER", "MasterUserPassword": "$ADMIN_PW",
   "VpcSecurityGroupIds": ["$SG"], "PubliclyAccessible": True, "MultiAZ": False,
@@ -109,7 +117,7 @@ PY
     exit 3
   fi
   rm -f "$REQ" "$ERR"
-  echo "made: DB instance $ID (sqlserver-ex, db.t3.micro, 20 GB gp3), tag pgvigil-proof=$PGVIGIL_LAB_PROOF; waiting until it is available (15-30 min)"
+  echo "made: DB instance $ID ($RDS_ENGINE, $RDS_CLASS, 20 GB gp3), tag pgvigil-proof=$PGVIGIL_LAB_PROOF; waiting until it is available (15-30 min)"
   aw rds wait db-instance-available --db-instance-identifier "$ID" || aw rds wait db-instance-available --db-instance-identifier "$ID"
   HOST=$(aw rds describe-db-instances --db-instance-identifier "$ID" --query 'DBInstances[0].Endpoint.Address' --output text)
   sed -i "s/^RDS_HOST=.*/RDS_HOST=$HOST/" "$STATE"
