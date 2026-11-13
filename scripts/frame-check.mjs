@@ -279,7 +279,8 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
   await openRange();
   const shape = await ev(`(() => { const p = ${rangePanel}; if (!p) return null;
     return { groups: [...p.querySelectorAll('legend')].map(l => l.textContent).join('|'), items: p.querySelectorAll('button[aria-pressed]').length, zones: ${zoneSel}.options.length,
-             expanded: ${rangeBtn}.getAttribute('aria-expanded'), inside: p.getBoundingClientRect().left >= 0 && p.getBoundingClientRect().right <= innerWidth }; })()`);
+             daymonth: [...p.querySelectorAll('select.range-daymonth')].map(x => x.options.length).join('/'),
+             expanded: ${rangeBtn}.getAttribute('aria-expanded'), inside: p.getBoundingClientRect().left >= 0 && p.getBoundingClientRect().right <= innerWidth && p.getBoundingClientRect().bottom <= innerHeight }; })()`);
   const local = await inputs();
   const zoneSet = await setZone('Asia/Tokyo');
   const tokyo = await ev(`(() => { const p = ${rangePanel}; const f = d => new Date(d).toLocaleString(undefined, { hour12: false, timeZone: 'Asia/Tokyo' });
@@ -326,7 +327,7 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
   const chartLocal = await chartClock();
   await send('Emulation.setTimezoneOverride', { timezoneId: '' });
   const ahead = chartTokyo && chartLocal ? (chartTokyo.tipMin - chartLocal.tipMin + 1440) % 1440 : -1;   // Tokyo is 17 h ahead of Los Angeles in November and 16 h in its summer
-  check('N range', !!shape && shape.groups === 'Quick ranges|Calendar periods|A start and an end|Type a range' && shape.items === 16 && shape.zones > 2 && shape.expanded === 'true' && shape.inside
+  check('N range', !!shape && shape.groups === 'Quick ranges|Calendar periods|A start and an end|Type a range' && shape.items === 26 && shape.daymonth === '16/14' && shape.zones > 2 && shape.expanded === 'true' && shape.inside
     && local.from === '2026-01-15T04:00' && local.to === '2026-01-15T05:00' && local.tag === 'UTC-08:00'
     && zoneSet === 'ok' && tokyo.tag === 'UTC+09:00' && tokyo.from === '2026-01-15T21:00' && tokyo.to === '2026-01-15T22:00' && tokyo.title === tokyo.want && tokyo.stored === 'Asia/Tokyo' && tokyo.same
     && applied.get('from') === '2026-01-15T12:00:00.000Z' && applied.get('to') === '2026-01-15T14:00:00.000Z'
@@ -603,7 +604,7 @@ const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()
   const kp = await params();
   check('V range steps', e1[0] === at('11:00') && e1[1] === at('12:00') && l1[0] === at('12:00') && l1[1] === at('13:00') && z1[0] === at('11:30') && z1[1] === at('13:30')
     && Date.parse(k1.get('from')) === at('11:00') && dis.off && !dis.disabledAttr && dis.tab === 0 && dis.described === 'the range already ends now' && dis.title === 'the range already ends now'
-    && zp[2] === '4h' && kp.get('w') === '4h',
+    && zp[2] === '2h' && kp.get('w') === '2h',
     `Earlier ${new Date(e1[0]).toISOString()}-${new Date(e1[1]).toISOString()}; Later ${new Date(l1[0]).toISOString()}-${new Date(l1[1]).toISOString()}; Zoom out ${new Date(z1[0]).toISOString()}-${new Date(z1[1]).toISOString()}; key [ from ${k1.get('from')}; on 1h: Later off ${JSON.stringify(dis)}, Zoom out w=${zp[2]}, key ] w=${kp.get('w')}`);
 }
 
@@ -648,11 +649,15 @@ const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()
     ? ack.door?.user === expectDoor && sum.seat === `demo: changes to the demo's own instances are saved as user ${expectDoor}; nothing reaches a server`
     : !ack.door && sum.seat.startsWith(seatWant) && /actions (on|off)$/.test(sum.seat);
   const noInst = (await fetch(`${base}api/frame/events`)).status;
-  const tooLong = (await fetch(`${base}api/frame/events?instance=1&from=2026-01-01T00:00:00Z&to=2026-02-02T00:00:00Z`)).status;
+  // a window up to a year is read, each part its reach (31 days and an hour), the reply saying what it read; past a
+  // year and an hour it is refused (task RANGE)
+  const tooLong = (await fetch(`${base}api/frame/events?instance=1&from=2025-01-01T00:00:00Z&to=2026-02-02T00:00:00Z`)).status;
+  const cut32 = await fetch(`${base}api/frame/events?instance=1&from=2026-01-01T00:00:00Z&to=2026-02-02T00:00:00Z`);
+  const cutOk = cut32.status === 200 && cut32.headers.get('X-Pgvigil-Read-From') === '2026-01-01T23:00:00Z' && cut32.headers.get('X-Pgvigil-Window-From') === '2026-01-01T00:00:00Z';
   check('X footer', sum.landmark === 'FOOTER' && sum.inst.startsWith(`${inst.rows.length} instances (`) && /^collections: \d+ healthy, /.test(sum.col) && /^repository \d/.test(sum.repo)
     && seatOk && sum.newest.startsWith('newest read ') && sum.refresh === 'auto refresh every 30 s' && perf === 'auto refresh not on this page'
-    && noInst === 400 && tooLong === 400,
-    `${sum.inst} · ${sum.col} · ${sum.repo} · ${sum.seat} (expected: ${expectDoor ? `the door of user ${expectDoor}` : 'a server without a door'}; the ack route: writable ${ack.writable}${ack.door ? `, door user ${ack.door.user}` : ', no door'}) · ${sum.newest} · ${sum.refresh}; Performance: '${perf}'; /api/frame/events without an instance ${noInst}, over 32 days ${tooLong}`);
+    && noInst === 400 && tooLong === 400 && cutOk,
+    `${sum.inst} · ${sum.col} · ${sum.repo} · ${sum.seat} (expected: ${expectDoor ? `the door of user ${expectDoor}` : 'a server without a door'}; the ack route: writable ${ack.writable}${ack.door ? `, door user ${ack.door.user}` : ', no door'}) · ${sum.newest} · ${sum.refresh}; Performance: '${perf}'; /api/frame/events without an instance ${noInst}, over a year ${tooLong}, 32 days ${cut32.status} read from ${cut32.headers.get('X-Pgvigil-Read-From')} of ${cut32.headers.get('X-Pgvigil-Window-From')}`);
 }
 
 // Y. a second y axis and a server limit: erp01's Transactions chart draws three axes, the right one written
