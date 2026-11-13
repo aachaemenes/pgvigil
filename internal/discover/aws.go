@@ -138,7 +138,7 @@ var tagKeyBad = regexp.MustCompile(`[^a-z0-9_.-]+`)
 // ReservedTagKeys are pgvigil's own tag keys on a cloud proposal: never taken from a resource's tags (a resource
 // tag 'region' would otherwise add a second region, and alert rules are scoped by tags).
 var ReservedTagKeys = map[string]bool{"cloud": true, "region": true, "account": true, "subscription": true, "resource-group": true,
-	"project": true, "cluster": true, "role": true, "source-instance": true, "source-cluster": true}
+	"project": true, "cluster": true, "role": true, "source-instance": true, "source-cluster": true, "pool": true}
 
 // TagKey is a cloud tag key as pgvigil writes it: lower-cased, other characters as '-', 40 at most ("" = none).
 func TagKey(k string) string {

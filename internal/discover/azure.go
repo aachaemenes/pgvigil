@@ -44,7 +44,8 @@ type AzureOptions struct {
 
 // azureQuery reads the three types with what the approve needs: the host, the Entra-only flag (an Azure SQL
 // server's or a Managed Instance's administrators.azureADOnlyAuthentication, a flexible server's
-// authConfig.passwordAuth) and a serverless database's auto-pause delay (minutes; -1 = off).
+// authConfig.passwordAuth), a serverless database's auto-pause delay (minutes; -1 = off) and a pooled database's
+// elastic pool (its ARM id: the tag pool:<name> mssql_pool reads, CLOUDSQL C4).
 const azureQuery = `resources
 | where type in~ ('microsoft.sql/servers/databases', 'microsoft.sql/managedinstances', 'microsoft.dbforpostgresql/flexibleservers')
 | where not(type =~ 'microsoft.sql/servers/databases' and name =~ 'master')
@@ -53,7 +54,7 @@ const azureQuery = `resources
 | project id, name, type, kind, location, subscriptionId, resourceGroup, tags, fqdn = iff(type =~ 'microsoft.sql/servers/databases', serverFqdn, tostring(properties.fullyQualifiedDomainName)),
   aadOnly = iff(type =~ 'microsoft.sql/servers/databases', serverAadOnly, tobool(properties.administrators.azureADOnlyAuthentication)),
   passwordAuth = tostring(properties.authConfig.passwordAuth), autoPauseDelay = toint(properties.autoPauseDelay), skuName = tostring(sku.name),
-  databaseId = tostring(properties.databaseId), dnsZone = tostring(properties.dnsZone)
+  databaseId = tostring(properties.databaseId), dnsZone = tostring(properties.dnsZone), elasticPoolId = tostring(properties.elasticPoolId)
 | order by id asc`
 
 // azureSubsQuery reads the subscriptions the identity can see: Resource Graph answers only for those, silently,
@@ -368,10 +369,10 @@ func Azure(ctx context.Context, o AzureOptions) (Read, error) {
 
 // azureRow is one row of azureQuery.
 type azureRow struct {
-	ID, Name, Type, Kind, Location, SubscriptionID, ResourceGroup, FQDN, PasswordAuth, SkuName, DatabaseID, DNSZone string
-	AadOnly                                                                                                         *bool
-	AutoPauseDelay                                                                                                  *int
-	Tags                                                                                                            map[string]string
+	ID, Name, Type, Kind, Location, SubscriptionID, ResourceGroup, FQDN, PasswordAuth, SkuName, DatabaseID, DNSZone, ElasticPoolID string
+	AadOnly                                                                                                                        *bool
+	AutoPauseDelay                                                                                                                 *int
+	Tags                                                                                                                           map[string]string
 }
 
 // azureProposal maps one resource. The key carries the subscription (azure:<sub>:sql:<server>/<database>,
@@ -404,6 +405,9 @@ func azureProposal(x azureRow) (config.Proposal, string) {
 		p.Engine, p.Port, p.DBName, p.DisplayName = config.EngineSQLServer, 1433, x.Name, server+"/"+x.Name
 		if x.DatabaseID != "" { // the database's own GUID: a database made again under the name is a new one
 			p.ResourceID = "databaseId:" + strings.ToLower(x.DatabaseID)
+		}
+		if x.ElasticPoolID != "" { // in an elastic pool: the pool's name, the tag mssql_pool reads (the name compared without case)
+			p.Tags = sortedTags(append(p.Tags, "pool:"+strings.ToLower(path.Base(x.ElasticPoolID)))...)
 		}
 		if strings.Contains(strings.ToLower(x.Kind), "serverless") || strings.HasPrefix(strings.ToUpper(x.SkuName), "GP_S_") {
 			p.Serverless = "Azure SQL Database serverless"

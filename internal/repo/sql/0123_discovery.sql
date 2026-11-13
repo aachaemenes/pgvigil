@@ -92,8 +92,8 @@ BEGIN
     v_why := 'a region is lower-case letters and digits in parts joined by hyphens, 40 characters at most';
   ELSIF v_op = 'edit' AND jsonb_typeof(p_payload->'tag_keys') = 'array'
         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_payload->'tag_keys') k
-                     WHERE k !~ '^[a-z0-9_.-]{1,40}$' OR k IN ('cloud', 'region', 'account', 'subscription', 'resource-group', 'project', 'cluster', 'role', 'source-instance', 'source-cluster', 'tag')) THEN
-    v_why := 'a tag key is 1 to 40 lower-case letters, digits, _ . or -, and not one of pgvigil''s own (cloud, region, account, subscription, resource-group, project, cluster, role, source-instance, source-cluster)';
+                     WHERE k !~ '^[a-z0-9_.-]{1,40}$' OR k IN ('cloud', 'region', 'account', 'subscription', 'resource-group', 'project', 'cluster', 'role', 'source-instance', 'source-cluster', 'pool', 'tag')) THEN
+    v_why := 'a tag key is 1 to 40 lower-case letters, digits, _ . or -, and not one of pgvigil''s own (cloud, region, account, subscription, resource-group, project, cluster, role, source-instance, source-cluster, pool)';
   END IF;
   IF v_why IS NOT NULL THEN
     PERFORM pgvigil.admin_log(v_user, v_cli, 'source ' || coalesce(v_op, '?'), v_name, 'refused', v_why);

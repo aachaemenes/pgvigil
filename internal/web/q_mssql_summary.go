@@ -27,7 +27,7 @@ WITH inst AS (
          ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services']),
          ('qs', ARRAY['mssql_querystore']), ('audit', ARRAY['mssql_audit']),
          ('checkdb', ARRAY['mssql_checks']), ('logspace', ARRAY['mssql_checks']), ('corruption', ARRAY['mssql_checks']),
-         ('alerts', ARRAY['mssql_checks']), ('identity', ARRAY['mssql_identity'])
+         ('alerts', ARRAY['mssql_checks']), ('identity', ARRAY['mssql_identity']), ('elasticpool', ARRAY['mssql_pool'])
 ), runs AS (
   -- the last run of each of the group's collections (collection_dates keeps one row per collection): old = older
   -- than three of its intervals, the rule of the daily check 'collection stale' ($1 the intervals, $2 the age for
@@ -51,7 +51,9 @@ WITH inst AS (
   -- ok = a read young enough; stale = only older reads; failed = no read left, the last run an error; n/a = every
   -- collection of the group is skipped on this kind of server; never = nothing ran yet
   SELECT instance_id, key, read_at, err,
-         CASE WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 THEN 'n/a' ELSE 'never' END AS state
+         -- Elastic Pool Storage where mssql_pool never ran is n/a, not 'not yet': most servers are in no pool, and a
+         -- store from before mssql_pool holds no run of it
+         CASE WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key = 'elasticpool' THEN 'n/a' ELSE 'never' END AS state
     FROM runs
 ), f AS (
   SELECT instance_id, severity, setting, value, detail,
@@ -181,6 +183,23 @@ WITH inst AS (
              min(CASE WHEN d.options->>'last_good_checkdb' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (d.options->>'last_good_checkdb')::timestamptz END) AS oldest
         FROM pgvigil.mssql_database_option d
        WHERE d.instance_id = i.instance_id AND d.is_present AND d.options ? 'last_good_checkdb') cd ON k.key = 'checkdb'
+  UNION ALL
+  -- DBA Dash's Elastic Pool Storage (CLOUDSQL C4; Allen's 2026-11-10 order): the database's pool's newest minute
+  -- against the pool's thresholds, pgvigil.mssql_pool_storage_status (0128: DBA Dash's view
+  -- AzureDBElasticPoolStorageStatus, plus pgvigil's 5-minute stale N/A and 10-minute member rule). A database read in
+  -- no pool has no row there; its state is mssql_pool's (n/a where the collection is skipped). The pool's N/A (no
+  -- minute in 5 minutes, no warning threshold) is 'not read', with its reason.
+  SELECT i.instance_id, 'elasticpool', coalesce(ps.status IN ('OK', 'Warning', 'Critical'), false),
+         coalesce(ps.status = 'Critical', false)::int, coalesce(ps.status = 'Warning', false)::int,
+         CASE WHEN ps.status IN ('OK', 'Warning', 'Critical') THEN trim_scale(round(ps.allocated_storage_percent, 1))::text || ' %' END,
+         CASE WHEN ps.pool IS NULL THEN '{}'::text[]
+              WHEN ps.minute IS NULL OR ps.minute < now() - interval '5 minutes' THEN ARRAY['pool ' || ps.pool || ' on ' || ps.server || ': no minute of the pool read in the last 5 minutes']
+              WHEN ps.warning IS NULL THEN ARRAY['pool ' || ps.pool || ' on ' || ps.server || ': no warning threshold set (pgvigil.mssql_pool_thresholds)']
+              ELSE ARRAY['pool ' || ps.pool || ' on ' || ps.server || ': ' || trim_scale(round(ps.allocated_storage_percent, 1)) || ' % of its maximum data size allocated at '
+                         || to_char(ps.minute AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC (warning over ' || trim_scale(ps.warning * 100) || ' %'
+                         || coalesce(', critical over ' || trim_scale(ps.critical * 100) || ' %', '') || ')'] END,
+         ps.minute
+    FROM inst i LEFT JOIN LATERAL pgvigil.mssql_pool_storage_status(i.instance_id) ps ON true
 )
 SELECT c.instance_id, c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
        c.value, c.detail, st.read_at, st.err, c.since

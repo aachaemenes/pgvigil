@@ -125,3 +125,43 @@ func TestPoolOnAStore(t *testing.T) {
 		t.Errorf("a member last read 16 minutes before: %d status rows, %v; want none", left, err)
 	}
 }
+
+// TestPoolMinutePurgedOnAStore (CLOUDSQL C4's wiring 2): on a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without
+// it) purge() drops a mssql_pool_minute partition older than its days, as every monthly parent of 0190's list (before
+// the wiring the parent was not in the list and its partitions were never dropped). A partition two years old and
+// purge(365) leave every other test's recent rows alone.
+func TestPoolMinutePurgedOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	old := time.Now().UTC().AddDate(-2, 0, 0)
+	part := "mssql_pool_minute_" + old.Format("200601")
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.ensure_month_partition('mssql_pool_minute', $1)`, old); err != nil {
+		t.Fatal(err)
+	}
+	exists := func() bool {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace WHERE ns.nspname = 'pgvigil' AND c.relname = $1`, part).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	if !exists() {
+		t.Fatalf("%s was not made", part)
+	}
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.purge(365)`); err != nil {
+		t.Fatal(err)
+	}
+	if exists() {
+		t.Fatalf("purge(365) left %s (two years old): mssql_pool_minute is not among purge()'s monthly parents", part)
+	}
+}

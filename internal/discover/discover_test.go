@@ -460,7 +460,7 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 					t.Errorf("the subscriptions were not sent: %v", body["subscriptions"])
 				}
 				_, _ = io.WriteString(w, `{"data":[
- {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/appdb","name":"appdb","type":"microsoft.sql/servers/databases","kind":"v12.0,user","aadOnly":true,"location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","tags":{"Team":"billing"},"fqdn":"sqlsrv.database.windows.net"},
+ {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/appdb","name":"appdb","type":"microsoft.sql/servers/databases","kind":"v12.0,user","aadOnly":true,"location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","tags":{"Team":"billing","Pool":"fake"},"elasticPoolId":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/elasticPools/Pool-A","fqdn":"sqlsrv.database.windows.net"},
  {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/otherdb","name":"otherdb","type":"microsoft.sql/servers/databases","kind":"v12.0,user,vcore,serverless","autoPauseDelay":60,"skuName":"GP_S_Gen5_1","location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","fqdn":"sqlsrv.database.windows.net"},
  {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/dw1","name":"dw1","type":"microsoft.sql/servers/databases","kind":"v12.0,user,datawarehouse,gen2","location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","fqdn":"sqlsrv.database.windows.net"},
  {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.DBforPostgreSQL/flexibleServers/pgf","name":"pgf","type":"microsoft.dbforpostgresql/flexibleservers","passwordAuth":"Disabled","location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","tags":null,"fqdn":"pgf.postgres.database.azure.com"}],
@@ -507,6 +507,14 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 	}
 	if got := strings.Join(TagsWith(db, []string{"team"}), " "); !strings.Contains(got, "team:billing") {
 		t.Fatalf("an allowed key: %s", got)
+	}
+	// a pooled database: pgvigil's own tag pool:<the pool's name> from its elasticPoolId (CLOUDSQL C4); a resource tag
+	// 'Pool' never adds a second one (pool is reserved); a database in no pool has none
+	if got := strings.Join(TagsWith(db, []string{"team", "pool"}), " "); strings.Count(got, "pool:") != 1 || !strings.Contains(got, "pool:pool-a") {
+		t.Fatalf("the pooled database's tags: %s", got)
+	}
+	if got := strings.Join(byKey[pre+"sql:sqlsrv/otherdb"].Tags, " "); strings.Contains(got, "pool:") {
+		t.Fatalf("a database in no pool: %s", got)
 	}
 	// the Entra-only flags and a serverless database's auto-pause
 	if !db.EntraOnly || !strings.Contains(db.Note, "Entra-only") {

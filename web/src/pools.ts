@@ -11,6 +11,13 @@ const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const gb = (v: unknown) => v == null ? '' : fmtNum(v) + ' GB';
 const tone: Record<string, string> = { OK: 'ok', Warning: 'warn', Critical: 'crit', 'N/A': '' };
 
+// hasPool: whether the database is in a pool now (mssql_pool_storage_status names its pool: read within 10 minutes);
+// the instance's Elastic pool tab is shown only then, as the Availability tab is only where it has a read
+export async function hasPool(instance: number): Promise<boolean> {
+  const d = await get<Pick<Parts, 'status'>>('mssql/pool', { instance, part: 'status' });
+  return rowsOf(d.status).some(r => r.pool != null);
+}
+
 export async function mssqlPoolView(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<Parts>('mssql/pool', { instance: ctx.instance, ...window_(ctx) });
   const status = rowsOf(d.status)[0], summary = rowsOf(d.summary)[0], members = rowsOf(d.members), minutes = rowsOf(d.minutes);

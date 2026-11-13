@@ -19,7 +19,7 @@
 -- OK at 0.8), else a NULL WARNING threshold N/A, else OK (DBA Dash's view line for line: a NULL critical threshold or
 -- percentage compares as false); pgvigil's own: N/A when the pool has no minute in the last 5 minutes, and no row
 -- at all for a database not read in a pool for over 10 minutes (it left the pool: its member row stays behind).
--- The partition parent for purge() (the join adds it): mssql_pool_minute.
+-- The partition parent for purge(): mssql_pool_minute (in 0190's list).
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_pool_minute (
   server                      text NOT NULL,     -- the logical server (@@SERVERNAME)
