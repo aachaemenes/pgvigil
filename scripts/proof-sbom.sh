@@ -10,8 +10,9 @@
 # component is github.com/aachaemenes/pgvigil with the build constraints GOOS / GOARCH / CGO_ENABLED as
 # properties; every module of a package `go list -deps` reports for ./cmd/pgvigil (the standard library aside) is a
 # component with a pkg:golang purl and a version; no component is without a purl; a dependency graph is
-# present; the licence evidence covers the modules (MIT, Apache-2.0 and BSD-3-Clause are the three in
-# use today: docs/notices.md).
+# present; the licence evidence covers the modules, every licence is one of MIT, Apache-2.0, BSD-3-Clause and
+# MPL-2.0 (a new one is the lead's word, never a silent addition), and each MPL-2.0 module has its source line in
+# docs/notices.md (MPL-2.0 section 3.2(a): the module, its exact version, its source archive's URL).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
@@ -36,7 +37,7 @@ for f in bom-1.6.schema.json spdx.schema.json jsf-0.82.schema.json; do curl -fsS
 
 echo "== content against go list"
 (cd "$SRC" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go list -deps -f '{{if .Module}}{{if not .Module.Main}}{{.Module.Path}}@{{.Module.Version}}{{end}}{{end}}' ./cmd/pgvigil | grep -v '^$' | sort -u > "$WORK/modules.txt")
-python3 - "$WORK/sbom.cdx.json" "$WORK/modules.txt" <<'PY' || fail "content check"
+python3 - "$WORK/sbom.cdx.json" "$WORK/modules.txt" "$SRC/docs/notices.md" <<'PY' || fail "content check"
 import json, sys
 d = json.load(open(sys.argv[1])); mods = [l.strip() for l in open(sys.argv[2]) if l.strip()]
 assert d.get("bomFormat") == "CycloneDX", d.get("bomFormat")
@@ -56,6 +57,17 @@ assert not missing, "modules go list names but the SBOM lacks: %s" % missing
 assert d.get("dependencies"), "no dependency graph"
 lic = sum(1 for c in comps if c.get("licenses") or (c.get("evidence") or {}).get("licenses"))
 ids = sorted({l.get("license", {}).get("id") or l.get("license", {}).get("name") or l.get("expression") for c in comps for l in ((c.get("evidence") or {}).get("licenses") or c.get("licenses") or [])} - {None})
+allowed = {"MIT", "Apache-2.0", "BSD-3-Clause", "MPL-2.0"}
+outside = [i for i in ids if i not in allowed]
+assert not outside, "licences outside MIT, Apache-2.0, BSD-3-Clause and MPL-2.0 (a new one is the lead's word): %s" % outside
+notices = open(sys.argv[3]).read()
+def lics(c):
+    return {l.get("license", {}).get("id") or l.get("license", {}).get("name") or l.get("expression") for l in ((c.get("evidence") or {}).get("licenses") or c.get("licenses") or [])}
+mpl = [c for c in comps if "MPL-2.0" in lics(c)]
+nosrc = [c["name"] + "@" + c.get("version", "") for c in mpl
+         if "`%s@%s`" % (c["name"], c.get("version", "")) not in notices or "/@v/%s.zip" % c.get("version", "") not in notices]
+assert not nosrc, "MPL-2.0 modules without their source line in docs/notices.md: %s" % nosrc
+print("   %d MPL-2.0 module(s), each with its source line in docs/notices.md" % len(mpl))
 print("   main %s %s; %d components, %d with licence evidence (%s); %d go modules all present; %d dependency entries" % (main["name"], main.get("version"), len(comps), lic, ", ".join(ids), len(mods), len(d["dependencies"])))
 PY
 cp "$WORK/sbom.cdx.json" "${PGVIGIL_SBOM_OUT:-/dev/null}" 2>/dev/null || true

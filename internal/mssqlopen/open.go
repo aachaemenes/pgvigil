@@ -22,6 +22,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -51,7 +52,8 @@ func Open(dsn string) (*sql.DB, error) {
 	return sql.OpenDB(c), nil
 }
 
-// connector is the federated-authentication connector a string with fedauth needs, nil for any other string.
+// connector is the federated-authentication connector a string with fedauth needs, the Kerberos one an old auth
+// windows string needs off Windows, nil for any other string.
 func connector(dsn string) (driver.Connector, error) {
 	cfg, err := msdsn.Parse(dsn)
 	if err != nil {
@@ -59,6 +61,14 @@ func connector(dsn string) (driver.Connector, error) {
 	}
 	fa := strings.TrimSpace(cfg.Parameters["fedauth"])
 	if fa == "" {
+		if kerberosByDefault(cfg, runtime.GOOS) {
+			// a string with no login, no password and no sign-in named: auth windows as written before Kerberos was
+			// added off Windows (a page row edited only in its tags keeps its old file). go-mssqldb's default there
+			// is NTLM, which without DOMAIN\user falls back to a SQL login with an empty user name and always
+			// fails; Kerberos is what auth windows means off Windows now.
+			cfg.Parameters["authenticator"] = "krb5"
+			return mssql.NewConnectorConfig(cfg), nil
+		}
 		return nil, nil
 	}
 	workflow, provide, err := tokenProvider(cfg, fa)
@@ -66,6 +76,27 @@ func connector(dsn string) (driver.Connector, error) {
 		return nil, err
 	}
 	return mssql.NewActiveDirectoryTokenConnector(cfg, workflow, provide)
+}
+
+// kerberosByDefault says whether a string off Windows names no sign-in at all (see connector).
+func kerberosByDefault(cfg msdsn.Config, goos string) bool {
+	_, named := cfg.Parameters["authenticator"]
+	return goos != "windows" && !named && strings.TrimSpace(cfg.User) == "" && cfg.Password == ""
+}
+
+// tokenAudiences are the Azure SQL resources a token may be asked for: the server names the audience in its login
+// answer, and a token for any other resource (Key Vault, ARM) must never go to a SQL endpoint.
+var tokenAudiences = []string{"https://database.windows.net", "https://database.usgovcloudapi.net", "https://database.chinacloudapi.cn"}
+
+// sqlAudience says whether the server's SPN is an Azure SQL resource (with or without a closing '/' or '/.default').
+func sqlAudience(spn string) bool {
+	a := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(spn), "/.default"), "/")
+	for _, ok := range tokenAudiences {
+		if strings.EqualFold(a, ok) {
+			return true
+		}
+	}
+	return false
 }
 
 // identity names one Entra identity; its credential is made once per process and kept.
@@ -120,6 +151,9 @@ func tokenProvider(cfg msdsn.Config, fedauth string) (byte, func(ctx context.Con
 		return 0, nil, fmt.Errorf("fedauth %s is not one pgvigil opens: %s (auth entra) or %s (auth entra-identity)", fedauth, ServicePrincipal, ManagedIdentity)
 	}
 	provide := func(ctx context.Context, serverSPN, stsURL string) (string, error) {
+		if !sqlAudience(serverSPN) {
+			return "", fmt.Errorf("the server asked for a token for %q, which is not an Azure SQL resource (%s): refused", serverSPN, strings.Join(tokenAudiences, ", "))
+		}
 		key := id
 		if key.flow == ServicePrincipal && key.tenant == "" {
 			// the server names its tenant in the STS URL (https://login.microsoftonline.com/<tenant>); only the tenant
@@ -137,6 +171,7 @@ func tokenProvider(cfg msdsn.Config, fedauth string) (byte, func(ctx context.Con
 		}
 		tok, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{scope}})
 		if err != nil {
+			forget(key) // a tenant the server named that the identity is not in: not kept (the map stays bounded)
 			return "", err
 		}
 		return tok.Token, nil
@@ -157,6 +192,13 @@ func credentialFor(key identity, secret string) (azcore.TokenCredential, error) 
 	}
 	creds[key] = c
 	return c, nil
+}
+
+// forget drops an identity's credential (its token request failed).
+func forget(key identity) {
+	credMu.Lock()
+	delete(creds, key)
+	credMu.Unlock()
 }
 
 // makeCredential is azidentity's credential for an identity.

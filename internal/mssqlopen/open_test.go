@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -234,7 +235,8 @@ func TestDocumentedStrings(t *testing.T) {
 		{"`server=<host>;user id=<principal>;authenticator=krb5;krb5-keytabfile=/etc/pgvigil/pgvigil.keytab;krb5-configfile=/etc/krb5.conf;encrypt=true`",
 			"server=sql01;user id=pgvigil-gmsa$@CORP.EXAMPLE.COM;authenticator=krb5;krb5-keytabfile=/etc/pgvigil/pgvigil.keytab;krb5-configfile=/etc/krb5.conf;encrypt=true",
 			"pgvigil-gmsa$@CORP.EXAMPLE.COM", "krb5", false},
-		{"`sqlserver://<host>?encrypt=true`", "sqlserver://sql01?encrypt=true", "", "", false},
+		// the Windows collector's form: SSPI there; run off Windows it opens with Kerberos (TestOldWindowsStringsAskKerberos)
+		{"`sqlserver://<host>?encrypt=true`", "sqlserver://sql01?encrypt=true", "", "", runtime.GOOS != "windows"},
 	} {
 		if !strings.Contains(string(doc), c.shown) {
 			t.Errorf("docs/sqlserver-cloud.md no longer shows %s", c.shown)
@@ -250,8 +252,79 @@ func TestDocumentedStrings(t *testing.T) {
 			t.Errorf("%s: %v", c.filled, err)
 			continue
 		}
-		if cfg.User != c.user || cfg.Password != "" || cfg.Parameters["authenticator"] != c.auth || (got != nil) != c.fed {
+		if cfg.User != c.user || cfg.Password != "" || cfg.Parameters["authenticator"] != c.auth || (got != nil) != c.fed { // fed: a connector of this package (Entra, or Kerberos by default)
 			t.Errorf("%s: user %q password set %v authenticator %q federated %v", c.filled, cfg.User, cfg.Password != "", cfg.Parameters["authenticator"], got != nil)
+		}
+	}
+}
+
+// The token's audience is an Azure SQL resource or nothing: a server naming Key Vault or ARM gets no token.
+func TestTokenAudience(t *testing.T) {
+	for spn, ok := range map[string]bool{
+		"https://database.windows.net/": true, "https://database.windows.net": true, "https://database.windows.net/.default": true,
+		"https://database.usgovcloudapi.net/": true, "https://database.chinacloudapi.cn/": true,
+		"https://vault.azure.net": false, "https://management.azure.com/": false, "https://database.windows.net.evil.example/": false, "": false,
+	} {
+		if sqlAudience(spn) != ok {
+			t.Errorf("%q: allowed %v, want %v", spn, !ok, ok)
+		}
+	}
+	resetCredentials(t)
+	var asked atomic.Int32
+	newCredential = func(identity, string) (azcore.TokenCredential, error) { return fakeCred{&asked}, nil }
+	cfg, _ := msdsn.Parse("sqlserver://h?fedauth=ActiveDirectoryManagedIdentity")
+	_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provide(context.Background(), "https://vault.azure.net", "https://login.microsoftonline.com/t"); err == nil || asked.Load() != 0 {
+		t.Fatalf("a Key Vault audience: err %v, token requests %d; want a refusal and none", err, asked.Load())
+	}
+}
+
+// A failed token request drops its credential: a server naming a new tenant at each connect cannot grow the map.
+func TestFailedCredentialForgotten(t *testing.T) {
+	resetCredentials(t)
+	newCredential = func(identity, string) (azcore.TokenCredential, error) { return failCred{}, nil }
+	cfg, _ := msdsn.Parse("sqlserver://app:s@h?fedauth=ActiveDirectoryServicePrincipal")
+	_, provide, _ := tokenProvider(cfg, cfg.Parameters["fedauth"])
+	for i := range 5 {
+		_, _ = provide(context.Background(), "https://database.windows.net/", fmt.Sprintf("https://login.microsoftonline.com/tenant-%d", i))
+	}
+	credMu.Lock()
+	n := len(creds)
+	credMu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d credentials kept after 5 failed token requests, want 0", n)
+	}
+}
+
+type failCred struct{}
+
+func (failCred) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	return azcore.AccessToken{}, errors.New("no such tenant")
+}
+
+// Off Windows, a string that names no login, no password and no sign-in (auth windows as saved before Kerberos) opens
+// with Kerberos; a SQL login, a Windows-only form or an explicit authenticator is left as written.
+func TestOldWindowsStringsAskKerberos(t *testing.T) {
+	for dsn, want := range map[string]bool{
+		"sqlserver://sql01?encrypt=true":                         true,
+		"server=sql01;encrypt=true":                              true,
+		"sqlserver://mon:pw@sql01?encrypt=true":                  false,
+		"sqlserver://svc%40R@sql01?authenticator=krb5":           false,
+		"sqlserver://sql01?authenticator=ntlm":                   false,
+		"server=sql01;user id=CORP\\svc;password=x;encrypt=true": false,
+	} {
+		cfg, err := msdsn.Parse(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := kerberosByDefault(cfg, "linux"); got != want {
+			t.Errorf("linux %s: Kerberos by default %v, want %v", dsn, got, want)
+		}
+		if kerberosByDefault(cfg, "windows") {
+			t.Errorf("windows %s: Kerberos by default (SSPI is Windows' own)", dsn)
 		}
 	}
 }

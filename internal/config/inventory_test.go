@@ -361,6 +361,8 @@ func TestBuildDSNSignIns(t *testing.T) {
 		{"linux windows, a keytab and its principal", "linux", Conn{Auth: "windows", Host: "sql01", Login: "pgvigil-gmsa$@CORP.EXAMPLE.COM", Extra: keytab},
 			"pgvigil-gmsa$@CORP.EXAMPLE.COM", "krb5", "", ""},
 		{"linux windows, a keytab without its principal", "linux", Conn{Auth: "windows", Host: "sql01", Extra: keytab}, "", "", "", "principal"},
+		{"linux windows, a credential cache with a login", "linux", Conn{Auth: "windows", Host: "sql01", Login: "svc@R", Extra: "krb5-credcachefile=/run/pgvigil/krb5cc"}, "", "", "", "leave the login empty"},
+		{"linux windows, a credential cache", "linux", Conn{Auth: "windows", Host: "sql01", Extra: "krb5-credcachefile=/run/pgvigil/krb5cc"}, "", "krb5", "", ""},
 		{"linux windows, a password", "linux", Conn{Auth: "windows", Host: "sql01", Login: "u@R", Password: "x"}, "", "", "", "no password"},
 		{"linux windows, NTLM asked in the options", "linux", Conn{Auth: "windows", Host: "sql01", Extra: "authenticator=ntlm"}, "", "", "", "only krb5"},
 		{"windows windows, the service's own account", "windows", Conn{Auth: "windows", Host: "sql01", Login: "ignored"}, "", "", "", ""},

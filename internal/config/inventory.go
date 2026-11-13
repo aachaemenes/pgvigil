@@ -300,7 +300,8 @@ type Conn struct {
 //   - sqlserver, auth windows: no password. On Windows the service's own account (SSPI: the gMSA the service runs
 //     as); the login is not used there. Elsewhere Kerberos (authenticator=krb5): a keytab or a credential cache,
 //     named in the options (krb5-keytabfile, krb5-credcachefile, krb5-configfile, krb5-realm) or by KRB5_KTNAME /
-//     KRB5CCNAME, with the login = the principal (user@REALM, or the gMSA's name$), required with a keytab. Never
+//     KRB5CCNAME, with the login = the principal (user@REALM, or the gMSA's name$), required with a keytab and left
+//     empty with a credential cache (the cache names it; with a login go-mssqldb looks for a keytab first). Never
 //     NTLM: go-mssqldb's NTLM, given no DOMAIN\user, falls back to a SQL login with an empty user name.
 //   - sqlserver, auth entra: fedauth=ActiveDirectoryServicePrincipal (login = the application id[@tenant], password =
 //     its secret)
@@ -389,9 +390,14 @@ func BuildDSN(c Conn) (string, error) {
 		}
 		if c.Auth == "windows" && q.Get("authenticator") == "krb5" {
 			// Kerberos names its principal; a keytab cannot be used without it (go-mssqldb integratedauth/krb5)
-			if c.Login != "" {
+			switch {
+			case c.Login != "" && q.Get("krb5-credcachefile") != "":
+				// with a login and no password go-mssqldb looks for a keytab first (KRB5_KTNAME, the default one,
+				// /etc/krb5.keytab on a domain-joined host) and never reaches the cache: the cache names its principal
+				return "", errors.New("a Kerberos credential cache names its own principal: leave the login empty")
+			case c.Login != "":
 				u.User = url.User(c.Login)
-			} else if q.Get("krb5-keytabfile") != "" {
+			case q.Get("krb5-keytabfile") != "":
 				return "", errors.New("a Kerberos keytab needs its principal: the login is user@REALM (or the gMSA's name$)")
 			}
 		}
