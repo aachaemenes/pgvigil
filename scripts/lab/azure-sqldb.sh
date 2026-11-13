@@ -25,6 +25,8 @@
 #                                entra-identity sign-in; Azure's retail prices, westus3, read 2026-11-13: the Basic
 #                                50 eDTU pool USD 2.42 a day (its databases inside it), the VM USD 0.0094 / h, its
 #                                Standard IPv4 USD 0.005 / h, its 30 GB Standard SSD OS disk (E4) USD 2.40 a month)
+#   PGVIGIL_LAB_AZ_VM_SIZE       (tier pool) the VM's size, default Standard_B2ats_v2; up refuses a size whose family
+#                                quota in the region (or the region's cores) has no room for it, before anything is made
 #   PGVIGIL_LAB_DIR              the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE         the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
 #   AZ                           the Azure CLI, default az on the PATH
@@ -52,7 +54,7 @@ STATE=$DIR/azure-sqldb.env
 SQLCMD_IMAGE=${PGVIGIL_SQLCMD_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 AZ=${AZ:-az}
 TIER=${PGVIGIL_LAB_AZ_TIER:-free}
-VM_SIZE=Standard_B2ats_v2
+VM_SIZE=${PGVIGIL_LAB_AZ_VM_SIZE:-Standard_B2ats_v2}
 CMD=${1:-}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need_az() {
@@ -93,6 +95,15 @@ up)
     [ "$(az_ vm list-skus -l "$PGVIGIL_LAB_AZ_REGION" --size "$VM_SIZE" --query "length([?name=='$VM_SIZE'])" -o tsv)" = 1 ] || fail "the region $PGVIGIL_LAB_AZ_REGION offers no $VM_SIZE"
     R=$(az_ vm list-skus -l "$PGVIGIL_LAB_AZ_REGION" --size "$VM_SIZE" --query "[?name=='$VM_SIZE'] | [0].restrictions[].reasonCode" -o tsv)
     [ -z "$R" ] || fail "the region $PGVIGIL_LAB_AZ_REGION restricts $VM_SIZE for this subscription: $R"
+    # a size without restrictions can still have a family quota of 0 (QuotaExceeded at the VM's create, after the
+    # server and the pool were made): the family's and the region's free cores are read before anything is made
+    read -r FAM NEED < <(az_ vm list-skus -l "$PGVIGIL_LAB_AZ_REGION" --size "$VM_SIZE" --query "[?name=='$VM_SIZE'] | [0].[[family, capabilities[?name=='vCPUs'].value | [0]]]" -o tsv)
+    [ -n "${FAM:-}" ] && [[ ${NEED:-} =~ ^[0-9]+$ ]] || fail "the family and vCPUs of $VM_SIZE were not read"
+    for q in "$FAM" cores; do
+      read -r USED LIMIT < <(az_ vm list-usage -l "$PGVIGIL_LAB_AZ_REGION" --query "[?name.value=='$q'] | [0].[[currentValue, limit]]" -o tsv)
+      [[ ${USED:-} =~ ^[0-9]+$ && ${LIMIT:-} =~ ^[0-9]+$ ]] || fail "the quota $q in $PGVIGIL_LAB_AZ_REGION was not read"
+      [ $((LIMIT - USED)) -ge "$NEED" ] || fail "the quota $q in $PGVIGIL_LAB_AZ_REGION has $((LIMIT - USED)) of $LIMIT cores free, $VM_SIZE needs $NEED: nothing made (a quota request, or another PGVIGIL_LAB_AZ_VM_SIZE)"
+    done
   fi
   mkdir -p "$DIR"; chmod 700 "$DIR"; printf '*\n' > "$DIR/.gitignore"   # the folder ignores itself on any clone
   SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')

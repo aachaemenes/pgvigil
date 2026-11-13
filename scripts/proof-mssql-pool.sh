@@ -49,7 +49,8 @@ for t in go psql ssh scp jq; do command -v "$t" >/dev/null || fail "$t is not on
 [ "${AZ_TIER:-}" = pool ] || fail "$STATE is not the pool tier's"
 umask 077
 WORK=$(mktemp -d); N=$RANDOM; STORE="pgvigil_poolproof_$N"
-VMS=(ssh -i "$VM_KEY" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$WORK/known_hosts" -o ConnectTimeout=20 "$VM_ADMIN@$VM_IP")
+# the VM's ssh (part E and its cleanup only): a lab without a VM, run with PGVIGIL_SKIP_VM=1, has none of these
+VMS=(ssh -i "${VM_KEY:-}" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$WORK/known_hosts" -o ConnectTimeout=20 "${VM_ADMIN:-}@${VM_IP:-}")
 cleanup() {
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $STORE with (force)" >/dev/null 2>&1 || true
   [ "${PGVIGIL_SKIP_VM:-}" = 1 ] || "${VMS[@]}" 'rm -rf ~/pgvproof; sudo -u postgres dropdb --if-exists pgvproof; sudo -u postgres dropuser --if-exists pgv' >/dev/null 2>&1 || true
