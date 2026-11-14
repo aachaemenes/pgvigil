@@ -3,7 +3,8 @@
 // the instance and database links landing on the tab with the row first, and the views of one engine or one instance.
 //   node scripts/fleet-mssql-check.mjs <cdp port> <base url/>
 //   FM_S1 / FM_S3 the demo's sql01 / sql03 instance_id; FM_NULDB sql01's database with a backup to NUL; FM_PROBLEMS /
-//   FM_ALL the hand counts of the databases under Problems and of all; FM_INSTS '<active instances>|<SQL Server ones>'
+//   FM_ALL the hand counts of the databases under Problems and of all; FM_INSTS '<active instances>|<SQL Server ones>';
+//   FM_SJ / FM_PJ the seeded jobs' names; FM_JALL / FM_JPROB every job / the problem rows
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base] = process.argv.slice(2);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -61,7 +62,7 @@ try {
     await ev(`(() => { const p = document.querySelector('#mssql-backups-fleet-filter'); p.value = 'all'; p.dispatchEvent(new Event('change')); return 1; })()`);
     await sleep(2500);
     const b2a = await ev(state);
-    check('B2 all', b2a.said === `${all} of ${all} databases` && b2a.dbs.length === all, `'${b2a.said}', ${b2a.dbs.length} rows (want ${all})`);
+    check('B2 all', !!b2a && b2a.said === `${all} of ${all} databases` && b2a.dbs.length === all, b2a ? `'${b2a.said}', ${b2a.dbs.length} rows (want ${all})` : 'the section went away');
   } else check('B2 all', false, 'no section');
 
   // B3. the links
@@ -90,9 +91,10 @@ try {
   const sales = await ev(state);
   await go('#/backups?tag=ledger&w=1h');
   const ledger = await ev(state);
-  check('B4 views', erp?.empty === 'No SQL Server instance in this view.' && sales?.pgEmpty.includes('No PostgreSQL instance in this view.') && sales?.inst.length === 2
+  const salesPg = sales ? sales.h2s.filter(h => h === 'Base backups (pgBackRest, barman)') : [];
+  check('B4 views', erp?.empty === 'No SQL Server instance in this view.' && sales?.pgEmpty.includes('No PostgreSQL instance in this view.') && salesPg.length === 0 && sales?.inst.length === 2
     && ledger?.filter === 'all' && ledger?.inst.length === 1 && ledger.inst[0][ledger.inst[0].length - 1] === 'mssql_backups has not run on this server yet' && ledger.dbs.length === 0,
-    `erp '${erp?.empty ?? 'no section'}'; sales ${JSON.stringify(sales?.pgEmpty)} with ${sales?.inst.length} instance rows; ledger filter ${ledger?.filter}, `
+    `erp '${erp?.empty ?? 'no section'}'; sales ${JSON.stringify(sales?.pgEmpty)}, PostgreSQL's Base backups ${salesPg.length ? 'DRAWN' : 'not drawn'}, ${sales?.inst.length} instance rows; ledger filter ${ledger?.filter}, `
       + `${ledger?.inst.length} instance row(s) ${JSON.stringify(ledger?.inst.map(r => r[r.length - 1]))}, ${ledger?.dbs.length} databases (sql03 = ${s3})`);
 
   // J2-J4. the fleet Jobs page
@@ -104,7 +106,7 @@ try {
     const heads = tb ? [...tb.querySelectorAll(':scope > thead > tr:first-child > th')].map(th => th.textContent.trim()) : [];
     const rows = tb ? [...tb.querySelectorAll(':scope > tbody > tr')].filter(tr => !tr.classList.contains('trend-row')) : [];
     const col = n => heads.findIndex(h => h.startsWith(n));
-    return { h3s, filter: s.querySelector('#job-status-filter')?.value, said: s.querySelector('#job-status-count')?.textContent,
+    return { h3s, filter: s.querySelector('#job-status-filter')?.value, said: s.querySelector('#job-status-count')?.textContent, ok7col: col('succeeded 7 days'),
              jobs: rows.map(tr => tr.cells[col('job')]?.textContent ?? ''), ok7: rows.map(tr => tr.cells[col('succeeded 7 days')]?.textContent ?? '') }; })()`;
   await go('#/jobs?w=1h');
   const j2 = await ev(jstate);
@@ -115,18 +117,40 @@ try {
   if (j2) {
     await sleep(4000);
     const j3 = await ev(jstate);
-    const bad = j3.ok7.filter(t => t === 'reading...' || t.startsWith('not read'));
-    check('J3 stats', j3.ok7.length > 0 && bad.length === 0, `${j3.ok7.length} 'succeeded 7 days' cells, ${bad.length} not filled ${JSON.stringify(bad.slice(0, 2))}`);
+    const bad = j3 ? j3.ok7.filter(t => !/^\d[\d,]*$/.test(t)) : [];
+    const seeded = j3 ? [j3.ok7[j3.jobs.indexOf(sj)], j3.ok7[j3.jobs.indexOf(pj)]] : [];
+    check('J3 stats', !!j3 && j3.ok7col >= 0 && j3.ok7.length > 0 && bad.length === 0 && seeded[0] === '1' && seeded[1] === '1',
+      j3 ? `the column at ${j3.ok7col}; ${j3.ok7.length} 'succeeded 7 days' cells, ${bad.length} not a number ${JSON.stringify(bad.slice(0, 2))}; the seeded two ${JSON.stringify(seeded)} (want ["1","1"]: one success each in 7 days)` : 'the section went away');
     await ev(`(() => { const p = document.querySelector('#job-status-filter'); p.value = 'all'; p.dispatchEvent(new Event('change')); return 1; })()`);
     await sleep(500);
     const ja = await ev(jstate);
-    await ev(`[...document.querySelectorAll('#job-status-grid button')].find(b => b.textContent === ${JSON.stringify(sj)}).click(); 1`);
+    const clicked = await ev(`(() => { const b = [...document.querySelectorAll('#job-status-grid button')].find(b => b.textContent === ${JSON.stringify(sj)}); b?.click(); return !!b; })()`);
     await sleep(3000);
     const j4 = await ev(`(() => { const h = document.querySelector('#job-status-history'); return { head: h?.querySelector('h3')?.textContent ?? '',
-      runs: [...(h?.querySelectorAll('table.grid > tbody > tr') ?? [])].length }; })()`);
-    check('J2 all', ja.said === `${jall} of ${jall} jobs` && ja.jobs.length === jall, `'${ja.said}', ${ja.jobs.length} rows`);
-    check('J4 history', j4.head === `demo-onprem-sql01 | ${sj}` && j4.runs === 2, `'${j4.head}', ${j4.runs} run row(s)`);
+      runs: [...(h?.querySelectorAll('table.grid > tbody > tr') ?? [])].length, open: h?.querySelector('a')?.getAttribute('href') ?? '' }; })()`);
+    // the page's rows in the order the API gives at this moment (DBA Dash's; J1 checks the API's order by its rule)
+    const live = await (await fetch(base + 'api/jobsreport?part=status')).json();
+    const jorder = live.status.rows.map(r => r[live.status.columns.indexOf('job_name')]);
+    const inOrder = !!ja && JSON.stringify(ja.jobs) === JSON.stringify(jorder);
+    check('J2 all', !!ja && ja.said === `${jall} of ${jall} jobs` && ja.jobs.length === jall && inOrder,
+      ja ? `'${ja.said}', ${ja.jobs.length} rows, in the API's order ${inOrder}${inOrder ? '' : ` (page ${JSON.stringify(ja.jobs.slice(0, 4))} vs API ${JSON.stringify(jorder.slice(0, 4))})`}` : 'the section went away');
+    // SF4: 'Open the job on its instance' = the instance's Agent jobs tab with the job picked (job=<name>), its history open
+    const oq = new URLSearchParams(j4.open.split('?')[1] ?? '');
+    let tabHead = '';
+    if (j4.open.startsWith('#/mssqljobs?')) {
+      await go(j4.open);
+      tabHead = await ev(`[...document.querySelectorAll('main .jobdetail h3')].map(h => h.textContent).find(t => t.startsWith(${JSON.stringify(sj + ': history')})) ?? ''`);
+    }
+    check('J4 history', clicked && j4.head === `demo-onprem-sql01 | ${sj}` && j4.runs === 2 && oq.get('i') === s1 && oq.get('job') === sj && tabHead !== '',
+      clicked ? `'${j4.head}', ${j4.runs} run row(s); its link '${j4.open}' -> the tab's picked history '${tabHead}'` : `no button '${sj}' in the grid`);
   } else { check('J3 stats', false, 'no section'); check('J2 all', false, 'no section'); check('J4 history', false, 'no section'); }
+
+  // S1. the fleet Summary's Agent Jobs link of sql01 lands on a page that names the seeded job
+  await go('#/summary?w=1h');
+  const sl = await ev(`[...document.querySelectorAll('main a')].map(a => a.getAttribute('href') ?? '').find(h => h.startsWith('#/mssqljobs?') && new URLSearchParams(h.split('?')[1]).get('i') === ${JSON.stringify(s1)}) ?? ''`);
+  let landed = '';
+  if (sl) { await go(sl); landed = await ev(`document.querySelector('main')?.textContent ?? ''`); }
+  check('S1 link', !!sl && landed.includes(sj), sl ? `'${sl}' -> the page names '${sj}': ${landed.includes(sj)}` : `no #/mssqljobs link of sql01 (${s1}) on the Summary`);
 } catch (e) {
   console.log(`FAIL check stopped: ${e.message}`);
   process.exit(2);

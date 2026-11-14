@@ -6,9 +6,15 @@
 # Needs go, psql, chromium, node, npm (web/node_modules installed), curl and python3, and a PostgreSQL for the database:
 #   PGVIGIL_ADMIN_DSN   keyword-form connection to a cluster as a login that may create a database
 #   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 900)
-# The wiring: a tree whose main.ts already names mssqlBackupsFleetSection is used as it is; a tree whose mssql_backups.ts
-# exports it gets scripts/fleet-mssql-wiring.patch applied and the bundle built again for the run (both put back on
-# exit); a tree without it (the base) runs unwired and its rows fail.
+# The wiring: a tree whose main.ts already names mssqlBackupsFleetSection (the join, or a copy a killed run left wired:
+# either way the wired product) has its bundle built from its source for the run; a tree whose mssql_backups.ts exports
+# it gets scripts/fleet-mssql-wiring.patch applied and the bundle built; both put back on exit (a patch that does not
+# come off is a FAIL and exit 1); a tree without it (the base) runs unwired and its rows fail.
+# The demo serve imports mssql_jobs every 5 minutes and that import replaces an instance's jobs: right after the seed,
+# sql01's 'mssql_jobs' read is moved an hour ahead so the import refuses as older (0066 mssql_hadr_read), and the seeded
+# rows are asked for again after the browser check (a FAIL there is the proof's, not the product's).
+# Not proven here (said, not hidden): Acknowledge on a Job status row with acks on and off, the status part timing out
+# alone with the PostgreSQL grid still drawn, a pg_cron job's click to #/job?; the Summary's other cells.
 # Expected (written before the first run, 2026-11-14 05:5x PST; red on d263c82, whose /api/mssql/backups needs an
 # instance and whose Backups page has no SQL Server section):
 #   B1 api       GET /api/mssql/backups with no instance: 200; by_instance one row per ACTIVE SQL Server instance (the
@@ -29,7 +35,8 @@
 #   B3 clicks    sql01's instance link = #/mssqlbackups?i=<sql01>; the NUL database's link carries db=<name>; opened, the
 #                tab says 'Opened for the database <name>: its row is the first below.' and its first row is that database
 #   B4 views     tag erp (PostgreSQL only): the SQL Server section says 'No SQL Server instance in this view.'; tag sales
-#                (sql01, sql02): PostgreSQL's part says 'No PostgreSQL instance in this view.', the SQL Server grid 2 rows;
+#                (sql01, sql02): PostgreSQL's part says 'No PostgreSQL instance in this view.' and draws no Base backups
+#                or Standbys section (F1), the SQL Server grid 2 rows;
 #                tag ledger (sql03 alone, one instance): the filter on All, one instance row that has not run, no database
 # DONE-2 Jobs (written before the rows' first run, 2026-11-14 06:0x PST; red on d263c82: no 'status' / 'stats' part, the
 # Summary's Agent Jobs cell judged by the finding 'a job failed', the PostgreSQL 'jobs' check one row per failed run):
@@ -37,17 +44,24 @@
 #                and pg_cron job 'fleet-proof-failed-then-succeeded' on erp01, each failed 120 minutes ago and succeeded
 #                60 minutes ago (no threshold row: DBA Dash's default)
 #   J1 api       /api/jobsreport with no part name answers counts and jobs only; ?part=status = every active instance's
-#                jobs judged by job_status - row for row (scheduler, job, status, reason, level, last failure / success,
-#                the four counts) the one-instance form job_status(i) over every active instance; ?part=status&ids=<sql01>
-#                sql01's rows only; ?part=stats one row per status row's job; ?ids=abc 400. Both seeded jobs 'warn'
-#                with the reason 'failed 120 minute(s) ago (warning within 10080)'
+#                jobs - PARITY (not a hand count: the same function) row for row on all ten fields (status, reason,
+#                level, last outcome, last failure / success as instants, the four counts) with the one-instance form
+#                job_status(i) over every active instance, a reason's minute within one; the rows in DBA Dash's order
+#                (the last run failed first, then the newest failure); ?part=status&ids=<sql01> exactly sql01's keys;
+#                ?part=stats one row per status row's job; ?ids=abc 400. Both seeded jobs 'warn', level 'default', the
+#                reason 'failed 120 (or 121) minute(s) ago (warning within 10080)'; HAND COUNTS from the raw run rows: the
+#                seeded jobs' fail_24h, fail_7d (and the SQL Agent one's step_fail_7d) = 1, their stats ok_24h = ok_7d = 1,
+#                max = the seeded duration (SQL Agent 5 s, pg_cron 60 s)
 #   S1 cells     the Summary's Agent Jobs cell of sql01 (/api/mssql/summary, key jobs) counts that warning, its detail
-#                names the job; the overview's 'jobs' group has a warning 'job status' row for erp01's pg_cron job
+#                names the job; the overview's 'jobs' group has a warning 'job status' row for erp01's pg_cron job; in the
+#                browser the fleet Summary's sql01 Agent Jobs link (#/mssqljobs, i=<sql01>) lands on a page that names it
 #   J2 page      #/jobs: 'Job status' above 'PostgreSQL schedule checks'; the filter on 'Critical, warning and
 #                acknowledged' (more than one instance in view), its line '<crit + warn + acknowledged> of <all> jobs'
-#                (the hand count: no live job acknowledgement on a fresh demo), the two seeded rows there; All = every job
-#   J3 stats     4 s after the grid: no 'reading...' and no 'not read' in its 'succeeded 7 days' cells
-#   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2)
+#                (parity with job_status(i); no live job acknowledgement on a fresh demo), the two seeded rows there;
+#                All = every job (a raw count of the jobs tables), in the API's order
+#   J3 stats     4 s after the grid: the 'succeeded 7 days' column there, every cell a number, both seeded jobs' '1'
+#   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2); its
+#                'Open the job on its instance' link is #/mssqljobs?i=<sql01>&job=<name> and lands with that job's history open (SF4)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -55,23 +69,28 @@ WORK=$(mktemp -d); DB="pgvigil_fleetms_$RANDOM"; PORT=$((21000 + RANDOM % 9000))
 fail() { echo "FAIL: $*" >&2; exit 1; }
 bad=0; no() { echo "FAIL: $*" >&2; bad=$((bad + 1)); }   # a row that failed: the next rows still run, the end exits 1
 cleanup() {
+  local rc=$?
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true
   wait 2>/dev/null || true
   if [[ -n "$UNWIRE" ]]; then
-    git apply -R scripts/fleet-mssql-wiring.patch 2>/dev/null || echo "the wiring patch did not come off main.ts: put it back by hand"
-    cp "$WORK/app.js.kept" internal/web/dist/app.js 2>/dev/null || true
+    git apply -R scripts/fleet-mssql-wiring.patch 2>/dev/null || { echo "FAIL: the wiring patch did not come off main.ts: put it back by hand" >&2; rc=1; }
   fi
+  if [[ -f "$WORK/app.js.kept" ]]; then cp "$WORK/app.js.kept" internal/web/dist/app.js || { echo "FAIL: internal/web/dist/app.js was not put back" >&2; rc=1; }; fi
   timeout 300 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 \
     || echo "the scratch database $DB: drop not confirmed in 300 s (psql exit $?)"
   rm -rf "$WORK"
+  exit $rc
 }
 trap cleanup EXIT
 for t in go chromium node npm psql curl python3; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p is in use: run again"; done
 
-if grep -q 'mssqlBackupsFleetSection' web/src/main.ts; then echo "wiring: main.ts wired in this tree"
-elif grep -q 'export async function mssqlBackupsFleetSection' web/src/mssql_backups.ts; then
+if grep -q 'mssqlBackupsFleetSection' web/src/main.ts; then
+  cp internal/web/dist/app.js "$WORK/app.js.kept"
+  (cd web && npm run build > "$WORK/build.txt" 2>&1) || { tail -30 "$WORK/build.txt"; fail "the wired tree's bundle did not build"; }
+  echo "wiring: main.ts wired in this tree (the join's, or left wired by a killed run), bundle built from it: $(wc -c < internal/web/dist/app.js) bytes"
+elif grep -qE 'export (async )?(function|const) mssqlBackupsFleetSection\b' web/src/mssql_backups.ts; then
   cp internal/web/dist/app.js "$WORK/app.js.kept"
   git apply scripts/fleet-mssql-wiring.patch || fail "the wiring patch does not apply"
   UNWIRE=1
@@ -107,9 +126,18 @@ HAND=$(Q "select json_build_object(
       'full', (select json_object_agg(s, n) from (select b.full_status s, count(*) n from pgvigil.mssql_backup_judged b where b.instance_id = i.instance_id group by 1) x),
       'diff', (select json_object_agg(s, n) from (select b.diff_status s, count(*) n from pgvigil.mssql_backup_judged b where b.instance_id = i.instance_id group by 1) x),
       'log', (select json_object_agg(s, n) from (select b.log_status s, count(*) n from pgvigil.mssql_backup_judged b where b.instance_id = i.instance_id group by 1) x),
-      'not_judged', (select count(*) from pgvigil.mssql_backup_judged b where b.instance_id = i.instance_id and b.not_judged is not null)))
+      'not_judged', (select count(*) from pgvigil.mssql_backup_judged b where b.instance_id = i.instance_id and b.not_judged is not null),
+      'replicas_unseen', (select count(*) from pgvigil.mssql_backup_judged b where b.instance_id = i.instance_id and b.replicas_unseen),
+      'nul_recent', (select count(*) from pgvigil.mssql_jobs_findings f where f.instance_id = i.instance_id and f.check_name = 'a backup went to NUL'),
+      'problems', (select count(distinct f.object) from pgvigil.mssql_jobs_findings f
+                    where f.instance_id = i.instance_id and f.check_name not in ('a job failed', 'a job runs far longer than its average')
+                      and exists (select 1 from pgvigil.mssql_backup_judged b where b.instance_id = f.instance_id and b.database_name = f.object))))
     from pgvigil.instances i where i.is_active and i.engine = 'sqlserver'),
   'all', (select count(*) from pgvigil.mssql_backup_judged b join pgvigil.instances i using (instance_id) where i.is_active and i.engine = 'sqlserver'),
+  'dbkeys', (select json_agg(b.instance_id || '|' || b.database_name order by 1) from pgvigil.mssql_backup_judged b join pgvigil.instances i using (instance_id)
+              where i.is_active and i.engine = 'sqlserver'),
+  'fkeys', (select json_agg(f.instance_id || '|' || f.check_name || '|' || f.object order by 1) from pgvigil.mssql_jobs_findings f join pgvigil.instances i using (instance_id)
+             where i.is_active and f.check_name not in ('a job failed', 'a job runs far longer than its average')),
   'problems', (select json_agg(distinct f.instance_id || '|' || f.object order by f.instance_id || '|' || f.object) from pgvigil.mssql_jobs_findings f
                 join pgvigil.instances i using (instance_id)
                 where i.is_active and i.engine = 'sqlserver' and f.check_name not in ('a job failed', 'a job runs far longer than its average')
@@ -121,7 +149,7 @@ echo "$HAND" > "$WORK/hand.json"
 c1=$(curl -s -o "$WORK/all.json" -w '%{http_code}' "${BASE}api/mssql/backups")
 c2=$(curl -s -o "$WORK/problems.json" -w '%{http_code}' "${BASE}api/mssql/backups?problems=1")
 c3=$(curl -s -o "$WORK/tab.json" -w '%{http_code}' "${BASE}api/mssql/backups?instance=$S1")
-B1=$(python3 -I - "$WORK" "$S1" "$S3" "$NULDB" "$c1" "$c2" "$c3" <<'PY'
+B1=$(python3 -I - "$WORK" "$S1" "$S3" "$NULDB" "$c1" "$c2" "$c3" 2>"$WORK/b1.err" <<'PY'
 import json, sys
 w, s1, s3, nul, c1, c2, c3 = sys.argv[1:]
 hand = json.load(open(w + '/hand.json'))
@@ -138,7 +166,8 @@ for i, h in hand['inst'].items():
     if h['databases'] == 0:
         if r['databases'] is not None or r['snapshot_at'] is not None: out.append(f"{h['name']} has no backup rows but databases {r['databases']} read {r['snapshot_at']}")
         continue
-    want = {'databases': h['databases'], 'not_judged': h['not_judged']}
+    want = {'databases': h['databases'], 'not_judged': h['not_judged'], 'replicas_unseen': h['replicas_unseen'],
+            'nul_recent': h['nul_recent'], 'problems': h['problems']}
     for k in ('full', 'diff', 'log'):
         for st, col in (('ok', 'ok'), ('late', 'late'), ('never', 'never'), ('not judged', 'not_judged')):
             want[f'{k}_{col}'] = (h[k] or {}).get(st, 0)
@@ -146,17 +175,19 @@ for i, h in hand['inst'].items():
     if got != want: out.append(f"{h['name']}: {got} vs the hand count {want}")
 if str(s3) not in bi or bi[str(s3)]['snapshot_at'] is not None: out.append("sql03 has no row with no read")
 dbs, pdbs, fnd = rows(a, 'databases'), rows(p, 'databases'), rows(a, 'findings')
-if len(dbs) != hand['all']: out.append(f"databases {len(dbs)} vs {hand['all']}")
+dk = sorted(f"{r['instance_id']}|{r['database_name']}" for r in dbs)
+if dk != sorted(hand['dbkeys'] or []): out.append(f"databases {len(dbs)} vs {hand['all']}: only in the API {sorted(set(dk) - set(hand['dbkeys'] or []))[:3]}, only in the hand count {sorted(set(hand['dbkeys'] or []) - set(dk))[:3]}, duplicated {len(dk) - len(set(dk))}")
 keys = sorted(f"{r['instance_id']}|{r['database_name']}" for r in pdbs)
 if keys != sorted(hand['problems'] or []): out.append(f"problems {keys} vs {hand['problems']}")
 nr = [r for r in pdbs if str(r['instance_id']) == s1 and r['database_name'] == nul]
 if not nr or nr[0]['nul_recent'] is not True or nr[0]['problem'] is not True: out.append(f"the NUL database {nul} under Problems: {nr}")
-if len(fnd) != hand['findings']: out.append(f"findings {len(fnd)} vs {hand['findings']}")
+fk = sorted(f"{r['instance_id']}|{r['check_name']}|{r['object']}" for r in fnd)
+if fk != sorted(hand['fkeys'] or []): out.append(f"findings {len(fnd)} vs {hand['findings']}: only in the API {sorted(set(fk) - set(hand['fkeys'] or []))[:2]}, only in the hand count {sorted(set(hand['fkeys'] or []) - set(fk))[:2]}")
 if not any(f['check_name'] == 'a backup went to NUL' and f['object'] == nul and str(f['instance_id']) == s1 for f in fnd): out.append("no 'a backup went to NUL' finding for " + nul)
 if len(rows(t, 'databases')) != hand['s1'] or not rows(t, 'limits'): out.append(f"the tab: {len(rows(t, 'databases'))} databases vs {hand['s1']}, limits {len(rows(t, 'limits'))}")
 print(('FAIL|' + '; '.join(out)) if out else f"ok|{len(bi)} instances (sql03 unread), {len(dbs)} databases, {len(pdbs)} under Problems with {nul}, {len(fnd)} findings, the tab {hand['s1']} = the hand counts")
 PY
-)
+) || B1="FAIL|the B1 reader crashed: $(tail -1 "$WORK/b1.err")"
 [[ "$B1" == ok\|* ]] || no "B1: ${B1#FAIL|}"
 [[ $bad -eq $b0 ]] && echo "ok   B1 api: ${B1#ok|}"
 PROBLEMS=$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["problems"] or []))' "$WORK/hand.json")
@@ -178,7 +209,27 @@ Q "insert into pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabl
    insert into pgvigil.job_runs (instance_id, scheduler, job_id, run_id, status, start_time, end_time, duration_secs, snapshot_at)
    values ($ERP, 'pg_cron', 990001, 990001, 'failed', now() - interval '120 minutes', now() - interval '119 minutes', 60, now()),
           ($ERP, 'pg_cron', 990001, 990002, 'succeeded', now() - interval '60 minutes', now() - interval '59 minutes', 60, now())" >/dev/null
-Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.scheduler || '|' || s.job_id, 'v', json_build_array(s.status, s.reason, s.level))), '[]')
+# the demo's live mssql_jobs import (every 5 minutes) would replace sql01's jobs and drop the seeded one: its stored read
+# an hour ahead makes mssql_hadr_read refuse the import as older
+[[ "$(Q "update pgvigil.mssql_hadr_reads set snapshot_at = now() + interval '1 hour' where instance_id = $S1 and collection = 'mssql_jobs' returning 1")" == 1 ]] \
+  || fail "sql01 has no 'mssql_jobs' read to hold the seeded job against the demo's import"
+# HAND COUNTS from the raw run rows (not the product's SQL): the seeded jobs' failed and succeeded runs and durations
+JRAW=$(Q "select json_build_object(
+  'ms', (select json_build_object('fail_24h', count(*) filter (where step_id = 0 and run_status in (0, 3) and snapshot_at > now() - interval '24 hours'),
+                                  'fail_7d', count(*) filter (where step_id = 0 and run_status in (0, 3)),
+                                  'step_fail_7d', count(*) filter (where step_id > 0 and run_status in (0, 3)),
+                                  'ok_24h', count(*) filter (where step_id = 0 and run_status = 1 and snapshot_at > now() - interval '24 hours'),
+                                  'ok_7d', count(*) filter (where step_id = 0 and run_status = 1),
+                                  'max', max(duration_s) filter (where step_id = 0))
+           from pgvigil.mssql_job_runs where instance_id = $S1 and job_id = 'FLEETPROOF-0001' and snapshot_at > now() - interval '7 days'),
+  'pg', (select json_build_object('fail_24h', count(*) filter (where status in ('failed', 'internal error', 'aborted') and start_time > now() - interval '24 hours'),
+                                  'fail_7d', count(*) filter (where status in ('failed', 'internal error', 'aborted')),
+                                  'ok_24h', count(*) filter (where status = 'succeeded' and start_time > now() - interval '24 hours'),
+                                  'ok_7d', count(*) filter (where status = 'succeeded'), 'max', max(duration_secs))
+           from pgvigil.job_runs where instance_id = $ERP and scheduler = 'pg_cron' and job_id = 990001 and start_time > now() - interval '7 days'))")
+echo "$JRAW" > "$WORK/jraw.json"
+Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.scheduler || '|' || s.job_id, 'v', json_build_array(s.status, s.reason, s.level, s.last_outcome,
+            extract(epoch from s.last_failed_at)::float8, extract(epoch from s.last_succeeded_at)::float8, s.fail_24h, s.fail_7d, s.step_fail_24h, s.step_fail_7d))), '[]')
      from pgvigil.instances i cross join lateral pgvigil.job_status(i.instance_id) s where i.is_active" > "$WORK/jhand.json"
 JALL=$(Q "select (select count(*) from pgvigil.mssql_jobs m join pgvigil.instances i using (instance_id) where i.is_active)
             + (select count(*) from pgvigil.jobs g join pgvigil.instances i using (instance_id) where i.is_active and g.is_present)")
@@ -186,8 +237,9 @@ JPROB=$(Q "select count(*) from pgvigil.instances i cross join lateral pgvigil.j
 JACK=$(Q "select count(*) from pgvigil.acks where kind = 'job' and ended_at is null" 2>/dev/null || echo 0)
 for u in "jobsreport" "jobsreport?part=status" "jobsreport?part=status&ids=$S1" "jobsreport?part=stats" "jobsreport?part=status&ids=abc" "mssql/summary" "overview"; do
   f="$WORK/j-$(printf %s "$u" | tr -c 'a-z0-9' _).json"; echo "$(curl -s -o "$f" -w '%{http_code}' "${BASE}api/$u") $f"; done > "$WORK/jcodes.txt"
-J1=$(python3 -I - "$WORK" "$S1" "$ERP" "$SJ" "$PJ" "$JALL" <<'PY2'
-import json, sys
+J1=$(python3 -I - "$WORK" "$S1" "$ERP" "$SJ" "$PJ" "$JALL" 2>"$WORK/j1.err" <<'PY2'
+import json, re, sys
+from datetime import datetime
 w, s1, erp, sj, pj, jall = sys.argv[1:]
 codes = {l.split()[1]: l.split()[0] for l in open(w + '/jcodes.txt')}
 f = lambda u: w + '/j-' + ''.join(c if c in 'abcdefghijklmnopqrstuvwxyz0123456789' else '_' for c in u) + '.json'
@@ -200,24 +252,52 @@ if got != want: print('FAIL|answers ' + json.dumps(got)); sys.exit()
 plain = json.load(open(f('jobsreport')))
 if sorted(plain) != ['counts', 'jobs']: out.append(f'no part name answered {sorted(plain)}')
 st = rows(json.load(open(f('jobsreport?part=status'))), 'status')
-def norm(v):
-    return '' if v is None else str(v)
+def epoch(v):   # the API's time text (RFC 3339, 'Z' or an offset, 0-9 fraction digits) to seconds; psql's side is extract(epoch)
+    if v is None: return None
+    m = re.match(r'^(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d(?::?\d\d)?)?$', str(v))
+    if not m: raise ValueError(f'a time the reader does not know: {v!r}')
+    d, t, frac, tz = m.groups()
+    frac = '.' + (frac[1:] + '000000')[:6] if frac else ''
+    tz = '+00:00' if tz in (None, 'Z') else (tz + ':00' if len(tz) == 3 else (tz if ':' in tz else tz[:3] + ':' + tz[3:]))
+    return datetime.fromisoformat(f'{d}T{t}{frac}{tz}').timestamp()
+MIN = re.compile(r'^(\w+) (\d+) minute\(s\) ago (.*)$')
+def same_reason(a, b):   # the same words, a minute count within one (the two reads are seconds apart)
+    if a == b: return True
+    ma, mb = MIN.match(a or ''), MIN.match(b or '')
+    return bool(ma and mb and ma.group(1) == mb.group(1) and ma.group(3) == mb.group(3) and abs(int(ma.group(2)) - int(mb.group(2))) <= 1)
+def same(h, a):
+    if h[0] != a[0] or not same_reason(h[1], a[1]) or h[2] != a[2] or h[3] != a[3]: return False
+    for x, y in ((h[4], a[4]), (h[5], a[5])):
+        if (x is None) != (y is None) or (x is not None and abs(x - y) > 0.001): return False
+    return [int(v) for v in h[6:10]] == [int(v) for v in a[6:10]]
 hand = {x['k']: x['v'] for x in json.load(open(w + '/jhand.json'))}
-api = {}
-for r in st:
-    api[f"{r['instance_id']}|{r['scheduler']}|{r['job_id']}"] = (r['status'], r['reason'], r['level'], r['last_failed_at'], r['last_succeeded_at'])
+key = lambda r: f"{r['instance_id']}|{r['scheduler']}|{r['job_id']}"
+api = {key(r): [r['status'], r['reason'], r['level'], r['last_outcome'], epoch(r['last_failed_at']), epoch(r['last_succeeded_at']),
+                r['fail_24h'], r['fail_7d'], r['step_fail_24h'], r['step_fail_7d']] for r in st}
 if set(api) != set(hand): out.append(f"status keys: {len(api)} vs the one-instance form's {len(hand)}; only in the API {sorted(set(api) - set(hand))[:3]}, only in the form {sorted(set(hand) - set(api))[:3]}")
-diff = [k for k in api if k in hand and hand[k] != list(api[k][0:3])]   # a NULL reason is None on both sides
-if diff: out.append(f"status / reason / level differ on {len(diff)} job(s): {diff[:3]}")
-if len(st) != int(jall): out.append(f"status rows {len(st)} vs every job {jall}")
+diff = [k for k in api if k in hand and not same(hand[k], api[k])]
+if diff: out.append(f"the ten fields differ on {len(diff)} job(s): {[(k, hand[k], api[k]) for k in diff[:2]]}")
+if len(st) != int(jall): out.append(f"status rows {len(st)} vs every job {jall} (the jobs tables)")
+# DBA Dash's order: the last run failed first, then the newest failure (none last)
+order = [(0 if r['last_run_failed'] else 1, -(epoch(r['last_failed_at']) or float('-inf'))) for r in st]
+if any(order[n] > order[n + 1] for n in range(len(order) - 1)): out.append(f"status rows not in the order 'last run failed, then the newest failure': {order[:6]}")
+if any(r['last_run_failed'] is None for r in st): out.append("last_run_failed NULL on a row")
 one = rows(json.load(open(f(f'jobsreport?part=status&ids={s1}'))), 'status')
-if not one or any(str(r['instance_id']) != s1 for r in one): out.append(f"ids={s1}: {len(one)} rows, instances {sorted(set(r['instance_id'] for r in one))}")
+if sorted(key(r) for r in one) != sorted(k for k in hand if k.split('|')[0] == s1): out.append(f"ids={s1}: {len(one)} rows vs the form's {sum(1 for k in hand if k.split('|')[0] == s1)} of sql01")
 sts = rows(json.load(open(f('jobsreport?part=stats'))), 'stats')
-if sorted(f"{r['instance_id']}|{r['scheduler']}|{r['job_id']}" for r in sts) != sorted(api): out.append(f"stats rows {len(sts)} vs status {len(api)}")
-for inst, name in ((s1, sj), (erp, pj)):
+if sorted(key(r) for r in sts) != sorted(api): out.append(f"stats rows {len(sts)} vs status {len(api)}")
+raw = json.load(open(w + '/jraw.json'))
+for inst, name, side in ((s1, sj, 'ms'), (erp, pj, 'pg')):
+    h = raw[side]
     r = [x for x in st if str(x['instance_id']) == inst and x['job_name'] == name]
-    if not r or r[0]['status'] != 'warn' or r[0]['reason'] != 'failed 120 minute(s) ago (warning within 10080)':
-        out.append(f"{name}: {[(x['status'], x['reason']) for x in r]}")
+    if not r or r[0]['status'] != 'warn' or r[0]['level'] != 'default' or not same_reason(r[0]['reason'], 'failed 120 minute(s) ago (warning within 10080)'):
+        out.append(f"{name}: {[(x['status'], x['level'], x['reason']) for x in r]}"); continue
+    r = r[0]
+    if (int(r['fail_24h']), int(r['fail_7d'])) != (h['fail_24h'], h['fail_7d']) or (h['fail_24h'], h['fail_7d']) != (1, 1): out.append(f"{name}: failed 24 h / 7 d {r['fail_24h']} / {r['fail_7d']}, the raw rows {h['fail_24h']} / {h['fail_7d']} (want 1 / 1)")
+    if side == 'ms' and (int(r['step_fail_7d']), h['step_fail_7d']) != (1, 1): out.append(f"{name}: failed steps 7 d {r['step_fail_7d']}, the raw rows {h['step_fail_7d']} (want 1)")
+    t = [x for x in sts if str(x['instance_id']) == inst and key(x) == key(r)]
+    if not t or (int(t[0]['ok_24h'] or 0), int(t[0]['ok_7d'] or 0)) != (h['ok_24h'], h['ok_7d']) or (h['ok_24h'], h['ok_7d']) != (1, 1) or t[0]['max_secs_7d'] is None or float(t[0]['max_secs_7d']) != float(h['max']):
+        out.append(f"{name}: stats {[(x['ok_24h'], x['ok_7d'], x['max_secs_7d']) for x in t]} vs the raw rows ok {h['ok_24h']} / {h['ok_7d']}, max {h['max']}")
 cells = rows(json.load(open(f('mssql/summary'))), 'cells')
 c = [x for x in cells if str(x['instance_id']) == s1 and x['key'] == 'jobs']
 if not c or int(c[0]['warning']) < 1 or not any(sj in str(d) for d in (c[0].get('detail') or [])): out.append(f"sql01's Agent Jobs cell: {c}")
@@ -225,9 +305,9 @@ ov = json.load(open(f('overview')))
 ov = rows(ov, 'overview') if 'overview' in ov else [dict(zip(ov['columns'], r)) for r in ov['rows']]
 o = [x for x in ov if str(x['instance_id']) == erp and x.get('check_name') == 'job status' and pj in str(x.get('object'))]
 if not o or o[0]['severity'] != 'warning': out.append(f"erp01's overview 'job status' row: {o}")
-print(('FAIL|' + '; '.join(out)) if out else f"ok|{len(st)} jobs = the one-instance form row for row; ids one instance {len(one)}; stats {len(sts)}; no part name: counts, jobs; both seeded jobs warn; sql01's cell warning {c[0]['warning']}; erp01's overview row warning")
+print(('FAIL|' + '; '.join(out)) if out else f"ok|{len(st)} jobs = the one-instance form on all ten fields, in DBA Dash's order; ids sql01's {len(one)}; stats {len(sts)}; no part name: counts, jobs; both seeded jobs warn at default, their counts and stats = the raw rows (failed 1 / 1, succeeded 1 / 1, max {raw['ms']['max']} s / {raw['pg']['max']} s); sql01's cell warning {c[0]['warning']}; erp01's overview row warning")
 PY2
-)
+) || J1="FAIL|the J1 reader crashed: $(tail -1 "$WORK/j1.err")"
 [[ "$J1" == ok\|* ]] || no "J1: ${J1#FAIL|}"
 [[ $bad -eq $b0 ]] && echo "ok   J1 api + S1 cells: ${J1#ok|}"
 
@@ -244,5 +324,9 @@ if [[ $rc -ne 0 ]]; then
   if [[ "$last" =~ ^FAIL\ [0-9]+\ case ]]; then no "fleet-mssql-check: exit $rc, '$last' (its FAIL rows are above)"
   else no "fleet-mssql-check: exit $rc and it STOPPED EARLY - its last line was '${last:0:160}'"; fi
 fi
+# the seeded rows after the browser check: a missing one is the demo's import, a proof fault (the rows above then read it)
+SEEDED=$(Q "select (select count(*) from pgvigil.mssql_jobs where instance_id = $S1 and job_id = 'FLEETPROOF-0001') || '|' ||
+                   (select count(*) from pgvigil.jobs where instance_id = $ERP and scheduler = 'pg_cron' and job_id = 990001 and is_present)")
+[[ "$SEEDED" == "1|1" ]] || no "the seeded jobs after the browser check: SQL Agent|pg_cron = $SEEDED (want 1|1) - the demo's live import replaced them: a proof fault"
 [[ $bad -eq 0 ]] || fail "$bad check(s) failed"
-echo "OK: the fleet's SQL Server backups and jobs (B1-B4, S1, J1-J4)"
+echo "OK: the fleet's SQL Server backups and jobs (B1-B4, S1, J1-J4, the S1 link)"
