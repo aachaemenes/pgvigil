@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,20 +128,38 @@ func readConn(ctx context.Context, conn *sql.Conn) (Payload, error) {
 		return Payload{}, errors.New("no dbo.Instances visible to this login: not a source repository, or the login lacks SELECT on it")
 	}
 	p := Payload{Status: "ok", Instances: []Instance{}}
+	var hist []deploy
 	if cols["DBVersionHistory"]["Version"] {
-		var v sql.NullString
-		if err := conn.QueryRowContext(ctx, `SELECT TOP (1) Version FROM dbo.DBVersionHistory ORDER BY DeployDate DESC`).Scan(&v); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return Payload{}, fmt.Errorf("dbo.DBVersionHistory: %w", err)
+		var err error
+		if hist, err = readVersions(ctx, conn); err != nil {
+			return Payload{}, err
 		}
-		p.Version = v.String
+		if len(hist) > 0 {
+			p.Version = hist[0].Version
+		}
 	}
 	insts, err := readInstances(ctx, conn, cols)
 	if err != nil {
 		return Payload{}, err
 	}
-	sums, err := readSummary(ctx, conn, cols["Summary"])
+	// the run rows are read only where the login may SELECT them: a table it sees (VIEW DEFINITION) without that right
+	// would fail the whole Summary read
+	runs := false
+	if cols["CollectionRunStatus"]["InstanceID"] {
+		var can sql.NullInt64
+		if err := conn.QueryRowContext(ctx, `SELECT HAS_PERMS_BY_NAME(N'dbo.CollectionRunStatus', N'OBJECT', N'SELECT')`).Scan(&can); err != nil {
+			return Payload{}, fmt.Errorf("dbo.CollectionRunStatus' SELECT right: %w", err)
+		}
+		runs = can.Valid && can.Int64 == 1
+	}
+	sums, err := readSummary(ctx, conn, cols["Summary"], runs)
 	if err != nil {
 		return Payload{}, err
+	}
+	since := healthSince(hist)
+	for id, s := range sums {
+		healthDetail(s.Details, s.RefreshedAt, since, runs)
+		sums[id] = s
 	}
 	for i := range insts {
 		if s, ok := sums[insts[i].InstanceID]; ok {
@@ -155,14 +174,97 @@ func readConn(ctx context.Context, conn *sql.Conn) (Payload, error) {
 	return p, nil
 }
 
-// columns lists the columns of the four tables the door reads, as this login sees them (a table it cannot see has none).
+// deploy is one row of dbo.DBVersionHistory: a DBA Dash version and when it was deployed (UTC: GETUTCDATE()).
+type deploy struct {
+	Version string
+	At      time.Time
+}
+
+// readVersions reads dbo.DBVersionHistory, the newest deploy first.
+func readVersions(ctx context.Context, conn *sql.Conn) ([]deploy, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT Version, DeployDate FROM dbo.DBVersionHistory ORDER BY DeployDate DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("dbo.DBVersionHistory: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []deploy
+	for rows.Next() {
+		var v sql.NullString
+		var at sql.NullTime
+		if err := rows.Scan(&v, &at); err != nil {
+			return nil, fmt.Errorf("dbo.DBVersionHistory: %w", err)
+		}
+		out = append(out, deploy{Version: v.String, At: asUTC(at.Time)})
+	}
+	return out, rows.Err()
+}
+
+// HealthVersion says whether a DBA Dash version is 4.25.0 or later, the release whose Summary_Upd counts collection
+// health (0138's dbadash_health_version, the same rule: dot-separated digits compared part by part; anything else no).
+func HealthVersion(v string) bool {
+	parts := strings.Split(strings.TrimSpace(v), ".")
+	want := []int{4, 25}
+	nums := make([]int, len(parts))
+	for i, s := range parts {
+		if s == "" || len(s) > 9 || strings.Trim(s, "0123456789") != "" {
+			return false
+		}
+		nums[i], _ = strconv.Atoi(s)
+	}
+	for i := 0; i < len(want); i++ {
+		if i >= len(nums) {
+			return false
+		}
+		if nums[i] != want[i] {
+			return nums[i] > want[i]
+		}
+	}
+	return true
+}
+
+// healthSince is when the repository became the DBA Dash release it is now, if that is 4.25.0 or later: the deploy of
+// the oldest row in the newest unbroken run of such versions (nil: the repository is older, or has no history).
+func healthSince(hist []deploy) *time.Time {
+	var since *time.Time
+	for i := range hist {
+		if !HealthVersion(hist[i].Version) {
+			break
+		}
+		t := hist[i].At
+		since = &t
+	}
+	return since
+}
+
+// healthDetail sets the detail HealthKey of one Summary row to what DBA Dash's Summary_Upd used for its
+// CollectionErrorCount when it last wrote the row: true (collections at warning or critical) only on a repository at
+// 4.25.0 or later whose row was written after that deploy and whose instance has run rows; false (the errors of 24
+// hours) for a row written before the deploy or an instance without runs; "unknown" (0138 shows the bare count) when the
+// login may not read the run rows; none on an older repository. Not known even so: an instance's first run after its
+// row was last written by 4.25.0 (the row says 24 h errors until DBA Dash's next refresh; docs/dbadash.md).
+func healthDetail(d map[string]any, refreshed, since *time.Time, runs bool) {
+	switch {
+	case since == nil:
+		delete(d, HealthKey)
+	case refreshed == nil || refreshed.Before(*since):
+		d[HealthKey] = false
+	case !runs:
+		d[HealthKey] = "unknown"
+	default:
+		if v, _ := d[HealthKey].(bool); !v {
+			d[HealthKey] = false
+		}
+	}
+}
+
+// columns lists the columns of the five tables the door reads, as this login sees them (a table it cannot see has none).
 func columns(ctx context.Context, conn *sql.Conn) (map[string]map[string]bool, error) {
 	rows, err := conn.QueryContext(ctx, `
 SELECT t.name, c.name
   FROM sys.tables t
   JOIN sys.schemas s ON s.schema_id = t.schema_id
   JOIN sys.columns c ON c.object_id = t.object_id
- WHERE s.name = N'dbo' AND t.name IN (N'Instances', N'Summary', N'CollectionDates', N'DBVersionHistory')`)
+ WHERE s.name = N'dbo' AND t.name IN (N'Instances', N'Summary', N'CollectionDates', N'DBVersionHistory', N'CollectionRunStatus')`)
 	if err != nil {
 		return nil, fmt.Errorf("sys.columns: %w", err)
 	}
@@ -238,7 +340,14 @@ type summaryRow struct {
 	RefreshedAt *time.Time
 }
 
-func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool) (map[int]summaryRow, error) {
+// HealthKey is the detail pgvigil adds to a Summary row of a repository at DBA Dash 4.25.0 or later (healthDetail): true
+// when the instance has run rows in dbo.CollectionRunStatus (new in 4.25.0) and its row was written by 4.25.0 or later.
+// DBA Dash's Summary_Upd (4.25.0 L279-280) then fills CollectionErrorStatus from the instance's collection health and
+// CollectionErrorCount with its collections at warning or critical; without them (a service older than 4.25.0 collects
+// it) both keep the errors of 24 hours. The door's words for that cell follow it (0138's dbadash_detail).
+const HealthKey = "CollectionHealth"
+
+func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool, runStatus bool) (map[int]summaryRow, error) {
 	out := map[int]summaryRow{}
 	if !sc["InstanceID"] {
 		return out, nil // no dbo.Summary visible: the instances are listed without statuses
@@ -261,6 +370,9 @@ func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool) (map[i
 	where := ""
 	if sc["IsAzure"] {
 		where = " WHERE S.IsAzure = 0"
+	}
+	if runStatus {
+		sel = append(sel, "CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.CollectionRunStatus R WHERE R.InstanceID = S.InstanceID) THEN 1 ELSE 0 END AS bit) AS "+HealthKey)
 	}
 	q := "SELECT S.InstanceID, " + refresh
 	if len(sel) > 0 {
@@ -292,6 +404,9 @@ func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool) (map[i
 		}
 		for i, col := range sel {
 			k := strings.TrimPrefix(col, "S.")
+			if strings.HasSuffix(col, " AS "+HealthKey) {
+				k = HealthKey
+			}
 			v := vals[2+i]
 			if isStatus(k) {
 				if n, ok := asInt(v); ok {

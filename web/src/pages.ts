@@ -3,7 +3,7 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf } from './fleet';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf, tagWords, inTagScope } from './fleet';
 import { Ctx, href, isMssql, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
@@ -20,6 +20,7 @@ import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
 import { applyTagFilter, tagFilterBar, tagUI } from './tree';
 import { jobsReportFleetView } from './jobsreport';
+import { jobStatusFleetSection } from './jobs_fleet_status';
 import { rolesFleetView } from './roles';
 import { indexesFleetView } from './indexes';
 import { slowFleetView } from './slow';
@@ -44,9 +45,9 @@ function needInstance(ctx: Ctx): HTMLElement | null {
 // inTag keeps the fleet rows of the tag folder picked in the tree (none = every instance).
 function inTag(ctx: Ctx, rows: Row[]): Row[] {
   if (!ctx.tag) return rows;
-  return rows.filter(r => ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag!));
+  return rows.filter(r => inTagScope(ctx.tag!, r));
 }
-const scopeLabel = (ctx: Ctx) => ctx.tag ? ` - tag ${ctx.tag}` : '';
+const scopeLabel = (ctx: Ctx) => ctx.tag ? ` - ${tagWords(ctx.tag)}` : '';
 const instLink = (ctx: Ctx, text: string, id: unknown, tab = 'summary') => link(text, href(ctx, { tab, instance: Number(id), tag: undefined, at: undefined, task: undefined, taskInstance: undefined }));
 
 
@@ -886,9 +887,17 @@ export async function storage(ctx: Ctx): Promise<HTMLElement> {
 }
 
 export async function backups(ctx: Ctx): Promise<HTMLElement> {
-  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
-  const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'));
+  // the instances in view by engine, from the fleet list (a PostgreSQL instance without an archiver or cloud row has
+  // no row in the grid and still counts)
+  const inView = inTag(ctx, (await fleet()).instances);
+  const ids = ctx.tag ? new Set(inView.map(r => Number(r.instance_id))) : null;
+  const sqlserver = inView.filter(r => r.engine === 'sqlserver').length;
+  const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'),
+    { postgres: inView.length - sqlserver, sqlserver });
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  // a view with no PostgreSQL instance: main.ts's wiring then leaves out PostgreSQL's Base backups and Standbys too (F1:
+  // one line in place of an engine's sections)
+  if (inView.length - sqlserver === 0) view.dataset.noPostgres = '1';
   return view;
 }
 
@@ -917,7 +926,8 @@ export async function versions(ctx: Ctx): Promise<HTMLElement> {
 // jobsRoot is the fleet's Jobs page: the failing, missed and over-average jobs of every instance in scope.
 export async function jobsRoot(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
-  const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'), ctx);
+  const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'), ctx,
+    await jobStatusFleetSection(ctx));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }

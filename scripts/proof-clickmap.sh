@@ -329,6 +329,12 @@ VOLS=$(q "select string_agg(volume, '|') from pgvigil.mssql_volumes where instan
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/drives/thresholds") == 403 ]] || fail "R: a write without the login"
 ok "R: drives, history ($H points; a year $HY; 5 minutes '$H5'; a window off the list refused), dbspace ($NI instances), dbfiles (sql01 on $EVOL, erp01's pg_wal on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
 
+# a repository-wide alert standing (no instance: 0190's alert_findings names it 'pgvigil', its instance_id NULL), so
+# click-check's tag row can prove such an alert stays listed under a tag folder as at the root (the TAGTREE review A #1)
+q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity, first_sent_at, last_sent_at)
+   values ('demo-spool', 'fx-repo-wide', NULL, 'pgvigil', 'pgvigil collector', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null
+[[ $(q "select count(*) from pgvigil.instances where name = 'pgvigil'") == 0 ]] || fail "the demo has an instance named pgvigil: the repository-wide alert row cannot be told apart"
+
 echo "== C the click map (headless Chromium on CDP $CDP)"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
 CHR=$!
@@ -384,4 +390,10 @@ for e, n in (('sqlserver', d['ms']), ('postgres', d['pg'])):
 print('the click map covered: ' + ('every kind asked' if not bad else '; '.join(bad)))
 sys.exit(1 if bad else 0)
 PY
+# N: the '(no env)' folder (TAGTREE: the pass's #6, the review B #4) - the demo puts an env on every instance, so one
+# instance with no tag is added now; under the demo's group_by [env] it is in '(no env)' (?tag=env:)
+q "insert into pgvigil.instances (name, platform, engine) values ('fx-noenv-pg', 'onprem', 'postgres')" >/dev/null
+PGVIGIL_CLICK_ONLY=noenv node scripts/click-check.mjs "$CDP" "$U/" "$WORK/click-noenv.json" | tee "$WORK/click-noenv.txt" || fail "the '(no env)' rows have a FAIL (above)"
+grep -q '^links: .*; 0 FAIL$' "$WORK/click-noenv.txt" || fail "the '(no env)' rows did not end with 0 FAIL"
+q "delete from pgvigil.instances where name = 'fx-noenv-pg'" >/dev/null
 echo "PROOF OK"

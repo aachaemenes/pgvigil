@@ -19,7 +19,9 @@ func TestProven(t *testing.T) {
 		want    bool
 	}{
 		{"4.24.1", true}, {"4.24.1.0", true}, {" 4.24.1.3 ", true}, // the padded one: Proven trims the version row
-		{"4.24.10", false}, {"4.24.0", false}, {"4.25.0", false}, {"", false},
+		{"4.24.10", false}, {"4.24.0", false}, {"", false},
+		// DBA Dash 4.25.0 (the door proof on a repository its own 4.25.0 service built: proof-dbadash-door 4.25.0, 2026-11-14)
+		{"4.25.0", true}, {"4.25.0.0", true}, {"4.25.1", false}, {"4.25.10", false},
 	}
 	for _, c := range cases {
 		if got := Proven(c.version); got != c.want {

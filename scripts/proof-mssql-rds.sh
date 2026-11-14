@@ -47,7 +47,7 @@
 #       mssql_requests     the master user's session waiting on WAITFOR: session id, command, wait type
 #       mssql_waits        sys.dm_os_wait_stats bracketed by a read just before and just after the run
 #       mssql_xe           one state per capture equal to sys.server_event_sessions / sys.dm_xe_sessions for
-#                          pgvigil_p<n>_<capture>: running for all four once the -form server script ran
+#                          pgvigil_p<n>_<capture>: running for all four once the -form rds script ran
 #                          [Run 7: RDS refuses the script's sessions on Express (rds_extended_events_trigger: "RDS for
 #                           SQL Server supports extended events only for the Enterprise and Standard editions"). On
 #                           that refusal the captures must read 'not installed', equal to the master user's read,
@@ -173,9 +173,44 @@
 #     after the proof's own setup, equal the same read after every collector run.
 #  The last line is "proof-mssql-rds: PASS (...)" and the exit code 0 only when R, A, B, C and D hold; else every
 #  failed item is listed with its text, the last line says FAIL with their count, and the exit code is 1.
-#  NOT PROVEN HERE: editions other than Express (Web, Standard, Enterprise: Agent and its jobs, Multi-AZ with
-#  Always On or mirroring), RDS's own procedures (rds_* in msdb) beyond what the collections read, Windows
-#  authentication (AWS Managed Microsoft AD), RDS Custom.
+#  Both editions (CLOUDSQL C3-2, written before its first live run): the checks' alerts area is not read, with the
+#     note 'SQL Server Express has no SQL Server Agent: there are no alerts to read' on Express and 'Amazon RDS for SQL
+#     Server does not support SQL Server Agent alerts and operators: there are none to read' on Standard.
+#
+# Expected on Standard Edition (PGVIGIL_LAB_RDS_EDITION=se: scripts/lab/aws-rds-mssql.sh's db.m7i.large, single AZ;
+# CLOUDSQL C3's R1, written before its first run). Every row above holds as on Express, with these differences:
+#  A. Edition 'Standard Edition (64-bit)', EngineEdition 2.
+#  B. mssql_services lists SQL Server Agent beside the engine (equal to sys.dm_server_services, as above), and its
+#     agent_expected is true (0070: EngineEdition other than 4);
+#     mssql_xe: the -form rds script is ACCEPTED (a refusal is a FAIL with its words) and all four captures read
+#     'running', equal to the master user's read; mssql_jobs skipped as on Express (the collector's login holds SELECT on
+#     the three tables R checks, so the read stops at the first other one) - and a FAIL when S4 shows the master user
+#     may grant the very table the skip's note names (the note would then be false on Standard); mssql_ag skipped as
+#     on Express (single AZ: no availability group).
+#  [R1 run 1 (2026-11-14 09:14-09:23) graded FAIL on six rows, five of them this proof's: the collections the join added
+#   (mssql_activity, mssql_pool) are listed and run (ok or a skip with its reason); mssql_xe's hand read includes the
+#   join's 'ag' capture (AlwaysOn_health) and the four of pgvigil are counted apart; Standard has Always On enabled by
+#   RDS (IsHadrEnabled 1, no group): mssql_ag ok with the server's 0 groups; Standard writes component results to
+#   system_health's files (16 at the read): the store's lower-case component and state compared upper-cased; part D
+#   leaves out tempdb's temporary objects. The sixth was pgvigil's: RDS refused the server form's bare event file
+#   name ("Extended events event_file target is allowed only ..."): the proof prints -form rds (the folder
+#   D:\rdsdbdata\log AWS names), from run 2 on both editions.]
+#  S. Standard's own rows, each RECORDED (AWS's pages do not show them), none a FAIL by its content:
+#     S1 the master user's EXEC msdb.dbo.rds_get_high_availability_option and EXEC msdb.dbo.rds_failover_time, with
+#        their column names (C3-1 builds its read from these); expected 'Single-AZ', a failover time NULL;
+#     S2 the same two as the collector's login (refused, or its rows);
+#     S3 whether the master user may GRANT EXECUTE on each to the collector's login (a GRANT rolled back at once);
+#     S4 whether it may GRANT SELECT on each of the eleven msdb tables mssql_jobs reads (each rolled back at once);
+#     S5 where the slow session's event file lands (the -form rds script gives only that session a file; the other
+#        three are ring buffers: sys.dm_xe_session_targets' File name; AWS: D:\rdsdbdata\log) and what mssql_xe stored
+#        per capture (its target, source and new events); a refusal of the -form rds script is a FAIL with its words
+#        (R1 run 1's refusal of the server form's bare file name made -form rds; no probe session since);
+#     S6 msdb's alerts and operators as the master user (sysalerts, sysoperators: counts, or the refusal), beside the
+#        alerts area's note.
+#  NOT PROVEN HERE: SQL Server Agent's jobs (mssql_jobs skipped: the RDS form of the login), Web and Enterprise
+#  Edition, Multi-AZ with Always On or mirroring (AWS's other HA modes), the
+#  Agent's own error log (rds_read_error_log @type = 2), RDS's other procedures (rds_* in msdb) beyond what the
+#  collections read, Windows authentication (AWS Managed Microsoft AD), RDS Custom.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection to a PostgreSQL in keyword form, no dbname}"
@@ -187,6 +222,11 @@ for t in docker psql curl jq python3; do command -v "$t" >/dev/null || { echo "F
 . "$STATE"
 : "${RDS_HOST:?the state file has no endpoint} ${ADMIN_USER:?} ${ADMIN_PW:?} ${MON_USER:?} ${MON_PW:?}"
 PORT_=${RDS_PORT:-1433}
+case ${PGVIGIL_LAB_RDS_EDITION:-ex} in
+  ex) RDS_ED=ex; WANT_EE=4; AGX=false ;;
+  se) RDS_ED=se; WANT_EE=2; AGX=true ;;
+  *) echo "FAIL: PGVIGIL_LAB_RDS_EDITION is ex or se (the lab's edition)" >&2; exit 1 ;;
+esac
 SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
 REPO_DB=pgvigil_rdsproof_$SUF; XEID=p$SUF; N=proof-rds-$SUF; HOSTTAG=pgvproof-$SUF; FDB=pgvproof_$SUF
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
@@ -212,11 +252,16 @@ sqmon() { local out rc=0
   [ $rc -eq 0 ] || { echo "$1" >> "$WORK/sq-failed"; echo "FAIL: a read of the collector's login failed ($rc): $(tr '\n' ' ' <<<"$out" | cut -c1-600) -- the statement: $(tr '\n' ' ' <<<"$1" | cut -c1-300)" >&2; return $rc; }
   sed -E 's/ +\|/|/g; s/\| +/|/g; s/^ +//; s/ +$//' <<<"$out"; }
 sqfile() { docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d master -C -b -l 60 -i /dev/stdin; }
+# sqtry "<sql>" [db] [mon]: a probe whose refusal is itself the answer (part S, RECORDED): one line of its rows with the
+# column names, or SQL Server's own error words; never a failed read (nothing goes to sq-failed)
+sqtry() { local u=$ADMIN_USER pw=$ADMIN_PW; if [ "${3:-}" = mon ]; then u=$MON_USER; pw=$MON_PW; fi
+  SQLCMDPASSWORD="$pw" docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$u" \
+  -d "${2:-master}" -C -b -I -l 60 -h 1 -s '|' -W -i /dev/stdin <<<"SET NOCOUNT ON; $1" 2>&1 | grep -v '^-[-|]*$' | tr -s ' \n' ' ' | cut -c1-700 || true; }
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
   for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
-  if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form server -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
+  if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form rds -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
   if [ -n "$MADE_FDB" ]; then
     sq "IF DB_ID(N'$FDB') IS NOT NULL BEGIN ALTER DATABASE [$FDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$FDB]; END" >/dev/null 2>&1 \
@@ -238,6 +283,9 @@ for i in $(seq 1 6); do sq "SELECT 1" >/dev/null 2>&1 && break; [ "$i" = 6 ] && 
 rm -f "$WORK/sq-failed"   # the tries before the first answer are the wait, not failed reads
 IFS='|' read -r PV ED EE SN <<<"$(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), CAST(SERVERPROPERTY('Edition') AS nvarchar(128)), CAST(SERVERPROPERTY('EngineEdition') AS int), CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))")"
 echo "  the master user reads: $PV | $ED | engine edition $EE | $SN"
+# the edition comes from PGVIGIL_LAB_RDS_EDITION, not the state file: a shell without it would run Express's rows on a
+# billed Standard lab - stop before any of it
+[ "$EE" = "$WANT_EE" ] || die "the lab is engine edition $EE; PGVIGIL_LAB_RDS_EDITION=$RDS_ED wants $WANT_EE (ex: Express 4, se: Standard 2)"
 
 echo "--- R. the collector's rights"
 # each piece COLLATE DATABASE_DEFAULT: the catalog's permission names and msdb's object names carry different
@@ -282,13 +330,13 @@ sq "CREATE TABLE dbo.big (id int NOT NULL CONSTRAINT pk_big PRIMARY KEY, b int N
   INSERT dbo.big (id, b) SELECT TOP (20000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)), 0 FROM sys.all_columns a CROSS JOIN sys.all_columns c;
   CREATE INDEX ix_b ON dbo.big (b) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE); CREATE STATISTICS st_bb ON dbo.big (b) WITH NORECOMPUTE;" "$FDB" >/dev/null
 sq "ALTER ROLE db_datareader ADD MEMBER [$MON_USER];" "$FDB" >/dev/null
-"$BIN" mssql-xe -print -form server -install-id "$XEID" > "$WORK/xe.sql"
+"$BIN" mssql-xe -print -form rds -install-id "$XEID" > "$WORK/xe.sql"
 MADE_XE=1
-XE_REFUSED=
+XE_REFUSED=; XE_FAILED=
 if ! sqfile < "$WORK/xe.sql" > "$WORK/xe.out" 2>&1; then
-  if grep -qi 'supports extended events only for the Enterprise and Standard editions' "$WORK/xe.out"; then
-    XE_REFUSED=1; echo "  the -form server script: RDS refuses event sessions on this edition (rds_extended_events_trigger)"
-  else bad "B: pgvigil's -form server Extended Events script failed as the master user: $(tr '\n' ' ' < "$WORK/xe.out" | cut -c1-600)"; fi
+  if [ "$RDS_ED" = ex ] && grep -qi 'supports extended events only for the Enterprise and Standard editions' "$WORK/xe.out"; then
+    XE_REFUSED=1; echo "  the -form rds script: RDS refuses event sessions on this edition (rds_extended_events_trigger)"
+  else XE_FAILED=1; bad "B: pgvigil's -form rds Extended Events script failed as the master user ($RDS_ED): $(tr '\n' ' ' < "$WORK/xe.out" | cut -c1-600)"; fi
 fi
 snap() {
   sq "SELECT 'srvprincipal|' + name + '|' + type COLLATE DATABASE_DEFAULT FROM sys.server_principals
@@ -297,7 +345,10 @@ snap() {
     UNION ALL SELECT 'db|' + name COLLATE DATABASE_DEFAULT FROM sys.databases ORDER BY 1"
   local dbs; dbs=$(sq "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name")
   for d in $dbs; do
-    sq "SELECT '$d|obj|' + s.name + '.' + o.name + '|' + o.type COLLATE DATABASE_DEFAULT FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE o.is_ms_shipped = 0
+    # tempdb's temporary objects (#..., their PK__#... constraints) live with the session that made them: on Standard
+    # other sessions made and dropped them between the reads (R1 run 1; which sessions, not read), and pgvigil's
+    # collector code makes no # object
+    sq "SELECT '$d|obj|' + s.name + '.' + o.name + '|' + o.type COLLATE DATABASE_DEFAULT FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE o.is_ms_shipped = 0 AND NOT (DB_NAME() = N'tempdb' AND o.name LIKE N'%#%')
       UNION ALL SELECT '$d|principal|' + name + '|' + type COLLATE DATABASE_DEFAULT FROM sys.database_principals
       UNION ALL SELECT '$d|perm|' + ISNULL(USER_NAME(grantee_principal_id), '?') + '|' + permission_name + '|' + state_desc + '|' + class_desc + '|' + CAST(major_id AS varchar(12)) COLLATE DATABASE_DEFAULT FROM sys.database_permissions
       UNION ALL SELECT '$d|member|' + USER_NAME(role_principal_id) + '|' + USER_NAME(member_principal_id) COLLATE DATABASE_DEFAULT FROM sys.database_role_members ORDER BY 1" "$d"
@@ -311,14 +362,14 @@ iid=$(q "select instance_id from pgvigil.instances where name='$N'")
 maj=${PV%%.*}; rest=${PV#*.}; min=${rest%%.*}
 GOT=$(q "select i.engine || '|' || i.platform || '|' || i.server_version_num || '|' || m.product_version || '|' || m.edition || '|' || m.engine_edition || '|' || m.server_name from pgvigil.instances i join pgvigil.mssql_instance m using (instance_id) where instance_id=$iid")
 WANT="sqlserver|rdssqlserver|$((maj * 10000 + 10#$min))|$PV|$ED|$EE|$SN"
-[ "$GOT" = "$WANT" ] && [ "$EE" = 4 ] && echo "A: OK ($GOT)" || bad "A: stored '$GOT', want '$WANT' with engine edition 4"
+[ "$GOT" = "$WANT" ] && [ "$EE" = "$WANT_EE" ] && echo "A: OK ($GOT)" || bad "A: stored '$GOT', want '$WANT' with engine edition $WANT_EE ($RDS_ED)"
 
 echo "--- B. every collection"
 mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls internal/mssql/*.go | grep -v _test.go) | sed 's/.*Prefix + "\([a-z_]*\)"/mssql_\1/' | sort)
 ALL=(mssql_instance mssql_services mssql_requests mssql_waits mssql_xe mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups
   mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
   mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags
-  mssql_waiting_tasks mssql_reports)
+  mssql_waiting_tasks mssql_reports mssql_activity mssql_pool)
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${ALL[@]}" | sort | tr '\n' ' ')" ] || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
@@ -382,7 +433,7 @@ if [[ $st == ok\|* ]]; then
 else VERDICT[mssql_instance]="FAIL"; bad "B: mssql_instance status '$st' (want ok)"; fi
 run_ok mssql_services && eq mssql_services \
   "$(q "select string_agg(service_name || '=' || coalesce(status, ''), ',' order by service_name) || '|' || (select coalesce(agent_expected::text, 'NULL') from pgvigil.mssql_health where instance_id=$iid) from pgvigil.mssql_service where instance_id=$iid and is_present")" \
-  "$(sq "SELECT ISNULL(STRING_AGG(CAST(servicename AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '=' + CAST(status_desc AS nvarchar(60)) COLLATE DATABASE_DEFAULT, ',') WITHIN GROUP (ORDER BY servicename), '') + '|false' FROM sys.dm_server_services")"
+  "$(sq "SELECT ISNULL(STRING_AGG(CAST(servicename AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '=' + CAST(status_desc AS nvarchar(60)) COLLATE DATABASE_DEFAULT, ',') WITHIN GROUP (ORDER BY servicename), '') + '|$AGX' FROM sys.dm_server_services")"
 # mssql_requests: a session of the master user that waits on WAITFOR
 WAITER=pgvproof-wait-$SUF
 docker run -d --name "$WAITER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d master -C -l 60 -H "$HOSTTAG" -Q "WAITFOR DELAY '00:02:00'" >/dev/null
@@ -558,18 +609,63 @@ run_ok mssql_querystore && eq mssql_querystore "$(q "select coalesce(actual_stat
 if run_ok mssql_xe; then
   eq mssql_xe "$(q "select capture || '|' || state from pgvigil.mssql_xe_state where instance_id=$iid order by 1" | tr '\n' ' ')" \
     "$(sq "SELECT c.capture + '|' + CASE WHEN x.name IS NOT NULL THEN 'running' WHEN d.name IS NOT NULL THEN 'stopped' ELSE 'not installed' END
-      FROM (VALUES ('attention'), ('blocked'), ('deadlocks'), ('slow')) c(capture) LEFT JOIN sys.server_event_sessions d ON d.name = N'pgvigil_${XEID}_' + c.capture
-      LEFT JOIN sys.dm_xe_sessions x ON x.name = d.name ORDER BY 1" | tr '\n' ' ')"
-  NRUN=$(q "select count(*) from pgvigil.mssql_xe_state where instance_id=$iid and state='running'")
+      FROM (VALUES ('ag', N'AlwaysOn_health'), ('attention', N'pgvigil_${XEID}_attention'), ('blocked', N'pgvigil_${XEID}_blocked'), ('deadlocks', N'pgvigil_${XEID}_deadlocks'), ('slow', N'pgvigil_${XEID}_slow')) c(capture, sname)
+      LEFT JOIN sys.server_event_sessions d ON d.name = c.sname
+      LEFT JOIN sys.dm_xe_sessions x ON x.name = d.name
+      WHERE c.capture <> 'ag' OR CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int) = 1 ORDER BY 1" | tr '\n' ' ')"
+  NRUN=$(q "select count(*) from pgvigil.mssql_xe_state where instance_id=$iid and state='running' and capture <> 'ag'")
   if [[ ${VERDICT[mssql_xe]} == PASS* ]] && [ -n "$XE_REFUSED" ]; then
     if [ "$NRUN" = 0 ]; then VERDICT[mssql_xe]="PASS (every capture 'not installed', equal to the master user's read; running sessions NOT PROVEN: RDS refuses them on Express)"
     else VERDICT[mssql_xe]="FAIL"; bad "B: mssql_xe: $NRUN capture(s) stored running where RDS refused every session"; fi
-  elif [[ ${VERDICT[mssql_xe]} == PASS* ]] && [ "$NRUN" != 4 ]; then VERDICT[mssql_xe]="FAIL"; bad "B: mssql_xe: $NRUN of four captures running after the -form server script"; fi
+  elif [[ ${VERDICT[mssql_xe]} == PASS* ]] && [ "$NRUN" != 4 ]; then VERDICT[mssql_xe]="FAIL"; bad "B: mssql_xe: $NRUN of four captures running after the -form rds script"; fi
 fi
+# the collections the join added since run 20: mssql_activity runs on RDS (ok; its rows are not compared here:
+# RECORDED), mssql_pool is skipped with its own note (elastic pools are Azure SQL Database's); anything else FAILs
+for c in mssql_activity mssql_pool; do
+  "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c.out" 2>&1 || true
+  st=$(status_of "$c")
+  case $c:$st in
+    mssql_activity:ok\|*) VERDICT[$c]="PASS (status ok; its rows not compared here: RECORDED)" ;;
+    "mssql_pool:skipped|elastic pools are Azure SQL Database's"*) VERDICT[$c]="SKIP (${st#skipped|})" ;;
+    *) VERDICT[$c]="FAIL"; bad "B: $c status '$st' (want $( [ "$c" = mssql_activity ] && echo "ok" || echo "skipped: elastic pools are Azure SQL Database's")): $(tr '\n' ' ' < "$WORK/$c.out" | cut -c1-300)" ;;
+  esac
+done
 "$BIN" collect -config "$CFG" -once mssql_ag -instance "$N" > "$WORK/mssql_ag.out" 2>&1 || true
 st=$(status_of mssql_ag)
-if [[ $st == "skipped|Always On is not enabled on this server"* ]] && grep -q "skipped: " "$WORK/mssql_ag.out" && [ "$(sq "SELECT CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int)")" = 0 ]; then VERDICT[mssql_ag]="SKIP (${st#skipped|})"
-else VERDICT[mssql_ag]="FAIL"; bad "B: mssql_ag status '$st' (want skipped: Always On is not enabled on this server)"; fi
+HADR=$(sq "SELECT CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int)")
+if [ "$HADR" = 0 ] && [[ $st == "skipped|Always On is not enabled on this server"* ]] && grep -q "skipped: " "$WORK/mssql_ag.out"; then VERDICT[mssql_ag]="SKIP (${st#skipped|})"
+elif [ "$HADR" = 1 ] && [[ $st == ok\|* ]]; then
+  # Standard: Always On enabled by RDS (R1: IsHadrEnabled 1 on a single-AZ instance), the groups stored equal the server's
+  eq mssql_ag "$(q "select count(distinct group_id) from pgvigil.mssql_ag_state where instance_id=$iid")" "$(sq "SELECT COUNT(*) FROM sys.availability_groups")" "0 groups: Always On enabled, none made (single AZ)"
+else VERDICT[mssql_ag]="FAIL"; bad "B: mssql_ag status '$st' with IsHadrEnabled $HADR (want skipped: Always On is not enabled, or ok where it is)"; fi
+
+if [ "$RDS_ED" = se ]; then
+  echo "--- S. Standard Edition's own rows (RECORDED: AWS's pages do not show them)"
+  echo "  S1 the master user: rds_get_high_availability_option: $(sqtry "EXEC msdb.dbo.rds_get_high_availability_option;")"
+  echo "  S1 the master user: rds_failover_time: $(sqtry "EXEC msdb.dbo.rds_failover_time;")"
+  echo "  S2 the collector's login: rds_get_high_availability_option: $(sqtry "EXEC msdb.dbo.rds_get_high_availability_option;" master mon)"
+  echo "  S2 the collector's login: rds_failover_time: $(sqtry "EXEC msdb.dbo.rds_failover_time;" master mon)"
+  # a GRANT inside a transaction that is rolled back: the answer without a change left on the server (a refused GRANT
+  # does not end the batch: TRY / CATCH tells the two apart)
+  grant_probe() { echo "BEGIN TRY BEGIN TRAN; $1 ROLLBACK; SELECT 'grantable' AS answer; END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK; SELECT 'refused ' + CAST(ERROR_NUMBER() AS varchar(10)) + ': ' + ERROR_MESSAGE() AS answer; END CATCH"; }
+  for p in rds_get_high_availability_option rds_failover_time; do
+    echo "  S3 GRANT EXECUTE ON msdb.dbo.$p TO the collector's login: $(sqtry "$(grant_probe "GRANT EXECUTE ON dbo.$p TO [$MON_USER];")" msdb)"
+  done
+  declare -A S4
+  for t in sysjobs sysjobhistory sysjobsteps sysjobschedules sysschedules syscategories sysjobactivity sysjobservers sysoperators sysproxies syssessions; do
+    S4[$t]=$(sqtry "$(grant_probe "GRANT SELECT ON dbo.$t TO [$MON_USER];")" msdb)
+    echo "  S4 GRANT SELECT ON msdb.dbo.$t: ${S4[$t]}"
+  done
+  # mssql_jobs' skip names the table the master user cannot grant: S4 must not show that table grantable
+  JST=$(status_of mssql_jobs); JT=$(grep -o 'msdb\.dbo\.sys[a-z_]*' <<<"$JST" | head -1); JT=${JT#msdb.dbo.}
+  if [ -n "$JT" ] && [[ "${S4[$JT]:-}" == *grantable* && "${S4[$JT]:-}" != *refused* ]]; then
+    VERDICT[mssql_jobs]="FAIL"; bad "B: mssql_jobs' skip names msdb.dbo.$JT as not grantable, and S4 granted it on Standard (the note is false here)"
+  fi
+  echo "  S5 the sessions' event files: $(sqtry "SELECT s.name, CAST(t.target_data AS xml).value('(/EventFileTarget/File/@name)[1]', 'nvarchar(400)') AS file_name FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address WHERE t.target_name = N'event_file' AND s.name LIKE N'pgvigil[_]${XEID}[_]%' ORDER BY s.name;")"
+  echo "  S5 mssql_xe stored (capture|state|target|source|new events): $(q "select capture || '|' || state || '|' || coalesce(target, '') || '|' || coalesce(source, '') || '|' || coalesce(new_events, -1) from pgvigil.mssql_xe_state where instance_id=$iid order by 1" | tr '\n' ' ')"
+  [ -z "$XE_FAILED" ] || echo "  S5 the -form rds script was refused (its words in the FAIL above): an rds form needs another folder or option"
+  echo "  S6 msdb's alerts and operators (sysalerts|sysoperators): $(sqtry "SELECT (SELECT COUNT(*) FROM msdb.dbo.sysalerts) AS alerts, (SELECT COUNT(*) FROM msdb.dbo.sysoperators) AS operators;")"
+fi
 # --- the eleven collections of the join of wave 1 (rel-join-w1), written before their first run here: each run as the
 # collector's login and compared with the master user's read of the same view, filtered as the collector filters
 setcmp() { # setcmp <collection> <stored> <read>: the two lists are equal (sorted in byte order); an empty pair fails
@@ -604,6 +700,11 @@ if run_ok mssql_checks; then
   q "select name || '=' || coalesce(value_in_use::text, 'NULL') || '/' || coalesce(value_set::text, 'NULL') from pgvigil.mssql_server_option where instance_id=$iid and is_present" > "$WORK/ck-s.txt"
   sq "SELECT CAST(name AS varchar(128)) COLLATE DATABASE_DEFAULT + '=' + CAST(CAST(value_in_use AS bigint) AS varchar(20)) + '/' + CAST(CAST(value AS bigint) AS varchar(20)) FROM sys.configurations" > "$WORK/ck-h.txt"
   setcmp mssql_checks "$WORK/ck-s.txt" "$WORK/ck-h.txt"
+  # the alerts area is not read on RDS (C3-2): Express has no Agent; AWS supports no alerts or operators on the others
+  if [ "$RDS_ED" = ex ]; then WAL="false|SQL Server Express has no SQL Server Agent: there are no alerts to read"
+  else WAL="false|Amazon RDS for SQL Server does not support SQL Server Agent alerts and operators: there are none to read"; fi
+  AL=$(q "select is_read || '|' || coalesce(note, '') from pgvigil.mssql_check_area where instance_id=$iid and area='alerts'")
+  [ "$AL" = "$WAL" ] && echo "  mssql_checks: the alerts area not read: '${AL#*|}'" || { VERDICT[mssql_checks]="FAIL"; bad "B: mssql_checks' alerts area '$AL' (want '$WAL')"; }
 fi
 
 # mssql_identity: the identity columns at 10 % of their type's range or more (dboptions.go's floor) in each user database the
@@ -763,11 +864,14 @@ XEPAT=$(sq "SELECT LEFT(f, LEN(f) - CHARINDEX('\\', REVERSE(f)) + 1) + 'system_h
   FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address WHERE s.name = N'system_health' AND t.target_name = N'event_file') x") || XEPAT=
 SHSQL="SELECT UPPER(x.c) + ':' + UPPER(x.s) + '|' + CAST(COUNT(*) AS varchar(9)) FROM (SELECT e.x.value('(event/data[@name=\"component\"]/text)[1]', 'nvarchar(60)') AS c,
   e.x.value('(event/data[@name=\"state\"]/text)[1]', 'nvarchar(60)') AS s FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL) f
-  CROSS APPLY (SELECT CAST(f.event_data AS xml) AS x) e WHERE f.object_name = N'sp_server_diagnostics_component_result' AND f.timestamp_utc >= DATEADD(day, -45, SYSUTCDATETIME())) x GROUP BY x.c, x.s"
+  CROSS APPLY (SELECT CAST(f.event_data AS xml) AS x) e WHERE f.object_name = N'sp_server_diagnostics_component_result' AND DATEADD(day, 45, f.timestamp_utc) >= SYSUTCDATETIME()) x GROUP BY x.c, x.s"
+# (the window as DATEADD(day, 45, timestamp_utc): RDS's SQL Server 2019 (15.0.4500.2) answered NO row to 'timestamp_utc >=
+# DATEADD(day, -45, ...)' beside the CROSS APPLY while the same files held component results in it - R1 run 3, by a
+# hand read not kept in the run's log)
 SHN="SELECT CAST(COUNT(*) AS varchar(12)) FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL)"
 sq "$SHSQL" > "$WORK/sh-b.txt" || : > "$WORK/sh-b.txt"; NB=$(sq "$SHN") || NB=0
 if run_ok mssql_syshealth; then sq "$SHSQL" > "$WORK/sh-a.txt" || : > "$WORK/sh-a.txt"; NA=$(sq "$SHN") || NA=0
-  q "select component || ':' || state || '|' || count(*) from pgvigil.mssql_health_components where instance_id=$iid and state <> 'EVENT' group by component, state" > "$WORK/sh-s.txt"
+  q "select upper(component) || ':' || upper(state) || '|' || count(*) from pgvigil.mssql_health_components where instance_id=$iid and upper(state) <> 'EVENT' group by upper(component), upper(state)" > "$WORK/sh-s.txt"
   sed -i '/^[[:space:]]*$/d' "$WORK/sh-b.txt" "$WORK/sh-a.txt"
   RS=$(reader_of syshealth); SCN=$(cut -d'|' -f2 <<<"$RS")
   if [ ! -s "$WORK/sh-b.txt" ] && [ ! -s "$WORK/sh-a.txt" ] && [ ! -s "$WORK/sh-s.txt" ]; then
@@ -897,8 +1001,16 @@ fi
 [ ! -s "$WORK/sq-failed" ] || bad "a read of the setup login failed during the run (its message is above): $(head -c 300 "$WORK/sq-failed" | tr '\n' ' ')"
 echo
 if [ ${#FAILS[@]} -eq 0 ]; then
-  NP=0; NS=0; for c in "${ALL[@]}"; do case ${VERDICT[$c]:-} in PASS*) NP=$((NP + 1));; SKIP*) NS=$((NS + 1));; esac; done
-  echo "proof-mssql-rds: PASS (R, A, B: $NP collected and equal, $NS skipped by an RDS rule (mssql_ag: no Always On, mssql_logshipping: no log shipping on RDS, mssql_jobs: the msdb tables the master user cannot grant); C; D)"
+  # the skips and the rows not compared are named from the verdicts: they differ by edition (Express skips mssql_ag,
+  # Standard has Always On enabled by RDS), and mssql_pool's skip is Azure SQL Database's, not an RDS rule
+  NP=0; NS=0; NC=(); SK=()
+  for c in "${ALL[@]}"; do case ${VERDICT[$c]:-} in
+    PASS*"not compared"*) NP=$((NP + 1)); NC+=("$c");;
+    PASS*) NP=$((NP + 1));;
+    SKIP*) NS=$((NS + 1)); SK+=("$c");;
+  esac; done
+  NCW=""; [ ${#NC[@]} -eq 0 ] || NCW=" (its rows not compared: ${NC[*]})"
+  echo "proof-mssql-rds: PASS (R, A, B: $NP collected, $((NP - ${#NC[@]})) equal to the master user's read$NCW, $NS skipped (${SK[*]:-none}: each with its note above); C; D)"
 else
   echo "the failed items:"; printf '  - %s\n' "${FAILS[@]}"
   echo "proof-mssql-rds: FAIL (${#FAILS[@]} item(s))"; exit 1

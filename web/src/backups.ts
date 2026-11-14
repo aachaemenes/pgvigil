@@ -97,8 +97,16 @@ export async function backupsView(ctx: Ctx): Promise<HTMLElement> {
 }
 
 // backupsFleetView: every instance's archiver and cloud backups, the failing first (keep narrows it to a tag
-// folder; instLink makes the instance name a link to its Backups tab).
-export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
+// folder; instLink makes the instance name a link to its Backups tab). engines: the instances in view by engine, from
+// the fleet list - the 'instances' tile counts both engines (SQL Server's sections follow PostgreSQL's on the page),
+// and a view without a PostgreSQL instance says so in place of PostgreSQL's tiles and grid.
+export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node,
+  engines?: { postgres: number; sqlserver: number }): Promise<HTMLElement> {
+  const instTile = (n: number) => engines
+    ? tile('instances', fmtNum(engines.postgres + engines.sqlserver), '', { sub: `${fmtNum(engines.postgres)} PostgreSQL, ${fmtNum(engines.sqlserver)} SQL Server` })
+    : tile('instances', String(n));
+  if (engines && engines.postgres === 0) return el('section', {}, el('h2', {}, 'Backups'), el('div', { class: 'tiles' }, instTile(0)),
+    el('p', { class: 'empty' }, 'No PostgreSQL instance in this view.'));
   const d = await get<Record<'instances', Table | null>>('backups/fleet');
   let rows = rowsOf(d.instances);
   if (keep) rows = rows.filter(keep);
@@ -107,7 +115,7 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
   const stale = rows.filter(r => r.retention_days != null && (r.newest_snapshot_age_s == null || Number(r.newest_snapshot_age_s) > 86400)).length;
   return el('section', {}, el('h2', {}, 'Backups'),
     el('div', { class: 'tiles' },
-      tile('instances', String(rows.length)),
+      instTile(rows.length),
       tile('archiver failing', String(failing), failing ? 'crit' : 'ok'),
       tile('retention under 7 days', String(short), short ? 'warn' : 'ok'),
       tile('no snapshot in 24 h', String(stale), stale ? 'warn' : 'ok')),

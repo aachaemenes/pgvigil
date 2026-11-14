@@ -76,6 +76,11 @@ func runAgentAlerts(ctx context.Context, conn *sql.Conn, info Info, c *checksRun
 		c.find(managedInstanceAlertFindings(agentAlertFindings(nil, ops, true, ""))...)
 		c.add(areaRow(AreaAlerts, true, "Azure SQL Managed Instance does not support SQL Server Agent alerts yet: only the operators are read"))
 		return
+	case info.Kind == KindRDS:
+		// AWS's 'Using SQL Server Agent for Amazon RDS': "SQL Server Agent alerts and operators aren't supported."
+		// (Web, Standard and Enterprise have the Agent; Express has none and is the case above.)
+		c.add(areaRow(AreaAlerts, false, "Amazon RDS for SQL Server does not support SQL Server Agent alerts and operators: there are none to read"))
+		return
 	case !info.MsdbAccess:
 		c.unread(AreaAlerts, "msdb.dbo.sysalerts", "the login has no access to msdb: the Agent's alerts and operators were not read")
 		return

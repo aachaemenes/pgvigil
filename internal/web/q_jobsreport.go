@@ -1,7 +1,10 @@
 package web
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -68,13 +71,110 @@ SELECT count(*) AS jobs, count(*) FILTER (WHERE r.fail_streak > 0) AS failing,
   FROM pgvigil.job_report r JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND r.is_present AND coalesce(r.active, true)`
 
+// sqlJobStatusFleet is the fleet Jobs page's 'Job status' grid (DBA Dash's root Jobs, AgentJobsReport_Get): every job
+// of the instances $1 (NULL = every active instance) judged by job_status_view (0137: DBA Dash's default rule with no
+// threshold row), with the job's own columns (enabled, category, description) and, for a SQL Agent job, the step of its
+// newest failed step inside the horizon (a step that failed: run_status 0; the failed rows' index), for a pgAgent job
+// its newest failed step in the step log. 'last run failed'
+// is DBA Dash's IsLastFail: a last run that failed or was cancelled (a cancelled run is a failure there, 0137). Ordered
+// as DBA Dash orders it: the last run failed first, then the newest failure, then critical, warning.
+const sqlJobStatusFleet = `
+SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.job_id, v.job_name,
+       coalesce(m.enabled, g.active) AS enabled, m.category, m.description,
+       v.status, v.reason, v.level, v.threshold_id, v.last_outcome, coalesce(v.last_outcome IN ('failed', 'cancelled'), false) AS last_run_failed,
+       v.last_failed_at, v.last_succeeded_at, v.fail_24h, v.fail_7d, v.step_fail_24h, v.step_fail_7d, fs.step_id AS failed_step_id,
+       fs.step_name AS failed_step, v.horizon_min
+  FROM pgvigil.job_status_view(coalesce($1::int[], ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active))) v
+  JOIN pgvigil.instances i ON i.instance_id = v.instance_id AND i.is_active
+  LEFT JOIN pgvigil.mssql_jobs m ON v.scheduler = 'sqlagent' AND m.instance_id = v.instance_id AND m.job_id = v.job_id
+  LEFT JOIN pgvigil.jobs g ON v.scheduler <> 'sqlagent' AND g.instance_id = v.instance_id AND g.scheduler = v.scheduler AND g.job_id::text = v.job_id
+  LEFT JOIN LATERAL ((SELECT r.step_id::bigint AS step_id, r.step_name FROM pgvigil.mssql_job_runs r
+                       WHERE v.scheduler = 'sqlagent' AND v.last_failed_at IS NOT NULL AND r.instance_id = v.instance_id AND r.job_id = v.job_id
+                         AND r.run_status = 0 AND r.step_id > 0 AND r.snapshot_at > now() - make_interval(mins => v.horizon_min)
+                       ORDER BY r.snapshot_at DESC LIMIT 1)
+                     UNION ALL
+                     -- pgAgent's newest failed step (0102's step log); the CASE keeps a SQL Agent job's text id from the cast
+                     (SELECT s.step_id, s.step_name FROM pgvigil.job_step_runs s
+                       WHERE v.scheduler = 'pgagent' AND v.last_failed_at IS NOT NULL AND s.instance_id = v.instance_id
+                         AND s.job_id = CASE WHEN v.scheduler = 'pgagent' THEN v.job_id::bigint END
+                         AND s.status = 'failed' AND s.start_time > now() - make_interval(mins => v.horizon_min)
+                       ORDER BY s.start_time DESC LIMIT 1)) fs ON true
+ ORDER BY coalesce(v.last_outcome IN ('failed', 'cancelled'), false) DESC, v.last_failed_at DESC NULLS LAST,
+          CASE v.status WHEN 'crit' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, i.name, v.scheduler, v.job_name`
+
+// sqlJobStatsFleet is the four columns of DBA Dash's root Jobs that need every run of 7 days (Succeed Count 24 h and
+// 7 days, Max and Avg Duration over AgentJob7Day's 7 days), per job of the instances $1 (NULL = every active instance):
+// its own part, read after the status grid is drawn, so its cost never holds the grid (the lead's 05:4x, (a)). SQL
+// Agent: the job outcome rows (step 0); PostgreSQL: the runs with a start, their durations where they ended.
+const sqlJobStatsFleet = `
+WITH ids AS (SELECT unnest(coalesce($1::int[], ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active))) AS instance_id)
+SELECT m.instance_id, 'sqlagent'::text AS scheduler, m.job_id,
+       a.ok_24h, a.ok_7d, a.max_secs_7d, a.avg_secs_7d
+  FROM pgvigil.mssql_jobs m JOIN ids USING (instance_id)
+  CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE r.run_status = 1 AND r.snapshot_at > now() - interval '24 hours') AS ok_24h,
+                             count(*) FILTER (WHERE r.run_status = 1) AS ok_7d,
+                             max(r.duration_s) AS max_secs_7d, round(avg(r.duration_s)::numeric, 1) AS avg_secs_7d
+                        FROM pgvigil.mssql_job_runs r
+                       WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.step_id = 0
+                         AND r.snapshot_at > now() - interval '7 days' AND r.snapshot_at <= now()) a
+UNION ALL
+SELECT g.instance_id, g.scheduler, g.job_id::text,
+       a.ok_24h, a.ok_7d, a.max_secs_7d, a.avg_secs_7d
+  FROM pgvigil.jobs g JOIN ids USING (instance_id)
+  CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE r.status = 'succeeded' AND r.start_time > now() - interval '24 hours') AS ok_24h,
+                             count(*) FILTER (WHERE r.status = 'succeeded') AS ok_7d,
+                             round(max(r.duration_secs)::numeric, 1) AS max_secs_7d, round(avg(r.duration_secs)::numeric, 1) AS avg_secs_7d
+                        FROM pgvigil.job_runs r
+                       WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id
+                         AND r.start_time > now() - interval '7 days' AND r.start_time <= now()) a
+ WHERE g.is_present`
+
+// idsParam reads ?ids=1,2,3 (the instances of the page's view): nil when absent, an error on anything but positive ids.
+func idsParam(r *http.Request) ([]int32, error) {
+	v := r.URL.Query().Get("ids")
+	if v == "" {
+		return nil, nil
+	}
+	parts := strings.Split(v, ",")
+	if len(parts) > 10000 {
+		return nil, errors.New("ids: at most 10000 instances")
+	}
+	ids := make([]int32, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.ParseInt(strings.TrimSpace(p), 10, 32)
+		if err != nil || n < 0 {
+			return nil, errors.New("ids must be instance ids separated by commas (0 = no instance: a view with none)")
+		}
+		ids = append(ids, int32(n))
+	}
+	return ids, nil
+}
+
 // JobsReport is one instance's job report (?instance=) or, without it, the fleet's problem jobs.
 func (s *Server) JobsReport(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("instance") == "" {
-		s.multi(w, r, []part{
+		ids, err := idsParam(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		var idsArg any // a nil []int32 is sent as an empty array, not NULL
+		if ids != nil {
+			idsArg = ids
+		}
+		// 'status' (job_status_view, both engines) and 'stats' are read only by name (?part=status, ?part=stats), each
+		// alone: a slow one never takes PostgreSQL's schedule checks down with it, nor they it; a reply with no part
+		// name is today's two parts
+		parts := []part{
 			{"counts", sqlJobFleetCounts, nil},
 			{"jobs", sqlJobFleet, nil},
-		})
+			{"status", sqlJobStatusFleet, []any{idsArg}},
+			{"stats", sqlJobStatsFleet, []any{idsArg}},
+		}
+		if r.URL.Query().Get("part") == "" {
+			parts = parts[:2]
+		}
+		s.multiPart(w, r, parts)
 		return
 	}
 	id, from, to, err := params(r, true)
