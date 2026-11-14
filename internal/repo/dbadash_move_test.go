@@ -883,3 +883,56 @@ func TestMoveAddTwiceAtOnce(t *testing.T) {
 		t.Fatalf("the second add of one server at once: %v, want refused 'was moved already, as %s'", got, names[0])
 	}
 }
+
+// TestMoveXEForeignOnAStore (task 206, W8 b): the collector's XE read stores DBA Dash's own sessions it listed - a
+// read with the marker replaces the instance's list whole (a name that is not DBADash_% is dropped), a read older than
+// the stored one changes nothing, a read without the marker (it failed before the list) keeps the list, a read that
+// listed none empties it and says when.
+func TestMoveXEForeignOnAStore(t *testing.T) {
+	ctx, pool, sfx := moveStore(t)
+	name := fmt.Sprintf("xef-%d", sfx)
+	var id int
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0.1', 160000, false, '{}'::text[], 'sqlserver')`, name).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dropInstance(pool, name) })
+	base := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	read := func(at time.Time, marker bool, sessions ...string) {
+		t.Helper()
+		var rows []map[string]any
+		for _, s := range sessions {
+			rows = append(rows, map[string]any{"kind": "foreign_session", "name": s, "running": s != "DBADash_AdHoc", "targets": []string{"ring_buffer"}})
+		}
+		if marker {
+			rows = append(rows, map[string]any{"kind": "sessions_read", "count": len(sessions)})
+		}
+		b, _ := json.Marshal(rows)
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_xe($1, $2, $3::jsonb)`, id, at, string(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func() (names string, readAt time.Time, count int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT coalesce((SELECT string_agg(name || ':' || running, ',' ORDER BY name) FROM pgvigil.mssql_xe_foreign WHERE instance_id = $1), ''),
+		    r.read_at, r.sessions FROM pgvigil.mssql_xe_foreign_read r WHERE r.instance_id = $1`, id).Scan(&names, &readAt, &count); err != nil {
+			t.Fatal(err)
+		}
+		return names, readAt, count
+	}
+	check := func(step string, wantNames string, wantAt time.Time, wantCount int) {
+		t.Helper()
+		if n, at, c := list(); n != wantNames || !at.Equal(wantAt) || c != wantCount {
+			t.Fatalf("%s: %q read %v count %d; want %q read %v count %d", step, n, at, c, wantNames, wantAt, wantCount)
+		}
+	}
+	read(base, true, "DBADash_SlowQueries", "DBADash_AdHoc", "system_health")
+	check("the first read", "DBADash_AdHoc:false,DBADash_SlowQueries:true", base, 2)
+	read(base.Add(time.Minute), true, "DBADash_1")
+	check("a newer read", "DBADash_1:true", base.Add(time.Minute), 1)
+	read(base.Add(-time.Minute), true, "DBADash_1", "DBADash_2", "DBADash_Deadlocks")
+	check("an older read arriving late", "DBADash_1:true", base.Add(time.Minute), 1)
+	read(base.Add(2*time.Minute), false, "DBADash_2")
+	check("a read without the marker", "DBADash_1:true", base.Add(time.Minute), 1)
+	read(base.Add(3*time.Minute), true)
+	check("a read that listed none", "", base.Add(3*time.Minute), 0)
+}

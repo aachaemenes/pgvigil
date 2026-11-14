@@ -533,3 +533,60 @@ BEGIN
   RETURN jsonb_build_object('outcome', 'done', 'detail', v_op || ' ' || v_name)
          || CASE WHEN v_op = 'run' THEN jsonb_build_object('run_id', v_m.run_id + 1) ELSE '{}' END;
 END $$;
+
+-- DBA Dash's own Extended Events sessions on a server (DBADash_%), as the collector's XE read saw them (task 206, W8):
+-- the move's checklist lists them, each with the DROP EVENT SESSION line for the server's DBA (pgvigil reads none of
+-- their events and drops none). A read that listed the sessions replaces the instance's list whole (an older read
+-- arriving late replaces nothing); a read that failed before the list leaves the last one. mssql_xe_foreign_read keeps
+-- when the list was last read, also when it held none.
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_foreign (
+  instance_id  int NOT NULL REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
+  name         text NOT NULL,
+  running      boolean NOT NULL,
+  targets      text[] NOT NULL DEFAULT '{}',
+  read_at      timestamptz NOT NULL,
+  PRIMARY KEY (instance_id, name)
+);
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_foreign_read (
+  instance_id  int PRIMARY KEY REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
+  read_at      timestamptz NOT NULL,
+  sessions     int NOT NULL
+);
+
+-- The importer: 0116's wrapper renamed import_mssql_xe_w0116 and called first (renamed once: a rerun finds it), then
+-- the list of DBA Dash's sessions this read carries ('foreign_session' rows, the 'sessions_read' marker)
+DO $$
+BEGIN
+  IF to_regprocedure('pgvigil.import_mssql_xe_w0116(integer, timestamp with time zone, jsonb)') IS NULL THEN
+    ALTER FUNCTION pgvigil.import_mssql_xe(int, timestamptz, jsonb) RENAME TO import_mssql_xe_w0116;
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_xe(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_rows jsonb := pgvigil.mssql_rows(p_payload);
+  v_n int;
+BEGIN
+  PERFORM pgvigil.import_mssql_xe_w0116(p_instance_id, p_snapshot_at, p_payload);
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'sessions_read') THEN
+    RETURN;
+  END IF;
+  -- the instance's row first (its lock orders two reads of one instance); an older read arriving late changes nothing
+  INSERT INTO pgvigil.mssql_xe_foreign_read AS f (instance_id, read_at, sessions) VALUES (p_instance_id, p_snapshot_at, 0)
+  ON CONFLICT (instance_id) DO UPDATE SET read_at = EXCLUDED.read_at WHERE f.read_at <= EXCLUDED.read_at;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  IF v_n = 0 THEN
+    RETURN;
+  END IF;
+  DELETE FROM pgvigil.mssql_xe_foreign WHERE instance_id = p_instance_id;
+  INSERT INTO pgvigil.mssql_xe_foreign (instance_id, name, running, targets, read_at)
+  SELECT DISTINCT ON (left(r->>'name', 128)) p_instance_id, left(r->>'name', 128), coalesce((r->>'running')::boolean, false),
+         coalesce(ARRAY(SELECT left(x, 60) FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(r->'targets') = 'array' THEN r->'targets' ELSE '[]' END) x), '{}'),
+         p_snapshot_at
+    FROM jsonb_array_elements(v_rows) r
+   WHERE r->>'kind' = 'foreign_session' AND coalesce(r->>'name', '') <> '' AND upper(r->>'name') LIKE 'DBADASH\_%'
+   ORDER BY left(r->>'name', 128);
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  UPDATE pgvigil.mssql_xe_foreign_read SET sessions = v_n WHERE instance_id = p_instance_id;
+END $$;

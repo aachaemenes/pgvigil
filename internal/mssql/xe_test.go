@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
@@ -784,5 +785,44 @@ func TestXECloudSQLOneMaxMemory(t *testing.T) {
 				t.Errorf("%s: CREATE %d: the one max_memory= is not the session's MAX_MEMORY=<the capture's size> KB", form, i+1)
 			}
 		}
+	}
+}
+
+// TestXEForeign (task 206): DBA Dash's own sessions are listed (any case of the prefix, running or not, their targets
+// sorted), nothing else is, and the read's marker row comes last with the count; no DBADash_ session is ever picked
+// for a capture of pgvigil's.
+func TestXEForeign(t *testing.T) {
+	sessions := xeGroup([]xeTarget{
+		{session: "DBADash_SlowQueries", running: true, target: "event_file"},
+		{session: "DBADash_1", running: true, target: "ring_buffer"},
+		{session: "dbadash_Deadlocks", running: false, target: "ring_buffer"},
+		{session: "DBADash_SlowQueries", running: true, target: "event_counter"},
+		{session: "DBADashSlow", running: true, target: "ring_buffer"}, // no '_': not DBA Dash's name
+		{session: "system_health", running: true, target: "event_file"},
+		{session: "pgvigil_a1_deadlocks", running: true, target: "ring_buffer"},
+	})
+	got := xeForeign(sessions)
+	want := []string{"DBADash_1 true [ring_buffer]", "DBADash_SlowQueries true [event_counter event_file]", "dbadash_Deadlocks false [ring_buffer]"}
+	if len(got) != len(want)+1 {
+		t.Fatalf("rows %v, want %d sessions and the marker", got, len(want))
+	}
+	for i, w := range want {
+		if g := fmt.Sprintf("%v %v %v", got[i]["name"], got[i]["running"], got[i]["targets"]); got[i]["kind"] != "foreign_session" || g != w {
+			t.Errorf("row %d: %v %q, want foreign_session %q", i, got[i]["kind"], g, w)
+		}
+	}
+	if m := got[len(got)-1]; m["kind"] != "sessions_read" || m["count"] != 3 {
+		t.Errorf("the marker: %v, want sessions_read with count 3", m)
+	}
+	for _, c := range xeCaptures {
+		if s := xePick(sessions, c); s != nil && strings.HasPrefix(strings.ToUpper(s.name), "DBADASH_") {
+			t.Errorf("capture %s picked DBA Dash's %s", c, s.name)
+		}
+	}
+	if !strings.Contains(xeSessionsSQL, "OR d.name LIKE N'DBADash[_]%%'") {
+		t.Error("the session list does not ask for DBA Dash's sessions")
+	}
+	if got := xeForeign(xeGroup(nil)); len(got) != 1 || got[0]["count"] != 0 {
+		t.Errorf("no session at all: %v, want the marker alone with count 0", got)
 	}
 }
