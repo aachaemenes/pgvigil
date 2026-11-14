@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/plans"
 )
 
 // TestStoreReportsLoginOnAStore (REPORT ROLE): on a migrated repository (PGVIGIL_REPO_TEST_DSN, a superuser; skipped
@@ -141,5 +143,58 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		if got := s.newReportsDoor(ctx, c.rc).state(ctx); !strings.Contains(got, c.want) {
 			t.Errorf("%+v: %q, want %q", c.rc, got, c.want)
 		}
+	}
+}
+
+// TestExplainFoldOnAStore (REPORT ROLE, the design pass's S1): EXPLAIN on a monitoring login plans the DBA's statement,
+// and the planner evaluates STABLE functions while it estimates (a hash cast to int then names itself in the error).
+// On a migrated repository (PGVIGIL_REPO_TEST_DSN) taken as an instance whose login holds pgvigil_auth: without a check
+// (the old behaviour) the run says whether the fold reads the hash - logged, the red's evidence, never a failure either
+// way; with pgRefusal the run is refused naming pgvigil_auth and nothing is planned.
+func TestExplainFoldOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := time.Now().UnixNano() % 1000000000
+	login, user, pw := fmt.Sprintf("pgvrr_ex_%d", sfx), fmt.Sprintf("pgvrr%d", sfx), fmt.Sprintf("Rr%d", sfx)
+	defer func() {
+		bg := context.Background()
+		if _, err := pool.Exec(bg, `DELETE FROM pgvigil.ui_users WHERE username = $1`, user); err != nil {
+			t.Error(err)
+		}
+		if _, err := pool.Exec(bg, `DROP ROLE IF EXISTS `+login); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_reader, pgvigil_auth`, login, pw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.ui_users (username, password_hash) VALUES ($1, '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA')`, user); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mon := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s", cfg.Host, cfg.Port, cfg.Database, login, pw)
+	stmt := fmt.Sprintf(`SELECT 1 FROM pg_class c WHERE c.relname = (pgvigil.ui_password_hash('%s')::int)::text`, user)
+	_, err = plans.Explain(ctx, mon, "", stmt, nil)
+	switch {
+	case err != nil && strings.Contains(err.Error(), "argon2id"):
+		t.Logf("without a check (the old behaviour) the fold READ the hash: %.120s", err.Error())
+	default:
+		t.Logf("without a check the fold did not read the hash here: %v", err)
+	}
+	_, err = plans.Explain(ctx, mon, "", stmt, pgRefusal)
+	if err == nil || !strings.Contains(err.Error(), "pgvigil_auth") || strings.Contains(err.Error(), "argon2id") {
+		t.Errorf("with pgRefusal: %v; want refused naming pgvigil_auth, no hash", err)
 	}
 }
