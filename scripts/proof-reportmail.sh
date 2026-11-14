@@ -305,7 +305,8 @@ const SCREEN = `(() => {
     const w = ['crit', 'warn', 'ok', 'none'].find(k => got.has(k)); if (w) return w;
     return ['crit', 'warn', 'ok'].find(k => td.classList.contains(k)) ?? null; };
   const head = c => { const x = c.cloneNode(true); x.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove()); return words(x); };
-  const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]') });
+  // a: the instant a cell counts from (data-at: the fleet Job status grid's since cells), so it is compared by that instant
+  const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'), a: td.querySelector('[data-at]')?.getAttribute('data-at') ?? null });
   let outer = '', inner = null;
   return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props, main p.empty[data-cols]')].flatMap(e => {
     if (e.tagName !== 'TABLE' && e.tagName !== 'P') { const within = e.closest('[role=region]'); if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; } return []; }
@@ -635,6 +636,15 @@ class P(HTMLParser):
         if s.inh3: s.h3 += d
         if s.cell is not None: s.cell['t'] += d
 problems = []; total = 0
+# a cell carrying its instant (data-at: the whole minutes since it, DBA Dash's DATEDIFF) is compared by that instant: the
+# mail was drawn between its reads, so its minutes lie between the minutes those reads show for the same instant, within
+# one (a minute boundary crossed between a read and the render); every other cell is compared by its words
+WHOLE = re.compile(r'\d[\d,.\s  ]*')
+def by_instant(mc, sc, alts):
+    if not sc.get('a') or not WHOLE.fullmatch(mc['t']): return False
+    mins = lambda t: int(re.sub(r'\D', '', t))
+    seen = [mins(c['t']) for c in alts if c.get('a') == sc['a'] and WHOLE.fullmatch(c['t'])]
+    return bool(seen) and min(seen) - 1 <= mins(mc['t']) <= max(seen) + 1
 for sid, s in sorted(sends.items()):
     m = mails.get(sid)
     if m is None: problems.append(f'mail {sid}: not in the sink'); continue
@@ -669,7 +679,7 @@ for sid, s in sorted(sends.items()):
     if s['schedule'] == SJOB and (not p.grids or HIDDEN in [c['t'] for c in p.grids[0]['head']]): problems.append(f'mail {sid}: the column {HIDDEN!r} the owner hid is in the mail')
     if [g['name'] for g in p.grids] != [g['named'] for g in grids]:
         problems.append(f'mail {sid}: grids {[g["name"] for g in p.grids]} vs the screen {[g["named"] for g in grids]}'); continue
-    cells = coloured = moved = 0
+    cells = coloured = moved = instants = 0
     altss = [[g for g in a if not g.get('empty')] for a in alt_scrs]
     altss = [a if len(a) == len(grids) else grids for a in altss]
     for gi, (g, sg) in enumerate(zip(p.grids, grids)):
@@ -696,7 +706,11 @@ for sid, s in sorted(sends.items()):
             row_st = {c['s'] for c in sr if c['s']}
             for j, (mc, sc) in enumerate(zip(mr, sr)):
                 cells += 1
-                if mc['t'] != sc['t']: problems.append(f'mail {sid} {sg["named"]} [{i},{j}]: {mc["t"]!r} vs {sc["t"]!r}')
+                if sc.get('a'):
+                    instants += 1
+                    if mc['t'] != sc['t'] and not by_instant(mc, sc, [r[j] for r in rows_i if j < len(r)]):
+                        problems.append(f'mail {sid} {sg["named"]} [{i},{j}]: {mc["t"]!r} vs {sc["t"]!r} (from {sc["a"]}: the reads show {[r[j]["t"] for r in rows_i if j < len(r) and r[j].get("a") == sc["a"]]})')
+                elif mc['t'] != sc['t']: problems.append(f'mail {sid} {sg["named"]} [{i},{j}]: {mc["t"]!r} vs {sc["t"]!r}')
                 got = (mc['bg'], mc['fg'])
                 if sc['s']:
                     coloured += 1
@@ -724,7 +738,7 @@ for sid, s in sorted(sends.items()):
             mg = next(body, None)
             if mg is not None and n != len(mg['rows']) and len(mg['rows']): problems.append(f'mail {sid} {mg["name"]}: the sheet {ws.title} has {n} rows, the mail {len(mg["rows"])}')
     total += cells
-    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched a later read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
+    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched a later read; {instants} compared by their instant), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
 for x in problems[:40]: print('     ' + x)
 if problems: print(f'{len(problems)} problems'); sys.exit(1)
 print(f'ok   H: every mail tables and inline styles only, no script, style, class or event attribute; X: every workbook opens with openpyxl; {total} cells in all')
