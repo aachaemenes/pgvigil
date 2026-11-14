@@ -55,13 +55,23 @@
 #           'collection failing'; then the 12-instance file back.
 #      SV   a second target server (DONE-2 N8): target2 with t16-t18 stopped - the server's own parent, once, claiming
 #           'server postgres:target2:5432 not answering from <T> UTC', t16-t18 held, t1-t12 not; started again, resolved once, none of t16-t18's own alerts after.
+#      SC7  slow connects shared (the slow-connect tier's host fold): t1-t12 dialled through a proxy container (slowp)
+#           on four ports, three instances each, that holds every new connection 2 s before it forwards it; the root's
+#           connect_time threshold set to 0.10 / 0.15 s for SC7 and SL (one slow minute in the 5-minute window then
+#           averages about 0.4 s: every member and the fold cross the critical line in the same beat, never one by one
+#           on a ramp, where a member above a warning fold is rightly sent on its own) - ONE 'slow connects' valued
+#           pgvigil-svc on U and S (repository-wide), critical, its four server folds held under it, its 12 members
+#           held, no 'slow connect' sent; the delay lifted: resolved once (the last slow minute leaves the window
+#           about 5 minutes later), no member's alert after it.
+#      SL   one slow server: t1 alone through slowp (its own port), t2-t12 direct - t1's own 'slow connect' once on U
+#           and S, no fold, no other instance's; the delay lifted: resolved once.
 #   U  uninstall (the join fold, last: the service is gone after it): `pgvigil uninstall` in the service's container
 #      retires the host in the repository it keeps (pgvigil.import_collector_retire); the page says retired; no
 #      'collector or network' follows (B shows the one a host that only stopped raises)
 #   (in A) W  serve's watchdog at its first answer 'starting' or 'on', never empty (DONE-2 N12), then 'on'.
 #          W2 a second serve whose alerts login accepts and never answers: 'starting' at its first answer, then
 #          'off: the alerts login: ...' once the 20 s ping ends (W alone cannot fail: a local login answers first).
-# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G SC5 SC6 SC4 BH SV U); unset = all.
+# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G SC5 SC6 SC4 BH SV SC7 SL U); unset = all.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .vis/spool-evidence .vis/collector-shots   # fetched back by the box job even when no case wrote to them
@@ -72,7 +82,7 @@ want() { [[ -z "${PROOF_ONLY:-}" || ",${PROOF_ONLY// /}," == *",$1,"* ]]; }
 fp() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 PW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 RP=$(fp); TP=$(fp); SP=$(fp); CDP=$(fp)
-NET=pgvch-$$; REPO=pgvch-repo-$$; TGT=pgvch-tgt-$$; TGT2=pgvch-tgt2-$$; SVC=pgvch-svc-$$; IMG=pgvigil-proof-systemd:1
+NET=pgvch-$$; REPO=pgvch-repo-$$; TGT=pgvch-tgt-$$; TGT2=pgvch-tgt2-$$; SVC=pgvch-svc-$$; SLP=pgvch-slowp-$$; IMG=pgvigil-proof-systemd:1
 SRV=""; CHR=""; SECOND=""; SRV2=""; HANG=""
 cleanup() {
   [[ -n "$CHR" ]] && kill -- -"$CHR" 2>/dev/null || true
@@ -80,9 +90,9 @@ cleanup() {
   [[ -n "$SECOND" ]] && kill "$SECOND" 2>/dev/null || true
   [[ -n "$SRV2" ]] && kill "$SRV2" 2>/dev/null || true
   [[ -n "$HANG" ]] && kill "$HANG" 2>/dev/null || true
-  docker rm -f -v "$SVC" "$TGT" "$TGT2" "$REPO" >/dev/null 2>&1 || true
+  docker rm -f -v "$SVC" "$TGT" "$TGT2" "$SLP" "$REPO" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
-  for c in "$SVC" "$TGT" "$TGT2" "$REPO"; do docker inspect "$c" >/dev/null 2>&1 && echo "container $c LEFT"; done
+  for c in "$SVC" "$TGT" "$TGT2" "$SLP" "$REPO"; do docker inspect "$c" >/dev/null 2>&1 && echo "container $c LEFT"; done
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -575,7 +585,7 @@ page=$(api '' | jget repository | python3 -c "import json,sys; r=json.load(sys.s
 fi
 
 # ---- SC the scale arm (the last cases: they change the service's instance list) ------------------------------------
-if want SC5 || want SC6 || want SC4 || want BH || want SV; then
+if want SC5 || want SC6 || want SC4 || want BH || want SV || want SC7 || want SL; then
 for n in 5 6 7 8 9 10 11 12; do psql "$TDSN" -Xq -v ON_ERROR_STOP=1 -c "create role l$n login password 'p$n' in role pg_monitor" -c "create database db$n owner l$n" >/dev/null; done
 instances12() { # $1 host, $2 port: t1-t12, each with 'activity' every 10 s (a cut at :20 reaches every cut instance in its first minute)
   local n; for n in $(seq 1 12); do printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n    schedules: {activity: 10s}\n' "$n" "$1" "$2" "$n" "$n" "$n"; done
@@ -717,6 +727,132 @@ if want SV; then
   fi
   docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc12.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
 fi
+# ---- SC7 / SL the slow-connect tier on the service: a proxy that delays new connections, the root's connect_time
+# threshold low (0.10 / 0.15 s) so one slow minute in an instance's 5-minute window is critical, every member and the fold
+# crossing in the same beat (a slow ramp across the critical line would send a member above a warning fold on its own,
+# as designed: the SQL rows C27l prove that edge, not this case)
+if want SC7 || want SL; then
+  # slowp: every new connection on its ports waits /tmp/delay seconds (none: 0), then goes on to target:5432
+  cat > "$WORK/slowp.py" <<'PY'
+import asyncio, sys
+
+def delay():
+    try:
+        with open('/tmp/delay') as f:
+            return float(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+
+async def pipe(r, w):
+    try:
+        while True:
+            b = await r.read(65536)
+            if not b:
+                break
+            w.write(b)
+            await w.drain()
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        w.close()
+
+async def handle(cr, cw):
+    d = delay()
+    if d > 0:
+        await asyncio.sleep(d)
+    try:
+        ur, uw = await asyncio.open_connection('target', 5432)
+    except OSError:
+        cw.close()
+        return
+    await asyncio.gather(pipe(cr, uw), pipe(ur, cw))
+
+async def main():
+    servers = [await asyncio.start_server(handle, '0.0.0.0', int(p)) for p in sys.argv[1:]]
+    print('slowp on', ' '.join(sys.argv[1:]), flush=True)
+    await asyncio.gather(*(s.serve_forever() for s in servers))
+
+asyncio.run(main())
+PY
+  docker image inspect python:3-slim >/dev/null 2>&1 || docker pull -q python:3-slim >/dev/null || fail "SC7 / SL: docker pull python:3-slim"
+  docker run -d --name "$SLP" --network "$NET" --network-alias slowp -v "$WORK/slowp.py:/slowp.py:ro" python:3-slim python3 -u /slowp.py 6001 6002 6003 6004 6005 >/dev/null
+  for _ in $(seq 1 30); do docker logs "$SLP" 2>&1 | grep -q 'slowp on' && break; sleep 1; done
+  slow() { docker exec "$SLP" sh -c "echo $1 > /tmp/delay"; }
+  # thr WARN CRIT: the root's connect_time threshold set; prints the outcome ('error': the repository has no such function)
+  thr() { q "SELECT pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'set', 'ui_user', 'proof', 'key', 'connect_time', 'level', 'root', 'warn', $1, 'crit', $2))->>'outcome'" || echo error; }
+  svc_head() { printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\ninstances:\n' "$PW"; }
+  inst() { printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n    schedules: {activity: 10s}\n' "$1" "$2" "$3" "$1" "$1" "$1"; }
+  { svc_head; for n in $(seq 1 12); do inst "$n" slowp $((6001 + (n - 1) / 3)); done; alerts_of /work; } > "$WORK/svc-sc7.yaml"
+  { svc_head; inst 1 slowp 6005; for n in $(seq 2 12); do inst "$n" target 5432; done; alerts_of /work; } > "$WORK/svc-sl.yaml"
+  sc_dial() { docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/$1 /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"; }
+  # sc_through NAMES TARGET N: N of the instances NAMES (a regex) with 3 written minutes of opened connects through
+  # TARGET (a LIKE pattern) in the last 5
+  sc_through() { waitfor 360 "SELECT count(*) = $3 FROM (SELECT l.instance_id FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name ~ '^($1)\$' AND l.target LIKE '$2' AND l.opened > 0 AND l.minute > now() - interval '5 minutes' GROUP BY 1 HAVING count(*) >= 3) x"; }
+  slow 0; sc_thr=$(thr 0.10 0.15)
+fi
+if want SC7; then
+  # t1-t12 through slowp's four ports (three each): the delay of 2 s for 5 minutes - ONE 'slow connects' (the host fold)
+  sc_clean; sc_dial svc-sc7.yaml
+  sc7_in=1; sc_through 't([1-9]|1[0-2])' 'postgres:slowp:600_' 12 || sc7_in=0
+  waitfor 300 "$NOPARENT" || true; sleep 65; rm -f "$WORK"/spool*/*
+  sc7_b=$(q "SELECT count(*) FROM pgvigil.collector_connects WHERE level > 0") || sc7_b=error
+  pin_at 3; slow 2; sc7_t0=$SECONDS
+  sc7_tp=$(within 300 "$WORK/spool" firing "slow connects" "")
+  sc_left=$(( 300 - (SECONDS - sc7_t0) )); if (( sc_left > 0 )); then sleep "$sc_left"; fi
+  sc7_f=$(q "SELECT coalesce(string_agg(kind || ' ' || value || ' ' || level || CASE WHEN under_host THEN ' under' ELSE '' END || ' ' || cardinality(members), '; ' ORDER BY kind, value), '-') FROM pgvigil.collector_slow_folds") || sc7_f=error
+  sc7_h=$(q "SELECT count(*) FROM pgvigil.collector_slow_held") || sc7_h=error
+  sc7_a=$(q "SELECT coalesce(min(avg_s) || ' - ' || max(avg_s) || ' s', '-') FROM pgvigil.collector_connects WHERE target LIKE 'postgres:slowp:%'") || sc7_a=error
+  sc7_d=$(q "SELECT coalesce(max(detail), '-') FROM pgvigil.collector_slow_folds WHERE kind = 'host'") || sc7_d=error
+  snap SC7; sc_L=$WORK/SC7.lst
+  sc7_u=$(cnt "$WORK/spool" firing "slow connects" ""); sc7_ut=$(cnt "$WORK/spool" firing "slow connects" "" "pgvigil-svc")
+  sc7_s=$(cnt "$WORK/spool2" firing "slow connects" ""); sc7_m=$(cnt "$WORK/spool" firing "slow connect" ""); sc7_m2=$(cnt "$WORK/spool2" firing "slow connect" "")
+  pin_at 3; slow 0
+  sc7_tr=-1; if [[ "$sc7_tp" -ge 0 ]]; then sc7_tr=$(SKIP=$sc_L within 600 "$WORK/spool" resolved "slow connects" ""); fi
+  sleep 130   # two more passes: no member's own alert after the fold's recovery
+  sc7_r=$(cnt "$WORK/spool" resolved "slow connects" ""); sc7_n=$(cnt "$WORK/spool" firing "slow connects" ""); sc7_x=$(cnt "$WORK/spool" firing "slow connect" "")
+  keep SC7
+  SC7_F="host pgvigil-svc 2 12; target postgres:slowp:6001 2 under 3; target postgres:slowp:6002 2 under 3; target postgres:slowp:6003 2 under 3; target postgres:slowp:6004 2 under 3"
+  if [[ "$sc_thr" == done && "$sc7_in" == 1 && "$sc7_b" == 0 && "$sc7_tp" -ge 0 && "$sc7_tp" -le 240 && "$sc7_u" == 1 && "$sc7_ut" == 0 && "$sc7_s" == 1 \
+        && "$sc7_m" == 0 && "$sc7_m2" == 0 && "$sc7_f" == "$SC7_F" && "$sc7_h" == 12 \
+        && "$sc7_d" == "connects slow from collector pgvigil-svc: 4 of its 4 judged target(s) over their warning"* \
+        && "$sc7_tr" -ge 0 && "$sc7_r" == 1 && "$sc7_n" == 1 && "$sc7_x" == 0 ]]; then
+    ok "SC7: t1-t12 through slowp's four ports held 2 s for 5 minutes (connect_time 0.10 / 0.15 s) - 'slow connects' $sc7_tp s after, once on U and S, valued pgvigil-svc; the folds '$sc7_f', $sc7_h held, averages $sc7_a; no 'slow connect' sent; the detail '$(echo "$sc7_d" | cut -c1-240)'; lifted: resolved once $sc7_tr s after, nothing after it"
+  else
+    fail "SC7: threshold '$sc_thr' (want done), the 12 through slowp $sc7_in (want 1), slow before the delay $sc7_b (want 0); 'slow connects' $sc7_tp s after (want 0-240), U $sc7_u (want 1), of another value $sc7_ut (want 0), S $sc7_s (want 1); 'slow connect' U $sc7_m / S $sc7_m2 (want 0 / 0); folds '$sc7_f' (want '$SC7_F'), held $sc7_h (want 12), averages $sc7_a, detail '$(echo "$sc7_d" | cut -c1-200)'; lifted: resolved after $sc7_tr s, $sc7_r (want 1), sent in all $sc7_n (want 1), members after $sc7_x (want 0): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-500)"
+  fi
+fi
+if want SL; then
+  # t1 alone through slowp (port 6005), t2-t12 direct: the delay of 2 s for 4 minutes - t1's own 'slow connect' only
+  sc_clean; sc_dial svc-sl.yaml
+  sl_in=1; sc_through 't1' 'postgres:slowp:6005' 1 || sl_in=0
+  sc_through 't([2-9]|1[0-2])' 'postgres:target:5432' 11 || sl_in=0
+  waitfor 300 "$NOPARENT" || true; sleep 65; rm -f "$WORK"/spool*/*
+  sl_b=$(q "SELECT count(*) FROM pgvigil.collector_connects WHERE level > 0") || sl_b=error
+  pin_at 3; slow 2; sl_t0=$SECONDS
+  sl_tp=$(within 300 "$WORK/spool" firing "slow connect" t1)
+  sc_left=$(( 240 - (SECONDS - sl_t0) )); if (( sc_left > 0 )); then sleep "$sc_left"; fi
+  sl_f=$(q "SELECT count(*) FROM pgvigil.collector_slow_folds") || sl_f=error
+  sl_c=$(q "SELECT coalesce(string_agg(name || ' ' || level || ' ' || avg_s || ' s', ', ' ORDER BY name), '-') FROM pgvigil.collector_connects WHERE level > 0") || sl_c=error
+  snap SL; sc_L=$WORK/SL.lst
+  sl_u=$(cnt "$WORK/spool" firing "slow connect" t1); sl_o=$(cnt "$WORK/spool" firing "slow connect" "t2|t3|t4|t5|t6|t7|t8|t9|t10|t11|t12")
+  sl_s=$(cnt "$WORK/spool2" firing "slow connect" t1); sl_fs=$(cnt "$WORK/spool" firing "slow connects" "")
+  pin_at 3; slow 0
+  sl_tr=-1; if [[ "$sl_tp" -ge 0 ]]; then sl_tr=$(SKIP=$sc_L within 600 "$WORK/spool" resolved "slow connect" t1); fi
+  sl_r=$(cnt "$WORK/spool" resolved "slow connect" t1); sl_n=$(cnt "$WORK/spool" firing "slow connect" t1)
+  keep SL
+  if [[ "$sc_thr" == done && "$sl_in" == 1 && "$sl_b" == 0 && "$sl_tp" -ge 0 && "$sl_tp" -le 240 && "$sl_u" == 1 && "$sl_o" == 0 && "$sl_s" == 1 && "$sl_fs" == 0 \
+        && "$sl_f" == 0 && "$sl_c" =~ ^t1\ 2\ [0-9.]+\ s$ && "$sl_tr" -ge 0 && "$sl_r" == 1 && "$sl_n" == 1 ]]; then
+    ok "SL: t1 alone through slowp held 2 s for 4 minutes - its own 'slow connect' $sl_tp s after, once on U and S ('$sl_c'), no fold, no other instance's; lifted: resolved once $sl_tr s after"
+  else
+    fail "SL: threshold '$sc_thr' (want done), t1 through slowp and the rest direct $sl_in (want 1), slow before the delay $sl_b (want 0); t1's 'slow connect' $sl_tp s after (want 0-240), U $sl_u (want 1), the others' $sl_o (want 0), S $sl_s (want 1), 'slow connects' $sl_fs (want 0), folds $sl_f (want 0), slow '$sl_c' (want t1 alone, critical); lifted: resolved after $sl_tr s, $sl_r (want 1), sent in all $sl_n (want 1): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-500)"
+  fi
+fi
+if want SC7 || want SL; then
+  sc_thr2=$(thr 1.00 2.50); docker rm -f -v "$SLP" >/dev/null 2>&1 || true
+  docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc12.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
+  [[ "$sc_thr" != done || "$sc_thr2" == done ]] || fail "SC7 / SL: the root's connect_time back to 1.00 / 2.50 s: '$sc_thr2'"
+fi
+# ---- SC7 / SL end
 # shellcheck disable=SC2086
 logins login $ALL12
 fi
