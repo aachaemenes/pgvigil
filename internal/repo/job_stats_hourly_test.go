@@ -29,6 +29,9 @@ import (
 //     no hand step;
 //   - a history import (job_stats_defer first) writes its day-batches with no hour built and one merged dirty range;
 //     job_stats_build at its end builds every hour once; a defer that lapsed no longer holds a write back;
+//   - the first build is no migration row (a migrated store holds no '0139' dirty range): an instance whose runs were
+//     stored before 0139 (no hours, no job_stats_built marker) is built whole by its first write, and a quiet one by
+//     job_stats_hourly_purge;
 //   - job_stats_hourly_purge drops the months older than hours_retention's 730 days and heals a quiet instance's dirty
 //     range.
 func TestJobStatsHourlyOnAStore(t *testing.T) {
@@ -65,19 +68,19 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 		t.Fatal("0139 not applied: pgvigil.job_stats_hourly does not exist")
 	}
 	sfx := time.Now().UnixNano() % 1000000000
-	var ms, pg int
+	var ms, pg, up1, up2 int
 	t.Cleanup(func() {
 		c, stop := context.WithTimeout(context.Background(), 20*time.Second)
 		defer stop()
 		ids := []int{}
-		for _, id := range []int{ms, pg} {
+		for _, id := range []int{ms, pg, up1, up2} {
 			if id > 0 {
 				ids = append(ids, id)
 			}
 		}
 		for _, q := range []string{
 			`DELETE FROM pgvigil.job_stats_hourly WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.job_stats_dirty WHERE instance_id = ANY($1)`,
-			`DELETE FROM pgvigil.job_stats_defer WHERE instance_id = ANY($1)`,
+			`DELETE FROM pgvigil.job_stats_defer WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.job_stats_built WHERE instance_id = ANY($1)`,
 			`DELETE FROM pgvigil.mssql_job_runs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.job_runs WHERE instance_id = ANY($1)`,
 			`DELETE FROM pgvigil.mssql_jobs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.jobs WHERE instance_id = ANY($1)`,
 			`DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`} {
@@ -102,6 +105,9 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 	if got := str(`SELECT days::text FROM pgvigil.hours_retention WHERE table_name = 'job_stats_hourly'`); got != "730" {
 		t.Errorf("hours_retention job_stats_hourly = %s days, want 730", got)
 	}
+	if got := str(`SELECT count(*)::text FROM pgvigil.job_stats_dirty WHERE why LIKE '0139%'`); got != "0" {
+		t.Errorf("the migration wrote %s first-build dirty row(s), want 0 (no migration writes a stored row)", got)
+	}
 	// h1: the UTC hour five hours back; h2 the next
 	var h1 time.Time
 	if err := pool.QueryRow(ctx, `SELECT date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '5 hours'`).Scan(&h1); err != nil {
@@ -117,11 +123,11 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 		status int
 		secs   int
 	}
-	// msRuns: ONE INSERT of the runs (as an import writes them)
-	msRuns := func(runs ...mrun) {
+	// msRunsOf: ONE INSERT of an instance's runs (as an import writes them); msRuns: the SQL Server instance's
+	msRunsOf := func(inst int, runs ...mrun) {
 		t.Helper()
 		sql := `INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, run_status, duration_s, retries) VALUES `
-		args := []any{ms}
+		args := []any{inst}
 		for i, r := range runs {
 			hid++
 			if i > 0 {
@@ -132,6 +138,10 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 			args = append(args, r.at, int64(hid), r.job, r.step, r.status, r.secs)
 		}
 		exec(sql, args...)
+	}
+	msRuns := func(runs ...mrun) {
+		t.Helper()
+		msRunsOf(ms, runs...)
 	}
 	hour := func(inst int, sched, job string, step int, at time.Time) string {
 		t.Helper()
@@ -287,6 +297,41 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 	want("a lapsed defer holds nothing back", hour(ms, "sqlagent", "g", 0, h1), "1/1/0 8/8/8")
 	exec(`DELETE FROM pgvigil.job_stats_defer WHERE instance_id = $1`, ms)
 
+	// 9. instances whose runs were stored before 0139 (an upgraded store: no hours, no build marker): runs written with
+	// the trigger off, in one transaction; up1's next import builds its whole range, up2 writes no more (step 7's purge)
+	for i, id := range []*int{&up1, &up2} {
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+			fmt.Sprintf("jobhours-up%d-%d", i+1, sfx)).Scan(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before0139 := func(inst int, at time.Time, secs int) {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		hid++
+		for _, q := range []string{`ALTER TABLE pgvigil.mssql_job_runs DISABLE TRIGGER job_stats_hourly_ins`,
+			fmt.Sprintf(`INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, run_status, duration_s, retries)
+			             VALUES (%d, '%s', %d, 'a', 'a', 0, 1, %d, 0)`, inst, at.UTC().Format(time.RFC3339), hid, secs),
+			`ALTER TABLE pgvigil.mssql_job_runs ENABLE TRIGGER job_stats_hourly_ins`} {
+			if _, err := tx.Exec(ctx, q); err != nil {
+				t.Fatalf("%v\n%s", err, q)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before0139(up1, plus(d1, 5), 2)
+	before0139(up2, plus(d2, 5), 4)
+	want("a run stored before 0139 has no hour", hour(up1, "sqlagent", "a", 0, d1), "none")
+	msRunsOf(up1, mrun{"a", 0, plus(h1, 5), 1, 1})
+	want("the upgraded instance's first write builds its whole range (the old run's hour)", hour(up1, "sqlagent", "a", 0, d1), "1/1/0 2/2/2")
+	want("and its own hour", hour(up1, "sqlagent", "a", 0, h1), "1/1/0 1/1/1")
+
 	// 7. job_stats_hourly_purge: the months older than 730 days go; a quiet instance's dirty range is healed
 	exec(`DELETE FROM pgvigil.job_stats_hourly WHERE instance_id = $1`, pg)
 	exec(`INSERT INTO pgvigil.job_stats_dirty (instance_id, source, from_at, to_at, why) VALUES ($1, 'job_runs', $2, $3, 'the test')`, pg, h1, h2)
@@ -300,4 +345,6 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 	want("2019-03's hours dropped", str(`SELECT (to_regclass('pgvigil.job_stats_hourly_201903') IS NULL)::text`), "true")
 	want("the quiet instance healed by the purge", hour(pg, "pg_cron", "7", 0, h1), "2/1/1 15/9/6")
 	want("its dirty range gone", str(`SELECT count(*)::text FROM pgvigil.job_stats_dirty WHERE instance_id = $1`, pg), "0")
+	want("the quiet upgraded instance built whole by the purge", hour(up2, "sqlagent", "a", 0, d2), "1/1/0 4/4/4")
+	want("both upgraded instances marked built", str(`SELECT count(*)::text FROM pgvigil.job_stats_built WHERE instance_id IN ($1, $2)`, up1, up2), "2")
 }
