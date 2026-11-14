@@ -358,7 +358,10 @@ for V in $VERSIONS; do
   # every value read, against the server's own reading of the raw text
   BAD=0; NH=0
   while IFS='|' read -r name raw val; do
-    printf 'begin;\nselect set_config(%s, %s, true) is null;\nselect setting from pg_settings where name = %s;\nrollback;\n' \
+    # ONE statement: a timeout the raw text sets (statement_timeout '2.5ms') is armed only when the NEXT statement starts,
+    # so the read never runs under it (a second statement was cancelled on a loaded box); the local setting ends with
+    # the statement's own transaction. OFFSET 0 keeps set_config out of the lateral's filter.
+    printf 'select p.setting from (select set_config(%s, %s, true) as v offset 0) s,\n  lateral (select setting from pg_settings where name = %s and s.v is not null) p;\n' \
       "'$name'" "'$raw'" "'$name'" > "$WORK/hand.sql"
     got=$(psql "${SU[$V]}" -XAtq -v ON_ERROR_STOP=1 -f "$WORK/hand.sql" < /dev/null | tail -1) || fail "C: the server did not read $name = '$raw'"
     NH=$((NH + 1))
