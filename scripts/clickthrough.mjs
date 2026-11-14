@@ -473,7 +473,11 @@ for (const sc of treeScopes) {
     const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree A ' + href.replace(/=[^&]*/g, '=')], tag: 'A', what, href };
     try {
       await fresh(sc.hash); await openAll(sc); net = []; exc = [];
-      const clicked = await ev(`(() => { const a = [...document.querySelectorAll('#tree a[href]')].find(a => a.getAttribute('href') === ${JSON.stringify(href)}); if (!a) return false; a.click(); return true; })()`);
+      const clickLeaf = () => ev(`(() => { const a = [...document.querySelectorAll('#tree a[href]')].find(a => a.getAttribute('href') === ${JSON.stringify(href)}); if (!a) return false; a.click(); return true; })()`);
+      let clicked = await clickLeaf();
+      // once more on the tree opened again: a leaf listed from this tree and gone in its own pass is the walk's timing
+      // (click-c6: the root's Community tools, a static leaf of rootGroups, its two neighbours found), not the page's
+      if (!clicked) { await sleep(1000); await openAll(sc); net = []; exc = []; clicked = await clickLeaf(); }
       if (!clicked) { row.kind = 'not reached'; row.why = 'not in the opened tree'; out.tree.push(row); continue; }
       await sleep(300);
       const okL = await settled(); const s = await ev(state).catch(e => ({ errors: [String(e)] }));
