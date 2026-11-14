@@ -128,6 +128,9 @@ if (isMain) {
   const notClicked = `${capN} control(s) over a page's cap on ${pages.filter(p => p.capped).length} page(s) (each a row 'over the cap'), ${sameN} of the grid's own controls past ${3} a driver on ${pages.filter(p => p.same).length} page(s)`;
   console.log(`pages: ${pages.length} (root ${count('root')}, pg ${count('pg')}, ms ${count('ms')}), ${pages.filter(p => !p.settled).length} not settled; not clicked: ${notClicked}; the longest driver ${seconds} s; chromium started ${starts} time(s)`);
   console.log(`rows: ${all.length} (walk ${rows.length}, tree ${tree.length}, click map ${all.filter(r => r.source === 'click map').length}); by kind: ${[...kinds.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}`);
+  // a tree leaf the walk found only on its second look (the tree opened again after a second): counted, never silent
+  const second = tree.filter(r => r.look === 2);
+  console.log(`tree: ${second.length} leaf(s) found on the second look${second.length ? ' (' + second.map(r => r.scope + ' ' + r.path[0]).join(', ') + ')' : ''}`);
   const distinct = new Map();
   for (const r of g.outside) { const k = [r.scope, r.page, r.kind, r.path.join(' > ')].join('\u0001'); if (!distinct.has(k)) distinct.set(k, r); }
   for (const r of distinct.values()) console.log(`NEW ${r.kind} ${r.scope} ${r.page} ${JSON.stringify(r.path.join(' > ').slice(0, 160))}: ${said(r).slice(0, 200)}`);

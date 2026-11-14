@@ -111,7 +111,7 @@ const connect = async () => {
   await cmd('Fetch.enable', { patterns: [{ urlPattern: U + 'api/*', requestStage: 'Request' }] });
   await cmd('Page.setInterceptFileChooserDialog', { enabled: true });
   // each download under its own GUID: a second save of the same file name (one deadlock's .xdl from two links) still
-  // adds a file, so the folder's count grows on every download (with 'allow' it did not: click-c5's two .xdl rows)
+  // adds a file, so the folder's count grows on every download (with 'allow' a second save of one name did not)
   await cmd('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: dl }).catch(() => {});
   await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
@@ -122,28 +122,35 @@ const connect = async () => {
 const ensure = async () => { if (!lost && ws) return; try { ws?.close(); } catch {} if (chrome) { try { chrome.kill('SIGKILL'); } catch {} chrome = null; await sleep(500); } await connect(); };
 await connect();
 
-// ---- a page: loaded, settled (no 'Loading' / 'Reading' / 'Running' line; an instance page's header drawn) ----------
-// a busy line: 'Loading' anything ('Loading the chart', chartkit.ts:40), or 'Reading' / 'Running' with its ellipsis
-// ('Reading...', 'Reading the heatmap ...', 'Running...'); never a sentence or a link that only begins so - the Queries
-// page's 'Running queries' (the link above its Active queries section, mssql_queries.ts:36 / :283) read as busy for good
-// (click-c3, c5: 12 rows; click-q1: its read answered in 25 ms)
-const BUSY_RE = String.raw`^Loading|^(Reading|Running)\b.*(\.\.\.|\u2026)$`;
+// ---- a page: loaded, settled (no busy line in main or an open dialog; an instance page's header drawn) -------------
+// a busy line: 'Loading' anything ('Loading the chart', chartkit.ts:40), or Reading / Running / Working / Checking /
+// Searching / Looking with its ellipsis ('Reading...', 'Reading the heatmap ...', 'Working...', 'Looking again...');
+// never a sentence or a link that only begins so - the Queries page's 'Running queries' (the link above its Active
+// queries section, mssql_queries.ts:36 / :283) would read as busy for good
+const BUSY_RE = String.raw`^Loading|^(Reading|Running|Working|Checking|Searching|Looking)\b.*(\.\.\.|\u2026)$`;
 const busyText = t => new RegExp(BUSY_RE).test(t.trim());
 // the fixture: the app's busy texts and the ones that only begin so (checked at the walker's start: exit 2 on a wrong one)
 for (const [t, want] of [['Reading...', true], ['Reading ...', true], ['Reading the heatmap ...', true], ['Loading...', true], ['Loading the chart', true],
   ['Running...', true], ["Reading the instance's collections...", true], ['Running queries', false], ['Running now', false], ['Running at once', false],
-  ['Running a report is off on this server.', false], ['Running queries of this instance at this snapshot', false]]) {
+  ['Running a report is off on this server.', false], ['Running queries of this instance at this snapshot', false],
+  ['Working...', true], ['Working\u2026', true], ['Checking...', true], ['Searching...', true], ['Looking again...', true], ['Reading the session...', true],
+  ['Working hours', false], ['Checking the login is off here.', false], ['Looking at a plan', false]]) {
   if (busyText(t) !== want) { console.error(`the busy rule's fixture: '${t}' read ${!want ? 'busy' : 'not busy'}`); process.exit(2); }
 }
-const BUSY = `[...document.querySelectorAll('main p, main [role=status]')].some(p => new RegExp(${JSON.stringify(BUSY_RE)}).test(p.textContent.trim()))`;
+// where a busy line sits: main's paragraphs and status lines, a meta span ('Looking again...'), an open dialog's
+const BUSYSEL = 'main p, main [role=status], main span.meta, dialog[open] p, dialog[open] [role=status]';
+const BUSY = `[...document.querySelectorAll(${JSON.stringify(BUSYSEL)})].some(p => new RegExp(${JSON.stringify(BUSY_RE)}).test(p.textContent.trim()))`;
 // the lines a page that did not settle still shows (which section was still reading at the cap)
-const BUSYLINES = `[...document.querySelectorAll('main p, main [role=status]')].map(p => { const sec = p.closest('section, .card'); const h = sec?.querySelector('h2, h3, h4')?.textContent?.trim() ?? ''; return [h, p.textContent.trim()]; })
+const BUSYLINES = `[...document.querySelectorAll(${JSON.stringify(BUSYSEL)})].map(p => { const sec = p.closest('section, .card, dialog'); const h = sec?.querySelector('h2, h3, h4')?.textContent?.trim() ?? ''; return [h, p.textContent.trim()]; })
   .filter(([, t]) => new RegExp(${JSON.stringify(BUSY_RE)}).test(t)).map(([h, t]) => (h ? h + ': ' : '') + t.slice(0, 80)).slice(0, 8)`;
+// settled: two quiet polls in a row (a page's status line goes in empty and gets its 'Loading...' a frame later)
 const settled = async (cap = 20000) => {
+  let quiet = 0;
   for (const t = Date.now(); Date.now() - t < cap; await sleep(200)) {
     if (lost) return false;
     const ok = await ev(`(() => { const m = document.querySelector('main'); return !!m && m.children.length > 0 && !(${BUSY}); })()`).catch(() => false);
-    if (ok) {
+    if (!ok) { quiet = 0; continue; }
+    if (++quiet >= 2) {
       for (let i = 0; i < 50 && await ev(`/[?&]i=/.test(location.hash) && !document.querySelector('main .inst-header')`).catch(() => false); i++) await sleep(100);
       await sleep(400); return true;
     }
@@ -157,14 +164,14 @@ const freshOnce = async hash => { await ensure(); await cmd('Page.navigate', { u
   // a click of the bar may have switched the theme: every page starts light
   await ev(`(() => { try { localStorage.setItem('pgvigil.theme', 'light'); } catch (e) {} document.documentElement.setAttribute('data-theme', 'light'); })()`).catch(() => {});
   return settled(); };
-// fresh: freshOnce, and once more on a browser started again when it was lost on the way (its CDP socket closed): a
-// lost browser costs one page load, never the list or the walk
+// fresh: freshOnce, and once more on a browser started again when it was lost on the way (its CDP socket closed),
+// in a command or while the page settled (settled() then answers false without a throw): a lost browser costs one
+// page load, never the list or the walk
 const fresh = async hash => {
-  try { return await freshOnce(hash); } catch (e) {
-    if (!lost) throw e;
-    console.error(`${label}: the browser was lost loading ${hash} (${e.message}): started again`);
-    await ensure(); return await freshOnce(hash);
-  }
+  let why;
+  try { const ok = await freshOnce(hash); if (ok || !lost) return ok; why = 'lost while the page settled'; } catch (e) { if (!lost) throw e; why = e.message; }
+  console.error(`${label}: the browser was lost loading ${hash} (${why}): started again`);
+  await ensure(); return await freshOnce(hash);
 };
 const tabsOf = async hash => { await fresh(hash); return await ev(`(() => { const t = document.querySelector('#tabs'); return t?.dataset.all ? JSON.parse(t.dataset.all) : [...(t?.querySelectorAll('a') ?? [])].map(a => a.getAttribute('href')); })()`) ?? []; };
 
@@ -206,13 +213,15 @@ if (mode === 'list') {
       add(kind === 'alert' ? 'root' : p.scope, kind === 'alert' ? null : p.engine, h, kind === 'alert' ? null : (p.engine === 'sqlserver' ? ms : pg));
     }
   }
+  if (!pages.some(p => p.tab === 'alert')) notes.push('no alert link found on the listed pages: the alert page was not listed');
+  if (starts > 1) notes.push(`chromium started ${starts} time(s) for the list (a lost browser started again)`);
   // the cost a page is expected to take (Community tools and Custom reports hold most clicks) and the cap
   for (const p of pages) { p.cap = /^(community|customreports)$/.test(p.tab) ? 160 : 80; p.cost = 10 + Math.min(p.cap, p.controls ?? p.cap); }
   const bins = Array.from({ length: shards }, (_, k) => ({ k, cost: k === 0 ? 180 : 0, pages: [] }));
   for (const p of [...pages].sort((x, y) => y.cost - x.cost)) { const b = bins.reduce((m, x) => x.cost < m.cost ? x : m); b.pages.push(p); b.cost += p.cost; }
   const stem = outFile.replace(/\.json$/, '');
   for (const b of bins) fs.writeFileSync(`${stem}-${b.k}.json`, JSON.stringify({ shard: b.k, chrome: b.k === 0, pg: pg ? { id: String(pg.instance_id), name: pg.name } : null, ms: ms ? { id: String(ms.instance_id), name: ms.name } : null, pages: b.pages }));
-  fs.writeFileSync(outFile, JSON.stringify({ pg: pg?.name, ms: ms?.name, pooler: pooler?.name ?? null, pages, notes }, null, 1));
+  fs.writeFileSync(outFile, JSON.stringify({ pg: pg?.name, ms: ms?.name, pooler: pooler?.name ?? null, pages, notes, chromeStarts: starts }, null, 1));
   const n = s => pages.filter(p => p.scope === s).length;
   console.log(`listed: ${pages.length} pages (root ${n('root')}, PostgreSQL ${pg?.name} ${n('pg')}${pooler ? ' with the Pooler of ' + pooler.name : ''}, SQL Server ${ms?.name} ${n('ms')}) in ${shards} shard(s)`);
   for (const x of notes) console.log('note: ' + x);
@@ -247,7 +256,7 @@ const controls = withBar => ev(`(() => { const S = ${SIG}; const seen = new Map(
     what: (el.getAttribute('aria-label') || el.textContent || el.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80), disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
     reason: [el.title, ...(el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent?.trim() ?? '')].filter(Boolean).join(' | ').slice(0, 240),
     href: el.getAttribute('href'), type: el.type || '', opts: el.tagName === 'SELECT' ? [...el.options].map(o => o.value) : null, cur: el.tagName === 'SELECT' ? el.value : null,
-    on: ['aria-selected', 'aria-current', 'aria-pressed'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
+    on: ['aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
   return [...seen.values()]; })()`);
 const offNotes = () => ev(`[...document.querySelectorAll('main p.meta, main p.note, main .note, main .off-reason, main [id^=off-], dialog[open] p')].map(p => p.textContent.trim()).filter(t => /off here|is off|read only|read-only|needs|refused|not configured|no read login|no monitoring login|-no-login|disabled|demo/i.test(t)).map(t => t.slice(0, 240))`);
 // one step, given up to 5 s to find its control: a replay on a fresh page reaches a grid cell or a cell's button only
@@ -273,7 +282,8 @@ const reasonOf = sig => ev(`(() => { const S = ${SIG}; const el = [...document.q
 // one step: the control by its signature, then a click (or a select's option, or a file input's fixture)
 const act = async (sig, step) => {
   if (sig === 'CTX') return ev(`(() => { const td = document.querySelector('main table.grid tbody td'); if (!td) return 'no grid cell'; const r = td.getBoundingClientRect(); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 5, clientY: r.y + 5, button: 2 })); return 'ok'; })()`);
-  const found = await cmd('Runtime.evaluate', { expression: `(() => { const S = ${SIG}; return [...document.querySelectorAll(${JSON.stringify(CTRL + BAR)})].find(el => S(el) === ${JSON.stringify(sig)}) ?? null; })()` });
+  const nth = Math.max(1, step?.nth ?? 1);
+  const found = await cmd('Runtime.evaluate', { expression: `(() => { const S = ${SIG}; return [...document.querySelectorAll(${JSON.stringify(CTRL + BAR)})].filter(el => S(el) === ${JSON.stringify(sig)})[${nth - 1}] ?? null; })()` });
   const oid = found.result?.result?.objectId; if (!oid) return 'gone';
   if (/^(dlg |menu |hdr |bar )?Ifile /.test(sig)) {
     const acc = (await cmd('Runtime.callFunctionOn', { objectId: oid, functionDeclaration: 'function () { return this.accept || ""; }', returnByValue: true })).result?.result?.value ?? '';
@@ -291,12 +301,14 @@ const out = { shard: shard.shard, pages: [], clicks: [], tree: [] };
 const t0 = Date.now();
 const save = () => fs.writeFileSync(outFile, JSON.stringify(out));
 const hdrSeen = new Set();
+// the downloads folder's whole files: never one still being written (.crdownload) or empty
+const dlCount = () => fs.readdirSync(dl).filter(f => { if (f.endsWith('.crdownload')) return false; try { return fs.statSync(path.join(dl, f)).size > 0; } catch { return false; } }).length;
 const verdict = (row, before, after, dl0) => {
   const newErr = (after.errors || []).filter(e => !(before.errors || []).includes(e));
   const apiBad = row.api.filter(x => x.status >= 400 || x.status === 0);
   row.status = after.status !== before.status ? after.status : '';
   row.errors = newErr; row.to = after.hash; row.h2 = after.h2; row.dialog = after.dialog; row.menu = after.menu;
-  const grew = fs.readdirSync(dl).length > dl0;
+  const grew = dlCount() > dl0;
   if (row.held.length) return 'write held';
   if (!after.mark) return 'reloads';
   if (row.chooser.length) return 'chooser';
@@ -342,7 +354,7 @@ for (const pg of [...pagesOf, ...chromePage]) {
   const done = new Set(); let budget = pg.cap ?? 80; let capped = 0, same = 0;
   while (queue.length) {
     const { path: p, c } = queue.shift();
-    const key = p.map(s => s.sig + (s.opt !== undefined ? '=' + s.opt : '')).join(' > ');
+    const key = p.map(s => s.sig + (s.opt !== undefined ? '=' + s.opt : '') + (s.nth ? ' [' + s.nth + ']' : '')).join(' > ');
     if (done.has(key)) continue; done.add(key);
     // the instance header's controls: once per engine (the same header on every page of the instance)
     if (p.length === 1 && /^hdr /.test(c.sig)) { const hk = (pg.engine ?? 'root') + ':' + c.sig; if (hdrSeen.has(hk)) continue; hdrSeen.add(hk); }
@@ -351,7 +363,7 @@ for (const pg of [...pagesOf, ...chromePage]) {
     if (gk) { const k = gk + (p[p.length - 1].opt !== undefined ? '=' + p[p.length - 1].opt : ''); const n = gridSeen.get(k) ?? 0; if (n >= GRID_MAX) { same++; continue; } gridSeen.set(k, n + 1); }
     if (budget-- <= 0) { capped++; out.clicks.push({ scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, kind: 'over the cap' }); continue; }
     const last = p[p.length - 1];
-    const row = { scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, count: c.n, on: !!c.on };
+    const row = { scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '') + (s.nth ? ' [' + s.nth + ']' : '')), tag: c.tag, what: c.what, count: c.n, on: !!c.on };
     try {
       if (c.disabled) { row.kind = c.reason ? 'disabled' : 'off without words'; row.why = c.reason; row.off = await offNotes().catch(() => []); if (!c.reason && row.off.length) row.kind = 'disabled'; out.clicks.push(row); continue; }
       if (c.tag === 'A' && last.sig !== 'CTX' && !/^(dlg|menu) /.test(last.sig) && p.length === 1) {
@@ -383,7 +395,7 @@ for (const pg of [...pagesOf, ...chromePage]) {
       if (replay !== 'ok') { row.kind = 'not reached'; row.why = (p.length > 1 ? 'step ' : '') + replay; out.clicks.push(row); continue; }
       await ev(MARK);
       const before = await ev(state); const ctl0 = new Set((await controls(!!pg.bar)).map(x => x.sig));
-      const dl0 = fs.readdirSync(dl).length; net = []; exc = []; dlgs = []; held = []; chooser = [];
+      const dl0 = dlCount(); net = []; exc = []; dlgs = []; held = []; chooser = [];
       const r = await act(last.sig, last);
       if (r === 'disabled') {
         // found off at its click (it was on in the list): judged as one found off there - its words, or none
@@ -395,17 +407,22 @@ for (const pg of [...pagesOf, ...chromePage]) {
       const okC = await settled(30000);
       if (chooser.length) { await sleep(800); await settled(15000); }
       // a link to the server's own file (a .xdl, a .sqlplan): its download is given up to 5 s to start
-      if (c.tag === 'A' && /^\/api\//.test(c.href || '')) for (let i = 0; i < 25 && fs.readdirSync(dl).length <= dl0; i++) await sleep(200);
+      if (c.tag === 'A' && /^\/api\//.test(c.href || '')) for (let i = 0; i < 25 && dlCount() <= dl0; i++) await sleep(200);
       const after = await ev(state).catch(e => ({ errors: ['(page gone) ' + e], mark: false }));
       row.api = [...net]; row.exc = [...exc]; row.jsDialogs = [...dlgs]; row.held = [...new Set(held)]; row.chooser = [...chooser];
       row.kind = verdict(row, before, after, dl0);
-      if (row.kind === 'NOTHING') { await sleep(1200); if (fs.readdirSync(dl).length > dl0) row.kind = 'download'; }
+      if (row.kind === 'NOTHING') { await sleep(1200); if (dlCount() > dl0) row.kind = 'download'; }
       // a click whose page never settled (a 'Reading ...' line still up at the cap) is not judged by what changed
       if (!okC && !['write held', 'reloads', 'navigates', 'download', 'chooser'].includes(row.kind) && !/^api /.test(row.kind) && after.mark) {
         row.seen = row.kind; row.kind = 'click not settled'; row.why = (await ev(BUSYLINES).catch(() => [])).map(b => 'still: ' + b).join(' | ');
       }
       row.api = row.api.filter(x => x.status >= 400 || x.status === 0);
       out.clicks.push(row);
+      // a grid cell's button (one per row: Draw, Graph) that only read: the first row's may be the one the page already
+      // shows or one with nothing to draw, so the second of the same signature is clicked too, a row of its own ('[2]')
+      if (row.kind === 'reads' && p.length === 1 && !last.nth && (c.n ?? 0) > 1 && /(^| )B cell \d+$/.test(last.sig)) {
+        queue.unshift({ path: [{ sig: last.sig, nth: 2 }], c: { ...c, what: c.what + ' (the second row\'s)' } }); budget++;
+      }
       // what the click added: one level deeper (not after a page change)
       if (p.length < 3 && after.mark && after.hash === before.hash) {
         const now = await controls(!!pg.bar).catch(() => []);
@@ -460,7 +477,7 @@ for (const sc of treeScopes) {
     const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree caret ' + key.replace(/\d+/g, '#')], tag: 'BUTTON', what: key };
     try {
       await fresh(sc.hash); await openAll(sc); await ev(MARK);
-      const before = await ev(state); const dl0 = fs.readdirSync(dl).length; net = []; exc = []; dlgs = []; held = []; chooser = [];
+      const before = await ev(state); const dl0 = dlCount(); net = []; exc = []; dlgs = []; held = []; chooser = [];
       const lab = await ev(`(() => { const b = [...document.querySelectorAll('#tree button.caret')].find(b => b.dataset.key === ${JSON.stringify(key)}); if (!b) return null; const l = b.getAttribute('aria-label'); b.click(); return l; })()`);
       if (lab === null) { row.kind = 'not reached'; row.why = 'gone'; out.tree.push(row); continue; }
       row.what = lab; await sleep(500);
@@ -473,16 +490,21 @@ for (const sc of treeScopes) {
     const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree A ' + href.replace(/=[^&]*/g, '=')], tag: 'A', what, href };
     try {
       await fresh(sc.hash); await openAll(sc); net = []; exc = [];
+      const h0 = await ev('location.hash').catch(() => '');
       const clickLeaf = () => ev(`(() => { const a = [...document.querySelectorAll('#tree a[href]')].find(a => a.getAttribute('href') === ${JSON.stringify(href)}); if (!a) return false; a.click(); return true; })()`);
       let clicked = await clickLeaf();
-      // once more on the tree opened again: a leaf listed from this tree and gone in its own pass is the walk's timing
-      // (click-c6: the root's Community tools, a static leaf of rootGroups, its two neighbours found), not the page's
-      if (!clicked) { await sleep(1000); await openAll(sc); net = []; exc = []; clicked = await clickLeaf(); }
+      // once more on the tree opened again, said in the row and the log: a leaf listed from this tree and gone in its own
+      // pass (the root's Community tools once, its two neighbours found); the grade counts the leaves found so
+      if (!clicked) {
+        await sleep(1000); await openAll(sc); net = []; exc = []; clicked = await clickLeaf();
+        if (clicked) { row.look = 2; console.error(`${label}: the tree leaf ${href} found on the second look`); }
+      }
       if (!clicked) { row.kind = 'not reached'; row.why = 'not in the opened tree'; out.tree.push(row); continue; }
       await sleep(300);
       const okL = await settled(); const s = await ev(state).catch(e => ({ errors: [String(e)] }));
       row.api = net.filter(x => x.status >= 400 || x.status === 0); row.exc = [...exc]; row.landing = { hash: s.hash, h2: s.h2, errors: s.errors, settled: okL, busy: okL ? [] : await ev(BUSYLINES).catch(() => []) };
-      row.kind = !okL ? 'link-stuck' : (s.errors?.length || row.api.length || row.exc.length) ? 'link-error' : s.hash === href ? 'link' : 'navigates';
+      // a leaf whose click left the page where it was (not its own address): NOTHING
+      row.kind = !okL ? 'link-stuck' : (s.errors?.length || row.api.length || row.exc.length) ? 'link-error' : s.hash === href ? 'link' : s.hash === h0 ? 'NOTHING' : 'navigates';
     } catch (e) { row.kind = lost ? 'browser lost' : 'driver error'; row.why = e.message; await ensure().catch(() => {}); }
     out.tree.push(row);
   }

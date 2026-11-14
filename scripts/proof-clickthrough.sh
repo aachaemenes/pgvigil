@@ -16,20 +16,25 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the seventh run: the sixth ran whole - 3 FAIL rows outside the file, down from the fifth's 17, every page
-# settled, the Queries page too: 2 a row's Draw on the strip (Query Store, Queries) whose query had no interval in the
-# last hour - the read answers and stripOverlay draws nothing and says nothing (timestrip.ts:206; the fifth drew it:
-# the demo's seed time decides), now in the expected file as a finding; 1 the root tree's Community tools leaf, listed
-# from the tree and not found in its own pass while its two neighbours were (a static leaf), now looked for once more
-# on the tree opened again; no browser lost in it; written before it):
-#   the grader's self-test: 14 of 14 cases; the expected file: 10 rows; no 'the busy rule's fixture' line
+# Expected (the eighth run, after the walker's second review - written before it): the seventh ran green (104 FAIL
+# rows, each listed); this one changes what a click is judged by: a pressed button (aria-pressed) is no current choice,
+# a grid cell's button that only read is clicked again on the second row ('[2]'), the tree leaf found on a second look
+# is counted, a tree leaf that leaves the page where it was is NOTHING, a lost browser is started again while a page
+# settles too, a busy line is read in an open dialog and with five more verbs, settled = two quiet polls in a row, a
+# download counts only as a whole file:
+#   the grader's self-test: 14 of 14 cases; the expected file: 12 rows; no 'the busy rule's fixture' line
 #   the click map: its own verdict line (524 links, 0 FAIL)
-#   listed: 182 pages (root 62, pg 64, ms 56) in 4 shards; every page settled, ms mssqlqueries among them
-#   the walk: the longest driver about the sixth run's 2692 s, chromium started once per driver
-#   the grade: the 8 earlier expected rows listed as in the sixth (75 Pick series All, 6 Columns, Reset all, Latest,
-#     Compare, the 14 re-reads, mssql_running's Later and Latest, the deadlock Graph finding: 1); the two Draw rows
-#     listed or not seen (seen only when the seed leaves query 5 outside the hour); the root tree's Community tools
-#     graded link; no row outside the file: 'click-through: OK (<n> FAIL row(s), each listed; ...)', rc 0
+#   listed: 183 pages (root 63, pg 64, ms 56) in 4 shards; every page settled
+#   the walk: the longest driver about the seventh run's 2548 s, chromium started once per driver
+#   the grade: the 10 earlier rows as in the seventh (75 Pick series All, 6 Columns, Reset all, Latest, Compare, the
+#     re-reads - 14 or 15: collectiondates' Refresh grades redraws in one run and reads in the next, the cause not
+#     established (an age text that ticks over is the likely one) - mssql_running's Later and Latest, the deadlock
+#     Graph 1, the two Draw rows 1 each); Admin's Servers and the alert page's 'at the firing' NOTHING, each listed by
+#     its new row; the 'current' rows 2 (statements' link, Diff's radio); the deadlock Graph '[2]' redraws (the second
+#     deadlock drawn); the two Draws' '[2]' redraw when the second row's query has an interval in the last hour, else
+#     each is a 'reads' row outside the file (the seed decides, as for the first row); 'tree: 0 leaf(s) found on the
+#     second look' (or the Community tools leaf, named); no tree leaf NOTHING; 'click-through: OK (...)', rc 0, unless
+#     a Draw '[2]' only read
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""
