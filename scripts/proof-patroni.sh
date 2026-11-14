@@ -48,19 +48,20 @@
 #     no_leader_since NULL, paused false; no 'no leader', 'paused' or pat3 row; 'patroni member down' for pat1 only.
 #     pat1's container started: once /cluster lists pat1 streaming, collect pv-pat2, pv-pat1, pv-pat3: no check row
 #     for pvp at all; pv-pat1 judges again (the lowest id).
-#  G. the DCS down (failsafe_mode is on in the cluster's settings): etcd stopped; once pat1's and pat2's own /patroni
-#     say failsafe_mode_is_active (the leader's DCS retries end, then it asks each member: tens of seconds), collect
-#     pv-pat1, pv-pat2
-#     (with the tag's patroni_dcs_last_seen at warn 0.25 min: a healthy member's contact is at most loop_wait, 10 s,
-#     old; pat3's newest reading is pv-pat3's of part F): each read ok true, cluster_ok false, message starting
-#     '/cluster:', members 1 - its own member present with failsafe_active true and dcs_last_seen older than the read;
-#     the other members not present and no down_since set on them; leader still the one read before (no 'no leader'
-#     row); 'patroni DCS not reached' warning rows for the two members read (detail 'failsafe mode keeps the leader
-#     running'), no other check (a pat3 row is not judged: pv-pat3's part-F reading of it may itself be 15 s old when
-#     the box's load slows Patroni's 10 s loop). etcd started; once /cluster answers, collect pv-pat1: cluster_ok true, members 3, no check. The tag
-#     row inherited.
-#     G runs LAST, after U, and only with PATRONI_G=1 (the lead, 10:0x: not proven until a diagnostic run is read); it
-#     first puts the members' REST API back on http 8008. Without PATRONI_G=1 the proof prints 'G: not proven: ...'.
+#  G. the DCS down (failsafe_mode is on in the cluster's settings) - run LAST, after U (PATRONI_G=0 skips it); attempt 4
+#     after the 10:4x diagnosis (a member that rejoined 2 s before the outage was outside the leader's failsafe list and
+#     said failsafe false, truthfully). The members' REST API back on http 8008 first. (1) The leader's GET /failsafe
+#     (Patroni 4.1.5 api.py L832-846: {member: its /patroni url}, from the leader's DCS cache) waited for, 120 s at most,
+#     until it names pat1, pat2 and pat3 at http 8008; on the timeout: 'G: not proven: the leader's failsafe topology
+#     never held all members (<what it held>)' and the proof goes on. (2) The tag's patroni_dcs_last_seen at warn 0.25
+#     min; etcd stopped; the leader's own /patroni failsafe_mode_is_active true waited for (120 s). (3) collect pv-pat1,
+#     pv-pat2, each followed at once by that member's own /patroni: each read ok true, cluster_ok false, message
+#     starting '/cluster:', members 1, the leader still the one read before; each own member row present with
+#     failsafe_active EQUAL to its /patroni's failsafe_mode_is_active, dcs_last_seen older than the read; no down_since
+#     on any member of pv-pat1 or pv-pat2; 'patroni DCS not reached' warning rows for pat1 and pat2 (their contact 15 s
+#     old or more), the words 'failsafe mode keeps the leader running' on a row exactly when that member's row says
+#     failsafe_active; no other check of the cluster. etcd started; once /cluster answers, collect pv-pat1:
+#     cluster_ok true, members 3; the tag row inherited; collect: no check on pv-pat1.
 #  H. another port and TLS. A CA, a server certificate for the three addresses and a client certificate made with
 #     openssl. The members' REST API moved to https on 8009 (restapi certfile / keyfile / cafile, verify_client
 #     optional, authentication set: Patroni's GETs need none), Patroni reloaded (SIGHUP): once https://pat1:8009
@@ -733,37 +734,52 @@ grep -q '^FAIL\|^--- FAIL\|panic:' "$WORK/u.out" && fail "U: the Go cases"
 [[ $(grep -c '^ok ' "$WORK/u.out") == 2 ]] || fail "U: not both packages ran"
 ok "U: the Go cases"
 echo "--- G. the DCS down (failsafe mode)"
-if [[ ${PATRONI_G:-0} == 1 ]]; then
+if [[ ${PATRONI_G:-1} == 1 ]]; then
   retls plain.yml
   plainup() { [[ $(api pat1 cluster | jq_ "print(sum(1 for m in d['members'] if m['api_url'].startswith('http://')))") == 3 ]]; }
   waitfor 90 "the members' REST API back on http 8008" plainup
-  tagset patroni_dcs_last_seen 0.25 30
-  docker stop -t 2 "$ETCD_CT" >/dev/null || fail "G: docker stop etcd"
-  failsafe2() { [[ $(api pat1 patroni | jq_ "print(d.get('failsafe_mode_is_active', False))")$(api pat2 patroni | jq_ "print(d.get('failsafe_mode_is_active', False))") == TrueTrue ]]; }
-  waitfor 180 "failsafe mode on pat1 and pat2 (the leader's DCS retries, then its POST /failsafe)" failsafe2
-  collect pv-pat1; collect pv-pat2
-  for i in $P1 $P2; do
-    [[ $(q "select concat_ws('|', ok, cluster_ok, message like '/cluster:%', members, leader is not null) from pgvigil.pg_patroni_read where instance_id = $i") == "t|f|t|1|t" ]] \
-      || fail "G: read of $i $(q "select * from pgvigil.pg_patroni_read where instance_id = $i")"
-  done
-  [[ $(q "select string_agg(member, ',') from pgvigil.pg_patroni_members where instance_id = $P1 and is_present and failsafe_active and dcs_last_seen < snapshot_at") == pat1 ]] \
-    || fail "G: pv-pat1's own member $(q "select member, is_present, failsafe_active, dcs_last_seen, snapshot_at, api_ok, api_message from pgvigil.pg_patroni_members where instance_id = $P1")"
-  [[ $(q "select count(*) from pgvigil.pg_patroni_members where instance_id in ($P1, $P2) and down_since is not null") == 0 ]] || fail "G: a down_since from an own-member read"
-  [[ $(q "select string_agg(severity || '|' || check_name || '|' || object, ',' order by object) from pgvigil.pg_patroni_checks c where c.instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp') and object in ('pat1', 'pat2')") \
-     == "warning|patroni DCS not reached|pat1,warning|patroni DCS not reached|pat2" ]] || fail "G: checks $(q "select * from pgvigil.pg_patroni_checks")"
-  [[ $(q "select bool_and(detail like '%failsafe mode keeps the leader running%') from pgvigil.pg_patroni_checks where object in ('pat1', 'pat2') and instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp')") == t ]] || fail "G: the failsafe words"
-  [[ $(q "select count(*) from pgvigil.pg_patroni_checks where instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp')
-           and (check_name <> 'patroni DCS not reached' or object not in ('pat1', 'pat2', 'pat3'))") == 0 ]] || fail "G: another check $(q "select * from pgvigil.pg_patroni_checks")"
-  docker start "$ETCD_CT" >/dev/null || fail "G: docker start etcd"
-  clusterok() { [[ $(api pat1 cluster | jq_ "print(len(d['members']))") == 3 ]]; }
-  waitfor 90 "/cluster to answer again" clusterok
-  collect pv-pat1
-  [[ $(q "select concat_ws('|', cluster_ok, members) from pgvigil.pg_patroni_read where instance_id = $P1") == "t|3" ]] || fail "G: back"
-  taginherit patroni_dcs_last_seen
-  collect pv-pat1
-  [[ -z $(checks "$P1") ]] || fail "G: checks after etcd came back $(checks "$P1")"
-  ok "G: with etcd down each member's own state read: failsafe mode, the DCS contact ageing, the leader kept"
+  LEADER=$(api pat1 cluster | jq_ "print([m['name'] for m in d['members'] if m['role'] == 'leader'][0])") || fail "G: no leader in /cluster"
+  topo() { api "$LEADER" failsafe | jq_ "print(','.join(k + '=' + ('http' if v.startswith('http://') and ':8008/' in v else v) for k, v in sorted(d.items())))"; }
+  HELD=""
+  for _ in $(seq 1 60); do HELD=$(topo || true); [[ $HELD == "pat1=http,pat2=http,pat3=http" ]] && break; sleep 2; done
+  if [[ $HELD != "pat1=http,pat2=http,pat3=http" ]]; then
+    [[ -n $HELD ]] || HELD="nothing read from the GET /failsafe of $LEADER"
+    echo "  G: not proven: the leader's failsafe topology never held all members ($HELD)"
+  else
+    echo "  G: the leader $LEADER's failsafe topology holds pat1, pat2, pat3 at http 8008"
+    tagset patroni_dcs_last_seen 0.25 30
+    docker stop -t 2 "$ETCD_CT" >/dev/null || fail "G: docker stop etcd"
+    lfs() { [[ $(api "$LEADER" patroni | jq_ "print(d.get('failsafe_mode_is_active', False))") == True ]]; }
+    waitfor 120 "the leader's failsafe mode" lfs
+    for n in 1 2; do
+      i=$(iid "pv-pat$n")
+      collect "pv-pat$n"
+      own=$(api "pat$n" patroni | jq_ "print('t' if d.get('failsafe_mode_is_active') else 'f')") || fail "G: pat$n's own /patroni"
+      [[ $(q "select concat_ws('|', ok, cluster_ok, message like '/cluster:%', members, leader) from pgvigil.pg_patroni_read where instance_id = $i") == "t|f|t|1|$LEADER" ]] \
+        || fail "G: read of pv-pat$n $(q "select * from pgvigil.pg_patroni_read where instance_id = $i")"
+      [[ $(q "select concat_ws('|', is_present, failsafe_active, dcs_last_seen < snapshot_at) from pgvigil.pg_patroni_members where instance_id = $i and member = 'pat$n'") == "t|$own|t" ]] \
+        || fail "G: pat$n's row against its own /patroni (failsafe $own): $(q "select member, is_present, failsafe_active, dcs_last_seen, snapshot_at, api_ok from pgvigil.pg_patroni_members where instance_id = $i")"
+      echo "  G: pat$n's row failsafe_active = its own /patroni's ($own)"
+    done
+    [[ $(q "select count(*) from pgvigil.pg_patroni_members where instance_id in ($P1, $P2) and down_since is not null") == 0 ]] || fail "G: a down_since from an own-member read"
+    [[ $(q "select string_agg(severity || '|' || check_name || '|' || object, ',' order by object) from pgvigil.pg_patroni_checks c where c.instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp') and object in ('pat1', 'pat2')") \
+       == "warning|patroni DCS not reached|pat1,warning|patroni DCS not reached|pat2" ]] || fail "G: checks $(q "select * from pgvigil.pg_patroni_checks")"
+    [[ $(q "select bool_and((c.detail like '%failsafe mode keeps the leader running%') = m.failsafe_active)
+              from pgvigil.pg_patroni_checks c join pgvigil.pg_patroni_members m on m.member = c.object and m.instance_id = (select instance_id from pgvigil.instances where name = 'pv-' || c.object)
+             where c.object in ('pat1', 'pat2') and c.instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp')") == t ]] || fail "G: the failsafe words"
+    [[ $(q "select count(*) from pgvigil.pg_patroni_checks where instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp')
+             and (check_name <> 'patroni DCS not reached' or object not in ('pat1', 'pat2', 'pat3'))") == 0 ]] || fail "G: another check $(q "select * from pgvigil.pg_patroni_checks")"
+    docker start "$ETCD_CT" >/dev/null || fail "G: docker start etcd"
+    clusterok() { [[ $(api pat1 cluster | jq_ "print(len(d['members']))") == 3 ]]; }
+    waitfor 90 "/cluster to answer again" clusterok
+    collect pv-pat1
+    [[ $(q "select concat_ws('|', cluster_ok, members) from pgvigil.pg_patroni_read where instance_id = $P1") == "t|3" ]] || fail "G: back"
+    taginherit patroni_dcs_last_seen
+    collect pv-pat1
+    [[ -z $(checks "$P1") ]] || fail "G: checks after etcd came back $(checks "$P1")"
+    ok "G: with etcd down each member's own state read and stored as it says (failsafe as the member says), the DCS contact ageing, the leader kept"
+  fi
 else
-  echo "  G: not proven: failsafe mode not read on pat1 and pat2 within 20, 120 and 180 s in three runs (box jobs pdfp-hadr-s2-proof3, -proof4, -proof5); a diagnostic run decides (PATRONI_G=1 runs it)"
+  echo "  G: not proven: skipped (PATRONI_G=0)"
 fi
 echo "PASS proof-patroni"
