@@ -507,6 +507,9 @@ func TestNoAnswer(t *testing.T) {
 		{"no answer in time", hung, true},
 		{"the instance's connect marked (InstanceConnect)", &connectError{fmt.Errorf("connect t1: %w", refused)}, true},
 		{"an end of stream in the handshake", fmt.Errorf("x: %w", io.EOF), true},
+		// review part E's nit 8: a stopped container's alias (SV) fails at the name - pgconn joins the resolver's error
+		{"a name that does not resolve", fmt.Errorf("failed to connect to `user=x database=`: hostname resolving error: %w",
+			errors.Join(&net.DNSError{Err: "no such host", Name: "target2", IsNotFound: true})), true},
 		{"3D000", &pgconn.PgError{Code: "3D000"}, false},
 		{"28P01", &pgconn.PgError{Code: "28P01"}, false},
 		{"53300", &pgconn.PgError{Code: "53300"}, false},

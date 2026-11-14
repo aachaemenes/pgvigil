@@ -128,8 +128,10 @@ func (h *Heartbeat) countConnect(instance string, err error) {
 
 // NoAnswer says whether a failed connect got no answer from the server (task 201 DONE-2 N8: the server's own parent
 // counts these alone) - a network error (refused, unreachable, a name not found), a timeout or deadline, a reset or an
-// end of stream in the handshake. Never a failure the server answered (a PostgreSQL SQLSTATE such as 3D000, 28P01 or
-// 53300; a SQL Server error number such as 18456), never a stop's cancel.
+// end of stream in the handshake, a TLS handshake that died. Never a failure the server answered (a PostgreSQL
+// SQLSTATE such as 3D000, 28P01 or 53300; a SQL Server error number such as 18456), never a stop's cancel. The SQL
+// Server connector joins the network error the driver drops (a named instance whose SQL Server Browser answered no
+// one, a TLS handshake's error: internal/mssql's withNetwork), so those read here as no answer too.
 func NoAnswer(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
