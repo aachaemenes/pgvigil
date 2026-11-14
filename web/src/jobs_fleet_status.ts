@@ -27,7 +27,12 @@ const noneIn = (r: Row) => `none in the last ${days(r.horizon_min)}`;
 const key = (r: Row) => `${String(r.instance_id)}|${String(r.scheduler)}|${String(r.job_id)}`;
 // the rules an acknowledgement answers (0137's reasons of rules 1 / 11 and 6 / 16): the last run, the time since a failure
 const ackRule = (r: Row) => /^the last run (failed|was cancelled)$|^(failed|cancelled) \d+ minute\(s\) ago/.test(String(r.reason ?? ''));
-const secsSince = (v: unknown) => v == null || v === '' ? null : Math.max(0, Math.round((Date.now() - Date.parse(String(v))) / 1000));
+// the whole minutes since an instant as DBA Dash counts them: DATEDIFF(mi, LastFailed, GETUTCDATE()), the minute boundaries
+// crossed (4.24.1 AgentJob7Day.sql L29-30), against one read of the clock for the whole grid
+const minsSince = (v: unknown, now: number) => v == null || v === '' ? null : Math.max(0, Math.floor(now / 60000) - Math.floor(Date.parse(String(v)) / 60000));
+// a since cell: the minutes, carrying the instant they count from (data-at), so a later render of the page (a mail) is
+// compared by that instant
+const sinceCell = (at: string) => (v: unknown, r: Row) => v == null ? '' : el('span', { 'data-at': String(r[at]) }, fmtNum(v));
 
 export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { id: 'job-status-fleet' });
@@ -37,8 +42,11 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     const names = new Map(inView.map(r => [Number(r.instance_id), String(r.name)]));
     const d = await get<Record<'status', Table | null>>('jobsreport', { part: 'status', ids: ids.join(',') || '0' });
     const rows = rowsOf(d.status);
-    // the seconds since the last failure and success as row values, so their columns sort (DBA Dash sorts them)
-    for (const r of rows) { r._since_fail = secsSince(r.last_failed_at); r._since_ok = secsSince(r.last_succeeded_at); }
+    // the whole minutes since the last failure and success as row values (DBA Dash's 'Time Since Last Fail (minutes)' /
+    // 'Time Since Last Succeeded (minutes)'), so their columns sort as DBA Dash's: by the instant to the minute, one
+    // minute's jobs in the API's order
+    const now = Date.now();
+    for (const r of rows) { r._since_fail = minsSince(r.last_failed_at, now); r._since_ok = minsSince(r.last_succeeded_at, now); }
     const ad: AckData = await loadAckSafe(['acks']);
     // a server that writes nothing (not a demo's door): one page sentence, not a reason in every row's cell
     const ackOffP = ad.writable || ad.door ? null : el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`);
@@ -109,10 +117,10 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
           r.reason ? ` ${String(r.reason)}` : '', acked(r) ? ' (acknowledged)' : '') },
       { key: 'last_failed_at', label: 'last failure', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v) },
       { key: 'last_run_failed', label: 'last run failed', fmt: (v, r) => v ? (acked(r) ? 'yes' : badge('yes', 'crit')) : 'no', cls: (v, r) => v && !acked(r) ? 'status crit' : '' },
-      { key: '_since_fail', label: 'since last failure', num: true, fmt: v => v == null ? '' : fmtSecs(v) },
+      { key: '_since_fail', label: 'since last failure (minutes)', num: true, fmt: sinceCell('last_failed_at') },
       { key: 'failed_step', label: 'failed step', fmt: (v, r) => v == null ? '' : `${String(r.failed_step_id)} ${String(v)}` },
       { key: 'last_succeeded_at', label: 'last success', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v) },
-      { key: '_since_ok', label: 'since last success', num: true, fmt: v => v == null ? '' : fmtSecs(v) },
+      { key: '_since_ok', label: 'since last success (minutes)', num: true, fmt: sinceCell('last_succeeded_at') },
       { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(r.instance_id), String(r.job_name), r.last_failed_at, redraw, undefined, names.get(Number(r.instance_id))) },
       { key: 'fail_24h', label: 'failed 24 h', num: true, cls: (v, r) => Number(v) > 0 && !acked(r) ? 'status warn' : '' },
       statCol('ok_24h', 'succeeded 24 h', v => v == null ? '' : fmtNum(v)),
