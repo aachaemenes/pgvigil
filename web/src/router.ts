@@ -76,8 +76,8 @@ const legacy: Record<string, string> = { overview: 'checks' };
 export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
-  { key: 'checks', name: 'Checks', tabs: ['checks', 'collectiondates', 'collector', 'corruption', 'custom'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks', 'pgthresholds', 'retention'] },
+  { key: 'checks', name: 'Checks', tabs: ['checks', 'collectiondates', 'collector', 'corruption', 'custom'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'pgreplication', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
@@ -86,14 +86,39 @@ export const rootGroups: TabGroup[] = [
   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
 ];
+// rootOnly: the fleet pages a tag folder does not carry (TAGTREE), DBA Dash's rule for its group Reports - what returns
+// the same result in every folder stays at the root (CustomReports.cs L19-23), its Recycle Bin root only (Main.cs L210):
+// the Doors and Admin groups whole, and these pages of the other groups. The tree leaves them out of a tag folder's own
+// folders and the strip out of a folder's strip under ?tag=; a link to one still opens it.
+export const rootOnlyGroups = new Set(['doors', 'admin']);
+// Alert rules too: the rules are the repository's and its state rows are not narrowed by a tag (the TAGTREE review A #5),
+// so a tag folder's name on it lands on the folder's Summary and the main strip links it without the tag
+export const rootOnly = new Set(['diff', 'pgthresholds', 'retention', 'rp_recycle', 'customreports', 'community', 'reportmail', 'alertrules']);
+// pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
+// page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
+// 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host
+// disks, storage, backups, roles, indexes, jobs, custom, DMS, database sizes -, mssql.All for SQL Server's mssql_*), or
+// the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
+// engine leaves them out, as a strip should; every other page holds both engines.
+export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
+  mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver',
+  pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
+  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
+  storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
+};
+// tagPages: a group's pages under a tag folder whose instances are of the engines given ('sqlserver', 'postgres')
+export function tagPages(g: TabGroup, engines: Set<string>): string[] {
+  if (rootOnlyGroups.has(g.key)) return [];
+  return g.tabs.filter(t => !rootOnly.has(t) && (!pageEngine[t] || engines.has(pageEngine[t])));
+}
 export const instanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'waiting', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
-  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'corruption', 'vacuum', 'indexes', 'custom', 'pgstate'] },
   { key: 'conf', name: 'Configuration', tabs: ['config', 'pgdboptions', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
+  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'corruption', 'vacuum', 'indexes', 'custom', 'pgstate'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'pgbackups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'pgtemp', 'tables', 'driveperf', 'storage', 'dbinfo', 'dbchanges'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport', 'jobstimeline'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
 ];
 // A SQL Server instance has its own pages (the engine of the instance chooses the tab set; a PostgreSQL page is
@@ -113,13 +138,13 @@ export const mssqlInstanceTabs: Record<string, string> = {
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
+  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
   { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
-  { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
-  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool'] },
+  { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
 ];
 export const isMssql = (engine: unknown) => engine === 'sqlserver';

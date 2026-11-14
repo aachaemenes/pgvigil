@@ -14,7 +14,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
-import { fleet, notReadYet, tagsOf } from './fleet';
+import { fleet, inTagScope, notReadYet, tagsOf, tagWords } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
 import { fromInput, toInput } from './tz';
@@ -114,7 +114,7 @@ const logCols: Col[] = [
 // blackout flag, the known-noise label), the silenced servers and blackouts, the mute rules and known patterns, the
 // sends they held (still logged) and the audit of every acknowledgement (task 118; DBA Dash 02, Darling 5 and 10)
 export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', {}, el('h2', {}, 'Alerts'));
+  const sec = el('section', {}, el('h2', {}, 'Alerts' + (ctx.tag && !ctx.instance ? ` - ${tagWords(ctx.tag)}` : '')));
   let d: AlertsData;
   // the channels, open alerts and send log are the page; the parts task 151 added are read on their own, so a slow or
   // failing one (an older server, a timeout) leaves its section saying so and the rest of the page standing
@@ -143,8 +143,21 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     ? `Demo: an acknowledgement, a note, a mute, a silence or a dismissal here is saved as user ${ad.door.user}, on the demo's own instances only. A change that reaches past one instance, and Send test, stay off: they need pgvigil serve with a signed-in user.`
     : `Acknowledge, notes, mute, dismiss and Send test are read only here: ${ad.reason ?? ''}`);
   if (offP && !ad.door) ad.note = offP;
-  const f = await fleet().catch(() => null);
-  const chans = rowsOf(d.channels), open = rowsOf(d.open), log = rowsOf(d.log);
+  let fleetErr: unknown = null;
+  const f = await fleet().catch((e: unknown) => { fleetErr = e; return null; });
+  const tagged = !!ctx.tag && !ctx.instance;
+  // a tag whose instances cannot be read shows no alert at all rather than the fleet's under the tag's heading
+  if (tagged && !f) { sec.append(errorBox(new Error(`the instances of ${tagWords(ctx.tag!)} could not be read: ${fleetErr instanceof Error ? fleetErr.message : String(fleetErr)}`))); return sec; }
+  // a tag folder (TAGTREE; DBA Dash's tag folder lists its own instances' alerts, Main.cs L1820-1822): the rows of the
+  // tag's instances by their id, and the repository-wide ones in every folder - those have no instance id (the
+  // collector, the repository: 0190's alert_findings names them 'pgvigil'); an instance renamed since its alert keeps
+  // its id. The send log carries a name only (its instance joined by id, none for a repository-wide send).
+  const tagInsts = tagged && f ? f.instances.filter(r => inTagScope(ctx.tag!, r)) : null;
+  const tagIds = tagInsts ? new Set(tagInsts.map(r => Number(r.instance_id))) : null;
+  const tagNames = tagInsts ? new Set(tagInsts.map(r => String(r.name))) : null;
+  const inFolder = (r: Row) => !tagIds || r.instance_id == null || tagIds.has(Number(r.instance_id));
+  const inLog = (r: Row) => !tagNames || r.instance == null || r.instance === '' || tagNames.has(String(r.instance));
+  const chans = rowsOf(d.channels), open = rowsOf(d.open).filter(inFolder), log = rowsOf(d.log).filter(inLog);
   const fixes = new Map(rowsOf(d.fixes).filter(r => r.fix != null).map(r => [String(r.finding_key), String(r.fix)]));
   // a finding's suggested value is its threshold in the history while the finding stands
   const suggested = new Map(rowsOf(d.fixes).filter(r => r.suggested != null).map(r => [String(r.finding_key), String(r.suggested)]));
@@ -153,7 +166,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   const configured = chans.filter(r => r.is_configured);
   const failed = log.filter(r => r.outcome === 'failed' || r.outcome === 'refused').length;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
-  const triage = rowsOf(ad.alerts);
+  const triage = rowsOf(ad.alerts).filter(inFolder);
   const nAcked = triage.filter(r => r.ack_id != null).length, nHeld = triage.filter(r => r.held_by != null).length;
   sec.append(el('p', { class: 'meta' }, configured.length === 0
     ? 'No alert channel is configured: pgvigil sends nothing. A channel is named in the configuration\'s alerts: list (SMTP, a webhook or a file drop); see docs/alerts.md.'
@@ -163,23 +176,24 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     ? `Every sent alert carries the address of its own page: ${String(base)}/#/alert?k=...`
     : 'The sent alerts carry no link to their page: alerts_base_url (the UI\'s address as a reader opens it) is not set in the configuration.'));
   if (offP) sec.append(offP);
+  if (tagIds) sec.append(el('p', { class: 'meta' }, `In view: ${tagWords(ctx.tag!)} - the open alerts, their history, the held sends and the send log of its ${tagIds.size} instance(s), and those of no instance (the collector, the repository) as in every folder. The channels, silenced servers and blackouts, mute rules, known patterns, send tests and the acknowledge log are the whole repository's.`));
   // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
   sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
-    el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
+    el('a', { href: href(ctx, { tab: 'alertrules', tag: undefined }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
   sec.append(el('h3', {}, 'Channels'),
     grid(chans, channelCols(ad, redraw), 'No channel recorded: the alert sender has not run with a channel configured.'));
   sec.append(el('h3', {}, 'Open alerts'));
   if (ad.alerts == null) sec.append(grid(open, openCols, 'No open alert: nothing sent is still standing.'));
   else sec.append(triageView(ctx, ad, triage, redraw, fixes, dismissed));
   if (missing.dismissed || missing.fixes) sec.append(notRead('dismissed'), notRead('fixes'));
-  sec.append(historyView(ctx, rowsOf(d.history).map(r => r.threshold == null && suggested.has(String(r.finding_key)) ? { ...r, threshold: suggested.get(String(r.finding_key)) } : r)), notRead('history'));
+  sec.append(historyView(ctx, rowsOf(d.history).filter(inFolder).map(r => r.threshold == null && suggested.has(String(r.finding_key)) ? { ...r, threshold: suggested.get(String(r.finding_key)) } : r)), notRead('history'));
   sec.append(serversView(ad, f?.instances ?? [], redraw));
   if (d.mutes != null) sec.append(mutesView(ctx, ad, rowsOf(d.mutes), 'mute', f?.instances ?? [], redraw), mutesView(ctx, ad, rowsOf(d.mutes), 'noise', f?.instances ?? [], redraw));
   else sec.append(rulesView(ad, 'mute', redraw), rulesView(ad, 'noise', redraw));
   sec.append(el('h3', {}, `Send tests ${rangeLabel(ctx)} `, whatIsThis('A Send test asks the alert sender for a test message on one channel: its next pass (within a minute while pgvigil run is up) sends it, whatever the quiet hours, back-off or cap, and records the destination\'s answer here and in the send log. PagerDuty and Opsgenie get the test and its resolve at once. A request no sender answered within the hour reads no answer: no sender holds that channel.', 'Send test')),
     missing.tests ? notRead('tests') : grid(rowsOf(d.tests), testCols, 'No test was asked in the time range.'));
   sec.append(el('h3', {}, `Held sends ${rangeLabel(ctx)} `, whatIsThis('What a mute, a silence or a blackout kept from a channel: the alert, the channel, the first and last pass of the sender that held it, and how many passes.', 'Held sends')),
-    grid(rowsOf(ad.suppressed), heldCols, 'Nothing held in the time range.'));
+    grid(rowsOf(ad.suppressed).filter(inFolder), heldCols, 'Nothing held in the time range.'));
   sec.append(el('h3', {}, `Send log ${rangeLabel(ctx)}`),
     grid(log, logCols, 'No send attempt in the time range.'));
   sec.append(el('h3', {}, `Acknowledge log ${rangeLabel(ctx)}`),

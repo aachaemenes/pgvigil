@@ -3,7 +3,7 @@
 // and the page under it.
 import { get, LoginRequired, onCutRead, post, Row, rowsOf, Session, startReads, Table } from './api';
 import { destroyCharts } from './chart';
-import { fleet, forget, tagsOf } from './fleet';
+import { fleet, forget, inTagScope, tagWords } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
@@ -40,7 +40,7 @@ import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { closeRange, rangePicker } from './rangepicker';
 import { fmt, fmtClock } from './tz';
-import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
+import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootOnly, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
 import { runningFleet } from './running_fleet';
@@ -137,7 +137,7 @@ for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
 const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
   if (!c.tag) return undefined;
   const ids = new Set((await fleet()).instances
-    .filter(r => c.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(c.tag!)).map(r => Number(r.instance_id)));
+    .filter(r => inTagScope(c.tag!, r)).map(r => Number(r.instance_id)));
   return r => ids.has(Number(r.instance_id));
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
@@ -433,12 +433,17 @@ async function render(force = false) {
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
-  const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab));
+  // under a tag a folder's strip is the tag folder's own (TAGTREE; router.ts tagPages): no root-only page, no page of an
+  // engine the tag's instances lack - the page shown keeps its tab (an old link still opens it)
+  const tagFleet = ctx.tag && !ctx.instance && group.key !== 'main' ? await fleet().catch(() => null) : null;
+  const inTagStrip = tagFleet ? new Set(tagPages(group, new Set(tagFleet.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')))) : null;
+  const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab) && (!inTagStrip || inTagStrip.has(k) || k === ctx.tab));
   // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(
     ...(group.name ? [el('a', { href: href(ctx, { tab: 'summary' }), class: 'tab-back' }, 'Summary'), el('span', { class: 'tab-group', 'aria-hidden': 'true' }, '/ ' + group.name + ':')] : []),
-    ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
+    // a root-only page (router.ts rootOnly: one that ignores a tag) is linked without the tag
+    ...strip.map(k => el('a', { href: href(ctx, rootOnly.has(k) ? { tab: k, tag: undefined } : { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
   // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
   $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));
 
@@ -476,7 +481,7 @@ async function render(force = false) {
     const oldDot = same ? crumb.querySelector('.band-dot') : null;
     crumb.replaceChildren(
       el('a', { href: href(ctx, { tab: ctx.instance ? 'summary' : ctx.tab, instance: undefined, tag: undefined }) }, 'All instances'),
-      ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, 'tag ' + ctx.tag)] : []),
+      ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, tagWords(ctx.tag))] : []),
       ...(ctx.instance ? [' / ', el('b', { id: 'crumb-inst' }, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []));
     if (oldDot) $('crumb-inst')?.before(oldDot, ' ');
     // the band's dot as soon as its read ends (it does not wait for the page); a failed read takes the old one away

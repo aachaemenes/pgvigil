@@ -3,7 +3,7 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf } from './fleet';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf, tagWords, inTagScope } from './fleet';
 import { Ctx, href, isMssql, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
@@ -44,9 +44,9 @@ function needInstance(ctx: Ctx): HTMLElement | null {
 // inTag keeps the fleet rows of the tag folder picked in the tree (none = every instance).
 function inTag(ctx: Ctx, rows: Row[]): Row[] {
   if (!ctx.tag) return rows;
-  return rows.filter(r => ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag!));
+  return rows.filter(r => inTagScope(ctx.tag!, r));
 }
-const scopeLabel = (ctx: Ctx) => ctx.tag ? ` - tag ${ctx.tag}` : '';
+const scopeLabel = (ctx: Ctx) => ctx.tag ? ` - ${tagWords(ctx.tag)}` : '';
 const instLink = (ctx: Ctx, text: string, id: unknown, tab = 'summary') => link(text, href(ctx, { tab, instance: Number(id), tag: undefined, at: undefined, task: undefined, taskInstance: undefined }));
 
 

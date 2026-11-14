@@ -5,6 +5,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { Col, el, fmtBytes, fmtNum, fmtSecs, grid } from './ui';
+import { tagWords } from './fleet';
 
 interface Data { pg: Table | null; mssql: Table | null }
 
@@ -71,7 +72,7 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     return el('span', { title: `snapshot ${fmtSecs(age)} before the range's end` }, v == null ? '' : f(v));
   };
   const rows = [...rowsOf(d.pg), ...rowsOf(d.mssql)];
-  const sec = el('section', {}, el('h2', {}, `Performance summary (${rangeLabel(ctx)})${ctx.tag ? ' - tag ' + ctx.tag : ''}`));
+  const sec = el('section', {}, el('h2', {}, `Performance summary (${rangeLabel(ctx)})${ctx.tag ? ` - ${tagWords(ctx.tag)}` : ''}`));
   const th = el('details', {}, el('summary', {}, 'thresholds'), el('ul', {},
     el('li', {}, `CPU max: warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} %`),
     el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
