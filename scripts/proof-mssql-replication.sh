@@ -107,7 +107,7 @@
 #     replication carries the new columns (the transactional subscription running, continuous, latency 0, active);
 #     part repllimits the three keys at their defaults (10, 15, 5 minutes); the bundle holds the latency chart.
 #  M. everything removed: the lab read back as 0 containers, 0 networks, 0 volumes; the repository database dropped.
-#  NOT PROVEN HERE: merge replication (SQL Server on Linux has none; no Windows lab runs this proof yet),
+#  NOT PROVEN HERE: merge replication (SQL Server on Linux has none: scripts/proof-mssql-merge.sh proves it),
 #  peer-to-peer, a pull subscription's agent on a live subscriber, an Azure SQL Managed Instance distributor, SQL
 #  Server 2016-2019 and 2025, a distributor in an availability group.
 set -Eeuo pipefail
@@ -862,5 +862,5 @@ r=$(q "select pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'set',
 r=$(q "select x->>'outcome' || '|' || (x->>'detail') from pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'set', 'key', 'amcheck_age', 'level', 'instance', 'instance_id', $ST, 'warn', 7, 'ui_user', 'proof')) x")
 [ "$r" = "refused|no PostgreSQL instance $ST" ] || fail "L: amcheck_age at a SQL Server instance: $r"
 echo "L: OK"
-echo "NOT PROVEN: merge replication (SQL Server on Linux has none; no Windows lab yet), peer-to-peer, a live pull subscription, Managed Instance, SQL Server 2016-2019 and 2025, a distributor in an availability group"
+echo "NOT PROVEN HERE: merge replication (SQL Server on Linux has none: scripts/proof-mssql-merge.sh proves it), peer-to-peer, a live pull subscription, Managed Instance, SQL Server 2016-2019 and 2025, a distributor in an availability group"
 echo "proof-mssql-replication: every part passed"
