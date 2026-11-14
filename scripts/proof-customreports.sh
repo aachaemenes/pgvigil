@@ -151,7 +151,8 @@
 #     Data Set reads as the sample's own columns and rows, its note starting with the mark.
 #     [the panel in view, 1500 x 1100] every tool's panel, after its click, after 'Open sample' from the top of the page
 #     and with tool= on load, and the dark panels: its heading inside the view's upper half (or the page at its end; the
-#     point at its middle is the heading's) with the focus; the intro says 'each tool opens a stored sample of its real output, captured on a test
+#     point at its middle is the heading's) with the focus, and a redraw of the page (the system's colours under 'auto')
+#     keeps the view; the intro says 'each tool with a stored sample opens it: its real output, captured on a test
 #     server; nothing runs on a demo instance'; each row with a sample has a button 'Open sample' named 'Open sample:
 #     <tool>'; axe-core (WCAG 2.1 A and AA) 0 on the demo page in both themes; the view's pictures (view-*.png).
 #  U3. [B3] each state as the page draws it: threshold 0 (read live): sp_HumanEventsBlockViewer on with its note, the
@@ -969,7 +970,7 @@ const look = (sel) => ev(`(() => { const b = document.querySelector(${JSON.strin
   const p = document.createElement('span'); p.style.color = 'var(--accent)'; document.body.append(p); const accent = getComputedStyle(p).color; p.style.color = 'GrayText'; const gray = getComputedStyle(p).color; p.remove();
   return { color: cs.color, deco: cs.textDecorationLine, cursor: cs.cursor, accent, gray }; })()`);
 const communityReady = `!!document.querySelector('main table.grid button.link')`;
-// a tool's panel in view (Allen 11-14: a click changed nothing a person could see): its heading inside the viewport, not
+// a tool's panel in view (a user's report: a click changed nothing a person could see): its heading inside the viewport, not
 // covered (the point at its middle is the heading's), and the focus on it
 const viewOf = (name) => ev(`(() => { const h = [...document.querySelectorAll('main section > h3')].find(x => x.textContent === ${JSON.stringify(name)}); if (!h) return null;
   const r = h.getBoundingClientRect(); const at = document.elementFromPoint(Math.min(innerWidth - 1, r.left + 4), r.top + r.height / 2);
@@ -1166,7 +1167,7 @@ if (mode === 'live') {
   }
 } else {
   const [U4, dms, dpg, realMsr, shots, dl, dms2, dpg2] = a;
-  // the view as the lead's pictures of the fault (1500 x 1100)
+  // the view as the fault's pictures (1500 x 1100)
   await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1100, deviceScaleFactor: 1, mobile: false });
   const axeSrc = process.env.AXE_JS ? fs.readFileSync(process.env.AXE_JS, 'utf8') : '';
   const axeRun = async () => { if (!axeSrc) return null; await ev(axeSrc + '; 1');
@@ -1228,7 +1229,7 @@ if (mode === 'live') {
         s.instance = api.instance; s.engine = api.engine; s.tools = [];
         // the intro, and each row's way in: an 'Open sample' button for a tool with a stored sample; the second such
         // tool opened by it from the top of the page (the view as a person meets it)
-        s.intro = await ev(`document.querySelector('main section p.meta')?.textContent ?? ''`);
+        s.intro = await ev(`document.querySelector('main .community-intro')?.textContent ?? ''`);
         s.openers = await ev(`[...document.querySelectorAll('main table.grid button:not(.link)')].filter(b => b.textContent.trim() === 'Open sample').map(b => ({ name: b.getAttribute('aria-label') || '', row: b.closest('tr')?.querySelector('button.link')?.textContent.trim() ?? '' }))`);
         const via = api.tools.filter(x => x.sample)[1];
         if (via) {
@@ -1249,6 +1250,7 @@ if (mode === 'live') {
         s.dom = await offCheck(`demo ${label} panel`);
         s.ax = await axSel('main section .toolbar button[aria-disabled="true"]');
         s.click = await clickOff('main section .toolbar button[aria-disabled="true"]');
+        s.axe = await axeRun();   // the demo page with its last panel open (before the link below leaves it)
         // one sample's link followed: this instance's own page of the subject
         const withPage = api.tools.find(x => x.sample?.page);
         await clickTool(withPage.name);
@@ -1257,7 +1259,7 @@ if (mode === 'live') {
         await until(`location.hash.startsWith('#/${withPage.sample.page}')`, 10000); await sleep(1500);
         s.followed = { want: withPage.sample.page, hash: await ev(`location.hash`), h2: await ev(`document.querySelector('main h2')?.textContent ?? ''`), error: await ev(`!!document.querySelector('main .error')`) };
       }
-      s.axe = await axeRun();
+      if (t === 'dark') s.axe = await axeRun();   // the dark panel open on the demo page
       out.demo.push(s);
       await shot(shots, `demo-${label}-${t}`);
     }
@@ -1267,6 +1269,14 @@ if (mode === 'live') {
   await open(U4 + `#/community?i=${dms}&tool=sp_Blitz`, `!!document.querySelector('main .sample table.grid')`);
   out.deep = await readPanel('sp_Blitz');
   await sleep(500); out.deep.view = await viewOf('sp_Blitz'); await vshot(shots, 'view-tool-sp_Blitz-on-load');
+  // a redraw of the same page (the system's colours change under the 'auto' theme: main.ts draws the page again) leaves
+  // the view where it is: no second jump
+  const y0 = await ev('scrollY');
+  await ev(`localStorage.setItem('pgvigil.theme', 'auto'); 1`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+  await sleep(2500);
+  out.redraw = { y0, y1: await ev('scrollY'), view: await viewOf('sp_Blitz'), dark: await ev(`matchMedia('(prefers-color-scheme: dark)').matches`) };
+  await theme('light'); await sleep(500);
   await shot(shots, 'demo-sample-sp_Blitz');
   out.files = {};
   if (dl) {
@@ -1384,7 +1394,7 @@ print(f"ok   U2: all {n_ms + n_pg} tools clicked and run on the rig: each ended 
 bv = next(r for r in rows if r['tool'] == 'sp_HumanEventsBlockViewer'); xes = sys.argv[2]
 assert bv.get('sessionInput') == xes and xes in (bv.get('filled') or ''), f"U2: sp_HumanEventsBlockViewer's default click in state (b): {bv}"
 print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (b): @session_name filled {xes} (the running session with the blocked process report), said, done")
-# the clicked tool's form opens in view (Allen 11-14 'community tool not working': it opened ~1,450 px below the tables)
+# the clicked tool's form opens in view (a user's report, 'community tool not working': it opened ~1,450 px below the tables)
 bz = next(r for r in rows if r['tool'] == 'sp_Blitz' and r['inst'] == 'sqlserver'); v = bz.get('view') or {}
 # (failed with S's view rows, after them: one run shows every row that is out of view)
 import os
@@ -1573,7 +1583,7 @@ def ends(eng, i):
 assert pms != 'sqlserver' and ppg != 'onprem' and pms2 == 'sqlserver' and ppg2 == 'onprem' and (('sqlserver', pms) in words) and (('postgres', ppg) in words), f"S: the instances do not cover both cases: {ids}"
 print(f"ok   S: the panels on {names[dms]} ({pms}) and {names[dpg]} ({ppg}), off the test server's platform; the picker on {names[dms2]} ({pms2}) and {names[dpg2]} ({ppg2}), on it")
 kit_of = {'First Responder Kit': 'First Responder Kit', 'Darling Data': 'DarlingData', 'sp_WhoIsActive': 'sp_WhoIsActive', 'pgvigil reads': 'pgvigil', 'Glenn Berry': None}
-# a panel in view: its heading inside the viewport, not covered, with the focus (Allen 11-14: a click on a tool changed
+# a panel in view: its heading inside the viewport, not covered, with the focus (a user's report: a click on a tool changed
 # nothing a person could see - the panel opened ~1,450 px below the tables); collected, failed after the deep read
 vbad = [x for x in (open(os.environ['VIEWBAD']).read().splitlines() if os.path.exists(os.environ.get('VIEWBAD', '')) else []) if x]
 inview = lambda v: bool(v and v.get('inView') and v.get('focus'))
@@ -1589,7 +1599,7 @@ for s in d['demo']:
         print(f"ok   S: demo {s['label']}: {s['n']} tool names, none off (each opens its sample), the demo line above them; a sample panel ({k['rows']} rows, Run off)"); continue
     inst = names[str(s['id'])]; eng = 'SQL Server 2022 ' if s['engine'] == 'sqlserver' else 'PostgreSQL '; tl, tm = ends(s['engine'], str(s['id']))
     assert len(s['tools']) == want, f"S: {inst}: {len(s['tools'])} tools"
-    if 'each tool opens a stored sample of its real output, captured on a test server; nothing runs on a demo instance' not in s.get('intro', '').lower():
+    if 'each tool with a stored sample opens it: its real output, captured on a test server; nothing runs on a demo instance' not in s.get('intro', '').lower():
         vbad.append(f"{inst}: the intro does not say what the page gives: {s.get('intro', '')[:200]!r}")
     withs = [t['name'] for t in s['tools'] if t.get('sample')]
     ops = s.get('openers') or []
@@ -1618,9 +1628,12 @@ for s in d['demo']:
 p = d['deep']; assert p and p['rows'] >= 1 and 'stored sample of sp_Blitz' in p['mark'], f"S: tool=sp_Blitz: {p}"
 print(f"ok   S: the address's tool=sp_Blitz opens its sample as the page loads ({p['rows']} rows)")
 if not inview(p.get('view')): vbad.append(f"tool=sp_Blitz on load: {p.get('view')}")
+rd = d.get('redraw') or {}
+if not (rd.get('dark') and rd.get('y0', 0) > 100 and abs(rd.get('y1', 0) - rd.get('y0', 0)) <= 4 and (rd.get('view') or {}).get('inView')):
+    vbad.append(f"a redraw of the page (the system's colours under 'auto') moved the view or lost the panel: {rd}")
 for x in vbad: print('     ' + x[:400])
 assert not vbad, f"S: {len(vbad)} panel(s) or row(s) not in view / not named / axe (above)"
-print(f"ok   S: every panel opened in view with the focus on its heading ({sum(len(s.get('tools') or []) for s in d['demo'])} clicks, 'Open sample' on both instances, tool= on load, the dark panels); each row with a sample its 'Open sample: <tool>' button; the intro says what the page gives; axe 0 on the demo page in both themes")
+print(f"ok   S: every panel opened in view with the focus on its heading ({sum(len(s.get('tools') or []) for s in d['demo'])} clicks, 'Open sample' on both instances, tool= on load, the dark panels); a redraw kept the view (scrollY {rd['y0']} -> {rd['y1']}); each row with a sample its 'Open sample: <tool>' button; the intro says what the page gives; axe 0 on the demo page in both themes")
 fx = d['files']; assert fx.get('xlsx') and fx.get('csv'), f"S: the downloads: {fx}"
 # About (the workbook's last sheet, found through the workbook's rels): a line 'Sheet <name>' | '<n> rows; <note>' for each
 # grid sheet - the sp_Blitz panel's sheets carry the mark in their note, the tools' grids and the log never

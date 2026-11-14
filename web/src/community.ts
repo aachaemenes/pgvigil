@@ -76,19 +76,24 @@ const stateWord: Record<string, [string, string]> = {
   ready: ['ready', 'ok'], note: ['note', 'warn'], needs: ['off', 'warn'], not_checked: ['not checked', 'crit'], demo: ['demo', 'none'],
 };
 
-// shownTool: the tool whose panel this page last brought into view ('<instance>:<tool>'): the address's tool= does it once
-// per load, so a redraw of the same page (the theme, the refresh choice) never moves the view
+// navs: this tab's navigations (a hash change: a link, Back); a redraw of the same page is none
+let navs = 0;
+addEventListener('hashchange', () => { navs++; });
+// shownTool: the tool whose panel was last brought into view ('<navs>:<instance>:<tool>'): the address's tool= does it once
+// per navigation, so a redraw of the same page (the system's colours under the 'auto' theme) never moves the view, and
+// Back to the page brings it into view again
 let shownTool = '';
 
 // inView: a tool's panel at the top of the view (html's scroll-padding keeps it under the sticky header and tabs) with the
-// focus on its heading, so a click on a tool changes what a person sees (it drew under every table, ~1,450 px down);
-// drawn before the page is on the screen (the address's tool=), it waits for the page, about 2 s at most
+// focus on its heading - or on its error or note when it has none (a failed read, an unknown tool) - so a click on a tool
+// changes what a person sees (it drew under every table, ~1,450 px down); drawn before the page is on the screen (the
+// address's tool=), it waits for the page, about 2 s at most
 function inView(panel: HTMLElement, tries = 120): void {
-  const h = panel.querySelector<HTMLElement>('h3') ?? panel;
-  if (!h.isConnected) { if (tries > 0) requestAnimationFrame(() => inView(panel, tries - 1)); return; }
-  h.tabIndex = -1;
-  h.scrollIntoView({ block: 'start' });
-  h.focus({ preventScroll: true });
+  const h = panel.querySelector<HTMLElement>('h3') ?? panel.querySelector<HTMLElement>('.error, [role=note]');
+  const at = h ?? panel;
+  if (!at.isConnected) { if (tries > 0) requestAnimationFrame(() => inView(panel, tries - 1)); return; }
+  at.scrollIntoView({ block: 'start' });
+  if (h) { h.tabIndex = -1; h.focus({ preventScroll: true }); }
 }
 
 // readAt: when a fact was read, for a fact the server took from the repository or a check it keeps
@@ -100,10 +105,10 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
   const d = await get<Tools>('community', { instance, database, ...(fresh ? { fresh: '1' } : {}) });
   const box = el('div', {});
   const out = el('div', {});
-  box.append(el('p', { class: 'meta' }, `On ${d.instance}. `
+  box.append(el('p', { class: 'meta community-intro' }, `On ${d.instance}. `
     + (d.demo
-      // a demo instance: what the page gives, before any row's refusal
-      ? 'Each tool opens a stored sample of its real output, captured on a test server; nothing runs on a demo instance.'
+      // a demo instance: what the page gives, before any row's refusal (Glenn Berry's script has no sample: its row says so)
+      ? 'Each tool with a stored sample opens it: its real output, captured on a test server; nothing runs on a demo instance.'
       : (d.engine === 'sqlserver'
         ? 'Each procedure runs as the instance\'s read login (never a sysadmin) with the parameters you give, under the timeout; pgvigil never installs one and never passes a parameter that writes a table.'
         : 'Each read runs on the instance\'s monitoring login in a read-only transaction, under the timeout and a 2 s lock timeout.')
@@ -129,17 +134,25 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
   if (!d.demo) box.append(el('div', { class: 'toolbar' }, el('label', {}, d.engine === 'sqlserver' ? 'Procedures installed in the database ' : 'Reads run in the database ', db), again, checked));
   // a tool's panel opens directly under the tool's own table, in view (inView); a click on another tool moves it there
   const tables = new Map<string, HTMLElement>();
+  let firstGroup: HTMLElement | undefined;
+  // a later click wins: a panel whose answer comes after another click's never replaces it nor moves the view
+  let seq = 0;
   const openTool = async (t: Tool) => {
+    const mine = ++seq;
     tables.get(t.id)?.after(out);
-    out.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
+    out.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Loading...'));
+    out.scrollIntoView({ block: 'nearest' });
     // a demo sample's own address (tool=): a schedule or a link of this page then opens it again
     if (d.demo) {
       const [path, q] = location.hash.split('?');
       const qs = new URLSearchParams(q ?? '');
       if (qs.get('i') === String(instance)) { qs.set('tool', t.id); history.replaceState(null, '', `${path}?${qs}`); }
     }
-    shownTool = `${instance}:${t.id}`;
-    try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }
+    shownTool = `${navs}:${instance}:${t.id}`;
+    let panel: HTMLElement;
+    try { panel = await panelOf(t, instance, d); } catch (e) { panel = errorBox(e); }
+    if (mine !== seq) return;
+    out.replaceChildren(panel);
     inView(out);
   };
   const groups = [...new Set(d.tools.map(t => t.group))];
@@ -154,7 +167,9 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
       { key: 'state', label: 'before it runs', wide: true, fmt: (_v, r) => cells.get(String(r.id)) ?? '' },
     ]);
     for (const t of tools) tables.set(t.id, table);
-    box.append(el('h3', {}, g), table);
+    const head = el('h3', {}, g);
+    firstGroup ??= head;
+    box.append(head, table);
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
   // the address named a tool: on a demo instance its sample is open when the page has drawn (a linked page opens it
@@ -165,10 +180,14 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     if (t) {
       tables.get(t.id)?.after(out);
       try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }
-      // in view once per load and tool: a redraw of the same page stays where the person is
-      if (shownTool !== `${instance}:${t.id}`) { shownTool = `${instance}:${t.id}`; inView(out); }
+      // in view once per navigation and tool: a redraw of the same page stays where the person is
+      if (shownTool !== `${navs}:${instance}:${t.id}`) { shownTool = `${navs}:${instance}:${t.id}`; inView(out); }
+    } else {
+      // an address naming no tool here (a renamed one in an old link): said above the tools, in view
+      firstGroup?.before(out);
+      out.replaceChildren(el('p', { class: 'meta', role: 'note' }, `No tool '${open}' on ${d.instance}: pick one below.`));
+      inView(out);
     }
-    else out.replaceChildren(el('p', { class: 'meta', role: 'note' }, `No tool '${open}' on ${d.instance}: pick one above.`));
   }
   return box;
 }
