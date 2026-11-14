@@ -107,7 +107,7 @@ type planButtons struct {
 func (s *Server) planButtons(name string) planButtons { return s.planButtonsOn(s.doorsNow(), name) }
 
 // planButtonsOn: the buttons on the request's door set. A page door (Admin > Instances) never plans: EXPLAIN and the
-// index advisor stay on pgvigil.yaml's instances in this release (SF1), checked on the door's Page flag.
+// index advisor stay on pgvigil.yaml's instances in this release, checked on the door's Page flag.
 func (s *Server) planButtonsOn(ds *doorSet, name string) planButtons {
 	a := s.actions
 	var b planButtons

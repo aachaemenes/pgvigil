@@ -56,16 +56,17 @@
 #   N. the page door (doors.page_instance_reads; the design pass's part H): pgd-ok (PostgreSQL, a pg_monitor login) and
 #      msd-ok (SQL Server, the read login) added in the page and collected. N1 on the first serve (no doors: key, a
 #      fresh install): their needs, a run and the form refused in the switch's words, audited (the form as
-#      community_form, 403). N2 on a serve whose pgvigil.yaml says 'doors: page_instance_reads: on': a read, a script
-#      and a custom report done on the stored logins (current_user / SUSER_SNAME() = those logins, never serve's),
-#      audited door page with the generation; filepg's run audited door file. N3: windows, entra-identity, pgpass and
-#      passfile= page instances each refused before anything is sent in the own-identity words, audited. N4: EXPLAIN
-#      403, EXPLAIN ANALYZE refused in the actions log, the advisor 409, the actions off - in their words. N5: on this
-#      serve a run right after an add is done and right after a disable refused (the answers: 'the door takes effect at
+#      community_form, 403); the add's answer says nothing of a door, the actions on pgd-ok a page instance's words. N2
+#      on a serve whose pgvigil.yaml says 'doors: page_instance_reads: on': a read, a script and a custom report done on
+#      the stored logins (current_user / SUSER_SNAME() = those logins, never serve's), audited door page with the
+#      generation; filepg's run audited door file. N3: windows, entra-identity, pgpass and passfile= page instances each
+#      refused before anything is sent in the own-identity words, audited. N4: EXPLAIN 403, EXPLAIN ANALYZE refused in
+#      the actions log, the advisor 409, the actions off - in their words. N5: on this serve a run right after an add is
+#      done and right after a disable refused (the answers: 'this change reaches Community tools and custom reports at
 #      once on this server'); a row Merge leaves out (a tag with no value) says why. N6: a report mail schedule of the
-#      report on pgd-ok rendered by this serve as its owner: one audit row per turn, door page; after a disable
-#      refused in the words, which the mail or its render error carries. N7: msdb.dbo.sp_start_job in a script as the
-#      read login (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen)
+#      report on pgd-ok rendered by this serve as its owner: one audit row per turn, door page; after a disable refused
+#      in the words, which the mail or its render error carries. N7: msdb.dbo.sp_start_job in a script as the read login
+#      (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen)
 #   L also draws one aws, one azure and one gcp source (rows only, disabled: never read) and grades their cloud-only
 #      controls ('Read the regions again', the cloud source's Edit) off with the rest
 #
@@ -748,22 +749,23 @@ lastlog() { pq "SELECT outcome || '|' || coalesce(door, '') || '|' || coalesce(d
 # needwords ID: every hard need's what and how, one per line
 needwords() { [[ "$(api GET "community?instance=$1")" == 200 ]] || fail "N: GET /api/community?instance=$1: $(head -c 300 "$TMPD/ans.json")"
   python3 -c 'import json, sys; [print(n["what"] + " || " + n.get("how", "")) for n in json.load(open(sys.argv[1]))["needs"] if n.get("hard")]' "$TMPD/ans.json"; }
-ATONCE='the door takes effect at once on this server'
+ATONCE='this change reaches Community tools and custom reports at once on this server'
 OFF='off on this install: doors.page_instance_reads in pgvigil.yaml turns on Community tools and custom reports for instances added in Admin > Instances'
 # the two page instances, added on the first serve (no doors: key - a fresh install)
 code=$(api POST admin/instances "$(js op=add name=pgd-ok engine=postgres host=127.0.0.1 port="$PB" dbname=postgres auth=password login="$DOOR" password=@DOOR_PW tags=env:door)")
-[[ "$code" == 200 && "$(ans doors)" == "$ATONCE"* ]] || fail "N: add pgd-ok: $code $(head -c 300 "$TMPD/ans.json")"
+[[ "$code" == 200 && -z "$(ans doors)" ]] || fail "N1: add pgd-ok on an install whose page doors are off: the answer speaks of them: $code $(head -c 300 "$TMPD/ans.json")"
 code=$(api POST admin/instances "$(js op=add name=msd-ok engine=sqlserver host=127.0.0.1 port="$PORT_SQL" dbname=master auth=sql login="$MONL" password=@MON_PW options=TrustServerCertificate=true tags=env:door)")
 [[ "$code" == 200 ]] || fail "N: add msd-ok: $code $(head -c 300 "$TMPD/ans.json")"
 waitcol pgd-ok 120 "N"; waitcol msd-ok 180 "N"
 PGD=$(iid pgd-ok); MSD=$(iid msd-ok); GN=$(gen)
-# N1 (B2): the fresh install keeps the page door shut, in its words, audited
+# N1: the fresh install keeps the page door shut, in its words, audited
 nw=$(needwords "$PGD"); [[ "$nw" == *"instance pgd-ok: $OFF || "*"doors: page_instance_reads: on"* ]] || fail "N1: pgd-ok's needs on a fresh install: $nw"
 r=$(crun "$PGD" pg_settings_changed); [[ "$r" == "refused|instance pgd-ok: $OFF" ]] || fail "N1: a run on pgd-ok on a fresh install: $r"
 [[ "$(lastlog community_run pgd-ok)" == "refused||$GN|instance pgd-ok: $OFF" ]] || fail "N1: its audit row: $(lastlog community_run pgd-ok)"
 code=$(api POST community/params "{\"instance_id\":$MSD,\"tool\":\"sp_Blitz\"}"); [[ "$code" == 403 && "$(ans error)" == "instance msd-ok: $OFF" ]] || fail "N1: the form on msd-ok: $code $(head -c 300 "$TMPD/ans.json")"
-[[ "$(lastlog community_form msd-ok)" == "refused||$GN|instance msd-ok: $OFF" ]] || fail "N1: the form's refusal is not audited (SF4): $(lastlog community_form msd-ok)"
-echo "ok   N1: a fresh install (no doors: key): pgd-ok and msd-ok added in the page, collected, and their tools refused in the switch's words - the needs, a run (audited refused, generation $GN), the form (403, audited community_form)"
+[[ "$(lastlog community_form msd-ok)" == "refused||$GN|instance msd-ok: $OFF" ]] || fail "N1: the form's refusal is not audited: $(lastlog community_form msd-ok)"
+code=$(api GET "actions/log?instance=$PGD"); [[ "$code" == 200 && "$(ans reason)" == "instance pgd-ok: actions run only on an instance of pgvigil.yaml"* ]] || fail "N1: the actions on pgd-ok with the page doors off: $code $(head -c 300 "$TMPD/ans.json")"
+echo "ok   N1: a fresh install (no doors: key): pgd-ok and msd-ok added in the page (the add's answer says nothing of a door), collected, and their tools refused in the switch's words - the needs, a run (audited refused, generation $GN), the form (403, audited community_form); the actions on pgd-ok in a page instance's words"
 # N2: a serve whose pgvigil.yaml turns the page door on; the first serve stops (one renderer of report mail)
 kill "$SRVPID" 2>/dev/null || true; SRVPID=
 { cat "$CFGD/pgvigil.yaml"; printf 'doors:\n  page_instance_reads: on\n'; } > "$CFGD/door.yaml"
@@ -773,8 +775,8 @@ for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && b
 kill -0 "$SRVDPID" 2>/dev/null || { cat "$TMPD/serve-door.log" >&2; fail "N2: the door serve exited"; }
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "N2: the UI login on the door serve"
 # a new serve holds pgvigil.yaml's doors until its watcher's first read of the inventory (at its start)
-nw=; for _ in $(seq 1 30); do nw=$(needwords "$PGD"); [[ "$nw" != *"neither pgvigil.yaml nor Admin > Instances"* ]] && break; sleep 1; done
-[[ "$nw" != *"neither pgvigil.yaml nor Admin > Instances"* && "$nw" != *"$OFF"* ]] || fail "N2: the door serve's page doors within 30 s: $nw"
+nw=; for _ in $(seq 1 30); do nw=$(needwords "$PGD"); [[ "$nw" != *"neither pgvigil.yaml nor Admin > Instances"* && "$nw" != *"has not read the list of Admin > Instances"* ]] && break; sleep 1; done
+[[ "$nw" != *"neither pgvigil.yaml nor Admin > Instances"* && "$nw" != *"has not read the list of Admin > Instances"* && "$nw" != *"$OFF"* ]] || fail "N2: the door serve's page doors within 30 s: $nw"
 r=$(crun "$PGD" pg_settings_changed); [[ "$r" == "done|" ]] || fail "N2: a run on pgd-ok with the switch on: $r"
 [[ "$(lastlog community_run pgd-ok)" == "done|page|$GN|" ]] || fail "N2: its audit row: $(lastlog community_run pgd-ok)"
 r=$(crun "$MSD" glenn_berry "SELECT SUSER_SNAME() AS who"); [[ "$r" == "done|" && "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["runs"][0]["sets"][0]["rows"][0][0])' "$TMPD/ans.json")" == "$MONL" ]] || fail "N2: a script on msd-ok: $r $(head -c 300 "$TMPD/ans.json")"
@@ -787,7 +789,7 @@ code=$(api POST customreports/run "{\"report_id\":$RID,\"target\":\"instance\",\
 FID=$(iid filepg); code=$(api POST customreports/run "{\"report_id\":$RID,\"target\":\"instance\",\"instance_id\":$FID}")
 [[ "$code" == 200 && "$(lastlog run filepg)" == "refused|file|$GN|"*superuser* ]] || fail "N2: the report on filepg (the file's door, a superuser login): $code $(lastlog run filepg)"
 echo "ok   N2: with doors.page_instance_reads on: a read on pgd-ok, a script on msd-ok (as $MONL), a custom report on pgd-ok (as $DOOR, the stored login, never serve's) - each done and audited door page, generation $GN; filepg's run names door file"
-# N3 (B1): serve's own identity and an option outside the lists, refused before anything is sent, audited
+# N3: serve's own identity and an option outside the lists, refused before anything is sent, audited
 for spec in "msd-win|engine=sqlserver auth=windows|windows" "msd-mi|engine=sqlserver auth=entra-identity|entra-identity" "pgd-pass|engine=postgres auth=pgpass login=$DOOR|pgpass" "pgd-pf|engine=postgres auth=password login=$DOOR password=@DOOR_PW options=passfile=/tmp/pgv-none|passfile"; do
   IFS='|' read -r nm args what <<<"$spec"
   hp="host=127.0.0.1 port=$PB dbname=postgres"; [[ "$nm" == msd-* ]] && hp="host=127.0.0.1 port=$PORT_SQL dbname=master"
@@ -801,7 +803,7 @@ for spec in "msd-win|engine=sqlserver auth=windows|windows" "msd-mi|engine=sqlse
   code=$(api POST admin/instances "$(js op=remove name="$nm")"); [[ "$code" == 200 ]] || fail "N3: remove $nm: $code"
 done
 echo "ok   N3: windows, entra-identity, pgpass and passfile= page instances: each run refused before anything is sent in the own-identity words, audited refused, the page's step 'put the instance in pgvigil.yaml'"
-# N4 (SF1, SF5): EXPLAIN, EXPLAIN ANALYZE, the index advisor and the actions stay on pgvigil.yaml's instances
+# N4: EXPLAIN, EXPLAIN ANALYZE, the index advisor and the actions stay on pgvigil.yaml's instances
 FO="instance pgd-ok: EXPLAIN and the index advisor run only on an instance of pgvigil.yaml"
 code=$(api POST plans/explain "{\"instance_id\":$PGD,\"datname\":\"postgres\",\"statement\":\"select 1\"}"); [[ "$code" == 403 && "$(ans error)" == "$FO" ]] || fail "N4: EXPLAIN on pgd-ok: $code $(head -c 300 "$TMPD/ans.json")"
 api POST plans/analyze "{\"instance_id\":$PGD,\"datname\":\"postgres\",\"statement\":\"select 1\",\"reason\":\"the page door proof\",\"confirm\":\"analyze\"}" >/dev/null
@@ -809,7 +811,7 @@ api POST plans/analyze "{\"instance_id\":$PGD,\"datname\":\"postgres\",\"stateme
 code=$(api POST indexes/advise "{\"instance_id\":$PGD,\"database\":\"postgres\"}"); [[ "$code" == 409 && "$(ans error)" == "$FO" ]] || fail "N4: the index advisor on pgd-ok: $code $(head -c 300 "$TMPD/ans.json")"
 code=$(api GET "actions/log?instance=$PGD"); [[ "$code" == 200 && "$(ans reason)" == "instance pgd-ok: actions run only on an instance of pgvigil.yaml"* ]] || fail "N4: the actions on pgd-ok: $code $(head -c 300 "$TMPD/ans.json")"
 echo "ok   N4: on pgd-ok EXPLAIN 403, EXPLAIN ANALYZE refused in the actions log, the advisor 409 - each '$FO'; the actions off in their words (query_text none with EXPLAIN: moot, EXPLAIN is off on a page door)"
-# N5 (SF2, SF3): at once after this serve's own write, both ways; a row Merge leaves out says why
+# N5: at once after this serve's own write, both ways; a row Merge leaves out says why
 code=$(api POST admin/instances "$(js op=add name=pgd-new engine=postgres host=127.0.0.1 port="$PB" dbname=postgres auth=password login="$DOOR" password=@DOOR_PW)")
 [[ "$code" == 200 && "$(ans doors)" == "$ATONCE"* ]] || fail "N5: add pgd-new: $code $(head -c 300 "$TMPD/ans.json")"
 NEW=$(iid pgd-new); r=$(crun "$NEW" pg_settings_changed); [[ "$r" == "done|" ]] || fail "N5: a run right after the add: $r"
@@ -825,7 +827,7 @@ pq "UPDATE pgvigil.admin_instances SET tags = array_remove(tags, 'env:') WHERE n
 pq "UPDATE pgvigil.admin_inventory_state SET generation = generation + 1, changed_at = now() WHERE one" >/dev/null
 for _ in $(seq 1 40); do r=$(crun "$PGD" pg_settings_changed); [[ "$r" == "done|" ]] && break; sleep 1; done; [[ "$r" == "done|" ]] || fail "N5: pgd-ok after its row was mended: $r"
 echo "ok   N5: on this serve a run right after the add is done and right after the disable refused ('$ATONCE' in each answer); a row Merge leaves out: '$LO', with its step"
-# N6 (SF6): a report mail schedule of the report on pgd-ok, rendered as its owner each turn
+# N6: a report mail schedule of the report on pgd-ok, rendered as its owner each turn
 pq "INSERT INTO pgvigil.alert_channels (name, kind, destination, min_severity, repeat_secs, recovery) VALUES ('doormail', 'smtp', 'door@pgvigil.test', 'critical', 0, false)" >/dev/null
 code=$(api POST reportmail "$(python3 -c 'import json, sys; print(json.dumps({"op": "add", "name": "door mail", "route": "#/customreports?i=%s&report=%s&run=1" % (sys.argv[1], sys.argv[2]), "recipients": ["door@pgvigil.test"], "channel": "doormail", "cadence": "daily", "cron": "0 7 * * *", "timezone": "UTC"}))' "$PGD" "$RID")")
 [[ "$code" == 200 ]] || fail "N6: the schedule: $code $(head -c 300 "$TMPD/ans.json")"; SID=$(ans schedule_id)
@@ -845,7 +847,7 @@ print("the mail" if w in html.unescape(h) else "its render error" if w in e else
 code=$(api POST admin/instances "$(js op=enable name=pgd-ok)"); [[ "$code" == 200 ]] || fail "N6: enable pgd-ok: $code"
 code=$(api POST reportmail "{\"op\":\"end\",\"schedule_id\":$SID}"); [[ "$code" == 200 ]] || fail "N6: the schedule's end: $code"
 echo "ok   N6: a schedule of the report on pgd-ok rendered by this serve as $USR: one audit row per turn - done, door page; after a disable refused '$DW', the words in $where"
-# N7 (could not verify, SF10): sp_start_job through the read login is refused by the server and starts nothing
+# N7: sp_start_job through the read login is refused by the server and starts nothing
 r=$(crun "$MSD" glenn_berry "EXEC msdb.dbo.sp_start_job @job_name = N'$JOB'"); [[ "$r" == failed\|* && "$r" == *sp_start_job* ]] || fail "N7: sp_start_job as $MONL: $r"
 sleep 5; [[ "$(sq "SELECT count(*) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$JOB' AND a.start_execution_date IS NOT NULL" msdb | tr -d '[:space:]')" == 0 ]] || fail "N7: the job started"
 sqok "N7: the job started by sa (the read sees a start)" "EXEC msdb.dbo.sp_start_job @job_name = N'$JOB';" msdb

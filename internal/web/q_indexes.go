@@ -172,7 +172,7 @@ func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
 	door, ok := ds.PG[name]
 	switch {
 	case ok && door.Page:
-		// the index advisor stays on pgvigil.yaml's instances (SF1)
+		// the index advisor stays on pgvigil.yaml's instances
 		writeErr(w, http.StatusConflict, errors.New(fileOnly(name)))
 		return
 	case !ok || strings.TrimSpace(door.Monitor) == "":

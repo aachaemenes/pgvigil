@@ -2,6 +2,10 @@ package web
 
 import (
 	"context"
+	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -71,7 +75,7 @@ func TestPageDoors(t *testing.T) {
 	if d := ds.MS["ms-ok"]; !d.Page || !strings.HasPrefix(d.Monitor, "sqlserver://r:x@b") {
 		t.Errorf("ms-ok: %+v", d)
 	}
-	// a service principal's typed secret is a typed credential: allowed (the lead 13:43)
+	// a service principal's typed secret is a typed credential: allowed
 	if d := ds.MS["ms-entra"]; !d.Page || d.Monitor == "" {
 		t.Errorf("ms-entra: %+v (%+v)", d, ds.NoDoor["ms-entra"])
 	}
@@ -98,6 +102,16 @@ func TestPageDoors(t *testing.T) {
 		if dsn != "" || kind != "" || !strings.Contains(no.Why, c.why) || no.How != c.how {
 			t.Errorf("%s: dsn %q kind %q %+v; want %q / %q", c.name, dsn, kind, no, c.why, c.how)
 		}
+		// a page row with no read login is still a page instance: the actions, EXPLAIN and the advisor say so
+		if wantPage := c.name != "pgempty" && c.name != "nobody"; ds.isPage(engine, c.name) != wantPage {
+			t.Errorf("%s: isPage %v, want %v", c.name, !wantPage, wantPage)
+		}
+	}
+	if off := ds.PG["pg-off"].Off("pg-off"); !strings.Contains(off, "actions run only on an instance of pgvigil.yaml") {
+		t.Errorf("a disabled page row's actions: %q", off)
+	}
+	if off := ds.MS["ms-win"].Off("ms-win", mssql.ActionKind("kill")); !strings.Contains(off, "actions run only on an instance of pgvigil.yaml") {
+		t.Errorf("a refused SQL Server page row's actions: %q", off)
 	}
 	for _, c := range []struct{ engine, name, kind string }{
 		{config.EnginePostgres, "pgfile", "file"}, {config.EnginePostgres, "pg-ok", "page"}, {config.EngineSQLServer, "msfile", "file"}, {config.EngineSQLServer, "ms-ok", "page"},
@@ -109,20 +123,31 @@ func TestPageDoors(t *testing.T) {
 			t.Errorf("%s: isPage", c.name)
 		}
 	}
-	// a page door never acts (SF5)
+	// a page door never acts
 	if off := ds.PG["pg-ok"].Off("pg-ok"); !strings.Contains(off, "actions run only on an instance of pgvigil.yaml") {
 		t.Errorf("pg-ok's actions: %q", off)
 	}
 
-	// the switch off (B2): no page door at all, the words name it
+	// the switch off: no page door opens, the words name it; the actions keep a page instance's words, not a
+	// missing actions_dsn's
 	off := c
 	off.reads = false
 	ds0 := build(file, nil, off, page, 7)
-	if _, ok := ds0.PG["pg-ok"]; ok {
-		t.Error("pg-ok has a door with the switch off")
+	if d := ds0.PG["pg-ok"]; d.Monitor != "" || !d.Page {
+		t.Errorf("pg-ok with the switch off: %+v", d)
 	}
 	if _, _, no := ds0.readLogin(config.EnginePostgres, "pg-ok"); !strings.Contains(no.Why, config.PageReadsOff) || no.How != howSwitch {
 		t.Errorf("switch off: %+v", no)
+	}
+	if off := ds0.PG["pg-ok"].Off("pg-ok"); !strings.Contains(off, "actions run only on an instance of pgvigil.yaml") {
+		t.Errorf("switch off, the actions: %q", off)
+	}
+	if b := (&Server{log: discardLog(), actions: &Actions{}}).planButtonsOn(ds0, "pg-ok"); b.Explain || b.ExplainReason != fileOnly("pg-ok") {
+		t.Errorf("switch off, EXPLAIN: %+v", b)
+	}
+	// a row the switch never opens says its own refusal first, not the switch
+	if _, _, no := ds0.readLogin(config.EngineSQLServer, "ms-win"); !strings.Contains(no.Why, "signs in with this server's own identity") || no.How != howInTheFile {
+		t.Errorf("switch off, a windows row: %+v", no)
 	}
 	if dsn, kind, _ := ds0.readLogin(config.EnginePostgres, "pgfile"); kind != "file" || dsn == "" {
 		t.Error("the switch off closed a file door")
@@ -139,17 +164,39 @@ func TestPageDoors(t *testing.T) {
 	if d := build(file, ds, c, page, 8).PG["pg-ok"]; d.Monitor != "host=c user=r2 password=y" {
 		t.Errorf("new generation: %q", d.Monitor)
 	}
-	// an empty one is read again on each tick (nit 2): the credential readable now opens the door
+	// an empty one is read again on each tick: the credential readable now opens the door; a set with no empty page
+	// door stands on a tick of the same generation (the watcher builds none)
+	if !ds.emptyPage() {
+		t.Error("pg-gone's empty door not seen")
+	}
 	gone := strings.TrimPrefix(page[10].DSNRef, "file:")
 	if err := os.WriteFile(gone, []byte(pgDSN), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if d := build(file, ds, c, page, 7).PG["pg-gone"]; d.Monitor != pgDSN {
+	again := build(file, ds, c, page, 7)
+	if d := again.PG["pg-gone"]; d.Monitor != pgDSN {
 		t.Errorf("an empty door read again: %q", d.Monitor)
+	}
+	if again.emptyPage() {
+		t.Error("an empty page door left after every credential was read")
+	}
+
+	// the page's list not read yet (the watcher's first read failed): the file's doors stand, a page instance is
+	// unknown here - never 'in neither list'
+	un := build(file, nil, c, nil, -1)
+	if !un.Unread {
+		t.Error("generation -1 not marked unread")
+	}
+	if _, _, no := un.readLogin(config.EnginePostgres, "pg-ok"); !strings.Contains(no.Why, "has not read the list of Admin > Instances") || no.How != howUnread {
+		t.Errorf("unread: %+v", no)
+	}
+	if dsn, kind, _ := un.readLogin(config.EnginePostgres, "pgfile"); kind != "file" || dsn == "" {
+		t.Error("an unread list closed a file door")
 	}
 }
 
-// one request's set is one generation whole while serve's watcher swaps it (run under -race)
+// the watcher's swap is race-free and a loaded set is never written after: a reader that loads the set once sees one
+// generation whole (run under -race). That each request loads it once is TestDoorsReadOnce's.
 func TestDoorSetSwap(t *testing.T) {
 	s := &Server{log: discardLog()}
 	t.Cleanup(func() { doorSets.Delete(s) })
@@ -190,7 +237,7 @@ func TestDoorSetSwap(t *testing.T) {
 	}
 }
 
-// the admin write's wait for the swap is bounded (the lead 13:43): a stuck watcher never hangs the page
+// the admin write's wait for the swap is bounded: a stuck watcher never hangs the page
 func TestWakeDoorsBounded(t *testing.T) {
 	s := &Server{log: discardLog()}
 	if got := s.doorsAfterWrite(context.Background()); got != "" {
@@ -218,15 +265,93 @@ func TestWakeDoorsBounded(t *testing.T) {
 	if d := time.Since(t0); d > time.Second {
 		t.Errorf("a pending wake: waited %v", d)
 	}
-	if got := doorTakesEffect(false, DoorEvery); got != "the door takes effect within 15 s" {
+	if got := doorTakesEffect(false, DoorEvery); got != "this change reaches Community tools and custom reports within 15 s" {
 		t.Errorf("late words: %q", got)
 	}
-	if got := doorTakesEffect(true, DoorEvery); !strings.HasPrefix(got, "the door takes effect at once on this server") {
+	if got := doorTakesEffect(true, DoorEvery); !strings.HasPrefix(got, "this change reaches Community tools and custom reports at once on this server") {
 		t.Errorf("at once words: %q", got)
+	}
+	// the write's own wait is doorWait: a stuck watcher answers the late words after it, never later
+	t0 = time.Now()
+	if got := s.doorsAfterGen(7, nil); got != doorTakesEffect(false, DoorEvery) {
+		t.Errorf("a stuck watcher after a write: %q", got)
+	}
+	if d := time.Since(t0); d < doorWait || d > doorWait+2*time.Second {
+		t.Errorf("a stuck watcher after a write: waited %v (doorWait %v)", d, doorWait)
+	}
+	// the generation not read after the write: said, never 'within 15 s'
+	if got := s.doorsAfterGen(0, errors.New("no 0131")); got != doorUnreadAfterWrite {
+		t.Errorf("generation unread: %q", got)
+	}
+	// an install whose page doors are off: the answer says nothing of them (no pool is asked)
+	s.storeDoors(&doorSet{Gen: 8, PageReads: false})
+	if got := s.doorsAfterWrite(context.Background()); got != "" {
+		t.Errorf("page doors off: %q", got)
 	}
 }
 
-// EXPLAIN, EXPLAIN ANALYZE and the index advisor stay on pgvigil.yaml's instances (SF1)
+// each request reads the door set once: no function outside doorset.go calls doorsNow twice, and none reads the
+// file's doors beside the set (an Actions' doors, plansConfig, the job allow lists) - a handler that did would mix two
+// generations, which TestDoorSetSwap cannot see
+func TestDoorsReadOnce(t *testing.T) {
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("the package's files: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || f == "doorset.go" {
+			continue
+		}
+		af, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			written := map[ast.Expr]bool{}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if as, ok := n.(*ast.AssignStmt); ok {
+					for _, l := range as.Lhs {
+						written[l] = true
+					}
+				}
+				return true
+			})
+			calls := 0
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.CallExpr:
+					if se, ok := x.Fun.(*ast.SelectorExpr); ok {
+						switch {
+						case se.Sel.Name == "doorsNow" && len(x.Args) == 0:
+							calls++
+						case se.Sel.Name == "plansConfig":
+							t.Errorf("%s: %s reads plansConfig() beside the door set", fset.Position(x.Pos()), fd.Name.Name)
+						case se.Sel.Name == "Load":
+							if id, ok := se.X.(*ast.Ident); ok && id.Name == "pgJobAllow" {
+								t.Errorf("%s: %s reads pgJobAllow beside the door set", fset.Position(x.Pos()), fd.Name.Name)
+							}
+						}
+					}
+				case *ast.SelectorExpr:
+					if x.Sel.Name == "doors" && !written[x] {
+						t.Errorf("%s: %s reads .doors beside the door set", fset.Position(x.Pos()), fd.Name.Name)
+					}
+				}
+				return true
+			})
+			if calls > 1 {
+				t.Errorf("%s: %s calls doorsNow %d times (one request, one set)", fset.Position(fd.Pos()), fd.Name.Name, calls)
+			}
+		}
+	}
+}
+
+// EXPLAIN, EXPLAIN ANALYZE and the index advisor stay on pgvigil.yaml's instances
 func TestPlanButtonsPageDoor(t *testing.T) {
 	s := &Server{log: discardLog()}
 	s.actions = &Actions{s: s}

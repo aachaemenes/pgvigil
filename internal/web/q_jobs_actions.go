@@ -228,7 +228,7 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 	ds := s.doorsNow() // the request's one door set
 	switch {
 	case ds.PG[name].Page:
-		// an instance added in Admin > Instances: no action of any kind (SF5)
+		// an instance added in Admin > Instances: no action of any kind
 		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: actions.PageOff(name)}
 	case !ds.pgJobAllowed(name, kind):
 		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would,

@@ -163,7 +163,8 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 }
 
 // WatchInventoryRaw is WatchInventory for serve's doors: apply also gets the page's raw rows (a disabled row and a row
-// Merge left out included: serve's words tell them apart) and the generation they were read at (0: the file's alone);
+// Merge left out included: serve's words tell them apart) and the generation they were read at (0: the file's alone;
+// -1: the first read failed, the file's alone meanwhile - serve says the page's list is unread, never 'in neither');
 // a receive on wake reads at once (serve's own write, so this serve's doors follow before it replies); with reapply,
 // every tick applies the last rows again although the generation did not move (serve re-resolves a page door whose
 // credential could not be read).
@@ -220,10 +221,10 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 				log.Warn("instances: the page's list could not be read; the last list stays", "err", err)
 			}
 			failing = true
-			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick)
+			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick), generation -1
 				have = -2
 				all, _ := Merge(file, nil, queryText)
-				apply(all, nil, 0)
+				apply(all, nil, -1)
 			}
 			return
 		}

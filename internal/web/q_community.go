@@ -34,6 +34,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -540,10 +541,13 @@ type communityCheck struct {
 	Preset    map[string]map[string]string // each tool's form values
 }
 
+// checkKey: one server's checks of an instance and database on one read login (its hash: an Edit in Admin >
+// Instances that moves the instance to another host or login starts a new check, never shows the old one's)
 type checkKey struct {
-	s  *Server
-	id int
-	db string
+	s    *Server
+	id   int
+	db   string
+	door [sha256.Size]byte
 }
 
 type checkEntry struct {
@@ -1153,7 +1157,7 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		if engine == "sqlserver" {
 			kdb = msDB(db)
 		}
-		c = s.checks(ctx, checkKey{s, id, kdb}, name, r.URL.Query().Get("fresh") == "1", func(cctx context.Context) *communityCheck {
+		c = s.checks(ctx, checkKey{s: s, id: id, db: kdb, door: sha256.Sum256([]byte(door))}, name, r.URL.Query().Get("fresh") == "1", func(cctx context.Context) *communityCheck {
 			if engine == "sqlserver" {
 				return s.msChecks(cctx, id, name, door, db)
 			}

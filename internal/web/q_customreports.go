@@ -1066,7 +1066,7 @@ func (s *Server) refuseRun(w http.ResponseWriter, r *http.Request, row map[strin
 	s.refuseRunStatus(w, r, row, why, http.StatusBadRequest)
 }
 
-// refuseRunStatus is refuseRun with the answer's status (403 for a form refused for its login: SF4)
+// refuseRunStatus is refuseRun with the answer's status (403 for a form refused for its login)
 func (s *Server) refuseRunStatus(w http.ResponseWriter, r *http.Request, row map[string]any, why error, status int) {
 	row["outcome"], row["detail"] = "refused", why.Error()
 	actx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)

@@ -180,13 +180,17 @@ the form, never for one that signs in as `pgvigil serve` itself:
 Each refusal is in words on the page and in the run's audit row: in neither `pgvigil.yaml` nor Admin > Instances;
 disabled in Admin > Instances; left out of the list (the reason); off on this install; this server's own identity;
 an option the door does not open; a credential not readable on this host (stored by another host's `pgvigil
-serve`: store it again with Edit on this server). EXPLAIN, the index advisor and every action (cancel, terminate,
-kill, a job's start and stop) stay on the instances of `pgvigil.yaml`: on a page instance they say so, and the
-actions log keeps no door column because a page instance runs no action.
+serve`: serve here as the account, and with the configuration folder, that stored it - storing it again with Edit on
+this server moves it to this host, where a collector on the other host then reads nothing); the list of Admin >
+Instances not read yet on this server (its log names why a read failed). EXPLAIN, the index advisor and every action
+(cancel, terminate, kill, a job's start and stop) stay on the instances of `pgvigil.yaml`: on a page instance - one
+with a door or refused one - they say so, and the actions log keeps no door column because a page instance runs no
+action.
 
 A change in Admin > Instances reaches this server's doors at once (its write waits up to 5 seconds for them, then
-answers that the door takes effect within 15 seconds) and another `pgvigil serve` on the same repository within 15
-seconds. Every run's audit row (`custom_report_log`) names its door, `file` (an instance of `pgvigil.yaml`), `page`
+answers that the change reaches Community tools and custom reports within 15 seconds) and another `pgvigil serve` on
+the same repository within 15 seconds. On an install whose page doors are off the answer says nothing of them.
+Every run's audit row (`custom_report_log`) names its door, `file` (an instance of `pgvigil.yaml`), `page`
 (Admin > Instances') or `store` (the repository), and `door_generation`, the repository's inventory generation the
 door was read from. `pgvigil serve` keeps every open page door's credential in memory while it runs. While a serve
 cannot read the repository, its last doors stay as they were: a disable written through another serve reaches it once

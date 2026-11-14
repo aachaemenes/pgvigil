@@ -43,6 +43,9 @@ type doorSet struct {
 	// NoDoor: a page instance with no door here -> why, and what opens it
 	NoDoor    map[string]noDoor
 	PageReads bool
+	// Unread: the page's list not read yet on this serve (its first read failed, or has not run): an instance in
+	// neither list is said to be unknown here, never 'in neither list'
+	Unread bool
 }
 
 // noDoor is why an instance has no read login here (Why: the words a refusal and the page carry) and what opens it
@@ -53,12 +56,18 @@ type noDoor struct{ Why, How string }
 const (
 	howFile      = "set the variable, or make the file readable, for the account pgvigil serve runs as, and serve again (docs/configuration.md)"
 	howNeither   = "give the instance a dsn in pgvigil.yaml with a login that is not a sysadmin or superuser and serve with that file, or add it in Admin > Instances (docs/configuration.md)"
-	howPageAgain = "store its credential again with Edit in Admin > Instances on this server, or put the instance in pgvigil.yaml (docs/configuration.md)"
+	howPageAgain = "serve here as the account, and with the configuration folder, that stored it, or put the instance in pgvigil.yaml (docs/configuration.md); storing it again with Edit on this server moves it to this host, and a collector on the other host then reads nothing"
 	howEnable    = "enable it in Admin > Instances"
 	howCorrect   = "correct its row in Admin > Instances (docs/configuration.md)"
 	howSwitch    = "an admin sets 'doors: page_instance_reads: on' in pgvigil.yaml and serves again, or the instance goes into pgvigil.yaml with its read login (docs/configuration.md)"
 	howInTheFile = "put the instance in pgvigil.yaml with its read login (docs/configuration.md)"
+	howUnread    = "serve reads the list again every 15 s; its log names why a read failed (a repository without migration 0131, or serve's role without EXECUTE on admin_inventory())"
 )
+
+// unreadWords: an instance this serve cannot place while the page's list is unread
+func unreadWords(name string) string {
+	return "instance " + name + " has no read login on this server yet: this server has not read the list of Admin > Instances"
+}
 
 var doorSets sync.Map // *Server -> *atomic.Pointer[doorSet] (serve's watcher stores it; demo and mcp keep the file's)
 
@@ -147,8 +156,10 @@ func (ds *doorSet) readLogin(engine, name string) (dsn, kind string, no noDoor) 
 		monitor, ok, page = d.Monitor, has, d.Page
 	}
 	switch {
-	case !ok && ds.NoDoor[name].Why != "":
+	case ds.NoDoor[name].Why != "":
 		return "", "", ds.NoDoor[name]
+	case !ok && ds.Unread:
+		return "", "", noDoor{unreadWords(name), howUnread}
 	case !ok:
 		return "", "", noDoor{noDoorWords(name), howNeither}
 	case monitor == "" && page:
@@ -184,10 +195,12 @@ type pageDoorsConfig struct {
 
 // pageDoors builds the set of one generation: the file's set copied, each open page door added. prev (the set
 // before) lends a page door's resolved string when the generation did not move and it was not empty; an empty one
-// is resolved again on each tick.
+// is resolved again on each tick. gen < 0: the page's list could not be read yet (the file's doors alone, Unread).
+// A page row with no door keeps a Door marked Page with no login, so the actions, EXPLAIN and the index advisor say
+// a page instance's words on it, and NoDoor says why it has no read login.
 func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Instance, page []config.PageInstance, gen int64) *doorSet {
 	ds := &doorSet{Gen: gen, PG: map[string]actions.Door{}, MS: map[string]mssql.Door{}, Gates: file.Gates, QueryText: map[string]string{},
-		DefaultQT: file.DefaultQT, Hypo: file.Hypo, PgJobs: file.PgJobs, NoDoor: map[string]noDoor{}, PageReads: c.reads}
+		DefaultQT: file.DefaultQT, Hypo: file.Hypo, PgJobs: file.PgJobs, NoDoor: map[string]noDoor{}, PageReads: c.reads, Unread: gen < 0}
 	for k, v := range file.PG {
 		ds.PG[k] = v
 	}
@@ -217,20 +230,28 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
 		if inFile[name] {
 			continue // pgvigil.yaml's door stands
 		}
+		shut := func(no noDoor) {
+			ds.NoDoor[name] = no
+			if p.Engine == config.EngineSQLServer {
+				ds.MS[name] = mssql.Door{Page: true}
+			} else {
+				ds.PG[name] = actions.Door{Page: true}
+			}
+		}
 		in, isMerged := merged[name]
-		switch {
+		// the row's own refusal before the switch: the switch never opens it, so its words come first
+		switch why := config.PageDoorRefusal(name, p.Engine, p.Auth, p.Options); {
 		case p.Disabled:
-			ds.NoDoor[name] = noDoor{"instance " + name + " is disabled in Admin > Instances", howEnable}
+			shut(noDoor{"instance " + name + " is disabled in Admin > Instances", howEnable})
 			continue
 		case !isMerged:
-			ds.NoDoor[name] = noDoor{"instance " + name + " is left out of the list: " + left[name], howCorrect}
+			shut(noDoor{"instance " + name + " is left out of the list: " + left[name], howCorrect})
+			continue
+		case why != "":
+			shut(noDoor{why, howInTheFile})
 			continue
 		case !c.reads:
-			ds.NoDoor[name] = noDoor{"instance " + name + ": " + config.PageReadsOff, howSwitch}
-			continue
-		}
-		if why := config.PageDoorRefusal(name, p.Engine, p.Auth, p.Options); why != "" {
-			ds.NoDoor[name] = noDoor{why, howInTheFile}
+			shut(noDoor{"instance " + name + ": " + config.PageReadsOff, howSwitch})
 			continue
 		}
 		dsn := ""
@@ -246,7 +267,7 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
 		}
 		if dsn != "" {
 			if why := pageDSNRefusal(name, p.Engine, dsn); why != "" {
-				ds.NoDoor[name] = noDoor{why, howInTheFile}
+				shut(noDoor{why, howInTheFile})
 				continue
 			}
 		}
@@ -367,12 +388,32 @@ func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.C
 	doorWake.Store(s, wake)
 	c := pageDoorsConfig{file: cfg.Instances, queryText: cfg.QueryText, reads: cfg.Doors.PageInstanceReads}
 	file := s.fileDoors()
-	s.storeDoors(file)
+	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
+	first.Unread, first.PageReads = true, c.reads
+	s.storeDoors(&first)
 	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, every, wake, true,
 		func(all []config.Instance, page []config.PageInstance, gen int64) {
 			prev := s.doorsNow()
+			if prev.Gen == gen && !prev.Unread && !prev.emptyPage() {
+				return // the same generation and every page door resolved: the set stands
+			}
 			s.storeDoors(pageDoors(file, prev, c, all, page, gen))
 		})
+}
+
+// emptyPage: a page door of this set whose credential resolved to nothing here (read again on the next tick)
+func (ds *doorSet) emptyPage() bool {
+	for name, d := range ds.PG {
+		if d.Page && d.Monitor == "" && ds.NoDoor[name].Why == "" {
+			return true
+		}
+	}
+	for name, d := range ds.MS {
+		if d.Page && d.Monitor == "" && ds.NoDoor[name].Why == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // wakeDoors asks this serve's watcher to read at once and waits for a set at least as new as gen, up to wait; it
@@ -395,24 +436,43 @@ func (s *Server) wakeDoors(gen int64, wait time.Duration) bool {
 	return false
 }
 
-// doorTakesEffect: the words a write's answer carries about its door
+// doorTakesEffect: the words a write's answer carries about the read doors (a change can open, move or close one, or
+// leave an instance refused: the words say only when the change reaches them)
 func doorTakesEffect(now bool, every time.Duration) string {
 	if now {
-		return fmt.Sprintf("the door takes effect at once on this server (on another serve within %d s)", int(every.Seconds()))
+		return fmt.Sprintf("this change reaches Community tools and custom reports at once on this server (on another serve within %d s)", int(every.Seconds()))
 	}
-	return fmt.Sprintf("the door takes effect within %d s", int(every.Seconds()))
+	return fmt.Sprintf("this change reaches Community tools and custom reports within %d s", int(every.Seconds()))
 }
 
-// doorsAfterWrite: after a done write of Admin > Instances, this serve's watcher reads the new generation at once and
-// the write waits for it up to doorWait (a stuck watcher never hangs the page); the words for the answer, "" where no watcher
-// runs (pgvigil demo, mcp: pgvigil.yaml's doors alone)
+// doorUnreadAfterWrite: the words when this serve could not read the inventory's generation after the write
+const doorUnreadAfterWrite = "this server could not read the list of Admin > Instances (its log names why): this change reaches Community tools and custom reports when it can"
+
+// doorsAfterWrite: after a done write of Admin > Instances, the words for the answer: "" where no watcher runs
+// (pgvigil demo, mcp: pgvigil.yaml's doors alone) and on an install whose page doors are off (the watcher still
+// reads the change, for the page's words); else doorsAfterGen on the generation read now
 func (s *Server) doorsAfterWrite(ctx context.Context) string {
-	if _, ok := doorWake.Load(s); !ok {
+	v, ok := doorWake.Load(s)
+	if !ok {
+		return ""
+	}
+	if !s.doorsNow().PageReads {
+		select {
+		case v.(chan struct{}) <- struct{}{}:
+		default: // a wake is already pending
+		}
 		return ""
 	}
 	var gen int64
-	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen); err != nil {
-		return doorTakesEffect(false, DoorEvery)
+	err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen)
+	return s.doorsAfterGen(gen, err)
+}
+
+// doorsAfterGen: this serve's watcher reads the generation gen at once and the write waits for it up to doorWait (a
+// stuck watcher never hangs the page)
+func (s *Server) doorsAfterGen(gen int64, err error) string {
+	if err != nil {
+		return doorUnreadAfterWrite
 	}
 	return doorTakesEffect(s.wakeDoors(gen, doorWait), DoorEvery)
 }
