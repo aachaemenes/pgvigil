@@ -345,9 +345,10 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
       sc = await scope(ctx);
       d = await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day });
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
+    // the GB columns (DBA Dash's 'Unit: GB, Decimal Places: 1', the folder's grid and an instance's alike) hold the GB figure
+    // itself (rounded to 0.1) and show it with fmtNum, so the export writes a number under the '(GB)' heading
+    const toGB = (v: unknown) => v == null ? null : Math.round(Number(v) / GB * 10) / 10;
     if (!ctx.instance) {
-      // the GB columns hold the GB figure itself (rounded to 0.1) and show it with fmtNum, so the export writes a number
-      const toGB = (v: unknown) => v == null ? null : Math.round(Number(v) / GB * 10) / 10;
       const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes) }));
       const cols: Col[] = [
         { key: 'instance', label: 'name', fmt: (v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace') }, String(v ?? '')) },
@@ -364,12 +365,14 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
           donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })));
       return;
     }
-    const dbs = rowsOf(d.databases), hist = rowsOf(d.history), engine = rowsOf(d.instances)[0]?.engine;
+    const dbs: Row[] = rowsOf(d.databases).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes), data_gb: toGB(r.data_bytes), log_gb: toGB(r.log_bytes) }));
+    const hist = rowsOf(d.history), engine = rowsOf(d.instances)[0]?.engine;
     const cols: Col[] = [
       // the name opens the database, as its slice does (DBA Dash's Name drill)
       { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
-      { key: 'allocated_bytes', label: 'allocated', num: true, fmt: fmtBytes }, { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
-      { key: 'data_bytes', label: 'data files', num: true, fmt: fmtBytes }, { key: 'log_bytes', label: 'log files', num: true, fmt: fmtBytes },
+      { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtNum(v) },
+      { key: 'used_gb', label: 'used (GB)', num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fmtNum(v) },
+      { key: 'data_gb', label: 'data files (GB)', num: true, fmt: v => fmtNum(v) }, { key: 'log_gb', label: 'log files (GB)', num: true, fmt: v => fmtNum(v) },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
