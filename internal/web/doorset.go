@@ -74,7 +74,7 @@ var doorSets sync.Map // *Server -> *atomic.Pointer[doorSet] (serve's watcher st
 // doorsNow is the request's set: the watcher's last one on serve, else pgvigil.yaml's as Open and the Set* calls left
 // it. Call it once per request and pass the value down.
 func (s *Server) doorsNow() *doorSet {
-	if v, ok := doorSets.Load(s); ok {
+	if v, ok := doorSets.Load(s.self()); ok {
 		if ds := v.(*atomic.Pointer[doorSet]).Load(); ds != nil {
 			return ds
 		}
@@ -94,7 +94,7 @@ func (s *Server) fileDoors() *doorSet {
 	if ds.MS == nil {
 		ds.MS = map[string]mssql.Door{}
 	}
-	if v, ok := pgJobAllow.Load(s); ok {
+	if v, ok := pgJobAllow.Load(s.self()); ok {
 		ds.PgJobs = v.(map[string]map[string]bool)
 	}
 	return ds
@@ -122,7 +122,7 @@ func (m *MSSQLActions) doorsNow() *doorSet {
 	if m.s == nil {
 		return &doorSet{PG: map[string]actions.Door{}, MS: m.doors, NoDoor: map[string]noDoor{}}
 	}
-	if v, ok := mssqlActions.Load(m.s); ok && v.(*MSSQLActions) == m {
+	if v, ok := mssqlActions.Load(m.s.self()); ok && v.(*MSSQLActions) == m {
 		return m.s.doorsNow()
 	}
 	ds := *m.s.fileDoors()
@@ -134,7 +134,7 @@ func (m *MSSQLActions) doorsNow() *doorSet {
 }
 
 func (s *Server) storeDoors(ds *doorSet) {
-	v, _ := doorSets.LoadOrStore(s, &atomic.Pointer[doorSet]{})
+	v, _ := doorSets.LoadOrStore(s.self(), &atomic.Pointer[doorSet]{})
 	v.(*atomic.Pointer[doorSet]).Store(ds)
 }
 
@@ -385,7 +385,7 @@ var doorWake sync.Map // *Server -> chan struct{}
 // alone calls it (demo and mcp keep pgvigil.yaml's doors).
 func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.Config, every time.Duration) {
 	wake := make(chan struct{}, 1)
-	doorWake.Store(s, wake)
+	doorWake.Store(s.self(), wake)
 	c := pageDoorsConfig{file: cfg.Instances, queryText: cfg.QueryText, reads: cfg.Doors.PageInstanceReads}
 	file := s.fileDoors()
 	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
@@ -420,7 +420,7 @@ func (ds *doorSet) emptyPage() bool {
 // says whether the door changed in time (false: another tick of the watcher brings it, within its interval). Only
 // called where a watcher runs (doorsAfterWrite).
 func (s *Server) wakeDoors(gen int64, wait time.Duration) bool {
-	v, ok := doorWake.Load(s)
+	v, ok := doorWake.Load(s.self())
 	if !ok {
 		return false
 	}
@@ -452,7 +452,7 @@ const doorUnreadAfterWrite = "this server could not read the list of Admin > Ins
 // (pgvigil demo, mcp: pgvigil.yaml's doors alone) and on an install whose page doors are off (the watcher still
 // reads the change, for the page's words); else doorsAfterGen on the generation read now
 func (s *Server) doorsAfterWrite(ctx context.Context) string {
-	v, ok := doorWake.Load(s)
+	v, ok := doorWake.Load(s.self())
 	if !ok {
 		return ""
 	}

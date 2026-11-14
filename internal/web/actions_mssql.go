@@ -48,12 +48,12 @@ var mssqlActions sync.Map // *Server -> *MSSQLActions
 // SetMSSQLActions gives the server its SQL Server doors: per configured SQL Server instance the read dsn, the
 // actions dsn and the allow list.
 func (s *Server) SetMSSQLActions(doors map[string]mssql.Door) {
-	mssqlActions.Store(s, s.NewMSSQLActions(doors))
+	mssqlActions.Store(s.self(), s.self().NewMSSQLActions(doors))
 }
 
 // mssqlDoor is the server's SQL Server door; without SetMSSQLActions every action is off with the reason.
 func (s *Server) mssqlDoor() *MSSQLActions {
-	if v, ok := mssqlActions.Load(s); ok {
+	if v, ok := mssqlActions.Load(s.self()); ok {
 		return v.(*MSSQLActions)
 	}
 	return s.NewMSSQLActions(nil)

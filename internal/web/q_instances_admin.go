@@ -58,10 +58,10 @@ type InstancesAdmin struct {
 var instancesAdmins sync.Map // *Server -> *InstancesAdmin
 
 // SetInstancesAdmin gives the server the page's settings (serve calls it after Open).
-func (s *Server) SetInstancesAdmin(a InstancesAdmin) { instancesAdmins.Store(s, &a) }
+func (s *Server) SetInstancesAdmin(a InstancesAdmin) { instancesAdmins.Store(s.self(), &a) }
 
 func (s *Server) instAdmin() *InstancesAdmin {
-	if v, ok := instancesAdmins.Load(s); ok {
+	if v, ok := instancesAdmins.Load(s.self()); ok {
 		return v.(*InstancesAdmin)
 	}
 	return &InstancesAdmin{}

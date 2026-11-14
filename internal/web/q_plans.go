@@ -56,10 +56,10 @@ type PlansConfig struct {
 var plansConfigs sync.Map // *Server -> PlansConfig
 
 // SetPlans gives the server its Plan page configuration (serve calls it after Open).
-func (s *Server) SetPlans(c PlansConfig) { plansConfigs.Store(s, c) }
+func (s *Server) SetPlans(c PlansConfig) { plansConfigs.Store(s.self(), c) }
 
 func (s *Server) plansConfig() PlansConfig {
-	if v, ok := plansConfigs.Load(s); ok {
+	if v, ok := plansConfigs.Load(s.self()); ok {
 		return v.(PlansConfig)
 	}
 	return PlansConfig{}

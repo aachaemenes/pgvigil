@@ -52,7 +52,7 @@ func (s *Server) SetPgJobActions(allow map[string][]string) {
 			}
 		}
 	}
-	pgJobAllow.Store(s, m)
+	pgJobAllow.Store(s.self(), m)
 }
 
 // pgJobAllowed: the instance's actions: list in pgvigil.yaml names the job action (the set's copy of the lists)
