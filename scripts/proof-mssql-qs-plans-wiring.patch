@@ -117,3 +117,86 @@ index 5def140..b065c80 100644
  	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
  	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
  	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
+diff --git i/web/src/filedrop.ts w/web/src/filedrop.ts
+index 0a0c61d..4f6201d 100644
+--- i/web/src/filedrop.ts
++++ w/web/src/filedrop.ts
+@@ -13,6 +13,7 @@ import { Row } from './api';
+ import { DlGraph, deadlockSvg, graphFromXml, resourceKind, sessionName } from './deadlock_graph';
+ import { Col, el, fmtNum, grid } from './ui';
+ import { showTreeMenu } from './treemenu';
++import { looksLikeStatistics, MAX_TEXT, readSaved, statsioView } from './mssql_statsio';
+ 
+ const MAX_BYTES = 64 * 1024 * 1024;
+ 
+@@ -250,13 +251,14 @@ function dataSetView(name: string, text: string): HTMLElement[] {
+ 
+ // ---- opening ----------------------------------------------------------------------------------------------------
+ 
+-type What = 'xdl' | 'sqlplan' | 'grid';
++type What = 'xdl' | 'sqlplan' | 'grid' | 'statsio';
+ // openText: the text of a file (or a paste) in the viewer its contents or its name call for
+ export function openText(name: string, text: string, back: HTMLElement | null = null, want?: What): HTMLDialogElement {
+   const head = text.slice(0, 4000);
+   // the extension decides first (a CSV of system_health rows holds deadlock XML); the contents only when it says nothing
+-  const kind: What | undefined = want ?? (/\.xdl$/i.test(name) ? 'xdl' : /\.sqlplan$/i.test(name) ? 'sqlplan' : /\.(json|csv)$/i.test(name) ? 'grid'
+-    : /<deadlock[\s>]/.test(head) ? 'xdl' : /<ShowPlanXML[\s>]/.test(head) ? 'sqlplan' : /^\s*[[{]/.test(head) ? 'grid' : undefined);
++  // task 406: a saved STATISTICS IO / TIME file (.statistics.json) and messages text
++  const kind: What | undefined = want ?? (/\.statistics\.json$/i.test(name) || readSaved(head.length < text.length ? '' : text) ? 'statsio' : /\.xdl$/i.test(name) ? 'xdl' : /\.sqlplan$/i.test(name) ? 'sqlplan' : /\.(json|csv)$/i.test(name) ? 'grid'
++    : /<deadlock[\s>]/.test(head) ? 'xdl' : /<ShowPlanXML[\s>]/.test(head) ? 'sqlplan' : /^\s*[[{]/.test(head) ? 'grid' : looksLikeStatistics(head) ? 'statsio' : undefined);
+   try {
+     if (kind === 'xdl') {
+       const g = graphFromXml(text);
+@@ -273,10 +275,15 @@ export function openText(name: string, text: string, back: HTMLElement | null =
+       return viewer(`Query plan: ${name}`, back, ...planView(doc));
+     }
+     if (kind === 'grid') return viewer(`Grid: ${name}`, back, ...dataSetView(name, text));
++    if (kind === 'statsio') {
++      const body = el('div', {}, note('Reading the messages ...'));
++      void statsioView(name, text).then(k => body.replaceChildren(...k)).catch(e => body.replaceChildren(el('p', { class: 'error' }, String(e))));
++      return viewer(`STATISTICS IO / TIME: ${name}`, back, body);
++    }
+   } catch (e) {
+     return viewer(name, back, el('p', { class: 'error' }, 'Could not read the file: ' + (e instanceof Error ? e.message : String(e))));
+   }
+-  return viewer(name, back, el('p', { class: 'error' }, 'Not a file pgvigil opens: a deadlock graph (.xdl), a query plan (.sqlplan), or a grid (.json, .csv, either .gz).'));
++  return viewer(name, back, el('p', { class: 'error' }, 'Not a file pgvigil opens: a deadlock graph (.xdl), a query plan (.sqlplan), a grid (.json, .csv, either .gz), or STATISTICS IO / TIME messages (.txt, .statistics.json).'));
+ }
+ 
+ async function readFile(f: File): Promise<string> {
+@@ -316,7 +323,7 @@ export async function openFile(f: File, back: HTMLElement | null = null, want?:
+ 
+ // pick: the browser's file chooser for one kind
+ function pick(want: What, back: HTMLElement | null) {
+-  const accept = want === 'xdl' ? '.xdl,.xml' : want === 'sqlplan' ? '.sqlplan,.xml' : '.json,.csv,.gz';
++  const accept = want === 'xdl' ? '.xdl,.xml' : want === 'sqlplan' ? '.sqlplan,.xml' : want === 'statsio' ? '.txt,.rpt,.json' : '.json,.csv,.gz';
+   const input = el('input', { type: 'file', accept, hidden: '', 'aria-hidden': 'true' }) as HTMLInputElement;
+   input.addEventListener('change', () => { const f = input.files?.[0]; input.remove(); if (f) void openFile(f, back, want); });
+   input.addEventListener('cancel', () => { input.remove(); back?.focus(); });
+@@ -326,11 +333,12 @@ function pick(want: What, back: HTMLElement | null) {
+ 
+ // toolsButton: the bar's Tools menu (main.ts puts it in the bar)
+ export function toolsButton(): HTMLElement {
+-  const b = el('button', { type: 'button', 'aria-haspopup': 'menu', title: 'Open a deadlock graph, a query plan or a saved grid' }, 'Tools');
++  const b = el('button', { type: 'button', 'aria-haspopup': 'menu', title: 'Open a deadlock graph, a query plan, a saved grid or STATISTICS IO / TIME messages' }, 'Tools');
+   const items = () => [
+     { label: 'Open Deadlock Graph | *.xdl', act: () => pick('xdl', b) },
+     { label: 'Open Query Plan | *.sqlplan', act: () => pick('sqlplan', b) },
+     { label: 'Open Grid or Data Set | *.json;*.csv;*.gz', act: () => pick('grid', b) },
++    { label: 'Open STATISTICS IO / TIME messages | *.txt;*.statistics.json', act: () => pick('statsio', b) },
+   ];
+   b.setAttribute('aria-expanded', 'false');
+   b.addEventListener('click', () => {
+@@ -368,8 +376,10 @@ export function installFileDrop() {
+     if (inField(e.target) || document.querySelector('dialog[open]')) return;
+     const t = e.clipboardData?.getData('text/plain') ?? '';
+     const head = t.slice(0, 4000);
+-    if (!/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head)) return;
++    const stats = !/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head) && looksLikeStatistics(head);
++    if (!/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head) && !stats) return;
+     e.preventDefault();
+-    openText(/<deadlock[\s>]/.test(head) ? 'pasted deadlock graph' : 'pasted query plan', t, document.activeElement as HTMLElement | null);
++    if (t.length > MAX_TEXT) { viewer('pasted text', document.activeElement as HTMLElement | null, el('p', { class: 'error' }, `The pasted text is over ${MAX_TEXT / 1048576} MB: not read.`)); return; }
++    openText(stats ? 'pasted messages' : /<deadlock[\s>]/.test(head) ? 'pasted deadlock graph' : 'pasted query plan', t, document.activeElement as HTMLElement | null, stats ? 'statsio' : undefined);
+   });
+ }

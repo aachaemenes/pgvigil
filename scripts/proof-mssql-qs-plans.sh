@@ -94,13 +94,19 @@
 #     F4 no note while the repository holds no PostgreSQL instance; after one is registered the replies carry the
 #        'PostgreSQL instances are not compared or searched here' note.
 #     Red on f8e89d2: the routes do not exist.
+#  G. the STATISTICS IO / TIME reader (DBA Dash N62-N67, F11, P9): web/src/mssql_statsio.ts compiled by esbuild; its unit
+#     tests (web/src/mssql_statsio.test.mjs: sqlcmd, SSMS and Azure Data Studio shapes, a German text, the
+#     DBADash-Compare runs, temporary tables, the save round trip) all ok; then a messages file captured on the box
+#     (sqlcmd, SET STATISTICS IO, TIME ON, NOCOUNT OFF, two statements at MAXDOP 1): the reader's logical reads and
+#     rows per statement equal the server's last_logical_reads and last_rows (sys.dm_exec_query_stats).
+#     Red on f8e89d2: no web/src/mssql_statsio.ts.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
 ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
 IMG_SQL=${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 EXTRACT=${PGVIGIL_PLAN_EXTRACT:-.lab/extract.py}
-PARTS=${PGVIGIL_PARTS:-ABCDEF}
+PARTS=${PGVIGIL_PARTS:-ABCDEFG}
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 SQL=pgvqs-sql-$SUF; SQL2=pgvqs-sql2-$SUF; LBL=pgvigil-proof=406
 PGDB=pgv_qs_$SUF; MON=pgv_qmon_$SUF; USR=proofdba$SUF
@@ -684,6 +690,27 @@ PYEND
 pq "SELECT pgvigil.ensure_instance('pgf_$SUF', 'auto', '17.0', 170000, false, '{}'::text[])" >/dev/null || fail "F4: a PostgreSQL instance"
 CODE=$(api "mssql/search?q=marker%25_x" "$TMPD/f4.json"); grep -q 'PostgreSQL instances are not compared or searched here' "$TMPD/f4.json" || fail "F4: no note with a PostgreSQL instance held: $(head -c 300 "$TMPD/f4.json")"
 echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note"
+fi
+
+if part G; then
+echo "== G. the STATISTICS IO / TIME reader =="
+[[ -f web/src/mssql_statsio.ts ]] || fail "G: no web/src/mssql_statsio.ts"
+[[ -x web/node_modules/.bin/esbuild ]] || (cd web && npm ci --no-audit --no-fund >"$TMPD/npm.log" 2>&1) || { tail -20 "$TMPD/npm.log" >&2; fail "G: npm ci"; }
+web/node_modules/.bin/esbuild web/src/mssql_statsio.ts --format=esm --outfile="$TMPD/mssql_statsio.mjs" --log-level=warning || fail "G: esbuild"
+G1="SELECT COUNT(*) FROM dbo.t WHERE a < 2500 OPTION (MAXDOP 1) /* pgvg1 */;"
+G2="SELECT TOP (100) id FROM dbo.big ORDER BY id OPTION (MAXDOP 1) /* pgvg2 */;"
+printf 'SET NOCOUNT OFF;\nSET STATISTICS IO, TIME ON;\nGO\n%s\nGO\n%s\nGO\n' "$G1" "$G2" | docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -d pgvqs -i /dev/stdin' > "$TMPD/captured.txt" 2>&1 || fail "G: the capture"
+EXP=$(sq "SELECT CAST(qs.last_logical_reads AS varchar(20)) + '|' + CAST(qs.last_rows AS varchar(20)) + '|' + CASE WHEN t.text LIKE '%pgvg1%' THEN '1' ELSE '2' END
+  FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE (t.text LIKE '%pgvg1%' OR t.text LIKE '%pgvg2%') AND t.text NOT LIKE '%dm_exec%'")
+python3 - "$TMPD/captured.txt.expect.json" "$EXP" <<'PYEND' || fail "G: the expected figures"
+import json, sys
+rows = sorted((l.split('|') for l in sys.argv[2].splitlines() if l.count('|') == 2), key=lambda r: r[2])
+if len(rows) != 2: print('DIFF G the server read', sys.argv[2]); sys.exit(1)
+json.dump({'statements': 2, 'logical_reads': [int(r[0]) for r in rows], 'rows': [int(r[1]) for r in rows]}, open(sys.argv[1], 'w'))
+PYEND
+node web/src/mssql_statsio.test.mjs "$TMPD/mssql_statsio.mjs" "$TMPD/captured.txt" > "$TMPD/g.out" 2>&1 || { cat "$TMPD/g.out"; head -40 "$TMPD/captured.txt"; fail "G: the reader's tests"; }
+grep -E '^ok   captured|of [0-9]+ ok' "$TMPD/g.out"
+echo "ok   G: the reader's unit tests, and a captured messages file read equal to the server's own figures"
 fi
 
 echo "PASS: proof-mssql-qs-plans parts $PARTS on SQL Server $VER"
