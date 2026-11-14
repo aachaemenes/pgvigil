@@ -130,21 +130,38 @@ s3setup() {
   s3step "the certificate" openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/certs/private.key" -out "$WORK/certs/public.crt" -days 2 \
     -subj "/CN=pgvbk-s3" -addext "subjectAltName=DNS:pgvbk-s3" || return 1
   chmod 644 "$WORK/certs/private.key"
-  S3IMG=
-  for i in quay.io/minio/minio:latest minio/minio:RELEASE.2025-04-22T22-12-26Z bitnami/minio:latest; do docker pull -q "$i" >/dev/null 2>&1 && { S3IMG=$i; break; }; done
-  [ -n "$S3IMG" ] || { S3WHY="no MinIO image could be pulled (quay.io/minio/minio, minio/minio, bitnami/minio)"; return 1; }
-  s3step "the MinIO container ($S3IMG)" docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 \
-    -e MINIO_ROOT_USER=pgvbk -e MINIO_ROOT_PASSWORD="$S3PW" -v "$WORK/certs:/root/.minio/certs:ro" --entrypoint minio "$S3IMG" server /data || return 1
+  # MinIO's community images are gone from Docker Hub, quay.io and bitnami (run 2): an S3 server that serves its own TLS
+  # certificate is tried in turn - MinIO, Versity's gateway, SeaweedFS - and the bucket made over its host port
+  S3IMG=; S3P=
+  for i in quay.io/minio/minio:latest minio/minio:RELEASE.2025-04-22T22-12-26Z versity/versitygw:latest chrislusf/seaweedfs:latest; do
+    docker pull -q "$i" >/dev/null 2>&1 || continue
+    case "$i" in
+      *minio*) docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -p 127.0.0.1::9000 \
+                 -e MINIO_ROOT_USER=pgvbk -e MINIO_ROOT_PASSWORD="$S3PW" -v "$WORK/certs:/root/.minio/certs:ro" --entrypoint minio "$i" server /data >"$WORK/s3.err" 2>&1 ;;
+      *versitygw*) docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -p 127.0.0.1::9000 \
+                 -e ROOT_ACCESS_KEY=pgvbk -e ROOT_SECRET_KEY="$S3PW" -v "$WORK/certs:/certs:ro" --tmpfs /data "$i" \
+                 --port :9000 --cert /certs/public.crt --key /certs/private.key posix /data >"$WORK/s3.err" 2>&1 ;;
+      *seaweedfs*) printf '{"identities":[{"name":"pgvbk","credentials":[{"accessKey":"pgvbk","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' "$S3PW" > "$WORK/certs/s3.json" && chmod 644 "$WORK/certs/s3.json" \
+                 && docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -p 127.0.0.1::9000 -v "$WORK/certs:/certs:ro" "$i" \
+                 server -s3 -s3.port=9000 -s3.config=/certs/s3.json -s3.cert.file=/certs/public.crt -s3.key.file=/certs/private.key >"$WORK/s3.err" 2>&1 ;;
+    esac || { docker rm -f -v "$S3" >/dev/null 2>&1; continue; }
+    S3IMG=$i; break
+  done
+  [ -n "$S3IMG" ] || { S3WHY="no S3 stand-in could be pulled and started (MinIO, versity/versitygw, chrislusf/seaweedfs): $(tr '\n' ' ' < "$WORK/s3.err" | cut -c1-200)"; return 1; }
+  sleep 5
+  S3P=$(docker port "$S3" 9000/tcp | head -1 | sed 's/.*://')
   s3step "the certificate into the SQL Server container" docker cp "$WORK/certs/public.crt" "$SQL:/tmp/pgvbk-s3.crt" || return 1
   s3step "update-ca-certificates" docker exec -u root "$SQL" bash -c 'cp /tmp/pgvbk-s3.crt /usr/local/share/ca-certificates/pgvbk-s3.crt && update-ca-certificates' || return 1
   s3step "the restart of SQL Server" docker restart "$SQL" || return 1
   up "$SQL" || { S3WHY="SQL Server did not come back after its restart"; return 1; }
   sleep 3
-  local m
-  for m in quay.io/minio/mc:latest minio/mc:latest; do
-    docker run --rm --network "$NET" -e MC_HOST_s3="https://pgvbk:$S3PW@pgvbk-s3:9000" "$m" --insecure mb s3/pgvbk >"$WORK/s3.err" 2>&1 && { S3OK=1; break; }
+  # the bucket: one signed PUT over the host port (curl's own SigV4)
+  for _ in 1 2 3 4 5 6; do
+    curl -sk -o "$WORK/s3.err" -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" --user "pgvbk:$S3PW" -X PUT "https://127.0.0.1:$S3P/pgvbk" > "$WORK/s3.code" 2>>"$WORK/s3.err" \
+      && grep -qE '^(200|409)$' "$WORK/s3.code" && { S3OK=1; break; }
+    sleep 3
   done
-  [ -n "$S3OK" ] || S3WHY="the bucket: $(tr '\n' ' ' < "$WORK/s3.err" | cut -c1-300)"
+  [ -n "$S3OK" ] || S3WHY="the bucket on $S3IMG: HTTP $(cat "$WORK/s3.code" 2>/dev/null) $(tr '\n' ' ' < "$WORK/s3.err" | cut -c1-300)"
   echo "  the S3 stand-in: $S3IMG, bucket $([ -n "$S3OK" ] && echo made || echo 'not made')"
 }
 if [ -z "${PROOF_SKIP_S3:-}" ]; then
@@ -240,7 +257,7 @@ echo "== L2 a mirrored full"
 sq "BACKUP DATABASE pgvbka TO DISK = N'/backups/m/m1a.bak', DISK = N'/backups/m/m1b.bak' MIRROR TO DISK = N'/backups2/m/m2a.bak', DISK = N'/backups2/m/m2b.bak' WITH FORMAT;" >/dev/null
 read2 L2
 G=$(q "select count(*) || '|' || string_agg(distinct mirror::text, ',') from pgvigil.mssql_backup_files where instance_id=$(iid) and database_name='pgvbka' and backup_type='full' and not is_copy_only")
-R=$(SF "mirror_count;array_to_string(roots, ',')" pgvbka full)
+R=$(SF "mirror_count;(select string_agg(r, ',' order by r collate \"C\") from unnest(roots) r)" pgvbka full)
 TO=$(q "select full_to from pgvigil.mssql_backup_loc_db where instance_id=$(iid) and database_name='pgvbka'")
 [ "$G|$R|$TO" = "4|0,1|2|/backups/m,/backups2/m|/backups/m/, 2 files, mirrored" ] || fail "L2: $G|$R|$TO"
 ok "L2: $G files and mirrors; mirror_count and roots $R; to '$TO'"
