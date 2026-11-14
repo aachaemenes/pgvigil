@@ -414,6 +414,14 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_failed_logins WHERE logged_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- 0139 (FLEET STATS ROLLUP): the hours tables last, each by its own age in pgvigil.hours_retention (not p_days), so
+  -- no runs table is locked after an hours parent; the months dropped join this run's partitions_dropped. The hours'
+  -- heals are not here (one transaction for all): 'pgvigil purge' runs them after this, one instance per transaction
+  IF to_regprocedure('pgvigil.job_stats_hourly_purge()') IS NOT NULL THEN
+    n := n - cardinality(v_dropped);
+    v_dropped := v_dropped || pgvigil.job_stats_hourly_purge();
+    n := n + cardinality(v_dropped);
+  END IF;
   -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
   INSERT INTO pgvigil.purge_runs (started_at, finished_at, days, partitions_dropped, rows_deleted, total)
   VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);

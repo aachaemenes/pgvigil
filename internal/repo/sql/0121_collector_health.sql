@@ -1039,4 +1039,23 @@ SELECT d.instance_id, 'critical', 'collected by more than one collector', d.coll
   JOIN pgvigil.instances i ON i.instance_id = d.instance_id AND i.is_active
   CROSS JOIN LATERAL (SELECT string_agg(DISTINCT format('%s (pid %s)', h.host, h.pid), ', ') AS hosts
                         FROM pgvigil.collector_load l2 JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                       WHERE l2.instance_id = d.instance_id AND l2.minute = d.last_minute) hh;
+                       WHERE l2.instance_id = d.instance_id AND l2.minute = d.last_minute) hh
+UNION ALL
+-- FLEET STATS ROLLUP (0139): an instance's jobs' hourly statistics not rolled up - per source, its newest 'rollup
+-- failed' row of the last day (collection_log, collection 'job_stats_hourly') with no 'rollup healed' row of that
+-- source after it (the heal writes one when it rebuilds a range that was logged). The runs are stored and the alerting
+-- grid reads them; the fleet Jobs page's 7-day columns are behind. A failing range is logged once an hour, so the
+-- newest row stands for the whole fault and the heal clears it (not 'the last hour': that would drop between rows)
+SELECT f.instance_id, 'warning', 'job statistics not rolled up', f.src, true, 'the hours rebuilt by the next import or pgvigil purge', 'all',
+       f.note, 'pgvigil collector', f.snapshot_at
+  FROM (SELECT DISTINCT ON (l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'))
+               l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours') AS src, l.note, l.snapshot_at
+          FROM pgvigil.collection_log l
+         WHERE l.collection = 'job_stats_hourly' AND l.status = 'error' AND l.note LIKE 'rollup failed for the %'
+           AND l.snapshot_at > now() - interval '1 day'
+         ORDER BY l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'), l.snapshot_at DESC) f
+  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
+ WHERE f.src IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_log h
+                    WHERE h.instance_id = f.instance_id AND h.collection = 'job_stats_hourly' AND h.status = 'ok'
+                      AND h.note LIKE 'rollup healed: the ' || f.src || ' hours %' AND h.snapshot_at >= f.snapshot_at);
