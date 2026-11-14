@@ -195,11 +195,16 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
       box.replaceChildren(grid(rows, fleetCols, problems
         ? 'No database of the SQL Server instances in view has a late or missing backup or a recent backup to NUL.' : 'The last reads listed no database.'));
     };
+    // a later pick wins over a slower earlier read; a failed read clears the count beside it
+    let pickSeq = 0;
     pick.addEventListener('change', () => {
+      const mine = ++pickSeq;
       problems = pick.value === 'problems';
+      said.textContent = '';
       box.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
       get<Record<FleetParts, Table | null>>('mssql/backups', { problems: problems ? 1 : undefined, part: 'databases' })
-        .then(x => draw(rowsOf(x.databases).filter(keep))).catch(e => box.replaceChildren(errorBox(e)));
+        .then(x => { if (mine === pickSeq) draw(rowsOf(x.databases).filter(keep)); })
+        .catch(e => { if (mine === pickSeq) { said.textContent = ''; box.replaceChildren(errorBox(e)); } });
     });
     sec.append(el('h3', {}, 'SQL Server databases'),
       el('p', { class: 'meta' }, el('label', { for: 'mssql-backups-fleet-filter' }, 'Show '), pick, ' ', said),

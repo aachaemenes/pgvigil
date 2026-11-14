@@ -74,7 +74,8 @@ SELECT count(*) AS jobs, count(*) FILTER (WHERE r.fail_streak > 0) AS failing,
 // sqlJobStatusFleet is the fleet Jobs page's 'Job status' grid (DBA Dash's root Jobs, AgentJobsReport_Get): every job
 // of the instances $1 (NULL = every active instance) judged by job_status_view (0137: DBA Dash's default rule with no
 // threshold row), with the job's own columns (enabled, category, description) and, for a SQL Agent job, the step of its
-// newest failed step inside the horizon (a step that failed: run_status 0; the failed rows' index). 'last run failed'
+// newest failed step inside the horizon (a step that failed: run_status 0; the failed rows' index), for a pgAgent job
+// its newest failed step in the step log. 'last run failed'
 // is DBA Dash's IsLastFail: a last run that failed or was cancelled (a cancelled run is a failure there, 0137). Ordered
 // as DBA Dash orders it: the last run failed first, then the newest failure, then critical, warning.
 const sqlJobStatusFleet = `
@@ -87,10 +88,17 @@ SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.j
   JOIN pgvigil.instances i ON i.instance_id = v.instance_id AND i.is_active
   LEFT JOIN pgvigil.mssql_jobs m ON v.scheduler = 'sqlagent' AND m.instance_id = v.instance_id AND m.job_id = v.job_id
   LEFT JOIN pgvigil.jobs g ON v.scheduler <> 'sqlagent' AND g.instance_id = v.instance_id AND g.scheduler = v.scheduler AND g.job_id::text = v.job_id
-  LEFT JOIN LATERAL (SELECT r.step_id, r.step_name FROM pgvigil.mssql_job_runs r
-                      WHERE v.scheduler = 'sqlagent' AND v.last_failed_at IS NOT NULL AND r.instance_id = v.instance_id AND r.job_id = v.job_id
-                        AND r.run_status = 0 AND r.step_id > 0 AND r.snapshot_at > now() - make_interval(mins => v.horizon_min)
-                      ORDER BY r.snapshot_at DESC LIMIT 1) fs ON true
+  LEFT JOIN LATERAL ((SELECT r.step_id::bigint AS step_id, r.step_name FROM pgvigil.mssql_job_runs r
+                       WHERE v.scheduler = 'sqlagent' AND v.last_failed_at IS NOT NULL AND r.instance_id = v.instance_id AND r.job_id = v.job_id
+                         AND r.run_status = 0 AND r.step_id > 0 AND r.snapshot_at > now() - make_interval(mins => v.horizon_min)
+                       ORDER BY r.snapshot_at DESC LIMIT 1)
+                     UNION ALL
+                     -- pgAgent's newest failed step (0102's step log); the CASE keeps a SQL Agent job's text id from the cast
+                     (SELECT s.step_id, s.step_name FROM pgvigil.job_step_runs s
+                       WHERE v.scheduler = 'pgagent' AND v.last_failed_at IS NOT NULL AND s.instance_id = v.instance_id
+                         AND s.job_id = CASE WHEN v.scheduler = 'pgagent' THEN v.job_id::bigint END
+                         AND s.status = 'failed' AND s.start_time > now() - make_interval(mins => v.horizon_min)
+                       ORDER BY s.start_time DESC LIMIT 1)) fs ON true
  ORDER BY coalesce(v.last_outcome IN ('failed', 'cancelled'), false) DESC, v.last_failed_at DESC NULLS LAST,
           CASE v.status WHEN 'crit' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, i.name, v.scheduler, v.job_name`
 

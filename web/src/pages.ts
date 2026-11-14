@@ -895,6 +895,9 @@ export async function backups(ctx: Ctx): Promise<HTMLElement> {
   const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'),
     { postgres: inView.length - sqlserver, sqlserver });
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  // a view with no PostgreSQL instance: main.ts's wiring then leaves out PostgreSQL's Base backups and Standbys too (F1:
+  // one line in place of an engine's sections)
+  if (inView.length - sqlserver === 0) view.dataset.noPostgres = '1';
   return view;
 }
 

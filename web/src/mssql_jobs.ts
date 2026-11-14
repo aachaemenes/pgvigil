@@ -21,6 +21,7 @@ import { fleet } from './fleet';
 import { jobChartSection } from './jobs_chart';
 import { definitionCompare, definitionView, diffCounts, lineDiff, textDiffView } from './diff';
 import { mssqlJobCol } from './mssql_actions';
+import { hashParam } from './dbinfo';
 
 const CUT = 200;
 
@@ -295,14 +296,22 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   // them before the grid draws - a long grid draws its first page only
   for (const c of extra) (c as Col & { rows?: (all: Row[]) => void }).rows?.(jobs);
   const ad = await loadAckSafe(['acks']);
+  // the job's status and its last failure from job_status (0137), the judge of the fleet's Job status grid too: an
+  // acknowledgement's seen_state is that last failure on both pages (a cancelled run is a failure there), so one made on
+  // either page holds on the other; with no status read (the thresholds read failed) the grid's own last failure
+  const th = await loadThresholds(Number(ctx.instance));
+  const statusOf = new Map(rowsOf(th?.status).map(r => [`${String(r.scheduler)}|${String(r.job_id)}`, r]));
+  const st = (r: Row) => statusOf.get(`${String(r.scheduler)}|${String(r.job_id)}`);
+  const lastFailOf = (r: Row) => { const x = st(r); return x ? x.last_failed_at : r.last_failed_at; };
   // the grid's Acknowledge buttons share one reason when they are off - a server that writes nothing at all, or on a
   // demo serve an instance that is not the demo's: said once above the grid, and every button points at that sentence
   // (given to each cell: where a door stands the page's note is not a control's default)
   // (drawn where a button will point at it: a failed job not yet acknowledged for that failure)
   const ackIsOff = !ackOn(ad, Number(ctx.instance)) && jobs.some(j => {
-    if (j.last_failed_at == null || j.last_failed_at === '') return false;
+    const lf = lastFailOf(j);
+    if (lf == null || lf === '') return false;
     const a = jobAcks(ad).get(`${String(ctx.instance)}|${String(j.name)}`);
-    return !(a && String(a.seen_state) === String(j.last_failed_at));
+    return !(a && String(a.seen_state) === String(lf));
   });
   // the instance's name is read only where the sentence names it (a demo serve, an instance that is not the demo's);
   // a failed read of the instance list leaves the sentence with 'this instance', never the page without its grid
@@ -314,10 +323,8 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const ackOffP = ackWhyNot ? el('p', { class: 'meta' }, `Acknowledge is off: ${ackWhyNot}`) : null;
   if (ackOffP && !ad.door) ad.note = ackOffP;
   const ackRedraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
-  const th = await loadThresholds(Number(ctx.instance));
-  const statusOf = new Map(rowsOf(th?.status).map(r => [`${String(r.scheduler)}|${String(r.job_id)}`, r]));
-  const st = (r: Row) => statusOf.get(`${String(r.scheduler)}|${String(r.job_id)}`);
-  const jobAcked = (r: Row) => { const a = jobAcks(ad).get(`${String(ctx.instance)}|${String(r.name)}`); return !!a && String(a.seen_state) === String(r.last_failed_at); };
+  const jobAcked = (r: Row) => { const a = jobAcks(ad).get(`${String(ctx.instance)}|${String(r.name)}`); return !!a && String(a.seen_state) === String(lastFailOf(r)); };
+  const judged = (r: Row) => { const x = st(r); return !!x && (x.status === 'crit' || x.status === 'warn'); };
   const detail = el('div', { class: 'jobdetail' });
   // a picked job's history and changes reach back a week at least: a daily job has no run in the default hour, and
   // DBA Dash's history lists a job's newest runs, not the last hour's; the jobs grid above keeps the page's range
@@ -382,10 +389,12 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     ...(th ? [statusCol(th)] : []),
     { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
-    { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), r.last_failed_at, ackRedraw, ackOffP ?? undefined, ackName) },
+    { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), lastFailOf(r), ackRedraw, ackOffP ?? undefined, ackName) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
-    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : 'status ok',
+    // failed runs in the range (run_status 0 / 'failed'); a job the judge holds critical or warning (a cancel among them)
+    // is never green here
+    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : judged(r) ? '' : 'status ok',
       fmt: (v, r) => Number(v) > 0 ? (jobAcked(r) ? `${fmtNum(v)} (acknowledged)` : badge(fmtNum(v), 'crit')) : '0' },
     { key: 'avg_s', label: 'average (good runs)', num: true, fmt: dur },
     { key: 'max_s', label: 'longest', num: true, fmt: dur },
@@ -394,6 +403,12 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   ];
   box.append(...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
   if (jobs.length) detail.append(el('p', { class: 'meta' }, 'Pick a job for its history and its versions (the script, the diff, the job as it was).'));
+  // a SQL Agent job named in the address (the fleet Job status grid's 'Open the job on its instance': job=<name>) opens
+  // picked, its history under the grid
+  const wanted = engine === 'mssql' ? hashParam('job') : undefined;
+  const wj = wanted == null ? undefined : jobs.find(j => String(j.name) === wanted);
+  if (wj) void pick(wj, undefined, true);
+  else if (wanted != null) detail.replaceChildren(el('p', { class: 'meta' }, `No job named ${wanted} on this server.`));
   return box;
 }
 
