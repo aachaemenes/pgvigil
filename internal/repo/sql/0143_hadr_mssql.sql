@@ -585,6 +585,112 @@ $v$;
   END IF;
 END $$;
 
+-- ONE judge of log shipping (task 383, the lead's D6): the four log shipping checks' findings, each with the database it
+-- is about and its role (msdb's primary rows are 'primary'), then one status row for every restoring database read
+-- from restore history that has no finding of its own: na_reason NULL = judged by the restore-history check and OK,
+-- else why it is not judged. pgvigil.mssql_hadr_findings takes its log shipping arms from here (severity NOT NULL)
+-- and the Log Shipping page its Status, so the two cannot differ.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_logship_judged()
+RETURNS TABLE (instance_id int, database_name text, role text, severity text, check_name text, object text,
+               at timestamptz, detail text, na_reason text)
+LANGUAGE sql STABLE AS $fn$
+WITH base AS (
+  SELECT s.*, l.new_database_hours,
+         extract(epoch FROM s.snapshot_at - s.last_log_restore_at) / 60 AS age_min,
+         extract(epoch FROM s.last_log_restore_at - s.last_log_backup_start_at) / 60 AS latency_min,
+         ta.warn AS age_warn, ta.crit AS age_crit, tl.warn AS lat_warn, tl.crit AS lat_crit,
+         EXISTS (SELECT 1 FROM pgvigil.mssql_logshipping_state m WHERE m.instance_id = s.instance_id AND m.role = 'secondary'
+                    AND lower(m.database_name) = lower(s.database_name) AND m.threshold_minutes > 0
+                    AND m.snapshot_at > now() - interval '15 minutes') AS msdb_judged,
+         -- why a row is not judged (NULL = judged): lr's WHERE, one condition each, in this order. The page shows no
+         -- row for the first three (DBA Dash's LogShippingStatus.sql leaves mirrored and SIMPLE databases out)
+         CASE WHEN s.is_mirrored IS TRUE THEN 'mirrored'
+              WHEN coalesce(s.in_availability_group, false) THEN 'availability group'
+              WHEN coalesce(s.recovery_model, '') = 'SIMPLE' THEN 'SIMPLE recovery'
+              WHEN s.snapshot_at <= now() - interval '15 minutes' THEN 'not read in 15 minutes'
+              WHEN s.is_mirrored IS NULL THEN 'mirroring unknown (the login cannot see it)'
+              WHEN s.last_log_restore_at IS NULL THEN 'no log restore yet'
+              WHEN l.instance_id IS NULL THEN 'no thresholds read'
+              WHEN s.created_at IS NOT NULL AND s.created_at > s.snapshot_at - make_interval(secs => (l.new_database_hours * 3600)::float8)
+                THEN 'New Database'
+         END AS na_reason
+    FROM pgvigil.mssql_logrestore_state s
+    LEFT JOIN pgvigil.mssql_hadr_limits l ON l.instance_id = s.instance_id
+    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_age', s.database_name) ta
+    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_latency', s.database_name) tl
+   WHERE s.kind = 'restore'
+), lr AS (
+  SELECT b.* FROM base b WHERE b.na_reason IS NULL
+), f AS (
+-- log shipping: msdb's monitor (0066's arm)
+SELECT s.instance_id, s.database_name, s.role, 'warning'::text AS severity, 'log shipping is behind its threshold'::text AS check_name,
+       s.role || ' / ' || s.database_name || CASE WHEN s.secondary_server <> '' THEN ' on ' || s.secondary_server ELSE '' END AS object, s.snapshot_at AS at,
+       CASE s.role WHEN 'primary' THEN
+         format('primary database %s: the last log backup is from %s, %s minutes before the read; its threshold is %s minutes.', s.database_name,
+                coalesce(to_char(s.last_backup_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'),
+                coalesce(round(extract(epoch FROM s.snapshot_at - s.last_backup_at) / 60)::text, '?'), s.threshold_minutes)
+       ELSE
+         format('secondary database %s (from %s.%s): the last restore is from %s, %s minutes before the read; its threshold is %s minutes. The last file copied: %s.', s.database_name,
+                coalesce(s.primary_server, '?'), coalesce(s.primary_database, '?'),
+                coalesce(to_char(s.last_restored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'),
+                coalesce(round(extract(epoch FROM s.snapshot_at - s.last_restored_at) / 60)::text, '?'), s.threshold_minutes,
+                coalesce(to_char(s.last_copied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'))
+       END AS detail
+  FROM pgvigil.mssql_logshipping_state s
+ WHERE s.snapshot_at > now() - interval '15 minutes' AND s.threshold_minutes > 0
+   AND coalesce(s.snapshot_at - CASE s.role WHEN 'primary' THEN s.last_backup_at ELSE s.last_restored_at END, interval '1000 years')
+       > make_interval(mins => s.threshold_minutes)
+-- log shipping from restore history (DBA Dash's two measures; a database msdb's monitor judges gets the critical tier
+-- only: the monitor's own threshold is its warning)
+UNION ALL
+SELECT x.instance_id, x.database_name, 'secondary', x.sev, 'log restores are behind', x.database_name || coalesce(' (from ' || x.source_server || '.' || x.source_database || ')', ''), x.snapshot_at,
+       format('database %s (log backups of %s.%s): the last log restore ran %s, %s minutes before the read, and restored a log backup started %s minutes before it ran; warning from %s / %s minutes, critical from %s / %s minutes (time since the restore / its latency). The last file: %s.',
+              x.database_name, coalesce(x.source_server, '?'), coalesce(x.source_database, '?'),
+              to_char(x.last_log_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), round(x.age_min::numeric),
+              coalesce(round(x.latency_min::numeric)::text, '?'), coalesce(x.age_warn::text, '-'), coalesce(x.lat_warn::text, '-'),
+              coalesce(x.age_crit::text, '-'), coalesce(x.lat_crit::text, '-'), coalesce(x.last_file, '?'))
+  FROM (SELECT lr.*, CASE WHEN lr.age_min > lr.age_crit OR lr.latency_min > lr.lat_crit THEN 'critical'
+                          WHEN (NOT lr.msdb_judged AND lr.age_min > lr.age_warn) OR lr.latency_min > lr.lat_warn THEN 'warning' END AS sev   -- msdb judges no latency
+          FROM lr) x
+ WHERE x.sev IS NOT NULL
+UNION ALL
+SELECT s.instance_id, s.database_name, 'secondary',
+       -- a log shipping copy whose last log restore left the 14-day window is broken past every log restore tier (S4);
+       -- else restoring_days' critical when it is set
+       CASE WHEN s.last_restore_type = 'L'
+              OR (t.crit > 0 AND coalesce(s.last_restore_at, s.created_at, '-infinity'::timestamptz) < s.snapshot_at - make_interval(secs => (t.crit * 86400)::float8))
+            THEN 'critical' ELSE 'warning' END,
+       'a database has been restoring for days', s.database_name, s.snapshot_at,
+       format('database %s is %s and no restore has been applied to it in %s day(s)%s: log shipping to it may be broken (sp_Blitz check 111).',
+              s.database_name, CASE WHEN s.is_in_standby THEN 'in standby' ELSE lower(s.database_state) END, z.days,
+              CASE WHEN s.last_restore_at IS NULL THEN ' (msdb lists no restore of it at all)'
+                   ELSE ' (the last one, ' || CASE s.last_restore_type WHEN 'L' THEN 'a log' WHEN 'D' THEN 'a full' WHEN 'I' THEN 'a differential' ELSE 'a' END
+                        || ' restore, ran ' || to_char(s.last_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"') || ')' END)
+  FROM pgvigil.mssql_logrestore_state s
+  CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'restoring_days', s.database_name) t
+  CROSS JOIN LATERAL (SELECT least(CASE WHEN t.warn > 0 THEN t.warn END, CASE WHEN t.crit > 0 THEN t.crit END) AS days) z   -- the lower tier set
+ WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'restore' AND s.last_log_restore_at IS NULL
+   AND s.is_mirrored IS FALSE AND NOT coalesce(s.in_availability_group, false)   -- unknown (NULL): not judged
+   AND z.days IS NOT NULL
+   AND coalesce(s.last_restore_at, s.created_at, '-infinity'::timestamptz) < s.snapshot_at - make_interval(secs => (z.days * 86400)::float8)
+   AND (s.created_at IS NULL OR s.created_at < s.snapshot_at - make_interval(secs => (z.days * 86400)::float8))
+UNION ALL
+SELECT s.instance_id, s.database_name, 'secondary', 'warning', 'a log shipping copy is missing', s.database_name || coalesce(' (from ' || s.source_server || '.' || s.source_database || ')', ''), s.snapshot_at,
+       format('database %s received log restores from %s.%s until %s, and no longer exists on this server: the copy was dropped or renamed.',
+              s.database_name, coalesce(s.source_server, '?'), coalesce(s.source_database, '?'),
+              to_char(s.last_log_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'))
+  FROM pgvigil.mssql_logrestore_state s
+ WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'pair'
+   AND coalesce(s.log_restores, 0) >= 2 AND s.last_with_recovery IS FALSE   -- a stream, not a restore test or a cut-over
+)
+SELECT f.instance_id, f.database_name, f.role, f.severity, f.check_name, f.object, f.at, f.detail, NULL::text FROM f
+UNION ALL
+SELECT b.instance_id, b.database_name, 'secondary', NULL, NULL, NULL, b.snapshot_at, NULL, b.na_reason
+  FROM base b
+ WHERE NOT EXISTS (SELECT 1 FROM f WHERE f.instance_id = b.instance_id AND f.role = 'secondary'
+                     AND lower(f.database_name) = lower(b.database_name))
+$fn$;
+
 -- The availability group and mirroring arms leave out Amazon RDS (see the header). "For 5 minutes" and the staleness
 -- rules are 0066's.
 CREATE OR REPLACE VIEW pgvigil.mssql_hadr_findings AS
@@ -627,22 +733,6 @@ WITH judged AS (
    WHERE s.snapshot_at > now() - interval '5 minutes 30 seconds'
    GROUP BY 1, 2, 3
   HAVING min(s.snapshot_at) <= now() - interval '4 minutes' AND max(s.snapshot_at) > now() - interval '2 minutes'
-), lr AS (
-  SELECT s.*, l.new_database_hours,
-         extract(epoch FROM s.snapshot_at - s.last_log_restore_at) / 60 AS age_min,
-         extract(epoch FROM s.last_log_restore_at - s.last_log_backup_start_at) / 60 AS latency_min,
-         ta.warn AS age_warn, ta.crit AS age_crit, tl.warn AS lat_warn, tl.crit AS lat_crit,
-         EXISTS (SELECT 1 FROM pgvigil.mssql_logshipping_state m WHERE m.instance_id = s.instance_id AND m.role = 'secondary'
-                    AND lower(m.database_name) = lower(s.database_name) AND m.threshold_minutes > 0
-                    AND m.snapshot_at > now() - interval '15 minutes') AS msdb_judged
-    FROM pgvigil.mssql_logrestore_state s
-    JOIN pgvigil.mssql_hadr_limits l ON l.instance_id = s.instance_id
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_age', s.database_name) ta
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_latency', s.database_name) tl
-   WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'restore' AND s.last_log_restore_at IS NOT NULL
-     AND s.is_mirrored IS FALSE AND NOT coalesce(s.in_availability_group, false)   -- unknown (NULL): not judged
-     AND coalesce(s.recovery_model, '') <> 'SIMPLE'
-     AND (s.created_at IS NULL OR s.created_at <= s.snapshot_at - make_interval(secs => (l.new_database_hours * 3600)::float8))
 )
 -- availability groups: 0066's arms (a replica or database that is not joined is said once, by its own arm below)
 SELECT r.instance_id, 'critical'::text AS severity, 'a replica is not connected'::text AS check_name,
@@ -856,67 +946,11 @@ SELECT DISTINCT ON (m.instance_id) m.instance_id, 'critical', 'the mirroring end
   FROM mir m WHERE m.endpoint->>'endpoint_state' IS NOT NULL AND m.endpoint->>'endpoint_state' <> 'STARTED'
    AND NOT EXISTS (SELECT 1 FROM rep r WHERE r.instance_id = m.instance_id AND r.is_local     -- one endpoint: the group's arm says it
                      AND r.endpoint->>'endpoint_state' IS NOT NULL)
--- log shipping: msdb's monitor (0066's arm)
+-- log shipping: msdb's monitor (0066's arm), restore history, restoring for days, a missing copy - one judge, the
+-- function pgvigil.mssql_logship_judged() above (the Log Shipping page reads the same rows)
 UNION ALL
-SELECT s.instance_id, 'warning', 'log shipping is behind its threshold',
-       s.role || ' / ' || s.database_name || CASE WHEN s.secondary_server <> '' THEN ' on ' || s.secondary_server ELSE '' END, s.snapshot_at,
-       CASE s.role WHEN 'primary' THEN
-         format('primary database %s: the last log backup is from %s, %s minutes before the read; its threshold is %s minutes.', s.database_name,
-                coalesce(to_char(s.last_backup_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'),
-                coalesce(round(extract(epoch FROM s.snapshot_at - s.last_backup_at) / 60)::text, '?'), s.threshold_minutes)
-       ELSE
-         format('secondary database %s (from %s.%s): the last restore is from %s, %s minutes before the read; its threshold is %s minutes. The last file copied: %s.', s.database_name,
-                coalesce(s.primary_server, '?'), coalesce(s.primary_database, '?'),
-                coalesce(to_char(s.last_restored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'),
-                coalesce(round(extract(epoch FROM s.snapshot_at - s.last_restored_at) / 60)::text, '?'), s.threshold_minutes,
-                coalesce(to_char(s.last_copied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'))
-       END
-  FROM pgvigil.mssql_logshipping_state s
- WHERE s.snapshot_at > now() - interval '15 minutes' AND s.threshold_minutes > 0
-   AND coalesce(s.snapshot_at - CASE s.role WHEN 'primary' THEN s.last_backup_at ELSE s.last_restored_at END, interval '1000 years')
-       > make_interval(mins => s.threshold_minutes)
--- log shipping from restore history (DBA Dash's two measures; a database msdb's monitor judges gets the critical tier
--- only: the monitor's own threshold is its warning)
-UNION ALL
-SELECT x.instance_id, x.sev, 'log restores are behind', x.database_name || coalesce(' (from ' || x.source_server || '.' || x.source_database || ')', ''), x.snapshot_at,
-       format('database %s (log backups of %s.%s): the last log restore ran %s, %s minutes before the read, and restored a log backup started %s minutes before it ran; warning from %s / %s minutes, critical from %s / %s minutes (time since the restore / its latency). The last file: %s.',
-              x.database_name, coalesce(x.source_server, '?'), coalesce(x.source_database, '?'),
-              to_char(x.last_log_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), round(x.age_min::numeric),
-              coalesce(round(x.latency_min::numeric)::text, '?'), coalesce(x.age_warn::text, '-'), coalesce(x.lat_warn::text, '-'),
-              coalesce(x.age_crit::text, '-'), coalesce(x.lat_crit::text, '-'), coalesce(x.last_file, '?'))
-  FROM (SELECT lr.*, CASE WHEN lr.age_min > lr.age_crit OR lr.latency_min > lr.lat_crit THEN 'critical'
-                          WHEN (NOT lr.msdb_judged AND lr.age_min > lr.age_warn) OR lr.latency_min > lr.lat_warn THEN 'warning' END AS sev   -- msdb judges no latency
-          FROM lr) x
- WHERE x.sev IS NOT NULL
-UNION ALL
-SELECT s.instance_id,
-       -- a log shipping copy whose last log restore left the 14-day window is broken past every log restore tier (S4);
-       -- else restoring_days' critical when it is set
-       CASE WHEN s.last_restore_type = 'L'
-              OR (t.crit > 0 AND coalesce(s.last_restore_at, s.created_at, '-infinity'::timestamptz) < s.snapshot_at - make_interval(secs => (t.crit * 86400)::float8))
-            THEN 'critical' ELSE 'warning' END,
-       'a database has been restoring for days', s.database_name, s.snapshot_at,
-       format('database %s is %s and no restore has been applied to it in %s day(s)%s: log shipping to it may be broken (sp_Blitz check 111).',
-              s.database_name, CASE WHEN s.is_in_standby THEN 'in standby' ELSE lower(s.database_state) END, z.days,
-              CASE WHEN s.last_restore_at IS NULL THEN ' (msdb lists no restore of it at all)'
-                   ELSE ' (the last one, ' || CASE s.last_restore_type WHEN 'L' THEN 'a log' WHEN 'D' THEN 'a full' WHEN 'I' THEN 'a differential' ELSE 'a' END
-                        || ' restore, ran ' || to_char(s.last_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"') || ')' END)
-  FROM pgvigil.mssql_logrestore_state s
-  CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'restoring_days', s.database_name) t
-  CROSS JOIN LATERAL (SELECT least(CASE WHEN t.warn > 0 THEN t.warn END, CASE WHEN t.crit > 0 THEN t.crit END) AS days) z   -- the lower tier set
- WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'restore' AND s.last_log_restore_at IS NULL
-   AND s.is_mirrored IS FALSE AND NOT coalesce(s.in_availability_group, false)   -- unknown (NULL): not judged
-   AND z.days IS NOT NULL
-   AND coalesce(s.last_restore_at, s.created_at, '-infinity'::timestamptz) < s.snapshot_at - make_interval(secs => (z.days * 86400)::float8)
-   AND (s.created_at IS NULL OR s.created_at < s.snapshot_at - make_interval(secs => (z.days * 86400)::float8))
-UNION ALL
-SELECT s.instance_id, 'warning', 'a log shipping copy is missing', s.database_name || coalesce(' (from ' || s.source_server || '.' || s.source_database || ')', ''), s.snapshot_at,
-       format('database %s received log restores from %s.%s until %s, and no longer exists on this server: the copy was dropped or renamed.',
-              s.database_name, coalesce(s.source_server, '?'), coalesce(s.source_database, '?'),
-              to_char(s.last_log_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'))
-  FROM pgvigil.mssql_logrestore_state s
- WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'pair'
-   AND coalesce(s.log_restores, 0) >= 2 AND s.last_with_recovery IS FALSE   -- a stream, not a restore test or a cut-over
+SELECT j.instance_id, j.severity, j.check_name, j.object, j.at, j.detail
+  FROM pgvigil.mssql_logship_judged() j WHERE j.severity IS NOT NULL
 -- the failover cluster instance (behind the clustered flag: an instance that is not one has no node row)
 UNION ALL
 SELECT c.instance_id, 'critical', 'the failover cluster instance moved to another node', c.new_node, c.at,
