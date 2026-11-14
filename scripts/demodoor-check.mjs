@@ -172,7 +172,7 @@ const strip = await ev(`[...document.querySelectorAll('.attention-row')].map(r =
   const m = /[?&]i=(\\d+)/.exec(r.querySelector('strong a')?.getAttribute('href') ?? '');
   return { name: r.querySelector('strong')?.textContent.trim() ?? '', id: m ? Number(m[1]) : 0, btn: !!b, off: b?.getAttribute('aria-disabled') === 'true' || !!b?.disabled }; })`);
 await shot('1-summary-before');
-// what Allen saw under the strip at 19:03: 'Acknowledge is off: acknowledgements need the UI login: this server runs with -no-login'
+// what a reader saw under the strip: 'Acknowledge is off: acknowledgements need the UI login: this server runs with -no-login'
 const offSaid = await ev(`(/Acknowledge is off[^.]*/.exec(document.querySelector('main')?.textContent ?? '') ?? [''])[0]`);
 const line = (strip ?? []).find(r => r.btn && !r.off && r.name !== REAL);
 let acked = '';

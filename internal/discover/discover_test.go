@@ -819,7 +819,7 @@ func (f fakeEC2) DescribeRegions(_ context.Context, in *ec2.DescribeRegionsInput
 	return out, nil
 }
 
-// Task 205 (the lead's 12:23 item 1 and 12:28): the account's region list (ec2:DescribeRegions, optional) beside RDS's
+// The account's region list (ec2:DescribeRegions, optional) beside RDS's
 // replication list - an enabled region outside RDS's list is swept, a region not enabled is noted and never read nor
 // kept, a region of another partition is said so, a token error in an enabled region is the token's; without the
 // list a standing note on every read.

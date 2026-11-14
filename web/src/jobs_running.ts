@@ -345,7 +345,7 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
       box.append(el('h3', {}, `pgAgent steps (${rangeLabel(ctx)})`));
       for (const j of agentJobs) {
         const inner = el('div', {});
-        const d = el('details', {}, el('summary', {}, `${text(j.name)} (job ${text(j.job_id)})`), inner);
+        const d = el('details', { 'data-sheet': text(j.name) }, el('summary', {}, `${text(j.name)} (job ${text(j.job_id)})`), inner);
         d.addEventListener('toggle', () => { if (d.open && inner.dataset.read !== 'ok') void stepLog(ctx, text(j.job_id), inner); });
         box.append(d);
       }

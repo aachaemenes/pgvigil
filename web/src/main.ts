@@ -442,8 +442,8 @@ async function render(force = false) {
     else if (fr) $('main').prepend(fr.header);
     else cur?.remove();
   });
-  // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (Allen
-  // 2026-11-11: 'when I click on something it takes me down to the page'); a range, a filter or a refresh of the same
+  // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (a
+  // reader's report: a click landed partway down the new page); a range, a filter or a refresh of the same
   // page keeps the place
   const path = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
   if (path !== shownPath) { shownPath = path; window.scrollTo(0, 0); }

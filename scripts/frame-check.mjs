@@ -402,8 +402,8 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
        : `no strip on the Log events page (${n} events from the API)`);
 }
 
-// P. a link to another page opens that page at its top, wherever the reader stood on the page before (Allen
-// 2026-11-11: 'when I click on something it takes me down to the page and I have to scroll all the way up'): the
+// P. a link to another page opens that page at its top, wherever the reader stood on the page before (a
+// reader's report: a click landed partway down the new page, to be scrolled back up): the
 // fleet Summary scrolled to its end, the lowest link in it to an instance's Summary (a page taller than the window)
 // clicked like a reader would; the new page must be seen rendered and be taller than the window, so a page that never
 // rendered or one too short to scroll cannot pass by itself

@@ -206,7 +206,7 @@ echo "server: OK ($SERVER)"
 
 echo "--- live: $CLUSTER ($PROFILE, $REGION)"
 H=$(aws rds describe-db-clusters --db-cluster-identifier "$CLUSTER" --query 'DBClusters[0].Endpoint' --output text --profile "$PROFILE" --region "$REGION") \
-  || fail "the lab's AWS login (aws login --profile $PROFILE is Allen's): live not proven"
+  || fail "the lab's AWS login (aws login --profile $PROFILE is the lab owner's): live not proven"
 [ -n "$H" ] && [ "$H" != None ] || fail "no writer endpoint for $CLUSTER"
 TOKEN=$(aws rds generate-db-auth-token --hostname "$H" --port 5432 --username postgres --profile "$PROFILE" --region "$REGION")
 export AURORA_DSN="host=$H port=5432 user=postgres dbname=postgres sslmode=require connect_timeout=60 password=$TOKEN"
