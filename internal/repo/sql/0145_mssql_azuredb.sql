@@ -3,7 +3,8 @@
 --
 --   mssql_azuredb_minute     monthly partitions; mssql_azuredb_resources (internal/mssql/azuredb_resources.go): a
 --                            database's minute of sys.dm_db_resource_stats - the averages of its 15-second rows, the
---                            per-sample maxima of CPU, data IO, log write and memory, DBA Dash's DTU % per sample and
+--                            per-sample maxima of CPU, data IO, log write, memory, XTP storage, instance CPU and
+--                            instance memory (AzureDBResourceStats_Raw's seven), DBA Dash's DTU % per sample and
 --                            the DTUs it makes (avg and max; NULL on vCore), the sample count, and the ten bucket
 --                            counts each of DTU, CPU, data IO and log write (AzureDBResourceStats_Raw: < 10, [10, 20),
 --                            ... [80, 90), >= 90) that the Azure Summary sums. A minute is stored once.
@@ -41,10 +42,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_azuredb_minute (
   avg_memory_usage_percent    numeric(7,4),
   max_memory_usage_percent    numeric(5,2),
   avg_xtp_storage_percent     numeric(7,4),
+  max_xtp_storage_percent     numeric(5,2),
   max_worker_percent          numeric(5,2),
   max_session_percent         numeric(5,2),
   avg_instance_cpu_percent    numeric(7,4),
+  max_instance_cpu_percent    numeric(5,2),
   avg_instance_memory_percent numeric(7,4),
+  max_instance_memory_percent numeric(5,2),
   dtu_limit                   int,                    -- NULL on vCore
   cpu_limit                   numeric(7,2),           -- vCores; NULL on DTU
   replica_role                int,                    -- 0 primary, 1 high availability secondary, 2 geo-replication forwarder, 3 named replica
@@ -144,16 +148,19 @@ BEGIN
     PERFORM pgvigil.ensure_month_partition('mssql_azuredb_minute', v_max);
     INSERT INTO pgvigil.mssql_azuredb_minute (instance_id, snapshot_at, samples, avg_cpu_percent, max_cpu_percent,
            avg_data_io_percent, max_data_io_percent, avg_log_write_percent, max_log_write_percent, avg_memory_usage_percent,
-           max_memory_usage_percent, avg_xtp_storage_percent, max_worker_percent, max_session_percent, avg_instance_cpu_percent,
-           avg_instance_memory_percent, dtu_limit, cpu_limit, replica_role, avg_dtu_percent, max_dtu_percent, avg_dtu, max_dtu,
+           max_memory_usage_percent, avg_xtp_storage_percent, max_xtp_storage_percent, max_worker_percent, max_session_percent,
+           avg_instance_cpu_percent, max_instance_cpu_percent, avg_instance_memory_percent, max_instance_memory_percent,
+           dtu_limit, cpu_limit, replica_role, avg_dtu_percent, max_dtu_percent, avg_dtu, max_dtu,
            dtu_buckets, cpu_buckets, data_buckets, log_buckets)
     SELECT p_instance_id, (r->>'minute')::timestamptz, (r->>'samples')::int,
            (r->>'avg_cpu_percent')::numeric, (r->>'max_cpu_percent')::numeric,
            (r->>'avg_data_io_percent')::numeric, (r->>'max_data_io_percent')::numeric,
            (r->>'avg_log_write_percent')::numeric, (r->>'max_log_write_percent')::numeric,
            (r->>'avg_memory_usage_percent')::numeric, (r->>'max_memory_usage_percent')::numeric,
-           (r->>'avg_xtp_storage_percent')::numeric, (r->>'max_worker_percent')::numeric, (r->>'max_session_percent')::numeric,
-           (r->>'avg_instance_cpu_percent')::numeric, (r->>'avg_instance_memory_percent')::numeric,
+           (r->>'avg_xtp_storage_percent')::numeric, (r->>'max_xtp_storage_percent')::numeric,
+           (r->>'max_worker_percent')::numeric, (r->>'max_session_percent')::numeric,
+           (r->>'avg_instance_cpu_percent')::numeric, (r->>'max_instance_cpu_percent')::numeric,
+           (r->>'avg_instance_memory_percent')::numeric, (r->>'max_instance_memory_percent')::numeric,
            round((r->>'dtu_limit')::numeric)::int, (r->>'cpu_limit')::numeric, round((r->>'replica_role')::numeric)::int,
            (r->>'avg_dtu_percent')::numeric, (r->>'max_dtu_percent')::numeric, (r->>'avg_dtu')::numeric, (r->>'max_dtu')::numeric,
            ARRAY(SELECT x::smallint FROM jsonb_array_elements_text(r->'dtu_buckets') x),

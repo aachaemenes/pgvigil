@@ -83,6 +83,7 @@ func TestAzureDBMinutesFirstRead(t *testing.T) {
 		azdbRow("2026-11-14T12:02:00.000", "40.00", "0.00", "0.00", int64(5)),
 		azdbRow("2026-11-14T12:02:15.000", "99.00", "0.00", "0.00", int64(5)), // 12:02: the server's current minute
 	}
+	raw[2]["xtp_storage_percent"], raw[2]["avg_instance_cpu_percent"], raw[2]["avg_instance_memory_percent"] = "1.50", "7.00", "44.00"
 	rows, err := azdbRead(raw, time.Time{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -96,20 +97,24 @@ func TestAzureDBMinutesFirstRead(t *testing.T) {
 	}
 	m := ms[0]
 	want := map[string]any{
-		"samples":                     4,
-		"avg_cpu_percent":             (10 + 9.99 + 90 + 30.01) / 4.0,
-		"max_cpu_percent":             90.0,
-		"avg_data_io_percent":         100.0 / 3,
-		"max_data_io_percent":         100.0,
-		"avg_log_write_percent":       20.0 / 3,
-		"max_log_write_percent":       20.0,
-		"avg_memory_usage_percent":    20.0,
-		"max_memory_usage_percent":    20.0,
-		"avg_xtp_storage_percent":     0.0,
+		"samples":                  4,
+		"avg_cpu_percent":          (10 + 9.99 + 90 + 30.01) / 4.0,
+		"max_cpu_percent":          90.0,
+		"avg_data_io_percent":      100.0 / 3,
+		"max_data_io_percent":      100.0,
+		"avg_log_write_percent":    20.0 / 3,
+		"max_log_write_percent":    20.0,
+		"avg_memory_usage_percent": 20.0,
+		"max_memory_usage_percent": 20.0,
+		// XTP storage, instance CPU and instance memory: averaged with the per-sample maximum kept (DBA Dash's Raw view)
+		"avg_xtp_storage_percent":     1.5 / 4,
+		"max_xtp_storage_percent":     1.5,
 		"max_worker_percent":          1.0,
 		"max_session_percent":         0.5,
-		"avg_instance_cpu_percent":    3.0,
-		"avg_instance_memory_percent": 40.0,
+		"avg_instance_cpu_percent":    (3 + 7 + 3 + 3) / 4.0,
+		"max_instance_cpu_percent":    7.0,
+		"avg_instance_memory_percent": (40 + 44 + 40 + 40) / 4.0,
+		"max_instance_memory_percent": 44.0,
 		"dtu_limit":                   5.0,
 		"cpu_limit":                   nil,
 		"replica_role":                0.0,
@@ -209,12 +214,51 @@ func TestAzureDBMinutesCursorAndGap(t *testing.T) {
 		t.Errorf("gap rows %v, want one from 12:00 (the stored end) to 12:31 (the first minute stored after it)", gaps)
 	}
 
-	// a view whose oldest row starts within a row's length of the stored end is no gap
-	for _, r := range raw {
-		r["oldest_end"] = "2026-11-14T12:00:15.000"
+	// a view whose oldest row starts within a row's length of the stored end is no gap; the slack (1 s) only absorbs
+	// a late row: an oldest row ending 15.9 s after the stored end is none, 16.1 s after it lost the row before it
+	for _, c := range []struct {
+		oldest string
+		gaps   int
+	}{
+		{"2026-11-14T12:00:15.000", 0},
+		{"2026-11-14T12:00:15.900", 0},
+		{"2026-11-14T12:00:16.100", 1},
+		{"2026-11-14T12:00:18.000", 1}, // rows ending :03, :18, ...: the row ending 12:00:03 is gone
+	} {
+		for _, r := range raw {
+			r["oldest_end"] = c.oldest
+		}
+		if _, gaps = minuteRows(t, mustRead(t, raw, since)); len(gaps) != c.gaps {
+			t.Errorf("oldest row ending %s after a stored end of 12:00: %d gap row(s) %v, want %d", c.oldest, len(gaps), gaps, c.gaps)
+		}
 	}
-	if _, gaps = minuteRows(t, mustRead(t, raw, since)); len(gaps) != 0 {
-		t.Errorf("oldest row 12:00:00-12:00:15 after a stored end of 12:00: gap %v, want none", gaps)
+}
+
+// The grace: a minute is stored only once 30 s have passed since its end (the cursor moves past it for good); at
+// 12:02:29 the minute 12:01 waits, at 12:02:31 it is stored.
+func TestAzureDBMinutesGrace(t *testing.T) {
+	since := time.Date(2026, 11, 14, 12, 1, 0, 0, time.UTC) // 12:00 is the newest stored minute
+	for _, c := range []struct {
+		now     string
+		minutes int
+	}{
+		{"2026-11-14T12:02:29.000", 0},
+		{"2026-11-14T12:02:31.000", 1},
+	} {
+		raw := []collect.Row{
+			azdbRow("2026-11-14T12:01:15.000", "10.00", "0.00", "0.00", int64(5)),
+			azdbRow("2026-11-14T12:01:30.000", "10.00", "0.00", "0.00", int64(5)),
+			azdbRow("2026-11-14T12:01:45.000", "10.00", "0.00", "0.00", int64(5)),
+			azdbRow("2026-11-14T12:02:00.000", "10.00", "0.00", "0.00", int64(5)),
+			azdbRow("2026-11-14T12:02:15.000", "10.00", "0.00", "0.00", int64(5)),
+		}
+		for _, r := range raw {
+			r["oldest_end"], r["server_utc"] = "2026-11-14T11:02:00.000", c.now
+		}
+		ms, gaps := minuteRows(t, mustRead(t, raw, since))
+		if len(ms) != c.minutes || len(gaps) != 0 || (c.minutes == 1 && (ms[0]["minute"] != "2026-11-14T12:01:00Z" || ms[0]["samples"] != 4)) {
+			t.Errorf("at %s: minutes %v gaps %v, want %d minute(s) (12:01 of 4 samples once stored) and no gap", c.now, ms, gaps, c.minutes)
+		}
 	}
 }
 

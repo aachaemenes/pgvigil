@@ -29,6 +29,10 @@ func (azureDBGovernanceCollector) DefaultInterval() time.Duration { return time.
 
 // azdbLowTier: the service objectives on which Microsoft's DMV pages ask the server admin, the Entra admin or
 // ##MS_ServerStateReader## in place of VIEW DATABASE STATE (detect.go's ViewServerState is that check there).
+// sys.dm_user_db_resource_governance's Permissions (Microsoft Learn): on those tiers one of the three; on every
+// other tier VIEW DATABASE STATE or ##MS_ServerStateReader##. A login of the role with no user in the database
+// (##MS_DatabaseConnector##) holds VIEW SERVER STATE but not VIEW DATABASE STATE, so each tier decides on its own
+// right: the server-level one alone on the low tiers, either one elsewhere.
 func azdbLowTier(serviceObjective string) bool {
 	switch strings.ToLower(serviceObjective) {
 	case "basic", "s0", "s1", "elasticpool":
@@ -41,9 +45,11 @@ func (azureDBGovernanceCollector) Applies(info Info) (bool, string) {
 	switch {
 	case info.Kind != KindAzureDB:
 		return false, "the tier's limits (sys.dm_user_db_resource_governance) are Azure SQL Database's"
-	case azdbLowTier(info.ServiceObjective) && !info.ViewServerState:
-		return false, "the login lacks ##MS_ServerStateReader## (Basic, S0, S1 and elastic pools): the tier's limits are not readable"
-	case !info.ViewDatabaseState:
+	case azdbLowTier(info.ServiceObjective):
+		if !info.ViewServerState {
+			return false, "the login lacks ##MS_ServerStateReader## (Basic, S0, S1 and elastic pools): the tier's limits are not readable"
+		}
+	case !info.ViewDatabaseState && !info.ViewServerState:
 		return false, "the login lacks VIEW DATABASE STATE: the tier's limits are not readable"
 	}
 	return true, ""

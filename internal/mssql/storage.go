@@ -19,8 +19,10 @@ import (
 //
 // Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance. On Azure SQL Database (no
 // sys.master_files, no volumes) it reads the database's own files from sys.database_files, the space used and the
-// filegroup in the same statement (B2a: DBA Dash's DBFiles there, the input of its '% Max Size'); any user of the
-// database may read them.
+// filegroup in the same statement (B2a: DBA Dash's DBFiles there, the input of its '% Max Size'). Not proven yet
+// that a CONNECT-only user gets the used space: Microsoft says FILEPROPERTY returns NULL to a caller without
+// permission to view the object, which would read as 'used not read'; the Azure SQL Database proof asserts the used
+// space on every file as such a user.
 type storageCollector struct{}
 
 func init() { Register(storageCollector{}) }

@@ -8,8 +8,9 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
-// mssql_azuredb_governance: Azure SQL Database only; VIEW DATABASE STATE, except on Basic, S0, S1 and in an elastic
-// pool, where Microsoft asks the server admin, the Entra admin or ##MS_ServerStateReader##.
+// mssql_azuredb_governance: Azure SQL Database only; VIEW DATABASE STATE or ##MS_ServerStateReader##, except on Basic,
+// S0, S1 and in an elastic pool, where Microsoft asks the server admin, the Entra admin or ##MS_ServerStateReader##
+// (the server-level right alone: a login of the role with no user in the database lacks VIEW DATABASE STATE).
 func TestAzureDBGovernanceApplies(t *testing.T) {
 	for _, c := range []struct {
 		info Info
@@ -21,6 +22,9 @@ func TestAzureDBGovernanceApplies(t *testing.T) {
 		{Info{Kind: KindAzureDB, ServiceObjective: "Basic", ViewDatabaseState: true}, false, "the login lacks ##MS_ServerStateReader## (Basic, S0, S1 and elastic pools): the tier's limits are not readable"},
 		{Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool", ViewDatabaseState: true}, false, "##MS_ServerStateReader##"},
 		{Info{Kind: KindAzureDB, ServiceObjective: "S1", ViewServerState: true, ViewDatabaseState: true}, true, ""},
+		{Info{Kind: KindAzureDB, ServiceObjective: "Basic", ViewServerState: true}, true, ""},
+		{Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool", ViewServerState: true}, true, ""},
+		{Info{Kind: KindAzureDB, ServiceObjective: "GP_S_Gen5_1", ViewServerState: true}, true, ""},
 		{Info{Kind: KindAzureMI, ViewServerState: true, ViewDatabaseState: true}, false, "Azure SQL Database's"},
 	} {
 		run, why := azureDBGovernanceCollector{}.Applies(c.info)

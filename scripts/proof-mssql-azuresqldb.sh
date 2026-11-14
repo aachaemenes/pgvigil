@@ -87,7 +87,13 @@
 #       the missing rights, as a contained user of the proof holding CONNECT only (made before part D's first read,
 #                       dropped at the end): mssql_azuredb_resources skipped 'the login lacks VIEW DATABASE STATE:
 #                       the database's resource use is not readable', mssql_azuredb_governance skipped with its
-#                       sentence, mssql_storage ok (any user of the database reads its files)
+#                       sentence, mssql_storage ok (any user of the database reads its files) with the used space
+#                       read on every file [review b2a-a 5, written before its first run]
+#       the role without a user [review b2a-a 1, written before its first run]: as the lab's login pgv_conn
+#                       (##MS_ServerStateReader## and ##MS_DatabaseConnector##, no user in the database; Microsoft's
+#                       governance page allows the role on every tier) mssql_azuredb_governance ok on any tier, its
+#                       compared columns equal to the setup login's read and its service objective the database's;
+#                       mssql_azuredb_resources run as it too, its status printed, not graded
 #     On Basic, S0, S1 and in an elastic pool the collector's least-privilege user lacks the server-level right the
 #     other RUN rows need (NOT PROVEN HERE below): there PGVIGIL_PROOF_B2A_ONLY=1 runs R, A (the instance row), these
 #     B2a rows and D only - mssql_azuredb_resources as the contained user (VIEW DATABASE STATE on every tier; the DTU
@@ -133,6 +139,12 @@ B2A=${PGVIGIL_PROOF_B2A_ONLY:-}
 NR_USER=pgvproof_nr_$SUF; NR_PW=$(printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')")
 export AZ_NR_DSN="sqlserver://$NR_USER:$NR_PW@$AZ_HOST:${AZ_PORT:-1433}?database=$AZ_DB&encrypt=true"
 export AZ_ADMIN_DSN="sqlserver://$ADMIN_USER:$ADMIN_PW@$AZ_HOST:${AZ_PORT:-1433}?database=$AZ_DB&encrypt=true"
+CONNI=; if [ -n "${CONN_USER:-}" ]; then
+  export AZ_CONN_DSN="sqlserver://$CONN_USER:$CONN_PW@$AZ_HOST:${AZ_PORT:-1433}?database=$AZ_DB&encrypt=true"
+  CONNI="  - name: $N-conn
+    engine: sqlserver
+    dsn: env:AZ_CONN_DSN"
+fi
 FAILS=()
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
 die() { echo "FAIL: $*" >&2; exit 1; }
@@ -193,6 +205,7 @@ instances:
   - name: $N-admin
     engine: sqlserver
     dsn: env:AZ_ADMIN_DSN
+$CONNI
 EOF
 "$BIN" migrate -config "$CFG" >/dev/null
 SO=$(sq "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS nvarchar(128))")
@@ -525,13 +538,29 @@ if [ -z "$NRID" ]; then RIGHTS="FAIL"; bad "B: the missing rights: the CONNECT-o
 else
   G1=$(status_for "$NRID" mssql_azuredb_resources); G2=$(status_for "$NRID" mssql_azuredb_governance); G3=$(status_for "$NRID" mssql_storage)
   NRF=$(q "select count(*) from pgvigil.mssql_files where instance_id=$NRID and is_present"); NRM=$(q "select count(*) from pgvigil.mssql_azuredb_minute where instance_id=$NRID")
-  if [ "$G1" = "$W1" ] && [ "$G2" = "$W2" ] && [[ $G3 == ok\|* ]] && [ "$NRF" = "${NFILES:-x}" ] && [ "$NRM" = 0 ]; then RIGHTS="PASS (CONNECT only: mssql_azuredb_resources and mssql_azuredb_governance skipped with their sentences, nothing stored; mssql_storage ok with $NRF file(s))"
-  else RIGHTS="FAIL"; bad "B: the missing rights as the CONNECT-only user: mssql_azuredb_resources '$G1' (want '$W1'), mssql_azuredb_governance '$G2' (want '$W2'), mssql_storage '$G3' with $NRF file(s) (want ok with ${NFILES:-?}), $NRM minute(s) stored (want 0)"; fi
+  NRU=$(q "select count(*) from pgvigil.mssql_files where instance_id=$NRID and is_present and used_read")
+  if [ "$G1" = "$W1" ] && [ "$G2" = "$W2" ] && [[ $G3 == ok\|* ]] && [ "$NRF" = "${NFILES:-x}" ] && [ "$NRU" = "$NRF" ] && [ "$NRM" = 0 ]; then RIGHTS="PASS (CONNECT only: mssql_azuredb_resources and mssql_azuredb_governance skipped with their sentences, nothing stored; mssql_storage ok with $NRF file(s), the used space read on each)"
+  else RIGHTS="FAIL"; bad "B: the missing rights as the CONNECT-only user: mssql_azuredb_resources '$G1' (want '$W1'), mssql_azuredb_governance '$G2' (want '$W2'), mssql_storage '$G3' with $NRF file(s) (want ok with ${NFILES:-?}), the used space read on $NRU (want every file), $NRM minute(s) stored (want 0)"; fi
+fi
+# the role without a user: the lab's pgv_conn, ##MS_ServerStateReader## and ##MS_DatabaseConnector## only
+if [ -z "${CONN_USER:-}" ]; then CONNV="FAIL"; bad "B: the role without a user: the lab state has no CONN_USER (scripts/lab/azure-sqldb.sh up and logins make pgv_conn on every tier)"
+else
+  run_as "$N-conn" mssql_azuredb_governance; run_as "$N-conn" mssql_azuredb_resources
+  CID=$(q "select instance_id from pgvigil.instances where name='$N-conn'")
+  C1=$(status_for "${CID:-0}" mssql_azuredb_governance); C2=$(status_for "${CID:-0}" mssql_azuredb_resources)
+  CG=; CEQ=; CSO=
+  if [[ $C1 == ok\|* ]]; then
+    sq "SELECT (SELECT * FROM sys.dm_user_db_resource_governance WHERE database_id = DB_ID() FOR JSON PATH, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER)" > "$WORK/gov-hand.json"
+    CG=$(gov_state "$CID"); IFS='|' read -r CEQ _ _ CSO _ <<<"$CG"
+  fi
+  if [[ $C1 == ok\|* ]] && [ "$CEQ" = true ] && [ "$CSO" = "$SO" ]; then CONNV="PASS (no user in the database: mssql_azuredb_governance ok on $SO, its compared columns equal to the setup login's read; mssql_azuredb_resources '$C2', not graded)"
+  else CONNV="FAIL"; bad "B: the role without a user on $SO: mssql_azuredb_governance '$C1' (want ok), stored '$CG' (want 'true|n|edition|$SO|...'), the run said '$(tr '\n' ' ' < "$WORK/mssql_azuredb_governance.$N-conn.out" | cut -c1-300)'"; fi
 fi
 echo "  the collections:"
 if [ -n "$B2A" ]; then for c in "${B2ARUNS[@]}"; do printf '    %-26s %s\n' "$c" "${VERDICT[$c]:-FAIL (no verdict)}"; done
 else for c in "${RUNS[@]}" "${SKIPS[@]}"; do printf '    %-26s %s\n' "$c" "${VERDICT[$c]:-FAIL (no verdict)}"; done; fi
 printf '    %-26s %s\n' "the missing rights" "$RIGHTS"
+printf '    %-26s %s\n' "the role without a user" "$CONNV"
 
 echo "--- D. nothing of pgvigil created in the monitored database"
 snap > "$WORK/after.txt"

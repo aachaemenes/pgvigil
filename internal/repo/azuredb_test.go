@@ -69,6 +69,8 @@ func TestAzureDBOnAStore(t *testing.T) {
 			"avg_cpu_percent": cpu, "max_cpu_percent": 90.0, "avg_data_io_percent": 100.0 / 3, "max_data_io_percent": 100.0,
 			"avg_log_write_percent": nil, "max_log_write_percent": nil, "dtu_limit": 5.0, "cpu_limit": nil, "replica_role": 0.0,
 			"avg_dtu_percent": 60.0025, "max_dtu_percent": 100.0, "avg_dtu": 3.000125, "max_dtu": 5.0,
+			"avg_xtp_storage_percent": 0.375, "max_xtp_storage_percent": 1.5, "avg_instance_cpu_percent": 4.0, "max_instance_cpu_percent": 7.0,
+			"avg_instance_memory_percent": 41.0, "max_instance_memory_percent": 44.0,
 			"dtu_buckets": []int{0, 0, 1, 1, 0, 0, 0, 0, 0, 2}, "cpu_buckets": []int{1, 1, 0, 1, 0, 0, 0, 0, 0, 1},
 			"data_buckets": []int{2, 0, 0, 0, 0, 0, 0, 0, 0, 1}, "log_buckets": []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 	}
@@ -92,6 +94,16 @@ func TestAzureDBOnAStore(t *testing.T) {
 	}
 	if c := cursor(); c == nil || *c != base.Add(2*time.Minute).Unix() {
 		t.Errorf("cursor %v, want 12:02's start %d (an older read never moves it back)", c, base.Add(2*time.Minute).Unix())
+	}
+	// the seven maxima of DBA Dash's Raw view: XTP storage, instance CPU and instance memory are kept with their averages
+	var seven string
+	if err := pool.QueryRow(ctx, `SELECT concat_ws('|', avg_xtp_storage_percent, max_xtp_storage_percent, avg_instance_cpu_percent,
+	     max_instance_cpu_percent, avg_instance_memory_percent, max_instance_memory_percent)
+	   FROM pgvigil.mssql_azuredb_minute WHERE instance_id = $1 AND snapshot_at = $2`, id, base).Scan(&seven); err != nil {
+		t.Fatal(err)
+	}
+	if seven != "0.3750|1.50|4.0000|7.00|41.0000|44.00" {
+		t.Errorf("12:00 XTP, instance CPU and memory (avg|max) %q, want 0.3750|1.50|4.0000|7.00|41.0000|44.00", seven)
 	}
 	// purge()'s parents from 0190's own text: TestSchemaCurrentBeforeSchemaMissing runs the file that creates
 	// schema_missing() again, which leaves an earlier purge() on a store a whole package run has used

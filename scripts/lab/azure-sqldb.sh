@@ -39,11 +39,12 @@
 # mode-600 request body that is removed right after the call, never on a command line, in the output or a log.
 # down deletes the server (its database and firewall rules with it), reads the listing back (the server, and every
 # resource of the subscription that carries the tag) and removes the state file only when nothing is left.
+# 'logins' makes, on every tier, the collector's contained user (VIEW DATABASE STATE) in the first database and one
+# SQL login in master with no user anywhere (pgv_conn: ##MS_ServerStateReader## and ##MS_DatabaseConnector##).
 # The pool tier also makes, each named from the server's name and tagged: the VM (its OS disk and NIC deleted with
 # it), its public address, its network security group (NO inbound rule until 'vmdoor': nothing reaches it), its
-# virtual network, and a mode-600 ssh key pair in the state folder; its 'logins' make two SQL logins in master
-# (pgv_pool: ##MS_ServerStateReader##, a user in each pooled database; pgv_conn: ##MS_ServerStateReader## and
-# ##MS_DatabaseConnector##, no user anywhere), the contained user of the free / basic tiers in the first database,
+# virtual network, and a mode-600 ssh key pair in the state folder; its 'logins' add the SQL login pgv_pool in master
+# (##MS_ServerStateReader##, a user in each pooled database),
 # and the VM's identity as a user of the first database only, made by SID = its client id, TYPE = E (Microsoft's
 # CREATE USER: 'The Database Engine doesn't validate the specified ID in Microsoft Entra': no directory role is
 # needed). down deletes the VM and its pieces first, then the server, and reads both back.
@@ -120,6 +121,8 @@ ADMIN_USER=pgv_admin
 ADMIN_PW=$(pw)
 MON_USER=pgv_monitor
 MON_PW=$(pw)
+CONN_USER=pgv_conn
+CONN_PW=$(pw)
 EOF
   )
   if [ "$TIER" = pool ]; then ( umask 077; cat >> "$STATE" <<EOF
@@ -128,8 +131,6 @@ AZ_DB2=pgvpool2
 AZ_POOL=pgvpool
 POOL_USER=pgv_pool
 POOL_PW=$(pw)
-CONN_USER=pgv_conn
-CONN_PW=$(pw)
 LAB_REGION=$PGVIGIL_LAB_AZ_REGION
 VM_NAME=pgv-proof-$SUF-vm
 VM_ADMIN=pgv
@@ -247,22 +248,33 @@ SELECT 'logins: ' + N'$MON_USER' + ' (contained, ' + authentication_type_desc + 
           WHERE member_principal_id = DATABASE_PRINCIPAL_ID(N'$MON_USER')), 'none')
 FROM sys.database_principals WHERE name = N'$MON_USER';
 SQL
-  if [ "${AZ_TIER:-}" = pool ]; then
-    sq() { local d=$1; docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$AZ_HOST,$AZ_PORT" -U "$ADMIN_USER" -d "$d" -C -b -l 60 -h -1 -W -i /dev/stdin; }
-    sq master <<SQL
+  sq() { local d=$1; docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$AZ_HOST,$AZ_PORT" -U "$ADMIN_USER" -d "$d" -C -b -l 60 -h -1 -W -i /dev/stdin; }
+  # every tier: the server roles' login with no user anywhere (pgv_conn), the shape Microsoft's governance page allows
+  # on every tier; the pool tier adds pgv_pool, a user in each pooled database
+  [ -n "${CONN_USER:-}" ] || fail "the state file has no CONN_USER (made before this script made one on every tier): down, then up"
+  sq master <<SQL
 SET NOCOUNT ON;
-IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = N'$POOL_USER') CREATE LOGIN [$POOL_USER] WITH PASSWORD = N'$POOL_PW';
-ELSE ALTER LOGIN [$POOL_USER] WITH PASSWORD = N'$POOL_PW';
 IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = N'$CONN_USER') CREATE LOGIN [$CONN_USER] WITH PASSWORD = N'$CONN_PW';
 ELSE ALTER LOGIN [$CONN_USER] WITH PASSWORD = N'$CONN_PW';
 GO
-ALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER [$POOL_USER];
 ALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER [$CONN_USER];
 ALTER SERVER ROLE ##MS_DatabaseConnector## ADD MEMBER [$CONN_USER];
 GO
 SELECT 'logins: ' + p.name + ' in ' + ISNULL((SELECT STRING_AGG(r.name, ', ') WITHIN GROUP (ORDER BY r.name) FROM sys.server_role_members m
           JOIN sys.server_principals r ON r.principal_id = m.role_principal_id WHERE m.member_principal_id = p.principal_id), 'no server role')
-FROM sys.sql_logins p WHERE p.name IN (N'$POOL_USER', N'$CONN_USER') ORDER BY p.name;
+FROM sys.sql_logins p WHERE p.name = N'$CONN_USER';
+SQL
+  if [ "${AZ_TIER:-}" = pool ]; then
+    sq master <<SQL
+SET NOCOUNT ON;
+IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = N'$POOL_USER') CREATE LOGIN [$POOL_USER] WITH PASSWORD = N'$POOL_PW';
+ELSE ALTER LOGIN [$POOL_USER] WITH PASSWORD = N'$POOL_PW';
+GO
+ALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER [$POOL_USER];
+GO
+SELECT 'logins: ' + p.name + ' in ' + ISNULL((SELECT STRING_AGG(r.name, ', ') WITHIN GROUP (ORDER BY r.name) FROM sys.server_role_members m
+          JOIN sys.server_principals r ON r.principal_id = m.role_principal_id WHERE m.member_principal_id = p.principal_id), 'no server role')
+FROM sys.sql_logins p WHERE p.name = N'$POOL_USER';
 SQL
     for d in "$AZ_DB" "$AZ_DB2"; do sq "$d" <<SQL
 SET NOCOUNT ON;
@@ -286,8 +298,8 @@ SELECT 'logins: ' + name + ' (' + type_desc COLLATE DATABASE_DEFAULT + ', ' + au
   ISNULL((SELECT STRING_AGG(permission_name, ', ') FROM sys.database_permissions WHERE grantee_principal_id = principal_id AND state = 'G'), 'nothing')
 FROM sys.database_principals WHERE name = N'$VM_NAME';
 SQL
-    echo "logins: Microsoft says a server role's membership may take up to 5 minutes to take effect"
   fi
+  echo "logins: Microsoft says a server role's membership may take up to 5 minutes to take effect"
   ;;
 status)
   need_az

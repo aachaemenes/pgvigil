@@ -21,8 +21,9 @@ import (
 //
 // The read asks the server for the rows ending after the newest stored minute (the cursor 'azdb_since', moved by
 // the import in the transaction that stores the minutes). A minute holds the averages of its 15-second rows, the
-// per-sample maxima of CPU, data IO, log write and memory, DBA Dash's DTU % per sample (the greatest of CPU, data IO
-// and log write when dtu_limit > 0) with the DTUs that makes, the sample count and the 4 x 10 bucket counts; the
+// per-sample maxima of CPU, data IO, log write, memory, XTP storage, instance CPU and instance memory (the seven of
+// DBA Dash's Raw view), DBA Dash's DTU % per sample (the greatest of CPU, data IO and log write when dtu_limit > 0)
+// with the DTUs that makes, the sample count and the 4 x 10 bucket counts; the
 // 15-second rows are not kept. The current minute waits for the next read. A first read, or a read after a gap (the
 // view's oldest row starts after the newest stored minute: the collector down over the view's hour, a failover, a
 // serverless resume), drops its oldest minute (the view trims its oldest rows one by one, so it may be short), and a
@@ -63,9 +64,12 @@ WHERE @p1 IS NULL OR end_time > CONVERT(datetime2(3), @p1, 126)`
 const azdbGrace = 30 * time.Second
 
 // azdbRowLength is one row's interval (Microsoft: a row for every 15 seconds) and the slack a gap allows past it.
+// The first row after the stored end ends within one interval of it; a view whose oldest row ends later than that
+// lost at least that row. The slack only absorbs a late row's jitter: a row trimmed when the rows end within the
+// slack after the minute is not seen, and that minute is stored with one sample fewer (its 'samples' says so).
 const (
 	azdbRowLength = 15 * time.Second
-	azdbGapSlack  = 5 * time.Second
+	azdbGapSlack  = time.Second
 )
 
 func (c azureDBResourcesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
@@ -106,11 +110,11 @@ var azdbFigures = []struct{ col, store, agg string }{
 	{"avg_data_io_percent", "data_io_percent", "avgmax"},
 	{"avg_log_write_percent", "log_write_percent", "avgmax"},
 	{"avg_memory_usage_percent", "memory_usage_percent", "avgmax"},
-	{"xtp_storage_percent", "xtp_storage_percent", "avg"},
+	{"xtp_storage_percent", "xtp_storage_percent", "avgmax"},
 	{"max_worker_percent", "max_worker_percent", "max"},
 	{"max_session_percent", "max_session_percent", "max"},
-	{"avg_instance_cpu_percent", "instance_cpu_percent", "avg"},
-	{"avg_instance_memory_percent", "instance_memory_percent", "avg"},
+	{"avg_instance_cpu_percent", "instance_cpu_percent", "avgmax"},
+	{"avg_instance_memory_percent", "instance_memory_percent", "avgmax"},
 	{"dtu_limit", "dtu_limit", "last"},
 	{"cpu_limit", "cpu_limit", "last"},
 	{"replica_role", "replica_role", "last"},
