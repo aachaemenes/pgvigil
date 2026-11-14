@@ -142,7 +142,8 @@ func withAppName(dsn string) string {
 //     handshake's error with %v - withNetwork joins the recorded error, so NoAnswer sees that no one answered.
 //
 // done() ends both: the deadline is lifted from the connections made, later dials go without one, nothing more is
-// recorded. The keep-alive is the driver's own (the DSN's keepAlive, else 30 s).
+// recorded. The keep-alive is the driver's own (the DSN's keepAlive, else 30 s). Hold() pauses the deadline while an
+// Entra token is fetched (mssqlopen.Holder); a Kerberos exchange with the KDC is not paused and counts toward it.
 type deadlineDialer struct {
 	mu        sync.Mutex
 	until     time.Time
@@ -150,6 +151,7 @@ type deadlineDialer struct {
 	conns     []*watchedConn
 	netErr    error
 	over      bool
+	held      bool // Hold: the deadline lifted while the sign-in waits on a third party
 }
 
 // watchedConn is a connection the dialer made: its read and write errors are noted, its deadlines held to the
@@ -192,6 +194,8 @@ func (d *deadlineDialer) DialContext(ctx context.Context, network, addr string) 
 	if !d.until.IsZero() {
 		_ = c.SetDeadline(d.until)
 		d.conns = append(d.conns, w)
+	} else if d.held {
+		d.conns = append(d.conns, w) // a dial under a hold gets the deadline back at its release
 	}
 	return w, nil
 }
@@ -231,6 +235,39 @@ func (d *deadlineDialer) done() {
 	d.conns, d.until, d.netErr, d.over = nil, time.Time{}, nil, true
 }
 
+// Hold lifts the connect's deadline while the sign-in waits on a third party - an Entra token fetched in the middle of
+// the login (mssqlopen's provider; azidentity's own retries on a managed identity alone wait 2 + 4 + 8 s) - and its
+// release puts back the time that was left when the hold began, from the release on: a slow identity provider is
+// not read as a server that never answered (join review 2). The run's context still bounds the fetch. Nothing while
+// the DSN sets its own 'connection timeout' (no deadline of the dialer's) or after done().
+func (d *deadlineDialer) Hold() (release func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.over || d.until.IsZero() || d.held {
+		return func() {}
+	}
+	left := time.Until(d.until)
+	if left < 0 {
+		left = 0
+	}
+	d.held, d.until = true, time.Time{}
+	for _, c := range d.conns {
+		_ = c.Conn.SetDeadline(time.Time{})
+	}
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		d.held = false
+		if d.over {
+			return
+		}
+		d.until = time.Now().Add(left)
+		for _, c := range d.conns {
+			_ = c.Conn.SetDeadline(d.until)
+		}
+	}
+}
+
 // withNetwork joins the network error a connection recorded during the connect to the driver's error when the driver
 // dropped it - an error with no SQL Server error number that NoAnswer does not read as unanswered (the Browser's "no
 // instance matching ...", a TLS handshake's '%v'). Never on a cancel.
@@ -247,6 +284,9 @@ func (d *deadlineDialer) withNetwork(ctx context.Context, err error) error {
 	}
 	return fmt.Errorf("%w (the network: %w)", err, ne)
 }
+
+// recordTarget records an instance's dial target on the beat (collect.InstanceTarget; a test replaces it).
+var recordTarget = collect.InstanceTarget
 
 // msTarget is a SQL Server DSN's dial target (task 201 DONE-2 N8): 'mssql:<host>[\<instance>]:<port>', lower-cased -
 // the port the driver dials: a port given (the instance name is then moot), else 1433 with no instance name, else 0
@@ -271,8 +311,9 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (unset variable or unreadable file)", in.Name))
 	}
 	dl := &deadlineDialer{keepAlive: 30 * time.Second}
+	var target string
 	if p, perr := msdsn.Parse(withAppName(dsn)); perr == nil {
-		collect.InstanceTarget(in.Name, msTarget(p)) // task 201 DONE-2 N8: the dial target on the beat
+		target = msTarget(p)
 		if p.KeepAlive != 0 {
 			dl.keepAlive = p.KeepAlive
 		}
@@ -284,8 +325,12 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	// the connector it chooses (the join of 201 DONE-2)
 	db, err := mssqlopen.OpenDialer(withAppName(dsn), dl)
 	if err != nil {
+		// a string mssqlopen refuses after it parses (a fedauth it does not open, fedauth with an authenticator, an
+		// identity with a password, a principal without its secret) is a configuration error, not a dial: no target is
+		// recorded, so the attempt it counts never stands for its server in collector_server_down_at (join review 1)
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn: %w", in.Name, err))
 	}
+	recordTarget(in.Name, target) // task 201 DONE-2 N8: the dial target on the beat, once the string opens
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
 	err = collect.InstanceConnect(in.Name, dl.withNetwork(ctx, err))

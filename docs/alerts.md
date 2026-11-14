@@ -159,7 +159,10 @@ takes up to 10 seconds more per attempt: the collector ends an instance connect 
 after 10 seconds (a DSN's own `connect_timeout` is kept; `connect_timeout=0` is read as none set), a SQL Server
 instance's too (its DSN's own `connection timeout` is kept - the SQL Server driver then applies it to every read of
 the session as well, so a query whose server sends nothing for that long is cut off; without either the driver would
-wait for good on a server that accepts the connection and never answers). An instance read only
+wait for good on a server that accepts the connection and never answers). On a SQL Server instance that signs in with
+Entra (`auth entra`, `auth entra-identity`) the time the identity provider takes to hand over the token is not counted
+in those 10 seconds; a Kerberos exchange with the domain controller (`auth windows` off Windows) is - a string that
+sets its own `connection timeout` gives a slow KDC more room. An instance read only
 by `pgvigil collect` on a schedule has no heartbeat: its *server unreachable* is raised by its first failed connect
 of any kind, a refused login included. The service names each instance to the repository inside the instance's own
 connect, so its first failed connect is already the service's to report - after a long stop, for an instance read
