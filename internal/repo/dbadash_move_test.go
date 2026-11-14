@@ -47,7 +47,7 @@ func moveStore(t *testing.T) (context.Context, *pgxpool.Pool, int64) {
 }
 
 // moveRepo makes a configured DBA Dash repository with the given InstanceIDs of one server (DBA Dash's Instance).
-func moveRepo(t *testing.T, ctx context.Context, pool *pgxpool.Pool, repo, server string, ids ...int) {
+func moveRepo(ctx context.Context, t *testing.T, pool *pgxpool.Pool, repo, server string, ids ...int) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.dbadash_repositories (repository, status, read_at) VALUES ($1, 'ok', now())
 	                             ON CONFLICT (repository) DO UPDATE SET is_configured = true`, repo); err != nil {
@@ -65,7 +65,7 @@ func moveRepo(t *testing.T, ctx context.Context, pool *pgxpool.Pool, repo, serve
 }
 
 // moveCall runs import_dbadash_move and returns its answer.
-func moveCall(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pay map[string]any) map[string]any {
+func moveCall(ctx context.Context, t *testing.T, pool *pgxpool.Pool, pay map[string]any) map[string]any {
 	t.Helper()
 	b, _ := json.Marshal(pay)
 	var raw []byte
@@ -79,20 +79,16 @@ func moveCall(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pay map[str
 	return out
 }
 
+// moveAdd is an add's payload; the ConnectionIDs (204's proposals) are read by the function from dbadash_instances.
 func moveAdd(repo, server, name, host string, ids ...int) map[string]any {
-	conns := []string{}
-	for _, id := range ids {
-		conns = append(conns, fmt.Sprintf("%s-conn%d", strings.ToLower(server), id))
-	}
 	return map[string]any{"op": "add", "ui_user": "t206", "client": "test", "repository": repo, "server": server, "dbadash_ids": ids,
-		"connection_ids": conns, "name": name, "platform": "", "dsn_ref": "file:/nonexistent/t206", "auth": "sql", "host": host, "port": "",
-		"tags": []string{}}
+		"name": name, "platform": "", "dsn_ref": "file:/nonexistent/t206", "auth": "sql", "host": host, "port": "", "tags": []string{}}
 }
 
 // moved adds a moved server and returns its instance_id; the instance and its move go at the test's end.
-func moved(t *testing.T, ctx context.Context, pool *pgxpool.Pool, repo, server, name, host string, ids ...int) int {
+func moved(ctx context.Context, t *testing.T, pool *pgxpool.Pool, repo, server, name, host string, ids ...int) int {
 	t.Helper()
-	ans := moveCall(t, ctx, pool, moveAdd(repo, server, name, host, ids...))
+	ans := moveCall(ctx, t, pool, moveAdd(repo, server, name, host, ids...))
 	if ans["outcome"] != "done" {
 		t.Fatalf("the move of %s: %v", server, ans)
 	}
@@ -101,6 +97,10 @@ func moved(t *testing.T, ctx context.Context, pool *pgxpool.Pool, repo, server, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { dropInstance(pool, name) })
+	// the move made a day ago: the tests' reads 'an hour ago' come after it (a read before the add sets nothing)
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_moves SET added_at = added_at - interval '1 day' WHERE instance_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
 	return id
 }
 
@@ -112,7 +112,7 @@ func dropInstance(pool *pgxpool.Pool, name string) {
 }
 
 // firstRead writes the collector's mssql_instance row (insert, then update).
-func firstRead(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int, at time.Time, server string) {
+func firstRead(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int, at time.Time, server string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, server_name) VALUES ($1, $2, $3)
 	    ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, server_name = EXCLUDED.server_name`, id, at, server); err != nil {
@@ -120,7 +120,7 @@ func firstRead(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int, at
 	}
 }
 
-func collectFrom(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int) *time.Time {
+func collectFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int) *time.Time {
 	t.Helper()
 	var at *time.Time
 	if err := pool.QueryRow(ctx, `SELECT collect_from FROM pgvigil.dbadash_moves WHERE instance_id = $1`, id).Scan(&at); err != nil {
@@ -129,7 +129,7 @@ func collectFrom(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int) 
 	return at
 }
 
-func collected(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int, collection, status string, at time.Time) {
+func collected(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int, collection, status string, at time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.collection_dates (instance_id, collection, snapshot_at, status) VALUES ($1, $2, $3, $4)
 	    ON CONFLICT (instance_id, collection) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, status = EXCLUDED.status`, id, collection, at, status); err != nil {
@@ -147,7 +147,7 @@ func importRows(ctx context.Context, q interface {
 	return n, err
 }
 
-func stored(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int, key string) int64 {
+func stored(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int, key string) int64 {
 	t.Helper()
 	var n int64
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.dbadash_import_stored($1, $2, '-infinity', 'infinity')`, id, key).Scan(&n); err != nil {
@@ -186,45 +186,74 @@ func jobRow(at time.Time, history int64, local time.Time) map[string]any {
 func TestMoveCollectFrom(t *testing.T) {
 	ctx, pool, sfx := moveStore(t)
 	repo, srv := fmt.Sprintf("r206a-%d", sfx), fmt.Sprintf("SRVA%d", sfx)
-	moveRepo(t, ctx, pool, repo, srv, 7)
-	id := moved(t, ctx, pool, repo, srv, fmt.Sprintf("mva-%d", sfx), fmt.Sprintf("hosta-%d", sfx), 7)
-	if at := collectFrom(t, ctx, pool, id); at != nil {
+	moveRepo(ctx, t, pool, repo, srv, 7)
+	id := moved(ctx, t, pool, repo, srv, fmt.Sprintf("mva-%d", sfx), fmt.Sprintf("hosta-%d", sfx), 7)
+	if at := collectFrom(ctx, t, pool, id); at != nil {
 		t.Fatalf("collect_from after the add = %v, want NULL", *at)
 	}
 	if _, err := importRows(ctx, pool, "volumes", id, volRows(time.Now().Add(-time.Hour))); !refusedWith(err, "collect it first") {
 		t.Fatalf("an import before the first read: %v, want refused 'collect it first'", err)
 	}
 	t1 := time.Now().UTC().Truncate(time.Millisecond)
-	firstRead(t, ctx, pool, id, t1, srv)
-	if at := collectFrom(t, ctx, pool, id); at == nil || !at.Equal(t1) {
+	firstRead(ctx, t, pool, id, t1, srv)
+	if at := collectFrom(ctx, t, pool, id); at == nil || !at.Equal(t1) {
 		t.Fatalf("collect_from after the first read = %v, want %v", at, t1)
 	}
-	firstRead(t, ctx, pool, id, t1.Add(5*time.Minute), srv)
-	if at := collectFrom(t, ctx, pool, id); at == nil || !at.Equal(t1) {
+	firstRead(ctx, t, pool, id, t1.Add(5*time.Minute), srv)
+	if at := collectFrom(ctx, t, pool, id); at == nil || !at.Equal(t1) {
 		t.Fatalf("collect_from after a later read = %v, want %v kept", at, t1)
+	}
+	// an InstanceID outside the move (DBA Dash re-added the server) under the moved name goes to the move too
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_instance($1::jsonb)::text`,
+		fmt.Sprintf(`{"repository": %q, "dbadash_id": 999, "name": "mva-%d", "platform": "sqlserver", "version": "1.0"}`, repo, sfx)).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"moved": true`) || !strings.Contains(string(raw), fmt.Sprintf(`"instance_id": %d`, id)) {
+		t.Fatalf("an unmoved InstanceID under the moved name: %s, want the move %d", raw, id)
+	}
+
+	// the host reaches another server: nothing set, and the import says which server it reaches; a read of the moved
+	// server from before the add sets nothing either
+	srv3 := fmt.Sprintf("SRVW%d", sfx)
+	moveRepo(ctx, t, pool, repo, srv3, 9)
+	wid := moved(ctx, t, pool, repo, srv3, fmt.Sprintf("mvw-%d", sfx), fmt.Sprintf("hostw-%d", sfx), 9)
+	firstRead(ctx, t, pool, wid, t1, "ANOTHER"+srv3)
+	if at := collectFrom(ctx, t, pool, wid); at != nil {
+		t.Fatalf("collect_from after a read of another server = %v, want NULL", *at)
+	}
+	if _, err := importRows(ctx, pool, "volumes", wid, volRows(t1.Add(-time.Hour))); !refusedWith(err, "pgvigil reaches ANOTHER"+srv3+" at this address, not "+srv3) {
+		t.Fatalf("an import after a read of another server: %v, want refused naming it", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_moves SET added_at = now() WHERE instance_id = $1`, wid); err != nil {
+		t.Fatal(err)
+	}
+	firstRead(ctx, t, pool, wid, t1.Add(-time.Hour), srv3)
+	if at := collectFrom(ctx, t, pool, wid); at != nil {
+		t.Fatalf("collect_from after a read from before the add = %v, want NULL", *at)
 	}
 
 	// a server collected before (its mssql_instance row kept), removed, then moved under its old name
 	srv2, old := fmt.Sprintf("SRVB%d", sfx), fmt.Sprintf("old-%d", sfx)
-	moveRepo(t, ctx, pool, repo, srv2, 8)
+	moveRepo(ctx, t, pool, repo, srv2, 8)
 	var oid int
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0.4295.3', 160000, false, '{}'::text[], 'sqlserver')`, old).Scan(&oid); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { dropInstance(pool, old) })
-	firstRead(t, ctx, pool, oid, t1.Add(-48*time.Hour), srv2)
+	firstRead(ctx, t, pool, oid, t1.Add(-48*time.Hour), srv2)
 	if _, err := pool.Exec(ctx, `UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $1`, oid); err != nil {
 		t.Fatal(err)
 	}
-	if ans := moveCall(t, ctx, pool, moveAdd(repo, srv2, old, fmt.Sprintf("hostb-%d", sfx), 8)); ans["outcome"] != "done" {
+	if ans := moveCall(ctx, t, pool, moveAdd(repo, srv2, old, fmt.Sprintf("hostb-%d", sfx), 8)); ans["outcome"] != "done" {
 		t.Fatalf("the move of a server collected before and removed: %v", ans)
 	}
-	if at := collectFrom(t, ctx, pool, oid); at != nil {
+	if at := collectFrom(ctx, t, pool, oid); at != nil {
 		t.Fatalf("collect_from of the re-moved server before its next read = %v, want NULL", *at)
 	}
 	t2 := t1.Add(time.Minute)
-	firstRead(t, ctx, pool, oid, t2, srv2)
-	if at := collectFrom(t, ctx, pool, oid); at == nil || !at.Equal(t2) {
+	firstRead(ctx, t, pool, oid, t2, srv2)
+	if at := collectFrom(ctx, t, pool, oid); at == nil || !at.Equal(t2) {
 		t.Fatalf("collect_from of the re-moved server after its next read = %v, want %v", at, t2)
 	}
 }
@@ -232,10 +261,10 @@ func TestMoveCollectFrom(t *testing.T) {
 func TestMoveBounds(t *testing.T) {
 	ctx, pool, sfx := moveStore(t)
 	repo, srv := fmt.Sprintf("r206b-%d", sfx), fmt.Sprintf("SRVC%d", sfx)
-	moveRepo(t, ctx, pool, repo, srv, 3)
-	id := moved(t, ctx, pool, repo, srv, fmt.Sprintf("mvb-%d", sfx), fmt.Sprintf("hostc-%d", sfx), 3)
+	moveRepo(ctx, t, pool, repo, srv, 3)
+	id := moved(ctx, t, pool, repo, srv, fmt.Sprintf("mvb-%d", sfx), fmt.Sprintf("hostc-%d", sfx), 3)
 	c := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
-	firstRead(t, ctx, pool, id, c, srv)
+	firstRead(ctx, t, pool, id, c, srv)
 
 	n, err := importRows(ctx, pool, "volumes", id, volRows(c.Add(-2*time.Hour), c.Add(-time.Hour), c, c.Add(time.Hour)))
 	if err != nil || n != 2 {
@@ -249,30 +278,50 @@ func TestMoveBounds(t *testing.T) {
 	if _, err = importRows(ctx, pool, "cpu", id, cpu); !refusedWith(err, "first CPU read") {
 		t.Fatalf("cpu before the collector's CPU read: %v, want refused 'first CPU read'", err)
 	}
-	collected(t, ctx, pool, id, "mssql_cpu", "ok", c.Add(-time.Second))
+	collected(ctx, t, pool, id, "mssql_cpu", "ok", c.Add(-time.Second))
 	if _, err = importRows(ctx, pool, "cpu", id, cpu); !refusedWith(err, "first CPU read") {
 		t.Fatalf("cpu with the collector's CPU read before collect_from: %v, want refused", err)
 	}
-	collected(t, ctx, pool, id, "mssql_cpu", "ok", c.Add(time.Minute))
+	collected(ctx, t, pool, id, "mssql_cpu", "ok", c.Add(time.Minute))
 	if n, err = importRows(ctx, pool, "cpu", id, cpu); err != nil || n != 2 {
 		t.Fatalf("cpu after the collector's CPU read: inserted %d (%v), want 2", n, err)
 	}
+	collected(ctx, t, pool, id, "mssql_cpu", "error", c.Add(2*time.Minute))
+	if n, err = importRows(ctx, pool, "cpu", id, cpuRows(c.Add(-10*time.Minute))); err != nil || n != 1 {
+		t.Fatalf("cpu after a failed read that followed the first ok one: inserted %d (%v), want 1 (the first ok read is kept)", n, err)
+	}
 
 	jobs := []map[string]any{jobRow(c.Add(-time.Hour), 101, c.Add(-time.Hour-8*time.Hour)), jobRow(c.Add(time.Hour), 102, c.Add(-7*time.Hour))}
-	collected(t, ctx, pool, id, "mssql_jobs", "error", c.Add(time.Minute))
+	collected(ctx, t, pool, id, "mssql_jobs", "error", c.Add(time.Minute))
 	if _, err = importRows(ctx, pool, "jobruns", id, jobs); !refusedWith(err, "first Agent job read") {
 		t.Fatalf("jobruns while the job read failed: %v, want refused 'first Agent job read'", err)
 	}
-	collected(t, ctx, pool, id, "mssql_jobs", "skipped", c.Add(time.Minute))
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.collection_dates SET status = 'skipped', note = 'no msdb access' WHERE instance_id = $1 AND collection = 'mssql_jobs'`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = importRows(ctx, pool, "jobruns", id, jobs); !refusedWith(err, "(its last read: skipped: no msdb access)") {
+		t.Fatalf("jobruns after a skipped job read (no msdb right): %v, want refused with the read's words", err)
+	}
+	collected(ctx, t, pool, id, "mssql_jobs", "ok", c.Add(2*time.Minute))
 	if n, err = importRows(ctx, pool, "jobruns", id, jobs); err != nil || n != 1 {
-		t.Fatalf("jobruns after a skipped job read: inserted %d (%v), want 1 (the one before collect_from)", n, err)
+		t.Fatalf("jobruns after an ok job read: inserted %d (%v), want 1 (the one before collect_from)", n, err)
+	}
+	// the collector's doors write SQL Server history under a SQL Server instance only
+	pg := fmt.Sprintf("pg-%d", sfx)
+	var pgid int
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'postgres', '17.0', 170000, false, '{}'::text[], 'postgres')`, pg).Scan(&pgid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dropInstance(pool, pg) })
+	if _, err = importRows(ctx, pool, "volumes", pgid, volRows(c)); !refusedWith(err, "is not a SQL Server instance") {
+		t.Fatalf("an import under a PostgreSQL instance: %v, want refused", err)
 	}
 	if n, err = importRows(ctx, pool, "dbsize", id, []map[string]any{{"at": c.Add(-time.Hour).Format(time.RFC3339), "database_name": "db1",
 		"data_bytes": 8192, "log_bytes": 8192, "data_used_bytes": nil, "log_used_bytes": nil, "files": 2}}); err != nil || n != 1 {
 		t.Fatalf("dbsize: inserted %d (%v), want 1", n, err)
 	}
 	for key, want := range map[string]int64{"volumes": 2, "cpu": 2, "jobruns": 1, "dbsize": 1} {
-		if got := stored(t, ctx, pool, id, key); got != want {
+		if got := stored(ctx, t, pool, id, key); got != want {
 			t.Errorf("%s stored %d, want %d", key, got, want)
 		}
 	}
@@ -281,10 +330,10 @@ func TestMoveBounds(t *testing.T) {
 func TestMoveJobRunDST(t *testing.T) {
 	ctx, pool, sfx := moveStore(t)
 	repo, srv := fmt.Sprintf("r206d-%d", sfx), fmt.Sprintf("SRVD%d", sfx)
-	moveRepo(t, ctx, pool, repo, srv, 4)
-	id := moved(t, ctx, pool, repo, srv, fmt.Sprintf("mvd-%d", sfx), fmt.Sprintf("hostd-%d", sfx), 4)
+	moveRepo(ctx, t, pool, repo, srv, 4)
+	id := moved(ctx, t, pool, repo, srv, fmt.Sprintf("mvd-%d", sfx), fmt.Sprintf("hostd-%d", sfx), 4)
 	c := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
-	firstRead(t, ctx, pool, id, c, srv)
+	firstRead(ctx, t, pool, id, c, srv)
 	// the run: 10:00 PDT (17:00 UTC) on 2026-10-30, read by the collector with msdb's own date and time
 	run := time.Date(2026, 10, 30, 17, 0, 0, 0, time.UTC)
 	pay, _ := json.Marshal([]map[string]any{{"kind": "run", "run_utc": run.Format(time.RFC3339), "history_id": 4242, "job_id": "1D3C5E7A-0000-4000-8000-00000000ABCD",
@@ -293,7 +342,7 @@ func TestMoveJobRunDST(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_jobs($1, $2, $3::jsonb)`, id, c.Add(time.Minute), string(pay)); err != nil {
 		t.Fatal(err)
 	}
-	collected(t, ctx, pool, id, "mssql_jobs", "ok", c.Add(time.Minute))
+	collected(ctx, t, pool, id, "mssql_jobs", "ok", c.Add(time.Minute))
 	// DBA Dash's row of that run after the change to PST: the same UTC start, its local time rebuilt an hour off (09:00);
 	// and the same row with its UTC start an hour off too (within the key's 3 hours)
 	for _, at := range []time.Time{run, run.Add(time.Hour)} {
@@ -302,7 +351,7 @@ func TestMoveJobRunDST(t *testing.T) {
 			t.Fatalf("the DST row at %v: inserted %d (%v), want 0", at, n, err)
 		}
 	}
-	if got := stored(t, ctx, pool, id, "jobruns"); got != 1 {
+	if got := stored(ctx, t, pool, id, "jobruns"); got != 1 {
 		t.Fatalf("job outcomes stored %d, want 1", got)
 	}
 }
@@ -310,10 +359,10 @@ func TestMoveJobRunDST(t *testing.T) {
 func TestMoveConcurrentImport(t *testing.T) {
 	ctx, pool, sfx := moveStore(t)
 	repo, srv := fmt.Sprintf("r206e-%d", sfx), fmt.Sprintf("SRVE%d", sfx)
-	moveRepo(t, ctx, pool, repo, srv, 5)
-	mid := moved(t, ctx, pool, repo, srv, fmt.Sprintf("mve-%d", sfx), fmt.Sprintf("hoste-%d", sfx), 5)
+	moveRepo(ctx, t, pool, repo, srv, 5)
+	mid := moved(ctx, t, pool, repo, srv, fmt.Sprintf("mve-%d", sfx), fmt.Sprintf("hoste-%d", sfx), 5)
 	c := time.Now().UTC().Truncate(time.Second)
-	firstRead(t, ctx, pool, mid, c, srv)
+	firstRead(ctx, t, pool, mid, c, srv)
 	plain := fmt.Sprintf("plain-%d", sfx)
 	var pid int
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', NULL, NULL, false, '{}'::text[], 'sqlserver')`, plain).Scan(&pid); err != nil {
@@ -340,8 +389,8 @@ func TestMoveConcurrentImport(t *testing.T) {
 		if errs[0] != nil || errs[1] != nil {
 			t.Fatalf("instance %d: %v / %v", id, errs[0], errs[1])
 		}
-		if got[0]+got[1] != 500 || stored(t, ctx, pool, id, "volumes") != 500 {
-			t.Fatalf("instance %d: two imports at once inserted %d + %d, stored %d; want 500 in all", id, got[0], got[1], stored(t, ctx, pool, id, "volumes"))
+		if got[0]+got[1] != 500 || stored(ctx, t, pool, id, "volumes") != 500 {
+			t.Fatalf("instance %d: two imports at once inserted %d + %d, stored %d; want 500 in all", id, got[0], got[1], stored(ctx, t, pool, id, "volumes"))
 		}
 	}
 }
@@ -369,7 +418,7 @@ func TestMoveAddRefusals(t *testing.T) {
 	refuse := func(pay map[string]any, words, target string) {
 		t.Helper()
 		before := audits(target)
-		ans := moveCall(t, ctx, pool, pay)
+		ans := moveCall(ctx, t, pool, pay)
 		if ans["outcome"] != "refused" || !strings.Contains(fmt.Sprint(ans["detail"]), words) {
 			t.Fatalf("%s: %v, want refused '%s'", pay["server"], ans, words)
 		}
@@ -381,20 +430,20 @@ func TestMoveAddRefusals(t *testing.T) {
 
 	// collected already: an active instance read under the server's @@SERVERNAME
 	sa := fmt.Sprintf("SRVF%d", sfx)
-	moveRepo(t, ctx, pool, repo, sa, 11)
+	moveRepo(ctx, t, pool, repo, sa, 11)
 	have := fmt.Sprintf("have-%d", sfx)
 	var hid int
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0.1', 160000, false, '{}'::text[], 'sqlserver')`, have).Scan(&hid); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { dropInstance(pool, have) })
-	firstRead(t, ctx, pool, hid, time.Now(), strings.ToLower(sa))
+	firstRead(ctx, t, pool, hid, time.Now(), strings.ToLower(sa))
 	pa := moveAdd(repo, sa, fmt.Sprintf("mvfa-%d", sfx), fmt.Sprintf("hostfa-%d", sfx), 11)
 	refuse(pa, "collects "+sa+" already, as "+have, pa["name"].(string))
 
 	// its host and port on Admin > Instances already
 	sb := fmt.Sprintf("SRVG%d", sfx)
-	moveRepo(t, ctx, pool, repo, sb, 12)
+	moveRepo(ctx, t, pool, repo, sb, 12)
 	page, host := fmt.Sprintf("page-%d", sfx), fmt.Sprintf("hostg-%d", sfx)
 	b, _ := json.Marshal(map[string]any{"op": "add", "ui_user": "t206", "name": page, "engine": "sqlserver", "dsn_ref": "file:/nonexistent/p", "auth": "sql",
 		"host": host, "port": "1433"})
@@ -407,7 +456,7 @@ func TestMoveAddRefusals(t *testing.T) {
 
 	// approved already from a DBA Dash source of this repository
 	sc := fmt.Sprintf("SRVH%d", sfx)
-	moveRepo(t, ctx, pool, repo, sc, 13, 14)
+	moveRepo(ctx, t, pool, repo, sc, 13, 14)
 	src := fmt.Sprintf("dd-%d", sfx)
 	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.admin_sources (name, kind, ref, credential_ref, created_by) VALUES ($1, 'dbadash', $2, 'file:/nonexistent/s', 't206')`, src, repo); err != nil {
 		t.Fatal(err)
@@ -422,21 +471,28 @@ func TestMoveAddRefusals(t *testing.T) {
 	pc := moveAdd(repo, sc, fmt.Sprintf("mvfc-%d", sfx), fmt.Sprintf("hostfc-%d", sfx), 13, 14)
 	refuse(pc, "approved already from the source "+src+" as other", pc["name"].(string))
 
+	// InstanceIDs out of range or not numbers: refused, nothing dropped silently
+	for _, bad := range []any{[]any{12, 9999999999}, []any{12, "x"}, []any{}} {
+		pay := moveAdd(repo, sb, fmt.Sprintf("mvfx-%d", sfx), fmt.Sprintf("hostfx-%d", sfx))
+		pay["dbadash_ids"] = bad
+		refuse(pay, "each 1 to 2147483647", pay["name"].(string))
+	}
+
 	// the name taken (import_admin_instance's refusal)
 	sd := fmt.Sprintf("SRVI%d", sfx)
-	moveRepo(t, ctx, pool, repo, sd, 15)
+	moveRepo(ctx, t, pool, repo, sd, 15)
 	pd := moveAdd(repo, sd, page, fmt.Sprintf("hostfd-%d", sfx), 15)
 	refuse(pd, "exists already", page)
 
 	// a proposed one of this repository is approved by the add, under the instance's name
 	se := fmt.Sprintf("SRVJ%d", sfx)
-	moveRepo(t, ctx, pool, repo, se, 16)
+	moveRepo(ctx, t, pool, repo, se, 16)
 	conn := strings.ToLower(se) + "-conn16"
 	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.admin_proposals (source, server, engine, host) VALUES ($1, $2, 'sqlserver', $2)`, src, conn); err != nil {
 		t.Fatal(err)
 	}
 	name := fmt.Sprintf("mvfe-%d", sfx)
-	id := moved(t, ctx, pool, repo, se, name, fmt.Sprintf("hostfe-%d", sfx), 16)
+	id := moved(ctx, t, pool, repo, se, name, fmt.Sprintf("hostfe-%d", sfx), 16)
 	var state, inst string
 	if err := pool.QueryRow(ctx, `SELECT state, coalesce(instance_name, '') FROM pgvigil.admin_proposals WHERE source = $1 AND server = $2`, src, conn).Scan(&state, &inst); err != nil {
 		t.Fatal(err)
@@ -523,5 +579,134 @@ func TestMoveCollectorLogin(t *testing.T) {
 	var pe *pgconn.PgError
 	if !errors.As(err, &pe) || pe.Code != "42501" {
 		t.Fatalf("import_dbadash_cpu as a reader member: %v, want permission denied (42501)", err)
+	}
+}
+
+func TestMoveRemovedThenAddedAgain(t *testing.T) {
+	ctx, pool, sfx := moveStore(t)
+	repo, srv, other := fmt.Sprintf("r206g-%d", sfx), fmt.Sprintf("SRVK%d", sfx), fmt.Sprintf("SRVL%d", sfx)
+	moveRepo(ctx, t, pool, repo, srv, 31)
+	moveRepo(ctx, t, pool, repo, other, 32)
+	name, host := fmt.Sprintf("mvk-%d", sfx), fmt.Sprintf("hostk-%d", sfx)
+	id := moved(ctx, t, pool, repo, srv, name, host, 31)
+	t1 := time.Now().UTC().Truncate(time.Millisecond)
+	firstRead(ctx, t, pool, id, t1, srv)
+	admin := func(op string) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"op": op, "ui_user": "t206", "name": name, "engine": "sqlserver", "dsn_ref": "file:/nonexistent/k", "auth": "sql", "host": host})
+		var out string
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.import_admin_instance(now(), $1::jsonb)->>'outcome'`, string(b)).Scan(&out); err != nil || out != "done" {
+			t.Fatalf("instance %s: %s (%v)", op, out, err)
+		}
+	}
+	moves := func() (n int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.dbadash_moves WHERE instance_id = $1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// the remove of a read instance (kept, inactive) ends its move
+	admin("remove")
+	if moves() != 0 {
+		t.Fatal("the move survived the remove of its page row")
+	}
+	// a plain add under the name: no move, so no bound and no wait (rows after the old collect_from are taken)
+	admin("add")
+	if n, err := importRows(ctx, pool, "volumes", id, volRows(t1.Add(time.Hour))); err != nil || n != 1 {
+		t.Fatalf("an import after a plain add again: inserted %d (%v), want 1", n, err)
+	}
+	// moved again: a new move, its collect_from from its own next read
+	admin("remove")
+	if ans := moveCall(ctx, t, pool, moveAdd(repo, srv, name, host, 31)); ans["outcome"] != "done" {
+		t.Fatalf("the server moved again: %v", ans)
+	}
+	if at := collectFrom(ctx, t, pool, id); at != nil {
+		t.Fatalf("collect_from of the move made again = %v, want NULL until its read", *at)
+	}
+	t2 := time.Now().UTC().Add(time.Second).Truncate(time.Millisecond)
+	firstRead(ctx, t, pool, id, t2, srv)
+	if at := collectFrom(ctx, t, pool, id); at == nil || !at.Equal(t2) {
+		t.Fatalf("collect_from of the move made again after its read = %v, want %v", at, t2)
+	}
+	// another server moved under the removed name: a move of it, no key error
+	admin("remove")
+	if ans := moveCall(ctx, t, pool, moveAdd(repo, other, name, fmt.Sprintf("hostl-%d", sfx), 32)); ans["outcome"] != "done" {
+		t.Fatalf("another server moved under the removed name: %v", ans)
+	}
+	var server string
+	if err := pool.QueryRow(ctx, `SELECT server FROM pgvigil.dbadash_moves WHERE instance_id = $1`, id).Scan(&server); err != nil || server != other {
+		t.Fatalf("the move under the name: %q (%v), want %s", server, err, other)
+	}
+}
+
+func TestMoveRunMarker(t *testing.T) {
+	ctx, pool, sfx := moveStore(t)
+	repo, srv := fmt.Sprintf("r206h-%d", sfx), fmt.Sprintf("SRVM%d", sfx)
+	moveRepo(ctx, t, pool, repo, srv, 41)
+	name := fmt.Sprintf("mvm-%d", sfx)
+	id := moved(ctx, t, pool, repo, srv, name, fmt.Sprintf("hostm-%d", sfx), 41)
+	op := func(o string, extra map[string]any) map[string]any {
+		t.Helper()
+		pay := map[string]any{"op": o, "ui_user": "t206", "name": name}
+		for k, v := range extra {
+			pay[k] = v
+		}
+		return moveCall(ctx, t, pool, pay)
+	}
+	want := func(ans map[string]any, outcome, words string) {
+		t.Helper()
+		if ans["outcome"] != outcome || !strings.Contains(fmt.Sprint(ans["detail"]), words) {
+			t.Fatalf("%v, want %s '%s'", ans, outcome, words)
+		}
+	}
+	want(op("run", nil), "refused", "collect it first")
+	firstRead(ctx, t, pool, id, time.Now().UTC(), srv)
+	r1 := op("run", nil)
+	want(r1, "done", "run "+name)
+	if fmt.Sprint(r1["run_id"]) != "1" {
+		t.Fatalf("the first run's id: %v, want 1", r1["run_id"])
+	}
+	want(op("run", nil), "refused", "an import of "+name+" runs already: started by t206")
+	want(op("beat", map[string]any{"run_id": 0}), "refused", "was taken over: run 1 is the current one")
+	want(op("beat", map[string]any{"run_id": 1, "imported": map[string]any{"cpu": 5}}), "done", "beat "+name)
+	want(op("ended", map[string]any{"run_id": 1, "outcome": "ok", "imported": map[string]any{"cpu": 7}}), "done", "ended "+name)
+	var imported *time.Time
+	if err := pool.QueryRow(ctx, `SELECT imported_at FROM pgvigil.dbadash_moves WHERE instance_id = $1`, id).Scan(&imported); err != nil || imported == nil {
+		t.Fatalf("imported_at after a run ended ok: %v (%v)", imported, err)
+	}
+	want(op("run", nil), "done", "run "+name)
+	want(op("ended", map[string]any{"run_id": 1, "outcome": "failed"}), "refused", "run 1 of "+name+" was taken over: run 2 is the current one")
+	var audits int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_audit WHERE target = $1 AND op = 'dbadash move run'`, name).Scan(&audits); err != nil || audits != 4 {
+		t.Fatalf("audit rows of 'dbadash move run': %d (%v), want 4 (two refused, two done)", audits, err)
+	}
+}
+
+func TestMoveAddTwiceAtOnce(t *testing.T) {
+	ctx, pool, sfx := moveStore(t)
+	repo, srv := fmt.Sprintf("r206i-%d", sfx), fmt.Sprintf("SRVN%d", sfx)
+	moveRepo(ctx, t, pool, repo, srv, 51)
+	names := []string{fmt.Sprintf("mvn1-%d", sfx), fmt.Sprintf("mvn2-%d", sfx)}
+	for _, n := range names {
+		t.Cleanup(func() { dropInstance(pool, n) })
+	}
+	out := make([]string, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for k := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b, _ := json.Marshal(moveAdd(repo, srv, names[k], fmt.Sprintf("hostn%d-%d", k, sfx), 51))
+			errs[k] = pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_move(now(), $1::jsonb)->>'outcome'`, string(b)).Scan(&out[k])
+		}()
+	}
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("two adds of one server at once: %v / %v, want answers, not errors", errs[0], errs[1])
+	}
+	if !((out[0] == "done" && out[1] == "refused") || (out[0] == "refused" && out[1] == "done")) {
+		t.Fatalf("two adds of one server at once: %v, want one done and one refused", out)
 	}
 }

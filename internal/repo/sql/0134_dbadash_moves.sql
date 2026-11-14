@@ -27,12 +27,15 @@ CREATE TABLE IF NOT EXISTS pgvigil.dbadash_moves (
   auth          text NOT NULL,                 -- the sign-in it was added with (sql, windows, entra, entra-identity)
   added_at      timestamptz NOT NULL,
   added_by      text NOT NULL,
-  collect_from  timestamptz,                   -- the collector's first read after the add (dbadash_move_first_read)
+  collect_from  timestamptz,                   -- the collector's first read OF THIS SERVER after the add (dbadash_move_first_read)
+  cpu_read_at   timestamptz,                   -- the collector's first ok mssql_cpu / mssql_jobs read at or after collect_from
+  jobs_read_at  timestamptz,                   -- (dbadash_move_reads): the import of cpu / jobruns waits for it
   counted_at    timestamptz,                   -- the last dry run ('Count'): its counts per mapping and its bound
   counted_by    text,
   counts        jsonb,
-  run_by        text,                          -- the history import: who started the last run, when, its last
-  run_started   timestamptz,                   -- progress, how it ended and what it stored per mapping
+  run_id        bigint NOT NULL DEFAULT 0,     -- the history import: the run's number (beat and ended name it), who
+  run_by        text,                          -- started it, when, its last progress, how it ended and what it stored
+  run_started   timestamptz,                   -- per mapping
   run_beat      timestamptz,
   run_ended     timestamptz,
   run_outcome   text CHECK (run_outcome IN ('ok', 'partial', 'failed')),
@@ -52,33 +55,75 @@ CREATE TABLE IF NOT EXISTS pgvigil.dbadash_move_ids (
 CREATE INDEX IF NOT EXISTS dbadash_move_ids_instance ON pgvigil.dbadash_move_ids (instance_id);
 
 -- collect_from: the first mssql_instance write after the add (one row per instance, written only by the collector's
--- read of a server it reached; the import never writes it). An UPDATE fires it too: a server collected before, removed
--- and moved again keeps its mssql_instance row, and its next read is its first since the move.
+-- read of a server it reached; the import never writes it) that read THE MOVED SERVER (its @@SERVERNAME is DBA Dash's
+-- Instance: a host that reaches another server sets nothing, and the import says which server it reaches) and was
+-- read after the add (a read in flight across a remove and a quick move sets nothing). An UPDATE fires it too: a
+-- server collected before, removed and moved again keeps its mssql_instance row, and its next read is its first since
+-- the move.
 CREATE OR REPLACE FUNCTION pgvigil.dbadash_move_first_read() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   UPDATE pgvigil.dbadash_moves SET collect_from = NEW.snapshot_at
-   WHERE instance_id = NEW.instance_id AND collect_from IS NULL;
+   WHERE instance_id = NEW.instance_id AND collect_from IS NULL
+     AND upper(server) = upper(NEW.server_name) AND NEW.snapshot_at >= added_at;
   RETURN NULL;
 END $$;
 DROP TRIGGER IF EXISTS dbadash_move_first_read ON pgvigil.mssql_instance;
 CREATE TRIGGER dbadash_move_first_read AFTER INSERT OR UPDATE ON pgvigil.mssql_instance
   FOR EACH ROW EXECUTE FUNCTION pgvigil.dbadash_move_first_read();
 
--- dbadash_import_wait: why a moved server's mapping cannot be imported now, or NULL. cpu waits for an ok mssql_cpu read
--- and jobruns for an ok (or skipped: no Agent, nothing of the collector's to skip) mssql_jobs read at or after
--- collect_from (collection_dates keeps each collection's last attempt).
-CREATE OR REPLACE FUNCTION pgvigil.dbadash_import_wait(p_instance_id int, p_collect_from timestamptz, p_key text)
+-- cpu_read_at / jobs_read_at: the collector's first ok CPU and Agent job reads at or after collect_from, kept (a later
+-- failed read does not hold an import back again). 'skipped' is not ok: a job read is skipped when the login cannot
+-- read msdb, and its first read after the right is granted goes back days with the collector's own key, which would
+-- store a second copy of a run the import stored first.
+CREATE OR REPLACE FUNCTION pgvigil.dbadash_move_reads() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE pgvigil.dbadash_moves
+     SET cpu_read_at = CASE WHEN NEW.collection = 'mssql_cpu' THEN coalesce(cpu_read_at, NEW.snapshot_at) ELSE cpu_read_at END,
+         jobs_read_at = CASE WHEN NEW.collection = 'mssql_jobs' THEN coalesce(jobs_read_at, NEW.snapshot_at) ELSE jobs_read_at END
+   WHERE instance_id = NEW.instance_id AND collect_from IS NOT NULL AND NEW.snapshot_at >= collect_from
+     AND ((NEW.collection = 'mssql_cpu' AND cpu_read_at IS NULL) OR (NEW.collection = 'mssql_jobs' AND jobs_read_at IS NULL));
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS dbadash_move_reads ON pgvigil.collection_dates;
+CREATE TRIGGER dbadash_move_reads AFTER INSERT OR UPDATE ON pgvigil.collection_dates
+  FOR EACH ROW WHEN (NEW.status = 'ok' AND NEW.collection IN ('mssql_cpu', 'mssql_jobs'))
+  EXECUTE FUNCTION pgvigil.dbadash_move_reads();
+
+-- a move ends with its page row: a remove (a read instance stays, inactive, with its history) takes the move, so the
+-- name can be added or moved again from the start (a new move: collect_from from its own first read)
+CREATE OR REPLACE FUNCTION pgvigil.dbadash_move_end() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM pgvigil.dbadash_moves m USING pgvigil.instances i WHERE i.name = OLD.name AND m.instance_id = i.instance_id;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS dbadash_move_end ON pgvigil.admin_instances;
+CREATE TRIGGER dbadash_move_end AFTER DELETE ON pgvigil.admin_instances
+  FOR EACH ROW EXECUTE FUNCTION pgvigil.dbadash_move_end();
+
+-- dbadash_import_wait: why a moved server's mapping (or a run, p_key 'run') cannot be imported now, or NULL: before
+-- collect_from (saying which server pgvigil reaches at the address when it read another one), cpu before the
+-- collector's first ok CPU read since, jobruns before its first ok job read since (each with that collection's last
+-- word: a missing right says which).
+CREATE OR REPLACE FUNCTION pgvigil.dbadash_import_wait(p_instance_id int, p_key text)
 RETURNS text LANGUAGE sql STABLE AS $$
   SELECT CASE
-    WHEN p_collect_from IS NULL THEN
+    WHEN m.collect_from IS NULL AND r.server_name IS NOT NULL AND upper(r.server_name) <> upper(m.server) AND r.snapshot_at >= m.added_at THEN
+      format('pgvigil reaches %s at this address, not %s: correct the host on Admin > Instances (the import waits for a read of %s)',
+             r.server_name, m.server, m.server)
+    WHEN m.collect_from IS NULL THEN
       'collect it first: pgvigil has not read this server since it was moved (the import takes DBA Dash''s history up to pgvigil''s first read)'
-    WHEN p_key = 'cpu' AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d WHERE d.instance_id = p_instance_id
-                                         AND d.collection = 'mssql_cpu' AND d.status = 'ok' AND d.snapshot_at >= p_collect_from) THEN
+    WHEN p_key = 'cpu' AND m.cpu_read_at IS NULL THEN
       'the collector''s first CPU read since the move is not stored yet: the import waits for it, so no minute is stored twice'
-    WHEN p_key = 'jobruns' AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d WHERE d.instance_id = p_instance_id
-                                             AND d.collection = 'mssql_jobs' AND d.status IN ('ok', 'skipped') AND d.snapshot_at >= p_collect_from) THEN
+        || coalesce(format(' (its last read: %s%s)', c.status, coalesce(': ' || left(c.note, 300), '')), '')
+    WHEN p_key = 'jobruns' AND m.jobs_read_at IS NULL THEN
       'the collector''s first Agent job read since the move is not stored yet: the import waits for it, so no job outcome is stored twice'
+        || coalesce(format(' (its last read: %s%s)', j.status, coalesce(': ' || left(j.note, 300), '')), '')
   END
+    FROM pgvigil.dbadash_moves m
+    LEFT JOIN pgvigil.mssql_instance r ON r.instance_id = m.instance_id
+    LEFT JOIN pgvigil.collection_dates c ON c.instance_id = m.instance_id AND c.collection = 'mssql_cpu'
+    LEFT JOIN pgvigil.collection_dates j ON j.instance_id = m.instance_id AND j.collection = 'mssql_jobs'
+   WHERE m.instance_id = p_instance_id
 $$;
 
 -- dbadash_import_gate: the instance's import lock to the commit, then the bound of a moved server (rows at or after
@@ -91,11 +136,15 @@ DECLARE
   v_why text;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.dbadash_import'), p_instance_id);
+  -- the collector's own doors write SQL Server history under a SQL Server instance only (0074)
+  IF NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.instance_id = p_instance_id AND i.engine = 'sqlserver') THEN
+    RAISE EXCEPTION 'dbadash import: instance % is not a SQL Server instance of pgvigil', p_instance_id USING ERRCODE = '55000';
+  END IF;
   SELECT true, m.collect_from INTO v_moved, v_from FROM pgvigil.dbadash_moves m WHERE m.instance_id = p_instance_id;
   IF v_moved IS NULL THEN
     RETURN NULL;
   END IF;
-  v_why := pgvigil.dbadash_import_wait(p_instance_id, v_from, p_key);
+  v_why := pgvigil.dbadash_import_wait(p_instance_id, p_key);
   IF v_why IS NOT NULL THEN
     RAISE EXCEPTION 'dbadash import: %', v_why USING ERRCODE = '55000';
   END IF;
@@ -259,9 +308,16 @@ BEGIN
     JOIN pgvigil.dbadash_moves m ON m.instance_id = mi.instance_id
     JOIN pgvigil.instances i ON i.instance_id = m.instance_id
    WHERE mi.repository = p->>'repository' AND mi.dbadash_id = (p->>'dbadash_id')::int;
+  IF v_id IS NULL THEN
+    -- an InstanceID not in a move whose name is a moved instance's (the server re-added in DBA Dash after the move):
+    -- that move too, never the name path, which would change a moved instance
+    SELECT m.instance_id, i.name, m.collect_from INTO v_id, v_name, v_from
+      FROM pgvigil.instances i JOIN pgvigil.dbadash_moves m ON m.instance_id = i.instance_id
+     WHERE i.name = p->>'name';
+  END IF;
   IF v_id IS NOT NULL THEN
     FOREACH v_key IN ARRAY ARRAY['cpu', 'volumes', 'dbsize', 'jobruns'] LOOP
-      v_why := pgvigil.dbadash_import_wait(v_id, v_from, v_key);
+      v_why := pgvigil.dbadash_import_wait(v_id, v_key);
       IF v_why IS NOT NULL THEN
         v_wait := v_wait || jsonb_build_object(v_key, v_why);
       END IF;
@@ -308,8 +364,8 @@ BEGIN
 END $$;
 
 -- import_dbadash_move: the page's writes, each audited (refused ones too). p_payload: ui_user, client, op and:
---   add     repository, server (DBA Dash's Instance), dbadash_ids (array: every InstanceID of the server), connection_ids
---           (array: their ConnectionIDs, for 204's proposals), and import_admin_instance's add keys (name, platform,
+--   add     repository, server (DBA Dash's Instance), dbadash_ids (array: every InstanceID of the server; their
+--           ConnectionIDs, for 204's proposals, are read from dbadash_instances), and import_admin_instance's add keys (name, platform,
 --           dsn_ref, auth, host, port, dbname, login, options, tags, file_names). Refused, with no row written, when
 --           the server is moved already, pgvigil collects it already (an active instance read under that @@SERVERNAME),
 --           Admin > Instances holds its host and port, or a DBA Dash source of this repository has it approved; then
@@ -317,11 +373,12 @@ END $$;
 --           approved under the instance's name - one transaction.
 --   count   name, counts (the dry run's: {mapping: n, ..., "to": <bound>})
 --   run     name: the import's start, refused while another run of it is marked (its beat within 15 minutes) or
---           before the collector's first read
---   beat    name, imported (so far): the run goes on
---   ended   name, outcome (ok | partial | failed), imported, detail
+--           before the collector's first read; answers run_id
+--   beat    name, run_id, imported (so far): the run goes on (refused for a run taken over: another run_id)
+--   ended   name, run_id, outcome (ok | partial | failed), imported, detail
 --   tick    name, step, done (the checklist; the DBA's record)
--- Answers {outcome, detail, generation (add)}.
+-- One server's adds, and one move's ops, are one at a time (an advisory lock; the move row FOR UPDATE).
+-- Answers {outcome, detail, generation (add), run_id (run)}.
 CREATE OR REPLACE FUNCTION pgvigil.import_dbadash_move(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -346,16 +403,21 @@ BEGIN
   IF v_op IS NULL OR v_op NOT IN ('add', 'count', 'run', 'beat', 'ended', 'tick') THEN
     v_why := 'op must be add, count, run, beat, ended or tick';
   ELSIF v_op = 'add' THEN
-    IF jsonb_typeof(p_payload->'dbadash_ids') = 'array' THEN
-      SELECT array_agg(DISTINCT x::int) INTO v_ids FROM jsonb_array_elements_text(p_payload->'dbadash_ids') x WHERE x ~ '^[0-9]{1,10}$';
+    PERFORM pg_advisory_xact_lock(hashtext('pgvigil.dbadash_move:' || v_repo || ':' || upper(v_srv)));
+    IF jsonb_typeof(p_payload->'dbadash_ids') = 'array'
+       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(p_payload->'dbadash_ids') x
+                        WHERE CASE WHEN x ~ '^[0-9]{1,10}$' THEN x::bigint NOT BETWEEN 1 AND 2147483647 ELSE true END) THEN
+      SELECT array_agg(DISTINCT x::int) INTO v_ids FROM jsonb_array_elements_text(p_payload->'dbadash_ids') x;
     END IF;
-    IF jsonb_typeof(p_payload->'connection_ids') = 'array' THEN
-      SELECT array_agg(DISTINCT x) INTO v_conns FROM jsonb_array_elements_text(p_payload->'connection_ids') x;
-    END IF;
+    SELECT array_agg(DISTINCT d.connection_id) FILTER (WHERE d.connection_id IS NOT NULL) INTO v_conns
+      FROM pgvigil.dbadash_instances d WHERE d.repository = v_repo AND d.instance_id = ANY (coalesce(v_ids, '{}'));
     IF NOT EXISTS (SELECT 1 FROM pgvigil.dbadash_repositories r WHERE r.repository = v_repo AND r.is_configured) THEN
       v_why := format('no DBA Dash repository %s in this server''s configuration', v_repo);
     ELSIF v_srv = '' OR v_ids IS NULL THEN
-      v_why := 'a move names the server and its DBA Dash InstanceIDs';
+      v_why := 'a move names the server and its DBA Dash InstanceIDs (each 1 to 2147483647)';
+    ELSIF EXISTS (SELECT 1 FROM pgvigil.instances i JOIN pgvigil.dbadash_moves m ON m.instance_id = i.instance_id WHERE i.name = v_name) THEN
+      v_why := format('%s holds a move already (of %s)', v_name,
+                      (SELECT m.server FROM pgvigil.instances i JOIN pgvigil.dbadash_moves m ON m.instance_id = i.instance_id WHERE i.name = v_name));
     ELSIF EXISTS (SELECT 1 FROM unnest(v_ids) x WHERE NOT EXISTS (SELECT 1 FROM pgvigil.dbadash_instances d
                     WHERE d.repository = v_repo AND d.instance_id = x AND upper(d.instance) = upper(v_srv))) THEN
       v_why := format('an InstanceID given is not %s in repository %s', v_srv, v_repo);
@@ -398,16 +460,19 @@ BEGIN
       END IF;
     END IF;
   ELSE
-    SELECT m.* INTO v_m FROM pgvigil.dbadash_moves m JOIN pgvigil.instances i ON i.instance_id = m.instance_id WHERE i.name = v_name;
+    SELECT m.* INTO v_m FROM pgvigil.dbadash_moves m JOIN pgvigil.instances i ON i.instance_id = m.instance_id WHERE i.name = v_name
+       FOR UPDATE OF m;
     IF v_m.instance_id IS NULL THEN
       v_why := format('%s is not a server moved from DBA Dash', v_name);
     ELSIF v_op = 'run' AND v_m.collect_from IS NULL THEN
-      v_why := pgvigil.dbadash_import_wait(v_m.instance_id, NULL, 'run');
+      v_why := pgvigil.dbadash_import_wait(v_m.instance_id, 'run');
     ELSIF v_op = 'run' AND v_m.run_started IS NOT NULL AND v_m.run_ended IS NULL AND v_m.run_beat > p_at - interval '15 minutes' THEN
       v_why := format('an import of %s runs already: started by %s at %s', v_name, v_m.run_by,
                       to_char(v_m.run_started AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC');
     ELSIF v_op IN ('beat', 'ended') AND (v_m.run_started IS NULL OR v_m.run_ended IS NOT NULL) THEN
       v_why := format('no import of %s is running', v_name);
+    ELSIF v_op IN ('beat', 'ended') AND coalesce(p_payload->>'run_id', '') IS DISTINCT FROM v_m.run_id::text THEN
+      v_why := format('run %s of %s was taken over: run %s is the current one', coalesce(p_payload->>'run_id', '?'), v_name, v_m.run_id);
     ELSIF v_op = 'ended' AND coalesce(p_payload->>'outcome', '') NOT IN ('ok', 'partial', 'failed') THEN
       v_why := 'outcome is ok, partial or failed';
     ELSIF v_op = 'tick' AND coalesce(p_payload->>'step', '') !~ '^[a-z_]{1,40}$' THEN
@@ -443,7 +508,7 @@ BEGIN
   ELSIF v_op = 'count' THEN
     UPDATE pgvigil.dbadash_moves SET counted_at = p_at, counted_by = v_user, counts = p_payload->'counts' WHERE instance_id = v_m.instance_id;
   ELSIF v_op = 'run' THEN
-    UPDATE pgvigil.dbadash_moves SET run_by = v_user, run_started = p_at, run_beat = p_at, run_ended = NULL, run_outcome = NULL
+    UPDATE pgvigil.dbadash_moves SET run_id = run_id + 1, run_by = v_user, run_started = p_at, run_beat = p_at, run_ended = NULL, run_outcome = NULL
      WHERE instance_id = v_m.instance_id;
   ELSIF v_op = 'beat' THEN
     UPDATE pgvigil.dbadash_moves SET run_beat = p_at, imported = coalesce(p_payload->'imported', imported) WHERE instance_id = v_m.instance_id;
@@ -460,10 +525,11 @@ BEGIN
   END IF;
   PERFORM pgvigil.admin_log(v_user, v_cli, 'dbadash move ' || v_op, v_name, 'done',
     CASE v_op WHEN 'count' THEN 'counted: ' || (p_payload->'counts')::text
-              WHEN 'run' THEN 'history import started'
+              WHEN 'run' THEN format('history import run %s started', v_m.run_id + 1)
               WHEN 'ended' THEN format('history import %s: %s%s', p_payload->>'outcome', coalesce((p_payload->'imported')::text, '{}'),
                                        coalesce('; ' || nullif(p_payload->>'detail', ''), ''))
               WHEN 'tick' THEN format('%s %s', p_payload->>'step', CASE WHEN coalesce((p_payload->>'done')::boolean, true) THEN 'done' ELSE 'not done' END)
     END);
-  RETURN jsonb_build_object('outcome', 'done', 'detail', v_op || ' ' || v_name);
+  RETURN jsonb_build_object('outcome', 'done', 'detail', v_op || ' ' || v_name)
+         || CASE WHEN v_op = 'run' THEN jsonb_build_object('run_id', v_m.run_id + 1) ELSE '{}' END;
 END $$;
