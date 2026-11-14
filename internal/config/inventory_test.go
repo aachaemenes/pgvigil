@@ -466,6 +466,36 @@ func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
 	}
 }
 
+// serve's watcher on a failed first read: the file's list once, at generation -1 (serve says the page's list is
+// unread, never that an instance is in neither list); the recovery's read at its own generation
+func TestWatchInventoryRawFailedFirstReadIsUnread(t *testing.T) {
+	src := &fakeInv{gen: 4, fail: true, list: []PageInstance{{Name: "p", Engine: EnginePostgres, DSNRef: "file:/p"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gens := make(chan int64, 16)
+	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", 20*time.Millisecond, nil, true,
+		func(_ []Instance, _ []PageInstance, gen int64) { gens <- gen })
+	select {
+	case g := <-gens:
+		if g != -1 {
+			t.Fatalf("a failed first read applied generation %d (want -1)", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a failed first read applied nothing")
+	}
+	src.mu.Lock()
+	src.fail = false
+	src.mu.Unlock()
+	select {
+	case g := <-gens:
+		if g != 4 {
+			t.Fatalf("the recovery applied generation %d (want 4)", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the recovery applied nothing")
+	}
+}
+
 // serve's watcher: a wake reads at once (an hour's tick never comes), apply gets the raw rows - a disabled one too -
 // and the generation; with reapply the last rows are applied again on a tick although the generation did not move
 func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
