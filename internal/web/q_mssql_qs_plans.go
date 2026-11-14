@@ -330,3 +330,75 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 	name := fmt.Sprintf("plan-%s-%s-%s-%s.sqlplan", safeFileName(deref(inst)), safeFileName(deref(db)), tag, strings.ToLower(strings.TrimPrefix(ph, "0x")))
 	s.reply(w, r, map[string]any{"state": "ok", "words": "the plan kept for this running query", "plan": mssql.MaskPlanXML(*xml), "file": name}, nil)
 }
+
+// ---- the statistics a plan was compiled with; a forced plan's failures ----------------------------------------------
+//   GET /api/mssql/planstats?instance=N&source=qs&db=D&plan=P | &source=running&qh=..&ph=..&start=S&end=E
+//        the plan's statistics as it saw them at compile (mssql_plan_stat_status)          -> Server.MSSQLPlanStats
+//   GET /api/mssql/forcefail?instance=N   each forced plan's failures since its last reset, paged or held, and the
+//        reads that saw them                                                                 -> Server.MSSQLForceFail
+
+const sqlMSSQLPlanStats = `
+SELECT stmt, stat_database AS database, stat_schema AS schema, stat_table AS "table", stat_name AS statistic, modification_count,
+       table_rows, modified_pct, update_line, stale_at_compile, sampling_pct, last_update, compatibility_level, rows_read_at, captured_at
+  FROM pgvigil.mssql_plan_stat_status
+ WHERE instance_id = $1 AND source = $2 AND plan_key = $3
+ ORDER BY stale_at_compile DESC NULLS LAST, modification_count DESC NULLS LAST, stmt, stat_table, stat_name`
+
+// MSSQLPlanStats is GET /api/mssql/planstats.
+func (s *Server) MSSQLPlanStats(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	q := r.URL.Query()
+	var key string
+	switch q.Get("source") {
+	case "qs":
+		db, plan := q.Get("db"), q.Get("plan")
+		if db == "" || len(db) > 128 {
+			writeErr(w, http.StatusBadRequest, errors.New("db must be a database name"))
+			return
+		}
+		if _, err := strconv.ParseInt(plan, 10, 64); err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("plan must be a Query Store plan id"))
+			return
+		}
+		key = db + ":" + plan
+	case "running":
+		qh, ph := q.Get("qh"), q.Get("ph")
+		start, err1 := strconv.Atoi(q.Get("start"))
+		end, err2 := strconv.Atoi(q.Get("end"))
+		if !planHashForm.MatchString(qh) || !planHashForm.MatchString(ph) || err1 != nil || err2 != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("qh, ph, start and end must name a kept running plan"))
+			return
+		}
+		key = fmt.Sprintf("%s|%s|%d|%d", qh, ph, start, end)
+	default:
+		writeErr(w, http.StatusBadRequest, errors.New("source must be qs or running"))
+		return
+	}
+	s.multi(w, r, []part{{"stats", sqlMSSQLPlanStats, []any{id, q.Get("source"), key}}})
+}
+
+const sqlMSSQLForceFail = `
+SELECT f.database_name AS database, f.plan_id, p.query_id, f.failures, f.failure_reads, f.first_failure, f.last_failure,
+       f.two_in_one_read, f.two_in_24h, f.paged, p.is_forced, p.force_failure_count, p.force_failure_reason
+  FROM pgvigil.mssql_qs_force_fail_status f
+  LEFT JOIN pgvigil.mssql_qs_plan p ON p.instance_id = f.instance_id AND p.database_name = f.database_name AND p.plan_id = f.plan_id
+ WHERE f.instance_id = $1
+ ORDER BY f.paged DESC, f.last_failure DESC`
+
+const sqlMSSQLForceFailReads = `
+SELECT database_name AS database, plan_id, seen_at, count_before, count_after, rise, reset
+  FROM pgvigil.mssql_qs_force_fail WHERE instance_id = $1 ORDER BY seen_at DESC LIMIT 200`
+
+// MSSQLForceFail is GET /api/mssql/forcefail.
+func (s *Server) MSSQLForceFail(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.multi(w, r, []part{{"plans", sqlMSSQLForceFail, []any{id}}, {"reads", sqlMSSQLForceFailReads, []any{id}}})
+}

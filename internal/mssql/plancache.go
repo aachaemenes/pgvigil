@@ -3,10 +3,12 @@ package mssql
 import (
 	"context"
 	"database/sql"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -953,6 +955,8 @@ func (runningPlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info)
 				// kind_of 'plan': the policy empties statement unless it is full
 				row["kind_of"], row["statement"], row["plan_bytes"], row["plan_state"] = "plan", MaskPlanXML(xml.String), size.Int64, "read"
 				runningPlanSent.mark(key, now)
+				out = append(out, statsRows(xml.String, collect.Row{"query_hash_hex": q.qhash, "plan_hash_hex": q.phash, "stmt_start": q.start,
+					"stmt_end": q.end, "database_name": q.dbname})...)
 			default:
 				row["plan_state"] = "no plan"
 			}
@@ -1026,4 +1030,86 @@ func MaskPlanXML(x string) string {
 	s := collect.MaskJobText(strings.ReplaceAll(x, "&apos;", "'"))
 	s = strings.ReplaceAll(s, "<masked>", "&lt;masked&gt;")
 	return strings.ReplaceAll(s, "'", "&apos;")
+}
+
+// ---- the statistics a plan was compiled with (task 406, PerformanceMonitor 3.13's Added 1) -------------------------
+
+// StatUsed is one StatisticsInfo of a showplan's OptimizerStatsUsage: a statistic the optimizer loaded to compile the
+// statement, as it saw it then (SQL Server 2017 and 2016 SP2 write the element; an older plan has none).
+type StatUsed struct {
+	Stmt        int    // the statement's place in the plan, from 1
+	Database    string // as the plan writes it, brackets taken off
+	Schema      string
+	Table       string
+	Statistics  string
+	ModCount    int64   // ModificationCount: rows changed since the statistic's last update, at compile
+	SamplingPct float64 // SamplingPercent
+	LastUpdate  string  // LastUpdate as written (the server's clock, no zone)
+}
+
+func unbracket(s string) string {
+	if len(s) >= 2 && s[0] == '[' && s[len(s)-1] == ']' {
+		return strings.ReplaceAll(s[1:len(s)-1], "]]", "]")
+	}
+	return s
+}
+
+// PlanStatsUsed reads every StatisticsInfo of a showplan (encoding/xml, nothing evaluated); a document that does not
+// parse gives what was read before the fault.
+func PlanStatsUsed(plan string) []StatUsed {
+	var out []StatUsed
+	if !strings.Contains(plan, "StatisticsInfo") {
+		return nil
+	}
+	dec := xml.NewDecoder(strings.NewReader(plan))
+	stmt := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return out
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		switch se.Name.Local {
+		case "StmtSimple", "StmtCond", "StmtCursor", "StmtReceive", "StmtUseDb":
+			stmt++
+		case "StatisticsInfo":
+			s := StatUsed{Stmt: max(stmt, 1)}
+			for _, a := range se.Attr {
+				switch a.Name.Local {
+				case "Database":
+					s.Database = unbracket(a.Value)
+				case "Schema":
+					s.Schema = unbracket(a.Value)
+				case "Table":
+					s.Table = unbracket(a.Value)
+				case "Statistics":
+					s.Statistics = unbracket(a.Value)
+				case "ModificationCount":
+					s.ModCount, _ = strconv.ParseInt(a.Value, 10, 64)
+				case "SamplingPercent":
+					s.SamplingPct, _ = strconv.ParseFloat(a.Value, 64)
+				case "LastUpdate":
+					s.LastUpdate = a.Value
+				}
+			}
+			out = append(out, s)
+		}
+	}
+}
+
+// statsRows turns a plan's statistics into collect rows of kind 'plan_stats' carrying the plan's key fields.
+func statsRows(plan string, key collect.Row) []collect.Row {
+	var out []collect.Row
+	for _, s := range PlanStatsUsed(plan) {
+		r := collect.Row{"kind": "plan_stats", "stmt": s.Stmt, "stat_database": s.Database, "stat_schema": s.Schema, "stat_table": s.Table,
+			"stat_name": s.Statistics, "modification_count": s.ModCount, "sampling_pct": s.SamplingPct, "last_update": s.LastUpdate}
+		for k, v := range key {
+			r[k] = v
+		}
+		out = append(out, r)
+	}
+	return out
 }

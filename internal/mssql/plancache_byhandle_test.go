@@ -167,3 +167,29 @@ func TestMaskPlanXML(t *testing.T) {
 		t.Errorf("empty: %q", got)
 	}
 }
+
+func TestPlanStatsUsed(t *testing.T) {
+	plan := `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>` +
+		`<StmtSimple StatementText="a"><QueryPlan><OptimizerStatsUsage>` +
+		`<StatisticsInfo Database="[pgvqs]" Schema="[dbo]" Table="[t]" Statistics="[ix_a]" ModificationCount="1500" SamplingPercent="100" LastUpdate="2026-11-14T21:00:00.12"/>` +
+		`<StatisticsInfo Database="[pgvqs]" Schema="[dbo]" Table="[we]]ird]" Statistics="[_WA_Sys_00000002_1]" ModificationCount="0" SamplingPercent="31.5" LastUpdate="2026-11-14T21:01:00"/>` +
+		`</OptimizerStatsUsage></QueryPlan></StmtSimple>` +
+		`<StmtSimple StatementText="b"><QueryPlan><OptimizerStatsUsage><StatisticsInfo Database="[pgvqs]" Schema="[dbo]" Table="[u]" Statistics="[pk]" ModificationCount="7" SamplingPercent="100" LastUpdate="x"/></OptimizerStatsUsage></QueryPlan></StmtSimple>` +
+		`</Statements></Batch></BatchSequence></ShowPlanXML>`
+	got := PlanStatsUsed(plan)
+	if len(got) != 3 {
+		t.Fatalf("%d statistics, want 3: %+v", len(got), got)
+	}
+	if g := got[0]; g.Stmt != 1 || g.Database != "pgvqs" || g.Schema != "dbo" || g.Table != "t" || g.Statistics != "ix_a" || g.ModCount != 1500 || g.SamplingPct != 100 || g.LastUpdate != "2026-11-14T21:00:00.12" {
+		t.Errorf("first: %+v", g)
+	}
+	if g := got[1]; g.Table != "we]ird" || g.SamplingPct != 31.5 {
+		t.Errorf("second (a bracket in the name, a sampled one): %+v", g)
+	}
+	if g := got[2]; g.Stmt != 2 || g.Table != "u" {
+		t.Errorf("third (the second statement): %+v", g)
+	}
+	if PlanStatsUsed(`<ShowPlanXML><BatchSequence/></ShowPlanXML>`) != nil || PlanStatsUsed("not xml StatisticsInfo <") != nil {
+		t.Error("a plan without the element, or no XML, gives none")
+	}
+}

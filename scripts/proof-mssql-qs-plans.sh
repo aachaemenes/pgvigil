@@ -58,13 +58,33 @@
 #        through POST /api/admin/instances) each store the 80 s blocked statement's plan and have an ok
 #        mssql_running_plans run; rpoff has no mssql_running_plans run at all and no row.
 #     Red on f8e89d2: no such collection (collect -once refuses mssql_running_plans).
+#  D. the statistics a plan was compiled with (PerformanceMonitor 3.13 Added 1, F10, P5), database pgvqs2 with Query Store
+#     on: four tables of 20,000 rows, each with a statistic on v made WITH FULLSCAN, 30 % of rows changed, then one query
+#     each read through mssql_querystore (and mssql_indexes for the rows):
+#     D0 AUTO_UPDATE_STATISTICS on, synchronous: the statistic is updated before the compile: stale_at_compile false;
+#     D1 AUTO_UPDATE_STATISTICS off: stale true; D2 on with ASYNC: stale true (the compile uses the old statistic);
+#     D3 on, the statistic made WITH NORECOMPUTE: stale true;
+#     each row's modification_count equals the plan's own StatisticsInfo read by hand from sys.query_store_plan, table
+#     rows 20,000, the auto-update line min(4,500, sqrt(1000 x 20,000)) = 4,472; the finding 'a plan compiled on stale
+#     statistics' names D1-D3's plans and not D0's; GET /api/mssql/planstats answers D1's rows.
+#     On a server whose plans carry no OptimizerStatsUsage (before 2017 / 2016 SP2) D is NOT PROVEN, said so.
+#     Red on f8e89d2: no mssql_plan_stat table.
+#  E. a forced plan's failures (PerformanceMonitor 3.13 Changed 15, F9, P6), in pgvqs2: a query (OPTION (RECOMPILE)) whose
+#     plan seeks ix_f is forced, ix_f dropped, then each run is one failure; mssql_querystore read after each step:
+#     E1 one failure in one read: the finding 'a forced plan fails' is info, its detail 'Held: it failed once';
+#     E2 two more failures in the next read (one read saw 2): warning, 'one read saw 2 or more';
+#     E3 the plan forced anew (count back to 0): a reset row; one failure after it: info again (a new window);
+#     E4 one more failure in the next read: warning, 'two within 24 hours';
+#     E5 the window's first failure moved 25 h back in the repository: info again (it starts over after 24 h);
+#     GET /api/mssql/forcefail lists the plan with its reads.
+#     Red on f8e89d2: no mssql_qs_force_fail table; 'a forced plan fails' is a warning at E1.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
 ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
 IMG_SQL=${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 EXTRACT=${PGVIGIL_PLAN_EXTRACT:-.lab/extract.py}
-PARTS=${PGVIGIL_PARTS:-ABC}
+PARTS=${PGVIGIL_PARTS:-ABCDE}
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 SQL=pgvqs-sql-$SUF; LBL=pgvigil-proof=406
 PGDB=pgv_qs_$SUF; MON=pgv_qmon_$SUF; USR=proofdba$SUF
@@ -317,11 +337,15 @@ stopbg() { for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || true; done; BG=(
 req() { sq "SELECT TOP (1) CONVERT(varchar(40), r.query_hash, 1) + '|' + CONVERT(varchar(40), r.query_plan_hash, 1) + '|' + CAST(r.statement_start_offset AS varchar(10)) + '|' + CAST(r.statement_end_offset AS varchar(10))
   + '|' + CAST(r.cpu_time AS varchar(20)) + '|' + CAST(r.granted_query_memory AS varchar(20)) + '|' + CAST(DATEDIFF_BIG(millisecond, r.start_time, GETDATE()) AS varchar(20))
   FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE t.text LIKE '%$1%' AND t.text NOT LIKE '%dm_exec_requests%' ORDER BY r.cpu_time DESC"; }
-waitreq() { local v=; for _ in $(seq 1 60); do v=$(req "$1" 2>/dev/null || true); [[ -n "$v" ]] && { echo "$v"; return 0; }; sleep 0.5; done; fail "C: no running request $1"; }
+waitreq() { local v=; for _ in $(seq 1 60); do v=$(req "$1" 2>/dev/null || true); [[ -n "$v" ]] && { echo "$v"; return 0; }; sleep 0.5; done
+  sq "SELECT s.host_name + '|' + s.status + '|' + ISNULL(r.status, '-') + '|' + ISNULL(r.wait_type, '-') + '|' + CAST(ISNULL(r.blocking_session_id, 0) AS varchar(10)) + '|' + ISNULL(LEFT(t.text, 120), '-')
+    FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE s.host_name LIKE 'pgvqs-%'" >&2 || true
+  req "$1" >&2 || true
+  fail "C: no running request $1"; }
 VICTIM="SELECT COUNT(*) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.id ="
 # held <tag>: until the blocker of that tag sits in its WAITFOR (its lock is taken)
 held() { local n=; for _ in $(seq 1 60); do n=$(sq "SELECT COUNT(*) FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.host_name = 'pgvqs-$1' AND r.wait_type = 'WAITFOR'" 2>/dev/null || echo 0); [[ "$n" == 1 ]] && return 0; sleep 0.5; done; fail "C: the blocker $1 never held its lock"; }
-hold() { bg "hold$1" "$2" "BEGIN TRAN; UPDATE dbo.t SET a = a + 0 WHERE id = $1; WAITFOR DELAY '00:03:00'; ROLLBACK;"; held "hold$1"; }
+hold() { bg "hold$1" "$2" "BEGIN TRAN; UPDATE dbo.t SET a = a + 1 WHERE id = $1; WAITFOR DELAY '00:03:00'; ROLLBACK;"; held "hold$1"; }
 : >"$TMPD/cases.txt"
 # C1 duration: blocked 12 s (and C3: rpnone reads the same moment)
 hold 5 100; bg dur 100 "$VICTIM 5 /* pgvc-dur */"; waitreq pgvc-dur >/dev/null; sleep 12
@@ -335,7 +359,7 @@ waitreq pgvc-cpu >/dev/null; sleep 3; echo "cpu|$(req pgvc-cpu)" >>"$TMPD/cases.
 hold 6 100; bg cnt1 100 "$VICTIM 6 /* pgvc-cnt */"; bg cnt2 100 "$VICTIM 6 /* pgvc-cnt */"; waitreq pgvc-cnt >/dev/null; sleep 3
 echo "count|$(req pgvc-cnt)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 # C1 grant: a sort over dbo.big holding its grant while it waits on a locked row
-bg holdbig 100 "BEGIN TRAN; UPDATE dbo.big SET pad = pad WHERE id = 300000; WAITFOR DELAY '00:03:00'; ROLLBACK;"; held holdbig
+bg holdbig 100 "BEGIN TRAN; UPDATE dbo.big SET pad = REVERSE(pad) WHERE id = 300000; WAITFOR DELAY '00:03:00'; ROLLBACK;"; held holdbig
 bg grant 100 "SELECT TOP (550000) id, pad FROM dbo.big WHERE id > 0 ORDER BY pad DESC OPTION (MAXDOP 1) /* pgvc-grant */"; waitreq pgvc-grant >/dev/null; sleep 3
 echo "grant|$(req pgvc-grant)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 # C2 below every threshold: one session blocked 2 s
@@ -440,6 +464,112 @@ done
 OFFRUN=$(pq "SELECT count(*) FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpoff' AND c.collection = 'mssql_running_plans'")
 [[ "$OFFRUN" == 0 ]] || fail "C6: rpoff has an mssql_running_plans run"
 echo "ok   C6: under pgvigil run rpon and rppage (added on the page) read the running plan; rpoff ran no mssql_running_plans"
+fi
+
+if part D || part E; then
+  sqok "D: pgvqs2 with Query Store" "CREATE DATABASE pgvqs2; ALTER DATABASE pgvqs2 SET RECOVERY SIMPLE;
+    ALTER DATABASE pgvqs2 SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60);"
+fi
+
+if part D; then
+echo "== D. the statistics a plan was compiled with =="
+for c in d0 d1 d2 d3; do
+  NR=; [[ $c == d3 ]] && NR=", NORECOMPUTE"
+  sqok "D: table $c" "CREATE TABLE dbo.$c (id int NOT NULL PRIMARY KEY, v int NOT NULL);
+    INSERT dbo.$c (id, v) SELECT TOP (20000) n, n FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS n FROM sys.all_objects x CROSS JOIN sys.all_objects y) z;
+    CREATE STATISTICS st_v ON dbo.$c (v) WITH FULLSCAN$NR;" pgvqs2
+done
+# each case under its own database setting, the change and the compile in that setting
+dcase() { local c=$1 opt=$2
+  sqok "D: $c setting" "$opt" pgvqs2
+  sqok "D: $c change" "UPDATE dbo.$c SET v = v + 1 WHERE id % 10 < 3;" pgvqs2
+  sqok "D: $c query" "SELECT COUNT(*) FROM dbo.$c WHERE v BETWEEN 100 AND 200 /* pgvd-$c */;" pgvqs2
+  sleep 1; }
+dcase d0 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS ON; ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS_ASYNC OFF;"
+dcase d1 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS OFF;"
+dcase d2 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS ON; ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS_ASYNC ON;"
+dcase d3 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS ON; ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS_ASYNC OFF;"
+sqok "D: the store flushed" "EXEC sys.sp_query_store_flush_db;" pgvqs2
+sqbig "SELECT 'PLAN|' + qt.query_sql_text + '|' + CAST(p.plan_id AS varchar(20)) + '|' + CAST(p.query_plan AS nvarchar(max))
+  FROM sys.query_store_plan p JOIN sys.query_store_query q ON q.query_id = p.query_id JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
+ WHERE qt.query_sql_text LIKE '%pgvd-d%' AND qt.query_sql_text NOT LIKE '%query_store%'" 2>&1 | sed 's/^/X/' > "$TMPD/d-hand.out" || true
+sed -i 's/^X//' "$TMPD/d-hand.out"
+col sqlfull mssql_indexes mssql_querystore; col sqlfull mssql_querystore
+python3 - "$TMPD" "$PGDSN" "$U" <<'PYEND' || fail "D: see above"
+import json, re, subprocess, sys, urllib.parse
+d, dsn, u = sys.argv[1:]
+def q(s): return [l.split('|') for l in subprocess.run(['psql', dsn, '-XAtq', '-c', s], check=True, capture_output=True, text=True).stdout.splitlines() if l]
+bad = []
+raw = open(f"{d}/d-hand.out", errors='replace').read()
+hand = {}
+for m in re.finditer(r"PLAN\|.*?pgvd-(d\d).*?\|(\d+)\|(<ShowPlanXML.*?</ShowPlanXML>)", raw, re.S):
+    c, plan_id, x = m.group(1), m.group(2), m.group(3)
+    st = re.search(r'<StatisticsInfo[^>]*Table="\[' + c + r'\]"[^>]*Statistics="\[st_v\]"[^>]*>', x) or re.search(r'<StatisticsInfo[^>]*Statistics="\[st_v\]"[^>]*Table="\[' + c + r'\]"[^>]*>', x)
+    mc = re.search(r'ModificationCount="(\d+)"', st.group(0)).group(1) if st else None
+    hand[c] = (plan_id, mc)
+if not hand:
+    print("NOT PROVEN D: no plan of the four queries read by hand from sys.query_store_plan: " + raw[:300].replace('\n', ' ')); sys.exit(0)
+if all(v[1] is None for v in hand.values()):
+    print(f"NOT PROVEN D: the plans carry no OptimizerStatsUsage on this server ({hand})"); sys.exit(0)
+iid = q("SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlfull'")[0][0]
+want = {'d0': 'f', 'd1': 't', 'd2': 't', 'd3': 't'}
+for c, stale in want.items():
+    if c not in hand: bad.append(f"D {c}: no plan read by hand"); continue
+    plan_id, mc = hand[c]
+    rows = q(f"SELECT modification_count, table_rows, update_line, coalesce(stale_at_compile::text, ''), modified_pct FROM pgvigil.mssql_plan_stat_status WHERE instance_id = {iid} AND source = 'qs' AND database_name = 'pgvqs2' AND plan_id = {plan_id} AND stat_table = '{c}' AND stat_name = 'st_v'")
+    if not rows: bad.append(f"D {c}: no stored statistic for plan {plan_id}"); continue
+    r = rows[0]
+    if r[0] != mc: bad.append(f"D {c}: modification_count {r[0]} != the plan's {mc}")
+    if r[1] != '20000' or r[2] != '4472': bad.append(f"D {c}: table rows {r[1]} / line {r[2]} (want 20000 / 4472)")
+    if r[3] != stale[0]: bad.append(f"D {c}: stale_at_compile {r[3]} (want {stale}; modification count {r[0]})")
+    f = q(f"SELECT count(*) FROM pgvigil.mssql_querystore_findings WHERE instance_id = {iid} AND check_name = 'a plan compiled on stale statistics' AND object LIKE 'pgvqs2: query %, plan {plan_id}'")
+    if (f[0][0] == '1') != (stale == 't'): bad.append(f"D {c}: the finding count {f[0][0]} (stale {stale})")
+    print(f"D {c}: plan {plan_id} rows changed {r[0]} of {r[1]} ({r[4]} %), line {r[2]}, stale {r[3]}")
+p1 = hand.get('d1', (None,))[0]
+out = f"{d}/d.json"
+code = subprocess.run(['curl', '-s', '-o', out, '-w', '%{http_code}', '-b', f"{d}/cj", '-H', 'X-Pgvigil: 1', f"{u}/api/mssql/planstats?" + urllib.parse.urlencode({'instance': iid, 'source': 'qs', 'db': 'pgvqs2', 'plan': p1})], capture_output=True, text=True).stdout
+b = json.load(open(out)) if code == '200' else {}
+rows = [dict(zip(b['stats']['columns'], r)) for r in b.get('stats', {}).get('rows', [])] if b else []
+if not any(x['statistic'] == 'st_v' and x['stale_at_compile'] is True for x in rows): bad.append(f"D the API for d1: HTTP {code} {str(b)[:300]}")
+for x in bad: print('DIFF', x)
+sys.exit(1 if bad else 0)
+PYEND
+echo "ok   D: the statistics stored per plan equal the plans' own; stale at compile under AUTO_UPDATE off, ASYNC and NORECOMPUTE, not under synchronous updates; the finding and the API"
+fi
+
+if part E; then
+echo "== E. a forced plan's failures =="
+sqok "E: dbo.f" "CREATE TABLE dbo.f (id int NOT NULL PRIMARY KEY, k int NOT NULL, pad char(200) NOT NULL DEFAULT 'f');
+  INSERT dbo.f (id, k) SELECT TOP (20000) n, n FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS n FROM sys.all_objects x CROSS JOIN sys.all_objects y) z;
+  CREATE INDEX ix_f ON dbo.f (k) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE);" pgvqs2
+QF="SELECT id FROM dbo.f WITH (INDEX (ix_f)) WHERE k = 5 OPTION (RECOMPILE) /* pgve-forced */;"
+sqok "E: the query" "$QF $QF $QF" pgvqs2
+sqok "E: flushed" "EXEC sys.sp_query_store_flush_db;" pgvqs2
+QP=$(sq "SELECT TOP (1) CAST(q.query_id AS varchar(20)) + '|' + CAST(p.plan_id AS varchar(20)) FROM sys.query_store_query q JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
+  JOIN sys.query_store_plan p ON p.query_id = q.query_id WHERE qt.query_sql_text LIKE '%pgve-forced%' AND qt.query_sql_text NOT LIKE '%query_store%' ORDER BY p.plan_id" pgvqs2)
+QID=${QP%%|*}; PID=${QP##*|}; [[ -n "$QID" && -n "$PID" ]] || fail "E: the query's ids ($QP)"
+sqok "E: forced" "EXEC sys.sp_query_store_force_plan @query_id = $QID, @plan_id = $PID;" pgvqs2
+sqok "E: ix_f dropped" "DROP INDEX ix_f ON dbo.f;" pgvqs2
+sleep 11   # the forced plan's last run is now more than 10 s before the query's next one
+fail_runs() { local i; for i in $(seq 1 "$1"); do sq "SELECT id FROM dbo.f WHERE k = 5 OPTION (RECOMPILE) /* pgve-forced */;" pgvqs2 >/dev/null 2>&1 || true; done; sq "EXEC sys.sp_query_store_flush_db;" pgvqs2 >/dev/null; }
+fcount() { sq "SELECT CAST(force_failure_count AS varchar(20)) FROM sys.query_store_plan WHERE plan_id = $PID" pgvqs2; }
+judge() { pq "SELECT severity || '|' || detail FROM pgvigil.mssql_querystore_findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'sqlfull' AND f.check_name = 'a forced plan fails' AND f.object = 'pgvqs2: query $QID, plan $PID'"; }
+expect() { local got; got=$(judge); [[ "${got%%|*}" == "$2" && "$got" == *"$3"* ]] || fail "$1: want $2 with '$3', got '$got' (server count $(fcount))"; echo "ok   $1: $2 ($(fcount) failure(s) on the server)"; }
+fail_runs 1; [[ "$(fcount)" == 1 ]] || echo "E1: the server's count after one run: $(fcount)"
+col sqlfull mssql_querystore; expect E1 info "Held: it failed once"
+fail_runs 2; col sqlfull mssql_querystore; expect E2 warning "one read saw 2 or more"
+sqok "E3: forced anew" "EXEC sys.sp_query_store_unforce_plan @query_id = $QID, @plan_id = $PID; EXEC sys.sp_query_store_force_plan @query_id = $QID, @plan_id = $PID;" pgvqs2
+col sqlfull mssql_querystore
+[[ "$(pq "SELECT count(*) FROM pgvigil.mssql_qs_force_fail WHERE database_name = 'pgvqs2' AND plan_id = $PID AND reset")" -ge 1 ]] || fail "E3: no reset row after forcing anew (server count $(fcount))"
+sleep 11; fail_runs 1; col sqlfull mssql_querystore; expect E3 info "Held: it failed once"
+fail_runs 1; col sqlfull mssql_querystore; expect E4 warning "two within 24 hours"
+pq "UPDATE pgvigil.mssql_qs_force_fail f SET seen_at = seen_at - interval '25 hours'
+     WHERE f.database_name = 'pgvqs2' AND f.plan_id = $PID AND f.rise > 0
+       AND f.seen_at = (SELECT min(x.seen_at) FROM pgvigil.mssql_qs_force_fail x WHERE x.database_name = 'pgvqs2' AND x.plan_id = $PID AND x.rise > 0
+                         AND x.seen_at >= (SELECT max(y.seen_at) FROM pgvigil.mssql_qs_force_fail y WHERE y.database_name = 'pgvqs2' AND y.plan_id = $PID AND y.reset))" >/dev/null
+expect E5 info "Held: it failed once"
+CODE=$(api "mssql/forcefail?instance=$IF" "$TMPD/e.json"); [[ "$CODE" == 200 ]] && grep -q "\"$PID\"\|,$PID," "$TMPD/e.json" || fail "E: GET /api/mssql/forcefail: HTTP $CODE $(head -c 300 "$TMPD/e.json")"
+echo "ok   E: held at one failure, paged at two in one read and at two within 24 h, a new window after forcing anew, held again past 24 h; the API lists it"
 fi
 
 echo "PASS: proof-mssql-qs-plans parts $PARTS on SQL Server $VER"

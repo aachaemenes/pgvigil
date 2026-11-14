@@ -543,6 +543,8 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 			// statement's text and the compiled parameter values)
 			px, _ := x["plan_xml"].(string)
 			out = append(out, collect.Row{"kind": "plan_xml", "kind_of": "plan", "database_name": name, "plan_id": x["plan_id"], "statement": MaskPlanXML(px)})
+			// the statistics the plan was compiled with (names and counts, no text: kept under every policy)
+			out = append(out, statsRows(px, collect.Row{"database_name": name, "plan_id": x["plan_id"]})...)
 		}
 	}
 	if qsHasWaits(info) {

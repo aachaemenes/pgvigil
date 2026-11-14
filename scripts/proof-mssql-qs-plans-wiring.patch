@@ -15,10 +15,10 @@ index a04766f..445e14f 100644
  	return all, skipped
  }
 diff --git i/internal/web/web.go w/internal/web/web.go
-index 5def140..8025d93 100644
+index 5def140..b6f91c3 100644
 --- i/internal/web/web.go
 +++ w/internal/web/web.go
-@@ -335,6 +335,10 @@ func (s *Server) Handler() http.Handler {
+@@ -335,6 +335,12 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
  	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
  	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
@@ -26,6 +26,8 @@ index 5def140..8025d93 100644
 +	api.HandleFunc("GET /api/mssql/plancache/plan", s.MSSQLPlanCachePlan)
 +	api.HandleFunc("GET /api/mssql/runningplans", s.MSSQLRunningPlans)
 +	api.HandleFunc("GET /api/mssql/runningplans/plan", s.MSSQLRunningPlan)
++	api.HandleFunc("GET /api/mssql/planstats", s.MSSQLPlanStats)
++	api.HandleFunc("GET /api/mssql/forcefail", s.MSSQLForceFail)
  	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
  	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
  	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)

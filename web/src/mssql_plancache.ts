@@ -7,7 +7,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { openText } from './filedrop';
 import { lineChart } from './chart';
 import { queryHistory } from './mssql_queries';
-import { compareSection } from './mssql_querystore';
+import { compareSection, planStatsPanel } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
@@ -262,6 +262,7 @@ const RUNNING_ON_WORDS = 'Off for this instance: the collections mssql_running_p
 function runningPlansSection(ctx: Ctx): HTMLElement {
   const box = el('div', { class: 'pc-running' }, el('h3', {}, 'Plans of running queries'), el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const statsBox = el('div', { class: 'pc-stats' });
   const fetchPlan = async (b: HTMLElement, q: Record<string, string | number | undefined>, open: boolean) => {
     status.textContent = 'Reading the kept plan ...';
     try {
@@ -308,8 +309,11 @@ function runningPlansSection(ctx: Ctx): HTMLElement {
         { key: 'live', label: 'live plan', fmt: (_, r) => r.live_newest != null
           ? btn(`Open live (${fmtNum(r.live_captures)})`, `Open the newest live plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, { ...key(r), live: Number(r.live_newest) }, true); })
           : el('span', { class: 'meta' }, Number(r.live_captures) > 0 ? 'not kept: query_text is not "full"' : 'none') },
+        { key: 'stats_used', label: 'statistics', fmt: (_, r) => r.has_plan
+          ? btn('Statistics used', `Statistics used by the plan of ${String(r.query_hash)}`, () => { statsBox.replaceChildren(planStatsPanel(ctx, { source: 'running', ...key(r) }, `the plan of ${String(r.query_hash)}`)); })
+          : '' },
         { key: 'query_hash', label: 'query hash' }, { key: 'plan_hash', label: 'plan hash' },
-      ], 'No running query met the thresholds in this range.'), status);
+      ], 'No running query met the thresholds in this range.'), status, statsBox);
     }
     box.replaceChildren(...kids);
   })();

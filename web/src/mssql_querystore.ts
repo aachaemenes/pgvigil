@@ -145,7 +145,12 @@ async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPane
       { key: 'initial_compile', label: 'first compiled', fmt: fmtTime }, { key: 'last_compile', label: 'last compiled', fmt: fmtTime },
       { key: 'plan_hash', label: 'plan hash' },
       { key: 'xml_state', label: 'plan XML', fmt: (v, r) => planFile(ctx, row.database_name, r.plan_id, v, r.xml_note, r.in_store) },
+      // PerformanceMonitor 3.13's Statistics Used (task 406): the statistics the plan was compiled with
+      { key: 'stats_used', label: 'statistics', fmt: (_, r) => openButton('Statistics used', `of plan ${text(r.plan_id)}`, () => {
+        statsBox.replaceChildren(planStatsPanel(ctx, { source: 'qs', db: text(row.database_name), plan: text(r.plan_id) }, `plan ${text(r.plan_id)}`));
+      }) },
     ];
+    const statsBox = el('div', { class: 'qs-stats' });
     const pd = pivot(series, 'plan_id', 'avg_duration_ms'), pc = pivot(series, 'plan_id', 'avg_cpu_ms');
     const charts = el('div', { class: 'charts' },
       lineChart('Average duration per interval, by plan', pd.rows, pd.keys.map(k => ({ key: k, label: k })), v => fmtNum(v) + ' ms'),
@@ -162,6 +167,7 @@ async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPane
       el('pre', { class: 'sql', tabindex: '0' }, text(q?.query) || '(no statement text is stored: the query_text policy of this instance is "none", or the query left the store)'),
       el('h4', {}, 'Plans'),
       grid(plans, cols, 'No stored row of this query in this range.'),
+      statsBox,
       charts,
       numbersOf(series, [
         { key: 'snapshot_at', label: 'interval from', fmt: fmtTime }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
@@ -519,7 +525,58 @@ function forcedView(ctx: Ctx, d: QS): HTMLElement[] {
       + 'A force failure means SQL Server could not use the forced plan and ran the query with another: the reason names why (an index dropped, a hint that no longer fits). '
       + 'pgvigil forces and unforces nothing: sys.sp_query_store_force_plan and sp_query_store_unforce_plan are the DBA\'s.'),
     grid(rows, cols, 'No forced plan in the stores read.'),
+    forceFailSection(ctx),
   ];
+}
+
+// forceFailSection: each forced plan's failures since it was last forced (PerformanceMonitor 3.13's Changed 15: the
+// first failure is held; a second within 24 hours pages), read from the history pgvigil keeps of force_failure_count.
+function forceFailSection(ctx: Ctx): HTMLElement {
+  const box = el('div', {}, el('h4', {}, 'Failures since forced'), el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
+  get<Record<'plans' | 'reads', Table | null>>('mssql/forcefail', { instance: ctx.instance }).then(d => {
+    box.replaceChildren(el('h4', {}, 'Failures since forced'),
+      el('p', { class: 'meta' }, 'Each change of a forced plan\'s failure count that a read saw, since the plan was last forced (forcing it anew sets the count to 0 and starts again). '
+        + 'The finding \'a forced plan fails\' is a warning when one read saw 2 or more failures or two failures were read within 24 hours of each other; with one failure it is held as an info.'),
+      grid(rowsOf(d.plans), [
+        { key: 'database' }, { key: 'query_id', label: 'query', num: true, fmt: v => text(v) }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
+        { key: 'paged', label: 'judged', fmt: v => v ? badge('pages (warning)', 'warn') : badge('held (info)', 'info') },
+        { key: 'failures', num: true }, { key: 'failure_reads', label: 'reads with a failure', num: true },
+        { key: 'first_failure', label: 'first failure read', fmt: fmtTime }, { key: 'last_failure', label: 'last failure read', fmt: fmtTime },
+        { key: 'force_failure_reason', label: 'last reason' },
+      ], 'No forced plan has failed since it was forced.'),
+      el('h4', {}, 'The reads that saw a change'),
+      grid(rowsOf(d.reads), [
+        { key: 'database' }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) }, { key: 'seen_at', label: 'read', fmt: fmtTime },
+        { key: 'count_before', label: 'count before', num: true }, { key: 'count_after', label: 'count after', num: true },
+        { key: 'rise', label: 'failures', num: true }, { key: 'reset', label: 'forced anew', fmt: yes },
+      ], 'None yet.'));
+  }).catch(e => box.replaceChildren(el('h4', {}, 'Failures since forced'), errorBox(e)));
+  return box;
+}
+
+// planStatsPanel: the statistics a plan was compiled with (PerformanceMonitor 3.13's Statistics Used), read from the
+// plan's OptimizerStatsUsage when pgvigil stored it: modified % against the table's rows at the last index read and the
+// auto-update line, stale at compile when the modifications had passed the line.
+export function planStatsPanel(ctx: Ctx, key: Record<string, string | number>, title: string): HTMLElement {
+  const box = el('section', { class: 'detail', 'aria-live': 'polite' }, el('h4', { tabindex: '-1' }, `Statistics used by ${title}`), el('p', { class: 'meta' }, 'Reading ...'));
+  get<Record<'stats', Table | null>>('mssql/planstats', { instance: ctx.instance, ...key }).then(d => {
+    const rows = rowsOf(d.stats);
+    box.replaceChildren(el('h4', { tabindex: '-1' }, `Statistics used by ${title}`),
+      el('p', { class: 'meta' }, 'The statistics the optimizer loaded to compile the plan, as it saw them then (SQL Server 2017 and 2016 SP2 write them into the plan; an older plan has none). '
+        + 'Rows changed is the count at compile; the table\'s rows are pgvigil\'s last index read. The auto-update line is 500 rows up to 500, past that 500 + 20 %, '
+        + 'or from compatibility level 130 the smaller of that and the square root of 1,000 x rows: a statistic past it was stale at compile '
+        + '(AUTO_UPDATE_STATISTICS off, asynchronous updates or NORECOMPUTE).'),
+      grid(rows, [
+        { key: 'stale_at_compile', label: 'stale at compile', fmt: v => v === true ? badge('stale', 'warn') : v === false ? 'no' : 'rows not read' },
+        { key: 'stmt', label: 'statement', num: true }, { key: 'database' }, { key: 'schema' }, { key: 'table' }, { key: 'statistic' },
+        { key: 'modification_count', label: 'rows changed', num: true }, { key: 'table_rows', label: 'table rows', num: true },
+        { key: 'modified_pct', label: 'modified %', num: true }, { key: 'update_line', label: 'auto-update line', num: true },
+        { key: 'sampling_pct', label: 'sampled %', num: true }, { key: 'last_update', label: 'last updated (server clock)' },
+        { key: 'compatibility_level', label: 'compat level', num: true },
+      ], 'No statistics are stored for this plan: it was not read since pgvigil keeps them, or the plan names none (SQL Server before 2017 or 2016 SP2).'));
+    (box.firstElementChild as HTMLElement).focus();
+  }).catch(e => box.replaceChildren(el('h4', {}, `Statistics used by ${title}`), errorBox(e)));
+  return box;
 }
 
 // ---- Tuning
