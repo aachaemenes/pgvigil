@@ -30,6 +30,7 @@ export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date' | 'bool' | 'days' | 'day';   // bool: v 1 or 0, written as an Excel boolean (P3)   // days: a count of days the page writes 'n days'   // day: a date alone (v its Excel serial, stamp 'YYYY-MM-DD')
 export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (written in the header row's style)   // stamp: a time's local text for the CSV
   per?: string;   // a size per a time ('381.5 MB / day': kind 'bytes', per 'day')
+  dp?: number;   // (X13) a grid sheet's number shown with the decimals its column shows on the page: '0.0' for 1 (a share: '0%' for 0); the value stays exact
   look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
   runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
   jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
@@ -208,6 +209,21 @@ const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
 export function sizeOf(text: string): { unit: string; pow: number; k: number } | undefined {
   const m = /^-?\d+(?:\.(\d+))?\s(B|KB|MB|GB|TB|PB)$/.exec(text);
   return m ? { unit: m[2], pow: UNITS.indexOf(m[2]), k: m[1]?.length ?? 0 } : undefined;
+}
+// decimalsOf (X13): how many decimals a page's figure shows - a raw number the page prints as it is (v: the cell's value;
+// JavaScript's form in any language), a size as fmtBytes writes it (under 1024, at most one decimal: '1.6 GB', '7 B', a
+// rate '-2.0 GB / day'), a number in the locale's form with a unit or a percent sign ('12.35 ms', '1 536,5 MB', de-DE's
+// '1.536 MB', '12,5 %', '233.3 days', 'off (0 days)'), a bare number ('17.35', '61,075'); undefined for words with no figure
+// and for fmtSecs's whole units ('1m 5s': the page cuts the seconds it does not show, a format would round them)
+export function decimalsOf(text: string, v?: number | string): number | undefined {
+  const t = norm(text).replace(/^off \((.*)\)$/, '$1');
+  if (typeof v === 'number' && String(v) === t && !/e/i.test(t)) return (t.split('.')[1] ?? '').length;
+  const bare = t.replace(/ \/ day$/, '');
+  if (/^-?\d{1,4}(?:\.\d)? (?:B|KB|MB|GB|TB|PB)$/.test(bare)) return sizeOf(bare.replace(/^-/, ''))!.k;
+  if (/^-?\d+[dhms](?: \d+[hms])*$/.test(t)) return undefined;
+  const m = /^[+-]?(.*?)(?: (?:%|ms|s|min|days?|B|KB|MB|GB|TB|PB)(?: \/ day)?)?$/.exec(t);
+  const d = m ? digitsOf(m[1]) : '';
+  return d ? (d.split('.')[1] ?? '').length : undefined;
 }
 // dateFmt: the page's date-and-time form (tz.ts fmt: toLocaleString with hour12 false) as an Excel format code, read
 // from the locale's own parts of a date whose month, day and hour are one digit (a part written with two digits there
@@ -587,6 +603,12 @@ export function linePx(c: Cell): number[] {
 export function shown(c: Cell): string {
   if (typeof c.v !== 'number') return c.v.split(/\r?\n/).reduce((a, b) => b.length > a.length ? b : a, '');
   const n = c.v;
+  // (X13) under the column's decimals: Excel's text of it (a negative figure keeps its minus also where it rounds to zero:
+  // '-0.0')
+  if (c.dp !== undefined) {
+    const x = c.kind === 'pct' ? n * 100 : n;
+    return (x < 0 ? '-' : '') + Math.abs(x).toFixed(c.dp) + (c.kind === 'pct' ? '%' : '');
+  }
   switch (c.kind) {
     case 'date': return (c.stamp ?? '').slice(0, 16);
     case 'day': return (c.stamp ?? '').slice(0, 10);
@@ -669,7 +691,9 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
     const v = t.length > 32767 ? t.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : t;
     return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
-  const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt) : fmtOf(c);
+  // (X13) a grid sheet's number under its column's decimals as the page shows them: '0', '0.0' .. (a share: Excel's '0%')
+  const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt)
+    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? 9 : st.code(c.dp ? '0.' + '0'.repeat(c.dp) : '0')) : fmtOf(c);
   const styleOf = (c: Cell) => c.look ? st.look(fmtFor(c), c.look) : st.id(fmtFor(c), c.status, !!c.head, c.link);
   // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
   // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
@@ -756,6 +780,18 @@ export function gridSection(s: Section): Section {
   const ncol = Math.max(cols.length, ...rows.map(r => r.length), 0);
   const unitOf = (j: number, u: string) => { if (j < cols.length) cols[j] = `${cols[j]} (${u})`; };
   const emptyWords = (j: number) => { for (const r of rows) { const c = r[j]; if (c && typeof c.v === 'string' && !/\d/.test(c.v)) c.v = ''; } };
+  // (X13) the decimals the page shows in a column, the most any of its figures shows: every decimal cell of it under that
+  // format ('1.6 GB', '336.0 MB' -> '0.0': 1.6328125 GB reads 1.6, the formula bar keeps it whole; '17.35' -> '0.00'); a
+  // count stays General. A column whose texts carry more than 6 decimals is a raw value the page does not round (a chart's
+  // series without a formatter): General as it is. A share column the page writes in whole percents: '0%'
+  const decimals = (j: number) => {
+    const decs = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'dec');
+    const k = Math.max(-1, ...decs.map(c => decimalsOf(c.text, c.v) ?? -1));
+    if (k >= 0 && k <= 6) for (const c of decs) c.dp = k;
+    // (a chart's share holds its fraction as text, not the page's percent: only a column of the page's own percents)
+    const pcts = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'pct');
+    if (pcts.length && pcts.every(c => / ?%$/.test(norm(c.text)) && decimalsOf(c.text) === 0)) for (const c of pcts) c.dp = 0;
+  };
   for (let j = 0; j < ncol; j++) {
     const nums = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number');
     const largest = (k: Kind, per = false) => nums.filter(c => c.kind === k && !!c.per === per).reduce<Cell | undefined>((a, c) => !a || Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a, undefined);
@@ -785,6 +821,7 @@ export function gridSection(s: Section): Section {
       const unit = at.reduce((a, x) => Math.abs(x.b) > Math.abs(a.b) ? x : a).z.unit;
       for (const x of at) { x.c.v = x.b / 1024 ** UNITS.indexOf(unit); x.c.kind = 'dec'; }
       unitOf(j, unit);
+      decimals(j);
       continue;
     }
     const big = largest('bytes');
@@ -810,6 +847,7 @@ export function gridSection(s: Section): Section {
       for (const c of secs) { c.v = Number((ms(c) / DUR[unit]).toPrecision(15)); c.kind = 'dec'; }   // no float noise: 11 s, not 10.999999999999998, at any size
       if (j < cols.length && !long) cols[j] = `${cols[j]} (${unit})`;
     }
+    decimals(j);
   }
   const { heads: _heads, ...rest } = s;
   return { ...rest, cols, rows };
