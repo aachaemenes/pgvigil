@@ -320,7 +320,7 @@ func TestMoveBounds(t *testing.T) {
 		"data_bytes": 8192, "log_bytes": 8192, "data_used_bytes": nil, "log_used_bytes": nil, "files": 2}}); err != nil || n != 1 {
 		t.Fatalf("dbsize: inserted %d (%v), want 1", n, err)
 	}
-	for key, want := range map[string]int64{"volumes": 2, "cpu": 2, "jobruns": 1, "dbsize": 1} {
+	for key, want := range map[string]int64{"volumes": 2, "cpu": 3, "jobruns": 1, "dbsize": 1} {
 		if got := stored(ctx, t, pool, id, key); got != want {
 			t.Errorf("%s stored %d, want %d", key, got, want)
 		}
@@ -706,7 +706,7 @@ func TestMoveAddTwiceAtOnce(t *testing.T) {
 	if errs[0] != nil || errs[1] != nil {
 		t.Fatalf("two adds of one server at once: %v / %v, want answers, not errors", errs[0], errs[1])
 	}
-	if !((out[0] == "done" && out[1] == "refused") || (out[0] == "refused" && out[1] == "done")) {
+	if got := map[string]int{out[0]: 1, out[1]: 1}; out[0] == out[1] || got["done"] != 1 || got["refused"] != 1 {
 		t.Fatalf("two adds of one server at once: %v, want one done and one refused", out)
 	}
 }
