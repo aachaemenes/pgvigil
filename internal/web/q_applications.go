@@ -204,14 +204,23 @@ func (s *Server) ApplicationContacts(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, map[string]any{"contacts": t}, nil)
 }
 
-// ApplicationsUnassigned is GET /api/applications/unassigned: every present database with no application.
+// ApplicationsUnassigned is GET /api/applications/unassigned: every present database with no application, and the
+// databases marked 'not an application' (the page's Unmark).
 func (s *Server) ApplicationsUnassigned(w http.ResponseWriter, r *http.Request) {
-	t, err := s.query(r.Context(), `SELECT u.instance_id, i.name AS instance, u.engine, u.database_name
+	ctx := r.Context()
+	t, err := s.query(ctx, `SELECT u.instance_id, i.name AS instance, u.engine, u.database_name
 	  FROM pgvigil.app_unassigned() u JOIN pgvigil.instances i ON i.instance_id = u.instance_id`)
 	if err != nil {
 		s.reply(w, r, nil, fmt.Errorf("unassigned: %w", err))
 		return
 	}
+	marked, err := s.query(ctx, `SELECT m.instance_id, i.name AS instance, i.engine, m.database_name, m.set_at, m.set_by
+	  FROM pgvigil.app_not_application m JOIN pgvigil.instances i ON i.instance_id = m.instance_id
+	 ORDER BY i.name, m.database_name`)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("marked: %w", err))
+		return
+	}
 	off := s.applicationsOff()
-	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "unassigned": t}, nil)
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "unassigned": t, "marked": marked}, nil)
 }
