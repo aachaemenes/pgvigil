@@ -664,7 +664,8 @@ t = os.path.getmtime(stamp) if stamp else 0; n = 0
 for p in glob.glob(os.path.join(d, "*.eml")):
     if os.path.getmtime(p) <= t: continue
     b = open(p, encoding="utf-8", errors="replace").read()
-    if addr not in b.split("\r\n", 1)[0][len("X-Rcpt: "):].split(","): continue
+    # the first line is the sink's X-Rcpt (text mode reads CRLF as LF: splitlines, never a split on CRLF - t-ap-r7)
+    if addr not in b.splitlines()[0][len("X-Rcpt: "):].split(","): continue
     if word and word.lower() not in b.lower(): continue
     n += 1
 print(n)

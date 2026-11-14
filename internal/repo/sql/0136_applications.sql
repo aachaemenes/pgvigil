@@ -14,8 +14,11 @@
 -- The tag: instance_tag_pairs gains an 'application' arm - application:<name> on an instance assigned at its own level or
 -- through a database still present - and the key 'application' leaves the config and override arms, so every reader of
 -- instance_tags_merged sees the application without a write to instances.tags, and a rename follows at the next read.
--- The writes (import_app_application, import_app_contact, import_app_assign) answer {outcome done | refused, detail} and
--- write admin_audit rows naming ids, never a contact's name, e-mail or phone; one advisory lock orders them.
+-- The writes (import_app_application, import_app_contact, import_app_assign, import_app_contact_route) answer {outcome
+-- done | refused, detail} and write admin_audit rows naming ids, never a contact's name, e-mail or phone; one advisory
+-- lock orders them.
+--   ui_app_contact_routes  a contact's route: its alerts through a configured smtp channel (owner-routed alerts); the
+--                          alerter reads the live ones through alert_contact_routes() (its session or the owner's only)
 
 CREATE TABLE IF NOT EXISTS pgvigil.app_applications (
   app_id       int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -628,3 +631,168 @@ RETURNS text LANGUAGE sql STABLE AS $$
    ORDER BY CASE c.role WHEN 'business owner' THEN 1 ELSE 2 END, c.ord, c.contact_id
    LIMIT 1
 $$;
+
+-- ---- owner-routed alerts (Allen 2026-11-14 06:40: an application's contacts receive its instances' alerts) ----------
+-- A route sends one contact the alerts of its application's instances through a CONFIGURED smtp channel (its relay and
+-- secrets stay in the configuration file): the alerter makes one derived channel per live route, 'contact-<route_id>',
+-- a copy of the base's built channel with to: the contact's address and scope the application's tag; the base's
+-- repeat, clear_after, quiet hours and max_per_hour hold it as its own channel. min_severity NULL = the base's. The
+-- table is ui_ so apply_roles (0110) keeps the reader out; the alerter reads it through alert_contact_routes() only.
+CREATE TABLE IF NOT EXISTS pgvigil.ui_app_contact_routes (
+  route_id     int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  contact_id   int NOT NULL REFERENCES pgvigil.ui_app_contacts (contact_id) ON DELETE CASCADE,
+  channel_name text NOT NULL CHECK (channel_name ~ '^[a-z0-9][a-z0-9_.-]{0,62}$' AND channel_name !~ '^contact-'),
+  min_severity text CHECK (min_severity IN ('info', 'warning', 'critical')),
+  enabled      boolean NOT NULL DEFAULT true,
+  set_at       timestamptz NOT NULL DEFAULT now(),
+  set_by       text,
+  UNIQUE (contact_id, channel_name)
+);
+
+-- import_app_contact_route: op set (a contact and a channel: added, or its severity / on-off changed) | remove; refused
+-- in words; one admin_audit row per attempt naming the contact and the channel, never the address
+CREATE OR REPLACE FUNCTION pgvigil.import_app_contact_route(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_op     text := p_payload->>'op';
+  v_user   text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_cli    text := p_payload->>'client';
+  v_cid    int := pgvigil.app_int(p_payload->'contact_id');
+  v_rid    int := pgvigil.app_int(p_payload->'route_id');
+  v_chan   text := btrim(coalesce(p_payload->>'channel', ''));
+  v_sev    text := nullif(p_payload->>'min_severity', '');
+  v_en     boolean;
+  v_c      pgvigil.ui_app_contacts%ROWTYPE;
+  v_r      pgvigil.ui_app_contact_routes%ROWTYPE;
+  v_why    text;
+  v_detail text;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_app_contact_route: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.app_writes'));
+  IF v_rid IS NOT NULL THEN
+    SELECT * INTO v_r FROM pgvigil.ui_app_contact_routes r WHERE r.route_id = v_rid;
+    v_cid := coalesce(v_cid, v_r.contact_id);
+    IF v_chan = '' THEN v_chan := coalesce(v_r.channel_name, ''); END IF;
+  ELSIF v_cid IS NOT NULL AND v_chan <> '' THEN
+    SELECT * INTO v_r FROM pgvigil.ui_app_contact_routes r WHERE r.contact_id = v_cid AND r.channel_name = v_chan;
+  END IF;
+  IF v_cid IS NOT NULL THEN
+    SELECT * INTO v_c FROM pgvigil.ui_app_contacts c WHERE c.contact_id = v_cid;
+  END IF;
+  IF jsonb_typeof(p_payload->'enabled') = 'boolean' THEN
+    v_en := (p_payload->>'enabled')::boolean;
+  END IF;
+  IF v_op IS NULL OR v_op NOT IN ('set', 'remove') THEN
+    v_why := 'op must be set or remove';
+  ELSIF p_payload ? 'enabled' AND jsonb_typeof(p_payload->'enabled') <> 'boolean' THEN
+    v_why := 'enabled is true or false';
+  ELSIF v_rid IS NOT NULL AND v_r.route_id IS NULL THEN
+    v_why := format('no route %s', v_rid);
+  ELSIF v_c.contact_id IS NULL THEN
+    v_why := format('no contact %s', coalesce(p_payload->>'contact_id', '(none given)'));
+  ELSIF v_op = 'remove' AND v_r.route_id IS NULL THEN
+    v_why := format('contact %s has no route through %s', v_cid, coalesce(nullif(v_chan, ''), '(no channel named)'));
+  ELSIF v_op = 'set' AND v_chan !~ '^[a-z0-9][a-z0-9_.-]{0,62}$' THEN
+    v_why := 'a channel is named as in the alerts: list of the configuration (lower-case letters, digits, ''_'', ''.'' or ''-'', at most 63)';
+  ELSIF v_op = 'set' AND v_chan ~ '^contact-' THEN
+    v_why := 'a route goes through a channel of the configuration, never through another route';
+  ELSIF v_op = 'set' AND v_sev IS NOT NULL AND v_sev NOT IN ('info', 'warning', 'critical') THEN
+    v_why := 'min_severity is info, warning or critical (empty: the channel''s own)';
+  ELSIF v_op = 'set' AND nullif(btrim(coalesce(v_c.email, '')), '') IS NULL THEN
+    v_why := format('contact %s has no e-mail address: a route mails its contact', v_cid);
+  ELSIF v_op = 'set' AND EXISTS (SELECT 1 FROM pgvigil.alert_channels ch WHERE ch.name = v_chan AND ch.is_configured AND ch.kind <> 'smtp') THEN
+    v_why := format('channel %s is not an smtp channel: a route mails its contact', v_chan);
+  END IF;
+  IF v_why IS NOT NULL THEN
+    PERFORM pgvigil.admin_log(v_user, v_cli, 'app_route', 'contact ' || coalesce(v_cid::text, '-'), 'refused', v_why);
+    RETURN jsonb_build_object('outcome', 'refused', 'detail', v_why);
+  END IF;
+
+  IF v_op = 'set' THEN
+    INSERT INTO pgvigil.ui_app_contact_routes AS r (contact_id, channel_name, min_severity, enabled, set_at, set_by)
+    VALUES (v_cid, v_chan, v_sev, coalesce(v_en, true), now(), v_user)
+    ON CONFLICT (contact_id, channel_name) DO UPDATE SET
+      min_severity = CASE WHEN p_payload ? 'min_severity' THEN EXCLUDED.min_severity ELSE r.min_severity END,
+      enabled = coalesce(v_en, r.enabled), set_at = now(), set_by = EXCLUDED.set_by
+    RETURNING * INTO v_r;
+    v_detail := format('route %s: contact %s (%s of application %s) via %s from %s, %s', v_r.route_id, v_cid, v_c.role, v_c.app_id,
+                       v_chan, coalesce(v_r.min_severity, 'the channel''s severity'), CASE WHEN v_r.enabled THEN 'on' ELSE 'off' END);
+  ELSE
+    DELETE FROM pgvigil.ui_app_contact_routes r WHERE r.route_id = v_r.route_id;
+    v_detail := format('route %s removed: contact %s via %s', v_r.route_id, v_cid, v_r.channel_name);
+  END IF;
+  PERFORM pgvigil.admin_log(v_user, v_cli, 'app_route', 'contact ' || v_cid, 'done', v_detail);
+  RETURN jsonb_build_object('outcome', 'done', 'detail', v_detail, 'route_id', v_r.route_id);
+END $$;
+
+-- alert_contact_routes: the alerter's one read of the live routes and their addresses (an enabled route of a contact
+-- with an e-mail), for the alert sender's session (pgvigil_alerter) or the owner only, as alert_log_partition (0059)
+CREATE OR REPLACE FUNCTION pgvigil.alert_contact_routes()
+RETURNS TABLE (route_id int, contact_id int, role text, application text, channel_name text, min_severity text, email text)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pgvigil AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT (pg_has_role(session_user, 'pgvigil_alerter', 'MEMBER')
+          OR pg_has_role(session_user, (SELECT n.nspowner FROM pg_namespace n WHERE n.nspname = 'pgvigil'), 'MEMBER')) THEN
+    RAISE EXCEPTION 'alert_contact_routes: % is not the alert sender', session_user USING ERRCODE = '42501';
+  END IF;
+  RETURN QUERY
+  SELECT r.route_id, c.contact_id, c.role, a.name, r.channel_name, r.min_severity, btrim(c.email)
+    FROM pgvigil.ui_app_contact_routes r
+    JOIN pgvigil.ui_app_contacts c ON c.contact_id = r.contact_id
+    JOIN pgvigil.app_applications a ON a.app_id = c.app_id
+   WHERE r.enabled AND nullif(btrim(coalesce(c.email, '')), '') IS NOT NULL
+   ORDER BY r.route_id;
+END $$;
+GRANT EXECUTE ON FUNCTION pgvigil.alert_contact_routes() TO pgvigil_alerter;
+
+-- ui_app_contact_routes_of: one application's routes for the page (ui_: SECURITY DEFINER for pgvigil_auth only, apply_roles)
+CREATE OR REPLACE FUNCTION pgvigil.ui_app_contact_routes_of(p_app_id int)
+RETURNS TABLE (route_id int, contact_id int, contact text, channel_name text, min_severity text, enabled boolean, set_at timestamptz, set_by text)
+LANGUAGE sql STABLE AS $$
+  SELECT r.route_id, c.contact_id, c.name, r.channel_name, r.min_severity, r.enabled, r.set_at, r.set_by
+    FROM pgvigil.ui_app_contact_routes r JOIN pgvigil.ui_app_contacts c ON c.contact_id = r.contact_id
+   WHERE c.app_id = p_app_id
+   ORDER BY c.ord, c.contact_id, r.channel_name
+$$;
+
+-- import_alert_test is 0093's with one refusal more (O-D9): a route's derived channel 'contact-<id>' takes no Send test
+CREATE OR REPLACE FUNCTION pgvigil.import_alert_test(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_user   text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_client text := nullif(p_payload->>'client', '');
+  v_chan   text := nullif(btrim(coalesce(p_payload->>'channel', '')), '');
+  v_why    text;
+  v_wait   pgvigil.alert_tests;
+  v_id     bigint;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_alert_test: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('pgvigil.alert_tests:' || coalesce(v_chan, ''), 0));
+  SELECT * INTO v_wait FROM pgvigil.alert_tests t
+   WHERE t.channel = v_chan AND t.done_at IS NULL AND t.requested_at > p_at - pgvigil.alert_test_window()
+   ORDER BY t.requested_at DESC LIMIT 1;
+  IF v_chan IS NULL OR length(v_chan) > 63 THEN
+    v_why := 'no channel named';
+  ELSIF v_chan LIKE 'contact-%' THEN
+    v_why := format('channel %s is an application contact''s route: a Send test goes to a channel of the configuration (its route mails through it)', v_chan);
+  ELSIF NOT EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.name = v_chan AND c.is_configured) THEN
+    v_why := format('channel %s is not configured (the sender''s last record of its alerts: list)', v_chan);
+  ELSIF v_wait.test_id IS NOT NULL THEN
+    v_why := format('a test of %s asked by %s at %s still waits for the sender', v_chan, v_wait.requested_by, v_wait.requested_at);
+  ELSIF EXISTS (SELECT 1 FROM pgvigil.alert_tests t WHERE t.channel = v_chan AND t.outcome IS DISTINCT FROM 'refused'
+                   AND t.requested_at > p_at - pgvigil.alert_test_gap()) THEN
+    v_why := format('%s had a test in the last %s: one test per channel in that time', v_chan, pgvigil.alert_test_gap());
+  END IF;
+  INSERT INTO pgvigil.alert_tests (channel, requested_by, requested_at, client, done_at, outcome, error)
+  VALUES (left(coalesce(v_chan, ''), 63), left(v_user, 200), p_at, left(v_client, 100), CASE WHEN v_why IS NOT NULL THEN p_at END,
+          CASE WHEN v_why IS NOT NULL THEN 'refused' END, v_why)
+  RETURNING test_id INTO v_id;
+  RETURN jsonb_build_object('outcome', CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END,
+                            'detail', coalesce(v_why, format('test %s of %s asked: the sender''s next pass sends it (within a minute while pgvigil run is up)', v_id, v_chan)),
+                            'test_id', v_id);
+END $$;
