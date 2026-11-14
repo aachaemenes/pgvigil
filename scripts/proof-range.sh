@@ -39,8 +39,8 @@
 #                  per-snapshot summaries from <rows_from> (pgvigil purge -days 10, last run <t>); the monthly history
 #                  from <Month YYYY>...' (each date = RB's hand read as the page writes a time) and a Data retention
 #                  link to #/retention; at w=3d no such line
-#   R7 export      erp01's Statements at w=1y: Export .xlsx - its Summary sheet holds a 'Read' row 'Parts of this page
-#                  read the newest 31 days ...' and the statements sheet's note 'This list reads the newest 31 days ...';
+#   R7 export      erp01's Statements at w=1y: Export .xlsx - its 'About' sheet holds a 'Read' row 'Parts of this page
+#                  read the newest 31 days ...' and the statements sheet's row there 'This list reads the newest 31 days ...';
 #                  Export CSV - the statements file's first line is that list's 'This list reads ...' line
 #   R8 mail        the same page's Mail... Send now: the body the page builds and posts holds the header line 'Read'
 #                  with the page's words and the statements grid's note (the mail door and the send answered in the
@@ -52,6 +52,8 @@
 #                  window: <from> to <to> (this chart is longer than they read).' (red on c5c7e83)
 #   R11 once       sql01's SQL Server File IO at w=60d (two cut reads asked milliseconds apart): the page's line says
 #                  'the newest 31 days of this window' once (red on c5c7e83)
+#   R12 file rules that workbook (the one whose 'About' holds the 'Read' row) passes scripts/xlsx-check.py rules, X0-X12,
+#                  and 'About' is its last sheet
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -171,4 +173,4 @@ else
   no "R10: no size row of erp01 to copy back"
 fi
 [[ $bad -eq 0 ]] || fail "$bad row(s) failed (above)"
-echo "OK: the range up to a year (RA RB R1-R11)"
+echo "OK: the range up to a year (RA RB R1-R12)"

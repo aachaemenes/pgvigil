@@ -150,7 +150,7 @@ check('R6 retention', !!r6 && r6.text.startsWith('This window starts ') && r6.te
   && r6.link.startsWith('#/retention') && !r6b,
   `30 days: '${r6?.text}' (link ${r6?.link}; wanted ${JSON.stringify(r6?.want)}); 3 days: line ${r6b}`);
 
-// R7. the export of erp01's Statements at a year: the workbook's Summary 'Read' row and the list's note; the CSV's line
+// R7. the export of erp01's Statements at a year: the workbook's 'Read' row on its 'About' sheet and the list's note there; the CSV's line
 await go(`#/statements?i=${erp}&w=1y`); await sleep(1500);
 for (const f of fs.readdirSync(dl)) fs.rmSync(`${dl}/${f}`, { recursive: true });
 const grab = async (button, ext) => { await ev(`[...document.querySelectorAll('#bar button')].find(b => b.textContent === ${JSON.stringify(button)}).click(); 'ok'`);
@@ -166,6 +166,17 @@ if (csvFile.endsWith('.zip')) {
 check('R7 export', strings.includes('Parts of this page read the newest 31 days of this window') && strings.includes('This list reads the newest 31 days of this window')
   && /^"?This list reads the newest 31 days of this window: /.test(csvLine),
   `${xlsx.split('/').pop() || 'no .xlsx'}: 'Read' words ${strings.includes('Parts of this page read the newest 31 days')}, the list's note ${strings.includes('This list reads the newest 31 days')}; ${csvFile.split('/').pop() || 'no CSV'}: first line '${csvLine.slice(0, 160)}'`);
+
+// R12. that workbook - the one here whose 'About' sheet holds the 'Read' row - passes the export's file rules (X0-X12,
+// scripts/xlsx-check.py: the rules DBA Dash's own exports pass) and names 'About' as its last sheet
+let rules12 = 'no .xlsx', ok12 = false, last12 = '';
+if (xlsx) {
+  try { rules12 = execFileSync('python3', ['-I', 'scripts/xlsx-check.py', 'rules', xlsx]).toString().trim().split('\n').pop(); ok12 = / PASS$/.test(rules12); }
+  catch (e) { rules12 = String(e.stdout ?? e.message).split('\n').filter(l => l.startsWith('FAIL')).join(' | ').slice(0, 600); }
+  const book = execFileSync('unzip', ['-p', xlsx, 'xl/workbook.xml']).toString();
+  last12 = ([...book.matchAll(/<sheet [^>]*name="([^"]*)"/g)].pop() ?? [])[1] ?? '';
+}
+check('R12 file rules', ok12 && last12 === 'About', `the year's workbook: ${rules12.split('/').pop()}; its last sheet '${last12}'`);
 
 // R8. the mail body the page builds (the door and the send answered by stubs in the page: nothing is sent)
 const r8 = await ev(`(async () => {
