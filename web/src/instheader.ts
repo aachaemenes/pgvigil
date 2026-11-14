@@ -25,6 +25,7 @@ import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
 import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
 import { Ctx, href } from './router';
+import { verdict, verdictCard } from './verdict';
 import { el, fmtTime, pill } from './ui';
 
 export type Band = 'crit' | 'warn' | 'ok' | 'unknown';
@@ -175,7 +176,7 @@ export function chipEl(c: Chip): HTMLElement {
 // page its Summary cell opens; acked the groups not OK an acknowledgement holds; reasons their words. The header and
 // the verdict card (verdict.ts) both read this one result.
 export interface BandItem { key: string; label: string; level: number; cell: Cell; target: { tab: string; kind?: string; cv?: string } }
-export interface InstBand { level: number; word: string; cls: string; reasons: string[]; items: BandItem[]; acked: BandItem[]; offline: boolean }
+export interface InstBand { level: number; word: string; cls: string; reasons: string[]; items: BandItem[]; acked: BandItem[]; offline: boolean; cells: Record<string, Cell> }
 export function instBand(f: Fleet, r: Row, ad: AckData, live: Row | undefined, now = Date.now()): InstBand {
   const c = cells(f, r);
   const acks = checkAcks(ad);
@@ -187,8 +188,8 @@ export function instBand(f: Fleet, r: Row, ad: AckData, live: Row | undefined, n
   const acked = bad.filter(g => held(g.key)).map(item);
   const level = Math.max(0, ...items.map(i => i.level));
   const reasons = items.map(i => `${i.label} ${cellText(i.cell)}`);
-  if (freshness(live, now) === 'offline') return { level: 2, word: 'Offline', cls: 'none', reasons: ['Offline - no recent collection', ...reasons], items, acked, offline: true };
-  return { level, word: ['OK', 'Warning', 'Critical'][level], cls: ['ok', 'warn', 'crit'][level], reasons, items, acked, offline: false };
+  if (freshness(live, now) === 'offline') return { level: 2, word: 'Offline', cls: 'none', reasons: ['Offline - no recent collection', ...reasons], items, acked, offline: true, cells: c };
+  return { level, word: ['OK', 'Warning', 'Critical'][level], cls: ['ok', 'warn', 'crit'][level], reasons, items, acked, offline: false, cells: c };
 }
 
 // the band's dot (the breadcrumb, the header): its word is its name for a screen reader, the reasons its title
@@ -269,6 +270,8 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
       silencedMark(live) ?? '', el('span', { class: `meta status-line${fr === 'awaiting' ? ' awaiting' : ''}` }, status),
       el('span', { style: 'margin-left:auto' }, silenceButton(ad, r, live, redraw))),
     b.reasons.length ? el('div', { class: `meta inst-reason ${b.cls}` }, b.reasons.slice(0, 6).join(', ') + (b.reasons.length > 6 ? `, +${b.reasons.length - 6} more` : '')) : null,
-    el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(chipEl)));
+    el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(chipEl)),
+    // the verdict card on the instance's Summary (both engines): a reading of this band and freshness, never another
+    ctx.tab === 'summary' ? verdictCard(ctx, verdict(r, live, now, b, fr)) : null);
   return { header, dot: bandDot(b) };
 }
