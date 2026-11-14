@@ -40,6 +40,13 @@
 # T: as its Drives page lists them), no 'tree drive (none)' row; each must row 'clicked' (the two drive rows and E304's
 # five: the Base backups dialog, its Set held, Inherit off with its words, Back, the root Thresholds page's Set...
 # refused in words on the demo); 'click-through: OK (... 7 must row(s) clicked ...)', rc 0
+# Expected (the findings run, rel-findings: the fold, the must rows and the findings - written before it): as the tenth's,
+# and: none of the seven findings' controls a NOTHING or reads row; each of their must rows 'clicked' (14 must rows in all),
+# its row 'disabled' with its words (every series is shown; every column is shown; nothing in this grid is changed from its
+# default; no filter is set: nothing to reset; this is the newest snapshot: the page follows it; Pick instance A.; this is
+# the newest snapshot); the Draws on the strip redraw or say '... has no interval in this range: no line to draw.' (no
+# reads row); the FAIL rows listed: the re-reads (12 to 15), the deadlock Graph 1, Admin's Servers 1, the alert page's
+# 'at the firing' 1; 'click-through: OK (... 14 must row(s) clicked ...)', rc 0
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""
