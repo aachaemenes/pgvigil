@@ -5,7 +5,7 @@
 // scripts/proof-dbadash-door.sh part G runs it after the web build. Every row prints 'ok' or 'FAIL'; the exit is 1 when
 // any failed. The host rows are internal/web/migrate_test.go TestMoveAddCheck's (the server's addressWhy decides).
 const m = await import(new URL(process.argv[2], 'file://' + process.cwd() + '/').href);
-const { addrWhy, hostPort, rowAddress } = m;
+const { addrWhy, hostPort, rowAddress, localHost, isV6 } = m;
 let bad = 0, n = 0;
 const eq = (what, got, want) => {
   n++;
@@ -36,11 +36,30 @@ has('an instance name with a hyphen', addrWhy('SQL01\\MY-INST'), 'not a characte
 has('a name with a slash', addrWhy('sql01/prod'), 'not a character of a network name');
 has('a name ending in a dot', addrWhy('sql01.'), 'not a host name');
 has('empty', addrWhy('  '), 'empty');
+// review 206h: an IPv6 address with ',port' (the server takes it); spaces around the ','; isV6 as strict as Go's
+// net.ParseIP; an unclosed bracket; a name's 253 limit in bytes (Go's len)
+for (const s of ['fe80::1,1433', 'tcp:2001:db8::5,1433', 'sql01, 1433', 'sql01 , 1433', '::ffff:10.1.2.3', '::', '1::']) {
+  eq(`address: ${s}`, addrWhy(s), '');
+}
+has('a space in the name before the comma', addrWhy('sql01 old,1433'), 'a space');
+for (const s of ['db1:2:3', ':::', '12345::1', '1:2:3:4:5:6:7:8::', '1::2::3']) has(`not IPv6: ${s}`, addrWhy(s), 'colons');
+has('[cafe:1] is not IPv6', addrWhy('[cafe:1]'), 'brackets');
+has('an unclosed bracket', addrWhy('[fe80::1'), "a '[' with no ']'");
+has('a name of 254 bytes (127 letters)', addrWhy('\u00e9'.repeat(127)), 'not a host name');
+eq('isV6 of 8 groups', isV6('1:2:3:4:5:6:7:8'), true);
+eq('isV6 of 7 groups', isV6('1:2:3:4:5:6:7'), false);
+// the server's localHost: DBA Dash's own host is no address for pgvigil
+for (const s of ['localhost', '127.0.0.1', '::1', '[::1]', 'localhost\\SQLEXPRESS', 'localhost,1433', 'tcp:localhost', '.', '(local)', '.\\SQLEXPRESS', '(localdb)\\v11']) {
+  eq(`local: ${s}`, localHost(s), true);
+}
+eq('not local: localhost2', localHost('localhost2'), false);
 
 // hostPort: the row's two fields
 eq('host,port', hostPort('sql01.corp.example.com,14330'), ['sql01.corp.example.com', '14330']);
 eq('tcp:host,port', hostPort('tcp:sql01,1433'), ['sql01', '1433']);
 eq('host:port', hostPort('sql01:1433'), ['sql01', '1433']);
+eq('host , port', hostPort('sql01 , 1433'), ['sql01', '1433']);
+eq('v6,port', hostPort('fe80::1,1433'), ['fe80::1', '1433']);
 eq('[v6]:port', hostPort('[fe80::1]:1433'), ['fe80::1', '1433']);
 eq('[v6]', hostPort('[2001:db8::5]'), ['2001:db8::5', '']);
 eq('a named instance', hostPort('sql01\\PROD'), ['sql01\\PROD', '']);
@@ -59,6 +78,13 @@ has('no ConnectionID: why says so', none.why, 'holds no connection');
 const neither = rowAddress('[odd] name', ['[ERP]']);
 eq('neither is an address: the host empty', [neither.host, neither.port], ['', '']);
 has('neither is an address: why asks for both', neither.why, 'type its host and port');
+// review 206h: a ConnectionID on DBA Dash's own host falls back to the Instance, with why
+const loc = rowAddress('SQL01', ['localhost']);
+eq('localhost: the host is the Instance', [loc.host, loc.port], ['SQL01', '']);
+has('localhost: why says DBA Dash\'s own host', loc.why, "DBA Dash's own host");
+const loc2 = rowAddress('SQL01', ['localhost,1433', 'sql01.corp.example.com,14330']);
+eq('a local ConnectionID is skipped for the next address', loc2, { host: 'sql01.corp.example.com', port: '14330', why: '' });
+eq('tcp:localhost: the Instance', rowAddress('SQL05', ['tcp:localhost']).host, 'SQL05');
 
 console.log(`${n - bad} of ${n} ok`);
 process.exit(bad ? 1 : 0);

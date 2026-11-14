@@ -6,7 +6,28 @@
 // it is not a network name or address, '' when it is. A ConnectionID is often a free-text label (a host and a comment,
 // an alias in brackets, two names in one).
 export const isV4 = (s: string) => /^\d{1,3}(\.\d{1,3}){3}$/.test(s) && s.split('.').every(p => Number(p) <= 255);
-export const isV6 = (s: string) => s.includes(':') && /^[0-9A-Fa-f:.]+$/.test(s) && (s.match(/::/g) ?? []).length <= 1 && !isV4(s);
+// isV6 is Go's net.ParseIP for a text with ':' (no zone): 8 groups of 1 to 4 hex digits, or fewer with one '::' standing
+// for at least one zero group; the last two groups may be an IPv4 address.
+export function isV6(s: string): boolean {
+  if (!s.includes(':')) return false;
+  let t = s;
+  const last = t.lastIndexOf(':'), tail = t.slice(last + 1);
+  if (tail.includes('.')) { if (!isV4(tail)) return false; t = t.slice(0, last + 1) + '0:0'; }
+  const halves = t.split('::');
+  if (halves.length > 2) return false;
+  const groups = halves.flatMap(h => (h === '' ? [] : h.split(':')));
+  if (!groups.every(g => /^[0-9A-Fa-f]{1,4}$/.test(g))) return false;
+  return halves.length === 2 ? groups.length < 8 : groups.length === 8;
+}
+// localHost is q_migrate.go's localHost on the row's host: DBA Dash's connection names the server on DBA Dash's own
+// host, which pgvigil cannot reach so.
+export function localHost(raw: string): boolean {
+  const h = hostPort(raw)[0].toLowerCase();
+  if (['', '.', '(local)', 'localhost', '127.0.0.1', '::1', '(localdb)'].includes(h)) return true;
+  return ['.\\', '(local)\\', 'localhost\\', '(localdb)\\'].some(p => h.startsWith(p));
+}
+// spaces around the ',' before a port come off ('sql01, 1433' is sql01 on 1433), as on the server
+const commaTrim = (s: string) => { const i = s.indexOf(','); return i < 0 ? s : s.slice(0, i).trim() + ',' + s.slice(i + 1).trim(); };
 export function portWhy(p: string): string {
   const t = p.trim();
   if (!/^\d+$/.test(t)) return `"${p}" after the name is not a port`;
@@ -16,11 +37,13 @@ export function portWhy(p: string): string {
 export function addrWhy(raw: string): string {
   let s = raw.trim();
   if (s.length > 4 && s.slice(0, 4).toLowerCase() === 'tcp:') s = s.slice(4);
+  s = commaTrim(s);
   if (s === '') return 'empty';
   if (/[ \t]/.test(s)) return 'a space in it: a label, not a network name';
   if (s.startsWith('[')) {
     const close = s.indexOf(']');
-    const inner = close < 0 ? s.slice(1) : s.slice(1, close), rest = close < 0 ? '' : s.slice(close + 1);
+    if (close < 0) return "a '[' with no ']': not a network address";
+    const inner = s.slice(1, close), rest = s.slice(close + 1);
     if (!isV6(inner) || inner.includes('.')) return 'brackets around a name: an alias, not a network address';
     if (rest === '') return '';
     return rest.startsWith(':') ? portWhy(rest.slice(1)) : 'text after the bracketed address';
@@ -41,8 +64,8 @@ export function addrWhy(raw: string): string {
   const b = host.indexOf('\\');
   const name = b < 0 ? host : host.slice(0, b), inst = b < 0 ? null : host.slice(b + 1);
   if (/[[\](){}]/.test(name)) return 'brackets in it: a label, not a network name';
-  if (!isV4(name)) {
-    if (name === '' || name.length > 253 || name.includes('..') || /^[.-]|[.-]$/.test(name)) return 'not a host name';
+  if (!isV4(name) && !isV6(name)) {
+    if (name === '' || new TextEncoder().encode(name).length > 253 || name.includes('..') || /^[.-]|[.-]$/.test(name)) return 'not a host name';
     const bad = [...name].find(r => !/[\p{L}\p{Nd}_.-]/u.test(r));
     if (bad !== undefined) return `"${bad}" is not a character of a network name`;
   }
@@ -59,17 +82,19 @@ export function hostPort(raw: string): [string, string] {
   let s = raw.trim();
   if (s.length > 4 && s.slice(0, 4).toLowerCase() === 'tcp:') s = s.slice(4);
   if (s.startsWith('[')) { const i = s.indexOf(']'); return [s.slice(1, i), s.slice(i + 1).replace(/^:/, '')]; }
-  if (s.includes(',')) { const i = s.indexOf(','); return [s.slice(0, i), s.slice(i + 1).trim()]; }
+  if (s.includes(',')) { const i = s.indexOf(','); return [s.slice(0, i).trim(), s.slice(i + 1).trim()]; }
   if ((s.match(/:/g) ?? []).length === 1) { const i = s.indexOf(':'); return [s.slice(0, i), s.slice(i + 1)]; }
   return [s, ''];
 }
 
 // rowAddress is a movable row's prefill: the first of DBA Dash's ConnectionIDs that is a network address (its port
 // apart), else DBA Dash's Instance (@@SERVERNAME) with why, else nothing with why - never a silent refusal at the add.
+// A connection on DBA Dash's own host (localhost, 127.0.0.1, '.') is no address for pgvigil: the server refuses it.
 export function rowAddress(server: string, conns: string[]): { host: string; port: string; why: string } {
-  const pick = conns.find(c => addrWhy(c) === '');
+  const why = (c: string) => addrWhy(c) || (localHost(c) ? "it names DBA Dash's own host" : '');
+  const pick = conns.find(c => why(c) === '');
   if (pick !== undefined) { const [host, port] = hostPort(pick); return { host, port, why: '' }; }
-  const said = conns.length ? `DBA Dash connects to it as ${conns.map(c => `"${c}"`).join(', ')}: not a network address (${addrWhy(conns[0])})` : 'DBA Dash holds no connection for it';
-  if (addrWhy(server) === '') return { host: server, port: '', why: `${said}; the host here is DBA Dash's Instance (@@SERVERNAME) - check it and the port.` };
+  const said = conns.length ? `DBA Dash connects to it as ${conns.map(c => `"${c}"`).join(', ')}: not a network address (${why(conns[0])})` : 'DBA Dash holds no connection for it';
+  if (why(server) === '') return { host: server, port: '', why: `${said}; the host here is DBA Dash's Instance (@@SERVERNAME) - check it and the port.` };
   return { host: '', port: '', why: `${said}, nor is its Instance "${server}" - type its host and port.` };
 }

@@ -161,11 +161,15 @@ func localHost(h string) bool {
 // the first collection, or reach another server. Accepted, after an optional 'tcp:': a DNS or NetBIOS name (letters,
 // digits, '-', '_', '.') or an IPv4 address, either with an optional '\instance' (letters, digits, '_', '$', '#'; at
 // most 16), then an optional ',port' or ':port'; an IPv6 address alone, or in brackets with an optional ':port'.
-// web/src/migrate.ts' addrWhy is the same rule (the page's prefill); this one decides.
+// web/src/move_address.ts' addrWhy is the same rule (the page's prefill); this one decides. Spaces around the ','
+// before a port are dropped first ('sql01, 1433' is sql01 on 1433).
 func addressWhy(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > 4 && strings.EqualFold(s[:4], "tcp:") {
 		s = s[4:]
+	}
+	if h, p, ok := strings.Cut(s, ","); ok {
+		s = strings.TrimSpace(h) + "," + strings.TrimSpace(p)
 	}
 	switch {
 	case s == "":
@@ -174,7 +178,10 @@ func addressWhy(s string) string {
 		return "a space in it: a label, not a network name"
 	}
 	if strings.HasPrefix(s, "[") {
-		in, rest, _ := strings.Cut(s[1:], "]")
+		in, rest, closed := strings.Cut(s[1:], "]")
+		if !closed {
+			return "a '[' with no ']': not a network address"
+		}
 		if ip := net.ParseIP(in); ip == nil || ip.To4() != nil || strings.Contains(in, ".") {
 			return "brackets around a name: an alias, not a network address"
 		}
@@ -460,6 +467,9 @@ func moveAddCheck(auth, gmsa, goos string, servers []moveServer) error {
 		return fmt.Errorf("an add moves 1 to %d servers (got %d)", maxMoveAdd, len(servers))
 	}
 	for _, sv := range servers {
+		if strings.TrimSpace(sv.Host) == "" {
+			return fmt.Errorf("%s: no host: type the server's host and port in its row", sv.Server)
+		}
 		if config.NotTCP(sv.Host) {
 			return fmt.Errorf("%s: %q is a named pipe or shared memory; pgvigil connects over TCP: type the server's network name", sv.Server, sv.Host)
 		}
@@ -474,8 +484,13 @@ func moveAddCheck(auth, gmsa, goos string, servers []moveServer) error {
 			return fmt.Errorf("%s: the name %q must be 1 to 63 characters of letters, digits, '_', '.', '@' and '-' (suggested: %s)", sv.Server, sv.Name, nameFor(sv.Server))
 		}
 		if sv.Port != "" {
-			if p, err := strconv.Atoi(sv.Port); err != nil || p < 1 || p > 65535 {
+			p, err := strconv.Atoi(sv.Port)
+			if err != nil || p < 1 || p > 65535 {
 				return fmt.Errorf("%s: port %q is not 1 to 65535", sv.Server, sv.Port)
+			}
+			// a port typed in the host and another in the port field: never pick one silently
+			if _, hp := config.SplitHostPort(sv.Host); hp > 0 && hp != p {
+				return fmt.Errorf("%s: the host %q carries port %d and the port field says %d: keep one", sv.Server, sv.Host, hp, p)
 			}
 		}
 	}

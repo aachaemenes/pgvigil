@@ -351,9 +351,10 @@ for page, sqltext in calls.items():
                 if ok and x != y: clockcells[0] += 1
                 return ok
             if not (len(a) == len(b) and all(len(x) == len(y) and all(near(p, q, c) for p, q, c in zip(x, y, cols)) for x, y in zip(a, b))):
-                diff = next(((x, y) for x, y in zip(a, b) if x != y), None)
-                # the columns of that first differing pair by name (the whole pair is long: a cut log loses the cells)
-                cells = [f"{c}: DBA Dash {p} / page {q}" for p, q, c in zip(diff[0], diff[1], cols) if p != q] if diff else []
+                # the first pair near() refuses (a pair differing only in accepted clock cells is not it), and only its
+                # cells near() refuses, by column name (the whole pair is long: a cut log loses the cells)
+                diff = next(((x, y) for x, y in zip(a, b) if not (len(x) == len(y) and all(near(p, q, c) for p, q, c in zip(x, y, cols)))), None)
+                cells = [f"{c}: DBA Dash {p} / page {q}" for p, q, c in zip(diff[0], diff[1], cols) if not near(p, q, c)] if diff else []
                 bad.append(f"{page} set {n+1}: the rows differ in {'; '.join(cells) or 'their order'} - first pair: {diff}")
         rows_seen += len(rows)
     if page == "sessions@snapshot" and rows_seen == 0: bad.append(f"{page}: 0 rows for the snapshot {snap}")

@@ -50,7 +50,7 @@ func TestMoveAddCheck(t *testing.T) {
 		{"(local)", "sql", "", "linux", with(func(s *moveServer) { s.Host = "(local)" }), "on DBA Dash's own host"},
 		{"localhost,1433", "sql", "", "linux", with(func(s *moveServer) { s.Host = "localhost,1433" }), "on DBA Dash's own host"},
 		{"tcp:localhost", "sql", "", "linux", with(func(s *moveServer) { s.Host = "tcp:localhost,1433" }), "on DBA Dash's own host"},
-		{"empty host", "sql", "", "linux", with(func(s *moveServer) { s.Host = "" }), "on DBA Dash's own host"},
+		{"empty host", "sql", "", "linux", with(func(s *moveServer) { s.Host = "" }), "no host: type the server's host and port"},
 		{"localhost-like name", "sql", "", "linux", with(func(s *moveServer) { s.Host = "localhost2" }), ""},
 		{"a name with a backslash", "sql", "", "linux", with(func(s *moveServer) { s.Name = `sql01\PROD` }), "suggested: SQL01-PROD"},
 		{"no name", "sql", "", "linux", with(func(s *moveServer) { s.Name = "" }), "must be 1 to 63"},
@@ -82,6 +82,18 @@ func TestMoveAddCheck(t *testing.T) {
 		{"an instance name of 17 characters", "sql", "", "linux", with(func(s *moveServer) { s.Host = `SQL01\` + strings.Repeat("A", 17) }), "not 1 to 16"},
 		{"a name ending in a dot", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01." }), "not a host name"},
 		{"an IPv6 address alone", "sql", "", "linux", with(func(s *moveServer) { s.Host = "fe80::1" }), ""},
+		// review 206h: an IPv6 address with SQL Server's ',port' (the page took it for a name); spaces around the ',';
+		// an unclosed bracket; a port in the host against another in the port field; a 254-byte name of 127 letters
+		{"an IPv6 address and ',port'", "sql", "", "linux", with(func(s *moveServer) { s.Host = "fe80::1,1433" }), ""},
+		{"tcp: an IPv6 address and ',port'", "sql", "", "linux", with(func(s *moveServer) { s.Host = "tcp:2001:db8::5,1433" }), ""},
+		{"a space after the comma", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01, 1433" }), ""},
+		{"spaces around the comma", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01 , 1433" }), ""},
+		{"a space in the name before the comma", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01 old,1433" }), "a space"},
+		{"an unclosed bracket", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[fe80::1" }), "a '[' with no ']'"},
+		{"a port in the host and another in the field", "sql", "", "linux", with(func(s *moveServer) { s.Host, s.Port = "sql05-listener,1433", "14330" }), "keep one"},
+		{"the same port in the host and the field", "sql", "", "linux", with(func(s *moveServer) { s.Host, s.Port = "sql05,1433", "1433" }), ""},
+		{"a name of 254 bytes", "sql", "", "linux", with(func(s *moveServer) { s.Host = strings.Repeat("é", 127) }), "not a host name"},
+		{"an IPv4-mapped IPv6 address", "sql", "", "linux", with(func(s *moveServer) { s.Host = "::ffff:10.1.2.3" }), ""},
 	} {
 		err := moveAddCheck(c.auth, c.gmsa, c.goos, c.servers)
 		switch {

@@ -327,8 +327,10 @@ func BuildDSN(c Conn) (string, error) {
 	case EngineSQLServer:
 		// a named instance (host\name) is go-mssqldb's sqlserver://host/name
 		h, inst, _ := strings.Cut(host, `\`)
-		if strings.Contains(h, ":") {
-			h = "[" + strings.Trim(h, "[]") + "]" // an IPv6 address: unbracketed, a URL reads its last group as the port
+		// an IPv6 address (bare or in brackets, no port): unbracketed, a URL reads its last group as the port; any
+		// other host with ':' ('sql01:1433', '[fe80::1]:1433') is left as typed, a host and its port
+		if in := strings.TrimSuffix(strings.TrimPrefix(h, "["), "]"); strings.Contains(in, ":") && net.ParseIP(in) != nil {
+			h = "[" + in + "]"
 		}
 		if c.Port > 0 {
 			h += ":" + strconv.Itoa(c.Port)
