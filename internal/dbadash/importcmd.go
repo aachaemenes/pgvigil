@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // ImportUsage is the command's usage line.
@@ -54,6 +55,7 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 	if err != nil {
 		return err
 	}
+	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
 	var src *config.DBADashRepo
 	for i := range cfg.DBADash {
 		if strings.EqualFold(cfg.DBADash[i].Name, *repo) {

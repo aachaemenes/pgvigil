@@ -63,7 +63,9 @@
 #        an error and gets the bare count 'Collection Health|<k>'. With PGVIGIL_DBADASH_BAK an instance without runs
 #        takes the 24 h branch, and D1s / D1p are not run (a restored repository's history is the site's);
 #     D2 after `pgvigil collect -once mssql_instance` of a pgvigil SQL Server instance on the same server it returns
-#        that instance (its instance_id and name);
+#        that instance (its instance_id and name); D2x a session named DBADash_T206 (stopped, a ring buffer) made on the
+#        server, then `collect -once mssql_xe`: pgvigil.mssql_xe_foreign holds it 'false|ring_buffer' and the read's count
+#        equals the server's own count of DBADash_% sessions; the session dropped;
 #     D3 without an actions_dsn on it, a kill of the proof's own application session is 409, outcome refused, the
 #        detail names 'actions_dsn', one audit row 'refused' is in pgvigil.actions_log and the session is still
 #        connected;
@@ -76,6 +78,10 @@
 #     pgvigil table for the instance equals the source; a second run inserts 0 and stored is unchanged; pgvigil holds
 #     the instance under DBA Dash's display name, engine sqlserver, with the tag 'env:proof' added on DBA Dash's side
 #     and none of DBA Dash's system tags; the run as a login in role pgvigil_reader is refused ('may not write').
+#     E2 (task 206: serve's way) the first real run goes through a pool handed to the import (ImportOptions.Store): one
+#     'progress' line per batch of 2 (ceil(source / 2) for each mapping, the last at inserted = source) and one final
+#     line per mapping at inserted = source; the pool answers after the import (Import leaves it open); the second run
+#     goes through the dsn as before; a pgvigil_reader login's pool is refused ('may not write') as its dsn is.
 #  F. the version pin: with a newer version row '9.9.9' in the repository, every page answers ok with proven=false and
 #     the note 'not proven on source version 9.9.9'; the row is removed again.
 #  G. the imported server's tabs (task 168), under `pgvigil serve` built from a copy of this tree with the join's wiring
@@ -83,6 +89,8 @@
 #     join carries the wiring = said and used as it is) and the
 #     web bundle rebuilt, on a pgvigil repository of its own whose configuration names the DBA Dash repository and no
 #     instance, in a headless Chromium signed in as a UI user:
+#     G0 (before the walk, Node) web/src/move_address.test.mjs: the move's prefill rule - which DBA Dash connection is
+#        a network address, its host and port apart, else DBA Dash's Instance with why - every row 'ok';
 #     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists every SQL Server tab (as many
 #        as web/src/router.ts mssqlInstanceTabs holds in the tree: 33 at task 168, 53 at the release join);
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
@@ -360,8 +368,11 @@ for page, sqltext in calls.items():
                 if ok and x != y: clockcells[0] += 1
                 return ok
             if not (len(a) == len(b) and all(len(x) == len(y) and all(near(p, q, c) for p, q, c in zip(x, y, cols)) for x, y in zip(a, b))):
-                diff = next(((x, y) for x, y in zip(a, b) if x != y), None)
-                bad.append(f"{page} set {n+1}: the rows differ, first: {diff}")
+                # the first pair near() refuses (a pair differing only in accepted clock cells is not it), and only its
+                # cells near() refuses, by column name (the whole pair is long: a cut log loses the cells)
+                diff = next(((x, y) for x, y in zip(a, b) if not (len(x) == len(y) and all(near(p, q, c) for p, q, c in zip(x, y, cols)))), None)
+                cells = [f"{c}: DBA Dash {p} / page {q}" for p, q, c in zip(diff[0], diff[1], cols) if not near(p, q, c)] if diff else []
+                bad.append(f"{page} set {n+1}: the rows differ in {'; '.join(cells) or 'their order'} - first pair: {diff}")
         rows_seen += len(rows)
     if page == "sessions@snapshot" and rows_seen == 0: bad.append(f"{page}: 0 rows for the snapshot {snap}")
     nonempty += rows_seen > 0
@@ -489,6 +500,15 @@ else
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlbox'")
 p2=$(part); echo "$p2" | grep -qE "^1 .*instance_id=$SB( |$)" && echo "$p2" | grep -q 'name=sqlbox' || fail "D2: part=pgvigil after the collect: $p2 (want instance $SB sqlbox)"
 echo "ok   D2: after pgvigil collected sqlbox ($SERVERNAME): part=pgvigil names instance $SB sqlbox"
+# D2x (task 206, review 206f 1): the collector's own XE read stores the DBA Dash sessions it lists (xe.go's tail through
+# import_mssql_xe), a stopped one with its ring buffer, and the count the server itself gives
+sqok "D2x: a DBA Dash-named session" "CREATE EVENT SESSION [DBADash_T206] ON SERVER ADD EVENT sqlserver.error_reported ADD TARGET package0.ring_buffer;"
+"$BIN" collect -config "$TMPD/d.yaml" -instance sqlbox -once mssql_xe >"$TMPD/collect-xe.out" 2>&1 || { cat "$TMPD/collect-xe.out" >&2; fail "D2x: collect mssql_xe"; }
+xhand=$(sq "SELECT COUNT(*) FROM sys.server_event_sessions WHERE name LIKE N'DBADash[_]%'")
+xgot=$(pq "SELECT coalesce((SELECT running::text || '|' || array_to_string(targets, ',') FROM pgvigil.mssql_xe_foreign WHERE instance_id = $SB AND name = 'DBADash_T206'), 'none') || '|' || coalesce((SELECT sessions::text FROM pgvigil.mssql_xe_foreign_read WHERE instance_id = $SB), 'no read')")
+[[ "$xgot" == "false|ring_buffer|$xhand" ]] || fail "D2x: the stored DBA Dash sessions: '$xgot' (want 'false|ring_buffer|$xhand': DBADash_T206 stopped with its ring buffer, and the server's own count)"
+sqok "D2x: the session dropped" "DROP EVENT SESSION [DBADash_T206] ON SERVER;"
+echo "ok   D2x: the collector's XE read stored DBA Dash's sessions as the server lists them ($xhand, DBADash_T206 stopped with its ring_buffer); the session dropped"
 # the proof's own application session, an open transaction, waiting
 printf "BEGIN TRAN; SELECT 1 AS pgvdoor_marker; WAITFOR DELAY '00:10:00';\n" | docker exec -i --env-file "$TMPD/app.env" "$SQL" /opt/mssql-tools18/bin/sqlcmd -S localhost -U "$APP" -C -i /dev/stdin >/dev/null 2>&1 & APPPID=$!
 for _ in $(seq 1 30); do S_ID=$(sq "SELECT MIN(session_id) FROM sys.dm_exec_sessions WHERE login_name = '$APP'"); [[ -n "$S_ID" && "$S_ID" != NULL ]] && break; sleep 0.5; done
@@ -518,18 +538,25 @@ echo "== E. the import =="
 TAGID=$(sq "INSERT INTO dbo.Tags (TagName, TagValue) VALUES (N'env', N'proof'); SELECT SCOPE_IDENTITY();" "$DDB")
 sqok "E: the tag" "INSERT INTO dbo.InstanceIDsTags (InstanceID, TagID) VALUES ($ID, $TAGID)" "$DDB"
 imp() { PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$1" PGVIGIL_DBADASH_IMPORT_DRY="${2:-0}" PGVIGIL_DBADASH_IMPORT_BATCH=2 \
-  go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import ' || true; }
+  PGVIGIL_DBADASH_IMPORT_STORE="${3:-0}" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep -E '^(import |progress |store open after: )' || true; }
 declare -A want=([cpu]=$n_cpu [volumes]=$n_vol [dbsize]=$n_dbs [jobruns]=$n_job)
 field() { echo "$1" | grep "^import $ID [0-9]* $2 " | sed -n "s/.* $3=\([0-9]*\).*/\1/p"; }
 dry=$(imp "$PGDSN" 1); echo "$dry"
 for m in cpu volumes dbsize jobruns; do
   [[ "$(field "$dry" "$m" source)" == "${want[$m]}" && "$(field "$dry" "$m" inserted)" == 0 ]] || fail "E: the dry run of $m: $(echo "$dry" | grep " $m ") (want source=${want[$m]} inserted=0)"
 done
-one=$(imp "$PGDSN"); echo "$one"
+one=$(imp "$PGDSN" 0 1); echo "$one" | grep -v '^progress '
 for m in cpu volumes dbsize jobruns; do
   s=$(field "$one" "$m" source); i=$(field "$one" "$m" inserted); t=$(field "$one" "$m" stored)
   [[ "$s" == "${want[$m]}" && "$i" == "$s" && "$t" == "$s" ]] || fail "E: $m: source=$s inserted=$i stored=$t (want ${want[$m]} each)"
+  # E2: Progress per batch of 2, then the mapping's final line
+  nb=$(echo "$one" | grep -c "^progress $ID $m inserted=[0-9]* final=0$" || true)
+  lastb=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=0$" | tail -1 | sed -n 's/.*inserted=\([0-9]*\).*/\1/p' || true)
+  fin=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=1$" | sed -n 's/.*inserted=\([0-9]*\).*/\1/p' || true)
+  [[ "$nb" == "$(( (${want[$m]} + 1) / 2 ))" && "$fin" == "${want[$m]}" && ( ${want[$m]} == 0 || "$lastb" == "${want[$m]}" ) ]] \
+    || fail "E2: $m's progress: $nb batch line(s) ending at '${lastb}', final '${fin}' (want $(( (${want[$m]} + 1) / 2 )) ending at ${want[$m]}, final ${want[$m]})"
 done
+echo "$one" | grep -qx 'store open after: ok' || fail "E2: the pool handed to the import does not answer after it: $(echo "$one" | grep '^store open after')"
 two=$(imp "$PGDSN")
 for m in cpu volumes dbsize jobruns; do
   [[ "$(field "$two" "$m" inserted)" == 0 && "$(field "$two" "$m" stored)" == "${want[$m]}" ]] || fail "E: the second run of $m: $(echo "$two" | grep " $m ")"
@@ -546,7 +573,9 @@ psql "$ADMIN_DSN" -Xqc "CREATE ROLE $PGRO LOGIN IN ROLE pgvigil_reader" >/dev/nu
 ROPG="$PGDSN user=$PGRO"; ROPG="${ROPG/user=postgres /}"
 bad=$(PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$ROPG" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import error' || true)
 echo "$bad" | grep -q 'may not write' || fail "E: the import as a pgvigil_reader login was not refused: $bad"
-echo "ok   E: dry run counts equal the source (cpu ${want[cpu]}, volumes ${want[volumes]}, dbsize ${want[dbsize]}, jobruns ${want[jobruns]}); the import inserted and pgvigil's tables hold exactly those, in batches of 2; a second run inserted 0; instance '$DISP' engine sqlserver with env:proof ($nsys DBA Dash system tag(s) left out); a pgvigil_reader login refused"
+bad=$(PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$ROPG" PGVIGIL_DBADASH_IMPORT_STORE=1 go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import error' || true)
+echo "$bad" | grep -q 'may not write' || fail "E2: the import through a pgvigil_reader login's pool was not refused: $bad"
+echo "ok   E: dry run counts equal the source (cpu ${want[cpu]}, volumes ${want[volumes]}, dbsize ${want[dbsize]}, jobruns ${want[jobruns]}); the import (through a pool handed to it, one progress line per batch, the pool open after) inserted and pgvigil's tables hold exactly those, in batches of 2; a second run (its dsn) inserted 0; instance '$DISP' engine sqlserver with env:proof ($nsys DBA Dash system tag(s) left out); a pgvigil_reader login refused (dsn and pool)"
 
 echo "== F. the version pin =="
 sqok "F: the version row" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES (DATEADD(day, 1, SYSUTCDATETIME()), '9.9.9')" "$DDB"
@@ -565,6 +594,10 @@ elif (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: the j
 elif (cd "$GSRC" && git apply "$JP" 2>"$TMPD/g-apply.err"); then echo "G: the join's wiring applied to the run's copy"
 else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; fi
 (cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/g-web.log" 2>&1 && npm run build >>"$TMPD/g-web.log" 2>&1) || { tail -20 "$TMPD/g-web.log" >&2; fail "G: the web build"; }
+# G0: the move's prefill rule (web/src/move_address.ts: which DBA Dash connection is a network address) in Node
+"$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/move_address.ts" --format=esm --outfile="$TMPD/move_address.mjs" --log-level=warning || fail "G0: move_address.ts did not compile"
+node "$GSRC/web/src/move_address.test.mjs" "$TMPD/move_address.mjs" > "$TMPD/g0-unit.out" 2>&1 || { cat "$TMPD/g0-unit.out"; fail "G0: the move's prefill unit tests"; }
+echo "ok   G0: the move's prefill rule: $(tail -1 "$TMPD/g0-unit.out")"
 (cd "$GSRC" && go build -o "$TMPD/pgvigil-g" ./cmd/pgvigil) || fail "G: the build"
 BIN="$TMPD/pgvigil-g"
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $GDB" >/dev/null

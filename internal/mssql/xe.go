@@ -359,7 +359,7 @@ FROM sys.%[1]s_event_sessions d
 LEFT JOIN sys.%[1]s_event_session_targets dt ON dt.event_session_id = d.event_session_id
 LEFT JOIN sys.dm_xe_%[2]ssessions r ON r.name = d.name
 LEFT JOIN sys.dm_xe_%[2]ssession_targets rt ON rt.event_session_address = r.address AND rt.target_name = dt.name
-WHERE d.name LIKE N'pgvigil[_]%%' OR d.name IN (N'system_health', N'AlwaysOn_health')
+WHERE d.name LIKE N'pgvigil[_]%%' OR d.name IN (N'system_health', N'AlwaysOn_health') OR d.name LIKE N'DBADash[_]%%'
 ORDER BY d.name, dt.name`
 
 // xeRingSQL reads one ring buffer whole, once, into a variable and hands it over in pieces of 16,000 characters as
@@ -434,6 +434,32 @@ func xeGroup(targets []xeTarget) map[string]*xeSession {
 		}
 	}
 	return out
+}
+
+// xeForeign is DBA Dash's own sessions on the server (DBADash_1 / _2, DBADash_SlowQueries, DBADash_Deadlocks,
+// DBADash_AdHoc in 4.24.1): listed for the move from DBA Dash (task 206), whose checklist prints a DROP line for each
+// for the server's DBA; pgvigil never reads their events (xePick takes only its own names) and never drops one. One row
+// per session (its name, whether it runs, its targets) and one 'sessions_read' row: a read that listed the sessions,
+// so the store replaces its list (a read that failed before here leaves the last list).
+func xeForeign(sessions map[string]*xeSession) []collect.Row {
+	names := make([]string, 0, len(sessions))
+	for n := range sessions {
+		if strings.HasPrefix(strings.ToUpper(n), "DBADASH_") {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	out := make([]collect.Row, 0, len(names)+1)
+	for _, n := range names {
+		s := sessions[n]
+		targets := make([]string, 0, len(s.targets))
+		for t := range s.targets {
+			targets = append(targets, t)
+		}
+		sort.Strings(targets)
+		out = append(out, collect.Row{"kind": "foreign_session", "name": n, "running": s.running, "targets": targets})
+	}
+	return append(out, collect.Row{"kind": "sessions_read", "count": len(names)})
 }
 
 // xePick chooses the session of one capture among the defined ones: a name pgvigil_<install id>_<capture>; a running
@@ -556,6 +582,7 @@ func (xeCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, op
 		}
 		tail = append(tail, state)
 	}
+	tail = append(tail, xeForeign(sessions)...)
 	return emit(tail)
 }
 

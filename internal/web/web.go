@@ -185,7 +185,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 }
 
 // Close releases the audit pool and the pool.
-func (s *Server) Close() { s.actions.Close(); s.demo.close(); s.pool.Close() }
+func (s *Server) Close() { s.closeMoveJobs(); s.actions.Close(); s.demo.close(); s.pool.Close() }
 
 // Handler returns the routes: /api/... (behind the login when it is on) and the embedded frontend.
 // The shell and its assets are public: they hold no data.
@@ -225,6 +225,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)
 	api.HandleFunc("POST /api/admin/sources", s.SourcesAdminWrite)
 	api.HandleFunc("POST /api/admin/proposals", s.ProposalsAdminWrite)
+	// task 206: Admin > Instances' Move from DBA Dash (q_migrate.go)
+	api.HandleFunc("GET /api/admin/dbadash_moves", s.DBADashMoves)
+	api.HandleFunc("POST /api/admin/dbadash_moves", s.DBADashMovesWrite)
 	api.HandleFunc("GET /api/uptime", s.Uptime)
 	api.HandleFunc("GET /api/pgconfig", s.PGConfig)
 	api.HandleFunc("GET /api/pg/dboptions", s.PGDBOptions)

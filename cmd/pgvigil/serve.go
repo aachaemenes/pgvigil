@@ -20,6 +20,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/aachaemenes/pgvigil/internal/web"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -50,6 +51,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
 	// the custom: list (task 61): with it the stale check counts the custom collection among the expected ones
 	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
 		return err
@@ -191,7 +193,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	for _, d := range cfg.DBADash {
 		dd[d.Name] = d.DSNRaw
 	}
-	srv.SetInstancesAdmin(web.InstancesAdmin{ConfigPath: *path, File: cfg.Instances, DBADash: dd})
+	srv.SetInstancesAdmin(web.InstancesAdmin{ConfigPath: *path, File: cfg.Instances, DBADash: dd, GMSA: cfg.GMSA})
 	go srv.RunInstanceSync(ctx)
 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
 	go srv.RunReportMail(ctx)

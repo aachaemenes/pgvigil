@@ -155,6 +155,14 @@ func TestBuildDSN(t *testing.T) {
 		{Conn{Engine: EngineSQLServer, Auth: "sql", Host: "sql01", Login: "mon"}, "", true},
 		{Conn{Engine: EngineSQLServer, Auth: "sql", Host: "sql01", Login: "mon", Password: "x", Extra: "TrustServerCertificate=true&server=evil"},
 			"sqlserver://mon:x@sql01?TrustServerCertificate=true&encrypt=true", false},
+		// an IPv6 host goes in brackets: unbracketed, a URL reads 'fe80::1' as host 'fe80:' and port 1
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "fe80::1"}, "sqlserver://[fe80::1]?encrypt=true", false},
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "2001:db8::5", Port: 14330}, "sqlserver://[2001:db8::5]:14330?encrypt=true", false},
+		// review 206h: only an IPv6 address is bracketed; a host typed with its port stays as typed (it worked before)
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "sql01:1433"}, "sqlserver://sql01:1433?encrypt=true", false},
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "[fe80::1]:1433"}, "sqlserver://[fe80::1]:1433?encrypt=true", false},
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "[fe80::1]", Port: 1433}, "sqlserver://[fe80::1]:1433?encrypt=true", false},
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "::ffff:10.1.2.3"}, "sqlserver://[::ffff:10.1.2.3]?encrypt=true", false},
 		{Conn{Engine: EnginePostgres, Auth: "password", Host: "pg1", Port: 5432, Login: "pgvigil", Password: "it's a pw"},
 			`host=pg1 port=5432 dbname=postgres user=pgvigil password='it\'s a pw'`, false},
 		{Conn{Engine: EnginePostgres, Auth: "pgpass", Host: "pg1", Login: "pgvigil", Extra: "sslmode=require host=evil"},

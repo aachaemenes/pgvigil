@@ -53,6 +53,8 @@ type InstancesAdmin struct {
 	File       []config.Instance
 	// DBADash maps a dbadash: repository's name in pgvigil.yaml to its connection string's reference (env:/file:).
 	DBADash map[string]string
+	// GMSA is the configuration's gmsa: (task 206): the Windows sign-in of a server moved from DBA Dash, on Windows only.
+	GMSA string
 }
 
 var instancesAdmins sync.Map // *Server -> *InstancesAdmin

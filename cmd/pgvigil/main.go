@@ -38,6 +38,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/reportmail"
 	"github.com/aachaemenes/pgvigil/internal/sched"
@@ -168,6 +169,7 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 	if err != nil {
 		return nil, nil, &configError{err}
 	}
+	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
 	if needInstance && len(cfg.Instances) == 0 {
 		return nil, nil, &configError{fmt.Errorf("config %s: at least one instance is required", *path)}
 	}

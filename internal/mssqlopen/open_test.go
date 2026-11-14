@@ -459,3 +459,46 @@ func TestProviderHoldsTheDeadline(t *testing.T) {
 		t.Fatal("with no holder the fake credential answered (it answers only under a hold): the test cannot tell")
 	}
 }
+
+// TestGMSARefusal (reviews 206d 1 / 206e 3): with gmsa: set, a string that signs in as the process's own Windows
+// account opens on Windows only when the process runs as that gMSA; every other string, OS or unset gmsa: as before.
+func TestGMSARefusal(t *testing.T) {
+	was := processAccount
+	defer func() { processAccount = was; RequireGMSA("") }()
+	own := `sqlserver://sql01:1433?encrypt=true`
+	for _, c := range []struct {
+		name, gmsa, goos, runAs, dsn string
+		want                         string // "" = opens
+	}{
+		{"no gmsa", "", "windows", `NT SERVICE\pgvigil`, own, ""},
+		{"as the gmsa", `CORP\pgv$`, "windows", `CORP\pgv$`, own, ""},
+		{"as the gmsa, another case", `CORP\pgv$`, "windows", `corp\PGV$`, own, ""},
+		{"as the virtual account", `CORP\pgv$`, "windows", `NT SERVICE\pgvigil`, own, `runs as "NT SERVICE\\pgvigil", not as the gMSA CORP\pgv$`},
+		{"as LocalSystem, winsspi named", `CORP\pgv$`, "windows", `NT AUTHORITY\SYSTEM`, own + "&authenticator=winsspi", "not as the gMSA"},
+		{"the account unread", `CORP\pgv$`, "windows", "?", own, "could not be read"},
+		{"a SQL login", `CORP\pgv$`, "windows", `NT SERVICE\pgvigil`, `sqlserver://mon:pw@sql01:1433`, ""},
+		{"a Windows account with its password (NTLM)", `CORP\pgv$`, "windows", `NT SERVICE\pgvigil`, `sqlserver://CORP%5Cmon:pw@sql01:1433`, ""},
+		{"krb5 named (a keytab names its account)", `CORP\pgv$`, "windows", `NT SERVICE\pgvigil`, own + "&authenticator=krb5", ""},
+		{"off Windows", `CORP\pgv$`, "linux", "aachaemenes", own, ""},
+	} {
+		RequireGMSA(c.gmsa)
+		runAs := c.runAs
+		processAccount = func() (string, error) {
+			if runAs == "?" {
+				return "", errors.New("lookup failed")
+			}
+			return runAs, nil
+		}
+		cfg, err := msdsn.Parse(c.dsn)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		got := gmsaRefusal(cfg, c.goos)
+		switch {
+		case c.want == "" && got != "":
+			t.Errorf("%s: refused (%s), want it to open", c.name, got)
+		case c.want != "" && !strings.Contains(got, c.want):
+			t.Errorf("%s: %q, want a refusal with %q", c.name, got, c.want)
+		}
+	}
+}
