@@ -454,9 +454,10 @@ echo "ok   C1-C4: one row per threshold case with its plan, none below the thres
 
 # C5 the live plan
 MAJ=${VER%%.*}
-bg live 200 "SELECT COUNT_BIG(*) FROM dbo.t a CROSS JOIN dbo.t b CROSS JOIN (SELECT TOP 2000 1 x FROM dbo.t) c WHERE a.pad <> b.pad OR a.a > b.a OPTION (MAXDOP 1) /* pgvc-live */"
+# row mode on every version (a recursive CTE has no batch mode): one statement running for minutes on one core
+bg live 300 "WITH n AS (SELECT CAST(1 AS bigint) AS i UNION ALL SELECT i + 1 FROM n WHERE i < 2000000000) SELECT COUNT_BIG(*) FROM n OPTION (MAXDOP 1, MAXRECURSION 0) /* pgvc-live */"
 waitreq pgvc-live >/dev/null
-for _ in $(seq 1 90); do C=$(req pgvc-live | cut -d'|' -f5); [[ -n "$C" && "$C" -ge 61000 ]] && break; sleep 1; done
+for _ in $(seq 1 150); do C=$(req pgvc-live | cut -d'|' -f5); [[ -n "$C" && "$C" -ge 61000 ]] && break; sleep 1; done
 [[ -n "$C" && "$C" -ge 61000 ]] || fail "C5: the CPU-bound statement did not reach 61 s of CPU (at $C ms)"
 col rpon mssql_live_plans; stopbg
 LV=$(pq "SELECT count(*) FILTER (WHERE live_xml LIKE '%RunTimeCountersPerThread%') FROM pgvigil.mssql_live_plan l JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpon'")
