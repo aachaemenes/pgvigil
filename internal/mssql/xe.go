@@ -127,7 +127,8 @@ func XEScript(installID, form string) (string, error) {
 	case XEFormCloudSQL:
 		w("  Google Cloud SQL for SQL Server: run it in master as the sqlserver user. The slow capture's event file goes\n" +
 			"  to " + xeCloudSQLDir + ", the folder Google names for Extended Events files.\n" +
-			"  NOT PROVEN: this form was written from Google's pages and has not been run against Cloud SQL.\n")
+			"  Run on a real Cloud SQL for SQL Server 2022 instance: the four sessions made, started and read. Google's trigger\n" +
+			"  takes one max_memory per session, of 4 to 8 MB: the sizes below are each session's MAX_MEMORY, kept in that range.\n")
 	default:
 		w("  Run it in master as a login that may create event sessions (ALTER ANY EVENT SESSION, or CONTROL SERVER).\n")
 	}
@@ -154,7 +155,12 @@ func XEScript(installID, form string) (string, error) {
 	} else {
 		w("DECLARE @slow_kb          int = 4096;   -- the slow session's ring buffer (KB): a full buffer loses its oldest events\n")
 	}
-	w("DECLARE @deadlock_kb      int = 4096;   -- ring buffer sizes (KB)\n")
+	if form == XEFormCloudSQL {
+		w("DECLARE @deadlock_kb      int = 4096;   -- each session's MAX_MEMORY (KB), 4096 to 8192 on Cloud SQL (kept in that range);\n")
+		w("                                        -- the ring buffers there take no size of their own\n")
+	} else {
+		w("DECLARE @deadlock_kb      int = 4096;   -- ring buffer sizes (KB)\n")
+	}
 	w("DECLARE @blocked_kb       int = 4096;\n")
 	w("DECLARE @attention_kb     int = 1024;\n")
 	w("-- ---- end of settings ----\n\nDECLARE @sql nvarchar(max), @us nvarchar(30) = CAST(CAST(@slow_ms AS bigint) * 1000 AS nvarchar(30));\n\n")
@@ -176,8 +182,23 @@ func XEScript(installID, form string) (string, error) {
 	ring := func(kbVar string) string {
 		return "ADD TARGET package0.ring_buffer(SET max_memory=(' + CAST(" + kbVar + " AS nvarchar(20)) + N'))"
 	}
-	session(xeDeadlocks, "ADD EVENT sqlserver."+sc.deadlock+"(ACTION(package0.event_sequence))\n"+ring("@deadlock_kb")+"\n"+opts)
-	session(xeBlocked, "ADD EVENT sqlserver.blocked_process_report(ACTION(package0.event_sequence))\n"+ring("@blocked_kb")+"\n"+opts)
+	// a ring-buffer session's target and options. On Cloud SQL Google's trigger TRG_EnforceXEventSessionParams4 refuses
+	// a CREATE EVENT SESSION holding "max_memory=" more than once, and fails on its own (Msg 537) when the one it finds
+	// is not the session's 'MAX_MEMORY=<n> KB', and it takes 4 to 8 MB only (G1, a real instance, 2026-11-13): there
+	// the ring buffer takes no max_memory of its own and the session's MAX_MEMORY is the capture's size within 4-8 MB
+	cloudMem := func(kbVar string) string {
+		return "MAX_MEMORY=' + CAST(CASE WHEN " + kbVar + " < 4096 THEN 4096 WHEN " + kbVar + " > 8192 THEN 8192 ELSE " + kbVar + " END AS nvarchar(20)) + N' KB"
+	}
+	ringOf := func(kbVar string) (string, string) {
+		if form == XEFormCloudSQL {
+			return "ADD TARGET package0.ring_buffer", strings.Replace(opts, "MAX_MEMORY=4096 KB", cloudMem(kbVar), 1)
+		}
+		return ring(kbVar), opts
+	}
+	dt, dw := ringOf("@deadlock_kb")
+	bt, bw := ringOf("@blocked_kb")
+	session(xeDeadlocks, "ADD EVENT sqlserver."+sc.deadlock+"(ACTION(package0.event_sequence))\n"+dt+"\n"+dw)
+	session(xeBlocked, "ADD EVENT sqlserver.blocked_process_report(ACTION(package0.event_sequence))\n"+bt+"\n"+bw)
 
 	// the slow session: the completions with who ran them; pgvigil's own sessions are left out by their program name
 	who := "sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.database_name,sqlserver.server_principal_name,sqlserver.session_id"
@@ -197,14 +218,20 @@ func XEScript(installID, form string) (string, error) {
 		if form == XEFormCloudSQL {
 			dir = xeCloudSQLDir
 		}
+		mem := "MAX_MEMORY=' + CAST(@slow_memory_kb AS nvarchar(20)) + N' KB"
+		if form == XEFormCloudSQL {
+			mem = cloudMem("@slow_memory_kb")
+		}
 		slow += "ADD TARGET package0.event_file(SET filename=N''" + dir + name(xeSlow) + ".xel'', max_file_size=(' + CAST(@slow_file_mb AS nvarchar(20)) + N'), max_rollover_files=(' + CAST(@slow_files AS nvarchar(20)) + N'))\n" +
-			strings.Replace(opts, "MAX_MEMORY=4096 KB", "MAX_MEMORY=' + CAST(@slow_memory_kb AS nvarchar(20)) + N' KB", 1)
+			strings.Replace(opts, "MAX_MEMORY=4096 KB", mem, 1)
 	} else {
-		slow += ring("@slow_kb") + "\n" + opts
+		st, sw := ringOf("@slow_kb")
+		slow += st + "\n" + sw
 	}
 	session(xeSlow, slow)
+	at, aw := ringOf("@attention_kb")
 	session(xeAttention, "ADD EVENT sqlserver.attention(ACTION(package0.event_sequence,"+who+",sqlserver.sql_text))\n"+
-		ring("@attention_kb")+",\nADD TARGET package0.event_counter\n"+opts)
+		at+",\nADD TARGET package0.event_counter\n"+aw)
 
 	if form != XEFormAzureDB {
 		step := "EXEC sys.sp_configure ''blocked process threshold (s)'', 15; RECONFIGURE; (it is an advanced option; 5 is the lowest value SQL Server honours)"
@@ -482,6 +509,12 @@ func (xeCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, op
 					fail("system_health", err)
 				}
 				state["new_events"] = side["new_events"]
+				if tr, ok := side["truncated"].(bool); ok {
+					state["truncated"] = tr // a cut ring raises 0120's 'the ring buffer output was cut off'
+				}
+				if n := ringLossNote(side); n != "" {
+					state["note"] = fmt.Sprintf("%v; %s", state["note"], n)
+				}
 				if n, ok := side["note"].(string); ok && n != "" {
 					state["note"] = fmt.Sprintf("%v; %s", state["note"], n)
 				}
@@ -522,7 +555,9 @@ func (r *xeRun) readSession(s *xeSession, source string, events []string, state 
 			state["counter"] = n
 		}
 	}
-	if t, ok := s.targets["event_file"]; ok {
+	switch xeReadTarget(r.info.Kind, s.targets) {
+	case "event_file":
+		t := s.targets["event_file"]
 		state["target"], state["buffer_kb"] = "event_file", nilIfZero(t.fileSizeMB*1024)
 		state["dropped_events"] = t.dropEvents
 		var ft xeFileTarget
@@ -541,13 +576,43 @@ func (r *xeRun) readSession(s *xeSession, source string, events []string, state 
 			top *= 20
 		}
 		return r.readFile(s.name, pattern, events, top, c, state)
-	}
-	if t, ok := s.targets["ring_buffer"]; ok {
+	case "ring_buffer":
+		t := s.targets["ring_buffer"]
 		state["target"], state["buffer_kb"] = "ring_buffer", nilIfZero(t.maxMemory)
 		state["dropped_buffers"] = t.dropBufs
-		return r.readRing(s.name, t, events, c, state)
+		return r.readRing(s.name, s.name, t, events, c, state)
+	}
+	if _, file := s.targets["event_file"]; file && r.info.Kind == KindAzureMI {
+		if source != "product" {
+			// a session of the service's own (AlwaysOn_health on Business Critical): the DBA cannot change it, so it is
+			// said on its state row, never a failed read; the product's own session in this shape is the wrong form
+			state["note"] = xeMIFileOnly(s.name)
+			return nil
+		}
+		return errors.New(xeMIFileOnly(s.name))
 	}
 	return fmt.Errorf("%s has neither a ring_buffer nor an event_file target", s.name)
+}
+
+// xeReadTarget is the target of a session the reader takes: its event file when it has one, else its ring buffer;
+// "" = neither. On Azure SQL Managed Instance a file is read only by its Azure Blob storage URL (a real instance refused
+// system_health.xel with Msg 40538, A2 2026-11-14) and its system_health keeps a ring buffer beside the file: the ring
+// buffer there, and a session with a file alone is not read.
+func xeReadTarget(kind Kind, targets map[string]xeTarget) string {
+	_, file := targets["event_file"]
+	_, ring := targets["ring_buffer"]
+	switch {
+	case ring && (kind == KindAzureMI || !file):
+		return "ring_buffer"
+	case file && kind != KindAzureMI:
+		return "event_file"
+	}
+	return ""
+}
+
+// xeMIFileOnly is why a Managed Instance session with an event file alone is not read.
+func xeMIFileOnly(session string) string {
+	return session + " writes to an event file alone, and Azure SQL Managed Instance reads an event file only by its Azure Blob storage URL: pgvigil reads a ring_buffer target there"
 }
 
 func nilIfZero(n int64) any {
@@ -587,14 +652,11 @@ func nameSet(names []string) map[string]bool {
 	return m
 }
 
-// readRing reads one ring buffer whole and emits the events past the cursor in batches, each with its cursor.
-func (r *xeRun) readRing(source string, t xeTarget, events []string, c xeContext, state collect.Row) error {
-	cur, err := r.cursor(r.ctx, source)
-	if err != nil {
-		return err
-	}
+// readRing reads one ring buffer whole (the session's) and emits the events past the cursor (source's) in batches,
+// each with its cursor (ringRows).
+func (r *xeRun) readRing(source, session string, t xeTarget, events []string, c xeContext, state collect.Row) error {
 	_, dmv := xeScopeWords(r.info.Kind)
-	rs, err := r.conn.QueryContext(r.ctx, fmt.Sprintf(xeRingSQL, dmv), source)
+	rs, err := r.conn.QueryContext(r.ctx, fmt.Sprintf(xeRingSQL, dmv), session)
 	if err != nil {
 		return fmt.Errorf("the ring buffer of %s: %w", source, err)
 	}
@@ -616,8 +678,21 @@ func (r *xeRun) readRing(source string, t xeTarget, events []string, c xeContext
 	if err != nil {
 		return fmt.Errorf("%s: %w", source, err)
 	}
+	return r.ringRows(source, ring, t.dropEvents, events, c, state)
+}
+
+// ringRows emits a ring buffer's events past the source's cursor, oldest first, in batches each with its cursor, and
+// fills the state: the ring's figures, its cut-off flag and dropped count, new_events (a session of the server's own
+// carries mostly events the reader does not store: its count is the wanted ones, and scanned_events every event past
+// the cursor, readFile's rule), and a note when the ring's oldest event is newer than the cursor (it wrapped between
+// reads: events in between, if any, were overwritten before this read).
+func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, events []string, c xeContext, state collect.Row) error {
+	cur, err := r.cursor(r.ctx, source)
+	if err != nil {
+		return err
+	}
 	state["buffer_used_kb"], state["event_count"], state["total_processed"] = ring.MemoryUsed/1024, ring.EventCount, ring.TotalProcessed
-	state["dropped_events"], state["truncated"] = t.dropEvents+ring.DroppedCount, ring.Truncated != 0
+	state["dropped_events"], state["truncated"] = sessionDropped+ring.DroppedCount, ring.Truncated != 0
 
 	// the events past the cursor, oldest first. An event's place is its time and its sequence; a session that does
 	// not collect the sequence (not the product's) gets the event's count among those of the same time.
@@ -627,12 +702,16 @@ func (r *xeRun) readRing(source string, t xeTarget, events []string, c xeContext
 		seq int64
 	}
 	var items []item
+	var oldest time.Time
 	sameAt := map[string]int64{}
 	for i := range ring.Events {
 		e := &ring.Events[i]
 		at, ok := e.at()
 		if !ok {
 			continue
+		}
+		if oldest.IsZero() || at.Before(oldest) {
+			oldest = at
 		}
 		seq := e.seq()
 		if seq == 0 {
@@ -650,8 +729,22 @@ func (r *xeRun) readRing(source string, t xeTarget, events []string, c xeContext
 		}
 		return items[i].seq < items[j].seq
 	})
-	state["new_events"] = len(items)
 	wanted := nameSet(events)
+	state["new_events"] = len(items)
+	if c.source != "product" {
+		var n int64
+		for _, it := range items {
+			if wanted[it.e.Name] {
+				n++
+			}
+		}
+		state["new_events"], state["scanned_events"] = n, int64(len(items))
+	}
+	var notes []string
+	if cur.Found && !oldest.IsZero() && oldest.After(cur.LastEventAt) {
+		notes = append(notes, fmt.Sprintf("the ring buffer's oldest event (%s) is newer than the last one read (%s): it wrapped between reads, and events in between, if any, were overwritten",
+			oldest.UTC().Format(time.RFC3339), cur.LastEventAt.UTC().Format(time.RFC3339)))
+	}
 	var keys xeKeyer
 	keys.reset()
 	var unknown, old int64
@@ -670,7 +763,29 @@ func (r *xeRun) readRing(source string, t xeTarget, events []string, c xeContext
 		}
 	}
 	state["unknown_events"] = unknown
+	if old > 0 {
+		notes = append(notes, fmt.Sprintf("%d event(s) older than %d days were not stored", old, int(xeMaxAge.Hours()/24)))
+	}
+	if len(notes) > 0 {
+		if prev, ok := state["note"].(string); ok && prev != "" {
+			notes = append([]string{prev}, notes...)
+		}
+		state["note"] = strings.Join(notes, "; ")
+	}
 	return nil
+}
+
+// ringLossNote is what a ring buffer read lost, in words for a state note: its output cut off (the newest events
+// missing: 0120's words) and the events it dropped; "" when neither.
+func ringLossNote(side collect.Row) string {
+	var out []string
+	if tr, _ := side["truncated"].(bool); tr {
+		out = append(out, "the ring buffer output was cut off: the newest events are the ones missing")
+	}
+	if d, _ := side["dropped_events"].(int64); d > 0 {
+		out = append(out, fmt.Sprintf("%d event(s) dropped (the ring buffer's droppedCount and the session's dropped_event_count)", d))
+	}
+	return strings.Join(out, "; ")
 }
 
 // xeFileRow is one row of sys.fn_xe_file_target_read_file.
@@ -715,6 +830,12 @@ func (r *xeRun) readFile(source, pattern string, events []string, batchTop int, 
 	// floor: after the cursor's file is gone the set is read from its oldest file, and events at or before the
 	// newest event already stored are passed over by their time (the event's key keeps an equal time from doubling)
 	var floor time.Time
+	if cur.Found && cur.FileName == "" {
+		// the cursor was left by a ring buffer read (the session had no file then): the set is read from its oldest
+		// file, and events before the newest one stored are passed over by their time
+		floor = cur.LastEventAt
+		notes = append(notes, "the cursor came from a ring buffer read: the event files were read from the oldest, past its time")
+	}
 	for {
 		top := batchTop
 		var rows []xeFileRow
@@ -798,9 +919,10 @@ func (r *xeRun) readFile(source, pattern string, events []string, batchTop int, 
 		}
 	}
 	// a session of the server's own carries mostly events the reader does not want: its count is the wanted ones
-	state["new_events"] = taken
+	state["new_events"], state["scanned_events"] = taken, total
 	if c.source == "product" {
 		state["new_events"], state["unknown_events"] = total, unknown
+		delete(state, "scanned_events")
 	}
 	if old > 0 {
 		notes = append(notes, fmt.Sprintf("%d event(s) older than %d days were not stored", old, int(xeMaxAge.Hours()/24)))

@@ -14,7 +14,10 @@ import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { fleet, tagsOf } from './fleet';
 import { donutChart, lineChart } from './chart';
+import { hrefWith } from './dbinfo';
+import { mssqlFilesTab } from './mssql_storage';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid } from './ui';
+import { loadAckSafe, offBeside, onDoor, pageNote, seatWhy } from './ack';
 
 type Parts<K extends string> = Record<K, Table | null>;
 const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -88,7 +91,8 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
   const warn = inp('Warning, per cent free', own ? own.warn_pct : ''), crit = inp('Critical, per cent free', own ? own.crit_pct : '');
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const save = el('button', { type: 'submit' }, 'Set'), inherit = el('button', { type: 'button' }, 'Inherit'), back = el('button', { type: 'button' }, 'Back');
-  if (!own) inherit.disabled = true;
+  // nothing of this level's own to end: Inherit is off with that reason beside it (it already inherits)
+  if (!own) offBeside(inherit, 'this level has no threshold of its own: it already inherits the level above');
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Drive space thresholds: ${p.where}`),
     el('p', {}, 'A drive with less free space than the warning per cent is a warning, less than the critical per cent a critical. '
       + 'The drive\'s own threshold wins, then its instance\'s, a tag\'s (when two of the instance\'s tags carry one, the tag first by name), the root\'s; the default is warning under 20 %, critical under 10 %. '
@@ -113,7 +117,7 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
       msg.replaceChildren(badge(r.outcome, 'ok'), ' ', r.detail);
     } catch (e) {
       msg.replaceChildren(badge('not saved', 'crit'), ' ', e instanceof Error ? e.message : String(e));
-      save.disabled = false; inherit.disabled = !own;
+      save.disabled = false; inherit.disabled = false;   // an Inherit that is off stays off the B7 way
     }
     back.textContent = 'Close';
   };
@@ -135,6 +139,26 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
   const refresh = el('button', { type: 'button', title: 'Read the drives again' }, 'Refresh');
   const configure = el('button', { type: 'button' }, 'Configure');
   const toggle = el('button', { type: 'button', 'aria-pressed': String(metrics) }, 'Toggle Metrics');
+  // who may set a threshold here (the acknowledgement seat: the threshold writes ask the same one). A server that
+  // writes nothing: the page's one sentence, which every Configure points at; where a door stands a Configure that
+  // is off says its own reason (a real instance's drive, a level wider than one instance)
+  const ad = await loadAckSafe(['acks']);
+  if (!ad.writable && !ad.door) ad.note = el('p', { class: 'meta' }, `Thresholds are read only here: ${seatWhy(ad, 'thresholds') ?? ''}`);
+  // on a demo serve the drives of an instance that is not the demo's share one reason: ONE sentence on the page that
+  // every such Configure points at (beside each drive it stood once per drive). An instance's own page names the
+  // instance; a folder says it of every such instance. Shown only while a control points at it (realUsed)
+  const instName = onDoor(ad) && ctx.instance
+    ? await fleet().then(f => String(f.instances.find(i => Number(i.instance_id) === ctx.instance)?.name ?? 'this instance'), () => 'this instance') : undefined;
+  const realNote = onDoor(ad) ? el('p', { class: 'meta', hidden: '' }, ctx.instance
+    ? `Thresholds are read only here: ${seatWhy(ad, 'thresholds', ctx.instance, instName) ?? ''}`
+    : "Thresholds of an instance that is not one of this demo's instances are read only here: changing them needs pgvigil serve with a signed-in user") : undefined;
+  let realUsed = false;
+  const offNote = (instanceId: number | undefined): HTMLElement | undefined => {
+    if (pageNote(ad)) return pageNote(ad);
+    if (!realNote || instanceId == null || ad.door!.instances.includes(instanceId)) return undefined;   // its own reason, beside it
+    realUsed = true; realNote.hidden = false;
+    return realNote;
+  };
   const body = el('div');
   let seq = 0;
   let thresholds: Row[] = [];
@@ -147,6 +171,8 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
       d = await get<Parts<'drives' | 'counts' | 'thresholds'>>('drives', { ...sc.params, status: statusSel.value });
     } catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }
     if (mine !== seq) return;
+    // a new draw: the sentence for other instances' drives shows again only if one of them is drawn
+    if (realNote && !(ctx.instance && realUsed)) { realUsed = false; realNote.hidden = true; }
     const rows = rowsOf(d.drives), c = rowsOf(d.counts)[0] ?? {};
     thresholds = rowsOf(d.thresholds);
     const total = Number(c.drives ?? 0);
@@ -175,7 +201,9 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
     el('div', { style: `height:100%;width:${usedPct.toFixed(1)}%;background:${statusColor[st]}` })) : '';
     const own: Place = { level: 'drive', instance_id: Number(r.instance_id), drive: String(r.drive), where: `the drive ${String(r.drive)} of ${String(r.instance)}` };
     const cfg = el('button', { type: 'button', class: 'link', 'aria-label': `Configure the thresholds of ${String(r.drive)} on ${String(r.instance)}` }, 'Configure');
-    cfg.addEventListener('click', () => configureDialog(own, `warning under ${pct(r.warn_pct)}, critical under ${pct(r.crit_pct)} (${levelWords(r)})`, ownRow(thresholds, own), () => void draw()));
+    const cfgWhy = seatWhy(ad, 'thresholds', Number(r.instance_id), String(r.instance));
+    if (cfgWhy) offBeside(cfg, cfgWhy, offNote(Number(r.instance_id)));
+    else cfg.addEventListener('click', () => configureDialog(own, `warning under ${pct(r.warn_pct)}, critical under ${pct(r.crit_pct)} (${levelWords(r)})`, ownRow(thresholds, own), () => void draw()));
     const hist = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false', 'aria-label': `History of ${String(r.drive)} on ${String(r.instance)}` }, 'History');
     const histBox = el('div');
     hist.addEventListener('click', () => {
@@ -209,7 +237,11 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
     const own = ownRow(thresholds, p);
     configureDialog(p, own ? `warning under ${pct(own.warn_pct)}, critical under ${pct(own.crit_pct)} (set at this level)` : 'the level above (or the default: warning under 20 %, critical under 10 %)', own, () => void draw());
   });
-  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'drv-status' }, 'Status ', statusSel), ' ', configure, ' ', toggle), body);
+  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'drv-status' }, 'Status ', statusSel), ' ', configure, ' ', toggle), ...(ad.note ? [ad.note] : []), ...(realNote ? [realNote] : []), body);
+  // the toolbar's Configure sets the scope's own level: this instance, the tag folder, or the root - an instance that
+  // is not the demo's points at the page's one sentence; a level wider than one instance says its own reason beside it
+  const scopeWhy = seatWhy(ad, 'thresholds', ctx.instance ?? undefined, instName);
+  if (scopeWhy) offBeside(configure, scopeWhy, offNote(ctx.instance ?? undefined));
   await draw();
   return sec;
 }
@@ -290,6 +322,14 @@ async function driveHistory(id: number, drive: string, inst: string, marked: boo
 }
 
 // ---- DB Space
+// dbSlice: where a database of the instance's DB Space opens, by the instance's engine - a PostgreSQL database's own
+// page (#/db, by its id), a SQL Server database's files (#/mssqlfiles, by its name); none when neither is known
+function dbSlice(ctx: Ctx, engine: unknown, r: Row): string | undefined {
+  if (engine === 'postgres' && r.dbid != null) return hrefWith(ctx, 'db', { db: String(r.dbid) });
+  if (engine === 'sqlserver' && r.database != null) return hrefWith(ctx, mssqlFilesTab, { db: String(r.database) });
+  return undefined;
+}
+
 export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'DB Space'));
   const body = el('div');
@@ -321,12 +361,13 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
           + 'Used: the space used inside SQL Server\'s files where every file\'s was read; a PostgreSQL file holds no unallocated space to read, so it is not given there.'),
         el('div', { class: 'cards', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
           grid(rows, cols, 'No database size read yet.'),
-          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10)));
+          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })));
       return;
     }
-    const dbs = rowsOf(d.databases), hist = rowsOf(d.history);
+    const dbs = rowsOf(d.databases), hist = rowsOf(d.history), engine = rowsOf(d.instances)[0]?.engine;
     const cols: Col[] = [
-      { key: 'database' },
+      // the name opens the database, as its slice does (DBA Dash's Name drill)
+      { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
       { key: 'allocated_bytes', label: 'allocated', num: true, fmt: fmtBytes }, { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
       { key: 'data_bytes', label: 'data files', num: true, fmt: fmtBytes }, { key: 'log_bytes', label: 'log files', num: true, fmt: fmtBytes },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
@@ -334,7 +375,8 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
     body.replaceChildren(
       el('div', { style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
         grid(dbs, cols, 'No database size read yet.'),
-        donutChart('DB Space by database', dbs.map(r => ({ label: String(r.database), value: Number(r.allocated_bytes ?? 0) })), v => fmtBytes(v), 10)),
+        // a database opens its own page: PostgreSQL's database page, SQL Server's files of that database (dbSlice)
+        donutChart('DB Space by database', dbs.map(r => ({ label: String(r.database), value: Number(r.allocated_bytes ?? 0), href: dbSlice(ctx, engine, r) })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })),
       lineChart(`History: the databases' space over ${day} days`, hist, [{ key: 'allocated_bytes', label: 'allocated' }, { key: 'used_bytes', label: 'used' }], v => fmtBytes(v)));
   }
   daySel.addEventListener('change', () => { day = Number(daySel.value); lsSet('pgvigil.dbspaceDays', String(day)); void draw(); });

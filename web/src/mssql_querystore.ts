@@ -11,6 +11,7 @@
 // stmt_filter.ts reads its own; the lead's wiring keeps them on the tab's own links (router.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { qsOverlay, qsStrip } from './mssql_queries';
 import { Ctx, rangeLabel, window_ } from './router';
 import { sqlCell } from './sqlview';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
@@ -357,7 +358,34 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
   ];
   // the share column sorts by the ordered total
   for (const r of rows) r.share = totalKey ? r[totalKey] : null;
-  out.push(grid(rows, cols, 'No query ran in the store\'s intervals of this range.'), panel.box);
+  // PerformanceMonitor's strip over its Query Store grid: a drag reads the grid again for the stretch (its shares of the
+  // stretch's own totals); a row's Draw puts its average duration per interval on the strip
+  const gbox = el('div', {});
+  const said = el('p', { class: 'meta', role: 'status' });
+  const win = window_(ctx);
+  let asked = 0;   // a newer drag's answer wins: an older, slower one is dropped
+  const strip = qsStrip(win, series, (from, to, words) => {
+    const mine = ++asked;
+    const p = { instance: ctx.instance, from: from ?? win.from, to: to ?? win.to, db: hashQS().get('qdb')?.slice(0, 128) || undefined, order, view: 'top' };
+    void Promise.all([get<QS>('mssql/querystore', { ...p, part: 'top' }), get<QS>('mssql/querystore', { ...p, part: 'totals' })]).then(([a, b]) => {
+      if (mine !== asked) return;
+      const rs = rowsOf(a.top), tt = rowsOf(b.totals)[0] ?? {};
+      const all = totalKey ? Number(tt[totalKey]) : 0;
+      for (const r of rs) r.share = totalKey ? r[totalKey] : null;
+      const shareCol = cols.findIndex(c => c.key === 'share');
+      const cs = shareCol < 0 ? cols : cols.map((c, i) => i === shareCol ? { ...c, fmt: (_: unknown, r: Row) => share(r[totalKey], all) } : c);
+      said.textContent = from ? `The grid holds ${words ?? ''}, snapped to the store's intervals (${fmtTime(from)} to ${fmtTime(to)}); its shares are of that stretch.` : '';
+      gbox.replaceChildren(grid(rs, cs, 'No query ran in the store\'s intervals of this stretch.'));
+    }).catch(e => { if (mine === asked) gbox.replaceChildren(errorBox(e)); });
+  });
+  cols.splice(3, 0, { key: 'line', label: 'on the strip', fmt: (_, r) => {
+    if (r.query_id == null || r.query_hash == null) return '';   // the overlay read refuses it ('plans gone from the store')
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `Draw query ${text(r.query_id)} on the strip` }, 'Draw');
+    b.addEventListener('click', () => { void qsOverlay(ctx, strip, r).catch(e => said.replaceChildren(errorBox(e))); });
+    return b;
+  } });
+  gbox.replaceChildren(grid(rows, cols, 'No query ran in the store\'s intervals of this range.'));
+  out.push(strip, said, gbox, panel.box);
   out.push(compareSection(ctx, 'querystore', { db: hashQS().get('qdb')?.slice(0, 128) || undefined }));
   out.push(el('div', { class: 'charts' },
     lineChart('The store over time: duration and CPU of every plan', series, [{ key: 'duration_ms', label: 'duration' }, { key: 'cpu_ms', label: 'CPU' }], v => dur(v)),
@@ -519,7 +547,10 @@ function tuningView(d: QS): HTMLElement[] {
     { key: 'script', label: 'script', fmt: v => v == null || v === '' ? '' : sqlCell(v, { heading: 'The recommendation\'s script', title: 'Show the script' }) },
     { key: 'object_name', label: 'object' },
     { key: 'query', label: 'statement', fmt: v => v == null || v === '' ? '' : sqlCell(v) },
-    { key: 'snapshot_at', label: 'read', fmt: fmtTime },
+    // PerformanceMonitor's First seen / Last seen (its plan corrections grid): the first read that listed the
+    // recommendation and the last; its Captures is not kept (pgvigil stores the current state, not each read)
+    { key: 'first_seen', label: 'first seen', fmt: fmtTime },
+    { key: 'snapshot_at', label: 'last seen', fmt: fmtTime },
   ];
   return [
     el('p', { class: 'meta' }, 'SQL Server 2017 and later: the server\'s own plan-regression recommendations (sys.dm_db_tuning_recommendations) and each database\'s automatic tuning options. '

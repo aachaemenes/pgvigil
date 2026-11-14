@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -151,9 +152,10 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") {
 			t.Errorf("%s: the blocked process threshold's advice", form)
 		}
-		// the Managed Instance and Cloud SQL forms are written from the documentation; the Azure SQL Database form is proven (scripts/proof-mssql-azuresqldb.sh)
-		if (form == XEFormAzureMI || form == XEFormCloudSQL) != strings.Contains(script, "NOT PROVEN") {
-			t.Errorf("%s: only the Managed Instance and Cloud SQL forms are marked not proven", form)
+		// the Managed Instance form is written from the documentation; the Azure SQL Database form is proven
+		// (scripts/proof-mssql-azuresqldb.sh) and the Cloud SQL form too (a real instance, 2026-11-13)
+		if (form == XEFormAzureMI) != strings.Contains(script, "NOT PROVEN") {
+			t.Errorf("%s: only the Managed Instance form is marked not proven", form)
 		}
 		// Azure SQL Database has no server_principal_name action (Msg 25744): its form names the login by username
 		if (form == XEFormAzureDB) == strings.Contains(script, "server_principal_name") || (form == XEFormAzureDB) != strings.Contains(script, "sqlserver.username") {
@@ -747,4 +749,79 @@ func TestXMLCleanKeepsTheRead(t *testing.T) {
 	if _, err := parseEvent(strings.Replace(fixBatch, "the report", "the &#x2; report", 1)); err != nil {
 		t.Errorf("a file event with a control character: %v", err)
 	}
+}
+
+// Cloud SQL's trigger TRG_EnforceXEventSessionParams4 refuses a CREATE EVENT SESSION that holds "max_memory=" more than
+// once (G1 on a real instance, 2026-11-13: Msg 50000 'The command must not contain more than one occurrence of
+// "max_memory="') and fails (Msg 537) when the one it finds is a ring buffer's: each of the cloudsql form's CREATEs
+// holds it once, as the session's MAX_MEMORY=<the capture's size within 4-8 MB> KB (the trigger: 'max_memory value must
+// be between 4MB and 8MB'); the other forms keep the session's MAX_MEMORY beside a ring buffer's max_memory.
+func TestXECloudSQLOneMaxMemory(t *testing.T) {
+	re := regexp.MustCompile(`(?i)max_memory=`)
+	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2} {
+		s, err := XEScript("g1", form)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := strings.Split(s, "CREATE EVENT SESSION")[1:]
+		if len(parts) != 4 {
+			t.Fatalf("%s: %d CREATE EVENT SESSION, want 4", form, len(parts))
+		}
+		for i, p := range parts {
+			end := strings.Index(p, "EXEC sys.sp_executesql")
+			if end < 0 {
+				t.Fatalf("%s: session %d has no EXEC sys.sp_executesql after its CREATE EVENT SESSION", form, i+1)
+			}
+			p = p[:end]
+			got := len(re.FindAllString(p, -1))
+			if form == "server" && strings.Contains(p, "event_file") {
+				continue // the slow session's file target has no max_memory of its own
+			}
+			if got != want {
+				t.Errorf("%s: CREATE %d holds max_memory= %d times, want %d", form, i+1, got, want)
+			}
+			// the trigger parses the one it finds as the session's 'MAX_MEMORY=<n> KB' (Msg 537 on the ring buffer's)
+			if form == XEFormCloudSQL && (strings.Contains(p, "ring_buffer(SET") || !regexp.MustCompile(`MAX_MEMORY=' \+ CAST\(CASE WHEN (@[a-z_]+) < 4096 THEN 4096 WHEN @[a-z_]+ > 8192 THEN 8192 ELSE @[a-z_]+ END AS nvarchar\(20\)\) \+ N' KB`).MatchString(p)) {
+				t.Errorf("%s: CREATE %d: the one max_memory= is not the session's MAX_MEMORY=<the capture's size> KB", form, i+1)
+			}
+		}
+	}
+}
+
+// TestXEReadTarget (A2, a real Managed Instance 2026-11-14): the target a session is read from - its event file, but on
+// Azure SQL Managed Instance its ring buffer (a file is read there only by its Azure Blob storage URL: Msg 40538 for
+// system_health.xel); a Managed Instance session with a file alone is not read ("").
+func TestXEReadTarget(t *testing.T) {
+	both := map[string]xeTarget{"event_file": {}, "ring_buffer": {}}
+	file := map[string]xeTarget{"event_file": {}}
+	ring := map[string]xeTarget{"ring_buffer": {}, "event_counter": {}}
+	for _, c := range []struct {
+		kind    Kind
+		targets map[string]xeTarget
+		want    string
+	}{
+		{KindServer, both, "event_file"},
+		{KindServer, file, "event_file"},
+		{KindServer, ring, "ring_buffer"},
+		{KindRDS, both, "event_file"},
+		{KindCloudSQL, both, "event_file"},
+		{KindAzureDB, ring, "ring_buffer"},
+		{KindAzureMI, both, "ring_buffer"},
+		{KindAzureMI, ring, "ring_buffer"},
+		{KindAzureMI, file, ""},
+		{KindServer, map[string]xeTarget{"event_counter": {}}, ""},
+	} {
+		if got := xeReadTarget(c.kind, c.targets); got != c.want {
+			t.Errorf("xeReadTarget(%s, %v) = %q, want %q", c.kind, keysOf(c.targets), got, c.want)
+		}
+	}
+}
+
+func keysOf(m map[string]xeTarget) []string {
+	out := []string{}
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

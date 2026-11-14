@@ -2,8 +2,10 @@ package mssqlopen
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	mssql "github.com/microsoft/go-mssqldb"
 	"github.com/microsoft/go-mssqldb/msdsn"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -209,6 +212,13 @@ func TestOneSQLServerOpener(t *testing.T) {
 				found = append(found, strings.TrimPrefix(p, root+string(filepath.Separator)))
 			}
 		}
+		// a go-mssqldb connector built elsewhere skips fedauth the same way (the join of 201 DONE-2, 11-14: its
+		// collector connect built one to set a dialer - OpenDialer is that door)
+		for _, ctor := range []string{".NewConnector(", ".NewConnectorConfig(", ".NewActiveDirectoryTokenConnector(", ".NewConnectorWithAccessTokenProvider(", ".NewSecurityTokenConnector("} {
+			if strings.Contains(string(b), ctor) {
+				found = append(found, strings.TrimPrefix(p, root+string(filepath.Separator))+" ("+strings.Trim(ctor, ".(")+")")
+			}
+		}
 		return nil
 	})
 	if err != nil && !errors.Is(err, filepath.SkipDir) {
@@ -326,5 +336,52 @@ func TestOldWindowsStringsAskKerberos(t *testing.T) {
 		if kerberosByDefault(cfg, "windows") {
 			t.Errorf("windows %s: Kerberos by default (SSPI is Windows' own)", dsn)
 		}
+	}
+}
+
+type noDial struct{}
+
+func (noDial) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("no dial")
+}
+
+// OpenDialer keeps the connector Open chooses (the join of 201 DONE-2, 11-14): the federated one carries the dialer
+// for an Entra string, the driver's own for any other; before, the collector built its own connector and an Entra
+// string signed in as a SQL login.
+func TestOpenDialerKeepsTheSignIn(t *testing.T) {
+	for _, c := range []struct {
+		conn config.Conn
+		fed  bool
+	}{
+		{config.Conn{Auth: "sql", Login: "mon", Password: "x"}, false},
+		{config.Conn{Auth: "windows", Login: "svc@CORP.EXAMPLE.COM"}, false},
+		{config.Conn{Auth: "entra", Login: "app-id", Password: "s3cret"}, true},
+		{config.Conn{Auth: "entra-identity"}, true},
+	} {
+		c.conn.Engine, c.conn.Host = config.EngineSQLServer, "srv1.database.windows.net"
+		dsn, err := config.BuildDSN(c.conn)
+		if err != nil {
+			t.Fatalf("%s: %v", c.conn.Auth, err)
+		}
+		fc, err := connector(dsn)
+		if err != nil {
+			t.Fatalf("%s: %v", c.conn.Auth, err)
+		}
+		var d noDial
+		mc, err := withDialer(fc, dsn, d)
+		if err != nil {
+			t.Fatalf("%s: withDialer: %v", c.conn.Auth, err)
+		}
+		if mc.Dialer != (mssql.Dialer)(d) {
+			t.Errorf("auth %s: the dialer is not set", c.conn.Auth)
+		}
+		if c.fed && driver.Connector(mc) != fc {
+			t.Errorf("auth %s: the dialer went on another connector than the federated one", c.conn.Auth)
+		}
+		db, err := OpenDialer(dsn, d)
+		if err != nil {
+			t.Fatalf("%s: OpenDialer: %v", c.conn.Auth, err)
+		}
+		_ = db.Close()
 	}
 }

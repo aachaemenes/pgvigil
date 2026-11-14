@@ -23,7 +23,7 @@
 #          header cells shared strings equal to the table's column names; no frozen pane; DBA Dash's widths re-measured
 #          by pgvigil's rule within 6 px (under one character) in every column of every DBA Dash export read
 #   named  (kept on purpose, said and not failed) the orange's text (pgvigil the screen's dark FF1D1300, DBA Dash white:
-#          2.5:1); the sheets (pgvigil a Summary sheet first, task 153, and the grid's sheet named; DBA Dash 'Sheet1');
+#          2.5:1); the sheets (pgvigil the grid's sheet first and named, its facts on an 'About' sheet last; DBA Dash 'Sheet1');
 #          DBA Dash's tableColumn dataDxfId (ClosedXML marks a column whose cells share one style) and its fill 00FFFFFF
 #          on a plain cell with a format (none in a Test Summary); pgvigil's own column names and widths
 import re, sys, zipfile
@@ -70,7 +70,7 @@ def cells(x, sst):
     return out
 
 def sheet_of(z, part, sheets, want):
-    # the grid's sheet: DBA Dash's only one; pgvigil's the one after its Summary sheet
+    # the grid's sheet: DBA Dash's only one; pgvigil's the one named for the grid (its first; 'About' is its last)
     i = sheets.index(want) + 1 if want in sheets else 1
     rels = part('xl/_rels/workbook.xml.rels'); wb = part('xl/workbook.xml')
     rid = re.findall(r'<sheet name="[^"]*" sheetId="\d+" r:id="(\w+)"', wb)[i - 1]
@@ -186,7 +186,7 @@ def main():
     same(len(set(P['tref'])) == 1 and P['tref'][0] is not None and len(set(D['tref'])) == 1, f"the table's ref = its autoFilter's = the sheet's dimension (pgvigil {P['tref'][0]}, DBA Dash {D['tref'][0]})", f"pgvigil {P['tref']}, DBA Dash {D['tref']}")
     same(P['tcols'] == P['hdr'] and D['tcols'] == D['hdr'] and P['head_shared'] and D['head_shared'], "the header cells are shared strings equal to the table's column names", f"pgvigil {P['tcols']} / {P['hdr']}, DBA Dash {D['tcols']} / {D['hdr']}")
     if D['dxf']: named(f"DBA Dash's table marks {D['dxf']} column(s) dataDxfId (ClosedXML: a column whose cells share one style); pgvigil writes none ({P['dxf']})")
-    named(f"the sheets: pgvigil {pg[2]} (its Summary sheet first, task 153; the grid's sheet named), DBA Dash {dd[2]}")
+    named(f"the sheets: pgvigil {pg[2]} (the grid's sheet first and named, 'About' last), DBA Dash {dd[2]}")
     named(f"the columns: pgvigil {P['hdr']} (its own words), DBA Dash {D['hdr']}")
     print('     widths, column by column (pgvigil | DBA Dash): ' + '; '.join(f"{(P['hdr'][j] or '')!s}: {P['widths'].get(j)} | {(D['hdr'][j] if j < len(D['hdr']) else '') or ''}: {D['widths'].get(j)}" for j in range(max(P['ncol'], D['ncol']))))
     px = rule_px(src)

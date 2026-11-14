@@ -43,10 +43,17 @@ check('a week whose Monday lies in the month before', tz.periodStart('wtd', apr)
 check('the week before it', tz.periodStart('wtd', apr, 1).toISOString(), '2026-03-23T00:00:00.000Z');
 // a period on a zone's own clock: Tokyo's day starts at 15:00 UTC of the day before
 tz.setZone('Asia/Tokyo'); check('today in Tokyo', tz.periodStart('today', jan).toISOString(), '2026-01-14T15:00:00.000Z');
-// the server's longest window: exactly 31 days passes, a millisecond more is cut at its start
+// the server's longest window (internal/web maxWindow): a year, a leap day and a fall-back hour pass, a millisecond
+// more is cut at its start; a part reads 31 days and an hour of a longer one by default (defaultReach)
 const t1 = new Date('2026-03-01T00:00:00Z');
-check('31 days pass', tz.capRange(new Date(t1.getTime() - tz.MAX_RANGE_MS), t1).from.toISOString(), '2026-01-29T00:00:00.000Z');
-check('31 days and a millisecond are cut', tz.capRange(new Date(t1.getTime() - tz.MAX_RANGE_MS - 1), t1).from.toISOString(), '2026-01-29T00:00:00.000Z');
+check('366 days and an hour pass', tz.capRange(new Date(t1.getTime() - tz.MAX_RANGE_MS), t1).from.toISOString(), '2025-02-27T23:00:00.000Z');
+check('366 days, an hour and a millisecond are cut', tz.capRange(new Date(t1.getTime() - tz.MAX_RANGE_MS - 1), t1).from.toISOString(), '2025-02-27T23:00:00.000Z');
+check("a part's default reach in hours", String(tz.REACH_MS / 3600e3), '745');
+// the range panel's quick ranges: DBA Dash 4.24.1's twenty lengths in its order, each its length; 4h opens, off the menu
+check('the quick ranges', (tz.menuPresets ?? []).join(' '), '5m 10m 15m 30m 1h 2h 3h 6h 12h 24h 2d 3d 7d 14d 28d 30d 60d 90d 180d 1y');
+check('their lengths in seconds', (tz.menuPresets ?? []).map(k => tz.presets[k]).join(','),
+  '300,600,900,1800,3600,7200,10800,21600,43200,86400,172800,259200,604800,1209600,2419200,2592000,5184000,7776000,15552000,31536000');
+check('4h opens an old address, off the menu', `${'4h' in (tz.presets ?? {})} ${(tz.menuPresets ?? ['4h']).includes('4h')}`, 'true false');
 // a name the browser does not know falls back to its own zone
 tz.setZone('Not/AZone'); check('an unknown zone', tz.zoneChoice(), 'local');
 if (failed) { console.log(`FAIL ${failed} of ${n} zone checks`); process.exit(1); }

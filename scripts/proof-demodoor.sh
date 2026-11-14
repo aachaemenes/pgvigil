@@ -23,10 +23,16 @@
 #     - a silence on a demo instance: 200 done; the acknowledge log's row: demo / demo door / add / done; its end: 200
 #     - prod-db1 and prod-db2: 403 '<name> is not one of this demo's instances: changing it needs pgvigil serve with a
 #       signed-in user'; nothing written for them
-#     - a root drive threshold: 403 'a root change would reach past the demo's instances'; a job exclusion (root, a
-#       demo instance's, prod-db1's) and a job's threshold (a demo instance's, prod-db1's): 403 'this change is not made
-#       through the demo' - their pages are not taught the door, so the route is not the door's [the fold of the
-#       merge's review, A2]; a mute on every instance: 403 'an every-instance change would reach past ...'
+#     - a root drive threshold: 403 'a root change would reach past the demo's instances'; a mute on every instance:
+#       403 'an every-instance change would reach past ...'
+#     [B7 DONE-3: a job's thresholds and the job exclusions are the door's again with their pages (A2 took them off
+#     until then):]
+#     - an instance's job threshold on a demo instance: 200 done, its row created_by demo; its inherit: 200 done; a
+#       root job threshold: 403 'a root change would reach past ...'; prod-db1's: 403 'prod-db1 is not one of ...'
+#     - a job exclusion on a demo instance: 200 done; its end: 200 done; a root one: 403 'a root change would reach
+#       past ...'; prod-db1's: 403 'prod-db1 is not one of ...'; the END of prod-db1's exclusion (the proof's own row,
+#       made through the function as 'proof'): 403 'prod-db1 is not one of ...' and the row still live [the review of
+#       DONE-3, item 3: the row-based end of a route that has just come on]
 #     [Added at the fold of the merge's review, C1 and C2:]
 #     - the REAL instance is refused on every route the wiring moved, not on the silence add alone: prod-db1's drive
 #       threshold and PostgreSQL threshold, the end of its silence (made by the proof), the pause of its mute rule
@@ -41,26 +47,31 @@
 #       demo-proof-stale's silence stored by name, prod-db2's Memory Dump acknowledgement: none ended, none paused),
 #       '1 dismissal(s) of the alert, 1 live'; and no row but the proof's own names prod-db1, prod-db2 or
 #       demo-proof-stale (by id or by name, the log too)
-#     - after the counted change the proof ends its own two silences, its mute rule and its dismissal by SQL: 'done
-#       done done done' (part B's pages then show a Silence that is off and prod-db1's alert open)
+#     - after the counted change the proof ends its own two silences, its mute rule, its dismissal and prod-db1's job
+#       exclusion by SQL: 'done done done done done' (part B's pages then show a Silence that is off and prod-db1's
+#       alert open, and prod-db1's Jobs page no exclusion of the proof's)
 #     - every request is bounded (curl --connect-timeout 5 --max-time 60): a server that never answers fails its line
 #     - an instance-level drive threshold on a demo instance: 200 done, its row created_by demo; inherit: 200
 #     - an alert's key of one demo instance with another demo instance's id: 403 'the alert belongs to another instance'
 #     - Send test: 403 '... pgvigil demo -serve runs no sender ...'; an alert rule: 403 '... judged by the alert sender,
 #       which pgvigil demo -serve does not run ...'; cancel: 403 'actions are off on this server (no actions
-#       configuration)'; Admin > Instances: 403 '... writes connection secrets and connects to servers ...'
+#       configuration)'; Admin > Instances (an instance add, a source's sweep and edit, a proposal's test): 403 '...
+#       writes connection secrets and connects to servers ...'
 #     - every row the door wrote names demo: no ack_log row with client 'demo door' and another user
 #     - nothing else was written: over the tables the page's write functions touch (acks, ack_log, the three threshold
-#       tables, job_exclusions, alert_dismissals, alert_rules, alert_tests, instances), counted before part A's first
-#       request and after its last, the whole change is 'acks +1 ack_log +2 drive_thresholds +1', no threshold of demo
+#       tables, job_exclusions, alert_dismissals, alert_rules, alert_tests, instances, admin_sources, admin_proposals,
+#       admin_audit), counted before part A's first
+#       request and after its last, the whole change is 'acks +1 ack_log +2 drive_thresholds +1 job_thresholds +1 job_exclusions +1' (B7 DONE-3: a job threshold set and inherited, a job exclusion added and ended), no threshold or exclusion of demo
 #       is live and no door row is without an instance [added at the review's fold]
 #     [Added at the review's fold, red on the tree before it:]
 #     - the seed's own silence (stored by its instance's NAME, without an id; read from the store by its client
 #       'demo seed', the oldest when the seed made several) is listed by GET /api/ack under that instance's id, so the
 #       page can offer its Unsilence
-#     - GET /api/jobs/thresholds and GET /api/jobs/exclusions (pages whose controls stay off on a demo serve until
-#       they are taught the door): writable false, 'this page's ... are off on pgvigil demo -serve', never 'saved as
-#       user demo' beside a control that is off
+#     - GET /api/jobs/thresholds and GET /api/jobs/exclusions: writable false, demo true (the page says 'the demo
+#       door's instances were not read' where its read of the door failed, never the door's sentence as an off
+#       reason: the review of DONE-3, item 5) and the door's own sentence under the page's noun ('this is pgvigil
+#       demo -serve: thresholds are saved as user demo, ...'; the page reads per level what the door carries) [B7
+#       DONE-3; until then 'this page's ... are off on pgvigil demo -serve']
 #  B. the page, by clicks (scripts/demodoor-check.mjs): 'ok door', 'ok seat' (the footer says whose door this is),
 #     [every click that writes is judged on the log rows IT wrote: every row newer than the newest one read before
 #     the click - their COUNT exactly what the click names (one; a dialog's N; the page's N), each of the kind, the
@@ -87,7 +98,8 @@
 #     under R2's N [B3]),
 #     'ok R2c' (the dialog again, only prod-db2's acknowledgement in force: Clear is aria-disabled, never the disabled
 #     attribute, with 'the acknowledgements in force are of instances that are not the demo's: ...' beside it, and the
-#     date beside it reads 'Not acknowledged' [the fold's own review, part A finding 3]), 'ok R7' (prod-db1's
+#     date beside it reads 'Not acknowledged (1 instance(s) not the demo's left alone)' [the fold's own review, part A
+#     finding 3; the count beside it: the lead 01:38]), 'ok R7' (prod-db1's
 #     Silence, prod-db2's - a real instance tagged demo by hand - AND demo-proof-stale's [C2] are aria-disabled, never
 #     the disabled attribute, each with its reason as visible text naming it as not one of this demo's instances; a
 #     Silence that is on stands in the row of an instance the door names), 'ok R6' (Silence a demo instance from its
@@ -108,16 +120,30 @@
 #     reads 'read only, actions off' - the plain footer, which proof-frame's demo serve never draws [C9]; its
 #     Summary's dump dialog shows Clear aria-disabled with '... this server runs with -no-login' - an
 #     acknowledgement stands and this server ends none [part A finding 3]) [both added
-#     at the review's fold], 'demodoor-check: every row ok', then, read from the repository: 'ok B the seed's own
+#     at the review's fold], and DONE-2's rows: 'ok R14' (a bulk action over a mixed scope: an alert of a demo
+#     instance and the real instance's alert ticked, Acknowledge alerts: 'partly done 1 of 2 saved; 1 refused:
+#     prod-db1 is not one of this demo's instances ...', ONE new log row, the demo alert's), 'ok R12' (every page of
+#     the mixed store - the root and four instances, the real one among them - walked, each read once it is its own
+#     drawing (not the page before it, not the router's 'Loading' note): no control that is off and shown in a page's
+#     main lacks its reason as visible words, no sentence ends at its colon, no page drew only an error (the instance
+#     header beside an error box included), the two rules tried on planted pages first ('self-test ... ok'); no
+#     dialog is opened by the walk (R2c, R7 and R13 read theirs); the top bar's off controls - 'Later' while the range
+#     ends now, the Auto refresh select on a page that is not live - are described, not worded on the page: a pager's
+#     end and a form field, both kinds seen [the lead 01:38]; the drill pages behind a row are not walked), 'ok R13'
+#     (the threshold dialogs: a level wider than one instance is off in words before any request, one demo
+#     instance's own level is on - the instance picked one of the door's, its dialog's Set on; the two root dialogs
+#     known by their own titles), 'demodoor-check: every row ok', then, read from the repository: 'ok B the seed's own
 #     silence ... is ended in the store, by demo', 'ok B prod-db2's Memory Dump acknowledgement (the proof's own)
 #     still stands', 'ok B nothing was written by the page for prod-db1, prod-db2 or demo-proof-stale', 'ok B outside
 #     the acknowledge store the page's clicks changed nothing', 'ok B the Memory Dump acknowledgements the page made
 #     through the door: N made, 0 still live', and 'ok B the
 #     serve -no-login, written to once: 403 'acknowledgements need the UI login: this server runs with -no-login',
 #     the counts equal before and after' [C1]. Shots are kept of R1, R1b, R7, R4, R15's dialog, R6b, R16's two
-#     pages and R10's Summary (17, in a folder of this run's own under DOOR_SHOTS; one that could not be taken is a
-#     FAIL line).
-# NOT shown: a door whose instance list was read from the repository when it opened (a re-seed removes every instance
+#     pages, R10's Summary and R12's seven pages whose off controls say why since DONE-2 (24, in a folder of this run's
+#     own under DOOR_SHOTS; one that could not be taken is a FAIL line).
+# NOT shown: a threshold SAVED through a dialog by a click (R13 opens its dialogs and closes them; part A sets and ends a
+# drive threshold through the API), so the B line 'outside the acknowledge store ... changed nothing' holds by design;
+# a door whose instance list was read from the repository when it opened (a re-seed removes every instance
 # with the demo's tag and prefix before the door opens, so none can stand there at the start; demo-proof-stale is made
 # after it); Send test's own reason on a signed-in serve whose configuration lost a channel (no such serve is started).
 # Last line: 'proof-demodoor: OK'. A scratch database that could not be dropped is a FAIL line after it and exit 1.
@@ -211,6 +237,10 @@ q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_
    values ('demo-spool', '$RKEY', $REAL, 'prod-db1', 'critical', 'pgvigil', 'door proof', 'a real instance''s alert', now(), now())" >/dev/null
 PX=$(q "select pgvigil.import_alert_dismiss(now(), '{\"op\":\"add\",\"finding_key\":\"$RKEY\",\"reason\":\"door proof ground\",$PW}'::jsonb)->>'dismiss_id'")
 [[ -n "$PX" ]] || die "the rig: the proof's own dismissal of prod-db1's alert was not made"
+# one job exclusion on prod-db1 (the proof's own, through the function the route calls): its end through the door is
+# refused by the row's own instance (B7 DONE-3, the review's item 3)
+PXE=$(q "select pgvigil.import_job_exclusion(now(), '{\"op\":\"add\",\"level\":\"instance\",\"instance_id\":$REAL,\"match_on\":\"name\",\"pattern\":\"door-proof-real-*\",$PW}'::jsonb)->>'exclusion_id'")
+[[ -n "$PXE" ]] || die "the rig: the proof's own job exclusion on prod-db1 was not made"
 # two crash restarts in prod-db1's log (its Memory Dump cell on the Summary turns critical; its state page lists both)
 q "insert into pgvigil.log_events (instance_id, snapshot_at, kind, pid, detail, source, event_key)
    select $REAL, now() - x.ago, 'crash', 4242, 'server process (PID 4242) was terminated by signal 11: Segmentation fault', 'door proof', 'door-proof-' || x.n
@@ -231,7 +261,9 @@ counts() { q "select concat_ws(' ', 'acks', (select count(*) from pgvigil.acks),
   'drive_thresholds', (select count(*) from pgvigil.drive_thresholds), 'pg_thresholds', (select count(*) from pgvigil.pg_thresholds),
   'job_thresholds', (select count(*) from pgvigil.job_thresholds), 'job_exclusions', (select count(*) from pgvigil.job_exclusions),
   'alert_dismissals', (select count(*) from pgvigil.alert_dismissals), 'alert_rules', (select count(*) from pgvigil.alert_rules),
-  'alert_tests', (select count(*) from pgvigil.alert_tests), 'instances', (select count(*) from pgvigil.instances))"; }
+  'alert_tests', (select count(*) from pgvigil.alert_tests), 'instances', (select count(*) from pgvigil.instances),
+  'admin_sources', (select count(*) from pgvigil.admin_sources), 'admin_proposals', (select count(*) from pgvigil.admin_proposals),
+  'admin_audit', (select count(*) from pgvigil.admin_audit))"; }
 C0=$(counts)
 
 echo "== A. the API"
@@ -253,8 +285,8 @@ s=[x for x in r if x["kind"]=="silence" and x["live"] and x["client"]=="demo see
 print(len(s), "|", ",".join(str(x["instance_id"]) for x in s))' "$SEED")
 if [[ -n "$SEED" && "$SS" == "1 | $SEEDID" ]]; then ok "A the seed's silence ($SEED, read by its client 'demo seed') is listed under its instance's id: $SS"; else fail "A the seed's silence: instance '$SEED', listed '$SS' (want 1 | $SEEDID)"; fi
 for pair in "thresholds:jobs/thresholds?instance=$D1" "job exclusions:jobs/exclusions?instance=$D1"; do
-  G=$("${CURL[@]}" -s "$U/api/${pair#*:}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("writable"), "|", d.get("reason"))')
-  if [[ "$G" == "False | this page's ${pair%%:*} are off on pgvigil demo -serve"* && "$G" != *"saved as user demo"* ]]; then ok "A GET /api/${pair#*:}: $G"; else fail "A GET /api/${pair#*:}: $G (want False | this page's ${pair%%:*} are off on pgvigil demo -serve ...)"; fi
+  G=$("${CURL[@]}" -s "$U/api/${pair#*:}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("writable"), "|", d.get("demo"), "|", d.get("reason"))')
+  if [[ "$G" == "False | True | this is pgvigil demo -serve: ${pair%%:*} are saved as user demo, on the demo's own instances only"* ]]; then ok "A GET /api/${pair#*:}: $G"; else fail "A GET /api/${pair#*:}: $G (want False | True | this is pgvigil demo -serve: ${pair%%:*} are saved as user demo, on the demo's own instances only ...)"; fi
 done
 post ack "{\"kind\":\"silence\",\"instance_id\":$D1,\"note\":\"x\"}" -H 'Content-Type: application/json'; want "no header" 403 "the X-Pgvigil header is required"
 post ack "{\"kind\":\"silence\",\"instance_id\":$D1,\"note\":\"door proof\"}" "${H[@]}"; want "a silence on a demo instance" 200 '"outcome":"done"'
@@ -282,14 +314,22 @@ if [[ "$OWN" == "4 of 4 acknowledge rows live, 1 dismissal(s) of the alert, 1 li
 NAMES="'prod-db1', 'prod-db2', 'demo-proof-stale'"
 if [[ $(q "select (select count(*) from pgvigil.acks where client is distinct from 'proof' and (instance_id in ($REAL, $TAGGED, $STALE) or instance_name in ($NAMES))) + (select count(*) from pgvigil.ack_log where client is distinct from 'proof' and instance_name in ($NAMES))") == 0 ]]; then ok "A nothing written for prod-db1, prod-db2 or demo-proof-stale (by id or by name, the log too; the proof's own rows apart)"; else fail "A a row was written for an instance that is not the demo's"; fi
 post drives/thresholds '{"op":"set","level":"root","warn":20,"crit":10}' "${H[@]}"; want "a root drive threshold" 403 "a root change would reach past the demo's instances"
-# a job's thresholds and the job exclusions: their pages are not taught the door, so the route is not the door's -
-# for a demo instance as for a real one, at every level
-NOJ="this change is not made through the demo"
-post jobs/exclusions '{"op":"add","level":"root","pattern":"x"}' "${H[@]}"; want "a root job exclusion" 403 "$NOJ"
-for pair in "a demo instance:$D1" "prod-db1:$REAL"; do
-  post jobs/thresholds "{\"op\":\"set\",\"level\":\"instance\",\"instance_id\":${pair##*:},\"fail_24h_warn\":3}" "${H[@]}"; want "a job's threshold on ${pair%%:*}" 403 "$NOJ"
-  post jobs/exclusions "{\"op\":\"add\",\"level\":\"instance\",\"instance_id\":${pair##*:},\"pattern\":\"x\"}" "${H[@]}"; want "a job exclusion on ${pair%%:*}" 403 "$NOJ"
-done
+# a job's thresholds and the job exclusions are the door's again with their pages (B7 DONE-3): one demo instance's own
+# levels written as demo; a level wider than one instance and an instance not the demo's refused in words
+WIDE="a root change would reach past the demo's instances"
+post jobs/thresholds "{\"op\":\"set\",\"level\":\"instance\",\"instance_id\":$D1,\"fail_24h_warn\":3}" "${H[@]}"; want "an instance's job threshold on a demo instance" 200 '"outcome":"done"'
+[[ $(q "select created_by from pgvigil.job_thresholds where instance_id = $D1 and level = 'instance' order by threshold_id desc limit 1") == demo ]] && ok "A its row is demo's" || fail "A the job threshold's created_by"
+post jobs/thresholds "{\"op\":\"inherit\",\"level\":\"instance\",\"instance_id\":$D1}" "${H[@]}"; want "its inherit" 200 '"outcome":"done"'
+post jobs/thresholds '{"op":"set","level":"root","fail_24h_warn":3}' "${H[@]}"; want "a root job threshold" 403 "$WIDE"
+post jobs/thresholds "{\"op\":\"set\",\"level\":\"instance\",\"instance_id\":$REAL,\"fail_24h_warn\":3}" "${H[@]}"; want "prod-db1's job threshold" 403 "$NOT1"
+post jobs/exclusions "{\"op\":\"add\",\"level\":\"instance\",\"instance_id\":$D1,\"match_on\":\"name\",\"pattern\":\"door-proof-*\"}" "${H[@]}"; want "a job exclusion on a demo instance" 200 '"outcome":"done"'
+XID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("exclusion_id") or 0)' "$WORK/ans" 2>/dev/null || echo 0)
+post jobs/exclusions "{\"op\":\"end\",\"exclusion_id\":$XID}" "${H[@]}"; want "its end" 200 '"outcome":"done"'
+post jobs/exclusions '{"op":"add","level":"root","match_on":"name","pattern":"x"}' "${H[@]}"; want "a root job exclusion" 403 "$WIDE"
+post jobs/exclusions "{\"op\":\"add\",\"level\":\"instance\",\"instance_id\":$REAL,\"match_on\":\"name\",\"pattern\":\"x\"}" "${H[@]}"; want "a job exclusion on prod-db1" 403 "$NOT1"
+post jobs/exclusions "{\"op\":\"end\",\"exclusion_id\":$PXE}" "${H[@]}"; want "the end of prod-db1's job exclusion (the proof's row)" 403 "$NOT1"
+XL=$(q "select count(*) from pgvigil.job_exclusions where exclusion_id = $PXE and ended_at is null")
+if [[ "$XL" == 1 ]]; then ok "A prod-db1's job exclusion (the proof's row) still stands"; else fail "A prod-db1's job exclusion: $XL live (want 1)"; fi
 post ack '{"kind":"mute","match_text":"jit","note":"x"}' "${H[@]}"; want "a mute on every instance" 403 "an every-instance change would reach past the demo's instances"
 post drives/thresholds "{\"op\":\"set\",\"level\":\"instance\",\"instance_id\":$D1,\"warn\":20,\"crit\":10}" "${H[@]}"; want "an instance's drive threshold" 200 '"outcome":"done"'
 [[ $(q "select created_by from pgvigil.drive_thresholds where instance_id = $D1 order by threshold_id desc limit 1") == demo ]] && ok "A its row is demo's" || fail "A the threshold's created_by"
@@ -299,6 +339,9 @@ post alerts/test '{"channel":"ops"}' "${H[@]}"; want "Send test" 403 "pgvigil de
 post alertrules '{"name":"x"}' "${H[@]}"; want "an alert rule" 403 "judged by the alert sender, which pgvigil demo -serve does not run"
 post actions/cancel "{\"instance_id\":$D1,\"pid\":1,\"reason\":\"x\"}" "${H[@]}"; want "cancel" 403 "actions are off on this server (no actions configuration)"
 post admin/instances '{"op":"add","name":"x"}' "${H[@]}"; want "Admin > Instances" 403 "writes connection secrets and connects to servers"
+post admin/sources '{"op":"sweep","name":"x"}' "${H[@]}"; want "Admin > Instances: a source's sweep" 403 "writes connection secrets and connects to servers"
+post admin/sources '{"op":"edit","name":"x"}' "${H[@]}"; want "Admin > Instances: a source's edit" 403 "writes connection secrets and connects to servers"
+post admin/proposals '{"op":"test","proposal_id":"1"}' "${H[@]}"; want "Admin > Instances: a proposal's test" 403 "writes connection secrets and connects to servers"
 if [[ $(q "select count(*) from pgvigil.ack_log where client = 'demo door' and ui_user is distinct from 'demo'") == 0 ]]; then ok "A every row through the door names demo"; else fail "A a door row names another user"; fi
 # nothing else was written: over the tables the page's write functions touch, part A's whole change is one silence
 # (made and ended: one acks row, two log rows) and one drive threshold (set, then ended by inherit: one row, none live)
@@ -307,16 +350,17 @@ DELTA=$(python3 -c 'import sys
 a, b = sys.argv[1].split(), sys.argv[2].split()
 d = {a[i]: int(b[i + 1]) - int(a[i + 1]) for i in range(0, len(a), 2)}
 print(" ".join(f"{k} {v:+d}" for k, v in d.items() if v) or "nothing")' "$C0" "$C1")
-LIVE=$(q "select (select count(*) from pgvigil.drive_thresholds where ended_at is null and created_by = 'demo') || ' live threshold(s) of demo, ' || (select count(*) from pgvigil.acks where client = 'demo door' and instance_id is null) || ' door row(s) without an instance'")
-if [[ "$DELTA" == "acks +1 ack_log +2 drive_thresholds +1" && "$LIVE" == "0 live threshold(s) of demo, 0 door row(s) without an instance" ]]; then ok "A nothing else was written: $DELTA; $LIVE"; else fail "A what part A changed: $DELTA; $LIVE (want acks +1 ack_log +2 drive_thresholds +1; 0 live threshold(s) of demo, 0 door row(s) without an instance)"; fi
+LIVE=$(q "select (select count(*) from pgvigil.drive_thresholds where ended_at is null and created_by = 'demo') + (select count(*) from pgvigil.job_thresholds where ended_at is null and created_by = 'demo') + (select count(*) from pgvigil.job_exclusions where ended_at is null and created_by = 'demo') || ' live threshold(s) or exclusion(s) of demo, ' || (select count(*) from pgvigil.acks where client = 'demo door' and instance_id is null) || ' door row(s) without an instance'")
+if [[ "$DELTA" == "acks +1 ack_log +2 drive_thresholds +1 job_thresholds +1 job_exclusions +1" && "$LIVE" == "0 live threshold(s) or exclusion(s) of demo, 0 door row(s) without an instance" ]]; then ok "A nothing else was written: $DELTA; $LIVE"; else fail "A what part A changed: $DELTA; $LIVE (want acks +1 ack_log +2 drive_thresholds +1 job_thresholds +1 job_exclusions +1; 0 live threshold(s) or exclusion(s) of demo, 0 door row(s) without an instance)"; fi
 # the proof ends its own silences, its mute rule and its dismissal itself (by SQL, as 'proof'): the pages of part B
 # then show prod-db1 and demo-proof-stale with a Silence that is off and prod-db1's alert open, as a visitor meets
 # them; prod-db2's Memory Dump acknowledgement stays for R2b. An end that is not 'done' is a FAIL line (part B would
 # meet another page than the one its rows name)
 ENDS=""
 for a in $PS $PN $PM; do ENDS+="$(q "select pgvigil.import_ack(now(), '{\"op\":\"end\",\"ack_id\":$a,$PW}'::jsonb)->>'outcome'") "; done
-ENDS+="$(q "select pgvigil.import_alert_dismiss(now(), '{\"op\":\"end\",\"dismiss_id\":$PX,$PW}'::jsonb)->>'outcome'")"
-if [[ "$ENDS" == "done done done done" ]]; then ok "A the proof ended its own two silences, its mute rule and its dismissal: $ENDS"; else fail "A the proof's own ends: '$ENDS' (want done done done done)"; fi
+ENDS+="$(q "select pgvigil.import_alert_dismiss(now(), '{\"op\":\"end\",\"dismiss_id\":$PX,$PW}'::jsonb)->>'outcome'") "
+ENDS+="$(q "select pgvigil.import_job_exclusion(now(), '{\"op\":\"end\",\"exclusion_id\":$PXE,$PW}'::jsonb)->>'outcome'")"
+if [[ "$ENDS" == "done done done done done" ]]; then ok "A the proof ended its own two silences, its mute rule, its dismissal and prod-db1's job exclusion: $ENDS"; else fail "A the proof's own ends: '$ENDS' (want done done done done done)"; fi
 
 if [[ "${PROOF_DOOR_ONLY:-}" == A ]]; then
   if (( FAILS )); then echo "FAIL: $FAILS"; exit 1; fi

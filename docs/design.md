@@ -83,8 +83,8 @@ read by chart.ts in that order, assigned in order and never cycled (a ninth seri
 Every chart goes through chart.ts (`lineChart`, `donutChart`, `ringChart`, `volumeBars`), which draws with
 web/src/chartkit.ts; a page never styles a chart itself.
 - The chart a measure takes (`lineChart`'s `measure`, `chartKind`): a rate or a level over time is a line; a share of a
-  whole over time is stacked areas (`measure: 'share'`), a share at one moment DBA Dash's pie or ring where Allen ordered
-  one; a distribution over time, a count per step, is bars (`measure: 'distribution'`). One value axis: a second measure of another scale is its own chart (`y2` stays only where a
+  whole over time is stacked areas (`measure: 'share'`), a share at one moment DBA Dash's pie or ring where a page
+  asks for one; a distribution over time, a count per step, is bars (`measure: 'distribution'`). One value axis: a second measure of another scale is its own chart (`y2` stays only where a
   page already uses it).
 - The look (`chartLook`, `axisLook`): axis values in `--fs-xs` and `--text-muted`, grid lines in `--line`, short ticks,
   about five values up a 220 px chart and seven along a 560 px one; the series in `--s1` ... `--s8` order.
@@ -95,6 +95,16 @@ web/src/chartkit.ts; a page never styles a chart itself.
 - A drag across a chart sets the page's range (the address); while the page stands on a range a drag led to (a second
   drag included), every line chart's heading, an empty one too, offers 'Reset zoom' back to the range before the first
   drag (`--select-fill` is the drag's brush). Pies, rings and volume bars draw no time and offer none.
+- Pies and rings (`donutChart`, `ringChart`, DBA Dash's): the slice under a mouse pops out (the class `pop`; no copied or
+  exported picture carries it) and a box beside the pointer lists the slices - each one's square, name, size and share,
+  15 rows at most around the hovered one - with its row marked; the legend row marks its slice the same way. The box
+  follows the pointer and cannot itself be hovered, as the line charts' readout: the legend table and the picture's
+  label are the complete keyboard and screen-reader path (WCAG 1.4.13). A touch shows the box on its first tap and opens
+  the slice's page on a second tap of the same slice. A slice that names a thing opens it (Ctrl or the middle button: a
+  new tab); 'other (n)' shows every slice for that draw. Each slice carries '<name> <size> (<share>)' where that fits
+  its wedge at the drawn size, else the legend's share as a whole number (the legend's 3.5 % reads 4 %), else nothing.
+  A pie with a row of its own or beside its grid (DB Space beside its grid, the PostgreSQL Storage's alone in its row)
+  is 300-520 px across; a pie in a row of several 150-200 px. A label's dark halo is 0.4 of its font size (WCAG 1.4.3).
 - Empty and loading (`chartState`, `chartPlaceholder`): one box in the chart's place, 'No data in this window (<the
   window>).', 'No data in this span.' on a chart of its own span, or the caller's words; loading is a status a screen
   reader announces (`chartPlaceholder` is for a page to draw while its rows load; the screen tasks adopt it).

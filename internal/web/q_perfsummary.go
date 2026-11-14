@@ -323,5 +323,6 @@ func queryTx(ctx context.Context, tx pgx.Tx, sql string, args ...any) (*table, e
 		}
 		t.Rows = append(t.Rows, v)
 	}
+	markRead(ctx, t, args) // the request's cut window beside a part that read it (web.go)
 	return t, rows.Err()
 }

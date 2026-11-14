@@ -473,6 +473,24 @@ type Proposal struct {
 	Login       string   `json:"login,omitempty"`
 	DisplayName string   `json:"display_name,omitempty"`
 	Tags        []string `json:"tags"`
+	// cloud discovery (task 205): the resource's id, immutable where the cloud gives one (a new id under an old key is
+	// a new server; docs/discovery.md names what each cloud keeps), the
+	// other address (the private one is Host), the master user (shown as information, never the login), the
+	// resource's own tags (taken in by serve only through the source's allow-list of keys), a note the page shows,
+	// Entra-only (a password or SQL login is refused at the approve) and serverless (an auto-pause the collector
+	// would keep from pausing: a tick at the approve)
+	ResourceID string            `json:"resource_id,omitempty"`
+	AltHost    string            `json:"alt_host,omitempty"`
+	MasterUser string            `json:"master_user,omitempty"`
+	CloudTags  map[string]string `json:"-"`
+	Note       string            `json:"note,omitempty"`
+	EntraOnly  bool              `json:"entra_only,omitempty"`
+	Serverless string            `json:"serverless,omitempty"`
+	AutoPause  bool              `json:"auto_pause,omitempty"`
+	// Platform: what the cloud says the server is, the configuration's platform word (rds, aurora, azure, cloudsql,
+	// alloydb for PostgreSQL; rds, azuresqldb, azuresqlmi, cloudsql for SQL Server) - an approved proposal's instance
+	// starts with it, never 'auto' when the source knows (the join's review 3e); empty for the list and CMS sources
+	Platform string `json:"platform,omitempty"`
 }
 
 // SplitHostPort reads "host", "host,port" (SQL Server's form), "host:port" and "[v6]:port"; a named instance

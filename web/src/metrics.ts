@@ -55,7 +55,8 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('p', { class: 'meta' },
     `${rows.length} counter(s)${kind === 'all' ? '' : ' in this family'}, ${sampled} with samples in the range, ${withRule} with a threshold. `,
     whatIsThis('Max, min, average and the newest value of every counter over the time range, from the samples the collector already stores (a cumulative counter is shown as its rate per interval; a counter reset gives no point). A row with a threshold shows its warning and critical values and colours each of the four figures by them; the threshold is an alert rule (the Alert rules page), judged by the alert sender on the same samples: the rule column says what it last made of it. The narrowest rule covering the instance is the one in force: this instance\'s own over a tag\'s over the fleet\'s. Chart draws a row over the range with its thresholds as flat lines.', 'Metrics')));
-  if (!d.writable) sec.append(el('p', { class: 'meta' }, `Thresholds are read only here: ${d.reason ?? ''}`));
+  // the page's one sentence where thresholds cannot be written here: every off control below points at it
+  if (!d.writable) { d.note = el('p', { class: 'meta' }, `Thresholds are read only here: ${d.reason ?? ''}`); sec.append(d.note); }
   sec.append(el('div', { class: 'subtabs' }, ...[['all', 'all'], ...families].map(([k, label]) =>
     el('a', { href: link(k, mdb), class: k === kind ? 'on' : '', ...(k === kind ? { 'aria-current': 'true' } : {}) }, label))));
   if (!families.length) { sec.append(el('p', { class: 'empty' }, 'No counter is known for this instance.')); return sec; }

@@ -253,7 +253,7 @@ function onClick(e: MouseEvent) {
 
 // ---- the copies ----------------------------------------------------------------------------------------------
 
-export interface Sheet { cols: string[]; rows: Cell[][]; num?: boolean[] }
+export interface Sheet { cols: string[]; rows: Cell[][]; num?: boolean[]; borders?: boolean }   // borders: each cell's thin border (a mail's grid, as its header table)
 
 // shown: the grid as the copies take it: every row the filter leaves (also past the grid's page), the columns not
 // hidden; with a selection, the rows and columns that hold a selected cell, a cell outside it empty
@@ -282,9 +282,11 @@ export function toMarkdown(s: Sheet): string {
 const rgb = (argb: string) => '#' + argb.slice(2).toLowerCase();
 const html = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // toHtml: a table that carries its colours in each cell's own style, so a mail, a document or a spreadsheet it is
-// pasted into shows them: the export's header blue, each status fill with its text colour, a link cell's light fill and blue
+// pasted into shows them: the export's header blue, each status fill with its text colour, a link cell's light fill and blue;
+// no cell border in a copy (DBA Dash's copy draws none); a mail's grid keeps its thin borders, as the mail's header table
+// (s.borders: reportmail.ts mailHtml)
 export function toHtml(s: Sheet): string {
-  const base = 'border:1px solid #c8ccd4;padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap';
+  const base = `${s.borders ? 'border:1px solid #c8ccd4;' : ''}padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap`;
   const th = (c: string) => `<th style="${base};background:${rgb(headFill)};color:#ffffff;font-weight:bold;text-align:left">${html(c)}</th>`;
   const td = (c: Cell | undefined, j: number) => {
     const st: Status | undefined = c?.status;
@@ -314,9 +316,10 @@ function copyByEvent(h: string, plain: string): boolean {
 }
 // copyHtml: the table on the clipboard as HTML, with the tab-separated words beside it for a plain-text paste; never
 // the markup itself as text
-async function copyHtml(s: Sheet): Promise<boolean> {
-  const h = toHtml(s);
-  const plain = [s.cols, ...s.rows.map(r => s.cols.map((_, j) => r[j]?.text ?? ''))].map(r => r.map(v => v.replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n');
+// mark: a stored sample's mark (the closest [data-sample]), put first so a copy is never read as the instance's own data
+async function copyHtml(s: Sheet, mark = ''): Promise<boolean> {
+  const h = (mark ? `<p>${html(mark)}</p>` : '') + toHtml(s);
+  const plain = (mark ? mark + '\n' : '') + [s.cols, ...s.rows.map(r => s.cols.map((_, j) => r[j]?.text ?? ''))].map(r => r.map(v => v.replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n');
   try {
     await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([h], { type: 'text/html' }), 'text/plain': new Blob([plain], { type: 'text/plain' }) })]);
     return true;
@@ -448,9 +451,11 @@ export function menuItems(t: HTMLTableElement, td: Element | null, back: HTMLEle
   const visible = hs.filter(h => !h.hasAttribute('data-gt-hidden')).length;
   const frozen = [...t.classList].filter(c => /^gt-f\d+$/.test(c)).length;
   const barred = new Set(p.bars);
+  // a stored sample's grid (community.ts demoPanel): its mark first in both copies, as in an export
+  const mark = t.closest('[data-sample]')?.getAttribute('data-sample') ?? '';
   const items: Item[] = [
-    [`Copy ${what} as Markdown`, () => { const s = shown(t); void copyText(toMarkdown(s)).then(said(t, `${s.rows.length} rows as Markdown`)); }],
-    [`Copy ${what} as HTML with the colours`, () => { const s = shown(t); void copyHtml(s).then(said(t, `${s.rows.length} rows as HTML`)); }],
+    [`Copy ${what} as Markdown`, () => { const s = shown(t); void copyText((mark ? mark.replace(/[\\|*_`<[\]]/g, '\\$&') + '\n\n' : '') + toMarkdown(s)).then(said(t, `${s.rows.length} rows as Markdown`)); }],
+    [`Copy ${what} as HTML with the colours`, () => { const s = shown(t); void copyHtml(s, mark).then(said(t, `${s.rows.length} rows as HTML`)); }],
   ];
   if (n !== undefined) {
     if (visible > 1) items.push([`Hide column ${n}`, () => save(t, { ...p, hidden: [...new Set([...p.hidden, n])] })]);

@@ -13,22 +13,33 @@ same way as any browser.
 
 ## The workbook
 
-- **Summary** is the first sheet: the instance (or `fleet`, or the tag), the tab, the time window (its label,
-  its start and its end), the export time, the time zone the times in the file are written in (the display time zone: the browser's unless the range panel names another, as
-  `America/Los_Angeles (UTC-08:00 at export)`; each time carries its own date's offset, so a window across a
-  daylight-saving change holds two), and one line per data sheet with its row count and, when the page said
-  it shows only the newest N of M rows (the Running queries samples), that note, or, for a grid with no row, the
-  page's own empty message. Its header row and the
-  heading of its list of sheets carry the same blue as every data sheet's header.
-- **One sheet per grid** on the tab, named by the heading (h2, h3 or h4) above the grid on the screen (Excel's
-  31-character limit applies, a trailing space cut; a name that repeats gets ` (2)`, and so do `Summary` and
-  Excel's reserved `History`; the characters `\ / ? * [ ] :` become spaces, and a run of spaces is one space).
-  Property cards (two-column label / value panels) export too, as `item` / `value` sheets.
+- **The grid sheets come first**, in page order, so the file opens on the page's first grid: a sheet per grid
+  on the tab, a heading's tiles (`Backups tiles`: Item | Value | Status), the fleet Summary's Needs attention lines,
+  property cards (two-column label / value panels) as Item | Value | Status sheets, and each chart's series as its
+  own Export Excel writes them (a time per row, a series per column, in the chart's axis unit).
+- **About** is the last sheet, Item | Value: the instance (or `fleet`, or the tag), the tab, the time window (its
+  label, its start and its end; and, when parts of the page read only the newest part of a long window - each part
+  reads its own reach of it, 31 days and an hour unless it reads further - a 'Read' row with what they read), the
+  export time, the time zone the times in the file are written in (the display time zone: the browser's unless the
+  range panel names another, as `America/Los_Angeles (UTC-08:00 at export)`; each time carries its own date's
+  offset, so a window across a daylight-saving change holds two), the source, and one row per grid sheet
+  (`Sheet <name>`) with its row count and its note: what the list read when its part was cut to its reach ('This
+  list reads the newest 31 days of this window: <from> to <to>.', also the first line of its CSV), when the page
+  said it shows only the newest N of M rows (the Running queries samples) that note, a stored sample's mark (a demo
+  instance's community tool), or, for a grid with no row, the page's own empty message.
+- **Each sheet is named by the heading** (h2, h3 or h4) above its grid on the screen, cut to Excel's 31
+  characters; the characters `\ / ? * [ ] :` become spaces and a run of spaces is one space (a rate's `/ s` reads
+  `per s`). A time the heading carries and a bare count in brackets are left out (About holds the window and the
+  rows); a cut that would end inside a bracket leaves that bracket out. A sheet is never numbered: two headings
+  equal after the cut keep their start and the words where they part (`DatabaseBackup - USER_DAT… FULL`); a heading
+  equal to a name already taken (Excel's reserved `History`, `About`, or the same heading twice) is named with the
+  heading above it (`Trace flags History`). Only two headings equal in full under one heading get ` (2)` so that
+  the file still opens, and the file rules (`scripts/xlsx-check.py`) fail such a file.
 - **Every grid with rows is an Excel table** (Insert > Table: sortable, filterable, a name per sheet, `Table1`
   on), with no table style, so the cells keep their own colours. Its column names are the header cells: a
   heading that repeats gets ` (2)`, an empty one is `Column n` (Excel wants each column named once). A grid
-  without rows (one a filter left empty, or one with no row at all) is a plain sheet of its header row with the
-  filter on; DBA Dash also exports an empty grid as its header row. A grid with no row at all leaves out a column
+  without rows (one a filter left empty, or one with no row at all) is a table too: its header row and one empty
+  row (a table needs a data row), as DBA Dash exports an empty grid. A grid with no row at all leaves out a column
   the grid tools hid while it had rows, as DBA Dash writes only the visible columns (the tools' choice is read from
   this browser's storage; a choice a private window keeps only in memory is not seen there).
 - **No frozen pane**, as DBA Dash's: scrolled down, Excel shows a table's column names in place of the column
@@ -104,7 +115,7 @@ The workbook writes one sheet per grid as an Excel table without a style (DBA Da
 style named, so none drawn), a blue header row in white bold, every cell in the colour its grid gives it in a plain
 font, counts General, dates `yyyy-MM-dd HH:mm` and percents `0.0%`, no frozen pane, and DBA Dash's column widths.
 `scripts/proof-export-dbadash.py` sets the Test Summary export beside DBA Dash's own (`summary-1.xlsx`) part by part.
-Kept on purpose and named there: the Summary sheet first (what was exported, from when, in which time zone; DBA
+Kept on purpose and named there: an 'About' sheet last (what was exported, from when, in which time zone; DBA
 Dash writes `Sheet1` alone), each sheet named by its grid's heading, the orange's dark text (the screen's), the unit
 formats of a size or a duration (DBA Dash has no such cell), and a value cell carried in the colour of the cell that
 judges it. Not copied: ClosedXML's artefacts (a `dataDxfId` on a table column whose cells share one style; a white
@@ -116,7 +127,10 @@ same row.
 
 The same rows and the same columns: one grid gives one `.csv`; a tab with several grids gives a `.csv.zip` with one CSV per grid,
 numbered in page order and named by the sheet names above. RFC 4180, UTF-8 with a byte-order mark (Excel reads
-the encoding from it), CRLF line ends. Numbers are plain values (bytes, seconds for a `1h 1m` duration, milliseconds for a millisecond time, the percent
+the encoding from it), CRLF line ends. The header row is the first line, except in the CSV of a list that read only the
+newest part of a long window: there one quoted sentence comes first ('This list reads the newest 31 days of this window:
+<from> to <to>.') and the header row is the second line - a reader that takes line 1 as the header skips that line
+first (pandas: `skiprows=1`). Numbers are plain values (bytes, seconds for a `1h 1m` duration, milliseconds for a millisecond time, the percent
 figure); times are
 `yyyy-mm-dd hh:mm:ss` in the browser's time. A text cell that a spreadsheet program would run as a formula
 (it starts with `=`, `+`, `-`, `@`, a tab or a carriage return: query text, an application name or any other
@@ -134,7 +148,7 @@ outside `A-Z a-z 0-9 . _ -` become `-`.
 ## The grid tools
 
 Every grid's menu (right-click, the menu key or Shift+F10) carries **Export Excel** after the copy lines (that grid's
-workbook: the Summary sheet and its own; the grid's line says the file's name), and, under them:
+workbook: its own sheet, then 'About'; the grid's line says the file's name), and, under them:
 
 - **Copy the rows as Markdown** and **as HTML with the colours**: the rows the filter leaves and the columns
   shown, as a pipe table, or as an HTML table whose cells carry the workbook's colours in their own style (the

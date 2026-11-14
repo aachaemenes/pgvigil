@@ -6,7 +6,7 @@
 // column (a light fill, the link blue), no other cell filled, the numbers as numbers (a count or a decimal General, a
 // share '0.0%', a time 'yyyy-MM-dd HH:mm': DBA Dash's formats), no frozen pane, and each column as wide as its widest
 // cell the way DBA Dash's writer measures it (ClosedXML AdjustToContents, capped at 150); a
-// column hidden with the grid tools (gridtools.ts) is left out, as on the screen; a Summary sheet first (the instance,
+// column hidden with the grid tools (gridtools.ts) is left out, as on the screen; an 'About' sheet last (the instance,
 // the tab, the window, the export time); the same rows as CSV beside it (one grid: a .csv; several: a .zip of one
 // .csv per grid). It reads the rendered page and each grid's page model (ui.ts gridModel: the raw values in the order
 // shown), so the file matches the screen; the server is untouched and nothing leaves the browser but the file the
@@ -17,12 +17,28 @@ import { fleet } from './fleet';
 import { installGridTools } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
 import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
-import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showMenu } from './ui';
+import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, readWindowWords, showMenu } from './ui';
+import { cutReads } from './api';
+import { readRows } from './export_colours';
+import { ownName, sheetNames, sheetTitle } from './export_names';
+import { drawingRels, drawingXml, pictureOf } from './export_chart';
+import type { ChartNumbers, PictureBox } from './export_chart';
+import { cellLook, gridHeadLook, headLook, withDot } from './export_page';
+import type { LookCache, PageSheet } from './export_page';
 
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
-export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
-export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string }   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
-export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; sample?: string }   // note: the page's 'the newest N of M' line above the grid   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note, the mail's line above the grid and a CSV's first line
+export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date' | 'bool' | 'days' | 'day';   // bool: v 1 or 0, written as an Excel boolean (P3)   // days: a count of days the page writes 'n days'   // day: a date alone (v its Excel serial, stamp 'YYYY-MM-DD')
+export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (written in the header row's style)   // stamp: a time's local text for the CSV
+  per?: string;   // a size per a time ('381.5 MB / day': kind 'bytes', per 'day')
+  look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
+  runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
+  jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
+  fmt?: string;   // the page sheet (E2-15, F2): the number format that shows the value as the page's words ('#,##0.0', a size's unit, the page's date form)
+  sheets?: number[] }   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+// Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
+// words, a thick left border in a colour (a tile's stripe)
+export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[]; sample?: string; within?: string; own?: boolean; items?: boolean; read?: string }   // own: the name is the page's own (data-sheet: kept whole, export_names.ts ownName)   // items: an Item | Value | Status section (itemSection)   // within: the heading above the one that names it (export_names.ts sheetNames: a name taken in full falls back on it)   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in About's line of its sheet and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)   // read: a list cut to its part's reach, what it read ('This list reads the newest 31 days of this window: ...'): in its note on 'About' and the line above its CSV's header
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -47,17 +63,29 @@ function numeric(raw: unknown): number | undefined {
 // space), so each rendering is collapsed the same way before the comparison.
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
 
-export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'stamp'> {
+export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'stamp' | 'per'> {
   if (text === '') return { v: '', kind: 'text' };
+  // (P3, the lead 22:34) a boolean the page writes as its yes / no or true / false: an Excel boolean on a grid sheet
+  // (DBA Dash's file: TRUE / FALSE cells); the page sheet keeps the page's words (export_page.ts gridBlock)
+  if (typeof raw === 'boolean' && [raw ? 'yes' : 'no', String(raw)].includes(text.toLowerCase())) return { v: raw ? 1 : 0, kind: 'bool' };
+  // (X9) a cell the page writes as yes or no whatever lies under it (a count shown 'no' when it is zero): the boolean of the word
+  const yn = yesNo(text);
+  if (yn) return yn;
   if (typeof raw === 'string' && isoTime.test(raw) && norm(fmtTime(raw)) === text) {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) return { v: excelDate(d), kind: 'date', stamp: localStamp(d) };
   }
+  // (X7, X8) a date alone the server sends as text ('2026-11-11', a date column) and the page writes as it is: a date cell
+  // under 'yyyy-MM-dd'
+  if (typeof raw === 'string' && raw.slice(0, 10) === text) { const day = dayCell(text); if (day) return day; }
   // a text that only looks like a number (a role or database named '0042', a '+5') is kept as the text it is
   if (typeof raw === 'string' && /^[+0]\d/.test(raw)) return { v: text, kind: 'text' };
   const n = numeric(raw);
   if (n !== undefined) {
     if (norm(fmtBytes(raw)) === text) return { v: n, kind: 'bytes' };
+    // a size a page writes in its own unit with the locale's number ('1,536 MB', '100,5 MB': fmtNum(v) + ' MB'): bytes
+    const sw = /^(.+) (B|KB|MB|GB|TB|PB)$/.exec(text);
+    if (sw && norm(fmtNum(n)) === sw[1]) return { v: n * 1024 ** UNITS.indexOf(sw[2]), kind: 'bytes' };
     if (norm(fmtSecs(raw)) === text) return n >= 0 ? { v: n / 86400, kind: 'secs' } : { v: n, kind: 'nsecs' };
     const dur = durParse(text);
     // a duration kept in seconds and shown under a minute as '12.2 s' (the Jobs tabs; a longer one is fmtSecs's '1m 5s'):
@@ -70,9 +98,26 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
     // a share: '12.5 %', a growth with its sign ('+3 %'), or one the page rounds to a whole percent
     const pct = new Set([fmtNum(n), (n > 0 ? '+' : '') + fmtNum(n), fmtNum(Math.round(n)), (n > 0 ? '+' : '') + fmtNum(Math.round(n))].map(x => norm(x + ' %')));
     if (pct.has(text)) return { v: n / 100, kind: 'pct' };   // a share under a percent format: Excel's own percent, 12.5 % = 0.125
+    // (X7) a count of days as the pages write it ('233.3 days', a badge's 'off (0 days)', storage.ts's 'over 10 years' past
+    // 3,650): the days, a number in its column's one unit (gridSection: the header says '(days)')
+    const dm = /^(?:off \()?(.+) days?\)?$/.exec(text);
+    if (dm && norm(fmtNum(n)) === dm[1] || /^over \d+ years$/.test(text) && n > 3650) return { v: n, kind: 'days' };
+    // (X7) a size per day as the pages write it ('381.5 MB / day', '-2.0 GB / day'): the bytes, its unit chosen per column
+    const rm = /^(.+) \/ day$/.exec(text);
+    if (rm && norm(n < 0 ? '-' + fmtBytes(-n) : fmtBytes(n)) === rm[1]) return { v: n, kind: 'bytes', per: 'day' };
     if (norm(fmtNum(raw)) === text || String(raw) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
+    // a figure the page rounds to a whole number first ('61,075' for 61074.6: fmtNum(Math.round(v))): the raw value
+    if (norm(fmtNum(Math.round(n))) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
   }
   return { v: text, kind: 'text' };
+}
+
+// bareNumber: words that are a bare number in the locale ('3', '1,234', '5432'), as that number
+export function bareNumber(text: string): Pick<Cell, 'v' | 'kind'> | undefined {
+  const d = digitsOf(text);
+  if (!d || !(norm(fmtNum(Number(d))) === text || /^-?\d+$/.test(text)) || /^[+0]\d/.test(text)) return undefined;
+  const k = Number(d);
+  return { v: k, kind: Number.isInteger(k) ? 'int' : 'dec' };
 }
 
 // the locale's grouping and decimal characters, learnt from fmtNum (',' and '.' in en-US, U+202F and ',' in fr-FR)
@@ -81,6 +126,40 @@ const sep = (() => { const t = fmtNum(1234567.5); return { group: t[1], dec: t[t
 function digitsOf(t: string): string {
   const d = t.split(sep.group).join('').split(sep.dec).join('.').replace(/[\s\u202f\u00a0']/g, '');
   return /^-?\d+(\.\d+)?$/.test(d) ? d : '';
+}
+
+// yesNo: a cell whose whole text is yes or no, as the boolean of the word (X9: DBA Dash writes booleans as booleans)
+export function yesNo(text: string): Pick<Cell, 'v' | 'kind'> | undefined {
+  return /^(yes|no)$/i.test(text) ? { v: /^yes$/i.test(text) ? 1 : 0, kind: 'bool' } : undefined;
+}
+// dayCell: a date alone as the pages write it ('2026-11-11', the slow page's per-day grid, a chart's day): a date cell
+// under 'yyyy-MM-dd' (X7, X8), never a false 00:00
+export function dayCell(text: string): Pick<Cell, 'v' | 'kind' | 'stamp'> | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!m) return undefined;
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  return isNaN(t) ? undefined : { v: t / 86400000 + 25569, kind: 'day', stamp: text };
+}
+// shownTime: a time as the page shows it (tz.ts fmt: toLocaleString with hour12 false, the locale's order of the parts) back
+// to its Excel serial and its 'YYYY-MM-DD HH:MM:SS' stamp - the wall clock the screen shows, in the display zone; undefined
+// for any other text
+let timeRe: { re: RegExp; order: string[] } | undefined;
+export function shownTime(text: string): Pick<Cell, 'v' | 'kind' | 'stamp'> | undefined {
+  if (!timeRe) {
+    const parts = new Intl.DateTimeFormat(undefined, { hour12: false, year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', timeZone: 'UTC' }).formatToParts(new Date(Date.UTC(2026, 0, 2, 3, 4, 5)));
+    const order: string[] = [];
+    const re = parts.map(p => p.type === 'literal' ? p.value.replace(/\s+/g, ' ').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s*') : (order.push(p.type), '(\\d{1,4})')).join('');
+    timeRe = { re: new RegExp('^' + re + '$'), order };
+  }
+  const m = timeRe.re.exec(text);
+  if (!m) return undefined;
+  const at: Record<string, number> = {};
+  timeRe.order.forEach((k, i) => { at[k] = Number(m[i + 1]); });
+  const { year: y, month: mo, day: d, minute: mi, second: sec } = at;
+  const h = at.hour === 24 ? 0 : at.hour;
+  if (!(y > 1900 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h <= 23 && mi <= 59 && sec <= 59)) return undefined;
+  const pad = (x: number) => String(x).padStart(2, '0');
+  return { v: Date.UTC(y, mo - 1, d, h, mi, sec) / 86400000 + 25569, kind: 'date', stamp: `${y}-${pad(mo)}-${pad(d)} ${pad(h)}:${pad(mi)}:${pad(sec)}` };
 }
 
 // durParse: a millisecond duration as any tab's formatter writes it ('0.3 ms', '2,500 ms', '3.72 s', '75 s',
@@ -113,6 +192,38 @@ export function excelDate(d: Date): number {
   return (Math.floor(d.getTime() / 1000) * 1000 + offsetMin(d) * 60000) / 86400000 + 25569;
 }
 
+// ---- the page sheet's number formats (E2-15, F2): a number shows the page's own words ------------------------
+// numFmtOf: a count or a decimal as the page writes it - the locale's grouping where the page groups (a number of 1,000
+// or more written with more than its digits), its decimals as many as the page shows; Excel and LibreOffice put the
+// viewer's own grouping and decimal marks in place of ',' and '.'
+export function numFmtOf(n: number, text: string): string {
+  const dm = new RegExp('\\' + sep.dec + '(\\d+)$').exec(text.replace(/\s/g, ''));
+  const k = dm ? dm[1].length : 0;
+  const grouped = Math.abs(n) >= 1000 && !/^-?\d+$/.test(text.split(sep.dec)[0]);
+  return (grouped ? '#,##0' : '0') + (k ? '.' + '0'.repeat(k) : '');
+}
+// sizeOf: a size as fmtBytes writes it ('312.6 MB', '7 B': a '.' decimal whatever the locale, ui.ts:29) - its unit,
+// its power of 1024 and its decimals; undefined for other words
+const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+export function sizeOf(text: string): { unit: string; pow: number; k: number } | undefined {
+  const m = /^-?\d+(?:\.(\d+))?\s(B|KB|MB|GB|TB|PB)$/.exec(text);
+  return m ? { unit: m[2], pow: UNITS.indexOf(m[2]), k: m[1]?.length ?? 0 } : undefined;
+}
+// dateFmt: the page's date-and-time form (tz.ts fmt: toLocaleString with hour12 false) as an Excel format code, read
+// from the locale's own parts of a date whose month, day and hour are one digit (a part written with two digits there
+// is padded: 'mm', else 'm'); the zone does not change the parts' order
+let dateCode = '';
+export function dateFmt(): string {
+  if (dateCode) return dateCode;
+  const sample = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+  const parts = new Intl.DateTimeFormat(undefined, { hour12: false, year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', timeZone: 'UTC' }).formatToParts(sample);
+  const code: Record<string, (v: string) => string> = { year: v => v.length === 2 ? 'yy' : 'yyyy', month: v => v.length === 2 ? 'mm' : 'm', day: v => v.length === 2 ? 'dd' : 'd',
+    hour: v => v.length === 2 ? 'hh' : 'h', minute: () => 'mm', second: () => 'ss' };
+  // a literal of separators only ('/', ':', ', ', ' ', '.', '-') stands bare; any other is quoted
+  dateCode = parts.map(p => code[p.type] ? code[p.type](p.value) : /^[/:,. -]*$/.test(p.value) ? p.value : '"' + p.value.replace(/"/g, '') + '"').join('');
+  return dateCode;
+}
+
 const statuses: Status[] = ['crit', 'warn', 'ok', 'none'];
 // the marks inside a cell that colour it on the screen: a badge, a dot, a data bar's fill (perfsummary.ts), a word the
 // page marks warning or critical (a span with the class), a value whose text the page paints in the status colour
@@ -137,39 +248,28 @@ export function statusOf(td: Element): Status | undefined {
   return (['crit', 'warn', 'ok'] as Status[]).find(k => td.classList.contains(k));
 }
 
-// carry: a value cell takes the colour of the cell that judges it in its row (the page puts the verdict on the word:
-// 'failing', 'late', 'failed', '4 %'; DBA Dash colours the value too: the date of the late backup, the time of the
-// failed run). So the file colours these value cells where the screen leaves them plain. Column keys of the page
-// models: the value's key, then the keys of the cells that may judge it. A cell with a colour of its own keeps it; an
-// empty cell takes none.
-const carry: Record<string, string[]> = {
-  value: ['severity', 'check_name'],                                    // a finding's or a check's value
-  archive_age_s: ['archiver_failing'],                                  // Backups: the last archived WAL's age by the archiver's state
-  full_at: ['full_status'], full_age_hours: ['full_status'],            // SQL Server backups: each date and age by its type's status
-  diff_at: ['diff_status'], log_at: ['log_status'], log_age_minutes: ['log_status'],
-  last_run_at: ['last_outcome'], last_run_utc: ['last_outcome'],        // Jobs: the last run's time by its outcome
-  last_start: ['last_status'],                                          // Job report: the same
-  free_bytes: ['free_pct'],                                             // Storage, drives: the free size by the free share
-};
+// (No colour is carried from a judging cell to a value cell: the file follows the page, which leaves those value cells
+// plain; design line C4, the export's E2 answer.)
 
 // linkOf: a plain cell the screen draws as a link (a name that opens its page); a status cell keeps its status colours
 const linkOf = (td: Element) => !td.classList.contains('status') && !!td.querySelector('a[href]') || undefined;
 
 // a status cell that shows only its colour (a green Summary cell) carries its words in data-text; a statement cell
 // shown as its first characters (sqlview.ts) carries the whole text in data-full, which the export writes instead
+export const cellWords = (e: Element): string => text(e);
 const text = (e: Element) => e.querySelector('[data-full]')?.getAttribute('data-full')
   ?? ((e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''));
 
 // a heading's own words, without its 'what is this' button (sqlview.ts): they name a sheet and a CSV file
-const headingText = (e: Element) => {
+export const headingText = (e: Element): string => {
   const c = e.cloneNode(true) as Element;
-  c.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove());
+  c.querySelectorAll('.whatis, .filter-btn, .chart-reset').forEach(b => b.remove());   // a drag's 'Reset zoom' link is no word of it
   return text(c);
 };
 
 // readGrid: a grid's header and its rows as cells. A column hidden with the grid tools (its header carries
 // data-gt-hidden) is left out, as DBA Dash's export leaves out a hidden column; all = every column (the tools' own reads).
-export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'cols' | 'rows'> {
+export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'cols' | 'rows' | 'heads'> {
   const ths = [...table.querySelectorAll(':scope > thead > tr:first-child > th')];
   const cols = ths.map(headingText);   // a header's words without its filter button (ui.ts grid)
   const numCol = ths.map(h => h.classList.contains('num'));
@@ -179,32 +279,34 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
   const trs = (m?.allRows ? m.allRows() : [...table.querySelectorAll<HTMLTableRowElement>(':scope > tbody > tr')]).filter(tr => !tr.classList.contains('trend-row'));
   const data = m?.rows();
   const keys: (Col | undefined)[] = m && m.cols.length === cols.length ? m.cols : cols.map(() => undefined);
-  const at = new Map(keys.map((k, j) => [k?.key ?? '', j] as [string, number]));
-  const rows = trs.map((tr, i) => {
-    const r: Cell[] = [...tr.children].map((td, j) => {
-      const t = text(td);
-      const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
-      return { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
-    });
-    // the colours the row's own cells hold, read before any is carried: a carried colour is never carried on
-    const own = r.map(c => c.status);
-    r.forEach((c, j) => {
-      const from = keys[j] ? carry[keys[j]!.key] : undefined;
-      if (!from || c.status || c.text === '') return;
-      for (const k of from) { const s = at.has(k) ? own[at.get(k)!] : undefined; if (s) { c.status = s; break; } }
-    });
-    return r;
-  });
+  // each cell's look as the page's CSS paints it: a drawn row where it is, a row past the grid's page in a hidden copy of
+  // the table (readRows), one read per cell shape (cache)
+  const cache: LookCache = new Map();
+  const looks = readRows(table, trs, tr => [...tr.children].map(td => cellLook(td, table, cache)));
+  const rows = trs.map((tr, i) => [...tr.children].map((td, j) => {
+    const t = text(td);
+    const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
+    const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
+    // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
+    // are that number ('3' collection errors), as DBA Dash writes its 'DBA Dash Errors (24hrs)'
+    if (td.classList.contains('status') && typeof c.v === 'string') { const b = bareNumber(t); if (b) Object.assign(c, b); }
+    const l = looks[i]?.[j];
+    return l ? withDot({ ...c, look: l.look }, l) : c;
+  }));
+  const heads = ths.map(th => headLook(th, table));
   const keep = ths.map(h => all || !h.hasAttribute('data-gt-hidden'));
-  if (keep.every(Boolean)) return { cols, rows };
-  return { cols: cols.filter((_, j) => keep[j]), rows: rows.map(r => r.filter((_, j) => keep[j] ?? true)) };
+  if (keep.every(Boolean)) return { cols, rows, heads };
+  return { cols: cols.filter((_, j) => keep[j]), rows: rows.map(r => r.filter((_, j) => keep[j] ?? true)), heads: heads.filter((_, j) => keep[j]) };
 }
 
 function readProps(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const rows = [...table.querySelectorAll('tr')].map(tr => {
     const th = tr.querySelector('th'), td = tr.querySelector('td');
     const a = th ? text(th) : '', b = td ? text(td) : '';
-    return [{ v: a, kind: 'text' as Kind, text: a }, { v: b, kind: 'text' as Kind, status: td ? statusOf(td) : undefined, text: b }];
+    const la = th ? cellLook(th, table) : undefined, lb = td ? cellLook(td, table) : undefined;
+    const ca: Cell = { v: a, kind: 'text' as Kind, text: a, ...(la ? { look: la.look } : {}) };
+    const cb: Cell = { v: b, kind: 'text' as Kind, status: td ? statusOf(td) : undefined, text: b, ...(lb ? { look: lb.look } : {}) };
+    return [la ? withDot(ca, la) : ca, lb ? withDot(cb, lb) : cb];
   });
   return { cols: ['item', 'value'], rows };
 }
@@ -248,15 +350,13 @@ export function sections(root: ParentNode, fallback: string, empties = false): S
 
 // walk: sections() with the element each came from (a grid's menu exports the one it was opened on)
 function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Section; el: Element }[] {
-  let outer = fallback, inner: { text: string; within: Element } | undefined;
+  const hs = headings(fallback);
   const out: { sec: Section; el: Element }[] = [];
-  for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, table.grid, table.props, p.empty[data-cols]' : 'h2, h3, h4, table.grid, table.props')) {
-    if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
-      const within = e.closest('[role=region]');
-      if (within) inner = { text: headingText(e) || fallback, within }; else { outer = headingText(e) || fallback; inner = undefined; }
-      continue;
-    }
-    const heading = inner && inner.within.contains(e) ? inner.text : outer;
+  let cardHead: Look | undefined;   // a property card's sheet: its 'item | value' header in the page's grid-header look
+  const cardHeads = () => { const l = cardHead ??= (root instanceof Element ? gridHeadLook(root) : undefined); return l ? [l, l] : undefined; };
+  for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, h5, table.grid, table.props, p.empty[data-cols]' : 'h2, h3, h4, h5, table.grid, table.props')) {
+    if (e.tagName !== 'TABLE' && e.tagName !== 'P') { hs.see(e); continue; }
+    const { heading, within, own } = hs.of(e);
     // a grid with no row (ui.ts grid: its note carries its columns' names): a sheet of its header row alone, as DBA Dash
     // exports an empty grid (CommonShared.cs SaveDataGridViewsToXLSX: a sheet per grid, the header row, then the rows)
     if (e.tagName === 'P') {
@@ -265,25 +365,79 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
       if (Array.isArray(cols) && cols.length) {
         // DBA Dash writes the visible columns' headers only: a column the grid tools hide stays out here too
         const all = cols.map(String), hid = hiddenOfEmpty(e, all);
+        // the header row the page draws for it (ui.ts: a .grid-empty table beside the note): its cells' looks
+        const drawn = e.parentElement?.querySelector(':scope > table.grid-empty');
+        const ths = drawn ? [...drawn.querySelectorAll('th')] : [];
+        const heads = ths.length === all.length ? ths.map(th => headLook(th, drawn!)).filter((_, j) => !hid.has(j)) : undefined;
         const sample = e.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
-        out.push({ sec: { name: heading, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: [sample, text(e)].filter(Boolean).join('; ') || undefined, sample }, el: e });
+        // a list whose part read only the newest part of a long window: its words (ui.ts grid) in the note and the CSV
+        const rd = e.closest('.empty-grid')?.querySelector('.read-window');
+        const read = rd ? text(rd) : undefined;
+        out.push({ sec: { name: heading, within, ...(own ? { own } : {}), cols: all.filter((_, j) => !hid.has(j)), rows: [], note: [sample, read, text(e)].filter(Boolean).join('; ') || undefined, sample, ...(read ? { read } : {}), ...(heads ? { heads } : {}) }, el: e });
       }
       continue;
     }
     const t = e as HTMLTableElement;
-    // a 'the newest 500 of 1,234 samples' line right above the grid rides into the Summary sheet: the rows taken are not all
+    // a 'the newest 500 of 1,234 samples' line right above the grid rides into About's line of its sheet: the rows taken are not all
     // ui.ts grid: table in .grid-wrap in .grid-box, whose first child is the 'n of m rows shown (filtered)' line
     const wrap = t.parentElement?.classList.contains('grid-wrap') ? t.parentElement : t;
     const box = wrap.parentElement?.classList.contains('grid-box') ? wrap.parentElement : wrap;
     const prev = box.previousElementSibling;
     const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
-    // a stored sample's grid carries its mark first: never read as the instance's own data in a file or a mail
+    // a stored sample's grid carries its mark first: never read as the instance's own data in a file
     const sample = t.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
-    const notes = [sample ?? '', prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
+    // a list whose part read only the newest part of a long window (ui.ts grid: data-read-from / -to): its sheet's note
+    // and its CSV's first line say what was read, never the page's whole window
+    const readWin = t.dataset.readFrom && t.dataset.readTo ? `This list reads ${readWindowWords({ from: t.dataset.readFrom, to: t.dataset.readTo })}.` : undefined;
+    const notes = [sample ?? '', readWin ?? '', prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;
-    out.push({ sec: { name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note, sample }, el: t });
+    const read = t.classList.contains('grid') ? readGrid(t) : { ...readProps(t), ...(cardHeads() ? { heads: cardHeads() } : {}) };
+    out.push({ sec: { name: heading, within, ...(own ? { own } : {}), ...read, note, sample, ...(readWin ? { read: readWin } : {}) }, el: t });
   }
+  distinct(out);
   return out;
+}
+
+// headings: the headings above a section as the walk meets them (h2 to h5), by level. A section is named by the nearest
+// heading, its 'within' the one above that; a heading inside a region of its own (the Summary's 'Needs attention' strip)
+// names the sections of that region only (the sections after it keep the heading before it); a section the page names
+// itself - inside an element with data-sheet (a disclosure per job or per check under one heading, a totals grid under its
+// grid's heading) that holds no heading the walk met - takes that name, the heading its 'within'; one that holds headings
+// of its own (a pgAgent job's 'Steps' and 'Step runs') names each section by both: the page's name, then the heading's
+// title ('jobA Steps': ownName), the heading above the disclosure its 'within'
+function headings(fallback: string) {
+  const lv: string[] = [];
+  let outer = fallback, up: string | undefined, last: Element | undefined;
+  let inner: { text: string; within: Element; up: string } | undefined;
+  return {
+    see(e: Element) {
+      const t = headingText(e) || fallback, region = e.closest('[role=region]');
+      if (region) { inner = { text: t, within: region, up: outer }; return; }
+      const n = Number(e.tagName.slice(1));
+      lv.length = n; lv[n] = t; outer = t; up = lv.slice(0, n).filter(Boolean).pop(); inner = undefined; last = e;
+    },
+    of(e: Element): { heading: string; within?: string; own?: boolean } {
+      const inR = !!inner && inner.within.contains(e);
+      const heading = inR ? inner!.text : outer, within = inR ? inner!.up : up;
+      const own = e.closest('[data-sheet]'), name = own?.getAttribute('data-sheet')?.trim() ?? '';
+      if (!name) return { heading, within };
+      return last && own!.contains(last) ? { heading: ownName(name, heading), within, own: true } : { heading: name, within: heading, own: true };
+    },
+  };
+}
+
+// distinct (X2: a sheet's name says what it holds, never ' (2)'): sections that share a heading, each its own sheet - a
+// property card takes ' properties' after the heading and a row of tiles ' tiles' (a grid keeps the heading, as DBA Dash
+// names a grid by its title); a section the page names itself (a tile row's aria-label, data-sheet) keeps its name
+function distinct(all: { sec: Section; el: Element }[]): void {
+  const key = (f: { sec: Section }) => sheetTitle(f.sec.name).toLowerCase();
+  const n = new Map<string, number>();
+  for (const f of all) n.set(key(f), (n.get(key(f)) ?? 0) + 1);
+  for (const f of all) {
+    if ((n.get(key(f)) ?? 0) < 2 || f.el.matches('[aria-label]') || f.el.closest('[data-sheet]')) continue;
+    const word = f.el.matches('table.props') ? 'properties' : f.el.matches('.tiles') ? 'tiles' : '';
+    if (word) f.sec = { ...f.sec, name: `${f.sec.name} ${word}` };
+  }
 }
 
 // ---- the workbook -----------------------------------------------------------------------------------------
@@ -299,11 +453,15 @@ export const linkFill = 'FFF1F1F6', linkFont = 'FF004F83';   // DBA Dash's link 
 // numFmt ids: 0 is General (DBA Dash writes a count or a decimal so); 165 on are this file's own: a share and a time in
 // DBA Dash's formats (its P1 percent, its date), a size, a duration in pgvigil's units (the screen shows the unit; DBA Dash
 // has no such kind)
-const fmtId: Record<Kind, number> = { text: 0, int: 0, dec: 0, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
+// (X7, X8) a grid sheet carries DBA Dash's formats only: General, '0', '0.0%' / '0.00%' and its date; a size or a
+// millisecond or seconds column reaches the writer as plain numbers in one unit (gridSection)
+const fmtId: Record<Kind, number> = { text: 0, int: 0, dec: 0, bytes: 0, secs: 0, pct: 167, date: 168, nsecs: 0, msecs: 0, bool: 0, days: 0, day: 169 };
+// a share the page shows with two decimals ('12.50 %'): Excel's built-in '0.00%' (10), DBA Dash's P2
+const twoPlaces = (c: Cell) => /\d[.,]\d\d\s*%$/.test(c.text);
 // fmtOf: a cell's number format. A count of 12 digits or more (a PostgreSQL counter: blocks hit, tuples returned) under
 // Excel's built-in '0' (1): General would show it as 9.87654E+11, six digits of it; DBA Dash's writer has no such count
-const fmtOf = (c: Cell) => c.kind === 'int' && typeof c.v === 'number' && Math.abs(c.v) >= 1e11 ? 1 : fmtId[c.kind];
-const customFmts: [number, string][] = [[165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '0.0%'], [168, 'yyyy-MM-dd HH:mm'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
+const fmtOf = (c: Cell) => c.kind === 'int' && typeof c.v === 'number' && Math.abs(c.v) >= 1e11 ? 1 : c.kind === 'pct' && twoPlaces(c) ? 10 : fmtId[c.kind];
+const customFmts: [number, string][] = [[167, '0.0%'], [168, 'yyyy-MM-dd HH:mm'], [169, 'yyyy-MM-dd']];   // 169: a date alone (a day column), never a false 00:00
 
 const esc = (s: string) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -314,43 +472,75 @@ function colName(i: number): string {
   return s;
 }
 
-// Styles: one cellXfs entry per (number format, fill, font) used; fills 0 and 1 are the two the format reserves.
+// Styles: one cellXfs entry per (number format, fill, font, border, wrap) used; fills 0 and 1 are the two the format
+// reserves. A cell with a look (the page's CSS, export_page.ts) is written in that look; the old palette (fillOf, the
+// blue header) is for the grid sheets' header rows and the cells with a status but no look.
 class Styles {
-  private xfs = new Map<string, number>([['0|0|0', 0]]);
+  private xfs = new Map<string, number>([['0|0|0|0|', 0]]);   // style 0 (a cell typed in later) plain: no alignment, Excel's bottom (X0)
   private fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
   private fonts = ['<font><sz val="11"/><name val="Calibri"/></font>'];
+  private borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
   private fillIds = new Map<string, number>();
-  private fontIds = new Map<string, number>();
+  private fontIds = new Map<string, number>([['|0|0|0|11', 0]]);
+  private borderIds = new Map<string, number>();
   private fill(argb: string): number {
     let i = this.fillIds.get(argb);
     if (i === undefined) { i = this.fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${argb}"/><bgColor indexed="64"/></patternFill></fill>`) - 1; this.fillIds.set(argb, i); }
     return i;
   }
-  private font(argb: string, bold: boolean): number {
-    const k = argb + (bold ? 'b' : '');
+  private font(argb: string, bold: boolean, italic = false, underline = false, pt = 11): number {
+    const k = `${argb}|${+bold}|${+italic}|${+underline}|${pt}`;
     let i = this.fontIds.get(k);
-    if (i === undefined) { i = this.fonts.push(`<font>${bold ? '<b/>' : ''}<sz val="11"/><color rgb="${argb}"/><name val="Calibri"/></font>`) - 1; this.fontIds.set(k, i); }
+    if (i === undefined) {
+      i = this.fonts.push(`<font>${bold ? '<b/>' : ''}${italic ? '<i/>' : ''}${underline ? '<u/>' : ''}<sz val="${pt}"/>${argb ? `<color rgb="${argb}"/>` : ''}<name val="Calibri"/></font>`) - 1;
+      this.fontIds.set(k, i);
+    }
+    return i;
+  }
+  private border(argb: string): number {
+    let i = this.borderIds.get(argb);
+    if (i === undefined) { i = this.borders.push(`<border><left style="thick"><color rgb="${argb}"/></left><right/><top/><bottom/><diagonal/></border>`) - 1; this.borderIds.set(argb, i); }
+    return i;
+  }
+  // al: the cell's alignment - '' none (a cell of the export's own: Excel's bottom), 't' top, 'm' middle, then 'r' right
+  // or 'c' centred as the page aligns it (F2), then a 'w' when it wraps
+  private xf(fmt: number, fill: number, font: number, border: number, al: string): number {
+    const k = `${fmt}|${fill}|${font}|${border}|${al}`;
+    let i = this.xfs.get(k);
+    if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }
     return i;
   }
   id(fmt: number, status?: Status, head = false, link = false): number {
     const fill = head ? this.fill(headFill) : status ? this.fill(fillOf[status]) : link ? this.fill(linkFill) : 0;
     const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], false) : link ? this.font(linkFont, false) : 0;
-    const k = `${fmt}|${fill}|${font}`;
-    let i = this.xfs.get(k);
-    if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }
+    return this.xf(fmt, fill, font, 0, '');
+  }
+  // look: a cell in the page's look ('RRGGBB' colours)
+  look(fmt: number, l: Look): number {
+    const fill = l.fill ? this.fill('FF' + l.fill) : 0;
+    const plain = !l.color && !l.bold && !l.italic && !l.underline && !l.pt;
+    const font = plain ? 0 : this.font(l.color ? 'FF' + l.color : '', !!l.bold, !!l.italic, !!l.underline, l.pt ?? 11);
+    return this.xf(fmt, fill, font, l.border ? this.border('FF' + l.border) : 0, (l.valign === 'middle' ? 'm' : 't') + (l.halign === 'right' ? 'r' : l.halign === 'center' ? 'c' : '') + (l.wrap ? 'w' : ''));
+  }
+  // code: a number format of the page sheet's own (F2): its id, 171 on (165-170 are the fixed ones)
+  private codes = new Map<string, number>();
+  code(f: string): number {
+    let i = this.codes.get(f);
+    if (i === undefined) { i = 171 + this.codes.size; this.codes.set(f, i); }
     return i;
   }
   xml(): string {
     const xfs = [...this.xfs.keys()].map(k => {
-      const [n, f, t] = k.split('|');
-      return `<xf numFmtId="${n}" fontId="${t}" fillId="${f}" borderId="0" xfId="0"${n !== '0' ? ' applyNumberFormat="1"' : ''}${f !== '0' ? ' applyFill="1"' : ''}${t !== '0' ? ' applyFont="1"' : ''}/>`;
+      const [n, f, t, b, a] = k.split('|');
+      return `<xf numFmtId="${n}" fontId="${t}" fillId="${f}" borderId="${b}" xfId="0"${n !== '0' ? ' applyNumberFormat="1"' : ''}${f !== '0' ? ' applyFill="1"' : ''}${t !== '0' ? ' applyFont="1"' : ''}${b !== '0' ? ' applyBorder="1"' : ''}`
+        + (a ? ` applyAlignment="1"><alignment${a[1] === 'r' ? ' horizontal="right"' : a[1] === 'c' ? ' horizontal="center"' : ''} vertical="${a.startsWith('m') ? 'center' : 'top'}"${a.endsWith('w') ? ' wrapText="1"' : ''}/></xf>` : '/>');
     });
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
       + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-      + `<numFmts count="${customFmts.length}">${customFmts.map(([i, f]) => `<numFmt numFmtId="${i}" formatCode="${esc(f)}"/>`).join('')}</numFmts>`
+      + `<numFmts count="${customFmts.length + this.codes.size}">${[...customFmts, ...[...this.codes].map(([f, i]) => [i, f] as [number, string])].map(([i, f]) => `<numFmt numFmtId="${i}" formatCode="${esc(f)}"/>`).join('')}</numFmts>`
       + `<fonts count="${this.fonts.length}">${this.fonts.join('')}</fonts>`
       + `<fills count="${this.fills.length}">${this.fills.join('')}</fills>`
-      + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+      + `<borders count="${this.borders.length}">${this.borders.join('')}</borders>`
       + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
       + `<cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs>`
       + '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
@@ -367,16 +557,30 @@ class Styles {
 const ADV = [463, 667, 821, 1020, 1038, 1464, 1397, 452, 621, 621, 1020, 1020, 511, 627, 517, 791, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 548, 548, 1020, 1020, 1020, 949, 1831, 1185, 1114, 1092, 1260, 1000, 941, 1292, 1276, 516, 653, 1064, 861, 1751, 1322, 1356, 1058, 1378, 1112, 941, 998, 1314, 1162, 1822, 1063, 998, 959, 628, 791, 628, 1020, 1020, 596, 981, 1076, 866, 1076, 1019, 625, 964, 1076, 470, 490, 931, 470, 1636, 1076, 1080, 1076, 1076, 714, 801, 686, 1076, 925, 1464, 887, 927, 809, 644, 943, 644, 1020];
 const ADV_B = [463, 667, 898, 1020, 1038, 1493, 1443, 478, 638, 638, 1020, 1020, 528, 627, 547, 880, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 565, 565, 1020, 1020, 1020, 949, 1840, 1241, 1148, 1084, 1291, 999, 940, 1305, 1292, 546, 678, 1120, 866, 1790, 1349, 1385, 1090, 1405, 1153, 968, 1014, 1337, 1211, 1856, 1128, 1064, 979, 665, 880, 665, 1020, 1020, 615, 1011, 1099, 857, 1099, 1031, 648, 971, 1099, 503, 523, 983, 503, 1666, 1099, 1101, 1099, 1099, 728, 817, 710, 1099, 969, 1526, 941, 970, 814, 704, 973, 704, 1020];
 const MAX_WIDTH = 150, PX = 11 * 96 / 72 / 2048;
-// textPx: the pixels a line of text takes in Calibri 11 (a character past ASCII: Carlito's Latin average, a wide one an em)
-export function textPx(s: string, bold: boolean): number {
+// textPx: the pixels a line of text takes in Calibri 11 (a character past ASCII: Carlito's Latin average, a wide one an em);
+// cap: stop past 1,200 px (the width rule's 150 characters are 1,050 px), off for a wrapped line's count or a flowed segment
+export function textPx(s: string, bold: boolean, cap = true): number {
   const t = bold ? ADV_B : ADV;
   let u = 0;
   for (const ch of s) {
     const c = ch.codePointAt(0) ?? 32;
     u += c >= 32 && c <= 126 ? t[c - 32] : c >= 0x2e80 ? 2048 : bold ? 1030 : 1013;
-    if (u * PX > MAX_WIDTH * 8) break;   // past the cap: the rest changes nothing
+    if (cap && u * PX > MAX_WIDTH * 8) break;   // past the cap: the rest changes nothing to a width
   }
   return u * PX;
+}
+// linePx: a text cell's lines in pixels as written, each run at its own size and weight (a rich-text cell: a tile's large
+// value and its small label on one line), the whole text measured (no cap)
+export function linePx(c: Cell): number[] {
+  const runs = c.runs ?? [{ text: String(c.v), bold: c.look?.bold, pt: c.look?.pt }];
+  const out = [0];
+  for (const r of runs) {
+    String(r.text).split(/\r?\n/).forEach((part, k) => {
+      if (k > 0) out.push(0);
+      out[out.length - 1] += textPx(part, !!(r.bold ?? c.look?.bold), false) * (r.pt ?? c.look?.pt ?? 11) / 11;
+    });
+  }
+  return out;
 }
 // shown: the text Excel shows for a cell under its format (what the width is measured on)
 export function shown(c: Cell): string {
@@ -384,7 +588,9 @@ export function shown(c: Cell): string {
   const n = c.v;
   switch (c.kind) {
     case 'date': return (c.stamp ?? '').slice(0, 16);
-    case 'pct': return (n * 100).toFixed(1) + '%';
+    case 'day': return (c.stamp ?? '').slice(0, 10);
+    case 'bool': return n ? 'TRUE' : 'FALSE';   // as Excel draws a boolean
+    case 'pct': return (n * 100).toFixed(twoPlaces(c) ? 2 : 1) + '%';
     case 'bytes': return Math.round(n).toLocaleString('en-US') + ' B';
     case 'nsecs': return Math.round(n).toLocaleString('en-US') + ' s';
     case 'msecs': return n.toLocaleString('en-US', { maximumFractionDigits: 3 }) + ' ms';
@@ -399,7 +605,10 @@ export function colWidth(cells: { text: string; head: boolean }[]): number {
   return Math.min(MAX_WIDTH, Math.round((px - 0.025625) / 7 * 1e6) / 1e6);
 }
 
-interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number }   // data: a grid's sheet (the Summary sheet is not one); table: the id of its Excel table part
+// Sheet: a grid's sheet (data: its header row, then its rows; table: the id of its Excel table part), the 'About'
+// sheet, or the page sheet (page: its rows written as they are from row 1, no header row); heads: the
+// header cells' looks as the page draws them; freeze: the rows that stay on screen; widths: the columns' widths as given
+interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number; heads?: Look[]; page?: boolean; freeze?: number; widths?: number[]; drawing?: boolean }   // drawing: the page sheet's pictures (rId1 of its rels)
 
 // Shared: the workbook's shared strings. Only a table's header cells use them: Excel matches a table's column names
 // against its header cells, and every writer Excel is known to accept (its own, DBA Dash's) stores those as shared
@@ -433,58 +642,192 @@ export function tableHead(head: string[], ncol: number): string[] {
 }
 
 // tableXml: the grid as a real Excel table (sortable, filterable, named), with no table style: the cells keep their own colours.
+// (P2) an empty grid's table holds its header and ONE empty row (a table needs a data row; DBA Dash writes the same)
 function tableXml(id: number, head: string[], nrow: number): string {
-  const ref = `A1:${colName(head.length - 1)}${nrow + 1}`;
+  const ref = `A1:${colName(head.length - 1)}${Math.max(nrow, 1) + 1}`;
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     + `<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="Table${id}" displayName="Table${id}" ref="${ref}" totalsRowShown="0">`
     + `<autoFilter ref="${ref}"/><tableColumns count="${head.length}">${head.map((h, j) => `<tableColumn id="${j + 1}" name="${esc(h)}"/>`).join('')}</tableColumns>`
     + '<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>';   // DBA Dash's: no style name, so no stripe is drawn
 }
 
-function sheetXml(sh: Sheet, st: Styles, sst: Shared): string {
+function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): string {
   const ncol = Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
   const head = sh.table ? tableHead(sh.head, ncol) : sh.head;
-  const widths = Array.from({ length: ncol }, (_, j) => colWidth([{ text: head[j] ?? '', head: true }, ...sh.rows.map(r => ({ text: r[j] ? shown(r[j]) : '', head: !!r[j]?.head }))]));
+  const widths = sh.widths ? Array.from({ length: ncol }, (_, j) => sh.widths![j] ?? 0)
+    : Array.from({ length: ncol }, (_, j) => colWidth([{ text: head[j] ?? '', head: true }, ...sh.rows.map(r => ({ text: r[j] ? shown(r[j]) : '', head: !!r[j]?.head }))]));
+  const name = (c: Cell, s: string) => s.replace(/\{sheet(?::(\d+))?\}/g, (_, k) => names[(k !== undefined ? Number(k) : c.jump ?? -1) + 1] ?? '');
+  const runXml = (r: NonNullable<Cell['runs']>[number]) => `<r><rPr>${r.bold ? '<b/>' : ''}${r.italic ? '<i/>' : ''}${r.underline ? '<u/>' : ''}<sz val="${r.pt ?? 11}"/>${r.color ? `<color rgb="FF${r.color}"/>` : ''}<rFont val="Calibri"/></rPr><t xml:space="preserve">${esc(r.text)}</t></r>`;
   const cell = (ref: string, c: Cell, s: number) => {
+    if (c.kind === 'bool' && typeof c.v === 'number') return `<c r="${ref}" s="${s}" t="b"><v>${c.v ? 1 : 0}</v></c>`;
     if (typeof c.v === 'number') return `<c r="${ref}" s="${s}"><v>${String(c.v).toUpperCase()}</v></c>`;
     if (c.v === '') return s ? `<c r="${ref}" s="${s}"/>` : '';
+    if (c.runs?.length) return `<c r="${ref}" s="${s}" t="inlineStr"><is>${c.runs.map(r => runXml({ ...r, text: name(c, r.text) })).join('')}</is></c>`;
     // Excel holds at most 32,767 characters in a cell (a longer one opens with a repair): the rest is cut, said in the cell
-    const v = c.v.length > 32767 ? c.v.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : c.v;
+    const t = name(c, c.v);
+    const v = t.length > 32767 ? t.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : t;
     return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
-  const hs = st.id(0, undefined, true);   // every sheet's header row, the Summary sheet's too
-  const rows = [`<row r="1">${head.map((h, j) => sh.table ? `<c r="${colName(j)}1" s="${hs}" t="s"><v>${sst.id(h)}</v></c>` : cell(colName(j) + '1', { v: h, kind: 'text', text: h }, hs)).join('')}</row>`];
-  // a cell has the fill the screen gives it and no other (DBA Dash bands no rows): a plain cell is unfilled
+  const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt) : fmtOf(c);
+  const styleOf = (c: Cell) => c.look ? st.look(fmtFor(c), c.look) : st.id(fmtFor(c), c.status, !!c.head, c.link);
+  // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
+  // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
+  // measures a cell, a line 1.36 x the font's points); a row of 11-point single lines keeps the default (no height)
+  const colPx = (j: number) => Math.round((widths[j] > 0 ? widths[j] : 8.43) * 7) + 5;
+  const rowHt = (r: (Cell | undefined)[]): number | undefined => {
+    let pt = 11, ht = 15;
+    r.forEach((c, j) => {
+      if (!c) return;
+      const size = Math.max(c.look?.pt ?? 11, ...(c.runs ?? []).map(x => x.pt ?? 11));
+      pt = Math.max(pt, size);
+      if (!c.look?.wrap || typeof c.v === 'number') return;
+      const room = Math.max(10, colPx(j) - 6);
+      const lines = linePx(c).reduce((n, w) => n + Math.max(1, Math.ceil((1.0738 * w + 1) / room)), 0);
+      ht = Math.max(ht, Math.ceil(lines * size * 1.36));
+    });
+    ht = Math.max(ht, Math.ceil(pt * 1.36));
+    return ht > 15 ? ht : undefined;
+  };
+  const rows: string[] = [];
+  const jumps: string[] = [];
+  const first = sh.page ? 1 : 2;
+  if (!sh.page) {
+    const hs = st.id(0, undefined, true);   // the header row: the export's own (X4: one header style)
+    const hcell = (j: number) => {
+      const l = sh.heads?.[j], s = l ? st.look(0, l) : hs;
+      return sh.table ? `<c r="${colName(j)}1" s="${s}" t="s"><v>${sst.id(head[j])}</v></c>` : cell(colName(j) + '1', { v: head[j], kind: 'text', text: head[j] }, s);
+    };
+    const h1 = rowHt(head.map((h, j): Cell => ({ v: h, kind: 'text', text: h, ...(sh.heads?.[j] ? { look: sh.heads[j] } : {}) })));
+    rows.push(`<row r="1"${h1 ? ` ht="${h1}" customHeight="1"` : ''}>${head.map((_, j) => hcell(j)).join('')}</row>`);
+  }
+  // a cell has the look the page gives it and no other (DBA Dash bands no rows): a plain cell is unfilled
   sh.rows.forEach((r, i) => {
-    rows.push(`<row r="${i + 2}">${r.map((c, j) => cell(colName(j) + (i + 2), c, st.id(fmtOf(c), c.status, !!c.head, c.link))).join('')}</row>`);
+    const n = i + first;
+    const ht = rowHt(r);
+    rows.push(`<row r="${n}"${ht ? ` ht="${ht}" customHeight="1"` : ''}>${r.map((c, j) => {
+      if (!c) return '';
+      if (c.jump !== undefined && names[c.jump + 1]) jumps.push(`<hyperlink ref="${colName(j)}${n}" location="${esc(`'${names[c.jump + 1].replace(/'/g, "''")}'!A1`)}" display="${esc(names[c.jump + 1])}"/>`);
+      return cell(colName(j) + n, c, styleOf(c));
+    }).join('')}</row>`);
   });
-  const last = `${colName(ncol - 1)}${sh.rows.length + 1}`;
+  const last = `${colName(ncol - 1)}${Math.max(sh.rows.length + first - 1, sh.table ? 2 : 1)}`;   // an empty table's one empty row (P2)
+  const pane = sh.freeze ? `<pane ySplit="${sh.freeze}" topLeftCell="A${sh.freeze + 1}" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A${sh.freeze + 1}" sqref="A${sh.freeze + 1}"/>` : '';
+  const cols = widths.map((w, j) => w > 0 ? `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>` : '').join('');
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
     + `<dimension ref="A1:${last}"/>`
-    + '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'   // no frozen pane, as DBA Dash: a table shows its column names in place of the letters when scrolled
+    + `<sheetViews><sheetView workbookViewId="0">${pane}</sheetView></sheetViews>`
     + '<sheetFormatPr defaultRowHeight="15"/>'
-    + `<cols>${widths.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`
+    + (cols ? `<cols>${cols}</cols>` : '')
     + `<sheetData>${rows.join('')}</sheetData>`
-    + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : sh.data ? `<autoFilter ref="A1:${last}"/>` : '')
+    + (!sh.page && !sh.table && sh.data ? `<autoFilter ref="A1:${last}"/>` : '')
+    + (jumps.length ? `<hyperlinks>${jumps.join('')}</hyperlinks>` : '')
+    + (sh.drawing ? '<drawing r:id="rId1"/>' : '')
+    + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : '')
     + '</worksheet>';
 }
 
-// sheetNames: the screen's heading, cut to Excel's 31 characters without the characters a sheet name refuses,
-// a repeat numbered; 'Summary' is the export's own first sheet and 'History' is a name Excel reserves.
-export function sheetNames(names: string[]): string[] {
-  const used = new Set(['summary', 'history']);
-  const cut = (s: string, n: number) => s.slice(0, n).replace(/[\s']+$/, '');
-  return names.map(n => {
-    const base = cut(n.replace(/[\\/?*[\]:]/g, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim(), 31) || 'Sheet';
-    let s = base;
-    for (let i = 2; used.has(s.toLowerCase()); i++) s = cut(base, 31 - ` (${i})`.length) + ` (${i})`;
-    used.add(s.toLowerCase());
-    return s;
-  });
+// sheetNames, sheetTitle: export_names.ts (pure: its unit tests run in Node)
+
+// ---- a grid sheet as DBA Dash writes one (X0, X7, X8) ------------------------------------------------------------
+const DUR: Record<string, number> = { ms: 1, s: 1000, min: 60000 };
+const sizeUnit = (n: number) => { let i = 0; for (let a = Math.abs(n); a >= 1024 && i < UNITS.length - 1; a /= 1024) i++; return UNITS[i]; };
+// plainCell (X0): a grid cell is one of the named pairs (its status, or the link column's) or plain; the page's look, its
+// rich runs, the page sheet's formats and jumps stay out
+// a dot's glyph (export_page.ts withDot: its own coloured run before the words) goes with its run: the cell keeps the words
+const dotless = (c: Cell): string | number => typeof c.v === 'string' && c.runs?.length === 2 && c.v === c.runs[0].text + c.runs[1].text ? c.runs[1].text : c.v;
+const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}) });
+// gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
+// writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
+// with its time unit ('took (s)'). X8: a seconds column is numbers - in its one unit, or in seconds when the page mixes
+// units ('4.4 s' beside ui.ts fmtSecs's '1m 5s'), as DBA Dash writes a seconds column. A count of days ('233.3 days')
+// is numbers under '(days)'; a size per day ('381.5 MB / day') numbers in the unit the column shows most, '(MB/day)'; a
+// size the server sends as words ('1024 MB', a file's growth) numbers like any size when every cell of its column is one;
+// in a column of days or of a rate, a cell with no number in it ('never', '-', 'too little history') is left empty. A
+// duration the page writes in words only (the Summary's ages, '3 days' since a dump: DBA Dash's Summary writes its ages as
+// text) stays text. The page's header looks go too (X4: the one header style).
+export function gridSection(s: Section): Section {
+  const rows = s.rows.map(r => r.map(plainCell));
+  const cols = [...s.cols];
+  // an Item | Value | Status section's cells are typed by their own content (itemSection): a Value with a unit stays the
+  // page's words, its column mixed per row; no column of it is converted
+  if (s.items) { const { heads: _h, ...rest } = s; return { ...rest, cols, rows }; }
+  const ncol = Math.max(cols.length, ...rows.map(r => r.length), 0);
+  const unitOf = (j: number, u: string) => { if (j < cols.length) cols[j] = `${cols[j]} (${u})`; };
+  const emptyWords = (j: number) => { for (const r of rows) { const c = r[j]; if (c && typeof c.v === 'string' && !/\d/.test(c.v)) c.v = ''; } };
+  for (let j = 0; j < ncol; j++) {
+    const nums = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number');
+    const largest = (k: Kind, per = false) => nums.filter(c => c.kind === k && !!c.per === per).reduce<Cell | undefined>((a, c) => !a || Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a, undefined);
+    // a size per day: the unit the column's figures show most (zero left out of the count; a tie: the largest's)
+    const rate = nums.filter(c => c.kind === 'bytes' && c.per);
+    if (rate.length) {
+      const unitIn = (c: Cell) => sizeOf(c.text.replace(/ \/ day$/, '').replace(/^-/, ''))?.unit;
+      const seen = new Map<string, number>();
+      for (const c of rate) { const u = unitIn(c); if (u && c.v !== 0) seen.set(u, (seen.get(u) ?? 0) + 1); }
+      const most = Math.max(0, ...seen.values()), tied = [...seen].filter(([, k]) => k === most).map(([u]) => u);
+      const top = largest('bytes', true)!, topUnit = unitIn(top);
+      const unit = tied.length === 1 ? tied[0] : topUnit && tied.includes(topUnit) ? topUnit : tied.sort((a, b) => UNITS.indexOf(b) - UNITS.indexOf(a))[0] ?? sizeUnit(top.v as number);
+      for (const c of rate) { c.v = (c.v as number) / 1024 ** UNITS.indexOf(unit); c.kind = 'dec'; delete c.per; }
+      unitOf(j, `${unit}/day`);
+      emptyWords(j);
+    }
+    if (nums.some(c => c.kind === 'days')) {
+      for (const c of nums) if (c.kind === 'days') c.kind = Number.isInteger(c.v) ? 'int' : 'dec';
+      unitOf(j, 'days');
+      emptyWords(j);
+    }
+    // a size the server sends as words (a SQL Server file's growth '1024 MB'): numbers when every cell is a size; a
+    // column holding a percent growth ('10 %') beside them stays the page's words (one unit cannot head it)
+    const words = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'string' && c.v !== '');
+    if (!nums.length && words.length && words.every(c => sizeOf(c.v as string))) {
+      const at = words.map(c => { const z = sizeOf(c.v as string)!; return { c, b: Number((c.v as string).split(/\s/)[0]) * 1024 ** z.pow, z }; });
+      const unit = at.reduce((a, x) => Math.abs(x.b) > Math.abs(a.b) ? x : a).z.unit;
+      for (const x of at) { x.c.v = x.b / 1024 ** UNITS.indexOf(unit); x.c.kind = 'dec'; }
+      unitOf(j, unit);
+      continue;
+    }
+    const big = largest('bytes');
+    if (big) {
+      const unit = sizeOf(big.text)?.unit ?? sizeUnit(big.v as number), k = 1024 ** UNITS.indexOf(unit);
+      for (const c of nums) if (c.kind === 'bytes') { c.v = (c.v as number) / k; c.kind = 'dec'; }
+      if (j < cols.length) cols[j] = `${cols[j]} (${unit})`;
+    }
+    const long = largest('msecs');
+    if (long) {
+      const unit = /\s(ms|s|min)$/.exec(long.text)?.[1] ?? 'ms';
+      for (const c of nums) if (c.kind === 'msecs') { c.v = (c.v as number) / DUR[unit]; c.kind = 'dec'; }
+      if (j < cols.length) cols[j] = `${cols[j]} (${unit})`;
+    }
+    // a seconds column (fmtSecs, the Jobs tabs' '12.2 s'): numbers in one unit named in the header (X7, X8) - every cell
+    // in one unit ('12.2 s'): that unit, as the millisecond column; units mixed ('4.4 s' beside fmtSecs's '3m 0s', which
+    // also cuts its seconds off past an hour): seconds, the stored value, as DBA Dash writes a seconds column
+    const secs = nums.filter(c => c.kind === 'secs' || c.kind === 'nsecs');
+    if (secs.length) {
+      const ms = (c: Cell) => c.kind === 'secs' ? (c.v as number) * 86400000 : (c.v as number) * 1000;
+      const top = secs.reduce((a, c) => Math.abs(ms(c)) > Math.abs(ms(a)) ? c : a);
+      const unit = secs.every(c => durParse(c.text)) ? /\s(ms|s|min)$/.exec(top.text)?.[1] ?? 's' : 's';
+      for (const c of secs) { c.v = Number((ms(c) / DUR[unit]).toPrecision(15)); c.kind = 'dec'; }   // no float noise: 11 s, not 10.999999999999998, at any size
+      if (j < cols.length && !long) cols[j] = `${cols[j]} (${unit})`;
+    }
+  }
+  const { heads: _heads, ...rest } = s;
+  return { ...rest, cols, rows };
 }
 
-export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date }
+// coreXml (D-A): the export's facts in the document's properties as well (File > Info in Excel)
+function coreXml(meta: Meta): string {
+  const iso = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    + '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+    + `<dc:title>${esc(`${meta.instance} - ${meta.tab}`)}</dc:title>`
+    + `<dc:subject>${esc(`${meta.window}: ${localStamp(meta.from)} to ${localStamp(meta.to)}`)}</dc:subject>`
+    + `<dc:description>${esc(`Window ${localStamp(meta.from)} to ${localStamp(meta.to)}; ${timeZone(meta.at)}; exported ${localStamp(meta.at)}; source pgvigil`)}</dc:description>`
+    + '<dc:creator>pgvigil</dc:creator>'
+    + `<dcterms:created xsi:type="dcterms:W3CDTF">${iso(meta.at)}</dcterms:created>`
+    + '</cp:coreProperties>';
+}
+
+export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date; engine?: string; platform?: string; read?: string }   // engine, platform: an instance's (the page sheet's scope row)   // read: what the page's parts read when the server cut them to their reach (cutWords)
 
 // timeZone: the zone the times in the file are written in, 'America/Los_Angeles (UTC-08:00 at export)': the display
 // zone (the browser's unless another was chosen in the range panel). Each time carries its own date's offset (a window
@@ -494,44 +837,72 @@ export function timeZone(at: Date): string {
   return `${zoneName()} (${offsetLabel(at)} at export), ${whose}; each time in its own date's offset`;
 }
 
-export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uint8Array }[] {
-  const names = sheetNames(secs.map(s => s.name));
+// workbook: the sheets as a .xlsx's parts. The grid sheets first in page order, as DBA Dash writes them (gridSection;
+// X1: the file opens on the first grid; X6: no frozen row), then the 'About' sheet LAST (D-A: the export's facts, also in
+// the document's properties). A page sheet (export_page.ts, parked out of the export: D-B) still writes as sheet 1 with
+// its grids in the page's looks when one is passed.
+export function workbook(meta: Meta, given: Section[], page?: PageSheet): { name: string; data: Uint8Array }[] {
+  const first = page ? page.name.slice(0, 31).replace(/[\\/?*[\]:]/g, ' ').trim() || 'Page' : '';
+  const secs = page ? given : given.map(gridSection);
+  const names = sheetNames(secs.map(s => s.name), first ? [first] : [], secs.map(s => s.within), secs.map(s => !!s.own));
   const t = (v: string): Cell => ({ v, kind: 'text', text: v });
-  const h = (v: string): Cell => ({ v, kind: 'text', text: v, head: true });
   const d = (v: Date): Cell => ({ v: excelDate(v), kind: 'date', text: '', stamp: localStamp(v) });
-  const info: Cell[][] = [
+  // About (D-A): Item | Value - the scope, the window, the zone with its offset, the export's time, the source, then each
+  // grid sheet's rows and the page's note above it ('the newest 500 of N')
+  const about: Cell[][] = [
     [t('Instance'), t(meta.instance)], [t('Tab'), t(meta.tab)],
     [t('Window'), t(meta.window)], [t('Window from'), d(meta.from)], [t('Window to'), d(meta.to)],
-    [t('Exported at'), d(meta.at)], [t('Time zone'), t(timeZone(meta.at))], [t('Source'), t('pgvigil')], [t(''), t('')], [h('Sheet'), h('Rows'), h('Note')],
-    ...secs.map((s, i) => [t(names[i]), { v: s.rows.length, kind: 'int' as Kind, text: '' }, t(s.note ?? '')]),
+    [t('Exported at'), d(meta.at)], [t('Time zone'), t(timeZone(meta.at))], [t('Source'), t('pgvigil')],
+    // the page's parts that read only the newest part of a long window: what they read (each sheet's row says its own)
+    ...(meta.read ? [[t('Read'), t(meta.read)]] : []),
+    ...secs.map((s, i) => [t(`Sheet ${names[i]}`), t(`${s.rows.length} row${s.rows.length === 1 ? '' : 's'}${s.note ? '; ' + s.note : ''}`)]),
+    ...(secs.some(s => s.items) ? [[t('Item | Value sheets'), t('Each Value is typed by its own content: a time a date, a bare number a number, yes / no a boolean; a value with a unit (a size, a duration, a rate) is the page\'s text with its unit, as the page shows it.')]] : []),
   ];
-  const sheets: Sheet[] = [{ name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, data: false },
-    ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true }))];
-  // every grid with rows is an Excel table (a table needs a data row: an empty grid keeps the plain filter)
+  const pics = page?.pictures ?? [];
+  const sheets: Sheet[] = [...(page ? [{ name: first, head: [], rows: page.rows, data: false, page: true, freeze: page.freeze, widths: page.widths, drawing: pics.length > 0 }] : []),
+    ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true, ...(page && s.heads ? { heads: s.heads } : {}), ...(page ? { freeze: 1 } : {}) })),
+    ...(page ? [] : [{ name: 'About', head: ['Item', 'Value'], rows: about, data: false }])];
+  const all = sheets.map(sh => sh.name);
+  // (P1, the lead 22:34) every grid sheet is one Excel table over the grid, an empty grid's too (P2: its header and one
+  // empty row), as DBA Dash writes each sheet
   let tables = 0;
-  for (const sh of sheets) if (sh.data && sh.rows.length > 0) sh.table = ++tables;
+  for (const sh of sheets) if (sh.data) sh.table = ++tables;
   const st = new Styles(), sst = new Shared();
   const enc = new TextEncoder();
-  const files = sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh, st, sst)) }));
+  const files = sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh, st, sst, all)) }));
   const x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
   const ncolOf = (sh: Sheet) => Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
   const tableFiles = sheets.flatMap((sh, i) => sh.table ? [
     { name: `xl/tables/table${sh.table}.xml`, data: enc.encode(tableXml(sh.table, tableHead(sh.head, ncolOf(sh)), sh.rows.length)) },
     { name: `xl/worksheets/_rels/sheet${i + 1}.xml.rels`, data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
       + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${sh.table}.xml"/></Relationships>`) }] : []);
+  // the page sheet's pictures (export_chart.ts): one drawing, its pictures in xl/media, each one's alt text naming its
+  // numbers sheet by name
+  const named = (s: string) => s.replace(/\{sheet:(\d+)\}/g, (_, k) => all[Number(k) + 1] ?? '');
+  const drawFiles = pics.length ? [
+    { name: 'xl/worksheets/_rels/sheet1.xml.rels', data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>') },
+    { name: 'xl/drawings/drawing1.xml', data: enc.encode(drawingXml(pics.map(p => ({ ...p, descr: named(p.descr) })))) },
+    { name: 'xl/drawings/_rels/drawing1.xml.rels', data: enc.encode(drawingRels(pics, 1)) },
+    ...pics.map((p, i) => ({ name: `xl/media/image${i + 1}.png`, data: p.png })),
+  ] : [];
   const filters = sheets.map((sh, i) => sh.data && !sh.table
     ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${esc(sh.name.replace(/'/g, "''"))}'!$A$1:$${colName(Math.max(sh.head.length, 1) - 1)}$${sh.rows.length + 1}</definedName>` : '').join('');
   return [
     { name: '[Content_Types].xml', data: enc.encode(x + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
       + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+      + (pics.length ? '<Default Extension="png" ContentType="image/png"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>' : '')
       + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
       + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
       + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')
       + sheets.map(sh => sh.table ? `<Override PartName="/xl/tables/table${sh.table}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>` : '').join('')
       + (sst.size ? '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' : '')
+      + '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
       + '</Types>') },
     { name: '_rels/.rels', data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-      + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>') },
+      + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+      + '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>') },
+    { name: 'docProps/core.xml', data: enc.encode(coreXml(meta)) },
     { name: 'xl/workbook.xml', data: enc.encode(x + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
       + `<sheets>${sheets.map((sh, i) => `<sheet name="${esc(sh.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>`
       + (filters ? `<definedNames>${filters}</definedNames>` : '') + '</workbook>') },
@@ -542,7 +913,7 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
       + '</Relationships>') },
     { name: 'xl/styles.xml', data: enc.encode(st.xml()) },   // after the sheets: they register the styles they use
     ...(sst.size ? [{ name: 'xl/sharedStrings.xml', data: enc.encode(sst.xml()) }] : []),
-    ...files, ...tableFiles,
+    ...files, ...tableFiles, ...drawFiles,
   ];
 }
 
@@ -555,7 +926,8 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
 export function csv(s: Section): string {
   const val = (c: Cell): string => {
     if (typeof c.v === 'number') {
-      if (c.kind === 'date') return c.stamp ?? '';
+      if (c.kind === 'date' || c.kind === 'day') return c.stamp ?? '';
+      if (c.kind === 'bool') return c.text;   // the CSV keeps the page's word for a boolean
       if (c.kind === 'secs') return String(Math.round(c.v * 86400 * 1000) / 1000);
       if (c.kind === 'msecs') return String(c.v);   // the milliseconds, as the raw value
       if (c.kind === 'pct') return String(Math.round(c.v * 1e12) / 1e10);   // the percent figure (the cell holds the share): 12.5, not 0.125; ten decimals kept
@@ -564,8 +936,9 @@ export function csv(s: Section): string {
     return /^[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
   };
   const q = (v: string) => /[",\r\n]|^\s|\s$/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
-  // a stored sample's file starts with its mark, a line of its own above the header
-  return '﻿' + [...(s.sample ? [q(s.sample)] : []), s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
+  // a stored sample's file starts with its mark, a line of its own above the header; a list cut to its part's reach
+  // says what it read on the next line
+  return '﻿' + [...(s.sample ? [q(s.sample)] : []), ...(s.read ? [q(s.read)] : []), s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
 }
 
 // ---- zip (the .xlsx container and the CSV bundle) ---------------------------------------------------------
@@ -625,13 +998,34 @@ const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$
 
 async function metaOf(ctx: Ctx): Promise<Meta> {
   let instance = ctx.tag ? 'tag ' + ctx.tag : 'fleet';
+  let engine: string | undefined, platform: string | undefined;
   if (ctx.instance) {
     instance = 'instance ' + ctx.instance;
-    try { const r = (await fleet()).instances.find(x => Number(x.instance_id) === ctx.instance); if (r) instance = String(r.name); } catch { /* the id stands */ }
+    try {
+      const r = (await fleet()).instances.find(x => Number(x.instance_id) === ctx.instance);
+      if (r) {
+        instance = String(r.name);
+        engine = String(r.engine ?? 'postgres') === 'sqlserver' ? 'SQL Server' : 'PostgreSQL';
+        if (r.platform) platform = String(r.platform);
+      }
+    } catch { /* the id stands */ }
   }
   const w = window_(ctx);
   const tab = (ctx.instance ? instanceTabs[ctx.tab] ?? mssqlInstanceTabs[ctx.tab] ?? drillTabs[ctx.tab] : rootTabs[ctx.tab]) ?? ctx.tab;
-  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date() };
+  const read = cutWords();
+  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date(), ...(engine ? { engine } : {}), ...(platform ? { platform } : {}), ...(read ? { read } : {}) };
+}
+
+// cutWords: the page's reads the server cut to a part's reach (api.ts cutReads), in words, once per reach (its length in
+// whole minutes: a draw's reads ask the window milliseconds apart, so their ends differ), the newest read of each; none =
+// undefined
+export function cutWords(): string | undefined {
+  const byReach = new Map<number, { from: string; to: string }>();
+  for (const c of cutReads()) {
+    const k = Math.round((Date.parse(c.to) - Date.parse(c.from)) / 60e3), had = byReach.get(k);
+    if (!had || Date.parse(c.to) > Date.parse(had.to)) byReach.set(k, { from: c.from, to: c.to });
+  }
+  return byReach.size ? 'Parts of this page read ' + [...byReach.values()].map(rw => readWindowWords(rw)).join('; ') + ' (the window is longer than they read)' : undefined;
 }
 
 export function exportName(m: Meta, ext: string): string {
@@ -649,11 +1043,11 @@ function save(blob: Blob, name: string) {
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-// oneFile: a workbook of one grid or one chart (the Summary sheet, then its own), named
+// oneFile: a workbook of one grid or one chart (its sheet, then 'About'), named
 // <instance>_<tab>_<sheet>_<from>_<to>.xlsx
 async function oneFile(m: Meta, sec: Section): Promise<string> {
   const z = await zip(workbook(m, [sec]), m.at);
-  const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
+  const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name], [], [sec.within], [!!sec.own])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
   save(new Blob([z], { type: XLSX }), name);
   return name;
 }
@@ -670,17 +1064,158 @@ export async function exportGrid(g: Element, name?: string, ctx: Ctx = parse()):
   return oneFile(m, name ? { ...found, name } : found);
 }
 
-// exportChart: a chart's numbers as a workbook (a chart's menu: Export Excel; chart.ts): one sheet named by the chart's
-// title, a time as a time ('yyyy-MM-dd HH:mm'), a number as a number, a share (kind 'pct', the fraction) as '0.0%'
-export async function exportChart(title: string, cols: string[], rows: (string | number | Date | null | undefined)[][], kinds: (Kind | undefined)[] = [], ctx: Ctx = parse()): Promise<string> {
-  const m = await metaOf(ctx);
+// chartSection: a chart's numbers as a sheet (its Export Excel's and the page export's numbers sheet): a time as a time,
+// a day alone ('2026-11-11') as a date under 'yyyy-MM-dd', a number as a number, a share (kind 'pct', the fraction) as
+// '0.0%'. A series with its axis's formatter (n.fmts: fmtBytes, fmtSecs, a millisecond one) is typed as the page's grids are
+// (typed: bytes, seconds, milliseconds), so gridSection writes it in the unit the axis shows, named in its header
+// ('erp (GB)', not bytes with no unit)
+export function chartSection(title: string, n: ChartNumbers): Section {
+  const kinds = n.kinds ?? [], fmts = n.fmts ?? [];
   const cell = (v: string | number | Date | null | undefined, j: number): Cell => {
     if (v instanceof Date) return { v: excelDate(v), kind: 'date', text: '', stamp: localStamp(v) };
-    if (typeof v === 'number' && isFinite(v)) return { v, kind: kinds[j] ?? (Number.isInteger(v) ? 'int' : 'dec'), text: String(v) };
+    if (typeof v === 'number' && isFinite(v)) {
+      const f = fmts[j], t = f && !kinds[j] ? typed(v, norm(f(v))) : undefined;
+      if (t && typeof t.v === 'number' && t.kind !== 'bool') return { ...t, text: norm(f!(v)) };
+      return { v, kind: kinds[j] ?? (Number.isInteger(v) ? 'int' : 'dec'), text: String(v) };
+    }
     const t = v == null || typeof v === 'number' ? '' : v;
-    return { v: t, kind: 'text', text: t };
+    const d = dayCell(t);
+    return d ? { ...d, text: t } : { v: t, kind: 'text', text: t };
   };
-  return oneFile(m, { name: title || 'Chart', cols, rows: rows.map(r => r.map(cell)) });
+  const rows = n.rows.map(r => r.map(cell)), cols = [...n.cols];
+  // (the lead 13:44 (3)) the series one axis draws (one formatter) share its unit: the largest value's, as the axis shows it,
+  // named in each series' header ('erp (GB)', 'postgres (GB)'), not a unit per series
+  for (const f of new Set(fmts.filter((x): x is ((v: number) => string) => !!x))) {
+    const js = cols.map((_, j) => j).filter(j => fmts[j] === f);
+    const at = js.flatMap(j => rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number'));
+    for (const [k, read] of [['bytes', (c: Cell) => sizeOf(c.text)?.unit], ['msecs', (c: Cell) => /\s(ms|s|min)$/.exec(c.text)?.[1]]] as [Kind, (c: Cell) => string | undefined][]) {
+      const cs = at.filter(c => c.kind === k);
+      if (!cs.length) continue;
+      const top = cs.reduce((a, c) => Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a);
+      const unit = read(top) ?? (k === 'bytes' ? sizeUnit(top.v as number) : 'ms');
+      const div = k === 'bytes' ? 1024 ** UNITS.indexOf(unit) : DUR[unit];
+      for (const c of cs) { c.v = (c.v as number) / div; c.kind = 'dec'; }
+      for (const j of js) if (rows.some(r => r[j] && cs.includes(r[j]))) cols[j] = `${cols[j]} (${unit})`;
+    }
+  }
+  return { name: title || 'Chart', cols, rows };
+}
+// exportChart: a chart's numbers as a workbook (a chart's menu: Export Excel; chart.ts): one sheet named by the chart's
+// title, a time as a time ('yyyy-MM-dd HH:mm'), a number as a number, a share (kind 'pct', the fraction) as '0.0%'
+export async function exportChart(title: string, cols: string[], rows: (string | number | Date | null | undefined)[][], kinds: (Kind | undefined)[] = [], ctx: Ctx = parse(), fmts: ChartNumbers['fmts'] = []): Promise<string> {
+  const m = await metaOf(ctx);
+  return oneFile(m, chartSection(title, { cols, rows: rows.map(r => r.map(v => v ?? null)), kinds, fmts }));
+}
+
+// ---- the page's sections that are no grid (X12) ------------------------------------------------------------------
+// AttentionBox: the fleet Summary's Needs attention strip (pages.ts) with every line it holds, also those past its first 8
+export type AttentionBox = HTMLElement & { pgvItems?: () => { item: string; value: string; status: Status }[] };
+const STATUS_WORD: Record<Status, string> = { ok: 'OK', warn: 'Warning', crit: 'Critical', none: 'N/A', ack: 'Acknowledged' };
+// itemSection: tiles, a property card or the Needs attention lines as an Item | Value | Status table, the Status cell in
+// its named pair (a value without a status: its Status cell empty)
+// (the lead 13:44, X7-X9 on these sheets) each Value cell is typed by its own content, as Excel types cells: a time the page
+// shows -> a date cell, a bare number -> a number (no 'Number Stored as Text'), yes / no -> a boolean; a value with a unit
+// (a size, a duration, a rate) or with words stays the page's text (About says so), and so does a version ('collation
+// version' '2.39': a number in its looks, not one in its meaning)
+export function valueCell(v: string, item = ''): Cell {
+  const text: Cell = { v, kind: 'text', text: v };
+  if (v === '' || /\bversion\b/i.test(item)) return text;
+  const yn = yesNo(v), tm = shownTime(v) ?? dayCell(v);
+  if (yn) return { ...yn, text: v };
+  if (tm) return { ...tm, text: v };
+  const d = digitsOf(v);
+  if (d && (norm(fmtNum(Number(d))) === v || /^-?\d+$/.test(v)) && !/^[+0]\d/.test(v)) { const n = Number(d); return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec', text: v }; }   // '5432' too
+  return text;
+}
+function itemSection(name: string, items: { item: string; value: string; status?: Status }[]): Section {
+  const t = (v: string): Cell => ({ v, kind: 'text', text: v });
+  return { name, items: true, cols: ['Item', 'Value', 'Status'], rows: items.map(x => [t(x.item), valueCell(x.value, x.item), x.status ? { ...t(STATUS_WORD[x.status]), status: x.status } : t('')]) };
+}
+// asItems: a property card read by readProps (item | value, the value cell in its status) as an Item | Value | Status table
+function asItems(sec: Section): Section {
+  return { ...itemSection(sec.name, sec.rows.map(r => ({ item: String(r[0]?.v ?? ''), value: String(r[1]?.v ?? ''), status: r[1]?.status }))), within: sec.within };
+}
+const shownEl = (e: Element) => !(e.closest('[hidden], details:not([open]) > :not(summary)') || (e as HTMLElement).offsetParent === null && getComputedStyle(e).position !== 'fixed');
+// pageExtras: in page order, each heading's tiles (ui.ts tile: label, value, its pill's status), the fleet Summary's
+// Needs attention lines (pages.ts: the instance, its reasons, its badge's level) and each chart's series as the chart's own
+// Export Excel writes them (a time per row, a series per column); an SVG chart whose numbers the page shows as a table
+// is that table's sheet already
+function pageExtras(root: Element, fallback: string): { sec: Section; el: Element }[] {
+  const out: { sec: Section; el: Element }[] = [];
+  const hs = headings(fallback);
+  for (const e of root.querySelectorAll('h2, h3, h4, h5, .tiles, .attention, .chart')) {
+    if (/^H[2-5]$/.test(e.tagName)) { if (!e.closest('.chart, .attention')) hs.see(e); continue; }
+    if (!shownEl(e)) continue;
+    const { heading, within, own: ownSheet } = hs.of(e);
+    if (e.matches('.tiles')) {
+      const items = [...e.querySelectorAll(':scope > .tile')].filter(shownEl).map(x => ({
+        item: text(x.querySelector('.tile-l') ?? x),
+        value: [x.querySelector('.tile-v'), x.querySelector('.tile-sub')].filter((y): y is Element => !!y).map(text).join('; '),
+        status: statuses.find(k => x.classList.contains(k)),
+      }));
+      // a row of tiles the page names (tiles.ts tileRow: its aria-label, 'Instance health') is that sheet's name
+      const own = e.getAttribute('aria-label')?.trim();
+      if (items.length) out.push({ sec: { ...itemSection(own || heading, items), within: own ? heading : within, ...(ownSheet && !own ? { own: true } : {}) }, el: e });
+    } else if (e.matches('.attention')) {
+      // every line with every reason (pages.ts gives the strip pgvItems: the page draws the first 8 lines and 4 reasons
+      // of each until 'Show all'); a strip without it: its drawn lines
+      const all = (e as AttentionBox).pgvItems?.();
+      const items = all ?? [...e.querySelectorAll('.attention-row')].map(x => ({
+        item: text(x.querySelector('strong') ?? x),
+        value: text(x.querySelector('span[style*="flex"]') ?? x),
+        status: x.querySelector('.badge.crit') ? 'crit' as Status : 'warn' as Status,
+      }));
+      if (items.length) out.push({ sec: itemSection('Needs attention', items), el: e });
+    } else {
+      const h = e.querySelector('h3, h4'), hc = h?.cloneNode(true) as Element | undefined;
+      hc?.querySelectorAll('button, select, .chart-note, .chart-reset, .whatis, .filter-btn').forEach(b => b.remove());
+      const title = hc ? (hc.textContent ?? '').replace(/\s+/g, ' ').trim() : heading;
+      let table = false;
+      for (let a: Element | null = e; a && a !== root && !table; a = a.parentElement) {
+        const nx = a.nextElementSibling;
+        if (nx?.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) table = true;
+      }
+      const nf = pictureOf(e)?.numbers ?? (table ? undefined : (e as PictureBox).pgvNumbers);
+      const n = nf?.();
+      if (n && n.rows.length) out.push({ sec: { ...chartSection(title || heading, n), within: title && title !== heading ? heading : within, ...(ownSheet && !title ? { own: true } : {}) }, el: e });
+    }
+  }
+  return out;
+}
+// pageSections (X12): every section of the page in page order - grids, property cards as Item | Value | Status, tiles,
+// the Needs attention lines, charts' series; the fleet Summary's two grids named 'Test Summary' and 'Instance Summary' on
+// every route (X2, the names its drop-down gives them)
+function pageSections(ctx: Ctx, root: Element, found: { sec: Section; el: Element }[], fallback: string): { sec: Section; el: Element }[] {
+  const all = [...found.map(f => ({ ...f, sec: f.el.matches('table.props') ? asItems(f.sec) : f.sec })), ...pageExtras(root, fallback)];
+  if (!ctx.instance && ctx.tab === 'summary') {
+    const grids = all.filter(f => f.el.matches('table.grid, p.empty[data-cols]') && !f.el.closest('.attention'));
+    const tests = grids.find(f => f.el.closest('.tests')), inst = [...grids].reverse().find(f => !f.el.closest('.tests'));
+    if (tests) tests.sec = { ...tests.sec, name: 'Test Summary' };
+    if (inst) inst.sec = { ...inst.sec, name: 'Instance Summary' };
+  }
+  all.sort((a, b) => a.el === b.el ? 0 : a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+  distinct(all);
+  return all;
+}
+
+// pageBook: the page under root as its workbook's sections and its grids, read as the bar's Export .xlsx reads them (the
+// charts drawn first, the light theme around the reads) - the bar's workbook and CSV, and the mailed workbook
+// (reportmail.ts), so the three name each grid alike (X2: the same names, never ' (2)'); names: each section's sheet name
+export async function pageBook(ctx: Ctx, r: HTMLElement | null, tab: string, waitCharts = true): Promise<{ items: { sec: Section; el: Element }[]; found: { sec: Section; el: Element }[]; names: string[] }> {
+  if (waitCharts) await chartsDrawn(r);
+  // every read of the page from here to the workbook's parts runs in one task, after the last await (nothing is painted
+  // between: the hidden copy of a grid's rows past its page, the colour probe and the charts drawn again come and go
+  // unseen), under the light theme (E2-16: the file is light whatever the screen; 'auto' restored by removing the attribute)
+  const html = document.documentElement, was = html.getAttribute('data-theme');
+  html.setAttribute('data-theme', 'light');
+  let found: { sec: Section; el: Element }[] = [], items: { sec: Section; el: Element }[] = [];
+  try {
+    found = r ? walk(r, tab, true) : [];
+    // (X12, D-B) the page's sections in page order, a sheet each; the page sheet with pictures is parked
+    if (r) items = pageSections(ctx, r, found, tab);
+  } finally { if (was === null) html.removeAttribute('data-theme'); else html.setAttribute('data-theme', was); }
+  const secs = items.map(f => gridSection(f.sec));
+  return { items, found, names: sheetNames(secs.map(s => s.name), [], secs.map(s => s.within), secs.map(s => !!s.own)) };
 }
 
 // tell: a word in the grid's own count line for a moment (ui.ts grid: the 'n of m rows' line above it)
@@ -729,6 +1264,14 @@ function summaryExport(ctx: Ctx, root: () => HTMLElement | null, note: HTMLEleme
   return b;
 }
 
+// chartsDrawn: a chart of the page drawn by the time its picture is asked for - a box that is neither drawn (no
+// picture to give, chart.ts) nor in a state of its own ('one read', 'no data') is waited for, 3 s at most; one still
+// not drawn then says so on the page sheet
+async function chartsDrawn(r: Element | null): Promise<void> {
+  if (!r) return;
+  const pending = () => [...r.querySelectorAll('.chart')].some(b => !(b as PictureBox).pgvPicture && !(b as PictureBox).pgvNumbers && !b.querySelector('.chart-state') && !!b.querySelector('.uplot, div:empty'));
+  for (let t = 0; t < 30 && pending(); t++) await new Promise(res => setTimeout(res, 100));
+}
 // exportButtons: the bar's two buttons for the page under them (#main): the workbook and the CSV. The grid tools
 // (gridtools.ts: the column chooser, the copies with the colours, the selection's sums, the groups, the data bars)
 // start with the bar: they answer the grids' own menu and touch nothing until asked.
@@ -740,17 +1283,24 @@ export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => d
     b.disabled = true; note.textContent = '';
     try {
       const m = await metaOf(ctx);
-      const r = root();
-      const secs = r ? sections(r, m.tab, true) : [];
-      if (secs.length === 0) { note.textContent = 'Nothing to export: no grid on this page.'; return; }
+      // the CSV reads the charts too only to name its files as the workbook names its sheets (3.6: one name per grid)
+      const { items, found, names } = await pageBook(ctx, root(), m.tab, kind === 'xlsx');
+      const secs = found.map(f => f.sec);
       if (kind === 'xlsx') {
-        const z = await zip(workbook(m, secs), m.at);
+        if (items.length === 0) { note.textContent = 'Nothing to export: no grid on this page.'; return; }
+        const parts = workbook(m, items.map(f => f.sec));
+        const z = await zip(parts, m.at);
         save(new Blob([z], { type: XLSX }), exportName(m, 'xlsx'));
+      } else if (secs.length === 0) {
+        note.textContent = 'Nothing to export: no grid on this page.'; return;
       } else if (secs.length === 1) {
         save(new Blob([csv(secs[0])], { type: 'text/csv;charset=utf-8' }), exportName(m, 'csv'));
       } else {
-        const names = sheetNames(secs.map(s => s.name)), enc = new TextEncoder();
-        const z = await zip(secs.map((s, i) => ({ name: `${String(i + 1).padStart(2, '0')}_${safe(names[i])}.csv`, data: enc.encode(csv(s)) })), m.at);
+        // each CSV named by its grid's sheet name in the workbook (the Summary's 'Test Summary' / 'Instance Summary', a card
+        // 'Database erp properties'), never a numbered repeat
+        const own = sheetNames(secs.map(s => s.name), [], secs.map(s => s.within), secs.map(s => !!s.own)), enc = new TextEncoder();
+        const nameOf = (i: number) => { const k = items.findIndex(f => f.el === found[i].el); return k >= 0 ? names[k] : own[i]; };
+        const z = await zip(secs.map((s, i) => ({ name: `${String(i + 1).padStart(2, '0')}_${safe(nameOf(i))}.csv`, data: enc.encode(csv(s)) })), m.at);
         save(new Blob([z], { type: 'application/zip' }), exportName(m, 'csv.zip'));
       }
     } catch (e) {

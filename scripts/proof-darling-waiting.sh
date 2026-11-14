@@ -333,7 +333,8 @@ for (const name of ['Earlier', 'Later', 'Latest']) {
   if (!l) { console.log(`link ${name} missing`); continue; }
   await go(l.h); const r = await state();
   const at = new URLSearchParams(r.hash.split('?')[1] ?? '').get('at');
-  const read = await ev(`(document.querySelector('main [role=group]')?.textContent ?? '').split(' (')[0]`);
+  // the read line by its own label: the instance header's chips are role 'group' too (instheader.ts chipEl)
+  const read = await ev(`(document.querySelector('main [role=group][aria-label="Read at in view"]')?.textContent ?? '').split(' (')[0]`);
   console.log(`link ${name} at=${at ?? 'latest'} errors=${r.errors} read=${read}`);
 }
 await go(`#/mssql_waiting?i=${sb}`); s = await state();

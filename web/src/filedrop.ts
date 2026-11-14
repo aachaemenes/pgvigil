@@ -215,8 +215,11 @@ function unique(cols: string[]): string[] {
 const numText = (v: string) => /^-?(0|[1-9]\d*)(\.\d+)?$/.test(v) && (v.includes('.') || Number.isSafeInteger(Number(v)));
 function dataSetView(name: string, text: string): HTMLElement[] {
   let cols: string[] = [], rows: Row[] = [];
+  // a stored sample's CSV (export.ts csv()) starts with its mark on a line of its own: taken off the rows, said in the note
+  let mark = '';
   if (/\.csv$/i.test(name)) {
     const all = csvRows(text.replace(/^\ufeff/, ''));
+    if (all.length > 1 && all[0].length === 1 && /^stored sample of /.test(all[0][0])) mark = all.shift()![0];
     cols = unique(all[0] ?? []);
     rows = all.slice(1).map(r => Object.fromEntries(cols.map((c, i) => [c, r[i] ?? ''])));
   } else {
@@ -242,7 +245,7 @@ function dataSetView(name: string, text: string): HTMLElement[] {
   }
   // each column judged once (a test per cell scanned the whole column again: 16,000 rows took 26 s)
   const numCols = new Set(cols.filter(c => rows.length > 0 && rows.some(r => r[c] !== '') && rows.every(r => r[c] === '' || numText(String(r[c])))));
-  return [note(`${fmtNum(rows.length)} rows, ${cols.length} columns.`), grid(rows.map(r => Object.fromEntries(cols.map(c => [c, numCols.has(c) && r[c] !== '' ? Number(r[c]) : r[c]]))), cols.map(c => ({ key: c, num: numCols.has(c) })), 'No rows.')];
+  return [note(`${mark ? mark + '. ' : ''}${fmtNum(rows.length)} rows, ${cols.length} columns.`), grid(rows.map(r => Object.fromEntries(cols.map(c => [c, numCols.has(c) && r[c] !== '' ? Number(r[c]) : r[c]]))), cols.map(c => ({ key: c, num: numCols.has(c) })), 'No rows.')];
 }
 
 // ---- opening ----------------------------------------------------------------------------------------------------

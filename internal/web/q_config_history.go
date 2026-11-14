@@ -92,6 +92,7 @@ func (s *Server) JobThresholds(w http.ResponseWriter, r *http.Request) {
 	out["writable"] = why == ""
 	if why != "" {
 		out["reason"] = s.offWords(why, "thresholds")
+		out["demo"] = s.demo != nil // the page reads the door from GET /api/ack; this says which reason it lacks when that read fails
 	}
 	for _, p := range ps {
 		t, err := s.query(r.Context(), p.sql, p.args...)

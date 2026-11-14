@@ -95,7 +95,9 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 // server: its tabs come from the import's tables and the repository's live screens, web/src/dbadash.ts). The order is
 // the preference: collected first, then a repository instance still present, then the newest collection; candidates
 // counts the repository instances that match one pgvigil instance (two repositories, or a server re-added under one
-// display name: the page says so). An instance imported under another name (-name) is not matched (docs/dbadash.md).
+// display name: the page says so). A server moved from DBA Dash (task 206, 0134) is matched through its move by every
+// InstanceID of it, whatever its display name (one with a '\' moves under a name-safe one); another instance imported
+// under another name (-name) is not matched (docs/dbadash.md).
 const sqlDBADashImported = `
 SELECT d.repository, d.instance_id AS source_id, i.instance_id, i.name, (m.instance_id IS NOT NULL OR c.attempted) AS collected,
        d.is_present, count(*) OVER (PARTITION BY i.instance_id) AS candidates
@@ -109,11 +111,14 @@ SELECT d.repository, d.instance_id AS source_id, i.instance_id, i.name, (m.insta
                                        AND NOT (cd.status = 'error' AND cd.note LIKE 'connect: %')) AS attempted) c
  WHERE ($1::text IS NULL OR d.repository = $1)
    AND (upper(m.server_name) = upper(d.instance)
-        OR (m.instance_id IS NULL AND upper(i.name) = upper(d.display_name)))
+        OR (m.instance_id IS NULL AND upper(i.name) = upper(d.display_name))
+        OR EXISTS (SELECT 1 FROM pgvigil.dbadash_move_ids mi
+                    WHERE mi.repository = d.repository AND mi.dbadash_id = d.instance_id AND mi.instance_id = i.instance_id))
  ORDER BY (m.instance_id IS NULL AND NOT c.attempted), NOT d.is_present, d.last_collection DESC NULLS LAST, d.repository, d.instance_id`
 
 // sqlDBADashSizes is the newest database size per database that pgvigil import dbadash stored for the imported server of
-// one repository instance (sqlDBADashImported's imported match: the display name, not collected by pgvigil), largest
+// one repository instance (sqlDBADashImported's imported match: the display name or a move's InstanceID, not
+// collected by pgvigil), largest
 // first: the Storage tab of an imported server (pgvigil's own Storage page lists the databases of its own file read,
 // which an imported server has not). No imported server = no row.
 const sqlDBADashSizes = `
@@ -122,7 +127,10 @@ SELECT * FROM (
          s.data_used_bytes, s.files
     FROM pgvigil.dbadash_instances d
     JOIN pgvigil.dbadash_repositories r ON r.repository = d.repository AND r.is_configured
-    JOIN pgvigil.instances i ON i.engine = 'sqlserver' AND i.is_active AND upper(i.name) = upper(d.display_name)
+    JOIN pgvigil.instances i ON i.engine = 'sqlserver' AND i.is_active
+     AND (upper(i.name) = upper(d.display_name)
+          OR EXISTS (SELECT 1 FROM pgvigil.dbadash_move_ids mi
+                      WHERE mi.repository = d.repository AND mi.dbadash_id = d.instance_id AND mi.instance_id = i.instance_id))
     JOIN pgvigil.mssql_database_size s ON s.instance_id = i.instance_id
    WHERE d.repository = $1 AND d.instance_id = $2
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)

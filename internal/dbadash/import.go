@@ -2,10 +2,12 @@ package dbadash
 
 // The DBADash import (task 92): a DBADash repository's history loaded into pgvigil's own SQL Server tables, so a site
 // that moves from DBADash to pgvigil keeps what DBADash collected. It reads the repository through the door's read
-// login (SELECT on the dbo schema) and writes the pgvigil repository as its OWNER (the login 'pgvigil migrate' uses):
-// the rows go straight into the history tables of the SQL Server engine, one pgvigil row per DBADash row, because the
-// collector's import functions take a live read of a server (its clock, its counters, its cursors) and a replay of
-// history is not one.
+// login (SELECT on the dbo schema) and writes the pgvigil repository through its own functions (0134's
+// import_dbadash_instance and import_dbadash_<mapping>, the collector's door: a login in role pgvigil_collector or the
+// owner; no other login writes the history tables), one pgvigil row per DBADash row - the collector's import functions
+// take a live read of a server (its clock, its counters, its cursors) and a replay of history is not one. A server
+// moved from DBA Dash (task 206, Admin > Instances) is imported into its moved instance up to pgvigil's first read of
+// it, and only after that read: the functions hold the bound and the order, whatever -to the caller gives.
 //
 // What is imported, per DBADash instance (docs/dbadash.md has the table of mappings and what is not imported):
 //   - the instance: a pgvigil SQL Server instance under DBADash's display name, with DBADash's tags (an instance of
@@ -25,11 +27,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -47,8 +49,12 @@ type ImportOptions struct {
 	// Batch is the rows per insert (one transaction each); 0 = DefaultImportBatch.
 	Batch int
 	// Names maps a DBADash InstanceID to the pgvigil instance name to use (the name pgvigil.yaml will monitor it
-	// under); an instance not named here takes DBADash's display name.
+	// under); an instance not named here takes DBADash's display name. A moved server's InstanceID goes to its move.
 	Names map[int]string
+	// Repository is the dbadash: repository's name in the configuration (the key of a move's InstanceIDs).
+	Repository string
+	// By names who runs it on a moved server's run marks (0134's import_dbadash_move run / ended); default "cli".
+	By string
 }
 
 // DefaultImportBatch is the rows of one insert.
@@ -65,40 +71,26 @@ type ImportCount struct {
 	Inserted  int64  `json:"inserted"`
 	Stored    int64  `json:"stored"`
 	Skipped   string `json:"skipped,omitempty"`
+	// Bound is a moved server's: its history is taken up to pgvigil's first read of it, whatever -to says.
+	Bound *time.Time `json:"bound,omitempty"`
 }
 
 // importMapping is one DBADash history table and its pgvigil home. The T-SQL takes @id, @from and @to; rows aliases
-// its columns as the insert's record names and orders by time ('at' is the row's UTC time); insert takes $1 the
-// pgvigil instance_id, $2 the batch as JSON and $3 the instance's facts ({"linux": bool}) and returns the rows it
-// inserted; stored takes $1 instance_id, $2 from, $3 to.
+// its columns as the record names of the mapping's function (0134's import_dbadash_<Key>: instance_id, the batch as
+// JSON, the instance's facts {"linux": bool}; it answers the rows it inserted) and orders by time ('at' is the row's
+// UTC time).
 type importMapping struct {
-	Key, Table, Count, Rows, Insert, Stored string
-	// Facts says the insert takes $3, the instance's facts
-	Facts bool
+	Key, Table, Count, Rows string
 }
 
 var importMappings = []importMapping{
 	{
-		Key: "cpu", Table: "mssql_cpu_sample", Facts: true,
+		Key: "cpu", Table: "mssql_cpu_sample",
 		Count: `SELECT COUNT_BIG(*) FROM dbo.CPU WHERE InstanceID = @id AND EventTime >= @from AND EventTime < @to`,
 		Rows: `SELECT EventTime AS at, CAST(SQLProcessCPU AS int) AS sql_pct, CAST(SystemIdleCPU AS int) AS idle_pct
   FROM dbo.CPU WHERE InstanceID = @id AND EventTime >= @from AND EventTime < @to ORDER BY EventTime`,
-		// the record number is the time's negative milliseconds: a live read's ring-buffer numbers are positive, so an
-		// imported row never stands for a live one; a DBADash minute within 30 s of a stored row (pgvigil's own read of the
-		// same ring-buffer record: DBADash timed it with GETUTCDATE, the collector with SYSUTCDATETIME) is skipped; SQL
-		// Server on Linux writes no idle figure (always 0): other and idle are NULL there, as the collector stores them
-		Insert: `WITH x AS (SELECT * FROM jsonb_to_recordset($2) AS r(at timestamptz, sql_pct int, idle_pct int)),
-ins AS (
-  INSERT INTO pgvigil.mssql_cpu_sample (instance_id, snapshot_at, record_id, sql_pct, other_pct, idle_pct)
-  SELECT $1, x.at, -(extract(epoch FROM x.at) * 1000)::bigint, least(greatest(x.sql_pct, 0), 100),
-         CASE WHEN ($3::jsonb->>'linux')::boolean THEN NULL ELSE least(greatest(100 - x.sql_pct - x.idle_pct, 0), 100) END,
-         CASE WHEN ($3::jsonb->>'linux')::boolean THEN NULL ELSE least(greatest(x.idle_pct, 0), 100) END
-    FROM x
-   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_cpu_sample c
-                      WHERE c.instance_id = $1 AND c.snapshot_at BETWEEN x.at - interval '30 seconds' AND x.at + interval '30 seconds')
-  RETURNING 1)
-SELECT count(*) FROM ins`,
-		Stored: `SELECT count(*) FROM pgvigil.mssql_cpu_sample WHERE instance_id = $1 AND snapshot_at >= $2 AND snapshot_at < $3`,
+		// the negative record number, the 30-second skip beside the collector's own minutes and Linux's empty idle figure:
+		// 0134's import_dbadash_cpu
 	},
 	{
 		Key: "volumes", Table: "mssql_volume_sample",
@@ -107,18 +99,6 @@ SELECT count(*) FROM ins`,
 		Rows: `SELECT S.SnapshotDate AS at, D.Name AS volume, S.Capacity AS total_bytes, S.FreeSpace AS free_bytes
   FROM dbo.DriveSnapshot S JOIN dbo.Drives D ON D.DriveID = S.DriveID
  WHERE D.InstanceID = @id AND S.SnapshotDate >= @from AND S.SnapshotDate < @to ORDER BY S.SnapshotDate, S.DriveID`,
-		Insert: `WITH x AS (SELECT * FROM jsonb_to_recordset($2) AS r(at timestamptz, volume text, total_bytes bigint, free_bytes bigint)),
-ins AS (
-  INSERT INTO pgvigil.mssql_volume_sample (instance_id, snapshot_at, volume, total_bytes, free_bytes)
-  SELECT $1, x.at, n.volume, x.total_bytes, x.free_bytes
-    FROM x
-   -- DBADash keeps a mount point in capitals (UPPER(volume_mount_point)): a volume pgvigil already lists keeps its own spelling
-   CROSS JOIN LATERAL (SELECT coalesce((SELECT v.volume FROM pgvigil.mssql_volumes v WHERE v.instance_id = $1 AND upper(v.volume) = upper(x.volume)
-                                         ORDER BY v.is_present DESC, v.volume LIMIT 1), x.volume) AS volume) n
-   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_volume_sample v WHERE v.instance_id = $1 AND v.snapshot_at = x.at AND upper(v.volume) = upper(x.volume))
-  RETURNING 1)
-SELECT count(*) FROM ins`,
-		Stored: `SELECT count(*) FROM pgvigil.mssql_volume_sample WHERE instance_id = $1 AND snapshot_at >= $2 AND snapshot_at < $3`,
 	},
 	{
 		// DBADash keeps file sizes in 8 KB pages (sys.database_files' unit): bytes are pages * 8192; the collector's rule
@@ -138,16 +118,6 @@ SELECT count(*) FROM ins`,
   FROM dbo.DBFileSnapshot S JOIN dbo.DBFiles F ON F.FileID = S.FileID JOIN dbo.Databases D ON D.DatabaseID = F.DatabaseID
  WHERE D.InstanceID = @id AND S.SnapshotDate >= @from AND S.SnapshotDate < @to
  GROUP BY S.SnapshotDate, F.DatabaseID ORDER BY S.SnapshotDate, F.DatabaseID`,
-		Insert: `WITH x AS (SELECT * FROM jsonb_to_recordset($2) AS r(at timestamptz, database_name text, data_bytes bigint, log_bytes bigint,
-                                                   data_used_bytes bigint, log_used_bytes bigint, files int)),
-ins AS (
-  INSERT INTO pgvigil.mssql_database_size (instance_id, snapshot_at, database_name, data_bytes, log_bytes, data_used_bytes, log_used_bytes, files)
-  SELECT $1, x.at, x.database_name, x.data_bytes, x.log_bytes, x.data_used_bytes, x.log_used_bytes, x.files
-    FROM x
-   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_database_size d WHERE d.instance_id = $1 AND d.snapshot_at = x.at AND d.database_name = x.database_name)
-  RETURNING 1)
-SELECT count(*) FROM ins`,
-		Stored: `SELECT count(*) FROM pgvigil.mssql_database_size WHERE instance_id = $1 AND snapshot_at >= $2 AND snapshot_at < $3`,
 	},
 	{
 		// DBADash stores a run's start in UTC (msdb's local time plus the instance's UTC offset); msdb's own run_date and
@@ -163,23 +133,6 @@ SELECT count(*) FROM ins`,
   JOIN dbo.Instances I ON I.InstanceID = H.InstanceID
   LEFT JOIN dbo.Jobs J ON J.InstanceID = H.InstanceID AND J.job_id = H.job_id
  WHERE H.InstanceID = @id AND H.RunDateTime >= @from AND H.RunDateTime < @to ORDER BY H.RunDateTime, H.instance_id`,
-		Insert: `WITH x AS (SELECT * FROM jsonb_to_recordset($2) AS r(at timestamptz, history_id bigint, job_id text, job_name text, step_id int,
-                                                   step_name text, run_status int, duration_s bigint, sql_message_id int,
-                                                   sql_severity int, retries int, message text, local_at timestamp)),
-ins AS (
-  INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, step_name, run_date, run_time,
-                                      run_status, duration_s, sql_message_id, sql_severity, retries, message)
-  SELECT $1, x.at, x.history_id, upper(x.job_id), x.job_name, x.step_id, x.step_name,
-         to_char(x.local_at, 'YYYYMMDD')::int, to_char(x.local_at, 'HH24MISS')::int,
-         x.run_status, x.duration_s, x.sql_message_id, x.sql_severity, x.retries, x.message
-    FROM x
-   -- the collector's own key (0072): the history id, job and step within 3 hours, so a row pgvigil read itself is not added again
-   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs j
-                      WHERE j.instance_id = $1 AND j.snapshot_at BETWEEN x.at - interval '3 hours' AND x.at + interval '3 hours'
-                        AND j.history_id = x.history_id AND j.job_id = upper(x.job_id) AND j.step_id = x.step_id)
-  RETURNING 1)
-SELECT count(*) FROM ins`,
-		Stored: `SELECT count(*) FROM pgvigil.mssql_job_runs WHERE instance_id = $1 AND snapshot_at >= $2 AND snapshot_at < $3`,
 	},
 }
 
@@ -204,8 +157,11 @@ type srcInstance struct {
 }
 
 // Import loads the history of a DBADash repository (srcDSN, the door's read login) into the pgvigil repository
-// (repoDSN, its owner). The error is the whole run's; an instance or mapping that cannot be imported is a count with
-// its reason.
+// (repoDSN: a login in role pgvigil_collector, or the owner). The error is the whole run's; an instance or mapping that
+// cannot be imported now (a moved server not read yet, or waiting for the collector's own first reads) is a count with
+// its reason, and the run goes on. A real run of a moved server writes its run marks on the move (run, beat after each
+// mapping, ended ok / partial / failed), so the page shows a CLI import as it shows its own; a run already marked
+// there is not started twice.
 func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt ImportOptions) ([]ImportCount, error) {
 	if strings.TrimSpace(srcDSN) == "" {
 		return nil, errors.New("the DBADash repository's dsn resolved to nothing")
@@ -268,30 +224,119 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 		if n := strings.TrimSpace(opt.Names[in.ID]); n != "" {
 			name = n
 		}
-		pid, why, err := pgvigilInstance(ctx, log, pool, name, in, opt.DryRun)
+		tgt, err := importTarget(ctx, log, pool, opt.Repository, name, in, opt.DryRun)
 		if err != nil {
 			return out, err
 		}
+		// a moved server: its own instance, its history up to pgvigil's first read of it (the functions hold it too)
+		to, none := importBound(opt.From, opt.To, tgt)
+		runID, marked := int64(0), ""
+		if tgt.Moved && !opt.DryRun && tgt.ID > 0 && none == "" {
+			if runID, marked, err = moveMark(ctx, pool, "run", tgt.Name, opt.By, 0, nil, ""); err != nil {
+				return out, err
+			}
+		}
+		imported := map[string]any{}
+		outcome := "ok"
 		for _, m := range importMappings {
-			c := ImportCount{Instance: name, DBADashID: in.ID, PgvigilID: pid, Mapping: m.Key, Skipped: why}
-			if err := src.QueryRowContext(ctx, m.Count, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(opt.To))).Scan(&c.Source); err != nil {
-				return out, fmt.Errorf("%s %s: count: %w", name, m.Key, err)
+			c := ImportCount{Instance: tgt.Name, DBADashID: in.ID, PgvigilID: tgt.ID, Mapping: m.Key, Skipped: tgt.Skipped}
+			if tgt.Moved {
+				c.Bound = tgt.CollectFrom
 			}
-			if why == "" && !opt.DryRun {
-				if c.Inserted, err = importOne(ctx, src, pool, m, in, pid, opt); err != nil {
-					return out, fmt.Errorf("%s %s: %w", name, m.Key, err)
+			for _, why := range []string{marked, none, tgt.Wait[m.Key]} {
+				if c.Skipped == "" {
+					c.Skipped = why
 				}
 			}
-			if pid > 0 {
-				if err := pool.QueryRow(ctx, m.Stored, pid, opt.From, opt.To).Scan(&c.Stored); err != nil {
-					return out, fmt.Errorf("%s %s: stored: %w", name, m.Key, err)
+			if opt.From.Before(to) {
+				if err := src.QueryRowContext(ctx, m.Count, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to))).Scan(&c.Source); err != nil {
+					return out, fmt.Errorf("%s %s: count: %w", tgt.Name, m.Key, err)
 				}
 			}
-			log.Info("dbadash import", "instance", name, "mapping", m.Key, "source", c.Source, "inserted", c.Inserted, "stored", c.Stored, "skipped", c.Skipped)
+			if c.Skipped == "" && !opt.DryRun && opt.From.Before(to) {
+				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to)
+				var pe *pgconn.PgError
+				switch {
+				case errors.As(err, &pe) && pe.Code == "55000":
+					// the store holds this mapping back now (a read of the collector's it waits for): said, the run goes on
+					c.Skipped = strings.TrimPrefix(pe.Message, "dbadash import: ")
+				case err != nil:
+					if runID > 0 {
+						_, _, _ = moveMark(context.WithoutCancel(ctx), pool, "ended", tgt.Name, opt.By, runID, imported, "failed: "+err.Error())
+					}
+					return out, fmt.Errorf("%s %s: %w", tgt.Name, m.Key, err)
+				}
+			}
+			if tgt.ID > 0 && opt.From.Before(to) {
+				if err := pool.QueryRow(ctx, `SELECT pgvigil.dbadash_import_stored($1, $2, $3, $4)`, tgt.ID, m.Key, opt.From, to).Scan(&c.Stored); err != nil {
+					return out, fmt.Errorf("%s %s: stored: %w", tgt.Name, m.Key, err)
+				}
+			}
+			if c.Skipped != "" {
+				outcome = "partial"
+			}
+			imported[m.Key] = map[string]any{"source": c.Source, "inserted": c.Inserted, "stored": c.Stored, "skipped": c.Skipped}
+			if runID > 0 {
+				if _, why, err := moveMark(ctx, pool, "beat", tgt.Name, opt.By, runID, imported, ""); err != nil || why != "" {
+					log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
+				}
+			}
+			log.Info("dbadash import", "instance", tgt.Name, "mapping", m.Key, "to", to, "source", c.Source, "inserted", c.Inserted, "stored", c.Stored, "skipped", c.Skipped)
 			out = append(out, c)
+		}
+		if runID > 0 {
+			if _, why, err := moveMark(ctx, pool, "ended", tgt.Name, opt.By, runID, imported, outcome); err != nil || why != "" {
+				log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
+			}
 		}
 	}
 	return out, nil
+}
+
+// importBound is the newest time a run takes for one instance: the caller's To, or a moved server's first read by
+// pgvigil when that is earlier; none says why nothing is taken (a From at or after that first read).
+func importBound(from, to time.Time, tgt importTargetRow) (time.Time, string) {
+	if tgt.Moved && tgt.CollectFrom != nil && tgt.CollectFrom.Before(to) {
+		to = tgt.CollectFrom.UTC()
+		if !from.Before(to) {
+			return to, fmt.Sprintf("nothing to import: -from is at or after pgvigil's first read of the server (%s)", to.Format(time.RFC3339))
+		}
+	}
+	return to, ""
+}
+
+// moveMark writes one run mark on a moved server's move (0134's import_dbadash_move: run, beat or ended); a refusal
+// (another run marked, a run taken over) is its words, not an error. ended's outcome may carry a detail after "failed: ".
+func moveMark(ctx context.Context, pool *pgxpool.Pool, op, name, by string, runID int64, imported map[string]any, outcome string) (int64, string, error) {
+	if strings.TrimSpace(by) == "" {
+		by = "cli"
+	}
+	pay := map[string]any{"op": op, "ui_user": by, "client": "pgvigil import dbadash", "name": name}
+	if op != "run" {
+		pay["run_id"] = runID
+		pay["imported"] = imported
+	}
+	if op == "ended" {
+		o, detail, _ := strings.Cut(outcome, ": ")
+		pay["outcome"], pay["detail"] = o, detail
+	}
+	b, _ := json.Marshal(pay)
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_move(now(), $1::jsonb)::text`, string(b)).Scan(&raw); err != nil {
+		return 0, "", fmt.Errorf("the move's run mark (%s %s): %w", op, name, err)
+	}
+	var ans struct {
+		Outcome string `json:"outcome"`
+		Detail  string `json:"detail"`
+		RunID   int64  `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &ans); err != nil {
+		return 0, "", fmt.Errorf("import_dbadash_move answered %q", raw)
+	}
+	if ans.Outcome != "done" {
+		return 0, ans.Detail, nil
+	}
+	return ans.RunID, "", nil
 }
 
 // importInstances reads the instances to import: active, not Azure SQL Database, the ids asked for (all when none).
@@ -375,9 +420,17 @@ SELECT T.TagName, T.TagValue FROM dbo.InstanceIDsTags IT JOIN dbo.Tags T ON T.Ta
 	return tags, skipped, rows.Err()
 }
 
-// openImportStore connects to the pgvigil repository and checks the login may do what the import does: create a
-// month's partition, add an instance and insert into the four history tables (the owner may; the collector and the
-// reader may not). A dry run needs to read only.
+// The import's functions (0134): the run's writes and the reads of a dry run.
+var (
+	importRunFuncs = []string{"pgvigil.import_dbadash_instance(jsonb)", "pgvigil.import_dbadash_cpu(int, jsonb, jsonb)",
+		"pgvigil.import_dbadash_volumes(int, jsonb, jsonb)", "pgvigil.import_dbadash_dbsize(int, jsonb, jsonb)",
+		"pgvigil.import_dbadash_jobruns(int, jsonb, jsonb)"}
+	importReadFuncs = []string{"pgvigil.dbadash_import_target(jsonb)", "pgvigil.dbadash_import_stored(int, text, timestamptz, timestamptz)"}
+)
+
+// openImportStore connects to the pgvigil repository and checks the login may call what the import calls: the
+// run's functions and the two reads (a login in role pgvigil_collector, or the owner; a reader may not), or for a dry
+// run the two reads (any of the three).
 func openImportStore(ctx context.Context, repoDSN string, dry bool) (*pgxpool.Pool, error) {
 	if strings.TrimSpace(repoDSN) == "" {
 		return nil, errors.New("the pgvigil repository's dsn is empty")
@@ -396,20 +449,13 @@ func openImportStore(ctx context.Context, repoDSN string, dry bool) (*pgxpool.Po
 		pool.Close()
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
-	if dry {
-		return pool, nil
-	}
-	tables := make([]string, 0, len(importMappings))
-	for _, m := range importMappings {
-		tables = append(tables, "pgvigil."+m.Table)
+	need := importReadFuncs
+	if !dry {
+		need = append(append([]string{}, importReadFuncs...), importRunFuncs...)
 	}
 	var missing []string
-	rows, err := pool.Query(ctx, `
-SELECT t FROM unnest($1::text[]) AS t WHERE NOT coalesce(has_table_privilege(to_regclass(t), 'INSERT'), false)
-UNION ALL
-SELECT f FROM unnest(ARRAY['pgvigil.ensure_month_partition(text, timestamptz)',
-                           'pgvigil.ensure_instance(text, text, text, int, boolean, text[], text)']) AS f
- WHERE NOT coalesce(has_function_privilege(to_regprocedure(f), 'EXECUTE'), false)`, tables)
+	rows, err := pool.Query(ctx, `SELECT f FROM unnest($1::text[]) AS f
+ WHERE NOT coalesce(has_function_privilege(to_regprocedure(f), 'EXECUTE'), false)`, need)
 	if err == nil {
 		missing, err = pgx.CollectRows(rows, pgx.RowTo[string])
 	}
@@ -419,60 +465,67 @@ SELECT f FROM unnest(ARRAY['pgvigil.ensure_month_partition(text, timestamptz)',
 	}
 	if len(missing) > 0 {
 		pool.Close()
-		return nil, fmt.Errorf("this login may not write what the import writes (%s): run the import with the repository owner's dsn, the one 'pgvigil migrate' uses", strings.Join(missing, ", "))
+		if dry {
+			return nil, fmt.Errorf("this login may not read what the import reads (%s): run 'pgvigil migrate' (0134); then the owner's dsn or a login in role pgvigil_collector or pgvigil_reader may", strings.Join(missing, ", "))
+		}
+		return nil, fmt.Errorf("this login may not write what the import writes (%s): run it with a login in role pgvigil_collector (the collector's) or the repository owner's dsn, after 'pgvigil migrate' (0134)", strings.Join(missing, ", "))
 	}
 	return pool, nil
 }
 
-// pgvigilInstance finds or (not in a dry run) creates the pgvigil SQL Server instance for a DBADash instance. An
-// existing SQL Server instance of that name is used as it is (its description and tags are pgvigil's), except that a
-// row Admin > Instances made at its add and pgvigil never read (no version, no mssql_instance read: whatever platform
-// the page gave it - the join's w9e, finding 4) takes DBA Dash's version, and its platform when the page left it
-// 'auto', as a new one would; one stored as PostgreSQL is a skip with its reason.
-func pgvigilInstance(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, name string, in srcInstance, dry bool) (int, string, error) {
-	var id int
-	var engine string
-	var never bool
-	err := pool.QueryRow(ctx, `SELECT i.instance_id, i.engine, (i.server_version IS NULL
-	    AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)) FROM pgvigil.instances i WHERE i.name = $1`, name).Scan(&id, &engine, &never)
+// importTargetRow is where a DBADash instance's history goes (0134's dbadash_import_target / import_dbadash_instance).
+type importTargetRow struct {
+	ID          int               `json:"instance_id"`
+	Name        string            `json:"name"`
+	Moved       bool              `json:"moved"`
+	CollectFrom *time.Time        `json:"collect_from"`
+	Skipped     string            `json:"skipped"`
+	Wait        map[string]string `json:"wait"`
+	Added       bool              `json:"added"`
+	NeverRead   bool              `json:"never_read"`
+}
+
+// importTarget finds or (not in a dry run) creates the pgvigil SQL Server instance for a DBADash instance: a server
+// moved from DBA Dash goes to its move (whatever name), with what holds its mappings back (collect it first, the
+// collector's first CPU or job read); else the SQL Server instance of that name as it is (its description and tags are
+// pgvigil's), except that a row Admin > Instances made at its add and pgvigil never read takes DBA Dash's version, and
+// its platform when the page left it 'auto', as a new one would (the join's w9e, finding 4), and is seen now; one
+// stored as PostgreSQL is a skip with its reason; none = a new instance with DBA Dash's version, platform and tags.
+func importTarget(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, repo, name string, in srcInstance, dry bool) (importTargetRow, error) {
 	platform := "sqlserver"
 	if in.Edition == 8 { // DBADash's EngineEdition 8: Azure SQL Managed Instance (internal/mssql detect.go's kinds)
 		platform = "azuresqlmi"
 	}
-	switch {
-	case err == nil && engine == "sqlserver":
-		if never && !dry {
-			// is_active and the tags stay the page's (a disabled page instance stays disabled)
-			if _, err := pool.Exec(ctx, `UPDATE pgvigil.instances SET platform = CASE WHEN platform = 'auto' THEN $2 ELSE platform END,
-			     server_version = $3, server_version_num = $4
-			     WHERE instance_id = $1 AND server_version IS NULL`, id, platform, nullIfEmpty(in.Version), versionNum(in.Version)); err != nil {
-				return 0, "", fmt.Errorf("the page instance %s: %w", name, err)
-			}
-			log.Info("dbadash import: a page instance never read takes the source's platform and version", "name", name, "instance_id", id, "platform", platform)
-		}
-		return id, "", nil
-	case err == nil:
-		return 0, fmt.Sprintf("pgvigil stores %s as a %s instance: give the SQL Server its own name (the import's name map)", name, engine), nil
-	case !errors.Is(err, pgx.ErrNoRows):
-		return 0, "", fmt.Errorf("pgvigil.instances: %w", err)
+	tags := in.Tags
+	if tags == nil {
+		tags = []string{}
 	}
+	p, _ := json.Marshal(map[string]any{"repository": repo, "dbadash_id": in.ID, "name": name, "platform": platform,
+		"version": strings.TrimSpace(in.Version), "version_num": versionNum(in.Version), "tags": tags})
+	fn := "import_dbadash_instance"
 	if dry {
-		return 0, "", nil
+		fn = "dbadash_import_target"
 	}
-	err = pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, $3, $4, false, $5, 'sqlserver')`,
-		name, platform, nullIfEmpty(in.Version), versionNum(in.Version), in.Tags).Scan(&id)
-	if err != nil {
-		return 0, "", fmt.Errorf("ensure_instance %s: %w", name, err)
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.`+fn+`($1::jsonb)::text`, string(p)).Scan(&raw); err != nil {
+		return importTargetRow{}, fmt.Errorf("%s %s: %w", fn, name, err)
 	}
-	log.Info("dbadash import: instance added", "name", name, "instance_id", id, "platform", platform, "tags", in.Tags)
-	return id, "", nil
-}
-
-func nullIfEmpty(s string) any {
-	if strings.TrimSpace(s) == "" {
-		return nil
+	var t importTargetRow
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return importTargetRow{}, fmt.Errorf("%s answered %q: %w", fn, raw, err)
 	}
-	return s
+	if t.Name == "" {
+		t.Name = name
+	}
+	switch {
+	case t.Moved:
+		log.Info("dbadash import: a server moved from DBA Dash goes to its move", "dbadash_instance_id", in.ID, "name", t.Name, "instance_id", t.ID, "collect_from", t.CollectFrom)
+	case t.Added:
+		log.Info("dbadash import: instance added", "name", t.Name, "instance_id", t.ID, "platform", platform, "tags", in.Tags)
+	case t.NeverRead:
+		log.Info("dbadash import: a page instance never read takes the source's platform and version", "name", t.Name, "instance_id", t.ID, "platform", platform)
+	}
+	return t, nil
 }
 
 // versionNum is a SQL Server ProductVersion as pgvigil stores it: major * 10000 + minor (16.0.4295.3 -> 160000);
@@ -485,9 +538,10 @@ func versionNum(v string) any {
 	return major*10000 + minor
 }
 
-// importOne copies one mapping of one instance in batches, each batch one transaction with its months' partitions.
-func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions) (int64, error) {
-	rows, err := src.QueryContext(ctx, m.Rows, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(opt.To)))
+// importOne copies one mapping of one instance in batches up to 'to', each batch one call of the mapping's function
+// (one transaction: its months' partitions, the instance's import lock, the rows).
+func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time) (int64, error) {
+	rows, err := src.QueryContext(ctx, m.Rows, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to)))
 	if err != nil {
 		return 0, fmt.Errorf("read: %w", err)
 	}
@@ -499,7 +553,6 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 	facts, _ := json.Marshal(map[string]any{"linux": in.Linux})
 	var total int64
 	batch := make([]map[string]any, 0, opt.Batch)
-	months := map[time.Time]bool{}
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
@@ -508,13 +561,12 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		if err != nil {
 			return err
 		}
-		n, err := insertBatch(ctx, pool, m, pid, payload, facts, months)
-		if err != nil {
-			return err
+		var n int64
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_`+m.Key+`($1, $2::jsonb, $3::jsonb)`, pid, string(payload), string(facts)).Scan(&n); err != nil {
+			return fmt.Errorf("insert: %w", err)
 		}
 		total += n
 		batch = batch[:0]
-		months = map[time.Time]bool{}
 		return nil
 	}
 	for rows.Next() {
@@ -530,12 +582,9 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		for i, c := range cols {
 			rec[c] = importValue(vals[i])
 		}
-		at, ok := vals[0].(time.Time)
-		if !ok {
+		if _, ok := vals[0].(time.Time); !ok {
 			return total, fmt.Errorf("read: the row's time is %T, not a date", vals[0])
 		}
-		u := at.UTC()
-		months[time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)] = true
 		batch = append(batch, rec)
 		if len(batch) >= opt.Batch {
 			if err := flush(); err != nil {
@@ -547,34 +596,6 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		return total, fmt.Errorf("read: %w", err)
 	}
 	return total, flush()
-}
-
-// insertBatch writes one batch in one transaction: the months' partitions first (in time order), then the rows.
-func insertBatch(ctx context.Context, pool *pgxpool.Pool, m importMapping, pid int, payload, facts []byte, months map[time.Time]bool) (int64, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	ms := make([]time.Time, 0, len(months))
-	for t := range months {
-		ms = append(ms, t)
-	}
-	sort.Slice(ms, func(i, j int) bool { return ms[i].Before(ms[j]) })
-	for _, t := range ms {
-		if _, err := tx.Exec(ctx, `SELECT pgvigil.ensure_month_partition($1, $2)`, m.Table, t); err != nil {
-			return 0, fmt.Errorf("partition %s %s: %w", m.Table, t.Format("2006-01"), err)
-		}
-	}
-	args := []any{pid, string(payload)}
-	if m.Facts {
-		args = append(args, string(facts))
-	}
-	var n int64
-	if err := tx.QueryRow(ctx, m.Insert, args...).Scan(&n); err != nil {
-		return 0, fmt.Errorf("insert: %w", err)
-	}
-	return n, tx.Commit(ctx)
 }
 
 // importValue makes a DBADash value a JSON value for jsonb_to_recordset: a date as RFC 3339 in UTC (DBADash keeps

@@ -112,15 +112,13 @@ SELECT b.bucket AS snapshot_at, count(d.bucket)::int AS deadlocks, coalesce(sum(
 
 // BlockingHistory serves /api/blocking/history.
 func (s *Server) BlockingHistory(w http.ResponseWriter, r *http.Request) {
-	id, from, to, err := params(r, true)
+	// its reach is historyMaxWindow: a longer window reads its newest 7 days and the reply says so (paramsReach)
+	id, from, to, err := paramsReach(r, true, historyMaxWindow)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	cut := false
-	if to.Sub(from) > historyMaxWindow {
-		from, cut = to.Add(-historyMaxWindow), true
-	}
+	cut := readWindowOf(r) != nil
 	step := int(math.Ceil(to.Sub(from).Seconds() / 120))
 	if step < 60 {
 		step = 60
