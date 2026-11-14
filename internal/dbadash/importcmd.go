@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os/user"
 	"strconv"
 	"strings"
 	"time"
@@ -63,12 +64,19 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 		return fmt.Errorf("no DBA Dash repository named %q in the configuration's dbadash: list", *repo)
 	}
 	opt.Repository = src.Name
+	opt.By = "cli"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		opt.By = "cli:" + u.Username
+	}
 	got, err := Import(ctx, log, src.DSN(), cfg.Repository.DSN(), opt)
 	var source, inserted int64
 	for _, c := range got {
 		source += c.Source
 		inserted += c.Inserted
 		line := fmt.Sprintf("%-30s dbadash %-5d pgvigil %-5d %-8s source %-8d inserted %-8d stored %d", c.Instance, c.DBADashID, c.PgvigilID, c.Mapping, c.Source, c.Inserted, c.Stored)
+		if c.Bound != nil {
+			line += "  up to pgvigil's first read " + c.Bound.UTC().Format(time.RFC3339)
+		}
 		if c.Skipped != "" {
 			line += "  skipped: " + c.Skipped
 		}

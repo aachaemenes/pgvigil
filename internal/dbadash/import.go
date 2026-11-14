@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -52,6 +53,8 @@ type ImportOptions struct {
 	Names map[int]string
 	// Repository is the dbadash: repository's name in the configuration (the key of a move's InstanceIDs).
 	Repository string
+	// By names who runs it on a moved server's run marks (0134's import_dbadash_move run / ended); default "cli".
+	By string
 }
 
 // DefaultImportBatch is the rows of one insert.
@@ -68,6 +71,8 @@ type ImportCount struct {
 	Inserted  int64  `json:"inserted"`
 	Stored    int64  `json:"stored"`
 	Skipped   string `json:"skipped,omitempty"`
+	// Bound is a moved server's: its history is taken up to pgvigil's first read of it, whatever -to says.
+	Bound *time.Time `json:"bound,omitempty"`
 }
 
 // importMapping is one DBADash history table and its pgvigil home. The T-SQL takes @id, @from and @to; rows aliases
@@ -152,8 +157,11 @@ type srcInstance struct {
 }
 
 // Import loads the history of a DBADash repository (srcDSN, the door's read login) into the pgvigil repository
-// (repoDSN, its owner). The error is the whole run's; an instance or mapping that cannot be imported is a count with
-// its reason.
+// (repoDSN: a login in role pgvigil_collector, or the owner). The error is the whole run's; an instance or mapping that
+// cannot be imported now (a moved server not read yet, or waiting for the collector's own first reads) is a count with
+// its reason, and the run goes on. A real run of a moved server writes its run marks on the move (run, beat after each
+// mapping, ended ok / partial / failed), so the page shows a CLI import as it shows its own; a run already marked
+// there is not started twice.
 func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt ImportOptions) ([]ImportCount, error) {
 	if strings.TrimSpace(srcDSN) == "" {
 		return nil, errors.New("the DBADash repository's dsn resolved to nothing")
@@ -221,14 +229,24 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 			return out, err
 		}
 		// a moved server: its own instance, its history up to pgvigil's first read of it (the functions hold it too)
-		to := opt.To
-		if tgt.Moved && tgt.CollectFrom != nil && tgt.CollectFrom.Before(to) {
-			to = tgt.CollectFrom.UTC()
+		to, none := importBound(opt.From, opt.To, tgt)
+		runID, marked := int64(0), ""
+		if tgt.Moved && !opt.DryRun && tgt.ID > 0 && none == "" {
+			if runID, marked, err = moveMark(ctx, pool, "run", tgt.Name, opt.By, 0, nil, ""); err != nil {
+				return out, err
+			}
 		}
+		imported := map[string]any{}
+		outcome := "ok"
 		for _, m := range importMappings {
 			c := ImportCount{Instance: tgt.Name, DBADashID: in.ID, PgvigilID: tgt.ID, Mapping: m.Key, Skipped: tgt.Skipped}
-			if c.Skipped == "" {
-				c.Skipped = tgt.Wait[m.Key]
+			if tgt.Moved {
+				c.Bound = tgt.CollectFrom
+			}
+			for _, why := range []string{marked, none, tgt.Wait[m.Key]} {
+				if c.Skipped == "" {
+					c.Skipped = why
+				}
 			}
 			if opt.From.Before(to) {
 				if err := src.QueryRowContext(ctx, m.Count, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to))).Scan(&c.Source); err != nil {
@@ -236,7 +254,16 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 				}
 			}
 			if c.Skipped == "" && !opt.DryRun && opt.From.Before(to) {
-				if c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to); err != nil {
+				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to)
+				var pe *pgconn.PgError
+				switch {
+				case errors.As(err, &pe) && pe.Code == "55000":
+					// the store holds this mapping back now (a read of the collector's it waits for): said, the run goes on
+					c.Skipped = strings.TrimPrefix(pe.Message, "dbadash import: ")
+				case err != nil:
+					if runID > 0 {
+						_, _, _ = moveMark(context.WithoutCancel(ctx), pool, "ended", tgt.Name, opt.By, runID, imported, "failed: "+err.Error())
+					}
 					return out, fmt.Errorf("%s %s: %w", tgt.Name, m.Key, err)
 				}
 			}
@@ -245,11 +272,71 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 					return out, fmt.Errorf("%s %s: stored: %w", tgt.Name, m.Key, err)
 				}
 			}
+			if c.Skipped != "" {
+				outcome = "partial"
+			}
+			imported[m.Key] = map[string]any{"source": c.Source, "inserted": c.Inserted, "stored": c.Stored, "skipped": c.Skipped}
+			if runID > 0 {
+				if _, why, err := moveMark(ctx, pool, "beat", tgt.Name, opt.By, runID, imported, ""); err != nil || why != "" {
+					log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
+				}
+			}
 			log.Info("dbadash import", "instance", tgt.Name, "mapping", m.Key, "to", to, "source", c.Source, "inserted", c.Inserted, "stored", c.Stored, "skipped", c.Skipped)
 			out = append(out, c)
 		}
+		if runID > 0 {
+			if _, why, err := moveMark(ctx, pool, "ended", tgt.Name, opt.By, runID, imported, outcome); err != nil || why != "" {
+				log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
+			}
+		}
 	}
 	return out, nil
+}
+
+// importBound is the newest time a run takes for one instance: the caller's To, or a moved server's first read by
+// pgvigil when that is earlier; none says why nothing is taken (a From at or after that first read).
+func importBound(from, to time.Time, tgt importTargetRow) (time.Time, string) {
+	if tgt.Moved && tgt.CollectFrom != nil && tgt.CollectFrom.Before(to) {
+		to = tgt.CollectFrom.UTC()
+		if !from.Before(to) {
+			return to, fmt.Sprintf("nothing to import: -from is at or after pgvigil's first read of the server (%s)", to.Format(time.RFC3339))
+		}
+	}
+	return to, ""
+}
+
+// moveMark writes one run mark on a moved server's move (0134's import_dbadash_move: run, beat or ended); a refusal
+// (another run marked, a run taken over) is its words, not an error. ended's outcome may carry a detail after "failed: ".
+func moveMark(ctx context.Context, pool *pgxpool.Pool, op, name, by string, runID int64, imported map[string]any, outcome string) (int64, string, error) {
+	if strings.TrimSpace(by) == "" {
+		by = "cli"
+	}
+	pay := map[string]any{"op": op, "ui_user": by, "client": "pgvigil import dbadash", "name": name}
+	if op != "run" {
+		pay["run_id"] = runID
+		pay["imported"] = imported
+	}
+	if op == "ended" {
+		o, detail, _ := strings.Cut(outcome, ": ")
+		pay["outcome"], pay["detail"] = o, detail
+	}
+	b, _ := json.Marshal(pay)
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_move(now(), $1::jsonb)::text`, string(b)).Scan(&raw); err != nil {
+		return 0, "", fmt.Errorf("the move's run mark (%s %s): %w", op, name, err)
+	}
+	var ans struct {
+		Outcome string `json:"outcome"`
+		Detail  string `json:"detail"`
+		RunID   int64  `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &ans); err != nil {
+		return 0, "", fmt.Errorf("import_dbadash_move answered %q", raw)
+	}
+	if ans.Outcome != "done" {
+		return 0, ans.Detail, nil
+	}
+	return ans.RunID, "", nil
 }
 
 // importInstances reads the instances to import: active, not Azure SQL Database, the ids asked for (all when none).
@@ -342,8 +429,8 @@ var (
 )
 
 // openImportStore connects to the pgvigil repository and checks the login may call what the import calls: the
-// run's functions (a login in role pgvigil_collector, or the owner; a reader may not), or for a dry run the two reads
-// (any of the three).
+// run's functions and the two reads (a login in role pgvigil_collector, or the owner; a reader may not), or for a dry
+// run the two reads (any of the three).
 func openImportStore(ctx context.Context, repoDSN string, dry bool) (*pgxpool.Pool, error) {
 	if strings.TrimSpace(repoDSN) == "" {
 		return nil, errors.New("the pgvigil repository's dsn is empty")
@@ -379,7 +466,7 @@ func openImportStore(ctx context.Context, repoDSN string, dry bool) (*pgxpool.Po
 	if len(missing) > 0 {
 		pool.Close()
 		if dry {
-			return nil, fmt.Errorf("this login may not read what the import reads (%s): run 'pgvigil migrate' (0134), then use a login in role pgvigil_collector or pgvigil_reader", strings.Join(missing, ", "))
+			return nil, fmt.Errorf("this login may not read what the import reads (%s): run 'pgvigil migrate' (0134); then the owner's dsn or a login in role pgvigil_collector or pgvigil_reader may", strings.Join(missing, ", "))
 		}
 		return nil, fmt.Errorf("this login may not write what the import writes (%s): run it with a login in role pgvigil_collector (the collector's) or the repository owner's dsn, after 'pgvigil migrate' (0134)", strings.Join(missing, ", "))
 	}
@@ -425,7 +512,7 @@ func importTarget(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, rep
 	}
 	var t importTargetRow
 	if err := json.Unmarshal(raw, &t); err != nil {
-		return importTargetRow{}, fmt.Errorf("%s answered %q", fn, raw)
+		return importTargetRow{}, fmt.Errorf("%s answered %q: %w", fn, raw, err)
 	}
 	if t.Name == "" {
 		t.Name = name

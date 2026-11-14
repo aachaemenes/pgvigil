@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,11 +124,26 @@ func TestImportMappings(t *testing.T) {
 			t.Errorf("%s: the rows must alias their time 'at' and come in time order", m.Key)
 		}
 		// its function in 0134 skips a stored row and writes its own table; the stored count reads that table
-		body := fnBody(t, sql0134, "pgvigil.import_dbadash_"+m.Key+"(")
+		body := fnBody(t, "pgvigil.import_dbadash_"+m.Key+"(")
 		if !contains(body, "NOT EXISTS") || !contains(body, "INSERT INTO pgvigil."+m.Table) || !contains(body, "dbadash_import_gate(p_instance_id, '"+m.Key+"')") {
 			t.Errorf("%s: import_dbadash_%s must take the gate, skip a stored row and write its own table", m.Key, m.Key)
 		}
-		if !contains(fnBody(t, sql0134, "pgvigil.dbadash_import_stored("), "WHEN '"+m.Key+"' THEN (SELECT count(*) FROM pgvigil."+m.Table+" ") {
+		// every column the T-SQL hands over is a record name of the function (a misspelt one would arrive NULL and
+		// the row be dropped without a word)
+		rm := regexp.MustCompile(`AS r\(([^)]*)\)`).FindStringSubmatch(body)
+		if rm == nil {
+			t.Fatalf("%s: import_dbadash_%s has no record list 'AS r(...)'", m.Key, m.Key)
+		}
+		rec := rm[1]
+		for _, a := range regexp.MustCompile(`(?i)\bAS ([a-z_]+)\b`).FindAllStringSubmatch(m.Rows, -1) {
+			if slices.Contains([]string{"int", "bigint", "char", "nvarchar", "varchar", "datetime2"}, strings.ToLower(a[1])) {
+				continue // CAST(... AS <type>)
+			}
+			if !regexp.MustCompile(`\b` + a[1] + ` [a-z]`).MatchString(rec) {
+				t.Errorf("%s: the T-SQL's column %s is not a record name of import_dbadash_%s (%s)", m.Key, a[1], m.Key, rec)
+			}
+		}
+		if !contains(fnBody(t, "pgvigil.dbadash_import_stored("), "WHEN '"+m.Key+"' THEN (SELECT count(*) FROM pgvigil."+m.Table+" ") {
 			t.Errorf("%s: dbadash_import_stored does not count pgvigil.%s", m.Key, m.Table)
 		}
 	}
@@ -135,18 +152,18 @@ func TestImportMappings(t *testing.T) {
 	}
 }
 
-// sql0134 is the migration that holds the import's functions.
-var sql0134 = func() string {
-	b, err := os.ReadFile("../repo/sql/0134_dbadash_moves.sql")
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}()
+// sql0134Path is the migration that holds the import's functions (a later migration that replaces one of them
+// must be read here instead).
+const sql0134Path = "../repo/sql/0134_dbadash_moves.sql"
 
 // fnBody is one function of a migration: from its CREATE line to the next CREATE.
-func fnBody(t *testing.T, src, head string) string {
+func fnBody(t *testing.T, head string) string {
 	t.Helper()
+	b, err := os.ReadFile(sql0134Path)
+	if err != nil {
+		t.Fatalf("the import's functions: %v", err)
+	}
+	src := string(b)
 	i := strings.Index(src, "CREATE OR REPLACE FUNCTION "+head)
 	if i < 0 {
 		t.Fatalf("no function %s in 0134", head)
