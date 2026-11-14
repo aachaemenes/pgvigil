@@ -152,6 +152,10 @@ type deadlineDialer struct {
 	netErr    error
 	over      bool
 	held      bool // Hold: the deadline lifted while the sign-in waits on a third party
+	// the slow-connect tier (the pass's #7): when the hold began and how long the holds of this connect lasted - the
+	// connect's own time is db.Conn's elapsed minus that, whether or not the dialer keeps a deadline
+	heldAt  time.Time
+	heldSum time.Duration
 }
 
 // watchedConn is a connection the dialer made: its read and write errors are noted, its deadlines held to the
@@ -238,27 +242,33 @@ func (d *deadlineDialer) done() {
 // Hold lifts the connect's deadline while the sign-in waits on a third party - an Entra token fetched in the middle of
 // the login (mssqlopen's provider; azidentity's own retries on a managed identity alone wait 2 + 4 + 8 s) - and its
 // release puts back the time that was left when the hold began, from the release on: a slow identity provider is
-// not read as a server that never answered (join review 2). The run's context still bounds the fetch. Nothing while
-// the DSN sets its own 'connection timeout' (no deadline of the dialer's) or after done().
+// not read as a server that never answered (join review 2). The run's context still bounds the fetch. The deadline is
+// left alone while the DSN sets its own 'connection timeout' (no deadline of the dialer's) or after done(); the hold's
+// time is recorded in every case (heldTotal: the slow-connect tier leaves it out of the connect's time).
 func (d *deadlineDialer) Hold() (release func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.over || d.until.IsZero() || d.held {
+	if d.held {
 		return func() {}
 	}
-	left := time.Until(d.until)
-	if left < 0 {
-		left = 0
-	}
-	d.held, d.until = true, time.Time{}
-	for _, c := range d.conns {
-		_ = c.Conn.SetDeadline(time.Time{})
+	// the hold is timed in every case (a DSN's own 'connection timeout' too: the slow-connect tier leaves it out of
+	// the connect's time); the deadline is lifted only where the dialer keeps one
+	d.held, d.heldAt = true, time.Now()
+	lift := !d.over && !d.until.IsZero()
+	var left time.Duration
+	if lift {
+		left = max(time.Until(d.until), 0)
+		d.until = time.Time{}
+		for _, c := range d.conns {
+			_ = c.Conn.SetDeadline(time.Time{})
+		}
 	}
 	return func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		d.held = false
-		if d.over {
+		d.heldSum += time.Since(d.heldAt)
+		if !lift || d.over {
 			return
 		}
 		d.until = time.Now().Add(left)
@@ -266,6 +276,23 @@ func (d *deadlineDialer) Hold() (release func()) {
 			_ = c.Conn.SetDeadline(d.until)
 		}
 	}
+}
+
+// heldTotal: how long this connect's sign-in was held for a third party (Hold), its releases so far.
+func (d *deadlineDialer) heldTotal() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.heldSum
+}
+
+// connectTook: a SQL Server connect's own time for the slow-connect tier - db.Conn's elapsed minus the holds (an Entra
+// token fetch not counted; Kerberos, DNS, the Browser, the redirect and the collector's CPU counted); never under a
+// nanosecond, so an opened connect is always timed.
+func connectTook(elapsed, held time.Duration) time.Duration {
+	if t := elapsed - held; t > 0 {
+		return t
+	}
+	return time.Nanosecond
 }
 
 // withNetwork joins the network error a connection recorded during the connect to the driver's error when the driver
@@ -332,8 +359,10 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	}
 	recordTarget(in.Name, target) // task 201 DONE-2 N8: the dial target on the beat, once the string opens
 	db.SetMaxOpenConns(1)
+	t0 := time.Now()
 	conn, err := db.Conn(ctx)
-	err = collect.InstanceConnect(in.Name, dl.withNetwork(ctx, err))
+	took := connectTook(time.Since(t0), dl.heldTotal()) // the slow-connect tier: the connect, its token fetch left out
+	err = collect.InstanceConnectTimed(in.Name, dl.withNetwork(ctx, err), took)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("connect %s: %w", in.Name, err)
