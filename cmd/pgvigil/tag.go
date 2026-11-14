@@ -97,6 +97,9 @@ func tagOps(args []string, reset bool) ([]tagOp, error) {
 		if !config.ValidTagKey(op.Key) {
 			return nil, fmt.Errorf("%q: the key must be lower-case letters, digits, '_', '.' or '-' (1..40)", a)
 		}
+		if op.Key == "application" { // task 310: the applications page sets it (0136 refuses an override row too)
+			return nil, fmt.Errorf("%q: the key application is set on Admin > Applications (an application assigned to the server or its databases), not with pgvigil tag", a)
+		}
 		if seen[op.Key] {
 			return nil, fmt.Errorf("key %q named twice", op.Key)
 		}
