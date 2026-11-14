@@ -760,10 +760,11 @@ func TestXMLCleanKeepsTheRead(t *testing.T) {
 // once (G1 on a real instance, 2026-11-13: Msg 50000 'The command must not contain more than one occurrence of
 // "max_memory="') and fails (Msg 537) when the one it finds is a ring buffer's: each of the cloudsql form's CREATEs
 // holds it once, as the session's MAX_MEMORY=<the capture's size within 4-8 MB> KB (the trigger: 'max_memory value must
-// be between 4MB and 8MB'); the other forms keep the session's MAX_MEMORY beside a ring buffer's max_memory.
+// be between 4MB and 8MB'); the other forms keep the session's MAX_MEMORY beside a ring buffer's max_memory (the rds form
+// so on R1, a real RDS for SQL Server 2019 Standard instance, 2026-11-14: the four sessions made and started).
 func TestXECloudSQLOneMaxMemory(t *testing.T) {
 	re := regexp.MustCompile(`(?i)max_memory=`)
-	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2} {
+	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2, XEFormRDS: 2} {
 		s, err := XEScript("g1", form)
 		if err != nil {
 			t.Fatal(err)
@@ -779,7 +780,7 @@ func TestXECloudSQLOneMaxMemory(t *testing.T) {
 			}
 			p = p[:end]
 			got := len(re.FindAllString(p, -1))
-			if form == "server" && strings.Contains(p, "event_file") {
+			if (form == "server" || form == XEFormRDS) && strings.Contains(p, "event_file") {
 				continue // the slow session's file target has no max_memory of its own
 			}
 			if got != want {

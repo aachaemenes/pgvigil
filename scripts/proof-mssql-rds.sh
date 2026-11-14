@@ -203,10 +203,8 @@
 #     S4 whether it may GRANT SELECT on each of the eleven msdb tables mssql_jobs reads (each rolled back at once);
 #     S5 where the slow session's event file lands (the -form rds script gives only that session a file; the other
 #        three are ring buffers: sys.dm_xe_session_targets' File name; AWS: D:\rdsdbdata\log) and what mssql_xe stored
-#        per capture (its target, source and new events); if the script was refused, the same script again under an
-#        install id of its own with only the slow session's file name put in D:\rdsdbdata\log (made, started, the
-#        sessions running read back, dropped by its -drop script; the words of either answer RECORDED: an rds form of
-#        the script would follow from them);
+#        per capture (its target, source and new events); a refusal of the -form rds script is a FAIL with its words
+#        (R1 run 1's refusal of the server form's bare file name made -form rds; no probe session since);
 #     S6 msdb's alerts and operators as the master user (sysalerts, sysoperators: counts, or the refusal), beside the
 #        alerts area's note.
 #  NOT PROVEN HERE: SQL Server Agent's jobs (mssql_jobs skipped: the RDS form of the login), Web and Enterprise
@@ -234,7 +232,7 @@ REPO_DB=pgvigil_rdsproof_$SUF; XEID=p$SUF; N=proof-rds-$SUF; HOSTTAG=pgvproof-$S
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
 export SQLCMDPASSWORD="$ADMIN_PW"
 export RDS_MON_DSN="sqlserver://$MON_USER:$MON_PW@$RDS_HOST:$PORT_?database=master&encrypt=true&TrustServerCertificate=true"
-MADE_DB=; MADE_XE=; MADE_FDB=; WAITER=; SRV=; LOCKER=; LOOPER=; PROBE_XE=
+MADE_DB=; MADE_XE=; MADE_FDB=; WAITER=; SRV=; LOCKER=; LOOPER=
 FAILS=()
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
 die() { echo "FAIL: $*" >&2; exit 1; }
@@ -265,8 +263,6 @@ cleanup() {
   for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form rds -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
-  if [ -n "$PROBE_XE" ]; then "$BIN" mssql-xe -print -drop -form server -install-id "$PROBE_XE" > "$WORK/xe-probe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-probe-drop.sql" >/dev/null 2>&1 \
-    || echo "CLEANUP: the probe's event sessions pgvigil_${PROBE_XE}_* were NOT dropped" >&2; fi
   if [ -n "$MADE_FDB" ]; then
     sq "IF DB_ID(N'$FDB') IS NOT NULL BEGIN ALTER DATABASE [$FDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$FDB]; END" >/dev/null 2>&1 \
       || sq "EXEC msdb.dbo.rds_drop_database N'$FDB'" >/dev/null 2>&1 || echo "CLEANUP: database $FDB on the instance NOT dropped" >&2
@@ -349,8 +345,9 @@ snap() {
     UNION ALL SELECT 'db|' + name COLLATE DATABASE_DEFAULT FROM sys.databases ORDER BY 1"
   local dbs; dbs=$(sq "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name")
   for d in $dbs; do
-    # tempdb's temporary objects (#..., their PK__#... constraints) live with the session that made them: on Standard RDS's
-    # own Agent work makes and drops them between the reads (R1), and pgvigil's sessions end with each run
+    # tempdb's temporary objects (#..., their PK__#... constraints) live with the session that made them: on Standard
+    # other sessions made and dropped them between the reads (R1 run 1; which sessions, not read), and pgvigil's
+    # collector code makes no # object
     sq "SELECT '$d|obj|' + s.name + '.' + o.name + '|' + o.type COLLATE DATABASE_DEFAULT FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE o.is_ms_shipped = 0 AND NOT (DB_NAME() = N'tempdb' AND o.name LIKE N'%#%')
       UNION ALL SELECT '$d|principal|' + name + '|' + type COLLATE DATABASE_DEFAULT FROM sys.database_principals
       UNION ALL SELECT '$d|perm|' + ISNULL(USER_NAME(grantee_principal_id), '?') + '|' + permission_name + '|' + state_desc + '|' + class_desc + '|' + CAST(major_id AS varchar(12)) COLLATE DATABASE_DEFAULT FROM sys.database_permissions
@@ -614,22 +611,23 @@ if run_ok mssql_xe; then
     "$(sq "SELECT c.capture + '|' + CASE WHEN x.name IS NOT NULL THEN 'running' WHEN d.name IS NOT NULL THEN 'stopped' ELSE 'not installed' END
       FROM (VALUES ('ag', N'AlwaysOn_health'), ('attention', N'pgvigil_${XEID}_attention'), ('blocked', N'pgvigil_${XEID}_blocked'), ('deadlocks', N'pgvigil_${XEID}_deadlocks'), ('slow', N'pgvigil_${XEID}_slow')) c(capture, sname)
       LEFT JOIN sys.server_event_sessions d ON d.name = c.sname
-      LEFT JOIN sys.dm_xe_sessions x ON x.name = d.name ORDER BY 1" | tr '\n' ' ')"
+      LEFT JOIN sys.dm_xe_sessions x ON x.name = d.name
+      WHERE c.capture <> 'ag' OR CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int) = 1 ORDER BY 1" | tr '\n' ' ')"
   NRUN=$(q "select count(*) from pgvigil.mssql_xe_state where instance_id=$iid and state='running' and capture <> 'ag'")
   if [[ ${VERDICT[mssql_xe]} == PASS* ]] && [ -n "$XE_REFUSED" ]; then
     if [ "$NRUN" = 0 ]; then VERDICT[mssql_xe]="PASS (every capture 'not installed', equal to the master user's read; running sessions NOT PROVEN: RDS refuses them on Express)"
     else VERDICT[mssql_xe]="FAIL"; bad "B: mssql_xe: $NRUN capture(s) stored running where RDS refused every session"; fi
   elif [[ ${VERDICT[mssql_xe]} == PASS* ]] && [ "$NRUN" != 4 ]; then VERDICT[mssql_xe]="FAIL"; bad "B: mssql_xe: $NRUN of four captures running after the -form rds script"; fi
 fi
-# the collections the join added since run 20 (mssql_activity; mssql_pool, Azure SQL Database's elastic pools): each
-# ok, or skipped by a rule that says why; their rows are not compared here (RECORDED)
+# the collections the join added since run 20: mssql_activity runs on RDS (ok; its rows are not compared here:
+# RECORDED), mssql_pool is skipped with its own note (elastic pools are Azure SQL Database's); anything else FAILs
 for c in mssql_activity mssql_pool; do
   "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c.out" 2>&1 || true
   st=$(status_of "$c")
-  case $st in
-    ok\|*) VERDICT[$c]="PASS (status ok; its rows not compared here: RECORDED)" ;;
-    skipped\|*) VERDICT[$c]="SKIP (${st#skipped|})" ;;
-    *) VERDICT[$c]="FAIL"; bad "B: $c status '$st' (want ok, or skipped with its reason): $(tr '\n' ' ' < "$WORK/$c.out" | cut -c1-300)" ;;
+  case $c:$st in
+    mssql_activity:ok\|*) VERDICT[$c]="PASS (status ok; its rows not compared here: RECORDED)" ;;
+    "mssql_pool:skipped|elastic pools are Azure SQL Database's"*) VERDICT[$c]="SKIP (${st#skipped|})" ;;
+    *) VERDICT[$c]="FAIL"; bad "B: $c status '$st' (want $( [ "$c" = mssql_activity ] && echo "ok" || echo "skipped: elastic pools are Azure SQL Database's")): $(tr '\n' ' ' < "$WORK/$c.out" | cut -c1-300)" ;;
   esac
 done
 "$BIN" collect -config "$CFG" -once mssql_ag -instance "$N" > "$WORK/mssql_ag.out" 2>&1 || true
@@ -868,7 +866,8 @@ SHSQL="SELECT UPPER(x.c) + ':' + UPPER(x.s) + '|' + CAST(COUNT(*) AS varchar(9))
   e.x.value('(event/data[@name=\"state\"]/text)[1]', 'nvarchar(60)') AS s FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL) f
   CROSS APPLY (SELECT CAST(f.event_data AS xml) AS x) e WHERE f.object_name = N'sp_server_diagnostics_component_result' AND DATEADD(day, 45, f.timestamp_utc) >= SYSUTCDATETIME()) x GROUP BY x.c, x.s"
 # (the window as DATEADD(day, 45, timestamp_utc): RDS's SQL Server 2019 (15.0.4500.2) answered NO row to 'timestamp_utc >=
-# DATEADD(day, -45, ...)' beside the CROSS APPLY while the same files held 28 component results in it - R1 run 3)
+# DATEADD(day, -45, ...)' beside the CROSS APPLY while the same files held component results in it - R1 run 3, by a
+# hand read not kept in the run's log)
 SHN="SELECT CAST(COUNT(*) AS varchar(12)) FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL)"
 sq "$SHSQL" > "$WORK/sh-b.txt" || : > "$WORK/sh-b.txt"; NB=$(sq "$SHN") || NB=0
 if run_ok mssql_syshealth; then sq "$SHSQL" > "$WORK/sh-a.txt" || : > "$WORK/sh-a.txt"; NA=$(sq "$SHN") || NA=0

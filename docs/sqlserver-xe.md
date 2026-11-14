@@ -76,7 +76,7 @@ A report is raised for a task blocked that many seconds and again each time that
 
 ### Amazon RDS and Google Cloud SQL
 
-`-form rds` and `-form cloudsql` are the server form with the slow capture's event file in the folder each service allows (`D:\rdsdbdata\log\` on RDS, `/var/opt/mssql/xevents/` on Cloud SQL), and the blocked process threshold step in the service's own words. [SQL Server in the cloud](sqlserver-cloud.md) says what each was run on.
+`-form rds` and `-form cloudsql` are the server form with the slow capture's event file in the folder each service allows (`D:\rdsdbdata\log\` on RDS, `/var/opt/mssql/xevents/` on Cloud SQL), and the blocked process threshold step in the service's own words. On Cloud SQL each session also holds one memory size, its `MAX_MEMORY` kept within 4 to 8 MB, and its ring buffers take no size of their own: there the settings block's sizes are each session's memory. [SQL Server in the cloud](sqlserver-cloud.md) says what each was run on.
 
 ## The reader: `mssql_xe`, every minute
 

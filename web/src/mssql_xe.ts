@@ -14,7 +14,9 @@ import { stripGrid } from './timestrip';
 type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'block_findings' | 'block_rollup' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
 type XE = Record<XEParts, Table | null>;
 
-const SCRIPT = 'pgvigil mssql-xe -print';
+// the form follows the server's platform (server, rds, cloudsql, azuresqlmi, azuresqldb: docs/sqlserver-xe.md); the page
+// names the flag, not one form, since the bare command prints the server form, which RDS and Cloud SQL refuse
+const SCRIPT = 'pgvigil mssql-xe -print -form <the server\'s form>';
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
 const secs = (v: unknown) => v == null ? '' : fmtNum(Math.round(Number(v) / 100) / 10) + ' s';
@@ -46,7 +48,7 @@ function captureNote(d: XE, capture: string, what: string): HTMLElement {
   if (st.state === 'not installed') {
     const p = el('p', { class: 'meta' }, badge('not installed', 'warn'),
       ` This server has no ${what} session of pgvigil. pgvigil does not create one: the script is what `, el('code', {}, SCRIPT),
-      ' writes, for the server\'s DBA to run (docs/sqlserver-xe.md).');
+      ' writes (the form: server, rds, cloudsql, azuresqlmi or azuresqldb, docs/sqlserver-xe.md), for the server\'s DBA to run.');
     if (st.source === 'system_health') p.append(' Until then the deadlock reports below are the ones SQL Server\'s own system_health session kept.');
     p.append(` (${read})`);
     return p;

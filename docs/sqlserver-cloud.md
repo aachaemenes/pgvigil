@@ -214,9 +214,13 @@ RDS's own procedures (`rds_*` in msdb) are not read in this release. On a single
 
 ### Extended Events
 
-`pgvigil mssql-xe -print -form rds`, run in `master` by the master user, makes and starts the four sessions on Standard and Enterprise. It is the server form with the slow capture's event file in `D:\rdsdbdata\log\`: RDS's trigger refuses an event file anywhere else ("Extended events event_file target is allowed only to D:\rdsdbdata\Log"), the server form's bare file name too. The blocked-process capture needs the 'blocked process threshold (s)' above 0, and on RDS that is a DB parameter group's setting (dynamic, 0 to 86400; AWS's default group `default.sqlserver-se-15.0` holds 0); the script prints the step and does not take it.
+`pgvigil mssql-xe -print -form rds`, run in `master` by the master user, makes and starts the four sessions on Standard and Enterprise (AWS: Extended Events on those two editions, SQL Server 2016 and later). It is the server form with the slow capture's event file in `D:\rdsdbdata\log\`: RDS's trigger refuses an event file anywhere else ("Extended events event_file target is allowed only to D:\rdsdbdata\Log"), the server form's bare file name too. AWS's limits, which the script's default sizes keep within: a ring buffer of at most 4 MB, a session's memory of 4 to 8 MB (`xe_session_max_memory`), an event file of 100 MB unless raised (`xe_file_target_size`, up to 1 GB, through `rdsadmin.dbo.rds_set_configuration`).
 
-On a real Standard instance the four sessions were made and started, the slow session's file was in `D:\rdsdbdata\log`, and `mssql_xe` read its events. The threshold was left at 0 there, so the blocked-process capture read nothing; it is not proven on RDS, and `-form rds` is not proven on Enterprise.
+The blocked-process capture needs the 'blocked process threshold (s)' above 0, and on RDS that is a DB parameter group's setting (dynamic, 0 to 86400; AWS's default group `default.sqlserver-se-15.0` holds 0). A default group cannot be changed: the value goes in a group of the instance's own, where a dynamic change applies at once, and an instance moved to a new group takes it at its next reboot. The script prints the step and does not take it.
+
+On a Multi-AZ instance a session made on the primary does not reach the standby (AWS); after a failover the script is run again on the new primary, and until then the captures read `not installed`.
+
+On a real Standard instance the four sessions were made and started, the slow session's file was in `D:\rdsdbdata\log`, and `mssql_xe` read its events. The threshold was left at 0 there, so the blocked-process capture read nothing; it is not proven on RDS, and `-form rds` is not proven on Enterprise, on another SQL Server version, past AWS's limits or across a Multi-AZ failover.
 
 ## Proof
 
@@ -244,5 +248,5 @@ These results are for this release's code, which includes the collector and page
 ## Not proven, not in this release
 
 - Azure SQL Database: the Basic, S0 and S1 tiers as single databases (their rights differ, above; a Basic elastic pool is proven live: the elastic pools section), a vCore elastic pool, Microsoft Entra sign-in with a service principal (`entra`) or a user-assigned identity against a live server (built: above; a system-assigned identity is proven live on a pooled database), a geo-replica.
-- Amazon RDS: Web and Enterprise (`-form rds` on Enterprise too); Multi-AZ (Always On or mirroring, and `rds_failover_time`'s answer); SQL Server Agent's jobs (skipped: above); the blocked-process capture with the threshold set in a parameter group; Windows authentication through AWS Managed Microsoft AD, RDS Custom.
+- Amazon RDS: Web and Enterprise (`-form rds` on Enterprise too); SQL Server versions other than 2019 (both proofs ran 15.0.4500.2); Multi-AZ (Always On or mirroring, `rds_failover_time`'s answer, the event sessions after a failover); SQL Server Agent's jobs (skipped: above); the blocked-process capture with the threshold set in a parameter group; Windows authentication through AWS Managed Microsoft AD, RDS Custom.
 - Not in this release: AlloyDB is not proven against a real instance. Google Cloud SQL for SQL Server is (Express, the login above, above); Azure SQL Managed Instance is on General Purpose (above), not on Business Critical.

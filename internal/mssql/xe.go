@@ -142,7 +142,11 @@ func XEScript(installID, form string) (string, error) {
 	case XEFormRDS:
 		w("  Amazon RDS for SQL Server (Standard or Enterprise): run it in master as the master user. The slow capture's event\n" +
 			"  file goes to " + xeRDSDir + ", the folder AWS names for Extended Events files (RDS refuses a bare file name).\n" +
-			"  Run on a real RDS for SQL Server Standard instance: the four sessions made and started.\n")
+			"  AWS's limits: a ring buffer at most 4 MB, a session's memory 4 to 8 MB (xe_session_max_memory), an event file\n" +
+			"  100 MB unless raised (xe_file_target_size, up to 1 GB, through rdsadmin.dbo.rds_set_configuration); the sizes\n" +
+			"  below are within them (a size past them was not run). Multi-AZ: a session made on the primary does not reach the\n" +
+			"  standby; after a failover run this script again on the new primary.\n" +
+			"  Run on a real RDS for SQL Server 2019 Standard instance: the four sessions made and started.\n")
 	default:
 		w("  Run it in master as a login that may create event sessions (ALTER ANY EVENT SESSION, or CONTROL SERVER).\n")
 	}
@@ -253,7 +257,7 @@ func XEScript(installID, form string) (string, error) {
 	if form != XEFormAzureDB {
 		step := "EXEC sys.sp_configure ''blocked process threshold (s)'', 15; RECONFIGURE; (it is an advanced option; 5 is the lowest value SQL Server honours)"
 		if form == XEFormRDS {
-			step = "on Amazon RDS, the instance''s DB parameter group: its ''blocked process threshold (s)'' (dynamic, 0 to 86400), set to 15"
+			step = "on Amazon RDS, ''blocked process threshold (s)'' set to 15 in a DB parameter group of the instance''s own (dynamic, 0 to 86400: applied at once there; a default group cannot be changed, and an instance moved to a new group takes it at its next reboot)"
 		}
 		if form == XEFormCloudSQL {
 			step = "none on Cloud SQL: it has no sp_configure and its database flags offer no blocked process threshold, so this session stays empty there (deadlocks, slow queries and attention still capture)"
