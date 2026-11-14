@@ -175,6 +175,9 @@ CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
 GRANT SELECT ON dbo.sysjobs TO [pgvigil_monitor];
 GRANT SELECT ON dbo.sysjobhistory TO [pgvigil_monitor];
 GRANT SELECT ON dbo.sysjobactivity TO [pgvigil_monitor];
+-- optional, for the instance's high availability mode and last failover on its Properties page:
+GRANT EXECUTE ON dbo.rds_get_high_availability_option TO [pgvigil_monitor];
+GRANT EXECUTE ON dbo.rds_failover_time TO [pgvigil_monitor];
 -- in each database whose procedures, indexes, statistics and Query Store pgvigil is to name:
 USE [<database>];
 CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
@@ -211,7 +214,7 @@ Detected as `rdssqlserver` by the database `rdsadmin`. Every collection runs as 
 | `mssql_identity`, `mssql_indexes`, `mssql_stats` | runs | in the user databases the login has a user in; `rdsadmin`, the service's own database, is left out (its tables are not the DBA's and the master user cannot give a login SELECT there) |
 | `mssql_plancache`, `mssql_plancache_health` | runs | as on a server. On a db.t3.micro SQL Server's memory target is about 115 MB and a plan stays cached only while it is used (recompiled every few seconds under load), so both lists hold what runs at the moment of the read |
 
-RDS's own procedures (`rds_*` in msdb) are not read in this release. On a single-AZ Standard instance the master user reads `Single-AZ` from `msdb.dbo.rds_get_high_availability_option`, `msdb.dbo.rds_failover_time` refuses the instance ("This procedure can only be used on Multi-AZ RDS Instance."), and the master user may grant EXECUTE on both; the login above is not given it.
+Two of RDS's own procedures are read, by `mssql_properties` into the instance's Properties page (Server): **High availability (Amazon RDS)** from `msdb.dbo.rds_get_high_availability_option` (AWS's values: `Single-AZ`, `Multi-AZ (AlwaysOn)`, `Multi-AZ (Mirroring)`, `Multi-AZ (Block level replication)`; a change of mode is logged), and **Last failover (Amazon RDS)** from `msdb.dbo.rds_failover_time` (the most recent failover the error logs still hold, as the procedure returns it: AWS names no time zone; `none` when they hold none), asked only when the mode is not `Single-AZ`: on a single-AZ instance the procedure refuses ("This procedure can only be used on Multi-AZ RDS Instance."), and the row's value is `none` with that reason. Each needs the optional EXECUTE above: without it the mode's row names both lines (`USE msdb; GRANT EXECUTE ON dbo.<procedure> TO [<the login's user in msdb>];`) and the run stays ok; a refusal by the failover procedure itself is said on its row and the run stays ok; any other error makes the run partial. Read on a real single-AZ Standard instance: the master user's answer `Single-AZ`, the refusal of the failover time, the monitoring login refused without the grant (Msg 229) and the master user's right to grant it. The collector's read of these answers is tested in Go on those answers and against stubs of the two procedures on a SQL Server container (`internal/mssql/rds_ha_test.go`, `TestRDSHALive`, which also runs the printed GRANT lines), not against an RDS instance. Not proven: a Multi-AZ instance's answers (they follow AWS's page) and either procedure's answer to a granted login other than the master user. RDS's other procedures (`rds_*` in msdb) are not read in this release.
 
 ### Extended Events
 
@@ -249,5 +252,5 @@ These results are for this release's code, which includes the collector and page
 ## Not proven, not in this release
 
 - Azure SQL Database: the Basic, S0 and S1 tiers as single databases (their rights differ, above; a Basic elastic pool is proven live: the elastic pools section), a vCore elastic pool, Microsoft Entra sign-in with a service principal (`entra`) or a user-assigned identity against a live server (built: above; a system-assigned identity is proven live on a pooled database), a geo-replica.
-- Amazon RDS: Web and Enterprise (`-form rds` on Enterprise too); SQL Server versions other than 2019 (both proofs ran 15.0.4500.2); Multi-AZ (Always On or mirroring, `rds_failover_time`'s answer, the event sessions after a failover); SQL Server Agent's jobs (skipped: above); the blocked-process capture with the threshold set in a parameter group; Windows authentication through AWS Managed Microsoft AD, RDS Custom.
+- Amazon RDS: Web and Enterprise (`-form rds` on Enterprise too); SQL Server versions other than 2019 (both proofs ran 15.0.4500.2); Multi-AZ (Always On or mirroring, the high availability mode's Multi-AZ values and `rds_failover_time`'s answer on the Properties page, the event sessions after a failover); the two Properties rows read live (their Go cases rest on R1's recorded answers); SQL Server Agent's jobs (skipped: above); the blocked-process capture with the threshold set in a parameter group; Windows authentication through AWS Managed Microsoft AD, RDS Custom.
 - Not in this release: AlloyDB is not proven against a real instance. Google Cloud SQL for SQL Server is (Express, the login above, above); Azure SQL Managed Instance is on General Purpose (above), not on Business Critical.

@@ -54,7 +54,7 @@ export async function mssqlPropertiesView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(grid(props, cols));
   sec.append(el('h3', {}, 'Changes'), el('p', { class: 'meta' },
     'A value that differed from the read before. The time is the read that saw it: the change happened within the hour before. '
-    + 'The first read of a property sets it and logs nothing; tempdb\'s sizes move by themselves and are not logged.'),
+    + 'The first read of a property sets it and logs nothing; tempdb\'s sizes move by themselves and are not logged, nor is an Amazon RDS instance\'s last failover.'),
     grid(changes, [
       { key: 'changed_at', label: 'seen changed', fmt: fmtTime },
       { key: 'label', label: 'property' },
