@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
   interval_s    int,                              -- the fastest configured interval of the minute's runs of it (NULL: not known)
   noanswer      int NOT NULL DEFAULT 0,           -- failed connects the server never answered (no SQLSTATE: heartbeat.go NoAnswer)
   target        text,                             -- the dial target, 'postgres:<host>:<port>' (NULL: not known; collector_server_down)
+  -- the slow-connect tier: the opened connects timed where they were made (heartbeat.go CountConnectTimed), their
+  -- milliseconds summed and the longest; an older collector's beat carries none (0)
+  timed          int NOT NULL DEFAULT 0,
+  connect_ms_sum bigint NOT NULL DEFAULT 0,
+  connect_ms_max int NOT NULL DEFAULT 0,
   PRIMARY KEY (minute, instance_id, collector_id)
 );
 -- an instance's rows in time order (collector_server_down_at: the row before a spell, rows between two minutes)
@@ -280,16 +285,21 @@ BEGIN
          rows_written = collector_runs.rows_written + EXCLUDED.rows_written, dur_ms_sum = collector_runs.dur_ms_sum + EXCLUDED.dur_ms_sum,
          dur_ms_max = greatest(collector_runs.dur_ms_max, EXCLUDED.dur_ms_max),
          dur_hist = ARRAY(SELECT coalesce(a, 0) + coalesce(b, 0) FROM unnest(collector_runs.dur_hist, EXCLUDED.dur_hist) AS u(a, b));
-  INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures, interval_s, noanswer, target)
-  SELECT p_minute, i.instance_id, p_id, l.attempts, l.opened, l.runs, l.failures, l.auth, nullif(l.interval_s, 0), coalesce(l.noanswer, 0), nullif(l.target, '')
-    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text, attempts int, opened int, runs int, failures int, auth int, interval_s int, noanswer int, target text)
+  INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures, interval_s, noanswer, target,
+                                      timed, connect_ms_sum, connect_ms_max)
+  SELECT p_minute, i.instance_id, p_id, l.attempts, l.opened, l.runs, l.failures, l.auth, nullif(l.interval_s, 0), coalesce(l.noanswer, 0), nullif(l.target, ''),
+         coalesce(l.timed, 0), coalesce(l.connect_ms_sum, 0), coalesce(l.connect_ms_max, 0)
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text, attempts int, opened int, runs int, failures int, auth int, interval_s int, noanswer int, target text, timed int, connect_ms_sum bigint, connect_ms_max int)
     JOIN pgvigil.instances i ON i.name = l.instance
   ON CONFLICT (minute, instance_id, collector_id) DO UPDATE
      SET attempts = collector_load.attempts + EXCLUDED.attempts, opened = collector_load.opened + EXCLUDED.opened,
          runs = collector_load.runs + EXCLUDED.runs,
          failures = collector_load.failures + EXCLUDED.failures, auth_failures = collector_load.auth_failures + EXCLUDED.auth_failures,
          interval_s = least(collector_load.interval_s, EXCLUDED.interval_s),
-         noanswer = collector_load.noanswer + EXCLUDED.noanswer, target = coalesce(EXCLUDED.target, collector_load.target);
+         noanswer = collector_load.noanswer + EXCLUDED.noanswer, target = coalesce(EXCLUDED.target, collector_load.target),
+         -- a minute written twice (a beat retried): the timed connects and their time summed, the longest kept
+         timed = collector_load.timed + EXCLUDED.timed, connect_ms_sum = collector_load.connect_ms_sum + EXCLUDED.connect_ms_sum,
+         connect_ms_max = greatest(collector_load.connect_ms_max, EXCLUDED.connect_ms_max);
   PERFORM pgvigil.collector_spells_take(p_id, p_minute);
   PERFORM pgvigil.collector_span_take(p_id, p_minute);
   -- the beat names the instances it loaded (collector_instances): seen at the minute's end
@@ -646,7 +656,7 @@ SELECT DISTINCT x.instance_id
 -- last good read and is sent as it is (a full disk found before a cut may be the shared cause itself).
 CREATE OR REPLACE FUNCTION pgvigil.collector_shared_cause(p_source text, p_setting text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable'))
+  SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect'))
       OR (p_source = 'collector' AND p_setting = 'server unreachable')   -- 0118's (task 177 D30), where no heartbeat covers the instance
       OR (p_source = 'pgvigil' AND p_setting IN ('job run over twice its average', 'job schedule missed'))
       OR (p_source = 'mssql_jobs' AND p_setting = 'a job runs far longer than its average')
@@ -679,7 +689,7 @@ $$;
 -- key. alert_findings (0190) and the alert page's two queries call it, so they agree.
 CREATE OR REPLACE FUNCTION pgvigil.alert_key(p_instance_id int, p_source text, p_setting text, p_value text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting = 'collector or network'
+  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects')
               THEN md5('0' || E'\x1f' || p_source || E'\x1f' || p_setting || E'\x1f' || coalesce(p_value, ''))
               ELSE pgvigil.alert_finding_key(coalesce(p_instance_id, 0), p_source, p_setting, p_value) END
 $$;
@@ -927,6 +937,128 @@ $$;
 -- collector_findings: the findings shape (pgvigil.findings' arms). Source 'pgvigil repository' marks the
 -- repository-wide ones (no instance: every channel past its severity floor takes them); 'pgvigil collector' an
 -- instance's.
+-- ===== the slow-connect tier (Allen 11-14 06:40; the design S1-S6, 'SLOWCONNECT FOLD' K1-K9 and the pass
+-- 20261114-091104 #1-#9 as the lead took them 10:2x) =====
+-- collector_connects: per collector host and instance, its connects over its last 5 written minutes of the 20 (its
+-- window) and over the 5 before its newest (the window a minute ago): the timed connects, their average and the longest
+-- in seconds, its own warning and critical (pg_threshold 'connect_time': 1.00 / 2.50 s by default), its dial target
+-- (the newest row's), its level (0, 1 over the warning, 2 over the critical) and 'crossed' (slow now, not slow a minute
+-- ago). JUDGED instances only: 3 or more timed connects in the window, its newest minute within span + 3 min of now()
+-- (a stopped collector's last minutes judge nothing), covered by a beating collector (collector_covers), active, and not
+-- held by 201's parent ('collector or network': another cause's). The time includes the collector's own CPU, DNS and
+-- an instance's TLS and login; never an Entra token fetch (internal/mssql's connectTook).
+CREATE OR REPLACE VIEW pgvigil.collector_connects AS
+WITH r AS (
+  SELECT h.host, l.instance_id, l.minute, l.timed, l.connect_ms_sum, l.connect_ms_max, l.target,
+         row_number() OVER (PARTITION BY h.host, l.instance_id ORDER BY l.minute DESC) AS k
+    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute > now() - interval '20 minutes' AND h.retired_at IS NULL
+), w AS (
+  SELECT host, instance_id,
+         max(minute) FILTER (WHERE k <= 5) AS newest, min(minute) FILTER (WHERE k <= 5) AS oldest,
+         sum(timed) FILTER (WHERE k <= 5) AS timed, sum(connect_ms_sum) FILTER (WHERE k <= 5) AS ms,
+         max(connect_ms_max) FILTER (WHERE k <= 5) AS ms_max,
+         sum(timed) FILTER (WHERE k BETWEEN 2 AND 6) AS timed_prev, sum(connect_ms_sum) FILTER (WHERE k BETWEEN 2 AND 6) AS ms_prev,
+         (array_agg(target ORDER BY minute DESC) FILTER (WHERE target IS NOT NULL))[1] AS target
+    FROM r GROUP BY host, instance_id
+), t AS (
+  SELECT w.*, coalesce(th.warn, 1.00) AS warn, coalesce(th.crit, 2.50) AS crit,
+         w.ms::numeric / nullif(w.timed, 0) / 1000 AS avg_s,
+         w.ms_prev::numeric / nullif(w.timed_prev, 0) / 1000 AS avg_prev_s
+    FROM w LEFT JOIN LATERAL pgvigil.pg_threshold(w.instance_id, 'connect_time') th ON true
+)
+SELECT t.host, t.instance_id, i.name, coalesce(t.target, 'instance ' || t.instance_id) AS target, t.timed, round(t.avg_s, 2) AS avg_s,
+       round(t.ms_max::numeric / 1000, 2) AS max_s, t.warn, t.crit, t.oldest, t.newest,
+       CASE WHEN t.avg_s > t.crit THEN 2 WHEN t.avg_s > t.warn THEN 1 ELSE 0 END AS level,
+       (t.avg_s > t.warn AND NOT coalesce(t.timed_prev >= 3 AND t.avg_prev_s > t.warn, false)) AS crossed
+  FROM t JOIN pgvigil.instances i ON i.instance_id = t.instance_id AND i.is_active
+ WHERE t.timed >= 3
+   AND t.newest >= now() - pgvigil.collector_span(t.host) - interval '3 minutes'
+   AND pgvigil.collector_covers(t.instance_id, now())
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances x WHERE x.instance_id = t.instance_id);
+
+-- collector_slow_open: is a fold's alert open (its finding sent and not cleared) - a standing fold clears by its own
+-- lower bar (hysteresis)
+CREATE OR REPLACE FUNCTION pgvigil.collector_slow_open(p_value text)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM pgvigil.alert_state s WHERE s.cleared_at IS NULL AND s.source = 'pgvigil repository'
+                    AND s.setting = 'slow connects' AND s.value = p_value)
+$$;
+
+-- collector_slow_targets: per host and dial target, the judged instances, the slow ones (over their own warning) and
+-- the critical ones. A target of 3 or more judged instances is SLOW when 3 or more of them and more than half are slow
+-- (a fold of its own: 'slow connects' valued by the target, a server slow to connect - its gateway, its login), and
+-- while its fold's alert is open until a quarter or less of them, or under 3, are slow; a target of 1 or 2 is slow
+-- when all of them are (it counts toward its host, never a fold of its own). Critical alike over the critical values.
+CREATE OR REPLACE VIEW pgvigil.collector_slow_targets AS
+WITH g AS (
+  SELECT c.host, c.target, count(*) AS judged, count(*) FILTER (WHERE c.level >= 1) AS slow,
+         count(*) FILTER (WHERE c.level = 2) AS crit
+    FROM pgvigil.collector_connects c GROUP BY c.host, c.target
+)
+SELECT g.*, g.judged >= 3 AS foldable,
+       CASE WHEN g.judged >= 3 THEN (g.slow >= 3 AND g.slow * 2 > g.judged)
+                                    OR (pgvigil.collector_slow_open(g.target) AND g.slow >= 3 AND g.slow * 4 > g.judged)
+            ELSE g.slow = g.judged END AS is_slow,
+       CASE WHEN g.judged >= 3 THEN g.crit * 2 > g.judged ELSE g.crit = g.judged END AS is_crit
+  FROM g;
+
+-- collector_slow_folds: the standing folds. kind 'host': 3 or more slow targets and more than half of the host's judged
+-- targets (a collector slow to connect everywhere: its CPU, its DNS, its network), standing while open until a quarter
+-- or less, or under 3; critical when more than half of its judged targets are critical. kind 'target': a slow target of
+-- 3 or more judged instances (collector_slow_targets), critical when more than half of them are critical;
+-- under_host: its host's fold stands (alert_due holds it). members: the slow instances it covers; level 1 or 2;
+-- detail: the counts, the average, the 3 slowest.
+CREATE OR REPLACE VIEW pgvigil.collector_slow_folds AS
+WITH hs AS (
+  SELECT t.host, count(*) AS judged_t, count(*) FILTER (WHERE t.is_slow) AS slow_t, count(*) FILTER (WHERE t.is_crit) AS crit_t
+    FROM pgvigil.collector_slow_targets t GROUP BY t.host
+), hf AS (
+  SELECT hs.*, CASE WHEN hs.crit_t * 2 > hs.judged_t THEN 2 ELSE 1 END AS level
+    FROM hs
+   WHERE (hs.slow_t >= 3 AND hs.slow_t * 2 > hs.judged_t)
+      OR (pgvigil.collector_slow_open(hs.host) AND hs.slow_t >= 3 AND hs.slow_t * 4 > hs.judged_t)
+), f AS (
+  SELECT 'host'::text AS kind, hf.host, hf.host AS value, hf.level, false AS under_host,
+         ARRAY(SELECT c.instance_id FROM pgvigil.collector_connects c JOIN pgvigil.collector_slow_targets t USING (host, target)
+                WHERE c.host = hf.host AND t.is_slow AND c.level >= 1 ORDER BY c.avg_s DESC) AS members,
+         format('connects slow from collector %s: %s of its %s judged target(s) over their warning', hf.host, hf.slow_t, hf.judged_t) AS head
+    FROM hf
+  UNION ALL
+  SELECT 'target', t.host, t.target, CASE WHEN t.is_crit THEN 2 ELSE 1 END, EXISTS (SELECT 1 FROM hf WHERE hf.host = t.host),
+         ARRAY(SELECT c.instance_id FROM pgvigil.collector_connects c WHERE c.host = t.host AND c.target = t.target AND c.level >= 1 ORDER BY c.avg_s DESC),
+         format('server %s slow to connect from %s: %s of its %s judged instance(s) over their warning', t.target, t.host, t.slow, t.judged)
+    FROM pgvigil.collector_slow_targets t
+   WHERE t.foldable AND t.is_slow
+)
+SELECT f.kind, f.host, f.value, f.level, f.under_host, f.members,
+       f.head || format(', average %s s', (SELECT round(avg(c.avg_s), 2) FROM pgvigil.collector_connects c WHERE c.host = f.host AND c.instance_id = ANY (f.members)))
+       || '; slowest: ' || (SELECT string_agg(format('%s %s s', x.name, x.avg_s), ', ' ORDER BY x.avg_s DESC, x.name)
+                              FROM (SELECT c.name, c.avg_s FROM pgvigil.collector_connects c WHERE c.host = f.host AND c.instance_id = ANY (f.members)
+                                     ORDER BY c.avg_s DESC, c.name LIMIT 3) x)
+       || format('; since %s UTC', to_char((SELECT min(c.oldest) FROM pgvigil.collector_connects c WHERE c.host = f.host AND c.instance_id = ANY (f.members)) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'))
+       || CASE WHEN f.kind = 'host' THEN ' - the collector''s own CPU, DNS or network, not the servers' ELSE ' - the server or the way to it' END
+       || '; the members'' own ''slow connect'' alerts are held while this stands' AS detail,
+       (SELECT min(c.oldest) FROM pgvigil.collector_connects c WHERE c.host = f.host AND c.instance_id = ANY (f.members)) AS since
+  FROM f;
+
+-- collector_slow_held: the instances whose own 'slow connect' alert a standing fold holds - its members at or under the
+-- fold's level (a member above it is sent on its own: one server critical under a warning fold); alert_due (0190)
+-- reads it, and holds a target fold under its host's fold (under_host)
+CREATE OR REPLACE VIEW pgvigil.collector_slow_held AS
+SELECT DISTINCT c.instance_id
+  FROM pgvigil.collector_slow_folds f CROSS JOIN LATERAL unnest(f.members) AS m(instance_id)
+  JOIN pgvigil.collector_connects c ON c.host = f.host AND c.instance_id = m.instance_id
+ WHERE c.level <= f.level;
+
+-- collector_slow_forming: the instances of a fold that may be forming - its host had 3 or more judged instances cross
+-- their warning in its newest written minute: a new 'slow connect' of one of them waits (alert_due, 0190) until the
+-- crossing is a minute old (span + 1 min at most), so a fold forming over two beats sends no member first
+CREATE OR REPLACE VIEW pgvigil.collector_slow_forming AS
+SELECT c.instance_id
+  FROM pgvigil.collector_connects c
+ WHERE c.crossed AND (SELECT count(*) FROM pgvigil.collector_connects o WHERE o.host = c.host AND o.crossed) >= 3;
+
 CREATE OR REPLACE VIEW pgvigil.collector_findings AS
 -- the parent: its value is the host alone (one alert per collector, whatever its why: a restart inside the hold, or a
 -- cut that turns into a host not seen, is the same alert, repeated once with its new why - alert_due); the claim
@@ -1039,4 +1171,19 @@ SELECT d.instance_id, 'critical', 'collected by more than one collector', d.coll
   JOIN pgvigil.instances i ON i.instance_id = d.instance_id AND i.is_active
   CROSS JOIN LATERAL (SELECT string_agg(DISTINCT format('%s (pid %s)', h.host, h.pid), ', ') AS hosts
                         FROM pgvigil.collector_load l2 JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                       WHERE l2.instance_id = d.instance_id AND l2.minute = d.last_minute) hh;
+                       WHERE l2.instance_id = d.instance_id AND l2.minute = d.last_minute) hh
+UNION ALL
+-- the slow-connect tier: an instance whose connects average over its own warning (collector_connects); its value the
+-- average in seconds (alert_finding_key reads its digits as '#': one alert while it stays slow)
+SELECT c.instance_id, CASE WHEN c.level = 2 THEN 'critical' ELSE 'warning' END, 'slow connect', to_char(c.avg_s, 'FM9990.00') || ' s', true,
+       format('connects under %s s on average', c.warn), 'all',
+       format('its connects from %s averaged %s s over its last 5 written minutes (%s timed, the longest %s s; warning %s s, critical %s s): the time includes DNS, the TLS handshake and the login, and the collector''s own CPU',
+              c.host, c.avg_s, c.timed, c.max_s, c.warn, c.crit),
+       'pgvigil collector', c.newest
+  FROM pgvigil.collector_connects c
+ WHERE c.level >= 1
+UNION ALL
+-- a slowdown most of a server's or a collector's instances share: ONE alert (collector_slow_folds), its members held
+SELECT NULL::int, CASE WHEN f.level = 2 THEN 'critical' ELSE 'warning' END, 'slow connects', f.value, true,
+       'connects under their warning', 'all', f.detail, 'pgvigil repository', f.since
+  FROM pgvigil.collector_slow_folds f;
