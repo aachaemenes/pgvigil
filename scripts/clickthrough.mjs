@@ -123,10 +123,22 @@ const ensure = async () => { if (!lost && ws) return; try { ws?.close(); } catch
 await connect();
 
 // ---- a page: loaded, settled (no 'Loading' / 'Reading' / 'Running' line; an instance page's header drawn) ----------
-const BUSY = `[...document.querySelectorAll('main p, main [role=status]')].some(p => /^(Loading|Reading|Running)/.test(p.textContent.trim()))`;
+// a busy line: 'Loading' anything ('Loading the chart', chartkit.ts:40), or 'Reading' / 'Running' with its ellipsis
+// ('Reading...', 'Reading the heatmap ...', 'Running...'); never a sentence or a link that only begins so - the Queries
+// page's 'Running queries' (the link above its Active queries section, mssql_queries.ts:36 / :283) read as busy for good
+// (click-c3, c5: 12 rows; click-q1: its read answered in 25 ms)
+const BUSY_RE = String.raw`^Loading|^(Reading|Running)\b.*(\.\.\.|\u2026)$`;
+const busyText = t => new RegExp(BUSY_RE).test(t.trim());
+// the fixture: the app's busy texts and the ones that only begin so (checked at the walker's start: exit 2 on a wrong one)
+for (const [t, want] of [['Reading...', true], ['Reading ...', true], ['Reading the heatmap ...', true], ['Loading...', true], ['Loading the chart', true],
+  ['Running...', true], ["Reading the instance's collections...", true], ['Running queries', false], ['Running now', false], ['Running at once', false],
+  ['Running a report is off on this server.', false], ['Running queries of this instance at this snapshot', false]]) {
+  if (busyText(t) !== want) { console.error(`the busy rule's fixture: '${t}' read ${!want ? 'busy' : 'not busy'}`); process.exit(2); }
+}
+const BUSY = `[...document.querySelectorAll('main p, main [role=status]')].some(p => new RegExp(${JSON.stringify(BUSY_RE)}).test(p.textContent.trim()))`;
 // the lines a page that did not settle still shows (which section was still reading at the cap)
 const BUSYLINES = `[...document.querySelectorAll('main p, main [role=status]')].map(p => { const sec = p.closest('section, .card'); const h = sec?.querySelector('h2, h3, h4')?.textContent?.trim() ?? ''; return [h, p.textContent.trim()]; })
-  .filter(([, t]) => /^(Loading|Reading|Running)/.test(t)).map(([h, t]) => (h ? h + ': ' : '') + t.slice(0, 80)).slice(0, 8)`;
+  .filter(([, t]) => new RegExp(${JSON.stringify(BUSY_RE)}).test(t)).map(([h, t]) => (h ? h + ': ' : '') + t.slice(0, 80)).slice(0, 8)`;
 const settled = async (cap = 20000) => {
   for (const t = Date.now(); Date.now() - t < cap; await sleep(200)) {
     if (lost) return false;
