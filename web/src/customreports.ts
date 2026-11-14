@@ -22,7 +22,9 @@ export interface ReportDef {
 }
 export interface ResultSet { columns: string[]; types: string[]; rows: unknown[][]; truncated?: boolean }
 export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[]; declined?: boolean }
-interface State { enabled: boolean; reason?: string }
+// store: why a report on the store cannot run here (REPORT ROLE: reports_dsn, a login IN ROLE pgvigil_reader alone),
+// absent when it can
+interface State { enabled: boolean; reason?: string; store?: string }
 
 const engineName: Record<string, string> = { store: 'the repository', postgres: 'PostgreSQL instances', sqlserver: 'SQL Server instances' };
 export const condNames: Record<string, string> = {
@@ -392,8 +394,10 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   // off with the page's own words: the server's door, or (an instance report) no active instance of its engine to run on
   const noInst = def.engine !== 'store' && !mine.length && !gone;
   const runWhy = !d.state.enabled ? (d.state.reason || 'Running a report is off on this server.')
+    : def.engine === 'store' && d.state.store ? d.state.store
     : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance to run it on.` : '';
-  const runOff = el('p', { class: 'meta off-reason' }, runWhy);
+  // 'said': report mail carries this paragraph's words (reportmail.ts notesOf) - a run that is not made says why
+  const runOff = el('p', { class: 'meta off-reason said' }, runWhy);
   if (runWhy) offControl(runBtn, runWhy, runOff);
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
@@ -427,7 +431,9 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   runBtn.addEventListener('click', () => { void run(); });
   // a repository report runs on open (DBA Dash's custom reports run when opened); an instance report on the button,
   // or on open when the address says run=1 (a mailed or linked page)
-  if (d.state.enabled && (mine.length || gone) && (def.engine === 'store' || q.get('run') === '1')) await run();
+  // a run only where it may: a store report without its login is not run on open (no refused row per page view); its
+  // off words stand in the page, and a mailed render carries them (reportmail.ts notesOf reads p.said)
+  if (d.state.enabled && !runWhy && (mine.length || gone) && (def.engine === 'store' || q.get('run') === '1')) await run();
 
   const det = el('details', {}, el('summary', {}, 'Definition'));
   det.append(el('pre', { class: 'sql', tabindex: '0' }, def.kind === 'procedure' ? 'procedure ' + def.body : def.body));

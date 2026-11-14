@@ -56,10 +56,11 @@ function numbers(root: ParentNode): boolean[][] {
   });
 }
 
-// notesOf: what the page said in words where a grid would be - a run refused (its reason) or an error box - each with
-// the heading it sits under: a mail carries them, so a refused or failed turn is never mailed as an empty report
+// notesOf: what the page said in words where a grid would be - a run refused (its reason), an error box, or a run not
+// made and why (p.said: a store report with no reports_dsn is not run at all, its Run's words) - each with the heading
+// it sits under: a mail carries them, so a refused, failed or unrun turn is never mailed as an empty report
 export function notesOf(root: ParentNode, fallback: string): { head: string; text: string }[] {
-  return [...root.querySelectorAll<HTMLElement>('p.refused, p.error')].map(p => {
+  return [...root.querySelectorAll<HTMLElement>('p.refused, p.error, p.said')].map(p => {
     let h: Element | null = p.previousElementSibling;
     while (h && !/^H[2-4]$/.test(h.tagName)) h = h.previousElementSibling;
     return { head: (h?.textContent ?? '').trim() || fallback, text: (p.textContent ?? '').replace(/\s+/g, ' ').trim() };
