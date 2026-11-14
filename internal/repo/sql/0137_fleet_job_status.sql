@@ -8,6 +8,12 @@
 --                        days. Before this file the rule was 'critical only when the last run failed', so a job that
 --                        failed at 08:00 and succeeded at 09:00 read 'ok' at 10:00; it reads 'warn' now, for 7 days. A
 --                        threshold row at any level (root, instance, job) still replaces the default whole, as before.
+--   a cancelled run is a failure   as in DBA Dash 4.24.1 (JobHistory_Upd's LastFailed and StepLastFailed, JobStats_RAW's
+--                        FailedCount: run_status IN (0,3)): a SQL Agent run or step with run_status 0 (failed) or 3
+--                        (cancelled), a PostgreSQL run 'failed', 'internal error' or 'aborted', a pgAgent step 'failed'
+--                        or 'aborted' counts in the last failure, the 24 h / 7 d counts and 'the last run failed' (a
+--                        last run that was cancelled reads 'the last run was cancelled'). Before this file 0102 counted
+--                        run_status 0 and 'failed' / 'internal error' only.
 --   job_status_view(p_ids int[])    0102's job_status for a set of instances in one statement, one row per job with
 --                        its instance_id first and horizon_min last. The last failure and the last success are looked
 --                        for inside a horizon H = the longest 'since' threshold in force for those instances (the root
@@ -18,7 +24,7 @@
 --                        'No success for N minutes' is still judged past H: a job that ran before H and has no success
 --                        inside it breaks the rule, and its reason says 'no success in the last <H>'.
 --   job_status(p_instance_id)       unchanged in name, arguments and columns: job_status_view of that one instance.
---   two partial indexes hold the failed rows by job, newest first (mssql_job_runs: steps too; job_runs), so the last
+--   two partial indexes hold the failed and cancelled rows by job, newest first (mssql_job_runs: steps too; job_runs), so the last
 --                        failure and the failed counts are a probe and not a walk of a job's every stored row. The
 --                        last success needs none: a job's newest rows are its last run's, so the index by job finds it
 --                        in a few rows (measured on a synthetic store: the view read the same with and without an
@@ -37,9 +43,9 @@
 SET LOCAL lock_timeout = '20s';
 
 CREATE INDEX IF NOT EXISTS mssql_job_runs_failed_idx ON pgvigil.mssql_job_runs (instance_id, job_id, snapshot_at DESC)
-  WHERE run_status = 0;
+  WHERE run_status IN (0, 3);
 CREATE INDEX IF NOT EXISTS job_runs_failed_idx ON pgvigil.job_runs (instance_id, scheduler, job_id, start_time DESC)
-  WHERE status IN ('failed', 'internal error');
+  WHERE status IN ('failed', 'internal error', 'aborted');
 
 CREATE OR REPLACE FUNCTION pgvigil.job_status_view(p_ids int[])
 RETURNS TABLE (instance_id int, scheduler text, job_id text, job_name text, level text, threshold_id bigint, fail_24h bigint, fail_7d bigint,
@@ -58,17 +64,17 @@ LANGUAGE sql STABLE AS $$
            c.fail_24h, c.fail_7d, c.step_fail_24h, c.step_fail_7d, lf.at AS last_failed_at, ls.at AS last_succeeded_at, fr.at AS first_run_at,
            NULL::text AS excluded_by
       FROM pgvigil.mssql_jobs m
-      -- the failed rows of 7 days: mssql_job_runs_failed_idx
+      -- the failed and cancelled rows of 7 days: mssql_job_runs_failed_idx
       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE r.step_id = 0 AND r.snapshot_at > now() - interval '24 hours') AS fail_24h,
                                 count(*) FILTER (WHERE r.step_id = 0) AS fail_7d,
                                 count(*) FILTER (WHERE r.step_id > 0 AND r.snapshot_at > now() - interval '24 hours') AS step_fail_24h,
                                 count(*) FILTER (WHERE r.step_id > 0) AS step_fail_7d
                            FROM pgvigil.mssql_job_runs r
-                          WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.run_status = 0
+                          WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.run_status IN (0, 3)
                             AND r.snapshot_at > now() - interval '7 days' AND r.snapshot_at <= now()) c ON true
-      -- the newest failed job row inside H: mssql_job_runs_failed_idx
+      -- the newest failed or cancelled job row inside H: mssql_job_runs_failed_idx
       LEFT JOIN LATERAL (SELECT r.snapshot_at AS at FROM pgvigil.mssql_job_runs r
-                          WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.step_id = 0 AND r.run_status = 0
+                          WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.step_id = 0 AND r.run_status IN (0, 3)
                             AND r.snapshot_at > now() - make_interval(mins => (SELECT h.mins FROM h))
                           ORDER BY r.snapshot_at DESC LIMIT 1) lf ON true
       -- the newest succeeded job row inside H: the job's newest rows in mssql_job_runs_job_idx
@@ -86,16 +92,16 @@ LANGUAGE sql STABLE AS $$
            lr.outcome, c.fail_24h, c.fail_7d, coalesce(sf.step_fail_24h, 0), coalesce(sf.step_fail_7d, 0), lf.at, ls.at, fr.at,
            pgvigil.job_exclusion(g.instance_id, coalesce(g.job_name, g.job_id::text), g.command)
       FROM pgvigil.jobs g
-      -- the failed runs of 7 days: job_runs_failed_idx
+      -- the failed and aborted runs of 7 days: job_runs_failed_idx
       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE r.start_time > now() - interval '24 hours') AS fail_24h, count(*) AS fail_7d
                            FROM pgvigil.job_runs r
                           WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id
-                            AND r.status IN ('failed', 'internal error')
+                            AND r.status IN ('failed', 'internal error', 'aborted')
                             AND r.start_time > now() - interval '7 days' AND r.start_time <= now()) c ON true
-      -- pgAgent's failed steps (0102's step log); pg_cron has no steps
+      -- pgAgent's failed and aborted steps (0102's step log); pg_cron has no steps
       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE s.start_time > now() - interval '24 hours') AS step_fail_24h, count(*) AS step_fail_7d
                            FROM pgvigil.job_step_runs s
-                          WHERE g.scheduler = 'pgagent' AND s.instance_id = g.instance_id AND s.job_id = g.job_id AND s.status = 'failed'
+                          WHERE g.scheduler = 'pgagent' AND s.instance_id = g.instance_id AND s.job_id = g.job_id AND s.status IN ('failed', 'aborted')
                             AND s.start_time > now() - interval '7 days' AND s.start_time <= now()) sf ON true
       -- the newest run that has a start: the last row of job_runs_job_start_idx (0102 sorted a job's every run for it)
       LEFT JOIN LATERAL (SELECT CASE WHEN r.status = 'succeeded' THEN 'succeeded' WHEN r.status IN ('failed', 'internal error') THEN 'failed'
@@ -103,10 +109,10 @@ LANGUAGE sql STABLE AS $$
                            FROM pgvigil.job_runs r
                           WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id AND r.start_time IS NOT NULL
                           ORDER BY r.start_time DESC LIMIT 1) lr ON true
-      -- the newest failed run inside H: job_runs_failed_idx
+      -- the newest failed or aborted run inside H: job_runs_failed_idx
       LEFT JOIN LATERAL (SELECT r.start_time AS at FROM pgvigil.job_runs r
                           WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id
-                            AND r.status IN ('failed', 'internal error')
+                            AND r.status IN ('failed', 'internal error', 'aborted')
                             AND r.start_time > now() - make_interval(mins => (SELECT h.mins FROM h))
                           ORDER BY r.start_time DESC LIMIT 1) lf ON true
       -- the newest succeeded run inside H: the job's newest rows in job_runs_job_start_idx
@@ -151,7 +157,8 @@ LANGUAGE sql STABLE AS $$
     LEFT JOIN LATERAL (
       SELECT v.sev, v.why
         FROM (VALUES
-          (1, 'crit', e.last_outcome = 'failed' AND e.last_fail_is = 'crit', 'the last run failed'),
+          (1, 'crit', e.last_outcome IN ('failed', 'cancelled') AND e.last_fail_is = 'crit',
+              CASE e.last_outcome WHEN 'cancelled' THEN 'the last run was cancelled' ELSE 'the last run failed' END),
           (2, 'crit', e.fail_24h >= e.fail_24h_crit, format('%s failed run(s) in 24 hours (critical at %s)', e.fail_24h, e.fail_24h_crit)),
           (3, 'crit', e.fail_7d >= e.fail_7d_crit, format('%s failed run(s) in 7 days (critical at %s)', e.fail_7d, e.fail_7d_crit)),
           (4, 'crit', e.step_fail_24h >= e.step_fail_24h_crit, format('%s failed step(s) in 24 hours (critical at %s)', e.step_fail_24h, e.step_fail_24h_crit)),
@@ -160,7 +167,8 @@ LANGUAGE sql STABLE AS $$
           (7, 'crit', e.ok_min > e.since_ok_crit_min,
               CASE WHEN e.ok_past THEN format('no success in the last %s day(s) (critical over %s minute(s))', (SELECT h.mins FROM h) / 1440, e.since_ok_crit_min)
                    ELSE format('no success for %s minute(s) (critical over %s)', round(e.ok_min), e.since_ok_crit_min) END),
-          (11, 'warn', e.last_outcome = 'failed' AND e.last_fail_is = 'warn', 'the last run failed'),
+          (11, 'warn', e.last_outcome IN ('failed', 'cancelled') AND e.last_fail_is = 'warn',
+              CASE e.last_outcome WHEN 'cancelled' THEN 'the last run was cancelled' ELSE 'the last run failed' END),
           (12, 'warn', e.fail_24h >= e.fail_24h_warn, format('%s failed run(s) in 24 hours (warning at %s)', e.fail_24h, e.fail_24h_warn)),
           (13, 'warn', e.fail_7d >= e.fail_7d_warn, format('%s failed run(s) in 7 days (warning at %s)', e.fail_7d, e.fail_7d_warn)),
           (14, 'warn', e.step_fail_24h >= e.step_fail_24h_warn, format('%s failed step(s) in 24 hours (warning at %s)', e.step_fail_24h, e.step_fail_24h_warn)),

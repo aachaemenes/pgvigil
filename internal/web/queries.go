@@ -58,7 +58,8 @@ SELECT r.instance_id, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'criti
 	// one judge with the fleet's Jobs page and the SQL Server Agent Jobs cell (FLEET B1): every job of the active
 	// PostgreSQL instances whose status is critical or warning under job_status_view (DBA Dash's default rule where no
 	// threshold is set: the last run failed or a failure inside 60 minutes is critical, a failure inside 7 days a
-	// warning), one row per job; an aborted run is not a failure there, as in DBA Dash
+	// warning), one row per job; an aborted run is a failure there, as DBA Dash counts a cancelled SQL Agent run
+	// (JobHistory_Upd: run_status IN (0,3)) and as job_failures did before
 	{"jobs", `
 SELECT v.instance_id, CASE v.status WHEN 'crit' THEN 'critical' ELSE 'warning' END, 'job status', v.scheduler || ' ' || v.job_name,
        coalesce(v.last_failed_at, now()), v.reason

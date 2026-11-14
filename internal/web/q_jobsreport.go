@@ -74,12 +74,13 @@ SELECT count(*) AS jobs, count(*) FILTER (WHERE r.fail_streak > 0) AS failing,
 // sqlJobStatusFleet is the fleet Jobs page's 'Job status' grid (DBA Dash's root Jobs, AgentJobsReport_Get): every job
 // of the instances $1 (NULL = every active instance) judged by job_status_view (0137: DBA Dash's default rule with no
 // threshold row), with the job's own columns (enabled, category, description) and, for a SQL Agent job, the step of its
-// newest failure inside the horizon (the failed rows' index). Ordered as DBA Dash orders it: the last run failed first,
-// then the newest failure, then critical, warning.
+// newest failed step inside the horizon (a step that failed: run_status 0; the failed rows' index). 'last run failed'
+// is DBA Dash's IsLastFail: a last run that failed or was cancelled (a cancelled run is a failure there, 0137). Ordered
+// as DBA Dash orders it: the last run failed first, then the newest failure, then critical, warning.
 const sqlJobStatusFleet = `
 SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.job_id, v.job_name,
        coalesce(m.enabled, g.active) AS enabled, m.category, m.description,
-       v.status, v.reason, v.level, v.threshold_id, v.last_outcome, v.last_outcome = 'failed' AS last_run_failed,
+       v.status, v.reason, v.level, v.threshold_id, v.last_outcome, v.last_outcome IN ('failed', 'cancelled') AS last_run_failed,
        v.last_failed_at, v.last_succeeded_at, v.fail_24h, v.fail_7d, v.step_fail_24h, v.step_fail_7d, fs.step_id AS failed_step_id,
        fs.step_name AS failed_step, v.horizon_min
   FROM pgvigil.job_status_view(coalesce($1::int[], ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active))) v
@@ -90,7 +91,7 @@ SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.j
                       WHERE v.scheduler = 'sqlagent' AND v.last_failed_at IS NOT NULL AND r.instance_id = v.instance_id AND r.job_id = v.job_id
                         AND r.run_status = 0 AND r.step_id > 0 AND r.snapshot_at > now() - make_interval(mins => v.horizon_min)
                       ORDER BY r.snapshot_at DESC LIMIT 1) fs ON true
- ORDER BY (v.last_outcome = 'failed') DESC, v.last_failed_at DESC NULLS LAST,
+ ORDER BY (v.last_outcome IN ('failed', 'cancelled')) DESC, v.last_failed_at DESC NULLS LAST,
           CASE v.status WHEN 'crit' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, i.name, v.scheduler, v.job_name`
 
 // sqlJobStatsFleet is the four columns of DBA Dash's root Jobs that need every run of 7 days (Succeed Count 24 h and
