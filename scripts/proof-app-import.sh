@@ -186,10 +186,12 @@ q "insert into pgvigil.mssql_database_option (instance_id, database_name, databa
    ($MSF, 'master', 1, true, now()), ($MSF, 'msdb', 4, true, now()), ($MSF, 's1', 5, false, now()), ($MSF, 's2', 6, false, now()), ($MSF, 'sgone', 7, false, now())" >/dev/null
 OLD=$(newinst imp-old); q "update pgvigil.instances set is_active = false where instance_id = $OLD" >/dev/null
 FA=$(field "$(wp application '{"op": "add", "name": "F Alpha", "tier": 2, "description": "alpha"}')" app_id)
-FB=$(field "$(wi application '{"op": "add", "name": "F Beta", "description": "''=x"}')" app_id)
+# double-quoted: inside single quotes bash drops the '' and the store got '=x (t-im-g2 F7); SQL reads '' as one '
+FB=$(field "$(wi application "{\"op\": \"add\", \"name\": \"F Beta\", \"description\": \"''=x\"}")" app_id)
 wp assign "{\"op\": \"assign\", \"app_id\": $FA, \"targets\": [{\"instance_id\": $PGF, \"database\": null}, {\"instance_id\": $MSF, \"database\": \"s1\"}, {\"instance_id\": $PGF, \"database\": \"fgone\"}, {\"instance_id\": $PGF, \"database\": \"=x\"}]}" >/dev/null
 wp assign "{\"op\": \"assign\", \"app_id\": $FB, \"targets\": [{\"instance_id\": $PGF, \"database\": \"f1\"}]}" >/dev/null
-wi assign "{\"op\": \"assign\", \"app_id\": $FB, \"targets\": [{\"instance_id\": $PGF, \"database\": \"f2\"}, {\"instance_id\": $MSF, \"database\": \"sgone\"}, {\"instance_id\": $PGF, \"database\": \"-name\"}]}" >/dev/null
+# forced: under imp-pg's ENTERED server assignment (F Alpha) an unforced import of another application is the m3 conflict (t-im-g2)
+wi assign "{\"op\": \"assign\", \"force\": true, \"app_id\": $FB, \"targets\": [{\"instance_id\": $PGF, \"database\": \"f2\"}, {\"instance_id\": $MSF, \"database\": \"sgone\"}, {\"instance_id\": $PGF, \"database\": \"-name\"}]}" >/dev/null
 wp assign "{\"op\": \"mark\", \"targets\": [{\"instance_id\": $PGF, \"database\": \"f4\"}]}" >/dev/null
 # fgone and sgone dropped on their servers (absent, still named by their assignments)
 dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81002 f2), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
@@ -240,14 +242,17 @@ x=$(imp "$WORK/f2.csv" "dry=0&digest=$D3&force=t4"); xo=$(js "print(d.get('outco
 # F4 (R5) a page write between preview and apply: refused whole; F5 (R5b) a collector's list read between them: not refused
 printf 'instance,database,application\nimp-pg,f2,F Beta\n' > "$WORK/f4.csv"
 imp "$WORK/f4.csv" "dry=1" >/dev/null; D4=$(dig)
-ver=$(q "select version from pgvigil.app_applications where app_id = $FA")
-post admin/applications "{\"op\": \"edit\", \"app_id\": $FA, \"version\": $ver, \"description\": \"edited between\"}" >/dev/null
+# the page write touches the plan: f2 itself re-assigned by hand (an edit of an application the file does not name
+# is not in the plan, so the digest rightly stays: t-im-g2)
+FG=$(q "select app_id from pgvigil.app_applications where name = 'F Gamma'")
+pw=$(post admin/applications/assign "{\"op\": \"assign\", \"app_id\": ${FG:-0}, \"targets\": [{\"instance_id\": $PGF, \"database\": \"f2\"}]}"); pa=$(asg imp-pg f2)
 m0=$(appmd5); x=$(imp "$WORK/f4.csv" "dry=0&digest=$D4"); xd=$(js "print(d.get('detail', d.get('error', '')))"); m1=$(appmd5)
-[[ $x == 409 && $xd == *"changed since the preview"* && $m1 == "$m0" ]] && ok "F4 a page write between the preview and the apply: refused whole ('${xd:0:80}'), nothing written" || bad "F4 $x '$xd'; md5 same: $([[ $m1 == "$m0" ]] && echo yes || echo no)"
-imp "$WORK/f4.csv" "dry=1" >/dev/null; D5=$(dig)
+[[ $pw == 200 && $pa == "F Gamma|entered" && $x == 409 && $xd == *"changed since the preview"* && $m1 == "$m0" ]] && ok "F4 a page write between the preview and the apply (f2 re-assigned by hand): refused whole ('${xd:0:80}'), nothing written" || bad "F4 page write $pw (f2 $pa); apply $x '$xd'; md5 same: $([[ $m1 == "$m0" ]] && echo yes || echo no)"
+# F5: f2 is now entered by hand, so the file's line 2 is a conflict: ticked (t2), the collector's read between
+imp "$WORK/f4.csv" "dry=1" >/dev/null; D5=$(dig); i5=$(item 2)
 dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81002 f2), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
-x=$(imp "$WORK/f4.csv" "dry=0&digest=$D5"); xo=$(js "print(d.get('outcome'))")
-[[ $x == 200 && $xo == done && $(asg imp-pg f2) == "F Beta|import:proof" ]] && ok "F5 a collector's list read (last_seen, engine_db_id moved) between the preview and the apply: not refused, applied" || bad "F5 $x $xo; f2 $(asg imp-pg f2); $(head -c 300 "$WORK/ans.json")"
+x=$(imp "$WORK/f4.csv" "dry=0&digest=$D5&force=t2"); xo=$(js "print(d.get('outcome'))")
+[[ $i5 == conflict:* && $x == 200 && $xo == done && $(asg imp-pg f2) == "F Beta|import:proof" ]] && ok "F5 a collector's list read (last_seen, engine_db_id moved) between the preview and the apply: not refused, applied (its conflict ticked)" || bad "F5 line 2 '$i5'; $x $xo; f2 $(asg imp-pg f2); $(head -c 300 "$WORK/ans.json")"
 
 # F6 (R6): the export as a semicolon file (Excel in a comma-decimal locale) under the bar's two mark lines: no change
 curl -s -o "$WORK/inv2.csv" -b "$WORK/cj" -H 'X-Pgvigil: 1' "$U/api/applications/inventory.csv"
