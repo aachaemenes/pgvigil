@@ -246,6 +246,9 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 	old := time.Date(2019, 3, 10, 10, 10, 0, 0, time.UTC)
 	exec(`DROP TABLE IF EXISTS pgvigil.job_stats_hourly_201903`)
 	exec(`SELECT pgvigil.ensure_month_partition('mssql_job_runs', $1)`, old)
+	// the job row as the collector's read of a job whose last run failed holds it: job_status_view looks past its horizon
+	// only on the row's own last_outcome (0137 L85)
+	exec(`UPDATE pgvigil.mssql_jobs SET last_outcome = 0, last_run_at = $2 WHERE instance_id = $1 AND job_id = 'e'`, ms, old)
 	exec(`CREATE TABLE pgvigil.job_stats_hourly_201903 (in_the_way int)`) // ensure_month_partition sees the name and makes no partition
 	msRuns(mrun{"e", 0, old, 0, 3})                                       // the import itself must not fail
 	want("the run of the failed rollup is stored", str(`SELECT count(*)::text FROM pgvigil.mssql_job_runs WHERE instance_id = $1 AND job_id = 'e'`, ms), "1")
