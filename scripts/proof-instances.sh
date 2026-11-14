@@ -883,7 +883,7 @@ echo "ok   N6: a schedule of the report on pgd-ok rendered by this serve as $USR
 # opens (no run row), and a mail of it carries Run's words in its 'What the page said' lines
 code=$(api POST customreports "{\"op\":\"add\",\"name\":\"store mail $SUF\",\"engine\":\"store\",\"kind\":\"sql\",\"body\":\"select count(*) as n from instances\",\"timeout_secs\":30,\"max_rows\":100,\"params\":[],\"columns\":[],\"rules\":[]}")
 [[ "$code" == 200 ]] || fail "N6s: the store report's save: $code $(head -c 300 "$TMPD/ans.json")"; SRID=$(ans report_id)
-code=$(api POST reportmail "$(python3 -c 'import json, sys; print(json.dumps({"op": "add", "name": "store mail", "route": "#/customreports?report=%s&run=1" % sys.argv[1], "recipients": ["door@pgvigil.test"], "channel": "doormail", "cadence": "daily", "cron": "0 7 * * *", "timezone": "UTC"}))' "$SRID")")
+code=$(api POST reportmail "$(python3 -c 'import json, sys; print(json.dumps({"op": "add", "name": "store mail", "route": "#/customreports?report=%s&run=1" % sys.argv[1], "recipients": ["door@pgvigil.test"], "channel": "doormail", "cadence": "daily", "at": "07:00", "timezone": "UTC"}))' "$SRID")")
 [[ "$code" == 200 ]] || fail "N6s: the schedule: $code $(head -c 300 "$TMPD/ans.json")"; SSID=$(ans schedule_id)
 l0=$(pq "SELECT coalesce(max(log_id), 0) FROM pgvigil.custom_report_log"); n0=$(pq "SELECT count(*) FROM pgvigil.report_mail_sends WHERE schedule_id = $SSID")
 pq "UPDATE pgvigil.report_mail_schedules SET next_at = now() - interval '1 second' WHERE schedule_id = $SSID" >/dev/null
