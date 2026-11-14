@@ -16,25 +16,20 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the fifth run: the fourth stopped at the page list - its Chromium closed the CDP socket and exited 0, its
-# own log not kept: a lost browser now costs one page load (started again, the page loaded again), each Chromium's log
-# kept in chrome-logs/; otherwise the fourth run's expected, as written for it below)
-# Expected (the fourth run: the third run was red by 9 rows outside the file - 7 the driver's own (a replay step
-# acted once on a page not yet redrawn; a download read 600 ms after its click), now each step is given 5 s to find
-# its control and the path one more fresh replay; 2 the joined tree's Queries page, which never settled in 20 s; the
-# review of the click-through folded: a read with nothing to see FAILS ('reads', 2 expected rows by cause), a click
-# whose page never settles FAILS ('click not settled'), a canvas drawn on is a change, a link to the server's own file
-# on the page is clicked, the control is waited for before 'before', the auto refresh off on every page, the controls
-# not clicked said in the verdict; written before it):
-#   the grader's self-test: 14 of 14 cases; the expected file: 7 rows
-#   the click map: its own verdict line (the third run: 524 links, 0 FAIL)
-#   listed: 182 pages (root 62, pg 64, ms 56) in 4 shards; every page settled but ms mssqlqueries
-#   the walk: the longest driver about the third run's 2590 s (a little more: the waits)
-#   the grade: the 7 expected rows listed (the reads rows: 16 re-reads, mssql_running's Later and Latest); none of
-#     the third run's 7 driver rows; 'off without words' none; the 'Draw on the strip' cells graded redraws (their
-#     canvas); the Queries page's rows again ('page not settled', the tree's 'link-stuck', its clicks 'click not
-#     settled'), each with 'still: <section>: Reading ...' - 'click-through: FAIL (<n> FAIL row(s) outside the
-#     expected file)'; any other row outside is read first (a 'reads' cell button, a page-level .xdl / .sqlplan link)
+# Expected (the sixth run: the fifth ran whole - 17 FAIL rows outside the file: the Queries page's 12 were the walker's
+# busy rule reading the page's own 'Running queries' link as a busy line (click-q1: its read answered 200 in 69 ms),
+# now 'Loading' anything and 'Reading' / 'Running' only with the ellipsis, its fixture at the start; 2 a pressed toggle
+# (aria-pressed: Admin's Servers, the alert page's 'at the firing'), now the current choice; 2 a second save of one
+# deadlock's .xdl, now each download under its GUID; 1 the deadlock Graph of the row already drawn, now in the
+# expected file as a finding; no browser lost in it; written before it):
+#   the grader's self-test: 14 of 14 cases; the expected file: 8 rows; no 'the busy rule's fixture' line
+#   the click map: its own verdict line (524 links, 0 FAIL)
+#   listed: 182 pages (root 62, pg 64, ms 56) in 4 shards; every page settled, ms mssqlqueries among them
+#   the walk: the longest driver about the fifth run's 2729 s, chromium started once per driver
+#   the grade: the 8 expected rows listed (77 Pick series All, 6 Columns, Reset all, Latest, Compare, the 16 re-reads,
+#     mssql_running's Later and Latest, the deadlock Graph finding: 1); Admin's Servers and 'at the firing' graded
+#     current; every .xdl save graded download (4 on the two deadlock pages); the Queries page's clicks graded by what
+#     they changed; no row outside the file: 'click-through: OK (<n> FAIL row(s), each listed; ...)', rc 0
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""
