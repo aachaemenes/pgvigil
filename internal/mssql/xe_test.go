@@ -158,8 +158,9 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 			t.Errorf("%s: the blocked process threshold's advice", form)
 		}
 		// every form has run on a real instance: the Azure SQL Database form (scripts/proof-mssql-azuresqldb.sh), the
-		// Managed Instance form (A2, scripts/proof-mssql-mi.sh, 2026-11-14), Cloud SQL's (2026-11-13) and RDS's (R1,
-		// 2026-11-14); the two Azure forms name what their proofs did not show (an event through their sessions, the tiers)
+		// Managed Instance form (scripts/proof-mssql-mi.sh), Cloud SQL's (scripts/proof-mssql-cloudsql.sh) and RDS's
+		// (scripts/proof-mssql-rds.sh); the two Azure forms name what their proofs did not show (an event through their
+		// sessions, the tiers)
 		if strings.Contains(script, "NOT PROVEN") || strings.Contains(script, "written from the documentation") {
 			t.Errorf("%s: the header still says the form was not run", form)
 		}
@@ -769,7 +770,7 @@ func TestXMLCleanKeepsTheRead(t *testing.T) {
 // "max_memory="') and fails (Msg 537) when the one it finds is a ring buffer's: each of the cloudsql form's CREATEs
 // holds it once, as the session's MAX_MEMORY=<the capture's size within 4-8 MB> KB (the trigger: 'max_memory value must
 // be between 4MB and 8MB'); the other forms keep the session's MAX_MEMORY beside a ring buffer's max_memory (the rds form
-// so on R1, a real RDS for SQL Server 2019 Standard instance, 2026-11-14: the four sessions made and started).
+// so on a real RDS for SQL Server 2019 Standard instance, scripts/proof-mssql-rds.sh: the four sessions made and started).
 func TestXECloudSQLOneMaxMemory(t *testing.T) {
 	re := regexp.MustCompile(`(?i)max_memory=`)
 	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2, XEFormRDS: 2} {

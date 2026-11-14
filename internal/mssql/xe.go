@@ -133,11 +133,11 @@ func XEScript(installID, form string) (string, error) {
 			"  sessions made and running, pgvigil's reader storing them. Not proven: an event captured through these\n" +
 			"  sessions, and a tier other than General Purpose serverless.\n")
 	case XEFormAzureMI:
-		w("  Azure SQL Managed Instance: run it in master. Every target is a ring buffer (an event file there must be a\n" +
-			"  blob URL with a credential).\n" +
+		w("  Azure SQL Managed Instance: run it in master. No event file (one there must be a blob URL with a credential):\n" +
+			"  ring buffers, and an event counter for attention.\n" +
 			"  Run on a real General Purpose Managed Instance (scripts/proof-mssql-mi.sh): the four sessions made and started,\n" +
 			"  no event file, pgvigil's reader storing them running. Not proven: an event captured through these sessions\n" +
-			"  (the deadlock reports there were read from system_health), and Business Critical.\n")
+			"  (the deadlocks capture there read system_health and stored no deadlock), and Business Critical.\n")
 	case XEFormCloudSQL:
 		w("  Google Cloud SQL for SQL Server: run it in master as the sqlserver user. The slow capture's event file goes\n" +
 			"  to " + xeCloudSQLDir + ", the folder Google names for Extended Events files.\n" +

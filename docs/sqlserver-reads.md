@@ -4,7 +4,7 @@ Three collections of the [SQL Server engine](sqlserver.md) and the tabs they fee
 
 | collection | every | what | the login needs |
 |---|---|---|---|
-| `mssql_properties` | 1 hour | what the instance is: server, processors, memory, tempdb's layout, host; every change of a value | public for the server and tempdb rows and max / min server memory; `VIEW SERVER STATE` for the processor rows, the machine's memory and the memory model; the host rows are public's before SQL Server 2022 and need `VIEW SERVER PERFORMANCE STATE` from it (partial where a row cannot be read) |
+| `mssql_properties` | 1 hour | what the instance is: server, processors, memory, tempdb's layout, host; every change of a value | public for the server and tempdb rows and max / min server memory (on Amazon RDS the two RDS rows need EXECUTE on two msdb procedures, optional: [SQL Server in the cloud](sqlserver-cloud.md)); `VIEW SERVER STATE` for the processor rows, the machine's memory and the memory model; the host rows are public's before SQL Server 2022 and need `VIEW SERVER PERFORMANCE STATE` from it (partial where a row cannot be read) |
 | `mssql_procstats` | 5 min | what each stored procedure did between two reads | `VIEW SERVER STATE` (2022: `VIEW SERVER PERFORMANCE STATE` should be enough; not proven); names of another database's procedures: `CONNECT ANY DATABASE` and `VIEW ANY DEFINITION` |
 | `mssql_indexlocks` | 5 min | where sessions waited for locks, per index, and lock escalations | as `mssql_procstats`; names: a database the login can enter |
 
@@ -22,7 +22,7 @@ Without it the counters are still stored, under the object's id.
 
 One row per property, in five groups (DBA Dash's Info page):
 
-- **Server**: edition, version and level, collation, clustered, Always On enabled, the machine's and the server's name, max degree of parallelism, cost threshold for parallelism (`SERVERPROPERTY`, `sys.configurations`).
+- **Server**: edition, version and level, collation, clustered, Always On enabled, the machine's and the server's name, max degree of parallelism, cost threshold for parallelism (`SERVERPROPERTY`, `sys.configurations`); on Amazon RDS also its high availability mode and its last failover (`msdb.dbo.rds_get_high_availability_option`, `msdb.dbo.rds_failover_time`).
 - **Processor**: logical CPUs, sockets, cores per socket, the hyperthread ratio, NUMA nodes, soft NUMA, the affinity type, max worker threads, the hypervisor (`sys.dm_os_sys_info`); the schedulers online and offline (`sys.dm_os_schedulers`: an offline scheduler is a CPU the edition's core limit, the licence or an affinity mask keeps SQL Server from using); the power plan.
 - **Memory**: the machine's memory, max and min server memory, max server memory as a per cent of the machine (`no limit` while the setting is at its default; a note when it is more than the machine has), the memory model.
 - **TempDB**: data files, their size, whether they are one size, log files, log size (`tempdb.sys.database_files`).
@@ -32,7 +32,7 @@ A property the server did not give says **not read** and why: the login lacks th
 
 **The power plan** is the one value SQL Server does not hold. On a Windows server someone runs, the collector reads the active power scheme from the registry with `xp_regread` (a read): first the plan a Group Policy enforces (`HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings`), which the machine's own key does not follow, then the machine's own (`HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes`). It names the plan; one other than High performance or Ultimate Performance carries a note. On Linux, Amazon RDS and Azure SQL Managed Instance the row says not read. A login that may not execute `xp_regread` gets not read as well.
 
-**The change history.** The first value of a property sets it (also when earlier reads could not read it). From then on a value that differs from the read before is logged with the old value, the new one and the time of the read that saw it (the change happened within the hour before). Three values are shown without being logged: tempdb's two sizes, which move by themselves, and the per cent, which is derived (the change of max server memory is logged once, on its own row). The server's start time is not a property: the DMV writes it in the local clock, and a daylight-saving shift would log a change that never happened.
+**The change history.** The first value of a property sets it (also when earlier reads could not read it). From then on a value that differs from the read before is logged with the old value, the new one and the time of the read that saw it (the change happened within the hour before). Three values are shown without being logged: tempdb's two sizes, which move by themselves, and the per cent, which is derived (the change of max server memory is logged once, on its own row); on Amazon RDS a fourth, the last failover, which leaves the error logs as they roll over. The server's start time is not a property: the DMV writes it in the local clock, and a daylight-saving shift would log a change that never happened.
 
 ## Procedures (`mssql_procstats`)
 

@@ -147,10 +147,6 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 	p.add("cost_threshold", "Server", "Cost threshold for parallelism", 190, s["cost_threshold"], "")
 
 	var partial []collect.Row
-	if info.Kind == KindRDS {
-		// Amazon RDS's high availability mode and last failover (rds_ha.go)
-		partial = append(partial, rdsHAProps(p, readRDSHA(ctx, conn))...)
-	}
 	perfErr := perfState(ctx, conn, info, "sys.dm_os_sys_info")
 	var si collect.Row
 	why := "not read: the login lacks VIEW SERVER STATE"
@@ -279,6 +275,11 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 	}
 	p.add("host_distribution", "Host", "Distribution", 610, hval("host_distribution"), distNote)
 	p.add("host_release", "Host", "Release", 620, hval("host_release"), hnote())
+	if info.Kind == KindRDS {
+		// Amazon RDS's high availability mode and last failover (rds_ha.go), read last: rds_failover_time searches the
+		// error logs, and a slow answer must not take the run's time from the rows above (ord places the two rows)
+		partial = append(partial, rdsHAProps(p, readRDSHA(ctx, conn))...)
+	}
 	return append(p.rows, partial...), nil
 }
 
