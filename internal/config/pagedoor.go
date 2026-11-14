@@ -82,13 +82,43 @@ func notOpened(name, key string) string {
 	return "instance " + name + ": its driver option " + key + " is not one a page door opens: Community tools and custom reports run on it only from pgvigil.yaml"
 }
 
-func optionRefusal(name, key, value string, allowed map[string]string) string {
-	k := strings.ToLower(strings.TrimSpace(key))
+func fileOnHost(name, key string) string {
+	return "instance " + name + ": its driver option names a file on this server's host (" + key + "): Community tools and custom reports run on it only from pgvigil.yaml"
+}
+
+func ownSocket(name, host string) string {
+	return "instance " + name + " signs in through this server's own socket (host '" + host + "'): Community tools and custom reports run on it only from pgvigil.yaml"
+}
+
+// optionRefusal: a key outside the lists refuses. fold: the driver reads its keys without case (go-mssqldb); pgx
+// reads them as written, so an upper-case PostgreSQL key is a startup setting, never the allowed option
+func optionRefusal(name, key, value string, allowed map[string]string, fold bool) string {
+	k := strings.TrimSpace(key)
+	if fold {
+		k = strings.ToLower(k)
+	}
+	lk := strings.ToLower(k)
 	switch {
-	case pageIdentityOptions[k] || strings.HasPrefix(k, "krb5-") || (k == "sslrootcert" && value != "system"):
+	case lk == "sslrootcert" && value != "system":
+		return fileOnHost(name, k)
+	case pageIdentityOptions[lk] || strings.HasPrefix(lk, "krb5-"):
 		return ownIdentity(name, k)
 	case allowed[k] == "":
 		return notOpened(name, k)
+	}
+	return ""
+}
+
+// pgHostRefusal: a host list pgx would read as this server's own socket - none at all (pgx's default is the local
+// socket), an empty element, a path or an abstract socket ('@')
+func pgHostRefusal(name, host string) string {
+	if strings.TrimSpace(host) == "" {
+		return ownSocket(name, host)
+	}
+	for _, h := range strings.Split(host, ",") {
+		if h = strings.TrimSpace(h); h == "" || strings.HasPrefix(h, "/") || strings.HasPrefix(h, "@") {
+			return ownSocket(name, host)
+		}
 	}
 	return ""
 }
@@ -117,7 +147,7 @@ func PageDoorRefusal(name, engine, auth, options string) string {
 			if lk := strings.ToLower(strings.TrimSpace(k)); lk == "server" || lk == "host" {
 				continue // BuildDSN leaves them out: the host is the form's
 			}
-			if why := optionRefusal(name, k, q.Get(k), pageMSOptions); why != "" {
+			if why := optionRefusal(name, k, q.Get(k), pageMSOptions, true); why != "" {
 				return why
 			}
 		}
@@ -134,7 +164,7 @@ func PageDoorRefusal(name, engine, auth, options string) string {
 			if k == "host" || k == "hostaddr" || k == "port" || k == "dbname" {
 				continue // BuildDSN leaves them out: the form's fields
 			}
-			if why := optionRefusal(name, k, v, pagePGOptions); why != "" {
+			if why := optionRefusal(name, k, v, pagePGOptions, false); why != "" {
 				return why
 			}
 		}
@@ -173,12 +203,12 @@ func PageDSNRefusal(name, engine, dsn string) string {
 			case "user id", "password", "server", "port":
 				continue
 			case "fedauth":
-				if strings.EqualFold(v, "ActiveDirectoryServicePrincipal") {
+				if strings.EqualFold(v, "ActiveDirectoryServicePrincipal") || strings.EqualFold(v, "ActiveDirectoryApplication") {
 					continue
 				}
 				return ownIdentity(name, "fedauth="+v)
 			}
-			if why := optionRefusal(name, k, v, pageMSOptions); why != "" {
+			if why := optionRefusal(name, k, v, pageMSOptions, true); why != "" {
 				return why
 			}
 		}
@@ -186,16 +216,23 @@ func PageDSNRefusal(name, engine, dsn string) string {
 			return ownIdentity(name, "no login and password in its credential")
 		}
 	case EnginePostgres:
+		if t := strings.TrimSpace(dsn); strings.HasPrefix(t, "postgres://") || strings.HasPrefix(t, "postgresql://") {
+			// pgvigil writes the keyword form; a URL is a hand edit, and net/url and pgx part on ';' and '#'
+			return "instance " + name + ": its credential is a URL, not the keyword form pgvigil writes: Community tools and custom reports run on it only from pgvigil.yaml"
+		}
 		kv, err := pgSettings(dsn)
 		if err != nil {
 			return "instance " + name + ": its credential does not read as a PostgreSQL connection string"
+		}
+		if why := pgHostRefusal(name, kv["host"]); why != "" {
+			return why
 		}
 		for _, k := range sortedKeys(kv) {
 			switch k {
 			case "host", "port", "dbname", "user", "password":
 				continue
 			}
-			if why := optionRefusal(name, k, kv[k], pagePGOptions); why != "" {
+			if why := optionRefusal(name, k, kv[k], pagePGOptions, false); why != "" {
 				return why
 			}
 		}
@@ -254,10 +291,10 @@ func pgSettings(dsn string) (map[string]string, error) {
 			return nil, errSyntax
 		}
 		key := strings.TrimSpace(s[:eq])
-		if strings.ContainsAny(key, " \t\n'\\") {
+		if strings.ContainsAny(key, pgSpace+"'\\") {
 			return nil, errSyntax
 		}
-		s = strings.TrimLeft(s[eq+1:], " \t\n")
+		s = strings.TrimLeft(s[eq+1:], pgSpace)
 		var val strings.Builder
 		if strings.HasPrefix(s, "'") {
 			s = s[1:]
@@ -282,7 +319,7 @@ func pgSettings(dsn string) (map[string]string, error) {
 			}
 		} else {
 			i := 0
-			for ; i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n'; i++ {
+			for ; i < len(s) && strings.IndexByte(pgSpace, s[i]) < 0; i++ {
 				if s[i] == '\\' && i+1 < len(s) {
 					i++
 				}
@@ -293,10 +330,16 @@ func pgSettings(dsn string) (map[string]string, error) {
 		if err := put(key, val.String()); err != nil {
 			return nil, err
 		}
-		s = strings.TrimLeft(s, " \t\n")
+		s = strings.TrimLeft(s, pgSpace)
 	}
 	return out, nil
 }
+
+// pgSpace is what pgx splits a keyword string at (pgconn config.go: unicode.IsSpace on the ASCII bytes)
+const pgSpace = " \t\n\r\v\f"
+
+// PGSettings is a keyword connection string as the page door's check reads it (serve compares pgx's own reading)
+func PGSettings(dsn string) (map[string]string, error) { return pgSettings(dsn) }
 
 type parseError string
 

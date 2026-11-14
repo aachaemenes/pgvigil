@@ -479,9 +479,10 @@ func optionHoldsPassword(x string) bool {
 // QuoteValue quotes a libpq keyword value (a path or a login with a space, a quote or a backslash).
 func QuoteValue(v string) string { return pq(v) }
 
-// pq quotes a libpq keyword value.
+// pq quotes a libpq keyword value: one holding a space or any control byte (pgx splits a bare value at \t, \n, \r,
+// \v and \f too), a quote or a backslash
 func pq(v string) string {
-	if v != "" && !strings.ContainsAny(v, " '\\") {
+	if v != "" && !strings.ContainsAny(v, " '\\") && strings.IndexFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0 {
 		return v
 	}
 	return "'" + strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `'`, `\'`) + "'"

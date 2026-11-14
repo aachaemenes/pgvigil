@@ -188,4 +188,6 @@ A change in Admin > Instances reaches this server's doors at once (its write wai
 answers that the door takes effect within 15 seconds) and another `pgvigil serve` on the same repository within 15
 seconds. Every run's audit row (`custom_report_log`) names its door, `file` (an instance of `pgvigil.yaml`), `page`
 (Admin > Instances') or `store` (the repository), and `door_generation`, the repository's inventory generation the
-door was read from. `pgvigil serve` keeps every open page door's credential in memory while it runs.
+door was read from. `pgvigil serve` keeps every open page door's credential in memory while it runs. While a serve
+cannot read the repository, its last doors stay as they were: a disable written through another serve reaches it once
+its reads work again.

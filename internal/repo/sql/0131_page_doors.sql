@@ -1,10 +1,11 @@
 -- 0131: the read door of an instance added in Admin > Instances (Community tools and custom reports on serve).
 --   admin_inventory()        gains auth and options (the door's words for a sign-in it never opens: serve's own
 --                            identity, an option outside its list); same name, a new shape: dropped and made again,
---                            its one caller (repo.go Inventory) reads the new columns
---   pgvigil_reader           may call admin_inventory() and admin_inventory_generation(): serve's UI pool, which
---                            already reads pgvigil.admin_instances (the page's own list), reads the same rows through
---                            the one function the collector reads
+--                            its two readers (the collector's repo.go Inventory, serve's door watcher) read the new
+--                            columns
+--   pgvigil_reader           may call admin_inventory() and admin_inventory_generation() (as apply_roles has granted
+--                            after every migration since 0122: written here too, so the file stands on its own):
+--                            serve's UI pool, which already reads pgvigil.admin_instances, reads the same rows
 --   custom_report_log        gains door ('file': pgvigil.yaml's instance; 'page': Admin > Instances'; 'store': the
 --                            repository) and door_generation (the inventory generation the run's door was built
 --                            from: repository-wide, one number for the whole list); op 'community_form' (the tool's

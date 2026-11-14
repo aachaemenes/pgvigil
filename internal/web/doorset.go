@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -250,7 +251,21 @@ func pageDSNRefusal(name, engine, dsn string) string {
 		return "instance " + name + ": its credential does not read as a PostgreSQL connection string"
 	}
 	if pc.TLSConfig != nil && len(pc.TLSConfig.Certificates) > 0 || pc.KerberosSrvName != "" || pc.KerberosSpn != "" {
-		return "instance " + name + " signs in with this server's own identity (this server's environment: PGSSLCERT, PGSSLKEY or PGKRBSRVNAME): Community tools and custom reports run on it only from pgvigil.yaml"
+		return "instance " + name + " signs in with this server's own identity (this server's environment: PGSSLCERT or PGSSLKEY): Community tools and custom reports run on it only from pgvigil.yaml"
+	}
+	// pgx's own reading against the check's: a parser that drifts refuses instead of opening
+	kv, err := config.PGSettings(dsn)
+	if err != nil || pc.User != kv["user"] || pc.Password != kv["password"] || kv["dbname"] != "" && pc.Database != kv["dbname"] {
+		return "instance " + name + ": its credential reads differently to the driver than to the door's check: Community tools and custom reports run on it only from pgvigil.yaml"
+	}
+	hosts := map[string]bool{}
+	for _, h := range strings.Split(kv["host"], ",") {
+		hosts[strings.TrimSpace(h)] = true
+	}
+	for _, c := range append([]*pgconn.FallbackConfig{{Host: pc.Host, Port: pc.Port}}, pc.Fallbacks...) {
+		if network, _ := pgconn.NetworkAddress(c.Host, c.Port); network == "unix" || !hosts[c.Host] {
+			return "instance " + name + " signs in through this server's own socket or a host its credential does not name (" + c.Host + "): Community tools and custom reports run on it only from pgvigil.yaml"
+		}
 	}
 	return ""
 }
@@ -356,7 +371,7 @@ func doorTakesEffect(now bool, every time.Duration) string {
 }
 
 // doorsAfterWrite: after a done write of Admin > Instances, this serve's watcher reads the new generation at once and
-// the write waits for it up to doorWait (SF2; the lead 13:43: bounded); the words for the answer, "" where no watcher
+// the write waits for it up to doorWait (a stuck watcher never hangs the page); the words for the answer, "" where no watcher
 // runs (pgvigil demo, mcp: pgvigil.yaml's doors alone)
 func (s *Server) doorsAfterWrite(ctx context.Context) string {
 	if _, ok := doorWake.Load(s); !ok {

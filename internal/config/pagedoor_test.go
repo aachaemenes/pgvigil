@@ -82,12 +82,27 @@ func TestPageDSNRefusal(t *testing.T) {
 		{EngineSQLServer, "sqlserver://reader:pw@db.example?encrypt=true&encrypt=false", "does not read"},
 		{EnginePostgres, "host=db.example port=5432 dbname=erp user=reader password=pw sslmode=require", ""},
 		{EnginePostgres, "host=db.example dbname='my db' user='o\\'neil' password='p w' sslrootcert=system", ""},
-		{EnginePostgres, "postgres://reader:pw@db.example:5432/erp?sslmode=verify-full", ""},
+		// a URL is never what BuildDSN writes: refused (net/url and pgx read a ';' or a '#' apart)
+		{EnginePostgres, "postgres://reader:pw@db.example:5432/erp?sslmode=verify-full", "a URL"},
+		{EnginePostgres, "postgres://reader:pw@h/erp?options=-c%20role%3Dadmin%20-c%20application_name%3Da;b", "a URL"},
+		{EnginePostgres, "postgres://reader:pw@h/erp#?options=-c%20role%3Dadmin", "a URL"},
+		{EnginePostgres, "postgres://u:p@/db", "a URL"},
 		{EnginePostgres, "host=db.example dbname=erp user=reader", "no login and password"},
 		{EnginePostgres, "host=db.example dbname=erp user=reader password=pw passfile=/p", "own identity (passfile)"},
-		{EnginePostgres, "host=db.example dbname=erp user=reader password=pw sslrootcert=/ca.pem", "own identity (sslrootcert)"},
+		{EnginePostgres, "host=db.example dbname=erp user=reader password=pw sslrootcert=/ca.pem", "names a file on this server's host (sslrootcert)"},
 		{EnginePostgres, "host=db.example dbname=erp user=reader password=pw statement_timeout=0", "driver option statement_timeout is not one"},
-		{EnginePostgres, "postgres://reader:pw@db.example/erp?service=prod", "own identity (service)"},
+		{EnginePostgres, "postgres://reader:pw@db.example/erp?service=prod", "a URL"},
+		// pgx splits at \r, \v and \f too, and its last key wins: a second key hidden behind one of them
+		{EnginePostgres, "host=h user=u password=x\vpassword=", "does not read"},
+		{EnginePostgres, "host=h\rservice=prod user=u password=p", "own identity (service)"},
+		{EnginePostgres, "host=h user=u password=p sslmode=require\fpassfile=/p", "own identity (passfile)"},
+		// a host pgx reads as this server's own socket: an empty list element, a path, an abstract socket, none at all
+		{EnginePostgres, "host=h, user=u password=p", "this server's own socket"},
+		{EnginePostgres, "host=/var/run/postgresql user=u password=p", "this server's own socket"},
+		{EnginePostgres, "host=@pg user=u password=p", "this server's own socket"},
+		{EnginePostgres, "user=u password=p dbname=erp", "this server's own socket"},
+		// pgx's keywords are read as written: an upper-case key is a startup setting, not the allowed option
+		{EnginePostgres, "host=h user=u password=p SSLMODE=disable", "driver option SSLMODE is not one"},
 		{EnginePostgres, "host=db.example user=reader user=other password=pw", "does not read"},
 		{EnginePostgres, "host=db.example password='unclosed", "does not read"},
 		{EnginePostgres, "", "not readable on this host"},
@@ -103,6 +118,8 @@ func TestPageDSNRefusal(t *testing.T) {
 		{Engine: EngineSQLServer, Auth: "sql", Host: "db.example", Port: 1433, DBName: "Sales", Login: "reader", Password: "pw", Extra: "TrustServerCertificate=true"},
 		{Engine: EngineSQLServer, Auth: "entra", Host: "db.example", Login: "app-id", Password: "secret"},
 		{Engine: EnginePostgres, Auth: "password", Host: "db.example", Port: 5432, DBName: "erp", Login: "reader", Password: "p w'x", Extra: "sslmode=require"},
+		// a control byte in a typed value is quoted, so the driver reads one value (never a second key)
+		{Engine: EnginePostgres, Auth: "password", Host: "db.example", Login: "reader", Password: "x\vpassword="},
 	} {
 		dsn, err := BuildDSN(c)
 		if err != nil {
@@ -110,6 +127,13 @@ func TestPageDSNRefusal(t *testing.T) {
 		}
 		if why := PageDSNRefusal("i1", c.Engine, dsn); why != "" {
 			t.Errorf("BuildDSN's own string for %s %s refused: %s (%q)", c.Engine, c.Auth, why, dsn)
+		}
+	}
+	// a form's host with an empty list element opens no door
+	dsn, err := BuildDSN(Conn{Engine: EnginePostgres, Auth: "password", Host: "h,", Login: "reader", Password: "pw"})
+	if err == nil {
+		if why := PageDSNRefusal("i1", EnginePostgres, dsn); !strings.Contains(why, "this server's own socket") {
+			t.Errorf("host 'h,': %q (%q)", why, dsn)
 		}
 	}
 }
