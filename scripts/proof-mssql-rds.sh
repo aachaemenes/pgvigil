@@ -866,7 +866,9 @@ XEPAT=$(sq "SELECT LEFT(f, LEN(f) - CHARINDEX('\\', REVERSE(f)) + 1) + 'system_h
   FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address WHERE s.name = N'system_health' AND t.target_name = N'event_file') x") || XEPAT=
 SHSQL="SELECT UPPER(x.c) + ':' + UPPER(x.s) + '|' + CAST(COUNT(*) AS varchar(9)) FROM (SELECT e.x.value('(event/data[@name=\"component\"]/text)[1]', 'nvarchar(60)') AS c,
   e.x.value('(event/data[@name=\"state\"]/text)[1]', 'nvarchar(60)') AS s FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL) f
-  CROSS APPLY (SELECT CAST(f.event_data AS xml) AS x) e WHERE f.object_name = N'sp_server_diagnostics_component_result' AND f.timestamp_utc >= DATEADD(day, -45, SYSUTCDATETIME())) x GROUP BY x.c, x.s"
+  CROSS APPLY (SELECT CAST(f.event_data AS xml) AS x) e WHERE f.object_name = N'sp_server_diagnostics_component_result' AND DATEADD(day, 45, f.timestamp_utc) >= SYSUTCDATETIME()) x GROUP BY x.c, x.s"
+# (the window as DATEADD(day, 45, timestamp_utc): RDS's SQL Server 2019 (15.0.4500.2) answered NO row to 'timestamp_utc >=
+# DATEADD(day, -45, ...)' beside the CROSS APPLY while the same files held 28 component results in it - R1 run 3)
 SHN="SELECT CAST(COUNT(*) AS varchar(12)) FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL)"
 sq "$SHSQL" > "$WORK/sh-b.txt" || : > "$WORK/sh-b.txt"; NB=$(sq "$SHN") || NB=0
 if run_ok mssql_syshealth; then sq "$SHSQL" > "$WORK/sh-a.txt" || : > "$WORK/sh-a.txt"; NA=$(sq "$SHN") || NA=0
