@@ -202,8 +202,8 @@ func (sysHealthCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 		return emit([]collect.Row{readerStateRow(sysHealthSource, readerFailed, err.Error()),
 			{"kind": "collector_error", "source": "system_health", "message": err.Error()}})
 	}
-	t, ok := s.targets["event_file"]
-	if !ok {
+	t := s.targets["event_file"]
+	if xeReadTarget(info.Kind, s.targets) != "event_file" {
 		// a session a DBA changed, or a platform that writes it to a ring buffer only: not a failed read
 		return emit([]collect.Row{readerStateRow(sysHealthSource, readerOff,
 			"system_health has no event_file target on this server: this reader takes the component results from the file only")})

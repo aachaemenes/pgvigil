@@ -543,7 +543,9 @@ func (r *xeRun) readSession(s *xeSession, source string, events []string, state 
 			state["counter"] = n
 		}
 	}
-	if t, ok := s.targets["event_file"]; ok {
+	switch xeReadTarget(r.info.Kind, s.targets) {
+	case "event_file":
+		t := s.targets["event_file"]
 		state["target"], state["buffer_kb"] = "event_file", nilIfZero(t.fileSizeMB*1024)
 		state["dropped_events"] = t.dropEvents
 		var ft xeFileTarget
@@ -562,13 +564,25 @@ func (r *xeRun) readSession(s *xeSession, source string, events []string, state 
 			top *= 20
 		}
 		return r.readFile(s.name, pattern, events, top, c, state)
-	}
-	if t, ok := s.targets["ring_buffer"]; ok {
+	case "ring_buffer":
+		t := s.targets["ring_buffer"]
 		state["target"], state["buffer_kb"] = "ring_buffer", nilIfZero(t.maxMemory)
 		state["dropped_buffers"] = t.dropBufs
-		return r.readRing(s.name, t, events, c, state)
+		return r.readRing(s.name, s.name, t, events, c, state)
 	}
 	return fmt.Errorf("%s has neither a ring_buffer nor an event_file target", s.name)
+}
+
+// xeReadTarget is the target of a session the reader takes: its event file when it has one, else its ring buffer;
+// "" = neither.
+func xeReadTarget(_ Kind, targets map[string]xeTarget) string {
+	if _, ok := targets["event_file"]; ok {
+		return "event_file"
+	}
+	if _, ok := targets["ring_buffer"]; ok {
+		return "ring_buffer"
+	}
+	return ""
 }
 
 func nilIfZero(n int64) any {
@@ -608,14 +622,15 @@ func nameSet(names []string) map[string]bool {
 	return m
 }
 
-// readRing reads one ring buffer whole and emits the events past the cursor in batches, each with its cursor.
-func (r *xeRun) readRing(source string, t xeTarget, events []string, c xeContext, state collect.Row) error {
+// readRing reads one ring buffer whole (the session's) and emits the events past the cursor (source's) in batches,
+// each with its cursor.
+func (r *xeRun) readRing(source, session string, t xeTarget, events []string, c xeContext, state collect.Row) error {
 	cur, err := r.cursor(r.ctx, source)
 	if err != nil {
 		return err
 	}
 	_, dmv := xeScopeWords(r.info.Kind)
-	rs, err := r.conn.QueryContext(r.ctx, fmt.Sprintf(xeRingSQL, dmv), source)
+	rs, err := r.conn.QueryContext(r.ctx, fmt.Sprintf(xeRingSQL, dmv), session)
 	if err != nil {
 		return fmt.Errorf("the ring buffer of %s: %w", source, err)
 	}
