@@ -13,8 +13,11 @@
 #   scripts/dag/trial.sh down <tag>   remove the lab of that tag: a kept one, or what a killed run left behind
 #
 # Needs docker and openssl. From the environment, all optional:
-#   PGVIGIL_MSSQL_IMAGE     the image (default mcr.microsoft.com/mssql/server:2022-latest; run on 16.0.4315 only: no other
-#                           version is proven). Its sqlcmd is found per image: /opt/mssql-tools18 (with -C), else /opt/mssql-tools.
+#   PGVIGIL_MSSQL_IMAGE     the image (default mcr.microsoft.com/mssql/server:2022-CU27-GDR2-ubuntu-22.04, 16.0.4315.2,
+#                           pinned: on 2022 CU28's container, 16.0.4325.4 - what 2022-latest gave from 2026-11-14 - a
+#                           secondary stopped answering logins seconds after its primary made a clusterless group, three
+#                           times, in our lab; 16.0.4315.2 joined at the first try. No other version is proven here). Its
+#                           sqlcmd is found per image: /opt/mssql-tools18 (with -C), else /opt/mssql-tools.
 #   PGVIGIL_DAG_TAG         the lab's name (default pgvdag<8 hex digits>): the containers are <tag>-d1a ... <tag>-d2b, the
 #                           network <tag>-net, both labelled pgvdag=<tag>.
 #   PGVIGIL_DAG_SA          the sa password (default: random), so a caller that goes on with the lab holds it.
@@ -65,7 +68,7 @@ fi
 [[ $# == 0 ]] || { echo "FAIL: unknown argument '$1' (none, or: down <tag>)"; exit 1; }
 
 for t in docker openssl; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine"; exit 1; }; done
-IMG="${PGVIGIL_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}"
+IMG="${PGVIGIL_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-GDR2-ubuntu-22.04}"
 TAG="${PGVIGIL_DAG_TAG:-pgvdag$(openssl rand -hex 4)}"; NET="$TAG-net"
 SA="${PGVIGIL_DAG_SA:-S$(openssl rand -hex 14)!a}"; KP="K$(openssl rand -hex 12)!a"; LP="L$(openssl rand -hex 12)!a"
 tag_ok "$TAG" || { echo "FAIL: PGVIGIL_DAG_TAG is a lower-case letter, then 2 to 39 letters or digits"; exit 1; }
