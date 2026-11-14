@@ -1883,6 +1883,8 @@ _dp += [page_decimals('12.35 ms' if want.startswith('en') else '12,35 ms'), page
 check(_dp == [1, 1, 0, 1, 0, 1, 0, 2, None, None, None, 2, 0, 1], f"decimals: self-test - page_decimals() reads a size, a rate, fmtSecs, days, a badge, a bare number, the language's decimal mark and grouping; words, a time and a version are no figure ({_dp})")
 _pg = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), f'page-{want}.json')
 json.dump(PAGE_DP, open(_pg, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+if os.environ.get('PGVIGIL_EXPORT_OUT') and os.path.isdir(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want)):   # kept beside the downloads
+    json.dump(PAGE_DP, open(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want, os.path.basename(_pg)), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
 _books = [f"{dl}/{n}" for n in PAGE_DP]
 _r = subprocess.run([sys.executable, '-I', 'scripts/xlsx-check.py', 'rules', '--page', _pg] + _books, capture_output=True, text=True)
 _l13 = [l for l in _r.stdout.splitlines() if ' X13 ' in l]
