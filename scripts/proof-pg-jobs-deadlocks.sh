@@ -53,10 +53,19 @@
 #     dl161; [review fold] total 1 and the trend's buckets sum to 1. The two sessions are waited for (both active in
 #     pg_sleep, bounded at 15 s) before the activity read.
 #  G. A pg_cron job changed twice (schedule, then command) with a jobs read after each: /api/jobs/history's changes carry 3
-#     scripts; v1 -> v2 differ in exactly the schedule line, v2 -> v3 in exactly the command line.
+#     scripts; v1 -> v2 differ in exactly the schedule line, v2 -> v3 in exactly the command line. [the version views,
+#     the lead 2026-11-14] D's pgAgent job pgv161_agent changed once (step 'b after': select 1 -> select 3) with a jobs read
+#     after it: its history carries 2 scripts, v1 -> v2 differ in exactly that step's code line.
 #  H. The pages in a headless Chromium: the Deadlocks tab draws the graph (an svg.deadlock-graph with 2 process boxes, 1
 #     victim box, the word VICTIM) and the groups grid has 1 row; the Jobs tab shows Running now, pgAgent steps, the
 #     exclusions and the schedule in words 'at 04:10 every day'; no exception and no console error on either.
+#     [the version views (C01), the lead 2026-11-14; red first: no run of this proof clicked them - uidoor-u3's H has no
+#     such line] On the Jobs tab, pgv161_diff (pg_cron) picked by its name: '<job>: versions' with 3 versions, the newest
+#     version's script against the one before in each view - Side by side diff (a table 'side by side diff: ...'): one
+#     removed line holding select 1 and one added line holding select 2, both tinted, the changed word boxed; Inline
+#     diff (a table 'inline diff: ...'): the same two lines marked - and +, tinted, boxed; Code view (a table 'the script'):
+#     the script alone, no line marked; then pgv161_agent (pgAgent) picked: 2 versions, the same three views over
+#     select 1 -> select 3; each a line 'ok   the version views (<scheduler> <job>): ...'; no exception, no error box.
 #  I. The parser's cases as tests in the scratch copy (the slice owns no test file): a two-process DETAIL; the same under
 #     the 'normalized' policy (every number '?': processes by place, blocked by the next one); a three-process cycle; a
 #     relation lock 'relation 16384 of database 5'; a statement of two lines; a CONTEXT line naming the relation; and the
@@ -249,6 +258,35 @@ check('the Jobs tab', jb && jb.steps && jb.excl && jb.words, JSON.stringify(jb))
 await sleep(500);
 thrown.push(...(await ev(errBoxes)).map(x => 'error box: ' + x));
 check('the Jobs tab: no exception, no error', thrown.length === 0, thrown.join(' | ') || 'none');
+// the version views (C01): a job picked by its name in the jobs grid, its versions listed, the newest version's script
+// against the one before in each of the three views; the changed line tinted (its background not the unchanged lines')
+// and the changed word boxed
+const views = async (sched, name, n, was, now) => {
+  thrown = [];
+  const picked = await ev(`(() => { const t = [...document.querySelectorAll('main table')].find(t => [...t.querySelectorAll('th')].some(th => th.textContent.trim() === 'enabled'));
+    const b = [...(t ?? document).querySelectorAll('button.link')].find(b => b.textContent.trim() === ${JSON.stringify(name)}); if (!b) return false; b.click(); return true; })()`);
+  const kept = picked ? await until(`(() => { const h = [...document.querySelectorAll('main h3')].some(h => h.textContent.trim() === ${JSON.stringify(name + ': versions')});
+    const box = document.querySelector('main .jobversions'); if (!h || !box || !box.querySelector('.versiondetail .textdiff')) return null;
+    return [...box.querySelectorAll('table')].find(t => !t.closest('.versiondetail'))?.querySelectorAll('tbody tr').length ?? -1; })()`, 30000) : null;
+  const read = mode => ev(`(() => { const d = document.querySelector('main .versiondetail .textdiff'); if (!d) return null;
+    const rb = d.querySelector('input[type=radio][value=${mode}]'); if (!rb || rb.disabled) return { off: true }; rb.click();
+    const t = d.querySelector('.tdiff table'); if (!t) return null; const bg = td => getComputedStyle(td).backgroundColor;
+    const del = [...t.querySelectorAll('td.tx.del')], add = [...t.querySelectorAll('td.tx.add')];
+    const plain = [...t.querySelectorAll('td.tx')].find(td => !/\\b(add|del|gap)\\b/.test(td.className));
+    return { table: (t.getAttribute('aria-label') || '').split(':')[0], del: del.map(td => td.textContent.trim()), add: add.map(td => td.textContent.trim()),
+      tinted: del.length + add.length > 0 && [...del, ...add].every(td => bg(td) !== 'rgba(0, 0, 0, 0)' && (!plain || bg(td) !== bg(plain))),
+      boxed: !!t.querySelector('td.tx.del del.w') && !!t.querySelector('td.tx.add ins.w') }; })()`);
+  const side = kept ? await read('side') : null, inline = kept ? await read('inline') : null, code = kept ? await read('code') : null;
+  const pair = v => v && v.del.length === 1 && v.del[0].includes(was) && v.add.length === 1 && v.add[0].includes(now) && v.tinted && v.boxed;
+  const ok = picked && kept === n && side?.table === 'side by side diff' && pair(side) && inline?.table === 'inline diff' && pair(inline)
+    && code?.table === 'the script' && code.del.length === 0 && code.add.length === 0;
+  check(`the version views (${sched} ${name})`, ok, JSON.stringify({ picked, versions: kept, side, inline, code: code && { table: code.table, marked: code.del.length + code.add.length } }).slice(0, 900));
+  await sleep(300);
+  thrown.push(...(await ev(errBoxes)).map(x => 'error box: ' + x));
+  check(`the version views (${sched} ${name}): no exception, no error`, thrown.length === 0, thrown.join(' | ') || 'none');
+};
+await views('pg_cron', 'pgv161_diff', 3, '$cmd$select 1$cmd$', '$cmd$select 2$cmd$');
+await views('pgagent', 'pgv161_agent', 2, '$code$select 1$code$', '$code$select 3$code$');
 ws.close();
 process.exit(failed ? 1 : 0);
 PAGE
@@ -511,6 +549,19 @@ print(' ;; '.join(out))
 PY
 )
   [ "$R" = "3 ;; -    schedule => '5 4 * * *',|+    schedule => '10 4 * * *', ;; -    command  => \$cmd\$select 1\$cmd\$,|+    command  => \$cmd\$select 2\$cmd\$," ] || fail "G: the versions' diffs: $R"
+  # the pgAgent job of D changed once: its second version, for H's version views on both schedulers
+  sq "update pgagent.pga_jobstep set jstcode = 'select 3' where jstjobid = $AJ and jstname = 'b after'" >/dev/null; collect jobs
+  [ "$(api "jobs/history?instance=$I&engine=pg&scheduler=pgagent&job=$AJ")" = 200 ] || fail "G: the pgAgent history: $(cat "$WORK/b")"
+  R=$(python3 - "$WORK/b" <<'PY'
+import json, sys, difflib
+d = json.load(open(sys.argv[1]))
+rows = sorted([dict(zip(d['changes']['columns'], r)) for r in d['changes']['rows']], key=lambda r: r['version_no'])
+s = [r.get('script') or '' for r in rows]
+ch = [l for l in difflib.unified_diff(s[0].splitlines(), s[1].splitlines(), lineterm='', n=0) if l[:1] in '+-' and l[:3] not in ('---', '+++')] if len(s) == 2 else []
+print(len(rows), sum(1 for l in ch if l[0] == '-' and '$code$select 1$code$' in l), sum(1 for l in ch if l[0] == '+' and '$code$select 3$code$' in l), len(ch))
+PY
+)
+  [ "$R" = "2 1 1 2" ] || fail "G: the pgAgent job's versions (count, the removed line, the added line, lines changed): $R"
   echo "G: OK"
 
   echo "--- H. the pages"
