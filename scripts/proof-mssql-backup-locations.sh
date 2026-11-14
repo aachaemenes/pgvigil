@@ -333,8 +333,9 @@ asop "BACKUP LOG pgvbkw TO DISK = N'/backups2/w/l4.trn' WITH FORMAT;"
 sq "BACKUP LOG pgvbkw TO DISK = N'/backups2/c/copy.trn' WITH FORMAT, COPY_ONLY; BACKUP DATABASE pgvbkw TO DISK = N'/backups/w/full2.bak' WITH FORMAT;" >/dev/null
 read2 L8b
 G=$(q "select string_agg(root || ':' || sets, ',' order by root collate \"C\") from pgvigil.mssql_backup_writers where instance_id=$(iid) and database_name='pgvbkw'")
-F=$(q "select severity || '|' || check_name from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkw'")
-D=$(q "select detail from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkw'")
+# the warning (the log's move to /backups2/w is also F11's info 'a backup destination not seen before': run 4)
+F=$(q "select severity || '|' || check_name from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkw' and severity='warning'")
+D=$(q "select detail from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkw' and severity='warning'")
 [ "$G" = "/backups/w:3,/backups2/w:1" ] && [ "$F" = "warning|log backups to two destinations" ] && [[ "$D" == *"/backups/w"*"/backups2/w"* || "$D" == *"/backups2/w"*"/backups/w"* ]] || fail "L8 two destinations: $G | $F | $D"
 G3=$(q "select root || '|' || sets from pgvigil.mssql_backup_writers where instance_id=$(iid) and database_name='pgvbkw3'")
 [ "$G3" = "/backups/w3|2" ] || fail "L8 no full in msdb: $G3"
