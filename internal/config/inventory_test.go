@@ -473,7 +473,7 @@ func TestWatchInventoryRawFailedFirstReadIsUnread(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	gens := make(chan int64, 16)
-	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", 20*time.Millisecond, nil, true,
+	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", 20*time.Millisecond, nil, false,
 		func(_ []Instance, _ []PageInstance, gen int64) { gens <- gen })
 	select {
 	case g := <-gens:
