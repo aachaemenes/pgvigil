@@ -176,8 +176,7 @@ Q "insert into pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabl
    insert into pgvigil.job_runs (instance_id, scheduler, job_id, run_id, status, start_time, end_time, duration_secs, snapshot_at)
    values ($ERP, 'pg_cron', 990001, 990001, 'failed', now() - interval '120 minutes', now() - interval '119 minutes', 60, now()),
           ($ERP, 'pg_cron', 990001, 990002, 'succeeded', now() - interval '60 minutes', now() - interval '59 minutes', 60, now())" >/dev/null
-Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.scheduler || '|' || s.job_id, 'v', concat_ws('|', s.status, s.reason, s.level,
-     s.last_failed_at, s.last_succeeded_at, s.fail_24h, s.fail_7d, s.step_fail_24h, s.step_fail_7d))), '[]')
+Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.scheduler || '|' || s.job_id, 'v', json_build_array(s.status, s.reason, s.level))), '[]')
      from pgvigil.instances i cross join lateral pgvigil.job_status(i.instance_id) s where i.is_active" > "$WORK/jhand.json"
 JALL=$(Q "select (select count(*) from pgvigil.mssql_jobs m join pgvigil.instances i using (instance_id) where i.is_active)
             + (select count(*) from pgvigil.jobs g join pgvigil.instances i using (instance_id) where i.is_active and g.is_present)")
@@ -206,7 +205,7 @@ api = {}
 for r in st:
     api[f"{r['instance_id']}|{r['scheduler']}|{r['job_id']}"] = (r['status'], r['reason'], r['level'], r['last_failed_at'], r['last_succeeded_at'])
 if set(api) != set(hand): out.append(f"status keys: {len(api)} vs the one-instance form's {len(hand)}; only in the API {sorted(set(api) - set(hand))[:3]}, only in the form {sorted(set(hand) - set(api))[:3]}")
-diff = [k for k in api if k in hand and hand[k].split('|')[0:3] != [norm(x) for x in api[k][0:3]]]
+diff = [k for k in api if k in hand and hand[k] != list(api[k][0:3])]   # a NULL reason is None on both sides
 if diff: out.append(f"status / reason / level differ on {len(diff)} job(s): {diff[:3]}")
 if len(st) != int(jall): out.append(f"status rows {len(st)} vs every job {jall}")
 one = rows(json.load(open(f(f'jobsreport?part=status&ids={s1}'))), 'status')
