@@ -83,7 +83,8 @@
 #        WAL written, one read: 'slot WAL near its limit' warning for hadr_grow (one finding per slot: it outranks
 #        growing) [red FAIL]
 #   SL1  about 250 MB more and a checkpoint: the slot loses its WAL (wal_status lost), one read: 'slot invalidated'
-#        critical naming wal_removed (PostgreSQL 17 on: invalidation_reason) [red FAIL]; the slot dropped, the setting and
+#        critical, its value the stable text and its detail naming wal_removed (PostgreSQL 17 on: invalidation_reason;
+#        the run of b0e72a5 looked for the reason in the value and failed on a right finding) [red FAIL]; the slot dropped, the setting and
 #        the threshold reset
 #   SP   a test_decoding slot hadr_dec, logical_decoding_work_mem 64kB, a 20000-row transaction decoded through
 #        pg_logical_slot_get_changes, one read: a slot_stats row for hadr_dec with spill_bytes over 0 [red FAIL]; undone
@@ -546,8 +547,10 @@ if want SL3 || want SL2 || want SL1; then
   echo "  hadr_grow: $(pq "select coalesce(wal_status, '?') || ', ' || coalesce(invalidation_reason::text, '-') from pg_replication_slots where slot_name = 'hadr_grow'")"
   read_ hadr-p 1
   if want SL1; then
-    r=$(slotf hadr_grow)
-    [[ "$r" == "critical|slot invalidated|slot hadr_grow:"*"wal_removed"* ]] && ok "SL1 'slot invalidated' critical: $r" || fail "SL1: '$r'"
+    r=$(slotf hadr_grow); r2=$(check "$PID_" 'slot invalidated')
+    [[ "$r" == "critical|slot invalidated|slot hadr_grow: the slot is invalidated" ]] && ok "SL1 'slot invalidated' critical: $r" || fail "SL1: '$r'"
+    # the reason is in the detail, never the value (alert keys include the value: it stays fixed while the fault lasts)
+    [[ "$r2" == "slot hadr_grow|"*"wal_removed"* ]] && ok "SL1 its detail names wal_removed: $r2" || fail "SL1 detail: '$r2'"
   fi
   pq "select pg_drop_replication_slot('hadr_grow')" >/dev/null
   pq "alter system reset max_slot_wal_keep_size" >/dev/null; pq "select pg_reload_conf()" >/dev/null
