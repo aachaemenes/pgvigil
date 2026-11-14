@@ -55,11 +55,15 @@ SELECT r.instance_id, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'criti
        r.value::text || ' ' || r.unit || coalesce(' (' || r.state || ')', '')
   FROM pgvigil.replication_checks r JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active`},
+	// one judge with the fleet's Jobs page and the SQL Server Agent Jobs cell (FLEET B1): every job of the active
+	// PostgreSQL instances whose status is critical or warning under job_status_view (DBA Dash's default rule where no
+	// threshold is set: the last run failed or a failure inside 60 minutes is critical, a failure inside 7 days a
+	// warning), one row per job; an aborted run is not a failure there, as in DBA Dash
 	{"jobs", `
-SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f.job_name, f.job_id::text), f.start_time,
-       left(f.return_message, 300)
-  FROM pgvigil.job_failures f JOIN pgvigil.instances i USING (instance_id)
- WHERE i.is_active`},
+SELECT v.instance_id, CASE v.status WHEN 'crit' THEN 'critical' ELSE 'warning' END, 'job status', v.scheduler || ' ' || v.job_name,
+       coalesce(v.last_failed_at, now()), v.reason
+  FROM pgvigil.job_status_view(ARRAY(SELECT i.instance_id FROM pgvigil.instances i WHERE i.is_active AND i.engine = 'postgres')) v
+ WHERE v.scheduler <> 'sqlagent' AND v.status IN ('crit', 'warn')`},
 	{"dms", `
 SELECT d.instance_id, d.severity, d.check_name, d.object, d.at, d.detail
   FROM pgvigil.dms_checks d JOIN pgvigil.instances i USING (instance_id)

@@ -100,8 +100,19 @@ WITH inst AS (
                              ORDER BY f.severity, f.setting) FILTER (WHERE f.instance_id IS NOT NULL))[1:12], '{}') AS detail,
          NULL::timestamptz AS since
     FROM st LEFT JOIN f ON f.instance_id = st.instance_id AND f.key = st.key
-   WHERE st.key IN ('blocking', 'events', 'availability', 'logship', 'mirroring', 'full', 'diff', 'log', 'jobs', 'filespace', 'pctmax', 'disk')
+   WHERE st.key IN ('blocking', 'events', 'availability', 'logship', 'mirroring', 'full', 'diff', 'log', 'filespace', 'pctmax', 'disk')
    GROUP BY st.instance_id, st.key
+  UNION ALL
+  -- Agent Jobs: one judge with the fleet's Jobs page (FLEET B1) - job_status_view over the SQL Server instances, DBA
+  -- Dash's default rule where no threshold is set; a critical or warning job counts once, its reason in the detail
+  SELECT st.instance_id, 'jobs', true,
+         count(v.instance_id) FILTER (WHERE v.status = 'crit')::int, count(v.instance_id) FILTER (WHERE v.status = 'warn')::int, NULL::text,
+         coalesce((array_agg('job ' || v.job_name || ': ' || coalesce(v.reason, v.status) ORDER BY v.status, v.job_name)
+                   FILTER (WHERE v.status IN ('crit', 'warn')))[1:12], '{}'),
+         NULL::timestamptz
+    FROM st LEFT JOIN pgvigil.job_status_view(ARRAY(SELECT instance_id FROM inst)) v ON v.instance_id = st.instance_id
+   WHERE st.key = 'jobs'
+   GROUP BY st.instance_id
   UNION ALL
   -- uptime: the threshold in force for the instance (pg_threshold(instance, 'uptime'): DBA Dash's defaults, critical
   -- under 12 hours since the start, warning under 48; set in the Summary's Uptime dialog, task 176b); a start time
