@@ -363,6 +363,8 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 .donut-body svg { width: clamp(150px, 12vw, 200px); height: auto; aspect-ratio: 1; flex: none; }
 .donut { position: relative; }
 .donut.big .donut-body svg { width: min(clamp(300px, 34vw, 520px), 100%); }
+/* the DB Space rows (drives.ts dbSpaceView): the pie's box takes the room beside its grid, 360 px at least (under it below) */
+.dbs-row > .donut.big { flex: 1 1 0; min-width: 360px; }
 /* DBA Dash's pies (dbadash-pies/): the hovered slice pops out - a class only, so no serialized copy of the picture (the
    menu's image, the workbook's) carries it; a slice with a page has the hand */
 .donut-body svg path, .donut-body svg circle, .donut-body svg text { transition: transform .12s ease-out; }

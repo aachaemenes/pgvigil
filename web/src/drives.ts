@@ -360,7 +360,8 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
       body.replaceChildren(
         el('p', { class: 'meta' }, `The space the databases hold now, per instance of ${sc.folder}. Allocated: a SQL Server instance's data and log files, a PostgreSQL instance's databases (pg_database_size). `
           + 'Used: the space used inside SQL Server\'s files where every file\'s was read; a PostgreSQL file holds no unallocated space to read, so it is not given there.'),
-        el('div', { class: 'cards', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
+        // the DB Space row: the pie takes the room its grid leaves (app.css .dbs-row), as DBA Dash's DB Space pie does
+        el('div', { class: 'cards dbs-row', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
           grid(rows, cols, 'No database size read yet.'),
           donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })));
       return;
@@ -373,11 +374,11 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtNum(v) },
       { key: 'used_gb', label: 'used (GB)', num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fmtNum(v) },
       // a PostgreSQL database has no data and log files of its own to size: those two columns are SQL Server's only
-      ...(engine === 'postgres' ? [] : [{ key: 'data_gb', label: 'data files (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }, { key: 'log_gb', label: 'log files (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }] as Col[]),
+      ...(engine === 'postgres' ? [] : [{ key: 'data_gb', label: 'data (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }, { key: 'log_gb', label: 'log (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }] as Col[]),
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
-      el('div', { style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
+      el('div', { class: 'dbs-row', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
         grid(dbs, cols, 'No database size read yet.'),
         // a database opens its own page: PostgreSQL's database page, SQL Server's files of that database (dbSlice)
         donutChart('DB Space by database', dbs.map(r => ({ label: String(r.database), value: Number(r.allocated_bytes ?? 0), href: dbSlice(ctx, engine, r) })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })),
