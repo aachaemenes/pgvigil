@@ -419,6 +419,29 @@ done
 [[ $(q "select count(*) from pgvigil.custom_report_log where op = 'run' and instance = 'store' and statement is not null") == "$(nruns)" ]] || fail "S: not one store log row per run"
 ok "S: the store report equals the hand read; one instance; no row; superuser refused; write, two statements refused; the lock gone; $(nruns) log rows"
 
+# ---- R1 / R2: the UI's password hashes stay out of a store report (REPORT ROLE) --------------------------------------
+# R2, a probe of PostgreSQL, not of pgvigil: on the UI login (pgvigil_reader + pgvigil_auth), SET LOCAL ROLE
+# pgvigil_reader stops a plain ui_password_hash call, but a report's own single statement can switch back, since
+# PostgreSQL checks a role change against the session user ('SET ROLE NONE ... These forms can be executed by any
+# user') - so a store report's boundary is its login (reports_dsn), not a role set inside the run. Either answer is
+# printed; neither fails. Only the hash's first 10 characters are read ('$argon2id$').
+r2a=$(as "$RDR" -c "begin read only" -c "set local role pgvigil_reader" -c "select pgvigil.ui_password_hash('$UIUSER')" -c "rollback" || true)
+r2b=$(as "$RDR" -c "begin read only" -c "set local role pgvigil_reader" \
+  -c "select current_user, set_config('role', 'none', true), current_user, query_to_xml('select left(pgvigil.ui_password_hash(''$UIUSER''), 10) as h', false, false, '')" \
+  -c "rollback" || true)
+if [[ $r2a == *"permission denied for function ui_password_hash"* && $r2b == *'<h>$argon2id$</h>'* ]]; then
+  ok "R2: the escape HOLDS - SET LOCAL ROLE pgvigil_reader on the UI login refuses a plain ui_password_hash call, and ONE statement switches back (set_config('role', 'none', true), then query_to_xml) and reads the hash's prefix (roles: $(head -1 <<<"$r2b" | cut -d'|' -f1,3)): SET LOCAL ROLE alone is no boundary"
+else
+  ok "R2: the escape did NOT hold here - a plain call: ${r2a:0:200}; the switch: $(tr '\n' ' ' <<<"$r2b" | cut -c1-300)"
+fi
+# R1: a store report calling ui_password_hash on the UI login's serve is refused for want of reports_dsn, never run
+[[ $(post customreports "$(add "name=pgcr hash" "body=SELECT left(pgvigil.ui_password_hash('$UIUSER'), 10) AS h")") == 200 ]] || fail "R1: add: $(cat "$WORK/body")"
+HREP=$(js "d['report_id']")
+[[ $(run "{\"report_id\":$HREP,\"target\":\"fleet\"}") == 200 ]] || fail "R1: run: $(cat "$WORK/body")"
+r1=$(js "d['runs'][0]['outcome'] + '|' + str(d['runs'][0].get('error', '')) + '|' + str(d['runs'][0]['sets'][0]['rows'] if d['runs'][0].get('sets') else '')")
+[[ $r1 == refused\|*reports_dsn* ]] || fail "R1: a store report calling pgvigil.ui_password_hash on the UI login's serve was not refused for want of reports_dsn (outcome|error|rows): ${r1:0:300}"
+ok "R1: a store report calling pgvigil.ui_password_hash on the UI login's serve: refused for want of reports_dsn (${r1:0:200})"
+
 # ---- P: PostgreSQL instances -----------------------------------------------------------------------------------------
 [[ $(post customreports "$(add "name=pgcr t" engine=postgres 'body=select count(*) as n from t where n >= @min_n' 'params=[{"name":"min_n","type":"int"}]')") == 200 ]] || fail "P: add: $(cat "$WORK/body")"
 PREP=$(js "d['report_id']")
