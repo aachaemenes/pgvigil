@@ -61,6 +61,7 @@ import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, m
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
 import { hasPool, mssqlPoolView } from './pools';
+import { azureSummaryView, mssqlAzureView } from './azuredb';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlAuditView } from './mssql_audit';
 import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
@@ -103,7 +104,7 @@ const mssqlPages: Record<string, Render> = {
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
-  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlactions: mssqlActionsLogView,
+  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
@@ -116,7 +117,7 @@ const mssqlPages: Record<string, Render> = {
 // such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
 const mssqlTabRuns: Record<string, string[]> = {
   mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
-  mssqlcpu: ['mssql_cpu'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
+  mssqlcpu: ['mssql_cpu', 'mssql_azuredb_resources'], mssqlazure: ['mssql_azuredb_resources', 'mssql_azuredb_governance'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
 };
@@ -133,6 +134,24 @@ for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
     return s;
   };
 }
+// a tab whose collection runs on a platform that has nothing for it to show (B2a: Azure SQL Database has no volumes,
+// mssql_storage reads the database's own files there): the page opens with the platform's line
+const mssqlPlatformNote: Record<string, Record<string, string>> = {
+  drives: { azuresqldb: 'Not on this platform: Azure SQL Database has no volumes; the database\'s files and their max size are on DB Space, Files and the Azure tab.' },
+};
+for (const [tab, notes] of Object.entries(mssqlPlatformNote)) {
+  const page = mssqlPages[tab];
+  mssqlPages[tab] = async c => {
+    const [s, f] = await Promise.all([page(c), fleet().catch(() => null)]);
+    const note = notes[String(f?.instances.find(r => Number(r.instance_id) === c.instance)?.platform ?? '')];
+    if (note && c.instance) {
+      const p = el('p', { class: 'meta' }, note);
+      const h = s.querySelector('h2');
+      if (h) h.after(p); else s.prepend(p);
+    }
+    return s;
+  };
+}
 // a fleet page under a tag folder keeps that folder's instances (as the fleet Slow queries page does): the Jobs timeline, TempDB
 const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
   if (!c.tag) return undefined;
@@ -142,7 +161,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), await mssqlBackupsFleetSection(c)); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages, admin: adminView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), await mssqlBackupsFleetSection(c)); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages, admin: adminView };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
@@ -420,6 +439,8 @@ async function render(force = false) {
     // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
     // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)
     if (imported || fleetRow?.platform !== 'azuresqldb' || !(await hasPool(ctx.instance).catch(() => false))) offStrip.add('mssqlpool');
+    // the Azure tab (B2a) only on an Azure SQL Database pgvigil reads: no other kind of server has its view
+    if (imported || fleetRow?.platform !== 'azuresqldb') offStrip.add('mssqlazure');
   } else if (ctx.instance) {
     // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
