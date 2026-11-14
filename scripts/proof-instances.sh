@@ -859,7 +859,7 @@ for _ in $(seq 1 40); do r=$(crun "$PGD" pg_settings_changed); [[ "$r" == "done|
 echo "ok   N5: on this serve a run right after the add is done and right after the disable refused ('$ATONCE' in each answer); a row Merge leaves out: '$LO', with its step"
 # N6: a report mail schedule of the report on pgd-ok, rendered as its owner each turn
 pq "INSERT INTO pgvigil.alert_channels (name, kind, destination, min_severity, repeat_secs, recovery, configured_at, updated_at) VALUES ('doormail', 'smtp', 'door@pgvigil.test', 'critical', 0, false, now(), now())" >/dev/null || fail "N6: the mail channel"
-code=$(api POST reportmail "$(python3 -c 'import json, sys; print(json.dumps({"op": "add", "name": "door mail", "route": "#/customreports?i=%s&report=%s&run=1" % (sys.argv[1], sys.argv[2]), "recipients": ["door@pgvigil.test"], "channel": "doormail", "cadence": "daily", "cron": "0 7 * * *", "timezone": "UTC"}))' "$PGD" "$RID")")
+code=$(api POST reportmail "$(python3 -c 'import json, sys; print(json.dumps({"op": "add", "name": "door mail", "route": "#/customreports?i=%s&report=%s&run=1" % (sys.argv[1], sys.argv[2]), "recipients": ["door@pgvigil.test"], "channel": "doormail", "cadence": "daily", "at": "07:00", "timezone": "UTC"}))' "$PGD" "$RID")")
 [[ "$code" == 200 ]] || fail "N6: the schedule: $code $(head -c 300 "$TMPD/ans.json")"; SID=$(ans schedule_id)
 turn() { local l0 n0; l0=$(pq "SELECT coalesce(max(log_id), 0) FROM pgvigil.custom_report_log"); n0=$(pq "SELECT count(*) FROM pgvigil.report_mail_sends WHERE schedule_id = $SID")
   pq "UPDATE pgvigil.report_mail_schedules SET next_at = now() - interval '1 second' WHERE schedule_id = $SID" >/dev/null
