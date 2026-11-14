@@ -487,8 +487,8 @@ $$;
 -- digest must be the preview's, the ticked items (force) a subset of its conflicts, and the writes go through
 -- import_app_application / import_app_assign in a fixed order (applications by name, then targets by instance and
 -- database), every one checked before the next; one summary audit row. payload: {ui_user, client, source_name, dry,
--- digest, force: [item ids], file_kind, rows: [{line, level, instance, engine, database, application, environment,
--- tier, description, cmdb_url, not_an_application}]}.
+-- digest, force: [item ids], file_kind, rows: [{line, why (a refusal the parser made: a formula cell, a NUL), level,
+-- instance, engine, database, application, environment, tier, description, cmdb_url, not_an_application}]}.
 CREATE OR REPLACE FUNCTION pgvigil.import_app_file(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -538,11 +538,11 @@ BEGIN
     own_app int, own_env text, own_src text, own_set timestamptz, srv_app int, srv_name text, srv_src text, mark_src text,
     akey text, tapp int, op1 text, op2 text, c1 boolean DEFAULT false, c2 boolean DEFAULT false, outcome text, words text
   ) ON COMMIT DROP;
-  INSERT INTO pg_temp.app_imp_r (line, lvl, inst, eng, db, app, env, tier, descr, url, naa)
-  SELECT x.line, lower(btrim(coalesce(x.level, ''))), btrim(coalesce(x.instance, '')), lower(btrim(coalesce(x.engine, ''))),
+  INSERT INTO pg_temp.app_imp_r (line, why, lvl, inst, eng, db, app, env, tier, descr, url, naa)
+  SELECT x.line, nullif(x.why, ''), lower(btrim(coalesce(x.level, ''))), btrim(coalesce(x.instance, '')), lower(btrim(coalesce(x.engine, ''))),
          coalesce(x.database, ''), btrim(coalesce(x.application, '')), btrim(coalesce(x.environment, '')), btrim(coalesce(x.tier, '')),
          coalesce(x.description, ''), btrim(coalesce(x.cmdb_url, '')), lower(btrim(coalesce(x.not_an_application, '')))
-    FROM jsonb_to_recordset(v_rows) AS x(line int, level text, instance text, engine text, database text, application text,
+    FROM jsonb_to_recordset(v_rows) AS x(line int, why text, level text, instance text, engine text, database text, application text,
                                          environment text, tier text, description text, cmdb_url text, not_an_application text);
 
   -- a credential-shaped cell: the line refused, its text never echoed (D5)
