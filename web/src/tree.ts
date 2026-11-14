@@ -24,7 +24,9 @@ import { dot, el, fmtBytes } from './ui';
 import { dbadashFolders } from './dbadash';
 import { driveNodes } from './treemenu';
 
-const UNTAGGED = 'untagged';
+// the no-tag bucket's key: a sentinel no written tag can be, so a written plain tag 'untagged' is never merged into it
+// (the TAGTREE review A #10)
+const UNTAGGED = '\u0000untagged';
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* private window */ } }
@@ -407,7 +409,7 @@ function scopeFolders(ctx: Ctx, scope: string | undefined, keyOf: (g: string) =>
 const rollup = (f: Fleet, rows: Row[]) => rows.reduce<Level>((a, r) => Math.max(a, worst(f, r)) as Level, 0);
 
 // a folder: its key path (collapse memory), its label, its scope link (top level only), its members, its children
-interface Folder { path: string; label: string; tag?: string; muted?: boolean; rows: Row[]; kids: Folder[] }
+interface Folder { path: string; label: string; tag?: string; muted?: boolean; why?: string; rows: Row[]; kids: Folder[] }
 
 function foldersFor(rows: Row[], keys: string[], level: number, parent: string): Folder[] {
   if (keys.length === 0) {
@@ -418,8 +420,11 @@ function foldersFor(rows: Row[], keys: string[], level: number, parent: string):
       m.get(t)!.push(r);
     }
     const names = [...m.keys()].sort((a, b) => a === UNTAGGED ? 1 : b === UNTAGGED ? -1 : cmpValues(parseTag(a).value, parseTag(b).value) || a.localeCompare(b));
-    // 'untagged' scopes the instances with no tag at all (?tag=untagged, as every page reads it): its folders too (TAGTREE)
-    return names.map(t => ({ path: t, label: t, tag: t, muted: t === UNTAGGED, rows: m.get(t)!, kids: [] }));
+    // 'untagged' scopes the instances with no tag at all (?tag=untagged, as every page reads it): its folders too (TAGTREE);
+    // a WRITTEN tag 'untagged' cannot be scoped (its address is the no-tag folder's): its folder lists its instances only
+    return names.map(t => t === UNTAGGED ? { path: 'untagged', label: 'untagged', tag: 'untagged', muted: true, rows: m.get(t)!, kids: [] }
+      : t === 'untagged' ? { path: 'untagged\u0000written', label: 'untagged (a written tag)', why: 'A written tag named untagged: ?tag=untagged is the folder of the instances with no tag, so this folder has no pages of its own', rows: m.get(t)!, kids: [] }
+      : { path: t, label: t, tag: t, rows: m.get(t)!, kids: [] });
   }
   if (level >= keys.length) return [];
   const key = keys[level], none = `(no ${key})`;
@@ -475,7 +480,7 @@ function draw() {
     const nameOn = tagOn && carried;
     const label = fo.tag
       ? nameOpens(el('a', { class: 'folder-name' + (nameOn ? ' on' : ''), href: href(ctx, { tab: carried ? rootTab : 'summary', instance: undefined, tag: fo.tag }) }, text), 'f:' + fo.path, !shut, nameOn, nameFlip)
-      : nameOpens(el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), style: 'cursor:pointer', title: depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '' }, text), 'f:' + fo.path, !shut, true, nameFlip);
+      : nameOpens(el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), style: 'cursor:pointer', title: fo.why ?? (depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '') }, text), 'f:' + fo.path, !shut, true, nameFlip);
     const box = el('div', { class: 'folder', style: depth ? 'margin-left:.8rem' : '' }, el('div', { class: 'folder-head' }, caret, dot(rollup(f, fo.rows)), label));
     if (!shut) {
       const ul = el('div', { class: 'folder-items' });
