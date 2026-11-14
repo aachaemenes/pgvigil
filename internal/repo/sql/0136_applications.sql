@@ -221,19 +221,19 @@ RETURNS void LANGUAGE sql AS $$
   ON CONFLICT (object_kind, object_id, field) DO UPDATE SET source = EXCLUDED.source, set_at = now(), set_by = EXCLUDED.set_by
 $$;
 
+-- a JSON value as an int, NULL when it is not a whole number in range
+CREATE OR REPLACE FUNCTION pgvigil.app_int(p jsonb)
+RETURNS int LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN jsonb_typeof(p) = 'number' AND p::text ~ '^-?[0-9]{1,9}$' THEN p::text::int
+              WHEN jsonb_typeof(p) = 'string' AND (p #>> '{}') ~ '^-?[0-9]{1,9}$' THEN (p #>> '{}')::int END
+$$;
+
 -- an assign's targets as rows, read straight from the payload: no temp table (a caller's own temp table of that name,
 -- with a trigger, would run inside the owner's function: review A, M1)
 CREATE OR REPLACE FUNCTION pgvigil.app_targets_of(p jsonb)
 RETURNS TABLE (n bigint, instance_id int, database_name text, raw jsonb) LANGUAGE sql IMMUTABLE AS $$
   SELECT e.n, pgvigil.app_int(e.v->'instance_id'), CASE WHEN jsonb_typeof(e.v->'database') = 'string' THEN e.v->>'database' END, e.v
     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p) = 'array' THEN p ELSE '[]'::jsonb END) WITH ORDINALITY AS e(v, n)
-$$;
-
--- a JSON value as an int, NULL when it is not a whole number in range
-CREATE OR REPLACE FUNCTION pgvigil.app_int(p jsonb)
-RETURNS int LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN jsonb_typeof(p) = 'number' AND p::text ~ '^-?[0-9]{1,9}$' THEN p::text::int
-              WHEN jsonb_typeof(p) = 'string' AND (p #>> '{}') ~ '^-?[0-9]{1,9}$' THEN (p #>> '{}')::int END
 $$;
 
 -- the live thresholds, acknowledgements and alert rules scoped by one tag (their written form, 'application:<name>')
