@@ -197,15 +197,6 @@ func fromRecords(kind string, header []string, recs [][]string, lines []int, why
 	return f, nil
 }
 
-func slicesContains(s []string, v string) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
-
 // csvGuardUndo: the export writes one more ' before a cell that starts with = + - @ TAB CR (or with 's before one); the
 // import takes one off - exact both ways (the 312 pass, answer 4), on CSV only.
 var csvGuardUndo = regexp.MustCompile(`^'+[=+\-@\t\r]`)
