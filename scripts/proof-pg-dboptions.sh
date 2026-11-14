@@ -52,7 +52,11 @@
 #     Cause: the sessions logged in as dbo_app, whose statement_timeout C had set to 2.5 ms, so the held session ended
 #     at once. Fixed: the held sessions log in as dbo_hold, a role without overrides, and a hold is read again a second
 #     later; the expectation unchanged.]
-#     ALLOW_CONNECTIONS false on dbo_x: allow warn with its finding; true again: ok, gone. dbo_l (LATIN1, C): encoding
+#     ALLOW_CONNECTIONS false on dbo_x: allow warn with its finding; true again: ok, gone. dbo_inv with datconnlimit -2
+#     (invalid, as an interrupted DROP leaves it; the server's own refusal read first, its version printed): its connection
+#     cell crit 'invalid: ...' with one critical 'database connection limit' finding, and tables and roles end ok (the
+#     per-database list passes an invalid database by; red before that fix: 'partial', FATAL 55000); then dropped: its
+#     row and finding gone after the next databases read. dbo_l (LATIN1, C): encoding
 #     warn (advice, an info finding); its collation cell grey (C has no version on 15+, 'PostgreSQL 15+' on 13);
 #     template0's encoding cell grey. The collation cell (15+): datcollversion of dbo_t written to '0.0' by hand: after
 #     versions warn, recorded 0.0; ALTER DATABASE dbo_t REFRESH COLLATION VERSION: ok again. On 13 every collation cell
@@ -354,7 +358,10 @@ for V in $VERSIONS; do
   # every value read, against the server's own reading of the raw text
   BAD=0; NH=0
   while IFS='|' read -r name raw val; do
-    printf 'begin;\nselect set_config(%s, %s, true) is null;\nselect setting from pg_settings where name = %s;\nrollback;\n' \
+    # ONE statement: a timeout the raw text sets (statement_timeout '2.5ms') is armed only when the NEXT statement starts,
+    # so the read never runs under it (a second statement was cancelled on a loaded box); the local setting ends with
+    # the statement's own transaction. OFFSET 0 keeps set_config out of the lateral's filter.
+    printf 'select p.setting from (select set_config(%s, %s, true) as v offset 0) s,\n  lateral (select setting from pg_settings where name = %s and s.v is not null) p;\n' \
       "'$name'" "'$raw'" "'$name'" > "$WORK/hand.sql"
     got=$(psql "${SU[$V]}" -XAtq -v ON_ERROR_STOP=1 -f "$WORK/hand.sql" < /dev/null | tail -1) || fail "C: the server did not read $name = '$raw'"
     NH=$((NH + 1))
@@ -559,6 +566,24 @@ JS
   s "$V" "alter database dbo_x allow_connections true" >/dev/null; collect "$V" databases
   [[ "$(dbcell "$V" dbo_x allow) $(dbfind "$V" 'database allow connections' dbo_x)" == "ok - 0 -" ]] || fail "D: dbo_x open again reads '$(dbcell "$V" dbo_x allow)'"
   ok "D: dbo_x ALLOW_CONNECTIONS false yellow with its finding; true: green, gone"
+  # D-INV (11-14): a database an interrupted DROP left invalid (datconnlimit -2, set here by hand as the server's own
+  # DROP leaves it): its connection cell red with 0104's words, and the per-database collections pass it by - a read
+  # of it is refused (FATAL 55000) and ended the collection 'partial' every run before the fix
+  s "$V" "create database dbo_inv" >/dev/null
+  s "$V" "update pg_database set datconnlimit = -2 where datname = 'dbo_inv'" >/dev/null
+  # precondition (review 20261114-095000 #1): this server itself refuses an invalid database (13.12, 14.9, 15.4, 16+);
+  # on an older minor the row would pass with or without the fix
+  echo "  (PostgreSQL $V runs $(s "$V" "select version()" | cut -d' ' -f1-2))"
+  INVERR=$(psql "${SU[$V]} dbname=dbo_inv" -XAtqc "select 1" 2>&1) && fail "D: the server let a session into dbo_inv (datconnlimit -2): an older minor, the row proves nothing"
+  [[ "$INVERR" == *"invalid database"* ]] || fail "D: dbo_inv refused with other words: $INVERR"
+  collect "$V" databases tables roles
+  IV=$(dbcell "$V" dbo_inv conn); IN=$(q "select conn_note from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_inv'")
+  [[ "$IV" == "crit critical" && "$IN" == invalid:* ]] || fail "D: dbo_inv invalid reads '$IV' '$IN'"
+  [[ "$(dbfind "$V" 'database connection limit' dbo_inv)" == "1 critical" ]] || fail "D: dbo_inv's finding reads '$(dbfind "$V" 'database connection limit' dbo_inv)' (want 1 critical)"
+  s "$V" "drop database dbo_inv" >/dev/null; collect "$V" databases
+  [[ "$(dbfind "$V" 'database connection limit' dbo_inv)" == "0 -" && -z "$(q "select 1 from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_inv'")" ]] \
+    || fail "D: after the DROP dbo_inv still has its row or finding ('$(dbfind "$V" 'database connection limit' dbo_inv)')"
+  ok "D: dbo_inv invalid (datconnlimit -2, refused by the server itself): red 'invalid: ...' with its critical finding; tables and roles ended ok without it; dropped: row and finding gone"
   [[ "$(dbcell "$V" dbo_l encoding) $(dbfind "$V" 'database encoding' dbo_l)" == "warn info 1 info" ]] || fail "D: dbo_l LATIN1 reads '$(dbcell "$V" dbo_l encoding)'"
   [[ "$(dbcell "$V" dbo_l collation)" == "none -" ]] || fail "D: dbo_l's collation (C) reads '$(dbcell "$V" dbo_l collation)'"
   [[ "$(dbcell "$V" template0 encoding)" == "none -" ]] || fail "D: template0's encoding reads '$(dbcell "$V" template0 encoding)'"
