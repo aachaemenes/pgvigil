@@ -12,7 +12,8 @@
 #   PGVIGIL_SRC        the source tree to build (default: this checkout); PGVIGIL_BIN a built binary instead (its bundle).
 #
 # Expected (written before the first run):
-#  A. with w=7d: demo-onprem-erp01's caret shows, in order, Configuration, Checks, Replication, Storage, Databases, Jobs,
+#  A. with w=7d: demo-onprem-erp01's caret shows, in order, Configuration, Checks, HA/DR, Storage, Databases, Jobs,
+#     Performance, Reports (DBA Dash's order, Main.cs L1627-1643, then pgvigil's own Performance and Reports last; TAGTREE),
 #     and no API read; Databases opens with exactly 1 /api/dbinfo read and lists the instance's present non-template
 #     databases (the same names as that read); a database node opens "Database <name>" with w=7d and db= in the hash; its
 #     Tables folder opens with exactly 1 /api/drill/db read and lists up to 15 tables; a table node opens "Table <s>.<t>"
@@ -117,7 +118,7 @@ let n0 = reqs.length;
 await ev(`__inst('demo-onprem-erp01').querySelector('button.caret').click(), 'ok'`);
 await sleep(300);
 const folders = await ev(`__under(__inst('demo-onprem-erp01')).map(b => b.querySelector(':scope > .tree-node')?.textContent.slice(1))`);
-check(JSON.stringify(folders) === JSON.stringify(['Configuration', 'Checks', 'Replication', 'Storage', 'Databases', 'Jobs']), `instance folders: ${JSON.stringify(folders)}`);
+check(JSON.stringify(folders) === JSON.stringify(['Configuration', 'Checks', 'HA/DR', 'Storage', 'Databases', 'Jobs', 'Performance', 'Reports']), `instance folders: ${JSON.stringify(folders)}`);
 check(since(n0).length === 0, `opening an instance reads nothing (${since(n0).join(' ')})`);
 n0 = reqs.length;
 await ev(`__folder(__inst('demo-onprem-erp01'), 'Databases').querySelector('button.caret').click(), 'ok'`);

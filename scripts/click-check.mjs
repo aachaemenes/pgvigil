@@ -114,6 +114,26 @@ const landing = async () => ev(`(() => { const m = document.querySelector('main'
   const err = [...(m?.querySelectorAll('p.error') ?? [])].map(e => e.textContent.slice(0, 160));
   return { hash: location.hash, h2: m?.querySelector('h2')?.textContent?.trim() ?? '', err }; })()`);
 
+// TAGTREE (DBA Dash: Main.cs L95-110, a tag folder's own Configuration, Checks, HA/DR, Storage, Jobs, Reports, each over
+// that folder's instances only, SQLTreeItem.cs L168-190): the tag folder of `tag` at the tree's top (its name a link that
+// carries tag=<tag>) and, inside it, the folder of a group by its caret key 't:<folder path>/<group>', opened when closed;
+// the folder name's href and its leaves [text, href], or why there is none
+const tagFolder = (group) => ev(`(async () => {
+  const want = ${JSON.stringify('tag=' + encodeURIComponent(tag))};
+  const carries = a => ((a.getAttribute('href') || '').split('?')[1] || '').split('&').includes(want);
+  const findCaret = () => { const top = [...document.querySelectorAll('#tree .folder')].find(f => [...f.querySelectorAll(':scope > .folder-head a')].some(carries));
+    return top ? [...top.querySelectorAll('button.caret')].find(b => /^t:/.test(b.dataset.key || '') && b.dataset.key.endsWith('/' + ${JSON.stringify(group)})) ?? 'none' : null; };
+  let c = findCaret();
+  if (c === null) return { why: 'no tag folder whose name links ' + want };
+  if (c === 'none') return { why: 'the tag folder holds no folder with a caret key t:.../' + ${JSON.stringify(group)} };
+  if (c.getAttribute('aria-expanded') !== 'true') { c.click(); await new Promise(r => setTimeout(r, 500)); c = findCaret(); }
+  const box = c && c !== 'none' ? c.closest('.tree-node')?.parentElement : null;
+  if (!box) return { why: 'the folder was not drawn again after its caret was clicked' };
+  return { key: c.dataset.key, name: box.querySelector(':scope > .tree-node a')?.getAttribute('href') ?? null,
+    leaves: [...box.querySelectorAll(':scope > div:not(.tree-node) a.inst')].map(a => [a.textContent.trim(), a.getAttribute('href')]) };
+})()`, true);
+const treeClick = async h => { await ev(`(() => { const a = [...document.querySelectorAll('#tree a')].find(x => x.getAttribute('href') === ${JSON.stringify(h)}); a?.click(); return !!a; })()`); await sleep(500); await settled(); return landing(); };
+
 const results = [];
 let fails = 0;
 const record = (r) => { results.push(r); if (r.verdict.startsWith('FAIL')) fails++; };
@@ -247,6 +267,18 @@ for (const sc of scopes) {
     caret = await ev(`(() => { const b = [...document.querySelectorAll('#tree button.caret')].find(x => x.dataset.key === 'i${sc.instance}'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); return !!b; })()`);
     await sleep(600);
   }
+  // the tag scope: the tag folder's OWN Storage (TAGTREE; the pass's #10), found by its 't:' caret key - its name lands on
+  // Drives with tag=<tag> kept (the first 'Storage' without i= is the root's: the fleet's Drives, the tag lost)
+  if (!sc.instance && sc.name.startsWith('tag ')) {
+    await go(sc.hash);
+    const ts = await tagFolder('storage');
+    if (!ts.name) record({ scope: sc.name, kind: 'tree', column: 'Storage', engine: '', link: "the tag folder's Storage", landed: ts.why ?? "its Storage folder's name is no link", verdict: "FAIL no Storage folder of the tag folder's own with a link" });
+    else {
+      const got = await treeClick(ts.name);
+      record({ scope: sc.name, kind: 'tree', column: 'Storage', engine: '', link: "the tag folder's Storage", landed: `${got.hash} (${got.h2.slice(0, 40)})`,
+        verdict: tabOf(got.hash) === 'drives' && paramsOf(got.hash).get('tag') === tag && !got.err.length ? "ok (DBA Dash: a tag folder's Storage -> Drives, its instances)" : `FAIL want drives with tag=${tag}, got ${got.hash} ${got.err[0] ?? ''}` });
+    }
+  } else {
   const treeHref = await ev(`(() => { const want = ${JSON.stringify(sc.instance ? `i=${sc.instance}` : '')};
     const a = [...document.querySelectorAll('#tree a')].find(x => x.textContent.trim() === 'Storage' && (want ? x.getAttribute('href').includes(want) : !/[?&]i=/.test(x.getAttribute('href'))));
     return a ? a.getAttribute('href') : null; })()`);
@@ -260,6 +292,7 @@ for (const sc of scopes) {
     const got = await landing();
     record({ scope: sc.name, kind: 'tree', column: 'Storage', engine: '', link: 'tree Storage', landed: `${tabOf(got.hash)} (${got.h2.slice(0, 40)})`, verdict: tabOf(got.hash) === 'drives' && !got.err.length ? 'ok (DBA Dash: Storage -> Drives)' : `FAIL want drives, got ${tabOf(got.hash)} ${got.err[0] ?? ''}` });
   }
+  }   // the tag scope's own Storage row above
 }
 
 // every tab of the Storage folder at each scope: drawn, no error box
@@ -540,6 +573,40 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
       } else pm(`${eng} ${inst.name}`, 'zoom: Reset zoom from a custom range', eng, 'no custom range to open', false, 'the first case left no zoomed address');
     } else pm(`${eng} ${inst.name}`, 'Performance zoom', eng, 'not drawn', false, 'the Performance page did not draw');
   }
+}
+
+// TAGTREE rows (the lead's 07:35 GO): (a) the tag folder's own Jobs folder holds the Jobs page of that tag
+{
+  const sc = `tag ${tag}`;
+  await go(`#/summary?tag=${encodeURIComponent(tag)}`);
+  const tj = await tagFolder('jobs');
+  const jobs = tj.leaves?.find(([t]) => t === 'Jobs')?.[1];
+  if (!jobs) record({ scope: sc, kind: 'tag-tree', column: 'Jobs', engine: '', link: "the tag folder's Jobs", landed: tj.why ?? `leaves: ${(tj.leaves ?? []).map(l => l[0]).join(', ') || 'none'}`, verdict: "FAIL no Jobs leaf in the tag folder's own Jobs folder" });
+  else {
+    const got = await treeClick(jobs);
+    record({ scope: sc, kind: 'tag-tree', column: 'Jobs', engine: '', link: "the tag folder's Jobs", landed: `${got.hash} (${got.h2.slice(0, 40)})`,
+      verdict: tabOf(got.hash) === 'jobs' && paramsOf(got.hash).get('tag') === tag && !got.err.length ? "ok (DBA Dash: a tag folder's Jobs, its instances only)" : `FAIL want jobs with tag=${tag}, got ${got.hash} ${got.err[0] ?? ''}` });
+  }
+  // (c) Alerts under the tag lists only the tag's instances' alerts and names the tag (DBA Dash: Main.cs L1820-1822 at a
+  // tag folder); the root's Alerts must list an instance outside the tag, or the row proves nothing
+  const tagNames = new Set(insts.filter(r => (Array.isArray(r.tags) ? r.tags : []).includes(tag)).map(r => String(r.name)));
+  const alertInstances = () => ev(`(() => { const out = [];
+    for (const t of document.querySelectorAll('main table.grid')) {
+      const hs = [...t.querySelectorAll('thead th')].map(h => (h.querySelector('.th-label') ?? h).textContent.trim());
+      const i = hs.findIndex(h => h === 'instance' || h === 'instance (one)');
+      if (i < 0) continue;
+      for (const tr of t.querySelectorAll('tbody tr')) { const v = tr.children[i]?.textContent.trim(); if (v) out.push(v); }
+    }
+    return { out, h2: document.querySelector('main h2')?.textContent.trim() ?? '' }; })()`);
+  await go('#/alerts'); const rootA = await alertInstances();
+  const outside = [...new Set(rootA.out.filter(n => !tagNames.has(n)))];
+  await go(`#/alerts?tag=${encodeURIComponent(tag)}`); const tagA = await alertInstances();
+  const leak = [...new Set(tagA.out.filter(n => !tagNames.has(n)))];
+  record({ scope: sc, kind: 'tag-tree', column: 'Alerts', engine: '', link: `#/alerts?tag=${tag}`, landed: `${tagA.out.length} row(s) naming an instance, ${leak.length} outside the tag; heading '${tagA.h2.slice(0, 50)}'`,
+    verdict: outside.length === 0 ? "FAIL the root's Alerts lists no instance outside the tag: the row proves nothing"
+      : leak.length ? `FAIL ${leak.length} instance(s) outside ${tag} listed: ${leak.slice(0, 4).join(', ')}`
+      : !tagA.h2.includes(tag) ? `FAIL the heading '${tagA.h2}' does not name ${tag}`
+      : `ok (the root lists ${outside.length} instance(s) outside the tag; under it none)` });
 }
 
 // an instance whose drives' Files pages listed no file at all has proven nothing
