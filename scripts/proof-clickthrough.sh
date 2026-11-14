@@ -34,6 +34,12 @@
 #     'current' rows 2; 'tree: 0 leaf(s) found on the second look'; no tree leaf NOTHING; 'click-through: OK (...)', rc 0
 #   beside the run: every path in the eighth's rows and not in the ninth's (or the reverse) is a control with a meta
 #     span - the ten range items
+# Expected (the tenth run, after the must rows - written before it): as the ninth's grade, and: the grader's self-test
+# 15 of 15 cases; the expected file 19 rows (12 FAIL rows, 7 must rows); the tree's drive nodes each a row 'tree drive
+# <volume>' of kind link with its bar (demo-onprem-erp01's '/' and '/var/lib/pgsql', demo-onprem-sql01's C:, E:, L: and
+# T: as its Drives page lists them), no 'tree drive (none)' row; each must row 'clicked' (the two drive rows and E304's
+# five: the Base backups dialog, its Set held, Inherit off with its words, Back, the root Thresholds page's Set...
+# refused in words on the demo); 'click-through: OK (... 7 must row(s) clicked ...)', rc 0
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""

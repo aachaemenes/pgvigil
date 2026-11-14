@@ -18,3 +18,12 @@ reads | ms | ^mssqlqueries$ | ^B cell 6$ | the Queries page's Draw on the strip,
 # the second review: a pressed button (aria-pressed) is no longer the current choice; the two that are one choice of a set
 NOTHING | root | ^admin$ | ^B Servers$ | Admin's 'Servers', the tab already shown (a pressed button of the tab set, aria-pressed): its click changes nothing and nothing says it is the one shown; fix: the shown tab marked aria-current (web/src/alerts.ts:728 / :737)
 NOTHING | root | ^alert$ | ^B at the firing$ | the alert page's 'at the firing', the view already shown (pressed, one of 'at the firing' / 'now'): its click changes nothing and nothing says it is the one shown; fix: the shown view marked aria-current (web/src/alert_page.ts:251)
+# must rows: a control the walk must reach, a row of the kinds named, else MISSING and the run fails (the PostgreSQL
+# re-grade's BUILT-NOT-CLICKED rows A22 / G05 and E304)
+must link | pg | ^tree$ | ^tree drive  | a PostgreSQL instance's Storage folder: a node per volume with its used / free bar beside its name, its click lands on the Storage tab (web/src/treemenu.ts:530-560; A22 / G05)
+must link | ms | ^tree$ | ^tree drive  | a SQL Server instance's Storage folder: the same nodes, its click lands on its Storage tab (web/src/treemenu.ts:530-560)
+must dialog | pg | ^pgbackups$ | ^B cell \d+$ | the Base backups tab's threshold Change opens the dialog 'Threshold <key>' (web/src/pg_backups.ts:51-125; E304)
+must write held | pg | ^pgbackups$ | ^B cell \d+ > dlg B Set$ | the dialog's Set sends POST /api/pg/thresholds, held by the walk (the write itself: proof-pg-backups-roles.sh A3, S9, S11) (E304)
+must disabled | pg | ^pgbackups$ | ^B cell \d+ > dlg B Inherit$ | the dialog's Inherit off with its words at a level with no threshold of its own (E304)
+must redraws | pg | ^pgbackups$ | ^B cell \d+ > dlg B Back$ | the dialog's Back closes it unsaved (E304)
+must status|disabled | root | ^pgthresholds$ | ^B Set\.\.\.$ | the root Thresholds page's Set...: on the demo refused in words (a change past the demo's instances) (web/src/pg_backups.ts:366-439; E304)

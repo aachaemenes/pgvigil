@@ -480,9 +480,23 @@ function treeLeaves(sc) {
   for (const a of document.querySelectorAll('#tree a[href]')) {
     const h = a.getAttribute('href') || ''; const m = /[?&]i=(\d+)/.exec(h);
     if (sc.id ? m?.[1] !== sc.id : !!m) continue;
+    if (a.closest('.tm-drive')) continue;   // a drive node: its own leaf below (treeDrives)
     if (!seen.has(fold(h))) seen.set(fold(h), [h, (a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60)]);
   }
   return [...seen.values()];
+}
+// the drive nodes under the scope's instance's Storage folder (treemenu.ts driveNodes): each by its volume, its link's
+// address and words (the free space, of the total) and its bar (its level and the used share drawn); a node's link has
+// the Storage tab's own address, so the leaves above (one per address) never reach it. state: still reading / an error
+function treeDrives(sc) {
+  const mine = d => /[?&]i=(\d+)/.exec(d.querySelector('a[href]')?.getAttribute('href') || '')?.[1] === String(sc.id);
+  const nodes = [...document.querySelectorAll('#tree .tm-drive')].filter(mine).map(d => {
+    const a = d.querySelector('a[href]'), bar = d.querySelector('.tm-bar'), fill = bar?.querySelector('span');
+    return { vol: d.dataset.volume || '', href: a.getAttribute('href'), title: a.title || (a.textContent || '').trim(),
+      bar: bar ? (bar.className.replace(/\btm-bar\b/, '').trim() || 'no level') + (fill ? ' ' + fill.style.width + ' used' : ' (no fill)') : '' };
+  });
+  const p = [...document.querySelectorAll('#tree p')].map(x => x.textContent.trim()).find(t => /^Reading the drives|^Drives: /.test(t)) ?? '';
+  return { nodes, state: p };
 }
 const openAll = async sc => {
   for (let round = 0; round < 6; round++) {
@@ -529,6 +543,31 @@ for (const sc of treeScopes) {
       row.kind = !okL ? 'link-stuck' : (s.errors?.length || row.api.length || row.exc.length) ? 'link-error' : s.hash === href ? 'link' : s.hash === h0 ? 'NOTHING' : 'navigates';
     } catch (e) { row.kind = lost ? 'browser lost' : 'driver error'; row.why = e.message; await ensure().catch(() => {}); }
     out.tree.push(row);
+  }
+  // an instance's drive nodes (A22 / G05): each clicked from a fresh page as its own leaf, its bar in the row; none drawn
+  // within 10 s of the Storage folder opening is a row 'not reached' with what the folder said
+  if (sc.id) {
+    const drivesOf = async () => { let d = { nodes: [], state: '' }; for (const t = Date.now(); Date.now() - t < 10000; await sleep(250)) { d = await call(treeDrives, sc).catch(() => d); if (d.nodes.length || /^Drives: /.test(d.state)) break; } return d; };
+    let drives = { nodes: [], state: '' };
+    try { await fresh(sc.hash); await openAll(sc); drives = await drivesOf(); }
+    catch (e) { drives.state = 'driver error: ' + e.message; await ensure().catch(() => {}); }
+    if (!drives.nodes.length) out.tree.push({ scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree drive (none)'], tag: 'A', kind: 'not reached', why: 'no drive node under the Storage folder' + (drives.state ? ': ' + drives.state : '') });
+    for (const d of drives.nodes) {
+      const row = { scope: sc.scope, page: 'tree', hash: sc.hash, path: ['tree drive ' + d.vol], tag: 'A', what: d.title, href: d.href, bar: d.bar };
+      try {
+        await fresh(sc.hash); await openAll(sc); await drivesOf(); net = []; exc = [];
+        const h0 = await ev('location.hash').catch(() => '');
+        const clicked = await ev(`(() => { const n = [...document.querySelectorAll('#tree .tm-drive')].find(n => n.dataset.volume === ${JSON.stringify(d.vol)} && n.querySelector('a[href]')?.getAttribute('href') === ${JSON.stringify(d.href)}); const a = n?.querySelector('a[href]'); if (!a) return false; a.click(); return true; })()`);
+        if (!clicked) { row.kind = 'not reached'; row.why = 'the drive node gone'; out.tree.push(row); continue; }
+        await sleep(300);
+        const okL = await settled(); const s = await ev(state).catch(e => ({ errors: [String(e)] }));
+        row.api = net.filter(x => x.status >= 400 || x.status === 0); row.exc = [...exc]; row.landing = { hash: s.hash, h2: s.h2, errors: s.errors, settled: okL, busy: okL ? [] : await ev(BUSYLINES).catch(() => []) };
+        // a node with no bar drawn is NOTHING to the eye: it says nothing of the volume's space
+        row.kind = !okL ? 'link-stuck' : (s.errors?.length || row.api.length || row.exc.length) ? 'link-error' : !d.bar ? 'NOTHING' : s.hash === d.href ? 'link' : s.hash === h0 ? 'NOTHING' : 'navigates';
+        if (!d.bar) row.why = 'no bar beside the volume';
+      } catch (e) { row.kind = lost ? 'browser lost' : 'driver error'; row.why = e.message; await ensure().catch(() => {}); }
+      out.tree.push(row);
+    }
   }
   save();
 }
