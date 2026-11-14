@@ -408,13 +408,14 @@ if [ -z "${PROOF_SKIP_DBATOOLS:-}" ]; then
               (select string_agg(f.path, ';' order by f.family) from pgvigil.mssql_backup_files f where f.instance_id = l.from_instance_id and f.database_name = l.database_name
                   and f.backup_type = l.backup_type and f.is_copy_only = l.is_copy_only and f.mirror = 0)
          from pgvigil.mssql_backup_locations l where l.instance_id=$(iid) and l.shown and l.database_name in ('pgvbka','pgvbkw','pgvbkr','pgvbkv') order by 1" > "$WORK/pgvigil.txt"
-    sort -o "$WORK/dbatools.txt" "$WORK/dbatools.txt"
+    # PowerShell in the container ends its lines with CR LF and may print blank lines (run 6)
+    tr -d '\r' < "$WORK/dbatools.txt" | grep -v '^$' | sort > "$WORK/dbatools.sorted"; mv "$WORK/dbatools.sorted" "$WORK/dbatools.txt"
     DIFF=$(diff "$WORK/pgvigil.txt" "$WORK/dbatools.txt" | grep '^[<>]' | sed 's/^</pgvigil:/; s/^>/dbatools:/' | sort -t'|' -k1,2 || true)
     echo "$DIFF" | sed 's/^/     /'
     NULL_ID=$(setid pgvbka L); OTHER_ID=$(setid pgvbkw L); PART_ID=$(sq "SELECT MAX(backup_set_id) FROM msdb.dbo.backupset WHERE database_name = N'pgvbkr' AND type = 'P'")
     # what may differ, and only that: one line each side for pgvbka's log, pgvbkw's log, pgvbkr's full
-    KEYS=$(echo "$DIFF" | cut -d: -f2- | cut -d'|' -f1,2 | sort -u | tr '\n' ' ')
-    [ "$KEYS" = "pgvbka|LastLog pgvbkr|LastFull pgvbkw|LastLog " ] || fail "L11: the rows that differ are $KEYS, want exactly pgvbka's log, pgvbkr's full and pgvbkw's log"
+    KEYS=$(echo "$DIFF" | grep -v '^$' | cut -d: -f2- | cut -d'|' -f1,2 | sort -u | paste -sd' ')
+    [ "$KEYS" = "pgvbka|LastLog pgvbkr|LastFull pgvbkw|LastLog" ] || fail "L11: the rows that differ are $KEYS, want exactly pgvbka's log, pgvbkr's full and pgvbkw's log"
     echo "$DIFF" | grep -q "^dbatools:pgvbka|LastLog|$NULL_ID|NUL" || fail "L11 (a): dbatools' pgvbka log is not the NUL one ($NULL_ID)"
     echo "$DIFF" | grep -q "^dbatools:pgvbkw|LastLog|$OTHER_ID|" || fail "L11 (b): dbatools' pgvbkw log is not the other server's ($OTHER_ID)"
     echo "$DIFF" | grep -q "^dbatools:pgvbkr|LastFull|$PART_ID|" || fail "L11 (c): dbatools' pgvbkr full is not the partial backup ($PART_ID)"
