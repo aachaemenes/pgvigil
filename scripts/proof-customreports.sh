@@ -125,6 +125,7 @@
 #     are the reasons; state (c): system_health filled with its note, done; the real instance beside the demo its own
 #     -no-login state with every tool off, never the demo line. The DOM check reads buttons, inputs, selects and
 #     textareas in main and dialogs: a link or a role=button control is outside it (B2's list holds the other pages).
+#     sp_Blitz's form after its click: its heading inside the view (not covered) with the focus (failed with S's).
 #  S. [B3 DONE-2] the demo's stored samples (pgvigil demo -serve -config, beside the real instances), clicked in Chromium
 #     on the first demo SQL Server and PostgreSQL instance in both themes and through the fleet picker: 14 and 10 tool
 #     names, none off; each opens its panel (light): the sample line of the API's own mark naming the kit of its group,
@@ -148,6 +149,11 @@
 #     the sample grid's menu 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark
 #     first (the tools' grid's copy carries none); the exported sample CSV opened by the bar's Tools > Open Grid or
 #     Data Set reads as the sample's own columns and rows, its note starting with the mark.
+#     [the panel in view, 1500 x 1100] every tool's panel, after its click, after 'Open sample' from the top of the page
+#     and with tool= on load, and the dark panels: its heading inside the view (the point at its middle is the
+#     heading's) with the focus; the intro says 'each tool opens a stored sample of its real output, captured on a test
+#     server; nothing runs on a demo instance'; each row with a sample has a button 'Open sample' named 'Open sample:
+#     <tool>'; axe-core (WCAG 2.1 A and AA) 0 on the demo page in both themes; the view's pictures (view-*.png).
 #  U3. [B3] each state as the page draws it: threshold 0 (read live): sp_HumanEventsBlockViewer on with its note, the
 #     default click fills system_health, done; the procedures' refusals drawn as notes 'declined' with their words and no
 #     error box (sp_HumanEventsBlockViewer on a typed session at 0, sp_IndexCleanup on a missing database); a real
