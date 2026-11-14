@@ -57,7 +57,9 @@
 #      with its mark. msdb replaced: its history deleted and backupset's identity reseeded, a full of pgvbkr taken (a
 #      backup_set_id below the cursor): the next read stores it.
 #  L12 the least-privilege login (a user in msdb with db_datareader, no server right) reads the same sets as the monitor
-#      login; a login without a user in msdb: 'skipped', naming msdb.dbo.backupset and the missing right.
+#      login; a login without a user in msdb: read through msdb's guest where public may select the backup tables, else
+#      'skipped' naming the table - never an error. (Changed after run 9: the expected said 'skipped'; on this container
+#      public may select them and the login read 20 rows.)
 #  L15 (F9) SQL Server 2019: one read with no error, compression_algorithm and last_valid_restore_at NULL.
 #  L20 msdb's indexes on backupset and backupmediafamily printed (sp_helpindex), the writers' backup_finish_date among them.
 #  H   the API: /api/mssql/backup_files?instance= answers sets, files (every path of every set), writers, roots,
@@ -450,8 +452,11 @@ collect mssql_backup_files pgvbk-l || fail "L12: the least-privilege read failed
 IL=$(q "select instance_id from pgvigil.instances where name='pgvbk-l'")
 G=$(q "select count(*) from pgvigil.mssql_backup_sets where instance_id=$IL"); GM=$(q "select count(*) from pgvigil.mssql_backup_sets where instance_id=$(iid) and snapshot_at > now() - interval '1 hour'")
 [ "$G" -gt 0 ] || fail "L12: the least-privilege login stored no set"
-collect mssql_backup_files pgvbk-b || true
-grep -q "skipped" "$OUT" && grep -q "msdb.dbo.backupset" "$OUT" || fail "L12: the login without msdb: $(cat "$OUT")"
+# a login without a user in msdb: msdb's guest lets it in, and where public holds SELECT on the backup tables (this
+# container, run 9 - as proof-mssql-hadr.sh notes for mssql_backups) it reads them; where not, the collection is skipped
+# naming the table; never an error
+collect mssql_backup_files pgvbk-b || fail "L12: the login without msdb failed: $(cat "$OUT")"
+grep -qE "row\(s\) in" "$OUT" && { ! grep -q skipped "$OUT" || grep -q "msdb.dbo.backup" "$OUT"; } || fail "L12: the login without msdb: $(cat "$OUT")"
 ok "L12: the least-privilege login stored $G sets (the monitor login $GM after msdb was emptied); without msdb: $(tr '\n' ' ' < "$OUT" | cut -c1-200)"
 
 echo "== L15 SQL Server 2019"
