@@ -11,8 +11,9 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/platform"
 )
 
-// replicationCollector is the HADR page: streaming senders (pg_stat_replication),
-// the receiver on a standby (pg_stat_wal_receiver, replay delay), replication
+// replicationCollector is the HADR page: streaming senders (pg_stat_replication,
+// each with the slot it holds), the receiver on a standby (pg_stat_wal_receiver,
+// replay delay) and the standby's recovery state (a 'standby' row), replication
 // slots with the WAL they retain (a DMS or Debezium consumer is a slot), logical
 // subscriptions and publications, recovery conflicts per database, and on Aurora
 // the replica status function. Every minute; rows are stored as read, each with a
@@ -48,8 +49,9 @@ SELECT 'sender' AS kind, r.pid, r.usename::text AS usename, r.application_name, 
        extract(epoch FROM r.write_lag)  AS write_lag_secs,
        extract(epoch FROM r.flush_lag)  AS flush_lag_secs,
        extract(epoch FROM r.replay_lag) AS replay_lag_secs,
-       r.reply_time
-  FROM pg_stat_replication r`
+       r.reply_time, sl.slot_name::text AS slot_name, sl.slot_type
+  FROM pg_stat_replication r
+  LEFT JOIN pg_replication_slots sl ON sl.active_pid = r.pid`
 
 // the standby side: one row when this server is in recovery. The replay delay
 // is 0 when everything received has been replayed: behind an idle primary the
@@ -65,6 +67,24 @@ SELECT 'receiver' AS kind, w.pid, w.status, w.sender_host, w.sender_port, w.slot
        pg_is_wal_replay_paused() AS replay_paused,
        regexp_replace(w.conninfo, '(password|passfile|sslkey|sslpassword)=\S+', '\1=<masked>', 'gi') AS conninfo
   FROM pg_stat_wal_receiver w`
+
+// the server's recovery state, one row while it is in recovery (none on a primary): whether a WAL receiver runs, whether
+// primary_conninfo and restore_command are set (true / false only: the values can hold a password; read through
+// pg_settings, whose superuser-only rows a login without pg_read_all_settings does not see, so NULL is 'unknown'), the
+// receive and replay positions and the replay pause. The repository's 'receiver down' rule reads it (migration 0141).
+const standbySQL = `
+SELECT 'standby' AS kind,
+       EXISTS (SELECT 1 FROM pg_stat_wal_receiver w WHERE w.pid IS NOT NULL) AS has_receiver,
+       (SELECT s.setting <> '' FROM pg_settings s WHERE s.name = 'primary_conninfo') AS conninfo_set,
+       (SELECT s.setting <> '' FROM pg_settings s WHERE s.name = 'restore_command') AS restore_set,
+       (SELECT s.setting FROM pg_settings s WHERE s.name = 'primary_slot_name') AS primary_slot_name,
+       (SELECT s.setting::bigint FROM pg_settings s WHERE s.name = 'recovery_min_apply_delay') AS min_apply_delay_ms,
+       pg_last_wal_receive_lsn()::text AS receive_lsn,
+       pg_last_wal_replay_lsn()::text  AS replay_lsn,
+       pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) AS replay_lag_bytes,
+       pg_last_xact_replay_timestamp() AS last_replay_at,
+       CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused() END AS replay_paused
+ WHERE pg_is_in_recovery()`
 
 // slots: wal_status and safe_wal_size exist from PG13; two_phase 14, conflicting 16, synced and inactive_since 17
 const slotsSQL = `
@@ -129,6 +149,7 @@ func (replicationCollector) Run(ctx context.Context, conn *pgx.Conn, info platfo
 	if info.IsReplica {
 		read("receiver", receiverSQL)
 	}
+	read("standby", standbySQL)
 	if slotCols, err := viewColumns(ctx, conn, "pg_catalog.pg_replication_slots"); err != nil {
 		failed = append(failed, "slots")
 		out = append(out, Row{"kind": "collector_error", "source": "slots", "message": err.Error()})
