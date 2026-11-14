@@ -37,6 +37,9 @@ what happens in the other order, and what the project's own proof showed (`scrip
   that may `CREATE` in a `pgvigil` schema, and, in the repository's own database, a member of its owner or of
   `pg_read_all_data` - the grant `pgvigil roles` prints for `pgvigil_explain`, so EXPLAIN ANALYZE of a statement in the
   repository database itself is refused with that login; every other database is unchanged.
+- **A channel named `contact-...`.** From this version a channel of the `alerts:` list may not be named `contact-...`
+  (an application contact's route takes those names: docs/applications.md): pgvigil refuses to start with one. Rename
+  it in the config before the upgrade.
 - **Nothing else.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no migration
   changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and after.
 

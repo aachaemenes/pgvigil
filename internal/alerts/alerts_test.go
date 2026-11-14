@@ -268,11 +268,12 @@ func TestWebhookTLS(t *testing.T) {
 
 // sink is a loopback SMTP server that records each message's DATA.
 type sink struct {
-	ln       net.Listener
-	starttls bool
-	mu       sync.Mutex
-	msgs     []string
-	rcpts    []string
+	ln        net.Listener
+	starttls  bool
+	rcptReply string // a reply to RCPT instead of 250 (a relay's refusal in its own words)
+	mu        sync.Mutex
+	msgs      []string
+	rcpts     []string
 }
 
 func newSink(t *testing.T, starttls bool) *sink {
@@ -319,6 +320,10 @@ func (s *sink) serve(c net.Conn) {
 			s.mu.Lock()
 			s.rcpts = append(s.rcpts, strings.TrimSpace(l))
 			s.mu.Unlock()
+			if s.rcptReply != "" {
+				say(s.rcptReply)
+				continue
+			}
 			say("250 ok")
 		case cmd == "DATA":
 			say("354 go")

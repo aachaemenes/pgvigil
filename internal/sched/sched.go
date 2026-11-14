@@ -287,6 +287,9 @@ func (l *pageLease) release() {
 
 // startInstance starts one goroutine per applicable collection of the instance's engine; it answers how many.
 func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config, in config.Instance, wg *sync.WaitGroup) int {
+	for _, t := range applicationTags(in) {
+		log.Warn("tag not taken: an application is set on Admin > Applications", "instance", in.Name, "tag", t)
+	}
 	started := 0
 	for _, c := range engines.Specs(in.Engine) {
 		iv := cfg.Interval(in, c.Name, c.Default)
@@ -335,4 +338,16 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 			run()
 		}
 	}
+}
+
+// applicationTags is an instance's configured tags with the key application (task 310, decision E5): the repository's
+// tag view leaves them out (Admin > Applications sets the key), and the collector says so once at the instance's start.
+func applicationTags(in config.Instance) []string {
+	var out []string
+	for _, t := range in.TagPairs() {
+		if t.Key == "application" {
+			out = append(out, t.String())
+		}
+	}
+	return out
 }

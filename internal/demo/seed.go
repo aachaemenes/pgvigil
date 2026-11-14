@@ -198,6 +198,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
+		// made-up applications and their contacts at example.com on three demo instances (apps_demo.go, task 310)
+		if e := SeedApplications(ctx, pool, o.Prefix); e != nil {
+			err = fmt.Errorf("applications demo: %w", e)
+		}
+	}
+	if err == nil {
 		// a PgBouncer in front of one instance, derived from its activity (pooler_demo.go, task 128)
 		if e := SeedPooler(ctx, pool, o.Prefix, grid[0].Add(-time.Minute), o.End); e != nil {
 			err = fmt.Errorf("pooler demo: %w", e)

@@ -456,13 +456,16 @@ LANGUAGE sql STABLE SET jit = off AS $$
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
-           coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery
+           coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery,
+           coalesce(c.repo_wide, true) AS repo_wide
       FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
-           AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean)
-  ), sc AS (   -- every finding in a channel's scope, any severity
+           AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
+                repo_wide boolean)
+  ), sc AS (   -- every finding in a channel's scope, any severity (a repository-wide one: every channel but a route's,
+               -- task 310 - an application contact's route says repo_wide false)
     SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, f.*
       FROM ch JOIN pgvigil.alert_findings f
-        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR f.source = 'pgvigil repository'
+        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide)
      ORDER BY ch.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC
   ), m AS (    -- the ones at or above its floor that nothing holds
     SELECT * FROM sc WHERE pgvigil.severity_rank(sc.severity) >= sc.floor
