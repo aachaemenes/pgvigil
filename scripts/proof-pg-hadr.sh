@@ -353,7 +353,7 @@ if want R2W || want R2C || want R2X; then
     feed_on
     l0=$(sq "select pg_last_wal_replay_lsn()"); sleep 8; l1=$(sq "select pg_last_wal_replay_lsn()")
     echo "  receiver held down: wal_receiver rows $(sq "select count(*) from pg_stat_wal_receiver"), replay $l0 -> $l1 through restore_command"
-    if want R2W || want R2C; then   # R2C alone still needs R2W's value to compare
+    if want R2W || want R2C || want R2X; then   # R2C compares with R2W's value; R2X's held read needs a fault to hold
       read_ hadr-s 2 10
       r=$(finding "$SID_" 'receiver down'); R2W_VALUE=${r#*|}
     fi
