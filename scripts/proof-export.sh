@@ -55,7 +55,8 @@
 #              Files each show a grid with rows, named fleet_Drives_ / fleet_DB-Space_ / fleet_Files_, and are graded as
 #              every page here is (sheets, tables, colours, csv); Drives drawn with the status All and Toggle Metrics
 #              pressed, Files with the status All (read from the page); DB Space's allocated (GB) and used (GB) numbers
-#              in the workbook (no figure left as text; used's text only 'not read')
+#              in the workbook (no figure left as text; used's text only 'not read'), each figure one decimal on the
+#              page ('12.0') and a number under '0.0' in the workbook (dbs_onedec, every DB Space grid)
 #   library    when python3 has openpyxl, each workbook loads with it without an error, its tables counted; none = said
 #   tools      when the grid's menu carries the grid tools (ui.ts sends 'pgvigil:gridmenu'; not wired = said), on
 #              the fleet Backups grid: 'Copy the rows as HTML with the colours' puts a table on the clipboard whose
@@ -97,9 +98,10 @@
 #              its job (data-sheet), no numbered repeat
 #   dbspace_i  the SQL Server instance's DB Space page: graded as every page here; its grid's allocated, used, data and
 #              log headed '(GB)' on the page and in the workbook, each cell a number rounded to 0.1 equal to the screen's
-#              (used may be blank), no text
+#              (used may be blank), no text; one decimal on the page, '0.0' in the workbook (dbs_onedec)
 #   dbspace_p  a PostgreSQL instance's DB Space page: graded as every page here; its grid's allocated (GB) and used (GB)
-#              only (no data / log column), allocated a number rounded to 0.1 equal to the screen's, used 'not read' throughout
+#              only (no data / log column), allocated a number rounded to 0.1 equal to the screen's, used 'not read' throughout;
+#              allocated one decimal on the page, '0.0' in the workbook (dbs_onedec)
 #   perf       (P03) the fleet's Performance summary: graded as every page here; its CPU histogram column (a picture of
 #              bars, the top bucket painted critical even when empty) has no fill in any row
 #   reader     the screen's colour of a cell is read on its own terms, not by export.ts's rule: a status cell, else the
@@ -945,6 +947,23 @@ def number(t):
     if ',' in t and '.' not in t: t = t.replace(',', '.')
     try: return float(t.replace(',', ''))
     except ValueError: return None
+def dbs_onedec(key, g, cells, cx):
+    # (DBA Dash's 'Decimal Places: 1': '12.0', never '12') every GB figure of a DB Space grid shows exactly one decimal on
+    # the page (fr-FR '12,0'), its workbook cell a number under '0.0' whose value is the figure shown; a blank or 'not read'
+    # cell is skipped. The grid must hold a whole figure (the case the rule is about), or the row proves nothing
+    gb = [j for j, h in enumerate(g['head']) if h.endswith('(GB)')]
+    seen, whole, bad = 0, 0, []
+    for i, row in enumerate(g.get('cells') or []):
+        for j in gb:
+            t_ = row[j]['t'] if j < len(row) else ''
+            if t_ in ('', 'not read'): continue
+            sid, v_, _ = cells.get((i + 2, j), (0, None, None))
+            code = FMT_CODES.get(cx[sid]['fmt'], cx[sid]['fmt']) if sid < len(cx) else '?'
+            n_ = number(t_); seen += 1
+            if n_ is not None and n_ == int(n_): whole += 1
+            if not re.fullmatch(r'-?[\d\s\u202f\u00a0.,]*\d[.,]\d', t_) or v_ is None or code != '0.0' or n_ is None or abs(n_ - v_) >= 1e-9:
+                bad.append(f"{colname(j)}{i + 2} page {t_!r}, workbook {v_} under {code!r}")
+    check(len(gb) >= 1 and seen >= 1 and whole >= 1 and not bad, f"{key}: every GB figure shows one decimal on the page and is a number under '0.0' in the workbook, the value shown ({len(gb)} GB columns, {seen} figures, {whole} whole; {len(bad)} off {bad[:3]})")
 def sheets_of(z):
     wb = z.read('xl/workbook.xml').decode()
     return [n.replace('&amp;', '&') for n in re.findall(r'<sheet name="([^"]*)"', wb)]
@@ -1708,6 +1727,7 @@ for key, tab, inst in PAGES:
             used_text = re.findall(r'<c r="C(\d+)"[^>]*t="inlineStr"><is><t[^>]*>([^<]*)</t>', sx)
             used_num = [r for r, k in re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', sx) if r != '1' and k == '><v>']
             check(len(used_num) >= 1 and all(t in ('not read', '') for r, t in used_text if r != '1'), f"dbspace: used (GB) numeric in {len(used_num)} rows, its text cells only 'not read' ({sorted({t for r, t in used_text if r != '1'})[:3]})")
+            dbs_onedec('dbspace', g0, cells_of(sx, shared(z)), cx)
     if key == 'dbspace_i':
         # an instance's DB Space grid reads as DBA Dash's ('Unit: GB, Decimal Places: 1') and as the fleet grid: allocated,
         # used, data files and log files hold the GB figure, headed '(GB)' on the page and in the workbook, numbers in the
@@ -1731,6 +1751,7 @@ for key, tab, inst in PAGES:
             dsi_full = len(dsi_nums) >= 1 if dsi_w == 'used (GB)' else len(dsi_nums) == len(dsi_rows)
             check(len(dsi_rows) == dsi_g['rows'] == len(dsi_scr) and dsi_full and not dsi_texts and not dsi_odd and not dsi_diff,
                   f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}, screen read {len(dsi_scr)}), text cells {dsi_texts[:3]}, not a tenth {dsi_odd[:3]}, off the screen {dsi_diff[:3]}")
+        dbs_onedec('dbspace_i', dsi_g, dsi_c, cx)
     if key == 'dbspace_p':
         # a PostgreSQL instance's DB Space grid: allocated (GB) and used (GB) only - no data / log column (a PostgreSQL
         # database has no files of its own to size) - on the page and in the workbook; allocated a number in every row,
@@ -1749,6 +1770,7 @@ for key, tab, inst in PAGES:
             dsp_u = [(dsp_c.get((r, dsp_cols[2])) or (0, None, None))[2] for r in dsp_rows]
             dsp_us = [(row[2]['t'] if len(row) > 2 else '') for row in dsp_scr]
             check(dsp_u and all(t_ == 'not read' for t_ in dsp_u + dsp_us), f"dbspace_p: 'used (GB)' 'not read' in every row (workbook {sorted(set(map(str, dsp_u)))[:3]}, screen {sorted(set(dsp_us))[:3]})")
+        dbs_onedec('dbspace_p', dsp_g, dsp_c, cx)
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
