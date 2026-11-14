@@ -948,6 +948,10 @@ func TestMoveListStates(t *testing.T) {
 		srv("NOTYET"): "not yet", srv("IMPONLY"): "imported only", srv("COLL"): "collected by pgvigil", srv("MOVING"): "moving",
 		srv("COLLECTING"): "collecting", srv("READY"): "ready to switch", srv("PARTIAL"): "partial", srv("TWICE"): "moving",
 		srv("DISABLED"): "disabled",
+		// reviews 206d 2 / 206e 1 / 206e 6: the latest run decides, a run cut off says so, a moved server stays listed
+		// once DBA Dash stops listing it
+		srv("IMPORTING"): "importing", srv("INTERRUPTED"): "import interrupted", srv("FAILED"): "import failed",
+		srv("OKTHENFAIL"): "import failed", srv("MOVEDGONE"): "collecting",
 	}
 	ids := map[string][]int{}
 	n := 100
@@ -981,34 +985,57 @@ func TestMoveListStates(t *testing.T) {
 	}
 	mv(srv("MOVING"))
 	mv(srv("TWICE"))
-	for _, s := range []string{srv("COLLECTING"), srv("READY"), srv("PARTIAL"), srv("DISABLED")} {
+	for _, s := range []string{srv("COLLECTING"), srv("READY"), srv("PARTIAL"), srv("DISABLED"), srv("IMPORTING"), srv("INTERRUPTED"), srv("FAILED"), srv("OKTHENFAIL"), srv("MOVEDGONE")} {
 		firstRead(ctx, t, pool, mv(s), time.Now().UTC(), s)
 	}
-	for s, outcome := range map[string]string{srv("READY"): "ok", srv("PARTIAL"): "partial"} {
+	runEnd := func(s, outcome string) {
+		t.Helper()
 		name := strings.ToLower(s)
 		run := moveCall(ctx, t, pool, map[string]any{"op": "run", "ui_user": "t206", "name": name})
+		if outcome == "" {
+			return
+		}
 		if end := moveCall(ctx, t, pool, map[string]any{"op": "ended", "ui_user": "t206", "name": name, "run_id": run["run_id"], "outcome": outcome}); end["outcome"] != "done" {
 			t.Fatalf("%s: ended %v", s, end)
 		}
+	}
+	runEnd(srv("READY"), "ok")
+	runEnd(srv("PARTIAL"), "partial")
+	runEnd(srv("IMPORTING"), "")
+	runEnd(srv("INTERRUPTED"), "")
+	runEnd(srv("FAILED"), "failed")
+	runEnd(srv("OKTHENFAIL"), "ok")
+	runEnd(srv("OKTHENFAIL"), "failed")
+	// the interrupted run's last beat 20 minutes ago (its serve stopped); DBA Dash no longer lists MOVEDGONE
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_moves m SET run_beat = now() - interval '20 minutes', run_started = now() - interval '25 minutes'
+  FROM pgvigil.instances i WHERE i.instance_id = m.instance_id AND i.name = $1`, strings.ToLower(srv("INTERRUPTED"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_instances SET is_present = false WHERE repository = $1 AND instance_id = ANY ($2)`, repo, ids[srv("MOVEDGONE")]); err != nil {
+		t.Fatal(err)
 	}
 	b, _ := json.Marshal(map[string]any{"op": "disable", "ui_user": "t206", "name": strings.ToLower(srv("DISABLED"))})
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_admin_instance(now(), $1::jsonb)`, string(b)); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := pool.Query(ctx, `SELECT server, state, dbadash_ids FROM pgvigil.dbadash_move_list($1)`, repo)
+	rows, err := pool.Query(ctx, `SELECT server, state, dbadash_ids, coalesce(move_ids, '{}') FROM pgvigil.dbadash_move_list($1)`, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]string{}
 	for rows.Next() {
 		var s, state string
-		var k []int32
-		if err := rows.Scan(&s, &state, &k); err != nil {
+		var k, mk []int32
+		if err := rows.Scan(&s, &state, &k, &mk); err != nil {
 			t.Fatal(err)
 		}
 		got[s] = state
 		if len(k) != len(ids[s]) {
 			t.Errorf("%s: InstanceIDs %v, want %v", s, k, ids[s])
+		}
+		// review 206d 9: the move's own InstanceIDs (the page's command), on a moved server only
+		if moved := state != "not yet" && state != "imported only" && state != "collected by pgvigil"; moved != (len(mk) == len(ids[s])) {
+			t.Errorf("%s (%s): the move's InstanceIDs %v, want %v", s, state, mk, ids[s])
 		}
 	}
 	if err := rows.Err(); err != nil {

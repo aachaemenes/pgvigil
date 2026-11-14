@@ -143,14 +143,17 @@ func TestMoveLines(t *testing.T) {
 		cfg, repo string
 		ids       []int
 		cf        *time.Time
+		goos      string
 		want      string
 	}{
-		{"/etc/pgvigil/pgvigil.yaml", "corp", []int{3, 7}, nil, "pgvigil import dbadash -config /etc/pgvigil/pgvigil.yaml -repo corp -instance 3,7"},
-		{"/etc/pgvigil/pgvigil.yaml", "corp", []int{3}, &at, "pgvigil import dbadash -config /etc/pgvigil/pgvigil.yaml -repo corp -instance 3 -to 2026-11-14T18:00:00.0000005Z"},
-		{`C:\Program Files\pgvigil\pgvigil.yaml`, "it's", []int{1}, nil, `pgvigil import dbadash -config 'C:\Program Files\pgvigil\pgvigil.yaml' -repo 'it''s' -instance 1`},
-		{"", "corp", []int{1}, nil, "pgvigil import dbadash -config pgvigil.yaml -repo corp -instance 1"},
+		{"/etc/pgvigil/pgvigil.yaml", "corp", []int{3, 7}, nil, "linux", "pgvigil import dbadash -config /etc/pgvigil/pgvigil.yaml -repo corp -instance 3,7"},
+		{"/etc/pgvigil/pgvigil.yaml", "corp", []int{3}, &at, "linux", "pgvigil import dbadash -config /etc/pgvigil/pgvigil.yaml -repo corp -instance 3 -to 2026-11-14T18:00:00.0000005Z"},
+		{`C:\Program Files\pgvigil\pgvigil.yaml`, "it's", []int{1}, nil, "windows", `pgvigil import dbadash -config 'C:\Program Files\pgvigil\pgvigil.yaml' -repo 'it''s' -instance 1`},
+		{"", "corp", []int{1}, nil, "linux", "pgvigil import dbadash -config pgvigil.yaml -repo corp -instance 1"},
+		// review 206d 15: a POSIX shell's quoting off Windows ('it''s' there is two words)
+		{"/srv/my pgvigil/pgvigil.yaml", "it's", []int{1}, nil, "linux", `pgvigil import dbadash -config '/srv/my pgvigil/pgvigil.yaml' -repo 'it'\''s' -instance 1`},
 	} {
-		if got := moveCommand(c.cfg, c.repo, c.ids, c.cf); got != c.want {
+		if got := moveCommand(c.cfg, c.repo, c.ids, c.cf, c.goos); got != c.want {
 			t.Errorf("moveCommand(%q, %q, %v): %q, want %q", c.cfg, c.repo, c.ids, got, c.want)
 		}
 	}
@@ -352,13 +355,18 @@ SELECT i.instance_id, x.n, x.r, '{ring_buffer}', $2 FROM pgvigil.instances i, (V
 		t.Fatalf("a count of a server not moved: %d %s; want 404", w.Code, w.Body.String())
 	}
 	// the checklist
-	tick := func(step string) *httptest.ResponseRecorder {
+	tickIn := func(rp, step string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		s.moveTick(w, req(), "t206", map[string]any{"name": nameA, "step": step})
+		s.moveTick(w, req(), "t206", rp, map[string]any{"name": nameA, "step": step})
 		return w
 	}
+	tick := func(step string) *httptest.ResponseRecorder { return tickIn(repo, step) }
 	if w := tick("coffee"); w.Code != http.StatusBadRequest {
 		t.Fatalf("a tick of an unknown step: %d, want 400", w.Code)
+	}
+	// review 206d 14: a tick names a server moved from THIS repository
+	if w := tickIn("other-"+repo, "xe_dropped"); w.Code != http.StatusNotFound {
+		t.Fatalf("a tick through another repository: %d %s, want 404", w.Code, w.Body.String())
 	}
 	if w := tick("xe_dropped"); w.Code != http.StatusOK {
 		t.Fatalf("a tick: %d %s", w.Code, w.Body.String())

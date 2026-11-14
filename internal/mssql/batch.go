@@ -123,7 +123,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		batches++
 		for _, row := range rows {
 			switch row["kind"] {
-			case CursorKind, "state":
+			case CursorKind, "state", "foreign_session", "sessions_read": // DBA Dash's sessions (task 206): not collected rows
 			case "collector_error":
 				if status == "ok" {
 					status, note = "partial", fmt.Sprintf("%v: %v", row["source"], row["message"])

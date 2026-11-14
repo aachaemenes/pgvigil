@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -60,22 +61,73 @@ type moveJob struct {
 	By       string           `json:"by"`
 	Started  time.Time        `json:"started"`
 	Ended    *time.Time       `json:"ended,omitempty"`
-	Inserted map[string]int64 `json:"inserted"`
-	Outcome  string           `json:"outcome,omitempty"` // ok | partial | failed: <why>
+	Inserted map[string]int64 `json:"inserted"`          // per mapping, summed over the server's InstanceIDs at each read
+	Outcome  string           `json:"outcome,omitempty"` // ok | partial: <why> | failed: <why>
+	Notes    []string         `json:"notes,omitempty"`   // an InstanceID DBA Dash no longer holds, and the like
+	byID     map[int]map[string]int64
 }
 
-// moveJobs is a serve's import jobs and the pool they share.
+// moveJobs is a serve's import jobs, the pool they share and their lifetime: serve's Close stops them (their runs end
+// 'failed: serve stopped'), waits for them and then closes the pool.
 type moveJobs struct {
-	mu   sync.Mutex
-	pool *pgxpool.Pool
-	jobs map[string]*moveJob // by instance name, the newest
+	mu     sync.Mutex
+	pool   *pgxpool.Pool
+	jobs   map[string]*moveJob // by instance name, the newest
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 var moveJobsOf sync.Map // *Server -> *moveJobs
 
 func (s *Server) moveJobs() *moveJobs {
-	v, _ := moveJobsOf.LoadOrStore(s, &moveJobs{jobs: map[string]*moveJob{}})
+	if v, ok := moveJobsOf.Load(s); ok {
+		return v.(*moveJobs)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	v, loaded := moveJobsOf.LoadOrStore(s, &moveJobs{jobs: map[string]*moveJob{}, ctx: ctx, cancel: cancel})
+	if loaded {
+		cancel()
+	}
 	return v.(*moveJobs)
+}
+
+// closeMoveJobs is serve's Close for the import jobs: each job's context ends, its run's end mark is written by the
+// import itself, and the pool closes once every job returned (at most 30 s).
+func (s *Server) closeMoveJobs() {
+	v, ok := moveJobsOf.LoadAndDelete(s)
+	if !ok {
+		return
+	}
+	mj := v.(*moveJobs)
+	mj.cancel()
+	done := make(chan struct{})
+	go func() { mj.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		s.log.Warn("dbadash move import: a job did not end within 30 s of serve's stop")
+	}
+	mj.mu.Lock()
+	if mj.pool != nil {
+		mj.pool.Close()
+		mj.pool = nil
+	}
+	mj.mu.Unlock()
+}
+
+// copyJob is a job as the page reads it: its inserts per mapping summed over the server's InstanceIDs.
+func copyJob(j *moveJob) moveJob {
+	c := *j
+	c.byID = nil
+	c.Inserted = map[string]int64{}
+	for _, m := range j.byID {
+		for k, v := range m {
+			c.Inserted[k] += v
+		}
+	}
+	c.Notes = slices.Clone(j.Notes)
+	return c
 }
 
 // importPool is the import's own pool: the actions door's audit login (a pgvigil_collector member, which the import's
@@ -148,8 +200,9 @@ func windowsOff(w winSide) string {
 	return ""
 }
 
-// moveCommand is the exact CLI line of a moved server's history (W7: what the page shows when the import is off).
-func moveCommand(cfgPath, repo string, ids []int, collectFrom *time.Time) string {
+// moveCommand is the exact CLI line of a moved server's history (W7: what the page shows when the import is off), in
+// the shell of serve's own OS (PowerShell on Windows, a POSIX shell elsewhere), the configuration's path absolute.
+func moveCommand(cfgPath, repo string, ids []int, collectFrom *time.Time, goos string) string {
 	if cfgPath == "" {
 		cfgPath = "pgvigil.yaml"
 	}
@@ -157,19 +210,34 @@ func moveCommand(cfgPath, repo string, ids []int, collectFrom *time.Time) string
 	for i, id := range ids {
 		parts[i] = strconv.Itoa(id)
 	}
-	c := "pgvigil import dbadash -config " + shellWord(cfgPath) + " -repo " + shellWord(repo) + " -instance " + strings.Join(parts, ",")
+	c := "pgvigil import dbadash -config " + shellWord(cfgPath, goos) + " -repo " + shellWord(repo, goos) + " -instance " + strings.Join(parts, ",")
 	if collectFrom != nil {
 		c += " -to " + collectFrom.UTC().Format(time.RFC3339Nano)
 	}
 	return c
 }
 
-// shellWord quotes a word for a POSIX shell or PowerShell when it holds anything but a plain path's characters.
-func shellWord(v string) string {
+// absConfig is serve's configuration path made absolute (serve's own working folder), so the command runs from any.
+func absConfig(p string) string {
+	if p == "" {
+		p = "pgvigil.yaml"
+	}
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
+}
+
+// shellWord quotes a word when it holds anything but a plain path's characters: PowerShell doubles a "'" inside single
+// quotes, a POSIX shell closes, escapes and reopens them.
+func shellWord(v, goos string) string {
 	if v != "" && strings.Trim(v, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:\\-") == "" {
 		return v
 	}
-	return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+	if goos == "windows" {
+		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
 
 // dropLine is the T-SQL a server's DBA runs to drop one of DBA Dash's sessions (pgvigil never runs it).
@@ -352,16 +420,11 @@ func (s *Server) DBADashMoves(w http.ResponseWriter, r *http.Request) {
 			if t, ok := m["collect_from"].(time.Time); ok {
 				cf = &t
 			}
-			row["command"] = moveCommand(a.ConfigPath, *repo, ids, cf)
+			row["command"] = moveCommand(absConfig(a.ConfigPath), *repo, intsOf(m["move_ids"]), cf, runtime.GOOS)
 			row["xe"] = xe[name]
 			mj.mu.Lock()
 			if j := mj.jobs[name]; j != nil {
-				c := *j
-				c.Inserted = make(map[string]int64, len(j.Inserted))
-				for k, v := range j.Inserted {
-					c.Inserted[k] = v
-				}
-				row["job"] = c
+				row["job"] = copyJob(j)
 			}
 			mj.mu.Unlock()
 		}
@@ -549,14 +612,14 @@ func (s *Server) DBADashMovesWrite(w http.ResponseWriter, r *http.Request) {
 	case "count", "import":
 		s.moveHistory(w, r, user, repo, op, str(in, "name"))
 	case "tick":
-		s.moveTick(w, r, user, in)
+		s.moveTick(w, r, user, repo, in)
 	default:
 		writeErr(w, http.StatusBadRequest, errors.New("op is add, count, import or tick"))
 	}
 }
 
 // moveTick is one checklist tick (a step of moveSteps, done or not), audited by 0134.
-func (s *Server) moveTick(w http.ResponseWriter, r *http.Request, user string, in map[string]any) {
+func (s *Server) moveTick(w http.ResponseWriter, r *http.Request, user, repo string, in map[string]any) {
 	step := str(in, "step")
 	if !slices.Contains(moveSteps, step) {
 		writeErr(w, http.StatusBadRequest, errors.New("step is "+strings.Join(moveSteps, ", ")))
@@ -565,6 +628,14 @@ func (s *Server) moveTick(w http.ResponseWriter, r *http.Request, user string, i
 	done := true
 	if v, ok := in["done"].(bool); ok {
 		done = v
+	}
+	// a tick is a server moved from THIS repository (0134's tick reads the name alone)
+	if _, _, found, err := s.moveOf(r.Context(), repo, str(in, "name")); err != nil {
+		s.reply(w, r, nil, err)
+		return
+	} else if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("%s is not a server moved from DBA Dash repository %s", str(in, "name"), repo))
+		return
 	}
 	ans, raw, err := s.callMove(r.Context(), map[string]any{"op": "tick", "ui_user": user, "client": clientIP(r), "name": str(in, "name"), "step": step, "done": done})
 	if err != nil {
@@ -582,8 +653,10 @@ func (s *Server) callMove(ctx context.Context, pay map[string]any) (importAnswer
 func (s *Server) moveAdd(w http.ResponseWriter, r *http.Request, user, repo string, in map[string]any) {
 	a := s.instAdmin()
 	var servers []moveServer
-	if b, err := json.Marshal(in["servers"]); err == nil {
-		_ = json.Unmarshal(b, &servers)
+	b, _ := json.Marshal(in["servers"])
+	if err := json.Unmarshal(b, &servers); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("servers: each is {server, dbadash_ids, host, port, name} with text fields (%v)", err))
+		return
 	}
 	for i := range servers {
 		sv := &servers[i]
@@ -680,6 +753,12 @@ SELECT array_agg(mi.dbadash_id ORDER BY mi.dbadash_id), m.collect_from
 // moveHistory is count (the dry run, kept on the move) and import (the background run).
 func (s *Server) moveHistory(w http.ResponseWriter, r *http.Request, user, repo, op, name string) {
 	ctx := r.Context()
+	if op == "count" {
+		// one deadline for the whole count, inside serve's 75 s write deadline
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 55*time.Second)
+		defer cancel()
+	}
 	ids, cf, found, err := s.moveOf(ctx, repo, name)
 	switch {
 	case err != nil:
@@ -689,7 +768,7 @@ func (s *Server) moveHistory(w http.ResponseWriter, r *http.Request, user, repo,
 		writeErr(w, http.StatusNotFound, fmt.Errorf("%s is not a server moved from DBA Dash repository %s", name, repo))
 		return
 	}
-	cmd := moveCommand(s.instAdmin().ConfigPath, repo, ids, cf)
+	cmd := moveCommand(absConfig(s.instAdmin().ConfigPath), repo, ids, cf, runtime.GOOS)
 	if on, _ := dbadash.ImportOn(repo); op == "import" && !on {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -712,28 +791,12 @@ func (s *Server) moveHistory(w http.ResponseWriter, r *http.Request, user, repo,
 	}
 	if op == "count" {
 		opt.DryRun = true
-		cctx, cancel := context.WithTimeout(ctx, 60*time.Second) // inside serve's 75 s write deadline
-		defer cancel()
-		got, err := dbadash.ImportFrom(cctx, s.log, repo, opt)
+		got, err := dbadash.ImportFrom(ctx, s.log, repo, opt)
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, fmt.Errorf("the dry run: %v", err))
 			return
 		}
-		counts := map[string]any{}
-		for _, c := range got {
-			if c.Mapping == "-" {
-				continue
-			}
-			e := map[string]any{"source": c.Source, "stored": c.Stored}
-			if c.Skipped != "" {
-				e["skipped"] = c.Skipped
-			}
-			if prev, ok := counts[c.Mapping].(map[string]any); ok { // a server DBA Dash lists twice: its InstanceIDs summed
-				e["source"] = prev["source"].(int64) + c.Source
-				e["stored"] = prev["stored"].(int64) + c.Stored
-			}
-			counts[c.Mapping] = e
-		}
+		counts := moveCounts(got)
 		ans, raw, err := s.callMove(ctx, map[string]any{"op": "count", "ui_user": user, "client": clientIP(r), "name": name, "counts": counts})
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
@@ -749,35 +812,110 @@ func (s *Server) moveHistory(w http.ResponseWriter, r *http.Request, user, repo,
 		writeErr(w, http.StatusConflict, fmt.Errorf("an import of %s runs in this server already: started by %s at %s", name, j.By, j.Started.UTC().Format(time.RFC3339)))
 		return
 	}
-	job := &moveJob{Name: name, By: user, Started: time.Now(), Inserted: map[string]int64{}}
+	prev := mj.jobs[name] // an ended job stays shown when this click is refused
+	job := &moveJob{Name: name, By: user, Started: time.Now(), Inserted: map[string]int64{}, byID: map[int]map[string]int64{}}
 	mj.jobs[name] = job
 	mj.mu.Unlock()
+	// the run mark before the answer: another run of this move (a CLI run, another serve) is the click's 409, in its words
+	_, raw, err := s.callMove(ctx, map[string]any{"op": "run", "ui_user": user, "client": clientIP(r), "name": name})
+	var mark struct {
+		Outcome string `json:"outcome"`
+		Detail  string `json:"detail"`
+		RunID   int64  `json:"run_id"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &mark)
+	}
+	if err != nil || mark.Outcome != "done" || mark.RunID == 0 {
+		mj.mu.Lock()
+		if prev != nil {
+			mj.jobs[name] = prev
+		} else {
+			delete(mj.jobs, name)
+		}
+		mj.mu.Unlock()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the run mark was not written: %v", err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "refused", "detail": mark.Detail})
+		return
+	}
+	opt.Run = &dbadash.MoveRun{Name: name, ID: mark.RunID}
 	opt.Progress = func(c dbadash.ImportCount, _ bool) {
 		mj.mu.Lock()
 		defer mj.mu.Unlock()
-		job.Inserted[c.Mapping] = c.Inserted
+		if job.byID[c.DBADashID] == nil {
+			job.byID[c.DBADashID] = map[string]int64{}
+		}
+		job.byID[c.DBADashID][c.Mapping] = c.Inserted
 	}
+	mj.wg.Add(1)
 	go func() {
-		jctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 24*time.Hour)
+		defer mj.wg.Done()
+		outcome, notes := "", []string(nil)
+		defer func() {
+			if p := recover(); p != nil { // never takes the server down
+				outcome = fmt.Sprintf("failed: panic: %v", p)
+			}
+			now := time.Now()
+			mj.mu.Lock()
+			job.Ended, job.Outcome, job.Notes = &now, outcome, notes
+			mj.mu.Unlock()
+			s.log.Info("dbadash move import", "repository", repo, "name", name, "user", user, "outcome", outcome)
+		}()
+		// serve's own lifetime (Close ends it), at most a day
+		jctx, cancel := context.WithTimeout(mj.ctx, 24*time.Hour)
 		defer cancel()
 		got, err := dbadash.ImportFrom(jctx, s.log, repo, opt)
-		outcome := "ok"
-		for _, c := range got {
-			if c.Skipped != "" {
-				outcome = "partial: " + c.Mapping + ": " + c.Skipped
-				break
-			}
-		}
-		if err != nil {
-			outcome = "failed: " + err.Error()
-		}
-		now := time.Now()
-		mj.mu.Lock()
-		job.Ended, job.Outcome = &now, outcome
-		mj.mu.Unlock()
-		s.log.Info("dbadash move import", "repository", repo, "name", name, "user", user, "outcome", outcome)
+		outcome, notes = jobOutcome(got, err)
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "started", "detail": "the history import of " + name + " runs in the background: the list shows its rows and its end"})
+}
+
+// moveCounts is a dry run's counts per mapping: a server DBA Dash lists under several InstanceIDs has its sources
+// summed and its stored rows once (stored is pgvigil's figure for the one moved instance, the same on every line); an
+// InstanceID DBA Dash no longer holds (mapping '-') counts nothing.
+func moveCounts(got []dbadash.ImportCount) map[string]any {
+	counts := map[string]any{}
+	for _, c := range got {
+		if c.Mapping == "-" {
+			continue
+		}
+		e := map[string]any{"source": c.Source, "stored": c.Stored}
+		if prev, ok := counts[c.Mapping].(map[string]any); ok {
+			e["source"] = prev["source"].(int64) + c.Source
+			if sk, ok := prev["skipped"]; ok {
+				e["skipped"] = sk
+			}
+		}
+		if c.Skipped != "" {
+			e["skipped"] = c.Skipped
+		}
+		counts[c.Mapping] = e
+	}
+	return counts
+}
+
+// jobOutcome is a background import's outcome: failed with the error, partial with the first mapping held back, else
+// ok; an InstanceID DBA Dash no longer holds is a note, not a partial (nothing of it was there to import).
+func jobOutcome(got []dbadash.ImportCount, err error) (string, []string) {
+	var notes []string
+	outcome := "ok"
+	for _, c := range got {
+		switch {
+		case c.Mapping == "-":
+			notes = append(notes, "DBA Dash InstanceID "+strconv.Itoa(c.DBADashID)+": "+c.Skipped)
+		case c.Skipped != "" && outcome == "ok":
+			outcome = "partial: " + c.Mapping + ": " + c.Skipped
+		}
+	}
+	if err != nil {
+		outcome = "failed: " + err.Error()
+	}
+	return outcome, notes
 }

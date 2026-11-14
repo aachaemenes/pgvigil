@@ -61,11 +61,33 @@ type ImportOptions struct {
 	// Progress, when set, is called after every batch a mapping inserts (final false: Inserted so far, Stored not read
 	// yet) and once when the mapping ends (final true: the count Import answers), on Import's own goroutine.
 	Progress func(c ImportCount, final bool)
+	// Run is a moved server's run its caller has marked already (serve's page takes the mark before it answers): Import
+	// carries that run, beats it and ends it, whatever ends the run (an error, a panic); nil = Import marks its own.
+	Run *MoveRun
 }
 
-// beatEvery is how often a long mapping of a moved server writes its run's beat between batches (0134 lets another
-// run take a move over after 15 minutes without one).
-const beatEvery = time.Minute
+// MoveRun is a run mark taken on a moved server's move (0134's import_dbadash_move run): the server's pgvigil name and
+// the run's id.
+type MoveRun struct {
+	Name string
+	ID   int64
+}
+
+// beatEvery is how often a moved server's run writes its beat: before each mapping's count, before its rows and
+// between batches (0134 lets another run take a move over after 15 minutes without one). A variable: the store tests
+// set it to 0.
+var beatEvery = time.Minute
+
+// moveRun is one moved server's run inside Import: one mark around all the InstanceIDs DBA Dash lists it under, ended
+// ok only when every one ended ok.
+type moveRun struct {
+	id       int64
+	marked   string // why no mark was taken (another run holds the move)
+	imported map[string]any
+	outcome  string
+	lastBeat time.Time
+	ended    bool
+}
 
 // DefaultImportBatch is the rows of one insert.
 const DefaultImportBatch = 2000
@@ -171,8 +193,36 @@ type srcInstance struct {
 // cannot be imported now (a moved server not read yet, or waiting for the collector's own first reads) is a count with
 // its reason, and the run goes on. A real run of a moved server writes its run marks on the move (run, beat after each
 // mapping, ended ok / partial / failed), so the page shows a CLI import as it shows its own; a run already marked
-// there is not started twice.
-func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt ImportOptions) ([]ImportCount, error) {
+// there is not started twice. Every way out of a run that is not its end (an error, a panic, a run another import took
+// over) ends its open marks 'failed' with why.
+func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt ImportOptions) (out []ImportCount, err error) {
+	var pool *pgxpool.Pool
+	ownPool := false
+	runs := map[string]*moveRun{} // by the moved server's pgvigil name
+	if opt.Run != nil && opt.Run.ID > 0 {
+		runs[opt.Run.Name] = &moveRun{id: opt.Run.ID, imported: map[string]any{}, outcome: "ok", lastBeat: time.Now()}
+		pool = opt.Store
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("the import stopped on a panic: %v", p)
+		}
+		if err != nil && pool != nil {
+			for name, r := range runs {
+				if r.id > 0 && !r.ended {
+					ectx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+					if _, why, merr := moveMark(ectx, pool, "ended", name, opt.By, r.id, r.imported, "failed: "+err.Error()); merr != nil || why != "" {
+						log.Warn("dbadash import: the move's end mark", "instance", name, "refused", why, "err", merr)
+					}
+					cancel()
+					r.ended = true
+				}
+			}
+		}
+		if ownPool && pool != nil {
+			pool.Close()
+		}
+	}()
 	if strings.TrimSpace(srcDSN) == "" {
 		return nil, errors.New("the DBADash repository's dsn resolved to nothing")
 	}
@@ -214,53 +264,81 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 	for _, t := range leftOut {
 		log.Warn("dbadash import: a DBADash tag left out", "why", t)
 	}
-	out := []ImportCount{}
+	out = []ImportCount{}
 	found := map[int]bool{}
 	for _, in := range insts {
 		found[in.ID] = true
 	}
 	for _, id := range opt.Instances {
 		if !found[id] {
-			out = append(out, ImportCount{DBADashID: id, Mapping: "-", Skipped: "no active SQL Server instance with this InstanceID in the repository (inactive, an Azure SQL database, or unknown)"})
+			out = append(out, ImportCount{DBADashID: id, Mapping: "-", Skipped: "no SQL Server instance with this InstanceID in the repository (an Azure SQL database, or unknown)"})
 		}
 	}
-	pool := opt.Store
-	if pool == nil {
+	if pool = opt.Store; pool == nil {
 		if pool, err = openImportStore(ctx, repoDSN, opt.DryRun); err != nil {
 			return nil, err
 		}
-		defer pool.Close()
+		ownPool = true
 	} else if err := importRights(ctx, pool, opt.DryRun); err != nil {
 		return nil, err
 	}
-	for _, in := range insts {
+	// the targets first: a moved server DBA Dash lists under several InstanceIDs is one run of one move
+	tgts := make([]importTargetRow, len(insts))
+	left := map[string]int{} // a moved server's InstanceIDs still to run
+	for i, in := range insts {
 		name := in.Display
 		if n := strings.TrimSpace(opt.Names[in.ID]); n != "" {
 			name = n
 		}
-		tgt, err := importTarget(ctx, log, pool, opt.Repository, name, in, opt.DryRun)
-		if err != nil {
+		if tgts[i], err = importTarget(ctx, log, pool, opt.Repository, name, in, opt.DryRun); err != nil {
 			return out, err
 		}
+		if tgts[i].Moved {
+			left[tgts[i].Name]++
+		}
+	}
+	for i, in := range insts {
+		tgt := tgts[i]
 		// a moved server: its own instance, its history up to pgvigil's first read of it (the functions hold it too)
 		to, none := importBound(opt.From, opt.To, tgt)
-		runID, marked := int64(0), ""
-		if tgt.Moved && !opt.DryRun && tgt.ID > 0 && none == "" {
-			if runID, marked, err = moveMark(ctx, pool, "run", tgt.Name, opt.By, 0, nil, ""); err != nil {
+		run := runs[tgt.Name]
+		if run == nil && tgt.Moved && !opt.DryRun && tgt.ID > 0 && none == "" {
+			run = &moveRun{imported: map[string]any{}, outcome: "ok", lastBeat: time.Now()}
+			if run.id, run.marked, err = moveMark(ctx, pool, "run", tgt.Name, opt.By, 0, nil, ""); err != nil {
 				return out, err
 			}
+			runs[tgt.Name] = run
 		}
-		imported := map[string]any{}
-		outcome := "ok"
+		if run == nil {
+			run = &moveRun{imported: map[string]any{}, outcome: "ok"} // not a moved server's run: nothing marked
+		}
+		// beat writes the run's beat when beatEvery has passed; another import that took the move over stops this one
+		beat := func(so map[string]any) error {
+			if run.id == 0 || time.Since(run.lastBeat) < beatEvery {
+				return nil
+			}
+			run.lastBeat = time.Now()
+			_, why, err := moveMark(ctx, pool, "beat", tgt.Name, opt.By, run.id, so, "")
+			switch {
+			case err != nil:
+				log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "err", err)
+			case why != "":
+				return fmt.Errorf("%s: this run's mark was refused (%s): it stops", tgt.Name, why)
+			}
+			return nil
+		}
 		for _, m := range importMappings {
 			c := ImportCount{Instance: tgt.Name, DBADashID: in.ID, PgvigilID: tgt.ID, Mapping: m.Key, Skipped: tgt.Skipped}
 			if tgt.Moved {
 				c.Bound = tgt.CollectFrom
 			}
-			for _, why := range []string{marked, none, tgt.Wait[m.Key]} {
+			for _, why := range []string{run.marked, none, tgt.Wait[m.Key]} {
 				if c.Skipped == "" {
 					c.Skipped = why
 				}
+			}
+			if err := beat(run.imported); err != nil {
+				return out, err
 			}
 			if opt.From.Before(to) {
 				if err := src.QueryRowContext(ctx, m.Count, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to))).Scan(&c.Source); err != nil {
@@ -268,23 +346,25 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 				}
 			}
 			if c.Skipped == "" && !opt.DryRun && opt.From.Before(to) {
-				lastBeat := time.Now()
-				onBatch := func(n int64) {
+				running := func(n int64) map[string]any {
+					so := map[string]any{m.Key: map[string]any{"source": c.Source, "inserted": n, "running": true}}
+					for k, v := range run.imported {
+						if k != m.Key {
+							so[k] = v
+						}
+					}
+					return so
+				}
+				if err := beat(running(0)); err != nil {
+					return out, err
+				}
+				onBatch := func(n int64) error {
 					if opt.Progress != nil {
 						p := c
 						p.Inserted = n
 						opt.Progress(p, false)
 					}
-					if runID > 0 && time.Since(lastBeat) >= beatEvery {
-						lastBeat = time.Now()
-						so := map[string]any{m.Key: map[string]any{"source": c.Source, "inserted": n, "running": true}}
-						for k, v := range imported {
-							so[k] = v
-						}
-						if _, why, err := moveMark(ctx, pool, "beat", tgt.Name, opt.By, runID, so, ""); err != nil || why != "" {
-							log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
-						}
-					}
+					return beat(running(n))
 				}
 				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
 				var pe *pgconn.PgError
@@ -293,9 +373,8 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 					// the store holds this mapping back now (a read of the collector's it waits for): said, the run goes on
 					c.Skipped = strings.TrimPrefix(pe.Message, "dbadash import: ")
 				case err != nil:
-					if runID > 0 {
-						_, _, _ = moveMark(context.WithoutCancel(ctx), pool, "ended", tgt.Name, opt.By, runID, imported, "failed: "+err.Error())
-					}
+					// what was committed before the failure stays on the record (the batches before it are stored)
+					run.imported[m.Key] = map[string]any{"source": c.Source, "inserted": c.Inserted, "failed": err.Error()}
 					return out, fmt.Errorf("%s %s: %w", tgt.Name, m.Key, err)
 				}
 			}
@@ -305,13 +384,26 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 				}
 			}
 			if c.Skipped != "" {
-				outcome = "partial"
+				run.outcome = "partial"
 			}
-			imported[m.Key] = map[string]any{"source": c.Source, "inserted": c.Inserted, "stored": c.Stored, "skipped": c.Skipped}
-			if runID > 0 {
-				if _, why, err := moveMark(ctx, pool, "beat", tgt.Name, opt.By, runID, imported, ""); err != nil || why != "" {
-					log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
+			// a server DBA Dash lists under several InstanceIDs: its sources and inserts summed, stored is the server's own
+			e := map[string]any{"source": c.Source, "inserted": c.Inserted, "stored": c.Stored, "skipped": c.Skipped}
+			if prev, ok := run.imported[m.Key].(map[string]any); ok {
+				ps, _ := prev["source"].(int64)
+				pi, _ := prev["inserted"].(int64)
+				e["source"], e["inserted"] = ps+c.Source, pi+c.Inserted
+				if was, _ := prev["skipped"].(string); was != "" && c.Skipped == "" {
+					e["skipped"] = was
 				}
+			}
+			run.imported[m.Key] = e
+			if run.id > 0 {
+				if _, why, err := moveMark(ctx, pool, "beat", tgt.Name, opt.By, run.id, run.imported, ""); err != nil {
+					log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "err", err)
+				} else if why != "" {
+					return out, fmt.Errorf("%s: this run's mark was refused (%s): it stops", tgt.Name, why)
+				}
+				run.lastBeat = time.Now()
 			}
 			log.Info("dbadash import", "instance", tgt.Name, "mapping", m.Key, "to", to, "source", c.Source, "inserted", c.Inserted, "stored", c.Stored, "skipped", c.Skipped)
 			out = append(out, c)
@@ -319,10 +411,23 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 				opt.Progress(c, true)
 			}
 		}
-		if runID > 0 {
-			if _, why, err := moveMark(ctx, pool, "ended", tgt.Name, opt.By, runID, imported, outcome); err != nil || why != "" {
+		if tgt.Moved {
+			left[tgt.Name]--
+		}
+		if run.id > 0 && !run.ended && left[tgt.Name] <= 0 {
+			if _, why, err := moveMark(ctx, pool, "ended", tgt.Name, opt.By, run.id, run.imported, run.outcome); err != nil || why != "" {
 				log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
 			}
+			run.ended = true
+		}
+	}
+	// a run its caller marked for a server none of whose InstanceIDs is here (DBA Dash no longer holds any): ended, said
+	for name, r := range runs {
+		if r.id > 0 && !r.ended {
+			if _, why, err := moveMark(ctx, pool, "ended", name, opt.By, r.id, r.imported, "failed: none of its InstanceIDs is in the DBA Dash repository now"); err != nil || why != "" {
+				log.Warn("dbadash import: the move's run mark", "instance", name, "refused", why, "err", err)
+			}
+			r.ended = true
 		}
 	}
 	return out, nil
@@ -374,14 +479,16 @@ func moveMark(ctx context.Context, pool *pgxpool.Pool, op, name, by string, runI
 	return ans.RunID, "", nil
 }
 
-// importInstances reads the instances to import: active, not Azure SQL Database, the ids asked for (all when none).
+// importInstances reads the instances to import, never an Azure SQL database: the ids asked for, active or not (a
+// server moved to pgvigil is often removed in DBA Dash's GUI once DBA Dash stops collecting it, and its history stays
+// in DBA Dash's tables), else every active one.
 func importInstances(ctx context.Context, src *sql.Conn, want []int) ([]srcInstance, []string, error) {
-	// (an id asked for that is not here - inactive, an Azure SQL database, unknown - is reported by Import)
+	// (an id asked for that is not here - an Azure SQL database, unknown - is reported by Import)
 	rows, err := src.QueryContext(ctx, `
 SELECT I.InstanceID, I.Instance, ISNULL(I.Alias, I.ConnectionID), ISNULL(I.ProductVersion, ''), ISNULL(I.host_platform, ''), ISNULL(I.EngineEdition, 0)
   FROM dbo.Instances I
- WHERE I.IsActive = 1 AND ISNULL(I.EngineEdition, 0) <> 5
- ORDER BY I.InstanceID`)
+ WHERE (I.IsActive = 1 OR @asked = 1) AND ISNULL(I.EngineEdition, 0) <> 5
+ ORDER BY I.InstanceID`, sql.Named("asked", len(want) > 0))
 	if err != nil {
 		return nil, nil, fmt.Errorf("dbo.Instances: %w", err)
 	}
@@ -583,7 +690,7 @@ func versionNum(v string) any {
 // importOne copies one mapping of one instance in batches up to 'to', each batch one call of the mapping's function
 // (one transaction: its months' partitions, the instance's import lock, the rows); onBatch gets the rows inserted so
 // far after each batch.
-func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time, onBatch func(int64)) (int64, error) {
+func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time, onBatch func(int64) error) (int64, error) {
 	rows, err := src.QueryContext(ctx, m.Rows, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to)))
 	if err != nil {
 		return 0, fmt.Errorf("read: %w", err)
@@ -611,7 +718,7 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		total += n
 		batch = batch[:0]
 		if onBatch != nil {
-			onBatch(total)
+			return onBatch(total)
 		}
 		return nil
 	}

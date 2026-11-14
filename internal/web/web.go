@@ -185,7 +185,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 }
 
 // Close releases the audit pool and the pool.
-func (s *Server) Close() { s.actions.Close(); s.demo.close(); s.pool.Close() }
+func (s *Server) Close() { s.closeMoveJobs(); s.actions.Close(); s.demo.close(); s.pool.Close() }
 
 // Handler returns the routes: /api/... (behind the login when it is on) and the embedded frontend.
 // The shell and its assets are public: they hold no data.
