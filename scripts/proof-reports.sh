@@ -715,13 +715,16 @@ for f in files:
         sheets = re.findall(r'<sheet [^>]*name="([^"]+)"', zipfile.ZipFile(p).read('xl/workbook.xml').decode())
     tab = f[:-5]
     clean = lambda x: re.sub(r'[\\/?*\[\]:]', '', x)[:25].lower()
+    # a grid's sheet: named by its heading's first words; a heading whose 31-character cut would end inside a bracket is
+    # named by the words before that bracket (export_names.ts: 'Server Actions (pgaudit: ROLE and DDL)' -> 'Server Actions')
+    named = lambda s, w: clean(s).startswith(clean(w)) or clean(w) in clean(s) or bool(re.fullmatch(re.escape(re.sub(r'[\\/?*\[\]:]', '', s).lower().strip()) + r'\s+\(.*', re.sub(r'[\\/?*\[\]:]', '', w).lower().strip()))
     # the grid sheets: every sheet but a last 'About' (the export's facts), the first one too
     assert sheets and sheets[-1] == 'About', f'{f}: the last sheet is not About: {sheets}'
     gs = len(sheets) - 1
     for w in grids.get(tab, []):
-        assert any(clean(s).startswith(clean(w)) or clean(w) in clean(s) for s in sheets[:gs]), f'{f}: no sheet for the grid {w!r} in {sheets}'
+        assert any(named(s, w) for s in sheets[:gs]), f'{f}: no sheet for the grid {w!r} in {sheets}'
     for w, ncols in empties.get(tab, []):
-        k = next((i for i, s in enumerate(sheets) if i < gs and (clean(s).startswith(clean(w)) or clean(w) in clean(s))), None)
+        k = next((i for i, s in enumerate(sheets) if i < gs and named(s, w)), None)
         assert k is not None, f'{f}: no sheet for the empty grid {w!r} in {sheets}'
         xml = zipfile.ZipFile(p).read(f'xl/worksheets/sheet{k + 1}.xml').decode()
         rows = re.findall(r'<row [^>]*>(.*?)</row>', xml, re.S)
