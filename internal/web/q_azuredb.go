@@ -1,6 +1,10 @@
 package web
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+	"strings"
+)
 
 // Azure SQL Database's resource use and tier (B2a; DBA Dash's Azure Summary, AzureSummary.cs with
 // AzureDBPerformanceSummary_Get, and its instance's Azure DB tab, AzureDBResourceStats.cs). Data from
@@ -11,9 +15,15 @@ import "net/http"
 // Every average over the window weighs each minute by its 15-second samples, so it equals DBA Dash's AVG over the
 // view's rows; a maximum is the largest per-sample figure; the histograms sum the minutes' bucket counts (< 10, [10,
 // 20) ... [80, 90), >= 90: AzureDBResourceStats_Raw).
+//
+// The window is DBA Dash's: the minutes that start at or after its start and before its end (end_time >= @FromDate AND
+// end_time < @ToDate); the CPU readers take Azure SQL Database's minutes the same way. DBA Dash reads hourly rows for
+// a window over a day (Use60MIN); pgvigil has no hourly rollup yet (task B21) and reads the minutes for every window.
 
-// azdbWindowCols: the window's figures of one database (alias a = mssql_azuredb_minute), DBA Dash's columns
-const azdbWindowCols = `
+// azdbWindowCols: the window's figures of one database (alias a = mssql_azuredb_minute), DBA Dash's columns, in one
+// pass over the minutes: the four histograms sum each bucket of the minutes' counts, and the 'hot' shares are the
+// samples at 70 % and over of those counted (as the Performance summary's)
+var azdbWindowCols = `
        sum(a.samples)::bigint AS samples, count(*) AS minutes,
        round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 2) AS avg_cpu_percent,
        max(a.max_cpu_percent) AS max_cpu_percent,
@@ -26,12 +36,26 @@ const azdbWindowCols = `
        round(sum(a.avg_dtu * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_dtu IS NOT NULL), 0), 2) AS avg_dtu,
        max(a.max_dtu) AS max_dtu, min(a.dtu_limit) AS min_dtu_limit, max(a.dtu_limit) AS max_dtu_limit,
        max(a.dtu_limit) - max(a.max_dtu) AS unused_dtu,
-       min(a.cpu_limit) AS min_cpu_limit, max(a.cpu_limit) AS max_cpu_limit`
+       min(a.cpu_limit) AS min_cpu_limit, max(a.cpu_limit) AS max_cpu_limit,
+       ` + azdbHist("cpu") + ` AS cpu_hist, ` + azdbHist("data") + ` AS data_hist, ` + azdbHist("log") + ` AS log_hist, ` + azdbHist("dtu") + ` AS dtu_hist,
+       ` + azdbHot("cpu") + ` AS cpu_hot_pct, ` + azdbHot("data") + ` AS data_hot_pct, ` + azdbHot("log") + ` AS log_hot_pct, ` + azdbHot("dtu") + ` AS dtu_hot_pct`
 
-// azdbHist sums one bucket column over the window's minutes of the database $id (10 counts)
-func azdbHist(col, id string) string {
-	return `ARRAY(SELECT coalesce(sum(h.` + col + `[k]), 0)::int FROM generate_series(1, 10) k LEFT JOIN pgvigil.mssql_azuredb_minute h
-                 ON h.instance_id = ` + id + ` AND h.snapshot_at >= $2 AND h.snapshot_at < $3 GROUP BY k ORDER BY k)`
+// azdbHist: one histogram's ten sums over the minutes (alias a)
+func azdbHist(name string) string {
+	parts := make([]string, 10)
+	for k := range parts {
+		parts[k] = fmt.Sprintf("coalesce(sum(a.%s_buckets[%d]), 0)", name, k+1)
+	}
+	return "ARRAY[" + strings.Join(parts, ", ") + "]::int[]"
+}
+
+// azdbHot: the share of one histogram's samples in its last three buckets (70 % and over), NULL with none counted
+func azdbHot(name string) string {
+	all := make([]string, 10)
+	for k := range all {
+		all[k] = fmt.Sprintf("sum(a.%s_buckets[%d])", name, k+1)
+	}
+	return fmt.Sprintf("round(100.0 * (sum(a.%[1]s_buckets[8]) + sum(a.%[1]s_buckets[9]) + sum(a.%[1]s_buckets[10])) / nullif(%[2]s, 0), 1)", name, strings.Join(all, " + "))
 }
 
 // the database's tier as last read (mssql_azuredb_governance) and its reads' times
@@ -48,15 +72,13 @@ SELECT g.snapshot_at AS tier_read_at, g.since AS tier_since, g.edition, g.servic
 
 // the window's one row of the database (DBA Dash's Azure Summary row) with its four histograms; $1 id, $2 from, $3 to
 var sqlAzureDBSummary = `
-SELECT ` + azdbWindowCols + `,
-       ` + azdbHist("cpu_buckets", "$1") + ` AS cpu_hist, ` + azdbHist("data_buckets", "$1") + ` AS data_hist,
-       ` + azdbHist("log_buckets", "$1") + ` AS log_hist, ` + azdbHist("dtu_buckets", "$1") + ` AS dtu_hist
+SELECT ` + azdbWindowCols + `
   FROM pgvigil.mssql_azuredb_minute a
  WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3`
 
 // the window's minutes, newest first (at most a day of them)
 const sqlAzureDBMinutes = `
-SELECT a.snapshot_at AS minute, a.samples, a.avg_cpu_percent, a.max_cpu_percent, a.avg_data_io_percent, a.max_data_io_percent,
+SELECT a.snapshot_at AS minute, a.snapshot_at, a.samples, a.avg_cpu_percent, a.max_cpu_percent, a.avg_data_io_percent, a.max_data_io_percent,
        a.avg_log_write_percent, a.max_log_write_percent, a.avg_memory_usage_percent, a.max_worker_percent, a.max_session_percent,
        a.avg_dtu_percent, a.max_dtu_percent, a.avg_dtu, a.max_dtu, a.dtu_limit, a.cpu_limit, a.replica_role
   FROM pgvigil.mssql_azuredb_minute a
@@ -87,40 +109,48 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// the fleet's Azure SQL Databases over the window (DBA Dash's Azure Summary grid): the tier, the window's figures and
-// histograms, the gaps in the window, and the storage of the PRIMARY data files as mssql_storage last read them (DBA
-// Dash's AzureDBInfo: allocated and used against the summed max size, NULL when a file is unlimited) with the '% Max
-// Size' status from the storage findings. $1 from, $2 to, $3 'sqlserver', $4 the tag scope (sqlPerfScope's rule).
-var sqlAzureDBFleet = sqlPerfScope + `
-SELECT inst.instance_id, inst.instance, g.edition, g.service_objective, g.pool, g.dtu_limit, g.cpu_limit,
-       w.*, gp.gaps, gp.gap_minutes, fs.allocated_mb, fs.used_mb, fs.max_size_mb,
+// the fleet's Azure SQL Databases over the window (DBA Dash's Azure Summary grid): the tier (its limits from the minutes
+// when the tier is not read: mssql_azuredb_governance needs ##MS_ServerStateReader## on Basic, S0, S1 and in a pool),
+// the window's figures, histograms and hot shares in one GROUP BY over the window's minutes, the gaps in the window, and
+// the PRIMARY data files as mssql_storage last read them (DBA Dash's AzureDBInfo: allocated and used against the summed
+// max size, none when a file is unlimited) with the % Max Size status of 0145's arm computed here from the same read:
+// over 90 % critical, over 80 % warning (a strict 'over'), 'stale' when the files were read over 3 hours ago (the
+// findings' window), 'no max size' with an unlimited file. DBA Dash's order: the most unused DTUs first. $1 from,
+// $2 to, $3 'sqlserver', $4 the tag scope (sqlPerfScope's rule).
+var sqlAzureDBFleet = sqlPerfScope + `, w AS (
+  SELECT a.instance_id, ` + azdbWindowCols + `
+    FROM pgvigil.mssql_azuredb_minute a
+   WHERE a.instance_id IN (SELECT instance_id FROM inst WHERE platform = 'azuresqldb') AND a.snapshot_at >= $1 AND a.snapshot_at < $2
+   GROUP BY a.instance_id
+)
+SELECT inst.instance_id, inst.instance, g.edition, g.service_objective, g.pool,
+       coalesce(g.dtu_limit, w.max_dtu_limit) AS dtu_limit, coalesce(g.cpu_limit, w.max_cpu_limit) AS cpu_limit, g.instance_id IS NOT NULL AS tier_read,
+       w.samples, w.minutes, w.avg_cpu_percent, w.max_cpu_percent, w.avg_data_io_percent, w.max_data_io_percent, w.avg_log_write_percent,
+       w.max_log_write_percent, w.avg_dtu_percent, w.max_dtu_percent, w.avg_dtu, w.max_dtu, w.unused_dtu,
+       w.cpu_hist, w.data_hist, w.log_hist, w.dtu_hist, w.cpu_hot_pct, w.data_hot_pct, w.log_hot_pct, w.dtu_hot_pct,
+       gp.gaps, gp.gap_minutes, round(fs.allocated_mb) AS allocated_mb, round(fs.used_mb) AS used_mb, round(fs.max_size_mb) AS max_size_mb,
        round(100.0 * fs.allocated_mb / nullif(fs.max_size_mb, 0), 1) AS allocated_pct, round(100.0 * fs.used_mb / nullif(fs.max_size_mb, 0), 1) AS used_pct,
-       coalesce(mf.severity, CASE WHEN fs.max_size_mb IS NULL THEN NULL ELSE 'ok' END) AS pctmax_status, fs.files_read_at,
-       h.cpu_hist, h.dtu_hist
+       CASE WHEN fs.files_read_at IS NULL THEN NULL
+            WHEN fs.files_read_at < now() - interval '3 hours' THEN 'stale'
+            WHEN fs.max_size_mb IS NULL THEN 'no max size'
+            WHEN fs.allocated_mb > 0.9 * fs.max_size_mb THEN 'critical'
+            WHEN fs.allocated_mb > 0.8 * fs.max_size_mb THEN 'warning'
+            ELSE 'ok' END AS pctmax_status, fs.files_read_at
   FROM inst
   LEFT JOIN pgvigil.mssql_azuredb_governance g ON g.instance_id = inst.instance_id
-  LEFT JOIN LATERAL (SELECT ` + azdbWindowCols + `
-      FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = inst.instance_id AND a.snapshot_at >= $1 AND a.snapshot_at < $2) w ON true
-  LEFT JOIN LATERAL (
-    SELECT ARRAY(SELECT coalesce(sum(x.cpu_buckets[k]), 0)::int FROM generate_series(1, 10) k LEFT JOIN pgvigil.mssql_azuredb_minute x
-                  ON x.instance_id = inst.instance_id AND x.snapshot_at >= $1 AND x.snapshot_at < $2 GROUP BY k ORDER BY k) AS cpu_hist,
-           ARRAY(SELECT coalesce(sum(x.dtu_buckets[k]), 0)::int FROM generate_series(1, 10) k LEFT JOIN pgvigil.mssql_azuredb_minute x
-                  ON x.instance_id = inst.instance_id AND x.snapshot_at >= $1 AND x.snapshot_at < $2 GROUP BY k ORDER BY k) AS dtu_hist) h ON true
+  LEFT JOIN w ON w.instance_id = inst.instance_id
   LEFT JOIN LATERAL (
     SELECT count(*) AS gaps, coalesce(round(sum(extract(epoch FROM least(x.gap_to, $2) - greatest(x.gap_from, $1)) / 60)), 0) AS gap_minutes
       FROM pgvigil.mssql_azuredb_gap x WHERE x.instance_id = inst.instance_id AND x.gap_to > $1 AND x.gap_from < $2) gp ON true
   LEFT JOIN LATERAL (
-    SELECT round(sum(f.size_bytes) / 1048576.0) AS allocated_mb,
-           CASE WHEN bool_and(f.used_read) THEN round(sum(f.used_bytes) / 1048576.0) END AS used_mb,
-           CASE WHEN bool_and(f.max_size_bytes IS NOT NULL) THEN round(sum(f.max_size_bytes) / 1048576.0) END AS max_size_mb,
+    SELECT sum(f.size_bytes) / 1048576.0 AS allocated_mb,
+           CASE WHEN bool_and(f.used_read) THEN sum(f.used_bytes) / 1048576.0 END AS used_mb,
+           CASE WHEN bool_and(f.max_size_bytes IS NOT NULL) THEN sum(f.max_size_bytes) / 1048576.0 END AS max_size_mb,
            max(f.snapshot_at) AS files_read_at
       FROM pgvigil.mssql_files f
      WHERE f.instance_id = inst.instance_id AND f.is_present AND f.type_desc = 'ROWS' AND f.filegroup = 'PRIMARY') fs ON true
-  LEFT JOIN LATERAL (
-    SELECT sf.severity FROM pgvigil.mssql_storage_findings sf
-     WHERE sf.instance_id = inst.instance_id AND sf.check_name = 'the database allocated over 80 % of its max size' LIMIT 1) mf ON true
  WHERE inst.platform = 'azuresqldb'
- ORDER BY inst.instance`
+ ORDER BY w.unused_dtu DESC NULLS LAST, inst.instance`
 
 // AzureDBSummary is GET /api/azuredb/summary?[from=&to=][&tag=]: the fleet's Azure SQL Databases (DBA Dash's Azure
 // Summary).

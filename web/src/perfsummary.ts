@@ -78,10 +78,12 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
     el('li', {}, 'every other cell is plain; a value not held is a muted word, never 0'),
     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
-    el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only')));
+    el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only'),
+    el('li', {}, 'Azure SQL Database: CPU is the database\'s share of its limit from sys.dm_db_resource_stats (mssql_azuredb_resources, VIEW DATABASE STATE), the minutes weighed by their 15-second samples')));
   sec.append(th);
   const link = (r: Row, tab: string) => el('a', { href: href(ctx, { tab, instance: Number(r.instance_id), tag: undefined }) }, String(r.instance));
-  const notRead = (_r: Row) => muted('not read', 'no mssql_cpu read in the range (VIEW SERVER STATE)');
+  const notRead = (r: Row) => r.platform === 'azuresqldb' ? muted('not read', 'no mssql_azuredb_resources read in the range (VIEW DATABASE STATE)')
+    : muted('not read', 'no mssql_cpu read in the range (VIEW SERVER STATE)');
   const cols: Col[] = [
     { key: 'instance', fmt: (_v, r) => link(r, 'performance') },
     { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' },

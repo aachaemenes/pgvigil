@@ -117,7 +117,7 @@ const mssqlPages: Record<string, Render> = {
 // such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
 const mssqlTabRuns: Record<string, string[]> = {
   mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
-  mssqlcpu: ['mssql_cpu', 'mssql_azuredb_resources'], mssqlazure: ['mssql_azuredb_resources', 'mssql_azuredb_governance'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
+  mssqlcpu: ['mssql_cpu'], mssqlazure: ['mssql_azuredb_resources', 'mssql_azuredb_governance'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
 };
@@ -445,6 +445,9 @@ async function render(force = false) {
     // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
   }
+  // the Azure Summary (B2a) in the root strip only where the fleet holds an Azure SQL Database (DBA Dash shows it under
+  // its Azure node); the page stays one of the root's (a link, the tree)
+  if (!ctx.instance && !(await fleet().catch(() => null))?.instances.some(r => r.platform === 'azuresqldb')) offStrip.add('azuresummary');
   const pages = ctx.instance ? (isMssql(engine) ? mssqlPages : instancePages) : rootPages;
   // a page of the other engine (an old link, a tree click from another instance) opens this instance's Summary
   if (ctx.instance && !pages[ctx.tab]) {

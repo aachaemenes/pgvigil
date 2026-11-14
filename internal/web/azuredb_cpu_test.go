@@ -101,20 +101,20 @@ func TestAzureDBCPUOnAStore(t *testing.T) {
 		return out
 	}
 	// each query wrapped so its numbers come back as plain floats
-	perfQ := `SELECT cpu_avg::float8 AS cpu_avg, cpu_max::float8 AS cpu_max, sql_avg::float8 AS sql_avg, machine_read FROM (` + sqlPerfMSSQLCPU + `) q`
+	perfQ := `SELECT cpu_avg::float8 AS cpu_avg, cpu_max::float8 AS cpu_max, sql_avg::float8 AS sql_avg, machine_read, azure FROM (` + sqlPerfMSSQLCPU + `) q`
 	perf := one(perfQ, az, from, to, 3600)
-	if s := fmt.Sprintf("%v %v %v %v", perf["cpu_avg"], perf["cpu_max"], perf["sql_avg"], perf["machine_read"]); s != "20 95 20 false" {
-		t.Errorf("Performance page on Azure SQL Database: cpu_avg cpu_max sql_avg machine_read = %s, want 20 95 20 false", s)
+	if s := fmt.Sprintf("%v %v %v %v %v", perf["cpu_avg"], perf["cpu_max"], perf["sql_avg"], perf["machine_read"], perf["azure"]); s != "20 95 20 false true" {
+		t.Errorf("Performance page on Azure SQL Database: cpu_avg cpu_max sql_avg machine_read azure = %s, want 20 95 20 false true", s)
 	}
 	perf = one(perfQ, ss, from, to, 3600)
-	if s := fmt.Sprintf("%v %v %v %v", perf["cpu_avg"], perf["cpu_max"], perf["sql_avg"], perf["machine_read"]); s != "62.5 95 35 true" {
-		t.Errorf("Performance page on SQL Server: cpu_avg cpu_max sql_avg machine_read = %s, want 62.5 95 35 true (100 - idle, as before)", s)
+	if s := fmt.Sprintf("%v %v %v %v %v", perf["cpu_avg"], perf["cpu_max"], perf["sql_avg"], perf["machine_read"], perf["azure"]); s != "62.5 95 35 true false" {
+		t.Errorf("Performance page on SQL Server: cpu_avg cpu_max sql_avg machine_read azure = %s, want 62.5 95 35 true false (100 - idle, as before)", s)
 	}
 	tab := one(`SELECT sql_pct::float8 AS sql_pct, total_max::float8 AS total_max, total_pct::float8 AS total_pct FROM (`+sqlMSSQLCPUSeries+`) q`, az, from, to, 3600)
 	if s := fmt.Sprintf("%v %v %v", tab["sql_pct"], tab["total_max"], tab["total_pct"]); s != "20 95 <nil>" {
 		t.Errorf("CPU tab on Azure SQL Database: sql_pct total_max total_pct = %s, want 20 95 and no machine figure", s)
 	}
-	rows, err := pool.Query(ctx, `SELECT instance_id, cpu_samples, cpu_avg::float8 AS cpu_avg, cpu_max::float8 AS cpu_max, cpu_hist FROM (`+sqlPerfSummaryMSSQL+`) q`, from, to, "sqlserver", nil)
+	rows, err := pool.Query(ctx, `SELECT instance_id, cpu_samples, cpu_avg::float8 AS cpu_avg, cpu_max::float8 AS cpu_max, cpu_hist, cpu_source FROM (`+sqlPerfSummaryMSSQL+`) q`, from, to, "sqlserver", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,12 +130,12 @@ func TestAzureDBCPUOnAStore(t *testing.T) {
 			r[f.Name] = vals[i]
 		}
 		id, _ := r["instance_id"].(int32)
-		got[int(id)] = fmt.Sprintf("%v %v %v %v", r["cpu_samples"], r["cpu_avg"], r["cpu_max"], r["cpu_hist"])
+		got[int(id)] = fmt.Sprintf("%v %v %v %v %v", r["cpu_samples"], r["cpu_avg"], r["cpu_max"], r["cpu_hist"], r["cpu_source"])
 	}
-	if got[az] != "6 20 95 [2 1 0 1 1 0 0 0 0 1]" {
+	if got[az] != "6 20 95 [2 1 0 1 1 0 0 0 0 1] azure" {
 		t.Errorf("Performance Summary on Azure SQL Database: %q, want 6 samples, 20.0, 95.00 and the buckets summed", got[az])
 	}
-	if got[ss] != "2 62.5 95 [0 0 0 1 0 0 0 0 0 1]" {
+	if got[ss] != "2 62.5 95 [0 0 0 1 0 0 0 0 0 1] scheduler" {
 		t.Errorf("Performance Summary on SQL Server: %q, want 2 samples, 62.5, 95 and its own buckets (30 and 95)", got[ss])
 	}
 }

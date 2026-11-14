@@ -113,8 +113,10 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     box.append(cpu.length
       ? titled(lineChart('CPU', align(g, cpu, ['sql_avg', 'cpu_avg', 'cpu_max']),
           [{ key: 'sql_avg', label: 'SQL Server %' }, { key: 'cpu_avg', label: 'total %' }, { key: 'cpu_max', label: 'total max %' }], v => fmtNum(v) + ' %'),
-          cpu.some(r => r.machine_read) ? 'CPU (scheduler monitor: SQL Server and the machine)' : 'CPU (scheduler monitor: SQL Server only, a Linux host)', to(mssqlCpuTab))
-      : emptyChart('CPU', to(mssqlCpuTab), 'No CPU read in this window: the mssql_cpu collection runs every minute and needs VIEW SERVER STATE.'));
+          cpu.some(r => r.azure) ? 'CPU (the database\'s share of its limit: sys.dm_db_resource_stats, Azure SQL Database)'
+            : cpu.some(r => r.machine_read) ? 'CPU (scheduler monitor: SQL Server and the machine)' : 'CPU (scheduler monitor: SQL Server only, a Linux host)', to(mssqlCpuTab))
+      : emptyChart('CPU', to(mssqlCpuTab), 'No CPU read in this window: the mssql_cpu collection runs every minute and needs VIEW SERVER STATE '
+        + '(on Azure SQL Database mssql_azuredb_resources, with VIEW DATABASE STATE).'));
     box.append(titled(lineChart('Requests', align(g, rowsOf(d.sessions), ['requests', 'blocked', 'sessions']),
       [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions', to('mssql_running')));
     const w = pivotWaits(g, rowsOf(d.waits));

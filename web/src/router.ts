@@ -101,7 +101,7 @@ export const rootOnly = new Set(['diff', 'pgthresholds', 'retention', 'rp_recycl
 // the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
 // engine leaves them out, as a strip should; every other page holds both engines.
 export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
-  mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver',
+  mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver', azuresummary: 'sqlserver',
   pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
   tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
   storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',

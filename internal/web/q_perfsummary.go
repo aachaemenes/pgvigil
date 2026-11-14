@@ -189,7 +189,7 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((w.other_ms / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
-       h.cpu_sql_avg, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+       h.cpu_sql_avg, h.cpu_source, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
        CASE WHEN io.secs > 0 THEN 'virtual_file_stats' END AS io_source,
@@ -199,8 +199,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
   FROM inst
   LEFT JOIN LATERAL (
     -- the source with samples: SQL Server's scheduler monitor, or on Azure SQL Database (B2a) mssql_azuredb_minute -
-    -- DBA Dash's Azure Summary arithmetic: the 15-second samples' average CPU, their largest, their ten buckets summed
-    SELECT u.cpu_samples, u.cpu_avg, u.cpu_max, u.cpu_sql_avg, u.cpu_hist FROM (
+    -- DBA Dash's Azure Summary arithmetic: the 15-second samples' average CPU, their largest, their ten buckets summed in
+    -- one pass, the minutes that start in the window (DBA Dash's window, as q_azuredb.go); cpu_source names the source
+    SELECT u.cpu_samples, u.cpu_avg, u.cpu_max, u.cpu_sql_avg, u.cpu_hist, CASE WHEN u.pri = 0 THEN 'azure' ELSE 'scheduler' END AS cpu_source FROM (
     SELECT 1 AS pri, x.* FROM (
     -- the scheduler monitor's records: the machine's CPU (100 - idle) and the SQL Server process's share
     SELECT count(*) AS cpu_samples, round(avg(coalesce(100 - s.idle_pct, s.sql_pct)), 1) AS cpu_avg, max(coalesce(100 - s.idle_pct, s.sql_pct))::numeric AS cpu_max,
@@ -216,10 +217,11 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
     UNION ALL
     SELECT 0, sum(a.samples)::bigint, round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 1),
            max(a.max_cpu_percent), round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 1),
-           ARRAY(SELECT sum(a2.cpu_buckets[k])::int FROM pgvigil.mssql_azuredb_minute a2, generate_series(1, 10) k
-                  WHERE a2.instance_id = inst.instance_id AND a2.snapshot_at > $1 AND a2.snapshot_at <= $2 GROUP BY k ORDER BY k)
+           ARRAY[coalesce(sum(a.cpu_buckets[1]), 0), coalesce(sum(a.cpu_buckets[2]), 0), coalesce(sum(a.cpu_buckets[3]), 0), coalesce(sum(a.cpu_buckets[4]), 0),
+                 coalesce(sum(a.cpu_buckets[5]), 0), coalesce(sum(a.cpu_buckets[6]), 0), coalesce(sum(a.cpu_buckets[7]), 0), coalesce(sum(a.cpu_buckets[8]), 0),
+                 coalesce(sum(a.cpu_buckets[9]), 0), coalesce(sum(a.cpu_buckets[10]), 0)]::int[]
       FROM pgvigil.mssql_azuredb_minute a
-     WHERE a.instance_id = inst.instance_id AND a.snapshot_at > $1 AND a.snapshot_at <= $2
+     WHERE a.instance_id = inst.instance_id AND a.snapshot_at >= $1 AND a.snapshot_at < $2
     ) u ORDER BY (coalesce(u.cpu_samples, 0) > 0) DESC, u.pri DESC LIMIT 1) h ON true
   LEFT JOIN LATERAL (
     SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,

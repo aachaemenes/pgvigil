@@ -53,12 +53,14 @@ SELECT s.snapshot_at, s.schedulers, s.cpu_count, s.runnable_tasks, s.work_queue,
 const sqlMSSQLCPUSeries = `
 SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
        round(sum(s.sql_pct * s.w) / nullif(sum(s.w) FILTER (WHERE s.sql_pct IS NOT NULL), 0), 1) AS sql_pct, round(avg(s.other_pct), 1) AS other_pct,
-       round(avg(100 - s.idle_pct), 1) AS total_pct, coalesce(max(100 - s.idle_pct), max(s.az_max)) AS total_max, bool_or(s.idle_pct IS NOT NULL) AS machine_read
+       round(avg(100 - s.idle_pct), 1) AS total_pct, coalesce(max(100 - s.idle_pct), max(s.az_max)) AS total_max, bool_or(s.idle_pct IS NOT NULL) AS machine_read,
+       bool_or(s.az_max IS NOT NULL) AS azure
   FROM (SELECT c.snapshot_at, c.sql_pct::numeric AS sql_pct, c.other_pct, c.idle_pct, NULL::numeric AS az_max, 1 AS w
           FROM pgvigil.mssql_cpu_sample c WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
         UNION ALL
+        -- Azure SQL Database's minutes by DBA Dash's window (a minute that starts in it: q_azuredb.go)
         SELECT a.snapshot_at, a.avg_cpu_percent, NULL, NULL, a.max_cpu_percent, a.samples
-          FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = $1 AND a.snapshot_at > $2 AND a.snapshot_at <= $3) s
+          FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3) s
  GROUP BY 1 ORDER BY 1`
 
 const sqlMSSQLSchedSeries = `
