@@ -11,7 +11,8 @@
 #           instances, every service whose name starts MSSQL, SQL or DBADash with its status and start type, every
 #           inbound firewall rule, the listening TCP ports, the SQL Server Browser's start type, whether each ISO the lab
 #           may use is attached). Refused when <LabDir> exists and is not empty (a lab is in progress: down first; a
-#           folder of anything else is never taken), or when one of the lab's three instance names already exists.
+#           folder of anything else is never taken), when one of the lab's three instance names already exists, or
+#           when a scheduled task named pgvigil-mirroring-lab-setup exists (it is not the lab's to take).
 #   up      builds the lab; needs before.json. Every step reads first and skips what is already there, so a cut run
 #           is run again. An instance named in before.json is never touched.
 #   status  read only: each lab instance's services, version and port, the mirroring rows of both partners, the
@@ -46,7 +47,7 @@
 #              with DPAPI under the user that runs it (SqlSecureString.WriteXml -> ProtectedData.Protect, even for an
 #              account with no password), and a key-based OpenSSH logon (S4U) holds no credentials to open that user's
 #              DPAPI key: setup then stops with 'There was an error generating the XML document' (CryptographicException
-#              Access is denied; two runs on 2026-11-14). SYSTEM's own DPAPI key is the machine's. The ssh user stays the
+#              Access is denied). SYSTEM's own DPAPI key is the machine's. The ssh user stays the
 #              instances' sysadmin (named in the configuration by the caller). The configuration file holds no password. The SQL Server Browser keeps the start
 #              type before.json read (setup is told it explicitly). Shared features already on the host stay as
 #              they are; nothing of another instance is touched.
@@ -64,8 +65,8 @@
 # runtime): they are shared, the default instance's setup installed them already, and an uninstall leaves them.
 #
 # Passwords are made here from a cryptographic random source and are never printed; the setup configuration file
-# that carries the sa password lives in the secret folder and is deleted when setup returns (setup's own log copy of
-# it holds no password).
+# holds no password (setup installs with Windows authentication; mixed mode and sa's password are set after it), and
+# the one secret, sa.pw, lives in the secret folder.
 # A cut run is run again: an instance already installed is kept, every certificate is exported again and a peer's
 # copy replaced when its thumbprint differs, and while the principal has no mirroring row the mirror's copy is
 # restored again (its mirroring removed first) from fresh backups.
@@ -275,8 +276,11 @@ function Get-SetupFolder([object]$before) {
 # Invoke-SetupAsSystem: setup.exe <arguments> as SYSTEM through the lab's one-shot task; returns setup's exit code.
 # The task's command is a .cmd in the secret folder that runs setup and writes its exit code beside it; the task, the
 # .cmd and the exit file are removed on every path. A task left by a killed run is the lab's (its fixed name, absent
-# from before.json) and is replaced.
+# from before.json) and is replaced only when it is not running: a running one is an earlier run's setup, whose .cmd
+# and exit file are in use. The task's own time limit is longer than the wait, so the wait ends first and says why.
 function Invoke-SetupAsSystem([string]$setupExe, [string]$arguments, [int]$timeoutMin = 50) {
+    $earlier = Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue
+    if ($earlier -and [string]$earlier.State -eq 'Running') { throw "setup as SYSTEM from an earlier run is still running (task '$setupTask'): wait for it to end, then run again" }
     $wrapper = Join-Path $secretDir 'setup-run.cmd'
     $exitFile = Join-Path $secretDir 'setup-run.exit'
     if (Test-Path -LiteralPath $exitFile) { Remove-Item -LiteralPath $exitFile -Force -ErrorAction Stop }
@@ -284,13 +288,25 @@ function Invoke-SetupAsSystem([string]$setupExe, [string]$arguments, [int]$timeo
     Set-Content -LiteralPath $wrapper -Encoding ASCII -Value @("@echo off", "`"$setupExe`" $arguments", "> `"$exitFile`" echo %ERRORLEVEL%")
     $taskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$wrapper`""
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-    $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $timeoutMin) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes ($timeoutMin + 10)) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     try {
         Register-ScheduledTask -TaskName $setupTask -Action $taskAction -Principal $taskPrincipal -Settings $taskSettings -Force -ErrorAction Stop | Out-Null
         Start-ScheduledTask -TaskName $setupTask -ErrorAction Stop
-        $deadline = (Get-Date).AddMinutes($timeoutMin)
+        $started = Get-Date
+        $deadline = $started.AddMinutes($timeoutMin)
         while (-not (Test-Path -LiteralPath $exitFile)) {
-            if ((Get-Date) -gt $deadline) { throw "setup as SYSTEM wrote no exit code in $timeoutMin minutes (task state $((Get-ScheduledTask -TaskName $setupTask).State))" }
+            # the task ended (Ready) with no exit file: it never ran the .cmd, or something stopped it - said now
+            $state = [string](Get-ScheduledTask -TaskName $setupTask -ErrorAction Stop).State
+            if ($state -eq 'Ready' -and ((Get-Date) - $started).TotalSeconds -gt 30) {
+                Start-Sleep -Seconds 2
+                if (Test-Path -LiteralPath $exitFile) { break }
+                throw "setup as SYSTEM ended with no exit code (task state $state, last result $((Get-ScheduledTaskInfo -TaskName $setupTask).LastTaskResult))"
+            }
+            if ((Get-Date) -gt $deadline) {
+                Stop-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue
+                $left = @(Get-CimInstance Win32_Process -Filter "Name = 'setup.exe'" -ErrorAction SilentlyContinue | ForEach-Object { "$($_.ProcessId) $($_.ExecutablePath)" })
+                throw "setup as SYSTEM wrote no exit code in $timeoutMin minutes; the task was stopped; setup processes still running: $(if ($left.Count) { $left -join ', ' } else { 'none' })"
+            }
             Start-Sleep -Seconds 10
         }
         Start-Sleep -Seconds 2
@@ -353,6 +369,11 @@ function Set-LabMixedMode([object]$inst, [string]$instanceId) {
     if ([int](Get-ItemProperty -LiteralPath $key -ErrorAction Stop).LoginMode -ne 2) {
         Set-ItemProperty -LiteralPath $key -Name LoginMode -Value 2 -Type DWord -ErrorAction Stop
         $script:restartFor = $inst.Name
+    } else {
+        # LoginMode 2 already, from the live engine: a run cut before its restart left Windows authentication only
+        # (or the engine stopped): restart it once
+        try { $live = (Invoke-LabSql $inst "SELECT CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS int) AS v")[0].v } catch { $live = $null }
+        if ($live -ne 0) { $script:restartFor = $inst.Name }
     }
 }
 
@@ -409,8 +430,8 @@ SELECT CAST(1 AS int) AS ok;
     if (Test-Path -LiteralPath $certFile) { Remove-Item -LiteralPath $certFile -Force -ErrorAction Stop }
     $null = Invoke-LabSql $inst "BACKUP CERTIFICATE [$certName] TO FILE = '$certFile'; SELECT CAST(1 AS int) AS ok;"
     if (-not (Test-Path -LiteralPath $certFile)) { throw "the certificate file $certFile was not written" }
-    # SQL Server writes the file with a DACL of its own (its service SID, OWNER RIGHTS, Administrators: read on the
-    # lab VM 2026-11-14): the two other engines could not read it. Back to the folder's inherited rights (the three
+    # SQL Server writes the file with a DACL of its own (its service SID, OWNER RIGHTS, Administrators): the two
+    # other engines could not read it. Back to the folder's inherited rights (the three
     # service SIDs of Grant-ServiceFolder); the file holds the public certificate only.
     $null = & icacls.exe $certFile /reset /Q
     if ($LASTEXITCODE -ne 0) { throw "icacls could not reset the rights of $certFile (exit $LASTEXITCODE)" }
@@ -671,12 +692,18 @@ function Invoke-Down {
     foreach ($inst in $labInstances) {
         if (Test-InBefore $before 'Instances' $inst.Name) { Say "uninstall $($inst.Name): listed in before.json, NOT touched"; continue }
         if (-not $installed.ContainsKey($inst.Name)) { Say "uninstall $($inst.Name): not installed"; continue }
-        $setupExe = $bootstrapSetup
-        if (-not (Test-Path -LiteralPath $setupExe)) { $setupExe = (Get-SetupFolder $before).SetupExe }
-        New-SecretDir
-        $code = Invoke-SetupAsSystem $setupExe "/ACTION=Uninstall /QUIET /FEATURES=SQLENGINE /INSTANCENAME=$($inst.Name)"
-        Say "uninstall $($inst.Name): exit $code (as SYSTEM)"
-        if ($code -ne 0 -and $code -ne 3010) { $failures.Add("uninstall $($inst.Name) exit $code") }
+        # one instance's failure is counted and the rest of down still runs (the rule, the ISO, the read-back)
+        try {
+            $setupExe = $bootstrapSetup
+            if (-not (Test-Path -LiteralPath $setupExe)) { $setupExe = (Get-SetupFolder $before).SetupExe }
+            New-SecretDir
+            $code = Invoke-SetupAsSystem $setupExe "/ACTION=Uninstall /QUIET /FEATURES=SQLENGINE /INSTANCENAME=$($inst.Name)"
+            Say "uninstall $($inst.Name): exit $code (as SYSTEM)"
+            if ($code -ne 0 -and $code -ne 3010) { $failures.Add("uninstall $($inst.Name) exit $code") }
+        } catch {
+            Say "uninstall $($inst.Name): FAILED ($($_.Exception.Message))"
+            $failures.Add("uninstall $($inst.Name): $($_.Exception.Message)")
+        }
     }
     $installed = Get-InstalledInstances
     foreach ($inst in $labInstances) {
