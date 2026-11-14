@@ -8,7 +8,8 @@ application beats its server's). A server or a database has one application at i
 application is on carries the tag `application:<name>`: on the tree, in the tag filter, in a threshold's, an
 acknowledgement's or an alert rule's scope, like any other tag. The tag is pgvigil's own: `pgvigil tag`, Admin >
 Instances and the configuration file cannot set the key `application`: a file's `application:` tag is not taken, the
-page names the instance, and the collector logs "tag not taken" when the instance starts.
+page names the instance, and the collector logs "tag not taken" when the instance starts. An older store's override of
+the key (named on the page too) is cleared with `pgvigil tag -reset <instance> application`.
 
 ## The page
 
@@ -21,7 +22,9 @@ page names the instance, and the collector logs "tag not taken" when the instanc
 - **Servers and databases**: own (assigned here) or inherited (a database of a server the application is on, with no
   application of its own). A database dropped on its server keeps its assignment, shown absent since its last read; it
   leaves the tag after that. A database renamed on its server (PostgreSQL: the same database id) is never taken under
-  its new name silently: the old name shows absent with "renamed to <new>", and Assign instead moves the assignment.
+  its new name silently: the old name shows absent with "renamed to <new>", and Assign instead moves the assignment. The
+offer is not made while the new name has an application of its own; on SQL Server it says "possibly" (SQL Server gives
+a dropped database's id to the next database made).
 - **Databases with no application**: every present database of a monitored server with neither its own application nor
   its server's. System databases (template0, template1, rdsadmin, master, model, msdb, tempdb) are left out. Tick rows,
   then assign them all to one application in one request (500 at most), or mark them **not an application** (a test
@@ -76,6 +79,10 @@ for each configured channel with something due, plus one for each route with som
 routes, up to n x (1 + r) messages a pass in the worst case.
 
 A channel of the configuration may not be named `contact-...` (pgvigil refuses to start with one).
+
+A development or lab repository that recorded migration 0190 before this release's version of it keeps the older
+alert_due, which sends repository-wide alerts to routes too: pgvigil migrate does not run a recorded file again, so
+such a store is made anew (a released store never held the older 0190).
 
 ## In the repository (migration 0136)
 

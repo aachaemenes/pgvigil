@@ -413,7 +413,8 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
             say(`${str(v)} is assigned to ${name}, and ${str(r.database_name)} is still assigned too: ${(status.textContent ?? '').replace(/^Not done: /, '')}`, true);
           }
         });
-        return el('span', {}, str(v), ' ', lock(el('span', { class: 'actions' }, b)));
+        // SQL Server gives a dropped database's id to the next one made: there the offer is only a likelihood (review A, m8)
+        return el('span', {}, str(v), r.engine === 'sqlserver' ? ' (possibly: SQL Server reuses a dropped database\'s id)' : '', ' ', lock(el('span', { class: 'actions' }, b)));
       } },
       { key: 'set_by', label: 'set by', fmt: (v, r) => r.own ? `${str(r.source)} by ${str(v) || 'unknown'}, ${fmtTime(r.set_at)}` : '' },
       { key: 'actions', fmt: (_v, r) => {

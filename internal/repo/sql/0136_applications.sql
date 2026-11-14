@@ -185,7 +185,7 @@ RETURNS TABLE (instance_id int, database_name text, own boolean, absent_since ti
       SELECT d.datname AS name FROM pgvigil.databases d
        WHERE d.instance_id = a.instance_id AND d.is_present AND NOT coalesce(d.is_template, false)
       UNION
-      SELECT o.database_name FROM pgvigil.mssql_database_option o WHERE o.instance_id = a.instance_id AND o.is_present) x
+      SELECT o.database_name FROM pgvigil.mssql_database_option o WHERE o.instance_id = a.instance_id AND o.is_present AND NOT o.is_snapshot) x   -- review A, m6
    WHERE a.app_id = p_app_id AND a.database_name IS NULL AND NOT pgvigil.app_system_db(x.name)
      AND NOT EXISTS (SELECT 1 FROM pgvigil.app_assignments b
                       WHERE b.instance_id = a.instance_id AND b.database_name = x.name)
@@ -221,6 +221,14 @@ RETURNS void LANGUAGE sql AS $$
   ON CONFLICT (object_kind, object_id, field) DO UPDATE SET source = EXCLUDED.source, set_at = now(), set_by = EXCLUDED.set_by
 $$;
 
+-- an assign's targets as rows, read straight from the payload: no temp table (a caller's own temp table of that name,
+-- with a trigger, would run inside the owner's function: review A, M1)
+CREATE OR REPLACE FUNCTION pgvigil.app_targets_of(p jsonb)
+RETURNS TABLE (n bigint, instance_id int, database_name text, raw jsonb) LANGUAGE sql IMMUTABLE AS $$
+  SELECT e.n, pgvigil.app_int(e.v->'instance_id'), CASE WHEN jsonb_typeof(e.v->'database') = 'string' THEN e.v->>'database' END, e.v
+    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p) = 'array' THEN p ELSE '[]'::jsonb END) WITH ORDINALITY AS e(v, n)
+$$;
+
 -- a JSON value as an int, NULL when it is not a whole number in range
 CREATE OR REPLACE FUNCTION pgvigil.app_int(p jsonb)
 RETURNS int LANGUAGE sql IMMUTABLE AS $$
@@ -236,6 +244,7 @@ RETURNS TABLE (kind text, id bigint) LANGUAGE sql STABLE AS $$
   SELECT 'drive threshold', d.threshold_id FROM pgvigil.drive_thresholds d WHERE d.ended_at IS NULL AND d.tag = p_tag
   UNION ALL
   SELECT 'acknowledgement', a.ack_id FROM pgvigil.acks a WHERE a.ended_at IS NULL AND a.tag = p_tag
+     AND (a.until IS NULL OR a.until > now())   -- an expired one is not live (review A, m7)
   UNION ALL
   SELECT 'alert rule', r.rule_id FROM pgvigil.alert_rules r WHERE r.ended_at IS NULL AND r.tag = p_tag
 $$;
@@ -283,7 +292,7 @@ BEGIN
   ELSIF v_op IN ('add', 'rename') AND NOT pgvigil.app_name_ok(v_name) THEN
     v_why := 'a name is 1 to 100 bytes with no comma or control character and no space at either end (it is a tag value)';
   ELSIF v_op IN ('add', 'rename') AND EXISTS (SELECT 1 FROM pgvigil.app_applications a
-                                               WHERE lower(a.name) = lower(v_name) AND a.app_id IS DISTINCT FROM v_id) THEN
+                                               WHERE lower(a.name) = lower(v_name) AND NOT (v_op = 'rename' AND a.app_id = v_id)) THEN   -- review A, m2
     v_why := format('an application %s exists already', v_name);
   ELSIF v_op IN ('add', 'edit') AND p_payload ? 'tier' AND jsonb_typeof(p_payload->'tier') <> 'null'
         AND coalesce(pgvigil.app_int(p_payload->'tier'), 0) NOT BETWEEN 1 AND 4 THEN
@@ -349,7 +358,7 @@ BEGIN
     IF v_scoped > 0 THEN
       UPDATE pgvigil.pg_thresholds SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
       UPDATE pgvigil.drive_thresholds SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
-      UPDATE pgvigil.acks SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.acks SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old AND (until IS NULL OR until > now());
       UPDATE pgvigil.alert_rules SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
     END IF;
     v_detail := format('application %s renamed from %s to %s%s', v_id, v_have.name, v_name,
@@ -363,7 +372,7 @@ BEGIN
     IF v_scoped > 0 THEN
       UPDATE pgvigil.pg_thresholds SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
       UPDATE pgvigil.drive_thresholds SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
-      UPDATE pgvigil.acks SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.acks SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old AND (until IS NULL OR until > now());
       UPDATE pgvigil.alert_rules SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
     END IF;
     v_detail := format('removed application %s (%s) with %s assignment(s)%s', v_id, v_have.name, v_n,
@@ -422,9 +431,11 @@ BEGIN
         AND coalesce(length(btrim(p_payload->>'name')), 0) NOT BETWEEN 1 AND 200 THEN
     v_why := 'a name is 1 to 200 characters';
   ELSIF v_op IN ('add', 'edit') AND nullif(p_payload->>'email', '') IS NOT NULL
-        AND (length(p_payload->>'email') > 254 OR p_payload->>'email' !~ '^[^@[:space:][:cntrl:]]+@[^@[:space:][:cntrl:]]+\.[^@[:space:][:cntrl:]]+$') THEN
+        AND (length(p_payload->>'email') > 254 OR p_payload->>'email' ~ '[[:cntrl:]]'   -- report_mail_why's pattern (review A, m11)
+             OR p_payload->>'email' !~ '^[^@\s<>,;"()\[\]\\]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$') THEN
     v_why := 'an e-mail is one address (name@domain), at most 254 characters';
-  ELSIF v_op IN ('add', 'edit') AND nullif(p_payload->>'phone', '') IS NOT NULL AND v_kind <> 'person' THEN
+  ELSIF v_op IN ('add', 'edit') AND v_kind <> 'person'   -- the phone the row ends with (an edit to a team keeps a stored one: review A, M2)
+        AND coalesce(CASE WHEN p_payload ? 'phone' THEN nullif(p_payload->>'phone', '') ELSE v_have.phone END, '') <> '' THEN
     v_why := 'a phone belongs to a person, not to a team (a team has its group address)';
   ELSIF v_op IN ('add', 'edit') AND nullif(p_payload->>'phone', '') IS NOT NULL AND p_payload->>'phone' !~ '^[+0-9 ().-]{3,40}$' THEN
     v_why := 'a phone is 3 to 40 of + 0-9 space ( ) . -';
@@ -486,6 +497,7 @@ DECLARE
   v_src   text := coalesce(nullif(p_payload->>'source', ''), 'entered');
   v_force boolean := coalesce(p_payload->>'force', '') = 'true';
   v_env   text := nullif(p_payload->>'environment', '');
+  v_t     jsonb := p_payload->'targets';
   v_n     int;
   v_why   text;
   v_name  text;
@@ -495,14 +507,7 @@ BEGIN
     RAISE EXCEPTION 'import_app_assign: no ui_user' USING ERRCODE = '22023';
   END IF;
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.app_writes'));
-  CREATE TEMP TABLE IF NOT EXISTS pg_temp.app_targets (n int, instance_id int, database_name text, raw jsonb) ON COMMIT DROP;
-  TRUNCATE pg_temp.app_targets;
-  IF jsonb_typeof(p_payload->'targets') = 'array' THEN
-    INSERT INTO pg_temp.app_targets
-    SELECT e.n, pgvigil.app_int(e.v->'instance_id'), CASE WHEN jsonb_typeof(e.v->'database') = 'string' THEN e.v->>'database' END, e.v
-      FROM jsonb_array_elements(p_payload->'targets') WITH ORDINALITY AS e(v, n);
-  END IF;
-  SELECT count(*) INTO v_n FROM pg_temp.app_targets;
+  SELECT count(*) INTO v_n FROM pgvigil.app_targets_of(v_t);
   SELECT a.name INTO v_name FROM pgvigil.app_applications a WHERE a.app_id = v_app;
   IF v_op IS NULL OR v_op NOT IN ('assign', 'unassign', 'mark', 'unmark') THEN
     v_why := 'op must be assign, unassign, mark or unmark';
@@ -516,26 +521,28 @@ BEGIN
     v_why := format('no application %s', coalesce(p_payload->>'app_id', '(none given)'));
   ELSIF v_env IS NOT NULL AND v_env NOT IN ('production', 'staging', 'test', 'development', 'DR') THEN
     v_why := 'environment is production, staging, test, development or DR';
-  ELSIF EXISTS (SELECT 1 FROM pg_temp.app_targets x WHERE x.instance_id IS NULL
-                   OR (x.raw ? 'database' AND jsonb_typeof(x.raw->'database') NOT IN ('string', 'null'))) THEN
+  ELSIF EXISTS (SELECT 1 FROM pgvigil.app_targets_of(v_t) x WHERE x.instance_id IS NULL
+                   OR (x.raw ? 'database' AND jsonb_typeof(x.raw->'database') NOT IN ('string', 'null'))
+                   OR x.database_name = '') THEN   -- "" is no database (null names the instance itself): review A, m4
     v_why := 'each target is {instance_id: a number, database: a name or null}';
-  ELSIF EXISTS (SELECT 1 FROM pg_temp.app_targets x GROUP BY x.instance_id, coalesce(x.database_name, '') HAVING count(*) > 1) THEN
+  ELSIF EXISTS (SELECT 1 FROM pgvigil.app_targets_of(v_t) x GROUP BY x.instance_id, coalesce(x.database_name, '') HAVING count(*) > 1) THEN
     v_why := 'a target is named twice in one request';
-  ELSIF EXISTS (SELECT 1 FROM pg_temp.app_targets x WHERE NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.instance_id = x.instance_id)) THEN
-    SELECT format('no instance %s', min(x.instance_id)) INTO v_why FROM pg_temp.app_targets x
+  ELSIF EXISTS (SELECT 1 FROM pgvigil.app_targets_of(v_t) x WHERE NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.instance_id = x.instance_id)) THEN
+    SELECT format('no instance %s', min(x.instance_id)) INTO v_why FROM pgvigil.app_targets_of(v_t) x
      WHERE NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.instance_id = x.instance_id);
-  ELSIF v_op IN ('mark', 'unmark') AND EXISTS (SELECT 1 FROM pg_temp.app_targets x WHERE x.database_name IS NULL) THEN
+  ELSIF v_op IN ('mark', 'unmark') AND EXISTS (SELECT 1 FROM pgvigil.app_targets_of(v_t) x WHERE x.database_name IS NULL) THEN
     v_why := 'only a database is marked ''not an application'', never a whole instance';
-  ELSIF v_op IN ('assign', 'mark') AND EXISTS (SELECT 1 FROM pg_temp.app_targets x
+  ELSIF v_op IN ('assign', 'mark') AND EXISTS (SELECT 1 FROM pgvigil.app_targets_of(v_t) x
                                                 WHERE x.database_name IS NOT NULL AND NOT pgvigil.app_db_present(x.instance_id, x.database_name)) THEN
-    SELECT format('%s is not a database of instance %s as last read', min(x.database_name), min(x.instance_id)) INTO v_why
-      FROM pg_temp.app_targets x WHERE x.database_name IS NOT NULL AND NOT pgvigil.app_db_present(x.instance_id, x.database_name);
-  ELSIF v_op = 'unassign' AND EXISTS (SELECT 1 FROM pg_temp.app_targets x WHERE NOT EXISTS (
+    SELECT format('%s is not a database of instance %s as last read', x.database_name, x.instance_id) INTO v_why   -- one target's pair (review A, m5)
+      FROM pgvigil.app_targets_of(v_t) x WHERE x.database_name IS NOT NULL AND NOT pgvigil.app_db_present(x.instance_id, x.database_name)
+     ORDER BY x.n LIMIT 1;
+  ELSIF v_op = 'unassign' AND EXISTS (SELECT 1 FROM pgvigil.app_targets_of(v_t) x WHERE NOT EXISTS (
           SELECT 1 FROM pgvigil.app_assignments a WHERE a.instance_id = x.instance_id
              AND coalesce(a.database_name, '') = coalesce(x.database_name, '') AND a.app_id = v_app)) THEN
     v_why := format('a target is not assigned to application %s', v_app);
   ELSIF v_op = 'assign' AND NOT v_force AND v_src <> 'entered' AND EXISTS (
-          SELECT 1 FROM pg_temp.app_targets x JOIN pgvigil.app_assignments a
+          SELECT 1 FROM pgvigil.app_targets_of(v_t) x JOIN pgvigil.app_assignments a
             ON a.instance_id = x.instance_id AND coalesce(a.database_name, '') = coalesce(x.database_name, '')
            WHERE a.source = 'entered' AND a.app_id <> v_app) THEN
     v_why := format('conflict: a target''s application was entered by hand; %s does not change it unless forced', v_src);
@@ -545,7 +552,7 @@ BEGIN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', v_why);
   END IF;
 
-  FOR t IN SELECT * FROM pg_temp.app_targets ORDER BY n LOOP
+  FOR t IN SELECT * FROM pgvigil.app_targets_of(v_t) ORDER BY n LOOP
     IF v_op = 'assign' THEN
       INSERT INTO pgvigil.app_assignments AS a (instance_id, database_name, app_id, environment, engine_db_id, last_seen, source, set_at, set_by)
       VALUES (t.instance_id, t.database_name, v_app, v_env,
@@ -676,6 +683,9 @@ BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.app_writes'));
   IF v_rid IS NOT NULL THEN
     SELECT * INTO v_r FROM pgvigil.ui_app_contact_routes r WHERE r.route_id = v_rid;
+    IF v_cid IS NOT NULL AND v_r.route_id IS NOT NULL AND v_cid <> v_r.contact_id THEN   -- review A, m1
+      v_why := format('route %s belongs to contact %s, not to contact %s', v_rid, v_r.contact_id, v_cid);
+    END IF;
     v_cid := coalesce(v_cid, v_r.contact_id);
     IF v_chan = '' THEN v_chan := coalesce(v_r.channel_name, ''); END IF;
   ELSIF v_cid IS NOT NULL AND v_chan <> '' THEN
@@ -687,7 +697,9 @@ BEGIN
   IF jsonb_typeof(p_payload->'enabled') = 'boolean' THEN
     v_en := (p_payload->>'enabled')::boolean;
   END IF;
-  IF v_op IS NULL OR v_op NOT IN ('set', 'remove') THEN
+  IF v_why IS NOT NULL THEN
+    NULL;   -- the route and the contact disagree (above)
+  ELSIF v_op IS NULL OR v_op NOT IN ('set', 'remove') THEN
     v_why := 'op must be set or remove';
   ELSIF p_payload ? 'enabled' AND jsonb_typeof(p_payload->'enabled') <> 'boolean' THEN
     v_why := 'enabled is true or false';
@@ -734,11 +746,12 @@ END $$;
 -- with an e-mail), for the alert sender's session (pgvigil_alerter) or the owner only, as alert_log_partition (0059)
 CREATE OR REPLACE FUNCTION pgvigil.alert_contact_routes()
 RETURNS TABLE (route_id int, contact_id int, role text, application text, channel_name text, min_severity text, email text)
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pgvigil AS $$
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp AS $$
 #variable_conflict use_column
 BEGIN
-  IF NOT (pg_has_role(session_user, 'pgvigil_alerter', 'MEMBER')
-          OR pg_has_role(session_user, (SELECT n.nspowner FROM pg_namespace n WHERE n.nspname = 'pgvigil'), 'MEMBER')) THEN
+  -- pg_temp last and the catalog named: a caller's temp table pg_namespace never answers the owner test (review A, B1)
+  IF NOT (pg_catalog.pg_has_role(session_user, 'pgvigil_alerter', 'MEMBER')
+          OR pg_catalog.pg_has_role(session_user, (SELECT n.nspowner FROM pg_catalog.pg_namespace n WHERE n.nspname = 'pgvigil'), 'MEMBER')) THEN
     RAISE EXCEPTION 'alert_contact_routes: % is not the alert sender', session_user USING ERRCODE = '42501';
   END IF;
   RETURN QUERY
