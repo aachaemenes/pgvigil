@@ -221,8 +221,9 @@ It becomes critical when more than half are over their critical value. It forms 
 quarter or less (or under 3), so a count that hovers at half does not send and resolve every minute; while 3 or more of
 a collector's instances cross their warning in the same minute, a new *slow connect* waits up to a minute for the fold
 to form. A member above the fold's level (one server critical under a warning fold) is sent on its own. The detail
-names the counts, the average, the 3 slowest instances and since when. A collector's own *collector or network*
-comes first: the instances it holds are not judged.
+names the counts, the members' average over their last 5 written minutes with the first minute of that window (not
+the minute the slowdown began: the alert's own first send is the nearest time to that) and the 3 slowest instances. A
+collector's own *collector or network* comes first: the instances it holds are not judged.
 
 What the time costs and why the collections start spread: a collector spends about 2 ms of its own CPU on each
 PostgreSQL connect with TLS and a password login (measured 2026-11-14 on a 4-CPU client, flat with the load). Each

@@ -450,10 +450,12 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT instance_id FROM pgvigil.collector_held_instances
   ), forming AS MATERIALIZED (  -- task 201: the instances of a parent that may be forming
     SELECT DISTINCT instance_id FROM pgvigil.collector_forming
-  ), slow_held AS MATERIALIZED (   -- the slow-connect tier: the members a standing fold holds (0121 collector_slow_held)
-    SELECT instance_id FROM pgvigil.collector_slow_held
+  ), slow_folds AS MATERIALIZED (  -- the slow-connect tier: the standing folds, read once a pass (0121 collector_slow_folds)
+    SELECT kind, value, under_host, held FROM pgvigil.collector_slow_folds
+  ), slow_held AS MATERIALIZED (   -- the members a standing fold holds (those at or under its level)
+    SELECT DISTINCT m.instance_id FROM slow_folds f CROSS JOIN LATERAL unnest(f.held) AS m(instance_id)
   ), slow_under AS MATERIALIZED (  -- a server's fold under its collector's standing fold: held
-    SELECT value FROM pgvigil.collector_slow_folds WHERE kind = 'target' AND under_host
+    SELECT value FROM slow_folds WHERE kind = 'target' AND under_host
   ), slow_forming AS MATERIALIZED (  -- 3 or more of a collector's instances crossed in its newest minute: new ones wait
     SELECT instance_id FROM pgvigil.collector_slow_forming
   ), ch AS (
