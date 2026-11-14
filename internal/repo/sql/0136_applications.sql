@@ -222,6 +222,18 @@ RETURNS int LANGUAGE sql IMMUTABLE AS $$
               WHEN jsonb_typeof(p) = 'string' AND (p #>> '{}') ~ '^-?[0-9]{1,9}$' THEN (p #>> '{}')::int END
 $$;
 
+-- the live thresholds, acknowledgements and alert rules scoped by one tag (their written form, 'application:<name>')
+CREATE OR REPLACE FUNCTION pgvigil.app_tag_scoped(p_tag text)
+RETURNS TABLE (kind text, id bigint) LANGUAGE sql STABLE AS $$
+  SELECT 'pg threshold', t.threshold_id FROM pgvigil.pg_thresholds t WHERE t.ended_at IS NULL AND t.tag = p_tag
+  UNION ALL
+  SELECT 'drive threshold', d.threshold_id FROM pgvigil.drive_thresholds d WHERE d.ended_at IS NULL AND d.tag = p_tag
+  UNION ALL
+  SELECT 'acknowledgement', a.ack_id FROM pgvigil.acks a WHERE a.ended_at IS NULL AND a.tag = p_tag
+  UNION ALL
+  SELECT 'alert rule', r.rule_id FROM pgvigil.alert_rules r WHERE r.ended_at IS NULL AND r.tag = p_tag
+$$;
+
 CREATE OR REPLACE FUNCTION pgvigil.import_app_application(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -240,6 +252,9 @@ DECLARE
   v_detail text;
   v_f      text;
   v_n      int;
+  v_old    text;
+  v_scoped int := 0;
+  v_retag  boolean := coalesce(p_payload->>'retag', '') = 'true';
 BEGIN
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'import_app_application: no ui_user' USING ERRCODE = '22023';
@@ -279,6 +294,19 @@ BEGIN
     SELECT count(*) INTO v_n FROM pgvigil.app_assignments a WHERE a.app_id = v_id;
     v_why := format('%s is assigned to %s server(s) or database(s): remove it with its assignments, or unassign them first', v_have.name, v_n);
   END IF;
+  -- a rename or a remove moves the tag a threshold, an acknowledgement or an alert rule may be scoped by: listed and
+  -- refused unless ticked (retag), then rewritten to the new name (rename) or ended (remove)
+  IF v_why IS NULL AND v_op IN ('rename', 'remove') THEN
+    v_old := 'application:' || v_have.name;
+    SELECT count(*) INTO v_scoped FROM pgvigil.app_tag_scoped(v_old);
+    IF v_scoped > 0 AND NOT v_retag THEN
+      SELECT format('%s %s scoped by the tag %s (%s): tick to %s them', v_scoped,
+                    CASE WHEN v_scoped = 1 THEN 'threshold, acknowledgement or alert rule is' ELSE 'thresholds, acknowledgements or alert rules are' END,
+                    v_old, string_agg(x.kind || ' ' || x.id, ', ' ORDER BY x.kind, x.id),
+                    CASE v_op WHEN 'rename' THEN 'rewrite' ELSE 'end' END)
+        INTO v_why FROM pgvigil.app_tag_scoped(v_old) x;
+    END IF;
+  END IF;
   IF v_why IS NULL AND v_op IN ('edit', 'rename') THEN
     FOREACH v_f IN ARRAY (CASE WHEN v_op = 'rename' THEN ARRAY['name'] ELSE v_given END) LOOP
       IF NOT pgvigil.app_src_ok('application', v_id, v_f, v_src, v_force) THEN v_conf := v_conf || v_f; END IF;
@@ -312,14 +340,28 @@ BEGIN
   ELSIF v_op = 'rename' THEN
     UPDATE pgvigil.app_applications SET name = v_name, version = version + 1 WHERE app_id = v_id;
     PERFORM pgvigil.app_src_set('application', v_id, 'name', v_src, v_user);
-    v_detail := format('application %s renamed from %s to %s', v_id, v_have.name, v_name);
+    IF v_scoped > 0 THEN
+      UPDATE pgvigil.pg_thresholds SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.drive_thresholds SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.acks SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.alert_rules SET tag = 'application:' || v_name WHERE ended_at IS NULL AND tag = v_old;
+    END IF;
+    v_detail := format('application %s renamed from %s to %s%s', v_id, v_have.name, v_name,
+                       CASE WHEN v_scoped > 0 THEN format(' (%s tag-scoped row(s) rewritten)', v_scoped) ELSE '' END);
   ELSE
     SELECT count(*) INTO v_n FROM pgvigil.app_assignments a WHERE a.app_id = v_id;
     DELETE FROM pgvigil.app_field_source s
      WHERE (s.object_kind = 'application' AND s.object_id = v_id)
         OR (s.object_kind = 'contact' AND s.object_id IN (SELECT c.contact_id FROM pgvigil.ui_app_contacts c WHERE c.app_id = v_id));
     DELETE FROM pgvigil.app_applications WHERE app_id = v_id;   -- its contacts and assignments cascade
-    v_detail := format('removed application %s (%s) with %s assignment(s)', v_id, v_have.name, v_n);
+    IF v_scoped > 0 THEN
+      UPDATE pgvigil.pg_thresholds SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.drive_thresholds SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.acks SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
+      UPDATE pgvigil.alert_rules SET ended_at = now(), ended_by = v_user WHERE ended_at IS NULL AND tag = v_old;
+    END IF;
+    v_detail := format('removed application %s (%s) with %s assignment(s)%s', v_id, v_have.name, v_n,
+                       CASE WHEN v_scoped > 0 THEN format(', %s tag-scoped row(s) ended', v_scoped) ELSE '' END);
   END IF;
   PERFORM pgvigil.admin_log(v_user, v_cli, 'app_' || v_op, 'application ' || v_id, 'done', v_detail);
   RETURN jsonb_build_object('outcome', 'done', 'detail', v_detail, 'app_id', v_id,
