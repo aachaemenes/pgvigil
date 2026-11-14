@@ -1360,7 +1360,7 @@ JS
   SHOTS=${PGVIGIL_SHOTS:-$WORK/shots}
   if [[ -z "$SKIP_MSSQL" ]]; then
     timeout 1500 node "$WORK/buttons.mjs" live "$CDP" "$U/" "$COOKIE" "$U2/" "$MRID" "$MAID" "$AID" "$SREP" "$WORK/glenn.sql" "$SHOTS" > "$WORK/buttons.json" 2>"$WORK/buttons.err" || { rc=$?; fail "U2: the live driver ended $rc$([[ $rc == 124 ]] && echo ' (killed at its 1500 s cap)'): $(tail -5 "$WORK/buttons.err")"; }
-    python3 - "$WORK/buttons.json" "$XES" <<'PY' || fail "U2: see above"
+    VIEWBAD="$WORK/view-bad.txt" python3 - "$WORK/buttons.json" "$XES" <<'PY' || fail "U2: see above"
 import json, sys
 d = json.load(open(sys.argv[1])); rows = d['rows']; bad = []
 for r in rows:
@@ -1378,8 +1378,12 @@ assert bv.get('sessionInput') == xes and xes in (bv.get('filled') or ''), f"U2: 
 print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (b): @session_name filled {xes} (the running session with the blocked process report), said, done")
 # the clicked tool's form opens in view (Allen 11-14 'community tool not working': it opened ~1,450 px below the tables)
 bz = next(r for r in rows if r['tool'] == 'sp_Blitz' and r['inst'] == 'sqlserver'); v = bz.get('view') or {}
-assert v.get('inView') and v.get('focus'), f"U2: sp_Blitz's form after its click: not in view with the focus on its heading: {v}"
-print(f"ok   U2: sp_Blitz's form after its click: its heading in the view ({v['top']}..{v['bottom']} of {v['vh']} px) with the focus")
+# (failed with S's view rows, after them: one run shows every row that is out of view)
+import os
+if v.get('inView') and v.get('focus'): print(f"ok   U2: sp_Blitz's form after its click: its heading in the view ({v['top']}..{v['bottom']} of {v['vh']} px) with the focus")
+else:
+    print(f"     U2: sp_Blitz's form after its click: not in view with the focus on its heading: {v} (failed with S)")
+    open(os.environ['VIEWBAD'], 'a').write(f"U2 sp_Blitz's form after its click: {v}\n")
 ax, tab = d['msaAx'], d['msaTab']
 assert len(ax) == 14 and all(x['same'] for x in ax), f"U2: the sa page's off tools in the accessibility tree: {[(x['name'], x['same'], x['axDesc'][:60]) for x in ax]}"
 assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: Tab reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
@@ -1542,7 +1546,7 @@ PY
   tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}") == 200 ]] || fail "S: a run asked of the demo's instance on the signed-in serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run.json"
   tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"glenn_berry\",\"text\":\"SELECT 1\"}") == 200 ]] || fail "S: a script run asked of the demo's instance on the signed-in serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run-script.json"
   [[ $(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}" "$U4/api/community/run") == 403 ]] || fail "S: a run asked of a demo instance on the demo serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run4.json"
-  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$(ident $DMS)" "$(ident $DPG)" "$(ident $DMS2)" "$(ident $DPG2)" "$WORK/demo-run4.json" "$WORK/demo-run-script.json" <<'PY' || fail "S: see above"
+  VIEWBAD="$WORK/view-bad.txt" python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$(ident $DMS)" "$(ident $DPG)" "$(ident $DMS2)" "$(ident $DPG2)" "$WORK/demo-run4.json" "$WORK/demo-run-script.json" <<'PY' || fail "S: see above"
 import json, sys, zipfile, os, re, html
 d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'; dl = sys.argv[3]
 # each instance's name and platform as the repository holds them (never the name the page's own API answered)
@@ -1563,7 +1567,7 @@ print(f"ok   S: the panels on {names[dms]} ({pms}) and {names[dpg]} ({ppg}), off
 kit_of = {'First Responder Kit': 'First Responder Kit', 'Darling Data': 'DarlingData', 'sp_WhoIsActive': 'sp_WhoIsActive', 'pgvigil reads': 'pgvigil', 'Glenn Berry': None}
 # a panel in view: its heading inside the viewport, not covered, with the focus (Allen 11-14: a click on a tool changed
 # nothing a person could see - the panel opened ~1,450 px below the tables); collected, failed after the deep read
-vbad = []
+vbad = [x for x in (open(os.environ['VIEWBAD']).read().splitlines() if os.path.exists(os.environ.get('VIEWBAD', '')) else []) if x]
 inview = lambda v: bool(v and v.get('inView') and v.get('focus'))
 for s in d['demo']:
     want = 14 if s['label'].endswith('sqlserver') else 10
