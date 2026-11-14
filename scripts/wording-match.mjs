@@ -128,7 +128,8 @@ export function check(el, ctx) {
     if (NAME[other].test(text)) reds.push({ word: text.match(NAME[other])[0], owner: other, source: "the other engine's name in a label", sentence: raw, why: 'a label' });
     return reds;
   }
-  const lastAt = (re, t) => { let at = -1; const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'); for (let m; (m = g.exec(t));) { at = m.index; if (!m[0]) g.lastIndex++; } return at; };
+  const lastOf = (re, t) => { let r = null; const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'); for (let m; (m = g.exec(t));) { r = m; if (!m[0]) g.lastIndex++; } return r; };
+  const lastAt = (re, t) => lastOf(re, t)?.index ?? -1;
   for (const s of sentences(text)) {
     const cl = clauses(s);
     for (const w of words) {
@@ -136,8 +137,11 @@ export function check(el, ctx) {
       for (let m; (m = g.exec(s));) {
         if (!m[0]) { g.lastIndex++; continue; }
         const before = s.slice(0, m.index);
-        if (lastAt(NAME[other], before) > lastAt(NAME[engine], before)) continue;   // A1: its own engine named before it in the sentence
         const c = cl.find(x => m.index >= x.at && m.index < x.at + x.text.length) ?? { at: 0, text: s };
+        // A1: its own engine named before it, later than this page's engine - a lead ('X:' or 'X only:') holds over the
+        // rest of the sentence, any other mention only in the word's own clause
+        const o = lastOf(NAME[other], before);
+        if (o && o.index > lastAt(NAME[engine], before) && (/^\s*(only\s*)?:/.test(before.slice(o.index + o[0].length)) || o.index >= c.at)) continue;
         if (NAME[engine].test(c.text) && NEG_BEFORE.test(s.slice(c.at, m.index))) continue;   // A2, in its clause: 'PostgreSQL has no Query Store'
         reds.push({ word: w.word, owner: other, source: w.source, sentence: s, why: 'prose' });
         break;
@@ -222,7 +226,7 @@ export function selfTest() {
     ['sqlserver', 'collector?tag=sales', 'th', 'pid', []],
     ['sqlserver', 'collector?tag=sales', 'heading', 'Repository the PostgreSQL database pgvigil writes to', []],
     // an engine's name or a negation elsewhere in the sentence attributes nothing: A1 needs the word's own engine named
-    // before it in its clause, A2 a negation right before the word and this engine named in its clause
+    // before it as a lead ('X:') or in its own clause, A2 a negation right before the word and this engine named in its clause
     ['postgres', 'summary?tag=aurora', 'prose', 'PostgreSQL instances: 3 read, Agent Jobs failing on none', ['Agent Jobs']],
     ['postgres', 'summary?i=3', 'prose', 'No sample on PostgreSQL for Query Store; SQL Agent Alerts off.', ['Query Store', 'SQL Agent', 'Agent Alerts']],
     ['postgres', 'summary?tag=aurora', 'prose', 'Agent Jobs and Memory Dump: 0 SQL Server instance(s) in this folder.', ['Agent Jobs', 'Memory Dump']],
@@ -238,6 +242,11 @@ export function selfTest() {
     // an element that only holds an allow row's phrase is not cleared whole; the Doors page's row is its page alone
     ['postgres', 'collector?tag=aurora', 'heading', 'Repository the PostgreSQL database pgvigil writes to: tempdb and Query Store', ['tempdb', 'Query Store']],
     ['postgres', 'dbadashx?i=3', 'label', 'SQL Server repository', ['SQL Server']],
+    // A1's reach over the whole sentence needs a lead ('X:' or 'X only:'); a name that is no lead attributes only its
+    // own clause
+    ['postgres', 'roles?i=3', 'prose', 'Unlike SQL Server, a role here has no password policy; the plan cache column counts the cached plans.', ['plan cache']],
+    ['postgres', 'running?i=3', 'prose', "Longest blocked wait: on SQL Server the wait the server measured; the tempdb latch waits column counts this instance's requests", ['tempdb']],
+    ['sqlserver', 'mssql_running?i=9', 'prose', 'Blocked: as on PostgreSQL, a session waiting on a lock; the pid column is the session and autovacuum workers are left out.', ['pid', 'vacuum']],
     ['postgres', 'notdbadash?i=3', 'label', 'SQL Server repository', ['SQL Server']],
   ];
   let bad = 0;
@@ -260,6 +269,8 @@ export function selfTest() {
     ['sqlserver', { tag: 'sales' }, 'admin?tag=sales&w=1h', 'cell', 'aurora', []],
     ['sqlserver', { tag: 'sales' }, 'admin?tag=sales&w=1h', 'prose', 'an Aurora cluster volume grows by itself', ['Aurora']],
     ['sqlserver', { tag: 'sales' }, 'disks?tag=sales&w=1h', 'cell', 'aurora', ['Aurora']],
+    ['sqlserver', { tag: 'sales' }, 'admin?tag=sales&w=1h', 'cell', 'aurora serverless v2', ['Aurora', 'Serverless v2']],
+    ['sqlserver', { tag: 'sales' }, 'admin_instances?tag=sales&w=1h', 'cell', 'aurora', ['Aurora']],
   ];
   for (const [engine, scope, page, kind, text, want] of scoped) {
     const got = check({ text, kind, page }, { engine, words, allow, names: scopeNames(fleet, scope) }).map(r => r.word);

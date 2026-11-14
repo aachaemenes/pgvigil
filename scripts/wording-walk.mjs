@@ -99,6 +99,9 @@ function read(arg) {
   // the text a reader sees, each text node apart: textContent would glue two lines ('demo-aurora-crm01' + 'First
   // sent' = 'demo-aurora-crm01First sent') and hide a word glued to the next label
   const txt = e => { if (!e) return ''; if (e.nodeType === 3) return e.nodeValue.replace(/\s+/g, ' ').trim(); const parts = []; const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT); for (let n; (n = w.nextNode());) parts.push(n.nodeValue); return parts.join(' ').replace(/\s+/g, ' ').trim(); };
+  // prose without a select's options: a picker inside a paragraph is read as its options (kind option), never as
+  // the paragraph's sentence (its options in a row are no sentence)
+  const ptxt = e => { const parts = []; const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT, { acceptNode: n => (n.parentElement?.closest('select') ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT) }); for (let n; (n = w.nextNode());) parts.push(n.nodeValue); return parts.join(' ').replace(/\s+/g, ' ').trim(); };
   const out = [], names = new Set(), treeNames = new Set(), seen = new Set();
   const push = (kind, text, iid) => { const t = String(text ?? '').replace(/\s+/g, ' ').trim(); const k = kind + '\u0001' + t + '\u0001' + (iid ?? ''); if (t && !seen.has(k)) { seen.add(k); out.push({ kind, text: t, iid }); } };
   const attrs = (x, iid) => { for (const a of ['title', 'aria-label', 'aria-description', 'placeholder', 'alt']) { const v = x.getAttribute?.(a); if (v) push('attr', v, iid); } };
@@ -126,7 +129,7 @@ function read(arg) {
     if (!vis(e) || e.closest('table') || (e.matches('li') && e.querySelector('p'))) continue;
     const iid = row ? iidOf(e) : undefined;
     if (row && !iid) continue;
-    push('prose', txt(e), iid);
+    push('prose', ptxt(e), iid);
     if (row) for (const x of [e, ...e.querySelectorAll('*')]) attrs(x, iid);
   }
   if (row) return { out, names: [...names], treeNames: [] };
@@ -251,7 +254,7 @@ for (let k = 0; k < pages.length; k++) {
 
 // the table and the grade
 const count = s => pageRows.filter(p => p.scope === s).length;
-console.log(`picked: PostgreSQL ${pgOnprem?.name}, ${pgCloud?.name}${pooler ? ', the Pooler on ' + pooler.name : ''}; SQL Server ${msPrimary?.name}, ${msManaged?.name}; tags ${pgTag} (PostgreSQL), ${msTag} (SQL Server)`);
+console.log(`picked: PostgreSQL ${pgOnprem?.name}, ${pgCloud?.name}${pooler ? ', the Pooler on ' + pooler.name : ''}; SQL Server ${msPrimary?.name}, ${msManaged?.name}; tags ${pgTag} (PostgreSQL; ${tagCount.get(pgTag)?.n ?? 0} instance(s)), ${msTag} (SQL Server; ${tagCount.get(msTag)?.n ?? 0})`);
 console.log(`pages: ${pageRows.length} (pg-instance ${count('pg-instance')}, ms-instance ${count('ms-instance')}, pg-tag ${count('pg-tag')}, ms-tag ${count('ms-tag')}, root ${count('root')}) in ${Math.round((Date.now() - t0) / 1000)} s; ${pageRows.reduce((a, p) => a + p.elements, 0)} elements read; ${pageRows.filter(p => !p.rendered).length} not read (${pageRows.filter(p => !p.settled).length} not settled, ${pageRows.filter(p => p.settled && !p.elements).length} with 0 elements, ${pageRows.filter(p => p.errors?.length).length} with an error box); the tree menu ${menuCount.postgres ?? 0} item(s) (PostgreSQL), ${menuCount.sqlserver ?? 0} (SQL Server)`);
 const distinct = new Map();
 for (const r of reds) { const k = [r.scope, r.kind, r.word, r.text].join('\u0001'); const d = distinct.get(k) ?? { ...r, pages: [] }; d.pages.push(r.page); distinct.set(k, d); }
@@ -267,7 +270,7 @@ const newDistinct = new Map();
 for (const r of g.outside) { const k = [r.scope, r.kind, r.word].join('\u0001'); const d = newDistinct.get(k) ?? { ...r, pages: new Set() }; d.pages.add(r.page); newDistinct.set(k, d); }
 for (const d of newDistinct.values()) console.log(`NEW ${d.scope} ${d.kind} '${d.word}' on ${d.pages.size} page(s) (#/${[...d.pages][0]}): ${JSON.stringify(d.text.slice(0, 160))} [${d.source}]`);
 for (const n of notes) console.log('note: ' + n);
-console.log('not read by the walk (the click-through opens them): the dialogs behind write controls (off on the demo without a login), the help shown only on a click; exports and mail carry the grids\' own th');
+console.log('not read by the walk (the click-through opens them): the dialogs behind write controls (off on the demo without a login), the help shown only on a click; the Admin page\'s tabs past Servers (Notification routes, Alert settings, Threshold overrides, Server actions: atab=); exports and mail carry the grids\' own th');
 fs.writeFileSync(outFile, JSON.stringify({ picked: { pgOnprem: pgOnprem?.name, pgCloud: pgCloud?.name, pooler: pooler?.name, msPrimary: msPrimary?.name, msManaged: msManaged?.name, pgTag, msTag }, pages: pageRows, reds, grade: { mustMissing: g.mustMissing.map(e => e.word + ' ' + e.pageText), mustNotSeen: g.mustNotSeen.map(e => e.word + ' ' + e.pageText), outside: g.outside }, notes }, null, 1));
 for (const e of ['postgres', 'sqlserver']) if (!menuCount[e]) fails.push(`the instance tree menu (${e}) showed no item: not read`);
 for (const f of fails) console.log('FAIL ' + f);
