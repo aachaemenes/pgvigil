@@ -69,21 +69,21 @@ func TestPgvigilInstanceNeverRead(t *testing.T) {
 		{"nr-onprem", row{"onprem", "16.0.4105.2", true}}, // fold 1 left it unread: its platform was not 'auto'
 		{"nr-read", row{"onprem", "15.0.4430.1", false}},
 	} {
-		if _, skip, err := pgvigilInstance(ctx, log, pool, c.name, src, false); err != nil || skip != "" {
-			t.Fatalf("%s: skip %q err %v", c.name, skip, err)
+		if tgt, err := importTarget(ctx, log, pool, "", c.name, src, false); err != nil || tgt.Skipped != "" {
+			t.Fatalf("%s: skip %q err %v", c.name, tgt.Skipped, err)
 		}
 		if got := read(c.name); got != c.want {
 			t.Errorf("%s: platform, version, first_seen moved = %+v, want %+v", c.name, got, c.want)
 		}
 	}
-	if _, skip, err := pgvigilInstance(ctx, log, pool, "nr-pg", src, false); err != nil || skip == "" {
-		t.Fatalf("a name stored as PostgreSQL: skip %q err %v (want a skip)", skip, err)
+	if tgt, err := importTarget(ctx, log, pool, "", "nr-pg", src, false); err != nil || tgt.Skipped == "" {
+		t.Fatalf("a name stored as PostgreSQL: skip %q err %v (want a skip)", tgt.Skipped, err)
 	}
 	// a dry run writes nothing
 	if _, err := pool.Exec(ctx, `UPDATE pgvigil.instances SET server_version = NULL, platform = 'onprem' WHERE name = 'nr-onprem'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := pgvigilInstance(ctx, log, pool, "nr-onprem", src, true); err != nil || read("nr-onprem").version != "" {
+	if _, err := importTarget(ctx, log, pool, "", "nr-onprem", src, true); err != nil || read("nr-onprem").version != "" {
 		t.Fatalf("a dry run wrote the version: %v %+v", err, read("nr-onprem"))
 	}
 }
