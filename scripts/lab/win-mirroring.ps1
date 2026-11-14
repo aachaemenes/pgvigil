@@ -40,9 +40,14 @@
 #              (the running Windows user a sysadmin) and switched to mixed mode right after (LoginMode 2 in the
 #              instance's own registry key, a restart, then sa's password made here and sa enabled by T-SQL), TCP on
 #              with a static port, named pipes off, Agent automatic and started, no product update during setup.
-#              Why not SECURITYMODE=SQL in setup: setup protects SAPWD with DPAPI under the running user, and a
-#              key-based OpenSSH logon (S4U) holds no credentials to open that user's DPAPI key - setup then fails with
-#              'There was an error generating the XML document' (CryptographicException: Access is denied). The SQL Server Browser keeps the start
+#   setup      SQL Server setup (install and uninstall) runs as SYSTEM through ONE scheduled task of the lab's,
+#              'pgvigil-mirroring-lab-setup', registered for the one call and deleted when it returns (down deletes it
+#              too, by that name, when before.json does not list it). Why: setup protects its service-account settings
+#              with DPAPI under the user that runs it (SqlSecureString.WriteXml -> ProtectedData.Protect, even for an
+#              account with no password), and a key-based OpenSSH logon (S4U) holds no credentials to open that user's
+#              DPAPI key: setup then stops with 'There was an error generating the XML document' (CryptographicException
+#              Access is denied; two runs on 2026-11-14). SYSTEM's own DPAPI key is the machine's. The ssh user stays the
+#              instances' sysadmin (named in the configuration by the caller). The configuration file holds no password. The SQL Server Browser keeps the start
 #              type before.json read (setup is told it explicitly). Shared features already on the host stay as
 #              they are; nothing of another instance is touched.
 #   endpoint   pgv_mirroring on each (ROLE PARTNER on the partners, WITNESS on the witness), certificate
@@ -108,6 +113,7 @@ $labIso = Join-Path $LabDir 'media\SQLServer2022-x64-ENU-Dev.iso'
 # the lab's own children of LabDir: down removes these by name and nothing else
 $labChildren = @('before.json', 'secret', 'certs', 'xfer', 'media')
 $script:restartFor = ''   # the instance whose login mode changed and waits for its restart
+$setupTask = 'pgvigil-mirroring-lab-setup'   # the one scheduled task of the lab: setup as SYSTEM (see the header)
 
 # Write-Host: a function's own output stays its return value (Invoke-Status returns its verdict)
 function Say([string]$text) { Write-Host "win-mirroring: $text" }
@@ -209,6 +215,7 @@ function Invoke-Before {
     foreach ($inst in $labInstances) {
         if ($installed.ContainsKey($inst.Name)) { Stop-Refused "the instance $($inst.Name) already exists and was not made by a run of this lab's before / up: it is never touched" }
     }
+    if (Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue) { Stop-Refused "a scheduled task named '$setupTask' exists already: it is not the lab's to take" }
     New-Item -ItemType Directory -Path $LabDir -Force | Out-Null
     $services = @(Get-Service -ErrorAction Stop | Where-Object { $_.Name -like 'MSSQL*' -or $_.Name -like 'SQL*' -or $_.Name -like 'DBADash*' } |
         Sort-Object Name | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Status = [string]$_.Status; StartType = [string]$_.StartType } })
@@ -224,6 +231,7 @@ function Invoke-Before {
         WrittenAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); Computer = $env:COMPUTERNAME
         Instances = $instList; Services = $services; FirewallRules = $rules; ListeningPorts = @(Get-ListeningPorts)
         BrowserStartType = $browserStart; SharedIsoPresent = (Test-Path -LiteralPath $sharedIso); Isos = $isoState
+        SetupTaskPresent = [bool](Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue)
         FreeGB = [math]::Round((Get-PSDrive C -ErrorAction Stop).Free / 1GB, 1)
     }
     $state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $beforeFile -Encoding UTF8
@@ -264,6 +272,37 @@ function Get-SetupFolder([object]$before) {
     return [pscustomobject]@{ Iso = $iso; SetupExe = $setupExe }
 }
 
+# Invoke-SetupAsSystem: setup.exe <arguments> as SYSTEM through the lab's one-shot task; returns setup's exit code.
+# The task's command is a .cmd in the secret folder that runs setup and writes its exit code beside it; the task, the
+# .cmd and the exit file are removed on every path. A task left by a killed run is the lab's (its fixed name, absent
+# from before.json) and is replaced.
+function Invoke-SetupAsSystem([string]$setupExe, [string]$arguments, [int]$timeoutMin = 50) {
+    $wrapper = Join-Path $secretDir 'setup-run.cmd'
+    $exitFile = Join-Path $secretDir 'setup-run.exit'
+    if (Test-Path -LiteralPath $exitFile) { Remove-Item -LiteralPath $exitFile -Force -ErrorAction Stop }
+    # the redirection comes first: 'echo 0> file' would redirect handle 0 and leave the file empty
+    Set-Content -LiteralPath $wrapper -Encoding ASCII -Value @("@echo off", "`"$setupExe`" $arguments", "> `"$exitFile`" echo %ERRORLEVEL%")
+    $taskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$wrapper`""
+    $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $timeoutMin) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    try {
+        Register-ScheduledTask -TaskName $setupTask -Action $taskAction -Principal $taskPrincipal -Settings $taskSettings -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $setupTask -ErrorAction Stop
+        $deadline = (Get-Date).AddMinutes($timeoutMin)
+        while (-not (Test-Path -LiteralPath $exitFile)) {
+            if ((Get-Date) -gt $deadline) { throw "setup as SYSTEM wrote no exit code in $timeoutMin minutes (task state $((Get-ScheduledTask -TaskName $setupTask).State))" }
+            Start-Sleep -Seconds 10
+        }
+        Start-Sleep -Seconds 2
+        $codeText = [string](Get-Content -LiteralPath $exitFile -Raw -ErrorAction Stop)
+        if ($codeText.Trim() -notmatch '^-?[0-9]+$') { throw "setup as SYSTEM left no exit code in $exitFile ('$($codeText.Trim())')" }
+        return [int]$codeText.Trim()
+    } finally {
+        if (Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $setupTask -Confirm:$false -ErrorAction SilentlyContinue }
+        foreach ($leftover in @($wrapper, $exitFile)) { if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Force -ErrorAction SilentlyContinue } }
+    }
+}
+
 function Install-LabInstance([object]$inst, [string]$setupExe, [object]$before) {
     # the running identity (a process started through WMI does not carry the caller's USERNAME variable)
     $sysadmin = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -290,9 +329,8 @@ SQLSVCINSTANTFILEINIT="True"
     $iniPath = Join-Path $secretDir "setup-$($inst.Name).ini"
     try {
         [IO.File]::WriteAllText($iniPath, $iniText, (New-Object Text.UTF8Encoding $false))
-        Say "setup $($inst.Name): started $(Get-Date -Format 'HH:mm:ss') (about 10 minutes)"
-        $proc = Start-Process -FilePath $setupExe -ArgumentList "/ConfigurationFile=`"$iniPath`"" -Wait -PassThru -ErrorAction Stop
-        $code = $proc.ExitCode
+        Say "setup $($inst.Name): started $(Get-Date -Format 'HH:mm:ss') as SYSTEM (about 10 minutes)"
+        $code = Invoke-SetupAsSystem $setupExe "/ConfigurationFile=`"$iniPath`""
     } finally {
         if (Test-Path -LiteralPath $iniPath) { Remove-Item -LiteralPath $iniPath -Force }
     }
@@ -371,6 +409,11 @@ SELECT CAST(1 AS int) AS ok;
     if (Test-Path -LiteralPath $certFile) { Remove-Item -LiteralPath $certFile -Force -ErrorAction Stop }
     $null = Invoke-LabSql $inst "BACKUP CERTIFICATE [$certName] TO FILE = '$certFile'; SELECT CAST(1 AS int) AS ok;"
     if (-not (Test-Path -LiteralPath $certFile)) { throw "the certificate file $certFile was not written" }
+    # SQL Server writes the file with a DACL of its own (its service SID, OWNER RIGHTS, Administrators: read on the
+    # lab VM 2026-11-14): the two other engines could not read it. Back to the folder's inherited rights (the three
+    # service SIDs of Grant-ServiceFolder); the file holds the public certificate only.
+    $null = & icacls.exe $certFile /reset /Q
+    if ($LASTEXITCODE -ne 0) { throw "icacls could not reset the rights of $certFile (exit $LASTEXITCODE)" }
 }
 
 function Grant-LabPeer([object]$inst, [object]$peer, [string]$certDir) {
@@ -379,8 +422,8 @@ function Grant-LabPeer([object]$inst, [object]$peer, [string]$certDir) {
     $loginPw = New-LabPassword
     # the peer's copy here must be the peer's certificate now: a copy with another thumbprint is dropped and taken again
     $thumbSql = "SELECT CONVERT(varchar(100), thumbprint, 2) AS thumb FROM sys.certificates WHERE name = '$certName'"
-    $peerThumb = @(Invoke-LabSql $peer $thumbSql)
-    $hereThumb = @(Invoke-LabSql $inst $thumbSql)
+    $peerThumb = (Invoke-LabSql $peer $thumbSql)
+    $hereThumb = (Invoke-LabSql $inst $thumbSql)
     if ($peerThumb.Count -ne 1) { throw "$($peer.Name) has no certificate $certName" }
     $dropStale = ''
     if ($hereThumb.Count -eq 1 -and $hereThumb[0].thumb -ne $peerThumb[0].thumb) { $dropStale = "DROP CERTIFICATE [$certName];" }
@@ -548,7 +591,7 @@ SELECT CAST(1 AS int) AS ok;
     $jobs = 0
     foreach ($inst in @($principalInst, $mirrorInst)) {
         $null = Invoke-LabSql $inst "IF NOT EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'Database Mirroring Monitor Job') EXEC msdb.dbo.sp_dbmmonitoraddmonitoring 1; SELECT CAST(1 AS int) AS ok;"
-        $jobs += @(Invoke-LabSql $inst "SELECT name FROM msdb.dbo.sysjobs WHERE name = N'Database Mirroring Monitor Job'").Count
+        $jobs += (Invoke-LabSql $inst "SELECT name FROM msdb.dbo.sysjobs WHERE name = N'Database Mirroring Monitor Job'").Count
     }
     Say "monitor job: $jobs"
 
@@ -623,15 +666,17 @@ function Invoke-Down {
     if (-not (Test-Elevated)) { Stop-Refused 'not an elevated administrator session' }
     $installed = Get-InstalledInstances
     $failures = New-Object System.Collections.Generic.List[string]
+    # a before.json written before the task field existed: the task was not there (its name is the lab's own)
+    $taskBefore = ($before.PSObject.Properties.Name -contains 'SetupTaskPresent') -and [bool]$before.SetupTaskPresent
     foreach ($inst in $labInstances) {
         if (Test-InBefore $before 'Instances' $inst.Name) { Say "uninstall $($inst.Name): listed in before.json, NOT touched"; continue }
         if (-not $installed.ContainsKey($inst.Name)) { Say "uninstall $($inst.Name): not installed"; continue }
         $setupExe = $bootstrapSetup
         if (-not (Test-Path -LiteralPath $setupExe)) { $setupExe = (Get-SetupFolder $before).SetupExe }
-        $uninstallArgs = "/ACTION=Uninstall /QUIET /FEATURES=SQLENGINE /INSTANCENAME=$($inst.Name)"
-        $proc = Start-Process -FilePath $setupExe -ArgumentList $uninstallArgs -Wait -PassThru -ErrorAction Stop
-        Say "uninstall $($inst.Name): exit $($proc.ExitCode)"
-        if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { $failures.Add("uninstall $($inst.Name) exit $($proc.ExitCode)") }
+        New-SecretDir
+        $code = Invoke-SetupAsSystem $setupExe "/ACTION=Uninstall /QUIET /FEATURES=SQLENGINE /INSTANCENAME=$($inst.Name)"
+        Say "uninstall $($inst.Name): exit $code (as SYSTEM)"
+        if ($code -ne 0 -and $code -ne 3010) { $failures.Add("uninstall $($inst.Name) exit $code") }
     }
     $installed = Get-InstalledInstances
     foreach ($inst in $labInstances) {
@@ -642,6 +687,9 @@ function Invoke-Down {
                 catch { $failures.Add("folder $folder not removed: $($_.Exception.Message)") }
             }
         }
+    }
+    if (-not $taskBefore -and (Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue)) {
+        Unregister-ScheduledTask -TaskName $setupTask -Confirm:$false -ErrorAction Stop; Say "task '$setupTask': removed"
     }
     if (-not (Test-InBefore $before 'FirewallRules' $ruleName)) {
         $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
@@ -666,6 +714,7 @@ function Invoke-Down {
         foreach ($port in @($inst.SqlPort, $inst.EndpointPort)) { if ($listening -contains $port -and $before.ListeningPorts -notcontains $port) { $failures.Add("TCP $port still listening") } }
     }
     if (-not (Test-InBefore $before 'FirewallRules' $ruleName) -and (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) { $failures.Add("rule '$ruleName' still present") }
+    if (-not $taskBefore -and (Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue)) { $failures.Add("task '$setupTask' still present") }
     foreach ($name in @($before.Instances | ForEach-Object { $_.Name })) { if (-not $installed.ContainsKey($name)) { $failures.Add("before.json instance $name is GONE") } }
     foreach ($svcBefore in @($before.Services)) {
         $svcNow = Get-Service -Name $svcBefore.Name -ErrorAction SilentlyContinue

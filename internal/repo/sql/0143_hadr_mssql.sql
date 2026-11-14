@@ -636,13 +636,14 @@ WITH judged AS (
      AND coalesce(s.recovery_model, '') <> 'SIMPLE'
      AND (s.created_at IS NULL OR s.created_at <= s.snapshot_at - make_interval(secs => (l.new_database_hours * 3600)::float8))
 )
--- availability groups: 0066's arms
+-- availability groups: 0066's arms (a replica or database that is not joined is said once, by its own arm below)
 SELECT r.instance_id, 'critical'::text AS severity, 'a replica is not connected'::text AS check_name,
        r.group_name || ' / ' || r.replica_server AS object, r.snapshot_at AS at,
        format('replica %s of the availability group %s is %s%s. Its databases receive nothing until it connects again.',
               r.replica_server, r.group_name, lower(r.connected_state),
               coalesce(' (last connect error ' || r.last_connect_error || ': ' || r.last_connect_error_text || ')', '')) AS detail
   FROM rep r WHERE r.connected_state IS NOT NULL AND r.connected_state <> 'CONNECTED'
+               AND r.join_state IS DISTINCT FROM 'NOT_JOINED'                          -- a replica never joined has its own finding
 UNION ALL
 SELECT r.instance_id, 'critical', 'a replica is not healthy', r.group_name || ' / ' || r.replica_server, r.snapshot_at,
        format('replica %s of the availability group %s: synchronization health %s, role %s, operational state %s.',
@@ -663,6 +664,9 @@ SELECT d.instance_id, 'critical', 'a database is not synchronizing', d.group_nam
               coalesce(lower(replace(d.database_state, '_', ' ')), 'unknown'))
   FROM dbs d WHERE NOT coalesce(d.is_suspended, false) AND d.synchronization_state IS NOT NULL
                AND d.synchronization_state NOT IN ('SYNCHRONIZED', 'SYNCHRONIZING')
+               AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_ag_database_cluster c       -- not joined there: its own finding
+                                WHERE c.instance_id = d.instance_id AND c.group_id = d.group_id AND c.replica_server = d.replica_server
+                                  AND c.database_name = d.database_name AND c.is_database_joined IS FALSE)
 UNION ALL
 SELECT d.instance_id, 'warning', 'a synchronous replica is not synchronized', d.group_name || ' / ' || d.replica_server || ' / ' || d.database_name, d.snapshot_at,
        format('database %s on the synchronous-commit replica %s (group %s) is synchronizing, not synchronized: a failover to it now would lose data.',
