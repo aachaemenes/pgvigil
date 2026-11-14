@@ -772,7 +772,13 @@ func (s *Server) AppImport(w http.ResponseWriter, r *http.Request) {
 	pay := map[string]any{"ui_user": user, "client": clientIP(r), "source_name": q.Get("source"), "dry": q.Get("dry") != "0",
 		"digest": q.Get("digest"), "force": force, "file_kind": f.Kind, "rows": f.Rows}
 	b, _ := json.Marshal(pay)
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 130*time.Second)
+	// serve's WriteTimeout (75 s) would cut a long import's answer (t-im-g2 F13: curl 000 after 79 s): this route moves
+	// its own write deadline past its work's; a writer that cannot move it keeps the work inside the serve's 75 s
+	budget := 130 * time.Second
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget + 20*time.Second)); err != nil {
+		budget = 70 * time.Second
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
 	ans, err := s.importCall(wctx, b)
 	if err != nil {

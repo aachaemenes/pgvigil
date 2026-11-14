@@ -544,6 +544,10 @@ BEGIN
          coalesce(x.description, ''), btrim(coalesce(x.cmdb_url, '')), lower(btrim(coalesce(x.not_an_application, '')))
     FROM jsonb_to_recordset(v_rows) AS x(line int, why text, level text, instance text, engine text, database text, application text,
                                          environment text, tier text, description text, cmdb_url text, not_an_application text);
+  -- statistics at each stage (t-im-g2 F13: 20000 lines previewed in 79 s): a fresh temp table has none and autovacuum
+  -- never reaches one, so the joins below were planned blind; analyzed again once a stage fills the columns the next
+  -- stage joins on (the server match fills iid, the database match dbname, the planning op1 / outcome)
+  ANALYZE pg_temp.app_imp_r;
 
   -- a credential-shaped cell: the line refused, its text never echoed (D5)
   UPDATE pg_temp.app_imp_r r SET why = 'a cell looks like a credential (a password, a token or a key): nothing of this line is read'
@@ -571,6 +575,7 @@ BEGIN
                                             WHEN r.eng IN ('mssql', 'sql server', 'sql_server') THEN 'sqlserver' ELSE r.eng END;
   UPDATE pg_temp.app_imp_r r SET why = format('engine %s is not the server''s (%s)', r.eng, r.iengine)
    WHERE r.why IS NULL AND r.eng <> '' AND r.eng <> r.iengine;
+  ANALYZE pg_temp.app_imp_r;
 
   -- the database: among the server's present databases and the absent ones still named; exact, else the one equal
   -- ignoring case; else unknown (listed, never made)
@@ -634,6 +639,7 @@ BEGIN
     FROM pgvigil.app_not_application m
    WHERE r.why IS NULL AND r.unk IS NULL AND r.lvl = 'database' AND m.instance_id = r.iid AND m.database_name = r.dbname;
   UPDATE pg_temp.app_imp_r r SET akey = lower(r.app) WHERE r.why IS NULL AND r.unk IS NULL AND r.app NOT IN ('', '(none)');
+  ANALYZE pg_temp.app_imp_r;
 
   -- the application items: one per name; a field two lines give differently refuses the item
   CREATE TEMP TABLE app_imp_a (
@@ -650,6 +656,7 @@ BEGIN
   UPDATE pg_temp.app_imp_a a SET app_id = ap.app_id, version = ap.version, name = ap.name, cur_tier = coalesce(ap.tier::text, ''),
          cur_descr = coalesce(ap.description, ''), cur_url = coalesce(ap.cmdb_url, '')
     FROM pgvigil.app_applications ap WHERE lower(ap.name) = a.akey;
+  ANALYZE pg_temp.app_imp_a;
   UPDATE pg_temp.app_imp_a a SET outcome = 'refused', words = format('%s differ between its lines (%s): one value per application',
            array_to_string(ARRAY[CASE WHEN cardinality(a.tiers) > 1 THEN 'tier' END, CASE WHEN cardinality(a.descrs) > 1 THEN 'description' END,
                                  CASE WHEN cardinality(a.urls) > 1 THEN 'cmdb_url' END], ', '),
@@ -704,6 +711,7 @@ BEGIN
                   ELSE 'has no application of its own: (none) changes nothing' END END,
       CASE r.op2 WHEN 'mark' THEN 'mark not an application' WHEN 'unmark' THEN 'unmark' || CASE WHEN r.c2 THEN ' (marked by hand: only when ticked)' ELSE '' END END,
       r.note) END;
+  ANALYZE pg_temp.app_imp_r;
 
   -- the plan and its digest: the lines as read, what each matched and its state, the applications, the outcomes
   SELECT jsonb_build_object('source', v_src,
