@@ -441,30 +441,7 @@ func (s *Server) DBADashMoves(w http.ResponseWriter, r *http.Request) {
 	if aerr != nil {
 		out["agents_note"] = "DBA Dash's services were not read now (" + aerr.Error() + "): which service collects which server is not known here"
 	} else {
-		type agentOut struct {
-			dbadash.Agent
-			Waiting []string `json:"waiting"`
-			Stop    string   `json:"stop,omitempty"`
-		}
-		ag := make([]agentOut, 0, len(agents))
-		for _, a := range agents {
-			o := agentOut{Agent: a, Waiting: []string{}}
-			for _, in := range a.Instances {
-				if !ready[in.ID] {
-					sv := in.Server
-					if sv == "" {
-						sv = "InstanceID " + strconv.Itoa(in.ID)
-					}
-					if !slices.ContainsFunc(o.Waiting, func(x string) bool { return strings.EqualFold(x, sv) }) {
-						o.Waiting = append(o.Waiting, sv)
-					}
-				}
-			}
-			if len(o.Waiting) == 0 {
-				o.Stop = "stop the DBA Dash service " + a.Service + " on " + a.Host
-			}
-			ag = append(ag, o)
-		}
+		ag := agentLines(agents, ready)
 		out["agents"] = ag
 	}
 	s.reply(w, r, out, nil)
@@ -875,6 +852,44 @@ func (s *Server) moveHistory(w http.ResponseWriter, r *http.Request, user, repo,
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "started", "detail": "the history import of " + name + " runs in the background: the list shows its rows and its end"})
+}
+
+// agentOut is one DBA Dash service as the page shows it: the servers it still collects that are not ready to switch,
+// and the stop line once there are none.
+type agentOut struct {
+	dbadash.Agent
+	Waiting []string `json:"waiting"`
+	Stop    string   `json:"stop,omitempty"`
+}
+
+// agentLines is the agents' rule (W8 c): a service may be stopped only when every active server it collects is ready to
+// switch (by DBA Dash InstanceID); each server waiting is named once (its @@SERVERNAME, else its InstanceID). A service
+// that collects no active server now (each removed in DBA Dash after its move) may be stopped too.
+func agentLines(agents []dbadash.Agent, ready map[int]bool) []agentOut {
+	ag := make([]agentOut, 0, len(agents))
+	for _, a := range agents {
+		o := agentOut{Agent: a, Waiting: []string{}}
+		for _, in := range a.Instances {
+			if ready[in.ID] {
+				continue
+			}
+			sv := in.Server
+			if sv == "" {
+				sv = "InstanceID " + strconv.Itoa(in.ID)
+			}
+			if !slices.ContainsFunc(o.Waiting, func(x string) bool { return strings.EqualFold(x, sv) }) {
+				o.Waiting = append(o.Waiting, sv)
+			}
+		}
+		switch {
+		case len(a.Instances) == 0:
+			o.Stop = "stop the DBA Dash service " + a.Service + " on " + a.Host + " if it still runs: it collects no active server now"
+		case len(o.Waiting) == 0:
+			o.Stop = "stop the DBA Dash service " + a.Service + " on " + a.Host
+		}
+		ag = append(ag, o)
+	}
+	return ag
 }
 
 // moveCounts is a dry run's counts per mapping: a server DBA Dash lists under several InstanceIDs has its sources

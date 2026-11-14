@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -239,7 +240,9 @@ func TestMoveMigrateOnAStore(t *testing.T) {
 	b := map[string]any{"server": srvB, "dbadash_ids": []int{33}, "host": "tcp:" + strings.ToLower(srvB), "port": "14330", "name": nameB}
 
 	// Windows on this serve: refused before anything is written
-	if w := add("windows", a); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Windows authentication needs pgvigil on Windows") || files() != 0 {
+	// review 206f 12: the words of this serve's own OS and account, not Linux's alone
+	winWhy := windowsOff(thisWin(""))
+	if w := add("windows", a); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), winWhy) || files() != 0 {
 		t.Fatalf("a Windows add on %s: %d %s, %d file(s); want 400 with the words and no file", "linux", w.Code, w.Body.String(), files())
 	}
 	w := add("sql", a, b)
@@ -259,6 +262,16 @@ func TestMoveMigrateOnAStore(t *testing.T) {
 	for _, e := range es {
 		if fi, err := e.Info(); err != nil || fi.Mode().Perm() != 0o600 {
 			t.Fatalf("credential file %s: mode %v (%v), want 0600", e.Name(), fi.Mode().Perm(), err)
+		}
+	}
+	// review 206f 8: each move's own file, holding its own host, port and sign-in
+	for _, c := range []struct{ name, at string }{{nameA, "@" + strings.ToLower(strings.Split(srvA, `\`)[0]) + ":1433/prod"}, {nameB, "@" + strings.ToLower(srvB) + ":14330"}} {
+		var ref string
+		if err := pool.QueryRow(ctx, `SELECT dsn_ref FROM pgvigil.admin_instances WHERE name = $1`, c.name).Scan(&ref); err != nil {
+			t.Fatal(err)
+		}
+		if d := config.Resolve(ref); !strings.Contains(d, "pgv_mon:pw%20t206"+c.at) {
+			t.Fatalf("%s: its credential file %s holds %d characters without 'pgv_mon:pw%%20t206%s'", c.name, ref, len(d), c.at)
 		}
 	}
 	var got string
@@ -355,6 +368,85 @@ SELECT i.instance_id, x.n, x.r, '{ring_buffer}', $2 FROM pgvigil.instances i, (V
 	if w := hist("count", "nobody-"+fmt.Sprint(sfx)); w.Code != http.StatusNotFound {
 		t.Fatalf("a count of a server not moved: %d %s; want 404", w.Code, w.Body.String())
 	}
+	// review 206f 3: the job in serve. A run held elsewhere (a CLI run) is the click's 409 in the store's words; then the
+	// click's 202, its job in the list ending failed (the repository's dsn resolves to nothing), the move's run ended
+	// failed by the import itself
+	_, raw, err := s.callMove(ctx, map[string]any{"op": "run", "ui_user": "cli:t206", "client": "test", "name": nameA})
+	var mk struct {
+		Outcome string `json:"outcome"`
+		RunID   int64  `json:"run_id"`
+	}
+	if err != nil || json.Unmarshal(raw, &mk) != nil || mk.Outcome != "done" {
+		t.Fatalf("a CLI run's mark: %s %v", raw, err)
+	}
+	if w := hist("import", nameA); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "runs already: started by cli:t206") {
+		t.Fatalf("an import while a CLI run holds the move: %d %s; want 409 with the store's words", w.Code, w.Body.String())
+	}
+	if _, _, err := s.callMove(ctx, map[string]any{"op": "ended", "ui_user": "cli:t206", "client": "test", "name": nameA, "run_id": mk.RunID, "imported": map[string]any{}, "outcome": "failed", "detail": "held by the test"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := hist("import", nameA); w.Code != http.StatusAccepted || decode(w)["outcome"] != "started" {
+		t.Fatalf("the import: %d %s; want 202 started", w.Code, w.Body.String())
+	}
+	var job map[string]any
+	for i := 0; i < 100 && (job == nil || job["ended"] == nil); i++ {
+		time.Sleep(100 * time.Millisecond)
+		_, by = list()
+		job, _ = by[srvA]["job"].(map[string]any)
+	}
+	if job == nil || job["ended"] == nil || !strings.HasPrefix(fmt.Sprint(job["outcome"]), "failed: ") || by[srvA]["state"] != "import failed" {
+		t.Fatalf("the job after its run: %v, state %v; want ended 'failed: ...' and 'import failed'", job, by[srvA]["state"])
+	}
+	if err := pool.QueryRow(ctx, `SELECT m.run_by || '|' || m.run_outcome || '|' || (m.run_ended IS NOT NULL)
+  FROM pgvigil.dbadash_moves m JOIN pgvigil.instances i ON i.instance_id = m.instance_id WHERE i.name = $1`, nameA).Scan(&got); err != nil || got != "t206|failed|true" {
+		t.Fatalf("the move's run after the job: %q (%v), want t206|failed|true", got, err)
+	}
+	s.closeMoveJobs()
+	// review 206f 6: the dispatcher (the door's checks, an unknown repository or op) and the GET without a repository
+	s.auth = newAuth(func(context.Context, string) (string, error) { return "h", nil }, false, time.Hour)
+	tok, err := s.auth.issue("t206", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	disp := func(header bool, body map[string]any) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(body)
+		r := httptest.NewRequest(http.MethodPost, "/api/admin/dbadash_moves", bytes.NewReader(b))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: tok})
+		if header {
+			r.Header.Set(loginHeader, "1")
+		}
+		w := httptest.NewRecorder()
+		s.DBADashMovesWrite(w, r)
+		return w
+	}
+	for _, c := range []struct {
+		name   string
+		header bool
+		body   map[string]any
+		code   int
+		words  string
+	}{
+		{"no X-Pgvigil header", false, map[string]any{"repo": repo, "op": "tick"}, http.StatusForbidden, "X-Pgvigil"},
+		{"an unknown repository", true, map[string]any{"repo": "nope-" + repo, "op": "count", "name": nameA}, http.StatusNotFound, ""},
+		{"an unknown op", true, map[string]any{"repo": repo, "op": "coffee"}, http.StatusBadRequest, "op is add, count, import or tick"},
+		{"servers not a list of objects", true, map[string]any{"repo": repo, "op": "add", "auth": "sql", "servers": "SQL01"}, http.StatusBadRequest, "servers:"},
+	} {
+		if w := disp(c.header, c.body); w.Code != c.code || !strings.Contains(w.Body.String(), c.words) {
+			t.Fatalf("%s: %d %s; want %d with %q", c.name, w.Code, w.Body.String(), c.code, c.words)
+		}
+	}
+	{
+		w := httptest.NewRecorder()
+		s.DBADashMoves(w, httptest.NewRequest(http.MethodGet, "/api/admin/dbadash_moves", nil))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"`+repo+`"`) || !strings.Contains(w.Body.String(), `"max_add":50`) {
+			t.Fatalf("the GET without a repository: %d %s", w.Code, w.Body.String())
+		}
+		w = httptest.NewRecorder()
+		s.DBADashMoves(w, httptest.NewRequest(http.MethodGet, "/api/admin/dbadash_moves?repo=nope-"+repo, nil))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("the GET of an unknown repository: %d %s", w.Code, w.Body.String())
+		}
+	}
 	// the checklist
 	tickIn := func(rp, step string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -412,5 +504,41 @@ func TestMoveCountsAndOutcome(t *testing.T) {
 	j := &moveJob{byID: map[int]map[string]int64{31: {"cpu": 300, "jobruns": 4}, 32: {"cpu": 120}}}
 	if cj := copyJob(j); cj.Inserted["cpu"] != 420 || cj.Inserted["jobruns"] != 4 || cj.byID != nil {
 		t.Errorf("the job's inserts: %v, want cpu 420 (300 + 120), jobruns 4", cj.Inserted)
+	}
+}
+
+// TestAgentLines (review 206f 4): a DBA Dash service may be stopped only when every active server it collects is ready
+// to switch; each waiting server is named once; a service with no active server may be stopped (each removed in DBA
+// Dash after its move).
+func TestAgentLines(t *testing.T) {
+	ag := func(id int, ins ...dbadash.AgentInstance) dbadash.Agent {
+		return dbadash.Agent{ID: id, Host: "DDHOST", Service: "DBADashService", Instances: ins}
+	}
+	in := func(id int, server string) dbadash.AgentInstance {
+		return dbadash.AgentInstance{ID: id, Server: server}
+	}
+	for _, c := range []struct {
+		name    string
+		agent   dbadash.Agent
+		ready   map[int]bool
+		waiting string // the waiting list joined by '|'
+		stop    string // "" = no stop line
+	}{
+		{"all ready", ag(1, in(31, "SQL01"), in(32, "SQL01"), in(40, "SQL02")), map[int]bool{31: true, 32: true, 40: true}, "", "stop the DBA Dash service DBADashService on DDHOST"},
+		{"one not ready", ag(1, in(31, "SQL01"), in(40, "SQL02")), map[int]bool{31: true}, "SQL02", ""},
+		{"one server under two ids, neither ready: named once", ag(1, in(31, "SQL01"), in(32, "sql01")), map[int]bool{}, "SQL01", ""},
+		{"half of a server ready", ag(1, in(31, "SQL01"), in(32, "SQL01")), map[int]bool{31: true}, "SQL01", ""},
+		{"no Instance name: its id", ag(1, in(55, "")), map[int]bool{}, "InstanceID 55", ""},
+		{"an Azure SQL database (never moved) waits", ag(1, in(31, "SQL01"), in(70, "pool-db")), map[int]bool{31: true}, "pool-db", ""},
+		{"no active server", ag(2), map[int]bool{}, "", "stop the DBA Dash service DBADashService on DDHOST if it still runs: it collects no active server now"},
+		{"ready keyed by DBA Dash's id, not another", ag(1, in(31, "SQL01")), map[int]bool{1: true}, "SQL01", ""},
+	} {
+		got := agentLines([]dbadash.Agent{c.agent}, c.ready)
+		if len(got) != 1 {
+			t.Fatalf("%s: %d lines", c.name, len(got))
+		}
+		if w := strings.Join(got[0].Waiting, "|"); w != c.waiting || got[0].Stop != c.stop {
+			t.Errorf("%s: waiting %q stop %q; want %q, %q", c.name, w, got[0].Stop, c.waiting, c.stop)
+		}
 	}
 }

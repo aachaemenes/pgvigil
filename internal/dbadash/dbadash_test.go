@@ -75,11 +75,17 @@ gmsa: " CORP\\pgvigil-gmsa$ "
 		"gmsa a UPN":          "gmsa: pgvigil-gmsa$@corp.example.com\n",
 		"gmsa name too long":  "gmsa: CORP\\pgvigil-collector$\n",
 		"gmsa FQDN domain":    "gmsa: corp.example.com\\pgvigil$\n",
+		// review 206f 13: the account's 15-character limit at its edge, and '$' only at its end
+		"gmsa name of 16": "gmsa: CORP\\abcdefghijklmnop$\n",
+		"gmsa a $ inside": "gmsa: CORP\\a$$\n",
 	}
 	for name, body := range bad {
 		if _, err := loadYAML(t, body); err == nil {
 			t.Errorf("%s: accepted, want refused", name)
 		}
+	}
+	if c, err := loadYAML(t, "gmsa: CORP\\abcdefghijklmno$\n"); err != nil || c.GMSA != `CORP\abcdefghijklmno$` {
+		t.Errorf("a gmsa name of 15: %v %q, want accepted", err, c.GMSA)
 	}
 }
 

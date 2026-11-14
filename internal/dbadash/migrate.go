@@ -27,7 +27,7 @@ func ImportOn(repo string) (on, ok bool) {
 func ImportFrom(ctx context.Context, log *slog.Logger, repo string, opt ImportOptions) ([]ImportCount, error) {
 	r, ok := repository(repo)
 	if !ok {
-		return nil, ErrNoRepository
+		return nil, endRun(ctx, log, opt, ErrNoRepository)
 	}
 	if opt.Store == nil {
 		return nil, fmt.Errorf("dbadash import from %s: no store", r.Name)
@@ -52,12 +52,13 @@ type AgentInstance struct {
 	Server string `json:"server"`
 }
 
-// agentsSQL is every active instance with the service that collects it (4.24.1: dbo.DBADashAgent L1-4, dbo.Instances'
-// CollectAgentID), Azure SQL databases included: a service that collects one is never all moved.
+// agentsSQL is every DBA Dash service with the active instances it collects (4.24.1: dbo.DBADashAgent L1-4,
+// dbo.Instances' CollectAgentID), Azure SQL databases included: a service that collects one is never all moved. A
+// service with no active instance (each removed in DBA Dash's GUI after its move: Instance_Del sets IsActive = 0) is
+// listed with none.
 const agentsSQL = `
 SELECT A.DBADashAgentID, A.AgentHostName, A.AgentServiceName, I.InstanceID, I.Instance
-  FROM dbo.Instances I JOIN dbo.DBADashAgent A ON A.DBADashAgentID = I.CollectAgentID
- WHERE I.IsActive = 1
+  FROM dbo.DBADashAgent A LEFT JOIN dbo.Instances I ON I.CollectAgentID = A.DBADashAgentID AND I.IsActive = 1
  ORDER BY A.DBADashAgentID, I.InstanceID`
 
 // agentsKeep is how long a read of a repository's services answers the page (its list polls every 5 s while an import
@@ -112,7 +113,8 @@ func readAgents(ctx context.Context, repo string) ([]Agent, error) {
 	defer func() { _ = rows.Close() }()
 	out := []Agent{}
 	for rows.Next() {
-		var id, iid int
+		var id int
+		var iid sql.NullInt64
 		var host, svc string
 		var inst sql.NullString
 		if err := rows.Scan(&id, &host, &svc, &iid, &inst); err != nil {
@@ -121,8 +123,10 @@ func readAgents(ctx context.Context, repo string) ([]Agent, error) {
 		if len(out) == 0 || out[len(out)-1].ID != id {
 			out = append(out, Agent{ID: id, Host: host, Service: svc, Instances: []AgentInstance{}})
 		}
-		a := &out[len(out)-1]
-		a.Instances = append(a.Instances, AgentInstance{ID: iid, Server: strings.TrimSpace(inst.String)})
+		if iid.Valid {
+			a := &out[len(out)-1]
+			a.Instances = append(a.Instances, AgentInstance{ID: int(iid.Int64), Server: strings.TrimSpace(inst.String)})
+		}
 	}
 	return out, rows.Err()
 }

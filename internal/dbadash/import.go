@@ -433,6 +433,20 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 	return out, nil
 }
 
+// endRun ends a run its caller marked (opt.Run) 'failed' with err when the import stops before Import (an unknown
+// repository), and answers err.
+func endRun(ctx context.Context, log *slog.Logger, opt ImportOptions, err error) error {
+	if opt.Run == nil || opt.Run.ID == 0 || opt.Store == nil {
+		return err
+	}
+	ectx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if _, why, merr := moveMark(ectx, opt.Store, "ended", opt.Run.Name, opt.By, opt.Run.ID, map[string]any{}, "failed: "+err.Error()); merr != nil || why != "" {
+		log.Warn("dbadash import: the move's end mark", "instance", opt.Run.Name, "refused", why, "err", merr)
+	}
+	return err
+}
+
 // importBound is the newest time a run takes for one instance: the caller's To, or a moved server's first read by
 // pgvigil when that is earlier; none says why nothing is taken (a From at or after that first read).
 func importBound(from, to time.Time, tgt importTargetRow) (time.Time, string) {

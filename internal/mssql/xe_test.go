@@ -819,6 +819,20 @@ func TestXEForeign(t *testing.T) {
 			t.Errorf("capture %s picked DBA Dash's %s", c, s.name)
 		}
 	}
+	// review 206f 7: DBA Dash's own sessions alone, running, named like pgvigil's captures (4.24.1 ships
+	// DBADash_Deadlocks): never picked, whatever the suffix
+	only := xeGroup([]xeTarget{
+		{session: "DBADash_Deadlocks", running: true, target: "ring_buffer"},
+		{session: "DBADash_SlowQueries", running: true, target: "event_file"},
+		{session: "DBADash_blocked", running: true, target: "ring_buffer"},
+		{session: "DBADash_attention", running: true, target: "ring_buffer"},
+		{session: "dbadash_slow", running: true, target: "event_file"},
+	})
+	for _, c := range xeCaptures {
+		if s := xePick(only, c); s != nil {
+			t.Errorf("capture %s picked %s among DBA Dash's sessions alone", c, s.name)
+		}
+	}
 	if !strings.Contains(xeSessionsSQL, "OR d.name LIKE N'DBADash[_]%%'") {
 		t.Error("the session list does not ask for DBA Dash's sessions")
 	}

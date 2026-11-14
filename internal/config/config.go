@@ -130,9 +130,9 @@ type DBADashRepo struct {
 	Import bool `yaml:"import"`
 }
 
-// gmsaName is DOMAIN\name$: a NetBIOS domain of 1 to 15 characters and an account of 1 to 15 before its '$' (the
+// gmsaName is DOMAIN\name$: a NetBIOS domain of 1 to 15 characters and an account of 1 to 15 before its one '$' (the
 // sAMAccountName rule), neither holding a character Windows refuses in a name.
-var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\]]{1,15}\\[^\\/:*?"<>|\s@\[\]]{1,15}\$$`)
+var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\]]{1,15}\\[^\\/:*?"<>|\s@\[\]$]{1,15}\$$`)
 
 // validateGMSA trims the gmsa: key and refuses a form that is not DOMAIN\name$.
 func (c *Config) validateGMSA() error {

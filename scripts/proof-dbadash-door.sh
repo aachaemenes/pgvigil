@@ -55,7 +55,9 @@
 #     D1 the DBADash read (TestLive) stores the instance; GET /api/dbadash?repo=lab&id=<id>&part=pgvigil answers 200
 #        with 0 rows while pgvigil monitors no SQL Server of that @@SERVERNAME;
 #     D2 after `pgvigil collect -once mssql_instance` of a pgvigil SQL Server instance on the same server it returns
-#        that instance (its instance_id and name);
+#        that instance (its instance_id and name); D2x a session named DBADash_T206 (stopped, a ring buffer) made on the
+#        server, then `collect -once mssql_xe`: pgvigil.mssql_xe_foreign holds it 'false|ring_buffer' and the read's count
+#        equals the server's own count of DBADash_% sessions; the session dropped;
 #     D3 without an actions_dsn on it, a kill of the proof's own application session is 409, outcome refused, the
 #        detail names 'actions_dsn', one audit row 'refused' is in pgvigil.actions_log and the session is still
 #        connected;
@@ -426,6 +428,15 @@ else
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlbox'")
 p2=$(part); echo "$p2" | grep -qE "^1 .*instance_id=$SB( |$)" && echo "$p2" | grep -q 'name=sqlbox' || fail "D2: part=pgvigil after the collect: $p2 (want instance $SB sqlbox)"
 echo "ok   D2: after pgvigil collected sqlbox ($SERVERNAME): part=pgvigil names instance $SB sqlbox"
+# D2x (task 206, review 206f 1): the collector's own XE read stores the DBA Dash sessions it lists (xe.go's tail through
+# import_mssql_xe), a stopped one with its ring buffer, and the count the server itself gives
+sqok "D2x: a DBA Dash-named session" "CREATE EVENT SESSION [DBADash_T206] ON SERVER ADD EVENT sqlserver.error_reported ADD TARGET package0.ring_buffer;"
+"$BIN" collect -config "$TMPD/d.yaml" -instance sqlbox -once mssql_xe >"$TMPD/collect-xe.out" 2>&1 || { cat "$TMPD/collect-xe.out" >&2; fail "D2x: collect mssql_xe"; }
+xhand=$(sq "SELECT COUNT(*) FROM sys.server_event_sessions WHERE name LIKE N'DBADash[_]%'")
+xgot=$(pq "SELECT coalesce((SELECT running::text || '|' || array_to_string(targets, ',') FROM pgvigil.mssql_xe_foreign WHERE instance_id = $SB AND name = 'DBADash_T206'), 'none') || '|' || coalesce((SELECT sessions::text FROM pgvigil.mssql_xe_foreign_read WHERE instance_id = $SB), 'no read')")
+[[ "$xgot" == "false|ring_buffer|$xhand" ]] || fail "D2x: the stored DBA Dash sessions: '$xgot' (want 'false|ring_buffer|$xhand': DBADash_T206 stopped with its ring buffer, and the server's own count)"
+sqok "D2x: the session dropped" "DROP EVENT SESSION [DBADash_T206] ON SERVER;"
+echo "ok   D2x: the collector's XE read stored DBA Dash's sessions as the server lists them ($xhand, DBADash_T206 stopped with its ring_buffer); the session dropped"
 # the proof's own application session, an open transaction, waiting
 printf "BEGIN TRAN; SELECT 1 AS pgvdoor_marker; WAITFOR DELAY '00:10:00';\n" | docker exec -i --env-file "$TMPD/app.env" "$SQL" /opt/mssql-tools18/bin/sqlcmd -S localhost -U "$APP" -C -i /dev/stdin >/dev/null 2>&1 & APPPID=$!
 for _ in $(seq 1 30); do S_ID=$(sq "SELECT MIN(session_id) FROM sys.dm_exec_sessions WHERE login_name = '$APP'"); [[ -n "$S_ID" && "$S_ID" != NULL ]] && break; sleep 0.5; done

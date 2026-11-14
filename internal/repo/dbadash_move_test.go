@@ -952,6 +952,28 @@ func TestMoveXEForeignOnAStore(t *testing.T) {
 	check("a session gone", "DBADash_1:true", base.Add(6*time.Minute), 1)
 }
 
+// TestMoveCountKept (review 206f 5): a count is kept on the move with who counted; counts that are not an object are
+// refused.
+func TestMoveCountKept(t *testing.T) {
+	ctx, pool, sfx := moveStore(t)
+	repo := fmt.Sprintf("r206c-%d", sfx)
+	srv := fmt.Sprintf("CNT%d", sfx)
+	name := strings.ToLower(srv)
+	moveRepo(ctx, t, pool, repo, srv, 500)
+	moved(ctx, t, pool, repo, srv, name, "host-"+name, 500)
+	if ans := moveCall(ctx, t, pool, map[string]any{"op": "count", "ui_user": "t206", "name": name, "counts": map[string]any{"cpu": map[string]any{"source": 5, "stored": 2}}}); ans["outcome"] != "done" {
+		t.Fatalf("a count: %v", ans)
+	}
+	var got string
+	if err := pool.QueryRow(ctx, `SELECT m.counted_by || '|' || (m.counts->'cpu'->>'source') || '|' || (m.counted_at IS NOT NULL)
+  FROM pgvigil.dbadash_moves m JOIN pgvigil.instances i ON i.instance_id = m.instance_id WHERE i.name = $1`, name).Scan(&got); err != nil || got != "t206|5|true" {
+		t.Fatalf("the count kept: %q (%v), want t206|5|true", got, err)
+	}
+	if ans := moveCall(ctx, t, pool, map[string]any{"op": "count", "ui_user": "t206", "name": name, "counts": []any{}}); ans["outcome"] != "refused" || ans["detail"] != "counts is an object" {
+		t.Fatalf("counts as a list: %v, want refused 'counts is an object'", ans)
+	}
+}
+
 // TestMoveListStates (task 206, W2 / P2): dbadash_move_list gives each server of a repository the state the test set up
 // for it, written down here first: one row per server (two InstanceIDs of one @@SERVERNAME are one row with both ids),
 // a server DBA Dash no longer lists not at all.
@@ -979,6 +1001,10 @@ func TestMoveListStates(t *testing.T) {
 		ids[s] = k
 		n += 10
 	}
+	// review 206f 11: one server whose Instance DBA Dash holds in two cases is one row with both ids
+	moveRepo(ctx, t, pool, repo, srv("CASEX"), 300)
+	moveRepo(ctx, t, pool, repo, strings.ToLower(srv("CASEX")), 301)
+	want[srv("CASEX")], ids[srv("CASEX")] = "not yet", []int{300, 301}
 	moveRepo(ctx, t, pool, repo, srv("GONE"), 999)
 	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_instances SET is_present = false WHERE repository = $1 AND instance_id = 999`, repo); err != nil {
 		t.Fatal(err)
@@ -1044,8 +1070,9 @@ func TestMoveListStates(t *testing.T) {
 		if err := rows.Scan(&s, &state, &k, &mk); err != nil {
 			t.Fatal(err)
 		}
+		s = strings.ToUpper(s) // the row's name is DBA Dash's first spelling of it; every name here is upper case
 		got[s] = state
-		if len(k) != len(ids[s]) {
+		if fmt.Sprint(k) != fmt.Sprint(ids[s]) {
 			t.Errorf("%s: InstanceIDs %v, want %v", s, k, ids[s])
 		}
 		// review 206d 9: the move's own InstanceIDs (the page's command), on a moved server only
