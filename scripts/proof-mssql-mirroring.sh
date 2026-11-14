@@ -143,7 +143,7 @@ ok "M1: principal '$SP'; mirror '$SM'; the witness lists pgvmirror"
 # a run killed before its trap (a box preemption, kill -9) leaves its login and helper: named, never taken
 for x in p m w; do left=$(S "$x" "SELECT ISNULL(STRING_AGG(name, ','), '') FROM sys.server_principals WHERE name LIKE 'pgvmir[_]mon[_]%'")
   [ -z "$left" ] || fail "M1: ${NAME[$x]} has a monitoring login of an earlier run: $left (drop it by hand)"; done
-left=$(docker ps -a --filter label=pgvmirp --format '{{.Names}}' | grep -vx "$TAG" | tr '\n' ' ')
+left=$(docker ps -a --filter label=pgvmirp --format '{{.Names}}' | { grep -vx "$TAG" || true; } | tr '\n' ' ')   # none left: grep exits 1
 [ -z "$left" ] || fail "M1: helper containers of an earlier run: $left (docker rm -f them)"
 
 for x in p m w; do
