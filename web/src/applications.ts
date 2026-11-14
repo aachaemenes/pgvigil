@@ -10,7 +10,7 @@
 // tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
-import { Col, el, fmtTime, grid, offControl } from './ui';
+import { Col, el, fmtTime, grid, gridModel, offControl } from './ui';
 
 // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
 // described by that sentence (admin_instances.ts's way: a button aria-disabled with its reason, a field disabled)
@@ -71,6 +71,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
   let openId = 0;           // the application opened below the list
   let contactsOf = 0;       // the application whose contacts were asked for (read on a click only: personal data)
   let seq = 0;              // the latest draw: an older one that ends later is dropped
+  let busy = false;         // a write in flight: no second write, no Open, until its redraw (review C, MINOR 2)
   const picked = new Set<string>();   // the Unassigned rows ticked (instance_id TAB database)
 
   // a grid draws its rows again at each sort, filter and 'Show more' through the columns' formats: each actions cell
@@ -111,7 +112,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
       one ?? '',
       el('h3', {}, `Databases with no application (${un.length})`),
       el('p', { class: 'meta' }, 'Every present database of a monitored server with no application of its own or of its server\'s; system databases (template0, template1, rdsadmin, master, model, msdb, tempdb) are left out. Tick rows, then assign them or mark them not an application.'),
-      grid(un, unCols, 'Every database has an application or is marked not one.'),
+      unGrid(un),
       selectedForm(apps),
       el('h3', {}, `Marked not an application (${marked.length})`),
       grid(marked, markedCols, 'No database is marked.'),
@@ -122,18 +123,32 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     readOnly();
   }
 
+  // after a redraw the control that had the focus is gone: the opened application's heading takes it, else the page's
+  const refocus = () => (root.querySelector<HTMLElement>('section.app-one h3') ?? root.querySelector<HTMLElement>('h2'))?.focus();
+  // a read after Open, Close, Show or Hide that fails says so (a removed application, an expired session)
+  const redraw = () => draw().then(refocus, (e: unknown) => say(`The page could not be read again: ${(e as Error).message}`, true));
+
   async function act(path: string, data: Record<string, unknown>, done: (b: Record<string, unknown>) => string): Promise<boolean> {
+    if (busy) { say('Another change is still being written: try again when it is done.', true); return false; }
+    busy = true;
     say('Working…');
-    // one request at a time: a second click waits for the redraw
+    // one request at a time: every button off until the redraw (a grid redrawn meanwhile draws new ones: busy holds them)
     const off = [...root.querySelectorAll('button')].filter(b => !(b as HTMLButtonElement).disabled) as HTMLButtonElement[];
     for (const b of off) b.disabled = true;
-    try {
-      const r = await send(path, data);
-      if (!r.ok) { for (const b of off) b.disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
-      await draw();
-      say(done(r.body));
-      return true;
-    } catch (e) { for (const b of off) b.disabled = false; say(`Not done: ${(e as Error).message}`, true); return false; }
+    let r: { ok: boolean; body: Record<string, unknown> };
+    try { r = await send(path, data); } catch (e) {
+      busy = false; for (const b of off) b.disabled = false; say(`Not done: ${(e as Error).message}`, true); return false;
+    }
+    if (!r.ok) { busy = false; for (const b of off) b.disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
+    // done: its words and the state it sets come before the redraw, so the redraw shows what they set (review C, MINOR 1)
+    const msg = done(r.body);
+    try { await draw(); } catch (e) {
+      busy = false; say(`${msg} The page could not be read again: ${(e as Error).message}`, true); return true;
+    }
+    busy = false;
+    say(msg);
+    refocus();
+    return true;
   }
 
   // a remove asks twice: the first click arms the row's own confirm (no browser dialog); a refusal brings the first back
@@ -151,7 +166,12 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     return b;
   }
 
-  const open = (id: number) => { if (id !== openId) contactsOf = 0; openId = id; void draw().then(() => root.querySelector<HTMLElement>('section.app-one h3')?.focus()); };
+  const open = (id: number) => {
+    if (busy) return;
+    if (id !== openId) contactsOf = 0;
+    openId = id; say('');   // the status words of another application never stay under this one (review C, M3)
+    void redraw();
+  };
 
   const listCols: Col[] = [
     { key: 'name', fmt: (v, r) => {
@@ -203,11 +223,11 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     ];
     const sec = el('section', { class: 'app-one', 'aria-label': `Application ${name}` });
     const close = el('button', { type: 'button', class: 'link', 'aria-label': `Close ${name}` }, 'Close');
-    close.addEventListener('click', () => { openId = 0; contactsOf = 0; void draw(); });
+    close.addEventListener('click', () => { openId = 0; contactsOf = 0; say(''); void redraw(); });
     const dbGrid = grid(dbs.map(r => ({ ...r, database: r.database_name == null ? '(the whole server)' : str(r.database_name), assigned: r.own ? 'own' : 'inherited' })), dbCols(id, name), 'Not assigned to any server or database yet: assign it below, or tick its databases under Databases with no application.');
     dbGrid.querySelector('table.grid')?.setAttribute('data-part', 'databases');
     sec.append(
-      el('h3', { tabindex: '-1' }, name, ' ', close),
+      el('div', { class: 'app-one-head' }, el('h3', { tabindex: '-1', style: 'display:inline-block;margin-right:.6rem' }, name), close),
       grid(fields, [{ key: 'field' }, { key: 'value', wide: true, fmt: (v, r) => r.field === 'CMDB link' && v ? el('a', { href: str(v), rel: 'noopener noreferrer', target: '_blank' }, str(v)) : str(v) }, { key: 'source', label: 'set by' }], ''),
       editForm(a, id, name, version),
       renameForm(id, name, version),
@@ -233,7 +253,8 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
       const data: Record<string, unknown> = { op: 'edit', app_id: id, version };
       if (tier.value !== str(a.tier)) data.tier = tierOf(tier.value);
       if (env.value !== str(a.environment)) data.environment = env.value;
-      if (desc.value.trim() !== str(a.description)) data.description = desc.value.trim();
+      const norm = (t: string) => t.replace(/\r\n?/g, '\n').trim();   // a textarea reads CR LF as LF (review C, MINOR 11)
+      if (norm(desc.value) !== norm(str(a.description))) data.description = desc.value.trim();
       if (cmdb.value.trim() !== str(a.cmdb_url)) data.cmdb_url = cmdb.value.trim();
       if (Object.keys(data).length === 3) { say('Nothing changed.'); return; }
       await act('admin/applications', data, () => `Saved ${name}.`);
@@ -275,7 +296,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     const box = el('div', { class: 'app-contacts' });
     if (contactsOf !== id) {
       const show = el('button', { type: 'button', 'aria-label': `Show contacts of ${name}` }, 'Show contacts');
-      show.addEventListener('click', () => { contactsOf = id; void draw(); });
+      show.addEventListener('click', () => { contactsOf = id; void redraw(); });
       box.append(el('p', { class: 'meta' }, 'Contacts are personal data: they are read only when you ask, so an export or a mail of this page carries them only while they are shown. '), show);
       return box;
     }
@@ -288,7 +309,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
       return box;
     }
     const hide = el('button', { type: 'button', 'aria-label': `Hide contacts of ${name}` }, 'Hide contacts');
-    hide.addEventListener('click', () => { contactsOf = 0; void draw(); });
+    hide.addEventListener('click', () => { contactsOf = 0; say(''); void redraw(); });
     const form = contactForm(id, name);
     box.append(grid(rows, [{ key: 'role' }, { key: 'kind' }, { key: 'name' }, { key: 'email', label: 'e-mail' }, { key: 'phone' },
       { key: 'cmdb_url', label: 'CMDB link' },
@@ -296,7 +317,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
         const cn = str(r.name);
         const edit = el('button', { type: 'button', class: 'link', 'aria-label': `Edit contact ${cn} of ${name}` }, 'Edit');
         edit.addEventListener('click', () => form.fill?.(r));
-        const rm = removeButton(`contact ${cn} of ${name}`, cn, () => act('admin/applications/contacts', { op: 'remove', app_id: id, contact_id: Number(r.contact_id) }, () => `Removed contact ${cn}.`));
+        const rm = removeButton(`contact ${cn} of ${name}`, cn, () => act('admin/applications/contacts', { op: 'remove', app_id: id, contact_id: Number(r.contact_id) }, () => `Contact ${str(r.contact_id)} removed.`));
         return lock(el('span', { class: 'actions' }, edit, ' ', rm));
       } }], 'No contact yet.'), form, routesPart(name, rows, routes, channels), hide);
     return box;
@@ -308,6 +329,8 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
   function routesPart(name: string, contacts: Row[], routes: Row[], channels: Row[]): HTMLElement {
     const part = el('div', { class: 'app-routes' });
     const label = (r: Row) => `${str(r.contact)} via ${str(r.channel_name)}`;
+    // the status words name a contact by its id only: they stay on the page (and in its export) after Hide (review C, M3)
+    const said = (r: Row) => `contact ${str(r.contact_id)} via ${str(r.channel_name)}`;
     part.append(el('h5', {}, 'Alerts to contacts'),
       el('p', { class: 'meta' }, 'A route mails a contact the alerts of this application\'s servers through a channel of the configuration (its relay); the channel\'s repeat, quiet hours and hourly cap hold the route as its own. The channel\'s own recipients and scope are unchanged; repository-wide alerts (the collector, purge) never go to a route. A person on two contact rows gets two copies.'),
       grid(routes, [{ key: 'contact' }, { key: 'channel_name', label: 'channel' },
@@ -317,8 +340,8 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
         { key: 'actions', fmt: (_v, r) => {
           const on = !!r.enabled, l = label(r);
           const t = el('button', { type: 'button', class: 'link', 'aria-label': `${on ? 'Turn off' : 'Turn on'} the route of ${l}` }, on ? 'Turn off' : 'Turn on');
-          t.addEventListener('click', () => { void act('admin/applications/routes', { op: 'set', route_id: Number(r.route_id), enabled: !on }, () => `The route of ${l} is ${on ? 'off: its open alerts close with no message' : 'on'}.`); });
-          const rm = removeButton(`the route of ${l}`, `the route of ${l}`, () => act('admin/applications/routes', { op: 'remove', route_id: Number(r.route_id) }, () => `The route of ${l} is removed.`));
+          t.addEventListener('click', () => { void act('admin/applications/routes', { op: 'set', route_id: Number(r.route_id), enabled: !on }, () => `The route of ${said(r)} is ${on ? 'off: its open alerts close with no message' : 'on'}.`); });
+          const rm = removeButton(`the route of ${l}`, `the route of ${l}`, () => act('admin/applications/routes', { op: 'remove', route_id: Number(r.route_id) }, () => `The route of ${said(r)} is removed.`));
           return lock(el('span', { class: 'actions' }, t, ' ', rm));
         } }], 'No route: no contact of this application receives its alerts yet.'));
     const f = el('form', { class: 'admin-form', 'aria-label': `Route alerts of ${name}` });
@@ -329,10 +352,9 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
       ev.preventDefault();
       if (!who.value) { say('A route mails a contact: add a contact with an e-mail address first.', true); return; }
       if (!via.value) { say('No smtp channel is configured (the alerts: list of the configuration): a route needs one to mail through.', true); return; }
-      const data: Record<string, unknown> = { op: 'set', contact_id: Number(who.value), channel: via.value };
-      if (from.value) data.min_severity = from.value;
-      const l = `${who.selectedOptions[0]?.textContent ?? ''} via ${via.value}`;
-      await act('admin/applications/routes', data, () => `The route of ${l} is on: the next alert pass mails it.`);
+      // the severity always sent (empty: the channel's own) and the route on: an existing route takes both (review C, M1)
+      const data: Record<string, unknown> = { op: 'set', contact_id: Number(who.value), channel: via.value, min_severity: from.value, enabled: true };
+      await act('admin/applications/routes', data, () => `The route of contact ${who.value} via ${via.value} is on, from ${from.value || 'the channel\'s severity'}: the next alert pass mails it.`);
     });
     f.append(el('fieldset', {}, el('legend', {}, `Route alerts of ${name}`),
       el('div', {}, field('Contact', who), field('Channel', via), field('From severity', from)),
@@ -348,22 +370,28 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     const role = select('role', ROLES), kind = select('kind', KINDS), cname = input('name', { required: '', maxlength: '200' });
     const email = input('email', { type: 'email', maxlength: '254', size: '28' }), phone = input('phone', { maxlength: '40', placeholder: 'a person only' }), cmdb = input('cmdb_url', { placeholder: 'https://...' });
     const legend = el('legend', {}, addLabel), submit = el('button', { type: 'submit' }, 'Add the contact'), cancel = el('button', { type: 'button', hidden: '' }, 'Cancel the edit');
-    let editing = 0;
-    const reset = () => { editing = 0; f.reset(); legend.textContent = addLabel; f.setAttribute('aria-label', addLabel); submit.textContent = 'Add the contact'; cancel.hidden = true; };
+    let editing = 0, was: Row = {};
+    const reset = () => { editing = 0; was = {}; f.reset(); legend.textContent = addLabel; f.setAttribute('aria-label', addLabel); submit.textContent = 'Add the contact'; cancel.hidden = true; };
     cancel.addEventListener('click', reset);
     f.fill = (r: Row) => {
-      editing = Number(r.contact_id); const lbl = `Edit contact ${str(r.name)} of ${name}`;
+      editing = Number(r.contact_id); was = r; const lbl = `Edit contact ${str(r.name)} of ${name}`;
       legend.textContent = lbl; f.setAttribute('aria-label', lbl); submit.textContent = 'Save the contact'; cancel.hidden = false;
       role.value = str(r.role); kind.value = str(r.kind); cname.value = str(r.name); email.value = str(r.email); phone.value = str(r.phone); cmdb.value = str(r.cmdb_url);
       cname.focus();
     };
     f.addEventListener('submit', async ev => {
       ev.preventDefault();
-      const data: Record<string, unknown> = { op: editing ? 'edit' : 'add', app_id: id, role: role.value, kind: kind.value, name: cname.value.trim(),
-        email: email.value.trim(), phone: phone.value.trim(), cmdb_url: cmdb.value.trim() };
-      if (editing) data.contact_id = editing;
-      const n = cname.value.trim();
-      if (await act('admin/applications/contacts', data, () => editing ? `Saved contact ${n}.` : `Added contact ${n}.`)) reset();
+      const now: Record<string, string> = { role: role.value, kind: kind.value, name: cname.value.trim(), email: email.value.trim(),
+        phone: phone.value.trim(), cmdb_url: cmdb.value.trim() };
+      const data: Record<string, unknown> = { op: editing ? 'edit' : 'add', app_id: id };
+      // an edit sends only the fields changed: its audit row and each field's source name those alone (review C, M2)
+      for (const [k, v] of Object.entries(now)) if (!editing || v !== str(was[k])) data[k] = v;
+      if (editing) {
+        if (Object.keys(data).length === 2) { say('Nothing changed.'); return; }
+        data.contact_id = editing;
+      }
+      const e = editing;
+      if (await act('admin/applications/contacts', data, b => e ? `Contact ${e} saved.` : `Contact ${str(b.contact_id) || ''} added.`.replace('  ', ' '))) reset();
     });
     f.append(el('fieldset', {}, legend,
       el('div', {}, field('Role', role), field('Kind', kind), field('Name', cname), field('E-mail', email), field('Phone', phone), field('CMDB link', cmdb)),
@@ -381,7 +409,9 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
         b.addEventListener('click', async () => {
           const target = { instance_id: Number(r.instance_id) };
           const ok = await act('admin/applications/assign', { op: 'assign', app_id: id, environment: str(r.environment), targets: [{ ...target, database: str(v) }] }, () => `${str(v)} assigned to ${name}.`);
-          if (ok) await act('admin/applications/assign', { op: 'unassign', app_id: id, targets: [{ ...target, database: str(r.database_name) }] }, () => `${str(v)} assigned to ${name} instead of ${str(r.database_name)}.`);
+          if (ok && !await act('admin/applications/assign', { op: 'unassign', app_id: id, targets: [{ ...target, database: str(r.database_name) }] }, () => `${str(v)} assigned to ${name} instead of ${str(r.database_name)}.`)) {
+            say(`${str(v)} is assigned to ${name}, and ${str(r.database_name)} is still assigned too: ${(status.textContent ?? '').replace(/^Not done: /, '')}`, true);
+          }
         });
         return el('span', {}, str(v), ' ', lock(el('span', { class: 'actions' }, b)));
       } },
@@ -424,6 +454,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     } },
     { key: 'instance', label: 'server' }, { key: 'engine' }, { key: 'database_name', label: 'database' },
   ];
+  const unGrid = (un: Row[]) => { const g = grid(un, unCols, 'Every database has an application or is marked not one.'); g.querySelector('table.grid')?.setAttribute('data-part', 'unassigned'); return g; };
   let countEl: HTMLElement | null = null;
   const count = () => { if (countEl) countEl.textContent = `${picked.size} ticked`; };
   const targets = () => [...picked].map(k => { const [i, db] = k.split('\t'); return { instance_id: Number(i), database: db }; });
@@ -433,9 +464,21 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     const f = el('form', { class: 'admin-form', 'aria-label': 'Assign the selected databases' });
     const app = select('app_id', apps.map(a => [str(a.app_id), str(a.name)] as [string, string])), env = select('environment', [['', '(the application\'s)'], ...ENVS]);
     const all = el('button', { type: 'button', 'aria-label': 'Tick every row shown' }, 'Tick every row shown');
-    all.addEventListener('click', () => { for (const c of root.querySelectorAll<HTMLInputElement>('input[data-pick]')) if (!c.checked && !c.disabled) c.click(); });
+    all.addEventListener('click', () => {
+      // every row the grid holds under its filter, drawn or past its first page (review C, MINOR 6)
+      const t = root.querySelector<HTMLTableElement>('table.grid[data-part=unassigned]'), m = t ? gridModel(t) : undefined;
+      for (const r of m ? m.rows() : []) picked.add(pickKey(r));
+      for (const c of root.querySelectorAll<HTMLInputElement>('input[data-pick]')) c.checked = true;
+      count();
+    });
     const mark = el('button', { type: 'button', 'aria-label': 'Mark the selected not an application' }, 'Mark the selected not an application');
-    const need = () => { if (!picked.size) { say('Tick at least one database first.', true); return false; } if (picked.size > 500) { say(`${picked.size} ticked: at most 500 in one request.`, true); return false; } return true; };
+    const need = () => {
+      if (!picked.size) { say('Tick at least one database first.', true); return false; }
+      if (picked.size > 500) { say(`${picked.size} ticked: at most 500 in one request.`, true); return false; }
+      // the server takes a body of 64 KB: long database names may pass it under 500 (review C, MINOR 7)
+      if (JSON.stringify({ op: 'assign', app_id: 0, environment: 'development', targets: targets() }).length > 60000) { say(`${picked.size} ticked with long names: too many for one request (64 KB); assign them in two.`, true); return false; }
+      return true;
+    };
     mark.addEventListener('click', () => {
       if (!need()) return;
       const n = picked.size;

@@ -167,12 +167,15 @@ RETURNS TABLE (instance_id int, database_name text, own boolean, absent_since ti
                             (SELECT max(o.snapshot_at) FROM pgvigil.mssql_database_option o
                               WHERE o.instance_id = a.instance_id AND o.database_name = a.database_name AND NOT o.is_present),
                             a.last_seen, a.set_at) END,
+         -- renamed to: the present database with the old one's engine id, unless that name has an application of its own
+         -- (the page's 'Assign instead' would move it silently: review C, MINOR 5)
          CASE WHEN a.database_name IS NOT NULL AND a.engine_db_id IS NOT NULL
                    AND NOT pgvigil.app_db_present(a.instance_id, a.database_name) THEN
-              coalesce((SELECT d.datname FROM pgvigil.databases d
-                         WHERE d.instance_id = a.instance_id AND d.dbid = a.engine_db_id AND d.is_present LIMIT 1),
-                       (SELECT o.database_name FROM pgvigil.mssql_database_option o
-                         WHERE o.instance_id = a.instance_id AND o.database_id = a.engine_db_id AND o.is_present LIMIT 1)) END
+              (SELECT x.n FROM (SELECT coalesce((SELECT d.datname FROM pgvigil.databases d
+                                                  WHERE d.instance_id = a.instance_id AND d.dbid = a.engine_db_id AND d.is_present LIMIT 1),
+                                                (SELECT o.database_name FROM pgvigil.mssql_database_option o
+                                                  WHERE o.instance_id = a.instance_id AND o.database_id = a.engine_db_id AND o.is_present LIMIT 1)) AS n) x
+                WHERE NOT EXISTS (SELECT 1 FROM pgvigil.app_assignments b WHERE b.instance_id = a.instance_id AND b.database_name = x.n)) END
     FROM pgvigil.app_assignments a
    WHERE a.app_id = p_app_id
   UNION ALL

@@ -50,6 +50,7 @@
 #      them; with retag the rename is done and both carry the new tag; an application whose tag scopes a drive
 #      threshold is removed only with retag, which ends the threshold
 #  S16 a database marked 'not an application' (import_app_assign op mark) leaves app_unassigned(); unmarked, it is back
+#  S18 'renamed to' is not offered while the new name has an application of its own (review C, MINOR 5)
 # Section H, the API (serve with a UI login on the same repository; the routes are 310's WIRING of web.go,
 # scripts/proof-applications-wiring.patch, applied to the box's copy when the tree lacks them):
 #  H1  GET /api/applications: 401 without a login; with one 200, can_edit true, the list holds the applications
@@ -79,6 +80,9 @@
 #  P11 axe-core 4.14.0 on the page (an application and its contacts open) light and dark, and read only: 0 nodes
 #  P12 the page's Export .xlsx passes scripts/xlsx-check.py and holds no contact value (contacts not shown)
 #  P13 the page names an instance whose pgvigil.yaml gives it an application: tag (E5)
+#  P14 a contact's one field edited on the page: its audit row names that field alone (review C, M2)
+#  P15 a contact added, the contacts hidden, the page exported: no contact's name or address in the status or the file
+#      (review C, M3); P2 also: the added application opens (review C, MINOR 1)
 # Section O, owner-routed alerts (a contact's route through a configured smtp channel: one derived channel per route,
 # 'contact-<route_id>', the base's relay, repeat, clear_after, quiet hours and cap, scoped by the application's tag;
 # real passes of 'pgvigil alerts' against a loopback SMTP sink that keeps each message with its RCPT list):
@@ -123,7 +127,7 @@ q()  { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { echo "FAIL setup: migrate"; tail -5 "$WORK/migrate.out"; exit 1; }
 if [[ $(q "select to_regprocedure('pgvigil.import_app_application(timestamptz, jsonb)') is not null") != t ]]; then
-  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17; do bad "$row not on this tree (no import_app_application)"; done
+  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18; do bad "$row not on this tree (no import_app_application)"; done
   echo "proof-applications: $NFAIL FAIL"; exit 1
 fi
 
@@ -251,6 +255,14 @@ rn=$(q "select database_name || ':' || (absent_since is not null)::text || ':' |
 own=$(q "select count(*) from pgvigil.app_assignments where instance_id = $PGI and database_name = 'db3new'")
 [[ $rn == "db3:true:db3new" && $own == 0 ]] && ok "S12 a renamed database's assignment stays on the old name, absent, renamed_to offered; none taken silently" \
   || bad "S12 [$rn], assignments on the new name: $own"
+# S18 (review C, MINOR 5): the new name assigned to another application -> no 'renamed to' offer; unassigned, the offer is back
+ans=$(wr application '{"op": "add", "name": "S18 Other"}'); S18A=$(field "$ans" app_id)
+wr assign "{\"op\": \"assign\", \"app_id\": $S18A, \"targets\": [{\"instance_id\": $PGI, \"database\": \"db3new\"}]}" >/dev/null
+r18a=$(q "select coalesce(renamed_to, '') from pgvigil.app_databases($PAY) where own and database_name = 'db3'")
+wr assign "{\"op\": \"unassign\", \"app_id\": $S18A, \"targets\": [{\"instance_id\": $PGI, \"database\": \"db3new\"}]}" >/dev/null
+r18b=$(q "select coalesce(renamed_to, '') from pgvigil.app_databases($PAY) where own and database_name = 'db3'")
+[[ -n $S18A && $r18a == "" && $r18b == db3new ]] && ok "S18 'renamed to' is not offered while the new name has an application of its own; unassigned, it is offered again" \
+  || bad "S18 with the new name assigned: '$r18a'; after: '$r18b'"
 
 # ---------------- S17 ----------------
 pname=$(q "select name from pgvigil.app_applications where app_id = $PAY")
@@ -381,7 +393,7 @@ else bad "H6 setup: the -no-login serve did not answer ($(tail -3 "$WORK/serve-$
 # ================= P: the page (Admin > Applications in a headless Chromium over CDP, on the H section's serves) =================
 # the bundle is built from this tree on the box (.ap/run.sh: npm ci, npm run build) with 310's WIRING of router.ts and
 # main.ts applied; a binary without the page's route is the red: every P row 'not on this tree'
-PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13"
+PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15"
 if ! grep -a -q 'admin_applications' "$BIN"; then
   for row in $PROWS; do bad "$row not on this tree (no Admin > Applications in the bundle)"; done
 else
@@ -467,6 +479,10 @@ if (mode === 'routes') {
     out('R.status', await submit('Route alerts of O App D'));
     out('R.added', await ev(`[...document.querySelectorAll('main button')].some(b => b.getAttribute('aria-label') === 'Turn off the route of Dee via mail')`));
     out('R.off', await click('Turn off the route of Dee via mail'));
+    out('R.off_store', sql(`select r.enabled::text || '/' || coalesce(r.min_severity, 'base') from pgvigil.ui_app_contact_routes r join pgvigil.ui_app_contacts c on c.contact_id = r.contact_id where c.name = 'Dee' and r.channel_name = 'mail'`));
+    // added again with the channel's severity: on, its severity the channel's (review C, M1)
+    out('R.fill2', await fill('Route alerts of O App D', { contact_id: 'Dee', channel: 'mail', min_severity: '' }));
+    out('R.status2', await submit('Route alerts of O App D'));
     out('R.axe', await axe());
   } catch (e) { out('ERROR', String(e?.message ?? e)); }
   ws.close(); bws.close(); process.exit(0);
@@ -480,6 +496,7 @@ try {
   // P2 add through the form
   out('P2.fill', await fill('Add an application', { name: 'Page Added', tier: '2', environment: 'test', description: 'added by the page' }));
   out('P2.status', await submit('Add an application'));
+  out('P2.opened', await ev(`!!document.querySelector('main section[aria-label="Application Page Added"]')`));
   out('P2.store', sql(`select tier || '|' || environment || '|' || description || '|' || (select string_agg(distinct source || '/' || set_by, ',') from pgvigil.app_field_source f where f.object_kind = 'application' and f.object_id = a.app_id) from pgvigil.app_applications a where name = 'Page Added'`));
   // P3 open it: each field's source; edit the description
   out('P3.open', await click('Open Page Added'));
@@ -494,6 +511,12 @@ try {
   out('P4.fill', await fill('Add a contact to Http App', { role: 'technical owner', kind: 'team', name: 'Page Team', email: env.P_TEAM }));
   out('P4.status', await submit('Add a contact to Http App'));
   out('P4.listed', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_TEAM)})`));
+  // P14: the team's e-mail edited on the page: its audit row names the e-mail alone (review C, M2)
+  out('P14.edit', await click('Edit contact Page Team of Http App'));
+  out('P14.fill', await fill('Edit contact Page Team of Http App', { email: env.P_TEAM2 }));
+  out('P14.status', await submit('Edit contact Page Team of Http App'));
+  out('P14.audit', sql(`select detail from pgvigil.admin_audit where op = 'app_contact_edit' and outcome = 'done' and ui_user = '${env.P_USR}' order by audit_id desc limit 1`));
+  out('P14.store', sql(`select count(*) from pgvigil.ui_app_contacts where name = 'Page Team' and email = '${env.P_TEAM2}'`));
   // P5 two Unassigned rows ticked, assigned in one call
   await go(U, '#/admin_applications');
   out('P5.before', await ticks());
@@ -542,6 +565,16 @@ try {
   let file = '';
   for (let i = 0; i < 100 && !file; i++) { await sleep(200); const f = fs.readdirSync(dl).filter(n => n.endsWith('.xlsx') && !before.has(n)); if (f.length && !fs.readdirSync(dl).some(n => n.endsWith('.crdownload'))) file = dl + '/' + f[0]; }
   out('P12.file', file || 'none');
+  // P15: a contact added, the contacts hidden, the page exported: neither its name nor its address in the file (review C, M3)
+  await click('Show contacts of Http App');
+  out('P15.fill', await fill('Add a contact to Http App', { role: 'support', kind: 'person', name: 'Zed Hidden', email: env.P_ZED }));
+  out('P15.status', await submit('Add a contact to Http App'));
+  out('P15.hide', await click('Hide contacts of Http App'));
+  const before15 = new Set(fs.readdirSync(dl));
+  await ev(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Export .xlsx')?.click()`);
+  let file15 = '';
+  for (let i = 0; i < 100 && !file15; i++) { await sleep(200); const f = fs.readdirSync(dl).filter(n => n.endsWith('.xlsx') && !before15.has(n)); if (f.length && !fs.readdirSync(dl).some(n => n.endsWith('.crdownload'))) file15 = dl + '/' + f[0]; }
+  out('P15.file', file15 || 'none');
   // P11 axe on the page with an application and its contacts open, light and dark
   for (const t of ['light', 'dark']) {
     await theme(t); await go(U, '#/admin_applications'); await click('Open Http App'); await click('Show contacts of Http App');
@@ -565,7 +598,7 @@ ws.close(); bws.close();
 JS
 if [[ $P_SET == 1 ]]; then
   P1WANT=$(q "select string_agg(name, '|' order by name collate \"C\") from pgvigil.app_applications")   # the list as P1 reads it
-  P_USR=$USR P_UPW=$UPW P_EMAIL="h5.$SUF@example.com" P_TEAM="$TEAM" P_PPI=$PPI P_PMI=$PMI \
+  P_USR=$USR P_UPW=$UPW P_EMAIL="h5.$SUF@example.com" P_TEAM="$TEAM" P_TEAM2="page-team2.$SUF@example.com" P_ZED="zed.$SUF@example.com" P_PPI=$PPI P_PMI=$PMI \
     timeout 600 node "$WORK/p.mjs" "$CDP" "$U/" "http://127.0.0.1:$P6/" "$DL" "$AXE" > "$WORK/p.out" 2> "$WORK/p.err"; echo "read: the page's click run ended rc $? ($(wc -l < "$WORK/p.out") lines)"
   pv() { sed -n "s/^$1=//p" "$WORK/p.out" | head -1; }
   grep -q '^ERROR=' "$WORK/p.out" && echo "read: the click run stopped: $(pv ERROR | cut -c1-300)"
@@ -576,7 +609,7 @@ if [[ $P_SET == 1 ]]; then
   # P2
   # P2, P5 and P7 grade the store as read right after their step (later steps change it: t-ap-g6 graded the end state)
   p2=$(pv P2.store)
-  [[ $(pv P2.fill) == ok && $p2 == "2|test|added by the page|entered/$USR" ]] && ok "P2 Add through the form: stored, every field entered by $USR ($(pv P2.status))" || bad "P2 fill $(pv P2.fill); store '$p2'; status '$(pv P2.status)'"
+  [[ $(pv P2.fill) == ok && $p2 == "2|test|added by the page|entered/$USR" && $(pv P2.opened) == true ]] && ok "P2 Add through the form: stored, every field entered by $USR ($(pv P2.status))" || bad "P2 fill $(pv P2.fill); store '$p2'; opened $(pv P2.opened); status '$(pv P2.status)'"
   # P3
   p3=$(q "select description || '|' || version from pgvigil.app_applications where name = 'Page Added'")
   [[ $(pv P3.sources) -ge 4 && $p3 == "edited by the page|2" ]] && ok "P3 one application's fields with their sources ($(pv P3.sources) 'entered by'); Edit stored, version 2" || bad "P3 sources $(pv P3.sources); store '$p3'; status '$(pv P3.status)'"
@@ -626,6 +659,17 @@ if [[ $P_SET == 1 ]]; then
     [[ $x12 == *": PASS" && $leak == 0 && $has -ge 1 ]] && ok "P12 the page's Export .xlsx passes xlsx-check and holds no contact value (contacts not shown)" \
       || bad "P12 xlsx-check '$x12'; contact values in the file $leak; 'Http App' parts $has"
   else bad "P12 no workbook downloaded (press $(pv P12.press))"; fi
+  # P14
+  [[ $(pv P14.fill) == ok && $(pv P14.store) == 1 && $(pv P14.audit) == *": email changed" ]] && ok "P14 a contact's e-mail edited on the page: stored, its audit row names the e-mail alone ('$(pv P14.audit)')" \
+    || bad "P14 fill $(pv P14.fill); stored $(pv P14.store); audit '$(pv P14.audit)'; status '$(pv P14.status)'"
+  # P15
+  F15=$(pv P15.file)
+  if [[ -f "$F15" ]]; then
+    l15=$(unzip -p "$F15" | grep -c -i -e 'Zed Hidden' -e "zed.$SUF@example.com")
+    s15=$(q "select count(*) from pgvigil.ui_app_contacts where name = 'Zed Hidden'")
+    [[ $(pv P15.fill) == ok && $s15 == 1 && $l15 == 0 && $(pv P15.status) != *"Zed"* ]] && ok "P15 a contact added then the contacts hidden: the status words and the page's export hold neither its name nor its address" \
+      || bad "P15 fill $(pv P15.fill); stored $s15; hits in the export $l15; status '$(pv P15.status)'"
+  else bad "P15 no workbook downloaded"; fi
   [[ -s "$WORK/p.err" ]] && echo "read: the click run's stderr: $(head -c 300 "$WORK/p.err" | tr '\n' ' ')"
 else
   for row in $PROWS; do bad "$row not run (P setup)"; done
@@ -897,9 +941,9 @@ if [[ ${P_SET:-0} == 1 && $HAS_ROUTES == t ]]; then
   ov() { sed -n "s/^$1=//p" "$WORK/o19.out" | head -1; }
   o19=$(q "select string_agg(r.channel_name || '/' || coalesce(r.min_severity, 'base') || '/' || r.enabled::text, ',') from pgvigil.ui_app_contact_routes r where r.contact_id = $CDEE and r.channel_name = 'mail'")
   o19a=$(q "select count(*) from pgvigil.admin_audit where op = 'app_route' and outcome = 'done' and ui_user = '$USR' and target = 'contact $CDEE'")
-  [[ $(ov R.fill) == ok && $(ov R.added) == true && $o19 == "mail/warning/false" && $o19a == 2 && $(ov R.axe) == "0 "* ]] \
-    && ok "O19 the page: a route added for Dee (mail from warning) and turned off by clicks; two audit rows; axe 0 nodes with the routes shown" \
-    || bad "O19 fill $(ov R.fill), listed $(ov R.added); store '$o19'; audit $o19a; axe '$(ov R.axe)'; status '$(ov R.status)' / '$(ov R.off)'; $(head -c 200 "$WORK/o19.err")"
+  [[ $(ov R.fill) == ok && $(ov R.added) == true && $(ov R.off_store) == "false/warning" && $(ov R.fill2) == ok && $o19 == "mail/base/true" && $o19a == 3 && $(ov R.axe) == "0 "* ]] \
+    && ok "O19 the page: a route added for Dee (mail from warning), turned off, added again with the channel's severity (on, from the channel's) by clicks; three audit rows; axe 0 nodes with the routes shown" \
+    || bad "O19 fill $(ov R.fill), listed $(ov R.added); off '$(ov R.off_store)'; again '$(ov R.fill2)' -> store '$o19'; audit $o19a; axe '$(ov R.axe)'; status '$(ov R.status)' / '$(ov R.off)' / '$(ov R.status2)'; $(head -c 200 "$WORK/o19.err")"
 else bad "O19 not run (the page's click run or the routes are not on this tree)"; fi
 fi
 
