@@ -40,7 +40,7 @@ import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { closeRange, rangePicker } from './rangepicker';
 import { fmt, fmtClock } from './tz';
-import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
+import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
 import { runningFleet } from './running_fleet';
@@ -433,7 +433,11 @@ async function render(force = false) {
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
-  const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab));
+  // under a tag a folder's strip is the tag folder's own (TAGTREE; router.ts tagPages): no root-only page, no page of an
+  // engine the tag's instances lack - the page shown keeps its tab (an old link still opens it)
+  const tagFleet = ctx.tag && !ctx.instance && group.key !== 'main' ? await fleet().catch(() => null) : null;
+  const inTagStrip = tagFleet ? new Set(tagPages(group, new Set(tagFleet.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')))) : null;
+  const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab) && (!inTagStrip || inTagStrip.has(k) || k === ctx.tab));
   // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(

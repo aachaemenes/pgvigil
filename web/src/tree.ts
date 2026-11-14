@@ -16,7 +16,7 @@
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { poolerCached } from './pooler';
-import { Ctx, href, drillHome, groupsFor, isMssql, rootGroups, rootTabs, TabGroup, tabsFor, tagPages } from './router';
+import { Ctx, href, drillHome, groupsFor, isMssql, rootGroups, rootOnly, rootOnlyGroups, rootTabs, TabGroup, tabsFor, tagPages } from './router';
 import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { refreshSilenced, silencedSet, treeBell } from './instheader';
 import { hashParam, hrefWith } from './dbinfo';
@@ -390,15 +390,17 @@ function instanceFolders(ctx: Ctx, id: number, depth: number, engine?: unknown):
 // link its tag and hold its pages only (router.ts tagPages: no root-only page, no page of an engine the folder lacks).
 // A leaf is on only on its own scope's page.
 function scopeFolders(ctx: Ctx, scope: string | undefined, keyOf: (g: string) => string, pages: (g: TabGroup) => string[]): HTMLElement[] {
-  const link = (t: string) => href(ctx, { tab: t, instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined });
-  const here = !ctx.instance && ctx.tag === scope;
   return rootGroups.filter(g => g.key !== 'main').flatMap(g => {
     const tabs = pages(g);
     if (!tabs.length) return [];
+    // a root-only page never carries a tag (it ignores one): it links the fleet even where the root keeps a tag
+    const scopeOf = (t: string) => scope && !rootOnlyGroups.has(g.key) && !rootOnly.has(t) ? scope : undefined;
+    const link = (t: string) => href(ctx, { tab: t, instance: undefined, tag: scopeOf(t), at: undefined, task: undefined, taskInstance: undefined });
+    const on = (t: string) => !ctx.instance && ctx.tag === scopeOf(t) && ctx.tab === t;
     return [folder(keyOf(g.key), g.name, 0, () => tabs.map(t => t === 'customreports'
-      ? customReports(ctx, `${keyOf(g.key)}/cr`, rootTabs[t], 1, link(t), here && ctx.tab === t, undefined, undefined, scope)
-      : el('div', { style: nodeStyle(1) }, leaf(rootTabs[t], link(t), here && ctx.tab === t))),
-      link(tabs[0]), here && ctx.tab === tabs[0])];
+      ? customReports(ctx, `${keyOf(g.key)}/cr`, rootTabs[t], 1, link(t), on(t), undefined, undefined, scopeOf(t))
+      : el('div', { style: nodeStyle(1) }, leaf(rootTabs[t], link(t), on(t)))),
+      link(tabs[0]), on(tabs[0]))];
   });
 }
 
