@@ -456,13 +456,18 @@ func envFileValue(path, name string) (string, bool) {
 // environment (Linux: the env file beside it) or a file (Windows: repo.dsn beside it), the instance
 // list is empty; the service waits until the DSN is filled in.
 func configTemplate(repositoryDSN string) string {
-	return strings.ReplaceAll(`# pgvigil configuration, written by 'pgvigil install'. Secrets stay out of this file:
+	return strings.ReplaceAll(strings.ReplaceAll(`# pgvigil configuration, written by 'pgvigil install'. Secrets stay out of this file:
 #   env:NAME     read from the environment
 #   file:/path   read from a file (one line)
 # The full reference with every option: deploy/examples/pgvigil.example.yaml in the repository,
 # https://github.com/aachaemenes/pgvigil#quick-start
 repository:
   dsn: @DSN@
+
+# Custom reports on the store (the repository) run as a login of their own, IN ROLE pgvigil_reader alone ('pgvigil
+# roles' prints it): fill in its connection string as the repository's, then take the # off the line. Without it a
+# report on the store is refused and the page says why (serve's own login reads the UI's password hashes).
+# reports_dsn: @RDSN@
 
 # A collection's default interval for every instance; an instance's own schedules: override it.
 schedules:
@@ -478,7 +483,14 @@ instances: []
 #    dsn: env:PROD_WRITER_DSN
 #    platform: auto                   # auto | onprem | rds | aurora | azure | cloudsql | alloydb
 #    tags: [prod]
-`, "@DSN@", repositoryDSN)
+`, "@DSN@", repositoryDSN), "@RDSN@", reportsDSNFor(repositoryDSN))
+}
+
+// reportsDSNFor is the reports_dsn line's value beside the repository's: env:PGVIGIL_REPORTS_DSN beside
+// env:PGVIGIL_REPO_DSN (Linux: the env file), a reports.dsn file beside repo.dsn (Windows).
+func reportsDSNFor(repositoryDSN string) string {
+	r := strings.Replace(repositoryDSN, "PGVIGIL_REPO_DSN", "PGVIGIL_REPORTS_DSN", 1)
+	return strings.Replace(r, "repo.dsn", "reports.dsn", 1)
 }
 
 // --- install -upgrade

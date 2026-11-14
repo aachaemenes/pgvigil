@@ -25,6 +25,11 @@ CREATE ROLE %[1]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_collector;
 -- through pgvigil_auth the password check of the UI login (ui_password_hash); the ui_users table itself
 -- stays the owner's. Grafana, a script or an MCP server takes a login IN ROLE pgvigil_reader alone.
 CREATE ROLE %[2]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth;
+-- the custom reports' login on the store (the configuration's reports_dsn): IN ROLE pgvigil_reader alone and nothing
+-- else - a custom report runs the DBA's own SQL, and the UI's login above reads the UI's password hashes; without it a
+-- report on the store is refused and the page says why. Name its dsn in reports_dsn (env:NAME or file:/path), as
+-- the repository's.
+CREATE ROLE pgvigil_reports LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
 -- optional: the alert sender's login (the configuration's alerts_dsn; only where an alerts: list names channels):
 -- it reads the findings (pgvigil_reader) and writes the alert tables; the collector's login cannot read the findings.
 -- CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;
