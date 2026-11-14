@@ -17,7 +17,8 @@
 #           is run again. An instance named in before.json is never touched.
 #   status  read only: each lab instance's services, version and port, the mirroring rows of both partners, the
 #           witness's row, the firewall rule; the last line is the VERDICT (exit 1 when it is not UP).
-#   down    the undo; needs before.json. Uninstalls ONLY the lab's three instance names, and only when before.json
+#   down    the undo; needs before.json. Ends the mirroring session of the lab's database first (SET PARTNER OFF on
+#           a running lab instance that holds it). Uninstalls ONLY the lab's three instance names, and only when before.json
 #           does not list them; removes the firewall rule by its name only when before.json does not list it; removes
 #           each instance's leftover folder by its own instance id; dismounts only an ISO before.json saw unattached;
 #           reads every name of before.json back (present, the same start type, Running where it was Running) and
@@ -689,6 +690,18 @@ function Invoke-Down {
     $failures = New-Object System.Collections.Generic.List[string]
     # a before.json written before the task field existed: the task was not there (its name is the lab's own)
     $taskBefore = ($before.PSObject.Properties.Name -contains 'SetupTaskPresent') -and [bool]$before.SetupTaskPresent
+    # the mirroring session ends before any uninstall: a principal stopped with its session live (mirror and witness
+    # up) can hang in its shutdown (its endpoint closes first, the partners fail over) until setup's stop times out
+    # (0x851A0018, the service left StopPending). SET PARTNER OFF from either partner ends the session on both and on
+    # the witness; one instance's failure here is said and the uninstall goes on.
+    foreach ($inst in $labInstances) {
+        if ((Test-InBefore $before 'Instances' $inst.Name) -or -not $installed.ContainsKey($inst.Name)) { continue }
+        if ((Get-Service -Name "MSSQL`$$($inst.Name)" -ErrorAction SilentlyContinue).Status -ne 'Running') { continue }
+        try {
+            $ended = (Invoke-LabSql $inst "IF EXISTS (SELECT 1 FROM sys.database_mirroring WHERE database_id = DB_ID(N'$labDatabase') AND mirroring_guid IS NOT NULL) BEGIN ALTER DATABASE [$labDatabase] SET PARTNER OFF; SELECT CAST(1 AS int) AS v; END ELSE SELECT CAST(0 AS int) AS v;")[0].v
+            if ($ended -eq 1) { Say "mirroring $($inst.Name): the session of $labDatabase ended (SET PARTNER OFF)" }
+        } catch { Say "mirroring $($inst.Name): the session could not be ended ($($_.Exception.Message)); the uninstall goes on" }
+    }
     foreach ($inst in $labInstances) {
         if (Test-InBefore $before 'Instances' $inst.Name) { Say "uninstall $($inst.Name): listed in before.json, NOT touched"; continue }
         if (-not $installed.ContainsKey($inst.Name)) { Say "uninstall $($inst.Name): not installed"; continue }
