@@ -119,13 +119,17 @@ if [ -z "${PROOF_SKIP_S3:-}" ]; then
   mkdir -p "$WORK/certs"
   if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/certs/private.key" -out "$WORK/certs/public.crt" -days 2 -subj "/CN=pgvbk-s3" \
        -addext "subjectAltName=DNS:pgvbk-s3" >/dev/null 2>&1 && chmod 644 "$WORK/certs/private.key" \
+     && S3IMG=$(for i in quay.io/minio/minio:latest minio/minio:RELEASE.2025-04-22T22-12-26Z bitnami/minio:latest; do docker pull -q "$i" >/dev/null 2>&1 && { echo "$i"; break; }; done) && [ -n "$S3IMG" ] \
      && docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -e MINIO_ROOT_USER=pgvbk -e MINIO_ROOT_PASSWORD="$S3PW" \
-          -v "$WORK/certs:/root/.minio/certs:ro" minio/minio:latest server /data >/dev/null \
+          -v "$WORK/certs:/root/.minio/certs:ro" --entrypoint minio "$S3IMG" server /data >/dev/null \
      && docker cp "$WORK/certs/public.crt" "$SQL:/tmp/pgvbk-s3.crt" \
      && docker exec -u root "$SQL" bash -c 'cp /tmp/pgvbk-s3.crt /usr/local/share/ca-certificates/pgvbk-s3.crt && update-ca-certificates >/dev/null' \
      && docker restart "$SQL" >/dev/null && up "$SQL"; then
     sleep 3
-    if docker run --rm --network "$NET" -e MC_HOST_s3="https://pgvbk:$S3PW@pgvbk-s3:9000" minio/mc:latest --insecure mb s3/pgvbk >/dev/null 2>&1; then S3OK=1; fi
+    for m in quay.io/minio/mc:latest minio/mc:latest; do
+      docker run --rm --network "$NET" -e MC_HOST_s3="https://pgvbk:$S3PW@pgvbk-s3:9000" "$m" --insecure mb s3/pgvbk >/dev/null 2>&1 && { S3OK=1; break; }
+    done
+    echo "  the S3 stand-in: $S3IMG, bucket $([ -n "$S3OK" ] && echo made || echo 'not made')"
   fi
   [ -n "$S3OK" ] || echo "  the S3 stand-in did not stand up: L3b will say NOT PROVEN"
 fi
@@ -193,6 +197,8 @@ collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&
 read2() { collect mssql_backups pgvbk-m && collect mssql_backup_files pgvbk-m || fail "$1: the read failed: $(cat "$OUT")"; grep -q "skipped\|partial" "$OUT" && fail "$1: the read is skipped or partial: $(cat "$OUT")"; return 0; }
 I=; iid() { [ -n "$I" ] || I=$(q "select instance_id from pgvigil.instances where name='pgvbk-m'"); echo "$I"; }
 S() { q "select $1 from pgvigil.mssql_backup_sets where instance_id=$(iid) and database_name='$2' and backup_type='$3' and is_copy_only=${4:-false}"; }
+# SF 'a;b;c' db type [copy]: the fields joined by '|', a NULL written NULL
+SF() { local e; e=$(printf '%s' "$1" | tr ';' '\n' | sed "s/.*/coalesce((&)::text, 'NULL')/" | paste -sd, -); S "concat_ws('|', $e)" "$2" "$3" "${4:-false}"; }
 L() { q "select $1 from pgvigil.mssql_backup_locations where instance_id=$(iid) and database_name='$2' and backup_type='$3' and is_copy_only=${4:-false}"; }
 setid() { sq "SELECT MAX(backup_set_id) FROM msdb.dbo.backupset WHERE database_name = N'$1' AND type = '$2'"; }
 # one statement as the backup operator login (its password by name from the environment)
@@ -205,7 +211,7 @@ ID=$(setid pgvbka D)
 WANT=$(sq "SELECT STRING_AGG(CAST(f.family_sequence_number AS varchar(3)) + ':' + CAST(f.mirror AS varchar(3)) + ':' + f.physical_device_name, ',') WITHIN GROUP (ORDER BY f.family_sequence_number) FROM msdb.dbo.backupmediafamily f JOIN msdb.dbo.backupset b ON b.media_set_id = f.media_set_id WHERE b.backup_set_id = $ID")
 GOT=$(q "select string_agg(family || ':' || mirror || ':' || path, ',' order by family) from pgvigil.mssql_backup_files where instance_id=$(iid) and database_name='pgvbka' and backup_type='full' and not is_copy_only")
 [ "$GOT" = "$WANT" ] || fail "L1 files: $GOT, want $WANT"
-G=$(S "backup_set_id || '|' || user_name || '|' || set_name || '|' || description || '|' || has_checksums || '|' || (compressed_bytes < size_bytes) || '|' || key_algorithm || '|' || folder || '|' || family_count" pgvbka full)
+G=$(SF "backup_set_id;user_name;set_name;description;has_checksums;compressed_bytes < size_bytes;key_algorithm;folder;family_count" pgvbka full)
 [ "$G" = "$ID|sa|pgvbk stripe|four stripes|true|true|NO_Encryption|/backups/a/|4" ] || fail "L1 set: $G"
 ok "L1: 4 files equal to msdb ($GOT); $G"
 
@@ -213,7 +219,7 @@ echo "== L2 a mirrored full"
 sq "BACKUP DATABASE pgvbka TO DISK = N'/backups/m/m1a.bak', DISK = N'/backups/m/m1b.bak' MIRROR TO DISK = N'/backups2/m/m2a.bak', DISK = N'/backups2/m/m2b.bak' WITH FORMAT;" >/dev/null
 read2 L2
 G=$(q "select count(*) || '|' || string_agg(distinct mirror::text, ',') from pgvigil.mssql_backup_files where instance_id=$(iid) and database_name='pgvbka' and backup_type='full' and not is_copy_only")
-R=$(S "mirror_count || '|' || array_to_string(roots, ',')" pgvbka full)
+R=$(SF "mirror_count;array_to_string(roots, ',')" pgvbka full)
 TO=$(q "select full_to from pgvigil.mssql_backup_loc_db where instance_id=$(iid) and database_name='pgvbka'")
 [ "$G|$R|$TO" = "4|0,1|2|/backups/m,/backups2/m|/backups/m/, 2 files, mirrored" ] || fail "L2: $G|$R|$TO"
 ok "L2: $G files and mirrors; mirror_count and roots $R; to '$TO'"
@@ -225,7 +231,7 @@ CREATE CERTIFICATE pgvbk_cert WITH SUBJECT = N'pgvbk proof';
 SQL
 sq "BACKUP DATABASE pgvbka TO DISK = N'/backups/a/enc.bak' WITH FORMAT, ENCRYPTION (ALGORITHM = AES_256, SERVER CERTIFICATE = pgvbk_cert);" >/dev/null 2>&1
 read2 L6
-G=$(S "key_algorithm || '|' || encryptor_type" pgvbka full)
+G=$(SF "key_algorithm;encryptor_type" pgvbka full)
 [ "$G" = "aes_256|CERTIFICATE" ] || fail "L6: $G (msdb: $(sq "SELECT TOP 1 key_algorithm + '|' + encryptor_type FROM msdb.dbo.backupset WHERE database_name = N'pgvbka' ORDER BY backup_set_id DESC"))"
 ok "L6: $G"
 
@@ -388,7 +394,7 @@ ok "L17: the cursor $C = msdb's newest; the read after one more log re-stored $G
 sq "EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '9999-12-31'; DBCC CHECKIDENT ('msdb.dbo.backupset', RESEED, 0) WITH NO_INFOMSGS;" >/dev/null
 sq "BACKUP DATABASE pgvbkr TO DISK = N'/backups/r4.bak' WITH FORMAT;" >/dev/null
 NEWID=$(setid pgvbkr D); read2 L17c
-G=$(S "backup_set_id || '|' || folder" pgvbkr full)
+G=$(SF "backup_set_id;folder" pgvbkr full)
 [ "$G" = "$NEWID|/backups/" ] && [ "$NEWID" -lt "${C%%|*}" ] || fail "L17 msdb replaced: stored $G, the new full is $NEWID (the old cursor ${C%%|*})"
 ok "L17: msdb's history deleted and its numbering restarted: the full numbered $NEWID (below the cursor ${C%%|*}) is stored"
 
