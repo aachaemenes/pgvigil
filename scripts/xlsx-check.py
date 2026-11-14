@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """xlsx-check.py - the grid export's file rules, read from the .xlsx as a zip of XML (no package).
 
-  python3 -I scripts/xlsx-check.py rules FILE.xlsx [FILE.xlsx ...]
-      X0-X12 on each workbook: one 'PASS Xn <file>' or 'FAIL Xn <file>: <count> - <first problems>' line per rule, then
-      '<file>: PASS' or '<file>: FAIL Xa,Xb'. Exit 1 when any rule fails.
+  python3 -I scripts/xlsx-check.py rules [--page PAGE.json] FILE.xlsx [FILE.xlsx ...]
+      X0-X13 on each workbook: one 'PASS Xn <file>' or 'FAIL Xn <file>: <count> - <first problems>' line per rule, then
+      '<file>: PASS' or '<file>: FAIL Xa,Xb'. Exit 1 when any rule fails. X13 needs the page: PAGE.json maps a file's
+      name to {sheet: {column header: the most decimals the page shows in that column}}; a file it does not name (or no
+      --page) gets 'SKIP X13 <file>: ...' and no verdict on X13.
   python3 -I scripts/xlsx-check.py same REFERENCE.xlsx FILE.xlsx
       the reference (DBA Dash's file of a grid) against pgvigil's file of the same grid: one 'SAME <property>' or
       'DIFF <property>: <reference> | <file>' line per property; the sheets paired by name (then by order) on 'PAIR' lines,
@@ -29,8 +31,9 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
       the workbook (names ignoring case), a name of at most 255 letters (any script), digits, '_' and '.' that starts with a
       letter, '_' or '\\' and is not a cell reference (A1 .. XFD1048576, R1C1); no merged range over a table
   X6  no pane on any sheet
-  X7  each cell's number format is General (id 0 or an empty code), '0', '0.0%', '0.00%', 'yyyy-MM-dd HH:mm' or, for a
-      day alone (a chart's per-day column), 'yyyy-MM-dd'
+  X7  each cell's number format is General (id 0 or an empty code), '0', a fixed count of decimals '0.0' .. '0.000000' (a
+      column's decimals as its page shows them), '0%', '0.0%', '0.00%', 'yyyy-MM-dd HH:mm' or, for a day alone (a chart's
+      per-day column), 'yyyy-MM-dd'; no unit, text or grouping inside a format
   X8  no text cell whose whole value reads as a date-time or a day, ISO or a page's locale form ('10/3/2026, 21:05:00',
       '13/11/2026 21:05:35', '13.11.2026, 21:05:35', '13. 11. 2026 21:05:35', '2026. 11. 13. 21:05:35', 12-hour; a day
       '2026-11-11', '13-11-2026', '2026/11/13'): a date is a number under its format; a column's empty value may be text; a
@@ -42,6 +45,14 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X11 no hyperlink to a place inside the application ('#/') or a jump inside the workbook; no underlined cell without an
       external hyperlink
   X12 no drawing, chart or picture part
+  X13 (with the page's decimals) no number cell of a grid sheet shows more decimals than its column shows on the page: a
+      fixed format shows its own ('0.0' one, '0%' none, '0.00%' two of the percent); General shows the stored digits as
+      Excel draws them in 11 characters (1.6328125 seven, 0.01605224609375 as 0.016052246 nine, 1.25E-05 seven); a date
+      or day format is no figure. A cell under a fixed number format ('0', '0.0' ..: one per column) shows no FEWER
+      decimals than its column on the page either; General and a percent (typed per cell) are held to the upper bound
+      alone. A sheet or a column the page names that the file lacks fails. DBA Dash stores a value
+      rounded to what its grid shows (1.6 under General), pgvigil keeps the value exact under the page's decimals
+      ('0.0': the cell reads 1.6, the formula bar 1.6328125) - both pass; a file alone cannot say what its page showed
 Not checkable from a file (proof-export.sh holds them): the page order of a page's sheets, a grid's own export holding
 that grid alone, a chart's series as its sheet, a number being the one the grid shows.
 """
@@ -62,7 +73,9 @@ BUILTIN = {0: 'General', 1: '0', 2: '0.00', 3: '#,##0', 4: '#,##0.00', 9: '0%', 
            22: 'm/d/yy h:mm', 45: 'mm:ss', 46: '[h]:mm:ss', 47: 'mmss.0', 49: '@'}
 DATE_FMT = 'yyyy-MM-dd HH:mm'
 DAY_FMT = 'yyyy-MM-dd'
-FORMATS_OK = {'General', '', '0', '0.0%', '0.00%', DATE_FMT, DAY_FMT}
+FORMATS_OK = {'General', '', '0', '0%', '0.0%', '0.00%', DATE_FMT, DAY_FMT}
+FIXED = re.compile(r'0(?:\.(0{1,6}))?')        # (X7, X13) a fixed count of decimals, no grouping, no unit
+PERCENT = re.compile(r'0(?:\.(0{1,2}))?%')
 HEAD = ('FF0063A3', 'FFFFFFFF')
 # the named pairs: fill -> the text colours allowed on it
 PAIRS = {
@@ -78,7 +91,7 @@ PAIRS = {
 # a plain cell: no fill, the default text (no colour of its own, Excel's automatic black, theme 1 = Text 1, index 8 / 64)
 PLAIN_TEXT = {None, 'FF000000', 'auto', 'theme:1', 'indexed:8', 'indexed:64'}
 MAX_WIDTH = 150 + 5 / 7 + 1e-6   # 150 characters and Excel's 5 px of padding: DBA Dash's capped column is stored 150.71
-RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12']
+RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12', 'X13']
 # a whole cell that reads as one date-time or one day (a message that starts with a time, or a range of two, is words)
 SEP_ = r'(?:[/-]|\.\s?)'   # a day's separator: '/', '-', '.' or '. ' (cs-CZ, hu-HU, hr-HR)
 DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?'   # ISO
@@ -300,16 +313,16 @@ def shown_number(v, fmt):
         x = float(v)
     except (TypeError, ValueError):
         return str(v)
-    if fmt == '0.0%':
-        return '%.1f%%' % (x * 100)
-    if fmt == '0.00%':
-        return '%.2f%%' % (x * 100)
+    pm = PERCENT.fullmatch(fmt or '')
+    if pm:
+        return '%.*f%%' % (len(pm.group(1) or ''), x * 100)
     if fmt == DATE_FMT:
         return '0000-00-00 00:00'
     if fmt == DAY_FMT:
         return '0000-00-00'
-    if fmt == '0':
-        return '%d' % round(x)
+    fm = FIXED.fullmatch(fmt or '')
+    if fm:
+        return '%.*f' % (len(fm.group(1) or ''), x)
     if x == int(x) and abs(x) < 1e11:
         return '%d' % x
     for p in range(10, 0, -1):   # General: at most 11 characters
@@ -317,6 +330,19 @@ def shown_number(v, fmt):
         if len(t) <= 11:
             return t
     return '%.5E' % x
+
+
+def shown_decimals(v, fmt):
+    """(X13) how many decimals Excel draws for a number under its format; None for a date, a day or a format X7 refuses"""
+    m = FIXED.fullmatch(fmt or '') or PERCENT.fullmatch(fmt or '')
+    if m:
+        return len(m.group(1) or '')
+    if fmt not in ('General', ''):
+        return None
+    t = shown_number(v, 'General')
+    mant, _, exp = t.upper().partition('E')
+    k = len(mant.split('.')[1]) if '.' in mant else 0
+    return max(0, k - int(exp)) if exp else k   # 1.25E-05 is 0.0000125: seven decimals
 
 
 def floor_units(t):
@@ -352,7 +378,8 @@ def overlap(r1, r2):
     return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
 
 
-def check(book):
+def check(book, page=None):
+    """the rules' problems on one workbook; page: {sheet: {column header: decimals}} for X13 (None: X13 not judged)"""
     out = {r: [] for r in RULES}
     grids = [s for s in book.sheets if s['grid']]
     # X1
@@ -490,7 +517,7 @@ def check(book):
             if c['row'] == 1 or c['v'] is None:
                 continue
             fmt = c['xf']['fmt']
-            if fmt not in FORMATS_OK and c['xf']['fmt_id'] != 0:
+            if fmt not in FORMATS_OK and not FIXED.fullmatch(fmt or '') and c['xf']['fmt_id'] != 0:
                 out['X7'].append("'%s'!%s format %s" % (nm, c['ref'], fmt))
             text_cell = c['t'] in ('s', 'inlineStr', 'str')
             if text_cell and DATE_TEXT.match(c['v'] or ''):
@@ -511,6 +538,38 @@ def check(book):
                 out['X10'].append("'%s' column %s width %.2f over 150" % (nm, col_letters(j), w))
             if j in widest and w + 1e-9 < widest[j]:
                 out['X10'].append("'%s' column %s width %.2f under its widest number (%.1f)" % (nm, col_letters(j), w, widest[j]))
+    # X13 the decimals the page shows, per column
+    book.judged = None
+    if page is not None:
+        book.judged = [0, 0, 0]   # number cells judged, columns judged, of them columns whose page shows decimals
+        by_name = {s['name']: s for s in grids}
+        for sn, cols in page.items():
+            s = by_name.get(sn)
+            if s is None:
+                out['X13'].append("the page names sheet '%s', not a grid sheet of the file" % sn)
+                continue
+            hdr = {c['col']: str(c['v'] if c['v'] is not None else '') for c in s['cells'] if c['row'] == 1}
+            seen = {}   # the columns a number cell was judged in, and their page decimals
+            for h in cols:
+                if h not in hdr.values():
+                    out['X13'].append("the page names column '%s', not on '%s'" % (h, sn))
+            for c in s['cells']:
+                h = hdr.get(c['col'])
+                if c['row'] == 1 or c['t'] != 'n' or c['v'] in (None, '') or h not in cols:
+                    continue
+                k = shown_decimals(c['v'], c['xf']['fmt'])
+                if k is None:
+                    continue
+                book.judged[0] += 1
+                seen.setdefault(h, cols[h])
+                if k > cols[h]:
+                    out['X13'].append("'%s'!%s '%s' shows %d decimals (%s under %s), the page %d"
+                                      % (sn, c['ref'], h, k, c['v'], c['xf']['fmt'] or 'General', cols[h]))
+                elif k < cols[h] and FIXED.fullmatch(c['xf']['fmt'] or ''):
+                    out['X13'].append("'%s'!%s '%s' shows %d decimals under %s, fewer than the page's %d"
+                                      % (sn, c['ref'], h, k, c['xf']['fmt'], cols[h]))
+            book.judged[1] += len(seen)
+            book.judged[2] += sum(1 for k in seen.values() if k >= 1)
     for n in book.filter_names:
         out['X5'].append('defined name %s' % n)
     # X5 across the workbook: table ids and names unique (names ignoring case), a name Excel accepts
@@ -532,11 +591,13 @@ def check(book):
     return out
 
 
-def rules(paths):
+def rules(paths, pages=None):
     bad = 0
     for p in paths:
+        page = (pages or {}).get(posixpath.basename(p))
         try:
-            res = check(Book(p))
+            book = Book(p)
+            res = check(book, page)
         except Exception as e:   # a file the check cannot read fails every rule
             for r in RULES:
                 print('FAIL %s %s: unreadable (%s: %s)' % (r, p, type(e).__name__, e))
@@ -546,6 +607,12 @@ def rules(paths):
         failed = []
         for r in RULES:
             probs = res[r]
+            if r == 'X13' and page is None:
+                print('SKIP X13 %s: no page given (the decimals its page shows are not in the file)' % p)
+                continue
+            if r == 'X13' and not probs:
+                print('PASS X13 %s: %d number cells in %d columns judged, %d with decimals' % (p, book.judged[0], book.judged[1], book.judged[2]))
+                continue
             if probs:
                 failed.append(r)
                 print('FAIL %s %s: %d - %s' % (r, p, len(probs), '; '.join(probs[:3])))
@@ -662,7 +729,17 @@ def same(ref_path, file_path):
 
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == 'rules':
-        return rules(sys.argv[2:])
+        args, pages = sys.argv[2:], None
+        if '--page' in args:
+            i = args.index('--page')
+            if i + 1 >= len(args):
+                print('--page needs a file', file=sys.stderr)
+                return 2
+            import json
+            with open(args[i + 1], encoding='utf-8') as f:
+                pages = json.load(f)
+            args = args[:i] + args[i + 2:]
+        return rules(args, pages) if args else 2
     if len(sys.argv) == 4 and sys.argv[1] == 'same':
         return same(sys.argv[2], sys.argv[3])
     print(__doc__.split('\n\n')[0], file=sys.stderr)

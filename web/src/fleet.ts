@@ -319,3 +319,36 @@ export function tagsOf(r: Row): string[] {
   const t = r.tags;
   return Array.isArray(t) && t.length ? t.map(String) : [];
 }
+
+// inTagScope: an instance in a tag scope (?tag=, the tree's tag folders): 'untagged' = no tag at all; '<key>:' with no
+// value = no value of that key (the tree's '(no <key>)' folder, DBA Dash's '[N/A]' folder of its grouping tag,
+// Instances_Get.sql L25); any other = the written tag itself (a plain word is key 'tag', tree.ts parseTag's rule)
+export function inTagScope(tag: string, r: Row): boolean {
+  const ts = tagsOf(r);
+  if (tag === 'untagged') return ts.length === 0;
+  const i = tag.indexOf(':');
+  if (i > 0 && i === tag.length - 1) {
+    const key = tag.slice(0, i).trim().toLowerCase();
+    return !ts.some(t => { const j = t.indexOf(':'); return (j > 0 ? t.slice(0, j).trim().toLowerCase() : 'tag') === key; });
+  }
+  return ts.includes(tag);
+}
+
+// tagWords: a tag scope in words for a heading, a breadcrumb or an 'in view' line, as the tree names its folder - a
+// written tag 'tag env:prod'; '<key>:' (no value of the key, inTagScope) '(no env)'; 'untagged' (no tag at all) 'the
+// untagged instances'
+export function tagWords(tag: string): string {
+  if (tag === 'untagged') return 'the untagged instances';
+  const i = tag.indexOf(':');
+  if (i > 0 && i === tag.length - 1) return `(no ${tag.slice(0, i).trim().toLowerCase()})`;
+  return `tag ${tag}`;
+}
+
+// tagScopeIds: the instance ids of a fleet page's tag scope (null with no tag, or on an instance's page); a fleet read
+// that fails throws in words, so a page shows the error rather than the whole fleet's rows under the tag's heading
+export async function tagScopeIds(ctx: { tag?: string; instance?: number }): Promise<Set<number> | null> {
+  const tag = ctx.tag;
+  if (!tag || ctx.instance) return null;
+  const f = await fleet().catch((e: unknown) => { throw new Error(`the instances of ${tagWords(tag)} could not be read: ${e instanceof Error ? e.message : String(e)}`); });
+  return new Set(f.instances.filter(r => inTagScope(tag, r)).map(r => Number(r.instance_id)));
+}

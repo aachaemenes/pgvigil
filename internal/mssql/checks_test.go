@@ -506,6 +506,25 @@ func TestAgentAlertsManagedInstance(t *testing.T) {
 	}
 }
 
+// TestAgentAlertsRDS: AWS's 'Using SQL Server Agent for Amazon RDS': "SQL Server Agent alerts and operators aren't
+// supported." (Web, Standard and Enterprise have the Agent; Express has none and is its own case), so on RDS the
+// area is a row with that reason, no finding asks for an alert or an operator, and nothing is read (the nil
+// connection: a query would panic).
+func TestAgentAlertsRDS(t *testing.T) {
+	for _, ee := range []int{2, 3} {
+		c := &checksRun{}
+		runAgentAlerts(t.Context(), nil, Info{Kind: KindRDS, EngineEdition: ee, MsdbAccess: true}, c)
+		if len(c.rows) != 1 {
+			t.Fatalf("RDS edition %d: %d rows, want the one area row: %v", ee, len(c.rows), c.rows)
+		}
+		r := c.rows[0]
+		note, _ := r["note"].(string)
+		if r["kind"] != "area" || r["area"] != AreaAlerts || r["read"] != b2i(false) || !strings.Contains(note, "Amazon RDS for SQL Server does not support SQL Server Agent alerts and operators") {
+			t.Errorf("RDS edition %d: %v", ee, r)
+		}
+	}
+}
+
 func TestAgentAlertFindings(t *testing.T) {
 	names := func(fs []checkFinding) string {
 		var s []string

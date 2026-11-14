@@ -200,7 +200,8 @@ function fleetGrid(ctx: Ctx, d: DBADashData, rows: Row[], checks: Row[]): HTMLEl
 export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
   const repo = hashParam('dr'), id = hashParam('di');
   if (repo && id) return repoInstanceView(ctx, repo, Number(id));
-  const d = await dbadashData(true);
+  // one repository's page reads its own parts: the column headers follow that repository's DBA Dash version (0138)
+  const d = repo ? await get<DBADashData>('dbadash', { repo }) : await dbadashData(true);
   const repos = rowsOf(d.repositories).filter(r => !repo || r.repository === repo);
   const rows = rowsOf(d.fleet).filter(r => !repo || r.repository === repo)
     .sort((a, b) => Number(b.level ?? 0) - Number(a.level ?? 0) || String(a.display_name).localeCompare(String(b.display_name)));
