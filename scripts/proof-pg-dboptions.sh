@@ -576,14 +576,23 @@ JS
   echo "  (PostgreSQL $V runs $(s "$V" "select version()" | cut -d' ' -f1-2))"
   INVERR=$(psql "${SU[$V]} dbname=dbo_inv" -XAtqc "select 1" 2>&1) && fail "D: the server let a session into dbo_inv (datconnlimit -2): an older minor, the row proves nothing"
   [[ "$INVERR" == *"invalid database"* ]] || fail "D: dbo_inv refused with other words: $INVERR"
+  # D-INV xid (11-14 review 20261114-095000's follow-up): autovacuum and the clog truncation skip an invalid database, so
+  # its frozen-xid age only grows and is no risk; neither the 'database xid age' finding nor the xid cell may judge it.
+  # datfrozenxid = '2' (FrozenTransactionId) makes age() read 2147483647 at once (a fresh server has used too few xids)
+  s "$V" "update pg_database set datfrozenxid = '2'::xid where datname = 'dbo_inv'" >/dev/null
+  [[ $(s "$V" "select age(datfrozenxid) from pg_database where datname = 'dbo_inv'") == 2147483647 ]] || fail "D: dbo_inv's age(datfrozenxid) is not 2147483647"
   collect "$V" databases tables roles
+  IX=$(q "select count(*) || ' ' || coalesce(max(severity), '-') from pgvigil.findings where instance_id = $ID and setting = 'database xid age' and value like 'dbo_inv:%'")
+  IXC=$(dbcell "$V" dbo_inv xid); IXN=$(q "select xid_note from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_inv'")
+  [[ "$IX" == "0 -" && "$IXC" == "none -" && "$IXN" == *"not judged"* ]] \
+    || fail "D: dbo_inv (invalid, xid age 2147483647) judged on its xid age: finding '$IX', cell '$IXC' '$IXN' (want 0 -, none -, 'not judged')"
   IV=$(dbcell "$V" dbo_inv conn); IN=$(q "select conn_note from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_inv'")
   [[ "$IV" == "crit critical" && "$IN" == invalid:* ]] || fail "D: dbo_inv invalid reads '$IV' '$IN'"
   [[ "$(dbfind "$V" 'database connection limit' dbo_inv)" == "1 critical" ]] || fail "D: dbo_inv's finding reads '$(dbfind "$V" 'database connection limit' dbo_inv)' (want 1 critical)"
   s "$V" "drop database dbo_inv" >/dev/null; collect "$V" databases
   [[ "$(dbfind "$V" 'database connection limit' dbo_inv)" == "0 -" && -z "$(q "select 1 from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_inv'")" ]] \
     || fail "D: after the DROP dbo_inv still has its row or finding ('$(dbfind "$V" 'database connection limit' dbo_inv)')"
-  ok "D: dbo_inv invalid (datconnlimit -2, refused by the server itself): red 'invalid: ...' with its critical finding; tables and roles ended ok without it; dropped: row and finding gone"
+  ok "D: dbo_inv invalid (datconnlimit -2, refused by the server itself): red 'invalid: ...' with its critical finding; tables and roles ended ok without it; its xid age 2147483647 not judged (no 'database xid age' finding, the cell grey 'not judged'); dropped: row and finding gone"
   [[ "$(dbcell "$V" dbo_l encoding) $(dbfind "$V" 'database encoding' dbo_l)" == "warn info 1 info" ]] || fail "D: dbo_l LATIN1 reads '$(dbcell "$V" dbo_l encoding)'"
   [[ "$(dbcell "$V" dbo_l collation)" == "none -" ]] || fail "D: dbo_l's collation (C) reads '$(dbcell "$V" dbo_l collation)'"
   [[ "$(dbcell "$V" template0 encoding)" == "none -" ]] || fail "D: template0's encoding reads '$(dbcell "$V" template0 encoding)'"
