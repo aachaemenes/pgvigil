@@ -55,8 +55,23 @@
 #        primary's replay_lag 30 s or more (the default 30 s tier alone would warn) [red ok] and no 'standby lag' [red
 #        ok]; the delay removed after
 #   L6   a physical slot hadr_spare and synchronous_standby_names 'FIRST 1 (hadrs1, hadr_absent)', one read of hadr-p:
-#        link rows slot:hadr_spare 'missing: physical slot inactive' and app:hadr_absent 'missing: named in
-#        synchronous_standby_names', no finding on either; hadrs1's link sync_state sync [red FAIL x3: no view]; undone
+#        link rows slot:hadr_spare 'missing: physical slot inactive' (no finding) and app:hadr_absent 'missing: named in
+#        synchronous_standby_names'; hadrs1's link sync_state sync [red FAIL x3: no view]
+#   S3   task 372, in L6: app:hadr_absent's row carries 'synchronous standby absent' warning on hadr-p (num_sync 1 holds:
+#        hadrs1 is sync) and no 'synchronous commits waiting' [red FAIL: no view]; L6 and S3 undone after
+# Task 372 (written before its first run, 2026-11-14 10:4x PST):
+#   P    pg_sync_standbys: '2 (a, b)' FIRST 2 {a,b}; 'a, b' FIRST 1 {a,b}; 'ANY 1 (*)' 'ANY *' 1 no names;
+#        '"Quoted", b' FIRST 1 {Quoted,b}; 'first 3 (x)' FIRST 3 {x}; '*' 'FIRST *' 1; '' nothing [red FAIL: no function]
+#   S1   synchronous_standby_names 'FIRST 1 (hadrs1)', hadrs1 sync, one read of hadr-p: no 'synchronous commits waiting'
+#        [red ok]
+#   S2   the receiver held down: an insert on the primary waits (a session in wait_event SyncRep, watched), one read of
+#        hadr-p: 'synchronous commits waiting' critical, its detail naming hadrs1 not connected and that every commit
+#        waits [red FAIL x2]; S2X the hold lifted: the waiting insert completes, one read: gone [red ok]
+#   S4   'ANY 2 (hadrs1, hadr_absent)': hadrs1 in quorum, one short of 2 - an insert waits, one read: 'synchronous
+#        commits waiting' critical naming hadr_absent [red FAIL]; the setting reset releases the insert
+#   S6   'ANY 2 (hadrs1, hadr_absent)' with synchronous_commit local at the server: an insert completes within 10 s, one
+#        read: 'synchronous commits waiting' WARNING (commits at the default do not wait) [red FAIL x2]
+#   S5   'ANY 1 (*)': hadrs1 in quorum, one read: no 'synchronous commits waiting' [red ok]; everything reset after
 #   R3   the standby stopped, hadr-p and hadr-s read once (hadr-s's connect fails): nothing yet [red ok]
 #   G2   hadr-p read with 'platform: rds' in its config: no 'standby gone' on a managed platform [red ok]
 #   R3   the plain config, one read of hadr-p: 'standby gone' critical naming hadrs1 in pgvigil.findings and
@@ -72,7 +87,7 @@
 # Not proven here: a promotion (the role-change drop of a server's links), a failed 'standby' or 'senders' read leaving
 # the state as it was, a receiver that connects and then fails (the hysteresis is in the import, its row R2X's).
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
-# L6 R3 R3X L4; L7 rides with R2W, NS with G, G2 and L5 with R3); unset = all.
+# L6 P S1 S2 S4 S6 S5 R3 R3X L4; L7 rides with R2W, NS with G, S3 with L6, G2 and L5 with R3); unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -85,8 +100,9 @@ PW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 MPW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 RP=$(fp); PP=$(fp); SP=$(fp)
 NET=pgvhadr-$$; REPO=pgvhadr-repo-$$; PRI=pgvhadr-p-$$; STB=pgvhadr-s-$$; BB=pgvhadr-bb-$$; ARC=pgvhadr-arc-$$
-FEED=""; R2W_VALUE=""; HOLD=""; DFEED=""
+FEED=""; R2W_VALUE=""; HOLD=""; DFEED=""; SYNCW=""
 cleanup() {
+  [[ -n "$SYNCW" ]] && kill "$SYNCW" 2>/dev/null || true
   [[ -n "$FEED" ]] && kill "$FEED" 2>/dev/null || true
   [[ -n "$HOLD" ]] && kill "$HOLD" 2>/dev/null || true
   [[ -n "$DFEED" ]] && kill "$DFEED" 2>/dev/null || true
@@ -405,12 +421,79 @@ if want L6; then
   read_ hadr-p 1
   r=$(link 'slot:hadr_spare'); r2=$(link 'app:hadr_absent')
   [[ "$r" == "missing: physical slot inactive|||"*"|slot" ]] && ok "L6 slot:hadr_spare: $r" || fail "L6 slot:hadr_spare: '$r'"
-  [[ "$r2" == "missing: named in synchronous_standby_names|||"*"|sync names" ]] && ok "L6 app:hadr_absent: $r2" || fail "L6 app:hadr_absent: '$r2'"
+  [[ "$r2" == "missing: named in synchronous_standby_names|"*"|sync names" ]] && ok "L6 app:hadr_absent: $r2" || fail "L6 app:hadr_absent: '$r2'"
+  [[ "$r2" == *"|synchronous standby absent|warning|$PID_|"* ]] && ok "S3 'synchronous standby absent' warning on hadr-p" || fail "S3 app:hadr_absent's finding: '$r2'"
+  r=$(finding "$PID_" 'synchronous commits waiting')
+  [[ -z "$r" ]] && ok "S3 no 'synchronous commits waiting' (num_sync 1 holds)" || fail "S3 'synchronous commits waiting' raised: '$r'"
   r=$(q "select coalesce(sync_state, '') from pgvigil.pg_repl_link_health where link like 'app:hadrs1@%' and gone_reads = 0")
   [[ "$r" == "sync" ]] && ok "L6 hadrs1's link sync_state sync" || fail "L6 hadrs1's sync_state: '$r'"
   pq "alter system reset synchronous_standby_names" >/dev/null; pq "select pg_reload_conf()" >/dev/null
   pq "select pg_drop_replication_slot('hadr_spare')" >/dev/null
   read_ hadr-p 1
+fi
+
+# ---- P / S: synchronous standbys (task 372) ------------------------------------------------------------------------
+if want P; then
+  for c in "2 (a, b)=FIRST|2|{a,b}" "a, b=FIRST|1|{a,b}" "ANY 1 (*)=ANY *|1|" '"Quoted", b=FIRST|1|{Quoted,b}' "first 3 (x)=FIRST|3|{x}" "*=FIRST *|1|" "=||"; do
+    in=${c%%=*}; want_=${c#*=}
+    r=$(q "select coalesce(method, '') || '|' || coalesce(num_sync::text, '') || '|' || coalesce(names::text, '') from pgvigil.pg_sync_standbys('$in')" 2>/dev/null || echo error)
+    [[ "$r" == "$want_" ]] && ok "P '$in' -> $r" || fail "P '$in' -> '$r', expected '$want_'"
+  done
+fi
+sync_set() { pq "alter system set synchronous_standby_names = '$1'" >/dev/null; pq "select pg_reload_conf()" >/dev/null; sleep 1; }
+sync_reset() { pq "alter system reset synchronous_standby_names" >/dev/null; pq "alter system reset synchronous_commit" >/dev/null; pq "select pg_reload_conf()" >/dev/null; sleep 1; }
+waiter() { ( psql "$PDSN" -XAtq -c "insert into hadr_feed (pad) values ('sync')" >/dev/null 2>&1 ) & SYNCW=$!
+  local _; for _ in $(seq 1 20); do [[ "$(pq "select count(*) from pg_stat_activity where wait_event = 'SyncRep'")" -ge 1 ]] && return 0; sleep 0.5; done; return 1; }
+if want S1 || want S2 || want S4 || want S6 || want S5; then
+  sync_set 'FIRST 1 (hadrs1)'
+  for _ in $(seq 1 20); do [[ "$(pq "select sync_state from pg_stat_replication where application_name = 'hadrs1'")" == "sync" ]] && break; sleep 0.5; done
+  read_ hadr-p 1
+  if want S1; then
+    r=$(finding "$PID_" 'synchronous commits waiting')
+    [[ -z "$r" ]] && ok "S1 hadrs1 sync: no 'synchronous commits waiting'" || fail "S1 raised: '$r'"
+  fi
+  if want S2; then
+    if hold_down && waiter; then
+      echo "  a commit waits: $(pq "select count(*) from pg_stat_activity where wait_event = 'SyncRep'") session(s) in SyncRep"
+      read_ hadr-p 1
+      r=$(finding "$PID_" 'synchronous commits waiting'); r2=$(check "$PID_" 'synchronous commits waiting')
+      [[ "$r" == critical\|* ]] && ok "S2 'synchronous commits waiting' critical on hadr-p: $r" || fail "S2 on hadr-p: '$r', expected critical"
+      [[ "$r2" == *"not connected: hadrs1"* && "$r2" == *"every commit waits"* ]] && ok "S2 detail: $r2" || fail "S2 detail: '$r2'"
+      lift || fail "S2X the receiver did not come back"
+      for _ in $(seq 1 60); do kill -0 "$SYNCW" 2>/dev/null || break; sleep 0.5; done
+      kill -0 "$SYNCW" 2>/dev/null && fail "S2X the waiting insert did not complete" || ok "S2X the waiting insert completed once hadrs1 was back"
+      SYNCW=""
+      read_ hadr-p 1
+      r=$(finding "$PID_" 'synchronous commits waiting')
+      [[ -z "$r" ]] && ok "S2X cleared" || fail "S2X still raised: '$r'"
+    else fail "S2 no commit waited (or the receiver could not be held down)"; lift; fi
+  fi
+  if want S4; then
+    sync_set 'ANY 2 (hadrs1, hadr_absent)'
+    if waiter; then
+      read_ hadr-p 1
+      r=$(finding "$PID_" 'synchronous commits waiting'); r2=$(check "$PID_" 'synchronous commits waiting')
+      [[ "$r" == critical\|* && "$r2" == *"not connected: hadr_absent"* ]] && ok "S4 quorum one short: critical naming hadr_absent" || fail "S4: '$r' / '$r2'"
+    else fail "S4 no commit waited under ANY 2"; fi
+    sync_reset
+    for _ in $(seq 1 20); do kill -0 "$SYNCW" 2>/dev/null || break; sleep 0.5; done; SYNCW=""
+  fi
+  if want S6; then
+    pq "alter system set synchronous_commit = 'local'" >/dev/null; sync_set 'ANY 2 (hadrs1, hadr_absent)'
+    if timeout 10 psql "$PDSN" -XAtq -c "insert into hadr_feed (pad) values ('local')" >/dev/null 2>&1; then ok "S6 an insert completes at synchronous_commit local"; else fail "S6 an insert waited at synchronous_commit local"; fi
+    read_ hadr-p 1
+    r=$(finding "$PID_" 'synchronous commits waiting')
+    [[ "$r" == warning\|* ]] && ok "S6 'synchronous commits waiting' warning when commits do not wait: $r" || fail "S6: '$r', expected warning"
+    sync_reset
+  fi
+  if want S5; then
+    sync_set 'ANY 1 (*)'
+    for _ in $(seq 1 20); do [[ "$(pq "select sync_state from pg_stat_replication where application_name = 'hadrs1'")" == "quorum" ]] && break; sleep 0.5; done
+    read_ hadr-p 1
+    r=$(finding "$PID_" 'synchronous commits waiting')
+    [[ -z "$r" ]] && ok "S5 'ANY 1 (*)' with hadrs1 in quorum: nothing" || fail "S5 raised: '$r'"
+  fi
+  sync_reset; read_ hadr-p 1
 fi
 
 # ---- R3: the standby stopped ---------------------------------------------------------------------------------------

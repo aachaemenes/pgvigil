@@ -34,6 +34,12 @@
 --                 each held for 2 reads in a row; judged from the sending server's sender (its replay position, or its
 --                 flush position on a standby that delays apply on purpose) and from the standby's received - replayed
 --                 bytes when the sending server is not read.
+--   task 372      synchronous standbys (pg_sync_state): synchronous_standby_names parsed (pg_sync_standbys: FIRST n (...),
+--                 ANY n (...), n (...) = FIRST, a bare list = FIRST 1, '*' = any); 'synchronous commits waiting' when
+--                 fewer standbys are in 'sync' / 'quorum' state than num_sync - critical at once (H2: a commit waits),
+--                 a warning when synchronous_commit is off or local at the server (its sessions' commits do not wait);
+--                 'synchronous standby absent' (warning, on that name's link row) when a named standby is not
+--                 connected and num_sync still holds ('potential' and 'quorum' are healthy).
 -- The collector adds a 'standby' row (the server in recovery: its receiver, primary_conninfo / restore_command set,
 -- positions, replay pause), a 'sync' row (synchronous_standby_names) and each sender's slot and flush lag;
 -- import_replication keeps the two state tables from them.
@@ -289,6 +295,26 @@ BEGIN
   END IF;
 END $$;
 
+-- pg_sync_state (task 372): each primary's synchronous standbys - synchronous_standby_names parsed (FIRST n (...),
+-- ANY n (...), n (...) = FIRST, a bare list = FIRST 1, '*' = any standby), the physical senders in 'sync' or 'quorum'
+-- state, and the named standbys with no streaming sender. 'potential' and 'async' are not in sync.
+CREATE OR REPLACE VIEW pgvigil.pg_sync_state AS
+SELECT y.instance_id, y.snapshot_at, y.setting, p.method, p.num_sync, p.names, y.commit_level,
+       (SELECT count(*) FROM pgvigil.replication_latest r
+         WHERE r.instance_id = y.instance_id AND pgvigil.pg_link_sender(r.detail) AND r.state = 'streaming'
+           AND r.detail->>'sync_state' IN ('sync', 'quorum')) AS in_sync,
+       (SELECT array_agg(n.name ORDER BY n.o) FROM unnest(p.names) WITH ORDINALITY n(name, o)
+         WHERE NOT EXISTS (SELECT 1 FROM pgvigil.replication_latest r
+                            WHERE r.instance_id = y.instance_id AND pgvigil.pg_link_sender(r.detail) AND r.state = 'streaming'
+                              AND lower(r.detail->>'application_name') = lower(n.name))) AS absent,
+       (SELECT string_agg(r.detail->>'application_name' || ' ' || coalesce(r.detail->>'sync_state', '?'), ', ' ORDER BY r.detail->>'application_name')
+          FROM pgvigil.replication_latest r WHERE r.instance_id = y.instance_id AND pgvigil.pg_link_sender(r.detail)) AS senders
+  FROM (SELECT r.instance_id, r.snapshot_at, r.state AS setting, r.detail->>'commit_level' AS commit_level
+          FROM pgvigil.replication_latest r
+         WHERE r.kind = 'sync' AND NOT coalesce((r.detail->>'in_recovery')::boolean, false) AND btrim(coalesce(r.state, '')) <> '') y
+  CROSS JOIN LATERAL pgvigil.pg_sync_standbys(y.setting) p
+ WHERE p.num_sync IS NOT NULL;
+
 -- pg_repl_link_health: one row per physical link of the fleet (the header's task 371), with both sides' views, its
 -- status and its one finding (check_name NULL when it has none). finding_id is the instance the finding is raised on.
 -- stable is the text the findings carry, fixed while the fault lasts (an alert is keyed by its finding's value).
@@ -384,6 +410,7 @@ judged AS (
          b.has_receiver, b.receiver_status, b.sender_host, b.conninfo_set, b.restore_set, b.primary_slot, b.min_apply_delay_ms,
          b.rcv_bytes, b.prev_rcv_bytes, b.replay_paused, b.prev_replay_paused, b.replay_moved_at, b.down_reads, b.down_since,
          b.replay_lsn AS standby_replay_lsn, b.receive_lsn AS standby_receive_lsn,
+         ss.in_sync, ss.num_sync AS sync_num, ss.setting AS sync_setting, ss.snapshot_at AS sync_at,
          -- a standby paired with several links (an old one replaced, or vanished) judges its own side on one: its live
          -- link first, else the newest
          (k.standby_id IS NULL OR row_number() OVER (PARTITION BY k.standby_id ORDER BY (k.gone_reads = 0) DESC NULLS FIRST, k.last_seen DESC NULLS FIRST) = 1) AS own_row,
@@ -396,6 +423,7 @@ judged AS (
          bb.warn AS sb_warn, bb.crit AS sb_crit, rst.crit AS stall_min, rst.level AS stall_level
     FROM links k
     LEFT JOIN stb b ON b.instance_id = k.standby_id
+    LEFT JOIN pgvigil.pg_sync_state ss ON k.source = 'sync names' AND ss.instance_id = k.sending_id
     LEFT JOIN LATERAL pgvigil.pg_threshold(k.sending_id, 'standby_replay_lag') ts ON k.sending_id IS NOT NULL
     LEFT JOIN LATERAL pgvigil.pg_threshold(k.sending_id, 'standby_lag_bytes') bs ON k.sending_id IS NOT NULL
     LEFT JOIN LATERAL pgvigil.pg_threshold(k.standby_id, 'standby_lag_bytes') bb ON k.standby_id IS NOT NULL
@@ -423,7 +451,9 @@ measured AS (
           AND j.standby_platform NOT IN ('rds', 'aurora', 'azure', 'cloudsql', 'alloydb')) AS is_paused,
          -- 'receiver down' is a warning only while restore_command still feeds replay past the last streamed position
          (j.restore_set AND j.replay_moved_at > j.down_since AND j.standby_replay_lsn > coalesce(j.standby_receive_lsn, '0/0'::pg_lsn)
-          AND NOT (j.stall_min IS NOT NULL AND j.replay_moved_at < j.standby_read_at - make_interval(secs => j.stall_min * 60))) AS fed
+          AND NOT (j.stall_min IS NOT NULL AND j.replay_moved_at < j.standby_read_at - make_interval(secs => j.stall_min * 60))) AS fed,
+         -- a named synchronous standby not connected while num_sync still holds (fewer is pg_hadr_checks' critical)
+         (j.source = 'sync names' AND j.in_sync >= j.sync_num AND j.sync_at > now() - interval '30 minutes') AS is_sync_absent
     FROM judged j
 ),
 tiered AS (
@@ -452,12 +482,14 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
        t.down_reads, t.gone_reads, t.last_seen, t.checked_at, t.standby_read_at, t.unreachable AS standby_unreachable,
        CASE WHEN t.is_down OR t.is_gone OR t.is_paused THEN NULL ELSE t.lag_sev END AS lag_severity,
        CASE WHEN t.is_down THEN 'receiver down' WHEN t.is_gone THEN 'standby gone' WHEN t.is_paused THEN 'replay paused'
-            WHEN t.lag_sev IS NOT NULL THEN 'standby lag' END AS check_name,
+            WHEN t.lag_sev IS NOT NULL THEN 'standby lag' WHEN t.is_sync_absent THEN 'synchronous standby absent' END AS check_name,
        CASE WHEN t.is_down THEN CASE WHEN t.fed THEN 'warning' ELSE 'critical' END
             WHEN t.is_gone OR t.is_paused THEN 'critical'
+            WHEN t.is_sync_absent THEN 'warning'
             ELSE t.lag_sev END AS severity,
        CASE WHEN t.is_down OR t.is_paused THEN t.standby_id WHEN t.is_gone THEN t.sending_id
-            WHEN t.lag_sev IS NOT NULL THEN CASE WHEN t.sender_view THEN t.sending_id ELSE t.standby_id END END AS finding_id,
+            WHEN t.lag_sev IS NOT NULL THEN CASE WHEN t.sender_view THEN t.sending_id ELSE t.standby_id END
+            WHEN t.is_sync_absent THEN t.sending_id END AS finding_id,
        CASE WHEN t.is_down THEN coalesce('slot ' || t.primary_slot, 'primary_conninfo')
             WHEN t.is_paused THEN 'replay'
             ELSE coalesce(nullif(t.application_name, ''), t.standby, '(no name)') || coalesce(' at ' || t.client_addr, '')
@@ -482,6 +514,9 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
                      to_char(t.last_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), t.gone_reads,
                      CASE WHEN t.unreachable THEN 'not answering pgvigil either (stopped or cut off)' ELSE 'stopped, cut off or no longer replicating' END)
             WHEN t.is_paused THEN 'replay is paused (pg_wal_replay_pause) for 2 reads in a row: the standby receives WAL and applies none of it'
+            WHEN t.is_sync_absent THEN
+              format('named in synchronous_standby_names (%s) and not connected; %s in sync of the %s it asks for: commits go on, one more loss and they wait',
+                     t.sync_setting, t.in_sync, t.sync_num)
             WHEN t.lag_sev IS NOT NULL THEN
               concat_ws('; ',
                 CASE WHEN t.bw IS NOT NULL AND t.bytes2 >= t.bw * 1048576 THEN format('%s not yet replayed (%s)', pg_size_pretty(t.bytes2::numeric),
@@ -495,7 +530,8 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
             WHEN t.is_gone THEN format('no WAL sender since %s UTC (it last streamed %s UTC)', to_char(t.gone_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
                                        to_char(t.last_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
             WHEN t.is_paused THEN 'replay is paused'
-            WHEN t.lag_sev IS NOT NULL THEN 'the standby is behind its primary (bytes not replayed or replay_lag past the thresholds)' END AS stable
+            WHEN t.lag_sev IS NOT NULL THEN 'the standby is behind its primary (bytes not replayed or replay_lag past the thresholds)'
+            WHEN t.is_sync_absent THEN 'named in synchronous_standby_names and not connected' END AS stable
   FROM tiered t;
 
 -- pg_hadr_checks: the streaming replication rules of this file, one row per finding (instance_id, severity, check_name,
@@ -505,7 +541,20 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
 CREATE OR REPLACE VIEW pgvigil.pg_hadr_checks AS
 SELECT h.finding_id AS instance_id, h.severity, h.check_name, h.object, h.at, h.detail, h.reads, h.stable
   FROM pgvigil.pg_repl_link_health h
- WHERE h.check_name IS NOT NULL AND h.finding_id IS NOT NULL;
+ WHERE h.check_name IS NOT NULL AND h.finding_id IS NOT NULL
+UNION ALL
+-- task 372: fewer standbys in sync than synchronous_standby_names asks for (one row per primary, not per link)
+SELECT y.instance_id, CASE WHEN y.commit_level IN ('off', 'local') THEN 'warning' ELSE 'critical' END, 'synchronous commits waiting',
+       'synchronous_standby_names', y.snapshot_at,
+       format('%s standby(s) in sync of the %s that synchronous_standby_names = ''%s'' asks for (%s)%s; %s',
+              y.in_sync, y.num_sync, y.setting, coalesce('senders: ' || y.senders, 'no sender connected'),
+              coalesce('; named and not connected: ' || array_to_string(y.absent, ', '), ''),
+              CASE WHEN y.commit_level IN ('off', 'local') THEN 'synchronous_commit is ' || y.commit_level || ' at the server: sessions that keep it do not wait, those that set on / remote_write / remote_apply do'
+                   ELSE 'every commit waits (synchronous_commit ' || y.commit_level || ') until a standby is back or the setting changes' END),
+       1, format('fewer synchronous standbys than synchronous_standby_names = ''%s'' asks for', y.setting)
+  FROM pgvigil.pg_sync_state y
+  JOIN pgvigil.instances i ON i.instance_id = y.instance_id AND i.is_active
+ WHERE y.in_sync < y.num_sync AND y.snapshot_at > now() - interval '30 minutes';
 
 -- 0006's daily-check view again with a severity column at its end (for the Summary's 'replication' overview and the
 -- Replication page, which judge severity by check name until they read this column: the join's wiring): a base backup's senders out of 'sender not streaming' and the replay-lag check (task 370
