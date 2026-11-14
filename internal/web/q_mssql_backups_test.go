@@ -20,7 +20,7 @@ import (
 // mssql_backup_files: 'app' with a full striped over two files of a share, a copy-only full to D:\temp, a log by two
 // logins to one share; 'lnx' with a full in its data directory (a same-volume finding) and log backups to two
 // destinations. It returns the instance and a func that removes it.
-func seedBackupLocations(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name string) (int, func()) {
+func seedBackupLocations(ctx context.Context, t *testing.T, pool *pgxpool.Pool, name string) (int, func()) {
 	t.Helper()
 	var id int
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`, name).Scan(&id); err != nil {
@@ -127,7 +127,7 @@ func TestMSSQLBackupFilesOnAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	id, drop := seedBackupLocations(t, ctx, pool, fmt.Sprintf("bkapi-%d", time.Now().UnixNano()%1000000000))
+	id, drop := seedBackupLocations(ctx, t, pool, fmt.Sprintf("bkapi-%d", time.Now().UnixNano()%1000000000))
 	defer drop()
 	s := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 

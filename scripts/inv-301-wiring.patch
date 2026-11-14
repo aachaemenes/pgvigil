@@ -33,7 +33,7 @@ index 0000000..2f2686b
 +		t.Fatal(err)
 +	}
 +	defer pool.Close()
-+	id, drop := seedBackupLocations(t, ctx, pool, fmt.Sprintf("bkwire-%d", time.Now().UnixNano()%1000000000))
++	id, drop := seedBackupLocations(ctx, t, pool, fmt.Sprintf("bkwire-%d", time.Now().UnixNano()%1000000000))
 +	defer drop()
 +	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.collection_dates (instance_id, collection, snapshot_at, status, note)
 +	                              VALUES ($1, 'mssql_backups', now(), 'error', 'the run hit its 120 s timeout'), ($1, 'mssql_backup_files', now(), 'ok', NULL)`, id); err != nil {
