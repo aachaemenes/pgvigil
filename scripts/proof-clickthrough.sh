@@ -16,23 +16,25 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the fourth run: click-c3 on 935989c was red by 9 rows outside the file - 7 the driver's own (a replay
-# step acted once on a page not yet redrawn: 'step no grid cell' x3, 'step gone' x3, while a sibling path on the same
-# page reached the same control; a .xdl link graded NOTHING via cell 3 and download via cell 4), now each step is
-# given 5 s to find its control and a link to the server's own file 5 s to start its download; 2 the joined tree's
-# Queries page (mssql_queries.ts), which never settled in 20 s on any load, now named with the lines still reading;
-# written before it):
-#   the grader's self-test: 9 of 9 cases; the expected file: 5 rows
+# Expected (the fourth run: the third run was red by 9 rows outside the file - 7 the driver's own (a replay step
+# acted once on a page not yet redrawn; a download read 600 ms after its click), now each step is given 5 s to find
+# its control and the path one more fresh replay; 2 the joined tree's Queries page, which never settled in 20 s; the
+# review of the click-through folded: a read with nothing to see FAILS ('reads', 2 expected rows by cause), a click
+# whose page never settles FAILS ('click not settled'), a canvas drawn on is a change, a link to the server's own file
+# on the page is clicked, the control is waited for before 'before', the auto refresh off on every page, the controls
+# not clicked said in the verdict; written before it):
+#   the grader's self-test: 14 of 14 cases; the expected file: 7 rows
 #   the click map: its own verdict line (the third run: 524 links, 0 FAIL)
 #   listed: 182 pages (root 62, pg 64, ms 56) in 4 shards; every page settled but ms mssqlqueries
 #   the walk: the longest driver about the third run's 2590 s (a little more: the waits)
-#   the grade: the 5 expected rows listed; none of the third run's 7 driver rows (each reached and graded by its own
-#     kind); 'off without words' none; the 2 Queries rows again ('page not settled' ms mssqlqueries, the tree's
-#     'link-stuck' to it), each with 'still: <section>: Reading ...' - 'click-through: FAIL (2 FAIL row(s) outside the
-#     expected file)'; any other row outside is read first
+#   the grade: the 7 expected rows listed (the reads rows: 16 re-reads, mssql_running's Later and Latest); none of
+#     the third run's 7 driver rows; 'off without words' none; the 'Draw on the strip' cells graded redraws (their
+#     canvas); the Queries page's rows again ('page not settled', the tree's 'link-stuck', its clicks 'click not
+#     settled'), each with 'still: <section>: Reading ...' - 'click-through: FAIL (<n> FAIL row(s) outside the
+#     expected file)'; any other row outside is read first (a 'reads' cell button, a page-level .xdl / .sqlplan link)
 set -uo pipefail
 cd "$(dirname "$0")/.."
-WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=()
+WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""
 OUT="${PGVIGIL_CLICKTHROUGH_OUT:-$WORK/out}"; mkdir -p "$OUT/shots"
 N="${PGVIGIL_CLICK_DRIVERS:-4}"
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -40,13 +42,15 @@ cleanup() {
   for p in "${DRV[@]}"; do kill "$p" 2>/dev/null || true; done
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true
-  [[ -z "${PGVIGIL_DEMO_URL:-}" ]] && psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
+  # only the database this run made (a name another run drew is never dropped); set -u never stops the cleanup
+  [[ -n "$MADE" ]] && psql "${PGVIGIL_ADMIN_DSN:-} dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 for t in chromium node curl ss; do command -v $t >/dev/null || fail "$t is not on this machine"; done
-taken=" "
-freeport() { local p; for _ in $(seq 1 60); do p=$((21000 + RANDOM % 11500)); [[ "$taken" == *" $p "* ]] && continue; ss -Htan "sport = :$p" | grep -q . || { taken+="$p "; echo $p; return; }; done; echo 0; }
+# a free port, never one this run handed out before (kept in a file: each call runs in a $(...) subshell)
+freeport() { local p; for _ in $(seq 1 60); do p=$((21000 + RANDOM % 11500)); grep -qx "$p" "$WORK/ports" 2>/dev/null && continue; ss -Htan "sport = :$p" | grep -q . || { echo "$p" >> "$WORK/ports"; echo $p; return; }; done; echo 0; }
 
 echo "== the grader's self-test"
 node scripts/clickthrough-grade.mjs --self-test || fail "the grader's self-test"
@@ -61,7 +65,7 @@ else
   PORT=$(freeport); [[ "$PORT" != 0 ]] || fail "no free port"
   echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
   CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil || fail "the build"
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null || fail "create database $DB"
+  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null || fail "create database $DB"; MADE=1
   "$WORK/pgvigil" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -serve -listen "127.0.0.1:$PORT" -days 2 > "$WORK/demo.log" 2>&1 &
   SRV=$!
   for _ in $(seq 1 "${PGVIGIL_DEMO_WAIT_S:-300}"); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { tail -5 "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done

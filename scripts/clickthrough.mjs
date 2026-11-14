@@ -15,9 +15,10 @@
 // Every request that is not a GET to the server's /api/ is HELD by the walk (Fetch.failRequest): the row names it
 // ('write held: POST /api/...'), so a click proves its write is sent and the demo's state never changes between
 // clicks or drivers. Kinds a row can end with (scripts/clickthrough-grade.mjs grades them): link, navigates, dialog,
-// menu, expands, redraws, status, download, chooser, write held, js-dialog, disabled (with its words), outside;
-// NOTHING, error, js-error, api <status>, link-error, link-stuck, dead link, reloads, off without words, not
-// reached, browser lost, driver error.
+// menu, expands, redraws, status, download, chooser, write held, js-dialog, copies, current, focus, disabled (with
+// its words), outside, over the cap; NOTHING, reads (a read and nothing to see), error, js-error, api <status>,
+// link-error, link-stuck, dead link, reloads, off without words, not reached, click not settled, browser lost,
+// driver error.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -41,6 +42,9 @@ fs.mkdirSync(dl, { recursive: true });
 let chrome = null, ws = null, lost = true, id = 0, starts = 0;
 const wait = new Map();
 let net = [], exc = [], dlgs = [], held = [], chooser = [];
+// chromium never outlives the driver: killed on any exit, and a TERM or INT ends the driver (its exit kills it)
+process.on('exit', () => { try { chrome?.kill('SIGKILL'); } catch {} });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(sig === 'SIGINT' ? 130 : 143));
 const startChrome = async () => {
   starts++;
   chrome = spawn('chromium', ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${udd}`, '--no-first-run', '--disable-gpu', '--lang=en-US', 'about:blank'], { stdio: ['ignore', clog, clog] });
@@ -101,6 +105,9 @@ const connect = async () => {
     }
   });
   await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable'); await cmd('DOM.enable'); await cmd('Inspector.enable').catch(() => {});
+  // every document starts with the auto refresh off (Off (paused)), before the page's own script reads it: a live
+  // page's 30 s redraw never falls between a click's before and after (the bar's refresh select is still clicked)
+  await cmd('Page.addScriptToEvaluateOnNewDocument', { source: "try { if (location.origin === " + JSON.stringify(new URL(U).origin) + ") localStorage.setItem('pgvigil.refresh', '0'); } catch (e) {}" });
   await cmd('Fetch.enable', { patterns: [{ urlPattern: U + 'api/*', requestStage: 'Request' }] });
   await cmd('Page.setInterceptFileChooserDialog', { enabled: true });
   await cmd('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dl }).catch(() => {});
@@ -195,6 +202,7 @@ const shard = JSON.parse(fs.readFileSync(a5, 'utf8'));
 const [outFile, shots] = [a6, a7];
 fs.mkdirSync(shots, { recursive: true });
 const state = `({ hash: location.hash, h2: document.querySelector('main h2')?.textContent ?? '',
+  canvas: [...document.querySelectorAll('main canvas, dialog[open] canvas')].map(c => { try { return c.width + 'x' + c.height + ':' + c.toDataURL().length; } catch (e) { return 'x'; } }).join(','),
   html: (() => { const s = (document.querySelector('main')?.innerHTML ?? '') + '|' + [...document.querySelectorAll('dialog[open], #bar')].map(d => d.innerHTML).join('|') + '|' + [...document.querySelectorAll('main input, main select, dialog[open] input, dialog[open] select')].map(i => i.type === 'checkbox' || i.type === 'radio' ? i.checked : i.value).join('|'); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; })(),
   copied: window.__walkCopied ?? 0, focus: document.activeElement ? document.activeElement.tagName + (document.activeElement.getAttribute('aria-label') || document.activeElement.textContent || '').slice(0, 40) : '',
   errors: [...document.querySelectorAll('main .error, dialog[open] .error, #bar .error')].map(e => e.textContent.trim().slice(0, 300)).filter(Boolean),
@@ -216,7 +224,7 @@ const controls = withBar => ev(`(() => { const S = ${SIG}; const seen = new Map(
     what: (el.getAttribute('aria-label') || el.textContent || el.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80), disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
     reason: [el.title, ...(el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent?.trim() ?? '')].filter(Boolean).join(' | ').slice(0, 240),
     href: el.getAttribute('href'), type: el.type || '', opts: el.tagName === 'SELECT' ? [...el.options].map(o => o.value) : null, cur: el.tagName === 'SELECT' ? el.value : null,
-    on: ['aria-pressed', 'aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
+    on: ['aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
   return [...seen.values()]; })()`);
 const offNotes = () => ev(`[...document.querySelectorAll('main p.meta, main p.note, main .note, main .off-reason, main [id^=off-], dialog[open] p')].map(p => p.textContent.trim()).filter(t => /off here|is off|read only|read-only|needs|refused|not configured|no read login|no monitoring login|-no-login|disabled|demo/i.test(t)).map(t => t.slice(0, 240))`);
 // one step, given up to 5 s to find its control: a replay on a fresh page reaches a grid cell or a cell's button only
@@ -227,6 +235,18 @@ const actWait = async (sig, step, ms = 5000) => {
     if ((r !== 'gone' && r !== 'no grid cell') || Date.now() - t >= ms) return r;
   }
 };
+// a step's control is on the page (nothing clicked), waited for up to ms
+const there = async (sig, ms = 5000) => {
+  for (const t = Date.now(); ; await sleep(250)) {
+    const ok = sig === 'CTX' ? await ev(`!!document.querySelector('main table.grid tbody td')`).catch(() => false)
+      : await ev(`(() => { const S = ${SIG}; return [...document.querySelectorAll(${JSON.stringify(CTRL + BAR)})].some(el => S(el) === ${JSON.stringify(sig)}); })()`).catch(() => false);
+    if (ok || Date.now() - t >= ms) return ok;
+  }
+};
+// a control's words at this moment (title, aria-describedby): a control found off at its click is judged as one found
+// off in the list
+const reasonOf = sig => ev(`(() => { const S = ${SIG}; const el = [...document.querySelectorAll(${JSON.stringify(CTRL + BAR)})].find(el => S(el) === ${JSON.stringify(sig)});
+  return el ? [el.title, ...(el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent?.trim() ?? '')].filter(Boolean).join(' | ').slice(0, 240) : ''; })()`).catch(() => '');
 // one step: the control by its signature, then a click (or a select's option, or a file input's fixture)
 const act = async (sig, step) => {
   if (sig === 'CTX') return ev(`(() => { const td = document.querySelector('main table.grid tbody td'); if (!td) return 'no grid cell'; const r = td.getBoundingClientRect(); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 5, clientY: r.y + 5, button: 2 })); return 'ok'; })()`);
@@ -265,7 +285,7 @@ const verdict = (row, before, after, dl0) => {
   if (after.hash !== before.hash) return 'navigates';
   if (row.status) return 'status';
   if (after.open !== before.open) return 'expands';
-  if (after.html !== before.html || after.tree !== before.tree || (before.dialog && !after.dialog) || (before.menu?.length && !after.menu?.length)) return 'redraws';
+  if (after.html !== before.html || after.canvas !== before.canvas || after.tree !== before.tree || (before.dialog && !after.dialog) || (before.menu?.length && !after.menu?.length)) return 'redraws';
   if (grew) return 'download';
   if (row.jsDialogs.length) return 'js-dialog';
   if ((after.copied ?? 0) > (before.copied ?? 0)) return 'copies';
@@ -306,14 +326,14 @@ for (const pg of [...pagesOf, ...chromePage]) {
     // the grid's own controls: GRID_MAX times a driver, then counted as the same component
     const gk = gridKey(c.sig) ?? (p.length > 1 && p[0].sig === 'CTX' ? 'CTX ' + (gridKey(c.sig) ?? c.sig.replace(/\s.*$/, '')) : null);
     if (gk) { const k = gk + (p[p.length - 1].opt !== undefined ? '=' + p[p.length - 1].opt : ''); const n = gridSeen.get(k) ?? 0; if (n >= GRID_MAX) { same++; continue; } gridSeen.set(k, n + 1); }
-    if (budget-- <= 0) { capped++; continue; }
+    if (budget-- <= 0) { capped++; out.clicks.push({ scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, kind: 'over the cap' }); continue; }
     const last = p[p.length - 1];
     const row = { scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, count: c.n, on: !!c.on };
     try {
       if (c.disabled) { row.kind = c.reason ? 'disabled' : 'off without words'; row.why = c.reason; row.off = await offNotes().catch(() => []); if (!c.reason && row.off.length) row.kind = 'disabled'; out.clicks.push(row); continue; }
       if (c.tag === 'A' && last.sig !== 'CTX' && !/^(dlg|menu) /.test(last.sig) && p.length === 1) {
         const h = c.href || '';
-        if (h !== '' && h !== '#' && !h.startsWith('#/')) { row.kind = 'outside'; row.href = h; out.clicks.push(row); continue; }
+        if (h !== '' && h !== '#' && !h.startsWith('#/') && !h.startsWith('/api/')) { row.kind = 'outside'; row.href = h; out.clicks.push(row); continue; }
       }
       if (c.tag === 'A' && last.sig !== 'CTX' && !/^(dlg|menu) /.test(last.sig) && p.length === 1 && (c.href || '').startsWith('#/')) {
         const h = c.href;
@@ -326,17 +346,30 @@ for (const pg of [...pagesOf, ...chromePage]) {
         for (const o of (c.opts || []).filter(o => o !== c.cur).slice(0, 5)) queue.unshift({ path: [...p.slice(0, -1), { sig: last.sig, opt: o }], c: { ...c, what: c.what + ' = ' + o } });
         budget++; continue;
       }
-      // replay the path on a fresh page, then act on its last step
-      await fresh(pg.hash);
+      // replay the path on a fresh page (once more from a fresh page when a step's control is lost: a late redraw can
+      // close a menu an earlier step opened), wait for the last step's control without clicking it, and only then
+      // read 'before': the page's own late draw never counts as the click's
       let replay = 'ok';
-      for (const st of p.slice(0, -1)) { replay = await actWait(st.sig, st); if (replay !== 'ok') break; await sleep(350); await settled(30000); }
-      if (replay !== 'ok') { row.kind = 'not reached'; row.why = 'step ' + replay; out.clicks.push(row); continue; }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await fresh(pg.hash);
+        replay = 'ok';
+        for (const st of p.slice(0, -1)) { replay = await actWait(st.sig, st); if (replay !== 'ok') break; await sleep(350); await settled(30000); }
+        if (replay === 'ok' && !(await there(last.sig))) replay = 'gone';
+        if (replay !== 'gone' && replay !== 'no grid cell') break;
+      }
+      if (replay !== 'ok') { row.kind = 'not reached'; row.why = (p.length > 1 ? 'step ' : '') + replay; out.clicks.push(row); continue; }
       await ev(MARK);
       const before = await ev(state); const ctl0 = new Set((await controls(!!pg.bar)).map(x => x.sig));
       const dl0 = fs.readdirSync(dl).length; net = []; exc = []; dlgs = []; held = []; chooser = [];
-      const r = await actWait(last.sig, last);
-      if (r !== 'ok') { row.kind = r === 'disabled' ? 'disabled' : 'not reached'; row.why = r; if (r === 'disabled') row.off = await offNotes().catch(() => []); out.clicks.push(row); continue; }
-      await sleep(600); await settled(30000);
+      const r = await act(last.sig, last);
+      if (r === 'disabled') {
+        // found off at its click (it was on in the list): judged as one found off there - its words, or none
+        row.why = await reasonOf(last.sig); row.off = await offNotes().catch(() => []);
+        row.kind = row.why || row.off.length ? 'disabled' : 'off without words'; out.clicks.push(row); continue;
+      }
+      if (r !== 'ok') { row.kind = 'not reached'; row.why = r; out.clicks.push(row); continue; }
+      await sleep(600);
+      const okC = await settled(30000);
       if (chooser.length) { await sleep(800); await settled(15000); }
       // a link to the server's own file (a .xdl, a .sqlplan): its download is given up to 5 s to start
       if (c.tag === 'A' && /^\/api\//.test(c.href || '')) for (let i = 0; i < 25 && fs.readdirSync(dl).length <= dl0; i++) await sleep(200);
@@ -344,6 +377,10 @@ for (const pg of [...pagesOf, ...chromePage]) {
       row.api = [...net]; row.exc = [...exc]; row.jsDialogs = [...dlgs]; row.held = [...new Set(held)]; row.chooser = [...chooser];
       row.kind = verdict(row, before, after, dl0);
       if (row.kind === 'NOTHING') { await sleep(1200); if (fs.readdirSync(dl).length > dl0) row.kind = 'download'; }
+      // a click whose page never settled (a 'Reading ...' line still up at the cap) is not judged by what changed
+      if (!okC && !['write held', 'reloads', 'navigates', 'download', 'chooser'].includes(row.kind) && !/^api /.test(row.kind) && after.mark) {
+        row.seen = row.kind; row.kind = 'click not settled'; row.why = (await ev(BUSYLINES).catch(() => [])).map(b => 'still: ' + b).join(' | ');
+      }
       row.api = row.api.filter(x => x.status >= 400 || x.status === 0);
       out.clicks.push(row);
       // what the click added: one level deeper (not after a page change)

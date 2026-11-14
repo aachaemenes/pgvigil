@@ -4,16 +4,18 @@
 // scripts/clickthrough-expected.txt. Usage:
 //   node scripts/clickthrough-grade.mjs <out dir> <list.json> <walk.json>... [--click <click.json>] [--shots <dir>]
 //   node scripts/clickthrough-grade.mjs --self-test
-// A row FAILS when its kind is one of FAIL_KINDS (a control that does NOTHING, an error box or a script error after
-// it, a read answered 4xx / 5xx, a link that lands on an error or never settles, a dead link, a full reload, an off
-// control with no words, a step the walk could not reach, the browser lost) or a page did not settle or drew an error
-// box on load. Each FAIL is 'listed' when a row of the expected file matches it, else NEW; an expected row no FAIL
+// A row FAILS when its kind is one of FAIL_KINDS (a control that does NOTHING, or only reads with nothing to see, an
+// error box or a script error after it, a read answered 4xx / 5xx, a link that lands on an error or never settles, a
+// click whose page never settles, a dead link, a full reload, an off control with no words, a step the walk could not
+// reach, the browser lost) or a page did not settle or drew an error box on load. The controls not clicked (over a
+// page's cap, each a row 'over the cap'; the grid's own controls past GRID_MAX a driver, counted) are said in the
+// verdict, and a run that listed no page of an engine fails. Each FAIL is 'listed' when a row of the expected file matches it, else NEW; an expected row no FAIL
 // matched is 'not seen'. Exit 0 only when no FAIL is NEW (said: 'click-through: OK (...)' / 'click-through: FAIL').
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const FAIL_KINDS = /^(NOTHING|error|js-error|api \d.*|link-error|link-stuck|dead link|reloads|off without words|not reached|browser lost|driver error|page not settled|page error|click map FAIL)$/;
+export const FAIL_KINDS = /^(NOTHING|reads|error|js-error|api \d.*|link-error|link-stuck|dead link|reloads|off without words|not reached|click not settled|browser lost|driver error|page not settled|page error|click map FAIL)$/;
 // expected rows: kind | scope (root, pg, ms or *) | page (a regular expression over the page's tab, or 'tree') |
 // control (a regular expression over the row's path, its steps joined by ' > ') | why, and the smallest fix and its file
 export function loadExpected(text) {
@@ -37,7 +39,8 @@ export function grade(rows, expected) {
   return { fails, outside, notSeen: expected.filter(e => !e.hits.length) };
 }
 function selfTest() {
-  const ex = loadExpected('# a comment\nNOTHING | ms | ^mssqlrisks$ | B Refresh | a button that redraws nothing | x.ts\napi | * | .* | ^A #/db | a drill read refused | y.go\nlink-error | root | ^tree$ | tree A #/rp_ | the tree | z.ts\n');
+  const ex = loadExpected('# a comment\nNOTHING | ms | ^mssqlrisks$ | B Refresh | a button that redraws nothing | x.ts\napi | * | .* | ^A #/db | a drill read refused | y.go\nlink-error | root | ^tree$ | tree A #/rp_ | the tree | z.ts\n'
+    + 'link* | pg | ^tables$ | ^A #/table | a table link | t.ts\npage not settled | ms | ^mssqlqueries$ | ^\\(the page\\)$ | a slow page | q.ts\nreads | * | .* | ^B (Refresh|Search)$ | a re-read | r.ts\nreads | root | .* | ^B Refresh$ | the same, second | r2.ts\n');
   const cases = [
     [{ kind: 'NOTHING', scope: 'ms', page: 'mssqlrisks', path: ['B Refresh'] }, true],
     [{ kind: 'NOTHING', scope: 'pg', page: 'mssqlrisks', path: ['B Refresh'] }, false],
@@ -46,15 +49,23 @@ function selfTest() {
     [{ kind: 'api 404', scope: 'root', page: 'summary', path: ['B Export'] }, false],
     [{ kind: 'link-error', scope: 'root', page: 'tree', path: ['tree A #/rp_finder?'] }, true],
     [{ kind: 'link', scope: 'root', page: 'tree', path: ['tree A #/rp_finder?'] }, false],
+    [{ kind: 'link-stuck', scope: 'pg', page: 'tables', path: ['A #/table?db&i&rel cell 1'] }, true],
+    [{ kind: 'page not settled', scope: 'ms', page: 'mssqlqueries', path: ['(the page)'] }, true],
+    [{ kind: 'reads', scope: 'pg', page: 'drives', path: ['B Refresh'] }, true],
+    [{ kind: 'reads', scope: 'pg', page: 'drives', path: ['B Refresh all'] }, false],
   ];
   let ok = 0;
   for (const [r, want] of cases) { const got = ex.some(e => matches(e, r)); if (got === want) ok++; else console.log(`FAIL self-test: ${JSON.stringify(r)} matched ${got}, wanted ${want}`); }
   const g = grade([{ kind: 'NOTHING', scope: 'ms', page: 'mssqlrisks', path: ['B Refresh'] }, { kind: 'dialog', scope: 'ms', page: 'x', path: ['B y'] }, { kind: 'reloads', scope: 'pg', page: 'x', path: ['B z'] }], ex);
-  const gOK = g.fails.length === 2 && g.outside.length === 1 && g.notSeen.length === 2;
+  const gOK = g.fails.length === 2 && g.outside.length === 1 && g.notSeen.length === 6;
   if (gOK) ok++; else console.log('FAIL self-test: the grade of three rows');
+  // two expected rows match one FAIL: the first in the file takes it; the new kinds fail; 'over the cap' does not
+  const g2 = grade([{ kind: 'reads', scope: 'root', page: 'drives', path: ['B Refresh'] }, { kind: 'click not settled', scope: 'ms', page: 'x', path: ['B y'] }, { kind: 'over the cap', scope: 'ms', page: 'x', path: ['B z'] }], ex);
+  const r6 = ex.find(e => e.why.startsWith('a re-read')), r7 = ex.find(e => e.why.startsWith('the same, second'));
+  if (g2.fails.length === 2 && g2.outside.length === 1 && r6.hits.length === 1 && r7.hits.length === 0) ok++; else console.log('FAIL self-test: the first expected row takes a FAIL; the new kinds');
   let bad = 0; try { loadExpected('NOTHING | ms | x'); } catch { bad = 1; } ok += bad; if (!bad) console.log('FAIL self-test: a short expected row was taken');
-  console.log(`self-test: ${ok} of ${cases.length + 2} cases`);
-  return ok === cases.length + 2;
+  console.log(`self-test: ${ok} of ${cases.length + 3} cases`);
+  return ok === cases.length + 3;
 }
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
@@ -104,7 +115,7 @@ if (isMain) {
   for (const p of pages) {
     const mine = all.filter(r => r.hash === p.hash && r.scope === p.scope).sort((x, y) => Number(FAIL_KINDS.test(y.kind)) - Number(FAIL_KINDS.test(x.kind)));
     const img = p.shot && shotsDir ? `<img alt="${esc(p.hash)}" src="${esc(path.relative(outDir, path.join(shotsDir, p.shot + '.png')))}">` : '<p>(no shot)</p>';
-    sheet.push(`<section><div><h2>${esc(p.scope)} ${esc(p.hash)}</h2>${img}</div><table>${mine.map(r => `<tr class="${FAIL_KINDS.test(r.kind) ? 'fail' : ''}"><td>${esc(r.path.join(' > '))}</td><td>${esc(r.kind)}</td><td>${esc(said(r))}</td></tr>`).join('')}</table></section>`);
+    sheet.push(`<section><div><h2>${esc(p.scope)} ${esc(p.hash)}</h2>${p.capped || p.same ? `<p>not clicked: ${p.capped ?? 0} over the cap, ${p.same ?? 0} grid controls counted as the same component</p>` : ''}${img}</div><table>${mine.map(r => `<tr class="${FAIL_KINDS.test(r.kind) ? 'fail' : ''}"><td>${esc(r.path.join(' > '))}</td><td>${esc(r.kind)}</td><td>${esc(said(r))}</td></tr>`).join('')}</table></section>`);
   }
   const treeRows = all.filter(r => r.source === 'tree');
   sheet.push(`<section><div><h2>the tree</h2></div><table>${treeRows.map(r => `<tr class="${FAIL_KINDS.test(r.kind) ? 'fail' : ''}"><td>${esc(r.scope)} ${esc(r.path.join(' > '))}</td><td>${esc(r.kind)}</td><td>${esc(said(r))}</td></tr>`).join('')}</table></section></body></html>`);
@@ -113,7 +124,9 @@ if (isMain) {
   const count = s => pages.filter(p => p.scope === s).length;
   const kinds = new Map(); for (const r of all) kinds.set(r.kind, (kinds.get(r.kind) ?? 0) + 1);
   console.log(`picked: PostgreSQL ${list.pg}${list.pooler ? ' (the Pooler of ' + list.pooler + ')' : ''}, SQL Server ${list.ms}`);
-  console.log(`pages: ${pages.length} (root ${count('root')}, pg ${count('pg')}, ms ${count('ms')}), ${pages.filter(p => !p.settled).length} not settled, ${pages.filter(p => p.capped).length} over the cap (${pages.reduce((a, p) => a + (p.capped ?? 0), 0)} controls not clicked); the longest driver ${seconds} s; chromium started ${starts} time(s)`);
+  const capN = pages.reduce((a, p) => a + (p.capped ?? 0), 0), sameN = pages.reduce((a, p) => a + (p.same ?? 0), 0);
+  const notClicked = `${capN} control(s) over a page's cap on ${pages.filter(p => p.capped).length} page(s) (each a row 'over the cap'), ${sameN} of the grid's own controls past ${3} a driver on ${pages.filter(p => p.same).length} page(s)`;
+  console.log(`pages: ${pages.length} (root ${count('root')}, pg ${count('pg')}, ms ${count('ms')}), ${pages.filter(p => !p.settled).length} not settled; not clicked: ${notClicked}; the longest driver ${seconds} s; chromium started ${starts} time(s)`);
   console.log(`rows: ${all.length} (walk ${rows.length}, tree ${tree.length}, click map ${all.filter(r => r.source === 'click map').length}); by kind: ${[...kinds.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}`);
   const distinct = new Map();
   for (const r of g.outside) { const k = [r.scope, r.page, r.kind, r.path.join(' > ')].join('\u0001'); if (!distinct.has(k)) distinct.set(k, r); }
@@ -121,7 +134,7 @@ if (isMain) {
   for (const e of expected) console.log(`${e.hits.length ? 'listed' : 'not seen'} ${e.kind} ${e.scope} ${e.pageText} ${e.controlText}: ${e.hits.length} row(s); ${e.why}`);
   for (const n of list.notes ?? []) console.log('note: ' + n);
   console.log('not clicked by design: the text boxes (a search, a form field); another instance\'s tree leaves (the same renderers as the picked instance\'s); the tag folders\' other copies of an instance');
-  const bad = [distinct.size && `${distinct.size} FAIL row(s) outside the expected file`].filter(Boolean);
-  console.log(bad.length ? `click-through: FAIL (${bad.join('; ')})` : `click-through: OK (${g.fails.length} FAIL row(s), each listed; ${g.notSeen.length} expected row(s) not seen)`);
+  const bad = [distinct.size && `${distinct.size} FAIL row(s) outside the expected file`, ...['pg', 'ms'].filter(e => !count(e)).map(e => `no ${e} page listed`)].filter(Boolean);
+  console.log(bad.length ? `click-through: FAIL (${bad.join('; ')})` : `click-through: OK (${g.fails.length} FAIL row(s), each listed; ${g.notSeen.length} expected row(s) not seen; not clicked: ${notClicked})`);
   process.exit(bad.length ? 1 : 0);
 }
