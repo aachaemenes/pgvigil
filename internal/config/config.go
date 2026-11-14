@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -31,6 +32,12 @@ type Config struct {
 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
 	// collects nothing from SQL Server itself.
 	DBADash []DBADashRepo `yaml:"dbadash"`
+	// GMSA names the group Managed Service Account pgvigil's Windows service runs as (DOMAIN\\name$, task 206): the
+	// Windows sign-in of a server moved from DBA Dash on Admin > Instances is this account, offered only when it is set
+	// and serve runs on Windows (each moved server then needs CREATE LOGIN [DOMAIN\\name$] FROM WINDOWS and the rights
+	// of docs/sqlserver-cloud.md). Never the machine account (DOMAIN\\HOST$): no other service of the host shares a gMSA.
+	// Empty (the default) = no Windows sign-in on that page.
+	GMSA string `yaml:"gmsa"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -118,6 +125,22 @@ type DBADashRepo struct {
 	DSNRaw string `yaml:"dsn"`
 	// Interval is how often it is read (default 5m; at least 1m).
 	Interval Duration `yaml:"interval"`
+	// Import lets Admin > Instances' 'Move from DBA Dash' run the history import of a server moved from this repository
+	// inside serve (task 206). Off (the default): the page prints the 'pgvigil import dbadash' command instead.
+	Import bool `yaml:"import"`
+}
+
+// gmsaName is DOMAIN\name$: a NetBIOS domain of 1 to 15 characters and an account of 1 to 15 before its '$' (the
+// sAMAccountName rule), neither holding a character Windows refuses in a name.
+var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\]]{1,15}\\[^\\/:*?"<>|\s@\[\]]{1,15}\$$`)
+
+// validateGMSA trims the gmsa: key and refuses a form that is not DOMAIN\name$.
+func (c *Config) validateGMSA() error {
+	c.GMSA = strings.TrimSpace(c.GMSA)
+	if c.GMSA != "" && !gmsaName.MatchString(c.GMSA) {
+		return fmt.Errorf("gmsa %q must be DOMAIN\\name$ (the group Managed Service Account the service runs as: a domain of at most 15 characters, a name of at most 15 before its '$')", c.GMSA)
+	}
+	return nil
 }
 
 // DefaultDBADashInterval is the read cadence of a DBADash repository.
@@ -448,6 +471,9 @@ func (c *Config) Validate() error {
 		c.UI.EnvOrder = DefaultEnvOrder
 	}
 	if err := c.validateDBADash(); err != nil {
+		return err
+	}
+	if err := c.validateGMSA(); err != nil {
 		return err
 	}
 	seen := map[string]bool{}
