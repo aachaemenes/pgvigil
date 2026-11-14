@@ -28,6 +28,7 @@ import { readStmtGroups, stmtGroupsSection, totalWithShare } from './stmt_filter
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
+import type { AttentionBox } from './export';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
 import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
@@ -538,6 +539,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   let allLines = false;
   const drawStrip = () => {
+    // every line with every reason, for the export (export.ts AttentionBox: the page draws 8 lines and 4 reasons of each)
+    const every: { item: string; value: string; status: 'crit' | 'warn' }[] = [];
+    (strip as AttentionBox).pgvItems = () => every;
     const lines = rows.filter(r => Number(r._worst) > 0).map(r => {
       const c = cellsOf(r), acked = r._acked as Acked;
       const open = groups.filter(g => !c[g.key].none && c[g.key].level > 0 && !acked[g.key]);
@@ -551,6 +555,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       const shown = [per('blocking', 'Blocking'), per('deadlocks', 'Deadlocks'), ...reasons].filter(Boolean);
       const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellState(c[g.key], g.key) }));
       const lvl = Number(r._worst);
+      every.push({ item: String(r.name), value: shown.join(' · '), status: lvl === 2 ? 'crit' : 'warn' });
       return el('div', { class: 'attention-row', style: `display:flex;gap:.8rem;align-items:baseline;padding:.25rem .5rem;border-left:3px solid var(${lvl === 2 ? '--crit' : '--warn'});margin:.2rem 0` },
         dot(lvl), el('strong', {}, instLink(ctx, String(r.name), r.instance_id)),
         el('span', { style: 'flex:1' }, shown.slice(0, 4).join(' · ') + (shown.length > 4 ? ` · +${shown.length - 4} more` : '')),

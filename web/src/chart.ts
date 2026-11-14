@@ -3,6 +3,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { href, MAX_RANGE_MS, parse, window_ } from './router';
 import { copyText, el, saveBlob, showMenu } from './ui';
 import { exportChart } from './export';
+import type { ChartNumbers, PictureBox } from './export_chart';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
 import { axisLook, chartKind, chartLook, chartState, Measure, rememberZoom, zoomReset } from './chartkit';
 
@@ -236,7 +237,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     const u = new uPlot(opts, data, holder);
     live.push(u);
     isolateOnDoubleClick(u);
-    chartMenu(box, title, u, !!o.stacked);
+    // each series' formatter as its axis draws it (o.y2's series on the right axis): its numbers carry the axis's unit
+    chartMenu(box, title, u, !!o.stacked, j => (o.y2?.keys.includes(series[j - 1]?.key ?? '') ? o.y2?.fmt : undefined) ?? fmt);
     fullWindow(box, title, u, hiddenKey);
     const reset = zoomReset();   // the page stands on a range a drag set: the way back, in the heading
     if (reset) box.querySelector('h3')?.append(' ', reset);
@@ -391,7 +393,7 @@ function fullWindow(box: HTMLElement, title: string, u: uPlot, key: string) {
 // The button in the chart's heading opens it (the keyboard's way) and so does a right-click on the plot. The numbers are
 // the series shown, a row per point, the time as 'YYYY-MM-DD HH:MM:SS' in the display zone; a stacked chart gives each
 // band's own value.
-function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) {
+function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean, fmtOf: (j: number) => (v: number) => string = () => v => v.toLocaleString()) {
   const head = box.querySelector('h3');
   if (!head) return;
   const note = el('span', { class: 'meta chart-note', role: 'status' });
@@ -399,6 +401,20 @@ function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) 
   const say = (t: string) => { note.textContent = t; };
   const fileName = (ext: string) => `${title.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'chart'}_${fileStamp(new Date())}.${ext}`;
   const shown = () => u.series.map((s, j) => ({ s, j })).filter(x => x.j > 0 && x.s.show);
+  // numbers: the series shown, a row per time, as the menu's Export Excel writes them; the page's own workbook reads the
+  // same from the box (export.ts pageExtras, X12: a chart's series as a sheet)
+  const numbers = (): ChartNumbers => {
+    const cols = shown(), xs = u.data[0] as number[];
+    return {
+      fmts: [undefined, ...cols.map(c => fmtOf(c.j))],
+      cols: ['time', ...cols.map(c => String(c.s.label ?? ''))],
+      rows: xs.map((x, i) => [new Date(x * 1000), ...cols.map(c => {
+        const tot = u.data[c.j][i], below = stacked && c.j > 1 ? u.data[c.j - 1][i] : 0;
+        return tot == null ? null : Number(((tot as number) - ((below as number | null) ?? 0)).toPrecision(12));
+      })]),
+    };
+  };
+  (box as PictureBox).pgvNumbers = numbers;
   const table = (sep: string): { text: string; rows: number } => {
     const q = (v: string) => sep === ',' && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
     const cols = shown(), xs = u.data[0] as number[];
@@ -448,13 +464,9 @@ function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) 
     ['Export data (CSV)', () => { const t = table(','); saveBlob(new Blob([t.text + '\n'], { type: 'text/csv;charset=utf-8' }), fileName('csv')); say(`Saved ${t.rows} points`); }],
     // Export Excel (DBA Dash's chart menu): the same numbers as a workbook, a time as a time, each value a number
     ['Export Excel', () => {
-      const cols = shown(), xs = u.data[0] as number[];
-      const rows = xs.map((x, i) => [new Date(x * 1000), ...cols.map(c => {
-        const tot = u.data[c.j][i], below = stacked && c.j > 1 ? u.data[c.j - 1][i] : 0;
-        return tot == null ? null : Number(((tot as number) - ((below as number | null) ?? 0)).toPrecision(12));
-      })]);
-      void exportChart(title, ['time', ...cols.map(c => String(c.s.label ?? ''))], rows)
-        .then(() => say(`Saved ${xs.length} points as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
+      const n = numbers();
+      void exportChart(title, n.cols, n.rows, n.kinds, parse(), n.fmts)
+        .then(() => say(`Saved ${n.rows.length} points as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
     }],
     ...(u.series.length > 2 ? [['Pick series', () => pickSeries(box, u, btn)] as [string, () => void]] : []),
   ];
@@ -908,6 +920,10 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     img.onerror = () => res(null);
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(src.includes('xmlns=') ? src : src.replace('<svg', `<svg xmlns="${SVG_NS}"`));
   });
+  // sliceNumbers: every slice as the menu's Export Excel writes it (its size a number, its share under '0.0%'); the page's
+  // own workbook reads the same from the box (export.ts pageExtras, X12: a chart's series as a sheet)
+  const sliceNumbers = (): ChartNumbers => ({ cols: ['name', 'size', 'share'], rows: all.map(s => [s.label, s.value, total ? s.value / total : null]), kinds: [undefined, undefined, 'pct'], fmts: [undefined, fmt, undefined] });
+  (box as PictureBox).pgvNumbers = sliceNumbers;
   const items: [string, () => void][] = [
     ['Copy image', () => { void (async () => {
       try { const b = await image(); if (!b) throw new Error('no image'); await navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]); say('Copied the image'); }
@@ -918,7 +934,8 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     ['Export data (CSV)', () => { saveBlob(new Blob([table(',') + '\n'], { type: 'text/csv;charset=utf-8' }), fileName('csv')); say(`Saved ${all.length} slices`); }],
     // Export Excel: every slice as a row, its size a number and its share under '0.0%'
     ['Export Excel', () => {
-      void exportChart(title, ['name', 'size', 'share'], all.map(s => [s.label, s.value, total ? s.value / total : null]), [undefined, undefined, 'pct'])
+      const n = sliceNumbers();
+      void exportChart(title, n.cols, n.rows, n.kinds, parse(), n.fmts)
         .then(() => say(`Saved ${all.length} slices as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
     }],
   ];
