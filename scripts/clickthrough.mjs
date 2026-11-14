@@ -110,7 +110,9 @@ const connect = async () => {
   await cmd('Page.addScriptToEvaluateOnNewDocument', { source: "try { if (location.origin === " + JSON.stringify(new URL(U).origin) + ") localStorage.setItem('pgvigil.refresh', '0'); } catch (e) {}" });
   await cmd('Fetch.enable', { patterns: [{ urlPattern: U + 'api/*', requestStage: 'Request' }] });
   await cmd('Page.setInterceptFileChooserDialog', { enabled: true });
-  await cmd('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dl }).catch(() => {});
+  // each download under its own GUID: a second save of the same file name (one deadlock's .xdl from two links) still
+  // adds a file, so the folder's count grows on every download (with 'allow' it did not: click-c5's two .xdl rows)
+  await cmd('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: dl }).catch(() => {});
   await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
   await cmd('Emulation.setLocaleOverride', { locale: 'en-US' }).catch(() => null);
@@ -233,7 +235,7 @@ const controls = withBar => ev(`(() => { const S = ${SIG}; const seen = new Map(
     what: (el.getAttribute('aria-label') || el.textContent || el.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80), disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
     reason: [el.title, ...(el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent?.trim() ?? '')].filter(Boolean).join(' | ').slice(0, 240),
     href: el.getAttribute('href'), type: el.type || '', opts: el.tagName === 'SELECT' ? [...el.options].map(o => o.value) : null, cur: el.tagName === 'SELECT' ? el.value : null,
-    on: ['aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
+    on: ['aria-selected', 'aria-current', 'aria-pressed'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
   return [...seen.values()]; })()`);
 const offNotes = () => ev(`[...document.querySelectorAll('main p.meta, main p.note, main .note, main .off-reason, main [id^=off-], dialog[open] p')].map(p => p.textContent.trim()).filter(t => /off here|is off|read only|read-only|needs|refused|not configured|no read login|no monitoring login|-no-login|disabled|demo/i.test(t)).map(t => t.slice(0, 240))`);
 // one step, given up to 5 s to find its control: a replay on a fresh page reaches a grid cell or a cell's button only
