@@ -129,12 +129,15 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	// connect_timeout; a DSN that does not parse is a failed connect, as before
 	cfg, err := pgx.ParseConfig(dsn)
 	var conn *pgx.Conn
+	var took time.Duration
 	if err == nil {
 		InstanceTarget(in.Name, PgTarget(cfg)) // task 201 DONE-2 N8: the dial target on the beat
 		withConnectTimeout(cfg)
+		t0 := time.Now()
 		conn, err = pgx.ConnectConfig(ctx, cfg)
+		took = time.Since(t0) // the slow-connect tier: the connect itself, the session setup after it not counted
 	}
-	err = InstanceConnect(in.Name, err)
+	err = InstanceConnectTimed(in.Name, err, took)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", in.Name, err)
 	}
