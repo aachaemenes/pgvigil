@@ -1,0 +1,194 @@
+diff --git i/cmd/pgvigil/purge.go w/cmd/pgvigil/purge.go
+index 3de2666..25ee16d 100644
+--- i/cmd/pgvigil/purge.go
++++ w/cmd/pgvigil/purge.go
+@@ -7,6 +7,7 @@ import (
+ 	"fmt"
+ 	"log/slog"
+ 	"os"
++	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -28,6 +29,7 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+ 	path := fs.String("config", "pgvigil.yaml", "path to the configuration file")
+ 	days := fs.Int("days", 30, "keep this many days; a monthly partition goes once its whole month is older")
+ 	dry := fs.Bool("dry-run", false, "list the partitions that would be dropped and change nothing")
++	hours := fs.String("hours", "", "set an hours table's own retention first: <table>=<days> (job_stats_hourly=730), several separated by commas")
+ 	if err := fs.Parse(args); err != nil {
+ 		if errors.Is(err, flag.ErrHelp) {
+ 			return nil
+@@ -46,6 +48,22 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+ 		return err
+ 	}
+ 	defer r.Close()
++	if *hours != "" {
++		sets, err := parseHoursFlag(*hours)
++		if err != nil {
++			return &usageError{err}
++		}
++		for _, h := range sets {
++			if *dry {
++				fmt.Printf("purge -hours: %s would keep %d days (not set: -dry-run)\n", h.table, h.days)
++				continue
++			}
++			if err := r.SetHoursRetention(ctx, h.table, h.days); err != nil {
++				return err
++			}
++			fmt.Printf("purge -hours: %s keeps %d days\n", h.table, h.days)
++		}
++	}
+ 	if *dry {
+ 		parts, err := r.PurgeCandidates(ctx, *days)
+ 		if err != nil {
+@@ -69,6 +87,28 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+ 	return nil
+ }
+ 
++// hoursSet is one '<table>=<days>' of -hours.
++type hoursSet struct {
++	table string
++	days  int
++}
++
++// parseHoursFlag reads -hours: '<table>=<days>' pairs separated by commas, each table a plain lower-case name and its
++// days 1 or more.
++func parseHoursFlag(v string) ([]hoursSet, error) {
++	var out []hoursSet
++	for _, part := range strings.Split(v, ",") {
++		t, d, ok := strings.Cut(strings.TrimSpace(part), "=")
++		n, err := strconv.Atoi(strings.TrimSpace(d))
++		t = strings.TrimSpace(t)
++		if !ok || err != nil || n < 1 || t == "" || strings.Trim(t, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
++			return nil, fmt.Errorf("-hours wants <table>=<days> with days 1 or more (job_stats_hourly=730), not %q", part)
++		}
++		out = append(out, hoursSet{t, n})
++	}
++	return out, nil
++}
++
+ // checkPurgeDays refuses a retention under one day: purge(0) would delete every row of the
+ // row-level series up to this moment.
+ func checkPurgeDays(days int) error {
+diff --git i/internal/repo/repo.go w/internal/repo/repo.go
+index ecce0f4..818eba2 100644
+--- i/internal/repo/repo.go
++++ w/internal/repo/repo.go
+@@ -416,8 +416,25 @@ func (r *Repo) Purge(ctx context.Context, days int) (int64, error) {
+ 	return n, nil
+ }
+ 
++// SetHoursRetention sets an hours table's own retention (pgvigil.hours_retention, 0139): the days its monthly
++// partitions are kept, apart from purge's -days. Only a table the store already lists is set (an unknown name is
++// refused with the known ones).
++func (r *Repo) SetHoursRetention(ctx context.Context, table string, days int) error {
++	tag, err := r.pool.Exec(ctx, `UPDATE pgvigil.hours_retention SET days = $2, changed_at = now() WHERE table_name = $1`, table, days)
++	if err != nil {
++		return fmt.Errorf("hours retention: %w", err)
++	}
++	if tag.RowsAffected() == 0 {
++		var known string
++		_ = r.pool.QueryRow(ctx, `SELECT coalesce(string_agg(table_name, ', ' ORDER BY table_name), 'none') FROM pgvigil.hours_retention`).Scan(&known)
++		return fmt.Errorf("hours retention: no hours table %q (the store has: %s)", table, known)
++	}
++	return nil
++}
++
+ // PurgeCandidates lists the monthly partitions under schema pgvigil that purge(days) would drop,
+-// by the function's own rule: the month after the partition's (UTC) lies before now minus days.
++// by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
++// (pgvigil.hours_retention, 0139) by its own days.
+ // It takes every partitioned series in the schema, so a series the function does not yet name
+ // would be listed though kept.
+ func (r *Repo) PurgeCandidates(ctx context.Context, days int) ([]string, error) {
+@@ -429,7 +446,8 @@ SELECT c.relname
+   JOIN pg_namespace ns ON ns.oid = p.relnamespace
+  WHERE ns.nspname = 'pgvigil'
+    AND c.relname ~ '_[0-9]{6}$'
+-   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => $1)
++   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
++       < now() - make_interval(days => coalesce((SELECT h.days FROM pgvigil.hours_retention h WHERE h.table_name = p.relname), $1))
+  ORDER BY c.relname`, days)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("purge candidates: %w", err)
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 3e4fc9e..bd692ce 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -411,6 +411,11 @@ BEGIN
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   DELETE FROM pgvigil.mssql_failed_logins WHERE logged_at < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  -- 0139 (FLEET STATS ROLLUP): the hours tables last, each by its own age in pgvigil.hours_retention (not p_days), so
++  -- no runs table is locked after an hours parent; it also heals the dirty hours of an instance that writes no more runs
++  IF to_regprocedure('pgvigil.job_stats_hourly_purge()') IS NOT NULL THEN
++    n := n + pgvigil.job_stats_hourly_purge();
++  END IF;
+   -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
+   INSERT INTO pgvigil.purge_runs (started_at, finished_at, days, partitions_dropped, rows_deleted, total)
+   VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);
+diff --git i/internal/web/q_retention.go w/internal/web/q_retention.go
+index 93cc2a4..7b5d8a4 100644
+--- i/internal/web/q_retention.go
++++ w/internal/web/q_retention.go
+@@ -6,7 +6,8 @@ package web
+ //   GET /api/retention[?days=N]               every table of the repository's schema: its size with its partitions,
+ //                                             what the retention does to it (read from pgvigil.purge()'s own text and
+ //                                             the text of the *_purge functions it calls, so the page follows the
+-//                                             functions as installed), its oldest partition or oldest row, the days that
++//                                             functions as installed; an hours table's own age from
++//                                             pgvigil.hours_retention, 0139), its oldest partition or oldest row, the days that
+ //                                             oldest row is from now, whether that age can be judged against the purge
+ //                                             age, and what a purge with -days N would drop (N 1-3650, default 30: the
+ //                                             deploy timer's)
+@@ -80,6 +81,19 @@ SELECT t.relname AS table_name, t.relkind = 'p' AS partitioned,
+   FROM t
+  ORDER BY size_bytes DESC, t.relname`
+ 
++// sqlRetentionHours is every hours table of pgvigil.hours_retention (0139): its own age in days (not purge's -days) and
++// the monthly partitions that age drops (its function, called by purge()'s last block, holds the drop; purge()'s text
++// does not name these parents).
++const sqlRetentionHours = `
++SELECT h.table_name, h.days,
++       count(c.oid) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => h.days))::int AS drop_months,
++       coalesce(sum(pg_total_relation_size(c.oid)) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
++                                                             < now() - make_interval(days => h.days)), 0)::bigint AS drop_bytes
++  FROM pgvigil.hours_retention h
++  LEFT JOIN pg_inherits i ON i.inhparent = to_regclass('pgvigil.' || h.table_name)
++  LEFT JOIN pg_class c ON c.oid = i.inhrelid AND c.relname ~ '_[0-9]{6}$'
++ GROUP BY h.table_name, h.days`
++
+ // del is one DELETE of the purge functions: the time column it compares with the age, whether it takes only the rows
+ // no longer present, the table whose rows keep these (its first NOT EXISTS), and whether it is a pure age rule (the
+ // age comparison and nothing else, so a row older than the age means the purge did not run with that age).
+@@ -277,6 +291,18 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 	}
+ 	rules := purgeRules(srcs)
++	// the hours tables (0139's hours_retention): their own age, read from their rows
++	hours := map[string][]any{}
++	ht, err := s.query(ctx, sqlRetentionHours)
++	if err != nil {
++		s.reply(w, r, nil, fmt.Errorf("hours tables: %w", err))
++		return
++	}
++	for _, hr := range ht.Rows {
++		if n, ok := hr[0].(string); ok {
++			hours[n] = hr
++		}
++	}
+ 	t, err := s.query(ctx, sqlRetentionTables, days)
+ 	if err != nil {
+ 		s.reply(w, r, nil, fmt.Errorf("tables: %w", err))
+@@ -306,6 +332,11 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
+ 		} else if ru != nil && ru.kind == "daily" {
+ 			drop, dropBytes = row[col["drop_days"]], row[col["drop_days_bytes"]]
+ 		}
++		if hr, ok := hours[name]; ok {
++			// an hours table keeps its own age, whatever the -days previewed: its words and drops say that age
++			words, judged, note = fmt.Sprintf("monthly partitions kept %v days, its own age (pgvigil.hours_retention; 'pgvigil purge -hours %s=<days>' sets it)", hr[1], name), false, ""
++			drop, dropBytes = hr[2], hr[3]
++		}
+ 		var actual, oldest any
+ 		if p, ok := row[col["oldest_partition"]].(time.Time); ok {
+ 			actual = int(now.Sub(p).Hours() / 24)
