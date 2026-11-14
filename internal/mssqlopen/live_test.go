@@ -93,3 +93,88 @@ SELECT count(*) FROM @l;`).Scan(&n)
 		t.Fatalf("after: the server logged %d more failed login(s), want 0 (no SQL login attempted)", n2-n1)
 	}
 }
+
+// auth entra-identity against a real Azure SQL Database or Managed Instance from an Azure VM's system-assigned identity
+// (scripts/proof-mssql-pool.sh part E and proof-mssql-mi.sh M6, run on the lab's VM; skipped without
+// PGVIGIL_ENTRA_HOST). The string is the
+// one config.BuildDSN writes for the page's and pgvigil.yaml's auth entra-identity, opened through Open as every
+// reader opens it.
+//
+//	PGVIGIL_ENTRA_HOST    the logical server's name (<server>.database.windows.net), or a Managed Instance's endpoint
+//	PGVIGIL_ENTRA_PORT    its port when not 1433 (a Managed Instance's public endpoint: 3342)
+//	PGVIGIL_ENTRA_DB      a database holding a user for the identity (by SID = its client id, TYPE = E) with VIEW
+//	                      DATABASE STATE
+//	PGVIGIL_ENTRA_NOUSER  a database of the same server holding no user for it (E2; optional)
+//	PGVIGIL_ENTRA_CLIENT  a user-assigned identity's client id; empty = the host's system-assigned identity
+//
+// E1: five connections in turn, each a new connect (no pooled connection kept), sign in as the identity: the server
+// names the same login each time, the database is the one asked, VIEW DATABASE STATE is held. E2: the database with no
+// user refuses the sign-in (Azure's words recorded: Azure SQL Database's 'Login failed' (18456), a Managed Instance's
+// 'Cannot open database' (4060) for an instance login without that database's user), and nothing in pgvigil falls back
+// to another sign-in.
+func TestEntraIdentityLive(t *testing.T) {
+	host, dbName := os.Getenv("PGVIGIL_ENTRA_HOST"), os.Getenv("PGVIGIL_ENTRA_DB")
+	if host == "" || dbName == "" {
+		t.Skip("PGVIGIL_ENTRA_HOST / PGVIGIL_ENTRA_DB not set")
+	}
+	port := 0
+	if p := os.Getenv("PGVIGIL_ENTRA_PORT"); p != "" {
+		var err error
+		if port, err = strconv.Atoi(p); err != nil || port < 1 || port > 65535 {
+			t.Fatalf("PGVIGIL_ENTRA_PORT %q is not a port", p)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	dsnFor := func(db string) string {
+		t.Helper()
+		d, err := config.BuildDSN(config.Conn{Engine: config.EngineSQLServer, Auth: "entra-identity", Host: host, Port: port, DBName: db, Login: os.Getenv("PGVIGIL_ENTRA_CLIENT")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if out := os.Getenv("PGVIGIL_ENTRA_DSN_OUT"); out != "" { // E3's instance takes the same string (no secret in it)
+		if err := os.WriteFile(out, []byte(dsnFor(dbName)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := Open(dsnFor(dbName))
+	if err != nil {
+		t.Fatalf("E1 open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxIdleConns(0) // every query below connects anew: each one signs in
+	var first string
+	for i := 1; i <= 5; i++ {
+		var login, dbn string
+		var vds int
+		if err := db.QueryRowContext(ctx, `SELECT SUSER_SNAME(), DB_NAME(), ISNULL(HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DATABASE STATE'), 0)`).Scan(&login, &dbn, &vds); err != nil {
+			t.Fatalf("E1 connect %d: %v", i, err)
+		}
+		if i == 1 {
+			first = login
+			t.Logf("E1 signed in as %q in %s, VIEW DATABASE STATE %d", login, dbn, vds)
+		}
+		if login != first || !strings.EqualFold(dbn, dbName) || vds != 1 {
+			t.Fatalf("E1 connect %d: login %q (first %q), database %s, VIEW DATABASE STATE %d", i, login, first, dbn, vds)
+		}
+	}
+	t.Logf("E1 5 connects, each signed in as the same identity (open connections now %d)", db.Stats().OpenConnections)
+	if nu := os.Getenv("PGVIGIL_ENTRA_NOUSER"); nu != "" {
+		db2, err := Open(dsnFor(nu))
+		if err != nil {
+			t.Fatalf("E2 open: %v", err)
+		}
+		defer func() { _ = db2.Close() }()
+		var login string
+		err = db2.QueryRowContext(ctx, `SELECT SUSER_SNAME()`).Scan(&login)
+		if err == nil {
+			t.Fatalf("E2 the database with no user let the identity in as %q", login)
+		}
+		if !strings.Contains(err.Error(), "Login failed") && !strings.Contains(err.Error(), "18456") && !strings.Contains(err.Error(), "Cannot open database") {
+			t.Fatalf("E2 failed, but not with Azure's sign-in refusal (Login failed / 18456, or a Managed Instance's Cannot open database / 4060): %v", err)
+		}
+		t.Logf("E2 refused by Azure: %v", err)
+	}
+}

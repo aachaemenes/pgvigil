@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -785,4 +786,42 @@ func TestXECloudSQLOneMaxMemory(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestXEReadTarget (A2, a real Managed Instance 2026-11-14): the target a session is read from - its event file, but on
+// Azure SQL Managed Instance its ring buffer (a file is read there only by its Azure Blob storage URL: Msg 40538 for
+// system_health.xel); a Managed Instance session with a file alone is not read ("").
+func TestXEReadTarget(t *testing.T) {
+	both := map[string]xeTarget{"event_file": {}, "ring_buffer": {}}
+	file := map[string]xeTarget{"event_file": {}}
+	ring := map[string]xeTarget{"ring_buffer": {}, "event_counter": {}}
+	for _, c := range []struct {
+		kind    Kind
+		targets map[string]xeTarget
+		want    string
+	}{
+		{KindServer, both, "event_file"},
+		{KindServer, file, "event_file"},
+		{KindServer, ring, "ring_buffer"},
+		{KindRDS, both, "event_file"},
+		{KindCloudSQL, both, "event_file"},
+		{KindAzureDB, ring, "ring_buffer"},
+		{KindAzureMI, both, "ring_buffer"},
+		{KindAzureMI, ring, "ring_buffer"},
+		{KindAzureMI, file, ""},
+		{KindServer, map[string]xeTarget{"event_counter": {}}, ""},
+	} {
+		if got := xeReadTarget(c.kind, c.targets); got != c.want {
+			t.Errorf("xeReadTarget(%s, %v) = %q, want %q", c.kind, keysOf(c.targets), got, c.want)
+		}
+	}
+}
+
+func keysOf(m map[string]xeTarget) []string {
+	out := []string{}
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

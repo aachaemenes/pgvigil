@@ -56,7 +56,7 @@ func TestConnectorChosenPerAuth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.conn.Auth, err)
 		}
-		got, err := connector(dsn)
+		got, err := connector(dsn, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", c.conn.Auth, err)
 		}
@@ -114,7 +114,7 @@ func TestOneCredentialPerIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"])
+		_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"], nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,7 +168,7 @@ func TestManagedIdentityTokenCached(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 5 {
-		_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"])
+		_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"], nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +214,13 @@ func TestOneSQLServerOpener(t *testing.T) {
 		}
 		// a go-mssqldb connector built elsewhere skips fedauth the same way (the join of 201 DONE-2, 11-14: its
 		// collector connect built one to set a dialer - OpenDialer is that door)
-		for _, ctor := range []string{".NewConnector(", ".NewConnectorConfig(", ".NewActiveDirectoryTokenConnector(", ".NewConnectorWithAccessTokenProvider(", ".NewSecurityTokenConnector("} {
+		// - only in a file that imports go-mssqldb (another driver's NewConnector is not this one; join review 4)
+		ctors := []string{".NewConnector(", ".NewConnectorConfig(", ".NewActiveDirectoryTokenConnector(", ".NewConnectorWithAccessTokenProvider(",
+			".NewSecurityTokenConnector(", ".NewConnectorWithProcessQueryText(", ".OpenConnector("}
+		if !strings.Contains(string(b), `"github.com/microsoft/go-mssqldb`) {
+			ctors = nil
+		}
+		for _, ctor := range ctors {
 			if strings.Contains(string(b), ctor) {
 				found = append(found, strings.TrimPrefix(p, root+string(filepath.Separator))+" ("+strings.Trim(ctor, ".(")+")")
 			}
@@ -225,7 +231,7 @@ func TestOneSQLServerOpener(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(found) > 0 {
-		t.Fatalf("SQL Server opened outside internal/mssqlopen (use mssqlopen.Open): %v", found)
+		t.Fatalf("SQL Server opened outside internal/mssqlopen (use mssqlopen.Open or mssqlopen.OpenDialer): %v", found)
 	}
 }
 
@@ -257,7 +263,7 @@ func TestDocumentedStrings(t *testing.T) {
 			t.Errorf("%s: %v", c.filled, err)
 			continue
 		}
-		got, err := connector(c.filled)
+		got, err := connector(c.filled, nil)
 		if err != nil {
 			t.Errorf("%s: %v", c.filled, err)
 			continue
@@ -283,7 +289,7 @@ func TestTokenAudience(t *testing.T) {
 	var asked atomic.Int32
 	newCredential = func(identity, string) (azcore.TokenCredential, error) { return fakeCred{&asked}, nil }
 	cfg, _ := msdsn.Parse("sqlserver://h?fedauth=ActiveDirectoryManagedIdentity")
-	_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"])
+	_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +303,7 @@ func TestFailedCredentialForgotten(t *testing.T) {
 	resetCredentials(t)
 	newCredential = func(identity, string) (azcore.TokenCredential, error) { return failCred{}, nil }
 	cfg, _ := msdsn.Parse("sqlserver://app:s@h?fedauth=ActiveDirectoryServicePrincipal")
-	_, provide, _ := tokenProvider(cfg, cfg.Parameters["fedauth"])
+	_, provide, _ := tokenProvider(cfg, cfg.Parameters["fedauth"], nil)
 	for i := range 5 {
 		_, _ = provide(context.Background(), "https://database.windows.net/", fmt.Sprintf("https://login.microsoftonline.com/tenant-%d", i))
 	}
@@ -349,6 +355,11 @@ func (noDial) DialContext(context.Context, string, string) (net.Conn, error) {
 // for an Entra string, the driver's own for any other; before, the collector built its own connector and an Entra
 // string signed in as a SQL login.
 func TestOpenDialerKeepsTheSignIn(t *testing.T) {
+	type row struct {
+		name, dsn string
+		own       bool // connector() makes a connector of its own: the dialer must go on that one
+	}
+	var rows []row
 	for _, c := range []struct {
 		conn config.Conn
 		fed  bool
@@ -363,25 +374,88 @@ func TestOpenDialerKeepsTheSignIn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.conn.Auth, err)
 		}
-		fc, err := connector(dsn)
+		rows = append(rows, row{"auth " + c.conn.Auth, dsn, c.fed})
+	}
+	if runtime.GOOS != "windows" {
+		// an old auth windows string (no login, no password, no authenticator): its Kerberos connector carries
+		// authenticator=krb5 in the parsed config only, so a dialer on a connector rebuilt from the string would sign
+		// in with NTLM and an empty SQL login (join review 3)
+		rows = append(rows, row{"Kerberos by default", "sqlserver://sql01?encrypt=true", true})
+	}
+	for _, c := range rows {
+		fc, err := connector(c.dsn, nil)
 		if err != nil {
-			t.Fatalf("%s: %v", c.conn.Auth, err)
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if c.own != (fc != nil) {
+			t.Fatalf("%s: connector() made a connector of its own %v, want %v", c.name, fc != nil, c.own)
 		}
 		var d noDial
-		mc, err := withDialer(fc, dsn, d)
+		mc, err := withDialer(fc, c.dsn, d)
 		if err != nil {
-			t.Fatalf("%s: withDialer: %v", c.conn.Auth, err)
+			t.Fatalf("%s: withDialer: %v", c.name, err)
 		}
 		if mc.Dialer != (mssql.Dialer)(d) {
-			t.Errorf("auth %s: the dialer is not set", c.conn.Auth)
+			t.Errorf("%s: the dialer is not set", c.name)
 		}
-		if c.fed && driver.Connector(mc) != fc {
-			t.Errorf("auth %s: the dialer went on another connector than the federated one", c.conn.Auth)
+		if fc != nil && driver.Connector(mc) != fc {
+			t.Errorf("%s: the dialer went on another connector than the one connector() chose", c.name)
 		}
-		db, err := OpenDialer(dsn, d)
+		db, err := OpenDialer(c.dsn, d)
 		if err != nil {
-			t.Fatalf("%s: OpenDialer: %v", c.conn.Auth, err)
+			t.Fatalf("%s: OpenDialer: %v", c.name, err)
 		}
 		_ = db.Close()
+	}
+}
+
+// fakeHolder counts its holds and releases; held is true between them.
+type fakeHolder struct{ holds, releases, held atomic.Int32 }
+
+func (h *fakeHolder) Hold() func() {
+	h.holds.Add(1)
+	h.held.Store(1)
+	return func() { h.held.Store(0); h.releases.Add(1) }
+}
+
+// holdCred answers a token only while the holder is held (else an error), as a slow identity provider would be timed.
+type holdCred struct{ h *fakeHolder }
+
+func (c holdCred) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	if c.h.held.Load() != 1 {
+		return azcore.AccessToken{}, errors.New("the token was fetched while the connect's deadline ran")
+	}
+	return azcore.AccessToken{Token: "tok", ExpiresOn: time.Now().Add(time.Hour)}, nil
+}
+
+// TestProviderHoldsTheDeadline (join review 2): the token provider holds the dialer's deadline while it fetches the
+// token and releases it after, on success and on a refusal; a nil holder (Open's) holds nothing.
+func TestProviderHoldsTheDeadline(t *testing.T) {
+	resetCredentials(t)
+	h := &fakeHolder{}
+	newCredential = func(identity, string) (azcore.TokenCredential, error) { return holdCred{h}, nil }
+	cfg, _ := msdsn.Parse("sqlserver://h?fedauth=ActiveDirectoryManagedIdentity")
+	_, provide, err := tokenProvider(cfg, cfg.Parameters["fedauth"], h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := provide(context.Background(), "https://database.windows.net/", "https://login.microsoftonline.com/t"); err != nil || tok != "tok" {
+		t.Fatalf("token %q, err %v; want tok fetched under the hold", tok, err)
+	}
+	if h.holds.Load() != 1 || h.releases.Load() != 1 || h.held.Load() != 0 {
+		t.Fatalf("holds %d, releases %d, held %d after one fetch; want 1, 1, 0", h.holds.Load(), h.releases.Load(), h.held.Load())
+	}
+	if _, err := provide(context.Background(), "https://vault.azure.net", "https://login.microsoftonline.com/t"); err == nil {
+		t.Fatal("a Key Vault audience was not refused")
+	}
+	if h.holds.Load() != h.releases.Load() || h.held.Load() != 0 {
+		t.Fatalf("a refused audience left the hold on: holds %d, releases %d", h.holds.Load(), h.releases.Load())
+	}
+	_, nilProvide, err := tokenProvider(cfg, cfg.Parameters["fedauth"], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nilProvide(context.Background(), "https://database.windows.net/", "https://login.microsoftonline.com/t"); err == nil {
+		t.Fatal("with no holder the fake credential answered (it answers only under a hold): the test cannot tell")
 	}
 }

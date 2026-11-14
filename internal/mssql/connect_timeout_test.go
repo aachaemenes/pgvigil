@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -50,14 +51,24 @@ func TestConnectTimeoutDefault(t *testing.T) {
 	collect.DefaultConnectTimeout = 300 * time.Millisecond
 	defer func() { collect.DefaultConnectTimeout = old }()
 	port := ln.Addr().(*net.TCPAddr).Port
-	for _, c := range []struct {
+	type row struct {
 		dsn      string
 		min, max time.Duration
-	}{
+	}
+	rows := []row{
 		{fmt.Sprintf("sqlserver://u:p@127.0.0.1:%d?database=master&encrypt=disable", port), 200 * time.Millisecond, 3 * time.Second},
 		{fmt.Sprintf("server=127.0.0.1;port=%d;user id=u;password=p;database=master;encrypt=disable", port), 200 * time.Millisecond, 3 * time.Second},
 		{fmt.Sprintf("sqlserver://u:p@127.0.0.1:%d?database=master&encrypt=disable&connection+timeout=2", port), 1800 * time.Millisecond, 6 * time.Second},
-	} {
+		// the deadline reaches the connector mssqlopen.OpenDialer chooses (join review 5): the federated one (the
+		// prelogin read stalls before any token request: nothing goes to Entra) ...
+		{fmt.Sprintf("sqlserver://app-id:s3cret@127.0.0.1:%d?database=master&encrypt=disable&fedauth=ActiveDirectoryServicePrincipal", port), 200 * time.Millisecond, 3 * time.Second},
+	}
+	if runtime.GOOS != "windows" {
+		// ... and the Kerberos one an old auth windows string gets off Windows (its authenticator is made after the
+		// prelogin: no krb5.conf is read)
+		rows = append(rows, row{fmt.Sprintf("sqlserver://127.0.0.1:%d?database=master&encrypt=disable", port), 200 * time.Millisecond, 3 * time.Second})
+	}
+	for _, c := range rows {
 		done := make(chan error, 1)
 		start := time.Now()
 		go func() {
@@ -171,6 +182,89 @@ func TestDeadlineDialerDone(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if _, err := c.Read(make([]byte, 1)); err != nil {
 		t.Errorf("a read after done() failed: %v (want the byte)", err)
+	}
+}
+
+// TestDeadlineDialerHold (join review 2): a hold lifts the connect's deadline while an Entra token is fetched - a read
+// that would time out at 300 ms gets its byte at 600 ms - and its release gives back the time that was left, so a
+// server that then says nothing still ends the connect; no hold after done() or without a deadline.
+func TestDeadlineDialerHold(t *testing.T) {
+	addr, stop := silentListener(t, 600*time.Millisecond)
+	defer stop()
+	d := &deadlineDialer{until: time.Now().Add(300 * time.Millisecond), keepAlive: 30 * time.Second}
+	c, err := d.DialContext(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	release := d.Hold()
+	start := time.Now()
+	if _, err := c.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("a read under the hold failed after %v: %v (want the byte at about 600 ms)", time.Since(start).Round(10*time.Millisecond), err)
+	}
+	release()
+	start = time.Now()
+	done := make(chan error, 1)
+	go func() { _, err := c.Read(make([]byte, 1)); done <- err }()
+	select {
+	case err := <-done:
+		if el := time.Since(start); err == nil || el < 100*time.Millisecond || el > 1500*time.Millisecond {
+			t.Errorf("after the release the read ended after %v with %v (want an i/o timeout at about 300 ms)", el.Round(10*time.Millisecond), err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("the release did not put the deadline back: the read still waits after 3 s")
+	}
+	d.done()
+	d.Hold()() // after done(): nothing to hold, nothing put back
+	if !d.until.IsZero() {
+		t.Errorf("a hold after done() set a deadline: %v", d.until)
+	}
+	free := &deadlineDialer{keepAlive: 30 * time.Second} // the DSN sets its own 'connection timeout'
+	free.Hold()()
+	if !free.until.IsZero() {
+		t.Errorf("a hold on a dialer without a deadline set one: %v", free.until)
+	}
+}
+
+// TestRefusedStringRecordsNoTarget (join review 1): a string mssqlopen refuses after it parses is a configuration error
+// - it counts its attempt but records no dial target, so it never stands for its server as an answered attempt; a
+// string that opens records its target.
+func TestRefusedStringRecordsNoTarget(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]string{}
+	old := recordTarget
+	recordTarget = func(instance, target string) { mu.Lock(); got[instance] = target; mu.Unlock() }
+	defer func() { recordTarget = old }()
+	oldT := collect.DefaultConnectTimeout
+	collect.DefaultConnectTimeout = 200 * time.Millisecond
+	defer func() { collect.DefaultConnectTimeout = oldT }()
+	addr, stop := silentListener(t, 0)
+	defer stop()
+	_, port, _ := net.SplitHostPort(addr)
+	for _, c := range []struct{ name, dsn, want string }{
+		{"refused", "sqlserver://srv1.database.windows.net?database=db1&fedauth=ActiveDirectoryDefault", ""},
+		{"refused2", "sqlserver://app-id@srv1.database.windows.net?database=db1&fedauth=ActiveDirectoryServicePrincipal", ""},
+		{"opens", "sqlserver://u:p@127.0.0.1:" + port + "?database=master&encrypt=disable", "mssql:127.0.0.1:" + port},
+	} {
+		db, conn, err := Connect(context.Background(), config.Instance{Name: c.name, DSNRaw: c.dsn})
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if db != nil {
+			_ = db.Close()
+		}
+		if err == nil {
+			t.Errorf("%s: connected (want an error)", c.name)
+		}
+		mu.Lock()
+		target, recorded := got[c.name]
+		mu.Unlock()
+		if c.want == "" && recorded {
+			t.Errorf("%s: a string mssqlopen refuses recorded the target %q (%v)", c.name, target, err)
+		}
+		if c.want != "" && target != c.want {
+			t.Errorf("%s: target %q (want %q)", c.name, target, c.want)
+		}
 	}
 }
 

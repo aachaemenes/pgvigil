@@ -24,6 +24,10 @@ func (logshippingCollector) Applies(info Info) (bool, string) {
 	case info.Kind == KindRDS:
 		// RDS's master user cannot grant msdb's log shipping tables either: the login could never read them
 		return false, "Amazon RDS for SQL Server has no log shipping"
+	case info.Kind == KindAzureMI:
+		// Microsoft's T-SQL differences page for Managed Instance: "Differential, log, and file snapshot backups
+		// aren't supported" - a user takes COPY_ONLY full backups to a URL only, so there is no log to ship
+		return false, "Azure SQL Managed Instance has no log shipping: it takes no log backup a user can ship"
 	case !info.MsdbAccess:
 		return false, "the login has no access to msdb (a user there with db_datareader)"
 	}

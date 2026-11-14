@@ -1,6 +1,6 @@
-# SQL Server in the cloud: Azure SQL Database, Amazon RDS and Google Cloud SQL
+# SQL Server in the cloud: Azure SQL Database, Azure SQL Managed Instance, Amazon RDS and Google Cloud SQL
 
-The [SQL Server engine](sqlserver.md) reads two managed services besides a server someone runs: Azure SQL Database and Amazon RDS for SQL Server. This page says, per service, how pgvigil tells it apart, which login it needs, what each collection does there and why, and what was proven against a real instance of each.
+The [SQL Server engine](sqlserver.md) reads four managed services besides a server someone runs: Azure SQL Database, Azure SQL Managed Instance, Amazon RDS for SQL Server and Google Cloud SQL for SQL Server. This page says, per service, how pgvigil tells it apart, which login it needs, what each collection does there and why, and what was proven against a real instance of each.
 
 Nothing is installed on the monitored server and nothing is written there, on either service: the proofs read every object, principal, permission and event session before and after the collector's runs and find them equal.
 
@@ -97,9 +97,33 @@ A database in an elastic pool is an Azure SQL Database instance like any other; 
 
 Proven against a live Basic 50 eDTU pool of two databases: the read as a login holding `##MS_ServerStateReader##` with a user in the database (six complete minutes equal, field by field, to the server admin's read of the view right after), the role's reach (`##MS_DatabaseConnector##` and `##MS_ServerStateReader##` with no user in the database read the view), the pool's name from `sys.database_service_objectives`, the store's one row a minute from the first of the two databases, and the storage status (OK). Not proven live: a vCore pool's columns (instance CPU and memory), and the cell against master's own `sys.elastic_pool_resource_stats`.
 
+## Azure SQL Managed Instance
+
+A Managed Instance is an instance-scoped SQL Server that Microsoft runs (`EngineEdition` 8, kind `azuresqlmi`): most collections run on it as on a server someone runs. DBA Dash skips backups, mirroring, log restores and the availability group reads there; pgvigil follows Microsoft's T-SQL differences page item by item, below. `scripts/proof-mssql-mi.sh` runs these against a real General Purpose instance (Microsoft's free offer); Business Critical (its readable secondary, `AlwaysOn_health`) has not run.
+
+### The login
+
+Made in master by the instance's admin (a SQL login, or an Entra one), as on a server someone runs ([the login](sqlserver.md)): VIEW SERVER STATE (Microsoft: the DMVs need it there too), VIEW ANY DEFINITION, CONNECT ANY DATABASE (a built-in server permission there; without it a real instance's identity read was partial with "the login can enter none of the 1 online user database(s)", and its index, Query Store and statistics reads with "the login cannot enter any of the 1 user database(s)"), ALTER TRACE for the default trace (not settled there: below), a user in msdb with db_datareader. For `entra-identity` (above) the login is `CREATE LOGIN [<the identity's name>] FROM EXTERNAL PROVIDER;` in master, the name being the identity's display name (a system-assigned identity's is its VM's name). The instance must have a Microsoft Entra admin (a group here; a guest account of the tenant was refused as the admin); then its SQL admin (sysadmin) may make the login too. A real instance with no Entra admin refused it with Msg 33134 "Principal '<name>' could not be resolved", twice, with the Directory Readers role already given to the instance's own identity (a tenant role, given in Entra; not run without it). A login with no user in a database and without CONNECT ANY DATABASE is refused there with 4060 "Cannot open database ... requested by the login".
+
+### What runs
+
+The collections run as on a server someone runs, with these differences:
+
+| collection | on a Managed Instance | why (Microsoft's T-SQL differences page, unless named) |
+| --- | --- | --- |
+| `mssql_mirroring` | skipped | "Database mirroring isn't supported." |
+| `mssql_logshipping` | skipped | "Differential, log, and file snapshot backups aren't supported": a user takes `COPY_ONLY` full backups to a URL only, so there is no log of the user's own to ship |
+| `mssql_checks`, its alerts area | the operators only | SQL Server Agent: "Alerts aren't yet supported." and "Pager isn't supported.", while email notification is: 'no operator' is judged; the alert findings (severities 19 to 25, corruption errors, disabled alerts) and the fail-safe operator (it serves alert paging) are not. The Summary's alerts cell then counts 0 alerts |
+| `mssql_backups` | runs; master, model and msdb not judged (each with its reason: master is not backed up, model and msdb are kept by the service) | ['Automated backups'](https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/automated-backups-overview): "The system databases are automatically backed up (excluding the physical master database), but these backups aren't currently logged in msdb." User databases are judged: ['Monitor backup activity'](https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/backup-activity-monitor) says the instance "stores backup information in the msdb database". The collection stays on (DBA Dash skips it) because it also lists the databases for new and dropped databases |
+| `mssql_errorlog` | runs | `sp_readerrorlog` reads the unfiltered log there (Microsoft's SQLCAT post on `sp_readmierrorlog`, an open-source procedure that filters it: not used) |
+| Extended Events | ring buffers | `pgvigil mssql-xe -print -form azuresqlmi`: "The `event_file` target isn't supported" (a file there must be in Azure Blob storage); `system_health` (`mssql_syshealth`, and the deadlock reports `mssql_xe` reads without pgvigil's own session) is read from its ring buffer, which it keeps beside its file there: a real instance refused its file `system_health.xel` by name (Msg 40538, "A valid URL beginning with 'https://' is required"). That ring comes back cut off: a real instance's held 1,267 events in about 4 MB, and its output (truncated) the oldest 703, the newest of them 16 minutes old, so the component results and `system_health`'s deadlock reports arrive that late there (read once, not over hours); the reader's state says the output was cut off. pgvigil's own deadlock session keeps a ring of its own |
+| the Windows power plan, the memory limit | not read, not advised | Microsoft runs the host and sets the memory limit |
+
+A real General Purpose instance (Microsoft's free offer) answered `scripts/proof-mssql-mi.sh`: every collection ok or skipped as the login above (`mssql_plancache` partial only by its own cap, as anywhere), msdb rows for its user database's automatic full and log backups (none for master, model and msdb), the four `-form azuresqlmi` sessions with no `event_file` target, and `entra-identity` from a VM's system-assigned identity. Not settled: the default trace (that login held no ALTER TRACE, so its reader's "ok" was the "no right" state, not a read), whether every automatic differential and log backup keeps its row (and whether the weekly full against the 168-hour default warns before each new full), and what the availability group reads show for Business Critical's own replicas and a Managed Instance link.
+
 ## Google Cloud SQL for SQL Server
 
-Google's own SQL Server instances: SQL Server on Linux that Google runs, the customer's highest login being the `sqlserver` user (no sysadmin). DBA Dash has no Cloud SQL detection; this is pgvigil's own reading of Google's pages, run so far only against a simulation (below).
+Google's own SQL Server instances: SQL Server on Linux that Google runs, the customer's highest login being the `sqlserver` user (no sysadmin). DBA Dash has no Cloud SQL detection; this is pgvigil's own reading of Google's pages, run against a real instance (Express) and a simulation (below).
 
 ### How it is told apart
 
@@ -211,4 +235,4 @@ These results are for this release's code, which includes the collector and page
 
 - Azure SQL Database: the Basic, S0 and S1 tiers as single databases (their rights differ, above; a Basic elastic pool is proven live: the elastic pools section), a vCore elastic pool, Microsoft Entra sign-in with a service principal (`entra`) or a user-assigned identity against a live server (built: above; a system-assigned identity is proven live on a pooled database), a geo-replica.
 - Amazon RDS: editions other than Express (Web, Standard, Enterprise: SQL Server Agent and its jobs, Multi-AZ with Always On or mirroring), Windows authentication through AWS Managed Microsoft AD, RDS Custom.
-- Not in this release: Azure SQL Managed Instance and AlloyDB are not proven against a real instance (Google Cloud SQL for SQL Server is: Express, the login above, above); a Managed Instance is detected and read like a server, with no collection switched off by its kind.
+- Not in this release: AlloyDB is not proven against a real instance. Google Cloud SQL for SQL Server is (Express, the login above, above); Azure SQL Managed Instance is on General Purpose (above), not on Business Critical.

@@ -18,9 +18,10 @@ import (
 //
 // SQL Server runs sp_server_diagnostics for itself every five minutes and its system_health session records the
 // result of four components (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM): a state (CLEAN, WARNING, ERROR) and
-// a document of figures. The reader takes each result from the session's event file, past a cursor of its own
-// (source 'syshealth': the Extended Events reader keeps another for the deadlock reports it takes from the same
-// files), and stores the state with the figures a finding is made of:
+// a document of figures. The reader takes each result from the session's event file (on Azure SQL Managed Instance
+// its ring buffer: xeReadTarget), past a cursor of its own (source 'syshealth': the Extended Events reader keeps
+// another for the deadlock reports it takes from the same target), and stores the state with the figures a finding
+// is made of:
 //
 //	SYSTEM            spinlock backoffs and a sick spinlock type, latch warnings, access violations, dump requests,
 //	                  non-yielding tasks, bad pages detected and fixed, page faults, CPU
@@ -177,11 +178,12 @@ func parseComponentResult(e *xeEvent, c xeContext) collect.Row {
 		"detail": detail}
 }
 
-// RunBatches reads system_health's event file past the reader's cursor and stores the component results.
+// RunBatches reads system_health's event file (on a Managed Instance its ring buffer) past the reader's cursor and
+// stores the component results.
 func (sysHealthCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, opt BatchOptions, cursor CursorFunc, emit EmitFunc) error {
 	if !info.ViewServerState {
 		return emit([]collect.Row{readerStateRow(sysHealthSource, readerNoRight,
-			"the login lacks VIEW SERVER STATE: the system_health session and its event file cannot be read")})
+			"the login lacks VIEW SERVER STATE: the system_health session and its targets cannot be read")})
 	}
 	targets, err := xeListTargets(ctx, conn, info)
 	if err != nil {
@@ -202,12 +204,34 @@ func (sysHealthCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 		return emit([]collect.Row{readerStateRow(sysHealthSource, readerFailed, err.Error()),
 			{"kind": "collector_error", "source": "system_health", "message": err.Error()}})
 	}
-	t, ok := s.targets["event_file"]
-	if !ok {
-		// a session a DBA changed, or a platform that writes it to a ring buffer only: not a failed read
-		return emit([]collect.Row{readerStateRow(sysHealthSource, readerOff,
-			"system_health has no event_file target on this server: this reader takes the component results from the file only")})
+	batchEmit := emit
+	if linuxHost(ctx, conn) {
+		// SQL Server on Linux writes the scheduler monitor's system_idle as 0 (cpu.go's rule): not stored as read
+		batchEmit = func(rows []collect.Row) error { return emit(dropLinuxIdle(rows)) }
 	}
+	r := &xeRun{ctx: ctx, conn: conn, info: info, opt: opt, cursor: cursor, emit: batchEmit, now: time.Now()}
+	xc := xeContext{source: "system_health", session: "system_health", queryText: opt.QueryText}
+	side := collect.Row{}
+	scope := xeReadTarget(info.Kind, s.targets)
+	switch scope {
+	case "":
+		// a session a DBA changed, or a Managed Instance's system_health without its ring buffer: not a failed read
+		why := "system_health has neither an event_file nor a ring_buffer target on this server"
+		if _, file := s.targets["event_file"]; file && info.Kind == KindAzureMI {
+			why = xeMIFileOnly("system_health")
+		}
+		return emit([]collect.Row{readerStateRow(sysHealthSource, readerOff, why)})
+	case "ring_buffer":
+		// Azure SQL Managed Instance (xeReadTarget), or a server whose system_health a DBA left with its ring buffer only
+		if err := r.readRing(sysHealthSource, "system_health", s.targets["ring_buffer"], sysEventList(), xc, side); err != nil {
+			if noRightError(err) {
+				return emit([]collect.Row{readerStateRow(sysHealthSource, readerNoRight, "the login may not read the ring buffer: "+err.Error())})
+			}
+			return failed(err)
+		}
+		return sysHealthDone(ctx, cursor, emit, scope, side)
+	}
+	t := s.targets["event_file"]
 	var ft xeFileTarget
 	if err := xml.Unmarshal([]byte(t.targetData), &ft); err != nil || ft.File.Name == "" {
 		return failed(errors.New("the event file target of system_health names no file"))
@@ -216,26 +240,31 @@ func (sysHealthCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 	if pattern == "" {
 		return failed(fmt.Errorf("the event file of system_health has an unexpected name: %s", ft.File.Name))
 	}
-	batchEmit := emit
-	if linuxHost(ctx, conn) {
-		// SQL Server on Linux writes the scheduler monitor's system_idle as 0 (cpu.go's rule): not stored as read
-		batchEmit = func(rows []collect.Row) error { return emit(dropLinuxIdle(rows)) }
-	}
-	r := &xeRun{ctx: ctx, conn: conn, info: info, opt: opt, cursor: cursor, emit: batchEmit, now: time.Now()}
-	side := collect.Row{}
-	if err := r.readFile(sysHealthSource, pattern, sysEventList(), sysHealthBatch,
-		xeContext{source: "system_health", session: "system_health", queryText: opt.QueryText}, side); err != nil {
+	if err := r.readFile(sysHealthSource, pattern, sysEventList(), sysHealthBatch, xc, side); err != nil {
 		if noRightError(err) {
 			return emit([]collect.Row{readerStateRow(sysHealthSource, readerNoRight, "the login may not read the event file: "+err.Error())})
 		}
 		return failed(err)
 	}
+	return sysHealthDone(ctx, cursor, emit, scope, side)
+}
+
+// sysHealthDone is the reader's state row after a read of system_health's file or ring buffer.
+func sysHealthDone(ctx context.Context, cursor CursorFunc, emit EmitFunc, scope string, side collect.Row) error {
 	state := readerStateRow(sysHealthSource, readerRead, "")
-	state["scope"] = "event_file"
+	state["scope"] = scope
 	state["scanned"], state["stored"] = side["new_events"], side["new_events"]
-	if note, ok := side["note"].(string); ok {
-		state["note"] = strOrNil(note)
+	if n, ok := side["scanned_events"]; ok {
+		state["scanned"] = n
 	}
+	var notes []string
+	if note, ok := side["note"].(string); ok && note != "" {
+		notes = append(notes, note)
+	}
+	if n := ringLossNote(side); n != "" {
+		notes = append(notes, "system_health: "+n)
+	}
+	state["note"] = strOrNil(strings.Join(notes, "; "))
 	if cur, err := cursor(ctx, sysHealthSource); err == nil && cur.Found {
 		state["newest_at"] = instantText(cur.LastEventAt)
 	}

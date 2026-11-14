@@ -13,15 +13,16 @@
 #   PGVIGIL_DEMO_WAIT_S   seconds to wait for the seeded demo (default 240)
 #   PGVIGIL_WORDING_OUT   a file that gets the walk's JSON (every page, every red, the grade)
 #   PGVIGIL_WORDING_SHOTS a folder: a shot of each page read
-# Expected (the seventh run: walk-w6 on 0c1fe35 was red by one row outside the file - the help sentence at
-# pg_backups.ts:361 ('a database to one database (amcheck)') in a SQL Server folder, which the prose row the second
-# fold removed with the picker's options also covered; that row back with the sentence as its source; walk-w6's own
-# reds re-graded on this file by the matcher's grade(): 107 must listed, 8 must-not gone, 0 outside; written before it):
+# Expected (the run on the join's tip 6690789 with the five SQL Server group names' 31 rows moved to must-not: the
+# join's j11 on af0d2e9 listed 26 must rows 'not seen' - Memory Dump, Availability Group, Last Good Check DB, Agent
+# Jobs, Backup LOG on PostgreSQL rows and scopes, gone since a1e161f's labelOf / pgLabel - and the 5 may rows of the
+# same names showed no red either; every other line of j11 unchanged; written before it):
 #   the matcher's self-test: 65 of 65 cases (63 words, 5 allow rows, 147 expected rows)
-#   picked: PostgreSQL demo-onprem-erp01 and demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
-#     demo-onprem-sql01 and demo-azure-sql03; tags aurora (PostgreSQL; 3 instance(s)) and sales (SQL Server; 2)
-#   pages: 357, 0 not read (0 not settled, 0 with 0 elements, 0 with an error box); the tree menu 4 items per engine
-#   the grade: every must row listed (107), every must-not row gone (8), the 32 may rows reported; no red outside
+#   picked: PostgreSQL demo-onprem-erp01, demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
+#     demo-onprem-sql01, demo-azure-sql03; tags aurora (PostgreSQL; 3 instance(s)), sales (SQL Server; 2)
+#   pages: 361 (pg-instance 125, ms-instance 111, pg-tag 61, ms-tag 61, root 3), 0 not read (0 not settled, 0 with 0
+#     elements, 0 with an error box); the tree menu 4 items per engine
+#   the grade: every must row listed (81), every must-not row gone (39), the 27 may rows reported; no red outside
 #     the file: 'wording walk: OK'
 set -uo pipefail
 cd "$(dirname "$0")/.."
