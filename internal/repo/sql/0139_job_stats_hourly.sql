@@ -34,10 +34,12 @@
 --                      first, and while that instance's defer row lives (30 minutes, renewed by each deferred batch) the
 --                      triggers only merge the touched range into one dirty row; job_stats_build at the import's end
 --                      builds it ONCE. An import that dies leaves the row to lapse: the next write or purge heals
---   the first build    none in this file (it would hold the job tables' writes or leave holes): every instance with
---                      stored runs gets a dirty range here, so its next import (or purge()'s block) builds its hours
---                      through job_stats_rebuild under the same lock; the stats cells fill as each instance's next jobs
---                      import runs (5 minutes)
+--   the first build    none in this file, and no row written by it (it would hold the job tables' writes or leave
+--                      holes; and no migration writes a stored row, docs/upgrade.md): an instance with no
+--                      job_stats_built row is built whole (job_stats_rebuild over its every run, under the same lock)
+--                      by the first heal that meets it - its next import's trigger call, job_stats_build, or purge()'s
+--                      block, which also takes the instances with stored runs and no marker - and the marker is
+--                      written then; the stats cells fill as each instance's next jobs import runs (5 minutes)
 --   retention          pgvigil.hours_retention, one row per hours table (this file seeds job_stats_hourly 730 days,
 --                      DBA Dash's for JobStats_60MIN); job_stats_hourly_purge drops the months older than it, and is
 --                      called by purge()'s last block
@@ -83,6 +85,12 @@ CREATE TABLE IF NOT EXISTS pgvigil.hours_retention (
   changed_at  timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO pgvigil.hours_retention (table_name, days) VALUES ('job_stats_hourly', 730) ON CONFLICT (table_name) DO NOTHING;
+
+-- the instances whose hours were built whole once (their first build); one with no row is built whole by the next heal
+CREATE TABLE IF NOT EXISTS pgvigil.job_stats_built (
+  instance_id  int PRIMARY KEY,
+  built_at     timestamptz NOT NULL DEFAULT now()
+);
 
 -- an instance whose history is being imported: until until_at the triggers only mark its hours dirty
 CREATE TABLE IF NOT EXISTS pgvigil.job_stats_defer (
@@ -190,12 +198,20 @@ BEGIN
   RETURN v_n;
 END $$;
 
--- job_stats_heal: one instance's dirty ranges rebuilt and removed (the caller holds the instance's lock); an error
--- leaves them for the next call
+-- job_stats_heal: one instance's dirty ranges rebuilt and removed (the caller holds the instance's lock); an instance
+-- not yet built (no job_stats_built row: its runs were stored before 0139) is built whole instead, once, and marked;
+-- an error leaves them for the next call
 CREATE OR REPLACE FUNCTION pgvigil.job_stats_heal(p_instance_id int)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE v record; v_n int := 0;
 BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_built b WHERE b.instance_id = p_instance_id) THEN
+    v_n := pgvigil.job_stats_rebuild(p_instance_id, '-infinity', 'infinity');
+    INSERT INTO pgvigil.job_stats_built AS b (instance_id) VALUES (p_instance_id)
+    ON CONFLICT (instance_id) DO UPDATE SET built_at = now();
+    DELETE FROM pgvigil.job_stats_dirty WHERE instance_id = p_instance_id;
+    RETURN v_n;
+  END IF;
   FOR v IN SELECT d.from_at, d.to_at FROM pgvigil.job_stats_dirty d WHERE d.instance_id = p_instance_id ORDER BY d.from_at LOOP
     v_n := v_n + pgvigil.job_stats_rebuild(p_instance_id, v.from_at, v.to_at);
   END LOOP;
@@ -328,8 +344,9 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- job_stats_hourly_purge: the months of job_stats_hourly wholly older than its hours_retention row (730 days when
--- absent) dropped, then the dirty ranges of the instances no trigger call healed (they write no more runs) rebuilt;
--- called by purge()'s last block. Returns the partitions dropped.
+-- absent) dropped, then the dirty ranges of the instances no trigger call healed (they write no more runs) rebuilt,
+-- and the instances with stored runs never built (no job_stats_built row) built whole; called by purge()'s last
+-- block. Returns the partitions dropped.
 CREATE OR REPLACE FUNCTION pgvigil.job_stats_hourly_purge()
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE v_days int; v_part record; v_i record; v_n int := 0;
@@ -347,9 +364,15 @@ BEGIN
     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);
     v_n := v_n + 1;
   END LOOP;
-  FOR v_i IN SELECT DISTINCT d.instance_id FROM pgvigil.job_stats_dirty d
-              WHERE NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_defer f WHERE f.instance_id = d.instance_id AND f.until_at > now())
-              ORDER BY d.instance_id LOOP
+  FOR v_i IN SELECT u.instance_id
+               FROM (SELECT d.instance_id FROM pgvigil.job_stats_dirty d
+                     UNION
+                     SELECT i.instance_id FROM pgvigil.instances i
+                      WHERE NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_built b WHERE b.instance_id = i.instance_id)
+                        AND (EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs r WHERE r.instance_id = i.instance_id)
+                             OR EXISTS (SELECT 1 FROM pgvigil.job_runs r WHERE r.instance_id = i.instance_id))) u
+              WHERE NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_defer f WHERE f.instance_id = u.instance_id AND f.until_at > now())
+              ORDER BY u.instance_id LOOP
     BEGIN
       PERFORM pg_advisory_xact_lock(hashtext('pgvigil.job_stats_hourly'), v_i.instance_id);
       PERFORM pgvigil.job_stats_heal(v_i.instance_id);
@@ -370,14 +393,3 @@ CREATE TRIGGER job_stats_hourly_ins AFTER INSERT ON pgvigil.job_runs
 DROP TRIGGER IF EXISTS job_stats_hourly_upd ON pgvigil.job_runs;
 CREATE TRIGGER job_stats_hourly_upd AFTER UPDATE ON pgvigil.job_runs
   REFERENCING NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION pgvigil.job_stats_pg_tg();
-
--- the first build: every instance with stored runs is dirty from its first run to an hour past now (a run committed
--- while this file ran is inside it), so its next import or purge() builds its hours
-INSERT INTO pgvigil.job_stats_dirty (instance_id, source, from_at, to_at, why)
-SELECT i.instance_id, 'mssql_job_runs', '-infinity', now() + interval '1 hour', '0139: the first build'
-  FROM pgvigil.instances i WHERE EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs r WHERE r.instance_id = i.instance_id)
-ON CONFLICT (instance_id, source, from_at) DO NOTHING;
-INSERT INTO pgvigil.job_stats_dirty (instance_id, source, from_at, to_at, why)
-SELECT i.instance_id, 'job_runs', '-infinity', now() + interval '1 hour', '0139: the first build'
-  FROM pgvigil.instances i WHERE EXISTS (SELECT 1 FROM pgvigil.job_runs r WHERE r.instance_id = i.instance_id)
-ON CONFLICT (instance_id, source, from_at) DO NOTHING;
