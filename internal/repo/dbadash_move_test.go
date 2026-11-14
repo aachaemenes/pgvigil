@@ -526,22 +526,22 @@ func TestMoveAddRefusals(t *testing.T) {
 		}
 		return refused
 	}
-	noMove := func(server string) {
+	// moves: the server's moves (any name) and the name's moves (any server)
+	moves := func(server, name string) (ofServer, ofName int) {
 		t.Helper()
-		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.dbadash_moves WHERE repository = $1 AND server = $2`, repo, server).Scan(&n); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.dbadash_moves WHERE repository = $1 AND server = $2),
+		    (SELECT count(*) FROM pgvigil.dbadash_moves m JOIN pgvigil.instances i ON i.instance_id = m.instance_id WHERE i.name = $3)`, repo, server, name).Scan(&ofServer, &ofName); err != nil {
 			t.Fatal(err)
 		}
-		if n != 0 {
-			t.Fatalf("%s: %d move row(s) after a refused add, want 0", server, n)
-		}
+		return ofServer, ofName
 	}
 	// refuse: refused with its words, one refused audit row of op for the name, no move row, and - for the move's own
 	// refusals (op 'dbadash move add') - no page row and no instance of the name written
 	refuse := func(pay map[string]any, words, op string) {
 		t.Helper()
-		name := pay["name"].(string)
+		name, server := pay["name"].(string), pay["server"].(string)
 		before := audits(name, op)
+		serverBefore, _ := moves(server, name)
 		ans := moveCall(ctx, t, pool, pay)
 		if ans["outcome"] != "refused" || !strings.Contains(fmt.Sprint(ans["detail"]), words) {
 			t.Fatalf("%s: %v, want refused '%s'", pay["server"], ans, words)
@@ -549,7 +549,11 @@ func TestMoveAddRefusals(t *testing.T) {
 		if audits(name, op) != before+1 {
 			t.Fatalf("%s: no refused audit row '%s' for %s", pay["server"], op, name)
 		}
-		noMove(pay["server"].(string))
+		// no move written: the server's moves as before (a 'moved already' server keeps its earlier one), none of the name
+		// unless it held one before (the name-taken case names another server's instance: none there either)
+		if ofServer, ofName := moves(server, name); ofServer != serverBefore || ofName != 0 {
+			t.Fatalf("%s: moves of the server %d (was %d), of %s %d after a refused add; want unchanged and 0", server, ofServer, serverBefore, name, ofName)
+		}
 		if op == "dbadash move add" {
 			var pages, insts int
 			if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.admin_instances WHERE name = $1), (SELECT count(*) FROM pgvigil.instances WHERE name = $1)`, name).Scan(&pages, &insts); err != nil {
@@ -661,12 +665,12 @@ func TestMoveAddRefusals(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_admin_instance(now(), $1::jsonb)`, string(b)); err != nil {
 		t.Fatal(err)
 	}
-	var moves, ids int
-	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.dbadash_moves WHERE instance_id = $1), (SELECT count(*) FROM pgvigil.dbadash_move_ids WHERE instance_id = $1)`, id).Scan(&moves, &ids); err != nil {
+	var left, ids int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.dbadash_moves WHERE instance_id = $1), (SELECT count(*) FROM pgvigil.dbadash_move_ids WHERE instance_id = $1)`, id).Scan(&left, &ids); err != nil {
 		t.Fatal(err)
 	}
-	if moves != 0 || ids != 0 {
-		t.Fatalf("after the remove: %d move row(s), %d id row(s); want 0 and 0", moves, ids)
+	if left != 0 || ids != 0 {
+		t.Fatalf("after the remove: %d move row(s), %d id row(s); want 0 and 0", left, ids)
 	}
 }
 
@@ -738,8 +742,8 @@ func TestMoveCollectorLogin(t *testing.T) {
 	for fn, call := range map[string]string{
 		"import_dbadash_cpu": `SELECT pgvigil.import_dbadash_cpu($1, '[]', '{}')`, "import_dbadash_volumes": `SELECT pgvigil.import_dbadash_volumes($1, '[]', '{}')`,
 		"import_dbadash_dbsize": `SELECT pgvigil.import_dbadash_dbsize($1, '[]', '{}')`, "import_dbadash_jobruns": `SELECT pgvigil.import_dbadash_jobruns($1, '[]', '{}')`,
-		"import_dbadash_instance": `SELECT pgvigil.import_dbadash_instance(jsonb_build_object('name', 'x' || $1))`,
-		"import_dbadash_move":     `SELECT pgvigil.import_dbadash_move(now(), jsonb_build_object('op', 'tick', 'ui_user', 'x', 'name', 'x' || $1))`,
+		"import_dbadash_instance": `SELECT pgvigil.import_dbadash_instance(jsonb_build_object('name', 'x' || $1::int))`,
+		"import_dbadash_move":     `SELECT pgvigil.import_dbadash_move(now(), jsonb_build_object('op', 'tick', 'ui_user', 'x', 'name', 'x' || $1::int))`,
 	} {
 		_, err := conn.Exec(ctx, call, tgt.ID)
 		var pe *pgconn.PgError
