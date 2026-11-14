@@ -94,7 +94,8 @@
 #     columns filled), mssql_azuredb_governance as the contained user skipped 'the login lacks
 #     ##MS_ServerStateReader## (Basic, S0, S1 and elastic pools): the tier's limits are not readable' and as the
 #     server admin ok with the tier's dtu_limit - and the last line says 'B2a rows only'.
-#  C. the pages: GET /api/mssql/summary gives the instance blocking, events and uptime as ok and every other cell
+#  C. the pages: GET /api/mssql/summary gives the instance blocking, events and uptime [B2a: and filespace, pctmax and
+#     dbstate (mssql_storage runs; disk is n/a: no volumes)] as ok and every other cell
 #     the tree's Summary has as n/a (every collection of the group skipped; the keys are read from the API, not
 #     listed here: task P08 made them DBA Dash's, e.g. full/diff/log for backups) [the collections that feed an ok
 #     cell run again right before C, so no cell reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
@@ -542,7 +543,7 @@ if [ -n "$B2A" ]; then echo "C: NOT RUN (PGVIGIL_PROOF_B2A_ONLY: the pages are t
 elif [ -n "${PGVIGIL_SKIP_PAGES:-}" ]; then echo "C: NOT RUN (PGVIGIL_SKIP_PAGES)"; FAILS+=("C: not run")
 else
   # the collections behind an ok cell run again now: the Summary calls a read older than its window stale
-  for c in mssql_instance mssql_requests mssql_xe; do "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c-c.out" 2>&1 || true; done
+  for c in mssql_instance mssql_requests mssql_xe mssql_storage; do "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c-c.out" 2>&1 || true; done
   PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   "$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 & SRV=$!
   for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
@@ -553,7 +554,8 @@ else
   # the cell keys come from the tree's own Summary (task P08 set them one for one under DBA Dash's): the three cells
   # whose collections run here (blocking: mssql_requests, events: mssql_xe, uptime: mssql_instance) must say ok, every
   # other cell n/a (its collection skipped by the platform rule); a key with any other state fails by its name
-  OKCELLS="blocking events uptime"; CBAD=""
+  # [B2a: mssql_storage runs here: File space, % Max Size and Database state are ok; Disk is n/a (no volumes)]
+  OKCELLS="blocking events uptime filespace pctmax dbstate"; CBAD=""
   for kv in $GOT; do k=${kv%%=*}; s=${kv#*=}
     if [[ " $OKCELLS " == *" $k "* ]]; then [ "$s" = ok ] || CBAD+=" $k=$s (want ok)"; else [ "$s" = n/a ] || CBAD+=" $k=$s (want n/a)"; fi
   done
@@ -566,20 +568,21 @@ else
     T=$(text < "$WORK/p-summary.html")
     grep -q 'azuresqldb' <<<"$T" || bad "C: the Summary page does not show the platform badge azuresqldb"
     # the n/a groups by the page's own labels (web/src/fleet.ts: g.mssql[2] ?? g.label, task P08's set)
-    if grep -qE 'not read yet:[^.]*(Availability|Log shipping|Mirroring|Full backups|Differential backups|Log backups|Agent Jobs|Drive space|File space|Files at their max size|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store|SQL Server Audit|Last good CHECKDB|Log space|Suspect pages|Agent alerts|Identity columns)' <<<"$T"; then
+    if grep -qE 'not read yet:[^.]*(Availability|Log shipping|Mirroring|Full backups|Differential backups|Log backups|Agent Jobs|Drive space|SQL Server Agent|Database Mail|Memory dumps|Query Store|SQL Server Audit|Last good CHECKDB|Log space|Suspect pages|Agent alerts|Identity columns)' <<<"$T"; then
       bad "C: the Summary page lists groups that do not run on Azure SQL Database as 'not read yet': $(grep -oE 'not read yet:[^.]*' <<<"$T" | head -1)"; fi
-    declare -A SKIPTABS=([availability]="mssql_ag" [mssqlbackups]="mssql_backups" [mssqljobs]="mssql_jobs" [jobstimeline]="mssql_jobs" [mssqlstorage]="mssql_storage"
-      [mssqlfiles]="mssql_storage" [rowversions]="mssql_versionstore" [mssqltempdb]="mssql_tempdb" [mssqlcpu]="mssql_cpu" [mssqlmemory]="mssql_memory"
+    # [B2a: the storage tabs and the CPU tab read here now; Drives says the platform has no volumes]
+    declare -A SKIPTABS=([availability]="mssql_ag" [mssqlbackups]="mssql_backups" [mssqljobs]="mssql_jobs" [jobstimeline]="mssql_jobs"
+      [rowversions]="mssql_versionstore" [mssqltempdb]="mssql_tempdb" [mssqlmemory]="mssql_memory"
       [mssqlfileio]="mssql_fileio" [mssqlqs]="mssql_querystore" [mssqlprocs]="mssql_procstats" [mssqlindexlocks]="mssql_indexlocks" [mssqlproperties]="mssql_properties"
       [mssqlplancache]="mssql_plancache" [mssqlindexes]="mssql_indexes" [mssqlaudit]="mssql_audit" [mssqlchecks]="mssql_checks" [mssqlerrorlog]="mssql_errorlog"
       [mssqltrace]="mssql_defaulttrace" [mssqlhealth]="mssql_syshealth"
-      [drives]="mssql_storage" [dbspace]="mssql_storage" [dbfiles]="mssql_storage" [driveperf]="mssql_fileio"
+      [drives]="mssql_storage" [driveperf]="mssql_fileio"
       [rp_props]="mssql_reports" [rp_failed]="mssql_reports" [rp_roles]="mssql_reports" [rp_services]="mssql_reports" [rp_pwage]="mssql_reports" [rp_tables]="mssql_reports")
     NTABS=0
     for tab in summary performance mssql_running mssql_slow mssql_waits mssql_deadlocks mssql_blocked findings availability mssqlbackups mssqljobs mssqlstorage mssqlfiles \
                rowversions mssqlconfig mssqlactions jobstimeline mssqlcpu mssqlmemory mssqlfileio mssqltempdb mssqlqs counters mssqlprocs mssqlindexlocks mssqlproperties \
                mssqlplancache mssqlindexes mssqlaudit mssqlchecks mssqlerrorlog mssqltrace mssqlhealth \
-               drives dbspace dbfiles driveperf mssql_waiting \
+               drives dbspace dbfiles driveperf mssql_waiting mssqlazure \
                rp_props rp_finder rp_dbdeleted rp_failed rp_flushed rp_killed rp_dbnew rp_actions rp_roles rp_services rp_pwage rp_tables customreports community; do
       NTABS=$((NTABS + 1))
       page "$tab" > "$WORK/p-$tab.html" || true
