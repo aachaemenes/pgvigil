@@ -742,7 +742,8 @@ docker start "$SQL" >/dev/null || fail "N: docker start the SQL Server"; up
 # before Agent is up, and they answer 14258 ('Cannot perform this operation while SQLServerAgent is starting. Try again
 # later.') until it is. The server's own words decide the wait: the call again 2 s apart while that is its answer, up
 # to 180 s; any other error, or 14258 still at 180 s, is a FAIL with the last answer. Only for a call a second try
-# cannot do twice (sp_add_jobserver behind a read of sysjobservers, sp_start_job); no guessed readiness probe.
+# cannot do twice (sp_add_job, sp_add_jobstep and sp_add_jobserver each behind a read of the row it writes,
+# sp_start_job); no guessed readiness probe.
 again14258() { local out= n=0 t0=$SECONDS
   while ! out=$(sq "$2" "${3:-master}" 2>&1); do
     [[ "$out" == *'Msg 14258,'* ]] || fail "$1: $out"
@@ -752,17 +753,17 @@ again14258() { local out= n=0 t0=$SECONDS
   if (( n > 0 )); then echo "$1: answered 14258 $n times over $(( SECONDS - t0 )) s, then ran"; fi; }
 PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 JOB=pgvin_probe_$SUF
-# the probe job: sp_add_job and sp_add_jobstep ONCE each (a second call could add a second job or step); an answer
-# other than 14258 is a FAIL, and either way a read of msdb after them decides (the job and its one step there), their
-# answers printed; then sp_add_jobserver (the job to this server's Agent) through again14258, behind a read of
-# sysjobservers (where in the proc the 14258 comes, before or after its row, is not read here: a try after a row that
-# was written adds nothing), and the row read after it
-a1=$(sq "EXEC msdb.dbo.sp_add_job @job_name = N'$JOB';" msdb 2>&1) && a1=
-a2=$(sq "EXEC msdb.dbo.sp_add_jobstep @job_name = N'$JOB', @step_name = N'one', @subsystem = N'TSQL', @command = N'SELECT 1';" msdb 2>&1) && a2=
-for a in "$a1" "$a2"; do [[ -z "$a" || "$a" == *'Msg 14258,'* ]] || fail "N: the probe job: sp_add_job answered '${a1:-nothing}', sp_add_jobstep '${a2:-nothing}'"; done
-[[ -z "$a1$a2" ]] || echo "N: the probe job: sp_add_job answered '${a1:-nothing}', sp_add_jobstep '${a2:-nothing}'"
-[[ "$(sq "SELECT count(*) FROM msdb.dbo.sysjobs j JOIN msdb.dbo.sysjobsteps s ON s.job_id = j.job_id WHERE j.name = N'$JOB' AND s.step_name = N'one'" msdb | tr -d '[:space:]')" == 1 ]] \
-  || fail "N: the probe job or its step is not in msdb after sp_add_job ('${a1:-nothing}') and sp_add_jobstep ('${a2:-nothing}')"
+# the probe job: sp_add_job, sp_add_jobstep and sp_add_jobserver (the job to this server's Agent), each through
+# again14258 behind a read of the row it writes - the job in sysjobs, its step in sysjobsteps, its server in
+# sysjobservers - so a try after a row that was written adds nothing (where in a proc the 14258 comes, before or after
+# its row, is not read here); Agent's start can outlast the first calls after the restart (14258 met at
+# sp_add_jobstep, once in two runs); the rows read after them decide
+JQ="FROM msdb.dbo.sysjobs WHERE name = N'$JOB'"
+SQ="FROM msdb.dbo.sysjobs j JOIN msdb.dbo.sysjobsteps s ON s.job_id = j.job_id WHERE j.name = N'$JOB' AND s.step_name = N'one'"
+again14258 "N: the probe job's sp_add_job" "IF NOT EXISTS (SELECT 1 $JQ) EXEC msdb.dbo.sp_add_job @job_name = N'$JOB';" msdb
+again14258 "N: the probe job's sp_add_jobstep" "IF NOT EXISTS (SELECT 1 $SQ) EXEC msdb.dbo.sp_add_jobstep @job_name = N'$JOB', @step_name = N'one', @subsystem = N'TSQL', @command = N'SELECT 1';" msdb
+[[ "$(sq "SELECT count(*) $JQ" msdb | tr -d '[:space:]')" == 1 && "$(sq "SELECT count(*) $SQ" msdb | tr -d '[:space:]')" == 1 ]] \
+  || fail "N: the probe job and its one step are not in msdb after sp_add_job and sp_add_jobstep (jobs $(sq "SELECT count(*) $JQ" msdb | tr -d '[:space:]'), steps $(sq "SELECT count(*) $SQ" msdb | tr -d '[:space:]'))"
 JS="FROM msdb.dbo.sysjobservers js JOIN msdb.dbo.sysjobs j ON j.job_id = js.job_id WHERE j.name = N'$JOB' AND js.server_id = 0"
 again14258 "N: the probe job's sp_add_jobserver" "IF NOT EXISTS (SELECT 1 $JS) EXEC msdb.dbo.sp_add_jobserver @job_name = N'$JOB';" msdb
 [[ "$(sq "SELECT count(*) $JS" msdb | tr -d '[:space:]')" == 1 ]] || fail "N: the probe job is not targeted at this server after sp_add_jobserver"
@@ -873,9 +874,9 @@ code=$(api POST admin/instances "$(js op=disable name=pgd-ok)"); [[ "$code" == 2
 DW="instance pgd-ok is disabled in Admin > Instances"
 t2=$(turn); [[ "$t2" == "1|$USR|refused||$(gen)|$DW" ]] || fail "N6: the second turn's audit (want one row, refused in the words): $t2"
 # the words in the mail's own lines (the result section's note), not the report's audit grid (an earlier turn's words)
-where=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SID ORDER BY send_id DESC LIMIT 1" | DW="$DW" python3 -c 'import html, os, re, sys
+where=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SID ORDER BY send_id DESC LIMIT 1" | DW="$DW" python3 -c 'import html, os, re, sys
 h, _, e = sys.stdin.read().partition("\x1f"); w = os.environ["DW"]
-m = re.search(r"What the page said</h3>(.*?)</table>", h, re.S); said = html.unescape(re.sub(r"<[^>]+>", " ", m.group(1))) if m else ""
+m = re.search(r"What the page said</h3>(.*?)</table>", h, re.S); said = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)) for t in re.findall(r"<td[^>]*>(.*?)</td>", m.group(1), re.S)) if m else ""
 print("the mail" if w in said else "neither: " + (e or said or h)[:300])')
 [[ "$where" == "the mail" ]] || fail "N6: the refused turn's words are not in the mail's 'What the page said' lines: $where"
 code=$(api POST admin/instances "$(js op=enable name=pgd-ok)"); [[ "$code" == 200 ]] || fail "N6: enable pgd-ok: $code"
