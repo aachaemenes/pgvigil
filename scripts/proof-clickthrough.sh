@@ -16,6 +16,9 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
+# Expected (the fifth run: the fourth stopped at the page list - its Chromium closed the CDP socket and exited 0, its
+# own log not kept: a lost browser now costs one page load (started again, the page loaded again), each Chromium's log
+# kept in chrome-logs/; otherwise the fourth run's expected, as written for it below)
 # Expected (the fourth run: the third run was red by 9 rows outside the file - 7 the driver's own (a replay step
 # acted once on a page not yet redrawn; a download read 600 ms after its click), now each step is given 5 s to find
 # its control and the path one more fresh replay; 2 the joined tree's Queries page, which never settled in 20 s; the
@@ -44,6 +47,8 @@ cleanup() {
   [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true
   # only the database this run made (a name another run drew is never dropped); set -u never stops the cleanup
   [[ -n "$MADE" ]] && psql "${PGVIGIL_ADMIN_DSN:-} dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
+  # each Chromium's own log beside the run's output (a browser that exits or is lost says why there)
+  mkdir -p "$OUT/chrome-logs" 2>/dev/null && cp "$WORK"/clickthrough-list-*/*-chrome.log "$WORK"/drv-*/*-chrome.log "$OUT/chrome-logs/" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -82,7 +87,7 @@ node scripts/click-check.mjs "$CDP" "$URL" "$OUT/click.json" > "$OUT/click.txt" 
 kill "$CHR" 2>/dev/null; CHR=""
 
 echo "== the pages"
-node scripts/clickthrough.mjs list "$(freeport)" "$URL" "$OUT/pages.json" "$N" 2> "$OUT/list.log" || { tail -5 "$OUT/list.log"; fail "the page list"; }
+TMPDIR="$WORK" node scripts/clickthrough.mjs list "$(freeport)" "$URL" "$OUT/pages.json" "$N" 2> "$OUT/list.log" || { tail -5 "$OUT/list.log"; fail "the page list"; }
 
 echo "== the walk: $N drivers"
 T=$(date +%s)

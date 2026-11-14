@@ -139,10 +139,19 @@ const settled = async (cap = 20000) => {
 const ORIGIN = new URL(U).origin;
 // every page starts with no stored state: a click's filter, frozen or hidden column, folder or range never reaches the
 // next row (the page keeps them in its storage)
-const fresh = async hash => { await ensure(); await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Storage.clearDataForOrigin', { origin: ORIGIN, storageTypes: 'local_storage,session_storage' }).catch(() => {}); await sleep(100); net = []; exc = []; dlgs = []; held = []; chooser = []; await cmd('Page.navigate', { url: U + hash }); await sleep(250);
+const freshOnce = async hash => { await ensure(); await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Storage.clearDataForOrigin', { origin: ORIGIN, storageTypes: 'local_storage,session_storage' }).catch(() => {}); await sleep(100); net = []; exc = []; dlgs = []; held = []; chooser = []; await cmd('Page.navigate', { url: U + hash }); await sleep(250);
   // a click of the bar may have switched the theme: every page starts light
   await ev(`(() => { try { localStorage.setItem('pgvigil.theme', 'light'); } catch (e) {} document.documentElement.setAttribute('data-theme', 'light'); })()`).catch(() => {});
   return settled(); };
+// fresh: freshOnce, and once more on a browser started again when it was lost on the way (its CDP socket closed): a
+// lost browser costs one page load, never the list or the walk
+const fresh = async hash => {
+  try { return await freshOnce(hash); } catch (e) {
+    if (!lost) throw e;
+    console.error(`${label}: the browser was lost loading ${hash} (${e.message}): started again`);
+    await ensure(); return await freshOnce(hash);
+  }
+};
 const tabsOf = async hash => { await fresh(hash); return await ev(`(() => { const t = document.querySelector('#tabs'); return t?.dataset.all ? JSON.parse(t.dataset.all) : [...(t?.querySelectorAll('a') ?? [])].map(a => a.getAttribute('href')); })()`) ?? []; };
 
 // ---- list -----------------------------------------------------------------------------------------------------------
