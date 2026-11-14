@@ -1,0 +1,31 @@
+diff --git i/internal/config/inventory.go w/internal/config/inventory.go
+index a04766f..445e14f 100644
+--- i/internal/config/inventory.go
++++ w/internal/config/inventory.go
+@@ -104,6 +104,11 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
+ 			plat = "auto"
+ 		}
+ 		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
++		// task 406: an instance added on the page reads the plans of its running queries (DBA Dash 4.25.0 turns them on for a
++		// new connection); an instance of the file follows its own schedules:
++		if p.Engine == EngineSQLServer {
++			all[len(all)-1].Schedules = map[string]Duration{"mssql_running_plans": {Duration: time.Minute}}
++		}
+ 	}
+ 	return all, skipped
+ }
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 5def140..8025d93 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -335,6 +335,10 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
+ 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
+ 	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
++	api.HandleFunc("GET /api/mssql/plancache/entries", s.MSSQLPlanCacheEntries) // task 406 (q_mssql_qs_plans.go)
++	api.HandleFunc("GET /api/mssql/plancache/plan", s.MSSQLPlanCachePlan)
++	api.HandleFunc("GET /api/mssql/runningplans", s.MSSQLRunningPlans)
++	api.HandleFunc("GET /api/mssql/runningplans/plan", s.MSSQLRunningPlan)
+ 	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
+ 	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
+ 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)

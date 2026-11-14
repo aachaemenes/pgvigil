@@ -3,7 +3,8 @@
 // apart, with a scope for the databases that have no Query Store; and what the cache holds per database (single-use
 // plans, one statement compiled into many plans, how recent the plans are) with its two lists. Data from
 // /api/mssql/plancache; the route and the tab's entry are the shell's.
-import { get, rowsOf, Table } from './api';
+import { get, Row, rowsOf, Table } from './api';
+import { openText } from './filedrop';
 import { lineChart } from './chart';
 import { queryHistory } from './mssql_queries';
 import { compareSection } from './mssql_querystore';
@@ -95,6 +96,12 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
           });
           return b;
         } },
+        // the cache entries of the row (task 406): each plan handle with its own .sqlplan, read on demand
+        { key: 'cached_plans', label: 'cached plans', fmt: (_, r) => {
+          const b = el('button', { type: 'button', class: 'link', 'aria-label': `Cached plans of ${String(r.query_key)}` }, 'Cached plans');
+          b.addEventListener('click', () => { void cachedPlans(ctx, r, hist); });
+          return b;
+        } },
         { key: 'executions', num: true },
         { key: 'cpu_ms', label: 'CPU (sec)', num: true, fmt: secs },
         { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
@@ -125,6 +132,8 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         grid(top, cols), hist,
         compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
     }
+
+    out.push(runningPlansSection(ctx));
 
     const health = rowsOf(d.health);
     out.push(el('h3', {}, 'What the cache holds (hourly)'));
@@ -163,3 +172,146 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
   return sec;
 }
 
+
+// ---- the cache entries of one row and their plans, read on demand (task 406) -------------------------------------
+
+type PlanReply = { state: string; words: string; plan_hash?: string; objtype?: string; database?: string; object?: string; bytes?: number; file?: string; plan?: string };
+
+// planWords: what a read by handle said, as a line of the panel.
+function planWords(p: PlanReply): string {
+  const what = [p.objtype, p.object || p.database].filter(Boolean).join(' ');
+  return `${p.words}${what ? ' (' + what + ')' : ''}${p.bytes ? `, ${fmtNum(Math.round(p.bytes / 1024))} KB` : ''}.`;
+}
+
+// readPlan reads one entry's plan on demand: the statement at its offsets, or the whole batch.
+async function readPlan(ctx: Ctx, e: Row, batch: boolean): Promise<PlanReply> {
+  return get<PlanReply>('mssql/plancache/plan', {
+    instance: ctx.instance, handle: String(e.plan_handle),
+    start: batch ? 0 : Number(e.stmt_start), end: batch ? -1 : Number(e.stmt_end),
+    hash: batch || e.plan_hash == null ? undefined : String(e.plan_hash),
+  });
+}
+
+function saveFile(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/xml;charset=utf-8' }));
+  const a = el('a', { href: url, download: name }) as HTMLAnchorElement;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
+  box.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Reading the cache entries ...'));
+  let d: { entries: Table | null; fetch_off: string; policy: string };
+  try {
+    d = await get('mssql/plancache/entries', { instance: ctx.instance, db: Number(row.database_id), key: String(row.query_key) });
+  } catch (e) {
+    box.replaceChildren(errorBox(e));
+    return;
+  }
+  const entries = rowsOf(d.entries);
+  const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const act = (e: Row, label: string, batch: boolean, open: boolean) => {
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: ${String(e.plan_handle)} at ${String(e.stmt_start)}` }, label) as HTMLButtonElement;
+    if (d.fetch_off) {
+      b.disabled = true;
+      b.title = d.fetch_off;
+      return b;
+    }
+    b.addEventListener('click', async () => {
+      status.textContent = 'Reading the plan on demand ...';
+      try {
+        const p = await readPlan(ctx, e, batch);
+        status.textContent = planWords(p);
+        if (p.plan && p.file) {
+          if (open) openText(p.file, p.plan, b, 'sqlplan');
+          else saveFile(p.file, p.plan);
+        }
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+      }
+    });
+    return b;
+  };
+  box.replaceChildren(
+    el('h4', { tabindex: '-1' }, `Cached plans of ${String(row.database)} ${String(row.query_key)}`),
+    el('p', { class: 'meta' }, 'The statement\'s entries in the plan cache at the last read (each a plan handle and the statement\'s place in its batch). '
+      + 'A plan is read from the server when asked, through the read login: the statement\'s plan, or the plan of its whole batch or module. '
+      + 'A plan hash that differs from the one read with the sample says the statement was compiled again since.'),
+    d.fetch_off ? el('p', { class: 'meta' }, d.fetch_off) : '',
+    grid(entries, [
+      { key: 'plan_handle', label: 'plan handle' }, { key: 'stmt_start', label: 'start', num: true }, { key: 'stmt_end', label: 'end', num: true },
+      { key: 'plan_hash', label: 'plan hash' }, { key: 'creation_time', label: 'compiled (server clock)' },
+      { key: 'execution_count', label: 'executions', num: true }, { key: 'cpu_ms', label: 'CPU (ms)', num: true, fmt: num3 },
+      { key: 'download', label: 'statement plan', fmt: (_, e) => el('span', {}, act(e, 'Download .sqlplan', false, false), ' ', act(e, 'Open', false, true)) },
+      { key: 'batch', label: 'batch plan', fmt: (_, e) => el('span', {}, act(e, 'Download batch', true, false), ' ', act(e, 'Open batch', true, true)) },
+    ], 'The last plan cache read held no entry for this statement: it left the cache.'),
+    status);
+  (box.firstElementChild as HTMLElement).focus();
+}
+
+// ---- the plans of running queries (task 406, DBA Dash 4.25.0's running query plans and live plans) ----------------
+
+const RUNNING_ON_WORDS = 'Off for this instance: the collections mssql_running_plans and mssql_live_plans are off by default (an instance added on '
+  + 'Admin > Instances has mssql_running_plans on). To switch them on for an instance of the configuration file, add under that instance '
+  + '"schedules:" with the line "mssql_running_plans: 1m", and "mssql_live_plans: 1m" for live plans (SQL Server 2016 SP1, 2017 CU26, '
+  + '2019 CU12 and later, Managed Instance, Azure SQL Database), then restart the collector. Each reads the running requests every minute; '
+  + 'a plan is kept when its requests used 1 second of CPU, 50 MB of granted memory, ran 10 seconds, or two ran it at once (DBA Dash\'s thresholds).';
+
+function runningPlansSection(ctx: Ctx): HTMLElement {
+  const box = el('div', { class: 'pc-running' }, el('h3', {}, 'Plans of running queries'), el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
+  const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const fetchPlan = async (b: HTMLElement, q: Record<string, string | number | undefined>, open: boolean) => {
+    status.textContent = 'Reading the kept plan ...';
+    try {
+      const p = await get<PlanReply>('mssql/runningplans/plan', { instance: ctx.instance, ...q });
+      status.textContent = `${p.words}.`;
+      if (p.plan && p.file) { if (open) openText(p.file, p.plan, b, 'sqlplan'); else saveFile(p.file, p.plan); }
+    } catch (e) {
+      status.textContent = e instanceof Error ? e.message : String(e);
+    }
+  };
+  const btn = (label: string, aria: string, go: (b: HTMLElement) => void) => {
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
+    b.addEventListener('click', () => go(b));
+    return b;
+  };
+  (async () => {
+    let d: Record<'plans' | 'state' | 'live_read', Table | null>;
+    try {
+      d = await get('mssql/runningplans', { instance: ctx.instance, ...window_(ctx) });
+    } catch (e) {
+      box.replaceChildren(el('h3', {}, 'Plans of running queries'), errorBox(e));
+      return;
+    }
+    const state = rowsOf(d.state), plans = rowsOf(d.plans), live = rowsOf(d.live_read)[0];
+    const kids: (Node | string)[] = [el('h3', {}, 'Plans of running queries')];
+    if (!state.length) kids.push(el('p', { class: 'meta' }, RUNNING_ON_WORDS));
+    for (const st of state) if (st.status !== 'ok') kids.push(el('p', { class: 'meta' }, `The ${String(st.collection)} collection's last run: ${String(st.status)}${st.note ? ' (' + String(st.note) + ')' : ''}.`));
+    if (state.length && !state.some(st => st.collection === 'mssql_live_plans')) kids.push(el('p', { class: 'meta' }, 'Live plans are off for this instance (mssql_live_plans: 1m under its schedules: switches them on where the build allows).'));
+    if (live?.note) kids.push(el('p', { class: 'meta' }, `Live plans: ${String(live.note)}.`));
+    if (state.length) {
+      const key = (r: Row) => ({ qh: String(r.query_hash), ph: String(r.plan_hash), start: Number(r.stmt_start), end: Number(r.stmt_end) });
+      kids.push(el('p', { class: 'meta' }, 'Each plan a running query used past DBA Dash\'s thresholds, read while it ran (the statement\'s plan by its handle). '
+        + 'The figures are the largest one read saw. A live plan holds the operator counters of a long running request (60 seconds of CPU, or 5 minutes running while not blocked).'),
+      grid(plans, [
+        { key: 'database' }, { key: 'object_name', label: 'module' }, { key: 'query', label: 'statement', fmt: text, wide: true },
+        { key: 'reasons', label: 'kept for', fmt: v => String(v ?? '').split(',').filter(Boolean).map(x => ({ cpu: 'CPU', grant: 'memory grant', count: 'requests', duration: 'running time' } as Record<string, string>)[x] ?? x).join(', ') },
+        { key: 'max_requests', label: 'requests', num: true }, { key: 'max_cpu_ms', label: 'CPU (ms)', num: true },
+        { key: 'max_grant_kb', label: 'grant (KB)', num: true }, { key: 'max_longest_ms', label: 'running (ms)', num: true },
+        { key: 'first_seen', label: 'first seen', fmt: fmtTime }, { key: 'last_seen', label: 'last seen', fmt: fmtTime }, { key: 'reads', num: true },
+        { key: 'plan', label: 'plan', fmt: (_, r) => r.has_plan
+          ? el('span', {}, btn('Download .sqlplan', `Download the plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, key(r), false); }), ' ',
+            btn('Open', `Open the plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, key(r), true); }))
+          : el('span', { class: 'meta' }, r.plan_state === 'policy' ? 'not kept: query_text is not "full"' : r.plan_state ? String(r.plan_state) + (r.plan_note ? ': ' + String(r.plan_note) : '') : 'not read yet') },
+        { key: 'live', label: 'live plan', fmt: (_, r) => r.live_newest != null
+          ? btn(`Open live (${fmtNum(r.live_captures)})`, `Open the newest live plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, { ...key(r), live: Number(r.live_newest) }, true); })
+          : el('span', { class: 'meta' }, Number(r.live_captures) > 0 ? 'not kept: query_text is not "full"' : 'none') },
+        { key: 'query_hash', label: 'query hash' }, { key: 'plan_hash', label: 'plan hash' },
+      ], 'No running query met the thresholds in this range.'), status);
+    }
+    box.replaceChildren(...kids);
+  })();
+  return box;
+}
