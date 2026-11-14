@@ -41,8 +41,9 @@
 # system-assigned identity), its NIC and OS disk (deleted with it), a public address, a network security group with no
 # inbound rule until 'vmdoor', and a virtual network of its own, each named <instance>-vm* and tagged, a mode-600 ssh
 # key pair in the state folder, and a second 3342 rule on the instance's NSG for the VM's address. 'vmlogin' makes the
-# VM's identity a login of the instance as its admin (a sysadmin SQL login may create Entra logins there: Microsoft's
-# CREATE LOGIN for Managed Instance; the instance resolves the name with its Directory Readers role) with VIEW SERVER
+# VM's identity a login of the instance as its admin (a sysadmin SQL login may create Entra logins there once the
+# instance has a Microsoft Entra admin - without one a real instance answered Msg 33134 'could not be resolved'; the
+# instance resolves the name with its Directory Readers role; both are Entra steps outside this script) with VIEW SERVER
 # STATE, VIEW ANY DEFINITION and a user in msdb - not CONNECT ANY DATABASE, so the user database the proof made refuses
 # it (M6's E2); a login of the same name is dropped first (an earlier VM's identity has another SID), and a name the
 # instance cannot resolve yet is tried again for about 4 minutes. The VM is billed by the minute: vmdown removes the
