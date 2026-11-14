@@ -736,14 +736,34 @@ DOOR=pgv_door_$SUF; DOOR_PW=$(pw); export DOOR_PW
 printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pg_monitor;\n" "$DOOR" "$DOOR_PW" | PGPASSWORD="$PG_PW" psql "host=127.0.0.1 port=$PB user=postgres dbname=postgres" -Xq -v ON_ERROR_STOP=1 >/dev/null || fail "N: the door's login on PostgreSQL"
 # K stopped A's SQL Server as its last row: N starts it again (a published port may move on a restart)
 docker start "$SQL" >/dev/null || fail "N: docker start the SQL Server"; up
-# agent_up: SQL Agent has started again too - msdb opens a while before Agent is up, and sp_add_jobserver raises 14258
-# ('Cannot perform this operation while SQLServerAgent is starting') until it is; N7's control start needs it running
-agent_up() { local r=; for _ in $(seq 1 90); do r=$(sq "EXEC msdb.dbo.sp_is_sqlagent_starting; SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE program_name LIKE N'SQLAgent%') THEN 1 ELSE 0 END" msdb 2>&1 || true); [[ "$r" == 1 ]] && return 0; sleep 2; done; fail "N: SQL Agent did not start in 180 s after the restart: $r"; }
-agent_up
+# again14258 WHAT SQL [DB]: a call SQL Agent's procs refuse while Agent starts - after the restart msdb opens a while
+# before Agent is up, and they answer 14258 ('Cannot perform this operation while SQLServerAgent is starting. Try again
+# later.') until it is. The server's own words decide the wait: the call again 2 s apart while that is its answer, up
+# to 180 s; any other error, or 14258 still at 180 s, is a FAIL with the last answer. Only for a call a second try
+# cannot do twice (sp_add_jobserver behind a read of sysjobservers, sp_start_job); no guessed readiness probe.
+again14258() { local out= n=0 t0=$SECONDS
+  while ! out=$(sq "$2" "${3:-master}" 2>&1); do
+    [[ "$out" == *'Msg 14258,'* ]] || fail "$1: $out"
+    (( SECONDS - t0 >= 180 )) && fail "$1: still 14258 after $(( SECONDS - t0 )) s ($((n + 1)) answers): $out"
+    n=$((n + 1)); sleep 2
+  done
+  if (( n > 0 )); then echo "$1: answered 14258 $n times over $(( SECONDS - t0 )) s, then ran"; fi; }
 PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 JOB=pgvin_probe_$SUF
-sqok "N: the probe job" "EXEC msdb.dbo.sp_add_job @job_name = N'$JOB'; EXEC msdb.dbo.sp_add_jobstep @job_name = N'$JOB', @step_name = N'one', @subsystem = N'TSQL', @command = N'SELECT 1';
-  EXEC msdb.dbo.sp_add_jobserver @job_name = N'$JOB';" msdb
+# the probe job: sp_add_job and sp_add_jobstep ONCE each (a second call could add a second job or step); an answer
+# other than 14258 is a FAIL, and either way a read of msdb after them decides (the job and its one step there), their
+# answers printed; then sp_add_jobserver (the job to this server's Agent) through again14258, behind a read of
+# sysjobservers (where in the proc the 14258 comes, before or after its row, is not read here: a try after a row that
+# was written adds nothing), and the row read after it
+a1=$(sq "EXEC msdb.dbo.sp_add_job @job_name = N'$JOB';" msdb 2>&1) && a1=
+a2=$(sq "EXEC msdb.dbo.sp_add_jobstep @job_name = N'$JOB', @step_name = N'one', @subsystem = N'TSQL', @command = N'SELECT 1';" msdb 2>&1) && a2=
+for a in "$a1" "$a2"; do [[ -z "$a" || "$a" == *'Msg 14258,'* ]] || fail "N: the probe job: sp_add_job answered '${a1:-nothing}', sp_add_jobstep '${a2:-nothing}'"; done
+[[ -z "$a1$a2" ]] || echo "N: the probe job: sp_add_job answered '${a1:-nothing}', sp_add_jobstep '${a2:-nothing}'"
+[[ "$(sq "SELECT count(*) FROM msdb.dbo.sysjobs j JOIN msdb.dbo.sysjobsteps s ON s.job_id = j.job_id WHERE j.name = N'$JOB' AND s.step_name = N'one'" msdb | tr -d '[:space:]')" == 1 ]] \
+  || fail "N: the probe job or its step is not in msdb after sp_add_job ('${a1:-nothing}') and sp_add_jobstep ('${a2:-nothing}')"
+JS="FROM msdb.dbo.sysjobservers js JOIN msdb.dbo.sysjobs j ON j.job_id = js.job_id WHERE j.name = N'$JOB' AND js.server_id = 0"
+again14258 "N: the probe job's sp_add_jobserver" "IF NOT EXISTS (SELECT 1 $JS) EXEC msdb.dbo.sp_add_jobserver @job_name = N'$JOB';" msdb
+[[ "$(sq "SELECT count(*) $JS" msdb | tr -d '[:space:]')" == 1 ]] || fail "N: the probe job is not targeted at this server after sp_add_jobserver"
 iid() { local v=; for _ in $(seq 1 30); do v=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = '$1'"); [[ -n "$v" ]] && { echo "$v"; return 0; }; sleep 1; done; fail "N: no instances row for $1"; }
 # crun ID TOOL [text]: a community run; prints its first run's outcome|error
 crun() { local b; if [[ $# -ge 3 ]]; then b=$(python3 -c 'import json, sys; print(json.dumps({"instance_id": int(sys.argv[1]), "tool": sys.argv[2], "text": sys.argv[3], "query_name": "proof"}))' "$@");
@@ -862,7 +882,7 @@ echo "ok   N6: a schedule of the report on pgd-ok rendered by this serve as $USR
 # N7: sp_start_job through the read login is refused by the server and starts nothing
 r=$(crun "$MSD" glenn_berry "EXEC msdb.dbo.sp_start_job @job_name = N'$JOB'"); [[ "$r" == failed\|* && "$r" == *sp_start_job* ]] || fail "N7: sp_start_job as $MONL: $r"
 sleep 5; [[ "$(sq "SELECT count(*) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$JOB' AND a.start_execution_date IS NOT NULL" msdb | tr -d '[:space:]')" == 0 ]] || fail "N7: the job started"
-sqok "N7: the job started by sa (the read sees a start)" "EXEC msdb.dbo.sp_start_job @job_name = N'$JOB';" msdb
+again14258 "N7: the job started by sa (the read sees a start)" "EXEC msdb.dbo.sp_start_job @job_name = N'$JOB';" msdb
 st=0; for _ in $(seq 1 30); do st=$(sq "SELECT count(*) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$JOB' AND a.start_execution_date IS NOT NULL" msdb | tr -d '[:space:]'); [[ "$st" -gt 0 ]] && break; sleep 1; done
 [[ "$st" -gt 0 ]] || fail "N7: sa's start of the job is not seen in sysjobactivity (the read would miss one)"
 echo "ok   N7: msdb.dbo.sp_start_job in a script on msd-ok as $MONL (no sysadmin, no agent role): the server refused it ('${r:0:120}'), no start in sysjobactivity; sa's start is seen there"
