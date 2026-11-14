@@ -70,10 +70,15 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       } catch (e) { if (mine === pickSeq) hist.replaceChildren(el('h3', {}, title), errorBox(e)); }
     };
 
-    // the four columns of the stats part: filled in after the grid is drawn
+    // the four columns of the stats part: filled IN PLACE when it answers (the grid is not drawn again, so a sort, a
+    // filter or a hidden column the reader set stays); the values go into the rows too, for the sort and the export
     let stats: Map<string, Row> | null = null, statsWhy = '';
-    const statCol = (k: string, label: string, fmt: (v: unknown) => string): Col => ({ key: k, label, num: true,
-      fmt: (_v, r) => statsWhy ? `not read: ${statsWhy}` : !stats ? 'reading...' : fmt(stats.get(key(r))?.[k]) });
+    const statFmt: Record<string, (v: unknown) => string> = {};
+    const statText = (k: string, r: Row) => statsWhy ? `not read: ${statsWhy}` : !stats ? 'reading...' : statFmt[k](r[k]);
+    const statCol = (k: string, label: string, fmt: (v: unknown) => string): Col => {
+      statFmt[k] = fmt;
+      return { key: k, label, num: true, fmt: (_v, r) => el('span', { 'data-stat': k, 'data-row': key(r) }, statText(k, r)) };
+    };
     const instHref = (r: Row) => r.engine === 'sqlserver' ? hrefWith(ctx, 'mssqljobs', {}, Number(r.instance_id)) : hrefWith(ctx, 'jobsreport', {}, Number(r.instance_id));
     const cols: Col[] = [
       { key: 'instance', fmt: (v, r) => el('a', { href: instHref(r) }, String(v ?? '')) },
@@ -126,9 +131,18 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
         + 'Pick a job for its history below.'),
       box, hist);
     draw();
+    const byKey = new Map(rows.map(r => [key(r), r]));
     get<Record<'stats', Table | null>>('jobsreport', { part: 'stats', ids: ids.join(',') || '0' })
-      .then(x => { stats = new Map(rowsOf(x.stats).map(r => [key(r), r])); }, e => { statsWhy = e instanceof Error ? e.message : String(e); })
-      .finally(() => { if (box.isConnected || !sec.isConnected) draw(); });
+      .then(x => {
+        stats = new Map(rowsOf(x.stats).map(r => [key(r), r]));
+        for (const [k, r] of byKey) { const t = stats.get(k); for (const c of Object.keys(statFmt)) r[c] = t?.[c] ?? null; }
+      }, e => { statsWhy = e instanceof Error ? e.message : String(e); })
+      .finally(() => {
+        for (const sp of box.querySelectorAll<HTMLElement>('[data-stat]')) {
+          const r = byKey.get(sp.dataset.row ?? '');
+          if (r) sp.textContent = statText(sp.dataset.stat ?? '', r);
+        }
+      });
   } catch (e) {
     sec.append(el('h3', {}, 'Job status'), errorBox(e));
   }
