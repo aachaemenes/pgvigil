@@ -57,12 +57,13 @@
 #           'server postgres:target2:5432 not answering from <T> UTC', t16-t18 held, t1-t12 not; started again, resolved once, none of t16-t18's own alerts after.
 #      SC7  slow connects shared (the slow-connect tier's host fold): t1-t12 dialled through a proxy container (slowp)
 #           on four ports, three instances each, that holds every new connection 2 s before it forwards it; the root's
-#           connect_time threshold set to 0.10 / 0.15 s for SC7 and SL (one slow minute in the 5-minute window then
-#           averages about 0.4 s: every member and the fold cross the critical line in the same beat, never one by one
-#           on a ramp, where a member above a warning fold is rightly sent on its own) - ONE 'slow connects' valued
-#           pgvigil-svc on U and S (repository-wide), critical, its four server folds held under it, its 12 members
-#           held, no 'slow connect' sent; the delay lifted: resolved once (the last slow minute leaves the window
-#           about 5 minutes later), no member's alert after it.
+#           connect_time threshold set to 0.10 / 0.10 s for SC7 and SL (warning = critical: the channels here send
+#           critical only, and a slow member is then critical with its fold - none can stand above a warning fold,
+#           where it is rightly sent on its own; one slow minute in the 5-minute window averages 0.2 s or more) - ONE
+#           'slow connects' valued pgvigil-svc on U and S (repository-wide), critical, its four server folds held
+#           under it, its 12 members held, no 'slow connect' sent; the delay lifted at :57 (a held connect ends before
+#           the minute turns): resolved once (the last slow minute leaves the window about 5 minutes later), no
+#           member's alert after it.
 #      SL   one slow server: t1 alone through slowp (its own port), t2-t12 direct - t1's own 'slow connect' once on U
 #           and S, no fold, no other instance's; the delay lifted: resolved once.
 #   U  uninstall (the join fold, last: the service is gone after it): `pgvigil uninstall` in the service's container
@@ -728,9 +729,12 @@ if want SV; then
   docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc12.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
 fi
 # ---- SC7 / SL the slow-connect tier on the service: a proxy that delays new connections, the root's connect_time
-# threshold low (0.10 / 0.15 s) so one slow minute in an instance's 5-minute window is critical, every member and the fold
-# crossing in the same beat (a slow ramp across the critical line would send a member above a warning fold on its own,
-# as designed: the SQL rows C27l prove that edge, not this case)
+# threshold low and warning = critical (0.10 / 0.10 s): one slow minute in an instance's 5-minute window is over it, and
+# a slow member is critical with its fold (a member above a WARNING fold is sent on its own, as designed: the SQL row
+# C27l proves that edge, not this case). The delay starts only after 5 written minutes through the new address (a
+# restart runs every collection once within 5 minutes: those minutes hold far more connects than a later one, and a
+# window full of them would dilute the first slow minute); it is lifted at :57, so a connect held 2 s ends before the
+# minute turns and the lift's minute is fast
 if want SC7 || want SL; then
   # slowp: every new connection on its ports waits /tmp/delay seconds (none: 0), then goes on to target:5432
   cat > "$WORK/slowp.py" <<'PY'
@@ -785,10 +789,10 @@ PY
   { svc_head; for n in $(seq 1 12); do inst "$n" slowp $((6001 + (n - 1) / 3)); done; alerts_of /work; } > "$WORK/svc-sc7.yaml"
   { svc_head; inst 1 slowp 6005; for n in $(seq 2 12); do inst "$n" target 5432; done; alerts_of /work; } > "$WORK/svc-sl.yaml"
   sc_dial() { docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/$1 /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"; }
-  # sc_through NAMES TARGET N: N of the instances NAMES (a regex) with 3 written minutes of opened connects through
-  # TARGET (a LIKE pattern) in the last 5
-  sc_through() { waitfor 360 "SELECT count(*) = $3 FROM (SELECT l.instance_id FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name ~ '^($1)\$' AND l.target LIKE '$2' AND l.opened > 0 AND l.minute > now() - interval '5 minutes' GROUP BY 1 HAVING count(*) >= 3) x"; }
-  slow 0; sc_thr=$(thr 0.10 0.15)
+  # sc_through NAMES TARGET N: N of the instances NAMES (a regex) with 5 written minutes of opened connects through
+  # TARGET (a LIKE pattern) in the last 7
+  sc_through() { waitfor 540 "SELECT count(*) = $3 FROM (SELECT l.instance_id FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name ~ '^($1)\$' AND l.target LIKE '$2' AND l.opened > 0 AND l.minute > now() - interval '7 minutes' GROUP BY 1 HAVING count(*) >= 5) x"; }
+  slow 0; sc_thr=$(thr 0.10 0.10)
 fi
 if want SC7; then
   # t1-t12 through slowp's four ports (three each): the delay of 2 s for 5 minutes - ONE 'slow connects' (the host fold)
@@ -806,7 +810,7 @@ if want SC7; then
   snap SC7; sc_L=$WORK/SC7.lst
   sc7_u=$(cnt "$WORK/spool" firing "slow connects" ""); sc7_ut=$(cnt "$WORK/spool" firing "slow connects" "" "pgvigil-svc")
   sc7_s=$(cnt "$WORK/spool2" firing "slow connects" ""); sc7_m=$(cnt "$WORK/spool" firing "slow connect" ""); sc7_m2=$(cnt "$WORK/spool2" firing "slow connect" "")
-  pin_at 3; slow 0
+  pin_at 57; slow 0
   sc7_tr=-1; if [[ "$sc7_tp" -ge 0 ]]; then sc7_tr=$(SKIP=$sc_L within 600 "$WORK/spool" resolved "slow connects" ""); fi
   sleep 130   # two more passes: no member's own alert after the fold's recovery
   sc7_r=$(cnt "$WORK/spool" resolved "slow connects" ""); sc7_n=$(cnt "$WORK/spool" firing "slow connects" ""); sc7_x=$(cnt "$WORK/spool" firing "slow connect" "")
@@ -816,7 +820,7 @@ if want SC7; then
         && "$sc7_m" == 0 && "$sc7_m2" == 0 && "$sc7_f" == "$SC7_F" && "$sc7_h" == 12 \
         && "$sc7_d" == "connects slow from collector pgvigil-svc: 4 of its 4 judged target(s) over their warning"* \
         && "$sc7_tr" -ge 0 && "$sc7_r" == 1 && "$sc7_n" == 1 && "$sc7_x" == 0 ]]; then
-    ok "SC7: t1-t12 through slowp's four ports held 2 s for 5 minutes (connect_time 0.10 / 0.15 s) - 'slow connects' $sc7_tp s after, once on U and S, valued pgvigil-svc; the folds '$sc7_f', $sc7_h held, averages $sc7_a; no 'slow connect' sent; the detail '$(echo "$sc7_d" | cut -c1-240)'; lifted: resolved once $sc7_tr s after, nothing after it"
+    ok "SC7: t1-t12 through slowp's four ports held 2 s for 5 minutes (connect_time 0.10 / 0.10 s) - 'slow connects' $sc7_tp s after, once on U and S, valued pgvigil-svc; the folds '$sc7_f', $sc7_h held, averages $sc7_a; no 'slow connect' sent; the detail '$(echo "$sc7_d" | cut -c1-240)'; lifted: resolved once $sc7_tr s after, nothing after it"
   else
     fail "SC7: threshold '$sc_thr' (want done), the 12 through slowp $sc7_in (want 1), slow before the delay $sc7_b (want 0); 'slow connects' $sc7_tp s after (want 0-240), U $sc7_u (want 1), of another value $sc7_ut (want 0), S $sc7_s (want 1); 'slow connect' U $sc7_m / S $sc7_m2 (want 0 / 0); folds '$sc7_f' (want '$SC7_F'), held $sc7_h (want 12), averages $sc7_a, detail '$(echo "$sc7_d" | cut -c1-200)'; lifted: resolved after $sc7_tr s, $sc7_r (want 1), sent in all $sc7_n (want 1), members after $sc7_x (want 0): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-500)"
   fi
@@ -836,13 +840,13 @@ if want SL; then
   snap SL; sc_L=$WORK/SL.lst
   sl_u=$(cnt "$WORK/spool" firing "slow connect" t1); sl_o=$(cnt "$WORK/spool" firing "slow connect" "t2|t3|t4|t5|t6|t7|t8|t9|t10|t11|t12")
   sl_s=$(cnt "$WORK/spool2" firing "slow connect" t1); sl_fs=$(cnt "$WORK/spool" firing "slow connects" "")
-  pin_at 3; slow 0
+  pin_at 57; slow 0
   sl_tr=-1; if [[ "$sl_tp" -ge 0 ]]; then sl_tr=$(SKIP=$sc_L within 600 "$WORK/spool" resolved "slow connect" t1); fi
   sl_r=$(cnt "$WORK/spool" resolved "slow connect" t1); sl_n=$(cnt "$WORK/spool" firing "slow connect" t1)
   keep SL
   if [[ "$sc_thr" == done && "$sl_in" == 1 && "$sl_b" == 0 && "$sl_tp" -ge 0 && "$sl_tp" -le 240 && "$sl_u" == 1 && "$sl_o" == 0 && "$sl_s" == 1 && "$sl_fs" == 0 \
         && "$sl_f" == 0 && "$sl_c" =~ ^t1\ 2\ [0-9.]+\ s$ && "$sl_tr" -ge 0 && "$sl_r" == 1 && "$sl_n" == 1 ]]; then
-    ok "SL: t1 alone through slowp held 2 s for 4 minutes - its own 'slow connect' $sl_tp s after, once on U and S ('$sl_c'), no fold, no other instance's; lifted: resolved once $sl_tr s after"
+    ok "SL: t1 alone through slowp held 2 s for 4 minutes (connect_time 0.10 / 0.10 s) - its own 'slow connect' $sl_tp s after, once on U and S ('$sl_c'), no fold, no other instance's; lifted: resolved once $sl_tr s after"
   else
     fail "SL: threshold '$sc_thr' (want done), t1 through slowp and the rest direct $sl_in (want 1), slow before the delay $sl_b (want 0); t1's 'slow connect' $sl_tp s after (want 0-240), U $sl_u (want 1), the others' $sl_o (want 0), S $sl_s (want 1), 'slow connects' $sl_fs (want 0), folds $sl_f (want 0), slow '$sl_c' (want t1 alone, critical); lifted: resolved after $sl_tr s, $sl_r (want 1), sent in all $sl_n (want 1): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-500)"
   fi
