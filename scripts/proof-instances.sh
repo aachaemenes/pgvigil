@@ -53,20 +53,20 @@
 #      Summary card, /api/instances (last_seen null, added_at set) and pgvigil report's instances.txt; once its
 #      server answers, the read's time on all five, the words gone, and first_seen moved to that read (0123's
 #      admin_first_read: the 'never read' test whatever the platform)
-#   N. the page door (doors.page_instance_reads; the design pass's part H): pgd-ok (PostgreSQL, a pg_monitor login) and
-#      msd-ok (SQL Server, the read login) added in the page and collected. N1 on the first serve (no doors: key, a
-#      fresh install): their needs, a run and the form refused in the switch's words, audited (the form as
-#      community_form, 403); the add's answer says nothing of a door, the actions on pgd-ok a page instance's words. N2
-#      on a serve whose pgvigil.yaml says 'doors: page_instance_reads: on': a read, a script and a custom report done on
-#      the stored logins (current_user / SUSER_SNAME() = those logins, never serve's), audited door page with the
-#      generation; filepg's run audited door file. N3: windows, entra-identity, pgpass and passfile= page instances each
-#      refused before anything is sent in the own-identity words, audited. N4: EXPLAIN 403, EXPLAIN ANALYZE refused in
-#      the actions log, the advisor 409, the actions off - in their words. N5: on this serve a run right after an add is
-#      done and right after a disable refused (the answers: 'this change reaches Community tools and custom reports at
-#      once on this server'); a row Merge leaves out (a tag with no value) says why. N6: a report mail schedule of the
-#      report on pgd-ok rendered by this serve as its owner: one audit row per turn, door page; after a disable refused
-#      in the words, which the mail or its render error carries. N7: msdb.dbo.sp_start_job in a script as the read login
-#      (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen)
+#   N. the page door (doors.page_instance_reads): pgd-ok (PostgreSQL, a pg_monitor login) and msd-ok (SQL Server, the
+#      read login) added in the page and collected. N1 on the first serve (no doors: key, a fresh install): their needs,
+#      a run and the form refused in the switch's words, audited (the form as community_form, 403); the add's answer
+#      says nothing of a door, the actions on pgd-ok a page instance's words. N2 on a serve whose pgvigil.yaml says
+#      'doors: page_instance_reads: on': a read, a script and a custom report done on the stored logins (current_user /
+#      SUSER_SNAME() = those logins, never serve's), audited door page with the generation; filepg's run audited door
+#      file. N3: windows, entra-identity, pgpass and passfile= page instances each refused before anything is sent in
+#      the own-identity words, audited. N4: EXPLAIN 403, EXPLAIN ANALYZE refused in the actions log, the advisor 409,
+#      the actions off - in their words. N5: on this serve a run right after an add is done and right after a disable
+#      refused (the answers: 'this change reaches Community tools and custom reports at once on this server'); a row
+#      Merge leaves out (a tag with no value) says why. N6: a report mail schedule of the report on pgd-ok rendered by
+#      this serve as its owner: one audit row per turn, door page; after a disable refused in the words, which the mail
+#      carries (its 'What the page said' lines), run on no other instance. N7: msdb.dbo.sp_start_job in a script as the
+#      read login (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen)
 #   L also draws one aws, one azure and one gcp source (rows only, disabled: never read) and grades their cloud-only
 #      controls ('Read the regions again', the cloud source's Edit) off with the rest
 #
@@ -818,6 +818,7 @@ echo "ok   N4: on pgd-ok EXPLAIN 403, EXPLAIN ANALYZE refused in the actions log
 code=$(api POST admin/instances "$(js op=add name=pgd-new engine=postgres host=127.0.0.1 port="$PB" dbname=postgres auth=password login="$DOOR" password=@DOOR_PW)")
 [[ "$code" == 200 && "$(ans doors)" == "$ATONCE"* ]] || fail "N5: add pgd-new: $code $(head -c 300 "$TMPD/ans.json")"
 NEW=$(iid pgd-new); r=$(crun "$NEW" pg_settings_changed); [[ "$r" == "done|" ]] || fail "N5: a run right after the add: $r"
+[[ "$(lastlog community_run pgd-new)" == "done|page|$(gen)|" ]] || fail "N5: the run's audit row names its door: $(lastlog community_run pgd-new)"
 code=$(api POST admin/instances "$(js op=disable name=pgd-new)"); [[ "$code" == 200 && "$(ans doors)" == "$ATONCE"* ]] || fail "N5: disable pgd-new: $code"
 r=$(crun "$NEW" pg_settings_changed); [[ "$r" == "refused|instance pgd-new is disabled in Admin > Instances" ]] || fail "N5: a run right after the disable: $r"
 code=$(api POST admin/instances "$(js op=remove name=pgd-new)"); [[ "$code" == 200 ]] || fail "N5: remove pgd-new: $code"
@@ -831,7 +832,7 @@ pq "UPDATE pgvigil.admin_inventory_state SET generation = generation + 1, change
 for _ in $(seq 1 40); do r=$(crun "$PGD" pg_settings_changed); [[ "$r" == "done|" ]] && break; sleep 1; done; [[ "$r" == "done|" ]] || fail "N5: pgd-ok after its row was mended: $r"
 echo "ok   N5: on this serve a run right after the add is done and right after the disable refused ('$ATONCE' in each answer); a row Merge leaves out: '$LO', with its step"
 # N6: a report mail schedule of the report on pgd-ok, rendered as its owner each turn
-pq "INSERT INTO pgvigil.alert_channels (name, kind, destination, min_severity, repeat_secs, recovery) VALUES ('doormail', 'smtp', 'door@pgvigil.test', 'critical', 0, false)" >/dev/null
+pq "INSERT INTO pgvigil.alert_channels (name, kind, destination, min_severity, repeat_secs, recovery, configured_at, updated_at) VALUES ('doormail', 'smtp', 'door@pgvigil.test', 'critical', 0, false, now(), now())" >/dev/null || fail "N6: the mail channel"
 code=$(api POST reportmail "$(python3 -c 'import json, sys; print(json.dumps({"op": "add", "name": "door mail", "route": "#/customreports?i=%s&report=%s&run=1" % (sys.argv[1], sys.argv[2]), "recipients": ["door@pgvigil.test"], "channel": "doormail", "cadence": "daily", "cron": "0 7 * * *", "timezone": "UTC"}))' "$PGD" "$RID")")
 [[ "$code" == 200 ]] || fail "N6: the schedule: $code $(head -c 300 "$TMPD/ans.json")"; SID=$(ans schedule_id)
 turn() { local l0 n0; l0=$(pq "SELECT coalesce(max(log_id), 0) FROM pgvigil.custom_report_log"); n0=$(pq "SELECT count(*) FROM pgvigil.report_mail_sends WHERE schedule_id = $SID")
@@ -843,10 +844,12 @@ t1=$(turn); [[ "$t1" == "1|$USR|done|page|$(gen)|" ]] || fail "N6: the first tur
 code=$(api POST admin/instances "$(js op=disable name=pgd-ok)"); [[ "$code" == 200 ]] || fail "N6: disable pgd-ok: $code"
 DW="instance pgd-ok is disabled in Admin > Instances"
 t2=$(turn); [[ "$t2" == "1|$USR|refused||$(gen)|$DW" ]] || fail "N6: the second turn's audit (want one row, refused in the words): $t2"
-where=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SID ORDER BY send_id DESC LIMIT 1" | DW="$DW" python3 -c 'import html, os, sys
+# the words in the mail's own lines (the result section's note), not the report's audit grid (an earlier turn's words)
+where=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SID ORDER BY send_id DESC LIMIT 1" | DW="$DW" python3 -c 'import html, os, re, sys
 h, _, e = sys.stdin.read().partition("\x1f"); w = os.environ["DW"]
-print("the mail" if w in html.unescape(h) else "its render error" if w in e else "neither: " + (e or h)[:300])')
-[[ "$where" == "the mail" || "$where" == "its render error" ]] || fail "N6: the refused turn's words are in $where"
+m = re.search(r"<div data-said=\"1\">(.*?)</div>", h, re.S); said = html.unescape(re.sub(r"<[^>]+>", "", m.group(1))) if m else ""
+print("the mail" if w in said else "neither: " + (e or said or h)[:300])')
+[[ "$where" == "the mail" ]] || fail "N6: the refused turn's words are not in the mail's 'What the page said' lines: $where"
 code=$(api POST admin/instances "$(js op=enable name=pgd-ok)"); [[ "$code" == 200 ]] || fail "N6: enable pgd-ok: $code"
 code=$(api POST reportmail "{\"op\":\"end\",\"schedule_id\":$SID}"); [[ "$code" == 200 ]] || fail "N6: the schedule's end: $code"
 echo "ok   N6: a schedule of the report on pgd-ok rendered by this serve as $USR: one audit row per turn - done, door page; after a disable refused '$DW', the words in $where"
@@ -858,8 +861,12 @@ st=0; for _ in $(seq 1 30); do st=$(sq "SELECT count(*) FROM msdb.dbo.sysjobacti
 [[ "$st" -gt 0 ]] || fail "N7: sa's start of the job is not seen in sysjobactivity (the read would miss one)"
 echo "ok   N7: msdb.dbo.sp_start_job in a script on msd-ok as $MONL (no sysadmin, no agent role): the server refused it ('${r:0:120}'), no start in sysjobactivity; sa's start is seen there"
 kill "$SRVDPID" 2>/dev/null || true; SRVDPID=
-# G2: G's scan again after L2 and M (they came after G), the read-only login's password too: serve's two logs, the
-# run's log, the API's last answer and every file of M's report zip
+# G2: G's scan again after L2, M and N (they came after G), the read-only login's and the door's passwords too: every
+# repository table (N writes custom_report_log, report_mail_sends and actions_log), serve's three logs, the run's log,
+# the API's last answer and every file of M's report zip
+TABLES=$(pq "SELECT c.oid::regclass FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1")
+HITS=""; for t in $TABLES; do for v in MON_PW DOOR_PW; do n=$(pq "SELECT count(*) FROM $t x WHERE strpos(x::text, '${!v}') > 0"); [[ "$n" == 0 ]] || HITS+=" $t:$v=$n"; done; done
+[[ -z "$HITS" ]] || fail "G2: a password is in the repository after N:$HITS"
 for v in MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW RDL_PW DOOR_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/serve-rd.log" "$TMPD/serve-door.log" "$TMPD/run.log"; do
   [[ -f "$f" ]] || continue; ! grep -qF -- "${!v}" "$f" || fail "G2: $v is in $(basename "$f")"; done; done
 [[ -f "$TMPD/rep.zip" ]] || fail "G2: M's report zip is gone"
@@ -874,5 +881,5 @@ for n in z.namelist():
             print("G2: password %d is in the report's %s" % (i, n)); bad = 1
 sys.exit(bad)
 PY
-echo "ok   G2: after L2 and M no password (the read-only login's too) in serve's two logs, the run's log, the API's last answer or M's report zip ($(python3 -c 'import sys, zipfile; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))' "$TMPD/rep.zip") files)"
+echo "ok   G2: after L2, M and N no password (the read-only login's and the door's too) in the repository's tables, serve's three logs, the run's log, the API's last answer or M's report zip ($(python3 -c 'import sys, zipfile; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))' "$TMPD/rep.zip") files)"
 echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login and with the audit login off, no error box; a page instance never read says so until its first read; the NOT PROVEN lines above stand; the page door: off on a fresh install, on with doors.page_instance_reads, serve's own identity refused, EXPLAIN / the advisor / actions off, at once on this serve, report mail as the owner, sp_start_job refused)"

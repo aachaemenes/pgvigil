@@ -1133,6 +1133,7 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		refuse(fmt.Errorf("a %s report runs on one instance or on a tag's instances, not on the fleet", d.Engine))
 		return
 	}
+	ds := s.doorsNow() // one door set for every target of the run (an inactive instance's words come from it too)
 	trows, err := s.pool.Query(ctx, sqlRunTargets, in.Target, in.InstanceID, in.Tag)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -1146,21 +1147,33 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	var runs []instanceRun
 	if len(targets) == 0 {
-		refuse(errors.New("the target names no active instance"))
-		return
+		// an instance that exists but is not active: its own words, audited with it - never another instance's run in
+		// its place (a mailed page names its instance)
+		gone, ok, err := s.inactiveTarget(ctx, ds, d, in)
+		switch {
+		case err != nil:
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		case !ok:
+			refuse(errors.New("the target names no active instance"))
+			return
+		}
+		runs = append(runs, gone)
 	}
 	timeout := time.Duration(d.TimeoutSecs) * time.Second
 	stmt := d.Body
 	if d.Kind == "procedure" {
 		stmt = procCall(d.Engine, d.Body, d.Params, given)
 	}
-	var runs []instanceRun
 	ids := make([]int32, 0, len(targets))
 	for _, t := range targets {
 		ids = append(ids, int32(t.id))
 	}
-	if d.Engine == "store" {
+	switch {
+	case len(runs) > 0: // the inactive instance's refusal: nothing runs
+	case d.Engine == "store":
 		args := pgx.NamedArgs{"from": from, "to": to, "instance_ids": ids}
 		for k, v := range given {
 			args[k] = v
@@ -1173,7 +1186,7 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		sets, why, err := runPG(ctx, s.pool.Config().ConnConfig, stmt, args, timeout, d.MaxRows)
 		run.finish(t0, sets, why, err)
 		runs = append(runs, run)
-	} else {
+	default:
 		var mine []runTarget
 		var skipped []string
 		for _, t := range targets {
@@ -1192,7 +1205,6 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		runs = make([]instanceRun, len(mine))
-		ds := s.doorsNow() // one door set for every target of the run
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 4)
 		for i, t := range mine {
@@ -1229,6 +1241,33 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 		To       time.Time     `json:"to"`
 		Runs     []instanceRun `json:"runs"`
 	}{d.ID, time.Now().UTC(), from.UTC(), to.UTC(), runs}, nil)
+}
+
+// inactiveTarget: a run's one instance that exists but is not active (disabled in Admin > Instances, or gone from
+// pgvigil.yaml and the page's list) - a refused run in the door set's words, audited with the instance, so the page
+// and a mailed page say why and nothing runs on another instance in its place. ok false: no such instance of the
+// report's engine (a repository report keeps its refusal: it reads the active instances).
+func (s *Server) inactiveTarget(ctx context.Context, ds *doorSet, d *reportDef, in reportRunBody) (instanceRun, bool, error) {
+	if in.Target != "instance" || d.Engine == "store" {
+		return instanceRun{}, false, nil
+	}
+	var name, engine string
+	err := s.pool.QueryRow(ctx, `SELECT name, engine FROM pgvigil.instances WHERE instance_id = $1`, in.InstanceID).Scan(&name, &engine)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return instanceRun{}, false, nil
+	case err != nil:
+		return instanceRun{}, false, err
+	case engine != d.Engine:
+		return instanceRun{}, false, nil
+	}
+	why := "instance " + name + " is not active on this server (disabled in Admin > Instances, or removed): the report runs on no other instance in its place"
+	if _, _, no := ds.readLogin(engine, name); no.Why != "" {
+		why = no.Why
+	}
+	run := instanceRun{InstanceID: in.InstanceID, Instance: name, Engine: engine, DoorGen: ds.Gen}
+	run.finish(time.Now(), nil, why, nil)
+	return run, true, nil
 }
 
 // finish fills a run's outcome from what its runner returned.

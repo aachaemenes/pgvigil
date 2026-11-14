@@ -152,9 +152,11 @@ doors:
 ```
 
 The switch is in the file only, never on the page; while it is off a page instance's tools and reports say 'off on
-this install: doors.page_instance_reads in pgvigil.yaml turns on Community tools and custom reports for instances added
-in Admin > Instances'. (A later release lists the switch on a Site settings page, one switch per door in one place,
-where this file's 'off' still wins.)
+this install: doors.page_instance_reads in pgvigil.yaml turns on Community tools and custom reports for instances
+added in Admin > Instances' - unless its row has a refusal of its own (disabled, left out of the list, this server's
+own identity, an option the door does not open), which the switch would not lift: those words come first. (A later
+release lists the switch on a Site settings page, one switch per door in one place, where this file's 'off' still
+wins.)
 
 With it on, a page instance's door is its stored read login alone, and it opens only for a credential typed into
 the form, never for one that signs in as `pgvigil serve` itself:
@@ -178,20 +180,24 @@ the form, never for one that signs in as `pgvigil serve` itself:
   or a Kerberos name (`PGSSLCERT`, `PGSSLKEY`, `PGKRBSRVNAME`) refuses it too.
 
 Each refusal is in words on the page and in the run's audit row: in neither `pgvigil.yaml` nor Admin > Instances;
-disabled in Admin > Instances; left out of the list (the reason); off on this install; this server's own identity;
-an option the door does not open; a credential not readable on this host (stored by another host's `pgvigil
-serve`: serve here as the account, and with the configuration folder, that stored it - storing it again with Edit on
-this server moves it to this host, where a collector on the other host then reads nothing); the list of Admin >
-Instances not read yet on this server (its log names why a read failed). EXPLAIN, the index advisor and every action
-(cancel, terminate, kill, a job's start and stop) stay on the instances of `pgvigil.yaml`: on a page instance - one
-with a door or refused one - they say so, and the actions log keeps no door column because a page instance runs no
+disabled in Admin > Instances; left out of the list (the reason); off on this install; this server's own identity; an
+authentication or a driver option the door does not open; a driver option that names a file on this server's host;
+this server's own socket; a credential stored as a URL rather than the keyword form pgvigil writes; a credential the
+driver reads differently from the door's check; a credential not readable on this host (stored by another host's
+`pgvigil serve`: serve here as the account, and with the configuration folder, that stored it - storing it again with
+Edit on this server moves it to this host, where a collector on the other host then reads nothing); the list of
+Admin > Instances not read yet on this server (its log names why a read failed). A custom report's page opened on an
+instance that is disabled or removed (a mailed page names its instance) keeps it as the target and runs on no other in
+its place: its run says why, and a mailed turn carries those words in the mail. EXPLAIN, the index advisor and every
+action (cancel, terminate, kill, a job's start and stop) stay on the instances of `pgvigil.yaml`: on a page instance -
+one with a door or refused one - they say so, and the actions log keeps no door column because a page instance runs no
 action.
 
 A change in Admin > Instances reaches this server's doors at once (its write waits up to 5 seconds for them, then
 answers that the change reaches Community tools and custom reports within 15 seconds) and another `pgvigil serve` on
-the same repository within 15 seconds. On an install whose page doors are off the answer says nothing of them.
-Every run's audit row (`custom_report_log`) names its door, `file` (an instance of `pgvigil.yaml`), `page`
-(Admin > Instances') or `store` (the repository), and `door_generation`, the repository's inventory generation the
-door was read from. `pgvigil serve` keeps every open page door's credential in memory while it runs. While a serve
-cannot read the repository, its last doors stay as they were: a disable written through another serve reaches it once
-its reads work again.
+the same repository within 15 seconds. On an install whose page doors are off the answer says nothing of them. A run
+that reached a door names it in its audit row (`custom_report_log`): `file` (an instance of `pgvigil.yaml`), `page`
+(Admin > Instances') or `store` (the repository); one refused for want of a door names none. Each carries
+`door_generation`, the repository's inventory generation its door set was read from. `pgvigil serve` keeps every open
+page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
+were: a disable written through another serve reaches it once its reads work again.

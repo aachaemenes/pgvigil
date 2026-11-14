@@ -376,7 +376,11 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const tagSel = el('select', { 'aria-label': 'Tag' }) as HTMLSelectElement;
   for (const t of tags) tagSel.append(el('option', { value: t }, t));
   const want = Number(q.get('i') ?? ctx.instance ?? 0);
-  if (want && mine.some(i => i.id === want)) { instSel.value = String(want); target.value = 'instance'; }
+  // an address naming an instance that is not active here (disabled in Admin > Instances, or removed) keeps it as the
+  // target: its run says why, never another instance's run in its place (a mailed page names its instance)
+  const gone = !!want && !insts.some(i => i.id === want);
+  if (gone) instSel.append(el('option', { value: String(want) }, `instance ${want} (not active here)`));
+  if (want && (gone || mine.some(i => i.id === want))) { instSel.value = String(want); target.value = 'instance'; }
   else if (q.get('tag') && tags.includes(q.get('tag')!)) { tagSel.value = q.get('tag')!; target.value = 'tag'; }
   else if (def.engine !== 'store') target.value = 'instance';
   const instBox = el('label', {}, 'Instance ', instSel), tagBox = el('label', {}, 'Tag ', tagSel);
@@ -386,7 +390,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const inputs = def.params.map(p => paramInput(p, q));
   const runBtn = el('button', { type: 'button' }, 'Run');
   // off with the page's own words: the server's door, or (an instance report) no active instance of its engine to run on
-  const noInst = def.engine !== 'store' && !mine.length;
+  const noInst = def.engine !== 'store' && !mine.length && !gone;
   const runWhy = !d.state.enabled ? (d.state.reason || 'Running a report is off on this server.')
     : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance to run it on.` : '';
   const runOff = el('p', { class: 'meta off-reason' }, runWhy);
@@ -423,7 +427,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   runBtn.addEventListener('click', () => { void run(); });
   // a repository report runs on open (DBA Dash's custom reports run when opened); an instance report on the button,
   // or on open when the address says run=1 (a mailed or linked page)
-  if (d.state.enabled && mine.length && (def.engine === 'store' || q.get('run') === '1')) await run();
+  if (d.state.enabled && (mine.length || gone) && (def.engine === 'store' || q.get('run') === '1')) await run();
 
   const det = el('details', {}, el('summary', {}, 'Definition'));
   det.append(el('pre', { class: 'sql', tabindex: '0' }, def.kind === 'procedure' ? 'procedure ' + def.body : def.body));

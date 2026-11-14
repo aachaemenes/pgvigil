@@ -56,9 +56,20 @@ function numbers(root: ParentNode): boolean[][] {
   });
 }
 
+// notesOf: what the page said in words where a grid would be - a run refused (its reason) or an error box - each with
+// the heading it sits under: a mail carries them, so a refused or failed turn is never mailed as an empty report
+export function notesOf(root: ParentNode, fallback: string): { head: string; text: string }[] {
+  return [...root.querySelectorAll<HTMLElement>('p.refused, p.error')].map(p => {
+    let h: Element | null = p.previousElementSibling;
+    while (h && !/^H[2-4]$/.test(h.tagName)) h = h.previousElementSibling;
+    return { head: (h?.textContent ?? '').trim() || fallback, text: (p.textContent ?? '').replace(/\s+/g, ' ').trim() };
+  }).filter(n => n.text);
+}
+
 // mailHtml: the whole mail body. Tables and inline styles only (a mail client takes no stylesheet and runs nothing):
-// the header lines as the workbook's Summary sheet has them, then each grid under its heading as toHtml writes it.
-export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: string): string {
+// the header lines as the workbook's Summary sheet has them, what the page said in words (a refused run, an error),
+// then each grid under its heading as toHtml writes it.
+export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: string, said: { head: string; text: string }[] = []): string {
   const cell = 'border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;' + FONT + ';white-space:nowrap';
   const line = (k: string, v: string) => `<tr><th style="${cell};background:#0063a3;color:#ffffff;font-weight:bold;text-align:left">${esc(k)}</th><td style="${cell};color:#1d1d1f">${esc(v)}</td></tr>`;
   const head = '<table role="presentation" style="border-collapse:collapse;margin:0 0 10px 0">'
@@ -75,7 +86,10 @@ export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: str
     + `<title>${esc(title)}</title></head>`
     + `<body style="margin:0;padding:12px;background:#ffffff;color:#1d1d1f;font-size:11pt;${FONT}">`
     + `<h2 style="margin:0 0 8px 0;font-size:15pt;font-weight:bold;${FONT};color:#1d1d1f">${esc(title)}</h2>`
-    + head + parts
+    + head
+    + (said.length ? `<div data-said="1"><h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;${FONT};color:#b3261e">What the page said</h3>`
+      + said.map(n => `<p style="margin:2px 0 4px 0;font-size:11pt;${FONT};color:#1d1d1f"><b>${esc(n.head)}</b>: ${esc(n.text)}</p>`).join('') + '</div>' : '')
+    + parts
     + `<p style="margin:16px 0 0 0;font-size:9pt;${FONT};color:#5f6368">Sent by pgvigil: the page as it showed at ${esc(stamp(m.at))} (${esc(zoneName())}). The workbook attached holds the same rows.</p>`
     + '</body></html>';
 }
@@ -107,7 +121,7 @@ export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<Mai
   const xlsx = b64(new Uint8Array(await z.arrayBuffer()));
   return {
     name: title, route: routeOf(), subject: `pgvigil: ${title} - ${win}`, window: win,
-    html: mailHtml(m, secs, nums, title), xlsx, xlsx_name: exportName(m, 'xlsx'),
+    html: mailHtml(m, secs, nums, title, notesOf(root!, m.tab)), xlsx, xlsx_name: exportName(m, 'xlsx'),
     grids: book.length, rows: book.reduce((n, s) => n + s.rows.length, 0),
   };
 }
