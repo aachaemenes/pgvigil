@@ -366,7 +366,20 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 					}
 					return beat(running(n))
 				}
+				// the job runs' history (FLEET STATS ROLLUP, 0139): the hourly statistics are only marked while the
+				// batches go in and built ONCE at the end, not once per batch (a defer a dead run leaves lapses 2 hours
+				// after this call, and the next write or purge builds the hours); import_* is the collector's door
+				if m.Key == "jobruns" {
+					if _, err := pool.Exec(ctx, `SELECT pgvigil.import_job_stats_defer($1)`, tgt.ID); err != nil {
+						return out, fmt.Errorf("%s %s: the job statistics' defer: %w", tgt.Name, m.Key, err)
+					}
+				}
 				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
+				if m.Key == "jobruns" {
+					if _, berr := pool.Exec(ctx, `SELECT pgvigil.import_job_stats_build($1)`, tgt.ID); berr != nil && err == nil {
+						err = fmt.Errorf("the job statistics' build (the runs are stored; the next write or purge builds the hours): %w", berr)
+					}
+				}
 				var pe *pgconn.PgError
 				switch {
 				case errors.As(err, &pe) && pe.Code == "55000":
