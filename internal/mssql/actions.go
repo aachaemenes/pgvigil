@@ -96,7 +96,7 @@ func (d Door) Allows(k ActionKind) bool {
 // PageOff is the words of an action on an instance added in Admin > Instances (actions.PageOff's own; a web test
 // holds the two equal).
 func PageOff(instance string) string {
-	return fmt.Sprintf("instance %s: actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it here", instance)
+	return fmt.Sprintf("instance %s: actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it from Admin > Instances", instance)
 }
 
 // Off is the reason the door cannot do k on the instance, or "" when it can.

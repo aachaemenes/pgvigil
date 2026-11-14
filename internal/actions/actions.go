@@ -79,7 +79,7 @@ func (d Door) Off(instance string) string {
 
 // PageOff is the words of an action on an instance added in Admin > Instances.
 func PageOff(instance string) string {
-	return fmt.Sprintf("instance %s: actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it here", instance)
+	return fmt.Sprintf("instance %s: actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it from Admin > Instances", instance)
 }
 
 // DoorsFromConfig maps every configured instance name to its door.
