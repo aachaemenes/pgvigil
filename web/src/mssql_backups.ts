@@ -2,10 +2,18 @@
 // log backup, where it ran, and its age AT THE READ against the threshold of its type. A database in an
 // availability group shows the newest backup any monitored replica took. Data from /api/mssql/backups; the lead
 // wires the tab (router.ts, main.ts).
+//   mssqlBackups               the tab; opened with a database in its address (#/mssqlbackups?i=<id>&db=<name>, the
+//                              fleet page's database link) that database's row is first and marked
+//   mssqlBackupsFleetSection   the SQL Server sections of the fleet's Backups page, DBA Dash's root Backups: its Summary
+//                              grid (one row per instance) and its Detail grid (one row per database, Problems or All),
+//                              with the backup findings of every instance in view between them. The same API with no
+//                              instance. main.ts appends it below PostgreSQL's sections (the lead's wiring).
 import { get, Row, rowsOf, Table } from './api';
+import { hashParam, hrefWith } from './dbinfo';
+import { fleet, tagsOf } from './fleet';
 import { Ctx } from './router';
 import { mssqlFindingCols, words } from './mssql_hadr';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, tile } from './ui';
 
 type Parts = 'databases' | 'findings' | 'limits';
 
@@ -50,7 +58,11 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Backups'));
   try {
     const d = await get<Record<Parts, Table | null>>('mssql/backups', { instance: ctx.instance });
-    const dbs = rowsOf(d.databases), lim = rowsOf(d.limits)[0];
+    let dbs = rowsOf(d.databases);
+    const lim = rowsOf(d.limits)[0];
+    // a database named in the address (the fleet page's link): its row first, and marked in words
+    const asked = hashParam('db'), picked = asked == null ? undefined : dbs.find(r => r.database_name === asked);
+    if (picked) dbs = [picked, ...dbs.filter(r => r !== picked)];
     if (lim?.status && lim.status !== 'ok') sec.append(el('p', { class: 'meta' }, badge(String(lim.status), 'warn'),
       ` mssql_backups: ${String(lim.note ?? '')}${lim.snapshot_at ? `. What follows is its last read (${fmtTime(lim.snapshot_at)}).` : ''}`));
     if (!lim || !lim.snapshot_at) {
@@ -75,11 +87,129 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
     ]));
     const findings = rowsOf(d.findings);
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
-    sec.append(el('h3', {}, 'Databases'),
+    sec.append(el('h3', {}, 'Databases'));
+    if (asked != null) sec.append(el('p', { class: 'meta', id: 'mssql-backups-picked' }, picked
+      ? `Opened for the database ${asked}: its row is the first below.`
+      : `The database ${asked} is not in this server's last read.`));
+    const tabCols = !picked ? cols : [{ ...cols[0], fmt: (v: unknown) => v === asked ? el('strong', { 'aria-current': 'true' }, String(v)) : String(v ?? '') }, ...cols.slice(1)];
+    sec.append(
       el('p', { class: 'meta' }, 'msdb is each server\'s own record. A database in an availability group shows the newest backup of each type that any '
         + 'monitored replica took, with the instance it ran on (its size and device are on that instance\'s tab); a group with a replica that is not monitored is not alarmed on. '
         + 'A backup to the NUL device is no backup and is listed apart.'),
-      grid(dbs, cols, 'The last read listed no database.'));
+      grid(dbs, tabCols, 'The last read listed no database.'));
+  } catch (e) {
+    sec.append(errorBox(e));
+  }
+  return sec;
+}
+
+// ---- the fleet's Backups page, the SQL Server sections ------------------------------------------------------
+
+type FleetParts = 'by_instance' | 'databases' | 'findings';
+const n0 = (v: unknown) => v == null ? 0 : Number(v);
+const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => bad && n0(v) > 0 ? bad : '' });
+const rate = (v: unknown) => v == null ? '' : `${fmtNum(v)} MB/s`;
+// where the thresholds are set, for the Configure control that cannot act here
+const configureWhy = 'Backup thresholds are not set from this page: they are each instance\'s mssql_thresholds in pgvigil.yaml '
+  + '(full_backup_hours, diff_backup_hours, log_backup_minutes, new_database_hours, nul_backup_days, backup_exclude) and reach the repository with the collector.';
+
+const byInstanceCols = (ctx: Ctx): Col[] => [
+  { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
+  { key: 'findings', fmt: (v, r) => !n0(v) ? '' : badge(`${fmtNum(v)} ${String(r.worst)}`, r.worst === 'critical' ? 'crit' : r.worst === 'warning' ? 'warn' : '') },
+  { key: 'databases', ...count() },
+  { key: 'full_ok', label: 'full ok', ...count() }, { key: 'full_late', label: 'full late', ...count('crit') },
+  { key: 'full_never', label: 'full never', ...count('crit') }, { key: 'full_not_judged', label: 'full not judged', ...count() },
+  { key: 'diff_ok', label: 'differential ok', ...count() }, { key: 'diff_late', label: 'differential late', ...count('warn') },
+  { key: 'diff_never', label: 'differential never', ...count('warn') }, { key: 'diff_not_judged', label: 'differential not judged', ...count() },
+  { key: 'log_ok', label: 'log ok', ...count() }, { key: 'log_late', label: 'log late', ...count('warn') },
+  { key: 'log_never', label: 'log never', ...count('warn') }, { key: 'log_not_judged', label: 'log not judged', ...count() },
+  { key: 'nul_recent', label: 'backup to NUL', ...count('warn') },
+  { key: 'model_full', label: 'full recovery', ...count() }, { key: 'model_bulk_logged', label: 'bulk-logged recovery', ...count() },
+  { key: 'model_simple', label: 'simple recovery', ...count() },
+  { key: 'oldest_full', label: 'oldest full', fmt: fmtTime }, { key: 'oldest_diff', label: 'oldest differential', fmt: fmtTime },
+  { key: 'oldest_log', label: 'oldest log', fmt: fmtTime },
+  { key: 'full_bytes', label: 'full size', num: true, fmt: fmtBytes },
+  { key: 'full_compressed_bytes', label: 'compressed', num: true, fmt: (v, r) => v == null ? ''
+    : fmtBytes(v) + (n0(r.full_bytes) > 0 ? ` (${fmtNum(Math.round((1 - n0(v) / n0(r.full_bytes)) * 100))} % saved)` : '') },
+  { key: 'fulls_compressed', label: 'fulls compressed', fmt: (v, r) => !n0(r.fulls_here) ? '' : `${fmtNum(v)} of ${fmtNum(r.fulls_here)}` },
+  { key: 'full_mb_s', label: 'full MB/s', num: true, fmt: rate }, { key: 'full_write_mb_s', label: 'full write MB/s', num: true, fmt: rate },
+  { key: 'diff_bytes', label: 'differential size', num: true, fmt: fmtBytes }, { key: 'diff_mb_s', label: 'differential MB/s', num: true, fmt: rate },
+  { key: 'fulls_snapshot', label: 'snapshot backups', fmt: (v, r) => !n0(r.fulls_here) ? '' : n0(v) === 0 ? 'NONE' : n0(v) === n0(r.fulls_here) ? 'ALL' : 'SOME' },
+  { key: 'copy_only_fulls', label: 'copy-only fulls', ...count() },
+  // no read: the tab's own line; a collection that last failed says its status and note beside its last read
+  { key: 'snapshot_at', label: 'read', fmt: (v, r) => !v ? (r.status ? `${String(r.status)}: ${String(r.note ?? '')}` : 'mssql_backups has not run on this server yet')
+    : fmtTime(v) + (r.status && r.status !== 'ok' ? ` (last run ${String(r.status)}: ${String(r.note ?? '')})` : ''),
+    cls: (v, r) => !v || (r.status && r.status !== 'ok') ? 'warn' : '' },
+];
+
+export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('section', { id: 'mssql-backups-fleet' }, el('h2', {}, 'SQL Server backups'));
+  try {
+    // the instances in view come from the fleet list and its engines, never from which rows a read returned
+    const inView = (await fleet()).instances.filter(r => r.engine === 'sqlserver'
+      && (!ctx.tag || (ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag))));
+    if (!inView.length) {
+      sec.append(el('p', { class: 'empty' }, 'No SQL Server instance in this view.'));
+      return sec;
+    }
+    const ids = new Set(inView.map(r => Number(r.instance_id)));
+    const keep = (r: Row) => ids.has(Number(r.instance_id));
+    // DBA Dash's default (CustomReportView.cs ResetStatusFilter): a view of one instance lists every database, a view
+    // of more the ones with a problem
+    let problems = inView.length > 1;
+    const d = await get<Record<FleetParts, Table | null>>('mssql/backups', { problems: problems ? 1 : undefined });
+    const inst = rowsOf(d.by_instance).filter(keep), findings = rowsOf(d.findings).filter(keep);
+    const sum = (k: string) => inst.reduce((a, r) => a + n0(r[k]), 0);
+    const noFull = sum('full_late') + sum('full_never'), noLog = sum('log_late') + sum('log_never'), unread = inst.filter(r => !r.snapshot_at).length;
+    sec.append(el('div', { class: 'tiles' },
+      tile('SQL Server instances', fmtNum(inst.length)),
+      tile('databases', fmtNum(sum('databases'))),
+      tile('without a recent full backup', fmtNum(noFull), noFull ? 'crit' : ''),
+      tile('without a recent log backup', fmtNum(noLog), noLog ? 'warn' : ''),
+      tile('not judged', fmtNum(sum('not_judged'))),
+      ...(unread ? [tile('instances not read', fmtNum(unread), 'warn')] : [])));
+    const cfg = el('button', { type: 'button' }, 'Configure');
+    sec.append(el('p', { class: 'meta' }, cfg, ' ', offControl(cfg, configureWhy)));
+
+    sec.append(el('h3', {}, 'SQL Server backups by instance'),
+      el('p', { class: 'meta' }, 'One row per SQL Server instance in view, as each was last read (hourly); every count is of its databases at that read. '
+        + 'Oldest: the oldest last backup among the databases judged for that type. Sizes and rates are each server\'s own msdb record: '
+        + 'a backup that ran on another replica of an availability group counts on that replica\'s row. MB/s is the summed size over the summed duration.'),
+      el('div', { id: 'mssql-backups-fleet-instances' }, grid(inst, byInstanceCols(ctx), 'No SQL Server instance in this view.')));
+
+    if (findings.length) sec.append(el('h3', {}, 'SQL Server backup findings'),
+      el('div', { id: 'mssql-backups-fleet-findings' }, grid(findings, [{ key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) }, ...mssqlFindingCols])));
+
+    const fleetCols: Col[] = [
+      { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
+      { ...cols[0], fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', { db: String(v ?? '') }, Number(r.instance_id)) }, String(v ?? '')) },
+      ...cols.slice(1),
+    ];
+    const total = sum('databases');
+    const pick = el('select', { id: 'mssql-backups-fleet-filter' }, el('option', { value: 'problems' }, 'Problems'), el('option', { value: 'all' }, 'All')) as HTMLSelectElement;
+    pick.value = problems ? 'problems' : 'all';
+    const said = el('span', { id: 'mssql-backups-fleet-count', role: 'status' });
+    const box = el('div', { id: 'mssql-backups-fleet-databases' });
+    const draw = (rows: Row[]) => {
+      said.textContent = `${fmtNum(rows.length)} of ${fmtNum(total)} databases`;
+      box.replaceChildren(grid(rows, fleetCols, problems
+        ? 'No database of the SQL Server instances in view has a late or missing backup or a recent backup to NUL.' : 'The last reads listed no database.'));
+    };
+    pick.addEventListener('change', () => {
+      problems = pick.value === 'problems';
+      box.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
+      get<Record<FleetParts, Table | null>>('mssql/backups', { problems: problems ? 1 : undefined, part: 'databases' })
+        .then(x => draw(rowsOf(x.databases).filter(keep))).catch(e => box.replaceChildren(errorBox(e)));
+    });
+    sec.append(el('h3', {}, 'SQL Server databases'),
+      el('p', { class: 'meta' }, el('label', { for: 'mssql-backups-fleet-filter' }, 'Show '), pick, ' ', said),
+      el('p', { class: 'meta' }, 'Problems: a full, differential or log backup that is late or was never taken, or a backup to the NUL device inside the instance\'s '
+        + 'nul_backup_days. A view of one instance opens on All. The database opens its instance\'s Backups tab with its row first; pgvigil keeps the newest backup '
+        + 'of each type per database, not a history of backups. Full size, compressed, took, device and path are of a full backup that ran on the row\'s own server '
+        + '(blank where it ran on another replica: open that instance). Not read by pgvigil: backup checksums, encryption, password protection, the compression '
+        + 'algorithm, damaged and partial or filegroup backups, the partner replica\'s backup.'),
+      box);
+    draw(rowsOf(d.databases).filter(keep));
   } catch (e) {
     sec.append(errorBox(e));
   }

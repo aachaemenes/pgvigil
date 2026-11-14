@@ -886,8 +886,13 @@ export async function storage(ctx: Ctx): Promise<HTMLElement> {
 }
 
 export async function backups(ctx: Ctx): Promise<HTMLElement> {
-  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
-  const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'));
+  // the instances in view by engine, from the fleet list (a PostgreSQL instance without an archiver or cloud row has
+  // no row in the grid and still counts)
+  const inView = inTag(ctx, (await fleet()).instances);
+  const ids = ctx.tag ? new Set(inView.map(r => Number(r.instance_id))) : null;
+  const sqlserver = inView.filter(r => r.engine === 'sqlserver').length;
+  const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'),
+    { postgres: inView.length - sqlserver, sqlserver });
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }
