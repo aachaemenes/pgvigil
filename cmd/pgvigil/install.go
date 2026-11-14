@@ -622,8 +622,9 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 	}
 	// REPORT ROLE: a custom report on the store runs only as reports_dsn now; an installed config without it is told how
 	if c, err := config.Load(p.inst.Config); err == nil && strings.TrimSpace(c.ReportsDSNRaw) == "" {
-		fmt.Printf("next: custom reports on the store run only as their own login now, reports_dsn in %s (IN ROLE pgvigil_reader alone): "+
-			"'pgvigil roles' as the repository's owner prints its CREATE ROLE (pgvigil_reports); until it is set, such a report is refused and its page says why\n", p.inst.Config)
+		fmt.Printf("next: custom reports on the store run only as their own login now, reports_dsn (IN ROLE pgvigil_reader alone) in the configuration "+
+			"your serve reads (%s for a serve on this config; the Windows app reads its own, docs/app.md): 'pgvigil roles' as the repository's owner "+
+			"prints its CREATE ROLE (pgvigil_reports); restart serve after it is set; until then such a report is refused and its page says why\n", p.inst.Config)
 	}
 	return nil
 }

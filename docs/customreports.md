@@ -83,8 +83,9 @@ database that holds a `pgvigil` schema (the repository monitored as an instance)
 `NOINHERIT` member too: `SET ROLE` reaches the owner) or of `pg_read_all_data` (it reads every table, the UI's logins
 among them), or a login that may read the UI's password hashes. A monitoring login's `pg_read_all_data` stays fine on
 every other database. The session
-user, not the current role: a role set when the login connects (`ALTER ROLE ... SET role`) or inside the run is undone
-by the run itself (`set_config('role', 'none', true)`: PostgreSQL checks a role change against the session user). A
+user, not the current role: a role set when the login connects (`ALTER ROLE ... SET role`) or inside the run can be
+undone by the report's own statement (`set_config('role', 'none', true)`: PostgreSQL checks a role change against the
+session user). A
 `SET TRANSACTION READ WRITE` in a report is refused, because the transaction has run a query (the rights check)
 before the report's statement. EXPLAIN on the Plan page and the index advisor's hypothetical index ask the same check of
 the monitoring login, and EXPLAIN
@@ -93,7 +94,8 @@ ANALYZE's own login is refused the same way.
 ### A report on the repository: its own login (reports_dsn)
 
 A report on the repository runs the DBA's own SQL against pgvigil's own tables, so it runs only as a login of its own,
-`reports_dsn` in `pgvigil.yaml` (`env:NAME` or `file:/path`, as every dsn), a login IN ROLE `pgvigil_reader` alone
+`reports_dsn` in `pgvigil.yaml` (`env:NAME`, `file:/path`, or a connection string without a password, its password
+in pgpass as the Windows app's is), a login IN ROLE `pgvigil_reader` alone
 (`pgvigil roles` prints it: `pgvigil_reports`). The UI's own repository login holds `pgvigil_auth`, which reads every UI
 user's password hash through `pgvigil.ui_password_hash`, so a report on it could read them; a report is never run as
 it. Each run checks the login inside its own read-only transaction, on its session user: refused when it is a superuser

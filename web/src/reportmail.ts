@@ -57,7 +57,8 @@ function numbers(root: ParentNode): boolean[][] {
 }
 
 // notesOf: what the page said in words where a grid would be - a run refused (its reason), an error box, or a run not
-// made and why (p.said: a store report with no reports_dsn is not run at all, its Run's words) - each with the heading
+// made and why (p.said, Run's words when Run is off: the server's door off, no active instance of the report's engine,
+// a store report without a usable reports_dsn) - each with the heading
 // it sits under: a mail carries them, so a refused, failed or unrun turn is never mailed as an empty report
 export function notesOf(root: ParentNode, fallback: string): { head: string; text: string }[] {
   return [...root.querySelectorAll<HTMLElement>('p.refused, p.error, p.said')].map(p => {

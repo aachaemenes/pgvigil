@@ -23,13 +23,20 @@ what happens in the other order, and what the project's own proof showed (`scrip
   is refused too, and in a database that holds a `pgvigil` schema (the repository monitored as an instance) a member of
   that schema's owner or of `pg_read_all_data` ([customreports.md](customreports.md)); on every database a member of a
   superuser role (a `NOINHERIT` member too), which before this version passed: a statement can `SET ROLE` to that
-  role. `install -upgrade` prints the line as a next step.
+  role. `install -upgrade` prints the line as a next step. Where the line goes: the configuration your `serve` reads
+  (a serve started from a shell: its own `-config`; the Windows app: `%LOCALAPPDATA%\pgvigil\pgvigil.yaml` or
+  `%ProgramData%\pgvigil\app\pgvigil.yaml`, [app.md](app.md)), its connection string in that serve's environment or
+  file, never only in the collector's unit (`pgvigil serve` is not part of it). `serve` reads `reports_dsn` when it
+  starts: restart it after the line is in.
 - **EXPLAIN asks the same check.** Plain EXPLAIN (Plans > a statement's EXPLAIN) and the index advisor's hypothetical
   index now refuse, in words, a monitoring login that is a superuser or a member of `pg_execute_server_program`,
   `pg_write_server_files` or `pg_read_server_files`, besides the logins above: they plan the DBA's statement on that
   login, and the planner can evaluate a function while it plans. Before this version they had no login check; EXPLAIN
-  ANALYZE already refused a superuser and the program and file-writing roles; it now refuses a member of a superuser
-  role too.
+  ANALYZE already refused a superuser and the program and file-writing roles; its own login (`explain_dsn`) is now
+  refused for the logins above as well: a member of a superuser role, of `pgvigil_auth` or `pgvigil_collector`, one
+  that may `CREATE` in a `pgvigil` schema, and, in the repository's own database, a member of its owner or of
+  `pg_read_all_data` - the grant `pgvigil roles` prints for `pgvigil_explain`, so EXPLAIN ANALYZE of a statement in the
+  repository database itself is refused with that login; every other database is unchanged.
 - **Nothing else.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no migration
   changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and after.
 
@@ -65,7 +72,7 @@ build (a downgrade: the way back below, not this command); the owner's connectio
 (major version) than the repository's server, or missing (`--pg-dump <path>` names one, `--no-dump` takes none); the
 dump's folder has less room than the repository's size; another process runs the installed binary (a `pgvigil serve`,
 the Windows app: the swap would leave it on the old binary over the new schema); the config's folder, when it is not
-named `pgvigil`, holds files the installer does not own (its own are the config, the env file or `repo.dsn`, the logs
+named `pgvigil`, holds files the installer does not own (its own are the config, the env file or `repo.dsn` and `reports.dsn`, the logs
 and the page's `instances/` and `sources/`). Then:
 
 1. keeps the binary it replaces as `pgvigil.previous` (`pgvigil.previous.exe`) beside it, while the service still runs (a

@@ -58,7 +58,7 @@ CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
 -- attempt is kept in pgvigil.actions_log. The on-demand EXPLAIN without execution needs no login of its own: it
 -- runs as the monitoring login, which may need SELECT on the application's tables for the planner to see them.
 -- CREATE ROLE %[6]s LOGIN PASSWORD '<set-me>' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
--- GRANT pg_read_all_data TO %[6]s;   -- PostgreSQL 14+; older: SELECT on the application's tables
+-- GRANT pg_read_all_data TO %[6]s;   -- PostgreSQL 14+ (refused in a pgvigil repository's own database); older: SELECT on the application's tables
 
 -- Optional, per on-prem monitored server: the read door of the serverlog collection (the server-log files
 -- through pg_ls_logdir(), for the Slow queries view). Run as a superuser on that server; the function serves
