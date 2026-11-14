@@ -337,7 +337,13 @@ WITH ` + hadrScope + `, rs AS (
     JOIN pgvigil.instances i2 ON i2.instance_id = a2.instance_id AND i2.is_active
    WHERE $5::boolean AND a1.instance_id IN (SELECT instance_id FROM sc)
 ), names AS (
-  SELECT i.instance_id, i.name, mi.server_name FROM pgvigil.instances i
+  -- the instance's own server name: mssql_instance's, else its local replica's name in a group it holds (a replica
+  -- is named by its server; an instance whose mssql_instance collection has not run still matches its own rows)
+  SELECT i.instance_id, i.name,
+         coalesce(mi.server_name, (SELECT a.replica_server FROM pgvigil.mssql_ag_state a
+                                     WHERE a.instance_id = i.instance_id AND a.is_local AND NOT coalesce(a.is_distributed, false)
+                                     ORDER BY a.snapshot_at DESC LIMIT 1)) AS server_name
+    FROM pgvigil.instances i
     JOIN rs ON rs.instance_id = i.instance_id
     LEFT JOIN pgvigil.mssql_instance mi ON mi.instance_id = i.instance_id
 ), ev AS (

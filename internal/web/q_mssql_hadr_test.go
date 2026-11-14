@@ -75,7 +75,9 @@ func TestHADRFleetOnAStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		ids[k] = id
-		if k != "P" {
+		// B has no mssql_instance row (its collection has not run): its role change must still match through its own
+		// replica row's name (the root cause of part U's first run, 383gaps1: no row matched without it)
+		if k != "P" && k != "B" {
 			exec(`INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, server_name) VALUES ($1, now(), $2)`, id, names[k])
 		}
 	}

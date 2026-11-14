@@ -143,6 +143,15 @@ set -euo pipefail
 #      finding on d1b. A group's secondary database reads ONLINE, so the reader never reads it and this row cannot fail
 #      on log shipping's group exclusion: that exclusion is NOT PROVEN here (it is proven over stub rows, part T); a
 #      restore row of d1b, if one is ever stored, must be marked as in a group.
+#  U (task 383, before S10): the HA/DR folder's AG page over d1a and d1b (TestHADRFleetProof, the handler as served).
+#  U1. at rest, after a fresh read of both: each node's FLEET counts (local and remote, by state) equal the counts of
+#      its stored mssql_ag_database_state rows by the DMV's own state text (upper, '_' as ' ').
+#  U2. dagdb suspended on d1b, both read: sa on d1b reads its local dagdb row 'NOT SYNCHRONIZING' (the DMV's text, with a
+#      space), the stored text is the same, d1b's Not Synchronizing is 1 or more and equals the stored count; d1a's
+#      Remote Not Synchronizing equals its stored count. Resumed after.
+#  U3. ag1 failed over by hand (FORCE_FAILOVER_ALLOW_DATA_LOSS on d1b, ROLE = SECONDARY on d1a: a clusterless group),
+#      both read: Role Changes hold 'Became Primary' for d1b and 'No Longer Primary' for d1a on ag1. Failover Type
+#      'Forced' only where AlwaysOn_health's DDL row is stored (mssql_xe is not read by this part: said NOT PROVEN).
 #  S10. the lab removed: 0 containers, 0 networks, 0 volumes; the repository database dropped.
 #  NOT PROVEN HERE: quorum, a cluster member down and failover readiness on a Windows cluster (WSFC; task 387's Q8; a
 #  clusterless group cannot be AUTOMATIC, so 'a database is not ready for automatic failover' is proven over stub rows
@@ -537,12 +546,46 @@ if [ "${1:-}" = gaps ]; then
     echo "ok S9: d1b's restore rows are all marked as in a group and none is judged"
   fi
 
+  echo "--- U. the HA/DR folder's AG page (task 383) over d1a and d1b"
+  ufleet() { PGVIGIL_HADR_FLEET_DSN="$PGVIGIL_REPO_DSN" PGVIGIL_HADR_FLEET_INSTANCES="${S_I[d1a]},${S_I[d1b]}" go test -count=1 -v -run 'TestHADRFleetProof' ./internal/web/ > "$S_OUT" 2>&1 || { cat "$S_OUT"; sfail "U: TestHADRFleetProof failed"; }; }
+  ucount() { grep "^FLEET ${S_I[$1]} " "$S_OUT" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
+  ustored() { sq "select count(*) from pgvigil.mssql_ag_database_state where instance_id = ${S_I[$1]} and coalesce(is_local, false) = $2 and upper(replace(synchronization_state, '_', ' ')) = '$3'"; }
+  ucheck() { local n k st loc
+    for n in d1a d1b; do
+      for st in 'NOT SYNCHRONIZING' SYNCHRONIZING SYNCHRONIZED REVERTING INITIALIZING; do
+        k=$(echo "$st" | tr 'A-Z ' 'a-z_')
+        [ "$(ucount "$n" "$k")" = "$(ustored "$n" true "$st")" ] || sfail "U: $n $k: page $(ucount "$n" "$k"), stored $(ustored "$n" true "$st")"
+        [ "$(ucount "$n" "remote_$k")" = "$(ustored "$n" false "$st")" ] || sfail "U: $n remote_$k: page $(ucount "$n" "remote_$k"), stored $(ustored "$n" false "$st")"
+      done
+    done; }
+  for n in d1a d1b; do sread "$n" mssql_instance; done   # each server's own name, as a deployment reads it on every instance
+  sag d1a d1b; ufleet; ucheck
+  echo "ok U1: the page's counts on d1a and d1b equal their stored rows by state ($(grep '^FLEET' "$S_OUT" | sed "s/^FLEET ${S_I[d1a]}/d1a/; s/^FLEET ${S_I[d1b]}/d1b/" | tr '\n' ';'))"
+  SX d1b "U2: suspend" "ALTER DATABASE dagdb SET HADR SUSPEND"
+  sleep 3; sag d1b d1a; ufleet; ucheck
+  SAT=$(SQ d1b "SELECT synchronization_state_desc FROM sys.dm_hadr_database_replica_states WHERE is_local = 1 AND database_id = DB_ID('dagdb')")
+  PGT=$(sq "select synchronization_state from pgvigil.mssql_ag_database_state where instance_id = ${S_I[d1b]} and database_name = 'dagdb' and is_local and group_name = 'ag1'")
+  [ "$SAT" = "NOT SYNCHRONIZING" ] && [ "$PGT" = "$SAT" ] || sfail "U2: dagdb on d1b: sa '$SAT', stored '$PGT' (want the DMV's 'NOT SYNCHRONIZING')"
+  [ "$(ucount d1b not_synchronizing)" -ge 1 ] || sfail "U2: d1b's Not Synchronizing is $(ucount d1b not_synchronizing)"
+  echo "ok U2: sa and the store read '$SAT' (with a space); d1b Not Synchronizing $(ucount d1b not_synchronizing), d1a Remote Not Synchronizing $(ucount d1a remote_not_synchronizing) - each equal to the stored rows"
+  SX d1b "U2: resume" "ALTER DATABASE dagdb SET HADR RESUME"
+  sleep 5
+  SX d1b "U3: failover" "ALTER AVAILABILITY GROUP ag1 FORCE_FAILOVER_ALLOW_DATA_LOSS"
+  SX d1a "U3: demote" "ALTER AVAILABILITY GROUP ag1 SET (ROLE = SECONDARY)"
+  sleep 5; sag d1b d1a; ufleet
+  RC=$(grep '^RC ' "$S_OUT" | grep '|ag1|' || true)
+  printf '%s\n' "$RC" | sed "s/^RC ${S_I[d1a]}/    d1a/; s/^RC ${S_I[d1b]}/    d1b/"
+  printf '%s\n' "$RC" | grep -q "^RC ${S_I[d1b]}|ag1|Became Primary|" || sfail "U3: no 'Became Primary' for d1b on ag1"
+  printf '%s\n' "$RC" | grep -q "^RC ${S_I[d1a]}|ag1|No Longer Primary|" || sfail "U3: no 'No Longer Primary' for d1a on ag1"
+  if printf '%s\n' "$RC" | grep -q '|Forced|'; then echo "ok U3: the failover in Role Changes on both sides, Failover Type Forced"
+  else echo "ok U3: the failover in Role Changes on both sides; its Failover Type NOT PROVEN here (AlwaysOn_health's DDL row is not read by this part)"; fi
+
   echo "--- S10. the lab removed"
   bash scripts/dag/trial.sh down "$S_TAG" | tee "$S_OUT" || sfail "S10: the lab is not removed in full"
   S_LAB=
   psql "$S_ADMIN" -XAtq -c "drop database if exists $S_REPO with (force)" >/dev/null; S_MADE_REPO=
   echo "ok S10: the lab and the repository removed"
-  echo "PROOF OK (part S)${S8NP:-}"
+  echo "PROOF OK (part S, part U)${S8NP:-}"
   exit 0
 fi
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
