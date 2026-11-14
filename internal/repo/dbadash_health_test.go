@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestDBADashHealthWords (the lead 11-14 06:1x, 0138): the door's Collection Errors column follows DBA Dash's version
+// TestDBADashHealthWords (0138): the door's Collection Errors column follows DBA Dash's version
 // as the door read it - 'Collection Health' on a repository at 4.25.0 or later, 'DBA Dash Errors (24hrs)' before, both
 // over repositories of both kinds - and each instance's count follows what DBA Dash's 4.25.0 Summary_Upd used for it:
 // collections at warning or critical where the instance has collection runs (the detail CollectionHealth), the errors of
@@ -14,12 +14,13 @@ func TestDBADashHealthWords(t *testing.T) {
 	ctx, pool, sfx := moveStore(t)
 	old, neu, odd := fmt.Sprintf("r425o-%d", sfx), fmt.Sprintf("r425n-%d", sfx), fmt.Sprintf("r425x-%d", sfx)
 	for repo, ver := range map[string]string{old: "4.24.1.0", neu: "4.25.0.0", odd: "beta"} {
-		moveRepo(ctx, t, pool, repo, "SQL"+repo, 1, 2)
+		moveRepo(ctx, t, pool, repo, "SQL"+repo, 1, 2, 3)
 		if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_repositories SET version = $2 WHERE repository = $1`, repo, ver); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// on 4.25.0: instance 1 with collection runs, instance 2 without (a service older than 4.25.0 collects it)
+	// on 4.25.0: instance 1 with collection runs, instance 2 without (a service older than 4.25.0 collects it), instance 3
+	// read by a login that may not SELECT the runs (the bare count)
 	sum := func(repo string, id int, details string) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.dbadash_summary (repository, instance_id, snapshot_at, statuses, details)
@@ -29,6 +30,7 @@ VALUES ($1, $2, now(), '{"CollectionErrorStatus": 2}', $3::jsonb)`, repo, id, de
 	}
 	sum(neu, 1, `{"CollectionErrorCount": 3, "CollectionHealth": true}`)
 	sum(neu, 2, `{"CollectionErrorCount": 5, "CollectionHealth": false}`)
+	sum(neu, 3, `{"CollectionErrorCount": 6, "CollectionHealth": "unknown"}`)
 	sum(old, 1, `{"CollectionErrorCount": 4}`)
 	cell := func(repo string, id int) string {
 		t.Helper()
@@ -45,6 +47,7 @@ VALUES ($1, $2, now(), '{"CollectionErrorStatus": 2}', $3::jsonb)`, repo, id, de
 	}{
 		{neu, 1, "Collection Health | 3 collection(s) at warning or critical"},
 		{neu, 2, "Collection Health | 5 error(s) in 24 h"},
+		{neu, 3, "Collection Health | 6"},
 		{old, 1, "DBA Dash Errors (24hrs) | 4 error(s) in 24 h"},
 	} {
 		if got := cell(c.repo, c.id); got != c.want {

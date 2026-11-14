@@ -54,6 +54,14 @@
 #  D. the actions, through the API of a running `pgvigil serve` as a signed-in UI user:
 #     D1 the DBADash read (TestLive) stores the instance; GET /api/dbadash?repo=lab&id=<id>&part=pgvigil answers 200
 #        with 0 rows while pgvigil monitors no SQL Server of that @@SERVERNAME;
+#     D1w the Collection Errors cell (part=statuses): on 4.24.1 'DBA Dash Errors (24hrs)|<k> error(s) in 24 h'; on
+#        4.25.0 'Collection Health|<k> collection(s) at warning or critical' (the instance has collection runs), then -
+#        its runs removed, Summary_Upd again - 'Collection Health|<k2> error(s) in 24 h'. On 4.25.0 also (review 425's
+#        fold, written before their first run): D1s a deploy row newer than the instance's Summary RefreshDate (a row
+#        DBA Dash wrote before the upgrade) reads 'Collection Health|<k> error(s) in 24 h'; D1p a read login with VIEW
+#        DEFINITION and SELECT on the four tables only (it sees dbo.CollectionRunStatus, may not read it) reads without
+#        an error and gets the bare count 'Collection Health|<k>'. With PGVIGIL_DBADASH_BAK an instance without runs
+#        takes the 24 h branch, and D1s / D1p are not run (a restored repository's history is the site's);
 #     D2 after `pgvigil collect -once mssql_instance` of a pgvigil SQL Server instance on the same server it returns
 #        that instance (its instance_id and name);
 #     D3 without an actions_dsn on it, a kill of the proof's own application session is 409, outcome refused, the
@@ -431,8 +439,37 @@ if [[ "$runs" == -1 ]]; then
   [[ "$w1" == "DBA Dash Errors (24hrs)|$ecount error(s) in 24 h" ]] || fail "D1w: on $VER (no dbo.CollectionRunStatus) the cell reads '$w1' (want 'DBA Dash Errors (24hrs)|$ecount error(s) in 24 h')"
   echo "ok   D1w: on $VER the cell reads '$w1' (DBA Dash's 4.24.1 words; no collection runs recorded there)"
 else
+  if [[ "$runs" == 0 && -n "${PGVIGIL_DBADASH_BAK:-}" ]]; then
+    # a restored repository's lowest active instance may be collected by a service older than 4.25.0 at its site
+    [[ "$w1" == "Collection Health|$ecount error(s) in 24 h" ]] || fail "D1w: on $VER (restored) an instance without collection runs reads '$w1' (want 'Collection Health|$ecount error(s) in 24 h')"
+    echo "ok   D1w: on $VER (restored) the cell reads '$w1' (an instance without collection runs: the 24 h errors)"
+  else
   [[ "$runs" =~ ^[1-9][0-9]*$ ]] || fail "D1w: DBA Dash $VER's service recorded no collection run of the instance ($runs rows in dbo.CollectionRunStatus)"
   [[ "$w1" == "Collection Health|$ecount collection(s) at warning or critical" ]] || fail "D1w: on $VER with $runs collection runs the cell reads '$w1' (want 'Collection Health|$ecount collection(s) at warning or critical')"
+  if [[ -z "${PGVIGIL_DBADASH_BAK:-}" ]]; then
+    # D1s: dbo.Summary is DBA Dash's cache - a row written before the repository became 4.25.0 holds the 24 h errors
+    # (a downgrade to 4.24.1 an hour on and the upgrade to $VER an hour after it: the repository is $VER from that deploy)
+    DEP1=$(sq "SELECT CONVERT(varchar(27), DATEADD(hour, 1, SYSUTCDATETIME()), 121)" "$DDB")
+    DEP2=$(sq "SELECT CONVERT(varchar(27), DATEADD(hour, 2, SYSUTCDATETIME()), 121)" "$DDB")
+    sqok "D1s: two newer deploy rows" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES ('$DEP1', '4.24.1.0'), ('$DEP2', '$VER')" "$DDB"
+    PGVIGIL_DBADASH_CONFIG="$TMPD/d.yaml" go test -count=1 -run '^TestLive$' ./internal/dbadash >/dev/null 2>&1 || fail "D1s: the door's read with the newer deploy rows"
+    ws=$(words)
+    sqok "D1s: the deploy rows removed" "DELETE FROM dbo.DBVersionHistory WHERE DeployDate IN ('$DEP1', '$DEP2')" "$DDB"
+    [[ "$ws" == "Collection Health|$ecount error(s) in 24 h" ]] || fail "D1s: a Summary row written before the $VER deploy reads '$ws' (want 'Collection Health|$ecount error(s) in 24 h')"
+    echo "ok   D1s: a Summary row written before the repository's $VER deploy (4.24.1 at $DEP1, $VER at $DEP2) reads '$ws'; the rows removed"
+    # D1p: a read login that sees dbo.CollectionRunStatus (VIEW DEFINITION) but may not SELECT it; the lab container
+    # holds it until the container goes
+    NAR=pgv_ddnar_$SUF; NAR_PW=$(pw)
+    sqok "D1p: the narrow read login" "CREATE LOGIN [$NAR] WITH PASSWORD = '$NAR_PW', CHECK_POLICY = OFF; USE [$DDB]; CREATE USER [$NAR] FOR LOGIN [$NAR];
+      GRANT VIEW DEFINITION TO [$NAR]; GRANT SELECT ON dbo.Instances TO [$NAR]; GRANT SELECT ON dbo.Summary TO [$NAR];
+      GRANT SELECT ON dbo.CollectionDates TO [$NAR]; GRANT SELECT ON dbo.DBVersionHistory TO [$NAR];"
+    PGV_DD_RO="sqlserver://$NAR:$(urlq "$NAR_PW")@127.0.0.1:$PORT_SQL?database=$DDB&encrypt=true&TrustServerCertificate=true" PGVIGIL_DBADASH_CONFIG="$TMPD/d.yaml" \
+      go test -count=1 -run '^TestLive$' ./internal/dbadash >"$TMPD/d1p.out" 2>&1 || fail "D1p: the narrow login's read failed: $(grep -m1 -iE 'denied|error' "$TMPD/d1p.out" | cut -c1-300)"
+    wp=$(words)
+    [[ "$wp" == "Collection Health|$ecount" ]] || fail "D1p: the narrow login's cell reads '$wp' (want the bare count 'Collection Health|$ecount')"
+    echo "ok   D1p: a login without SELECT on dbo.CollectionRunStatus reads the repository; the cell '$wp' (the count without its words)"
+    PGVIGIL_DBADASH_CONFIG="$TMPD/d.yaml" go test -count=1 -run '^TestLive$' ./internal/dbadash >/dev/null 2>&1 || fail "D1p: the read login's read again"
+  fi
   # the same instance as one a service older than 4.25.0 collects: its runs removed, DBA Dash's Summary_Upd again, the door's read again
   sqok "D1w: the runs removed" "DELETE dbo.CollectionRunStatus WHERE InstanceID = $ID; EXEC dbo.Summary_Upd;" "$DDB"
   ecount2=$(sq "SELECT ISNULL(CollectionErrorCount, 0) FROM dbo.Summary WHERE InstanceID = $ID" "$DDB")
@@ -440,6 +477,7 @@ else
   w2=$(words)
   [[ "$w2" == "Collection Health|$ecount2 error(s) in 24 h" ]] || fail "D1w: with no collection runs the cell reads '$w2' (want 'Collection Health|$ecount2 error(s) in 24 h')"
   echo "ok   D1w: on $VER the cell reads '$w1' with $runs collection runs, and '$w2' once they were removed and Summary_Upd ran again (the 24 h errors, as DBA Dash chooses for an instance without runs)"
+  fi
 fi
 if [[ -n "${PGVIGIL_DBADASH_BAK:-}" ]]; then
   echo "not proven: D2-D4 (the restored repository's instance is another server than this run's container; run without PGVIGIL_DBADASH_BAK for them)"

@@ -7,8 +7,10 @@
 -- the column 'Collection Health'. 0052 shipped the 4.24.1 words for every repository: the door now says
 --   the header  'Collection Health' on a repository at 4.25.0 or later (its dbo.DBVersionHistory, as the door reads it),
 --               'DBA Dash Errors (24hrs)' before; over several repositories of both kinds, both words;
---   the count   'n collection(s) at warning or critical' for an instance with run rows (the door's read adds the detail
---               CollectionHealth, internal/dbadash/read.go), 'n error(s) in 24 h' for any other - as Summary_Upd chose.
+--   the count   'n collection(s) at warning or critical' where Summary_Upd 4.25.0+ wrote the row for an instance with
+--               run rows (the door's read adds the detail CollectionHealth, internal/dbadash/read.go's healthDetail),
+--               'n error(s) in 24 h' for any other row - as Summary_Upd chose; the bare count when the read login may
+--               not SELECT dbo.CollectionRunStatus (the detail 'unknown').
 -- 0052's dbadash_checks() stays as it was (its words are 4.24.1's); the door's reads use dbadash_checks(p_repository).
 
 -- whether a DBA Dash version string is 4.25.0 or later (a version that is not dot-separated digits: no)
@@ -48,8 +50,9 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
     WHEN 'LastGoodCheckDBStatus' THEN coalesce((d->>'DaysSinceLastGoodCheckDB') || ' days', 'Never')
          || coalesce(' (critical ' || (d->>'LastGoodCheckDBCriticalCount') || ', warning ' || (d->>'LastGoodCheckDBWarningCount')
                      || ', healthy ' || (d->>'LastGoodCheckDBHealthyCount') || ')', '')
-    WHEN 'CollectionErrorStatus' THEN coalesce((d->>'CollectionErrorCount') || CASE WHEN (d->>'CollectionHealth')::boolean
-                                                                                     THEN ' collection(s) at warning or critical'
+    WHEN 'CollectionErrorStatus' THEN coalesce((d->>'CollectionErrorCount') || CASE d->>'CollectionHealth'
+                                                                                     WHEN 'true' THEN ' collection(s) at warning or critical'
+                                                                                     WHEN 'unknown' THEN ''
                                                                                      ELSE ' error(s) in 24 h' END, '')
     WHEN 'SnapshotAgeStatus' THEN CASE WHEN d->>'SnapshotAgeMin' IS NULL THEN ''
                                        WHEN d->>'SnapshotAgeMin' = d->>'SnapshotAgeMax' THEN (d->>'SnapshotAgeMax') || ' min'

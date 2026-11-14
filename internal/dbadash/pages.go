@@ -6,8 +6,8 @@ package dbadash
 // procedure's order, its rows as the procedure returned them). pgvigil keeps nothing of a page: DBADash's repository
 // is the store, as it is for DBADash's GUI.
 //
-// The procedures are the contract: they are named here for DBADash 4.24.1, the version proven (scripts/
-// proof-dbadash-door.sh). A repository of another version is still read, and the reply says 'not proven on <v>';
+// The procedures are the contract: they are named here for DBADash 4.24.1 and 4.25.0, the versions proven (scripts/
+// proof-dbadash-door.sh, ProvenVersions). A repository of another version is still read, and the reply says 'not proven on <v>';
 // a procedure whose signature changed fails with SQL Server's own message, shown on the page.
 //
 // Read only: every procedure below is a dbo.*_Get that writes nothing (each was read in DBADash 4.24.1's source:

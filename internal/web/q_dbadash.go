@@ -157,10 +157,12 @@ const pageTimeout = 70 * time.Second
 // dbadashPage is GET /api/dbadash?repo=&id=&page=: one DBADash procedure called now for one instance.
 func (s *Server) dbadashPage(w http.ResponseWriter, r *http.Request, repo *string, idv, page string) {
 	if page == "list" {
+		// proven: the proven versions as one phrase ("4.24.1, 4.25.0"); proven_versions: the same as a list
 		s.reply(w, r, struct {
-			Pages  []dbadash.PageDef `json:"pages"`
-			Proven string            `json:"proven"`
-		}{dbadash.Pages, dbadash.ProvenVersion}, nil)
+			Pages          []dbadash.PageDef `json:"pages"`
+			Proven         string            `json:"proven"`
+			ProvenVersions []string          `json:"proven_versions"`
+		}{dbadash.Pages, dbadash.ProvenVersion, dbadash.ProvenVersions}, nil)
 		return
 	}
 	def, ok := dbadash.PageByKey(page)
