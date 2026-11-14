@@ -1029,8 +1029,6 @@ const Every = time.Minute
 // maxBackoff caps how long a failing channel waits before the next try.
 const maxBackoff = 30 * time.Minute
 
-// Run is the loop inside `pgvigil run`: a pass every minute until ctx ends. With no channel it logs "alerts off" and
-// returns without touching the repository: nothing is ever sent, and the collector's login needs no alert right.
 // logPass logs one pass of Run: its result when something moved, and each part it could not read - on a quiet pass
 // too, where nothing else would say it.
 func logPass(log *slog.Logger, res Result, err error) {
@@ -1051,6 +1049,8 @@ func logPass(log *slog.Logger, res Result, err error) {
 	}
 }
 
+// Run is the loop inside `pgvigil run`: a pass every minute until ctx ends. With no channel it logs "alerts off" and
+// returns without touching the repository: nothing is ever sent, and the collector's login needs no alert right.
 func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error {
 	if len(chs) == 0 {
 		log.Info("alerts off: no channel configured, nothing is sent")
