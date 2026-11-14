@@ -46,9 +46,14 @@ if (process.env.RANGE_CASE === 'R10') {
   await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent === '90 days').click(); 'ok'`);
   await sleep(4500);
   const r10 = await ev(words);
-  const said = await ev(`(document.querySelector('main').innerText.match(/Marks are read for the newest \\d+ days of this window: [^\\n]*/) ?? [''])[0]`);
-  check('R10 own span', (await params()).get('w') === '1h' && !r10.some(t => t.startsWith('meta range-cut')) && /^Marks are read for the newest 31 days of this window: .+ to .+ \(this chart is longer than they read\)\.$/.test(said),
-    `w=1h, growth 90 days: the page's line ${JSON.stringify(r10)}; the chart's '${said}'`);
+  // the note is read inside the growth panel (the box that holds the '90 days' button), the button read back as pressed
+  const g10 = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(b => b.textContent === '90 days');
+    const box = b && b.closest('.seg') ? b.closest('.seg').parentElement : null;
+    return { pressed: b ? b.getAttribute('aria-pressed') : '', head: box ? (box.querySelector('h3')?.textContent ?? '') : '',
+             said: ((box ? box.innerText : '').match(/Marks are read for the newest \\d+ days of this window: [^\\n]*/) ?? [''])[0] }; })()`);
+  check('R10 own span', (await params()).get('w') === '1h' && !r10.some(t => t.startsWith('meta range-cut')) && g10.pressed === 'true' && g10.head === 'Database growth'
+    && /^Marks are read for the newest 31 days of this window: .+ to .+ \(this chart is longer than they read\)\.$/.test(g10.said),
+    `w=1h, '${g10.head}' with '90 days' pressed ${g10.pressed}: the page's line ${JSON.stringify(r10)}; the panel's '${g10.said}'`);
   console.log(failed ? 'FAIL 1 case(s)' : 'range-check R10: ok');
   process.exit(failed ? 1 : 0);
 }
@@ -201,34 +206,51 @@ const html = r8.html ?? '';
 check('R8 mail', /<th[^>]*>Read<\/th><td[^>]*>Parts of this page read the newest 31 days of this window: /.test(html) && html.includes('This list reads the newest 31 days of this window'),
   r8.err ?? `the body: 'Read' line ${/>Read<\/th>/.test(html)}, the page's words ${html.includes('Parts of this page read the newest 31 days')}, the list's note ${html.includes('This list reads the newest 31 days')} (${html.length} bytes)`);
 
-// R9. a reply of the page before comes back after a newer draw began: never in the newer page's line (blocker 1). The
-// 60-day page's statements read is held 3 s by CDP Fetch (its request paused, then continued, as proof-darling-fleet.sh
-// holds its reads), the address goes to 1 hour while it is held; every other statements read goes on at once
-let heldSeen = false;
+// R9. a reply of the page before comes back after a newer draw began: never in the newer page's line (blocker 1).
+// CDP Fetch holds EVERY reply of the 60-day Statements page at its response (each read of a window over 40 days: the
+// statements read and the page's other reads, so none lands by itself), the address goes to 1 hour, the 1-hour page is
+// placed with no cut line, and only then the held replies are let through: the row reads the page after they landed
+const isCut = p => (p.responseHeaders ?? []).some(h => h.name.toLowerCase() === 'x-pgvigil-read-from');
+const placed = `!!document.querySelector('main section, main .grid-box, main .chart, main .empty-grid') && !document.querySelector('main > p.empty[role=status]')`;
+const held = [];   // { id, path, cut }: the long reads' replies, paused
 const onPaused = m => { const d = JSON.parse(m.data); if (d.method !== 'Fetch.requestPaused') return;
   const s = d.params.request.url, q = new URLSearchParams(s.split('?')[1] ?? '');
-  const long = s.includes('/api/statements?') && Date.parse(q.get('to')) - Date.parse(q.get('from')) > 40 * 86400e3;
-  if (long) heldSeen = true;
-  setTimeout(() => send('Fetch.continueRequest', { requestId: d.params.requestId }), long ? 3000 : 0); };
+  if (Date.parse(q.get('to')) - Date.parse(q.get('from')) > 40 * 86400e3) { held.push({ id: d.params.requestId, path: new URL(s).pathname, cut: isCut(d.params) }); return; }
+  void send('Fetch.continueRequest', { requestId: d.params.requestId }); };
 ws.addEventListener('message', onPaused);
-await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/statements*' }] });
+await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Response' }] });
 await send('Page.navigate', { url: 'about:blank' }); await sleep(200);
 await send('Page.navigate', { url: base + `#/statements?i=${erp}&w=60d` });
-for (let i = 0; i < 80 && !heldSeen; i++) await sleep(125);
-const held9 = heldSeen;
+const stmt = () => held.some(h => h.path === '/api/statements');
+for (let i = 0; i < 120 && !stmt(); i++) await sleep(125);
+await sleep(500);   // the page's other reads of that draw reach their replies too
 await ev(`location.hash = '#/statements?i=${erp}&w=1h'; 'ok'`);
-await sleep(4500);
+let placed9 = false;
+for (let i = 0; i < 60 && !placed9; i++) { await sleep(250); placed9 = (await params()).get('w') === '1h' && await ev(placed); }
+await sleep(800);
+const before9 = await ev(words);
+const let9 = held.slice(), bad9 = [];
+for (const h of let9) { const r = await send('Fetch.continueRequest', { requestId: h.id }); if (r.error) bad9.push(`${h.path}: ${r.error.message}`); }
+await sleep(1500);   // the replies land; the page's line redraws 300 ms after a late read
 const r9 = await ev(words), w9 = (await params()).get('w');
 await send('Fetch.disable'); ws.removeEventListener('message', onPaused);
-check('R9 late reply', held9 && w9 === '1h' && !r9.some(t => t.startsWith('meta range-cut')),
-  `the 60-day read held ${held9}, then w=${w9}: ${JSON.stringify(r9).slice(0, 500)}`);
+const cutOf = t => t.some(x => x.startsWith('meta range-cut'));
+check('R9 late reply', stmt() && let9.some(h => h.cut) && placed9 && !cutOf(before9) && bad9.length === 0 && w9 === '1h' && !cutOf(r9),
+  `${let9.length} replies of the 60-day page held at their response (${let9.map(h => h.path.replace('/api/', '') + (h.cut ? ' cut' : '')).join(', ')}); the 1-hour page placed ${placed9}, its lines before the release ${JSON.stringify(before9).slice(0, 200)}; released ${bad9.length ? 'FAILED ' + bad9.join('; ') : 'ok'}; then w=${w9}: ${JSON.stringify(r9).slice(0, 500)}`);
 
 // R11. a page with two cut reads of one reach says the reach once (SQL Server File IO over 60 days: its fileio and its
-// counters read, asked milliseconds apart)
+// counters read, asked milliseconds apart); the replies the server cut are counted at their responses (CDP Fetch)
+let cuts11 = 0;
+const onReply = m => { const d = JSON.parse(m.data); if (d.method !== 'Fetch.requestPaused') return;
+  if (isCut(d.params)) cuts11++;
+  void send('Fetch.continueRequest', { requestId: d.params.requestId }); };
+ws.addEventListener('message', onReply);
+await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Response' }] });
 await go(`#/mssqlfileio?i=${process.env.RANGE_SQL01}&w=60d`); await sleep(3000);
-const cut11 = (await ev(words)).find(t => t.startsWith('meta range-cut: ')) ?? '';
-const times11 = (cut11.match(/the newest 31 days of this window/g) ?? []).length;
-check('R11 once', times11 === 1, `the reach said ${times11} time(s): ${cut11.slice(0, 400)}`);
+const lines11 = (await ev(words)).filter(t => t.startsWith('meta range-cut: '));
+await send('Fetch.disable'); ws.removeEventListener('message', onReply);
+const times11 = (lines11.join(' ').match(/the newest 31 days of this window/g) ?? []).length;
+check('R11 once', cuts11 >= 2 && lines11.length === 1 && times11 === 1, `${cuts11} replies cut by the server; ${lines11.length} cut line(s), the reach said ${times11} time(s): ${lines11.join(' | ').slice(0, 400)}`);
 
 if (failed) { console.log(`FAIL ${failed} case(s)`); process.exit(1); }
 console.log('range-check: every case ok');
