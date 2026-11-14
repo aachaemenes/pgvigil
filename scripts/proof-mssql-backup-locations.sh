@@ -69,9 +69,13 @@
 #      stripe and mirror of pgvbka's kept sets, each path cell's data-full equal to its path and a Copy button in it; the
 #      Backup files grid every file of the instance; #/backups the SQL Server section; axe-core 4.14.0 (WCAG 2.1 A and AA)
 #      0 violation nodes on both pages in the light and the dark theme. Skipped (NOT PROVEN) without chromium and node.
+#  J   (F10, only with PROOF_AG=1) rel-160's lab (scripts/dag/trial.sh, KEEP=1) forms a clusterless group ag1 (d1a primary,
+#      d1b secondary, database dagdb): a full on d1a and a log on d1b, both instances read: from d1a the locations show
+#      the full from d1a and the log from d1b, the log 'is partner backup' with d1b as its partner; from d1b the same
+#      two sets; replicas_unseen false. Without PROOF_AG=1, or the lab refused: 'NOT PROVEN live: an availability group'.
 #  NOT PROVEN HERE: a Windows path, a share, a mounted folder or Cluster Shared Volume on a live server (the containers are
 #  Linux; the store test holds the rules); a real Azure URL row; a virtual-device row of a third-party tool; a live
-#  availability group (the group merge: TestBackupLocationsOnAStore's stubbed rows); Amazon RDS; Managed Instance.
+#  availability group unless part J ran (the group merge: TestBackupLocationsOnAStore's stubbed rows); Amazon RDS; Managed Instance.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?a superuser keyword DSN of a PostgreSQL sandbox}"
@@ -87,13 +91,14 @@ export SAPW SQLCMDPASSWORD="$SAPW"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 notproven() { echo "NOT PROVEN: $*"; }
-MADE_NET=; MADE_VOL=; MADE_DB=; SRVPID=; CHR=
+MADE_NET=; MADE_VOL=; MADE_DB=; SRVPID=; CHR=; AGTAG=
 cleanup() {
   rc=$?
   set +e
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
   [ -n "$CHR" ] && kill "$CHR" 2>/dev/null
   docker rm -f -v "$SQL" "$SQL19" "$S3" "$PS" >/dev/null 2>&1
+  [ -n "$AGTAG" ] && bash scripts/dag/trial.sh down "$AGTAG" >/dev/null 2>&1
   [ -n "$MADE_VOL" ] && docker volume rm "$VB1" "$VB2" >/dev/null 2>&1
   [ -n "$MADE_NET" ] && docker network rm "$NET" >/dev/null 2>&1
   [ -n "$MADE_DB" ] && psql "$PGVIGIL_REPO_DSN" -XAtqc "DROP DATABASE IF EXISTS $REPO_DB WITH (FORCE)" >/dev/null 2>&1
@@ -554,4 +559,31 @@ if bad: print("\n".join(bad)); sys.exit(1)
 print(f"ok   I: the tab with pgvbka's panel and the fleet page, light and dark: drawn, no error box, 0 axe violation nodes; the Last backup header = DBA Dash's 26 in order + pgvigil's 14; Files {len(t['files'])} rows each with data-full and Copy; Backup files {t['all']} rows")
 PYI
 else notproven "I: the pages - no chromium or node here (or PROOF_SKIP_PAGE)"; fi
+echo "== J an availability group (F10)"
+if [ -n "${PROOF_AG:-}" ]; then
+  AGTAG=pgvbkag$(printf '%04x' "$SUF"); AGSA="S$(head -c 14 /dev/urandom | od -An -tx1 | tr -d ' \n')!a"
+  if KEEP=1 PGVIGIL_DAG_TAG=$AGTAG PGVIGIL_DAG_SA=$AGSA bash scripts/dag/trial.sh > "$WORK/ag.log" 2>&1 && grep -q "DAG FORMED" "$WORK/ag.log"; then
+    agq() { SQLCMDPASSWORD="$AGSA" docker exec -e SQLCMDPASSWORD "$AGTAG-$1" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -W -h -1 -d master -Q "SET NOCOUNT ON; $2"; }
+    for n in d1a d1b; do
+      printf "CREATE LOGIN pgvbk_mon WITH PASSWORD = N'%s', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO pgvbk_mon; GRANT VIEW ANY DEFINITION TO pgvbk_mon;\n" "$PM" \
+        | SQLCMDPASSWORD="$AGSA" docker exec -i -e SQLCMDPASSWORD "$AGTAG-$n" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -d master -i /dev/stdin >/dev/null
+      agq $n "USE msdb; CREATE USER pgvbk_mon FOR LOGIN pgvbk_mon; ALTER ROLE db_datareader ADD MEMBER pgvbk_mon;" >/dev/null
+      docker exec "$AGTAG-$n" mkdir -p /var/opt/mssql/bk
+      IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$AGTAG-$n")
+      export "MSSQL_AG_${n^^}_DSN=sqlserver://pgvbk_mon:$PM@$IP:1433?database=master&encrypt=true&TrustServerCertificate=true"
+      printf '  - name: pgvbk-ag-%s\n    engine: sqlserver\n    dsn: env:MSSQL_AG_%s_DSN\n    mssql_thresholds:\n      new_database_hours: 0\n' "$n" "${n^^}" >> "$CFG"
+    done
+    agq d1a "BACKUP DATABASE dagdb TO DISK = N'/var/opt/mssql/bk/dagdb_full.bak' WITH FORMAT;" >/dev/null
+    sleep 2; agq d1b "BACKUP LOG dagdb TO DISK = N'/var/opt/mssql/bk/dagdb_log.trn' WITH FORMAT;" >/dev/null
+    for n in d1a d1b; do for c in mssql_ag mssql_backups mssql_backup_files; do collect $c "pgvbk-ag-$n" || fail "J: $c on $n: $(cat "$OUT")"; done; done
+    for n in d1a d1b; do
+      IA=$(q "select instance_id from pgvigil.instances where name='pgvbk-ag-$n'")
+      G=$(q "select string_agg(backup_type || '@' || replace(from_instance, 'pgvbk-ag-', '') || ':' || (from_instance_id <> instance_id), ',' order by backup_type) || '|' || bool_or(replicas_unseen) from pgvigil.mssql_backup_locations where instance_id=$IA and database_name='dagdb' and shown")
+      W=$([ $n = d1a ] && echo "full@d1a:false,log@d1b:true|false" || echo "full@d1a:true,log@d1b:false|false")
+      [ "$G" = "$W" ] || fail "J: from $n the group's sets: $G, want $W"
+      P=$(curl -s "$U/api/mssql/backup_files?instance=$IA&db=dagdb" | python3 -c 'import json,sys; d=json.load(sys.stdin)["sets"]; c=d["columns"]; print(",".join("%s:%s:%s" % (r[c.index("backup_type")], r[c.index("is_partner")], r[c.index("partner")]) for r in d["rows"] if r[c.index("shown")]))')
+      ok "J: from $n: $G; the panel's Is Partner Backup / Partner: $P"
+    done
+  else notproven "J: a live availability group - the lab did not form: $(grep -E 'FAIL|REFUSED' "$WORK/ag.log" | head -2 | tr '\n' ' ' | cut -c1-300)"; fi
+else notproven "J: a live availability group (PROOF_AG unset): the merge rests on TestBackupLocationsOnAStore's stubbed rows"; fi
 echo "ALL ROWS GREEN"
