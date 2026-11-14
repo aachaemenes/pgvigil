@@ -16,7 +16,9 @@
 # Expected (written before the first run):
 #  L1  a full striped over 4 files (CHECKSUM, COMPRESSION, NAME, DESCRIPTION) of pgvbka: 4 file rows, family 1-4, mirror
 #      0, each path equal to msdb's; the set's user_name sa, set name and description as given, checksum true,
-#      compressed (compressed_bytes < size), key_algorithm NO_Encryption, copy-only false; folder /backups/a/, family_count 4.
+#      compressed (compressed_bytes < size), key_algorithm as msdb holds it and not encrypted, copy-only false; folder
+#      /backups/a/, family_count 4. (Changed after run 1: msdb held NULL, not Learn's 'NO_Encryption', for a backup that is
+#      not encrypted on SQL Server 2022 16.0.4325.)
 #  L2  a mirrored full (2 families MIRROR TO 2 more, FORMAT): 4 file rows (families 1-2 x mirrors 0-1), mirror_count 2,
 #      roots {/backups/m, /backups2/m}; the 'to' cell '/backups/m/, 2 files, mirrored'.
 #  L6  an encrypted full (a certificate in master, AES_256): key_algorithm aes_256, encryptor_type CERTIFICATE.
@@ -114,24 +116,33 @@ P22=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 echo "  SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20)) + ' ' + CAST(SERVERPROPERTY('Edition') AS varchar(60))") on 127.0.0.1:$P22"
 
 # the MinIO stand-in with its own TLS certificate, trusted by the 2022 container (F8)
-S3OK=
-if [ -z "${PROOF_SKIP_S3:-}" ]; then
+S3OK=; S3WHY=
+s3step() { local what=$1; shift; "$@" >"$WORK/s3.err" 2>&1 || { S3WHY="$what: $(tr '\n' ' ' < "$WORK/s3.err" | cut -c1-300)"; return 1; }; }
+s3setup() {
   mkdir -p "$WORK/certs"
-  if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/certs/private.key" -out "$WORK/certs/public.crt" -days 2 -subj "/CN=pgvbk-s3" \
-       -addext "subjectAltName=DNS:pgvbk-s3" >/dev/null 2>&1 && chmod 644 "$WORK/certs/private.key" \
-     && S3IMG=$(for i in quay.io/minio/minio:latest minio/minio:RELEASE.2025-04-22T22-12-26Z bitnami/minio:latest; do docker pull -q "$i" >/dev/null 2>&1 && { echo "$i"; break; }; done) && [ -n "$S3IMG" ] \
-     && docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -e MINIO_ROOT_USER=pgvbk -e MINIO_ROOT_PASSWORD="$S3PW" \
-          -v "$WORK/certs:/root/.minio/certs:ro" --entrypoint minio "$S3IMG" server /data >/dev/null \
-     && docker cp "$WORK/certs/public.crt" "$SQL:/tmp/pgvbk-s3.crt" \
-     && docker exec -u root "$SQL" bash -c 'cp /tmp/pgvbk-s3.crt /usr/local/share/ca-certificates/pgvbk-s3.crt && update-ca-certificates >/dev/null' \
-     && docker restart "$SQL" >/dev/null && up "$SQL"; then
-    sleep 3
-    for m in quay.io/minio/mc:latest minio/mc:latest; do
-      docker run --rm --network "$NET" -e MC_HOST_s3="https://pgvbk:$S3PW@pgvbk-s3:9000" "$m" --insecure mb s3/pgvbk >/dev/null 2>&1 && { S3OK=1; break; }
-    done
-    echo "  the S3 stand-in: $S3IMG, bucket $([ -n "$S3OK" ] && echo made || echo 'not made')"
-  fi
-  [ -n "$S3OK" ] || echo "  the S3 stand-in did not stand up: L3b will say NOT PROVEN"
+  s3step "the certificate" openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/certs/private.key" -out "$WORK/certs/public.crt" -days 2 \
+    -subj "/CN=pgvbk-s3" -addext "subjectAltName=DNS:pgvbk-s3" || return 1
+  chmod 644 "$WORK/certs/private.key"
+  S3IMG=
+  for i in quay.io/minio/minio:latest minio/minio:RELEASE.2025-04-22T22-12-26Z bitnami/minio:latest; do docker pull -q "$i" >/dev/null 2>&1 && { S3IMG=$i; break; }; done
+  [ -n "$S3IMG" ] || { S3WHY="no MinIO image could be pulled (quay.io/minio/minio, minio/minio, bitnami/minio)"; return 1; }
+  s3step "the MinIO container ($S3IMG)" docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 \
+    -e MINIO_ROOT_USER=pgvbk -e MINIO_ROOT_PASSWORD="$S3PW" -v "$WORK/certs:/root/.minio/certs:ro" --entrypoint minio "$S3IMG" server /data || return 1
+  s3step "the certificate into the SQL Server container" docker cp "$WORK/certs/public.crt" "$SQL:/tmp/pgvbk-s3.crt" || return 1
+  s3step "update-ca-certificates" docker exec -u root "$SQL" bash -c 'cp /tmp/pgvbk-s3.crt /usr/local/share/ca-certificates/pgvbk-s3.crt && update-ca-certificates' || return 1
+  s3step "the restart of SQL Server" docker restart "$SQL" || return 1
+  up "$SQL" || { S3WHY="SQL Server did not come back after its restart"; return 1; }
+  sleep 3
+  local m
+  for m in quay.io/minio/mc:latest minio/mc:latest; do
+    docker run --rm --network "$NET" -e MC_HOST_s3="https://pgvbk:$S3PW@pgvbk-s3:9000" "$m" --insecure mb s3/pgvbk >"$WORK/s3.err" 2>&1 && { S3OK=1; break; }
+  done
+  [ -n "$S3OK" ] || S3WHY="the bucket: $(tr '\n' ' ' < "$WORK/s3.err" | cut -c1-300)"
+  echo "  the S3 stand-in: $S3IMG, bucket $([ -n "$S3OK" ] && echo made || echo 'not made')"
+}
+if [ -z "${PROOF_SKIP_S3:-}" ]; then
+  s3setup || true
+  [ -n "$S3OK" ] || echo "  the S3 stand-in did not stand up ($S3WHY): L3b will say NOT PROVEN"
 fi
 up "$SQL" || fail "SQL Server 2022 is down after its restart"
 P22=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
@@ -212,7 +223,10 @@ WANT=$(sq "SELECT STRING_AGG(CAST(f.family_sequence_number AS varchar(3)) + ':' 
 GOT=$(q "select string_agg(family || ':' || mirror || ':' || path, ',' order by family) from pgvigil.mssql_backup_files where instance_id=$(iid) and database_name='pgvbka' and backup_type='full' and not is_copy_only")
 [ "$GOT" = "$WANT" ] || fail "L1 files: $GOT, want $WANT"
 G=$(SF "backup_set_id;user_name;set_name;description;has_checksums;compressed_bytes < size_bytes;key_algorithm;folder;family_count" pgvbka full)
-[ "$G" = "$ID|sa|pgvbk stripe|four stripes|true|true|NO_Encryption|/backups/a/|4" ] || fail "L1 set: $G"
+# key_algorithm as msdb holds it (Learn names 'NO_Encryption'; SQL Server 2022 on Linux leaves NULL for a backup that is
+# not encrypted, run 1): either way the set is not encrypted
+KA=$(sq "SELECT ISNULL(NULLIF(key_algorithm, ''), 'NULL') FROM msdb.dbo.backupset WHERE backup_set_id = $ID")
+[ "$G" = "$ID|sa|pgvbk stripe|four stripes|true|true|$KA|/backups/a/|4" ] && [ "$(L is_encrypted pgvbka full)" = f ] || fail "L1 set: $G (msdb's key_algorithm $KA; encrypted $(L is_encrypted pgvbka full))"
 ok "L1: 4 files equal to msdb ($GOT); $G"
 
 echo "== L2 a mirrored full"
@@ -275,7 +289,7 @@ SQL
   else
     notproven "L3b: a real URL row - SQL Server refused the S3 stand-in: $(tr '\n' ' ' < "$OUT" | cut -c1-400)"
   fi
-else notproven "L3b: a real URL row - the S3 stand-in did not stand up"; fi
+else notproven "L3b: a real URL row - the S3 stand-in did not stand up ($S3WHY)"; fi
 
 echo "== L8 the log writers"
 sq "BACKUP DATABASE pgvbkw TO DISK = N'/backups/w/full1.bak' WITH FORMAT; BACKUP LOG pgvbkw TO DISK = N'/backups/w/l1.trn' WITH FORMAT; BACKUP LOG pgvbkw TO DISK = N'/backups/w/l2.trn' WITH FORMAT;" >/dev/null
