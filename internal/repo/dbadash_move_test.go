@@ -936,3 +936,90 @@ func TestMoveXEForeignOnAStore(t *testing.T) {
 	read(base.Add(3*time.Minute), true)
 	check("a read that listed none", "", base.Add(3*time.Minute), 0)
 }
+
+// TestMoveListStates (task 206, W2 / P2): dbadash_move_list gives each server of a repository the state the test set up
+// for it, written down here first: one row per server (two InstanceIDs of one @@SERVERNAME are one row with both ids),
+// a server DBA Dash no longer lists not at all.
+func TestMoveListStates(t *testing.T) {
+	ctx, pool, sfx := moveStore(t)
+	repo := fmt.Sprintf("r206k-%d", sfx)
+	srv := func(s string) string { return fmt.Sprintf("%s%d", s, sfx) }
+	want := map[string]string{
+		srv("NOTYET"): "not yet", srv("IMPONLY"): "imported only", srv("COLL"): "collected by pgvigil", srv("MOVING"): "moving",
+		srv("COLLECTING"): "collecting", srv("READY"): "ready to switch", srv("PARTIAL"): "partial", srv("TWICE"): "moving",
+		srv("DISABLED"): "disabled",
+	}
+	ids := map[string][]int{}
+	n := 100
+	for s := range want {
+		k := []int{n}
+		if s == srv("TWICE") {
+			k = append(k, n+1)
+		}
+		moveRepo(ctx, t, pool, repo, s, k...)
+		ids[s] = k
+		n += 10
+	}
+	moveRepo(ctx, t, pool, repo, srv("GONE"), 999)
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_instances SET is_present = false WHERE repository = $1 AND instance_id = 999`, repo); err != nil {
+		t.Fatal(err)
+	}
+	ensure := func(name string) int {
+		t.Helper()
+		var id int
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', NULL, NULL, false, '{}'::text[], 'sqlserver')`, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { dropInstance(pool, name) })
+		return id
+	}
+	// imported only: an instance under the display name, never read; collected: one read under the @@SERVERNAME
+	ensure(srv("IMPONLY"))
+	firstRead(ctx, t, pool, ensure(fmt.Sprintf("coll-%d", sfx)), time.Now(), srv("COLL"))
+	mv := func(s string) int {
+		return moved(ctx, t, pool, repo, s, strings.ToLower(s), "host-"+strings.ToLower(s), ids[s]...)
+	}
+	mv(srv("MOVING"))
+	mv(srv("TWICE"))
+	for _, s := range []string{srv("COLLECTING"), srv("READY"), srv("PARTIAL"), srv("DISABLED")} {
+		firstRead(ctx, t, pool, mv(s), time.Now().UTC(), s)
+	}
+	for s, outcome := range map[string]string{srv("READY"): "ok", srv("PARTIAL"): "partial"} {
+		name := strings.ToLower(s)
+		run := moveCall(ctx, t, pool, map[string]any{"op": "run", "ui_user": "t206", "name": name})
+		if end := moveCall(ctx, t, pool, map[string]any{"op": "ended", "ui_user": "t206", "name": name, "run_id": run["run_id"], "outcome": outcome}); end["outcome"] != "done" {
+			t.Fatalf("%s: ended %v", s, end)
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"op": "disable", "ui_user": "t206", "name": strings.ToLower(srv("DISABLED"))})
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_admin_instance(now(), $1::jsonb)`, string(b)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := pool.Query(ctx, `SELECT server, state, dbadash_ids FROM pgvigil.dbadash_move_list($1)`, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for rows.Next() {
+		var s, state string
+		var k []int32
+		if err := rows.Scan(&s, &state, &k); err != nil {
+			t.Fatal(err)
+		}
+		got[s] = state
+		if len(k) != len(ids[s]) {
+			t.Errorf("%s: InstanceIDs %v, want %v", s, k, ids[s])
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Errorf("rows %d, want %d (one per present server; %s not listed)", len(got), len(want), srv("GONE"))
+	}
+	for s, w := range want {
+		if got[s] != w {
+			t.Errorf("%s: state %q, want %q", s, got[s], w)
+		}
+	}
+}
