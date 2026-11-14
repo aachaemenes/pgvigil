@@ -439,7 +439,7 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
 -- alert of such a kind waits while its instance is in a parent that may be forming (collector_forming: until the next
 -- minute is written, 3 minutes at most) and, for the collector's own kinds, while its newest failure is inside an
 -- 'instances failing together' window of the instance (collector_in_window: one failure past it after the parent
--- clears); every other finding is sent as it is; a repository-wide alert is never 'the instance left' and resolves
+-- clears; an open one's repeat waits the same way, its escalation never); every other finding is sent as it is; a repository-wide alert is never 'the instance left' and resolves
 -- once its finding has been gone for the channel's clear_after. held and forming are read once per pass.
 CREATE OR REPLACE FUNCTION pgvigil.alert_due(p_at timestamptz, p_channels jsonb)
 RETURNS TABLE (channel text, event text, finding_key text, instance_id int, instance text, severity text, source text,
@@ -485,9 +485,21 @@ LANGUAGE sql STABLE SET jit = off AS $$
               THEN NOT (pgvigil.collector_shared_cause(m.source, m.setting)
                         AND (EXISTS (SELECT 1 FROM forming WHERE forming.instance_id = m.instance_id)
                              OR (m.source = 'pgvigil collector' AND pgvigil.collector_in_window(m.instance_id, m.at))))
+              -- open: an escalation always; a repeat of a collector kind waits like a new one while its newest failure
+              -- is inside a failing-together window (the instance released by an ok read, its finding standing until
+              -- the next clean minute is written: a stale repeat just before its recovery) - deferred, never dropped
               ELSE pgvigil.severity_rank(m.severity) > pgvigil.severity_rank(s.severity)
                    OR (s.repeat_secs > 0 AND p_at - s.last_sent_at >= make_interval(secs => s.repeat_secs)
-                       AND NOT pgvigil.ack_alert_acked(p_at, m.finding_key, s.first_sent_at)) END
+                       AND NOT pgvigil.ack_alert_acked(p_at, m.finding_key, s.first_sent_at)
+                       AND NOT (m.source = 'pgvigil collector' AND pgvigil.collector_shared_cause(m.source, m.setting)
+                                AND pgvigil.collector_in_window(m.instance_id, m.at)))
+                   -- task 201 DONE-2 (N6): a repository-wide alert whose claim changed since its last send (a cut that
+                   -- turned into a host not seen; a new cut while one stands): ONE repeat - alert_record stores the claim
+                   -- it sent. An acknowledgement holds it, but for a NEWER event (collector_claim_newer), which passes
+                   -- the ack as an escalation does
+                   OR (m.source = 'pgvigil repository' AND s.why IS NOT NULL AND s.why IS DISTINCT FROM pgvigil.collector_claim(m.detail)
+                       AND (NOT pgvigil.ack_alert_acked(p_at, m.finding_key, s.first_sent_at)
+                            OR pgvigil.collector_claim_newer(pgvigil.collector_claim(m.detail), s.why))) END
   UNION ALL
   SELECT s.channel,
          CASE WHEN NOT s.instance_active OR s.present THEN 'cleared'          -- the instance left, or out of scope now
@@ -523,3 +535,61 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
      AND (a.match_text IS NULL
           OR strpos(lower(concat_ws(' ', p_source, p_setting, p_value)), lower(a.match_text)) > 0)
 $$;
+
+-- task 201 DONE-2 (N6): alert_record is 0059's with one change - at a send (firing, escalated, repeat) of a
+-- repository-wide 'collector or network' it stores the claim it sent (collector_claim of the item's own detail, as the
+-- sender sent it - never a read at record time: the claim may have changed since alert_due, or the parent left; a
+-- read now only for an item without its detail) in alert_state.why (0121 adds the column), so alert_due sends ONE
+-- repeat when the claim changes and none after it.
+CREATE OR REPLACE FUNCTION pgvigil.alert_record(p_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_outcome text := p_payload->>'outcome';
+  v_chan    text := nullif(p_payload->>'channel', '');
+  v_items   jsonb := coalesce(p_payload->'items', '[]'::jsonb);
+BEGIN
+  IF to_regclass('pgvigil.alert_log_' || to_char(date_trunc('month', p_at AT TIME ZONE 'UTC'), 'YYYYMM')) IS NULL THEN
+    PERFORM pgvigil.alert_log_partition(p_at);   -- a past month's partition is the owner's to make (the demo's history)
+  END IF;
+  WITH i AS (
+    SELECT x.event, x.finding_key, x.instance_id
+      FROM jsonb_to_recordset(v_items) AS x(event text, finding_key text, instance_id int)
+     WHERE x.finding_key IS NOT NULL AND x.event IN ('firing', 'escalated', 'repeat', 'resolved', 'cleared')
+  ), insts AS (SELECT array_agg(DISTINCT i.instance_id) AS a FROM i WHERE i.instance_id IS NOT NULL)
+  INSERT INTO pgvigil.alert_log (snapshot_at, instance_id, channel, kind, destination, n_firing, n_repeat, n_resolved,
+                                 outcome, error, keys)
+  SELECT p_at, CASE WHEN cardinality((SELECT a FROM insts)) = 1 THEN (SELECT a[1] FROM insts) END, v_chan,
+         nullif(p_payload->>'kind', ''), nullif(p_payload->>'destination', ''),
+         (SELECT count(*) FROM i WHERE i.event IN ('firing', 'escalated')), (SELECT count(*) FROM i WHERE i.event = 'repeat'),
+         (SELECT count(*) FROM i WHERE i.event IN ('resolved', 'cleared')), v_outcome,
+         left(nullif(p_payload->>'error', ''), 2000),
+         coalesce((SELECT array_agg(i.finding_key ORDER BY i.finding_key) FROM i), '{}');
+  IF v_chan IS NULL OR v_outcome NOT IN ('sent', 'cleared') THEN
+    RETURN;   -- a failed or refused attempt moves nothing: the next pass owes the same alerts
+  END IF;
+  INSERT INTO pgvigil.alert_state AS s (channel, finding_key, instance_id, instance_name, source, setting, value, severity,
+                                        first_sent_at, last_sent_at, send_count, why)
+  SELECT v_chan, x.finding_key, x.instance_id, coalesce(x.instance, ''), x.source, x.setting, x.value, x.severity, p_at, p_at, 1,
+         CASE WHEN x.source = 'pgvigil repository' AND x.setting = 'collector or network'
+              THEN coalesce(pgvigil.collector_claim(x.detail),   -- the claim SENT; a read now only for an item without its detail
+                            (SELECT pgvigil.collector_claim(f.detail) FROM pgvigil.collector_findings f
+                              WHERE f.source = x.source AND f.setting = x.setting AND f.value = x.value LIMIT 1)) END
+    FROM jsonb_to_recordset(v_items) AS x(event text, finding_key text, instance_id int, instance text, severity text,
+                                          source text, setting text, value text, detail text)
+   WHERE x.event = 'firing' AND x.finding_key IS NOT NULL
+  ON CONFLICT (channel, finding_key) WHERE cleared_at IS NULL DO UPDATE SET
+    last_sent_at = EXCLUDED.last_sent_at, send_count = s.send_count + 1, severity = EXCLUDED.severity, value = EXCLUDED.value,
+    missing_since = NULL, why = coalesce(EXCLUDED.why, s.why);
+  UPDATE pgvigil.alert_state s SET last_sent_at = p_at, send_count = s.send_count + 1, severity = x.severity,
+         value = x.value, missing_since = NULL,
+         why = CASE WHEN s.source = 'pgvigil repository' AND s.setting = 'collector or network'
+                    THEN coalesce(pgvigil.collector_claim(x.detail),   -- the claim SENT; a read now only for an item without its detail
+                                  (SELECT pgvigil.collector_claim(f.detail) FROM pgvigil.collector_findings f
+                                    WHERE f.source = s.source AND f.setting = s.setting AND f.value = x.value LIMIT 1), s.why)
+                    ELSE s.why END
+    FROM jsonb_to_recordset(v_items) AS x(event text, finding_key text, severity text, value text, detail text)
+   WHERE x.event IN ('escalated', 'repeat') AND s.channel = v_chan AND s.finding_key = x.finding_key AND s.cleared_at IS NULL;
+  UPDATE pgvigil.alert_state s SET cleared_at = p_at, recovery_sent_at = CASE WHEN x.event = 'resolved' THEN p_at END
+    FROM jsonb_to_recordset(v_items) AS x(event text, finding_key text)
+   WHERE x.event IN ('resolved', 'cleared') AND s.channel = v_chan AND s.finding_key = x.finding_key AND s.cleared_at IS NULL;
+END $$;
