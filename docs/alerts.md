@@ -312,6 +312,14 @@ database that is later dropped stays held until someone ends the rule.
 - **The air-gapped site** uses the file drop. pgvigil writes into a directory and the site's own tooling picks the
   files up.
 
+## Alerts to an application's contacts
+
+Admin > Applications can route an application's contacts to the alerts of its servers through an smtp channel of this
+file (task 310): each pass makes one channel per route, `contact-<route id>`, with the channel's relay, repeat,
+clear_after, quiet hours and max_per_hour, its scope the application's tag. Repository-wide alerts never go to a route,
+a Send test and Report mail use the configured channels only, and no address appears in the log or on the Alerts page.
+A channel of this file may not be named `contact-...`. The whole: [applications.md](applications.md#alerts-to-contacts-routes).
+
 ## Where it shows
 
 - **Alerts** (a root tab) lists the channels as last recorded: kind, destination, severity floor, scope, quiet hours,
