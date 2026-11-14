@@ -250,8 +250,9 @@ function sigWords(label, parts, title, name, id) {
   const all = parts.map(p => p.text).join(''), own = parts.filter(p => !p.meta).map(p => p.text).join('');
   return (label || (own.trim() ? own : all) || title || name || id || '').replace(/\s+/g, ' ').trim().replace(/[0-9][0-9:.,\- ]*/g, '#').slice(0, 60);
 }
-// the fixture: the picker's lengths either side of a turn read as one control, the presets stay apart, a control with
-// no meta span reads as before (checked at the walker's start: exit 2 on a wrong one)
+// the fixture: the picker's lengths either side of a turn read as one control, quick ranges of two units stay apart (those
+// of one unit share a signature, numbers folded, as before), a control with no meta span reads as before (checked at the
+// walker's start: exit 2 on a wrong one)
 {
   const m = (name, meta) => sigWords(null, [{ meta: false, text: name }, { meta: true, text: meta }], '', null, '');
   const p = text => sigWords(null, [{ meta: false, text }], '', null, '');
@@ -490,7 +491,9 @@ function treeLeaves(sc) {
 // the Storage tab's own address, so the leaves above (one per address) never reach it. state: still reading / an error
 function treeDrives(sc) {
   const mine = d => /[?&]i=(\d+)/.exec(d.querySelector('a[href]')?.getAttribute('href') || '')?.[1] === String(sc.id);
-  const nodes = [...document.querySelectorAll('#tree .tm-drive')].filter(mine).map(d => {
+  // one node per volume and address: an instance under two tag folders draws its Storage folder twice
+  const seen = new Set();
+  const nodes = [...document.querySelectorAll('#tree .tm-drive')].filter(mine).filter(d => { const k = (d.dataset.volume || '') + '|' + d.querySelector('a[href]').getAttribute('href'); if (seen.has(k)) return false; seen.add(k); return true; }).map(d => {
     const a = d.querySelector('a[href]'), bar = d.querySelector('.tm-bar'), fill = bar?.querySelector('span');
     return { vol: d.dataset.volume || '', href: a.getAttribute('href'), title: a.title || (a.textContent || '').trim(),
       bar: bar ? (bar.className.replace(/\btm-bar\b/, '').trim() || 'no level') + (fill ? ' ' + fill.style.width + ' used' : ' (no fill)') : '' };

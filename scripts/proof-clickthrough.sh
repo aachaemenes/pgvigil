@@ -34,6 +34,9 @@
 #     'current' rows 2; 'tree: 0 leaf(s) found on the second look'; no tree leaf NOTHING; 'click-through: OK (...)', rc 0
 #   beside the run: every path in the eighth's rows and not in the ninth's (or the reverse) is a control with a meta
 #     span - the ten range items
+#   [the review's should 1, folded after the ninth run started - its grade names it as a difference] the three range
+#     items the walk clicked again under 'display time zone = <zone>' (Today, Week to date, Month to date: new signatures
+#     in the eighth, '#m' against '#h #m') are the same signatures now and not clicked again: three bar rows fewer
 # Expected (the tenth run, after the must rows - written before it): as the ninth's grade, and: the grader's self-test
 # 15 of 15 cases; the expected file 19 rows (12 FAIL rows, 7 must rows); the tree's drive nodes each a row 'tree drive
 # <volume>' of kind link with its bar (demo-onprem-erp01's '/' and '/var/lib/pgsql', demo-onprem-sql01's C:, E:, L: and
