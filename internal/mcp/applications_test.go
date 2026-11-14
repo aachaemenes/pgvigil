@@ -33,21 +33,47 @@ func plantedAPI(t *testing.T, seen *[]string, inFindings bool) http.Handler {
 	})
 }
 
+// toolCalls: every tool with one or two argument shapes each; TestEveryToolCalled holds it to tools/list.
+var toolCalls = []struct{ name, args string }{
+	{"fleet_summary", `{}`},
+	{"instance_findings", `{"instance":"alpha"}`},
+	{"blocking_chain", `{"instance":1,"at":"2026-11-09T10:00:00Z"}`},
+	{"top_statements", `{"instance":"beta","hours":6,"limit":5}`},
+	{"plan_findings", `{"plan_id":7}`},
+	{"plan_findings", `{"instance":"Alpha"}`},
+	{"table_state", `{"instance":"Alpha","table":"orders"}`},
+	{"storage_forecast", `{}`},
+	{"storage_forecast", `{"instance":"beta"}`},
+}
+
 func allTools(t *testing.T, h http.Handler) string {
 	t.Helper()
 	s := New(h, "test")
-	_, _, raw := exchange(t, s,
-		call(1, "fleet_summary", `{}`),
-		call(2, "instance_findings", `{"instance":"alpha"}`),
-		call(3, "blocking_chain", `{"instance":1,"at":"2026-11-09T10:00:00Z"}`),
-		call(4, "top_statements", `{"instance":"beta","hours":6,"limit":5}`),
-		call(5, "plan_findings", `{"plan_id":7}`),
-		call(6, "plan_findings", `{"instance":"Alpha"}`),
-		call(7, "table_state", `{"instance":"Alpha","table":"orders"}`),
-		call(8, "storage_forecast", `{}`),
-		call(9, "storage_forecast", `{"instance":"beta"}`),
-	)
+	lines := make([]string, 0, len(toolCalls))
+	for i, c := range toolCalls {
+		lines = append(lines, call(i+1, c.name, c.args))
+	}
+	_, _, raw := exchange(t, s, lines...)
 	return raw
+}
+
+// Review B, m6: A11 calls every tool the server lists - a tool added later and not called here fails this test.
+func TestEveryToolCalled(t *testing.T) {
+	var seen []string
+	got, _, _ := exchange(t, New(fakeAPI(t, &seen), "test"), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	called := map[string]bool{}
+	for _, c := range toolCalls {
+		called[c.name] = true
+	}
+	list, _ := got["1"]["result"].(map[string]any)["tools"].([]any)
+	if len(list) == 0 {
+		t.Fatal("tools/list answered no tool")
+	}
+	for _, x := range list {
+		if n, _ := x.(map[string]any)["name"].(string); !called[n] {
+			t.Errorf("tools/list names %q, which A11 (TestNoToolAnswersContacts) never calls", n)
+		}
+	}
 }
 
 func TestNoToolAnswersContacts(t *testing.T) {

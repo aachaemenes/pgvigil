@@ -1031,6 +1031,23 @@ const maxBackoff = 30 * time.Minute
 
 // Run is the loop inside `pgvigil run`: a pass every minute until ctx ends. With no channel it logs "alerts off" and
 // returns without touching the repository: nothing is ever sent, and the collector's login needs no alert right.
+// logPass logs one pass of Run: its result when something moved, and each part it could not read - on a quiet pass
+// too, where nothing else would say it.
+func logPass(log *slog.Logger, res Result, err error) {
+	switch {
+	case err != nil:
+		log.Warn("alerts pass failed", "err", err)
+	case res.Sent+res.Failed+res.Cleared+res.Capped+res.Tests > 0:
+		log.Info("alerts pass", "result", res.String())
+	}
+	if res.RulesErr != nil {
+		log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
+	}
+	if res.TestsErr != nil {
+		log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
+	}
+}
+
 func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error {
 	if len(chs) == 0 {
 		log.Info("alerts off: no channel configured, nothing is sent")
@@ -1068,18 +1085,7 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 			}
 		}
 		res, outcome, err := Pass(ctx, pool, chs, now, skip)
-		switch {
-		case err != nil:
-			log.Warn("alerts pass failed", "err", err)
-		case res.Sent+res.Failed+res.Cleared+res.Capped+res.Tests > 0:
-			log.Info("alerts pass", "result", res.String())
-		}
-		if res.RulesErr != nil {
-			log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
-		}
-		if res.TestsErr != nil {
-			log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
-		}
+		logPass(log, res, err)
 		for n, e := range outcome {
 			if e == nil {
 				delete(backoff, n)
