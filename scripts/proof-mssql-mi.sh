@@ -23,9 +23,9 @@
 #     model and msdb not judged with 0129's two reasons.
 #  M3 the availability reads (mssql_ag) on General Purpose: the status and note RECORDED (no readable replica there).
 #  M4 the error log (mssql_errorlog) as pgv_monitor: ok, or skipped / partial with its words, RECORDED.
-#  M5 the -form azuresqlmi script run by the admin: four sessions made and started (sys.dm_xe_sessions: 4; targets other
-#     than ring_buffer in sys.dm_xe_session_targets: 0), mssql_xe as pgv_monitor ends ok with the four stored running;
-#     then dropped.
+#  M5 the -form azuresqlmi script run by the admin: four sessions made and started (sys.dm_xe_sessions: 4; each one's
+#     targets printed - the attention session's event_counter beside its ring buffer is every form's; event_file targets
+#     in sys.dm_xe_session_targets: 0), mssql_xe as pgv_monitor ends ok with the four stored running; then dropped.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
@@ -114,13 +114,21 @@ SQL
 sed 's/^/   running: /' "$WORK/xe-running.txt"
 NRUN=$(grep -c "^pgvigil_${XEID}_" "$WORK/xe-running.txt" || true)
 [ "$NRUN" = 4 ] && echo "ok   M5: 4 sessions running" || { VERDICT=FAIL; echo "FAIL M5: $NRUN session(s) running, want 4"; }
-NOTRB=$(sq master "$ADMIN_USER" ADMIN_PW <<SQL 2>&1 | tr -d '[:space:]'
+# each session's targets (the attention session's event_counter beside its ring buffer is every form's), then the
+# event files among them: none on a Managed Instance (a file there is a blob URL)
+sq master "$ADMIN_USER" ADMIN_PW <<SQL 2>&1 | sed 's/^/   targets: /' || true
+SET NOCOUNT ON;
+SELECT s.name + ': ' + STRING_AGG(CAST(t.target_name AS nvarchar(60)), ', ') WITHIN GROUP (ORDER BY t.target_name)
+  FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+ WHERE s.name LIKE N'pgvigil[_]$XEID[_]%' GROUP BY s.name ORDER BY s.name;
+SQL
+NFILE=$(sq master "$ADMIN_USER" ADMIN_PW <<SQL 2>&1 | tr -d '[:space:]'
 SET NOCOUNT ON;
 SELECT COUNT(*) FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
-WHERE s.name LIKE N'pgvigil[_]$XEID[_]%' AND t.target_name <> N'ring_buffer';
+WHERE s.name LIKE N'pgvigil[_]$XEID[_]%' AND t.target_name = N'event_file';
 SQL
 )
-[ "$NOTRB" = 0 ] && echo "ok   M5: ring buffers only (no other target)" || { VERDICT=FAIL; echo "FAIL M5: targets other than ring_buffer: '$NOTRB'"; }
+[ "$NFILE" = 0 ] && echo "ok   M5: no event_file target" || { VERDICT=FAIL; echo "FAIL M5: event_file targets: '$NFILE'"; }
 "$WORK/pgvigil" collect -config "$WORK/cfg.yaml" -once mssql_xe -instance mi-live > "$WORK/xe-collect.out" 2>&1 || true
 XST=$(q "select d.status || '|' || coalesce(d.note, '') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = 'mssql_xe'")
 NST=$(q "select count(*) from pgvigil.mssql_xe_state s join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and s.state = 'running' and s.session_name like 'pgvigil\_${XEID}\_%'")

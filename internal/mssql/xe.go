@@ -570,19 +570,31 @@ func (r *xeRun) readSession(s *xeSession, source string, events []string, state 
 		state["dropped_buffers"] = t.dropBufs
 		return r.readRing(s.name, s.name, t, events, c, state)
 	}
+	if _, file := s.targets["event_file"]; file && r.info.Kind == KindAzureMI {
+		return errors.New(xeMIFileOnly(s.name))
+	}
 	return fmt.Errorf("%s has neither a ring_buffer nor an event_file target", s.name)
 }
 
 // xeReadTarget is the target of a session the reader takes: its event file when it has one, else its ring buffer;
-// "" = neither.
-func xeReadTarget(_ Kind, targets map[string]xeTarget) string {
-	if _, ok := targets["event_file"]; ok {
+// "" = neither. On Azure SQL Managed Instance a file is read only by its Azure Blob storage URL (a real instance refused
+// system_health.xel with Msg 40538, A2 2026-11-14) and its system_health keeps a ring buffer beside the file: the ring
+// buffer there, and a session with a file alone is not read.
+func xeReadTarget(kind Kind, targets map[string]xeTarget) string {
+	_, file := targets["event_file"]
+	_, ring := targets["ring_buffer"]
+	switch {
+	case ring && (kind == KindAzureMI || !file):
+		return "ring_buffer"
+	case file && kind != KindAzureMI:
 		return "event_file"
 	}
-	if _, ok := targets["ring_buffer"]; ok {
-		return "ring_buffer"
-	}
 	return ""
+}
+
+// xeMIFileOnly is why a Managed Instance session with an event file alone is not read.
+func xeMIFileOnly(session string) string {
+	return session + " writes to an event file alone, and Azure SQL Managed Instance reads an event file only by its Azure Blob storage URL: pgvigil reads a ring_buffer target there"
 }
 
 func nilIfZero(n int64) any {
