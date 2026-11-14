@@ -292,10 +292,12 @@ c3=$(curl -s -o /dev/null -w '%{http_code}' "$U/api/applications/inventory.csv")
 
 # F10 (R10, R20): an .xlsx with shared strings, a blank cell left out mid-row, 'no' as a boolean cell, 2024 as a number
 python3 -I - "$WORK/inv4.csv" "$WORK/f10.xlsx" <<'PY'
-import csv, io, sys, zipfile
+import csv, io, re, sys, zipfile
 from xml.sax.saxutils import escape
 rows = list(csv.reader(io.StringIO(open(sys.argv[1], encoding="utf-8-sig").read())))
-rows = [[c[1:] if c[:1] == "'" and c[1:2] in "=+-@" else c for c in r] for r in rows]   # the CSV's guard undone: an .xlsx has none
+# the CSV's guard undone as the server undoes it (q_app_import.go csvGuardUndo ^'+[=+\-@\t\r]: one ' off), an .xlsx has
+# none; t-im-g3: a one-quote undo left F Beta's "''=x" whole
+rows = [[c[1:] if re.match(r"'+[=+\-@\t\r]", c) else c for c in r] for r in rows]
 rows.append(["database", "imp-pg", "", "f3", "F Gamma", "", "", "2024"] + [""] * (len(rows[0]) - 8))
 ss = []; idx = {}
 def si(v):
@@ -414,7 +416,7 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 # P2's file: an assign (s1, no application now) and the unmark of f4 (a person's mark: a conflict, ticked on the page)
 printf 'instance,database,application,not_an_application\nimp-ms,s1,F Gamma,\nimp-pg,f4,,no\n' > "$WORK/p2.csv"
 cat > "$WORK/p.mjs" <<'JS'
-const [port, U, dl, axePath, p2file] = process.argv.slice(2);
+const [port, U, dl, axePath, p2file, phase] = process.argv.slice(2);   // phase 1: P1; phase 2: P2 and P3 (P1's file is read back between)
 const fs = await import('node:fs');
 const env = process.env;
 const out = (k, v) => console.log(`${k}=${(typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ')}`);
@@ -431,7 +433,8 @@ ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const fileStatus = () => ev(`document.querySelector('main section.app-file p[role=status]')?.textContent ?? ''`);
+// the import's own status line (the one after its form; the Inventory grid has a status line of its own: t-im-g3)
+const fileStatus = () => ev(`document.querySelector('main section.app-file form + p[role=status]')?.textContent ?? ''`);
 const ready = async () => { for (let i = 0; i < 150; i++) { if (await ev(`!!document.querySelector('main section.app-file table.grid')`)) { await sleep(400); return true; } await sleep(200); } return false; };
 const settle = async () => { let t = ''; for (let i = 0; i < 400; i++) { await sleep(150); t = await fileStatus(); if (t && !/^Working/.test(t)) break; } await sleep(300); return t; };
 const go = async hash => { await cmd('Page.navigate', { url: 'about:blank' }); await sleep(150); await cmd('Page.navigate', { url: U + hash }); return ready(); };
@@ -448,6 +451,7 @@ await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 out('login', await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(env.P_USR)}, password: ${JSON.stringify(env.P_UPW)} }) }).then(r => r.status)`, true));
 await theme('light');
 try {
+ if (phase === '1') {
   // P1: an application's contacts shown, the Inventory filtered to imp-ms, the inventory's own export
   out('P1.ready', await go('#/admin_applications'));
   out('P1.open', await press('Open F Alpha')); await sleep(1200);
@@ -461,7 +465,10 @@ try {
   out('P1.press', await press('Export the inventory (.xlsx)'));
   out('P1.file', (await newFile(before)) || 'none');
   out('P1.status', await fileStatus());
-  // P2: the file chosen, previewed, its conflict ticked, applied
+ } else {
+  // P2: the file chosen, its source name typed, previewed, its conflict ticked, applied
+  out('P2.ready', await go('#/admin_applications'));
+  out('P2.source', await ev(`(() => { const s = document.querySelector('#app-import-source'); if (!s) return 'no field'; s.value = 'proof'; s.dispatchEvent(new Event('input', { bubbles: true })); return s.value; })()`));
   const doc = await cmd('DOM.getDocument', { depth: 1 });
   const node = await cmd('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: '#app-import-file' });
   out('P2.set', (await cmd('DOM.setFileInputFiles', { nodeId: node.result?.nodeId, files: [p2file] })).error ? 'error' : 'ok');
@@ -474,11 +481,14 @@ try {
   out('P2.tick', await press("Take line 3's change"));
   out('P2.apply', await ev(`(() => { const b = [...document.querySelectorAll('main section.app-file button')].find(b => b.textContent.startsWith('Apply the import')); if (!b) return false; b.click(); return true; })()`));
   out('P2.applied', await settle());
+ }
 } catch (e) { out('ERROR', String(e?.message ?? e)); }
 process.exit(0);
 JS
 if [[ $P_OK == 1 ]]; then
-  P_USR=$USR P_UPW=$UPW P_FIONA="fiona.$SUF@example.com" timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" > "$WORK/p.out" 2> "$WORK/p.err"
+  # phase 1 (P1's export), its read back, then phase 2 (P2's apply): the read back before P2 changes the store (t-im-g3:
+  # P2's unmark of f4 made P1's workbook, read after it, one mark to make)
+  P_USR=$USR P_UPW=$UPW P_FIONA="fiona.$SUF@example.com" timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" 1 > "$WORK/p.out" 2> "$WORK/p.err"
   pv() { sed -n "s/^$1=//p" "$WORK/p.out" | head -1; }
   # P1: the workbook read back through the import's own preview; no contact, user or client in it
   F1X=$(pv P1.file); get applications/inventory >/dev/null; ninv=$(js "print(len(d['rows']))")
@@ -490,11 +500,12 @@ if [[ $P_OK == 1 ]]; then
       && ok "P1 contacts shown, the grid filtered to imp-ms ($(pv P1.visible) of $ninv lines drawn): the inventory's own .xlsx holds all $ninv lines (read back: nothing to change), sheet Inventory, no contact / user / client in it" \
       || bad "P1 shown $(pv P1.shown), filter $(pv P1.filter), drawn $(pv P1.visible) of $ninv; read back $p $kind $pc; sheets $sheets; hits $leak; status '$(pv P1.status)'; $(head -c 200 "$WORK/ans.json")"
   else bad "P1 no workbook downloaded (press $(pv P1.press); status '$(pv P1.status)'; $(head -c 200 "$WORK/p.err"))"; fi
+  P_USR=$USR P_UPW=$UPW timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" 2 >> "$WORK/p.out" 2>> "$WORK/p.err"
   # P2
-  [[ $(pv P2.set) == ok && $(pv P2.previewed) == Previewed* && $(pv P2.counts) == *"1 conflict"* && $(pv P2.tick) == true && $(pv P2.applied) == Applied* \
+  [[ $(pv P2.source) == proof && $(pv P2.set) == ok && $(pv P2.previewed) == Previewed* && $(pv P2.counts) == *"1 conflict"* && $(pv P2.tick) == true && $(pv P2.applied) == Applied* \
      && $(asg imp-ms s1) == "F Gamma|import:proof" && $(q "select count(*) from pgvigil.app_not_application m join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and m.database_name = 'f4'") == 0 ]] \
     && ok "P2 a file chosen, previewed ('$(pv P2.counts | cut -c1-80)'), its conflict ticked and applied by clicks: s1 assigned, f4's hand mark taken off" \
-    || bad "P2 set $(pv P2.set); '$(pv P2.previewed)'; counts '$(pv P2.counts)'; tick $(pv P2.tick); '$(pv P2.applied)'; s1 $(asg imp-ms s1); $(pv ERROR) $(head -c 200 "$WORK/p.err")"
+    || bad "P2 source '$(pv P2.source)'; set $(pv P2.set); '$(pv P2.previewed)'; counts '$(pv P2.counts)'; tick $(pv P2.tick); '$(pv P2.applied)'; s1 $(asg imp-ms s1); $(pv ERROR) $(head -c 200 "$WORK/p.err")"
   # P3
   [[ $(pv P3.light) == "0 "* && $(pv P3.dark) == "0 "* ]] && ok "P3 axe-core 4.14.0 with the Inventory and the preview shown: 0 violation nodes, light and dark" || bad "P3 light '$(pv P3.light)'; dark '$(pv P3.dark)'"
 fi
