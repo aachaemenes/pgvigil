@@ -9,8 +9,10 @@
 # is one `pgvigil collect -once logical` of one instance.
 #
 # Expected (written before the first run, 2026-11-14 11:1x PST; on a tree without task 373 (486015e) the 'logical'
-# collection does not exist: every row fails at its first read [red FAIL], but K, which reads the replication
-# collection, fails on its key alone):
+# collection does not exist: every positive assertion fails at its first read [red FAIL] (B x3, D, S x4, C x2, W),
+# and K, which reads the replication collection, fails on its key alone [red FAIL]; the negative and data assertions
+# pass on any tree [red ok]: B no finding, D gone, C the row applied, X, W gone. Corrected after the red run, which
+# the old line 'every row fails' described loosely: 12 FAIL, 5 ok, each as marked here):
 #   B    the healthy pair: lsub's pg_logical_subs row app1.sub1 enabled, an apply worker, tables ready 1/1, its
 #        publications pub1; lpub's pg_logical_pubs row app1.pub1 with 1 table (app1 is not the connected database: it is
 #        read because a logical slot decodes it); pg_logical_status's row for sub1 names lpub as its publisher; no

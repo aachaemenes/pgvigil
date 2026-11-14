@@ -78,7 +78,8 @@
 #   SL3  a physical slot hadr_grow reserving WAL, read; its hourly mark moved an hour back in the repository with 2 GB
 #        less retained (a stand-in for the hour: the growth arithmetic is the import's), one read: 'slot WAL growing'
 #        warning on hadr-p naming hadr_grow [red FAIL]
-#   SL2  max_slot_wal_keep_size 200MB and 'slot_safe_wal' 150 MB on hadr-p (import_pg_threshold: done), about 80 MB of
+#   SL2  max_slot_wal_keep_size 200MB and 'slot_safe_wal' 150 MB on hadr-p (import_pg_threshold: done [red FAIL: no
+#        such key before 374; mark added after the red run]), about 80 MB of
 #        WAL written, one read: 'slot WAL near its limit' warning for hadr_grow (one finding per slot: it outranks
 #        growing) [red FAIL]
 #   SL1  about 250 MB more and a checkpoint: the slot loses its WAL (wal_status lost), one read: 'slot invalidated'
@@ -89,7 +90,8 @@
 #   AU   Aurora, a repository stand-in until Q7 (an Aurora reader for the proof hour) is answered - not proven on Aurora:
 #        an instance aurora-w (platform aurora) imported with aurora_replica_status rows (its own MASTER_SESSION_ID row
 #        at 0 ms, reader-1 at 400 s, reader-2 at 45 s): 'Aurora replica lag' critical for reader-1 and warning for
-#        reader-2, none for the writer's own row [red FAIL x2]; an instance aurora-r (platform aurora) imported twice as
+#        reader-2 [red FAIL: one assertion for both readers], none for the writer's own row [red ok: a guard] (the marks
+#        corrected after the red run, which said 'x2'); an instance aurora-r (platform aurora) imported twice as
 #        a reader in recovery with primary_conninfo set and no WAL receiver: no 'receiver down' [red ok: gated since
 #        370] and no link row [red FAIL: 371 made it a standby-only link]
 #   R3   the standby stopped, hadr-p and hadr-s read once (hadr-s's connect fails): nothing yet [red ok]
