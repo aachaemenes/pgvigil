@@ -309,6 +309,9 @@ ALTER TABLE pgvigil.mssql_mirroring_state ADD COLUMN IF NOT EXISTS send_rate_kb_
 ALTER TABLE pgvigil.mssql_mirroring_state ADD COLUMN IF NOT EXISTS redo_rate_kb_s numeric;
 ALTER TABLE pgvigil.mssql_mirroring_state ADD COLUMN IF NOT EXISTS txn_delay_ms numeric;    -- per mirrored write transaction
 ALTER TABLE pgvigil.mssql_mirroring_state ADD COLUMN IF NOT EXISTS endpoint jsonb;          -- the instance's endpoint, the same on each row
+ALTER TABLE pgvigil.mssql_mirroring_state ADD COLUMN IF NOT EXISTS values_hidden boolean;    -- a mirror read by a login that is not sysadmin:
+-- sys.database_mirroring shows a mirror database's values to sysadmin only, so its role came from the database state
+-- and its Database Mirroring counters, and its state, partner, witness and role sequence are the principal's to show
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_mirroring_sample (
   instance_id                int NOT NULL,
@@ -406,12 +409,12 @@ BEGIN
   DELETE FROM pgvigil.mssql_mirroring_state WHERE instance_id = p_instance_id;
   INSERT INTO pgvigil.mssql_mirroring_state (instance_id, database_name, snapshot_at, role, state, safety_level, partner,
       partner_instance, witness, witness_state, connection_timeout_s, log_send_queue_kb, redo_queue_kb, state_code, role_sequence,
-      database_state, send_rate_kb_s, redo_rate_kb_s, txn_delay_ms, endpoint)
+      database_state, send_rate_kb_s, redo_rate_kb_s, txn_delay_ms, endpoint, values_hidden)
   SELECT DISTINCT ON (r->>'database_name') p_instance_id, r->>'database_name', p_snapshot_at, r->>'role', r->>'state',
          r->>'safety_level', r->>'partner', r->>'partner_instance', r->>'witness', r->>'witness_state',
          (r->>'connection_timeout_s')::int, (r->>'log_send_queue_kb')::bigint, (r->>'redo_queue_kb')::bigint,
          (r->>'state_code')::int, (r->>'role_sequence')::int, r->>'database_state',
-         s.send_rate_kb_s, s.redo_rate_kb_s, s.txn_delay_ms, v_endpoint
+         s.send_rate_kb_s, s.redo_rate_kb_s, s.txn_delay_ms, v_endpoint, (r->>'values_hidden')::int = 1
     FROM jsonb_array_elements(v_rows) r
     LEFT JOIN pgvigil.mssql_mirroring_sample s
            ON s.instance_id = p_instance_id AND s.snapshot_at = p_snapshot_at AND s.database_name = r->>'database_name'

@@ -64,12 +64,22 @@ ORDER BY secondary_database`
 // logRestoreSQL: SQL Server 2016 SP1 and later. restore_date and create_date are the server's local clock (utcText);
 // backup_start_date is the clock of the server that took the backup: backupset.time_zone is its offset from UTC in
 // 15-minute steps at the backup (127 = unknown: then this server's offset is taken, as for a backup of its own).
-// replica_id is NULL for a database in no availability group (SQL Server 2012 and later).
-var logRestoreSQL = `SELECT 'restore' AS kind, CAST(d.name AS nvarchar(128)) AS database_name,
+// replica_id is NULL for a database in no availability group (SQL Server 2012 and later). A mirror database is
+// mirrored by its sys.database_mirroring row, which a login that is not sysadmin sees with NULL values on the mirror
+// (Microsoft: "To see non-NULL values on a mirror database, you must be a member of the sysadmin fixed server role");
+// with VIEW SERVER STATE its Database Mirroring counter instance says so too (mirroringSQL), so a mirror is never
+// judged as a restore left behind. Without that right a mirror database reads as not mirrored to such a login.
+func logRestoreSQL(withCounters bool) string {
+	mirrored := "m.mirroring_guid IS NOT NULL"
+	if withCounters {
+		mirrored += ` OR EXISTS (SELECT 1 FROM sys.dm_os_performance_counters pc
+                                        WHERE pc.object_name LIKE '%:Database Mirroring%' AND RTRIM(pc.instance_name) = d.name)`
+	}
+	return `SELECT 'restore' AS kind, CAST(d.name AS nvarchar(128)) AS database_name,
   CAST(d.state_desc AS nvarchar(60)) AS database_state, CAST(d.is_in_standby AS int) AS is_in_standby,
   CAST(d.recovery_model_desc AS nvarchar(60)) AS recovery_model,
   ` + utcText("d.create_date") + ` AS created_utc,
-  CAST(CASE WHEN m.mirroring_guid IS NOT NULL THEN 1 ELSE 0 END AS int) AS is_mirrored,
+  CAST(CASE WHEN ` + mirrored + ` THEN 1 ELSE 0 END AS int) AS is_mirrored,
   CAST(CASE WHEN d.replica_id IS NOT NULL THEN 1 ELSE 0 END AS int) AS in_availability_group,
   ` + utcText("lr.restore_date") + ` AS last_log_restore_utc,
   CASE WHEN lr.backup_start_date IS NULL THEN NULL
@@ -93,6 +103,7 @@ OUTER APPLY (SELECT TOP (1) rh.restore_date, rh.restore_type FROM msdb.dbo.resto
 WHERE d.database_id > 4 AND d.source_database_id IS NULL
   AND (d.state = 1 OR d.is_in_standby = 1 OR (d.state = 2 AND lr.restore_date IS NOT NULL))
 ORDER BY d.name`
+}
 
 // logRestorePairSQL: a database log-restored here in the last 14 days that no longer exists: its pair, its last
 // restore. One row per destination name.
@@ -107,7 +118,7 @@ FROM (SELECT rh.destination_database_name, rh.restore_date, bs.server_name, bs.d
 WHERE x.rn = 1 AND DB_ID(x.destination_database_name) IS NULL
 ORDER BY 2`
 
-func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
+func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	for _, t := range []string{"log_shipping_monitor_primary", "log_shipping_monitor_secondary", "restorehistory", "backupset", "backupmediafamily"} {
 		if err := msdbReadable(ctx, conn, t); err != nil {
 			return nil, err
@@ -122,7 +133,7 @@ func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]
 		return nil, err
 	}
 	rows = append(rows, sec...)
-	for _, q := range []string{logRestoreSQL, logRestorePairSQL} {
+	for _, q := range []string{logRestoreSQL(info.ViewServerState), logRestorePairSQL} {
 		got, err := QueryRows(ctx, conn, q)
 		if err != nil {
 			return nil, err

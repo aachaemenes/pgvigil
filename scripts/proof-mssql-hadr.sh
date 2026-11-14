@@ -509,6 +509,10 @@ CREATE TABLE dbo.MSsnapshot_agents (id int, name nvarchar(100), publisher_id sma
 CREATE TABLE dbo.MSsnapshot_history (agent_id int, runstatus int, start_time datetime, time datetime, duration int, comments nvarchar(1000), delivered_transactions int, delivered_commands int, delivery_rate float, error_id int, timestamp timestamp);
 CREATE TABLE dbo.MSmerge_agents (id int, name nvarchar(100), publisher_id smallint, publisher_db sysname, publication sysname, subscriber_id smallint, subscriber_db sysname, subscriber_name sysname NULL);
 CREATE TABLE dbo.MSmerge_sessions (session_id int, agent_id int, start_time datetime, end_time datetime, duration int, runstatus int, timestamp timestamp);
+CREATE TABLE dbo.MSsubscriptions (publisher_database_id int, article_id int, agent_id int, status tinyint);
+CREATE TABLE dbo.MSrepl_errors (id int, time datetime, error_code sysname NULL, error_text ntext NULL);
+CREATE TABLE dbo.MSrepl_transactions (publisher_database_id int, xact_seqno varbinary(16), entry_time datetime);
+CREATE TABLE dbo.MSrepl_commands (publisher_database_id int, xact_seqno varbinary(16), article_id int);
 CREATE TABLE dbo.MSmerge_history (session_id int, agent_id int, comments nvarchar(1000), error_id int, timestamp timestamp, updatable_row bit);
 CREATE TABLE dbo.stub_status (article_id int, agent_id int, UndelivCmdsInDistDB int, DelivCmdsInDistDB int);
 EXEC('CREATE VIEW dbo.MSdistribution_status AS SELECT article_id, agent_id, UndelivCmdsInDistDB, DelivCmdsInDistDB FROM dbo.stub_status');

@@ -17,7 +17,7 @@ func hadrS3Statements(info Info) map[string]string {
 		"ag routing": agRoutingSQL, "ag seeding": agSeedingSQL, "ag endpoint": agEndpointSQL, "ag counters": agCountersSQL,
 		"ag health session": agHealthSessionSQL,
 		"mirroring":         mirroringSQL(true), "mirroring without counters": mirroringSQL(false), "mirroring endpoint": mirroringEndpointSQL,
-		"log restores": logRestoreSQL, "log restore pairs": logRestorePairSQL,
+		"log restores": logRestoreSQL(true), "log restores without counters": logRestoreSQL(false), "log restore pairs": logRestorePairSQL,
 		"fci flag": fciFlagSQL, "fci nodes": fciNodesSQL,
 	}
 }
@@ -52,6 +52,13 @@ func TestMirroringS3Columns(t *testing.T) {
 		}
 		if strings.Contains(q, "dm_os_performance_counters") != with {
 			t.Errorf("counters %v: the performance counters are read = %v", with, !with)
+		}
+		// a mirror whose values sys.database_mirroring hides from a login that is not sysadmin: read from its counters
+		if !strings.Contains(q, " AS values_hidden,") || !strings.Contains(q, "COALESCE(m.mirroring_role_desc, N'MIRROR')") {
+			t.Errorf("counters %v: the statement lacks values_hidden or the MIRROR role of a hidden mirror", with)
+		}
+		if strings.Contains(q, "m.mirroring_guid IS NULL AND d.state = 1 AND c.redo_queue_kb IS NOT NULL") != with {
+			t.Errorf("counters %v: a hidden mirror is read = %v", with, !with)
 		}
 	}
 }
@@ -108,9 +115,19 @@ func TestLogRestoreText(t *testing.T) {
 	for _, want := range []string{"d.database_id > 4", "d.source_database_id IS NULL", "rh.restore_type = 'L'",
 		"DATEADD(day, -14, GETDATE())", "lr.time_zone = 127", "DATEADD(minute, -15 * lr.time_zone, lr.backup_start_date)",
 		" AS is_mirrored,", " AS in_availability_group,", "d.state = 1 OR d.is_in_standby = 1"} {
-		if !strings.Contains(logRestoreSQL, want) {
-			t.Errorf("the restore-history read lacks %q", want)
+		for _, with := range []bool{true, false} {
+			if !strings.Contains(logRestoreSQL(with), want) {
+				t.Errorf("counters %v: the restore-history read lacks %q", with, want)
+			}
 		}
+	}
+	// a mirror a login that is not sysadmin sees with NULL values is still mirrored, by its counter instance
+	if !strings.Contains(logRestoreSQL(true), "m.mirroring_guid IS NOT NULL OR EXISTS (SELECT 1 FROM sys.dm_os_performance_counters pc") ||
+		!strings.Contains(logRestoreSQL(true), "'%:Database Mirroring%' AND RTRIM(pc.instance_name) = d.name") {
+		t.Error("with VIEW SERVER STATE the restore-history read does not take a mirror from its counter instance")
+	}
+	if strings.Contains(logRestoreSQL(false), "dm_os_performance_counters") {
+		t.Error("without VIEW SERVER STATE the restore-history read reads the performance counters")
 	}
 	if !strings.Contains(logRestorePairSQL, "DB_ID(x.destination_database_name) IS NULL") {
 		t.Error("a pair row is not only for a destination that is gone")
@@ -139,7 +156,7 @@ func TestHADRS3StatementsLive(t *testing.T) {
 		switch {
 		case strings.HasPrefix(what, "ag ") && (!info.HADREnabled || !info.ViewServerState):
 			continue
-		case (what == "mirroring" || strings.HasPrefix(what, "fci")) && !info.ViewServerState:
+		case (what == "mirroring" || what == "log restores" || strings.HasPrefix(what, "fci")) && !info.ViewServerState:
 			continue
 		case strings.HasPrefix(what, "log restore") && !info.MsdbAccess:
 			continue

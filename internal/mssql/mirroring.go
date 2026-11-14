@@ -13,8 +13,9 @@ import (
 // swap between two reads is seen even when the pair is SYNCHRONIZED again at the next one) with the send and redo
 // queues and the cumulative send, redo and transaction-delay counters of the Database Mirroring performance object
 // (the repository turns two reads of a counter into a rate), and the instance's mirroring endpoint (its state, role,
-// port, authentication and encryption) where the login may see it. A server without a mirrored database returns no
-// row and nothing is stored.
+// port, authentication and encryption) where the login may see it. A mirror database whose values sys.database_mirroring
+// hides from a login that is not sysadmin is read as the mirror from its counters (mirroringSQL). A server without a
+// mirrored database returns no row and nothing is stored.
 type mirroringCollector struct{}
 
 func init() { Register(mirroringCollector{}) }
@@ -36,14 +37,24 @@ func (mirroringCollector) Applies(info Info) (bool, string) {
 // counters need VIEW SERVER STATE; without it the queues and the counters are NULL. The counters named "/sec" and
 // "Transaction Delay" are cumulative in sys.dm_os_performance_counters (cntr_type 272696576, read with each value so
 // the repository takes a difference only of a cumulative one); the queues are values at the read.
+//
+// A mirror database seen by a login that is not sysadmin: Microsoft's page for sys.database_mirroring says "To see
+// non-NULL values on a mirror database, you must be a member of the sysadmin fixed server role", so for a
+// least-privilege login every mirroring column of the mirror's row is NULL (the principal's row is whole). With VIEW
+// SERVER STATE the Database Mirroring performance object still has an instance for that database on the mirror, so a
+// RESTORING database with that instance is read as the mirror: role MIRROR, its queues and counters as on the
+// principal, values_hidden 1, and its state, partner, witness and role sequence NULL (the principal's row has them).
 func mirroringSQL(withCounters bool) string {
 	counters := `CAST(NULL AS bigint) AS log_send_queue_kb, CAST(NULL AS bigint) AS redo_queue_kb,
   CAST(NULL AS bigint) AS log_bytes_sent_total, CAST(NULL AS bigint) AS redo_bytes_total,
   CAST(NULL AS bigint) AS txn_delay_ms_total, CAST(NULL AS bigint) AS mirrored_write_txns_total,
   CAST(NULL AS int) AS log_bytes_sent_type, CAST(NULL AS int) AS redo_bytes_type, CAST(NULL AS int) AS txn_delay_type,
   CAST(NULL AS int) AS mirrored_write_txns_type`
-	apply := ""
+	apply, hidden := "", ""
 	if withCounters {
+		// the mirror a least-privilege login sees with NULL values (above): a counter instance of its own
+		hidden = `
+   OR (m.mirroring_guid IS NULL AND d.state = 1 AND c.redo_queue_kb IS NOT NULL)`
 		counters = `c.log_send_queue_kb, c.redo_queue_kb, c.log_bytes_sent_total, c.redo_bytes_total, c.txn_delay_ms_total,
   c.mirrored_write_txns_total, c.log_bytes_sent_type, c.redo_bytes_type, c.txn_delay_type, c.mirrored_write_txns_type`
 		apply = `
@@ -61,7 +72,8 @@ OUTER APPLY (SELECT MAX(CASE WHEN RTRIM(pc.counter_name) = 'Log Send Queue KB' T
               WHERE pc.object_name LIKE '%:Database Mirroring%' AND RTRIM(pc.instance_name) = d.name) c`
 	}
 	return `SELECT 'mirror' AS kind, CAST(d.name AS nvarchar(128)) AS database_name,
-  CAST(m.mirroring_role_desc AS nvarchar(60)) AS role,
+  CAST(COALESCE(m.mirroring_role_desc, N'MIRROR') AS nvarchar(60)) AS role,
+  CAST(CASE WHEN m.mirroring_guid IS NULL THEN 1 ELSE 0 END AS int) AS values_hidden,
   CAST(m.mirroring_state_desc AS nvarchar(60)) AS state,
   CAST(m.mirroring_state AS int) AS state_code,
   CAST(m.mirroring_role_sequence AS int) AS role_sequence,
@@ -75,7 +87,7 @@ OUTER APPLY (SELECT MAX(CASE WHEN RTRIM(pc.counter_name) = 'Log Send Queue KB' T
   ` + counters + `
 FROM sys.database_mirroring m
 JOIN sys.databases d ON d.database_id = m.database_id` + apply + `
-WHERE m.mirroring_guid IS NOT NULL
+WHERE m.mirroring_guid IS NOT NULL` + hidden + `
 ORDER BY d.name`
 }
 
