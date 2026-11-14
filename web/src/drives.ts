@@ -372,7 +372,8 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
       { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtNum(v) },
       { key: 'used_gb', label: 'used (GB)', num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fmtNum(v) },
-      { key: 'data_gb', label: 'data files (GB)', num: true, fmt: v => fmtNum(v) }, { key: 'log_gb', label: 'log files (GB)', num: true, fmt: v => fmtNum(v) },
+      // a PostgreSQL database has no data and log files of its own to size: those two columns are SQL Server's only
+      ...(engine === 'postgres' ? [] : [{ key: 'data_gb', label: 'data files (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }, { key: 'log_gb', label: 'log files (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }] as Col[]),
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
