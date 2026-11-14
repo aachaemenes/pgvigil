@@ -216,7 +216,7 @@ func TestMoveMigrateOnAStore(t *testing.T) {
 	s := &Server{pool: pool, log: discardLog(), actions: &Actions{audit: pool}}
 	s.SetInstancesAdmin(InstancesAdmin{ConfigPath: cfgPath, DBADash: map[string]string{repo: "env:PGVIGIL_T206_NONE"}})
 	defer instancesAdmins.Delete(s)
-	defer moveJobsOf.Delete(s)
+	defer moveJobsOf.Delete(s.self())
 	dbadash.SetRepositories([]config.DBADashRepo{{Name: repo, DSNRaw: "env:PGVIGIL_T206_NONE"}})
 	req := func() *http.Request { return httptest.NewRequest(http.MethodPost, "/api/admin/dbadash_moves", nil) }
 	decode := func(w *httptest.ResponseRecorder) map[string]any {

@@ -81,11 +81,11 @@ type moveJobs struct {
 var moveJobsOf sync.Map // *Server -> *moveJobs
 
 func (s *Server) moveJobs() *moveJobs {
-	if v, ok := moveJobsOf.Load(s); ok {
+	if v, ok := moveJobsOf.Load(s.self()); ok {
 		return v.(*moveJobs)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	v, loaded := moveJobsOf.LoadOrStore(s, &moveJobs{jobs: map[string]*moveJob{}, ctx: ctx, cancel: cancel})
+	v, loaded := moveJobsOf.LoadOrStore(s.self(), &moveJobs{jobs: map[string]*moveJob{}, ctx: ctx, cancel: cancel})
 	if loaded {
 		cancel()
 	}
@@ -95,7 +95,7 @@ func (s *Server) moveJobs() *moveJobs {
 // closeMoveJobs is serve's Close for the import jobs: each job's context ends, its run's end mark is written by the
 // import itself, and the pool closes once every job returned (at most 30 s).
 func (s *Server) closeMoveJobs() {
-	v, ok := moveJobsOf.LoadAndDelete(s)
+	v, ok := moveJobsOf.LoadAndDelete(s.self())
 	if !ok {
 		return
 	}
