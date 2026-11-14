@@ -9,7 +9,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart, ringChart, Slice } from './chart';
 import { deadlockSvg, DlGraph, graphFromRows, graphFromXml } from './deadlock_graph';
 import { hrefWith } from './dbinfo';
-import { fleet, tagsOf, inTagScope } from './fleet';
+import { fleet, tagsOf, tagWords, inTagScope } from './fleet';
 import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { sqlCell } from './sqlview';
@@ -73,7 +73,7 @@ const daysPicker = (key: string, def = '7'): Picker => ({ key, label: 'Days', de
 async function page(ctx: Ctx, key: string, pickers: Picker[], body: (v: Record<string, string>, s: Scope, out: HTMLElement) => Promise<void>,
                     extra: HTMLElement[] = [], ready?: (redraw: () => void) => void): Promise<HTMLElement> {
   const name = reportTabs[key];
-  const sec = el('section', { class: 'report', 'data-report': key }, el('h2', {}, name + (ctx.tag ? ` (${ctx.tag})` : '')));
+  const sec = el('section', { class: 'report', 'data-report': key }, el('h2', {}, name + (ctx.tag ? ` - ${tagWords(ctx.tag)}` : '')));
   const out = el('div', { 'aria-live': 'polite' });
   let seq = 0;
   const vals: { key: string; value: () => string }[] = [];

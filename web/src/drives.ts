@@ -12,7 +12,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
-import { fleet, inTagScope } from './fleet';
+import { fleet, inTagScope, tagWords } from './fleet';
 import { donutChart, lineChart } from './chart';
 import { hrefWith } from './dbinfo';
 import { mssqlFilesTab } from './mssql_storage';
@@ -42,7 +42,7 @@ async function scope(ctx: Ctx): Promise<{ params: Record<string, string | number
   if (ctx.instance) return { params: { instance: ctx.instance }, engineOf, folder: '' };
   if (!ctx.tag) return { params: {}, engineOf, folder: 'the fleet' };
   const ids = f.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => Number(r.instance_id));
-  return { params: { instances: ids.join(',') || '0' }, engineOf, folder: `the folder ${ctx.tag}` };
+  return { params: { instances: ids.join(',') || '0' }, engineOf, folder: tagWords(ctx.tag) };
 }
 // a page of one instance, from a folder: the instance's own tab (the strip's names: drives, dbspace, dbfiles ...)
 const instHref = (ctx: Ctx, id: unknown, tab: string) => href(ctx, { tab, instance: Number(id), tag: undefined });
@@ -237,7 +237,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
       : ctx.tag && !noValueScope(ctx.tag) ? { level: 'tag', tag: ctx.tag, where: `the tag ${ctx.tag} (every instance carrying it)` }
         // 'untagged' and '<key>:' (the tree's '(no <key>)' folder) name instances by a tag they lack: no threshold level
         // exists for them, so the root's is the one set (the pass's #12: said in the dialog's words)
-        : { level: 'root', where: ctx.tag ? `the root (every drive of the fleet: no level exists for the instances of ${ctx.tag === 'untagged' ? 'no tag' : `no ${ctx.tag.slice(0, -1)} tag`})` : 'the root (every drive of the fleet)' };
+        : { level: 'root', where: ctx.tag ? `the root (every drive of the fleet: no level exists for the instances with ${ctx.tag === 'untagged' ? 'no tag at all' : ctx.tag.slice(0, -1).trim().toLowerCase() === 'tag' ? 'no plain tag' : `no ${ctx.tag.slice(0, -1).trim().toLowerCase()} tag`})` : 'the root (every drive of the fleet)' };
     const own = ownRow(thresholds, p);
     configureDialog(p, own ? `warning under ${pct(own.warn_pct)}, critical under ${pct(own.crit_pct)} (set at this level)` : 'the level above (or the default: warning under 20 %, critical under 10 %)', own, () => void draw());
   });

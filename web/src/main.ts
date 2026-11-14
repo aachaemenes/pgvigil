@@ -3,7 +3,7 @@
 // and the page under it.
 import { get, LoginRequired, onCutRead, post, Row, rowsOf, Session, startReads, Table } from './api';
 import { destroyCharts } from './chart';
-import { fleet, forget, inTagScope } from './fleet';
+import { fleet, forget, inTagScope, tagWords } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
@@ -480,7 +480,7 @@ async function render(force = false) {
     const oldDot = same ? crumb.querySelector('.band-dot') : null;
     crumb.replaceChildren(
       el('a', { href: href(ctx, { tab: ctx.instance ? 'summary' : ctx.tab, instance: undefined, tag: undefined }) }, 'All instances'),
-      ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, 'tag ' + ctx.tag)] : []),
+      ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, tagWords(ctx.tag))] : []),
       ...(ctx.instance ? [' / ', el('b', { id: 'crumb-inst' }, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []));
     if (oldDot) $('crumb-inst')?.before(oldDot, ' ');
     // the band's dot as soon as its read ends (it does not wait for the page); a failed read takes the old one away

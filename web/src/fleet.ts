@@ -343,3 +343,12 @@ export function tagWords(tag: string): string {
   if (i > 0 && i === tag.length - 1) return `(no ${tag.slice(0, i).trim().toLowerCase()})`;
   return `tag ${tag}`;
 }
+
+// tagScopeIds: the instance ids of a fleet page's tag scope (null with no tag, or on an instance's page); a fleet read
+// that fails throws in words, so a page shows the error rather than the whole fleet's rows under the tag's heading
+export async function tagScopeIds(ctx: { tag?: string; instance?: number }): Promise<Set<number> | null> {
+  const tag = ctx.tag;
+  if (!tag || ctx.instance) return null;
+  const f = await fleet().catch((e: unknown) => { throw new Error(`the instances of ${tagWords(tag)} could not be read: ${e instanceof Error ? e.message : String(e)}`); });
+  return new Set(f.instances.filter(r => inTagScope(tag, r)).map(r => Number(r.instance_id)));
+}

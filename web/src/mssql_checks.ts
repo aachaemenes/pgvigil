@@ -11,7 +11,7 @@
 // the databases view a risk filter (risk=<key>[,<key>...], a key optionally key:value - the option deviates and has
 // that value): the fleet's risk counts link there.
 import { get, Row, rowsOf, Table } from './api';
-import { fleet, inTagScope } from './fleet';
+import { tagScopeIds, tagWords } from './fleet';
 import type { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
 
@@ -279,12 +279,12 @@ const risks: [string, string, string][] = [   // the column, its heading, the da
 ];
 
 export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', {}, el('h2', {}, 'SQL Server options' + (ctx.tag && !ctx.instance ? ` - tag ${ctx.tag}` : '')));
+  const sec = el('section', {}, el('h2', {}, 'SQL Server options' + (ctx.tag && !ctx.instance ? ` - ${tagWords(ctx.tag)}` : '')));
   let d: FleetParts;
   try { d = await get<FleetParts>('mssql/checks/fleet'); } catch (e) { sec.append(errorBox(e)); return sec; }
   // a tag folder's (TAGTREE; DBA Dash's tag folder lists its own instances): the rows of the tag's instances
-  const tf = ctx.tag && !ctx.instance ? await fleet().catch(() => null) : null;
-  const ids = tf ? new Set(tf.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => Number(r.instance_id))) : null;
+  let ids: Set<number> | null;
+  try { ids = await tagScopeIds(ctx); } catch (e) { sec.append(errorBox(e)); return sec; }
   const inFolder = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const rs = rowsOf(d.risks).filter(inFolder);
   const to = (iid: unknown, view: string, risk = '') => `#/${mssqlChecksTab}?i=${String(iid)}&cv=${view}${risk ? '&risk=' + encodeURIComponent(risk) : ''}`;
@@ -310,8 +310,10 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
     + 'Green: none. Yellow: some.'), grid(rs, cols, 'No SQL Server instance read yet.'));
 
   // the pivot: one row per option, one column per instance
-  const ops = rowsOf(d.options);
+  // under a tag its instances' options alone: an option read only outside the tag is no row of it
+  const ops = rowsOf(d.options).filter(inFolder);
   const names = [...new Set(ops.map(o => String(o.name)))];
+  const across = ids ? `across the instances of ${tagWords(ctx.tag!)}` : 'across the fleet';
   const insts = rs.map(r => [Number(r.instance_id), String(r.instance_name)] as [number, string]);
   const by = new Map(ops.map(o => [`${String(o.name)}|${String(o.instance_id)}`, o]));
   const pivot: Row[] = names.map(n => {
@@ -325,8 +327,8 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
     key: 'i' + id, label: name, num: true,
     cls: (_v, r) => statusCls(by.get(`${String(r.name)}|${id}`)?.status),
     fmt: (v, r) => { const o = by.get(`${String(r.name)}|${id}`); return o ? titled(fmtNum(v), `${verdict(o.status, o.severity)}${o.detail ? ': ' + String(o.detail) : ''}`) : ''; },
-  })), { key: 'differs', label: 'differs across the fleet', fmt: yn }];
-  sec.append(el('h3', {}, 'Server options across the fleet'),
+  })), { key: 'differs', label: `differs ${across}`, fmt: yn }];
+  sec.append(el('h3', {}, `Server options ${across}`),
     el('p', { class: 'meta' }, 'Every option a column per instance, the value in use coloured by its verdict on that instance (green at the default '
       + 'or best practice, yellow a deviation, red a critical rule broken).'),
     grid(pivot, pcols, 'No option read yet.'));

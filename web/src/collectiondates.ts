@@ -7,7 +7,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href } from './router';
-import { fleet, inTagScope } from './fleet';
+import { fleet, inTagScope, tagWords } from './fleet';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { collectorLine } from './collector';
 
@@ -35,7 +35,7 @@ export async function collectionDatesView(ctx: Ctx): Promise<HTMLElement> {
       else if (ctx.tag) {
         const f = await fleet();
         params.instances = f.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => Number(r.instance_id)).join(',') || '0';
-        folder = ` of the folder ${ctx.tag}`;
+        folder = ` of ${tagWords(ctx.tag!)}`;
       } else folder = ' of the fleet';
       rows = rowsOf((await get<Record<'collections', Table | null>>('collectiondates', params)).collections);
     } catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }

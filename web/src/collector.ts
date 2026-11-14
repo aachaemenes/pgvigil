@@ -8,7 +8,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href } from './router';
-import { fleet, inTagScope } from './fleet';
+import { tagScopeIds, tagWords } from './fleet';
 import { lineChart } from './chart';
 import { tileRow } from './tiles';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, panel, stateNote, tile } from './ui';
@@ -43,19 +43,19 @@ const instLink = (ctx: Ctx, r: Row) => r.instance_id == null ? el('span', {}, St
 
 export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
   const tagged = ctx.tag && !ctx.instance ? ctx.tag : undefined;
-  const sec = el('section', { class: 'collector' }, el('h2', {}, 'Collector' + (tagged ? ` - tag ${tagged}` : '')));
+  const sec = el('section', { class: 'collector' }, el('h2', {}, 'Collector' + (tagged ? ` - ${tagWords(tagged)}` : '')));
   let d: Parts;
   try { d = await get<Parts>('collector'); } catch (e) { sec.append(errorBox(e)); return sec; }
   // a tag folder's (TAGTREE; DBA Dash's tag folder's Checks over its own instances): the per-instance rows of the tag's
   // instances; a row of no instance (the collector's own, the repository's) and the service and repository panels stay
-  const tf = tagged ? await fleet().catch(() => null) : null;
-  const ids = tf ? new Set(tf.instances.filter(r => inTagScope(tagged!, r)).map(r => Number(r.instance_id))) : null;
+  let ids: Set<number> | null;
+  try { ids = await tagScopeIds(ctx); } catch (e) { sec.append(errorBox(e)); return sec; }
   const inFolder = (r: Row) => !ids || r.instance_id == null || ids.has(Number(r.instance_id));
   const collectors = rowsOf(d.collectors), findings = rowsOf(d.findings).filter(inFolder), colls = rowsOf(d.collections), minutes = rowsOf(d.minutes);
   const load = rowsOf(d.load).filter(inFolder), streaks = rowsOf(d.streaks).filter(inFolder), tables = rowsOf(d.tables);
   const repo: Row = rowsOf(d.repository)[0] ?? {};
   const conns = rowsOf(d.connections), purges = rowsOf(d.purges);
-  if (ids) sec.append(el('p', { class: 'meta' }, `The tag ${tagged} is in view: the instances' rows are its ${ids.size} instance(s); the service, the collections and the repository are the whole repository's.`));
+  if (ids) sec.append(el('p', { class: 'meta' }, `In view: ${tagWords(tagged!)} - the instances' rows are its ${ids.size} instance(s); the service, the collections and the repository are the whole repository's.`));
   const st = serviceState(collectors, findings), me = collectors.find(r => r.state === 'up') ?? collectors[0];
   const wd = String(rowsOf(d.watchdog)[0]?.watchdog ?? '');
   const wdTile = wd === 'on' ? tile('Watchdog', 'On', '', { sub: 'serve sends the alert while a collector is down' })
