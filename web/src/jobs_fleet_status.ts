@@ -2,8 +2,10 @@
 // every instance in view, SQL Agent, pg_cron and pgAgent alike, judged by one judge - job_status_view (0137: DBA Dash's
 // default rule when no threshold row is set) - the judge the Summary's Agent Jobs / Jobs cells use too. Data from
 // /api/jobsreport?part=status&ids=<the view's instances> and, after the grid is drawn, ?part=stats (the four columns
-// that need every run of 7 days: succeeded 24 h / 7 days, longest and average over 7 days); a stats read that fails
-// leaves those cells 'not read: <why>' and the grid stands. The picked job's history opens UNDER the grid as DBA Dash's
+// that need 7 days of runs, read from 0139's hourly table with DBA Dash's arithmetic: succeeded 24 h / 7 days, longest and average
+// over 7 days, whole seconds); a stats read that fails
+// leaves those cells 'not read: <why>' and the grid stands; an instance whose hours of the 7 days are not built yet (after
+// the upgrade to 0139, during a history import, a heal not done) reads 'being built' there. The picked job's history opens UNDER the grid as DBA Dash's
 // child panel ('<instance> | <job>'); 'judged at' opens the thresholds dialog in place; Acknowledge is the tab's cell, and
 // an acknowledged job reads 'acknowledged' in place of critical / warning where the rule broken is the last failure's
 // (DBA Dash 4.24.1 AgentJobStatus: status 5 for TimeSinceLastFailure / LastFail when AckDate > LastFailed; a count rule
@@ -100,7 +102,7 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     // filter or a hidden column the reader set stays); the values go into the rows too, for the sort and the export
     let stats: Map<string, Row> | null = null, statsWhy = '';
     const statFmt: Record<string, (v: unknown) => string> = {};
-    const statText = (k: string, r: Row) => statsWhy ? `not read: ${statsWhy}` : !stats ? 'reading...' : statFmt[k](r[k]);
+    const statText = (k: string, r: Row) => statsWhy ? `not read: ${statsWhy}` : !stats ? 'reading...' : r._stats_building ? 'being built' : statFmt[k](r[k]);
     const statCol = (k: string, label: string, fmt: (v: unknown) => string): Col => {
       statFmt[k] = fmt;
       return { key: k, label, num: true, fmt: (_v, r) => el('span', { 'data-stat': k, 'data-row': key(r) }, statText(k, r)) };
@@ -170,8 +172,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, `Every job of the instances in view, ${engineJobs}, judged by its thresholds (the job, its instance or the root); with none set, `
         + 'DBA Dash\'s default: critical when the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days. As in DBA Dash a '
         + 'cancelled run counts as a failure and a disabled job is not judged. The 24-hour and 7-day counts are fixed windows, not the page\'s range. The last failure and '
-        + 'success are looked for back as far as the longest threshold in force (7 days at least); a job whose last run failed shows that failure however old. The 7-day '
-        + 'average is over the runs (DBA Dash averages its hourly averages, so a few long runs weigh more there). '
+        + 'success are looked for back as far as the longest threshold in force (7 days at least); a job whose last run failed shows that failure however old. The '
+        + 'succeeded, longest and average columns are read from the hourly statistics as DBA Dash reads its own: an hour counts when it started within 24 hours or 7 days, '
+        + 'the average is the average of each hour\'s average, both in whole seconds, as DBA Dash; \'being built\' while an instance\'s hours of the 7 days are not built yet. '
         + 'Pick a job for its history below.'),
       ...(ackOffP ? [ackOffP] : []), box, hist);
     draw();
@@ -179,7 +182,7 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     get<Record<'stats', Table | null>>('jobsreport', { part: 'stats', ids: ids.join(',') || '0' })
       .then(x => {
         stats = new Map(rowsOf(x.stats).map(r => [key(r), r]));
-        for (const [k, r] of byKey) { const t = stats.get(k); for (const c of Object.keys(statFmt)) r[c] = t?.[c] ?? null; }
+        for (const [k, r] of byKey) { const t = stats.get(k); for (const c of Object.keys(statFmt)) r[c] = t?.[c] ?? null; r._stats_building = t?.building === true; }
       }, e => { statsWhy = e instanceof Error ? e.message : String(e); })
       .finally(() => {
         for (const sp of box.querySelectorAll<HTMLElement>('[data-stat]')) {

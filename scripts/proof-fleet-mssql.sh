@@ -60,6 +60,10 @@
 #                acknowledged' (more than one instance in view), its line '<crit + warn + acknowledged> of <all> jobs'
 #                (parity with job_status(i); no live job acknowledgement on a fresh demo), the two seeded rows there;
 #                All = every job (a raw count of the jobs tables), in the API's order
+#   R0 hours     (FLEET STATS ROLLUP, 0139) the demo's job imports and the seeds filled job_stats_hourly through its triggers
+#                (the collector's SECURITY DEFINER import path): SQL Server hour rows, the seeded pg_cron job's two hours,
+#                no 'rollup failed' row in collection_log, no dirty range; J1 also compares DBA Dash's whole-second average
+#                (per UTC hour total / (failed + succeeded), then their average) counted from the runs
 #   J3 stats     4 s after the grid: the 'succeeded 7 days' column there, every cell a number, both seeded jobs' '1'
 #   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2); its
 #                'Open the job on its instance' link is #/mssqljobs?i=<sql01>&job=<name> and lands with that job's history open (SF4)
@@ -221,12 +225,20 @@ JRAW=$(Q "select json_build_object(
                                   'step_fail_7d', count(*) filter (where step_id > 0 and run_status in (0, 3)),
                                   'ok_24h', count(*) filter (where step_id = 0 and run_status = 1 and snapshot_at > now() - interval '24 hours'),
                                   'ok_7d', count(*) filter (where step_id = 0 and run_status = 1),
-                                  'max', max(duration_s) filter (where step_id = 0))
+                                  'max', max(duration_s) filter (where step_id = 0),
+                                  -- DBA Dash's average (AgentJob7Day.sql): per UTC hour of the start, total / (failed + succeeded) in
+                                  -- whole seconds, then the average of those, whole seconds - counted here from the runs themselves
+                                  'avg', (select trunc(avg(trunc(x.t / nullif(x.n, 0)))) from (select sum(r.duration_s) as t, count(*) filter (where r.run_status in (0, 1, 3)) as n
+                                            from pgvigil.mssql_job_runs r where r.instance_id = $S1 and r.job_id = 'FLEETPROOF-0001' and r.step_id = 0 and r.snapshot_at > now() - interval '7 days'
+                                           group by date_trunc('hour', r.snapshot_at at time zone 'UTC')) x))
            from pgvigil.mssql_job_runs where instance_id = $S1 and job_id = 'FLEETPROOF-0001' and snapshot_at > now() - interval '7 days'),
   'pg', (select json_build_object('fail_24h', count(*) filter (where status in ('failed', 'internal error', 'aborted') and start_time > now() - interval '24 hours'),
                                   'fail_7d', count(*) filter (where status in ('failed', 'internal error', 'aborted')),
                                   'ok_24h', count(*) filter (where status = 'succeeded' and start_time > now() - interval '24 hours'),
-                                  'ok_7d', count(*) filter (where status = 'succeeded'), 'max', max(duration_secs))
+                                  'ok_7d', count(*) filter (where status = 'succeeded'), 'max', max(duration_secs),
+                                  'avg', (select trunc(avg(trunc(x.t / nullif(x.n, 0)))) from (select sum(r.duration_secs) as t, count(*) filter (where r.status in ('succeeded', 'failed', 'internal error', 'aborted')) as n
+                                            from pgvigil.job_runs r where r.instance_id = $ERP and r.scheduler = 'pg_cron' and r.job_id = 990001 and r.end_time is not null and r.start_time > now() - interval '7 days'
+                                           group by date_trunc('hour', r.start_time at time zone 'UTC')) x))
            from pgvigil.job_runs where instance_id = $ERP and scheduler = 'pg_cron' and job_id = 990001 and start_time > now() - interval '7 days'))")
 echo "$JRAW" > "$WORK/jraw.json"
 Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.scheduler || '|' || s.job_id, 'v', json_build_array(s.status, s.reason, s.level, s.last_outcome,
@@ -297,8 +309,9 @@ for inst, name, side in ((s1, sj, 'ms'), (erp, pj, 'pg')):
     if (int(r['fail_24h']), int(r['fail_7d'])) != (h['fail_24h'], h['fail_7d']) or (h['fail_24h'], h['fail_7d']) != (1, 1): out.append(f"{name}: failed 24 h / 7 d {r['fail_24h']} / {r['fail_7d']}, the raw rows {h['fail_24h']} / {h['fail_7d']} (want 1 / 1)")
     if side == 'ms' and (int(r['step_fail_7d']), h['step_fail_7d']) != (1, 1): out.append(f"{name}: failed steps 7 d {r['step_fail_7d']}, the raw rows {h['step_fail_7d']} (want 1)")
     t = [x for x in sts if str(x['instance_id']) == inst and key(x) == key(r)]
-    if not t or (int(t[0]['ok_24h'] or 0), int(t[0]['ok_7d'] or 0)) != (h['ok_24h'], h['ok_7d']) or (h['ok_24h'], h['ok_7d']) != (1, 1) or t[0]['max_secs_7d'] is None or float(t[0]['max_secs_7d']) != float(h['max']):
-        out.append(f"{name}: stats {[(x['ok_24h'], x['ok_7d'], x['max_secs_7d']) for x in t]} vs the raw rows ok {h['ok_24h']} / {h['ok_7d']}, max {h['max']}")
+    if not t or (int(t[0]['ok_24h'] or 0), int(t[0]['ok_7d'] or 0)) != (h['ok_24h'], h['ok_7d']) or (h['ok_24h'], h['ok_7d']) != (1, 1) or t[0]['max_secs_7d'] is None or float(t[0]['max_secs_7d']) != float(h['max']) \
+            or t[0]['avg_secs_7d'] is None or h['avg'] is None or float(t[0]['avg_secs_7d']) != float(h['avg']):
+        out.append(f"{name}: stats {[(x['ok_24h'], x['ok_7d'], x['max_secs_7d'], x['avg_secs_7d']) for x in t]} vs the raw rows ok {h['ok_24h']} / {h['ok_7d']}, max {h['max']}, DBA Dash's average {h['avg']}")
 cells = rows(json.load(open(f('mssql/summary'))), 'cells')
 c = [x for x in cells if str(x['instance_id']) == s1 and x['key'] == 'jobs']
 if not c or int(c[0]['warning']) < 1 or not any(sj in str(d) for d in (c[0].get('detail') or [])): out.append(f"sql01's Agent Jobs cell: {c}")
@@ -306,11 +319,21 @@ ov = json.load(open(f('overview')))
 ov = rows(ov, 'overview') if 'overview' in ov else [dict(zip(ov['columns'], r)) for r in ov['rows']]
 o = [x for x in ov if str(x['instance_id']) == erp and x.get('check_name') == 'job status' and pj in str(x.get('object'))]
 if not o or o[0]['severity'] != 'warning': out.append(f"erp01's overview 'job status' row: {o}")
-print(('FAIL|' + '; '.join(out)) if out else f"ok|{len(st)} jobs = the one-instance form on all ten fields, in DBA Dash's order; ids sql01's {len(one)}; stats {len(sts)}; no part name: counts, jobs; both seeded jobs warn at default, their counts and stats = the raw rows (failed 1 / 1, succeeded 1 / 1, max {raw['ms']['max']} s / {raw['pg']['max']} s); sql01's cell warning {c[0]['warning']}; erp01's overview row warning")
+print(('FAIL|' + '; '.join(out)) if out else f"ok|{len(st)} jobs = the one-instance form on all ten fields, in DBA Dash's order; ids sql01's {len(one)}; stats {len(sts)}; no part name: counts, jobs; both seeded jobs warn at default, their counts and stats = the raw rows (failed 1 / 1, succeeded 1 / 1, max {raw['ms']['max']} s / {raw['pg']['max']} s, DBA Dash's whole-second average {raw['ms']['avg']} s / {raw['pg']['avg']} s); sql01's cell warning {c[0]['warning']}; erp01's overview row warning")
 PY2
 ) || J1="FAIL|the J1 reader crashed: $(tail -1 "$WORK/j1.err")"
 [[ "$J1" == ok\|* ]] || no "J1: ${J1#FAIL|}"
 [[ $bad -eq $b0 ]] && echo "ok   J1 api + S1 cells: ${J1#ok|}"
+# R0 (FLEET STATS ROLLUP, 0139): the demo's own job imports - the collector's import functions, the SECURITY DEFINER path a
+# store test does not take - and the seeds above filled the hourly table through its triggers, and none of them failed
+b0=$bad
+R0=$(Q "select format('%s|%s|%s|%s', (select count(*) from pgvigil.job_stats_hourly h join pgvigil.instances i using (instance_id) where i.engine = 'sqlserver'),
+                                  (select count(*) from pgvigil.job_stats_hourly where instance_id = $ERP and job_id = '990001'),
+                                  (select count(*) from pgvigil.collection_log where collection = 'job_stats_hourly'), (select count(*) from pgvigil.job_stats_dirty))")
+IFS='|' read -r r0ms r0pg r0fail r0dirty <<< "$R0"
+[[ ${r0ms:-0} -gt 0 && ${r0pg:-0} -eq 2 && $r0fail == 0 && $r0dirty == 0 ]] \
+  || no "R0 hours: $r0ms SQL Server hour rows (want some), $r0pg of the seeded pg_cron job's (want 2: its two hours), $r0fail 'rollup failed' rows (want 0), $r0dirty dirty ranges (want 0)"
+[[ $bad -eq $b0 ]] && echo "ok   R0 hours: $r0ms SQL Server hour rows from the demo's imports and the seeds, the seeded pg_cron job's two hours, 0 'rollup failed', 0 dirty"
 
 echo "== a headless Chromium on CDP $CDP"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
@@ -330,4 +353,4 @@ SEEDED=$(Q "select (select count(*) from pgvigil.mssql_jobs where instance_id = 
                    (select count(*) from pgvigil.jobs where instance_id = $ERP and scheduler = 'pg_cron' and job_id = 990001 and is_present)")
 [[ "$SEEDED" == "1|1" ]] || no "the seeded jobs after the browser check: SQL Agent|pg_cron = $SEEDED (want 1|1) - the demo's live import replaced them: a proof fault"
 [[ $bad -eq 0 ]] || fail "$bad check(s) failed"
-echo "OK: the fleet's SQL Server backups and jobs (B1-B4, S1, J1-J4, the S1 link)"
+echo "OK: the fleet's SQL Server backups and jobs (B1-B4, S1, J1-J4, R0, the S1 link)"
