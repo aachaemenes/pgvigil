@@ -138,7 +138,7 @@ func readConn(ctx context.Context, conn *sql.Conn) (Payload, error) {
 	if err != nil {
 		return Payload{}, err
 	}
-	sums, err := readSummary(ctx, conn, cols["Summary"])
+	sums, err := readSummary(ctx, conn, cols["Summary"], cols["CollectionRunStatus"]["InstanceID"])
 	if err != nil {
 		return Payload{}, err
 	}
@@ -162,7 +162,7 @@ SELECT t.name, c.name
   FROM sys.tables t
   JOIN sys.schemas s ON s.schema_id = t.schema_id
   JOIN sys.columns c ON c.object_id = t.object_id
- WHERE s.name = N'dbo' AND t.name IN (N'Instances', N'Summary', N'CollectionDates', N'DBVersionHistory')`)
+ WHERE s.name = N'dbo' AND t.name IN (N'Instances', N'Summary', N'CollectionDates', N'DBVersionHistory', N'CollectionRunStatus')`)
 	if err != nil {
 		return nil, fmt.Errorf("sys.columns: %w", err)
 	}
@@ -238,7 +238,14 @@ type summaryRow struct {
 	RefreshedAt *time.Time
 }
 
-func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool) (map[int]summaryRow, error) {
+// HealthKey is the detail pgvigil adds to a Summary row of a repository that records collection runs (DBA Dash 4.25.0's
+// dbo.CollectionRunStatus): true when the instance has run rows there. DBA Dash's Summary_Upd (4.25.0 L279-280) then
+// fills CollectionErrorStatus from the instance's collection health and CollectionErrorCount with its collections at
+// warning or critical; without them (a service older than 4.25.0 collects it) both keep the errors of 24 hours. The
+// door's words for that cell follow it (0138's dbadash_detail).
+const HealthKey = "CollectionHealth"
+
+func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool, runStatus bool) (map[int]summaryRow, error) {
 	out := map[int]summaryRow{}
 	if !sc["InstanceID"] {
 		return out, nil // no dbo.Summary visible: the instances are listed without statuses
@@ -261,6 +268,9 @@ func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool) (map[i
 	where := ""
 	if sc["IsAzure"] {
 		where = " WHERE S.IsAzure = 0"
+	}
+	if runStatus {
+		sel = append(sel, "CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.CollectionRunStatus R WHERE R.InstanceID = S.InstanceID) THEN 1 ELSE 0 END AS bit) AS "+HealthKey)
 	}
 	q := "SELECT S.InstanceID, " + refresh
 	if len(sel) > 0 {
@@ -292,6 +302,9 @@ func readSummary(ctx context.Context, conn *sql.Conn, sc map[string]bool) (map[i
 		}
 		for i, col := range sel {
 			k := strings.TrimPrefix(col, "S.")
+			if strings.HasSuffix(col, " AS "+HealthKey) {
+				k = HealthKey
+			}
 			v := vals[2+i]
 			if isStatus(k) {
 				if n, ok := asInt(v); ok {

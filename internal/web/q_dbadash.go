@@ -60,7 +60,7 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 		s.multiPart(w, r, []part{
 			{"repositories", `SELECT * FROM pgvigil.dbadash_repositories() WHERE $1::text IS NULL OR repository = $1`, []any{repo}},
 			{"fleet", `SELECT * FROM pgvigil.dbadash_fleet($1)`, []any{repo}},
-			{"checks", `SELECT * FROM pgvigil.dbadash_checks()`, nil},
+			{"checks", `SELECT * FROM pgvigil.dbadash_checks($1)`, []any{repo}},
 			{"imported", sqlDBADashImported, []any{repo}},
 		})
 		return
