@@ -106,7 +106,9 @@ SELECT 'sync' AS kind, current_setting('synchronous_standby_names') AS names,
 // pg_subscription is cluster-wide and names repeat across databases
 const subscriptionsSQL = `
 SELECT 'subscription' AS kind, s.subid::bigint AS subid, s.subname::text AS subname, d.datname::text AS datname,
-       s.pid, s.received_lsn::text, s.last_msg_send_time, s.last_msg_receipt_time, s.latest_end_lsn::text, s.latest_end_time,
+       s.pid, s.received_lsn::text, CASE WHEN isfinite(s.last_msg_send_time) THEN s.last_msg_send_time END AS last_msg_send_time,
+       CASE WHEN isfinite(s.last_msg_receipt_time) THEN s.last_msg_receipt_time END AS last_msg_receipt_time, s.latest_end_lsn::text,
+       CASE WHEN isfinite(s.latest_end_time) THEN s.latest_end_time END AS latest_end_time,
        sub.subenabled AS enabled, array_to_string(sub.subpublications, ',') AS publications
   FROM pg_stat_subscription s
   JOIN pg_subscription sub ON sub.oid = s.subid

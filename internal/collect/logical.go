@@ -40,14 +40,17 @@ func (c logicalCollector) Run(ctx context.Context, conn *pgx.Conn, info platform
 }
 
 // logicalSubsSQL: one row per subscription with its apply worker (relid NULL; a parallel apply worker, PostgreSQL 16
-// on, has a leader_pid). subconninfo is never read (it can hold a password; pg_monitor cannot read it anyway).
+// on, has a leader_pid). subconninfo is never read (it can hold a password; pg_monitor cannot read it anyway). A worker
+// that has received nothing yet shows its times as '-infinity': sent as NULL (an infinite silent_secs is no JSON number).
 const logicalSubsSQL = `
 SELECT 'subscription' AS kind, s.oid::bigint AS subid, s.subname::text AS subname, d.datname::text AS datname,
        s.subenabled AS enabled, s.subslotname::text AS slot_name, array_to_string(s.subpublications, ',') AS publications,
        %s AS disable_on_error, pg_is_in_recovery() AS in_recovery,
        w.pid AS worker_pid, w.received_lsn::text AS received_lsn, w.latest_end_lsn::text AS latest_end_lsn,
-       w.last_msg_send_time, w.last_msg_receipt_time, w.latest_end_time,
-       extract(epoch FROM clock_timestamp() - w.last_msg_receipt_time)::float8 AS silent_secs,
+       CASE WHEN isfinite(w.last_msg_send_time) THEN w.last_msg_send_time END AS last_msg_send_time,
+       CASE WHEN isfinite(w.last_msg_receipt_time) THEN w.last_msg_receipt_time END AS last_msg_receipt_time,
+       CASE WHEN isfinite(w.latest_end_time) THEN w.latest_end_time END AS latest_end_time,
+       CASE WHEN isfinite(w.last_msg_receipt_time) THEN extract(epoch FROM clock_timestamp() - w.last_msg_receipt_time)::float8 END AS silent_secs,
        (SELECT count(*) FROM pg_stat_subscription x WHERE x.subid = s.oid AND x.relid IS NOT NULL) AS sync_workers,
        %s
   FROM pg_subscription s
