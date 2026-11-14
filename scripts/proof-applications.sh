@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proof of applications (task 310, migration 0136) on a throwaway repository database: the store's rows (section S).
-# The API, the page and the owner-routed alerts add their sections as they are built.
+# The API (H) and the page (P) follow; the owner-routed alerts add their section as they are built.
 #
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a SUPERUSER (the proof creates pgvigil_proof_app_<n> and a
 #                      reader login there, and drops both at the end)
@@ -61,6 +61,22 @@
 #      answer and in neither the list's nor one application's
 #  H6  a serve with -no-login: the contacts' GET 403 'contacts hidden: the login is off'; every POST 403
 #  H7  GET /api/applications/unassigned lists a present database with no application
+# Section P, the page (Admin > Applications, web/src/applications.ts; its tab and route a WIRING of router.ts and
+# main.ts in the same patch; the bundle built from the tree; a headless Chromium over CDP on section H's two serves):
+#  P1  the Admin strip lists Applications; the page lists exactly the store's applications
+#  P2  Add through the form: stored with tier, environment and description, every field 'entered' by the signed-in user
+#  P3  one application opened: its fields with their sources; Edit stores the description, version 2
+#  P4  contacts on a click only: a planted e-mail is not on the page before 'Show contacts', is after; a contact added
+#      through the form is stored and listed
+#  P5  two Unassigned rows ticked and 'Assign the selected' (one call, two audit rows): stored with the environment,
+#      gone from Unassigned, listed 'own' on the application
+#  P6  Mark the selected not an application: gone from Unassigned, stored, Unmark offered; Unmark: back, the mark gone
+#  P7  Rename with a threshold scoped by the tag: refused without the tick (the store's words), done with it, re-tagged
+#  P8  Remove asked twice: refused without 'with its assignments', done with the ticks; assignment and threshold gone
+#  P9  a PostgreSQL database renamed on the server: 'absent since' and 'renamed to' shown; 'Assign <new> instead' moves it
+#  P10 the -no-login serve: at least 8 write controls, every one off with a visible reason; contacts in words
+#  P11 axe-core 4.14.0 on the page (an application and its contacts open) light and dark, and read only: 0 nodes
+#  P12 the page's Export .xlsx passes scripts/xlsx-check.py and holds no contact value (contacts not shown)
 # On a tree without 0136 every row FAILs as 'not on this tree': the red run.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -331,6 +347,239 @@ if startserve "$P6" -no-login; then
   [[ $c6a == 403 && $d6 == *"contacts hidden: the login is off"* && $c6b == 403 ]] && ok "H6 -no-login: contacts 403 'contacts hidden: the login is off', a POST 403" \
     || bad "H6 contacts $c6a '${d6:0:120}', POST $c6b"
 else bad "H6 setup: the -no-login serve did not answer ($(tail -3 "$WORK/serve-$P6.log" | tr '\n' ' '))"; fi
+# ================= P: the page (Admin > Applications in a headless Chromium over CDP, on the H section's serves) =================
+# the bundle is built from this tree on the box (.ap/run.sh: npm ci, npm run build) with 310's WIRING of router.ts and
+# main.ts applied; a binary without the page's route is the red: every P row 'not on this tree'
+PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12"
+if ! grep -a -q 'admin_applications' "$BIN"; then
+  for row in $PROWS; do bad "$row not on this tree (no Admin > Applications in the bundle)"; done
+else
+P_SET=1
+for t in chromium node npm unzip; do command -v $t >/dev/null || { P_SET=0; bad "P setup: $t is not on this machine"; }; done
+# the page's own fleet: a PostgreSQL instance (pdb1-pdb3) and a SQL Server one (Orders, Ledger); 'Page Rename' on pdb3
+# with a pg threshold scoped by its tag
+PPI=$(q "select pgvigil.ensure_instance('proof-page-pg', 'onprem', '18.0', 180000, false, '{}'::text[])")
+PMI=$(q "select pgvigil.ensure_instance('proof-page-ms', 'onprem', '16.0', 160000, false, '{}'::text[], 'sqlserver')")
+dbs "$PPI" "[$(pgdb 40001 pdb1), $(pgdb 40002 pdb2), $(pgdb 40003 pdb3)]"
+q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, is_system, snapshot_at) values
+   ($PMI, 'Orders', 7, false, now()), ($PMI, 'Ledger', 8, false, now())" >/dev/null
+ans=$(wr application '{"op": "add", "name": "Page Rename", "tier": 3}'); PREN=$(field "$ans" app_id)
+wr assign "{\"op\": \"assign\", \"app_id\": $PREN, \"targets\": [{\"instance_id\": $PPI, \"database\": \"pdb3\"}]}" >/dev/null
+pk=$(q "select min(key) from pgvigil.pg_threshold_keys")
+q "insert into pgvigil.pg_thresholds (key, level, tag, warn, crit, created_by, created_at) values ('$pk', 'tag', 'application:Page Rename', 1, 2, 'proof', now())" >/dev/null
+TEAM="page-team.$SUF@example.com"
+CDP=$(freeport); DL=$WORK/dl; mkdir -p "$DL"
+chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu --window-size=1500,1100 about:blank > "$WORK/chrome.log" 2>&1 & SPIDS+=($!)
+for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+(cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1); AXE=$WORK/node_modules/axe-core/axe.min.js
+[[ -f "$AXE" ]] || { P_SET=0; bad "P setup: axe-core 4.14.0 did not install"; }
+cat > "$WORK/p.mjs" <<'JS'
+// the page clicked as a user would: each step prints KEY=value; the shell grades the lines and the store
+const [port, U, U6, dl, axePath] = process.argv.slice(2);
+const fs = await import('node:fs');
+const { execFileSync } = await import('node:child_process');
+const env = process.env;
+const sql = s => execFileSync('psql', [env.PGVIGIL_REPO_DSN, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-c', s], { encoding: 'utf8' }).trim();
+const out = (k, v) => console.log(`${k}=${(typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ')}`);
+const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+const bws = new WebSocket(ver.webSocketDebuggerUrl);
+await new Promise(r => bws.addEventListener('open', r));
+bws.send(JSON.stringify({ id: 1, method: 'Browser.setDownloadBehavior', params: { behavior: 'allow', downloadPath: dl } }));
+await new Promise(r => bws.addEventListener('message', r));
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const status = () => ev(`document.querySelector('main .applications p[role=status]')?.textContent ?? ''`);
+const ready = async () => { for (let i = 0; i < 150; i++) { if (await ev(`!!document.querySelector('main .applications h2')`) && !/^Working/.test(await status())) { await sleep(300); return true; } await sleep(200); } return false; };
+const settle = async () => { let t = ''; for (let i = 0; i < 300; i++) { await sleep(150); t = await status(); if (!/^Working/.test(t)) break; } await sleep(300); return t; };
+const go = async (base, hash) => { await cmd('Page.navigate', { url: 'about:blank' }); await sleep(150); await cmd('Page.navigate', { url: base + hash }); return ready(); };
+// a button or a tick by its aria-label; the status line after it settles
+const click = async label => {
+  const ok = await ev(`(() => { const b = [...document.querySelectorAll('main button, main input[type=checkbox]')].find(b => b.getAttribute('aria-label') === ${JSON.stringify(label)}); if (!b) return false; b.click(); return true; })()`);
+  return ok ? await settle() : `NOT FOUND ${label}`;
+};
+const formOf = label => `[...document.querySelectorAll('main form')].find(f => f.getAttribute('aria-label') === ${JSON.stringify(label)})`;
+// a form's fields by name: a tick takes true / false, a list its option's value or its words
+const fill = (form, vals) => ev(`(() => { const f = ${formOf(form)}; if (!f) return 'no form'; for (const [k, v] of Object.entries(${JSON.stringify(vals)})) {
+  const c = f.querySelector('[name="' + k + '"]'); if (!c) return 'no field ' + k;
+  if (c.type === 'checkbox') c.checked = !!v;
+  else if (c.tagName === 'SELECT' && ![...c.options].some(o => o.value === v)) { const o = [...c.options].find(o => o.textContent.trim() === v); if (!o) return 'no option ' + v; c.value = o.value; }
+  else c.value = v;
+  c.dispatchEvent(new Event('input', { bubbles: true })); c.dispatchEvent(new Event('change', { bubbles: true })); } return 'ok'; })()`);
+const submit = async form => (await ev(`(() => { const f = ${formOf(form)}; if (!f) return false; f.requestSubmit(); return true; })()`)) ? await settle() : `NOT FOUND form ${form}`;
+// one application's servers and databases as the page lists them: a row per tr, keyed by the header's labels
+const panelRows = name => ev(`(() => { const s = document.querySelector('main section[aria-label=' + JSON.stringify('Application ' + ${JSON.stringify(name)}) + ']'); if (!s) return null;
+  const t = s.querySelector('table.grid[data-part=databases]'); if (!t) return [];
+  const h = [...t.querySelectorAll('thead tr:first-child th')].map(x => (x.querySelector('.th-label') ?? x).textContent.trim());
+  return [...t.querySelectorAll('tbody tr')].map(r => Object.fromEntries([...r.children].map((c, i) => [h[i], c.textContent.replace(/\\s+/g, ' ').trim()]))); })()`);
+const ticks = () => ev(`[...document.querySelectorAll('main input[type=checkbox]')].map(c => c.getAttribute('aria-label') ?? '').filter(l => l.startsWith('Select ')).join('|')`);
+const axe = async () => {
+  await cmd('Runtime.evaluate', { expression: fs.readFileSync(axePath, 'utf8') });
+  return await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => r.violations.reduce((n, v) => n + v.nodes.length, 0) + ' ' + r.violations.map(v => v.id + ':' + v.nodes.map(n => n.target.join(' ')).join(',')).join(';').slice(0, 600))`, true);
+};
+const theme = async t => { await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(t)}); 'ok'`); await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: t }] }); };
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1100, deviceScaleFactor: 1, mobile: false });
+await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
+out('login', await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(env.P_USR)}, password: ${JSON.stringify(env.P_UPW)} }) }).then(r => r.status)`, true));
+await theme('light');
+try {
+  // P1 the tab and the list
+  out('P1.ready', await go(U, '#/admin_applications'));
+  out('P1.strip', await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.textContent.trim()).join('|')`));
+  out('P1.names', await ev(`[...document.querySelectorAll('main .applications button')].map(b => b.getAttribute('aria-label') ?? '').filter(l => l.startsWith('Open ')).map(l => l.slice(5)).join('|')`));
+  // P2 add through the form
+  out('P2.fill', await fill('Add an application', { name: 'Page Added', tier: '2', environment: 'test', description: 'added by the page' }));
+  out('P2.status', await submit('Add an application'));
+  // P3 open it: each field's source; edit the description
+  out('P3.open', await click('Open Page Added'));
+  out('P3.sources', await ev(`document.querySelector('main section[aria-label="Application Page Added"]')?.textContent.replace(/\\s+/g, ' ').match(/entered by \\S+/g)?.length ?? 0`));
+  out('P3.fill', await fill('Edit Page Added', { description: 'edited by the page' }));
+  out('P3.status', await submit('Edit Page Added'));
+  // P4 contacts on a click only; a contact added through the form
+  out('P4.open', await click('Open Http App'));
+  out('P4.before', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_EMAIL)})`));
+  out('P4.show', await click('Show contacts of Http App'));
+  out('P4.after', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_EMAIL)})`));
+  out('P4.fill', await fill('Add a contact to Http App', { role: 'technical owner', kind: 'team', name: 'Page Team', email: env.P_TEAM }));
+  out('P4.status', await submit('Add a contact to Http App'));
+  out('P4.listed', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_TEAM)})`));
+  // P5 two Unassigned rows ticked, assigned in one call
+  await go(U, '#/admin_applications');
+  out('P5.before', await ticks());
+  await click('Select pdb1 on proof-page-pg'); await click('Select Orders on proof-page-ms');
+  out('P5.fill', await fill('Assign the selected databases', { app_id: 'Page Added', environment: 'production' }));
+  out('P5.status', await submit('Assign the selected databases'));
+  out('P5.after', await ticks());
+  await click('Open Page Added');
+  out('P5.rows', (await panelRows('Page Added') ?? []).map(r => `${r.database}:${r.assigned}:${r.environment}`).join('|'));
+  // P6 mark and unmark
+  await click('Select Ledger on proof-page-ms');
+  out('P6.status', await click('Mark the selected not an application'));
+  out('P6.gone', !(await ticks()).split('|').includes('Select Ledger on proof-page-ms'));
+  out('P6.unmarkable', await ev(`[...document.querySelectorAll('main button')].some(b => b.getAttribute('aria-label') === 'Unmark Ledger on proof-page-ms')`));
+  out('P6.store', sql(`select count(*) from pgvigil.app_not_application where instance_id = ${env.P_PMI} and database_name = 'Ledger'`));
+  out('P6.unmark', await click('Unmark Ledger on proof-page-ms'));
+  out('P6.back', (await ticks()).split('|').includes('Select Ledger on proof-page-ms'));
+  // P7 rename with a tag-scoped threshold: refused without the tick, done with it
+  await click('Open Page Rename');
+  out('P7.fill', await fill('Rename Page Rename', { new_name: 'Page Renamed' }));
+  out('P7.refused', await submit('Rename Page Rename'));
+  out('P7.fill2', await fill('Rename Page Rename', { new_name: 'Page Renamed', retag: true }));
+  out('P7.done', await submit('Rename Page Rename'));
+  // P8 remove an assigned application: asked twice; refused without its ticks, done with them
+  out('P8.ask', await click('Remove Page Renamed'));
+  out('P8.refused', await click('Confirm: remove Page Renamed'));
+  out('P8.fill', await fill('Remove Page Renamed', { with_assignments: true, retag: true }));
+  await click('Remove Page Renamed');
+  out('P8.done', await click('Confirm: remove Page Renamed'));
+  // P9 pdb1 renamed on the server (the same dbid): absent since, renamed to, and the offer taken
+  sql(`select pgvigil.import_databases(${env.P_PPI}, now(), '[{"dbid": 40001, "datname": "pdb1_new", "is_template": false, "allow_conn": true, "can_connect": true, "size_bytes": 1},
+       {"dbid": 40002, "datname": "pdb2", "is_template": false, "allow_conn": true, "can_connect": true, "size_bytes": 1},
+       {"dbid": 40003, "datname": "pdb3", "is_template": false, "allow_conn": true, "can_connect": true, "size_bytes": 1}]'::jsonb)`);
+  await go(U, '#/admin_applications'); await click('Open Page Added');
+  const r9 = (await panelRows('Page Added') ?? []).find(r => r.database === 'pdb1') ?? {};
+  out('P9.row', `${r9['absent since'] ?? '-'}|${r9['renamed to'] ?? '-'}`);
+  out('P9.offer', await click('Assign pdb1_new to Page Added instead'));
+  out('P9.after', (await panelRows('Page Added') ?? []).map(r => `${r.database}:${r.assigned}`).join('|'));
+  // P12 the page's export with an application open and its contacts not shown
+  await go(U, '#/admin_applications'); await click('Open Http App');
+  const before = new Set(fs.readdirSync(dl));
+  out('P12.press', await ev(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Export .xlsx'); if (!b) return false; b.click(); return true; })()`));
+  let file = '';
+  for (let i = 0; i < 100 && !file; i++) { await sleep(200); const f = fs.readdirSync(dl).filter(n => n.endsWith('.xlsx') && !before.has(n)); if (f.length && !fs.readdirSync(dl).some(n => n.endsWith('.crdownload'))) file = dl + '/' + f[0]; }
+  out('P12.file', file || 'none');
+  // P11 axe on the page with an application and its contacts open, light and dark
+  for (const t of ['light', 'dark']) {
+    await theme(t); await go(U, '#/admin_applications'); await click('Open Http App'); await click('Show contacts of Http App');
+    out(`P11.${t}`, await axe());
+  }
+  // P10 the -no-login serve: every write control off with a visible reason; contacts in words; axe there too
+  await cmd('Page.navigate', { url: U6 + '#/about' }); await sleep(500); await theme('light');
+  out('P10.ready', await go(U6, '#/admin_applications'));
+  await click('Open Http App');
+  out('P10.controls', await ev(`(() => {
+    const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+    const w = [...document.querySelectorAll('main .applications form button, main .applications form input, main .applications form select, main .applications form textarea, main .applications .actions button, main .applications .actions input')].filter(vis);
+    const off = e => e.disabled || e.getAttribute('aria-disabled') === 'true';
+    const said = e => (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.trim().length > 10; });
+    return w.length + ' on:' + w.filter(e => !off(e)).length + ' unsaid:' + w.filter(e => off(e) && !said(e)).length; })()`));
+  out('P10.contacts', await click('Show contacts of Http App'));
+  out('P10.words', await ev(`document.querySelector('main section[aria-label="Application Http App"]')?.textContent.includes('contacts hidden: the login is off') ?? false`));
+  for (const t of ['light', 'dark']) { await theme(t); await go(U6, '#/admin_applications'); await click('Open Http App'); out(`P11.ro_${t}`, await axe()); }
+} catch (e) { out('ERROR', String(e?.message ?? e)); }
+ws.close(); bws.close();
+JS
+if [[ $P_SET == 1 ]]; then
+  P1WANT=$(q "select string_agg(name, '|' order by name collate \"C\") from pgvigil.app_applications")   # the list as P1 reads it
+  P_USR=$USR P_UPW=$UPW P_EMAIL="h5.$SUF@example.com" P_TEAM="$TEAM" P_PPI=$PPI P_PMI=$PMI \
+    timeout 600 node "$WORK/p.mjs" "$CDP" "$U/" "http://127.0.0.1:$P6/" "$DL" "$AXE" > "$WORK/p.out" 2> "$WORK/p.err"; echo "read: the page's click run ended rc $? ($(wc -l < "$WORK/p.out") lines)"
+  pv() { sed -n "s/^$1=//p" "$WORK/p.out" | head -1; }
+  grep -q '^ERROR=' "$WORK/p.out" && echo "read: the click run stopped: $(pv ERROR | cut -c1-300)"
+  # P1
+  want=$P1WANT; have=$(pv P1.names | tr '|' '\n' | LC_ALL=C sort | paste -sd'|')
+  [[ $(pv P1.ready) == true && "|$(pv P1.strip)|" == *"|Applications|"* && -n "$want" && "$have" == "$want" ]] \
+    && ok "P1 the Admin strip lists Applications; the page lists the store's applications ($have)" || bad "P1 ready $(pv P1.ready); strip '$(pv P1.strip)'; page '$have' / store '$want'"
+  # P2
+  p2=$(q "select tier || '|' || environment || '|' || description || '|' || (select string_agg(distinct source || '/' || set_by, ',') from pgvigil.app_field_source f where f.object_kind = 'application' and f.object_id = a.app_id) from pgvigil.app_applications a where name = 'Page Added'")
+  [[ $(pv P2.fill) == ok && $p2 == "2|test|added by the page|entered/$USR" ]] && ok "P2 Add through the form: stored, every field entered by $USR ($(pv P2.status))" || bad "P2 fill $(pv P2.fill); store '$p2'; status '$(pv P2.status)'"
+  # P3
+  p3=$(q "select description || '|' || version from pgvigil.app_applications where name = 'Page Added'")
+  [[ $(pv P3.sources) -ge 4 && $p3 == "edited by the page|2" ]] && ok "P3 one application's fields with their sources ($(pv P3.sources) 'entered by'); Edit stored, version 2" || bad "P3 sources $(pv P3.sources); store '$p3'; status '$(pv P3.status)'"
+  # P4
+  p4=$(q "select count(*) from pgvigil.ui_app_contacts c join pgvigil.app_applications a using (app_id) where a.name = 'Http App' and c.name = 'Page Team' and c.kind = 'team' and c.role = 'technical owner' and c.email = '$TEAM'")
+  [[ $(pv P4.before) == false && $(pv P4.after) == true && $p4 == 1 && $(pv P4.listed) == true ]] && ok "P4 contacts on a click only (the planted e-mail absent before, shown after); a contact added through the form stored and listed" \
+    || bad "P4 before $(pv P4.before), after $(pv P4.after); stored $p4, listed $(pv P4.listed); status '$(pv P4.status)'"
+  # P5
+  p5=$(q "select string_agg(i.name || '/' || x.database_name || '/' || x.environment || '/' || x.set_by, ',' order by i.name) from pgvigil.app_assignments x join pgvigil.instances i using (instance_id) join pgvigil.app_applications a using (app_id) where a.name = 'Page Added'")
+  n5=$(q "select count(*) from pgvigil.admin_audit where op = 'app_assign' and outcome = 'done' and ui_user = '$USR' and (target like 'instance $PPI database pdb1' or target like 'instance $PMI database Orders')")
+  a5="|$(pv P5.after)|"; r5="|$(pv P5.rows)|"
+  [[ "|$(pv P5.before)|" == *"|Select pdb1 on proof-page-pg|"* && $p5 == "proof-page-ms/Orders/production/$USR,proof-page-pg/pdb1/production/$USR" && $n5 == 2 \
+     && $a5 != *"|Select pdb1 on proof-page-pg|"* && $a5 != *"|Select Orders on proof-page-ms|"* && $a5 == *"|Select pdb2 on proof-page-pg|"* && $r5 == *"|pdb1:own:production|"* && $r5 == *"|Orders:own:production|"* ]] \
+    && ok "P5 two ticked rows assigned in one call (two audit rows), gone from Unassigned, listed own on the application" || bad "P5 store '$p5' (audit $n5); Unassigned after '$(pv P5.after)'; rows '$(pv P5.rows)'; status '$(pv P5.status)'"
+  # P6
+  m6=$(q "select count(*) from pgvigil.app_not_application where instance_id = $PMI and database_name = 'Ledger'")
+  [[ $(pv P6.gone) == true && $(pv P6.unmarkable) == true && $(pv P6.store) == 1 && $(pv P6.back) == true && $m6 == 0 ]] && ok "P6 Mark: Ledger left Unassigned (stored) and Unmark is offered; Unmark: back on Unassigned, the mark gone" \
+    || bad "P6 gone $(pv P6.gone), unmark offered $(pv P6.unmarkable), stored $(pv P6.store), back $(pv P6.back), left $m6; '$(pv P6.status)' / '$(pv P6.unmark)'"
+  # P7
+  t7=$(q "select (select count(*) from pgvigil.pg_thresholds where ended_at is null and tag = 'application:Page Renamed') || '|' || (select count(*) from pgvigil.pg_thresholds where ended_at is null and tag = 'application:Page Rename') || '|' || (select count(*) from pgvigil.app_applications where app_id = $PREN and name = 'Page Renamed')")
+  [[ $(pv P7.refused) == *"tick to rewrite"* && $(pv P7.done) != "Not done"* && $(pv P7.fill2) == ok && $t7 == "1|0|1" ]] && ok "P7 Rename: refused without the tick (the store's words), done with it; the threshold re-tagged" \
+    || bad "P7 refused '$(pv P7.refused)'; done '$(pv P7.done)'; store (new|old|renamed) $t7"
+  # P8
+  t8=$(q "select (select count(*) from pgvigil.app_applications where app_id = $PREN) || '|' || (select count(*) from pgvigil.app_assignments where app_id = $PREN) || '|' || (select count(*) from pgvigil.pg_thresholds where ended_at is null and tag = 'application:Page Renamed')")
+  [[ $(pv P8.refused) == *"assigned to"* && $(pv P8.fill) == ok && $(pv P8.done) != "Not done"* && $t8 == "0|0|0" ]] && ok "P8 Remove asked twice: refused without 'with its assignments', done with the ticks; its assignment and tag-scoped threshold gone" \
+    || bad "P8 ask '$(pv P8.ask)'; refused '$(pv P8.refused)'; done '$(pv P8.done)'; store (app|assignments|threshold) $t8"
+  # P9
+  t9=$(q "select string_agg(database_name, ',' order by database_name) from pgvigil.app_assignments x join pgvigil.app_applications a using (app_id) where a.name = 'Page Added' and x.instance_id = $PPI")
+  r9=$(pv P9.row)
+  [[ ${r9%%|*} != "-" && -n ${r9%%|*} && ${r9#*|} == pdb1_new* && $t9 == pdb1_new && "|$(pv P9.after)|" == *"|pdb1_new:own|"* ]] && ok "P9 a renamed database: absent since and 'renamed to pdb1_new' shown; the offer moved the assignment" \
+    || bad "P9 row (absent|renamed) '$r9'; store '$t9'; after '$(pv P9.after)'; offer '$(pv P9.offer)'"
+  # P10
+  c10=$(pv P10.controls); n10=${c10%% *}
+  [[ $(pv P10.ready) == true && $n10 -ge 8 && $c10 == *" on:0 unsaid:0" && $(pv P10.words) == true ]] && ok "P10 -no-login: $n10 write controls, every one off with a visible reason; contacts: 'contacts hidden: the login is off'" \
+    || bad "P10 ready $(pv P10.ready); controls '$c10'; contacts words $(pv P10.words) ('$(pv P10.contacts)')"
+  # P11
+  [[ $(pv P11.light) == "0 "* && $(pv P11.dark) == "0 "* && $(pv P11.ro_light) == "0 "* && $(pv P11.ro_dark) == "0 "* ]] && ok "P11 axe-core 4.14.0: 0 violation nodes, light and dark, writable (contacts open) and read only" \
+    || bad "P11 light '$(pv P11.light)'; dark '$(pv P11.dark)'; read only '$(pv P11.ro_light)' / '$(pv P11.ro_dark)'"
+  # P12
+  F12=$(pv P12.file)
+  if [[ -f "$F12" ]]; then
+    x12=$(python3 -I scripts/xlsx-check.py rules "$F12" 2>&1 | tail -1)
+    leak=$(unzip -p "$F12" | grep -c -e "h5.$SUF@example.com" -e "555 5$SUF" -e "$TEAM")
+    has=$(unzip -p "$F12" | grep -c 'Http App')
+    [[ $x12 == *": PASS" && $leak == 0 && $has -ge 1 ]] && ok "P12 the page's Export .xlsx passes xlsx-check and holds no contact value (contacts not shown)" \
+      || bad "P12 xlsx-check '$x12'; contact values in the file $leak; 'Http App' parts $has"
+  else bad "P12 no workbook downloaded (press $(pv P12.press))"; fi
+  [[ -s "$WORK/p.err" ]] && echo "read: the click run's stderr: $(head -c 300 "$WORK/p.err" | tr '\n' ' ')"
+else
+  for row in $PROWS; do bad "$row not run (P setup)"; done
+fi
+fi
 fi
 
 echo "proof-applications: $NFAIL FAIL"
