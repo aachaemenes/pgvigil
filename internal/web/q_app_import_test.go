@@ -193,3 +193,22 @@ func TestImportRefusals(t *testing.T) {
 		}
 	}
 }
+
+// a date cell (a date-like text the house export wrote as one) reads back as its date text; a plain number as it is
+func TestImportXLSXDates(t *testing.T) {
+	st := []byte(`<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy\-mm\-dd"/><numFmt numFmtId="165" formatCode="0.00&quot; d&quot;"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="165"/></cellXfs></styleSheet>`)
+	d := xlsxDateStyles(st)
+	if d[0] || !d[1] || !d[2] || d[3] {
+		t.Fatalf("date styles %v, want 1 and 2 only (165's ' d' is quoted text)", d)
+	}
+	if got := xlsxSerialText("45658"); got != "2025-01-01" {
+		t.Errorf("45658 read %q, want 2025-01-01", got)
+	}
+	if got := xlsxSerialText("45658.5"); got != "2025-01-01 12:00:00" {
+		t.Errorf("45658.5 read %q", got)
+	}
+	rows, err := xlsxRows([]byte(`<worksheet><sheetData><row r="1"><c r="A1" s="2"><v>45658</v></c><c r="B1" s="0"><v>2024</v></c></row></sheetData></worksheet>`), nil, d)
+	if err != nil || len(rows) != 1 || rows[0].cells[0] != "2025-01-01" || rows[0].cells[1] != "2024" {
+		t.Errorf("cells %v (%v)", rows, err)
+	}
+}

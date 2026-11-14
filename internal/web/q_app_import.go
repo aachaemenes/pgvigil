@@ -471,6 +471,12 @@ func parseXLSX(body []byte) (*invFile, error) {
 			return nil, err
 		}
 	}
+	dates := map[int]bool{}
+	if st, err := x.part("xl/styles.xml"); err != nil {
+		return nil, err
+	} else if st != nil {
+		dates = xlsxDateStyles(st)
+	}
 	// the sheet named Inventory, else the first whose header (in its first 20 rows) names instance and application
 	order := make([]int, 0, len(book.Sheets))
 	for i, s := range book.Sheets {
@@ -488,7 +494,7 @@ func parseXLSX(body []byte) (*invFile, error) {
 		if sb == nil {
 			continue
 		}
-		rows, err := xlsxRows(sb, sst)
+		rows, err := xlsxRows(sb, sst, dates)
 		if err != nil {
 			return nil, fmt.Errorf("sheet %s: %v", book.Sheets[i].Name, err)
 		}
@@ -573,11 +579,12 @@ func colIndex(ref string) int {
 	return n - 1
 }
 
-func xlsxRows(b []byte, sst []string) ([]xlsxRow, error) {
+func xlsxRows(b []byte, sst []string, dates map[int]bool) ([]xlsxRow, error) {
 	d := xml.NewDecoder(bytes.NewReader(b))
 	var rows []xlsxRow
 	var row *xlsxRow
 	var ctype, cref string
+	cstyle := -1
 	var val, inl strings.Builder
 	var inV, inIS, inT, hasF bool
 	next := 0
@@ -607,7 +614,7 @@ func xlsxRows(b []byte, sst []string) ([]xlsxRow, error) {
 				rows = append(rows, xlsxRow{num: num})
 				row, next = &rows[len(rows)-1], 0
 			case "c":
-				ctype, cref, hasF = "", "", false
+				ctype, cref, hasF, cstyle = "", "", false, -1
 				val.Reset()
 				inl.Reset()
 				for _, a := range t.Attr {
@@ -616,6 +623,10 @@ func xlsxRows(b []byte, sst []string) ([]xlsxRow, error) {
 						ctype = a.Value
 					case "r":
 						cref = a.Value
+					case "s":
+						if n, err := strconv.Atoi(a.Value); err == nil {
+							cstyle = n
+						}
 					}
 				}
 			case "v":
@@ -662,7 +673,12 @@ func xlsxRows(b []byte, sst []string) ([]xlsxRow, error) {
 					s = map[string]string{"1": "yes", "0": "no"}[strings.TrimSpace(val.String())]
 				case "e":
 					row.why = fmt.Sprintf("cell %s holds an error value: this line is not read", cref)
-				default: // n, str, d
+				case "", "n":
+					s = strings.TrimSpace(val.String())
+					if dates[cstyle] && s != "" {
+						s = xlsxSerialText(s) // a date cell (the house export writes a date-like text as one) reads as its date
+					}
+				default: // str, d
 					s = xlsxUnescape(val.String())
 				}
 				if hasF {
@@ -889,4 +905,46 @@ func writeInventoryCSV(w io.Writer, t *table) error {
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+// xlsxDateStyles: the cell style indexes (cellXfs) whose number format is a date or a time - Excel's built-in ids and a
+// custom format with a day, a year, an hour or seconds in it (quoted text, [colour] and escaped characters set aside).
+func xlsxDateStyles(b []byte) map[int]bool {
+	var st struct {
+		NumFmts []struct {
+			ID   int    `xml:"numFmtId,attr"`
+			Code string `xml:"formatCode,attr"`
+		} `xml:"numFmts>numFmt"`
+		Xfs []struct {
+			ID int `xml:"numFmtId,attr"`
+		} `xml:"cellXfs>xf"`
+	}
+	out := map[int]bool{}
+	if xml.Unmarshal(b, &st) != nil {
+		return out
+	}
+	custom := map[int]bool{}
+	strip := regexp.MustCompile(`"[^"]*"|\[[^\]]*\]|\\.`)
+	for _, f := range st.NumFmts {
+		c := strings.ToLower(strip.ReplaceAllString(f.Code, ""))
+		custom[f.ID] = strings.ContainsAny(c, "ydh") || strings.Contains(c, "ss")
+	}
+	for i, x := range st.Xfs {
+		id := x.ID
+		out[i] = (id >= 14 && id <= 22) || (id >= 45 && id <= 47) || (id >= 27 && id <= 36) || (id >= 50 && id <= 58) || custom[id]
+	}
+	return out
+}
+
+// xlsxSerialText: an Excel serial day (the 1900 system, day 0 = 1899-12-30) as yyyy-MM-dd, with the time when it has one.
+func xlsxSerialText(v string) string {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return v
+	}
+	t := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC).Add(time.Duration(f*86400*1000+0.5) * time.Millisecond).Truncate(time.Second)
+	if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 {
+		return t.Format("2006-01-02")
+	}
+	return t.Format("2006-01-02 15:04:05")
 }
