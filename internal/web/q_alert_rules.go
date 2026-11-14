@@ -94,7 +94,7 @@ SELECT c.key, c.engine, c.family, c.family_label, c.metric, c.label, c.unit, c.p
 const sqlAlertRuleSender = `
 SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated_at,
        (SELECT extract(epoch FROM now() - max(s.evaluated_at))::int FROM pgvigil.alert_rule_state s) AS evaluated_secs_ago,
-       (SELECT count(*) FROM pgvigil.alert_channels c WHERE c.is_configured) AS channels,
+       (SELECT count(*) FROM pgvigil.alert_channels c WHERE c.is_configured AND c.name NOT LIKE 'contact-%') AS channels,   -- the configuration's (task 310: a contact's route is not one)
        (SELECT max(l.snapshot_at) FROM pgvigil.alert_log l WHERE l.snapshot_at > now() - interval '1 day') AS last_pass_at,
        (SELECT count(*) FROM pgvigil.alert_rules_effective) AS in_force`
 

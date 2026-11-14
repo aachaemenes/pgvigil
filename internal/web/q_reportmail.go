@@ -89,7 +89,8 @@ SELECT x.send_id, x.requested_at, x.kind, x.name, array_to_string(x.recipients, 
   FROM pgvigil.report_mail_sends x WHERE x.send_id = $1`
 
 const sqlReportMailChannels = `
-SELECT c.name, c.destination FROM pgvigil.alert_channels c WHERE c.kind = 'smtp' AND c.is_configured ORDER BY c.name`
+SELECT c.name, c.destination FROM pgvigil.alert_channels c WHERE c.kind = 'smtp' AND c.is_configured
+   AND c.name NOT LIKE 'contact-%' ORDER BY c.name` // an application contact's route (task 310) mails no report
 
 const sqlReportMailLog = `
 SELECT l.at, l.ui_user, l.client, l.op, l.schedule_id, l.send_id, l.outcome, l.detail
