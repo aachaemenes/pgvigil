@@ -18,7 +18,11 @@ import (
 //   - a cancelled run is a failure, as in DBA Dash 4.24.1 (JobHistory_Upd's LastFailed and JobStats_RAW's FailedCount
 //     count run_status IN (0,3)): a SQL Agent job cancelled two hours ago and successful since is 'warn', one whose
 //     last run was cancelled 'crit' ('the last run was cancelled'), a pg_cron run that was aborted counts as pg_cron's
-//     failed one does, and a cancelled step is a failed step;
+//     failed one does, and a cancelled step is a failed step; the 'since' rule names the cancel ('cancelled 120
+//     minute(s) ago');
+//   - a disabled job is not judged, as in DBA Dash (AgentJobStatus: enabled = 0 is N/A): 'none', 'the job is disabled',
+//     though its last run failed; a job whose last run failed 10 days ago shows that failure though the horizon is 7
+//     days (DBA Dash keeps LastFailed with no cut);
 //   - the view of two instances holds every job of both, and job_status of one instance is the view's rows of it;
 //   - a threshold row with a longer 'since' span lengthens the horizon of the views that hold its instance and of no
 //     other: the failure 8 days back is then found, and a job with no success inside the horizon that ran before it
@@ -34,7 +38,7 @@ func TestJobStatusOnAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close) // registered first, so it runs after the data cleanup below (t.Cleanup runs last-in first-out; a defer would close the pool before it)
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, sql, args...); err != nil {
@@ -43,6 +47,23 @@ func TestJobStatusOnAStore(t *testing.T) {
 	}
 	sfx := time.Now().UnixNano() % 1000000000
 	var ms, pg int
+	t.Cleanup(func() {
+		c, stop := context.WithTimeout(context.Background(), 20*time.Second)
+		defer stop()
+		ids := []int{}
+		for _, id := range []int{ms, pg} {
+			if id > 0 {
+				ids = append(ids, id)
+			}
+		}
+		for _, q := range []string{
+			`DELETE FROM pgvigil.mssql_job_runs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.job_runs WHERE instance_id = ANY($1)`,
+			`DELETE FROM pgvigil.jobs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`} {
+			if _, err := pool.Exec(c, q, ids); err != nil {
+				t.Logf("cleanup: %v", err)
+			}
+		}
+	})
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
 		fmt.Sprintf("jobstatus-sql-%d", sfx)).Scan(&ms); err != nil {
 		t.Fatal(err)
@@ -51,17 +72,6 @@ func TestJobStatusOnAStore(t *testing.T) {
 		fmt.Sprintf("jobstatus-pg-%d", sfx)).Scan(&pg); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		c, stop := context.WithTimeout(context.Background(), 20*time.Second)
-		defer stop()
-		for _, q := range []string{
-			`DELETE FROM pgvigil.mssql_job_runs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.job_runs WHERE instance_id = ANY($1)`,
-			`DELETE FROM pgvigil.jobs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`} {
-			if _, err := pool.Exec(c, q, []int{ms, pg}); err != nil {
-				t.Logf("cleanup: %v", err)
-			}
-		}
-	})
 	exec(`SELECT pgvigil.ensure_month_partition('mssql_job_runs', m) FROM generate_series(now() - interval '25 days', now() + interval '1 day', interval '5 days') m`)
 
 	// a SQL Agent job: its row and its runs, each (minutes ago, run_status of the job row); a failed run has a failed step too
@@ -90,6 +100,9 @@ func TestJobStatusOnAStore(t *testing.T) {
 	agent("f no success for 20 days", 1, run{20 * day, 1})
 	agent("h cancelled then succeeded", 1, run{120, 3}, run{60, 1})
 	agent("i last run cancelled", 3, run{5 * day, 1}, run{2 * day, 3})
+	agent("k disabled, last run failed", 0, run{3 * day, 0})
+	exec(`UPDATE pgvigil.mssql_jobs SET enabled = false WHERE instance_id = $1 AND job_id = 'k disabled, last run failed'`, ms)
+	agent("l last run failed 10 days ago", 0, run{12 * day, 1}, run{10 * day, 0})
 	exec(`INSERT INTO pgvigil.jobs (instance_id, scheduler, job_id, snapshot_at, job_name, schedule, command, active, first_seen, is_present)
 	      VALUES ($1, 'pg_cron', 1, now(), 'g failed then succeeded', '0 * * * *', 'SELECT 1', true, now() - interval '30 days', true)`, pg)
 	exec(`INSERT INTO pgvigil.job_runs (instance_id, scheduler, job_id, run_id, status, start_time, end_time, snapshot_at)
@@ -143,16 +156,18 @@ func TestJobStatusOnAStore(t *testing.T) {
 	// 1. no threshold row: DBA Dash's default, the horizon 7 days
 	const week = 7 * day
 	def := map[string]row{
-		"a failed then succeeded":    {"warn", "failed 120 minute(s) ago (warning within 10080)", true, true, week},
-		"b failed half an hour ago":  {"crit", "failed 30 minute(s) ago (critical within 60)", true, true, week},
-		"c last run failed":          {"crit", "the last run failed", true, true, week},
-		"d failed 8 days ago":        {"ok", "", false, true, week},
-		"e never failed":             {"ok", "", false, true, week},
-		"f no success for 20 days":   {"ok", "", false, false, week},
-		"g failed then succeeded":    {"warn", "failed 120 minute(s) ago (warning within 10080)", true, true, week},
-		"h cancelled then succeeded": {"warn", "failed 120 minute(s) ago (warning within 10080)", true, true, week},
-		"i last run cancelled":       {"crit", "the last run was cancelled", true, true, week},
-		"j aborted then succeeded":   {"warn", "failed 120 minute(s) ago (warning within 10080)", true, true, week},
+		"a failed then succeeded":       {"warn", "failed 120 minute(s) ago (warning within 10080)", true, true, week},
+		"b failed half an hour ago":     {"crit", "failed 30 minute(s) ago (critical within 60)", true, true, week},
+		"c last run failed":             {"crit", "the last run failed", true, true, week},
+		"d failed 8 days ago":           {"ok", "", false, true, week},
+		"e never failed":                {"ok", "", false, true, week},
+		"f no success for 20 days":      {"ok", "", false, false, week},
+		"g failed then succeeded":       {"warn", "failed 120 minute(s) ago (warning within 10080)", true, true, week},
+		"h cancelled then succeeded":    {"warn", "cancelled 120 minute(s) ago (warning within 10080)", true, true, week},
+		"i last run cancelled":          {"crit", "the last run was cancelled", true, true, week},
+		"k disabled, last run failed":   {"none", "the job is disabled", true, false, week},
+		"l last run failed 10 days ago": {"crit", "the last run failed", true, false, week},
+		"j aborted then succeeded":      {"warn", "cancelled 120 minute(s) ago (warning within 10080)", true, true, week},
 	}
 	check("the default, both instances", view(ms, pg), def)
 
@@ -164,11 +179,17 @@ func TestJobStatusOnAStore(t *testing.T) {
 	     EXCEPT
 	     SELECT scheduler, job_id, job_name, level, threshold_id, fail_24h, fail_7d, step_fail_24h, step_fail_7d, last_failed_at, last_succeeded_at, last_outcome, status, reason
 	       FROM pgvigil.job_status_view(ARRAY[$1::int, $2::int]) WHERE instance_id = $1))
-	  AND (SELECT count(*) FROM pgvigil.job_status($1)) = 8`, ms, pg).Scan(&same); err != nil {
+	  AND NOT EXISTS (
+	    (SELECT scheduler, job_id, job_name, level, threshold_id, fail_24h, fail_7d, step_fail_24h, step_fail_7d, last_failed_at, last_succeeded_at, last_outcome, status, reason
+	       FROM pgvigil.job_status_view(ARRAY[$1::int, $2::int]) WHERE instance_id = $1
+	     EXCEPT
+	     SELECT scheduler, job_id, job_name, level, threshold_id, fail_24h, fail_7d, step_fail_24h, step_fail_7d, last_failed_at, last_succeeded_at, last_outcome, status, reason
+	       FROM pgvigil.job_status($1)))
+	  AND (SELECT count(*) FROM pgvigil.job_status($1)) = 10`, ms, pg).Scan(&same); err != nil {
 		t.Fatal(err)
 	}
 	if !same {
-		t.Error("job_status of the SQL Server instance is not the view's eight rows of it")
+		t.Error("job_status of the SQL Server instance is not the view's ten rows of it")
 	}
 	var steps int64
 	if err := pool.QueryRow(ctx, `SELECT step_fail_7d FROM pgvigil.job_status($1) WHERE job_name = 'a failed then succeeded'`, ms).Scan(&steps); err != nil || steps != 1 {
@@ -183,14 +204,16 @@ func TestJobStatusOnAStore(t *testing.T) {
 	exec(`INSERT INTO pgvigil.job_thresholds (level, instance_id, since_ok_warn_min, created_by, created_at) VALUES ('instance', $1, 20160, 'test', now())`, ms)
 	const two = 14 * day
 	check("a 14-day threshold on the SQL Server instance", view(ms), map[string]row{
-		"a failed then succeeded":    {"ok", "", true, true, two},
-		"b failed half an hour ago":  {"ok", "", true, true, two},
-		"c last run failed":          {"ok", "", true, true, two},
-		"d failed 8 days ago":        {"ok", "", true, true, two},
-		"e never failed":             {"ok", "", false, true, two},
-		"f no success for 20 days":   {"warn", "no success in the last 14 day(s) (warning over 20160 minute(s))", false, false, two},
-		"h cancelled then succeeded": {"ok", "", true, true, two},
-		"i last run cancelled":       {"ok", "", true, true, two},
+		"a failed then succeeded":       {"ok", "", true, true, two},
+		"b failed half an hour ago":     {"ok", "", true, true, two},
+		"c last run failed":             {"ok", "", true, true, two},
+		"d failed 8 days ago":           {"ok", "", true, true, two},
+		"e never failed":                {"ok", "", false, true, two},
+		"f no success for 20 days":      {"warn", "no success in the last 14 day(s) (warning over 20160 minute(s))", false, false, two},
+		"h cancelled then succeeded":    {"ok", "", true, true, two},
+		"i last run cancelled":          {"ok", "", true, true, two},
+		"k disabled, last run failed":   {"none", "the job is disabled", true, false, two},
+		"l last run failed 10 days ago": {"ok", "", true, true, two},
 	})
 	check("the PostgreSQL instance alone", view(pg), map[string]row{"g failed then succeeded": def["g failed then succeeded"],
 		"j aborted then succeeded": def["j aborted then succeeded"]})
