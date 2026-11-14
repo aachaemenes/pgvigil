@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -106,6 +105,10 @@ func moved(ctx context.Context, t *testing.T, pool *pgxpool.Pool, repo, server, 
 
 func dropInstance(pool *pgxpool.Pool, name string) {
 	ctx := context.Background()
+	// the four history tables have no foreign key to instances: their rows first
+	for _, tbl := range []string{"mssql_cpu_sample", "mssql_volume_sample", "mssql_database_size", "mssql_job_runs"} {
+		_, _ = pool.Exec(ctx, `DELETE FROM pgvigil.`+tbl+` WHERE instance_id IN (SELECT instance_id FROM pgvigil.instances WHERE name = $1)`, name)
+	}
 	_, _ = pool.Exec(ctx, `DELETE FROM pgvigil.admin_instances WHERE name = $1`, name)
 	_, _ = pool.Exec(ctx, `DELETE FROM pgvigil.admin_removed WHERE name = $1`, name)
 	_, _ = pool.Exec(ctx, `DELETE FROM pgvigil.instances WHERE name = $1`, name)
@@ -118,6 +121,80 @@ func firstRead(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int, at
 	    ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, server_name = EXCLUDED.server_name`, id, at, server); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// storeNow is the store's clock (an add's added_at is the store's now(), never this host's)
+func storeNow(ctx context.Context, t *testing.T, pool *pgxpool.Pool, plus time.Duration) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := pool.QueryRow(ctx, `SELECT now() + make_interval(secs => $1)`, plus.Seconds()).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at.UTC().Truncate(time.Millisecond)
+}
+
+// heldRace runs first in a transaction of one connection and keeps it open, starts second on another connection,
+// waits until second is seen waiting on an advisory lock (the code's own lock, not a row or key lock), then commits
+// first and returns second's answer. Code without the lock fails here: second does not wait, or waits on a row.
+func heldRace(ctx context.Context, t *testing.T, pool *pgxpool.Pool, first func(pgx.Tx) error, second func(*pgxpool.Conn) (any, error)) any {
+	t.Helper()
+	a, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Release()
+	b, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Release()
+	tx, err := a.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := first(tx); err != nil {
+		t.Fatalf("the first call: %v", err)
+	}
+	var bpid int
+	if err := b.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&bpid); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		v   any
+		err error
+	}
+	done := make(chan result, 1)
+	go func() { v, err := second(b); done <- result{v, err} }()
+	var typ, event string
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		select {
+		case r := <-done:
+			t.Fatalf("the second call answered %v (%v) while the first was still open: it did not wait", r.v, r.err)
+		default:
+		}
+		if err := pool.QueryRow(ctx, `SELECT coalesce(wait_event_type, ''), coalesce(wait_event, '') FROM pg_stat_activity WHERE pid = $1`, bpid).Scan(&typ, &event); err != nil {
+			t.Fatal(err)
+		}
+		if typ == "Lock" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the second call did not wait on a lock in 10 s (wait %q %q)", typ, event)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if event != "advisory" {
+		t.Fatalf("the second call waits on a %q lock, want the advisory one (a row or key wait = no lock of the code's own)", event)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("the second call after the first's commit: %v", r.err)
+	}
+	return r.v
 }
 
 func collectFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int) *time.Time {
@@ -369,38 +446,82 @@ func TestMoveConcurrentImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { dropInstance(pool, plain) })
+	collected(ctx, t, pool, mid, "mssql_cpu", "ok", c.Add(time.Minute))
 	var at []time.Time
 	for i := 0; i < 500; i++ {
 		at = append(at, c.Add(-time.Duration(i+1)*time.Minute))
 	}
-	rows := volRows(at...)
-	for _, id := range []int{mid, pid} {
-		var wg sync.WaitGroup
-		got := make([]int64, 2)
-		errs := make([]error, 2)
-		for k := range 2 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				got[k], errs[k] = importRows(ctx, pool, "volumes", id, rows)
-			}()
+	for _, r := range []struct {
+		id   int
+		key  string
+		rows []map[string]any
+	}{{mid, "volumes", volRows(at...)}, {mid, "cpu", cpuRows(at...)}, {pid, "volumes", volRows(at...)}} {
+		got := heldRace(ctx, t, pool,
+			func(tx pgx.Tx) error {
+				n, err := importRows(ctx, tx, r.key, r.id, r.rows)
+				if err == nil && n != 500 {
+					err = fmt.Errorf("inserted %d, want 500", n)
+				}
+				return err
+			},
+			func(b *pgxpool.Conn) (any, error) { return importRows(ctx, b, r.key, r.id, r.rows) })
+		if got != int64(0) || stored(ctx, t, pool, r.id, r.key) != 500 {
+			t.Fatalf("instance %d %s: the second import inserted %v, stored %d; want 0 and 500", r.id, r.key, got, stored(ctx, t, pool, r.id, r.key))
 		}
-		wg.Wait()
-		if errs[0] != nil || errs[1] != nil {
-			t.Fatalf("instance %d: %v / %v", id, errs[0], errs[1])
+	}
+}
+
+// TestMoveBoundsEveryKey: for each mapping, rows an hour before pgvigil's first read, at it and an hour after: only the
+// first is imported, and the same batch again inserts nothing; a DBA Dash minute within 30 s of the collector's own CPU
+// sample is skipped, one 40 s away is not.
+func TestMoveBoundsEveryKey(t *testing.T) {
+	ctx, pool, sfx := moveStore(t)
+	repo, srv := fmt.Sprintf("r206j-%d", sfx), fmt.Sprintf("SRVP%d", sfx)
+	moveRepo(ctx, t, pool, repo, srv, 6)
+	id := moved(ctx, t, pool, repo, srv, fmt.Sprintf("mvp-%d", sfx), fmt.Sprintf("hostp-%d", sfx), 6)
+	c := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	firstRead(ctx, t, pool, id, c, srv)
+	collected(ctx, t, pool, id, "mssql_cpu", "ok", c.Add(time.Minute))
+	collected(ctx, t, pool, id, "mssql_jobs", "ok", c.Add(time.Minute))
+	three := []time.Time{c.Add(-time.Hour), c, c.Add(time.Hour)}
+	sizes := func(at ...time.Time) (out []map[string]any) {
+		for _, a := range at {
+			out = append(out, map[string]any{"at": a.Format(time.RFC3339), "database_name": "db1", "data_bytes": 8192, "log_bytes": 8192, "files": 2})
 		}
-		if got[0]+got[1] != 500 || stored(ctx, t, pool, id, "volumes") != 500 {
-			t.Fatalf("instance %d: two imports at once inserted %d + %d, stored %d; want 500 in all", id, got[0], got[1], stored(ctx, t, pool, id, "volumes"))
+		return out
+	}
+	for key, rows := range map[string][]map[string]any{
+		"volumes": volRows(three...), "cpu": cpuRows(three...), "dbsize": sizes(three...),
+		"jobruns": {jobRow(three[0], 201, three[0]), jobRow(three[1], 202, three[1]), jobRow(three[2], 203, three[2])},
+	} {
+		for i, want := range []int64{1, 0} {
+			if n, err := importRows(ctx, pool, key, id, rows); err != nil || n != want {
+				t.Fatalf("%s, send %d: inserted %d (%v), want %d (only the row before pgvigil's first read, once)", key, i+1, n, err, want)
+			}
 		}
+	}
+	// the collector's own CPU sample (a positive ring-buffer record number) two hours before its first read
+	own := c.Add(-2 * time.Hour)
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.ensure_month_partition('mssql_cpu_sample', $1)`, own); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.mssql_cpu_sample (instance_id, snapshot_at, record_id, sql_pct) VALUES ($1, $2, 4711, 5)`, id, own); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := importRows(ctx, pool, "cpu", id, cpuRows(own.Add(10*time.Second))); err != nil || n != 0 {
+		t.Fatalf("a DBA Dash minute 10 s from the collector's sample: inserted %d (%v), want 0", n, err)
+	}
+	if n, err := importRows(ctx, pool, "cpu", id, cpuRows(own.Add(40*time.Second))); err != nil || n != 1 {
+		t.Fatalf("a DBA Dash minute 40 s from the collector's sample: inserted %d (%v), want 1", n, err)
 	}
 }
 
 func TestMoveAddRefusals(t *testing.T) {
 	ctx, pool, sfx := moveStore(t)
 	repo := fmt.Sprintf("r206f-%d", sfx)
-	audits := func(target string) (refused int) {
+	audits := func(target, op string) (refused int) {
 		t.Helper()
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_audit WHERE target = $1 AND outcome = 'refused'`, target).Scan(&refused); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_audit WHERE target = $1 AND op = $2 AND outcome = 'refused'`, target, op).Scan(&refused); err != nil {
 			t.Fatal(err)
 		}
 		return refused
@@ -415,17 +536,29 @@ func TestMoveAddRefusals(t *testing.T) {
 			t.Fatalf("%s: %d move row(s) after a refused add, want 0", server, n)
 		}
 	}
-	refuse := func(pay map[string]any, words, target string) {
+	// refuse: refused with its words, one refused audit row of op for the name, no move row, and - for the move's own
+	// refusals (op 'dbadash move add') - no page row and no instance of the name written
+	refuse := func(pay map[string]any, words, op string) {
 		t.Helper()
-		before := audits(target)
+		name := pay["name"].(string)
+		before := audits(name, op)
 		ans := moveCall(ctx, t, pool, pay)
 		if ans["outcome"] != "refused" || !strings.Contains(fmt.Sprint(ans["detail"]), words) {
 			t.Fatalf("%s: %v, want refused '%s'", pay["server"], ans, words)
 		}
-		if audits(target) != before+1 {
-			t.Fatalf("%s: no refused audit row for %s", pay["server"], target)
+		if audits(name, op) != before+1 {
+			t.Fatalf("%s: no refused audit row '%s' for %s", pay["server"], op, name)
 		}
 		noMove(pay["server"].(string))
+		if op == "dbadash move add" {
+			var pages, insts int
+			if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.admin_instances WHERE name = $1), (SELECT count(*) FROM pgvigil.instances WHERE name = $1)`, name).Scan(&pages, &insts); err != nil {
+				t.Fatal(err)
+			}
+			if pages != 0 || insts != 0 {
+				t.Fatalf("%s: a refused move wrote %d page row(s) and %d instance(s) of %s", pay["server"], pages, insts, name)
+			}
+		}
 	}
 
 	// collected already: an active instance read under the server's @@SERVERNAME
@@ -439,7 +572,7 @@ func TestMoveAddRefusals(t *testing.T) {
 	t.Cleanup(func() { dropInstance(pool, have) })
 	firstRead(ctx, t, pool, hid, time.Now(), strings.ToLower(sa))
 	pa := moveAdd(repo, sa, fmt.Sprintf("mvfa-%d", sfx), fmt.Sprintf("hostfa-%d", sfx), 11)
-	refuse(pa, "collects "+sa+" already, as "+have, pa["name"].(string))
+	refuse(pa, "collects "+sa+" already, as "+have, "dbadash move add")
 
 	// its host and port on Admin > Instances already
 	sb := fmt.Sprintf("SRVG%d", sfx)
@@ -452,7 +585,7 @@ func TestMoveAddRefusals(t *testing.T) {
 	}
 	t.Cleanup(func() { dropInstance(pool, page) })
 	pb := moveAdd(repo, sb, fmt.Sprintf("mvfb-%d", sfx), strings.ToUpper(host), 12)
-	refuse(pb, "Admin > Instances has", pb["name"].(string))
+	refuse(pb, "Admin > Instances has", "dbadash move add")
 
 	// approved already from a DBA Dash source of this repository
 	sc := fmt.Sprintf("SRVH%d", sfx)
@@ -469,20 +602,32 @@ func TestMoveAddRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	pc := moveAdd(repo, sc, fmt.Sprintf("mvfc-%d", sfx), fmt.Sprintf("hostfc-%d", sfx), 13, 14)
-	refuse(pc, "approved already from the source "+src+" as other", pc["name"].(string))
+	refuse(pc, "approved already from the source "+src+" as other", "dbadash move add")
 
 	// InstanceIDs out of range or not numbers: refused, nothing dropped silently
 	for _, bad := range []any{[]any{12, 9999999999}, []any{12, "x"}, []any{}} {
 		pay := moveAdd(repo, sb, fmt.Sprintf("mvfx-%d", sfx), fmt.Sprintf("hostfx-%d", sfx))
 		pay["dbadash_ids"] = bad
-		refuse(pay, "each 1 to 2147483647", pay["name"].(string))
+		refuse(pay, "each 1 to 2147483647", "dbadash move add")
 	}
 
 	// the name taken (import_admin_instance's refusal)
 	sd := fmt.Sprintf("SRVI%d", sfx)
 	moveRepo(ctx, t, pool, repo, sd, 15)
 	pd := moveAdd(repo, sd, page, fmt.Sprintf("hostfd-%d", sfx), 15)
-	refuse(pd, "exists already", page)
+	refuse(pd, "exists already", "instance add")
+	var pageHost string
+	if err := pool.QueryRow(ctx, `SELECT host FROM pgvigil.admin_instances WHERE name = $1`, page).Scan(&pageHost); err != nil || pageHost != host {
+		t.Fatalf("the page row of the taken name after the refused move: host %q (%v), want %s unchanged", pageHost, err, host)
+	}
+
+	// an InstanceID of another server, and a repository not configured
+	sx := fmt.Sprintf("SRVX%d", sfx)
+	moveRepo(ctx, t, pool, repo, sx, 17)
+	px := moveAdd(repo, sx, fmt.Sprintf("mvfy-%d", sfx), fmt.Sprintf("hostfy-%d", sfx), 17, 11)
+	refuse(px, "an InstanceID given is not "+sx+" in repository "+repo, "dbadash move add")
+	pn := moveAdd(fmt.Sprintf("nosuch-%d", sfx), sx, fmt.Sprintf("mvfz-%d", sfx), fmt.Sprintf("hostfz-%d", sfx), 17)
+	refuse(pn, "no DBA Dash repository nosuch-", "dbadash move add")
 
 	// a proposed one of this repository is approved by the add, under the instance's name
 	se := fmt.Sprintf("SRVJ%d", sfx)
@@ -499,6 +644,16 @@ func TestMoveAddRefusals(t *testing.T) {
 	}
 	if state != "approved" || inst != name {
 		t.Fatalf("the proposal after the add: %s as %q, want approved as %s", state, inst, name)
+	}
+	// the same server again, under another name; and its InstanceID under another @@SERVERNAME (DBA Dash renamed it)
+	refuse(moveAdd(repo, se, fmt.Sprintf("mvfe2-%d", sfx), fmt.Sprintf("hostfe2-%d", sfx), 16), se+" was moved already, as "+name, "dbadash move add")
+	se2 := se + "B"
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_instances SET instance = $3 WHERE repository = $1 AND instance_id = $2`, repo, 16, se2); err != nil {
+		t.Fatal(err)
+	}
+	refuse(moveAdd(repo, se2, fmt.Sprintf("mvfe3-%d", sfx), fmt.Sprintf("hostfe3-%d", sfx), 16), "an InstanceID of "+se2+" was moved already, as "+name, "dbadash move add")
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.dbadash_instances SET instance = $3 WHERE repository = $1 AND instance_id = $2`, repo, 16, se); err != nil {
+		t.Fatal(err)
 	}
 
 	// a remove of the moved server never read takes its move rows with it
@@ -520,7 +675,7 @@ func TestMoveCollectorLogin(t *testing.T) {
 	coll, rdr := fmt.Sprintf("t206c_%d", sfx), fmt.Sprintf("t206r_%d", sfx)
 	for role, member := range map[string]string{coll: "pgvigil_collector", rdr: "pgvigil_reader"} {
 		if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s NOLOGIN IN ROLE %s`, role, member)); err != nil {
-			t.Fatal(err)
+			t.Skipf("this store's login may not make roles (it needs CREATE ROLE and SET ROLE): %v", err)
 		}
 		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP ROLE IF EXISTS %s`, role)) })
 	}
@@ -545,6 +700,11 @@ func TestMoveCollectorLogin(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &tgt); err != nil || tgt.ID == 0 {
 		t.Fatalf("import_dbadash_instance answered %s", raw)
+	}
+	// the dry run's read (the collector member has no SELECT: dbadash_import_target is its door)
+	if err := conn.QueryRow(ctx, `SELECT pgvigil.dbadash_import_target($1::jsonb)::text`, fmt.Sprintf(`{"repository": "none", "dbadash_id": 1, "name": %q}`, name)).Scan(&raw); err != nil ||
+		!strings.Contains(string(raw), fmt.Sprintf(`"instance_id": %d`, tgt.ID)) {
+		t.Fatalf("dbadash_import_target as a collector member: %s (%v)", raw, err)
 	}
 	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)
 	for key, rows := range map[string][]map[string]any{
@@ -575,10 +735,17 @@ func TestMoveCollectorLogin(t *testing.T) {
 	if _, err := conn.Exec(ctx, `SET ROLE `+rdr); err != nil {
 		t.Fatal(err)
 	}
-	_, err = importRows(ctx, conn, "cpu", tgt.ID, cpuRows(at.Add(-time.Hour)))
-	var pe *pgconn.PgError
-	if !errors.As(err, &pe) || pe.Code != "42501" {
-		t.Fatalf("import_dbadash_cpu as a reader member: %v, want permission denied (42501)", err)
+	for fn, call := range map[string]string{
+		"import_dbadash_cpu": `SELECT pgvigil.import_dbadash_cpu($1, '[]', '{}')`, "import_dbadash_volumes": `SELECT pgvigil.import_dbadash_volumes($1, '[]', '{}')`,
+		"import_dbadash_dbsize": `SELECT pgvigil.import_dbadash_dbsize($1, '[]', '{}')`, "import_dbadash_jobruns": `SELECT pgvigil.import_dbadash_jobruns($1, '[]', '{}')`,
+		"import_dbadash_instance": `SELECT pgvigil.import_dbadash_instance(jsonb_build_object('name', 'x' || $1))`,
+		"import_dbadash_move":     `SELECT pgvigil.import_dbadash_move(now(), jsonb_build_object('op', 'tick', 'ui_user', 'x', 'name', 'x' || $1))`,
+	} {
+		_, err := conn.Exec(ctx, call, tgt.ID)
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.Code != "42501" || !strings.Contains(pe.Message, "function "+fn) {
+			t.Errorf("%s as a reader member: %v, want permission denied for function %s", fn, err, fn)
+		}
 	}
 }
 
@@ -624,7 +791,7 @@ func TestMoveRemovedThenAddedAgain(t *testing.T) {
 	if at := collectFrom(ctx, t, pool, id); at != nil {
 		t.Fatalf("collect_from of the move made again = %v, want NULL until its read", *at)
 	}
-	t2 := time.Now().UTC().Add(time.Second).Truncate(time.Millisecond)
+	t2 := storeNow(ctx, t, pool, time.Second)
 	firstRead(ctx, t, pool, id, t2, srv)
 	if at := collectFrom(ctx, t, pool, id); at == nil || !at.Equal(t2) {
 		t.Fatalf("collect_from of the move made again after its read = %v, want %v", at, t2)
@@ -691,22 +858,24 @@ func TestMoveAddTwiceAtOnce(t *testing.T) {
 	for _, n := range names {
 		t.Cleanup(func() { dropInstance(pool, n) })
 	}
-	out := make([]string, 2)
-	errs := make([]error, 2)
-	var wg sync.WaitGroup
-	for k := range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			b, _ := json.Marshal(moveAdd(repo, srv, names[k], fmt.Sprintf("hostn%d-%d", k, sfx), 51))
-			errs[k] = pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_move(now(), $1::jsonb)->>'outcome'`, string(b)).Scan(&out[k])
-		}()
+	add := func(q interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	}, k int) (string, error) {
+		b, _ := json.Marshal(moveAdd(repo, srv, names[k], fmt.Sprintf("hostn%d-%d", k, sfx), 51))
+		var out string
+		err := q.QueryRow(ctx, `SELECT pgvigil.import_dbadash_move(now(), $1::jsonb)::text`, string(b)).Scan(&out)
+		return out, err
 	}
-	wg.Wait()
-	if errs[0] != nil || errs[1] != nil {
-		t.Fatalf("two adds of one server at once: %v / %v, want answers, not errors", errs[0], errs[1])
-	}
-	if got := map[string]int{out[0]: 1, out[1]: 1}; out[0] == out[1] || got["done"] != 1 || got["refused"] != 1 {
-		t.Fatalf("two adds of one server at once: %v, want one done and one refused", out)
+	got := heldRace(ctx, t, pool,
+		func(tx pgx.Tx) error {
+			out, err := add(tx, 0)
+			if err == nil && !strings.Contains(out, `"outcome": "done"`) {
+				err = fmt.Errorf("the first add: %s", out)
+			}
+			return err
+		},
+		func(b *pgxpool.Conn) (any, error) { return add(b, 1) })
+	if !strings.Contains(fmt.Sprint(got), `"outcome": "refused"`) || !strings.Contains(fmt.Sprint(got), "was moved already, as "+names[0]) {
+		t.Fatalf("the second add of one server at once: %v, want refused 'was moved already, as %s'", got, names[0])
 	}
 }
