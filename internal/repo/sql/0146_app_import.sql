@@ -574,20 +574,25 @@ BEGIN
 
   -- the database: among the server's present databases and the absent ones still named; exact, else the one equal
   -- ignoring case; else unknown (listed, never made)
-  WITH cand AS (
-    SELECT d.instance_id, d.datname AS name FROM pgvigil.databases d WHERE d.is_present AND NOT coalesce(d.is_template, false)
-    UNION SELECT o.instance_id, o.database_name FROM pgvigil.mssql_database_option o WHERE o.is_present AND NOT o.is_snapshot
-    UNION SELECT a.instance_id, a.database_name FROM pgvigil.app_assignments a WHERE a.database_name IS NOT NULL
-    UNION SELECT m.instance_id, m.database_name FROM pgvigil.app_not_application m
-  ), pick AS (
-    SELECT r.line, coalesce(
-             (SELECT c.name FROM cand c WHERE c.instance_id = r.iid AND c.name = r.db),
-             (SELECT min(c.name) FROM cand c WHERE c.instance_id = r.iid AND lower(c.name) = lower(r.db)
-               HAVING count(*) = 1)) AS name
-      FROM pg_temp.app_imp_r r WHERE r.why IS NULL AND r.lvl = 'database'
-  )
-  UPDATE pg_temp.app_imp_r r SET dbname = p.name, dbpresent = pgvigil.app_db_present(r.iid, p.name)
-    FROM pick p WHERE p.line = r.line AND p.name IS NOT NULL;
+  WITH cand AS (   -- every name the server holds now (present) or still names (absent), set-based: joins, no per-line scan
+    SELECT x.instance_id, x.name, bool_or(x.present) AS present FROM (
+      SELECT d.instance_id, d.datname AS name, true AS present FROM pgvigil.databases d WHERE d.is_present AND NOT coalesce(d.is_template, false)
+      UNION ALL SELECT o.instance_id, o.database_name, true FROM pgvigil.mssql_database_option o WHERE o.is_present AND NOT o.is_snapshot
+      UNION ALL SELECT a.instance_id, a.database_name, false FROM pgvigil.app_assignments a WHERE a.database_name IS NOT NULL
+      UNION ALL SELECT m.instance_id, m.database_name, false FROM pgvigil.app_not_application m) x
+     WHERE x.instance_id IN (SELECT r.iid FROM pg_temp.app_imp_r r WHERE r.why IS NULL AND r.lvl = 'database')
+     GROUP BY x.instance_id, x.name
+  ), ex AS (
+    SELECT r.line, c.name, c.present FROM pg_temp.app_imp_r r JOIN cand c ON c.instance_id = r.iid AND c.name = r.db
+     WHERE r.why IS NULL AND r.lvl = 'database'
+  ), ci AS (
+    SELECT r.line, min(c.name) AS name, bool_or(c.present) AS present
+      FROM pg_temp.app_imp_r r JOIN cand c ON c.instance_id = r.iid AND lower(c.name) = lower(r.db)
+     WHERE r.why IS NULL AND r.lvl = 'database' AND NOT EXISTS (SELECT 1 FROM ex WHERE ex.line = r.line)
+     GROUP BY r.line HAVING count(*) = 1
+  ), pick AS (SELECT * FROM ex UNION ALL SELECT * FROM ci)
+  UPDATE pg_temp.app_imp_r r SET dbname = p.name, dbpresent = p.present
+    FROM pick p WHERE p.line = r.line;
   UPDATE pg_temp.app_imp_r r SET unk = 'database', note = format('no database %s on %s as last read: listed, never made', r.db, r.iname)
    WHERE r.why IS NULL AND r.lvl = 'database' AND r.dbname IS NULL;
   UPDATE pg_temp.app_imp_r r SET why = 'a system database never takes an application'
