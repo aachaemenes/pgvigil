@@ -68,9 +68,12 @@ export function notesOf(root: ParentNode, fallback: string): { head: string; tex
 
 // mailHtml: the whole mail body. Tables and inline styles only (a mail client takes no stylesheet and runs nothing):
 // the header lines as the workbook's Summary sheet has them, what the page said in words (a refused run, an error),
-// then each grid under its heading as toHtml writes it.
+// then each grid under its heading as toHtml writes it. Every tag and attribute is one the server's mail checker takes
+// (internal/reportmail/reportmail.go CheckBody: a document's and a table's tags, no div, no b, no data-* but a cell's
+// data-status): what the page said is a table too, each line its head in a th and its words in a td.
 export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: string, said: { head: string; text: string }[] = []): string {
-  const cell = 'border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;' + FONT + ';white-space:nowrap';
+  const box = 'border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;' + FONT;
+  const cell = box + ';white-space:nowrap';
   const line = (k: string, v: string) => `<tr><th style="${cell};background:#0063a3;color:#ffffff;font-weight:bold;text-align:left">${esc(k)}</th><td style="${cell};color:#1d1d1f">${esc(v)}</td></tr>`;
   const head = '<table role="presentation" style="border-collapse:collapse;margin:0 0 10px 0">'
     + line('Instance', m.instance) + line('Page', m.tab) + line('Window', m.window)
@@ -87,8 +90,10 @@ export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: str
     + `<body style="margin:0;padding:12px;background:#ffffff;color:#1d1d1f;font-size:11pt;${FONT}">`
     + `<h2 style="margin:0 0 8px 0;font-size:15pt;font-weight:bold;${FONT};color:#1d1d1f">${esc(title)}</h2>`
     + head
-    + (said.length ? `<div data-said="1"><h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;${FONT};color:#b3261e">What the page said</h3>`
-      + said.map(n => `<p style="margin:2px 0 4px 0;font-size:11pt;${FONT};color:#1d1d1f"><b>${esc(n.head)}</b>: ${esc(n.text)}</p>`).join('') + '</div>' : '')
+    + (said.length ? `<h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;${FONT};color:#b3261e">What the page said</h3>`
+      + '<table role="presentation" style="border-collapse:collapse;margin:0 0 10px 0">'
+      + said.map(n => `<tr><th style="${cell};background:#b3261e;color:#ffffff;font-weight:bold;text-align:left;vertical-align:top">${esc(n.head)}</th><td style="${box};color:#1d1d1f">${esc(n.text)}</td></tr>`).join('')
+      + '</table>' : '')
     + parts
     + `<p style="margin:16px 0 0 0;font-size:9pt;${FONT};color:#5f6368">Sent by pgvigil: the page as it showed at ${esc(stamp(m.at))} (${esc(zoneName())}). The workbook attached holds the same rows.</p>`
     + '</body></html>';
