@@ -319,3 +319,17 @@ export function tagsOf(r: Row): string[] {
   const t = r.tags;
   return Array.isArray(t) && t.length ? t.map(String) : [];
 }
+
+// inTagScope: an instance in a tag scope (?tag=, the tree's tag folders): 'untagged' = no tag at all; '<key>:' with no
+// value = no value of that key (the tree's '(no <key>)' folder, DBA Dash's '[N/A]' folder of its grouping tag,
+// Instances_Get.sql L25); any other = the written tag itself (a plain word is key 'tag', tree.ts parseTag's rule)
+export function inTagScope(tag: string, r: Row): boolean {
+  const ts = tagsOf(r);
+  if (tag === 'untagged') return ts.length === 0;
+  const i = tag.indexOf(':');
+  if (i > 0 && i === tag.length - 1) {
+    const key = tag.slice(0, i).trim().toLowerCase();
+    return !ts.some(t => { const j = t.indexOf(':'); return (j > 0 ? t.slice(0, j).trim().toLowerCase() : 'tag') === key; });
+  }
+  return ts.includes(tag);
+}

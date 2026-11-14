@@ -3,7 +3,7 @@
 // and the page under it.
 import { get, LoginRequired, onCutRead, post, Row, rowsOf, Session, startReads, Table } from './api';
 import { destroyCharts } from './chart';
-import { fleet, forget, tagsOf } from './fleet';
+import { fleet, forget, inTagScope } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
@@ -137,7 +137,7 @@ for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
 const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
   if (!c.tag) return undefined;
   const ids = new Set((await fleet()).instances
-    .filter(r => c.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(c.tag!)).map(r => Number(r.instance_id)));
+    .filter(r => inTagScope(c.tag!, r)).map(r => Number(r.instance_id)));
   return r => ids.has(Number(r.instance_id));
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));

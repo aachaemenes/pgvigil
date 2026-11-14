@@ -9,7 +9,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart, ringChart, Slice } from './chart';
 import { deadlockSvg, DlGraph, graphFromRows, graphFromXml } from './deadlock_graph';
 import { hrefWith } from './dbinfo';
-import { fleet, tagsOf } from './fleet';
+import { fleet, tagsOf, inTagScope } from './fleet';
 import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { sqlCell } from './sqlview';
@@ -42,7 +42,7 @@ async function scopeOf(ctx: Ctx): Promise<Scope> {
   const f = await fleet();
   let rows = f.instances;
   if (ctx.instance) rows = rows.filter(r => Number(r.instance_id) === ctx.instance);
-  else if (ctx.tag) rows = rows.filter(r => ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag!));
+  else if (ctx.tag) rows = rows.filter(r => inTagScope(ctx.tag!, r));
   const ids = new Set(rows.map(r => Number(r.instance_id)));
   const engines = new Set(rows.map(r => r.engine === 'sqlserver' ? 'sqlserver' : 'postgres'));
   const params = ctx.instance ? { instance: ctx.instance } : ctx.tag ? { instances: [...ids].join(',') || '0' } : {};

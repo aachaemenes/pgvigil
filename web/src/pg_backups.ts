@@ -13,7 +13,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, writeButton } from './ack';
 import { Ctx, href } from './router';
-import { fleet, tagsOf } from './fleet';
+import { fleet, inTagScope } from './fleet';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 
 type Parts<K extends string> = Record<K, Table | null>;
@@ -32,7 +32,7 @@ function instLink(ctx: Ctx, name: unknown, id: unknown, tab: string): Node {
 async function tagIds(ctx: Ctx): Promise<Set<number> | null> {
   if (!ctx.tag) return null;
   const f = await fleet();
-  return new Set(f.instances.filter(r => tagsOf(r).includes(ctx.tag!)).map(r => Number(r.instance_id)));
+  return new Set(f.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => Number(r.instance_id)));
 }
 
 // ---- thresholds ------------------------------------------------------------------------------------------

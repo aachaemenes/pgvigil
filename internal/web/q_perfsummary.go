@@ -43,7 +43,9 @@ import (
 //   now_*            the newest snapshot inside the range (a preset range ends now): the longest running statement,
 //                    the oldest open transaction, the sessions blocked.
 
-// sqlPerfScope is the instances of one engine ($3) in the tag scope ($4; NULL = the fleet, 'untagged' = no tag).
+// sqlPerfScope is the instances of one engine ($3) in the tag scope ($4; NULL = the fleet, 'untagged' = no tag,
+// '<key>:' with no value = no value of that key - the tree's '(no <key>)' folder, web/src/fleet.ts inTagScope's rule: a
+// written tag's key is the text before its first ':', a plain word's key is 'tag').
 const sqlPerfScope = `
 WITH inst AS (
   SELECT i.instance_id, i.name AS instance, i.engine, i.platform
@@ -52,6 +54,9 @@ WITH inst AS (
    WHERE i.is_active AND i.engine = $3
      AND ($4::text IS NULL
           OR CASE WHEN $4 = 'untagged' THEN cardinality(coalesce(tm.tags, i.tags)) = 0
+                  WHEN $4 ~ '^[^:]+:$' THEN NOT EXISTS (
+                    SELECT 1 FROM unnest(coalesce(tm.tags, i.tags)) t
+                     WHERE lower(trim(CASE WHEN strpos(t, ':') > 1 THEN split_part(t, ':', 1) ELSE 'tag' END)) = lower(trim(left($4, -1))))
                   ELSE $4 = ANY (coalesce(tm.tags, i.tags)) END)
 )`
 

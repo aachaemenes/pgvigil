@@ -14,7 +14,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
-import { fleet, notReadYet, tagsOf } from './fleet';
+import { fleet, inTagScope, notReadYet, tagsOf } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
 import { fromInput, toInput } from './tz';
@@ -114,7 +114,7 @@ const logCols: Col[] = [
 // blackout flag, the known-noise label), the silenced servers and blackouts, the mute rules and known patterns, the
 // sends they held (still logged) and the audit of every acknowledgement (task 118; DBA Dash 02, Darling 5 and 10)
 export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', {}, el('h2', {}, 'Alerts'));
+  const sec = el('section', {}, el('h2', {}, 'Alerts' + (ctx.tag && !ctx.instance ? ` - tag ${ctx.tag}` : '')));
   let d: AlertsData;
   // the channels, open alerts and send log are the page; the parts task 151 added are read on their own, so a slow or
   // failing one (an older server, a timeout) leaves its section saying so and the rest of the page standing
@@ -144,7 +144,11 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     : `Acknowledge, notes, mute, dismiss and Send test are read only here: ${ad.reason ?? ''}`);
   if (offP && !ad.door) ad.note = offP;
   const f = await fleet().catch(() => null);
-  const chans = rowsOf(d.channels), open = rowsOf(d.open), log = rowsOf(d.log);
+  // a tag folder (TAGTREE; DBA Dash's tag folder lists its own instances' alerts, Main.cs L1820-1822): the rows of the
+  // tag's instances, and the repository-wide ones (no instance: the collector, the repository) in every folder
+  const tagNames = ctx.tag && !ctx.instance && f ? new Set(f.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => String(r.name))) : null;
+  const inFolder = (r: Row) => !tagNames || r.instance == null || r.instance === '' || tagNames.has(String(r.instance));
+  const chans = rowsOf(d.channels), open = rowsOf(d.open).filter(inFolder), log = rowsOf(d.log).filter(inFolder);
   const fixes = new Map(rowsOf(d.fixes).filter(r => r.fix != null).map(r => [String(r.finding_key), String(r.fix)]));
   // a finding's suggested value is its threshold in the history while the finding stands
   const suggested = new Map(rowsOf(d.fixes).filter(r => r.suggested != null).map(r => [String(r.finding_key), String(r.suggested)]));
@@ -153,7 +157,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   const configured = chans.filter(r => r.is_configured);
   const failed = log.filter(r => r.outcome === 'failed' || r.outcome === 'refused').length;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
-  const triage = rowsOf(ad.alerts);
+  const triage = rowsOf(ad.alerts).filter(inFolder);
   const nAcked = triage.filter(r => r.ack_id != null).length, nHeld = triage.filter(r => r.held_by != null).length;
   sec.append(el('p', { class: 'meta' }, configured.length === 0
     ? 'No alert channel is configured: pgvigil sends nothing. A channel is named in the configuration\'s alerts: list (SMTP, a webhook or a file drop); see docs/alerts.md.'
@@ -163,6 +167,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     ? `Every sent alert carries the address of its own page: ${String(base)}/#/alert?k=...`
     : 'The sent alerts carry no link to their page: alerts_base_url (the UI\'s address as a reader opens it) is not set in the configuration.'));
   if (offP) sec.append(offP);
+  if (tagNames) sec.append(el('p', { class: 'meta' }, `The tag ${ctx.tag} is in view: the alerts of its ${tagNames.size} instance(s), and those of no instance (the collector, the repository) as in every folder; the channels are the repository's.`));
   // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
   sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
     el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
@@ -172,7 +177,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   if (ad.alerts == null) sec.append(grid(open, openCols, 'No open alert: nothing sent is still standing.'));
   else sec.append(triageView(ctx, ad, triage, redraw, fixes, dismissed));
   if (missing.dismissed || missing.fixes) sec.append(notRead('dismissed'), notRead('fixes'));
-  sec.append(historyView(ctx, rowsOf(d.history).map(r => r.threshold == null && suggested.has(String(r.finding_key)) ? { ...r, threshold: suggested.get(String(r.finding_key)) } : r)), notRead('history'));
+  sec.append(historyView(ctx, rowsOf(d.history).filter(inFolder).map(r => r.threshold == null && suggested.has(String(r.finding_key)) ? { ...r, threshold: suggested.get(String(r.finding_key)) } : r)), notRead('history'));
   sec.append(serversView(ad, f?.instances ?? [], redraw));
   if (d.mutes != null) sec.append(mutesView(ctx, ad, rowsOf(d.mutes), 'mute', f?.instances ?? [], redraw), mutesView(ctx, ad, rowsOf(d.mutes), 'noise', f?.instances ?? [], redraw));
   else sec.append(rulesView(ad, 'mute', redraw), rulesView(ad, 'noise', redraw));

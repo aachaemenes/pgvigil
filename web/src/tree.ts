@@ -16,7 +16,7 @@
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { poolerCached } from './pooler';
-import { Ctx, href, drillHome, groupsFor, isMssql, rootGroups, rootTabs, tabsFor } from './router';
+import { Ctx, href, drillHome, groupsFor, isMssql, rootGroups, rootTabs, TabGroup, tabsFor, tagPages } from './router';
 import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { refreshSilenced, silencedSet, treeBell } from './instheader';
 import { hashParam, hrefWith } from './dbinfo';
@@ -280,9 +280,10 @@ function state(l: Load, depth: number, empty: string): HTMLElement | null {
 // the reports of its engine and the repository's (a repository report runs about the instance, as every DBA Dash custom
 // report does); at the root every report. The node's name opens the Custom reports page, a report
 // #/customreports?report=N (&i= under an instance).
-function customReports(ctx: Ctx, key: string, label: string, depth: number, base: string, on: boolean, id?: number, engine?: unknown): HTMLElement {
+function customReports(ctx: Ctx, key: string, label: string, depth: number, base: string, on: boolean, id?: number, engine?: unknown, tag?: string): HTMLElement {
   const withReport = (n: unknown) => { const [p, q] = base.split('?'); const u = new URLSearchParams(q ?? ''); u.set('report', String(n)); return `${p}?${u}`; };
-  const scoped = id === undefined ? !ctx.instance : ctx.instance === id;
+  // the page is this node's own scope: its instance, or the root's (the fleet, or the tag the root's folders carry)
+  const scoped = id === undefined ? !ctx.instance && ctx.tag === tag : ctx.instance === id;
   const cur = ctx.tab === 'customreports' && scoped ? hashParam('report') : undefined;
   const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
   const level = (rows: Row[], path: string, d: number): HTMLElement[] => {
@@ -369,22 +370,36 @@ function instanceFolders(ctx: Ctx, id: number, depth: number, engine?: unknown):
     return shown;
   }, tabLink('jobs'), here && ctx.tab === 'jobs');
 
-  // one folder per tab group of router.ts (the strip shows the same tabs once inside); the Pooler leaf only where a
-  // pooler read exists; Jobs is the folder above, with its jobs under it
-  const groupFolders = instanceGroups.filter(g => g.key !== 'main' && g.key !== 'jobs').map(g =>
-    tabFolder(g.key, g.name, g.tabs.filter(t => t !== 'pooler' || poolerCached(id)).map(t => [t, instanceTabs[t]] as [string, string])));
-  return [...groupFolders, databases, jobs];
+  // one folder per tab group of router.ts, in its order - DBA Dash's (Main.cs ExpandInstance L1627-1643: Configuration,
+  // Checks, HA/DR, Storage, Databases, Jobs), then pgvigil's Performance and the Reports (the strip shows the same tabs
+  // once inside); the Pooler leaf only where a pooler read exists; Databases after Storage; Jobs is the folder above,
+  // with its jobs under it
+  const out: HTMLElement[] = [];
+  for (const g of instanceGroups.filter(x => x.key !== 'main')) {
+    if (g.key === 'jobs') { out.push(jobs); continue; }
+    out.push(tabFolder(g.key, g.name, g.tabs.filter(t => t !== 'pooler' || poolerCached(id)).map(t => [t, instanceTabs[t]] as [string, string])));
+    if (g.key === 'storage') out.push(databases);
+  }
+  return out;
 }
 
-// scopeFolders: the folders of the fleet or of a tag folder (the scope the page is in), each a short list of pages
-function scopeFolders(ctx: Ctx): HTMLElement[] {
-  const scope = ctx.instance ? undefined : ctx.tag;
+// scopeFolders: a scope's folders, each a short list of pages (DBA Dash: the root's Configuration, Checks, HA/DR,
+// Storage, Jobs, Reports, Main.cs L66-75, and the same under each tag folder, L99-110, over that folder's instances only,
+// SQLTreeItem.cs L168-190). The root's (keys 'r/<group>') link the fleet - or the page's tag when no top-level tag folder
+// carries it (a bookmark, a nested tag: the tree keeps a way to it); a tag folder's (keys 't:<folder path>/<group>')
+// link its tag and hold its pages only (router.ts tagPages: no root-only page, no page of an engine the folder lacks).
+// A leaf is on only on its own scope's page.
+function scopeFolders(ctx: Ctx, scope: string | undefined, keyOf: (g: string) => string, pages: (g: TabGroup) => string[]): HTMLElement[] {
   const link = (t: string) => href(ctx, { tab: t, instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined });
-  return rootGroups.filter(g => g.key !== 'main').map(g =>
-    folder(`r/${g.key}`, g.name, 0, () => g.tabs.map(t => t === 'customreports'
-      ? customReports(ctx, `r/${g.key}/cr`, rootTabs[t], 1, link(t), !ctx.instance && ctx.tab === t)
-      : el('div', { style: nodeStyle(1) }, leaf(rootTabs[t], link(t), !ctx.instance && ctx.tab === t))),
-      link(g.tabs[0]), !ctx.instance && ctx.tab === g.tabs[0]));
+  const here = !ctx.instance && ctx.tag === scope;
+  return rootGroups.filter(g => g.key !== 'main').flatMap(g => {
+    const tabs = pages(g);
+    if (!tabs.length) return [];
+    return [folder(keyOf(g.key), g.name, 0, () => tabs.map(t => t === 'customreports'
+      ? customReports(ctx, `${keyOf(g.key)}/cr`, rootTabs[t], 1, link(t), here && ctx.tab === t, undefined, undefined, scope)
+      : el('div', { style: nodeStyle(1) }, leaf(rootTabs[t], link(t), here && ctx.tab === t))),
+      link(tabs[0]), here && ctx.tab === tabs[0])];
+  });
 }
 
 const rollup = (f: Fleet, rows: Row[]) => rows.reduce<Level>((a, r) => Math.max(a, worst(f, r)) as Level, 0);
@@ -401,7 +416,8 @@ function foldersFor(rows: Row[], keys: string[], level: number, parent: string):
       m.get(t)!.push(r);
     }
     const names = [...m.keys()].sort((a, b) => a === UNTAGGED ? 1 : b === UNTAGGED ? -1 : cmpValues(parseTag(a).value, parseTag(b).value) || a.localeCompare(b));
-    return names.map(t => ({ path: t, label: t, tag: t === UNTAGGED ? undefined : t, muted: t === UNTAGGED, rows: m.get(t)!, kids: [] }));
+    // 'untagged' scopes the instances with no tag at all (?tag=untagged, as every page reads it): its folders too (TAGTREE)
+    return names.map(t => ({ path: t, label: t, tag: t, muted: t === UNTAGGED, rows: m.get(t)!, kids: [] }));
   }
   if (level >= keys.length) return [];
   const key = keys[level], none = `(no ${key})`;
@@ -415,7 +431,10 @@ function foldersFor(rows: Row[], keys: string[], level: number, parent: string):
     const isNone = v === none;
     return {
       path, label: isNone ? v : (key === 'tag' ? v : `${key}: ${v}`), muted: isNone,
-      tag: level === 0 && !isNone ? tagText({ key, value: v }) : undefined,
+      // a top-level folder scopes its tag; '(no <key>)' the instances with no value of the key ('<key>:', an empty value:
+      // DBA Dash's '[N/A]' folder of its one grouping tag, Instances_Get.sql L25); a nested folder names a combination no
+      // single tag scopes
+      tag: level === 0 ? (isNone ? `${key}:` : tagText({ key, value: v })) : undefined,
       rows: m.get(v)!, kids: foldersFor(m.get(v)!, keys, level + 1, path),
     };
   });
@@ -443,12 +462,21 @@ function draw() {
     const nameFlip = () => { if (!filter) flipFolder(); };
     const text = `${fo.label} (${fo.rows.length})`;
     const tagOn = !ctx.instance && ctx.tag === fo.tag;
+    // the folder's engines: its own folders hold only their pages (router.ts tagPages, the pass's #7)
+    const engines = new Set(fo.rows.map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres'));
+    const tagGroup = (g: TabGroup) => tagPages(g, engines);
+    // its name keeps the page shown when the folder carries that page, else lands on its Summary (a root-only page: the
+    // Collector of the fleet, Diff ... never shown 'in' a tag it ignores)
+    const carried = rootGroups.some(g => tagGroup(g).includes(rootTab)) || rootGroups[0].tabs.includes(rootTab);
     const label = fo.tag
-      ? nameOpens(el('a', { class: 'folder-name' + (tagOn ? ' on' : ''), href: href(ctx, { tab: rootTab, instance: undefined, tag: fo.tag }) }, text), 'f:' + fo.path, !shut, tagOn, nameFlip)
+      ? nameOpens(el('a', { class: 'folder-name' + (tagOn ? ' on' : ''), href: href(ctx, { tab: carried ? rootTab : 'summary', instance: undefined, tag: fo.tag }) }, text), 'f:' + fo.path, !shut, tagOn, nameFlip)
       : nameOpens(el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), style: 'cursor:pointer', title: depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '' }, text), 'f:' + fo.path, !shut, true, nameFlip);
     const box = el('div', { class: 'folder', style: depth ? 'margin-left:.8rem' : '' }, el('div', { class: 'folder-head' }, caret, dot(rollup(f, fo.rows)), label));
     if (!shut) {
       const ul = el('div', { class: 'folder-items' });
+      // a top-level tag folder's own folders before its instances (DBA Dash: Main.cs L99-110, then the instances L195);
+      // none while a filter is typed, as the root's
+      if (fo.tag && depth === 0 && !filter) ul.append(...scopeFolders(ctx, fo.tag, g => `t:${fo.path.replace(/\/$/, '')}/${g}`, tagGroup));
       if (fo.kids.length) {
         for (const k of fo.kids) { const e = render(k, depth + 1); if (e) ul.append(e); }
       } else {
@@ -469,8 +497,12 @@ function draw() {
     }
     return box;
   };
-  const out: HTMLElement[] = [all, ...(filter ? [] : scopeFolders(ctx))];
-  for (const fo of foldersFor(f.instances, ui.group_by, 0, '')) { const e = render(fo, 0); if (e) out.push(e); }
+  const tops = foldersFor(f.instances, ui.group_by, 0, '');
+  // the root's folders link the fleet (DBA Dash's root); a tag no top-level folder carries (a bookmark, a nested
+  // folder's tag, a link kept by a page) stays on them, so the tree keeps a way to that scope's pages (the pass's #9)
+  const rootScope = !ctx.instance && ctx.tag && !tops.some(t => t.tag === ctx.tag) ? ctx.tag : undefined;
+  const out: HTMLElement[] = [all, ...(filter ? [] : scopeFolders(ctx, rootScope, g => `r/${g}`, g => g.tabs))];
+  for (const fo of tops) { const e = render(fo, 0); if (e) out.push(e); }
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
   else if (filter && out.length === 1) out.push(el('p', { class: 'empty', style: 'padding:.1rem .4rem' }, 'No instance named like that.'));
   out.push(...dbadashFolders(ctx, draw, filter));
