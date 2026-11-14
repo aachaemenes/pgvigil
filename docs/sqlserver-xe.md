@@ -102,7 +102,7 @@ What is stored, each event once:
 
 ### system_health and AlwaysOn_health
 
-- On a server with no running deadlock session of pgvigil, the reader takes the `xml_deadlock_report` events from `system_health`'s event files instead, and marks each deadlock as read from there. `system_health` keeps a limited history and shares its files with many other events, so a busy server can roll a deadlock out before it is read; the dedicated session does not have that problem.
+- On a server with no running deadlock session of pgvigil, the reader takes the `xml_deadlock_report` events from `system_health` instead (its event files; on Azure SQL Managed Instance, where a file is read only by its Azure Blob storage URL, its ring buffer), and marks each deadlock as read from there. `system_health` keeps a limited history and shares its files with many other events, so a busy server can roll a deadlock out before it is read; the dedicated session does not have that problem.
 - Where Always On is enabled, the reader takes `AlwaysOn_health`'s replica state changes, replica manager state changes, lease expiries, availability group DDL and reported errors, each with its time. An error is filed under a family by its number: lease (19407, 19419, 19421, 19422, 19423, 19424), connection (35201, 35202, 35206), role (1480, 19406), data movement (35264, 35265); an informational message of no family is not kept. A role change is marked a failover when a secondary is told to take over, when a primary loses its role, or when a `FAILOVER` statement commits. A start of the instance is not a failover.
 - The first read of either session goes through its whole history, 20,000 events per batch; events older than 45 days are not stored.
 

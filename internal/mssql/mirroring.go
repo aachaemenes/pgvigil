@@ -18,8 +18,12 @@ func init() { Register(mirroringCollector{}) }
 func (mirroringCollector) Name() string                   { return Prefix + "mirroring" }
 func (mirroringCollector) DefaultInterval() time.Duration { return time.Minute }
 func (mirroringCollector) Applies(info Info) (bool, string) {
-	if info.Kind == KindAzureDB {
+	switch info.Kind {
+	case KindAzureDB:
 		return false, "Azure SQL Database has no database mirroring"
+	case KindAzureMI:
+		// Microsoft's T-SQL differences page for Managed Instance: "Database mirroring isn't supported."
+		return false, "Azure SQL Managed Instance does not support database mirroring"
 	}
 	return true, ""
 }
