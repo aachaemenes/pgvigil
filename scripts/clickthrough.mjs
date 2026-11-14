@@ -242,9 +242,31 @@ const state = `({ hash: location.hash, h2: document.querySelector('main h2')?.te
   dialog: document.querySelector('dialog[open]') ? (document.querySelector('dialog[open]').getAttribute('aria-label') || document.querySelector('dialog[open]').querySelector('h2, h3')?.textContent || '(untitled dialog)') : null,
   menu: [...document.querySelectorAll('[role=menu], .menu')].filter(m => m.getClientRects().length > 0).map(m => [...m.querySelectorAll('button, [role=menuitem]')].map(b => b.textContent.trim().slice(0, 50))).flat().slice(0, 30),
   mark: window.__walk === 1, open: document.querySelectorAll('details[open], [aria-expanded=true]').length, tree: document.querySelector('#tree')?.innerHTML.length ?? 0 })`;
-// a control's signature: where it is, its tag, its words with numbers folded; a grid cell's link by its column
-const SIG = `(el => { const t = el.tagName, cell = el.closest('td');
-  let w = (el.getAttribute('aria-label') || el.textContent || el.title || el.getAttribute('name') || el.id || '').replace(/\\s+/g, ' ').trim().replace(/[0-9][0-9:.,\\- ]*/g, '#').slice(0, 60);
+// a control's words for its signature: its aria-label, else its text without a meta span beside its name (a length or
+// an age that the clock changes: the range picker's 'Today' reads '20h 59m' at 20:59 and '21h' at 21:00, so a click
+// after the hour found no control of the listed words), else its title, name or id; numbers folded to '#'. parts: the
+// control's child nodes as { meta, text }; run in the page (inside SIG) and by the fixture below
+function sigWords(label, parts, title, name, id) {
+  const all = parts.map(p => p.text).join(''), own = parts.filter(p => !p.meta).map(p => p.text).join('');
+  return (label || (own.trim() ? own : all) || title || name || id || '').replace(/\s+/g, ' ').trim().replace(/[0-9][0-9:.,\- ]*/g, '#').slice(0, 60);
+}
+// the fixture: the picker's lengths either side of a turn read as one control, the presets stay apart, a control with
+// no meta span reads as before (checked at the walker's start: exit 2 on a wrong one)
+{
+  const m = (name, meta) => sigWords(null, [{ meta: false, text: name }, { meta: true, text: meta }], '', null, '');
+  const p = text => sigWords(null, [{ meta: false, text }], '', null, '');
+  for (const [got, want, what] of [[m('Today', '20h 59m'), m('Today', '21h'), 'Today across the hour'], [m('Week to date', '5d 23h'), m('Week to date', '6d'), 'Week to date across the day'],
+    [m('Today', '<1m'), 'Today', 'Today at midnight'], [m('Last 5 minutes', '5m'), 'Last #minutes', 'a quick range'], [m('Last 4 hours', '4h'), 'Last #hours', 'another quick range'],
+    [p('Refresh'), 'Refresh', 'a plain button'], [p('Run 3 checks'), 'Run #checks', 'a number in the words'],
+    [sigWords('Range: Last hour', [{ meta: false, text: 'Last hour' }], '', null, ''), 'Range: Last hour', 'the aria-label first'],
+    [sigWords(null, [{ meta: true, text: '3 rows' }], '', null, ''), '#rows', 'a meta span alone keeps its words'],
+    [sigWords(null, [], 'Close', null, ''), 'Close', 'no words: the title']]) {
+    if (got !== want) { console.error(`the signature's fixture (${what}): '${got}', want '${want}'`); process.exit(2); }
+  }
+}
+// a control's signature: where it is, its tag, its words (sigWords); a grid cell's link by its column
+const SIG = `(el => { const t = el.tagName, cell = el.closest('td'), W = ${sigWords};
+  let w = W(el.getAttribute('aria-label'), [...el.childNodes].map(n => ({ meta: n.nodeType === 1 && n.matches('span.meta'), text: n.nodeType === 8 ? '' : n.textContent || '' })), el.title, el.getAttribute('name'), el.id);
   if (cell && (t === 'A' || t === 'BUTTON')) w = 'cell ' + cell.cellIndex;
   const where = el.closest('dialog[open]') ? 'dlg ' : el.closest('[role=menu], .menu') ? 'menu ' : el.closest('.inst-header') ? 'hdr ' : el.closest('#bar') ? 'bar ' : '';
   if (t === 'A') { const h = el.getAttribute('href') || ''; const [p, qs] = h.split('?'); return where + 'A ' + p + '?' + [...new URLSearchParams(qs || '').keys()].sort().join('&') + ' ' + w; }

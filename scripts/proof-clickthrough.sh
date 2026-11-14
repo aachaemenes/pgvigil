@@ -16,25 +16,24 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the eighth run, after the walker's second review - written before it): the seventh ran green (104 FAIL
-# rows, each listed); this one changes what a click is judged by: a pressed button (aria-pressed) is no current choice,
-# a grid cell's button that only read is clicked again on the second row ('[2]'), the tree leaf found on a second look
-# is counted, a tree leaf that leaves the page where it was is NOTHING, a lost browser is started again while a page
-# settles too, a busy line is read in an open dialog and with five more verbs, settled = two quiet polls in a row, a
-# download counts only as a whole file:
-#   the grader's self-test: 14 of 14 cases; the expected file: 12 rows; no 'the busy rule's fixture' line
+# Expected (the ninth run, written before it): the eighth ran as expected but for one row outside the file - the bar's
+# 'Today', listed as 'Today 20h 59m' and clicked after 21:00, when the picker words it '21h' (a length drops its zero
+# part): no control of the listed words, 'step gone'. A control's words now leave out a meta span beside its name:
+#   the grader's self-test: 14 of 14 cases; the expected file: 12 rows; no 'the busy rule's fixture' line and no 'the
+#     signature's fixture' line
 #   the click map: its own verdict line (524 links, 0 FAIL)
-#   listed: 183 pages (root 63, pg 64, ms 56) in 4 shards; every page settled
-#   the walk: the longest driver about the seventh run's 2548 s, chromium started once per driver
-#   the grade: the 10 earlier rows as in the seventh (75 Pick series All, 6 Columns, Reset all, Latest, Compare, the
-#     re-reads - 14 or 15: collectiondates' Refresh grades redraws in one run and reads in the next, the cause not
-#     established (an age text that ticks over is the likely one) - mssql_running's Later and Latest, the deadlock
-#     Graph 1, the two Draw rows 1 each); Admin's Servers and the alert page's 'at the firing' NOTHING, each listed by
-#     its new row; the 'current' rows 2 (statements' link, Diff's radio); the deadlock Graph '[2]' redraws (the second
-#     deadlock drawn); the two Draws' '[2]' redraw when the second row's query has an interval in the last hour, else
-#     each is a 'reads' row outside the file (the seed decides, as for the first row); 'tree: 0 leaf(s) found on the
-#     second look' (or the Community tools leaf, named); no tree leaf NOTHING; 'click-through: OK (...)', rc 0, unless
-#     a Draw '[2]' only read
+#   listed: 182 pages (root 62, pg 64, ms 56) in 4 shards; the grade's pages 183 (root 63); every page settled
+#   the walk: the longest driver about the eighth run's 3288 s, chromium started once per driver
+#   the grade: the bar's ten range items by their names alone ('bar B Range: Last hour > bar B Today', 'bar B Week to
+#     date'; no length in a path), each navigates; no 'not reached' bar row; the eighth run's rows otherwise - Pick
+#     series All 75 to 79 (77 in the eighth: two charts drawn that the seventh did not reach), 6 Columns, Reset all,
+#     Latest, Compare, the re-reads 12 to 15 (drives' and collectiondates' Refresh grade redraws in some runs; the
+#     likely cause drives' 'Updated ... (<age> ago)' line read with a new age), mssql_running's Later and Latest, the deadlock Graph 1
+#     and its '[2]' redraws, the two Draw rows 0 or 1 each (the seed decides; 0 in the eighth, both drew; a Draw '[2]'
+#     that only reads is a row outside the file), Admin's Servers and the alert page's 'at the firing' 1 each, the
+#     'current' rows 2; 'tree: 0 leaf(s) found on the second look'; no tree leaf NOTHING; 'click-through: OK (...)', rc 0
+#   beside the run: every path in the eighth's rows and not in the ninth's (or the reverse) is a control with a meta
+#     span - the ten range items
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""
