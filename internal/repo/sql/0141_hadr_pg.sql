@@ -48,11 +48,18 @@
 --                 slots' spill / stream counters (14 on: 'slot_stats' rows); pg_repl_slot_state keeps each slot's retained
 --                 WAL at an hourly mark for its growth per hour. One finding per slot: 'slot invalidated' (critical:
 --                 invalidation_reason set or wal_status lost), 'slot WAL near its limit' (safe_wal_size under 'slot_safe_wal',
---                 1024 MB: warning; wal_status unreserved: critical - this replaces 0006's 'slot WAL status not reserved'),
+--                 1024 MB, or under half of max_slot_wal_keep_size when that is smaller: warning; wal_status unreserved:
+--                 critical - this replaces 0006's 'slot WAL status not reserved'),
 --                 'slot WAL growing' (retained WAL up 'slot_growth', 1024 MB, or more in the last full hour: warning);
 --                 thresholds pgvigil's own defaults. Aurora: a reader is judged by aurora_replica_status alone - 'Aurora
---                 replica lag' on the writer at the 'standby_replay_lag' tiers (30 / 300 s, PerformanceMonitor 3.12.0's), no
---                 receiver rule and no link row for an Aurora reader.
+--                 replica lag' on the writer at the 'standby_replay_lag' tiers (30 / 300 s, PerformanceMonitor 3.12.0's; a
+--                 reader returns the same rows and raises nothing), no receiver rule and no link row for an Aurora reader.
+--   review fold   (2026-11-14, the split review of ee6d061..6b75eb0) a database walsender is no link; a held 'receiver down'
+--                 read with the receiver back is a warning; a standby whose primary_conninfo is unreadable does not speak
+--                 for its link; a named synchronous standby with a down link is not listed twice; 'sending server not read';
+--                 a WAL receiver without a replay position (pg_receivewal) judged on its flush position; 0006's standby-side
+--                 'replay lag' kept for a standby no monitored primary sends to; a subscription's publisher paired only
+--                 when one instance has that slot; the state tables cascade with their instance.
 -- The collector adds a 'standby' row (the server in recovery: its receiver, primary_conninfo / restore_command set,
 -- positions, replay pause), a 'sync' row (synchronous_standby_names) and each sender's slot and flush lag;
 -- import_replication keeps the two state tables from them.
@@ -77,7 +84,7 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
 -- reads with a receiver, and the fault ends at 2; replay_moved_at is the newest read whose
 -- replay position was past the read before it (a move is dated by the read that sees it); rcv_bytes is received - replayed.
 CREATE TABLE IF NOT EXISTS pgvigil.pg_repl_standby_state (
-  instance_id        int PRIMARY KEY,
+  instance_id        int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   read_at            timestamptz NOT NULL,
   in_recovery        boolean NOT NULL,
   has_receiver       boolean,
@@ -105,7 +112,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.pg_repl_standby_state (
 -- with no sender for the link; the lag columns are the newest read's and the one before (prev_*, NULL after a gap) so a
 -- tier holds for 2 reads in a row; a link not seen for 7 days is dropped, and a role change of the server drops its links.
 CREATE TABLE IF NOT EXISTS pgvigil.pg_repl_link_seen (
-  instance_id      int NOT NULL,
+  instance_id      int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   link             text NOT NULL,
   application_name text,
   client_addr      text,
@@ -142,7 +149,7 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
 -- pg_repl_slot_state (task 374): each slot's newest retained WAL and an hourly mark; growth_bytes_h is the growth over the
 -- last full hour (bytes per hour), growth_at the read that closed that hour. A slot no longer listed is dropped.
 CREATE TABLE IF NOT EXISTS pgvigil.pg_repl_slot_state (
-  instance_id     int NOT NULL,
+  instance_id     int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   slot_name       text NOT NULL,
   read_at         timestamptz NOT NULL,
   retained_bytes  bigint,
@@ -165,6 +172,7 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
      AND coalesce(r->>'application_name', '') NOT IN ('pg_basebackup', 'pg_rewind')
      AND coalesce(r->>'slot_type', 'physical') = 'physical'
      AND NOT coalesce((r->>'slot_temporary')::boolean, false)   -- pg_basebackup -X stream's own slot, whatever its name
+     AND NOT coalesce((r->>'db_sender')::boolean, false)        -- a database (logical) walsender, slot or not: a table copy
 $$;
 
 -- pg_sync_standbys: synchronous_standby_names parsed - FIRST n (a, b), ANY n (a, b), n (a, b) (FIRST), a bare list
@@ -456,7 +464,7 @@ links AS (
     CROSS JOIN LATERAL unnest(y.names) n(name)
     JOIN pgvigil.instances i ON i.instance_id = y.instance_id AND i.is_active
     LEFT JOIN pgvigil.pg_role_state rs ON rs.instance_id = y.instance_id
-   WHERE NOT EXISTS (SELECT 1 FROM snd WHERE snd.instance_id = y.instance_id AND lower(snd.application_name) = lower(n.name) AND snd.gone_reads = 0)
+   WHERE NOT EXISTS (SELECT 1 FROM snd WHERE snd.instance_id = y.instance_id AND lower(snd.application_name) = lower(n.name))
 ),
 judged AS (
   SELECT k.*, b.standby, b.standby_platform, b.speaks, b.unreachable, b.read_at AS standby_read_at, b.in_recovery,
@@ -469,14 +477,18 @@ judged AS (
          (k.standby_id IS NULL OR row_number() OVER (PARTITION BY k.standby_id ORDER BY (k.gone_reads = 0) DESC NULLS FIRST, k.last_seen DESC NULLS FIRST) = 1) AS own_row,
          coalesce(b.min_apply_delay_ms, 0) / 1000.0 AS delay_s,
          -- the standby speaks for this link only when read since its sender vanished (else its last word is older)
-         (b.speaks AND (k.gone_since IS NULL OR b.read_at >= k.gone_since)) AS link_speaks,
+         -- and only when it can judge its own side: a receiver, or primary_conninfo readable (NULL = a login without
+         -- pg_read_all_settings: then the sender's 'standby gone' holds)
+         (b.speaks AND (b.has_receiver OR b.conninfo_set IS NOT NULL) AND (k.gone_since IS NULL OR b.read_at >= k.gone_since)) AS link_speaks,
          -- the sending server's view counts while its read is fresh and the link has a sender
          (k.source = 'sender' AND k.sender_fresh AND k.gone_reads = 0) AS sender_view,
          ts.warn AS t_warn, ts.crit AS t_crit, ts.level AS t_level, bs.warn AS b_warn, bs.crit AS b_crit, bs.level AS b_level,
          bb.warn AS sb_warn, bb.crit AS sb_crit, rst.crit AS stall_min, rst.level AS stall_level
     FROM links k
     LEFT JOIN stb b ON b.instance_id = k.standby_id
-    LEFT JOIN pgvigil.pg_sync_state ss ON k.source = 'sync names' AND ss.instance_id = k.sending_id
+    LEFT JOIN pgvigil.pg_sync_state ss ON ss.instance_id = k.sending_id
+         AND (k.source = 'sync names'
+              OR (k.source = 'sender' AND k.gone_reads > 0 AND lower(k.application_name) IN (SELECT lower(x) FROM unnest(ss.names) x)))
     LEFT JOIN LATERAL pgvigil.pg_threshold(k.sending_id, 'standby_replay_lag') ts ON k.sending_id IS NOT NULL
     LEFT JOIN LATERAL pgvigil.pg_threshold(k.sending_id, 'standby_lag_bytes') bs ON k.sending_id IS NOT NULL
     LEFT JOIN LATERAL pgvigil.pg_threshold(k.standby_id, 'standby_lag_bytes') bb ON k.standby_id IS NOT NULL
@@ -489,7 +501,8 @@ measured AS (
          -- (least() skips a NULL, so each pair is NULL unless both reads have a value: a first read is no 2 in a row)
          CASE WHEN NOT j.own_row AND NOT j.sender_view THEN NULL
               WHEN j.sender_view AND j.delay_s > 0 THEN CASE WHEN j.prev_flush_bytes IS NOT NULL AND j.flush_bytes IS NOT NULL THEN least(j.flush_bytes, j.prev_flush_bytes) END
-              WHEN j.sender_view THEN CASE WHEN j.prev_lag_bytes IS NOT NULL AND j.lag_bytes IS NOT NULL THEN least(j.lag_bytes, j.prev_lag_bytes) END
+              WHEN j.sender_view THEN CASE WHEN coalesce(j.prev_lag_bytes, j.prev_flush_bytes) IS NOT NULL AND coalesce(j.lag_bytes, j.flush_bytes) IS NOT NULL
+                                           THEN least(coalesce(j.lag_bytes, j.flush_bytes), coalesce(j.prev_lag_bytes, j.prev_flush_bytes)) END   -- pg_receivewal / Barman: no replay position
               WHEN j.speaks AND j.has_receiver AND j.delay_s = 0 THEN CASE WHEN j.prev_rcv_bytes IS NOT NULL AND j.rcv_bytes IS NOT NULL THEN least(j.rcv_bytes, j.prev_rcv_bytes) END
          END AS bytes2,
          CASE WHEN j.sender_view AND j.prev_lag_secs IS NOT NULL AND j.lag_secs IS NOT NULL THEN least(j.lag_secs, j.prev_lag_secs) - j.delay_s END AS secs2,
@@ -506,7 +519,7 @@ measured AS (
          (j.restore_set AND j.replay_moved_at > j.down_since AND j.standby_replay_lsn > coalesce(j.standby_receive_lsn, '0/0'::pg_lsn)
           AND NOT (j.stall_min IS NOT NULL AND j.replay_moved_at < j.standby_read_at - make_interval(secs => j.stall_min * 60))) AS fed,
          -- a named synchronous standby not connected while num_sync still holds (fewer is pg_hadr_checks' critical)
-         (j.source = 'sync names' AND j.in_sync >= j.sync_num AND j.sync_at > now() - interval '30 minutes') AS is_sync_absent
+         (j.source IN ('sync names', 'sender') AND j.in_sync >= j.sync_num AND j.sync_at > now() - interval '30 minutes') AS is_sync_absent
     FROM judged j
 ),
 tiered AS (
@@ -521,6 +534,7 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
        CASE WHEN t.source = 'slot' THEN 'missing: physical slot inactive'
             WHEN t.source = 'sync names' THEN 'missing: named in synchronous_standby_names'
             WHEN t.is_down THEN 'down: receiver'
+            WHEN t.source = 'sender' AND NOT t.sender_fresh THEN 'sending server not read'
             WHEN t.source = 'sender' AND t.gone_reads > 0 AND t.replaced THEN 'replaced: the standby is back under another link'
             WHEN t.source = 'sender' AND t.gone_reads > 0 AND t.unreachable THEN 'down: standby unreachable'
             WHEN t.source = 'sender' AND t.gone_reads > 0 AND t.link_speaks AND t.has_receiver THEN 'moved: the standby streams from elsewhere'
@@ -536,7 +550,7 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
        CASE WHEN t.is_down OR t.is_gone OR t.is_paused THEN NULL ELSE t.lag_sev END AS lag_severity,
        CASE WHEN t.is_down THEN 'receiver down' WHEN t.is_gone THEN 'standby gone' WHEN t.is_paused THEN 'replay paused'
             WHEN t.lag_sev IS NOT NULL THEN 'standby lag' WHEN t.is_sync_absent THEN 'synchronous standby absent' END AS check_name,
-       CASE WHEN t.is_down THEN CASE WHEN t.fed THEN 'warning' ELSE 'critical' END
+       CASE WHEN t.is_down THEN CASE WHEN t.fed OR t.has_receiver THEN 'warning' ELSE 'critical' END
             WHEN t.is_gone OR t.is_paused THEN 'critical'
             WHEN t.is_sync_absent THEN 'warning'
             ELSE t.lag_sev END AS severity,
@@ -552,7 +566,9 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
        CASE WHEN t.is_down THEN
               format('in recovery with primary_conninfo set and no WAL receiver for %s reads in a row (since %s UTC); %s',
                      t.down_reads, to_char(t.down_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
-                     CASE WHEN t.fed
+                     CASE WHEN t.has_receiver
+                            THEN 'a WAL receiver is back (' || coalesce(t.receiver_status, 'status unknown') || '): the fault ends at the second read with it'
+                          WHEN t.fed
                             THEN 'replay still advances through restore_command (last moved ' || to_char(t.replay_moved_at AT TIME ZONE 'UTC', 'HH24:MI:SS') || ' UTC): the standby follows whole WAL files, not the stream'
                           WHEN NOT coalesce(t.restore_set, false)
                             THEN 'no restore_command: nothing reaches the standby until the receiver is back'
@@ -603,7 +619,7 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
 -- the read before, or a second rise in a row: a single rise of one is a disconnect); worker_down_reads counts the reads
 -- in a row of an enabled subscription on a server not in recovery with no apply worker.
 CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_subs (
-  instance_id        int NOT NULL,
+  instance_id        int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   datname            text NOT NULL,
   subname            text NOT NULL,
   read_at            timestamptz NOT NULL,
@@ -635,7 +651,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_subs (
 );
 -- pg_logical_rels: the tables of a subscription whose initial sync has not finished (a ready table has no row)
 CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_rels (
-  instance_id  int NOT NULL,
+  instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   datname      text NOT NULL,
   subname      text NOT NULL,
   rel          text NOT NULL,
@@ -646,7 +662,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_rels (
 );
 -- pg_logical_pubs: the publications per database of a publisher
 CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_pubs (
-  instance_id  int NOT NULL,
+  instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   datname      text NOT NULL,
   pubname      text NOT NULL,
   all_tables   boolean,
@@ -681,7 +697,8 @@ BEGIN
         SELECT jsonb_object_agg(k, (r->>k)::bigint) FILTER (WHERE r->>k IS NOT NULL) AS conflicts,
                sum((r->>k)::bigint) AS total
           FROM unnest(ARRAY['confl_insert_exists', 'confl_update_origin_differs', 'confl_update_exists', 'confl_update_missing',
-                            'confl_delete_origin_differs', 'confl_delete_missing', 'confl_multiple_unique_conflicts']) k) c
+                            'confl_delete_origin_differs', 'confl_delete_missing', 'confl_multiple_unique_conflicts',
+                            'confl_update_deleted']) k) c
      WHERE r->>'kind' = 'subscription'
     ON CONFLICT (instance_id, datname, subname) DO UPDATE SET
       read_at = EXCLUDED.read_at, is_present = true, in_recovery = EXCLUDED.in_recovery, enabled = EXCLUDED.enabled,
@@ -699,9 +716,15 @@ BEGIN
       conflicts = EXCLUDED.conflicts, conflicts_total = EXCLUDED.conflicts_total,
       worker_down_reads = CASE WHEN EXCLUDED.worker_down_reads = 1 THEN s.worker_down_reads + 1 ELSE 0 END,
       disabled_since = CASE WHEN NOT EXCLUDED.enabled THEN coalesce(s.disabled_since, EXCLUDED.read_at) END;
-    -- a subscription no longer listed is gone (dropped)
+    -- a subscription no longer listed is gone (dropped): its unfinished tables go now, its row (the counters a
+    -- re-created subscription must not be compared with) after 7 days
     UPDATE pgvigil.pg_logical_subs SET is_present = false
      WHERE instance_id = p_instance_id AND is_present AND read_at < p_snapshot_at;
+    DELETE FROM pgvigil.pg_logical_rels l
+     WHERE l.instance_id = p_instance_id
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_logical_subs s
+                        WHERE s.instance_id = l.instance_id AND s.datname = l.datname AND s.subname = l.subname AND s.is_present);
+    DELETE FROM pgvigil.pg_logical_subs WHERE instance_id = p_instance_id AND NOT is_present AND read_at < p_snapshot_at - interval '7 days';
   END IF;
 
   -- per database read: its unfinished tables and its publications replace what was there; a database not read keeps them
@@ -825,6 +848,9 @@ SELECT s.instance_id, i.name AS instance, s.datname, s.subname, s.enabled, s.in_
   LEFT JOIN LATERAL (SELECT r.* FROM pgvigil.replication_latest r
                       WHERE r.kind = 'sender' AND r.detail->>'slot_type' = 'logical' AND r.detail->>'slot_name' = s.slot_name
                         AND r.instance_id <> s.instance_id
+                        AND (SELECT count(DISTINCT r2.instance_id) FROM pgvigil.replication_latest r2
+                              WHERE r2.kind = 'sender' AND r2.detail->>'slot_type' = 'logical' AND r2.detail->>'slot_name' = s.slot_name
+                                AND r2.instance_id <> s.instance_id) = 1   -- a slot name two publishers share pairs with neither
                       ORDER BY r.snapshot_at DESC LIMIT 1) snd ON true
   LEFT JOIN pgvigil.instances pi ON pi.instance_id = snd.instance_id
   LEFT JOIN pgvigil.pg_logical_checks k ON k.instance_id = s.instance_id AND k.object = s.datname || '.' || s.subname
@@ -865,7 +891,7 @@ SELECT x.instance_id,
        CASE x.check_name
          WHEN 'slot invalidated' THEN format('invalidated (%s): the slot can no longer be used; its consumer must be rebuilt (a standby from a new base backup, a subscription or CDC task re-synced)',
                                              coalesce(x.reason, 'wal_status lost'))
-         WHEN 'slot WAL near its limit' THEN format('%s of WAL left before max_slot_wal_keep_size (%s) invalidates it (wal_status %s; retains %s; warning under %s MB)',
+         WHEN 'slot WAL near its limit' THEN format('%s of WAL left before max_slot_wal_keep_size (%s) invalidates it (wal_status %s; retains %s; warning under %s MB or half the limit, the smaller)',
                                                     pg_size_pretty(x.safe_bytes), pg_size_pretty(x.max_keep), x.wal_status, pg_size_pretty(x.lag_bytes), trim_scale(x.safe_warn))
          WHEN 'slot WAL growing' THEN format('retained WAL grew %s in the last full hour (closed %s UTC; now %s; warning at %s MB)',
                                              pg_size_pretty(x.growth_bytes_h), to_char(x.growth_at AT TIME ZONE 'UTC', 'HH24:MI'), pg_size_pretty(x.lag_bytes), trim_scale(x.growth_warn))
@@ -879,7 +905,8 @@ SELECT x.instance_id,
                st.growth_bytes_h, st.growth_at, sw.warn AS safe_warn, gw.warn AS growth_warn,
                CASE WHEN r.detail->>'invalidation_reason' IS NOT NULL OR r.detail->>'wal_status' = 'lost' THEN 'slot invalidated'
                     WHEN r.detail->>'wal_status' = 'unreserved'
-                         OR (sw.warn IS NOT NULL AND (r.detail->>'safe_wal_size')::bigint < sw.warn * 1048576) THEN 'slot WAL near its limit'
+                         OR (sw.warn IS NOT NULL AND (r.detail->>'safe_wal_size')::bigint
+                               < least(sw.warn * 1048576, (r.detail->>'max_keep_bytes')::bigint / 2)) THEN 'slot WAL near its limit'
                     WHEN gw.warn IS NOT NULL AND st.growth_bytes_h >= gw.warn * 1048576 AND st.growth_at > now() - interval '2 hours' THEN 'slot WAL growing'
                END AS check_name
           FROM pgvigil.replication_latest r
@@ -901,7 +928,9 @@ SELECT a.instance_id, CASE WHEN t.crit IS NOT NULL AND a.lag_secs >= t.crit THEN
   JOIN pgvigil.instances i ON i.instance_id = a.instance_id AND i.is_active
   CROSS JOIN LATERAL pgvigil.pg_threshold(a.instance_id, 'standby_replay_lag') t
  WHERE a.kind = 'aurora_replica' AND a.snapshot_at > now() - interval '30 minutes'
-   AND coalesce(a.state, '') <> 'MASTER_SESSION_ID' AND t.warn IS NOT NULL AND a.lag_secs >= t.warn;
+   AND coalesce(a.state, '') <> 'MASTER_SESSION_ID' AND coalesce(t.warn, t.crit) IS NOT NULL AND a.lag_secs >= coalesce(t.warn, t.crit)
+   -- a reader returns the same aurora_replica_status rows: the writer alone raises (one finding per lagging replica)
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_standby_state st WHERE st.instance_id = a.instance_id AND st.in_recovery);
 
 -- 0006's daily-check view again with a severity column at its end (for the Summary's 'replication' overview and the
 -- Replication page, which judge severity by check name until they read this column: the join's wiring): a base backup's senders out of 'sender not streaming' and the replay-lag check (task 370
@@ -923,6 +952,12 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
     FROM pgvigil.replication_latest
    WHERE coalesce(lag_secs, 0) > 30 AND kind = 'sender' AND detail->>'slot_type' = 'logical'
   UNION ALL
+  -- 0006's time rule on the standby side, kept for a standby no monitored primary sends to (the link rule judges the rest)
+  SELECT r.instance_id, r.snapshot_at, 'replay lag', r.key, r.lag_secs::bigint, 'seconds', r.state, 'warning'
+    FROM pgvigil.replication_latest r
+   WHERE r.kind = 'receiver' AND coalesce(r.lag_secs, 0) > 30
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_link_health h WHERE h.standby_id = r.instance_id AND h.sending_id IS NOT NULL)
+  UNION ALL
   -- a read that failed is a check of its own: an unreadable slot list must not look healthy
   SELECT d.instance_id, d.snapshot_at, 'replication read failed', split_part(d.note, ':', 1), NULL::bigint, NULL, d.note, 'warning'
     FROM pgvigil.collection_dates d
@@ -933,7 +968,8 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
 
 -- 0103's Summary rows and findings again (its section 4, every arm kept): the 'log shipping' arm leaves out a standby with
 -- primary_conninfo set, and the 'replication' check group carries pg_hadr_checks (to pgvigil.findings through
--- pg_backups_findings, so the alert sender sends them; the Summary shows them through replication_checks).
+-- pg_backups_findings, so the alert sender sends them; the Summary shows them through replication_checks); the findings'
+-- platforms column says 'aurora' for 'Aurora replica lag' (every other row keeps 0103's 'self-managed').
 CREATE OR REPLACE VIEW pgvigil.pg_backups_checks AS
 SELECT b.instance_id, 'critical' AS severity, b.tool || ' read failing' AS check_name, b.name AS object, b.read_at AS at,
        coalesce(b.status_message, b.message, b.state) AS detail, 'base backups' AS check_group
@@ -1029,10 +1065,14 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c
                                    WHEN 'subscription conflicts' THEN 'read the subscriber''s server log for the conflicts: changes are being skipped or applied over other rows'
                                    WHEN 'table sync not finished' THEN 'check the tablesync workers (max_sync_workers_per_subscription) and the server log for the copy'
                                    WHEN 'subscription silent' THEN 'check the publisher and the network between them: the publisher sends a keepalive every wal_sender_timeout / 2'
+                                   WHEN 'slot invalidated' THEN 'rebuild the slot''s consumer (a standby from a new base backup, a subscription or CDC task re-synced), then drop the invalidated slot'
+                                   WHEN 'slot WAL near its limit' THEN 'find why the slot''s consumer lags or is offline and bring it back, or raise max_slot_wal_keep_size if the disk allows: at the limit the slot is invalidated'
+                                   WHEN 'slot WAL growing' THEN 'find why the slot''s consumer does not confirm (offline, slow, a long transaction on the publisher); drop the slot if nothing uses it'
+                                   WHEN 'Aurora replica lag' THEN 'read the replica''s CloudWatch AuroraReplicaLag and its load (a long query on the reader, an undersized instance class)'
                                    ELSE 'see the Replication page'
                                  END
          ELSE 'schedule the amcheck collection for the database (README: the amcheck collection)'
-       END AS suggested, 'self-managed' AS platforms,
+       END AS suggested, CASE WHEN c.check_name = 'Aurora replica lag' THEN 'aurora' ELSE 'self-managed' END AS platforms,
        CASE c.check_group
          WHEN 'base backups' THEN 'without a recent base backup a restore replays more WAL, or has nothing to start from'
          WHEN 'log shipping' THEN 'a standby that falls behind loses what it has not replayed if it must take over'
@@ -1040,6 +1080,12 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c
          WHEN 'statement store' THEN 'evicted statements drop out of the statement history'
          WHEN 'replication' THEN CASE WHEN c.check_name LIKE 'subscription%' OR c.check_name = 'table sync not finished'
                                      THEN 'a subscriber that does not apply falls behind its publisher, and the publisher''s slot keeps WAL until it does'
+                                     WHEN c.check_name LIKE 'slot %'
+                                     THEN 'a slot keeps WAL until its consumer confirms it: the disk fills, or past max_slot_wal_keep_size the slot is invalidated and its consumer must be rebuilt'
+                                     WHEN c.check_name = 'synchronous commits waiting'
+                                     THEN 'a commit waits until enough synchronous standbys confirm it: the applications stall'
+                                     WHEN c.check_name = 'Aurora replica lag'
+                                     THEN 'reads on a lagging replica return old data, and a failover to it takes longer'
                                      ELSE 'a standby that does not stream falls behind: a failover to it loses what it has not received' END
          ELSE 'damage in an index or a table is only found by a check that reads it'
        END AS detail, 'pg-backups' AS source, c.at

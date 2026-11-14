@@ -41,6 +41,8 @@ func (replicationCollector) Applies(info platform.Info) (bool, string) {
 // the last received position stands in
 const currentLSN = `CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn() ELSE pg_current_wal_lsn() END`
 
+// db_sender: a database (logical) walsender - a table copy's, or a client's between its slot and START_REPLICATION -
+// holds no active slot, so slot_type alone would read it as a physical link (0141's pg_link_sender leaves it out)
 const sendersSQL = `
 SELECT 'sender' AS kind, r.pid, r.usename::text AS usename, r.application_name, host(r.client_addr) AS client_addr,
        r.backend_start, r.state, r.sync_state, r.sync_priority,
@@ -51,7 +53,8 @@ SELECT 'sender' AS kind, r.pid, r.usename::text AS usename, r.application_name, 
        extract(epoch FROM r.write_lag)  AS write_lag_secs,
        extract(epoch FROM r.flush_lag)  AS flush_lag_secs,
        extract(epoch FROM r.replay_lag) AS replay_lag_secs,
-       r.reply_time, sl.slot_name::text AS slot_name, sl.slot_type, sl.temporary AS slot_temporary
+       r.reply_time, sl.slot_name::text AS slot_name, sl.slot_type, sl.temporary AS slot_temporary,
+       (SELECT a.datname IS NOT NULL FROM pg_stat_activity a WHERE a.pid = r.pid) AS db_sender
   FROM pg_stat_replication r
   LEFT JOIN pg_replication_slots sl ON sl.active_pid = r.pid`
 
@@ -88,10 +91,15 @@ SELECT 'standby' AS kind,
        CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused() END AS replay_paused
  WHERE pg_is_in_recovery()`
 
-// the synchronous standbys a primary waits for, one row always (on a standby the setting is inert: in_recovery says so)
+// the synchronous standbys a primary waits for, one row always (on a standby the setting is inert: in_recovery says so).
+// commit_level is the server-wide synchronous_commit only: a value set for this login, its database or this session
+// (source user, database, client, session) is not what the applications run with, so it is sent as NULL (unknown).
 const syncSQL = `
 SELECT 'sync' AS kind, current_setting('synchronous_standby_names') AS names,
-       current_setting('synchronous_commit') AS commit_level, pg_is_in_recovery() AS in_recovery`
+       (SELECT CASE WHEN s.source IN ('default', 'configuration file', 'command line', 'environment variable', 'global', 'override')
+                    THEN s.setting END
+          FROM pg_settings s WHERE s.name = 'synchronous_commit') AS commit_level,
+       pg_is_in_recovery() AS in_recovery`
 
 // one row per subscription: the apply worker only (a parallel apply worker on
 // PG16+ has a leader_pid); the key is the database plus the name, since
@@ -165,7 +173,13 @@ func (replicationCollector) Run(ctx context.Context, conn *pgx.Conn, info platfo
 		if subCols["leader_pid"] {
 			leader = "AND s.leader_pid IS NULL"
 		}
-		read("subscriptions", fmt.Sprintf(subscriptionsSQL, leader))
+		if subCols["worker_type"] {
+			leader += " AND s.worker_type = 'apply'"
+		}
+		var oidOK bool
+		if err := conn.QueryRow(ctx, logicalSubOidSQL).Scan(&oidOK); err != nil || oidOK {
+			read("subscriptions", fmt.Sprintf(subscriptionsSQL, leader))
+		} // else PostgreSQL 13 without pg_subscription.oid: the logical collection's error row says so (not one per minute here)
 	}
 	read("publications", publicationsSQL)
 	if conflCols, err := viewColumns(ctx, conn, "pg_catalog.pg_stat_database_conflicts"); err != nil {
