@@ -87,6 +87,271 @@
 #  sandbox); a real mirrored database, log shipping pair or distributor; the sign of backupset.time_zone on a server
 #  whose clock is not UTC on REAL rows (the containers run in UTC; the expression is proven over literal rows); SQL Server 2016-2019, RDS, Managed Instance.
 set -euo pipefail
+#
+# PART S - the availability group gaps (task 382 and the tools audit's B1; migration 0143): `scripts/proof-mssql-hadr.sh
+# gaps` runs it ALONE, on a lab of its own (scripts/dag/trial.sh, KEEP=1: ag1 on d1a + d1b, ag2 on d2a + d2b, both
+# clusterless, the distributed group dag1 over them; image PGVIGIL_MSSQL_IMAGE, default the CU27 pin
+# mcr.microsoft.com/mssql/server:2022-CU27-GDR2-ubuntu-22.04), removed on every exit path (trial.sh down, read back).
+# Needs docker, openssl, psql, python3, a go toolchain and PGVIGIL_REPO_DSN (keyword form); nothing of parts A-G.
+# The collector reads each node at its address on the lab's network as a monitoring login of the run (one SID on the
+# four nodes; VIEW SERVER STATE, VIEW ANY DEFINITION, a user in msdb with db_datareader).
+# Expected (written before the first run):
+#  S1. the lab forms ('DAG FORMED'); the login is on the four nodes, no sysadmin.
+#  S2. at rest, one read per node, none partial or skipped. On d1a: ag1's two replicas with join_state as sa reads
+#      sys.dm_hadr_availability_replica_cluster_states (JOINED_STANDALONE_INSTANCE), failure_condition_level and
+#      health_check_timeout as sa reads sys.availability_groups, the endpoint Hadr_endpoint STARTED on 5022, the
+#      AlwaysOn_health session exists / running / autostart as sa reads; quorum as sa reads sys.dm_hadr_cluster (the
+#      question the design pass left open: what a clusterless Linux node answers), stored and shown, never judged
+#      (cluster_type NONE); ag1 / d1b / dagdb joined, its failover readiness as sa reads (judged only for AUTOMATIC:
+#      ag1 is MANUAL, so never); a seeding row of dagdb (COMPLETED) where sa's sys.dm_hadr_automatic_seeding lists
+#      one; a second read gives the replica and database counter rates as numbers (0 or more). TestHADRS3StatementsLive
+#      passes on d1a and d1b. Findings at rest: none of the new checks, except 'the AlwaysOn_health session is not
+#      running' on exactly the nodes where sa reads it not running or not starting with the server (said either way).
+#  S3. a lagging secondary: a row written on d1a and read until d1a's estimate for d1b is 0 s (the secondary holds the
+#      newest commit: the estimate is the primary's last commit less the secondary's, so on an idle database it would
+#      jump at once to the age of the last commit - seen on run 1: 54 s at the first read), then dagdb's data movement
+#      suspended on d1b and a row written on d1a every few seconds; ag_data_loss set for d1a's instance at 0.25 / 0.75
+#      minutes (15 / 45 s; rows of pg_thresholds): 'a secondary would lose data in a failover' on ag1 / d1b / dagdb as
+#      a warning once two reads in a row are 15 s or more, then critical at 45 s - ONE finding of that check for the
+#      secondary at each read (beside 'a database is suspended', 0066's). 0118's 'AG secondary behind' is not read
+#      (the join drops it). After RESUME, within 90 s, no data-loss finding.
+#  S4. a secondary's endpoint stopped (ALTER ENDPOINT Hadr_endpoint STATE = STOPPED on d1b): d1b's read raises 'the
+#      availability group endpoint is not started' (critical) and d1a's raises 'a replica is not connected' for ag1 / d1b
+#      (critical) within 60 s; after STATE = STARTED both are gone within 90 s.
+#  S5. a database not joined: pgvgj added to ag1 (seeded to d1b), then SET HADR OFF on d1b: d1a raises 'a database is not
+#      joined' (warning) for ag1 / d1b / pgvgj, and NOT 'a database is not synchronizing' for it; removed from ag1 and
+#      dropped on both: gone.
+#  S6. a replica not joined: d2b added to ag1 on d1a (ASYNCHRONOUS_COMMIT, MANUAL, SEEDING_MODE MANUAL) and never joined
+#      there: d1a raises 'a replica is not joined' (warning) for ag1 / d2b, and neither 'a replica is not connected' nor
+#      'a replica is not healthy' for it; the replica removed: gone.
+#  S7. read-only routing: d1a's routing list set to ('d1b') while d1b has no READ_ONLY_ROUTING_URL: 'read-only routing
+#      names a replica that takes no reads' (warning) for ag1 / d1a -> d1b; d1b's URL set: gone; the list reset to NONE.
+#      If SQL Server refuses a list naming a replica with no URL (it does: Msg 19404 on CU27, run gaps2), the row says so
+#      and the finding is made with d1b's URL set and ALLOW_CONNECTIONS = NO instead, cleared by ALLOW_CONNECTIONS = ALL.
+#  S8. a failed seeding: pgvgf exists on d1b already, then made on d1a and added to ag1 (automatic seeding): sa reads a
+#      FAILED seeding on d1a and pgvigil raises 'automatic seeding failed' (warning) for ag1 / pgvgf -> d1b; removed.
+#      If SQL Server reports no FAILED row, the row says 'seeding failure NOT PROVEN' with what sa read.
+#  S9. log shipping's group exclusion (task 384): dagdb on d1b as sa reads its state in sys.databases (the second
+#      question of the design pass); mssql_logshipping on d1b stores no restore row of dagdb that is judged, and no
+#      log shipping finding.
+#  S10. the lab removed: 0 containers, 0 networks, 0 volumes; the repository database dropped.
+#  NOT PROVEN HERE: quorum, a cluster member down and failover readiness on a Windows cluster (WSFC; task 387's Q8);
+#  dbachecks HADR #1-#20, #22-#25, #27 (the cluster's own nodes, resources, networks and listener names: Windows only).
+if [ "${1:-}" = gaps ]; then
+  : "${PGVIGIL_REPO_DSN:?a superuser connection to a PostgreSQL sandbox, in keyword form}"
+  for t in docker openssl psql python3 go; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+  export PGVIGIL_MSSQL_IMAGE=${PGVIGIL_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-GDR2-ubuntu-22.04}
+  S_ADMIN=$PGVIGIL_REPO_DSN; S_SUF=$RANDOM
+  S_TAG="pgvgaps$(openssl rand -hex 4)"; S_NODES=(d1a d1b d2a d2b)
+  S_SA="S$(openssl rand -hex 14)!a"; S_MP="Pv9$(openssl rand -hex 16)"; S_LM="pgvgaps_mon_$S_SUF"; S_SID="0x9B$(openssl rand -hex 15 | tr a-f A-F)"
+  S_REPO=pgvigil_gapsproof_$S_SUF
+  S_WORK=$(mktemp -d); S_CFG=$S_WORK/pgvigil.yaml; S_OUT=$S_WORK/out
+  S_LAB=; S_MADE_REPO=; S_SQLCMD=()
+  declare -A S_N S_I
+  for n in "${S_NODES[@]}"; do S_N[$n]="gapsproof-$n-$S_SUF"; done
+  sfail() { echo "FAIL: $*" >&2; exit 1; }
+  s_cleanup() {
+    rc=$?
+    set +e
+    if [ -n "$S_LAB" ]; then bash scripts/dag/trial.sh down "$S_TAG" || { echo "CLEANUP: the lab $S_TAG is not removed in full" >&2; [ $rc = 0 ] && rc=1; }; fi
+    if [ -n "$S_MADE_REPO" ]; then psql "$S_ADMIN" -XAtq -c "drop database if exists $S_REPO with (force)" >/dev/null 2>&1 || { echo "CLEANUP: database $S_REPO not dropped" >&2; [ $rc = 0 ] && rc=1; }; fi
+    rm -rf "$S_WORK"
+    exit $rc
+  }
+  trap s_cleanup EXIT
+  sct() { echo "$S_TAG-$1"; }
+  SQ() { SQLCMDPASSWORD="$S_SA" MP="$S_MP" docker exec -e SQLCMDPASSWORD -e MP "$(sct "$1")" "${S_SQLCMD[@]}" -S localhost -U sa -b -h -1 -W -s '|' -Q "SET NOCOUNT ON; $2"; }
+  SX() { local out; if ! out=$(SQ "$1" "$3" 2>&1); then printf '%s\n' "$out" | sed "s/$S_SA/<sa>/g; s/$S_MP/<password>/g" >&2; sfail "$2 (on $1) was refused"; fi; }
+  sq() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
+  saddr() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(sct "$1")"; }
+  sdsnvar() { echo "MSSQL_GAPS_${1^^}_DSN"; }
+  sread() { "$BIN" collect -config "$S_CFG" -once "$2" -instance "${S_N[$1]}" >"$S_OUT" 2>&1 || { cat "$S_OUT"; sfail "the $2 read of $1 failed"; }
+    if grep -q "partial\|skipped" "$S_OUT"; then cat "$S_OUT"; sfail "the $2 read of $1 is partial or skipped"; fi; }
+  sag() { local n; for n in "$@"; do sread "$n" mssql_ag; done; }
+  # sf <node> <check> <object>: the severities of that finding on the node (comma list), or nothing
+  sf() { sq "select coalesce(string_agg(severity, ',' order by severity), '') from pgvigil.mssql_hadr_findings where instance_id = ${S_I[$1]} and check_name = '$2' and object = '$3'"; }
+  # swait <seconds> <nodes> -- <command>: read the nodes every 5 s until the command holds
+  swait() { local limit=$1; shift; local nodes=() t0=$SECONDS; while [ "$1" != -- ]; do nodes+=("$1"); shift; done; shift
+    while :; do sag "${nodes[@]}"; if "$@"; then echo "    after $((SECONDS - t0)) s"; return 0; fi; [ $((SECONDS - t0)) -ge "$limit" ] && return 1; sleep 5; done; }
+  setthr_ag() { sq "update pgvigil.pg_thresholds set ended_at = now(), ended_by = 'proof' where ended_at is null and key = 'ag_data_loss' and level = 'instance' and instance_id = ${S_I[d1a]};
+     insert into pgvigil.pg_thresholds (key, level, instance_id, warn, crit, created_by, created_at) values ('ag_data_loss', 'instance', ${S_I[d1a]}, $1, $2, 'proof', now())" >/dev/null; }
+  BIN=${PGVIGIL_BIN:-}
+  if [ -z "$BIN" ]; then CGO_ENABLED=0 go build -o "$S_WORK/pgvigil" ./cmd/pgvigil || sfail "the build"; BIN=$S_WORK/pgvigil; fi
+
+  echo "--- S1. the lab ($PGVIGIL_MSSQL_IMAGE) and the monitoring login"
+  S_LAB=1
+  KEEP=1 PGVIGIL_DAG_TAG="$S_TAG" PGVIGIL_DAG_SA="$S_SA" bash scripts/dag/trial.sh > "$S_OUT" 2>&1 || { cat "$S_OUT"; sfail "S1: the lab did not form"; }
+  grep -qx 'DAG FORMED' "$S_OUT" || { cat "$S_OUT"; sfail "S1: no 'DAG FORMED' line"; }
+  if docker exec "$(sct d1a)" test -x /opt/mssql-tools18/bin/sqlcmd; then S_SQLCMD=(/opt/mssql-tools18/bin/sqlcmd -C); else S_SQLCMD=(/opt/mssql-tools/bin/sqlcmd); fi
+  for n in "${S_NODES[@]}"; do
+    SX "$n" "S1: the monitoring login" "CREATE LOGIN [$S_LM] WITH PASSWORD = '\$(MP)', SID = $S_SID, CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$S_LM]; GRANT VIEW ANY DEFINITION TO [$S_LM]; USE msdb; CREATE USER [$S_LM] FOR LOGIN [$S_LM]; ALTER ROLE db_datareader ADD MEMBER [$S_LM];"
+    [ "$(SQ "$n" "SELECT CAST(IS_SRVROLEMEMBER('sysadmin', '$S_LM') AS varchar(2))")" = 0 ] || sfail "S1: the login is a sysadmin on $n"
+    ip=$(saddr "$n"); [ -n "$ip" ] || sfail "S1: $n has no address"
+    export "$(sdsnvar "$n")=sqlserver://$S_LM:$S_MP@$ip:1433?database=master&encrypt=true&TrustServerCertificate=true&dial+timeout=5"
+  done
+  psql "$S_ADMIN" -XAtq -v ON_ERROR_STOP=1 -c "create database $S_REPO"; S_MADE_REPO=1
+  export PGVIGIL_REPO_DSN="$S_ADMIN dbname=$S_REPO"
+  { echo "repository:"; echo "  dsn: env:PGVIGIL_REPO_DSN"; echo "instances:"
+    for n in "${S_NODES[@]}"; do echo "  - name: ${S_N[$n]}"; echo "    engine: sqlserver"; echo "    dsn: env:$(sdsnvar "$n")"; done; } > "$S_CFG"
+  "$BIN" migrate -config "$S_CFG" >/dev/null
+  echo "ok S1: DAG FORMED; the login on four nodes, no sysadmin"
+
+  echo "--- S2. at rest"
+  sag "${S_NODES[@]}"
+  for n in "${S_NODES[@]}"; do S_I[$n]=$(sq "select instance_id from pgvigil.instances where name = '${S_N[$n]}'"); done
+  sleep 20; sag "${S_NODES[@]}"
+  SAJ=$(SQ d1a "SELECT STRING_AGG(r.replica_server_name + '=' + c.join_state_desc, ' ') WITHIN GROUP (ORDER BY r.replica_server_name) FROM sys.dm_hadr_availability_replica_cluster_states c JOIN sys.availability_replicas r ON r.replica_id = c.replica_id JOIN sys.availability_groups g ON g.group_id = r.group_id WHERE g.name = 'ag1'")
+  PGJ=$(sq "select string_agg(replica_server || '=' || coalesce(join_state, '-'), ' ' order by replica_server) from pgvigil.mssql_ag_state where instance_id = ${S_I[d1a]} and group_name = 'ag1'")
+  [ "$SAJ" = "$PGJ" ] || sfail "S2: join states: sa '$SAJ', stored '$PGJ'"
+  SAG=$(SQ d1a "SELECT CONCAT(failure_condition_level, '|', health_check_timeout) FROM sys.availability_groups WHERE name = 'ag1'")
+  PGG=$(sq "select distinct failure_condition_level || '|' || health_check_timeout_ms from pgvigil.mssql_ag_state where instance_id = ${S_I[d1a]} and group_name = 'ag1'")
+  [ "$SAG" = "$PGG" ] || sfail "S2: failure condition / health check: sa '$SAG', stored '$PGG'"
+  PGE=$(sq "select distinct (endpoint->>'endpoint_name') || '|' || (endpoint->>'endpoint_state') || '|' || (endpoint->>'endpoint_port') from pgvigil.mssql_ag_state where instance_id = ${S_I[d1a]} and is_local")
+  [ "$PGE" = "Hadr_endpoint|STARTED|5022" ] || sfail "S2: the endpoint stored as '$PGE'"
+  for n in "${S_NODES[@]}"; do
+    SAH=$(SQ "$n" "SELECT CONCAT(CASE WHEN es.name IS NULL THEN 0 ELSE 1 END, '|', CASE WHEN xs.name IS NULL THEN 0 ELSE 1 END, '|', CAST(ISNULL(es.startup_state, 0) AS int)) FROM (SELECT 1 AS one) x LEFT JOIN sys.server_event_sessions es ON es.name = 'AlwaysOn_health' LEFT JOIN sys.dm_xe_sessions xs ON xs.name = 'AlwaysOn_health'")
+    PGH=$(sq "select distinct case when (health_session->>'exists')::boolean then 1 else 0 end || '|' || case when (health_session->>'running')::boolean then 1 else 0 end || '|' || case when coalesce((health_session->>'autostart')::boolean, false) then 1 else 0 end from pgvigil.mssql_ag_state where instance_id = ${S_I[$n]}")
+    [ "$SAH" = "$PGH" ] || sfail "S2: AlwaysOn_health on $n: sa '$SAH', stored '$PGH'"
+    want=; [ "$SAH" = "1|1|1" ] || want=warning
+    [ "$(sf "$n" 'the AlwaysOn_health session is not running' AlwaysOn_health)" = "$want" ] || sfail "S2: the AlwaysOn_health finding on $n is '$(sf "$n" 'the AlwaysOn_health session is not running' AlwaysOn_health)' with sa's '$SAH'"
+    echo "    AlwaysOn_health on $n (exists|running|autostart): $SAH -> finding '${want:-none}'"
+  done
+  SAQ=$(SQ d1a "SELECT CONCAT(ISNULL(cluster_name, ''), '|', quorum_type_desc, '|', quorum_state_desc) FROM sys.dm_hadr_cluster" 2>&1 || true)
+  PGQ=$(sq "select distinct coalesce(e->>'cluster_name', '') || '|' || (e->>'quorum_type') || '|' || (e->>'quorum_state') from pgvigil.mssql_ag_state a cross join lateral jsonb_array_elements(case when jsonb_typeof(a.cluster) = 'array' then a.cluster else '[]'::jsonb end) e where a.instance_id = ${S_I[d1a]}")
+  echo "    quorum on a clusterless Linux node: sa '$SAQ', stored '$PGQ' (cluster type $(sq "select distinct cluster_type from pgvigil.mssql_ag_state where instance_id = ${S_I[d1a]} and group_name = 'ag1'"))"
+  [ "$SAQ" = "$PGQ" ] || sfail "S2: quorum: sa '$SAQ', stored '$PGQ'"
+  SAR=$(SQ d1a "SELECT CONCAT(c.is_database_joined, '|', c.is_failover_ready) FROM sys.dm_hadr_database_replica_cluster_states c JOIN sys.availability_replicas r ON r.replica_id = c.replica_id WHERE r.replica_server_name = 'd1b' AND c.database_name = 'dagdb'")
+  PGR=$(sq "select case when is_database_joined then 1 else 0 end || '|' || case when is_failover_ready then 1 else 0 end from pgvigil.mssql_ag_database_cluster where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd1b' and database_name = 'dagdb'")
+  [ "$SAR" = "$PGR" ] && [ "${PGR%%|*}" = 1 ] || sfail "S2: ag1 / d1b / dagdb joined|ready: sa '$SAR', stored '$PGR'"
+  SAS=$(SQ d1a "SELECT COUNT(*) FROM sys.dm_hadr_automatic_seeding")
+  PGS=$(sq "select coalesce(string_agg(database_name || '->' || remote_replica || '=' || seeding_state, ' ' order by 1), 'none') from pgvigil.mssql_ag_seeding where instance_id = ${S_I[d1a]}")
+  echo "    seeding on d1a: sa counts $SAS row(s); stored: $PGS"
+  [ "$SAS" = 0 ] || [ "$PGS" != none ] || sfail "S2: sa lists seeding rows on d1a, none stored"
+  RR=$(sq "select count(*) from pgvigil.mssql_ag_replica_sample where instance_id = ${S_I[d1a]} and flow_control_ms_per_s is not null and resent_messages_per_s is not null")
+  RD=$(sq "select count(*) from pgvigil.mssql_ag_dbcounter_sample where instance_id = ${S_I[d1b]} and database_name = 'dagdb' and redo_blocked_per_s is not null")
+  [ "$RR" -ge 1 ] && [ "$RD" -ge 1 ] || sfail "S2: the counter rates: replica rows with rates $RR on d1a, database rows $RD on d1b"
+  NEW="'a secondary would lose data in a failover','a replica is not joined','a database is not joined','a database is not ready for automatic failover','the cluster has no normal quorum','a cluster member is down','the availability group endpoint is not started','automatic seeding failed','read-only routing names a replica that takes no reads'"
+  AT_REST=$(sq "select coalesce(string_agg(i.name || ':' || f.check_name, '; '), 'none') from pgvigil.mssql_hadr_findings f join pgvigil.instances i using (instance_id) where f.check_name in ($NEW)")
+  [ "$AT_REST" = none ] || sfail "S2: new findings at rest: $AT_REST"
+  for n in d1a d1b; do v=$(sdsnvar "$n")
+    PGVIGIL_MSSQL_TEST_DSN="${!v}" go test -count=1 -run 'TestHADRS3StatementsLive' ./internal/mssql/ > "$S_OUT" 2>&1 || { sed "s/$S_MP/<password>/g" "$S_OUT"; sfail "S2: TestHADRS3StatementsLive on $n"; }
+  done
+  echo "ok S2: join states, group settings, endpoint, AlwaysOn_health, quorum, joined / ready, seeding, counter rates as sa reads; no new finding at rest; the statements live on d1a and d1b"
+
+  echo "--- S3. a lagging secondary: one data-loss finding, two tiers"
+  setthr_ag 0.25 0.75
+  srow() { SQ d1a "USE dagdb; IF OBJECT_ID('dbo.gaps_rows') IS NULL CREATE TABLE dbo.gaps_rows (id int IDENTITY PRIMARY KEY, at datetime2 DEFAULT SYSUTCDATETIME()); INSERT dbo.gaps_rows DEFAULT VALUES;" >/dev/null; }
+  srow
+  zero() { [ "$(sq "select coalesce(est_data_loss_s::text, '-') from pgvigil.mssql_ag_database_state where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd1b' and database_name = 'dagdb'")" = 0 ]; }
+  swait 60 d1a -- zero || sfail "S3: the estimate for d1b does not come to 0 s after a replicated write"
+  SX d1b "S3: suspend" "ALTER DATABASE dagdb SET HADR SUSPEND;"
+  t0=$SECONDS; W1=; C1=; BAD=
+  while [ $((SECONDS - t0)) -lt 150 ]; do
+    srow
+    sag d1a
+    sev=$(sf d1a 'a secondary would lose data in a failover' 'ag1 / d1b / dagdb')
+    n=$(sq "select count(*) from pgvigil.mssql_hadr_findings where instance_id = ${S_I[d1a]} and check_name = 'a secondary would lose data in a failover' and object = 'ag1 / d1b / dagdb'")
+    [ "$n" -le 1 ] || BAD="$n findings at $((SECONDS - t0)) s"
+    [ "$sev" = warning ] && [ -z "$W1" ] && W1=$((SECONDS - t0))
+    if [ "$sev" = critical ]; then C1=$((SECONDS - t0)); break; fi
+    sleep 4
+  done
+  LOSS=$(sq "select est_data_loss_s || ' s (' || coalesce(data_loss_basis, '-') || ')' from pgvigil.mssql_ag_database_state where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd1b' and database_name = 'dagdb'")
+  [ -z "$BAD" ] || sfail "S3: more than one data-loss finding: $BAD"
+  [ -n "$W1" ] && [ -n "$C1" ] || sfail "S3: the tiers: warning at '${W1:-never}' s, critical at '${C1:-never}' s (last estimate $LOSS)"
+  [ "$(sf d1a 'a database is suspended' 'ag1 / d1b / dagdb')" = critical ] || sfail "S3: 0066's suspended finding is missing"
+  SX d1b "S3: resume" "ALTER DATABASE dagdb SET HADR RESUME;"
+  cleared() { [ -z "$(sf d1a 'a secondary would lose data in a failover' 'ag1 / d1b / dagdb')" ]; }
+  swait 90 d1a -- cleared || sfail "S3: the data-loss finding stays 90 s after RESUME"
+  echo "ok S3: one finding: warning after $W1 s, critical after $C1 s (estimate $LOSS); cleared after RESUME"
+
+  echo "--- S4. a secondary's endpoint stopped"
+  SX d1b "S4: stop the endpoint" "ALTER ENDPOINT Hadr_endpoint STATE = STOPPED;"
+  s4set() { [ "$(sf d1b 'the availability group endpoint is not started' Hadr_endpoint)" = critical ] && [ "$(sf d1a 'a replica is not connected' 'ag1 / d1b')" = critical ]; }
+  swait 60 d1a d1b -- s4set || { SX d1b "S4: restart the endpoint" "ALTER ENDPOINT Hadr_endpoint STATE = STARTED;"; sfail "S4: endpoint '$(sf d1b 'the availability group endpoint is not started' Hadr_endpoint)', not connected '$(sf d1a 'a replica is not connected' 'ag1 / d1b')'"; }
+  SX d1b "S4: restart the endpoint" "ALTER ENDPOINT Hadr_endpoint STATE = STARTED;"
+  s4clear() { [ -z "$(sf d1b 'the availability group endpoint is not started' Hadr_endpoint)" ] && [ -z "$(sf d1a 'a replica is not connected' 'ag1 / d1b')" ]; }
+  swait 90 d1a d1b -- s4clear || sfail "S4: the findings stay 90 s after STARTED"
+  echo "ok S4: endpoint stopped -> both critical findings; started -> both gone"
+
+  echo "--- S5. a database not joined"
+  SX d1a "S5: pgvgj" "CREATE DATABASE pgvgj; ALTER DATABASE pgvgj SET RECOVERY FULL; BACKUP DATABASE pgvgj TO DISK = 'NUL'; ALTER AVAILABILITY GROUP ag1 ADD DATABASE pgvgj;"
+  seeded() { [ "$(SQ d1b "SELECT COUNT(*) FROM sys.dm_hadr_database_replica_states WHERE database_id = DB_ID('pgvgj') AND is_local = 1")" = 1 ]; }
+  for _ in $(seq 1 30); do seeded && break; sleep 2; done; seeded || sfail "S5: pgvgj never arrived on d1b"
+  SX d1b "S5: leave the group on d1b" "ALTER DATABASE pgvgj SET HADR OFF;"
+  s5set() { [ "$(sf d1a 'a database is not joined' 'ag1 / d1b / pgvgj')" = warning ]; }
+  swait 60 d1a -- s5set || sfail "S5: no 'a database is not joined' (stored: $(sq "select coalesce(string_agg(replica_server || '/' || database_name || ' joined=' || coalesce(is_database_joined::text, '-'), '; '), 'none') from pgvigil.mssql_ag_database_cluster where instance_id = ${S_I[d1a]} and database_name = 'pgvgj'"))"
+  [ -z "$(sf d1a 'a database is not synchronizing' 'ag1 / d1b / pgvgj')" ] || sfail "S5: a second finding (not synchronizing) for the unjoined database"
+  SX d1a "S5: remove" "ALTER AVAILABILITY GROUP ag1 REMOVE DATABASE pgvgj;"
+  SX d1b "S5: drop the copy" "IF DB_ID('pgvgj') IS NOT NULL DROP DATABASE pgvgj;"
+  SX d1a "S5: drop" "ALTER DATABASE pgvgj SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE pgvgj;"
+  s5clear() { [ -z "$(sf d1a 'a database is not joined' 'ag1 / d1b / pgvgj')" ]; }
+  swait 60 d1a -- s5clear || sfail "S5: the finding stays after the removal"
+  echo "ok S5: one warning 'a database is not joined', no second finding; gone after the removal"
+
+  echo "--- S6. a replica not joined"
+  SX d1a "S6: add d2b to ag1" "ALTER AVAILABILITY GROUP ag1 ADD REPLICA ON N'd2b' WITH (ENDPOINT_URL = 'TCP://d2b:5022', AVAILABILITY_MODE = ASYNCHRONOUS_COMMIT, FAILOVER_MODE = MANUAL, SEEDING_MODE = MANUAL);"
+  s6set() { [ "$(sf d1a 'a replica is not joined' 'ag1 / d2b')" = warning ]; }
+  swait 60 d1a -- s6set || { SQ d1a "ALTER AVAILABILITY GROUP ag1 REMOVE REPLICA ON N'd2b';" >/dev/null 2>&1; sfail "S6: no 'a replica is not joined' (stored join state $(sq "select coalesce(join_state, '-') from pgvigil.mssql_ag_state where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd2b'"))"; }
+  OTHER=$(sq "select coalesce(string_agg(check_name, '; '), 'none') from pgvigil.mssql_hadr_findings where instance_id = ${S_I[d1a]} and object = 'ag1 / d2b' and check_name <> 'a replica is not joined'")
+  SX d1a "S6: remove d2b" "ALTER AVAILABILITY GROUP ag1 REMOVE REPLICA ON N'd2b';"
+  [ "$OTHER" = none ] || sfail "S6: other findings for the unjoined replica: $OTHER"
+  s6clear() { [ -z "$(sf d1a 'a replica is not joined' 'ag1 / d2b')" ]; }
+  swait 60 d1a -- s6clear || sfail "S6: the finding stays after the removal"
+  echo "ok S6: one warning 'a replica is not joined', no other finding for it; gone after the removal"
+
+  echo "--- S7. read-only routing"
+  RMODE=url
+  if ! SQ d1a "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1a' WITH (PRIMARY_ROLE (READ_ONLY_ROUTING_LIST = ('d1b')));" > "$S_OUT" 2>&1; then
+    echo "    SQL Server refused a list naming d1b without a URL: $(tr '\n' ' ' < "$S_OUT" | sed "s/$S_SA/<sa>/g" | cut -c1-200)"
+    RMODE=allow
+    SX d1a "S7: d1b's URL" "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1b' WITH (SECONDARY_ROLE (READ_ONLY_ROUTING_URL = 'TCP://d1b:1433'));"
+    SX d1a "S7: d1b takes no reads" "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1b' WITH (SECONDARY_ROLE (ALLOW_CONNECTIONS = NO));"
+    SX d1a "S7: the list" "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1a' WITH (PRIMARY_ROLE (READ_ONLY_ROUTING_LIST = ('d1b')));"
+  fi
+  s7set() { [ "$(sf d1a 'read-only routing names a replica that takes no reads' 'ag1 / d1a -> d1b')" = warning ]; }
+  swait 60 d1a -- s7set || sfail "S7: no routing finding ($RMODE; stored list $(sq "select coalesce(routing_list::text, '-') from pgvigil.mssql_ag_state where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd1a'"))"
+  if [ "$RMODE" = url ]; then SX d1a "S7: d1b's URL" "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1b' WITH (SECONDARY_ROLE (READ_ONLY_ROUTING_URL = 'TCP://d1b:1433'));"
+  else SX d1a "S7: d1b takes reads again" "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1b' WITH (SECONDARY_ROLE (ALLOW_CONNECTIONS = ALL));"; fi
+  s7clear() { [ -z "$(sf d1a 'read-only routing names a replica that takes no reads' 'ag1 / d1a -> d1b')" ]; }
+  swait 60 d1a -- s7clear || sfail "S7: the routing finding stays after the fix"
+  # READ_ONLY_ROUTING_URL takes no NONE (Msg 153): d1b keeps its URL until the lab is removed
+  SX d1a "S7: reset" "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1a' WITH (PRIMARY_ROLE (READ_ONLY_ROUTING_LIST = NONE));"
+  echo "ok S7: the routing finding ($RMODE), gone after the fix; the list reset"
+
+  echo "--- S8. a failed automatic seeding"
+  SX d1b "S8: pgvgf on d1b first" "CREATE DATABASE pgvgf;"
+  SX d1a "S8: pgvgf on d1a, added" "CREATE DATABASE pgvgf; ALTER DATABASE pgvgf SET RECOVERY FULL; BACKUP DATABASE pgvgf TO DISK = 'NUL'; ALTER AVAILABILITY GROUP ag1 ADD DATABASE pgvgf;"
+  failed() { [ "$(SQ d1a "SELECT COUNT(*) FROM sys.dm_hadr_automatic_seeding s JOIN sys.availability_databases_cluster c ON c.group_database_id = s.ag_db_id WHERE c.database_name = 'pgvgf' AND s.current_state = 'FAILED'")" -ge 1 ]; }
+  for _ in $(seq 1 30); do failed && break; sleep 2; done
+  if failed; then
+    s8set() { [ "$(sf d1a 'automatic seeding failed' 'ag1 / pgvgf -> d1b')" = warning ]; }
+    swait 60 d1a -- s8set || sfail "S8: sa reads a FAILED seeding, no finding (stored: $(sq "select coalesce(string_agg(database_name || '->' || remote_replica || '=' || coalesce(seeding_state, '-') || '/' || coalesce(failure_state, '-'), '; '), 'none') from pgvigil.mssql_ag_seeding where instance_id = ${S_I[d1a]} and database_name = 'pgvgf'"))"
+    echo "ok S8: a FAILED seeding ($(SQ d1a "SELECT TOP (1) failure_state_desc FROM sys.dm_hadr_automatic_seeding s JOIN sys.availability_databases_cluster c ON c.group_database_id = s.ag_db_id WHERE c.database_name = 'pgvgf' AND s.current_state = 'FAILED'")) -> 'automatic seeding failed'"
+  else
+    echo "    seeding failure NOT PROVEN: sa reads for pgvgf: $(SQ d1a "SELECT STRING_AGG(CONCAT(s.current_state, '/', s.failure_state_desc), ' ') FROM sys.dm_hadr_automatic_seeding s JOIN sys.availability_databases_cluster c ON c.group_database_id = s.ag_db_id WHERE c.database_name = 'pgvgf'")"
+  fi
+  SX d1a "S8: remove" "ALTER AVAILABILITY GROUP ag1 REMOVE DATABASE pgvgf; ALTER DATABASE pgvgf SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE pgvgf;"
+  SX d1b "S8: drop" "IF DB_ID('pgvgf') IS NOT NULL BEGIN ALTER DATABASE pgvgf SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE pgvgf; END"
+
+  echo "--- S9. log shipping leaves a group's secondary out"
+  STATE=$(SQ d1b "SELECT CONCAT(state_desc, '|', is_in_standby, '|', CASE WHEN replica_id IS NULL THEN 0 ELSE 1 END) FROM sys.databases WHERE name = 'dagdb'")
+  sread d1b mssql_logshipping
+  ROWS=$(sq "select coalesce(string_agg(database_name || ' ag=' || in_availability_group, ' '), 'none') from pgvigil.mssql_logrestore_state where instance_id = ${S_I[d1b]}")
+  LSF=$(sq "select count(*) from pgvigil.mssql_hadr_findings where instance_id = ${S_I[d1b]} and check_name in ('log restores are behind', 'a database has been restoring for days', 'a log shipping copy is missing')")
+  echo "    dagdb on d1b (state|standby|in a group): $STATE; restore rows stored: $ROWS; log shipping findings: $LSF"
+  [ "$LSF" = 0 ] || sfail "S9: log shipping findings on the group's secondary"
+  case "$ROWS" in none|*"ag=t"*) ;; *) sfail "S9: a restore row of d1b not marked as in a group: $ROWS";; esac
+  echo "ok S9: the group's secondary is not judged as log shipping"
+
+  echo "--- S10. the lab removed"
+  bash scripts/dag/trial.sh down "$S_TAG" | tee "$S_OUT" || sfail "S10: the lab is not removed in full"
+  S_LAB=
+  psql "$S_ADMIN" -XAtq -c "drop database if exists $S_REPO with (force)" >/dev/null; S_MADE_REPO=
+  echo "ok S10: the lab and the repository removed"
+  echo "PROOF OK (part S)"
+  exit 0
+fi
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}" "${MSSQL_SA_PASSWORD:?the sa password of the SQL Server sandbox}"
 CT1=${PGVIGIL_MSSQL_CONTAINER:-mssql-sandbox}; ADDR1=${PGVIGIL_MSSQL_ADDR:-localhost:1433}
