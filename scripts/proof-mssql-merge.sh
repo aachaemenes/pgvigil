@@ -175,10 +175,10 @@ SQL
   echo "--- T1-T3. the statements"
   for t in TestReplicationMergeShape TestReplicationMergeLive; do
     if PGVIGIL_MSSQL_TEST_MERGESTUB=pgvm_stub go test ./internal/mssql/ -run "^$t\$" -count=1 -v > "$OUT" 2>&1; then
-      grep -E '^\s+replication_merge_test.go:[0-9]+: merge-' "$OUT" | sed 's/^ */    /'
+      { grep -E '^\s+replication_merge_test.go:[0-9]+: merge-' "$OUT" || true; } | sed 's/^ */    /'   # none for the shape test: grep exits 1
       grep -q "^--- PASS: $t" "$OUT" && ok "$t" || red "$t" "(not run: skipped?)"
     else
-      grep -E '^\s+replication_merge_test.go:[0-9]+:' "$OUT" | mask | sed 's/^ */    /' | head -30
+      { grep -E '^\s+replication_merge_test.go:[0-9]+:' "$OUT" || true; } | mask | sed 's/^ */    /' | head -30
       red "$t"
     fi
   done
