@@ -29,6 +29,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
            'pg-collector', d.snapshot_at
       FROM pgvigil.databases d
      WHERE d.is_present AND NOT coalesce(d.is_template, false) AND d.xid_age >= 300000000
+       AND coalesce(d.conn_limit, 0) <> -2   -- an invalid database (an interrupted DROP): autovacuum skips it, its age is no risk
     UNION ALL
     -- pg-collector: an inactive replication slot (the replication collection's latest read)
     SELECT s.instance_id, 'warning', 'inactive replication slot', s.key, true, 'drop it or reconnect its consumer', 'all',
@@ -593,3 +594,107 @@ BEGIN
     FROM jsonb_to_recordset(v_items) AS x(event text, finding_key text)
    WHERE x.event IN ('resolved', 'cleared') AND s.channel = v_chan AND s.finding_key = x.finding_key AND s.cleared_at IS NULL;
 END $$;
+
+-- pg_db_options (0104's, replaced whole here: 0104 is not edited in place): an invalid database (datconnlimit -2, an
+-- interrupted DROP DATABASE) gets no xid verdict - autovacuum and the clog truncation skip it (13.12 / 14.9 / 15.4 / 16+),
+-- so its frozen-xid age only grows and holds nothing back; its connection cell already says DROP DATABASE.
+CREATE OR REPLACE VIEW pgvigil.pg_db_options AS
+WITH n0 AS (    -- the newest connections read of each instance in the last 10 minutes (the collection runs every minute)
+  SELECT c.instance_id, max(c.snapshot_at) AS at
+    FROM pgvigil.conn_sources c
+   WHERE c.snapshot_at > now() - interval '10 minutes'
+   GROUP BY 1
+), n AS (       -- folded: the read put its smallest sources under '(other sources)', so a database's count is a floor
+  SELECT n0.instance_id, n0.at,
+         EXISTS (SELECT 1 FROM pgvigil.conn_sources c WHERE c.instance_id = n0.instance_id AND c.snapshot_at = n0.at
+                    AND c.datname = '(other sources)') AS folded
+    FROM n0
+), cs AS (
+  SELECT c.instance_id, c.datname, sum(c.total)::int AS sessions
+    FROM pgvigil.conn_sources c JOIN n ON n.instance_id = c.instance_id AND n.at = c.snapshot_at
+   GROUP BY 1, 2
+), b AS (
+  SELECT d.instance_id, d.dbid, d.datname, d.is_template, d.allow_conn, d.conn_limit, d.encoding, d.xid_age, d.snapshot_at,
+         st.platform, st.server_version_num, st.data_checksums, n.at AS sessions_at, coalesce(n.folded, false) AS folded,
+         CASE WHEN n.at IS NOT NULL THEN coalesce(cs.sessions, 0) END AS sessions,
+         fm.v AS freeze_max_age,
+         co.dbid IS NOT NULL AS collation_read, co.provider, co.locale, co.recorded_version, co.actual_version
+    FROM pgvigil.databases d
+    JOIN pgvigil.instance_state st ON st.instance_id = d.instance_id
+    LEFT JOIN n ON n.instance_id = d.instance_id
+    LEFT JOIN cs ON cs.instance_id = d.instance_id AND cs.datname = d.datname
+    LEFT JOIN LATERAL (SELECT CASE WHEN x->>'value' ~ '^[0-9]+$' THEN (x->>'value')::bigint END AS v
+                         FROM jsonb_array_elements(coalesce(st.non_default_settings, '[]'::jsonb)) x
+                        WHERE x->>'name' = 'autovacuum_freeze_max_age' LIMIT 1) fx ON true
+    CROSS JOIN LATERAL (SELECT coalesce(fx.v, 200000000) AS v) fm
+    LEFT JOIN pgvigil.database_collations co ON co.instance_id = d.instance_id AND co.dbid = d.dbid AND co.is_present
+   WHERE d.is_present
+), j AS (
+  SELECT b.*,
+    -- the connection limit against the sessions now (a superuser is not held to it; the count is every client session
+    -- of the newest read but the collector's own)
+    -- datconnlimit -2 (PostgreSQL 13.12, 14.9, 15.4, 16 and later): an interrupted DROP DATABASE left it invalid
+    CASE WHEN b.conn_limit = -2 THEN 'crit' WHEN NOT coalesce(b.allow_conn, true) OR b.conn_limit IS NULL THEN 'none'
+         WHEN b.conn_limit < 0 THEN 'ok' WHEN b.conn_limit = 0 THEN 'warn'
+         WHEN b.sessions IS NULL THEN 'none' WHEN b.sessions >= b.conn_limit THEN 'crit'
+         WHEN b.folded THEN 'none' WHEN b.sessions >= 0.8 * b.conn_limit THEN 'warn' ELSE 'ok' END AS conn_status,
+    CASE WHEN b.conn_limit = -2 THEN 'invalid: an interrupted DROP DATABASE left it; no session can connect and only DROP DATABASE removes it'
+         WHEN NOT coalesce(b.allow_conn, true) THEN 'not judged: connections are not allowed'
+         WHEN b.conn_limit IS NULL THEN 'not read' WHEN b.conn_limit < 0 THEN 'no limit'
+         WHEN b.conn_limit = 0 THEN 'closed: CONNECTION LIMIT 0 lets only a superuser in'
+         WHEN b.sessions IS NULL THEN 'sessions not read in the last 10 minutes (the connections collection)'
+         WHEN b.sessions >= b.conn_limit THEN 'reached: a new session of a login that is not a superuser is refused'
+         WHEN b.folded THEN 'not judged: the read folded its smallest connection sources into (other sources), so the count is a floor'
+         WHEN b.sessions >= 0.8 * b.conn_limit THEN 'near: 80 % or more of the limit in use' ELSE 'room' END AS conn_note,
+    -- allow connections
+    CASE WHEN b.allow_conn IS NULL OR b.conn_limit = -2 THEN 'none' WHEN coalesce(b.is_template, false) THEN 'none' WHEN b.allow_conn THEN 'ok' ELSE 'warn' END AS allow_status,
+    CASE WHEN b.allow_conn IS NULL THEN 'not read' WHEN b.conn_limit = -2 THEN 'an invalid database: not judged'
+         WHEN coalesce(b.is_template, false) THEN 'a template: not judged'
+         WHEN b.allow_conn THEN 'allowed' ELSE 'not allowed: no session can use the database (ALTER DATABASE ... ALLOW_CONNECTIONS true opens it)' END AS allow_note,
+    -- encoding
+    -- template0's encoding binds nothing: CREATE DATABASE ... TEMPLATE template0 takes any encoding
+    CASE WHEN b.encoding IS NULL OR b.datname = 'template0' THEN 'none' WHEN b.encoding = 'UTF8' THEN 'ok' ELSE 'warn' END AS encoding_status,
+    CASE WHEN b.encoding IS NULL THEN 'not read' WHEN b.datname = 'template0' THEN b.encoding || ' (template0: CREATE DATABASE ... TEMPLATE template0 takes any encoding)'
+         WHEN b.encoding = 'UTF8' THEN 'UTF8'
+         WHEN b.encoding = 'SQL_ASCII' THEN 'SQL_ASCII stores bytes unchecked: no character is validated or converted'
+         ELSE 'not UTF8: characters outside ' || b.encoding || ' cannot be stored' END AS encoding_note,
+    -- the collation version (PostgreSQL 15+)
+    CASE WHEN b.server_version_num < 150000 THEN 'none' WHEN NOT b.collation_read THEN 'none'
+         WHEN b.recorded_version IS NULL OR b.actual_version IS NULL THEN 'none'
+         WHEN b.recorded_version <> b.actual_version THEN 'warn' ELSE 'ok' END AS collation_status,
+    CASE WHEN b.server_version_num < 150000 THEN 'PostgreSQL 15+ records it'
+         WHEN NOT b.collation_read THEN 'not read (the versions collection reads the databases the login may connect to)'
+         WHEN b.recorded_version IS NULL OR b.actual_version IS NULL THEN 'the locale has no version (C, POSIX or the builtin provider)'
+         WHEN b.recorded_version <> b.actual_version THEN 'recorded ' || b.recorded_version || ', the library now ' || b.actual_version
+              || ': text indexes may be out of order; REINDEX them, then ALTER DATABASE ... REFRESH COLLATION VERSION'
+         ELSE 'recorded ' || b.recorded_version || ' = the library''s' END AS collation_note,
+    -- data checksums (the cluster's): the severity is corruption_findings'
+    CASE WHEN b.data_checksums IS NULL OR b.platform = 'aurora' THEN 'none' WHEN b.data_checksums = 'on' THEN 'ok' ELSE 'warn' END AS checksums_status,
+    CASE WHEN b.data_checksums IS NULL THEN 'not read' WHEN b.platform = 'aurora' THEN 'Aurora''s storage checks its own pages: not judged'
+         WHEN b.data_checksums = 'on' THEN 'on'
+         WHEN b.platform = 'onprem' THEN 'off: a damaged page is read as good data (pg_checksums --enable on the stopped cluster)'
+         ELSE 'off: a damaged page is read as good data; the platform cannot turn them on in place' END AS checksums_note,
+    -- age(datfrozenxid) against autovacuum_freeze_max_age
+    CASE WHEN b.conn_limit = -2 THEN 'none' WHEN b.xid_age IS NULL THEN 'none' WHEN b.xid_age >= 1000000000 THEN 'crit' WHEN b.xid_age >= b.freeze_max_age THEN 'warn' ELSE 'ok' END AS xid_status,
+    CASE WHEN b.conn_limit = -2 THEN 'an invalid database: not judged (autovacuum and the clog truncation skip it, so its age only grows; DROP DATABASE removes it)'
+         WHEN b.xid_age IS NULL THEN 'not read' WHEN b.xid_age >= 1000000000 THEN 'past 1 billion: find what holds vacuum back before the 2 billion stop'
+         WHEN b.xid_age >= b.freeze_max_age THEN 'past autovacuum_freeze_max_age (' || b.freeze_max_age || '): the anti-wraparound vacuum is due; staying here means it is held back'
+         ELSE 'under autovacuum_freeze_max_age (' || b.freeze_max_age || ')' END AS xid_note
+    FROM b
+)
+SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platform, j.server_version_num,
+       j.conn_limit, j.sessions, j.sessions_at, j.conn_status, CASE j.conn_status WHEN 'crit' THEN 'critical' WHEN 'warn' THEN 'warning' END AS conn_severity, j.conn_note,
+       j.allow_conn, j.allow_status, CASE WHEN j.allow_status = 'warn' THEN 'warning' END AS allow_severity, j.allow_note,
+       j.encoding, j.encoding_status, CASE WHEN j.encoding_status = 'warn' THEN 'info' END AS encoding_severity, j.encoding_note,
+       j.provider AS collation_provider, j.locale AS collation_locale, j.recorded_version, j.actual_version,
+       j.collation_status, CASE WHEN j.collation_status = 'warn' THEN 'warning' END AS collation_severity, j.collation_note,
+       j.data_checksums, j.checksums_status,
+       CASE WHEN j.checksums_status = 'warn' THEN CASE WHEN j.platform = 'onprem' THEN 'warning' ELSE 'info' END END AS checksums_severity, j.checksums_note,
+       j.xid_age, j.freeze_max_age, j.xid_status,
+       CASE j.xid_status WHEN 'crit' THEN 'critical' WHEN 'warn' THEN 'warning' END AS xid_severity, j.xid_note,
+       (j.conn_status IN ('warn', 'crit'))::int + (j.allow_status = 'warn')::int + (j.encoding_status = 'warn')::int
+         + (j.collation_status = 'warn')::int + (j.checksums_status = 'warn')::int + (j.xid_status IN ('warn', 'crit'))::int AS deviations,
+       CASE WHEN 'crit' IN (j.conn_status, j.xid_status) THEN 'crit'
+            WHEN 'warn' IN (j.conn_status, j.allow_status, j.encoding_status, j.collation_status, j.checksums_status, j.xid_status) THEN 'warn'
+            ELSE 'ok' END AS worst
+  FROM j;
