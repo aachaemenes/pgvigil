@@ -51,10 +51,12 @@ SELECT j.name, j.running_since, extract(epoch FROM j.snapshot_at - j.running_sin
  WHERE j.instance_id = $1 AND j.running_since IS NOT NULL
  ORDER BY j.running_since`
 
-// a failed job outcome (step 0) of the window with the step that failed in that run; a step that failed in a run
-// whose outcome row is not read yet is listed by itself
+// a failed or cancelled job outcome (step 0) of the window - 0137's judge (DBA Dash 4.24.1: run_status IN (0, 3)),
+// its outcome as a word - with the step that failed in that run (a cancelled run has none); a step that failed in a
+// run whose outcome row is not read yet is listed by itself
 const sqlMSSQLJobsFailed = `
-SELECT r.snapshot_at AS run_at, coalesce(r.job_name, r.job_id) AS job, s.step_id, s.step_name,
+SELECT r.snapshot_at AS run_at, coalesce(r.job_name, r.job_id) AS job, CASE r.run_status WHEN 3 THEN 'cancelled' ELSE 'failed' END AS outcome,
+       s.step_id, s.step_name,
        coalesce(s.message, r.message) AS message, r.duration_s, s.sql_message_id, s.sql_severity, r.message AS outcome_message
   FROM pgvigil.mssql_job_runs r
   LEFT JOIN LATERAL (SELECT x.step_id, x.step_name, x.message, x.sql_message_id, x.sql_severity FROM pgvigil.mssql_job_runs x
@@ -63,7 +65,7 @@ SELECT r.snapshot_at AS run_at, coalesce(r.job_name, r.job_id) AS job, s.step_id
                         AND x.snapshot_at <= r.snapshot_at + make_interval(secs => coalesce(r.duration_s, 0) + 60)
                         AND x.history_id < r.history_id
                       ORDER BY x.history_id DESC LIMIT 1) s ON true
- WHERE r.instance_id = $1 AND r.step_id = 0 AND r.run_status = 0 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+ WHERE r.instance_id = $1 AND r.step_id = 0 AND r.run_status IN (0, 3) AND r.snapshot_at > $2 AND r.snapshot_at <= $3
  ORDER BY r.snapshot_at DESC
  LIMIT 500`
 
