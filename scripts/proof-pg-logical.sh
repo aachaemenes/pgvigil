@@ -11,7 +11,7 @@
 # Expected (written before the first run, 2026-11-14 10:5x PST; the rows the review fold added or changed 12:5x PST,
 # before their runs). On a tree without task 373 (486015e) the 'logical' collection does not exist: every positive
 # assertion fails at its first read [red FAIL] - B x3, K x2 (K's key, read through the replication collection, and the
-# status row), D x2 (D's 'gone' also asks for the stored worker), S x4, C x2, C2's second read, W, WP - and the negative
+# status row), D x2 (D's 'gone' also asks for the stored worker), S x4, C2's second read, C x2, W, WP - and the negative
 # and data assertions pass [red ok]: B no finding, C the row applied, C2's first read and its fix, X, W's restart and
 # 'gone', WP's 'gone':
 #   B    the healthy pair: lsub's pg_logical_subs row app1.sub1 enabled, an apply worker, tables ready 1/1, its
@@ -31,7 +31,7 @@
 #        'subscription apply errors' critical, its detail counting the insert_exists conflicts (over 0); fixed: the
 #        subscriber's row 100 deleted, the change applied (row 100 arrives, polled), one read (it dates the retries made
 #        before the fix: a rise is dated by the read that sees it)
-#   C2   the loop rule's second arm: wal_retrieve_retry_interval 25 s, a conflict on row 101, one read after its first
+#   C2   (runs before C: C's 2-minute window would hold its first read) the loop rule's second arm: wal_retrieve_retry_interval 25 s, a conflict on row 101, one read after its first
 #        error: no 'apply errors' (one rise of one) [red ok]; one read after its second error: 'apply errors' critical
 #        (a rise on 2 reads in a row) [red FAIL]; fixed and 2 s again, one read (on 6b75eb0, before the loop rule, the
 #        first read would raise: reasoned from W's run there, not run)
@@ -41,15 +41,16 @@
 #        worker down' critical - PostgreSQL 18 counts the streaming worker's disconnect as ONE apply error and the rule
 #        calls only a loop 'apply errors' (2+ since the read before, or a rise on 2 reads in a row); the run prints the
 #        count across the stop; the publisher started ([red ok]), the worker back and receiving (polled), one read: gone
-#   WP   the publisher frozen (docker pause: it neither answers nor refuses) with the subscriber's wal_receiver_timeout
-#        10 s: reads of lsub 5 s apart until two in a row saw no worker receiving (at most 12): 'subscription worker down'
-#        critical - the relaunched worker waits in its connect with a pid and no message [red FAIL; on dd05ea2, before
-#        the review fold counted such a worker as down, too: run red in pdfp-hadr-s1-redfoldwp]; unpaused, the
-#        worker receiving (polled), one read: gone [red ok]
+#   WP   the publisher frozen (docker pause: it neither answers nor refuses), 'subscription_silent' 1 min on lsub, reads
+#        of lsub 10 s apart until a finding (at most 15): 'subscription silent' warning - the worker stays with its last
+#        message ageing (measured: no relaunch within a minute at wal_receiver_timeout 10 s); a worker that has received
+#        nothing since it started is measured from its start [red FAIL on 486015e; ok from 16cc0fb: the frozen worker
+#        keeps its last message, which 373's rule already measured]; unpaused, the worker receiving, one read: gone [red ok]
 #   read a failed read is a FAIL, and a failed repository query answers 'QUERY FAILED' (a negative row cannot pass on an
 #        empty answer); the repository is read with jit off, and B prints one findings read timed with jit on and off
 # Not proven here: a disconnect during a running table sync (PostgreSQL may count it as one sync error: 'subscription
 # sync errors' would then show for 2 minutes; the apply side's one-rise rule is not applied to sync errors),
+# a worker waiting in its connect with no message yet (its silence measured from its start: not seen with docker pause),
 # 'subscription conflicts' alone (a conflict counter rising with no error), 'subscription disabled' critical through
 # disable_on_error, a dropped subscription or publication, PostgreSQL 13-17 (no conflict counters; before 15 no error
 # counters; 13 without pg_subscription.oid for pg_monitor),
@@ -192,23 +193,6 @@ read_ lsub 1
 r=$(sub "coalesce(rels_ready, '')"); r2=$(q "select count(*) from pgvigil.pg_logical_rels where instance_id = $SUBID")
 [[ "$r" == "2/2" && "$r2" == "0" ]] && ok "S fixed: tables ready 2/2, no unfinished table" || fail "S fixed: ready '$r', unfinished rows '$r2'"
 
-# ---- C ---------------------------------------------------------------------------------------------------------------
-sa "insert into t values (100, 'mine')" >/dev/null
-pa "insert into t values (100, 'theirs')" >/dev/null
-for _ in $(seq 1 30); do [[ "$(sa "select coalesce(apply_error_count, 0) from pg_stat_subscription_stats where subname = 'sub1'")" -ge 1 ]] && break; sleep 1; done
-echo "  apply_error_count $(sa "select apply_error_count from pg_stat_subscription_stats where subname = 'sub1'"), confl_insert_exists $(sa "select confl_insert_exists from pg_stat_subscription_stats where subname = 'sub1'")"
-read_ lsub 2 8
-r=$(finding "$SUBID"); r2=$(q "select coalesce(detail, '') from pgvigil.pg_logical_checks where instance_id = $SUBID")
-[[ "$r" == "critical|subscription apply errors|"* ]] && ok "C 'subscription apply errors' critical: $r" || fail "C: '$r'"
-[[ "$r2" =~ confl_insert_exists:\ [1-9] ]] && ok "C its detail counts the conflict: $r2" || fail "C detail: '$r2'"
-sa "delete from t where id = 100" >/dev/null
-for _ in $(seq 1 60); do [[ "$(sa "select v from t where id = 100")" == "theirs" ]] && break; sleep 1; done
-[[ "$(sa "select v from t where id = 100")" == "theirs" ]] && ok "C fixed: the publisher's row 100 applied" || fail "C the change was not applied after the fix"
-# a counter's rise is dated by the read that sees it (as the collector's schedule would): this read takes the retries made
-# between C's reads and the fix, so X's window starts here
-echo "  apply_error_count after the fix $(sa "select apply_error_count from pg_stat_subscription_stats where subname = 'sub1'")"
-read_ lsub 1
-
 # ---- C2: the loop rule's second arm - a rise of one on each of 2 reads in a row ---------------------------------------
 aec() { sa "select apply_error_count from pg_stat_subscription_stats where subname = 'sub1'"; }
 psql "$SDSN dbname=postgres" -XAtq -c "alter system set wal_retrieve_retry_interval = '25s'" -c "select pg_reload_conf()" >/dev/null
@@ -226,6 +210,23 @@ psql "$SDSN dbname=postgres" -XAtq -c "alter system set wal_retrieve_retry_inter
 sa "delete from t where id = 101" >/dev/null
 for _ in $(seq 1 60); do [[ "$(sa "select v from t where id = 101")" == "theirs" ]] && break; sleep 1; done
 [[ "$(sa "select v from t where id = 101")" == "theirs" ]] && ok "C2 fixed: row 101 applied" || fail "C2 the change was not applied after the fix"
+read_ lsub 1
+
+# ---- C ---------------------------------------------------------------------------------------------------------------
+sa "insert into t values (100, 'mine')" >/dev/null
+c0=$(aec); pa "insert into t values (100, 'theirs')" >/dev/null
+for _ in $(seq 1 30); do (( $(num "$(aec)") > $(num "$c0") )) && break; sleep 1; done   # C2 ran first: the count is not 0
+echo "  apply_error_count $(sa "select apply_error_count from pg_stat_subscription_stats where subname = 'sub1'"), confl_insert_exists $(sa "select confl_insert_exists from pg_stat_subscription_stats where subname = 'sub1'")"
+read_ lsub 2 8
+r=$(finding "$SUBID"); r2=$(q "select coalesce(detail, '') from pgvigil.pg_logical_checks where instance_id = $SUBID")
+[[ "$r" == "critical|subscription apply errors|"* ]] && ok "C 'subscription apply errors' critical: $r" || fail "C: '$r'"
+[[ "$r2" == *'"confl_insert_exists": '[1-9]* ]] && ok "C its detail counts the conflict: $r2" || fail "C detail: '$r2'"
+sa "delete from t where id = 100" >/dev/null
+for _ in $(seq 1 60); do [[ "$(sa "select v from t where id = 100")" == "theirs" ]] && break; sleep 1; done
+[[ "$(sa "select v from t where id = 100")" == "theirs" ]] && ok "C fixed: the publisher's row 100 applied" || fail "C the change was not applied after the fix"
+# a counter's rise is dated by the read that sees it (as the collector's schedule would): this read takes the retries made
+# between C's reads and the fix, so X's window starts here
+echo "  apply_error_count after the fix $(sa "select apply_error_count from pg_stat_subscription_stats where subname = 'sub1'")"
 read_ lsub 1
 
 # ---- X ---------------------------------------------------------------------------------------------------------------
@@ -251,19 +252,19 @@ r=$(finding "$SUBID")
 [[ -z "$r" ]] && ok "W the publisher back: gone" || fail "W still raised: '$r'"
 
 # ---- WP: the publisher frozen (docker pause): it neither answers nor refuses ------------------------------------------
-psql "$SDSN dbname=postgres" -XAtq -c "alter system set wal_receiver_timeout = '10s'" -c "select pg_reload_conf()" >/dev/null
+r=$(q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"set\",\"key\":\"subscription_silent\",\"level\":\"instance\",\"instance_id\":$SUBID,\"warn\":1,\"ui_user\":\"proof\"}'::jsonb)->>'outcome'")
+[[ "$r" == "done" ]] || fail "WP subscription_silent was not set to 1 min: '$r'"
 docker pause "$PUB" >/dev/null || fail "WP docker pause failed"
-sleep 15
-for _ in $(seq 1 12); do read_ lsub 1; (( $(num "$(sub worker_down_reads)") >= 2 )) && break; sleep 5; done
-echo "  the subscriber's apply worker while the publisher is frozen: $(sa "select coalesce(pid::text, 'none') || ', last message ' || coalesce(last_msg_receipt_time::text, 'null') from pg_stat_subscription where subname = 'sub1' and relid is null")"
+for _ in $(seq 1 15); do sleep 10; read_ lsub 1; [[ -n "$(finding "$SUBID")" ]] && break; done
+echo "  the subscriber's apply worker while the publisher is frozen: $(sa "select coalesce(w.pid::text, 'none') || ', started ' || coalesce(a.backend_start::text, '?') || ', last message ' || coalesce(w.last_msg_receipt_time::text, 'null') || ', now ' || now() from pg_stat_subscription w left join pg_stat_activity a on a.pid = w.pid where w.subname = 'sub1' and w.relid is null")"
 r=$(finding "$SUBID")
-[[ "$r" == "critical|subscription worker down|"* ]] && ok "WP 'subscription worker down' critical: $r" || fail "WP: '$r' (worker_down_reads $(sub worker_down_reads))"
+[[ "$r" == "warning|subscription silent|app1.sub1:"* ]] && ok "WP 'subscription silent' warning: $r" || fail "WP: '$r' (silent_secs $(sub "coalesce(round(silent_secs)::text, 'null')"))"
 docker unpause "$PUB" >/dev/null || fail "WP docker unpause failed"
-psql "$SDSN dbname=postgres" -XAtq -c "alter system reset wal_receiver_timeout" -c "select pg_reload_conf()" >/dev/null
 for _ in $(seq 1 90); do worker_live && break; sleep 1; done
 read_ lsub 1
 r=$(finding "$SUBID")
 [[ -z "$r" ]] && ok "WP the publisher back: gone" || fail "WP still raised: '$r'"
+q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"inherit\",\"key\":\"subscription_silent\",\"level\":\"instance\",\"instance_id\":$SUBID,\"ui_user\":\"proof\"}'::jsonb)" >/dev/null
 
 if (( FAILS == 0 )); then echo "proof-pg-logical: OK"; exit 0; fi
 echo "proof-pg-logical: $FAILS FAIL"; exit 1

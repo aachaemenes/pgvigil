@@ -50,7 +50,9 @@ SELECT 'subscription' AS kind, s.oid::bigint AS subid, s.subname::text AS subnam
        CASE WHEN isfinite(w.last_msg_send_time) THEN w.last_msg_send_time END AS last_msg_send_time,
        CASE WHEN isfinite(w.last_msg_receipt_time) THEN w.last_msg_receipt_time END AS last_msg_receipt_time,
        CASE WHEN isfinite(w.latest_end_time) THEN w.latest_end_time END AS latest_end_time,
-       CASE WHEN isfinite(w.last_msg_receipt_time) THEN extract(epoch FROM clock_timestamp() - w.last_msg_receipt_time)::float8 END AS silent_secs,
+       -- the silence since the last message, or since the worker started when it has received nothing yet
+       extract(epoch FROM clock_timestamp() - coalesce(CASE WHEN isfinite(w.last_msg_receipt_time) THEN w.last_msg_receipt_time END,
+               (SELECT a.backend_start FROM pg_stat_activity a WHERE a.pid = w.pid)))::float8 AS silent_secs,
        (SELECT count(*) FROM pg_stat_subscription x WHERE x.subid = s.oid AND x.relid IS NOT NULL) AS sync_workers,
        %s
   FROM pg_subscription s

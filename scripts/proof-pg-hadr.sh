@@ -117,7 +117,8 @@
 #   R2X  first read after the lift (a receiver back, the fault held for one read): 'receiver down' WARNING whose detail
 #        says the receiver is back [red FAIL: critical]; second read: gone [red ok]
 #   NS2  in NS (the standby read through a login that cannot read primary_conninfo, the receiver held down), hadr-p read
-#        twice: 'standby gone' critical on hadr-p naming hadrs1 - a standby that cannot tell whether it should stream does
+#        twice, then hadr-s once through that login (its word newer than the sender's loss): 'standby gone' critical on
+#        hadr-p naming hadrs1 - a standby that cannot tell whether it should stream does
 #        not speak for its link [red FAIL: it spoke, nothing was raised]
 #   SL2H with max_slot_wal_keep_size 400MB and 'slot_safe_wal' 300 MB, WAL written until safe_wal_size is between 200 and
 #        300 MB, one read: no slot finding - the floor is half the limit when that is smaller [red FAIL: warning]; then
@@ -409,7 +410,8 @@ if want G; then
     [[ "$r" == "null" ]] && ok "NS a login without pg_read_all_settings: the standby row's conninfo_set unknown" || fail "NS the standby row's conninfo_set: '$r', expected null"
     r=$(finding "$SID_" 'receiver down')
     [[ -z "$r" ]] && ok "NS no 'receiver down' when primary_conninfo cannot be read" || fail "NS raised with primary_conninfo unknown: '$r'"
-    read_ hadr-p 2   # the standby cannot say whether it should stream: the sending side's view holds
+    # the standby, read AFTER the sender vanished, cannot say whether it should stream: the sending side's view holds
+    read_ hadr-p 2; CFG=$WORK/pgvigil-ns.yaml; read_ hadr-s 1; CFG=$WORK/pgvigil.yaml
     r=$(finding "$PID_" 'standby gone')
     [[ "$r" == critical\|*hadrs1* ]] && ok "NS2 'standby gone' on hadr-p while the standby cannot judge its own side: $r" || fail "NS2 'standby gone' on hadr-p: '$r', expected critical naming hadrs1"
     lift || fail "G the receiver did not come back after the lift"

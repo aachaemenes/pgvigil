@@ -617,8 +617,9 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
 -- was past the read before (a counter that went down was reset: not a rise); apply_rise_reads counts the reads in a row
 -- whose apply_error_count rose, and apply_loop_at is the newest read where the rise was a failing loop (2 or more since
 -- the read before, or a second rise in a row: a single rise of one is a disconnect); worker_down_reads counts the reads
--- in a row of an enabled subscription on a server not in recovery with no apply worker, or one with no message received
--- since it started (last_msg_receipt_time NULL: the collector sends NULL for PostgreSQL's '-infinity' of a new worker).
+-- in a row of an enabled subscription on a server not in recovery with no apply worker. silent_secs is the time since
+-- the worker's last message, or since it started when it has received none (a publisher that neither answers nor
+-- refuses: the worker stays, or waits in its connect - 'subscription silent' sees both).
 CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_subs (
   instance_id        int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   datname            text NOT NULL,
@@ -694,8 +695,7 @@ BEGIN
            (r->>'last_msg_receipt_time')::timestamptz, (r->>'silent_secs')::float8, (r->>'sync_workers')::int,
            (r->>'apply_error_count')::bigint, (r->>'sync_error_count')::bigint,
            c.conflicts, c.total,
-           CASE WHEN (r->>'enabled')::boolean AND NOT coalesce((r->>'in_recovery')::boolean, false)
-                     AND (r->>'worker_pid' IS NULL OR r->>'last_msg_receipt_time' IS NULL) THEN 1 ELSE 0 END,
+           CASE WHEN (r->>'enabled')::boolean AND NOT coalesce((r->>'in_recovery')::boolean, false) AND r->>'worker_pid' IS NULL THEN 1 ELSE 0 END,
            CASE WHEN NOT (r->>'enabled')::boolean THEN p_snapshot_at END
       FROM jsonb_array_elements(p_payload) r
       CROSS JOIN LATERAL (
@@ -767,9 +767,7 @@ END $$;
 --                                  loop: PostgreSQL counts a streaming publisher's disconnect as one apply error
 --                                  (measured on PostgreSQL 18; a failed reconnect is not counted), so the stop reads as
 --                                  'worker down', not as apply errors
---   'subscription worker down'     critical: enabled, the server not in recovery, for 2 reads in a row no apply worker or
---                                  one that has received nothing since it started (a publisher that does not answer: the
---                                  relaunched worker waits in its connect with a pid and no message)
+--   'subscription worker down'     critical: enabled, the server not in recovery, no apply worker for 2 reads in a row
 --   'subscription disabled'        warning; critical when disable_on_error is set and the apply errors rose in the 5
 --                                  minutes before it was disabled (the error disabled it)
 --   'subscription sync errors'     warning: sync_error_count rose in the last 2 minutes (a table's initial copy fails)
@@ -819,8 +817,7 @@ SELECT c.instance_id,
          WHEN 'subscription apply errors' THEN format('apply_error_count %s, rising (last at %s UTC): the apply worker fails and retries%s; the server log names the row and the error',
                 c.apply_errors, to_char(c.apply_rose_at AT TIME ZONE 'UTC', 'HH24:MI:SS'),
                 CASE WHEN c.conflicts_total > 0 THEN '; conflicts ' || c.conflicts::text ELSE '' END)
-         WHEN 'subscription worker down' THEN format('enabled with no apply worker receiving for %s reads in a row (%s): the publisher (%s) refuses, does not answer, or the worker cannot start',
-                c.worker_down_reads, CASE WHEN c.worker_pid IS NULL THEN 'no worker' ELSE 'worker ' || c.worker_pid || ' has received nothing since it started' END, c.publications)
+         WHEN 'subscription worker down' THEN format('enabled with no apply worker for %s reads in a row: the publisher (%s) cannot be reached or the worker cannot start', c.worker_down_reads, c.publications)
          WHEN 'subscription disabled' THEN format('disabled since %s UTC%s: nothing is applied and the publisher''s slot %s keeps its WAL',
                 to_char(c.disabled_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'),
                 CASE WHEN c.disable_on_error AND c.apply_rose_at >= c.disabled_since - interval '5 minutes' THEN ' by disable_on_error after an apply error' ELSE '' END,
@@ -828,11 +825,12 @@ SELECT c.instance_id,
          WHEN 'subscription sync errors' THEN format('sync_error_count %s, rising: a table''s initial copy fails%s', c.sync_errors, coalesce('; not ready: ' || c.slow_rels, ''))
          WHEN 'subscription conflicts' THEN format('conflicts rising: %s', c.conflicts::text)
          WHEN 'table sync not finished' THEN format('tables not ready: %s (%s ready)', c.slow_rels, coalesce(c.rels_ready, '?'))
-         WHEN 'subscription silent' THEN format('no message from the publisher for %s s (the worker runs)', round(c.silent_secs::numeric))
+         WHEN 'subscription silent' THEN format('no message from the publisher for %s s (the worker runs%s)', round(c.silent_secs::numeric),
+                CASE WHEN c.last_msg_at IS NULL THEN ', and has received nothing since it started' ELSE '' END)
        END AS detail,
        CASE c.check_name
          WHEN 'subscription apply errors' THEN 'the apply worker fails and retries'
-         WHEN 'subscription worker down' THEN 'enabled with no apply worker receiving'
+         WHEN 'subscription worker down' THEN 'enabled with no apply worker'
          WHEN 'subscription disabled' THEN 'disabled'
          WHEN 'subscription sync errors' THEN 'a table''s initial copy fails'
          WHEN 'subscription conflicts' THEN 'conflicts rising'
