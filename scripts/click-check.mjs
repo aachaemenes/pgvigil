@@ -598,15 +598,22 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
       for (const tr of t.querySelectorAll('tbody tr')) { const v = tr.children[i]?.textContent.trim(); if (v) out.push(v); }
     }
     return { out, h2: document.querySelector('main h2')?.textContent.trim() ?? '' }; })()`);
+  // a repository-wide alert (no instance: the collector, the repository) carries the name 'pgvigil' (0190's
+  // alert_findings) and stays listed in every folder; proof-clickmap.sh seeds one standing (the TAGTREE review A #1)
+  const isRepo = n => n === 'pgvigil' && !insts.some(r => String(r.name) === 'pgvigil');
   await go('#/alerts'); const rootA = await alertInstances();
-  const outside = [...new Set(rootA.out.filter(n => !tagNames.has(n)))];
+  const outside = [...new Set(rootA.out.filter(n => !tagNames.has(n) && !isRepo(n)))];
+  const repoRoot = rootA.out.filter(isRepo).length;
   await go(`#/alerts?tag=${encodeURIComponent(tag)}`); const tagA = await alertInstances();
-  const leak = [...new Set(tagA.out.filter(n => !tagNames.has(n)))];
-  record({ scope: sc, kind: 'tag-tree', column: 'Alerts', engine: '', link: `#/alerts?tag=${tag}`, landed: `${tagA.out.length} row(s) naming an instance, ${leak.length} outside the tag; heading '${tagA.h2.slice(0, 50)}'`,
+  const leak = [...new Set(tagA.out.filter(n => !tagNames.has(n) && !isRepo(n)))];
+  const repoTag = tagA.out.filter(isRepo).length;
+  record({ scope: sc, kind: 'tag-tree', column: 'Alerts', engine: '', link: `#/alerts?tag=${tag}`, landed: `${tagA.out.length} row(s) naming an instance, ${leak.length} outside the tag, ${repoTag} of the root's ${repoRoot} repository-wide; heading '${tagA.h2.slice(0, 50)}'`,
     verdict: outside.length === 0 ? "FAIL the root's Alerts lists no instance outside the tag: the row proves nothing"
+      : repoRoot === 0 ? "FAIL the root's Alerts lists no repository-wide alert ('pgvigil'): the row proves nothing"
       : leak.length ? `FAIL ${leak.length} instance(s) outside ${tag} listed: ${leak.slice(0, 4).join(', ')}`
+      : repoTag !== repoRoot ? `FAIL under ${tag} ${repoTag} of the root's ${repoRoot} repository-wide alert row(s) listed`
       : !tagA.h2.includes(tag) ? `FAIL the heading '${tagA.h2}' does not name ${tag}`
-      : `ok (the root lists ${outside.length} instance(s) outside the tag; under it none)` });
+      : `ok (the root lists ${outside.length} instance(s) outside the tag; under it none; the ${repoRoot} repository-wide row(s) under it too)` });
 }
 
 // an instance whose drives' Files pages listed no file at all has proven nothing
