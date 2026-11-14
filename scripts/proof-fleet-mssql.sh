@@ -184,7 +184,7 @@ JALL=$(Q "select (select count(*) from pgvigil.mssql_jobs m join pgvigil.instanc
 JPROB=$(Q "select count(*) from pgvigil.instances i cross join lateral pgvigil.job_status(i.instance_id) s where i.is_active and s.status in ('crit', 'warn')")
 JACK=$(Q "select count(*) from pgvigil.acks where kind = 'job' and ended_at is null" 2>/dev/null || echo 0)
 for u in "jobsreport" "jobsreport?part=status" "jobsreport?part=status&ids=$S1" "jobsreport?part=stats" "jobsreport?part=status&ids=abc" "mssql/summary" "overview"; do
-  f="$WORK/j-$(echo "$u" | tr -c 'a-z0-9' _).json"; echo "$(curl -s -o "$f" -w '%{http_code}' "${BASE}api/$u") $f"; done > "$WORK/jcodes.txt"
+  f="$WORK/j-$(printf %s "$u" | tr -c 'a-z0-9' _).json"; echo "$(curl -s -o "$f" -w '%{http_code}' "${BASE}api/$u") $f"; done > "$WORK/jcodes.txt"
 J1=$(python3 -I - "$WORK" "$S1" "$ERP" "$SJ" "$PJ" "$JALL" <<'PY2'
 import json, sys
 w, s1, erp, sj, pj, jall = sys.argv[1:]
