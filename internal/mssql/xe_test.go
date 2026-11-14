@@ -100,7 +100,7 @@ var fullCtx = xeContext{source: "product", session: "pgvigil_t_x", queryText: "f
 // dropping every event of that kind at the read.
 func TestXEScriptEventsHaveParsers(t *testing.T) {
 	added := regexp.MustCompile(`ADD EVENT sqlserver\.([a-z_]+)`)
-	for _, form := range []string{XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL} {
+	for _, form := range []string{XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL, XEFormRDS} {
 		script, err := XEScript("t1", form)
 		if err != nil {
 			t.Fatal(err)
@@ -140,8 +140,12 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 		if strings.Count(script, "] "+scope+"\n") != 4 {
 			t.Errorf("%s: want four sessions created %s", form, scope)
 		}
-		if (form == XEFormServer || form == XEFormCloudSQL) != strings.Contains(script, "package0.event_file") {
-			t.Errorf("%s: only the server and Cloud SQL forms write an event file", form)
+		if (form == XEFormServer || form == XEFormCloudSQL || form == XEFormRDS) != strings.Contains(script, "package0.event_file") {
+			t.Errorf("%s: only the server, Cloud SQL and RDS forms write an event file", form)
+		}
+		// RDS's file goes to the folder AWS names (its trigger refuses a bare file name: R1, 2026-11-14)
+		if (form == XEFormRDS) != strings.Contains(script, `filename=N''D:\rdsdbdata\log\pgvigil_t1_slow.xel''`) {
+			t.Errorf("%s: the RDS event file's path", form)
 		}
 		// Cloud SQL's file goes to the folder Google names; the server form's has no path (the server's log directory)
 		if (form == XEFormCloudSQL) != strings.Contains(script, "filename=N''/var/opt/mssql/xevents/pgvigil_t1_slow.xel''") {
@@ -149,7 +153,8 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 		}
 		// Cloud SQL has no sp_configure and no database flag for the threshold: its advice says the session stays empty
 		if (form == XEFormCloudSQL) != strings.Contains(script, "offer no blocked process threshold, so this session stays empty there") ||
-			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") {
+			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") ||
+			(form == XEFormRDS) != strings.Contains(script, "DB parameter group") {
 			t.Errorf("%s: the blocked process threshold's advice", form)
 		}
 		// the Managed Instance form is written from the documentation; the Azure SQL Database form is proven
