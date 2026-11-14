@@ -30,6 +30,7 @@ a dropped database's id to the next database made).
   then assign them all to one application in one request (500 at most), or mark them **not an application** (a test
   database, a DBA's own): a marked database leaves the list, and Unmark brings it back.
 - **Changes**: the last 200 changes and refusals of this page, who and from where.
+- **Inventory** and **Import a file**: the inventory as a file and back (below, "The inventory file").
 
 Report mail never mails this page (it carries contacts). The demo (`pgvigil demo`) gets three made-up applications with
 contacts at example.com and no route.
@@ -91,20 +92,89 @@ A development or lab repository that recorded migration 0190 before this release
 alert_due, which sends repository-wide alerts to routes too: pgvigil migrate does not run a recorded file again, so
 such a store is made anew (a released store never held the older 0190).
 
-## In the repository (migration 0136)
+## The inventory file
+
+The inventory goes out as a file and comes back in (task 312, migration 0146). The **Inventory** grid lists one row per
+active server and one per database of it. **Export the inventory (.xlsx)** writes every row whatever the grid is
+filtered to (a sheet named Inventory, never the page's own workbook, which carries the Changes grid's user names and,
+while shown, the contacts); **Download the inventory (CSV)** gets the same rows from `GET
+/api/applications/inventory.csv` (UTF-8 with a BOM, an attachment). **Import a file** reads a CSV, JSON or .xlsx file,
+previews what it would change, and changes it only on Apply.
+
+- **Columns**, in order: level (server or database), instance, engine, database, application, environment, tier,
+  description, cmdb_url, not_an_application; then inherited_from, absent_since, source and set_at, which the export
+  writes and an import reads back and ignores. The header line is found by its names (server, app, db and cmdb are
+  taken too), so the export bar's two lines above it are skipped.
+- **Rows**: one per server (database blank) and one per database: every present database, and every absent one an
+  assignment or a mark still names (absent_since filled). System databases and inactive servers are left out; a line
+  naming an inactive server is refused.
+- **Inheritance**: a database that inherits its server's application has application blank and the server's in
+  inherited_from, so a round trip never turns inheritance into an assignment of its own.
+- **A blank cell changes nothing**, in every column. environment is the assignment's own (blank: the application's
+  default); it and tier, description and cmdb_url (the application's, repeated on each of its rows) are read only on a
+  line that names an application. Two lines giving one application different values refuse that application and name
+  both lines.
+- **`(none)`** in application removes the target's own assignment: one an import set is a change, one a person entered
+  is a conflict. On a database with no application of its own (it inherits, or has none) it changes nothing, and the
+  preview says so. `(none)` is no longer accepted as an application's name; an older store's application of that name
+  is kept, and in a file the word means none.
+- **not_an_application**: yes marks the database, no unmarks it, blank changes nothing; yes beside an application on
+  one line refuses the line; a whole server is never marked.
+- **Contacts are never in the file**, either way. A column named email, phone, contact or owner, like any column not
+  listed above, is not read, and the preview lists it under the columns not read.
+- **Matching**: a server by its exact name, else by the one name equal to it ignoring case; an import never makes a
+  server: a line naming no known server is refused and the rest go on. A filled engine must be the server's. A database
+  is matched the same way among the server's present databases and the absent ones still named; an unknown one is
+  listed, never made. An absent database is assigned, re-assigned or marked on the page only.
+
+**Formats.** CSV: commas or semicolons (Excel in a comma-decimal locale saves semicolons), UTF-8; UTF-16, a
+tab-separated file and an .xls are refused in words. The CSV export writes one more `'` before a cell that starts with
+`=`, `+`, `-`, `@`, a tab or a carriage return (or with `'`s before one), so a spreadsheet does not run it as a formula,
+and an import takes one off: exact both ways, key columns too. JSON: the grid's `{columns, rows}` as the API answers
+it, or an array of objects. .xlsx: the sheet named Inventory, else the first whose header (in its first 20 rows) names
+instance and application; read as values, so a cell holding a formula or an error refuses its line. A date-formatted
+cell reads as its date (yyyy-MM-dd), a TRUE / FALSE cell as yes / no, a number as it is stored: the .xlsx export writes
+a number-like text as a number, so a description `1.50` comes back `1.5` through the .xlsx (the CSV keeps it). A file is
+read by what it holds, never by its name. Excel's own save of the workbook is not proven (no Excel where the proof
+runs: it reads the export's workbook and one with shared strings).
+
+**Preview and apply.**
+
+- **Preview the import** writes nothing (no audit row). It lists each item: an application added or changed, and each
+  line that changes (assign, re-assign, unassign, mark, unmark), with the conflicts, the refused lines and the unknown
+  servers and databases, the counts, and how many servers' `application:` tag would move (so which tag-scoped
+  thresholds, acknowledgements, rules and routes cover them differently).
+- **A conflict** is a value a person entered on this page that the file would change, a database-level assignment under
+  a server whose application a person entered included: it is kept unless ticked. What an import set, the next import
+  may change. Every field and assignment an import sets records its source `import:<name>`, the name typed beside the
+  file (1 to 40 of a-z, 0-9, `_ . -`; default `file`).
+- **Apply the import** sends the preview's digest. When anything the plan read changed since the preview (a page write,
+  another import), the apply is refused whole and nothing is written: preview again. A collector reading the servers'
+  database lists in between is not a change.
+- The apply writes through this page's own writes, so each change has its audit row, plus one summary row (counts
+  only, never a cell's text). A line with a credential-shaped cell (a password, secret, token or API, access or private
+  key followed by = or :, a URL with user:password@, a link whose query sets token, key, sig, secret, password or auth)
+  is refused, its text in no answer and no audit row.
+- **One import at a time**: a second, while one runs, is refused in words, never queued. A file holds 5 MB and 20,000
+  lines at most, and an import has 120 s (else it is rolled back and says so: split the file).
+- Signed-in users only (no door without the login cookie); with the page read only, the Import section is off too.
+
+## In the repository (migrations 0136, 0146)
 
 | Object | What |
 |---|---|
 | app_applications | the application: name (a tag value: 1 to 100 bytes, no comma), description, tier, environment, CMDB link, version |
 | ui_app_contacts | its contacts (ui_: the reader cannot read it) |
 | app_assignments | an application per server (database_name NULL) or per database (by name), its environment, source, who and when, the engine's id and last seen |
-| app_not_application | the databases marked not an application |
+| app_not_application | the databases marked not an application, with the mark's source (0146) |
 | app_field_source | each field's source and when (an import never overwrites an entered field unless forced) |
 | ui_app_contact_routes | the routes: contact, channel, minimum severity, on or off |
 | instance_tag_pairs | gains the `application` arm (source `application`); the key leaves the configuration's and the overrides' arms |
 | import_app_application, import_app_contact, import_app_assign, import_app_contact_route | the writes, each answering done or refused with the reason, one audit row per attempt (a done assign, unassign, mark or unmark: one per target) |
 | app_effective, app_databases, app_unassigned | the reads of the page |
 | alert_contact_routes() | the alert sender's one read of the live routes and their addresses (its own session or the owner's only) |
+| app_conflict | 0146: the one rule of every write above: true when an unforced import would change what a person entered |
+| app_inventory(), import_app_file | 0146: the file's rows; the one planner of an import (match, plan, digest, then the writes above) |
 
 ## Proof
 
@@ -114,3 +184,9 @@ passes against a loopback SMTP sink (O1-O20 with O5b and O14b); serve reads on a
 pgvigil_auth and writes on one IN ROLE pgvigil_collector, the passes send as one IN ROLE pgvigil_alerter. O5b (a custom
 report calling the contacts' door) is said OWED, not failed, on a tree without the custom reports' own login. Go tests: internal/alerts/routes_test.go (the derived channels), internal/mcp/applications_test.go
 (no MCP tool reads or answers a contact, row A11), internal/sched/apptag_test.go (the file's application: tag named).
+
+`scripts/proof-app-import.sh` (the inventory file) on a throwaway repository: 0146's writes as an import against what a
+person entered (M1-M10), the file through the API on the same non-superuser logins on both engines (F1-F21), the page in
+a headless Chromium (P1-P3: the inventory's own .xlsx read back with the grid filtered and contacts shown, a file
+previewed, a conflict ticked and applied by clicks, axe-core light and dark) and the limits (section B: F13, 20,000
+lines previewed and applied). Go tests: internal/web/q_app_import_test.go (the CSV, JSON and .xlsx readers).
