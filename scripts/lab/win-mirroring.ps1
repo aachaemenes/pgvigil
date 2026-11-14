@@ -81,7 +81,10 @@
 #           'VERDICT UP', exit 0.
 #   status  three instances Running with Agent Running, the principal's row PRINCIPAL / SYNCHRONIZED / witness
 #           CONNECTED, the mirror's row MIRROR / SYNCHRONIZED, the witness's row naming both partners; 'VERDICT UP'.
-#   down    'uninstall <name>: exit 0' for each, 'folder <name>: removed', 'rule: removed' (when made), every
+#   down    first 'mirroring <the principal>: the session of pgvmirror ended (SET PARTNER OFF)' once (nothing from the
+#           mirror or the witness when the partners were connected: the session ends on both; a second such line from
+#           the other partner when they were disconnected); then
+#           'uninstall <name>: exit 0' for each, 'folder <name>: removed', 'rule: removed' (when made), every
 #           before.json service present with its start type and Running where it was, every before.json instance
 #           present; 'VERDICT CLEAN', exit 0; the lab's files and <LabDir> removed.
 # Exit: 0 done, 1 failed (a VERDICT NOT ... line names what), 2 refused (nothing changed).
@@ -690,16 +693,26 @@ function Invoke-Down {
     $failures = New-Object System.Collections.Generic.List[string]
     # a before.json written before the task field existed: the task was not there (its name is the lab's own)
     $taskBefore = ($before.PSObject.Properties.Name -contains 'SetupTaskPresent') -and [bool]$before.SetupTaskPresent
-    # the mirroring session ends before any uninstall: a principal stopped with its session live (mirror and witness
-    # up) can hang in its shutdown (its endpoint closes first, the partners fail over) until setup's stop times out
-    # (0x851A0018, the service left StopPending). SET PARTNER OFF from either partner ends the session on both and on
-    # the witness; one instance's failure here is said and the uninstall goes on.
+    # the mirroring session ends before any uninstall: a principal uninstalled with its session live (mirror and
+    # witness up) hung in its shutdown until setup's stop timed out (0x851A0018, the service left StopPending; VM run
+    # down1). SET PARTNER OFF may be run on either partner: while the partners communicate it ends the session on both
+    # at once; when they are disconnected only on the partner where it ran, so each running lab instance is tried.
+    # The instance is checked by its own name before the ALTER (the connection is by port), and the session is read
+    # back after it: 'ended' only when it was there and is gone. One instance's failure is said and the uninstall goes
+    # on (a principal whose session is still live may then hang in its stop as down1 did).
     foreach ($inst in $labInstances) {
         if ((Test-InBefore $before 'Instances' $inst.Name) -or -not $installed.ContainsKey($inst.Name)) { continue }
-        if ((Get-Service -Name "MSSQL`$$($inst.Name)" -ErrorAction SilentlyContinue).Status -ne 'Running') { continue }
+        $engine = Get-Service -Name "MSSQL`$$($inst.Name)" -ErrorAction SilentlyContinue
+        if (-not $engine -or [string]$engine.Status -ne 'Running') { continue }
         try {
-            $ended = (Invoke-LabSql $inst "IF EXISTS (SELECT 1 FROM sys.database_mirroring WHERE database_id = DB_ID(N'$labDatabase') AND mirroring_guid IS NOT NULL) BEGIN ALTER DATABASE [$labDatabase] SET PARTNER OFF; SELECT CAST(1 AS int) AS v; END ELSE SELECT CAST(0 AS int) AS v;")[0].v
-            if ($ended -eq 1) { Say "mirroring $($inst.Name): the session of $labDatabase ended (SET PARTNER OFF)" }
+            $partnerOff = "DECLARE @had int = (SELECT COUNT(*) FROM sys.database_mirroring WHERE database_id = DB_ID(N'$labDatabase') AND mirroring_guid IS NOT NULL); " +
+                "DECLARE @mine bit = CASE WHEN CAST(SERVERPROPERTY('InstanceName') AS sysname) = N'$($inst.Name)' THEN 1 ELSE 0 END; " +
+                "IF @had > 0 AND @mine = 1 ALTER DATABASE [$labDatabase] SET PARTNER OFF; " +
+                "SELECT @had AS had, @mine AS mine, (SELECT COUNT(*) FROM sys.database_mirroring WHERE database_id = DB_ID(N'$labDatabase') AND mirroring_guid IS NOT NULL) AS still;"
+            $read = (Invoke-LabSql $inst $partnerOff)[0]
+            if (-not [bool]$read.mine) { Say "mirroring $($inst.Name): port $($inst.SqlPort) answers as another instance: NOT touched; the uninstall goes on" }
+            elseif ([int]$read.had -gt 0 -and [int]$read.still -eq 0) { Say "mirroring $($inst.Name): the session of $labDatabase ended (SET PARTNER OFF)" }
+            elseif ([int]$read.had -gt 0) { Say "mirroring $($inst.Name): the session of $labDatabase is still there after SET PARTNER OFF; the uninstall goes on" }
         } catch { Say "mirroring $($inst.Name): the session could not be ended ($($_.Exception.Message)); the uninstall goes on" }
     }
     foreach ($inst in $labInstances) {
