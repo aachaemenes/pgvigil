@@ -99,7 +99,7 @@ func TestAzureDBOnAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body := string(b); !strings.Contains(body[strings.Index(body, "FUNCTION pgvigil.purge("):], "'mssql_pool_minute', 'mssql_azuredb_minute')") {
+	if _, purge, ok := strings.Cut(string(b), "FUNCTION pgvigil.purge("); !ok || !strings.Contains(purge, "'mssql_pool_minute', 'mssql_azuredb_minute')") {
 		t.Error("mssql_azuredb_minute is not among purge()'s monthly parents in 0190")
 	}
 

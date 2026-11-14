@@ -40,9 +40,15 @@ func TestAzureDBCPUOnAStore(t *testing.T) {
 	}
 	az, ss := ids["azuresqldb"], ids["sqlserver"]
 	defer func() {
-		for _, q := range []string{`DELETE FROM pgvigil.mssql_azuredb_minute WHERE instance_id = $1`, `DELETE FROM pgvigil.mssql_cpu_sample WHERE instance_id = $2`,
-			`DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2)`} {
-			if _, err := pool.Exec(context.Background(), q, az, ss); err != nil {
+		for _, c := range []struct {
+			q    string
+			args []any
+		}{
+			{`DELETE FROM pgvigil.mssql_azuredb_minute WHERE instance_id = $1`, []any{az}},
+			{`DELETE FROM pgvigil.mssql_cpu_sample WHERE instance_id = $1`, []any{ss}},
+			{`DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2)`, []any{az, ss}},
+		} {
+			if _, err := pool.Exec(context.Background(), c.q, c.args...); err != nil {
 				t.Error(err)
 			}
 		}
