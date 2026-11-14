@@ -383,9 +383,12 @@ na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'ap
 nr=$(q "select count(*) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused'")
 rc8=$(q "select count(*) from (select client from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused' group by client having count(*) > 1) z")
 # (review A, m12) one audit row per target: an assign of two targets in one call writes two done rows of that call
-ans=$(wr assign "{\"op\": \"mark\", \"targets\": [{\"instance_id\": $PGI, \"database\": \"db2\"}, {\"instance_id\": $PGI, \"database\": \"postgres\"}]}")   # two present databases (t-ap-r8: hr was dropped by S5)
+# an instance of its own with two present databases (t-ap-g14: S14 had deleted $PGI, the call answered 'no instance')
+S8I=$(q "select pgvigil.ensure_instance('proof-app-s8', 'onprem', '18.0', 180000, false, '{}'::text[])")
+dbs "$S8I" "[$(pgdb 60001 s8a), $(pgdb 60002 s8b)]"
+ans=$(wr assign "{\"op\": \"mark\", \"targets\": [{\"instance_id\": $S8I, \"database\": \"s8a\"}, {\"instance_id\": $S8I, \"database\": \"s8b\"}]}")
 t8=$(q "select count(*) from pgvigil.admin_audit where client = 'proof-applications#$(wc -l < "$WORK/calls")' and outcome = 'done'")
-wr assign "{\"op\": \"unmark\", \"targets\": [{\"instance_id\": $PGI, \"database\": \"db2\"}, {\"instance_id\": $PGI, \"database\": \"postgres\"}]}" >/dev/null
+wr assign "{\"op\": \"unmark\", \"targets\": [{\"instance_id\": $S8I, \"database\": \"s8a\"}, {\"instance_id\": $S8I, \"database\": \"s8b\"}]}" >/dev/null
 NATT=$(wc -l < "$WORK/calls")
 na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%'")
 [[ $na == "$NATT" && $rc8 == 0 && $t8 == 2 ]] && ok "S8 every write attempt left its audit row(s) ($na of $NATT calls; $nr refusals, one row each)" || bad "S8 calls with audit rows $na of $NATT; refused calls with more than one row: $rc8; a two-target call's done rows: $t8 (its answer: $(field "$ans" outcome) $(field "$ans" detail))"
@@ -642,6 +645,9 @@ try {
   out('P12.press', await ev(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Export .xlsx'); if (!b) return false; b.click(); return true; })()`));
   let file = '';
   for (let i = 0; i < 100 && !file; i++) { await sleep(200); const f = fs.readdirSync(dl).filter(n => n.endsWith('.xlsx') && !before.has(n)); if (f.length && !fs.readdirSync(dl).some(n => n.endsWith('.crdownload'))) file = dl + '/' + f[0]; }
+  // P12's file renamed at once: P15 exports the same page in the same window, and the bar names a file by instance,
+  // tab and window, so P15's download takes P12's name (t-ap-g14: 'no workbook downloaded' - a detector of new names)
+  if (file) { fs.renameSync(file, file.replace(/\.xlsx$/, '.p12.xlsx')); file = file.replace(/\.xlsx$/, '.p12.xlsx'); }
   out('P12.file', file || 'none');
   // P15: a contact added, the contacts hidden, the page exported: neither its name nor its address in the file (review C, M3)
   await click('Show contacts of Http App');
@@ -652,7 +658,7 @@ try {
   await ev(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Export .xlsx')?.click()`);
   let file15 = '';
   for (let i = 0; i < 100 && !file15; i++) { await sleep(200); const f = fs.readdirSync(dl).filter(n => n.endsWith('.xlsx') && !before15.has(n)); if (f.length && !fs.readdirSync(dl).some(n => n.endsWith('.crdownload'))) file15 = dl + '/' + f[0]; }
-  out('P15.file', file15 || 'none');
+  out('P15.file', file15 || ('none: ' + fs.readdirSync(dl).join(',')));
   // P11 axe on the page with an application and its contacts open, light and dark
   for (const t of ['light', 'dark']) {
     await theme(t); await go(U, '#/admin_applications'); await click('Open Http App'); await click('Show contacts of Http App');
@@ -747,7 +753,7 @@ if [[ $P_SET == 1 ]]; then
     s15=$(q "select count(*) from pgvigil.ui_app_contacts where name = 'Zed Hidden'")
     [[ $(pv P15.fill) == ok && $s15 == 1 && $l15 == 0 && $(pv P15.status) != *"Zed"* ]] && ok "P15 a contact added then the contacts hidden: the status words and the page's export hold neither its name nor its address" \
       || bad "P15 fill $(pv P15.fill); stored $s15; hits in the export $l15; status '$(pv P15.status)'"
-  else bad "P15 no workbook downloaded"; fi
+  else bad "P15 no workbook downloaded ($F15)"; fi
   [[ -s "$WORK/p.err" ]] && echo "read: the click run's stderr: $(head -c 300 "$WORK/p.err" | tr '\n' ' ')"
 else
   for row in $PROWS; do bad "$row not run (P setup)"; done
