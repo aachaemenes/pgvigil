@@ -193,7 +193,8 @@ const thresholdRows: [string, string, string][] = [
 ];
 
 // thresholdsDialog: one job's thresholds at its three levels. A level with a row of its own applies whole; a level
-// without one inherits the level above (the root inherits the built-in rule: the last run failed = critical).
+// without one inherits the level above (the root inherits the built-in rule, DBA Dash's default since 0137: critical when
+// the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days).
 // Save writes the level's row (the old one is ended and kept), Inherit ends it. Nothing is written on a bare click.
 // ad, instName: the acknowledgement seat (GET /api/ack) and the instance as the page names it - on a demo serve the door
 // writes this instance's own levels (job, instance) for one of its instances, never the root (B7 DONE-3); a level it
@@ -227,8 +228,9 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
     const r = rowAt(level);
     for (const [k, i] of inputs) i.value = r?.[k] == null ? '' : String(r[k]);
     lastFail.value = r?.last_fail_is == null ? '' : String(r.last_fail_is);
-    const above = level === 'job' ? (rowAt('instance') ? "the instance's thresholds" : rowAt('root') ? "the root's thresholds" : 'the built-in rule (the last run failed = critical)')
-      : level === 'instance' ? (rowAt('root') ? "the root's thresholds" : 'the built-in rule (the last run failed = critical)') : 'the built-in rule (the last run failed = critical)';
+    const builtIn = 'the built-in rule (DBA Dash\'s default: critical when the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days)';
+    const above = level === 'job' ? (rowAt('instance') ? "the instance's thresholds" : rowAt('root') ? "the root's thresholds" : builtIn)
+      : level === 'instance' ? (rowAt('root') ? "the root's thresholds" : builtIn) : builtIn;
     state.textContent = r ? `This level has thresholds of its own, set by ${String(r.created_by)} on ${fmtTime(r.created_at)}; they apply whole.`
       : `This level has none of its own: it inherits ${above}.`;
     // every control of the level that is off says why: the level's own reason in the dialog's one sentence (Save, the
