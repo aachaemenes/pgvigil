@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"runtime"
 	"slices"
@@ -35,6 +36,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -151,6 +153,96 @@ func localHost(h string) bool {
 	}
 	return strings.HasPrefix(strings.ToLower(h), ".\\") || strings.HasPrefix(strings.ToLower(h), "(local)\\") ||
 		strings.HasPrefix(strings.ToLower(h), "localhost\\") || strings.HasPrefix(strings.ToLower(h), "(localdb)\\")
+}
+
+// addressWhy says why a server as DBA Dash connects to it (or as typed in the add's row) is not a network name or
+// address pgvigil can connect to; "" when it is. A DBA Dash ConnectionID is often a free-text label (a host and a
+// comment, an alias in brackets, two names in one): the driver would take such a label for a host name and fail at
+// the first collection, or reach another server. Accepted, after an optional 'tcp:': a DNS or NetBIOS name (letters,
+// digits, '-', '_', '.') or an IPv4 address, either with an optional '\instance' (letters, digits, '_', '$', '#'; at
+// most 16), then an optional ',port' or ':port'; an IPv6 address alone, or in brackets with an optional ':port'.
+// web/src/migrate.ts' addrWhy is the same rule (the page's prefill); this one decides.
+func addressWhy(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 4 && strings.EqualFold(s[:4], "tcp:") {
+		s = s[4:]
+	}
+	switch {
+	case s == "":
+		return "empty"
+	case strings.ContainsAny(s, " \t"):
+		return "a space in it: a label, not a network name"
+	}
+	if strings.HasPrefix(s, "[") {
+		in, rest, _ := strings.Cut(s[1:], "]")
+		if ip := net.ParseIP(in); ip == nil || ip.To4() != nil || strings.Contains(in, ".") {
+			return "brackets around a name: an alias, not a network address"
+		}
+		if rest == "" {
+			return ""
+		}
+		if !strings.HasPrefix(rest, ":") {
+			return "text after the bracketed address"
+		}
+		return portWhy(rest[1:])
+	}
+	host := s
+	switch {
+	case strings.Contains(s, ","):
+		h, p, _ := strings.Cut(s, ",")
+		if why := portWhy(p); why != "" {
+			return why
+		}
+		host = h
+	case strings.Count(s, ":") == 1:
+		h, p, _ := strings.Cut(s, ":")
+		if why := portWhy(p); why != "" {
+			return why
+		}
+		host = h
+	case strings.Contains(s, ":"):
+		if net.ParseIP(s) != nil {
+			return ""
+		}
+		return "colons that are neither an IPv6 address nor a port"
+	}
+	name, inst, named := strings.Cut(host, `\`)
+	if strings.ContainsAny(name, "[](){}") {
+		return "brackets in it: a label, not a network name"
+	}
+	if net.ParseIP(name) == nil {
+		if name == "" || len(name) > 253 || strings.Contains(name, "..") || strings.Trim(name, ".-") != name {
+			return "not a host name"
+		}
+		for _, r := range name {
+			if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' && r != '.' {
+				return fmt.Sprintf("%q is not a character of a network name", r)
+			}
+		}
+	}
+	if named {
+		if inst == "" || len([]rune(inst)) > 16 {
+			return "the instance name after '\\' is not 1 to 16 characters"
+		}
+		for _, r := range inst {
+			if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '$' && r != '#' {
+				return fmt.Sprintf("%q is not a character of an instance name", r)
+			}
+		}
+	}
+	return ""
+}
+
+// portWhy is addressWhy's port after ',' or ':': "" for 1 to 65535.
+func portWhy(p string) string {
+	n, err := strconv.Atoi(strings.TrimSpace(p))
+	switch {
+	case err != nil:
+		return fmt.Sprintf("%q after the name is not a port", p)
+	case n < 1 || n > 65535:
+		return fmt.Sprintf("port %d is not 1 to 65535", n)
+	}
+	return ""
 }
 
 // moveRow is one server of dbadash_move_list as the page reads it, plus what serve adds.
@@ -375,6 +467,9 @@ func moveAddCheck(auth, gmsa, goos string, servers []moveServer) error {
 		if localHost(h) {
 			return fmt.Errorf("%s: DBA Dash connects to it as %q, on DBA Dash's own host: type the server's network name", sv.Server, sv.Host)
 		}
+		if why := addressWhy(sv.Host); why != "" {
+			return fmt.Errorf("%s: %q is not a network name or address pgvigil can connect to (%s): type the server's host and port in its row", sv.Server, sv.Host, why)
+		}
 		if n := strings.TrimSpace(sv.Name); n == "" || len(n) > 63 || nameFor(n) != n {
 			return fmt.Errorf("%s: the name %q must be 1 to 63 characters of letters, digits, '_', '.', '@' and '-' (suggested: %s)", sv.Server, sv.Name, nameFor(sv.Server))
 		}
@@ -442,21 +537,22 @@ func (s *Server) moveAdd(w http.ResponseWriter, r *http.Request, user, repo stri
 	}
 	for i := range servers {
 		sv := &servers[i]
-		sv.Port, sv.Name = strings.TrimSpace(sv.Port), strings.TrimSpace(sv.Name)
-		// DBA Dash's connection as typed: 'tcp:' and a ',port' or ':port' come off the host (a port typed apart wins);
-		// a pipe or shared memory is kept whole for moveAddCheck's refusal
-		if sv.Host = strings.TrimSpace(sv.Host); !config.NotTCP(sv.Host) {
-			h, p := config.SplitHostPort(sv.Host)
-			sv.Host = h
-			if sv.Port == "" && p > 0 {
-				sv.Port = strconv.Itoa(p)
-			}
-		}
+		sv.Host, sv.Port, sv.Name = strings.TrimSpace(sv.Host), strings.TrimSpace(sv.Port), strings.TrimSpace(sv.Name)
 	}
 	auth, login, password := str(in, "auth"), str(in, "login"), rawStr(in, "password")
+	// the checks read each host as typed (an alias in brackets is refused before the split would cut it to a name)
 	if err := moveAddCheck(auth, a.GMSA, runtime.GOOS, servers); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	for i := range servers {
+		// DBA Dash's connection as typed: 'tcp:' and a ',port' or ':port' come off the host (a port typed apart wins)
+		sv := &servers[i]
+		h, p := config.SplitHostPort(sv.Host)
+		sv.Host = h
+		if sv.Port == "" && p > 0 {
+			sv.Port = strconv.Itoa(p)
+		}
 	}
 	if auth == "windows" {
 		login, password = "", "" // the service's own account (the gMSA): no secret

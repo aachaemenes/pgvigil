@@ -19,7 +19,8 @@ import (
 )
 
 // TestMoveAddCheck (task 206, W3): the add's refusals before anything is written - the sign-in (Windows only on a
-// Windows serve with the gMSA named), the count (1 to 50), DBA Dash's local or pipe connections, the name rule, the port.
+// Windows serve with the gMSA named), the count (1 to 50), DBA Dash's local or pipe connections, a host that is not a
+// network name or address (a ConnectionID that is a free-text label), the name rule, the port.
 func TestMoveAddCheck(t *testing.T) {
 	ok := moveServer{Server: `SQL01\PROD`, DBADashIDs: []int{1}, Host: `sql01\PROD`, Name: "sql01-PROD"}
 	many := make([]moveServer, maxMoveAdd+1)
@@ -58,6 +59,22 @@ func TestMoveAddCheck(t *testing.T) {
 		{"port 0", "sql", "", "linux", with(func(s *moveServer) { s.Port = "0" }), "not 1 to 65535"},
 		{"port 70000", "sql", "", "linux", with(func(s *moveServer) { s.Port = "70000" }), "not 1 to 65535"},
 		{"port 1433", "sql", "", "linux", with(func(s *moveServer) { s.Port = "1433" }), ""},
+		// a ConnectionID that is a free-text label, not an address: refused with the server, the value and why, never
+		// sent to the driver
+		{"a free-text label", "sql", "", "linux", with(func(s *moveServer) { s.Host = "SQL01 payroll box (old)" }), `SQL01\PROD: "SQL01 payroll box (old)" is not a network name or address`},
+		{"two servers in one label", "sql", "", "linux", with(func(s *moveServer) { s.Host = "X_App and Y_Prod" }), "a space"},
+		{"an alias in brackets before the name", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[ERP] SQL01" }), "not a network name or address"},
+		{"an alias alone in brackets", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[ERP]" }), "brackets"},
+		{"a note in parentheses", "sql", "", "linux", with(func(s *moveServer) { s.Host = "SQL01(old)" }), "not a network name or address"},
+		{"a comma before no port", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01,prod" }), "not a network name or address"},
+		{"an instance name with a space", "sql", "", "linux", with(func(s *moveServer) { s.Host = `SQL01\MY INST` }), "not a network name or address"},
+		{"a DNS name and a port", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01.corp.example.com,14330" }), ""},
+		{"tcp: a name and a port", "sql", "", "linux", with(func(s *moveServer) { s.Host = "tcp:sql01,1433" }), ""},
+		{"a name with an underscore", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql_01" }), ""},
+		{"an IPv4 address", "sql", "", "linux", with(func(s *moveServer) { s.Host = "10.1.2.3" }), ""},
+		{"an IPv6 address and a port", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[fe80::1]:1433" }), ""},
+		{"an IPv6 address in brackets", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[2001:db8::5]" }), ""},
+		{"a host:port", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01:1433" }), ""},
 	} {
 		err := moveAddCheck(c.auth, c.gmsa, c.goos, c.servers)
 		switch {
