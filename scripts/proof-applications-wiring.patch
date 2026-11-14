@@ -1,8 +1,35 @@
+diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
+index 25a49aa..5ce8225 100644
+--- i/internal/web/q_alert_rules.go
++++ w/internal/web/q_alert_rules.go
+@@ -94,7 +94,7 @@ SELECT c.key, c.engine, c.family, c.family_label, c.metric, c.label, c.unit, c.p
+ const sqlAlertRuleSender = `
+ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated_at,
+        (SELECT extract(epoch FROM now() - max(s.evaluated_at))::int FROM pgvigil.alert_rule_state s) AS evaluated_secs_ago,
+-       (SELECT count(*) FROM pgvigil.alert_channels c WHERE c.is_configured) AS channels,
++       (SELECT count(*) FROM pgvigil.alert_channels c WHERE c.is_configured AND c.name NOT LIKE 'contact-%') AS channels,   -- the configuration's (task 310: a contact's route is not one)
+        (SELECT max(l.snapshot_at) FROM pgvigil.alert_log l WHERE l.snapshot_at > now() - interval '1 day') AS last_pass_at,
+        (SELECT count(*) FROM pgvigil.alert_rules_effective) AS in_force`
+ 
+diff --git i/internal/web/q_reportmail.go w/internal/web/q_reportmail.go
+index 6cc8b4f..ca4791c 100644
+--- i/internal/web/q_reportmail.go
++++ w/internal/web/q_reportmail.go
+@@ -89,7 +89,8 @@ SELECT x.send_id, x.requested_at, x.kind, x.name, array_to_string(x.recipients,
+   FROM pgvigil.report_mail_sends x WHERE x.send_id = $1`
+ 
+ const sqlReportMailChannels = `
+-SELECT c.name, c.destination FROM pgvigil.alert_channels c WHERE c.kind = 'smtp' AND c.is_configured ORDER BY c.name`
++SELECT c.name, c.destination FROM pgvigil.alert_channels c WHERE c.kind = 'smtp' AND c.is_configured
++   AND c.name NOT LIKE 'contact-%' ORDER BY c.name` // an application contact's route (task 310) mails no report
+ 
+ const sqlReportMailLog = `
+ SELECT l.at, l.ui_user, l.client, l.op, l.schedule_id, l.send_id, l.outcome, l.detail
 diff --git i/internal/web/web.go w/internal/web/web.go
-index 5def140..f5e4e77 100644
+index 5def140..dff9497 100644
 --- i/internal/web/web.go
 +++ w/internal/web/web.go
-@@ -223,6 +223,14 @@ func (s *Server) Handler() http.Handler {
+@@ -223,6 +223,15 @@ func (s *Server) Handler() http.Handler {
  	// task 204: Admin > Instances (q_instances_admin.go)
  	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
  	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)
@@ -14,6 +41,7 @@ index 5def140..f5e4e77 100644
 +	api.HandleFunc("POST /api/admin/applications", s.ApplicationsWrite)
 +	api.HandleFunc("POST /api/admin/applications/contacts", s.ApplicationContactsWrite)
 +	api.HandleFunc("POST /api/admin/applications/assign", s.ApplicationsAssignWrite)
++	api.HandleFunc("POST /api/admin/applications/routes", s.ApplicationRoutesWrite)
  	api.HandleFunc("POST /api/admin/sources", s.SourcesAdminWrite)
  	api.HandleFunc("POST /api/admin/proposals", s.ProposalsAdminWrite)
  	api.HandleFunc("GET /api/uptime", s.Uptime)

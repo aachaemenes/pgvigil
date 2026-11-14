@@ -276,8 +276,11 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
       box.append(el('p', { class: 'meta' }, 'Contacts are personal data: they are read only when you ask, so an export or a mail of this page carries them only while they are shown. '), show);
       return box;
     }
-    let rows: Row[];
-    try { rows = rowsOf((await get<{ contacts: Table | null }>(`applications/${id}/contacts`)).contacts); } catch (e) {
+    let rows: Row[], routes: Row[], channels: Row[];
+    try {
+      const d = await get<{ contacts: Table | null; routes: Table | null; channels: Table | null }>(`applications/${id}/contacts`);
+      rows = rowsOf(d.contacts); routes = rowsOf(d.routes); channels = rowsOf(d.channels);
+    } catch (e) {
       box.append(el('p', { class: 'meta' }, (e as Error).message));
       return box;
     }
@@ -292,8 +295,48 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
         edit.addEventListener('click', () => form.fill?.(r));
         const rm = removeButton(`contact ${cn} of ${name}`, cn, () => act('admin/applications/contacts', { op: 'remove', app_id: id, contact_id: Number(r.contact_id) }, () => `Removed contact ${cn}.`));
         return lock(el('span', { class: 'actions' }, edit, ' ', rm));
-      } }], 'No contact yet.'), form, hide);
+      } }], 'No contact yet.'), form, routesPart(id, name, rows, routes, channels), hide);
     return box;
+  }
+
+  // owner-routed alerts: a contact's alerts of this application's servers through a configured smtp channel, its
+  // repeat, quiet hours and cap the channel's (counted as the route's own); a route turned off or removed closes its
+  // open alerts with no message
+  function routesPart(id: number, name: string, contacts: Row[], routes: Row[], channels: Row[]): HTMLElement {
+    const part = el('div', { class: 'app-routes' });
+    const label = (r: Row) => `${str(r.contact)} via ${str(r.channel_name)}`;
+    part.append(el('h5', {}, 'Alerts to contacts'),
+      el('p', { class: 'meta' }, 'A route mails a contact the alerts of this application\'s servers through a channel of the configuration (its relay); the channel\'s repeat, quiet hours and hourly cap hold the route as its own. The channel\'s own recipients and scope are unchanged; repository-wide alerts (the collector, purge) never go to a route. A person on two contact rows gets two copies.'),
+      grid(routes, [{ key: 'contact' }, { key: 'channel_name', label: 'channel' },
+        { key: 'min_severity', label: 'from', fmt: v => v ? str(v) : 'the channel\'s severity' },
+        { key: 'enabled', label: 'state', fmt: v => v ? 'on' : 'off' },
+        { key: 'set_by', label: 'set by', fmt: (v, r) => `${str(v) || 'unknown'}, ${fmtTime(r.set_at)}` },
+        { key: 'actions', fmt: (_v, r) => {
+          const on = !!r.enabled, l = label(r);
+          const t = el('button', { type: 'button', class: 'link', 'aria-label': `${on ? 'Turn off' : 'Turn on'} the route of ${l}` }, on ? 'Turn off' : 'Turn on');
+          t.addEventListener('click', () => { void act('admin/applications/routes', { op: 'set', route_id: Number(r.route_id), enabled: !on }, () => `The route of ${l} is ${on ? 'off: its open alerts close with no message' : 'on'}.`); });
+          const rm = removeButton(`the route of ${l}`, `the route of ${l}`, () => act('admin/applications/routes', { op: 'remove', route_id: Number(r.route_id) }, () => `The route of ${l} is removed.`));
+          return lock(el('span', { class: 'actions' }, t, ' ', rm));
+        } }], 'No route: no contact of this application receives its alerts yet.'));
+    const f = el('form', { class: 'admin-form', 'aria-label': `Route alerts of ${name}` });
+    const who = select('contact_id', contacts.filter(c => str(c.email)).map(c => [str(c.contact_id), str(c.name)] as [string, string]));
+    const via = select('channel', channels.map(c => [str(c.name), str(c.name)] as [string, string]));
+    const from = select('min_severity', [['', 'the channel\'s severity'], ['info', 'info'], ['warning', 'warning'], ['critical', 'critical']]);
+    f.addEventListener('submit', async ev => {
+      ev.preventDefault();
+      if (!who.value) { say('A route mails a contact: add a contact with an e-mail address first.', true); return; }
+      if (!via.value) { say('No smtp channel is configured (the alerts: list of the configuration): a route needs one to mail through.', true); return; }
+      const data: Record<string, unknown> = { op: 'set', contact_id: Number(who.value), channel: via.value };
+      if (from.value) data.min_severity = from.value;
+      const l = `${who.selectedOptions[0]?.textContent ?? ''} via ${via.value}`;
+      await act('admin/applications/routes', data, () => `The route of ${l} is on: the next alert pass mails it.`);
+    });
+    f.append(el('fieldset', {}, el('legend', {}, `Route alerts of ${name}`),
+      el('div', {}, field('Contact', who), field('Channel', via), field('From severity', from)),
+      channels.length ? '' : el('p', { class: 'meta' }, 'No smtp channel is configured yet (or the alert sender has not run since): a route needs one.'),
+      el('div', {}, el('button', { type: 'submit', 'aria-label': `Add the route for ${name}` }, 'Add the route'))));
+    part.append(f);
+    return part;
   }
 
   function contactForm(id: number, name: string): HTMLFormElement & { fill?: (r: Row) => void } {

@@ -114,6 +114,12 @@ func (s *Server) ApplicationsAssignWrite(w http.ResponseWriter, r *http.Request)
 	s.appWrite(w, r, "import_app_assign")
 }
 
+// ApplicationRoutesWrite is POST /api/admin/applications/routes (op set, remove): a contact's alerts through a
+// configured smtp channel (owner-routed alerts, internal/alerts/routes.go).
+func (s *Server) ApplicationRoutesWrite(w http.ResponseWriter, r *http.Request) {
+	s.appWrite(w, r, "import_app_contact_route")
+}
+
 // appID is the {id} of a route, 0 when it is not a whole number.
 func appID(r *http.Request) int {
 	n, err := strconv.Atoi(r.PathValue("id"))
@@ -185,7 +191,7 @@ func (s *Server) ApplicationOne(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "application": app, "databases": dbs}, nil)
 }
 
-// ApplicationContacts is GET /api/applications/{id}/contacts: the contacts, with the UI login on only.
+// ApplicationContacts is GET /api/applications/{id}/contacts: the contacts and their alert routes, with the UI login on only.
 func (s *Server) ApplicationContacts(w http.ResponseWriter, r *http.Request) {
 	if s.auth == nil {
 		writeErr(w, http.StatusForbidden, errors.New("contacts hidden: the login is off (they are personal data)"))
@@ -196,12 +202,28 @@ func (s *Server) ApplicationContacts(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("an application's id is a whole number"))
 		return
 	}
-	t, err := s.query(r.Context(), `SELECT contact_id, role, kind, name, email, phone, cmdb_url, ord FROM pgvigil.ui_app_contacts_of($1)`, id)
+	ctx := r.Context()
+	t, err := s.query(ctx, `SELECT contact_id, role, kind, name, email, phone, cmdb_url, ord FROM pgvigil.ui_app_contacts_of($1)`, id)
 	if err != nil {
 		s.reply(w, r, nil, fmt.Errorf("contacts: %w", err))
 		return
 	}
-	s.reply(w, r, map[string]any{"contacts": t}, nil)
+	// owner-routed alerts: the contacts' routes, and the configured smtp channels a route may go through (never a
+	// route's own derived channel)
+	routes, err := s.query(ctx, `SELECT route_id, contact_id, contact, channel_name, min_severity, enabled, set_at, set_by
+	  FROM pgvigil.ui_app_contact_routes_of($1)`, id)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("routes: %w", err))
+		return
+	}
+	channels, err := s.query(ctx, `SELECT c.name, c.min_severity FROM pgvigil.alert_channels c
+	 WHERE c.is_configured AND c.kind = 'smtp' AND c.name NOT LIKE 'contact-%' ORDER BY c.name`)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("channels: %w", err))
+		return
+	}
+	off := s.applicationsOff()
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "contacts": t, "routes": routes, "channels": channels}, nil)
 }
 
 // ApplicationsUnassigned is GET /api/applications/unassigned: every present database with no application, and the
