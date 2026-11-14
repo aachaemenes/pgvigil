@@ -2,7 +2,8 @@
 // every instance in view, SQL Agent, pg_cron and pgAgent alike, judged by one judge - job_status_view (0137: DBA Dash's
 // default rule when no threshold row is set) - the judge the Summary's Agent Jobs / Jobs cells use too. Data from
 // /api/jobsreport?part=status&ids=<the view's instances> and, after the grid is drawn, ?part=stats (the four columns
-// that need every run of 7 days: succeeded 24 h / 7 days, longest and average over 7 days); a stats read that fails
+// that need 7 days of runs, read from 0139's hourly table with DBA Dash's arithmetic: succeeded 24 h / 7 days, longest and average
+// over 7 days, whole seconds); a stats read that fails
 // leaves those cells 'not read: <why>' and the grid stands. The picked job's history opens UNDER the grid as DBA Dash's
 // child panel ('<instance> | <job>'); 'judged at' opens the thresholds dialog in place; Acknowledge is the tab's cell, and
 // an acknowledged job reads 'acknowledged' in place of critical / warning where the rule broken is the last failure's
@@ -167,8 +168,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, 'Every job of the instances in view, SQL Agent, pg_cron and pgAgent, judged by its thresholds (the job, its instance or the root); with none set, '
         + 'DBA Dash\'s default: critical when the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days. As in DBA Dash a '
         + 'cancelled run counts as a failure and a disabled job is not judged. The 24-hour and 7-day counts are fixed windows, not the page\'s range. The last failure and '
-        + 'success are looked for back as far as the longest threshold in force (7 days at least); a job whose last run failed shows that failure however old. The 7-day '
-        + 'average is over the runs (DBA Dash averages its hourly averages, so a few long runs weigh more there). '
+        + 'success are looked for back as far as the longest threshold in force (7 days at least); a job whose last run failed shows that failure however old. The '
+        + 'succeeded, longest and average columns are read from the hourly statistics as DBA Dash reads its own: an hour counts when it started within 24 hours or 7 days, '
+        + 'the average is the average of each hour\'s average, both in whole seconds, as DBA Dash. '
         + 'Pick a job for its history below.'),
       ...(ackOffP ? [ackOffP] : []), box, hist);
     draw();
