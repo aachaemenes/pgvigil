@@ -189,7 +189,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	for _, d := range cfg.DBADash {
 		dd[d.Name] = d.DSNRaw
 	}
-	srv.SetInstancesAdmin(web.InstancesAdmin{ConfigPath: *path, File: cfg.Instances, DBADash: dd})
+	srv.SetInstancesAdmin(web.InstancesAdmin{ConfigPath: *path, File: cfg.Instances, DBADash: dd, GMSA: cfg.GMSA})
 	go srv.RunInstanceSync(ctx)
 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
 	go srv.RunReportMail(ctx)

@@ -215,6 +215,9 @@ export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
   for (const r of rows) n[Number(r.level ?? 0)]++;
   // the settings line: the one place the source product is named
   sec.append(el('p', { class: 'meta', 'data-source-line': '' }, 'Source: DBA Dash repositories (the dbadash: list of pgvigil.yaml), read every 5 minutes with a read-only login; their statuses below, their history copied by pgvigil import dbadash, their screens read live.'),
+    // task 206: the way off, server by server (Admin > Instances: migrate.ts); the source line above stays the one place
+    // the source product is named
+    el('p', { class: 'meta' }, el('a', { href: '#/admin_instances' }, 'Move these servers to pgvigil'), ' (Admin > Instances): one at a time, each keeping its history.'),
     el('div', { class: 'tiles' }, tile('SQL Server instances', String(rows.length)), tile('Critical instances', String(n[2]), n[2] ? 'crit' : 'ok'),
       tile('Warning instances', String(n[1]), n[1] ? 'warn' : 'ok'), tile('Repositories not read', String(repos.filter(r => r.status !== 'ok').length),
         repos.some(r => r.status !== 'ok') ? 'warn' : 'ok')),

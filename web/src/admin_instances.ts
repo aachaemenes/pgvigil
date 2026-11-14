@@ -8,6 +8,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+import { moveSection } from './migrate';
 
 // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
 // described by that sentence (its id), so the reason is words on the page for each of them
@@ -63,6 +64,8 @@ const platOpts = (engine: string): [string, string][] => engine === 'sqlserver'
 
 export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   const root = el('section', { class: 'admin-instances' });
+  // task 206: Move from DBA Dash (migrate.ts) reads and redraws itself; one node kept across this page's redraws
+  const moves = moveSection();
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); };
 
@@ -91,6 +94,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       sourceForm(d),
       el('h3', {}, `Proposed servers (${props.length})`),
       grid(props, proposalCols, 'No source has proposed a server yet.'),
+      moves,
       el('h3', {}, 'Changes (the last 200)'),
       grid(audit, [{ key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'client' }, { key: 'op' }, { key: 'target' },
         { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? '' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
