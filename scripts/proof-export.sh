@@ -584,6 +584,8 @@ if (sq) {
   if (!await settled()) throw new Error('the SQL Server Jobs tab did not render');
   const any = await ev(`!!document.querySelector('main table.grid, main table.props, main p.empty[data-cols]')`);
   out.sqljobs = any ? { ...(await page(`#/mssqljobs?i=${sq.instance_id}&w=24h`)), instance: sq.name } : { none: await ev(`(document.querySelector('main')?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160)`), instance: sq.name };
+  // the instance's DB Space grid: its size columns in DBA Dash's unit (GB, one decimal), as the fleet grid's
+  out.dbspace_i = { ...(await page(`#/dbspace?i=${sq.instance_id}`)), instance: sq.name };
 }
 out.tools = await tools();
 // ---- P03: the new menu items, each clicked and its download read ---------------------------------------------------
@@ -1464,6 +1466,8 @@ if (d.get('volumes') or {}).get('grids') is not None: PAGES.append(('volumes', '
 if d.get('sqljobs') and not d['sqljobs'].get('none'): PAGES.append(('sqljobs', 'Jobs', re.sub(r'[^A-Za-z0-9._-]+', '-', d['sqljobs']['instance'])))
 elif d.get('sqljobs'): print(f"not checked: sqljobs: the SQL Server instance {d['sqljobs']['instance']}'s Jobs tab shows no grid ({d['sqljobs']['none'][:100]})")
 else: print("not checked: sqljobs: the demo has no SQL Server instance (its Jobs tab's step grids)")
+if d.get('dbspace_i'): PAGES.append(('dbspace_i', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_i']['instance'])))
+else: print("not checked: dbspace_i: the demo has no SQL Server instance (its DB Space grid)")
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
 for key, tab, inst in PAGES:
@@ -1662,6 +1666,20 @@ for key, tab, inst in PAGES:
             used_text = re.findall(r'<c r="C(\d+)"[^>]*t="inlineStr"><is><t[^>]*>([^<]*)</t>', sx)
             used_num = [r for r, k in re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', sx) if r != '1' and k == '><v>']
             check(len(used_num) >= 1 and all(t in ('not read', '') for r, t in used_text if r != '1'), f"dbspace: used (GB) numeric in {len(used_num)} rows, its text cells only 'not read' ({sorted({t for r, t in used_text if r != '1'})[:3]})")
+    if key == 'dbspace_i':
+        # an instance's DB Space grid reads as DBA Dash's ('Unit: GB, Decimal Places: 1') and as the fleet grid: allocated,
+        # used, data files and log files hold the GB figure, headed '(GB)' on the page and in the workbook, numbers in the
+        # workbook; a text cell is only 'not read' (a PostgreSQL database's used)
+        g0 = gs[0]; cc = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
+        cols_ = sorted({c for r, c in cc}); hdr = [(cc.get((1, c)) or (0, None, None))[2] for c in cols_]
+        want = ['allocated (GB)', 'used (GB)', 'data files (GB)', 'log files (GB)']
+        check(g0['head'][1:5] == want and hdr[1:5] == want, f"dbspace_i: the instance grid's columns 2-5 are {want}: page {g0['head'][1:5]}, workbook {hdr[1:5]}")
+        body = sorted({r for r, c in cc if r > 1})
+        for j, w in enumerate(want, 1):
+            if j >= len(cols_): break
+            nums = [r for r in body if (cc.get((r, cols_[j])) or (0, None, None))[1] is not None]
+            texts = sorted({cc[(r, cols_[j])][2] for r in body if (r, cols_[j]) in cc and cc[(r, cols_[j])][2]})
+            check(len(body) == g0['rows'] and len(nums) >= 1 and texts in ([], ['not read']), f"dbspace_i: '{w}' a number in {len(nums)} of {len(body)} rows (page {g0['rows']}), its text cells {texts[:3]}")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
