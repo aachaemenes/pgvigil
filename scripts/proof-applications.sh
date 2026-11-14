@@ -113,8 +113,9 @@
 #  O11 a route through a 63-character base; a repository-wide finding goes to the base, to no route
 #  O12 an application name at the tag's 100-byte cap          O13 an address Go's parser refuses: that route alone skipped
 #  O14 a route off: its open rows closed with no message; on again: no stale recovery
-#  O14b (review P, M1) Eve's route off while her application's finding clears: the control route (Cal's) mails the
-#      [RESOLVED], Eve none then; her route on again: still no [RESOLVED] to her
+#  O14b (review P, M1) Eve's route off while her application's finding clears: nothing to her; the collector reads the
+#      instance again (alert_due resolves only then) and her route is on again: the control route (Cal's) mails the
+#      [RESOLVED], Eve none
 #  O15 the routes' door failing: the config's channels still send, no route row closed
 #  O16 the Send test refused on a route's channel             O17 Report mail and the rules page count config channels only
 #  O18 the contacts' answer carries the routes and the configured smtp channels
@@ -972,13 +973,17 @@ o14ef=$(q "select count(*) from pgvigil.alert_findings where instance_id = $OE a
 opass; P5=$NPASS
 o14off=$(mails $P5 "$TEAMA"); o14rows=$( [[ -n $RTEAM ]] && open_rows "$RTEAM" || echo x); o14log=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RTEAM:-0}")' and outcome = 'cleared'")
 rset "$CTEAM" mail '' true >/dev/null
-o14cal=$(mails $P5 "$CAL" '[RESOLVED] proof-o-e'); o14e5=$(mails $P5 "$EVE")
+o14e5=$(mails $P5 "$EVE")
+# a collector read of proof-o-e after its finding left: alert_due resolves a gone finding only then (0190's alert_due:
+# a collection_dates row 'ok' newer than missing_since; t-ap-g16 had none, and Cal's route was held, not resolved)
+q "insert into pgvigil.collection_dates (instance_id, collection, snapshot_at, duration_ms, status) values ($OE, 'proof-o14b', now(), 1, 'ok')
+   on conflict (instance_id, collection) do update set snapshot_at = excluded.snapshot_at, status = 'ok'" >/dev/null
 rset "$CEVE" mail '' true >/dev/null
 opass; P6=$NPASS
-o14res=$(mails $P6 "$TEAMA" '[RESOLVED]'); o14e6=$(mails $P6 "$EVE" '[RESOLVED]')
+o14res=$(mails $P6 "$TEAMA" '[RESOLVED]'); o14e6=$(mails $P6 "$EVE" '[RESOLVED]'); o14cal=$(mails $P6 "$CAL" '[RESOLVED] proof-o-e')
 [[ -n $REVE && -n $RCAL && $o14e1 -ge 1 && $evrows -ge 1 && $o14ef == 0 && $o14cal -ge 1 && $o14e5 == 0 && $o14e6 == 0 ]] \
-  && ok "O14b Eve's route off while her application's finding cleared: Cal's route mailed the [RESOLVED] ($o14cal), Eve none; on again: no [RESOLVED] to her" \
-  || bad "O14b Eve mailed at pass 1 $o14e1, open rows $evrows; the finding after the clear $o14ef; Cal's [RESOLVED] $o14cal; to Eve while off $o14e5, after on $o14e6 (routes '$REVE' '$RCAL')"
+  && ok "O14b Eve's route off while her application's finding cleared (nothing to her); on again with the instance read since: Cal's route mailed the [RESOLVED] ($o14cal), Eve none" \
+  || bad "O14b Eve mailed at pass 1 $o14e1, open rows $evrows; the finding after the clear $o14ef; to Eve while off $o14e5; after on: Cal's [RESOLVED] $o14cal, Eve's $o14e6 (routes '$REVE' '$RCAL')"
 [[ -n $RTEAM && $offrows -ge 1 && $o14off == 0 && $o14rows == 0 && $o14log -ge 1 && $o14res == 0 ]] \
   && ok "O14 a route turned off: its $offrows open row(s) closed 'cleared' with no message; on again: no stale recovery" \
   || bad "O14 open before $offrows; off: messages $o14off, open rows $o14rows, cleared rows $o14log; on: 'resolved' messages $o14res"
