@@ -367,6 +367,20 @@ for (const pg of rig.pages) {
     if (pie.edge) {
       await mouse('mouseMoved', 3, 3);
       await until(`__pie.tip() ? null : 1`, 1000);
+      // 'flip': the window narrowed until the pie's right side is near its right edge (where the pie sits depends on the
+      // width of what is beside it, the flip on chart.ts place() alone), the pie kept on its row; 1600 px again after
+      let narrowed = 0;
+      if (pie.edge === 'flip') {
+        const at = () => S(pie.title, `(() => { const r = b.querySelector('svg').getBoundingClientRect(); return [Math.round(r.top + scrollY), Math.round(r.right), innerWidth]; })()`);
+        const [top0, right0, w0] = await at();
+        for (let w = right0 + 24; w < w0; w += 20) {   // the pie's right 24 px in, widened until the pie keeps its row
+          await cmd('Emulation.setDeviceMetricsOverride', { width: w, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(250);
+          const [top1, right1, w1] = await at();
+          if (top1 === top0 && right1 <= w1) { narrowed = w; break; }
+        }
+        if (!narrowed) await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+        await sleep(250);
+      }
       const pe = await S(pie.title, `(() => { const s = b.querySelector('svg'); s.scrollIntoView({ block: 'center' }); const sp = __pie.spans(b); let best = null;
         sp.forEach(([a, z], k) => { for (let f = a + 0.02 * (z - a); f < z; f += (z - a) / 20) { const q = __pie.point(b, f, 0.9); if (document.elementFromPoint(q.x, q.y)?.closest('svg') === s && (!best || q.x > best.x)) best = { ...q, k }; } });
         return best; })()`);
@@ -380,8 +394,9 @@ for (const pg of rig.pages) {
       const side = te ? (te.rect[2] <= pe.x ? 'left of the pointer' : te.rect[0] >= pe.x ? 'right of the pointer' : 'over the pointer') : '';
       row(!!te && te.rect[0] >= 0 && te.rect[1] >= 0 && te.rect[2] <= vw[0] - 4 && te.rect[3] <= vw[1] && side === (wantFlip ? 'left of the pointer' : 'right of the pointer')
         && (pie.edge !== 'flip' || wantFlip), tag, 'edge',
-        `the pointer at x ${Math.round(pe.x)} of ${vw[0]} -> the box ${te ? `at [${te.rect.map(Math.round).join(', ')}], ${side}` : 'not shown'} (inside 0 0 ${vw[0] - 4} ${vw[1]}; ${wantFlip ? 'flipped' : 'not flipped'}${pie.edge === 'flip' ? ', the flip wanted' : ''})`);
+        `the pointer at x ${Math.round(pe.x)} of ${vw[0]} -> the box ${te ? `at [${te.rect.map(Math.round).join(', ')}], ${side}` : 'not shown'} (inside 0 0 ${vw[0] - 4} ${vw[1]}; ${wantFlip ? 'flipped' : 'not flipped'}${pie.edge === 'flip' ? `, the flip wanted; the window ${narrowed ? `narrowed to ${narrowed} px, the pie on its row` : 'not narrowed (the pie left its row)'}` : ''})`);
       await mouse('mouseMoved', 3, 3);
+      if (narrowed) { await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(250); }
     }
     // other-click (finding 9): every slice for this draw, the select says All, the focus on it, the note says so, nothing kept
     if (pie.other && kOther >= 0) {
