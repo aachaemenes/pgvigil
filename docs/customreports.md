@@ -74,7 +74,8 @@ and on SQL Server a later result set of the same batch is not read.
 | a PostgreSQL instance | the instance's monitoring login (its `dsn`) | the same, and `default_transaction_read_only = on` |
 | a SQL Server instance | the instance's read login (its `dsn`) | a connection of its own, `LOCK_TIMEOUT 2000`, `DEADLOCK_PRIORITY LOW`, the report inside a transaction that is rolled back, the timeout on the request, and the login's own rights |
 
-A PostgreSQL run is refused before the report's statement when its SESSION user is a superuser or a member of
+A PostgreSQL run is refused before the report's statement when its SESSION user is a superuser, a member of a
+superuser role (a `NOINHERIT` member too: the statement can `SET ROLE` to it), or a member of
 `pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files` (a read-only transaction does not stop
 `COPY ... TO PROGRAM`), a member of `pgvigil_auth` (it reads the UI's password hashes) or `pgvigil_collector` (its
 import functions write the repository), or may `CREATE` in a `pgvigil` schema (the repository's owner); and, in a

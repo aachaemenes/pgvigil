@@ -60,6 +60,13 @@ const RepoSecretsCols = `coalesce((SELECT pg_has_role(session_user, n.nspowner, 
          OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                      WHERE n.nspname = 'pgvigil' AND p.proname LIKE 'ui\_%' AND has_function_privilege(session_user, p.oid, 'EXECUTE'))`
 
+// SuperMemberCol is one column on the SESSION user: a member of a superuser role other than itself (MEMBER, so a
+// NOINHERIT member too): SET ROLE / set_config('role', ..., true) inside the DBA's one statement reaches that role, and
+// as a superuser a read-only transaction does not stop COPY ... TO PROGRAM or pg_read_file. MEMBER and never SET: a
+// server before PostgreSQL 16 knows no SET mode, so a membership granted WITH SET FALSE is refused too. serve's
+// pgRefusal and EXPLAIN ANALYZE's check select it (the code review of REPORT ROLE, part B).
+const SuperMemberCol = `EXISTS (SELECT 1 FROM pg_roles s WHERE s.rolsuper AND s.rolname <> session_user AND pg_has_role(session_user, s.oid, 'MEMBER'))`
+
 // Explain plans a statement without running it, through the monitoring login (dsn) in the database datname: EXPLAIN
 // (FORMAT JSON) in a read-only transaction that is rolled back. A statement with $n parameters (pg_stat_statements'
 // text) is planned in the generic form: PREPARE, plan_cache_mode = force_generic_plan, EXPLAIN EXECUTE with NULLs

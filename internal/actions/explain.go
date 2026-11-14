@@ -155,14 +155,16 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	// (set_config('role', 'none', true)) is undone by the statement, so the current role's rights say nothing
 	// in a database that is a pgvigil repository also plans.RepoSecretsCols: a member of the schema's owner (NOINHERIT
 	// too), pg_read_all_data, a direct read of the UI's hashes (the code review of REPORT ROLE, part A)
-	var actSuper, actOwner, ownerMember, readAll, hashes bool
+	// a member of a superuser role (NOINHERIT too) counts as a superuser: the statement can SET ROLE to it (part B)
+	var actSuper, superMember, actOwner, ownerMember, readAll, hashes bool
 	var acting, secrets *string
 	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time(), (SELECT rolsuper FROM pg_roles WHERE rolname = session_user),
+	       `+plans.SuperMemberCol+`,
 	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname = ANY($1) AND pg_has_role(session_user, oid, 'MEMBER')),
 	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('pgvigil_auth', 'pgvigil_collector') AND pg_has_role(session_user, oid, 'MEMBER')),
 	       coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false),
 	       `+plans.RepoSecretsCols,
-		signalLike).Scan(&actStart, &actSuper, &acting, &secrets, &actOwner, &ownerMember, &readAll, &hashes); err != nil {
+		signalLike).Scan(&actStart, &actSuper, &superMember, &acting, &secrets, &actOwner, &ownerMember, &readAll, &hashes); err != nil {
 		return Result{Outcome: Failed, Detail: fmt.Sprintf("the explain login's server check failed: %v", err)}, nil
 	}
 	if !monStart.Equal(actStart) {
@@ -171,6 +173,9 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	}
 	if actSuper {
 		return refused("the explain login is a superuser: pgvigil refuses it (a login with SELECT grants only)"), nil
+	}
+	if superMember {
+		return refused("the explain login is a member of a superuser role (a statement can SET ROLE to it): pgvigil refuses it (a login with SELECT grants only)"), nil
 	}
 	if secrets != nil || actOwner || ownerMember || readAll || hashes {
 		what := "allowed to read the UI's password hashes"

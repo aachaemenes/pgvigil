@@ -589,8 +589,10 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 // by the run itself (set_config('role', 'none', true): PostgreSQL checks a role change against the session user). Every
 // pgvigil name in oid form: a monitored server without the pgvigil roles or schema answers NULL, never an error. In a
 // database that is a pgvigil repository also plans.RepoSecretsCols: a member of the schema's owner (NOINHERIT too),
-// pg_read_all_data, a direct read of the hashes (the code review of REPORT ROLE, part A).
+// pg_read_all_data, a direct read of the hashes (the code review of REPORT ROLE, part A). A member of a superuser role
+// (plans.SuperMemberCol, NOINHERIT too) is refused as a superuser is (part B).
 const pgRightsSQL = `SELECT r.rolsuper,
+       ` + plans.SuperMemberCol + `,
        pg_has_role(session_user, 'pg_execute_server_program', 'MEMBER'),
        pg_has_role(session_user, 'pg_write_server_files', 'MEMBER'),
        pg_has_role(session_user, 'pg_read_server_files', 'MEMBER'),
@@ -603,8 +605,8 @@ const pgRightsSQL = `SELECT r.rolsuper,
 // pgRefusal refuses a login whose rights reach past a read: every PostgreSQL run of the DBA's own SQL (a custom report
 // on an instance, a community tool, EXPLAIN) asks it inside the run's own transaction.
 func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
-	var super, prog, write, read, auth, collector, create, owner, readAll, hashes bool
-	if err := tx.QueryRow(ctx, pgRightsSQL).Scan(&super, &prog, &write, &read, &auth, &collector, &create, &owner, &readAll, &hashes); err != nil {
+	var super, superMember, prog, write, read, auth, collector, create, owner, readAll, hashes bool
+	if err := tx.QueryRow(ctx, pgRightsSQL).Scan(&super, &superMember, &prog, &write, &read, &auth, &collector, &create, &owner, &readAll, &hashes); err != nil {
 		return "", fmt.Errorf("reading the login's rights: %w", err)
 	}
 	var too, why []string
@@ -612,6 +614,7 @@ func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
 		on        bool
 		name, why string
 	}{{super, "superuser", "a read-only transaction does not stop COPY ... TO PROGRAM"},
+		{superMember && !super, "a member of a superuser role", "SET ROLE reaches it, and a read-only transaction does not stop COPY ... TO PROGRAM"},
 		{prog, "pg_execute_server_program", "a read-only transaction does not stop COPY ... TO PROGRAM"},
 		{write, "pg_write_server_files", "a read-only transaction does not stop COPY ... TO PROGRAM"},
 		{read, "pg_read_server_files", "pg_read_file reads the server's files"},
