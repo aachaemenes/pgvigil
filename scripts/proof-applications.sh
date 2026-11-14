@@ -88,7 +88,7 @@
 #  P7  Rename with a threshold scoped by the tag: refused without the tick (the store's words), done with it, re-tagged
 #  P8  Remove asked twice: refused without 'with its assignments', done with the ticks; assignment and threshold gone
 #  P9  a PostgreSQL database renamed on the server: 'absent since' and 'renamed to' shown; 'Assign <new> instead' moves it
-#  P10 the -no-login serve: at least 8 controls under the page that are not on its read list (Open, Close, Show / Hide
+#  P10 the -no-login serve: at least 8 controls under the page that are not on its read list (Open, Close, Export the inventory, Show / Hide
 #      contacts, a grid's own tools), every one off with a visible reason; contacts in words
 #  P11 axe-core 4.14.0 on the page (an application and its contacts open) light and dark, and read only: 0 nodes
 #  P12 the page's Export .xlsx passes scripts/xlsx-check.py and holds no contact value (contacts not shown)
@@ -705,7 +705,7 @@ try {
     // every control under the page (review P, m7) but the read list: Open, Show / Hide contacts, and a grid's own tools
     // (its header's sort and menu buttons, its filter and paging): a write control anywhere else is counted
     const name = e => (e.getAttribute('aria-label') || e.textContent || '').trim();
-    const read = e => /^(Open |Close |Show contacts of |Hide contacts of )/.test(name(e)) || !!e.closest('thead, .grid-tools, .gridtools, .grid-pager, .pager');
+    const read = e => /^(Open |Close |Show contacts of |Hide contacts of |Export the inventory)/.test(name(e)) || !!e.closest('thead, .grid-tools, .gridtools, .grid-pager, .pager');
     const w = [...document.querySelectorAll('main .applications button, main .applications input, main .applications select, main .applications textarea')].filter(vis).filter(e => !read(e));
     const off = e => e.disabled || e.getAttribute('aria-disabled') === 'true';
     const said = e => (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.trim().length > 10; });
