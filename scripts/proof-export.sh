@@ -1669,17 +1669,18 @@ for key, tab, inst in PAGES:
     if key == 'dbspace_i':
         # an instance's DB Space grid reads as DBA Dash's ('Unit: GB, Decimal Places: 1') and as the fleet grid: allocated,
         # used, data files and log files hold the GB figure, headed '(GB)' on the page and in the workbook, numbers in the
-        # workbook; a text cell is only 'not read' (a PostgreSQL database's used)
-        g0 = gs[0]; cc = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
-        cols_ = sorted({c for r, c in cc}); hdr = [(cc.get((1, c)) or (0, None, None))[2] for c in cols_]
-        want = ['allocated (GB)', 'used (GB)', 'data files (GB)', 'log files (GB)']
-        check(g0['head'][1:5] == want and hdr[1:5] == want, f"dbspace_i: the instance grid's columns 2-5 are {want}: page {g0['head'][1:5]}, workbook {hdr[1:5]}")
-        body = sorted({r for r, c in cc if r > 1})
-        for j, w in enumerate(want, 1):
-            if j >= len(cols_): break
-            nums = [r for r in body if (cc.get((r, cols_[j])) or (0, None, None))[1] is not None]
-            texts = sorted({cc[(r, cols_[j])][2] for r in body if (r, cols_[j]) in cc and cc[(r, cols_[j])][2]})
-            check(len(body) == g0['rows'] and len(nums) >= 1 and texts in ([], ['not read']), f"dbspace_i: '{w}' a number in {len(nums)} of {len(body)} rows (page {g0['rows']}), its text cells {texts[:3]}")
+        # workbook; a text cell is only 'not read' (a PostgreSQL database's used). Its names are its own (dsi_): the grader's
+        # module-level names (want: the language) are read further on
+        dsi_g = gs[0]; dsi_c = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
+        dsi_cols = sorted({c for r, c in dsi_c}); dsi_hdr = [(dsi_c.get((1, c)) or (0, None, None))[2] for c in dsi_cols]
+        dsi_want = ['allocated (GB)', 'used (GB)', 'data files (GB)', 'log files (GB)']
+        check(dsi_g['head'][1:5] == dsi_want and dsi_hdr[1:5] == dsi_want, f"dbspace_i: the instance grid's columns 2-5 are {dsi_want}: page {dsi_g['head'][1:5]}, workbook {dsi_hdr[1:5]}")
+        dsi_rows = sorted({r for r, c in dsi_c if r > 1})
+        for dsi_j, dsi_w in enumerate(dsi_want, 1):
+            if dsi_j >= len(dsi_cols): break
+            dsi_nums = [r for r in dsi_rows if (dsi_c.get((r, dsi_cols[dsi_j])) or (0, None, None))[1] is not None]
+            dsi_texts = sorted({dsi_c[(r, dsi_cols[dsi_j])][2] for r in dsi_rows if (r, dsi_cols[dsi_j]) in dsi_c and dsi_c[(r, dsi_cols[dsi_j])][2]})
+            check(len(dsi_rows) == dsi_g['rows'] and len(dsi_nums) >= 1 and dsi_texts in ([], ['not read']), f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}), its text cells {dsi_texts[:3]}")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
