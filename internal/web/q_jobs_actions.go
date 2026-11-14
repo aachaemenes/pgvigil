@@ -368,6 +368,7 @@ func (s *Server) JobExclusions(w http.ResponseWriter, r *http.Request) {
 	out["writable"] = why == ""
 	if why != "" {
 		out["reason"] = s.offWords(why, "job exclusions")
+		out["demo"] = s.demo != nil // the page reads the door from GET /api/ack; this says which reason it lacks when that read fails
 	}
 	out["exclusions"], err = s.query(r.Context(), `SELECT * FROM pgvigil.job_exclusion_rows($1)`, id)
 	s.reply(w, r, out, err)

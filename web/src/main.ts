@@ -60,7 +60,7 @@ import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
-import { mssqlPoolView } from './pools';
+import { hasPool, mssqlPoolView } from './pools';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlAuditView } from './mssql_audit';
 import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
@@ -407,13 +407,19 @@ async function render(force = false) {
     shownPage = pageKey;
   }
   // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
-  const engine = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance)?.engine : undefined;
+  const fleetRow = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
+  const engine = fleetRow?.engine;
   let tabs = ctx.instance ? tabsFor(engine) : rootTabs;
   // an imported server (pgvigil import dbadash, not collected by pgvigil): every SQL Server tab, each from dbadash.ts
   const imported = ctx.instance !== undefined && isMssql(engine) && await isImported(ctx.instance);
+  const offStrip = new Set<string>();
   if (ctx.instance && isMssql(engine)) {
     // the Availability tab only where one of its collections has stored a read (an imported server keeps it: its line says why it is not read)
     if (!imported && !(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+    // the Elastic pool tab in the strip only where the database is in a pool now (an imported server has no pgvigil read
+    // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
+    // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)
+    if (imported || fleetRow?.platform !== 'azuresqldb' || !(await hasPool(ctx.instance).catch(() => false))) offStrip.add('mssqlpool');
   } else if (ctx.instance) {
     // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
@@ -427,7 +433,7 @@ async function render(force = false) {
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
-  const strip = group.tabs.filter(k => tabs[k]);
+  const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab));
   // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(
@@ -509,8 +515,8 @@ async function render(force = false) {
     else if (fr) $('main').prepend(fr.header);
     else cur?.remove();
   });
-  // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (Allen
-  // 2026-11-11: 'when I click on something it takes me down to the page'); a range, a filter or a refresh of the same
+  // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (a
+  // reader's report: a click landed partway down the new page); a range, a filter or a refresh of the same
   // page keeps the place
   const path = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
   if (path !== shownPath) { shownPath = path; window.scrollTo(0, 0); }

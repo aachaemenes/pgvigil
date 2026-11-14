@@ -48,7 +48,7 @@
 #      pgvigil_reader, pgvigil_auth: docs/app.md), so the actions door's audit login is off ('... goes through the
 #      actions door's audit login, and it is off: the audit login may not write the actions log ...'); the third
 #      reason (no actions door) serve never has (it always builds the door): internal/web's TestInstancesOffNoDoor
-#   M. a page instance never read (task 205, the lead's 12:23): pg-m, added with platform onprem while nothing listens
+#   M. a page instance never read: pg-m, added with platform onprem while nothing listens
 #      on its port, is 'not read yet (added <t>)' with no last-seen time on Admin > Servers, the fleet list, its
 #      Summary card, /api/instances (last_seen null, added_at set) and pgvigil report's instances.txt; once its
 #      server answers, the read's time on all five, the words gone, and first_seen moved to that read (0123's

@@ -220,6 +220,12 @@ export interface SlowGroupsOpts {
   instLink?: (name: string, id: unknown) => Node;      // an instance name as a link to its tab
 }
 
+// totalsGrid: the All row's grid, named for an export (data-sheet: its sheet is 'Group by totals', export.ts headings)
+function totalsGrid(g: HTMLElement): HTMLElement {
+  g.setAttribute('data-sheet', 'Group by totals');
+  return g;
+}
+
 // slowGroupsPanel: the grid and its drill; its own state (group, database, top) lives in the panel, not the hash.
 export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
   const fleet = !ctx.instance;
@@ -334,7 +340,8 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
         o.keep ? el('p', { class: 'meta' }, group === 'instance' ? 'Under a tag folder the grid keeps the folder\'s instances; the All row counts the whole fleet.'
           : 'Under a tag folder only Group By Instance keeps the folder\'s instances: this grouping and the All row count the whole fleet.') : '',
         grid(rows, cols, 'No slow event in this window.'),
-        Number(tot.total) ? grid([totalRow], totCols) : '');
+        // the All row's grid under the same heading: its own name in an export (data-sheet, export.ts headings)
+        Number(tot.total) ? totalsGrid(grid([totalRow], totCols)) : '');
     } catch (e) {
       if (seq === drawSeq) body.replaceChildren(errorBox(e));
     }

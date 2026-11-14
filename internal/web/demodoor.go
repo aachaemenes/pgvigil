@@ -9,10 +9,10 @@ package web
 //	where    an instance this process seeded that still carries the tag 'demo' and the demo's name prefix; never
 //	         another instance of the same repository, whatever its tags say
 //	what     an acknowledgement, a note, a close, a silence, a blackout, a mute or a known pattern of ONE instance or
-//	         ONE alert, a dismiss, and a drive's or a PostgreSQL threshold at the instance level or below
+//	         ONE alert, a dismiss, a drive's, a PostgreSQL or a job's threshold and a job exclusion at the instance
+//	         level or below
 //	never    a write wider than one instance (a root or tag level, a rule on every instance), a level its route does
-//	         not write at, Send test, a job's thresholds and the job exclusions (their pages are not taught the door:
-//	         the route and the page come on together), and every route this file does not name - each refused in words
+//	         not write at, Send test, and every route this file does not name - each refused in words
 //
 // One path: the door calls the same import_ functions with the same payloads as a serve does, on a small pool of its
 // own on the demo's repository login. A handler asks seat() who writes, then asks that seat for the pool with the
@@ -125,6 +125,8 @@ type demoDoor struct {
 var doorLevels = map[doorRoute][]string{
 	doorDriveThreshold: {"instance", "drive"},
 	doorPgThreshold:    {"instance", "database"},
+	doorJobThreshold:   {"instance", "job"},
+	doorJobExclusion:   {"instance"},
 }
 
 func doorWide(what string) string {
@@ -134,9 +136,9 @@ func doorWide(what string) string {
 // allow says why the door refuses a write, "" when it carries it.
 func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 	switch sc.Route {
-	// not on this list: doorJobThreshold and doorJobExclusion. Their pages keep their controls off on a demo serve
-	// ('this page's ... are off', offWords) until they are taught the door, and the server does what its page says.
-	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold:
+	// a job's thresholds and the job exclusions came back on with their pages (B7 DONE-3): the page and the route turn
+	// on together, so the server never carries a write its page says is off
+	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion:
 	case doorAlertTest:
 		return "Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here", nil
 	default:
@@ -406,13 +408,12 @@ func (s *Server) doorInfo(ctx context.Context) map[string]any {
 	return map[string]any{"user": doorUser, "instances": live}
 }
 
-// offWords is a page's reason where its writes are off, from ackOff's: on a serve the same sentence with the page's
-// own noun, as before. On a demo serve a page that asks this is one whose controls are not taught the door (they
-// stay off): it says so, never 'saved as user demo' beside a control that is off.
+// offWords is a page's reason where its writes are off, from ackOff's, with the page's own noun (thresholds, job
+// exclusions): on a serve as before; on a demo serve the door's sentence, beside which the page says per level what
+// the door carries (it reads the door's instances from GET /api/ack).
 func (s *Server) offWords(why, what string) string {
-	if s.demo != nil {
-		return "this page's " + what + " are off on pgvigil demo -serve: changing them here needs pgvigil serve with a signed-in user"
-	}
+	// a demo serve: the door's own words under the page's noun - its pages are taught the door (B7 DONE-3) and say
+	// per level what it carries; 'writable' stays false, the page reads the door from GET /api/ack
 	return strings.Replace(why, "acknowledgements", what, 1)
 }
 

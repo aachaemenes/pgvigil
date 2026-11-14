@@ -42,6 +42,13 @@ const dbadash = {
   'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
   'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
   'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
+  // PostgreSQL's own names of five of DBA Dash's columns (B7 DONE-3, the pgLabel item: web/src/fleet.ts labelOf): a
+  // PostgreSQL row's cell is named so (its aria-label) on every scope, and a scope with no SQL Server names its column so
+  'Crash restarts':      { postgres: ['pgstate'], dd: 'Memory Dump (PostgreSQL: its crash restarts) -> the instance\'s Server state' },
+  'Last amcheck':        { postgres: ['corruption'], dd: 'Last Good Check DB (PostgreSQL: amcheck) -> the Corruption page' },
+  'WAL archive':         { postgres: ['backups'], dd: 'Backup LOG (PostgreSQL: the WAL archiver) -> HA/DR > Backups' },
+  'Jobs':                { postgres: ['jobsreport', 'jobs'], dd: 'Agent Jobs (PostgreSQL: pg_cron and pgAgent) -> Jobs > Job Status' },
+  'Replication':         { postgres: ['replication'], dd: 'Availability Groups (PostgreSQL: replication) -> HA/DR' },
   // QS is SQL Server's Query Store alone (a QS link on a PostgreSQL instance FAILS: 'the column has no read there');
   // PostgreSQL's statement store has its own column, which SQL Server has no cell in
   'QS':                  { sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS' },
@@ -58,13 +65,15 @@ const dbadash = {
 // the differences named (pgvigil lands elsewhere, argued in the report): column -> words
 const named = {};
 // DBA Dash's cells that are text, not links (Checks/Summary.cs: no tab, no dialog)
-const plainColumns = ['Memory Dump', 'Is Agent Running', 'DB Mail'];
+const plainColumns = ['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB Mail'];
 // Instance Uptime: DBA Dash's Summary opens the Instance Uptime threshold dialog over the grid; the click must too
 const dialogColumns = new Set(['Instance Uptime']);
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
   'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
-  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom' };
+  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
+  // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
+  'Last amcheck': 'corruption', 'WAL archive': 'backups', 'Jobs': 'jobs', 'Replication': 'pgreplication' };
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
 const ddOrder = ['Instance', 'Memory Dump', 'Corruption', 'Last Good Check DB', 'SQL Agent Alerts', 'Backup FULL', 'Backup DIFF', 'Backup LOG', 'Drive Space',
   'Agent Jobs', 'Is Agent Running', 'Log Shipping', 'Mirroring', 'Availability Groups', 'Log Space', 'File Space', '% Max Size', 'Elastic Pool Storage', 'QS',
