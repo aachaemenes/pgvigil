@@ -26,7 +26,8 @@ const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 // sqlCollectorFindings: the collector's findings ($1 the instance, 0 = all: an instance sees its own and the
 // repository-wide ones)
 const sqlCollectorFindings = `
-SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at
+SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at,
+       CASE WHEN f.source = 'pgvigil repository' THEN pgvigil.collector_claim(f.detail) END AS why
   FROM pgvigil.collector_findings f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
  WHERE $1::int = 0 OR f.instance_id IS NULL OR f.instance_id = $1
@@ -99,10 +100,11 @@ SELECT i.instance_id, i.name AS instance, i.engine,
  GROUP BY i.instance_id, i.name, i.engine
  ORDER BY sum(l.auth_failures) DESC, avg(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour') DESC NULLS LAST, i.name`
 
-// sqlCollectorStreaks: the collections failing now ($1 the instance, 0 = all)
+// sqlCollectorStreaks: the collections failing now ($1 the instance, 0 = all) - per instance and collection the
+// streak that speaks (collector_streaks_now: the lowest of the hosts still reading it, as the findings)
 const sqlCollectorStreaks = `
 SELECT s.instance_id, i.name AS instance, s.collection, s.fail_streak, s.failing_since, s.last_run_at, s.last_error
-  FROM pgvigil.collector_streaks s
+  FROM pgvigil.collector_streaks_now s
   JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
  WHERE s.fail_streak > 0 AND ($1::int = 0 OR s.instance_id = $1)
  ORDER BY s.fail_streak DESC, i.name, s.collection`
@@ -151,6 +153,13 @@ SELECT run_id, started_at, finished_at, round(extract(epoch FROM finished_at - s
        cardinality(partitions_dropped) AS partitions, rows_deleted, total, array_to_string(partitions_dropped, ', ') AS dropped
   FROM pgvigil.purge_runs ORDER BY finished_at DESC LIMIT 10`
 
+// sqlCollectorWaits: a forming wait that ended on a collector without a parent (task 201 DONE-2 N7): its alerts went
+// out as they came. The page says it under the findings; a parent's detail never does.
+const sqlCollectorWaits = `
+SELECT e.host, e.last_forming, e.ended_at, cardinality(e.instances) AS instances
+  FROM pgvigil.collector_forming_ended e
+ ORDER BY e.host`
+
 // Collector is GET /api/collector[?instance=N]: the whole page, or with an instance the parts its Collection dates
 // line reads (collectors, findings, load, streaks).
 func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
@@ -166,8 +175,9 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 		{"load", sqlCollectorLoad, []any{id}},
 		{"streaks", sqlCollectorStreaks, []any{id}},
 	}
-	if id == 0 {
+	if id == 0 { // the Collector page; an instance's Collection dates line reads none of these
 		parts = append(parts,
+			part{"waits", sqlCollectorWaits, nil},
 			part{"collections", sqlCollectorCollections, nil},
 			part{"minutes", sqlCollectorMinutes, nil},
 			part{"repository", sqlCollectorRepository, nil},
