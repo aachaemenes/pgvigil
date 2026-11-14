@@ -29,6 +29,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // planReadBudget bounds one read on demand: the connection, the two statements and the transfer of the XML.
@@ -401,4 +402,154 @@ func (s *Server) MSSQLForceFail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.multi(w, r, []part{{"plans", sqlMSSQLForceFail, []any{id}}, {"reads", sqlMSSQLForceFailReads, []any{id}}})
+}
+
+// ---- one statement on every instance; statements containing a text (PerformanceMonitor 3.13 Added 14 and 15) -------
+//   GET /api/mssql/everywhere?hash=0x..[&from=&to=]   one query hash on every SQL Server instance the repository holds:
+//        per instance, database and source (plan cache, Query Store) its executions, CPU, duration and reads in the
+//        window, the most CPU first                                                         -> Server.MSSQLEverywhere
+//   GET /api/mssql/search?q=<text>[&instance=N]   the stored SQL Server statement texts holding the text (case
+//        ignored, % and _ taken as they are), per source, with each source's time bound, the trigram indexes' state
+//        and the instances whose query_text policy keeps no text to search                  -> Server.MSSQLSearch
+// SQL Server only: a PostgreSQL statement's queryid is not comparable across servers (to PostgreSQL 17 it hashes the
+// tables' object ids; 18 hashes their names but still the server's own object ids and its build), so those
+// instances are not compared or searched here, and the reply says so when the repository holds any.
+
+const sqlMSSQLEverywhere = `SELECT * FROM pgvigil.mssql_statement_everywhere($1, $2, $3)`
+
+const pgNotHere = "PostgreSQL instances are not compared or searched here: a PostgreSQL statement's identifier is its own server's, not one every server shares"
+
+// pgInstances counts the PostgreSQL instances the repository holds (the reply's note when there are any).
+func (s *Server) pgInstances(ctx context.Context) int {
+	var n int
+	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.instances WHERE engine = 'postgres'`).Scan(&n)
+	return n
+}
+
+// MSSQLEverywhere is GET /api/mssql/everywhere.
+func (s *Server) MSSQLEverywhere(w http.ResponseWriter, r *http.Request) {
+	_, from, to, err := params(r, false)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	hash := r.URL.Query().Get("hash")
+	if !planHashForm.MatchString(hash) || strings.Trim(hash[2:], "0") == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("hash must be a query hash (0x and up to 16 hex digits, not zero)"))
+		return
+	}
+	t, err := s.query(r.Context(), sqlMSSQLEverywhere, "0x"+strings.ToUpper(hash[2:]), from, to)
+	if err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	out := map[string]any{"rows": t}
+	if s.pgInstances(r.Context()) > 0 {
+		out["note"] = pgNotHere
+	}
+	s.reply(w, r, out, nil)
+}
+
+// searchBudget is one source's time bound without a trigram index (PerformanceMonitor's 4 s per source).
+const searchBudget = "4s"
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// MSSQLSearch is GET /api/mssql/search.
+func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	text := strings.TrimSpace(q.Get("q"))
+	if len([]rune(text)) < 3 || len(text) > 400 {
+		writeErr(w, http.StatusBadRequest, errors.New("the text to find must be 3 to 400 characters"))
+		return
+	}
+	var inst any
+	if v := q.Get("instance"); v != "" {
+		id, err := strconv.Atoi(v)
+		if err != nil || id <= 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive instance_id"))
+			return
+		}
+		if _, ok := s.mssqlInstanceName(w, r, id); !ok {
+			return
+		}
+		inst = id
+	}
+	pattern := "%" + likeEscaper.Replace(text) + "%"
+	ctx := r.Context()
+	type src struct {
+		Source string `json:"source"`
+		Rows   *table `json:"rows"`
+		Note   string `json:"note,omitempty"`
+	}
+	var sources []src
+	for _, name := range []string{"plan cache", "Query Store"} {
+		one := src{Source: name}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			s.reply(w, r, nil, err)
+			return
+		}
+		_, err = tx.Exec(ctx, "SET LOCAL statement_timeout = '"+searchBudget+"'")
+		if err == nil {
+			var rows pgx.Rows
+			rows, err = tx.Query(ctx, `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200)`, pattern, name, inst)
+			if err == nil {
+				t := &table{Rows: [][]any{}}
+				for _, f := range rows.FieldDescriptions() {
+					t.Columns = append(t.Columns, f.Name)
+				}
+				for rows.Next() {
+					v, verr := rows.Values()
+					if verr != nil {
+						err = verr
+						break
+					}
+					t.Rows = append(t.Rows, v)
+				}
+				rows.Close()
+				if err == nil {
+					err = rows.Err()
+				}
+				one.Rows = t
+			}
+		}
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		var pe *pgconn.PgError
+		switch {
+		case errors.As(err, &pe) && pe.Code == "57014":
+			one.Rows, one.Note = nil, fmt.Sprintf("not searched to the end: the %s texts took longer than %s without the trigram index (docs/sqlserver-querystore.md, 'Finding statements by their text', has the DBA's statements that build it)", name, searchBudget)
+		case err != nil:
+			s.reply(w, r, nil, fmt.Errorf("%s: %w", name, err))
+			return
+		}
+		sources = append(sources, one)
+	}
+	idx, err := s.query(ctx, `SELECT * FROM pgvigil.mssql_text_index_state()`)
+	if err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	// the instances whose policy keeps no text, or only normalized text
+	var noText, normalized []string
+	if pol, err := s.pool.Query(ctx, `SELECT name, instance_id FROM pgvigil.instances WHERE engine = 'sqlserver' ORDER BY name`); err == nil {
+		for pol.Next() {
+			var n string
+			var id int
+			if pol.Scan(&n, &id) == nil && (inst == nil || inst == id) {
+				switch s.mssqlPlanPolicy(n) {
+				case "none":
+					noText = append(noText, n)
+				case "normalized":
+					normalized = append(normalized, n)
+				}
+			}
+		}
+		pol.Close()
+	}
+	out := map[string]any{"sources": sources, "text_indexes": idx, "no_text": noText, "normalized": normalized}
+	if inst == nil && s.pgInstances(ctx) > 0 {
+		out["note"] = pgNotHere
+	}
+	s.reply(w, r, out, nil)
 }

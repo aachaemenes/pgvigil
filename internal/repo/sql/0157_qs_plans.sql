@@ -348,3 +348,61 @@ SELECT p.instance_id, 'info', 'a plan compiled on stale statistics',
   JOIN pgvigil.mssql_plan_stat_status st ON st.instance_id = p.instance_id AND st.source = 'qs' AND st.database_name = p.database_name AND st.plan_id = p.plan_id
  WHERE st.stale_at_compile AND p.snapshot_at > now() - interval '3 hours'
  GROUP BY p.instance_id, p.database_name, p.query_id, p.plan_id, p.snapshot_at;
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- one statement on every instance (PerformanceMonitor 3.13 Added 14); statements containing a text (Added 15)
+-- ---------------------------------------------------------------------------------------------------------------
+-- SQL Server's query hash is computed from the statement's shape, so the same statement carries the same hash on every
+-- server: the plan cache's samples (query_key = the hash) and the Query Store's intervals (query_hash) of the window,
+-- per instance, database and source, the most CPU first. A plan cache read cut at the collector's lists, or a store
+-- interval kept only for its top plans, makes a figure a floor: capped_reads says how many plan cache reads were cut.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_statement_everywhere(p_hash text, p_from timestamptz, p_to timestamptz)
+RETURNS TABLE (instance_id int, instance text, source text, database text, executions numeric, cpu_ms numeric, duration_ms numeric,
+               logical_reads numeric, first_seen timestamptz, last_seen timestamptz, capped_reads bigint)
+LANGUAGE sql STABLE AS $$
+  SELECT x.instance_id, i.name, x.source, x.database_name, x.executions, x.cpu_ms, x.duration_ms, x.logical_reads, x.first_seen, x.last_seen, x.capped_reads
+    FROM (
+      SELECT s.instance_id, 'plan cache'::text AS source, max(s.database_name) AS database_name, sum(s.executions)::numeric AS executions,
+             round(sum(s.cpu_us) / 1000.0, 3) AS cpu_ms, round(sum(s.duration_us) / 1000.0, 3) AS duration_ms, sum(s.logical_reads)::numeric AS logical_reads,
+             min(s.snapshot_at) AS first_seen, max(s.snapshot_at) AS last_seen,
+             (SELECT count(*) FROM pgvigil.mssql_pc_read r WHERE r.instance_id = s.instance_id AND r.snapshot_at > p_from AND r.snapshot_at <= p_to AND r.capped) AS capped_reads
+        FROM pgvigil.mssql_pc_sample s
+       WHERE s.query_key = p_hash AND s.snapshot_at > p_from AND s.snapshot_at <= p_to
+       GROUP BY s.instance_id, s.database_id
+      UNION ALL
+      SELECT r.instance_id, 'Query Store', r.database_name, sum(r.executions), round(sum(r.cpu_us) / 1000.0, 3), round(sum(r.duration_us) / 1000.0, 3),
+             sum(r.logical_reads), min(r.snapshot_at), max(r.interval_end), NULL::bigint
+        FROM pgvigil.mssql_qs_runtime r
+       WHERE r.query_hash = p_hash AND r.interval_end > p_from AND r.snapshot_at <= p_to
+       GROUP BY r.instance_id, r.database_name
+    ) x JOIN pgvigil.instances i ON i.instance_id = x.instance_id
+   ORDER BY x.cpu_ms DESC NULLS LAST, i.name, x.source
+$$;
+
+-- the stored statement texts of SQL Server instances holding p_pattern (an ILIKE pattern the caller escaped, ESCAPE
+-- '\'), from the plan cache's texts or the Query Store's; p_instance NULL = every instance. The caller bounds the time.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_statement_search(p_pattern text, p_source text, p_instance int, p_limit int)
+RETURNS TABLE (instance_id int, instance text, source text, database text, statement_key text, object_name text, statement text, seen_at timestamptz)
+LANGUAGE sql STABLE AS $$
+  SELECT t.instance_id, i.name, 'plan cache'::text, d.database_name, t.query_key, t.object_name, left(t.query, 400), t.seen_at
+    FROM pgvigil.mssql_pc_text t JOIN pgvigil.instances i ON i.instance_id = t.instance_id
+    LEFT JOIN pgvigil.mssql_pc_database d ON d.instance_id = t.instance_id AND d.database_id = t.database_id
+   WHERE p_source = 'plan cache' AND (p_instance IS NULL OR t.instance_id = p_instance) AND t.query ILIKE p_pattern ESCAPE '\'
+  UNION ALL
+  SELECT q.instance_id, i.name, 'Query Store', q.database_name, q.query_hash, q.object_name, left(q.query_text, 400), q.last_execution
+    FROM pgvigil.mssql_qs_query q JOIN pgvigil.instances i ON i.instance_id = q.instance_id
+   WHERE p_source = 'Query Store' AND (p_instance IS NULL OR q.instance_id = p_instance) AND q.query_text ILIKE p_pattern ESCAPE '\'
+   LIMIT p_limit
+$$;
+
+-- whether the optional trigram indexes over the stored texts exist and can be used (docs/sqlserver-querystore.md has
+-- the DBA's statements; pgvigil never builds them): a failed CREATE INDEX CONCURRENTLY leaves an invalid one behind
+CREATE OR REPLACE FUNCTION pgvigil.mssql_text_index_state()
+RETURNS TABLE (index_name text, on_table text, present boolean, valid boolean, ready boolean, size_bytes bigint)
+LANGUAGE sql STABLE AS $$
+  SELECT w.index_name, w.on_table, c.oid IS NOT NULL, coalesce(x.indisvalid, false), coalesce(x.indisready, false),
+         CASE WHEN c.oid IS NOT NULL THEN pg_relation_size(c.oid) END
+    FROM (VALUES ('mssql_pc_text_query_trgm', 'mssql_pc_text'), ('mssql_qs_query_text_trgm', 'mssql_qs_query')) w(index_name, on_table)
+    LEFT JOIN pg_class c ON c.relname = w.index_name AND c.relnamespace = 'pgvigil'::regnamespace
+    LEFT JOIN pg_index x ON x.indexrelid = c.oid
+$$;

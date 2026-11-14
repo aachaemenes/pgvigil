@@ -78,15 +78,31 @@
 #     E5 the window's first failure moved 25 h back in the repository: info again (it starts over after 24 h);
 #     GET /api/mssql/forcefail lists the plan with its reads.
 #     Red on f8e89d2: no mssql_qs_force_fail table; 'a forced plan fails' is a warning at E1.
+#  F. one statement on every instance, statements by their text (PerformanceMonitor 3.13 Added 14, 15, 16; F13, F14,
+#     P7, P8), a second container (instance f2) beside the first (sqlfull):
+#     F1 a statement run 3 times on the first (in pgvqs, and twice in pgvqs2 under Query Store) and 5 on the second
+#        between two plan cache reads: GET /api/mssql/everywhere for its query hash lists sqlfull's plan cache (3),
+#        sqlfull's Query Store (2) and f2's plan cache (5) executions, each equal to the server's own count read by hand
+#        (sys.dm_exec_query_stats execution_count; sys.query_store_runtime_stats count_executions), the CPU within
+#        1 ms of total_worker_time / 1000;
+#     F2 GET /api/mssql/search?q=marker%_x finds the statement on sqlfull and f2 (plan cache), each row's key = the
+#        hash; q=marker__x finds nothing (% and _ taken as they are); sqlnone is named under no_text and sqlnorm under
+#        normalized; with instance=f2 only f2's rows;
+#     F3 text_indexes: both absent; after the DBA's statements (CREATE EXTENSION pg_trgm; CREATE INDEX CONCURRENTLY
+#        mssql_pc_text_query_trgm ... gin_trgm_ops) the plan cache's is present, valid and ready, and the search still
+#        finds the statement;
+#     F4 no note while the repository holds no PostgreSQL instance; after one is registered the replies carry the
+#        'PostgreSQL instances are not compared or searched here' note.
+#     Red on f8e89d2: the routes do not exist.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
 ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
 IMG_SQL=${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 EXTRACT=${PGVIGIL_PLAN_EXTRACT:-.lab/extract.py}
-PARTS=${PGVIGIL_PARTS:-ABCDE}
+PARTS=${PGVIGIL_PARTS:-ABCDEF}
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-SQL=pgvqs-sql-$SUF; LBL=pgvigil-proof=406
+SQL=pgvqs-sql-$SUF; SQL2=pgvqs-sql2-$SUF; LBL=pgvigil-proof=406
 PGDB=pgv_qs_$SUF; MON=pgv_qmon_$SUF; USR=proofdba$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 part() { [[ "$PARTS" == *"$1"* ]]; }
@@ -100,6 +116,7 @@ cleanup() {
   [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
   for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true; done
   docker rm -f -v "$SQL" >/dev/null 2>&1 || { docker inspect "$SQL" >/dev/null 2>&1 && echo "CLEANUP: container $SQL not removed" >&2; }
+  docker rm -f -v "$SQL2" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   rm -rf "$TMPD"
 }
@@ -342,13 +359,19 @@ waitreq() { local v=; for _ in $(seq 1 60); do v=$(req "$1" 2>/dev/null || true)
     FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE s.host_name LIKE 'pgvqs-%'" >&2 || true
   req "$1" >&2 || true
   fail "C: no running request $1"; }
-VICTIM="SELECT COUNT(*) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.id ="
+# each case its own statement shape (a literal alone leaves the query and plan hash as they are): victim <shape> <id>
+victim() { case $1 in
+  dur) echo "SELECT COUNT(*) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.id = $2" ;;
+  cnt) echo "SELECT MAX(t1.a) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.id = $2" ;;
+  low) echo "SELECT MIN(t2.a), COUNT(t1.pad) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.id = $2" ;;
+  sw)  echo "SELECT SUM(t1.a), MAX(t2.pad) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.id = $2" ;;
+  esac; }
 # held <tag>: until the blocker of that tag sits in its WAITFOR (its lock is taken)
 held() { local n=; for _ in $(seq 1 60); do n=$(sq "SELECT COUNT(*) FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.host_name = 'pgvqs-$1' AND r.wait_type = 'WAITFOR'" 2>/dev/null || echo 0); [[ "$n" == 1 ]] && return 0; sleep 0.5; done; fail "C: the blocker $1 never held its lock"; }
 hold() { bg "hold$1" "$2" "BEGIN TRAN; UPDATE dbo.t SET a = a + 1 WHERE id = $1; WAITFOR DELAY '00:03:00'; ROLLBACK;"; held "hold$1"; }
 : >"$TMPD/cases.txt"
 # C1 duration: blocked 12 s (and C3: rpnone reads the same moment)
-hold 5 100; bg dur 100 "$VICTIM 5 /* pgvc-dur */"; waitreq pgvc-dur >/dev/null; sleep 12
+hold 5 100; bg dur 100 "$(victim dur 5) /* pgvc-dur */"; waitreq pgvc-dur >/dev/null; sleep 12
 echo "duration|$(req pgvc-dur)" >>"$TMPD/cases.txt"
 col rpon mssql_running_plans; col rpnone mssql_running_plans
 DURQ=$(req pgvc-dur); stopbg
@@ -356,14 +379,14 @@ DURQ=$(req pgvc-dur); stopbg
 bg cpu 60 "SELECT COUNT_BIG(*) FROM dbo.t a CROSS JOIN dbo.t b CROSS JOIN (SELECT TOP 8 1 x FROM dbo.t) c WHERE a.pad <> b.pad OR a.a > b.a OPTION (MAXDOP 1) /* pgvc-cpu */"
 waitreq pgvc-cpu >/dev/null; sleep 3; echo "cpu|$(req pgvc-cpu)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 # C1 count: two sessions on one plan, blocked 3 s
-hold 6 100; bg cnt1 100 "$VICTIM 6 /* pgvc-cnt */"; bg cnt2 100 "$VICTIM 6 /* pgvc-cnt */"; waitreq pgvc-cnt >/dev/null; sleep 3
+hold 6 100; bg cnt1 100 "$(victim cnt 6) /* pgvc-cnt */"; bg cnt2 100 "$(victim cnt 6) /* pgvc-cnt */"; waitreq pgvc-cnt >/dev/null; sleep 3
 echo "count|$(req pgvc-cnt)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 # C1 grant: a sort over dbo.big holding its grant while it waits on a locked row
 bg holdbig 100 "BEGIN TRAN; UPDATE dbo.big SET pad = REVERSE(pad) WHERE id = 300000; WAITFOR DELAY '00:03:00'; ROLLBACK;"; held holdbig
 bg grant 100 "SELECT TOP (550000) id, pad FROM dbo.big WHERE id > 0 ORDER BY pad DESC OPTION (MAXDOP 1) /* pgvc-grant */"; waitreq pgvc-grant >/dev/null; sleep 3
 echo "grant|$(req pgvc-grant)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 # C2 below every threshold: one session blocked 2 s
-hold 7 100; bg low 100 "$VICTIM 7 /* pgvc-low */"; waitreq pgvc-low >/dev/null; sleep 1
+hold 7 100; bg low 100 "$(victim low 7) /* pgvc-low */"; waitreq pgvc-low >/dev/null; sleep 1
 echo "low|$(req pgvc-low)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 python3 - "$TMPD" "$PGDSN" "$U" "$EXTRACT" <<'PYEND' || fail "C1-C4: see above"
 import json, subprocess, sys, urllib.parse
@@ -403,7 +426,10 @@ if z[0][0] != '0': bad.append(f"C2 a zero plan hash stored: {z}")
 dur = cases.get('duration', {})
 n = q(f"SELECT coalesce(plan_state, ''), (plan_xml IS NULL)::text FROM pgvigil.mssql_running_plan WHERE instance_id = {iid['rpnone']} AND query_hash = '{dur.get('qh')}' AND plan_hash = '{dur.get('ph')}'")
 if n != [['policy', 'true']]: bad.append(f"C3 rpnone: {n} (want policy, no plan)")
-code, b = api('mssql/runningplans', instance=iid['rpon'], **{'from': '2020-01-01T00:00:00Z', 'to': '2100-01-01T00:00:00Z'})
+import datetime
+now = datetime.datetime.now(datetime.timezone.utc)
+iso = lambda t: t.strftime('%Y-%m-%dT%H:%M:%SZ')
+code, b = api('mssql/runningplans', instance=iid['rpon'], **{'from': iso(now - datetime.timedelta(hours=1)), 'to': iso(now + datetime.timedelta(hours=1))})
 listed = [dict(zip(b['plans']['columns'], r)) for r in b.get('plans', {}).get('rows', [])] if code == 200 else []
 if code != 200 or not any(x['query_hash'] == dur.get('qh') and 'duration' in (x['reasons'] or '') for x in listed): bad.append(f"C4 list: HTTP {code} {str(b)[:200]}")
 code, b = api('mssql/runningplans/plan', instance=iid['rpon'], qh=dur.get('qh'), ph=dur.get('ph'), start=dur.get('start'), end=dur.get('end'))
@@ -422,7 +448,7 @@ echo "ok   C1-C4: one row per threshold case with its plan, none below the thres
 
 # C5 the live plan
 MAJ=${VER%%.*}
-bg live 200 "SELECT COUNT_BIG(*) FROM dbo.t a CROSS JOIN dbo.t b CROSS JOIN (SELECT TOP 100 1 x FROM dbo.t) c WHERE a.pad <> b.pad OR a.a > b.a OPTION (MAXDOP 1) /* pgvc-live */"
+bg live 200 "SELECT COUNT_BIG(*) FROM dbo.t a CROSS JOIN dbo.t b CROSS JOIN (SELECT TOP 2000 1 x FROM dbo.t) c WHERE a.pad <> b.pad OR a.a > b.a OPTION (MAXDOP 1) /* pgvc-live */"
 waitreq pgvc-live >/dev/null
 for _ in $(seq 1 90); do C=$(req pgvc-live | cut -d'|' -f5); [[ -n "$C" && "$C" -ge 61000 ]] && break; sleep 1; done
 [[ -n "$C" && "$C" -ge 61000 ]] || fail "C5: the CPU-bound statement did not reach 61 s of CPU (at $C ms)"
@@ -446,7 +472,7 @@ export ADD_PW="$MON_PW"
 python3 -c 'import json, os, sys; print(json.dumps({"op": "add", "name": "rppage", "engine": "sqlserver", "auth": "sql", "host": "127.0.0.1", "port": sys.argv[1], "login": sys.argv[2], "password": os.environ["ADD_PW"], "options": "encrypt=true&TrustServerCertificate=true"}))' "$PORT_SQL" "$MON" > "$TMPD/add.json"
 CODE=$(curl -s -o "$TMPD/add.out" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/add.json" "$U/api/admin/instances")
 [[ "$CODE" == 200 ]] || fail "C6: adding rppage on Admin > Instances: HTTP $CODE $(head -c 300 "$TMPD/add.out")"
-hold 8 200; bg sw 200 "$VICTIM 8 /* pgvc-switch */"; waitreq pgvc-switch >/dev/null
+hold 8 200; bg sw 200 "$(victim sw 8) /* pgvc-switch */"; waitreq pgvc-switch >/dev/null
 "$TMPD/pgvigil" run -config "$TMPD/collector.yaml" >"$TMPD/run.log" 2>&1 & RUNPID=$!
 sleep 150
 kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true; RUNPID=
@@ -570,6 +596,94 @@ pq "UPDATE pgvigil.mssql_qs_force_fail f SET seen_at = seen_at - interval '25 ho
 expect E5 info "Held: it failed once"
 CODE=$(api "mssql/forcefail?instance=$IF" "$TMPD/e.json"); [[ "$CODE" == 200 ]] && grep -q "\"$PID\"\|,$PID," "$TMPD/e.json" || fail "E: GET /api/mssql/forcefail: HTTP $CODE $(head -c 300 "$TMPD/e.json")"
 echo "ok   E: held at one failure, paged at two in one read and at two within 24 h, a new window after forcing anew, held again past 24 h; the API lists it"
+fi
+
+if part F; then
+echo "== F. one statement on every instance; statements by their text =="
+docker run -d --name "$SQL2" --label "$LBL" --memory 4g --env-file "$TMPD/sa.env" -p 127.0.0.1::1433 "$IMG_SQL" >/dev/null
+sq2() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$1" | timeout 120 docker exec -i --env-file "$TMPD/sa.env" "$SQL2" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
+for _ in $(seq 1 150); do [[ "$(sq2 "SELECT CASE WHEN DATABASEPROPERTYEX('msdb', 'Status') = 'ONLINE' THEN 1 ELSE 0 END" 2>/dev/null)" == 1 ]] && break; sleep 2; done
+PORT2=$(docker port "$SQL2" 1433/tcp | head -1 | sed 's/.*://')
+sq2 "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON]; GRANT CONNECT ANY DATABASE TO [$MON];" >/dev/null || fail "F: the second server's login"
+TBL="CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, a int NOT NULL, pad char(100) NOT NULL DEFAULT 'p'); INSERT dbo.t (id, a) SELECT TOP (5000) n, n FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS n FROM sys.all_objects x CROSS JOIN sys.all_objects y) z;"
+sq2 "CREATE DATABASE pgvqs;" >/dev/null && sq2 "$TBL" pgvqs >/dev/null || fail "F: the second server's table"
+part D || part E || sqok "F: pgvqs2" "CREATE DATABASE pgvqs2; ALTER DATABASE pgvqs2 SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1);"
+sqok "F: dbo.t in pgvqs2" "$TBL" pgvqs2
+export PGV_Q_MON2="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT2?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
+printf '  - name: f2\n    engine: sqlserver\n    dsn: env:PGV_Q_MON2\n    query_text: full\n' >> "$TMPD/m.yaml"
+col sqlfull mssql_plancache; col f2 mssql_instance mssql_plancache
+STF="SELECT COUNT(*) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.a > 4990 AND t1.pad <> 'pgvf_marker%_x';"
+sqok "F: three runs" "$STF $STF $STF" pgvqs; sqok "F: two runs under Query Store" "$STF $STF EXEC sys.sp_query_store_flush_db;" pgvqs2
+sq2 "$STF $STF $STF $STF $STF" pgvqs >/dev/null || fail "F: five runs on f2"
+col sqlfull mssql_plancache mssql_querystore; col f2 mssql_plancache
+HAND1=$(sq "SELECT CONVERT(varchar(40), qs.query_hash, 1) + '|' + CAST(qs.execution_count AS varchar(20)) + '|' + CAST(qs.total_worker_time AS varchar(20)) + '|' + CAST(t.dbid AS varchar(10))
+  FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE '%pgvf[_]marker%' AND t.text NOT LIKE '%dm_exec%'")
+HAND2=$(sq2 "SELECT CONVERT(varchar(40), qs.query_hash, 1) + '|' + CAST(qs.execution_count AS varchar(20)) + '|' + CAST(qs.total_worker_time AS varchar(20))
+  FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE '%pgvf[_]marker%' AND t.text NOT LIKE '%dm_exec%'")
+HANDQ=$(sq "SELECT CAST(SUM(rs.count_executions) AS varchar(20)) FROM sys.query_store_runtime_stats rs JOIN sys.query_store_plan p ON p.plan_id = rs.plan_id
+  JOIN sys.query_store_query q ON q.query_id = p.query_id JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id WHERE qt.query_sql_text LIKE '%pgvf[_]marker%'" pgvqs2)
+IF2=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'f2'")
+python3 - "$TMPD" "$U" "$IF" "$IF2" "$HAND1" "$HAND2" "$HANDQ" "$PGDSN" <<'PYEND' || fail "F: see above"
+import json, subprocess, sys, urllib.parse, datetime
+d, u, i1, i2, h1, h2, hq, dsn = sys.argv[1:]
+bad = []
+def api(path, **q):
+    out = f"{d}/f.json"
+    code = subprocess.run(['curl', '-s', '-o', out, '-w', '%{http_code}', '-b', f"{d}/cj", '-H', 'X-Pgvigil: 1', f"{u}/api/{path}?{urllib.parse.urlencode(q)}"], capture_output=True, text=True).stdout
+    try: return int(code), json.load(open(out))
+    except Exception: return int(code), {}
+rows1 = [l.split('|') for l in h1.splitlines() if l.count('|') == 3]
+rows2 = [l.split('|') for l in h2.splitlines() if l.count('|') == 2]
+pc1 = [r for r in rows1 if r[3] != str(0)]
+if not rows1 or not rows2: print(f"DIFF F1 the hand reads: {h1!r} {h2!r}"); sys.exit(1)
+qh = '0x' + rows1[0][0][2:].upper()
+want = {}
+for r in rows1:   # the server's statements of the hash: pgvqs's runs (3) and pgvqs2's (2) are two plans in two databases
+    want.setdefault('sqlfull', []).append((int(r[1]), int(r[2])))
+now = datetime.datetime.now(datetime.timezone.utc); iso = lambda t: t.strftime('%Y-%m-%dT%H:%M:%SZ')
+code, b = api('mssql/everywhere', hash=qh, **{'from': iso(now - datetime.timedelta(hours=1)), 'to': iso(now + datetime.timedelta(minutes=5))})
+got = [dict(zip(b['rows']['columns'], r)) for r in b.get('rows', {}).get('rows', [])] if code == 200 else []
+if code != 200: bad.append(f"F1 HTTP {code} {str(b)[:200]}")
+pcfull = sum(float(x['executions']) for x in got if x['instance'] == 'sqlfull' and x['source'] == 'plan cache')
+pcf2 = [x for x in got if x['instance'] == 'f2' and x['source'] == 'plan cache']
+qsfull = [x for x in got if x['instance'] == 'sqlfull' and x['source'] == 'Query Store']
+hand_full = sum(e for e, _ in want['sqlfull']); hand_f2 = int(rows2[0][1])
+if pcfull != hand_full: bad.append(f"F1 sqlfull plan cache executions {pcfull} != hand {hand_full} ({rows1})")
+if not pcf2 or float(pcf2[0]['executions']) != hand_f2: bad.append(f"F1 f2 plan cache {pcf2} != hand {hand_f2}")
+elif abs(float(pcf2[0]['cpu_ms']) - int(rows2[0][2]) / 1000.0) > 1: bad.append(f"F1 f2 CPU {pcf2[0]['cpu_ms']} vs hand {int(rows2[0][2]) / 1000.0}")
+if not qsfull or float(qsfull[0]['executions']) != float(hq or 0): bad.append(f"F1 sqlfull Query Store {qsfull} != hand {hq}")
+if b.get('note'): bad.append(f"F4 a PostgreSQL note with no PostgreSQL instance: {b.get('note')}")
+print(f"F1 {qh}: plan cache sqlfull {pcfull} / f2 {hand_f2}, Query Store {hq}")
+code, b = api('mssql/search', q='marker%_x')
+srcs = {x['source']: x for x in b.get('sources', [])} if code == 200 else {}
+pc = [dict(zip(srcs['plan cache']['rows']['columns'], r)) for r in srcs['plan cache']['rows']['rows']] if srcs.get('plan cache', {}).get('rows') else []
+names = {x['instance'] for x in pc if x['statement_key'] == qh}
+if code != 200 or not {'sqlfull', 'f2'} <= names: bad.append(f"F2 search: HTTP {code} instances {names} {str(b)[:300]}")
+if 'sqlnone' not in (b.get('no_text') or []) or 'sqlnorm' not in (b.get('normalized') or []): bad.append(f"F2 policy lists: no_text {b.get('no_text')} normalized {b.get('normalized')}")
+if any(not (x.get('present') is False) for x in [dict(zip(b['text_indexes']['columns'], r)) for r in b['text_indexes']['rows']]): bad.append(f"F3 an index present before the DBA's statements: {b['text_indexes']}")
+code, b = api('mssql/search', q='marker__x')
+n = sum(len(x['rows']['rows']) for x in b.get('sources', []) if x.get('rows'))
+if code != 200 or n != 0: bad.append(f"F2 '_' taken as a wildcard: HTTP {code}, {n} rows")
+code, b = api('mssql/search', q='marker%_x', instance=i2)
+pc = [dict(zip(x['rows']['columns'], r)) for x in b.get('sources', []) if x.get('rows') for r in x['rows']['rows']]
+if code != 200 or not pc or {x['instance'] for x in pc} != {'f2'}: bad.append(f"F2 instance=f2: {pc}")
+for x in bad: print('DIFF', x)
+sys.exit(1 if bad else 0)
+PYEND
+psql "$ADMIN_DSN" -Xq -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm" -d "$PGDB" >/dev/null 2>&1 || pq "CREATE EXTENSION IF NOT EXISTS pg_trgm" >/dev/null || fail "F3: CREATE EXTENSION pg_trgm"
+psql "$PGDSN" -Xq -v ON_ERROR_STOP=1 -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS mssql_pc_text_query_trgm ON pgvigil.mssql_pc_text USING gin (query gin_trgm_ops)" >/dev/null || fail "F3: CREATE INDEX CONCURRENTLY"
+CODE=$(api "mssql/search?q=marker%25_x" "$TMPD/f3.json")
+python3 - "$TMPD/f3.json" <<'PYEND' || fail "F3: see above"
+import json, sys
+b = json.load(open(sys.argv[1]))
+idx = {r[0]: dict(zip(b['text_indexes']['columns'], r)) for r in b['text_indexes']['rows']}
+p = idx.get('mssql_pc_text_query_trgm', {})
+if not (p.get('present') and p.get('valid') and p.get('ready')): print('DIFF F3 the index state', idx); sys.exit(1)
+if not any(x.get('rows') and x['rows']['rows'] for x in b['sources']): print('DIFF F3 the search found nothing with the index'); sys.exit(1)
+PYEND
+pq "SELECT pgvigil.ensure_instance('pgf_$SUF', 'auto', '17.0', 170000, false, '{}'::text[])" >/dev/null || fail "F4: a PostgreSQL instance"
+CODE=$(api "mssql/search?q=marker%25_x" "$TMPD/f4.json"); grep -q 'PostgreSQL instances are not compared or searched here' "$TMPD/f4.json" || fail "F4: no note with a PostgreSQL instance held: $(head -c 300 "$TMPD/f4.json")"
+echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note"
 fi
 
 echo "PASS: proof-mssql-qs-plans parts $PARTS on SQL Server $VER"

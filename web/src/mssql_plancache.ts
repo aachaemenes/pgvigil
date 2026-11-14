@@ -7,7 +7,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { openText } from './filedrop';
 import { lineChart } from './chart';
 import { queryHistory } from './mssql_queries';
-import { compareSection, planStatsPanel } from './mssql_querystore';
+import { compareSection, everywherePanel, planStatsPanel, statementSearch } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
@@ -118,6 +118,9 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'max_dop', label: 'max DOP', num: true },
         { key: 'plans', label: 'plans', num: true },
         { key: 'query_key', label: 'query hash' },
+        { key: 'every', label: 'every instance', fmt: (_, r) => /^0x[0-9A-F]{1,16}$/i.test(String(r.query_key ?? ''))
+          ? (() => { const b = el('button', { type: 'button', class: 'link', 'aria-label': `On every instance: ${String(r.query_key)}` }, 'On every instance');
+              b.addEventListener('click', () => { hist.replaceChildren(everywherePanel(ctx, String(r.query_key))); }); return b; })() : '' },
         { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
         // PerformanceMonitor's 'Hashes and handles' (D10, 0126): the statements cached at the last read
         { key: 'plan_hash', label: 'plan hash (cached now)' },
@@ -133,7 +136,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
     }
 
-    out.push(runningPlansSection(ctx));
+    out.push(runningPlansSection(ctx), statementSearch(ctx));
 
     const health = rowsOf(d.health);
     out.push(el('h3', {}, 'What the cache holds (hourly)'));

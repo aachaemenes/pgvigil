@@ -14,11 +14,95 @@ index a04766f..445e14f 100644
  	}
  	return all, skipped
  }
+diff --git i/internal/mcp/tools.go w/internal/mcp/tools.go
+index 7afb52b..0c83504 100644
+--- i/internal/mcp/tools.go
++++ w/internal/mcp/tools.go
+@@ -111,6 +111,16 @@ func tools() []tool {
+ 			Description: "Volumes with free space, growth per day over 7 and 30 days and the days until full, soonest first; with instance, also its database and table growth and storage checks.",
+ 			args:        []arg{{name: "instance", typ: "string", desc: "one instance (name or instance_id); without it, the whole fleet and the repository's own size"}},
+ 			run:         storageForecast},
++		// task 406 (PerformanceMonitor 3.13 Added 14 and 15): tools_mssql_statements.go
++		{Name: "statement_everywhere", Title: "Statement on every instance (SQL Server)",
++			Description: "SQL Server only: one query hash on every SQL Server instance over a window, per instance, database and source (plan cache, Query Store): executions, CPU, duration, reads, the most CPU first. PostgreSQL statements are not compared (a queryid is its own server's).",
++			args:        []arg{{name: "query_hash", typ: "string", desc: "the query hash, 0x and up to 16 hex digits", required: true}, argFrom, argTo, argHours},
++			run:         statementEverywhere},
++		{Name: "find_statements", Title: "Find statements by text (SQL Server)",
++			Description: "SQL Server only: the stored statement texts holding a text (3 to 400 characters, case ignored), from the plan cache and the Query Store, of one instance or every one, each with its query hash for statement_everywhere. Instances whose query_text policy keeps no text are named, not searched; PostgreSQL instances are not searched.",
++			args: []arg{{name: "text", typ: "string", desc: "the text the statement holds", required: true},
++				{name: "instance", typ: "string", desc: "one SQL Server instance (name or instance_id); without it every one"}},
++			run: findStatements},
+ 	}
+ }
+ 
+diff --git i/internal/mcp/tools_mssql_statements.go w/internal/mcp/tools_mssql_statements.go
+new file mode 100644
+index 0000000..867d24a
+--- /dev/null
++++ w/internal/mcp/tools_mssql_statements.go
+@@ -0,0 +1,57 @@
++package mcp
++
++// The two SQL Server statement tools of task 406 (PerformanceMonitor 3.13 Added 14 and 15): they read the web API's
++// /api/mssql/everywhere and /api/mssql/search as every tool reads its page's API.
++
++import (
++	"context"
++	"errors"
++	"net/url"
++	"regexp"
++)
++
++var queryHashForm = regexp.MustCompile(`^0x[0-9A-Fa-f]{1,16}$`)
++
++func statementEverywhere(ctx context.Context, s *Server, a map[string]any) (any, error) {
++	h, err := str(a, "query_hash")
++	if err != nil {
++		return nil, err
++	}
++	if !queryHashForm.MatchString(h) {
++		return nil, errors.New("query_hash must be 0x and up to 16 hex digits")
++	}
++	q, err := window(a, 24)
++	if err != nil {
++		return nil, err
++	}
++	q.Set("hash", h)
++	v, err := s.get(ctx, "/api/mssql/everywhere", q)
++	if err != nil {
++		return nil, err
++	}
++	out := map[string]any{"query_hash": h, "from": q.Get("from"), "to": q.Get("to"), "rows": records(field(v, "rows"))}
++	if n := field(v, "note"); n != nil {
++		out["note"] = n
++	}
++	return readNote(out, v), nil
++}
++
++func findStatements(ctx context.Context, s *Server, a map[string]any) (any, error) {
++	t, err := str(a, "text")
++	if err != nil {
++		return nil, err
++	}
++	q := url.Values{"q": {t}}
++	if _, ok := a["instance"]; ok {
++		in, err := s.resolve(ctx, a, "instance")
++		if err != nil {
++			return nil, err
++		}
++		q.Set("instance", in.ID)
++	}
++	v, err := s.get(ctx, "/api/mssql/search", q)
++	if err != nil {
++		return nil, err
++	}
++	return v, nil
++}
 diff --git i/internal/web/web.go w/internal/web/web.go
-index 5def140..b6f91c3 100644
+index 5def140..b065c80 100644
 --- i/internal/web/web.go
 +++ w/internal/web/web.go
-@@ -335,6 +335,12 @@ func (s *Server) Handler() http.Handler {
+@@ -335,6 +335,14 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
  	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
  	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
@@ -28,6 +112,8 @@ index 5def140..b6f91c3 100644
 +	api.HandleFunc("GET /api/mssql/runningplans/plan", s.MSSQLRunningPlan)
 +	api.HandleFunc("GET /api/mssql/planstats", s.MSSQLPlanStats)
 +	api.HandleFunc("GET /api/mssql/forcefail", s.MSSQLForceFail)
++	api.HandleFunc("GET /api/mssql/everywhere", s.MSSQLEverywhere)
++	api.HandleFunc("GET /api/mssql/search", s.MSSQLSearch)
  	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
  	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
  	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)

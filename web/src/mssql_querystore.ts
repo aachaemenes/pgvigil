@@ -150,7 +150,7 @@ async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPane
         statsBox.replaceChildren(planStatsPanel(ctx, { source: 'qs', db: text(row.database_name), plan: text(r.plan_id) }, `plan ${text(r.plan_id)}`));
       }) },
     ];
-    const statsBox = el('div', { class: 'qs-stats' });
+    const statsBox = el('div', { class: 'qs-stats' }), everyBox = el('div', { class: 'qs-every' });
     const pd = pivot(series, 'plan_id', 'avg_duration_ms'), pc = pivot(series, 'plan_id', 'avg_cpu_ms');
     const charts = el('div', { class: 'charts' },
       lineChart('Average duration per interval, by plan', pd.rows, pd.keys.map(k => ({ key: k, label: k })), v => fmtNum(v) + ' ms'),
@@ -164,6 +164,10 @@ async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPane
         ['plans', `${fmtNum(plans.length)} in this range's stored rows; the store holds ${q?.plan_count == null ? '?' : fmtNum(q.plan_count)}`],
         ['last execution', fmtTime(q?.last_execution)],
       ]),
+      row.query_hash ? el('p', {}, openButton('On every instance', `query hash ${text(row.query_hash)}`, () => {
+        everyBox.replaceChildren(everywherePanel(ctx, text(row.query_hash)));
+      })) : '',
+      everyBox,
       el('pre', { class: 'sql', tabindex: '0' }, text(q?.query) || '(no statement text is stored: the query_text policy of this instance is "none", or the query left the store)'),
       el('h4', {}, 'Plans'),
       grid(plans, cols, 'No stored row of this query in this range.'),
@@ -715,9 +719,82 @@ export async function mssqlQueryStoreView(ctx: Ctx): Promise<HTMLElement> {
     const body = view === 'regressed' ? regressedView(ctx, d, base) : view === 'forced' ? forcedView(ctx, d) : view === 'tuning' ? tuningView(d)
       : view === 'state' ? stateView(d) : topView(ctx, d, order);
     sec.append(...body);
+    if (view === 'top') sec.append(statementSearch(ctx));
   } catch (e) {
     sec.append(errorBox(e));
   }
   refocus = '';   // a control this draw did not rebuild (an empty view) must not take the focus at a later draw
   return sec;
+}
+
+// ---- one statement on every instance; statements containing a text (task 406, PerformanceMonitor 3.13 Added 14, 15) --
+
+// everywherePanel: one query hash on every SQL Server instance the repository holds, over the range (the plan cache's
+// samples and the Query Store's intervals), the most CPU first.
+export function everywherePanel(ctx: Ctx, hash: string): HTMLElement {
+  const title = `Query hash ${hash} on every instance (${rangeLabel(ctx)})`;
+  const box = el('section', { class: 'detail', 'aria-live': 'polite' }, el('h4', { tabindex: '-1' }, title), el('p', { class: 'meta' }, 'Reading ...'));
+  get<{ rows: Table | null; note?: string }>('mssql/everywhere', { hash, ...window_(ctx) }).then(d => {
+    box.replaceChildren(el('h4', { tabindex: '-1' }, title),
+      el('p', { class: 'meta' }, 'SQL Server computes a query hash from the statement\'s shape, so the same statement has the same hash on every server. '
+        + 'Each row is one instance, database and source over the range; a plan cache figure is a floor when a read was cut (capped reads), '
+        + 'and the Query Store keeps each interval\'s top plans only.'),
+      d.note ? el('p', { class: 'meta' }, `${d.note}.`) : '',
+      grid(rowsOf(d.rows), [
+        { key: 'instance' }, { key: 'database' }, { key: 'source' }, { key: 'executions', num: true },
+        { key: 'cpu_ms', label: 'CPU (ms)', num: true }, { key: 'duration_ms', label: 'duration (ms)', num: true },
+        { key: 'logical_reads', label: 'logical reads', num: true }, { key: 'first_seen', label: 'first seen', fmt: fmtTime },
+        { key: 'last_seen', label: 'last seen', fmt: fmtTime }, { key: 'capped_reads', label: 'capped reads', num: true },
+      ], 'No instance ran this query hash in this range.'));
+    (box.firstElementChild as HTMLElement).focus();
+  }).catch(e => box.replaceChildren(el('h4', {}, title), errorBox(e)));
+  return box;
+}
+
+type SearchReply = { sources: { source: string; rows: Table | null; note?: string }[]; text_indexes: Table | null; no_text: string[] | null; normalized: string[] | null; note?: string };
+
+// statementSearch: 'Find statements containing' over the stored SQL Server statement texts of this instance, or of
+// every instance with the box ticked.
+export function statementSearch(ctx: Ctx): HTMLElement {
+  const input = el('input', { type: 'search', minlength: '3', maxlength: '400', 'aria-label': 'Text the statement holds', placeholder: 'part of a statement' }) as HTMLInputElement;
+  const every = el('input', { type: 'checkbox' }) as HTMLInputElement;
+  const go = el('button', { type: 'submit' }, 'Find');
+  const out = el('div', { 'aria-live': 'polite' });
+  const form = el('form', { class: 'toolbar', role: 'search', 'aria-label': 'Find statements containing a text' },
+    el('label', {}, 'Find statements containing ', input), el('label', {}, every, ' every instance'), go) as HTMLFormElement;
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const q = input.value.trim();
+    if (q.length < 3) { out.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Type 3 characters or more.')); return; }
+    out.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Searching ...'));
+    try {
+      const d = await get<SearchReply>('mssql/search', { q, instance: every.checked ? undefined : ctx.instance });
+      const idx = rowsOf(d.text_indexes);
+      const usable = idx.filter(r => r.valid === true && r.ready === true).length;
+      const kids: (Node | string)[] = [
+        el('p', { class: 'meta' }, `The stored statement texts are searched as they are kept (case ignored; % and _ are plain characters). `
+          + (usable === idx.length && idx.length ? 'The trigram indexes over them are built and in use.'
+            : 'Without the optional trigram indexes each source stops after 4 seconds (docs: Query Store, finding statements by their text).')),
+      ];
+      if (d.no_text?.length) kids.push(el('p', { class: 'meta' }, `Not searched (query_text "none" keeps no text): ${d.no_text.join(', ')}.`));
+      if (d.normalized?.length) kids.push(el('p', { class: 'meta' }, `Kept normalized (literals stored as ?, so a literal is not found): ${d.normalized.join(', ')}.`));
+      if (d.note) kids.push(el('p', { class: 'meta' }, `${d.note}.`));
+      for (const src of d.sources) {
+        kids.push(el('h4', {}, `From the ${src.source}`));
+        if (src.note) kids.push(el('p', { class: 'meta' }, `${src.note}.`));
+        else kids.push(grid(rowsOf(src.rows), [
+          { key: 'instance' }, { key: 'database' }, { key: 'object_name', label: 'module' }, { key: 'statement', fmt: stmt, wide: true },
+          { key: 'statement_key', label: 'query hash' }, { key: 'seen_at', label: 'last seen', fmt: fmtTime },
+          { key: 'every', label: 'every instance', fmt: (_, r) => /^0x[0-9A-F]{1,16}$/i.test(text(r.statement_key))
+            ? openButton('On every instance', `query hash ${text(r.statement_key)}`, () => { everyOut.replaceChildren(everywherePanel(ctx, text(r.statement_key))); }) : '' },
+        ], 'No stored statement holds this text.'));
+      }
+      kids.push(everyOut);
+      out.replaceChildren(...kids);
+    } catch (e) {
+      out.replaceChildren(errorBox(e));
+    }
+  });
+  const everyOut = el('div');
+  return el('section', { class: 'qs-search' }, el('h3', {}, 'Find statements'), form, out);
 }
