@@ -125,7 +125,8 @@ function databasesGrid(all: Row[], risk: string): HTMLElement[] {
       + 'yellow at 80 % or more, or a limit of 0; grey where the read folded its smallest sources (the count is then a floor). Allow '
       + 'connections: off on a database that is not a template is yellow. Encoding: other than UTF8 is advice (template0 not judged). '
       + 'Collation version: the version recorded against the library\'s now (PostgreSQL 15+). Data checksums: the cluster\'s, on every row. '
-      + 'xid age: age(datfrozenxid) - yellow at or past autovacuum_freeze_max_age, red at 1 billion or more. A cell\'s title says the rule and why.'),
+      + 'xid age: age(datfrozenxid) - yellow at or past autovacuum_freeze_max_age, red at 1 billion or more, grey on an invalid database '
+      + '(autovacuum skips it). A cell\'s title says the rule and why.'),
     grid(shown, cols, risk ? 'No database behind this count now.' : 'No database read yet.'),
   ];
 }
