@@ -8,7 +8,7 @@ Three collections of the [SQL Server engine](sqlserver.md) and the tabs they fee
 | `mssql_procstats` | 5 min | what each stored procedure did between two reads | `VIEW SERVER STATE` (2022: `VIEW SERVER PERFORMANCE STATE` should be enough; not proven); names of another database's procedures: `CONNECT ANY DATABASE` and `VIEW ANY DEFINITION` |
 | `mssql_indexlocks` | 5 min | where sessions waited for locks, per index, and lock escalations | as `mssql_procstats`; names: a database the login can enter |
 
-None of the three runs on Azure SQL Database.
+None of the three runs on Azure SQL Database; there the Properties page shows the tier's rows of `mssql_azuredb_governance` ([cloud](sqlserver-cloud.md#resource-use-and-the-tier)).
 
 To name procedures and indexes in every database, the monitoring login takes one more grant than [the base login](sqlserver.md#the-login):
 

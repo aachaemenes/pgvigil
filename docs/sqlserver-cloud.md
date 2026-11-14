@@ -57,7 +57,7 @@ The service tier matters: on Basic, S0 and S1 (and in an elastic pool) Microsoft
 
 ### What runs
 
-Four collections run; twenty-eight are skipped by an Azure SQL Database rule, each with its reason on the run's row and on the page that would show it ("Not read on this instance: ... is skipped (...)"), and the Summary lists their groups as "not on this platform".
+Seven collections of this table run; the others are skipped by an Azure SQL Database rule, each with its reason on the run's row and on the page that would show it ("Not read on this instance: ... is skipped (...)"), and the Summary lists their groups as "not on this platform" (its Disk cell too: the platform has no volumes).
 
 | collection | on Azure SQL Database | why |
 | --- | --- | --- |
@@ -65,12 +65,16 @@ Four collections run; twenty-eight are skipped by an Azure SQL Database rule, ea
 | `mssql_requests` | runs | the database's own sessions and requests (`database_id = DB_ID()`), no task columns |
 | `mssql_waits` | runs | `sys.dm_db_wait_stats`: the database's own waits (the server-wide view is the logical server's, not the tenant's) |
 | `mssql_xe` | runs | the database-scoped sessions of pgvigil's script (`sys.database_event_sessions`, `sys.dm_xe_database_sessions`), ring buffer targets |
+| `mssql_azuredb_resources` | runs | the database's resource use, a row a minute from `sys.dm_db_resource_stats` (VIEW DATABASE STATE on every tier): [below](#resource-use-and-the-tier) |
+| `mssql_azuredb_governance` | runs | the tier and its limits, hourly, from `sys.dm_user_db_resource_governance` (VIEW DATABASE STATE; on Basic, S0, S1 and in an elastic pool `##MS_ServerStateReader##`) |
+| `mssql_storage` | runs | the database's own files from `sys.database_files` with the space used inside each (`FILEPROPERTY`): any user of the database; no volumes |
 | `mssql_services` | skipped | no SQL Server Agent, no Database Mail, no memory dump files to read |
 | `mssql_ag`, `mssql_mirroring`, `mssql_logshipping`, `mssql_replication` | skipped | none of them exists on the service (its geo-replication is not read) |
 | `mssql_jobs` | skipped | no SQL Server Agent (Elastic Jobs are not read) |
 | `mssql_backups` | skipped | no backup history in msdb: the backups are the service's own |
-| `mssql_storage`, `mssql_versionstore` | skipped (not yet) | no `sys.master_files`; tempdb's version store is not the tenant's |
-| `mssql_cpu`, `mssql_memory`, `mssql_fileio`, `mssql_tempdb`, `mssql_properties` | skipped | the ring buffer, schedulers, memory, file stats, tempdb and processors there are the host's, not the database's |
+| `mssql_versionstore` | skipped | tempdb's version store is not the tenant's |
+| `mssql_cpu` | skipped | the database's CPU is `mssql_azuredb_resources`' (`sys.dm_db_resource_stats`, the view DBA Dash reads there); the CPU tab, the Performance page and the Performance summary read it |
+| `mssql_memory`, `mssql_fileio`, `mssql_tempdb`, `mssql_properties` | skipped | the memory, file stats, tempdb and processors there are the host's, not the database's; the Properties page shows the tier's rows of `mssql_azuredb_governance` instead |
 | `mssql_procstats`, `mssql_indexlocks`, `mssql_querystore` | skipped (not yet) | the database's own procedure, index and Query Store reads are a later wave |
 | `mssql_audit` | skipped | the service's auditing writes "to an audit log in your Azure storage account, Log Analytics workspace, or Event Hubs", and the T-SQL differences page says "SQL Server audit: Use SQL Database auditing instead" ([Auditing for Azure SQL Database](https://learn.microsoft.com/en-us/azure/azure-sql/database/auditing-overview); `sys.server_audits` applies to SQL Server and Managed Instance only) |
 | `mssql_defaulttrace` | skipped | "SQL Server trace" is T-SQL syntax not supported in Azure SQL Database ([T-SQL differences](https://learn.microsoft.com/en-us/azure/azure-sql/database/transact-sql-tsql-differences-sql-server)); `sys.traces` applies to SQL Server and Managed Instance only |
@@ -79,7 +83,20 @@ Four collections run; twenty-eight are skipped by an Azure SQL Database rule, ea
 | `mssql_traceflags` | skipped | trace flags are instance configuration, T-SQL not supported there: "Use service tiers and compute sizes instead" ([T-SQL differences](https://learn.microsoft.com/en-us/azure/azure-sql/database/transact-sql-tsql-differences-sql-server)) |
 | `mssql_checks`, `mssql_identity`, `mssql_indexes`, `mssql_stats`, `mssql_plancache`, `mssql_plancache_health` | skipped (not yet) | the server options, msdb and the other databases are the service's; the database's own identity columns, indexes, statistics and plan cache are a later wave |
 
-The database's own resource use (`sys.dm_db_resource_stats`), its files and its Query Store are not read in this release.
+The database's Query Store is not read in this release.
+
+### Resource use and the tier
+
+DBA Dash's Azure Summary and its instance's Azure DB tab are the shape: the root page **Azure Summary** lists every Azure SQL Database over the window, and the instance's **Azure** tab (Performance) shows one.
+
+- **`mssql_azuredb_resources`, every minute.** It reads DBA Dash's 13 columns of `sys.dm_db_resource_stats` (Microsoft: "a row for every 15 seconds", kept "approximately one hour") from the end of the newest stored minute, filtered on the server. A minute holds the averages of its 15-second rows, the largest CPU, data IO, log write and memory of them, DBA Dash's DTU % per row (the greatest of CPU, data IO and log write when `dtu_limit` is over 0; none on vCore) with the DTUs that makes, the row count, and ten bucket counts each of DTU, CPU, data IO and log write (under 10 %, 10-20 % ... 80-90 %, 90 % and over). The 15-second rows are not kept. A minute is stored once 30 seconds have passed after its end and never rewritten; the oldest minute of a first read is not stored (the view drops its oldest rows one by one).
+- **Gaps.** When the view's oldest row starts after the newest stored minute (the collector down over the view's hour, a failover - Microsoft: the view then returns "data for the time since that failover" - or a serverless pause), the minutes between are lost: pgvigil stores the gap, and the Azure tab and the Azure Summary name it.
+- **The averages over a window** weigh each minute by its rows, so they equal DBA Dash's average over the view's rows; a maximum is the largest row; the histograms sum the bucket counts. In an elastic pool the percentages are "of the max limit for the databases as set in the elastic pool configuration" (Microsoft).
+- **`mssql_azuredb_governance`, hourly.** It reads the database's row of `sys.dm_user_db_resource_governance` whole (every column the view has: Microsoft calls its data "intended for internal consumption and ... subject to change") with the edition, service objective and max size from `DATABASEPROPERTYEX`, and the pool's name as `mssql_pool` takes it. A new history row is kept when one of the 54 columns DBA Dash compares (every column it reads but `user_data_directory_space_usage_mb`), the edition, the service objective or the pool changes. The tier's figures are the instance's Properties rows (group Azure SQL Database); a change of the service objective, the pool, the DTU limit or the vCore limit is listed under Properties' Changes (DBA Dash's DTU limit change).
+- **`mssql_storage`.** The database's files with the space used inside them; the Summary's **% Max Size** cell is DBA Dash's status there: the PRIMARY filegroup's data files' allocated size against their summed max size, over 80 % a warning and over 90 % critical (DBA Dash's default thresholds, a strict "over"), no status when a file has no max size. pgvigil has no per-database threshold for it (DBA Dash's DBFileThresholds has one): a departure.
+- **Retention.** The minutes are monthly partitions dropped by `pgvigil purge -days N` (30 by default) with the rest of the history; DBA Dash keeps them 120 days (its DataRetention seed for AzureDBResourceStats): to keep as long, run the purge with `-days 120`. The tier's history and the gaps are few rows and kept, as DBA Dash keeps its governance and service objective histories.
+
+Not proven live yet: everything in this part (no lab has run it); a pooled database's figures and the pool's DTU or vCore limit (the pool page shows percentages, below); Hyperscale; a geo-replica (its `replica_role` is stored, a secondary is not read); Business Critical.
 
 ### Extended Events
 

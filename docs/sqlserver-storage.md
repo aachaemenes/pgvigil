@@ -10,6 +10,7 @@ What is read:
 - The space used inside each file and its filegroup, read in each ONLINE database the login can enter (`sys.database_files` and `FILEPROPERTY(..., 'SpaceUsed')`). The read is one SELECT run in that database's own context; it changes no session setting. The file's current size comes from the same read, which matters for tempdb: `sys.master_files` keeps tempdb's size at startup.
 - A database the login cannot enter is kept with its allocated size, and so is one whose turn came after the run's five-minute deadline (the run then says `partial`). Its files say `used not read`, with the reason (the login cannot enter the database, the database is restoring or offline, or the read failed).
 - The volumes the files sit on (`sys.dm_os_volume_stats`): mount point, label, file system, total and free space.
+- On Azure SQL Database (no `sys.master_files`, no volumes) the database's own files from `sys.database_files` with the space used and the filegroup in one statement, for any user of the database; the Summary's % Max Size there is DBA Dash's ([cloud](sqlserver-cloud.md#resource-use-and-the-tier)).
 
 What is kept: the current row per file with the previous size and the time the size changed, the current row per volume, each database's data and log size per read, and each volume's total and free space per read. A file or volume the server no longer lists is marked as gone and stays as last read.
 
