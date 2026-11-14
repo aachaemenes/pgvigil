@@ -145,7 +145,9 @@ gen() { pq "SELECT pgvigil.admin_inventory_generation()"; }
 echo "== A. the servers =="
 docker run -d --name "$SQL" --label "$LBL" --env-file "$TMPD/sa.env" -p 127.0.0.1::1433 "$IMG_SQL" >/dev/null
 for c in "$PGA" "$PGB"; do docker run -d --name "$c" --label "$LBL" --env-file "$TMPD/pg.env" -p 127.0.0.1::5432 "$IMG_PG" >/dev/null; done
-up() { local r=; for _ in $(seq 1 90); do r=$(sq "SELECT CASE WHEN DATABASEPROPERTYEX('msdb', 'Status') = 'ONLINE' THEN 1 ELSE 0 END" 2>/dev/null || true); [[ "$r" == 1 ]] && return 0; sleep 2; done; fail "A: the SQL Server container did not come up in 180 s"; }
+# up: the server answers a login that opens msdb itself (right after a restart msdb's status reads ONLINE from master
+# a while before a login can open it)
+up() { local r=; for _ in $(seq 1 90); do r=$(sq "SELECT CASE WHEN DATABASEPROPERTYEX('msdb', 'Status') = 'ONLINE' THEN 1 ELSE 0 END" msdb 2>/dev/null || true); [[ "$r" == 1 ]] && return 0; sleep 2; done; fail "the SQL Server container did not open msdb in 180 s"; }
 up
 PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 SQLIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$SQL")

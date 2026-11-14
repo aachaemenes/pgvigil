@@ -41,7 +41,7 @@ func TestPageDoorRefusal(t *testing.T) {
 		{EnginePostgres, "password", "servicefile=/etc/pg_service.conf", "this server's own identity (servicefile)"},
 		{EnginePostgres, "password", "service=prod", "this server's own identity (service)"},
 		{EnginePostgres, "password", "sslkey=/k sslcert=/c", "this server's own identity (sslkey)"},
-		{EnginePostgres, "password", "sslrootcert=/etc/ssl/ca.pem", "this server's own identity (sslrootcert)"},
+		{EnginePostgres, "password", "sslrootcert=/etc/ssl/ca.pem", "names a file on this server's host (sslrootcert)"},
 		{EnginePostgres, "password", "krbsrvname=postgres", "this server's own identity (krbsrvname)"},
 		{EnginePostgres, "password", "gssencmode=require", "this server's own identity (gssencmode)"},
 		{EnginePostgres, "password", "options=-crole=admin", "driver option options is not one"},
