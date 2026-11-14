@@ -449,12 +449,15 @@ else
   if [[ -z "${PGVIGIL_DBADASH_BAK:-}" ]]; then
     # D1s: dbo.Summary is DBA Dash's cache - a row written before the repository became 4.25.0 holds the 24 h errors
     # (a downgrade to 4.24.1 an hour on and the upgrade to $VER an hour after it: the repository is $VER from that deploy)
-    DEP1=$(sq "SELECT CONVERT(varchar(27), DATEADD(hour, 1, SYSUTCDATETIME()), 121)" "$DDB")
-    DEP2=$(sq "SELECT CONVERT(varchar(27), DATEADD(hour, 2, SYSUTCDATETIME()), 121)" "$DDB")
+    # DeployDate is datetime2(3): the literals carry exactly its three digits, so the DELETE below finds the rows again
+    DEP1=$(sq "SELECT CONVERT(varchar(23), CAST(DATEADD(hour, 1, SYSUTCDATETIME()) AS datetime2(3)), 121)" "$DDB")
+    DEP2=$(sq "SELECT CONVERT(varchar(23), CAST(DATEADD(hour, 2, SYSUTCDATETIME()) AS datetime2(3)), 121)" "$DDB")
     sqok "D1s: two newer deploy rows" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES ('$DEP1', '4.24.1.0'), ('$DEP2', '$VER')" "$DDB"
     PGVIGIL_DBADASH_CONFIG="$TMPD/d.yaml" go test -count=1 -run '^TestLive$' ./internal/dbadash >/dev/null 2>&1 || fail "D1s: the door's read with the newer deploy rows"
     ws=$(words)
     sqok "D1s: the deploy rows removed" "DELETE FROM dbo.DBVersionHistory WHERE DeployDate IN ('$DEP1', '$DEP2')" "$DDB"
+    left=$(sq "SELECT COUNT(*) FROM dbo.DBVersionHistory WHERE DeployDate > SYSUTCDATETIME()" "$DDB")
+    [[ "$left" == 0 ]] || fail "D1s: $left deploy row(s) dated after now are left in dbo.DBVersionHistory (the removal missed them)"
     [[ "$ws" == "Collection Health|$ecount error(s) in 24 h" ]] || fail "D1s: a Summary row written before the $VER deploy reads '$ws' (want 'Collection Health|$ecount error(s) in 24 h')"
     echo "ok   D1s: a Summary row written before the repository's $VER deploy (4.24.1 at $DEP1, $VER at $DEP2) reads '$ws'; the rows removed"
     # D1p: a read login that sees dbo.CollectionRunStatus (VIEW DEFINITION) but may not SELECT it; the lab container
