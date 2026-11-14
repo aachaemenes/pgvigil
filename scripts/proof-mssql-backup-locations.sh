@@ -156,7 +156,9 @@ s3setup() {
   sleep 5
   S3P=$(docker port "$S3" 9000/tcp | head -1 | sed 's/.*://')
   s3step "the certificate into the SQL Server container" docker cp "$WORK/certs/public.crt" "$SQL:/tmp/pgvbk-s3.crt" || return 1
-  s3step "update-ca-certificates" docker exec -u root "$SQL" bash -c 'cp /tmp/pgvbk-s3.crt /usr/local/share/ca-certificates/pgvbk-s3.crt && update-ca-certificates' || return 1
+  # SQL Server on Linux reads the CA certificates of an S3 endpoint from /var/opt/mssql/security/ca-certificates (run 3: with
+  # the system store alone it refused with OS error 12175, a TLS failure); both, then a restart
+  s3step "the certificate into SQL Server's store" docker exec -u root "$SQL" bash -c 'mkdir -p /var/opt/mssql/security/ca-certificates && cp /tmp/pgvbk-s3.crt /var/opt/mssql/security/ca-certificates/pgvbk-s3.crt && chown -R mssql /var/opt/mssql/security && cp /tmp/pgvbk-s3.crt /usr/local/share/ca-certificates/pgvbk-s3.crt && update-ca-certificates' || return 1
   s3step "the restart of SQL Server" docker restart "$SQL" || return 1
   up "$SQL" || { S3WHY="SQL Server did not come back after its restart"; return 1; }
   sleep 3
@@ -330,7 +332,7 @@ G=$(q "select device_kind || '|' || root || '|' || array_to_string(users, ',') |
 asop "BACKUP LOG pgvbkw TO DISK = N'/backups2/w/l4.trn' WITH FORMAT;"
 sq "BACKUP LOG pgvbkw TO DISK = N'/backups2/c/copy.trn' WITH FORMAT, COPY_ONLY; BACKUP DATABASE pgvbkw TO DISK = N'/backups/w/full2.bak' WITH FORMAT;" >/dev/null
 read2 L8b
-G=$(q "select string_agg(root || ':' || sets, ',' order by root) from pgvigil.mssql_backup_writers where instance_id=$(iid) and database_name='pgvbkw'")
+G=$(q "select string_agg(root || ':' || sets, ',' order by root collate \"C\") from pgvigil.mssql_backup_writers where instance_id=$(iid) and database_name='pgvbkw'")
 F=$(q "select severity || '|' || check_name from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkw'")
 D=$(q "select detail from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkw'")
 [ "$G" = "/backups/w:3,/backups2/w:1" ] && [ "$F" = "warning|log backups to two destinations" ] && [[ "$D" == *"/backups/w"*"/backups2/w"* || "$D" == *"/backups2/w"*"/backups/w"* ]] || fail "L8 two destinations: $G | $F | $D"
