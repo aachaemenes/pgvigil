@@ -46,6 +46,9 @@
 #  S13 one target twice in one assign call, and a call over 500 targets, are refused, nothing written
 #  S14 an instance removed (its instances row deleted) takes its assignments with it (ON DELETE CASCADE)
 #  S15 purge(30) leaves every app_ and ui_app_ row in place
+#  S17 a pg threshold and a drive threshold scoped by application:Payroll: a rename without retag is refused naming
+#      them; with retag the rename is done and both carry the new tag; an application whose tag scopes a drive
+#      threshold is removed only with retag, which ends the threshold
 #  S16 a database marked 'not an application' (import_app_assign op mark) leaves app_unassigned(); unmarked, it is back
 # On a tree without 0136 every row FAILs as 'not on this tree': the red run.
 set -uo pipefail
@@ -69,7 +72,7 @@ q()  { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { echo "FAIL setup: migrate"; tail -5 "$WORK/migrate.out"; exit 1; }
 if [[ $(q "select to_regprocedure('pgvigil.import_app_application(timestamptz, jsonb)') is not null") != t ]]; then
-  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16; do bad "$row not on this tree (no import_app_application)"; done
+  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17; do bad "$row not on this tree (no import_app_application)"; done
   echo "proof-applications: $NFAIL FAIL"; exit 1
 fi
 
@@ -197,6 +200,27 @@ rn=$(q "select database_name || ':' || (absent_since is not null)::text || ':' |
 own=$(q "select count(*) from pgvigil.app_assignments where instance_id = $PGI and database_name = 'db3new'")
 [[ $rn == "db3:true:db3new" && $own == 0 ]] && ok "S12 a renamed database's assignment stays on the old name, absent, renamed_to offered; none taken silently" \
   || bad "S12 [$rn], assignments on the new name: $own"
+
+# ---------------- S17 ----------------
+pname=$(q "select name from pgvigil.app_applications where app_id = $PAY")
+pk=$(q "select min(key) from pgvigil.pg_threshold_keys")
+q "insert into pgvigil.pg_thresholds (key, level, tag, warn, crit, created_by, created_at) values ('$pk', 'tag', 'application:$pname', 1, 2, 'proof', now())" >/dev/null
+q "insert into pgvigil.drive_thresholds (level, tag, warn_pct, crit_pct, created_by, created_at) values ('tag', 'application:$pname', 20, 10, 'proof', now())" >/dev/null
+ver=$(q "select version from pgvigil.app_applications where app_id = $PAY")
+nt=$(wr application "{\"op\": \"rename\", \"app_id\": $PAY, \"version\": $ver, \"name\": \"Payroll Two\"}")
+rt=$(wr application "{\"op\": \"rename\", \"app_id\": $PAY, \"version\": $ver, \"name\": \"Payroll Two\", \"retag\": true}")
+tg=$(q "select (select string_agg(distinct tag, ',') from pgvigil.pg_thresholds where ended_at is null and tag like 'application:Payroll%') || '|' || (select string_agg(distinct tag, ',') from pgvigil.drive_thresholds where ended_at is null and tag like 'application:Payroll%')")
+tmp=$(wr application '{"op": "add", "name": "Temp App"}'); TMP=$(field "$tmp" app_id)
+q "insert into pgvigil.drive_thresholds (level, tag, warn_pct, crit_pct, created_by, created_at) values ('tag', 'application:Temp App', 20, 10, 'proof', now())" >/dev/null
+ver=$(q "select version from pgvigil.app_applications where app_id = $TMP")
+rm1=$(wr application "{\"op\": \"remove\", \"app_id\": $TMP, \"version\": $ver}")
+rm2=$(wr application "{\"op\": \"remove\", \"app_id\": $TMP, \"version\": $ver, \"retag\": true}")
+live=$(q "select count(*) from pgvigil.drive_thresholds where tag = 'application:Temp App' and ended_at is null")
+[[ $(field "$nt" outcome) == refused && $(field "$nt" detail) == *"pg threshold"* && $(field "$nt" detail) == *"drive threshold"* \
+   && $(field "$rt" outcome) == done && $tg == "application:Payroll Two|application:Payroll Two" \
+   && $(field "$rm1" outcome) == refused && $(field "$rm2" outcome) == done && $live == 0 ]] \
+  && ok "S17 a rename over tag-scoped thresholds refused unless ticked, then rewritten; a remove ends them only when ticked" \
+  || bad "S17 rename unticked: $(field "$nt" outcome) '$(field "$nt" detail)'; ticked: $(field "$rt" outcome) -> [$tg]; remove: $(field "$rm1" outcome) / $(field "$rm2" outcome), live $live"
 
 # ---------------- S13 ----------------
 n0=$(q "select count(*) from pgvigil.app_assignments")
