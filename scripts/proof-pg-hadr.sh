@@ -115,13 +115,16 @@
 #        [red FAIL: keyed '...#<pid>']
 # The review fold (2026-11-14 12:5x PST, written before its runs; red = 7636cca, the tree before the fold):
 #   R2X  first read after the lift (a receiver back, the fault held for one read): 'receiver down' WARNING whose detail
-#        says the receiver is back [red FAIL: critical]; second read: gone [red ok]
+#        says the receiver is back [red FAIL: no such text; its severity there follows restore_command - a warning while
+#        replay is still fed, critical otherwise, which the fold makes a warning: that case reasoned, not run]; second
+#        read: gone [red ok]
 #   NS2  in NS (the standby read through a login that cannot read primary_conninfo, the receiver held down), hadr-p read
 #        twice, then hadr-s once through that login (its word newer than the sender's loss): 'standby gone' critical on
 #        hadr-p naming hadrs1 - a standby that cannot tell whether it should stream does
 #        not speak for its link [red FAIL: it spoke, nothing was raised]
 #   SL2H with max_slot_wal_keep_size 400MB and 'slot_safe_wal' 300 MB, WAL written until safe_wal_size is between 200 and
-#        300 MB, one read: no slot finding - the floor is half the limit when that is smaller [red FAIL: warning]; then
+#        300 MB, one read: no 'slot WAL near its limit' (SL3's 'slot WAL growing' may still hold) - the floor is half the
+#        limit when that is smaller [red FAIL: warning]; then
 #        SL2 below 200 MB as before, SL1 after about 300 MB more and a checkpoint
 #   AU   the writer's own row at 400 s (over both tiers): still nothing for it [red ok: the MASTER_SESSION_ID filter];
 #        aurora-r imported as a reader in recovery WITH the same aurora_replica_status rows: no 'Aurora replica lag' on
@@ -608,7 +611,8 @@ if want SL3 || want SL2 || want SL1; then
   read_ hadr-p 1
   if want SL2; then
     r=$(slotf hadr_grow)
-    if (( s > 200 && s < 300 )); then [[ -z "$r" ]] && ok "SL2H under slot_safe_wal but over half the limit: no slot finding" || fail "SL2H raised at $s MB safe: '$r'"
+    # SL3's 'slot WAL growing' may still hold here (one finding per slot: 'near its limit' would outrank it)
+    if (( s > 200 && s < 300 )); then [[ "$r" != *"near its limit"* ]] && ok "SL2H under slot_safe_wal but over half the limit: no 'slot WAL near its limit' (${r:-no finding})" || fail "SL2H raised at $s MB safe: '$r'"
     else fail "SL2H the slot's safe_wal_size $s MB is not between 200 and 300 MB (the rig wrote too much before SL2)"; fi
   fi
   for _ in $(seq 1 60); do (( $(safe_mb) < 190 )) && break; wal_mb 8; done
