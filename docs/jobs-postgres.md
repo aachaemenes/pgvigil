@@ -97,6 +97,8 @@ pg_cron jobs only: a pgAgent job has no command of its own (its steps' code is n
 - the job report's checks (`job_report_checks`: the Summary's Agent Jobs column and the job findings);
 - the overview's job check (the job's status from `job_status_view`: an excluded job is never critical or warning there).
 
+The fleet Jobs page's 7-day columns (succeeded in 24 hours and 7 days, the longest and the average run) read the jobs' hourly statistics (`job_stats_hourly`, migration 0139; the SQL Server page's section on the fleet Jobs page says how they are counted): a pg_cron or pgAgent run counts in the UTC hour it started, once it has ended, as its job's step 0. pgAgent's step rows (`job_step_runs`) are not rolled up into the hours.
+
 The grids still list the job and its runs, marked. The exclusions are written from the Jobs page (Leave out of the checks;
 End) through `pgvigil.import_job_exclusion`, by the UI login and the actions door's audit login, as acknowledgements are; a
 pattern of wildcards alone and a second copy of a live one are refused. A row is never changed: End closes it with who and
