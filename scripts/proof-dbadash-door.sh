@@ -318,7 +318,7 @@ def canon_pg(v, typ):  # pgvigil's JSON value with its column type
 con = pymssql.connect(server=os.environ["SQLHOST"], user="sa", password=os.environ["SA_PW"], database=os.environ["DDB"], port=1433, tds_version="7.4")
 import re
 DUR = re.compile(r"^S(\d+) (\d\d):(\d\d):(\d\d)$")
-AGE = re.compile(r"(Age|Days|Mins|Minutes|Hours)$")
+AGE = re.compile(r"(Age|Days|Mins|Minutes|Hours)$|^TimeSinceLast(Failed|Succeeded)$")   # AgentJob7Day.sql L29-30: DATEDIFF(mi, ..., GETUTCDATE()) at the call
 bad, nonempty, clockcells = [], 0, [0]
 for page, sqltext in calls.items():
     cur = con.cursor()
