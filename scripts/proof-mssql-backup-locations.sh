@@ -359,7 +359,7 @@ echo "== L10 the roots seen"
 sq "BACKUP DATABASE pgvbkr TO DISK = N'/backups/r1.bak' WITH FORMAT;" >/dev/null; read2 L10a
 sq "BACKUP DATABASE pgvbkr TO DISK = N'/backups2/r2.bak' WITH FORMAT;" >/dev/null; read2 L10b
 F=$(q "select severity || '|' || check_name from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkr'")
-[ "$F" = "info|a backup destination not seen before" ] || fail "L10: $F"
+[ "$F" = "info|a backup destination not seen before" ] || fail "L10: '$F'; roots seen: $(q "select string_agg(backup_type || ' ' || root || ' ' || first_seen || '..' || last_seen, '; ') from pgvigil.mssql_backup_roots_seen where instance_id=$(iid) and database_name='pgvbkr'"); judged: $(q "select coalesce(not_judged, 'judged') from pgvigil.mssql_backup_judged where instance_id=$(iid) and database_name='pgvbkr'"); sets: $(q "select string_agg(backup_type || ' ' || backup_set_id || ' ' || array_to_string(roots, ',') || ' ' || finish_at, '; ') from pgvigil.mssql_backup_sets where instance_id=$(iid) and database_name='pgvbkr'")"
 sq "BACKUP DATABASE pgvbkr TO DISK = N'/backups/r3.bak' WITH FORMAT;" >/dev/null; read2 L10c
 G=$(q "select string_agg(root, ',' order by root) from pgvigil.mssql_backup_roots_seen where instance_id=$(iid) and database_name='pgvbkr' and backup_type='full'")
 [ "$G" = "/backups,/backups2" ] || fail "L10 roots after the flip back: $G"
