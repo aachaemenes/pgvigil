@@ -151,11 +151,15 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	if err := mon.QueryRow(ctx, `SELECT pg_postmaster_start_time()`).Scan(&monStart); err != nil {
 		return refused("the server check failed: %v", err), nil
 	}
-	var actSuper bool
-	var acting *string
-	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time(), (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
-	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname = ANY($1) AND pg_has_role(current_user, oid, 'MEMBER'))`,
-		signalLike).Scan(&actStart, &actSuper, &acting); err != nil {
+	// the SESSION user's rights (REPORT ROLE): a role set at connect (ALTER ROLE ... SET role) or by the statement itself
+	// (set_config('role', 'none', true)) is undone by the statement, so the current role's rights say nothing
+	var actSuper, actOwner bool
+	var acting, secrets *string
+	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time(), (SELECT rolsuper FROM pg_roles WHERE rolname = session_user),
+	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname = ANY($1) AND pg_has_role(session_user, oid, 'MEMBER')),
+	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('pgvigil_auth', 'pgvigil_collector') AND pg_has_role(session_user, oid, 'MEMBER')),
+	       coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false)`,
+		signalLike).Scan(&actStart, &actSuper, &acting, &secrets, &actOwner); err != nil {
 		return Result{Outcome: Failed, Detail: fmt.Sprintf("the explain login's server check failed: %v", err)}, nil
 	}
 	if !monStart.Equal(actStart) {
@@ -164,6 +168,14 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	}
 	if actSuper {
 		return refused("the explain login is a superuser: pgvigil refuses it (a login with SELECT grants only)"), nil
+	}
+	if secrets != nil || actOwner {
+		what := "allowed to CREATE in the pgvigil schema (the repository's owner?)"
+		if secrets != nil {
+			what = "a member of " + *secrets
+		}
+		return refused("the explain login is %s: a statement it plans or runs could read the UI's password hashes or write the repository, so pgvigil refuses it; "+
+			"give EXPLAIN ANALYZE a login of its own with SELECT grants only", what), nil
 	}
 	if acting != nil {
 		return refused("the explain login is a member of %s: a SELECT could act through it (pg_terminate_backend, lo_export), so pgvigil refuses it; "+

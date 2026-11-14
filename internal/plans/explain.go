@@ -52,7 +52,11 @@ func Connect(ctx context.Context, dsn, datname, app string, timeout time.Duratio
 // text) is planned in the generic form: PREPARE, plan_cache_mode = force_generic_plan, EXPLAIN EXECUTE with NULLs
 // (the generic plan does not look at the values). The login needs the privileges the statement needs (EXPLAIN
 // checks them): pg_monitor alone cannot plan an application's statement, and the error says so.
-func Explain(ctx context.Context, dsn, datname, query string) (Row, error) {
+//
+// check, when set, is asked inside the read-only transaction before anything is planned (serve passes its pgRefusal:
+// a login whose session user reaches past a read - a superuser, the server-file roles, pgvigil_auth, pgvigil_collector,
+// CREATE on a pgvigil schema - is refused; the planner folds STABLE functions, so a planned statement can call them).
+func Explain(ctx context.Context, dsn, datname, query string, check func(context.Context, pgx.Tx) (string, error)) (Row, error) {
 	query = strings.TrimSpace(query)
 	query = strings.TrimSpace(strings.TrimSuffix(query, ";"))
 	if len(query) > MaxStatement {
@@ -74,6 +78,15 @@ func Explain(ctx context.Context, dsn, datname, query string) (Row, error) {
 		return Row{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if check != nil {
+		why, err := check(ctx, tx)
+		if err != nil {
+			return Row{}, err
+		}
+		if why != "" {
+			return Row{}, errors.New(why)
+		}
+	}
 
 	var plan string
 	note := ""

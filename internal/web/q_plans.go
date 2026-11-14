@@ -296,7 +296,7 @@ func (a *Actions) Explain(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), plans.ExplainTimeout+20*time.Second)
 	defer cancel()
-	row, err := plans.Explain(ctx, ds.PG[name].Monitor, in.Datname, in.Statement)
+	row, err := plans.Explain(ctx, ds.PG[name].Monitor, in.Datname, in.Statement, pgRefusal)
 	a.s.log.Info("plans: explain", "instance", name, "datname", in.Datname, "user", user, "err", err)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
