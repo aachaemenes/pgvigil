@@ -63,6 +63,12 @@
 #  H   the API: /api/mssql/backup_files?instance= answers sets, files (every path of every set), writers, roots,
 #      findings, read; &db=pgvbka its rows alone; no instance: by_instance with pgvbk's texts; /api/mssql/backups carries
 #      full_to / log_to and the flags for pgvbka.
+#  I   (L14) the pages in a headless Chromium with the binary's own bundle: #/mssqlbackups?i=<instance>&db=pgvbka draws the
+#      Databases grid with full damaged .. log compression algorithm and full / differential / log to; the Last backup
+#      panel's header = DBA Dash's 26 Last Backup columns in its order, then pgvigil's own; its Files grid one row per
+#      stripe and mirror of pgvbka's kept sets, each path cell's data-full equal to its path and a Copy button in it; the
+#      Backup files grid every file of the instance; #/backups the SQL Server section; axe-core 4.14.0 (WCAG 2.1 A and AA)
+#      0 violation nodes on both pages in the light and the dark theme. Skipped (NOT PROVEN) without chromium and node.
 #  NOT PROVEN HERE: a Windows path, a share, a mounted folder or Cluster Shared Volume on a live server (the containers are
 #  Linux; the store test holds the rules); a real Azure URL row; a virtual-device row of a third-party tool; a live
 #  availability group (the group merge: TestBackupLocationsOnAStore's stubbed rows); Amazon RDS; Managed Instance.
@@ -81,11 +87,12 @@ export SAPW SQLCMDPASSWORD="$SAPW"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 notproven() { echo "NOT PROVEN: $*"; }
-MADE_NET=; MADE_VOL=; MADE_DB=; SRVPID=
+MADE_NET=; MADE_VOL=; MADE_DB=; SRVPID=; CHR=
 cleanup() {
   rc=$?
   set +e
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
+  [ -n "$CHR" ] && kill "$CHR" 2>/dev/null
   docker rm -f -v "$SQL" "$SQL19" "$S3" "$PS" >/dev/null 2>&1
   [ -n "$MADE_VOL" ] && docker volume rm "$VB1" "$VB2" >/dev/null 2>&1
   [ -n "$MADE_NET" ] && docker network rm "$NET" >/dev/null 2>&1
@@ -457,4 +464,77 @@ d = json.load(sys.stdin); c = d["databases"]["columns"]
 r = [dict(zip(c, x)) for x in d["databases"]["rows"] if x[c.index("database_name")] == "pgvbka"]
 assert r and "full_to" in r[0], "the Detail rows lack full_to (the wiring)"
 print("ok   H: /api/mssql/backups pgvbka: full to %s, log to %s, full checksum %s" % (r[0]["full_to"], r[0]["log_to"], r[0]["full_checksum"]))'
+echo "== I the pages in a headless Chromium"
+if command -v chromium >/dev/null && command -v node >/dev/null && [ -z "${PROOF_SKIP_PAGE:-}" ]; then
+  (cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1) || fail "I: npm install axe-core failed"
+  CDP=$((PORT + 1)); chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
+  CHR=$!
+  for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+  NFILES=$(q "select count(*) from pgvigil.mssql_backup_locations l join pgvigil.mssql_backup_files f on f.instance_id = l.from_instance_id and f.database_name = l.database_name and f.backup_type = l.backup_type and f.is_copy_only = l.is_copy_only and f.backup_set_id = l.backup_set_id where l.instance_id=$(iid) and l.database_name='pgvbka'")
+  NALL=$(q "select count(*) from pgvigil.mssql_backup_locations l join pgvigil.mssql_backup_files f on f.instance_id = l.from_instance_id and f.database_name = l.database_name and f.backup_type = l.backup_type and f.is_copy_only = l.is_copy_only and f.backup_set_id = l.backup_set_id where l.instance_id=$(iid)")
+  cat > "$WORK/page.mjs" <<'JS'
+const [port, U, axePath, inst] = process.argv.slice(2);
+const fs = await import('node:fs');
+const axeSrc = fs.readFileSync(axePath, 'utf8');
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => (await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise })).result?.result?.value;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const until = async (expr, s = 30) => { for (let i = 0; i < s * 4; i++) { if (await ev(expr)) return true; await sleep(250); } return false; };
+const heads = sel => `[...document.querySelectorAll('${sel} table.grid > thead > tr:first-child > th')].map(h => (h.childNodes[0]?.textContent ?? h.textContent).trim())`;
+const out = {};
+for (const theme of ['light', 'dark']) {
+  await cmd('Page.navigate', { url: U + '#/summary' }); await sleep(500);
+  await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+  for (const [name, hash, ready] of [['tab', `#/mssqlbackups?i=${inst}&db=pgvbka`, `!!document.querySelector('#mssql-backups-last-files table.grid')`],
+                                     ['fleet', '#/backups', `!!document.querySelector('#mssql-backups-fleet-instances table.grid')`]]) {
+    await cmd('Page.navigate', { url: U + hash }); await sleep(300);
+    const drawn = await until(ready);
+    const r = { drawn, errors: await ev(`document.querySelectorAll('main .error').length`) };
+    if (name === 'tab' && theme === 'light') {
+      r.db = await ev(heads('main section'));
+      r.last = await ev(heads('#mssql-backups-last-grid'));
+      r.files = await ev(`[...document.querySelectorAll('#mssql-backups-last-files table.grid > tbody > tr')].map(tr => { const c = tr.querySelector('[data-full]'); return c ? [c.getAttribute('data-full') === c.querySelector('code')?.textContent, !!c.querySelector('button')] : [false, false]; })`);
+      r.all = await ev(`document.querySelectorAll('#mssql-backups-files-grid table.grid > tbody > tr').length`);
+      r.picked = await ev(`document.querySelector('#mssql-backups-picked')?.textContent ?? ''`);
+    }
+    await cmd('Runtime.evaluate', { expression: axeSrc });
+    const a = JSON.parse(await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => JSON.stringify(r.violations.map(v => ({ id: v.id, n: v.nodes.length, t: v.nodes.slice(0, 3).map(x => x.target.join(' ')) }))))`, true) ?? '[]');
+    r.violations = a;
+    out[`${name}-${theme}`] = r;
+  }
+}
+console.log(JSON.stringify(out));
+process.exit(0);
+JS
+  node "$WORK/page.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$(iid)" > "$WORK/page.json" 2> "$WORK/page.err" || fail "I: the page check did not run: $(tail -c 400 "$WORK/page.err")"
+  kill "$CHR" 2>/dev/null || true
+  NFILES=$NFILES NALL=$NALL python3 - "$WORK/page.json" <<'PYI' || fail "I: the pages"
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+dd = ["database", "recovery model", "type", "start date", "finish date", "duration", "backup size", "backup MB/s", "backup size (compressed)",
+      "compression saving %", "backup write MB/s", "is partner backup", "partner", "is damaged", "checksum", "is compressed", "password protected",
+      "encrypted", "snapshot backup", "has bulk logged data", "readonly", "force offline", "single user", "key algorithm", "encryptor type", "compression algorithm"]
+own = ["to", "files", "mirrors", "device", "taken by", "machine", "set name", "description", "software", "copy-only", "incomplete metadata", "base", "media password", "on the database's volume"]
+bad = []
+for k, r in d.items():
+    if not r["drawn"] or r["errors"]: bad.append(f"{k}: drawn {r['drawn']}, error boxes {r['errors']}")
+    n = sum(v["n"] for v in r["violations"])
+    if n: bad.append(f"{k}: {n} axe violation node(s): {r['violations']}")
+t = d["tab-light"]
+if t.get("last") != dd + own: bad.append(f"the Last backup header: {t.get('last')}")
+need = ["full damaged", "differential damaged", "log damaged", "full checksum", "log compression algorithm", "full to", "differential to", "log to"]
+miss = [h for h in need if h not in (t.get("db") or [])]
+if miss: bad.append(f"the Databases grid lacks {miss}")
+if len(t.get("files") or []) != int(os.environ["NFILES"]) or not all(a and b for a, b in t["files"]): bad.append(f"the Files grid: {t.get('files')} (want {os.environ['NFILES']} rows, each data-full = its path, a Copy button)")
+if t.get("all") != int(os.environ["NALL"]): bad.append(f"the Backup files grid: {t.get('all')} rows, want {os.environ['NALL']}")
+if bad: print("\n".join(bad)); sys.exit(1)
+print(f"ok   I: the tab with pgvbka's panel and the fleet page, light and dark: drawn, no error box, 0 axe violation nodes; the Last backup header = DBA Dash's 26 in order + pgvigil's 14; Files {len(t['files'])} rows each with data-full and Copy; Backup files {t['all']} rows")
+PYI
+else notproven "I: the pages - no chromium or node here (or PROOF_SKIP_PAGE)"; fi
 echo "ALL ROWS GREEN"
