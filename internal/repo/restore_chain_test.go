@@ -139,6 +139,19 @@ func TestRestoreChainOnAStore(t *testing.T) {
 			t.Errorf("%s: %v | %q, want %s | %q...", c.db, steps, verdict, c.steps, c.verdict)
 		}
 	}
+	state := func(id int, dbn string) string {
+		t.Helper()
+		var st string
+		if err := pool.QueryRow(ctx, `SELECT state FROM pgvigil.mssql_restore_verdicts WHERE instance_id = $1 AND database_name = $2`, id, dbn).Scan(&st); err != nil {
+			t.Fatalf("the verdict of %s: %v", dbn, err)
+		}
+		return st
+	}
+	for dbn, want := range map[string]string{"db1": "whole", "db2": "whole", "db3": "broken", "db4": "broken"} {
+		if got := state(a, dbn); got != want {
+			t.Errorf("%s's stored verdict: %s, want %s", dbn, got, want)
+		}
+	}
 	// a replica of db5's group read before the set after the gap: the break is held (F3)
 	g := fmt.Sprintf("%08x-0000-0000-0000-00000000aaaa", tag)
 	p, s := inst("p"), inst("s")
@@ -152,6 +165,10 @@ func TestRestoreChainOnAStore(t *testing.T) {
 	importAll(p, now.Add(time.Minute), []map[string]any{db("db5", g), set("db5", "full", 50, 500, 510, -10*h, nil), set("db5", "log", 51, 505, 520, -9*h, nil), {"kind": "read"}})
 	if _, verdict = chain(s, "db5"); !strings.HasPrefix(verdict, "broken before the log of") {
 		t.Errorf("db5 with every replica read after the gap: %q", verdict)
+	}
+	// the replica's late read decided the other member's stored verdict again
+	if got := state(s, "db5"); got != "broken" {
+		t.Errorf("db5's stored verdict on the member not read: %s, want broken", got)
 	}
 	// db6: the newest sets are on a new fork; the full is on the parent fork past the fork point: not taken (F2)
 	const newFork = "00000000-0000-0000-0000-00000000f1f1"

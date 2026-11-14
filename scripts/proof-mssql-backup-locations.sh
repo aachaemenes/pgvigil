@@ -410,7 +410,7 @@ if [ -z "${PROOF_SKIP_DBATOOLS:-}" ]; then
          from pgvigil.mssql_backup_locations l where l.instance_id=$(iid) and l.shown and l.database_name in ('pgvbka','pgvbkw','pgvbkr','pgvbkv') order by 1" > "$WORK/pgvigil.txt"
     # PowerShell in the container ends its lines with CR LF and may print blank lines (run 6)
     tr -d '\r' < "$WORK/dbatools.txt" | grep -v '^$' | sort > "$WORK/dbatools.sorted"; mv "$WORK/dbatools.sorted" "$WORK/dbatools.txt"
-    DIFF=$(diff "$WORK/pgvigil.txt" "$WORK/dbatools.txt" | grep '^[<>]' | sed 's/^</pgvigil:/; s/^>/dbatools:/' | sort -t'|' -k1,2 || true)
+    DIFF=$(diff "$WORK/pgvigil.txt" "$WORK/dbatools.txt" | grep '^[<>]' | sed 's/^< /pgvigil:/; s/^> /dbatools:/' | sort -t'|' -k1,2 || true)
     echo "$DIFF" | sed 's/^/     /'
     NULL_ID=$(setid pgvbka L); OTHER_ID=$(setid pgvbkw L); PART_ID=$(sq "SELECT MAX(backup_set_id) FROM msdb.dbo.backupset WHERE database_name = N'pgvbkr' AND type = 'P'")
     # what may differ, and only that: one line each side for pgvbka's log, pgvbkw's log, pgvbkr's full

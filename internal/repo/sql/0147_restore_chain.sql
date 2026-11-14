@@ -60,6 +60,41 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_restore_files (
   FOREIGN KEY (instance_id, backup_set_uuid) REFERENCES pgvigil.mssql_restore_sets (instance_id, backup_set_uuid) ON DELETE CASCADE
 );
 
+-- the verdict of each database's chain, decided at each import (for the instance read and for the other members of the
+-- database's group, whose verdict the new sets may change): the page and the findings read it without walking the chain
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_restore_verdicts (
+  instance_id    int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  database_name  text NOT NULL,
+  verdict        text NOT NULL,
+  restorable_to  timestamptz,
+  steps          int,
+  state          text NOT NULL CHECK (state IN ('whole', 'broken', 'held', 'no full', 'none')),
+  decided_at     timestamptz NOT NULL,
+  PRIMARY KEY (instance_id, database_name)
+);
+
+-- the steps of each chain as mssql_restore_chain decided them at the import (serve's pool is read only: the chain, which
+-- works through a temp table, is walked where the repository is written, never by a page)
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_restore_steps (
+  instance_id     int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  database_name   text NOT NULL,
+  step            int NOT NULL,
+  role            text,
+  backup_set_uuid text,
+  from_instance   text,
+  start_at        timestamptz,
+  finish_at       timestamptz,
+  first_lsn       text,
+  last_lsn        text,
+  family_count    int,
+  mirror_count    int,
+  media_position  int,
+  user_name       text,
+  marks           text,
+  restorable_to   timestamptz,
+  PRIMARY KEY (instance_id, database_name, step)
+);
+
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_restore_reads (
   instance_id    int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   database_name  text NOT NULL,
@@ -151,6 +186,7 @@ BEGIN
    GROUP BY d.database_name
   ON CONFLICT (instance_id, database_name) DO UPDATE SET read_at = EXCLUDED.read_at, logs_since = EXCLUDED.logs_since,
       logs_sent = EXCLUDED.logs_sent, server_gaps = EXCLUDED.server_gaps;
+  PERFORM pgvigil.mssql_restore_decide(p_instance_id, p_snapshot_at);
 END $$;
 
 -- mssql_restore_members: the instances whose sets make one database's chain - the instance itself and, for a database
@@ -286,3 +322,51 @@ BEGIN
          ELSE 'restorable from these backups to ' || to_char(v_to AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC; later than that needs a tail-log backup' END,
     v_to;
 END $$;
+
+-- mssql_restore_decide: the verdicts of an instance's databases and of the same databases on the other members of their
+-- groups, from mssql_restore_chain's verdict row.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_restore_decide(p_instance_id int, p_at timestamptz)
+RETURNS void LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+  t record; v record;
+BEGIN
+  DELETE FROM pgvigil.mssql_restore_verdicts x WHERE x.instance_id = p_instance_id
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_restore_reads r WHERE r.instance_id = x.instance_id AND r.database_name = x.database_name);
+  DELETE FROM pgvigil.mssql_restore_steps x WHERE x.instance_id = p_instance_id
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_restore_reads r WHERE r.instance_id = x.instance_id AND r.database_name = x.database_name);
+  FOR t IN SELECT DISTINCT m.instance_id, r.database_name
+             FROM pgvigil.mssql_restore_reads r
+             CROSS JOIN LATERAL pgvigil.mssql_restore_members(p_instance_id, r.database_name) m
+            WHERE r.instance_id = p_instance_id
+              AND EXISTS (SELECT 1 FROM pgvigil.mssql_restore_reads y WHERE y.instance_id = m.instance_id AND y.database_name = r.database_name) LOOP
+    DELETE FROM pgvigil.mssql_restore_steps x WHERE x.instance_id = t.instance_id AND x.database_name = t.database_name;
+    INSERT INTO pgvigil.mssql_restore_steps (instance_id, database_name, step, role, backup_set_uuid, from_instance, start_at, finish_at,
+        first_lsn, last_lsn, family_count, mirror_count, media_position, user_name, marks, restorable_to)
+    SELECT t.instance_id, t.database_name, c.* FROM pgvigil.mssql_restore_chain(t.instance_id, t.database_name) c;
+    SELECT max(x.marks) FILTER (WHERE x.step = 0) AS marks, max(x.restorable_to) FILTER (WHERE x.step = 0) AS restorable_to,
+           count(*) FILTER (WHERE x.step > 0)::int AS steps
+      INTO v FROM pgvigil.mssql_restore_steps x WHERE x.instance_id = t.instance_id AND x.database_name = t.database_name;
+    INSERT INTO pgvigil.mssql_restore_verdicts AS x (instance_id, database_name, verdict, restorable_to, steps, state, decided_at)
+    VALUES (t.instance_id, t.database_name, v.marks, v.restorable_to, v.steps,
+            CASE WHEN v.marks LIKE 'broken before%' OR v.marks LIKE 'went to NUL%' THEN 'broken'
+                 WHEN v.marks LIKE 'not yet read from%' THEN 'held'
+                 WHEN v.marks LIKE 'no full backup%' THEN 'no full'
+                 WHEN v.marks LIKE 'restorable%' THEN 'whole' ELSE 'none' END, p_at)
+    ON CONFLICT (instance_id, database_name) DO UPDATE SET verdict = EXCLUDED.verdict, restorable_to = EXCLUDED.restorable_to,
+        steps = EXCLUDED.steps, state = EXCLUDED.state, decided_at = EXCLUDED.decided_at;
+  END LOOP;
+END $$;
+
+-- mssql_restore_findings (the findings columns): 'the log chain is broken' (warning) on a database judged for its log
+-- backups (mssql_backup_judged: log_status not 'not judged'), whose replicas are all monitored, not on Amazon RDS or Managed
+-- Instance (the service keeps their backups: 301's platform line instead), and only for a break - a gap a replica's late
+-- read may fill is held, never raised. Its pgvigil.findings arm and the Summary's map are the lead's wiring.
+CREATE OR REPLACE VIEW pgvigil.mssql_restore_findings AS
+SELECT v.instance_id, 'warning'::text AS severity, 'the log chain is broken' AS check_name, v.database_name AS object,
+       v.verdict || ' (a restore from these backups stops there; a new full or differential backup starts a whole chain again)' AS detail,
+       v.decided_at AS at
+  FROM pgvigil.mssql_restore_verdicts v
+  JOIN pgvigil.mssql_backup_judged b ON b.instance_id = v.instance_id AND b.database_name = v.database_name
+  JOIN pgvigil.instances i ON i.instance_id = v.instance_id AND i.is_active
+ WHERE v.state = 'broken' AND b.log_status <> 'not judged' AND NOT b.replicas_unseen
+   AND i.platform NOT IN ('rdssqlserver', 'azuresqlmi');
