@@ -48,8 +48,10 @@ off with the reason.
 A contact is a team (its group address first) or a person (with a phone if wanted), in a role: business owner,
 technical owner, support or escalation. Contacts are read only when asked: the list and one application's answer never
 carry them, Show contacts reads them (with the UI login on only: with `-no-login` the answer is "contacts hidden: the
-login is off"), and an export or a mail of the page carries them only while they are shown. The reader role (custom
-reports, BI tools, the MCP door) cannot read the contacts table. A change's audit row names the application, the role
+login is off"), and an export of the page carries them only while they are shown (the page is never mailed: Report
+mail refuses it). The reader role (BI tools, the MCP door) can neither read the contacts table nor call the doors that
+answer them. A custom report on the store runs on the serve's own login, which can call those doors: a login of its
+own for custom reports, in the reader role alone, closes that and is not part of this page. A change's audit row names the application, the role
 and the contact's id, never a name, an e-mail address or a phone. The repository's backups and its server's statement
 log, if it logs statements, hold what was typed: treat them as personal data too.
 
@@ -72,11 +74,12 @@ its secrets stay in the configuration file. Each alert pass makes one channel pe
 - no address leaves the route: its destination text and every error name the contact's id (a relay's refusal that names
   the recipient is logged as `contact <id>`);
 - a Send test, Report mail and the alert rules page's channel count use the configured channels only;
-- with no channel configured, no route can send.
+- with no channel configured, no route can send and the sender closes nothing (it records no channel then, so it
+  leaves what another collector recorded as it was).
 
 A person on two contact rows (two applications, or two roles) gets two copies. The relay carries one message per pass
 for each configured channel with something due, plus one for each route with something due: with n channels and r
-routes, up to n x (1 + r) messages a pass in the worst case.
+routes in all, up to n + r messages a pass.
 
 A channel of the configuration may not be named `contact-...` (pgvigil refuses to start with one).
 
@@ -95,13 +98,15 @@ such a store is made anew (a released store never held the older 0190).
 | app_field_source | each field's source and when (an import never overwrites an entered field unless forced) |
 | ui_app_contact_routes | the routes: contact, channel, minimum severity, on or off |
 | instance_tag_pairs | gains the `application` arm (source `application`); the key leaves the configuration's and the overrides' arms |
-| import_app_application, import_app_contact, import_app_assign, import_app_contact_route | the writes, each answering done or refused with the reason, one audit row per attempt |
+| import_app_application, import_app_contact, import_app_assign, import_app_contact_route | the writes, each answering done or refused with the reason, one audit row per attempt (a done assign, unassign, mark or unmark: one per target) |
 | app_effective, app_databases, app_unassigned | the reads of the page |
 | alert_contact_routes() | the alert sender's one read of the live routes and their addresses (its own session or the owner's only) |
 
 ## Proof
 
-`scripts/proof-applications.sh` on a throwaway repository: the store (S1-S17), the API (H1-H7), the page clicked in a
-headless Chromium with axe-core and the page's export (P1-P12), and owner-routed alerts on real alert passes against a
-loopback SMTP sink (O1-O20). Go tests: internal/alerts/routes_test.go (the derived channels), internal/mcp/applications_test.go
+`scripts/proof-applications.sh` on a throwaway repository: the store (S1-S24 with S11b and S11c), the API (H1-H8), the page
+clicked in a headless Chromium with axe-core and the page's export (P1-P15), and owner-routed alerts on real alert
+passes against a loopback SMTP sink (O1-O20 with O5b and O14b); serve reads on a login IN ROLE pgvigil_reader,
+pgvigil_auth and writes on one IN ROLE pgvigil_collector, the passes send as one IN ROLE pgvigil_alerter. O5b (a custom
+report calling the contacts' door) is said OWED, not failed, on a tree without the custom reports' own login. Go tests: internal/alerts/routes_test.go (the derived channels), internal/mcp/applications_test.go
 (no MCP tool reads or answers a contact, row A11), internal/sched/apptag_test.go (the file's application: tag named).

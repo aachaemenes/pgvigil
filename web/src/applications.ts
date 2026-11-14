@@ -6,7 +6,7 @@
 // assigned or marked 'not an application' in one request; the marks; the changes. Data from /api/applications,
 // /api/applications/{id}, /{id}/contacts and /unassigned; the writes POST /api/admin/applications, /contacts and
 // /assign (internal/web/q_applications.go), each refused in the store's own words. Contacts are personal data: read
-// only when asked, so an export or a mail of this page carries them only while they are shown. The route and the
+// only when asked, so an export of this page carries them only while they are shown (the page is never mailed). The route and the
 // tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
@@ -297,7 +297,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     if (contactsOf !== id) {
       const show = el('button', { type: 'button', 'aria-label': `Show contacts of ${name}` }, 'Show contacts');
       show.addEventListener('click', () => { contactsOf = id; void redraw(); });
-      box.append(el('p', { class: 'meta' }, 'Contacts are personal data: they are read only when you ask, so an export or a mail of this page carries them only while they are shown. '), show);
+      box.append(el('p', { class: 'meta' }, 'Contacts are personal data: they are read only when you ask, so an export of this page carries them only while they are shown; this page is never mailed. '), show);
       return box;
     }
     let rows: Row[], routes: Row[], channels: Row[];

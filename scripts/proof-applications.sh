@@ -59,7 +59,10 @@
 #  S21 a route_id and a contact_id that disagree are refused (A, m1); S22 an add carrying an existing id and name refused
 #      in words (A, m2); S23 a database "" refused (A, m4); S24 a SQL Server snapshot is never inherited (A, m6)
 # Section H, the API (serve with a UI login on the same repository; the routes are 310's WIRING of web.go,
-# scripts/proof-applications-wiring.patch, applied to the box's copy when the tree lacks them):
+# scripts/proof-applications-wiring.patch, applied to the box's copy when the tree lacks them). No superuser serves
+# (review P, M5): serve reads on a login IN ROLE pgvigil_reader, pgvigil_auth (-dsn) and writes its audit on a login
+# IN ROLE pgvigil_collector (the config's repository dsn), as docs/app.md shapes it; the O passes send as a login IN
+# ROLE pgvigil_alerter (alerts_dsn), with the config's repository dsn a login that does not exist:
 #  H1  GET /api/applications: 401 without a login; with one 200, can_edit true, the list holds the applications
 #  H2  a POST that sends source 'import:x' is stored 'entered' (the HTTP door forces it)
 #  H3  a POST without the X-Pgvigil header 403, without a login 401; nothing written by either
@@ -83,7 +86,8 @@
 #  P7  Rename with a threshold scoped by the tag: refused without the tick (the store's words), done with it, re-tagged
 #  P8  Remove asked twice: refused without 'with its assignments', done with the ticks; assignment and threshold gone
 #  P9  a PostgreSQL database renamed on the server: 'absent since' and 'renamed to' shown; 'Assign <new> instead' moves it
-#  P10 the -no-login serve: at least 8 write controls, every one off with a visible reason; contacts in words
+#  P10 the -no-login serve: at least 8 controls under the page that are not on its read list (Open, Show / Hide
+#      contacts, a grid's own tools), every one off with a visible reason; contacts in words
 #  P11 axe-core 4.14.0 on the page (an application and its contacts open) light and dark, and read only: 0 nodes
 #  P12 the page's Export .xlsx passes scripts/xlsx-check.py and holds no contact value (contacts not shown)
 #  P13 the page names an instance whose pgvigil.yaml gives it an application: tag (E5)
@@ -100,6 +104,8 @@
 #  O4  a 550 naming the address is logged as 'contact <id>'; no planted address in alert_log, alert_channels,
 #      admin_audit, alert_tests, alert_state, the passes' output, the Alerts, rules or Report mail answers
 #  O5  a reader login: the routes' door refuses it; ui_app_contact_routes not readable
+#  O5b (review P, M2) a custom report on the store calling ui_app_contacts_of: refused; on a tree without reports_dsn
+#      (pdfp-relw4-s1's report login, O-D10) it runs, and the line says OWED instead of FAIL
 #  O6  a route whose channel is not in the config sends nothing, named once in three passes
 #  O7  a changed e-mail followed at the next pass; the contact removed: its open rows closed with no message
 #  O8  an instance carrying A (the instance) and B (one database): its finding mailed to both contacts
@@ -107,6 +113,8 @@
 #  O11 a route through a 63-character base; a repository-wide finding goes to the base, to no route
 #  O12 an application name at the tag's 100-byte cap          O13 an address Go's parser refuses: that route alone skipped
 #  O14 a route off: its open rows closed with no message; on again: no stale recovery
+#  O14b (review P, M1) Eve's route off while her application's finding clears: the control route (Cal's) mails the
+#      [RESOLVED], Eve none then; her route on again: still no [RESOLVED] to her
 #  O15 the routes' door failing: the config's channels still send, no route row closed
 #  O16 the Send test refused on a route's channel             O17 Report mail and the rules page count config channels only
 #  O18 the contacts' answer carries the routes and the configured smtp channels
@@ -118,13 +126,13 @@ cd "$(dirname "$0")/.."
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
 SUF=$RANDOM
-DB=pgvigil_proof_app_$SUF; RD=pgvigil_app_rd_$SUF
+DB=pgvigil_proof_app_$SUF; RD=pgvigil_app_rd_$SUF; UIL=pgvigil_app_ui_$SUF; COLL=pgvigil_app_col_$SUF; ALR=pgvigil_app_al_$SUF
 WORK=$(mktemp -d); CFG=$WORK/cfg.yaml
 NFAIL=0
 ok()  { echo "ok   $*"; }
 bad() { echo "FAIL $*"; NFAIL=$((NFAIL + 1)); }
 cleanup() {
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" -c "drop role if exists $RD" >/dev/null 2>&1 || true
+  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" -c "drop role if exists $RD" -c "drop role if exists $UIL" -c "drop role if exists $COLL" -c "drop role if exists $ALR" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -176,7 +184,7 @@ ans=$(wr application "{\"op\": \"rename\", \"app_id\": $BILL, \"version\": $ver,
 stale=$(wr application "{\"op\": \"rename\", \"app_id\": $BILL, \"version\": $ver, \"name\": \"Billing Again\"}")
 t3=",$(tags "$PGI"),"; aud=$(q "select detail from pgvigil.admin_audit where op = 'app_rename' and outcome = 'done' order by audit_id desc limit 1")
 [[ $(field "$ans" outcome) == done && $t3 == *",application:Billing System: EU,"* && $t3 != *",application:Billing,"* \
-   && $aud == *"Billing"* && $aud == *"Billing System: EU"* && $(field "$stale" outcome) == refused ]] \
+   && $aud == *"Billing"*"Billing System: EU"* && $(field "$stale" outcome) == refused ]] \
   && ok "S3 the rename follows into the tag at the next read; its audit row names both; a stale version refused" \
   || bad "S3 rename $(field "$ans" outcome) ($(field "$ans" detail)); tags $t3; audit '$aud'; stale: $(field "$stale" outcome) $(field "$stale" detail)"
 
@@ -239,21 +247,25 @@ ai=$(q "select pgvigil.import_admin_instance(now(), '{\"op\": \"add\", \"ui_user
   || bad "S9 tags $t9; override rc $ovrc: ${ov:0:120}; Admin > Instances: $(field "$ai" outcome) '$(field "$ai" detail)'"
 
 # ---------------- S10 ----------------
-leak=$(q "select coalesce(string_agg(x, ', '), '') from (
+leak=$(q "select 'S10:' || coalesce(string_agg(x, ', '), '') from (
   select p.proname::text x from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'pgvigil' and p.proname like 'import\_app\_%' and has_function_privilege('pgvigil_reader', p.oid, 'EXECUTE')
   union all
   select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
-   where n.nspname = 'pgvigil' and c.relname like 'ui\_app\_%' and c.relkind in ('r', 'v') and has_table_privilege('pgvigil_reader', c.oid, 'SELECT')) z")
+   where n.nspname = 'pgvigil' and c.relname like 'ui\_app\_%' and c.relkind in ('r', 'v') and has_table_privilege('pgvigil_reader', c.oid, 'SELECT')
+  union all
+  select p.proname::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'pgvigil' and p.proname like 'ui\_app\_%' and has_function_privilege('pgvigil_reader', p.oid, 'EXECUTE')) z")
 nf=$(q "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname like 'import\_app\_%'")
-[[ -z "$leak" && $nf -ge 3 ]] && ok "S10 the reader may execute none of the $nf import_app_ functions and read no ui_app_ table" || bad "S10 the reader may use: [$leak] ($nf import_app_ functions)"
+[[ $leak == "S10:" && $nf -ge 3 ]] && ok "S10 the reader may execute none of the $nf import_app_ functions nor a ui_app_ function, and read no ui_app_ table" || bad "S10 the reader may use: [$leak] ($nf import_app_ functions)"
 
 # ---------------- S11 ----------------
 con=$(wr contact "{\"op\": \"add\", \"app_id\": $PAY, \"role\": \"technical owner\", \"kind\": \"person\", \"name\": \"Pat Planted\", \"email\": \"planted.$SUF@example.com\", \"phone\": \"+1 555 0$SUF\"}")
 CID=$(field "$con" contact_id)
-wr contact "{\"op\": \"edit\", \"contact_id\": $CID, \"email\": \"moved.$SUF@example.com\", \"phone\": \"+1 555 9$SUF\"}" >/dev/null
-hits=$(q "select count(*) from pgvigil.admin_audit where detail ~ '(planted|moved)\\.$SUF@' or detail ~ '555 [09]$SUF' or detail ~ 'Pat Planted'")
-[[ -n "$CID" && $hits == 0 ]] && ok "S11 a contact's name, e-mail and phone, added and changed, appear in no audit row" || bad "S11 contact '$CID' ($(field "$con" detail)); audit rows with them: $hits"
+e11=$(wr contact "{\"op\": \"edit\", \"app_id\": $PAY, \"contact_id\": ${CID:-0}, \"email\": \"moved.$SUF@example.com\", \"phone\": \"+1 555 9$SUF\"}")
+moved=$(q "select count(*) from pgvigil.ui_app_contacts where contact_id = ${CID:-0} and email = 'moved.$SUF@example.com'")
+hits=$(q "select count(*) from pgvigil.admin_audit a, lateral (values (a.detail), (a.target), (a.client)) v(t) where v.t ~ '(planted|moved)\\.$SUF@' or v.t ~ '555 [09]$SUF' or v.t ~ 'Pat Planted'")
+[[ -n "$CID" && $(field "$e11" outcome) == done && $moved == 1 && $hits == 0 ]] && ok "S11 a contact's name, e-mail and phone, added and changed (the edit done), appear in no audit row's detail, target or client" || bad "S11 contact '$CID' ($(field "$con" detail)); edit $(field "$e11" outcome) '$(field "$e11" detail)', stored $moved; audit rows with them: $hits"
 # S11b (review A, M2): a person with a phone edited to a team is refused in words, one audit row, no CHECK error
 con=$(wr contact "{\"op\": \"add\", \"app_id\": $PAY, \"role\": \"support\", \"kind\": \"person\", \"name\": \"Phoebe Phone\", \"email\": \"phoebe.$SUF@example.com\", \"phone\": \"+1 555 1$SUF\"}")
 C11B=$(field "$con" contact_id)
@@ -317,8 +329,8 @@ tw=$(wr assign "{\"op\": \"assign\", \"app_id\": $PAY, \"targets\": [{\"instance
 big=$(python3 -I -c "import json, sys; print(json.dumps({'op': 'assign', 'app_id': int(sys.argv[1]), 'targets': [{'instance_id': int(sys.argv[2]), 'database': 'x%d' % i} for i in range(501)]}))" "$PAY" "$MSI")
 ov=$(wr assign "$big")
 n1=$(q "select count(*) from pgvigil.app_assignments")
-[[ $(field "$tw" outcome) == refused && $(field "$ov" outcome) == refused && $n0 == "$n1" ]] \
-  && ok "S13 one target twice, and 501 targets, refused with nothing written" || bad "S13 twice: $(field "$tw" outcome) '$(field "$tw" detail)'; 501: $(field "$ov" outcome); rows $n0 -> $n1"
+[[ $(field "$tw" outcome) == refused && $(field "$ov" outcome) == refused && $(field "$ov" detail) == *"at most 500"* && $n0 == "$n1" ]] \
+  && ok "S13 one target twice, and 501 targets, refused with nothing written" || bad "S13 twice: $(field "$tw" outcome) '$(field "$tw" detail)'; 501: $(field "$ov" outcome) '$(field "$ov" detail)'; rows $n0 -> $n1"
 
 # ---------------- S15 (before S14 removes P) ----------------
 before=$(q "select (select count(*) from pgvigil.app_applications) || '/' || (select count(*) from pgvigil.app_assignments) || '/' || (select count(*) from pgvigil.ui_app_contacts)")
@@ -396,12 +408,17 @@ na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'ap
 # ================= H: the API =================
 if [[ -z "${APP_SKIP_HTTP:-}" ]]; then
 USR=proofuser; UPW="pw-proof-310-$SUF-$RANDOM"   # at least 12 characters whatever $SUF and $RANDOM are (t-ap-g13: user add refused a short one)
-printf 'repository:\n  dsn: "%s"\ninstances: []\n' "$PGVIGIL_REPO_DSN" > "$WORK/serve.yaml"
-PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$WORK/serve.yaml" "$USR" > "$WORK/useradd.out" 2>&1 || bad "H setup: user add ($(tail -1 "$WORK/useradd.out"))"
+printf 'repository:\n  dsn: "%s"\ninstances: []\n' "$PGVIGIL_REPO_DSN" > "$WORK/owner.yaml"
+PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$WORK/owner.yaml" "$USR" > "$WORK/useradd.out" 2>&1 || bad "H setup: user add ($(tail -1 "$WORK/useradd.out"))"
+# (review P, M5) no superuser serves: its reads on the UI's login, its audit (every write) on a collector login
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create role $UIL login in role pgvigil_reader, pgvigil_auth" \
+  -c "create role $COLL login in role pgvigil_collector" > "$WORK/logins.out" 2>&1 || bad "H setup: the serve's logins ($(tail -1 "$WORK/logins.out"))"
+printf 'repository:\n  dsn: "%s"\ninstances: []\n' "$PGVIGIL_ADMIN_DSN dbname=$DB user=$COLL" > "$WORK/serve.yaml"
+export PGVIGIL_UI_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB user=$UIL"
 freeport() { python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 startserve() {   # $1 port, then serve's own flags
   local port=$1; shift
-  "$BIN" serve -config "$WORK/serve.yaml" -listen "127.0.0.1:$port" "$@" > "$WORK/serve-$port.log" 2>&1 & SPIDS+=($!)
+  "$BIN" serve -config "$WORK/serve.yaml" -dsn env:PGVIGIL_UI_DSN -listen "127.0.0.1:$port" "$@" > "$WORK/serve-$port.log" 2>&1 & SPIDS+=($!)
   for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$port/api/session" 2>/dev/null && return 0; sleep 0.1; done
   return 1
 }
@@ -446,10 +463,10 @@ c4c=$(post "$U" admin/applications/assign "$(python3 -I -c 'print("{\"op\": \"as
 # H5
 post "$U" admin/applications/contacts "{\"op\": \"add\", \"app_id\": $HAPP, \"role\": \"support\", \"kind\": \"person\", \"name\": \"Hal Http\", \"email\": \"h5.$SUF@example.com\", \"phone\": \"+1 555 5$SUF\"}" >/dev/null
 c5a=$(get "$U" "applications/$HAPP/contacts"); in_c=$(grep -c "h5.$SUF@example.com" "$WORK/ans.json"); grep -q "555 5$SUF" "$WORK/ans.json" && in_p=1 || in_p=0
-get "$U" applications >/dev/null; l5=$(grep -c "h5.$SUF\|555 5$SUF" "$WORK/ans.json")
-get "$U" "applications/$HAPP" >/dev/null; o5=$(grep -c "h5.$SUF\|555 5$SUF" "$WORK/ans.json")
-[[ $c5a == 200 && $in_c == 1 && $in_p == 1 && $l5 == 0 && $o5 == 0 ]] && ok "H5 contacts only from their own GET with a login; none in the list or one application's answer" \
-  || bad "H5 contacts GET $c5a (e-mail $in_c, phone $in_p); in the list $l5; in one application $o5"
+c5l=$(get "$U" applications); l5=$(grep -c "h5.$SUF\|555 5$SUF" "$WORK/ans.json")
+c5o=$(get "$U" "applications/$HAPP"); o5=$(grep -c "h5.$SUF\|555 5$SUF" "$WORK/ans.json")
+[[ $c5a == 200 && $in_c == 1 && $in_p == 1 && $c5l == 200 && $l5 == 0 && $c5o == 200 && $o5 == 0 ]] && ok "H5 contacts only from their own GET with a login; none in the list or one application's answer (both 200)" \
+  || bad "H5 contacts GET $c5a (e-mail $in_c, phone $in_p); the list $c5l with $l5; one application $c5o with $o5"
 
 # H7
 c7=$(get "$U" applications/unassigned); h7=$(js 'r = d["unassigned"]; i = r["columns"].index("database_name"); print(",".join(x[i] for x in r["rows"]))' 2>&1)
@@ -474,7 +491,7 @@ else bad "H6 setup: the -no-login serve did not answer ($(tail -3 "$WORK/serve-$
 # the bundle is built from this tree on the box (.ap/run.sh: npm ci, npm run build) with 310's WIRING of router.ts and
 # main.ts applied; a binary without the page's route is the red: every P row 'not on this tree'
 PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15"
-if ! grep -a -q 'admin_applications' "$BIN"; then
+if ! grep -a -q 'admin_applications:"Applications"' "$BIN"; then   # the bundle's tab (0136's text names admin_applications too: review P, m10)
   for row in $PROWS; do bad "$row not on this tree (no Admin > Applications in the bundle)"; done
 else
 P_SET=1
@@ -585,6 +602,7 @@ try {
   out('P3.status', await submit('Edit Page Added'));
   // P4 contacts on a click only; a contact added through the form
   out('P4.open', await click('Open Http App'));
+  out('P4.sec', await ev(`!!document.querySelector('main section[aria-label="Application Http App"]')`));
   out('P4.before', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_EMAIL)})`));
   out('P4.show', await click('Show contacts of Http App'));
   out('P4.after', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_EMAIL)})`));
@@ -640,7 +658,8 @@ try {
   out('P9.offer', await click('Assign pdb1_new to Page Added instead'));
   out('P9.after', (await panelRows('Page Added') ?? []).map(r => `${r.database}:${r.assigned}`).join('|'));
   // P12 the page's export with an application open and its contacts not shown
-  await go(U, '#/admin_applications'); await click('Open Http App');
+  await go(U, '#/admin_applications'); out('P12.open', await click('Open Http App'));
+  out('P12.sec', await ev(`!!document.querySelector('main section[aria-label="Application Http App"]')`));
   const before = new Set(fs.readdirSync(dl));
   out('P12.press', await ev(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Export .xlsx'); if (!b) return false; b.click(); return true; })()`));
   let file = '';
@@ -661,7 +680,8 @@ try {
   out('P15.file', file15 || ('none: ' + fs.readdirSync(dl).join(',')));
   // P11 axe on the page with an application and its contacts open, light and dark
   for (const t of ['light', 'dark']) {
-    await theme(t); await go(U, '#/admin_applications'); await click('Open Http App'); await click('Show contacts of Http App');
+    await theme(t); await go(U, '#/admin_applications'); const o = await click('Open Http App'); const sh = await click('Show contacts of Http App');
+    out(`P11.clicks_${t}`, [o, sh].some(x => String(x).startsWith('NOT FOUND')) ? `${o} / ${sh}` : 'ok');
     out(`P11.${t}`, await axe());
   }
   // P10 the -no-login serve: every write control off with a visible reason; contacts in words; axe there too
@@ -670,13 +690,18 @@ try {
   await click('Open Http App');
   out('P10.controls', await ev(`(() => {
     const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
-    const w = [...document.querySelectorAll('main .applications form button, main .applications form input, main .applications form select, main .applications form textarea, main .applications .actions button, main .applications .actions input')].filter(vis);
+    // every control under the page (review P, m7) but the read list: Open, Show / Hide contacts, and a grid's own tools
+    // (its header's sort and menu buttons, its filter and paging): a write control anywhere else is counted
+    const name = e => (e.getAttribute('aria-label') || e.textContent || '').trim();
+    const read = e => /^(Open |Show contacts of |Hide contacts of )/.test(name(e)) || !!e.closest('thead, .grid-tools, .gridtools, .grid-pager, .pager');
+    const w = [...document.querySelectorAll('main .applications button, main .applications input, main .applications select, main .applications textarea')].filter(vis).filter(e => !read(e));
     const off = e => e.disabled || e.getAttribute('aria-disabled') === 'true';
     const said = e => (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.trim().length > 10; });
-    return w.length + ' on:' + w.filter(e => !off(e)).length + ' unsaid:' + w.filter(e => off(e) && !said(e)).length; })()`));
+    const on = w.filter(e => !off(e)), unsaid = w.filter(e => off(e) && !said(e));
+    return w.length + ' on:' + on.length + ' unsaid:' + unsaid.length + (on.length + unsaid.length ? ' [' + [...on, ...unsaid].map(name).slice(0, 12).join(' | ') + ']' : ''); })()`));
   out('P10.contacts', await click('Show contacts of Http App'));
   out('P10.words', await ev(`document.querySelector('main section[aria-label="Application Http App"]')?.textContent.includes('contacts hidden: the login is off') ?? false`));
-  for (const t of ['light', 'dark']) { await theme(t); await go(U6, '#/admin_applications'); await click('Open Http App'); out(`P11.ro_${t}`, await axe()); }
+  for (const t of ['light', 'dark']) { await theme(t); await go(U6, '#/admin_applications'); const o = await click('Open Http App'); out(`P11.roclick_${t}`, String(o).startsWith('NOT FOUND') ? o : 'ok'); out(`P11.ro_${t}`, await axe()); }
 } catch (e) { out('ERROR', String(e?.message ?? e)); }
 ws.close(); bws.close();
 JS
@@ -699,8 +724,8 @@ if [[ $P_SET == 1 ]]; then
   [[ $(pv P3.sources) -ge 4 && $p3 == "edited by the page|2" ]] && ok "P3 one application's fields with their sources ($(pv P3.sources) 'entered by'); Edit stored, version 2" || bad "P3 sources $(pv P3.sources); store '$p3'; status '$(pv P3.status)'"
   # P4
   p4=$(pv P4.store)   # read right after P4 (P14 changes this contact's e-mail later: t-ap-g11)
-  [[ $(pv P4.before) == false && $(pv P4.after) == true && $p4 == 1 && $(pv P4.listed) == true ]] && ok "P4 contacts on a click only (the planted e-mail absent before, shown after); a contact added through the form stored and listed" \
-    || bad "P4 before $(pv P4.before), after $(pv P4.after); stored $p4, listed $(pv P4.listed); status '$(pv P4.status)'"
+  [[ $(pv P4.open) != "NOT FOUND"* && $(pv P4.sec) == true && $(pv P4.before) == false && $(pv P4.after) == true && $p4 == 1 && $(pv P4.listed) == true ]] && ok "P4 contacts on a click only (the planted e-mail absent before, shown after); a contact added through the form stored and listed" \
+    || bad "P4 open '$(pv P4.open)', section $(pv P4.sec); before $(pv P4.before), after $(pv P4.after); stored $p4, listed $(pv P4.listed); status '$(pv P4.status)'"
   # P5
   p5=$(pv P5.store); n5=$(pv P5.audit)
   a5="|$(pv P5.after)|"; r5="|$(pv P5.rows)|"
@@ -732,16 +757,16 @@ if [[ $P_SET == 1 ]]; then
   [[ $(pv P10.ready) == true && $n10 -ge 8 && $c10 == *" on:0 unsaid:0" && $(pv P10.words) == true ]] && ok "P10 -no-login: $n10 write controls, every one off with a visible reason; contacts: 'contacts hidden: the login is off'" \
     || bad "P10 ready $(pv P10.ready); controls '$c10'; contacts words $(pv P10.words) ('$(pv P10.contacts)')"
   # P11
-  [[ $(pv P11.light) == "0 "* && $(pv P11.dark) == "0 "* && $(pv P11.ro_light) == "0 "* && $(pv P11.ro_dark) == "0 "* ]] && ok "P11 axe-core 4.14.0: 0 violation nodes, light and dark, writable (contacts open) and read only" \
-    || bad "P11 light '$(pv P11.light)'; dark '$(pv P11.dark)'; read only '$(pv P11.ro_light)' / '$(pv P11.ro_dark)'"
+  [[ $(pv P11.clicks_light) == ok && $(pv P11.clicks_dark) == ok && $(pv P11.roclick_light) == ok && $(pv P11.roclick_dark) == ok && $(pv P11.light) == "0 "* && $(pv P11.dark) == "0 "* && $(pv P11.ro_light) == "0 "* && $(pv P11.ro_dark) == "0 "* ]] && ok "P11 axe-core 4.14.0: 0 violation nodes, light and dark, writable (contacts open) and read only" \
+    || bad "P11 clicks '$(pv P11.clicks_light)' / '$(pv P11.clicks_dark)' / '$(pv P11.roclick_light)' / '$(pv P11.roclick_dark)'; light '$(pv P11.light)'; dark '$(pv P11.dark)'; read only '$(pv P11.ro_light)' / '$(pv P11.ro_dark)'"
   # P12
   F12=$(pv P12.file)
   if [[ -f "$F12" ]]; then
     x12=$(python3 -I scripts/xlsx-check.py rules "$F12" 2>&1 | tail -1)
     leak=$(unzip -p "$F12" | grep -c -e "h5.$SUF@example.com" -e "555 5$SUF" -e "$TEAM")
     has=$(unzip -p "$F12" | grep -c 'Http App')
-    [[ $x12 == *": PASS" && $leak == 0 && $has -ge 1 ]] && ok "P12 the page's Export .xlsx passes xlsx-check and holds no contact value (contacts not shown)" \
-      || bad "P12 xlsx-check '$x12'; contact values in the file $leak; 'Http App' parts $has"
+    [[ $(pv P12.open) != "NOT FOUND"* && $(pv P12.sec) == true && $x12 == *": PASS" && $leak == 0 && $has -ge 1 ]] && ok "P12 the page's Export .xlsx passes xlsx-check and holds no contact value (contacts not shown)" \
+      || bad "P12 open '$(pv P12.open)', section $(pv P12.sec); xlsx-check '$x12'; contact values in the file $leak; 'Http App' parts $has"
   else bad "P12 no workbook downloaded (press $(pv P12.press))"; fi
   # P14
   [[ $(pv P14.fill) == ok && $(pv P14.store) == 1 && $(pv P14.audit) == *": email changed" ]] && ok "P14 a contact's e-mail edited on the page: stored, its audit row names the e-mail alone ('$(pv P14.audit)')" \
@@ -825,38 +850,43 @@ crit() {    # a critical finding on an instance: autovacuum off in its state (th
   q "select count(*) from pgvigil.alert_findings where instance_id = $1 and severity = 'critical'"
 }
 newinst() { q "select pgvigil.ensure_instance('$1', 'onprem', '18.0', 180000, false, '{}'::text[])"; }
-OA=$(newinst proof-o-a); OB=$(newinst proof-o-b); OC=$(newinst proof-o-c); OD1=$(newinst proof-o-d1); OD2=$(newinst proof-o-d2); OL=$(newinst proof-o-l)
+OA=$(newinst proof-o-a); OB=$(newinst proof-o-b); OC=$(newinst proof-o-c); OD1=$(newinst proof-o-d1); OD2=$(newinst proof-o-d2); OL=$(newinst proof-o-l); OE=$(newinst proof-o-e)
 dbs "$OC" "[$(pgdb 50001 cdb1)]"
-for i in $OA $OB $OC $OD1 $OD2 $OL; do n=$(crit "$i"); [[ $n -ge 1 ]] || bad "O setup: no critical finding on instance $i after the plant ($n)"; done
+for i in $OA $OB $OC $OD1 $OD2 $OL $OE; do n=$(crit "$i"); [[ $n -ge 1 ]] || bad "O setup: no critical finding on instance $i after the plant ($n)"; done
 LNAME=$(python3 -I -c 'print("Long " + "L" * 95)')   # 100 bytes: the tag value's cap
 app()  { field "$(wr application "{\"op\": \"add\", \"name\": \"$1\"}")" app_id; }
 asg()  { wr assign "{\"op\": \"assign\", \"app_id\": $1, \"targets\": [{\"instance_id\": $2, \"database\": ${3:-null}}]}" >/dev/null; }
 con()  { field "$(wr contact "{\"op\": \"add\", \"app_id\": $1, \"role\": \"support\", \"kind\": \"$2\", \"name\": \"$3\", \"email\": \"$4\"}")" contact_id; }
-OAPP=$(app 'O App A'); OBPP=$(app 'O App B'); ODPP=$(app 'O App D'); OLPP=$(app "$LNAME")
-asg "$OAPP" "$OA"; asg "$OAPP" "$OC"; asg "$OBPP" "$OB"; asg "$OBPP" "$OC" '"cdb1"'; asg "$ODPP" "$OD1"; asg "$ODPP" "$OD2"; asg "$OLPP" "$OL"
+OAPP=$(app 'O App A'); OBPP=$(app 'O App B'); ODPP=$(app 'O App D'); OLPP=$(app "$LNAME"); OEPP=$(app 'O App E')
+asg "$OAPP" "$OA"; asg "$OAPP" "$OC"; asg "$OBPP" "$OB"; asg "$OBPP" "$OC" '"cdb1"'; asg "$ODPP" "$OD1"; asg "$ODPP" "$OD2"; asg "$OLPP" "$OL"; asg "$OEPP" "$OE"
 ANN="ann.$SUF@example.com"; BOB="bob.$SUF@example.com"; DEE="dee.$SUF@example.com"; LEE="lee.$SUF@example.com"; WES="wes.$SUF@example.com"
-TEAMA="a-team.$SUF@example.com"; QUINN="bad\\\"q.$SUF@example.com"; QPLAIN="bad\"q.$SUF@example.com"; DBA="dba.$SUF@example.org"; WBASE="w.$SUF@example.org"
+EVE="eve.$SUF@example.com"; CAL="cal.$SUF@example.com"; TEAMA="a-team.$SUF@example.com"; QUINN="bad\\\"q.$SUF@example.com"; QPLAIN="bad\"q.$SUF@example.com"; DBA="dba.$SUF@example.org"; WBASE="w.$SUF@example.org"
 CANN=$(con "$OAPP" person Ann "$ANN"); CDUP=$(con "$OAPP" person 'Ann again' "$ANN"); CTEAM=$(con "$OAPP" team 'A Team' "$TEAMA")
 # Quinn's address (a quote before the @) is refused by the store since review A's m11: planted straight into the table, as an
 # older row or a future import could hold it, so the alerter's own skip is still tested
 CQ=$(q "insert into pgvigil.ui_app_contacts (app_id, role, kind, name, email) values ($OAPP, 'support', 'person', 'Quinn', '$QPLAIN') returning contact_id" | head -1); CWES=$(con "$OAPP" person Wes "$WES"); CBOB=$(con "$OBPP" person Bob "$BOB")
-CDEE=$(con "$ODPP" person Dee "$DEE"); CLEE=$(con "$OLPP" person Lee "$LEE")
+CDEE=$(con "$ODPP" person Dee "$DEE"); CLEE=$(con "$OLPP" person Lee "$LEE"); CEVE=$(con "$OEPP" person Eve "$EVE"); CCAL=$(con "$OEPP" person Cal "$CAL")
 [[ -n "$CANN$CQ" && $(q "select email from pgvigil.ui_app_contacts where contact_id = ${CQ:-0}") == "$QPLAIN" ]] || bad "O setup: the contacts (Quinn's address as stored: $(q "select email from pgvigil.ui_app_contacts where contact_id = ${CQ:-0}"))"
 # the repository-wide finding ('purge not run in 2 days', warning): no purge run, an instance seen 3 days ago
 q "delete from pgvigil.purge_runs; update pgvigil.instances set first_seen = now() - interval '3 days' where instance_id = $OA" >/dev/null
 RW=$(q "select count(*) from pgvigil.alert_findings where source = 'pgvigil repository' and setting = 'purge not run in 2 days'")
 H0=$(date -u +%H); H2=$(( (10#$H0 + 2) % 24 ))
 LONGB=mailw-$(python3 -I -c 'print("w" * 57)')     # a base name of 63 characters
+# (review P, M5) the passes send as a login IN ROLE pgvigil_alerter (alerts_dsn); the repository dsn names a login that
+# does not exist, so a pass that fell back to it would fail
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create role $ALR login in role pgvigil_alerter" > "$WORK/alr.out" 2>&1 || bad "O setup: the alerter's login ($(tail -1 "$WORK/alr.out"))"
+export PGVIGIL_ALERTS_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB user=$ALR" PGVIGIL_NO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB user=pgvigil_app_none_$SUF"
 cat > "$WORK/o.yaml" <<EOF
 repository:
-  dsn: env:PGVIGIL_REPO_DSN
+  dsn: env:PGVIGIL_NO_DSN
+alerts_dsn: env:PGVIGIL_ALERTS_DSN
 alerts:
   - {name: mail, kind: smtp, min_severity: critical, repeat: 5m, clear_after: 0, instances: [proof-o-b],
      smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [$DBA]}}
   - {name: mailq, kind: smtp, min_severity: critical, tags: [env:nowhere], timezone: UTC,
      quiet_hours: "$(printf %02d $((10#$H0))):00-$(printf %02d $H2):00",
      smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [q.$SUF@example.org]}}
-  - {name: mailcap, kind: smtp, min_severity: critical, max_per_hour: 1, tags: [env:nowhere],
+  - {name: mailcap, kind: smtp, min_severity: critical, max_per_hour: 1, instances: [proof-o-d1],
      smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [cap.$SUF@example.org]}}
   - {name: $LONGB, kind: smtp, min_severity: warning, tags: [env:nowhere],
      smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [$WBASE]}}
@@ -875,7 +905,7 @@ if [[ $HAS_ROUTES == t ]]; then
   [[ $c == 200 && -n $RANN ]] || echo "read: Ann's route through the HTTP door: $c $(head -c 200 "$WORK/ans.json")"
 else echo "read: no routes on this tree (no import_app_contact_route): every route below is unset"; fi
 RDUP=$(rset "$CDUP" mail); RTEAM=$(rset "$CTEAM" mail); RQ=$(rset "$CQ" mail); RWES=$(rset "$CWES" "$LONGB"); RBOB=$(rset "$CBOB" mail)
-RGONE=$(rset "$CBOB" mailgone); RDQ=$(rset "$CDEE" mailq); RDC=$(rset "$CDEE" mailcap); RLEE=$(rset "$CLEE" mail)
+RGONE=$(rset "$CBOB" mailgone); RDQ=$(rset "$CDEE" mailq); RDC=$(rset "$CDEE" mailcap); RLEE=$(rset "$CLEE" mail); REVE=$(rset "$CEVE" mail); RCAL=$(rset "$CCAL" mail)
 ch() { echo "contact-$1"; }
 open_rows() { q "select count(*) from pgvigil.alert_state where channel = '$(ch "$1")' and cleared_at is null"; }
 
@@ -900,9 +930,10 @@ o12=$(mails $P1 "$LEE" proof-o-l)
 o3q=$(mails $P1 "$DEE"); o3qs=$( [[ -n $RDQ ]] && open_rows "$RDQ" || echo x)
 o3c=$(q "select coalesce(sum(cardinality(keys)), 0) from pgvigil.alert_log where channel = '$(ch "${RDC:-0}")' and outcome = 'capped'")
 o3s=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RDC:-0}")' and outcome = 'sent'")
-[[ -n $RDQ && -n $RDC && $o3qs == 0 && $o3q == 1 && $o3c -ge 1 && $o3s == 1 ]] \
-  && ok "O3 the base's quiet hours hold its route (no row, no message on mailq's route); the base's max_per_hour 1 caps its route as its own channel (1 message, $o3c held)" \
-  || bad "O3 quiet route rows '$o3qs'; Dee's messages $o3q (want 1: mailcap's one); capped items $o3c, sent rows $o3s (routes '$RDQ' '$RDC')"
+o3b=$(mails $P1 "cap.$SUF@example.org" proof-o-d1)   # the base's own one message of the hour (review P, m4)
+[[ -n $RDQ && -n $RDC && $o3qs == 0 && $o3q == 1 && $o3c -ge 1 && $o3s == 1 && $o3b == 1 ]] \
+  && ok "O3 the base's quiet hours hold its route (no row, no message on mailq's route); the base's max_per_hour 1 caps its route as its own channel (the base sent its 1, the route its 1, $o3c held)" \
+  || bad "O3 quiet route rows '$o3qs'; Dee's messages $o3q (want 1: mailcap's one); capped items $o3c, sent rows $o3s; the base's own message $o3b (routes '$RDQ' '$RDC')"
 o13a=$(mails $P1 "$QPLAIN"); o13n=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RQ:-0}")' and error like '%contact $CQ%'")
 o13s=$(mails $P1 "$ANN" proof-o-a)
 [[ -n $RQ && $o13a == 0 && $o13n == 1 && $o13s -ge 1 ]] && ok "O13 an address Go's parser refuses: that route alone skipped, named in the log by its contact id; the others sent" \
@@ -933,11 +964,21 @@ o7new=$(mails $P4 "ann2.$SUF@example.com" proof-o-a)
 # off then on: the team's route turned off (its open rows closed, no message), on again (no stale recovery)
 offrows=$( [[ -n $RTEAM ]] && open_rows "$RTEAM" || echo 0)
 rset "$CTEAM" mail '' false >/dev/null
+# O14b: Eve's route off and her application's finding cleared in the same stretch (the 'mail' base's clear_after 0)
+o14e1=$(mails $P1 "$EVE" proof-o-e); evrows=$( [[ -n $REVE ]] && open_rows "$REVE" || echo 0)
+rset "$CEVE" mail '' false >/dev/null
+q "update pgvigil.instance_state set snapshot_at = now(), non_default_settings = '[]'::jsonb where instance_id = $OE" >/dev/null
+o14ef=$(q "select count(*) from pgvigil.alert_findings where instance_id = $OE and setting ilike '%autovacuum%'")
 opass; P5=$NPASS
 o14off=$(mails $P5 "$TEAMA"); o14rows=$( [[ -n $RTEAM ]] && open_rows "$RTEAM" || echo x); o14log=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RTEAM:-0}")' and outcome = 'cleared'")
 rset "$CTEAM" mail '' true >/dev/null
+o14cal=$(mails $P5 "$CAL" '[RESOLVED] proof-o-e'); o14e5=$(mails $P5 "$EVE")
+rset "$CEVE" mail '' true >/dev/null
 opass; P6=$NPASS
-o14res=$(mails $P6 "$TEAMA" '[RESOLVED]')
+o14res=$(mails $P6 "$TEAMA" '[RESOLVED]'); o14e6=$(mails $P6 "$EVE" '[RESOLVED]')
+[[ -n $REVE && -n $RCAL && $o14e1 -ge 1 && $evrows -ge 1 && $o14ef == 0 && $o14cal -ge 1 && $o14e5 == 0 && $o14e6 == 0 ]] \
+  && ok "O14b Eve's route off while her application's finding cleared: Cal's route mailed the [RESOLVED] ($o14cal), Eve none; on again: no [RESOLVED] to her" \
+  || bad "O14b Eve mailed at pass 1 $o14e1, open rows $evrows; the finding after the clear $o14ef; Cal's [RESOLVED] $o14cal; to Eve while off $o14e5, after on $o14e6 (routes '$REVE' '$RCAL')"
 [[ -n $RTEAM && $offrows -ge 1 && $o14off == 0 && $o14rows == 0 && $o14log -ge 1 && $o14res == 0 ]] \
   && ok "O14 a route turned off: its $offrows open row(s) closed 'cleared' with no message; on again: no stale recovery" \
   || bad "O14 open before $offrows; off: messages $o14off, open rows $o14rows, cleared rows $o14log; on: 'resolved' messages $o14res"
@@ -961,35 +1002,49 @@ opass; P8=$NPASS
 o15dba=$(mails $P8 "$DBA" '[REPEAT CRITICAL] proof-o-b'); o15rows=$( [[ -n $RBOB ]] && open_rows "$RBOB" || echo x)
 o15clr=$(q "select count(*) from pgvigil.alert_log where channel like 'contact-%' and outcome = 'cleared' and snapshot_at >= '$T8'")
 [[ -n "$DEF" ]] && { printf '%s;\n' "$DEF" | psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 >/dev/null || bad "O15 setup: the door's definition was not restored"; }
-[[ -n $RBOB && -n "$DEF" && $o15door == *"the door fails"* && $o15dba -ge 1 && $bobrows -ge 1 && $o15rows == "$bobrows" && $o15clr == 0 ]] \
-  && ok "O15 the routes' door failing: the base still sent its repeat; Bob's $bobrows open row(s) left open, no route row closed" \
-  || bad "O15 door saved '${DEF:0:40}', made to fail: '${o15door:0:80}'; base repeat $o15dba; Bob's open rows $bobrows -> $o15rows; route rows cleared $o15clr"
 
 # O4: a contact the relay refuses (550 naming the address): the error says 'contact <id>'; no planted address anywhere
 CREX=$(con "$OBPP" person Rex "$REFUSED"); RREX=$(rset "$CREX" mail)
 opass; P9=$NPASS
 o4err=$(q "select coalesce(string_agg(error, ' | '), '') from pgvigil.alert_log where channel = '$(ch "${RREX:-0}")' and outcome in ('failed', 'refused')")
-get "$U" alerts > /dev/null; cp "$WORK/ans.json" "$WORK/o-alerts.json"; get "$U" alertrules > /dev/null; cp "$WORK/ans.json" "$WORK/o-rules.json"
-get "$U" reportmail > /dev/null; cp "$WORK/ans.json" "$WORK/o-reportmail.json"
+c4al=$(get "$U" alerts); cp "$WORK/ans.json" "$WORK/o-alerts.json"; c4ru=$(get "$U" alertrules); cp "$WORK/ans.json" "$WORK/o-rules.json"
+c4rm=$(get "$U" reportmail); cp "$WORK/ans.json" "$WORK/o-reportmail.json"
+# (review P, M4) each answer read only when it is one: 200 and its positive control (a route's channel on Alerts, the
+# base 'mail' on Report mail)
+p4al=$(grep -c "contact-${RBOB:-x}" "$WORK/o-alerts.json"); p4rm=$(grep -c '"mail"' "$WORK/o-reportmail.json")
 leaks=0; where4=""
-for a in "$ANN" "ann2.$SUF@example.com" "$BOB" "$DEE" "$LEE" "$WES" "$TEAMA" "$QPLAIN" "$REFUSED"; do
+for a in "$ANN" "ann2.$SUF@example.com" "$BOB" "$DEE" "$LEE" "$WES" "$EVE" "$CAL" "$TEAMA" "$QPLAIN" "q.$SUF@example.com" "$REFUSED"; do   # Quinn's also after its quote (JSON escapes it: review P, M3)
   for t in alert_log alert_channels admin_audit alert_tests alert_state; do
     n=$(q "select count(*) from pgvigil.$t x where strpos(lower(row_to_json(x)::text), lower('${a//\'/\'\'}')) > 0"); [[ $n == 0 ]] || { leaks=$((leaks + n)); where4+=" $t:$a"; }
   done
   n=$(cat "$WORK"/opass.*.out "$WORK"/opass.*.err "$WORK/o-alerts.json" "$WORK/o-rules.json" "$WORK/o-reportmail.json" | grep -c -i -F "$a"); [[ $n == 0 ]] || { leaks=$((leaks + n)); where4+=" outputs:$a"; }
 done
-[[ -n $RREX && $o4err == *"contact $CREX"* && $o4err != *"$REFUSED"* && $leaks == 0 ]] \
+o15p9=$(mails $P9 "$BOB")   # the pass after the door came back: no re-send of Bob's open alerts (review P, m5)
+[[ -n $RREX && $o4err == *"contact $CREX"* && $o4err != *"$REFUSED"* && $leaks == 0 && $c4al == 200 && $c4ru == 200 && $c4rm == 200 && $p4al -ge 1 && $p4rm -ge 1 ]] \
   && ok "O4 the relay's 550 is logged as 'contact $CREX'; no planted address in alert_log, alert_channels, admin_audit, alert_tests, alert_state, the passes' output and log, the Alerts, rules or Report mail answers" \
-  || bad "O4 the refused route's error '${o4err:0:200}'; $leaks hit(s):$where4"
+  || bad "O4 the refused route's error '${o4err:0:200}'; $leaks hit(s):$where4; answers alerts $c4al ($p4al route channel), rules $c4ru, report mail $c4rm ($p4rm 'mail')"
 
+[[ -n $RBOB && -n "$DEF" && $o15door == *"the door fails"* && $o15dba -ge 1 && $bobrows -ge 1 && $o15rows == "$bobrows" && $o15clr == 0 && $o15p9 == 0 ]] \
+  && ok "O15 the routes' door failing: the base still sent its repeat; Bob's $bobrows open row(s) left open, no route row closed; the pass after it came back sent Bob nothing again" \
+  || bad "O15 door saved '${DEF:0:40}', made to fail: '${o15door:0:80}'; base repeat $o15dba; Bob's open rows $bobrows -> $o15rows; route rows cleared $o15clr; Bob at the pass after $o15p9"
 # O5: a reader may not read the routes: the door refuses it, the table is not its
 RD2=pgvigil_app_rd2_$SUF; RPW="rpw-$SUF-$RANDOM"
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create role $RD2 login password '$RPW' in role pgvigil_reader" >/dev/null 2>&1
 asrd() { psql "$PGVIGIL_ADMIN_DSN dbname=$DB user=$RD2 password=$RPW" -XAt -c "$1" 2>&1; }
 o5a=$(asrd "select count(*) from pgvigil.alert_contact_routes()"); o5b=$(asrd "select count(*) from pgvigil.ui_app_contact_routes")
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $RD2" >/dev/null 2>&1
-[[ $o5a == *"not the alert sender"* && $o5b == *"permission denied"* ]] && ok "O5 a reader login: the routes' door refuses it, ui_app_contact_routes is not readable (the custom-report path: pdfp-relw4-s1's fix, not this tree's)" \
+[[ $o5a == *"not the alert sender"* && $o5b == *"permission denied"* ]] && ok "O5 a reader login: the routes' door refuses it, ui_app_contact_routes is not readable" \
   || bad "O5 door: '${o5a:0:120}'; table: '${o5b:0:120}'"
+# O5b (review P, M2): a custom report on the store calling the contacts' door (the lead 08:14: 'O5's custom-report row
+# stands and leans on that fix' - pdfp-relw4-s1's reports_dsn, O-D10). Refused = ok; run on a tree without reports_dsn
+# = OWED (said, not a FAIL); run on a tree with it = FAIL
+c5r=$(post "$U" customreports "{\"op\": \"add\", \"name\": \"proof 310 contacts door\", \"engine\": \"store\", \"kind\": \"sql\", \"body\": \"SELECT count(*) AS n FROM pgvigil.ui_app_contacts_of($OBPP)\", \"timeout_secs\": 30, \"max_rows\": 50, \"params\": [], \"columns\": [], \"rules\": []}")
+REP5=$(js 'print(d.get("report_id", ""))' 2>/dev/null)
+c5x=$(post "$U" customreports/run "{\"report_id\": ${REP5:-0}, \"target\": \"fleet\"}")
+o5x=$(js 'r = (d.get("runs") or [{}])[0]; print(str(r.get("outcome", "")) + "|" + str(r.get("error") or r.get("detail") or d.get("detail") or "")[:160])' 2>&1)
+if [[ $c5r == 200 && -n $REP5 && ( $c5x == 200 || $c5x == 409 ) && $o5x != done* ]]; then ok "O5b a custom report on the store calling ui_app_contacts_of: not done ('${o5x:0:160}')"
+elif [[ $c5r == 200 && -n $REP5 && $o5x == done* ]] && ! grep -a -q 'reports_dsn' "$BIN"; then echo "OWED O5b a custom report on the store called ui_app_contacts_of and was done ('${o5x:0:80}'): this tree has no reports_dsn (pdfp-relw4-s1's report login, O-D10) - named owed in 310's DONE"
+else bad "O5b add $c5r report '$REP5'; run $c5x '${o5x:0:200}'"; fi
 
 # O16: the Send test is refused on a route; O17: Report mail and the rules page count the configured channels only
 o16=$(q "select pgvigil.import_alert_test(now(), '{\"ui_user\": \"proof\", \"channel\": \"$(ch "${RBOB:-0}")\"}'::jsonb)")
