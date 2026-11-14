@@ -35,13 +35,22 @@ import (
 // MaxInstanceID is the largest DBADash InstanceID (an int column).
 const MaxInstanceID = 2147483647
 
-// ProvenVersion is the DBADash version the pages and the import are proven on.
-const ProvenVersion = "4.24.1"
+// ProvenVersions are the DBADash versions the pages and the import are proven on (scripts/proof-dbadash-door.sh on a
+// repository each version's own service built); ProvenVersion names them for a note.
+var ProvenVersions = []string{"4.24.1", "4.25.0"}
 
-// Proven says whether a repository's DBVersionHistory version is the proven one (4.24.1 or a build of it, 4.24.1.x).
+// ProvenVersion is ProvenVersions as one phrase ("4.24.1, 4.25.0").
+var ProvenVersion = strings.Join(ProvenVersions, ", ")
+
+// Proven says whether a repository's DBVersionHistory version is a proven one (e.g. 4.24.1 or a build of it, 4.24.1.x).
 func Proven(v string) bool {
 	v = strings.TrimSpace(v)
-	return v == ProvenVersion || strings.HasPrefix(v, ProvenVersion+".")
+	for _, p := range ProvenVersions {
+		if v == p || strings.HasPrefix(v, p+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // PageDef is one page: its key in the URL, DBADash's own name for the screen, the procedure and how it is called.

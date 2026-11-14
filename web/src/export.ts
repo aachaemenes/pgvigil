@@ -288,7 +288,8 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
     const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
     // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
-    // are that number ('3' collection errors), as DBA Dash writes its 'DBA Dash Errors (24hrs)'
+    // are that number ('3' collection errors; on DBA Dash 4.25.0 '3' collections at warning or critical), as DBA Dash
+    // writes its 'DBA Dash Errors (24hrs)' / 'Collection Health'
     if (td.classList.contains('status') && typeof c.v === 'string') { const b = bareNumber(t); if (b) Object.assign(c, b); }
     const l = looks[i]?.[j];
     return l ? withDot({ ...c, look: l.look }, l) : c;
