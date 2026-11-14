@@ -100,11 +100,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
 ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
-CACHE=${PGVIGIL_DBADASH_CACHE:-$HOME/.cache/pgvigil-dbadash-4.24.1}
+# the DBA Dash release the repository is built with: 4.24.1 (the default) or 4.25.0, each zip pinned by the SHA-256
+# GitHub's release lists for it (read 2026-11-14)
+DDV=${PGVIGIL_DBADASH_VERSION:-4.24.1}
+case "$DDV" in
+  4.24.1) ZIP_SHA=c04f3cd949f89d93f72269a1223bea2153b7017a80823064b585997e8d632033 ;;
+  4.25.0) ZIP_SHA=e3da8b4312d8b5b829ba14ecdc34ba65b07d00fb1bc5b9d8fb059d69ddd16dd1 ;;
+  *) echo "FAIL: PGVIGIL_DBADASH_VERSION is 4.24.1 or 4.25.0 (the releases whose SHA-256 this proof holds)" >&2; exit 1 ;;
+esac
+CACHE=${PGVIGIL_DBADASH_CACHE:-$HOME/.cache/pgvigil-dbadash-$DDV}
 SVC_SECS=${SVC_SECS:-180}
 IMG_SQL=mcr.microsoft.com/mssql/server:2022-latest; IMG_NET=mcr.microsoft.com/dotnet/runtime:10.0; IMG_PY=python:3.12-slim
-ZIP_URL=https://github.com/trimble-oss/dba-dash/releases/download/4.24.1/DBADash_4.24.1.zip
-ZIP_SHA=c04f3cd949f89d93f72269a1223bea2153b7017a80823064b585997e8d632033
+ZIP_URL=https://github.com/trimble-oss/dba-dash/releases/download/$DDV/DBADash_$DDV.zip
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 NET=pgvdoor-net-$SUF; SQL=pgvdoor-sql-$SUF; SVC=pgvdoor-svc-$SUF; CFGC=pgvdoor-cfg-$SUF; PYC=pgvdoor-py-$SUF; HOSTN=pgvdoor$SUF; LBL=pgvigil-proof=s156
 DDB=DBADash_pgv$SUF; PGDB=pgv_door_$SUF; PGRO=pgv_door_ro_$SUF
@@ -184,7 +191,7 @@ else
     # fetched into a folder of this run's own and moved into place whole: two first runs never share a half-written zip
     part="$CACHE.part.$SUF"; mkdir -p "$part"
     curl -fsSL -o "$part/z.zip" "$ZIP_URL" || { rm -rf "$part"; fail "A: the release zip could not be fetched"; }
-    [[ "$(sha256sum "$part/z.zip" | cut -c1-64)" == "$ZIP_SHA" ]] || { rm -rf "$part"; fail "A: the release zip's SHA-256 is not the one of DBADash_4.24.1.zip"; }
+    [[ "$(sha256sum "$part/z.zip" | cut -c1-64)" == "$ZIP_SHA" ]] || { rm -rf "$part"; fail "A: the release zip's SHA-256 is not the one of DBADash_$DDV.zip"; }
     (cd "$part" && unzip -q -o z.zip && rm -f z.zip) || { rm -rf "$part"; fail "A: unzip"; }
     mkdir -p "$(dirname "$CACHE")"; mv -T "$part" "$CACHE" 2>/dev/null || rm -rf "$part"
   fi
@@ -214,7 +221,7 @@ n_cpu=$(sq "SELECT COUNT(*) FROM dbo.CPU WHERE InstanceID = $ID" "$DDB")
 n_vol=$(sq "SELECT COUNT(*) FROM dbo.DriveSnapshot S JOIN dbo.Drives D ON D.DriveID = S.DriveID WHERE D.InstanceID = $ID" "$DDB")
 n_dbs=$(sq "SELECT COUNT(*) FROM (SELECT DISTINCT S.SnapshotDate, F.DatabaseID FROM dbo.DBFileSnapshot S JOIN dbo.DBFiles F ON F.FileID = S.FileID JOIN dbo.Databases D ON D.DatabaseID = F.DatabaseID WHERE D.InstanceID = $ID) g" "$DDB")
 n_job=$(sq "SELECT COUNT(*) FROM dbo.JobHistory WHERE InstanceID = $ID" "$DDB")
-[[ "$VER" == 4.24.1 || "$VER" == 4.24.1.* ]] || fail "A: the repository's version is '$VER' (the proof is of 4.24.1)"
+[[ "$VER" == "$DDV" || "$VER" == "$DDV".* ]] || fail "A: the repository's version is '$VER' (this run is of $DDV)"
 [[ "$ID" =~ ^[0-9]+$ ]] || fail "A: no active SQL Server instance in the repository"
 nsys=$(sq "SELECT COUNT(*) FROM dbo.InstanceIDsTags IT JOIN dbo.Tags T ON T.TagID = IT.TagID WHERE IT.InstanceID = $ID AND T.TagName LIKE N'{%'" "$DDB")
 if [[ -z "${PGVIGIL_DBADASH_BAK:-}" ]]; then
@@ -410,6 +417,30 @@ print(len(rows), *(("%s=%s" % (c, r[i])) for r in rows[:1] for i, c in enumerate
 serve "$TMPD/d.yaml"
 p1=$(part); [[ "$p1" == 0* ]] || fail "D1: part=pgvigil before pgvigil monitors the server: $p1 (want 0 rows)"
 echo "ok   D1: the door read the repository; part=pgvigil: 0 rows while pgvigil monitors no SQL Server named $SERVERNAME"
+# D1w (0138): the Collection Errors cell's header follows the repository's version, its count words what DBA Dash's
+# Summary_Upd used for the instance (4.25.0: its collection health when it has collection runs, else the 24 h errors)
+words() { local code; code=$(curl -s -o "$BODY" -w '%{http_code}' -b "$CJ" "$U/api/dbadash?repo=lab&id=$ID&part=statuses")
+  [[ "$code" == 200 ]] || fail "D1w: GET part=statuses answered $code: $(cat "$BODY")"
+  python3 -c 'import json,sys; t=json.load(open(sys.argv[1])).get("statuses") or {}; c=t.get("columns") or []
+r=[dict(zip(c, x)) for x in (t.get("rows") or [])]; r=[x for x in r if x.get("status_key") == "CollectionErrorStatus"]
+print((r[0]["label"] + "|" + (r[0]["detail"] or "")) if r else "no CollectionErrorStatus row")' "$BODY"; }
+runs=$(sq "IF OBJECT_ID(N'dbo.CollectionRunStatus') IS NULL SELECT -1 ELSE SELECT COUNT(*) FROM dbo.CollectionRunStatus WHERE InstanceID = $ID" "$DDB")
+ecount=$(sq "SELECT ISNULL(CollectionErrorCount, 0) FROM dbo.Summary WHERE InstanceID = $ID" "$DDB")
+w1=$(words)
+if [[ "$runs" == -1 ]]; then
+  [[ "$w1" == "DBA Dash Errors (24hrs)|$ecount error(s) in 24 h" ]] || fail "D1w: on $VER (no dbo.CollectionRunStatus) the cell reads '$w1' (want 'DBA Dash Errors (24hrs)|$ecount error(s) in 24 h')"
+  echo "ok   D1w: on $VER the cell reads '$w1' (DBA Dash's 4.24.1 words; no collection runs recorded there)"
+else
+  [[ "$runs" =~ ^[1-9][0-9]*$ ]] || fail "D1w: DBA Dash $VER's service recorded no collection run of the instance ($runs rows in dbo.CollectionRunStatus)"
+  [[ "$w1" == "Collection Health|$ecount collection(s) at warning or critical" ]] || fail "D1w: on $VER with $runs collection runs the cell reads '$w1' (want 'Collection Health|$ecount collection(s) at warning or critical')"
+  # the same instance as one a service older than 4.25.0 collects: its runs removed, DBA Dash's Summary_Upd again, the door's read again
+  sqok "D1w: the runs removed" "DELETE dbo.CollectionRunStatus WHERE InstanceID = $ID; EXEC dbo.Summary_Upd;" "$DDB"
+  ecount2=$(sq "SELECT ISNULL(CollectionErrorCount, 0) FROM dbo.Summary WHERE InstanceID = $ID" "$DDB")
+  PGVIGIL_DBADASH_CONFIG="$TMPD/d.yaml" go test -count=1 -run '^TestLive$' ./internal/dbadash >/dev/null 2>&1 || fail "D1w: the door's read after Summary_Upd"
+  w2=$(words)
+  [[ "$w2" == "Collection Health|$ecount2 error(s) in 24 h" ]] || fail "D1w: with no collection runs the cell reads '$w2' (want 'Collection Health|$ecount2 error(s) in 24 h')"
+  echo "ok   D1w: on $VER the cell reads '$w1' with $runs collection runs, and '$w2' once they were removed and Summary_Upd ran again (the 24 h errors, as DBA Dash chooses for an instance without runs)"
+fi
 if [[ -n "${PGVIGIL_DBADASH_BAK:-}" ]]; then
   echo "not proven: D2-D4 (the restored repository's instance is another server than this run's container; run without PGVIGIL_DBADASH_BAK for them)"
 else
