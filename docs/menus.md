@@ -13,9 +13,10 @@ value of the first `ui.group_by` key, or one per written tag when `group_by` is 
 Checks, HA/DR, Storage, Jobs and Reports over its own instances only (`?tag=` on every page they open), then its
 instances, as DBA Dash's tag folder does. A tag folder carries only the pages that read its instances: the pages that
 read the whole repository whatever folder is open (Diff, Thresholds, Data retention, Recycle Bin, Custom reports,
-Community tools, Report mail, Doors, Admin) stay at the root, and a page that holds one engine (SQL Server options,
-TempDB, Flushed Plans, Server Services; PostgreSQL options, Replication, Extensions) is left out of a folder whose
-instances are all of the other. The folder's tab strip shows the same pages. An instance's folders follow DBA Dash's
+Community tools, Report mail, Doors, Admin, Alert rules) stay at the root, and a page that holds one engine's data
+(SQL Server options, TempDB, Flushed Plans, Server Services; PostgreSQL options, Replication, Extensions, Corruption,
+Versions, Table size, Backups, Roles, DMS, Custom report, Disk report, Storage, Growth, Indexes, Jobs) is left out of a
+folder whose instances are all of the other. The folder's tab strip shows the same pages. An instance's folders follow DBA Dash's
 order too: Configuration, Checks, HA/DR, Storage, Databases, Jobs, then Performance (and Logs on SQL Server), then
 Reports.
 
