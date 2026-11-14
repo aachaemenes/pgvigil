@@ -898,6 +898,9 @@ export async function backups(ctx: Ctx): Promise<HTMLElement> {
   // a view with no PostgreSQL instance: main.ts's wiring then leaves out PostgreSQL's Base backups and Standbys too (F1:
   // one line in place of an engine's sections)
   if (inView.length - sqlserver === 0) view.dataset.noPostgres = '1';
+  // and the reverse: no SQL Server instance in view = no SQL Server section at all (its heading would name the other
+  // engine on a PostgreSQL-only scope: the wording walk, j13r)
+  if (sqlserver === 0) view.dataset.noSqlServer = '1';
   return view;
 }
 
@@ -924,10 +927,14 @@ export async function versions(ctx: Ctx): Promise<HTMLElement> {
 }
 
 // jobsRoot is the fleet's Jobs page: the failing, missed and over-average jobs of every instance in scope.
+// A scope with no PostgreSQL instance draws no PostgreSQL schedule checks (their heading, tiles and grid would name the
+// other engine on a SQL Server-only tag folder: the wording walk, j13r).
 export async function jobsRoot(ctx: Ctx): Promise<HTMLElement> {
-  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const inView = inTag(ctx, (await fleet()).instances);
+  const ids = ctx.tag ? new Set(inView.map(r => Number(r.instance_id))) : null;
+  const pgInView = inView.some(r => r.engine !== 'sqlserver');
   const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'), ctx,
-    await jobStatusFleetSection(ctx));
+    await jobStatusFleetSection(ctx), pgInView);
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }
