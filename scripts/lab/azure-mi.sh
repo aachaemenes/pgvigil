@@ -44,8 +44,9 @@
 # VM's identity a login of the instance as its admin (a sysadmin SQL login may create Entra logins there: Microsoft's
 # CREATE LOGIN for Managed Instance; the instance resolves the name with its Directory Readers role) with VIEW SERVER
 # STATE, VIEW ANY DEFINITION and a user in msdb - not CONNECT ANY DATABASE, so the user database the proof made refuses
-# it (M6's E2). The VM is billed by the minute: vmdown removes the login, the rule, the VM and its pieces and reads
-# them back; down refuses while the state file names a VM.
+# it (M6's E2); a login of the same name is dropped first (an earlier VM's identity has another SID), and a name the
+# instance cannot resolve yet is tried again for about 4 minutes. The VM is billed by the minute: vmdown removes the
+# login, the rule, the NIC, the VM and its pieces and reads them back; down refuses while the state file names a VM.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 DIR=${PGVIGIL_LAB_DIR:-.lab}
@@ -230,7 +231,7 @@ vm)
   rm -f "$VM_KEY" "$VM_KEY.pub"; ssh-keygen -q -t ed25519 -N '' -C pgv-mi-proof -f "$VM_KEY"; chmod 600 "$VM_KEY"
   VMJ=$(az_ vm create -g "$(g)" -n "$VM_NAME" -l "$LAB_REGION" --image Canonical:ubuntu-24_04-lts:server:latest --size "$VM_SIZE" \
     --admin-username "$VM_ADMIN" --ssh-key-values "$VM_KEY.pub" --assign-identity '[system]' --nsg "$VM_NAME-nsg" --nsg-rule NONE \
-    --public-ip-address "$VM_NAME-ip" --public-ip-sku Standard --vnet-name "$VM_NAME-vnet" --address-prefixes 10.1.0.0/16 --subnet-address-prefix 10.1.0.0/24 \
+    --public-ip-address "$VM_NAME-ip" --public-ip-sku Standard --vnet-name "$VM_NAME-vnet" --vnet-address-prefix 10.1.0.0/16 --subnet-address-prefix 10.1.0.0/24 \
     --nic-delete-option Delete --os-disk-delete-option Delete --tags "$(TAG)" -o json) || fail "the VM was not made (above): vmdown removes what was"
   VM_IP=$(jq -r '.publicIpAddress // empty' <<<"$VMJ"); VM_PRINCIPAL=$(jq -r '.identity.systemAssignedIdentity // empty' <<<"$VMJ")
   ip_ok "${VM_IP:-x}" && [ -n "$VM_PRINCIPAL" ] || fail "the VM's address or identity was not read back: vmdown removes what was made"
@@ -261,22 +262,30 @@ vmlogin)
   # the identity's login is its display name, the VM's name (a system-assigned identity is named as its resource)
   BATCH=$(cat <<SQL
 SET NOCOUNT ON;
-IF SUSER_ID(N'$VM_NAME') IS NULL CREATE LOGIN [$VM_NAME] FROM EXTERNAL PROVIDER;
+IF SUSER_ID(N'$VM_NAME') IS NOT NULL DROP LOGIN [$VM_NAME];
+CREATE LOGIN [$VM_NAME] FROM EXTERNAL PROVIDER;
 GRANT VIEW SERVER STATE TO [$VM_NAME];
 GRANT VIEW ANY DEFINITION TO [$VM_NAME];
 GO
 USE msdb;
-IF USER_ID(N'$VM_NAME') IS NULL CREATE USER [$VM_NAME] FOR LOGIN [$VM_NAME];
+IF USER_ID(N'$VM_NAME') IS NOT NULL DROP USER [$VM_NAME];
+CREATE USER [$VM_NAME] FOR LOGIN [$VM_NAME];
 ALTER ROLE db_datareader ADD MEMBER [$VM_NAME];
 GO
-SELECT 'vmlogin: ' + p.name + ' type ' + p.type_desc + ', holds ' + ISNULL((SELECT STRING_AGG(CAST(sp.permission_name AS nvarchar(128)) COLLATE DATABASE_DEFAULT, ', ')
+SELECT 'vmlogin: ' + p.name COLLATE DATABASE_DEFAULT + ' type ' + CAST(p.type_desc AS nvarchar(60)) COLLATE DATABASE_DEFAULT + ', holds ' + ISNULL((SELECT STRING_AGG(CAST(sp.permission_name AS nvarchar(128)) COLLATE DATABASE_DEFAULT, ', ')
          FROM sys.server_permissions sp WHERE sp.grantee_principal_id = p.principal_id AND sp.state = 'G'), 'nothing')
        + '; msdb user ' + CAST(ISNULL((SELECT 1 FROM msdb.sys.database_principals u WHERE u.sid = p.sid), 0) AS varchar(1))
        + '; a user in $MI_DB ' + CAST(ISNULL((SELECT 1 FROM [$MI_DB].sys.database_principals u WHERE u.sid = p.sid), 0) AS varchar(1))
 FROM sys.server_principals p WHERE p.name = N'$VM_NAME';
 SQL
 )
-  OUT=$(sqa master <<<"$BATCH" 2>&1) || { echo "$OUT" >&2; fail "the instance refused the VM's login (above): a finding - the words are Microsoft's"; }
+  # a name the instance cannot resolve yet (an identity made minutes ago; a directory role granted minutes ago) is tried
+  # again for about 4 minutes; any other refusal, or one that lasts, is printed as the instance's words
+  for try in 1 2 3 4 5 6 7 8 9; do
+    if OUT=$(sqa master <<<"$BATCH" 2>&1); then break; fi
+    grep -qiE 'could not be found|cannot be resolved|not found in' <<<"$OUT" && [ "$try" -lt 9 ] || { echo "$OUT" >&2; fail "the instance refused the VM's login (above, try $try): a finding - the words are Microsoft's"; }
+    echo "vmlogin: try $try - the instance cannot resolve $VM_NAME yet; again in 30 s"; sleep 30
+  done
   echo "$OUT"
   grep -q "^vmlogin: $VM_NAME type EXTERNAL_LOGIN" <<<"$OUT" || fail "the VM's login was not read back as an external login (above)"
   ;;
@@ -285,20 +294,33 @@ vmdown)
   [ -n "${VM_NAME:-}" ] || { echo "vmdown: no VM in the state file"; exit 0; }
   # the login first (the instance stays up for the proof's other rows), then the rule, the VM, its pieces
   if command -v docker >/dev/null; then
-    sqa master <<SQL >/dev/null 2>&1 && echo "dropped: login $VM_NAME and its msdb user" || echo "WARN: the login $VM_NAME was not dropped (the instance's delete removes it)" >&2
+    if OUT=$(sqa master 2>&1 <<SQL
+SET NOCOUNT ON;
 USE msdb; IF USER_ID(N'$VM_NAME') IS NOT NULL DROP USER [$VM_NAME];
 GO
 IF SUSER_ID(N'$VM_NAME') IS NOT NULL DROP LOGIN [$VM_NAME];
+SELECT 'logins named $VM_NAME: ' + CAST(COUNT(*) AS varchar(10)) FROM sys.server_principals WHERE name = N'$VM_NAME';
 SQL
+    ); then
+      echo "$OUT" | grep '^logins named' | sed 's/^/read back: /'
+      grep -q "^logins named $VM_NAME: 0" <<<"$OUT" && echo "dropped: login $VM_NAME and its msdb user" || echo "WARN: the login $VM_NAME is still on the instance (above; the instance's delete removes it)" >&2
+    else
+      echo "$OUT" >&2; echo "WARN: the login $VM_NAME was not dropped (the instance's words above; the instance's delete removes it)" >&2
+    fi
+  else
+    echo "WARN: docker is not on this machine: the login $VM_NAME was not dropped (the instance's delete removes it)" >&2
   fi
-  az_ network nsg rule delete -g "$(g)" --nsg-name "$MI_NSG" -n pgv-vm-3342 -o none 2>/dev/null || true
-  [ -z "$(az_ network nsg rule list -g "$(g)" --nsg-name "$MI_NSG" --query "[?name=='pgv-vm-3342'].name" -o tsv)" ] || fail "the rule pgv-vm-3342 is still on $MI_NSG"
+  az_ network nsg rule delete -g "$(g)" --nsg-name "$MI_NSG" -n pgv-vm-3342 -o none || echo "WARN: the rule's delete answered an error (above); read back next" >&2
+  RL=$(az_ network nsg rule list -g "$(g)" --nsg-name "$MI_NSG" --query "[?name=='pgv-vm-3342'].name" -o tsv) || fail "$MI_NSG's rules were not read back: the state file names the VM still"
+  [ -z "$RL" ] || fail "the rule pgv-vm-3342 is still on $MI_NSG"
   echo "deleted: $MI_NSG's rule pgv-vm-3342"
   if az_ vm show -g "$(g)" -n "$VM_NAME" -o none 2>/dev/null; then
     az_ vm delete -g "$(g)" -n "$VM_NAME" --yes -o none || fail "the VM $VM_NAME was not deleted (above): the state file names it still"
     echo "deleted: VM $VM_NAME (its NIC and OS disk with it)"
   fi
-  for r in "public-ip $VM_NAME-ip" "nsg $VM_NAME-nsg" "vnet $VM_NAME-vnet"; do
+  # the NIC first: a create that failed after its network pieces leaves it holding the public address (az's own NIC
+  # name: <vm>VMNic), and the address cannot be deleted while it is in use
+  for r in "nic ${VM_NAME}VMNic" "public-ip $VM_NAME-ip" "nsg $VM_NAME-nsg" "vnet $VM_NAME-vnet"; do
     set -- $r
     if az_ network "$1" show -g "$(g)" -n "$2" -o none 2>/dev/null; then
       ok=; for _ in 1 2 3 4 5; do if az_ network "$1" delete -g "$(g)" -n "$2" -o none; then ok=1; break; fi; sleep 30; done

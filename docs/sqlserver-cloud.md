@@ -98,11 +98,11 @@ Not proven against a live pool in this release: every row here is proven on reco
 
 ## Azure SQL Managed Instance
 
-A Managed Instance is an instance-scoped SQL Server that Microsoft runs (`EngineEdition` 8, kind `azuresqlmi`): most collections run on it as on a server someone runs. DBA Dash skips backups, mirroring, log restores and the availability group reads there; pgvigil follows Microsoft's T-SQL differences page item by item, below. Nothing here has run against a real Managed Instance yet.
+A Managed Instance is an instance-scoped SQL Server that Microsoft runs (`EngineEdition` 8, kind `azuresqlmi`): most collections run on it as on a server someone runs. DBA Dash skips backups, mirroring, log restores and the availability group reads there; pgvigil follows Microsoft's T-SQL differences page item by item, below. `scripts/proof-mssql-mi.sh` runs these against a real General Purpose instance (Microsoft's free offer); Business Critical (its readable secondary, `AlwaysOn_health`) has not run.
 
 ### The login
 
-Made in master by the instance's admin (a SQL login, or an Entra one), as on a server someone runs ([the login](sqlserver.md)): VIEW SERVER STATE (Microsoft: the DMVs need it there too), VIEW ANY DEFINITION, CONNECT ANY DATABASE (a built-in server permission there; without it a real instance answered the identity, index, Query Store and statistics reads with "the login can enter none of the user databases"), a user in msdb with db_datareader. For `entra-identity` (above) the login is `CREATE LOGIN [<the identity's name>] FROM EXTERNAL PROVIDER;`, which needs an Entra admin on the instance and the Directory Readers role for the instance's own identity (a tenant role, given in Entra).
+Made in master by the instance's admin (a SQL login, or an Entra one), as on a server someone runs ([the login](sqlserver.md)): VIEW SERVER STATE (Microsoft: the DMVs need it there too), VIEW ANY DEFINITION, CONNECT ANY DATABASE (a built-in server permission there; without it a real instance's identity read was partial with "the login can enter none of the 1 online user database(s)", and its index, Query Store and statistics reads with "the login cannot enter any of the 1 user database(s)"), a user in msdb with db_datareader. For `entra-identity` (above) the login is `CREATE LOGIN [<the identity's name>] FROM EXTERNAL PROVIDER;`, which needs an Entra admin on the instance and the Directory Readers role for the instance's own identity (a tenant role, given in Entra).
 
 ### What runs
 

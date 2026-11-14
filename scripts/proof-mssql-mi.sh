@@ -17,7 +17,9 @@
 #     an 'error' is a finding, listed); mssql_mirroring and mssql_logshipping skipped with C5's words ('Azure SQL Managed
 #     Instance does not support database mirroring', '... has no log shipping ...'); the checks' alerts area READ (its
 #     operators: is_read true) with C5's words ('... does not support SQL Server Agent alerts yet: only the operators are
-#     read').
+#     read'); system_health read from its ring buffer: the syshealth reader's state 'read', scope ring_buffer, stored > 0
+#     (its note RECORDED), component results stored, and mssql_xe's deadlocks capture read from system_health (no
+#     deadlock session of pgvigil yet).
 #  M2 backups: msdb.dbo.backupset as the admin for the lab's database pgvproof and for master / model / msdb (counts by
 #     type, RECORDED: whether the service's automatic backups have rows there); pgvigil's mssql_backup_judged: master,
 #     model and msdb not judged with 0129's two reasons.
@@ -32,6 +34,7 @@
 #     for it, no CONNECT ANY DATABASE) refuses it, the words RECORDED; E3 pgvigil collect -once mssql_instance with the
 #     string config.BuildDSN writes for auth entra-identity (port 3342), a store on the VM: engine sqlserver, platform
 #     azuresqlmi, status ok. No VM: 'M6 NOT RUN' and why.
+# Exit 0 only for PASS: 'PASS (M6 NOT RUN)' exits 1, as proof-mssql-pool.sh's does (every row above it may be ok).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
@@ -92,6 +95,14 @@ done
 AL=$(q "select a.is_read || '|' || coalesce(a.note, '') from pgvigil.mssql_check_area a join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and a.area = 'alerts'")
 echo "   M1: the checks' alerts area: '$AL'"
 [[ "$AL" == "true|Azure SQL Managed Instance does not support SQL Server Agent alerts yet"* ]] && echo "ok   M1: the alerts area read (the operators), with C5's words" || { VERDICT=FAIL; echo "FAIL M1: the alerts area is not 'read, with C5's words'"; }
+# a status of ok alone would pass a ring read that stores nothing: what the two system_health readers stored
+SH=$(q "select s.state || '|' || coalesce(s.scope, '') || '|' || coalesce(s.scanned, -1) || '|' || coalesce(s.stored, -1) || '|' || coalesce(s.note, '') from pgvigil.mssql_reader_state s join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and s.reader = 'syshealth'")
+NHC=$(q "select count(*) from pgvigil.mssql_health_components h join pgvigil.instances i using (instance_id) where i.name = 'mi-live'")
+DLS=$(q "select coalesce(s.source, '') || '|' || coalesce(s.new_events, -1) from pgvigil.mssql_xe_state s join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and s.capture = 'deadlocks'")
+echo "   M1: syshealth state|scope|scanned|stored|note = '$SH'; component results stored $NHC; deadlocks capture source|new events = '$DLS' (RECORDED)"
+IFS='|' read -r SHS SHSC _ SHST _ <<<"$SH"
+[[ "$SHS|$SHSC" == "read|ring_buffer" && "${SHST:-0}" =~ ^[0-9]+$ && "${SHST:-0}" -gt 0 && "$NHC" -gt 0 ]] && echo "ok   M1: syshealth read system_health's ring buffer: $SHST event(s) stored, $NHC component result(s)" || { VERDICT=FAIL; echo "FAIL M1: syshealth did not store from the ring buffer (above)"; }
+[[ "$DLS" == system_health\|* ]] && echo "ok   M1: the deadlocks capture read from system_health" || { VERDICT=FAIL; echo "FAIL M1: the deadlocks capture's source is '$DLS'"; }
 
 echo "== M2: backups"
 sq msdb "$ADMIN_USER" ADMIN_PW <<SQL | sed 's/^/   msdb as the admin: /'
@@ -155,7 +166,7 @@ else
   if grep -q '^--- PASS: TestEntraIdentityLive' "$WORK/m6.txt" && grep -q 'E2 refused by Azure' "$WORK/m6.txt"; then echo "ok   M6: E1 (5 connects as one identity), E2 refused (its words above, RECORDED)"
   else VERDICT=FAIL; echo "FAIL M6: E1 / E2 (above)"; fi
   echo "   M6 E3: PostgreSQL from Ubuntu's archive on the VM, a store, collect -once mssql_instance with auth entra-identity"
-  "${VMS[@]}" "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update >/dev/null && sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y postgresql >/dev/null && (sudo -u postgres createuser -s $VM_ADMIN 2>/dev/null || true) && (sudo -u postgres createdb -O $VM_ADMIN pgvproof 2>/dev/null || true)" \
+  "${VMS[@]}" "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq -o DPkg::Lock::Timeout=300 update >/dev/null && sudo DEBIAN_FRONTEND=noninteractive apt-get -qq -o DPkg::Lock::Timeout=300 install -y postgresql >/dev/null && (sudo -u postgres createuser -s $VM_ADMIN 2>/dev/null || true) && (sudo -u postgres createdb -O $VM_ADMIN pgvproof 2>/dev/null || true)" \
     || fail "M6 E3: PostgreSQL did not install on the VM"
   printf 'repository:\n  dsn: "host=/var/run/postgresql dbname=pgvproof"\ninstances:\n  - name: mi-entra\n    engine: sqlserver\n    dsn: file:/home/%s/pgvproof/entra1.dsn\n' "$VM_ADMIN" > "$WORK/m6.yaml"
   scp -q -i "$VM_KEY" -o UserKnownHostsFile="$WORK/known_hosts" -o IdentitiesOnly=yes -o BatchMode=yes "$WORK/m6.yaml" "$VM_ADMIN@$VM_IP:pgvproof/pgvigil.yaml"

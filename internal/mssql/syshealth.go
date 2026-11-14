@@ -18,9 +18,10 @@ import (
 //
 // SQL Server runs sp_server_diagnostics for itself every five minutes and its system_health session records the
 // result of four components (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM): a state (CLEAN, WARNING, ERROR) and
-// a document of figures. The reader takes each result from the session's event file, past a cursor of its own
-// (source 'syshealth': the Extended Events reader keeps another for the deadlock reports it takes from the same
-// files), and stores the state with the figures a finding is made of:
+// a document of figures. The reader takes each result from the session's event file (on Azure SQL Managed Instance
+// its ring buffer: xeReadTarget), past a cursor of its own (source 'syshealth': the Extended Events reader keeps
+// another for the deadlock reports it takes from the same target), and stores the state with the figures a finding
+// is made of:
 //
 //	SYSTEM            spinlock backoffs and a sick spinlock type, latch warnings, access violations, dump requests,
 //	                  non-yielding tasks, bad pages detected and fixed, page faults, CPU
@@ -177,11 +178,12 @@ func parseComponentResult(e *xeEvent, c xeContext) collect.Row {
 		"detail": detail}
 }
 
-// RunBatches reads system_health's event file past the reader's cursor and stores the component results.
+// RunBatches reads system_health's event file (on a Managed Instance its ring buffer) past the reader's cursor and
+// stores the component results.
 func (sysHealthCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, opt BatchOptions, cursor CursorFunc, emit EmitFunc) error {
 	if !info.ViewServerState {
 		return emit([]collect.Row{readerStateRow(sysHealthSource, readerNoRight,
-			"the login lacks VIEW SERVER STATE: the system_health session and its event file cannot be read")})
+			"the login lacks VIEW SERVER STATE: the system_health session and its targets cannot be read")})
 	}
 	targets, err := xeListTargets(ctx, conn, info)
 	if err != nil {
@@ -252,9 +254,17 @@ func sysHealthDone(ctx context.Context, cursor CursorFunc, emit EmitFunc, scope 
 	state := readerStateRow(sysHealthSource, readerRead, "")
 	state["scope"] = scope
 	state["scanned"], state["stored"] = side["new_events"], side["new_events"]
-	if note, ok := side["note"].(string); ok {
-		state["note"] = strOrNil(note)
+	if n, ok := side["scanned_events"]; ok {
+		state["scanned"] = n
 	}
+	var notes []string
+	if note, ok := side["note"].(string); ok && note != "" {
+		notes = append(notes, note)
+	}
+	if n := ringLossNote(side); n != "" {
+		notes = append(notes, "system_health: "+n)
+	}
+	state["note"] = strOrNil(strings.Join(notes, "; "))
 	if cur, err := cursor(ctx, sysHealthSource); err == nil && cur.Found {
 		state["newest_at"] = instantText(cur.LastEventAt)
 	}
