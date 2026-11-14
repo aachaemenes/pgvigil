@@ -94,6 +94,39 @@ try {
     && ledger?.filter === 'all' && ledger?.inst.length === 1 && ledger.inst[0][ledger.inst[0].length - 1] === 'mssql_backups has not run on this server yet' && ledger.dbs.length === 0,
     `erp '${erp?.empty ?? 'no section'}'; sales ${JSON.stringify(sales?.pgEmpty)} with ${sales?.inst.length} instance rows; ledger filter ${ledger?.filter}, `
       + `${ledger?.inst.length} instance row(s) ${JSON.stringify(ledger?.inst.map(r => r[r.length - 1]))}, ${ledger?.dbs.length} databases (sql03 = ${s3})`);
+
+  // J2-J4. the fleet Jobs page
+  const { FM_SJ: sj, FM_PJ: pj } = process.env;
+  const jall = Number(process.env.FM_JALL), jprob = Number(process.env.FM_JPROB);
+  const jstate = `(() => { const s = document.querySelector('#job-status-fleet'); if (!s) return null;
+    const h3s = [...document.querySelectorAll('main h3')].map(h => h.textContent);
+    const tb = document.querySelector('#job-status-grid table.grid');
+    const heads = tb ? [...tb.querySelectorAll(':scope > thead > tr:first-child > th')].map(th => th.textContent.trim()) : [];
+    const rows = tb ? [...tb.querySelectorAll(':scope > tbody > tr')].filter(tr => !tr.classList.contains('trend-row')) : [];
+    const col = n => heads.findIndex(h => h.startsWith(n));
+    return { h3s, filter: s.querySelector('#job-status-filter')?.value, said: s.querySelector('#job-status-count')?.textContent,
+             jobs: rows.map(tr => tr.cells[col('job')]?.textContent ?? ''), ok7: rows.map(tr => tr.cells[col('succeeded 7 days')]?.textContent ?? '') }; })()`;
+  await go('#/jobs?w=1h');
+  const j2 = await ev(jstate);
+  const iS = j2 ? j2.h3s.indexOf('Job status') : -1, iP = j2 ? j2.h3s.indexOf('PostgreSQL schedule checks') : -1;
+  check('J2 page', !!j2 && iS >= 0 && iP > iS && j2.filter === 'problems' && j2.said === `${jprob} of ${jall} jobs` && j2.jobs.length === jprob
+    && j2.jobs.includes(sj) && j2.jobs.includes(pj),
+    j2 ? `h3 ${JSON.stringify(j2.h3s)}; filter ${j2.filter}, '${j2.said}' (want '${jprob} of ${jall} jobs'), ${j2.jobs.length} rows, the seeded two there ${j2.jobs.includes(sj)} / ${j2.jobs.includes(pj)}` : 'no #job-status-fleet section on #/jobs');
+  if (j2) {
+    await sleep(4000);
+    const j3 = await ev(jstate);
+    const bad = j3.ok7.filter(t => t === 'reading...' || t.startsWith('not read'));
+    check('J3 stats', j3.ok7.length > 0 && bad.length === 0, `${j3.ok7.length} 'succeeded 7 days' cells, ${bad.length} not filled ${JSON.stringify(bad.slice(0, 2))}`);
+    await ev(`(() => { const p = document.querySelector('#job-status-filter'); p.value = 'all'; p.dispatchEvent(new Event('change')); return 1; })()`);
+    await sleep(500);
+    const ja = await ev(jstate);
+    await ev(`[...document.querySelectorAll('#job-status-grid button')].find(b => b.textContent === ${JSON.stringify(sj)}).click(); 1`);
+    await sleep(3000);
+    const j4 = await ev(`(() => { const h = document.querySelector('#job-status-history'); return { head: h?.querySelector('h3')?.textContent ?? '',
+      runs: [...(h?.querySelectorAll('table.grid > tbody > tr') ?? [])].length }; })()`);
+    check('J2 all', ja.said === `${jall} of ${jall} jobs` && ja.jobs.length === jall, `'${ja.said}', ${ja.jobs.length} rows`);
+    check('J4 history', j4.head === `demo-onprem-sql01 | ${sj}` && j4.runs === 2, `'${j4.head}', ${j4.runs} run row(s)`);
+  } else { check('J3 stats', false, 'no section'); check('J2 all', false, 'no section'); check('J4 history', false, 'no section'); }
 } catch (e) {
   console.log(`FAIL check stopped: ${e.message}`);
   process.exit(2);

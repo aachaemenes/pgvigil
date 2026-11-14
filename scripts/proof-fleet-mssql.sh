@@ -30,6 +30,23 @@
 #   B4 views     tag erp (PostgreSQL only): the SQL Server section says 'No SQL Server instance in this view.'; tag sales
 #                (sql01, sql02): PostgreSQL's part says 'No PostgreSQL instance in this view.', the SQL Server grid 2 rows;
 #                tag ledger (sql03 alone, one instance): the filter on All, one instance row that has not run, no database
+# DONE-2 Jobs (written before the rows' first run, 2026-11-14 06:0x PST; red on d263c82: no 'status' / 'stats' part, the
+# Summary's Agent Jobs cell judged by the finding 'a job failed', the PostgreSQL 'jobs' check one row per failed run):
+#   S1 seed      the pass's case on both engines, made here: SQL Agent job 'fleet proof failed then succeeded' on sql01
+#                and pg_cron job 'fleet-proof-failed-then-succeeded' on erp01, each failed 120 minutes ago and succeeded
+#                60 minutes ago (no threshold row: DBA Dash's default)
+#   J1 api       /api/jobsreport with no part name answers counts and jobs only; ?part=status = every active instance's
+#                jobs judged by job_status - row for row (scheduler, job, status, reason, level, last failure / success,
+#                the four counts) the one-instance form job_status(i) over every active instance; ?part=status&ids=<sql01>
+#                sql01's rows only; ?part=stats one row per status row's job; ?ids=abc 400. Both seeded jobs 'warn'
+#                with the reason 'failed 120 minute(s) ago (warning within 10080)'
+#   S1 cells     the Summary's Agent Jobs cell of sql01 (/api/mssql/summary, key jobs) counts that warning, its detail
+#                names the job; the overview's 'jobs' group has a warning 'job status' row for erp01's pg_cron job
+#   J2 page      #/jobs: 'Job status' above 'PostgreSQL schedule checks'; the filter on 'Critical, warning and
+#                acknowledged' (more than one instance in view), its line '<crit + warn + acknowledged> of <all> jobs'
+#                (the hand count: no live job acknowledgement on a fresh demo), the two seeded rows there; All = every job
+#   J3 stats     4 s after the grid: no 'reading...' and no 'not read' in its 'succeeded 7 days' cells
+#   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -144,13 +161,82 @@ PROBLEMS=$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1])
 ALL=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["all"])' "$WORK/hand.json")
 INSTS=$(Q "select count(*) || '|' || count(*) filter (where engine = 'sqlserver') from pgvigil.instances where is_active")
 
+echo "== S1 / J1: the job judge"; b0=$bad
+ERP=$(Q "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
+SJ='fleet proof failed then succeeded'; PJ='fleet-proof-failed-then-succeeded'
+Q "insert into pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabled, category, last_outcome, last_run_at)
+   values ($S1, 'FLEETPROOF-0001', now(), '$SJ', true, 'proof', 1, now() - interval '60 minutes');
+   insert into pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, step_name, run_status, duration_s)
+   values ($S1, now() - interval '120 minutes', 990000001, 'FLEETPROOF-0001', '$SJ', 0, '(Job outcome)', 0, 5),
+          ($S1, now() - interval '120 minutes' + interval '1 second', 990000000, 'FLEETPROOF-0001', '$SJ', 1, 'one', 0, 4),
+          ($S1, now() - interval '60 minutes', 990000003, 'FLEETPROOF-0001', '$SJ', 0, '(Job outcome)', 1, 5),
+          ($S1, now() - interval '60 minutes' + interval '1 second', 990000002, 'FLEETPROOF-0001', '$SJ', 1, 'one', 1, 4);
+   insert into pgvigil.jobs (instance_id, scheduler, job_id, snapshot_at, job_name, schedule, command, active, first_seen, is_present)
+   values ($ERP, 'pg_cron', 990001, now(), '$PJ', '0 * * * *', 'SELECT 1', true, now() - interval '3 days', true);
+   insert into pgvigil.job_runs (instance_id, scheduler, job_id, run_id, status, start_time, end_time, duration_secs, snapshot_at)
+   values ($ERP, 'pg_cron', 990001, 990001, 'failed', now() - interval '120 minutes', now() - interval '119 minutes', 60, now()),
+          ($ERP, 'pg_cron', 990001, 990002, 'succeeded', now() - interval '60 minutes', now() - interval '59 minutes', 60, now())" >/dev/null
+Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.scheduler || '|' || s.job_id, 'v', concat_ws('|', s.status, s.reason, s.level,
+     s.last_failed_at, s.last_succeeded_at, s.fail_24h, s.fail_7d, s.step_fail_24h, s.step_fail_7d))), '[]')
+     from pgvigil.instances i cross join lateral pgvigil.job_status(i.instance_id) s where i.is_active" > "$WORK/jhand.json"
+JALL=$(Q "select (select count(*) from pgvigil.mssql_jobs m join pgvigil.instances i using (instance_id) where i.is_active)
+            + (select count(*) from pgvigil.jobs g join pgvigil.instances i using (instance_id) where i.is_active and g.is_present)")
+JPROB=$(Q "select count(*) from pgvigil.instances i cross join lateral pgvigil.job_status(i.instance_id) s where i.is_active and s.status in ('crit', 'warn')")
+JACK=$(Q "select count(*) from pgvigil.acks where kind = 'job' and ended_at is null" 2>/dev/null || echo 0)
+for u in "jobsreport" "jobsreport?part=status" "jobsreport?part=status&ids=$S1" "jobsreport?part=stats" "jobsreport?part=status&ids=abc" "mssql/summary" "overview"; do
+  f="$WORK/j-$(echo "$u" | tr -c 'a-z0-9' _).json"; echo "$(curl -s -o "$f" -w '%{http_code}' "${BASE}api/$u") $f"; done > "$WORK/jcodes.txt"
+J1=$(python3 -I - "$WORK" "$S1" "$ERP" "$SJ" "$PJ" "$JALL" <<'PY2'
+import json, sys
+w, s1, erp, sj, pj, jall = sys.argv[1:]
+codes = {l.split()[1]: l.split()[0] for l in open(w + '/jcodes.txt')}
+f = lambda u: w + '/j-' + ''.join(c if c in 'abcdefghijklmnopqrstuvwxyz0123456789' else '_' for c in u) + '.json'
+rows = lambda d, p: [dict(zip(d[p]['columns'], r)) for r in d[p]['rows']] if isinstance(d.get(p), dict) else []
+out = []
+want = {'jobsreport': '200', 'jobsreport?part=status': '200', f'jobsreport?part=status&ids={s1}': '200', 'jobsreport?part=stats': '200',
+        'jobsreport?part=status&ids=abc': '400', 'mssql/summary': '200', 'overview': '200'}
+got = {u: codes.get(f(u)) for u in want}
+if got != want: print('FAIL|answers ' + json.dumps(got)); sys.exit()
+plain = json.load(open(f('jobsreport')))
+if sorted(plain) != ['counts', 'jobs']: out.append(f'no part name answered {sorted(plain)}')
+st = rows(json.load(open(f('jobsreport?part=status'))), 'status')
+def norm(v):
+    return '' if v is None else str(v)
+hand = {x['k']: x['v'] for x in json.load(open(w + '/jhand.json'))}
+api = {}
+for r in st:
+    api[f"{r['instance_id']}|{r['scheduler']}|{r['job_id']}"] = (r['status'], r['reason'], r['level'], r['last_failed_at'], r['last_succeeded_at'])
+if set(api) != set(hand): out.append(f"status keys: {len(api)} vs the one-instance form's {len(hand)}; only in the API {sorted(set(api) - set(hand))[:3]}, only in the form {sorted(set(hand) - set(api))[:3]}")
+diff = [k for k in api if k in hand and hand[k].split('|')[0:3] != [norm(x) for x in api[k][0:3]]]
+if diff: out.append(f"status / reason / level differ on {len(diff)} job(s): {diff[:3]}")
+if len(st) != int(jall): out.append(f"status rows {len(st)} vs every job {jall}")
+one = rows(json.load(open(f(f'jobsreport?part=status&ids={s1}'))), 'status')
+if not one or any(str(r['instance_id']) != s1 for r in one): out.append(f"ids={s1}: {len(one)} rows, instances {sorted(set(r['instance_id'] for r in one))}")
+sts = rows(json.load(open(f('jobsreport?part=stats'))), 'stats')
+if sorted(f"{r['instance_id']}|{r['scheduler']}|{r['job_id']}" for r in sts) != sorted(api): out.append(f"stats rows {len(sts)} vs status {len(api)}")
+for inst, name in ((s1, sj), (erp, pj)):
+    r = [x for x in st if str(x['instance_id']) == inst and x['job_name'] == name]
+    if not r or r[0]['status'] != 'warn' or r[0]['reason'] != 'failed 120 minute(s) ago (warning within 10080)':
+        out.append(f"{name}: {[(x['status'], x['reason']) for x in r]}")
+cells = rows(json.load(open(f('mssql/summary'))), 'cells')
+c = [x for x in cells if str(x['instance_id']) == s1 and x['key'] == 'jobs']
+if not c or int(c[0]['warning']) < 1 or not any(sj in str(d) for d in (c[0].get('detail') or [])): out.append(f"sql01's Agent Jobs cell: {c}")
+ov = json.load(open(f('overview')))
+ov = rows(ov, 'overview') if 'overview' in ov else [dict(zip(ov['columns'], r)) for r in ov['rows']]
+o = [x for x in ov if str(x['instance_id']) == erp and x.get('check_name') == 'job status' and pj in str(x.get('object'))]
+if not o or o[0]['severity'] != 'warning': out.append(f"erp01's overview 'job status' row: {o}")
+print(('FAIL|' + '; '.join(out)) if out else f"ok|{len(st)} jobs = the one-instance form row for row; ids one instance {len(one)}; stats {len(sts)}; no part name: counts, jobs; both seeded jobs warn; sql01's cell warning {c[0]['warning']}; erp01's overview row warning")
+PY2
+)
+[[ "$J1" == ok\|* ]] || no "J1: ${J1#FAIL|}"
+[[ $bad -eq $b0 ]] && echo "ok   J1 api + S1 cells: ${J1#ok|}"
+
 echo "== a headless Chromium on CDP $CDP"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 set +e
-FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
+FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" FM_SJ="$SJ" FM_PJ="$PJ" FM_JALL=$JALL FM_JPROB=$((JPROB + JACK)) node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}; set -e
 if [[ $rc -ne 0 ]]; then
   last=$(tail -n 1 "$WORK/check.txt" 2>/dev/null || true)
@@ -158,4 +244,4 @@ if [[ $rc -ne 0 ]]; then
   else no "fleet-mssql-check: exit $rc and it STOPPED EARLY - its last line was '${last:0:160}'"; fi
 fi
 [[ $bad -eq 0 ]] || fail "$bad check(s) failed"
-echo "OK: the fleet's SQL Server backups (B1-B4)"
+echo "OK: the fleet's SQL Server backups and jobs (B1-B4, S1, J1-J4)"
