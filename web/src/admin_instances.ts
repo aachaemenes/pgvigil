@@ -64,8 +64,9 @@ const platOpts = (engine: string): [string, string][] => engine === 'sqlserver'
 
 export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   const root = el('section', { class: 'admin-instances' });
-  // task 206: Move from DBA Dash (migrate.ts) reads and redraws itself; one node kept across this page's redraws
-  const moves = moveSection();
+  // task 206: Move from DBA Dash (migrate.ts) reads and redraws itself; one node kept across this page's redraws, told
+  // to read again after each of this page's writes, and redrawing this page after an add of its own
+  const moves = moveSection(() => { void draw(); });
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); };
 
@@ -94,7 +95,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       sourceForm(d),
       el('h3', {}, `Proposed servers (${props.length})`),
       grid(props, proposalCols, 'No source has proposed a server yet.'),
-      moves,
+      moves.node,
       el('h3', {}, 'Changes (the last 200)'),
       grid(audit, [{ key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'client' }, { key: 'op' }, { key: 'target' },
         { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? '' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
@@ -118,17 +119,20 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) offRead(c, d.why_not);
   }
 
+  // this page's own buttons: the Move section's are its own (their state, their requests in flight)
+  const own = (): HTMLButtonElement[] => [...root.querySelectorAll('button')].filter(b => !b.closest('.admin-moves')) as HTMLButtonElement[];
   async function act(path: string, data: Record<string, unknown>, done: string): Promise<boolean> {
     say('Working…');
     // one request at a time: a second click (a double Approve) waits for the redraw
-    for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = true;
+    for (const b of own()) b.disabled = true;
     try {
       const r = await send(path, data);
-      if (!r.ok) { for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
+      if (!r.ok) { for (const b of own()) b.disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
       await draw();
+      moves.refresh(); // a disable or remove of a moved instance shows on its row
       say(done + (r.body.sync_error ? ` The first read failed: ${String(r.body.sync_error)}` : ''));
       return true;
-    } catch (e) { for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = false; say(`Not done: ${(e as Error).message}`, true); return false; }
+    } catch (e) { for (const b of own()) b.disabled = false; say(`Not done: ${(e as Error).message}`, true); return false; }
   }
 
   // the add / edit form; edit fills it from a row (the password is asked again when the connection changes)

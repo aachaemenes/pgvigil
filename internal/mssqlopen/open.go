@@ -53,7 +53,7 @@ func Open(dsn string) (*sql.DB, error) {
 	return sql.OpenDB(c), nil
 }
 
-// gmsa is the configuration's gmsa: (task 206; Allen's decision: the Windows sign-in only as a gMSA named in the
+// gmsa is the configuration's gmsa: (task 206; the design's rule: the Windows sign-in only as a gMSA named in the
 // configuration, never the machine account). With it set, a string that signs in as this process's own Windows
 // account opens on Windows only when the process runs as that gMSA: a virtual account (the service's default, NT
 // SERVICE\pgvigil) or a system account reaches the server as the machine account DOMAIN\HOST$, and serve, run and the

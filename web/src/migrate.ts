@@ -48,15 +48,22 @@ function labelled(label: string, control: HTMLElement): HTMLElement {
   return el('label', { class: 'admin-field', style: 'display:inline-flex;flex-direction:column;margin:.25rem .6rem .25rem 0;font-size:.9em' }, label, control);
 }
 
-// moveSection is the section; it reads its own data and redraws itself after each write.
-export function moveSection(): HTMLElement {
+// moveSection is the section; it reads its own data and redraws itself after each write. refresh redraws it (the page
+// calls it after its own writes); onAdded is the page's redraw, called after an add made instances. What the DBA has
+// ticked and typed in the add form is kept across redraws (a poll during an import, another write), and the last add's
+// results stay listed until the repository changes.
+export function moveSection(onAdded: () => void = () => {}): { node: HTMLElement; refresh: () => void } {
   const root = el('section', { class: 'admin-moves', 'aria-labelledby': 'admin-moves-h' });
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; };
   const body = el('div', {});
   const picker = el('select', { name: 'repository' });
+  const results = el('ul', { class: 'meta', 'aria-label': 'The last add, server by server' });
+  const draft = new Map<string, { tick: boolean; host: string; port: string; name: string }>();
+  const sign = { auth: '', login: '', pw: '' };
   let repo = '';
   let poll = 0;
+  let seq = 0; // the newest draw: an older GET landing after it draws nothing
   root.append(el('h3', { id: 'admin-moves-h' }, 'Move from DBA Dash'), status, body);
 
   async function start(): Promise<void> {
@@ -67,15 +74,30 @@ export function moveSection(): HTMLElement {
       return;
     }
     picker.replaceChildren(...r.repositories.map(x => el('option', { value: x.name }, x.name)));
-    picker.addEventListener('change', () => { repo = picker.value; void draw(); });
+    picker.addEventListener('change', () => { repo = picker.value; draft.clear(); results.replaceChildren(); void draw(); });
     repo = r.repositories[0].name;
+    // the picker stays when a repository's read fails, so another can be picked
+    root.insertBefore(labelled('DBA Dash repository', picker), body);
     await draw();
+  }
+
+  // the next poll: not once the page is left; not while the DBA types or ticks in the section (its focus would go)
+  function schedule(): void {
+    window.clearTimeout(poll);
+    poll = window.setTimeout(() => {
+      if (!root.isConnected) return;
+      const a = document.activeElement;
+      if (a && body.contains(a) && (a instanceof HTMLInputElement || a instanceof HTMLSelectElement)) { schedule(); return; }
+      void draw();
+    }, 5000);
   }
 
   async function draw(): Promise<void> {
     window.clearTimeout(poll);
+    const my = ++seq;
     let d: MoveData;
-    try { d = await get<MoveData>('admin/dbadash_moves', { repo }); } catch (e) { say(`Not read: ${(e as Error).message}`, true); return; }
+    try { d = await get<MoveData>('admin/dbadash_moves', { repo }); } catch (e) { if (my === seq) say(`Not read: ${(e as Error).message}`, true); return; }
+    if (my !== seq) return;
     const ro = d.off !== '';
     // the page's one read-only sentence describes every control that cannot write here (admin_instances.ts' way); a
     // button off for its own reason gets that reason as text beside it (offControl's note)
@@ -94,29 +116,37 @@ export function moveSection(): HTMLElement {
     // the list: one row per server (@@SERVERNAME), a tick for the servers that can move
     const table = el('table', { class: 'grid' });
     table.append(el('caption', {}, `DBA Dash repository ${d.repository}: ${servers.length} server(s)`));
-    table.append(el('thead', {}, el('tr', {}, ...['Move', 'Server', 'DBA Dash InstanceIDs', 'Connects as', 'State', 'pgvigil instance', 'pgvigil first read', 'History'].map(h => el('th', { scope: 'col' }, h)))));
+    table.append(el('thead', {}, el('tr', {}, ...['Move', 'Server', 'DBA Dash InstanceIDs', 'DBA Dash connects as', 'Host (pgvigil connects to)', 'Port', 'pgvigil name', 'State', 'pgvigil instance', 'pgvigil first read', 'History'].map(h => el('th', { scope: 'col' }, h)))));
     const tb = el('tbody', {});
     for (const s of servers) {
       const srv = String(s.server), state = String(s.state);
       const conns = (s.connection_ids as string[] | null) ?? [];
-      let tick: HTMLElement | string = '';
+      const cells: (HTMLElement | string)[] = ['', '', '', ''];
       if (MOVABLE.has(state)) {
         const at = rowAddress(srv, conns);
+        // the DBA's own ticks and edits come back on every redraw (a poll, another write)
+        const dr = draft.get(srv) ?? { tick: false, host: at.host, port: at.port, name: safeName(srv) };
+        draft.set(srv, dr);
         const box = el('input', { type: 'checkbox', 'aria-label': `Move ${srv}` });
-        const host = el('input', { name: 'host', type: 'text', autocomplete: 'off', value: at.host, size: '22', 'aria-label': `Host of ${srv} (as pgvigil connects to it)` });
-        const port = el('input', { name: 'port', type: 'text', inputmode: 'numeric', autocomplete: 'off', value: at.port, size: '6', 'aria-label': `Port of ${srv} (empty: 1433, or the SQL Browser's for a named instance)` });
-        const name = el('input', { name: 'name', type: 'text', autocomplete: 'off', value: safeName(srv), maxlength: '63', size: '22', 'aria-label': `pgvigil instance name of ${srv}` });
+        box.checked = dr.tick;
+        const host = el('input', { name: 'host', type: 'text', autocomplete: 'off', value: dr.host, size: '22', 'aria-label': `Host of ${srv} (as pgvigil connects to it)` });
+        const port = el('input', { name: 'port', type: 'text', inputmode: 'numeric', autocomplete: 'off', value: dr.port, size: '6', 'aria-label': `Port of ${srv} (empty: 1433, or the SQL Browser's for a named instance)` });
+        const name = el('input', { name: 'name', type: 'text', autocomplete: 'off', value: dr.name, maxlength: '63', size: '22', 'aria-label': `pgvigil name of ${srv}` });
+        box.addEventListener('change', () => { dr.tick = box.checked; });
+        host.addEventListener('input', () => { dr.host = host.value; });
+        port.addEventListener('input', () => { dr.port = port.value; });
+        name.addEventListener('input', () => { dr.name = name.value; });
         ticked.set(srv, { box, host, port, name, row: s });
         const why = at.why ? el('span', { class: 'meta', id: `admin-move-why-${++rowN}` }, at.why) : null;
         if (why) { host.setAttribute('aria-describedby', why.id); port.setAttribute('aria-describedby', why.id); }
         if (ro) { off(box, d.off); off(host, d.off); off(port, d.off); off(name, d.off); }
-        tick = el('span', {}, box, ' ', host, ' ', port, ' ', name, ...(why ? [el('br', {}), why] : []));
+        cells.splice(0, 4, box, el('span', {}, host, ...(why ? [el('br', {}), why] : [])), port, name);
       }
-      const hist = s.job ? jobWords(s.job as Obj) : s.imported_at ? `imported ${fmtTime(s.imported_at)}` : s.counted_at ? `counted ${fmtTime(s.counted_at)}: ${countWords(s.counts as Obj)}` : '';
       tb.append(el('tr', {},
-        el('td', {}, tick), el('th', { scope: 'row' }, srv), el('td', {}, ((s.dbadash_ids as number[]) ?? []).join(', ')), el('td', {}, conns.join(', ')),
+        el('td', {}, cells[0]), el('th', { scope: 'row' }, srv), el('td', {}, ((s.dbadash_ids as number[]) ?? []).join(', ')), el('td', {}, conns.join(', ')),
+        el('td', {}, cells[1]), el('td', {}, cells[2]), el('td', {}, cells[3]),
         el('td', {}, badge(state, STATE_KIND[state] ?? '')), el('td', {}, String(s.instance_name ?? s.collected_as ?? s.imported_as ?? '')),
-        el('td', {}, fmtTime(s.collect_from)), el('td', {}, hist)));
+        el('td', {}, fmtTime(s.collect_from)), el('td', {}, historyWords(s))));
     }
     table.append(tb);
 
@@ -127,10 +157,14 @@ export function moveSection(): HTMLElement {
       if (v === 'windows' && d.windows_off) { o.disabled = true; o.textContent = `${t}: ${d.windows_off}`; }
       auth.append(o);
     }
-    const login = el('input', { name: 'login', type: 'text', autocomplete: 'off' });
+    if (sign.auth && [...auth.options].some(o => o.value === sign.auth && !o.disabled)) auth.value = sign.auth;
+    const login = el('input', { name: 'login', type: 'text', autocomplete: 'off', value: sign.login });
     const pw = el('input', { name: 'password', type: 'password', autocomplete: 'new-password' });
+    pw.value = sign.pw;
+    auth.addEventListener('change', () => { sign.auth = auth.value; });
+    login.addEventListener('input', () => { sign.login = login.value; });
+    pw.addEventListener('input', () => { sign.pw = pw.value; });
     const add = el('button', { type: 'button' }, 'Add the ticked servers');
-    const results = el('ul', { class: 'meta' });
     add.addEventListener('click', async () => {
       const pick = [...ticked.values()].filter(t => t.box.checked);
       if (!pick.length) { say('Tick the servers to move first.', true); return; }
@@ -152,9 +186,15 @@ export function moveSection(): HTMLElement {
           res.push(...((r.body.results as Obj[]) ?? []));
         }
         const done = res.filter(x => x.outcome === 'done').length;
-        await draw();
+        // each server's answer stays listed (the list is the section's, kept across the redraw); an added server's draft
+        // and the password go
         results.replaceChildren(...res.map(x => el('li', {}, `${String(x.server)} as ${String(x.name)}: ${String(x.outcome)}${x.detail ? ` - ${String(x.detail)}` : ''}`)));
-        say(`${done} of ${res.length} added: the collector starts on each within 15 seconds.`, done < res.length);
+        for (const x of res) if (x.outcome === 'done') draft.delete(String(x.server));
+        sign.pw = '';
+        await draw();
+        if (done) onAdded();
+        say(done === res.length ? `${done} of ${res.length} added: the collector starts on each within 15 seconds.`
+          : `${done} of ${res.length} added; each refusal's reason is listed below${done ? ': the collector starts on the added within 15 seconds' : ''}.`, done < res.length);
       } catch (e) { say(`Not added: ${(e as Error).message}`, true); add.disabled = false; }
     });
     if (ro) for (const c of [auth, login, pw, add]) off(c, d.off);
@@ -171,7 +211,6 @@ export function moveSection(): HTMLElement {
       : el('p', { class: 'meta' }, d.agents_note ?? '');
 
     body.replaceChildren(
-      labelled('DBA Dash repository', picker),
       ro ? roNote : '',
       d.import_off ? el('p', { class: 'meta', role: 'note' }, d.import_off + '.') : '',
       table, form,
@@ -179,7 +218,7 @@ export function moveSection(): HTMLElement {
       el('h4', {}, 'DBA Dash\'s services'), agents,
     );
     // a running import: the list again in 5 seconds
-    if (servers.some(s => s.state === 'importing' || (s.job && !(s.job as Obj).ended))) poll = window.setTimeout(() => { void draw(); }, 5000);
+    if (servers.some(s => s.state === 'importing' || (s.job && !(s.job as Obj).ended))) schedule();
   }
 
   function movedCard(s: Obj, d: MoveData, ro: boolean, off: (c: HTMLElement, why: string) => HTMLElement | null): HTMLElement {
@@ -187,18 +226,22 @@ export function moveSection(): HTMLElement {
     const count = el('button', { type: 'button', 'aria-label': `Count the DBA Dash history of ${name}` }, 'Count');
     count.addEventListener('click', async () => {
       count.disabled = true; say(`Counting the DBA Dash history of ${name}…`);
-      const r = await post({ op: 'count', repo, name });
-      await draw();
-      say(r.ok ? `${name}: ${countWords(r.body.counts as Obj)}` : `Not counted: ${words(r.body)}`, !r.ok);
+      try {
+        const r = await post({ op: 'count', repo, name });
+        await draw();
+        say(r.ok ? `${name}: ${countWords(r.body.counts as Obj)}` : `Not counted: ${words(r.body)}`, !r.ok);
+      } catch (e) { count.disabled = false; say(`Not counted: ${(e as Error).message}`, true); }
     });
     const parts: (HTMLElement | string)[] = [count, ' '];
     if (d.import) {
       const imp = el('button', { type: 'button', 'aria-label': `Import the DBA Dash history of ${name}` }, 'Import');
       imp.addEventListener('click', async () => {
         imp.disabled = true; say(`Starting the import of ${name}…`);
-        const r = await post({ op: 'import', repo, name });
-        await draw();
-        say(r.ok ? words(r.body) : `Not started: ${words(r.body)}`, !r.ok);
+        try {
+          const r = await post({ op: 'import', repo, name });
+          await draw();
+          say(r.ok ? words(r.body) : `Not started: ${words(r.body)}`, !r.ok);
+        } catch (e) { imp.disabled = false; say(`Not started: ${(e as Error).message}`, true); }
       });
       parts.push(imp);
       const why = ro ? d.off : s.collect_from == null ? `pgvigil has not read ${name} yet: its history is imported up to that first read, after it` : '';
@@ -214,8 +257,10 @@ export function moveSection(): HTMLElement {
       el('p', { class: 'meta' }, xe.read_at ? `DBA Dash's Extended Events sessions on ${srv}, as pgvigil listed them ${fmtTime(xe.read_at)}: ${sessions.length || 'none'}` : `DBA Dash's Extended Events sessions on ${srv}: not listed by pgvigil yet.`),
       sessions.length ? el('ul', {}, ...sessions.map(x => el('li', {}, `${String(x.name)} (${x.running ? 'running' : 'stopped'}; ${((x.targets as string[]) ?? []).join(', ')})${x.note ? ` - ${String(x.note)}` : ''}`))) : '',
       xe.note ? el('p', { class: 'meta' }, String(xe.note)) : '',
-      xe.read ? el('pre', { 'aria-label': `The read to run on ${srv}` }, String(xe.read)) : '',
-      ((xe.drop as string[]) ?? []).length ? el('pre', { 'aria-label': `The DROP lines for ${srv}'s DBA` }, ((xe.drop as string[]) ?? []).join('\n')) : '');
+      xe.read ? el('p', { class: 'meta' }, `The read to run on ${srv}:`) : '',
+      xe.read ? el('pre', {}, String(xe.read)) : '',
+      ((xe.drop as string[]) ?? []).length ? el('p', { class: 'meta' }, `The DROP lines for ${srv}'s DBA:`) : '',
+      ((xe.drop as string[]) ?? []).length ? el('pre', {}, ((xe.drop as string[]) ?? []).join('\n')) : '');
     const ticks = (s.ticks ?? {}) as Record<string, { done: boolean; at: string; by: string }>;
     const list = el('ul', { class: 'admin-checklist' }, ...d.steps.map(step => {
       const t = ticks[step];
@@ -223,10 +268,12 @@ export function moveSection(): HTMLElement {
       box.checked = !!t?.done;
       box.addEventListener('change', async () => {
         box.disabled = true;
-        const r = await post({ op: 'tick', repo, name, step, done: box.checked });
-        if (!r.ok) { box.checked = !box.checked; box.disabled = false; say(`Not kept: ${words(r.body)}`, true); return; }
-        await draw();
-        say(`${name}: kept.`);
+        try {
+          const r = await post({ op: 'tick', repo, name, step, done: box.checked });
+          if (!r.ok) { box.checked = !box.checked; box.disabled = false; say(`Not kept: ${words(r.body)}`, true); return; }
+          await draw();
+          say(`${name}: kept.`);
+        } catch (e) { box.checked = !box.checked; box.disabled = false; say(`Not kept: ${(e as Error).message}`, true); }
       });
       if (ro) off(box, d.off);
       return el('li', {}, el('label', {}, box, ' ', STEP_WORDS[step] ?? step), t ? el('span', { class: 'meta' }, ` (${t.by}, ${fmtTime(t.at)})`) : '');
@@ -240,7 +287,18 @@ export function moveSection(): HTMLElement {
   }
 
   void start();
-  return root;
+  return { node: root, refresh: () => { if (repo) void draw(); } };
+}
+
+// historyWords is a row's History: serve's own job while it runs, or when it is this move's latest run (a later run -
+// from the CLI, another serve - is the store's, and its words win); else the store's last run, import or count.
+function historyWords(s: Obj): string {
+  const job = s.job as Obj | undefined;
+  const runAt = s.run_started ? Date.parse(String(s.run_started)) : NaN;
+  if (job && (!job.ended || Number.isNaN(runAt) || Date.parse(String(job.started)) >= runAt - 60_000)) return jobWords(job);
+  if (s.run_outcome && s.run_ended) return `import ${String(s.run_outcome)} ${fmtTime(s.run_ended)}`;
+  if (s.imported_at) return `imported ${fmtTime(s.imported_at)}`;
+  return s.counted_at ? `counted ${fmtTime(s.counted_at)}: ${countWords(s.counts as Obj)}` : '';
 }
 
 function countWords(c: Obj | null | undefined): string {

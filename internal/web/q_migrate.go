@@ -15,7 +15,7 @@ package web
 //     add    servers: [{server, dbadash_ids, host, port, name}] (at most 50), one sign-in for all (auth sql | entra |
 //            entra-identity | windows; login, password): each a credential file as 204 writes one and 0134's
 //            import_dbadash_move add (the instance, the move, the audit row) on the actions door's audit login;
-//            Windows only with the configuration's gmsa: on a Windows serve (Allen's (a): never DOMAIN\HOST$)
+//            Windows only with the configuration's gmsa: on a Windows serve (the design's rule: never DOMAIN\HOST$)
 //     count  name: the dry run of the moved server's history (its InstanceIDs, up to pgvigil's first read of it), the
 //            counts kept on the move (audited)
 //     import name: the history import in the background on serve's own pool (the audit login, one connection), only
