@@ -81,6 +81,10 @@ func (s *Server) appBody(w http.ResponseWriter, r *http.Request) (string, map[st
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
 		return "", nil, false
 	}
+	if in == nil { // a body of null decodes to a nil map (review B, m1)
+		writeErr(w, http.StatusBadRequest, errors.New("body: a JSON object is required"))
+		return "", nil, false
+	}
 	return user, in, true
 }
 
@@ -156,7 +160,7 @@ func (s *Server) ApplicationsList(w http.ResponseWriter, r *http.Request) {
 	// override of the key - the tag view leaves both out, the page names them
 	fileTags, err := s.query(ctx, `SELECT i.instance_id, i.name AS instance, t.tag, 'pgvigil.yaml' AS source
 	  FROM pgvigil.instances i CROSS JOIN LATERAL unnest(i.tags) AS t(tag)
-	 WHERE i.is_active AND lower(split_part(t.tag, ':', 1)) = 'application'
+	 WHERE i.is_active AND EXISTS (SELECT 1 FROM pgvigil.tag_split(t.tag) k WHERE k.key = 'application')   -- the view's own split (review B, m4)
 	UNION ALL
 	SELECT i.instance_id, i.name, 'application:' || v.value, 'a tag override'
 	  FROM pgvigil.instance_tag_overrides o JOIN pgvigil.instances i ON i.instance_id = o.instance_id

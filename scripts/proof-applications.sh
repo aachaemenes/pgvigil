@@ -72,7 +72,9 @@
 #      answer and in neither the list's nor one application's
 #  H6  a serve with -no-login: the contacts' GET 403 'contacts hidden: the login is off'; every POST 403
 #  H7  GET /api/applications/unassigned lists a present database with no application
-#  H8  an instance whose pgvigil.yaml gives it an application: tag is named in the list's answer, not taken (E5)
+#  H8  an instance whose pgvigil.yaml gives it an application: tag is named in the list's answer, not taken (E5); H8b
+#      the same with spaces around the key ('application : Spaced', review B m4)
+#  H9  a POST whose body is null: 400 'a JSON object is required', the serve still answering (review B m1)
 # Section P, the page (Admin > Applications, web/src/applications.ts; its tab and route a WIRING of router.ts and
 # main.ts in the same patch; the bundle built from the tree; a headless Chromium over CDP on section H's two serves):
 #  P1  the Admin strip lists Applications; the page lists exactly the store's applications
@@ -86,7 +88,7 @@
 #  P7  Rename with a threshold scoped by the tag: refused without the tick (the store's words), done with it, re-tagged
 #  P8  Remove asked twice: refused without 'with its assignments', done with the ticks; assignment and threshold gone
 #  P9  a PostgreSQL database renamed on the server: 'absent since' and 'renamed to' shown; 'Assign <new> instead' moves it
-#  P10 the -no-login serve: at least 8 controls under the page that are not on its read list (Open, Show / Hide
+#  P10 the -no-login serve: at least 8 controls under the page that are not on its read list (Open, Close, Show / Hide
 #      contacts, a grid's own tools), every one off with a visible reason; contacts in words
 #  P11 axe-core 4.14.0 on the page (an application and its contacts open) light and dark, and read only: 0 nodes
 #  P12 the page's Export .xlsx passes scripts/xlsx-check.py and holds no contact value (contacts not shown)
@@ -479,6 +481,15 @@ c8=$(get "$U" applications); h8=$(js 'r = d.get("file_tags") or {"columns": [], 
 print(",".join("%s=%s/%s" % (x[c.index("instance")], x[c.index("tag")], x[c.index("source")]) for x in r["rows"]))' 2>&1)
 [[ $c8 == 200 && ",$h8," == *",proof-file-tag=application:FromFile/pgvigil.yaml,"* && ",$(tags "$FTI")," != *",application:"* ]] \
   && ok "H8 an application: tag from pgvigil.yaml is not taken and the list's answer names it (proof-file-tag)" || bad "H8 $c8 '${h8:0:200}'; its merged tags $(tags "$FTI")"
+# H8b (review B, m4): a key with spaces around it is the view's 'application' too (tag_split trims it): named as well
+FT2=$(q "select pgvigil.ensure_instance('proof-file-tag2', 'onprem', '18.0', 180000, false, '{\"application : Spaced\",env:x}'::text[])")
+c8b=$(get "$U" applications); h8b=$(js 'r = d.get("file_tags") or {"columns": [], "rows": []}; c = r["columns"]
+print(",".join("%s=%s" % (x[c.index("instance")], x[c.index("tag")]) for x in r["rows"]))' 2>&1)
+[[ $c8b == 200 && ",$h8b," == *",proof-file-tag2=application : Spaced,"* && ",$(tags "$FT2")," != *",application:"* ]] \
+  && ok "H8b a pgvigil.yaml tag 'application : Spaced' (spaces around the key) is not taken and is named too" || bad "H8b $c8b '${h8b:0:200}'; its merged tags $(tags "$FT2")"
+# H9 (review B, m1): a body of null is a 400 in words, never a panic (the serve still answers after it)
+c9=$(post "$U" admin/applications null); d9=$(head -c 200 "$WORK/ans.json"); c9b=$(get "$U" applications)
+[[ $c9 == 400 && $d9 == *"JSON object is required"* && $c9b == 200 ]] && ok "H9 a POST with the body null: 400 '$d9'; the serve still answers" || bad "H9 null body: $c9 '$d9'; the list after it $c9b"
 
 # H6 (a second serve, -no-login, on the same repository)
 P6=$(freeport)
@@ -694,7 +705,7 @@ try {
     // every control under the page (review P, m7) but the read list: Open, Show / Hide contacts, and a grid's own tools
     // (its header's sort and menu buttons, its filter and paging): a write control anywhere else is counted
     const name = e => (e.getAttribute('aria-label') || e.textContent || '').trim();
-    const read = e => /^(Open |Show contacts of |Hide contacts of )/.test(name(e)) || !!e.closest('thead, .grid-tools, .gridtools, .grid-pager, .pager');
+    const read = e => /^(Open |Close |Show contacts of |Hide contacts of )/.test(name(e)) || !!e.closest('thead, .grid-tools, .gridtools, .grid-pager, .pager');
     const w = [...document.querySelectorAll('main .applications button, main .applications input, main .applications select, main .applications textarea')].filter(vis).filter(e => !read(e));
     const off = e => e.disabled || e.getAttribute('aria-disabled') === 'true';
     const said = e => (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.trim().length > 10; });

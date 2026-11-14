@@ -83,6 +83,10 @@ routes in all, up to n + r messages a pass.
 
 A channel of the configuration may not be named `contact-...` (pgvigil refuses to start with one).
 
+A base channel renamed in `pgvigil.yaml` does not carry its routes over: at the next pass each route through the old
+name is 'not configured' and its open alerts close with no message. Set the route again on the new name: that is a new
+route, and its application's standing findings are mailed to the contact again as new.
+
 A development or lab repository that recorded migration 0190 before this release's version of it keeps the older
 alert_due, which sends repository-wide alerts to routes too: pgvigil migrate does not run a recorded file again, so
 such a store is made anew (a released store never held the older 0190).

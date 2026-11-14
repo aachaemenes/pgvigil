@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"net/textproto"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -122,6 +124,16 @@ func (r *routeSender) send(ctx context.Context, m Message) error {
 	if err == nil {
 		return nil
 	}
+	// a relay's reply is its own words, which may name the recipient in any form (rewritten, the local part alone):
+	// only its code and its enhanced status code are kept (review B, m2)
+	var tpe *textproto.Error
+	if errors.As(err, &tpe) {
+		code := strconv.Itoa(tpe.Code)
+		if f := strings.Fields(tpe.Msg); len(f) > 0 && enhancedStatus.MatchString(f[0]) {
+			code += " " + f[0]
+		}
+		return fmt.Errorf("the relay answered %s for contact %d (its words left out: they may name the address)", code, r.contact)
+	}
 	msg := scrub(err.Error(), fmt.Sprintf("contact %d", r.contact), r.addr, r.raw)
 	var re *refusedError
 	if errors.As(err, &re) {
@@ -129,6 +141,9 @@ func (r *routeSender) send(ctx context.Context, m Message) error {
 	}
 	return errors.New(msg)
 }
+
+// enhancedStatus is an SMTP enhanced status code (RFC 3463: class.subject.detail): digits and dots, no address.
+var enhancedStatus = regexp.MustCompile(`^[245]\.[0-9]{1,3}\.[0-9]{1,3}$`)
 
 // scrub replaces each address in s (any case) by its stand-in.
 func scrub(s, with string, addrs ...string) string {
@@ -149,8 +164,9 @@ func routeNotes(ctx context.Context, conn *pgxpool.Conn, now time.Time, ds []der
 			continue
 		}
 		var last string
+		// the last row that is not a close: closeGone's 'cleared' row of the same pass ties on snapshot_at (review B, m3)
 		err := conn.QueryRow(ctx, `SELECT coalesce((SELECT l.error FROM pgvigil.alert_log l WHERE l.channel = $1
-		  ORDER BY l.snapshot_at DESC LIMIT 1), '')`, d.ch.Name).Scan(&last)
+		  AND l.outcome <> 'cleared' ORDER BY l.snapshot_at DESC LIMIT 1), '')`, d.ch.Name).Scan(&last)
 		if err != nil {
 			return err
 		}

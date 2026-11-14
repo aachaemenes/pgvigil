@@ -1046,6 +1046,9 @@ func logPass(log *slog.Logger, res Result, err error) {
 	if res.TestsErr != nil {
 		log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
 	}
+	if res.RoutesErr != nil {
+		log.Warn("alerts: the contact routes were not read in this pass", "err", res.RoutesErr)
+	}
 }
 
 func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error {
