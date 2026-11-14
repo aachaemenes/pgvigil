@@ -388,11 +388,11 @@ t8=$(q "select count(*) from pgvigil.admin_audit where client = 'proof-applicati
 wr assign "{\"op\": \"unmark\", \"targets\": [{\"instance_id\": $PGI, \"database\": \"db2\"}, {\"instance_id\": $PGI, \"database\": \"postgres\"}]}" >/dev/null
 NATT=$(wc -l < "$WORK/calls")
 na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%'")
-[[ $na == "$NATT" && $rc8 == 0 && $t8 == 2 ]] && ok "S8 every write attempt left its audit row(s) ($na of $NATT calls; $nr refusals, one row each)" || bad "S8 calls with audit rows $na of $NATT; refused calls with more than one row: $rc8; a two-target call's done rows: $t8"
+[[ $na == "$NATT" && $rc8 == 0 && $t8 == 2 ]] && ok "S8 every write attempt left its audit row(s) ($na of $NATT calls; $nr refusals, one row each)" || bad "S8 calls with audit rows $na of $NATT; refused calls with more than one row: $rc8; a two-target call's done rows: $t8 (its answer: $(field "$ans" outcome) $(field "$ans" detail))"
 
 # ================= H: the API =================
 if [[ -z "${APP_SKIP_HTTP:-}" ]]; then
-USR=proofuser; UPW="pw-$SUF-$RANDOM"
+USR=proofuser; UPW="pw-proof-310-$SUF-$RANDOM"   # at least 12 characters whatever $SUF and $RANDOM are (t-ap-g13: user add refused a short one)
 printf 'repository:\n  dsn: "%s"\ninstances: []\n' "$PGVIGIL_REPO_DSN" > "$WORK/serve.yaml"
 PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$WORK/serve.yaml" "$USR" > "$WORK/useradd.out" 2>&1 || bad "H setup: user add ($(tail -1 "$WORK/useradd.out"))"
 freeport() { python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
@@ -833,7 +833,7 @@ TEAMA="a-team.$SUF@example.com"; QUINN="bad\\\"q.$SUF@example.com"; QPLAIN="bad\
 CANN=$(con "$OAPP" person Ann "$ANN"); CDUP=$(con "$OAPP" person 'Ann again' "$ANN"); CTEAM=$(con "$OAPP" team 'A Team' "$TEAMA")
 # Quinn's address (a quote before the @) is refused by the store since review A's m11: planted straight into the table, as an
 # older row or a future import could hold it, so the alerter's own skip is still tested
-CQ=$(q "insert into pgvigil.ui_app_contacts (app_id, role, kind, name, email) values ($OAPP, 'support', 'person', 'Quinn', '$QPLAIN') returning contact_id"); CWES=$(con "$OAPP" person Wes "$WES"); CBOB=$(con "$OBPP" person Bob "$BOB")
+CQ=$(q "insert into pgvigil.ui_app_contacts (app_id, role, kind, name, email) values ($OAPP, 'support', 'person', 'Quinn', '$QPLAIN') returning contact_id" | head -1); CWES=$(con "$OAPP" person Wes "$WES"); CBOB=$(con "$OBPP" person Bob "$BOB")
 CDEE=$(con "$ODPP" person Dee "$DEE"); CLEE=$(con "$OLPP" person Lee "$LEE")
 [[ -n "$CANN$CQ" && $(q "select email from pgvigil.ui_app_contacts where contact_id = ${CQ:-0}") == "$QPLAIN" ]] || bad "O setup: the contacts (Quinn's address as stored: $(q "select email from pgvigil.ui_app_contacts where contact_id = ${CQ:-0}"))"
 # the repository-wide finding ('purge not run in 2 days', warning): no purge run, an instance seen 3 days ago
