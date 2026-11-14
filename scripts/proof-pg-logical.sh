@@ -31,9 +31,14 @@
 #   X    one read right after C's fix (a counter's rise is dated by the read that sees it: this read takes the retries
 #        made before the fix; added after the run of b0e72a5, which had none and raised at X), then 130 s (the 2-minute
 #        windows of the error counters), one read: no logical finding
-#   W    the publisher stopped: three reads of lsub 4 s apart: 'subscription worker down' critical; the publisher
-#        started, the worker back (polled), one read: gone
-# Not proven here: 'table sync not finished' without errors (a copy that hangs), 'subscription silent' (a publisher that
+#   W    the publisher stopped: three reads of lsub 4 s apart: 'subscription worker down' critical (PostgreSQL 18 counts
+#        the streaming worker's disconnect as ONE apply error - 30 -> 31 in the run of 6b75eb0, which raised 'apply
+#        errors' for it and failed W: the rule now calls only a loop 'apply errors' (2+ since the read before, or a rise on
+#        2 reads in a row); the run prints the count across the stop); the publisher started, the worker back (polled),
+#        one read: gone
+# Not proven here: a disconnect during a running table sync (PostgreSQL may count it as one sync error: 'subscription
+# sync errors' would then show for 2 minutes; the apply side's one-rise rule is not applied to sync errors),
+# 'table sync not finished' without errors (a copy that hangs), 'subscription silent' (a publisher that
 # answers and sends nothing), a subscription on a standby (no worker: judged 'disabled' only).
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-logical: OK' or 'proof-pg-logical: <n> FAIL'; exit 0 only when every
 # row passed.
@@ -186,7 +191,8 @@ AEC0=$(sa "select apply_error_count from pg_stat_subscription_stats where subnam
 docker stop -t 10 "$PUB" >/dev/null
 sleep 3
 read_ lsub 3 4
-echo "  apply_error_count before the stop $AEC0, after the reads $(sa "select apply_error_count from pg_stat_subscription_stats where subname = 'sub1'") (a rise here = the stop counted as an apply error)"
+AEC1=$(sa "select apply_error_count from pg_stat_subscription_stats where subname = 'sub1'")
+echo "  apply_error_count before the stop $AEC0, after the reads $AEC1 ($(( AEC1 - AEC0 )) counted at the stop: a rise of one is the disconnect, judged no apply loop)"
 r=$(finding "$SUBID")
 [[ "$r" == "critical|subscription worker down|"* ]] && ok "W 'subscription worker down' critical: $r" || fail "W: '$r' (worker_down_reads $(sub worker_down_reads))"
 docker start "$PUB" >/dev/null

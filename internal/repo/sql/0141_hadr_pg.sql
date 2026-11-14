@@ -598,8 +598,10 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
   warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
 
 -- pg_logical_subs: a subscriber's subscriptions. The counters are cumulative: *_rose_at is the newest read whose counter
--- was past the read before (a counter that went down was reset: not a rise); worker_down_reads counts the reads in a row
--- of an enabled subscription on a server not in recovery with no apply worker.
+-- was past the read before (a counter that went down was reset: not a rise); apply_rise_reads counts the reads in a row
+-- whose apply_error_count rose, and apply_loop_at is the newest read where the rise was a failing loop (2 or more since
+-- the read before, or a second rise in a row: a single rise of one is a disconnect); worker_down_reads counts the reads
+-- in a row of an enabled subscription on a server not in recovery with no apply worker.
 CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_subs (
   instance_id        int NOT NULL,
   datname            text NOT NULL,
@@ -622,6 +624,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_subs (
   conflicts          jsonb,
   conflicts_total    bigint,
   apply_rose_at      timestamptz,
+  apply_rise_reads   int NOT NULL DEFAULT 0,
+  apply_loop_at      timestamptz,
   sync_rose_at       timestamptz,
   conflicts_rose_at  timestamptz,
   worker_down_reads  int NOT NULL DEFAULT 0,
@@ -685,6 +689,10 @@ BEGIN
       worker_pid = EXCLUDED.worker_pid, received_lsn = EXCLUDED.received_lsn, latest_end_lsn = EXCLUDED.latest_end_lsn,
       last_msg_at = EXCLUDED.last_msg_at, silent_secs = EXCLUDED.silent_secs, sync_workers = EXCLUDED.sync_workers,
       apply_rose_at = CASE WHEN s.is_present AND EXCLUDED.apply_errors > s.apply_errors THEN EXCLUDED.read_at ELSE s.apply_rose_at END,
+      apply_rise_reads = CASE WHEN s.is_present AND EXCLUDED.apply_errors > s.apply_errors THEN s.apply_rise_reads + 1 ELSE 0 END,
+      apply_loop_at = CASE WHEN s.is_present AND EXCLUDED.apply_errors > s.apply_errors
+                                AND (EXCLUDED.apply_errors - s.apply_errors >= 2 OR s.apply_rise_reads >= 1)
+                           THEN EXCLUDED.read_at ELSE s.apply_loop_at END,
       sync_rose_at = CASE WHEN s.is_present AND EXCLUDED.sync_errors > s.sync_errors THEN EXCLUDED.read_at ELSE s.sync_rose_at END,
       conflicts_rose_at = CASE WHEN s.is_present AND EXCLUDED.conflicts_total > s.conflicts_total THEN EXCLUDED.read_at ELSE s.conflicts_rose_at END,
       apply_errors = EXCLUDED.apply_errors, sync_errors = EXCLUDED.sync_errors,
@@ -724,9 +732,13 @@ BEGIN
 END $$;
 
 -- pg_logical_checks: one finding per subscription (on the subscriber), the first that holds of:
---   'subscription apply errors'    critical: apply_error_count rose in the last 2 minutes (pgvigil's own default) - the
---                                  apply worker fails and retries: a conflict (a row that exists, PostgreSQL 18 names it
---                                  in the conflict counters) or a missing table or column
+--   'subscription apply errors'    critical: the apply worker fails and retries (apply_loop_at in the last 2 minutes,
+--                                  pgvigil's own default: apply_error_count rose by 2 or more since the read before, or
+--                                  rose on 2 reads in a row): a conflict (a row that exists, PostgreSQL 18 names it in
+--                                  the conflict counters) or a missing table or column. A rise of one on one read is no
+--                                  loop: PostgreSQL counts a streaming publisher's disconnect as one apply error (a
+--                                  stopped publisher: 30 -> 31 on the lab box, PostgreSQL 18; a failed reconnect is not
+--                                  counted), so the stop reads as 'worker down', not as apply errors
 --   'subscription worker down'     critical: enabled, the server not in recovery, no apply worker for 2 reads in a row
 --   'subscription disabled'        warning; critical when disable_on_error is set and the apply errors rose in the 5
 --                                  minutes before it was disabled (the error disabled it)
@@ -740,7 +752,7 @@ END $$;
 CREATE OR REPLACE VIEW pgvigil.pg_logical_checks AS
 WITH s AS (
   SELECT s.*, i.name AS instance,
-         (s.apply_rose_at > s.read_at - interval '2 minutes') AS apply_now,
+         (s.apply_loop_at > s.read_at - interval '2 minutes') AS apply_now,
          (s.sync_rose_at > s.read_at - interval '2 minutes') AS sync_now,
          (s.conflicts_rose_at > s.read_at - interval '2 minutes') AS confl_now,
          (SELECT string_agg(l.rel || ' (' || l.state || ' since ' || to_char(l.state_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC)', ', ' ORDER BY l.rel)
