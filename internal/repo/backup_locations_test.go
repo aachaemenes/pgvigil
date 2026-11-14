@@ -302,6 +302,14 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 		t.Errorf("app's sets after a late old read: %q", got)
 	}
 
+	// ---- two fulls in one second to two shares (msdb keeps finish times to the second): the second is 'not seen before'
+	dbsTie := append(append(bkRows{}, dbs2...), db("tie", -30*d, ""))
+	importBoth(a, now.Add(3*time.Minute), dbsTie, bkRows{set("tie", "full", false, 980, -h, nil), file(980, 1, 0, "disk", `\\nas01\sql\t.bak`)})
+	importBoth(a, now.Add(4*time.Minute), dbsTie, bkRows{set("tie", "full", false, 981, -h, nil), file(981, 1, 0, "disk", `\\nas02\sql\t.bak`)})
+	if got := one(`SELECT coalesce(string_agg(severity || ' ' || check_name, '; '), '') FROM pgvigil.mssql_backup_loc_findings WHERE instance_id = $1 AND object = 'tie'`, a); got != "info a backup destination not seen before" {
+		t.Errorf("two fulls in one second to two shares: %q", got)
+	}
+
 	// ---- an availability group: the newest set of each type over the monitored replicas (F10)
 	p, s := inst("p", "sqlserver"), inst("s", "sqlserver")
 	g := fmt.Sprintf("%08x-0000-0000-0000-000000000001", tag)

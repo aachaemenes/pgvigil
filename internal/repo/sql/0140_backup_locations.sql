@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_roots_seen (
   root           text NOT NULL,
   first_seen     timestamptz NOT NULL,              -- the finish of the first set seen there
   last_seen      timestamptz NOT NULL,              -- the finish of the newest set seen there
+  first_set_id   bigint,                            -- that first set's backup_set_id: msdb keeps finish times to the second, two
+                                                    -- sets of one second are told apart by it (a proof run, 11-14)
   PRIMARY KEY (instance_id, database_name, backup_type, root)
 );
 
@@ -412,15 +414,17 @@ BEGIN
       physical_name = EXCLUDED.physical_name;
 
   -- the roots seen: a set that is not copy-only (a copy taken elsewhere is no destination change), by its finish
-  INSERT INTO pgvigil.mssql_backup_roots_seen AS t (instance_id, database_name, backup_type, root, first_seen, last_seen)
-  SELECT s.instance_id, s.database_name, s.backup_type, r.root, s.finish_at, s.finish_at
+  INSERT INTO pgvigil.mssql_backup_roots_seen AS t (instance_id, database_name, backup_type, root, first_seen, last_seen, first_set_id)
+  SELECT s.instance_id, s.database_name, s.backup_type, r.root, s.finish_at, s.finish_at, s.backup_set_id
     FROM pgv_bf_set x
     JOIN pgvigil.mssql_backup_sets s ON s.instance_id = p_instance_id AND s.database_name = x.database_name
          AND s.backup_type = x.backup_type AND s.is_copy_only = x.is_copy_only AND s.backup_set_id = x.backup_set_id
     CROSS JOIN LATERAL unnest(s.roots) r(root)
    WHERE NOT s.is_copy_only AND r.root IS NOT NULL AND r.root <> 'NUL'
   ON CONFLICT (instance_id, database_name, backup_type, root) DO UPDATE SET
-      first_seen = least(t.first_seen, EXCLUDED.first_seen), last_seen = greatest(t.last_seen, EXCLUDED.last_seen);
+      first_seen = least(t.first_seen, EXCLUDED.first_seen), last_seen = greatest(t.last_seen, EXCLUDED.last_seen),
+      first_set_id = CASE WHEN (EXCLUDED.first_seen, EXCLUDED.first_set_id) < (t.first_seen, coalesce(t.first_set_id, 9223372036854775807))
+                          THEN EXCLUDED.first_set_id ELSE t.first_set_id END;
 
   -- the writers of the last 7 days: replaced whole when the read took the window
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'writers_read') THEN
@@ -530,14 +534,14 @@ SELECT r.instance_id, 'info', 'a backup destination not seen before', r.database
          || ' (first seen ' || to_char(r.first_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC); before: '
          || (SELECT string_agg(o.root, ', ' ORDER BY o.last_seen DESC) FROM pgvigil.mssql_backup_roots_seen o
               WHERE o.instance_id = r.instance_id AND o.database_name = r.database_name AND o.backup_type = r.backup_type
-                AND o.first_seen < r.first_seen),
+                AND (o.first_seen, coalesce(o.first_set_id, 0)) < (r.first_seen, coalesce(r.first_set_id, 0))),
        r.first_seen
   FROM pgvigil.mssql_backup_roots_seen r
   JOIN pgvigil.mssql_backup_judged b ON b.instance_id = r.instance_id AND b.database_name = r.database_name AND b.not_judged IS NULL
  WHERE r.first_seen > now() - interval '7 days'
    AND EXISTS (SELECT 1 FROM pgvigil.mssql_backup_roots_seen o
                 WHERE o.instance_id = r.instance_id AND o.database_name = r.database_name AND o.backup_type = r.backup_type
-                  AND o.first_seen < r.first_seen);
+                  AND (o.first_seen, coalesce(o.first_set_id, 0)) < (r.first_seen, coalesce(r.first_set_id, 0)));
 
 -- mssql_backup_loc_db: per instance and database the fleet's and the tab's added cells (the lead's join into
 -- sqlMSSQLBackups): '<type>_to' = the folder (a URL's container) of the newest set of the type, ', n files' when

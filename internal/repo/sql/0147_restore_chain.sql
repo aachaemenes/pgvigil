@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_restore_sets (
   role                     text NOT NULL CHECK (role IN ('full', 'copy_full', 'diff', 'log')),
   sink                     text NOT NULL,     -- 'backup' or 'nul' (the NUL device: nothing was kept)
   is_copy_only             boolean,
-  position                 int,
+  media_position           int,       -- the set's place on its media (FILE = n)
   is_snapshot              boolean,
   has_bulk_logged_data     boolean,
   is_damaged               boolean,
@@ -117,7 +117,7 @@ BEGIN
           OR s.last_lsn < coalesce((SELECT min(x.last_lsn) FROM pgv_rc_set x WHERE x.database_name = s.database_name AND x.role = 'log'), 'infinity'::numeric));
 
   INSERT INTO pgvigil.mssql_restore_sets AS t (instance_id, backup_set_uuid, database_name, backup_set_id, set_type, role, sink,
-      is_copy_only, position, is_snapshot, has_bulk_logged_data, is_damaged, begins_log_chain, first_lsn, last_lsn, checkpoint_lsn,
+      is_copy_only, media_position, is_snapshot, has_bulk_logged_data, is_damaged, begins_log_chain, first_lsn, last_lsn, checkpoint_lsn,
       database_backup_lsn, differential_base_lsn, differential_base_guid, fork_point_lsn, database_guid, family_guid,
       first_recovery_fork_guid, last_recovery_fork_guid, recovery_model, user_name, size_bytes, compressed_bytes, start_at,
       finish_at, last_valid_restore_at, software_name, family_count, mirror_count, db_created_at, seen_at)
@@ -179,7 +179,7 @@ $$;
 -- step 0 is the verdict row (its role 'verdict', its marks the words).
 CREATE OR REPLACE FUNCTION pgvigil.mssql_restore_chain(p_instance_id int, p_database text)
 RETURNS TABLE (step int, role text, backup_set_uuid text, from_instance text, start_at timestamptz, finish_at timestamptz,
-               first_lsn text, last_lsn text, family_count int, mirror_count int, position int, user_name text, marks text,
+               first_lsn text, last_lsn text, family_count int, mirror_count int, media_position int, user_name text, marks text,
                restorable_to timestamptz)
 LANGUAGE plpgsql VOLATILE AS $$   -- volatile: it fills a temp table of the members' sets
 DECLARE
@@ -234,17 +234,17 @@ BEGIN
   -- the start: the full, then its differential when it is the start
   v_step := 1;
   RETURN QUERY SELECT v_step, st.role, st.backup_set_uuid, st.from_instance, st.start_at, st.finish_at, st.first_lsn::text, st.last_lsn::text,
-                      st.family_count, st.mirror_count, st.position, st.user_name,
+                      st.family_count, st.mirror_count, st.media_position, st.user_name,
                       concat_ws('; ', CASE WHEN st.role = 'copy_full' THEN 'a copy-only full: no differential can follow it' END,
                                 CASE WHEN st.is_damaged THEN 'damaged' END,
                                 CASE WHEN st.is_snapshot THEN 'a snapshot backup: restored through its tool' END,
-                                CASE WHEN st.position > 1 THEN 'file ' || st.position || ' of its media' END), NULL::timestamptz;
+                                CASE WHEN st.media_position > 1 THEN 'file ' || st.media_position || ' of its media' END), NULL::timestamptz;
   v_reached := st.last_lsn; v_to := st.finish_at;
   IF st.role = 'full' AND nd.backup_set_uuid IS NOT NULL THEN
     v_step := v_step + 1;
     RETURN QUERY SELECT v_step, nd.role, nd.backup_set_uuid, nd.from_instance, nd.start_at, nd.finish_at, nd.first_lsn::text, nd.last_lsn::text,
-                        nd.family_count, nd.mirror_count, nd.position, nd.user_name,
-                        concat_ws('; ', CASE WHEN nd.is_damaged THEN 'damaged' END, CASE WHEN nd.position > 1 THEN 'file ' || nd.position || ' of its media' END), NULL::timestamptz;
+                        nd.family_count, nd.mirror_count, nd.media_position, nd.user_name,
+                        concat_ws('; ', CASE WHEN nd.is_damaged THEN 'damaged' END, CASE WHEN nd.media_position > 1 THEN 'file ' || nd.media_position || ' of its media' END), NULL::timestamptz;
     v_reached := nd.last_lsn; v_to := nd.finish_at;
   END IF;
   -- the logs
@@ -271,12 +271,12 @@ BEGIN
     END IF;
     v_step := v_step + 1; v_logs := v_logs + 1;
     RETURN QUERY SELECT v_step, s.role, s.backup_set_uuid, s.from_instance, s.start_at, s.finish_at, s.first_lsn::text, s.last_lsn::text,
-                        s.family_count, s.mirror_count, s.position, s.user_name,
+                        s.family_count, s.mirror_count, s.media_position, s.user_name,
                         concat_ws('; ', CASE WHEN s.database_backup_lsn IS DISTINCT FROM st.checkpoint_lsn AND st.role = 'full'
                                              THEN 'its full is another than the start set''s (database_backup_lsn ' || s.database_backup_lsn || ')' END,
                                   CASE WHEN s.has_bulk_logged_data THEN 'bulk-logged: no point in time inside it' END,
                                   CASE WHEN s.is_damaged THEN 'damaged' END,
-                                  CASE WHEN s.position > 1 THEN 'file ' || s.position || ' of its media' END), NULL::timestamptz;
+                                  CASE WHEN s.media_position > 1 THEN 'file ' || s.media_position || ' of its media' END), NULL::timestamptz;
     v_reached := s.last_lsn; v_to := coalesce(s.last_valid_restore_at, s.finish_at);
   END LOOP;
   RETURN QUERY SELECT 0, 'verdict', NULL::text, NULL::text, NULL::timestamptz, NULL::timestamptz, NULL::text, v_reached::text, NULL::int, NULL::int, NULL::int, NULL::text,
