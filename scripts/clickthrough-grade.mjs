@@ -77,7 +77,7 @@ if (isMain) {
   }
   // a page that did not settle or drew an error box on load is a row of its own
   for (const p of pages) {
-    if (!p.settled) rows.push({ scope: p.scope, page: p.tab, hash: p.hash, path: ['(the page)'], kind: 'page not settled', why: (p.errors || []).join(' | ') });
+    if (!p.settled) rows.push({ scope: p.scope, page: p.tab, hash: p.hash, path: ['(the page)'], kind: 'page not settled', why: [...(p.busy || []).map(b => 'still: ' + b), ...(p.errors || [])].join(' | ') });
     else if ((p.errors || []).length || (p.api || []).length || (p.exc || []).length) rows.push({ scope: p.scope, page: p.tab, hash: p.hash, path: ['(the page)'], kind: 'page error', why: [...(p.errors || []), ...(p.api || []).map(a => a.status + ' ' + a.url), ...(p.exc || [])].join(' | ').slice(0, 300) });
   }
   const all = [...rows, ...tree];
@@ -91,7 +91,7 @@ if (isMain) {
     : r.kind === 'navigates' ? `to ${r.to ?? r.landing?.hash ?? ''} '${r.h2 ?? r.landing?.h2 ?? ''}'` : r.kind === 'dialog' ? `opened '${r.dialog}'` : r.kind === 'menu' ? `menu: ${(r.menu || []).slice(0, 8).join(', ')}`
     : r.kind === 'disabled' ? `off: ${[r.why, ...(r.off || [])].filter(Boolean).join(' | ')}` : r.kind === 'write held' ? `sent ${(r.held || []).join(', ')}` : r.kind === 'status' ? `said '${r.status}'`
     : r.kind === 'chooser' ? `file chooser (${(r.chooser || []).join(', ')})` : r.kind === 'outside' ? `outside link ${r.href}` : r.kind === 'js-dialog' ? (r.jsDialogs || []).join(' | ')
-    : FAIL_KINDS.test(r.kind) ? [r.why, ...(r.errors || []), ...(r.exc || []), ...(r.api || []).map(a => a.status + ' ' + a.url), r.landing?.errors?.join(' | ')].filter(Boolean).join(' | ').slice(0, 300) : '';
+    : FAIL_KINDS.test(r.kind) ? [r.why, ...(r.errors || []), ...(r.exc || []), ...(r.api || []).map(a => a.status + ' ' + a.url), r.landing?.errors?.join(' | '), ...(r.landing?.busy || []).map(b => 'still: ' + b)].filter(Boolean).join(' | ').slice(0, 300) : '';
   fs.mkdirSync(outDir, { recursive: true });
   const tsvCell = s => String(s ?? '').replace(/[\t\r\n]+/g, ' ');
   const tsv = ['source\tscope\tpage\tcontrol\tkind\twhat happened\tgrade', ...all.map(r => [r.source, r.scope, r.page, r.path.join(' > '), r.kind, said(r), FAIL_KINDS.test(r.kind) ? (g.outside.includes(r) ? 'NEW' : 'listed') : ''].map(tsvCell).join('\t'))];

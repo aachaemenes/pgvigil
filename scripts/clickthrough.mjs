@@ -115,6 +115,9 @@ await connect();
 
 // ---- a page: loaded, settled (no 'Loading' / 'Reading' / 'Running' line; an instance page's header drawn) ----------
 const BUSY = `[...document.querySelectorAll('main p, main [role=status]')].some(p => /^(Loading|Reading|Running)/.test(p.textContent.trim()))`;
+// the lines a page that did not settle still shows (which section was still reading at the cap)
+const BUSYLINES = `[...document.querySelectorAll('main p, main [role=status]')].map(p => { const sec = p.closest('section, .card'); const h = sec?.querySelector('h2, h3, h4')?.textContent?.trim() ?? ''; return [h, p.textContent.trim()]; })
+  .filter(([, t]) => /^(Loading|Reading|Running)/.test(t)).map(([h, t]) => (h ? h + ': ' : '') + t.slice(0, 80)).slice(0, 8)`;
 const settled = async (cap = 20000) => {
   for (const t = Date.now(); Date.now() - t < cap; await sleep(200)) {
     if (lost) return false;
@@ -216,6 +219,14 @@ const controls = withBar => ev(`(() => { const S = ${SIG}; const seen = new Map(
     on: ['aria-pressed', 'aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
   return [...seen.values()]; })()`);
 const offNotes = () => ev(`[...document.querySelectorAll('main p.meta, main p.note, main .note, main .off-reason, main [id^=off-], dialog[open] p')].map(p => p.textContent.trim()).filter(t => /off here|is off|read only|read-only|needs|refused|not configured|no read login|no monitoring login|-no-login|disabled|demo/i.test(t)).map(t => t.slice(0, 240))`);
+// one step, given up to 5 s to find its control: a replay on a fresh page reaches a grid cell or a cell's button only
+// once the page has redrawn it (on the shared box a redraw can take seconds), so 'gone' is said only after the wait
+const actWait = async (sig, step, ms = 5000) => {
+  for (const t = Date.now(); ; await sleep(250)) {
+    const r = await act(sig, step);
+    if ((r !== 'gone' && r !== 'no grid cell') || Date.now() - t >= ms) return r;
+  }
+};
 // one step: the control by its signature, then a click (or a select's option, or a file input's fixture)
 const act = async (sig, step) => {
   if (sig === 'CTX') return ev(`(() => { const td = document.querySelector('main table.grid tbody td'); if (!td) return 'no grid cell'; const r = td.getBoundingClientRect(); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 5, clientY: r.y + 5, button: 2 })); return 'ok'; })()`);
@@ -278,7 +289,8 @@ for (const pg of [...pagesOf, ...chromePage]) {
   try {
     const okLoad = await fresh(pg.hash);
     const land = await ev(state).catch(e => ({ errors: [String(e)] }));
-    out.pages.push({ scope: pg.scope, tab: pg.tab, hash: pg.hash, settled: okLoad, h2: land.h2, errors: land.errors ?? [], api: net.filter(x => x.status >= 400 || x.status === 0), exc: [...exc], off: await offNotes().catch(() => []), shot: pg.bar ? null : shotName(pg) });
+    out.pages.push({ scope: pg.scope, tab: pg.tab, hash: pg.hash, settled: okLoad, h2: land.h2, errors: land.errors ?? [], api: net.filter(x => x.status >= 400 || x.status === 0), exc: [...exc], off: await offNotes().catch(() => []), shot: pg.bar ? null : shotName(pg),
+      busy: okLoad ? [] : await ev(BUSYLINES).catch(() => []) });
     if (!pg.bar) await shot(shotName(pg));
     const all = await controls(!!pg.bar);
     queue = all.filter(c => pg.bar ? /^bar /.test(c.sig) : !/^bar /.test(c.sig)).map(c => ({ path: [{ sig: c.sig }], c }));
@@ -317,15 +329,17 @@ for (const pg of [...pagesOf, ...chromePage]) {
       // replay the path on a fresh page, then act on its last step
       await fresh(pg.hash);
       let replay = 'ok';
-      for (const st of p.slice(0, -1)) { replay = await act(st.sig, st); if (replay !== 'ok') break; await sleep(350); await settled(30000); }
+      for (const st of p.slice(0, -1)) { replay = await actWait(st.sig, st); if (replay !== 'ok') break; await sleep(350); await settled(30000); }
       if (replay !== 'ok') { row.kind = 'not reached'; row.why = 'step ' + replay; out.clicks.push(row); continue; }
       await ev(MARK);
       const before = await ev(state); const ctl0 = new Set((await controls(!!pg.bar)).map(x => x.sig));
       const dl0 = fs.readdirSync(dl).length; net = []; exc = []; dlgs = []; held = []; chooser = [];
-      const r = await act(last.sig, last);
+      const r = await actWait(last.sig, last);
       if (r !== 'ok') { row.kind = r === 'disabled' ? 'disabled' : 'not reached'; row.why = r; if (r === 'disabled') row.off = await offNotes().catch(() => []); out.clicks.push(row); continue; }
       await sleep(600); await settled(30000);
       if (chooser.length) { await sleep(800); await settled(15000); }
+      // a link to the server's own file (a .xdl, a .sqlplan): its download is given up to 5 s to start
+      if (c.tag === 'A' && /^\/api\//.test(c.href || '')) for (let i = 0; i < 25 && fs.readdirSync(dl).length <= dl0; i++) await sleep(200);
       const after = await ev(state).catch(e => ({ errors: ['(page gone) ' + e], mark: false }));
       row.api = [...net]; row.exc = [...exc]; row.jsDialogs = [...dlgs]; row.held = [...new Set(held)]; row.chooser = [...chooser];
       row.kind = verdict(row, before, after, dl0);
@@ -403,7 +417,7 @@ for (const sc of treeScopes) {
       if (!clicked) { row.kind = 'not reached'; row.why = 'not in the opened tree'; out.tree.push(row); continue; }
       await sleep(300);
       const okL = await settled(); const s = await ev(state).catch(e => ({ errors: [String(e)] }));
-      row.api = net.filter(x => x.status >= 400 || x.status === 0); row.exc = [...exc]; row.landing = { hash: s.hash, h2: s.h2, errors: s.errors, settled: okL };
+      row.api = net.filter(x => x.status >= 400 || x.status === 0); row.exc = [...exc]; row.landing = { hash: s.hash, h2: s.h2, errors: s.errors, settled: okL, busy: okL ? [] : await ev(BUSYLINES).catch(() => []) };
       row.kind = !okL ? 'link-stuck' : (s.errors?.length || row.api.length || row.exc.length) ? 'link-error' : s.hash === href ? 'link' : 'navigates';
     } catch (e) { row.kind = lost ? 'browser lost' : 'driver error'; row.why = e.message; await ensure().catch(() => {}); }
     out.tree.push(row);

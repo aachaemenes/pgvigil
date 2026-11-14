@@ -16,17 +16,20 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the third run, on a tree joined with the release's tip: its threshold dialogs' Inherit, the calendar's
-# Next month and the job thresholds dialog's controls now carry their reasons in words, so their three rows left the
-# expected file; the second run's 18 driver rows fixed; written before it):
+# Expected (the fourth run: click-c3 on 935989c was red by 9 rows outside the file - 7 the driver's own (a replay
+# step acted once on a page not yet redrawn: 'step no grid cell' x3, 'step gone' x3, while a sibling path on the same
+# page reached the same control; a .xdl link graded NOTHING via cell 3 and download via cell 4), now each step is
+# given 5 s to find its control and a link to the server's own file 5 s to start its download; 2 the joined tree's
+# Queries page (mssql_queries.ts), which never settled in 20 s on any load, now named with the lines still reading;
+# written before it):
 #   the grader's self-test: 9 of 9 cases; the expected file: 5 rows
-#   the click map: its own verdict line (the second run: 524 links, 0 FAIL)
-#   listed: the second run's 180 pages and the joined tree's new tabs (mssql_queries, pools) in 4 shards; every page
-#     settled
-#   the walk: the longest driver about the second run's 3012 s or less
-#   the grade: every FAIL row listed: 'click-through: OK (<n> FAIL row(s), each listed; 0 expected row(s) not seen)';
-#     no 'off without words' row (Inherit, Next month, the job dialog's Save / Inherit / fields: 'disabled' with the
-#     words); a row NEW now is the joined tree's (42 UI files changed) or the driver's own, read first
+#   the click map: its own verdict line (the third run: 524 links, 0 FAIL)
+#   listed: 182 pages (root 62, pg 64, ms 56) in 4 shards; every page settled but ms mssqlqueries
+#   the walk: the longest driver about the third run's 2590 s (a little more: the waits)
+#   the grade: the 5 expected rows listed; none of the third run's 7 driver rows (each reached and graded by its own
+#     kind); 'off without words' none; the 2 Queries rows again ('page not settled' ms mssqlqueries, the tree's
+#     'link-stuck' to it), each with 'still: <section>: Reading ...' - 'click-through: FAIL (2 FAIL row(s) outside the
+#     expected file)'; any other row outside is read first
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=()
