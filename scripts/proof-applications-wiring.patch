@@ -1,0 +1,19 @@
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 5def140..f5e4e77 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -223,6 +223,14 @@ func (s *Server) Handler() http.Handler {
+ 	// task 204: Admin > Instances (q_instances_admin.go)
+ 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
+ 	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)
++	// task 310: applications (q_applications.go)
++	api.HandleFunc("GET /api/applications", s.ApplicationsList)
++	api.HandleFunc("GET /api/applications/unassigned", s.ApplicationsUnassigned)
++	api.HandleFunc("GET /api/applications/{id}", s.ApplicationOne)
++	api.HandleFunc("GET /api/applications/{id}/contacts", s.ApplicationContacts)
++	api.HandleFunc("POST /api/admin/applications", s.ApplicationsWrite)
++	api.HandleFunc("POST /api/admin/applications/contacts", s.ApplicationContactsWrite)
++	api.HandleFunc("POST /api/admin/applications/assign", s.ApplicationsAssignWrite)
+ 	api.HandleFunc("POST /api/admin/sources", s.SourcesAdminWrite)
+ 	api.HandleFunc("POST /api/admin/proposals", s.ProposalsAdminWrite)
+ 	api.HandleFunc("GET /api/uptime", s.Uptime)

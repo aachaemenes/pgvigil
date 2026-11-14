@@ -611,3 +611,20 @@ BEGIN
   END IF;
   RETURN pgvigil.import_admin_instance_base(p_at, p_payload);
 END $$;
+
+-- the page's reads of contacts (ui_: SECURITY DEFINER, executable by pgvigil_auth only - apply_roles, 0110), on a click
+CREATE OR REPLACE FUNCTION pgvigil.ui_app_contacts_of(p_app_id int)
+RETURNS TABLE (contact_id int, role text, kind text, name text, email text, phone text, cmdb_url text, ord int) LANGUAGE sql STABLE AS $$
+  SELECT c.contact_id, c.role, c.kind, c.name, c.email, c.phone, c.cmdb_url, c.ord
+    FROM pgvigil.ui_app_contacts c WHERE c.app_id = p_app_id
+   ORDER BY CASE c.role WHEN 'business owner' THEN 1 WHEN 'technical owner' THEN 2 WHEN 'support' THEN 3 ELSE 4 END, c.ord, c.contact_id
+$$;
+
+-- an application's owner team for the lists: the first team contact, business owner before technical owner
+CREATE OR REPLACE FUNCTION pgvigil.ui_app_owner_team(p_app_id int)
+RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT c.name FROM pgvigil.ui_app_contacts c
+   WHERE c.app_id = p_app_id AND c.kind = 'team' AND c.role IN ('business owner', 'technical owner')
+   ORDER BY CASE c.role WHEN 'business owner' THEN 1 ELSE 2 END, c.ord, c.contact_id
+   LIMIT 1
+$$;
