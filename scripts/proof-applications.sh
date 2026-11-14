@@ -33,9 +33,11 @@
 #      model / msdb / tempdb never are
 #  S7  (A7) an entered description written with source 'import:cmdb' is refused 'conflict' and unchanged; with force
 #      the import wins and the field's source is 'import:cmdb'
-#  S8  (A8) admin_audit holds exactly one row per write attempt of this proof (refusals included)
+#  S8  (A8) every write attempt of this proof left its admin_audit row(s): one per target of an assign or unassign,
+#      one for a refusal (each call carries its own client tag)
 #  S9  (A9) P's application tags survive ensure_instance with config tags that lack them; a config tag
-#      'application:Rogue' is not in P's merged tags; an override row on the key 'application' is refused by the table
+#      'application:Rogue' is not in P's merged tags; an override row on the key 'application' is refused by the table,
+#      and Admin > Instances' write refuses a tag with the key 'application'
 #  S10 (A10, the store's half) pgvigil_reader holds EXECUTE on no import_app_ function and SELECT on no ui_app_ table
 #  S11 (A14, the store's half) a contact added and edited with a planted e-mail and phone: no admin_audit row holds
 #      either value
@@ -44,6 +46,7 @@
 #  S13 one target twice in one assign call, and a call over 500 targets, are refused, nothing written
 #  S14 an instance removed (its instances row deleted) takes its assignments with it (ON DELETE CASCADE)
 #  S15 purge(30) leaves every app_ and ui_app_ row in place
+#  S16 a database marked 'not an application' (import_app_assign op mark) leaves app_unassigned(); unmarked, it is back
 # On a tree without 0136 every row FAILs as 'not on this tree': the red run.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -66,14 +69,14 @@ q()  { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { echo "FAIL setup: migrate"; tail -5 "$WORK/migrate.out"; exit 1; }
 if [[ $(q "select to_regprocedure('pgvigil.import_app_application(timestamptz, jsonb)') is not null") != t ]]; then
-  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15; do bad "$row not on this tree (no import_app_application)"; done
+  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16; do bad "$row not on this tree (no import_app_application)"; done
   echo "proof-applications: $NFAIL FAIL"; exit 1
 fi
 
 NATT=0   # write attempts of this proof (S8 counts admin_audit rows against it)
 wr() {    # $1 the function (application | contact | assign), $2 the payload's JSON without ui_user: the answer's JSON
   NATT=$((NATT + 1))
-  q "select pgvigil.import_app_$1(now(), '{\"ui_user\": \"proof\", \"client\": \"proof-applications\"}'::jsonb || '$2'::jsonb)"
+  q "select pgvigil.import_app_$1(now(), '{\"ui_user\": \"proof\", \"client\": \"proof-applications#$NATT\"}'::jsonb || '$2'::jsonb)"
 }
 field() { python3 -I -c 'import json, sys; v = json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else v)' "$1" "$2"; }
 tags()  { q "select array_to_string(tags, ',') from pgvigil.instance_tags_merged where instance_id = $1"; }
@@ -138,6 +141,13 @@ un=$(q "select string_agg(database_name, ',' order by database_name) from pgvigi
    && ",$un," != *",model,"* && ",$un," != *",msdb,"* && ",$un," != *",tempdb,"* ]] \
   && ok "S6 a new database is on Unassigned at its first read; no system database is" || bad "S6 unassigned: [$un]"
 
+# ---------------- S16 ----------------
+wr assign "{\"op\": \"mark\", \"targets\": [{\"instance_id\": $PGI, \"database\": \"postgres\"}]}" >/dev/null
+m1=$(q "select count(*) from pgvigil.app_unassigned() where instance_id = $PGI and database_name = 'postgres'")
+wr assign "{\"op\": \"unmark\", \"targets\": [{\"instance_id\": $PGI, \"database\": \"postgres\"}]}" >/dev/null
+m2=$(q "select count(*) from pgvigil.app_unassigned() where instance_id = $PGI and database_name = 'postgres'")
+[[ $m1 == 0 && $m2 == 1 ]] && ok "S16 a database marked 'not an application' leaves Unassigned; unmarked it is back" || bad "S16 on Unassigned marked: $m1, unmarked: $m2"
+
 # ---------------- S7 ----------------
 ver=$(q "select version from pgvigil.app_applications where app_id = $PAY")
 wr application "{\"op\": \"edit\", \"app_id\": $PAY, \"version\": $ver, \"description\": \"typed\"}" >/dev/null
@@ -156,9 +166,10 @@ wr assign "{\"op\": \"assign\", \"app_id\": $PAY, \"targets\": [{\"instance_id\"
 q "select pgvigil.ensure_instance('proof-app-pg', 'onprem', '18.0', 180000, false, array['env:prod', 'application:Rogue'])" >/dev/null
 t9=",$(tags "$PGI"),"
 ov=$(q "insert into pgvigil.instance_tag_overrides (instance_id, key, vals) values ($PGI, 'application', array['Rogue'])" 2>&1); ovrc=$?
-[[ $t9 == *",application:Payroll,"* && $t9 == *",env:prod,"* && $t9 != *"Rogue"* && $ovrc != 0 ]] \
+ai=$(q "select pgvigil.import_admin_instance(now(), '{\"op\": \"add\", \"ui_user\": \"proof\", \"client\": \"proof-s9\", \"name\": \"pageinst\", \"engine\": \"postgres\", \"dsn_ref\": \"file:/x\", \"host\": \"h\", \"auth\": \"password\", \"tags\": [\"application:Rogue\"]}'::jsonb)")
+[[ $t9 == *",application:Payroll,"* && $t9 == *",env:prod,"* && $t9 != *"Rogue"* && $ovrc != 0 && $(field "$ai" outcome) == refused && $(field "$ai" detail) == *Applications* ]] \
   && ok "S9 the application tag survives the collector's re-make; a file's application:Rogue is not taken; an override on the key refused" \
-  || bad "S9 tags $t9; override rc $ovrc: ${ov:0:120}"
+  || bad "S9 tags $t9; override rc $ovrc: ${ov:0:120}; Admin > Instances: $(field "$ai" outcome) '$(field "$ai" detail)'"
 
 # ---------------- S10 ----------------
 leak=$(q "select coalesce(string_agg(x, ', '), '') from (
@@ -180,7 +191,7 @@ hits=$(q "select count(*) from pgvigil.admin_audit where detail ~ '(planted|move
 # ---------------- S12 ----------------
 wr assign "{\"op\": \"assign\", \"app_id\": $PAY, \"targets\": [{\"instance_id\": $PGI, \"database\": \"db3\"}]}" >/dev/null
 dbs "$PGI" "[$(pgdb 1 template0 true), $(pgdb 2 template1 true), $(pgdb 5 postgres), $(pgdb 16385 db2), $(pgdb 16390 db3new)]"   # db3 renamed in place
-rn=$(q "select database_name || ':' || (absent_since is not null)::text || ':' || coalesce(renamed_to, '') from pgvigil.app_databases($PAY) where database_name in ('db3', 'db3new')")
+rn=$(q "select database_name || ':' || (absent_since is not null)::text || ':' || coalesce(renamed_to, '') from pgvigil.app_databases($PAY) where own and database_name in ('db3', 'db3new')")
 own=$(q "select count(*) from pgvigil.app_assignments where instance_id = $PGI and database_name = 'db3new'")
 [[ $rn == "db3:true:db3new" && $own == 0 ]] && ok "S12 a renamed database's assignment stays on the old name, absent, renamed_to offered; none taken silently" \
   || bad "S12 [$rn], assignments on the new name: $own"
@@ -207,8 +218,10 @@ nq=$(q "select count(*) from pgvigil.app_assignments where instance_id = $PGI")
 [[ $np -gt 0 && $nq == 0 ]] && ok "S14 an instance's removal takes its $np assignments with it" || bad "S14 assignments of the removed instance: $np -> $nq"
 
 # ---------------- S8 (last: every write attempt above) ----------------
-na=$(q "select count(*) from pgvigil.admin_audit where op like 'app\_%' and client = 'proof-applications'")
-[[ $na == "$NATT" ]] && ok "S8 one audit row per write attempt ($na of $NATT, refusals included)" || bad "S8 audit rows $na for $NATT attempts"
+na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%'")
+nr=$(q "select count(*) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused'")
+rc8=$(q "select count(*) from (select client from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused' group by client having count(*) > 1) z")
+[[ $na == "$NATT" && $rc8 == 0 ]] && ok "S8 every write attempt left its audit row(s) ($na of $NATT calls; $nr refusals, one row each)" || bad "S8 calls with audit rows $na of $NATT; refused calls with more than one row: $rc8"
 
 echo "proof-applications: $NFAIL FAIL"
 [[ $NFAIL == 0 ]]
