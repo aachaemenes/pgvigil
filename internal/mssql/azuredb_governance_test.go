@@ -22,9 +22,13 @@ func TestAzureDBGovernanceApplies(t *testing.T) {
 		{Info{Kind: KindAzureDB, ServiceObjective: "Basic", ViewDatabaseState: true}, false, "the login lacks ##MS_ServerStateReader## (Basic, S0, S1 and elastic pools): the tier's limits are not readable"},
 		{Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool", ViewDatabaseState: true}, false, "##MS_ServerStateReader##"},
 		{Info{Kind: KindAzureDB, ServiceObjective: "S1", ViewServerState: true, ViewDatabaseState: true}, true, ""},
-		{Info{Kind: KindAzureDB, ServiceObjective: "Basic", ViewServerState: true}, true, ""},
-		{Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool", ViewServerState: true}, true, ""},
-		{Info{Kind: KindAzureDB, ServiceObjective: "GP_S_Gen5_1", ViewServerState: true}, true, ""},
+		// the server roles' login with no user in the database: detect gives VIEW SERVER STATE as the server grants it
+		// (ServerStateRead) and, on the low tiers, the same as ViewServerState; elsewhere ViewServerState is VIEW
+		// DATABASE STATE, which it likely lacks
+		{Info{Kind: KindAzureDB, ServiceObjective: "Basic", ViewServerState: true, ServerStateRead: true}, true, ""},
+		{Info{Kind: KindAzureDB, ServiceObjective: "ElasticPool", ViewServerState: true, ServerStateRead: true}, true, ""},
+		{Info{Kind: KindAzureDB, ServiceObjective: "GP_S_Gen5_1", ServerStateRead: true}, true, ""},
+		{Info{Kind: KindAzureDB, ServiceObjective: "S0"}, false, "##MS_ServerStateReader##"},
 		{Info{Kind: KindAzureMI, ViewServerState: true, ViewDatabaseState: true}, false, "Azure SQL Database's"},
 	} {
 		run, why := azureDBGovernanceCollector{}.Applies(c.info)
