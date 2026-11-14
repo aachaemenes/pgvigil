@@ -22,6 +22,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"os/user"
 	"runtime"
 	"strings"
 	"sync"
@@ -52,12 +53,63 @@ func Open(dsn string) (*sql.DB, error) {
 	return sql.OpenDB(c), nil
 }
 
+// gmsa is the configuration's gmsa: (task 206; Allen's decision: the Windows sign-in only as a gMSA named in the
+// configuration, never the machine account). With it set, a string that signs in as this process's own Windows
+// account opens on Windows only when the process runs as that gMSA: a virtual account (the service's default, NT
+// SERVICE\pgvigil) or a system account reaches the server as the machine account DOMAIN\HOST$, and serve, run and the
+// import are separate processes, each checked here.
+var gmsa struct {
+	sync.Mutex
+	name string
+}
+
+// RequireGMSA is called by each command that connects to SQL Server, right after it reads the configuration.
+func RequireGMSA(name string) {
+	gmsa.Lock()
+	gmsa.name = strings.TrimSpace(name)
+	gmsa.Unlock()
+}
+
+// processAccount is the account this process runs as, DOMAIN\name on Windows (a variable: the tests replace it).
+var processAccount = func() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
+}
+
+// gmsaRefusal is why a string may not open under gmsa: ("" = it may): only a string that names no login, no password,
+// no fedauth and no authenticator but winsspi (the process's own account, through SSPI) on Windows is checked.
+func gmsaRefusal(cfg msdsn.Config, goos string) string {
+	gmsa.Lock()
+	want := gmsa.name
+	gmsa.Unlock()
+	if want == "" || goos != "windows" || strings.TrimSpace(cfg.User) != "" || cfg.Password != "" || strings.TrimSpace(cfg.Parameters["fedauth"]) != "" {
+		return ""
+	}
+	if a, named := cfg.Parameters["authenticator"]; named && !strings.EqualFold(strings.TrimSpace(a), "winsspi") {
+		return ""
+	}
+	who, err := processAccount()
+	if err != nil {
+		return fmt.Sprintf("the account this process runs as could not be read (%v): a Windows sign-in opens only as the gMSA %s (gmsa:)", err, want)
+	}
+	if !strings.EqualFold(who, want) {
+		return fmt.Sprintf("this process runs as %q, not as the gMSA %s the configuration names (gmsa:): its Windows sign-in would reach the server as another account (a virtual or system account signs in as the machine account DOMAIN\\HOST$); run it as the gMSA", who, want)
+	}
+	return ""
+}
+
 // connector is the federated-authentication connector a string with fedauth needs, the Kerberos one an old auth
-// windows string needs off Windows, nil for any other string.
+// windows string needs off Windows, nil for any other string; an error for a Windows sign-in gmsa: refuses.
 func connector(dsn string) (driver.Connector, error) {
 	cfg, err := msdsn.Parse(dsn)
 	if err != nil {
 		return nil, err
+	}
+	if why := gmsaRefusal(cfg, runtime.GOOS); why != "" {
+		return nil, errors.New(why)
 	}
 	fa := strings.TrimSpace(cfg.Parameters["fedauth"])
 	if fa == "" {

@@ -95,7 +95,38 @@ func TestMoveAddCheck(t *testing.T) {
 		{"a name of 254 bytes", "sql", "", "linux", with(func(s *moveServer) { s.Host = strings.Repeat("é", 127) }), "not a host name"},
 		{"an IPv4-mapped IPv6 address", "sql", "", "linux", with(func(s *moveServer) { s.Host = "::ffff:10.1.2.3" }), ""},
 	} {
-		err := moveAddCheck(c.auth, c.gmsa, c.goos, c.servers)
+		err := moveAddCheck(c.auth, winSide{GMSA: c.gmsa, GOOS: c.goos, RunAs: c.gmsa, Host: "PGVHOST"}, c.servers)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: refused (%v), want accepted", c.name, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: %v, want an error with %q", c.name, err, c.want)
+		}
+	}
+}
+
+// TestMoveAddWindows (reviews 206d 1 / 206e 3): the Windows sign-in only when serve runs as the gMSA gmsa: names, never
+// the machine account; the host here is PGVHOST.
+func TestMoveAddWindows(t *testing.T) {
+	ok := moveServer{Server: "SQL01", DBADashIDs: []int{1}, Host: "sql01", Name: "sql01"}
+	for _, c := range []struct {
+		name, auth, gmsa, runAs string
+		want                    string // "" = accepted; runAs "?" = the account could not be read
+	}{
+		{"serve as the service's virtual account", "windows", `CORP\pgv$`, `NT SERVICE\pgvigil`, `runs as "NT SERVICE\\pgvigil", not as the gMSA`},
+		{"serve as LocalSystem", "windows", `CORP\pgv$`, `NT AUTHORITY\SYSTEM`, "not as the gMSA"},
+		{"serve as a DBA's own account", "windows", `CORP\pgv$`, `CORP\allen`, "not as the gMSA"},
+		{"serve as the gmsa, another case", "windows", `CORP\pgv$`, `corp\PGV$`, ""},
+		{"the machine account named as the gmsa", "windows", `CORP\PGVHOST$`, "", "this host's machine account"},
+		{"the machine account, lower case", "windows", `CORP\pgvhost$`, "", "this host's machine account"},
+		{"the account unread", "windows", `CORP\pgv$`, "?", `runs as "", not as the gMSA`},
+		{"sql on windows as another account", "sql", `CORP\pgv$`, `NT SERVICE\pgvigil`, ""},
+	} {
+		runAs := c.runAs
+		if runAs == "?" {
+			runAs = ""
+		}
+		err := moveAddCheck(c.auth, winSide{GMSA: c.gmsa, GOOS: "windows", RunAs: runAs, Host: "PGVHOST"}, []moveServer{ok})
 		switch {
 		case c.want == "" && err != nil:
 			t.Errorf("%s: refused (%v), want accepted", c.name, err)

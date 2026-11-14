@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"os/user"
 	"runtime"
 	"slices"
 	"strconv"
@@ -102,13 +104,46 @@ func (s *Server) importPool(ctx context.Context) (*pgxpool.Pool, error) {
 	return p, nil
 }
 
-// windowsOff is why the Windows sign-in is not offered ("" = it is, as the gMSA).
-func windowsOff(gmsa, goos string) string {
+// winSide is what the Windows sign-in is offered on: the configuration's gmsa:, the OS, the account this serve runs
+// as and the host's NetBIOS name.
+type winSide struct{ GMSA, GOOS, RunAs, Host string }
+
+// thisWin is serve's own winSide (the account and the host read once).
+func thisWin(gmsa string) winSide {
+	runAs, host := winSelf()
+	return winSide{GMSA: gmsa, GOOS: runtime.GOOS, RunAs: runAs, Host: host}
+}
+
+var winSelf = sync.OnceValues(func() (string, string) {
+	runAs := ""
+	if u, err := user.Current(); err == nil {
+		runAs = u.Username
+	}
+	h, _ := os.Hostname()
+	h, _, _ = strings.Cut(h, ".")
+	h = strings.ToUpper(h)
+	if len(h) > 15 {
+		h = h[:15] // the NetBIOS name: the first 15 characters
+	}
+	return runAs, h
+})
+
+// windowsOff is why the Windows sign-in is not offered ("" = it is, as the gMSA): never the machine account
+// DOMAIN\HOST$, named in gmsa: or reached through a serve that runs as another account (mssqlopen refuses the same at
+// each connect of run, serve and the import).
+func windowsOff(w winSide) string {
 	switch {
-	case goos != "windows":
-		return "Windows authentication needs pgvigil on Windows, running as the gMSA the configuration names (gmsa:); this server runs on " + goos
-	case gmsa == "":
+	case w.GOOS != "windows":
+		return "Windows authentication needs pgvigil on Windows, running as the gMSA the configuration names (gmsa:); this server runs on " + w.GOOS
+	case w.GMSA == "":
 		return "Windows authentication needs the gMSA the service runs as named in the configuration (gmsa: DOMAIN\\name$); never the machine account"
+	}
+	_, acct, _ := strings.Cut(w.GMSA, `\`)
+	if w.Host != "" && strings.EqualFold(strings.TrimSuffix(acct, "$"), w.Host) {
+		return "gmsa: " + w.GMSA + " is this host's machine account (" + w.Host + "$), never offered: name the group Managed Service Account the service runs as"
+	}
+	if !strings.EqualFold(w.RunAs, w.GMSA) {
+		return fmt.Sprintf("pgvigil serve runs as %q, not as the gMSA %s the configuration names (gmsa:): a Windows sign-in would reach the servers as another account (a virtual or system account signs in as the machine account); run pgvigil serve and the service as the gMSA", w.RunAs, w.GMSA)
 	}
 	return ""
 }
@@ -264,7 +299,7 @@ func (s *Server) DBADashMoves(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	off := s.instancesOff()
-	win := windowsOff(a.GMSA, runtime.GOOS)
+	win := windowsOff(thisWin(a.GMSA))
 	if repo == nil {
 		type repoRow struct {
 			Name   string `json:"name"`
@@ -453,11 +488,11 @@ type moveServer struct {
 }
 
 // moveAddCheck is the add's refusals before anything is written: the sign-in, the count, each server's host and name.
-func moveAddCheck(auth, gmsa, goos string, servers []moveServer) error {
+func moveAddCheck(auth string, win winSide, servers []moveServer) error {
 	switch auth {
 	case "sql", "entra", "entra-identity":
 	case "windows":
-		if why := windowsOff(gmsa, goos); why != "" {
+		if why := windowsOff(win); why != "" {
 			return errors.New(why)
 		}
 	default:
@@ -556,7 +591,7 @@ func (s *Server) moveAdd(w http.ResponseWriter, r *http.Request, user, repo stri
 	}
 	auth, login, password := str(in, "auth"), str(in, "login"), rawStr(in, "password")
 	// the checks read each host as typed (an alias in brackets is refused before the split would cut it to a name)
-	if err := moveAddCheck(auth, a.GMSA, runtime.GOOS, servers); err != nil {
+	if err := moveAddCheck(auth, thisWin(a.GMSA), servers); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
