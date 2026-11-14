@@ -41,9 +41,10 @@ const dbadash = {
   'Backup LOG':          { postgres: ['backups'], sqlserver: ['mssqlbackups'], dd: 'Backup LOG -> HA/DR > Backups' },
   'Drive Space':         { postgres: ['drives'], sqlserver: ['drives'], dd: 'Drive Space -> Storage > Drives' },
   'Agent Jobs':          { postgres: ['jobsreport', 'jobs'], sqlserver: ['mssqljobs'], dd: 'Agent Jobs -> Jobs > Job Status' },
-  'Log Shipping':        { postgres: ['pgbackups'], sqlserver: ['availability'], dd: 'Log Shipping -> HA/DR > Log Shipping' },
-  'Mirroring':           { sqlserver: ['availability'], dd: 'Mirroring -> HA/DR > Mirroring' },
-  'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
+  // task 383: SQL Server's three HA cells land on the HA/DR folder's pages in DBA Dash's shape (the instance's own tab)
+  'Log Shipping':        { postgres: ['pgbackups'], sqlserver: ['mssqllogshipping'], dd: 'Log Shipping -> HA/DR > Log Shipping' },
+  'Mirroring':           { sqlserver: ['mssqlmirroring'], dd: 'Mirroring -> HA/DR > Mirroring' },
+  'Availability Groups': { postgres: ['replication'], sqlserver: ['mssqlag'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
   'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
   'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
   // PostgreSQL's own names of five of DBA Dash's columns (B7 DONE-3, the pgLabel item: web/src/fleet.ts labelOf): a
@@ -75,7 +76,8 @@ const dialogColumns = new Set(['Instance Uptime']);
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
   'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
-  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
+  // task 383: a scope with SQL Server names this column 'Availability Groups' (a PostgreSQL-only one 'Replication', below)
+  'Availability Groups': 'mssqlag', 'Mirroring': 'mssqlmirroring', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
   // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
   'Last amcheck': 'corruption', 'WAL archive': 'backups', 'Jobs': 'jobs', 'Replication': 'pgreplication' };
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)

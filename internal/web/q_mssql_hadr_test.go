@@ -366,3 +366,51 @@ func TestHADRFleetOnAStore(t *testing.T) {
 		want("summary "+k, num(sum[0][k]), v)
 	}
 }
+
+// TestHADRFleetProof is driven by scripts/proof-mssql-hadr.sh part U (the real two-node group of part S):
+// PGVIGIL_HADR_FLEET_DSN its repository, PGVIGIL_HADR_FLEET_INSTANCES the nodes' instance ids; skipped without them. It
+// prints what the AG page answers - one 'FLEET' line per instance (the summary's counts) and one 'RC' line per role
+// change - and the script grades them against sa's own reads.
+func TestHADRFleetProof(t *testing.T) {
+	dsn, inst := os.Getenv("PGVIGIL_HADR_FLEET_DSN"), os.Getenv("PGVIGIL_HADR_FLEET_INSTANCES")
+	if dsn == "" || inst == "" {
+		t.Skip("PGVIGIL_HADR_FLEET_DSN / _INSTANCES not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	s := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	rec := httptest.NewRecorder()
+	s.MSSQLHADRFleet(rec, httptest.NewRequest(http.MethodGet, "/api/mssql/hadr/fleet?page=ag&instances="+inst, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	out := map[string]*table{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"primary_replicas", "secondary_replicas", "not_synchronizing", "synchronizing", "synchronized", "reverting", "initializing",
+		"remote_not_synchronizing", "remote_synchronizing", "remote_synchronized", "remote_reverting", "remote_initializing"}
+	for _, r := range out["summary"].Rows {
+		m := map[string]any{}
+		for i, c := range out["summary"].Columns {
+			m[c] = r[i]
+		}
+		line := fmt.Sprintf("FLEET %v", m["instance_id"])
+		for _, k := range keys {
+			line += fmt.Sprintf(" %s=%v", k, m[k])
+		}
+		fmt.Println(line)
+	}
+	for _, r := range out["role_changes"].Rows {
+		m := map[string]any{}
+		for i, c := range out["role_changes"].Columns {
+			m[c] = r[i]
+		}
+		fmt.Printf("RC %v|%v|%v|%v|%v|%v\n", m["instance_id"], m["group_name"], m["change"], m["source"], m["failover_type"], m["reason"])
+	}
+}
