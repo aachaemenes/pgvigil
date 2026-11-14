@@ -38,8 +38,8 @@
 #   N2 [B3 DONE-2] the demo's first SQL Server instance on this signed-in plain serve is an instance without a
 #      login there, never a demo instance (pgvigil demo -serve alone has demo instances, and it has no login, so it
 #      mails nothing): GET /api/community demo false, no sample, the read login's reason; GET /api/community/sample 404;
-#      Send now of its Community tools page with tool=sp_Blitz answered sent, its HTML and its workbook's Summary with
-#      no 'captured <day> UTC' mark and no demo words.
+#      Send now of its Community tools page with tool=sp_Blitz answered sent, its HTML and every part of its workbook
+#      with no 'captured <day> UTC' mark and no demo words.
 #   S  schedules: on the Jobs page a column hidden with the grid's menu holds over a reload, and Mail... > Schedule this
 #      page... adds a schedule that keeps that grid's choice (grid_prefs, one grid); three more added through POST
 #      /api/reportmail (daily at 07:00, the same three routes, the third in America/Los_Angeles), next_at = the next
@@ -62,9 +62,11 @@
 #      tbody, tr, th, td; no script, style element, class attribute, event attribute or javascript: URL; every th and
 #      td carries its own style; one HTML part (text/html, base64) and one plain part (text/plain) in a
 #      multipart/alternative.
-#   X  every mail's .xlsx attachment opens with openpyxl and is the page's Export .xlsx (P03): a Summary sheet first,
-#      then one sheet per grid of the page in order, each with the mail's grid's rows under its header row, an empty
-#      grid's sheet its header row alone (the screen's columns, no data row).
+#   X  every mail's .xlsx attachment opens with openpyxl and is the page's Export .xlsx (P03): the driver presses the
+#      bar's Export .xlsx at each read of the screen (not the read during the renders); the mail's sheets equal that
+#      file's in order, each sheet's header row and number of data rows equal to its sheet's ('About' by name only: its
+#      times are the export's own); an empty grid of the page is a sheet of its header row alone (the screen's columns,
+#      no data row); scripts/xlsx-check.py rules PASS on every mailed workbook.
 #   F  failures: a Send now through 'badmail' (an smtp relay on a port nothing listens on) is answered 'failed' with
 #      the connection's error, and a 'report mail failed' notice naming the mail reaches the file drop and the sink (the
 #      notice is sent on every channel); a schedule whose owner is disabled before its turn is answered 'failed' with
@@ -87,7 +89,7 @@ cleanup() {
   pkill -f "pgvigil-render-" 2>/dev/null || true   # a render's browser left by a killed serve
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO with (force)" >/dev/null 2>&1 || true
   for r in "$COL" "$ALR" "$RDR"; do psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $r" >/dev/null 2>&1 || true; done
-  if [[ -n "${PGVIGIL_MAIL_OUT:-}" ]]; then mkdir -p "$PGVIGIL_MAIL_OUT"; cp -r "$WORK/sink" "$WORK"/screen-*.json "$PGVIGIL_MAIL_OUT/" 2>/dev/null || true; fi
+  if [[ -n "${PGVIGIL_MAIL_OUT:-}" ]]; then mkdir -p "$PGVIGIL_MAIL_OUT"; cp -r "$WORK/sink" "$WORK"/screen-*.json "$WORK/bar" "$WORK/mailbooks" "$PGVIGIL_MAIL_OUT/" 2>/dev/null || true; fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -279,6 +281,14 @@ const ev = async (expr) => {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 await cmd('Network.enable');
 await cmd('Network.setCookie', { name: 'pgvigil_session', value: token, url: U, httpOnly: true });
+// the browser's own target: where its downloads go (each press of the bar's Export .xlsx into a folder of its own)
+const path = await import('node:path');
+const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+const bws = new WebSocket(ver.webSocketDebuggerUrl);
+await new Promise(r => bws.addEventListener('open', r));
+let bid = 0; const bwait = new Map();
+bws.addEventListener('message', m => { const d = JSON.parse(m.data); if (bwait.has(d.id)) { bwait.get(d.id)(d); bwait.delete(d.id); } });
+const bcmd = (method, params = {}) => new Promise(r => { const i = ++bid; bwait.set(i, r); bws.send(JSON.stringify({ id: i, method, params })); });
 const settled = async () => {
   let last = '', since = Date.now();
   for (const t = Date.now(); Date.now() - t < 30000; await sleep(200)) {
@@ -329,6 +339,22 @@ const open = async (route, zone = '') => {
   if (!await settled()) throw new Error('the page did not settle: ' + route);
 };
 const split = a => a.includes('^') ? [a.slice(a.indexOf('^') + 1), a.slice(0, a.indexOf('^'))] : [a, ''];
+// the bar's Export .xlsx of the page as drawn at this read (X: the mail's workbook is graded against it), saved under
+// <out>/bar/<sub>/; its path from <out>
+const bar = async (sub) => {
+  const dir = path.resolve(out, 'bar', sub); fs.mkdirSync(dir, { recursive: true });
+  const set = await bcmd('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dir });
+  if (set.error) throw new Error('Browser.setDownloadBehavior: ' + JSON.stringify(set.error));
+  const hit = await ev(`(() => { const b = [...document.querySelectorAll('#bar .export button')].find(x => x.textContent === 'Export .xlsx'); if (!b) return false; b.click(); return true; })()`);
+  if (!hit) throw new Error('no Export .xlsx in the bar of ' + await ev('location.hash'));
+  for (const t = Date.now(); Date.now() - t < 20000; await sleep(200)) {
+    const f = fs.readdirSync(dir);
+    if (f.some(x => x.endsWith('.crdownload'))) continue;
+    const x = f.find(x => x.endsWith('.xlsx'));
+    if (x) return path.join('bar', sub, x);
+  }
+  throw new Error(`no .xlsx after Export .xlsx on ${await ev('location.hash')}: ` + await ev(`document.querySelector('#bar .export [role=status]')?.textContent ?? ''`));
+};
 const res = {};
 if (mode === 'now' || mode === 'screen') {
   const base = mode === 'now' && /^\d+$/.test(tag) ? Number(tag) : 0;   // a later Send now numbers its screens on from the first's
@@ -337,7 +363,10 @@ if (mode === 'now' || mode === 'screen') {
     const [route, zone] = split(arg);
     await open(route, zone);
     const screen = await ev(SCREEN);
-    fs.writeFileSync(`${out}/screen-${mode === 'now' ? 'now' : tag}-${i}.json`, JSON.stringify({ route, screen }));
+    // the bar's export at the same read; not while the schedules' turns are drawn (the read 'sm': its timing is S's)
+    const key = mode === 'now' ? 'now' : tag;
+    const file = key === 'sm' ? undefined : await bar(`${key}-${i}`);
+    fs.writeFileSync(`${out}/screen-${key}-${i}.json`, JSON.stringify({ route, screen, ...(file ? { bar: file } : {}) }));
     if (mode === 'now') {
       await ev(`document.querySelector('#bar .mail button').click()`);
       for (let n = 0; n < 50 && !await ev(`!!document.querySelector('dialog[open] textarea')`); n++) await sleep(100);
@@ -466,9 +495,10 @@ stored = re.compile(r'captured \d{4}-\d{2}-\d{2} UTC|is a demo instance')
 assert not stored.search(body), f"N2: the mail's body holds stored words: {stored.findall(body)[:3]}"
 xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
 z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
-# the Summary sheet writes its text inline; the tags go first, so a note split into rich-text runs is read whole
-xml = html.unescape(re.sub(r'<[^>]+>', '', z.read('xl/worksheets/sheet1.xml').decode()))
-assert not stored.search(xml), f"N2: the mail's workbook's Summary holds stored words: {stored.findall(xml)[:3]}"
+# every XML part of the workbook (its sheets, About last, the shared strings, the document's properties); the tags go
+# first, so a note split into rich-text runs is read whole
+xml = ' '.join(html.unescape(re.sub(r'<[^>]+>', '', z.read(n).decode())) for n in z.namelist() if n.endswith('.xml'))
+assert not stored.search(xml), f"N2: the mail's workbook holds stored words: {stored.findall(xml)[:3]}"
 print(f"ok   N2: mail {sid}: {name}'s Community tools page (tool=sp_Blitz) from the signed-in plain serve, an instance without a login there: no sample (GET /api/community/sample 404), the mail sent with no kit's stored words in its body or its workbook")
 PY
 NOWIDS="$NOWIDS $SAMPID"   # graded by C, H and X with the others
@@ -579,12 +609,12 @@ ok "F: the bad relay answered failed ($BADERR); the disabled owner's turn failed
 
 # ---- C, H, X: every mail against its screen -----------------------------------------------------------------------------
 q "select json_agg(json_build_object('id', send_id, 'kind', kind, 'route', route, 'subject', subject, 'name', name, 'to', recipients, 'schedule', schedule_id)) from pgvigil.report_mail_sends where send_id in ($(tr ' ' ',' <<<"$NOWIDS $SCHIDS $TESTID"))" > "$WORK/sends.json"
-python3 - "$WORK" "$SJOB" "$HIDDEN" "$SLA" <<'PY' || fail "C/H/X: the mails differ from the window (above)"
-import email, glob, html as H, io, json, os, re, sys
+python3 - "$WORK" "$SJOB" "$HIDDEN" "$SLA" "$PWD/scripts/xlsx-check.py" <<'PY' || fail "C/H/X: the mails differ from the window (above)"
+import email, glob, html as H, io, json, os, re, subprocess, sys
 from email import policy
 from html.parser import HTMLParser
 import openpyxl
-W, SJOB, HIDDEN, SLA = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+W, SJOB, HIDDEN, SLA, XCHECK = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), sys.argv[5]
 FILL = {'ok': ('#006638', '#ffffff'), 'warn': ('#e49325', '#1d1300'), 'crit': ('#ab1f26', '#ffffff'), 'none': ('#e0e1e9', '#004f83'), 'ack': ('#1b6aa3', '#ffffff')}
 LINK = ('#f1f1f6', '#004f83')
 ALLOWED = {'html', 'head', 'meta', 'title', 'body', 'h2', 'h3', 'p', 'table', 'thead', 'tbody', 'tr', 'th', 'td'}
@@ -593,9 +623,15 @@ from urllib.parse import parse_qsl
 def norm(route):
     path, _, qs = route.partition('?')
     return path + '?' + '&'.join(f'{k}={v}' for k, v in sorted(parse_qsl(qs)))
-screens = {}
+screens = {}; bars = {}   # each read of a route, and the bar's Export .xlsx pressed at it (not at the read 'sm')
 for f in glob.glob(os.path.join(W, 'screen-*.json')):
-    d = json.load(open(f)); screens.setdefault(norm(d['route']), {})[os.path.basename(f).split('-')[1]] = d['screen']
+    d = json.load(open(f)); k = os.path.basename(f).split('-')[1]
+    screens.setdefault(norm(d['route']), {})[k] = d['screen']
+    if d.get('bar'): bars.setdefault(norm(d['route']), {})[k] = os.path.join(W, d['bar'])
+# a sheet's header row and its number of data rows (a row with any value under the header)
+head_of = lambda ws: [str(c.value) for c in next(ws.iter_rows(min_row=1, max_row=1), []) if c.value is not None]
+rows_of = lambda ws: sum(1 for r in ws.iter_rows(min_row=2) if any(c.value is not None for c in r))
+books = []
 mails = {}
 for f in sorted(glob.glob(os.path.join(W, 'sink', '*.eml'))):
     m = email.message_from_binary_file(open(f, 'rb'), policy=policy.default)
@@ -662,6 +698,10 @@ for sid, s in sorted(sends.items()):
     shape = lambda r: [(g['named'], g['rows']) for g in r if not g.get('empty')]
     scr = next((r for r in reads if shape(r) == [(g['name'], len(g['rows'])) for g in p.grids]), reads[0])
     alt_scrs = [r for r in reads if r is not scr]
+    # the bar's export pressed at that read (the read 'sm' has none: the next read of the route that has one)
+    at = pair[next(i for i, r in enumerate(reads) if r is scr)]
+    rb = bars.get(norm(s['route']), {})
+    barf = rb.get(at) or next((rb[k] for k in pair if k in rb), None)
     book = [g for g in scr]   # every grid of the page in order, the empty ones too: the workbook's sheets
     grids = [g for g in scr if not g.get('empty')]   # the grids with rows: the mail's body
     zone = re.search(r'>Time zone</th><td[^>]*>([^<]*)<', body)
@@ -709,25 +749,32 @@ for sid, s in sorted(sends.items()):
                     else: coloured += 1
     x = [p for p in m.walk() if p.get_content_type().endswith('spreadsheetml.sheet')]
     if len(x) != 1: problems.append(f'mail {sid}: {len(x)} workbooks'); continue
-    wb = openpyxl.load_workbook(io.BytesIO(x[0].get_payload(decode=True)))
-    # P03: the workbook is Export .xlsx's: the Summary sheet, then a sheet per grid of the page in order, an empty grid's
-    # its header row alone (its columns, no data row)
-    if wb.sheetnames[0] != 'Summary' or len(wb.sheetnames) != 1 + len(book): problems.append(f'mail {sid}: sheets {wb.sheetnames} vs 1 + {len(book)} grids of the page ({sum(1 for g in book if g.get("empty"))} empty)')
+    raw = x[0].get_payload(decode=True)
+    wb = openpyxl.load_workbook(io.BytesIO(raw))
+    os.makedirs(os.path.join(W, 'mailbooks'), exist_ok=True)
+    books.append(os.path.join(W, 'mailbooks', f'mail-{sid}.xlsx')); open(books[-1], 'wb').write(raw)
+    # P03: the workbook is Export .xlsx's - the bar's export of the same page at the same read: the same sheets in order,
+    # each with the same header row and as many data rows ('About' by name only: its times are the export's own)
+    if barf is None: problems.append(f'mail {sid}: no bar export beside a read of {s["route"]}')
     else:
-        body = iter(p.grids)
-        for ws, g in zip(wb.worksheets[1:], book):
-            n = sum(1 for r in ws.iter_rows(min_row=2) if any(c.value is not None for c in r))
-            if g.get('empty'):
-                hd = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))] if ws.max_row >= 1 else []
-                if n or [str(v) for v in hd if v is not None] != g['head']: problems.append(f'mail {sid} {g["named"]}: the empty grid\'s sheet {ws.title}: {n} rows, header {hd} vs {g["head"]}')
-                continue
-            mg = next(body, None)
-            if mg is not None and n != len(mg['rows']) and len(mg['rows']): problems.append(f'mail {sid} {mg["name"]}: the sheet {ws.title} has {n} rows, the mail {len(mg["rows"])}')
+        bw = openpyxl.load_workbook(barf)
+        if wb.sheetnames != bw.sheetnames: problems.append(f'mail {sid}: sheets {wb.sheetnames} vs the bar\'s {bw.sheetnames} ({os.path.basename(barf)})')
+        else:
+            for ws, bs in zip(wb.worksheets, bw.worksheets):
+                if ws.title == 'About': continue
+                if (head_of(ws), rows_of(ws)) != (head_of(bs), rows_of(bs)): problems.append(f'mail {sid} sheet {ws.title}: header {head_of(ws)}, {rows_of(ws)} rows vs the bar\'s {head_of(bs)}, {rows_of(bs)} rows')
+    # an empty grid of the page: a sheet of its header row alone (its columns, no data row)
+    for g in book:
+        if g.get('empty') and not any(head_of(ws) == g['head'] and rows_of(ws) == 0 for ws in wb.worksheets if ws.title != 'About'):
+            problems.append(f'mail {sid} {g["named"]}: no sheet of the empty grid\'s header row alone ({g["head"]}) in {wb.sheetnames}')
     total += cells
     print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched a later read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
+# the file rules (scripts/xlsx-check.py rules) on every mailed workbook
+xr = subprocess.run([sys.executable, '-I', XCHECK, 'rules', *books], capture_output=True, text=True)
+if xr.returncode != 0 or not books: problems += [f'xlsx-check: {l}' for l in xr.stdout.splitlines() if l.startswith('FAIL')] or [f'xlsx-check rc {xr.returncode}: {(xr.stderr or xr.stdout)[-300:]}']
 for x in problems[:40]: print('     ' + x)
 if problems: print(f'{len(problems)} problems'); sys.exit(1)
-print(f'ok   H: every mail tables and inline styles only, no script, style, class or event attribute; X: every workbook opens with openpyxl; {total} cells in all')
+print(f'ok   H: every mail tables and inline styles only, no script, style, class or event attribute; X: every workbook opens with openpyxl, its sheets the bar\'s export\'s of its page at its read (headers and row counts equal), every empty grid a sheet of its header alone; xlsx-check rules PASS on {len(books)} workbooks; {total} cells in all')
 PY
 
 # ---- P: the Report mail page ------------------------------------------------------------------------------------------

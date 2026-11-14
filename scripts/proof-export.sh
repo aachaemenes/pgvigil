@@ -1700,7 +1700,7 @@ for key, tab, inst in PAGES:
         check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF0063A3' and cx[u]['font'] == 'FFFFFFFF' and cx[u]['bold'] for u in hs1),
               f"{key}: sheet '{names[gsheet[i] - 1]}' header row FF0063A3, white, bold (X4) ({sorted({(cx[u]['fill'], cx[u]['font'], cx[u]['bold']) for u in hs1 if u < len(cx)})})")
     # each sheet named by the heading above its grid (h2 to h5, or the name the page gives it: data-sheet): the name starts
-    # with the heading's first words (cut at 31 characters; the Summary grid's heading meets the export's own Summary sheet)
+    # with the heading's first words (cut at 31 characters)
     # (the export's rule: a character Excel refuses becomes a space, then each run of spaces one space)
     # (changed by P5, the lead 22:34: a time the heading carries in brackets is left out of the sheet's name)
     # (changed by X2: a time after a word too; never a numbered repeat - two headings equal after the cut keep their start,

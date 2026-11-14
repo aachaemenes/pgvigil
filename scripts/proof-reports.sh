@@ -73,7 +73,7 @@
 #     The Deadlock Charts and Query Stats Charts rings are rings with a hole half their radius (each slice an outer arc
 #     and an inner one of radius 27, a whole slice a circle of radius 40.5 stroked 27 wide: DBA Dash's InnerRadius 0.5); the PostgreSQL instance's Databases by size stays a pie (each wedge from the centre).
 #  G. each page's Export .xlsx (16: every page with a grid) gives a workbook that opens (openpyxl where the box has
-#     it, else the zip's workbook.xml) with a sheet, after its own Summary sheet, for every grid heading of its page that
+#     it, else the zip's workbook.xml) with a grid sheet (every sheet but a last 'About') for every grid heading of its page that
 #     holds rows [fold: all 16; run 8: an empty grid (pgaudit's, not in the image) shows a note, not a table, and the
 #     shell's export takes tables]; every grid F wants holds rows on this seed [fold]. [169b] An empty grid is a sheet
 #     too, its header row alone with as many cells as the grid's columns, as DBA Dash exports one (CommonShared.cs
@@ -715,10 +715,13 @@ for f in files:
         sheets = re.findall(r'<sheet [^>]*name="([^"]+)"', zipfile.ZipFile(p).read('xl/workbook.xml').decode())
     tab = f[:-5]
     clean = lambda x: re.sub(r'[\\/?*\[\]:]', '', x)[:25].lower()
+    # the grid sheets: every sheet but a last 'About' (the export's facts), the first one too
+    assert sheets and sheets[-1] == 'About', f'{f}: the last sheet is not About: {sheets}'
+    gs = len(sheets) - 1
     for w in grids.get(tab, []):
-        assert any(clean(s).startswith(clean(w)) or clean(w) in clean(s) for s in sheets[1:]), f'{f}: no sheet for the grid {w!r} in {sheets}'   # sheet 1 is the export's own Summary
+        assert any(clean(s).startswith(clean(w)) or clean(w) in clean(s) for s in sheets[:gs]), f'{f}: no sheet for the grid {w!r} in {sheets}'
     for w, ncols in empties.get(tab, []):
-        k = next((i for i, s in enumerate(sheets) if i > 0 and (clean(s).startswith(clean(w)) or clean(w) in clean(s))), None)
+        k = next((i for i, s in enumerate(sheets) if i < gs and (clean(s).startswith(clean(w)) or clean(w) in clean(s))), None)
         assert k is not None, f'{f}: no sheet for the empty grid {w!r} in {sheets}'
         xml = zipfile.ZipFile(p).read(f'xl/worksheets/sheet{k + 1}.xml').decode()
         rows = re.findall(r'<row [^>]*>(.*?)</row>', xml, re.S)
