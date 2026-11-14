@@ -108,13 +108,15 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
     // a figure the page rounds to a whole number first ('61,075' for 61074.6: fmtNum(Math.round(v))): the raw value
     if (norm(fmtNum(Math.round(n))) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
   }
-  // a status grid's cell whose model is an object (the fleet Summary's) and whose words are a bare number in the locale
-  // ('2' collection errors): that number, as DBA Dash writes its 'DBA Dash Errors (24hrs)'
-  if (raw !== null && typeof raw === 'object') {
-    const d = digitsOf(text);
-    if (d && (norm(fmtNum(Number(d))) === text || /^\d+$/.test(text))) { const k = Number(d); return { v: k, kind: Number.isInteger(k) ? 'int' : 'dec' }; }
-  }
   return { v: text, kind: 'text' };
+}
+
+// bareNumber: words that are a bare number in the locale ('3', '1,234', '5432'), as that number
+export function bareNumber(text: string): Pick<Cell, 'v' | 'kind'> | undefined {
+  const d = digitsOf(text);
+  if (!d || !(norm(fmtNum(Number(d))) === text || /^-?\d+$/.test(text)) || /^[+0]\d/.test(text)) return undefined;
+  const k = Number(d);
+  return { v: k, kind: Number.isInteger(k) ? 'int' : 'dec' };
 }
 
 // the locale's grouping and decimal characters, learnt from fmtNum (',' and '.' in en-US, U+202F and ',' in fr-FR)
@@ -284,6 +286,9 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     const t = text(td);
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
     const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
+    // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
+    // are that number ('3' collection errors), as DBA Dash writes its 'DBA Dash Errors (24hrs)'
+    if (td.classList.contains('status') && typeof c.v === 'string') { const b = bareNumber(t); if (b) Object.assign(c, b); }
     const l = looks[i]?.[j];
     return l ? withDot({ ...c, look: l.look }, l) : c;
   }));
