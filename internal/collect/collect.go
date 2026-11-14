@@ -125,7 +125,15 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	if dsn == "" {
 		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (unset variable or unreadable file)", in.Name, in.DSNRaw))
 	}
-	conn, err := pgx.Connect(ctx, dsn)
+	// task 201 DONE-2 (N10): pgx.Connect's own two steps, with DefaultConnectTimeout where the DSN sets no
+	// connect_timeout; a DSN that does not parse is a failed connect, as before
+	cfg, err := pgx.ParseConfig(dsn)
+	var conn *pgx.Conn
+	if err == nil {
+		InstanceTarget(in.Name, PgTarget(cfg)) // task 201 DONE-2 N8: the dial target on the beat
+		withConnectTimeout(cfg)
+		conn, err = pgx.ConnectConfig(ctx, cfg)
+	}
 	err = InstanceConnect(in.Name, err)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", in.Name, err)

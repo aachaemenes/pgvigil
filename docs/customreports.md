@@ -159,12 +159,21 @@ list what stops every tool there, each with the way to get it:
 | note | on | what the run will not see, or what the form filled in for this server |
 | off | off | what it lacks: the line to ask for (a `GRANT`, a configuration key, a setting) |
 | not checked | off | the check that failed or ran out of time: a tool is never 'ready' on a guess |
-| demo | Run off; the name opens the stored sample | a demo instance: `pgvigil demo` invented its data and no server stands behind it |
+| demo | Run off; 'Open sample' (or the name) opens the stored sample | a demo instance: `pgvigil demo` invented its data and no server stands behind it |
+
+A tool's panel (its form and Run, or on a demo instance its stored sample) opens directly under the tool's own table, at
+the top of the view with the keyboard's focus on its heading (a failed read: on its error); a click on another tool
+moves it there, and a later click wins over an earlier one still loading. On a demo instance the address's `tool=`
+opens the sample the same way once as the page is reached (a link, Back); a redraw of the same page (the system's
+colours under the 'auto' theme) leaves the view where it is. An address naming no tool there says so above the tools.
 
 On a demo instance (one this running `pgvigil demo -serve` seeded, still tagged `demo` under the demo's name prefix,
 with no login for it on this server: decided per instance, so `pgvigil demo -serve -config` shows real instances beside
 it as themselves; a plain `pgvigil serve` has no demo instance, whatever an instance's tags, and the demo's instances
-there are instances without a login) each tool's name opens its stored sample: what a run of the tool
+there are instances without a login) the page says so first ('Each tool with a stored sample opens it: its real
+output, captured on a test server; nothing runs on a demo instance.'), and each row's 'before it runs' leads with an 'Open
+sample' button (named 'Open sample: <tool>'; the tool's name opens it too) before the demo line; a tool with no stored
+sample says so in its row. The sample is what a run of the tool
 returned on a test server built for the capture (`scripts/capture-community-samples.sh`: a SQL Server 2022 and a
 PostgreSQL server of their own, loaded with the demo's own invented names; the kit, its version, the capture's date (its
 UTC day, said so) and the test server's version in the line above it, and 'not <instance>' - with the instance's

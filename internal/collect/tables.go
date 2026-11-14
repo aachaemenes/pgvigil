@@ -44,11 +44,13 @@ func (tablesCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row, er
 }
 
 // tablesDatabasesSQL lists the databases to read: connectable, not a template, CONNECT granted
-// (a managed platform's own database, rdsadmin or azure_maintenance, refuses CONNECT and drops out).
+// (a managed platform's own database, rdsadmin or azure_maintenance, refuses CONNECT and drops out), not invalid
+// (datconnlimit -2, PostgreSQL 13.12, 14.9, 15.4, 16 and later: an interrupted DROP DATABASE left it; the server refuses
+// every connection to it with FATAL 55000, and the databases collection already names it red).
 const tablesDatabasesSQL = `
 SELECT d.datname::text
   FROM pg_database d
- WHERE d.datallowconn AND NOT d.datistemplate AND has_database_privilege(d.datname, 'CONNECT')
+ WHERE d.datallowconn AND NOT d.datistemplate AND d.datconnlimit <> -2 AND has_database_privilege(d.datname, 'CONNECT')
  ORDER BY d.datname = current_database() DESC, d.datname`
 
 // tablesDBSQL is the database's summary row (the after-load section of a slow-read diagnostic): user tables, how many

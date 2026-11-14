@@ -22,8 +22,8 @@ function stateLine(st: Row | undefined): HTMLElement {
   if (!st) return el('p', { class: 'meta' }, badge('not read yet', ''), ' The Extended Events reader (mssql_xe, every minute) has not read this instance yet.');
   const read = ` (read ${fmtTime(st.snapshot_at)})`;
   if (st.state === 'not installed') {
-    return el('p', { class: 'meta' }, badge('not installed', 'warn'), ' This server has no deadlock session of pgvigil (', el('code', {}, 'pgvigil mssql-xe -print'),
-      ' writes it for the server\'s DBA).', st.source === 'system_health' ? ' The deadlocks below are the ones SQL Server\'s own system_health session kept.' : '', read);
+    return el('p', { class: 'meta' }, badge('not installed', 'warn'), ' This server has no deadlock session of pgvigil (', el('code', {}, 'pgvigil mssql-xe -print -form <the server\'s form>'),
+      ' writes it for the server\'s DBA; the forms: docs/sqlserver-xe.md).', st.source === 'system_health' ? ' The deadlocks below are the ones SQL Server\'s own system_health session kept.' : '', read);
   }
   if (st.state === 'stopped') return el('p', { class: 'meta' }, badge('stopped', 'warn'), ` The session ${text(st.session_name)} is defined and not started: nothing is captured.`, read);
   return el('p', { class: 'meta' }, badge('running', 'ok'), ` session ${text(st.session_name)}, target ${text(st.target)}`, read,

@@ -12,10 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/bits"
+	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +50,8 @@ type runAgg struct {
 
 type loadAgg struct {
 	attempts, opened, runs, failures, auth int
+	noanswer                               int           // failed connects the server never answered (NoAnswer: N8)
+	every                                  time.Duration // the fastest configured interval of the runs counted (0: none known)
 }
 
 type streak struct {
@@ -69,6 +74,7 @@ type Heartbeat struct {
 	load     map[string]*loadAgg   // instance name
 	streaks  map[[2]string]*streak // instance name, collection
 	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
+	targets  map[string]string     // instance name: its dial target (InstanceTarget: N8)
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -76,8 +82,16 @@ var current atomic.Pointer[Heartbeat]
 // RecordRun counts one run of a collection on an instance (sched's loop calls it after each run, never for a run its
 // stop cut short); nothing when no heartbeat runs (`pgvigil collect`, a test).
 func RecordRun(instance, engine, collection string, res Result) {
+	RecordRunEvery(instance, engine, collection, res, 0)
+}
+
+// RecordRunEvery is RecordRun with the collection's configured interval on that instance (task 201 DONE-2 N3): the
+// minute's load row carries the fastest one counted, and the repository reads the collector's span from them
+// (collector_span_take, 0121) - how far apart one instance's written minutes may lie, so a host whose collections all
+// run every 5 minutes is not read as a late 1-minute one. every 0 = not known.
+func RecordRunEvery(instance, engine, collection string, res Result, every time.Duration) {
 	if h := current.Load(); h != nil {
-		h.record(instance, engine, collection, res, time.Now())
+		h.record(instance, engine, collection, res, time.Now(), every)
 	}
 }
 
@@ -107,6 +121,66 @@ func (h *Heartbeat) countConnect(instance string, err error) {
 	} else if AuthFailure(err) {
 		l.auth++
 	}
+	if NoAnswer(err) {
+		l.noanswer++
+	}
+}
+
+// NoAnswer says whether a failed connect got no answer from the server (task 201 DONE-2 N8: the server's own parent
+// counts these alone) - a network error (refused, unreachable, a name not found), a timeout or deadline, a reset or an
+// end of stream in the handshake, a TLS handshake that died. Never a failure the server answered (a PostgreSQL
+// SQLSTATE such as 3D000, 28P01 or 53300; a SQL Server error number such as 18456), never a stop's cancel. The SQL
+// Server connector joins the network error the driver drops (a named instance whose SQL Server Browser answered no
+// one, a TLS handshake's error: internal/mssql's withNetwork), so those read here as no answer too.
+func NoAnswer(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		return false
+	}
+	var ms interface{ SQLErrorNumber() int32 }
+	if errors.As(err, &ms) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne)
+}
+
+// InstanceTarget records the instance's dial target (task 201 DONE-2 N8): what the collector connects to - the engine,
+// the DSN's host and port, lower-cased ('postgres:db1.example:5432'; PgTarget, and the SQL Server connector's own) -
+// sent on the beat's load row. The repository names a server by it, never by the server's reported address (a pooler,
+// a container's address, a virtual name). Nothing when no heartbeat runs.
+func InstanceTarget(instance, target string) {
+	if h := current.Load(); h != nil && target != "" {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.targets == nil {
+			h.targets = map[string]string{}
+		}
+		h.targets[instance] = target
+	}
+}
+
+// PgTarget is a PostgreSQL config's dial target: 'postgres:<host>:<port>', its fallback hosts after it in order, each
+// once (pgx lists a host twice under sslmode=prefer: a try with TLS and one without).
+func PgTarget(cfg *pgx.ConnConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	first := strings.ToLower(cfg.Host) + ":" + strconv.Itoa(int(cfg.Port))
+	t, seen := "postgres:"+first, map[string]bool{first: true}
+	for _, f := range cfg.Fallbacks {
+		if hp := strings.ToLower(f.Host) + ":" + strconv.Itoa(int(f.Port)); !seen[hp] {
+			seen[hp] = true
+			t += "," + hp
+		}
+	}
+	return t
 }
 
 // connectError marks a failure of an instance's own connect (InstanceConnect): the run that meets it builds no
@@ -215,8 +289,25 @@ func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) e
 	return &connectError{err}
 }
 
-// connectCounted is pgx.ConnectConfig counted for the instance's load.
+// DefaultConnectTimeout bounds an instance connect whose DSN sets no connect_timeout (task 201 DONE-2, N10): pgx then
+// waits on the caller's context alone, so a host that drops packets held each collection to its own deadline. With it
+// the whole connect (dial, TLS, startup, login) ends in about 10 s per host address and is a failed attempt. A DSN's
+// own connect_timeout is kept; connect_timeout=0 parses to the same 0 as none and takes this too. A variable so a test
+// can shorten it.
+var DefaultConnectTimeout = 10 * time.Second
+
+// withConnectTimeout gives a config whose DSN set no connect_timeout DefaultConnectTimeout.
+func withConnectTimeout(cfg *pgx.ConnConfig) {
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = DefaultConnectTimeout
+	}
+}
+
+// connectCounted is pgx.ConnectConfig counted for the instance's load, under DefaultConnectTimeout where the DSN set
+// no connect_timeout.
 func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
+	withConnectTimeout(cfg)
+	InstanceTarget(instance, PgTarget(cfg))
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	CountConnect(instance, err)
 	return conn, err
@@ -253,7 +344,7 @@ func bucket(d time.Duration) int {
 	return min(bits.Len64(uint64(ms)), histBuckets-1)
 }
 
-func (h *Heartbeat) record(instance, engine, collection string, res Result, now time.Time) {
+func (h *Heartbeat) record(instance, engine, collection string, res Result, now time.Time, every time.Duration) {
 	if cutShort(res) {
 		return
 	}
@@ -268,6 +359,9 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 		return
 	}
 	l := h.loadOf(instance)
+	if every > 0 && (l.every == 0 || every < l.every) {
+		l.every = every
+	}
 	failed := res.Err != nil
 	l.runs++
 	if failed {
@@ -333,6 +427,11 @@ type beatLoad struct {
 	Runs     int    `json:"runs"`
 	Failures int    `json:"failures"`
 	Auth     int    `json:"auth"`
+	// IntervalS: the fastest configured interval, in seconds, of the minute's runs of the instance (none known: left out)
+	IntervalS int `json:"interval_s,omitempty"`
+	// NoAnswer: the minute's failed connects the server never answered; Target: the instance's dial target (N8)
+	NoAnswer int    `json:"noanswer,omitempty"`
+	Target   string `json:"target,omitempty"`
 }
 
 type beatStreak struct {
@@ -368,7 +467,8 @@ func (h *Heartbeat) take() beat {
 	}
 	now := time.Now()
 	for name, l := range h.load {
-		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth})
+		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth,
+			IntervalS: int(l.every / time.Second), NoAnswer: l.noanswer, Target: h.targets[name]})
 		if h.seen == nil {
 			h.seen = map[string]time.Time{}
 		}
@@ -461,7 +561,8 @@ func (h *Heartbeat) claim(ctx context.Context) error {
 func (h *Heartbeat) loadStreaks(ctx context.Context) {
 	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rows, err := h.pool.Query(lctx, `SELECT instance, collection, fail_streak, coalesce(last_error, '') FROM pgvigil.import_collector_streaks()`)
+	// this host's own (task 201 DONE-2 N5: streaks are kept by host; a collector on another host never takes them)
+	rows, err := h.pool.Query(lctx, `SELECT instance, collection, fail_streak, coalesce(last_error, '') FROM pgvigil.import_collector_streaks($1)`, h.host)
 	if err != nil {
 		h.log.Warn("heartbeat: the stored streaks were not read (counted from 0)", "err", err)
 		return
@@ -580,12 +681,18 @@ func (b *ChannelBackoff) Note(now time.Time, outcome map[string]error) {
 	}
 }
 
-var watchdog atomic.Value // string: "on", "on; the last alert pass failed: <err>", or "off: <why>"; empty outside serve
+var watchdog atomic.Value // string: "starting", "on", "on; the last alert pass failed: <err>", or "off: <why>"; empty outside serve
 
 // SetWatchdogOff records why serve runs no watchdog (logged by the caller; the Collector page shows it).
 func SetWatchdogOff(why string) { watchdog.Store("off: " + why) }
 
-// WatchdogStatus is "on" (with the last pass's failure when it failed), "off: <why>", or "" outside serve.
+// SetWatchdogStarting records that serve runs the watchdog and is still reaching the alerts login and the repository
+// (each ping up to 20 s): the Collector page says 'Starting', never 'not this process', until the watchdog's goroutine
+// stores 'on' or 'off: <why>'.
+func SetWatchdogStarting() { watchdog.Store("starting") }
+
+// WatchdogStatus is "starting" (serve reaching its logins), "on" (with the last pass's failure when it failed),
+// "off: <why>", or "" outside serve.
 func WatchdogStatus() string {
 	if v, ok := watchdog.Load().(string); ok {
 		return v

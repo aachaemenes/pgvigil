@@ -8,6 +8,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href } from './router';
+import { tagScopeIds, tagWords } from './fleet';
 import { lineChart } from './chart';
 import { tileRow } from './tiles';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, panel, stateNote, tile } from './ui';
@@ -22,8 +23,9 @@ const sevWord: Record<string, string> = { critical: 'Critical', warning: 'Warnin
 // the service's state in words: a collector down (its 'collector or network' finding) first, then the collectors up (one
 // per host), or how long the newest has not been seen
 function serviceState(rows: Row[], findings: Row[] = []): { word: string; kind: string; sub: string } {
-  const down = findings.filter(r => r.setting === 'collector or network' && String(r.value).startsWith('collector not seen'));
-  if (down.length) return { word: down.length === 1 ? 'Down' : `${down.length} down`, kind: 'crit', sub: down.map(r => String(r.value).replace(/^collector not seen: /, '')).join(', ') + ' not seen for 5 minutes' };
+  // the parent's value is its host; its why is a field of its own (the API reads it off the detail)
+  const down = findings.filter(r => r.setting === 'collector or network' && r.why === 'collector not seen');
+  if (down.length) return { word: down.length === 1 ? 'Down' : `${down.length} down`, kind: 'crit', sub: down.map(r => String(r.value)).join(', ') + ' not seen for 5 minutes' };
   const live = rows.filter(r => r.state === 'up');
   if (live.length > 1) return { word: `${live.length} up`, kind: 'ok', sub: live.map(r => String(r.host)).join(', ') };
   if (live.length === 1) return { word: 'Up', kind: 'ok', sub: `beat ${fmtSecs(live[0].beat_age_secs)} ago` };
@@ -41,16 +43,24 @@ const instLink = (ctx: Ctx, r: Row) => r.instance_id == null ? el('span', {}, St
   : el('a', { href: href(ctx, { tab: 'collectiondates', instance: Number(r.instance_id), tag: undefined }) }, String(r.instance ?? ''));
 
 export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', { class: 'collector' }, el('h2', {}, 'Collector'));
+  const tagged = ctx.tag && !ctx.instance ? ctx.tag : undefined;
+  const sec = el('section', { class: 'collector' }, el('h2', {}, 'Collector' + (tagged ? ` - ${tagWords(tagged)}` : '')));
   let d: Parts;
   try { d = await get<Parts>('collector'); } catch (e) { sec.append(errorBox(e)); return sec; }
-  const collectors = rowsOf(d.collectors), findings = rowsOf(d.findings), colls = rowsOf(d.collections), minutes = rowsOf(d.minutes);
-  const load = rowsOf(d.load), streaks = rowsOf(d.streaks), tables = rowsOf(d.tables);
+  // a tag folder's (TAGTREE; DBA Dash's tag folder's Checks over its own instances): the per-instance rows of the tag's
+  // instances; a row of no instance (the collector's own, the repository's) and the service and repository panels stay
+  let ids: Set<number> | null;
+  try { ids = await tagScopeIds(ctx); } catch (e) { sec.append(errorBox(e)); return sec; }
+  const inFolder = (r: Row) => !ids || r.instance_id == null || ids.has(Number(r.instance_id));
+  const collectors = rowsOf(d.collectors), findings = rowsOf(d.findings).filter(inFolder), colls = rowsOf(d.collections), minutes = rowsOf(d.minutes);
+  const load = rowsOf(d.load).filter(inFolder), streaks = rowsOf(d.streaks).filter(inFolder), tables = rowsOf(d.tables), waits = rowsOf(d.waits);
   const repo: Row = rowsOf(d.repository)[0] ?? {};
   const conns = rowsOf(d.connections), purges = rowsOf(d.purges);
+  if (ids) sec.append(el('p', { class: 'meta' }, `In view: ${tagWords(tagged!)} - the instances' rows are its ${ids.size} instance(s); the service, the collections and the repository are the whole repository's.`));
   const st = serviceState(collectors, findings), me = collectors.find(r => r.state === 'up') ?? collectors[0];
   const wd = String(rowsOf(d.watchdog)[0]?.watchdog ?? '');
   const wdTile = wd === 'on' ? tile('Watchdog', 'On', '', { sub: 'serve sends the alert while a collector is down' })
+    : wd === 'starting' ? tile('Watchdog', 'Starting', '', { sub: 'serve is reaching the alerts login and the repository (up to 40 s)' })
     : wd.startsWith('on;') ? tile('Watchdog', 'On', 'warn', { sub: wd.slice(4) })
     : wd ? tile('Watchdog', 'Off', 'warn', { sub: wd.replace(/^off: /, '') }) : tile('Watchdog', '-', '', { sub: 'not this process' });
 
@@ -80,7 +90,9 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'severity', fmt: v => badge(sevWord[String(v)] ?? String(v), sevKind[String(v)] ?? '') },
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'setting', label: 'check' }, { key: 'value' },
       { key: 'detail', wide: true }, { key: 'at', label: 'since', fmt: fmtTime },
-    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days.'));
+    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days.'),
+    // a forming wait that ended without a parent (task 201 DONE-2 N7): only while no parent stands on that host
+    ...waits.map(r => el('p', { class: 'state' }, `The wait for a shared cause ended on ${r.host} at ${fmtTime(r.ended_at)} without one: new alerts of its ${fmtNum(r.instances)} failing instance(s) are sent as they come.`)));
 
   // the collections over 24 h
   const sum = (k: string) => colls.reduce((a, r) => a + Number(r[k] ?? 0), 0);

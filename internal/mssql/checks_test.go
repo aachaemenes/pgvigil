@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -481,6 +482,46 @@ func TestSuspectPageRows(t *testing.T) {
 	}
 	if rows, fs = suspectPageRows(nil); len(rows) != 0 || len(fs) != 0 {
 		t.Errorf("an empty table: %v %+v", rows, fs)
+	}
+}
+
+// TestAgentAlertsManagedInstance: Microsoft's T-SQL differences page for Managed Instance - SQL Server Agent "Alerts
+// aren't yet supported" and "Pager isn't supported", while email notification is supported (operators exist). So on
+// a Managed Instance only the operators are judged: 'no operator' stays; every alert finding and the fail-safe
+// operator (it serves alert paging) go.
+func TestAgentAlertsManagedInstance(t *testing.T) {
+	all := agentAlertFindings(nil, nil, true, "")
+	var got []string
+	for _, f := range managedInstanceAlertFindings(all) {
+		got = append(got, f.Check)
+	}
+	if strings.Join(got, ", ") != "no operator" {
+		t.Errorf("Managed Instance keeps %v of a new server's alert findings, want [no operator]", got)
+	}
+	// a login without msdb: the plain reason, and no query (the nil connection would panic)
+	c := &checksRun{}
+	runAgentAlerts(t.Context(), nil, Info{Kind: KindAzureMI, EngineEdition: 8}, c)
+	if len(c.rows) != 2 || c.rows[0]["read"] != b2i(false) || !strings.Contains(fmt.Sprint(c.rows[0]["note"]), "no access to msdb") {
+		t.Errorf("Managed Instance without msdb: %v", c.rows)
+	}
+}
+
+// TestAgentAlertsRDS: AWS's 'Using SQL Server Agent for Amazon RDS': "SQL Server Agent alerts and operators aren't
+// supported." (Web, Standard and Enterprise have the Agent; Express has none and is its own case), so on RDS the
+// area is a row with that reason, no finding asks for an alert or an operator, and nothing is read (the nil
+// connection: a query would panic).
+func TestAgentAlertsRDS(t *testing.T) {
+	for _, ee := range []int{2, 3} {
+		c := &checksRun{}
+		runAgentAlerts(t.Context(), nil, Info{Kind: KindRDS, EngineEdition: ee, MsdbAccess: true}, c)
+		if len(c.rows) != 1 {
+			t.Fatalf("RDS edition %d: %d rows, want the one area row: %v", ee, len(c.rows), c.rows)
+		}
+		r := c.rows[0]
+		note, _ := r["note"].(string)
+		if r["kind"] != "area" || r["area"] != AreaAlerts || r["read"] != b2i(false) || !strings.Contains(note, "Amazon RDS for SQL Server does not support SQL Server Agent alerts and operators") {
+			t.Errorf("RDS edition %d: %v", ee, r)
+		}
 	}
 }
 

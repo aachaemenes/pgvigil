@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -55,14 +60,14 @@ func TestRecordTake(t *testing.T) {
 	defer current.Store(nil)
 	now := time.Now()
 	CountConnect("t1", nil)
-	h.record("t1", "postgres", "activity", Result{Rows: 5, Duration: 3 * time.Millisecond}, now)
+	h.record("t1", "postgres", "activity", Result{Rows: 5, Duration: 3 * time.Millisecond}, now, 0)
 	CountConnect("t1", fmt.Errorf("connect t1: %w", &pgconn.PgError{Code: "28P01"}))
-	h.record("t1", "postgres", "activity", Result{Duration: 20 * time.Millisecond, Err: errors.New("connect t1: refused")}, now)
+	h.record("t1", "postgres", "activity", Result{Duration: 20 * time.Millisecond, Err: errors.New("connect t1: refused")}, now, 0)
 	CountConnect("t1", nil)                            // the run of tables
 	CountConnect("t1", &pgconn.PgError{Code: "28000"}) // its per-database connect refused by pg_hba
-	h.record("t1", "postgres", "logs", Result{Note: " (skipped: no log door)"}, now)
+	h.record("t1", "postgres", "logs", Result{Note: " (skipped: no log door)"}, now, 0)
 	CountConnect("t2", nil)
-	h.record("t2", "sqlserver", "activity", Result{Rows: 2, Duration: time.Millisecond}, now)
+	h.record("t2", "sqlserver", "activity", Result{Rows: 2, Duration: time.Millisecond}, now, 0)
 	b := h.take()
 	if len(b.Runs) != 2 || len(b.Load) != 2 || b.Instances != 2 {
 		t.Fatalf("take: runs %d, load %d, instances %d", len(b.Runs), len(b.Load), b.Instances)
@@ -92,11 +97,11 @@ func TestRecordTake(t *testing.T) {
 	if b2 := h.take(); len(b2.Runs) != 0 || len(b2.Streaks) != 0 || len(b2.Load) != 0 {
 		t.Errorf("an empty minute sent %+v", b2)
 	}
-	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
+	h.record("t1", "postgres", "activity", Result{Rows: 1}, now, 0)
 	if b3 := h.take(); len(b3.Streaks) != 1 || b3.Streaks[0].Fails != 0 {
 		t.Errorf("the reset: %+v", b3.Streaks)
 	}
-	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
+	h.record("t1", "postgres", "activity", Result{Rows: 1}, now, 0)
 	if b4 := h.take(); len(b4.Streaks) != 0 {
 		t.Errorf("a success after a success was sent: %+v", b4.Streaks)
 	}
@@ -115,9 +120,9 @@ func TestStreakAfterRestart(t *testing.T) {
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{
 		{"t1", "activity"}: {fails: 5, fresh: true}, {"t1", "dbstats"}: {fails: 5, fresh: true}}}
 	now := time.Now()
-	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
-	h.record("t1", "postgres", "dbstats", Result{Err: errors.New("down")}, now)
-	h.record("t2", "postgres", "activity", Result{Rows: 1}, now) // never failed: its first result is sent once (0)
+	h.record("t1", "postgres", "activity", Result{Rows: 1}, now, 0)
+	h.record("t1", "postgres", "dbstats", Result{Err: errors.New("down")}, now, 0)
+	h.record("t2", "postgres", "activity", Result{Rows: 1}, now, 0) // never failed: its first result is sent once (0)
 	got := map[string]int{}
 	for _, s := range h.take().Streaks {
 		got[s.Instance+"/"+s.Collection] = s.Fails
@@ -125,7 +130,7 @@ func TestStreakAfterRestart(t *testing.T) {
 	if len(got) != 3 || got["t1/activity"] != 0 || got["t1/dbstats"] != 6 || got["t2/activity"] != 0 {
 		t.Errorf("after the restart: %v", got)
 	}
-	h.record("t2", "postgres", "activity", Result{Rows: 1}, now)
+	h.record("t2", "postgres", "activity", Result{Rows: 1}, now, 0)
 	if b := h.take(); len(b.Streaks) != 0 {
 		t.Errorf("a second success was sent: %+v", b.Streaks)
 	}
@@ -149,11 +154,11 @@ func TestEmptyBeatJSON(t *testing.T) {
 func TestStopCutRun(t *testing.T) {
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
 	now := time.Now()
-	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.Canceled)}, now)
+	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.Canceled)}, now, 0)
 	if b := h.take(); len(b.Runs) != 0 || len(b.Load) != 0 || len(b.Streaks) != 0 {
 		t.Fatalf("a cut run was counted: runs %d, load %d, streaks %d", len(b.Runs), len(b.Load), len(b.Streaks))
 	}
-	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.DeadlineExceeded)}, now)
+	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.DeadlineExceeded)}, now, 0)
 	if b := h.take(); len(b.Runs) != 1 || b.Runs[0].Failures != 1 {
 		t.Errorf("a timeout is a failure: %+v", b.Runs)
 	}
@@ -166,10 +171,10 @@ func TestSkipEndsStreak(t *testing.T) {
 		{"t2", "host"}: {fails: 7, lastErr: "refused", fresh: true}}}
 	now := time.Now()
 	skip := Result{Note: " (skipped: no system_stats)"}
-	h.record("t2", "postgres", "host", skip, now)
-	h.record("t2", "postgres", "jobs", Result{Err: errors.New("connect t2: refused")}, now)
-	h.record("t2", "postgres", "jobs", skip, now)
-	h.record("t1", "postgres", "host", skip, now)
+	h.record("t2", "postgres", "host", skip, now, 0)
+	h.record("t2", "postgres", "jobs", Result{Err: errors.New("connect t2: refused")}, now, 0)
+	h.record("t2", "postgres", "jobs", skip, now, 0)
+	h.record("t1", "postgres", "host", skip, now, 0)
 	b := h.take()
 	got := map[string]int{}
 	for _, s := range b.Streaks {
@@ -192,9 +197,9 @@ func TestConnectFailNoStreak(t *testing.T) {
 	refused := &pgconn.PgError{Code: "28P01", Message: "password authentication failed"}
 	for _, c := range []string{"activity", "jobs", "host", "waits"} {
 		err := h.instanceConnect("t2", refused, now)
-		h.record("t2", "postgres", c, Result{Err: fmt.Errorf("connect t2: %w", err)}, now)
+		h.record("t2", "postgres", c, Result{Err: fmt.Errorf("connect t2: %w", err)}, now, 0)
 	}
-	h.record("t1", "postgres", "activity", Result{Err: errors.New("activity on t1: relation missing")}, now)
+	h.record("t1", "postgres", "activity", Result{Err: errors.New("activity on t1: relation missing")}, now, 0)
 	b := h.take()
 	got := map[string]int{}
 	for _, s := range b.Streaks {
@@ -252,17 +257,17 @@ func TestStreakSince(t *testing.T) {
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
 	t0 := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
 	boom := Result{Err: errors.New("waits on t1: boom")}
-	h.record("t1", "postgres", "waits", boom, t0)
+	h.record("t1", "postgres", "waits", boom, t0, 0)
 	if b := h.take(); len(b.Streaks) != 1 || b.Streaks[0].Since == nil || !b.Streaks[0].Since.Equal(t0) {
 		t.Fatalf("first beat: %+v (want since %s)", b.Streaks, t0)
 	}
-	h.record("t1", "postgres", "waits", boom, t0.Add(30*time.Second))
-	h.record("t1", "postgres", "waits", boom, t0.Add(70*time.Second))
+	h.record("t1", "postgres", "waits", boom, t0.Add(30*time.Second), 0)
+	h.record("t1", "postgres", "waits", boom, t0.Add(70*time.Second), 0)
 	b := h.take()
 	if len(b.Streaks) != 1 || b.Streaks[0].Fails != 3 || b.Streaks[0].Since == nil || !b.Streaks[0].Since.Equal(t0) {
 		t.Errorf("second beat: %+v (want 3 fails since %s)", b.Streaks, t0)
 	}
-	h.record("t1", "postgres", "waits", Result{Rows: 1}, t0.Add(90*time.Second))
+	h.record("t1", "postgres", "waits", Result{Rows: 1}, t0.Add(90*time.Second), 0)
 	if b := h.take(); len(b.Streaks) != 1 || b.Streaks[0].Fails != 0 || b.Streaks[0].Since != nil {
 		t.Errorf("after a success: %+v (want 0 fails, no since)", b.Streaks)
 	}
@@ -329,5 +334,234 @@ func TestSeenDue(t *testing.T) {
 	h.take()
 	if h.seenDue("t3", time.Now().Add(time.Minute)) {
 		t.Fatal("an instance the beat just named is due again a minute later")
+	}
+}
+
+// TestWatchdogStarting: serve says 'starting' from the moment it decides to run the watchdog until the alerts login and
+// the repository answered (up to 40 s) - the Collector page says so instead of 'not this process' (task 201 DONE-2,
+// the review of the merges' finding 2); the goroutine then moves it on to 'on' or 'off: <why>'.
+func TestWatchdogStarting(t *testing.T) {
+	defer watchdog.Store("")
+	SetWatchdogStarting()
+	if got := WatchdogStatus(); got != "starting" {
+		t.Fatalf("after SetWatchdogStarting the status is %q, want 'starting'", got)
+	}
+	SetWatchdogOff("the alerts login: no answer")
+	if got := WatchdogStatus(); got != "off: the alerts login: no answer" {
+		t.Fatalf("after SetWatchdogOff the status is %q", got)
+	}
+}
+
+// TestRecordInterval (task 201 DONE-2 N3): an instance's minute carries the fastest configured interval of the runs it
+// counted - the span's input (0121 collector_span_take); a run recorded without one (RecordRun) never lowers a known
+// one, and an instance with none sends no interval_s at all (the repository keeps NULL: unknown, not 0).
+func TestRecordInterval(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
+	RecordRunEvery("t1", "postgres", "activity", Result{Rows: 1}, 5*time.Minute)
+	RecordRunEvery("t1", "postgres", "waits", Result{Rows: 1}, time.Minute)
+	RecordRun("t1", "postgres", "tables", Result{Rows: 1})
+	RecordRunEvery("t2", "postgres", "indexes", Result{Err: errors.New("boom")}, 5*time.Minute)
+	RecordRun("t3", "postgres", "activity", Result{Rows: 1})
+	RecordRunEvery("t4", "postgres", "logs", Result{Note: " (skipped: no log door)"}, time.Minute)
+	got := map[string]int{}
+	for _, l := range h.take().Load {
+		got[l.Instance] = l.IntervalS
+	}
+	if len(got) != 3 || got["t1"] != 60 || got["t2"] != 300 || got["t3"] != 0 {
+		t.Errorf("intervals: %v (want t1 60, t2 300, t3 0; t4's skip counts no run)", got)
+	}
+	body, err := json.Marshal(beatLoad{Instance: "t3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "interval_s") {
+		t.Errorf("an unknown interval was sent: %s", body)
+	}
+	if b2 := h.take(); len(b2.Load) != 0 {
+		t.Errorf("the next minute kept a load row: %+v", b2.Load)
+	}
+}
+
+// TestConnectTimeoutDefault (task 201 DONE-2, N10): an instance connect whose DSN sets no connect_timeout ends in about
+// DefaultConnectTimeout at a server that accepts and never answers (the startup hangs, as at a black-holed address
+// after its SYN), through both connect paths (the instance's own Connect, a collection's connectCounted), and is
+// counted as one failed attempt each - never a run held to its context.
+func TestConnectTimeoutDefault(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, c) // accepted and never answered
+			mu.Unlock()
+		}
+	}()
+	defer func() {
+		mu.Lock()
+		for _, c := range held {
+			_ = c.Close()
+		}
+		mu.Unlock()
+	}()
+	old := DefaultConnectTimeout
+	DefaultConnectTimeout = 300 * time.Millisecond
+	defer func() { DefaultConnectTimeout = old }()
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
+	dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=x dbname=x sslmode=disable", ln.Addr().(*net.TCPAddr).Port)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if c, err := Connect(ctx, config.Instance{Name: "bh1", DSNRaw: dsn}); err == nil {
+		_ = c.Close(ctx)
+		t.Fatal("Connect: connected to a server that never answers")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Connect ended after %v (want about %v)", d.Round(time.Millisecond), DefaultConnectTimeout)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	if c, err := connectCounted(ctx, "bh2", cfg); err == nil {
+		_ = c.Close(ctx)
+		t.Fatal("connectCounted: connected to a server that never answers")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("connectCounted ended after %v (want about %v)", d.Round(time.Millisecond), DefaultConnectTimeout)
+	}
+	for _, n := range []string{"bh1", "bh2"} {
+		if l := h.load[n]; l == nil || l.attempts != 1 || l.opened != 0 || l.auth != 0 {
+			t.Errorf("%s counted %+v (want 1 attempt, none opened, no refused login)", n, l)
+		}
+	}
+}
+
+// TestConnectTimeoutKept (N10): a DSN's own connect_timeout is kept; none gets DefaultConnectTimeout.
+func TestConnectTimeoutKept(t *testing.T) {
+	for dsn, want := range map[string]time.Duration{
+		"host=127.0.0.1 port=1 user=x connect_timeout=3":  3 * time.Second,
+		"host=127.0.0.1 port=1 user=x connect_timeout=60": 60 * time.Second,
+		"host=127.0.0.1 port=1 user=x":                    DefaultConnectTimeout,
+		"host=127.0.0.1 port=1 user=x connect_timeout=0":  DefaultConnectTimeout, // pgx parses 0 as none set (libpq: wait for ever)
+	} {
+		cfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		withConnectTimeout(cfg)
+		if cfg.ConnectTimeout != want {
+			t.Errorf("%q: %v (want %v)", dsn, cfg.ConnectTimeout, want)
+		}
+	}
+}
+
+// TestNoAnswer (task 201 DONE-2 N8): a failed connect the server never answered counts apart - a refused port, no
+// answer in time, an end of stream in the handshake; one the server answered never does (a SQLSTATE, a SQL Server error
+// number), nor a stop's cancel, nor a failure that never dialled (an empty DSN).
+func TestNoAnswer(t *testing.T) {
+	cfg, err := pgx.ParseConfig("host=127.0.0.1 port=1 user=x sslmode=disable connect_timeout=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, refused := pgx.ConnectConfig(context.Background(), cfg)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer func() { _ = c.Close() }()
+		}
+	}()
+	cfg2, err := pgx.ParseConfig(fmt.Sprintf("host=127.0.0.1 port=%d user=x sslmode=disable", ln.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg2.ConnectTimeout = 200 * time.Millisecond
+	_, hung := pgx.ConnectConfig(context.Background(), cfg2)
+	for _, c := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"a refused port", refused, true},
+		{"no answer in time", hung, true},
+		{"the instance's connect marked (InstanceConnect)", &connectError{fmt.Errorf("connect t1: %w", refused)}, true},
+		{"an end of stream in the handshake", fmt.Errorf("x: %w", io.EOF), true},
+		// review part E's nit 8: a stopped container's alias (SV) fails at the name - pgconn joins the resolver's error
+		{"a name that does not resolve", fmt.Errorf("failed to connect to `user=x database=`: hostname resolving error: %w",
+			errors.Join(&net.DNSError{Err: "no such host", Name: "target2", IsNotFound: true})), true},
+		{"3D000", &pgconn.PgError{Code: "3D000"}, false},
+		{"28P01", &pgconn.PgError{Code: "28P01"}, false},
+		{"53300", &pgconn.PgError{Code: "53300"}, false},
+		{"SQL Server 18456", msErr{18456}, false},
+		{"a stop's cancel", fmt.Errorf("x: %w", context.Canceled), false},
+		{"no error", nil, false},
+		{"a failure that never dialled", errors.New("connect t1: the dsn resolved to an empty string"), false},
+	} {
+		if got := NoAnswer(c.err); got != c.want {
+			t.Errorf("%s: NoAnswer(%v) = %v (want %v)", c.name, c.err, got, c.want)
+		}
+	}
+}
+
+// TestLoadTarget (task 201 DONE-2 N8): the dial target and the unanswered connects ride on the minute's load row, and
+// a row without them sends neither; PgTarget's forms.
+func TestLoadTarget(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
+	InstanceTarget("t1", "postgres:a:5432")
+	CountConnect("t1", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})
+	CountConnect("t1", nil)
+	CountConnect("t2", &pgconn.PgError{Code: "3D000"})
+	got := map[string]beatLoad{}
+	for _, l := range h.take().Load {
+		got[l.Instance] = l
+	}
+	if l := got["t1"]; l.Attempts != 2 || l.Opened != 1 || l.NoAnswer != 1 || l.Target != "postgres:a:5432" {
+		t.Errorf("t1: %+v (want 2 attempts, 1 opened, 1 unanswered, target postgres:a:5432)", l)
+	}
+	if l := got["t2"]; l.Attempts != 1 || l.NoAnswer != 0 || l.Target != "" {
+		t.Errorf("t2: %+v (want 1 attempt, answered, no target)", l)
+	}
+	body, err := json.Marshal(got["t2"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "noanswer") || strings.Contains(string(body), "target") {
+		t.Errorf("a row with neither sent them: %s", body)
+	}
+	for dsn, want := range map[string]string{
+		"host=DB1.Example port=5433 user=x":         "postgres:db1.example:5433",
+		"host=a,b port=5432,5433 user=x":            "postgres:a:5432,b:5433",
+		"postgres://x@db2:6432/app?sslmode=disable": "postgres:db2:6432",
+	} {
+		cfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := PgTarget(cfg); got != want {
+			t.Errorf("PgTarget(%q) = %q (want %q)", dsn, got, want)
+		}
 	}
 }

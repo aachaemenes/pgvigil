@@ -153,20 +153,23 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
 
 // jobsReportFleetView: every failing, missed or over-average job of the fleet, the worst first (keep narrows it to
 // a tag folder; instLink makes the instance name a link to its Job report tab).
-export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node, ctx?: Ctx): Promise<HTMLElement> {
+// status: the Job status section (jobs_fleet_status.ts, every engine's jobs judged by job_status) drawn first; its tiles
+// count every job, so PostgreSQL's own tiles below it say they are PostgreSQL's
+export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node, ctx?: Ctx, status?: HTMLElement): Promise<HTMLElement> {
   const d = await get<Record<'counts' | 'jobs', Table | null>>('jobsreport');
   let rows = withRank(rowsOf(d.jobs));
   if (keep) rows = rows.filter(keep);
   const c = rowsOf(d.counts)[0] ?? {};
   const failing = rows.filter(r => Number(r.fail_streak) >= 3).length, missed = rows.filter(r => r.missed).length;
   const slow = rows.filter(r => r.over_average).length, lastFailed = rows.filter(r => Number(r.fail_streak) > 0 && Number(r.fail_streak) < 3).length;
-  return el('section', {}, el('h2', {}, 'Jobs'),
+  const pg = status ? 'PostgreSQL ' : '';
+  return el('section', {}, el('h2', {}, 'Jobs'), ...(status ? [status, el('h3', {}, 'PostgreSQL schedule checks')] : []),
     el('div', { class: 'tiles' },
-      tile('jobs in the fleet', keep ? '-' : `${fmtNum(c.jobs)} on ${fmtNum(c.instances)} instances`),
+      tile(status ? 'PostgreSQL jobs' : 'jobs in the fleet', keep ? '-' : `${fmtNum(c.jobs)} on ${fmtNum(c.instances)} instances`),
       tile('failing (3+ in a row)', fmtNum(failing), failing ? 'crit' : 'ok'),
-      tile('missed schedule', fmtNum(missed), missed ? 'crit' : 'ok'),
+      tile(pg + 'missed schedule', fmtNum(missed), missed ? 'crit' : 'ok'),
       tile('last run failed', fmtNum(lastFailed), lastFailed ? 'warn' : 'ok'),
-      tile('over 2x average', fmtNum(slow), slow ? 'warn' : 'ok')),
+      tile(pg + 'over 2x average', fmtNum(slow), slow ? 'warn' : 'ok')),
     el('p', { class: 'meta' }, 'Every active job of the fleet whose last finished run failed, that missed its schedule, or whose latest run took over twice its average; '
       + 'the failing and missed first. The rules are on each instance\'s Job report tab.'),
     grid(rows, [

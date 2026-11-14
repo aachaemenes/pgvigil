@@ -7,7 +7,7 @@
 // TempDB Wait / Allocation Wait Count and Time); a PostgreSQL row leaves those cells empty.
 // Data: /api/running/fleet; the scope is the tag folder of the tree and the tag filter.
 import { get, Row, rowsOf, Table } from './api';
-import { fleet, tagsOf } from './fleet';
+import { fleet, inTagScope, tagWords } from './fleet';
 import { Ctx, href } from './router';
 import { applyTagFilter, tagFilterBar, tagUI } from './tree';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
@@ -37,7 +37,7 @@ function runningHref(ctx: Ctx, r: Row): string {
 export async function runningFleet(ctx: Ctx): Promise<HTMLElement> {
   const [d, f] = await Promise.all([get<{ rows: Table | null }>('running/fleet'), fleet(), tagUI()]);
   // the scope: the tag folder picked in the tree, then the tag filter of the bar (as on the Summary)
-  const inFolder = ctx.tag ? f.instances.filter(r => ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag!)) : f.instances;
+  const inFolder = ctx.tag ? f.instances.filter(r => inTagScope(ctx.tag!, r)) : f.instances;
   const filterBar = tagFilterBar(inFolder);   // built first: it drops a remembered filter this scope no longer carries
   const ids = new Set(applyTagFilter(inFolder).map(r => Number(r.instance_id)));
   const rows = rowsOf(d.rows).filter(r => ids.has(Number(r.instance_id)));
@@ -97,6 +97,6 @@ export async function runningFleet(ctx: Ctx): Promise<HTMLElement> {
     if (a) location.hash = a.getAttribute('href')!;
   });
   draw();
-  return el('section', {}, el('h2', {}, 'Running queries' + (ctx.tag ? ` - tag ${ctx.tag}` : '')),
+  return el('section', {}, el('h2', {}, 'Running queries' + (ctx.tag ? ` - ${tagWords(ctx.tag)}` : '')),
     el('div', { class: 'toolbar' }, filterBar, el('div', { class: 'seg' }, toggle)), status, holder);   // one toolbar row, as the Summary's
 }

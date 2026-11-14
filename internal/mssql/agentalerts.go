@@ -59,6 +59,28 @@ func runAgentAlerts(ctx context.Context, conn *sql.Conn, info Info, c *checksRun
 	case info.EngineEdition == 4:
 		c.add(areaRow(AreaAlerts, false, "SQL Server Express has no SQL Server Agent: there are no alerts to read"))
 		return
+	case info.Kind == KindAzureMI:
+		// Microsoft's T-SQL differences page for Managed Instance, SQL Server Agent: "Alerts aren't yet supported."
+		// and "Pager isn't supported.", while email notification is: the operators are read and judged, the alerts
+		// and the fail-safe operator (it serves alert paging) are not.
+		if !info.MsdbAccess {
+			c.unread(AreaAlerts, "msdb.dbo.sysoperators", "the login has no access to msdb: the Agent's operators were not read")
+			return
+		}
+		ops, err := QueryRows(ctx, conn, agentOperatorsSQL)
+		if err != nil {
+			c.unread(AreaAlerts, "msdb.dbo.sysoperators", "the Agent's operators were not read: "+err.Error())
+			return
+		}
+		c.add(ops...)
+		c.find(managedInstanceAlertFindings(agentAlertFindings(nil, ops, true, ""))...)
+		c.add(areaRow(AreaAlerts, true, "Azure SQL Managed Instance does not support SQL Server Agent alerts yet: only the operators are read"))
+		return
+	case info.Kind == KindRDS:
+		// AWS's 'Using SQL Server Agent for Amazon RDS': "SQL Server Agent alerts and operators aren't supported."
+		// (Web, Standard and Enterprise have the Agent; Express has none and is the case above.)
+		c.add(areaRow(AreaAlerts, false, "Amazon RDS for SQL Server does not support SQL Server Agent alerts and operators: there are none to read"))
+		return
 	case !info.MsdbAccess:
 		c.unread(AreaAlerts, "msdb.dbo.sysalerts", "the login has no access to msdb: the Agent's alerts and operators were not read")
 		return
@@ -85,6 +107,18 @@ func runAgentAlerts(ctx context.Context, conn *sql.Conn, info Info, c *checksRun
 	c.add(collect.Row{"kind": "agent_alerting", "failsafe_read": b2i(fsRead), "failsafe_operator": nilIfEmpty(strings.TrimSpace(failSafe))})
 	c.find(agentAlertFindings(alerts, ops, fsRead, strings.TrimSpace(failSafe))...)
 	c.add(areaRow(AreaAlerts, true, note))
+}
+
+// managedInstanceAlertFindings keeps the operator findings of the alerts area: on Azure SQL Managed Instance alerts and
+// paging are not supported, so neither an alert finding nor the fail-safe operator's applies there.
+func managedInstanceAlertFindings(fs []checkFinding) []checkFinding {
+	var out []checkFinding
+	for _, f := range fs {
+		if f.Check == "no operator" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // failSafeFromRows takes the fail-safe operator out of sp_MSgetalertinfo's result: one row whose column

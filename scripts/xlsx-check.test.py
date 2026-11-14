@@ -7,7 +7,8 @@ A built workbook (two grid sheets, each one Excel table, and a last 'About') pas
 thing in a copy and names the rule that must FAIL, or must still PASS. One 'ok' or 'FAIL' line per probe; exit 1 on any
 FAIL. The probes are the shapes a writer can get wrong in a way Excel draws or repairs: colours given by theme or index,
 patterns and gradients, a column's or a row's own style, a style index past its list, table names and ids, a merge in a
-table, dates and booleans stored as text, a time in a sheet name.
+table, dates and booleans stored as text, a time in a sheet name; a number that shows more decimals than its column on the
+page (X13, the page's decimals given beside the file).
 """
 import importlib.util
 import os
@@ -132,6 +133,11 @@ def styled_b2(fill=None, font=None, xf_attrs=''):
     return set_b2(p, 1.5, s)
 
 
+def set_b3(parts, v):
+    old = cell('B3', SHEETS[0][2][1][1])
+    return sub(parts, 'xl/worksheets/sheet1.xml', old, cell('B3', v))
+
+
 def rename(parts, i, name):
     return sub(parts, 'xl/workbook.xml', '<sheet name="%s"' % SHEETS[i][0], '<sheet name="%s"' % escape(name))
 
@@ -144,6 +150,27 @@ def date_fmt_cell(fmt_id):
     s = add_style(p, xf_attrs='numFmtId="%d" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"' % fmt_id)
     return set_b2(p, 46339.5, s)
 
+
+def add_fmt(parts, code):
+    """a custom number format (id 170 on) in styles.xml; returns its id"""
+    st = parts['xl/styles.xml']
+    n = 170 + st.count('<numFmt ')
+    parts['xl/styles.xml'] = st.replace('</numFmts>', '<numFmt numFmtId="%d" formatCode="%s"/></numFmts>' % (n, escape(code, {'"': '&quot;'})), 1)
+    return n
+
+
+def fmt_b2(v, code):
+    """B2 of the first grid sheet ('size (GB)') holding v under the format code"""
+    p = base()
+    s = add_style(p, xf_attrs='numFmtId="%d" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"' % add_fmt(p, code))
+    return set_b2(p, v, s)
+
+
+# X13: the decimals the page shows in a column, given beside the file (sheet -> column header -> decimals); the built
+# workbook's 'size (GB)' holds 1.5 and 0.25 under General
+PAGE2 = {'Grid': {'size (GB)': 2}}
+PAGE1 = {'Grid': {'size (GB)': 1}}
+PAGE0 = {'Grid': {'size (GB)': 0}}
 
 PROBES = [
     # (what, rule, 'FAIL' or 'PASS', build)
@@ -238,21 +265,53 @@ PROBES = [
     ('X7 a date-time cell yyyy-MM-dd HH:mm', 'X7', 'PASS', lambda: date_fmt_cell(164)),
     ('X7 a day cell yyyy-MM-dd', 'X7', 'PASS', lambda: date_fmt_cell(165)),
     ('X7 a built-in date format', 'X7', 'FAIL', lambda: date_fmt_cell(14)),
+    # X7: a fixed count of decimals (a column's decimals as the page shows them), no unit inside a format
+    ('X7 a number under 0.0', 'X7', 'PASS', lambda: fmt_b2(1.6328125, '0.0')),
+    ('X7 a number under 0.000', 'X7', 'PASS', lambda: fmt_b2(1.6328125, '0.000')),
+    ('X7 a share under 0%', 'X7', 'PASS', lambda: fmt_b2(0.125, '0%')),
+    ('X7 a unit inside the format', 'X7', 'FAIL', lambda: fmt_b2(1.6328125, '0.0" GB"')),
+    ('X7 a grouped format', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,##0.0')),
+    # X13: no number cell shows more decimals than its column shows on the page
+    ('X13 the built workbook, the page 2 decimals', 'X13', 'PASS', base, PAGE2),
+    ('X13 the built workbook, the page 1 decimal (0.25 shows 2)', 'X13', 'FAIL', base, PAGE1),
+    ('X13 1.6328125 under General, the page 2', 'X13', 'FAIL', lambda: set_b2(base(), 1.6328125), PAGE2),
+    ('X13 0.01605224609375 under General (Excel draws 0.016052246), the page 2', 'X13', 'FAIL', lambda: set_b2(base(), 0.01605224609375), PAGE2),
+    ('X13 1.6328125 under 0.00, the page 2', 'X13', 'PASS', lambda: fmt_b2(1.6328125, '0.00'), PAGE2),
+    ('X13 1.6328125 under 0.000, the page 2', 'X13', 'FAIL', lambda: fmt_b2(1.6328125, '0.000'), PAGE2),
+    ('X13 1.6 under General (a value stored rounded), the page 2', 'X13', 'PASS', lambda: set_b2(base(), 1.6), PAGE2),
+    ('X13 1.25E-05 under General (drawn 1.25E-05 = 7 decimals), the page 2', 'X13', 'FAIL', lambda: set_b2(base(), 1.25e-05), PAGE2),
+    # (B3 set so that only B2 decides: 0.5 shows one decimal, 1 none)
+    ('X13 B3 0.5, the page 1', 'X13', 'PASS', lambda: set_b3(base(), 0.5), PAGE1),
+    ('X13 a share 0.125 under 0.0%, the page 1', 'X13', 'PASS', lambda: set_b3(fmt_b2(0.125, '0.0%'), 0.5), PAGE1),
+    ('X13 a share 0.125 under 0.00%, the page 1', 'X13', 'FAIL', lambda: set_b3(fmt_b2(0.125, '0.00%'), 0.5), PAGE1),
+    ('X13 a share 0.125 under 0%, the page 0', 'X13', 'PASS', lambda: set_b3(fmt_b2(0.125, '0%'), 1), PAGE0),
+    ('X13 a share 0.125 under 0.0%, the page 0', 'X13', 'FAIL', lambda: set_b3(fmt_b2(0.125, '0.0%'), 1), PAGE0),
+    ('X13 1.6328125 under 0.0, the page 1', 'X13', 'PASS', lambda: set_b3(fmt_b2(1.6328125, '0.0'), 0.5), PAGE1),
+    ('X13 1.6328125 under 0, the page 0', 'X13', 'PASS', lambda: set_b3(fmt_b2(1.6328125, '0'), 1), PAGE0),
+    # X13's lower bound: a fixed number format shows no fewer decimals than its column on the page (General and a percent
+    # are held to the upper bound alone)
+    ('X13 1.6328125 under 0.0, the page 2: fewer', 'X13', 'FAIL', lambda: fmt_b2(1.6328125, '0.0'), PAGE2),
+    ('X13 1.6328125 under 0, the page 1: fewer', 'X13', 'FAIL', lambda: set_b3(fmt_b2(1.6328125, '0'), 0.5), PAGE1),
+    ('X13 a whole 2 under General, the page 2: not judged low', 'X13', 'PASS', lambda: set_b2(base(), 2), PAGE2),
+    ('X13 a date-time cell is no figure', 'X13', 'PASS', lambda: date_fmt_cell(164), PAGE2),
+    ('X13 a column the page does not name is not judged', 'X13', 'PASS', lambda: set_b2(base(), 1.6328125), {'Grid': {'name': 0}}),
+    ('X13 the page names a sheet the workbook lacks', 'X13', 'FAIL', base, {'Gird': {'size (GB)': 2}}),
+    ('X13 the page names a column the sheet lacks', 'X13', 'FAIL', base, {'Grid': {'size (MB)': 2}}),
 ]
 
 
-def verdicts(path):
-    return {r: bool(p) for r, p in xc.check(xc.Book(path)).items()}
+def verdicts(path, page=None):
+    return {r: bool(p) for r, p in xc.check(xc.Book(path), page).items()}
 
 
 def run():
     bad = 0
     tmp = tempfile.mkdtemp(prefix='xlsx-check-test-')
     try:
-        for i, (what, rule, want, build) in enumerate(PROBES):
+        for i, (what, rule, want, build, *page) in enumerate(PROBES):
             path = write(build(), os.path.join(tmp, 'p%02d.xlsx' % i))
             try:
-                v = verdicts(path)
+                v = verdicts(path, page[0] if page else None)
             except Exception as e:
                 print('FAIL %s: the check raised %s: %s' % (what, type(e).__name__, e))
                 bad += 1
@@ -270,11 +329,12 @@ def run():
                 bad += 1
         bad += unreadable(tmp)
         bad += same_pairs(tmp)
+        bad += page_cli(tmp)
     finally:
         for f in os.listdir(tmp):
             os.remove(os.path.join(tmp, f))
         os.rmdir(tmp)
-    print('xlsx-check.test: %d probes, %s' % (len(PROBES) + 3, 'every one ok' if not bad else '%d FAIL' % bad))
+    print('xlsx-check.test: %d probes, %s' % (len(PROBES) + 4, 'every one ok' if not bad else '%d FAIL' % bad))
     return 1 if bad else 0
 
 
@@ -322,6 +382,29 @@ def same_pairs(tmp):
         print("ok 'same' pairs sheets and columns (units spelled alike; a grid with the grid that shares most columns, not a tiles sheet)")
         return 0
     print("FAIL 'same' pairs sheets and columns: rc %d / %d, missing %s" % (r.returncode, r2.returncode, miss))
+    return 1
+
+
+def page_cli(tmp):
+    """'rules --page PAGE.json': X13 judged by the page given for the file's name; a file the page does not name is not
+    judged ('SKIP X13', no verdict either way); the exit code follows the FAIL lines"""
+    import json
+    good = write(base(), os.path.join(tmp, 'pg-good.xlsx'))
+    noisy = write(set_b2(base(), 1.6328125), os.path.join(tmp, 'pg-noisy.xlsx'))
+    other = write(set_b2(base(), 1.6328125), os.path.join(tmp, 'pg-other.xlsx'))
+    page = os.path.join(tmp, 'page.json')
+    with open(page, 'w') as f:
+        json.dump({'pg-good.xlsx': PAGE2, 'pg-noisy.xlsx': PAGE2}, f)
+    r = subprocess.run([sys.executable, '-I', CHECK, 'rules', '--page', page, good, noisy, other], capture_output=True, text=True)
+    lines = r.stdout.splitlines()
+    want = [l for l in lines if l.startswith('PASS X13 %s' % good)] and [l for l in lines if l.startswith('FAIL X13 %s' % noisy)] \
+        and [l for l in lines if l.startswith('SKIP X13 %s' % other)] and '%s: FAIL X13' % noisy in lines and '%s: PASS' % other in lines
+    r2 = subprocess.run([sys.executable, '-I', CHECK, 'rules', other], capture_output=True, text=True)
+    skip = r2.returncode == 0 and any(l.startswith('SKIP X13 %s' % other) for l in r2.stdout.splitlines())
+    if r.returncode == 1 and want and skip and 'Traceback' not in r.stderr + r2.stderr:
+        print("ok 'rules --page': X13 PASS / FAIL by the page given, SKIP for a file it does not name; no page at all: SKIP, exit 0")
+        return 0
+    print("FAIL 'rules --page': rc %d / %d, lines %s" % (r.returncode, r2.returncode, [l for l in lines + r2.stdout.splitlines() if 'X13' in l][:4] or (r.stderr + r2.stderr)[-300:]))
     return 1
 
 

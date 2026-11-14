@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ var fullCtx = xeContext{source: "product", session: "pgvigil_t_x", queryText: "f
 // dropping every event of that kind at the read.
 func TestXEScriptEventsHaveParsers(t *testing.T) {
 	added := regexp.MustCompile(`ADD EVENT sqlserver\.([a-z_]+)`)
-	for _, form := range []string{XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL} {
+	for _, form := range []string{XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL, XEFormRDS} {
 		script, err := XEScript("t1", form)
 		if err != nil {
 			t.Fatal(err)
@@ -139,8 +140,12 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 		if strings.Count(script, "] "+scope+"\n") != 4 {
 			t.Errorf("%s: want four sessions created %s", form, scope)
 		}
-		if (form == XEFormServer || form == XEFormCloudSQL) != strings.Contains(script, "package0.event_file") {
-			t.Errorf("%s: only the server and Cloud SQL forms write an event file", form)
+		if (form == XEFormServer || form == XEFormCloudSQL || form == XEFormRDS) != strings.Contains(script, "package0.event_file") {
+			t.Errorf("%s: only the server, Cloud SQL and RDS forms write an event file", form)
+		}
+		// RDS's file goes to the folder AWS names (its trigger refuses a bare file name: R1, 2026-11-14)
+		if (form == XEFormRDS) != strings.Contains(script, `filename=N''D:\rdsdbdata\log\pgvigil_t1_slow.xel''`) {
+			t.Errorf("%s: the RDS event file's path", form)
 		}
 		// Cloud SQL's file goes to the folder Google names; the server form's has no path (the server's log directory)
 		if (form == XEFormCloudSQL) != strings.Contains(script, "filename=N''/var/opt/mssql/xevents/pgvigil_t1_slow.xel''") {
@@ -148,7 +153,8 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 		}
 		// Cloud SQL has no sp_configure and no database flag for the threshold: its advice says the session stays empty
 		if (form == XEFormCloudSQL) != strings.Contains(script, "offer no blocked process threshold, so this session stays empty there") ||
-			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") {
+			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") ||
+			(form == XEFormRDS) != strings.Contains(script, "DB parameter group") {
 			t.Errorf("%s: the blocked process threshold's advice", form)
 		}
 		// the Managed Instance form is written from the documentation; the Azure SQL Database form is proven
@@ -754,10 +760,11 @@ func TestXMLCleanKeepsTheRead(t *testing.T) {
 // once (G1 on a real instance, 2026-11-13: Msg 50000 'The command must not contain more than one occurrence of
 // "max_memory="') and fails (Msg 537) when the one it finds is a ring buffer's: each of the cloudsql form's CREATEs
 // holds it once, as the session's MAX_MEMORY=<the capture's size within 4-8 MB> KB (the trigger: 'max_memory value must
-// be between 4MB and 8MB'); the other forms keep the session's MAX_MEMORY beside a ring buffer's max_memory.
+// be between 4MB and 8MB'); the other forms keep the session's MAX_MEMORY beside a ring buffer's max_memory (the rds form
+// so on R1, a real RDS for SQL Server 2019 Standard instance, 2026-11-14: the four sessions made and started).
 func TestXECloudSQLOneMaxMemory(t *testing.T) {
 	re := regexp.MustCompile(`(?i)max_memory=`)
-	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2} {
+	for form, want := range map[string]int{XEFormCloudSQL: 1, "server": 2, XEFormRDS: 2} {
 		s, err := XEScript("g1", form)
 		if err != nil {
 			t.Fatal(err)
@@ -773,7 +780,7 @@ func TestXECloudSQLOneMaxMemory(t *testing.T) {
 			}
 			p = p[:end]
 			got := len(re.FindAllString(p, -1))
-			if form == "server" && strings.Contains(p, "event_file") {
+			if (form == "server" || form == XEFormRDS) && strings.Contains(p, "event_file") {
 				continue // the slow session's file target has no max_memory of its own
 			}
 			if got != want {
@@ -785,4 +792,42 @@ func TestXECloudSQLOneMaxMemory(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestXEReadTarget (A2, a real Managed Instance 2026-11-14): the target a session is read from - its event file, but on
+// Azure SQL Managed Instance its ring buffer (a file is read there only by its Azure Blob storage URL: Msg 40538 for
+// system_health.xel); a Managed Instance session with a file alone is not read ("").
+func TestXEReadTarget(t *testing.T) {
+	both := map[string]xeTarget{"event_file": {}, "ring_buffer": {}}
+	file := map[string]xeTarget{"event_file": {}}
+	ring := map[string]xeTarget{"ring_buffer": {}, "event_counter": {}}
+	for _, c := range []struct {
+		kind    Kind
+		targets map[string]xeTarget
+		want    string
+	}{
+		{KindServer, both, "event_file"},
+		{KindServer, file, "event_file"},
+		{KindServer, ring, "ring_buffer"},
+		{KindRDS, both, "event_file"},
+		{KindCloudSQL, both, "event_file"},
+		{KindAzureDB, ring, "ring_buffer"},
+		{KindAzureMI, both, "ring_buffer"},
+		{KindAzureMI, ring, "ring_buffer"},
+		{KindAzureMI, file, ""},
+		{KindServer, map[string]xeTarget{"event_counter": {}}, ""},
+	} {
+		if got := xeReadTarget(c.kind, c.targets); got != c.want {
+			t.Errorf("xeReadTarget(%s, %v) = %q, want %q", c.kind, keysOf(c.targets), got, c.want)
+		}
+	}
+}
+
+func keysOf(m map[string]xeTarget) []string {
+	out := []string{}
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

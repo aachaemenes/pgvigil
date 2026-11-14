@@ -9,6 +9,7 @@
 // The instance page's risk filter rides its hash (risk=<key>: the fleet's counts link there): the database grid shows
 // only the databases behind that count, or, for risk=overrides, the overrides grid only the ones that break a rule.
 import { get, Row, rowsOf, Table } from './api';
+import { tagScopeIds, tagWords } from './fleet';
 import type { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
@@ -179,10 +180,14 @@ const riskCols: [string, string, string][] = [   // the column, its heading, the
   ['xid_past_freeze', 'xid age past freeze age', 'warn'],
 ];
 
-export async function pgDbOptionsFleetView(_ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', {}, el('h2', {}, 'PostgreSQL options'));
+export async function pgDbOptionsFleetView(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('section', {}, el('h2', {}, 'PostgreSQL options' + (ctx.tag && !ctx.instance ? ` - ${tagWords(ctx.tag)}` : '')));
   let d: Record<'risks', Table | null>;
   try { d = await get<Record<'risks', Table | null>>('pg/dboptions/fleet'); } catch (e) { sec.append(errorBox(e)); return sec; }
+  // a tag folder's (TAGTREE; DBA Dash's tag folder lists its own instances): the rows of the tag's instances
+  let ids: Set<number> | null;
+  try { ids = await tagScopeIds(ctx); } catch (e) { sec.append(errorBox(e)); return sec; }
+  const inFolder = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const to = (iid: unknown, risk = '') => `#/${pgDbOptionsTab}?i=${str(iid)}${risk ? '&risk=' + encodeURIComponent(risk) : ''}`;
   // a count's title says what it counts; its colour is the column's (red where any of them is critical)
   const count = (key: string, label: string, colour: string, readKey: string): Col => {
@@ -208,6 +213,6 @@ export async function pgDbOptionsFleetView(_ctx: Ctx): Promise<HTMLElement> {
   ];
   sec.append(el('p', { class: 'meta' }, 'Per PostgreSQL instance, the databases behind each risk and the ALTER DATABASE / ALTER ROLE ... SET overrides '
     + 'that break the rule the server\'s own value is held to; each count opens them. Green: none. Yellow: some. Red: a database at its '
-    + 'connection limit or invalid, an xid age of 1 billion or more, or an override that breaks a critical rule.'), grid(rowsOf(d.risks), cols, 'No PostgreSQL instance read yet.'));
+    + 'connection limit or invalid, an xid age of 1 billion or more, or an override that breaks a critical rule.'), grid(rowsOf(d.risks).filter(inFolder), cols, 'No PostgreSQL instance read yet.'));
   return sec;
 }

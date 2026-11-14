@@ -104,10 +104,34 @@ sends one alert for it, **collector or network** (critical, source `pgvigil repo
 severity floor, scoped channels too), instead of one per instance:
 
 - **raised** when a collector (a host) has not beaten for 5 minutes while no other collector reads its instances
-  (*collector not seen*), or in a minute in which at least 3 of its instances, and over half of those it ran, failed
-  every run (*instances failing together*);
-- **stands** until no such minute is left in its last 4 written minutes, and resolves `clear_after` later (10 minutes
-  by default): its recovery comes about 14 minutes after the network heals.
+  (*collector not seen*), or when failures of its instances BEGAN together: 5 or more, or at least 3 and over half of
+  those it ran, started failing every run within the collector's span plus 3 minutes of each other (*instances failing
+  together*; its text says how many of how many). The span is the fastest configured collection interval of the
+  instances the collector reads, 1 to 5 minutes. A failure that stood before never counts: instances that began
+  failing at different times raise nothing however many they are, and a new single failure beside them alerts as any;
+  or when one server stops answering (*server not answering*, its text naming the server by its dial target - the
+  DSN's host and port with the engine, `postgres:db1:5432` or `mssql:sql1\inst:1433`, never the address the server
+  reports): the instances the collector reads through that target got no answer at their connects (no error from the
+  server - a dropped database, a refused login or too many connections are answers), no instance on the target has
+  answered a connect since they began, and 3 or more of them are new to it (each answered a connect before, however
+  long ago) and began within the span plus 3 minutes of each other, or with no read between (an instance read once an
+  hour joins when its next read fails). One on that target that was already failing, or has never answered, is held
+  with them but not counted. A group failing together whose instances are exactly one server's down instances names
+  that server (*instances failing together from ... on server ...*);
+- **stands** while 3 or more of those instances still fail every run - one that is read again has left it - and a
+  server not answering stands until an instance on it answers a connect. A group that never recovers keeps it
+  standing (a server taken out for good: remove it from the configuration, or mute it). Under 3 it clears and resolves
+  `clear_after` later (10 minutes by default); the one or two still failing then alert on their own, once each. While
+  it stands it holds every instance of every failing group and every server not answering on that collector;
+- **is one alert per collector**: its value is the collector's host, whatever its reason. It repeats once per change
+  of its reason: a cut whose collector then stops beating, and a collector that crash-loops while its group stands
+  repeats at each flip. A new cut on that collector while one stands (instances that begin failing together, or a
+  second server that stops answering, more than the span plus 3 minutes after the standing one began) repeats it once
+  too, its text naming the new start, and that repeat passes an acknowledgement of the alert, as an escalation does;
+  when the newer cut clears first, the text names the older start again and repeats once more (an acknowledgement
+  holds that one). The same cut changing its reason (a server not answering that more instances then join) is no new
+  start: an acknowledgement holds it. A mute by text written for the old value (*collector not seen: host*) no longer
+  matches: mute the alert itself, or by check (`collector or network`).
 
 Only the alerts a shared cause explains wait under it: *authentication failing*, *collection failing*, *server
 unreachable*, and the findings judged by their age on data the cut stops refreshing (*job run over twice its
@@ -117,9 +141,10 @@ cause.
 
 | When | What those alerts do |
 |---|---|
-| A collector's newest written minute shows 3 or more of its instances, and over half of those it ran, with a failed run (a cut starts partway through a minute) | A new one waits for the next minute: about a minute, 3 minutes at most. One or two instances failing never wait. A cut that starts late in a minute may reach only some instances before the minute ends; when that is fewer than 3, or not over half of those the collector ran, they alert at once: up to half of a collector's instances, one beat (about a minute) before the parent, which then names them among the open alerts it covers. |
-| The parent stands | Held for its instances not read since it began: no new alert, no repeat, no recovery. One already open stays open and silent, and the parent's text names the open alerts it covers. An instance that comes back while held sends nothing. |
-| After the parent clears | An instance still failing sends one alert per finding after its next failure (its next refused login, failed run or failed connect), never off a streak built during the outage. |
+| In a collector's newest written minute 5 or more of its instances, or at least 3 and over half of those it ran, have trouble that is NEW: a connect that stopped opening, or a failed run of a collection that began failing, within the last span plus 1 minute (a cut starts partway through a minute; a failure that stood before - a collection failing on its own every minute or every 5 minutes, a login refused for an hour - never counts) | A new one waits for the next minute: about a minute, at most the span plus 3 minutes from the minute its own trouble began (4 at the default span of a minute, 8 when every collection runs every 5 minutes). One or two instances failing never wait. A cut that starts late in a minute may reach only some instances before the minute ends; when that is fewer than 3, or under 5 and not over half of those the collector ran, they alert at once, one beat (about a minute) before the parent, which then names them among the open alerts it covers: 4 instances at most (2 on a collector of up to 5 instances, 3 on one of 6 or 7). |
+| The parent stands | Held for its instances still failing every run: no new alert, no repeat, no recovery. One already open stays open and silent, and the parent's text names the open alerts it covers. An instance that comes back while held sends nothing. |
+| After the parent clears | An instance still failing sends one alert per finding after its next failure past the outage's window (its next refused login, failed run or failed connect once the span plus 4 minutes have passed since the last minute the group failed together, or its server answered no one: about 5 minutes after the others came back at the default span), never off a streak built during the outage. An instance whose connects in the server's first minute back fell before it answered waits the same way, so it sends nothing when it is read again a minute later. An alert that was open before it does not repeat on a failure from inside the outage either: when the instance is back, its recovery arrives alone. |
+| A wait ended without a parent | The new trouble did not turn into a shared cause: the alerts that waited go out as they come, and the Collector page says so under the collector for 15 minutes - *The wait for a shared cause ended on host at HH:MM without one: new alerts of its N failing instance(s) are sent as they come.* A wait that ran into a parent, since cleared, is not one. A parent that rises later says in its text when the wait had stopped (in UTC) and how many of the open alerts it covers went out between that stop and its own first send. |
 
 A refused login, or a server that does not answer at the instance's own connect, is that instance's one finding
 (*authentication failing* or *server unreachable*): the collections that could not connect do not each raise
@@ -130,21 +155,43 @@ not yet a server down (a restart, a failover or a network blip ends inside a min
 shows the failed read at once. At the default intervals a server that stops answering (its port refuses) is reported
 1 to about 4 minutes later, 2 and a half on average: up to a minute until the instance's next collection, the rule's
 own minute, then the collector's beat and the alert pass, each up to a minute. A host that drops packets instead
-takes longer by the operating system's connect timeout per attempt (about 2 minutes on Linux when the DSN sets no
-`connect_timeout`): set one. An instance read only
+takes up to 10 seconds more per attempt: the collector ends an instance connect whose DSN sets no `connect_timeout`
+after 10 seconds (a DSN's own `connect_timeout` is kept; `connect_timeout=0` is read as none set), a SQL Server
+instance's too (its DSN's own `connection timeout` is kept - the SQL Server driver then applies it to every read of
+the session as well, so a query whose server sends nothing for that long is cut off; without either the driver would
+wait for good on a server that accepts the connection and never answers). On a SQL Server instance that signs in with
+Entra (`auth entra`, `auth entra-identity`) the time the identity provider takes to hand over the token is not counted
+in those 10 seconds; a Kerberos exchange with the domain controller (`auth windows` off Windows) is - a string that
+sets its own `connection timeout` gives a slow KDC more room. An instance read only
 by `pgvigil collect` on a schedule has no heartbeat: its *server unreachable* is raised by its first failed connect
 of any kind, a refused login included. The service names each instance to the repository inside the instance's own
 connect, so its first failed connect is already the service's to report - after a long stop, for an instance read
-once an hour, and for one never reached.
+once an hour, and for one never reached. The service's *server unreachable* and *collection failing* speak only while
+a collector that beats still names the instance: 20 minutes after its last naming (the instance moved to a scheduled
+`pgvigil collect`, or its collector died) they leave the findings, and the scheduled read's own *server unreachable*
+and the Summary's Collection Errors check speak for it. An alert that was open stays open until a read of the instance
+is ok - it is never resolved because nobody reads the server any more. An instance moved from the service to a
+scheduled collect while it fails is announced again, once, by the scheduled collect: the two speak for different
+readers.
+
+Two collectors reading one instance (a move to another host, a second collector) each keep their own counts, and
+*collection failing*, *server unreachable* and *authentication failing* stand at the lowest of the collectors still
+reading it: one refused while the other reads fine raises nothing (*collected by more than one collector* says that
+two read it). A collector on a renamed host starts its counts at 0: an hourly collection needs 3 more hours to raise
+*collection failing*.
+
+What the hold does not cover: a collector whose collections all run less often than every 5 minutes, with its
+instances spread over the minutes, sends one alert per instance - the hold reads failures that begin within the span
+plus 3 minutes of each other, and the span is 5 minutes at most.
 
 A host whose collector was uninstalled while the repository stays is retired there by the uninstall
 ([uninstall.md](uninstall.md)): it raises no *collector not seen*. A blackout, silence or mute that names an instance
 never holds *collector or network* or *purge not run in 2 days*, which belong to no instance and carry no tag - mute
 those by their own alert, by check (`collector or network`) or by text.
 
-A cut that drops packets instead of refusing them makes each connect hang until the operating system gives up (about
-2 minutes on Linux when the DSN sets no `connect_timeout`). A run is counted when it ends, so the parent can rise a
-minute or two later than for a refused connection.
+A cut that drops packets instead of refusing them makes each connect hang until the 10-second connect timeout above
+ends it (or the DSN's own timeout; without either the operating system gives up after about 2 minutes on Linux). A run
+is counted when it ends, so the parent can rise a little later than for a refused connection.
 
 ## The address of an alert, templates, the send cap, Send test
 

@@ -42,7 +42,7 @@ const (
 
 // Open returns a *sql.DB for a go-mssqldb connection string (URL or key=value form).
 func Open(dsn string) (*sql.DB, error) {
-	c, err := connector(dsn)
+	c, err := connector(dsn, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -52,9 +52,50 @@ func Open(dsn string) (*sql.DB, error) {
 	return sql.OpenDB(c), nil
 }
 
+// OpenDialer is Open with the connector's network dialer set (the collector's connect, task 201 DONE-2: a deadline
+// on the dial, the TLS handshake and the login reply). The connector is the one Open would use - the federated one for
+// fedauth, the Kerberos one for an old auth windows string off Windows, else the driver's own for the string - so a
+// dialer never changes how an instance signs in.
+func OpenDialer(dsn string, d mssql.Dialer) (*sql.DB, error) {
+	h, _ := d.(Holder)
+	c, err := connector(dsn, h)
+	if err != nil {
+		return nil, err
+	}
+	mc, err := withDialer(c, dsn, d)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(mc), nil
+}
+
+// Holder is a dialer whose connect deadline can be paused: the token provider holds it while it fetches an Entra token
+// in the middle of the login, so the time the identity provider takes is not counted as the server's (the collector's
+// deadline dialer; join review 2). Hold returns the release, which restores the time that was left.
+type Holder interface{ Hold() (release func()) }
+
+// withDialer sets d on c (connector's result), or on the driver's own connector for dsn when c is nil.
+func withDialer(c driver.Connector, dsn string, d mssql.Dialer) (*mssql.Connector, error) {
+	if c == nil {
+		mc, err := mssql.NewConnector(dsn)
+		if err != nil {
+			return nil, err
+		}
+		mc.Dialer = d
+		return mc, nil
+	}
+	mc, ok := c.(*mssql.Connector)
+	if !ok {
+		return nil, fmt.Errorf("mssqlopen: a %T takes no dialer", c)
+	}
+	mc.Dialer = d
+	return mc, nil
+}
+
 // connector is the federated-authentication connector a string with fedauth needs, the Kerberos one an old auth
-// windows string needs off Windows, nil for any other string.
-func connector(dsn string) (driver.Connector, error) {
+// windows string needs off Windows, nil for any other string. A federated connector's token provider holds h (when
+// not nil) while it fetches the token.
+func connector(dsn string, h Holder) (driver.Connector, error) {
 	cfg, err := msdsn.Parse(dsn)
 	if err != nil {
 		return nil, err
@@ -71,7 +112,7 @@ func connector(dsn string) (driver.Connector, error) {
 		}
 		return nil, nil
 	}
-	workflow, provide, err := tokenProvider(cfg, fa)
+	workflow, provide, err := tokenProvider(cfg, fa, h)
 	if err != nil {
 		return nil, err
 	}
@@ -116,8 +157,8 @@ var (
 )
 
 // tokenProvider checks the string's Entra settings and returns the workflow the login announces and the provider
-// the driver calls for a token at each connect.
-func tokenProvider(cfg msdsn.Config, fedauth string) (byte, func(ctx context.Context, serverSPN, stsURL string) (string, error), error) {
+// the driver calls for a token at each connect; h (when not nil) is held while the token is fetched.
+func tokenProvider(cfg msdsn.Config, fedauth string, h Holder) (byte, func(ctx context.Context, serverSPN, stsURL string) (string, error), error) {
 	if _, ok := cfg.Parameters["authenticator"]; ok {
 		return 0, nil, errors.New("fedauth and authenticator together: an Entra sign-in takes no Windows authenticator")
 	}
@@ -151,6 +192,9 @@ func tokenProvider(cfg msdsn.Config, fedauth string) (byte, func(ctx context.Con
 		return 0, nil, fmt.Errorf("fedauth %s is not one pgvigil opens: %s (auth entra) or %s (auth entra-identity)", fedauth, ServicePrincipal, ManagedIdentity)
 	}
 	provide := func(ctx context.Context, serverSPN, stsURL string) (string, error) {
+		if h != nil {
+			defer h.Hold()()
+		}
 		if !sqlAudience(serverSPN) {
 			return "", fmt.Errorf("the server asked for a token for %q, which is not an Azure SQL resource (%s): refused", serverSPN, strings.Join(tokenAudiences, ", "))
 		}

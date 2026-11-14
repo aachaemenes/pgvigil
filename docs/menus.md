@@ -7,6 +7,32 @@ item, Escape closes the menu and gives the focus back to where it was.
 
 ## The tree
 
+The tree's folders are DBA Dash's, in its order. At the root, over the whole fleet: Configuration, Checks, HA/DR,
+Storage, Jobs, then pgvigil's Doors and Admin, then Reports, then the tag folders. Each top-level tag folder (one per
+value of the first `ui.group_by` key, or one per written tag when `group_by` is empty) holds the same Configuration,
+Checks, HA/DR, Storage, Jobs and Reports over its own instances only (`?tag=` on every page they open), then its
+instances, as DBA Dash's tag folder does. A tag folder carries only the pages that read its instances: the pages that
+read the whole repository whatever folder is open (Diff, Thresholds, Data retention, Recycle Bin, Custom reports,
+Community tools, Report mail, Doors, Admin, Alert rules) stay at the root, and a page that holds one engine's data
+(SQL Server options, TempDB, Flushed Plans, Server Services; PostgreSQL options, Replication, Extensions, Corruption,
+Versions, Table size, Backups, Roles, DMS, Custom report, Disk report, Storage, Growth, Indexes, Jobs) is left out of a
+folder whose instances are all of the other. The folder's tab strip shows the same pages. An instance's folders follow DBA Dash's
+order too: Configuration, Checks, HA/DR, Storage, Databases (PostgreSQL; a SQL Server instance's databases are pages),
+Jobs, then Performance (and Logs on SQL Server), then Reports.
+
+- **'(no env)'** holds the instances without a value of the grouping key (DBA Dash's '[N/A]' folder) and carries the
+  same folders, at `?tag=env:` (an empty value: the instances with no `env` tag).
+- **'untagged'** (with `group_by` empty, an instance with several tags sits in several folders) holds the instances
+  with no tag at all, at `?tag=untagged`. DBA Dash groups by one tag name, so it has no counterpart: it is pgvigil's.
+- A **nested** folder (`group_by: [env, team]`: the team folders inside an env folder) holds instances only: no single
+  tag scopes it. The root's folders keep a tag that no top-level folder carries (a bookmark, a link from a page), so
+  the tree still leads to that scope's pages.
+- DBA Dash's tree also has Extended Events folders (root, tag, instance); pgvigil has no Extended Events page at the
+  root, so there is none under a tag either. DBA Dash's Group menu (one tag name per user, saved per user) is not
+  pgvigil's: the grouping is the configuration's `ui.group_by`, the same for every user.
+- Configure (Drives) under 'untagged' or '(no env)' sets the root's thresholds and says so: no threshold level exists
+  for the instances a tag is missing from.
+
 | Node | Menu |
 | --- | --- |
 | All instances (the fleet root) | Refresh, Add Connections..., Find Database, Open in a new tab |
