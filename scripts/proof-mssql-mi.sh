@@ -26,6 +26,12 @@
 #  M5 the -form azuresqlmi script run by the admin: four sessions made and started (sys.dm_xe_sessions: 4; each one's
 #     targets printed - the attention session's event_counter beside its ring buffer is every form's; event_file targets
 #     in sys.dm_xe_session_targets: 0), mssql_xe as pgv_monitor ends ok with the four stored running; then dropped.
+#  M6 (only when the state file names a VM: scripts/lab/azure-mi.sh vm, vmdoor <this machine>, vmlogin) entra-identity
+#     on the VM, as its system-assigned identity, through the public endpoint: E1 internal/mssqlopen TestEntraIdentityLive
+#     - 5 new connects to master sign in as one identity with VIEW DATABASE STATE; E2 the proof's user database (no user
+#     for it, no CONNECT ANY DATABASE) refuses it, the words RECORDED; E3 pgvigil collect -once mssql_instance with the
+#     string config.BuildDSN writes for auth entra-identity (port 3342), a store on the VM: engine sqlserver, platform
+#     azuresqlmi, status ok. No VM: 'M6 NOT RUN' and why.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
@@ -134,5 +140,28 @@ XST=$(q "select d.status || '|' || coalesce(d.note, '') from pgvigil.collection_
 NST=$(q "select count(*) from pgvigil.mssql_xe_state s join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and s.state = 'running' and s.session_name like 'pgvigil\_${XEID}\_%'")
 echo "   mssql_xe: $XST"
 [[ "$XST" == ok\|* && "$NST" = 4 ]] && echo "ok   M5: mssql_xe ok, the four sessions stored running" || { VERDICT=FAIL; echo "FAIL M5: mssql_xe '$XST', $NST of the four sessions stored running"; }
+echo "== M6: entra-identity from the VM's system-assigned identity"
+if [ -z "${VM_IP:-}" ] || [ -z "${VM_KEY:-}" ]; then
+  echo "   M6 NOT RUN: the state file names no VM (scripts/lab/azure-mi.sh vm, vmdoor <this machine>, vmlogin)"; VERDICT="$VERDICT (M6 NOT RUN)"
+else
+  for t in ssh scp; do command -v "$t" >/dev/null || fail "$t is not on this machine (M6)"; done
+  VMS=(ssh -i "$VM_KEY" -o UserKnownHostsFile="$WORK/known_hosts" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 "$VM_ADMIN@$VM_IP")
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$WORK/mssqlopen.test" ./internal/mssqlopen
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$WORK/pgvigil-linux" ./cmd/pgvigil
+  "${VMS[@]}" 'mkdir -p ~/pgvproof' || fail "M6: the VM did not answer ssh (vmdoor <this machine's address>?)"
+  scp -q -i "$VM_KEY" -o UserKnownHostsFile="$WORK/known_hosts" -o IdentitiesOnly=yes -o BatchMode=yes "$WORK/mssqlopen.test" "$WORK/pgvigil-linux" "$VM_ADMIN@$VM_IP:pgvproof/"
+  "${VMS[@]}" "cd ~/pgvproof && PGVIGIL_ENTRA_HOST=$MI_PUBLIC PGVIGIL_ENTRA_PORT=$MI_PORT PGVIGIL_ENTRA_DB=master PGVIGIL_ENTRA_NOUSER=$MI_DB PGVIGIL_ENTRA_DSN_OUT=entra1.dsn ./mssqlopen.test -test.run '^TestEntraIdentityLive\$' -test.v -test.count=1" 2>&1 \
+    | tee "$WORK/m6.txt" | grep -E 'live_test.go|^(--- |ok|PASS|FAIL)' | sed 's/^/   /' || true
+  if grep -q '^--- PASS: TestEntraIdentityLive' "$WORK/m6.txt" && grep -q 'E2 refused by Azure' "$WORK/m6.txt"; then echo "ok   M6: E1 (5 connects as one identity), E2 refused (its words above, RECORDED)"
+  else VERDICT=FAIL; echo "FAIL M6: E1 / E2 (above)"; fi
+  echo "   M6 E3: PostgreSQL from Ubuntu's archive on the VM, a store, collect -once mssql_instance with auth entra-identity"
+  "${VMS[@]}" "sudo DEBIAN_FRONTEND=noninteractive apt-get -qq update >/dev/null && sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y postgresql >/dev/null && (sudo -u postgres createuser -s $VM_ADMIN 2>/dev/null || true) && (sudo -u postgres createdb -O $VM_ADMIN pgvproof 2>/dev/null || true)" \
+    || fail "M6 E3: PostgreSQL did not install on the VM"
+  printf 'repository:\n  dsn: "host=/var/run/postgresql dbname=pgvproof"\ninstances:\n  - name: mi-entra\n    engine: sqlserver\n    dsn: file:/home/%s/pgvproof/entra1.dsn\n' "$VM_ADMIN" > "$WORK/m6.yaml"
+  scp -q -i "$VM_KEY" -o UserKnownHostsFile="$WORK/known_hosts" -o IdentitiesOnly=yes -o BatchMode=yes "$WORK/m6.yaml" "$VM_ADMIN@$VM_IP:pgvproof/pgvigil.yaml"
+  "${VMS[@]}" "cd ~/pgvproof && test -s entra1.dsn && ./pgvigil-linux migrate -config pgvigil.yaml 2>&1 | tail -1 && ./pgvigil-linux collect -config pgvigil.yaml -once mssql_instance -instance mi-entra 2>&1 | tail -3; psql -h /var/run/postgresql -d pgvproof -XAtq -F '|' -c \"select i.engine, i.platform, coalesce(d.status, 'none') from pgvigil.instances i left join pgvigil.collection_dates d on d.instance_id = i.instance_id and d.collection = 'mssql_instance' where i.name = 'mi-entra'\"" 2>&1 \
+    | tee "$WORK/m6e3.txt" | sed 's/^/   /' || true
+  if tail -1 "$WORK/m6e3.txt" | grep -qx 'sqlserver|azuresqlmi|ok'; then echo "ok   M6 E3: mssql_instance ok as the identity, platform azuresqlmi"; else VERDICT=FAIL; echo "FAIL M6 E3 (above; no BuildDSN string from E1 = E1 did not run)"; fi
+fi
 echo "proof-mssql-mi: $VERDICT (a real Azure SQL Managed Instance; each RECORDED line above is an answer for the docs)"
 [ "$VERDICT" = PASS ]

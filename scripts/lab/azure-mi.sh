@@ -8,6 +8,10 @@
 #   scripts/lab/azure-mi.sh logins          the monitor login of docs/sqlserver-cloud.md's Managed Instance section and a
 #                                           user database the proof reads (where 3342 reaches: this machine)
 #   scripts/lab/azure-mi.sh status          what this lab holds now, read from Azure
+#   scripts/lab/azure-mi.sh vm              (M6) a VM with a system-assigned identity whose address 3342 admits too
+#   scripts/lab/azure-mi.sh vmdoor <ip>     the VM admits ssh from this address only
+#   scripts/lab/azure-mi.sh vmlogin         the VM's identity as a login of the instance (FROM EXTERNAL PROVIDER)
+#   scripts/lab/azure-mi.sh vmdown          the VM's login, its 3342 rule, the VM and its pieces; read back
 #   scripts/lab/azure-mi.sh down            the instance, then - once its virtual cluster is gone - the network; read back
 #
 # Settings (environment):
@@ -17,6 +21,7 @@
 #   PGVIGIL_LAB_AZ_REGION        the region (required for up)
 #   PGVIGIL_LAB_DIR              the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE         the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
+#   PGVIGIL_LAB_AZ_VM_SIZE       the VM's size (vm), default Standard_D2ls_v6
 #   AZ                           the Azure CLI, default az on the PATH
 #
 # What up makes, each named pgv-mi-<suf>* and tagged: a virtual network (10.0.0.0/16) with one subnet (10.0.0.0/24)
@@ -32,12 +37,22 @@
 # after, never a command line. down deletes the instance, waits for its virtual cluster to be removed (Microsoft: up to
 # 1.5 hours after the last instance), deletes the VNet, the NSG and the route table, and reads back by name and tag; the
 # state file goes only when nothing is left.
+# M6 (entra-identity on the instance) needs a host with an Azure identity: 'vm' makes one VM (Ubuntu 24.04, a
+# system-assigned identity), its NIC and OS disk (deleted with it), a public address, a network security group with no
+# inbound rule until 'vmdoor', and a virtual network of its own, each named <instance>-vm* and tagged, a mode-600 ssh
+# key pair in the state folder, and a second 3342 rule on the instance's NSG for the VM's address. 'vmlogin' makes the
+# VM's identity a login of the instance as its admin (a sysadmin SQL login may create Entra logins there: Microsoft's
+# CREATE LOGIN for Managed Instance; the instance resolves the name with its Directory Readers role) with VIEW SERVER
+# STATE, VIEW ANY DEFINITION and a user in msdb - not CONNECT ANY DATABASE, so the user database the proof made refuses
+# it (M6's E2). The VM is billed by the minute: vmdown removes the login, the rule, the VM and its pieces and reads
+# them back; down refuses while the state file names a VM.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 DIR=${PGVIGIL_LAB_DIR:-.lab}
 STATE=$DIR/azure-mi.env
 SQLCMD_IMAGE=${PGVIGIL_SQLCMD_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 AZ=${AZ:-az}
+VM_SIZE=${PGVIGIL_LAB_AZ_VM_SIZE:-Standard_D2ls_v6}
 CMD=${1:-}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need_az() {
@@ -56,6 +71,9 @@ load() { [ -r "$STATE" ] || fail "no state file $STATE (run up first)"; # shellc
 ip_ok() { local oct='(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
   [[ $1 =~ ^$oct\.$oct\.$oct\.$oct$ ]] && [ "$1" != 0.0.0.0 ]; }
 g() { echo "$PGVIGIL_LAB_AZ_GROUP"; }
+# sqa <database>: one batch from stdin as the instance's admin (the password to docker by name, never on a command line)
+sqa() { SQLCMDPASSWORD=$ADMIN_PW; export SQLCMDPASSWORD
+  docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$MI_PUBLIC,$MI_PORT" -U "$ADMIN_USER" -d "$1" -C -b -l 60 -h -1 -W -i /dev/stdin; }
 TAG() { echo "pgvigil-proof=$PGVIGIL_LAB_PROOF"; }
 
 case $CMD in
@@ -191,8 +209,112 @@ status)
     az_ sql virtual-cluster list -g "$(g)" --query '[].name' -o tsv | sed 's/^/  virtual cluster: /'
   fi
   ;;
+vm)
+  need_az; load
+  [ -z "${VM_NAME:-}" ] || fail "the state file names a VM already ($VM_NAME): vmdown first"
+  command -v ssh-keygen >/dev/null && command -v jq >/dev/null || fail "ssh-keygen and jq are needed (the VM's key, its create's answer)"
+  # the size, its restrictions and the family's and region's free cores, read before anything is made
+  [ "$(az_ vm list-skus -l "$LAB_REGION" --size "$VM_SIZE" --query "length([?name=='$VM_SIZE'])" -o tsv)" = 1 ] || fail "the region $LAB_REGION offers no $VM_SIZE"
+  R=$(az_ vm list-skus -l "$LAB_REGION" --size "$VM_SIZE" --query "[?name=='$VM_SIZE'] | [0].restrictions[].reasonCode" -o tsv)
+  [ -z "$R" ] || fail "the region $LAB_REGION restricts $VM_SIZE for this subscription: $R"
+  read -r FAM NEED < <(az_ vm list-skus -l "$LAB_REGION" --size "$VM_SIZE" --query "[?name=='$VM_SIZE'] | [0].[[family, capabilities[?name=='vCPUs'].value | [0]]]" -o tsv) || true
+  [ -n "${FAM:-}" ] && [[ ${NEED:-} =~ ^[0-9]+$ ]] || fail "the family and vCPUs of $VM_SIZE were not read"
+  for q in "$FAM" cores; do
+    USED= LIMIT=; read -r USED LIMIT < <(az_ vm list-usage -l "$LAB_REGION" --query "[?name.value=='$q'] | [0].[[currentValue, limit]]" -o tsv) || true
+    [[ ${USED:-} =~ ^[0-9]+$ && ${LIMIT:-} =~ ^[0-9]+$ ]] || fail "the quota $q in $LAB_REGION was not read"
+    [ $((LIMIT - USED)) -ge "$NEED" ] || fail "the quota $q in $LAB_REGION has $((LIMIT - USED)) of $LIMIT cores free, $VM_SIZE needs $NEED: nothing made"
+  done
+  VM_NAME=$MI_NAME-vm VM_ADMIN=pgv VM_KEY=$DIR/azure-mi-vm.key
+  # the state file names the VM before it is made, so vmdown finds whatever a failed create left
+  ( umask 077; printf 'VM_NAME=%s\nVM_ADMIN=%s\nVM_KEY=%s\n' "$VM_NAME" "$VM_ADMIN" "$VM_KEY" >> "$STATE" )
+  rm -f "$VM_KEY" "$VM_KEY.pub"; ssh-keygen -q -t ed25519 -N '' -C pgv-mi-proof -f "$VM_KEY"; chmod 600 "$VM_KEY"
+  VMJ=$(az_ vm create -g "$(g)" -n "$VM_NAME" -l "$LAB_REGION" --image Canonical:ubuntu-24_04-lts:server:latest --size "$VM_SIZE" \
+    --admin-username "$VM_ADMIN" --ssh-key-values "$VM_KEY.pub" --assign-identity '[system]' --nsg "$VM_NAME-nsg" --nsg-rule NONE \
+    --public-ip-address "$VM_NAME-ip" --public-ip-sku Standard --vnet-name "$VM_NAME-vnet" --address-prefixes 10.1.0.0/16 --subnet-address-prefix 10.1.0.0/24 \
+    --nic-delete-option Delete --os-disk-delete-option Delete --tags "$(TAG)" -o json) || fail "the VM was not made (above): vmdown removes what was"
+  VM_IP=$(jq -r '.publicIpAddress // empty' <<<"$VMJ"); VM_PRINCIPAL=$(jq -r '.identity.systemAssignedIdentity // empty' <<<"$VMJ")
+  ip_ok "${VM_IP:-x}" && [ -n "$VM_PRINCIPAL" ] || fail "the VM's address or identity was not read back: vmdown removes what was made"
+  ( umask 077; printf 'VM_IP=%s\nVM_PRINCIPAL=%s\n' "$VM_IP" "$VM_PRINCIPAL" >> "$STATE" )
+  echo "made: VM $VM_NAME ($VM_SIZE, Ubuntu 24.04, system-assigned identity $VM_PRINCIPAL) at $VM_IP, its NIC and OS disk (deleted with it), $VM_NAME-ip, $VM_NAME-nsg (no inbound rule), $VM_NAME-vnet (10.1.0.0/16); tag $(TAG) (undo: vmdown)"
+  az_ network nsg rule create -g "$(g)" --nsg-name "$MI_NSG" -n pgv-vm-3342 --priority 1310 --direction Inbound --access Allow \
+    --protocol Tcp --source-address-prefixes "$VM_IP/32" --source-port-ranges '*' --destination-address-prefixes '*' --destination-port-ranges 3342 -o none
+  GOT=$(az_ network nsg rule show -g "$(g)" --nsg-name "$MI_NSG" -n pgv-vm-3342 --query '[[sourceAddressPrefix, destinationPortRange, access, direction]]' -o tsv)
+  [ "$GOT" = "$(printf '%s/32\t3342\tAllow\tInbound' "$VM_IP")" ] || fail "the VM's 3342 rule reads '$GOT', not $VM_IP/32 alone"
+  echo "allowed: $MI_NAME's public endpoint (3342) admits the VM's $VM_IP/32 too (rule pgv-vm-3342; undo: vmdown)"
+  echo "vm: next vmdoor <this machine's ip>, then vmlogin"
+  ;;
+vmdoor)
+  need_az; load; shift
+  [ -n "${VM_IP:-}" ] || fail "no VM in the state file (vm first)"
+  [ $# -eq 1 ] && ip_ok "$1" || fail "vmdoor <ip>: one IPv4 address"
+  az_ network nsg rule delete -g "$(g)" --nsg-name "$VM_NAME-nsg" -n pgv-ssh -o none 2>/dev/null || true
+  az_ network nsg rule create -g "$(g)" --nsg-name "$VM_NAME-nsg" -n pgv-ssh --priority 1000 --direction Inbound --access Allow \
+    --protocol Tcp --source-address-prefixes "$1/32" --source-port-ranges '*' --destination-address-prefixes '*' --destination-port-ranges 22 -o none
+  GOT=$(az_ network nsg rule list -g "$(g)" --nsg-name "$VM_NAME-nsg" --query "[?direction=='Inbound' && access=='Allow'].[name,sourceAddressPrefix,destinationPortRange]" -o tsv)
+  [ "$GOT" = "$(printf 'pgv-ssh\t%s/32\t22' "$1")" ] || fail "the VM's door reads '$GOT', not ssh from $1 alone"
+  echo "door: $VM_NAME admits ssh from $1 only (undo: goes with the VM)"
+  ;;
+vmlogin)
+  need_az; load
+  [ -n "${VM_PRINCIPAL:-}" ] || fail "no VM in the state file (vm first)"
+  command -v docker >/dev/null || fail "docker is not on this machine (sqlcmd runs from $SQLCMD_IMAGE)"
+  # the identity's login is its display name, the VM's name (a system-assigned identity is named as its resource)
+  BATCH=$(cat <<SQL
+SET NOCOUNT ON;
+IF SUSER_ID(N'$VM_NAME') IS NULL CREATE LOGIN [$VM_NAME] FROM EXTERNAL PROVIDER;
+GRANT VIEW SERVER STATE TO [$VM_NAME];
+GRANT VIEW ANY DEFINITION TO [$VM_NAME];
+GO
+USE msdb;
+IF USER_ID(N'$VM_NAME') IS NULL CREATE USER [$VM_NAME] FOR LOGIN [$VM_NAME];
+ALTER ROLE db_datareader ADD MEMBER [$VM_NAME];
+GO
+SELECT 'vmlogin: ' + p.name + ' type ' + p.type_desc + ', holds ' + ISNULL((SELECT STRING_AGG(CAST(sp.permission_name AS nvarchar(128)) COLLATE DATABASE_DEFAULT, ', ')
+         FROM sys.server_permissions sp WHERE sp.grantee_principal_id = p.principal_id AND sp.state = 'G'), 'nothing')
+       + '; msdb user ' + CAST(ISNULL((SELECT 1 FROM msdb.sys.database_principals u WHERE u.sid = p.sid), 0) AS varchar(1))
+       + '; a user in $MI_DB ' + CAST(ISNULL((SELECT 1 FROM [$MI_DB].sys.database_principals u WHERE u.sid = p.sid), 0) AS varchar(1))
+FROM sys.server_principals p WHERE p.name = N'$VM_NAME';
+SQL
+)
+  OUT=$(sqa master <<<"$BATCH" 2>&1) || { echo "$OUT" >&2; fail "the instance refused the VM's login (above): a finding - the words are Microsoft's"; }
+  echo "$OUT"
+  grep -q "^vmlogin: $VM_NAME type EXTERNAL_LOGIN" <<<"$OUT" || fail "the VM's login was not read back as an external login (above)"
+  ;;
+vmdown)
+  need_az; load
+  [ -n "${VM_NAME:-}" ] || { echo "vmdown: no VM in the state file"; exit 0; }
+  # the login first (the instance stays up for the proof's other rows), then the rule, the VM, its pieces
+  if command -v docker >/dev/null; then
+    sqa master <<SQL >/dev/null 2>&1 && echo "dropped: login $VM_NAME and its msdb user" || echo "WARN: the login $VM_NAME was not dropped (the instance's delete removes it)" >&2
+USE msdb; IF USER_ID(N'$VM_NAME') IS NOT NULL DROP USER [$VM_NAME];
+GO
+IF SUSER_ID(N'$VM_NAME') IS NOT NULL DROP LOGIN [$VM_NAME];
+SQL
+  fi
+  az_ network nsg rule delete -g "$(g)" --nsg-name "$MI_NSG" -n pgv-vm-3342 -o none 2>/dev/null || true
+  [ -z "$(az_ network nsg rule list -g "$(g)" --nsg-name "$MI_NSG" --query "[?name=='pgv-vm-3342'].name" -o tsv)" ] || fail "the rule pgv-vm-3342 is still on $MI_NSG"
+  echo "deleted: $MI_NSG's rule pgv-vm-3342"
+  if az_ vm show -g "$(g)" -n "$VM_NAME" -o none 2>/dev/null; then
+    az_ vm delete -g "$(g)" -n "$VM_NAME" --yes -o none || fail "the VM $VM_NAME was not deleted (above): the state file names it still"
+    echo "deleted: VM $VM_NAME (its NIC and OS disk with it)"
+  fi
+  for r in "public-ip $VM_NAME-ip" "nsg $VM_NAME-nsg" "vnet $VM_NAME-vnet"; do
+    set -- $r
+    if az_ network "$1" show -g "$(g)" -n "$2" -o none 2>/dev/null; then
+      ok=; for _ in 1 2 3 4 5; do if az_ network "$1" delete -g "$(g)" -n "$2" -o none; then ok=1; break; fi; sleep 30; done
+      [ -n "$ok" ] || fail "$1 $2 was not deleted after 5 tries (above): the state file names the VM still; run vmdown again"
+      echo "deleted: $1 $2"
+    fi
+  done
+  NAMED=$(az_ resource list -g "$(g)" --query "length([?starts_with(name, '$VM_NAME')])" -o tsv) || fail "the read-back failed: the state file names the VM still"
+  echo "read back: resources named $VM_NAME* in $(g) $NAMED"
+  [ "$NAMED" = 0 ] || fail "something of the VM is left (above): the state file names it still"
+  sed -i '/^VM_\(NAME\|ADMIN\|KEY\|IP\|PRINCIPAL\)=/d' "$STATE"; rm -f "$VM_KEY" "$VM_KEY.pub"
+  echo "vmdown: 0 left of the VM"
+  ;;
 down)
   need_az; load
+  [ -z "${VM_NAME:-}" ] || fail "the state file names the VM $VM_NAME: vmdown first (the VM goes before the instance)"
   # only 'not found' means absent: any other failed read stops with nothing deleted and the state file kept
   if OUT=$(az_ sql mi show -g "$(g)" -n "$MI_NAME" --query name -o tsv 2>&1); then
     echo "deleting: managed instance $MI_NAME (Microsoft: a long operation)"
