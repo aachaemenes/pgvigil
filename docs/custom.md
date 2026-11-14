@@ -27,8 +27,10 @@ rolled back:
 - READ ONLY does not stop what a server-side right allows: `COPY ... TO PROGRAM` runs inside a read-only transaction
   for a superuser or a member of `pg_execute_server_program`. So before any check runs, each run reads the login's
   rights, and the collection refuses to run on the instance (a failed collection naming the right, no check run) when
-  the login is a superuser or a member of `pg_execute_server_program`, `pg_write_server_files` or
-  `pg_read_server_files`;
+  the login is a superuser, a member of a superuser role (a `NOINHERIT` member too: a check's statement can
+  `SET ROLE` to it) or a member of `pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files`.
+  The rights read are the session user's: a login that starts as another role (`ALTER ROLE ... SET role`) is judged as
+  itself, since a check can set the role back;
 - the check sees what the monitoring login sees: the statistics views in full (`pg_monitor`), the catalogs, and the
   tables the login has been granted. A check that needs more is the server DBA's grant to that login, made by hand.
 
