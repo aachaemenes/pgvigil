@@ -55,13 +55,17 @@ const storeIDSQL = `SELECT pg_postmaster_start_time(), d.oid FROM pg_database d 
 // or a login that bypasses row security; every role it is a MEMBER of (one it may switch to, not only one it inherits)
 // but itself and pgvigil_reader - the owner (pg_database_owner), pgvigil_auth, pgvigil_collector, pg_read_all_data,
 // the server-file roles, pg_monitor; USAGE on the schema; and, as a second line, the hashes themselves (SELECT on
-// ui_users, EXECUTE on any ui_* function). Then serve's repository's two facts, compared with storeIDSQL's.
+// ui_users, EXECUTE on any ui_* function). Then serve's repository's two facts, compared with storeIDSQL's. Every
+// object is found through the catalogs, never by a qualified name: a name in pgvigil (to_regclass('pgvigil.x'))
+// raises 'permission denied for schema pgvigil' for a login without USAGE - the logins this check exists to refuse
+// with words (reportrole-g1: noinh, none).
 const storeCheckSQL = `SELECT session_user::text, r.rolsuper OR r.rolbypassrls,
        coalesce((SELECT string_agg(m.rolname::text, ', ' ORDER BY m.rolname) FROM pg_roles m
                   WHERE m.rolname <> session_user AND m.rolname <> 'pgvigil_reader'
                     AND pg_has_role(session_user, m.oid, 'MEMBER')), ''),
        coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'USAGE'), false),
-       coalesce(has_table_privilege(session_user, to_regclass('pgvigil.ui_users')::oid, 'SELECT'), false)
+       coalesce(has_table_privilege(session_user, (SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                                                    WHERE n.nspname = 'pgvigil' AND c.relname = 'ui_users'), 'SELECT'), false)
          OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                      WHERE n.nspname = 'pgvigil' AND p.proname LIKE 'ui\_%'
                        AND has_function_privilege(session_user, p.oid, 'EXECUTE')),

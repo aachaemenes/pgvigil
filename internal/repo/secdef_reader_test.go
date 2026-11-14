@@ -14,8 +14,11 @@ import (
 // outside its lists to pgvigil_reader, and a custom report on the store runs as a login IN ROLE pgvigil_reader alone -
 // so a SECURITY DEFINER function the reader may run reads as the owner on any report's behalf. Only these may be one:
 // admin_inventory and admin_inventory_generation (the page instances' rows, dsn_ref paths and no secret: 0122, 0131)
-// and alert_log_partition (it checks session_user and writes, so a read-only report gets nothing from it: 0059). A new
-// one fails here until it is read and listed with its reason. Needs a migrated repository: PGVIGIL_REPO_TEST_DSN.
+// and alert_log_partition (it checks session_user and writes, so a read-only report gets nothing from it: 0059), and
+// mssql_hadr_cursor (the collector's door in apply_roles, 0110; the reader holds EXECUTE too - apply_roles' collector
+// branch takes no reader grant back - and it answers one bigint position, STABLE, no write, from mssql_jobs_cursor,
+// mssql_qs_store and mssql_qs_plan, tables the reader SELECTs anyway: 0083; found by reportrole-g1). A new one fails
+// here until it is read and listed with its reason. Needs a migrated repository: PGVIGIL_REPO_TEST_DSN.
 func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -28,7 +31,7 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	allowed := map[string]bool{"admin_inventory": true, "admin_inventory_generation": true, "alert_log_partition": true}
+	allowed := map[string]bool{"admin_inventory": true, "admin_inventory_generation": true, "alert_log_partition": true, "mssql_hadr_cursor": true}
 	rows, err := conn.Query(ctx, `SELECT p.oid::regprocedure::text, p.proname::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 	  WHERE n.nspname = 'pgvigil' AND p.prosecdef AND has_function_privilege('pgvigil_reader', p.oid, 'EXECUTE') ORDER BY 1`)
 	if err != nil {
