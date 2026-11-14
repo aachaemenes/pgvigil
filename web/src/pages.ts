@@ -20,6 +20,7 @@ import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
 import { applyTagFilter, tagFilterBar, tagUI } from './tree';
 import { jobsReportFleetView } from './jobsreport';
+import { jobStatusFleetSection } from './jobs_fleet_status';
 import { rolesFleetView } from './roles';
 import { indexesFleetView } from './indexes';
 import { slowFleetView } from './slow';
@@ -886,9 +887,17 @@ export async function storage(ctx: Ctx): Promise<HTMLElement> {
 }
 
 export async function backups(ctx: Ctx): Promise<HTMLElement> {
-  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
-  const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'));
+  // the instances in view by engine, from the fleet list (a PostgreSQL instance without an archiver or cloud row has
+  // no row in the grid and still counts)
+  const inView = inTag(ctx, (await fleet()).instances);
+  const ids = ctx.tag ? new Set(inView.map(r => Number(r.instance_id))) : null;
+  const sqlserver = inView.filter(r => r.engine === 'sqlserver').length;
+  const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'),
+    { postgres: inView.length - sqlserver, sqlserver });
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  // a view with no PostgreSQL instance: main.ts's wiring then leaves out PostgreSQL's Base backups and Standbys too (F1:
+  // one line in place of an engine's sections)
+  if (inView.length - sqlserver === 0) view.dataset.noPostgres = '1';
   return view;
 }
 
@@ -917,7 +926,8 @@ export async function versions(ctx: Ctx): Promise<HTMLElement> {
 // jobsRoot is the fleet's Jobs page: the failing, missed and over-average jobs of every instance in scope.
 export async function jobsRoot(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
-  const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'), ctx);
+  const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'), ctx,
+    await jobStatusFleetSection(ctx));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }
