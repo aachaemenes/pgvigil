@@ -200,6 +200,9 @@ function snapshotBar(ctx: Ctx, at: string | undefined, steps: Steps): HTMLElemen
   latest.addEventListener('click', () => {
     location.hash = isLive(ctx) ? href(ctx, { tab: TAB, at: undefined }) : href(ctx, { tab: TAB, at: undefined, range: { preset: '1h' } });
   });
+  // no snapshot picked under a range that follows now: the page shows the newest and keeps to it, so Latest would
+  // change nothing - off with that reason beside it (the walk's NOTHING row)
+  if (!ctx.at && isLive(ctx)) offBeside(latest, 'this is the newest snapshot: the page follows it');
   const newest = steps.shown != null && steps.shown === steps.latest;
   const hist = ctx.at ? 'history: auto refresh off' : at ? 'the end of the custom range: auto refresh off' : '';
   return el('div', { class: 'picker' },

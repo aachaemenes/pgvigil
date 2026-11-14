@@ -355,7 +355,12 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
   if (snaps.length > 1 && start >= 0) {
     const slider = el('input', { type: 'range', id: 'mssql-snap', min: '0', max: String(snaps.length - 1), step: '1', value: String(start) });
     const out = el('output', { for: 'mssql-snap' });
+    // Later and Latest at the newest snapshot would read it again: off with one reason beside them (the walk's 'reads' rows)
+    const newestNote = el('span', { class: 'off-reason' });
     const say = () => {
+      const atEnd = Number(slider.value) >= snaps.length - 1;
+      newestNote.textContent = atEnd ? 'this is the newest snapshot' : '';
+      offControl(next, atEnd ? 'this is the newest snapshot' : null, newestNote); offControl(last, atEnd ? 'this is the newest snapshot' : null, newestNote);
       const s = snaps[Number(slider.value)];
       const text = `${fmtTime(s.snapshot_at)}: ${fmtNum(s.sessions)} session(s), ${fmtNum(s.blocked)} blocked`;
       out.textContent = ' ' + text;
@@ -392,7 +397,7 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     }, inRange > snaps.length ? `The newest ${fmtNum(snaps.length)} of ${fmtNum(inRange)} snapshot times.` : '',
     { weights: snaps.map(s => Number(s.requests) || 0), unit: n => `${fmtNum(n)} requests` }));
     sec.append(el('p', { class: 'range' }, el('label', { for: 'mssql-snap' }, `Snapshot (${snaps.length} kept in the range${isLive(ctx) && !at ? '' : ', history'}): `),
-      prev, ' ', slider, ' ', next, ' ', last, out));
+      prev, ' ', slider, ' ', next, ' ', last, ' ', newestNote, out));
   }
   holder.append(body(d, ctx.instance, start >= 0 && snaps.length ? snaps[start].snapshot_at : at ? null : undefined, kill));   // at= before the first kept snapshot: none to show
   sec.append(holder);

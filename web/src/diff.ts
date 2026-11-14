@@ -264,6 +264,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     const none = p.m === 'i' ? '(all, paired by name)' : p.m === 't' ? '(all databases)' : '(pick a database)';
     set(dbA, namesOf(a), p.dba, none); set(dbB, namesOf(b), p.dbb, none);
     hint.textContent = failed + incomplete(p, engineOf(p.a));
+    offControl(go, incomplete(p, engineOf(p.a)) || null, hint);
   }
   // sync: the form shows the fields its mode uses; the picks are remembered
   function sync(refill = true) {
@@ -276,6 +277,8 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     const sql = engineOf(p.a) === 'sqlserver';
     fDbA.hidden = sql && p.m !== 'd'; if (sql && p.m !== 'd') fDbB.hidden = true;
     hint.textContent = incomplete(p, engineOf(p.a));
+    // Compare off while a pick is missing: the hint says which (a click would only repeat it: the walk's NOTHING row)
+    offControl(go, incomplete(p, engineOf(p.a)) || null, hint);
     try { localStorage.setItem(lsKey, JSON.stringify({ m: p.m, a: String(p.a ?? ''), b: String(p.b ?? ''), dba: p.dba ?? '', dbb: p.dbb ?? '', all: p.all ? '1' : '' })); } catch { /* private window */ }
     if (refill) void fillDatabases();
   }
