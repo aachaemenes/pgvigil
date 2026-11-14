@@ -463,8 +463,8 @@ for m in cpu volumes dbsize jobruns; do
   [[ "$s" == "${want[$m]}" && "$i" == "$s" && "$t" == "$s" ]] || fail "E: $m: source=$s inserted=$i stored=$t (want ${want[$m]} each)"
   # E2: Progress per batch of 2, then the mapping's final line
   nb=$(echo "$one" | grep -c "^progress $ID $m inserted=[0-9]* final=0$" || true)
-  lastb=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=0$" | tail -1 | sed -n 's/.*inserted=\([0-9]*\).*/\1/p')
-  fin=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=1$" | sed -n 's/.*inserted=\([0-9]*\).*/\1/p')
+  lastb=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=0$" | tail -1 | sed -n 's/.*inserted=\([0-9]*\).*/\1/p' || true)
+  fin=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=1$" | sed -n 's/.*inserted=\([0-9]*\).*/\1/p' || true)
   [[ "$nb" == "$(( (${want[$m]} + 1) / 2 ))" && "$fin" == "${want[$m]}" && ( ${want[$m]} == 0 || "$lastb" == "${want[$m]}" ) ]] \
     || fail "E2: $m's progress: $nb batch line(s) ending at '${lastb}', final '${fin}' (want $(( (${want[$m]} + 1) / 2 )) ending at ${want[$m]}, final ${want[$m]})"
 done
