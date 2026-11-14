@@ -61,6 +61,7 @@
 #      answer and in neither the list's nor one application's
 #  H6  a serve with -no-login: the contacts' GET 403 'contacts hidden: the login is off'; every POST 403
 #  H7  GET /api/applications/unassigned lists a present database with no application
+#  H8  an instance whose pgvigil.yaml gives it an application: tag is named in the list's answer, not taken (E5)
 # Section P, the page (Admin > Applications, web/src/applications.ts; its tab and route a WIRING of router.ts and
 # main.ts in the same patch; the bundle built from the tree; a headless Chromium over CDP on section H's two serves):
 #  P1  the Admin strip lists Applications; the page lists exactly the store's applications
@@ -77,6 +78,7 @@
 #  P10 the -no-login serve: at least 8 write controls, every one off with a visible reason; contacts in words
 #  P11 axe-core 4.14.0 on the page (an application and its contacts open) light and dark, and read only: 0 nodes
 #  P12 the page's Export .xlsx passes scripts/xlsx-check.py and holds no contact value (contacts not shown)
+#  P13 the page names an instance whose pgvigil.yaml gives it an application: tag (E5)
 # Section O, owner-routed alerts (a contact's route through a configured smtp channel: one derived channel per route,
 # 'contact-<route_id>', the base's relay, repeat, clear_after, quiet hours and cap, scoped by the application's tag;
 # real passes of 'pgvigil alerts' against a loopback SMTP sink that keeps each message with its RCPT list):
@@ -98,6 +100,7 @@
 #  O16 the Send test refused on a route's channel             O17 Report mail and the rules page count config channels only
 #  O18 the contacts' answer carries the routes and the configured smtp channels
 #  O19 the page: a route added and turned off by clicks; axe 0 nodes with the routes shown
+#  O20 Report mail refuses the Applications page and a route's channel (A14)
 # On a tree without 0136 every row FAILs as 'not on this tree': the red run.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -360,6 +363,13 @@ get "$U" "applications/$HAPP" >/dev/null; o5=$(grep -c "h5.$SUF\|555 5$SUF" "$WO
 c7=$(get "$U" applications/unassigned); h7=$(js 'r = d["unassigned"]; i = r["columns"].index("database_name"); print(",".join(x[i] for x in r["rows"]))' 2>&1)
 [[ $c7 == 200 && ",$h7," == *",sales,"* ]] && ok "H7 Unassigned lists a present database with no application (sales)" || bad "H7 $c7: ${h7:0:200}"
 
+# H8 (decision E5): an instance whose pgvigil.yaml gives it an application: tag is named, not dropped silently
+FTI=$(q "select pgvigil.ensure_instance('proof-file-tag', 'onprem', '18.0', 180000, false, '{application:FromFile,env:x}'::text[])")
+c8=$(get "$U" applications); h8=$(js 'r = d.get("file_tags") or {"columns": [], "rows": []}; c = r["columns"]
+print(",".join("%s=%s/%s" % (x[c.index("instance")], x[c.index("tag")], x[c.index("source")]) for x in r["rows"]))' 2>&1)
+[[ $c8 == 200 && ",$h8," == *",proof-file-tag=application:FromFile/pgvigil.yaml,"* && ",$(tags "$FTI")," != *",application:"* ]] \
+  && ok "H8 an application: tag from pgvigil.yaml is not taken and the list's answer names it (proof-file-tag)" || bad "H8 $c8 '${h8:0:200}'; its merged tags $(tags "$FTI")"
+
 # H6 (a second serve, -no-login, on the same repository)
 P6=$(freeport)
 if startserve "$P6" -no-login; then
@@ -371,7 +381,7 @@ else bad "H6 setup: the -no-login serve did not answer ($(tail -3 "$WORK/serve-$
 # ================= P: the page (Admin > Applications in a headless Chromium over CDP, on the H section's serves) =================
 # the bundle is built from this tree on the box (.ap/run.sh: npm ci, npm run build) with 310's WIRING of router.ts and
 # main.ts applied; a binary without the page's route is the red: every P row 'not on this tree'
-PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12"
+PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13"
 if ! grep -a -q 'admin_applications' "$BIN"; then
   for row in $PROWS; do bad "$row not on this tree (no Admin > Applications in the bundle)"; done
 else
@@ -465,6 +475,7 @@ try {
   // P1 the tab and the list
   out('P1.ready', await go(U, '#/admin_applications'));
   out('P1.strip', await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.textContent.trim()).join('|')`));
+  out('P13.note', await ev(`document.querySelector('main .applications [data-part=file-tags]')?.textContent ?? ''`));
   out('P1.names', await ev(`[...document.querySelectorAll('main .applications button')].map(b => b.getAttribute('aria-label') ?? '').filter(l => l.startsWith('Open ')).map(l => l.slice(5)).join('|')`));
   // P2 add through the form
   out('P2.fill', await fill('Add an application', { name: 'Page Added', tier: '2', environment: 'test', description: 'added by the page' }));
@@ -596,6 +607,9 @@ if [[ $P_SET == 1 ]]; then
   r9=$(pv P9.row)
   [[ ${r9%%|*} != "-" && -n ${r9%%|*} && ${r9#*|} == pdb1_new* && $t9 == pdb1_new && "|$(pv P9.after)|" == *"|pdb1_new:own|"* ]] && ok "P9 a renamed database: absent since and 'renamed to pdb1_new' shown; the offer moved the assignment" \
     || bad "P9 row (absent|renamed) '$r9'; store '$t9'; after '$(pv P9.after)'; offer '$(pv P9.offer)'"
+  # P13 (decision E5)
+  [[ $(pv P13.note) == *"proof-file-tag has application:FromFile from pgvigil.yaml"* ]] && ok "P13 the page names the instance whose pgvigil.yaml gives it an application: tag ('$(pv P13.note | cut -c1-120)')" \
+    || bad "P13 the page's notice '$(pv P13.note)'"
   # P10
   c10=$(pv P10.controls); n10=${c10%% *}
   [[ $(pv P10.ready) == true && $n10 -ge 8 && $c10 == *" on:0 unsaid:0" && $(pv P10.words) == true ]] && ok "P10 -no-login: $n10 write controls, every one off with a visible reason; contacts: 'contacts hidden: the login is off'" \
@@ -620,7 +634,7 @@ fi
 # ================= O: owner-routed alerts (a contact's route through a configured smtp channel) =================
 # real passes of 'pgvigil alerts' against a loopback SMTP sink that keeps each message with its RCPT list and refuses
 # one planted address with a 550 naming it; the routes through the store's door (Ann's through the HTTP door)
-OROWS="O1 O2 O3 O4 O5 O6 O7 O8 O9 O10 O11 O12 O13 O14 O15 O16 O17 O18 O19"
+OROWS="O1 O2 O3 O4 O5 O6 O7 O8 O9 O10 O11 O12 O13 O14 O15 O16 O17 O18 O19 O20"
 SINK=$(freeport); mkdir -p "$WORK/smtp"
 REFUSED="refused.$SUF@example.com"
 cat > "$WORK/sink.py" <<'PY'
@@ -772,7 +786,8 @@ opass                                                                     # pass
 P3=$NPASS
 o2rep=$(mails $P3 "$ANN" '[REPEAT CRITICAL] proof-o-a')
 o2cfg=$(q "select repeat_secs || '|' || clear_after_secs || '|' || max_per_hour || '|' || is_configured from pgvigil.alert_channels where name = '$(ch "${RANN:-0}")'")
-[[ -n $RANN && $o2now == 0 && $o2rep -ge 1 && $o2cfg == "300|0|0|t" ]] \
+# (is_configured through || reads 'true', not 't': t-ap-g8)
+[[ -n $RANN && $o2now == 0 && $o2rep -ge 1 && $o2cfg == "300|0|0|true" ]] \
   && ok "O2 the route repeats as its base: nothing again at once, a repeat after 6 minutes (repeat 5m); its channel row 300 s / 0 / no cap, configured" \
   || bad "O2 at once $o2now; after 6 minutes $o2rep; channel row '$o2cfg' (route '$RANN')"
 o6=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RGONE:-0}")' and error like '%mailgone%not configured%'")
@@ -809,7 +824,7 @@ DEF=$(q "select pg_get_functiondef('pgvigil.alert_contact_routes()'::regprocedur
 bobrows=$( [[ -n $RBOB ]] && open_rows "$RBOB" || echo 0)
 # the door made to fail (its body raises first), restored from its own definition after the pass
 [[ -n "$DEF" ]] && q "do \$d\$ begin execute replace(pg_get_functiondef('pgvigil.alert_contact_routes()'::regprocedure), 'BEGIN', 'BEGIN RAISE EXCEPTION ''proof: the door fails'';'); end \$d\$" >/dev/null
-o15door=$(q "select count(*) from pgvigil.alert_contact_routes()" 2>&1 | tail -1)
+o15door=$(q "select count(*) from pgvigil.alert_contact_routes()" 2>&1 | grep -m1 'ERROR')   # the error's own line, not its CONTEXT (t-ap-g8)
 T8=$(q "select now()")
 q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '6 minutes' where channel = 'mail'" >/dev/null
 opass; P8=$NPASS
@@ -860,6 +875,13 @@ def find(x):
     return None
 print(find(d))' "$WORK/o-rules.json" 2>&1)
 [[ -n $RBOB && $o17r == 0 && $o17n == 4 ]] && ok "O17 Report mail lists no route's channel; the rules page counts the 4 configured channels" || bad "O17 contact- channels in Report mail's answer $o17r; the rules page's channel count '$o17n' (want 4)"
+
+# O20 (A14): Report mail never mails the Applications page, nor through a route's channel; a good request still passes
+o20a=$(q "select pgvigil.report_mail_why('x', '#/admin_applications', array['a@example.org'], 'mail', null)")
+o20b=$(q "select pgvigil.report_mail_why('x', '#/summary', array['a@example.org'], '$(ch "${RBOB:-0}")', null)")
+o20c=$(q "select coalesce(pgvigil.report_mail_why('x', '#/summary', array['a@example.org'], 'mail', null), 'none')")
+[[ -n $RBOB && $o20a == *"never mailed"* && $o20b == *"route"* && $o20c == none ]] && ok "O20 Report mail refuses the Applications page ('$o20a') and a route's channel; a summary through 'mail' passes" \
+  || bad "O20 the page: '$o20a'; a route's channel: '$o20b'; a good request: '$o20c'"
 
 # O18: the page's API: one application's contacts carry their routes and the configured smtp channels a route may use
 c18=$(get "$U" "applications/$OBPP/contacts")

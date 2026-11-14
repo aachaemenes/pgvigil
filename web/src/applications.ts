@@ -23,7 +23,7 @@ function offRead(c: Element, why: string): void {
   c.setAttribute('aria-describedby', READ_ONLY_ID);
 }
 
-interface ListData { can_edit: boolean; why_not: string; applications: Table | null; audit: Table | null }
+interface ListData { can_edit: boolean; why_not: string; applications: Table | null; audit: Table | null; file_tags?: Table | null }
 interface OneData { can_edit: boolean; why_not: string; application: Table | null; databases: Table | null }
 interface UnData { can_edit: boolean; why_not: string; unassigned: Table | null; marked: Table | null }
 interface Source { source?: string; set_at?: string; set_by?: string }
@@ -89,7 +89,7 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
     const [d, u] = await Promise.all([get<ListData>('applications'), get<UnData>('applications/unassigned')]);
     if (mine !== seq) return;
     whyNot = d.can_edit ? '' : str(d.why_not);
-    const apps = rowsOf(d.applications), un = rowsOf(u.unassigned), marked = rowsOf(u.marked), audit = rowsOf(d.audit);
+    const apps = rowsOf(d.applications), un = rowsOf(u.unassigned), marked = rowsOf(u.marked), audit = rowsOf(d.audit), fileTags = rowsOf(d.file_tags);
     const onList = new Set(un.map(pickKey));
     for (const k of [...picked]) if (!onList.has(k)) picked.delete(k);
     if (openId && !apps.some(a => Number(a.app_id) === openId)) openId = 0;
@@ -102,6 +102,9 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
         'which thresholds, acknowledgements and alert rules may be scoped by. Until the viewer / operator / admin roles exist, any signed-in user may change applications.'),
       whyNot ? el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${whyNot}.`) : '',
       status,
+      // decision E5: an application: tag from pgvigil.yaml (or an older override) is not taken - named, never dropped silently
+      fileTags.length ? el('p', { class: 'meta', role: 'note', 'data-part': 'file-tags' },
+        'Not taken (an application is set on this page): ', fileTags.map(r => `${str(r.instance)} has ${str(r.tag)} from ${str(r.source)}`).join('; '), '.') : '',
       addForm(),
       el('h3', {}, 'Applications'),
       grid(apps, listCols, 'No application yet: add one above.'),
@@ -295,14 +298,14 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
         edit.addEventListener('click', () => form.fill?.(r));
         const rm = removeButton(`contact ${cn} of ${name}`, cn, () => act('admin/applications/contacts', { op: 'remove', app_id: id, contact_id: Number(r.contact_id) }, () => `Removed contact ${cn}.`));
         return lock(el('span', { class: 'actions' }, edit, ' ', rm));
-      } }], 'No contact yet.'), form, routesPart(id, name, rows, routes, channels), hide);
+      } }], 'No contact yet.'), form, routesPart(name, rows, routes, channels), hide);
     return box;
   }
 
   // owner-routed alerts: a contact's alerts of this application's servers through a configured smtp channel, its
   // repeat, quiet hours and cap the channel's (counted as the route's own); a route turned off or removed closes its
   // open alerts with no message
-  function routesPart(id: number, name: string, contacts: Row[], routes: Row[], channels: Row[]): HTMLElement {
+  function routesPart(name: string, contacts: Row[], routes: Row[], channels: Row[]): HTMLElement {
     const part = el('div', { class: 'app-routes' });
     const label = (r: Row) => `${str(r.contact)} via ${str(r.channel_name)}`;
     part.append(el('h5', {}, 'Alerts to contacts'),

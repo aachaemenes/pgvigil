@@ -796,3 +796,47 @@ BEGIN
                             'detail', coalesce(v_why, format('test %s of %s asked: the sender''s next pass sends it (within a minute while pgvigil run is up)', v_id, v_chan)),
                             'test_id', v_id);
 END $$;
+
+-- report_mail_why is 0107's with two refusals more (task 310, row A14): the Applications page (contacts are personal
+-- data) is never mailed, and a route's derived channel is no report's channel
+CREATE OR REPLACE FUNCTION pgvigil.report_mail_why(p_name text, p_route text, p_recipients text[], p_channel text, p_tz text)
+RETURNS text LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  v_bad text;
+BEGIN
+  IF p_name IS NULL OR length(btrim(p_name)) NOT BETWEEN 1 AND 120 THEN
+    RETURN 'a name of 1 to 120 characters is required';
+  END IF;
+  IF p_route IS NULL OR length(p_route) > 500 OR p_route !~ '^#/[A-Za-z0-9_]+(\?[A-Za-z0-9_.~%=&:+,-]*)?$' THEN
+    RETURN 'the page is the address of a page of this UI (#/<tab>?...)';
+  END IF;
+  IF p_route ~ '^#/admin_applications([?]|$)' THEN
+    RETURN 'Admin > Applications carries contacts (personal data): it is never mailed';
+  END IF;
+  IF p_recipients IS NULL OR cardinality(p_recipients) NOT BETWEEN 1 AND 50 THEN
+    RETURN 'one to 50 addresses are required';
+  END IF;
+  SELECT r INTO v_bad FROM unnest(p_recipients) r
+   WHERE r IS NULL OR length(r) > 254 OR r !~ '^[^@\s<>,;"()\[\]\\]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'
+   LIMIT 1;
+  IF FOUND THEN
+    RETURN format('%s is not a mail address', coalesce(v_bad, 'an empty entry'));
+  END IF;
+  IF p_channel LIKE 'contact-%' THEN
+    RETURN format('%s is an application contact''s route: a report goes through a channel of the alerts: block', p_channel);
+  END IF;
+  IF p_channel IS NULL OR NOT EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.name = p_channel AND c.kind = 'smtp' AND c.is_configured) THEN
+    RETURN format('%s is not an smtp channel of the alerts: block (the sender''s last record of its channels)', coalesce(p_channel, 'no channel'));
+  END IF;
+  IF p_tz IS NOT NULL THEN
+    BEGIN
+      PERFORM now() AT TIME ZONE p_tz;
+    EXCEPTION WHEN invalid_parameter_value THEN
+      RETURN format('%s is not a time zone', p_tz);
+    END;
+    IF p_tz !~ '^[A-Za-z][A-Za-z0-9_+/-]{0,63}$' THEN
+      RETURN format('%s is not a time zone name (an IANA name, America/Los_Angeles, or UTC)', p_tz);
+    END IF;
+  END IF;
+  RETURN NULL;
+END $$;

@@ -152,8 +152,23 @@ func (s *Server) ApplicationsList(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("audit: %w", err))
 		return
 	}
+	// an application: tag that is not taken (decision E5): a file's tag (instances.tags, from pgvigil.yaml) or an older
+	// override of the key - the tag view leaves both out, the page names them
+	fileTags, err := s.query(ctx, `SELECT i.instance_id, i.name AS instance, t.tag, 'pgvigil.yaml' AS source
+	  FROM pgvigil.instances i CROSS JOIN LATERAL unnest(i.tags) AS t(tag)
+	 WHERE i.is_active AND lower(split_part(t.tag, ':', 1)) = 'application'
+	UNION ALL
+	SELECT i.instance_id, i.name, 'application:' || v.value, 'a tag override'
+	  FROM pgvigil.instance_tag_overrides o JOIN pgvigil.instances i ON i.instance_id = o.instance_id
+	  CROSS JOIN LATERAL unnest(o.vals) AS v(value)
+	 WHERE i.is_active AND o.key = 'application'
+	 ORDER BY 2, 3`)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("file tags: %w", err))
+		return
+	}
 	off := s.applicationsOff()
-	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "applications": apps, "audit": audit}, nil)
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "applications": apps, "audit": audit, "file_tags": fileTags}, nil)
 }
 
 // ApplicationOne is GET /api/applications/{id}: its fields with each one's source, and its servers and databases
