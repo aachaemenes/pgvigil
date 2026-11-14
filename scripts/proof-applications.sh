@@ -511,6 +511,7 @@ try {
   out('P4.fill', await fill('Add a contact to Http App', { role: 'technical owner', kind: 'team', name: 'Page Team', email: env.P_TEAM }));
   out('P4.status', await submit('Add a contact to Http App'));
   out('P4.listed', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_TEAM)})`));
+  out('P4.store', sql(`select count(*) from pgvigil.ui_app_contacts c join pgvigil.app_applications a using (app_id) where a.name = 'Http App' and c.name = 'Page Team' and c.kind = 'team' and c.role = 'technical owner' and c.email = '${env.P_TEAM}'`));
   // P14: the team's e-mail edited on the page: its audit row names the e-mail alone (review C, M2)
   out('P14.edit', await click('Edit contact Page Team of Http App'));
   out('P14.fill', await fill('Edit contact Page Team of Http App', { email: env.P_TEAM2 }));
@@ -614,7 +615,7 @@ if [[ $P_SET == 1 ]]; then
   p3=$(q "select description || '|' || version from pgvigil.app_applications where name = 'Page Added'")
   [[ $(pv P3.sources) -ge 4 && $p3 == "edited by the page|2" ]] && ok "P3 one application's fields with their sources ($(pv P3.sources) 'entered by'); Edit stored, version 2" || bad "P3 sources $(pv P3.sources); store '$p3'; status '$(pv P3.status)'"
   # P4
-  p4=$(q "select count(*) from pgvigil.ui_app_contacts c join pgvigil.app_applications a using (app_id) where a.name = 'Http App' and c.name = 'Page Team' and c.kind = 'team' and c.role = 'technical owner' and c.email = '$TEAM'")
+  p4=$(pv P4.store)   # read right after P4 (P14 changes this contact's e-mail later: t-ap-g11)
   [[ $(pv P4.before) == false && $(pv P4.after) == true && $p4 == 1 && $(pv P4.listed) == true ]] && ok "P4 contacts on a click only (the planted e-mail absent before, shown after); a contact added through the form stored and listed" \
     || bad "P4 before $(pv P4.before), after $(pv P4.after); stored $p4, listed $(pv P4.listed); status '$(pv P4.status)'"
   # P5
