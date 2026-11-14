@@ -34,23 +34,27 @@
 # counts the transactions its stopped log reader has not read):
 #  A. the lab forms ('LAB UP'): three nodes, each @@SERVERNAME its hostname; the publisher's distributor is the other
 #     node (sys.servers' distributor entry names it); 100 rows of the transactional and 50 of the snapshot
-#     publication reach the subscriber. The monitoring login exists on the distributor and the publisher and is no
-#     sysadmin (IS_SRVROLEMEMBER 0).
-#  B. a healthy read, as the monitoring login. On the distributor, mssql_replication 'ok' (not partial): 2 publications
-#     (pgvr_tran transactional, pgvr_snap snapshot, 1 article each); 2 subscriptions to <sub>.pgvr_sub, push, active,
-#     every row naming the publisher and the subscriber by the containers' names (any case: a remote distributor's
-#     tables carry ids of its own server map, MSreplservers, not of its sys.servers - read on the probe);
-#     each with sa's agent name; the transactional one's job running and continuous, the snapshot one's job stopped
-#     and not continuous; agents: the log reader (running, continuous) and two snapshot agents (not continuous); the
+#     publication reach the subscriber; a second publisher LOCAL to the distributor (pgvr_local_tran, its own
+#     distributor) brings 30 rows to a second subscriber database. The monitoring login exists on the distributor and
+#     the publisher and is no sysadmin (IS_SRVROLEMEMBER 0).
+#  B. a healthy read, as the monitoring login. On the distributor, mssql_replication 'ok' (not partial): 3 publications
+#     (pgvr_local_tran and pgvr_tran transactional, pgvr_snap snapshot, 1 article each); 3 push subscriptions, active,
+#     each with sa's agent name - every row naming its publisher (the distributor itself for pgvr_local_tran, the
+#     publisher node for the others) and the subscriber by the containers' names (any case: the distribution
+#     database's tables carry ids of its own server map, MSreplservers, not of its sys.servers - read on the probe);
+#     the two transactional subscriptions' jobs running and continuous, the snapshot one's job stopped and not
+#     continuous; agents: two log readers (running, continuous) and three snapshot agents (not continuous); the
 #     undistributed commands per subscription equal sa's MSdistribution_status sum; no failing time, no error, no
-#     oldest waiting command; the judged latency 0. On the publisher: no distribution database, one published_db row
-#     pgvr_pub with the distributor sa's sys.servers names (another server), pending_xacts equal to sa's counter.
-#     Neither instance has a replication finding. One sample per series (5 on the distributor: 2 subscriptions, the
-#     log reader, 2 snapshot agents; 1 on the publisher) and one hour row each.
+#     oldest waiting command; the judged latency 0. The distributor's own published database pgvr_local, its
+#     distributor local (true). On the publisher: no distribution database, one published_db row pgvr_pub with the
+#     distributor sa's sys.servers names (another server), pending_xacts equal to sa's counter.
+#     Neither instance has a replication finding. One sample per series (9 on the distributor: 3 subscriptions, 2 log
+#     readers, 3 snapshot agents, 1 published database; 1 on the publisher) and one hour row each.
 #  C. the trend: 20,000 rows written at the publisher, then a read of both: the publisher's transactions per second
 #     above 0 (its counter moved since B), the distributor's undistributed back to 0 within 60 s (read again until).
 #     The hour rows count each series' reads.
-#  D. the subscriber's table locked (one session holds TABLOCKX for 220 s) and 100 rows written at the publisher.
+#  D. the subscriber's table locked (one session holds TABLOCKX until it is killed after the reads) and 100 rows
+#     written at the publisher.
 #     The distributor's instance thresholds set through import_pg_threshold at the INSTANCE level (SQL Server): latency
 #     1 / 3 minutes, silent 2 minutes ('done'). At about 150 s: stored undistributed = sa's 100, the oldest waiting
 #     command's entry time within 30 s after the write (sa's clock), the judged latency 120 s or more; findings
@@ -60,16 +64,16 @@
 #  E. the transactional distribution agent's job stopped (sp_stop_job) and 50 rows written: the first read stores
 #     job_state 'stopped' and raises nothing; the second raises 'a replication agent is stopped' (warning), its text
 #     naming 50 commands waiting. The job started again: within 90 s running, 0 waiting, no finding.
-#  F. the log reader's job stopped and 5 transactions written at the publisher. The publisher's instance threshold
-#     silent 1 minute. The publisher's first read stores pending_xacts = sa's counter (5 or more) and raises nothing;
-#     70 s later 'replicated transactions wait in the log of a published database' (warning), naming the distributor
+#  F. the log reader's job stopped and 5 transactions written at the publisher. The publisher's first read stores
+#     pending_xacts = sa's counter (5) and raises nothing; then its instance threshold silent 1 minute, and 70 s after
+#     its last healthy read 'replicated transactions wait in the log of a published database' (warning), naming the distributor
 #     as another server. The distributor at two reads: 'a replication agent is stopped' on the log reader. The job
 #     started again: within 120 s the publisher's pending_xacts 0 and neither finding.
 #  G. a row deleted at the subscriber, then updated at the publisher: the distribution agent fails on it. The
 #     distributor's instance threshold retrying 1 minute. A read while it fails: 'a replication agent failed'
 #     (warning) with error 20598 (sa finds it in MSrepl_errors; the history's error id names SQL Server's generic
 #     14151 row, whose text carries the cause) and the text 'The row was not found at the Subscriber';
-#     failing_since = sa's first retry or failure row after the agent's last idle or succeeded one (within 2 s).
+#     failing_since = sa's first retry or failure row of the agent after the UPDATE (within 2 s).
 #     Once that is a minute old: 'a replication agent keeps failing or retrying' and no longer 'failed' - also
 #     while a job retry's 'in progress' rows deliver nothing (read on the probe: 'Error executing a batch of
 #     commands. Retrying individual commands.', runstatus 3). The row put back at the subscriber: within 150 s no
@@ -82,22 +86,28 @@
 #     over three days from the hours ('hours'): the same largest latency and undistributed. Every hour row's reads =
 #     its series' samples in that hour.
 #  J. pgvigil.findings (the release join's union) carries the replication findings with source 'mssql_hadr'.
-#  K. the read-only statements again: TestHADRStatementsLive as the monitoring login against the real distribution
-#     database (its rows returned), go test ./internal/mssql/.
+#  K. the statements as the monitoring login: TestHADRStatementsLive (the old forms, their rows returned) and
+#     TestReplicationStatementsLive (the new ones: the publisher side, the jobs, the server map, the mapped forms) on
+#     the real distribution database; TestReplicationFailingLive over a stub database of crafted history: a busy agent
+#     that retried six hours ago, delivered and fails again is failing since the NEW failure (not six hours); an agent
+#     stuck between job retries ('in progress' rows that deliver nothing) since its first failure; an agent that
+#     delivered past its failure is not failing; a connection retry since its first retry; an idle agent is not
+#     failing; the cause code is the row whose text is part of the agent's own failure text (20598), never another
+#     error of the same second (2627); go test ./internal/mssql/.
 #  L. stubbed rows through the import on a stub instance: a pull subscription's agent ('not here') never 'stopped'; a
 #     failed jobs read (collector_error <db>.msdb) leaves job_state NULL and fires nothing; a failed publisher read
 #     keeps the last published_db rows; a re-run of one read adds nothing to the hours; an older read imported late
 #     changes nothing. import_pg_threshold: repl_latency at a PostgreSQL instance refused 'no SQL Server instance';
 #     uptime at a SQL Server instance accepted (as before); amcheck_age at a SQL Server instance refused 'no
 #     PostgreSQL instance' (as before).
-#  N. the page's wiring (the lead's files, web/src/mssql_hadr.ts and internal/web/q_mssql_hadr.go, task 383): the
+#  N. the page's wiring (web/src/mssql_hadr.ts and internal/web/q_mssql_hadr.go, joined apart from this file): the
 #     patch this file carries (wiring_patch) applies to a scratch copy of the tree, its web bundle builds (tsc,
 #     esbuild) and its binary serves /api/mssql/availability for the distributor: part replseries answers 2 or more
 #     buckets over the proof's window with the largest latency 120 s or more and 100 or more commands waiting; part
 #     replication carries the new columns (the transactional subscription running, continuous, latency 0, active);
 #     part repllimits the three keys at their defaults (10, 15, 5 minutes); the bundle holds the latency chart.
 #  M. everything removed: the lab read back as 0 containers, 0 networks, 0 volumes; the repository database dropped.
-#  NOT PROVEN HERE: merge replication (SQL Server on Linux has none; on Windows it waits on the owner's answer to Q10),
+#  NOT PROVEN HERE: merge replication (SQL Server on Linux has none; no Windows lab runs this proof yet),
 #  peer-to-peer, a pull subscription's agent on a live subscriber, an Azure SQL Managed Instance distributor, SQL
 #  Server 2016-2019 and 2025, a distributor in an availability group.
 set -Eeuo pipefail
@@ -191,6 +201,7 @@ SQL
   echo "== the subscriber $SUB"
   step subscriber "$SUB" <<SQL
 CREATE DATABASE pgvr_sub;
+CREATE DATABASE pgvr_sub2;
 SQL
   echo "== the publisher $PUB (its distributor is $DIST)"
   step publisher "$PUB" <<SQL
@@ -236,8 +247,37 @@ EXEC sp_addpushsubscription_agent @publication = N'pgvr_snap', @subscriber = N'$
 EXEC sp_startpublication_snapshot @publication = N'pgvr_tran';
 EXEC sp_startpublication_snapshot @publication = N'pgvr_snap';
 SQL
-  # the transactional subscription is initialised by its continuous distribution agent; the snapshot one by a run of
-  # its agent after the snapshot
+  echo "== a second publisher, local to the distributor (its own distributor)"
+  step "local publisher" "$DIST" <<SQL
+EXEC sp_adddistpublisher @publisher = @@SERVERNAME, @distribution_db = N'distribution', @security_mode = 0, @login = N'sa', @password = N'\$(SA)',
+     @working_directory = N'/var/opt/mssql/ReplData', @trusted = N'false', @thirdparty_flag = 0, @publisher_type = N'MSSQLSERVER';
+CREATE DATABASE pgvr_local;
+GO
+USE pgvr_local;
+CREATE TABLE dbo.t_local (id int NOT NULL PRIMARY KEY, v nvarchar(200) NOT NULL);
+INSERT dbo.t_local (id, v) SELECT TOP (30) ROW_NUMBER() OVER (ORDER BY (SELECT 0)), N'seed' FROM sys.all_objects;
+EXEC sp_replicationdboption @dbname = N'pgvr_local', @optname = N'publish', @value = N'true';
+GO
+USE pgvr_local;
+EXEC sp_addlogreader_agent @job_login = NULL, @job_password = NULL,
+     @publisher_security_mode = 0, @publisher_login = N'sa', @publisher_password = N'\$(SA)';
+EXEC sp_addpublication @publication = N'pgvr_local_tran', @status = N'active', @allow_push = N'true', @repl_freq = N'continuous',
+     @independent_agent = N'true', @immediate_sync = N'true', @sync_method = N'concurrent';
+EXEC sp_addpublication_snapshot @publication = N'pgvr_local_tran', @frequency_type = 1, @job_login = NULL, @job_password = NULL,
+     @publisher_security_mode = 0, @publisher_login = N'sa', @publisher_password = N'\$(SA)';
+EXEC sp_addarticle @publication = N'pgvr_local_tran', @article = N't_local', @source_owner = N'dbo', @source_object = N't_local',
+     @type = N'logbased', @destination_owner = N'dbo', @destination_table = N't_local';
+EXEC sp_addsubscription @publication = N'pgvr_local_tran', @subscriber = N'$SUB', @destination_db = N'pgvr_sub2', @subscription_type = N'Push',
+     @sync_type = N'automatic', @article = N'all', @update_mode = N'read only', @subscriber_type = 0;
+EXEC sp_addpushsubscription_agent @publication = N'pgvr_local_tran', @subscriber = N'$SUB', @subscriber_db = N'pgvr_sub2',
+     @subscriber_security_mode = 0, @subscriber_login = N'sa', @subscriber_password = N'\$(SA)', @job_login = NULL, @job_password = NULL,
+     @frequency_type = 64, @frequency_interval = 0, @frequency_relative_interval = 0, @frequency_recurrence_factor = 0,
+     @frequency_subday = 0, @frequency_subday_interval = 0, @active_start_time_of_day = 0, @active_end_time_of_day = 235959,
+     @active_start_date = 0, @active_end_date = 0, @dts_package_location = N'Distributor';
+EXEC sp_startpublication_snapshot @publication = N'pgvr_local_tran';
+SQL
+  # the transactional subscriptions are initialised by their continuous distribution agents; the snapshot one by a
+  # run of its agent after the snapshot
   until_is 60 5 "$SUB" 100 "SELECT CASE WHEN OBJECT_ID(N'pgvr_sub.dbo.t_tran') IS NULL THEN -1 ELSE (SELECT COUNT(*) FROM pgvr_sub.dbo.t_tran) END" \
     || fail "the transactional subscription did not reach 100 rows in 300 s (last read $GOT)"
   echo "  pgvr_tran: 100 rows at $SUB"
@@ -248,6 +288,9 @@ SQL
   until_is 40 3 "$SUB" 50 "SELECT CASE WHEN OBJECT_ID(N'pgvr_sub.dbo.t_snap') IS NULL THEN -1 ELSE (SELECT COUNT(*) FROM pgvr_sub.dbo.t_snap) END" \
     || fail "the snapshot subscription did not reach 50 rows in 120 s (last read $GOT)"
   echo "  pgvr_snap: 50 rows at $SUB"
+  until_is 60 5 "$SUB" 30 "SELECT CASE WHEN OBJECT_ID(N'pgvr_sub2.dbo.t_local') IS NULL THEN -1 ELSE (SELECT COUNT(*) FROM pgvr_sub2.dbo.t_local) END" \
+    || fail "the local publisher's subscription did not reach 30 rows in 300 s (last read $GOT)"
+  echo "  pgvr_local_tran (published on the distributor itself): 30 rows at $SUB"
   echo "LAB UP $TAG"
 }
 
@@ -289,7 +332,8 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2; exit 1' ERR
-# wiring_patch: the page's lines for the lead's files (task 383's), as the lead applies them at the join
+# wiring_patch: the page's lines (web/src/mssql_hadr.ts, internal/web/q_mssql_hadr.go, docs/sqlserver-hadr.md), as
+# they are joined; applied here to a scratch copy only
 wiring_patch() { cat <<'PATCH'
 diff -ru a/docs/sqlserver-hadr.md b/docs/sqlserver-hadr.md
 --- a/docs/sqlserver-hadr.md	2026-11-14 09:32:01.484310526 -0800
@@ -305,12 +349,13 @@ diff -ru a/docs/sqlserver-hadr.md b/docs/sqlserver-hadr.md
  
 diff -ru a/internal/web/q_mssql_hadr.go b/internal/web/q_mssql_hadr.go
 --- a/internal/web/q_mssql_hadr.go	2026-11-14 09:32:01.481723795 -0800
-+++ b/internal/web/q_mssql_hadr.go	2026-11-14 09:32:37.582711904 -0800
++++ b/internal/web/q_mssql_hadr.go	2026-11-14 10:04:45.725715711 -0800
 @@ -140,14 +140,30 @@
         snapshot_at
    FROM pgvigil.mssql_logshipping_state WHERE instance_id = $1 ORDER BY role, database_name`
  
-+// the judged latency of a subscription is the age of the oldest command waiting for it (0 when none waits; 0142)
++// the judged latency of a subscription is the age of the oldest command waiting for it (0 when none waits; 0142,
++// on the distributor's own clock)
  const sqlMSSQLReplication = `
  SELECT kind, distribution_db, publisher, publisher_db, publication, publication_type, articles, subscriber, subscriber_db,
 -       subscription_type, agent_type, agent_name, runstatus,
@@ -320,8 +365,7 @@ diff -ru a/internal/web/q_mssql_hadr.go b/internal/web/q_mssql_hadr.go
 -       status_text, last_run_at, latency_ms, delivery_rate, undistributed, est_catchup_s, snapshot_at
 +       status_text, last_run_at, latency_ms, delivery_rate, undistributed, est_catchup_s, snapshot_at,
 +       job_state, continuous, failing_since, error_code, error_text, oldest_pending_at,
-+       CASE WHEN kind = 'subscription' THEN CASE WHEN coalesce(undistributed, 0) = 0 THEN 0
-+            ELSE greatest(0, extract(epoch FROM snapshot_at - oldest_pending_at)) END END AS latency_s,
++       CASE WHEN kind = 'subscription' THEN pgvigil.mssql_repl_latency(undistributed, pending_age_s) END AS latency_s,
 +       database_name, distributor, distributor_local, log_reuse_wait, pending_xacts
    FROM pgvigil.mssql_replication_state WHERE instance_id = $1
 - ORDER BY CASE kind WHEN 'publication' THEN 0 WHEN 'subscription' THEN 1 ELSE 2 END, publisher, publisher_db, publication, subscriber, agent_name`
@@ -441,6 +485,50 @@ diff -ru a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
 PATCH
 }
 
+# stub_sql: a database with tables in the shape of a distribution database's and crafted history (part K); its
+# rows mark the expected failing time ('expected since') and cause code ('expected code <n>')
+stub_sql() { cat <<SQL
+CREATE DATABASE pgvr_stub;
+GO
+USE pgvr_stub;
+CREATE TABLE dbo.MSdistribution_agents (id int, name nvarchar(100), publisher_database_id int, publisher_id smallint, publisher_db sysname,
+  publication sysname, subscriber_id smallint, subscriber_db sysname, subscription_type int);
+CREATE TABLE dbo.MSdistribution_history (agent_id int, runstatus int, start_time datetime, time datetime, comments nvarchar(4000),
+  xact_seqno varbinary(16), delivery_latency int, delivery_rate float, error_id int, timestamp timestamp);
+CREATE TABLE dbo.stub_status (agent_id int, UndelivCmdsInDistDB int);
+EXEC('CREATE VIEW dbo.MSdistribution_status AS SELECT agent_id, UndelivCmdsInDistDB FROM dbo.stub_status');
+CREATE TABLE dbo.MSsubscriptions (publisher_database_id int, article_id int, agent_id int, status tinyint);
+CREATE TABLE dbo.MSrepl_transactions (publisher_database_id int, xact_seqno varbinary(16), entry_time datetime);
+CREATE TABLE dbo.MSrepl_commands (publisher_database_id int, xact_seqno varbinary(16), article_id int);
+CREATE TABLE dbo.MSrepl_errors (id int, time datetime, error_code sysname NULL, error_text ntext NULL);
+CREATE USER [$LM] FOR LOGIN [$LM]; ALTER ROLE db_datareader ADD MEMBER [$LM];
+DECLARE @b datetime = GETDATE();
+INSERT dbo.MSdistribution_agents VALUES (1, N'busy-failed-again', 1, 0, N'p', N'pub', 0, N's1', 0), (2, N'stuck-between-retries', 1, 0, N'p', N'pub', 0, N's2', 0),
+  (3, N'recovered-busy', 1, 0, N'p', N'pub', 0, N's3', 0), (4, N'retrying-now', 1, 0, N'p', N'pub', 0, N's4', 0), (5, N'healthy-idle', 1, 0, N'p', N'pub', 0, N's5', 0);
+INSERT dbo.MSdistribution_history (agent_id, runstatus, start_time, time, comments, xact_seqno, error_id) VALUES
+  (1, 5, DATEADD(hour, -7, @b), DATEADD(hour, -6, @b), N'a retry long ago', 0x10, 0),
+  (1, 3, DATEADD(hour, -7, @b), DATEADD(minute, -300, @b), N'delivered', 0x20, 0),
+  (1, 3, DATEADD(hour, -7, @b), DATEADD(minute, -10, @b), N'delivered', 0x50, 0),
+  (1, 6, DATEADD(hour, -7, @b), DATEADD(minute, -5, @b), N'expected since', 0x50, 7),
+  (1, 3, DATEADD(minute, -4, @b), DATEADD(minute, -3, @b), N'expected code 20598', 0x50, 0),
+  (2, 4, DATEADD(hour, -1, @b), DATEADD(minute, -30, @b), N'No replicated transactions are available.', 0x30, 0),
+  (2, 6, DATEADD(hour, -1, @b), DATEADD(minute, -20, @b), N'expected since', 0x30, 9),
+  (2, 3, DATEADD(minute, -19, @b), DATEADD(minute, -15, @b), N'Error executing a batch of commands. Retrying individual commands.', 0x30, 0),
+  (2, 6, DATEADD(minute, -19, @b), DATEADD(minute, -10, @b), N'failed again', 0x30, 9),
+  (3, 4, DATEADD(hour, -1, @b), DATEADD(minute, -30, @b), N'idle', 0x30, 0),
+  (3, 6, DATEADD(hour, -1, @b), DATEADD(minute, -20, @b), N'failed', 0x30, 0),
+  (3, 3, DATEADD(minute, -19, @b), DATEADD(minute, -10, @b), N'delivered past the failure', 0x40, 0),
+  (4, 4, DATEADD(hour, -1, @b), DATEADD(minute, -30, @b), N'idle', 0x30, 0),
+  (4, 5, DATEADD(hour, -1, @b), DATEADD(minute, -8, @b), N'expected since', 0x30, 0),
+  (4, 5, DATEADD(hour, -1, @b), DATEADD(minute, -2, @b), N'The process could not connect to Subscriber.', 0x30, 0),
+  (5, 4, DATEADD(hour, -1, @b), DATEADD(minute, -1, @b), N'idle', 0x30, 0);
+INSERT dbo.MSrepl_errors (id, time, error_code, error_text) VALUES
+  (7, DATEADD(minute, -5, @b), N'14151', N'Replication-Replication Distribution Subsystem: agent busy-failed-again failed. The row was not found at the Subscriber when applying the replicated UPDATE command for Table ''[dbo].[t1]'' with Primary Key(s): [id] = 5'),
+  (8, DATEADD(minute, -5, @b), N'2627', N'Violation of PRIMARY KEY constraint ''PK_x''. Cannot insert duplicate key in object ''dbo.x''.'),
+  (9, DATEADD(minute, -5, @b), N'20598', N'The row was not found at the Subscriber when applying the replicated UPDATE command for Table ''[dbo].[t1]'' with Primary Key(s): [id] = 5');
+SQL
+}
+
 if [ -n "${PGVIGIL_BIN:-}" ]; then BIN=$PGVIGIL_BIN; else
   CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil || fail "the build"
   BIN=$WORK/pgvigil
@@ -466,10 +554,13 @@ for n in "$DIST" "$PUB"; do [ "$(Q "$n" "SELECT IS_SRVROLEMEMBER('sysadmin', N'$
 D=distribution.dbo
 DA_TRAN=$(Q "$DIST" "SELECT name FROM $D.MSdistribution_agents WHERE publication = N'pgvr_tran' AND subscriber_db = N'pgvr_sub'")
 DA_SNAP=$(Q "$DIST" "SELECT name FROM $D.MSdistribution_agents WHERE publication = N'pgvr_snap' AND subscriber_db = N'pgvr_sub'")
-LR=$(Q "$DIST" "SELECT name FROM $D.MSlogreader_agents")
+LR=$(Q "$DIST" "SELECT name FROM $D.MSlogreader_agents WHERE publisher_db = N'pgvr_pub'")
+LR_LOCAL=$(Q "$DIST" "SELECT name FROM $D.MSlogreader_agents WHERE publisher_db = N'pgvr_local'")
+DA_LOCAL=$(Q "$DIST" "SELECT name FROM $D.MSdistribution_agents WHERE publication = N'pgvr_local_tran' AND subscriber_db = N'pgvr_sub2'")
+SN_LOCAL=$(Q "$DIST" "SELECT name FROM $D.MSsnapshot_agents WHERE publication = N'pgvr_local_tran'")
 SN_TRAN=$(Q "$DIST" "SELECT name FROM $D.MSsnapshot_agents WHERE publication = N'pgvr_tran'")
 SN_SNAP=$(Q "$DIST" "SELECT name FROM $D.MSsnapshot_agents WHERE publication = N'pgvr_snap'")
-echo "  agents: distribution $DA_TRAN / $DA_SNAP, log reader $LR, snapshot $SN_TRAN / $SN_SNAP"
+echo "  agents: distribution $DA_TRAN / $DA_SNAP / $DA_LOCAL, log reader $LR / $LR_LOCAL, snapshot $SN_TRAN / $SN_SNAP / $SN_LOCAL"
 echo "A: OK"
 
 ip_of() { docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$1"; }
@@ -527,17 +618,18 @@ rd "$NDIST"; rd "$NPUB"
 ID=$(iid "$NDIST"); IP=$(iid "$NPUB")
 # the names: every row names the publisher and the subscriber by the containers' own names (any case): a remote
 # distributor's tables carry ids of its own server map, never of its sys.servers
-got=$(q "select count(*) filter (where lower(publisher) is distinct from lower('$PUB')) || ':' || count(*) filter (where kind = 'subscription' and lower(subscriber) is distinct from lower('$SUB')) || ':' || count(*) from pgvigil.mssql_replication_state where instance_id = $ID")
-[ "$got" = "0:0:7" ] || fail "B: rows naming another publisher or subscriber (wrong:wrong:all): $got"
+got=$(q "select count(*) filter (where lower(publisher) is distinct from lower(CASE WHEN publisher_db = 'pgvr_local' THEN '$DIST' ELSE '$PUB' END)) || ':' || count(*) filter (where kind = 'subscription' and lower(subscriber) is distinct from lower('$SUB')) || ':' || count(*) from pgvigil.mssql_replication_state where instance_id = $ID and kind in ('publication', 'subscription', 'agent')")
+[ "$got" = "0:0:11" ] || fail "B: rows naming another publisher or subscriber (wrong:wrong:all): $got"
 SUBNAME=$(sv "$ID" "$DA_TRAN" subscriber)
 got=$(q "select string_agg(publication || ':' || publication_type || ':' || articles, ',' order by publication) from pgvigil.mssql_replication_state where instance_id = $ID and kind = 'publication'")
-[ "$got" = "pgvr_snap:snapshot:1,pgvr_tran:transactional:1" ] || fail "B: publications: $got"
-got=$(q "select string_agg(agent_name || ':' || subscriber || '.' || subscriber_db || ':' || subscription_type || ':' || subscription_status || ':' || job_state || ':' || continuous, ',' order by publication) from pgvigil.mssql_replication_state where instance_id = $ID and kind = 'subscription'")
-[ "$got" = "$DA_SNAP:$SUBNAME.pgvr_sub:push:active:stopped:false,$DA_TRAN:$SUBNAME.pgvr_sub:push:active:running:true" ] || fail "B: subscriptions: $got"
-got=$(q "select string_agg(agent_type || ':' || agent_name || ':' || job_state || ':' || continuous, ',' order by agent_type, agent_name) from pgvigil.mssql_replication_state where instance_id = $ID and kind = 'agent'")
-want=$(printf 'logreader:%s:running:true,snapshot:%s:stopped:false,snapshot:%s:stopped:false' "$LR" "$(printf '%s\n%s\n' "$SN_SNAP" "$SN_TRAN" | LC_ALL=C sort | head -1)" "$(printf '%s\n%s\n' "$SN_SNAP" "$SN_TRAN" | LC_ALL=C sort | tail -1)")
+[ "$got" = "pgvr_local_tran:transactional:1,pgvr_snap:snapshot:1,pgvr_tran:transactional:1" ] || fail "B: publications: $got"
+got=$(q "select string_agg(agent_name || ':' || lower(subscriber) || '.' || subscriber_db || ':' || subscription_type || ':' || subscription_status || ':' || job_state || ':' || continuous, ',' order by publication) from pgvigil.mssql_replication_state where instance_id = $ID and kind = 'subscription'")
+[ "$got" = "$DA_LOCAL:${SUB,,}.pgvr_sub2:push:active:running:true,$DA_SNAP:${SUB,,}.pgvr_sub:push:active:stopped:false,$DA_TRAN:${SUB,,}.pgvr_sub:push:active:running:true" ] || fail "B: subscriptions: $got"
+got=$(q "select agent_type || ':' || agent_name || ':' || job_state || ':' || continuous from pgvigil.mssql_replication_state where instance_id = $ID and kind = 'agent'" | LC_ALL=C sort | paste -sd, -)
+want=$(printf 'logreader:%s:running:true\nlogreader:%s:running:true\nsnapshot:%s:stopped:false\nsnapshot:%s:stopped:false\nsnapshot:%s:stopped:false\n' "$LR" "$LR_LOCAL" "$SN_TRAN" "$SN_SNAP" "$SN_LOCAL" | LC_ALL=C sort | paste -sd, -)
 [ "$got" = "$want" ] || fail "B: agents: $got (want $want)"
-for a in "$DA_TRAN" "$DA_SNAP"; do
+[ "$(q "select database_name || ':' || distributor_local from pgvigil.mssql_replication_state where instance_id = $ID and kind = 'published_db'")" = "pgvr_local:true" ] || fail "B: the distributor's own published database (distributor_local)"
+for a in "$DA_TRAN" "$DA_SNAP" "$DA_LOCAL"; do
   [ "$(sv "$ID" "$a" "coalesce(undistributed, 0)")" = "$(und_sa "$a")" ] || fail "B: undistributed of $a: $(sv "$ID" "$a" undistributed), sa $(und_sa "$a")"
 done
 [ "$(q "select count(*) from pgvigil.mssql_replication_state where instance_id = $ID and (failing_since is not null or error_text is not null or oldest_pending_at is not null)")" = 0 ] || fail "B: a failing time, an error or a waiting command on a healthy distributor"
@@ -545,23 +637,23 @@ done
 got=$(q "select database_name || ':' || upper(distributor) || ':' || distributor_local || ':' || pending_xacts from pgvigil.mssql_replication_state where instance_id = $IP and kind = 'published_db'")
 [ "$got" = "pgvr_pub:${DIST^^}:false:$(pending_sa)" ] || fail "B: the publisher side: $got"
 [ -z "$(fnd "$ID")$(fnd "$IP")" ] || fail "B: findings on a healthy lab: $(fnd "$ID") / $(fnd "$IP")"
-[ "$(q "select count(*) || ':' || count(distinct series) from pgvigil.mssql_repl_sample where instance_id = $ID")" = "5:5" ] || fail "B: the distributor's samples"
+[ "$(q "select count(*) || ':' || count(distinct series) from pgvigil.mssql_repl_sample where instance_id = $ID")" = "9:9" ] || fail "B: the distributor's samples"
 [ "$(q "select count(*) || ':' || min(series) from pgvigil.mssql_repl_sample where instance_id = $IP")" = "1:published:pgvr_pub" ] || fail "B: the publisher's sample"
-[ "$(q "select count(*) || ':' || sum(reads) from pgvigil.mssql_repl_hourly where instance_id in ($ID, $IP)")" = "6:6" ] || fail "B: the hour rows"
+[ "$(q "select count(*) || ':' || sum(reads) from pgvigil.mssql_repl_hourly where instance_id in ($ID, $IP)")" = "10:10" ] || fail "B: the hour rows"
 [ "$(q "select latency_s from pgvigil.mssql_repl_sample where instance_id = $ID and series = 'distribution:$DA_TRAN'")" = 0 ] || fail "B: the judged latency of a subscription with nothing waiting"
 echo "B: OK"
 
 echo "--- C. the trend under a write"
 Q "$PUB" "INSERT pgvr_pub.dbo.t_tran (id, v) SELECT TOP (20000) 1000 + ROW_NUMBER() OVER (ORDER BY (SELECT 0)), REPLICATE(N'x', 100) FROM sys.all_objects a CROSS JOIN sys.all_objects b" >/dev/null
-sleep 5; rd "$NPUB"
-[ "$(q "select trans_per_s > 0 from pgvigil.mssql_repl_sample where instance_id = $IP order by snapshot_at desc limit 1")" = t ] || fail "C: the publisher's transactions per second did not move"
+c_moved() { [ "$(q "select coalesce(trans_per_s > 0, false) from pgvigil.mssql_repl_sample where instance_id = $IP order by snapshot_at desc limit 1")" = t ]; }
+POLL_ON=$NPUB poll 6 5 c_moved || fail "C: the publisher's transactions per second did not move in 30 s"
 tc_drained() { [ "$(sv "$ID" "$DA_TRAN" "coalesce(undistributed, -1)")" = 0 ]; }
 poll 6 10 tc_drained || fail "C: the 20,000 commands did not drain in 60 s"
 echo "C: OK (delivery rate $(sv "$ID" "$DA_TRAN" delivery_rate) commands/s)"
 
 echo "--- D. the subscriber's table locked: latency and a silent agent"
 thr "$ID" repl_latency 1 3; thr "$ID" repl_agent_silent 2 null
-( SQLCMDPASSWORD="$SA" docker exec -e SQLCMDPASSWORD "$SUB" "${SQLCMD[@]}" -S localhost -U sa -b -Q "BEGIN TRAN; UPDATE pgvr_sub.dbo.t_tran WITH (TABLOCKX) SET v = v WHERE id = 1; WAITFOR DELAY '00:03:40'; ROLLBACK" >/dev/null 2>&1 ) &
+( SQLCMDPASSWORD="$SA" docker exec -e SQLCMDPASSWORD "$SUB" "${SQLCMD[@]}" -S localhost -U sa -H pgvrblocker -b -Q "BEGIN TRAN; UPDATE pgvr_sub.dbo.t_tran WITH (TABLOCKX) SET v = v WHERE id = 1; WAITFOR DELAY '00:06:00'; ROLLBACK" >/dev/null 2>&1 ) &
 BLOCKER=$!
 sleep 3
 TW=$(Q "$PUB" "SELECT CONVERT(varchar(23), SYSUTCDATETIME(), 126)"); TWS=$(date +%s)
@@ -585,6 +677,8 @@ wait_until 210 "$TWS"
 rd "$NDIST"
 want="warning:a replication agent writes nothing:distribution / $DA_TRAN,critical:replication latency over the threshold:pgvr_tran -> $SUBNAME.pgvr_sub"
 [ "$(fnd "$ID")" = "$want" ] || fail "D: the findings at 210 s: $(fnd "$ID") (want $want)"
+# the lock ends by KILL of its session (host name pgvrblocker), never by its timer
+for sp in $(Q "$SUB" "SELECT session_id FROM sys.dm_exec_sessions WHERE host_name = N'pgvrblocker'"); do Q "$SUB" "KILL $sp" >/dev/null 2>&1 || true; done
 wait "$BLOCKER" 2>/dev/null || true; BLOCKER=
 d_clear() { [ "$(sv "$ID" "$DA_TRAN" "coalesce(undistributed, -1)")" = 0 ] && [ -z "$(fnd "$ID")" ]; }
 poll 12 10 d_clear || fail "D: not clear 120 s after the lock: undistributed $(sv "$ID" "$DA_TRAN" undistributed), findings $(fnd "$ID")"
@@ -611,7 +705,6 @@ poll 9 10 e_clear || fail "E: not clear 90 s after the start: $(sv "$ID" "$DA_TR
 echo "E: OK"
 
 echo "--- F. the log reader's job stopped: the publisher side"
-thr "$IP" repl_agent_silent 1 null
 rd "$NPUB"
 [ "$(q "select pending_xacts from pgvigil.mssql_replication_state where instance_id = $IP and kind = 'published_db'")" = 0 ] || fail "F: transactions pending before the stop"
 TOK=$(date +%s)
@@ -624,6 +717,8 @@ until_is 15 2 "$PUB" 5 "SELECT cntr_value FROM sys.dm_os_performance_counters WH
 rd "$NPUB"
 [ "$(q "select pending_xacts from pgvigil.mssql_replication_state where instance_id = $IP and kind = 'published_db'")" = 5 ] || fail "F: the stored pending transactions"
 [ -z "$(fnd "$IP")" ] || fail "F: a finding at the first read: $(fnd "$IP")"
+# the threshold after the first read (it could come later than a minute after the healthy one)
+thr "$IP" repl_agent_silent 1 null
 rd "$NDIST"; rd "$NDIST"
 [ "$(fnd "$ID")" = "warning:a replication agent is stopped:logreader / $LR" ] || fail "F: the distributor's findings: $(fnd "$ID")"
 wait_until 70 "$TOK"
@@ -642,11 +737,12 @@ echo "F: OK"
 echo "--- G. a row missing at the subscriber: the agent fails, then keeps retrying"
 thr "$ID" repl_agent_retrying 1 null
 Q "$SUB" "DELETE pgvr_sub.dbo.t_tran WHERE id = 5" >/dev/null
+TU=$(Q "$DIST" "SELECT CONVERT(varchar(23), GETDATE(), 121)")
 Q "$PUB" "UPDATE pgvr_pub.dbo.t_tran SET v = N'conflict' WHERE id = 5" >/dev/null
 g_failing() { [ "$(sv "$ID" "$DA_TRAN" "failing_since is not null")" = t ]; }
 poll 30 5 g_failing || fail "G: no failing time stored in 150 s (runstatus $(sv "$ID" "$DA_TRAN" runstatus))"
 AGID=$(Q "$DIST" "SELECT id FROM $D.MSdistribution_agents WHERE name = N'$DA_TRAN'")
-FS_SA=$(Q "$DIST" "SELECT CONVERT(varchar(23), MIN(z.time), 126) FROM $D.MSdistribution_history z WHERE z.agent_id = $AGID AND z.runstatus IN (5, 6) AND z.time > ISNULL((SELECT MAX(y.time) FROM $D.MSdistribution_history y WHERE y.agent_id = $AGID AND y.runstatus IN (2, 4)), '19000101')")
+FS_SA=$(Q "$DIST" "SELECT CONVERT(varchar(23), MIN(z.time), 126) FROM $D.MSdistribution_history z WHERE z.agent_id = $AGID AND z.runstatus IN (5, 6) AND z.time >= '$TU'")
 [ "$(sv "$ID" "$DA_TRAN" "abs(extract(epoch FROM failing_since - '${FS_SA}Z'::timestamptz)) <= 2")" = t ] || fail "G: failing_since $(sv "$ID" "$DA_TRAN" failing_since), sa ${FS_SA}Z"
 [ "$(Q "$DIST" "SELECT COUNT(*) FROM $D.MSrepl_errors WHERE error_code = N'20598'")" -ge 1 ] || fail "G: sa sees no error 20598 in MSrepl_errors"
 echo "  sa: failing since ${FS_SA}Z, MSrepl_errors holds 20598; stored: runstatus $(sv "$ID" "$DA_TRAN" runstatus), error $(sv "$ID" "$DA_TRAN" "coalesce(error_code, '-') || ': ' || left(coalesce(error_text, '-'), 200)")"
@@ -677,6 +773,7 @@ echo "  $(detail "$ID" 'a replication agent failed')"
 Q "$PUB" "EXEC pgvr_pub.dbo.sp_startpublication_snapshot @publication = N'pgvr_snap'" >/dev/null 2>&1 || true
 h_clear() { [ "$(sv "$ID" "$SN_SNAP" runstatus)" = 2 ] && [ -z "$(fnd "$ID")" ]; }
 poll 18 10 h_clear || fail "H: not clear after the folder came back: runstatus $(sv "$ID" "$SN_SNAP" runstatus), $(fnd "$ID")"
+echo "  after the new snapshot: sa counts $(und_sa "$DA_SNAP") commands waiting for the snapshot subscription; stored $(sv "$ID" "$DA_SNAP" "coalesce(undistributed, 0) || ', job ' || job_state || ', continuous ' || continuous") (a scheduled agent: not judged on latency)"
 echo "H: OK"
 
 echo "--- I. the trend"
@@ -688,7 +785,7 @@ got=$(q "select count(*) filter (where h.reads <> (select count(*) from pgvigil.
 [ "${got%%:*}" = 0 ] || fail "I: hour rows whose reads differ from their samples: $got"
 echo "I: OK ($(q "select count(*) from pgvigil.mssql_repl_series($ID, '$W0', now(), 60)") buckets of a minute; ${got#*:} hour rows)"
 
-echo "--- N. the page's wiring (the lead's files: applied in a scratch copy)"
+echo "--- N. the page's wiring (applied in a scratch copy)"
 SCR=$WORK/scratch; mkdir -p "$SCR"
 tar --exclude=./web/node_modules --exclude=./bin --exclude=./.git -cf - . | tar -C "$SCR" -xf -
 if grep -q "mssql_repl_series" "$SCR/internal/web/q_mssql_hadr.go"; then
@@ -696,14 +793,18 @@ if grep -q "mssql_repl_series" "$SCR/internal/web/q_mssql_hadr.go"; then
 else
   wiring_patch > "$WORK/wiring.patch"
   (cd "$SCR" && git apply --check "$WORK/wiring.patch" && git apply "$WORK/wiring.patch") || fail "N: the wiring patch does not apply to this tree"
-  echo "  the wiring patch applied (the lead's files: web/src/mssql_hadr.ts, internal/web/q_mssql_hadr.go, docs/sqlserver-hadr.md)"
+  echo "  the wiring patch applied (web/src/mssql_hadr.ts, internal/web/q_mssql_hadr.go, docs/sqlserver-hadr.md)"
 fi
 (cd "$SCR/web" && npm ci --no-audit --no-fund > "$WORK/npm.log" 2>&1 && npm run build > "$WORK/web.log" 2>&1) || { tail -20 "$WORK/web.log" 2>/dev/null; tail -5 "$WORK/npm.log"; fail "N: the web build (tsc and esbuild) of the wired copy"; }
 (cd "$SCR" && CGO_ENABLED=0 go build -o "$WORK/pgvigil-wired" ./cmd/pgvigil) || fail "N: the build of the wired copy"
-PORT=$((20000 + RANDOM % 10000)); U="http://127.0.0.1:$PORT"
-"$WORK/pgvigil-wired" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$PORT" -no-login > "$WORK/serve.log" 2>&1 & SRVPID=$!
-for _ in $(seq 1 50); do curl -fs "$U/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
-kill -0 "$SRVPID" 2>/dev/null || fail "N: serve exited: $(mask < "$WORK/serve.log" | tail -5)"
+for _ in 1 2 3; do
+  PORT=$((20000 + RANDOM % 10000)); U="http://127.0.0.1:$PORT"
+  "$WORK/pgvigil-wired" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$PORT" -no-login > "$WORK/serve.log" 2>&1 & SRVPID=$!
+  for _ in $(seq 1 50); do curl -fs "$U/api/health" >/dev/null 2>&1 && break; kill -0 "$SRVPID" 2>/dev/null || break; sleep 0.2; done
+  if kill -0 "$SRVPID" 2>/dev/null; then break; fi
+  wait "$SRVPID" 2>/dev/null || true; SRVPID=   # the port was taken (or serve failed): another port, at most three
+done
+[ -n "$SRVPID" ] || fail "N: serve exited on three ports: $(mask < "$WORK/serve.log" | tail -5)"
 FROM=$(q "select to_char(('$W0'::timestamptz - interval '1 minute') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"); TO=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
 api() { local code; code=$(curl -s -o "$WORK/body" -w '%{http_code}' "$U/api/mssql/availability?instance=$ID&from=$FROM&to=$TO&part=$1"); [ "$code" = 200 ] || fail "N: part $1 answered $code: $(head -c 300 "$WORK/body")"; cat "$WORK/body"; }
 got=$(api replseries | python3 -c 'import json, sys
@@ -727,7 +828,11 @@ kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 echo "N: OK (tsc and the bundle built; replseries, replication and repllimits answer with the new rows)"
 
 echo "--- K. the statements as the monitoring login, the unit tests"
-PGVIGIL_MSSQL_TEST_DSN="$MSSQL_DIST_DSN" PGVIGIL_MSSQL_TEST_DISTRIBUTION=distribution go test ./internal/mssql/ -run 'TestHADRStatementsLive' -count=1 > "$OUT" 2>&1 || { mask < "$OUT" | tail -20; fail "K: TestHADRStatementsLive"; }
+step "the stub of crafted history" "$DIST" < <(stub_sql)
+PGVIGIL_MSSQL_TEST_DSN="$MSSQL_DIST_DSN" PGVIGIL_MSSQL_TEST_DISTRIBUTION=distribution PGVIGIL_MSSQL_TEST_REPLSTUB=pgvr_stub \
+  go test ./internal/mssql/ -run 'TestHADRStatementsLive|TestReplicationStatementsLive|TestReplicationFailingLive' -count=1 -v > "$OUT" 2>&1 || { mask < "$OUT" | tail -30; fail "K: the live tests"; }
+grep -E "^(--- |    replication_test.go:[0-9]+: (busy|stuck|recovered|retrying|healthy))" "$OUT" | sed 's/^/  /'
+[ "$(grep -c -E '^--- PASS: (TestHADRStatementsLive|TestReplicationStatementsLive|TestReplicationFailingLive)' "$OUT")" = 3 ] || { mask < "$OUT" | tail -30; fail "K: not all three live tests passed (one skipped?)"; }
 go test ./internal/mssql/ -count=1 > "$OUT" 2>&1 || { mask < "$OUT" | tail -20; fail "K: go test ./internal/mssql/"; }
 echo "K: OK"
 
@@ -757,5 +862,5 @@ r=$(q "select pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'set',
 r=$(q "select x->>'outcome' || '|' || (x->>'detail') from pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'set', 'key', 'amcheck_age', 'level', 'instance', 'instance_id', $ST, 'warn', 7, 'ui_user', 'proof')) x")
 [ "$r" = "refused|no PostgreSQL instance $ST" ] || fail "L: amcheck_age at a SQL Server instance: $r"
 echo "L: OK"
-echo "NOT PROVEN: merge replication (SQL Server on Linux has none; Windows waits on Q10), peer-to-peer, a live pull subscription, Managed Instance, SQL Server 2016-2019 and 2025, a distributor in an availability group"
+echo "NOT PROVEN: merge replication (SQL Server on Linux has none; no Windows lab yet), peer-to-peer, a live pull subscription, Managed Instance, SQL Server 2016-2019 and 2025, a distributor in an availability group"
 echo "proof-mssql-replication: every part passed"

@@ -19,9 +19,10 @@
 --   5. mssql_repl_findings: the replication findings (0066's two arms, moved here and widened, and five new ones);
 --      mssql_hadr_findings again: 0066's text without its two replication arms, with one UNION ALL of this view.
 --
--- The judged latency of a subscription is the age, at the read, of the oldest transaction in the distribution
--- database still waiting for it (0 when nothing waits): it grows while the agent is stopped, blocked or retrying,
--- where the agent's own last latency (its history row) stays as it was. The time between the publisher's commit and
+-- The judged latency of a subscription is the age, at the read and on the distributor's own clock, of the oldest
+-- transaction in the distribution database still waiting for it (0 when nothing waits): it grows while the agent
+-- is stopped, blocked or retrying, where the agent's own last latency (its history row) stays as it was. Only a
+-- subscription whose agent runs continuously is judged on it: a scheduled agent's commands wait for its next run. The time between the publisher's commit and
 -- the transaction's entry into the distribution database is the log reader's; it is judged from the publisher side
 -- ('replicated transactions wait in the log of a published database').
 -- Not stored or judged here: tracer tokens (a write), merge agents' failing time and error text (merge replication
@@ -148,6 +149,7 @@ ALTER TABLE pgvigil.mssql_replication_state
   ADD COLUMN IF NOT EXISTS error_code           text,          -- MSrepl_errors of that failure
   ADD COLUMN IF NOT EXISTS error_text           text,
   ADD COLUMN IF NOT EXISTS oldest_pending_at    timestamptz,   -- subscription: the oldest transaction waiting for it (entry time)
+  ADD COLUMN IF NOT EXISTS pending_age_s        int,           -- subscription: its age at the read, on the distributor's own clock
   ADD COLUMN IF NOT EXISTS job_state            text,          -- running | stopped | disabled | not here | Agent stopped; NULL: msdb not read
   ADD COLUMN IF NOT EXISTS continuous           boolean,       -- the job runs the agent with -Continuous
   ADD COLUMN IF NOT EXISTS job_stopped_at       timestamptz,   -- the job's last stop (sysjobactivity)
@@ -188,8 +190,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_repl_sample (
   repl_trans_total  bigint,
   trans_per_s       double precision    -- published_db: transactions read out per second since the series' previous read
 ) PARTITION BY RANGE (snapshot_at);
--- mssql_repl_findings reads the last minutes of every instance by snapshot_at alone
-CREATE INDEX IF NOT EXISTS mssql_repl_sample_at_idx ON pgvigil.mssql_repl_sample (snapshot_at);
+-- the findings, the import's previous read and the trend read one series of one instance over a window
+CREATE INDEX IF NOT EXISTS mssql_repl_sample_series_idx ON pgvigil.mssql_repl_sample (instance_id, series, snapshot_at);
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_repl_hourly (
   instance_id     int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -211,6 +213,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_repl_hourly (
   stopped_reads   int NOT NULL DEFAULT 0,
   PRIMARY KEY (instance_id, hour, series)
 );
+
+-- the judged latency of a subscription: the age of the oldest command waiting for it (the distributor's own clock),
+-- 0 when none waits, NULL when commands wait and their age was not read
+CREATE OR REPLACE FUNCTION pgvigil.mssql_repl_latency(p_undistributed bigint, p_age_s int)
+RETURNS double precision LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN coalesce(p_undistributed, 0) = 0 THEN 0 WHEN p_age_s IS NULL THEN NULL ELSE greatest(0, p_age_s) END
+$$;
 
 -- the state of an agent that counts as stopped (its job not running; SQL Server Agent itself not running)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_repl_stopped(p_job_state text)
@@ -253,14 +262,14 @@ BEGIN
   INSERT INTO pgvigil.mssql_replication_state (instance_id, snapshot_at, kind, distribution_db, publisher, publisher_db, publication,
       publication_type, articles, subscriber, subscriber_db, subscription_type, agent_type, agent_name, runstatus, status_text,
       last_run_at, latency_ms, delivery_rate, undistributed, est_catchup_s,
-      agent_id, subscription_status, session_start_at, failing_since, error_code, error_text, oldest_pending_at,
+      agent_id, subscription_status, session_start_at, failing_since, error_code, error_text, oldest_pending_at, pending_age_s,
       job_state, continuous, job_stopped_at, database_name, distributor, distributor_local, log_reuse_wait, pending_xacts, repl_trans_total)
   SELECT p_instance_id, p_snapshot_at, r->>'kind', coalesce(r->>'distribution_db', ''), r->>'publisher', r->>'publisher_db', r->>'publication',
          r->>'publication_type', (r->>'articles')::int, r->>'subscriber', r->>'subscriber_db', r->>'subscription_type',
          r->>'agent_type', r->>'agent_name', (r->>'runstatus')::int, r->>'status_text', (r->>'last_run_utc')::timestamptz,
          (r->>'latency_ms')::bigint, (r->>'delivery_rate')::float8, (r->>'undistributed')::bigint, (r->>'est_catchup_s')::float8,
          (r->>'agent_id')::int, r->>'subscription_status', (r->>'session_start_utc')::timestamptz, (r->>'failing_since_utc')::timestamptz,
-         nullif(r->>'error_code', ''), nullif(r->>'error_text', ''), (r->>'oldest_pending_utc')::timestamptz,
+         nullif(r->>'error_code', ''), nullif(r->>'error_text', ''), (r->>'oldest_pending_utc')::timestamptz, (r->>'oldest_pending_age_s')::int,
          j.job->>'job_state', (j.job->>'continuous')::int = 1, (j.job->>'job_stopped_utc')::timestamptz,
          r->>'database_name', r->>'distributor', (r->>'distributor_local')::int = 1, r->>'log_reuse_wait',
          (r->>'pending_xacts')::bigint, (r->>'repl_trans_total')::bigint
@@ -282,9 +291,7 @@ BEGIN
       delivery_rate, undistributed, pending_xacts, repl_trans_total, trans_per_s)
   SELECT s.instance_id, s.snapshot_at, x.series, s.kind, s.agent_type, s.publisher, s.publisher_db, s.publication,
          s.subscriber, s.subscriber_db, s.runstatus, s.job_state, s.continuous, s.failing_since, s.last_run_at,
-         CASE WHEN s.kind = 'subscription' THEN
-           CASE WHEN coalesce(s.undistributed, 0) = 0 THEN 0
-                ELSE greatest(0, extract(epoch FROM s.snapshot_at - s.oldest_pending_at)) END END,
+         CASE WHEN s.kind = 'subscription' THEN pgvigil.mssql_repl_latency(s.undistributed, s.pending_age_s) END,
          s.latency_ms, s.delivery_rate, s.undistributed, s.pending_xacts, s.repl_trans_total,
          (SELECT CASE WHEN s.repl_trans_total >= p.repl_trans_total
                       THEN (s.repl_trans_total - p.repl_trans_total) / extract(epoch FROM s.snapshot_at - p.snapshot_at) END
@@ -372,16 +379,23 @@ $$;
 -- (the collection reads every 5) fires nothing. Each threshold is pg_threshold(instance, key): an instance's own row,
 -- its tag's, the root's, the default.
 CREATE OR REPLACE VIEW pgvigil.mssql_repl_findings AS
-WITH st AS (
+WITH fresh AS (
+  SELECT s.* FROM pgvigil.mssql_replication_state s WHERE s.snapshot_at > now() - interval '15 minutes'
+), thr AS (
+  -- the thresholds in force, once per instance
+  SELECT i.instance_id, rt.warn AS rt_warn, rt.crit AS rt_crit, coalesce(rt.warn, rt.crit) AS rt_min,
+         sl.warn AS sl_warn, sl.crit AS sl_crit, coalesce(sl.warn, sl.crit) AS sl_min, la.warn AS lat_warn, la.crit AS lat_crit
+    FROM (SELECT DISTINCT f.instance_id FROM fresh f) i
+    CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'repl_agent_retrying') rt
+    CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'repl_agent_silent') sl
+    CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'repl_latency') la
+), st AS (
   SELECT s.*,
          s.distribution_db || ':' || coalesce(s.agent_name, '?') AS series,
          coalesce(s.agent_type, s.kind) || ' / ' || coalesce(s.agent_name, '?') AS obj,
-         rt.warn AS rt_warn, rt.crit AS rt_crit, coalesce(rt.warn, rt.crit) AS rt_min,
-         sl.warn AS sl_warn, sl.crit AS sl_crit, coalesce(sl.warn, sl.crit) AS sl_min
-    FROM pgvigil.mssql_replication_state s
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'repl_agent_retrying') rt
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'repl_agent_silent') sl
-   WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind IN ('subscription', 'agent')
+         t.rt_warn, t.rt_crit, t.rt_min, t.sl_warn, t.sl_crit, t.sl_min
+    FROM fresh s JOIN thr t USING (instance_id)
+   WHERE s.kind IN ('subscription', 'agent')
 ), ctx AS (
   -- the words that name an agent's publication or subscription in a finding
   SELECT st.*, format('the %s agent %s (publisher %s, database %s%s%s)', st.agent_type, coalesce(st.agent_name, '?'), coalesce(st.publisher, '?'),
@@ -390,22 +404,23 @@ WITH st AS (
          coalesce(' Error ' || st.error_code || ': ' || st.error_text, ' ' || st.error_text, '') AS err
     FROM st
 ), lat AS (
-  SELECT s.*, t.warn AS lat_warn, t.crit AS lat_crit,
-         CASE WHEN coalesce(s.undistributed, 0) = 0 THEN 0 ELSE greatest(0, extract(epoch FROM s.snapshot_at - s.oldest_pending_at)) END AS latency_s
-    FROM pgvigil.mssql_replication_state s
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'repl_latency') t
-   WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'subscription'
+  -- a subscription whose agent runs continuously (or whose job was not read): a scheduled agent's commands wait for
+  -- its next run by design and are not judged
+  SELECT s.*, t.lat_warn, t.lat_crit, pgvigil.mssql_repl_latency(s.undistributed, s.pending_age_s) AS latency_s
+    FROM fresh s JOIN thr t USING (instance_id)
+   WHERE s.kind = 'subscription' AND s.continuous IS NOT FALSE
 ), pubdb AS (
-  SELECT s.*, t.warn AS sl_warn, t.crit AS sl_crit, coalesce(t.warn, t.crit) AS sl_min, w.ok_at, w.first_at, w.reads
-    FROM pgvigil.mssql_replication_state s
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'repl_agent_silent') t
-    -- the publisher's reads of the last day: the newest one at which nothing waited or a transaction was read out
+  SELECT s.*, t.sl_warn, t.sl_crit, t.sl_min, w.ok_at, w.first_at, w.reads, w.cur_tps
+    FROM fresh s JOIN thr t USING (instance_id)
+    -- the publisher's reads of the last day: the newest one at which nothing waited or a transaction was read out;
+    -- this read's rate (NULL after a gap of over an hour or a counter that went back: then nothing is judged)
     CROSS JOIN LATERAL (SELECT max(x.snapshot_at) FILTER (WHERE coalesce(x.pending_xacts, 0) = 0 OR x.trans_per_s > 0) AS ok_at,
-                               min(x.snapshot_at) AS first_at, count(*) AS reads
+                               min(x.snapshot_at) AS first_at, count(*) AS reads,
+                               max(x.trans_per_s) FILTER (WHERE x.snapshot_at = s.snapshot_at) AS cur_tps
                           FROM pgvigil.mssql_repl_sample x
                          WHERE x.instance_id = s.instance_id AND x.series = 'published:' || s.database_name
                            AND x.snapshot_at > s.snapshot_at - interval '1 day' AND x.snapshot_at <= s.snapshot_at) w
-   WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'published_db'
+   WHERE s.kind = 'published_db'
 )
 -- an agent failing or retrying (its newest history row a failure, or the collector's failing time: between a job's
 -- retries a failing agent writes 'in progress' rows that deliver nothing), for less than its threshold (past it:
@@ -461,9 +476,9 @@ UNION ALL
 SELECT l.instance_id, CASE WHEN l.lat_crit IS NOT NULL AND l.latency_s >= l.lat_crit * 60 THEN 'critical' ELSE 'warning' END,
        'replication latency over the threshold',
        coalesce(l.publication, '?') || ' -> ' || coalesce(l.subscriber, '?') || '.' || coalesce(l.subscriber_db, '?'), l.snapshot_at,
-       format('subscription of %s.%s (publication %s) at %s.%s: the oldest of the %s commands waiting for it entered the distribution database at %s, %s minutes before the read (thresholds %s / %s minutes).',
+       format('subscription of %s.%s (publication %s) at %s.%s: the oldest of the %s commands waiting for it entered the distribution database at %s, %s minutes before the read by the distributor''s clock (thresholds %s / %s minutes).',
               coalesce(l.publisher, '?'), coalesce(l.publisher_db, '?'), coalesce(l.publication, '?'), coalesce(l.subscriber, '?'), coalesce(l.subscriber_db, '?'),
-              l.undistributed, to_char(l.oldest_pending_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS "UTC"'), round((l.latency_s / 60)::numeric, 1),
+              l.undistributed, to_char(l.oldest_pending_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS "UTC"'), round((l.latency_s / 60.0)::numeric, 1),
               coalesce(l.lat_warn::text, '-'), coalesce(l.lat_crit::text, '-'))
   FROM lat l
  WHERE (l.lat_warn IS NOT NULL AND l.latency_s >= l.lat_warn * 60) OR (l.lat_crit IS NOT NULL AND l.latency_s >= l.lat_crit * 60)
@@ -486,7 +501,7 @@ SELECT d.instance_id, CASE WHEN d.sl_crit IS NOT NULL AND coalesce(d.ok_at, d.fi
               round(extract(epoch FROM d.snapshot_at - coalesce(d.ok_at, d.first_at)) / 60), d.sl_min, coalesce(lower(d.log_reuse_wait), '?'),
               coalesce(d.distributor || CASE WHEN d.distributor_local THEN ' (this server)' ELSE ' (another server: its log reader runs there)' END, 'none named'))
   FROM pubdb d
- WHERE d.pending_xacts > 0 AND d.sl_min IS NOT NULL AND d.reads >= 2
+ WHERE d.pending_xacts > 0 AND d.sl_min IS NOT NULL AND d.reads >= 2 AND d.cur_tps IS NOT NULL
    AND coalesce(d.ok_at, d.first_at) <= d.snapshot_at - make_interval(secs => d.sl_min * 60);
 
 -- mssql_hadr_findings: 0066's text without its two replication arms (now in mssql_repl_findings), with one UNION ALL

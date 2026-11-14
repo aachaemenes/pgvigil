@@ -87,23 +87,30 @@ ORDER BY 2`
 // stopped cleanly). It is failing when a retry or failure row (5 or 6) is newer than that, and - for an agent with a
 // delivery position (seqno: the distribution agent and the log reader) - no row after the newest failure carries a
 // position past the one it had then: between a job's retries a failing distribution agent writes 'in progress' rows
-// (runstatus 3) that deliver nothing. since = the first retry or failure row after the last healthy one. The error is
+// (runstatus 3) that deliver nothing. since = its first retry or failure row after the last healthy one and, for an
+// agent with a position, at or after the time it first reached the position it is stuck at (a busy agent that
+// never idles may have retried hours ago, then delivered: that older retry is not this failure). The error is
 // MSrepl_errors' row of the newest failure's error id (SQL Server's generic 'agent failed' row, 14151, whose text
-// carries the cause), its code taken from the cause's own row when one follows within 5 s (20598: the row was not
-// found at the subscriber).
+// carries the cause), its code taken from the cause's own row: one that follows within 5 s and whose text is part
+// of that row's text (20598: the row was not found at the subscriber) - never another agent's error of that second.
 func replFailing(d, hist string, seqno bool) string {
-	moved := `0`
+	h := d + `.dbo.` + hist
+	moved, reach, pos := `0`, `'19000101'`, ``
 	if seqno {
-		moved = `CASE WHEN EXISTS (SELECT 1 FROM ` + d + `.dbo.` + hist + ` p WHERE p.agent_id = a.id AND p.time > lf.time
-                       AND p.xact_seqno > (SELECT MAX(q.xact_seqno) FROM ` + d + `.dbo.` + hist + ` q WHERE q.agent_id = a.id AND q.time <= lf.time)) THEN 1 ELSE 0 END`
+		pos = `
+OUTER APPLY (SELECT MAX(q.xact_seqno) AS seqno FROM ` + h + ` q WHERE lf.time IS NOT NULL AND q.agent_id = a.id AND q.time <= lf.time) lp
+OUTER APPLY (SELECT MIN(r.time) AS at FROM ` + h + ` r WHERE lp.seqno IS NOT NULL AND r.agent_id = a.id AND r.xact_seqno >= lp.seqno) rp`
+		moved = `CASE WHEN EXISTS (SELECT 1 FROM ` + h + ` p WHERE p.agent_id = a.id AND p.time > lf.time AND p.xact_seqno > lp.seqno) THEN 1 ELSE 0 END`
+		reach = `ISNULL(rp.at, '19000101')`
 	}
 	return `
-OUTER APPLY (SELECT MAX(y.time) AS ok_at FROM ` + d + `.dbo.` + hist + ` y WHERE y.agent_id = a.id AND y.runstatus IN (2, 4)) ok
-OUTER APPLY (SELECT TOP (1) z.time, z.error_id FROM ` + d + `.dbo.` + hist + ` z
-              WHERE z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.time > ISNULL(ok.ok_at, '19000101') ORDER BY z.time DESC, z.timestamp DESC) lf
+OUTER APPLY (SELECT MAX(y.time) AS ok_at FROM ` + h + ` y WHERE y.agent_id = a.id AND y.runstatus IN (2, 4)) ok
+OUTER APPLY (SELECT TOP (1) z.time, z.error_id FROM ` + h + ` z
+              WHERE z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.time > ISNULL(ok.ok_at, '19000101') ORDER BY z.time DESC, z.timestamp DESC) lf` + pos + `
 OUTER APPLY (SELECT CASE WHEN lf.time IS NULL THEN 0 WHEN ` + moved + ` = 1 THEN 0 ELSE 1 END AS failing) fl
-OUTER APPLY (SELECT MIN(z.time) AS since, MAX(z.error_id) AS error_id FROM ` + d + `.dbo.` + hist + ` z
-              WHERE fl.failing = 1 AND z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.time > ISNULL(ok.ok_at, '19000101')) f
+OUTER APPLY (SELECT MIN(z.time) AS since, MAX(z.error_id) AS error_id FROM ` + h + ` z
+              WHERE fl.failing = 1 AND z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.time > ISNULL(ok.ok_at, '19000101')
+                AND z.time >= ` + reach + `) f
 OUTER APPLY (SELECT TOP (1) e0.id, e0.time, CAST(e0.error_code AS nvarchar(128)) AS error_code,
                     CAST(LEFT(CAST(e0.error_text AS nvarchar(max)), 1000) AS nvarchar(1000)) AS error_text
                FROM ` + d + `.dbo.MSrepl_errors e0
@@ -112,6 +119,8 @@ OUTER APPLY (SELECT TOP (1) e0.id, e0.time, CAST(e0.error_code AS nvarchar(128))
 OUTER APPLY (SELECT TOP (1) CAST(c2.error_code AS nvarchar(128)) AS error_code FROM ` + d + `.dbo.MSrepl_errors c2
               WHERE c2.id > e.id AND c2.id <= e.id + 5 AND c2.time >= e.time AND c2.time < DATEADD(second, 5, e.time)
                 AND ISNULL(c2.error_code, N'') NOT IN (N'', N'0') AND c2.error_code <> e.error_code
+                AND LEN(CAST(c2.error_text AS nvarchar(max))) >= 10
+                AND CHARINDEX(CAST(LEFT(CAST(c2.error_text AS nvarchar(max)), 200) AS nvarchar(200)), e.error_text) > 0
               ORDER BY c2.id, c2.time) cz`
 }
 
@@ -159,6 +168,7 @@ ORDER BY 3, 4, 5`
 // replSubscriptionsSQL: one row per distribution agent (a subscription). oldest_pending_utc is the entry time of the
 // oldest transaction past the agent's last delivered one (the newest xact_seqno of its history, as
 // MSdistribution_status counts) that holds a command of an article it subscribes to; read only while commands wait.
+// oldest_pending_age_s is its age on the distributor's own clock (no skew against the collector's).
 // The reads of MSrepl_transactions and MSrepl_commands take no shared locks (READUNCOMMITTED, as
 // MSdistribution_status itself reads them): the log reader and the cleanup job write there all the time.
 func replSubscriptionsFor(db string, mapped bool) string {
@@ -176,6 +186,7 @@ func replSubscriptionsFor(db string, mapped bool) string {
   u.undistributed,
   CASE WHEN h.delivery_rate > 0 THEN u.undistributed / h.delivery_rate END AS est_catchup_s,
   ` + utcText("old.entry_time") + ` AS oldest_pending_utc,
+  CASE WHEN old.entry_time IS NOT NULL THEN DATEDIFF(second, old.entry_time, GETDATE()) END AS oldest_pending_age_s,
   ` + replFailingCols() + `
 FROM ` + d + `.dbo.MSdistribution_agents a
 LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
