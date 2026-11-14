@@ -164,13 +164,13 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 : "${PGVIGIL_ADMIN_DSN:?PGVIGIL_ADMIN_DSN (a superuser, keyword form) is required}"
 N=$RANDOM$RANDOM
-REPO=pgcr_repo_$N; TGT=pgcr_tgt_$N; COL=pgcr_col_$N; RDR=pgcr_rdr_$N; MON=pgcr_mon_$N
+REPO=pgcr_repo_$N; TGT=pgcr_tgt_$N; COL=pgcr_col_$N; RDR=pgcr_rdr_$N; MON=pgcr_mon_$N; REP=pgcr_rep_$N
 PW=p$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
 UIUSER=pgcrui; UIPW=u$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
 INSTA=pgcr-a-$N; INSTS=pgcr-su-$N; INSTL=pgcr-long-instance-name-$N; MSR=pgcr-msr-$N; MSA=pgcr-msa-$N; MSN=pgcr-msn-$N; INSTD=pgcr-down-$N; INSTNP=pgcr-np-$N
 CT=pgcr-mssql-$N
 WORK=$(mktemp -d)
-SRV=""; SRV2=""; SRV3=""; SRV4=""; CHR=""; MADE_CT=""; NPD=""; PGCTL=""
+SRV=""; SRV2=""; SRV3=""; SRV4=""; SRV5=""; CHR=""; MADE_CT=""; NPD=""; PGCTL=""
 # the runs this proof makes, one line each: a counter in a file (run and crun are called inside $(...), a subshell)
 tick() { echo r >> "$WORK/runs"; }
 nruns() { [[ -f "$WORK/runs" ]] && wc -l < "$WORK/runs" | tr -d ' ' || echo 0; }
@@ -178,13 +178,13 @@ NOTPROVEN=()
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 cleanup() {
-  for p in "$SRV" "$SRV2" "$SRV3" "$SRV4" "$CHR"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
+  for p in "$SRV" "$SRV2" "$SRV3" "$SRV4" "$SRV5" "$CHR"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   [[ -n "$MADE_CT" ]] && docker rm -f -v "$CT" >/dev/null 2>&1 || true
   [[ -n "$NPD" ]] && "$PGCTL" -D "$NPD" -m immediate stop >/dev/null 2>&1 || true
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO with (force)" \
     -c "drop database if exists $TGT with (force)" -c "drop role if exists $COL" -c "drop role if exists $RDR" \
-    -c "drop role if exists $MON" >/dev/null 2>&1 || true
+    -c "drop role if exists $MON" -c "drop role if exists $REP" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -286,6 +286,7 @@ else NOTPROVEN+=("N, U3: 55000 (created but not loaded): initdb / pg_ctl are not
 cat > "$WORK/cfg.yaml" <<EOF
 repository:
   dsn: env:PGVIGIL_REPO_DSN
+reports_dsn: env:REPORTS_DSN
 instances:
   - name: $INSTA
     dsn: env:TGT_MON
@@ -307,7 +308,8 @@ ok "migrate applied 0106"
 
 # ---- R: the roles --------------------------------------------------------------------------------------------------
 psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "create role $COL login password '$PW' in role pgvigil_collector" \
-  -c "create role $RDR login password '$PW' in role pgvigil_reader, pgvigil_auth" >/dev/null
+  -c "create role $RDR login password '$PW' in role pgvigil_reader, pgvigil_auth" \
+  -c "create role $REP login password '$PW' in role pgvigil_reader" >/dev/null
 as() { local who=$1; shift; psql "$(as_dsn "$REPO" "$who")" -XAtq "$@" 2>&1; }
 [[ $(as "$COL" -c "select has_function_privilege('pgvigil.import_custom_report(timestamptz, jsonb)', 'EXECUTE') and has_function_privilege('pgvigil.import_custom_report_run(timestamptz, jsonb)', 'EXECUTE')") == t ]] || fail "R: the collector may not call the imports"
 out=$(as "$COL" -c "insert into pgvigil.custom_reports (name, engine, kind, body, created_by, created_at, updated_by, updated_at) values ('x','store','sql','select 1','x',now(),'x',now())" || true)
@@ -330,13 +332,19 @@ DID=$(id_of "$INSTD")
 NPID=""; [[ -n "$np_cfg" ]] && { NPID=$(id_of "$INSTNP"); [[ -n $NPID ]] || fail "the cluster without the library ($INSTNP) is not registered: $(tail -5 "$WORK/collect.log")"; }
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add"
 export UI_DSN; UI_DSN=$(as_dsn "$REPO" "$RDR")
+# REPORT ROLE: the store's reports run as their own login (reports_dsn: IN ROLE pgvigil_reader alone); a fifth serve
+# reads the same config without the key
+export REPORTS_DSN; REPORTS_DSN=$(as_dsn "$REPO" "$REP")
+grep -v '^reports_dsn:' "$CFG" > "$WORK/cfg-nokey.yaml"
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
 "$BIN" serve -config "$CFG" -dsn env:UI_DSN -listen "127.0.0.1:$PORT" >"$WORK/serve.log" 2>&1 & SRV=$!
 PORT2=$(freeport); U2="http://127.0.0.1:$PORT2"
 "$BIN" serve -config "$CFG" -dsn env:UI_DSN -listen "127.0.0.1:$PORT2" -no-login >"$WORK/serve2.log" 2>&1 & SRV2=$!
 PORT3=$(freeport); U3="http://127.0.0.1:$PORT3"
 "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT3" >"$WORK/serve3.log" 2>&1 & SRV3=$!   # the superuser repository login
-for pair in "$SRV $U serve.log" "$SRV2 $U2 serve2.log" "$SRV3 $U3 serve3.log"; do
+PORT5=$(freeport); U5="http://127.0.0.1:$PORT5"
+"$BIN" serve -config "$WORK/cfg-nokey.yaml" -dsn env:UI_DSN -listen "127.0.0.1:$PORT5" >"$WORK/serve5.log" 2>&1 & SRV5=$!   # no reports_dsn
+for pair in "$SRV $U serve.log" "$SRV2 $U2 serve2.log" "$SRV3 $U3 serve3.log" "$SRV5 $U5 serve5.log"; do
   read -r pid url log <<<"$pair"
   for n in $(seq 1 60); do
     curl -sf -o /dev/null "$url/" && break
@@ -344,9 +352,9 @@ for pair in "$SRV $U serve.log" "$SRV2 $U2 serve2.log" "$SRV3 $U3 serve3.log"; d
     [[ $n == 60 ]] && fail "serve did not answer on $url"; sleep 0.5
   done
 done
-JAR=$WORK/jar; JAR3=$WORK/jar3
+JAR=$WORK/jar; JAR3=$WORK/jar3; JAR5=$WORK/jar5
 code() { curl -s --max-time 40 -o "$WORK/body" -w '%{http_code}' "$@"; }
-for pair in "$U $JAR" "$U3 $JAR3"; do read -r url jar <<<"$pair"
+for pair in "$U $JAR" "$U3 $JAR3" "$U5 $JAR5"; do read -r url jar <<<"$pair"
   curl -s -c "$jar" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$url/api/login" >/dev/null
   [[ -n $(awk '$6 == "pgvigil_session" {print $7}' "$jar") ]] || fail "no session cookie from $url"
 done
@@ -404,7 +412,12 @@ want=$(q "select name || '|' || length(name) from pgvigil.instances where is_act
 [[ "$got" == "$want" ]] || fail "S: the rows are not the hand read: got [$got] want [$want]"
 [[ $(run "{\"report_id\":$SREP,\"target\":\"instance\",\"instance_id\":$AID}") == 200 && $(js "len(d['runs'][0]['sets'][0]['rows'])") == 1 ]] || fail "S: one instance: $(cat "$WORK/body")"
 [[ $(run "{\"report_id\":$SREP,\"target\":\"fleet\",\"params\":{\"min_len\":\"1000\"}}") == 200 && $(js "len(d['runs'][0]['sets'][0]['rows'])") == 0 ]] || fail "S: min_len 1000: $(cat "$WORK/body")"
-tick; [[ $(post3 customreports/run "{\"report_id\":$SREP,\"target\":\"fleet\"}") == 200 && $(js "d['runs'][0]['outcome']") == refused && $(js "d['runs'][0]['error']") == *superuser* ]] || fail "S: the superuser serve: $(cat "$WORK/body")"
+# REPORT ROLE: a store report on the superuser repository login's serve runs as reports_dsn, never as that login (the
+# superuser's own refusal is the store check's, TestStoreReportsLoginOnAStore); session_user says which login ran it
+tick; [[ $(post3 customreports/run "{\"report_id\":$SREP,\"target\":\"fleet\"}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "S: the superuser serve's store report: $(cat "$WORK/body")"
+[[ $(post customreports "$(add "name=pgcr whoami" "body=SELECT session_user::text AS who, current_user::text AS role")") == 200 ]] || fail "S: add whoami: $(cat "$WORK/body")"
+WREP=$(js "d['report_id']")
+for k in "" 3; do tick; [[ $(post$k customreports/run "{\"report_id\":$WREP,\"target\":\"fleet\"}") == 200 && $(js "'|'.join(map(str, d['runs'][0]['sets'][0]['rows'][0]))") == "$REP|$REP" ]] || fail "S: whoami on serve${k:-1}: $(cat "$WORK/body")"; done
 F0=$(q "select count(*) from pgvigil.custom_report_folders")
 for pair in "pgcr write|insert into pgvigil.custom_report_folders values ('zz', 'x', now())|failed|read-only transaction" \
             "pgcr two|select 1; select 2|failed|multiple commands" "pgcr lock|select pg_advisory_lock(424242)|done|"; do
@@ -417,30 +430,49 @@ done
 [[ $(q "select count(*) from pgvigil.custom_report_folders") == "$F0" ]] || fail "S: the write reached the folders"
 [[ $(psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "select count(*) from pg_locks where locktype = 'advisory' and objid = 424242") == 0 ]] || fail "S: the advisory lock outlived its run"
 [[ $(q "select count(*) from pgvigil.custom_report_log where op = 'run' and instance = 'store' and statement is not null") == "$(nruns)" ]] || fail "S: not one store log row per run"
-ok "S: the store report equals the hand read; one instance; no row; superuser refused; write, two statements refused; the lock gone; $(nruns) log rows"
+ok "S: the store report equals the hand read; one instance; no row; the superuser serve runs it as reports_dsn ($REP, session_user and current_user); write, two statements refused; the lock gone; $(nruns) log rows"
 
-# ---- R1 / R2: the UI's password hashes stay out of a store report (REPORT ROLE) --------------------------------------
-# R2, a probe of PostgreSQL, not of pgvigil: on the UI login (pgvigil_reader + pgvigil_auth), SET LOCAL ROLE
+# ---- H: the UI's password hashes stay out of a store report (REPORT ROLE) ------------------------------------------
+# H2, a probe of PostgreSQL, not of pgvigil: on the UI login (pgvigil_reader + pgvigil_auth), SET LOCAL ROLE
 # pgvigil_reader stops a plain ui_password_hash call, but a report's own single statement can switch back, since
 # PostgreSQL checks a role change against the session user ('SET ROLE NONE ... These forms can be executed by any
-# user') - so a store report's boundary is its login (reports_dsn), not a role set inside the run. Either answer is
-# printed; neither fails. Only the hash's first 10 characters are read ('$argon2id$').
+# user') - so a store report's boundary is its login (reports_dsn), not a role set inside the run. It is judged only
+# when the plain call was refused (a psql that did not connect is 'no reading'); never a FAIL. Only the hash's first
+# 10 characters are read ('$argon2id$').
 r2a=$(as "$RDR" -c "begin read only" -c "set local role pgvigil_reader" -c "select pgvigil.ui_password_hash('$UIUSER')" -c "rollback" || true)
 r2b=$(as "$RDR" -c "begin read only" -c "set local role pgvigil_reader" \
   -c "select current_user, set_config('role', 'none', true), current_user, query_to_xml('select left(pgvigil.ui_password_hash(''$UIUSER''), 10) as h', false, false, '')" \
   -c "rollback" || true)
-if [[ $r2a == *"permission denied for function ui_password_hash"* && $r2b == *'<h>$argon2id$</h>'* ]]; then
-  ok "R2: the escape HOLDS - SET LOCAL ROLE pgvigil_reader on the UI login refuses a plain ui_password_hash call, and ONE statement switches back (set_config('role', 'none', true), then query_to_xml) and reads the hash's prefix (roles: $(head -1 <<<"$r2b" | cut -d'|' -f1,3)): SET LOCAL ROLE alone is no boundary"
+if [[ $r2a != *"permission denied for function ui_password_hash"* ]]; then
+  ok "H2: no reading - the plain call under SET LOCAL ROLE was not refused: ${r2a:0:200}"
+elif [[ $r2b == *'<h>$argon2id$</h>'* ]]; then
+  ok "H2: the escape HOLDS - SET LOCAL ROLE pgvigil_reader on the UI login refuses a plain ui_password_hash call, and ONE statement switches back (set_config('role', 'none', true), then query_to_xml) and reads the hash's prefix (roles: $(head -1 <<<"$r2b" | cut -d'|' -f1,3)): SET LOCAL ROLE alone is no boundary"
 else
-  ok "R2: the escape did NOT hold here - a plain call: ${r2a:0:200}; the switch: $(tr '\n' ' ' <<<"$r2b" | cut -c1-300)"
+  ok "H2: the escape did NOT hold here - the switch: $(tr '\n' ' ' <<<"$r2b" | cut -c1-300)"
 fi
-# R1: a store report calling ui_password_hash on the UI login's serve is refused for want of reports_dsn, never run
-[[ $(post customreports "$(add "name=pgcr hash" "body=SELECT left(pgvigil.ui_password_hash('$UIUSER'), 10) AS h")") == 200 ]] || fail "R1: add: $(cat "$WORK/body")"
+# H1: on the reader-alone login (reports_dsn), a store report calling ui_password_hash, and H2's statement as a store
+# report, are the server's permission denied - the run itself was allowed, the hash never read
+[[ $(post customreports "$(add "name=pgcr hash" "body=SELECT left(pgvigil.ui_password_hash('$UIUSER'), 10) AS h")") == 200 ]] || fail "H1: add: $(cat "$WORK/body")"
 HREP=$(js "d['report_id']")
-[[ $(run "{\"report_id\":$HREP,\"target\":\"fleet\"}") == 200 ]] || fail "R1: run: $(cat "$WORK/body")"
-r1=$(js "d['runs'][0]['outcome'] + '|' + str(d['runs'][0].get('error', '')) + '|' + str(d['runs'][0]['sets'][0]['rows'] if d['runs'][0].get('sets') else '')")
-[[ $r1 == refused\|*reports_dsn* ]] || fail "R1: a store report calling pgvigil.ui_password_hash on the UI login's serve was not refused for want of reports_dsn (outcome|error|rows): ${r1:0:300}"
-ok "R1: a store report calling pgvigil.ui_password_hash on the UI login's serve: refused for want of reports_dsn (${r1:0:200})"
+[[ $(post customreports "$(add "name=pgcr escape" "body=SELECT set_config('role', 'none', true) AS r, query_to_xml('select left(pgvigil.ui_password_hash(''$UIUSER''), 10) as h', false, false, '') AS x")") == 200 ]] || fail "H1: add the escape: $(cat "$WORK/body")"
+EREP=$(js "d['report_id']")
+for rid in $HREP $EREP; do
+  [[ $(run "{\"report_id\":$rid,\"target\":\"fleet\"}") == 200 ]] || fail "H1: run $rid: $(cat "$WORK/body")"
+  h1=$(js "d['runs'][0]['outcome'] + '|' + str(d['runs'][0].get('error', '')) + '|' + str(d['runs'][0]['sets'][0]['rows'] if d['runs'][0].get('sets') else '')")
+  [[ $h1 == failed\|*"permission denied for function ui_password_hash"* && $h1 != *argon2id* ]] || fail "H1: report $rid on reports_dsn (outcome|error|rows): ${h1:0:300}"
+done
+ok "H1: on reports_dsn ($REP, IN ROLE pgvigil_reader alone) a store report calling pgvigil.ui_password_hash, and one that sets the role back first, end 'failed' with the server's 'permission denied for function ui_password_hash'"
+# H3: a serve without reports_dsn: the store report is refused with the words, audited refused, nothing run; the page's
+# state says the same words; a GET writes no row
+L3=$(logn)
+[[ $(code -b "$JAR5" "$U5/api/customreports") == 200 && $(js "d['state'].get('store', '')") == *"reports_dsn in pgvigil.yaml names one"* ]] || fail "H3: the no-key serve's state: $(head -c 600 "$WORK/body")"
+[[ $(logn) == "$L3" ]] || fail "H3: the GET wrote a log row"
+tick; [[ $(code -b "$JAR5" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"report_id\":$HREP,\"target\":\"fleet\"}" "$U5/api/customreports/run") == 200 ]] || fail "H3: run: $(cat "$WORK/body")"
+h3=$(js "d['runs'][0]['outcome'] + '|' + str(d['runs'][0].get('error', ''))")
+[[ $h3 == "refused|a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one"* ]] || fail "H3: the no-key serve's store run: ${h3:0:300}"
+[[ $(logn) == $((L3 + 1)) && $(q "select outcome || '|' || instance from pgvigil.custom_report_log order by log_id desc limit 1") == "refused|store" ]] || fail "H3: not one refused store row: $(q "select outcome, instance, detail from pgvigil.custom_report_log order by log_id desc limit 1")"
+grep -q 'custom reports on the store are off' "$WORK/serve5.log" || fail "H3: the no-key serve's start WARN: $(grep -i report "$WORK/serve5.log" | head -3)"
+ok "H3: a serve without reports_dsn: its state and a store run refused with the words ('a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one ...'), one refused store row, none for the GET, its start's WARN"
 
 # ---- P: PostgreSQL instances -----------------------------------------------------------------------------------------
 [[ $(post customreports "$(add "name=pgcr t" engine=postgres 'body=select count(*) as n from t where n >= @min_n' 'params=[{"name":"min_n","type":"int"}]')") == 200 ]] || fail "P: add: $(cat "$WORK/body")"
@@ -755,6 +787,36 @@ if [[ -n "${PGVIGIL_SKIP_PAGES:-}" ]]; then NOTPROVEN+=("NOT PROVEN (PAGES): PGV
   chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank >"$WORK/chrome.log" 2>&1 & CHR=$!
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   COOKIE=$(awk '$6 == "pgvigil_session" {print $7}' "$JAR")
+  # H4 (REPORT ROLE): on the serve without reports_dsn, a store report's page: Run off with the words, the words in the
+  # paragraph report mail carries (p.said), and nothing run when the page opens (no log row)
+  cat > "$WORK/h4.mjs" <<'JS'
+const [port, base, cookie, hash] = process.argv.slice(2);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
+const ws = new WebSocket(t.webSocketDebuggerUrl);
+await new Promise((r, j) => { ws.addEventListener('open', r); ws.addEventListener('error', j); });
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(res => { const i = ++id; wait.set(i, res); ws.send(JSON.stringify({ id: i, method, params })); });
+await cmd('Network.enable'); await cmd('Page.enable');
+await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: base });
+await cmd('Page.navigate', { url: base + hash });
+let out = null;
+for (let i = 0; i < 40 && !out; i++) {
+  await sleep(500);
+  const r = await cmd('Runtime.evaluate', { returnByValue: true, expression: `(() => { const s = document.querySelector('main p.said'); const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Run'); return s && b ? { said: s.textContent.trim(), runOff: b.getAttribute('aria-disabled') } : null; })()` });
+  out = r.result?.result?.value ?? null;
+}
+console.log(JSON.stringify(out ?? { said: null, runOff: null }));
+await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
+process.exit(0);
+JS
+  L4=$(logn); COOKIE5=$(awk '$6 == "pgvigil_session" {print $7}' "$JAR5")
+  h4=$(timeout 60 node "$WORK/h4.mjs" "$CDP" "$U5/" "$COOKIE5" "#/customreports?report=$SREP" 2>&1 | tail -1)
+  h4v=$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); print((d.get("said") or "") + "|" + str(d.get("runOff")))' "$h4" 2>/dev/null || echo "$h4")
+  [[ $h4v == "a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one"*"|true" ]] || fail "H4: the no-key serve's store report page (said|Run aria-disabled): ${h4v:0:300}"
+  sleep 2; [[ $(logn) == "$L4" ]] || fail "H4: the no-key serve's page ran the store report on open (a log row)"
+  ok "H4: the no-key serve's page of a store report: Run off (aria-disabled) with the words in its p.said paragraph (the one report mail carries), and no run on open (no log row)"
   cat > "$WORK/pages.mjs" <<'JS'
 const [port, U, axePath, dl, cookie, srep, msr, pga, msa] = process.argv.slice(2);
 const fs = await import('node:fs');
