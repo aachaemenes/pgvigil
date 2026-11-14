@@ -153,14 +153,19 @@ func (s *Server) JobsReport(w http.ResponseWriter, r *http.Request) {
 		if ids != nil {
 			idsArg = ids
 		}
-		// 'status' (job_status_view, both engines) is its own part: the page asks for it alone (?part=status), so a slow
-		// status read never takes PostgreSQL's schedule checks down with it, nor they it
-		s.multiPart(w, r, []part{
+		// 'status' (job_status_view, both engines) and 'stats' are read only by name (?part=status, ?part=stats), each
+		// alone: a slow one never takes PostgreSQL's schedule checks down with it, nor they it; a reply with no part
+		// name is today's two parts
+		parts := []part{
 			{"counts", sqlJobFleetCounts, nil},
 			{"jobs", sqlJobFleet, nil},
 			{"status", sqlJobStatusFleet, []any{idsArg}},
 			{"stats", sqlJobStatsFleet, []any{idsArg}},
-		})
+		}
+		if r.URL.Query().Get("part") == "" {
+			parts = parts[:2]
+		}
+		s.multiPart(w, r, parts)
 		return
 	}
 	id, from, to, err := params(r, true)
