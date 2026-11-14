@@ -77,11 +77,16 @@ and on SQL Server a later result set of the same batch is not read.
 A PostgreSQL run is refused before the report's statement when its SESSION user is a superuser or a member of
 `pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files` (a read-only transaction does not stop
 `COPY ... TO PROGRAM`), a member of `pgvigil_auth` (it reads the UI's password hashes) or `pgvigil_collector` (its
-import functions write the repository), or may `CREATE` in a `pgvigil` schema (the repository's owner). The session
+import functions write the repository), or may `CREATE` in a `pgvigil` schema (the repository's owner); and, in a
+database that holds a `pgvigil` schema (the repository monitored as an instance), a member of that schema's owner (a
+`NOINHERIT` member too: `SET ROLE` reaches the owner) or of `pg_read_all_data` (it reads every table, the UI's logins
+among them), or a login that may read the UI's password hashes. A monitoring login's `pg_read_all_data` stays fine on
+every other database. The session
 user, not the current role: a role set when the login connects (`ALTER ROLE ... SET role`) or inside the run is undone
 by the run itself (`set_config('role', 'none', true)`: PostgreSQL checks a role change against the session user). A
 `SET TRANSACTION READ WRITE` in a report is refused, because the transaction has run a query (the rights check)
-before the report's statement. EXPLAIN on the Plan page asks the same check of the monitoring login, and EXPLAIN
+before the report's statement. EXPLAIN on the Plan page and the index advisor's hypothetical index ask the same check of
+the monitoring login, and EXPLAIN
 ANALYZE's own login is refused the same way.
 
 ### A report on the repository: its own login (reports_dsn)

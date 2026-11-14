@@ -398,8 +398,9 @@ var ddlRE = regexp.MustCompile(`^CREATE INDEX CONCURRENTLY ON ((?:[a-z_][a-z0-9_
 
 // Hypo checks one suggested index with the planner through hypopg on the monitored server: the statement's plan cost
 // before and with the hypothetical index, and whether the plan uses it. The statement is planned, never run (its
-// generic plan when it has $n parameters).
-func Hypo(ctx context.Context, dsn, datname, query, ddl string) (HypoResult, error) {
+// generic plan when it has $n parameters). check, when set, is asked inside the read-only transaction before anything
+// is planned, as Explain asks it (serve passes its pgRefusal: a stored statement may predate the check).
+func Hypo(ctx context.Context, dsn, datname, query, ddl string, check func(context.Context, pgx.Tx) (string, error)) (HypoResult, error) {
 	m := ddlRE.FindStringSubmatch(ddl)
 	if m == nil {
 		return HypoResult{}, errors.New("not a suggested index's text")
@@ -424,6 +425,15 @@ func Hypo(ctx context.Context, dsn, datname, query, ddl string) (HypoResult, err
 		return HypoResult{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if check != nil {
+		why, err := check(ctx, tx)
+		if err != nil {
+			return HypoResult{}, err
+		}
+		if why != "" {
+			return HypoResult{}, errors.New(why)
+		}
+	}
 	mode := pgx.QueryExecModeExec
 	var res HypoResult
 	var hsch string

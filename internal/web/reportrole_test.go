@@ -64,6 +64,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"noinh", "NOINHERIT IN ROLE pgvigil_reader, " + pgx.Identifier{owner}.Sanitize()},
 		{"mon", "IN ROLE pgvigil_reader, pg_monitor"},
 		{"none", ""},
+		{"rad", "IN ROLE pg_read_all_data"},
 	}
 	defer func() {
 		bg := context.Background()
@@ -106,8 +107,8 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 	s := &Server{pool: pool}
 	door := func(user, db string) *reportsDoor {
 		d := s.newReportsDoor(ctx, &ReportsConfig{Raw: "env:X", DSN: dsn})
-		if d.cfg == nil || !d.known {
-			t.Fatalf("the door: off %q, serve's repository read %v", d.off, d.known)
+		if d.cfg == nil || d.serve == nil {
+			t.Fatalf("the door: off %q, serve's pool held %v", d.off, d.serve != nil)
 		}
 		d.cfg.User, d.cfg.Password = user, pw
 		if db != "" {
@@ -128,7 +129,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"none", "", "may not read the repository"},
 		{"rd", other, "reaches another server or database"},
 	} {
-		got := door(name(c.key), c.db).check(ctx)
+		got, _ := door(name(c.key), c.db).check(ctx)
 		switch {
 		case c.want == "" && got != "":
 			t.Errorf("%s: refused, want passed: %s", c.key, got)
@@ -149,6 +150,54 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		pgx.NamedArgs{}, 10*time.Second, 10, d.refusal)
 	if why != "" || err == nil || !strings.Contains(err.Error(), "permission denied for function ui_password_hash") {
 		t.Errorf("the escape on the reader-alone login: refused %q, err %v; want the server's permission denied", why, err)
+	}
+	// pgRefusal (every PostgreSQL run of user SQL: an instance's custom report, a community tool, EXPLAIN, the advisor's
+	// hypothetical index) where the run's database is a repository: a NOINHERIT member of the schema's owner (CREATE
+	// answers false for it, SET ROLE reaches the owner) and pg_read_all_data are refused in words; the reader alone runs;
+	// on a database without a pgvigil schema pg_read_all_data runs (a monitoring login's usual grant) - the code review
+	// of REPORT ROLE, part A
+	plain := fmt.Sprintf("pgvrr_plain_%d", sfx)
+	if _, err := pool.Exec(ctx, `CREATE DATABASE `+plain); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = pool.Exec(context.Background(), `DROP DATABASE IF EXISTS `+plain+` WITH (FORCE)`) }()
+	refusalAs := func(user, db string) string {
+		c := base.Copy()
+		c.User, c.Password = user, pw
+		if db != "" {
+			c.Database = db
+		}
+		conn, err := pgx.ConnectConfig(ctx, c)
+		if err != nil {
+			t.Fatalf("%s on %q: %v", user, db, err)
+		}
+		defer func() { _ = conn.Close(context.Background()) }()
+		tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		why, err := pgRefusal(ctx, tx)
+		if err != nil {
+			t.Fatalf("%s on %q: pgRefusal: %v", user, db, err)
+		}
+		return why
+	}
+	for _, c := range []struct {
+		key, db, want string // want "" = runs
+	}{
+		{"noinh", "", "a member of the pgvigil schema's owner"},
+		{"rad", "", "a member of pg_read_all_data in a pgvigil repository"},
+		{"rd", "", ""},
+		{"rad", plain, ""},
+	} {
+		got := refusalAs(name(c.key), c.db)
+		switch {
+		case c.want == "" && got != "":
+			t.Errorf("pgRefusal: %s on %q refused, want it to run: %s", c.key, c.db, got)
+		case c.want != "" && !strings.Contains(got, c.want):
+			t.Errorf("pgRefusal: %s on %q: %q, want it to say %q", c.key, c.db, got, c.want)
+		}
 	}
 	// the door's own words before any connection
 	for _, c := range []struct {

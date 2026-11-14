@@ -20,7 +20,14 @@ what happens in the other order, and what the project's own proof showed (`scrip
   login, which reads the UI's password hashes. After the upgrade such a report is refused, and its page (and a mailed
   report) says why, until the login is made and `reports_dsn` names it; reports on instances are unchanged, except
   that a monitoring login holding `pgvigil_auth` or `pgvigil_collector`, or allowed to `CREATE` in a `pgvigil` schema,
-  is refused too ([customreports.md](customreports.md)). `install -upgrade` prints the line as a next step.
+  is refused too, and in a database that holds a `pgvigil` schema (the repository monitored as an instance) a member of
+  that schema's owner or of `pg_read_all_data` ([customreports.md](customreports.md)). `install -upgrade` prints the
+  line as a next step.
+- **EXPLAIN asks the same check.** Plain EXPLAIN (Plans > a statement's EXPLAIN) and the index advisor's hypothetical
+  index now refuse, in words, a monitoring login that is a superuser or a member of `pg_execute_server_program`,
+  `pg_write_server_files` or `pg_read_server_files`, besides the logins above: they plan the DBA's statement on that
+  login, and the planner can evaluate a function while it plans. Before this version they had no login check; EXPLAIN
+  ANALYZE already refused a superuser and the program and file-writing roles.
 - **Nothing else.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no migration
   changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and after.
 

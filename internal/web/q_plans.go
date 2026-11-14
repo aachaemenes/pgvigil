@@ -555,7 +555,7 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 		res = actions.Result{Outcome: actions.Refused, Detail: "the plan has no statement text (the query-text policy keeps none): nothing to plan"}
 	default:
 		ddl = sug[in.N].DDL
-		hr, err = plans.Hypo(ctx, ds.PG[p.Instance].Monitor, deref0(p.Datname), deref0(p.Query), ddl)
+		hr, err = plans.Hypo(ctx, ds.PG[p.Instance].Monitor, deref0(p.Datname), deref0(p.Query), ddl, pgRefusal)
 		switch {
 		case err != nil:
 			res = actions.Result{Outcome: actions.Failed, Detail: err.Error()}

@@ -11,6 +11,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,14 +27,13 @@ type ReportsConfig struct {
 }
 
 // reportsDoor is serve's store-report login: its connection settings (built as the UI pool's, uiPoolConfig: search_path,
-// jit off, the custom plans, read only) or why there is none, serve's own repository (the server's start and the
-// database's oid, read at Open) and the latest check's answer for the page (a minute old at most).
+// jit off, the custom plans, read only) or why there is none, serve's own repository to compare with (its pool: read
+// at every check, so a restart or a failover of the repository is followed, and a failed read refuses) and the latest
+// check's answer for the page (a minute old at most).
 type reportsDoor struct {
 	cfg   *pgx.ConnConfig
 	off   string // why store reports are off before any check ("" when cfg is set)
-	start time.Time
-	dbOID uint32
-	known bool // serve's own repository was read
+	serve rowQuerier
 
 	mu      sync.Mutex
 	checked time.Time
@@ -46,6 +46,11 @@ const (
 	storeNoKey    = "a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one ('pgvigil roles' prints it); this server's repository login holds pgvigil_auth, which reads the UI's password hashes"
 	storeCheckTTL = time.Minute
 )
+
+// rowQuerier is serve's pool as the door reads it (one row).
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // storeIDSQL is serve's own repository: the server's start (another server, a replica among them, started at another
 // time) and the database's oid (another database of the same server).
@@ -73,12 +78,12 @@ const storeCheckSQL = `SELECT session_user::text, r.rolsuper OR r.rolbypassrls,
        (SELECT d.oid FROM pg_database d WHERE d.datname = current_database())
   FROM pg_roles r WHERE r.rolname = session_user`
 
-// newReportsDoor builds the store-report login from the config (nil or an empty key = off, with the words) and reads
-// serve's own repository through serve's pool.
-func (s *Server) newReportsDoor(ctx context.Context, rc *ReportsConfig) *reportsDoor {
+// newReportsDoor builds the store-report login from the config (nil or an empty key = off, with the words); serve's
+// own repository is read through serve's pool at each check.
+func (s *Server) newReportsDoor(_ context.Context, rc *ReportsConfig) *reportsDoor {
 	d := &reportsDoor{}
-	if err := s.pool.QueryRow(ctx, storeIDSQL).Scan(&d.start, &d.dbOID); err == nil {
-		d.known = true
+	if s.pool != nil {
+		d.serve = s.pool
 	}
 	switch {
 	case rc == nil || strings.TrimSpace(rc.Raw) == "":
@@ -121,7 +126,17 @@ func (d *reportsDoor) refusal(ctx context.Context, tx pgx.Tx) (string, error) {
 	if !usage {
 		return fmt.Sprintf("reports_dsn's login %s may not read the repository: as its owner run GRANT pgvigil_reader TO %s", user, user), nil
 	}
-	if d.known && (!start.Equal(d.start) || oid != d.dbOID) {
+	// serve's own repository, read now beside the login's (a restart or a failover moves the start time of both; a read
+	// that fails refuses: the comparison is never skipped)
+	var sStart time.Time
+	var sOID uint32
+	if d.serve == nil {
+		return "this server's own repository could not be read to compare with reports_dsn's: nothing was run", nil
+	}
+	if err := d.serve.QueryRow(ctx, storeIDSQL).Scan(&sStart, &sOID); err != nil {
+		return "this server's own repository could not be read to compare with reports_dsn's (" + connWords(err) + "): nothing was run", nil
+	}
+	if !start.Equal(sStart) || oid != sOID {
 		return "reports_dsn reaches another server or database than this server's repository (a replica, a copy or another database): it names the repository the repository dsn names", nil
 	}
 	return "", nil
@@ -129,41 +144,50 @@ func (d *reportsDoor) refusal(ctx context.Context, tx pgx.Tx) (string, error) {
 
 // state is why a store report cannot run here ("" = it can), for the page's Run and the GET: the words before any
 // check, else the latest check's (at most a minute old: a check connects as the reports login and reads its rights).
+// The check runs outside the lock and apart from the request's context: a GET that ends early cancels nothing, and an
+// unreachable host holds no other GET behind the lock; a cancelled check is never kept.
 func (d *reportsDoor) state(ctx context.Context) string {
 	if d.off != "" {
 		return d.off
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if !d.checked.IsZero() && time.Since(d.checked) < storeCheckTTL {
-		return d.why
+		why := d.why
+		d.mu.Unlock()
+		return why
 	}
-	d.why = d.check(ctx)
-	d.checked = time.Now()
-	return d.why
+	d.mu.Unlock()
+	why, keep := d.check(context.WithoutCancel(ctx))
+	if keep {
+		d.mu.Lock()
+		d.why, d.checked = why, time.Now()
+		d.mu.Unlock()
+	}
+	return why
 }
 
-// check connects as the reports login and asks refusal, as a run does (a failed connection is a reason too).
-func (d *reportsDoor) check(ctx context.Context) string {
+// check connects as the reports login and asks refusal, as a run does (a failed connection is a reason too); keep is
+// false for a cancelled check (its words say nothing of the login).
+func (d *reportsDoor) check(ctx context.Context) (why string, keep bool) {
 	cfg := d.cfg.Copy()
 	cfg.ConnectTimeout = 10 * time.Second
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	conn, err := pgx.ConnectConfig(cctx, cfg)
 	if err != nil {
-		return "reports_dsn does not connect: " + connWords(err) + "; " + storeRule
+		return "reports_dsn does not connect: " + connWords(err) + "; " + storeRule, !errors.Is(err, context.Canceled)
 	}
 	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
 	tx, err := conn.BeginTx(cctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return "reports_dsn: " + err.Error()
+		return "reports_dsn: " + err.Error(), !errors.Is(err, context.Canceled)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	why, err := d.refusal(cctx, tx)
+	why, err = d.refusal(cctx, tx)
 	if err != nil {
-		return err.Error()
+		return err.Error(), !errors.Is(err, context.Canceled)
 	}
-	return why
+	return why, true
 }
 
 // connWords is a connection error without its connection string (pgx's message names the host, the user and the

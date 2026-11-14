@@ -47,6 +47,19 @@ func Connect(ctx context.Context, dsn, datname, app string, timeout time.Duratio
 	return pgx.ConnectConfig(ctx, cfg)
 }
 
+// RepoSecretsCols are three columns on the SESSION user for a run in a database that is a pgvigil repository (one
+// with a pgvigil schema; elsewhere all three are false, so a monitored database keeps pg_read_all_data): a member of
+// the schema's owner (MEMBER, so a NOINHERIT member too: SET ROLE / set_config('role', ...) reaches the owner and every
+// table), a member of pg_read_all_data (it reads ui_users; the planner folds table_to_xml), and a direct read of the
+// UI's hashes (SELECT on ui_users, EXECUTE on a ui_* function). Every pgvigil object through the catalogs: a login
+// without USAGE on the schema answers, never errors. serve's pgRefusal and EXPLAIN ANALYZE's check select them.
+const RepoSecretsCols = `coalesce((SELECT pg_has_role(session_user, n.nspowner, 'MEMBER') FROM pg_namespace n WHERE n.nspname = 'pgvigil'), false),
+       (EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgvigil') AND coalesce(pg_has_role(session_user, to_regrole('pg_read_all_data')::oid, 'MEMBER'), false)),
+       coalesce((SELECT has_table_privilege(session_user, c.oid, 'SELECT') FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = 'pgvigil' AND c.relname = 'ui_users'), false)
+         OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                     WHERE n.nspname = 'pgvigil' AND p.proname LIKE 'ui\_%' AND has_function_privilege(session_user, p.oid, 'EXECUTE'))`
+
 // Explain plans a statement without running it, through the monitoring login (dsn) in the database datname: EXPLAIN
 // (FORMAT JSON) in a read-only transaction that is rolled back. A statement with $n parameters (pg_stat_statements'
 // text) is planned in the generic form: PREPARE, plan_cache_mode = force_generic_plan, EXPLAIN EXECUTE with NULLs
