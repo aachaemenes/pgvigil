@@ -736,6 +736,10 @@ DOOR=pgv_door_$SUF; DOOR_PW=$(pw); export DOOR_PW
 printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pg_monitor;\n" "$DOOR" "$DOOR_PW" | PGPASSWORD="$PG_PW" psql "host=127.0.0.1 port=$PB user=postgres dbname=postgres" -Xq -v ON_ERROR_STOP=1 >/dev/null || fail "N: the door's login on PostgreSQL"
 # K stopped A's SQL Server as its last row: N starts it again (a published port may move on a restart)
 docker start "$SQL" >/dev/null || fail "N: docker start the SQL Server"; up
+# agent_up: SQL Agent has started again too - msdb opens a while before Agent is up, and sp_add_jobserver raises 14258
+# ('Cannot perform this operation while SQLServerAgent is starting') until it is; N7's control start needs it running
+agent_up() { local r=; for _ in $(seq 1 90); do r=$(sq "EXEC msdb.dbo.sp_is_sqlagent_starting; SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE program_name LIKE N'SQLAgent%') THEN 1 ELSE 0 END" msdb 2>&1 || true); [[ "$r" == 1 ]] && return 0; sleep 2; done; fail "N: SQL Agent did not start in 180 s after the restart: $r"; }
+agent_up
 PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 JOB=pgvin_probe_$SUF
 sqok "N: the probe job" "EXEC msdb.dbo.sp_add_job @job_name = N'$JOB'; EXEC msdb.dbo.sp_add_jobstep @job_name = N'$JOB', @step_name = N'one', @subsystem = N'TSQL', @command = N'SELECT 1';
