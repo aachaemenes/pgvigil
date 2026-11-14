@@ -50,6 +50,17 @@
 #      them; with retag the rename is done and both carry the new tag; an application whose tag scopes a drive
 #      threshold is removed only with retag, which ends the threshold
 #  S16 a database marked 'not an application' (import_app_assign op mark) leaves app_unassigned(); unmarked, it is back
+# Section H, the API (serve with a UI login on the same repository; the routes are 310's WIRING of web.go,
+# scripts/proof-applications-wiring.patch, applied to the box's copy when the tree lacks them):
+#  H1  GET /api/applications: 401 without a login; with one 200, can_edit true, the list holds the applications
+#  H2  a POST that sends source 'import:x' is stored 'entered' (the HTTP door forces it)
+#  H3  a POST without the X-Pgvigil header 403, without a login 401; nothing written by either
+#  H4  an assign of 500 targets (a body over 16 KB) reaches the store's answer (409, its reason); 501 targets 409
+#      'at most 500'; a body over the door's 64 KB 400
+#  H5  contacts come only from GET /api/applications/{id}/contacts with a login: the planted e-mail and phone are in its
+#      answer and in neither the list's nor one application's
+#  H6  a serve with -no-login: the contacts' GET 403 'contacts hidden: the login is off'; every POST 403
+#  H7  GET /api/applications/unassigned lists a present database with no application
 # On a tree without 0136 every row FAILs as 'not on this tree': the red run.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -249,6 +260,78 @@ na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'ap
 nr=$(q "select count(*) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused'")
 rc8=$(q "select count(*) from (select client from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused' group by client having count(*) > 1) z")
 [[ $na == "$NATT" && $rc8 == 0 ]] && ok "S8 every write attempt left its audit row(s) ($na of $NATT calls; $nr refusals, one row each)" || bad "S8 calls with audit rows $na of $NATT; refused calls with more than one row: $rc8"
+
+# ================= H: the API =================
+if [[ -z "${APP_SKIP_HTTP:-}" ]]; then
+USR=proofuser; UPW="pw-$SUF-$RANDOM"
+printf 'repository:\n  dsn: "%s"\ninstances: []\n' "$PGVIGIL_REPO_DSN" > "$WORK/serve.yaml"
+PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$WORK/serve.yaml" "$USR" > "$WORK/useradd.out" 2>&1 || bad "H setup: user add ($(tail -1 "$WORK/useradd.out"))"
+freeport() { python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+startserve() {   # $1 port, then serve's own flags
+  local port=$1; shift
+  "$BIN" serve -config "$WORK/serve.yaml" -listen "127.0.0.1:$port" "$@" > "$WORK/serve-$port.log" 2>&1 & SPIDS+=($!)
+  for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$port/api/session" 2>/dev/null && return 0; sleep 0.1; done
+  return 1
+}
+SPIDS=(); trap 'for x in "${SPIDS[@]}"; do kill "$x" 2>/dev/null; done; cleanup' EXIT
+PORT=$(freeport); U="http://127.0.0.1:$PORT"
+startserve "$PORT" || bad "H setup: serve did not answer ($(tail -3 "$WORK/serve-$PORT.log" | tr '\n' ' '))"
+printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$WORK/login.json"
+lg=$(curl -s -o /dev/null -w '%{http_code}' -c "$WORK/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$WORK/login.json" "$U/api/login")
+get()  { curl -s -o "$WORK/ans.json" -w '%{http_code}' -b "$WORK/cj" -H 'X-Pgvigil: 1' "$1/api/$2"; }
+post() { printf '%s' "$3" > "$WORK/body.json"; curl -s -o "$WORK/ans.json" -w '%{http_code}' -b "$WORK/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$WORK/body.json" "$1/api/$2"; }
+js() { python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); exec(sys.argv[2])' "$WORK/ans.json" "$1"; }
+
+# H1
+c0=$(curl -s -o /dev/null -w '%{http_code}' "$U/api/applications")
+c1=$(get "$U" applications)
+h1=$(js 'r = d["applications"]; i = r["columns"].index("name"); print(d.get("can_edit"), "|".join(sorted(x[i] for x in r["rows"])))' 2>&1)
+[[ $lg == 200 && $c0 == 401 && $c1 == 200 && $h1 == "True "* && $h1 == *"Payroll Two"* ]] \
+  && ok "H1 the list: 401 without a login; with one 200, can_edit, the applications ($h1)" || bad "H1 login $lg; no login $c0; with $c1: ${h1:0:200}"
+
+# H2
+c2=$(post "$U" admin/applications '{"op": "add", "name": "Http App", "tier": 3, "source": "import:sneak"}')
+HAPP=$(js 'print(d.get("app_id", ""))' 2>/dev/null)
+src=$(q "select string_agg(distinct source, ',') from pgvigil.app_field_source where object_kind = 'application' and object_id = ${HAPP:-0}")
+[[ $c2 == 200 && -n "$HAPP" && $src == entered ]] && ok "H2 a POST's source is 'entered' whatever the body says" || bad "H2 $c2 app '$HAPP', sources [$src]: $(head -c 200 "$WORK/ans.json")"
+
+# H3
+n0=$(q "select count(*) from pgvigil.app_applications")
+c3a=$(curl -s -o /dev/null -w '%{http_code}' -b "$WORK/cj" -H 'Content-Type: application/json' --data '{"op": "add", "name": "No Header"}' "$U/api/admin/applications")
+c3b=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data '{"op": "add", "name": "No Login"}' "$U/api/admin/applications")
+n1=$(q "select count(*) from pgvigil.app_applications")
+[[ $c3a == 403 && $c3b == 401 && $n0 == "$n1" ]] && ok "H3 no X-Pgvigil 403, no login 401, nothing written" || bad "H3 no header $c3a, no login $c3b, applications $n0 -> $n1"
+
+# H4
+big() { python3 -I -c 'import json, sys; print(json.dumps({"op": "assign", "app_id": int(sys.argv[1]), "targets": [{"instance_id": int(sys.argv[2]), "database": "missing_database_%05d" % i} for i in range(int(sys.argv[3]))]}))' "$HAPP" "$MSI" "$1"; }
+b500=$(big 500); c4a=$(post "$U" admin/applications/assign "$b500"); d4a=$(js 'print(d.get("detail", ""))' 2>&1)
+c4b=$(post "$U" admin/applications/assign "$(big 501)"); d4b=$(js 'print(d.get("detail", ""))' 2>&1)
+c4c=$(post "$U" admin/applications/assign "$(python3 -I -c 'print("{\"op\": \"assign\", \"pad\": \"" + "x" * 70000 + "\"}")')")
+[[ ${#b500} -gt 16384 && $c4a == 409 && $d4a == *"not a database"* && $c4b == 409 && $d4b == *"at most 500"* && $c4c == 400 ]] \
+  && ok "H4 500 targets (${#b500} bytes) reach the store's answer; 501 refused 'at most 500'; a body over 64 KB 400" \
+  || bad "H4 500: $c4a '${d4a:0:100}' (${#b500} bytes); 501: $c4b '${d4b:0:100}'; oversize: $c4c"
+
+# H5
+post "$U" admin/applications/contacts "{\"op\": \"add\", \"app_id\": $HAPP, \"role\": \"support\", \"kind\": \"person\", \"name\": \"Hal Http\", \"email\": \"h5.$SUF@example.com\", \"phone\": \"+1 555 5$SUF\"}" >/dev/null
+c5a=$(get "$U" "applications/$HAPP/contacts"); in_c=$(grep -c "h5.$SUF@example.com" "$WORK/ans.json"); grep -q "555 5$SUF" "$WORK/ans.json" && in_p=1 || in_p=0
+get "$U" applications >/dev/null; l5=$(grep -c "h5.$SUF\|555 5$SUF" "$WORK/ans.json")
+get "$U" "applications/$HAPP" >/dev/null; o5=$(grep -c "h5.$SUF\|555 5$SUF" "$WORK/ans.json")
+[[ $c5a == 200 && $in_c == 1 && $in_p == 1 && $l5 == 0 && $o5 == 0 ]] && ok "H5 contacts only from their own GET with a login; none in the list or one application's answer" \
+  || bad "H5 contacts GET $c5a (e-mail $in_c, phone $in_p); in the list $l5; in one application $o5"
+
+# H7
+c7=$(get "$U" applications/unassigned); h7=$(js 'r = d["unassigned"]; i = r["columns"].index("database_name"); print(",".join(x[i] for x in r["rows"]))' 2>&1)
+[[ $c7 == 200 && ",$h7," == *",sales,"* ]] && ok "H7 Unassigned lists a present database with no application (sales)" || bad "H7 $c7: ${h7:0:200}"
+
+# H6 (a second serve, -no-login, on the same repository)
+P6=$(freeport)
+if startserve "$P6" -no-login; then
+  c6a=$(curl -s -o "$WORK/ans.json" -w '%{http_code}' -H 'X-Pgvigil: 1' "http://127.0.0.1:$P6/api/applications/$HAPP/contacts"); d6=$(cat "$WORK/ans.json")
+  c6b=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data '{"op": "add", "name": "No Login Serve"}' "http://127.0.0.1:$P6/api/admin/applications")
+  [[ $c6a == 403 && $d6 == *"contacts hidden: the login is off"* && $c6b == 403 ]] && ok "H6 -no-login: contacts 403 'contacts hidden: the login is off', a POST 403" \
+    || bad "H6 contacts $c6a '${d6:0:120}', POST $c6b"
+else bad "H6 setup: the -no-login serve did not answer ($(tail -3 "$WORK/serve-$P6.log" | tr '\n' ' '))"; fi
+fi
 
 echo "proof-applications: $NFAIL FAIL"
 [[ $NFAIL == 0 ]]
