@@ -13,7 +13,7 @@
 // header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event with the
 // menu's items before it shows them, and the tools add theirs.
 import { Cell, Kind, Status, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, statusOf, typed } from './export';
-import { cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel } from './ui';
+import { cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, offControl } from './ui';
 
 type Item = [string, () => void];
 interface MenuDetail { table?: HTMLTableElement; td?: Element | null; items?: Item[] }
@@ -427,9 +427,23 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const done = el('button', { type: 'button' }, 'Close');
   done.addEventListener('click', close);
   box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
+  // Show every column with none hidden, Reset this grid with nothing changed from its default: a click would change
+  // nothing - each off with its reason, read again on every change in the panel (the walk's NOTHING rows)
+  const offNote = el('span', { class: 'off-reason' });
+  const offState = () => {
+    const noneHidden = hidden.size === 0;
+    const plain = noneHidden && barsOn.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && sum.value === '';
+    const why = [noneHidden ? 'every column is shown' : '', plain ? 'nothing in this grid is changed from its default' : ''].filter(Boolean);
+    offNote.textContent = why.join('; ');
+    offControl(all, noneHidden ? 'every column is shown' : null, offNote);
+    offControl(reset, plain ? 'nothing in this grid is changed from its default' : null, offNote);
+  };
+  box.addEventListener('change', offState);
+  all.addEventListener('click', offState);
+  offState();
   box.append(el('p', { class: 'meta' }, 'Columns of this grid: shown when ticked. The choice is kept in this browser.'), list,
     el('p', {}, el('label', {}, 'Freeze the first ', freeze, ' column(s)'), ' ', el('label', {}, 'Group by ', by), ' ', el('label', {}, 'Sum the cells of ', sum)),
-    el('p', {}, all, ' ', reset, ' ', done));
+    el('p', {}, all, ' ', reset, ' ', done, ' ', offNote));
   const host = boxOf(t);
   if (host.classList.contains('grid-box')) host.insertBefore(box, host.firstChild); else host.before(box);
   panels.set(t, box);

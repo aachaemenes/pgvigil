@@ -1,7 +1,7 @@
 import uPlot from 'uplot';
 import { get, Row, rowsOf, Table } from './api';
 import { href, MAX_RANGE_MS, parse, window_ } from './router';
-import { copyText, el, saveBlob, showMenu } from './ui';
+import { copyText, el, offControl, saveBlob, showMenu } from './ui';
 import { exportChart } from './export';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
 import { axisLook, chartKind, chartLook, chartState, Measure, rememberZoom, zoomReset } from './chartkit';
@@ -526,8 +526,20 @@ function pickSeries(box: HTMLElement, u: uPlot, back: HTMLElement) {
   };
   const bAll = el('button', { type: 'button' }, 'All'), bNone = el('button', { type: 'button' }, 'None'), done = el('button', { type: 'button' }, 'Done');
   bAll.addEventListener('click', all(true)); bNone.addEventListener('click', all(false));
+  // All with every series shown, None with none shown: a click would change nothing - each off with its reason, read
+  // again after every tick and after All / None (the walk's NOTHING rows)
+  const pickNote = el('span', { class: 'off-reason' });
+  const offState = () => {
+    const boxes = ticks.map(t => t.querySelector('input') as HTMLInputElement), on = boxes.filter(c => c.checked).length;
+    pickNote.textContent = on === boxes.length ? 'every series is shown' : on === 0 ? 'no series is shown' : '';
+    offControl(bAll, on === boxes.length ? 'every series is shown' : null, pickNote);
+    offControl(bNone, on === 0 ? 'no series is shown' : null, pickNote);
+  };
+  ticks.forEach(t => t.querySelector('input')?.addEventListener('change', offState));
+  bAll.addEventListener('click', offState); bNone.addEventListener('click', offState);
+  offState();
   const panel = el('fieldset', { class: 'chart-pick', style: 'margin:.3rem 0;display:flex;flex-wrap:wrap;gap:.2rem .8rem;align-items:center' },
-    el('legend', {}, 'Series shown'), ...ticks, el('span', {}, bAll, ' ', bNone, ' ', done));
+    el('legend', {}, 'Series shown'), ...ticks, el('span', {}, bAll, ' ', bNone, ' ', done, ' ', pickNote));
   const close = () => { panel.remove(); back.focus(); };
   done.addEventListener('click', close);
   panel.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
