@@ -51,6 +51,13 @@
 #      threshold is removed only with retag, which ends the threshold
 #  S16 a database marked 'not an application' (import_app_assign op mark) leaves app_unassigned(); unmarked, it is back
 #  S18 'renamed to' is not offered while the new name has an application of its own (review C, MINOR 5)
+#  S11b a person with a phone edited to a team: refused in words, one audit row (review A, M2); S11c an e-mail with a comma
+#      before the @ refused (A, m11); S11 searches the planted name too, S17 an acknowledgement, an alert rule and an
+#      expired acknowledgement on the tag, S8 one audit row per target (A, m12 / m7)
+#  S19 a caller's own pg_temp.app_targets with a trigger: the assign never writes it (A, M1)
+#  S20 a reader with its own temp pg_namespace: the routes' door still refuses it (A, B1)
+#  S21 a route_id and a contact_id that disagree are refused (A, m1); S22 an add carrying an existing id and name refused
+#      in words (A, m2); S23 a database "" refused (A, m4); S24 a SQL Server snapshot is never inherited (A, m6)
 # Section H, the API (serve with a UI login on the same repository; the routes are 310's WIRING of web.go,
 # scripts/proof-applications-wiring.patch, applied to the box's copy when the tree lacks them):
 #  H1  GET /api/applications: 401 without a login; with one 200, can_edit true, the list holds the applications
@@ -127,7 +134,7 @@ q()  { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { echo "FAIL setup: migrate"; tail -5 "$WORK/migrate.out"; exit 1; }
 if [[ $(q "select to_regprocedure('pgvigil.import_app_application(timestamptz, jsonb)') is not null") != t ]]; then
-  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18; do bad "$row not on this tree (no import_app_application)"; done
+  for row in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S11b S11c S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22 S23 S24; do bad "$row not on this tree (no import_app_application)"; done
   echo "proof-applications: $NFAIL FAIL"; exit 1
 fi
 
@@ -245,8 +252,20 @@ nf=$(q "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronames
 con=$(wr contact "{\"op\": \"add\", \"app_id\": $PAY, \"role\": \"technical owner\", \"kind\": \"person\", \"name\": \"Pat Planted\", \"email\": \"planted.$SUF@example.com\", \"phone\": \"+1 555 0$SUF\"}")
 CID=$(field "$con" contact_id)
 wr contact "{\"op\": \"edit\", \"contact_id\": $CID, \"email\": \"moved.$SUF@example.com\", \"phone\": \"+1 555 9$SUF\"}" >/dev/null
-hits=$(q "select count(*) from pgvigil.admin_audit where detail ~ '(planted|moved)\\.$SUF@' or detail ~ '555 [09]$SUF'")
-[[ -n "$CID" && $hits == 0 ]] && ok "S11 a contact's e-mail and phone, added and changed, appear in no audit row" || bad "S11 contact '$CID' ($(field "$con" detail)); audit rows with them: $hits"
+hits=$(q "select count(*) from pgvigil.admin_audit where detail ~ '(planted|moved)\\.$SUF@' or detail ~ '555 [09]$SUF' or detail ~ 'Pat Planted'")
+[[ -n "$CID" && $hits == 0 ]] && ok "S11 a contact's name, e-mail and phone, added and changed, appear in no audit row" || bad "S11 contact '$CID' ($(field "$con" detail)); audit rows with them: $hits"
+# S11b (review A, M2): a person with a phone edited to a team is refused in words, one audit row, no CHECK error
+con=$(wr contact "{\"op\": \"add\", \"app_id\": $PAY, \"role\": \"support\", \"kind\": \"person\", \"name\": \"Phoebe Phone\", \"email\": \"phoebe.$SUF@example.com\", \"phone\": \"+1 555 1$SUF\"}")
+C11B=$(field "$con" contact_id)
+a11b=$(wr contact "{\"op\": \"edit\", \"app_id\": $PAY, \"contact_id\": ${C11B:-0}, \"kind\": \"team\"}" 2>&1)
+n11b=$(q "select count(*) from pgvigil.admin_audit where op = 'app_contact_edit' and target = 'contact ${C11B:-0}' and outcome = 'refused'")
+k11b=$(q "select kind from pgvigil.ui_app_contacts where contact_id = ${C11B:-0}")
+[[ -n $C11B && $(field "$a11b" outcome 2>/dev/null) == refused && $a11b == *phone* && $a11b != *ERROR* && $n11b == 1 && $k11b == person ]] \
+  && ok "S11b a person with a phone edited to a team: refused in words ('$(field "$a11b" detail | cut -c1-80)'), one audit row, unchanged" \
+  || bad "S11b answer '${a11b:0:200}'; refused audit rows $n11b; kind $k11b"
+# S11c (review A, m11): an e-mail with a comma before the @ is refused (one address, never two)
+a11c=$(wr contact "{\"op\": \"add\", \"app_id\": $PAY, \"role\": \"support\", \"kind\": \"team\", \"name\": \"Comma Team\", \"email\": \"a,b.$SUF@example.org\"}" 2>&1)
+[[ $(field "$a11c" outcome 2>/dev/null) == refused ]] && ok "S11c an e-mail with a comma before the @ is refused" || bad "S11c '${a11c:0:200}'"
 
 # ---------------- S12 ----------------
 wr assign "{\"op\": \"assign\", \"app_id\": $PAY, \"targets\": [{\"instance_id\": $PGI, \"database\": \"db3\"}]}" >/dev/null
@@ -269,10 +288,15 @@ pname=$(q "select name from pgvigil.app_applications where app_id = $PAY")
 pk=$(q "select min(key) from pgvigil.pg_threshold_keys")
 q "insert into pgvigil.pg_thresholds (key, level, tag, warn, crit, created_by, created_at) values ('$pk', 'tag', 'application:$pname', 1, 2, 'proof', now())" >/dev/null
 q "insert into pgvigil.drive_thresholds (level, tag, warn_pct, crit_pct, created_by, created_at) values ('tag', 'application:$pname', 20, 10, 'proof', now())" >/dev/null
+# (review A, m12 / m7) an acknowledgement and an alert rule on the tag are rewritten too; an expired acknowledgement is not live
+q "insert into pgvigil.acks (kind, tag, created_by, created_at) values ('mute', 'application:$pname', 'proof', now())" >/dev/null
+q "insert into pgvigil.acks (kind, tag, created_by, created_at, until) values ('mute', 'application:$pname', 'proof', now() - interval '2 days', now() - interval '1 day')" >/dev/null
+q "insert into pgvigil.alert_rules (metric, op, critical, scope, tag, created_by, created_at) values ((select min(key) from pgvigil.metric_catalog), 'above', 1, 'tag', 'application:$pname', 'proof', now())" >/dev/null
 ver=$(q "select version from pgvigil.app_applications where app_id = $PAY")
 nt=$(wr application "{\"op\": \"rename\", \"app_id\": $PAY, \"version\": $ver, \"name\": \"Payroll Two\"}")
 rt=$(wr application "{\"op\": \"rename\", \"app_id\": $PAY, \"version\": $ver, \"name\": \"Payroll Two\", \"retag\": true}")
 tg=$(q "select (select string_agg(distinct tag, ',') from pgvigil.pg_thresholds where ended_at is null and tag like 'application:Payroll%') || '|' || (select string_agg(distinct tag, ',') from pgvigil.drive_thresholds where ended_at is null and tag like 'application:Payroll%')")
+tg2=$(q "select (select string_agg(distinct tag, ',') from pgvigil.acks where ended_at is null and (until is null or until > now()) and tag like 'application:Payroll%') || '|' || (select string_agg(distinct tag, ',') from pgvigil.alert_rules where ended_at is null and tag like 'application:Payroll%') || '|' || (select string_agg(tag, ',') from pgvigil.acks where until < now() and tag like 'application:Payroll%')")
 tmp=$(wr application '{"op": "add", "name": "Temp App"}'); TMP=$(field "$tmp" app_id)
 q "insert into pgvigil.drive_thresholds (level, tag, warn_pct, crit_pct, created_by, created_at) values ('tag', 'application:Temp App', 20, 10, 'proof', now())" >/dev/null
 ver=$(q "select version from pgvigil.app_applications where app_id = $TMP")
@@ -280,9 +304,11 @@ rm1=$(wr application "{\"op\": \"remove\", \"app_id\": $TMP, \"version\": $ver}"
 rm2=$(wr application "{\"op\": \"remove\", \"app_id\": $TMP, \"version\": $ver, \"retag\": true}")
 live=$(q "select count(*) from pgvigil.drive_thresholds where tag = 'application:Temp App' and ended_at is null")
 [[ $(field "$nt" outcome) == refused && $(field "$nt" detail) == *"pg threshold"* && $(field "$nt" detail) == *"drive threshold"* \
+   && $(field "$nt" detail) == "4 "* && $(field "$nt" detail) == *acknowledgement* && $(field "$nt" detail) == *"alert rule"* \
+   && $tg2 == "application:Payroll Two|application:Payroll Two|application:$pname" \
    && $(field "$rt" outcome) == done && $tg == "application:Payroll Two|application:Payroll Two" \
    && $(field "$rm1" outcome) == refused && $(field "$rm2" outcome) == done && $live == 0 ]] \
-  && ok "S17 a rename over tag-scoped thresholds refused unless ticked, then rewritten; a remove ends them only when ticked" \
+  && ok "S17 a rename over a pg threshold, a drive threshold, an acknowledgement and an alert rule on the tag refused unless ticked (an expired acknowledgement not counted nor rewritten), then rewritten; a remove ends them only when ticked" \
   || bad "S17 rename unticked: $(field "$nt" outcome) '$(field "$nt" detail)'; ticked: $(field "$rt" outcome) -> [$tg]; remove: $(field "$rm1" outcome) / $(field "$rm2" outcome), live $live"
 
 # ---------------- S13 ----------------
@@ -306,12 +332,63 @@ q "delete from pgvigil.instances where instance_id = $PGI" >/dev/null
 nq=$(q "select count(*) from pgvigil.app_assignments where instance_id = $PGI")
 [[ $np -gt 0 && $nq == 0 ]] && ok "S14 an instance's removal takes its $np assignments with it" || bad "S14 assignments of the removed instance: $np -> $nq"
 
+# ---------------- S19 (review A, M1): a caller's own pg_temp.app_targets is never the assign's ----------------
+t19=$(psql "$PGVIGIL_REPO_DSN" -XAt -c "create temp table app_targets (n bigint, instance_id int, database_name text, raw jsonb)" \
+  -c "create temp table trap_log (x int)" \
+  -c "create function pg_temp.trap() returns trigger language plpgsql as \$t\$ begin insert into pg_temp.trap_log values (1); return new; end \$t\$" \
+  -c "create trigger trap before insert on pg_temp.app_targets for each row execute function pg_temp.trap()" \
+  -c "select pgvigil.import_app_assign(now(), '{\"ui_user\": \"proof\", \"client\": \"s19\", \"op\": \"mark\", \"targets\": [{\"instance_id\": 999999, \"database\": \"nope\"}]}'::jsonb)->>'outcome'" \
+  -c "select 'trap ' || count(*) from pg_temp.trap_log" 2>&1)
+[[ $t19 == *refused* && $t19 == *"trap 0"* ]] && ok "S19 a caller's own pg_temp.app_targets with a trigger: the assign never writes it (the trigger did not run)" || bad "S19 '$(echo $t19 | tr '\n' ' ' | cut -c1-200)'"
+
+# ---------------- S20 (review A, B1): a reader's temp pg_namespace does not open the routes' door ----------------
+RD3=pgvigil_app_rd3_$SUF; PW3="rpw3-$SUF-$RANDOM"
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create role $RD3 login password '$PW3' in role pgvigil_reader" >/dev/null 2>&1
+con=$(wr contact "{\"op\": \"add\", \"app_id\": $PAY, \"role\": \"support\", \"kind\": \"person\", \"name\": \"Rita Route\", \"email\": \"rita.$SUF@example.com\"}")
+C20=$(field "$con" contact_id); R20=$(field "$(wr contact_route "{\"op\": \"set\", \"contact_id\": ${C20:-0}, \"channel\": \"mail\"}")" route_id)
+t20=$(psql "$PGVIGIL_ADMIN_DSN dbname=$DB user=$RD3 password=$PW3" -XAt -c "create temp table pg_namespace (nspname name, nspowner oid)" \
+  -c "insert into pg_namespace select 'pgvigil', oid from pg_catalog.pg_roles where rolname = session_user" \
+  -c "select 'routes ' || count(*) from pgvigil.alert_contact_routes()" 2>&1)
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $RD3" >/dev/null 2>&1
+[[ -n $R20 && $t20 == *"not the alert sender"* && $t20 != *"routes "* ]] && ok "S20 a reader with its own temp pg_namespace: the routes' door still refuses it" || bad "S20 route '$R20'; '$(echo $t20 | tr '\n' ' ' | cut -c1-200)'"
+
+# ---------------- S21 (review A, m1): a route_id and a contact_id that disagree are refused ----------------
+a21=$(wr contact_route "{\"op\": \"remove\", \"route_id\": ${R20:-0}, \"contact_id\": ${CID:-0}}")
+k21=$(q "select count(*) from pgvigil.ui_app_contact_routes where route_id = ${R20:-0}")
+[[ -n $R20 && $(field "$a21" outcome) == refused && $k21 == 1 ]] && ok "S21 a route_id and a contact_id that disagree: refused, the route kept" || bad "S21 '$(field "$a21" outcome) $(field "$a21" detail)'; route kept $k21"
+
+# ---------------- S22 (review A, m2): an add that carries an existing application's id and name is refused in words ----------------
+a22=$(wr application "{\"op\": \"add\", \"app_id\": $PAY, \"name\": \"$(q "select name from pgvigil.app_applications where app_id = $PAY")\"}" 2>&1)
+[[ $(field "$a22" outcome 2>/dev/null) == refused && $a22 == *"exists already"* ]] && ok "S22 an add carrying an existing application's id and name: refused 'exists already', no unique-index error" || bad "S22 '${a22:0:200}'"
+
+# ---------------- S23 (review A, m4): a database named "" is refused, never the whole instance ----------------
+ans=$(wr application '{"op": "add", "name": "S23 App"}'); S23A=$(field "$ans" app_id)
+wr assign "{\"op\": \"assign\", \"app_id\": $S23A, \"targets\": [{\"instance_id\": $MSI, \"database\": null}]}" >/dev/null
+a23=$(wr assign "{\"op\": \"unassign\", \"app_id\": $S23A, \"targets\": [{\"instance_id\": $MSI, \"database\": \"\"}]}")
+k23=$(q "select count(*) from pgvigil.app_assignments where app_id = ${S23A:-0} and instance_id = $MSI and database_name is null")
+wr assign "{\"op\": \"unassign\", \"app_id\": $S23A, \"targets\": [{\"instance_id\": $MSI, \"database\": null}]}" >/dev/null
+[[ -n $S23A && $(field "$a23" outcome) == refused && $k23 == 1 ]] && ok "S23 a target database \"\" is refused; the instance's own assignment stays" || bad "S23 '$(field "$a23" outcome) $(field "$a23" detail)'; the instance row kept $k23"
+
+# ---------------- S24 (review A, m6): a SQL Server snapshot is never an inherited database ----------------
+ans=$(wr application '{"op": "add", "name": "S24 App"}'); S24A=$(field "$ans" app_id)
+q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, is_system, is_snapshot, snapshot_at) values ($MSI, 'sales_snap', 40, false, true, now())" >/dev/null
+wr assign "{\"op\": \"assign\", \"app_id\": $S24A, \"targets\": [{\"instance_id\": $MSI, \"database\": null}]}" >/dev/null
+s24=$(q "select count(*) from pgvigil.app_databases($S24A) where database_name = 'sales_snap'"); s24n=$(q "select count(*) from pgvigil.app_databases($S24A) where not own")
+wr assign "{\"op\": \"unassign\", \"app_id\": $S24A, \"targets\": [{\"instance_id\": $MSI, \"database\": null}]}" >/dev/null
+[[ -n $S24A && $s24 == 0 && $s24n -ge 1 ]] && ok "S24 a SQL Server database snapshot is not listed as an inherited database ($s24n others are)" || bad "S24 snapshot rows $s24; inherited $s24n"
+
 # ---------------- S8 (last: every write attempt above) ----------------
 NATT=$(wc -l < "$WORK/calls")
 na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%'")
 nr=$(q "select count(*) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused'")
 rc8=$(q "select count(*) from (select client from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused' group by client having count(*) > 1) z")
-[[ $na == "$NATT" && $rc8 == 0 ]] && ok "S8 every write attempt left its audit row(s) ($na of $NATT calls; $nr refusals, one row each)" || bad "S8 calls with audit rows $na of $NATT; refused calls with more than one row: $rc8"
+# (review A, m12) one audit row per target: an assign of two targets in one call writes two done rows of that call
+ans=$(wr assign "{\"op\": \"mark\", \"targets\": [{\"instance_id\": $PGI, \"database\": \"db2\"}, {\"instance_id\": $MSI, \"database\": \"hr\"}]}")
+t8=$(q "select count(*) from pgvigil.admin_audit where client = 'proof-applications#$(wc -l < "$WORK/calls")' and outcome = 'done'")
+wr assign "{\"op\": \"unmark\", \"targets\": [{\"instance_id\": $PGI, \"database\": \"db2\"}, {\"instance_id\": $MSI, \"database\": \"hr\"}]}" >/dev/null
+NATT=$(wc -l < "$WORK/calls")
+na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%'")
+[[ $na == "$NATT" && $rc8 == 0 && $t8 == 2 ]] && ok "S8 every write attempt left its audit row(s) ($na of $NATT calls; $nr refusals, one row each)" || bad "S8 calls with audit rows $na of $NATT; refused calls with more than one row: $rc8; a two-target call's done rows: $t8"
 
 # ================= H: the API =================
 if [[ -z "${APP_SKIP_HTTP:-}" ]]; then
