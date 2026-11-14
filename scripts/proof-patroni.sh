@@ -48,19 +48,23 @@
 #     no_leader_since NULL, paused false; no 'no leader', 'paused' or pat3 row; 'patroni member down' for pat1 only.
 #     pat1's container started: once /cluster lists pat1 streaming, collect pv-pat2, pv-pat1, pv-pat3: no check row
 #     for pvp at all; pv-pat1 judges again (the lowest id).
-#  G. the DCS down (failsafe_mode is on in the cluster's settings) - run LAST, after U (PATRONI_G=0 skips it); attempt 4
-#     after the 10:4x diagnosis (a member that rejoined 2 s before the outage was outside the leader's failsafe list and
-#     said failsafe false, truthfully). The members' REST API back on http 8008 first. (1) The leader's GET /failsafe
-#     (Patroni 4.1.5 api.py L832-846: {member: its /patroni url}, from the leader's DCS cache) waited for, 120 s at most,
-#     until it names pat1, pat2 and pat3 at http 8008; on the timeout: 'G: not proven: the leader's failsafe topology
-#     never held all members (<what it held>)' and the proof goes on. (2) The tag's patroni_dcs_last_seen at warn 0.25
-#     min; etcd stopped; the leader's own /patroni failsafe_mode_is_active true waited for (120 s). (3) collect pv-pat1,
-#     pv-pat2, each followed at once by that member's own /patroni: each read ok true, cluster_ok false, message
-#     starting '/cluster:', members 1, the leader still the one read before; each own member row present with
-#     failsafe_active EQUAL to its /patroni's failsafe_mode_is_active, dcs_last_seen older than the read; no down_since
-#     on any member of pv-pat1 or pv-pat2; 'patroni DCS not reached' warning rows for pat1 and pat2 (their contact 15 s
-#     old or more), the words 'failsafe mode keeps the leader running' on a row exactly when that member's row says
-#     failsafe_active; no other check of the cluster. etcd started; once /cluster answers, collect pv-pat1:
+#  G. the DCS down (failsafe_mode is on in the cluster's settings) - run LAST, after U (PATRONI_G=0 skips it). The
+#     leader asks only the members of its failsafe topology (the copy it read from the DCS before the outage): a member
+#     outside it, one that joined just before, is never told and says failsafe false, truthfully. So: the members' REST
+#     API back on http 8008 first. (1) The leader's GET /failsafe (Patroni 4.1.5 api.py L832-846: {member: its /patroni
+#     url}) waited for, 120 s by the clock, until it names pat1, pat2 and pat3 at http 8008; on the timeout: 'G: not
+#     proven: the leader's failsafe topology never held all members (<what it held>)', and the last line says
+#     'PASS proof-patroni (G not proven)'. (2) The tag's patroni_dcs_last_seen at warn 0.25 min; etcd stopped; the
+#     leader's own /patroni failsafe_mode_is_active true waited for (120 s); then the DCS contact of each member to be
+#     collected, by its own /patroni, 17 s old or more (60 s: a contact up to 10 s old at the stop can still be under
+#     15 s when the leader's failsafe comes). (3) collect pv-pat1, pv-pat2 (and pv-pat3 when pat3 leads), each followed
+#     at once by that member's own /patroni: each read ok true, cluster_ok false, message starting '/cluster:', members
+#     1, the leader still the one read before; each own member row present with failsafe_active EQUAL to its
+#     /patroni's failsafe_mode_is_active, true on the leader, dcs_last_seen older than the read; no down_since on any
+#     member of those instances; a 'patroni DCS not reached' warning row for each member collected, the words
+#     'failsafe mode keeps the leader running' on a row exactly when that member's row says failsafe_active; no other
+#     check of the cluster except a 'patroni DCS not reached' row for pat3 (a whole read the judge still holds - pv-mtls's
+#     of part H - lists pat3, whose contact ages with the clock). etcd started; once /cluster answers, collect pv-pat1:
 #     cluster_ok true, members 3; the tag row inherited; collect: no check on pv-pat1.
 #  H. another port and TLS. A CA, a server certificate for the three addresses and a client certificate made with
 #     openssl. The members' REST API moved to https on 8009 (restapi certfile / keyfile / cafile, verify_client
@@ -74,7 +78,10 @@
 #       member's https api_url read with the CA);
 #       pv-tlshttp (url http://pat1:8009): message 'the endpoint answers in TLS: name it https:// ...';
 #       pv-noca (url https://pat1:8009, no ca_file): message naming a CA the collector does not trust.
-#     verify_client required (reloaded): pv-tls: message 'the endpoint asks for a client certificate ...';
+#     verify_client required (reloaded; waited for until a GET without a certificate fails and one with the client
+#     certificate answers 200): pv-tls: message 'the endpoint asks for a client certificate: name it in ...' (the
+#     server's alert read) or 'the endpoint asked for a client certificate and then closed the connection (<cause>): if
+#     its restapi.verify_client is required, name one in ...' (the server closed first); the log prints which;
 #     pv-mtls (ca_file, cert_file, key_file): ok true, members 3, every api_ok true.
 #  S. the rules on seeded rows (import_patroni called directly, instances of their own, the times around now()):
 #     s1 a leader, then none at -70 s and now: 'patroni no leader' critical; the first no-leader read alone: none
@@ -95,7 +102,13 @@
 #  U. the Go cases on a copy of the tree (go test): the endpoint's url rules, the pending-restart reason's text, a
 #     read of recorded Patroni 4.1.5 answers (members, pause, a stopped member, lag 'unknown', dcs_last_seen; each
 #     api_url asked at <host:port>/patroni whatever path it holds), a member whose address answers for another member, /cluster hanging past 3 s (the endpoint's own /patroni read instead), a TLS endpoint
-#     asked over http and a plain one over https, an unknown CA; config's patroni: block rules.
+#     asked over http and a plain one over https, an unknown CA; config's patroni: block rules. The client certificate,
+#     on Go TLS servers: one that requires a certificate, none configured: the firm hint or the asked-then-closed text;
+#     one that requests a certificate and answers: the GET ok, the ask recorded; one that requests a certificate and
+#     hangs up: the asked-then-closed text; a configured certificate the server refuses: a text naming 'the client
+#     certificate in patroni.cert_file (' and never 'name it in'; a configured certificate the server trusts: the GET
+#     ok (the hook hands the configured certificate over). A reset worded as Windows words it (wsarecv) counts as a
+#     dropped connection; a refused dial and a timeout do not.
 #  Z. every container, the network and the image's run left nothing: 0 containers of this proof.
 set -euo pipefail
 PG=${PG:-17}
@@ -444,11 +457,13 @@ while (( $(date +%s) - H1 < 55 )); do sleep 2; done
 collect pv-pat1
 [[ $(checks "$P1") == "warning|patroni API not answering|http://$IP1:8008/cluster" ]] || fail "H: pv-pat1 checks $(checks "$P1")"
 retls tls-required.yml
-needcert() { [[ $(curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert "$CERTS/ca.pem" "https://$IP1:8009/patroni") != 200 ]]; }
+needcert() { [[ $(curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert "$CERTS/ca.pem" "https://$IP1:8009/patroni") != 200 \
+  && $(curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert "$CERTS/ca.pem" --cert "$CERTS/client.pem" --key "$CERTS/client.key" "https://$IP1:8009/patroni") == 200 ]]; }
 waitfor 90 "verify_client required" needcert
 collect pv-tls; collect pv-mtls; M=$(iid pv-mtls)
-[[ $(q "select message from pgvigil.pg_patroni_read where instance_id = $T") == "the endpoint asks for a client certificate: name it in patroni.cert_file and patroni.key_file" ]] \
+[[ $(q "select message like 'the endpoint ask% for a client certificate%name % in patroni.cert_file and patroni.key_file' from pgvigil.pg_patroni_read where instance_id = $T") == t ]] \
   || fail "H: pv-tls without a client certificate: $(q "select message from pgvigil.pg_patroni_read where instance_id = $T")"
+echo "  H: pv-tls without a client certificate: $(q "select message from pgvigil.pg_patroni_read where instance_id = $T")"
 [[ $(q "select concat_ws('|', ok, cluster_ok, members) from pgvigil.pg_patroni_read where instance_id = $M") == "t|t|3" ]] || fail "H: pv-mtls $(q "select * from pgvigil.pg_patroni_read where instance_id = $M")"
 [[ $(q "select count(*) from pgvigil.pg_patroni_members where instance_id = $M and is_present and api_ok") == 3 ]] || fail "H: pv-mtls members"
 ok "H: https on 8009 read with the CA, then with a client certificate; each wrong setting says what to change"
@@ -535,11 +550,24 @@ package collect
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -684,6 +712,120 @@ func TestProof376TLS(t *testing.T) {
 		t.Errorf("a cert without its key: %v", err)
 	}
 }
+
+// a client certificate and key, self-signed, as PEM files
+func clientPair(t *testing.T, dir string) (string, string, *x509.Certificate) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(376), Subject: pkix.Name{CommonName: "pgvigil"}, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kd, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, kf := filepath.Join(dir, "client.pem"), filepath.Join(dir, "client.key")
+	if err := os.WriteFile(cf, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kf, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cf, kf, c
+}
+
+const askedClosed = "the endpoint asked for a client certificate and then closed the connection ("
+
+func TestProof376ClientCert(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cf, kf, cc := clientPair(t, dir)
+	answer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+	hangUp := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = c.Close()
+		}
+	})
+	// a TLS server asking for a client certificate as auth says; the endpoint built from its url and CA
+	ep := func(auth tls.ClientAuthType, pool *x509.CertPool, h http.Handler, withCert bool) patroniEndpoint {
+		ts := httptest.NewUnstartedServer(h)
+		ts.TLS = &tls.Config{ClientAuth: auth, ClientCAs: pool}
+		ts.StartTLS()
+		t.Cleanup(ts.Close)
+		f, err := os.CreateTemp(dir, "ca*.pem")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = f.Write(certPEM(ts))
+		_ = f.Close()
+		pc := &config.Patroni{URL: ts.URL, CAFile: f.Name()}
+		if withCert {
+			pc.CertFile, pc.KeyFile = cf, kf
+		}
+		e, err := patroniEndpointOf(config.Instance{Patroni: pc})
+		if err != nil || e.certAsked == nil || e.certSet != withCert {
+			t.Fatalf("endpoint %+v %v", e, err)
+		}
+		return e
+	}
+	var v map[string]any
+
+	// required, none configured: the server's alert (the firm hint) or its close (the asked-then-closed text)
+	e := ep(tls.RequireAnyClientCert, nil, answer, false)
+	if rows := patroniRead(ctx, e); len(rows) != 1 || !(rows[0]["message"] == patroniCertHint || strings.HasPrefix(rows[0]["message"].(string), askedClosed)) {
+		t.Errorf("required, no certificate: %v", rows)
+	}
+	// requested and answered: the empty certificate is harmless, the ask is recorded
+	e = ep(tls.RequestClientCert, nil, answer, false)
+	if err := patroniGet(ctx, e.client, e.base+"/cluster", &v, false); err != nil || !e.certAsked.Load() {
+		t.Errorf("requested, answered: %v asked %v", err, e.certAsked.Load())
+	}
+	// requested, then the server hangs up: the soft text with the cause, never the firm hint
+	e = ep(tls.RequestClientCert, nil, hangUp, false)
+	if rows := patroniRead(ctx, e); len(rows) != 1 || !strings.HasPrefix(rows[0]["message"].(string), askedClosed) || !strings.Contains(rows[0]["message"].(string), "if its restapi.verify_client is required") {
+		t.Errorf("requested, hung up: %v", rows)
+	}
+	// a configured certificate the server does not trust: it names the configured one, never 'name it in'
+	e = ep(tls.RequireAndVerifyClientCert, x509.NewCertPool(), answer, true)
+	if rows := patroniRead(ctx, e); len(rows) != 1 || !strings.Contains(rows[0]["message"].(string), "the client certificate in patroni.cert_file (") || strings.Contains(rows[0]["message"].(string), "name it in") {
+		t.Errorf("a refused certificate: %v", rows)
+	}
+	// a configured certificate the server trusts: the hook hands it over
+	pool := x509.NewCertPool()
+	pool.AddCert(cc)
+	e = ep(tls.RequireAndVerifyClientCert, pool, answer, true)
+	if err := patroniGet(ctx, e.client, e.base+"/cluster", &v, false); err != nil || !e.certAsked.Load() {
+		t.Errorf("a trusted certificate: %v", err)
+	}
+
+	// decided on the error, not its words: a reset as Windows words it is a dropped connection; a refused dial and a
+	// timeout are not, and keep their own text
+	asked := &atomic.Bool{}
+	asked.Store(true)
+	ea := patroniEndpoint{certAsked: asked}
+	win := &url.Error{Op: "Get", URL: "https://h:8009/cluster", Err: &net.OpError{Op: "read", Net: "tcp", Err: errors.New("wsarecv: An existing connection was forcibly closed by the remote host.")}}
+	var pe *patroniErr
+	if f := patroniFail(win); !errors.As(f, &pe) || !pe.dropped || !strings.HasPrefix(ea.failText(f), askedClosed) {
+		t.Errorf("a Windows reset: %v / %q", f, ea.failText(f))
+	}
+	refused := &url.Error{Op: "Get", URL: "https://h:8009/cluster", Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
+	if f := patroniFail(refused); !errors.As(f, &pe) || pe.dropped || pe.alert || ea.failText(f) != "connection refused" {
+		t.Errorf("a refused dial: %v / %q", f, ea.failText(f))
+	}
+	slow := &url.Error{Op: "Get", URL: "https://h:8009/cluster", Err: &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}}
+	if f := patroniFail(slow); !errors.As(f, &pe) || pe.dropped || ea.failText(f) != "no answer in 3s" {
+		t.Errorf("a timeout: %v / %q", f, ea.failText(f))
+	}
+}
 GO
 cat > "$UT/internal/collect/zz_proof376_pem_test.go" <<'GO'
 package collect
@@ -740,18 +882,27 @@ if [[ ${PATRONI_G:-1} == 1 ]]; then
   waitfor 90 "the members' REST API back on http 8008" plainup
   LEADER=$(api pat1 cluster | jq_ "print([m['name'] for m in d['members'] if m['role'] == 'leader'][0])") || fail "G: no leader in /cluster"
   topo() { api "$LEADER" failsafe | jq_ "print(','.join(k + '=' + ('http' if v.startswith('http://') and ':8008/' in v else v) for k, v in sorted(d.items())))"; }
-  HELD=""
-  for _ in $(seq 1 60); do HELD=$(topo || true); [[ $HELD == "pat1=http,pat2=http,pat3=http" ]] && break; sleep 2; done
+  HELD=""; GEND=$((SECONDS + 120))
+  while :; do HELD=$(topo || true); [[ $HELD == "pat1=http,pat2=http,pat3=http" ]] && break; (( SECONDS < GEND )) || break; sleep 2; done
   if [[ $HELD != "pat1=http,pat2=http,pat3=http" ]]; then
     [[ -n $HELD ]] || HELD="nothing read from the GET /failsafe of $LEADER"
     echo "  G: not proven: the leader's failsafe topology never held all members ($HELD)"
+    GNOTE=" (G not proven)"
   else
     echo "  G: the leader $LEADER's failsafe topology holds pat1, pat2, pat3 at http 8008"
     tagset patroni_dcs_last_seen 0.25 30
     docker stop -t 2 "$ETCD_CT" >/dev/null || fail "G: docker stop etcd"
     lfs() { [[ $(api "$LEADER" patroni | jq_ "print(d.get('failsafe_mode_is_active', False))") == True ]]; }
     waitfor 120 "the leader's failsafe mode" lfs
-    for n in 1 2; do
+    # the members collected: pat1, pat2, and pat3 when it leads (its row must then say failsafe)
+    GN="1 2"; [[ $LEADER == pat3 ]] && GN="1 2 3"
+    GI=$(for n in $GN; do printf '%s,' "$(iid "pv-pat$n")"; done); GI=${GI%,}
+    GO=$(for n in $GN; do printf "'pat%s'," "$n"; done); GO=${GO%,}
+    GW=$(for n in $GN; do printf 'warning|patroni DCS not reached|pat%s,' "$n"; done); GW=${GW%,}
+    # a contact up to 10 s old at the stop can still be under the 15 s warn when the leader's failsafe comes
+    aged() { for n in $GN; do [[ $(api "pat$n" patroni | jq_ "import time; print(time.time() - d.get('dcs_last_seen', 0) >= 17)") == True ]] || return 1; done; }
+    waitfor 60 "the members' DCS contact 17 s old" aged
+    for n in $GN; do
       i=$(iid "pv-pat$n")
       collect "pv-pat$n"
       own=$(api "pat$n" patroni | jq_ "print('t' if d.get('failsafe_mode_is_active') else 'f')") || fail "G: pat$n's own /patroni"
@@ -759,14 +910,15 @@ if [[ ${PATRONI_G:-1} == 1 ]]; then
         || fail "G: read of pv-pat$n $(q "select * from pgvigil.pg_patroni_read where instance_id = $i")"
       [[ $(q "select concat_ws('|', is_present, failsafe_active, dcs_last_seen < snapshot_at) from pgvigil.pg_patroni_members where instance_id = $i and member = 'pat$n'") == "t|$own|t" ]] \
         || fail "G: pat$n's row against its own /patroni (failsafe $own): $(q "select member, is_present, failsafe_active, dcs_last_seen, snapshot_at, api_ok from pgvigil.pg_patroni_members where instance_id = $i")"
+      [[ pat$n != "$LEADER" || $own == t ]] || fail "G: the leader $LEADER's own /patroni says no failsafe after the wait for it"
       echo "  G: pat$n's row failsafe_active = its own /patroni's ($own)"
     done
-    [[ $(q "select count(*) from pgvigil.pg_patroni_members where instance_id in ($P1, $P2) and down_since is not null") == 0 ]] || fail "G: a down_since from an own-member read"
-    [[ $(q "select string_agg(severity || '|' || check_name || '|' || object, ',' order by object) from pgvigil.pg_patroni_checks c where c.instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp') and object in ('pat1', 'pat2')") \
-       == "warning|patroni DCS not reached|pat1,warning|patroni DCS not reached|pat2" ]] || fail "G: checks $(q "select * from pgvigil.pg_patroni_checks")"
+    [[ $(q "select count(*) from pgvigil.pg_patroni_members where instance_id in ($GI) and down_since is not null") == 0 ]] || fail "G: a down_since from an own-member read"
+    [[ $(q "select string_agg(severity || '|' || check_name || '|' || object, ',' order by object) from pgvigil.pg_patroni_checks c where c.instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp') and object in ($GO)") \
+       == "$GW" ]] || fail "G: checks $(q "select * from pgvigil.pg_patroni_checks")"
     [[ $(q "select bool_and((c.detail like '%failsafe mode keeps the leader running%') = m.failsafe_active)
               from pgvigil.pg_patroni_checks c join pgvigil.pg_patroni_members m on m.member = c.object and m.instance_id = (select instance_id from pgvigil.instances where name = 'pv-' || c.object)
-             where c.object in ('pat1', 'pat2') and c.instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp')") == t ]] || fail "G: the failsafe words"
+             where c.object in ($GO) and c.instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp')") == t ]] || fail "G: the failsafe words"
     [[ $(q "select count(*) from pgvigil.pg_patroni_checks where instance_id in (select instance_id from pgvigil.pg_patroni_read where scope = 'pvp')
              and (check_name <> 'patroni DCS not reached' or object not in ('pat1', 'pat2', 'pat3'))") == 0 ]] || fail "G: another check $(q "select * from pgvigil.pg_patroni_checks")"
     docker start "$ETCD_CT" >/dev/null || fail "G: docker start etcd"
@@ -781,5 +933,6 @@ if [[ ${PATRONI_G:-1} == 1 ]]; then
   fi
 else
   echo "  G: not proven: skipped (PATRONI_G=0)"
+  GNOTE=" (G not proven)"
 fi
-echo "PASS proof-patroni"
+echo "PASS proof-patroni${GNOTE:-}"

@@ -75,10 +75,11 @@ type patroniEndpoint struct {
 	base       string // scheme://host:port, no path
 	configured bool   // from the patroni: block
 	client     *http.Client
-	// certAsked: an https endpoint read without a client certificate asked for one in its handshake (a REST API with
-	// restapi.verify_client). Patroni's server then drops the connection, which the client sees as a broken pipe or a
-	// reset before the TLS alert can be read: this flag is what says why.
+	// certAsked: an https endpoint asked for a client certificate in a handshake (a REST API with restapi.verify_client).
+	// Patroni's server drops a connection whose certificate it does not take, which the client often sees as a broken
+	// pipe or a reset before the TLS alert can be read: this flag, with certSet, is what says why (failText).
 	certAsked *atomic.Bool
+	certSet   bool // patroni.cert_file and key_file are configured
 }
 
 // patroniEndpointOf builds the endpoint: the patroni: block when it names a url, else the default on the dsn's host.
@@ -101,14 +102,17 @@ func patroniEndpointOf(in config.Instance) (patroniEndpoint, error) {
 		if tc == nil {
 			tc = &tls.Config{MinVersion: tls.VersionTLS12}
 		}
-		if len(tc.Certificates) == 0 {
-			asked := &atomic.Bool{}
-			tc.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-				asked.Store(true)
-				return &tls.Certificate{}, nil // none: the handshake goes on, the server decides
-			}
-			ep.certAsked = asked
+		// the hook replaces tc.Certificates for the client side: it hands over the configured certificate itself
+		own := &tls.Certificate{} // none: the handshake goes on, the server decides
+		if len(tc.Certificates) > 0 {
+			own, ep.certSet = &tc.Certificates[0], true
 		}
+		asked := &atomic.Bool{}
+		tc.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			asked.Store(true)
+			return own, nil
+		}
+		ep.certAsked = asked
 	}
 	ep.client = patroniHTTP(tc)
 	return ep, nil
@@ -242,15 +246,11 @@ func patroniRead(ctx context.Context, ep patroniEndpoint) []Row {
 	if cerr != nil {
 		var st patroniStatus
 		if serr := patroniGet(ctx, ep.client, ep.base+"/patroni", &st, true); serr != nil || st.Patroni.Name == "" {
-			read["message"] = cerr.Error()
+			read["message"] = ep.failText(cerr)
 			// a TLS endpoint asked over http fails in more than one way (EOF, a reset, a 400 from the TLS side): the
 			// port's own handshake says it
 			if strings.HasPrefix(ep.base, "http://") && cerr.Error() != patroniTLSHint && patroniSpeaksTLS(ctx, ep.base) {
 				read["message"] = patroniTLSHint
-			}
-			// an https endpoint that asked for a client certificate and then dropped the connection
-			if ep.certAsked != nil && ep.certAsked.Load() && patroniDropped(cerr.Error()) {
-				read["message"] = patroniCertHint
 			}
 			return []Row{read}
 		}
@@ -287,7 +287,7 @@ func patroniRead(ctx context.Context, ep patroniEndpoint) []Row {
 			defer wg.Done()
 			var st patroniStatus
 			if err := patroniGet(ctx, ep.client, u, &st, true); err != nil {
-				errs[i] = err
+				errs[i] = errors.New(ep.failText(err))
 				return
 			}
 			// the answer must be the member's own: an api_url that reaches another Patroni (a connect_address of
@@ -396,12 +396,12 @@ func patroniGet(ctx context.Context, c *http.Client, u string, v any, anyStatus 
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.Do(req)
 	if err != nil {
-		return errors.New(patroniErrText(err))
+		return patroniFail(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, patroniMaxBody))
 	if err != nil {
-		return errors.New(patroniErrText(err))
+		return patroniFail(err)
 	}
 	if resp.StatusCode != http.StatusOK && !anyStatus {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -416,7 +416,7 @@ func patroniGet(ctx context.Context, c *http.Client, u string, v any, anyStatus 
 }
 
 // patroniErrText is a request's failure in a line that says what to change: a TLS endpoint asked over http, a plain
-// endpoint asked over https, a certificate no configured CA signed, a client certificate asked for, a timeout.
+// endpoint asked over https, a certificate no configured CA signed, a timeout (a client certificate: failText).
 func patroniErrText(err error) string {
 	s := err.Error()
 	var ua x509.UnknownAuthorityError
@@ -431,11 +431,15 @@ func patroniErrText(err error) string {
 		return "the endpoint's certificate is signed by a CA the collector does not trust: name it in patroni.ca_file"
 	case errors.As(err, &hn):
 		return "the endpoint's certificate does not name this host: " + hn.Error()
-	case strings.Contains(s, "certificate required") || strings.Contains(s, "bad certificate"):
-		return patroniCertHint
 	case errors.As(err, &ne) && ne.Timeout():
 		return "no answer in " + patroniTimeout.String()
 	}
+	return patroniLast(s)
+}
+
+// patroniLast is an error's last part: 'Get "https://h:8009/cluster": remote error: tls: bad certificate' is
+// 'bad certificate'.
+func patroniLast(s string) string {
 	if i := strings.LastIndex(s, ": "); i >= 0 && i+2 < len(s) {
 		return s[i+2:]
 	}
@@ -466,15 +470,63 @@ func patroniSpeaksTLS(ctx context.Context, base string) bool {
 	return errors.As(err, &cv)
 }
 
-// patroniCertHint is the message for an endpoint that asks for a client certificate none was configured for.
+// patroniCertHint is the message for an endpoint that refused, by its TLS alert, a handshake without a client
+// certificate.
 const patroniCertHint = "the endpoint asks for a client certificate: name it in patroni.cert_file and patroni.key_file"
 
-// patroniDropped: a failure that is the server ending the connection (what a REST API with verify_client does to a
-// client without a certificate), as patroniErrText words it.
-func patroniDropped(msg string) bool {
-	switch msg {
-	case "broken pipe", "connection reset by peer", "EOF", "unexpected EOF", patroniCertHint:
-		return true
+// patroniErr is a failed request: its line (patroniErrText) and how the connection ended, decided on the error itself,
+// not on its text (a reset is worded by the operating system: 'connection reset by peer', 'wsarecv: An existing
+// connection was forcibly closed by the remote host').
+type patroniErr struct {
+	msg     string
+	cause   string // the error's last part, quoted by failText
+	alert   bool   // the server sent a TLS alert about a certificate or the handshake
+	dropped bool   // the connection was made and then ended by the server: EOF, a reset, a closed pipe
+}
+
+func (e *patroniErr) Error() string { return e.msg }
+
+// patroniFail wraps a transport failure as a patroniErr.
+func patroniFail(err error) error {
+	pe := &patroniErr{msg: patroniErrText(err), cause: patroniLast(err.Error())}
+	var op *net.OpError
+	var ne net.Error
+	var cv *tls.CertificateVerificationError
+	var ua x509.UnknownAuthorityError
+	var hn x509.HostnameError
+	switch {
+	case errors.As(err, &cv) || errors.As(err, &ua) || errors.As(err, &hn):
+		// the server's certificate: nothing about the client's
+	case errors.As(err, &op) && op.Op == "remote error": // crypto/tls: a TLS alert the server sent
+		a := ""
+		if op.Err != nil {
+			a = op.Err.Error()
+		}
+		pe.alert = strings.Contains(a, "certificate") || strings.Contains(a, "handshake failure") || strings.Contains(a, "access denied")
+	case errors.As(err, &ne) && ne.Timeout():
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
+		pe.dropped = true
+	case errors.As(err, &op) && (op.Op == "read" || op.Op == "write"):
+		pe.dropped = true
 	}
-	return strings.Contains(msg, "handshake failure")
+	return pe
+}
+
+// failText is a failed request's message, with what the handshake adds: an endpoint that asked for a client
+// certificate and then sent a certificate alert or ended the connection. An alert is the server's word; an ended
+// connection is only likely the certificate (a REST API restarting mid-read ends it too), so its text says 'if'.
+func (ep patroniEndpoint) failText(err error) string {
+	var pe *patroniErr
+	if ep.certAsked == nil || !ep.certAsked.Load() || !errors.As(err, &pe) || (!pe.alert && !pe.dropped) {
+		return err.Error()
+	}
+	switch {
+	case ep.certSet && pe.alert:
+		return "the endpoint did not accept the client certificate in patroni.cert_file (" + pe.cause + ")"
+	case ep.certSet:
+		return "the endpoint asked for the client certificate in patroni.cert_file and then closed the connection (" + pe.cause + "): it may not accept that certificate"
+	case pe.alert:
+		return patroniCertHint
+	}
+	return "the endpoint asked for a client certificate and then closed the connection (" + pe.cause + "): if its restapi.verify_client is required, name one in patroni.cert_file and patroni.key_file"
 }
