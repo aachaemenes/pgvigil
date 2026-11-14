@@ -164,8 +164,12 @@ keeps a row per step too: the step rows would be about three quarters of the hou
 that reads them, are a later task. The hours are kept 730 days by default, their own age apart from `purge -days`
 (`pgvigil.hours_retention`; `pgvigil purge -hours job_stats_hourly=<days>` changes it), measured at about 0.7 GB a month
 for 200 SQL Server instances of 30 jobs [an estimate from the per-step measure: 2.9 GB a month with every step]. After the
-upgrade to 0139 each instance's hours are built by its next jobs import (or by `pgvigil purge` for an instance that
-writes no more runs); a history import from DBA Dash builds them once at its end.
+upgrade to 0139 each instance's hours are built by its next jobs import that stores a run (about 2 seconds of building
+an import, the newest week first) and by `pgvigil purge`, which builds every instance still waiting, each in its own
+transaction; a history import from DBA Dash builds them once at its end. Until an instance's hours of the last 7 days
+are built, the fleet Jobs page's four 7-day columns read `being built`. `-hours <table>=<days>` takes days and drops
+the months the new age no longer keeps in the same run: a value lower than the stored one needs `-confirm` (the hours
+cannot be rebuilt once their runs are purged), and `-dry-run` with it lists those months and changes nothing.
 
 ## API
 

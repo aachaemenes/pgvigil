@@ -106,8 +106,9 @@ SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.j
 // days, Max and Avg Duration), per job of the instances $1 (NULL = every active instance): its own part, read after the
 // status grid is drawn (the lead's 05:4x, (a)). Read from 0139's hourly table through job_stats_7day, with DBA Dash
 // 4.24.1's arithmetic (AgentJob7Day.sql: step 0, the hours that started within 1 / 7 days, the average of each hour's
-// total / (failed + succeeded), whole seconds), not from every run.
-const sqlJobStatsFleet = `SELECT instance_id, scheduler, job_id, ok_24h, ok_7d, max_secs_7d, avg_secs_7d FROM pgvigil.job_stats_7day($1::int[])`
+// total / (failed + succeeded), whole seconds), not from every run; 'building' when the instance's hours of the 7 days
+// are not built yet (its four values are then NULL; the page says 'being built').
+const sqlJobStatsFleet = `SELECT instance_id, scheduler, job_id, ok_24h, ok_7d, max_secs_7d, avg_secs_7d, building FROM pgvigil.job_stats_7day($1::int[])`
 
 // idsParam reads ?ids=1,2,3 (the instances of the page's view): nil when absent, an error on anything but positive ids.
 func idsParam(r *http.Request) ([]int32, error) {
