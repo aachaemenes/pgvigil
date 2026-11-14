@@ -220,29 +220,35 @@ func guardCell(v string) string {
 // parseCSVInventory: the header is the first record naming instance and application (the bar's export writes up to
 // two lines above it); its line decides the separator - a comma, or a semicolon (Excel in a comma-decimal locale).
 func parseCSVInventory(text string) (*invFile, error) {
-	var hdr string
+	// the header line: the first of the file's first lines whose cells, split at a comma, a semicolon or a tab, name
+	// instance and application (their other names too: server, app) - t-im-u2, a literal search missed them
+	sep := rune(0)
 	for i, l := range strings.SplitN(text, "\n", 40) {
 		if i == 39 {
 			break
 		}
-		lo := strings.ToLower(l)
-		if strings.Contains(lo, "instance") && strings.Contains(lo, "application") {
-			hdr = l
+		for _, c := range []rune{',', ';', '\t'} {
+			cells := strings.Split(strings.TrimRight(l, "\r"), string(c))
+			for k := range cells {
+				cells[k] = strings.Trim(cells[k], `" `)
+			}
+			if len(cells) > 1 && isHeader(cells) {
+				sep = c
+				break
+			}
+		}
+		if sep != 0 {
 			break
 		}
 	}
-	if hdr == "" {
+	switch sep {
+	case 0:
 		return nil, errors.New("no header line naming instance and application in the file's first lines")
-	}
-	commas, semis, tabs := strings.Count(hdr, ","), strings.Count(hdr, ";"), strings.Count(hdr, "\t")
-	if tabs > commas && tabs > semis {
+	case '\t':
 		return nil, errors.New("a tab-separated file is not read: save it as CSV UTF-8 (commas or semicolons)")
 	}
 	cr := csv.NewReader(strings.NewReader(text))
-	cr.Comma = ','
-	if semis > commas {
-		cr.Comma = ';'
-	}
+	cr.Comma = sep
 	cr.LazyQuotes, cr.FieldsPerRecord = true, -1
 	var header []string
 	var recs [][]string
