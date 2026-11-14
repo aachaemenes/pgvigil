@@ -130,10 +130,74 @@ file's instances only. A repository `dsn` that resolves to nothing (the installe
 Credentials go to files beside the configuration file (`instances/` and `sources/`): on Linux 0600 files in 0700
 folders; on Windows a DPAPI machine-scope blob in a folder whose access list is SYSTEM, Administrators and the service
 account. The repository keeps only each file's name, so `pgvigil serve` and `pgvigil run` must share the configuration
-folder (one host). Every change is audited (the page's Changes grid).
+folder and run as one account: the account that wrote a credential is the one that can read it (on Windows the
+folder's access list names SYSTEM, Administrators and that account's own SID; on Linux the files are its own). Every
+change is audited (the page's Changes grid).
 
 A SQL Server added here signs in by `sql` (a login and its password), `windows` (the service's own account on Windows;
 off Windows Kerberos, the login the principal and the driver options naming the keytab or credential cache), `entra`
 (an Entra service principal and its secret) or `entra-identity` (the host's Azure managed identity, no secret): which
 works where is [SQL Server in the cloud](sqlserver-cloud.md#signing-in-without-a-stored-password). Entra and Kerberos
 are not proven against a live server in this release.
+
+### Community tools and custom reports on a page instance
+
+`pgvigil serve` runs Community tools and custom reports on an instance of `pgvigil.yaml` through its read login. On
+an instance added in Admin > Instances it does so only when `pgvigil.yaml` turns it on, off by default on every
+install:
+
+```yaml
+doors:
+  page_instance_reads: on   # Community tools and custom reports on the instances of Admin > Instances
+```
+
+The switch is in the file only, never on the page; while it is off a page instance's tools and reports say 'off on
+this install: doors.page_instance_reads in pgvigil.yaml turns on Community tools and custom reports for instances
+added in Admin > Instances' - unless its row has a refusal of its own (disabled, left out of the list, this server's
+own identity, an option the door does not open), which the switch would not lift: those words come first. (A later
+release lists the switch on a Site settings page, one switch per door in one place, where this file's 'off' still
+wins.)
+
+With it on, a page instance's door is its stored read login alone, and it opens only for a credential typed into
+the form, never for one that signs in as `pgvigil serve` itself:
+
+- SQL Server: auth `sql` and `entra` (a service principal and its secret); `windows` and `entra-identity` are refused,
+  being the service's own identity. PostgreSQL: auth `password`; `pgpass` (the service account's own `.pgpass`) is
+  refused.
+- The driver options it opens with, each for one reason. SQL Server (go-mssqldb's names, without case): `database`,
+  `encrypt`, `trustservercertificate`, `hostnameincertificate`, `tlsmin` (TLS on the wire and the certificate's
+  check), `connection timeout`, `dial timeout`, `keepalive` (seconds), `applicationintent` (an availability group's
+  read routing), `multisubnetfailover` (every address of one listener), `packet size`. PostgreSQL (pgx's keywords):
+  `sslmode`, `sslrootcert=system` (the operating system's CA store), `sslsni`, `sslnegotiation`, `channel_binding`
+  (TLS on the wire), `connect_timeout` (seconds), `target_session_attrs` (which server of a list). Every other option
+  refuses the door: a file on serve's host (`certificate`, `passfile`, `servicefile`, `sslcert`, `sslkey`, a
+  `sslrootcert` path), serve's Kerberos or Entra identity (`authenticator`, `fedauth` other than a service
+  principal, `serverspn`, `krbsrvname`, `gssencmode`, `krb5-*`), a second server (`failoverpartner`), a startup
+  setting (PostgreSQL's `options` and any runtime parameter) and anything else.
+- Both are checked twice: on the row's sign-in and options for the words, and on the stored credential's own
+  connection string each time the door is built, which is the check that holds - a hand-edited row or credential file
+  cannot widen it, and a key neither check knows refuses the door. Serve's environment lending a client certificate
+  or a Kerberos name (`PGSSLCERT`, `PGSSLKEY`, `PGKRBSRVNAME`) refuses it too.
+
+Each refusal is in words on the page and in the run's audit row: in neither `pgvigil.yaml` nor Admin > Instances;
+disabled in Admin > Instances; left out of the list (the reason); off on this install; this server's own identity; an
+authentication or a driver option the door does not open; a driver option that names a file on this server's host;
+this server's own socket; a credential stored as a URL rather than the keyword form pgvigil writes; a credential the
+driver reads differently from the door's check; a credential not readable on this host (stored by another host's
+`pgvigil serve`: serve here as the account, and with the configuration folder, that stored it - storing it again with
+Edit on this server moves it to this host, where a collector on the other host then reads nothing); the list of
+Admin > Instances not read yet on this server (its log names why a read failed). A custom report's page opened on an
+instance that is disabled or removed (a mailed page names its instance) keeps it as the target and runs on no other in
+its place: its run says why, and a mailed turn carries those words in the mail. EXPLAIN, the index advisor and every
+action (cancel, terminate, kill, a job's start and stop) stay on the instances of `pgvigil.yaml`: on a page instance -
+one with a door or refused one - they say so, and the actions log keeps no door column because a page instance runs no
+action.
+
+A change in Admin > Instances reaches this server's doors at once (its write waits up to 5 seconds for them, then
+answers that the change reaches Community tools and custom reports within 15 seconds) and another `pgvigil serve` on
+the same repository within 15 seconds. On an install whose page doors are off the answer says nothing of them. A run
+that reached a door names it in its audit row (`custom_report_log`): `file` (an instance of `pgvigil.yaml`), `page`
+(Admin > Instances') or `store` (the repository); one refused for want of a door names none. Each carries
+`door_generation`, the repository's inventory generation its door set was read from. `pgvigil serve` keeps every open
+page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
+were: a disable written through another serve reaches it once its reads work again.

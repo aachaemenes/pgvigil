@@ -1690,7 +1690,7 @@ for q in d['picker']:
 assert sys.argv[4] == sys.argv[5], f"S: custom_report_log {sys.argv[4]} -> {sys.argv[5]}: opening samples wrote audit rows"
 print(f"ok   S: no audit row from any sample opened (custom_report_log {sys.argv[4]} before and after)")
 rr = json.load(open(sys.argv[6])); runs = rr.get('runs') or []; dname = ids[0][1]
-want = f"instance {dname} has no read login in this server's configuration file"
+want = f"instance {dname} has no read login on this server: it is in neither pgvigil.yaml nor Admin > Instances"
 assert len(runs) == 1 and runs[0].get('outcome') == 'refused' and runs[0].get('error') == want and runs[0].get('sets') == [] \
     and runs[0].get('rows') == 0 and 'sample' not in json.dumps(rr), f"S: a run asked of the demo's instance on the signed-in serve: {str(rr)[:300]}"
 print(f"ok   S: POST /api/community/run on {dname} from the signed-in plain serve: an instance without a login there, refused before anything is sent ('{want}') - never a sample")

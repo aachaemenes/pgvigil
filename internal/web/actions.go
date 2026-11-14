@@ -171,7 +171,7 @@ func (a *Actions) act(w http.ResponseWriter, r *http.Request, kind actions.Kind)
 	} else if req.BackendStart = bs; strings.TrimSpace(in.Confirm) != strconv.Itoa(in.PID) {
 		res = actions.Result{Outcome: actions.Refused, Detail: fmt.Sprintf("the typed confirmation is not the pid %d", in.PID)}
 	} else {
-		res = a.run(ctx, a.doors[name], req)
+		res = a.run(ctx, a.doorsNow().PG[name], req) // the door read once, here
 	}
 	at := time.Now()
 	payload, err := actions.Payload(actions.Row(at, req, res))
@@ -234,12 +234,15 @@ func (a *Actions) Log(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
-	door := a.doors[name]
+	door := a.doorsNow().PG[name]
 	switch {
 	case a.off != "":
 		out.Reason = a.off
 	case door.Off(name) != "":
 		out.Reason = door.Off(name)
+	case strings.TrimSpace(door.Monitor) == "":
+		// as actions.Execute: an empty string would let the driver sign in from serve's own environment
+		out.Reason = fmt.Sprintf("instance %s: the monitoring dsn resolved to an empty string", name)
 	default:
 		out.Enabled = true
 		su, err := a.superusers(ctx, name, door.Monitor)
@@ -256,6 +259,9 @@ func (a *Actions) Log(w http.ResponseWriter, r *http.Request) {
 // superusers lists the server's superuser roles through the monitoring login (pg_roles is readable by any
 // login), kept a minute per instance: the Running queries page asks on every refresh.
 func (a *Actions) superusers(ctx context.Context, instance, dsn string) ([]string, error) {
+	if strings.TrimSpace(dsn) == "" { // never the driver's defaults (serve's environment, its local socket)
+		return nil, errors.New("the monitoring dsn resolved to an empty string")
+	}
 	a.mu.Lock()
 	if c, ok := a.suCache[instance]; ok && time.Since(c.at) < time.Minute {
 		a.mu.Unlock()

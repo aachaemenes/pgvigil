@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"regexp"
@@ -36,6 +37,29 @@ func firstWhat(c *communityCheck) string {
 		return ""
 	}
 	return c.Inst[0].What
+}
+
+// TestChecksKeyedByDoor: a new read login for the instance (an Edit that moves it to another host) is a new check,
+// never the old login's kept answer
+func TestChecksKeyedByDoor(t *testing.T) {
+	resetCommunityCache(t, time.Second)
+	s := &Server{log: discardLog()}
+	var runs atomic.Int32
+	run := func(context.Context) *communityCheck {
+		return &communityCheck{Tools: map[string][]toolNeed{}, Inst: []toolNeed{noteNeed(fmt.Sprint("answer ", runs.Add(1)), "", "live")}}
+	}
+	ctx := context.Background()
+	a := checkKey{s: s, id: 3, door: sha256.Sum256([]byte("host=a user=r"))}
+	b := checkKey{s: s, id: 3, door: sha256.Sum256([]byte("host=b user=r"))}
+	if got := firstWhat(s.checks(ctx, a, "i3", false, run)); got != "answer 1" {
+		t.Fatalf("first login: %q", got)
+	}
+	if got := firstWhat(s.checks(ctx, a, "i3", false, run)); got != "answer 1" {
+		t.Fatalf("the same login within the keep: %q", got)
+	}
+	if got := firstWhat(s.checks(ctx, b, "i3", false, run)); got != "answer 2" {
+		t.Fatalf("a new login: %q (want a new check)", got)
+	}
 }
 
 // TestChecksLookAgain: a check that outlives the GET's budget answers 'not checked' now; Look again (fresh) then gets

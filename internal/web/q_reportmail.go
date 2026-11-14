@@ -523,9 +523,7 @@ func (s *Server) renderPage(ctx context.Context, user, route, tz, prefs string, 
 		return mailRequest{}, err
 	}
 	// the same routes on loopback for the render's life: no Host list (the port is new), no TLS
-	inner := *s
-	inner.hosts, inner.tls = nil, false
-	app := inner.Handler()
+	app := s.renderCopy().Handler()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /mailrender/{key}", func(w http.ResponseWriter, rq *http.Request) { s.renderOpen(w, rq, user, hash) })
 	mux.Handle("/", app)
@@ -737,4 +735,25 @@ func (s *Server) reportMailTurns(ctx context.Context) {
 		s.renderAndQueue(rctx, d, "scheduled", d.owner, "scheduler", next, d.claim, schedSlot)
 		cancel()
 	}
+}
+
+// renderCopy is the server as report mail's render serves it on loopback for the render's life: no Host list (the port
+// is new), no TLS; origin names the server it was copied from, so the settings serve keeps in maps keyed by *Server
+// (the door set, its watcher's wake, the job allow lists, the Plan page's configuration, the SQL Server door, Admin >
+// Instances' settings) are the server's own on the copy (uidoor-u7: a mailed custom report on a page instance was
+// refused 'in neither pgvigil.yaml nor Admin > Instances' - the copy found no door set).
+func (s *Server) renderCopy() *Server {
+	inner := *s
+	inner.hosts, inner.tls = nil, false
+	inner.origin = s.self()
+	return &inner
+}
+
+// self is the server a map keyed by *Server keys by: the origin of a render's copy, else the server itself. A new
+// map keyed by *Server keys by s.self() too (TestServerCopyKeepsSideMaps).
+func (s *Server) self() *Server {
+	if s.origin != nil {
+		return s.origin
+	}
+	return s
 }

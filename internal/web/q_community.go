@@ -34,6 +34,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -367,8 +368,8 @@ func (s *Server) communityInstance(ctx context.Context, id int) (name, engine st
 }
 
 const sqlCommunityLog = `
-SELECT log_id, at, ui_user, client, op, tool, instance, outcome, detail, rows, duration_ms, statement
-  FROM pgvigil.custom_report_log WHERE op IN ('community_run', 'community_help') AND instance_id = $1
+SELECT log_id, at, ui_user, client, op, tool, instance, outcome, detail, rows, duration_ms, statement, door, door_generation
+  FROM pgvigil.custom_report_log WHERE op IN ('community_run', 'community_help', 'community_form') AND instance_id = $1
  ORDER BY at DESC, log_id DESC LIMIT 100`
 
 type toolState struct {
@@ -540,10 +541,13 @@ type communityCheck struct {
 	Preset    map[string]map[string]string // each tool's form values
 }
 
+// checkKey: one server's checks of an instance and database on one read login (its hash: an Edit in Admin >
+// Instances that moves the instance to another host or login starts a new check, never shows the old one's)
 type checkKey struct {
-	s  *Server
-	id int
-	db string
+	s    *Server
+	id   int
+	db   string
+	door [sha256.Size]byte
 }
 
 type checkEntry struct {
@@ -1093,7 +1097,8 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
-	demo, err := s.demoWithoutDoor(ctx, id, name, engine)
+	ds := s.doorsNow() // the request's one door set
+	demo, err := s.demoWithoutDoor(ctx, ds, id, name, engine)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1116,9 +1121,8 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 			out.Tools = append(out.Tools, toolState{communityTool: t, Needs: []toolNeed{}})
 		}
 	}
-	door := s.pgDoorDSN(name)
+	door, _, no := ds.readLogin(engine, name)
 	if engine == "sqlserver" {
-		door = s.msDoorDSN(name)
 		out.Database = msDB(db)
 	}
 	var c *communityCheck
@@ -1140,18 +1144,10 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 			out.Needs = append(out.Needs, *n)
 			break
 		}
-		if _, listed := s.mssqlDoor().doors[name]; engine == "sqlserver" && listed {
-			// listed in the configuration file, but its dsn (env:, file: or dpapi:) resolved to nothing on this server
-			out.Needs = append(out.Needs, hardNeed("a read login for "+name+": its dsn in the configuration file (env:, file: or dpapi:) resolved to an empty string on this server",
-				"set the variable, or make the file readable, for the account pgvigil serve runs as, and serve again (docs/configuration.md)", "configuration"))
-			break
-		}
-		login := "read login"
-		if engine == "postgres" {
-			login = "monitoring login"
-		}
-		out.Needs = append(out.Needs, hardNeed("a "+login+" for "+name+": this server holds none for it (pgvigil serve takes each instance's login from its configuration file)",
-			"give the instance a dsn in the configuration file with a login that is not a sysadmin or superuser, and serve with that file (docs/sqlserver.md, docs/configuration.md)", "configuration"))
+		// why this door set holds no read login for it, and the step that opens one (doorset.go: neither list, a dsn
+		// that resolved to nothing, a page row disabled or left out, the page door off on this install, serve's own
+		// identity, a credential this host cannot read)
+		out.Needs = append(out.Needs, hardNeed(no.Why, no.How, "configuration"))
 	default:
 		if n := s.communityOff(); n != nil {
 			out.Needs = append(out.Needs, *n)
@@ -1161,7 +1157,7 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		if engine == "sqlserver" {
 			kdb = msDB(db)
 		}
-		c = s.checks(ctx, checkKey{s, id, kdb}, name, r.URL.Query().Get("fresh") == "1", func(cctx context.Context) *communityCheck {
+		c = s.checks(ctx, checkKey{s: s, id: id, db: kdb, door: sha256.Sum256([]byte(door))}, name, r.URL.Query().Get("fresh") == "1", func(cctx context.Context) *communityCheck {
 			if engine == "sqlserver" {
 				return s.msChecks(cctx, id, name, door, db)
 			}
@@ -1234,7 +1230,7 @@ func (d *demoDoor) seeded(id int, in doorInstance) bool {
 // demoWithoutDoor: id is a demo instance - one this running pgvigil demo seeded (seeded) - with no login for it on
 // this server. A plain serve never has a demo instance, whatever an instance's tags: a real instance tagged demo gets
 // its ordinary lines, never the demo's words or a sample.
-func (s *Server) demoWithoutDoor(ctx context.Context, id int, name, engine string) (bool, error) {
+func (s *Server) demoWithoutDoor(ctx context.Context, ds *doorSet, id int, name, engine string) (bool, error) {
 	if s.demo == nil {
 		return false, nil
 	}
@@ -1242,10 +1238,7 @@ func (s *Server) demoWithoutDoor(ctx context.Context, id int, name, engine strin
 	if err != nil || !ok {
 		return false, err
 	}
-	door := s.pgDoorDSN(name)
-	if engine == "sqlserver" {
-		door = s.msDoorDSN(name)
-	}
+	door, _, _ := ds.readLogin(engine, name)
 	return s.demo.seeded(id, in) && door == "", nil
 }
 
@@ -1275,7 +1268,7 @@ func (s *Server) CommunitySample(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s is a %s tool and instance %s is %s", t.Name, t.Engine, name, engine))
 		return
 	}
-	demo, err := s.demoWithoutDoor(ctx, id, name, engine)
+	demo, err := s.demoWithoutDoor(ctx, s.doorsNow(), id, name, engine)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1391,14 +1384,21 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	dsn, no := s.msRunLogin(name)
-	if no != "" {
-		writeErr(w, http.StatusForbidden, errors.New(no))
+	ds := s.doorsNow()
+	dsn, kind, no := ds.readLogin("sqlserver", name)
+	// a refusal of the form is audited (op community_form), as a run's is
+	formRefused := func(why string) {
+		s.refuseRunStatus(w, r, map[string]any{"op": "community_form", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"database": in.Database},
+			"door": kind, "door_generation": ds.Gen}, errors.New(why), http.StatusForbidden)
+	}
+	if no.Why != "" {
+		formRefused(no.Why)
 		return
 	}
 	dbc, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
 	if why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(why))
+		formRefused(why)
 		return
 	}
 	if err != nil {
@@ -1427,7 +1427,7 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 			sets, err = readMS(rows, 2000, &sizer{}, hcancel)
 		}
 		hcancel()
-		run := instanceRun{Instance: name}
+		run := instanceRun{Instance: name, Door: kind, DoorGen: ds.Gen}
 		run.finish(t0, sets, "", err)
 		if err != nil {
 			out.HelpError = err.Error()
@@ -1439,30 +1439,14 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 		}
 		actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
 		defer acancel()
-		if err := s.auditRun(actx, map[string]any{"op": "community_help", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+		if err := s.auditRun(actx, run.audit(map[string]any{"op": "community_help", "ui_user": user, "client": clientIP(r), "tool": t.ID,
 			"instance_id": in.InstanceID, "instance": name, "outcome": run.Outcome, "detail": run.Error, "rows": run.Rows,
-			"duration_ms": run.DurationMS, "statement": stmt}); err != nil {
+			"duration_ms": run.DurationMS, "statement": stmt})); err != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the run's audit row could not be written (%v): its rows are withheld", err))
 			return
 		}
 	}
 	s.reply(w, r, out, nil)
-}
-
-// msRunLogin is a SQL Server instance's read login for a run, or why a run is refused before anything is sent: this
-// server's configuration file does not list the instance (the logins come from that file alone - an instance added in
-// Admin > Instances has none here; a plain serve has no demo instance, so the demo's own instances are such instances
-// there), or the configured dsn (env:, file: or dpapi:) resolved to an empty string on this server. A custom report's
-// run, a community tool's run and its form (POST /api/community/params) use the same words.
-func (s *Server) msRunLogin(name string) (dsn, why string) {
-	d, ok := s.mssqlDoor().doors[name]
-	switch {
-	case !ok:
-		return "", "instance " + name + " has no read login in this server's configuration file"
-	case d.Monitor == "":
-		return "", "instance " + name + ": its read login's dsn (env:, file: or dpapi:) resolved to an empty string on this server"
-	}
-	return d.Monitor, ""
 }
 
 // CommunityRun is POST /api/community/run.
@@ -1480,21 +1464,25 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	// a demo instance has no server behind it: refused before anything is sent - never answered with its stored sample
 	// (that is GET /api/community/sample, which runs nothing). pgvigil demo -serve runs without the UI login, so its gate
 	// refuses a run first (403); this line holds for a signed-in serve with a demo door, should one ever exist
-	if demo, err := s.demoWithoutDoor(ctx, in.InstanceID, name, t.Engine); err == nil && demo {
-		s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}},
+	ds := s.doorsNow() // the run's one door set: its login and the generation the audit names
+	// every refusal below is audited with this set's door and generation (run.audit), as a run is
+	dsn, kind, no := ds.readLogin(t.Engine, name)
+	run := instanceRun{InstanceID: in.InstanceID, Instance: name, Engine: t.Engine, Door: kind, DoorGen: ds.Gen}
+	if demo, err := s.demoWithoutDoor(ctx, ds, in.InstanceID, name, t.Engine); err == nil && demo {
+		s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}}),
 			fmt.Errorf("%s is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here", name))
 		return
 	}
 	timeout := time.Duration(in.TimeoutSecs) * time.Second
-	run := instanceRun{InstanceID: in.InstanceID, Instance: name, Engine: t.Engine}
 	t0 := time.Now()
 	var stmt string
+	// no read login on this door set: each kind refuses where it did before (a script's text is checked first),
+	// before anything is sent, the set's words as the run's
 	switch t.Kind {
 	case "query":
-		dsn := s.pgDoorDSN(name)
-		if dsn == "" {
-			run.finish(t0, nil, "instance "+name+" has no monitoring login configured on this server", nil)
+		if no.Why != "" {
+			run.finish(t0, nil, no.Why, nil)
 			break
 		}
 		cfg, err := pgx.ParseConfig(dsn)
@@ -1511,8 +1499,8 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 			v := in.Params[p.Name]
 			x, err := paramValue(p, &v)
 			if err != nil {
-				s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-					"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}},
+				s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+					"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}}),
 					fmt.Errorf("parameter %s %w", p.Name, err))
 				return
 			}
@@ -1537,25 +1525,23 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	case "script":
 		text := strings.TrimSpace(in.Text)
 		if text == "" || len(text) > 128<<10 {
-			s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "report_name": in.QueryName}, errors.New("text is the query to run, 1 to 128 KB (pick a query of the script)"))
+			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+				"instance_id": in.InstanceID, "instance": name, "report_name": in.QueryName}), errors.New("text is the query to run, 1 to 128 KB (pick a query of the script)"))
 			return
 		}
 		stmt = text
 		if in.Database != "" {
 			stmt = "USE " + msQuote(in.Database) + ";\n" + text
 		}
-		dsn, no := s.msRunLogin(name)
-		if no != "" {
-			run.finish(t0, nil, no, nil)
+		if no.Why != "" {
+			run.finish(t0, nil, no.Why, nil)
 			break
 		}
 		sets, why, err := runMS(ctx, dsn, stmt, nil, timeout, 5000, true)
 		run.finish(t0, sets, why, err)
 	default:
-		dsn, no := s.msRunLogin(name)
-		if no != "" {
-			run.finish(t0, nil, no, nil)
+		if no.Why != "" {
+			run.finish(t0, nil, no.Why, nil)
 			break
 		}
 		db, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
@@ -1615,8 +1601,8 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		if bad != nil {
 			_ = conn.Close()
 			_ = db.Close()
-			s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "statement": b.String(), "params": map[string]any{"values": in.Params, "database": in.Database}}, bad)
+			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+				"instance_id": in.InstanceID, "instance": name, "statement": b.String(), "params": map[string]any{"values": in.Params, "database": in.Database}}), bad)
 			return
 		}
 		stmt = b.String()
@@ -1641,9 +1627,9 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	run.Statement = stmt
 	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
 	defer acancel()
-	if err := s.auditRun(actx, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+	if err := s.auditRun(actx, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
 		"report_name": in.QueryName, "instance_id": in.InstanceID, "instance": name, "outcome": run.Outcome, "detail": run.Error,
-		"rows": run.Rows, "duration_ms": run.DurationMS, "statement": stmt, "params": map[string]any{"values": in.Params, "database": in.Database}}); err != nil {
+		"rows": run.Rows, "duration_ms": run.DurationMS, "statement": stmt, "params": map[string]any{"values": in.Params, "database": in.Database}})); err != nil {
 		s.log.Error("community tool: the run's audit row was not written", "tool", t.ID, "instance", name, "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("the run's audit row could not be written (%v): its rows are withheld", err))
 		return

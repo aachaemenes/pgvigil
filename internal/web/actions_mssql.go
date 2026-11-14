@@ -29,6 +29,7 @@ import (
 // MSSQLActions is the SQL Server side of the door. Never nil after NewMSSQLActions; without doors every action is
 // off with the reason.
 type MSSQLActions struct {
+	s       *Server
 	a       *Actions
 	doors   map[string]mssql.Door
 	preview func(ctx context.Context, d mssql.Door, instance string, k mssql.ActionKind, sessionID int, jobID string) (mssql.Target, string)
@@ -38,7 +39,7 @@ type MSSQLActions struct {
 // NewMSSQLActions builds the SQL Server side on the server's actions door (s.actions: call it after NewActions).
 // doors maps a configured SQL Server instance's name to its connection strings and allow list.
 func (s *Server) NewMSSQLActions(doors map[string]mssql.Door) *MSSQLActions {
-	return &MSSQLActions{a: s.actions, doors: doors, preview: mssql.Preview, run: mssql.Execute}
+	return &MSSQLActions{s: s, a: s.actions, doors: doors, preview: mssql.Preview, run: mssql.Execute}
 }
 
 // mssqlActions keeps each server's SQL Server door (serve calls SetMSSQLActions after Open), as plansConfigs does.
@@ -47,12 +48,12 @@ var mssqlActions sync.Map // *Server -> *MSSQLActions
 // SetMSSQLActions gives the server its SQL Server doors: per configured SQL Server instance the read dsn, the
 // actions dsn and the allow list.
 func (s *Server) SetMSSQLActions(doors map[string]mssql.Door) {
-	mssqlActions.Store(s, s.NewMSSQLActions(doors))
+	mssqlActions.Store(s.self(), s.self().NewMSSQLActions(doors))
 }
 
 // mssqlDoor is the server's SQL Server door; without SetMSSQLActions every action is off with the reason.
 func (s *Server) mssqlDoor() *MSSQLActions {
-	if v, ok := mssqlActions.Load(s); ok {
+	if v, ok := mssqlActions.Load(s.self()); ok {
 		return v.(*MSSQLActions)
 	}
 	return s.NewMSSQLActions(nil)
@@ -146,7 +147,7 @@ func (m *MSSQLActions) Preview(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	t, why := m.preview(ctx, m.doors[name], name, mssql.ActionKind(in.Action), in.SessionID, in.JobID)
+	t, why := m.preview(ctx, m.doorsNow().MS[name], name, mssql.ActionKind(in.Action), in.SessionID, in.JobID)
 	out := struct {
 		OK        bool         `json:"ok"`
 		Reason    string       `json:"reason,omitempty"`
@@ -187,7 +188,7 @@ func (m *MSSQLActions) Run(w http.ResponseWriter, r *http.Request) {
 		res = mssql.ActionResult{Outcome: mssql.OutcomeRefused, Detail: "the typed confirmation is not " + what,
 			Statement: mssql.Statement(kind, in.SessionID, in.JobID)}
 	} else {
-		res = m.run(ctx, m.doors[name], req)
+		res = m.run(ctx, m.doorsNow().MS[name], req) // the door read once, here
 	}
 	at := time.Now()
 	payload, err := mssql.ActionPayload(mssql.ActionRow(at, req, res))
@@ -258,7 +259,7 @@ func (m *MSSQLActions) State(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
-	door := m.doors[name]
+	door := m.doorsNow().MS[name]
 	for _, k := range mssql.ActionKinds {
 		why := m.a.off
 		if why == "" && engine != "sqlserver" {

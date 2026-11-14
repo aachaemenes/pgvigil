@@ -79,6 +79,8 @@ type Door struct {
 	Configured bool
 	// Allow is the instance's actions: list; an action not named there is off.
 	Allow []string
+	// Page: an instance added in Admin > Instances (serve's page door: its read login only, never an action)
+	Page bool
 }
 
 // Allows says whether the instance's allow list names the action.
@@ -91,9 +93,17 @@ func (d Door) Allows(k ActionKind) bool {
 	return false
 }
 
+// PageOff is the words of an action on an instance added in Admin > Instances (actions.PageOff's own; a web test
+// holds the two equal).
+func PageOff(instance string) string {
+	return fmt.Sprintf("instance %s: actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it from Admin > Instances", instance)
+}
+
 // Off is the reason the door cannot do k on the instance, or "" when it can.
 func (d Door) Off(instance string, k ActionKind) string {
 	switch {
+	case d.Page:
+		return PageOff(instance)
 	case d.Actions == "" && d.Configured:
 		return fmt.Sprintf("instance %s: actions_dsn is configured but resolved to an empty string (an unset variable or an unreadable file)", instance)
 	case d.Actions == "":

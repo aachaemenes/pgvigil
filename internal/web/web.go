@@ -51,6 +51,9 @@ type Server struct {
 	version string
 	// demo is the demo's write door (demodoor.go); nil on every serve.
 	demo *demoDoor
+	// origin is the server a render's copy was made from (renderCopy, q_reportmail.go); nil on the server itself. A
+	// setting kept in a map keyed by *Server keys by self(), so the copy reads the server's own.
+	origin *Server
 }
 
 // Options shape a Server beyond its repository connection.
