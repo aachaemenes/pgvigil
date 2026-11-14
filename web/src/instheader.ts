@@ -271,7 +271,8 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
       el('span', { style: 'margin-left:auto' }, silenceButton(ad, r, live, redraw))),
     b.reasons.length ? el('div', { class: `meta inst-reason ${b.cls}` }, b.reasons.slice(0, 6).join(', ') + (b.reasons.length > 6 ? `, +${b.reasons.length - 6} more` : '')) : null,
     el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(chipEl)),
-    // the verdict card on the instance's Summary (both engines): a reading of this band and freshness, never another
-    ctx.tab === 'summary' ? verdictCard(ctx, verdict(r, live, now, b, fr)) : null);
+    // the verdict card on the instance's Summary (both engines): a reading of this band and freshness, never another;
+    // a fault in it leaves the header standing (instanceFrame's caller drops the whole header on a throw)
+    ctx.tab === 'summary' ? (() => { try { return verdictCard(ctx, verdict(r, live, now, b, fr)); } catch { return null; } })() : null);
   return { header, dot: bandDot(b) };
 }
