@@ -34,7 +34,8 @@
 #                with its reason naming pgvigil.yaml
 #   B3 clicks    sql01's instance link = #/mssqlbackups?i=<sql01>; the NUL database's link carries db=<name>; opened, the
 #                tab says 'Opened for the database <name>: its row is the first below.' and its first row is that database
-#   B4 views     tag erp (PostgreSQL only): the SQL Server section says 'No SQL Server instance in this view.'; tag sales
+#   B4 views     tag erp (PostgreSQL only): no SQL Server section and no heading naming SQL Server (f8e89d2), the page's 'Backups'
+#                heading drawn; tag sales
 #                (sql01, sql02): PostgreSQL's part says 'No PostgreSQL instance in this view.' and draws no Base backups
 #                or Standbys section (F1), the SQL Server grid 2 rows;
 #                tag ledger (sql03 alone, one instance): the filter on All, one instance row that has not run, no database
