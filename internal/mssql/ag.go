@@ -209,6 +209,7 @@ func agReplicaSQL(info Info) string {
   CAST(ar.failover_mode_desc AS nvarchar(60)) AS failover_mode,
   CAST(ar.seeding_mode_desc AS nvarchar(60)) AS seeding_mode,
   CAST(ar.secondary_role_allow_connections_desc AS nvarchar(60)) AS secondary_connections,
+  CAST(ar.primary_role_allow_connections_desc AS nvarchar(60)) AS primary_connections,
   CAST(ar.read_only_routing_url AS nvarchar(256)) AS read_only_routing_url,
   CAST(rcs.join_state_desc AS nvarchar(60)) AS join_state,
   ar.backup_priority, ar.session_timeout,

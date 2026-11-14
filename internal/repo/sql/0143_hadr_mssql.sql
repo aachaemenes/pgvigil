@@ -63,6 +63,7 @@ ALTER TABLE pgvigil.mssql_ag_state ADD COLUMN IF NOT EXISTS endpoint jsonb;     
 ALTER TABLE pgvigil.mssql_ag_state ADD COLUMN IF NOT EXISTS failure_condition_level int;
 ALTER TABLE pgvigil.mssql_ag_state ADD COLUMN IF NOT EXISTS health_check_timeout_ms int;
 ALTER TABLE pgvigil.mssql_ag_state ADD COLUMN IF NOT EXISTS health_session jsonb;     -- AlwaysOn_health: exists, running, autostart
+ALTER TABLE pgvigil.mssql_ag_state ADD COLUMN IF NOT EXISTS primary_connections text;  -- primary_role_allow_connections_desc: ALL | READ_WRITE (DBA Dash's Primary Connections)
 ALTER TABLE pgvigil.mssql_ag_database_state ADD COLUMN IF NOT EXISTS data_loss_basis text;   -- commit | hardened
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_ag_database_cluster (
@@ -238,7 +239,7 @@ BEGIN
       replica_id, endpoint_url, availability_mode, failover_mode, seeding_mode, secondary_connections, backup_priority,
       session_timeout, is_local, role, operational_state, connected_state, recovery_health, synchronization_health,
       last_connect_error, last_connect_error_text, last_connect_error_at, read_only_routing_url, join_state, routing_list, endpoint,
-      failure_condition_level, health_check_timeout_ms, health_session)
+      failure_condition_level, health_check_timeout_ms, health_session, primary_connections)
   SELECT DISTINCT ON (r->>'group_id', r->>'replica_server')
          p_instance_id, r->>'group_id', r->>'replica_server', p_snapshot_at, r->>'group_name', r->>'cluster_type',
          (r->>'is_distributed')::int = 1, (r->>'is_contained')::int = 1, r->>'backup_preference', (r->>'db_failover')::int = 1,
@@ -254,7 +255,7 @@ BEGIN
                            ORDER BY (x->>'routing_priority')::int, x->>'read_only_replica')
             FROM jsonb_array_elements(v_rows) x
            WHERE x->>'kind' = 'routing' AND x->>'group_id' = r->>'group_id' AND x->>'replica_server' = r->>'replica_server'),
-         v_endpoint, (r->>'failure_condition_level')::int, (r->>'health_check_timeout_ms')::int, v_health
+         v_endpoint, (r->>'failure_condition_level')::int, (r->>'health_check_timeout_ms')::int, v_health, r->>'primary_connections'
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' = 'replica' AND r->>'group_id' IS NOT NULL AND r->>'replica_server' IS NOT NULL AND r->>'group_name' IS NOT NULL;
 
