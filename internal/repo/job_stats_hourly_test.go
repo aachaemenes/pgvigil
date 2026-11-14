@@ -11,8 +11,9 @@ import (
 )
 
 // On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it), 0139's hourly job statistics:
-//   - one INSERT of SQL Agent runs fills the UTC hours they started in, every step, exact: three successes of 3, 3 and
-//     4 s in one hour read '3/3/0 10/4/3'; a cancelled run is a failure;
+//   - one INSERT of SQL Agent runs fills the UTC hours they started in, the job's outcome rows only (step 0: a stated
+//     departure from DBA Dash, whose JobStats_60MIN keeps every step), exact: three successes of 3, 3 and 4 s in one
+//     hour read '3/3/0 10/4/3', the step rows beside them none; a cancelled run is a failure;
 //   - job_stats_7day reads DBA Dash 4.24.1's numbers (AgentJob7Day.sql): 10 s over 3 runs in one hour and 5 s over 1 in
 //     the next average 4 whole seconds (the review's case: 4.2 in exact arithmetic, 3.8 as the runs' mean), the
 //     longest 5, the successes 4 in 24 h and 7 days;
@@ -26,6 +27,8 @@ import (
 //     import: the run is stored and the alerting grid (job_status_view) reads it, a 'rollup failed' row names the hours
 //     in collection_log, a dirty range holds them; once the cause is gone the instance's next import heals them with
 //     no hand step;
+//   - a history import (job_stats_defer first) writes its day-batches with no hour built and one merged dirty range;
+//     job_stats_build at its end builds every hour once; a defer that lapsed no longer holds a write back;
 //   - job_stats_hourly_purge drops the months older than hours_retention's 730 days and heals a quiet instance's dirty
 //     range.
 func TestJobStatsHourlyOnAStore(t *testing.T) {
@@ -74,6 +77,7 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 		}
 		for _, q := range []string{
 			`DELETE FROM pgvigil.job_stats_hourly WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.job_stats_dirty WHERE instance_id = ANY($1)`,
+			`DELETE FROM pgvigil.job_stats_defer WHERE instance_id = ANY($1)`,
 			`DELETE FROM pgvigil.mssql_job_runs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.job_runs WHERE instance_id = ANY($1)`,
 			`DELETE FROM pgvigil.mssql_jobs WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.jobs WHERE instance_id = ANY($1)`,
 			`DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`} {
@@ -142,7 +146,7 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 			t.Errorf("%s: got %s, want %s", name, got, w)
 		}
 	}
-	for _, j := range []string{"a", "b", "c", "d", "e"} {
+	for _, j := range []string{"a", "b", "c", "d", "e", "f", "g"} {
 		exec(`INSERT INTO pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabled, category, description)
 		      VALUES ($1, $2, now(), 'job ' || $2, true, 'test', 'job_stats_hourly_test')`, ms, j)
 	}
@@ -152,7 +156,7 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 	msRuns(mrun{"a", 0, plus(h1, 5), 1, 3}, mrun{"a", 1, plus(h1, 5), 1, 2}, mrun{"a", 0, plus(h1, 20), 1, 3}, mrun{"a", 1, plus(h1, 20), 1, 2},
 		mrun{"a", 0, plus(h1, 40), 1, 4}, mrun{"a", 1, plus(h1, 40), 1, 2}, mrun{"a", 0, plus(h2, 10), 1, 5}, mrun{"b", 0, plus(h1, 10), 3, 7})
 	want("job a step 0, its first hour", hour(ms, "sqlagent", "a", 0, h1), "3/3/0 10/4/3")
-	want("job a step 1, its first hour", hour(ms, "sqlagent", "a", 1, h1), "3/3/0 6/2/2")
+	want("job a step 1: no step rows in the hours (step 0 only, a departure from DBA Dash)", hour(ms, "sqlagent", "a", 1, h1), "none")
 	want("job a step 0, its second hour", hour(ms, "sqlagent", "a", 0, h2), "1/1/0 5/5/5")
 	want("job b, a cancelled run is a failure", hour(ms, "sqlagent", "b", 0, h1), "1/0/1 7/7/7")
 	seven := func(job string) string {
@@ -256,6 +260,29 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 	want("healed by the next import", hour(ms, "sqlagent", "e", 0, old), "1/0/1 3/3/3")
 	want("no dirty range left", str(`SELECT count(*)::text FROM pgvigil.job_stats_dirty WHERE instance_id = $1`, ms), "0")
 	want("that import's own hour", hour(ms, "sqlagent", "a", 0, h2), "2/2/0 6/5/1")
+
+	// 8. a history import: deferred, three day-batches, one build; then a lapsed defer
+	d1, d2, d3 := h1.Add(-72*time.Hour), h1.Add(-48*time.Hour), h1.Add(-24*time.Hour)
+	exec(`SELECT pgvigil.ensure_month_partition('mssql_job_runs', m) FROM unnest(ARRAY[$1::timestamptz, $2::timestamptz, $3::timestamptz]) m`, d1, d2, d3)
+	exec(`SELECT pgvigil.job_stats_defer($1)`, ms)
+	msRuns(mrun{"f", 0, plus(d1, 5), 1, 2})
+	msRuns(mrun{"f", 0, plus(d2, 5), 1, 4})
+	msRuns(mrun{"f", 0, plus(d3, 5), 0, 6})
+	want("a deferred batch builds no hour", hour(ms, "sqlagent", "f", 0, d2), "none")
+	want("the three batches' one merged range", str(`SELECT coalesce(string_agg(format('%s %s %s', source, to_char(from_at AT TIME ZONE 'UTC', 'MM-DD HH24:MI'), to_char(to_at AT TIME ZONE 'UTC', 'MM-DD HH24:MI')), ', '), 'none')
+	                                                 FROM pgvigil.job_stats_dirty WHERE instance_id = $1 AND why = 'deferred'`, ms),
+		fmt.Sprintf("mssql_job_runs %s %s", d1.UTC().Format("01-02 15:04"), d3.Add(time.Hour).UTC().Format("01-02 15:04")))
+	var built int
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.job_stats_build($1)`, ms).Scan(&built); err != nil {
+		t.Fatal(err)
+	}
+	want("the build at the import's end", fmt.Sprintf("%s | %s | %s", hour(ms, "sqlagent", "f", 0, d1), hour(ms, "sqlagent", "f", 0, d2), hour(ms, "sqlagent", "f", 0, d3)),
+		"1/1/0 2/2/2 | 1/1/0 4/4/4 | 1/0/1 6/6/6")
+	want("nothing dirty or deferred after the build", str(`SELECT (SELECT count(*) FROM pgvigil.job_stats_dirty WHERE instance_id = $1) || ' ' || (SELECT count(*) FROM pgvigil.job_stats_defer WHERE instance_id = $1)`, ms), "0 0")
+	exec(`INSERT INTO pgvigil.job_stats_defer (instance_id, until_at) VALUES ($1, now() - interval '1 minute')`, ms) // an import that died
+	msRuns(mrun{"g", 0, plus(h1, 45), 1, 8})
+	want("a lapsed defer holds nothing back", hour(ms, "sqlagent", "g", 0, h1), "1/1/0 8/8/8")
+	exec(`DELETE FROM pgvigil.job_stats_defer WHERE instance_id = $1`, ms)
 
 	// 7. job_stats_hourly_purge: the months older than 730 days go; a quiet instance's dirty range is healed
 	exec(`DELETE FROM pgvigil.job_stats_hourly WHERE instance_id = $1`, pg)
