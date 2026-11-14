@@ -66,7 +66,9 @@
 #      Merge leaves out (a tag with no value) says why. N6: a report mail schedule of the report on pgd-ok rendered by
 #      this serve as its owner: one audit row per turn, door page; after a disable refused in the words, which the mail
 #      carries (its 'What the page said' lines), run on no other instance. N7: msdb.dbo.sp_start_job in a script as the
-#      read login (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen)
+#      read login (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen).
+#      N6s (REPORT ROLE): a store report mailed by this serve, whose pgvigil.yaml names no reports_dsn: not run when its
+#      page opens (no run row), and the mail's 'What the page said' lines carry Run's words
 #   L also draws one aws, one azure and one gcp source (rows only, disabled: never read) and grades their cloud-only
 #      controls ('Read the regions again', the cloud source's Edit) off with the rest
 #
@@ -880,6 +882,25 @@ print("the mail" if w in said else "neither: " + (e or said or h)[:300])')
 code=$(api POST admin/instances "$(js op=enable name=pgd-ok)"); [[ "$code" == 200 ]] || fail "N6: enable pgd-ok: $code"
 code=$(api POST reportmail "{\"op\":\"end\",\"schedule_id\":$SID}"); [[ "$code" == 200 ]] || fail "N6: the schedule's end: $code"
 echo "ok   N6: a schedule of the report on pgd-ok rendered by this serve as $USR: one audit row per turn - done, door page; after a disable refused '$DW', the words in $where"
+# N6s (REPORT ROLE): this serve's pgvigil.yaml names no reports_dsn, so a report on the store is not run when its page
+# opens (no run row), and a mail of it carries Run's words in its 'What the page said' lines
+code=$(api POST customreports "{\"op\":\"add\",\"name\":\"store mail $SUF\",\"engine\":\"store\",\"kind\":\"sql\",\"body\":\"select count(*) as n from instances\",\"timeout_secs\":30,\"max_rows\":100,\"params\":[],\"columns\":[],\"rules\":[]}")
+[[ "$code" == 200 ]] || fail "N6s: the store report's save: $code $(head -c 300 "$TMPD/ans.json")"; SRID=$(ans report_id)
+code=$(api POST reportmail "$(python3 -c 'import json, sys; print(json.dumps({"op": "add", "name": "store mail", "route": "#/customreports?report=%s&run=1" % sys.argv[1], "recipients": ["door@pgvigil.test"], "channel": "doormail", "cadence": "daily", "at": "07:00", "timezone": "UTC"}))' "$SRID")")
+[[ "$code" == 200 ]] || fail "N6s: the schedule: $code $(head -c 300 "$TMPD/ans.json")"; SSID=$(ans schedule_id)
+l0=$(pq "SELECT coalesce(max(log_id), 0) FROM pgvigil.custom_report_log"); n0=$(pq "SELECT count(*) FROM pgvigil.report_mail_sends WHERE schedule_id = $SSID")
+pq "UPDATE pgvigil.report_mail_schedules SET next_at = now() - interval '1 second' WHERE schedule_id = $SSID" >/dev/null
+for _ in $(seq 1 180); do [[ "$(pq "SELECT count(*) FROM pgvigil.report_mail_sends WHERE schedule_id = $SSID")" -gt "$n0" ]] && break; sleep 1; done
+[[ "$(pq "SELECT count(*) FROM pgvigil.report_mail_sends WHERE schedule_id = $SSID")" -gt "$n0" ]] || fail "N6s: no turn of the schedule within 180 s: $(tail -5 "$TMPD/serve-door.log")"
+[[ "$(pq "SELECT count(*) FROM pgvigil.custom_report_log WHERE log_id > $l0 AND op = 'run' AND report_id = $SRID")" == 0 ]] || fail "N6s: the store report was run by its page: $(pq "SELECT outcome || '|' || coalesce(detail, '') FROM pgvigil.custom_report_log WHERE log_id > $l0 AND report_id = $SRID")"
+SW="a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one"
+swhere=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SSID ORDER BY send_id DESC LIMIT 1" | DW="$SW" python3 -c 'import html, os, re, sys
+h, _, e = sys.stdin.read().partition("\x1f"); w = os.environ["DW"]
+m = re.search(r"What the page said</h3>(.*?)</table>", h, re.S); said = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)) for t in re.findall(r"<td[^>]*>(.*?)</td>", m.group(1), re.S)) if m else ""
+print("the mail" if w in said else "neither: " + (e or said or h)[:300])')
+[[ "$swhere" == "the mail" ]] || fail "N6s: the store report's words are not in the mail's 'What the page said' lines: $swhere"
+code=$(api POST reportmail "{\"op\":\"end\",\"schedule_id\":$SSID}"); [[ "$code" == 200 ]] || fail "N6s: the schedule's end: $code"
+echo "ok   N6s: a mailed store report on a serve without reports_dsn: not run by its page (no run row), the mail's 'What the page said' lines carry '$SW ...'"
 # N7: sp_start_job through the read login is refused by the server and starts nothing
 r=$(crun "$MSD" glenn_berry "EXEC msdb.dbo.sp_start_job @job_name = N'$JOB'"); [[ "$r" == failed\|* && "$r" == *sp_start_job* ]] || fail "N7: sp_start_job as $MONL: $r"
 sleep 5; [[ "$(sq "SELECT count(*) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$JOB' AND a.start_execution_date IS NOT NULL" msdb | tr -d '[:space:]')" == 0 ]] || fail "N7: the job started"

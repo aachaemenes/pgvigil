@@ -93,6 +93,20 @@ API: `GET /api/pg/dboptions?instance=<id>[&part=state|databases|overrides|overri
 
 Proof: `scripts/proof-pg-dboptions.sh` (PostgreSQL 13, 16 and 18).
 
+## The custom reports' login on the store (reports_dsn)
+
+```yaml
+reports_dsn: env:PGVIGIL_REPORTS_DSN   # a login IN ROLE pgvigil_reader alone, on the repository the repository dsn names
+```
+
+A custom report on the store (pgvigil's own repository) runs the DBA's own SQL, so it runs only as this login, never
+as serve's own repository login (which holds `pgvigil_auth` and reads the UI's password hashes). `pgvigil roles`
+prints it (`pgvigil_reports`). Each run checks it on its session user inside the run's own transaction: a superuser,
+a member of any role but `pgvigil_reader`, a login that may read the hashes, or one that reaches another server or
+database than the repository dsn's is refused, with words. Without the key (or when it resolves to nothing) a report on
+the store is refused and the page and a mailed report say why; `serve` starts anyway, with one WARN. Reports on
+instances need nothing here. The rules and the words: [customreports.md](customreports.md).
+
 ## Instances added in the page
 
 Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click

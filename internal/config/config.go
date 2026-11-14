@@ -43,6 +43,11 @@ type Config struct {
 	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
 	// where this file's off still wins (file off > profile > page).
 	Doors Doors `yaml:"doors"`
+	// ReportsDSNRaw is the login a custom report on the store (the repository) runs as: IN ROLE pgvigil_reader alone
+	// ('pgvigil roles' prints it), on the repository the repository dsn names; env:NAME or file:/path like every dsn.
+	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
+	// report is refused with words, never run as serve's login (REPORT ROLE, internal/web/reportrole.go).
+	ReportsDSNRaw string `yaml:"reports_dsn"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -54,6 +59,9 @@ type Repository struct {
 
 // DSN resolves the repository connection string.
 func (r Repository) DSN() string { return Resolve(r.DSNRaw) }
+
+// ReportsDSN resolves reports_dsn ("" when the key is not set or resolves to nothing).
+func (c Config) ReportsDSN() string { return Resolve(c.ReportsDSNRaw) }
 
 // The engines an instance can be.
 const (

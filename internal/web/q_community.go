@@ -1520,7 +1520,7 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 			}
 			stmt = strings.Replace(stmt, "FROM pg_stat_statements s", "FROM "+pgx.Identifier{schema, "pg_stat_statements"}.Sanitize()+" s", 1)
 		}
-		sets, why, err := runPG(ctx, cfg, stmt, args, timeout, 5000)
+		sets, why, err := runPG(ctx, cfg, stmt, args, timeout, 5000, nil)
 		run.finish(t0, sets, why, err)
 	case "script":
 		text := strings.TrimSpace(in.Text)

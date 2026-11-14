@@ -321,9 +321,10 @@ func writeIfAbsent(path, content string, mode os.FileMode) (bool, error) {
 	return true, f.Close()
 }
 
-// ownFiles are the files the installer itself puts beside the config (and the folder of the Windows log).
+// ownFiles are the files the installer itself puts beside the config (and the folder of the Windows log); reports.dsn
+// is the store reports' login on Windows (reportsDSNFor), which -purge removes with repo.dsn.
 // instances/ and sources/ are the page's credential folders (task 204, config.SecretDir / SourceSecretDir), beside the config.
-var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "pgvigil.log", "logs", "instances", "sources"}
+var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn", "pgvigil.log", "logs", "instances", "sources"}
 
 // dedicatedFolder refuses a config folder that is not the installer's own. The installer sets that
 // folder's permissions and -purge removes it, so it must be named pgvigil, or not exist yet, or hold
@@ -456,13 +457,18 @@ func envFileValue(path, name string) (string, bool) {
 // environment (Linux: the env file beside it) or a file (Windows: repo.dsn beside it), the instance
 // list is empty; the service waits until the DSN is filled in.
 func configTemplate(repositoryDSN string) string {
-	return strings.ReplaceAll(`# pgvigil configuration, written by 'pgvigil install'. Secrets stay out of this file:
+	return strings.ReplaceAll(strings.ReplaceAll(`# pgvigil configuration, written by 'pgvigil install'. Secrets stay out of this file:
 #   env:NAME     read from the environment
 #   file:/path   read from a file (one line)
 # The full reference with every option: deploy/examples/pgvigil.example.yaml in the repository,
 # https://github.com/aachaemenes/pgvigil#quick-start
 repository:
   dsn: @DSN@
+
+# Custom reports on the store (the repository) run as a login of their own, IN ROLE pgvigil_reader alone ('pgvigil
+# roles' prints it): fill in its connection string as the repository's, then take the # off the line. Without it a
+# report on the store is refused and the page says why (serve's own login reads the UI's password hashes).
+# reports_dsn: @RDSN@
 
 # A collection's default interval for every instance; an instance's own schedules: override it.
 schedules:
@@ -478,7 +484,14 @@ instances: []
 #    dsn: env:PROD_WRITER_DSN
 #    platform: auto                   # auto | onprem | rds | aurora | azure | cloudsql | alloydb
 #    tags: [prod]
-`, "@DSN@", repositoryDSN)
+`, "@DSN@", repositoryDSN), "@RDSN@", reportsDSNFor(repositoryDSN))
+}
+
+// reportsDSNFor is the reports_dsn line's value beside the repository's: env:PGVIGIL_REPORTS_DSN beside
+// env:PGVIGIL_REPO_DSN (Linux: the env file), a reports.dsn file beside repo.dsn (Windows).
+func reportsDSNFor(repositoryDSN string) string {
+	r := strings.Replace(repositoryDSN, "PGVIGIL_REPO_DSN", "PGVIGIL_REPORTS_DSN", 1)
+	return strings.Replace(r, "repo.dsn", "reports.dsn", 1)
 }
 
 // --- install -upgrade
@@ -606,6 +619,12 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 		fmt.Printf("5. swapped the binary and started the service\n%s\n", wayBack(p, true))
 	} else {
 		fmt.Printf("5. swapped the binary; the service is enabled, not started (%s)\n%s\n", why, wayBack(p, true))
+	}
+	// REPORT ROLE: a custom report on the store runs only as reports_dsn now; an installed config without it is told how
+	if c, err := config.Load(p.inst.Config); err == nil && strings.TrimSpace(c.ReportsDSNRaw) == "" {
+		fmt.Printf("next: custom reports on the store run only as their own login now, reports_dsn (IN ROLE pgvigil_reader alone) in the configuration "+
+			"your serve reads (%s for a serve on this config; the Windows app reads its own, docs/app.md): 'pgvigil roles' as the repository's owner "+
+			"prints its CREATE ROLE (pgvigil_reports); restart serve after it is set; until then such a report is refused and its page says why\n", p.inst.Config)
 	}
 	return nil
 }
