@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,10 +93,14 @@ func TestAzureDBOnAStore(t *testing.T) {
 	if c := cursor(); c == nil || *c != base.Add(2*time.Minute).Unix() {
 		t.Errorf("cursor %v, want 12:02's start %d (an older read never moves it back)", c, base.Add(2*time.Minute).Unix())
 	}
-	var inPurge bool
-	if err := pool.QueryRow(ctx, `SELECT bool_or(prosrc LIKE '%''mssql_azuredb_minute''%') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-	   WHERE n.nspname = 'pgvigil' AND p.proname = 'purge'`).Scan(&inPurge); err != nil || !inPurge {
-		t.Errorf("mssql_azuredb_minute in purge()'s parents: %v %v", inPurge, err)
+	// purge()'s parents from 0190's own text: TestSchemaCurrentBeforeSchemaMissing runs the file that creates
+	// schema_missing() again, which leaves an earlier purge() on a store a whole package run has used
+	b, err := migrations.ReadFile("sql/0190_join_release2.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := string(b); !strings.Contains(body[strings.Index(body, "FUNCTION pgvigil.purge("):], "'mssql_pool_minute', 'mssql_azuredb_minute')") {
+		t.Error("mssql_azuredb_minute is not among purge()'s monthly parents in 0190")
 	}
 
 	// N2
@@ -168,9 +173,9 @@ func TestAzureDBMaxSizeOnAStore(t *testing.T) {
 		}
 	}()
 	const mb = int64(1048576)
-	file := func(id int64, fg any, typ string, size, max, used int64, growth int64) map[string]any {
-		var mx any = max * mb
-		if max < 0 {
+	file := func(id int64, fg any, typ string, size, limit, used int64, growth int64) map[string]any {
+		var mx any = limit * mb
+		if limit < 0 {
 			mx = nil
 		}
 		return map[string]any{"kind": "file", "database_id": 5, "database_name": "appdb", "database_state": "ONLINE", "file_id": id,

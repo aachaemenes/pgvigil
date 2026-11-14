@@ -160,12 +160,19 @@ SELECT c.bucket AS snapshot_at, r.event_type, 'mssql_wait_sample'::text AS sourc
 
 // sqlPerfMSSQLCPU: the machine's CPU per step from the scheduler monitor records (100 - idle), and the SQL Server
 // process's share of it; on a Linux host (no idle figure) the total is the SQL Server share and machine_read false.
+// On Azure SQL Database (B2a) the database's CPU of its limit from mssql_azuredb_minute, each minute weighed by its
+// 15-second samples and its per-sample maximum the step's (DBA Dash's SQLCPU.sql reads sys.dm_db_resource_stats there).
 const sqlPerfMSSQLCPU = `
 SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
-       round(avg(coalesce(100 - s.idle_pct, s.sql_pct)), 1) AS cpu_avg, max(coalesce(100 - s.idle_pct, s.sql_pct)) AS cpu_max, round(avg(s.sql_pct), 1) AS sql_avg,
-       round(avg(s.other_pct), 1) AS other_avg, bool_or(s.idle_pct IS NOT NULL) AS machine_read
-  FROM pgvigil.mssql_cpu_sample s
- WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+       round(sum(s.total * s.w) / nullif(sum(s.w) FILTER (WHERE s.total IS NOT NULL), 0), 1) AS cpu_avg, max(s.total_max) AS cpu_max,
+       round(sum(s.sql_pct * s.w) / nullif(sum(s.w) FILTER (WHERE s.sql_pct IS NOT NULL), 0), 1) AS sql_avg,
+       round(avg(s.other_pct), 1) AS other_avg, bool_or(s.machine) AS machine_read
+  FROM (SELECT c.snapshot_at, coalesce(100 - c.idle_pct, c.sql_pct)::numeric AS total, coalesce(100 - c.idle_pct, c.sql_pct)::numeric AS total_max,
+               c.sql_pct::numeric AS sql_pct, c.other_pct, c.idle_pct IS NOT NULL AS machine, 1 AS w
+          FROM pgvigil.mssql_cpu_sample c WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
+        UNION ALL
+        SELECT a.snapshot_at, a.avg_cpu_percent, a.max_cpu_percent, a.avg_cpu_percent, NULL, false, a.samples
+          FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = $1 AND a.snapshot_at > $2 AND a.snapshot_at <= $3) s
  GROUP BY 1 ORDER BY 1`
 
 // sqlPerfMSSQLIO: every file's interval summed per read, then per step: latency = stall over operations, MB/s = bytes
