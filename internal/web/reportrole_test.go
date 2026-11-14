@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +15,17 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/plans"
 )
+
+// testPassword: a throwaway login's password from crypto/rand, unrelated to its name (the names are in pg_roles for
+// any login of the server to read; a run killed before its deferred drops leaves the logins behind) - the code review
+// of REPORT ROLE, part B
+func testPassword(t *testing.T) string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return "Rr" + hex.EncodeToString(b)
+}
 
 // memberNamed: the check's words name role among the roles the login is a member of ('is a member of a, b: ...').
 func memberNamed(words, role string) bool {
@@ -32,7 +45,7 @@ func memberNamed(words, role string) bool {
 // TestStoreReportsLoginOnAStore (REPORT ROLE): on a migrated repository (PGVIGIL_REPO_TEST_DSN, a superuser; skipped
 // without it) the store reports' check passes a login IN ROLE pgvigil_reader alone and refuses, on its SESSION user,
 // the UI's login (pgvigil_auth), the UI's login started as the reader (ALTER ROLE ... SET role: the run could set it
-// back), a superuser, a NOINHERIT member of the schema's owner, a login holding pg_monitor beside the reader, a login
+// back), a superuser, a NOINHERIT member of a superuser role, a NOINHERIT member of the schema's owner, a login holding pg_monitor beside the reader, a login
 // that may not read the schema, and a reader-alone login on another database with a pgvigil schema (not serve's
 // repository); on the reader-alone login a report that sets the role back and plans ui_password_hash at run time is
 // refused by the server. The door's own words: no key, a key that resolves to nothing, a dsn that does not parse.
@@ -49,7 +62,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 	}
 	defer pool.Close()
 	sfx := time.Now().UnixNano() % 1000000000
-	pw := fmt.Sprintf("Rr%d", sfx)
+	pw := testPassword(t)
 	var owner string
 	if err := pool.QueryRow(ctx, `SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'pgvigil'`).Scan(&owner); err != nil {
 		t.Fatal(err)
@@ -61,6 +74,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"ui", "IN ROLE pgvigil_reader, pgvigil_auth"},
 		{"uiset", "IN ROLE pgvigil_reader, pgvigil_auth"},
 		{"su", "SUPERUSER"},
+		{"insu", "NOINHERIT IN ROLE pgvigil_reader, " + name("su")}, // a member of a superuser role (part B)
 		{"noinh", "NOINHERIT IN ROLE pgvigil_reader, " + pgx.Identifier{owner}.Sanitize()},
 		{"mon", "IN ROLE pgvigil_reader, pg_monitor"},
 		{"none", ""},
@@ -125,6 +139,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"uiset", "", "is a member of pgvigil_auth"},
 		{"su", "", "is a superuser"},
 		{"noinh", "", "is a member of "}, // and the owner among the roles named (below)
+		{"insu", "", "is a member of "},  // and the superuser role among them (below)
 		{"mon", "", "pg_monitor"},
 		{"none", "", "may not read the repository"},
 		{"rd", other, "reaches another server or database"},
@@ -143,6 +158,9 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		if c.key == "noinh" && !memberNamed(got, owner) {
 			t.Errorf("noinh: %q, want %s among the roles it is a member of", got, owner)
 		}
+		if c.key == "insu" && !memberNamed(got, name("su")) {
+			t.Errorf("insu: %q, want %s among the roles it is a member of", got, name("su"))
+		}
 	}
 	// the reader-alone login: the role set back and the hash planned at run time is the server's refusal
 	d := door(name("rd"), "")
@@ -155,12 +173,16 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 	// hypothetical index) where the run's database is a repository: a NOINHERIT member of the schema's owner (CREATE
 	// answers false for it, SET ROLE reaches the owner) and pg_read_all_data are refused in words; the reader alone runs;
 	// on a database without a pgvigil schema pg_read_all_data runs (a monitoring login's usual grant) - the code review
-	// of REPORT ROLE, part A
+	// of REPORT ROLE, part A; a NOINHERIT member of a superuser role is refused on any database (part B)
 	plain := fmt.Sprintf("pgvrr_plain_%d", sfx)
 	if _, err := pool.Exec(ctx, `CREATE DATABASE `+plain); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _, _ = pool.Exec(context.Background(), `DROP DATABASE IF EXISTS `+plain+` WITH (FORCE)`) }()
+	defer func() {
+		if _, err := pool.Exec(context.Background(), `DROP DATABASE IF EXISTS `+plain+` WITH (FORCE)`); err != nil {
+			t.Error(err)
+		}
+	}()
 	refusalAs := func(user, db string) string {
 		c := base.Copy()
 		c.User, c.Password = user, pw
@@ -190,6 +212,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"rad", "", "a member of pg_read_all_data in a pgvigil repository"},
 		{"rd", "", ""},
 		{"rad", plain, ""},
+		{"insu", plain, "a member of a superuser role"}, // SET ROLE reaches the superuser (part B)
 	} {
 		got := refusalAs(name(c.key), c.db)
 		switch {
@@ -233,7 +256,7 @@ func TestExplainFoldOnAStore(t *testing.T) {
 	}
 	defer pool.Close()
 	sfx := time.Now().UnixNano() % 1000000000
-	login, user, pw := fmt.Sprintf("pgvrr_ex_%d", sfx), fmt.Sprintf("pgvrr%d", sfx), fmt.Sprintf("Rr%d", sfx)
+	login, user, pw := fmt.Sprintf("pgvrr_ex_%d", sfx), fmt.Sprintf("pgvrr%d", sfx), testPassword(t)
 	defer func() {
 		bg := context.Background()
 		if _, err := pool.Exec(bg, `DELETE FROM pgvigil.ui_users WHERE username = $1`, user); err != nil {
@@ -263,7 +286,7 @@ func TestExplainFoldOnAStore(t *testing.T) {
 		t.Logf("without a check the fold did not read the hash here: %v", err)
 	}
 	_, err = plans.Explain(ctx, mon, "", stmt, pgRefusal)
-	if err == nil || !strings.Contains(err.Error(), "pgvigil_auth") || strings.Contains(err.Error(), "argon2id") {
+	if err == nil || !strings.Contains(err.Error(), "the login is a member of pgvigil_auth") || strings.Contains(err.Error(), "argon2id") {
 		t.Errorf("with pgRefusal: %v; want refused naming pgvigil_auth, no hash", err)
 	}
 }

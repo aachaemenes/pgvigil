@@ -66,7 +66,9 @@
 #      Merge leaves out (a tag with no value) says why. N6: a report mail schedule of the report on pgd-ok rendered by
 #      this serve as its owner: one audit row per turn, door page; after a disable refused in the words, which the mail
 #      carries (its 'What the page said' lines), run on no other instance. N7: msdb.dbo.sp_start_job in a script as the
-#      read login (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen)
+#      read login (no sysadmin, no agent role) refused by the server, no start in sysjobactivity (sa's start is seen).
+#      N6s (REPORT ROLE): a store report mailed by this serve, whose pgvigil.yaml names no reports_dsn: not run when its
+#      page opens (no run row), and the mail's 'What the page said' lines carry Run's words
 #   L also draws one aws, one azure and one gcp source (rows only, disabled: never read) and grades their cloud-only
 #      controls ('Read the regions again', the cloud source's Edit) off with the rest
 #
@@ -893,7 +895,7 @@ for _ in $(seq 1 180); do [[ "$(pq "SELECT count(*) FROM pgvigil.report_mail_sen
 SW="a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one"
 swhere=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SSID ORDER BY send_id DESC LIMIT 1" | DW="$SW" python3 -c 'import html, os, re, sys
 h, _, e = sys.stdin.read().partition("\x1f"); w = os.environ["DW"]
-m = re.search(r"<div data-said=\"1\">(.*?)</div>", h, re.S); said = html.unescape(re.sub(r"<[^>]+>", "", m.group(1))) if m else ""
+m = re.search(r"What the page said</h3>(.*?)</table>", h, re.S); said = html.unescape(re.sub(r"<[^>]+>", " ", m.group(1))) if m else ""
 print("the mail" if w in said else "neither: " + (e or said or h)[:300])')
 [[ "$swhere" == "the mail" ]] || fail "N6s: the store report's words are not in the mail's 'What the page said' lines: $swhere"
 code=$(api POST reportmail "{\"op\":\"end\",\"schedule_id\":$SSID}"); [[ "$code" == 200 ]] || fail "N6s: the schedule's end: $code"

@@ -18,7 +18,9 @@ import (
 // mssql_hadr_cursor (the collector's door in apply_roles, 0110; the reader holds EXECUTE too - apply_roles' collector
 // branch takes no reader grant back - and it answers one bigint position, STABLE, no write, from mssql_jobs_cursor,
 // mssql_qs_store and mssql_qs_plan, tables the reader SELECTs anyway: 0083; found by reportrole-g1). A new one fails
-// here until it is read and listed with its reason. Needs a migrated repository: PGVIGIL_REPO_TEST_DSN.
+// here until it is read and listed with its reason; the list holds signatures, so a new overload of a listed name
+// (admin_inventory(text)) fails too (the code review of REPORT ROLE, part B). Needs a migrated repository:
+// PGVIGIL_REPO_TEST_DSN.
 func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -31,20 +33,23 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	allowed := map[string]bool{"admin_inventory": true, "admin_inventory_generation": true, "alert_log_partition": true, "mssql_hadr_cursor": true}
-	rows, err := conn.Query(ctx, `SELECT p.oid::regprocedure::text, p.proname::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+	allowed := map[string]bool{"admin_inventory()": true, "admin_inventory_generation()": true,
+		"alert_log_partition(timestamp with time zone)": true, "mssql_hadr_cursor(integer, text)": true}
+	// the signature without the schema (oidvectortypes: argument types as format_type writes them), whatever the
+	// connection's search_path
+	rows, err := conn.Query(ctx, `SELECT p.proname || '(' || oidvectortypes(p.proargtypes) || ')' FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 	  WHERE n.nspname = 'pgvigil' AND p.prosecdef AND has_function_privilege('pgvigil_reader', p.oid, 'EXECUTE') ORDER BY 1`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var bad, seen []string
 	for rows.Next() {
-		var sig, name string
-		if err := rows.Scan(&sig, &name); err != nil {
+		var sig string
+		if err := rows.Scan(&sig); err != nil {
 			t.Fatal(err)
 		}
 		seen = append(seen, sig)
-		if !allowed[name] {
+		if !allowed[sig] {
 			bad = append(bad, sig)
 		}
 	}

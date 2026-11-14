@@ -6,8 +6,9 @@
 # reads; the pages rendered in a headless Chromium with their colours, the Excel export and axe-core in both themes.
 #
 #   PGVIGIL_ADMIN_DSN       keyword-form connection to a PostgreSQL 14+ cluster as a superuser, no dbname. The proof
-#                           makes a repository database, a target database and three logins named pgcr_*_<random>
-#                           and drops them at the end (not the cluster-wide group roles pgvigil_*, which migrate makes).
+#                           makes a repository database, a target database and four logins named pgcr_*_<random>
+#                           (the collector, the reader, the monitoring login and reports_dsn's login: IN ROLE
+#                           pgvigil_reader alone) and drops them at the end (not the cluster-wide group roles pgvigil_*, which migrate makes).
 #   PGVIGIL_COMMUNITY_DIR   a folder with the community scripts to install on the SQL Server: frk-install-all.sql
 #                           (the First Responder Kit's Install-All-Scripts.sql), darlingdata.sql (DarlingData's
 #                           Install-All/DarlingData.sql) and sp_WhoIsActive.sql. This script fetches nothing. A file
@@ -47,10 +48,17 @@
 #     @instance_ids with length(name) >= @min_len; min_len int default 1; rules name_len gt 20 -> crit, then all -> ok;
 #     format of name_len int, label 'name length'). target fleet: done, its rows equal a hand read of pgvigil.instances
 #     (name, length) ordered by name, cell by cell; target instance pgcr-a: 1 row; min_len 1000: 0 rows. The serve on
-#     the superuser repository login: refused, 'superuser'. A store report that INSERTs: failed, 'read-only
-#     transaction', the folder table unchanged; 'select 1; select 2': failed, 'multiple commands'; 'select
+#     the superuser repository login runs it as reports_dsn (REPORT ROLE): done, session_user and current_user both
+#     pgcr_rep_<n>, never the superuser. A store report that INSERTs: failed, 'read-only transaction', the folder table unchanged; 'select 1; select 2': failed, 'multiple commands'; 'select
 #     pg_advisory_lock(424242)': done, and no advisory lock 424242 held after it (the run's connection is closed).
 #     Each run wrote one log row op run, instance store, its statement and outcome.
+#  H. [REPORT ROLE] the UI's password hashes stay out of a store report: H2 a probe of PostgreSQL (SET LOCAL ROLE on the
+#     UI login is no boundary: one statement switches back), never a FAIL; H1 on reports_dsn a store report calling
+#     pgvigil.ui_password_hash, and one that sets the role back first: failed, the server's 'permission denied for
+#     function ui_password_hash', no hash; H3 a serve without reports_dsn: its state and a store run refused 'a report
+#     on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one ...', one
+#     refused store row, none for the GET, its start's WARN; H4 (pages) that serve's page of a store report: Run off
+#     with the words in its p.said paragraph, no run on open.
 #  P. PostgreSQL instances: report 'pgcr t' (postgres: count(*) AS n FROM t WHERE n >= @min_n) on pgcr-a with min_n 2:
 #     done, n = 1 (t holds 1 and 2); on pgcr-su: refused, 'superuser'; on the tag env:pgcr: two runs, done and refused,
 #     two log rows. 'insert into t values (9)' on pgcr-a: failed, 'read-only transaction', t still 2 rows. A function
@@ -439,7 +447,7 @@ ok "S: the store report equals the hand read; one instance; no row; the superuse
 # user') - so a store report's boundary is its login (reports_dsn), not a role set inside the run. It is judged only
 # when the plain call was refused (a psql that did not connect is 'no reading'); never a FAIL. Only the hash's first
 # 10 characters are read ('$argon2id$').
-r2a=$(as "$RDR" -c "begin read only" -c "set local role pgvigil_reader" -c "select pgvigil.ui_password_hash('$UIUSER')" -c "rollback" || true)
+r2a=$(as "$RDR" -c "begin read only" -c "set local role pgvigil_reader" -c "select left(pgvigil.ui_password_hash('$UIUSER'), 10)" -c "rollback" || true)
 r2b=$(as "$RDR" -c "begin read only" -c "set local role pgvigil_reader" \
   -c "select current_user, set_config('role', 'none', true), current_user, query_to_xml('select left(pgvigil.ui_password_hash(''$UIUSER''), 10) as h', false, false, '')" \
   -c "rollback" || true)
@@ -812,7 +820,7 @@ await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
 process.exit(0);
 JS
   L4=$(logn); COOKIE5=$(awk '$6 == "pgvigil_session" {print $7}' "$JAR5")
-  h4=$(timeout 60 node "$WORK/h4.mjs" "$CDP" "$U5/" "$COOKIE5" "#/customreports?report=$SREP" 2>&1 | tail -1)
+  h4=$(timeout 60 node "$WORK/h4.mjs" "$CDP" "$U5/" "$COOKIE5" "#/customreports?report=$SREP" 2>&1 | tail -1) || fail "H4: the page driver (its exit, or 60 s): ${h4:0:300}"
   h4v=$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); print((d.get("said") or "") + "|" + str(d.get("runOff")))' "$h4" 2>/dev/null || echo "$h4")
   [[ $h4v == "a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one"*"|true" ]] || fail "H4: the no-key serve's store report page (said|Run aria-disabled): ${h4v:0:300}"
   sleep 2; [[ $(logn) == "$L4" ]] || fail "H4: the no-key serve's page ran the store report on open (a log row)"
