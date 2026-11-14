@@ -25,16 +25,16 @@ must-not | pg-instance | ^rp_finder\?i= | th | QS | reports.ts:153 (gated on any
 must-not | pg-instance | ^rp_finder\?i= | th | Forced Plans | reports.ts:155 | -
 
 # --- a PostgreSQL instance's own pages
-may | pg-instance | ^summary\?i= | prose | Memory Dump | pages.ts:649 'Not OK:' links | a pgLabel on Group (web/src/fleet.ts), used at pages.ts:649
-must | pg-instance | ^summary\?i= | prose | Availability Group | pages.ts:649 | the same pgLabel
-must | pg-instance | ^summary\?i= | prose | Last Good Check DB | pages.ts:649 | the same pgLabel
-must | pg-instance | ^summary\?i= | prose | Agent Jobs | pages.ts:649 | the same pgLabel
-may | pg-instance | ^summary\?i= | prose | Backup LOG | pages.ts:649 | the same pgLabel
-may | pg-instance | . | attr | Memory Dump | instheader.ts:181 (the band dot's title, every page of the instance) | the pgLabel at instheader.ts:181
-must | pg-instance | . | attr | Availability Group | instheader.ts:181 | the pgLabel at instheader.ts:181
-must | pg-instance | . | attr | Last Good Check DB | instheader.ts:181 | the pgLabel at instheader.ts:181
-must | pg-instance | . | attr | Agent Jobs | instheader.ts:181 | the pgLabel at instheader.ts:181
-may | pg-instance | . | attr | Backup LOG | instheader.ts:181 | the pgLabel at instheader.ts:181
+must-not | pg-instance | ^summary\?i= | prose | Memory Dump | pages.ts:649 'Not OK:' links - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | ^summary\?i= | prose | Availability Group | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | ^summary\?i= | prose | Last Good Check DB | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | ^summary\?i= | prose | Agent Jobs | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | ^summary\?i= | prose | Backup LOG | pages.ts:649 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | . | attr | Memory Dump | instheader.ts:181 (the band dot's title, every page of the instance) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | . | attr | Availability Group | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | . | attr | Last Good Check DB | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | . | attr | Agent Jobs | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-instance | . | attr | Backup LOG | instheader.ts:181 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
 must | pg-instance | ^rp_\w+\?i= | tab | Extended Properties | router.ts instanceGroups' Reports (rp_props 'Database Extended Properties') | rp_props named for PostgreSQL ('Database comments') where the instance is PostgreSQL: the tab name per engine in web/src/router.ts, or rp_props out of instanceGroups' Reports
 must | pg-instance | ^rp_\w+\?i= | tab | SQL Login | router.ts instanceGroups' Reports (rp_pwage 'SQL Login Password Age') | rp_pwage named for PostgreSQL ('Role Password Age': VALID UNTIL) in web/src/router.ts
 must | pg-instance | ^rp_props\?i= | heading | Extended Properties | reports.ts (the page's heading) | the heading per engine in web/src/reports.ts
@@ -42,18 +42,18 @@ must | pg-instance | ^rp_pwage\?i= | heading | SQL Login | reports.ts (the page'
 must | pg-instance | ^dbfiles\?i= | th | Filegroup | drives.ts:367 | the filegroup column only where a row is SQL Server (web/src/drives.ts:367)
 
 # --- fleet pages on a PostgreSQL-only tag folder
-must | pg-tag | ^summary\?tag= | th | Memory Dump | pages.ts (the Summary's column header) | the PostgreSQL label where the scope holds no SQL Server: pgLabel on Group (web/src/fleet.ts)
-must | pg-tag | ^summary\?tag= | th | Availability Group | pages.ts | the same
-must | pg-tag | ^summary\?tag= | th | Last Good Check DB | pages.ts | the same
-must | pg-tag | ^summary\?tag= | th | Agent Jobs | pages.ts | the same
-must | pg-tag | ^summary\?tag= | th | Backup LOG | pages.ts | the same
-must | pg-tag | ^summary\?tag= | cell | Memory Dump | pages.ts:463 (the tests grid's labels) | pgLabel in the tests grid, web/src/pages.ts:463
-must | pg-tag | ^summary\?tag= | cell | Availability Group | pages.ts:463 | the same
-must | pg-tag | ^summary\?tag= | cell | Last Good Check DB | pages.ts:463 | the same
-must | pg-tag | ^summary\?tag= | cell | Agent Jobs | pages.ts:463 | the same
-must | pg-tag | ^summary\?tag= | cell | Backup LOG | pages.ts:463 | the same
-must | pg-tag | ^summary\?tag= | attr | Memory Dump | pages.ts:350 (the cell link's aria-label) | pgLabel at web/src/pages.ts:350
-may | pg-tag | ^summary\?tag= | prose | Memory Dump | pages.ts:536 (Needs attention: the demo's state) | pgLabel at web/src/pages.ts:536
+must-not | pg-tag | ^summary\?tag= | th | Memory Dump | pages.ts (the Summary's column header) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | th | Availability Group | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | th | Last Good Check DB | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | th | Agent Jobs | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | th | Backup LOG | pages.ts - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | cell | Memory Dump | pages.ts:463 (the tests grid's labels) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | cell | Availability Group | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | cell | Last Good Check DB | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | cell | Agent Jobs | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | cell | Backup LOG | pages.ts:463 - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | attr | Memory Dump | pages.ts:350 (the cell link's aria-label) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | prose | Memory Dump | pages.ts:536 (Needs attention: the demo's state) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
 must | pg-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | SQL Server | main.ts:352 ('SQL Server options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:352
 must | pg-tag | ^(drives|dbspace|dbfiles|mssqltempdb|tablesize|disks|storage|growth|dbchanges|indexes)\?tag= | tab | tempdb | main.ts:352 ('TempDB' in the strip) | the same filter, web/src/main.ts:352
 must | pg-tag | ^mssqlrisks\?tag= | heading | SQL Server | the page's h2 'SQL Server options' | unreachable once main.ts:352 filters the strip
@@ -78,11 +78,11 @@ must | ms-tag | ^pgrisks\?tag= | heading | PostgreSQL | pg_dboptions.ts:183 (h2 
 must | pg-instance | ^rp_roles\?i= | prose | SQL Login | reports.ts:503 'Type: S SQL login, U Windows login ...; PostgreSQL L ...' | two attributed sentences: 'SQL Server: S a SQL login, U a Windows login, G a Windows group, R a server role.' and 'PostgreSQL: L a login role, R a role that cannot log in.' (web/src/reports.ts:503)
 must | pg-instance | ^(community|customreports)\?i= | tab | Extended Properties | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
 must | pg-instance | ^(community|customreports)\?i= | tab | SQL Login | router.ts:48 rootTabs (the Reports group's tab names) | the report's name per engine where the scope holds no SQL Server (web/src/router.ts:48), as the pg-instance rp_ rows
-must | pg-tag | ^summary\?tag= | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
-must | pg-tag | ^summary\?tag= | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
-must | pg-tag | ^summary\?tag= | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
-must | pg-tag | ^summary\?tag= | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
-must | pg-tag | ^summary\?tag= | button | Memory Dump | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
+must-not | pg-tag | ^summary\?tag= | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | pg-tag | ^summary\?tag= | button | Memory Dump | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
 must | pg-tag | ^dbadash\?tag= | th | Memory Dump | dbadash.ts:199 Imported servers (the Doors group, router.ts:71) reads no folder scope | Imported servers (DBA Dash's SQL Server repository) out of a PostgreSQL-only folder's strip: the filter by engine at web/src/main.ts:352
 must | pg-tag | ^dbadash\?tag= | th | Last Good Check DB | dbadash.ts:199 Imported servers (the Doors group, router.ts:71) reads no folder scope | Imported servers (DBA Dash's SQL Server repository) out of a PostgreSQL-only folder's strip: the filter by engine at web/src/main.ts:352
 must | pg-tag | ^dbadash\?tag= | th | SQL Agent | dbadash.ts:199 Imported servers (the Doors group, router.ts:71) reads no folder scope | Imported servers (DBA Dash's SQL Server repository) out of a PostgreSQL-only folder's strip: the filter by engine at web/src/main.ts:352
@@ -168,10 +168,10 @@ must | ms-tag | ^alertrules\?tag= | cell | WAL | alert_rules.ts:298 (every rule,
 must | ms-tag | ^alertrules\?tag= | cell | settings | alert_rules.ts:298 (every rule, whatever the folder) | Alert rules in a tag folder lists only the rules that can fire on the folder's instances (the metric's engine) - web/src/alert_rules.ts:298
 must | ms-tag | ^tablesize\?tag= | th | TOAST | tablesize.ts:66 (a PostgreSQL-only page: '0 PostgreSQL instance(s) in this folder') | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
 must | ms-tag | ^tablesize\?tag= | prose | TOAST | tablesize.ts:66 (a PostgreSQL-only page: '0 PostgreSQL instance(s) in this folder') | unreachable once the strip is filtered by the scope's engines: web/src/main.ts:352
-must | root-pg-row | ^summary(\?|$) | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
-must | root-pg-row | ^summary(\?|$) | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
-must | root-pg-row | ^summary(\?|$) | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
-must | root-pg-row | ^summary(\?|$) | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) | pgLabel on Group (web/src/fleet.ts) used at pages.ts:350
+must-not | root-pg-row | ^summary(\?|$) | attr | Last Good Check DB | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | root-pg-row | ^summary(\?|$) | attr | Backup LOG | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | root-pg-row | ^summary(\?|$) | attr | Agent Jobs | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
+must-not | root-pg-row | ^summary(\?|$) | attr | Availability Group | pages.ts:350 (the group's label in each row's attribute and the Not OK button) - fixed by a1e161f (labelOf / pgLabel, web/src/fleet.ts:64-79), gone on the join (j11) | -
 # --- the third run's reds outside this file (its read unmasked them: the scope's own names, each text node apart, A1 by position)
 must | pg-instance | ^pgstate\?i= | cell | Memory Dump | 0117_summary_dumps.sql:13 (the crash key's label: both engines' halves, on a PostgreSQL threshold page) | the PostgreSQL threshold pages draw the key's PostgreSQL half ('Crashes: time since the newest crash restart'): a label per engine for the key (internal/repo/sql/0117_summary_dumps.sql:13), read by the thresholds grids
 must | pg-tag | ^pgthresholds\?tag= | cell | Memory Dump | 0117_summary_dumps.sql:13 (the crash key's label: both engines' halves, on a PostgreSQL threshold page) | the same label per engine (internal/repo/sql/0117_summary_dumps.sql:13)
