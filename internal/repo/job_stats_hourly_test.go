@@ -197,7 +197,7 @@ func TestJobStatsHourlyOnAStore(t *testing.T) {
 	seven := func(inst int, job string) string {
 		t.Helper()
 		return str(`SELECT format('%s %s %s %s %s', coalesce(ok_24h::text, 'null'), coalesce(ok_7d::text, 'null'), coalesce(max_secs_7d::text, 'null'),
-		                          coalesce(avg_secs_7d::text, 'null'), building) FROM pgvigil.job_stats_7day(ARRAY[$1::int]) WHERE job_id = $2`, inst, job)
+		                          coalesce(avg_secs_7d::text, 'null'), building::text) FROM pgvigil.job_stats_7day(ARRAY[$1::int]) WHERE job_id = $2`, inst, job)
 	}
 	dirty := func(inst int) string {
 		t.Helper()
