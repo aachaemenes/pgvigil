@@ -13,6 +13,9 @@ import { lineChart } from './chart';
 import { tileRow } from './tiles';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, panel, stateNote, tile } from './ui';
 
+// connectSecs: a connect time in seconds as the page shows it ('0.12 s'; '-' when none was timed)
+const connectSecs = (v: unknown): string => v == null || v === '' ? '-' : `${Number(v).toFixed(2)} s`;
+
 type Parts = Record<string, Table | null>;
 
 const stateWord: Record<string, string> = { up: 'Up', stopped: 'Stopped', ended: 'Ended', 'not seen': 'Not seen', retired: 'Retired' };
@@ -148,9 +151,14 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'runs_1h', label: 'runs (1 h)', num: true, fmt: fmtNum }, { key: 'failures_1h', label: 'failures (1 h)', num: true, fmt: fmtNum },
       { key: 'auth_failures_1h', label: 'logins refused (1 h)', num: true, fmt: fmtNum },
       { key: 'auth_failures_24h', label: 'logins refused (24 h)', num: true, fmt: fmtNum },
+      { key: 'connect_avg_s', label: 'connect avg (1 h)', num: true, fmt: connectSecs },
+      { key: 'connect_max_s', label: 'connect max (1 h)', num: true, fmt: connectSecs },
     ] as Col[], 'No run in the last 24 hours.'),
     el('p', { class: 'meta' }, 'Counted at every connect a collection makes, a per-database connect included (each collection connects and closes; '
-      + 'every collector of the instance summed). A login refused (PostgreSQL 28P01 / 28000, SQL Server 18456) is retried at every run: a changed password can lock the login out.'));
+      + 'every collector of the instance summed). A login refused (PostgreSQL 28P01 / 28000, SQL Server 18456) is retried at every run: a changed password can lock the login out. '
+      + 'Connect avg / max: from the call to the open connection - DNS, the TLS handshake, the login and the collector\'s own CPU; an Entra token fetch left out - over the hour. '
+      + 'An instance whose last 5 written minutes average over its connect_time threshold (1.00 s / 2.50 s by default, on Thresholds) raises \'slow connect\'; '
+      + 'most of a server\'s or a collector\'s instances slow at once raise one \'slow connects\' instead.'));
 
   // the repository
   const total = conns.reduce((a, r) => a + Number(r.connections ?? 0), 0);
@@ -192,7 +200,8 @@ export async function collectorLine(ctx: Ctx): Promise<HTMLElement> {
   const own = rowsOf(d.findings).filter(r => r.instance_id != null);
   box.append(el('a', { href: href(ctx, { tab: 'collector', instance: undefined, tag: undefined }) }, 'Collector'), ': ',
     badge(st.word, st.kind), ` ${st.sub}. This instance: `,
-    l ? `${fmtNum(l.conns_per_min ?? 0)} connection(s) per minute, ${fmtNum(l.auth_failures_24h ?? 0)} login(s) refused in 24 h` : 'no run in 24 h',
+    l ? `${fmtNum(l.conns_per_min ?? 0)} connection(s) per minute, ${fmtNum(l.auth_failures_24h ?? 0)} login(s) refused in 24 h`
+      + (l.connect_avg_s == null ? '' : `, connect ${connectSecs(l.connect_avg_s)} on average in the last hour (the longest ${connectSecs(l.connect_max_s)})`) : 'no run in 24 h',
     `; ${failing.length ? failing.map(r => `${r.collection} failed ${r.fail_streak} in a row`).join(', ') : 'no collection failing'}`,
     own.length ? `; ${own.length} finding(s)` : '', '.');
   return box;

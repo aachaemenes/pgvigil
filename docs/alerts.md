@@ -193,6 +193,45 @@ A cut that drops packets instead of refusing them makes each connect hang until 
 ends it (or the DSN's own timeout; without either the operating system gives up after about 2 minutes on Linux). A run
 is counted when it ends, so the parent can rise a little later than for a refused connection.
 
+## When connects are slow
+
+The collector times every connect it opens - an instance's own and a collection's per-database ones - from the call
+to the open connection: DNS, the TCP and TLS handshakes, the login, and the collector's own CPU and scheduling. On a
+SQL Server instance that signs in with Entra the time the identity provider takes to hand over the token is left out
+(it is the provider's, not the server's); a Kerberos exchange with the domain controller is counted. A failed connect
+is never timed (it is *server unreachable* or *authentication failing*).
+
+**slow connect** (warning or critical, source `pgvigil collector`): an instance whose connects over its last 5 written
+minutes average over its `connect_time` threshold - 1.00 s for a warning and 2.50 s for a critical by default, set at
+the root, a tag or an instance on the Thresholds page, both engines. It needs 3 or more timed connects in those
+minutes (an instance read every minute has about 13; one slow connect among them does not alert, a server slow at
+every login does), and its newest written minute within the collector's span plus 3 minutes of now: a stopped
+collector's last minutes judge nothing. The Collector page shows each instance's connect average and longest of the
+hour, and the instance's line on Collection dates says the same.
+
+When most of one server's or one collector's instances are slow at once, ONE alert speaks for them, **slow connects**
+(source `pgvigil repository`), and the members' own *slow connect* alerts are held while it stands:
+- a **server** (a dial target: a SQL Server, an Azure SQL logical server and its databases, a PostgreSQL host and
+  port) with 3 or more judged instances is slow when 3 or more of them and more than half are over their own warning -
+  its gateway or its login, not the collector; the alert's value is the server;
+- a **collector** is slow when 3 or more of the servers it reads and more than half are slow (a server of 1 or 2
+  instances counts as slow when all of them are) - the collector's own CPU, DNS or network, not the servers; its value
+  is the collector's host, and the servers' own *slow connects* are held under it.
+It becomes critical when more than half are over their critical value. It forms at more than half and clears only at a
+quarter or less (or under 3), so a count that hovers at half does not send and resolve every minute; while 3 or more of
+a collector's instances cross their warning in the same minute, a new *slow connect* waits up to a minute for the fold
+to form. A member above the fold's level (one server critical under a warning fold) is sent on its own. The detail
+names the counts, the average, the 3 slowest instances and since when. A collector's own *collector or network*
+comes first: the instances it holds are not judged.
+
+What the time costs and why the collections start spread: a collector spends about 2 ms of its own CPU on each
+PostgreSQL connect with TLS and a password login (measured 2026-11-14 on a 4-CPU client, flat with the load). Each
+collection's first run after the collector starts falls at a random moment within its interval, 5 minutes at most,
+then repeats at the interval: a site's minute collections spread over the whole minute (about 25,000 connects a minute
+cost about 0.8 of a CPU, every connect under 10 ms at the 95th percentile on that rig) instead of all firing in the first
+10 seconds, which would queue them behind the collector's CPU and read as slow connects everywhere. An hourly or daily
+collection still runs within 5 minutes of a start.
+
 ## The address of an alert, templates, the send cap, Send test
 
 - **Every alert carries the address of its page.** With `alerts_base_url` set (the UI's address as a reader opens it:

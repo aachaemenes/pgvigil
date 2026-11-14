@@ -77,11 +77,13 @@ SELECT minute AS snapshot_at, sum(runs)::bigint AS runs, sum(failures)::bigint A
 
 // sqlCollectorLoad: pgvigil's own load per instance: connections opened and connection attempts per minute over the
 // last hour (the mean over the minutes it ran, every collector summed, and the busiest minute), runs and failures in
-// the hour, logins refused in the hour and 24 h ($1 the instance, 0 = all)
+// the hour, logins refused in the hour and 24 h, and the slow-connect tier's connect time in the hour (the timed
+// connects' average and the longest, in seconds; NULL: none timed) ($1 the instance, 0 = all)
 const sqlCollectorLoad = `
 WITH l AS (
   SELECT l.instance_id, l.minute, sum(l.attempts) AS attempts, sum(l.opened) AS opened, sum(l.runs) AS runs,
-         sum(l.failures) AS failures, sum(l.auth_failures) AS auth_failures
+         sum(l.failures) AS failures, sum(l.auth_failures) AS auth_failures,
+         sum(l.timed) AS timed, sum(l.connect_ms_sum) AS connect_ms, max(l.connect_ms_max) AS connect_ms_max
     FROM pgvigil.collector_load l
    WHERE l.minute > now() - interval '24 hours' AND ($1::int = 0 OR l.instance_id = $1)
    GROUP BY l.instance_id, l.minute
@@ -94,6 +96,9 @@ SELECT i.instance_id, i.name AS instance, i.engine,
        sum(l.failures) FILTER (WHERE l.minute > now() - interval '1 hour') AS failures_1h,
        coalesce(sum(l.auth_failures) FILTER (WHERE l.minute > now() - interval '1 hour'), 0) AS auth_failures_1h,
        sum(l.auth_failures) AS auth_failures_24h,
+       round(sum(l.connect_ms) FILTER (WHERE l.minute > now() - interval '1 hour')::numeric
+             / nullif(sum(l.timed) FILTER (WHERE l.minute > now() - interval '1 hour'), 0) / 1000, 3) AS connect_avg_s,
+       round(max(l.connect_ms_max) FILTER (WHERE l.minute > now() - interval '1 hour' AND l.timed > 0)::numeric / 1000, 3) AS connect_max_s,
        max(l.minute) AS last_minute
   FROM l
   JOIN pgvigil.instances i ON i.instance_id = l.instance_id AND i.is_active
