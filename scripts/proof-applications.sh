@@ -73,10 +73,12 @@ if [[ $(q "select to_regprocedure('pgvigil.import_app_application(timestamptz, j
   echo "proof-applications: $NFAIL FAIL"; exit 1
 fi
 
-NATT=0   # write attempts of this proof (S8 counts admin_audit rows against it)
+# write attempts of this proof, counted in a file: most calls run inside $(...), a subshell whose variables do not come
+# back (the first run counted 10 of them and gave several calls one client tag)
+: > "$WORK/calls"
 wr() {    # $1 the function (application | contact | assign), $2 the payload's JSON without ui_user: the answer's JSON
-  NATT=$((NATT + 1))
-  q "select pgvigil.import_app_$1(now(), '{\"ui_user\": \"proof\", \"client\": \"proof-applications#$NATT\"}'::jsonb || '$2'::jsonb)"
+  echo "$1" >> "$WORK/calls"
+  q "select pgvigil.import_app_$1(now(), '{\"ui_user\": \"proof\", \"client\": \"proof-applications#$(wc -l < "$WORK/calls")\"}'::jsonb || '$2'::jsonb)"
 }
 field() { python3 -I -c 'import json, sys; v = json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else v)' "$1" "$2"; }
 tags()  { q "select array_to_string(tags, ',') from pgvigil.instance_tags_merged where instance_id = $1"; }
@@ -218,6 +220,7 @@ nq=$(q "select count(*) from pgvigil.app_assignments where instance_id = $PGI")
 [[ $np -gt 0 && $nq == 0 ]] && ok "S14 an instance's removal takes its $np assignments with it" || bad "S14 assignments of the removed instance: $np -> $nq"
 
 # ---------------- S8 (last: every write attempt above) ----------------
+NATT=$(wc -l < "$WORK/calls")
 na=$(q "select count(distinct client) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%'")
 nr=$(q "select count(*) from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused'")
 rc8=$(q "select count(*) from (select client from pgvigil.admin_audit where op like 'app\_%' and client like 'proof-applications#%' and outcome = 'refused' group by client having count(*) > 1) z")
