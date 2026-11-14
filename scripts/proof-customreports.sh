@@ -150,8 +150,8 @@
 #     first (the tools' grid's copy carries none); the exported sample CSV opened by the bar's Tools > Open Grid or
 #     Data Set reads as the sample's own columns and rows, its note starting with the mark.
 #     [the panel in view, 1500 x 1100] every tool's panel, after its click, after 'Open sample' from the top of the page
-#     and with tool= on load, and the dark panels: its heading inside the view (the point at its middle is the
-#     heading's) with the focus; the intro says 'each tool opens a stored sample of its real output, captured on a test
+#     and with tool= on load, and the dark panels: its heading inside the view's upper half (or the page at its end; the
+#     point at its middle is the heading's) with the focus; the intro says 'each tool opens a stored sample of its real output, captured on a test
 #     server; nothing runs on a demo instance'; each row with a sample has a button 'Open sample' named 'Open sample:
 #     <tool>'; axe-core (WCAG 2.1 A and AA) 0 on the demo page in both themes; the view's pictures (view-*.png).
 #  U3. [B3] each state as the page draws it: threshold 0 (read live): sp_HumanEventsBlockViewer on with its note, the
@@ -974,7 +974,9 @@ const communityReady = `!!document.querySelector('main table.grid button.link')`
 const viewOf = (name) => ev(`(() => { const h = [...document.querySelectorAll('main section > h3')].find(x => x.textContent === ${JSON.stringify(name)}); if (!h) return null;
   const r = h.getBoundingClientRect(); const at = document.elementFromPoint(Math.min(innerWidth - 1, r.left + 4), r.top + r.height / 2);
   const f = document.activeElement;
-  return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight, inView: r.top >= 0 && r.bottom <= innerHeight && !!at && (at === h || h.contains(at)), focus: !!f && (f === h || h.contains(f)) }; })()`);
+  // brought into view: the heading in the view's upper half (its panel below it on the screen), or the page at its end
+  const end = scrollY + innerHeight >= document.documentElement.scrollHeight - 2;
+  return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight, end, inView: r.top >= 0 && r.bottom <= innerHeight && (r.top <= innerHeight / 2 || end) && !!at && (at === h || h.contains(at)), focus: !!f && (f === h || h.contains(f)) }; })()`);
 // a picture of the view alone (the person's screen), not the whole page
 const vshot = async (dir, name) => {
   if (!dir) return;
