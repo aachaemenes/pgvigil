@@ -606,7 +606,7 @@ func (s *Server) moveHistory(w http.ResponseWriter, r *http.Request, user, repo,
 	job := &moveJob{Name: name, By: user, Started: time.Now(), Inserted: map[string]int64{}}
 	mj.jobs[name] = job
 	mj.mu.Unlock()
-	opt.Progress = func(c dbadash.ImportCount, final bool) {
+	opt.Progress = func(c dbadash.ImportCount, _ bool) {
 		mj.mu.Lock()
 		defer mj.mu.Unlock()
 		job.Inserted[c.Mapping] = c.Inserted
