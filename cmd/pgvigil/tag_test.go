@@ -40,3 +40,17 @@ func TestRunTagUsage(t *testing.T) {
 		t.Fatalf("a bad op: %v", err)
 	}
 }
+
+// TestTagOpsRefusesApplication (task 310): the key application is the applications page's (an application assigned to
+// the server or its databases): pgvigil tag refuses to set, hide or reset it, naming where it is set.
+func TestTagOpsRefusesApplication(t *testing.T) {
+	for _, c := range []struct {
+		args  []string
+		reset bool
+	}{{[]string{"application=Billing"}, false}, {[]string{"APPLICATION=x"}, false}, {[]string{"-application"}, false}, {[]string{"application"}, true}} {
+		_, err := tagOps(c.args, c.reset)
+		if err == nil || !strings.Contains(err.Error(), "Admin > Applications") {
+			t.Errorf("tagOps(%q, reset %v): %v; want a refusal naming Admin > Applications", c.args, c.reset, err)
+		}
+	}
+}
