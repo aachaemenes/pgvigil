@@ -1,7 +1,10 @@
 package web
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -68,12 +71,67 @@ SELECT count(*) AS jobs, count(*) FILTER (WHERE r.fail_streak > 0) AS failing,
   FROM pgvigil.job_report r JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND r.is_present AND coalesce(r.active, true)`
 
+// sqlJobStatusFleet is the fleet Jobs page's 'Job status' grid (DBA Dash's root Jobs, AgentJobsReport_Get): every job
+// of the instances $1 (NULL = every active instance) judged by job_status_view (0137: DBA Dash's default rule with no
+// threshold row), with the job's own columns (enabled, category, description) and, for a SQL Agent job, the step of its
+// newest failure inside the horizon (the failed rows' index). Ordered as DBA Dash orders it: the last run failed first,
+// then the newest failure, then critical, warning.
+const sqlJobStatusFleet = `
+SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.job_id, v.job_name,
+       coalesce(m.enabled, g.active) AS enabled, m.category, m.description,
+       v.status, v.reason, v.level, v.threshold_id, v.last_outcome, v.last_outcome = 'failed' AS last_run_failed,
+       v.last_failed_at, v.last_succeeded_at, v.fail_24h, v.fail_7d, v.step_fail_24h, v.step_fail_7d, fs.step_id AS failed_step_id,
+       fs.step_name AS failed_step, v.horizon_min
+  FROM pgvigil.job_status_view(coalesce($1::int[], ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active))) v
+  JOIN pgvigil.instances i ON i.instance_id = v.instance_id AND i.is_active
+  LEFT JOIN pgvigil.mssql_jobs m ON v.scheduler = 'sqlagent' AND m.instance_id = v.instance_id AND m.job_id = v.job_id
+  LEFT JOIN pgvigil.jobs g ON v.scheduler <> 'sqlagent' AND g.instance_id = v.instance_id AND g.scheduler = v.scheduler AND g.job_id::text = v.job_id
+  LEFT JOIN LATERAL (SELECT r.step_id, r.step_name FROM pgvigil.mssql_job_runs r
+                      WHERE v.scheduler = 'sqlagent' AND v.last_failed_at IS NOT NULL AND r.instance_id = v.instance_id AND r.job_id = v.job_id
+                        AND r.run_status = 0 AND r.step_id > 0 AND r.snapshot_at > now() - make_interval(mins => v.horizon_min)
+                      ORDER BY r.snapshot_at DESC LIMIT 1) fs ON true
+ ORDER BY (v.last_outcome = 'failed') DESC, v.last_failed_at DESC NULLS LAST,
+          CASE v.status WHEN 'crit' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, i.name, v.scheduler, v.job_name`
+
+// idsParam reads ?ids=1,2,3 (the instances of the page's view): nil when absent, an error on anything but positive ids.
+func idsParam(r *http.Request) ([]int32, error) {
+	v := r.URL.Query().Get("ids")
+	if v == "" {
+		return nil, nil
+	}
+	parts := strings.Split(v, ",")
+	if len(parts) > 10000 {
+		return nil, errors.New("ids: at most 10000 instances")
+	}
+	ids := make([]int32, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.ParseInt(strings.TrimSpace(p), 10, 32)
+		if err != nil || n <= 0 {
+			return nil, errors.New("ids must be positive instance ids separated by commas")
+		}
+		ids = append(ids, int32(n))
+	}
+	return ids, nil
+}
+
 // JobsReport is one instance's job report (?instance=) or, without it, the fleet's problem jobs.
 func (s *Server) JobsReport(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("instance") == "" {
-		s.multi(w, r, []part{
+		ids, err := idsParam(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		var idsArg any // a nil []int32 is sent as an empty array, not NULL
+		if ids != nil {
+			idsArg = ids
+		}
+		// 'status' (job_status_view, both engines) is its own part: the page asks for it alone (?part=status), so a slow
+		// status read never takes PostgreSQL's schedule checks down with it, nor they it
+		s.multiPart(w, r, []part{
 			{"counts", sqlJobFleetCounts, nil},
 			{"jobs", sqlJobFleet, nil},
+			{"status", sqlJobStatusFleet, []any{idsArg}},
 		})
 		return
 	}
