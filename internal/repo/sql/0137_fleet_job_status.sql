@@ -18,9 +18,12 @@
 --                        'No success for N minutes' is still judged past H: a job that ran before H and has no success
 --                        inside it breaks the rule, and its reason says 'no success in the last <H>'.
 --   job_status(p_instance_id)       unchanged in name, arguments and columns: job_status_view of that one instance.
---   four partial indexes carry what the lookups filter on, so each is a probe and not a walk of a job's every stored
---                        row: the failed rows of mssql_job_runs (steps too) and its succeeded job rows, the failed and
---                        the succeeded rows of job_runs, each by job, newest first.
+--   two partial indexes hold the failed rows by job, newest first (mssql_job_runs: steps too; job_runs), so the last
+--                        failure and the failed counts are a probe and not a walk of a job's every stored row. The
+--                        last success needs none: a job's newest rows are its last run's, so the index by job finds it
+--                        in a few rows (measured on a synthetic store: the view read the same with and without an
+--                        index of the succeeded rows, which would be written on every job row); a job with no success
+--                        walks its own rows inside H, no more.
 --
 -- Locks, and what an upgrade waits for: CREATE INDEX holds SHARE on its table until this file's transaction commits
 -- (a migration file runs in one transaction, so the builds cannot be CONCURRENTLY): reads go on, the jobs collections'
@@ -35,12 +38,8 @@ SET LOCAL lock_timeout = '20s';
 
 CREATE INDEX IF NOT EXISTS mssql_job_runs_failed_idx ON pgvigil.mssql_job_runs (instance_id, job_id, snapshot_at DESC)
   WHERE run_status = 0;
-CREATE INDEX IF NOT EXISTS mssql_job_runs_ok_idx ON pgvigil.mssql_job_runs (instance_id, job_id, snapshot_at DESC)
-  WHERE step_id = 0 AND run_status = 1;
 CREATE INDEX IF NOT EXISTS job_runs_failed_idx ON pgvigil.job_runs (instance_id, scheduler, job_id, start_time DESC)
   WHERE status IN ('failed', 'internal error');
-CREATE INDEX IF NOT EXISTS job_runs_ok_idx ON pgvigil.job_runs (instance_id, scheduler, job_id, start_time DESC)
-  WHERE status = 'succeeded';
 
 CREATE OR REPLACE FUNCTION pgvigil.job_status_view(p_ids int[])
 RETURNS TABLE (instance_id int, scheduler text, job_id text, job_name text, level text, threshold_id bigint, fail_24h bigint, fail_7d bigint,
@@ -72,7 +71,7 @@ LANGUAGE sql STABLE AS $$
                           WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.step_id = 0 AND r.run_status = 0
                             AND r.snapshot_at > now() - make_interval(mins => (SELECT h.mins FROM h))
                           ORDER BY r.snapshot_at DESC LIMIT 1) lf ON true
-      -- the newest succeeded job row inside H: mssql_job_runs_ok_idx
+      -- the newest succeeded job row inside H: the job's newest rows in mssql_job_runs_job_idx
       LEFT JOIN LATERAL (SELECT r.snapshot_at AS at FROM pgvigil.mssql_job_runs r
                           WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.step_id = 0 AND r.run_status = 1
                             AND r.snapshot_at > now() - make_interval(mins => (SELECT h.mins FROM h))
@@ -110,7 +109,7 @@ LANGUAGE sql STABLE AS $$
                             AND r.status IN ('failed', 'internal error')
                             AND r.start_time > now() - make_interval(mins => (SELECT h.mins FROM h))
                           ORDER BY r.start_time DESC LIMIT 1) lf ON true
-      -- the newest succeeded run inside H: job_runs_ok_idx
+      -- the newest succeeded run inside H: the job's newest rows in job_runs_job_start_idx
       LEFT JOIN LATERAL (SELECT r.start_time AS at FROM pgvigil.job_runs r
                           WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id
                             AND r.status = 'succeeded'
