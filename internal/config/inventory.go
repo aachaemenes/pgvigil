@@ -174,6 +174,9 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 	var have int64 = -1
 	var lastAll []Instance
 	var lastPage []PageInstance
+	// read once: a list was read and applied (its merged list may be empty - every page row disabled, no file
+	// instance - and still re-applied on a tick)
+	readOnce := false
 	failing := false
 	held, toldOther := true, false
 	read := func() {
@@ -203,7 +206,7 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 			gen, err = src.InventoryGeneration(ctx)
 		}
 		if err == nil && gen == have {
-			if reapply && lastAll != nil {
+			if reapply && readOnce {
 				apply(lastAll, lastPage, have)
 			}
 			return
@@ -231,7 +234,7 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 		}
 		log.Info("instances: list read", "generation", gen, "from_file", len(file), "from_page", len(all)-len(file))
 		have = gen
-		lastAll, lastPage = all, page
+		lastAll, lastPage, readOnce = all, page, true
 		apply(all, page, gen)
 	}
 	read()

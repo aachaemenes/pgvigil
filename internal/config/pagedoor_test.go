@@ -77,7 +77,9 @@ func TestPageDSNRefusal(t *testing.T) {
 		{EngineSQLServer, "sqlserver://x@db.example?fedauth=ActiveDirectoryManagedIdentity", "own identity (fedauth=ActiveDirectoryManagedIdentity)"},
 		{EngineSQLServer, "sqlserver://reader:pw@db.example?log=255", "driver option log is not one"},
 		{EngineSQLServer, "sqlserver://reader:pw@db.example?krb5-keytabfile=/k", "own identity (krb5-keytabfile)"},
-		{EngineSQLServer, "sqlserver://reader:pw@db.example?encrypt=%zz", "does not read"},
+		// go-mssqldb reads the query through url.URL.Query(): a malformed pair is dropped, the driver never sees it
+		{EngineSQLServer, "sqlserver://reader:pw@db.example?encrypt=%zz", ""},
+		{EngineSQLServer, "sqlserver://reader:pw@db.example?encrypt=true&encrypt=false", "does not read"},
 		{EnginePostgres, "host=db.example port=5432 dbname=erp user=reader password=pw sslmode=require", ""},
 		{EnginePostgres, "host=db.example dbname='my db' user='o\\'neil' password='p w' sslrootcert=system", ""},
 		{EnginePostgres, "postgres://reader:pw@db.example:5432/erp?sslmode=verify-full", ""},
