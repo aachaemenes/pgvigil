@@ -156,12 +156,18 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
 		SessionTTL: time.Duration(*sessionHours) * time.Hour,
 		Actions:    &web.ActionsConfig{LogDSN: cfg.Repository.DSN(), Doors: actions.DoorsFromConfig(cfg)},
-		Tags:       web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine()})
+		Tags:       web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine(),
+		Reports: &web.ReportsConfig{Raw: cfg.ReportsDSNRaw, DSN: cfg.ReportsDSN()}})
 	if err != nil {
 		_ = ln.Close()
 		return err
 	}
 	defer srv.Close()
+	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
+	// check); serve starts either way and the page says the same words
+	if why := srv.StoreReportsOff(ctx); why != "" {
+		log.Warn("custom reports on the store are off", "reason", why)
+	}
 	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
 	for _, in := range cfg.Instances {
 		pc.Gates[in.Name] = actions.ExplainGate{Enabled: in.ExplainAnalyze, DSN: in.ExplainDSN(),
@@ -193,6 +199,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	srv.SetInstancesAdmin(web.InstancesAdmin{ConfigPath: *path, File: cfg.Instances, DBADash: dd})
 	go srv.RunInstanceSync(ctx)
+	// the read doors of each inventory generation (pgvigil.yaml's, and Admin > Instances' when doors.page_instance_reads
+	// is on), after every Set* call above: serve alone watches (demo and mcp keep the file's doors)
+	go srv.WatchDoors(ctx, log, cfg, web.DoorEvery)
 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
 	go srv.RunReportMail(ctx)
 

@@ -44,6 +44,10 @@ type PageInstance struct {
 	DSNRef   string
 	Tags     []string
 	Disabled bool
+	// Auth and Options: the sign-in and the driver options as the page stored them (never a password); serve's page
+	// door reads them for its words (pagedoor.go), the collector does not
+	Auth    string
+	Options string
 }
 
 // InventoryReader is the repository's side: the generation alone (cheap, polled) and the list with its generation.
@@ -155,10 +159,25 @@ func Diff(old, cur []Instance) (stop, start []string) {
 // sched's page_inventory lock). One that does not collects the file's instances only, says so once, and asks again
 // each tick: when the holder ends, the next to take the lock reads the page's list at once.
 func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
+	WatchInventoryRaw(ctx, log, src, hold, file, queryText, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
+}
+
+// WatchInventoryRaw is WatchInventory for serve's doors: apply also gets the page's raw rows (a disabled row and a row
+// Merge left out included: serve's words tell them apart) and the generation they were read at (0: the file's alone;
+// -1: the first read failed, the file's alone meanwhile - serve says the page's list is unread, never 'in neither');
+// a receive on wake reads at once (serve's own write, so this serve's doors follow before it replies); with reapply,
+// every tick applies the last rows again although the generation did not move (serve re-resolves a page door whose
+// credential could not be read).
+func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
 	if every <= 0 {
 		every = 15 * time.Second
 	}
 	var have int64 = -1
+	var lastAll []Instance
+	var lastPage []PageInstance
+	// read once: a list was read and applied (its merged list may be empty - every page row disabled, no file
+	// instance - and still re-applied on a tick)
+	readOnce := false
 	failing := false
 	held, toldOther := true, false
 	read := func() {
@@ -173,7 +192,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 				}
 				if held || have == -1 { // lost the lock, or never had it: the file's list alone
 					all, _ := Merge(file, nil, queryText)
-					apply(all)
+					apply(all, nil, 0)
 				}
 				held, have, failing = false, -3, false
 				return
@@ -188,6 +207,9 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 			gen, err = src.InventoryGeneration(ctx)
 		}
 		if err == nil && gen == have {
+			if reapply && readOnce {
+				apply(lastAll, lastPage, have)
+			}
 			return
 		}
 		var page []PageInstance
@@ -199,10 +221,10 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 				log.Warn("instances: the page's list could not be read; the last list stays", "err", err)
 			}
 			failing = true
-			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick)
+			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick), generation -1
 				have = -2
 				all, _ := Merge(file, nil, queryText)
-				apply(all)
+				apply(all, nil, -1)
 			}
 			return
 		}
@@ -213,7 +235,8 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 		}
 		log.Info("instances: list read", "generation", gen, "from_file", len(file), "from_page", len(all)-len(file))
 		have = gen
-		apply(all)
+		lastAll, lastPage, readOnce = all, page, true
+		apply(all, page, gen)
 	}
 	read()
 	t := time.NewTicker(every)
@@ -223,6 +246,8 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			read()
+		case <-wake: // a nil channel never wakes
 			read()
 		}
 	}
@@ -455,9 +480,10 @@ func optionHoldsPassword(x string) bool {
 // QuoteValue quotes a libpq keyword value (a path or a login with a space, a quote or a backslash).
 func QuoteValue(v string) string { return pq(v) }
 
-// pq quotes a libpq keyword value.
+// pq quotes a libpq keyword value: one holding a space or any control byte (pgx splits a bare value at \t, \n, \r,
+// \v and \f too), a quote or a backslash
 func pq(v string) string {
-	if v != "" && !strings.ContainsAny(v, " '\\") {
+	if v != "" && !strings.ContainsAny(v, " '\\") && strings.IndexFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0 {
 		return v
 	}
 	return "'" + strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `'`, `\'`) + "'"

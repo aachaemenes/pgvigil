@@ -60,17 +60,26 @@ type Door struct {
 	// Configured says actions_dsn is set in the config, so an empty Actions means it did not resolve
 	// (an unset variable or an unreadable file), not that the instance has none.
 	Configured bool
+	// Page: an instance added in Admin > Instances (serve's page door: its read login only, never an action)
+	Page bool
 }
 
 // Off is the reason a door cannot act, or "" when it can.
 func (d Door) Off(instance string) string {
 	switch {
+	case d.Page:
+		return PageOff(instance)
 	case d.Actions != "":
 		return ""
 	case d.Configured:
 		return fmt.Sprintf("instance %s: actions_dsn is configured but resolved to an empty string (an unset variable or an unreadable file)", instance)
 	}
 	return fmt.Sprintf("instance %s has no actions_dsn: cancel and terminate are off there (pgvigil roles prints the login to create)", instance)
+}
+
+// PageOff is the words of an action on an instance added in Admin > Instances.
+func PageOff(instance string) string {
+	return fmt.Sprintf("instance %s: actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it from Admin > Instances", instance)
 }
 
 // DoorsFromConfig maps every configured instance name to its door.

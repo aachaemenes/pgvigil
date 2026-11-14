@@ -74,7 +74,7 @@ A run without a terminal (a script, a configuration tool) names the database ins
    and `.service`, disabled and stopped, `daemon-reload`); on Windows each scheduled task whose action runs a pgvigil
    executable with `purge` (deleted with `schtasks /Delete`). Then the service definition (Linux: the unit, disabled,
    `daemon-reload`; Windows: the service, with its virtual account `NT SERVICE\pgvigil`).
-9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` on Windows), the purge's env
+9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` and `reports.dsn` on Windows), the purge's env
    file (Linux: the `EnvironmentFile=` the purge unit names, `/etc/pgvigil/pgvigil-purge.env` by README: the
    repository owner's connection string) or its configuration copy (Windows: `pgvigil-purge.yaml` beside the
    configuration), the logs, the page's credential folders `instances/` and `sources/` beside the configuration, each

@@ -465,3 +465,83 @@ func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
 		t.Fatalf("after the recovery %v", applied)
 	}
 }
+
+// serve's watcher on a failed first read: the file's list once, at generation -1 (serve says the page's list is
+// unread, never that an instance is in neither list); the recovery's read at its own generation
+func TestWatchInventoryRawFailedFirstReadIsUnread(t *testing.T) {
+	src := &fakeInv{gen: 4, fail: true, list: []PageInstance{{Name: "p", Engine: EnginePostgres, DSNRef: "file:/p"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gens := make(chan int64, 16)
+	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", 20*time.Millisecond, nil, false,
+		func(_ []Instance, _ []PageInstance, gen int64) { gens <- gen })
+	select {
+	case g := <-gens:
+		if g != -1 {
+			t.Fatalf("a failed first read applied generation %d (want -1)", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a failed first read applied nothing")
+	}
+	src.mu.Lock()
+	src.fail = false
+	src.mu.Unlock()
+	select {
+	case g := <-gens:
+		if g != 4 {
+			t.Fatalf("the recovery applied generation %d (want 4)", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the recovery applied nothing")
+	}
+}
+
+// serve's watcher: a wake reads at once (an hour's tick never comes), apply gets the raw rows - a disabled one too -
+// and the generation; with reapply the last rows are applied again on a tick although the generation did not move
+func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
+	src := &fakeInv{gen: 1, list: []PageInstance{{Name: "p", Engine: EnginePostgres, DSNRef: "file:/p", Auth: "password"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wake := make(chan struct{}, 1)
+	type got struct {
+		all  int
+		page []PageInstance
+		gen  int64
+	}
+	seen := make(chan got, 16)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	go WatchInventoryRaw(ctx, log, src, nil, nil, "full", time.Hour, wake, false, func(all []Instance, page []PageInstance, gen int64) {
+		seen <- got{len(all), page, gen}
+	})
+	first := <-seen
+	if first.gen != 1 || first.all != 1 || len(first.page) != 1 || first.page[0].Auth != "password" {
+		t.Fatalf("first apply: %+v", first)
+	}
+	src.mu.Lock()
+	src.gen, src.list = 2, []PageInstance{{Name: "p", Engine: EnginePostgres, DSNRef: "file:/p", Disabled: true}}
+	src.mu.Unlock()
+	wake <- struct{}{}
+	select {
+	case g := <-seen:
+		if g.gen != 2 || g.all != 0 || len(g.page) != 1 || !g.page[0].Disabled {
+			t.Fatalf("after the wake: %+v (want generation 2, nothing merged, the disabled row raw)", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a wake did not read at once")
+	}
+	// reapply: the same generation applied again on each tick
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	n := make(chan int64, 16)
+	go WatchInventoryRaw(ctx2, log, src, nil, nil, "full", 20*time.Millisecond, nil, true, func(_ []Instance, _ []PageInstance, gen int64) { n <- gen })
+	for i := 0; i < 3; i++ {
+		select {
+		case g := <-n:
+			if g != 2 {
+				t.Fatalf("reapply %d: generation %d", i, g)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("reapply did not apply again on a tick")
+		}
+	}
+}

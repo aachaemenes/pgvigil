@@ -56,8 +56,8 @@ func (s *Server) planFetchOff(name string) string {
 	if qt := s.mssqlPlanPolicy(name); qt != "full" {
 		return fmt.Sprintf("not read: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled parameter values, so plans are read under \"full\" only", qt)
 	}
-	if _, why := s.msRunLogin(name); why != "" {
-		return "not read: " + why
+	if _, _, no := s.doorsNow().readLogin("sqlserver", name); no.Why != "" {
+		return "not read: " + no.Why
 	}
 	return ""
 }
@@ -200,7 +200,7 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, map[string]any{"state": "off", "words": why}, nil)
 		return
 	}
-	dsn, _ := s.msRunLogin(name)
+	dsn, _, _ := s.doorsNow().readLogin("sqlserver", name)
 	ctx, cancel := context.WithTimeout(r.Context(), planReadBudget)
 	defer cancel()
 	db, conn, err := openPlanRead(ctx, dsn)

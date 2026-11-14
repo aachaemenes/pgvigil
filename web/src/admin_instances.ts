@@ -122,7 +122,11 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       const r = await send(path, data);
       if (!r.ok) { for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
       await draw();
-      say(done + (r.body.sync_error ? ` The first read failed: ${String(r.body.sync_error)}` : ''));
+      // the server's words on when the change reaches Community tools and custom reports, when serve watches its
+      // page doors (none on an install whose doors.page_instance_reads is off)
+      const dw = r.body.doors ? String(r.body.doors) : '';
+      const doors = dw ? ` ${dw.charAt(0).toUpperCase()}${dw.slice(1)}.` : '';
+      say(done + doors + (r.body.sync_error ? ` The first read failed: ${String(r.body.sync_error)}` : ''));
       return true;
     } catch (e) { for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = false; say(`Not done: ${(e as Error).message}`, true); return false; }
   }

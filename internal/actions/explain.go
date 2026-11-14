@@ -151,11 +151,20 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	if err := mon.QueryRow(ctx, `SELECT pg_postmaster_start_time()`).Scan(&monStart); err != nil {
 		return refused("the server check failed: %v", err), nil
 	}
-	var actSuper bool
-	var acting *string
-	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time(), (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
-	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname = ANY($1) AND pg_has_role(current_user, oid, 'MEMBER'))`,
-		signalLike).Scan(&actStart, &actSuper, &acting); err != nil {
+	// the SESSION user's rights (REPORT ROLE): a role set at connect (ALTER ROLE ... SET role) or by the statement itself
+	// (set_config('role', 'none', true)) is undone by the statement, so the current role's rights say nothing
+	// in a database that is a pgvigil repository also plans.RepoSecretsCols: a member of the schema's owner (NOINHERIT
+	// too), pg_read_all_data, a direct read of the UI's hashes (the code review of REPORT ROLE, part A)
+	// a member of a superuser role (NOINHERIT too) counts as a superuser: the statement can SET ROLE to it (part B)
+	var actSuper, superMember, actOwner, ownerMember, readAll, hashes bool
+	var acting, secrets *string
+	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time(), (SELECT rolsuper FROM pg_roles WHERE rolname = session_user),
+	       `+plans.SuperMemberCol+`,
+	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname = ANY($1) AND pg_has_role(session_user, oid, 'MEMBER')),
+	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('pgvigil_auth', 'pgvigil_collector') AND pg_has_role(session_user, oid, 'MEMBER')),
+	       coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false),
+	       `+plans.RepoSecretsCols,
+		signalLike).Scan(&actStart, &actSuper, &superMember, &acting, &secrets, &actOwner, &ownerMember, &readAll, &hashes); err != nil {
 		return Result{Outcome: Failed, Detail: fmt.Sprintf("the explain login's server check failed: %v", err)}, nil
 	}
 	if !monStart.Equal(actStart) {
@@ -164,6 +173,24 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	}
 	if actSuper {
 		return refused("the explain login is a superuser: pgvigil refuses it (a login with SELECT grants only)"), nil
+	}
+	if superMember {
+		return refused("the explain login is a member of a superuser role (a statement can SET ROLE to it): pgvigil refuses it (a login with SELECT grants only)"), nil
+	}
+	if secrets != nil || actOwner || ownerMember || readAll || hashes {
+		what := "allowed to read the UI's password hashes"
+		switch {
+		case secrets != nil:
+			what = "a member of " + *secrets
+		case actOwner:
+			what = "allowed to CREATE in the pgvigil schema (the repository's owner?)"
+		case ownerMember:
+			what = "a member of the pgvigil schema's owner"
+		case readAll:
+			what = "a member of pg_read_all_data in a pgvigil repository"
+		}
+		return refused("the explain login is %s: a statement it plans or runs could read the UI's password hashes or write the repository, so pgvigil refuses it; "+
+			"give EXPLAIN ANALYZE a login of its own with SELECT grants only", what), nil
 	}
 	if acting != nil {
 		return refused("the explain login is a member of %s: a SELECT could act through it (pg_terminate_backend, lo_export), so pgvigil refuses it; "+
