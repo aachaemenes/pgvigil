@@ -228,7 +228,7 @@ SELECT DISTINCT ON (m.instance_id) m.instance_id, m.snapshot_at, m.machine_name,
  ORDER BY m.instance_id, m.snapshot_at DESC`
 
 // The database state of the PostgreSQL instances, for the same Summary column: a database left invalid by an
-// interrupted DROP DATABASE (datconnlimit -2, PostgreSQL 15 and later) is critical; one that refuses connections
+// interrupted DROP DATABASE (datconnlimit -2, PostgreSQL 13.12, 14.9, 15.4 and 16 or later) is critical; one that refuses connections
 // (datallowconn off, not a template) is a warning, since it can be deliberate and it stops being vacuumed.
 const sqlPGDatabaseState = `
 SELECT d.instance_id, count(*)::int AS n,
