@@ -191,22 +191,26 @@ check('R8 mail', /<th[^>]*>Read<\/th><td[^>]*>Parts of this page read the newest
   r8.err ?? `the body: 'Read' line ${/>Read<\/th>/.test(html)}, the page's words ${html.includes('Parts of this page read the newest 31 days')}, the list's note ${html.includes('This list reads the newest 31 days')} (${html.length} bytes)`);
 
 // R9. a reply of the page before comes back after a newer draw began: never in the newer page's line (blocker 1). The
-// 60-day page's statements read is held 3 s in the page, the address goes to 1 hour while it is held
-const hold = await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const real = window.fetch;
-  window.fetch = async (u, o) => { const s = String(u), q = new URLSearchParams(s.split('?')[1] ?? '');
-    const long = s.includes('/api/statements?') && Date.parse(q.get('to')) - Date.parse(q.get('from')) > 40 * 86400e3;
-    if (long) window.__held = true;
-    const res = await real(u, o); if (long) await new Promise(r => setTimeout(r, 3000)); return res; }; })();` });
+// 60-day page's statements read is held 3 s by CDP Fetch (its request paused, then continued, as proof-darling-fleet.sh
+// holds its reads), the address goes to 1 hour while it is held; every other statements read goes on at once
+let heldSeen = false;
+const onPaused = m => { const d = JSON.parse(m.data); if (d.method !== 'Fetch.requestPaused') return;
+  const s = d.params.request.url, q = new URLSearchParams(s.split('?')[1] ?? '');
+  const long = s.includes('/api/statements?') && Date.parse(q.get('to')) - Date.parse(q.get('from')) > 40 * 86400e3;
+  if (long) heldSeen = true;
+  setTimeout(() => send('Fetch.continueRequest', { requestId: d.params.requestId }), long ? 3000 : 0); };
+ws.addEventListener('message', onPaused);
+await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/statements*' }] });
 await send('Page.navigate', { url: 'about:blank' }); await sleep(200);
 await send('Page.navigate', { url: base + `#/statements?i=${erp}&w=60d` });
-for (let i = 0; i < 80 && !(await ev('!!window.__held')); i++) await sleep(125);
-const heldSeen = await ev('!!window.__held');
+for (let i = 0; i < 80 && !heldSeen; i++) await sleep(125);
+const held9 = heldSeen;
 await ev(`location.hash = '#/statements?i=${erp}&w=1h'; 'ok'`);
 await sleep(4500);
 const r9 = await ev(words), w9 = (await params()).get('w');
-await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: hold.result?.identifier });
-check('R9 late reply', heldSeen && w9 === '1h' && !r9.some(t => t.startsWith('meta range-cut')),
-  `the 60-day read held ${heldSeen}, then w=${w9}: ${JSON.stringify(r9).slice(0, 500)}`);
+await send('Fetch.disable'); ws.removeEventListener('message', onPaused);
+check('R9 late reply', held9 && w9 === '1h' && !r9.some(t => t.startsWith('meta range-cut')),
+  `the 60-day read held ${held9}, then w=${w9}: ${JSON.stringify(r9).slice(0, 500)}`);
 
 // R11. a page with two cut reads of one reach says the reach once (SQL Server File IO over 60 days: its fileio and its
 // counters read, asked milliseconds apart)

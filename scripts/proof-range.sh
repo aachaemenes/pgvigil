@@ -45,6 +45,13 @@
 #   R8 mail        the same page's Mail... Send now: the body the page builds and posts holds the header line 'Read'
 #                  with the page's words and the statements grid's note (the mail door and the send answered in the
 #                  page by stubs: nothing is sent; the server's sender is proof-reportmail's, unchanged)
+#   R9 late reply  erp01's Statements at w=60d with its statements read held 3 s (CDP Fetch), the address moved to w=1h
+#                  meanwhile: the 1-hour page shows no range-cut line when the held 60-day reply lands (red on c5c7e83)
+#   R10 own span   erp01's sizes copied 60 days back, its Storage at w=1h with the growth panel at 90 days: w stays 1h,
+#                  no range-cut line on the page, the chart's own note 'Marks are read for the newest 31 days of this
+#                  window: <from> to <to> (this chart is longer than they read).' (red on c5c7e83)
+#   R11 once       sql01's SQL Server File IO at w=60d (two cut reads asked milliseconds apart): the page's line says
+#                  'the newest 31 days of this window' once (red on c5c7e83)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -141,9 +148,12 @@ chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chro
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
+# set +e around each check: under -e with pipefail a failed check would end the script before its status is read
+set +e
 RANGE_ERP=$ERP RANGE_SQL01=$SQL01 RANGE_ROWS_FROM="$hrows" RANGE_PURGE_AT="$hat" RANGE_MONTHS_FROM="$hm" RANGE_DAYS_FROM="$hd" \
   node scripts/range-check.mjs "$CDP" "$BASE" "$WORK/dl" | tee "$WORK/check.txt"
-[[ ${PIPESTATUS[0]} -eq 0 ]] || no "range-check: a case failed"
+rc=${PIPESTATUS[0]}; set -e
+[[ $rc -eq 0 ]] || no "range-check: a case failed"
 
 echo "== R10: erp01's database sizes of its oldest day copied 60 days back (more history than a part's reach), the growth panel at w=1h"
 Q "select pgvigil.ensure_month_partition('database_sizes', (select min(snapshot_at) from pgvigil.database_sizes where instance_id = $ERP) - interval '60 days')" >/dev/null
@@ -153,8 +163,10 @@ n10=$(Q "with o as (select min(snapshot_at) m from pgvigil.database_sizes where 
             from pgvigil.database_sizes s, o where s.instance_id = $ERP and s.snapshot_at < o.m + interval '1 day' returning 1)
   select count(*) from ins")
 if [[ "${n10:-0}" -gt 0 ]]; then
+  set +e
   RANGE_CASE=R10 RANGE_ERP=$ERP node scripts/range-check.mjs "$CDP" "$BASE" "$WORK/dl" | tee -a "$WORK/check.txt"
-  [[ ${PIPESTATUS[0]} -eq 0 ]] || no "range-check R10: failed"
+  rc=${PIPESTATUS[0]}; set -e
+  [[ $rc -eq 0 ]] || no "range-check R10: failed"
 else
   no "R10: no size row of erp01 to copy back"
 fi
