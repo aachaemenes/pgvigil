@@ -11,10 +11,14 @@
 # instance, the four Extended Events sessions of `pgvigil mssql-xe -print -form azuresqlmi -install-id m<n>` (dropped by
 # the -drop script). The login and the user database are the lab's (logins), gone with the instance at down.
 #
-# Expected (written before the first run):
+# Expected (written before the first run; the plancache cap exception added after run 3: every platform's rule; the
+# default trace's state and the statement texts added after run 4 by its review, not run yet):
 #  M0 `collect -once mssql_instance` as pgv_monitor: ok, platform azuresqlmi (EngineEdition 8).
 #  M1 every mssql_ collection once as pgv_monitor: a row for each listed collection, each ok or skipped (a 'partial' or
-#     an 'error' is a finding, listed - except mssql_plancache partial by its cap, every platform's rule, RECORDED);
+#     an 'error' is a finding, listed - except mssql_plancache partial by its cap, every platform's rule, RECORDED, with
+#     its statement texts stored all the same: the stored note is the first one only, so the cap's can hide a texts
+#     failure); the default trace reader's state 'read' (pgv_monitor holds ALTER TRACE: an 'ok' run alone also passes
+#     its 'no right' state), its note RECORDED;
 #     mssql_mirroring and mssql_logshipping skipped with C5's words ('Azure SQL Managed
 #     Instance does not support database mirroring', '... has no log shipping ...'); the checks' alerts area READ (its
 #     operators: is_read true) with C5's words ('... does not support SQL Server Agent alerts yet: only the operators are
@@ -90,8 +94,14 @@ NC=$(grep -c . <<<"$COLLS")
 # mssql_plancache is partial on ANY server whose cache holds more than its read takes (internal/mssql/plancache.go: the
 # cap, said in its note): that partial is RECORDED here, not a Managed Instance finding
 IFS='|' read -r NROWS NGOOD < <(q "select count(*), count(*) filter (where d.status in ('ok', 'skipped') or (d.collection = 'mssql_plancache' and d.status = 'partial' and d.note like 'sys.dm\\_exec\\_query\\_stats: the plan cache holds %')) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection like 'mssql\_%'")
-PCAP=$(q "select d.note from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = 'mssql_plancache' and d.status = 'partial'")
+PCAP=$(q "select d.note from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = 'mssql_plancache' and d.status = 'partial' and d.note like 'sys.dm\\_exec\\_query\\_stats: the plan cache holds %'")
+POTH=$(q "select d.note from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = 'mssql_plancache' and d.status = 'partial' and d.note not like 'sys.dm\\_exec\\_query\\_stats: the plan cache holds %'")
 [ -z "$PCAP" ] || echo "   M1: mssql_plancache partial by its cap (RECORDED, every platform's rule): $PCAP"
+[ -z "$POTH" ] || { VERDICT=FAIL; echo "FAIL M1: mssql_plancache partial, not by its cap: $POTH"; }
+# the stored note is the run's FIRST collector_error only (internal/collect/collect.go) and the cap's comes first
+# (plancache.go), so a statement texts failure behind it shows only as no text stored: count them
+NTX=$(q "select count(*) from pgvigil.mssql_pc_text t join pgvigil.instances i using (instance_id) where i.name = 'mi-live'")
+[[ "${NTX:-0}" =~ ^[0-9]+$ && "${NTX:-0}" -gt 0 ]] && echo "ok   M1: mssql_plancache stored $NTX statement text(s)" || { VERDICT=FAIL; echo "FAIL M1: mssql_plancache stored no statement text ('$NTX'): its texts read failed, or a note hides it"; }
 [ "$NROWS|$NGOOD" = "$NC|$NC" ] && echo "ok   M1: $NC collections, each ok or skipped (or mssql_plancache's cap)" || { VERDICT=FAIL; echo "FAIL M1: $NC collections listed, $NROWS rows stored, $NGOOD ok or skipped (above): each other one a finding"; }
 for want in "mssql_mirroring|skipped|Azure SQL Managed Instance does not support database mirroring" "mssql_logshipping|skipped|Azure SQL Managed Instance has no log shipping"; do
   c=${want%%|*}; got=$(q "select d.status || '|' || coalesce(d.note, '') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = '$c'")
@@ -108,6 +118,10 @@ echo "   M1: syshealth state|scope|scanned|stored|note = '$SH'; component result
 IFS='|' read -r SHS SHSC _ SHST _ <<<"$SH"
 [[ "$SHS|$SHSC" == "read|ring_buffer" && "${SHST:-0}" =~ ^[0-9]+$ && "${SHST:-0}" -gt 0 && "$NHC" -gt 0 ]] && echo "ok   M1: syshealth read system_health's ring buffer: $SHST event(s) stored, $NHC component result(s)" || { VERDICT=FAIL; echo "FAIL M1: syshealth did not store from the ring buffer (above)"; }
 [[ "$DLS" == system_health\|* ]] && echo "ok   M1: the deadlocks capture read from system_health" || { VERDICT=FAIL; echo "FAIL M1: the deadlocks capture's source is '$DLS'"; }
+# mssql_defaulttrace is ok in its 'no right' state too (defaulttrace.go): what its reader stored
+DT=$(q "select s.state || '|' || coalesce(s.note, '') from pgvigil.mssql_reader_state s join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and s.reader = 'defaulttrace'")
+echo "   M1: the default trace reader's state|note = '$DT' (RECORDED)"
+[[ "$DT" == read\|* ]] && echo "ok   M1: the default trace read (state 'read')" || { VERDICT=FAIL; echo "FAIL M1: the default trace reader's state is not 'read' (above)"; }
 
 echo "== M2: backups"
 sq msdb "$ADMIN_USER" ADMIN_PW <<SQL | sed 's/^/   msdb as the admin: /'

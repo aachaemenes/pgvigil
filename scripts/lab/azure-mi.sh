@@ -42,7 +42,8 @@
 # inbound rule until 'vmdoor', and a virtual network of its own, each named <instance>-vm* and tagged, a mode-600 ssh
 # key pair in the state folder, and a second 3342 rule on the instance's NSG for the VM's address. 'vmlogin' makes the
 # VM's identity a login of the instance as its admin (a sysadmin SQL login may create Entra logins there once the
-# instance has a Microsoft Entra admin - without one a real instance answered Msg 33134 'could not be resolved'; the
+# instance has a Microsoft Entra admin - without one a real instance answered Msg 33134 'could not be resolved', so
+# vmlogin reads the admin first and stops when there is none; the
 # instance resolves the name with its Directory Readers role; both are Entra steps outside this script) with VIEW SERVER
 # STATE, VIEW ANY DEFINITION and a user in msdb - not CONNECT ANY DATABASE, so the user database the proof made refuses
 # it (M6's E2); a login of the same name is dropped first (an earlier VM's identity has another SID), and a name the
@@ -188,6 +189,8 @@ ELSE ALTER LOGIN [$MON_USER] WITH PASSWORD = N'$MON_PW';
 GRANT VIEW SERVER STATE TO [$MON_USER];
 GRANT VIEW ANY DEFINITION TO [$MON_USER];
 GRANT CONNECT ANY DATABASE TO [$MON_USER];
+-- the default trace reader's right (sqlserver.md's login): without it the reader stores 'no right' and its run is ok
+GRANT ALTER TRACE TO [$MON_USER];
 IF DB_ID(N'$MI_DB') IS NULL CREATE DATABASE [$MI_DB];
 GO
 USE msdb;
@@ -280,8 +283,13 @@ SELECT 'vmlogin: ' + p.name COLLATE DATABASE_DEFAULT + ' type ' + CAST(p.type_de
 FROM sys.server_principals p WHERE p.name = N'$VM_NAME';
 SQL
 )
-  # a name the instance cannot resolve yet (an identity made minutes ago; a directory role granted minutes ago) is tried
-  # again for about 4 minutes; any other refusal, or one that lasts, is printed as the instance's words
+  # an instance with no Microsoft Entra admin answers Msg 33134 'could not be resolved' on every try (the lab's, twice
+  # 10 minutes apart; resolved at once after the admin was set): read the admin first and stop
+  NADM=$(az_ sql mi ad-admin list -g "$(g)" --managed-instance "$MI_NAME" --query 'length(@)' -o tsv) || fail "the instance's Microsoft Entra admin was not read"
+  [ "$NADM" != 0 ] || fail "no Microsoft Entra admin on $MI_NAME (Msg 33134 would follow): set one first (a group; an Entra step outside this script)"
+  # a name the instance cannot resolve yet (an identity made minutes ago; a directory role granted minutes ago - neither
+  # seen in the lab, which only met the no-admin answer above) is tried again for about 4 minutes; any other refusal, or
+  # one that lasts, is printed as the instance's words
   for try in 1 2 3 4 5 6 7 8 9; do
     if OUT=$(sqa master <<<"$BATCH" 2>&1); then break; fi
     grep -qiE 'could not be (found|resolved)|cannot be resolved|not found in' <<<"$OUT" && [ "$try" -lt 9 ] || { echo "$OUT" >&2; fail "the instance refused the VM's login (above, try $try): a finding - the words are Microsoft's"; }
