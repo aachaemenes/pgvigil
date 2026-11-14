@@ -91,6 +91,39 @@ func (s *Server) fileDoors() *doorSet {
 	return ds
 }
 
+// doorsNow for an Actions: its server's set when it is the server's own Actions; else (one built apart, as a test
+// does) the file's set with this Actions' own doors
+func (a *Actions) doorsNow() *doorSet {
+	if a.s == nil {
+		return &doorSet{PG: a.doors, MS: map[string]mssql.Door{}, NoDoor: map[string]noDoor{}}
+	}
+	if a.s.actions == a {
+		return a.s.doorsNow()
+	}
+	ds := *a.s.fileDoors()
+	ds.PG = a.doors
+	if ds.PG == nil {
+		ds.PG = map[string]actions.Door{}
+	}
+	return &ds
+}
+
+// doorsNow for the SQL Server side: the same, its own doors when it is not the server's
+func (m *MSSQLActions) doorsNow() *doorSet {
+	if m.s == nil {
+		return &doorSet{PG: map[string]actions.Door{}, MS: m.doors, NoDoor: map[string]noDoor{}}
+	}
+	if v, ok := mssqlActions.Load(m.s); ok && v.(*MSSQLActions) == m {
+		return m.s.doorsNow()
+	}
+	ds := *m.s.fileDoors()
+	ds.MS = m.doors
+	if ds.MS == nil {
+		ds.MS = map[string]mssql.Door{}
+	}
+	return &ds
+}
+
 func (s *Server) storeDoors(ds *doorSet) {
 	v, _ := doorSets.LoadOrStore(s, &atomic.Pointer[doorSet]{})
 	v.(*atomic.Pointer[doorSet]).Store(ds)

@@ -289,7 +289,7 @@ func (a *Actions) Explain(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ds := a.s.doorsNow() // the request's one door set
+	ds := a.doorsNow() // the request's one door set
 	if b := a.s.planButtonsOn(ds, name); !b.Explain {
 		writeErr(w, http.StatusForbidden, errors.New(b.ExplainReason))
 		return
@@ -326,7 +326,7 @@ func (a *Actions) ExplainAnalyze(w http.ResponseWriter, r *http.Request) {
 		Reason: in.Reason, User: user, Client: clientIP(r)}
 	var res actions.Result
 	var row *plans.Row
-	ds := a.s.doorsNow() // the request's one door set
+	ds := a.doorsNow() // the request's one door set
 	switch {
 	case ds.PG[name].Page:
 		res = actions.Result{Outcome: actions.Refused, Detail: fileOnly(name)}
@@ -541,7 +541,7 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 	var ddl string
 	res := actions.Result{Outcome: actions.Done}
 	var hr plans.HypoResult
-	ds := a.s.doorsNow() // the request's one door set
+	ds := a.doorsNow() // the request's one door set
 	switch on, why := a.s.hypoButtonOn(ds, p.Instance); {
 	case !on:
 		res = actions.Result{Outcome: actions.Refused, Detail: why}

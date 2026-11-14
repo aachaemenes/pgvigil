@@ -61,8 +61,10 @@ var pageIdentityOptions = map[string]bool{
 	"certificate": true, "servercertificate": true,
 }
 
-// PageMSOptions and PagePGOptions list the allowed options with their reasons (docs and the page's note).
+// PageMSOptions lists the SQL Server options a page door opens with (docs and the page's note).
 func PageMSOptions() []string { return sortedKeys(pageMSOptions) }
+
+// PagePGOptions lists the PostgreSQL options a page door opens with (docs and the page's note).
 func PagePGOptions() []string { return sortedKeys(pagePGOptions) }
 
 func sortedKeys(m map[string]string) []string {

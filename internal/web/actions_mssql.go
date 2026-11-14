@@ -147,7 +147,7 @@ func (m *MSSQLActions) Preview(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	t, why := m.preview(ctx, m.s.doorsNow().MS[name], name, mssql.ActionKind(in.Action), in.SessionID, in.JobID)
+	t, why := m.preview(ctx, m.doorsNow().MS[name], name, mssql.ActionKind(in.Action), in.SessionID, in.JobID)
 	out := struct {
 		OK        bool         `json:"ok"`
 		Reason    string       `json:"reason,omitempty"`
@@ -188,7 +188,7 @@ func (m *MSSQLActions) Run(w http.ResponseWriter, r *http.Request) {
 		res = mssql.ActionResult{Outcome: mssql.OutcomeRefused, Detail: "the typed confirmation is not " + what,
 			Statement: mssql.Statement(kind, in.SessionID, in.JobID)}
 	} else {
-		res = m.run(ctx, m.s.doorsNow().MS[name], req) // the door read once, here
+		res = m.run(ctx, m.doorsNow().MS[name], req) // the door read once, here
 	}
 	at := time.Now()
 	payload, err := mssql.ActionPayload(mssql.ActionRow(at, req, res))
@@ -259,7 +259,7 @@ func (m *MSSQLActions) State(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
-	door := m.s.doorsNow().MS[name]
+	door := m.doorsNow().MS[name]
 	for _, k := range mssql.ActionKinds {
 		why := m.a.off
 		if why == "" && engine != "sqlserver" {
