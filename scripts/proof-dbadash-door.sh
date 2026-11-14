@@ -264,6 +264,7 @@ mkdir -p "$TMPD/pages"
 export PGV_DD_RO="sqlserver://$RO:$(urlq "$RO_PW")@127.0.0.1:$PORT_SQL?database=$DDB&encrypt=true&TrustServerCertificate=true"
 pages() { PGVIGIL_DBADASH_PAGE_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_PAGE_ID="$ID" PGVIGIL_DBADASH_PAGE_FROM="$FROM" PGVIGIL_DBADASH_PAGE_TO="$TO" PGVIGIL_DBADASH_PAGE_DIR="${1:-$TMPD/pages}" \
   PGVIGIL_DBADASH_PAGE_SNAPSHOT="${2:-}" go test -count=1 -run '^TestLivePages$' -v ./internal/dbadash 2>&1 | grep '^page ' || true; }
+echo "page read at $(date +%s) (the page side; the doorage review, finding 2: the gap to the pymssql read)"
 res=$(pages); echo "$res"
 [[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == 9 ]] || fail "C: not every page answered ok and proven"
 # the exact snapshot: one SnapshotDateUTC as the running page printed it, back through the sessions page
@@ -326,8 +327,29 @@ def canon_pg(v, typ):  # pgvigil's JSON value with its column type
 con = pymssql.connect(server=os.environ["SQLHOST"], user="sa", password=os.environ["SA_PW"], database=os.environ["DDB"], port=1433, tds_version="7.4")
 import re
 DUR = re.compile(r"^S(\d+) (\d\d):(\d\d):(\d\d)$")
-AGE = re.compile(r"^(?!.*(Count|Fails)).*(Age|Days|Mins|Minutes|Hours)$|^TimeSinceLast(Failed|Succeeded)$")   # AgentJob7Day.sql L29-30: DATEDIFF(mi, ..., GETUTCDATE()) at the call; a count (FailCount7Days, JobStepFails7Days) is never an age
+AGE = re.compile(r"^(?!.*(Count|Fails)).*(Age|Days|Mins|Minutes|Hours)$|^(TimeSinceLast(Failed|Succeeded)|Days since Last Occurrence)$")   # Alerts_Get.sql L39: DATEDIFF(d, last_occurrence_utc, GETUTCDATE()), its unit first in the name   # AgentJob7Day.sql L29-30: DATEDIFF(mi, ..., GETUTCDATE()) at the call; a count (FailCount7Days, JobStepFails7Days) is never an age
 bad, nonempty, clockcells = [], 0, [0]
+# DBA Dash computes some durations from the clock at the call (BackupStatus.SnapshotAge, 'dd hh:mm:ss'): the two
+# calls are seconds apart, so such a cell is equal within 300 s; every other cell must be equal as it is
+def near(x, y, col):
+    if x == y: return True
+    # an age in whole minutes, hours or days computed at the call: 1 unit apart when the calls straddle one
+    if AGE.search(col) and x[:1] == y[:1] == "N":
+        try:
+            if abs(decimal.Decimal(x[1:]) - decimal.Decimal(y[1:])) <= 1:
+                clockcells[0] += 1; return True
+        except decimal.InvalidOperation: pass
+    mx, my = DUR.match(x), DUR.match(y)
+    if not (mx and my): return False
+    sx = lambda m: int(m[1]) * 86400 + int(m[2]) * 3600 + int(m[3]) * 60 + int(m[4])
+    ok = abs(sx(mx) - sx(my)) <= 300
+    if ok and x != y: clockcells[0] += 1
+    return ok
+# near()'s self-test (the doorage review, finding 4): a count is never a clock age, a minute age is 1 apart at most
+assert not near("N2", "N3", "FailCount7Days") and near("N4", "N3", "TimeSinceLastSucceeded") and not near("N5", "N3", "TimeSinceLastSucceeded") \
+    and near("N4", "N3", "Days since Last Occurrence") and not near("N2", "N3", "JobStepFails7Days"), "near() self-test"
+clockcells[0] = 0
+print(f"read at {int(datetime.datetime.now(datetime.timezone.utc).timestamp())} (the pymssql side; the doorage review, finding 2: the gap to the page read)", flush=True)
 for page, sqltext in calls.items():
     cur = con.cursor()
     cur.execute("SET NOCOUNT ON; " + sqltext)
@@ -351,22 +373,11 @@ for page, sqltext in calls.items():
         a = sorted(tuple(canon_py(v, t) for v, t in zip(r, types)) for r in rows)
         b = sorted(tuple(canon_pg(v, t) for v, t in zip(r, types)) for r in ps["rows"])
         if a != b:
-            # DBA Dash computes some durations from the clock at the call (BackupStatus.SnapshotAge, 'dd hh:mm:ss'): the two
-            # calls are seconds apart, so such a cell is equal within 300 s; every other cell must be equal as it is
-            def near(x, y, col):
-                if x == y: return True
-                # an age in whole minutes, hours or days computed at the call: 1 unit apart when the calls straddle one
-                if AGE.search(col) and x[:1] == y[:1] == "N":
-                    try:
-                        if abs(decimal.Decimal(x[1:]) - decimal.Decimal(y[1:])) <= 1:
-                            clockcells[0] += 1; return True
-                    except decimal.InvalidOperation: pass
-                mx, my = DUR.match(x), DUR.match(y)
-                if not (mx and my): return False
-                sx = lambda m: int(m[1]) * 86400 + int(m[2]) * 3600 + int(m[3]) * 60 + int(m[4])
-                ok = abs(sx(mx) - sx(my)) <= 300
-                if ok and x != y: clockcells[0] += 1
-                return ok
+            # a clock-computed cell is equal within near()'s tolerance (above); every other cell must be equal as it is.
+            # NOT COVERED (the doorage review, finding 3, 2026-11-14): a count summed over hour buckets with a GETUTCDATE()
+            # window (AgentJob7Day.sql L6-17) and a status cell derived from a clock age flip when the two reads straddle a
+            # bucket's or a threshold's edge; a back-to-back re-read of both sides before C fails would cover them - not
+            # built until the two 'read at' lines give the measured gap
             if not (len(a) == len(b) and all(len(x) == len(y) and all(near(p, q, c) for p, q, c in zip(x, y, cols)) for x, y in zip(a, b))):
                 # the first pair near() refuses (a pair differing only in accepted clock cells is not it), and only its
                 # cells near() refuses, by column name (the whole pair is long: a cut log loses the cells)
