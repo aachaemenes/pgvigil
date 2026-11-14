@@ -156,6 +156,17 @@ Runs stay in the existing run tables (`pgvigil.job_runs`, `pgvigil.mssql_job_run
 `pgvigil.job_versions` (migration 0072, the script since 0094), `mssql_config_history`, `mssql_trace_flag_history` and
 `job_thresholds` keep a row per change, not per read, and go with their instance.
 
+The jobs' hourly statistics (`pgvigil.job_stats_hourly`, migration 0139) keep, per job and UTC hour of a run's start,
+the runs, successes, failures, retries and the total, longest and shortest duration of the job's OUTCOME rows only
+(SQL Agent's step 0; a PostgreSQL run counts as its job's step 0). This departs from DBA Dash, whose `JobStats_60MIN`
+keeps a row per step too: the step rows would be about three quarters of the hours (about 75 GB more over 730 days at
+305 SQL Server instances of 30 jobs) and no page reads them yet; SQL Agent's and pgAgent's step rows, with a step chart
+that reads them, are a later task. The hours are kept 730 days by default, their own age apart from `purge -days`
+(`pgvigil.hours_retention`; `pgvigil purge -hours job_stats_hourly=<days>` changes it), measured at about 0.7 GB a month
+for 200 SQL Server instances of 30 jobs [an estimate from the per-step measure: 2.9 GB a month with every step]. After the
+upgrade to 0139 each instance's hours are built by its next jobs import (or by `pgvigil purge` for an instance that
+writes no more runs); a history import from DBA Dash builds them once at its end.
+
 ## API
 
 `GET /api/jobs/history?engine=pg|mssql&instance=<id>&from=&to=` is the grid; with `&scheduler=<pg_cron|pgagent|sqlagent>&job=<id>`

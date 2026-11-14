@@ -1,0 +1,23 @@
+--- a/internal/dbadash/import.go
++++ b/internal/dbadash/import.go
+@@ -366,7 +366,20 @@
+ 					}
+ 					return beat(running(n))
+ 				}
++				// the job runs' history (FLEET STATS ROLLUP, 0139): the hourly statistics are only marked while the
++				// batches go in and built ONCE at the end, not once per batch (a defer that a dead run leaves lapses in
++				// 30 minutes and the next write or purge builds the hours)
++				if m.Key == "jobruns" {
++					if _, err := pool.Exec(ctx, `SELECT pgvigil.job_stats_defer($1)`, tgt.ID); err != nil {
++						return out, fmt.Errorf("%s %s: the job statistics' defer: %w", tgt.Name, m.Key, err)
++					}
++				}
+ 				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
++				if m.Key == "jobruns" {
++					if _, berr := pool.Exec(ctx, `SELECT pgvigil.job_stats_build($1)`, tgt.ID); berr != nil && err == nil {
++						err = fmt.Errorf("the job statistics' build (the runs are stored; the next write or purge builds the hours): %w", berr)
++					}
++				}
+ 				var pe *pgconn.PgError
+ 				switch {
+ 				case errors.As(err, &pe) && pe.Code == "55000":
