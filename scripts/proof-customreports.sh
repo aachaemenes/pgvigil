@@ -133,7 +133,7 @@
 #     the instance's own tab of the subject; Glenn's panel: no sample, no file input, why nothing of it is stored; the
 #     last panel's Run: the DOM check, the accessibility tree's description, a mouse click sends nothing; one link
 #     followed lands on that tab; the address's tool=sp_Blitz opens its sample as the page loads, and Export .xlsx
-#     (the Summary sheet's note) and Export CSV (the sample's file's first line) carry the mark; no custom_report_log row
+#     (About's line of each of the panel's sheets) and Export CSV (the sample's file's first line) carry the mark; no custom_report_log row
 #     from any of it; the real instance: no sample in its tools, GET /api/community/sample 404; POST /api/community/run
 #     of the demo's SQL Server instance, never answered with a sample: on the signed-in plain serve (an instance without
 #     a login there: a plain serve has no demo instance) refused in its run row ('instance <name> has no read login
@@ -1550,18 +1550,28 @@ for s in d['demo']:
 p = d['deep']; assert p and p['rows'] >= 1 and 'stored sample of sp_Blitz' in p['mark'], f"S: tool=sp_Blitz: {p}"
 print(f"ok   S: the address's tool=sp_Blitz opens its sample as the page loads ({p['rows']} rows)")
 fx = d['files']; assert fx.get('xlsx') and fx.get('csv'), f"S: the downloads: {fx}"
-# the Summary sheet (sheet1, its text inline): each sheet's row - the sp_Blitz panel's sheets carry the mark in their
-# note, the tools' grids and the log never
-def summary_rows(xml):
+# About (the workbook's last sheet, found through the workbook's rels): a line 'Sheet <name>' | '<n> rows; <note>' for each
+# grid sheet - the sp_Blitz panel's sheets carry the mark in their note, the tools' grids and the log never
+def about_rows(z):
+    wb, rels = z.read('xl/workbook.xml').decode(), z.read('xl/_rels/workbook.xml.rels').decode()
+    sheets = [(html.unescape(n), r) for n, r in re.findall(r'<sheet [^>]*?name="([^"]*)"[^>]*?r:id="(\w+)"', wb)]
+    assert sheets and sheets[-1][0] == 'About', f"S: the workbook's last sheet is not About: {[n for n, _ in sheets]}"
+    rid = sheets[-1][1]
+    tg = re.search(r'<Relationship [^>]*?Id="' + rid + r'"[^>]*?Target="([^"]+)"', rels) or re.search(r'<Relationship [^>]*?Target="([^"]+)"[^>]*?Id="' + rid + '"', rels)
+    xml = z.read('xl/' + tg.group(1).lstrip('/').replace('xl/', '', 1)).decode()
+    sst = [html.unescape(re.sub(r'<[^>]+>', '', x)) for x in re.findall(r'<si>(.*?)</si>', z.read('xl/sharedStrings.xml').decode(), re.S)] if 'xl/sharedStrings.xml' in z.namelist() else []
+    val = lambda a, inner: sst[int(re.search(r'<v>(\d+)</v>', inner).group(1))] if 't="s"' in a else html.unescape(re.sub(r'<[^>]+>', '', inner or ''))
     out = {}
-    for r, body in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', xml):
-        cells = {c: html.unescape(re.sub(r'<[^>]+>', '', t)) for c, t in re.findall(r'<c r="([A-Z]+)\d+"[^>]*>(.*?)</c>', body)}
-        if int(r) >= 12 and cells.get('A'): out[cells['A']] = cells.get('C', '')
+    for body in re.findall(r'<row [^>]*>(.*?)</row>', xml, re.S):
+        cells = {c: val(a, inner) for c, a, inner in re.findall(r'<c r="([A-Z]+)\d+"([^>]*?)(?:/>|>(.*?)</c>)', body, re.S)}
+        if cells.get('A', '').startswith('Sheet '): out[cells['A'][6:]] = cells.get('B', '')
+    grid = [n for n, _ in sheets[:-1]]
+    assert sorted(out) == sorted(grid), f"S: About's sheet lines {sorted(out)} vs the grid sheets {grid}"
     return out
-z = zipfile.ZipFile(os.path.join(dl, fx['xlsx'])); rows = summary_rows(z.read('xl/worksheets/sheet1.xml').decode())
+z = zipfile.ZipFile(os.path.join(dl, fx['xlsx'])); rows = about_rows(z)
 bad = [(n, p['mark'] in note) for n, note in rows.items() if (p['mark'] in note) != n.startswith('sp_Blitz')]
-assert rows and not bad and sum(1 for n in rows if n.startswith('sp_Blitz')) == 2, f"S: the workbook's Summary: {rows} (wrong: {bad})"
-print(f"ok   S: Export .xlsx: the Summary sheet's notes carry the mark on exactly the panel's 2 sheets ({', '.join(n for n in rows if n.startswith('sp_Blitz'))}), none of the other {len(rows) - 2}")
+assert rows and not bad and sum(1 for n in rows if n.startswith('sp_Blitz')) == 2, f"S: the workbook's About: {rows} (wrong: {bad})"
+print(f"ok   S: Export .xlsx: About's lines carry the mark on exactly the panel's 2 sheets ({', '.join(n for n in rows if n.startswith('sp_Blitz'))}), none of the other {len(rows) - 2}")
 cpath = os.path.join(dl, fx['csv'])
 assert cpath.endswith('.zip'), f"S: one CSV for a page of several grids: {fx['csv']}"
 zc = zipfile.ZipFile(cpath)

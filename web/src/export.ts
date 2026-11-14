@@ -6,7 +6,7 @@
 // column (a light fill, the link blue), no other cell filled, the numbers as numbers (a count or a decimal General, a
 // share '0.0%', a time 'yyyy-MM-dd HH:mm': DBA Dash's formats), no frozen pane, and each column as wide as its widest
 // cell the way DBA Dash's writer measures it (ClosedXML AdjustToContents, capped at 150); a
-// column hidden with the grid tools (gridtools.ts) is left out, as on the screen; a Summary sheet first (the instance,
+// column hidden with the grid tools (gridtools.ts) is left out, as on the screen; an 'About' sheet last (the instance,
 // the tab, the window, the export time); the same rows as CSV beside it (one grid: a .csv; several: a .zip of one
 // .csv per grid). It reads the rendered page and each grid's page model (ui.ts gridModel: the raw values in the order
 // shown), so the file matches the screen; the server is untouched and nothing leaves the browser but the file the
@@ -28,7 +28,7 @@ import type { LookCache, PageSheet } from './export_page';
 
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date' | 'bool' | 'days' | 'day';   // bool: v 1 or 0, written as an Excel boolean (P3)   // days: a count of days the page writes 'n days'   // day: a date alone (v its Excel serial, stamp 'YYYY-MM-DD')
-export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
+export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (written in the header row's style)   // stamp: a time's local text for the CSV
   per?: string;   // a size per a time ('381.5 MB / day': kind 'bytes', per 'day')
   look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
   runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
@@ -38,7 +38,7 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
 export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
-export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[]; sample?: string; within?: string; own?: boolean; items?: boolean; read?: string }   // own: the name is the page's own (data-sheet: kept whole, export_names.ts ownName)   // items: an Item | Value | Status section (itemSection)   // within: the heading above the one that names it (export_names.ts sheetNames: a name taken in full falls back on it)   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)   // read: a list cut to its part's reach, what it read ('This list reads the newest 31 days of this window: ...'): in its note on 'About' and the line above its CSV's header
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[]; sample?: string; within?: string; own?: boolean; items?: boolean; read?: string }   // own: the name is the page's own (data-sheet: kept whole, export_names.ts ownName)   // items: an Item | Value | Status section (itemSection)   // within: the heading above the one that names it (export_names.ts sheetNames: a name taken in full falls back on it)   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in About's line of its sheet and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)   // read: a list cut to its part's reach, what it read ('This list reads the newest 31 days of this window: ...'): in its note on 'About' and the line above its CSV's header
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -378,7 +378,7 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
       continue;
     }
     const t = e as HTMLTableElement;
-    // a 'the newest 500 of 1,234 samples' line right above the grid rides into the Summary sheet: the rows taken are not all
+    // a 'the newest 500 of 1,234 samples' line right above the grid rides into About's line of its sheet: the rows taken are not all
     // ui.ts grid: table in .grid-wrap in .grid-box, whose first child is the 'n of m rows shown (filtered)' line
     const wrap = t.parentElement?.classList.contains('grid-wrap') ? t.parentElement : t;
     const box = wrap.parentElement?.classList.contains('grid-box') ? wrap.parentElement : wrap;
@@ -474,7 +474,7 @@ function colName(i: number): string {
 
 // Styles: one cellXfs entry per (number format, fill, font, border, wrap) used; fills 0 and 1 are the two the format
 // reserves. A cell with a look (the page's CSS, export_page.ts) is written in that look; the old palette (fillOf, the
-// blue header) is for the one-grid workbook's Summary sheet, whose header row is the export's own.
+// blue header) is for the grid sheets' header rows and the cells with a status but no look.
 class Styles {
   private xfs = new Map<string, number>([['0|0|0|0|', 0]]);   // style 0 (a cell typed in later) plain: no alignment, Excel's bottom (X0)
   private fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
@@ -605,8 +605,8 @@ export function colWidth(cells: { text: string; head: boolean }[]): number {
   return Math.min(MAX_WIDTH, Math.round((px - 0.025625) / 7 * 1e6) / 1e6);
 }
 
-// Sheet: a grid's sheet (data: its header row, then its rows; table: the id of its Excel table part), the one-grid
-// workbook's Summary sheet, or the page sheet (page: its rows written as they are from row 1, no header row); heads: the
+// Sheet: a grid's sheet (data: its header row, then its rows; table: the id of its Excel table part), the 'About'
+// sheet, or the page sheet (page: its rows written as they are from row 1, no header row); heads: the
 // header cells' looks as the page draws them; freeze: the rows that stay on screen; widths: the columns' widths as given
 interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number; heads?: Look[]; page?: boolean; freeze?: number; widths?: number[]; drawing?: boolean }   // drawing: the page sheet's pictures (rId1 of its rels)
 
@@ -692,7 +692,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
   const jumps: string[] = [];
   const first = sh.page ? 1 : 2;
   if (!sh.page) {
-    const hs = st.id(0, undefined, true);   // the one-grid workbook's Summary sheet: the export's own header row
+    const hs = st.id(0, undefined, true);   // the header row: the export's own (X4: one header style)
     const hcell = (j: number) => {
       const l = sh.heads?.[j], s = l ? st.look(0, l) : hs;
       return sh.table ? `<c r="${colName(j)}1" s="${s}" t="s"><v>${sst.id(head[j])}</v></c>` : cell(colName(j) + '1', { v: head[j], kind: 'text', text: head[j] }, s);
@@ -1043,7 +1043,7 @@ function save(blob: Blob, name: string) {
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-// oneFile: a workbook of one grid or one chart (the Summary sheet, then its own), named
+// oneFile: a workbook of one grid or one chart (its sheet, then 'About'), named
 // <instance>_<tab>_<sheet>_<from>_<to>.xlsx
 async function oneFile(m: Meta, sec: Section): Promise<string> {
   const z = await zip(workbook(m, [sec]), m.at);
