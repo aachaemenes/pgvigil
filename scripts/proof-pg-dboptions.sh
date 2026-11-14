@@ -52,7 +52,9 @@
 #     Cause: the sessions logged in as dbo_app, whose statement_timeout C had set to 2.5 ms, so the held session ended
 #     at once. Fixed: the held sessions log in as dbo_hold, a role without overrides, and a hold is read again a second
 #     later; the expectation unchanged.]
-#     ALLOW_CONNECTIONS false on dbo_x: allow warn with its finding; true again: ok, gone. dbo_l (LATIN1, C): encoding
+#     ALLOW_CONNECTIONS false on dbo_x: allow warn with its finding; true again: ok, gone. dbo_inv with datconnlimit -2
+#     (invalid, as an interrupted DROP leaves it): its connection cell crit 'invalid: ...', and tables ends ok (the
+#     per-database list passes an invalid database by; red before that fix: 'partial', FATAL 55000); then dropped. dbo_l (LATIN1, C): encoding
 #     warn (advice, an info finding); its collation cell grey (C has no version on 15+, 'PostgreSQL 15+' on 13);
 #     template0's encoding cell grey. The collation cell (15+): datcollversion of dbo_t written to '0.0' by hand: after
 #     versions warn, recorded 0.0; ALTER DATABASE dbo_t REFRESH COLLATION VERSION: ok again. On 13 every collation cell
@@ -559,6 +561,16 @@ JS
   s "$V" "alter database dbo_x allow_connections true" >/dev/null; collect "$V" databases
   [[ "$(dbcell "$V" dbo_x allow) $(dbfind "$V" 'database allow connections' dbo_x)" == "ok - 0 -" ]] || fail "D: dbo_x open again reads '$(dbcell "$V" dbo_x allow)'"
   ok "D: dbo_x ALLOW_CONNECTIONS false yellow with its finding; true: green, gone"
+  # D-INV (11-14): a database an interrupted DROP left invalid (datconnlimit -2, set here by hand as the server's own
+  # DROP leaves it): its connection cell red with 0104's words, and the per-database collections pass it by - a read
+  # of it is refused (FATAL 55000) and ended the collection 'partial' every run before the fix
+  s "$V" "create database dbo_inv" >/dev/null
+  s "$V" "update pg_database set datconnlimit = -2 where datname = 'dbo_inv'" >/dev/null
+  collect "$V" databases tables
+  IV=$(dbcell "$V" dbo_inv conn); IN=$(q "select conn_note from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_inv'")
+  [[ "$IV" == "crit critical" && "$IN" == invalid:* ]] || fail "D: dbo_inv invalid reads '$IV' '$IN'"
+  s "$V" "drop database dbo_inv" >/dev/null; collect "$V" databases
+  ok "D: dbo_inv invalid (datconnlimit -2): red 'invalid: ...'; tables ended ok without it; dropped"
   [[ "$(dbcell "$V" dbo_l encoding) $(dbfind "$V" 'database encoding' dbo_l)" == "warn info 1 info" ]] || fail "D: dbo_l LATIN1 reads '$(dbcell "$V" dbo_l encoding)'"
   [[ "$(dbcell "$V" dbo_l collation)" == "none -" ]] || fail "D: dbo_l's collation (C) reads '$(dbcell "$V" dbo_l collation)'"
   [[ "$(dbcell "$V" template0 encoding)" == "none -" ]] || fail "D: template0's encoding reads '$(dbcell "$V" template0 encoding)'"
