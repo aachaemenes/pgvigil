@@ -13,7 +13,8 @@ import (
 
 // replicationCollector is the HADR page: streaming senders (pg_stat_replication,
 // each with the slot it holds), the receiver on a standby (pg_stat_wal_receiver,
-// replay delay) and the standby's recovery state (a 'standby' row), replication
+// replay delay), the standby's recovery state (a 'standby' row) and
+// synchronous_standby_names (a 'sync' row), replication
 // slots with the WAL they retain (a DMS or Debezium consumer is a slot), logical
 // subscriptions and publications, recovery conflicts per database, and on Aurora
 // the replica status function. Every minute; rows are stored as read, each with a
@@ -46,10 +47,11 @@ SELECT 'sender' AS kind, r.pid, r.usename::text AS usename, r.application_name, 
        r.sent_lsn::text, r.write_lsn::text, r.flush_lsn::text, r.replay_lsn::text,
        pg_wal_lsn_diff(` + currentLSN + `, r.sent_lsn)   AS sent_lag_bytes,
        pg_wal_lsn_diff(` + currentLSN + `, r.replay_lsn) AS replay_lag_bytes,
+       pg_wal_lsn_diff(` + currentLSN + `, r.flush_lsn)  AS flush_lag_bytes,
        extract(epoch FROM r.write_lag)  AS write_lag_secs,
        extract(epoch FROM r.flush_lag)  AS flush_lag_secs,
        extract(epoch FROM r.replay_lag) AS replay_lag_secs,
-       r.reply_time, sl.slot_name::text AS slot_name, sl.slot_type
+       r.reply_time, sl.slot_name::text AS slot_name, sl.slot_type, sl.temporary AS slot_temporary
   FROM pg_stat_replication r
   LEFT JOIN pg_replication_slots sl ON sl.active_pid = r.pid`
 
@@ -85,6 +87,11 @@ SELECT 'standby' AS kind,
        pg_last_xact_replay_timestamp() AS last_replay_at,
        CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused() END AS replay_paused
  WHERE pg_is_in_recovery()`
+
+// the synchronous standbys a primary waits for, one row always (on a standby the setting is inert: in_recovery says so)
+const syncSQL = `
+SELECT 'sync' AS kind, current_setting('synchronous_standby_names') AS names,
+       current_setting('synchronous_commit') AS commit_level, pg_is_in_recovery() AS in_recovery`
 
 // slots: wal_status and safe_wal_size exist from PG13; two_phase 14, conflicting 16, synced and inactive_since 17
 const slotsSQL = `
@@ -150,6 +157,7 @@ func (replicationCollector) Run(ctx context.Context, conn *pgx.Conn, info platfo
 		read("receiver", receiverSQL)
 	}
 	read("standby", standbySQL)
+	read("sync", syncSQL)
 	if slotCols, err := viewColumns(ctx, conn, "pg_catalog.pg_replication_slots"); err != nil {
 		failed = append(failed, "slots")
 		out = append(out, Row{"kind": "collector_error", "source": "slots", "message": err.Error()})

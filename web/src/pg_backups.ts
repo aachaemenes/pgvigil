@@ -5,8 +5,10 @@
 //   pgStateView             one instance's Server state tab: the role and timeline with every role change, the crash
 //                           restarts from the log with Acknowledge, pg_stat_statements' state, uptime and the amcheck age
 //                           per database, each with its thresholds
-//   pgReplicationFleetView  the fleet Replication page: the clusters by system identifier, one row per link, Patroni's
-//                           members where its REST port answered, the fleet's role changes
+//   pgReplicationFleetView  the fleet Replication page: the clusters by system identifier, one row per member, each
+//                           cluster's physical links from both sides (task 371: pgvigil.pg_repl_link_health - the
+//                           sending server's sender beside the standby's own receiver, the links expected and absent,
+//                           each link's one finding), Patroni's members where its REST port answered, the role changes
 //   pgThresholdsView        the fleet Thresholds page: every key at the root, a tag, an instance or a database
 //   pgBaseBackupsFleetSection  the base-backup section of the fleet Backups root (the join adds it to backups.ts)
 // Every write goes through a dialog that says what it changes; the server answers done or the reason it refused.
@@ -323,9 +325,12 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
 // ---- fleet Replication page ------------------------------------------------------------------------------
 
 export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
-  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes'>>('pg/replication', {}), tagIds(ctx)]);
+  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes' | 'hadr_links'>>('pg/replication', {}), tagIds(ctx)]);
   const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const links = rowsOf(d.links).filter(keep), pat = rowsOf(d.patroni).filter(keep), ch = rowsOf(d.changes).filter(keep);
+  // a link is in scope when either side is (its sending server or its standby)
+  const keepLink = (r: Row) => !ids || ids.has(Number(r.sending_id)) || ids.has(Number(r.standby_id));
+  const hlinks = rowsOf(d.hadr_links).filter(keepLink), hadrRead = d.hadr_links != null;
   const clusters = new Map<string, Row[]>();
   for (const r of links) {
     const k = String(r.system_identifier ?? `instance ${String(r.instance_id)}`);
@@ -346,19 +351,54 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
   ];
   const out: HTMLElement[] = [el('h2', {}, 'Replication'),
     el('p', { class: 'meta' }, `${clusters.size} cluster(s) by system identifier, ${links.length} member(s) in the fleet. A standby's sender row is the primary's pg_stat_replication row named by the standby's cluster_name or instance name, or its slot.`)];
+  const shown = new Set<Row>();
   for (const [k, rows] of clusters) {
     const pri = rows.filter(r => r.role === 'primary');
+    const own = hlinks.filter(r => String(r.system_identifier ?? '') === k);
+    own.forEach(r => shown.add(r));
     out.push(el('section', {}, el('h3', {}, `${String(rows[0].cluster ?? 'cluster')} (system ${k})`),
       el('p', { class: 'meta' }, pri.length === 1 ? `primary ${String(pri[0].instance)}, ${rows.length - 1} standby(s)` : pri.length ? `${pri.length} primaries: a split cluster or a standby not yet read` : 'no primary in the fleet'),
-      grid(rows, cols)));
+      grid(rows, cols),
+      ...(hadrRead ? [el('h4', {}, `Links (${own.length})`), grid(own, linkCols(ctx), 'No physical link seen in this cluster in the last 7 days.')] : [])));
   }
   if (!clusters.size) out.push(el('p', { class: 'meta' }, 'No instance read by the rolechange collection yet.'));
+  const rest = hlinks.filter(r => !shown.has(r));
+  if (rest.length) out.push(el('section', {}, el('h3', {}, `Links outside the clusters above (${rest.length})`),
+    el('p', { class: 'meta' }, 'A link whose sending server or standby the rolechange collection has not read (no system identifier to group it by).'),
+    grid(rest, linkCols(ctx))));
+  if (!hadrRead) out.push(el('p', { class: 'meta' }, 'The link rows (both sides of each standby) are not served by this server yet.'));
   if (pat.length) out.push(el('section', {}, el('h3', {}, 'Patroni'),
     grid(pat, [{ key: 'scope' }, { key: 'instance', label: 'read through', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgstate') }, { key: 'ok', label: 'answered', fmt: v => yes(v) },
       { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => `${String(m.member)} ${String(m.role)} ${String(m.state)}${m.lag_bytes != null ? ` lag ${fmtBytes(m.lag_bytes)}` : ''}`).join('; ') : '' },
       { key: 'message', wide: true }, { key: 'snapshot_at', label: 'read', fmt: fmtTime }])));
   out.push(el('section', {}, el('h3', {}, `Role changes (${ch.length})`), grid(ch, changeCols(ctx, true), 'No role change seen in the fleet.')));
   return el('div', {}, ...out);
+}
+
+// linkCols: one physical link per row (pg_repl_link_health) - the sending server's view (its pg_stat_replication row)
+// beside the standby's own (its WAL receiver and what it has received and not replayed), then the link's one finding.
+function linkCols(ctx: Ctx): Col[] {
+  const linkState = (v: unknown) => {
+    const t = String(v ?? '');
+    return badge(t, t.startsWith('down') ? 'crit' : t.startsWith('missing') || t === 'replay paused' ? 'warn' : t.startsWith('streaming') ? 'ok' : '');
+  };
+  const bytes = (v: unknown) => v == null ? '' : fmtBytes(v);
+  return [
+    { key: 'link', label: 'link', fmt: (v, r) => String(r.application_name ?? r.standby ?? v ?? '') + (r.slot_name ? ` (slot ${String(r.slot_name)})` : '') },
+    { key: 'sending', label: 'from', fmt: (v, r) => r.sending_id == null ? String(r.sender_host ?? '') : instLink(ctx, v, r.sending_id, 'replication') },
+    { key: 'standby', label: 'to', fmt: (v, r) => r.standby_id == null ? String(r.client_addr ?? '') : instLink(ctx, v, r.standby_id, 'replication') },
+    { key: 'status', fmt: linkState },
+    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : '') },
+    { key: 'sender_state', label: 'sender' },
+    { key: 'sender_lag_bytes', label: 'not replayed (sender)', num: true, fmt: bytes },
+    { key: 'sender_lag_secs', label: 'replay_lag', num: true, fmt: v => v == null ? '' : fmtSecs(Math.round(num(v))) },
+    { key: 'receiver_status', label: 'receiver', fmt: (v, r) => r.standby_id == null ? '' : v == null ? (r.has_receiver === false ? badge('none', 'warn') : '') : String(v) },
+    { key: 'standby_lag_bytes', label: 'not replayed (standby)', num: true, fmt: bytes },
+    { key: 'min_apply_delay_ms', label: 'apply delay', num: true, fmt: v => v == null || num(v) === 0 ? '' : fmtSecs(Math.round(num(v) / 1000)) },
+    { key: 'last_seen', label: 'sender last seen', fmt: fmtTime },
+    { key: 'check_name', label: 'finding', fmt: (v, r) => v == null ? '' : el('span', {}, sev(r.severity), ' ', String(v)) },
+    { key: 'detail', wide: true },
+  ];
 }
 
 // ---- fleet Thresholds page -------------------------------------------------------------------------------
