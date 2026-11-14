@@ -731,6 +731,9 @@ echo "ok   M: pg-m (platform onprem) added while nothing listened: 'not read yet
 echo "== N. the page door: off on a fresh install, on with doors.page_instance_reads; serve's own identity refused; EXPLAIN, the advisor, the actions off; at once on this serve; a row left out; report mail as the owner; sp_start_job refused =="
 DOOR=pgv_door_$SUF; DOOR_PW=$(pw); export DOOR_PW
 printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pg_monitor;\n" "$DOOR" "$DOOR_PW" | PGPASSWORD="$PG_PW" psql "host=127.0.0.1 port=$PB user=postgres dbname=postgres" -Xq -v ON_ERROR_STOP=1 >/dev/null || fail "N: the door's login on PostgreSQL"
+# K stopped A's SQL Server as its last row: N starts it again (a published port may move on a restart)
+docker start "$SQL" >/dev/null || fail "N: docker start the SQL Server"; up
+PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 JOB=pgvin_probe_$SUF
 sqok "N: the probe job" "EXEC msdb.dbo.sp_add_job @job_name = N'$JOB'; EXEC msdb.dbo.sp_add_jobstep @job_name = N'$JOB', @step_name = N'one', @subsystem = N'TSQL', @command = N'SELECT 1';
   EXEC msdb.dbo.sp_add_jobserver @job_name = N'$JOB';" msdb
