@@ -283,7 +283,7 @@ SQL
   # again for about 4 minutes; any other refusal, or one that lasts, is printed as the instance's words
   for try in 1 2 3 4 5 6 7 8 9; do
     if OUT=$(sqa master <<<"$BATCH" 2>&1); then break; fi
-    grep -qiE 'could not be found|cannot be resolved|not found in' <<<"$OUT" && [ "$try" -lt 9 ] || { echo "$OUT" >&2; fail "the instance refused the VM's login (above, try $try): a finding - the words are Microsoft's"; }
+    grep -qiE 'could not be (found|resolved)|cannot be resolved|not found in' <<<"$OUT" && [ "$try" -lt 9 ] || { echo "$OUT" >&2; fail "the instance refused the VM's login (above, try $try): a finding - the words are Microsoft's"; }
     echo "vmlogin: try $try - the instance cannot resolve $VM_NAME yet; again in 30 s"; sleep 30
   done
   echo "$OUT"
