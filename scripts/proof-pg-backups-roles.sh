@@ -13,7 +13,7 @@
 # pgbackrest "$@"', which is the binary and the repository the collector would reach on a host set up for it
 # (docs/backups-postgres.md); a stand-in 'barman' prints a recorded 'barman -f json list-backups' answer (barman 3.20's
 # JsonOutputWriter shape: barman itself is not run). Both containers are removed with their volumes at the end, and that
-# is read back (Z). Nothing that existed before the run is touched; port 8008 (Patroni's default) is used only when free.
+# is read back (Z). Nothing that existed before the run is touched.
 #
 # Expected (written before the first run):
 #  A. pgBackRest. stanza 'demo' made, a full backup, a write and two WAL switches, a diff backup, two more switches.
@@ -60,12 +60,12 @@
 #     with the instance level ended (inherit): critical again, threshold_level 'tag'. The instance at warn 0 / crit 0
 #     again: no row (the instance wins over the tag).
 #  H. the web side, a -no-login server with the wiring: GET /api/pg/backups (the 6 parts, tools 1+ row), /api/pg/state
-#     (the 10 parts), /api/pg/replication (links holds the primary and both standbys), /api/pg/thresholds (keys 8),
+#     (the 11 parts: 0144 added patroni_checks), /api/pg/replication (links holds the primary and both standbys),
+#     /api/pg/thresholds (13 keys or more: 0144's five patroni_* among them),
 #     /api/pg/backups/fleet: each 200. /api/overview has rows of check_group 'uptime'. POST /api/pg/thresholds with the
 #     header and no login: 403; without the header: 403.
-#  I. Patroni (only when 127.0.0.1:8008 is free): a stand-in /cluster on it (2 members) and a session named 'Patroni
-#     heartbeat' on the promoted standby: collect rolechange: pg_patroni_read ok true, members 2; pg_patroni_members
-#     pg1 leader, pg2 replica with lag_bytes 0. The session closed: the next collect marks both absent.
+#  I. Patroni: no longer here - rolechange's Patroni read (task 376, patroni.go) is proven on a real Patroni + etcd
+#     cluster by scripts/proof-patroni.sh.
 #  S. the rules on seeded rows in the same repository (instances of their own):
 #     s1 a file-fed standby (no receiver) 90 min behind, its primary not in the fleet: 'replay delay over 60 min' warning
 #     s2 the same at 300 min: critical
@@ -109,7 +109,7 @@
 #      with status 2 (no valid backup) and no label marks them absent.
 #   S11 full_backup_age at critical 0.5 h alone on an instance whose full ended an hour ago: one row, critical, 'full
 #      backup older than 0.5 h'; amcheck_age at critical 5 d alone: db1 (10 d) critical.
-#   S12 Patroni answered (one member), then failed (ok false): the member absent, the read row ok false.
+#   S12 moved to scripts/proof-patroni.sh (its A, H and s4: a failed read takes the members off the page).
 #   U  more cases: a barman server name starting with '-' names no tool; --cloud-provider google-cloud-storage and an
 #      --endpoint-url pass on as options, an unknown provider names no tool; keepBackups keeps an older full past the
 #      newest 50; barman-cloud's ctime fields before 3.13; barman without backup_type is full; a failed barman backup is
@@ -121,12 +121,14 @@ WORK=$(mktemp -d); SUF=$(basename "$WORK" | tr -dc 'a-z0-9' | tail -c 8)
 MON_CT=pgv162-mon-$SUF; REPO_CT=pgv162-repo-$SUF
 SUPW=$(python3 -c 'import secrets; print(secrets.token_hex(12))'); MON=pgv162mon; MONPW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 REPO_DB=pgvigil_162_$SUF
-CIDS=(); HTTPPID=""; SRVPID=""; HOLD=""
+CIDS=(); SRVPID=""; HOLD=""
 rc=0
 cleanup() {
+  local st=$?
   set +e
+  # a command that failed outside fail() (set -e) is a failure too
+  [[ $rc -eq 0 && $st -ne 0 ]] && { echo "FAIL: exit $st outside a check" >&2; rc=$st; }
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null
-  [[ -n "$HTTPPID" ]] && kill "$HTTPPID" 2>/dev/null
   [[ -n "$HOLD" ]] && kill "$HOLD" 2>/dev/null
   for c in "${CIDS[@]}"; do docker rm -f -v "$c" >/dev/null 2>&1; done
   local left=0
@@ -357,28 +359,6 @@ upc() { q "select coalesce(string_agg(severity || '|' || check_name, ','), 'none
 [[ $(upc) == none ]] || fail "F: the instance did not win over the tag $(upc)"
 ok "F: default, instance, tag, the instance over the tag"
 
-echo "--- I. Patroni"
-if python3 -c 'import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(("127.0.0.1",8008)) else 1)'; then
-  mkdir -p "$WORK/www"
-  cat > "$WORK/www/cluster" <<'J'
-{"scope": "pvdemo", "members": [{"name": "pg1", "role": "leader", "state": "running", "api_url": "http://127.0.0.1:8008/patroni", "host": "127.0.0.1", "port": 5432, "timeline": 2},
- {"name": "pg2", "role": "replica", "state": "streaming", "api_url": "http://127.0.0.2:8008/patroni", "host": "127.0.0.2", "port": 5432, "timeline": 2, "lag": 0}]}
-J
-  python3 -m http.server 8008 --bind 127.0.0.1 --directory "$WORK/www" >/dev/null 2>&1 & HTTPPID=$!
-  sleep 1
-  psql "$SB_DSN application_name='Patroni heartbeat'" -XAtq -c "select pg_sleep(30)" >/dev/null 2>&1 & HOLD=$!
-  sleep 1
-  collect pv-standby rolechange
-  [[ $(q "select ok || '|' || members from pgvigil.pg_patroni_read where instance_id = $S") == "true|2" ]] || fail "I: read $(q "select * from pgvigil.pg_patroni_read where instance_id = $S")"
-  [[ $(q "select string_agg(member || ':' || role || ':' || coalesce(lag_bytes::text, '-'), ',' order by member) from pgvigil.pg_patroni_members where instance_id = $S and is_present") == "pg1:leader:-,pg2:replica:0" ]] || fail "I: members"
-  kill "$HOLD" 2>/dev/null; wait "$HOLD" 2>/dev/null || true; HOLD=""
-  psql "host=127.0.0.1 port=$SPORT user=postgres password=$SUPW dbname=postgres sslmode=disable" -XAtq -c "select pg_terminate_backend(pid) from pg_stat_activity where application_name like 'Patroni%'" >/dev/null
-  sleep 1; collect pv-standby rolechange
-  [[ $(q "select count(*) from pgvigil.pg_patroni_members where instance_id = $S and is_present") == 0 ]] || fail "I: members stayed"
-  ok "I: Patroni's /cluster read, two members, gone with the session"
-else
-  echo "  I: not run: 127.0.0.1:8008 is in use on this machine"
-fi
 
 echo "--- S. the rules on seeded rows"
 seed() { q "select pgvigil.ensure_instance('$1-$SUF', 'onprem', 'x', ${2:-180000}, ${3:-false}, '{}')"; }
@@ -463,12 +443,6 @@ bbc() { q "select coalesce(string_agg(severity || '|' || check_name, ','), 'none
 [[ $(thr "{\"op\":\"set\",\"key\":\"amcheck_age\",\"level\":\"instance\",\"instance_id\":$I_s5,\"crit\":5,\"ui_user\":\"proof\"}") == done ]] || fail "S11 amcheck set"
 [[ $(q "select severity || '|' || check_name from pgvigil.pg_backups_checks where instance_id = $I_s5 and object = 'db1' and check_group = 'amcheck age'") == "critical|amcheck older than 5 d" ]] || fail "S11 amcheck $(amc "$I_s5")"
 ok "S11: a critical alone judges the full backup's age and amcheck's"
-I_s12=$(seed s12)
-ROLE12='{"kind":"role","is_replica":false,"timeline_id":1,"timeline_source":"wal file","system_identifier":"91"}'
-q "select pgvigil.import_rolechange($I_s12, now(), '[$ROLE12,{\"kind\":\"patroni_read\",\"url\":\"u\",\"ok\":true,\"members\":1,\"scope\":\"sc\"},{\"kind\":\"patroni\",\"member\":\"m1\",\"role\":\"leader\",\"state\":\"running\"}]')" >/dev/null
-q "select pgvigil.import_rolechange($I_s12, now(), '[$ROLE12,{\"kind\":\"patroni_read\",\"url\":\"u\",\"ok\":false,\"message\":\"connection refused\"}]')" >/dev/null
-[[ $(q "select (select count(*) from pgvigil.pg_patroni_members where instance_id = $I_s12 and is_present) || '|' || ok from pgvigil.pg_patroni_read where instance_id = $I_s12") == "0|false" ]] || fail "S12"
-ok "S12: a failed Patroni read takes its members away"
 
 echo "--- H. the web side"
 U="http://127.0.0.1:$AP"
@@ -480,9 +454,10 @@ def rows(k):
     t=d.get(k) or {'columns':[],'rows':[]}; return [dict(zip(t['columns'],r)) for r in t['rows']]
 $2"; }
 [[ $(js "pg/backups?instance=$P" "print(len(d), len(rows('tools')) >= 1)") == "6 True" ]] || fail "H: pg/backups"
-[[ $(js "pg/state?instance=$S" "print(len(d), len(rows('changes')))") == "10 1" ]] || fail "H: pg/state"
+[[ $(js "pg/state?instance=$S" "print(len(d), len(rows('changes')))") == "11 1" ]] || fail "H: pg/state"
 [[ $(js "pg/replication" "print(sorted(r['instance'] for r in rows('links') if r['instance'].startswith('pv-')))") == "['pv-fileship', 'pv-primary', 'pv-standby']" ]] || fail "H: pg/replication"
-[[ $(js "pg/thresholds" "print(len(rows('keys')))") == 8 ]] || fail "H: pg/thresholds"
+[[ $(js "pg/thresholds" "k = [r['key'] for r in rows('keys')]; print(len(k) >= 13, sorted(x for x in k if x.startswith('patroni_')))") \
+   == "True ['patroni_dcs_last_seen', 'patroni_member_down', 'patroni_no_leader', 'patroni_paused', 'patroni_pending_restart']" ]] || fail "H: pg/thresholds"
 [[ $(js "pg/backups/fleet" "print(len(rows('tools')) >= 1)") == True ]] || fail "H: pg/backups/fleet"
 [[ $(js "overview" "print(any(r['check_group']=='uptime' for r in rows('x') or [dict(zip(d['columns'],r)) for r in d['rows']]))") == True ]] || fail "H: overview"
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/pg/thresholds") == 403 ]] || fail "H: a write without the login"

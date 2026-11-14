@@ -6,7 +6,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -106,6 +108,20 @@ type Instance struct {
 	PgBouncerDSNRaw string `yaml:"pgbouncer"`
 	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
 	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
+	// Patroni names the Patroni REST API of the instance's cluster when it is not Patroni's default
+	// http://<the dsn's host>:8008 (docs/backups-postgres.md); nil = the default, asked only while a Patroni session
+	// is connected.
+	Patroni *Patroni `yaml:"patroni"`
+}
+
+// Patroni is the patroni: block of a postgres instance: URL is http(s)://host:port (another port, or https); CAFile
+// the CA that signed the API's certificate (empty = the system's roots); CertFile and KeyFile a client certificate,
+// for a REST API with restapi.verify_client. With a URL the API is read whether or not a Patroni session is seen.
+type Patroni struct {
+	URL      string `yaml:"url"`
+	CAFile   string `yaml:"ca_file"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
 }
 
 // DBADashRepo is one DBADash repository of the dbadash: list.
@@ -538,9 +554,14 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
 			case in.Backups != nil:
 				return fmt.Errorf("instance %q: the backups: block is PostgreSQL's", in.Name)
+			case in.Patroni != nil:
+				return fmt.Errorf("instance %q: the patroni: block is PostgreSQL's", in.Name)
 			}
 		default:
 			return fmt.Errorf("instance %q: unknown engine %q (postgres or sqlserver)", in.Name, in.Engine)
+		}
+		if err := in.Patroni.validate(); err != nil {
+			return fmt.Errorf("instance %q: %w", in.Name, err)
 		}
 		for _, s := range in.Tags {
 			if _, err := ParseTag(s); err != nil {
@@ -610,4 +631,43 @@ func (c *Config) Interval(in Instance, collection string, def time.Duration) tim
 		return v.Duration
 	}
 	return def
+}
+
+// validate checks a patroni: block: a url of http or https with a host and nothing but a port after it (a /cluster or
+// /patroni path is taken), cert_file and key_file together, the files only with a url, https for the TLS files.
+func (p *Patroni) validate() error {
+	if p == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(p.URL)
+	if raw == "" {
+		if p.CAFile != "" || p.CertFile != "" || p.KeyFile != "" {
+			return errors.New("patroni: ca_file, cert_file and key_file need a url")
+		}
+		return errors.New("patroni: the block needs a url (http(s)://host:port)")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("patroni.url: %v", err)
+	}
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("patroni.url %q: the scheme must be http or https", raw)
+	case u.Hostname() == "":
+		return fmt.Errorf("patroni.url %q names no host", raw)
+	case u.User != nil || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("patroni.url %q: a scheme, a host and a port only", raw)
+	}
+	switch strings.TrimRight(u.Path, "/") {
+	case "", "/cluster", "/patroni":
+	default:
+		return fmt.Errorf("patroni.url %q: a scheme, a host and a port only", raw)
+	}
+	if (p.CertFile == "") != (p.KeyFile == "") {
+		return errors.New("patroni: cert_file and key_file go together")
+	}
+	if u.Scheme == "http" && (p.CAFile != "" || p.CertFile != "") {
+		return fmt.Errorf("patroni.url %q is http: ca_file, cert_file and key_file are for https", raw)
+	}
+	return nil
 }

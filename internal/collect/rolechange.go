@@ -2,12 +2,7 @@ package collect
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +16,7 @@ import (
 // rolechangeCollector reads, every minute, what the server is in its cluster: its role (pg_is_in_recovery), its
 // timeline, the cluster's system identifier (pg_control_system) and the postmaster's start. The repository keeps the
 // newest values and writes a role-change row when the role, the timeline or the system identifier differs from the
-// read before (0103: import_rolechange): a promotion, a demotion, a timeline change (a standby that follows a new
+// read before (0103, 0144: import_rolechange): a promotion, a demotion, a timeline change (a standby that follows a new
 // primary), or another cluster answering under the instance's name.
 //
 // The time of a change: the newest timeline history file's modification time in pg_wal (pg_ls_waldir, a pg_monitor
@@ -32,9 +27,8 @@ import (
 // receiver's received_tli, else the last restart point's (pg_control_checkpoint), which can trail a switch until the
 // next restart point.
 //
-// Patroni: when a session named 'Patroni...' is connected (Patroni's own connection) and the platform is not a
-// managed one, GET http://<the dsn's host>:8008/cluster (Patroni's default REST port, 3 s) is read and each member
-// stored (name, role, state, host, port, timeline, lag). No such session = no request.
+// Patroni (patroni.go): on a self-managed server, when the instance's patroni: block names the REST API or a session
+// named 'Patroni...' is connected (Patroni's own), its /cluster and each member's /patroni are read in the same run.
 //
 // Read only. A part the login cannot read (pg_control_* or pg_ls_waldir on a managed platform) is left empty.
 type rolechangeCollector struct{}
@@ -44,10 +38,6 @@ func init() { Register(rolechangeCollector{}) }
 func (rolechangeCollector) Name() string                         { return "rolechange" }
 func (rolechangeCollector) DefaultInterval() time.Duration       { return time.Minute }
 func (rolechangeCollector) Applies(platform.Info) (bool, string) { return true, "" }
-
-func (r rolechangeCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error) {
-	return r.RunInstance(ctx, conn, info, config.Instance{}, nil)
-}
 
 // roleBaseSQL is readable by any login. The CASE keeps pg_walfile_name (an error in recovery) off a standby.
 const roleBaseSQL = `
@@ -66,11 +56,9 @@ SELECT (pg_control_system()).system_identifier::text AS system_identifier, (pg_c
 const roleHistorySQL = `
 SELECT name, modification FROM pg_ls_waldir() WHERE name ~ '^[0-9A-F]{8}\.history$' ORDER BY name DESC LIMIT 1`
 
-// patroniPort is Patroni's default REST port; patroniTimeout bounds the one request.
-const (
-	patroniPort    = "8008"
-	patroniTimeout = 3 * time.Second
-)
+func (r rolechangeCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error) {
+	return r.RunInstance(ctx, conn, info, config.Instance{}, nil)
+}
 
 func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
 	base, err := conn.Query(ctx, roleBaseSQL)
@@ -108,10 +96,11 @@ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info
 	delete(r, "wal_timeline")
 	delete(r, "receiver_timeline")
 	out := []Row{r}
-	if p, _ := r["patroni_session"].(bool); p && info.Kind != platform.RDS && info.Kind != platform.Aurora && in.DSNRaw != "" {
-		out = append(out, patroniRows(ctx, patroniURL(in.DSN()))...)
-	}
+	seen, _ := r["patroni_session"].(bool)
 	delete(r, "patroni_session")
+	if !info.Kind.Managed() {
+		out = append(out, patroniRows(ctx, in, seen)...)
+	}
 	return out, nil
 }
 
@@ -140,86 +129,4 @@ func roleTimeline(isReplica bool, wal, recv any, ck *int64) (any, string) {
 		return *ck, "checkpoint"
 	}
 	return nil, ""
-}
-
-// patroniURL is the cluster endpoint on the dsn's host: a socket directory or no host = this machine.
-func patroniURL(dsn string) string {
-	host := "127.0.0.1"
-	if c, err := pgx.ParseConfig(dsn); err == nil && c.Host != "" && !strings.HasPrefix(c.Host, "/") {
-		host = c.Host
-	}
-	return "http://" + net.JoinHostPort(host, patroniPort) + "/cluster"
-}
-
-// patroniMember is one member of GET /cluster; lag is a number of bytes or a word ('unknown').
-type patroniMember struct {
-	Name     string          `json:"name"`
-	Role     string          `json:"role"`
-	State    string          `json:"state"`
-	Host     string          `json:"host"`
-	Port     int             `json:"port"`
-	Timeline *int64          `json:"timeline"`
-	Lag      json.RawMessage `json:"lag"`
-	APIURL   string          `json:"api_url"`
-}
-
-var patroniClient = &http.Client{Timeout: patroniTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-
-// patroniRows reads the cluster from Patroni's REST API: a 'patroni_read' row (ok, the message on a failure) and a
-// 'patroni' row per member. A failure is not a collector error: the endpoint is a guess at its default port.
-func patroniRows(ctx context.Context, url string) []Row {
-	read := Row{"kind": "patroni_read", "url": url, "ok": false}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		read["message"] = err.Error()
-		return []Row{read}
-	}
-	resp, err := patroniClient.Do(req)
-	if err != nil {
-		read["message"] = shortErr(err)
-		return []Row{read}
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		read["message"] = fmt.Sprintf("HTTP %d %v", resp.StatusCode, err)
-		return []Row{read}
-	}
-	var c struct {
-		Scope   string          `json:"scope"`
-		Members []patroniMember `json:"members"`
-	}
-	if err := json.Unmarshal(body, &c); err != nil || len(c.Members) == 0 {
-		read["message"] = "the answer is not a Patroni cluster (no members)"
-		return []Row{read}
-	}
-	read["ok"], read["scope"], read["members"] = true, nilIfEmpty(c.Scope), len(c.Members)
-	out := []Row{read}
-	for _, m := range c.Members {
-		if m.Name == "" {
-			continue
-		}
-		row := Row{"kind": "patroni", "scope": nilIfEmpty(c.Scope), "member": m.Name, "role": nilIfEmpty(m.Role), "state": nilIfEmpty(m.State),
-			"host": nilIfEmpty(m.Host), "port": m.Port, "timeline": m.Timeline, "api_url": nilIfEmpty(m.APIURL)}
-		if n, err := strconv.ParseInt(strings.TrimSpace(string(m.Lag)), 10, 64); err == nil {
-			row["lag_bytes"] = n
-		} else if len(m.Lag) > 0 {
-			row["lag_text"] = strings.Trim(string(m.Lag), `"`)
-		}
-		out = append(out, row)
-	}
-	return out
-}
-
-// shortErr is an error's last part (a refused or timed-out connection names the address once).
-func shortErr(err error) string {
-	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
-		return "no answer in " + patroniTimeout.String()
-	}
-	s := err.Error()
-	if i := strings.LastIndex(s, ": "); i >= 0 && i+2 < len(s) {
-		return s[i+2:]
-	}
-	return s
 }
