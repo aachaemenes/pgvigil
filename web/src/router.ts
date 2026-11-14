@@ -94,12 +94,17 @@ export const rootOnlyGroups = new Set(['doors', 'admin']);
 // Alert rules too: the rules are the repository's and its state rows are not narrowed by a tag (the TAGTREE review A #5),
 // so a tag folder's name on it lands on the folder's Summary and the main strip links it without the tag
 export const rootOnly = new Set(['diff', 'pgthresholds', 'retention', 'rp_recycle', 'customreports', 'community', 'reportmail', 'alertrules']);
-// pageEngine: the fleet pages that hold one engine alone (their own words say so: reports.ts L430 / L577, the options
-// pages' headings, PostgreSQL's replication and extensions): a tag folder whose instances are all of the other engine
-// leaves them out, as a strip should (the wording walk's rows); every other page holds both engines
+// pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
+// page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
+// 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host
+// disks, storage, backups, roles, indexes, jobs, custom, DMS, database sizes -, mssql.All for SQL Server's mssql_*), or
+// the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
+// engine leaves them out, as a strip should; every other page holds both engines.
 export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
   mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver',
-  pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres',
+  pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
+  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
+  storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
 };
 // tagPages: a group's pages under a tag folder whose instances are of the engines given ('sqlserver', 'postgres')
 export function tagPages(g: TabGroup, engines: Set<string>): string[] {
