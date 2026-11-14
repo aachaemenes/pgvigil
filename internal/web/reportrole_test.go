@@ -14,6 +14,21 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/plans"
 )
 
+// memberNamed: the check's words name role among the roles the login is a member of ('is a member of a, b: ...').
+func memberNamed(words, role string) bool {
+	_, list, ok := strings.Cut(words, "is a member of ")
+	if !ok {
+		return false
+	}
+	list, _, _ = strings.Cut(list, ": ")
+	for _, r := range strings.Split(list, ", ") {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
 // TestStoreReportsLoginOnAStore (REPORT ROLE): on a migrated repository (PGVIGIL_REPO_TEST_DSN, a superuser; skipped
 // without it) the store reports' check passes a login IN ROLE pgvigil_reader alone and refuses, on its SESSION user,
 // the UI's login (pgvigil_auth), the UI's login started as the reader (ALTER ROLE ... SET role: the run could set it
@@ -108,7 +123,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"ui", "", "is a member of pgvigil_auth"},
 		{"uiset", "", "is a member of pgvigil_auth"},
 		{"su", "", "is a superuser"},
-		{"noinh", "", "is a member of " + owner},
+		{"noinh", "", "is a member of "}, // and the owner among the roles named (below)
 		{"mon", "", "pg_monitor"},
 		{"none", "", "may not read the repository"},
 		{"rd", other, "reaches another server or database"},
@@ -121,6 +136,11 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 			t.Errorf("%s on %q: %q, want it to say %q", c.key, c.db, got, c.want)
 		case c.want != "" && !strings.Contains(got, "IN ROLE pgvigil_reader alone") && !strings.Contains(got, "GRANT pgvigil_reader") && !strings.Contains(got, "another server"):
 			t.Errorf("%s: the words do not say what to do: %q", c.key, got)
+		}
+		// noinh is a member of the owner, so of pg_database_owner too (the owner owns the database): the words name
+		// every role it is a member of, in name order (reportrole-g2: 'is a member of pg_database_owner, postgres')
+		if c.key == "noinh" && !memberNamed(got, owner) {
+			t.Errorf("noinh: %q, want %s among the roles it is a member of", got, owner)
 		}
 	}
 	// the reader-alone login: the role set back and the hash planned at run time is the server's refusal
