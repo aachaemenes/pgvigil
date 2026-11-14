@@ -93,16 +93,6 @@ const syncSQL = `
 SELECT 'sync' AS kind, current_setting('synchronous_standby_names') AS names,
        current_setting('synchronous_commit') AS commit_level, pg_is_in_recovery() AS in_recovery`
 
-// slots: wal_status and safe_wal_size exist from PG13; two_phase 14, conflicting 16, synced and inactive_since 17
-const slotsSQL = `
-SELECT 'slot' AS kind, s.slot_name, s.plugin, s.slot_type, s.database::text AS datname, s.temporary, s.active, s.active_pid,
-       s.xmin::text AS xmin, s.catalog_xmin::text AS catalog_xmin,
-       s.restart_lsn::text, s.confirmed_flush_lsn::text, s.wal_status, s.safe_wal_size,
-       CASE WHEN pg_is_in_recovery() THEN pg_wal_lsn_diff(pg_last_wal_replay_lsn(), s.restart_lsn)
-            ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), s.restart_lsn) END AS retained_bytes,
-       %s AS two_phase, %s AS conflicting, %s AS inactive_since, %s AS synced
-  FROM pg_replication_slots s`
-
 // one row per subscription: the apply worker only (a parallel apply worker on
 // PG16+ has a leader_pid); the key is the database plus the name, since
 // pg_subscription is cluster-wide and names repeat across databases
@@ -158,12 +148,14 @@ func (replicationCollector) Run(ctx context.Context, conn *pgx.Conn, info platfo
 	}
 	read("standby", standbySQL)
 	read("sync", syncSQL)
-	if slotCols, err := viewColumns(ctx, conn, "pg_catalog.pg_replication_slots"); err != nil {
-		failed = append(failed, "slots")
-		out = append(out, Row{"kind": "collector_error", "source": "slots", "message": err.Error()})
-	} else {
-		read("slots", fmt.Sprintf(slotsSQL, col(slotCols, "s", "two_phase", "boolean"), col(slotCols, "s", "conflicting", "boolean"),
-			col(slotCols, "s", "inactive_since", "timestamptz"), col(slotCols, "s", "synced", "boolean")))
+	// the slots and their decoding statistics (slots.go)
+	for _, q := range slotQueries(ctx, conn, info) {
+		if q.err != nil {
+			failed = append(failed, q.label)
+			out = append(out, Row{"kind": "collector_error", "source": q.label, "message": q.err.Error()})
+			continue
+		}
+		read(q.label, q.sql)
 	}
 	if subCols, err := viewColumns(ctx, conn, "pg_catalog.pg_stat_subscription"); err != nil {
 		failed = append(failed, "subscriptions")

@@ -74,6 +74,24 @@
 #        read: 'synchronous commits waiting' WARNING (commits at the default do not wait) [red FAIL x1: the insert completing
 #        is the server's own behaviour - mark corrected after 372's first red run]
 #   S5   'ANY 1 (*)': hadrs1 in quorum, one read: no 'synchronous commits waiting' [red ok]; everything reset after
+# Task 374 (written before its first run, 2026-11-14 11:3x PST; red = 16cc0fb, task 373's tree):
+#   SL3  a physical slot hadr_grow reserving WAL, read; its hourly mark moved an hour back in the repository with 2 GB
+#        less retained (a stand-in for the hour: the growth arithmetic is the import's), one read: 'slot WAL growing'
+#        warning on hadr-p naming hadr_grow [red FAIL]
+#   SL2  max_slot_wal_keep_size 200MB and 'slot_safe_wal' 150 MB on hadr-p (import_pg_threshold: done), about 80 MB of
+#        WAL written, one read: 'slot WAL near its limit' warning for hadr_grow (one finding per slot: it outranks
+#        growing) [red FAIL]
+#   SL1  about 250 MB more and a checkpoint: the slot loses its WAL (wal_status lost), one read: 'slot invalidated'
+#        critical naming wal_removed (PostgreSQL 17 on: invalidation_reason) [red FAIL]; the slot dropped, the setting and
+#        the threshold reset
+#   SP   a test_decoding slot hadr_dec, logical_decoding_work_mem 64kB, a 20000-row transaction decoded through
+#        pg_logical_slot_get_changes, one read: a slot_stats row for hadr_dec with spill_bytes over 0 [red FAIL]; undone
+#   AU   Aurora, a repository stand-in until Q7 (an Aurora reader for the proof hour) is answered - not proven on Aurora:
+#        an instance aurora-w (platform aurora) imported with aurora_replica_status rows (its own MASTER_SESSION_ID row
+#        at 0 ms, reader-1 at 400 s, reader-2 at 45 s): 'Aurora replica lag' critical for reader-1 and warning for
+#        reader-2, none for the writer's own row [red FAIL x2]; an instance aurora-r (platform aurora) imported twice as
+#        a reader in recovery with primary_conninfo set and no WAL receiver: no 'receiver down' [red ok: gated since
+#        370] and no link row [red FAIL: 371 made it a standby-only link]
 #   R3   the standby stopped, hadr-p and hadr-s read once (hadr-s's connect fails): nothing yet [red ok]
 #   G2   hadr-p read with 'platform: rds' in its config: no 'standby gone' on a managed platform [red ok]
 #   R3   the plain config, one read of hadr-p: 'standby gone' critical naming hadrs1 in pgvigil.findings and
@@ -89,7 +107,8 @@
 # Not proven here: a promotion (the role-change drop of a server's links), a failed 'standby' or 'senders' read leaving
 # the state as it was, a receiver that connects and then fails (the hysteresis is in the import, its row R2X's).
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
-# L6 P S1 S2 S4 S6 S5 R3 R3X L4; L7 rides with R2W, NS with G, S3 with L6, G2 and L5 with R3); unset = all.
+# L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU R3 R3X L4; L7 rides with R2W, NS with G, S3 with L6, G2 and L5 with R3); unset =
+# all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -128,7 +147,7 @@ docker volume create "$ARC" >/dev/null
 docker run --rm -v "$ARC:/archive" postgres:18 bash -c 'mkdir -p /archive/wal && chown -R postgres:postgres /archive' >/dev/null
 docker run -d --name "$REPO" --network "$NET" -e POSTGRES_PASSWORD="$PW" -p "127.0.0.1:$RP:5432" postgres:18 >/dev/null
 docker run -d --name "$PRI" --network "$NET" --network-alias primary -e POSTGRES_PASSWORD="$PW" -v "$ARC:/archive" \
-  -p "127.0.0.1:$PP:5432" postgres:18 -c wal_level=replica -c max_wal_senders=10 -c archive_mode=on \
+  -p "127.0.0.1:$PP:5432" postgres:18 -c wal_level=logical -c max_wal_senders=10 -c archive_mode=on \
   -c "archive_command=test ! -f /archive/wal/%f && cp %p /archive/wal/%f" -c cluster_name=hadrp >/dev/null
 RDSN="host=127.0.0.1 port=$RP user=postgres password=$PW sslmode=disable"
 PDSN="host=127.0.0.1 port=$PP user=postgres password=$PW sslmode=disable dbname=postgres"
@@ -496,6 +515,69 @@ if want S1 || want S2 || want S4 || want S6 || want S5; then
     [[ -z "$r" ]] && ok "S5 'ANY 1 (*)' with hadrs1 in quorum: nothing" || fail "S5 raised: '$r'"
   fi
   sync_reset; read_ hadr-p 1
+fi
+
+# ---- SL / SP / AU: slots and Aurora (task 374) ----------------------------------------------------------------------
+thr() { q "select pgvigil.import_pg_threshold(now(), '$1'::jsonb)->>'outcome'"; }
+wal_mb() { local i; for ((i = 0; i < $1 / 4; i++)); do pq "insert into hadr_bulk select repeat(md5(g::text), 31) from generate_series(1, 4000) g" >/dev/null; done; }
+slotf() { q "select severity || '|' || setting || '|' || value from pgvigil.findings where instance_id = $PID_ and setting like 'slot %' and value like 'slot $1:%' order by 1"; }
+if want SL3 || want SL2 || want SL1; then
+  pq "select pg_create_physical_replication_slot('hadr_grow', true)" >/dev/null
+  read_ hadr-p 1
+  if want SL3; then
+    q "update pgvigil.pg_repl_slot_state set mark_at = mark_at - interval '61 minutes', mark_bytes = coalesce(retained_bytes, 0) - 2147483648 where instance_id = $PID_ and slot_name = 'hadr_grow'" >/dev/null 2>&1
+    read_ hadr-p 1
+    r=$(slotf hadr_grow)
+    [[ "$r" == "warning|slot WAL growing|slot hadr_grow:"* ]] && ok "SL3 'slot WAL growing' warning: $r" || fail "SL3: '$r'"
+  fi
+  pq "alter system set max_slot_wal_keep_size = '200MB'" >/dev/null; pq "select pg_reload_conf()" >/dev/null
+  r=$(thr "{\"op\":\"set\",\"key\":\"slot_safe_wal\",\"level\":\"instance\",\"instance_id\":$PID_,\"warn\":150,\"ui_user\":\"proof\"}")
+  [[ "$r" == "done" ]] || fail "SL2 the threshold was not set: '$r'"
+  wal_mb 80
+  echo "  hadr_grow: $(pq "select wal_status || ', safe ' || pg_size_pretty(safe_wal_size) from pg_replication_slots where slot_name = 'hadr_grow'")"
+  read_ hadr-p 1
+  if want SL2; then
+    r=$(slotf hadr_grow)
+    [[ "$r" == "warning|slot WAL near its limit|slot hadr_grow:"* ]] && ok "SL2 'slot WAL near its limit' warning: $r" || fail "SL2: '$r'"
+  fi
+  wal_mb 260; pq "checkpoint" >/dev/null; wal_mb 8; pq "checkpoint" >/dev/null
+  echo "  hadr_grow: $(pq "select coalesce(wal_status, '?') || ', ' || coalesce(invalidation_reason::text, '-') from pg_replication_slots where slot_name = 'hadr_grow'")"
+  read_ hadr-p 1
+  if want SL1; then
+    r=$(slotf hadr_grow)
+    [[ "$r" == "critical|slot invalidated|slot hadr_grow:"*"wal_removed"* ]] && ok "SL1 'slot invalidated' critical: $r" || fail "SL1: '$r'"
+  fi
+  pq "select pg_drop_replication_slot('hadr_grow')" >/dev/null
+  pq "alter system reset max_slot_wal_keep_size" >/dev/null; pq "select pg_reload_conf()" >/dev/null
+  thr "{\"op\":\"inherit\",\"key\":\"slot_safe_wal\",\"level\":\"instance\",\"instance_id\":$PID_,\"ui_user\":\"proof\"}" >/dev/null
+  read_ hadr-p 1
+fi
+if want SP; then
+  pq "select pg_create_logical_replication_slot('hadr_dec', 'test_decoding')" >/dev/null
+  pq "alter system set logical_decoding_work_mem = '64kB'" >/dev/null; pq "select pg_reload_conf()" >/dev/null
+  pq "insert into hadr_feed (pad) select repeat('s', 100) from generate_series(1, 20000)" >/dev/null
+  echo "  decoded: $(pq "select count(*) from pg_logical_slot_get_changes('hadr_dec', NULL, NULL)") change(s); spill_bytes $(pq "select spill_bytes from pg_stat_replication_slots where slot_name = 'hadr_dec'")"
+  read_ hadr-p 1
+  r=$(q "select coalesce(max(lag_bytes), -1) from pgvigil.replication_sample where instance_id = $PID_ and kind = 'slot_stats' and key = 'hadr_dec'")
+  [[ "$r" =~ ^[0-9]+$ && "$r" -gt 0 ]] && ok "SP slot_stats row for hadr_dec: spill_bytes $r" || fail "SP slot_stats spill_bytes: '$r'"
+  pq "select pg_drop_replication_slot('hadr_dec')" >/dev/null
+  pq "alter system reset logical_decoding_work_mem" >/dev/null; pq "select pg_reload_conf()" >/dev/null
+  read_ hadr-p 1
+fi
+if want AU; then
+  AW=$(q "select pgvigil.ensure_instance('aurora-w', 'aurora', 'PostgreSQL 16.6', 160006, false, '{}')")
+  AR=$(q "select pgvigil.ensure_instance('aurora-r', 'aurora', 'PostgreSQL 16.6', 160006, true, '{}')")
+  q "select pgvigil.import_replication($AW, now(), '[{\"kind\":\"aurora_replica\",\"server_id\":\"aurora-w\",\"session_id\":\"MASTER_SESSION_ID\",\"replica_lag_in_msec\":0},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-1\",\"session_id\":\"s1\",\"replica_lag_in_msec\":400000},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-2\",\"session_id\":\"s2\",\"replica_lag_in_msec\":45000}]'::jsonb)" >/dev/null
+  r=$(q "select string_agg(severity || ' ' || value, '; ' order by value) from pgvigil.findings where instance_id = $AW and setting = 'Aurora replica lag'")
+  [[ "$r" == "critical replica reader-1:"*"; warning replica reader-2:"* ]] && ok "AU 'Aurora replica lag': critical reader-1, warning reader-2" || fail "AU findings: '$r'"
+  [[ "$r" != *"aurora-w"* ]] && ok "AU nothing for the writer's own row" || fail "AU the writer's row raised: '$r'"
+  for t in "now() - interval '10 seconds'" "now()"; do
+    q "select pgvigil.import_replication($AR, $t, '[{\"kind\":\"standby\",\"has_receiver\":false,\"conninfo_set\":true,\"restore_set\":false,\"replay_lsn\":\"0/3000000\"}]'::jsonb)" >/dev/null
+  done
+  r=$(finding "$AR" 'receiver down'); r2=$(q "select count(*) from pgvigil.pg_repl_link_health where standby_id = $AR" 2>/dev/null || echo error)
+  [[ -z "$r" ]] && ok "AU no 'receiver down' on an Aurora reader" || fail "AU 'receiver down' on aurora-r: '$r'"
+  [[ "$r2" == "0" ]] && ok "AU no link row for an Aurora reader" || fail "AU link rows for aurora-r: '$r2'"
+  q "update pgvigil.instances set is_active = false where instance_id in ($AW, $AR)" >/dev/null
 fi
 
 # ---- R3: the standby stopped ---------------------------------------------------------------------------------------
