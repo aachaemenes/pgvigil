@@ -350,14 +350,16 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
       d = await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day });
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
     // the GB columns (DBA Dash's unit, the folder's grid and an instance's alike) hold the GB figure rounded to 0.1 and show
-    // it with fmtNum (at most one decimal: 12 GB reads '12', where DBA Dash writes '12.0'), so the export writes a number
+    // it with one decimal always, as DBA Dash does ('12.0', the locale's form: fr-FR '12,0'); the export writes the number
+    // under '0.0' (export.ts typed: a figure in fixed decimals)
     const toGB = (v: unknown) => v == null ? null : Math.round(Number(v) / GB * 10) / 10;
+    const fmtGB = (v: unknown) => v == null || v === '' ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     if (!ctx.instance) {
       const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes) }));
       const cols: Col[] = [
         { key: 'instance', label: 'name', fmt: (v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace') }, String(v ?? '')) },
-        { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtNum(v) },
-        { key: 'used_gb', label: 'used (GB)', num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fmtNum(v) },
+        { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtGB(v) },
+        { key: 'used_gb', label: 'used (GB)', num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fmtGB(v) },
         { key: 'databases', num: true }, { key: 'engine' },
         { key: 'history', label: 'history', fmt: (_v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace'), 'aria-label': `View the history of ${String(r.instance)}` }, 'View') },
       ];
@@ -375,10 +377,10 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
     const cols: Col[] = [
       // the name opens the database, as its slice does (DBA Dash's Name drill)
       { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
-      { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtNum(v) },
-      { key: 'used_gb', label: 'used (GB)', num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fmtNum(v) },
+      { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtGB(v) },
+      { key: 'used_gb', label: 'used (GB)', num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fmtGB(v) },
       // a PostgreSQL database has no data and log files of its own to size: those two columns are SQL Server's only
-      ...(engine === 'postgres' ? [] : [{ key: 'data_gb', label: 'data (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }, { key: 'log_gb', label: 'log (GB)', num: true, fmt: (v: unknown) => fmtNum(v) }] as Col[]),
+      ...(engine === 'postgres' ? [] : [{ key: 'data_gb', label: 'data (GB)', num: true, fmt: (v: unknown) => fmtGB(v) }, { key: 'log_gb', label: 'log (GB)', num: true, fmt: (v: unknown) => fmtGB(v) }] as Col[]),
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
