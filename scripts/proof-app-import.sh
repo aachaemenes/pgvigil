@@ -388,6 +388,117 @@ p=$(imp "$WORK/f21.csv" "dry=1"); D21=$(dig); i2=$(js "print([i['words'] for i i
 x=$(imp "$WORK/f21.csv" "dry=0&digest=$D21&force=t3")
 [[ $p == 200 && $(cnt unchanged) -ge 1 && $i3 == conflict:*unassign* && $x == 200 && $(asg imp-ms s1) == none && $(asg imp-pg f5) == none ]] \
   && ok "F21 '(none)' on f5 (it inherits F Alpha): nothing; on s1 (a person's): a conflict, removed when ticked" || bad "F21 $p line 2 $i2 / line 3 '$i3'; apply $x; s1 $(asg imp-ms s1); $(head -c 300 "$WORK/ans.json")"
+fi
+
+# ================= P: the page (Admin > Applications in a headless Chromium, on section F's serve) =================
+#  P1 (R22, R10, R8's page half) the Inventory grid filtered to one server, an application's contacts shown, the
+#     inventory's own export: its .xlsx holds every line (read back through the import: as many lines as the API's
+#     inventory, nothing to change), and no contact, user name or client address
+#  P2 a file chosen, previewed (a conflict ticked) and applied by clicks: the store holds the change and the ticked one
+#  P3 (R23) axe-core 4.14.0 on the page with the preview shown, light and dark: 0 violation nodes
+# Excel's own save of the workbook is NOT PROVEN (no Excel on the box): F10 reads a workbook with shared strings.
+if want P; then
+if [[ -z "${U:-}" ]]; then bad "P needs section F's serve (IMP_ONLY with F)"; else
+P_OK=1
+for t in chromium node npm unzip; do command -v $t >/dev/null || { P_OK=0; bad "P setup: $t is not on this machine"; }; done
+CDP=$(freeport); DL=$WORK/dl; mkdir -p "$DL"
+chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu --window-size=1500,1100 about:blank > "$WORK/chrome.log" 2>&1 & SPIDS+=($!)
+for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+(cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1); AXE=$WORK/node_modules/axe-core/axe.min.js
+[[ -f "$AXE" ]] || { P_OK=0; bad "P setup: axe-core 4.14.0 did not install"; }
+# P2's file: an assign (s1, no application now) and the unmark of f4 (a person's mark: a conflict, ticked on the page)
+printf 'instance,database,application,not_an_application\nimp-ms,s1,F Gamma,\nimp-pg,f4,,no\n' > "$WORK/p2.csv"
+cat > "$WORK/p.mjs" <<'JS'
+const [port, U, dl, axePath, p2file] = process.argv.slice(2);
+const fs = await import('node:fs');
+const env = process.env;
+const out = (k, v) => console.log(`${k}=${(typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ')}`);
+const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+const bws = new WebSocket(ver.webSocketDebuggerUrl);
+await new Promise(r => bws.addEventListener('open', r));
+bws.send(JSON.stringify({ id: 1, method: 'Browser.setDownloadBehavior', params: { behavior: 'allow', downloadPath: dl } }));
+await new Promise(r => bws.addEventListener('message', r));
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const fileStatus = () => ev(`document.querySelector('main section.app-file p[role=status]')?.textContent ?? ''`);
+const ready = async () => { for (let i = 0; i < 150; i++) { if (await ev(`!!document.querySelector('main section.app-file table.grid')`)) { await sleep(400); return true; } await sleep(200); } return false; };
+const settle = async () => { let t = ''; for (let i = 0; i < 400; i++) { await sleep(150); t = await fileStatus(); if (t && !/^Working/.test(t)) break; } await sleep(300); return t; };
+const go = async hash => { await cmd('Page.navigate', { url: 'about:blank' }); await sleep(150); await cmd('Page.navigate', { url: U + hash }); return ready(); };
+const press = label => ev(`(() => { const b = [...document.querySelectorAll('main button, main input[type=checkbox]')].find(b => (b.getAttribute('aria-label') ?? b.textContent.trim()) === ${JSON.stringify(label)}); if (!b) return false; b.click(); return true; })()`);
+const newFile = async before => { for (let i = 0; i < 150; i++) { await sleep(200); const f = fs.readdirSync(dl).filter(n => n.endsWith('.xlsx') && !before.has(n)); if (f.length && !fs.readdirSync(dl).some(n => n.endsWith('.crdownload'))) return dl + '/' + f[0]; } return ''; };
+const axe = async () => {
+  await cmd('Runtime.evaluate', { expression: fs.readFileSync(axePath, 'utf8') });
+  return await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => r.violations.reduce((n, v) => n + v.nodes.length, 0) + ' ' + r.violations.map(v => v.id + ':' + v.nodes.map(n => n.target.join(' ')).join(',')).join(';').slice(0, 600))`, true);
+};
+const theme = async t => { await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(t)}); 'ok'`); await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: t }] }); };
+await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('DOM.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1100, deviceScaleFactor: 1, mobile: false });
+await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
+out('login', await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(env.P_USR)}, password: ${JSON.stringify(env.P_UPW)} }) }).then(r => r.status)`, true));
+await theme('light');
+try {
+  // P1: an application's contacts shown, the Inventory filtered to imp-ms, the inventory's own export
+  out('P1.ready', await go('#/admin_applications'));
+  out('P1.open', await press('Open F Alpha')); await sleep(1200);
+  out('P1.show', await press('Show contacts of F Alpha')); await sleep(1200);
+  out('P1.shown', await ev(`document.body.textContent.includes(${JSON.stringify(env.P_FIONA)})`));
+  out('P1.filter', await ev(`(() => { const s = document.querySelector('main section.app-file'); const i = [...s.querySelectorAll('input.filter')].find(x => x.getAttribute('aria-label') === 'Filter instance'); if (!i) return 'no filter';
+    i.value = 'imp-ms'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()`));
+  await sleep(800);
+  out('P1.visible', await ev(`[...document.querySelectorAll('main section.app-file table.grid tbody tr')].filter(r => r.getClientRects().length).length`));
+  const before = new Set(fs.readdirSync(dl));
+  out('P1.press', await press('Export the inventory (.xlsx)'));
+  out('P1.file', (await newFile(before)) || 'none');
+  out('P1.status', await fileStatus());
+  // P2: the file chosen, previewed, its conflict ticked, applied
+  const doc = await cmd('DOM.getDocument', { depth: 1 });
+  const node = await cmd('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: '#app-import-file' });
+  out('P2.set', (await cmd('DOM.setFileInputFiles', { nodeId: node.result?.nodeId, files: [p2file] })).error ? 'error' : 'ok');
+  out('P2.preview', await ev(`(() => { const f = [...document.querySelectorAll('main form')].find(f => f.getAttribute('aria-label') === 'Import a file'); if (!f) return false; f.requestSubmit(); return true; })()`));
+  out('P2.previewed', await settle());
+  out('P2.counts', await ev(`document.querySelector('main [data-part=import-counts]')?.textContent ?? ''`));
+  // P3 before the apply: axe with the preview shown, light and dark
+  out('P3.light', await axe());
+  await theme('dark'); await sleep(400); out('P3.dark', await axe()); await theme('light');
+  out('P2.tick', await press("Take line 3's change"));
+  out('P2.apply', await ev(`(() => { const b = [...document.querySelectorAll('main section.app-file button')].find(b => b.textContent.startsWith('Apply the import')); if (!b) return false; b.click(); return true; })()`));
+  out('P2.applied', await settle());
+} catch (e) { out('ERROR', String(e?.message ?? e)); }
+process.exit(0);
+JS
+if [[ $P_OK == 1 ]]; then
+  P_USR=$USR P_UPW=$UPW P_FIONA="fiona.$SUF@example.com" timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" > "$WORK/p.out" 2> "$WORK/p.err"
+  pv() { sed -n "s/^$1=//p" "$WORK/p.out" | head -1; }
+  # P1: the workbook read back through the import's own preview; no contact, user or client in it
+  F1X=$(pv P1.file); get applications/inventory >/dev/null; ninv=$(js "print(len(d['rows']))")
+  if [[ -f "$F1X" ]]; then
+    p=$(imp "$F1X" "dry=1"); pc="$(cnt lines)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt refused)"; kind=$(js "print(d.get('file', {}).get('kind'))")
+    sheets=$(unzip -p "$F1X" xl/workbook.xml | grep -o 'name="[^"]*"' | tr '\n' ' ')
+    leak=$(unzip -p "$F1X" | grep -c -i -e 'Fiona Planted' -e "fiona.$SUF@" -e "555 7$SUF" -e "$USR" -e '127.0.0.1')
+    [[ $(pv P1.shown) == true && $(pv P1.filter) == ok && $(pv P1.visible) -lt $ninv && $p == 200 && $kind == xlsx && $pc == "$ninv/0/0/0/0" && $sheets == *'name="Inventory"'* && $leak == 0 ]] \
+      && ok "P1 contacts shown, the grid filtered to imp-ms ($(pv P1.visible) of $ninv lines drawn): the inventory's own .xlsx holds all $ninv lines (read back: nothing to change), sheet Inventory, no contact / user / client in it" \
+      || bad "P1 shown $(pv P1.shown), filter $(pv P1.filter), drawn $(pv P1.visible) of $ninv; read back $p $kind $pc; sheets $sheets; hits $leak; status '$(pv P1.status)'; $(head -c 200 "$WORK/ans.json")"
+  else bad "P1 no workbook downloaded (press $(pv P1.press); status '$(pv P1.status)'; $(head -c 200 "$WORK/p.err"))"; fi
+  # P2
+  [[ $(pv P2.set) == ok && $(pv P2.previewed) == Previewed* && $(pv P2.counts) == *"1 conflict"* && $(pv P2.tick) == true && $(pv P2.applied) == Applied* \
+     && $(asg imp-ms s1) == "F Gamma|import:proof" && $(q "select count(*) from pgvigil.app_not_application m join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and m.database_name = 'f4'") == 0 ]] \
+    && ok "P2 a file chosen, previewed ('$(pv P2.counts | cut -c1-80)'), its conflict ticked and applied by clicks: s1 assigned, f4's hand mark taken off" \
+    || bad "P2 set $(pv P2.set); '$(pv P2.previewed)'; counts '$(pv P2.counts)'; tick $(pv P2.tick); '$(pv P2.applied)'; s1 $(asg imp-ms s1); $(pv ERROR) $(head -c 200 "$WORK/p.err")"
+  # P3
+  [[ $(pv P3.light) == "0 "* && $(pv P3.dark) == "0 "* ]] && ok "P3 axe-core 4.14.0 with the Inventory and the preview shown: 0 violation nodes, light and dark" || bad "P3 light '$(pv P3.light)'; dark '$(pv P3.dark)'"
+fi
+fi
+fi
+
+# ================= B: the limits (last: its 20000 targets would weigh on every read before it) =================
+if want B; then
+if [[ -z "${U:-}" ]]; then bad "B needs section F's serve (IMP_ONLY with F)"; else
 # F13 (R13): over 5 MB, over 20000 lines: refused in words; 20000 lines previewed and applied inside the timeout
 python3 -I -c 'import sys; open(sys.argv[1], "w").write("instance,application,description\n" + ("imp-pg,X," + "d" * 200 + "\n") * 26000)' "$WORK/big.csv"
 c1=$(imp "$WORK/big.csv" "dry=1"); w1=$(js "print(d.get('error', ''))")
@@ -407,6 +518,7 @@ nb=$(q "select count(*) from pgvigil.app_assignments a join pgvigil.app_applicat
   && ok "F13 6 MB refused ('${w1:0:40}'), 20001 lines refused ('${w2:0:40}'); 20000 lines previewed in $((t1 - t0)) s and applied in $((t2 - t1)) s (20000 assignments)" \
   || bad "F13 5 MB: $c1 '$w1'; 20001: $c2 '$w2'; 20000: preview $p ($((t1 - t0)) s), apply $x '$xo' ($((t2 - t1)) s), assigned $nb; $(head -c 300 "$WORK/ans.json")"
 
+fi
 fi
 
 echo "proof-app-import: $NFAIL FAIL"
