@@ -77,6 +77,27 @@
 #  P10 the -no-login serve: at least 8 write controls, every one off with a visible reason; contacts in words
 #  P11 axe-core 4.14.0 on the page (an application and its contacts open) light and dark, and read only: 0 nodes
 #  P12 the page's Export .xlsx passes scripts/xlsx-check.py and holds no contact value (contacts not shown)
+# Section O, owner-routed alerts (a contact's route through a configured smtp channel: one derived channel per route,
+# 'contact-<route_id>', the base's relay, repeat, clear_after, quiet hours and cap, scoped by the application's tag;
+# real passes of 'pgvigil alerts' against a loopback SMTP sink that keeps each message with its RCPT list):
+#  O1  a finding on A's instance mailed to A's routed contact; none of B's to her, none of A's to B's; the base keeps
+#      its own scope
+#  O2  the route repeats as its base (nothing at once, a repeat after 6 minutes with repeat 5m); its channel row's numbers
+#  O3  the base's quiet hours hold its route; the base's max_per_hour caps the route as its own channel
+#  O4  a 550 naming the address is logged as 'contact <id>'; no planted address in alert_log, alert_channels,
+#      admin_audit, alert_tests, alert_state, the passes' output, the Alerts, rules or Report mail answers
+#  O5  a reader login: the routes' door refuses it; ui_app_contact_routes not readable
+#  O6  a route whose channel is not in the config sends nothing, named once in three passes
+#  O7  a changed e-mail followed at the next pass; the contact removed: its open rows closed with no message
+#  O8  an instance carrying A (the instance) and B (one database): its finding mailed to both contacts
+#  O9  one address on two contact rows: two copies (O-D7)      O10 a team's group address routed
+#  O11 a route through a 63-character base; a repository-wide finding goes to the base, to no route
+#  O12 an application name at the tag's 100-byte cap          O13 an address Go's parser refuses: that route alone skipped
+#  O14 a route off: its open rows closed with no message; on again: no stale recovery
+#  O15 the routes' door failing: the config's channels still send, no route row closed
+#  O16 the Send test refused on a route's channel             O17 Report mail and the rules page count config channels only
+#  O18 the contacts' answer carries the routes and the configured smtp channels
+#  O19 the page: a route added and turned off by clicks; axe 0 nodes with the routes shown
 # On a tree without 0136 every row FAILs as 'not on this tree': the red run.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -375,7 +396,7 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 [[ -f "$AXE" ]] || { P_SET=0; bad "P setup: axe-core 4.14.0 did not install"; }
 cat > "$WORK/p.mjs" <<'JS'
 // the page clicked as a user would: each step prints KEY=value; the shell grades the lines and the store
-const [port, U, U6, dl, axePath] = process.argv.slice(2);
+const [port, U, U6, dl, axePath, mode] = process.argv.slice(2);   // mode 'routes': section O's O19 only
 const fs = await import('node:fs');
 const { execFileSync } = await import('node:child_process');
 const env = process.env;
@@ -428,6 +449,18 @@ await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1100, dev
 await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 out('login', await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(env.P_USR)}, password: ${JSON.stringify(env.P_UPW)} }) }).then(r => r.status)`, true));
 await theme('light');
+if (mode === 'routes') {
+  // O19: a route added for Dee on the page and turned off, by clicks; axe with the routes shown
+  try {
+    await go(U, '#/admin_applications'); await click('Open O App D'); await click('Show contacts of O App D');
+    out('R.fill', await fill('Route alerts of O App D', { contact_id: 'Dee', channel: 'mail', min_severity: 'warning' }));
+    out('R.status', await submit('Route alerts of O App D'));
+    out('R.added', await ev(`[...document.querySelectorAll('main button')].some(b => b.getAttribute('aria-label') === 'Turn off the route of Dee via mail')`));
+    out('R.off', await click('Turn off the route of Dee via mail'));
+    out('R.axe', await axe());
+  } catch (e) { out('ERROR', String(e?.message ?? e)); }
+  ws.close(); bws.close(); process.exit(0);
+}
 try {
   // P1 the tab and the list
   out('P1.ready', await go(U, '#/admin_applications'));
@@ -584,6 +617,267 @@ else
   for row in $PROWS; do bad "$row not run (P setup)"; done
 fi
 fi
+# ================= O: owner-routed alerts (a contact's route through a configured smtp channel) =================
+# real passes of 'pgvigil alerts' against a loopback SMTP sink that keeps each message with its RCPT list and refuses
+# one planted address with a 550 naming it; the routes through the store's door (Ann's through the HTTP door)
+OROWS="O1 O2 O3 O4 O5 O6 O7 O8 O9 O10 O11 O12 O13 O14 O15 O16 O17 O18 O19"
+SINK=$(freeport); mkdir -p "$WORK/smtp"
+REFUSED="refused.$SUF@example.com"
+cat > "$WORK/sink.py" <<'PY'
+import socketserver, sys, os, itertools
+out, refuse = sys.argv[2], sys.argv[3].lower(); n = itertools.count(1)
+class H(socketserver.StreamRequestHandler):
+    def say(self, l): self.wfile.write((l + "\r\n").encode())
+    def handle(self):
+        self.say("220 sink"); rcpt = []
+        while True:
+            l = self.rfile.readline()
+            if not l: return
+            raw = l.decode(errors="replace").strip(); c = raw.upper()
+            if c.startswith("EHLO") or c.startswith("HELO"): self.say("250 sink")
+            elif c.startswith("MAIL"): rcpt = []; self.say("250 ok")
+            elif c.startswith("RCPT"):
+                a = raw.split(":", 1)[1].strip().strip("<>").lower()
+                if a == refuse: self.say("550 5.1.1 <%s>: recipient address rejected: user unknown" % a)
+                else: rcpt.append(a); self.say("250 ok")
+            elif c.startswith("RSET") or c.startswith("NOOP"): self.say("250 ok")
+            elif c == "DATA":
+                self.say("354 go"); buf = []
+                while True:
+                    d = self.rfile.readline()
+                    if not d or d == b".\r\n": break
+                    buf.append(d)
+                p = os.path.join(out, "%d.eml" % next(n))
+                open(p + ".tmp", "wb").write(("X-Rcpt: " + ",".join(rcpt) + "\r\n").encode() + b"".join(buf)); os.rename(p + ".tmp", p)
+                self.say("250 queued")
+            elif c == "QUIT": self.say("221 bye"); return
+            else: self.say("502 no")
+class S(socketserver.ThreadingTCPServer): allow_reuse_address = True
+S(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+python3 -I "$WORK/sink.py" "$SINK" "$WORK/smtp" "$REFUSED" 2> "$WORK/sink.log" & SPIDS+=($!)
+# mails <stamp> <address> [word]: the messages the sink kept after the stamp with that RCPT (and that word in them)
+cat > "$WORK/eml.py" <<'PY'
+import glob, os, sys
+d, stamp, addr = sys.argv[1], sys.argv[2], sys.argv[3].lower(); word = sys.argv[4] if len(sys.argv) > 4 else ""
+t = os.path.getmtime(stamp) if stamp else 0; n = 0
+for p in glob.glob(os.path.join(d, "*.eml")):
+    if os.path.getmtime(p) <= t: continue
+    b = open(p, encoding="utf-8", errors="replace").read()
+    if addr not in b.split("\r\n", 1)[0][len("X-Rcpt: "):].split(","): continue
+    if word and word.lower() not in b.lower(): continue
+    n += 1
+print(n)
+PY
+mails() { python3 -I "$WORK/eml.py" "$WORK/smtp" "$WORK/stamp.$1" "$2" "${3:-}"; }
+NPASS=0
+opass() {   # one pass of the sender: the stamp before it, its exit code, its output kept
+  NPASS=$((NPASS + 1)); sleep 0.02; touch "$WORK/stamp.$NPASS"; sleep 0.02
+  "$BIN" alerts -config "$WORK/o.yaml" > "$WORK/opass.$NPASS.out" 2> "$WORK/opass.$NPASS.err"; ORC=$?
+  echo "read: pass $NPASS rc $ORC: $(grep -m1 '^alerts: ' "$WORK/opass.$NPASS.out" | cut -c1-300)"
+}
+crit() {    # a critical finding on an instance: autovacuum off in its state (the settings rule), read back
+  q "insert into pgvigil.instance_state (instance_id, snapshot_at, non_default_settings) values ($1, now(), '[{\"name\": \"autovacuum\", \"value\": \"off\"}]'::jsonb)
+     on conflict (instance_id) do update set snapshot_at = excluded.snapshot_at, non_default_settings = excluded.non_default_settings" >/dev/null
+  q "select count(*) from pgvigil.alert_findings where instance_id = $1 and severity = 'critical'"
+}
+newinst() { q "select pgvigil.ensure_instance('$1', 'onprem', '18.0', 180000, false, '{}'::text[])"; }
+OA=$(newinst proof-o-a); OB=$(newinst proof-o-b); OC=$(newinst proof-o-c); OD1=$(newinst proof-o-d1); OD2=$(newinst proof-o-d2); OL=$(newinst proof-o-l)
+dbs "$OC" "[$(pgdb 50001 cdb1)]"
+for i in $OA $OB $OC $OD1 $OD2 $OL; do n=$(crit "$i"); [[ $n -ge 1 ]] || bad "O setup: no critical finding on instance $i after the plant ($n)"; done
+LNAME=$(python3 -I -c 'print("Long " + "L" * 95)')   # 100 bytes: the tag value's cap
+app()  { field "$(wr application "{\"op\": \"add\", \"name\": \"$1\"}")" app_id; }
+asg()  { wr assign "{\"op\": \"assign\", \"app_id\": $1, \"targets\": [{\"instance_id\": $2, \"database\": ${3:-null}}]}" >/dev/null; }
+con()  { field "$(wr contact "{\"op\": \"add\", \"app_id\": $1, \"role\": \"support\", \"kind\": \"$2\", \"name\": \"$3\", \"email\": \"$4\"}")" contact_id; }
+OAPP=$(app 'O App A'); OBPP=$(app 'O App B'); ODPP=$(app 'O App D'); OLPP=$(app "$LNAME")
+asg "$OAPP" "$OA"; asg "$OAPP" "$OC"; asg "$OBPP" "$OB"; asg "$OBPP" "$OC" '"cdb1"'; asg "$ODPP" "$OD1"; asg "$ODPP" "$OD2"; asg "$OLPP" "$OL"
+ANN="ann.$SUF@example.com"; BOB="bob.$SUF@example.com"; DEE="dee.$SUF@example.com"; LEE="lee.$SUF@example.com"; WES="wes.$SUF@example.com"
+TEAMA="a-team.$SUF@example.com"; QUINN="bad\\\"q.$SUF@example.com"; QPLAIN="bad\"q.$SUF@example.com"; DBA="dba.$SUF@example.org"; WBASE="w.$SUF@example.org"
+CANN=$(con "$OAPP" person Ann "$ANN"); CDUP=$(con "$OAPP" person 'Ann again' "$ANN"); CTEAM=$(con "$OAPP" team 'A Team' "$TEAMA")
+CQ=$(con "$OAPP" person Quinn "$QUINN"); CWES=$(con "$OAPP" person Wes "$WES"); CBOB=$(con "$OBPP" person Bob "$BOB")
+CDEE=$(con "$ODPP" person Dee "$DEE"); CLEE=$(con "$OLPP" person Lee "$LEE")
+[[ -n "$CANN$CQ" && $(q "select email from pgvigil.ui_app_contacts where contact_id = ${CQ:-0}") == "$QPLAIN" ]] || bad "O setup: the contacts (Quinn's address as stored: $(q "select email from pgvigil.ui_app_contacts where contact_id = ${CQ:-0}"))"
+# the repository-wide finding ('purge not run in 2 days', warning): no purge run, an instance seen 3 days ago
+q "delete from pgvigil.purge_runs; update pgvigil.instances set first_seen = now() - interval '3 days' where instance_id = $OA" >/dev/null
+RW=$(q "select count(*) from pgvigil.alert_findings where source = 'pgvigil repository' and setting = 'purge not run in 2 days'")
+H0=$(date -u +%H); H2=$(( (10#$H0 + 2) % 24 ))
+LONGB=mailw-$(python3 -I -c 'print("w" * 57)')     # a base name of 63 characters
+cat > "$WORK/o.yaml" <<EOF
+repository:
+  dsn: env:PGVIGIL_REPO_DSN
+alerts:
+  - {name: mail, kind: smtp, min_severity: critical, repeat: 5m, clear_after: 0, instances: [proof-o-b],
+     smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [$DBA]}}
+  - {name: mailq, kind: smtp, min_severity: critical, tags: [env:nowhere], timezone: UTC,
+     quiet_hours: "$(printf %02d $((10#$H0))):00-$(printf %02d $H2):00",
+     smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [q.$SUF@example.org]}}
+  - {name: mailcap, kind: smtp, min_severity: critical, max_per_hour: 1, tags: [env:nowhere],
+     smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [cap.$SUF@example.org]}}
+  - {name: $LONGB, kind: smtp, min_severity: warning, tags: [env:nowhere],
+     smtp: {host: 127.0.0.1, port: $SINK, tls: none, from: pgvigil@example.org, to: [$WBASE]}}
+EOF
+echo "read: O fixtures - instances a $OA b $OB c $OC d1 $OD1 d2 $OD2 l $OL; applications A $OAPP B $OBPP D $ODPP L $OLPP; a repository-wide 'purge not run' finding: $RW"
+HAS_ROUTES=$(q "select to_regprocedure('pgvigil.import_app_contact_route(timestamptz, jsonb)') is not null")
+rset() {    # rset <contact> <channel> [min_severity] [enabled]: the route's id ('' when refused or not on this tree)
+  [[ $HAS_ROUTES == t ]] || return 0
+  local sev=${3:+, \"min_severity\": \"$3\"} en=${4:+, \"enabled\": $4}
+  field "$(wr contact_route "{\"op\": \"set\", \"contact_id\": $1, \"channel\": \"$2\"$sev$en}")" route_id
+}
+RANN=""
+if [[ $HAS_ROUTES == t ]]; then
+  # Ann's route through the HTTP door (the page's API), the others through the store's
+  c=$(post "$U" admin/applications/routes "{\"op\": \"set\", \"contact_id\": $CANN, \"channel\": \"mail\"}"); RANN=$(js 'print(d.get("route_id", ""))' 2>/dev/null)
+  [[ $c == 200 && -n $RANN ]] || echo "read: Ann's route through the HTTP door: $c $(head -c 200 "$WORK/ans.json")"
+else echo "read: no routes on this tree (no import_app_contact_route): every route below is unset"; fi
+RDUP=$(rset "$CDUP" mail); RTEAM=$(rset "$CTEAM" mail); RQ=$(rset "$CQ" mail); RWES=$(rset "$CWES" "$LONGB"); RBOB=$(rset "$CBOB" mail)
+RGONE=$(rset "$CBOB" mailgone); RDQ=$(rset "$CDEE" mailq); RDC=$(rset "$CDEE" mailcap); RLEE=$(rset "$CLEE" mail)
+ch() { echo "contact-$1"; }
+open_rows() { q "select count(*) from pgvigil.alert_state where channel = '$(ch "$1")' and cleared_at is null"; }
+
+opass                                                                     # pass 1
+P1=$NPASS
+o1a=$(mails $P1 "$ANN" proof-o-a); o1b=$(mails $P1 "$ANN" proof-o-b); o1bob=$(mails $P1 "$BOB" proof-o-a); o1dba=$(mails $P1 "$DBA" proof-o-b); o1dbaa=$(mails $P1 "$DBA" proof-o-a)
+[[ -n $RANN && $o1a -ge 1 && $o1b == 0 && $o1bob == 0 && $o1dba -ge 1 && $o1dbaa == 0 ]] \
+  && ok "O1 a finding on A's instance mailed to A's routed contact, none of B's to her, none of A's to B's contact; the base 'mail' kept its own scope (B's instance)" \
+  || bad "O1 route '$RANN'; to Ann: A's $o1a, B's $o1b; to Bob A's $o1bob; base to dba: B's $o1dba, A's $o1dbaa"
+o8a=$(mails $P1 "$ANN" proof-o-c); o8b=$(mails $P1 "$BOB" proof-o-c)
+[[ -n $RANN && -n $RBOB && $o8a -ge 1 && $o8b -ge 1 ]] && ok "O8 proof-o-c carries A (the instance) and B (its database cdb1): its finding mailed to Ann and to Bob" || bad "O8 to Ann $o8a, to Bob $o8b (routes '$RANN' '$RBOB')"
+o9=$(mails $P1 "$ANN")
+[[ -n $RDUP && $o9 == 2 ]] && ok "O9 one address on two contact rows: two copies in one pass (duplicates accepted, O-D7)" || bad "O9 messages to Ann's address in pass 1: $o9 (want 2; route '$RDUP')"
+o10=$(mails $P1 "$TEAMA" proof-o-a)
+[[ -n $RTEAM && $o10 -ge 1 ]] && ok "O10 a team's group address routed: mailed A's finding" || bad "O10 to the team's address $o10 (route '$RTEAM')"
+o11=$(mails $P1 "$WES" proof-o-a); o11w=$(mails $P1 "$WES" 'purge not run'); o11base=$(mails $P1 "$WBASE" 'purge not run')
+[[ -n $RWES && $o11 -ge 1 && $RW -ge 1 && $o11base -ge 1 && $o11w == 0 ]] \
+  && ok "O11 a route through a 63-character base: mailed A's finding; the repository-wide 'purge not run' went to the base only, to no route" \
+  || bad "O11 Wes: A's $o11, repository-wide $o11w; the base's repository-wide $o11base (finding standing: $RW; route '$RWES')"
+o12=$(mails $P1 "$LEE" proof-o-l)
+[[ -n $RLEE && $o12 -ge 1 ]] && ok "O12 an application named at the tag's 100-byte cap: its contact mailed" || bad "O12 to Lee $o12 (route '$RLEE')"
+o3q=$(mails $P1 "$DEE"); o3qs=$( [[ -n $RDQ ]] && open_rows "$RDQ" || echo x)
+o3c=$(q "select coalesce(sum(cardinality(keys)), 0) from pgvigil.alert_log where channel = '$(ch "${RDC:-0}")' and outcome = 'capped'")
+o3s=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RDC:-0}")' and outcome = 'sent'")
+[[ -n $RDQ && -n $RDC && $o3qs == 0 && $o3q == 1 && $o3c -ge 1 && $o3s == 1 ]] \
+  && ok "O3 the base's quiet hours hold its route (no row, no message on mailq's route); the base's max_per_hour 1 caps its route as its own channel (1 message, $o3c held)" \
+  || bad "O3 quiet route rows '$o3qs'; Dee's messages $o3q (want 1: mailcap's one); capped items $o3c, sent rows $o3s (routes '$RDQ' '$RDC')"
+o13a=$(mails $P1 "$QPLAIN"); o13n=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RQ:-0}")' and error like '%contact $CQ%'")
+o13s=$(mails $P1 "$ANN" proof-o-a)
+[[ -n $RQ && $o13a == 0 && $o13n == 1 && $o13s -ge 1 ]] && ok "O13 an address Go's parser refuses: that route alone skipped, named in the log by its contact id; the others sent" \
+  || bad "O13 to Quinn $o13a; log rows $o13n; Ann still mailed $o13s (route '$RQ')"
+
+opass                                                                     # pass 2, right after
+P2=$NPASS
+o2now=$(mails $P2 "$ANN")
+q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '6 minutes' where channel = '$(ch "${RANN:-0}")'" >/dev/null
+opass                                                                     # pass 3, Ann's state 6 minutes older
+P3=$NPASS
+o2rep=$(mails $P3 "$ANN" '[REPEAT CRITICAL] proof-o-a')
+o2cfg=$(q "select repeat_secs || '|' || clear_after_secs || '|' || max_per_hour || '|' || is_configured from pgvigil.alert_channels where name = '$(ch "${RANN:-0}")'")
+[[ -n $RANN && $o2now == 0 && $o2rep -ge 1 && $o2cfg == "300|0|0|t" ]] \
+  && ok "O2 the route repeats as its base: nothing again at once, a repeat after 6 minutes (repeat 5m); its channel row 300 s / 0 / no cap, configured" \
+  || bad "O2 at once $o2now; after 6 minutes $o2rep; channel row '$o2cfg' (route '$RANN')"
+o6=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RGONE:-0}")' and error like '%mailgone%not configured%'")
+o6m=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RGONE:-0}")' and outcome = 'sent'"); o13o=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RQ:-0}")'")
+[[ -n $RGONE && $o6 == 1 && $o6m == 0 && $o13o == 1 ]] && ok "O6 a route whose channel is not in the config sends nothing and is named once in three passes (so is the unparsable address)" \
+  || bad "O6 'not configured' rows $o6, sent $o6m; Quinn's rows $o13o (routes '$RGONE' '$RQ')"
+
+# O7: Ann's e-mail changed, then her contact removed
+wr contact "{\"op\": \"edit\", \"app_id\": $OAPP, \"contact_id\": $CANN, \"email\": \"ann2.$SUF@example.com\"}" >/dev/null
+q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '6 minutes' where channel = '$(ch "${RANN:-0}")'" >/dev/null
+opass; P4=$NPASS
+o7new=$(mails $P4 "ann2.$SUF@example.com" proof-o-a)
+# off then on: the team's route turned off (its open rows closed, no message), on again (no stale recovery)
+offrows=$( [[ -n $RTEAM ]] && open_rows "$RTEAM" || echo 0)
+rset "$CTEAM" mail '' false >/dev/null
+opass; P5=$NPASS
+o14off=$(mails $P5 "$TEAMA"); o14rows=$( [[ -n $RTEAM ]] && open_rows "$RTEAM" || echo x); o14log=$(q "select count(*) from pgvigil.alert_log where channel = '$(ch "${RTEAM:-0}")' and outcome = 'cleared'")
+rset "$CTEAM" mail '' true >/dev/null
+opass; P6=$NPASS
+o14res=$(mails $P6 "$TEAMA" '[RESOLVED]')
+[[ -n $RTEAM && $offrows -ge 1 && $o14off == 0 && $o14rows == 0 && $o14log -ge 1 && $o14res == 0 ]] \
+  && ok "O14 a route turned off: its $offrows open row(s) closed 'cleared' with no message; on again: no stale recovery" \
+  || bad "O14 open before $offrows; off: messages $o14off, open rows $o14rows, cleared rows $o14log; on: 'resolved' messages $o14res"
+wr contact "{\"op\": \"remove\", \"app_id\": $OAPP, \"contact_id\": $CANN}" >/dev/null
+annrows=$( [[ -n $RANN ]] && open_rows "$RANN" || echo 0)
+opass; P7=$NPASS
+o7gone=$(mails $P7 "ann2.$SUF@example.com"); o7rows=$( [[ -n $RANN ]] && open_rows "$RANN" || echo x)
+[[ -n $RANN && $o7new -ge 1 && $(mails $P4 "$ANN" proof-o-a) == 0 && $annrows -ge 1 && $o7gone == 0 && $o7rows == 0 ]] \
+  && ok "O7 a changed e-mail is mailed at the next pass (the old address not); the contact removed: its route's $annrows open row(s) closed with no message" \
+  || bad "O7 new address $o7new (old $(mails $P4 "$ANN" proof-o-a)); open before removal $annrows; after: messages $o7gone, open rows $o7rows"
+
+# O15: a failed door: the config's channels still send, no route row is closed
+DEF=$(q "select pg_get_functiondef('pgvigil.alert_contact_routes()'::regprocedure)" 2>/dev/null)
+bobrows=$( [[ -n $RBOB ]] && open_rows "$RBOB" || echo 0)
+# the door made to fail (its body raises first), restored from its own definition after the pass
+[[ -n "$DEF" ]] && q "do \$d\$ begin execute replace(pg_get_functiondef('pgvigil.alert_contact_routes()'::regprocedure), 'BEGIN', 'BEGIN RAISE EXCEPTION ''proof: the door fails'';'); end \$d\$" >/dev/null
+o15door=$(q "select count(*) from pgvigil.alert_contact_routes()" 2>&1 | tail -1)
+T8=$(q "select now()")
+q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '6 minutes' where channel = 'mail'" >/dev/null
+opass; P8=$NPASS
+o15dba=$(mails $P8 "$DBA" '[REPEAT CRITICAL] proof-o-b'); o15rows=$( [[ -n $RBOB ]] && open_rows "$RBOB" || echo x)
+o15clr=$(q "select count(*) from pgvigil.alert_log where channel like 'contact-%' and outcome = 'cleared' and snapshot_at >= '$T8'")
+[[ -n "$DEF" ]] && { printf '%s;\n' "$DEF" | psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 >/dev/null || bad "O15 setup: the door's definition was not restored"; }
+[[ -n $RBOB && -n "$DEF" && $o15door == *"the door fails"* && $o15dba -ge 1 && $bobrows -ge 1 && $o15rows == "$bobrows" && $o15clr == 0 ]] \
+  && ok "O15 the routes' door failing: the base still sent its repeat; Bob's $bobrows open row(s) left open, no route row closed" \
+  || bad "O15 door saved '${DEF:0:40}', made to fail: '${o15door:0:80}'; base repeat $o15dba; Bob's open rows $bobrows -> $o15rows; route rows cleared $o15clr"
+
+# O4: a contact the relay refuses (550 naming the address): the error says 'contact <id>'; no planted address anywhere
+CREX=$(con "$OBPP" person Rex "$REFUSED"); RREX=$(rset "$CREX" mail)
+opass; P9=$NPASS
+o4err=$(q "select coalesce(string_agg(error, ' | '), '') from pgvigil.alert_log where channel = '$(ch "${RREX:-0}")' and outcome in ('failed', 'refused')")
+get "$U" alerts > /dev/null; cp "$WORK/ans.json" "$WORK/o-alerts.json"; get "$U" alertrules > /dev/null; cp "$WORK/ans.json" "$WORK/o-rules.json"
+get "$U" reportmail > /dev/null; cp "$WORK/ans.json" "$WORK/o-reportmail.json"
+leaks=0; where4=""
+for a in "$ANN" "ann2.$SUF@example.com" "$BOB" "$DEE" "$LEE" "$WES" "$TEAMA" "$QPLAIN" "$REFUSED"; do
+  for t in alert_log alert_channels admin_audit alert_tests alert_state; do
+    n=$(q "select count(*) from pgvigil.$t x where strpos(lower(row_to_json(x)::text), lower('${a//\'/\'\'}')) > 0"); [[ $n == 0 ]] || { leaks=$((leaks + n)); where4+=" $t:$a"; }
+  done
+  n=$(cat "$WORK"/opass.*.out "$WORK"/opass.*.err "$WORK/o-alerts.json" "$WORK/o-rules.json" "$WORK/o-reportmail.json" | grep -c -i -F "$a"); [[ $n == 0 ]] || { leaks=$((leaks + n)); where4+=" outputs:$a"; }
+done
+[[ -n $RREX && $o4err == *"contact $CREX"* && $o4err != *"$REFUSED"* && $leaks == 0 ]] \
+  && ok "O4 the relay's 550 is logged as 'contact $CREX'; no planted address in alert_log, alert_channels, admin_audit, alert_tests, alert_state, the passes' output and log, the Alerts, rules or Report mail answers" \
+  || bad "O4 the refused route's error '${o4err:0:200}'; $leaks hit(s):$where4"
+
+# O5: a reader may not read the routes: the door refuses it, the table is not its
+RD2=pgvigil_app_rd2_$SUF; RPW="rpw-$SUF-$RANDOM"
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create role $RD2 login password '$RPW' in role pgvigil_reader" >/dev/null 2>&1
+asrd() { psql "$PGVIGIL_ADMIN_DSN dbname=$DB user=$RD2 password=$RPW" -XAt -c "$1" 2>&1; }
+o5a=$(asrd "select count(*) from pgvigil.alert_contact_routes()"); o5b=$(asrd "select count(*) from pgvigil.ui_app_contact_routes")
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $RD2" >/dev/null 2>&1
+[[ $o5a == *"not the alert sender"* && $o5b == *"permission denied"* ]] && ok "O5 a reader login: the routes' door refuses it, ui_app_contact_routes is not readable (the custom-report path: pdfp-relw4-s1's fix, not this tree's)" \
+  || bad "O5 door: '${o5a:0:120}'; table: '${o5b:0:120}'"
+
+# O16: the Send test is refused on a route; O17: Report mail and the rules page count the configured channels only
+o16=$(q "select pgvigil.import_alert_test(now(), '{\"ui_user\": \"proof\", \"channel\": \"$(ch "${RBOB:-0}")\"}'::jsonb)")
+[[ -n $RBOB && $o16 == *refused* && $o16 == *route* ]] && ok "O16 a Send test on a route's channel is refused ('${o16:0:120}')" || bad "O16 '$o16'"
+o17r=$(grep -c '"contact-' "$WORK/o-reportmail.json"); o17n=$(python3 -I -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+def find(x):
+    if isinstance(x, dict):
+        if "columns" in x and "channels" in x["columns"]: return x["rows"][0][x["columns"].index("channels")]
+        for v in x.values():
+            r = find(v)
+            if r is not None: return r
+    return None
+print(find(d))' "$WORK/o-rules.json" 2>&1)
+[[ -n $RBOB && $o17r == 0 && $o17n == 4 ]] && ok "O17 Report mail lists no route's channel; the rules page counts the 4 configured channels" || bad "O17 contact- channels in Report mail's answer $o17r; the rules page's channel count '$o17n' (want 4)"
+
+# O18: the page's API: one application's contacts carry their routes and the configured smtp channels a route may use
+c18=$(get "$U" "applications/$OBPP/contacts")
+o18=$(js 'r = d.get("routes") or {"columns": [], "rows": []}; c = d.get("channels") or {"columns": [], "rows": []}
+ri = r["columns"].index("channel_name") if "channel_name" in r["columns"] else 0; ci = c["columns"].index("name") if "name" in c["columns"] else 0
+print(",".join(sorted(x[ri] for x in r["rows"])) + "|" + ",".join(sorted(x[ci] for x in c["rows"])))' 2>&1)
+[[ $c18 == 200 && $o18 == "mail,mail,mailgone|mail,mailcap,mailq,$LONGB" ]] && ok "O18 B's contacts carry their routes (mail, mail, mailgone) and the four configured smtp channels, no route's" \
+  || bad "O18 $c18 '$o18'"
+
+# O19: the page's route controls, clicked (the click run of section P in its 'routes' mode, on the same browser)
+if [[ ${P_SET:-0} == 1 && $HAS_ROUTES == t ]]; then
+  P_USR=$USR P_UPW=$UPW timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "http://127.0.0.1:$P6/" "$DL" "$AXE" routes > "$WORK/o19.out" 2> "$WORK/o19.err"
+  ov() { sed -n "s/^$1=//p" "$WORK/o19.out" | head -1; }
+  o19=$(q "select string_agg(r.channel_name || '/' || coalesce(r.min_severity, 'base') || '/' || r.enabled::text, ',') from pgvigil.ui_app_contact_routes r where r.contact_id = $CDEE and r.channel_name = 'mail'")
+  o19a=$(q "select count(*) from pgvigil.admin_audit where op = 'app_route' and outcome = 'done' and ui_user = '$USR' and target = 'contact $CDEE'")
+  [[ $(ov R.fill) == ok && $(ov R.added) == true && $o19 == "mail/warning/false" && $o19a == 2 && $(ov R.axe) == "0 "* ]] \
+    && ok "O19 the page: a route added for Dee (mail from warning) and turned off by clicks; two audit rows; axe 0 nodes with the routes shown" \
+    || bad "O19 fill $(ov R.fill), listed $(ov R.added); store '$o19'; audit $o19a; axe '$(ov R.axe)'; status '$(ov R.status)' / '$(ov R.off)'; $(head -c 200 "$WORK/o19.err")"
+else bad "O19 not run (the page's click run or the routes are not on this tree)"; fi
 fi
 
 echo "proof-applications: $NFAIL FAIL"
