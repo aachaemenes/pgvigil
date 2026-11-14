@@ -18,12 +18,14 @@ import (
 //     Databases counters 'Repl. Pending Xacts' and 'Repl. Trans. Rate'). A publisher whose distributor is another
 //     server is judged from here even when that distributor is not monitored.
 //   - The DISTRIBUTOR side, from each distribution database's own tables (MSpublications, MSdistribution_agents and
-//     its history, MSlogreader_agents, MSsnapshot_agents and theirs, MSmerge_agents with MSmerge_sessions) and its
-//     view MSdistribution_status for the commands not yet delivered: per agent its last history row, since when it
-//     has been failing or retrying (the first row after its last healthy one), the error text of MSrepl_errors, and
-//     for a subscription the entry time of the oldest transaction still waiting for it (its latency while it
-//     delivers nothing). With msdb readable, each agent's SQL Server Agent job: running, stopped, disabled, not on
-//     this server (a pull subscription's), and whether the agent runs continuously.
+//     its history, MSlogreader_agents, MSsnapshot_agents and theirs, MSmerge_agents with MSmerge_sessions,
+//     MSmerge_history and MSmerge_subscriptions) and its view MSdistribution_status for the commands not yet
+//     delivered: per agent its last history row, since when it has been failing or retrying (the first row after its
+//     last healthy one), the error text of MSrepl_errors, and for a subscription the entry time of the oldest
+//     transaction still waiting for it (its latency while it delivers nothing). A merge agent is its subscription (one
+//     per merge subscription, as a distribution agent is one per transactional subscription) and is read as one.
+//     With msdb readable, each agent's SQL Server Agent job: running, stopped, disabled, not on this server (a pull
+//     subscription's), and whether the agent runs continuously.
 //
 // Nothing is written: no tracer token, no call of a replication procedure. A server that is no distributor returns
 // no distributor row; a publisher whose distributor is another server is read there.
@@ -204,11 +206,58 @@ OUTER APPLY (SELECT TOP (1) t.entry_time FROM ` + d + `.dbo.MSrepl_transactions 
                              WHERE c.publisher_database_id = t.publisher_database_id AND c.xact_seqno = t.xact_seqno AND s.agent_id = a.id)
               ORDER BY t.xact_seqno) old` + replFailing(d, "MSdistribution_history", true) + `
 WHERE a.subscriber_db <> N'virtual'
+UNION ALL` + replMergeSubscriptions(db, mapped) + `
 ORDER BY 4, 5, 6, 7, 8`
 }
 
-// replAgentsSQL: the log reader, snapshot and merge agents. A merge agent's failing columns are not read (merge
-// replication is not proven: SQL Server on Linux has none).
+// replMergeSubscriptions is the merge arm of replSubscriptionsFor: one row per merge agent (MSmerge_agents), its
+// newest session (MSmerge_sessions: runstatus 1 start, 2 succeed, 3 in progress, 4 idle, 5 retry, 6 fail; the time
+// is its end, or its start while it runs) and that session's newest message (MSmerge_history), the subscription's
+// type (MSmerge_subscriptions, matched to the agent's publication where the publication ids allow). The distributor
+// keeps no status for a merge subscription (MSmerge_subscriptions.status is no longer used: Microsoft's page; it
+// lives in the publication database's sysmergesubscriptions) and no commands or latency for it (merge keeps its
+// changes in the publication and subscription databases): those columns are NULL.
+// Failing: the agent is failing when a retry or failed session (5, 6) is newer than its newest succeeded or idle one
+// (2, 4); since = the start of the first such session; the error = the newest MSmerge_history row of those sessions
+// that names an error id, its MSrepl_errors row with an error code first.
+func replMergeSubscriptions(db string, mapped bool) string {
+	d := quoteName(db)
+	return `
+SELECT 'subscription', ` + literal(db) + `, a.id,
+  CAST(srv.name AS nvarchar(128)), CAST(a.publisher_db AS nvarchar(128)), CAST(a.publication AS nvarchar(128)),
+  COALESCE(CAST(sub.name AS nvarchar(128)), CAST(a.subscriber_name AS nvarchar(128))), CAST(a.subscriber_db AS nvarchar(128)),
+  CASE ms.subscription_type WHEN 0 THEN 'push' WHEN 1 THEN 'pull' WHEN 2 THEN 'anonymous' ELSE CAST(ms.subscription_type AS varchar(12)) END,
+  CAST(NULL AS varchar(10)), 'merge', CAST(a.name AS nvarchar(200)),
+  h.runstatus, CAST(LEFT(c.comments, 1000) AS nvarchar(1000)),
+  ` + utcText("COALESCE(h.end_time, h.start_time)") + `, ` + utcText("h.start_time") + `,
+  CAST(NULL AS int), h.delivery_rate, CAST(NULL AS bigint), CAST(NULL AS float), CAST(NULL AS varchar(33)), CAST(NULL AS int),
+  ` + utcText("mf.since") + `, NULLIF(me.error_code, N''), me.error_text
+FROM ` + d + `.dbo.MSmerge_agents a
+LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
+LEFT JOIN ` + replServers(d, mapped) + ` sub ON sub.server_id = a.subscriber_id
+OUTER APPLY (SELECT TOP (1) m.subscription_type FROM ` + d + `.dbo.MSmerge_subscriptions m
+               LEFT JOIN ` + d + `.dbo.MSpublications p ON p.publication_id = m.publication_id AND p.publisher_id = m.publisher_id AND p.publisher_db = m.publisher_db
+              WHERE m.publisher_id = a.publisher_id AND m.publisher_db = a.publisher_db AND m.subscriber_id = a.subscriber_id AND m.subscriber_db = a.subscriber_db
+              ORDER BY CASE WHEN p.publication = a.publication THEN 0 ELSE 1 END) ms
+OUTER APPLY (SELECT TOP (1) x.session_id, x.runstatus, x.start_time, x.end_time, x.delivery_rate
+               FROM ` + d + `.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) h
+OUTER APPLY (SELECT TOP (1) y.comments
+               FROM ` + d + `.dbo.MSmerge_history y WHERE y.agent_id = a.id AND y.session_id = h.session_id ORDER BY y.timestamp DESC) c
+OUTER APPLY (SELECT MAX(y.session_id) AS ok_id FROM ` + d + `.dbo.MSmerge_sessions y WHERE y.agent_id = a.id AND y.runstatus IN (2, 4)) mok
+OUTER APPLY (SELECT MIN(z.start_time) AS since FROM ` + d + `.dbo.MSmerge_sessions z
+              WHERE z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.session_id > ISNULL(mok.ok_id, -2147483648)) mf
+OUTER APPLY (SELECT TOP (1) y.error_id FROM ` + d + `.dbo.MSmerge_history y
+               JOIN ` + d + `.dbo.MSmerge_sessions z ON z.agent_id = y.agent_id AND z.session_id = y.session_id
+              WHERE mf.since IS NOT NULL AND y.agent_id = a.id AND ISNULL(y.error_id, 0) <> 0
+                AND z.runstatus IN (5, 6) AND z.session_id > ISNULL(mok.ok_id, -2147483648)
+              ORDER BY y.session_id DESC, y.timestamp DESC) mh
+OUTER APPLY (SELECT TOP (1) CAST(e0.error_code AS nvarchar(128)) AS error_code,
+                    CAST(LEFT(CAST(e0.error_text AS nvarchar(max)), 1000) AS nvarchar(1000)) AS error_text
+               FROM ` + d + `.dbo.MSrepl_errors e0 WHERE e0.id = mh.error_id
+              ORDER BY CASE WHEN ISNULL(e0.error_code, N'') IN (N'', N'0') THEN 1 ELSE 0 END, e0.time DESC) me`
+}
+
+// replAgentsSQL: the log reader and snapshot agents (a merge agent is read as its subscription: replMergeSubscriptions).
 func replAgentsFor(db string, mapped bool) string {
 	d := quoteName(db)
 	return `SELECT 'agent' AS kind, ` + literal(db) + ` AS distribution_db, a.id AS agent_id, 'logreader' AS agent_type, CAST(a.name AS nvarchar(200)) AS agent_name,
@@ -229,17 +278,6 @@ FROM ` + d + `.dbo.MSsnapshot_agents a
 LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
 OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time, x.start_time, x.error_id
                FROM ` + d + `.dbo.MSsnapshot_history x WHERE x.agent_id = a.id ORDER BY x.time DESC, x.timestamp DESC) h` + replFailing(d, "MSsnapshot_history", false) + `
-UNION ALL
-SELECT 'agent', ` + literal(db) + `, a.id, 'merge', CAST(a.name AS nvarchar(200)),
-  CAST(srv.name AS nvarchar(128)), CAST(a.publisher_db AS nvarchar(128)), CAST(a.publication AS nvarchar(128)),
-  h.runstatus, CAST(LEFT(c.comments, 1000) AS nvarchar(1000)), ` + utcText("COALESCE(h.end_time, h.start_time)") + `, ` + utcText("h.start_time") + `, CAST(NULL AS int),
-  CAST(NULL AS varchar(33)), CAST(NULL AS nvarchar(128)), CAST(NULL AS nvarchar(1000))
-FROM ` + d + `.dbo.MSmerge_agents a
-LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
-OUTER APPLY (SELECT TOP (1) x.session_id, x.runstatus, x.start_time, x.end_time
-               FROM ` + d + `.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) h
-OUTER APPLY (SELECT TOP (1) y.comments
-               FROM ` + d + `.dbo.MSmerge_history y WHERE y.agent_id = a.id AND y.session_id = h.session_id ORDER BY y.timestamp DESC) c
 ORDER BY 4, 5`
 }
 

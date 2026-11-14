@@ -291,7 +291,7 @@ BEGIN
       delivery_rate, undistributed, pending_xacts, repl_trans_total, trans_per_s)
   SELECT s.instance_id, s.snapshot_at, x.series, s.kind, s.agent_type, s.publisher, s.publisher_db, s.publication,
          s.subscriber, s.subscriber_db, s.runstatus, s.job_state, s.continuous, s.failing_since, s.last_run_at,
-         CASE WHEN s.kind = 'subscription' THEN pgvigil.mssql_repl_latency(s.undistributed, s.pending_age_s) END,
+         CASE WHEN s.kind = 'subscription' AND s.agent_type IS DISTINCT FROM 'merge' THEN pgvigil.mssql_repl_latency(s.undistributed, s.pending_age_s) END,
          s.latency_ms, s.delivery_rate, s.undistributed, s.pending_xacts, s.repl_trans_total,
          (SELECT CASE WHEN s.repl_trans_total >= p.repl_trans_total
                       THEN (s.repl_trans_total - p.repl_trans_total) / extract(epoch FROM s.snapshot_at - p.snapshot_at) END
@@ -408,7 +408,7 @@ WITH fresh AS (
   -- its next run by design and are not judged
   SELECT s.*, t.lat_warn, t.lat_crit, pgvigil.mssql_repl_latency(s.undistributed, s.pending_age_s) AS latency_s
     FROM fresh s JOIN thr t USING (instance_id)
-   WHERE s.kind = 'subscription' AND s.continuous IS NOT FALSE
+   WHERE s.kind = 'subscription' AND s.continuous IS NOT FALSE AND s.agent_type IS DISTINCT FROM 'merge'
 ), pubdb AS (
   SELECT s.*, t.sl_warn, t.sl_crit, t.sl_min, w.ok_at, w.first_at, w.reads, w.cur_tps
     FROM fresh s JOIN thr t USING (instance_id)
@@ -454,7 +454,7 @@ SELECT c.instance_id, 'warning', 'a replication agent is stopped', c.obj, c.snap
   FROM ctx c
  WHERE c.continuous AND pgvigil.mssql_repl_stopped(c.job_state)
    AND EXISTS (SELECT 1 FROM pgvigil.mssql_replication_state a
-                WHERE a.instance_id = c.instance_id AND a.kind = 'subscription' AND a.subscription_status = 'active'
+                WHERE a.instance_id = c.instance_id AND a.kind = 'subscription' AND (a.subscription_status = 'active' OR a.agent_type = 'merge')
                   AND a.distribution_db = c.distribution_db AND a.publisher_db = c.publisher_db AND a.publisher IS NOT DISTINCT FROM c.publisher
                   AND (c.agent_type = 'logreader' OR a.agent_name = c.agent_name))
    AND (SELECT count(*) FILTER (WHERE q.stopped) = 2
