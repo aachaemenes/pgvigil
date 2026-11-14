@@ -345,13 +345,14 @@ type instanceRun struct {
 	DoorGen int64  `json:"-"`
 }
 
-// audit adds the run's door to its audit row (custom_report_log door, door_generation: 0131)
+// audit adds the run's door to its audit row (custom_report_log door, door_generation: 0131): the door it used, and
+// the inventory generation of the door set it was decided on - a refusal for want of a door names that too
 func (run *instanceRun) audit(row map[string]any) map[string]any {
 	if run.Door != "" {
 		row["door"] = run.Door
-		if run.Door != "store" {
-			row["door_generation"] = run.DoorGen
-		}
+	}
+	if run.Door != "store" {
+		row["door_generation"] = run.DoorGen
 	}
 	return row
 }
