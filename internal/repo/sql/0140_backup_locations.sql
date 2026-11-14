@@ -341,7 +341,7 @@ BEGIN
          (x.r->>'has_checksums')::int = 1, (x.r->>'is_damaged')::int = 1, (x.r->>'is_password_protected')::int = 1,
          (x.r->>'has_bulk_logged_data')::int = 1, (x.r->>'is_readonly')::int = 1, (x.r->>'is_single_user')::int = 1,
          (x.r->>'is_force_offline')::int = 1, (x.r->>'has_incomplete_metadata')::int = 1, (x.r->>'is_snapshot')::int = 1,
-         x.r->>'key_algorithm', x.r->>'encryptor_type', x.r->>'compression_algorithm', (x.r->>'last_valid_restore_utc')::timestamptz,
+         nullif(x.r->>'key_algorithm', ''), nullif(x.r->>'encryptor_type', ''), nullif(x.r->>'compression_algorithm', ''), (x.r->>'last_valid_restore_utc')::timestamptz,
          (x.r->>'family_count')::int, (x.r->>'mirror_count')::int, x.r->>'software_name', (x.r->>'software_vendor_id')::int,
          (x.r->>'media_compressed')::int = 1, (x.r->>'media_encrypted')::int = 1, (x.r->>'media_password')::int = 1,
          f1.device_kind,
