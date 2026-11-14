@@ -55,7 +55,17 @@ type ImportOptions struct {
 	Repository string
 	// By names who runs it on a moved server's run marks (0134's import_dbadash_move run / ended); default "cli".
 	By string
+	// Store, when set, is the pgvigil repository the import writes through (serve's own pool, task 206's page); Import
+	// checks its rights as it checks repoDSN's and leaves it open. Nil = Import opens repoDSN and closes it at the end.
+	Store *pgxpool.Pool
+	// Progress, when set, is called after every batch a mapping inserts (final false: Inserted so far, Stored not read
+	// yet) and once when the mapping ends (final true: the count Import answers), on Import's own goroutine.
+	Progress func(c ImportCount, final bool)
 }
+
+// beatEvery is how often a long mapping of a moved server writes its run's beat between batches (0134 lets another
+// run take a move over after 15 minutes without one).
+const beatEvery = time.Minute
 
 // DefaultImportBatch is the rows of one insert.
 const DefaultImportBatch = 2000
@@ -214,11 +224,15 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 			out = append(out, ImportCount{DBADashID: id, Mapping: "-", Skipped: "no active SQL Server instance with this InstanceID in the repository (inactive, an Azure SQL database, or unknown)"})
 		}
 	}
-	pool, err := openImportStore(ctx, repoDSN, opt.DryRun)
-	if err != nil {
+	pool := opt.Store
+	if pool == nil {
+		if pool, err = openImportStore(ctx, repoDSN, opt.DryRun); err != nil {
+			return nil, err
+		}
+		defer pool.Close()
+	} else if err := importRights(ctx, pool, opt.DryRun); err != nil {
 		return nil, err
 	}
-	defer pool.Close()
 	for _, in := range insts {
 		name := in.Display
 		if n := strings.TrimSpace(opt.Names[in.ID]); n != "" {
@@ -254,7 +268,25 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 				}
 			}
 			if c.Skipped == "" && !opt.DryRun && opt.From.Before(to) {
-				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to)
+				lastBeat := time.Now()
+				onBatch := func(n int64) {
+					if opt.Progress != nil {
+						p := c
+						p.Inserted = n
+						opt.Progress(p, false)
+					}
+					if runID > 0 && time.Since(lastBeat) >= beatEvery {
+						lastBeat = time.Now()
+						so := map[string]any{m.Key: map[string]any{"source": c.Source, "inserted": n, "running": true}}
+						for k, v := range imported {
+							so[k] = v
+						}
+						if _, why, err := moveMark(ctx, pool, "beat", tgt.Name, opt.By, runID, so, ""); err != nil || why != "" {
+							log.Warn("dbadash import: the move's run mark", "instance", tgt.Name, "refused", why, "err", err)
+						}
+					}
+				}
+				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
 				var pe *pgconn.PgError
 				switch {
 				case errors.As(err, &pe) && pe.Code == "55000":
@@ -283,6 +315,9 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 			}
 			log.Info("dbadash import", "instance", tgt.Name, "mapping", m.Key, "to", to, "source", c.Source, "inserted", c.Inserted, "stored", c.Stored, "skipped", c.Skipped)
 			out = append(out, c)
+			if opt.Progress != nil {
+				opt.Progress(c, true)
+			}
 		}
 		if runID > 0 {
 			if _, why, err := moveMark(ctx, pool, "ended", tgt.Name, opt.By, runID, imported, outcome); err != nil || why != "" {
@@ -449,6 +484,15 @@ func openImportStore(ctx context.Context, repoDSN string, dry bool) (*pgxpool.Po
 		pool.Close()
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
+	if err := importRights(ctx, pool, dry); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
+
+// importRights checks the pool's login may call what the import calls (openImportStore's rule).
+func importRights(ctx context.Context, pool *pgxpool.Pool, dry bool) error {
 	need := importReadFuncs
 	if !dry {
 		need = append(append([]string{}, importReadFuncs...), importRunFuncs...)
@@ -460,17 +504,15 @@ func openImportStore(ctx context.Context, repoDSN string, dry bool) (*pgxpool.Po
 		missing, err = pgx.CollectRows(rows, pgx.RowTo[string])
 	}
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("repository rights: %w", err)
+		return fmt.Errorf("repository rights: %w", err)
 	}
 	if len(missing) > 0 {
-		pool.Close()
 		if dry {
-			return nil, fmt.Errorf("this login may not read what the import reads (%s): run 'pgvigil migrate' (0134); then the owner's dsn or a login in role pgvigil_collector or pgvigil_reader may", strings.Join(missing, ", "))
+			return fmt.Errorf("this login may not read what the import reads (%s): run 'pgvigil migrate' (0134); then the owner's dsn or a login in role pgvigil_collector or pgvigil_reader may", strings.Join(missing, ", "))
 		}
-		return nil, fmt.Errorf("this login may not write what the import writes (%s): run it with a login in role pgvigil_collector (the collector's) or the repository owner's dsn, after 'pgvigil migrate' (0134)", strings.Join(missing, ", "))
+		return fmt.Errorf("this login may not write what the import writes (%s): run it with a login in role pgvigil_collector (the collector's) or the repository owner's dsn, after 'pgvigil migrate' (0134)", strings.Join(missing, ", "))
 	}
-	return pool, nil
+	return nil
 }
 
 // importTargetRow is where a DBADash instance's history goes (0134's dbadash_import_target / import_dbadash_instance).
@@ -539,8 +581,9 @@ func versionNum(v string) any {
 }
 
 // importOne copies one mapping of one instance in batches up to 'to', each batch one call of the mapping's function
-// (one transaction: its months' partitions, the instance's import lock, the rows).
-func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time) (int64, error) {
+// (one transaction: its months' partitions, the instance's import lock, the rows); onBatch gets the rows inserted so
+// far after each batch.
+func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time, onBatch func(int64)) (int64, error) {
 	rows, err := src.QueryContext(ctx, m.Rows, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to)))
 	if err != nil {
 		return 0, fmt.Errorf("read: %w", err)
@@ -567,6 +610,9 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		}
 		total += n
 		batch = batch[:0]
+		if onBatch != nil {
+			onBatch(total)
+		}
 		return nil
 	}
 	for rows.Next() {

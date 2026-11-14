@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestLivePages calls every DBADash page once for one instance (scripts/proof-dbadash-door.sh drives it; skipped
@@ -67,9 +69,14 @@ func TestLivePages(t *testing.T) {
 
 // TestLiveImport runs the import once (scripts/proof-dbadash-door.sh drives it; skipped without
 // PGVIGIL_DBADASH_IMPORT_DSN): from that DBADash repository into the pgvigil repository PGVIGIL_DBADASH_IMPORT_REPO
-// (its owner, or a login in role pgvigil_collector), the dry run first when PGVIGIL_DBADASH_IMPORT_DRY=1. It prints one line per instance and mapping:
+// (its owner, or a login in role pgvigil_collector), the dry run first when PGVIGIL_DBADASH_IMPORT_DRY=1; with
+// PGVIGIL_DBADASH_IMPORT_STORE=1 through a pool of that repository handed to it (ImportOptions.Store, serve's way: task
+// 206), which it must leave open. It prints one line per instance and mapping, one per Progress call, and with a Store
+// whether the pool still answers after the import:
 //
 //	import <dbadash id> <pgvigil id> <mapping> source=<n> inserted=<n> stored=<n> skipped=<reason>
+//	progress <dbadash id> <mapping> inserted=<n> final=<0|1>
+//	store open after: <ok | the error>
 func TestLiveImport(t *testing.T) {
 	src := os.Getenv("PGVIGIL_DBADASH_IMPORT_DSN")
 	if src == "" {
@@ -81,6 +88,28 @@ func TestLiveImport(t *testing.T) {
 	opt := ImportOptions{DryRun: os.Getenv("PGVIGIL_DBADASH_IMPORT_DRY") == "1"}
 	if b := os.Getenv("PGVIGIL_DBADASH_IMPORT_BATCH"); b != "" {
 		opt.Batch, _ = strconv.Atoi(b)
+	}
+	opt.Progress = func(c ImportCount, final bool) {
+		f := 0
+		if final {
+			f = 1
+		}
+		fmt.Printf("progress %d %s inserted=%d final=%d\n", c.DBADashID, c.Mapping, c.Inserted, f)
+	}
+	if os.Getenv("PGVIGIL_DBADASH_IMPORT_STORE") == "1" {
+		pool, err := pgxpool.New(ctx, os.Getenv("PGVIGIL_DBADASH_IMPORT_REPO"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		opt.Store = pool
+		defer func() {
+			res := "ok"
+			if err := pool.Ping(ctx); err != nil {
+				res = err.Error()
+			}
+			fmt.Printf("store open after: %s\n", res)
+		}()
 	}
 	got, err := Import(ctx, log, src, os.Getenv("PGVIGIL_DBADASH_IMPORT_REPO"), opt)
 	for _, c := range got {

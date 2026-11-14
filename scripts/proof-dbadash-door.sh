@@ -68,6 +68,10 @@
 #     pgvigil table for the instance equals the source; a second run inserts 0 and stored is unchanged; pgvigil holds
 #     the instance under DBA Dash's display name, engine sqlserver, with the tag 'env:proof' added on DBA Dash's side
 #     and none of DBA Dash's system tags; the run as a login in role pgvigil_reader is refused ('may not write').
+#     E2 (task 206: serve's way) the first real run goes through a pool handed to the import (ImportOptions.Store): one
+#     'progress' line per batch of 2 (ceil(source / 2) for each mapping, the last at inserted = source) and one final
+#     line per mapping at inserted = source; the pool answers after the import (Import leaves it open); the second run
+#     goes through the dsn as before; a pgvigil_reader login's pool is refused ('may not write') as its dsn is.
 #  F. the version pin: with a newer version row '9.9.9' in the repository, every page answers ok with proven=false and
 #     the note 'not proven on source version 9.9.9'; the row is removed again.
 #  G. the imported server's tabs (task 168), under `pgvigil serve` built from a copy of this tree with the join's wiring
@@ -446,18 +450,25 @@ echo "== E. the import =="
 TAGID=$(sq "INSERT INTO dbo.Tags (TagName, TagValue) VALUES (N'env', N'proof'); SELECT SCOPE_IDENTITY();" "$DDB")
 sqok "E: the tag" "INSERT INTO dbo.InstanceIDsTags (InstanceID, TagID) VALUES ($ID, $TAGID)" "$DDB"
 imp() { PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$1" PGVIGIL_DBADASH_IMPORT_DRY="${2:-0}" PGVIGIL_DBADASH_IMPORT_BATCH=2 \
-  go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import ' || true; }
+  PGVIGIL_DBADASH_IMPORT_STORE="${3:-0}" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep -E '^(import|progress|store open after) ' || true; }
 declare -A want=([cpu]=$n_cpu [volumes]=$n_vol [dbsize]=$n_dbs [jobruns]=$n_job)
 field() { echo "$1" | grep "^import $ID [0-9]* $2 " | sed -n "s/.* $3=\([0-9]*\).*/\1/p"; }
 dry=$(imp "$PGDSN" 1); echo "$dry"
 for m in cpu volumes dbsize jobruns; do
   [[ "$(field "$dry" "$m" source)" == "${want[$m]}" && "$(field "$dry" "$m" inserted)" == 0 ]] || fail "E: the dry run of $m: $(echo "$dry" | grep " $m ") (want source=${want[$m]} inserted=0)"
 done
-one=$(imp "$PGDSN"); echo "$one"
+one=$(imp "$PGDSN" 0 1); echo "$one" | grep -v '^progress '
 for m in cpu volumes dbsize jobruns; do
   s=$(field "$one" "$m" source); i=$(field "$one" "$m" inserted); t=$(field "$one" "$m" stored)
   [[ "$s" == "${want[$m]}" && "$i" == "$s" && "$t" == "$s" ]] || fail "E: $m: source=$s inserted=$i stored=$t (want ${want[$m]} each)"
+  # E2: Progress per batch of 2, then the mapping's final line
+  nb=$(echo "$one" | grep -c "^progress $ID $m inserted=[0-9]* final=0$" || true)
+  lastb=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=0$" | tail -1 | sed -n 's/.*inserted=\([0-9]*\).*/\1/p')
+  fin=$(echo "$one" | grep "^progress $ID $m inserted=[0-9]* final=1$" | sed -n 's/.*inserted=\([0-9]*\).*/\1/p')
+  [[ "$nb" == "$(( (${want[$m]} + 1) / 2 ))" && "$fin" == "${want[$m]}" && ( ${want[$m]} == 0 || "$lastb" == "${want[$m]}" ) ]] \
+    || fail "E2: $m's progress: $nb batch line(s) ending at '${lastb}', final '${fin}' (want $(( (${want[$m]} + 1) / 2 )) ending at ${want[$m]}, final ${want[$m]})"
 done
+echo "$one" | grep -qx 'store open after: ok' || fail "E2: the pool handed to the import does not answer after it: $(echo "$one" | grep '^store open after')"
 two=$(imp "$PGDSN")
 for m in cpu volumes dbsize jobruns; do
   [[ "$(field "$two" "$m" inserted)" == 0 && "$(field "$two" "$m" stored)" == "${want[$m]}" ]] || fail "E: the second run of $m: $(echo "$two" | grep " $m ")"
@@ -474,7 +485,9 @@ psql "$ADMIN_DSN" -Xqc "CREATE ROLE $PGRO LOGIN IN ROLE pgvigil_reader" >/dev/nu
 ROPG="$PGDSN user=$PGRO"; ROPG="${ROPG/user=postgres /}"
 bad=$(PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$ROPG" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import error' || true)
 echo "$bad" | grep -q 'may not write' || fail "E: the import as a pgvigil_reader login was not refused: $bad"
-echo "ok   E: dry run counts equal the source (cpu ${want[cpu]}, volumes ${want[volumes]}, dbsize ${want[dbsize]}, jobruns ${want[jobruns]}); the import inserted and pgvigil's tables hold exactly those, in batches of 2; a second run inserted 0; instance '$DISP' engine sqlserver with env:proof ($nsys DBA Dash system tag(s) left out); a pgvigil_reader login refused"
+bad=$(PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$ROPG" PGVIGIL_DBADASH_IMPORT_STORE=1 go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import error' || true)
+echo "$bad" | grep -q 'may not write' || fail "E2: the import through a pgvigil_reader login's pool was not refused: $bad"
+echo "ok   E: dry run counts equal the source (cpu ${want[cpu]}, volumes ${want[volumes]}, dbsize ${want[dbsize]}, jobruns ${want[jobruns]}); the import (through a pool handed to it, one progress line per batch, the pool open after) inserted and pgvigil's tables hold exactly those, in batches of 2; a second run (its dsn) inserted 0; instance '$DISP' engine sqlserver with env:proof ($nsys DBA Dash system tag(s) left out); a pgvigil_reader login refused (dsn and pool)"
 
 echo "== F. the version pin =="
 sqok "F: the version row" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES (DATEADD(day, 1, SYSUTCDATETIME()), '9.9.9')" "$DDB"
