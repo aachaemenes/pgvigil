@@ -93,6 +93,33 @@ SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.j
  ORDER BY (v.last_outcome = 'failed') DESC, v.last_failed_at DESC NULLS LAST,
           CASE v.status WHEN 'crit' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, i.name, v.scheduler, v.job_name`
 
+// sqlJobStatsFleet is the four columns of DBA Dash's root Jobs that need every run of 7 days (Succeed Count 24 h and
+// 7 days, Max and Avg Duration over AgentJob7Day's 7 days), per job of the instances $1 (NULL = every active instance):
+// its own part, read after the status grid is drawn, so its cost never holds the grid (the lead's 05:4x, (a)). SQL
+// Agent: the job outcome rows (step 0); PostgreSQL: the runs with a start, their durations where they ended.
+const sqlJobStatsFleet = `
+WITH ids AS (SELECT unnest(coalesce($1::int[], ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active))) AS instance_id)
+SELECT m.instance_id, 'sqlagent'::text AS scheduler, m.job_id,
+       a.ok_24h, a.ok_7d, a.max_secs_7d, a.avg_secs_7d
+  FROM pgvigil.mssql_jobs m JOIN ids USING (instance_id)
+  CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE r.run_status = 1 AND r.snapshot_at > now() - interval '24 hours') AS ok_24h,
+                             count(*) FILTER (WHERE r.run_status = 1) AS ok_7d,
+                             max(r.duration_s) AS max_secs_7d, round(avg(r.duration_s)::numeric, 1) AS avg_secs_7d
+                        FROM pgvigil.mssql_job_runs r
+                       WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.step_id = 0
+                         AND r.snapshot_at > now() - interval '7 days' AND r.snapshot_at <= now()) a
+UNION ALL
+SELECT g.instance_id, g.scheduler, g.job_id::text,
+       a.ok_24h, a.ok_7d, a.max_secs_7d, a.avg_secs_7d
+  FROM pgvigil.jobs g JOIN ids USING (instance_id)
+  CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE r.status = 'succeeded' AND r.start_time > now() - interval '24 hours') AS ok_24h,
+                             count(*) FILTER (WHERE r.status = 'succeeded') AS ok_7d,
+                             round(max(r.duration_secs)::numeric, 1) AS max_secs_7d, round(avg(r.duration_secs)::numeric, 1) AS avg_secs_7d
+                        FROM pgvigil.job_runs r
+                       WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id
+                         AND r.start_time > now() - interval '7 days' AND r.start_time <= now()) a
+ WHERE g.is_present`
+
 // idsParam reads ?ids=1,2,3 (the instances of the page's view): nil when absent, an error on anything but positive ids.
 func idsParam(r *http.Request) ([]int32, error) {
 	v := r.URL.Query().Get("ids")
@@ -132,6 +159,7 @@ func (s *Server) JobsReport(w http.ResponseWriter, r *http.Request) {
 			{"counts", sqlJobFleetCounts, nil},
 			{"jobs", sqlJobFleet, nil},
 			{"status", sqlJobStatusFleet, []any{idsArg}},
+			{"stats", sqlJobStatsFleet, []any{idsArg}},
 		})
 		return
 	}
