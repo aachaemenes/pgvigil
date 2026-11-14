@@ -148,7 +148,7 @@ func TestMSSQLBackupFilesOnAStore(t *testing.T) {
 	if got := strings.Join(sets, "; "); got != want {
 		t.Errorf("sets:\n got %s\nwant %s", got, want)
 	}
-	if r := p["sets"][1]; fmt.Sprint(r["folder"], " ", r["family_count"], " ", r["mb_s"], " ", r["saving_pct"], " ", r["user_name"], " ", r["set_name"]) != `\\nas01\sql\app\ 2 16.7 75.0 svc_sql app full` {
+	if r := p["sets"][1]; fmt.Sprintf("%v %v %.1f %.1f %v %v", r["folder"], r["family_count"], r["mb_s"], r["saving_pct"], r["user_name"], r["set_name"]) != `\\nas01\sql\app\ 2 16.7 75.0 svc_sql app full` {
 		t.Errorf("app's full: folder %v, files %v, MB/s %v, saving %v, by %v, name %v", r["folder"], r["family_count"], r["mb_s"], r["saving_pct"], r["user_name"], r["set_name"])
 	}
 	var paths []string
