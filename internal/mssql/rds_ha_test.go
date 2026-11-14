@@ -259,8 +259,10 @@ func TestRDSHALive(t *testing.T) {
 	grantNote := "not granted: USE msdb; GRANT EXECUTE ON dbo.rds_get_high_availability_option TO [" + user + "]; GRANT EXECUTE ON dbo.rds_failover_time TO [" + user + "]; (the master user may grant them; the second is for the last failover on a Multi-AZ instance)"
 	check("not granted", ha, fo, partial, nil, nil, grantNote, "not read: the high availability mode was not granted (the row above names the GRANT lines)")
 	// the printed lines are the ones that work: run them as they stand, from master
-	lines := strings.TrimPrefix(noteOf(ha), "not granted: ")
-	lines = lines[:strings.Index(lines, " (the master user")]
+	lines, _, found := strings.Cut(strings.TrimPrefix(noteOf(ha), "not granted: "), " (the master user")
+	if !found {
+		t.Fatalf("the note names no GRANT lines: %q", noteOf(ha))
+	}
 	exec(lines)
 
 	// 2. granted, Single-AZ
