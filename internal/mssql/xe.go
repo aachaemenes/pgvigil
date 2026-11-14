@@ -127,7 +127,8 @@ func XEScript(installID, form string) (string, error) {
 	case XEFormCloudSQL:
 		w("  Google Cloud SQL for SQL Server: run it in master as the sqlserver user. The slow capture's event file goes\n" +
 			"  to " + xeCloudSQLDir + ", the folder Google names for Extended Events files.\n" +
-			"  NOT PROVEN: this form was written from Google's pages and has not been run against Cloud SQL.\n")
+			"  Run on a real Cloud SQL for SQL Server 2022 instance: the four sessions made, started and read. Google's trigger\n" +
+			"  takes one max_memory per session, of 4 to 8 MB: the sizes below are each session's MAX_MEMORY, kept in that range.\n")
 	default:
 		w("  Run it in master as a login that may create event sessions (ALTER ANY EVENT SESSION, or CONTROL SERVER).\n")
 	}
@@ -154,7 +155,12 @@ func XEScript(installID, form string) (string, error) {
 	} else {
 		w("DECLARE @slow_kb          int = 4096;   -- the slow session's ring buffer (KB): a full buffer loses its oldest events\n")
 	}
-	w("DECLARE @deadlock_kb      int = 4096;   -- ring buffer sizes (KB)\n")
+	if form == XEFormCloudSQL {
+		w("DECLARE @deadlock_kb      int = 4096;   -- each session's MAX_MEMORY (KB), 4096 to 8192 on Cloud SQL (kept in that range);\n")
+		w("                                        -- the ring buffers there take no size of their own\n")
+	} else {
+		w("DECLARE @deadlock_kb      int = 4096;   -- ring buffer sizes (KB)\n")
+	}
 	w("DECLARE @blocked_kb       int = 4096;\n")
 	w("DECLARE @attention_kb     int = 1024;\n")
 	w("-- ---- end of settings ----\n\nDECLARE @sql nvarchar(max), @us nvarchar(30) = CAST(CAST(@slow_ms AS bigint) * 1000 AS nvarchar(30));\n\n")

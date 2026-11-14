@@ -16,6 +16,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
+import { offBeside } from './ack';
 
 interface Buttons { explain: boolean; explain_reason?: string; analyze: boolean; analyze_reason?: string }
 interface PlansList { buttons: Buttons; shape: string | null; plans: Table | null }
@@ -97,21 +98,29 @@ function explainForm(ctx: Ctx, b: Buttons, stmt: string, db: string): HTMLElemen
       else msg.textContent = [r.detail, r.note].filter(Boolean).join(' ');
     } catch (e) { msg.replaceChildren(errorBox(e)); }
   };
+  // a button that is off says why in a sentence under the form and points at it; both off for one reason = one sentence
+  // (a reason the server did not give is said as such: a sentence never ends at its colon)
+  const explainWhy = b.explain_reason || 'the server gave no reason', analyzeWhy = b.analyze_reason || 'the server gave no reason';
+  const sameWhy = !b.explain && !b.analyze && explainWhy === analyzeWhy;
+  const explainOff = b.explain ? null : el('p', { class: 'meta' }, `${sameWhy ? 'EXPLAIN and EXPLAIN ANALYZE are' : 'EXPLAIN is'} off: ${explainWhy}`);
+  const analyzeOff = b.analyze ? null : sameWhy ? explainOff : el('p', { class: 'meta' }, `EXPLAIN ANALYZE is off: ${analyzeWhy}`);
   const btnExplain = el('button', { type: 'button' }, 'EXPLAIN (no execution)') as HTMLButtonElement;
-  btnExplain.disabled = !b.explain;
-  btnExplain.title = b.explain ? 'Plans the statement through the monitoring login without running it; a statement with $n parameters gets its generic plan' : b.explain_reason ?? '';
-  btnExplain.addEventListener('click', go('plans/explain', {}));
+  if (explainOff) offBeside(btnExplain, b.explain_reason || 'EXPLAIN is off for this instance', explainOff);
+  else {
+    btnExplain.title = 'Plans the statement through the monitoring login without running it; a statement with $n parameters gets its generic plan';
+    btnExplain.addEventListener('click', go('plans/explain', {}));
+  }
   const btnAnalyze = el('button', { type: 'button', class: 'danger' }, 'EXPLAIN ANALYZE (runs it)') as HTMLButtonElement;
-  btnAnalyze.disabled = !b.analyze;
-  btnAnalyze.title = b.analyze ? 'Runs the SELECT through the instance\'s explain login in a read-only transaction, rolled back, under a timeout; audited in the actions log' : b.analyze_reason ?? '';
-  btnAnalyze.addEventListener('click', () => {
+  if (analyzeOff) offBeside(btnAnalyze, b.analyze_reason || 'EXPLAIN ANALYZE is off for this instance', analyzeOff);
+  else btnAnalyze.title = 'Runs the SELECT through the instance\'s explain login in a read-only transaction, rolled back, under a timeout; audited in the actions log';
+  if (!analyzeOff) btnAnalyze.addEventListener('click', () => {
     const typed = prompt('EXPLAIN ANALYZE executes the statement on the server. Type analyze to run it.');
     if (typed == null) return;
     void go('plans/analyze', { reason: reason.value, confirm: typed })();
   });
   box.append(el('h3', {}, 'EXPLAIN'), text, el('div', { class: 'row' }, dbIn, ' ', btnExplain, ' ', reason, ' ', btnAnalyze));
-  if (!b.explain) box.append(el('p', { class: 'meta' }, 'EXPLAIN is off: ' + (b.explain_reason ?? '')));
-  else if (!b.analyze) box.append(el('p', { class: 'meta' }, 'EXPLAIN ANALYZE is off: ' + (b.analyze_reason ?? '')));
+  if (explainOff) box.append(explainOff);
+  if (analyzeOff && analyzeOff !== explainOff) box.append(analyzeOff);
   box.append(msg);
   return box;
 }
@@ -219,12 +228,15 @@ export async function suggestBox(o: { instance: number; plan?: number; queryid?:
   const from = o.plan ? 'this plan' : el('a', { href: planHref(o.instance, { plan: d.plan_id }) }, `plan ${d.plan_id}`);
   box.append(el('p', { class: 'meta' }, 'Read from ', from, ` (${sources[String(d.source)] ?? String(d.source ?? '')}, ${fmtTime(d.captured_at)}${d.analyzed ? ', actual rows' : ', estimates only'}).`));
   if (d.suggestions.length === 0) box.append(el('p', { class: 'empty' }, 'No index to suggest: no sequential scan in this plan filters on a plain column.'));
+  // the planner check off for the whole page: one sentence under the suggestions, and every suggestion's button
+  // points at it (reachable by keyboard, never the disabled attribute with a title alone)
+  const hypoOff = !d.hypo && d.suggestions.length ? el('p', { class: 'meta' }, 'The planner check is off: ' + (d.hypo_reason || 'the server gave no reason') + '.') : undefined;
   d.suggestions.forEach((sg, n) => {
     const state = el('span', { role: 'status' }, badge(d.label ?? 'not planner-checked', 'warn'));
     const reason = el('input', { type: 'text', placeholder: 'reason (for the actions log)', 'aria-label': `Reason for checking ${sg.ddl}`, style: 'width:20em' }) as HTMLInputElement;
     const btn = el('button', { type: 'button' }, 'Check with the planner (hypopg)') as HTMLButtonElement;
-    btn.disabled = !d.hypo;
-    btn.title = d.hypo ? 'Plans the statement before and with a hypothetical index (hypopg on the monitored server); nothing is created or run; audited' : d.hypo_reason ?? '';
+    if (hypoOff) offBeside(btn, d.hypo_reason || 'the planner check is off', hypoOff);
+    else btn.title = 'Plans the statement before and with a hypothetical index (hypopg on the monitored server); nothing is created or run; audited';
     btn.addEventListener('click', async () => {
       if (btn.disabled) return;
       btn.disabled = true;   // one check per click: each is a planner call on the server and an audit row
@@ -245,7 +257,7 @@ export async function suggestBox(o: { instance: number; plan?: number; queryid?:
       el('div', { style: 'margin:.4rem 0;display:flex;flex-wrap:wrap;gap:.5rem;align-items:center' }, state, reason, btn),
       el('details', {}, el('summary', {}, 'Details'), el('ul', {}, ...sg.why.map(w => el('li', {}, w))))));
   });
-  if (!d.hypo && d.suggestions.length) box.append(el('p', { class: 'meta' }, 'The planner check is off: ' + (d.hypo_reason ?? '') + '.'));
+  if (hypoOff) box.append(hypoOff);
   for (const sk of d.skipped) box.append(el('p', { class: 'meta' }, `${sk.node}: no index suggested (${sk.reason}).`));
   box.append(el('p', { class: 'meta' }, 'pgvigil never creates an index: run the text yourself after the check (CONCURRENTLY does not block writes but waits for every older transaction).'));
   return box;

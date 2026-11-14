@@ -7,7 +7,7 @@ import { el } from './ui';
 import { parse, rangeLabel } from './router';
 
 // The chart a measure takes (lineChart's o.measure): a rate or a level over time is a line; a share of a whole over time
-// is stacked areas, a share at one moment DBA Dash's pie or ring where Allen ordered one; a distribution over time (a
+// is stacked areas, a share at one moment DBA Dash's pie or ring where a page asks for one; a distribution over time (a
 // count per step: events, runs, failures) is bars.
 export type Measure = 'rate' | 'level' | 'share' | 'distribution';
 export type ChartKind = 'line' | 'stacked' | 'bars';

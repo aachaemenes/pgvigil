@@ -15,8 +15,13 @@ package web
 //                                             collector's default (0 = an opt-in collection), its last read, status,
 //                                             duration and note, its errors and skips in the last 24 hours
 //
-// Both read only. The purge age itself is not known to the server: it is the -days of 'pgvigil purge', which the
-// operator schedules (deploy/pgvigil-purge.timer); the page says so and takes the age to preview as a parameter.
+//   GET /api/stored                           what the repository keeps, for the line under the range bar (task RANGE,
+//                                             B5): the last purge run's age and time (pgvigil.purge_runs, 0121) - the
+//                                             row-trimmed tables hold that many days back from it - and the oldest
+//                                             monthly and daily partition in the catalogue (the names this page reads)
+//
+// All read only. The purge age is the -days of 'pgvigil purge', which the operator schedules (deploy/pgvigil-purge.timer);
+// each run records it in pgvigil.purge_runs, so the server knows the last one; the page previews another age as a parameter.
 
 import (
 	"context"
@@ -395,4 +400,32 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 		out.Rows = append(out.Rows, append([]any{interval(c), def(c)}, row...))
 	}
 	s.reply(w, r, map[string]any{"instance": name, "engine": engine, "collections": out}, nil)
+}
+
+// sqlStored is GET /api/stored: the last purge run (its age and end, for the words) and the oldest partitions held. A
+// row-trimmed table (activity_summary, mssql_requests_summary: 0190:201, 0064:468-469) holds rows from the LATEST cut
+// any run made (a run deletes before its start less its days: an earlier run with fewer days cut deeper than a later
+// one with more, and its cut stands until the newer horizon passes it); a monthly partition is dropped once its whole
+// month is older, so the partitioned tables hold from the oldest month left (up to 31 days more), a daily one from its
+// oldest day. No purge run yet: no rows_from.
+const sqlStored = `
+WITH pr AS (SELECT days, finished_at FROM pgvigil.purge_runs ORDER BY run_id DESC LIMIT 1),
+p AS (
+  SELECT CASE WHEN k.relname ~ '_[0-9]{6}$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
+         CASE WHEN k.relname ~ '_[0-9]{8}$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
+    FROM pg_inherits i
+    JOIN pg_class k ON k.oid = i.inhrelid
+    JOIN pg_class t ON t.oid = i.inhparent
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+   WHERE n.nspname = 'pgvigil'
+)
+SELECT (SELECT days FROM pr) AS purge_days, (SELECT finished_at FROM pr) AS purge_at,
+       (SELECT max(started_at - make_interval(days => days)) FROM pgvigil.purge_runs) AS rows_from,
+       (SELECT min(month)::timestamp AT TIME ZONE 'UTC' FROM p) AS months_from,
+       (SELECT min(day)::timestamp AT TIME ZONE 'UTC' FROM p) AS days_from`
+
+// Stored is GET /api/stored.
+func (s *Server) Stored(w http.ResponseWriter, r *http.Request) {
+	t, err := s.query(r.Context(), sqlStored)
+	s.reply(w, r, t, err)
 }

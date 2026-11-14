@@ -27,12 +27,25 @@ export interface Ctx {
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
 export function rememberInstance(id?: number) { if (id) try { localStorage.setItem('pgvigil.instance', String(id)); } catch { /* private window */ } }
 
-export const presets: Record<string, number> = { '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '6h': 21600, '24h': 86400, '2d': 172800, '7d': 604800, '30d': 2592000 };
+// presets: every length an address may name (w=), in seconds. menuPresets: the quick ranges the range panel offers, in
+// order - DBA Dash 4.24.1's twenty lengths, 5 minutes to a year (its range button). 4h is no longer offered and still
+// opens (an old link, a kept address): the panel and Zoom out step over the menu list only.
+export const presets: Record<string, number> = {
+  '5m': 300, '10m': 600, '15m': 900, '30m': 1800, '1h': 3600, '2h': 7200, '3h': 10800, '4h': 14400, '6h': 21600, '12h': 43200,
+  '24h': 86400, '2d': 172800, '3d': 259200, '7d': 604800, '14d': 1209600, '28d': 2419200, '30d': 2592000, '60d': 5184000,
+  '90d': 7776000, '180d': 15552000, '1y': 31536000,
+};
+export const menuPresets = ['5m', '10m', '15m', '30m', '1h', '2h', '3h', '6h', '12h', '24h', '2d', '3d', '7d', '14d', '28d', '30d', '60d', '90d', '180d', '1y'];
 // Calendar periods that end now: they follow now like a preset, from the start of the day, the week (Monday) or the
 // month on the display zone's clock (tz.ts). A period that has ended (yesterday, the week or month before) is a fixed
 // from / to the range panel writes.
 export const periods: Record<string, string> = { today: 'today', wtd: 'week to date', mtd: 'month to date' };
-export const MAX_RANGE_MS = 31 * 86400e3;   // the longest window the server reads (internal/web maxWindow)
+// MAX_RANGE_MS: the longest window the server takes (internal/web maxWindow: a year, a leap day and a fall-back hour);
+// REACH_MS: what a part reads of a longer window unless it names its own reach (internal/web defaultReach). The page's
+// words never assume it: each reply says what it read (X-Pgvigil-Read-From / -To and read_from / read_to, api.ts);
+// tz-check's row keeps this equal to the server's
+export const MAX_RANGE_MS = (366 * 24 + 1) * 3600e3;
+export const REACH_MS = (31 * 24 + 1) * 3600e3;
 // periodStart: where a period of the instant `now` begins; back = whole periods earlier (1 = the one before)
 export function periodStart(p: string, now: Date, back = 0): Date {
   const n = parts(now);
@@ -40,7 +53,7 @@ export function periodStart(p: string, now: Date, back = 0): Date {
   if (p === 'wtd') return zonedToUtc(n.y, n.mo, n.d - ((n.wd + 6) % 7) - 7 * back);
   return zonedToUtc(n.y, n.mo, n.d - back);
 }
-// capRange: a window cut at its start to the server's longest (a 31-day month with a fall-back hour is an hour over)
+// capRange: a window cut at its start to the server's longest (a year, a leap day and a fall-back hour)
 export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
@@ -88,9 +101,10 @@ export const instanceGroups: TabGroup[] = [
 export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
-  mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+  mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+  mssqlqueries: 'Queries',
   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
   // the instance's Reports folder (reports.ts)
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
@@ -102,7 +116,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
@@ -204,6 +218,8 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['dr', 'di', 'dp', 'ds']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
+  // the Running queries tab's wait filter (mssql_running.ts, D10) stays on its own links
+  if (keep && c.tab === 'mssql_running') { const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('wait'); if (v) q.set('wait', v); }
   // the Waiting tasks tab's read and wait type (darling_waiting.ts) stay on its own links
   if (keep && (c.tab === 'mssql_waiting' || c.tab === 'waiting')) {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');

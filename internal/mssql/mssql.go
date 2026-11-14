@@ -11,12 +11,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	mssqldb "github.com/microsoft/go-mssqldb" // the sqlserver driver (BSD-3)
+	"github.com/microsoft/go-mssqldb/msdsn"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -127,19 +131,164 @@ func withAppName(dsn string) string {
 	return strings.TrimRight(dsn, "; ") + ";app name=pgvigil"
 }
 
+// deadlineDialer is the SQL Server connector's dialer (task 201 DONE-2 N10 and N8; review part E). While the connect is
+// under way:
+//   - the deadline, when the DSN sets no 'connection timeout' (the connect's start + collect.DefaultConnectTimeout),
+//     bounds every dial and every connection it makes, and a later deadline the driver sets is held to it: go-mssqldb
+//     dials for 15 s, the SQL Server Browser read sets its own 15 s, and the login reply is read with no deadline and
+//     without the context, so a server that accepts and never answers would hold the collection for good;
+//   - each connection records the first network error of its dial, read or write: go-mssqldb only logs a failed
+//     Browser read (a named instance with no port then fails as "no instance matching ...") and wraps a TLS
+//     handshake's error with %v - withNetwork joins the recorded error, so NoAnswer sees that no one answered.
+//
+// done() ends both: the deadline is lifted from the connections made, later dials go without one, nothing more is
+// recorded. The keep-alive is the driver's own (the DSN's keepAlive, else 30 s).
+type deadlineDialer struct {
+	mu        sync.Mutex
+	until     time.Time
+	keepAlive time.Duration
+	conns     []*watchedConn
+	netErr    error
+	over      bool
+}
+
+// watchedConn is a connection the dialer made: its read and write errors are noted, its deadlines held to the
+// connect's while that stands.
+type watchedConn struct {
+	net.Conn
+	d *deadlineDialer
+}
+
+func (c *watchedConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.d.note(err)
+	return n, err
+}
+
+func (c *watchedConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	c.d.note(err)
+	return n, err
+}
+
+func (c *watchedConn) SetDeadline(t time.Time) error     { return c.Conn.SetDeadline(c.d.clamp(t)) }
+func (c *watchedConn) SetReadDeadline(t time.Time) error { return c.Conn.SetReadDeadline(c.d.clamp(t)) }
+func (c *watchedConn) SetWriteDeadline(t time.Time) error {
+	return c.Conn.SetWriteDeadline(c.d.clamp(t))
+}
+
+func (d *deadlineDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	d.mu.Lock()
+	until := d.until
+	d.mu.Unlock()
+	c, err := (&net.Dialer{KeepAlive: d.keepAlive, Deadline: until}).DialContext(ctx, network, addr)
+	if err != nil {
+		d.note(err)
+		return nil, err
+	}
+	w := &watchedConn{Conn: c, d: d}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.until.IsZero() {
+		_ = c.SetDeadline(d.until)
+		d.conns = append(d.conns, w)
+	}
+	return w, nil
+}
+
+// clamp holds a deadline the driver sets to the connect's while that stands (none: the connect's).
+func (d *deadlineDialer) clamp(t time.Time) time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.until.IsZero() && (t.IsZero() || t.After(d.until)) {
+		return d.until
+	}
+	return t
+}
+
+// note keeps the first network error (a net.Error, an end of stream) of the connect.
+func (d *deadlineDialer) note(err error) {
+	if err == nil {
+		return
+	}
+	var ne net.Error
+	if !errors.As(err, &ne) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.over && d.netErr == nil {
+		d.netErr = err
+	}
+}
+
+func (d *deadlineDialer) done() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, c := range d.conns {
+		_ = c.Conn.SetDeadline(time.Time{})
+	}
+	d.conns, d.until, d.netErr, d.over = nil, time.Time{}, nil, true
+}
+
+// withNetwork joins the network error a connection recorded during the connect to the driver's error when the driver
+// dropped it - an error with no SQL Server error number that NoAnswer does not read as unanswered (the Browser's "no
+// instance matching ...", a TLS handshake's '%v'). Never on a cancel.
+func (d *deadlineDialer) withNetwork(ctx context.Context, err error) error {
+	var num interface{ SQLErrorNumber() int32 }
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.As(err, &num) || collect.NoAnswer(err) {
+		return err
+	}
+	d.mu.Lock()
+	ne := d.netErr
+	d.mu.Unlock()
+	if ne == nil {
+		return err
+	}
+	return fmt.Errorf("%w (the network: %w)", err, ne)
+}
+
+// msTarget is a SQL Server DSN's dial target (task 201 DONE-2 N8): 'mssql:<host>[\<instance>]:<port>', lower-cased -
+// the port the driver dials: a port given (the instance name is then moot), else 1433 with no instance name, else 0
+// with the instance name (the SQL Server Browser resolves it). One server, one target (review part E's nit 5).
+func msTarget(p msdsn.Config) string {
+	t := "mssql:" + strings.ToLower(p.Host)
+	switch {
+	case p.Port != 0:
+		return t + ":" + fmt.Sprint(p.Port)
+	case p.Instance == "":
+		return t + ":1433"
+	}
+	return t + "\\" + strings.ToLower(p.Instance) + ":0"
+}
+
 // Connect opens one connection to a SQL Server instance with the safety settings applied. The caller closes both.
+// A DSN that sets no 'connection timeout' (or sets 0) has the connect and the session setup end after
+// collect.DefaultConnectTimeout (10 s), as a PostgreSQL instance's; one that sets it keeps its own.
 func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error) {
 	dsn := in.DSN()
 	if strings.TrimSpace(dsn) == "" {
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (unset variable or unreadable file)", in.Name))
 	}
-	db, err := mssqlopen.Open(withAppName(dsn))
+	dl := &deadlineDialer{keepAlive: 30 * time.Second}
+	if p, perr := msdsn.Parse(withAppName(dsn)); perr == nil {
+		collect.InstanceTarget(in.Name, msTarget(p)) // task 201 DONE-2 N8: the dial target on the beat
+		if p.KeepAlive != 0 {
+			dl.keepAlive = p.KeepAlive
+		}
+		if p.ConnTimeout <= 0 {
+			dl.until = time.Now().Add(collect.DefaultConnectTimeout)
+		}
+	}
+	// through mssqlopen as every SQL Server reader (CLOUDSQL C1: fedauth, Kerberos off Windows), with the dialer on
+	// the connector it chooses (the join of 201 DONE-2)
+	db, err := mssqlopen.OpenDialer(withAppName(dsn), dl)
 	if err != nil {
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn: %w", in.Name, err))
 	}
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
-	err = collect.InstanceConnect(in.Name, err)
+	err = collect.InstanceConnect(in.Name, dl.withNetwork(ctx, err))
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("connect %s: %w", in.Name, err)
@@ -149,6 +298,7 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("session setup %s: %w", in.Name, err)
 	}
+	dl.done()
 	return db, conn, nil
 }
 

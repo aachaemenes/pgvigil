@@ -10,7 +10,7 @@
 // drawn, builds the same mail and posts it back (POST /api/reportmail/rendered). The mail is sent by the alert sender
 // (pgvigil run) through an smtp channel of the alerts: block; this page shows each send's answer.
 import { get, post, Row, rowsOf, Table } from './api';
-import { Meta, Section, exportName, sections, timeZone, workbook, zip } from './export';
+import { cutWords, Meta, Section, exportName, pageBook, sections, timeZone, workbook, zip } from './export';
 import { fleet } from './fleet';
 import { toHtml } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
@@ -44,7 +44,7 @@ async function metaOf(ctx: Ctx): Promise<Meta> {
   }
   const w = window_(ctx);
   const tab = (ctx.instance ? instanceTabs[ctx.tab] ?? mssqlInstanceTabs[ctx.tab] ?? drillTabs[ctx.tab] : rootTabs[ctx.tab]) ?? ctx.tab;
-  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date() };
+  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date(), read: cutWords() };
 }
 
 // numbers: per grid of root, in sections()' order, which of its shown columns are number columns (right-aligned in
@@ -57,19 +57,20 @@ function numbers(root: ParentNode): boolean[][] {
 }
 
 // mailHtml: the whole mail body. Tables and inline styles only (a mail client takes no stylesheet and runs nothing):
-// the header lines as the workbook's Summary sheet has them, then each grid under its heading as toHtml writes it.
+// the header lines as the workbook's About sheet has them, then each grid under its heading as toHtml writes it (with
+// its thin borders, as the header table).
 export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: string): string {
   const cell = 'border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;' + FONT + ';white-space:nowrap';
   const line = (k: string, v: string) => `<tr><th style="${cell};background:#0063a3;color:#ffffff;font-weight:bold;text-align:left">${esc(k)}</th><td style="${cell};color:#1d1d1f">${esc(v)}</td></tr>`;
   const head = '<table role="presentation" style="border-collapse:collapse;margin:0 0 10px 0">'
     + line('Instance', m.instance) + line('Page', m.tab) + line('Window', m.window)
-    + line('Window from', stamp(m.from)) + line('Window to', stamp(m.to)) + line('Made at', stamp(m.at))
+    + line('Window from', stamp(m.from)) + line('Window to', stamp(m.to)) + (m.read ? line('Read', m.read) : '') + line('Made at', stamp(m.at))
     + line('Time zone', timeZone(m.at)) + '</table>';
   const parts = secs.map((s, i) => {
     const h = `<h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;${FONT};color:#0063a3">${esc(s.name)}</h3>`;
     const note = s.note ? `<p style="margin:2px 0 4px 0;font-size:9pt;${FONT};color:#5f6368">${esc(s.note)}</p>` : '';
     const empty = s.rows.length ? '' : `<p style="margin:2px 0 4px 0;font-size:10pt;${FONT};color:#5f6368">No rows.</p>`;
-    return h + note + toHtml({ cols: s.cols, rows: s.rows, num: nums[i] }) + empty;
+    return h + note + toHtml({ cols: s.cols, rows: s.rows, num: nums[i], borders: true }) + empty;
   }).join('');
   return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
     + `<title>${esc(title)}</title></head>`
@@ -93,11 +94,12 @@ export function routeOf(hash = location.hash): string {
 }
 
 // buildMail: the page under root as a mail: the HTML body and the workbook, its name, the window's words
-// The workbook is the one Export .xlsx writes of the same page (sections with the empty grids: a sheet of the header
-// row each); the body shows the grids with rows, as numbers() pairs them. A page whose grids are all empty is mailed too.
+// The workbook is the one Export .xlsx writes of the same page (export.ts pageBook: every section in page order, the
+// empty grids a sheet of the header row each, the sheets named alike); the body shows the grids with rows, as numbers()
+// pairs them. A page whose grids are all empty is mailed too.
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {
   const m = await metaOf(ctx);
-  const book = root ? sections(root, m.tab, true) : [];
+  const pb = await pageBook(ctx, root, m.tab), book = pb.items.map(f => f.sec);
   if (!book.length) throw new Error('nothing to mail: no grid on this page');
   const secs = sections(root!, m.tab);
   const nums = numbers(root!);
@@ -108,7 +110,7 @@ export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<Mai
   return {
     name: title, route: routeOf(), subject: `pgvigil: ${title} - ${win}`, window: win,
     html: mailHtml(m, secs, nums, title), xlsx, xlsx_name: exportName(m, 'xlsx'),
-    grids: book.length, rows: book.reduce((n, s) => n + s.rows.length, 0),
+    grids: pb.found.length, rows: pb.found.reduce((n, f) => n + f.sec.rows.length, 0),   // the page's grids, as before: no tiles, cards' or charts' rows
   };
 }
 

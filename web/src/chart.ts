@@ -1,8 +1,9 @@
 import uPlot from 'uplot';
 import { get, Row, rowsOf, Table } from './api';
 import { href, MAX_RANGE_MS, parse, window_ } from './router';
-import { copyText, el, saveBlob, showMenu } from './ui';
+import { copyText, el, readWindowWords, saveBlob, showMenu } from './ui';
 import { exportChart } from './export';
+import type { ChartNumbers, PictureBox } from './export_chart';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
 import { axisLook, chartKind, chartLook, chartState, Measure, rememberZoom, zoomReset } from './chartkit';
 
@@ -51,7 +52,7 @@ const withAlpha = (c: string, a: number) => /^#[0-9a-f]{6}$/i.test(c)
 // marks on its time axis (setting changes, restarts, failovers, deadlocks) and the server limits it may draw as lines.
 // One read per instance and window for the whole page: the charts of a page share it, a new page reads again.
 export interface FrameMark { at: number; kind: string; label: string; tab: string; ofKind: number }
-interface FrameRead { marks: FrameMark[]; limits: Map<string, number> }
+interface FrameRead { marks: FrameMark[]; limits: Map<string, number>; read?: { from: string; to: string } }
 const frameReads = new Map<string, Promise<FrameRead>>();
 // the page's window, taken once per address and draw (a preset's now moves): a page builds its charts before the frame
 // clears the last page's (main.ts render), so the address is the key, not the clearing alone
@@ -60,7 +61,7 @@ const minute = 60000;
 function pageWindow(): { from: number; to: number } {
   if (!pageWin || pageWin.key !== location.hash) {
     const w = window_(parse()), to = Math.ceil(Date.parse(w.to) / minute) * minute;
-    // whole minutes outward, then cut to the server's longest again (a 31-day window with ends inside a minute)
+    // whole minutes outward, then cut to the server's longest again (a year's window with ends inside a minute)
     pageWin = { key: location.hash, from: Math.max(Math.floor(Date.parse(w.from) / minute) * minute, to - MAX_RANGE_MS), to };
   }
   return pageWin;
@@ -73,6 +74,8 @@ function frameRead(instance: number, from: number, to: number): Promise<FrameRea
       .then(d => ({
         marks: rowsOf(d.events).map(r => ({ at: Date.parse(String(r.at)), kind: String(r.kind), label: String(r.label ?? ''), tab: String(r.tab ?? ''), ofKind: Number(r.of_kind ?? 0) })).filter(m => !Number.isNaN(m.at)),
         limits: new Map(rowsOf(d.limits).filter(r => r.value != null).map(r => [String(r.name), Number(r.value)])),
+        // the events' own read window when the server cut the chart's span to its reach: the chart says it (markNote)
+        read: d.events?.read_from && d.events.read_to ? { from: d.events.read_from, to: d.events.read_to } : undefined,
       }))
       .catch(() => ({ marks: [], limits: new Map<string, number>() }));   // a failed read draws the chart without its marks
     frameReads.set(key, p);
@@ -80,7 +83,7 @@ function frameRead(instance: number, from: number, to: number): Promise<FrameRea
   return p;
 }
 // the window a chart's frame read covers: the page's, or the chart's own span when the chart draws a longer one (the
-// Storage tab's days): its last 31 days at most, the server's longest
+// Storage tab's days): its last year at most, the server's longest (the frame's events read their reach of it, the newest)
 function chartWindow(xs: number[]): { from: number; to: number } {
   const w = pageWindow(), a = xs[0] * 1000, b = xs[xs.length - 1] * 1000;
   if (a >= w.from - 0.1 * (w.to - w.from)) return w;
@@ -236,7 +239,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     const u = new uPlot(opts, data, holder);
     live.push(u);
     isolateOnDoubleClick(u);
-    chartMenu(box, title, u, !!o.stacked);
+    // each series' formatter as its axis draws it (o.y2's series on the right axis): its numbers carry the axis's unit
+    chartMenu(box, title, u, !!o.stacked, j => (o.y2?.keys.includes(series[j - 1]?.key ?? '') ? o.y2?.fmt : undefined) ?? fmt);
     fullWindow(box, title, u, hiddenKey);
     const reset = zoomReset();   // the page stands on a range a drag set: the way back, in the heading
     if (reset) box.querySelector('h3')?.append(' ', reset);
@@ -266,6 +270,11 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
         const all = capped.get(k) ?? n;
         return all > n && f.marks.filter(m => m.kind === k).length < all ? `the newest ${n} of ${all} ${word(k, all)}` : `${n} ${word(k, n)}`;
       }).join(', ') + '.' : '';
+      // a chart over its own span longer than the events' reach (the Storage tab's 90 days to a year): its marks are of
+      // the newest part, and the chart says so here - never the page's line, whose window is the page's (api.ts)
+      if (o.marks !== false && f.read && Date.parse(f.read.from) > xs[0] * 1000 + 60e3) {
+        markNote = (markNote ? markNote + ' ' : '') + `Marks are read for ${readWindowWords(f.read)} (this chart is longer than they read).`;
+      }
       say();
       // the marks are links out of the keyboard's way (tabindex -1, hundreds on a long window): their one tab stop is
       // this list under the chart, closed until opened
@@ -391,7 +400,7 @@ function fullWindow(box: HTMLElement, title: string, u: uPlot, key: string) {
 // The button in the chart's heading opens it (the keyboard's way) and so does a right-click on the plot. The numbers are
 // the series shown, a row per point, the time as 'YYYY-MM-DD HH:MM:SS' in the display zone; a stacked chart gives each
 // band's own value.
-function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) {
+function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean, fmtOf: (j: number) => (v: number) => string = () => v => v.toLocaleString()) {
   const head = box.querySelector('h3');
   if (!head) return;
   const note = el('span', { class: 'meta chart-note', role: 'status' });
@@ -399,6 +408,20 @@ function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) 
   const say = (t: string) => { note.textContent = t; };
   const fileName = (ext: string) => `${title.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'chart'}_${fileStamp(new Date())}.${ext}`;
   const shown = () => u.series.map((s, j) => ({ s, j })).filter(x => x.j > 0 && x.s.show);
+  // numbers: the series shown, a row per time, as the menu's Export Excel writes them; the page's own workbook reads the
+  // same from the box (export.ts pageExtras, X12: a chart's series as a sheet)
+  const numbers = (): ChartNumbers => {
+    const cols = shown(), xs = u.data[0] as number[];
+    return {
+      fmts: [undefined, ...cols.map(c => fmtOf(c.j))],
+      cols: ['time', ...cols.map(c => String(c.s.label ?? ''))],
+      rows: xs.map((x, i) => [new Date(x * 1000), ...cols.map(c => {
+        const tot = u.data[c.j][i], below = stacked && c.j > 1 ? u.data[c.j - 1][i] : 0;
+        return tot == null ? null : Number(((tot as number) - ((below as number | null) ?? 0)).toPrecision(12));
+      })]),
+    };
+  };
+  (box as PictureBox).pgvNumbers = numbers;
   const table = (sep: string): { text: string; rows: number } => {
     const q = (v: string) => sep === ',' && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
     const cols = shown(), xs = u.data[0] as number[];
@@ -448,13 +471,9 @@ function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) 
     ['Export data (CSV)', () => { const t = table(','); saveBlob(new Blob([t.text + '\n'], { type: 'text/csv;charset=utf-8' }), fileName('csv')); say(`Saved ${t.rows} points`); }],
     // Export Excel (DBA Dash's chart menu): the same numbers as a workbook, a time as a time, each value a number
     ['Export Excel', () => {
-      const cols = shown(), xs = u.data[0] as number[];
-      const rows = xs.map((x, i) => [new Date(x * 1000), ...cols.map(c => {
-        const tot = u.data[c.j][i], below = stacked && c.j > 1 ? u.data[c.j - 1][i] : 0;
-        return tot == null ? null : Number(((tot as number) - ((below as number | null) ?? 0)).toPrecision(12));
-      })]);
-      void exportChart(title, ['time', ...cols.map(c => String(c.s.label ?? ''))], rows)
-        .then(() => say(`Saved ${xs.length} points as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
+      const n = numbers();
+      void exportChart(title, n.cols, n.rows, n.kinds, parse(), n.fmts)
+        .then(() => say(`Saved ${n.rows.length} points as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
     }],
     ...(u.series.length > 2 ? [['Pick series', () => pickSeries(box, u, btn)] as [string, () => void]] : []),
   ];
@@ -559,27 +578,91 @@ function topSet(title: string, n: number) { try { localStorage.setItem(topKey(ti
 // slices; the keyboard's way is the table's link). Over five slices the heading offers the Top N (5, 8, 10, 20 or all;
 // max is the default), kept per browser; its menu (the button, or a right-click on the ring) copies or saves the numbers
 // or the picture.
+// The pointer, as DBA Dash 4.24.1's pies answer it (dbadash-pies/: q02-q04): the slice under the pointer pops out of the
+// pie (a class: no picture taken of the pie carries it) and a box beside the pointer lists the slices - each one's
+// square, name, size and share - the hovered one's row marked; the legend row marks its slice the same way. The box
+// follows the pointer and is not itself hoverable, as the line charts' tooltip (WCAG 1.4.13: the legend table and the
+// picture's label are the complete keyboard and screen-reader path). A touch shows on the first tap and follows the
+// slice's page on a second tap of the same slice. Each slice carries its label where it fits the drawn size (P4).
+// PieOpts.big: the pie fills a row of its own or the room beside its grid (DB Space beside its grid, the PostgreSQL
+// Storage's 'Databases by size' alone in its row), as DBA Dash's DB Space pie does (the per-caller table: the design
+// pdfp-lead-pies-design.md, 'P0 per caller')
+export interface PieOpts { big?: boolean }
 export function donutChart(title: string, slices: Slice[], fmt: (v: number) => string = v => v.toLocaleString(),
-                           max = 8, keepOrder = false, empty = 'Nothing to show yet.'): HTMLElement {
-  return pieOrRing(title, slices, fmt, max, keepOrder, empty, 0);
+                           max = 8, keepOrder = false, empty = 'Nothing to show yet.', opts: PieOpts = {}): HTMLElement {
+  return pieOrRing(title, slices, fmt, max, keepOrder, empty, 0, opts);
 }
 
 // ringChart: the same chart drawn as a ring, its hole half the radius - DBA Dash's Deadlock Charts and Query Stats
 // Charts rings (DeadlockChartsReport.cs, QueryStatsChartsReport.cs: InnerRadius = 0.5); every other pie stays a pie
 export function ringChart(title: string, slices: Slice[], fmt: (v: number) => string = v => v.toLocaleString(),
-                          max = 8, keepOrder = false, empty = 'Nothing to show yet.'): HTMLElement {
-  return pieOrRing(title, slices, fmt, max, keepOrder, empty, 0.5);
+                          max = 8, keepOrder = false, empty = 'Nothing to show yet.', opts: PieOpts = {}): HTMLElement {
+  return pieOrRing(title, slices, fmt, max, keepOrder, empty, 0.5, opts);
+}
+
+// a slice's label: its own presentation attributes, so a serialized copy of the picture (the menu's image, the
+// workbook's) draws it as the page does without the page's stylesheet. Its dark halo is wide (fitLabels: 0.4 of the
+// font size, round joins) so it fills the letters' surround and counts as their background (WCAG 1.4.3's Understanding:
+// a wide border): white on #1d2330 is about 15:1, where white on the dark theme's slice colours alone is 3.1-3.9:1
+const PIE_LABEL: Record<string, string> = { class: 'pie-label', fill: '#fff', stroke: '#1d2330', 'stroke-linejoin': 'round', 'paint-order': 'stroke', 'font-weight': '600',
+  'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': 'system-ui, sans-serif', 'pointer-events': 'none', 'aria-hidden': 'true' };
+const PIE_R = 54;          // the pie's radius in its 120-unit picture
+const PIE_POP = 0.06;      // the pop-out: this share of the radius outward along the slice's middle
+const TIP_ROWS = 15;       // the box lists at most these rows around the hovered one, then '... n more'
+// pieAt: the point at fraction f of the circle (0 at the top, clockwise), at radius rad
+const pieAt = (f: number, rad: number): [number, number] => { const a = 2 * Math.PI * f - Math.PI / 2; return [60 + rad * Math.cos(a), 60 + rad * Math.sin(a)]; };
+
+// fitLabels (P4): each slice's label sized to about 12 screen pixels for a picture drawn `side` px wide, then DBA Dash's
+// '<name> <size> (<share>)' where its measured box lies inside its wedge, else the legend's share whole where that
+// fits, else none; a label that would overlap an earlier one is dropped. Measured, never guessed: the svg is laid out.
+// getBBox leaves the stroke out, so every box is padded by the halo's outer half before it is tested.
+const PIE_HALO = 0.4;      // the label's halo: this share of its font size (half of it outside the letters)
+type Box = { x: number; y: number; width: number; height: number };
+function fitLabels(s: SVGSVGElement, side: number, hole: number) {
+  if (!(side > 0) || !s.isConnected) return;
+  const fs = 12 * 120 / side, r0 = PIE_R * hole, placed: Box[] = [], h = fs * PIE_HALO / 2;
+  const inside = (b: Box, from: number, to: number) => {
+    const whole = to - from > 0.9999;
+    if (hole === 0 && !whole && b.x < 60 && b.x + b.width > 60 && b.y < 60 && b.y + b.height > 60) return false;   // over the centre
+    for (const [x, y] of [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height],
+                          [b.x + b.width / 2, b.y], [b.x + b.width / 2, b.y + b.height], [b.x, b.y + b.height / 2], [b.x + b.width, b.y + b.height / 2]]) {
+      const dx = x - 60, dy = y - 60, rad = Math.hypot(dx, dy);
+      if (rad > PIE_R * 0.97 || (hole > 0 && rad < r0 * 1.03)) return false;
+      if (whole) continue;
+      const f = ((Math.atan2(dy, dx) + Math.PI / 2) / (2 * Math.PI) + 1) % 1;
+      if (f < from || f > to) return false;
+    }
+    return true;
+  };
+  for (const t of s.querySelectorAll<SVGTextElement>('text.pie-label')) {
+    const from = Number(t.getAttribute('data-from')), to = Number(t.getAttribute('data-to'));
+    t.setAttribute('font-size', fs.toFixed(2)); t.setAttribute('stroke-width', (fs * PIE_HALO).toFixed(2));
+    let shown = false;
+    for (const words of [t.getAttribute('data-full'), t.getAttribute('data-short')]) {
+      if (!words) continue;
+      t.textContent = words; t.removeAttribute('display');
+      const g = t.getBBox(), b: Box = { x: g.x - h, y: g.y - h, width: g.width + 2 * h, height: g.height + 2 * h };
+      if (inside(b, from, to) && !placed.some(p => b.x < p.x + p.width && p.x < b.x + b.width && b.y < p.y + p.height && p.y < b.y + b.height)) {
+        placed.push(b); shown = true; break;
+      }
+    }
+    if (!shown) { t.textContent = ''; t.setAttribute('display', 'none'); }
+  }
 }
 
 // hole: the inner radius as a share of the outer one (0: a pie, each slice a wedge from the centre)
 function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, max: number, keepOrder: boolean, empty: string,
-                   hole: number): HTMLElement {
-  const box = el('div', { class: 'chart donut' }, el('h3', {}, title));
+                   hole: number, opts: PieOpts = {}): HTMLElement {
+  const box = el('div', { class: opts.big ? 'chart donut big' : 'chart donut' }, el('h3', {}, title));
   let all = slices.filter(s => isFinite(s.value) && s.value > 0);
   if (!keepOrder) all = [...all].sort((a, b) => b.value - a.value);
   const total = all.reduce((a, s) => a + s.value, 0);
   if (!all.length) { box.append(chartState('empty', empty)); return box; }
   const share = (v: number) => (100 * v / total).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' %';
+  // a label's short form: the whole number of the share the legend shows (one decimal), never of the precise share -
+  // a wedge reading '3 %' beside the legend's '3.5 %' (3.46 %) reads as another number (Intl rounds half away from zero
+  // in every locale, as Math.round does for a share)
+  const shareWhole = (v: number) => `${Math.round(Number((100 * v / total).toLocaleString('en-US', { maximumFractionDigits: 1, useGrouping: false })))} %`;
   let top = topGet(title) ?? max;
   if (!(top === 0 || top >= 2)) top = max;   // 0 = all
   let parts: Slice[] = [];
@@ -590,53 +673,210 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
       parts = [...parts.slice(0, top - 1), { label: `other (${rest.length})`, value: rest.reduce((a, s) => a + s.value, 0) }];
     }
   };
+  const isOther = (s: Slice) => !s.href && /^other \(\d+\)$/.test(s.label);
   const body = el('div', { class: 'donut-body' });
-  let ring: SVGElement;
+  let ring: SVGSVGElement;
+  let topSel: HTMLSelectElement | null = null;
+  let ro: ResizeObserver | null = null;
+  // the hover's state: the box (while shown), the slice marked, a touch's first tap, the pointer's last place
+  let tip: HTMLElement | null = null, tipTimer = 0, hot: number | null = null, touched: number | null = null, swallow = false;
+  let lastX = 0, lastY = 0;
+  let markSlice: (k: number | null) => void = () => undefined;
+  let tipFor: (k: number) => HTMLElement = () => el('div');
+  const place = () => {
+    if (!tip) return;
+    const b = box.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    // beside the pointer, kept inside the window
+    let left = lastX - b.left + 14, top = lastY - b.top + 14;
+    if (lastX + 14 + w > window.innerWidth - 4) left = lastX - b.left - 14 - w;
+    if (lastY + 14 + h > window.innerHeight - 4) top = lastY - b.top - 14 - h;
+    left = Math.max(left, 4 - b.left); top = Math.max(top, 4 - b.top);
+    tip.style.left = `${Math.round(left)}px`; tip.style.top = `${Math.round(top)}px`;
+  };
+  const onScroll = () => hide();
+  const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') hide(); };
+  const onOutside = (e: Event) => { if (!ring.contains(e.target as Node)) hide(); };
+  // hide: the box removed, its document listeners with it, nothing marked
+  function hide() {
+    window.clearTimeout(tipTimer); tipTimer = 0;
+    if (tip) { tip.remove(); tip = null; }
+    document.removeEventListener('scroll', onScroll, true);
+    document.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('pointerdown', onOutside, true);
+    hot = null; touched = null; swallow = false; markSlice(null);
+  }
+  // show: slice k marked at once; the box after the pointer rests 100 ms the first time (DBA Dash's delay), at once
+  // when it moves to another slice or for a touch
+  const show = (k: number, now: boolean) => {
+    hot = k; markSlice(k);
+    const put = () => {
+      tipTimer = 0;
+      if (hot === null) return;
+      const t = tipFor(hot);
+      if (tip) tip.replaceWith(t);
+      else {
+        box.append(t);
+        document.addEventListener('scroll', onScroll, true);
+        document.addEventListener('keydown', onKey, true);
+        document.addEventListener('pointerdown', onOutside, true);
+      }
+      tip = t; place();
+    };
+    if (tip || now) put();
+    else if (!tipTimer) tipTimer = window.setTimeout(put, 100);
+  };
+  const sliceOf = (t: EventTarget | null): number | null => {
+    const a = t instanceof Element ? t.closest('[data-slice]') : null;
+    return a && ring.contains(a) ? Number(a.getAttribute('data-slice')) : null;
+  };
+  // 'other (n)' shows every slice for this draw only (the Top N kept per browser is the select's alone), the select
+  // says All, the focus goes to it and the status note says what happened
+  const showAll = () => {
+    top = 0;
+    if (topSel) topSel.value = '0';
+    draw();
+    topSel?.focus();
+    say(`Showing all ${all.length} slices`);
+  };
   const draw = () => {
+    hide();
+    ro?.disconnect();
     fold();
     // each slice a wedge path from the centre (a dashed stroke of width 2r left a notch where two dashes met at the centre)
-    const r = 54, r0 = r * hole;
-    const at = (f: number, rad = r) => { const a = 2 * Math.PI * f - Math.PI / 2; return `${(60 + rad * Math.cos(a)).toFixed(3)} ${(60 + rad * Math.sin(a)).toFixed(3)}`; };
+    const r = PIE_R, r0 = r * hole;
+    const at = (f: number, rad = r) => pieAt(f, rad).map(n => n.toFixed(3)).join(' ');
     // a ring's slice: the outer arc, in to the inner circle, the inner arc back; a ring's whole slice: a circle stroked
     // as wide as the ring
     const ringSlice = (from: number, f: number) => { const big = f > 0.5 ? 1 : 0;
       return `M${at(from)} A${r} ${r} 0 ${big} 1 ${at(from + f)} L${at(from + f, r0)} A${r0} ${r0} 0 ${big} 0 ${at(from, r0)} Z`; };
     ring = svg('svg', { viewBox: '0 0 120 120', role: 'img',
-      'aria-label': `${title}: ` + parts.map(s => `${s.label} ${fmt(s.value)} (${share(s.value)})`).join(', ') });
+      'aria-label': `${title}: ` + parts.map(s => `${s.label} ${fmt(s.value)} (${share(s.value)})`).join(', ') }) as SVGSVGElement;
     const tbody = el('tbody');
     let off = 0;
     const palette = seriesColors();
+    const arcs: SVGElement[] = [], labels: (SVGElement | null)[] = [], rows: HTMLElement[] = [], pops: boolean[] = [];
     parts.forEach((s, i) => {
       const color = colorAt(palette, i), f = s.value / total;
-      const tip = svg('title', {}, `${s.label}: ${fmt(s.value)} (${share(s.value)})${s.href ? ' - click to open' : ''}`);
       // a slice of (nearly) the whole: its arc's two ends round to one point and SVG drops it, so it is the disc itself,
-      // drawn under the others
+      // drawn under the others; it never pops out
       const whole = f > 0.9999;
       const arc = whole
-        ? (hole > 0 ? svg('circle', { cx: '60', cy: '60', r: String((r + r0) / 2), fill: 'none', stroke: color, 'stroke-width': String(r - r0) }, tip)
-                    : svg('circle', { cx: '60', cy: '60', r: String(r), fill: color }, tip))
-        : svg('path', { d: hole > 0 ? ringSlice(off, f) : `M60 60 L${at(off)} A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${at(off + f)} Z`, fill: color }, tip);
+        ? (hole > 0 ? svg('circle', { cx: '60', cy: '60', r: String((r + r0) / 2), fill: 'none', stroke: color, 'stroke-width': String(r - r0) })
+                    : svg('circle', { cx: '60', cy: '60', r: String(r), fill: color }))
+        : svg('path', { d: hole > 0 ? ringSlice(off, f) : `M60 60 L${at(off)} A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${at(off + f)} Z`, fill: color });
+      arc.setAttribute('data-slice', String(i));
+      arc.setAttribute('data-from', off.toFixed(6)); arc.setAttribute('data-to', (off + f).toFixed(6));
+      // the pop-out's offset: custom properties the stylesheet's .pop reads (never a transform on the element)
+      const mid = 2 * Math.PI * (off + f / 2) - Math.PI / 2, d = PIE_POP * r;
+      pops.push(!whole);
+      const dx = `${(d * Math.cos(mid)).toFixed(2)}px`, dy = `${(d * Math.sin(mid)).toFixed(2)}px`;
+      if (!whole) { arc.style.setProperty('--dx', dx); arc.style.setProperty('--dy', dy); }
+      // the label at the slice's middle (a ring's: across its band; a whole disc's: the centre, or the ring's top)
+      const [lx, ly] = whole ? (hole > 0 ? pieAt(0, (r + r0) / 2) : [60, 60]) : pieAt(off + f / 2, hole > 0 ? (r + r0) / 2 : r * 0.62);
+      const label = svg('text', { ...PIE_LABEL, x: lx.toFixed(2), y: ly.toFixed(2), display: 'none', 'data-slice': String(i),
+        'data-from': off.toFixed(6), 'data-to': (off + f).toFixed(6), 'data-full': `${s.label} ${fmt(s.value)} (${share(s.value)})`,
+        'data-short': shareWhole(s.value) });
+      if (!whole) { label.style.setProperty('--dx', dx); label.style.setProperty('--dy', dy); }
+      labels.push(label);
       off += f;
-      // the ring is one image (no control inside an image: WCAG's nested-interactive): a wedge answers a pointer's click
-      // only, and its page opens from its name in the table for the keyboard
+      // the picture is one image (no control inside an image: WCAG's nested-interactive): a wedge answers a pointer's
+      // click only, and its page opens from its name in the table for the keyboard
       if (s.href) {
         const to = s.href;
         arc.setAttribute('data-href', to);
-        arc.setAttribute('style', 'cursor:pointer');
-        arc.addEventListener('click', () => { location.hash = to.replace(/^#/, ''); });
-      }
+        arc.classList.add('go');
+        arc.addEventListener('click', e => {
+          if (swallow) { swallow = false; return; }   // a touch's first tap shows the slice
+          const me = e as MouseEvent;
+          if (me.ctrlKey || me.metaKey) { window.open(to, '_blank'); return; }   // as the legend's link: a new tab
+          hide();
+          location.hash = to.replace(/^#/, '');
+        });
+        arc.addEventListener('auxclick', e => { if ((e as MouseEvent).button === 1) { e.preventDefault(); window.open(to, '_blank'); } });
+      } else if (isOther(s)) {
+        arc.classList.add('go');
+        arc.addEventListener('click', () => { if (swallow) { swallow = false; return; } showAll(); });
+      } else arc.addEventListener('click', () => { swallow = false; });
+      arcs.push(arc);
       if (whole) ring.prepend(arc); else ring.append(arc);
       const sw = el('span', { class: 'swatch', 'aria-hidden': 'true' });
       sw.style.background = color;
-      tbody.append(el('tr', {},
-        el('td', {}, sw, s.href ? el('a', { href: s.href }, s.label) : s.label),
-        el('td', { class: 'num' }, fmt(s.value)), el('td', { class: 'num' }, share(s.value))));
+      // 'other (n)': its name stays the cell's text (the export's alt text and Copy data read it); 'show all' is a
+      // button after it, its words drawn by the stylesheet and named by its label
+      const more = isOther(s) ? el('button', { type: 'button', class: 'link show-all', 'aria-label': `Show all ${all.length} slices` }) : null;
+      more?.addEventListener('click', showAll);
+      const name: Node | string = s.href ? el('a', { href: s.href }, s.label) : s.label;
+      const tr = el('tr', {}, el('td', {}, sw, name, ...(more ? [' ', more] : [])), el('td', { class: 'num' }, fmt(s.value)), el('td', { class: 'num' }, share(s.value)));
+      rows.push(tr);
+      tbody.append(tr);
     });
-    ring.addEventListener('contextmenu', e => { e.preventDefault(); showMenu(e.clientX, e.clientY, items, menuBtn); });
+    // the labels over every wedge (a later wedge must not cover an earlier one's label)
+    for (const l of labels) if (l) ring.append(l);
+    markSlice = (k: number | null) => {
+      arcs.forEach((a, j) => {
+        a.classList.toggle('hot', j === k);
+        a.classList.toggle('pop', j === k && pops[j]);
+        labels[j]?.classList.toggle('pop', j === k && pops[j]);
+      });
+      rows.forEach((tr, j) => tr.classList.toggle('hot', j === k));
+    };
+    tipFor = (k: number) => {
+      const n = parts.length;
+      let lo = 0, hi = n;
+      if (n > TIP_ROWS) { lo = Math.max(0, Math.min(k - Math.floor(TIP_ROWS / 2), n - TIP_ROWS)); hi = lo + TIP_ROWS; }
+      const t = el('div', { class: 'pie-tip', 'aria-hidden': 'true' });
+      for (let j = lo; j < hi; j++) {
+        const sq = el('span', { class: 'pie-tip-sq' });
+        sq.style.background = colorAt(palette, j);
+        t.append(el('div', { class: j === k ? 'pie-tip-row hot' : 'pie-tip-row' },
+          el('span', {}, sq, parts[j].label), el('span', { class: 'num' }, fmt(parts[j].value)), el('span', { class: 'num' }, share(parts[j].value))));
+      }
+      if (n > hi - lo) t.append(el('div', { class: 'pie-tip-more' }, `... ${n - (hi - lo)} more`));
+      return t;
+    };
+    // the pointer: a mouse marks the slice it is over (the svg's background keeps the mark: a popped slice leaves a gap
+    // the pointer may rest in), leaving the picture hides; a touch shows on its first tap
+    ring.addEventListener('pointerover', e => {
+      const pe = e as PointerEvent;
+      if (pe.pointerType !== 'mouse') return;
+      const k = sliceOf(pe.target);
+      lastX = pe.clientX; lastY = pe.clientY;
+      if (k !== null && k !== hot) show(k, false);
+    });
+    ring.addEventListener('pointermove', e => {
+      const pe = e as PointerEvent;
+      if (pe.pointerType !== 'mouse') return;
+      lastX = pe.clientX; lastY = pe.clientY; place();
+    });
+    ring.addEventListener('pointerleave', e => { if ((e as PointerEvent).pointerType === 'mouse') hide(); });
+    ring.addEventListener('pointerdown', e => {
+      const pe = e as PointerEvent;
+      // a mouse's press clears a touch's held first tap (a pan or a long press that ended without its click)
+      if (pe.pointerType === 'mouse') { swallow = false; return; }
+      const k = sliceOf(pe.target);
+      swallow = false;
+      if (k === null) { hide(); return; }
+      if (touched === k) return;           // the second tap on the slice: its click follows its page
+      lastX = pe.clientX; lastY = pe.clientY;
+      show(k, true); touched = k; swallow = true;
+    });
+    // the legend marks its slice too (both ways): pointer and keyboard
+    rows.forEach((tr, k) => {
+      tr.addEventListener('pointerenter', () => markSlice(k));
+      tr.addEventListener('pointerleave', () => markSlice(hot));
+      tr.addEventListener('focusin', () => markSlice(k));
+      tr.addEventListener('focusout', () => markSlice(hot));
+    });
+    // the menu's picture is the pie at rest: the box put away first
+    ring.addEventListener('contextmenu', e => { e.preventDefault(); hide(); showMenu(e.clientX, e.clientY, items, menuBtn); });
     body.replaceChildren(ring as unknown as HTMLElement,
       el('table', { class: 'legend' },
         el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'name'), el('th', { scope: 'col', class: 'num' }, 'size'), el('th', { scope: 'col', class: 'num' }, 'share'))),
         tbody));
+    // the labels fitted to the drawn size, again whenever it changes (a window resized, a theme's font)
+    const s = ring;
+    ro = new ResizeObserver(es => { for (const x of es) fitLabels(s, x.contentRect.width, hole); });
+    ro.observe(s);
   };
   // the menu: the numbers (every slice, not only the Top N shown) or the picture of the ring with its legend
   const note = el('span', { class: 'meta chart-note', role: 'status' });
@@ -646,6 +886,20 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     const q = (v: string) => sep === ',' && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
     return ['name' + sep + 'size' + sep + 'share_pct', ...all.map(s => [q(s.label), String(s.value), String(Number((100 * s.value / total).toPrecision(6)))].join(sep))].join('\n');
   };
+  // svgFor240: the picture as the menu's image draws it, 240 px a side: a copy laid out off screen at that size, its
+  // labels fitted to it (a label sized for a 520 px pie would not fit a 240 px one), then serialized
+  const svgFor240 = (): string => {
+    const c = ring.cloneNode(true) as SVGSVGElement;
+    c.querySelectorAll('.pop, .hot').forEach(x => x.classList.remove('pop', 'hot'));
+    c.setAttribute('width', '240'); c.setAttribute('height', '240');
+    c.style.cssText = 'position:absolute;left:-10000px;top:0;width:240px;height:240px';
+    box.append(c);
+    fitLabels(c, 240, hole);
+    c.removeAttribute('style');
+    const src = new XMLSerializer().serializeToString(c);
+    c.remove();
+    return src;
+  };
   const image = (): Promise<Blob | null> => new Promise(res => {
     const css = getComputedStyle(document.documentElement);
     const bg = css.getPropertyValue('--card').trim() || '#fff', fg = css.getPropertyValue('--fg').trim() || '#1d2330';
@@ -654,7 +908,7 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     c.width = side + 2 * pad + 300 * k; c.height = Math.max(side, parts.length * lh) + th + 2 * pad;
     const g = c.getContext('2d');
     if (!g) { res(null); return; }
-    const src = new XMLSerializer().serializeToString(ring);
+    const src = svgFor240();
     const img = new Image();
     img.onload = () => {
       g.fillStyle = bg; g.fillRect(0, 0, c.width, c.height);
@@ -673,6 +927,10 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     img.onerror = () => res(null);
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(src.includes('xmlns=') ? src : src.replace('<svg', `<svg xmlns="${SVG_NS}"`));
   });
+  // sliceNumbers: every slice as the menu's Export Excel writes it (its size a number, its share under '0.0%'); the page's
+  // own workbook reads the same from the box (export.ts pageExtras, X12: a chart's series as a sheet)
+  const sliceNumbers = (): ChartNumbers => ({ cols: ['name', 'size', 'share'], rows: all.map(s => [s.label, s.value, total ? s.value / total : null]), kinds: [undefined, undefined, 'pct'], fmts: [undefined, fmt, undefined] });
+  (box as PictureBox).pgvNumbers = sliceNumbers;
   const items: [string, () => void][] = [
     ['Copy image', () => { void (async () => {
       try { const b = await image(); if (!b) throw new Error('no image'); await navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]); say('Copied the image'); }
@@ -683,7 +941,8 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     ['Export data (CSV)', () => { saveBlob(new Blob([table(',') + '\n'], { type: 'text/csv;charset=utf-8' }), fileName('csv')); say(`Saved ${all.length} slices`); }],
     // Export Excel: every slice as a row, its size a number and its share under '0.0%'
     ['Export Excel', () => {
-      void exportChart(title, ['name', 'size', 'share'], all.map(s => [s.label, s.value, total ? s.value / total : null]), [undefined, undefined, 'pct'])
+      const n = sliceNumbers();
+      void exportChart(title, n.cols, n.rows, n.kinds, parse(), n.fmts)
         .then(() => say(`Saved ${all.length} slices as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
     }],
   ];
@@ -697,6 +956,7 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     for (const n of choices) sel.append(el('option', { value: String(n), ...(n === top ? { selected: '' } : {}) }, `Top ${n}`));
     sel.append(el('option', { value: '0', ...(top === 0 || top >= all.length ? { selected: '' } : {}) }, `All ${all.length}`));
     sel.addEventListener('change', () => { top = Number(sel.value); topSet(title, top); draw(); });
+    topSel = sel;
     head.append(' ', sel);
   }
   head.append(note);

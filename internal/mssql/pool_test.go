@@ -72,16 +72,19 @@ func TestPoolMinutes(t *testing.T) {
 // TestPoolName: the database's own answer wins; a tag fills in when the login may not read it; a tag naming another
 // pool is a skip, never a silent write under the wrong name.
 func TestPoolName(t *testing.T) {
-	for _, c := range []struct{ tag, objectives, pool, from, err string }{
-		{"", "pool1", "pool1", "service objectives", ""},
-		{"pool1", "", "pool1", "tag", ""},
-		{"POOL1", "pool1", "pool1", "service objectives", ""},
-		{"pool1", "pool2", "", "", "names another pool than the database's own, pool2"},
-		{"", "", "", "", "tag the instance pool:<name>"},
+	// a stale tag (the database moved to another pool after discovery wrote it at the approve: the wire review's
+	// blocker 1) reads the database's own pool and says so, never a skip
+	for _, c := range []struct{ tag, objectives, pool, from, stale, err string }{
+		{"", "pool1", "pool1", "service objectives", "", ""},
+		{"pool1", "", "pool1", "tag", "", ""},
+		{"POOL1", "pool1", "pool1", "service objectives", "", ""},
+		{"pool1", "pool2", "pool2", "service objectives", "the instance's tag pool:pool1 names another pool than the database's own, pool2: read as pool2", ""},
+		{"", "", "", "", "", "tag the instance pool:<name>"},
 	} {
-		pool, from, err := poolName(c.tag, c.objectives)
-		if pool != c.pool || from != c.from || (err == nil) != (c.err == "") || err != nil && (!strings.Contains(err.Error(), c.err) || !errors.Is(err, collect.ErrSkip)) {
-			t.Errorf("poolName(%q, %q) = %q, %q, %v; want %q, %q, %q", c.tag, c.objectives, pool, from, err, c.pool, c.from, c.err)
+		pool, from, stale, err := poolName(c.tag, c.objectives)
+		if pool != c.pool || from != c.from || !strings.HasPrefix(stale, c.stale) || (stale == "") != (c.stale == "") ||
+			(err == nil) != (c.err == "") || err != nil && (!strings.Contains(err.Error(), c.err) || !errors.Is(err, collect.ErrSkip)) {
+			t.Errorf("poolName(%q, %q) = %q, %q, %q, %v; want %q, %q, %q, %q", c.tag, c.objectives, pool, from, stale, err, c.pool, c.from, c.stale, c.err)
 		}
 	}
 }

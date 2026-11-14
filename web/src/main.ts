@@ -1,7 +1,7 @@
 // The shell: a header (brand, where you are, the time range, refresh, theme, the user), the instance
 // tree on the left, a tab strip (root tabs for the fleet or a tag, instance tabs for one instance)
 // and the page under it.
-import { get, LoginRequired, post, Row, rowsOf, Session, Table } from './api';
+import { get, LoginRequired, onCutRead, post, Row, rowsOf, Session, startReads, Table } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget, tagsOf } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
@@ -39,7 +39,7 @@ import { schemaView } from './schema';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { closeRange, rangePicker } from './rangepicker';
-import { fmtClock } from './tz';
+import { fmt, fmtClock } from './tz';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
@@ -60,6 +60,7 @@ import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
+import { hasPool, mssqlPoolView } from './pools';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlAuditView } from './mssql_audit';
 import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
@@ -67,6 +68,7 @@ import { pgDbOptionsFleetView, pgDbOptionsView } from './pg_dboptions';
 import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
 import { mssqlProcsView } from './mssql_procs';
 import { mssqlPlanCacheView } from './mssql_plancache';
+import { mssqlQueriesView } from './mssql_queries';
 import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
@@ -76,7 +78,7 @@ import { installTreeMenu } from './treemenu';
 import { installFileDrop, toolsButton } from './filedrop';
 import { retentionView } from './retention';
 import { dropMenu, el, fmtBytes } from './ui';
-import { exportButtons } from './export';
+import { cutWords, exportButtons } from './export';
 import { mailButton, mailRenderBoot, reportMailView } from './reportmail';
 import { connectionsView } from './connections';
 import { dbChangesView } from './dbchanges';
@@ -101,11 +103,11 @@ const mssqlPages: Record<string, Render> = {
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
-  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
+  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
-  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
+  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
   mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
   customreports: customReportsView, community: communityView,
   ...reportPages,
@@ -190,11 +192,25 @@ window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',
 // ---- auto refresh: how often a live page reads again (Darling's interval select; Off pauses it), remembered per browser
 const refreshChoices: [string, string][] = [['30', '30 s'], ['60', '1 min'], ['300', '5 min'], ['900', '15 min'], ['0', 'Off (paused)']];
 function refreshSecs(): number { const v = Number(lsGet('pgvigil.refresh') ?? '30'); return refreshChoices.some(([k]) => Number(k) === v) ? v : 30; }
-function refreshSelect(live: boolean): HTMLElement {
+// a window over a day reads again at most every 5 minutes: a year read again twice a minute is a heavy page for nothing
+// new (the choice kept stays the reader's; a shorter window takes it again)
+const LONG_FLOOR_S = 300;
+const longWindow = (ctx: Ctx) => { const w = window_(ctx); return Date.parse(w.to) - Date.parse(w.from) > 86400e3; };
+function refreshEvery(ctx: Ctx): number { const v = refreshSecs(); return v > 0 && longWindow(ctx) ? Math.max(v, LONG_FLOOR_S) : v; }
+const longWhy = 'a window over a day reads again at most every 5 minutes';
+function refreshSelect(live: boolean, long = false): HTMLElement {
   // a page that never reads again by itself (history, a snapshot, a page without live state) shows the choice disabled
   const why = live ? 'Auto refresh of a live page' : 'This page does not refresh by itself (a past range, a snapshot, or not a live page)';
-  const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '' }) }) as HTMLSelectElement;
-  for (const [k, label] of refreshChoices) sel.append(el('option', { value: k, ...(Number(k) === refreshSecs() ? { selected: '' } : {}) }, 'Auto refresh: ' + label));
+  // (off: a form field stays natively disabled, and is described by the footer's own visible sentence, 'auto refresh
+  // not on this page')
+  const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '', 'aria-describedby': 'status-refresh' }) }) as HTMLSelectElement;
+  // over a day the 30 s and 1 min choices are off with the reason, and the choice in force (5 min) is the one shown
+  const shown = long && refreshSecs() > 0 ? Math.max(refreshSecs(), LONG_FLOOR_S) : refreshSecs();
+  for (const [k, label] of refreshChoices) {
+    const off = long && Number(k) > 0 && Number(k) < LONG_FLOOR_S;
+    sel.append(el('option', { value: k, ...(Number(k) === shown ? { selected: '' } : {}), ...(off ? { disabled: '', title: longWhy } : {}) }, 'Auto refresh: ' + label + (off ? ` (off: ${longWhy})` : '')));
+  }
+  if (live && long) sel.title = `${why}; ${longWhy}`;   // the name stays; the off choices say why in their own words
   sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
   return sel;
 }
@@ -245,7 +261,8 @@ async function statusLine(ctx: Ctx, live: boolean) {
   }
   if (loginShown) return;
   const n = (k: string) => Number(statusRow?.[k] ?? 0);
-  const refresh = live ? (refreshSecs() > 0 ? 'every ' + (refreshChoices.find(([k]) => Number(k) === refreshSecs())?.[1] ?? refreshSecs() + ' s') : 'paused') : 'not on this page';
+  const every = refreshEvery(ctx);
+  const refresh = live ? (every > 0 ? 'every ' + (refreshChoices.find(([k]) => Number(k) === every)?.[1] ?? every + ' s') + (every !== refreshSecs() ? ' (a window over a day)' : '') : 'paused') : 'not on this page';
   const items: (Node | string)[] = statusRow ? [
     el('span', { 'data-part': 'instances' }, `${n('instances')} instances (${n('postgres')} PostgreSQL, ${n('sqlserver')} SQL Server)`),
     el('span', { 'data-part': 'collections' }, 'collections: ', `${n('healthy')} healthy, `,
@@ -257,8 +274,10 @@ async function statusLine(ctx: Ctx, live: boolean) {
       ? `demo: changes to the demo's own instances are saved as user ${String(statusRow.door)}; nothing reaches a server`
       : `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
     el('span', { 'data-part': 'newest' }, statusRow.newest_read ? `newest read ${fmtClock(new Date(String(statusRow.newest_read)))}` : 'no read yet'),
-    el('span', { 'data-part': 'refresh' }, `auto refresh ${refresh}`),
-  ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr)];
+    el('span', { 'data-part': 'refresh', id: 'status-refresh' }, `auto refresh ${refresh}`),
+  ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr),
+    // the Auto refresh select of a page that is not live is described by these words: they stand in this branch too
+    el('span', { 'data-part': 'refresh', id: 'status-refresh' }, `auto refresh ${refresh}`)];
   foot.replaceChildren(...items.flatMap((x, i) => i ? [' \u00b7 ', x] : [x]));
 }
 
@@ -310,12 +329,71 @@ async function signOut() {
 
 let shownPage = '';   // the page main shows or is loading: the whole hash (tab, instance, tag, range, filters)
 let shownPath = '';   // its tab, instance and tag alone: another of them opens at the page's top (a range or a filter keeps the place)
+// ---- the range's words under the bar (task RANGE): what the page's parts read of a window longer than they reach (the
+// server's X-Pgvigil-Read-* headers, api.ts; a part read after the page was placed adds its line), and, when the
+// window starts before what the repository keeps, what it keeps (GET /api/stored, read at most every 5 minutes): the
+// row-trimmed summaries from the last purge run's age, the partitioned history from its oldest partition - each class
+// with its own date, nothing clipped (B5)
+let storedRead: { at: number; row: Row | null } | undefined;
+async function storedRow(): Promise<Row | null> {
+  if (!storedRead || Date.now() - storedRead.at > 300000) {
+    let row: Row | null;
+    try { row = rowsOf(await get('stored'))[0] ?? null; } catch { return null; }   // a failed read is not kept: the next draw asks again
+    storedRead = { at: Date.now(), row };
+  }
+  return storedRead.row;
+}
+const utcWords = (ms: number, o: Intl.DateTimeFormatOptions) => new Date(ms).toLocaleDateString(undefined, { ...o, timeZone: 'UTC' });
+// one status node per address: a refresh of the same page keeps it with its words until its own reads are back (drawn
+// 300 ms after the last of them), and changes its children only when the words change - so a screen reader hears the
+// line when it appears or changes, not again at every refresh
+let noteNode: HTMLElement | undefined, noteKey = '';
+function rangeNote(ctx: Ctx, gen: number): HTMLElement {
+  const reused = !!noteNode && noteKey === location.hash;
+  if (!noteNode || !reused) { noteNode = el('div', { class: 'range-note', role: 'status', hidden: '' }); noteKey = location.hash; }
+  const note = noteNode;
+  const from = Date.parse(window_(ctx).from);
+  let storedWords = '';
+  const draw = () => {
+    const kids: Node[] = [];
+    const cut = cutWords();
+    if (cut) kids.push(el('p', { class: 'meta range-cut' }, cut + '.'));
+    if (storedWords) kids.push(el('p', { class: 'meta range-stored' }, storedWords + ' ', el('a', { href: href(ctx, { tab: 'retention', instance: undefined }) }, 'Data retention')));
+    const said = kids.map(k => k.textContent).join('\n');
+    if (note.dataset.said === said) return;
+    note.dataset.said = said;
+    note.replaceChildren(...kids);
+    note.hidden = kids.length === 0;
+  };
+  let pending: number | undefined;
+  const later = () => { window.clearTimeout(pending); pending = window.setTimeout(() => { if (gen === generation) draw(); }, 300); };
+  onCutRead(() => { if (gen === generation) later(); });
+  void storedRow().then(row => {
+    if (gen !== generation || !row) return;
+    const at = (k: string) => (row[k] == null ? NaN : Date.parse(String(row[k])));
+    const rows = at('rows_from'), months = at('months_from'), days = at('days_from');
+    const kept = [rows, months, days].filter(x => !Number.isNaN(x));
+    if (!kept.length || from >= Math.max(...kept)) return;
+    const bits: string[] = [];
+    if (!Number.isNaN(rows)) bits.push(`the per-snapshot summaries from ${fmt(new Date(rows))} (pgvigil purge -days ${String(row.purge_days)}, last run ${fmt(new Date(String(row.purge_at)))})`);
+    if (!Number.isNaN(months)) bits.push(`the monthly history from ${utcWords(months, { month: 'long', year: 'numeric' })} (UTC)`);
+    if (!Number.isNaN(days)) bits.push(`the daily history from ${utcWords(days, { day: 'numeric', month: 'long', year: 'numeric' })} (UTC)`);
+    storedWords = `This window starts ${fmt(new Date(from))}, before what the repository keeps: ${bits.join('; ')}.`;
+    later();
+  }).catch(() => undefined);
+  if (!reused) draw();   // a new page's node goes in empty (hidden) and gets its words when its reads come back
+  return note;
+}
+
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
   const gen = ++generation;
   dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
   const ctx = parse();
+  // the cut reads said under the range bar are this draw's, of this window's length (api.ts)
+  const w0 = window_(ctx);
+  startReads(Date.parse(w0.to) - Date.parse(w0.from));
   rememberInstance(ctx.instance);
   // another page or another range / filter of it: say so at once instead of leaving the old grids on screen while the
   // new ones read (an export in that gap took the old page); the same hash's refresh keeps its content (no flicker every
@@ -329,13 +407,19 @@ async function render(force = false) {
     shownPage = pageKey;
   }
   // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
-  const engine = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance)?.engine : undefined;
+  const fleetRow = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
+  const engine = fleetRow?.engine;
   let tabs = ctx.instance ? tabsFor(engine) : rootTabs;
   // an imported server (pgvigil import dbadash, not collected by pgvigil): every SQL Server tab, each from dbadash.ts
   const imported = ctx.instance !== undefined && isMssql(engine) && await isImported(ctx.instance);
+  const offStrip = new Set<string>();
   if (ctx.instance && isMssql(engine)) {
     // the Availability tab only where one of its collections has stored a read (an imported server keeps it: its line says why it is not read)
     if (!imported && !(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+    // the Elastic pool tab in the strip only where the database is in a pool now (an imported server has no pgvigil read
+    // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
+    // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)
+    if (imported || fleetRow?.platform !== 'azuresqldb' || !(await hasPool(ctx.instance).catch(() => false))) offStrip.add('mssqlpool');
   } else if (ctx.instance) {
     // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
@@ -349,7 +433,7 @@ async function render(force = false) {
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
-  const strip = group.tabs.filter(k => tabs[k]);
+  const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab));
   // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(
@@ -367,7 +451,7 @@ async function render(force = false) {
   const range = rangePicker(ctx, () => { void render(); });
   if (bar.firstChild !== range) bar.replaceChildren(range);
   while (range.nextSibling) range.nextSibling.remove();
-  bar.append(refresh, refreshSelect(livePage), exportButtons(ctx), mailButton(ctx), toolsButton(),
+  bar.append(refresh, refreshSelect(livePage, longWindow(ctx)), exportButtons(ctx), mailButton(ctx), toolsButton(),
     el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + fmtClock(new Date())),
     statusStyleButton(), themeButton(), aboutLink(ctx));
   if (session.login && session.user) {
@@ -418,6 +502,7 @@ async function render(force = false) {
   }
   if (gen !== generation) return;
   destroyCharts();
+  if (view.tagName !== 'P') view.prepend(rangeNote(ctx, gen));   // not into an error line
   // the page is placed the moment it is built and the header follows when its read ends (before the first paint when
   // it ended first; a refresh of the same page keeps the old header until then), never on a page the reader has left;
   // a header read that hangs holds nothing up
@@ -430,15 +515,15 @@ async function render(force = false) {
     else if (fr) $('main').prepend(fr.header);
     else cur?.remove();
   });
-  // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (Allen
-  // 2026-11-11: 'when I click on something it takes me down to the page'); a range, a filter or a refresh of the same
+  // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (a
+  // reader's report: a click landed partway down the new page); a range, a filter or a refresh of the same
   // page keeps the place
   const path = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
   if (path !== shownPath) { shownPath = path; window.scrollTo(0, 0); }
   void statusLine(ctx, livePage);
   const live = ctx.instance ? liveInstance : liveRoot;
   if (live.has(ctx.tab) && isLive(ctx) && !ctx.at && refreshSecs() > 0) {
-    timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, refreshSecs() * 1000);
+    timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, refreshEvery(ctx) * 1000);
   }
 }
 

@@ -14,7 +14,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
-import { fleet, tagsOf } from './fleet';
+import { fleet, notReadYet, tagsOf } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
 import { fromInput, toInput } from './tz';
@@ -655,9 +655,9 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
       const insts = (await fleet()).instances;
       const want = ['name', 'engine', 'platform', 'server_version', 'is_replica', 'tags', 'last_seen', 'collections_failing'];
       const keys = want.filter(k => insts.some(r => k in r));
-      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) in the repository: each named in pgvigil.yaml (instances:) or on Admin > Instances, and read by the collector at least once (a server never reached is listed after its first read); last seen and the collections failing now.`),
+      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) in the repository: each named in pgvigil.yaml (instances:) and read by the collector at least once (a server of the file never reached is listed after its first read), or added on Admin > Instances (listed from its add: 'not read yet' until a read connects); last seen and the collections failing now.`),
         grid(insts, keys.map(k => ({ key: k, ...(k === 'name' ? { fmt: (v: unknown, r: Row) => el('a', { href: href(ctx, { tab: 'summary', instance: Number(r.instance_id) }) }, String(v)) } : {}),
-          ...(k === 'last_seen' ? { label: 'last seen', fmt: fmtTime } : {}), ...(k === 'collections_failing' ? { label: 'collections failing', num: true } : {}),
+          ...(k === 'last_seen' ? { label: 'last seen', fmt: (v: unknown, r: Row) => notReadYet(r) || fmtTime(v) } : {}), ...(k === 'collections_failing' ? { label: 'collections failing', num: true } : {}),
           ...(k === 'is_replica' ? { label: 'replica', fmt: (v: unknown) => v ? 'yes' : '' } : {}),
           ...(k === 'tags' ? { fmt: (v: unknown) => Array.isArray(v) ? v.join(', ') : String(v ?? '') } : {}) })), 'No server in the repository yet.'));
     }],

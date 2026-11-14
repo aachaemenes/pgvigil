@@ -26,9 +26,11 @@
 #                 data-status quiet, the OK cell unfilled, stored 'quiet', kept on another page; a second click: solid again
 #   tz            (offline, before the browser) 25 zone checks: New York, Sydney, Lord Howe, Santiago and Cairo at their
 #                 daylight-saving edges, Kathmandu and Kolkata offsets, the calendar periods at a month and a year
-#                 rollover, the 31-day cap: 'tz: 25 checks as expected'
+#                 rollover, the cap of a year, a leap day and an hour, the 745-hour default reach, DBA Dash's twenty
+#                 quick ranges and their lengths, 4h off the menu (task RANGE): 'tz: 29 checks as expected'
 #   N range       (the browser's own zone pinned to America/Los_Angeles) the panel: 'Quick ranges|Calendar periods|A start
-#                 and an end|Type a range', 16 ranges, the zone chooser, inside the window; a range of 12:00-13:00 UTC in
+#                 and an end|Type a range', 26 ranges (DBA Dash's 20 lengths and the 6 periods, task RANGE), the Date and Month
+#                 selects (15 days and 13 months with their first line: 16/14 options), inside the window (its bottom too), the zone chooser, inside the window; a range of 12:00-13:00 UTC in
 #                 the inputs as 2026-01-15T04:00 and T05:00, the tag UTC-08:00; zone Asia/Tokyo: the tag UTC+09:00, the inputs T21:00 and
 #                 T22:00, the button's window text as the zone writes it, the chooser the same node; an end typed as 23:00
 #                 applied as 14:00Z; Yesterday: 24 h ending at the zone's midnight, no w=; Today: w=today, 'Range: Today',
@@ -61,7 +63,9 @@
 #   U pick series 2 or more ticks; the first unticked turns only its legend entry off, kept after a redraw; All then Done:
 #                 the panel closed, the focus on the menu button, every series on
 #   V steps       on 12:00-13:00 UTC: Earlier 11:00-12:00, Later 12:00-13:00, Zoom out 11:30-13:30, the key [ from 11:00; on
-#                 the preset 1h: Later disabled, Zoom out w=4h, then the key ] leaves w=4h
+#                 the preset 1h: Later off in its place - aria-disabled and focusable, never the disabled attribute, its
+#                 description and its title 'the range already ends now' - Zoom out w=2h (the next length of the menu, task
+#                 RANGE), then the key ] leaves w=2h
 #   W typed range 'now-6h' previews '..., follows now' and gives w=6h; 'now-1d/d to now/d' previews '... (1d)' and gives a
 #                 fixed range of 24 h ending at the zone's midnight, no w=; 'soon' previews 'not a time', the address unchanged
 #   X footer      on the Summary: the instances as /api/instances counts them, 'collections: n healthy, ...', the
@@ -69,7 +73,8 @@
 #                 the acknowledgement route names the door's user demo and the seat reads 'demo: changes to the demo's
 #                 own instances are saved as user demo; nothing reaches a server' (the plain seat 'read only, actions
 #                 off' is read by proof-demodoor's R10 on a serve -no-login) - 'newest read ...', 'auto refresh every 30 s'; a fixed
-#                 Performance window: 'auto refresh not on this page'; /api/frame/events without an instance and over 32 days: 400
+#                 Performance window: 'auto refresh not on this page'; /api/frame/events without an instance and over a year and an hour: 400; over 32 days:
+#                 200 with X-Pgvigil-Read-From 31 days and an hour before its end and X-Pgvigil-Window-From the asked start (task RANGE)
 #   Y axes, limit erp01's Transactions chart: 3 axes, its note naming commits/s left and rollbacks/s right; the CPU chart: 2
 #                 threshold lines (98 % above 90 %, inside the plot), its note 'threshold warning 90 %, threshold critical
 #                 98 %'; on the PostgreSQL Connections pages read, max_connections named and drawn or 'above the chart'
@@ -97,7 +102,7 @@ for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p 
 
 echo "== the zone arithmetic, offline (web/src/tz.ts and router.ts's periods at daylight-saving edges)"
 [[ -x web/node_modules/.bin/esbuild ]] || fail "web/node_modules is missing (cd web && npm ci)"
-printf "export * from './web/src/tz'; export { periodStart, capRange, MAX_RANGE_MS } from './web/src/router';" \
+printf "export * from './web/src/tz'; export { periodStart, capRange, MAX_RANGE_MS, REACH_MS, menuPresets, presets } from './web/src/router';" \
   | web/node_modules/.bin/esbuild --bundle --format=esm --loader=ts --log-level=warning --outfile="$WORK/tz.mjs"
 node scripts/tz-check.mjs "$WORK/tz.mjs" || fail "the zone arithmetic did not hold"
 

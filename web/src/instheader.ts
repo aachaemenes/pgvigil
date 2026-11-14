@@ -23,7 +23,7 @@
 // cadence; an acknowledged check does not make the band (the Summary's rule).
 import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
-import { Cell, cells, cellText, Fleet, fleet, groups, sinceState } from './fleet';
+import { Cell, cells, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
 import { Ctx, href } from './router';
 import { el, fmtTime, pill } from './ui';
 
@@ -178,7 +178,7 @@ export function instBand(f: Fleet, r: Row, ad: AckData, live: Row | undefined, n
   const notOk = groups.filter(g => !c[g.key].none && c[g.key].level > 0
     && !(acks.get(`${String(r.instance_id)}|${g.key}`) && ackHolds(acks.get(`${String(r.instance_id)}|${g.key}`), cellState(c[g.key], g.key))));
   const level = Math.max(0, ...notOk.map(g => c[g.key].level));
-  const reasons = notOk.sort((a, b) => c[b.key].level - c[a.key].level).map(g => `${g.label} ${cellText(c[g.key])}`);
+  const reasons = notOk.sort((a, b) => c[b.key].level - c[a.key].level).map(g => `${labelOf(g, r.engine !== 'sqlserver')} ${cellText(c[g.key])}`);
   if (freshness(live, now) === 'offline') return { level: 2, word: 'Offline', cls: 'none', reasons: ['Offline - no recent collection', ...reasons] };
   return { level, word: ['OK', 'Warning', 'Critical'][level], cls: ['ok', 'warn', 'crit'][level], reasons };
 }

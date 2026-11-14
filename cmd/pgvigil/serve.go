@@ -115,6 +115,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		if adsn == "" {
 			adsn = d
 		}
+		// the Collector page says 'Starting' until the goroutine below has reached both logins (task 201 DONE-2)
+		collect.SetWatchdogStarting()
 		go func() {
 			apool, perr := pgxpool.New(ctx, adsn)
 			if perr == nil {

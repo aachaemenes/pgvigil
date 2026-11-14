@@ -8,8 +8,11 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtTime, grid } from './ui';
+import { offBeside } from './ack';
 
-export interface ActionsState { enabled: boolean; reason?: string; superusers: string[]; log: Table | null }
+// note: the page's one visible sentence where Cancel and Terminate are off for the WHOLE instance (every row's buttons
+// share that reason and point at it: the page that builds the grid sets it); a row's own reason stands beside its buttons
+export interface ActionsState { enabled: boolean; reason?: string; superusers: string[]; log: Table | null; note?: HTMLElement }
 
 export async function actionsState(instance: number | undefined): Promise<ActionsState> {
   if (!instance) return { enabled: false, reason: 'no instance', superusers: [], log: null };
@@ -24,28 +27,31 @@ export async function actionsState(instance: number | undefined): Promise<Action
 // whyDisabled: the reason a row's buttons are off, or '' when they are on.
 export function whyDisabled(st: ActionsState, r: Row): string {
   if (!st.enabled) return st.reason || 'actions are off for this instance';
-  if (r.backend_type != null && r.backend_type !== 'client backend') return `a ${String(r.backend_type)}, not a client session`;
+  if (r.backend_type != null && r.backend_type !== 'client backend') return `backend type ${String(r.backend_type)}: not a client session`;
   if (r.usename != null && st.superusers.includes(String(r.usename))) return `a superuser's session (${String(r.usename)}): out of the actions login's reach`;
   if (r.backend_start == null || r.backend_start === '') return 'this row has no backend_start: the session cannot be matched';
   return '';
 }
 
-// actionsCol is the Sessions grid's last column: Cancel and Terminate, or the disabled pair with the reason.
+// actionsCol is the Sessions grid's last column: Cancel and Terminate, or the pair off with the reason in words.
 export function actionsCol(ctx: Ctx, st: ActionsState, after: () => void): Col {
   return {
     key: '_actions', label: 'action',
     fmt: (_v, r) => {
       const why = whyDisabled(st, r);
+      // a row's own reason is said ONCE in its cell, after the pair, and both buttons point at it (the same words
+      // beside each button stood twice in the cell and in its exported text)
+      const own = why && st.enabled ? el('span', { class: 'off-reason' }, why) : undefined;
       const mk = (kind: 'cancel' | 'terminate', label: string) => {
         const b = el('button', { type: 'button', class: 'act-' + kind, style: 'font-size:12px;padding:0 .4rem;margin-right:.2rem' }, label);
-        if (why) { b.disabled = true; b.title = why; }
+        if (why) offBeside(b, why, st.enabled ? own : st.note);
         else {
           b.title = kind === 'cancel' ? 'pg_cancel_backend: stop the running statement, keep the session' : 'pg_terminate_backend: end the session (its open transaction rolls back)';
           b.addEventListener('click', () => confirmAction(ctx, kind, r, after));
         }
         return b;
       };
-      return el('span', { style: 'white-space:nowrap' }, mk('cancel', 'Cancel'), mk('terminate', 'Terminate'));
+      return el('span', { style: 'white-space:nowrap' }, mk('cancel', 'Cancel'), mk('terminate', 'Terminate'), ...(own ? [' ', own] : []));
     },
   };
 }

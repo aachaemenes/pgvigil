@@ -172,7 +172,7 @@ const strip = await ev(`[...document.querySelectorAll('.attention-row')].map(r =
   const m = /[?&]i=(\\d+)/.exec(r.querySelector('strong a')?.getAttribute('href') ?? '');
   return { name: r.querySelector('strong')?.textContent.trim() ?? '', id: m ? Number(m[1]) : 0, btn: !!b, off: b?.getAttribute('aria-disabled') === 'true' || !!b?.disabled }; })`);
 await shot('1-summary-before');
-// what Allen saw under the strip at 19:03: 'Acknowledge is off: acknowledgements need the UI login: this server runs with -no-login'
+// what a reader saw under the strip: 'Acknowledge is off: acknowledgements need the UI login: this server runs with -no-login'
 const offSaid = await ev(`(/Acknowledge is off[^.]*/.exec(document.querySelector('main')?.textContent ?? '') ?? [''])[0]`);
 const line = (strip ?? []).find(r => r.btn && !r.off && r.name !== REAL);
 let acked = '';
@@ -326,12 +326,13 @@ if (acked) {
 
   // ---- R2c the same dialog again. The one Memory Dump acknowledgement still in force is the real instance's (the
   // proof's own row): Clear has nothing it may end here - off, aria-disabled (never the disabled attribute without
-  // words), its reason in words - and the date beside it is not that instance's acknowledgement
+  // words), its reason in words - and the date beside it is not that instance's acknowledgement: it reads 'Not
+  // acknowledged' with the count of the instances left alone, so a mixed store is not read as 'nothing is acknowledged'
   await reach(ackCells, v => v >= 0 && v < cells1, k > 0 ? 15000 : 0);   // the page drawn again after Clear
   const d2 = await openDump();
   const c2 = d2.open ? await dumpClear() : null;
   if (d2.open) await closeDump();
-  judge('R2c', !!c2 && c2.off && !c2.disabledAttr && /are of instances that are not the demo's/.test(c2.words) && c2.date === 'Not acknowledged',
+  judge('R2c', !!c2 && c2.off && !c2.disabledAttr && /are of instances that are not the demo's/.test(c2.words) && c2.date === "Not acknowledged (1 instance(s) not the demo's left alone)",
     `the dialog again (${d2.menus}; open ${d2.open}), only the real instance's acknowledgement in force: Clear ${JSON.stringify(c2)}`);
 }
 
@@ -456,6 +457,29 @@ if (acked) {
   }
 }
 
+// ---- R14 (DONE-2) a bulk action over a MIXED scope says how many were done and how many were refused, with the reason:
+// on the Alerts page one alert of a demo instance and the real instance's alert (the proof put it into the store)
+// ticked, Acknowledge alerts, Save - one saved, one refused by name, the log's new row the demo alert's
+{
+  await go('#/alerts');
+  // the open alerts are drawn when the real instance's row is there
+  await until(`[...document.querySelectorAll('main table tbody tr')].some(tr => [...tr.querySelectorAll('td')].some(td => td.textContent.trim() === ${JSON.stringify(REAL)}))`);
+  const picked = await ev(`(() => { const names = ${JSON.stringify(doorNames)}; const out = { real: false, demo: '' };
+    for (const tr of document.querySelectorAll('main table tbody tr')) { const c = tr.querySelector('input[type=checkbox]'); if (!c) continue;
+      const cells = [...tr.querySelectorAll('td')].map(td => td.textContent.trim());
+      if (!out.real && cells.includes(${JSON.stringify(REAL)})) { c.click(); out.real = true; continue; }
+      const n = cells.find(t => names.includes(t));
+      if (!out.demo && n && !cells.some(t => /acknowledged|held by/i.test(t))) { c.click(); out.demo = n; } }
+    return out; })()`);
+  const m0 = await mark();
+  const btn = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Acknowledge alerts'); if (!b) return 'absent'; if (b.getAttribute('aria-disabled') === 'true' || b.disabled) return 'off'; b.click(); return 'clicked'; })()`);
+  const d = btn === 'clicked' ? await saveDialog() : { opened: false, answer: '' };
+  // ONE new log row: the demo alert's (the real instance's alert is refused before anything is written)
+  const logs = btn === 'clicked' ? await wrote(m0, 1) : [];
+  judge('R14', picked.real && !!picked.demo && d.opened && /^partly done 1 of 2 saved; 1 refused: /.test(d.answer) && d.answer.includes(`${REAL} is not one of this demo's instances`) && allByDoor(logs, 1, 'alert_ack', 'add', picked.demo),
+    `the Alerts page: ${REAL}'s alert ticked ${picked.real}, an alert of ${picked.demo || 'no demo instance'} ticked, 'Acknowledge alerts' ${btn}: '${d.title}' answered '${d.answer}'; ${logSaid(logs)} (want 1)`);
+}
+
 // ---- R16 the REAL instance's own pages on the demo serve: every Acknowledge there is off for ONE reason - the instance
 // is not the demo's - and the page says it once, in one sentence that names the instance; every off Acknowledge points
 // at that sentence, none carries the words beside itself inside its grid cell (Copy all and the exports carry a
@@ -529,6 +553,316 @@ if (NOLOGIN) {
     && !!clearPlain && clearPlain.off && !clearPlain.disabledAttr && /this server runs with -no-login/.test(clearPlain.words),
     'pgvigil serve -no-login on the same repository: ' + got.map(g => `${g.what}: ${g.off} off control(s), ${g.undescribed} without a description, ${g.unseen} pointing at words not on the page, ${g.sentences} sentence(s) of which ${g.repeated} repeated, its words ${g.times} time(s) on the page and in ${g.cells} grid cell(s), ${g.noteCells} note(s) inside a grid cell ('${g.first}')`).join('; ')
     + `; the footer's seat: '${seatPlain}' (want 'read only, actions off'); the Summary's dump dialog (${dumpMenus}), Clear: ${JSON.stringify(clearPlain)}`);
+}
+
+// ---- R18 (DONE-3, the pgLabel item: Item 6 of the drives-range review) PostgreSQL's own words for its checks. On a
+// scope with NO SQL Server instance (the demo's tag 'aurora': its PostgreSQL instances alone) the Summary's column
+// headers, its tests and its cells' accessible names say 'Crash restarts', 'Last amcheck', 'Replication', 'Jobs',
+// 'WAL archive' - never DBA Dash's 'Memory Dump', 'Last Good Check DB', 'Availability Groups', 'Agent Jobs', 'Backup
+// LOG' - and its Options menu says 'Crash Restarts'; a PostgreSQL instance's own Summary page ('Not OK:' links) and its
+// band dot's title use them too; the mixed root keeps DBA Dash's names (a scope that holds SQL Server). At the review of
+// DONE-3 (items 1 and 7): the scope is first read to hold PostgreSQL instances alone; the acknowledged list's items are
+// read with the rest; the instance page is one whose counts line names a PostgreSQL group (never 'Every check group is
+// OK.' alone); and the scope's Options > Crash Restarts > Configure Thresholds is titled 'Crash Restart Thresholds' and
+// its Clear and the date beside it know only the scope's acknowledgements - prod-db2's Memory Dump acknowledgement
+// (the proof's own, tagged demo, not aurora) is not this scope's: Clear off as 'no crash restart acknowledgement is in
+// force on this scope's instances', the date 'Not acknowledged' with no count of instances left alone
+{
+  const dd = ['Memory Dump', 'Last Good Check DB', 'Availability Groups', 'Agent Jobs', 'Backup LOG'];
+  const pgw = ['Crash restarts', 'Last amcheck', 'Replication', 'Jobs', 'WAL archive'];
+  // the words a page shows in the places the item names: the instance grid's column headers, the tests grid's names,
+  // the cells' aria-labels, the Needs-attention line, the instance page's counts line, the band dot's title, the menu
+  const readJS = `(() => { const m = document.querySelector('main'); if (!m) return null;
+    const heads = [...m.querySelectorAll('.summary-instances thead th')].map(t => t.textContent.trim());
+    const tests = [...m.querySelectorAll('table.grid tbody tr td:first-child')].map(t => t.textContent.trim());
+    const cells = [...m.querySelectorAll('a.cell-link[aria-label]')].map(a => a.getAttribute('aria-label').replace(/:.*/, ''));
+    const strip = [...m.querySelectorAll('.attention-row')].map(r => r.textContent);
+    const counts = m.querySelector('p.counts')?.textContent ?? '';
+    const dot = document.querySelector('#crumb .band-dot')?.title ?? '';
+    const acked = [...m.querySelectorAll('details li')].map(l => l.textContent.trim());
+    return { heads, tests, cells, strip, counts, dot, acked }; })()`;
+  const words = (r) => r ? [...r.heads, ...r.tests, ...r.cells, ...r.strip, ...r.acked, r.counts, r.dot].join(' | ') : '';
+  const hits = (text, list) => list.filter(w => text.includes(w));
+  // a column header that names a word (its text may carry more after it: a unit, a mark)
+  const headed = (heads, w) => (heads ?? []).some(h => h === w || h.startsWith(w + ' '));
+  // the PostgreSQL-only scope: its instances read from the API first (a seed that ever tagged a SQL Server instance
+  // 'aurora' is said as that, never judged as the page's words)
+  const auroraInsts = tbl(await api('instances')).filter(i => Array.isArray(i.tags) && i.tags.includes('aurora'));
+  const engines = [...new Set(auroraInsts.map(i => String(i.engine)))];
+  const scopeOk = auroraInsts.length > 0 && engines.length === 1 && engines[0] === 'postgres';
+  await go('#/summary?tag=aurora');
+  const pg = await reach(() => ev(readJS), v => !!v && v.heads.length > 0);
+  const menu = await ev(`(() => { const b = [...document.querySelectorAll('button.tb-btn')].find(x => x.textContent.trim() === 'Options'); if (!b) return []; b.click(); return [...document.querySelectorAll('[role=menu] [role=menuitem]')].map(x => x.textContent.trim()); })()`) ?? [];
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  const pgText = words(pg);
+  // the scope's crash-restart dialog: its title, its Clear and the date beside it (the dialog of this scope alone)
+  const crashDlg = `document.querySelector('dialog.act-dialog[open][aria-label="Crash Restart Thresholds"]')`;
+  const cw = await menuWalk('/^Crash Restarts/', '/^Configure Thresholds/');
+  const crashOpen = cw.ok ? !!(await until(`!!${crashDlg}`, 5000)) : false;
+  const crash = crashOpen ? await ev(`(() => { const off = ${offWordsJS}; const d = ${crashDlg}; const b = [...d.querySelectorAll('button')].find(x => x.textContent.trim() === 'Clear');
+    return { title: d.querySelector('h3')?.textContent.trim() ?? '', text: d.textContent, clear: b ? { off: b.getAttribute('aria-disabled') === 'true', words: off(b), date: b.parentElement?.previousElementSibling?.textContent.trim() ?? '' } : null }; })()`) : null;
+  if (crashOpen) { await ev(`${crashDlg}?.querySelector('button[aria-label=Close]')?.click()`); await until(`!${crashDlg}`, 5000); }
+  const crashOk = !!crash && crash.title === 'Crash Restart Thresholds' && hits(crash.text, ['Memory Dump']).length === 0 && !!crash.clear && crash.clear.off
+    && /no crash restart acknowledgement is in force on this scope's instances/.test(crash.clear.words) && crash.clear.date === 'Not acknowledged';
+  // a PostgreSQL instance's own Summary page: the first of the scope's instances whose counts line names one of the
+  // PostgreSQL groups (a check not OK or not read), so the instance half never passes on 'Every check group is OK.' alone
+  const pgIds = (await ev(`(() => [...document.querySelectorAll('.summary-instances tbody tr a[href*="i="]')].map(a => (/[?&]i=(\\d+)/.exec(a.getAttribute('href')) ?? [])[1]).filter(Boolean))()`) ?? []);
+  let inst = null, pgInst = null;
+  for (const id of [...new Set(pgIds)].slice(0, 8)) {
+    await go(`#/summary?i=${id}`);
+    const r = await reach(() => ev(readJS), v => !!v && v.counts.length > 0 && v.dot !== '');
+    if (r && pgw.some(w => r.counts.includes(w))) { inst = r; pgInst = id; break; }
+  }
+  const instText = inst ? [inst.counts, inst.dot].join(' | ') : '';
+  // the mixed root: DBA Dash's names
+  await go('#/summary');
+  const mixed = await reach(() => ev(readJS), v => !!v && v.heads.length > 0);
+  const ddAtRoot = dd.filter(w => headed(mixed?.heads, w));
+  judge('R18', scopeOk && crashOk && !!pg && hits(pgText, dd).length === 0 && pgw.filter(w => headed(pg.heads, w)).length === pgw.length && menu.some(t => /^Crash Restarts/.test(t)) && !menu.some(t => /^Memory Dumps/.test(t))
+    && !!inst && hits(instText, dd).length === 0 && ddAtRoot.length === dd.length,
+    `the scope (tag aurora): ${auroraInsts.length} instance(s), engines ${JSON.stringify(engines)} (want postgres alone); its crash-restart dialog (${cw.said}; open ${crashOpen}): ${JSON.stringify(crash && { title: crash.title, clear: crash.clear })} (want 'Crash Restart Thresholds', no 'Memory Dump', Clear off as no crash restart acknowledgement in force on this scope's instances, 'Not acknowledged'); `
+    + `the PostgreSQL-only scope's page: DBA Dash's words found ${JSON.stringify(hits(pgText, dd))} (want none), PostgreSQL's headers ${JSON.stringify(pgw.filter(w => headed(pg?.heads, w)))} (want all five), the Options menu ${JSON.stringify(menu.slice(0, 4))}; `
+    + `a PostgreSQL instance's own page (#/summary?i=${pgInst ?? 'none'}): its counts line '${(inst?.counts ?? '').slice(0, 120)}', its band dot '${(inst?.dot ?? '').replace(/\n/g, '; ').slice(0, 120)}', DBA Dash's words there ${JSON.stringify(hits(instText, dd))} (want none); `
+    + `the mixed root's headers hold DBA Dash's ${ddAtRoot.length} of ${dd.length}`);
+}
+
+// ---- R12 (DONE-2) every page of the MIXED store: a control that is off says why in words on the page. The walk is
+// the tab strip's own list (as scripts/a11y-check.mjs reads it) at the root and on four instances - a PostgreSQL demo
+// instance on premises, the demo's Aurora instance with a failed job, the demo's SQL Server primary, and the real
+// instance beside them - each page once, and on each the rule proof-a11y applies to three pages: every control that
+// is off and shown (the disabled attribute or aria-disabled) has a visible, non-empty description (aria-describedby)
+// that is words, not a badge alone, and not a sentence that ends at its colon ('... are off: ' with no reason after it).
+// A page that drew only an error is NOT walked: it is listed and fails the row. The TOP BAR is walked on every page
+// under its own rule (the lead 01:38): a control that is off there must be DESCRIBED (aria-describedby naming an
+// element that holds words) - 'Later' while the range ends now by a description and its title, with no words in the
+// bar (a pager's end), the Auto refresh select by the footer's own visible sentence (a form field). The scope, named
+// in the ok line: the page's main and the top bar, on the tab strip's pages - not a drill page behind a row (a plan, a
+// diff, one alert), and no dialog: the walk opens none (R2c, R7, R13 read their dialogs). Each page is read only once
+// it is THIS page's drawing: a mark planted in main before the navigation is gone (render replaced main) and main holds
+// more than the router's own 'Loading' note. The error-page rule skips the instance header (render puts the header
+// before the view's error box). Both rules are tried on planted pages first (the self-test in the ok line).
+{
+  const offOnPage = () => ev(`(() => {
+    const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+    const ctl = [...document.querySelectorAll('main button, main input, main select, main textarea, dialog button')]
+      .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+    const said = x => { const t = x.textContent.replace(/^\\s*(off|not checked|demo|note|on|declined)\\b/i, '').trim(); return t.length > 0 && !/:\\s*\\.?$/.test(t); };
+    const bad = ctl.filter(e => !(e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && said(x); }));
+    // the top bar: off = described (the description need not be shown: no words are added to the bar)
+    const bar = [...document.querySelectorAll('#bar button, #bar select, #bar input')].filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+    const name = e => (e.tagName + ' ' + (e.getAttribute('aria-label') || e.textContent || '').trim()).slice(0, 40);
+    const barBad = bar.filter(e => !(e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return !!x && said(x); }));
+    return { off: ctl.length, bad: bad.map(e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 40)),
+      bar: bar.map(name), barBad: barBad.map(name),
+      // with a top-bar line, what the footer said (a status read that failed takes the refresh words with it)
+      foot: barBad.length ? (document.querySelector('footer')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 120) : '' }; })()`);
+  // THIS page's drawing (finding 3 of DONE-2's review): the old page's main is marked, the mark must be gone (render
+  // replaced main's children) and main must hold more than the router's own note (empty, then 'Loading...')
+  const markJS = `(() => { const m = document.querySelector('main'); if (m) m.append(Object.assign(document.createElement('span'), { hidden: true, className: 'r12-mark' })); return 1; })()`;
+  const ownDrawnJS = `(() => { const m = document.querySelector('main'); if (!m || m.querySelector('.r12-mark')) return false;
+    const k = [...m.children]; return k.length > 0 && !(k.length === 1 && k[0].matches('p.empty[role=status]')); })()`;
+  // a page whose view threw: render puts the instance header first and the error box after it
+  const errJS = `(() => { const m = document.querySelector('main'); const k = m ? [...m.children].filter(c => !c.matches('.inst-header')) : [];
+    return k.length > 0 && k.every(c => c.matches('p.error')) ? k[0].textContent.trim().slice(0, 120) : ''; })()`;
+  // a page reached: by its hash, through about:blank where the browser already shows that hash (no hashchange then)
+  const reach12 = async (h) => {
+    if (await ev('location.hash') === h) { await goTo(U, h); return true; }
+    await ev(markJS); await cmd('Page.navigate', { url: U + h });
+    return !!(await until(ownDrawnJS, 15000));
+  };
+  const tabsOf = async (hash) => { await go(hash);
+    return ev(`(() => { const t = document.querySelector('#tabs'); if (!t) return []; return t.dataset.all ? JSON.parse(t.dataset.all) : [...t.querySelectorAll('a')].map(a => a.getAttribute('href')); })()`); };
+  const all = tbl(await api('instances'));
+  const pickInst = (pred) => all.find(i => doorNames.includes(String(i.name)) && pred(i));
+  const walk = [['the root', '#/summary', null],
+    ['a PostgreSQL demo instance', null, pickInst(i => i.engine !== 'sqlserver' && i.platform === 'onprem')],
+    ['the demo instance with a failed job', null, all.find(i => String(i.name) === (failedJobs[0]?.name ?? ''))],
+    ['the demo SQL Server primary', null, pickInst(i => i.engine === 'sqlserver' && String(i.name).endsWith('sql01'))],
+    [`the real instance ${REAL}`, null, all.find(i => String(i.name) === REAL)]];
+  const pages = [], seen = new Set();
+  for (const [what, hash, inst] of walk) {
+    if (!hash && !inst) { fail('R12', `the walk found no instance for '${what}'`); continue; }
+    for (const t of await tabsOf(hash ?? `#/summary?i=${inst.instance_id}`)) {
+      const h = inst ? String(t).replace(/i=\d+/, `i=${inst.instance_id}`) : String(t);
+      if (!seen.has(h)) { seen.add(h); pages.push([what, h]); }
+    }
+  }
+  // a shot of the first page of each kind whose off controls say why since DONE-2 (how the words sit on the page),
+  // its first off control brought into view
+  const shotOf = [[/^#\/alertrules\b/, '12a-alert-rules'], [/^#\/admin_instances\b/, '12b-admin-instances'], [/^#\/activity\?/, '12c-activity'],
+    [/^#\/counters\?/, '12d-counters'], [/^#\/plans\?/, '12e-plans'], [/^#\/mssql_running\?/, '12f-sqlserver-running'], [/^#\/mssqljobs\?/, '12g-sqlserver-jobs']];
+  const shotDone = new Set();
+  let offSeen = 0; const bad = [], unrendered = [], errored = [], barBad = [], barSeen = new Map();
+  // the self-test of the two rules on planted pages (the first instance page of the walk): a main holding only the
+  // router's note is not drawn; an instance header followed by an error box is an error page
+  let selftest = 'not run';
+  const firstInst = pages.find(([, h]) => /[?&]i=\d+/.test(h));
+  if (firstInst && await reach12(firstInst[1]) && await until(`!!document.querySelector('main .inst-header')`, 15000)) {
+    const noteOnly = await ev(`(() => { const m = document.querySelector('main'); const keep = [...m.children]; m.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty', role: 'status', textContent: 'Loading...' }));
+      const v = ${ownDrawnJS}; m.replaceChildren(...keep); return v; })()`);
+    const errPlanted = await ev(`(() => { const m = document.querySelector('main'); const keep = [...m.children]; const hdr = m.querySelector('.inst-header');
+      m.replaceChildren(...(hdr ? [hdr] : []), Object.assign(document.createElement('p'), { className: 'error', textContent: 'planted error' }));
+      const v = ${errJS}; m.replaceChildren(...keep); return v; })()`);
+    selftest = noteOnly === false && errPlanted === 'planted error' ? 'ok' : `FAILED (a note-only main drawn: ${noteOnly}; a planted error page read as '${errPlanted}')`;
+  }
+  for (const [what, h] of pages) {
+    if (!(await reach12(h))) { unrendered.push(h); continue; }
+    await sleep(150);
+    // a page whose view threw (its main the instance header and an error box, or the box alone) was not drawn: it has
+    // no control to judge and must not pass as walked
+    const err = await ev(errJS);
+    if (err) { errored.push(`${h}: ${err}`); continue; }
+    const r = await offOnPage();
+    const sh = shotOf.find(([re, name]) => re.test(h) && !shotDone.has(name));
+    if (sh && r.off > 0) {
+      shotDone.add(sh[1]);
+      await ev(`[...document.querySelectorAll('main button')].find(b => b.getAttribute('aria-disabled') === 'true' || b.disabled)?.scrollIntoView({ block: 'center', inline: 'center' })`);
+      await sleep(250); await shot(sh[1]);
+    }
+    offSeen += r.off;
+    for (const n of r.bar) { const k = n.replace(/:.*/, ''); barSeen.set(k, (barSeen.get(k) ?? 0) + 1); }
+    if (r.barBad.length) barBad.push(`${h}: ${[...new Set(r.barBad)].join('; ')} (the footer: '${r.foot}')`);
+    if (r.bad.length) bad.push(`${h} (${what}): ${r.bad.length} - ${[...new Set(r.bad)].slice(0, 5).join('; ')}`);
+  }
+  // a shot of a kind whose page showed no off control is not taken: it is missing, said with the run's other shots
+  for (const [, name] of shotOf) if (!shotDone.has(name)) shotsMissed.push(name);
+  const bothBar = barSeen.has('BUTTON Later') && [...barSeen.keys()].some(k => k.startsWith('SELECT '));
+  judge('R12', selftest === 'ok' && pages.length > 100 && bad.length === 0 && unrendered.length === 0 && errored.length === 0 && barBad.length === 0 && bothBar,
+    `${pages.length} pages of the mixed store walked (${walk.map(w => w[0]).join(', ')}; each page's main and its top bar - no dialog is opened by the walk, not a drill page behind a row), each read once it was its own drawing; the rules' self-test on planted pages ${selftest}; ${offSeen} off control(s) seen; ${unrendered.length} page(s) not drawn in 15 s${unrendered.length ? ` (${unrendered.slice(0, 5).join(', ')})` : ''}; ${errored.length} page(s) drew only an error; ${bad.length} page(s) with an off control without its reason in words; the top bar's off controls (${[...barSeen].map(([n, c]) => `${n} on ${c} page(s)`).join(', ') || 'none seen'}; both kinds seen: ${bothBar}) described, not worded on the page: a pager's end and a form field - ${barBad.length} page(s) with one that is not described${bad.length || barBad.length ? ':' : ''}`);
+  for (const b of errored) console.log(`     R12 error page ${b}`);
+  for (const b of barBad.slice(0, 8)) console.log(`     R12 top bar ${b}`);
+  for (const b of bad) console.log(`     R12 ${b}`);
+}
+
+// ---- R13 (DONE-2) the threshold dialogs on a demo serve: a level wider than one instance is OFF in words BEFORE a
+// request is made (never a control that is on and then answers 403), and one demo instance's own level is on
+{
+  const stJS = `(b) => b ? { found: true, off: b.getAttribute('aria-disabled') === 'true' || b.disabled, words: (${offWordsJS})(b) } : { found: false, off: false, words: '' }`;
+  const openTitle = () => ev(`document.querySelector('dialog.act-dialog[open]')?.getAttribute('aria-label') ?? ''`);
+  const closeDialog = async () => { await ev(`document.querySelector('dialog.act-dialog[open]')?.close()`); await until(`!document.querySelector('dialog.act-dialog[open]')`, 5000); };
+  // (a) Drives at the root: the toolbar's Configure sets the ROOT's level - off; a demo drive's own Configure is on
+  await go('#/drives');
+  await until(`[...document.querySelectorAll('main .toolbar button')].some(b => b.textContent.trim() === 'Configure')`);
+  const drv = await ev(`(() => { const st = ${stJS}; const isOn = b => b.getAttribute('aria-disabled') !== 'true' && !b.disabled;
+    const tb = [...document.querySelectorAll('main .toolbar button')].find(b => b.textContent.trim() === 'Configure');
+    const own = [...document.querySelectorAll('main button[aria-label^="Configure the thresholds of "]')];
+    const on = own.find(isOn); if (on) on.click();
+    return { root: st(tb), drives: own.length, on: own.filter(isOn).length }; })()`);
+  if (drv.on > 0) await until(dialogOpenJS, 5000);
+  const drvOpened = await openTitle(); await closeDialog();
+  // (b) the Thresholds page: the root's Change buttons off for the page's one sentence; 'Set...' on - a tag picked is
+  // answered in words beside the button and no dialog opens, a demo instance picked opens the dialog
+  await go('#/pgthresholds');
+  await until(`[...document.querySelectorAll('main button')].some(b => b.textContent.trim() === 'Set...')`);
+  const thr = await ev(`(() => { const off = ${offWordsJS};
+    const roots = [...document.querySelectorAll('main button[aria-label$=" at the root"]')];
+    const set = [...document.querySelectorAll('main button')].find(b => b.textContent.trim() === 'Set...');
+    return { roots: roots.length, rootsOff: roots.filter(b => b.getAttribute('aria-disabled') === 'true').length, words: roots[0] ? off(roots[0]) : '',
+      setOn: !!set && set.getAttribute('aria-disabled') !== 'true' && !set.disabled,
+      levels: [...(document.querySelector('main select[aria-label="level"]')?.options ?? [])].map(o => o.value) }; })()`);
+  const pickLevel = (lv) => ev(`(() => { const l = document.querySelector('main select[aria-label="level"]'); if (!l || ![...l.options].some(o => o.value === ${JSON.stringify(lv)})) return false;
+    l.value = ${JSON.stringify(lv)}; l.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  const clickSet = () => ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === 'Set...'); if (b) b.click(); return !!b; })()`);
+  let tagSaid = '', tagOpened = '', instOpened = '', instPicked = '', instSubmit = null;
+  if (await pickLevel('tag')) {
+    await clickSet();
+    // its own condition: the answer in words beside the button (a dialog that opened instead is read after it)
+    tagSaid = await until(`[...document.querySelectorAll('main [role=status]')].map(x => x.textContent.trim()).find(t => /^Not set:/.test(t)) ?? ''`, 5000) ?? '';
+    tagOpened = await openTitle(); await closeDialog();
+  }
+  if (await pickLevel('instance')) {
+    // the instance picked is one the door carries (said in the line), and its dialog opens with its submit ON
+    instPicked = await ev(`(() => { const p = document.querySelector('main select[aria-label="where"]'); const o = p && [...p.options].find(x => ${JSON.stringify(doorIds)}.includes(Number(x.value)));
+      if (!o) return ''; p.value = o.value; p.dispatchEvent(new Event('change', { bubbles: true })); return o.value; })()`) ?? '';
+    await clickSet(); await until(dialogOpenJS, 5000);
+    instOpened = await openTitle();
+    instSubmit = await ev(`(() => { const st = ${stJS}; const d = document.querySelector('dialog.act-dialog[open]'); return d ? st(d.querySelector('button[type=submit]')) : null; })()`);
+    await closeDialog();
+  }
+  // (c) the root's two dialogs from the Summary's Options menu: Update off, its reason words in the dialog
+  const viaOptions = async (first, second) => {
+    await go('#/summary');
+    const w = await menuWalk(first, second);   // redone once from Options when the page's refresh dropped the menu
+    if (w.ok) await until(dialogOpenJS);
+    const r = await ev(`(() => { const st = ${stJS}; const d = document.querySelector('dialog.act-dialog[open]'); if (!d) return { open: false, title: '', update: st(null) };
+      return { open: true, title: d.getAttribute('aria-label') ?? '', update: st([...d.querySelectorAll('button')].find(x => x.textContent.trim() === 'Update')) }; })()`);
+    await closeDialog();
+    return { menus: w.said, ...r };
+  };
+  const dump = await viaOptions('/^Memory Dumps/', '/^Configure Thresholds/');
+  const upt = await viaOptions('/^Instance Uptime/', '/^Configure Thresholds/');
+  const wide = (w) => /reach past the demo's instances/.test(w ?? '');
+  judge('R13', drv.root.found && drv.root.off && wide(drv.root.words) && drv.on > 0 && /^Drive space thresholds: the drive /.test(drvOpened)
+    && thr.roots > 0 && thr.rootsOff === thr.roots && /^Demo: a threshold is set here for one demo instance/.test(thr.words) && thr.setOn
+    && /^Not set: /.test(tagSaid) && wide(tagSaid) && !tagOpened && /^Threshold /.test(instOpened) && doorIds.includes(Number(instPicked)) && !!instSubmit && instSubmit.found && !instSubmit.off
+    && dump.open && dump.title === 'Memory Dump Thresholds' && dump.update.off && wide(dump.update.words)
+    && upt.open && /^Uptime Threshold Config \(root\)/.test(upt.title) && upt.update.off && wide(upt.update.words),
+    `Drives at the root: the toolbar's Configure ${JSON.stringify(drv.root)}; ${drv.on} of ${drv.drives} drives' own Configure on, one clicked: '${drvOpened}'. `
+    + `Thresholds: ${thr.rootsOff} of ${thr.roots} root Change buttons off ('${(thr.words ?? '').slice(0, 70)}...'); Set... on ${thr.setOn} (levels ${JSON.stringify(thr.levels)}); a tag picked: '${tagSaid}' (a dialog: '${tagOpened}'); a demo instance picked (id ${instPicked || 'none'}): '${instOpened}', its submit ${JSON.stringify(instSubmit)}. `
+    + `Options > Memory Dumps > Configure Thresholds: '${dump.title}' Update ${JSON.stringify(dump.update)} (menus ${JSON.stringify(dump.menus)}); Options > Instance Uptime > Configure Thresholds: '${upt.title}' Update ${JSON.stringify(upt.update)} (menus ${JSON.stringify(upt.menus)})`);
+}
+
+// ---- R17 (DONE-3) the two job pages taught the door: on a demo instance's Jobs page the job thresholds dialog writes
+// the job's and the instance's own levels (Save on) and says its root level is off in words before any request; the
+// exclusions form adds this instance's exclusions and offers 'every instance' natively disabled, its reason in words
+// beside the form (the level field described by it) before any click (the lead 09:28, the review's nit 9); on the real instance's Jobs page the dialog's Save is off in its words and no form is offered - the page says
+// why instead. Nothing is saved by a click here (part A writes both at the API). Two requests come from controls that
+// are ON (the review of DONE-3, item 2): the job level saved with every box empty and an exclusion of pattern '*' on
+// this instance - the door passes the page's own payloads and the functions refuse them in their own words (409), so
+// a door that read the page's body wrongly fails here; part B's table count still finds nothing written.
+{
+  const pgJob = failedJobs.find(j => j.tab === 'jobs');
+  const dlgSel = `document.querySelector('dialog.act-dialog[open][aria-label^="Job thresholds: "]')`;
+  const readDlg = (lv) => ev(`(() => { const d = ${dlgSel}; if (!d) return null; const rb = d.querySelector('#th-level-${lv}'); if (rb) { rb.checked = true; rb.dispatchEvent(new Event('change', { bubbles: true })); }
+    const off = ${offWordsJS}; const save = d.querySelector('button[type=submit]'); const f = d.querySelector('input[type=number]');
+    return { save: save ? { off: save.getAttribute('aria-disabled') === 'true', disabledAttr: save.disabled, words: off(save) } : null, field: f ? f.disabled : null }; })()`);
+  // the job level, every box emptied, Save clicked (only where it is on): what the dialog's status line answers
+  const saveEmpty = async () => {
+    const clicked = await ev(`(() => { const d = ${dlgSel}; if (!d) return 'no dialog'; const rb = d.querySelector('#th-level-job'); if (rb) { rb.checked = true; rb.dispatchEvent(new Event('change', { bubbles: true })); }
+      d.querySelectorAll('input[type=number]').forEach(i => { i.value = ''; }); const lf = d.querySelector('#th-lastfail'); if (lf) lf.value = '';
+      const b = d.querySelector('button[type=submit]'); if (!b) return 'absent'; if (b.disabled || b.getAttribute('aria-disabled') === 'true') return 'off'; b.click(); return 'clicked'; })()`);
+    if (clicked !== 'clicked') return clicked;
+    return await until(`(() => { const t = ${dlgSel}?.querySelector('p[role=status]')?.textContent.trim() ?? ''; return t && t !== 'Saving...' ? t : ''; })()`, 8000) ?? 'no answer';
+  };
+  const thresholdsOn = async (hash, tryEmpty = false) => {
+    await go(hash);
+    const opened = await until(`(() => { const b = [...document.querySelectorAll('main button[aria-label^="Thresholds of "]')][0]; if (!b) return false; b.click(); return true; })()`);
+    if (!opened || !(await until(`!!${dlgSel}`, 5000))) return null;
+    const out = { job: await readDlg('job'), instance: await readDlg('instance'), root: await readDlg('root') };
+    if (tryEmpty) out.empty = await saveEmpty();
+    await ev(`${dlgSel}?.close()`); await until(`!${dlgSel}`, 5000);
+    return out;
+  };
+  // the form's answer to one Add: its status line emptied first, then the level and the pattern set and Add clicked
+  const addOnce = async (lv, pattern) => {
+    await ev(`(() => { const f = document.querySelector('main form.excl-form'); f.querySelector('[role=status]').textContent = ''; f.querySelector('input[aria-label=pattern]').value = ${JSON.stringify(pattern)};
+      const l = f.querySelector('select[aria-label=level]'); l.value = ${JSON.stringify(lv)}; l.dispatchEvent(new Event('change', { bubbles: true })); f.querySelector('button[type=submit]').click(); return 1; })()`);
+    return await until(`(() => { const t = document.querySelector('main form.excl-form [role=status]')?.textContent.trim() ?? ''; return t && t !== 'Writing...' ? t : ''; })()`, 8000) ?? '';
+  };
+  const formOn = async (tryWild = false) => {
+    const f = await until(`!!document.querySelector('main form.excl-form')`, 8000);
+    if (!f) return { form: false, said: await ev(`[...document.querySelectorAll('main p.meta')].map(p => p.textContent.trim()).find(t => /^Exclusions cannot be written here: /.test(t)) ?? ''`) };
+    // 'every instance': natively disabled, and the words the level field is described by (visible)
+    const root = await ev(`(() => { const off = ${offWordsJS}; const l = document.querySelector('main form.excl-form select[aria-label=level]'); const o = l && [...l.options].find(x => x.value === 'root');
+      return o ? { off: o.disabled, words: off(l) } : null; })()`);
+    return tryWild ? { form: true, root, wild: await addOnce('instance', '*') } : { form: true, root };
+  };
+  const m0 = await mark();
+  const demoTh = pgJob ? await thresholdsOn(`#/jobs?i=${pgJob.id}`, true) : null;
+  const demoForm = pgJob ? await formOn(true) : { form: false, said: '' };
+  const realTh = REAL_ID ? await thresholdsOn(`#/jobs?i=${REAL_ID}`) : null;
+  const realForm = REAL_ID ? await formOn() : { form: false, said: '' };
+  const logs = await wrote(m0, 0);
+  const on = (x) => !!x && !!x.save && !x.save.off && x.field === false;
+  const offWith = (x, re) => !!x && !!x.save && x.save.off && !x.save.disabledAttr && re.test(x.save.words) && x.field === true;
+  judge('R17', !!demoTh && on(demoTh.job) && on(demoTh.instance) && offWith(demoTh.root, /this change would reach past the demo's instances/)
+    && /^not saved no threshold is set: to take the level above, inherit/.test(demoTh.empty ?? '')
+    && demoForm.form && !!demoForm.root && demoForm.root.off && /^Every instance: this change would reach past the demo's instances/.test(demoForm.root.words)
+    && /^not added a pattern of wildcards alone would leave every job out of the checks/.test(demoForm.wild ?? '')
+    && !!realTh && offWith(realTh.job, new RegExp(`${REAL} is not one of this demo's instances`)) && offWith(realTh.root, /reach past/)
+    && !realForm.form && realForm.said.startsWith(`Exclusions cannot be written here: ${REAL} is not one of this demo's instances`) && logs.length === 0,
+    `${pgJob?.name ?? 'no PostgreSQL instance with a failed job'}'s Jobs page: the thresholds dialog's levels ${JSON.stringify(demoTh)}; the exclusions form's 'every instance' ${JSON.stringify(demoForm.root ?? null)}, 'this instance' and the pattern '*': '${demoForm.wild ?? ''}'; `
+    + `${REAL}'s Jobs page: the dialog ${JSON.stringify(realTh)}, a form offered ${realForm.form} ('${realForm.said.slice(0, 120)}'); ${logSaid(logs)} (want 0)`);
 }
 
 if (shotsMissed.length) fail('shots', `not taken: ${shotsMissed.join(', ')}`);

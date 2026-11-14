@@ -684,11 +684,16 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 	if gl == nil {
 		gl = []*dlGroup{}
 	}
-	s.reply(w, r, map[string]any{
+	out := map[string]any{
 		"deadlocks": evs, "more": more, "total": total, "groups": gl, "trend": tl, "step_secs": int(step.Seconds()),
 		"by_database": sortedCounts(byDB), "by_user": sortedCounts(byUser), "by_application": sortedCounts(byApp), "by_relation": sortedCounts(byRel),
 		"counter": map[string]any{"deadlocks": counted, "databases": dbn},
-	}, nil)
+	}
+	// every list here read the window: a cut one says what it read, as a table's read_from / read_to do (markRead)
+	if rw := readWindowOf(r); rw != nil {
+		out["read_from"], out["read_to"] = rw.from, rw.to
+	}
+	s.reply(w, r, out, nil)
 }
 
 func joinSet(m map[string]bool) string {
