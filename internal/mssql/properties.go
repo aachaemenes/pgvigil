@@ -16,7 +16,9 @@ import (
 // page), and the repository keeps the history of each value's changes (0084).
 //
 //   - Server: edition, version and level, collation, clustered, Always On enabled, the machine's and the server's
-//     name, max degree of parallelism and the cost threshold (SERVERPROPERTY and sys.configurations: any login).
+//     name, max degree of parallelism and the cost threshold (SERVERPROPERTY and sys.configurations: any login); on
+//     Amazon RDS also its high availability mode and last failover (rds_ha.go: EXECUTE on two msdb procedures,
+//     optional).
 //   - Processor: logical CPUs, sockets, cores per socket, the hyperthread ratio, NUMA nodes, soft NUMA, the affinity
 //     type, the schedulers online and offline, max worker threads, the hypervisor (sys.dm_os_sys_info and
 //     sys.dm_os_schedulers) and the Windows power plan.
@@ -145,6 +147,10 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 	p.add("cost_threshold", "Server", "Cost threshold for parallelism", 190, s["cost_threshold"], "")
 
 	var partial []collect.Row
+	if info.Kind == KindRDS {
+		// Amazon RDS's high availability mode and last failover (rds_ha.go)
+		partial = append(partial, rdsHAProps(p, readRDSHA(ctx, conn))...)
+	}
 	perfErr := perfState(ctx, conn, info, "sys.dm_os_sys_info")
 	var si collect.Row
 	why := "not read: the login lacks VIEW SERVER STATE"
