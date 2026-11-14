@@ -1465,15 +1465,16 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	// (that is GET /api/community/sample, which runs nothing). pgvigil demo -serve runs without the UI login, so its gate
 	// refuses a run first (403); this line holds for a signed-in serve with a demo door, should one ever exist
 	ds := s.doorsNow() // the run's one door set: its login and the generation the audit names
+	// every refusal below is audited with this set's door and generation (run.audit), as a run is
+	dsn, kind, no := ds.readLogin(t.Engine, name)
+	run := instanceRun{InstanceID: in.InstanceID, Instance: name, Engine: t.Engine, Door: kind, DoorGen: ds.Gen}
 	if demo, err := s.demoWithoutDoor(ctx, ds, in.InstanceID, name, t.Engine); err == nil && demo {
-		s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}},
+		s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}}),
 			fmt.Errorf("%s is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here", name))
 		return
 	}
 	timeout := time.Duration(in.TimeoutSecs) * time.Second
-	dsn, kind, no := ds.readLogin(t.Engine, name)
-	run := instanceRun{InstanceID: in.InstanceID, Instance: name, Engine: t.Engine, Door: kind, DoorGen: ds.Gen}
 	t0 := time.Now()
 	var stmt string
 	// no read login on this door set: each kind refuses where it did before (a script's text is checked first),
@@ -1498,8 +1499,8 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 			v := in.Params[p.Name]
 			x, err := paramValue(p, &v)
 			if err != nil {
-				s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-					"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}},
+				s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+					"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}}),
 					fmt.Errorf("parameter %s %w", p.Name, err))
 				return
 			}
@@ -1524,8 +1525,8 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	case "script":
 		text := strings.TrimSpace(in.Text)
 		if text == "" || len(text) > 128<<10 {
-			s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "report_name": in.QueryName}, errors.New("text is the query to run, 1 to 128 KB (pick a query of the script)"))
+			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+				"instance_id": in.InstanceID, "instance": name, "report_name": in.QueryName}), errors.New("text is the query to run, 1 to 128 KB (pick a query of the script)"))
 			return
 		}
 		stmt = text
@@ -1600,8 +1601,8 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		if bad != nil {
 			_ = conn.Close()
 			_ = db.Close()
-			s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "statement": b.String(), "params": map[string]any{"values": in.Params, "database": in.Database}}, bad)
+			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+				"instance_id": in.InstanceID, "instance": name, "statement": b.String(), "params": map[string]any{"values": in.Params, "database": in.Database}}), bad)
 			return
 		}
 		stmt = b.String()

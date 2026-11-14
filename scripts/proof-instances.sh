@@ -781,6 +781,9 @@ r=$(crun "$PGD" pg_settings_changed); [[ "$r" == "done|" ]] || fail "N2: a run o
 [[ "$(lastlog community_run pgd-ok)" == "done|page|$GN|" ]] || fail "N2: its audit row: $(lastlog community_run pgd-ok)"
 r=$(crun "$MSD" glenn_berry "SELECT SUSER_SNAME() AS who"); [[ "$r" == "done|" && "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["runs"][0]["sets"][0]["rows"][0][0])' "$TMPD/ans.json")" == "$MONL" ]] || fail "N2: a script on msd-ok: $r $(head -c 300 "$TMPD/ans.json")"
 [[ "$(lastlog community_run msd-ok)" == "done|page|$GN|" ]] || fail "N2: its audit row: $(lastlog community_run msd-ok)"
+# a refusal decided after the door was read names it too (a script's empty text on msd-ok)
+code=$(api POST community/run "{\"instance_id\":$MSD,\"tool\":\"glenn_berry\",\"text\":\"\"}"); [[ "$code" == 400 ]] || fail "N2: an empty script on msd-ok: $code $(head -c 300 "$TMPD/ans.json")"
+[[ "$(lastlog community_run msd-ok)" == "refused|page|$GN|text is the query to run, 1 to 128 KB (pick a query of the script)" ]] || fail "N2: the empty script's audit row: $(lastlog community_run msd-ok)"
 code=$(api POST customreports "{\"op\":\"add\",\"name\":\"door who $SUF\",\"engine\":\"postgres\",\"kind\":\"sql\",\"body\":\"select current_user::text as who\",\"timeout_secs\":30,\"max_rows\":100,\"params\":[],\"columns\":[],\"rules\":[]}")
 [[ "$code" == 200 ]] || fail "N2: the report's save: $code $(head -c 300 "$TMPD/ans.json")"; RID=$(ans report_id)
 code=$(api POST customreports/run "{\"report_id\":$RID,\"target\":\"instance\",\"instance_id\":$PGD}")
@@ -788,7 +791,7 @@ code=$(api POST customreports/run "{\"report_id\":$RID,\"target\":\"instance\",\
 [[ "$(lastlog run pgd-ok)" == "done|page|$GN|" ]] || fail "N2: the report's audit row: $(lastlog run pgd-ok)"
 FID=$(iid filepg); code=$(api POST customreports/run "{\"report_id\":$RID,\"target\":\"instance\",\"instance_id\":$FID}")
 [[ "$code" == 200 && "$(lastlog run filepg)" == "refused|file|$GN|"*superuser* ]] || fail "N2: the report on filepg (the file's door, a superuser login): $code $(lastlog run filepg)"
-echo "ok   N2: with doors.page_instance_reads on: a read on pgd-ok, a script on msd-ok (as $MONL), a custom report on pgd-ok (as $DOOR, the stored login, never serve's) - each done and audited door page, generation $GN; filepg's run names door file"
+echo "ok   N2: with doors.page_instance_reads on: a read on pgd-ok, a script on msd-ok (as $MONL), a custom report on pgd-ok (as $DOOR, the stored login, never serve's) - each done and audited door page, generation $GN; filepg's run names door file; a refusal after the door was read (an empty script on msd-ok) audited door page too"
 # N3: serve's own identity and an option outside the lists, refused before anything is sent, audited
 for spec in "msd-win|engine=sqlserver auth=windows|windows" "msd-mi|engine=sqlserver auth=entra-identity|entra-identity" "pgd-pass|engine=postgres auth=pgpass login=$DOOR|pgpass" "pgd-pf|engine=postgres auth=password login=$DOOR password=@DOOR_PW options=passfile=/tmp/pgv-none|passfile"; do
   IFS='|' read -r nm args what <<<"$spec"

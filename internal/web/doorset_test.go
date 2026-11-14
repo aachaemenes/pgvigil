@@ -290,9 +290,9 @@ func TestWakeDoorsBounded(t *testing.T) {
 	}
 }
 
-// each request reads the door set once: no function outside doorset.go calls doorsNow twice, and none reads the
-// file's doors beside the set (an Actions' doors, plansConfig, the job allow lists) - a handler that did would mix two
-// generations, which TestDoorSetSwap cannot see
+// each request reads the door set once: no function outside doorset.go calls doorsNow twice (planButtons and
+// hypoButton read it too, so each counts), and none reads the file's doors beside the set (an Actions' doors,
+// plansConfig, the job allow lists) - a handler that did would mix two generations, which TestDoorSetSwap cannot see
 func TestDoorsReadOnce(t *testing.T) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -327,7 +327,7 @@ func TestDoorsReadOnce(t *testing.T) {
 				case *ast.CallExpr:
 					if se, ok := x.Fun.(*ast.SelectorExpr); ok {
 						switch {
-						case se.Sel.Name == "doorsNow" && len(x.Args) == 0:
+						case se.Sel.Name == "doorsNow" && len(x.Args) == 0, se.Sel.Name == "planButtons", se.Sel.Name == "hypoButton":
 							calls++
 						case se.Sel.Name == "plansConfig":
 							t.Errorf("%s: %s reads plansConfig() beside the door set", fset.Position(x.Pos()), fd.Name.Name)
@@ -345,9 +345,27 @@ func TestDoorsReadOnce(t *testing.T) {
 				return true
 			})
 			if calls > 1 {
-				t.Errorf("%s: %s calls doorsNow %d times (one request, one set)", fset.Position(fd.Pos()), fd.Name.Name, calls)
+				t.Errorf("%s: %s reads the door set %d times (one request, one set)", fset.Position(fd.Pos()), fd.Name.Name, calls)
 			}
 		}
+	}
+}
+
+// a page instance's actions say the same words on both engines
+func TestPageOffWordsOnBothEngines(t *testing.T) {
+	if a, m := actions.PageOff("x"), mssql.PageOff("x"); a != m {
+		t.Errorf("PostgreSQL %q, SQL Server %q", a, m)
+	}
+	if off := (mssql.Door{Page: true, Monitor: "sqlserver://m@a", Actions: "sqlserver://a@a", Allow: []string{"kill"}}).Off("x", mssql.ActionKind("kill")); off != mssql.PageOff("x") {
+		t.Errorf("a SQL Server page door with every login: %q", off)
+	}
+}
+
+// the actions' superuser read never hands pgx an empty string (it would sign in from serve's own environment)
+func TestSuperusersRefuseAnEmptyDSN(t *testing.T) {
+	a := &Actions{suCache: map[string]suEntry{}}
+	if su, err := a.superusers(context.Background(), "x", " "); err == nil || su != nil || !strings.Contains(err.Error(), "empty string") {
+		t.Errorf("an empty dsn: %v %v", su, err)
 	}
 }
 
