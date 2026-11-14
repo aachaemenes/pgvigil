@@ -199,6 +199,19 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// a view rebuilt from the catalog's own text prints differently from one made from its migration's text (a later
+	// UNION arm's literal gains 'AS text': the same view, another print), so each view is rebuilt once from its own
+	// text first and read again: the definition kept is the one a put-back reproduces
+	for _, d := range defs {
+		if d.kind == "view" {
+			if _, err := r.pool.Exec(ctx, d.stmt); err != nil {
+				t.Fatalf("rebuilding %s from its own text: %v", d.name, err)
+			}
+		}
+	}
+	if defs, err = schemaDefinitionList(ctx, r); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { // registered before the cleanup below, so it runs after it (the store migrated again first)
 		c := context.Background()
 		now, err := schemaDefinitions(c, r)
@@ -216,8 +229,14 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 		}
 		if after, err := schemaDefinitions(c, r); err == nil {
 			for _, d := range defs {
-				if after[d.name] != d.def {
-					t.Errorf("%s %s differs from its definition before the test", d.kind, d.name)
+				if a := after[d.name]; a != d.def {
+					i := 0
+					for i < len(a) && i < len(d.def) && a[i] == d.def[i] {
+						i++
+					}
+					lo := max(0, i-60)
+					t.Errorf("%s %s differs from its definition before the test (%d bytes before, %d after, the test's change %v): at byte %d before %q, after %q",
+						d.kind, d.name, len(d.def), len(a), now[d.name] != d.def, i, d.def[lo:min(len(d.def), i+120)], a[lo:min(len(a), i+120)])
 				}
 			}
 		}
