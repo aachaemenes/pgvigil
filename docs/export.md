@@ -86,19 +86,25 @@ same way as any browser.
   | Findings and checks                | severity, check          | value                                |
 
   A cell with a colour of its own keeps it; an empty cell takes none; an acknowledged cell stays blue.
-- **Numbers are numbers**, in DBA Dash's formats where it has one (a count or a decimal General, a share `0.0%`, a
-  time `yyyy-MM-dd HH:mm`) and pgvigil's unit formats where the screen shows a unit, whenever the screen's text is
-  pgvigil's rendering of the raw value:
+- **Numbers are numbers**, whenever the screen's text is pgvigil's rendering of the raw value. A column with a
+  unit holds plain numbers in ONE unit, named in its header (`allocated (GB)`, `took (s)`), as DBA Dash writes
+  one; the value stays exact and the cell shows the decimals its column shows on the page, so `1.6 GB` reads
+  `1.6` in the cell and `1.6328125` in the formula bar (DBA Dash stores the value rounded instead):
 
   | Screen shows            | Cell value                          | Number format         |
   |-------------------------|-------------------------------------|-----------------------|
-  | a size (`117.7 MB`)     | the bytes                           | `#,##0" B"`           |
-  | a duration (`1h 1m`)    | the duration as an Excel time       | `[h]:mm:ss`           |
-  | a millisecond time (`0.3 ms`, `2,500 ms`, `3.72 s`, `1.08 min`) | the milliseconds | `#,##0.###" ms"` |
-  | a negative duration     | the seconds                         | `#,##0" s"`           |
-  | a share (`12.5 %`, a growth `+3 %`, a rounded `12 %`) | the share (0.125), Excel's own percent | `0.0%` |
-  | a count (`1,000`), a decimal | the number                     | General (a count of 12 digits or more `0`: General would show it as `9.87654E+11`) |
+  | a size (`117.7 MB`), a size per day (`381.5 MB / day`) | the size in the column's unit, the one its largest figure uses (a rate: the unit its figures use most) | the column's decimals on the page (`0.0`) |
+  | a duration (`0.3 ms`, `3.72 s`, `1.08 min`, `1m 5s`) | the duration in the column's unit (seconds where the page mixes units) | the column's decimals (`0.00`; whole units `0`) |
+  | a count of days (`233.3 days`) | the days                    | the column's decimals |
+  | a share (`12.5 %`, a growth `+3 %`, a rounded `12 %`) | the share (0.125), Excel's own percent | `0.0%`; `0.00%` where the page shows two decimals; `0%` where the column shows whole percents |
+  | a count (`1,000`)       | the number                          | General (a count of 12 digits or more `0`: General would show it as `9.87654E+11`) |
+  | a decimal the page rounds (`17.35`) | the number as the server sent it (17.346153) | the column's decimals (`0.00`) |
   | a time                  | an Excel date in the browser's time, whole seconds (the CSV keeps them) | `yyyy-MM-dd HH:mm` |
+  | a day alone (`2026-11-11`) | an Excel date                    | `yyyy-MM-dd`          |
+
+  A column of days or of a rate leaves a cell the page shows with no number (`never`, `-`) empty. The column's
+  decimals are the most any of its figures shows on the page; a figure in a smaller unit than the column's shows
+  that many decimals of the column's unit (`16.4 MB` in a GB column reads `0.0`, as DBA Dash's does).
 
   The comparison is the same in every browser language (a locale that groups thousands with a space, fr-FR
   among them, gives numbers too). A cell a formatter replaced with words (`never`, `no access`, `server start`)
@@ -113,12 +119,14 @@ same way as any browser.
 
 The workbook writes one sheet per grid as an Excel table without a style (DBA Dash's style info: row stripes on, no
 style named, so none drawn), a blue header row in white bold, every cell in the colour its grid gives it in a plain
-font, counts General, dates `yyyy-MM-dd HH:mm` and percents `0.0%`, no frozen pane, and DBA Dash's column widths.
+font, counts General, dates `yyyy-MM-dd HH:mm` and percents `0.0%`, sizes and durations in one unit named in the
+header, no frozen pane, and DBA Dash's column widths.
 `scripts/proof-export-dbadash.py` sets the Test Summary export beside DBA Dash's own (`summary-1.xlsx`) part by part.
 Kept on purpose and named there: an 'About' sheet last (what was exported, from when, in which time zone; DBA
-Dash writes `Sheet1` alone), each sheet named by its grid's heading, the orange's dark text (the screen's), the unit
-formats of a size or a duration (DBA Dash has no such cell), and a value cell carried in the colour of the cell that
-judges it. Not copied: ClosedXML's artefacts (a `dataDxfId` on a table column whose cells share one style; a white
+Dash writes `Sheet1` alone), each sheet named by its grid's heading, the orange's dark text (the screen's), and a
+decimal kept exact under the decimals its page shows where DBA Dash stores the rounded value (its Performance
+Summary's `Avg CPU` is the one DBA Dash column that keeps more decimals than its grid draws: 17.346153 under
+General for `17.3%`). Not copied: ClosedXML's artefacts (a `dataDxfId` on a table column whose cells share one style; a white
 `00FFFFFF` fill on a plain date, which hides the grid lines). Where the screen leaves a cell uncoloured, the workbook
 does too: a colour in the file is always one the page's own rule gave that cell, or the cell that judges it in the
 same row.
