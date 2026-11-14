@@ -1,0 +1,59 @@
+diff --git i/internal/web/q_mssql_jobs.go w/internal/web/q_mssql_jobs.go
+index 823fe63..96412a3 100644
+--- i/internal/web/q_mssql_jobs.go
++++ w/internal/web/q_mssql_jobs.go
+@@ -137,9 +137,14 @@ SELECT b.database_name, b.state, b.recovery_model, b.ag_name, b.replicas_total,
+        CASE WHEN b.log_from = b.instance THEN s.log_bytes END AS log_bytes,
+        CASE WHEN b.log_from = b.instance THEN s.log_duration_s END AS log_duration_s,
+        CASE WHEN b.log_from = b.instance THEN s.log_device END AS log_device,
+-       b.instance_id, b.instance, coalesce(` + sqlBackupNulRecent + `, false) AS nul_recent, ` + sqlBackupProblem + ` AS problem
++       b.instance_id, b.instance, coalesce(` + sqlBackupNulRecent + `, false) AS nul_recent, ` + sqlBackupProblem + ` AS problem,
++       -- task 301 (0140): where the newest set of each type went and DBA Dash's Detail flags of it
++       ld.full_to, ld.diff_to, ld.log_to, ld.full_damaged, ld.diff_damaged, ld.log_damaged, ld.full_checksum, ld.diff_checksum, ld.log_checksum,
++       ld.full_compressed, ld.diff_compressed, ld.log_compressed, ld.full_password, ld.diff_password, ld.log_password,
++       ld.full_encrypted, ld.diff_encrypted, ld.log_encrypted, ld.full_algorithm, ld.diff_algorithm, ld.log_algorithm
+   FROM pgvigil.mssql_backup_judged b
+   JOIN pgvigil.mssql_backup_state s ON s.instance_id = b.instance_id AND s.database_name = b.database_name
++  LEFT JOIN pgvigil.mssql_backup_loc_db ld ON ld.instance_id = b.instance_id AND ld.database_name = b.database_name
+  WHERE ($1::int IS NULL OR b.instance_id = $1) AND ($2::boolean IS NOT TRUE OR ` + sqlBackupProblem + `)
+  -- the fleet's grid: DBA Dash's Detail order, the full backup's status across every instance first
+  ORDER BY CASE WHEN $1::int IS NULL THEN CASE b.full_status WHEN 'never' THEN 0 WHEN 'late' THEN 1 ELSE 2 END END,
+diff --git i/internal/web/q_mssql_summary.go w/internal/web/q_mssql_summary.go
+index 6c902b7..5a16411 100644
+--- i/internal/web/q_mssql_summary.go
++++ w/internal/web/q_mssql_summary.go
+@@ -69,15 +69,19 @@ WITH inst AS (
+                                                  WHEN setting ILIKE '%log backup%' OR (setting LIKE 'backups not judged%' AND detail ILIKE '%log backup%')
+                                                       OR (setting = 'a backup went to NUL' AND detail LIKE '%: a log backup %') THEN 'log'
+                                                  WHEN setting ILIKE '%differential%' OR (setting = 'a backup went to NUL' AND detail LIKE '%: a differential backup %') THEN 'diff'
+-                                                 ELSE 'full' END END AS key
+-    -- the five SQL Server findings views themselves, as pgvigil.findings maps them (check_name = setting, object =
++                                                 ELSE 'full' END
++                     -- task 301 (0140): a backup on the database's own volume by the type its name carries, two log
++                     -- destinations LOG's (the info 'a destination not seen before' never reaches a cell)
++                     WHEN 'mssql_backup_loc' THEN CASE WHEN setting ILIKE '%log backup%' THEN 'log' WHEN setting ILIKE '%differential%' THEN 'diff' ELSE 'full' END END AS key
++    -- the SQL Server findings views themselves, as pgvigil.findings maps them (check_name = setting, object =
+     -- value): a filter on the big view's source still scans every PostgreSQL arm of it
+     FROM (SELECT instance_id, severity, check_name AS setting, object AS value, detail, 'mssql_running' AS source FROM pgvigil.mssql_running_findings
+           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_xe_findings
+           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_sysevents_findings WHERE check_name = 'the ring buffer output was cut off'
+           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_hadr' FROM pgvigil.mssql_hadr_findings
+           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_jobs' FROM pgvigil.mssql_jobs_findings
+-          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings) u
++          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings
++          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_backup_loc' FROM pgvigil.mssql_backup_loc_findings) u
+    WHERE severity IN ('critical', 'warning')
+ ), started AS (
+   SELECT m.instance_id, m.started_at FROM pgvigil.mssql_instance m JOIN inst USING (instance_id)
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 5def140..7bed4c5 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -378,6 +378,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/plans/suggest", s.PlanSuggest)
+ 	api.HandleFunc("GET /api/jobs/timeline", s.JobsTimeline)
+ 	api.HandleFunc("GET /api/mssql/backups", s.MSSQLBackups)
++	api.HandleFunc("GET /api/mssql/backup_files", s.MSSQLBackupFiles) // task 301: where the newest backups went
+ 	api.HandleFunc("POST /api/plans/explain", s.actions.Explain)
+ 	api.HandleFunc("POST /api/plans/analyze", s.actions.ExplainAnalyze)
+ 	api.HandleFunc("POST /api/plans/hypo", s.actions.HypoIndex)
