@@ -2,7 +2,7 @@
 // the display zone's offset beside it, and under the button a panel with the quick ranges that follow now, the calendar
 // periods, a start / end picker and the display time-zone chooser (tz.ts). The control is ONE node for the life of the
 // page (main.ts keeps it in the bar), so a refresh while the panel is open neither closes it nor takes the focus.
-import { capRange, Ctx, href, MAX_RANGE_MS, periods, periodStart, presets, Range, window_ } from './router';
+import { capRange, Ctx, href, MAX_RANGE_MS, menuPresets, periods, periodStart, presets, Range, window_ } from './router';
 import { el, offControl } from './ui';
 import { browserZone, fmt, fromInput, offsetLabel, parts, setZone, toInput, zonedToUtc, zoneChoice, zoneName, zones } from './tz';
 
@@ -10,8 +10,13 @@ import { browserZone, fmt, fromInput, offsetLabel, parts, setZone, toInput, zone
 // (keys [ and ]), and Zoom out that doubles it about its middle (key -; a preset that follows now takes the next preset
 // at least twice its length); the panel has a typed range ('now-6h', 'now/d', 'now-2d to now-1d', two dates) whose
 // parsed ends show as it is typed.
-const quick: Record<string, string> = { '5m': 'Last 5 minutes', '15m': 'Last 15 minutes', '30m': 'Last 30 minutes', '1h': 'Last hour', '4h': 'Last 4 hours', '6h': 'Last 6 hours',
-  '24h': 'Last 24 hours', '2d': 'Last 2 days', '7d': 'Last 7 days', '30d': 'Last 30 days' };
+const quick: Record<string, string> = {
+  '5m': 'Last 5 minutes', '10m': 'Last 10 minutes', '15m': 'Last 15 minutes', '30m': 'Last 30 minutes', '1h': 'Last hour', '2h': 'Last 2 hours',
+  '3h': 'Last 3 hours', '4h': 'Last 4 hours', '6h': 'Last 6 hours', '12h': 'Last 12 hours', '24h': 'Last 24 hours', '2d': 'Last 2 days',
+  '3d': 'Last 3 days', '7d': 'Last 7 days', '14d': 'Last 14 days', '28d': 'Last 28 days', '30d': 'Last 30 days', '60d': 'Last 60 days',
+  '90d': 'Last 90 days', '180d': 'Last 180 days', '1y': 'Last year' };
+// the words of Zoom out when the window is already the longest the server reads
+const zoomOutEnd = 'the range is already a year, the longest pgvigil reads';
 
 // parseTyped reads a range as typed: one end ('now-6h': from then to now) or two joined by 'to' (or '..'). An end is
 // 'now', 'now' with steps (-6h, +30m, -2d, -1w; m is minutes), either of them rounded down to the start of its day,
@@ -62,7 +67,7 @@ export function parseTyped(text: string, now: Date = new Date()): { range: Range
   if (!b) return { error: `not a time: '${sides[1].trim()}'` };
   if (a.at >= b.at) return { error: 'the start must be before the end' };
   if (b.at.getTime() > now.getTime() + 60000) return { error: 'the end is past now' };
-  if (b.at.getTime() - a.at.getTime() > MAX_RANGE_MS) return { error: '31 days at most' };
+  if (b.at.getTime() - a.at.getTime() > MAX_RANGE_MS) return { error: 'a year at most (366 days and an hour)' };
   // ends now: a preset of that length, or the period running ('now/d' alone)
   if (b.now && b.steps === 0 && !b.round && a.now) {
     if (a.steps === 0 && a.round) { const p = roundTo[a.round]; if (periods[p]) return { range: { preset: p }, from: a.at, to: b.at }; }
@@ -77,10 +82,13 @@ export function stepRange(ctx: Ctx, dir: -1 | 0 | 1, nowMs = Date.now()): Range 
   const fixed = (a: number, b: number): Range => { const c = capRange(new Date(a), new Date(b)); return { from: c.from.toISOString(), to: c.to.toISOString() }; };
   if (dir === 0) {
     const p = ctx.range.preset;
+    // the next length of the menu at least twice this one (an old key off the menu, 4h, steps onto it too); none past
+    // a year: Zoom out is off there (its words, zoomOutEnd)
     if (p && presets[p]) {
-      const next = Object.keys(presets).filter(k => presets[k] >= 2 * presets[p]).sort((x, y) => presets[x] - presets[y])[0];
-      return next ? { preset: next } : fixed(nowMs - MAX_RANGE_MS, nowMs);
+      const next = menuPresets.filter(k => presets[k] >= 2 * presets[p]).sort((x, y) => presets[x] - presets[y])[0];
+      return next ? { preset: next } : undefined;
     }
+    if (len >= MAX_RANGE_MS - 60000) return undefined;
     const mid = (f + t) / 2;
     let a = mid - len, b = mid + len;
     if (b > nowMs) { b = nowMs; a = nowMs - 2 * len; }
@@ -110,7 +118,7 @@ function label(ctx: Ctx): string {
   return `${short(new Date(ctx.range.from ?? ''))} - ${short(new Date(ctx.range.to ?? ''))}`;
 }
 
-let root: HTMLElement | undefined, btn: HTMLButtonElement, zoneTag: HTMLElement, earlier: HTMLButtonElement, later: HTMLButtonElement, zoomOut: HTMLButtonElement, laterWhy: HTMLElement;
+let root: HTMLElement | undefined, btn: HTMLButtonElement, zoneTag: HTMLElement, earlier: HTMLButtonElement, later: HTMLButtonElement, zoomOut: HTMLButtonElement, laterWhy: HTMLElement, zoomWhy: HTMLElement;
 let panel: HTMLElement | undefined;
 let cur: Ctx;
 let zoneChanged: () => void = () => { /* rangePicker sets it */ };
@@ -134,7 +142,8 @@ export function rangePicker(ctx: Ctx, onZone: () => void): HTMLElement {
     zoomOut = stepBtn('\u2212', '-', 'Zoom out: twice the window', 0);
     // why Later is off while the range ends now: the button's description (and its title) - the bar itself gains no words
     laterWhy = el('span', { id: 'range-later-why', hidden: '' }, 'the range already ends now');
-    const r = root = el('div', { class: 'range' }, earlier, btn, later, zoomOut, zoneTag, laterWhy);
+    zoomWhy = el('span', { id: 'range-zoom-why', hidden: '' }, zoomOutEnd);
+    const r = root = el('div', { class: 'range' }, earlier, btn, later, zoomOut, zoneTag, laterWhy, zoomWhy);
     // the keys, anywhere on the page but in a field (a typed '-' or '[' stays the field's)
     document.addEventListener('keydown', e => {
       if (!r.isConnected || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
@@ -174,6 +183,10 @@ function sync() {
   const ends = !stepRange(cur, 1);
   offControl(later, ends ? 'the range already ends now' : null, laterWhy);
   if (!ends) later.title = 'Later: the window after this one (])';
+  // Zoom out has nowhere to go at a year (the server's longest): off in its place with its words, as Later
+  const longest = !stepRange(cur, 0);
+  offControl(zoomOut, longest ? zoomOutEnd : null, zoomWhy);
+  if (!longest) zoomOut.title = 'Zoom out: twice the window (-)';
   btn.textContent = 'Range: ' + label(cur);
   btn.title = `${fmt(new Date(w.from))} to ${fmt(new Date(w.to))}${cur.range.preset ? ' (follows now)' : ''}`;
   zoneTag.textContent = offsetLabel(new Date());
@@ -206,6 +219,46 @@ function go(range: Range) {
   location.hash = href(cur, { tab: cur.tab, range, at: undefined });
 }
 
+// DBA Dash's Date and Month submenus (4.24.1's range button): the last 15 days and the last 13 months, each a whole day
+// or month on the display zone's clock, in its words ('Fri - Today', 'Wed - 2 days ago', 'This Month', '2 months ago').
+// The running day and month are the calendar periods 'today' and 'mtd' (they follow now); yesterday and the month before
+// are the same fixed ranges as the calendar's Yesterday and Previous month: one range, two ways in.
+const WDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad2 = (n: number) => String(n).padStart(2, '0');
+type Choice = { text: string; range: Range };
+export function dateChoices(now: Date, fixed: (a: Date, b: Date) => Range): Choice[] {
+  const out: Choice[] = [];
+  for (let i = 0; i < 15; i++) {
+    const a = periodStart('today', now, i), p = parts(a);
+    const ago = i === 0 ? 'Today' : i === 1 ? 'Yesterday' : `${i} days ago`;
+    out.push({ text: `${p.y}-${pad2(p.mo)}-${pad2(p.d)} (${WDAY[p.wd]} - ${ago})`, range: i === 0 ? { preset: 'today' } : fixed(a, periodStart('today', now, i - 1)) });
+  }
+  return out;
+}
+export function monthChoices(now: Date, fixed: (a: Date, b: Date) => Range): Choice[] {
+  const out: Choice[] = [];
+  for (let i = 0; i < 13; i++) {
+    const a = periodStart('mtd', now, i), p = parts(a);
+    const ago = i === 0 ? 'This Month' : i === 1 ? 'Last Month' : `${i} months ago`;
+    out.push({ text: `${MON[p.mo - 1]} ${p.y} (${ago})`, range: i === 0 ? { preset: 'mtd' } : fixed(a, periodStart('mtd', now, i - 1)) });
+  }
+  return out;
+}
+// dayMonth: one of the two as a select under its own label naming the display zone; the current range selected when it
+// is one of them; its Show button goes to the pick (WCAG 3.2.2, technique H84: arrowing through a closed select fires
+// 'change' on each option in Chrome and Firefox, so a pick never navigates by itself)
+function dayMonth(name: 'Date' | 'Month', choices: Choice[], isCur: (r: Range) => boolean): HTMLElement {
+  const words = name === 'Date' ? `a whole day in ${zoneName()}` : `a whole month in ${zoneName()}`;
+  const sel = el('select', { class: 'range-daymonth', 'aria-label': `${name}: ${words}` }) as HTMLSelectElement;
+  sel.append(el('option', { value: '' }, name === 'Date' ? 'Pick a day' : 'Pick a month'));
+  choices.forEach((c, i) => { const o = el('option', { value: String(i) }, c.text); if (isCur(c.range)) o.selected = true; sel.append(o); });
+  const show = el('button', { type: 'button', class: 'range-daymonth-go', 'aria-label': `Show the ${name === 'Date' ? 'day' : 'month'} picked` }, 'Show');
+  show.addEventListener('click', () => { const c = choices[Number(sel.value)]; if (sel.value !== '' && c) go(c.range); });
+  return el('span', { class: 'range-daymonth-row' },
+    el('label', { class: 'range-daymonth-label' }, `${name} `, sel, el('span', { class: 'meta' }, ` ${words}`)), ' ', show);
+}
+
 function build(): HTMLElement {
   // the three groups that depend on the clock and the zone: built once here and again in place after a change of zone
   const groups = (): [HTMLElement, HTMLElement, HTMLElement, string] => {
@@ -220,8 +273,8 @@ function build(): HTMLElement {
     // a length is the window's as it is read: cut to the server's longest like the window itself
     const len = (a: Date, b: Date) => { const w = capRange(a, b); return span(w.to.getTime() - w.from.getTime()); };
 
-    const quickSet = el('fieldset', {}, el('legend', {}, 'Quick ranges'),
-      ...Object.keys(presets).map(p => item(quick[p] ?? 'Last ' + p, p, { preset: p })));
+    const quickSet = el('fieldset', { class: 'range-quick' }, el('legend', {}, 'Quick ranges'),
+      ...menuPresets.map(p => item(quick[p] ?? 'Last ' + p, p, { preset: p })));
 
     // the day, the week (from Monday) and the month on the display zone's clock: the one running, and the one before it
     const day0 = periodStart('today', now), week0 = periodStart('wtd', now), month0 = periodStart('mtd', now);
@@ -232,7 +285,8 @@ function build(): HTMLElement {
       item('Week to date', len(week0, now), { preset: 'wtd' }),
       item('Previous week', len(week1, week0), fixed(week1, week0)),
       item('Month to date', len(month0, now), { preset: 'mtd' }),
-      item('Previous month', len(month1, month0), fixed(month1, month0)));
+      item('Previous month', len(month1, month0), fixed(month1, month0)),
+      dayMonth('Date', dateChoices(now, fixed), isCur), dayMonth('Month', monthChoices(now, fixed), isCur));
 
     const w = window_(cur);
     const from = el('input', { type: 'datetime-local', 'aria-label': 'from' }), to = el('input', { type: 'datetime-local', 'aria-label': 'to' });
@@ -242,7 +296,7 @@ function build(): HTMLElement {
     apply.addEventListener('click', () => {
       const f = fromInput(from.value), t = fromInput(to.value);
       if (isNaN(f.getTime()) || isNaN(t.getTime()) || f >= t) { err.textContent = 'from must be before to'; return; }
-      if (t.getTime() - f.getTime() > MAX_RANGE_MS) { err.textContent = '31 days at most'; return; }
+      if (t.getTime() - f.getTime() > MAX_RANGE_MS) { err.textContent = 'a year at most (366 days and an hour)'; return; }
       go({ from: f.toISOString(), to: t.toISOString() });
     });
     const pickSet = el('fieldset', { class: 'range-pick' }, el('legend', {}, 'A start and an end'), from, ' to ', to, ' ', apply, ' ', err);

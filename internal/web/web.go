@@ -266,6 +266,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/storage", s.Storage)
 	api.HandleFunc("GET /api/storage/fleet", s.StorageFleet)
 	api.HandleFunc("GET /api/retention", s.Retention)
+	api.HandleFunc("GET /api/stored", s.Stored)
 	api.HandleFunc("GET /api/instance/collections", s.InstanceCollections)
 	api.HandleFunc("GET /api/dbinfo", s.DBInfo)
 	api.HandleFunc("GET /api/dbinfo/fleet", s.DBInfoFleet)
@@ -393,7 +394,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/session", s.sessionInfo)
-	mux.Handle("/api/", s.requireLogin(api))
+	mux.Handle("/api/", s.requireLogin(withReadWindow(api)))
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
 		panic(err) // the embed path is fixed at build time
@@ -458,6 +459,9 @@ func (s *Server) secure(h http.Handler) http.Handler {
 type table struct {
 	Columns []string `json:"columns"`
 	Rows    [][]any  `json:"rows"`
+	// the window this table read when it was cut to its part's reach (readWindow); absent otherwise
+	ReadFrom *time.Time `json:"read_from,omitempty"`
+	ReadTo   *time.Time `json:"read_to,omitempty"`
 }
 
 func (s *Server) query(ctx context.Context, sql string, args ...any) (*table, error) {
@@ -483,6 +487,7 @@ func (s *Server) query(ctx context.Context, sql string, args ...any) (*table, er
 		}
 		t.Rows = append(t.Rows, v)
 	}
+	markRead(ctx, t, args)
 	return t, rows.Err()
 }
 
@@ -494,6 +499,15 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request, v any, err error)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	// a window cut to a part's reach: the reply says what was read (the page's line, the exports, the mail, MCP)
+	if rw := readWindowOf(r); rw != nil {
+		w.Header().Set("X-Pgvigil-Read-From", rw.from.UTC().Format(time.RFC3339Nano))
+		w.Header().Set("X-Pgvigil-Read-To", rw.to.UTC().Format(time.RFC3339Nano))
+		w.Header().Set("X-Pgvigil-Window-From", rw.asked.UTC().Format(time.RFC3339Nano))
+		if t, ok := v.(*table); ok && t != nil {
+			t.ReadFrom, t.ReadTo = &rw.from, &rw.to
+		}
+	}
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		s.log.Warn("api write failed", "path", r.URL.Path, "err", err)
 	}
@@ -505,20 +519,72 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
-// maxWindow is the longest window a page reads; maxSeriesWindow the longest of a size series (hourly rows, bucketed
-// to about 300 points whatever the span).
+// maxWindow is the longest window the API takes: a year, a leap day and a fall-back hour (the range bar's 'Last year'
+// and a calendar year in any zone). defaultReach is how much of it a part reads unless it names its own reach
+// (paramsReach): a longer window reads its newest defaultReach and the reply says so (readWindow). 31 days and an hour
+// hold a 31-day month that has a fall-back hour.
 const (
-	maxWindow       = 31 * 24 * time.Hour
-	maxSeriesWindow = 366 * 24 * time.Hour
+	maxWindow    = 366*24*time.Hour + time.Hour
+	defaultReach = 31*24*time.Hour + time.Hour
 )
 
-// params reads instance (required), from and to (RFC 3339, default the last hour); the window at most 31 days.
-func params(r *http.Request, needInstance bool) (id int, from, to time.Time, err error) {
-	return paramsMax(r, needInstance, maxWindow)
+// readWindowKey holds a request's *readWindow in its context (withReadWindow, on every /api/ route).
+type readWindowKey struct{}
+
+// readWindow is what a request read of the window it was asked: set by paramsReach when it cut the window to a part's
+// reach; reply() sends it as the X-Pgvigil-Read-* headers and markRead puts it beside each table that read the window.
+type readWindow struct {
+	asked, from, to time.Time
+	set             bool
 }
 
-// paramsMax is params with the longest window the caller allows.
-func paramsMax(r *http.Request, needInstance bool, longest time.Duration) (id int, from, to time.Time, err error) {
+// withReadWindow gives each API request its readWindow holder.
+func withReadWindow(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), readWindowKey{}, &readWindow{})))
+	})
+}
+
+// readWindowOf is the request's read window when a part was cut to its reach, else nil.
+func readWindowOf(r *http.Request) *readWindow { return readWindowIn(r.Context()) }
+
+// readWindowIn is readWindowOf for the request whose context ctx is (query and queryTx have the context, not the request).
+func readWindowIn(ctx context.Context) *readWindow {
+	if rw, ok := ctx.Value(readWindowKey{}).(*readWindow); ok && rw.set {
+		return rw
+	}
+	return nil
+}
+
+// markRead puts the cut window beside a table whose query read it (its arguments hold the cut start): every table
+// query and queryTx build, whatever shape the reply has - one table, a multi's parts, a struct's or a map's fields
+// (Plans, Metrics, PerfSummary, PgDepth) - so the page, the exports, the mail and MCP say what each list read.
+func markRead(ctx context.Context, t *table, args []any) {
+	if rw := readWindowIn(ctx); rw != nil && t != nil && readArgs(args, rw.from) {
+		t.ReadFrom, t.ReadTo = &rw.from, &rw.to
+	}
+}
+
+// readArgs tells whether a part's arguments hold the cut window's start: the part read the window.
+func readArgs(args []any, from time.Time) bool {
+	for _, a := range args {
+		if t, ok := a.(time.Time); ok && t.Equal(from) {
+			return true
+		}
+	}
+	return false
+}
+
+// params reads instance (required), from and to (RFC 3339, default the last hour); a window up to a year, of which
+// the part reads the newest defaultReach.
+func params(r *http.Request, needInstance bool) (id int, from, to time.Time, err error) {
+	return paramsReach(r, needInstance, defaultReach)
+}
+
+// paramsReach is params for a part that reads `reach` of the window: a window longer than maxWindow is refused (400);
+// one longer than reach starts reach before its end, and the request's readWindow keeps both, so the reply says what
+// was read (never a silent cut).
+func paramsReach(r *http.Request, needInstance bool, reach time.Duration) (id int, from, to time.Time, err error) {
 	q := r.URL.Query()
 	if needInstance {
 		id, err = strconv.Atoi(q.Get("instance"))
@@ -541,8 +607,21 @@ func paramsMax(r *http.Request, needInstance bool, longest time.Duration) (id in
 	if !from.Before(to) {
 		return 0, from, to, errors.New("from must be before to")
 	}
-	if to.Sub(from) > longest {
-		return 0, from, to, fmt.Errorf("window longer than %d days", int(longest.Hours()/24))
+	if to.Sub(from) > maxWindow {
+		return 0, from, to, errors.New("window longer than a year (366 days and an hour)")
+	}
+	// the reach counts back from the window's end or now, whichever is earlier: a window that ends in the future (a
+	// typed end past now) reads the newest data it holds, not an empty month ahead of now
+	end := to
+	if now := time.Now(); end.After(now) {
+		end = now
+	}
+	if end.Sub(from) > reach {
+		asked := from
+		from = end.Add(-reach)
+		if rw, ok := r.Context().Value(readWindowKey{}).(*readWindow); ok {
+			rw.asked, rw.from, rw.to, rw.set = asked, from, end, true
+		}
 	}
 	return id, from, to, nil
 }
@@ -880,6 +959,7 @@ func (s *Server) multi(w http.ResponseWriter, r *http.Request, parts []part) {
 			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
 			return
 		}
+		// a part that read a window cut to its reach carries what it read beside its columns and rows (query's markRead)
 		out[p.name] = t
 	}
 	s.reply(w, r, out, nil)

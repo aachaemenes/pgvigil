@@ -10,6 +10,7 @@
 --   task 177 D15 (0120): the mssql_sysevents_findings arm; nothing for purge() (the events live in mssql_health_components, already a monthly parent).
 --   task 177 D14 (0124): the mssql_cpu_findings arm; mssql_counter_sample, mssql_counter_read, mssql_session_summary,
 --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
+--   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
 -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -185,7 +186,7 @@ BEGIN
                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
-                         'mssql_session_tempdb', 'mssql_activity_read')
+                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then

@@ -67,7 +67,7 @@ func TestLivePages(t *testing.T) {
 
 // TestLiveImport runs the import once (scripts/proof-dbadash-door.sh drives it; skipped without
 // PGVIGIL_DBADASH_IMPORT_DSN): from that DBADash repository into the pgvigil repository PGVIGIL_DBADASH_IMPORT_REPO
-// (its owner), the dry run first when PGVIGIL_DBADASH_IMPORT_DRY=1. It prints one line per instance and mapping:
+// (its owner, or a login in role pgvigil_collector), the dry run first when PGVIGIL_DBADASH_IMPORT_DRY=1. It prints one line per instance and mapping:
 //
 //	import <dbadash id> <pgvigil id> <mapping> source=<n> inserted=<n> stored=<n> skipped=<reason>
 func TestLiveImport(t *testing.T) {

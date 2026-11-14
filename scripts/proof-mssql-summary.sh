@@ -99,13 +99,15 @@ want "$c2" dbstate "ok|true|0|1|" "C offline only"
 for k in blocking events availability logship mirroring full diff log jobs filespace pctmax disk uptime dbstate agent dbmail dumps qs audit checkdb logspace corruption alerts identity; do
   got=$(cell "$d" $k); [[ "$got" == never\|*\|0\|0\| ]] || fail "D: $k on an instance nothing ran on: '$got'"
 done; echo "ok   D never: twenty-four keys, none flagged"
+# Elastic Pool Storage (the 25th key): n/a where mssql_pool never ran, never 'not yet' - most servers are in no pool
+want "$d" elasticpool "n/a|false|0|0|" "D Elastic Pool Storage"
 want "$e" jobs "n/a|true|0|0|" "E skipped"; [[ "$(cell "$e" blocking state)" == never ]] || fail "E: blocking"
 want "$f" uptime "ok|true|1|0|0 h" "F clock skew"
 [[ "$(cell "$g" availability state)" == ok ]] || fail "G: availability state: $(cell "$g" availability state)"; echo "ok   G one fresh, one failed: availability = ok"
 got=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cells"]; c=d["columns"]; i=c.index("instance_id"); n={}
 for r in d["rows"]: n[r[i]]=n.get(r[i],0)+1
 print(len(n), sorted(set(n.values())), int(sys.argv[2]) in n)' "$WORK/sum.json" "$pg")
-[[ "$got" == "9 [24] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 9 instances x 24 keys (task P08's DBA Dash columns), no PostgreSQL row"
+[[ "$got" == "9 [25] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 9 instances x 25 keys (task P08's 24 DBA Dash columns + Elastic Pool Storage), no PostgreSQL row"
 want "$i" dumps "ok|true|1|0|1 file" "I the default 48 h"
 [[ "$(cell "$i" dumps since)" == "$(q "select to_char(last_dump_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI') from pgvigil.mssql_health where instance_id = $i")"* ]] || fail "I: since is '$(cell "$i" dumps since)'"
 # the dialog's write is POST /api/pg/thresholds, a signed-in user's: here its function, as proof-clickmap T9 sets uptime

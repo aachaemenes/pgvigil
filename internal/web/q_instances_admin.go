@@ -1309,6 +1309,111 @@ func nameFor(server string) string {
 	return n
 }
 
+// approveLogin: the authentication, login and password an approved (or tested) proposal's server is read with, or
+// the words of why not. A login typed at the approve is used with its password; else the source's, else the
+// proposal's own. The source's authentication unless one is picked (the panel sends a pick, a login typed or not:
+// never a silent drop, the join's review 3c), mapped to the engine's: SQL Server never takes password / pgpass, and a
+// cloud source's one SQL login is a password login on its PostgreSQL servers.
+//   - PostgreSQL: pgvigil signs in with a password login only (no Entra token sign-in), so a source that signs in to
+//     Azure as an Entra application or identity holds no PostgreSQL login - its secret never becomes one (the join's
+//     review 3a): such a proposal is approved only with a PostgreSQL login typed.
+//   - entra-identity (this host's managed identity, CLOUDSQL C1): no secret, and the login is a user-assigned
+//     identity's client id - typed, or the source's own when the source signs in that way; never a SQL login of the
+//     source or the proposal (a typed password reaches BuildDSN, which refuses it in its own words).
+//   - a picked authentication with no login typed takes the source's own login only when it is that kind (the
+//     source's kind read in the engine's words); .pgpass takes the login alone; else the words name what is missing.
+//   - a login typed on SQL Server with no pick, the source signing in as an Entra application, is refused: it would
+//     become the application's id (the review wire2 3).
+func approveLogin(engine, srcAuth, typedAuth, typedLogin, typedPassword string, cred sourceCred, proposalLogin, server string) (auth, login, password string, err error) {
+	typed := typedLogin != ""
+	if typed {
+		login, password = typedLogin, typedPassword
+	} else {
+		login, password = cred.Login, cred.Password
+		if login == "" {
+			login = proposalLogin
+		}
+	}
+	auth = srcAuth
+	if typedAuth != "" {
+		auth = typedAuth
+	}
+	// the source's sign-in in this engine's words: one login of a cloud source serves both engines (docs/discovery.md),
+	// so a source's PostgreSQL login is a SQL login on its SQL Server servers and the other way round; .pgpass holds no
+	// password to be a SQL login with
+	srcKind := srcAuth
+	switch {
+	case engine == config.EngineSQLServer && srcAuth == "password":
+		srcKind = "sql"
+	case engine == config.EnginePostgres && srcAuth == "sql":
+		srcKind = "password"
+	}
+	picked := typedAuth != "" && !typed && typedAuth != srcKind
+	entra := func(a string) bool { return a == "entra" || a == "entra-identity" }
+	switch engine {
+	case config.EnginePostgres:
+		if entra(auth) || (!typed && entra(srcAuth)) {
+			if !typed {
+				return "", "", "", fmt.Errorf("this source signs in to Azure as an Entra application or identity; pgvigil signs in to PostgreSQL with a password login only: type a PostgreSQL login for %s", server)
+			}
+			auth = "password"
+		}
+		if auth == "sql" {
+			auth = "password" // a cloud source's one login is a password login on its PostgreSQL servers
+		}
+		if picked && auth == "password" && password == "" {
+			return "", "", "", fmt.Errorf("a PostgreSQL login needs its password: the source holds none (it signs in as %s) - type the login and password for %s, or pick .pgpass", srcAuth, server)
+		}
+		if auth == "password" && password == "" {
+			auth = "pgpass"
+		}
+		if auth == "pgpass" && !typed {
+			password = "" // .pgpass on the collector's host holds it: the source's password is not sent with it
+		}
+	case config.EngineSQLServer:
+		if typed && typedAuth == "" && srcAuth == "entra" {
+			return "", "", "", fmt.Errorf("a login was typed with Authentication left 'as the source signs in', and this source signs in as an Entra application: pick SQL login (or Entra service principal for an application's id and secret) for %s", server)
+		}
+		if auth == "password" || auth == "pgpass" {
+			auth = "sql"
+		}
+		switch {
+		case auth == "entra-identity":
+			if !typed {
+				login, password = "", ""
+				if srcAuth == "entra-identity" {
+					login = cred.Login
+				}
+			}
+		case picked && auth == "sql":
+			return "", "", "", fmt.Errorf("a SQL login needs its name and password: the source signs in as %s, not with a SQL login - type the login and password for %s", srcAuth, server)
+		case picked && auth == "entra":
+			return "", "", "", fmt.Errorf("an Entra service principal needs its application (client) id and secret: the source signs in as %s - type them for %s", srcAuth, server)
+		case picked && auth == "windows":
+			login, password = "", "" // the service's own account or a credential cache: no secret of the source's
+		}
+	}
+	return auth, login, password, nil
+}
+
+// pgServiceDSN is a pg_service source's sign-in: the service file itself, its password (or the service account's
+// .pgpass) staying where it is, with the source's login and password, or the ones typed at the approve. A source that
+// signs in as an Entra application or identity never puts its secret into a PostgreSQL DSN (the join's review 3a):
+// with nothing typed it is refused in the words approveLogin uses.
+func pgServiceDSN(server, ref, srcAuth string, typed bool, cred sourceCred) (string, error) {
+	if !typed && (srcAuth == "entra" || srcAuth == "entra-identity") {
+		return "", fmt.Errorf("this source signs in to Azure as an Entra application or identity; pgvigil signs in to PostgreSQL with a password login only: type a PostgreSQL login for %s", server)
+	}
+	dsn := "service=" + config.QuoteValue(server) + " servicefile=" + config.QuoteValue(ref)
+	if cred.Login != "" {
+		dsn += " user=" + config.QuoteValue(cred.Login)
+	}
+	if cred.Password != "" {
+		dsn += " password=" + config.QuoteValue(cred.Password)
+	}
+	return dsn, nil
+}
+
 // ProposalsAdminWrite is POST /api/admin/proposals.
 func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	user, in, ok := s.adminBody(w, r)
@@ -1363,32 +1468,18 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		cloud := sr.Kind == "aws" || sr.Kind == "azure" || sr.Kind == "gcp"
 		var dsn string
 		if sr.Kind == "pg_service" {
-			// the service file itself: its password (or the service account's .pgpass) stays where it is
-			dsn = "service=" + config.QuoteValue(server) + " servicefile=" + config.QuoteValue(sr.Ref)
-			if cred.Login != "" {
-				dsn += " user=" + config.QuoteValue(cred.Login)
-			}
-			if cred.Password != "" {
-				dsn += " password=" + config.QuoteValue(cred.Password)
+			var perr error
+			if dsn, perr = pgServiceDSN(server, sr.Ref, sr.Auth, str(in, "login") != "", cred); perr != nil {
+				writeErr(w, http.StatusConflict, perr)
+				return
 			}
 		} else {
-			l := cred.Login
-			if l == "" {
-				l = orZero(login)
+			auth, l, pw, aerr := approveLogin(engine, sr.Auth, str(in, "auth"), str(in, "login"), rawStr(in, "password"), cred, orZero(login), server)
+			if aerr != nil {
+				writeErr(w, http.StatusConflict, aerr)
+				return
 			}
-			auth := sr.Auth
-			if v := str(in, "auth"); v != "" {
-				auth = v
-			}
-			switch {
-			case engine == config.EnginePostgres && (auth == "sql" || auth == "entra"):
-				auth = "password" // a cloud source's one login is a password login on its PostgreSQL servers
-			case engine == config.EngineSQLServer && (auth == "password" || auth == "pgpass"):
-				auth = "sql"
-			}
-			if auth == "password" && cred.Password == "" {
-				auth = "pgpass"
-			}
+			cred.Password = pw
 			pay["auth"] = auth
 			pay["login_used"] = l
 			extra := cred.Extra

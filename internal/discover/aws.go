@@ -138,7 +138,7 @@ var tagKeyBad = regexp.MustCompile(`[^a-z0-9_.-]+`)
 // ReservedTagKeys are pgvigil's own tag keys on a cloud proposal: never taken from a resource's tags (a resource
 // tag 'region' would otherwise add a second region, and alert rules are scoped by tags).
 var ReservedTagKeys = map[string]bool{"cloud": true, "region": true, "account": true, "subscription": true, "resource-group": true,
-	"project": true, "cluster": true, "role": true, "source-instance": true, "source-cluster": true}
+	"project": true, "cluster": true, "role": true, "source-instance": true, "source-cluster": true, "pool": true}
 
 // TagKey is a cloud tag key as pgvigil writes it: lower-cased, other characters as '-', 40 at most ("" = none).
 func TagKey(k string) string {
@@ -257,7 +257,7 @@ func ec2Regions(ctx context.Context, c regionsAPI) (map[string]bool, error) {
 }
 
 // regionsAPI is the one EC2 call discovery makes (an optional right: every partition has EC2, the account service
-// only two - task 205, the lead's 12:28).
+// only two).
 type regionsAPI interface {
 	DescribeRegions(context.Context, *ec2.DescribeRegionsInput, ...func(*ec2.Options)) (*ec2.DescribeRegionsOutput, error)
 }
@@ -751,7 +751,11 @@ func awsRegion(ctx context.Context, mk func(context.Context, string) (rdsAPI, er
 					sv = "Aurora Serverless v2"
 				}
 			}
-			out = append(out, config.Proposal{Server: "aws:" + account + ":" + region + ":instance:" + id, Engine: eng, Host: aws.ToString(in.Endpoint.Address),
+			plat := "rds" // RDS for PostgreSQL or SQL Server; Aurora's engines are aurora-*
+			if strings.HasPrefix(aws.ToString(in.Engine), "aurora") {
+				plat = "aurora"
+			}
+			out = append(out, config.Proposal{Server: "aws:" + account + ":" + region + ":instance:" + id, Engine: eng, Platform: plat, Host: aws.ToString(in.Endpoint.Address),
 				Port: int(aws.ToInt32(in.Endpoint.Port)), DBName: db, DisplayName: display, MasterUser: master, ResourceID: aws.ToString(in.DbiResourceId),
 				Tags: sortedTags(tags...), CloudTags: cloud, Serverless: sv, AutoPause: pause})
 		}

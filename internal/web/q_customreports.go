@@ -963,7 +963,7 @@ SELECT i.instance_id, i.name, i.engine
 
 const maxRunTargets = 20
 
-// runWindow is a run's @from and @to: the body's, or the last hour; at most 31 days.
+// runWindow is a run's @from and @to: the body's, or the last hour; at most a year (maxWindow: 366 days and an hour).
 func runWindow(from, to string) (time.Time, time.Time, error) {
 	t1, f1 := time.Now(), time.Now().Add(-time.Hour)
 	var err error
@@ -980,7 +980,7 @@ func runWindow(from, to string) (time.Time, time.Time, error) {
 		f1 = t1.Add(-time.Hour)
 	}
 	if !f1.Before(t1) || t1.Sub(f1) > maxWindow {
-		return f1, t1, errors.New("from is before to and the window is at most 31 days")
+		return f1, t1, errors.New("from must be before to and the window at most a year (366 days and an hour)")
 	}
 	return f1, t1, nil
 }

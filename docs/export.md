@@ -14,9 +14,9 @@ same way as any browser.
 ## The workbook
 
 - **Summary** is the first sheet: the instance (or `fleet`, or the tag), the tab, the time window (its label,
-  its start and its end), the export time, the time zone the times in the file are written in (the display time zone: the browser's unless the range panel names another, as
+  its start and its end; and, when parts of the page read only the newest part of a long window - each part reads its own reach of it, 31 days and an hour unless it reads further - a 'Read' row with what they read), the export time, the time zone the times in the file are written in (the display time zone: the browser's unless the range panel names another, as
   `America/Los_Angeles (UTC-08:00 at export)`; each time carries its own date's offset, so a window across a
-  daylight-saving change holds two), and one line per data sheet with its row count and, when the page said
+  daylight-saving change holds two), and one line per data sheet with its row count and its note: what the list read when its part was cut to its reach ('This list reads the newest 31 days of this window: <from> to <to>.', also the first line of its CSV), and, when the page said
   it shows only the newest N of M rows (the Running queries samples), that note, or, for a grid with no row, the
   page's own empty message. Its header row and the
   heading of its list of sheets carry the same blue as every data sheet's header.
@@ -116,7 +116,10 @@ same row.
 
 The same rows and the same columns: one grid gives one `.csv`; a tab with several grids gives a `.csv.zip` with one CSV per grid,
 numbered in page order and named by the sheet names above. RFC 4180, UTF-8 with a byte-order mark (Excel reads
-the encoding from it), CRLF line ends. Numbers are plain values (bytes, seconds for a `1h 1m` duration, milliseconds for a millisecond time, the percent
+the encoding from it), CRLF line ends. The header row is the first line, except in the CSV of a list that read only the
+newest part of a long window: there one quoted sentence comes first ('This list reads the newest 31 days of this window:
+<from> to <to>.') and the header row is the second line - a reader that takes line 1 as the header skips that line
+first (pandas: `skiprows=1`). Numbers are plain values (bytes, seconds for a `1h 1m` duration, milliseconds for a millisecond time, the percent
 figure); times are
 `yyyy-mm-dd hh:mm:ss` in the browser's time. A text cell that a spreadsheet program would run as a formula
 (it starts with `=`, `+`, `-`, `@`, a tab or a carriage return: query text, an application name or any other

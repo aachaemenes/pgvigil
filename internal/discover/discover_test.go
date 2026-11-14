@@ -200,6 +200,13 @@ func TestAWSProposesEachInstanceByItsOwnEndpoint(t *testing.T) {
 		keys = append(keys, strings.TrimPrefix(p.Server, pre)+"|"+p.Host+"|"+strings.Join(p.Tags, ","))
 		byKey[strings.TrimPrefix(p.Server, pre)] = p
 	}
+	// the platform the approve gives the instance (the join's review 3e): Aurora's engines aurora, RDS's rds (a Multi-AZ
+	// DB cluster's members too, and SQL Server)
+	for id, want := range map[string]string{"pg-a-1": "aurora", "pg-a-2": "aurora", "maz-1": "rds", "sql1": "rds"} {
+		if got := byKey[id].Platform; got != want {
+			t.Errorf("%s: platform %q, want %q", id, got, want)
+		}
+	}
 	base := "account:111122223333,cloud:aws,"
 	want := []string{
 		"maz-1|maz-1.x|" + base + "cluster:maz,region:us-east-2,role:writer",
@@ -460,7 +467,7 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 					t.Errorf("the subscriptions were not sent: %v", body["subscriptions"])
 				}
 				_, _ = io.WriteString(w, `{"data":[
- {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/appdb","name":"appdb","type":"microsoft.sql/servers/databases","kind":"v12.0,user","aadOnly":true,"location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","tags":{"Team":"billing"},"fqdn":"sqlsrv.database.windows.net"},
+ {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/appdb","name":"appdb","type":"microsoft.sql/servers/databases","kind":"v12.0,user","aadOnly":true,"location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","tags":{"Team":"billing","Pool":"fake"},"elasticPoolId":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/elasticPools/Pool-A","fqdn":"sqlsrv.database.windows.net"},
  {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/otherdb","name":"otherdb","type":"microsoft.sql/servers/databases","kind":"v12.0,user,vcore,serverless","autoPauseDelay":60,"skuName":"GP_S_Gen5_1","location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","fqdn":"sqlsrv.database.windows.net"},
  {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv/databases/dw1","name":"dw1","type":"microsoft.sql/servers/databases","kind":"v12.0,user,datawarehouse,gen2","location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","fqdn":"sqlsrv.database.windows.net"},
  {"id":"/subscriptions/`+subA+`/resourceGroups/rg1/providers/Microsoft.DBforPostgreSQL/flexibleServers/pgf","name":"pgf","type":"microsoft.dbforpostgresql/flexibleservers","passwordAuth":"Disabled","location":"westus3","subscriptionId":"`+subA+`","resourceGroup":"rg1","tags":null,"fqdn":"pgf.postgres.database.azure.com"}],
@@ -508,12 +515,33 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 	if got := strings.Join(TagsWith(db, []string{"team"}), " "); !strings.Contains(got, "team:billing") {
 		t.Fatalf("an allowed key: %s", got)
 	}
+	// a pooled database: pgvigil's own tag pool:<the pool's name> from its elasticPoolId (CLOUDSQL C4); a resource tag
+	// 'Pool' never adds a second one (pool is reserved); a database in no pool has none
+	if got := strings.Join(TagsWith(db, []string{"team", "pool"}), " "); strings.Count(got, "pool:") != 1 || !strings.Contains(got, "pool:pool-a") {
+		t.Fatalf("the pooled database's tags: %s", got)
+	}
+	if got := strings.Join(byKey[pre+"sql:sqlsrv/otherdb"].Tags, " "); strings.Contains(got, "pool:") {
+		t.Fatalf("a database in no pool: %s", got)
+	}
+	// a pool name the approve's tag rule would refuse (a comma) writes no tag: the read names the pool by the
+	// database's own answer (the wire review's finding 8)
+	if p, _ := azureProposal(azureRow{ID: "/subscriptions/" + subA + "/resourceGroups/rg1/providers/Microsoft.Sql/servers/s2/databases/d2", Name: "d2",
+		Type: "microsoft.sql/servers/databases", Location: "westus3", SubscriptionID: subA, FQDN: "s2.database.windows.net",
+		ElasticPoolID: "/subscriptions/" + subA + "/resourceGroups/rg1/providers/Microsoft.Sql/servers/s2/elasticPools/a,b"}); strings.Contains(strings.Join(p.Tags, " "), "pool:") {
+		t.Fatalf("a pool name with a comma: %v", p.Tags)
+	}
 	// the Entra-only flags and a serverless database's auto-pause
 	if !db.EntraOnly || !strings.Contains(db.Note, "Entra-only") {
 		t.Fatalf("an Entra-only server's database: %+v", db)
 	}
 	if o2 := byKey[pre+"sql:sqlsrv/otherdb"]; o2.EntraOnly || !o2.AutoPause || !strings.Contains(o2.Serverless, "pauses after 60 min") {
 		t.Fatalf("a serverless database: %+v", o2)
+	}
+	// the platform the approve gives the instance (the join's review 3e)
+	for k, want := range map[string]string{"sql:sqlsrv/appdb": "azuresqldb", "sql:sqlsrv/otherdb": "azuresqldb", "mi:mi1": "azuresqlmi", "pg:pgf": "azure"} {
+		if got := byKey[pre+k].Platform; got != want {
+			t.Errorf("%s: platform %q, want %q", k, got, want)
+		}
 	}
 	if pg := byKey[pre+"pg:pgf"]; pg.Engine != config.EnginePostgres || pg.Port != 5432 || pg.DBName != "postgres" || !pg.EntraOnly {
 		t.Fatalf("the flexible server %+v", pg)
@@ -704,6 +732,12 @@ func TestGCPSignsAKeyListsBothAPIsAndNotesWhatItCannotSee(t *testing.T) {
 	if got := strings.Join(rd.Unseen, " "); got != "gcp:p1:alloydb: gcp:p3:alloydb: gcp:p3:sql: gcp:p4:alloydb: gcp:p5:alloydb: gcp:p5:sql: gcp:p7:alloydb: gcp:p7:sql:" {
 		t.Fatalf("unseen %q", got)
 	}
+	// the platform the approve gives the instance (the join's review 3e): Cloud SQL's both engines cloudsql, AlloyDB alloydb
+	for k, want := range map[string]string{"gcp:p1:sql:ms22": "cloudsql", "gcp:p1:sql:pg16": "cloudsql", "gcp:p1:alloydb:us-central1/c1/i1": "alloydb"} {
+		if got := byKey[k].Platform; got != want {
+			t.Errorf("%s: platform %q, want %q", k, got, want)
+		}
+	}
 	rr, a1 := byKey["gcp:p1:sql:pg16-rr"], byKey["gcp:p1:alloydb:us-central1/c1/i1"]
 	if strings.Join(rr.Tags, " ") != "cloud:gcp project:p1 region:us-west1 role:replica source-instance:pg16" || rr.ResourceID != "https://x/projects/p1/instances/pg16-rr@2026-11-01T00:00:00Z" {
 		t.Fatalf("the replica: %+v", rr)
@@ -785,7 +819,7 @@ func (f fakeEC2) DescribeRegions(_ context.Context, in *ec2.DescribeRegionsInput
 	return out, nil
 }
 
-// Task 205 (the lead's 12:23 item 1 and 12:28): the account's region list (ec2:DescribeRegions, optional) beside RDS's
+// The account's region list (ec2:DescribeRegions, optional) beside RDS's
 // replication list - an enabled region outside RDS's list is swept, a region not enabled is noted and never read nor
 // kept, a region of another partition is said so, a token error in an enabled region is the token's; without the
 // list a standing note on every read.

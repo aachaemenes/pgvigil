@@ -127,7 +127,8 @@ func XEScript(installID, form string) (string, error) {
 	case XEFormCloudSQL:
 		w("  Google Cloud SQL for SQL Server: run it in master as the sqlserver user. The slow capture's event file goes\n" +
 			"  to " + xeCloudSQLDir + ", the folder Google names for Extended Events files.\n" +
-			"  NOT PROVEN: this form was written from Google's pages and has not been run against Cloud SQL.\n")
+			"  Run on a real Cloud SQL for SQL Server 2022 instance: the four sessions made, started and read. Google's trigger\n" +
+			"  takes one max_memory per session, of 4 to 8 MB: the sizes below are each session's MAX_MEMORY, kept in that range.\n")
 	default:
 		w("  Run it in master as a login that may create event sessions (ALTER ANY EVENT SESSION, or CONTROL SERVER).\n")
 	}
@@ -154,7 +155,12 @@ func XEScript(installID, form string) (string, error) {
 	} else {
 		w("DECLARE @slow_kb          int = 4096;   -- the slow session's ring buffer (KB): a full buffer loses its oldest events\n")
 	}
-	w("DECLARE @deadlock_kb      int = 4096;   -- ring buffer sizes (KB)\n")
+	if form == XEFormCloudSQL {
+		w("DECLARE @deadlock_kb      int = 4096;   -- each session's MAX_MEMORY (KB), 4096 to 8192 on Cloud SQL (kept in that range);\n")
+		w("                                        -- the ring buffers there take no size of their own\n")
+	} else {
+		w("DECLARE @deadlock_kb      int = 4096;   -- ring buffer sizes (KB)\n")
+	}
 	w("DECLARE @blocked_kb       int = 4096;\n")
 	w("DECLARE @attention_kb     int = 1024;\n")
 	w("-- ---- end of settings ----\n\nDECLARE @sql nvarchar(max), @us nvarchar(30) = CAST(CAST(@slow_ms AS bigint) * 1000 AS nvarchar(30));\n\n")
@@ -176,8 +182,23 @@ func XEScript(installID, form string) (string, error) {
 	ring := func(kbVar string) string {
 		return "ADD TARGET package0.ring_buffer(SET max_memory=(' + CAST(" + kbVar + " AS nvarchar(20)) + N'))"
 	}
-	session(xeDeadlocks, "ADD EVENT sqlserver."+sc.deadlock+"(ACTION(package0.event_sequence))\n"+ring("@deadlock_kb")+"\n"+opts)
-	session(xeBlocked, "ADD EVENT sqlserver.blocked_process_report(ACTION(package0.event_sequence))\n"+ring("@blocked_kb")+"\n"+opts)
+	// a ring-buffer session's target and options. On Cloud SQL Google's trigger TRG_EnforceXEventSessionParams4 refuses
+	// a CREATE EVENT SESSION holding "max_memory=" more than once, and fails on its own (Msg 537) when the one it finds
+	// is not the session's 'MAX_MEMORY=<n> KB', and it takes 4 to 8 MB only (G1, a real instance, 2026-11-13): there
+	// the ring buffer takes no max_memory of its own and the session's MAX_MEMORY is the capture's size within 4-8 MB
+	cloudMem := func(kbVar string) string {
+		return "MAX_MEMORY=' + CAST(CASE WHEN " + kbVar + " < 4096 THEN 4096 WHEN " + kbVar + " > 8192 THEN 8192 ELSE " + kbVar + " END AS nvarchar(20)) + N' KB"
+	}
+	ringOf := func(kbVar string) (string, string) {
+		if form == XEFormCloudSQL {
+			return "ADD TARGET package0.ring_buffer", strings.Replace(opts, "MAX_MEMORY=4096 KB", cloudMem(kbVar), 1)
+		}
+		return ring(kbVar), opts
+	}
+	dt, dw := ringOf("@deadlock_kb")
+	bt, bw := ringOf("@blocked_kb")
+	session(xeDeadlocks, "ADD EVENT sqlserver."+sc.deadlock+"(ACTION(package0.event_sequence))\n"+dt+"\n"+dw)
+	session(xeBlocked, "ADD EVENT sqlserver.blocked_process_report(ACTION(package0.event_sequence))\n"+bt+"\n"+bw)
 
 	// the slow session: the completions with who ran them; pgvigil's own sessions are left out by their program name
 	who := "sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.database_name,sqlserver.server_principal_name,sqlserver.session_id"
@@ -197,14 +218,20 @@ func XEScript(installID, form string) (string, error) {
 		if form == XEFormCloudSQL {
 			dir = xeCloudSQLDir
 		}
+		mem := "MAX_MEMORY=' + CAST(@slow_memory_kb AS nvarchar(20)) + N' KB"
+		if form == XEFormCloudSQL {
+			mem = cloudMem("@slow_memory_kb")
+		}
 		slow += "ADD TARGET package0.event_file(SET filename=N''" + dir + name(xeSlow) + ".xel'', max_file_size=(' + CAST(@slow_file_mb AS nvarchar(20)) + N'), max_rollover_files=(' + CAST(@slow_files AS nvarchar(20)) + N'))\n" +
-			strings.Replace(opts, "MAX_MEMORY=4096 KB", "MAX_MEMORY=' + CAST(@slow_memory_kb AS nvarchar(20)) + N' KB", 1)
+			strings.Replace(opts, "MAX_MEMORY=4096 KB", mem, 1)
 	} else {
-		slow += ring("@slow_kb") + "\n" + opts
+		st, sw := ringOf("@slow_kb")
+		slow += st + "\n" + sw
 	}
 	session(xeSlow, slow)
+	at, aw := ringOf("@attention_kb")
 	session(xeAttention, "ADD EVENT sqlserver.attention(ACTION(package0.event_sequence,"+who+",sqlserver.sql_text))\n"+
-		ring("@attention_kb")+",\nADD TARGET package0.event_counter\n"+opts)
+		at+",\nADD TARGET package0.event_counter\n"+aw)
 
 	if form != XEFormAzureDB {
 		step := "EXEC sys.sp_configure ''blocked process threshold (s)'', 15; RECONFIGURE; (it is an advanced option; 5 is the lowest value SQL Server honours)"

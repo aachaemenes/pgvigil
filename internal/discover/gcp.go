@@ -352,7 +352,7 @@ func GCP(ctx context.Context, o GCPOptions) (Read, error) {
 			if x.CreateTime != "" {
 				rid += "@" + x.CreateTime
 			}
-			rd.Proposals = append(rd.Proposals, config.Proposal{Server: "gcp:" + p + ":sql:" + x.Name, Engine: eng, Host: host, AltHost: alt, Port: port, DisplayName: display,
+			rd.Proposals = append(rd.Proposals, config.Proposal{Server: "gcp:" + p + ":sql:" + x.Name, Engine: eng, Platform: "cloudsql", Host: host, AltHost: alt, Port: port, DisplayName: display,
 				ResourceID: rid, Tags: sortedTags(tags...), CloudTags: x.Settings.UserLabels})
 		}
 		items, _ = list(p, "AlloyDB", orDefault(o.AlloyDB, "https://alloydb.googleapis.com"), "/v1/projects/"+pe+"/locations/-/clusters/-/instances", "instances", "gcp:"+p+":alloydb:")
@@ -389,7 +389,7 @@ func GCP(ctx context.Context, o GCPOptions) (Read, error) {
 			case "SECONDARY":
 				tags = append(tags, "role:secondary")
 			}
-			rd.Proposals = append(rd.Proposals, config.Proposal{Server: "gcp:" + p + ":alloydb:" + parts[3] + "/" + parts[5] + "/" + parts[7], Engine: config.EnginePostgres,
+			rd.Proposals = append(rd.Proposals, config.Proposal{Server: "gcp:" + p + ":alloydb:" + parts[3] + "/" + parts[5] + "/" + parts[7], Engine: config.EnginePostgres, Platform: "alloydb",
 				Host: host, AltHost: alt, Port: 5432, DBName: "postgres", DisplayName: parts[5] + "/" + parts[7] + " (" + strings.ToLower(x.InstanceType) + ")",
 				ResourceID: x.UID, Tags: sortedTags(tags...), CloudTags: x.Labels})
 		}

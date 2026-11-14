@@ -17,7 +17,8 @@ import { fleet } from './fleet';
 import { installGridTools } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
 import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
-import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showMenu } from './ui';
+import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, readWindowWords, showMenu } from './ui';
+import { cutReads } from './api';
 import { readRows } from './export_colours';
 import { ownName, sheetNames, sheetTitle } from './export_names';
 import { drawingRels, drawingXml, pictureOf } from './export_chart';
@@ -37,7 +38,7 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
 export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
-export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[]; sample?: string; within?: string; own?: boolean; items?: boolean }   // own: the name is the page's own (data-sheet: kept whole, export_names.ts ownName)   // items: an Item | Value | Status section (itemSection)   // within: the heading above the one that names it (export_names.ts sheetNames: a name taken in full falls back on it)   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in About's line of its sheet and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[]; sample?: string; within?: string; own?: boolean; items?: boolean; read?: string }   // own: the name is the page's own (data-sheet: kept whole, export_names.ts ownName)   // items: an Item | Value | Status section (itemSection)   // within: the heading above the one that names it (export_names.ts sheetNames: a name taken in full falls back on it)   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in About's line of its sheet and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)   // read: a list cut to its part's reach, what it read ('This list reads the newest 31 days of this window: ...'): in its note on 'About' and the line above its CSV's header
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -369,7 +370,10 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
         const ths = drawn ? [...drawn.querySelectorAll('th')] : [];
         const heads = ths.length === all.length ? ths.map(th => headLook(th, drawn!)).filter((_, j) => !hid.has(j)) : undefined;
         const sample = e.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
-        out.push({ sec: { name: heading, within, ...(own ? { own } : {}), cols: all.filter((_, j) => !hid.has(j)), rows: [], note: [sample, text(e)].filter(Boolean).join('; ') || undefined, sample, ...(heads ? { heads } : {}) }, el: e });
+        // a list whose part read only the newest part of a long window: its words (ui.ts grid) in the note and the CSV
+        const rd = e.closest('.empty-grid')?.querySelector('.read-window');
+        const read = rd ? text(rd) : undefined;
+        out.push({ sec: { name: heading, within, ...(own ? { own } : {}), cols: all.filter((_, j) => !hid.has(j)), rows: [], note: [sample, read, text(e)].filter(Boolean).join('; ') || undefined, sample, ...(read ? { read } : {}), ...(heads ? { heads } : {}) }, el: e });
       }
       continue;
     }
@@ -382,10 +386,13 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
     const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
     // a stored sample's grid carries its mark first: never read as the instance's own data in a file
     const sample = t.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
-    const notes = [sample ?? '', prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
+    // a list whose part read only the newest part of a long window (ui.ts grid: data-read-from / -to): its sheet's note
+    // and its CSV's first line say what was read, never the page's whole window
+    const readWin = t.dataset.readFrom && t.dataset.readTo ? `This list reads ${readWindowWords({ from: t.dataset.readFrom, to: t.dataset.readTo })}.` : undefined;
+    const notes = [sample ?? '', readWin ?? '', prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;
     const read = t.classList.contains('grid') ? readGrid(t) : { ...readProps(t), ...(cardHeads() ? { heads: cardHeads() } : {}) };
-    out.push({ sec: { name: heading, within, ...(own ? { own } : {}), ...read, note, sample }, el: t });
+    out.push({ sec: { name: heading, within, ...(own ? { own } : {}), ...read, note, sample, ...(readWin ? { read: readWin } : {}) }, el: t });
   }
   distinct(out);
   return out;
@@ -820,7 +827,7 @@ function coreXml(meta: Meta): string {
     + '</cp:coreProperties>';
 }
 
-export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date; engine?: string; platform?: string }   // engine, platform: an instance's (the page sheet's scope row)
+export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date; engine?: string; platform?: string; read?: string }   // engine, platform: an instance's (the page sheet's scope row)   // read: what the page's parts read when the server cut them to their reach (cutWords)
 
 // timeZone: the zone the times in the file are written in, 'America/Los_Angeles (UTC-08:00 at export)': the display
 // zone (the browser's unless another was chosen in the range panel). Each time carries its own date's offset (a window
@@ -846,6 +853,8 @@ export function workbook(meta: Meta, given: Section[], page?: PageSheet): { name
     [t('Instance'), t(meta.instance)], [t('Tab'), t(meta.tab)],
     [t('Window'), t(meta.window)], [t('Window from'), d(meta.from)], [t('Window to'), d(meta.to)],
     [t('Exported at'), d(meta.at)], [t('Time zone'), t(timeZone(meta.at))], [t('Source'), t('pgvigil')],
+    // the page's parts that read only the newest part of a long window: what they read (each sheet's row says its own)
+    ...(meta.read ? [[t('Read'), t(meta.read)]] : []),
     ...secs.map((s, i) => [t(`Sheet ${names[i]}`), t(`${s.rows.length} row${s.rows.length === 1 ? '' : 's'}${s.note ? '; ' + s.note : ''}`)]),
     ...(secs.some(s => s.items) ? [[t('Item | Value sheets'), t('Each Value is typed by its own content: a time a date, a bare number a number, yes / no a boolean; a value with a unit (a size, a duration, a rate) is the page\'s text with its unit, as the page shows it.')]] : []),
   ];
@@ -927,8 +936,9 @@ export function csv(s: Section): string {
     return /^[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
   };
   const q = (v: string) => /[",\r\n]|^\s|\s$/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
-  // a stored sample's file starts with its mark, a line of its own above the header
-  return '﻿' + [...(s.sample ? [q(s.sample)] : []), s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
+  // a stored sample's file starts with its mark, a line of its own above the header; a list cut to its part's reach
+  // says what it read on the next line
+  return '﻿' + [...(s.sample ? [q(s.sample)] : []), ...(s.read ? [q(s.read)] : []), s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
 }
 
 // ---- zip (the .xlsx container and the CSV bundle) ---------------------------------------------------------
@@ -1002,7 +1012,20 @@ async function metaOf(ctx: Ctx): Promise<Meta> {
   }
   const w = window_(ctx);
   const tab = (ctx.instance ? instanceTabs[ctx.tab] ?? mssqlInstanceTabs[ctx.tab] ?? drillTabs[ctx.tab] : rootTabs[ctx.tab]) ?? ctx.tab;
-  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date(), ...(engine ? { engine } : {}), ...(platform ? { platform } : {}) };
+  const read = cutWords();
+  return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date(), ...(engine ? { engine } : {}), ...(platform ? { platform } : {}), ...(read ? { read } : {}) };
+}
+
+// cutWords: the page's reads the server cut to a part's reach (api.ts cutReads), in words, once per reach (its length in
+// whole minutes: a draw's reads ask the window milliseconds apart, so their ends differ), the newest read of each; none =
+// undefined
+export function cutWords(): string | undefined {
+  const byReach = new Map<number, { from: string; to: string }>();
+  for (const c of cutReads()) {
+    const k = Math.round((Date.parse(c.to) - Date.parse(c.from)) / 60e3), had = byReach.get(k);
+    if (!had || Date.parse(c.to) > Date.parse(had.to)) byReach.set(k, { from: c.from, to: c.to });
+  }
+  return byReach.size ? 'Parts of this page read ' + [...byReach.values()].map(rw => readWindowWords(rw)).join('; ') + ' (the window is longer than they read)' : undefined;
 }
 
 export function exportName(m: Meta, ext: string): string {
