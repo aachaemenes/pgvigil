@@ -188,52 +188,61 @@ The instance's security group admits the collector's address on 1433 (a /32, nev
 
 Detected as `rdssqlserver` by the database `rdsadmin`. Every collection runs as on a server someone runs, except where the service or the login it allows says otherwise:
 
-| collection | on Amazon RDS (Express) | why |
+| collection | on Amazon RDS (Express and Standard) | why |
 | --- | --- | --- |
 | `mssql_instance`, `mssql_services`, `mssql_requests`, `mssql_waits` | runs | as on a server (VIEW SERVER STATE) |
 | `mssql_cpu`, `mssql_memory`, `mssql_fileio`, `mssql_tempdb`, `mssql_properties`, `mssql_storage`, `mssql_versionstore` | runs | as on a server |
-| `mssql_mirroring`, `mssql_replication` | runs | nothing to read on Express (no mirroring, no distributor): stored as none |
+| `mssql_waiting_tasks`, `mssql_reports`, `mssql_activity` | runs | as on a server (run on Standard; `mssql_activity`'s rows are not compared by the proof) |
+| `mssql_mirroring`, `mssql_replication` | runs | nothing to read on the instances proven (Express, and Standard in a single AZ: no mirroring, no distributor): stored as none |
 | `mssql_procstats` | runs | every cached procedure of every database (one server-wide DMV); a database the login has no user in keeps its procedures' ids without their names, and the run says partial |
 | `mssql_indexlocks`, `mssql_querystore` | runs | in the databases the login has a user in; the others are not read (the master user cannot enter `model`, so no user can be made there) |
 | `mssql_backups` | runs | `msdb.dbo.backupset` is readable without a grant there. RDS's automated backups and snapshots are the service's own storage snapshots and are not counted: what msdb holds of the instance's own is the full backups RDS writes to the NUL device while it builds the instance (msdb, model, rdsadmin; never a last full backup, as on any server) and native backups (`msdb.dbo.rds_backup_database`), which count as on a server. The last-backup check speaks of native backups alone |
-| `mssql_xe` | runs | reads pgvigil's sessions where they exist. RDS refuses event sessions on Express and Web (its trigger `rds_extended_events_trigger`: "supports extended events only for the Enterprise and Standard editions"): there every capture reads `not installed` |
-| `mssql_ag` | skipped | Always On is not enabled on this server (Express, single-AZ) |
+| `mssql_xe` | runs | reads pgvigil's sessions where they exist. On Standard and Enterprise they come from `pgvigil mssql-xe -print -form rds` (Extended Events, below). RDS refuses event sessions on Express and Web (its trigger `rds_extended_events_trigger`: "supports extended events only for the Enterprise and Standard editions"): there every capture reads `not installed` |
+| `mssql_ag` | skipped on Express, runs on Standard | Express: Always On is not enabled. Standard: RDS enables Always On even in a single AZ (`SERVERPROPERTY('IsHadrEnabled')` 1) and makes no availability group there, so none is stored |
 | `mssql_logshipping` | skipped | RDS has no log shipping (and its master user cannot grant msdb's log shipping tables) |
-| `mssql_jobs` | skipped | the read needs eleven msdb tables and the master user can grant three (`sysjobs`, `sysjobhistory`, `sysjobactivity`); the skip names the first table it cannot read. Express has no Agent at all |
+| `mssql_jobs` | skipped | the read needs eleven msdb tables and the master user can grant three (`sysjobs`, `sysjobhistory`, `sysjobactivity`; the other eight are invisible to it: "Cannot find the object", Msg 15151); the skip names the first table it cannot read (`sysjobsteps`). Express has no Agent at all; on Standard the Agent runs and its jobs are still not read |
+| `mssql_pool` | skipped | elastic pools are Azure SQL Database's |
 | `mssql_audit`, `mssql_checks`, `mssql_traceflags` | runs | as on a server: `sys.server_audits` and their specifications (RDS keeps two audits of its own, read like any other), `sys.configurations`, `DBCC TRACESTATUS(-1)` (RDS sets trace flags of its own, listed like any other) |
 | `mssql_checks`, its alerts area | not read, no alert finding | AWS's [SQL Server Agent page](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Appendix.SQLServer.CommonDBATasks.Agent.html): "SQL Server Agent alerts and operators aren't supported." On Express there is no Agent at all; on Web, Standard and Enterprise the 'no alerts for severity 19 to 25' and 'no operator' findings would ask for what the service does not offer |
 | `mssql_errorlog` | runs | the current log only, through `rdsadmin.dbo.rds_read_error_log` (the archives are not readable that way); the reader's state says so |
 | `mssql_defaulttrace` | runs | needs ALTER TRACE (in the login above): the default trace's growths, shrinks, DBCC commands and object changes |
-| `mssql_syshealth` | runs | reads the `system_health` session's event files; an Express db.t3.micro writes no `sp_server_diagnostics_component_result` there, so nothing is stored (and nothing is missing) |
+| `mssql_syshealth` | runs | reads the `system_health` session's event files (on Standard in `D:\rdsdbdata\Log`); an Express db.t3.micro writes no `sp_server_diagnostics_component_result` there, so nothing is stored (and nothing is missing); a Standard db.m7i.large writes them, and the four components are stored |
 | `mssql_identity`, `mssql_indexes`, `mssql_stats` | runs | in the user databases the login has a user in; `rdsadmin`, the service's own database, is left out (its tables are not the DBA's and the master user cannot give a login SELECT there) |
 | `mssql_plancache`, `mssql_plancache_health` | runs | as on a server. On a db.t3.micro SQL Server's memory target is about 115 MB and a plan stays cached only while it is used (recompiled every few seconds under load), so both lists hold what runs at the moment of the read |
 
-RDS's own procedures (`rds_*` in msdb) are not read in this release.
+RDS's own procedures (`rds_*` in msdb) are not read in this release. On a single-AZ Standard instance the master user reads `Single-AZ` from `msdb.dbo.rds_get_high_availability_option`, `msdb.dbo.rds_failover_time` refuses the instance ("This procedure can only be used on Multi-AZ RDS Instance."), and the master user may grant EXECUTE on both; the login above is not given it.
+
+### Extended Events
+
+`pgvigil mssql-xe -print -form rds`, run in `master` by the master user, makes and starts the four sessions on Standard and Enterprise. It is the server form with the slow capture's event file in `D:\rdsdbdata\log\`: RDS's trigger refuses an event file anywhere else ("Extended events event_file target is allowed only to D:\rdsdbdata\Log"), the server form's bare file name too. The blocked-process capture needs the 'blocked process threshold (s)' above 0, and on RDS that is a DB parameter group's setting (dynamic, 0 to 86400; AWS's default group `default.sqlserver-se-15.0` holds 0); the script prints the step and does not take it.
+
+On a real Standard instance the four sessions were made and started, the slow session's file was in `D:\rdsdbdata\log`, and `mssql_xe` read its events. The threshold was left at 0 there, so the blocked-process capture read nothing; it is not proven on RDS, and `-form rds` is not proven on Enterprise.
 
 ## Proof
 
 Two proofs, each against a real instance made for it and removed after it:
 
 - `scripts/proof-mssql-azuresqldb.sh` against a General Purpose serverless database (the subscription's free offer) made by `scripts/lab/azure-sqldb.sh`.
-- `scripts/proof-mssql-rds.sh` against an RDS for SQL Server Express instance (db.t3.micro, SQL Server 2019) made by `scripts/lab/aws-rds-mssql.sh`.
+- `scripts/proof-mssql-rds.sh` against an RDS for SQL Server instance made by `scripts/lab/aws-rds-mssql.sh`: Express (db.t3.micro, the default) and Standard (db.m7i.large, `PGVIGIL_LAB_RDS_EDITION=se`), both SQL Server 2019 in a single AZ.
 
-Each proof checks the collector's rights, the platform and edition stored, every one of the 32 SQL Server collections (stored rows equal to the setup login's read of the same view, or a skip whose note says why, never counted as collected or failed), the instance's pages, and that the monitored side is unchanged by the collector. The lab scripts make each resource with a tag, admit one address, keep the passwords only in a mode-600 file under `.lab/`, and take everything down with the listing read back.
+Each proof checks the collector's rights, the platform and edition stored, every SQL Server collection (stored rows equal to the setup login's read of the same view, or a skip whose note says why, never counted as collected or failed), the instance's pages, and that the monitored side is unchanged by the collector. The lab scripts make each resource with a tag, admit one address, keep the passwords only in a mode-600 file under `.lab/`, and take everything down with the listing read back.
 
 ### Results
 
-Run on 2026-11-11 from a machine in another cloud, each service's door admitting that machine alone:
+Run from a machine outside each service's cloud (on 2026-11-11; RDS Standard on 2026-11-14), each service's door admitting that machine alone:
 
 | service | instance | result |
 | --- | --- | --- |
 | Azure SQL Database | General Purpose serverless Gen5, 1 vCore (the free offer), engine 12.0.2000.8 | PASS: the contained user's rights; platform `azuresqldb`, engine edition 5; 4 collections stored equal to the setup login's read of the same views, 28 skipped by an Azure SQL Database rule with nothing stored; the Summary and 33 tabs, each skipped tab saying why; the database unchanged by the collector |
 | Amazon RDS for SQL Server | Express Edition 15.0.4500.2 (SQL Server 2019), db.t3.micro | PASS: the RDS form of the login; platform `rdssqlserver`, engine edition 4; 29 collections stored equal to the master user's read of the same views (counters between a read before and a read after the run; `mssql_syshealth` 0 = 0, below), 3 skipped by an RDS rule (`mssql_ag`, `mssql_logshipping`, `mssql_jobs`); the Summary (no cell stale or never read) and 33 tabs; the server unchanged by the collector |
+| Amazon RDS for SQL Server | Standard Edition 15.0.4500.2 (SQL Server 2019), db.m7i.large, single AZ | PASS: the RDS form of the login; platform `rdssqlserver`, engine edition 2; 33 collections run, 32 of them stored equal to the master user's read of the same views (`mssql_activity`'s rows not compared), 3 skipped (`mssql_logshipping`, `mssql_jobs`: RDS rules; `mssql_pool`: Azure SQL Database's); `mssql_ag` with Always On enabled and no group; `mssql_xe` reading the four sessions of `-form rds`, the slow capture's file among them; `mssql_syshealth` the four components equal; the Summary and 33 tabs; the server unchanged by the collector |
 
-What the RDS instance could not show, and the proof says so in its result: an Extended Events session of pgvigil's running (RDS refuses them on Express; every capture reads `not installed`, as the master user reads it), and a system_health component row's content (the instance writes none). On a db.t3.micro a plan stays cached only while it runs: the procedure, statement and plan-count reads were compared while a session ran the proof's own statements, a statement's plan by its handle and offsets where the cache compiled it again between the reads, and its count against the read that lists the same plan; where no read listed it, the proof says so.
+What the Express instance could not show, and the proof says so in its result: an Extended Events session of pgvigil's running (RDS refuses them on Express; every capture reads `not installed`, as the master user reads it), and a system_health component row's content (the instance writes none); the Standard instance showed both. On a db.t3.micro a plan stays cached only while it runs: the procedure, statement and plan-count reads were compared while a session ran the proof's own statements, a statement's plan by its handle and offsets where the cache compiled it again between the reads, and its count against the read that lists the same plan; where no read listed it, the proof says so.
 
 These results are for this release's code, which includes the collector and page changes the proofs found (Azure SQL Database's VIEW DATABASE STATE check, its event session form, the skipped tabs' lines, the RDS skip notes, and `rdsadmin` left out of the per-database passes).
 
 ## Not proven, not in this release
 
 - Azure SQL Database: the Basic, S0 and S1 tiers as single databases (their rights differ, above; a Basic elastic pool is proven live: the elastic pools section), a vCore elastic pool, Microsoft Entra sign-in with a service principal (`entra`) or a user-assigned identity against a live server (built: above; a system-assigned identity is proven live on a pooled database), a geo-replica.
-- Amazon RDS: editions other than Express (Web, Standard, Enterprise: SQL Server Agent and its jobs, Multi-AZ with Always On or mirroring), Windows authentication through AWS Managed Microsoft AD, RDS Custom.
+- Amazon RDS: Web and Enterprise (`-form rds` on Enterprise too); Multi-AZ (Always On or mirroring, and `rds_failover_time`'s answer); SQL Server Agent's jobs (skipped: above); the blocked-process capture with the threshold set in a parameter group; Windows authentication through AWS Managed Microsoft AD, RDS Custom.
 - Not in this release: AlloyDB is not proven against a real instance. Google Cloud SQL for SQL Server is (Express, the login above, above); Azure SQL Managed Instance is on General Purpose (above), not on Business Critical.

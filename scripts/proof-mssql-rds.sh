@@ -1002,8 +1002,16 @@ fi
 [ ! -s "$WORK/sq-failed" ] || bad "a read of the setup login failed during the run (its message is above): $(head -c 300 "$WORK/sq-failed" | tr '\n' ' ')"
 echo
 if [ ${#FAILS[@]} -eq 0 ]; then
-  NP=0; NS=0; for c in "${ALL[@]}"; do case ${VERDICT[$c]:-} in PASS*) NP=$((NP + 1));; SKIP*) NS=$((NS + 1));; esac; done
-  echo "proof-mssql-rds: PASS (R, A, B: $NP collected and equal, $NS skipped by an RDS rule (mssql_ag: no Always On, mssql_logshipping: no log shipping on RDS, mssql_jobs: the msdb tables the master user cannot grant); C; D)"
+  # the skips and the rows not compared are named from the verdicts: they differ by edition (Express skips mssql_ag,
+  # Standard has Always On enabled by RDS), and mssql_pool's skip is Azure SQL Database's, not an RDS rule
+  NP=0; NS=0; NC=(); SK=()
+  for c in "${ALL[@]}"; do case ${VERDICT[$c]:-} in
+    PASS*"not compared"*) NP=$((NP + 1)); NC+=("$c");;
+    PASS*) NP=$((NP + 1));;
+    SKIP*) NS=$((NS + 1)); SK+=("$c");;
+  esac; done
+  NCW=""; [ ${#NC[@]} -eq 0 ] || NCW=" (its rows not compared: ${NC[*]})"
+  echo "proof-mssql-rds: PASS (R, A, B: $NP collected, $((NP - ${#NC[@]})) equal to the master user's read$NCW, $NS skipped (${SK[*]:-none}: each with its note above); C; D)"
 else
   echo "the failed items:"; printf '  - %s\n' "${FAILS[@]}"
   echo "proof-mssql-rds: FAIL (${#FAILS[@]} item(s))"; exit 1
