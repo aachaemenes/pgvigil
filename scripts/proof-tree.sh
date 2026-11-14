@@ -98,7 +98,8 @@ const rows = t => t ? t.rows.map(r => Object.fromEntries(t.columns.map((c, i) =>
 const since = n => reqs.slice(n).filter(u => /^\/api\/(dbinfo|drill|jobs\?|tables)/.test(u));
 // the tree's helpers in the page: the instance row by name, a caret under a node, the node texts under it
 const H = `
-  window.__inst = n => [...document.querySelectorAll('#tree .tree-inst')].find(r => r.querySelector('a.inst')?.textContent === n);
+  // a silenced instance's link holds ' ' and the bell after its name (the join's D29, c3e04e0): the name is trimmed
+  window.__inst = n => [...document.querySelectorAll('#tree .tree-inst')].find(r => r.querySelector('a.inst')?.textContent.trim() === n);
   window.__under = (row) => { const out = []; let e = row.nextElementSibling; while (e && !e.classList.contains('tree-inst')) { out.push(e); e = e.nextElementSibling; } return out; };
   window.__folder = (row, name) => window.__under(row).find(b => b.querySelector(':scope > .tree-node')?.textContent.endsWith(name));
   // a child is a node box (its link or name inside) or a state line itself (Loading..., an error): match the child too
