@@ -48,7 +48,9 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X13 (with the page's decimals) no number cell of a grid sheet shows more decimals than its column shows on the page: a
       fixed format shows its own ('0.0' one, '0%' none, '0.00%' two of the percent); General shows the stored digits as
       Excel draws them in 11 characters (1.6328125 seven, 0.01605224609375 as 0.016052246 nine, 1.25E-05 seven); a date
-      or day format is no figure. A sheet or a column the page names that the file lacks fails. DBA Dash stores a value
+      or day format is no figure. A cell under a fixed number format ('0', '0.0' ..: one per column) shows no FEWER
+      decimals than its column on the page either; General and a percent (typed per cell) are held to the upper bound
+      alone. A sheet or a column the page names that the file lacks fails. DBA Dash stores a value
       rounded to what its grid shows (1.6 under General), pgvigil keeps the value exact under the page's decimals
       ('0.0': the cell reads 1.6, the formula bar 1.6328125) - both pass; a file alone cannot say what its page showed
 Not checkable from a file (proof-export.sh holds them): the page order of a page's sheets, a grid's own export holding
@@ -539,7 +541,7 @@ def check(book, page=None):
     # X13 the decimals the page shows, per column
     book.judged = None
     if page is not None:
-        book.judged = [0, 0]
+        book.judged = [0, 0, 0]   # number cells judged, columns judged, of them columns whose page shows decimals
         by_name = {s['name']: s for s in grids}
         for sn, cols in page.items():
             s = by_name.get(sn)
@@ -547,6 +549,7 @@ def check(book, page=None):
                 out['X13'].append("the page names sheet '%s', not a grid sheet of the file" % sn)
                 continue
             hdr = {c['col']: str(c['v'] if c['v'] is not None else '') for c in s['cells'] if c['row'] == 1}
+            seen = {}   # the columns a number cell was judged in, and their page decimals
             for h in cols:
                 if h not in hdr.values():
                     out['X13'].append("the page names column '%s', not on '%s'" % (h, sn))
@@ -558,10 +561,15 @@ def check(book, page=None):
                 if k is None:
                     continue
                 book.judged[0] += 1
+                seen.setdefault(h, cols[h])
                 if k > cols[h]:
                     out['X13'].append("'%s'!%s '%s' shows %d decimals (%s under %s), the page %d"
                                       % (sn, c['ref'], h, k, c['v'], c['xf']['fmt'] or 'General', cols[h]))
-            book.judged[1] += sum(1 for h in cols if h in hdr.values())
+                elif k < cols[h] and FIXED.fullmatch(c['xf']['fmt'] or ''):
+                    out['X13'].append("'%s'!%s '%s' shows %d decimals under %s, fewer than the page's %d"
+                                      % (sn, c['ref'], h, k, c['xf']['fmt'], cols[h]))
+            book.judged[1] += len(seen)
+            book.judged[2] += sum(1 for k in seen.values() if k >= 1)
     for n in book.filter_names:
         out['X5'].append('defined name %s' % n)
     # X5 across the workbook: table ids and names unique (names ignoring case), a name Excel accepts
@@ -603,7 +611,7 @@ def rules(paths, pages=None):
                 print('SKIP X13 %s: no page given (the decimals its page shows are not in the file)' % p)
                 continue
             if r == 'X13' and not probs:
-                print('PASS X13 %s: %d number cells in %d columns judged' % (p, book.judged[0], book.judged[1]))
+                print('PASS X13 %s: %d number cells in %d columns judged, %d with decimals' % (p, book.judged[0], book.judged[1], book.judged[2]))
                 continue
             if probs:
                 failed.append(r)

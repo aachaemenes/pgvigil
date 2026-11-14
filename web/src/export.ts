@@ -210,15 +210,17 @@ export function sizeOf(text: string): { unit: string; pow: number; k: number } |
   const m = /^-?\d+(?:\.(\d+))?\s(B|KB|MB|GB|TB|PB)$/.exec(text);
   return m ? { unit: m[2], pow: UNITS.indexOf(m[2]), k: m[1]?.length ?? 0 } : undefined;
 }
-// decimalsOf (X13): how many decimals a page's figure shows - a size as fmtBytes writes it ('1.6 GB', '7 B', a rate
-// '-2.0 GB / day'), a number in the locale's form with a unit or a percent sign ('12.35 ms', '1 536,5 MB', '12,5 %',
-// '233.3 days', 'off (0 days)'), a bare number ('17.35', '61,075'); fmtSecs's whole units ('1m 5s') none; undefined for
-// words with no figure
-export function decimalsOf(text: string): number | undefined {
+// decimalsOf (X13): how many decimals a page's figure shows - a raw number the page prints as it is (v: the cell's value;
+// JavaScript's form in any language), a size as fmtBytes writes it (under 1024, at most one decimal: '1.6 GB', '7 B', a
+// rate '-2.0 GB / day'), a number in the locale's form with a unit or a percent sign ('12.35 ms', '1 536,5 MB', de-DE's
+// '1.536 MB', '12,5 %', '233.3 days', 'off (0 days)'), a bare number ('17.35', '61,075'); undefined for words with no figure
+// and for fmtSecs's whole units ('1m 5s': the page cuts the seconds it does not show, a format would round them)
+export function decimalsOf(text: string, v?: number | string): number | undefined {
   const t = norm(text).replace(/^off \((.*)\)$/, '$1');
-  const z = sizeOf(t.replace(/ \/ day$/, '').replace(/^-/, ''));
-  if (z) return z.k;
-  if (/^-?\d+[dhms](?: \d+[hms])*$/.test(t)) return 0;
+  if (typeof v === 'number' && String(v) === t && !/e/i.test(t)) return (t.split('.')[1] ?? '').length;
+  const bare = t.replace(/ \/ day$/, '');
+  if (/^-?\d{1,4}(?:\.\d)? (?:B|KB|MB|GB|TB|PB)$/.test(bare)) return sizeOf(bare.replace(/^-/, ''))!.k;
+  if (/^-?\d+[dhms](?: \d+[hms])*$/.test(t)) return undefined;
   const m = /^[+-]?(.*?)(?: (?:%|ms|s|min|days?|B|KB|MB|GB|TB|PB)(?: \/ day)?)?$/.exec(t);
   const d = m ? digitsOf(m[1]) : '';
   return d ? (d.split('.')[1] ?? '').length : undefined;
@@ -600,10 +602,11 @@ export function linePx(c: Cell): number[] {
 export function shown(c: Cell): string {
   if (typeof c.v !== 'number') return c.v.split(/\r?\n/).reduce((a, b) => b.length > a.length ? b : a, '');
   const n = c.v;
-  // (X13) under the column's decimals: Excel's text of it (no minus on a figure that rounds to zero, as the proof's reader)
+  // (X13) under the column's decimals: Excel's text of it (a negative figure keeps its minus also where it rounds to zero:
+  // '-0.0')
   if (c.dp !== undefined) {
-    const x = c.kind === 'pct' ? n * 100 : n, t = Math.abs(x).toFixed(c.dp);
-    return (x < 0 && Number(t) !== 0 ? '-' : '') + t + (c.kind === 'pct' ? '%' : '');
+    const x = c.kind === 'pct' ? n * 100 : n;
+    return (x < 0 ? '-' : '') + Math.abs(x).toFixed(c.dp) + (c.kind === 'pct' ? '%' : '');
   }
   switch (c.kind) {
     case 'date': return (c.stamp ?? '').slice(0, 16);
@@ -782,10 +785,11 @@ export function gridSection(s: Section): Section {
   // series without a formatter): General as it is. A share column the page writes in whole percents: '0%'
   const decimals = (j: number) => {
     const decs = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'dec');
-    const k = Math.max(-1, ...decs.map(c => decimalsOf(c.text) ?? -1));
+    const k = Math.max(-1, ...decs.map(c => decimalsOf(c.text, c.v) ?? -1));
     if (k >= 0 && k <= 6) for (const c of decs) c.dp = k;
+    // (a chart's share holds its fraction as text, not the page's percent: only a column of the page's own percents)
     const pcts = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'pct');
-    if (pcts.length && pcts.every(c => decimalsOf(c.text) === 0)) for (const c of pcts) c.dp = 0;
+    if (pcts.length && pcts.every(c => / ?%$/.test(norm(c.text)) && decimalsOf(c.text) === 0)) for (const c of pcts) c.dp = 0;
   };
   for (let j = 0; j < ncol; j++) {
     const nums = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number');

@@ -288,6 +288,11 @@ PROBES = [
     ('X13 a share 0.125 under 0.0%, the page 0', 'X13', 'FAIL', lambda: set_b3(fmt_b2(0.125, '0.0%'), 1), PAGE0),
     ('X13 1.6328125 under 0.0, the page 1', 'X13', 'PASS', lambda: set_b3(fmt_b2(1.6328125, '0.0'), 0.5), PAGE1),
     ('X13 1.6328125 under 0, the page 0', 'X13', 'PASS', lambda: set_b3(fmt_b2(1.6328125, '0'), 1), PAGE0),
+    # X13's lower bound: a fixed number format shows no fewer decimals than its column on the page (General and a percent
+    # are held to the upper bound alone)
+    ('X13 1.6328125 under 0.0, the page 2: fewer', 'X13', 'FAIL', lambda: fmt_b2(1.6328125, '0.0'), PAGE2),
+    ('X13 1.6328125 under 0, the page 1: fewer', 'X13', 'FAIL', lambda: set_b3(fmt_b2(1.6328125, '0'), 0.5), PAGE1),
+    ('X13 a whole 2 under General, the page 2: not judged low', 'X13', 'PASS', lambda: set_b2(base(), 2), PAGE2),
     ('X13 a date-time cell is no figure', 'X13', 'PASS', lambda: date_fmt_cell(164), PAGE2),
     ('X13 a column the page does not name is not judged', 'X13', 'PASS', lambda: set_b2(base(), 1.6328125), {'Grid': {'name': 0}}),
     ('X13 the page names a sheet the workbook lacks', 'X13', 'FAIL', base, {'Gird': {'size (GB)': 2}}),

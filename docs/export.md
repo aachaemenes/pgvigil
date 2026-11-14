@@ -94,7 +94,7 @@ same way as any browser.
   | Screen shows            | Cell value                          | Number format         |
   |-------------------------|-------------------------------------|-----------------------|
   | a size (`117.7 MB`), a size per day (`381.5 MB / day`) | the size in the column's unit, the one its largest figure uses (a rate: the unit its figures use most) | the column's decimals on the page (`0.0`) |
-  | a duration (`0.3 ms`, `3.72 s`, `1.08 min`, `1m 5s`) | the duration in the column's unit (seconds where the page mixes units) | the column's decimals (`0.00`; whole units `0`) |
+  | a duration (`0.3 ms`, `3.72 s`, `1.08 min`) | the duration in the unit of the column's largest figure; a column of `12.2 s` beside whole minutes and seconds (`1m 5s`): seconds | the column's decimals (`0.00`); a column of whole units only (`1m 5s`) General: the page cuts the seconds it does not show, a format would round them |
   | a count of days (`233.3 days`) | the days                    | the column's decimals |
   | a share (`12.5 %`, a growth `+3 %`, a rounded `12 %`) | the share (0.125), Excel's own percent | `0.0%`; `0.00%` where the page shows two decimals; `0%` where the column shows whole percents |
   | a count (`1,000`)       | the number                          | General (a count of 12 digits or more `0`: General would show it as `9.87654E+11`) |
@@ -119,8 +119,8 @@ same way as any browser.
 
 The workbook writes one sheet per grid as an Excel table without a style (DBA Dash's style info: row stripes on, no
 style named, so none drawn), a blue header row in white bold, every cell in the colour its grid gives it in a plain
-font, counts General, dates `yyyy-MM-dd HH:mm` and percents `0.0%`, sizes and durations in one unit named in the
-header, no frozen pane, and DBA Dash's column widths.
+font, counts General, dates `yyyy-MM-dd HH:mm` and percents `0.0%` (`0.00%` or `0%` as the page shows them), sizes
+and durations in one unit named in the header, no frozen pane, and DBA Dash's column widths.
 `scripts/proof-export-dbadash.py` sets the Test Summary export beside DBA Dash's own (`summary-1.xlsx`) part by part.
 Kept on purpose and named there: an 'About' sheet last (what was exported, from when, in which time zone; DBA
 Dash writes `Sheet1` alone), each sheet named by its grid's heading, the orange's dark text (the screen's), and a

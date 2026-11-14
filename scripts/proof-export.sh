@@ -157,9 +157,10 @@
 #              named colour pairs only, the fixed header, one table each, no pane, the formats General / '0' / '0.0%' /
 #              '0.00%' / 'yyyy-MM-dd HH:mm' / 'yyyy-MM-dd' and a fixed count of decimals '0.0' .., booleans, widths, no app
 #              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook
-#   decimals   (X13) no number cell shows more decimals than its column shows on the screen: the read-back takes each grid
-#              column's (and each chart series' with a unit) most decimals from the screen's text into page-<lang>.json and
-#              runs scripts/xlsx-check.py rules --page on every page's workbook; each one judged, none over
+#   decimals   (X13) no number cell shows more decimals than its column shows on the screen (nor fewer under a fixed
+#              format): the read-back takes each grid column's most decimals from the screen's text (a grid drawn whole;
+#              not a chart's series: the driver reads one point of it) into page-<lang>.json and runs
+#              scripts/xlsx-check.py rules --page on every page's workbook; each one judged, none off
 #   volumes    an instance's Storage page: each volume its Volumes chart draws is a row of the 'Volumes' grid sheet
 #   languages  all of the above twice: Chromium in en-US and in fr-FR (navigator.language says so; 1234567 shows
 #              without a comma: the locale's grouping space), the numbers numeric in both
@@ -1077,14 +1078,15 @@ def converted(head_unit, screen):
     return None
 def page_decimals(t):
     # (X13) how many decimals a screen figure shows, read here on its own (export.ts decimalsOf is the writer's): a size as
-    # fmtBytes writes it ('1.6 GB', '7 B', '-2.0 GB / day'; a '.' in any language), whole fmtSecs units ('1m 5s'), a
+    # fmtBytes writes it (under 1024, at most one decimal: '1.6 GB', '7 B', '-2.0 GB / day'; a '.' in any language), a
     # number in the browser's language with a unit or a percent ('12.35 ms', '1 536,5 MB', '12,5 %', '233.3 days', 'off (0
-    # days)'), a bare number ('17.35', '61,075'); None for words, a time, a date, a version or an address
+    # days)'), a bare number ('17.35', '61,075'); None for words, a time, a date, a version, an address and fmtSecs's whole
+    # units ('1m 5s': the page cuts the seconds it does not show; the writer leaves such a column General)
     t = re.sub(r'[\s\u202f\u00a0]+', ' ', t or '').strip()
     m = re.fullmatch(r'off \((.*)\)', t); t = m.group(1) if m else t
-    m = re.fullmatch(r'-?\d+(?:\.(\d+))? (?:B|KB|MB|GB|TB|PB)(?: / day)?', t)
+    m = re.fullmatch(r'-?\d{1,4}(?:\.(\d))? (?:B|KB|MB|GB|TB|PB)(?: / day)?', t)
     if m: return len(m.group(1) or '')
-    if re.fullmatch(r'-?\d+[dhms](?: \d+[hms])*', t): return 0
+    if re.fullmatch(r'-?\d+[dhms](?: \d+[hms])*', t): return None
     m = re.fullmatch(r'[+-]?(\d[\d ,.]*?)(?: (?:%|ms|s|min|days?|B|KB|MB|GB|TB|PB)(?: / day)?)?', t)
     if not m: return None
     n = m.group(1).replace(' ', '')
@@ -1130,7 +1132,7 @@ def render_code(val, code, group=',', dec='.'):
     if not m: return js_num(val)
     k = len(m.group(2) or ''); s = f'{abs(val):,.{k}f}' if m.group(1) == '#,##0' else f'{abs(val):.{k}f}'
     s = s.replace(',', '\0').replace('.', dec).replace('\0', group)
-    return ('-' if val < 0 and float(f'{abs(val):.{k}f}') != 0 else '') + s + (m.group(3) or '')
+    return ('-' if val < 0 else '') + s + (m.group(3) or '')   # a negative figure keeps its minus where it rounds to zero ('-0.0')
 def shown_py(val, text, fmt):
     if text is not None: return max(re.split(r'\r?\n', text), key=len) if text else ''
     if val is None: return ''
@@ -1568,12 +1570,14 @@ for key, tab, inst in PAGES:
                 CONVERTED[0] += ncmp
                 if ncmp or off_:
                     check(not off_, f"{key}: sheet '{names[gsheet[i] - 1]}' {ncmp} figure(s) in its unit-headed columns = the screen's, converted, within the shown precision ({off_[:3]})")
-                # (X13) the most decimals the screen shows in each column of this grid, for xlsx-check's page
-                dps_ = {}
-                for j, c_ in enumerate(cols):
-                    ks_ = [k_ for k_ in (page_decimals(r_[j]['t']) for r_ in g['cells'] if j < len(r_)) if k_ is not None]
-                    if ks_ and c_: dps_[c_] = max(ks_)
-                PAGE_DP.setdefault(p['xlsx'], {})[names[gsheet[i] - 1]] = dps_
+                # (X13) the most decimals the screen shows in each column of this grid, for xlsx-check's page - a grid the
+                # screen drew whole only (a long grid's rows past the drawn ones can show more: the writer reads them all)
+                if len(g['cells']) == g['rows']:
+                    dps_ = {}
+                    for j, c_ in enumerate(cols):
+                        ks_ = [k_ for k_ in (page_decimals(r_[j]['t']) for r_ in g['cells'] if j < len(r_)) if k_ is not None]
+                        if ks_ and c_: dps_[c_] = max(ks_)
+                    PAGE_DP.setdefault(p['xlsx'], {})[names[gsheet[i] - 1]] = dps_
             check(bool(m) and f'PartName="/xl/tables/{m.group(1)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"' in ct, f"{key}: sheet '{names[gsheet[i] - 1]}' its table part is in [Content_Types].xml")
         if key == 'summary' and g['rows'] > 1 and any(c['l'] and not c['s'] for r in g['cells'] for c in r):
             # (changed by X11: a link cell is DBA Dash's link column - F1F1F6 / 004F83, no underline, no hyperlink)
@@ -1634,9 +1638,6 @@ for key, tab, inst in PAGES:
                 if not txt or not re.search(r'\d\s?(?:B|KB|MB|GB|TB|PB|ms|s|min)$', norm_(txt)): continue
                 mu = re.search(r' \(([^()]+)\)$', hd_.get(j, ''))
                 v_ = cv.get((fi['i'] + 2, j), (0, None, None))[1]
-                kd_ = page_decimals(norm_(txt))
-                if kd_ is not None and hd_.get(j):   # (X13) the chart's figure's decimals for xlsx-check's page
-                    sd_ = PAGE_DP.setdefault(p['xlsx'], {}).setdefault(names[k - 1], {}); sd_[hd_[j]] = max(sd_.get(hd_[j], 0), kd_)
                 e_ = converted(mu.group(1), norm_(txt)) if mu else None
                 ncf += 1
                 if not mu: cf_.append(f"{names[k - 1]} '{hd_.get(j)}': no unit for '{txt}'")
@@ -1880,7 +1881,8 @@ check(abs(_cv[0][0] - 93.9) < 1e-9 and abs(_cv[1][0] - 3072) < 1e-9 and _cv[1][1
 # chart series with a unit) handed to scripts/xlsx-check.py rules --page; every page's workbook judged, none over
 _dp = [page_decimals(x) for x in ('1.6 GB', '336.0 MB', '7 B', '-2.0 GB / day', '1m 5s', '233.3 days', 'off (0 days)', '17.35', 'never', '10/3/2026, 21:05:00', '16.0.4325.4')]
 _dp += [page_decimals('12.35 ms' if want.startswith('en') else '12,35 ms'), page_decimals('1,234' if want.startswith('en') else '1\u202f234'), page_decimals('12.5 %' if want.startswith('en') else '12,5 %')]
-check(_dp == [1, 1, 0, 1, 0, 1, 0, 2, None, None, None, 2, 0, 1], f"decimals: self-test - page_decimals() reads a size, a rate, fmtSecs, days, a badge, a bare number, the language's decimal mark and grouping; words, a time and a version are no figure ({_dp})")
+_dp += [page_decimals('1.536 MB')]   # no fmtBytes form (three decimals past 1024's reach): the language's number - en-US 3, fr-FR 3 (de-DE's grouping is not a proof language)
+check(_dp == [1, 1, 0, 1, None, 1, 0, 2, None, None, None, 2, 0, 1, 3], f"decimals: self-test - page_decimals() reads a size, a rate, days, a badge, a bare number, the language's decimal mark and grouping; words, a time, a version and fmtSecs's whole units are no figure ({_dp})")
 _pg = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), f'page-{want}.json')
 json.dump(PAGE_DP, open(_pg, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
 if os.environ.get('PGVIGIL_EXPORT_OUT') and os.path.isdir(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want)):   # kept beside the downloads
@@ -1890,9 +1892,9 @@ _r = subprocess.run([sys.executable, '-I', 'scripts/xlsx-check.py', 'rules', '--
 _l13 = [l for l in _r.stdout.splitlines() if ' X13 ' in l]
 _pass = [l for l in _l13 if l.startswith('PASS X13 ')]; _fail = [l for l in _l13 if not l.startswith('PASS X13 ')]
 _cells = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) number cells', l) for l in _pass) if m_)
-_cols = sum(1 for b in PAGE_DP.values() for sh_ in b.values() for k_ in sh_.values() if k_ >= 1)
+_cols = sum(int(m_.group(1)) for m_ in (re.search(r', (\d+) with decimals', l) for l in _pass) if m_)   # columns judged whose screen shows decimals
 check(len(_books) >= len(PAGES) - 1 and len(_pass) == len(_books) and not _fail and _cells >= 50 and _cols >= 3,
-      f"decimals (X13): no number cell shows more decimals than its column on the screen - {len(_pass)} of {len(_books)} page workbooks PASS, {_cells} number cells judged, {_cols} columns whose screen shows decimals; page in {os.path.basename(_pg)} ({[l[:300].replace(dl + '/', '') for l in _fail][:4]}{(' rc ' + str(_r.returncode) + ' ' + _r.stderr[-200:]) if _r.returncode not in (0, 1) else ''})")
+      f"decimals (X13): no number cell shows more decimals than its column on the screen, none under a fixed format fewer - {len(_pass)} of {len(_books)} page workbooks PASS, {_cells} number cells judged, {_cols} columns whose screen shows decimals; page in {os.path.basename(_pg)} ({[l[:300].replace(dl + '/', '') for l in _fail][:4]}{(' rc ' + str(_r.returncode) + ' ' + _r.stderr[-200:]) if _r.returncode not in (0, 1) else ''})")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
     # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
