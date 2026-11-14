@@ -40,6 +40,9 @@ type Info struct {
 	ViewServerState   bool
 	ViewAnyDefinition bool
 	MsdbAccess        bool
+	// VIEW DATABASE STATE on the connection's database, read on every tier: sys.dm_db_resource_stats asks it on
+	// Basic, S0, S1 and in a pool too (Microsoft), where ViewServerState is the server-level check
+	ViewDatabaseState bool
 	// Azure SQL Database: the database's service objective ('ElasticPool' in a pool), and the pool's name when the
 	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
 	ServiceObjective string
@@ -62,7 +65,8 @@ const detectSQL = `SELECT
   CAST(ISNULL(HAS_DBACCESS('msdb'), 0) AS int),
   CAST(CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS int),
   CAST(LEFT(@@VERSION, 400) AS nvarchar(400)),
-  CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS nvarchar(128))`
+  CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS nvarchar(128)),
+  CAST(ISNULL(HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DATABASE STATE'), 0) AS int)`
 
 // cloudSQLMarkSQL: Cloud SQL's own server role on a Linux host (a role of that name carried to a Windows server
 // someone runs is not Cloud SQL). A statement of its own, asked only of a server that is neither Azure nor RDS: the
@@ -77,8 +81,8 @@ const cloudSQLMarkSQL = `SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.server_
 func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	var in Info
 	var pv, ed, name, ver, so sql.NullString
-	var ee, hadr, vss, vad, msdb, rds sql.NullInt64
-	if err := conn.QueryRowContext(ctx, detectSQL).Scan(&pv, &ed, &ee, &name, &hadr, &vss, &vad, &msdb, &rds, &ver, &so); err != nil {
+	var ee, hadr, vss, vad, msdb, rds, vds sql.NullInt64
+	if err := conn.QueryRowContext(ctx, detectSQL).Scan(&pv, &ed, &ee, &name, &hadr, &vss, &vad, &msdb, &rds, &ver, &so, &vds); err != nil {
 		return in, fmt.Errorf("sql server detect: %w", err)
 	}
 	in.ProductVersion, in.Edition, in.ServerName = pv.String, ed.String, name.String
@@ -88,6 +92,7 @@ func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	}
 	in.HADREnabled = hadr.Int64 == 1
 	in.ViewServerState, in.ViewAnyDefinition, in.MsdbAccess = vss.Int64 == 1, vad.Int64 == 1, msdb.Int64 == 1
+	in.ViewDatabaseState = vds.Int64 == 1
 	in.ServiceObjective = so.String
 	in.Version, _, _ = strings.Cut(ver.String, "\n")
 	in.Version = strings.TrimSpace(in.Version)
