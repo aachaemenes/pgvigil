@@ -173,7 +173,7 @@ Azure SQL Managed Instance, where the same run returns other rows.'), with a lin
 same subject and Run off with the demo's line. Beside the result sets a sample keeps the stored run's parameters: their
 names, and for the First Responder Kit's and DarlingData's procedures their own help text (MIT, as
 THIRD-PARTY-NOTICES.md says); sp_WhoIsActive's sample holds its result rows and its parameters' names only. A sample is never a run: nothing is sent, nothing is audited, and it is
-never among the instance's runs; its grids carry the line's short form into Export .xlsx (the Summary sheet) and Export
+never among the instance's runs; its grids carry the line's short form into Export .xlsx (About's line of each of its sheets) and Export
 CSV (the file's first line: a program that reads the CSV takes that line as its first record). A sample is never
 mailed: `pgvigil demo -serve` has no login, so it sends and schedules no report mail (its door writes the repository
 only), and a serve that mails has no demo instance. The address keeps the tool open (`tool=<id>`), so a page linked
