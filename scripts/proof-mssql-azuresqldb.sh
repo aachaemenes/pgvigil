@@ -111,7 +111,8 @@
 #     fourteen tabs render; the six of mssql_reports (Database Extended Properties, Failed Logins, Server Role Members,
 #     Server Services, SQL Login Password Age, Table Size) each say mssql_reports is skipped here (web/src/main.ts's
 #     mssqlTabRuns holds the six since 43c3fbb, F14; reports.ts has no text naming Azure SQL Database, so the check
-#     catches a lost mssqlTabRuns entry)].
+#     catches a lost mssqlTabRuns entry)] [B2a, the click rows: the root page Azure Summary links the database to
+#     #/mssqlazure?i=<its id>, and that tab names the tier (the service objective)].
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
 #     permissions, role members and event sessions read by the setup login after the proof's own setup equal the
 #     same read after every collector run.
@@ -623,15 +624,22 @@ else
         bad "C: tab $tab (${SKIPTABS[$tab]}, skipped here) renders without a line saying it does not run on this platform"; fi
     done
     echo "  pages rendered: $NTABS tabs"
+    # [B2a, the click rows, written before their first run] the root page Azure Summary lists the database with its
+    # link to the instance's Azure tab (web/src/azuredb.ts: href(..., tab 'mssqlazure')), and that tab names the tier
+    timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/azuresummary?w=1h" > "$WORK/r-azuresummary.html" 2>/dev/null || true
+    CLICK=()
+    if grep -qE "href=\"#/mssqlazure\?i=$iid(&amp;|\")" "$WORK/r-azuresummary.html"; then CLICK+=("Azure Summary -> #/mssqlazure?i=$iid"); else bad "C: the Azure Summary page has no link to the instance's Azure tab (#/mssqlazure?i=$iid)"; fi
+    if grep -qF "$SO" <<<"$(text < "$WORK/p-mssqlazure.html")"; then CLICK+=("the Azure tab names the tier $SO"); else bad "C: the Azure tab does not name the tier $SO"; fi
+    [ ${#CLICK[@]} -eq 2 ] && echo "  clicks: ${CLICK[0]}; ${CLICK[1]}"
   else bad "C: chromium is not on this machine: the pages were not rendered"; fi
 fi
 
 [ ! -s "$WORK/sq-failed" ] || bad "a read of the setup login failed during the run (its message is above): $(head -c 300 "$WORK/sq-failed" | tr '\n' ' ')"
 echo
 if [ ${#FAILS[@]} -eq 0 ] && [ -n "$B2A" ]; then
-  echo "proof-mssql-azuresqldb: PASS (B2a rows only, on $SO: R, A (the instance row), B: ${B2ARUNS[*]} and the missing rights; D; the other collections and the pages NOT RUN)"
+  echo "proof-mssql-azuresqldb: PASS (B2a rows only, on $SO: R, A (the instance row), B: ${B2ARUNS[*]}, the missing rights and the role without a user; D; the other collections and the pages NOT RUN)"
 elif [ ${#FAILS[@]} -eq 0 ]; then
-  echo "proof-mssql-azuresqldb: PASS (R, A, B: ${#RUNS[@]} collected and equal (mssql_waiting_tasks against a blocked pair; B2a's three with the missing rights), ${#SKIPS[@]} skipped by the platform rule; C; D)"
+  echo "proof-mssql-azuresqldb: PASS (R, A, B: ${#RUNS[@]} collected and equal (mssql_waiting_tasks against a blocked pair; B2a's three with the missing rights), ${#SKIPS[@]} skipped by the platform rule; the role without a user; C with the Azure clicks; D)"
 else
   echo "the failed items:"; printf '  - %s\n' "${FAILS[@]}"
   echo "proof-mssql-azuresqldb: FAIL (${#FAILS[@]} item(s))"; exit 1
