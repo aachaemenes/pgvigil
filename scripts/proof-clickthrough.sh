@@ -37,7 +37,12 @@
 #   [the review's should 1, folded after the ninth run started - its grade names it as a difference] the three range
 #     items the walk clicked again under 'display time zone = <zone>' (Today, Week to date, Month to date: new signatures
 #     in the eighth, '#m' against '#h #m') are the same signatures now and not clicked again: three bar rows fewer
-# Expected (the tenth run, after the must rows - written before it): as the ninth's grade, and: the grader's self-test
+# The ninth ran as expected but for one row outside the file, 'not reached root bar "bar B Theme: auto": gone' - the
+# stored theme is in the button's words and a theme click changes it for the whole browser, so a row's words depended
+# on the rows before it (the eighth reached it, the ninth did not); every document now starts with theme light and
+# colours solid, so the bar's theme rows are 'Theme: light' and the rows under it, in every run.
+# Expected (the tenth run, after the must rows - written before it): as the ninth's grade, and: the bar's theme rows by
+# 'Theme: light' (no 'Theme: auto' row at the first level); the grader's self-test
 # 15 of 15 cases; the expected file 19 rows (12 FAIL rows, 7 must rows); the tree's drive nodes each a row 'tree drive
 # <volume>' of kind link with its bar (demo-onprem-erp01's '/' and '/var/lib/pgsql', demo-onprem-sql01's C:, E:, L: and
 # T: as its Drives page lists them), no 'tree drive (none)' row; each must row 'clicked' (the two drive rows and E304's

@@ -107,7 +107,10 @@ const connect = async () => {
   await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable'); await cmd('DOM.enable'); await cmd('Inspector.enable').catch(() => {});
   // every document starts with the auto refresh off (Off (paused)), before the page's own script reads it: a live
   // page's 30 s redraw never falls between a click's before and after (the bar's refresh select is still clicked)
-  await cmd('Page.addScriptToEvaluateOnNewDocument', { source: "try { if (location.origin === " + JSON.stringify(new URL(U).origin) + ") localStorage.setItem('pgvigil.refresh', '0'); } catch (e) {}" });
+  // and with the same theme and status colours: the bar's Theme and Colours buttons carry the stored choice in their
+  // words ('Theme: light'), which a theme click changes for the whole browser - left as it was, a row listed as
+  // 'Theme: auto' found 'Theme: light' on its fresh page when an earlier row had cycled it (the ninth run's 'gone')
+  await cmd('Page.addScriptToEvaluateOnNewDocument', { source: "try { if (location.origin === " + JSON.stringify(new URL(U).origin) + ") { localStorage.setItem('pgvigil.refresh', '0'); localStorage.setItem('pgvigil.theme', 'light'); localStorage.setItem('pgvigil.status', 'solid'); } } catch (e) {}" });
   await cmd('Fetch.enable', { patterns: [{ urlPattern: U + 'api/*', requestStage: 'Request' }] });
   await cmd('Page.setInterceptFileChooserDialog', { enabled: true });
   // each download under its own GUID: a second save of the same file name (one deadlock's .xdl from two links) still
