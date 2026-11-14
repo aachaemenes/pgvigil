@@ -3,7 +3,7 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf, tagWords, inTagScope } from './fleet';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf, tagWords, inTagScope, cellTarget } from './fleet';
 import { Ctx, href, isMssql, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
@@ -330,10 +330,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     waiters ? `; ${waiters} lock waiters now` : '');
   // a cell's page: the column's tab for the instance (DBA Dash's tabMapping), with the view a SQL Server tab opens on
   const cellHref = (g: Group, r: Row): string => {
-    const ms = r.engine === 'sqlserver';
-    const base = href(ctx, { tab: ms ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(!ms && g.kind ? { kind: g.kind } : {}) });
-    const cv = ms ? g.mssql?.[3] : g.cv;
-    return cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${cv}` : base;
+    const t = cellTarget(g, r);
+    const base = href(ctx, { tab: t.tab, instance: Number(r.instance_id), tag: undefined, ...(t.kind ? { kind: t.kind } : {}) });
+    return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base;
   };
   const statusCol = (g: Group): Col => ({
     key: 'g_' + g.key, label: labelOf(g, pgOnly),
