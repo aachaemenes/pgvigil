@@ -450,7 +450,7 @@ echo "== E. the import =="
 TAGID=$(sq "INSERT INTO dbo.Tags (TagName, TagValue) VALUES (N'env', N'proof'); SELECT SCOPE_IDENTITY();" "$DDB")
 sqok "E: the tag" "INSERT INTO dbo.InstanceIDsTags (InstanceID, TagID) VALUES ($ID, $TAGID)" "$DDB"
 imp() { PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$1" PGVIGIL_DBADASH_IMPORT_DRY="${2:-0}" PGVIGIL_DBADASH_IMPORT_BATCH=2 \
-  PGVIGIL_DBADASH_IMPORT_STORE="${3:-0}" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep -E '^(import|progress|store open after) ' || true; }
+  PGVIGIL_DBADASH_IMPORT_STORE="${3:-0}" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep -E '^(import |progress |store open after: )' || true; }
 declare -A want=([cpu]=$n_cpu [volumes]=$n_vol [dbsize]=$n_dbs [jobruns]=$n_job)
 field() { echo "$1" | grep "^import $ID [0-9]* $2 " | sed -n "s/.* $3=\([0-9]*\).*/\1/p"; }
 dry=$(imp "$PGDSN" 1); echo "$dry"

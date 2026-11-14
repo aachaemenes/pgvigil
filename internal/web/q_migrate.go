@@ -441,10 +441,15 @@ func (s *Server) moveAdd(w http.ResponseWriter, r *http.Request, user, repo stri
 		_ = json.Unmarshal(b, &servers)
 	}
 	for i := range servers {
-		servers[i].Host, servers[i].Port, servers[i].Name = strings.TrimSpace(servers[i].Host), strings.TrimSpace(servers[i].Port), strings.TrimSpace(servers[i].Name)
-		if servers[i].Port == "" {
-			if h, p := config.SplitHostPort(servers[i].Host); p > 0 {
-				servers[i].Host, servers[i].Port = h, strconv.Itoa(p)
+		sv := &servers[i]
+		sv.Port, sv.Name = strings.TrimSpace(sv.Port), strings.TrimSpace(sv.Name)
+		// DBA Dash's connection as typed: 'tcp:' and a ',port' or ':port' come off the host (a port typed apart wins);
+		// a pipe or shared memory is kept whole for moveAddCheck's refusal
+		if sv.Host = strings.TrimSpace(sv.Host); !config.NotTCP(sv.Host) {
+			h, p := config.SplitHostPort(sv.Host)
+			sv.Host = h
+			if sv.Port == "" && p > 0 {
+				sv.Port = strconv.Itoa(p)
 			}
 		}
 	}
