@@ -4,11 +4,12 @@
 -- switched on on a monitored server.
 --
 --   pgvigil.mssql_jobs_findings   replaced WHOLE (0066's text, its only definition on every branch read 11-14 13:0x),
---                        two changes: the newest failed run is the newest with run_status 0 OR 3, and its detail says
---                        'job X was cancelled at ...' for a 3 ('job X failed at ...' as before for a 0). The check name
---                        stays 'a job failed' (a mute or an alert rule keyed on it keeps working); the failed step's
---                        lookup stays at run_status 0 (a cancelled run has no failed step: its own message is the
---                        outcome row's). Every other arm (the long-running job, the backups, the empty reads) is 0066's,
+--                        three changes: the newest failed run is the newest with run_status 0 OR 3; its detail says
+--                        'job X was cancelled at ...' for a 3 ('job X failed at ...' as before for a 0); and the step it
+--                        names is the step that ended the run the same way (run_status equal to the run's: the step
+--                        cancelled in a cancelled run, as 0094's import_mssql_jobs stores the outcome row's failed
+--                        step). The check name stays 'a job failed' (a mute or an alert rule keyed on it keeps
+--                        working). Every other arm (the long-running job, the backups, the empty reads) is 0066's,
 --                        unchanged. Its columns are 0066's, so the views over it (pgvigil.findings) stand.
 --
 -- Locks: CREATE OR REPLACE VIEW takes ACCESS EXCLUSIVE on the view only, for the moment the file takes; no table is
@@ -35,7 +36,7 @@ SELECT f.instance_id, 'warning'::text AS severity, 'a job failed'::text AS check
   FROM failed f
   LEFT JOIN pgvigil.mssql_jobs j ON j.instance_id = f.instance_id AND j.job_id = f.job_id
   LEFT JOIN LATERAL (SELECT x.step_id, x.step_name, x.message FROM pgvigil.mssql_job_runs x
-                      WHERE x.instance_id = f.instance_id AND x.job_id = f.job_id AND x.step_id > 0 AND x.run_status = 0
+                      WHERE x.instance_id = f.instance_id AND x.job_id = f.job_id AND x.step_id > 0 AND x.run_status = f.run_status
                         AND x.snapshot_at >= f.snapshot_at - interval '1 second'
                         AND x.snapshot_at <= f.snapshot_at + make_interval(secs => coalesce(f.duration_s, 0) + 60) AND x.history_id < f.history_id
                       ORDER BY x.history_id DESC LIMIT 1) s ON true

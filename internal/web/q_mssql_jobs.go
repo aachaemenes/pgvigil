@@ -31,7 +31,7 @@ SELECT j.name, j.enabled, j.category, j.owner, j.schedule_names, j.schedules, j.
        j.last_run_at, j.last_duration_s, j.last_message, j.running_since, j.description, j.modified_at, j.steps, j.job_id, j.snapshot_at
   FROM pgvigil.mssql_jobs j
  WHERE j.instance_id = $1
- ORDER BY (j.last_outcome = 0) DESC NULLS LAST, j.name`
+ ORDER BY (j.last_outcome IN (0, 3)) DESC NULLS LAST, j.name`
 
 // sqlMSSQLJobsRunning: the jobs running at the read with the average and the 95th percentile of their good runs (the
 // job outcome rows, step 0, of the last 31 days) and the run so far as a percentage of the average (task 177 D14,
@@ -52,15 +52,16 @@ SELECT j.name, j.running_since, extract(epoch FROM j.snapshot_at - j.running_sin
  ORDER BY j.running_since`
 
 // a failed or cancelled job outcome (step 0) of the window - 0137's judge (DBA Dash 4.24.1: run_status IN (0, 3)),
-// its outcome as a word - with the step that failed in that run (a cancelled run has none); a step that failed in a
-// run whose outcome row is not read yet is listed by itself
+// its outcome as a word - with the step that ended that run the same way (failed for a failed run, cancelled for a
+// cancelled one: the import's own rule for the outcome row's failed step, 0094's import_mssql_jobs); a step that
+// failed in a run whose outcome row is not read yet is listed by itself
 const sqlMSSQLJobsFailed = `
 SELECT r.snapshot_at AS run_at, coalesce(r.job_name, r.job_id) AS job, CASE r.run_status WHEN 3 THEN 'cancelled' ELSE 'failed' END AS outcome,
        s.step_id, s.step_name,
        coalesce(s.message, r.message) AS message, r.duration_s, s.sql_message_id, s.sql_severity, r.message AS outcome_message
   FROM pgvigil.mssql_job_runs r
   LEFT JOIN LATERAL (SELECT x.step_id, x.step_name, x.message, x.sql_message_id, x.sql_severity FROM pgvigil.mssql_job_runs x
-                      WHERE x.instance_id = r.instance_id AND x.job_id = r.job_id AND x.step_id > 0 AND x.run_status = 0
+                      WHERE x.instance_id = r.instance_id AND x.job_id = r.job_id AND x.step_id > 0 AND x.run_status = r.run_status
                         AND x.snapshot_at >= r.snapshot_at - interval '1 second'
                         AND x.snapshot_at <= r.snapshot_at + make_interval(secs => coalesce(r.duration_s, 0) + 60)
                         AND x.history_id < r.history_id

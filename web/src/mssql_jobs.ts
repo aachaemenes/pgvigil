@@ -458,7 +458,8 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     if (!read.snapshot_at) return sec;   // never read: only the reason above
     sec.append(el('div', { class: 'tiles' },
       tile('jobs', fmtNum(jobs.length)),
-      tile('last outcome failed', fmtNum(jobs.filter(j => j.last_outcome === 0).length), jobs.some(j => j.last_outcome === 0) ? 'crit' : ''),
+      tile('last outcome failed or cancelled', fmtNum(jobs.filter(j => j.last_outcome === 0 || j.last_outcome === 3).length),
+        jobs.some(j => j.last_outcome === 0 || j.last_outcome === 3) ? 'crit' : ''),
       tile('failed or cancelled runs in the range', fmtNum(failed.length), failed.length ? 'warn' : ''),
       tile('running now', fmtNum(running.length)),
       tile('disabled', fmtNum(jobs.filter(j => j.enabled === false).length)),
@@ -473,7 +474,7 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     // job's Start and Stop point at it
     const jobsBox = await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]);
     sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), ...(act.offNote ? [act.offNote] : []), jobsBox);
-    sec.append(el('h3', {}, 'Failed runs in this range'), grid(failed, failedCols, 'No job failed in this range.'));
+    sec.append(el('h3', {}, 'Failed or cancelled runs in this range'), grid(failed, failedCols, 'No job failed or was cancelled in this range.'));
     // the steps of each job as last read, one disclosure per job: reachable by keyboard, named by the job (data-sheet: the
     // job's name names its grid's sheet in an export, export.ts headings)
     const withSteps = jobs.filter(j => jsonRows(j.steps).length);
