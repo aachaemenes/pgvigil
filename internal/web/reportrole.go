@@ -102,10 +102,10 @@ func (d *reportsDoor) refusal(ctx context.Context, tx pgx.Tx) (string, error) {
 		return "", fmt.Errorf("reading the reports login's rights: %w", err)
 	}
 	var why []string
-	if super {
+	switch {
+	case super: // a superuser counts as a member of every role: the one reason, not the server's every role
 		why = append(why, "is a superuser (or bypasses row security)")
-	}
-	if member != "" {
+	case member != "":
 		why = append(why, "is a member of "+member)
 	}
 	if hashes && member == "" && !super {
