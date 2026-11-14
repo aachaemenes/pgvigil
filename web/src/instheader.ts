@@ -23,7 +23,7 @@
 // cadence; an acknowledged check does not make the band (the Summary's rule).
 import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
-import { Cell, cells, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
+import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
 import { Ctx, href } from './router';
 import { el, fmtTime, pill } from './ui';
 
@@ -170,17 +170,25 @@ export function chipEl(c: Chip): HTMLElement {
     c.detail ? el('div', { class: 'chip-detail' }, c.detail) : null);
 }
 
-// the instance's band as the Summary judges it: its worst check not acknowledged, Offline first
-export interface InstBand { level: number; word: string; cls: string; reasons: string[] }
+// the instance's band as the Summary judges it: its worst check not acknowledged, Offline first. Its items are the
+// groups not OK and not acknowledged (worst first, then the Summary's order), each with its level, its cell and the
+// page its Summary cell opens; acked the groups not OK an acknowledgement holds; reasons their words. The header and
+// the verdict card (verdict.ts) both read this one result.
+export interface BandItem { key: string; label: string; level: number; cell: Cell; target: { tab: string; kind?: string; cv?: string } }
+export interface InstBand { level: number; word: string; cls: string; reasons: string[]; items: BandItem[]; acked: BandItem[]; offline: boolean }
 export function instBand(f: Fleet, r: Row, ad: AckData, live: Row | undefined, now = Date.now()): InstBand {
   const c = cells(f, r);
   const acks = checkAcks(ad);
-  const notOk = groups.filter(g => !c[g.key].none && c[g.key].level > 0
-    && !(acks.get(`${String(r.instance_id)}|${g.key}`) && ackHolds(acks.get(`${String(r.instance_id)}|${g.key}`), cellState(c[g.key], g.key))));
-  const level = Math.max(0, ...notOk.map(g => c[g.key].level));
-  const reasons = notOk.sort((a, b) => c[b.key].level - c[a.key].level).map(g => `${labelOf(g, r.engine !== 'sqlserver')} ${cellText(c[g.key])}`);
-  if (freshness(live, now) === 'offline') return { level: 2, word: 'Offline', cls: 'none', reasons: ['Offline - no recent collection', ...reasons] };
-  return { level, word: ['OK', 'Warning', 'Critical'][level], cls: ['ok', 'warn', 'crit'][level], reasons };
+  const pg = r.engine !== 'sqlserver';
+  const held = (key: string) => { const a = acks.get(`${String(r.instance_id)}|${key}`); return !!a && ackHolds(a, cellState(c[key], key)); };
+  const bad = groups.filter(g => !c[g.key].none && c[g.key].level > 0);
+  const item = (g: typeof groups[number]): BandItem => ({ key: g.key, label: labelOf(g, pg), level: c[g.key].level, cell: c[g.key], target: cellTarget(g, r) });
+  const items = bad.filter(g => !held(g.key)).sort((a, b) => c[b.key].level - c[a.key].level).map(item);
+  const acked = bad.filter(g => held(g.key)).map(item);
+  const level = Math.max(0, ...items.map(i => i.level));
+  const reasons = items.map(i => `${i.label} ${cellText(i.cell)}`);
+  if (freshness(live, now) === 'offline') return { level: 2, word: 'Offline', cls: 'none', reasons: ['Offline - no recent collection', ...reasons], items, acked, offline: true };
+  return { level, word: ['OK', 'Warning', 'Critical'][level], cls: ['ok', 'warn', 'crit'][level], reasons, items, acked, offline: false };
 }
 
 // the band's dot (the breadcrumb, the header): its word is its name for a screen reader, the reasons its title
@@ -253,7 +261,8 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
   const status = fr === 'awaiting' ? statusWord.awaiting
     : `${statusWord[fr]} · ${fr === 'offline' ? lastCollected(live, now) : `last collect ${clockOf(live?.last_collect_at)}`}${n < m ? ` · ${n} of ${m} measured` : ''}`;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
-  const word = el('span', { class: `badge band-word ${b.cls}` }, b.word);
+  // data-groups: the band's items in order (an offline band 'offline' first): the verdict card's reasons are these
+  const word = el('span', { class: `badge band-word ${b.cls}`, 'data-groups': [...(b.offline ? ['offline'] : []), ...b.items.map(i => i.key)].join(' ') }, b.word);
   if (b.reasons.length) word.title = b.reasons.join('\n');
   const header = el('section', { class: 'inst-header panel', 'aria-label': `${String(r.name)}: ${b.word}` },
     el('div', { class: 'inst-header-top' }, bandDot(b), ' ', el('a', { href: href(ctx, { tab: 'summary' }), class: 'inst-name' }, String(r.name)), ' ', word,
