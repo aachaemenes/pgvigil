@@ -871,9 +871,9 @@ code=$(api POST admin/instances "$(js op=disable name=pgd-ok)"); [[ "$code" == 2
 DW="instance pgd-ok is disabled in Admin > Instances"
 t2=$(turn); [[ "$t2" == "1|$USR|refused||$(gen)|$DW" ]] || fail "N6: the second turn's audit (want one row, refused in the words): $t2"
 # the words in the mail's own lines (the result section's note), not the report's audit grid (an earlier turn's words)
-where=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SID ORDER BY send_id DESC LIMIT 1" | DW="$DW" python3 -c 'import html, os, re, sys
+where=$(pq "SELECT coalesce(html, '') || E'\x1f' || coalesce(render_error, error, '') FROM pgvigil.report_mail_sends WHERE schedule_id = $SID ORDER BY send_id DESC LIMIT 1" | DW="$DW" python3 -c 'import html, os, re, sys
 h, _, e = sys.stdin.read().partition("\x1f"); w = os.environ["DW"]
-m = re.search(r"What the page said</h3>(.*?)</table>", h, re.S); said = html.unescape(re.sub(r"<[^>]+>", " ", m.group(1))) if m else ""
+m = re.search(r"What the page said</h3>(.*?)</table>", h, re.S); said = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)) for t in re.findall(r"<td[^>]*>(.*?)</td>", m.group(1), re.S)) if m else ""
 print("the mail" if w in said else "neither: " + (e or said or h)[:300])')
 [[ "$where" == "the mail" ]] || fail "N6: the refused turn's words are not in the mail's 'What the page said' lines: $where"
 code=$(api POST admin/instances "$(js op=enable name=pgd-ok)"); [[ "$code" == 200 ]] || fail "N6: enable pgd-ok: $code"

@@ -107,9 +107,10 @@ func TestRecipientsAndRoute(t *testing.T) {
 
 const page = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title></head><body><table style="border-collapse:collapse"><tr><td style="background:#006638;color:#ffffff" data-status="ok">x one=1 onboarding</td></tr></table></body></html>`
 
-// mailSaid: a page's mail that holds what the page said in words (a refused run, an error box), its 'What the page
-// said' block exactly as web/src/reportmail.ts mailHtml writes it - keep the two equal: two lines, one head with an
-// escaped < and &, then a grid and the footer.
+// mailSaid: a page's mail that holds what the page said in words (a refused run, an error box): its 'What the page
+// said' block as web/src/reportmail.ts mailHtml writes it (two lines, one head with an escaped < and &) and a grid as
+// gridtools.ts toHtml writes it (thead and tbody, a number cell, a status cell). A hand copy of both: keep it equal;
+// the end-to-end guard is proof-instances N6, a real mail of a refused turn through this checker.
 const mailSaid = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Custom reports - pgd-ok</title></head>` +
 	`<body style="margin:0;padding:12px;background:#ffffff;color:#1d1d1f;font-size:11pt;font-family:Calibri,Arial,sans-serif">` +
 	`<h2 style="margin:0 0 8px 0;font-size:15pt;font-weight:bold;font-family:Calibri,Arial,sans-serif;color:#1d1d1f">Custom reports - pgd-ok</h2>` +
@@ -118,14 +119,14 @@ const mailSaid = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><me
 	`<table role="presentation" style="border-collapse:collapse;margin:0 0 10px 0">` +
 	`<tr><th style="border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;font-family:Calibri,Arial,sans-serif;white-space:nowrap;background:#b3261e;color:#ffffff;font-weight:bold;text-align:left;vertical-align:top">door report</th><td style="border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;font-family:Calibri,Arial,sans-serif;color:#1d1d1f">instance pgd-ok is disabled in Admin &gt; Instances</td></tr>` +
 	`<tr><th style="border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;font-family:Calibri,Arial,sans-serif;white-space:nowrap;background:#b3261e;color:#ffffff;font-weight:bold;text-align:left;vertical-align:top">a &lt;b&gt; &amp; c</th><td style="border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;font-family:Calibri,Arial,sans-serif;color:#1d1d1f">the second line</td></tr></table>` +
-	`<h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;font-family:Calibri,Arial,sans-serif;color:#0063a3">Result</h3><table style="border-collapse:collapse"><tr><td style="background:#006638;color:#ffffff" data-status="ok">x</td></tr></table>` +
-	`<p style="margin:16px 0 0 0;font-size:9pt;font-family:Calibri,Arial,sans-serif;color:#5f6368">Sent by pgvigil: the page as it showed at 2026-11-14 07:00 (UTC). The workbook attached holds the same rows.</p></body></html>`
+	`<h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;font-family:Calibri,Arial,sans-serif;color:#0063a3">Result</h3><table style="border-collapse:collapse"><thead><tr><th style="border:1px solid #c8ccd4;padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap;background:#0063a3;color:#ffffff;font-weight:bold;text-align:left">n</th><th style="border:1px solid #c8ccd4;padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap;background:#0063a3;color:#ffffff;font-weight:bold;text-align:left">state</th></tr></thead><tbody><tr><td style="border:1px solid #c8ccd4;padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap;text-align:right">7</td><td style="border:1px solid #c8ccd4;padding:3px 8px;font:11pt Calibri,Arial,sans-serif;white-space:nowrap;background:#006638;color:#ffffff" data-status="ok">ok</td></tr></tbody></table>` +
+	`<p style="margin:16px 0 0 0;font-size:9pt;font-family:Calibri,Arial,sans-serif;color:#5f6368">Sent by pgvigil: the page as it showed at 2026-11-14 07:00:00 (UTC). The workbook attached holds the same rows.</p></body></html>`
 
 func TestCheckBody(t *testing.T) {
 	if err := CheckBody(page); err != nil {
 		t.Fatalf("a grid's body refused: %v", err)
 	}
-	// uidoor-u9's N6: a mailed page that said something in words was refused at the checker
+	// a mailed page that said something in words: its said block is a table, never a div
 	if err := CheckBody(mailSaid); err != nil {
 		t.Errorf("a page's mail with what the page said refused: %v", err)
 	}
