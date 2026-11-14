@@ -54,6 +54,8 @@ type Server struct {
 	// origin is the server a render's copy was made from (renderCopy, q_reportmail.go); nil on the server itself. A
 	// setting kept in a map keyed by *Server keys by self(), so the copy reads the server's own.
 	origin *Server
+	// reports is the store-report login (REPORT ROLE, reportrole.go); never nil after Open.
+	reports *reportsDoor
 }
 
 // Options shape a Server beyond its repository connection.
@@ -77,6 +79,9 @@ type Options struct {
 	Version string
 	// DemoDoor opens the demo's write door (demodoor.go): only `pgvigil demo -serve` sets it; nil on every serve.
 	DemoDoor *DemoDoor
+	// Reports is the config's reports_dsn: the login a custom report on the store runs as (REPORT ROLE, reportrole.go);
+	// nil or empty = store reports are off, with the words.
+	Reports *ReportsConfig
 }
 
 // Expected is the interval map of the stale check.
@@ -145,6 +150,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
 	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags, version: o.Version}
+	s.reports = s.newReportsDoor(ctx, o.Reports)
 	if o.Login {
 		var n int64
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_user_count()`).Scan(&n); err != nil {

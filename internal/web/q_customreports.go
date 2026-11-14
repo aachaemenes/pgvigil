@@ -50,6 +50,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -581,36 +582,59 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 
 // ---- running ----------------------------------------------------------------------------------------------------
 
-// pgRightsSQL reads what a read-only transaction does not stop (the custom checks' rule, internal/collect/custom.go).
+// pgRightsSQL reads what a read-only transaction does not stop (the custom checks' rule, internal/collect/custom.go),
+// and what reaches the repository's secrets where the server holds one (REPORT ROLE): the SESSION user's rights, not
+// the current role's - a role set at connect (ALTER ROLE ... SET role, options=-c role=...) or inside the run is undone
+// by the run itself (set_config('role', 'none', true): PostgreSQL checks a role change against the session user). Every
+// pgvigil name in oid form: a monitored server without the pgvigil roles or schema answers NULL, never an error.
 const pgRightsSQL = `SELECT r.rolsuper,
-       pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER'),
-       pg_has_role(current_user, 'pg_write_server_files', 'MEMBER'),
-       pg_has_role(current_user, 'pg_read_server_files', 'MEMBER')
-  FROM pg_roles r WHERE r.rolname = current_user`
+       pg_has_role(session_user, 'pg_execute_server_program', 'MEMBER'),
+       pg_has_role(session_user, 'pg_write_server_files', 'MEMBER'),
+       pg_has_role(session_user, 'pg_read_server_files', 'MEMBER'),
+       coalesce(pg_has_role(session_user, to_regrole('pgvigil_auth')::oid, 'MEMBER'), false),
+       coalesce(pg_has_role(session_user, to_regrole('pgvigil_collector')::oid, 'MEMBER'), false),
+       coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false)
+  FROM pg_roles r WHERE r.rolname = session_user`
 
+// pgRefusal refuses a login whose rights reach past a read: every PostgreSQL run of the DBA's own SQL (a custom report
+// on an instance, a community tool, EXPLAIN) asks it inside the run's own transaction.
 func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
-	var super, prog, write, read bool
-	if err := tx.QueryRow(ctx, pgRightsSQL).Scan(&super, &prog, &write, &read); err != nil {
+	var super, prog, write, read, auth, collector, create bool
+	if err := tx.QueryRow(ctx, pgRightsSQL).Scan(&super, &prog, &write, &read, &auth, &collector, &create); err != nil {
 		return "", fmt.Errorf("reading the login's rights: %w", err)
 	}
-	var too []string
+	var too, why []string
 	for _, x := range []struct {
-		on   bool
-		name string
-	}{{super, "superuser"}, {prog, "pg_execute_server_program"}, {write, "pg_write_server_files"}, {read, "pg_read_server_files"}} {
+		on        bool
+		name, why string
+	}{{super, "superuser", "a read-only transaction does not stop COPY ... TO PROGRAM"},
+		{prog, "pg_execute_server_program", "a read-only transaction does not stop COPY ... TO PROGRAM"},
+		{write, "pg_write_server_files", "a read-only transaction does not stop COPY ... TO PROGRAM"},
+		{read, "pg_read_server_files", "pg_read_file reads the server's files"},
+		{auth, "a member of pgvigil_auth", "it reads the UI's password hashes"},
+		{collector, "a member of pgvigil_collector", "its import functions write the repository"},
+		{create, "allowed to CREATE in the pgvigil schema (its owner?)", "the owner reads every table, the UI's logins among them"}} {
 		if x.on {
 			too = append(too, x.name)
+			if !slices.Contains(why, x.why) {
+				why = append(why, x.why)
+			}
 		}
 	}
 	if len(too) == 0 {
 		return "", nil
 	}
-	return "the login is " + strings.Join(too, ", ") + ": the DBA's own SQL runs only as a login without it (a read-only transaction does not stop COPY ... TO PROGRAM)", nil
+	return "the login is " + strings.Join(too, ", ") + ": the DBA's own SQL runs only as a login without it (" + strings.Join(why, "; ") + ")", nil
 }
 
 // runPG runs one statement read-only on a PostgreSQL connection made from cfg (the store's or an instance's), and
 // closes it: a session-level side effect (an advisory lock, a set_config) never outlives the run.
-func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows int) (sets []resultSet, refused string, err error) {
+// refusal is the check asked inside the run's transaction before the statement: nil = pgRefusal (an instance's login);
+// a store run passes the store's own (storeRefusal: IN ROLE pgvigil_reader alone, serve's own repository).
+func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
+	if refusal == nil {
+		refusal = pgRefusal
+	}
 	cfg = cfg.Copy()
 	cfg.ConnectTimeout = 10 * time.Second
 	rp := cfg.RuntimeParams
@@ -629,7 +653,7 @@ func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.Named
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	// a query first: the transaction's snapshot is taken, so a SET TRANSACTION READ WRITE in the report is refused
-	if why, err := pgRefusal(ctx, tx); err != nil || why != "" {
+	if why, err := refusal(ctx, tx); err != nil || why != "" {
 		return nil, why, err
 	}
 	qctx, qcancel := context.WithCancel(ctx)
@@ -791,10 +815,19 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 	type onOff struct {
 		Enabled bool   `json:"enabled"`
 		Reason  string `json:"reason,omitempty"`
+		// Store is why a report on the store cannot run here (REPORT ROLE: reports_dsn), "" when it can; the page's
+		// Run on a store report is off with these words
+		Store string `json:"store,omitempty"`
 	}
 	why := s.customReportsOff()
 	state := onOff{Enabled: why == "", Reason: why}
 	ctx := r.Context()
+	if state.Enabled {
+		state.Store = storeNoKey
+		if s.reports != nil {
+			state.Store = s.reports.state(ctx)
+		}
+	}
 	if q := r.URL.Query().Get("report"); q != "" {
 		id, err := strconv.ParseInt(q, 10, 64)
 		if err != nil || id <= 0 {
@@ -1183,8 +1216,18 @@ func (s *Server) CustomReportRun(w http.ResponseWriter, r *http.Request) {
 			run.InstanceID = targets[0].id
 		}
 		t0 := time.Now()
-		sets, why, err := runPG(ctx, s.pool.Config().ConnConfig, stmt, args, timeout, d.MaxRows)
-		run.finish(t0, sets, why, err)
+		// REPORT ROLE: the store's own login (reports_dsn), never serve's (which holds pgvigil_auth): without it the run
+		// is refused with the words; the login's rights are checked inside the run's own transaction (reportrole.go)
+		if s.reports == nil || s.reports.cfg == nil {
+			off := storeNoKey
+			if s.reports != nil {
+				off = s.reports.off
+			}
+			run.finish(t0, nil, off, nil)
+		} else {
+			sets, why, err := runPG(ctx, s.reports.cfg, stmt, args, timeout, d.MaxRows, s.reports.refusal)
+			run.finish(t0, sets, why, err)
+		}
 		runs = append(runs, run)
 	default:
 		var mine []runTarget
@@ -1320,7 +1363,7 @@ func (s *Server) runOnInstance(ctx context.Context, ds *doorSet, d *reportDef, t
 	for k, v := range given {
 		args[k] = v
 	}
-	sets, why, err := runPG(ctx, cfg, stmt, args, timeout, d.MaxRows)
+	sets, why, err := runPG(ctx, cfg, stmt, args, timeout, d.MaxRows, nil)
 	run.finish(t0, sets, why, err)
 	return run
 }
