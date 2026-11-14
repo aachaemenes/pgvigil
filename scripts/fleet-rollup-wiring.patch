@@ -1,67 +1,165 @@
 diff --git i/cmd/pgvigil/purge.go w/cmd/pgvigil/purge.go
-index 3de2666..25ee16d 100644
+index 3de2666..cb5eac7 100644
 --- i/cmd/pgvigil/purge.go
 +++ w/cmd/pgvigil/purge.go
-@@ -7,6 +7,7 @@ import (
+@@ -7,6 +7,8 @@ import (
  	"fmt"
  	"log/slog"
  	"os"
++	"sort"
 +	"strconv"
  	"strings"
  	"time"
  
-@@ -28,6 +29,7 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+@@ -21,13 +23,18 @@ import (
+ // (the config's repository DSN, as migrate does: purge() is the owner's alone, the collector and
+ // the UI logins cannot call it). pgvigil does not schedule it; the operator does
+ // (deploy/pgvigil-purge.timer, pg_cron on the repository, a Windows scheduled task). -dry-run
+-// lists the partitions a run would drop and changes nothing.
++// lists the partitions a run would drop and changes nothing. After purge() it builds the job statistics' hours
++// (0139) of every instance still waiting, one instance per transaction; a purge scheduled as SQL alone
++// (SELECT pgvigil.purge(N) from pg_cron) does not: schedule beside it
++// SELECT pgvigil.job_stats_heal_one(i) FROM pgvigil.job_stats_pending() i LIMIT 1 (one instance a run).
+ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+ 	fs := flag.NewFlagSet("pgvigil purge", flag.ContinueOnError)
+ 	fs.SetOutput(os.Stderr)
  	path := fs.String("config", "pgvigil.yaml", "path to the configuration file")
  	days := fs.Int("days", 30, "keep this many days; a monthly partition goes once its whole month is older")
  	dry := fs.Bool("dry-run", false, "list the partitions that would be dropped and change nothing")
-+	hours := fs.String("hours", "", "set an hours table's own retention first: <table>=<days> (job_stats_hourly=730), several separated by commas")
++	hours := fs.String("hours", "", "set an hours table's own retention first: <table>=<days> (job_stats_hourly=730), several separated by commas; the months the new age no longer keeps are dropped in this run")
++	confirm := fs.Bool("confirm", false, "with -hours: allow a value lower than the stored one that drops hours months (they cannot be rebuilt once their runs are purged)")
  	if err := fs.Parse(args); err != nil {
  		if errors.Is(err, flag.ErrHelp) {
  			return nil
-@@ -46,6 +48,22 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+@@ -46,8 +53,67 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
  		return err
  	}
  	defer r.Close()
++	// -hours: every pair checked against the store's hours tables before any is set (one bad name sets none); a value
++	// lower than the stored one that drops months needs -confirm; -dry-run lists by the new values and sets nothing
++	var over map[string]int
 +	if *hours != "" {
 +		sets, err := parseHoursFlag(*hours)
 +		if err != nil {
 +			return &usageError{err}
 +		}
++		known, err := r.HoursRetention(ctx)
++		if err != nil {
++			return err
++		}
++		over = map[string]int{}
++		for _, h := range sets {
++			if _, ok := known[h.table]; !ok {
++				names := make([]string, 0, len(known))
++				for n := range known {
++					names = append(names, n)
++				}
++				sort.Strings(names)
++				list := "none"
++				if len(names) > 0 {
++					list = strings.Join(names, ", ")
++				}
++				return &usageError{fmt.Errorf("-hours: no hours table %q (the store has: %s)", h.table, list)}
++			}
++			over[h.table] = h.days
++		}
++		with, err := r.PurgeCandidates(ctx, *days, over)
++		if err != nil {
++			return err
++		}
++		stored, err := r.PurgeCandidates(ctx, *days, nil)
++		if err != nil {
++			return err
++		}
++		extra := hoursExtraDrops(with, stored, over)
++		if len(extra) > 0 && !*dry && !*confirm {
++			return fmt.Errorf("-hours %s would drop %d hours month(s) the stored age keeps: %s - they cannot be rebuilt once their runs are purged; "+
++				"run again with -confirm to drop them (-dry-run lists what a run drops)", *hours, len(extra), strings.Join(extra, ", "))
++		}
 +		for _, h := range sets {
 +			if *dry {
-+				fmt.Printf("purge -hours: %s would keep %d days (not set: -dry-run)\n", h.table, h.days)
++				fmt.Printf("purge -hours: %s would keep %d days, now %d (not set: -dry-run)\n", h.table, h.days, known[h.table])
 +				continue
 +			}
 +			if err := r.SetHoursRetention(ctx, h.table, h.days); err != nil {
 +				return err
 +			}
-+			fmt.Printf("purge -hours: %s keeps %d days\n", h.table, h.days)
++			fmt.Printf("purge -hours: %s keeps %d days (was %d)\n", h.table, h.days, known[h.table])
++		}
++		if len(extra) > 0 {
++			verb := "are dropped by this run"
++			if *dry {
++				verb = "would be dropped"
++			}
++			fmt.Printf("purge -hours: %d hours month(s) the stored age kept %s: %s\n", len(extra), verb, strings.Join(extra, ", "))
 +		}
 +	}
  	if *dry {
- 		parts, err := r.PurgeCandidates(ctx, *days)
+-		parts, err := r.PurgeCandidates(ctx, *days)
++		parts, err := r.PurgeCandidates(ctx, *days, over)
  		if err != nil {
-@@ -69,6 +87,28 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+ 			return err
+ 		}
+@@ -66,9 +132,67 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
+ 	d := time.Since(start)
+ 	log.Info("purge done", "days", *days, "removed", n, "ms", d.Milliseconds())
+ 	fmt.Printf("purge -days %d: %d partitions and rows removed in %.1f s\n", *days, n, d.Seconds())
++	// 0139: the job statistics' hours of every instance still waiting (a failed rollup, a lapsed history import, the
++	// first build after the upgrade), each instance in its own transaction
++	start = time.Now()
++	inst, rows, failed, err := r.JobStatsHeal(ctx)
++	if err != nil {
++		return err
++	}
++	if inst > 0 || failed > 0 {
++		log.Info("job statistics healed", "instances", inst, "hour_rows", rows, "failed", failed, "ms", time.Since(start).Milliseconds())
++		fmt.Printf("purge: the job statistics' hours of %d instance(s) built (%d hour rows) in %.1f s", inst, rows, time.Since(start).Seconds())
++		if failed > 0 {
++			fmt.Printf("; %d instance(s) failed and stay for the next run (collection log 'job_stats_hourly')", failed)
++		}
++		fmt.Println()
++	}
  	return nil
  }
  
++// hoursExtraDrops is the hours months the -hours values drop that the stored ages keep: in with (the candidates by the
++// new values) and not in stored, of a table -hours names.
++func hoursExtraDrops(with, stored []string, over map[string]int) []string {
++	was := map[string]bool{}
++	for _, s := range stored {
++		was[s] = true
++	}
++	var out []string
++	for _, w := range with {
++		if was[w] || len(w) < 8 {
++			continue
++		}
++		if _, ok := over[w[:len(w)-7]]; ok {
++			out = append(out, w)
++		}
++	}
++	return out
++}
++
 +// hoursSet is one '<table>=<days>' of -hours.
 +type hoursSet struct {
 +	table string
 +	days  int
 +}
 +
-+// parseHoursFlag reads -hours: '<table>=<days>' pairs separated by commas, each table a plain lower-case name and its
-+// days 1 or more.
++// parseHoursFlag reads -hours: '<table>=<days>' pairs separated by commas, each table a plain lower-case name named
++// once and its days 1 to 3650.
 +func parseHoursFlag(v string) ([]hoursSet, error) {
 +	var out []hoursSet
++	seen := map[string]bool{}
 +	for _, part := range strings.Split(v, ",") {
 +		t, d, ok := strings.Cut(strings.TrimSpace(part), "=")
 +		n, err := strconv.Atoi(strings.TrimSpace(d))
 +		t = strings.TrimSpace(t)
-+		if !ok || err != nil || n < 1 || t == "" || strings.Trim(t, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
-+			return nil, fmt.Errorf("-hours wants <table>=<days> with days 1 or more (job_stats_hourly=730), not %q", part)
++		if !ok || err != nil || n < 1 || n > 3650 || t == "" || seen[t] || strings.Trim(t, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
++			return nil, fmt.Errorf("-hours wants <table>=<days>, each table once, with days 1 to 3650 (job_stats_hourly=730), not %q", part)
 +		}
++		seen[t] = true
 +		out = append(out, hoursSet{t, n})
 +	}
 +	return out, nil
@@ -71,10 +169,10 @@ index 3de2666..25ee16d 100644
  // row-level series up to this moment.
  func checkPurgeDays(days int) error {
 diff --git i/internal/repo/repo.go w/internal/repo/repo.go
-index ecce0f4..818eba2 100644
+index ecce0f4..f9f8d17 100644
 --- i/internal/repo/repo.go
 +++ w/internal/repo/repo.go
-@@ -416,8 +416,25 @@ func (r *Repo) Purge(ctx context.Context, days int) (int64, error) {
+@@ -416,11 +416,64 @@ func (r *Repo) Purge(ctx context.Context, days int) (int64, error) {
  	return n, nil
  }
  
@@ -94,41 +192,136 @@ index ecce0f4..818eba2 100644
 +	return nil
 +}
 +
++// HoursRetention is every hours table of pgvigil.hours_retention (0139) with its days; empty on a store without it.
++func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
++	out := map[string]int{}
++	var have bool
++	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil || !have {
++		return out, err
++	}
++	rows, err := r.pool.Query(ctx, `SELECT table_name, days FROM pgvigil.hours_retention`)
++	if err != nil {
++		return nil, fmt.Errorf("hours retention: %w", err)
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var n string
++		var d int
++		if err := rows.Scan(&n, &d); err != nil {
++			return nil, err
++		}
++		out[n] = d
++	}
++	return out, rows.Err()
++}
++
  // PurgeCandidates lists the monthly partitions under schema pgvigil that purge(days) would drop,
 -// by the function's own rule: the month after the partition's (UTC) lies before now minus days.
 +// by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
-+// (pgvigil.hours_retention, 0139) by its own days.
++// (pgvigil.hours_retention, 0139) by its own days, or by hours[table] when given (purge -hours, before it is set).
  // It takes every partitioned series in the schema, so a series the function does not yet name
  // would be listed though kept.
- func (r *Repo) PurgeCandidates(ctx context.Context, days int) ([]string, error) {
-@@ -429,7 +446,8 @@ SELECT c.relname
+-func (r *Repo) PurgeCandidates(ctx context.Context, days int) ([]string, error) {
++func (r *Repo) PurgeCandidates(ctx context.Context, days int, hours map[string]int) ([]string, error) {
++	var have bool
++	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil {
++		return nil, fmt.Errorf("purge candidates: %w", err)
++	}
++	age := `$1::int`
++	if have { // a store from before 0139 has no hours tables
++		age = `coalesce((SELECT o.d FROM unnest($2::text[], $3::int[]) o(t, d) WHERE o.t = p.relname),
++                    (SELECT h.days FROM pgvigil.hours_retention h WHERE h.table_name = p.relname), $1::int)`
++	}
++	names, ages := []string{}, []int{}
++	for t, d := range hours {
++		names, ages = append(names, t), append(ages, d)
++	}
+ 	rows, err := r.pool.Query(ctx, `
+ SELECT c.relname
+   FROM pg_inherits i
+@@ -429,8 +482,10 @@ SELECT c.relname
    JOIN pg_namespace ns ON ns.oid = p.relnamespace
   WHERE ns.nspname = 'pgvigil'
     AND c.relname ~ '_[0-9]{6}$'
 -   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => $1)
+- ORDER BY c.relname`, days)
 +   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
-+       < now() - make_interval(days => coalesce((SELECT h.days FROM pgvigil.hours_retention h WHERE h.table_name = p.relname), $1))
-  ORDER BY c.relname`, days)
++       < now() - make_interval(days => `+age+`)
++   AND cardinality($2::text[]) = cardinality($3::int[])
++ ORDER BY c.relname`, days, names, ages)
  	if err != nil {
  		return nil, fmt.Errorf("purge candidates: %w", err)
+ 	}
+@@ -445,3 +500,48 @@ SELECT c.relname
+ 	}
+ 	return out, rows.Err()
+ }
++
++// JobStatsHeal builds the job statistics' hours (0139) of every instance still waiting - a failed rollup, a lapsed
++// history import, the first build after the upgrade (pgvigil.job_stats_pending) - each instance in its own statement
++// and transaction (job_stats_heal_one), never all in one. It returns the instances built, their hour rows and the
++// instances that failed (they stay for the next run; the failure goes to the collection log). A store without 0139
++// heals nothing.
++func (r *Repo) JobStatsHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
++	var have bool
++	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.job_stats_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
++		return 0, 0, 0, err
++	}
++	rows, err := r.pool.Query(ctx, `SELECT i FROM pgvigil.job_stats_pending() i`)
++	if err != nil {
++		return 0, 0, 0, fmt.Errorf("job statistics pending: %w", err)
++	}
++	var ids []int32
++	for rows.Next() {
++		var id int32
++		if err := rows.Scan(&id); err != nil {
++			rows.Close()
++			return 0, 0, 0, fmt.Errorf("job statistics pending: %w", err)
++		}
++		ids = append(ids, id)
++	}
++	rows.Close()
++	if err := rows.Err(); err != nil {
++		return 0, 0, 0, fmt.Errorf("job statistics pending: %w", err)
++	}
++	for _, id := range ids {
++		var n int64
++		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.job_stats_heal_one($1)`, id).Scan(&n); err != nil {
++			if ctx.Err() != nil {
++				return instances, hourRows, failed, ctx.Err()
++			}
++			failed++
++			_, _ = r.pool.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
++			                         VALUES ($1, 'job_stats_hourly', now(), 'error', 'rollup heal failed in purge (the hours stay for the next run): ' || $2)`,
++				id, err.Error())
++			continue
++		}
++		instances++
++		hourRows += n
++	}
++	return instances, hourRows, failed, nil
++}
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 3e4fc9e..bd692ce 100644
+index 3e4fc9e..fa9d99d 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
-@@ -411,6 +411,11 @@ BEGIN
+@@ -411,6 +411,14 @@ BEGIN
    GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
    DELETE FROM pgvigil.mssql_failed_logins WHERE logged_at < now() - make_interval(days => p_days);
    GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
 +  -- 0139 (FLEET STATS ROLLUP): the hours tables last, each by its own age in pgvigil.hours_retention (not p_days), so
-+  -- no runs table is locked after an hours parent; it also heals the dirty hours of an instance that writes no more runs
++  -- no runs table is locked after an hours parent; the months dropped join this run's partitions_dropped. The hours'
++  -- heals are not here (one transaction for all): 'pgvigil purge' runs them after this, one instance per transaction
 +  IF to_regprocedure('pgvigil.job_stats_hourly_purge()') IS NOT NULL THEN
-+    n := n + pgvigil.job_stats_hourly_purge();
++    n := n - cardinality(v_dropped);
++    v_dropped := v_dropped || pgvigil.job_stats_hourly_purge();
++    n := n + cardinality(v_dropped);
 +  END IF;
    -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
    INSERT INTO pgvigil.purge_runs (started_at, finished_at, days, partitions_dropped, rows_deleted, total)
    VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);
 diff --git i/internal/web/q_retention.go w/internal/web/q_retention.go
-index 93cc2a4..7b5d8a4 100644
+index 93cc2a4..b6da2fe 100644
 --- i/internal/web/q_retention.go
 +++ w/internal/web/q_retention.go
 @@ -6,7 +6,8 @@ package web
@@ -161,26 +354,28 @@ index 93cc2a4..7b5d8a4 100644
  // del is one DELETE of the purge functions: the time column it compares with the age, whether it takes only the rows
  // no longer present, the table whose rows keep these (its first NOT EXISTS), and whether it is a pure age rule (the
  // age comparison and nothing else, so a row older than the age means the purge did not run with that age).
-@@ -277,6 +291,18 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
+@@ -277,6 +291,20 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
  		}
  	}
  	rules := purgeRules(srcs)
-+	// the hours tables (0139's hours_retention): their own age, read from their rows
++	// the hours tables (0139's hours_retention): their own age, read from their rows; none on a store without 0139
 +	hours := map[string][]any{}
-+	ht, err := s.query(ctx, sqlRetentionHours)
-+	if err != nil {
-+		s.reply(w, r, nil, fmt.Errorf("hours tables: %w", err))
-+		return
-+	}
-+	for _, hr := range ht.Rows {
-+		if n, ok := hr[0].(string); ok {
-+			hours[n] = hr
++	if hv, err := s.query(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`); err == nil && len(hv.Rows) == 1 && hv.Rows[0][0] == true {
++		ht, err := s.query(ctx, sqlRetentionHours)
++		if err != nil {
++			s.reply(w, r, nil, fmt.Errorf("hours tables: %w", err))
++			return
++		}
++		for _, hr := range ht.Rows {
++			if n, ok := hr[0].(string); ok {
++				hours[n] = hr
++			}
 +		}
 +	}
  	t, err := s.query(ctx, sqlRetentionTables, days)
  	if err != nil {
  		s.reply(w, r, nil, fmt.Errorf("tables: %w", err))
-@@ -306,6 +332,11 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
+@@ -306,6 +334,11 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
  		} else if ru != nil && ru.kind == "daily" {
  			drop, dropBytes = row[col["drop_days"]], row[col["drop_days_bytes"]]
  		}

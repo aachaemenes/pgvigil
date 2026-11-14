@@ -169,7 +169,10 @@ an import, the newest week first) and by `pgvigil purge`, which builds every ins
 transaction; a history import from DBA Dash builds them once at its end. Until an instance's hours of the last 7 days
 are built, the fleet Jobs page's four 7-day columns read `being built`. `-hours <table>=<days>` takes days and drops
 the months the new age no longer keeps in the same run: a value lower than the stored one needs `-confirm` (the hours
-cannot be rebuilt once their runs are purged), and `-dry-run` with it lists those months and changes nothing.
+cannot be rebuilt once their runs are purged), and `-dry-run` with it lists those months and changes nothing. A purge
+scheduled as SQL alone (`SELECT pgvigil.purge(N)` from pg_cron) does not build the hours: schedule
+`SELECT pgvigil.job_stats_heal_one(i) FROM pgvigil.job_stats_pending() i LIMIT 1` beside it (one instance a run, in its
+own transaction).
 
 ## API
 
