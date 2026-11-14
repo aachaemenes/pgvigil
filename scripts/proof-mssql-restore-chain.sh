@@ -111,7 +111,7 @@ echo "== the chains"
 G=$(steps pgvrc1); V=$(verdict pgvrc1)
 [ "$G" = "full:pgvrc-m,log:pgvrc-m,log:pgvrc-m,log:pgvrc-m" ] && [[ "$V" == "restorable from these backups to "* ]] || fail "R1: $G | $V"; ok "R1: $G | $V"
 G=$(q "select string_agg(role, ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='pgvrc2' and step > 0")
-[ "$G" = "full,diff,log,log" ] || fail "R2: $G"; ok "R2: $G"
+[ "$G" = "full,diff,log,log" ] || fail "R2: $G | $(verdict pgvrc2) | sets: $(q "select string_agg(role || ' ' || backup_set_id || ' ' || first_lsn || '-' || last_lsn || coalesce(' db ' || database_backup_lsn, '') || ' ' || sink, '; ' order by last_lsn) from pgvigil.mssql_restore_sets where instance_id=$(iid) and database_name='pgvrc2'") | msdb: $(sq "SELECT STRING_AGG(type + ' ' + CAST(backup_set_id AS varchar(9)) + ' ' + CAST(first_lsn AS varchar(25)) + '-' + CAST(last_lsn AS varchar(25)), '; ') WITHIN GROUP (ORDER BY backup_set_id) FROM msdb.dbo.backupset WHERE database_name = N'pgvrc2'")"; ok "R2: $G"
 G=$(q "select string_agg(role, ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='pgvrc3' and step > 0")
 [ "$G" = "copy_full,log" ] || fail "R3: $G"; ok "R3: the copy-only full is the start set: $G"
 G=$(q "select string_agg(role, ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='pgvrc5' and step > 0"); V=$(verdict pgvrc5)

@@ -476,6 +476,7 @@ PORT=$((20000 + RANDOM % 10000)); U="http://127.0.0.1:$PORT"
 "$BIN" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN_PROOF -listen "127.0.0.1:$PORT" -no-login >"$LOG" 2>&1 & SRVPID=$!
 for _ in $(seq 1 50); do curl -fs "$U/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
 api() { local code; code=$(curl -s -o "$WORK/body" -w '%{http_code}' "$U/api/$1"); [ "$code" = 200 ] || fail "H: /api/$1 answered $code: $(head -c 300 "$WORK/body")"; cat "$WORK/body"; }
+NF=$(q "select count(*) from pgvigil.mssql_backup_locations l join pgvigil.mssql_backup_files f on f.instance_id = l.from_instance_id and f.database_name = l.database_name and f.backup_type = l.backup_type and f.is_copy_only = l.is_copy_only and f.backup_set_id = l.backup_set_id where l.instance_id=$(iid)")
 api "mssql/backup_files?instance=$(iid)" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -483,9 +484,9 @@ for p in ("sets", "files", "writers", "roots", "findings", "read"):
     assert p in d, ("no part", p)
 rows = lambda p: [dict(zip(d[p]["columns"], r)) for r in d[p]["rows"]]
 assert any(r["database_name"] == "pgvbka" and r["backup_type"] == "log" for r in rows("sets")), "no pgvbka log"
-assert any(len(r["path"]) >= 250 for r in rows("files")), "the long path"
-assert any(r["check_name"] == "log backups to two destinations" for r in rows("findings")), "the writers finding"
-print("ok   H: /api/mssql/backup_files: %d sets, %d files, %d writers, %d roots, %d findings" % tuple(len(d[p]["rows"]) for p in ("sets", "files", "writers", "roots", "findings")))'
+assert len(rows("files")) == int(sys.argv[1]), ("files", len(rows("files")), sys.argv[1])   # every file of every set kept (the long path left with the newer log of L17)
+# (L8 proves the writers finding; after L17 emptied msdb the 7-day window is empty and the writers with it)
+print("ok   H: /api/mssql/backup_files: %d sets, %d files (= the store), %d writers, %d roots, %d findings" % tuple(len(d[p]["rows"]) for p in ("sets", "files", "writers", "roots", "findings")))' "$NF"
 N=$(api "mssql/backup_files?instance=$(iid)&db=pgvbka" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len({r[d["sets"]["columns"].index("database_name")] for r in d["sets"]["rows"]}))')
 [ "$N" = 1 ] || fail "H: &db=pgvbka answered $N databases"
 api "mssql/backup_files" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["by_instance"]["rows"], "no by_instance row"; print("ok   H: no instance: %d instance row(s)" % len(d["by_instance"]["rows"]))'

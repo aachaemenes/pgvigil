@@ -85,7 +85,7 @@ export async function mssqlRestore(ctx: Ctx): Promise<HTMLElement> {
     ];
     sec.append(el('div', { id: 'mssql-restore-steps-grid' }, grid(steps, stepCols, 'No step: see the verdict.')));
     const stepOf = new Map(steps.map(s => [String(s.backup_set_uuid), s]));
-    const fileRows = files.filter(f => stepOf.has(String(f.backup_set_uuid))).map(f => ({ ...f, step: stepOf.get(String(f.backup_set_uuid))!.step }))
+    const fileRows: Row[] = files.filter(f => stepOf.has(String(f.backup_set_uuid))).map((f): Row => ({ ...f, step: stepOf.get(String(f.backup_set_uuid))!.step }))
       .sort((a, b) => Number(a.step) - Number(b.step) || Number(a.mirror) - Number(b.mirror) || Number(a.family) - Number(b.family));
     const pathCell = (v: unknown) => {
       const p = String(v ?? ''), s2 = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
