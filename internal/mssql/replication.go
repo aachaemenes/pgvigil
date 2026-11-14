@@ -10,11 +10,23 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
-// replicationCollector is mssql_replication: transactional, snapshot and merge replication as the DISTRIBUTOR knows
-// it, read from the distribution database's own tables (MSpublications, MSdistribution_agents and its history,
-// MSlogreader_agents, MSsnapshot_agents and theirs, MSmerge_agents with MSmerge_sessions) and its view MSdistribution_status for the
-// commands not yet delivered. Nothing is written: no tracer token, no call of a replication procedure. A server
-// that is no distributor returns no row; a publisher whose distributor is another server is read there.
+// replicationCollector is mssql_replication: transactional, snapshot and merge replication.
+//
+//   - The PUBLISHER side, on every server: each published database (sys.databases), its log's reuse wait, the
+//     distributor it names (sys.servers' distributor entry: this server or another one) and, with VIEW SERVER STATE,
+//     the replicated transactions its log still holds for the log reader and how many it has read out (the
+//     Databases counters 'Repl. Pending Xacts' and 'Repl. Trans. Rate'). A publisher whose distributor is another
+//     server is judged from here even when that distributor is not monitored.
+//   - The DISTRIBUTOR side, from each distribution database's own tables (MSpublications, MSdistribution_agents and
+//     its history, MSlogreader_agents, MSsnapshot_agents and theirs, MSmerge_agents with MSmerge_sessions) and its
+//     view MSdistribution_status for the commands not yet delivered: per agent its last history row, since when it
+//     has been failing or retrying (the first row after its last healthy one), the error text of MSrepl_errors, and
+//     for a subscription the entry time of the oldest transaction still waiting for it (its latency while it
+//     delivers nothing). With msdb readable, each agent's SQL Server Agent job: running, stopped, disabled, not on
+//     this server (a pull subscription's), and whether the agent runs continuously.
+//
+// Nothing is written: no tracer token, no call of a replication procedure. A server that is no distributor returns
+// no distributor row; a publisher whose distributor is another server is read there.
 type replicationCollector struct{}
 
 func init() { Register(replicationCollector{}) }
@@ -42,10 +54,97 @@ func quoteName(name string) string { return "[" + strings.ReplaceAll(name, "]", 
 // literal is an N” literal of a name.
 func literal(s string) string { return "N'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
+// replPublishedSQL is the publisher side: one row per published database. The counters need VIEW SERVER STATE;
+// without it they are NULL. 'Repl. Trans. Rate' is cumulative (a per-second counter's raw value): the import turns
+// two reads into a rate.
+func replPublishedSQL(counters bool) string {
+	cnt := `CAST(NULL AS bigint) AS pending_xacts, CAST(NULL AS bigint) AS repl_trans_total`
+	apply := ``
+	if counters {
+		cnt = `c.pending_xacts, c.repl_trans_total`
+		apply = `
+OUTER APPLY (SELECT CAST(MAX(CASE WHEN p.counter_name = N'Repl. Pending Xacts' THEN p.cntr_value END) AS bigint) AS pending_xacts,
+                    CAST(MAX(CASE WHEN p.counter_name = N'Repl. Trans. Rate' THEN p.cntr_value END) AS bigint) AS repl_trans_total
+               FROM sys.dm_os_performance_counters p
+              WHERE p.object_name LIKE N'%:Databases%' AND p.instance_name = d.name
+                AND p.counter_name IN (N'Repl. Pending Xacts', N'Repl. Trans. Rate')) c`
+	}
+	return `SELECT 'published_db' AS kind, CAST(d.name AS nvarchar(128)) AS database_name,
+  CASE WHEN d.is_published = 1 AND d.is_merge_published = 1 THEN 'transactional or snapshot, merge'
+       WHEN d.is_merge_published = 1 THEN 'merge' ELSE 'transactional or snapshot' END AS publication_type,
+  CAST(d.log_reuse_wait_desc AS nvarchar(60)) AS log_reuse_wait,
+  CAST(s.data_source AS nvarchar(256)) AS distributor,
+  CASE WHEN s.data_source IS NULL THEN NULL WHEN UPPER(CAST(s.data_source AS nvarchar(256))) = UPPER(CAST(@@SERVERNAME AS nvarchar(256))) THEN 1 ELSE 0 END AS distributor_local,
+  ` + cnt + `
+FROM sys.databases d
+OUTER APPLY (SELECT TOP (1) v.data_source FROM sys.servers v WHERE v.is_distributor = 1) s` + apply + `
+WHERE (d.is_published = 1 OR d.is_merge_published = 1) AND d.state = 0
+ORDER BY 2`
+}
+
+// replFailing is the part of an agent's statement that says since when it has been failing or retrying and why.
+// The agent was last healthy at its newest idle or succeeded row (runstatus 4 or 2: it had caught up, or it was
+// stopped cleanly). It is failing when a retry or failure row (5 or 6) is newer than that, and - for an agent with a
+// delivery position (seqno: the distribution agent and the log reader) - no row after the newest failure carries a
+// position past the one it had then: between a job's retries a failing distribution agent writes 'in progress' rows
+// (runstatus 3) that deliver nothing. since = the first retry or failure row after the last healthy one. The error is
+// MSrepl_errors' row of the newest failure's error id (SQL Server's generic 'agent failed' row, 14151, whose text
+// carries the cause), its code taken from the cause's own row when one follows within 5 s (20598: the row was not
+// found at the subscriber).
+func replFailing(d, hist string, seqno bool) string {
+	moved := `0`
+	if seqno {
+		moved = `CASE WHEN EXISTS (SELECT 1 FROM ` + d + `.dbo.` + hist + ` p WHERE p.agent_id = a.id AND p.time > lf.time
+                       AND p.xact_seqno > (SELECT MAX(q.xact_seqno) FROM ` + d + `.dbo.` + hist + ` q WHERE q.agent_id = a.id AND q.time <= lf.time)) THEN 1 ELSE 0 END`
+	}
+	return `
+OUTER APPLY (SELECT MAX(y.time) AS ok_at FROM ` + d + `.dbo.` + hist + ` y WHERE y.agent_id = a.id AND y.runstatus IN (2, 4)) ok
+OUTER APPLY (SELECT TOP (1) z.time, z.error_id FROM ` + d + `.dbo.` + hist + ` z
+              WHERE z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.time > ISNULL(ok.ok_at, '19000101') ORDER BY z.time DESC, z.timestamp DESC) lf
+OUTER APPLY (SELECT CASE WHEN lf.time IS NULL THEN 0 WHEN ` + moved + ` = 1 THEN 0 ELSE 1 END AS failing) fl
+OUTER APPLY (SELECT MIN(z.time) AS since, MAX(z.error_id) AS error_id FROM ` + d + `.dbo.` + hist + ` z
+              WHERE fl.failing = 1 AND z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.time > ISNULL(ok.ok_at, '19000101')) f
+OUTER APPLY (SELECT TOP (1) e0.id, e0.time, CAST(e0.error_code AS nvarchar(128)) AS error_code,
+                    CAST(LEFT(CAST(e0.error_text AS nvarchar(max)), 1000) AS nvarchar(1000)) AS error_text
+               FROM ` + d + `.dbo.MSrepl_errors e0
+              WHERE fl.failing = 1 AND e0.id = COALESCE(NULLIF(lf.error_id, 0), NULLIF(f.error_id, 0))
+              ORDER BY CASE WHEN ISNULL(e0.error_code, N'') IN (N'', N'0') THEN 1 ELSE 0 END, e0.time DESC) e
+OUTER APPLY (SELECT TOP (1) CAST(c2.error_code AS nvarchar(128)) AS error_code FROM ` + d + `.dbo.MSrepl_errors c2
+              WHERE c2.id > e.id AND c2.id <= e.id + 5 AND c2.time >= e.time AND c2.time < DATEADD(second, 5, e.time)
+                AND ISNULL(c2.error_code, N'') NOT IN (N'', N'0') AND c2.error_code <> e.error_code
+              ORDER BY c2.id, c2.time) cz`
+}
+
+// the failing columns of replFailing, in the statement's order
+func replFailingCols() string {
+	return utcText("f.since") + ` AS failing_since_utc, COALESCE(cz.error_code, NULLIF(e.error_code, N'')) AS error_code, e.error_text`
+}
+
+// replServersSQL asks whether a distribution database keeps its own map of server ids (MSreplservers: srvid,
+// srvname). Where it does, the publisher_id and subscriber_id of its tables are ids of that map, NOT of the
+// distributor's sys.servers (read on a lab with a remote distributor: publisher_id 1 is the publisher there and
+// sys.servers' 1 is repl_distributor). Where it does not, they are sys.servers ids, as before.
+func replServersSQL(db string) string {
+	return `SELECT CASE WHEN OBJECT_ID(` + literal(quoteName(db)+".dbo.MSreplservers") + `) IS NULL THEN 0 ELSE 1 END AS mapped`
+}
+
+// replServers is what a statement joins to name a server id: the distribution database's own map, or sys.servers.
+func replServers(d string, mapped bool) string {
+	if mapped {
+		return `(SELECT CAST(rs.srvid AS int) AS server_id, CAST(rs.srvname AS nvarchar(128)) AS name FROM ` + d + `.dbo.MSreplservers rs)`
+	}
+	return `master.sys.servers`
+}
+
 // replPublicationsSQL, replSubscriptionsSQL and replAgentsSQL read one distribution database (SQL Server 2016 SP1
-// and later; the tables are unchanged since 2005). runstatus: 1 start, 2 succeed, 3 in progress, 4 idle, 5 retry,
-// 6 fail.
-func replPublicationsSQL(db string) string {
+// and later; the tables are unchanged since 2005), naming the servers through sys.servers; the collector uses their
+// ...For forms with the distribution database's own map where it has one (replServersSQL). runstatus: 1 start,
+// 2 succeed, 3 in progress, 4 idle, 5 retry, 6 fail.
+func replPublicationsSQL(db string) string  { return replPublicationsFor(db, false) }
+func replSubscriptionsSQL(db string) string { return replSubscriptionsFor(db, false) }
+func replAgentsSQL(db string) string        { return replAgentsFor(db, false) }
+
+func replPublicationsFor(db string, mapped bool) string {
 	d := quoteName(db)
 	return `SELECT 'publication' AS kind, ` + literal(db) + ` AS distribution_db,
   CAST(srv.name AS nvarchar(128)) AS publisher, CAST(p.publisher_db AS nvarchar(128)) AS publisher_db,
@@ -53,88 +152,192 @@ func replPublicationsSQL(db string) string {
   CASE p.publication_type WHEN 0 THEN 'transactional' WHEN 1 THEN 'snapshot' WHEN 2 THEN 'merge' ELSE CAST(p.publication_type AS varchar(12)) END AS publication_type,
   (SELECT COUNT(*) FROM ` + d + `.dbo.MSarticles a WHERE a.publisher_id = p.publisher_id AND a.publisher_db = p.publisher_db AND a.publication_id = p.publication_id) AS articles
 FROM ` + d + `.dbo.MSpublications p
-LEFT JOIN master.sys.servers srv ON srv.server_id = p.publisher_id
+LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = p.publisher_id
 ORDER BY 3, 4, 5`
 }
 
-func replSubscriptionsSQL(db string) string {
+// replSubscriptionsSQL: one row per distribution agent (a subscription). oldest_pending_utc is the entry time of the
+// oldest transaction past the agent's last delivered one (the newest xact_seqno of its history, as
+// MSdistribution_status counts) that holds a command of an article it subscribes to; read only while commands wait.
+// The reads of MSrepl_transactions and MSrepl_commands take no shared locks (READUNCOMMITTED, as
+// MSdistribution_status itself reads them): the log reader and the cleanup job write there all the time.
+func replSubscriptionsFor(db string, mapped bool) string {
 	d := quoteName(db)
-	return `SELECT 'subscription' AS kind, ` + literal(db) + ` AS distribution_db,
+	return `SELECT 'subscription' AS kind, ` + literal(db) + ` AS distribution_db, a.id AS agent_id,
   CAST(srv.name AS nvarchar(128)) AS publisher, CAST(a.publisher_db AS nvarchar(128)) AS publisher_db,
   CAST(a.publication AS nvarchar(128)) AS publication,
   CAST(sub.name AS nvarchar(128)) AS subscriber, CAST(a.subscriber_db AS nvarchar(128)) AS subscriber_db,
   CASE a.subscription_type WHEN 0 THEN 'push' WHEN 1 THEN 'pull' WHEN 2 THEN 'anonymous' ELSE CAST(a.subscription_type AS varchar(12)) END AS subscription_type,
+  CASE ss.st WHEN 2 THEN 'active' WHEN 1 THEN 'subscribed' WHEN 0 THEN 'inactive' END AS subscription_status,
   'distribution' AS agent_type, CAST(a.name AS nvarchar(200)) AS agent_name,
   h.runstatus, CAST(LEFT(h.comments, 1000) AS nvarchar(1000)) AS status_text,
-  ` + utcText("h.time") + ` AS last_run_utc,
+  ` + utcText("h.time") + ` AS last_run_utc, ` + utcText("h.start_time") + ` AS session_start_utc,
   h.delivery_latency AS latency_ms, h.delivery_rate AS delivery_rate,
   u.undistributed,
-  CASE WHEN h.delivery_rate > 0 THEN u.undistributed / h.delivery_rate END AS est_catchup_s
+  CASE WHEN h.delivery_rate > 0 THEN u.undistributed / h.delivery_rate END AS est_catchup_s,
+  ` + utcText("old.entry_time") + ` AS oldest_pending_utc,
+  ` + replFailingCols() + `
 FROM ` + d + `.dbo.MSdistribution_agents a
-LEFT JOIN master.sys.servers srv ON srv.server_id = a.publisher_id
-LEFT JOIN master.sys.servers sub ON sub.server_id = a.subscriber_id
-OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time, x.delivery_latency, x.delivery_rate
+LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
+LEFT JOIN ` + replServers(d, mapped) + ` sub ON sub.server_id = a.subscriber_id
+OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time, x.start_time, x.delivery_latency, x.delivery_rate, x.error_id
                FROM ` + d + `.dbo.MSdistribution_history x WHERE x.agent_id = a.id ORDER BY x.time DESC, x.timestamp DESC) h
 OUTER APPLY (SELECT SUM(CAST(s.UndelivCmdsInDistDB AS bigint)) AS undistributed
                FROM ` + d + `.dbo.MSdistribution_status s WHERE s.agent_id = a.id) u
+OUTER APPLY (SELECT MAX(s.status) AS st FROM ` + d + `.dbo.MSsubscriptions s WHERE s.agent_id = a.id) ss
+OUTER APPLY (SELECT ISNULL(MAX(x.xact_seqno), 0x0) AS seqno FROM ` + d + `.dbo.MSdistribution_history x WHERE x.agent_id = a.id) pos
+OUTER APPLY (SELECT TOP (1) t.entry_time FROM ` + d + `.dbo.MSrepl_transactions t WITH (READUNCOMMITTED)
+              WHERE u.undistributed > 0 AND t.publisher_database_id = a.publisher_database_id AND t.xact_seqno > pos.seqno
+                AND EXISTS (SELECT 1 FROM ` + d + `.dbo.MSrepl_commands c WITH (READUNCOMMITTED)
+                              JOIN ` + d + `.dbo.MSsubscriptions s ON s.publisher_database_id = c.publisher_database_id AND s.article_id = c.article_id
+                             WHERE c.publisher_database_id = t.publisher_database_id AND c.xact_seqno = t.xact_seqno AND s.agent_id = a.id)
+              ORDER BY t.xact_seqno) old` + replFailing(d, "MSdistribution_history", true) + `
 WHERE a.subscriber_db <> N'virtual'
-ORDER BY 3, 4, 5, 6, 7`
+ORDER BY 4, 5, 6, 7, 8`
 }
 
-func replAgentsSQL(db string) string {
+// replAgentsSQL: the log reader, snapshot and merge agents. A merge agent's failing columns are not read (merge
+// replication is not proven: SQL Server on Linux has none).
+func replAgentsFor(db string, mapped bool) string {
 	d := quoteName(db)
-	return `SELECT 'agent' AS kind, ` + literal(db) + ` AS distribution_db, 'logreader' AS agent_type, CAST(a.name AS nvarchar(200)) AS agent_name,
+	return `SELECT 'agent' AS kind, ` + literal(db) + ` AS distribution_db, a.id AS agent_id, 'logreader' AS agent_type, CAST(a.name AS nvarchar(200)) AS agent_name,
   CAST(srv.name AS nvarchar(128)) AS publisher, CAST(a.publisher_db AS nvarchar(128)) AS publisher_db, CAST(NULL AS nvarchar(128)) AS publication,
   h.runstatus, CAST(LEFT(h.comments, 1000) AS nvarchar(1000)) AS status_text, ` + utcText("h.time") + ` AS last_run_utc,
-  h.delivery_latency AS latency_ms
+  ` + utcText("h.start_time") + ` AS session_start_utc, h.delivery_latency AS latency_ms,
+  ` + replFailingCols() + `
 FROM ` + d + `.dbo.MSlogreader_agents a
-LEFT JOIN master.sys.servers srv ON srv.server_id = a.publisher_id
-OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time, x.delivery_latency
-               FROM ` + d + `.dbo.MSlogreader_history x WHERE x.agent_id = a.id ORDER BY x.time DESC, x.timestamp DESC) h
+LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
+OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time, x.start_time, x.delivery_latency, x.error_id
+               FROM ` + d + `.dbo.MSlogreader_history x WHERE x.agent_id = a.id ORDER BY x.time DESC, x.timestamp DESC) h` + replFailing(d, "MSlogreader_history", true) + `
 UNION ALL
-SELECT 'agent', ` + literal(db) + `, 'snapshot', CAST(a.name AS nvarchar(200)),
+SELECT 'agent', ` + literal(db) + `, a.id, 'snapshot', CAST(a.name AS nvarchar(200)),
   CAST(srv.name AS nvarchar(128)), CAST(a.publisher_db AS nvarchar(128)), CAST(a.publication AS nvarchar(128)),
-  h.runstatus, CAST(LEFT(h.comments, 1000) AS nvarchar(1000)), ` + utcText("h.time") + `, CAST(NULL AS int)
+  h.runstatus, CAST(LEFT(h.comments, 1000) AS nvarchar(1000)), ` + utcText("h.time") + `, ` + utcText("h.start_time") + `, CAST(NULL AS int),
+  ` + replFailingCols() + `
 FROM ` + d + `.dbo.MSsnapshot_agents a
-LEFT JOIN master.sys.servers srv ON srv.server_id = a.publisher_id
-OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time
-               FROM ` + d + `.dbo.MSsnapshot_history x WHERE x.agent_id = a.id ORDER BY x.time DESC, x.timestamp DESC) h
+LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
+OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time, x.start_time, x.error_id
+               FROM ` + d + `.dbo.MSsnapshot_history x WHERE x.agent_id = a.id ORDER BY x.time DESC, x.timestamp DESC) h` + replFailing(d, "MSsnapshot_history", false) + `
 UNION ALL
-SELECT 'agent', ` + literal(db) + `, 'merge', CAST(a.name AS nvarchar(200)),
+SELECT 'agent', ` + literal(db) + `, a.id, 'merge', CAST(a.name AS nvarchar(200)),
   CAST(srv.name AS nvarchar(128)), CAST(a.publisher_db AS nvarchar(128)), CAST(a.publication AS nvarchar(128)),
-  h.runstatus, CAST(LEFT(c.comments, 1000) AS nvarchar(1000)), ` + utcText("COALESCE(h.end_time, h.start_time)") + `, CAST(NULL AS int)
+  h.runstatus, CAST(LEFT(c.comments, 1000) AS nvarchar(1000)), ` + utcText("COALESCE(h.end_time, h.start_time)") + `, ` + utcText("h.start_time") + `, CAST(NULL AS int),
+  CAST(NULL AS varchar(33)), CAST(NULL AS nvarchar(128)), CAST(NULL AS nvarchar(1000))
 FROM ` + d + `.dbo.MSmerge_agents a
-LEFT JOIN master.sys.servers srv ON srv.server_id = a.publisher_id
+LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
 OUTER APPLY (SELECT TOP (1) x.session_id, x.runstatus, x.start_time, x.end_time
                FROM ` + d + `.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) h
 OUTER APPLY (SELECT TOP (1) y.comments
                FROM ` + d + `.dbo.MSmerge_history y WHERE y.agent_id = a.id AND y.session_id = h.session_id ORDER BY y.timestamp DESC) c
+ORDER BY 4, 5`
+}
+
+// replJobsSQL: each agent's SQL Server Agent job on this server (msdb). job_state: running (its newest activity row
+// has a start and no stop), stopped, disabled, 'not here' (no job on this server: a pull subscription's agent runs
+// at the subscriber), 'Agent stopped' (SQL Server Agent itself is not running; read with VIEW SERVER STATE only).
+// continuous: the job step runs the agent with -Continuous (it is meant to run all the time).
+func replJobsSQL(db string, serverState bool) string {
+	d := quoteName(db)
+	svc, svcApply := `CAST(NULL AS nvarchar(60))`, ``
+	if serverState {
+		svc = `svc.status_desc`
+		svcApply = `
+OUTER APPLY (SELECT TOP (1) CAST(v.status_desc AS nvarchar(60)) AS status_desc FROM sys.dm_server_services v WHERE v.servicename LIKE N'SQL Server Agent%') svc`
+	}
+	return `SELECT 'agent_job' AS kind, ` + literal(db) + ` AS distribution_db, a.agent_type, CAST(a.name AS nvarchar(200)) AS agent_name,
+  CASE WHEN j.job_id IS NULL THEN 'not here'
+       WHEN ` + svc + ` IS NOT NULL AND ` + svc + ` <> N'Running' THEN 'Agent stopped'
+       WHEN act.start_execution_date IS NOT NULL AND act.stop_execution_date IS NULL THEN 'running'
+       WHEN j.enabled = 0 THEN 'disabled'
+       ELSE 'stopped' END AS job_state,
+  CASE WHEN j.job_id IS NULL THEN NULL WHEN st.command LIKE N'%-Continuous%' THEN 1 ELSE 0 END AS continuous,
+  ` + utcText("act.stop_execution_date") + ` AS job_stopped_utc
+FROM (SELECT name, job_id, 'distribution' AS agent_type FROM ` + d + `.dbo.MSdistribution_agents WHERE subscriber_db <> N'virtual'
+      UNION ALL SELECT name, job_id, 'logreader' FROM ` + d + `.dbo.MSlogreader_agents
+      UNION ALL SELECT name, job_id, 'snapshot' FROM ` + d + `.dbo.MSsnapshot_agents
+      UNION ALL SELECT name, job_id, 'merge' FROM ` + d + `.dbo.MSmerge_agents) a
+LEFT JOIN msdb.dbo.sysjobs j ON j.job_id = CAST(a.job_id AS uniqueidentifier)
+OUTER APPLY (SELECT TOP (1) x.start_execution_date, x.stop_execution_date FROM msdb.dbo.sysjobactivity x
+              WHERE x.job_id = j.job_id ORDER BY x.session_id DESC) act
+OUTER APPLY (SELECT TOP (1) s.command FROM msdb.dbo.sysjobsteps s
+              WHERE s.job_id = j.job_id AND s.subsystem IN (N'Distribution', N'LogReader', N'Snapshot', N'Merge') ORDER BY s.step_id) st` + svcApply + `
 ORDER BY 3, 4`
 }
 
-func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
+// replMsdbTables are the msdb tables replJobsSQL reads; each is asked for with msdbReadable first.
+var replMsdbTables = []string{"sysjobs", "sysjobactivity", "sysjobsteps"}
+
+func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+	rows := noRows()
+	// the publisher side first: a server that publishes to another server's distributor has no distribution database
+	pub, err := QueryRows(ctx, conn, replPublishedSQL(info.ViewServerState))
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		rows = append(rows, collect.Row{"kind": "collector_error", "source": "published databases", "message": err.Error()})
+	} else {
+		rows = append(rows, pub...)
+	}
 	dist, err := QueryRows(ctx, conn, replDistributorsSQL)
 	if err != nil {
 		return nil, err
 	}
-	rows := noRows()
+	// the agents' jobs: read when msdb's three tables are readable, else said once per distribution database
+	jobsWhy := ""
+	if len(dist) > 0 {
+		if !info.MsdbAccess {
+			jobsWhy = "the login has no access to msdb (a user there with db_datareader): the agents' jobs (running, stopped) were not read"
+		} else {
+			for _, t := range replMsdbTables {
+				if err := msdbReadable(ctx, conn, t); err != nil {
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
+					}
+					jobsWhy = strings.TrimSuffix(err.Error(), ": "+collect.ErrSkip.Error()) + ": the agents' jobs (running, stopped) were not read"
+					break
+				}
+			}
+		}
+	}
 	for _, d := range dist {
 		name, _ := d["name"].(string)
 		if access, _ := d["has_access"].(int64); access != 1 {
 			rows = append(rows, replNoAccess(name))
 			continue
 		}
-		for _, q := range []struct{ what, text string }{
-			{"MSpublications", replPublicationsSQL(name)},
-			{"MSdistribution_agents", replSubscriptionsSQL(name)},
-			{"MSlogreader_agents", replAgentsSQL(name)},
-		} {
+		mapped := false
+		if m, err := QueryRows(ctx, conn, replServersSQL(name)); err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			rows = append(rows, collect.Row{"kind": "collector_error", "source": name, "message": "the server map (MSreplservers): " + err.Error()})
+			continue
+		} else if len(m) == 1 {
+			v, _ := m[0]["mapped"].(int64)
+			mapped = v == 1
+		}
+		reads := []struct{ what, text string }{
+			{"MSpublications", replPublicationsFor(name, mapped)},
+			{"MSdistribution_agents", replSubscriptionsFor(name, mapped)},
+			{"MSlogreader_agents", replAgentsFor(name, mapped)},
+		}
+		if jobsWhy == "" {
+			reads = append(reads, struct{ what, text string }{"msdb jobs", replJobsSQL(name, info.ViewServerState)})
+		} else {
+			rows = append(rows, collect.Row{"kind": "collector_error", "source": name + ".msdb", "message": jobsWhy})
+		}
+		for _, q := range reads {
 			part, err := QueryRows(ctx, conn, q.text)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, err
 				}
-				rows = append(rows, collect.Row{"kind": "collector_error", "source": name + ".dbo." + q.what, "message": err.Error()})
+				src := name + ".dbo." + q.what
+				if q.what == "msdb jobs" {
+					src = name + ".msdb"
+				}
+				rows = append(rows, collect.Row{"kind": "collector_error", "source": src, "message": err.Error()})
 				continue
 			}
 			rows = append(rows, part...)
