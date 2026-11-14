@@ -62,20 +62,30 @@ var xeAGEvents = []string{"availability_replica_state_change", "availability_rep
 
 // The forms of the session script.
 const (
-	XEFormServer  = "server"     // SQL Server on a machine, a VM or a container, and Amazon RDS for SQL Server
+	XEFormServer  = "server"     // SQL Server on a machine, a VM or a container
 	XEFormAzureMI = "azuresqlmi" // Azure SQL Managed Instance: no local event file, a ring buffer for every capture
 	XEFormAzureDB = "azuresqldb" // Azure SQL Database: database-scoped sessions, a ring buffer for every capture
 	// Google Cloud SQL for SQL Server: the server form, its event file in the folder Google names
 	// (/var/opt/mssql/xevents/); the blocked process threshold cannot be set there (no sp_configure, no such flag)
 	XEFormCloudSQL = "cloudsql"
+	// Amazon RDS for SQL Server (Standard and Enterprise: RDS refuses event sessions on Express and Web): the server
+	// form, its event file in the folder AWS names; RDS's trigger refused the server form's bare file name ("Extended
+	// events event_file target is allowed only ...", R1, a real Standard instance, 2026-11-14)
+	XEFormRDS = "rds"
 )
+
+// xeRDSDir is where Amazon RDS for SQL Server keeps Extended Events files (AWS's 'Using extended events with Amazon RDS
+// for Microsoft SQL Server': D:\rdsdbdata\log; R1 made and started the four sessions with the slow file there).
+const xeRDSDir = `D:\rdsdbdata\log\`
 
 // xeCloudSQLDir is where Cloud SQL for SQL Server keeps Extended Events files (Google's Cloud SQL for SQL Server
 // pages; a bare file name, the server form's, is not proven there).
 const xeCloudSQLDir = "/var/opt/mssql/xevents/"
 
 // xeFileForm says whether the form writes the slow capture to an event file (the others keep a ring buffer).
-func xeFileForm(form string) bool { return form == XEFormServer || form == XEFormCloudSQL }
+func xeFileForm(form string) bool {
+	return form == XEFormServer || form == XEFormCloudSQL || form == XEFormRDS
+}
 
 var xeInstallID = regexp.MustCompile(`^[a-z0-9]{1,20}$`)
 
@@ -87,10 +97,10 @@ func xeCheckArgs(installID, form string) error {
 		return fmt.Errorf("the install id %q must be 1 to 20 lower-case letters and digits (it is part of the session names)", installID)
 	}
 	switch form {
-	case XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL:
+	case XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL, XEFormRDS:
 		return nil
 	}
-	return fmt.Errorf("the form %q must be %s, %s, %s or %s", form, XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL)
+	return fmt.Errorf("the form %q must be %s, %s, %s, %s or %s", form, XEFormServer, XEFormAzureMI, XEFormAzureDB, XEFormCloudSQL, XEFormRDS)
 }
 
 // xeScope is what differs between a server-scoped and a database-scoped session script.
@@ -129,6 +139,14 @@ func XEScript(installID, form string) (string, error) {
 			"  to " + xeCloudSQLDir + ", the folder Google names for Extended Events files.\n" +
 			"  Run on a real Cloud SQL for SQL Server 2022 instance: the four sessions made, started and read. Google's trigger\n" +
 			"  takes one max_memory per session, of 4 to 8 MB: the sizes below are each session's MAX_MEMORY, kept in that range.\n")
+	case XEFormRDS:
+		w("  Amazon RDS for SQL Server (Standard or Enterprise): run it in master as the master user. The slow capture's event\n" +
+			"  file goes to " + xeRDSDir + ", the folder AWS names for Extended Events files (RDS refuses a bare file name).\n" +
+			"  AWS's limits: a ring buffer at most 4 MB, a session's memory 4 to 8 MB (xe_session_max_memory), an event file\n" +
+			"  100 MB unless raised (xe_file_target_size, up to 1 GB, through rdsadmin.dbo.rds_set_configuration); the sizes\n" +
+			"  below are within them (a size past them was not run). Multi-AZ: a session made on the primary does not reach the\n" +
+			"  standby; after a failover run this script again on the new primary.\n" +
+			"  Run on a real RDS for SQL Server 2019 Standard instance: the four sessions made and started.\n")
 	default:
 		w("  Run it in master as a login that may create event sessions (ALTER ANY EVENT SESSION, or CONTROL SERVER).\n")
 	}
@@ -215,8 +233,11 @@ func XEScript(installID, form string) (string, error) {
 		// the server form's file name has no path: SQL Server writes it to its own log directory, beside system_health's;
 		// Cloud SQL's goes to the folder Google names
 		dir := ""
-		if form == XEFormCloudSQL {
+		switch form {
+		case XEFormCloudSQL:
 			dir = xeCloudSQLDir
+		case XEFormRDS:
+			dir = xeRDSDir
 		}
 		mem := "MAX_MEMORY=' + CAST(@slow_memory_kb AS nvarchar(20)) + N' KB"
 		if form == XEFormCloudSQL {
@@ -235,6 +256,9 @@ func XEScript(installID, form string) (string, error) {
 
 	if form != XEFormAzureDB {
 		step := "EXEC sys.sp_configure ''blocked process threshold (s)'', 15; RECONFIGURE; (it is an advanced option; 5 is the lowest value SQL Server honours)"
+		if form == XEFormRDS {
+			step = "on Amazon RDS, ''blocked process threshold (s)'' set to 15 in a DB parameter group of the instance''s own (dynamic, 0 to 86400: applied at once there; a default group cannot be changed, and an instance moved to a new group takes it at its next reboot)"
+		}
 		if form == XEFormCloudSQL {
 			step = "none on Cloud SQL: it has no sp_configure and its database flags offer no blocked process threshold, so this session stays empty there (deadlocks, slow queries and attention still capture)"
 		}

@@ -29,7 +29,7 @@ Why the slow session also takes `sql_statement_completed` and `sp_statement_comp
 pgvigil mssql-xe -print -install-id prod1 > pgvigil-xe.sql
 ```
 
-`-install-id` is 1 to 20 lower-case letters and digits (default `main`). `-form` is `server` (the default: SQL Server on a machine, a VM or a container, and Amazon RDS for SQL Server), `azuresqlmi` or `azuresqldb`.
+`-install-id` is 1 to 20 lower-case letters and digits (default `main`). `-form` is `server` (the default: SQL Server on a machine, a VM or a container), `rds` (Amazon RDS for SQL Server), `cloudsql` (Google Cloud SQL for SQL Server), `azuresqlmi` or `azuresqldb`.
 
 The script is one batch, run in `master` by a login that may create event sessions. It has a settings block at the top for the DBA:
 
@@ -72,7 +72,11 @@ A report is raised for a task blocked that many seconds and again each time that
 
 ### Azure SQL Database and Managed Instance
 
-`-form azuresqldb` prints database-scoped sessions (`ON DATABASE`, `database_xml_deadlock_report`), every target a ring buffer, to run in the database pgvigil connects to. `-form azuresqlmi` prints server-scoped sessions with a ring buffer for the slow capture too (an event file on a Managed Instance must be a blob URL with a credential). **Both forms are not proven**: they were written from the documentation and have not been run against either service, and the script says so in its header.
+`-form azuresqldb` prints database-scoped sessions (`ON DATABASE`, `database_xml_deadlock_report`), every target a ring buffer, to run in the database pgvigil connects to. `-form azuresqlmi` prints server-scoped sessions with a ring buffer for the slow capture too (an event file on a Managed Instance must be a blob URL with a credential). Both forms were run against a real instance of each service. `-form azuresqldb` in a General Purpose serverless database (`scripts/proof-mssql-azuresqldb.sh`): the four sessions made in the monitored database as its DBA would, all running, and `mssql_xe`'s states equal to the setup login's read. `-form azuresqlmi` in master on a General Purpose Managed Instance (`scripts/proof-mssql-mi.sh`, run twice): the four sessions made and started by the instance's admin, every target a ring buffer and no event file, and `mssql_xe` storing the four running as the monitoring login. Not proven: an event captured through pgvigil's own sessions on either service (on the Managed Instance the deadlock reports were read from `system_health`), `-form azuresqldb` on a tier other than General Purpose serverless, and `-form azuresqlmi` on Business Critical.
+
+### Amazon RDS and Google Cloud SQL
+
+`-form rds` and `-form cloudsql` are the server form with the slow capture's event file in the folder each service allows (`D:\rdsdbdata\log\` on RDS, `/var/opt/mssql/xevents/` on Cloud SQL), and the blocked process threshold step in the service's own words. On Cloud SQL each session also holds one memory size, its `MAX_MEMORY` kept within 4 to 8 MB, and its ring buffers take no size of their own: there the settings block's sizes are each session's memory. [SQL Server in the cloud](sqlserver-cloud.md) says what each was run on.
 
 ## The reader: `mssql_xe`, every minute
 
