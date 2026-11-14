@@ -325,7 +325,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
 // ---- fleet Replication page ------------------------------------------------------------------------------
 
 export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
-  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes' | 'hadr_links'>>('pg/replication', {}), tagIds(ctx)]);
+  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes' | 'hadr_links' | 'subscriptions'>>('pg/replication', {}), tagIds(ctx)]);
   const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const links = rowsOf(d.links).filter(keep), pat = rowsOf(d.patroni).filter(keep), ch = rowsOf(d.changes).filter(keep);
   // a link is in scope when either side is (its sending server or its standby)
@@ -367,6 +367,13 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
     el('p', { class: 'meta' }, 'A link whose sending server or standby the rolechange collection has not read (no system identifier to group it by).'),
     grid(rest, linkCols(ctx))));
   if (!hadrRead) out.push(el('p', { class: 'meta' }, 'The link rows (both sides of each standby) are not served by this server yet.'));
+  // logical replication (task 373: pgvigil.pg_logical_status): one row per subscription, its publisher's walsender beside it
+  if (d.subscriptions != null) {
+    const subs = rowsOf(d.subscriptions).filter(r => !ids || ids.has(Number(r.instance_id)) || ids.has(Number(r.publisher_id)));
+    out.push(el('section', {}, el('h3', {}, `Logical subscriptions (${subs.length})`),
+      el('p', { class: 'meta' }, 'Each subscription on its subscriber, its apply worker and counters, and its publisher\'s walsender (the slot) where the publisher is monitored.'),
+      grid(subs, subscriptionCols(ctx), 'No logical subscription in the fleet.')));
+  }
   if (pat.length) out.push(el('section', {}, el('h3', {}, 'Patroni'),
     grid(pat, [{ key: 'scope' }, { key: 'instance', label: 'read through', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgstate') }, { key: 'ok', label: 'answered', fmt: v => yes(v) },
       { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => `${String(m.member)} ${String(m.role)} ${String(m.state)}${m.lag_bytes != null ? ` lag ${fmtBytes(m.lag_bytes)}` : ''}`).join('; ') : '' },
@@ -396,6 +403,30 @@ function linkCols(ctx: Ctx): Col[] {
     { key: 'standby_lag_bytes', label: 'not replayed (standby)', num: true, fmt: bytes },
     { key: 'min_apply_delay_ms', label: 'apply delay', num: true, fmt: v => v == null || num(v) === 0 ? '' : fmtSecs(Math.round(num(v) / 1000)) },
     { key: 'last_seen', label: 'sender last seen', fmt: fmtTime },
+    { key: 'check_name', label: 'finding', fmt: (v, r) => v == null ? '' : el('span', {}, sev(r.severity), ' ', String(v)) },
+    { key: 'detail', wide: true },
+  ];
+}
+
+// subscriptionCols: one logical subscription per row (pg_logical_status).
+function subscriptionCols(ctx: Ctx): Col[] {
+  const counters = (v: unknown) => {
+    if (v == null || typeof v !== 'object') return '';
+    return Object.entries(v as Record<string, unknown>).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${k.replace(/^confl_/, '')} ${String(n)}`).join(', ');
+  };
+  return [
+    { key: 'instance', label: 'subscriber', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
+    { key: 'subname', label: 'subscription', fmt: (v, r) => `${String(r.datname ?? '')}.${String(v ?? '')}` },
+    { key: 'enabled', fmt: v => v == null ? '' : v ? badge('enabled', 'ok') : badge('disabled', 'warn') },
+    { key: 'worker_pid', label: 'apply worker', fmt: (v, r) => r.in_recovery ? 'standby: not run here' : v == null ? badge('none', r.enabled ? 'crit' : '') : `pid ${String(v)}` },
+    { key: 'publications' },
+    { key: 'rels_ready', label: 'tables ready' },
+    { key: 'apply_errors', label: 'apply errors', num: true },
+    { key: 'sync_errors', label: 'sync errors', num: true },
+    { key: 'conflicts', label: 'conflicts', fmt: counters },
+    { key: 'silent_secs', label: 'last message', num: true, fmt: v => v == null ? '' : `${fmtSecs(Math.round(num(v)))} ago` },
+    { key: 'publisher', fmt: (v, r) => r.publisher_id == null ? '' : instLink(ctx, v, r.publisher_id, 'replication') },
+    { key: 'sender_lag_bytes', label: 'not applied (publisher)', num: true, fmt: v => v == null ? '' : fmtBytes(v) },
     { key: 'check_name', label: 'finding', fmt: (v, r) => v == null ? '' : el('span', {}, sev(r.severity), ' ', String(v)) },
     { key: 'detail', wide: true },
   ];

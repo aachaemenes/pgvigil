@@ -40,6 +40,10 @@
 --                 a warning when synchronous_commit is off or local at the server (its sessions' commits do not wait);
 --                 'synchronous standby absent' (warning, on that name's link row) when a named standby is not
 --                 connected and num_sync still holds ('potential' and 'quorum' are healthy).
+--   task 373      logical replication (the 'logical' collection): pg_logical_subs / _rels / _pubs kept by import_logical,
+--                 pg_logical_checks (one finding per subscription: apply errors, worker down, disabled, sync errors,
+--                 PostgreSQL 18's conflicts, a table's initial sync not finished, silent), pg_logical_status for the
+--                 Replication page; a subscription's walsender on the publisher is keyed by its slot.
 -- The collector adds a 'standby' row (the server in recovery: its receiver, primary_conninfo / restore_command set,
 -- positions, replay pause), a 'sync' row (synchronous_standby_names) and each sender's slot and flush lag;
 -- import_replication keeps the two state tables from them.
@@ -172,6 +176,7 @@ BEGIN
   INSERT INTO pgvigil.replication_sample (instance_id, snapshot_at, kind, key, state, lag_bytes, lag_secs, active, detail)
   SELECT p_instance_id, p_snapshot_at, r->>'kind',
          CASE WHEN pgvigil.pg_link_sender(r) THEN pgvigil.pg_link_key(r->>'application_name', r->>'client_addr', r->>'slot_name')
+              WHEN r->>'kind' = 'sender' AND r->>'slot_type' = 'logical' THEN 'slot:' || (r->>'slot_name')   -- task 373: a subscription's walsender
               ELSE CASE r->>'kind'
            WHEN 'sender'         THEN coalesce(r->>'application_name', '') || '@' || coalesce(r->>'client_addr', '') || '#' || coalesce(r->>'pid', '')
            WHEN 'receiver'       THEN coalesce(r->>'slot_name', r->>'sender_host', 'receiver')
@@ -534,6 +539,237 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
             WHEN t.is_sync_absent THEN 'named in synchronous_standby_names and not connected' END AS stable
   FROM tiered t;
 
+-- ---------------------------------------------------------------------------------------------------------------
+-- task 373: logical replication (the 'logical' collection, internal/collect/logical.go). Three state tables, one row per
+-- object (no time series: the publisher's walsender of each subscription, with its lag over time, is the replication
+-- collection's sender row of the slot, keyed 'slot:<name>').
+INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
+  ('subscription_silent', 'Logical replication: no message from the publisher for', 'minutes', 'over', 5, NULL, '{root,tag,instance}', 10080),
+  ('table_sync_age',      'Logical replication: a table''s initial sync not finished after', 'minutes', 'over', 60, NULL, '{root,tag,instance}', 43200)
+ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
+  warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
+
+-- pg_logical_subs: a subscriber's subscriptions. The counters are cumulative: *_rose_at is the newest read whose counter
+-- was past the read before (a counter that went down was reset: not a rise); worker_down_reads counts the reads in a row
+-- of an enabled subscription on a server not in recovery with no apply worker.
+CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_subs (
+  instance_id        int NOT NULL,
+  datname            text NOT NULL,
+  subname            text NOT NULL,
+  read_at            timestamptz NOT NULL,
+  is_present         boolean NOT NULL DEFAULT true,
+  in_recovery        boolean,
+  enabled            boolean,
+  slot_name          text,
+  publications       text,
+  disable_on_error   boolean,
+  worker_pid         int,
+  received_lsn       pg_lsn,
+  latest_end_lsn     pg_lsn,
+  last_msg_at        timestamptz,
+  silent_secs        double precision,
+  sync_workers       int,
+  apply_errors       bigint,
+  sync_errors        bigint,
+  conflicts          jsonb,
+  conflicts_total    bigint,
+  apply_rose_at      timestamptz,
+  sync_rose_at       timestamptz,
+  conflicts_rose_at  timestamptz,
+  worker_down_reads  int NOT NULL DEFAULT 0,
+  disabled_since     timestamptz,
+  rels_ready         text,
+  PRIMARY KEY (instance_id, datname, subname)
+);
+-- pg_logical_rels: the tables of a subscription whose initial sync has not finished (a ready table has no row)
+CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_rels (
+  instance_id  int NOT NULL,
+  datname      text NOT NULL,
+  subname      text NOT NULL,
+  rel          text NOT NULL,
+  state        text,
+  state_since  timestamptz NOT NULL,
+  read_at      timestamptz NOT NULL,
+  PRIMARY KEY (instance_id, datname, subname, rel)
+);
+-- pg_logical_pubs: the publications per database of a publisher
+CREATE TABLE IF NOT EXISTS pgvigil.pg_logical_pubs (
+  instance_id  int NOT NULL,
+  datname      text NOT NULL,
+  pubname      text NOT NULL,
+  all_tables   boolean,
+  operations   text,
+  table_count  bigint,
+  read_at      timestamptz NOT NULL,
+  is_present   boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (instance_id, datname, pubname)
+);
+
+CREATE OR REPLACE FUNCTION pgvigil.import_logical(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pgvigil.pg_logical_subs WHERE instance_id = p_instance_id AND read_at >= p_snapshot_at) THEN
+    RETURN;   -- an older read than the state: nothing changes
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'collector_error' AND r->>'source' = 'subscriptions') THEN
+    INSERT INTO pgvigil.pg_logical_subs AS s
+           (instance_id, datname, subname, read_at, is_present, in_recovery, enabled, slot_name, publications, disable_on_error,
+            worker_pid, received_lsn, latest_end_lsn, last_msg_at, silent_secs, sync_workers, apply_errors, sync_errors,
+            conflicts, conflicts_total, worker_down_reads, disabled_since)
+    SELECT p_instance_id, coalesce(r->>'datname', '?'), r->>'subname', p_snapshot_at, true, (r->>'in_recovery')::boolean,
+           (r->>'enabled')::boolean, r->>'slot_name', r->>'publications', (r->>'disable_on_error')::boolean,
+           (r->>'worker_pid')::int, (r->>'received_lsn')::pg_lsn, (r->>'latest_end_lsn')::pg_lsn,
+           (r->>'last_msg_receipt_time')::timestamptz, (r->>'silent_secs')::float8, (r->>'sync_workers')::int,
+           (r->>'apply_error_count')::bigint, (r->>'sync_error_count')::bigint,
+           c.conflicts, c.total,
+           CASE WHEN (r->>'enabled')::boolean AND NOT coalesce((r->>'in_recovery')::boolean, false) AND r->>'worker_pid' IS NULL THEN 1 ELSE 0 END,
+           CASE WHEN NOT (r->>'enabled')::boolean THEN p_snapshot_at END
+      FROM jsonb_array_elements(p_payload) r
+      CROSS JOIN LATERAL (
+        SELECT jsonb_object_agg(k, (r->>k)::bigint) FILTER (WHERE r->>k IS NOT NULL) AS conflicts,
+               sum((r->>k)::bigint) AS total
+          FROM unnest(ARRAY['confl_insert_exists', 'confl_update_origin_differs', 'confl_update_exists', 'confl_update_missing',
+                            'confl_delete_origin_differs', 'confl_delete_missing', 'confl_multiple_unique_conflicts']) k) c
+     WHERE r->>'kind' = 'subscription'
+    ON CONFLICT (instance_id, datname, subname) DO UPDATE SET
+      read_at = EXCLUDED.read_at, is_present = true, in_recovery = EXCLUDED.in_recovery, enabled = EXCLUDED.enabled,
+      slot_name = EXCLUDED.slot_name, publications = EXCLUDED.publications, disable_on_error = EXCLUDED.disable_on_error,
+      worker_pid = EXCLUDED.worker_pid, received_lsn = EXCLUDED.received_lsn, latest_end_lsn = EXCLUDED.latest_end_lsn,
+      last_msg_at = EXCLUDED.last_msg_at, silent_secs = EXCLUDED.silent_secs, sync_workers = EXCLUDED.sync_workers,
+      apply_rose_at = CASE WHEN s.is_present AND EXCLUDED.apply_errors > s.apply_errors THEN EXCLUDED.read_at ELSE s.apply_rose_at END,
+      sync_rose_at = CASE WHEN s.is_present AND EXCLUDED.sync_errors > s.sync_errors THEN EXCLUDED.read_at ELSE s.sync_rose_at END,
+      conflicts_rose_at = CASE WHEN s.is_present AND EXCLUDED.conflicts_total > s.conflicts_total THEN EXCLUDED.read_at ELSE s.conflicts_rose_at END,
+      apply_errors = EXCLUDED.apply_errors, sync_errors = EXCLUDED.sync_errors,
+      conflicts = EXCLUDED.conflicts, conflicts_total = EXCLUDED.conflicts_total,
+      worker_down_reads = CASE WHEN EXCLUDED.worker_down_reads = 1 THEN s.worker_down_reads + 1 ELSE 0 END,
+      disabled_since = CASE WHEN NOT EXCLUDED.enabled THEN coalesce(s.disabled_since, EXCLUDED.read_at) END;
+    -- a subscription no longer listed is gone (dropped)
+    UPDATE pgvigil.pg_logical_subs SET is_present = false
+     WHERE instance_id = p_instance_id AND is_present AND read_at < p_snapshot_at;
+  END IF;
+
+  -- per database read: its unfinished tables and its publications replace what was there; a database not read keeps them
+  UPDATE pgvigil.pg_logical_subs s SET rels_ready = r->>'state'
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'sub_rels' AND s.instance_id = p_instance_id AND s.datname = r->>'datname' AND s.subname = r->>'subname';
+  INSERT INTO pgvigil.pg_logical_rels AS l (instance_id, datname, subname, rel, state, state_since, read_at)
+  SELECT p_instance_id, r->>'datname', r->>'subname', r->>'rel', r->>'state', p_snapshot_at, p_snapshot_at
+    FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'sub_rel'
+  ON CONFLICT (instance_id, datname, subname, rel) DO UPDATE SET
+    state_since = CASE WHEN l.state IS DISTINCT FROM EXCLUDED.state THEN EXCLUDED.read_at ELSE l.state_since END,
+    state = EXCLUDED.state, read_at = EXCLUDED.read_at;
+  DELETE FROM pgvigil.pg_logical_rels l
+   USING jsonb_array_elements(p_payload) d
+   WHERE d->>'kind' = 'db_read' AND (d->>'subs')::boolean AND l.instance_id = p_instance_id AND l.datname = d->>'datname' AND l.read_at < p_snapshot_at;
+  INSERT INTO pgvigil.pg_logical_pubs AS p (instance_id, datname, pubname, all_tables, operations, table_count, read_at, is_present)
+  SELECT p_instance_id, r->>'datname', r->>'pubname', (r->>'puballtables')::boolean,
+         concat_ws(', ', CASE WHEN (r->>'pubinsert')::boolean THEN 'insert' END, CASE WHEN (r->>'pubupdate')::boolean THEN 'update' END,
+                   CASE WHEN (r->>'pubdelete')::boolean THEN 'delete' END, CASE WHEN (r->>'pubtruncate')::boolean THEN 'truncate' END),
+         (r->>'table_count')::bigint, p_snapshot_at, true
+    FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'publication'
+  ON CONFLICT (instance_id, datname, pubname) DO UPDATE SET all_tables = EXCLUDED.all_tables, operations = EXCLUDED.operations,
+    table_count = EXCLUDED.table_count, read_at = EXCLUDED.read_at, is_present = true;
+  UPDATE pgvigil.pg_logical_pubs p SET is_present = false
+    FROM jsonb_array_elements(p_payload) d
+   WHERE d->>'kind' = 'db_read' AND (d->>'pubs')::boolean AND p.instance_id = p_instance_id AND p.datname = d->>'datname'
+     AND p.is_present AND p.read_at < p_snapshot_at;
+END $$;
+
+-- pg_logical_checks: one finding per subscription (on the subscriber), the first that holds of:
+--   'subscription apply errors'    critical: apply_error_count rose in the last 2 minutes (pgvigil's own default) - the
+--                                  apply worker fails and retries: a conflict (a row that exists, PostgreSQL 18 names it
+--                                  in the conflict counters) or a missing table or column
+--   'subscription worker down'     critical: enabled, the server not in recovery, no apply worker for 2 reads in a row
+--   'subscription disabled'        warning; critical when disable_on_error is set and the apply errors rose in the 5
+--                                  minutes before it was disabled (the error disabled it)
+--   'subscription sync errors'     warning: sync_error_count rose in the last 2 minutes (a table's initial copy fails)
+--   'subscription conflicts'       warning: a PostgreSQL 18 conflict counter rose in the last 2 minutes (a conflict
+--                                  applied or skipped without an error: update_missing, delete_missing, origin_differs)
+--   'table sync not finished'      warning: a table not ready for longer than 'table_sync_age' (60 minutes)
+--   'subscription silent'          warning: no message from the publisher for 'subscription_silent' (5 minutes) while
+--                                  the worker runs (the publisher keeps the link alive every wal_sender_timeout / 2)
+-- On a server in recovery a subscription runs no worker (it replicates as the standby): only 'disabled' is judged there.
+CREATE OR REPLACE VIEW pgvigil.pg_logical_checks AS
+WITH s AS (
+  SELECT s.*, i.name AS instance,
+         (s.apply_rose_at > s.read_at - interval '2 minutes') AS apply_now,
+         (s.sync_rose_at > s.read_at - interval '2 minutes') AS sync_now,
+         (s.conflicts_rose_at > s.read_at - interval '2 minutes') AS confl_now,
+         (SELECT string_agg(l.rel || ' (' || l.state || ' since ' || to_char(l.state_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC)', ', ' ORDER BY l.rel)
+            FROM pgvigil.pg_logical_rels l
+           WHERE l.instance_id = s.instance_id AND l.datname = s.datname AND l.subname = s.subname
+             AND ts.warn IS NOT NULL AND l.state_since < s.read_at - make_interval(secs => ts.warn * 60)) AS slow_rels,
+         ss.warn AS silent_min
+    FROM pgvigil.pg_logical_subs s
+    JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'table_sync_age') ts
+    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'subscription_silent') ss
+   WHERE s.is_present AND s.read_at > now() - interval '30 minutes'
+),
+c AS (
+  SELECT s.*,
+         CASE WHEN s.apply_now AND s.enabled AND NOT coalesce(s.in_recovery, false) THEN 'subscription apply errors'
+              WHEN s.enabled AND NOT coalesce(s.in_recovery, false) AND s.worker_down_reads >= 2 THEN 'subscription worker down'
+              WHEN NOT s.enabled THEN 'subscription disabled'
+              WHEN s.sync_now AND NOT coalesce(s.in_recovery, false) THEN 'subscription sync errors'
+              WHEN s.confl_now AND NOT coalesce(s.in_recovery, false) THEN 'subscription conflicts'
+              WHEN s.slow_rels IS NOT NULL AND NOT coalesce(s.in_recovery, false) THEN 'table sync not finished'
+              WHEN s.enabled AND NOT coalesce(s.in_recovery, false) AND s.worker_pid IS NOT NULL AND s.silent_min IS NOT NULL
+                   AND s.silent_secs > s.silent_min * 60 THEN 'subscription silent' END AS check_name
+    FROM s
+)
+SELECT c.instance_id,
+       CASE c.check_name
+         WHEN 'subscription apply errors' THEN 'critical'
+         WHEN 'subscription worker down' THEN 'critical'
+         WHEN 'subscription disabled' THEN CASE WHEN c.disable_on_error AND c.apply_rose_at >= c.disabled_since - interval '5 minutes' THEN 'critical' ELSE 'warning' END
+         ELSE 'warning' END AS severity,
+       c.check_name, c.datname || '.' || c.subname AS object, c.read_at AS at,
+       CASE c.check_name
+         WHEN 'subscription apply errors' THEN format('apply_error_count %s, rising (last at %s UTC): the apply worker fails and retries%s; the server log names the row and the error',
+                c.apply_errors, to_char(c.apply_rose_at AT TIME ZONE 'UTC', 'HH24:MI:SS'),
+                CASE WHEN c.conflicts_total > 0 THEN '; conflicts ' || c.conflicts::text ELSE '' END)
+         WHEN 'subscription worker down' THEN format('enabled with no apply worker for %s reads in a row: the publisher (%s) cannot be reached or the worker cannot start', c.worker_down_reads, c.publications)
+         WHEN 'subscription disabled' THEN format('disabled since %s UTC%s: nothing is applied and the publisher''s slot %s keeps its WAL',
+                to_char(c.disabled_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'),
+                CASE WHEN c.disable_on_error AND c.apply_rose_at >= c.disabled_since - interval '5 minutes' THEN ' by disable_on_error after an apply error' ELSE '' END,
+                coalesce(c.slot_name, '(none)'))
+         WHEN 'subscription sync errors' THEN format('sync_error_count %s, rising: a table''s initial copy fails%s', c.sync_errors, coalesce('; not ready: ' || c.slow_rels, ''))
+         WHEN 'subscription conflicts' THEN format('conflicts rising: %s', c.conflicts::text)
+         WHEN 'table sync not finished' THEN format('tables not ready: %s (%s ready)', c.slow_rels, coalesce(c.rels_ready, '?'))
+         WHEN 'subscription silent' THEN format('no message from the publisher for %s s (the worker runs)', round(c.silent_secs::numeric))
+       END AS detail,
+       CASE c.check_name
+         WHEN 'subscription apply errors' THEN 'the apply worker fails and retries'
+         WHEN 'subscription worker down' THEN 'enabled with no apply worker'
+         WHEN 'subscription disabled' THEN 'disabled'
+         WHEN 'subscription sync errors' THEN 'a table''s initial copy fails'
+         WHEN 'subscription conflicts' THEN 'conflicts rising'
+         WHEN 'table sync not finished' THEN 'tables not ready'
+         WHEN 'subscription silent' THEN 'no message from the publisher'
+       END AS stable
+  FROM c
+ WHERE c.check_name IS NOT NULL;
+
+-- pg_logical_status: the Replication page's subscriptions block - one row per subscription with its publisher's walsender
+-- (the slot's sender row on a monitored instance) and its one finding.
+CREATE OR REPLACE VIEW pgvigil.pg_logical_status AS
+SELECT s.instance_id, i.name AS instance, s.datname, s.subname, s.enabled, s.in_recovery, s.publications, s.slot_name,
+       s.worker_pid, s.last_msg_at, s.silent_secs, s.sync_workers, s.rels_ready, s.apply_errors, s.sync_errors, s.conflicts,
+       s.disabled_since, s.read_at,
+       snd.instance_id AS publisher_id, pi.name AS publisher, snd.state AS sender_state, snd.lag_bytes AS sender_lag_bytes,
+       snd.lag_secs AS sender_lag_secs,
+       k.severity, k.check_name, k.detail
+  FROM pgvigil.pg_logical_subs s
+  JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+  LEFT JOIN LATERAL (SELECT r.* FROM pgvigil.replication_latest r
+                      WHERE r.kind = 'sender' AND r.detail->>'slot_type' = 'logical' AND r.detail->>'slot_name' = s.slot_name
+                        AND r.instance_id <> s.instance_id
+                      ORDER BY r.snapshot_at DESC LIMIT 1) snd ON true
+  LEFT JOIN pgvigil.instances pi ON pi.instance_id = snd.instance_id
+  LEFT JOIN pgvigil.pg_logical_checks k ON k.instance_id = s.instance_id AND k.object = s.datname || '.' || s.subname
+ WHERE s.is_present;
+
 -- pg_hadr_checks: the streaming replication rules of this file, one row per finding (instance_id, severity, check_name,
 -- object, at, detail, reads, stable): one per link at most. detail is the newest read's account (the Summary and the
 -- Replication page); stable is the text the findings carry. A read older than 30 minutes raises nothing (the
@@ -554,7 +790,11 @@ SELECT y.instance_id, CASE WHEN y.commit_level IN ('off', 'local') THEN 'warning
        1, format('fewer synchronous standbys than synchronous_standby_names = ''%s'' asks for', y.setting)
   FROM pgvigil.pg_sync_state y
   JOIN pgvigil.instances i ON i.instance_id = y.instance_id AND i.is_active
- WHERE y.in_sync < y.num_sync AND y.snapshot_at > now() - interval '30 minutes';
+ WHERE y.in_sync < y.num_sync AND y.snapshot_at > now() - interval '30 minutes'
+UNION ALL
+-- task 373: logical replication, one finding per subscription
+SELECT k.instance_id, k.severity, k.check_name, k.object, k.at, k.detail, 1, k.stable
+  FROM pgvigil.pg_logical_checks k;
 
 -- 0006's daily-check view again with a severity column at its end (for the Summary's 'replication' overview and the
 -- Replication page, which judge severity by check name until they read this column: the join's wiring): a base backup's senders out of 'sender not streaming' and the replay-lag check (task 370
@@ -675,7 +915,19 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c
          WHEN 'statement store' THEN 'raise pg_stat_statements.max (a restart) or turn tracking back on'
          WHEN 'replication' THEN CASE c.check_name
                                    WHEN 'receiver down' THEN 'read the standby''s server log for the receiver''s connect error (pg_hba on the primary, the network, the replication login, a slot gone) and fix it; the standby catches up by itself once streaming resumes'
-                                   ELSE 'start the standby or reconnect it; if it was retired on purpose, the finding ends 7 days after it was last seen'
+                                   WHEN 'standby gone' THEN 'start the standby or reconnect it; if it was retired on purpose, the finding ends 7 days after it was last seen'
+                                   WHEN 'replay paused' THEN 'resume replay on the standby (SELECT pg_wal_replay_resume()) unless it was paused on purpose'
+                                   WHEN 'standby lag' THEN 'find what holds the standby back: a query conflicting with replay (max_standby_streaming_delay, hot_standby_feedback), slow disk or network, a long apply'
+                                   WHEN 'synchronous commits waiting' THEN 'bring a synchronous standby back, or change synchronous_standby_names: until then commits wait'
+                                   WHEN 'synchronous standby absent' THEN 'bring the named standby back or take its name out of synchronous_standby_names'
+                                   WHEN 'subscription apply errors' THEN 'read the subscriber''s server log for the failing change (a conflicting row, a missing table or column), fix the data or ALTER SUBSCRIPTION ... SKIP the transaction'
+                                   WHEN 'subscription worker down' THEN 'check that the publisher answers and accepts the subscription''s connection, and the subscriber''s max_logical_replication_workers'
+                                   WHEN 'subscription disabled' THEN 'ALTER SUBSCRIPTION ... ENABLE once its cause is fixed, or drop it (and its slot on the publisher)'
+                                   WHEN 'subscription sync errors' THEN 'read the subscriber''s server log for the failing initial copy (a row already there, a missing column)'
+                                   WHEN 'subscription conflicts' THEN 'read the subscriber''s server log for the conflicts: changes are being skipped or applied over other rows'
+                                   WHEN 'table sync not finished' THEN 'check the tablesync workers (max_sync_workers_per_subscription) and the server log for the copy'
+                                   WHEN 'subscription silent' THEN 'check the publisher and the network between them: the publisher sends a keepalive every wal_sender_timeout / 2'
+                                   ELSE 'see the Replication page'
                                  END
          ELSE 'schedule the amcheck collection for the database (README: the amcheck collection)'
        END AS suggested, 'self-managed' AS platforms,
@@ -684,7 +936,9 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c
          WHEN 'log shipping' THEN 'a standby that falls behind loses what it has not replayed if it must take over'
          WHEN 'crashes' THEN 'a crash restart ends every session and replays WAL from the last checkpoint'
          WHEN 'statement store' THEN 'evicted statements drop out of the statement history'
-         WHEN 'replication' THEN 'a standby that does not stream falls behind: a failover to it loses what it has not received'
+         WHEN 'replication' THEN CASE WHEN c.check_name LIKE 'subscription%' OR c.check_name = 'table sync not finished'
+                                     THEN 'a subscriber that does not apply falls behind its publisher, and the publisher''s slot keeps WAL until it does'
+                                     ELSE 'a standby that does not stream falls behind: a failover to it loses what it has not received' END
          ELSE 'damage in an index or a table is only found by a check that reads it'
        END AS detail, 'pg-backups' AS source, c.at
   FROM pgvigil.pg_backups_checks c

@@ -61,7 +61,8 @@
 #        hadrs1 is sync) and no 'synchronous commits waiting' [red FAIL: no view]; L6 and S3 undone after
 # Task 372 (written before its first run, 2026-11-14 10:4x PST):
 #   P    pg_sync_standbys: '2 (a, b)' FIRST 2 {a,b}; 'a, b' FIRST 1 {a,b}; 'ANY 1 (*)' 'ANY *' 1 no names;
-#        '"Quoted", b' FIRST 1 {Quoted,b}; 'first 3 (x)' FIRST 3 {x}; '*' 'FIRST *' 1; '' nothing [red FAIL: no function]
+#        '"Quoted", b' FIRST 1 {Quoted,b}; 'first 3 (x)' FIRST 3 {x}; '*' 'FIRST *' 1; '' nothing [red FAIL on 35e627e: no
+#        function; red ok on 255f44c: the function came with task 371 - mark corrected after 372's first red run]
 #   S1   synchronous_standby_names 'FIRST 1 (hadrs1)', hadrs1 sync, one read of hadr-p: no 'synchronous commits waiting'
 #        [red ok]
 #   S2   the receiver held down: an insert on the primary waits (a session in wait_event SyncRep, watched), one read of
@@ -70,7 +71,8 @@
 #   S4   'ANY 2 (hadrs1, hadr_absent)': hadrs1 in quorum, one short of 2 - an insert waits, one read: 'synchronous
 #        commits waiting' critical naming hadr_absent [red FAIL]; the setting reset releases the insert
 #   S6   'ANY 2 (hadrs1, hadr_absent)' with synchronous_commit local at the server: an insert completes within 10 s, one
-#        read: 'synchronous commits waiting' WARNING (commits at the default do not wait) [red FAIL x2]
+#        read: 'synchronous commits waiting' WARNING (commits at the default do not wait) [red FAIL x1: the insert completing
+#        is the server's own behaviour - mark corrected after 372's first red run]
 #   S5   'ANY 1 (*)': hadrs1 in quorum, one read: no 'synchronous commits waiting' [red ok]; everything reset after
 #   R3   the standby stopped, hadr-p and hadr-s read once (hadr-s's connect fails): nothing yet [red ok]
 #   G2   hadr-p read with 'platform: rds' in its config: no 'standby gone' on a managed platform [red ok]
