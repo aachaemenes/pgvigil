@@ -436,6 +436,7 @@ try {
   // P2 add through the form
   out('P2.fill', await fill('Add an application', { name: 'Page Added', tier: '2', environment: 'test', description: 'added by the page' }));
   out('P2.status', await submit('Add an application'));
+  out('P2.store', sql(`select tier || '|' || environment || '|' || description || '|' || (select string_agg(distinct source || '/' || set_by, ',') from pgvigil.app_field_source f where f.object_kind = 'application' and f.object_id = a.app_id) from pgvigil.app_applications a where name = 'Page Added'`));
   // P3 open it: each field's source; edit the description
   out('P3.open', await click('Open Page Added'));
   out('P3.sources', await ev(`document.querySelector('main section[aria-label="Application Page Added"]')?.textContent.replace(/\\s+/g, ' ').match(/entered by \\S+/g)?.length ?? 0`));
@@ -456,6 +457,8 @@ try {
   out('P5.fill', await fill('Assign the selected databases', { app_id: 'Page Added', environment: 'production' }));
   out('P5.status', await submit('Assign the selected databases'));
   out('P5.after', await ticks());
+  out('P5.store', sql(`select string_agg(i.name || '/' || x.database_name || '/' || x.environment || '/' || x.set_by, ',' order by i.name) from pgvigil.app_assignments x join pgvigil.instances i using (instance_id) join pgvigil.app_applications a using (app_id) where a.name = 'Page Added'`));
+  out('P5.audit', sql(`select count(*) from pgvigil.admin_audit where op = 'app_assign' and outcome = 'done' and ui_user = '${env.P_USR}' and target in ('instance ${env.P_PPI} database pdb1', 'instance ${env.P_PMI} database Orders')`));
   await click('Open Page Added');
   out('P5.rows', (await panelRows('Page Added') ?? []).map(r => `${r.database}:${r.assigned}:${r.environment}`).join('|'));
   // P6 mark and unmark
@@ -472,6 +475,7 @@ try {
   out('P7.refused', await submit('Rename Page Rename'));
   out('P7.fill2', await fill('Rename Page Rename', { new_name: 'Page Renamed', retag: true }));
   out('P7.done', await submit('Rename Page Rename'));
+  out('P7.store', sql(`select (select count(*) from pgvigil.pg_thresholds where ended_at is null and tag = 'application:Page Renamed') || '|' || (select count(*) from pgvigil.pg_thresholds where ended_at is null and tag = 'application:Page Rename') || '|' || (select count(*) from pgvigil.app_applications where name = 'Page Renamed')`));
   // P8 remove an assigned application: asked twice; refused without its ticks, done with them
   out('P8.ask', await click('Remove Page Renamed'));
   out('P8.refused', await click('Confirm: remove Page Renamed'));
@@ -526,7 +530,8 @@ if [[ $P_SET == 1 ]]; then
   [[ $(pv P1.ready) == true && "|$(pv P1.strip)|" == *"|Applications|"* && -n "$want" && "$have" == "$want" ]] \
     && ok "P1 the Admin strip lists Applications; the page lists the store's applications ($have)" || bad "P1 ready $(pv P1.ready); strip '$(pv P1.strip)'; page '$have' / store '$want'"
   # P2
-  p2=$(q "select tier || '|' || environment || '|' || description || '|' || (select string_agg(distinct source || '/' || set_by, ',') from pgvigil.app_field_source f where f.object_kind = 'application' and f.object_id = a.app_id) from pgvigil.app_applications a where name = 'Page Added'")
+  # P2, P5 and P7 grade the store as read right after their step (later steps change it: t-ap-g6 graded the end state)
+  p2=$(pv P2.store)
   [[ $(pv P2.fill) == ok && $p2 == "2|test|added by the page|entered/$USR" ]] && ok "P2 Add through the form: stored, every field entered by $USR ($(pv P2.status))" || bad "P2 fill $(pv P2.fill); store '$p2'; status '$(pv P2.status)'"
   # P3
   p3=$(q "select description || '|' || version from pgvigil.app_applications where name = 'Page Added'")
@@ -536,8 +541,7 @@ if [[ $P_SET == 1 ]]; then
   [[ $(pv P4.before) == false && $(pv P4.after) == true && $p4 == 1 && $(pv P4.listed) == true ]] && ok "P4 contacts on a click only (the planted e-mail absent before, shown after); a contact added through the form stored and listed" \
     || bad "P4 before $(pv P4.before), after $(pv P4.after); stored $p4, listed $(pv P4.listed); status '$(pv P4.status)'"
   # P5
-  p5=$(q "select string_agg(i.name || '/' || x.database_name || '/' || x.environment || '/' || x.set_by, ',' order by i.name) from pgvigil.app_assignments x join pgvigil.instances i using (instance_id) join pgvigil.app_applications a using (app_id) where a.name = 'Page Added'")
-  n5=$(q "select count(*) from pgvigil.admin_audit where op = 'app_assign' and outcome = 'done' and ui_user = '$USR' and (target like 'instance $PPI database pdb1' or target like 'instance $PMI database Orders')")
+  p5=$(pv P5.store); n5=$(pv P5.audit)
   a5="|$(pv P5.after)|"; r5="|$(pv P5.rows)|"
   [[ "|$(pv P5.before)|" == *"|Select pdb1 on proof-page-pg|"* && $p5 == "proof-page-ms/Orders/production/$USR,proof-page-pg/pdb1/production/$USR" && $n5 == 2 \
      && $a5 != *"|Select pdb1 on proof-page-pg|"* && $a5 != *"|Select Orders on proof-page-ms|"* && $a5 == *"|Select pdb2 on proof-page-pg|"* && $r5 == *"|pdb1:own:production|"* && $r5 == *"|Orders:own:production|"* ]] \
@@ -547,7 +551,7 @@ if [[ $P_SET == 1 ]]; then
   [[ $(pv P6.gone) == true && $(pv P6.unmarkable) == true && $(pv P6.store) == 1 && $(pv P6.back) == true && $m6 == 0 ]] && ok "P6 Mark: Ledger left Unassigned (stored) and Unmark is offered; Unmark: back on Unassigned, the mark gone" \
     || bad "P6 gone $(pv P6.gone), unmark offered $(pv P6.unmarkable), stored $(pv P6.store), back $(pv P6.back), left $m6; '$(pv P6.status)' / '$(pv P6.unmark)'"
   # P7
-  t7=$(q "select (select count(*) from pgvigil.pg_thresholds where ended_at is null and tag = 'application:Page Renamed') || '|' || (select count(*) from pgvigil.pg_thresholds where ended_at is null and tag = 'application:Page Rename') || '|' || (select count(*) from pgvigil.app_applications where app_id = $PREN and name = 'Page Renamed')")
+  t7=$(pv P7.store)
   [[ $(pv P7.refused) == *"tick to rewrite"* && $(pv P7.done) != "Not done"* && $(pv P7.fill2) == ok && $t7 == "1|0|1" ]] && ok "P7 Rename: refused without the tick (the store's words), done with it; the threshold re-tagged" \
     || bad "P7 refused '$(pv P7.refused)'; done '$(pv P7.done)'; store (new|old|renamed) $t7"
   # P8
