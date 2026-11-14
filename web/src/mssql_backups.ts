@@ -108,7 +108,8 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
 type FleetParts = 'by_instance' | 'databases' | 'findings';
 const n0 = (v: unknown) => v == null ? 0 : Number(v);
 const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => bad && n0(v) > 0 ? bad : '' });
-const rate = (v: unknown) => v == null ? '' : `${fmtNum(v)} MB/s`;
+// a rate under a header that names its unit ('full MB/s'): the cell is the number, so the export keeps a number (X7)
+const rate = (v: unknown) => v == null ? '' : fmtNum(v);
 // where the thresholds are set, for the Configure control that cannot act here
 const configureWhy = 'Backup thresholds are not set from this page: they are each instance\'s mssql_thresholds in pgvigil.yaml '
   + '(full_backup_hours, diff_backup_hours, log_backup_minutes, new_database_hours, nul_backup_days, backup_exclude) and reach the repository with the collector.';
