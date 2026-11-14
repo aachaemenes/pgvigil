@@ -136,6 +136,7 @@ func sideMapKeyFindings(fset *token.FileSet, files []*ast.File) (found []string,
 // source (not its tests) and fails on any other *Server key: a map keyed by s misses on every mailed page, as the six did
 // before 4b4b7e4 (uidoor-u7's N6, a product fault of task 171's render). The checker itself first, on the old line
 // (doorSets.Load(s)) and its variants: a field, a parameter, Delete, a Range callback's comparison.
+// Its limit: it reads a key by its type, so a key that only carries a *Server (inside an interface value or a struct) is not seen.
 func TestSideMapsKeyedBySelf(t *testing.T) {
 	const old = `package web
 
