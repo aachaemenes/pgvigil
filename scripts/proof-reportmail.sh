@@ -632,6 +632,32 @@ for f in glob.glob(os.path.join(W, 'screen-*.json')):
 head_of = lambda ws: [str(c.value) for c in next(ws.iter_rows(min_row=1, max_row=1), []) if c.value is not None]
 rows_of = lambda ws: sum(1 for r in ws.iter_rows(min_row=2) if any(c.value is not None for c in r))
 books = []
+# -- x rule: a workbook as (sheet name, header row, data rows) per sheet
+def x_problems(sid, mail, bars, book, grids):
+    # mail: the mailed workbook; bars: the bar's Export .xlsx of the route at each read that has one (a scheduled mail is
+    # drawn between them, so a sheet may equal either: as C takes any read); book: the read the mail matches, its grids in
+    # order (the empty ones too); grids: the mail body's grids with rows, in order
+    out = []
+    if not bars: return [f'mail {sid}: no bar export beside a read of its route']
+    names = [n for n, _, _ in mail]
+    if not any(names == [n for n, _, _ in b] for b in bars): return [f"mail {sid}: sheets {names} vs the bar's {[[n for n, _, _ in b] for b in bars]}"]
+    for n, h, r in mail:
+        if n != 'About' and not any((bn, bh, br) == (n, h, r) for b in bars for bn, bh, br in b):
+            out.append(f"mail {sid} sheet {n}: header {h}, {r} rows vs the bar's {[(bh, br) for b in bars for bn, bh, br in b if bn == n]}")
+    # the page's grids in order, each the next sheet that is its own (a tiles, attention or chart sheet between is passed
+    # over; a sheet serves one grid): an empty grid a sheet of its header alone, a grid with rows a sheet with as many
+    # rows as the mail's grid
+    sheets = [x for x in mail if x[0] != 'About']; k = 0; body = iter(grids)
+    for g in book:
+        if g.get('empty'): fit = lambda x: x[1] == g['head'] and x[2] == 0
+        else:
+            mg = next(body, None); want = len(mg['rows']) if mg else 0
+            fit = lambda x: x[2] == want if want else x[2] > 0
+        j = next((i for i in range(k, len(sheets)) if fit(sheets[i])), None)
+        if j is None: out.append(f"mail {sid} {g['named']}: no sheet of its own after {sheets[k - 1][0] if k else 'the first'} ({'its header alone ' + str(g['head']) if g.get('empty') else str(want) + ' rows'}) in {names}"); continue
+        k = j + 1
+    return out
+# -- end x rule
 mails = {}
 for f in sorted(glob.glob(os.path.join(W, 'sink', '*.eml'))):
     m = email.message_from_binary_file(open(f, 'rb'), policy=policy.default)
@@ -698,10 +724,9 @@ for sid, s in sorted(sends.items()):
     shape = lambda r: [(g['named'], g['rows']) for g in r if not g.get('empty')]
     scr = next((r for r in reads if shape(r) == [(g['name'], len(g['rows'])) for g in p.grids]), reads[0])
     alt_scrs = [r for r in reads if r is not scr]
-    # the bar's export pressed at that read (the read 'sm' has none: the next read of the route that has one)
-    at = pair[next(i for i, r in enumerate(reads) if r is scr)]
+    # the bar's export pressed at each read of the route that has one (not 'sm', 'nowb')
     rb = bars.get(norm(s['route']), {})
-    barf = rb.get(at) or next((rb[k] for k in pair if k in rb), None)
+    barfs = [rb[k] for k in pair if k in rb]
     book = [g for g in scr]   # every grid of the page in order, the empty ones too: the workbook's sheets
     grids = [g for g in scr if not g.get('empty')]   # the grids with rows: the mail's body
     zone = re.search(r'>Time zone</th><td[^>]*>([^<]*)<', body)
@@ -753,20 +778,11 @@ for sid, s in sorted(sends.items()):
     wb = openpyxl.load_workbook(io.BytesIO(raw))
     os.makedirs(os.path.join(W, 'mailbooks'), exist_ok=True)
     books.append(os.path.join(W, 'mailbooks', f'mail-{sid}.xlsx')); open(books[-1], 'wb').write(raw)
-    # P03: the workbook is Export .xlsx's - the bar's export of the same page at the same read: the same sheets in order,
-    # each with the same header row and as many data rows ('About' by name only: its times are the export's own)
-    if barf is None: problems.append(f'mail {sid}: no bar export beside a read of {s["route"]}')
-    else:
-        bw = openpyxl.load_workbook(barf)
-        if wb.sheetnames != bw.sheetnames: problems.append(f'mail {sid}: sheets {wb.sheetnames} vs the bar\'s {bw.sheetnames} ({os.path.basename(barf)})')
-        else:
-            for ws, bs in zip(wb.worksheets, bw.worksheets):
-                if ws.title == 'About': continue
-                if (head_of(ws), rows_of(ws)) != (head_of(bs), rows_of(bs)): problems.append(f'mail {sid} sheet {ws.title}: header {head_of(ws)}, {rows_of(ws)} rows vs the bar\'s {head_of(bs)}, {rows_of(bs)} rows')
-    # an empty grid of the page: a sheet of its header row alone (its columns, no data row)
-    for g in book:
-        if g.get('empty') and not any(head_of(ws) == g['head'] and rows_of(ws) == 0 for ws in wb.worksheets if ws.title != 'About'):
-            problems.append(f'mail {sid} {g["named"]}: no sheet of the empty grid\'s header row alone ({g["head"]}) in {wb.sheetnames}')
+    # P03: the workbook is Export .xlsx's - the bar's export of the same page: the same sheets in order, each with the
+    # header row and as many data rows as that sheet in a bar file of the route ('About' by name only: its times are the
+    # export's own), and every grid of the page its own sheet in order
+    summ = lambda w: [(ws.title, head_of(ws), rows_of(ws)) for ws in w.worksheets]
+    problems += x_problems(sid, summ(wb), [summ(openpyxl.load_workbook(f)) for f in barfs], book, p.grids)
     total += cells
     print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched a later read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
 # the file rules (scripts/xlsx-check.py rules) on every mailed workbook
