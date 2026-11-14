@@ -46,7 +46,7 @@ SELECT l.at, l.ui_user, l.client, l.op, l.kind, l.ack_id, l.instance_name AS ins
 
 // sqlAckSuppressed: the sends a mute, silence or blackout held, last held in the window
 const sqlAckSuppressed = `
-SELECT x.last_at, x.first_at, x.passes, x.channel, x.instance_name AS instance, x.severity, x.source, x.setting, x.value,
+SELECT x.last_at, x.first_at, x.passes, x.channel, x.instance_id, x.instance_name AS instance, x.severity, x.source, x.setting, x.value,
        x.ack_id, a.kind AS held_by, a.created_by, coalesce(a.match_text, a.check_key, a.tag, a.instance_name) AS rule
   FROM pgvigil.ack_suppressed x
   JOIN pgvigil.acks a USING (ack_id)

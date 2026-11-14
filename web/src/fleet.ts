@@ -333,3 +333,13 @@ export function inTagScope(tag: string, r: Row): boolean {
   }
   return ts.includes(tag);
 }
+
+// tagWords: a tag scope in words for a heading, a breadcrumb or an 'in view' line, as the tree names its folder - a
+// written tag 'tag env:prod'; '<key>:' (no value of the key, inTagScope) '(no env)'; 'untagged' (no tag at all) 'the
+// untagged instances'
+export function tagWords(tag: string): string {
+  if (tag === 'untagged') return 'the untagged instances';
+  const i = tag.indexOf(':');
+  if (i > 0 && i === tag.length - 1) return `(no ${tag.slice(0, i).trim().toLowerCase()})`;
+  return `tag ${tag}`;
+}
