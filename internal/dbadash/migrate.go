@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
@@ -58,8 +60,37 @@ SELECT A.DBADashAgentID, A.AgentHostName, A.AgentServiceName, I.InstanceID, I.In
  WHERE I.IsActive = 1
  ORDER BY A.DBADashAgentID, I.InstanceID`
 
-// Agents reads the repository's DBA Dash services now, through the door's read login.
+// agentsKeep is how long a read of a repository's services answers the page (its list polls every 5 s while an import
+// runs; each read is a login on DBA Dash's repository server, an audit event there).
+const agentsKeep = time.Minute
+
+var agentsRead = struct {
+	sync.Mutex
+	at  map[string]time.Time
+	got map[string][]Agent
+}{at: map[string]time.Time{}, got: map[string][]Agent{}}
+
+// Agents is the repository's DBA Dash services, read through the door's read login at most once a minute (a failed
+// read is never kept).
 func Agents(ctx context.Context, repo string) ([]Agent, error) {
+	agentsRead.Lock()
+	if at, ok := agentsRead.at[repo]; ok && time.Since(at) < agentsKeep {
+		got := agentsRead.got[repo]
+		agentsRead.Unlock()
+		return got, nil
+	}
+	agentsRead.Unlock()
+	got, err := readAgents(ctx, repo)
+	if err == nil {
+		agentsRead.Lock()
+		agentsRead.at[repo], agentsRead.got[repo] = time.Now(), got
+		agentsRead.Unlock()
+	}
+	return got, err
+}
+
+// readAgents reads the repository's DBA Dash services now.
+func readAgents(ctx context.Context, repo string) ([]Agent, error) {
 	r, ok := repository(repo)
 	if !ok {
 		return nil, ErrNoRepository

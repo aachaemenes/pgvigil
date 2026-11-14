@@ -7,7 +7,7 @@
 // or to a monitored server. Data from GET /api/admin/dbadash_moves, writes POST /api/admin/dbadash_moves
 // (internal/web/q_migrate.go). The section is mounted by admin_instances.ts.
 import { get } from './api';
-import { rowAddress } from './move_address';
+import { addChunks, rowAddress } from './move_address';
 import { badge, el, fmtTime, offControl } from './ui';
 
 type Obj = Record<string, unknown>;
@@ -25,7 +25,7 @@ const STEP_WORDS: Record<string, string> = {
 // a state's badge kind: the steps of a move in their colours
 const STATE_KIND: Record<string, string> = {
   'not yet': '', 'imported only': 'info', 'collected by pgvigil': 'info', moving: 'info', collecting: 'info', importing: 'info',
-  partial: 'warn', 'import failed': 'warn', 'ready to switch': '', disabled: 'warn',
+  partial: 'warn', 'import failed': 'warn', 'import interrupted': 'warn', 'ready to switch': '', disabled: 'warn',
 };
 const MOVABLE = new Set(['not yet', 'imported only']);
 
@@ -137,10 +137,20 @@ export function moveSection(): HTMLElement {
       if (pick.length > d.max_add) { say(`At most ${d.max_add} servers in one add: untick ${pick.length - d.max_add}.`, true); return; }
       add.disabled = true; say('Working…');
       try {
-        const r = await post({ op: 'add', repo, auth: auth.value, login: login.value.trim(), password: pw.value,
-          servers: pick.map(t => ({ server: String(t.row.server), dbadash_ids: t.row.dbadash_ids, host: t.host.value.trim(), port: t.port.value.trim(), name: t.name.value.trim() })) });
-        if (!r.ok) { say(`Not added: ${words(r.body)}`, true); add.disabled = false; return; }
-        const res = (r.body.results as Obj[]) ?? [];
+        // one post per part under the server's 16 KB body (review 206d 13: 50 long names pass it in one)
+        const base = { op: 'add', repo, auth: auth.value, login: login.value.trim(), password: pw.value };
+        const all = pick.map(t => ({ server: String(t.row.server), dbadash_ids: t.row.dbadash_ids, host: t.host.value.trim(), port: t.port.value.trim(), name: t.name.value.trim() }));
+        const res: Obj[] = [];
+        for (const part of addChunks(base, all)) {
+          const r = await post({ ...base, servers: part });
+          if (!r.ok) {
+            say(`Not added: ${words(r.body)}${res.length ? ` (the ${res.length} server(s) of the parts before were sent: the list shows them)` : ''}`, true);
+            add.disabled = false;
+            if (res.length) await draw();
+            return;
+          }
+          res.push(...((r.body.results as Obj[]) ?? []));
+        }
         const done = res.filter(x => x.outcome === 'done').length;
         await draw();
         results.replaceChildren(...res.map(x => el('li', {}, `${String(x.server)} as ${String(x.name)}: ${String(x.outcome)}${x.detail ? ` - ${String(x.detail)}` : ''}`)));
@@ -243,5 +253,6 @@ function countWords(c: Obj | null | undefined): string {
 
 function jobWords(j: Obj): string {
   const rows = Object.entries((j.inserted ?? {}) as Obj).map(([k, v]) => `${k} ${String(v)}`).join(', ');
-  return j.ended ? `import ${String(j.outcome)} ${fmtTime(j.ended)}${rows ? `: ${rows}` : ''}` : `importing since ${fmtTime(j.started)}${rows ? `: ${rows} so far` : ''}`;
+  const notes = Array.isArray(j.notes) && j.notes.length ? ` (${(j.notes as string[]).join('; ')})` : '';
+  return j.ended ? `import ${String(j.outcome)} ${fmtTime(j.ended)}${rows ? `: ${rows}` : ''}${notes}` : `importing since ${fmtTime(j.started)}${rows ? `: ${rows} so far` : ''}`;
 }

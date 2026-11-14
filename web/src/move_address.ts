@@ -98,3 +98,18 @@ export function rowAddress(server: string, conns: string[]): { host: string; por
   if (why(server) === '') return { host: server, port: '', why: `${said}; the host here is DBA Dash's Instance (@@SERVERNAME) - check it and the port.` };
   return { host: '', port: '', why: `${said}, nor is its Instance "${server}" - type its host and port.` };
 }
+
+// addChunks splits an add's servers into posts whose JSON body stays under limit bytes (the server takes 16 KB per
+// post): 50 servers with long names and their InstanceIDs pass 16 KB in one. In order; a server too long alone is a
+// post of its own (the server then refuses it in its words).
+export function addChunks<T>(base: object, servers: T[], limit = 14000): T[][] {
+  const size = (x: unknown) => new TextEncoder().encode(JSON.stringify(x)).length;
+  const out: T[][] = [];
+  let cur: T[] = [];
+  for (const sv of servers) {
+    if (cur.length && size({ ...base, servers: [...cur, sv] }) > limit) { out.push(cur); cur = []; }
+    cur.push(sv);
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}

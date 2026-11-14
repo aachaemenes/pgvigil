@@ -96,8 +96,12 @@ func TestLiveImport(t *testing.T) {
 		}
 		fmt.Printf("progress %d %s inserted=%d final=%d\n", c.DBADashID, c.Mapping, c.Inserted, f)
 	}
+	repoDSN := os.Getenv("PGVIGIL_DBADASH_IMPORT_REPO")
 	if os.Getenv("PGVIGIL_DBADASH_IMPORT_STORE") == "1" {
-		pool, err := pgxpool.New(ctx, os.Getenv("PGVIGIL_DBADASH_IMPORT_REPO"))
+		// the pool handed to Import is the only way to the store: Import is given no dsn of its own (review 206e 2: an
+		// Import that opened the dsn itself would pass every E2 row otherwise)
+		pool, err := pgxpool.New(ctx, repoDSN)
+		repoDSN = "host=/nonexistent-pgvigil-e2 dbname=none"
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +115,7 @@ func TestLiveImport(t *testing.T) {
 			fmt.Printf("store open after: %s\n", res)
 		}()
 	}
-	got, err := Import(ctx, log, src, os.Getenv("PGVIGIL_DBADASH_IMPORT_REPO"), opt)
+	got, err := Import(ctx, log, src, repoDSN, opt)
 	for _, c := range got {
 		fmt.Printf("import %d %d %s source=%d inserted=%d stored=%d skipped=%s\n", c.DBADashID, c.PgvigilID, c.Mapping, c.Source, c.Inserted, c.Stored, c.Skipped)
 	}

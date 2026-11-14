@@ -5,7 +5,7 @@
 // scripts/proof-dbadash-door.sh part G runs it after the web build. Every row prints 'ok' or 'FAIL'; the exit is 1 when
 // any failed. The host rows are internal/web/migrate_test.go TestMoveAddCheck's (the server's addressWhy decides).
 const m = await import(new URL(process.argv[2], 'file://' + process.cwd() + '/').href);
-const { addrWhy, hostPort, rowAddress, localHost, isV6 } = m;
+const { addrWhy, hostPort, rowAddress, localHost, isV6, addChunks } = m;
 let bad = 0, n = 0;
 const eq = (what, got, want) => {
   n++;
@@ -86,5 +86,14 @@ const loc2 = rowAddress('SQL01', ['localhost,1433', 'sql01.corp.example.com,1433
 eq('a local ConnectionID is skipped for the next address', loc2, { host: 'sql01.corp.example.com', port: '14330', why: '' });
 eq('tcp:localhost: the Instance', rowAddress('SQL05', ['tcp:localhost']).host, 'SQL05');
 
+// review 206d 13: an add's posts under the server's 16 KB body, in order, nothing lost
+const base = { op: 'add', repo: 'corp', auth: 'sql', login: 'pgv_mon', password: 'p'.repeat(40) };
+const fifty = Array.from({ length: 50 }, (_, i) => ({ server: 'SQL' + i + 'X'.repeat(120), dbadash_ids: [1000 + i, 2000 + i], host: 'sql' + i + '.a-long-domain.example.com', port: '14330', name: 'sql' + i + 'x'.repeat(50) }));
+const parts = addChunks(base, fifty);
+const sizes = parts.map(p => new TextEncoder().encode(JSON.stringify({ ...base, servers: p })).length);
+eq('50 long servers: more than one post', parts.length > 1, true);
+eq('every post under 14000 bytes', sizes.every(z => z <= 14000), true);
+eq('in order, none lost', parts.flat().map(x => x.server), fifty.map(x => x.server));
+eq('a short add: one post', addChunks(base, fifty.slice(0, 3)).length, 1);
 console.log(`${n - bad} of ${n} ok`);
 process.exit(bad ? 1 : 0);

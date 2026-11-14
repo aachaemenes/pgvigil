@@ -935,6 +935,21 @@ func TestMoveXEForeignOnAStore(t *testing.T) {
 	check("a read without the marker", "DBADash_1:true", base.Add(time.Minute), 1)
 	read(base.Add(3*time.Minute), true)
 	check("a read that listed none", "", base.Add(3*time.Minute), 0)
+	// review 206e 7: an unchanged list is not rewritten (only the read's own row moves); a change rewrites it
+	read(base.Add(4*time.Minute), true, "DBADash_1", "DBADash_AdHoc")
+	check("a list again", "DBADash_1:true,DBADash_AdHoc:false", base.Add(4*time.Minute), 2)
+	var before, after string
+	tids := `SELECT string_agg(ctid::text || '@' || read_at::text, ',' ORDER BY name) FROM pgvigil.mssql_xe_foreign WHERE instance_id = $1`
+	if err := pool.QueryRow(ctx, tids, id).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	read(base.Add(5*time.Minute), true, "DBADash_AdHoc", "DBADash_1")
+	check("the same list, read again", "DBADash_1:true,DBADash_AdHoc:false", base.Add(5*time.Minute), 2)
+	if err := pool.QueryRow(ctx, tids, id).Scan(&after); err != nil || after != before {
+		t.Fatalf("the same list was rewritten: %q -> %q (%v)", before, after, err)
+	}
+	read(base.Add(6*time.Minute), true, "DBADash_1")
+	check("a session gone", "DBADash_1:true", base.Add(6*time.Minute), 1)
 }
 
 // TestMoveListStates (task 206, W2 / P2): dbadash_move_list gives each server of a repository the state the test set up

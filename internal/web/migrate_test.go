@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -374,5 +375,42 @@ SELECT i.instance_id, x.n, x.r, '{ring_buffer}', $2 FROM pgvigil.instances i, (V
 	if err := pool.QueryRow(ctx, `SELECT coalesce(m.ticks->'xe_dropped'->>'done', '-') || '|' || coalesce(m.ticks->'xe_dropped'->>'by', '-')
   FROM pgvigil.dbadash_moves m JOIN pgvigil.instances i ON i.instance_id = m.instance_id WHERE i.name = $1`, nameA).Scan(&got); err != nil || got != "true|t206" {
 		t.Fatalf("the tick kept: %q (%v), want true|t206", got, err)
+	}
+}
+
+// TestMoveCountsAndOutcome (reviews 206d 5, 7, 8): a server DBA Dash lists twice has its sources summed and its stored
+// rows once; the job's inserts are summed over its InstanceIDs at each read; an InstanceID DBA Dash no longer holds is
+// a note, never a partial.
+func TestMoveCountsAndOutcome(t *testing.T) {
+	got := []dbadash.ImportCount{
+		{DBADashID: 31, Mapping: "cpu", Source: 300, Stored: 500},
+		{DBADashID: 32, Mapping: "cpu", Source: 200, Stored: 500},
+		{DBADashID: 31, Mapping: "jobruns", Source: 4, Stored: 4},
+		{DBADashID: 32, Mapping: "jobruns", Source: 1, Stored: 4, Skipped: "waiting for the collector's first jobs read"},
+		{DBADashID: 77, Mapping: "-", Skipped: "no SQL Server instance with this InstanceID in the repository (an Azure SQL database, or unknown)"},
+	}
+	c := moveCounts(got)
+	if cpu := c["cpu"].(map[string]any); cpu["source"] != int64(500) || cpu["stored"] != int64(500) {
+		t.Errorf("cpu: %v, want source 500 (300 + 200) and stored 500 (once)", cpu)
+	}
+	if jr := c["jobruns"].(map[string]any); jr["source"] != int64(5) || jr["skipped"] == nil {
+		t.Errorf("jobruns: %v, want source 5 and the skip kept", jr)
+	}
+	if _, ok := c["-"]; ok {
+		t.Errorf("the '-' line counted: %v", c)
+	}
+	outcome, notes := jobOutcome(got, nil)
+	if outcome != "partial: jobruns: waiting for the collector's first jobs read" || len(notes) != 1 || !strings.Contains(notes[0], "InstanceID 77") {
+		t.Errorf("the outcome: %q, notes %v", outcome, notes)
+	}
+	if outcome, notes = jobOutcome(got[4:], nil); outcome != "ok" || len(notes) != 1 {
+		t.Errorf("only a '-' line: %q %v, want ok with its note", outcome, notes)
+	}
+	if outcome, _ = jobOutcome(got, errors.New("boom")); outcome != "failed: boom" {
+		t.Errorf("an error: %q", outcome)
+	}
+	j := &moveJob{byID: map[int]map[string]int64{31: {"cpu": 300, "jobruns": 4}, 32: {"cpu": 120}}}
+	if cj := copyJob(j); cj.Inserted["cpu"] != 420 || cj.Inserted["jobruns"] != 4 || cj.byID != nil {
+		t.Errorf("the job's inserts: %v, want cpu 420 (300 + 120), jobruns 4", cj.Inserted)
 	}
 }
