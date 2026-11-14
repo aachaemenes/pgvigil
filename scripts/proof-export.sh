@@ -95,6 +95,9 @@
 #              numbers under General (X7), two at least and not all equal
 #   sqljobs    (decision (b)) the SQL Server instance's Jobs tab: graded as every page here; each job's step grid named by
 #              its job (data-sheet), no numbered repeat
+#   dbspace_i  the SQL Server instance's DB Space page: graded as every page here; its grid's allocated, used, data files and
+#              log files headed '(GB)' on the page and in the workbook, each cell a number rounded to 0.1 equal to the screen's
+#              (used may be blank), no text
 #   perf       (P03) the fleet's Performance summary: graded as every page here; its CPU histogram column (a picture of
 #              bars, the top bucket painted critical even when empty) has no fill in any row
 #   reader     the screen's colour of a cell is read on its own terms, not by export.ts's rule: a status cell, else the
@@ -1669,18 +1672,26 @@ for key, tab, inst in PAGES:
     if key == 'dbspace_i':
         # an instance's DB Space grid reads as DBA Dash's ('Unit: GB, Decimal Places: 1') and as the fleet grid: allocated,
         # used, data files and log files hold the GB figure, headed '(GB)' on the page and in the workbook, numbers in the
-        # workbook; a text cell is only 'not read' (a PostgreSQL database's used). Its names are its own (dsi_): the grader's
+        # workbook (this is the SQL Server instance: no text cell). Its names are its own (dsi_): the grader's
         # module-level names (want: the language) are read further on
         dsi_g = gs[0]; dsi_c = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
         dsi_cols = sorted({c for r, c in dsi_c}); dsi_hdr = [(dsi_c.get((1, c)) or (0, None, None))[2] for c in dsi_cols]
         dsi_want = ['allocated (GB)', 'used (GB)', 'data files (GB)', 'log files (GB)']
         check(dsi_g['head'][1:5] == dsi_want and dsi_hdr[1:5] == dsi_want, f"dbspace_i: the instance grid's columns 2-5 are {dsi_want}: page {dsi_g['head'][1:5]}, workbook {dsi_hdr[1:5]}")
         dsi_rows = sorted({r for r, c in dsi_c if r > 1})
+        # each column: a number in every row (used: a number or blank - a SQL Server instance's unread used is blank), no
+        # text, each a tenth (the GB figure rounded to 0.1, not bytes under a '(GB)' heading), each the screen cell's number
         for dsi_j, dsi_w in enumerate(dsi_want, 1):
             if dsi_j >= len(dsi_cols): break
-            dsi_nums = [r for r in dsi_rows if (dsi_c.get((r, dsi_cols[dsi_j])) or (0, None, None))[1] is not None]
-            dsi_texts = sorted({dsi_c[(r, dsi_cols[dsi_j])][2] for r in dsi_rows if (r, dsi_cols[dsi_j]) in dsi_c and dsi_c[(r, dsi_cols[dsi_j])][2]})
-            check(len(dsi_rows) == dsi_g['rows'] and len(dsi_nums) >= 1 and dsi_texts in ([], ['not read']), f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}), its text cells {dsi_texts[:3]}")
+            dsi_v = [(dsi_c.get((r, dsi_cols[dsi_j])) or (0, None, None)) for r in dsi_rows]
+            dsi_scr = [(row[dsi_j]['t'] if dsi_j < len(row) else '') for row in dsi_g.get('cells') or []]
+            dsi_nums = [v for _, v, _ in dsi_v if v is not None]
+            dsi_texts = sorted({t for _, v, t in dsi_v if v is None and t})
+            dsi_odd = [v for v in dsi_nums if abs(v * 10 - round(v * 10)) >= 1e-9]
+            dsi_diff = [(s_, v) for (_, v, _), s_ in zip(dsi_v, dsi_scr) if not ((v is None and not s_) or (v is not None and s_ and number(s_) is not None and abs(number(s_) - v) < 1e-9))]
+            dsi_full = len(dsi_nums) >= 1 if dsi_w == 'used (GB)' else len(dsi_nums) == len(dsi_rows)
+            check(len(dsi_rows) == dsi_g['rows'] == len(dsi_scr) and dsi_full and not dsi_texts and not dsi_odd and not dsi_diff,
+                  f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}, screen read {len(dsi_scr)}), text cells {dsi_texts[:3]}, not a tenth {dsi_odd[:3]}, off the screen {dsi_diff[:3]}")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:

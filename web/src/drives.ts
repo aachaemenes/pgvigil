@@ -345,8 +345,8 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
       sc = await scope(ctx);
       d = await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day });
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
-    // the GB columns (DBA Dash's 'Unit: GB, Decimal Places: 1', the folder's grid and an instance's alike) hold the GB figure
-    // itself (rounded to 0.1) and show it with fmtNum, so the export writes a number under the '(GB)' heading
+    // the GB columns (DBA Dash's unit, the folder's grid and an instance's alike) hold the GB figure rounded to 0.1 and show
+    // it with fmtNum (at most one decimal: 12 GB reads '12', where DBA Dash writes '12.0'), so the export writes a number
     const toGB = (v: unknown) => v == null ? null : Math.round(Number(v) / GB * 10) / 10;
     if (!ctx.instance) {
       const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes) }));
