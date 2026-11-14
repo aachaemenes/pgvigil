@@ -21,7 +21,11 @@ const tagCount = new Map();
 for (const r of insts) for (const t of (Array.isArray(r.tags) ? r.tags : [])) {
   const e = tagCount.get(t) ?? { n: 0, engines: new Set() }; e.n++; e.engines.add(r.engine === 'sqlserver' ? 'sqlserver' : 'postgres'); tagCount.set(t, e);
 }
-const tag = [...tagCount.entries()].filter(([, e]) => e.n < insts.length && e.engines.size === 2).sort((a, b) => b[1].n - a[1].n || (a[0] < b[0] ? -1 : 1))[0]?.[0];
+// ... and that a TOP-LEVEL tag folder carries (the TAGTREE review B #6): under ui.group_by [k, ...] a 'k:<v>' (a bare
+// value when k is 'tag'), else any written tag - a tag the root only keeps has no folder of its own to click
+const groupBy = (await (await fetch(U + 'api/tags')).json()).group_by ?? [];
+const topLevel = t => !groupBy.length || (groupBy[0] === 'tag' ? !String(t).includes(':') : String(t).toLowerCase().startsWith(groupBy[0].toLowerCase() + ':'));
+const tag = [...tagCount.entries()].filter(([t, e]) => e.n < insts.length && e.engines.size === 2 && topLevel(t)).sort((a, b) => b[1].n - a[1].n || (a[0] < b[0] ? -1 : 1))[0]?.[0];
 if (!tag) { console.log('FAIL the demo has no tag that holds both engines and not every instance'); process.exit(1); }
 const engineOf = new Map(insts.map(r => [Number(r.instance_id), r.engine === 'sqlserver' ? 'sqlserver' : 'postgres']));
 
@@ -118,8 +122,8 @@ const landing = async () => ev(`(() => { const m = document.querySelector('main'
 // that folder's instances only, SQLTreeItem.cs L168-190): the tag folder of `tag` at the tree's top (its name a link that
 // carries tag=<tag>) and, inside it, the folder of a group by its caret key 't:<folder path>/<group>', opened when closed;
 // the folder name's href and its leaves [text, href], or why there is none
-const tagFolder = (group) => ev(`(async () => {
-  const want = ${JSON.stringify('tag=' + encodeURIComponent(tag))};
+const tagFolder = (group, t = tag) => ev(`(async () => {
+  const want = ${JSON.stringify('tag=' + encodeURIComponent(t))};
   const carries = a => ((a.getAttribute('href') || '').split('?')[1] || '').split('&').includes(want);
   const findCaret = () => { const top = [...document.querySelectorAll('#tree .folder')].find(f => [...f.querySelectorAll(':scope > .folder-head a')].some(carries));
     return top ? [...top.querySelectorAll('button.caret')].find(b => /^t:/.test(b.dataset.key || '') && b.dataset.key.endsWith('/' + ${JSON.stringify(group)})) ?? 'none' : null; };
@@ -133,6 +137,39 @@ const tagFolder = (group) => ev(`(async () => {
     leaves: [...box.querySelectorAll(':scope > div:not(.tree-node) a.inst')].map(a => [a.textContent.trim(), a.getAttribute('href')]) };
 })()`, true);
 const treeClick = async h => { await ev(`(() => { const a = [...document.querySelectorAll('#tree a')].find(x => x.getAttribute('href') === ${JSON.stringify(h)}); a?.click(); return !!a; })()`); await sleep(500); await settled(); return landing(); };
+
+// PGVIGIL_CLICK_ONLY=noenv: the '(no env)' folder alone (TAGTREE: the pass's #6, the review B #4). The demo puts an env on
+// every instance; proof-clickmap.sh adds instances with no tag after the main map and runs this. Under the demo's
+// group_by [env] they are in '(no env)', whose name links ?tag=env: and whose own folders scope the same.
+if (process.env.PGVIGIL_CLICK_ONLY === 'noenv') {
+  const lines = [];
+  const say = (ok, what, how) => lines.push(`${ok ? 'ok  ' : 'FAIL'} | tag env: | tag-tree | ${what} | - | 1 link(s) | ${how}`);
+  const none = insts.filter(r => !(Array.isArray(r.tags) ? r.tags : []).some(t => /^env:/i.test(String(t)))).map(r => String(r.name)).sort();
+  if (!none.length) say(false, 'instances', 'no instance without an env tag: the row proves nothing');
+  else {
+    await go('#/summary');
+    const st = await tagFolder('storage', 'env:');
+    say(!st.why, '(no env) folder', st.why ?? `its Storage folder ${st.key}, leaves: ${(st.leaves ?? []).map(l => l[0]).join(', ')}`);
+    const drives = st.leaves?.find(([t]) => t === 'Drives')?.[1];
+    if (!drives) say(false, 'Storage', 'no Drives leaf in the (no env) folder\'s own Storage');
+    else {
+      const got = await treeClick(drives);
+      const okD = tabOf(got.hash) === 'drives' && paramsOf(got.hash).get('tag') === 'env:' && !got.err.length;
+      say(okD, 'Storage', `${got.hash} (${got.h2.slice(0, 40)}) ${okD ? 'ok (lands on Drives scoped to the instances with no env)' : 'FAIL want drives with tag=env: and no error ' + (got.err[0] ?? '')}`);
+    }
+    // the folder's Summary lists exactly the instances with no env (fleet.ts inTagScope's '<key>:' rule)
+    await go('#/summary?tag=env%3A');
+    const listed = (await ev(`[...new Set([...document.querySelectorAll('main a')].map(a => a.textContent.trim()))]`)).filter(n => insts.some(r => String(r.name) === n)).sort();
+    const h2 = (await landing()).h2;
+    const okS = JSON.stringify(listed) === JSON.stringify(none) && h2.includes('(no env)');
+    say(okS, 'Summary', `listed [${listed.join(', ')}], heading '${h2.slice(0, 50)}' ${okS ? "ok (the instances with no env, the heading '(no env)')" : `FAIL want [${none.join(', ')}] and '(no env)' in the heading`}`);
+  }
+  for (const l of lines) console.log(l);
+  const nf = lines.filter(l => l.startsWith('FAIL')).length;
+  console.log(`links: ${lines.length} ('(no env)' rows); ${nf} FAIL`);
+  ws.close();
+  process.exit(nf ? 1 : 0);
+}
 
 const results = [];
 let fails = 0;
@@ -276,7 +313,7 @@ for (const sc of scopes) {
     else {
       const got = await treeClick(ts.name);
       record({ scope: sc.name, kind: 'tree', column: 'Storage', engine: '', link: "the tag folder's Storage", landed: `${got.hash} (${got.h2.slice(0, 40)})`,
-        verdict: tabOf(got.hash) === 'drives' && paramsOf(got.hash).get('tag') === tag && !got.err.length ? "ok (DBA Dash: a tag folder's Storage -> Drives, its instances)" : `FAIL want drives with tag=${tag}, got ${got.hash} ${got.err[0] ?? ''}` });
+        verdict: tabOf(got.hash) === 'drives' && paramsOf(got.hash).get('tag') === tag && !got.err.length ? "ok (DBA Dash: a tag folder's Storage -> Drives; lands with tag= kept, no error - what the page lists is not read here)" : `FAIL want drives with tag=${tag}, got ${got.hash} ${got.err[0] ?? ''}` });
     }
   } else {
   const treeHref = await ev(`(() => { const want = ${JSON.stringify(sc.instance ? `i=${sc.instance}` : '')};
@@ -585,13 +622,18 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
   else {
     const got = await treeClick(jobs);
     record({ scope: sc, kind: 'tag-tree', column: 'Jobs', engine: '', link: "the tag folder's Jobs", landed: `${got.hash} (${got.h2.slice(0, 40)})`,
-      verdict: tabOf(got.hash) === 'jobs' && paramsOf(got.hash).get('tag') === tag && !got.err.length ? "ok (DBA Dash: a tag folder's Jobs, its instances only)" : `FAIL want jobs with tag=${tag}, got ${got.hash} ${got.err[0] ?? ''}` });
+      verdict: tabOf(got.hash) === 'jobs' && paramsOf(got.hash).get('tag') === tag && !got.err.length ? "ok (DBA Dash: a tag folder's Jobs; lands with tag= kept, no error - what the page lists is not read here)" : `FAIL want jobs with tag=${tag}, got ${got.hash} ${got.err[0] ?? ''}` });
   }
   // (c) Alerts under the tag lists only the tag's instances' alerts and names the tag (DBA Dash: Main.cs L1820-1822 at a
   // tag folder); the root's Alerts must list an instance outside the tag, or the row proves nothing
   const tagNames = new Set(insts.filter(r => (Array.isArray(r.tags) ? r.tags : []).includes(tag)).map(r => String(r.name)));
-  const alertInstances = () => ev(`(() => { const out = [];
-    for (const t of document.querySelectorAll('main table.grid')) {
+  // the grids the page narrows by the tag (its in-view line): open alerts, the alert history, held sends, the send log;
+  // the silenced servers, mute rules, known patterns and the acknowledge log are the repository's, said in that line
+  const alertInstances = () => ev(`(() => { const out = []; let h3 = '';
+    const narrowed = /^(Open alerts|Alert history|Held sends|Send log)/;
+    for (const t of document.querySelectorAll('main h3, main table.grid')) {
+      if (t.matches('h3')) { h3 = t.textContent.trim(); continue; }
+      if (!narrowed.test(h3)) continue;
       const hs = [...t.querySelectorAll('thead th')].map(h => (h.querySelector('.th-label') ?? h).textContent.trim());
       const i = hs.findIndex(h => h === 'instance' || h === 'instance (one)');
       if (i < 0) continue;
@@ -644,6 +686,14 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
         : bad.length ? `FAIL page(s) of PostgreSQL alone offered for a SQL Server-only tag: ${bad.join(', ')}`
         : !tabs.includes('mssqlrisks') ? 'FAIL SQL Server options is not offered'
         : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options there)` });
+    // the Configuration strip on SQL Server options under that tag: no page of PostgreSQL alone (main.ts tagPages)
+    await go(`#/mssqlrisks?tag=${encodeURIComponent(msTag)}`);
+    const strip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
+    const sbad = strip.filter(t => pgOnly.has(t));
+    record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: 'strip', engine: 'sqlserver', link: `#/mssqlrisks?tag=${msTag}`, landed: `the strip: ${strip.join(' ')}`.slice(0, 260),
+      verdict: !strip.includes('mssqlrisks') ? 'FAIL the strip does not hold SQL Server options'
+        : sbad.length ? `FAIL the strip offers page(s) of PostgreSQL alone for a SQL Server-only tag: ${sbad.join(', ')}`
+        : 'ok (the Configuration strip holds no page of PostgreSQL alone)' });
   }
 }
 

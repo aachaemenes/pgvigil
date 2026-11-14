@@ -17,8 +17,8 @@ Community tools, Report mail, Doors, Admin, Alert rules) stay at the root, and a
 (SQL Server options, TempDB, Flushed Plans, Server Services; PostgreSQL options, Replication, Extensions, Corruption,
 Versions, Table size, Backups, Roles, DMS, Custom report, Disk report, Storage, Growth, Indexes, Jobs) is left out of a
 folder whose instances are all of the other. The folder's tab strip shows the same pages. An instance's folders follow DBA Dash's
-order too: Configuration, Checks, HA/DR, Storage, Databases, Jobs, then Performance (and Logs on SQL Server), then
-Reports.
+order too: Configuration, Checks, HA/DR, Storage, Databases (PostgreSQL; a SQL Server instance's databases are pages),
+Jobs, then Performance (and Logs on SQL Server), then Reports.
 
 - **'(no env)'** holds the instances without a value of the grouping key (DBA Dash's '[N/A]' folder) and carries the
   same folders, at `?tag=env:` (an empty value: the instances with no `env` tag).

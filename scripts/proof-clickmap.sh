@@ -390,4 +390,10 @@ for e, n in (('sqlserver', d['ms']), ('postgres', d['pg'])):
 print('the click map covered: ' + ('every kind asked' if not bad else '; '.join(bad)))
 sys.exit(1 if bad else 0)
 PY
+# N: the '(no env)' folder (TAGTREE: the pass's #6, the review B #4) - the demo puts an env on every instance, so one
+# instance with no tag is added now; under the demo's group_by [env] it is in '(no env)' (?tag=env:)
+q "insert into pgvigil.instances (name, platform, engine) values ('fx-noenv-pg', 'onprem', 'postgres')" >/dev/null
+PGVIGIL_CLICK_ONLY=noenv node scripts/click-check.mjs "$CDP" "$U/" "$WORK/click-noenv.json" | tee "$WORK/click-noenv.txt" || fail "the '(no env)' rows have a FAIL (above)"
+grep -q '^links: .*; 0 FAIL$' "$WORK/click-noenv.txt" || fail "the '(no env)' rows did not end with 0 FAIL"
+q "delete from pgvigil.instances where name = 'fx-noenv-pg'" >/dev/null
 echo "PROOF OK"

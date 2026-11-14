@@ -14,7 +14,9 @@ import (
 // TestPerfScopeOnAStore (TAGTREE): on a migrated repository (PGVIGIL_REPO_TEST_DSN, skipped without it) the tag scope
 // of /api/perfsummary (sqlPerfScope) holds the instances the pages' own rule holds (web/src/fleet.ts inTagScope): a
 // written tag exactly; 'untagged' = no tag at all; '<key>:' with no value = no value of that key (the tree's '(no <key>)'
-// folder), a key read without regard to case, a plain word's key being 'tag'; NULL = every instance.
+// folder), a key read without regard to case, a plain word's key being 'tag'; NULL = every instance. An instance whose
+// key a repository override hides ('pgvigil tag <name> -env': instance_tag_overrides with vals NULL) is read by its
+// merged tags, as the pages read them (instance_tags_merged).
 func TestPerfScopeOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -34,9 +36,19 @@ func TestPerfScopeOnAStore(t *testing.T) {
 		"c": {"team:y"},
 		"d": {},
 		"e": {"prodbox"},
+		"f": {"env:prod"},
 	}
+	// the cleanup first: a setup that fails part way leaves no instance behind (it runs before pool.Close)
 	var ids []int
-	for _, n := range []string{"a", "b", "c", "d", "e"} {
+	defer func() {
+		if len(ids) == 0 {
+			return
+		}
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, ids); err != nil {
+			t.Error(err)
+		}
+	}()
+	for _, n := range []string{"a", "b", "c", "d", "e", "f"} {
 		var id int
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '17.2', 170002, false, $2::text[], 'postgres')`,
 			fmt.Sprintf("perfscope-%s-%d", n, sfx), tags[n]).Scan(&id); err != nil {
@@ -44,11 +56,10 @@ func TestPerfScopeOnAStore(t *testing.T) {
 		}
 		ids = append(ids, id)
 	}
-	defer func() {
-		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, ids); err != nil {
-			t.Error(err)
-		}
-	}()
+	// f's env hidden by the repository (the override row leaves with the instance: ON DELETE CASCADE)
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.instance_tag_overrides (instance_id, key, vals) VALUES ($1, 'env', NULL)`, ids[5]); err != nil {
+		t.Fatal(err)
+	}
 	// $1 and $2 (the window) are unused by the scope itself: typed here so the statement prepares
 	q := sqlPerfScope + ` SELECT string_agg(split_part(instance, '-', 2), '' ORDER BY instance) FROM inst
 	 WHERE $1::text IS NULL AND $2::text IS NULL AND instance LIKE $5`
@@ -56,13 +67,13 @@ func TestPerfScopeOnAStore(t *testing.T) {
 		scope any
 		want  string
 	}{
-		{nil, "abcde"},
+		{nil, "abcdef"},
 		{"env:prod", "a"},
-		{"untagged", "d"},
-		{"env:", "cde"},
-		{"ENV:", "cde"},
-		{"team:", "bde"},
-		{"tag:", "abcd"},
+		{"untagged", "df"},
+		{"env:", "cdef"},
+		{"ENV:", "cdef"},
+		{"team:", "bdef"},
+		{"tag:", "abcdf"},
 		{"prodbox", "e"},
 	} {
 		var got *string
