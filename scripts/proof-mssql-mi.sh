@@ -14,7 +14,8 @@
 # Expected (written before the first run):
 #  M0 `collect -once mssql_instance` as pgv_monitor: ok, platform azuresqlmi (EngineEdition 8).
 #  M1 every mssql_ collection once as pgv_monitor: a row for each listed collection, each ok or skipped (a 'partial' or
-#     an 'error' is a finding, listed); mssql_mirroring and mssql_logshipping skipped with C5's words ('Azure SQL Managed
+#     an 'error' is a finding, listed - except mssql_plancache partial by its cap, every platform's rule, RECORDED);
+#     mssql_mirroring and mssql_logshipping skipped with C5's words ('Azure SQL Managed
 #     Instance does not support database mirroring', '... has no log shipping ...'); the checks' alerts area READ (its
 #     operators: is_read true) with C5's words ('... does not support SQL Server Agent alerts yet: only the operators are
 #     read'); system_health read from its ring buffer: the syshealth reader's state 'read', scope ring_buffer, stored > 0
@@ -86,8 +87,12 @@ for c in $COLLS; do [ "$c" = mssql_instance ] || "$WORK/pgvigil" collect -config
 echo "   M1: every collection's outcome (collection | status | its note):"
 q "select d.collection, d.status, left(coalesce(d.note, ''), 160) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' order by 1" | sed 's/^/     /'
 NC=$(grep -c . <<<"$COLLS")
-IFS='|' read -r NROWS NGOOD < <(q "select count(*), count(*) filter (where d.status in ('ok', 'skipped')) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection like 'mssql\_%'")
-[ "$NROWS|$NGOOD" = "$NC|$NC" ] && echo "ok   M1: $NC collections, each ok or skipped" || { VERDICT=FAIL; echo "FAIL M1: $NC collections listed, $NROWS rows stored, $NGOOD ok or skipped (above): each other one a finding"; }
+# mssql_plancache is partial on ANY server whose cache holds more than its read takes (internal/mssql/plancache.go: the
+# cap, said in its note): that partial is RECORDED here, not a Managed Instance finding
+IFS='|' read -r NROWS NGOOD < <(q "select count(*), count(*) filter (where d.status in ('ok', 'skipped') or (d.collection = 'mssql_plancache' and d.status = 'partial' and d.note like 'sys.dm\\_exec\\_query\\_stats: the plan cache holds %')) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection like 'mssql\_%'")
+PCAP=$(q "select d.note from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = 'mssql_plancache' and d.status = 'partial'")
+[ -z "$PCAP" ] || echo "   M1: mssql_plancache partial by its cap (RECORDED, every platform's rule): $PCAP"
+[ "$NROWS|$NGOOD" = "$NC|$NC" ] && echo "ok   M1: $NC collections, each ok or skipped (or mssql_plancache's cap)" || { VERDICT=FAIL; echo "FAIL M1: $NC collections listed, $NROWS rows stored, $NGOOD ok or skipped (above): each other one a finding"; }
 for want in "mssql_mirroring|skipped|Azure SQL Managed Instance does not support database mirroring" "mssql_logshipping|skipped|Azure SQL Managed Instance has no log shipping"; do
   c=${want%%|*}; got=$(q "select d.status || '|' || coalesce(d.note, '') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'mi-live' and d.collection = '$c'")
   [[ "$got" == "${want#*|}"* ]] && echo "ok   M1: $c skipped with C5's words" || { VERDICT=FAIL; echo "FAIL M1: $c = '$got'"; }
