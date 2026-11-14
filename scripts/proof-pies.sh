@@ -19,7 +19,8 @@
 # database': big, its databases' pages, the grid's links); a SQL Server demo instance's Storage ('Databases by size' and
 # 'Data against log': small, a row of two - files of each database / no target; 'Growth by database, 7 days': small, files);
 # its DB Space ('DB Space by database': big, files, the grid's links, touch); its files tab ('Files of <db> by size':
-# small, no target).
+# small, no target). The three DB Space pies 'beside': each pie's box on its grid's row at 1600 / 1500 / 1400 px (DBA Dash's
+# shape: its pie fills the room beside the grid); the PostgreSQL one's edge row narrows the window to the row's end first.
 # The control (finding 12): the same proof on three products in one box job.
 #  - base 54cb1d3 (the join's tip, no pie change): GREEN size on every small pie, menu, away, swatch, no-target ('Data
 #    against log', 'Files of'), click on the root DB Space and on SQL Server's 'Databases by size' (their pages existed);
@@ -105,19 +106,19 @@ pg, ms, msdb = sys.argv[1], sys.argv[2], sys.argv[3]
 pgdb = lambda api, name: {'kind': 'pgdb', 'api': api, 'part': 'databases', 'name': name}
 files = {'kind': 'msfiles'}
 print(json.dumps({'pages': [
-  {'name': 'root-dbspace', 'hash': '#/dbspace', 'pies': [{'title': 'DB Space (allocated)', 'size': 'big', 'shot': 'allocated', 'other': True, 'edge': True, 'touch': True,
+  {'name': 'root-dbspace', 'hash': '#/dbspace', 'pies': [{'title': 'DB Space (allocated)', 'size': 'big', 'shot': 'allocated', 'other': True, 'edge': True, 'touch': True, 'beside': True,
      'target': {'kind': 'instance', 'api': 'dbspace', 'part': 'instances', 'name': 'instance'}}]},
   {'name': 'pg-storage', 'hash': f'#/storage?i={pg}', 'pies': [
      {'title': 'Databases by size', 'size': 'big', 'shot': 'databases', 'touch': True, 'target': pgdb(f'storage?instance={pg}', 'datname')},
      {'title': 'Growth by database*', 'size': 'small', 'days': '7 days', 'target': pgdb(f'storage?instance={pg}', 'datname')}]},
   {'name': 'pg-dbspace', 'hash': f'#/dbspace?i={pg}', 'pies': [
-     {'title': 'DB Space by database', 'size': 'big', 'shot': 'bydb', 'gridLink': True, 'edge': 'flip', 'target': pgdb(f'dbspace?instance={pg}', 'database')}]},
+     {'title': 'DB Space by database', 'size': 'big', 'shot': 'bydb', 'gridLink': True, 'edge': 'flip', 'beside': True, 'target': pgdb(f'dbspace?instance={pg}', 'database')}]},
   {'name': 'ms-storage', 'hash': f'#/mssqlstorage?i={ms}', 'pies': [
      {'title': 'Databases by size', 'size': 'small', 'shot': 'databases', 'target': files},
      {'title': 'Data against log', 'size': 'small', 'noTarget': True},
      {'title': 'Growth by database*', 'size': 'small', 'days': '7 days', 'target': files}]},
   {'name': 'ms-dbspace', 'hash': f'#/dbspace?i={ms}', 'pies': [
-     {'title': 'DB Space by database', 'size': 'big', 'shot': 'bydb', 'gridLink': True, 'touch': True, 'target': files}]},
+     {'title': 'DB Space by database', 'size': 'big', 'shot': 'bydb', 'gridLink': True, 'touch': True, 'beside': True, 'target': files}]},
   {'name': 'ms-files', 'hash': f'#/mssqlfiles?i={ms}&db={urllib.parse.quote(msdb)}', 'pies': [
      {'title': 'Files of*', 'size': 'small', 'shot': 'files', 'noTarget': True}]},
 ]}))

@@ -8,7 +8,7 @@
 // Each row prints 'ok   <page> '<pie>': <row>: ...' or 'FAIL ...'; the last line 'pies-check: every row ok' or
 // 'pies-check: N row(s) FAILED'. The row names (for the control's per-row expected in proof-pies.sh): size, labels,
 // hover, other-hover, legend, rest, away, escape, redraw, menu, export, swatch, click, grid-link, ctrl-click, no-target,
-// other-click, touch, pan, edge.
+// other-click, touch, pan, edge (a flip pie: the window narrowed to the row's end first), beside (a DB Space pie on its grid's row at 1600 / 1500 / 1400 px).
 import { mkdirSync, writeFileSync } from 'node:fs';
 const [port, U, SHOTS, RIG] = process.argv.slice(2);
 const rig = JSON.parse(RIG);
@@ -130,6 +130,19 @@ for (const pg of rig.pages) {
   await ev(HELP);
   for (const pie of pg.pies) {
     const tag = `${pg.name} '${pie.title}'`;
+    // beside: the pie's box on its grid's row (the two boxes' tops equal), as DBA Dash's DB Space draws it, at 1600 / 1500 /
+    // 1400 px; the line names the widths and the window under which the row wraps (the grid + 24 px + the pie box's floor,
+    // its own width where it has none, + what the window keeps beside the row)
+    if (pie.beside) {
+      for (const w of [1600, 1500, 1400]) {
+        await cmd('Emulation.setDeviceMetricsOverride', { width: w, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500);
+        const g = await S(pie.title, `(() => { const r = b.parentElement, gb = r && [...r.children].find(k => k.querySelector('table.grid')); if (!gb) return null;
+          const R = e => e.getBoundingClientRect(); const fl = parseFloat(getComputedStyle(b).minWidth);
+          return { gt: Math.round(R(gb).top), pt: Math.round(R(b).top), gw: Math.round(R(gb).width), pw: Math.round(R(b).width), rw: Math.round(R(r).width), vw: innerWidth, fl: isFinite(fl) && fl > 0 ? fl : Math.round(R(b).width) }; })()`);
+        row(!!g && g.gt === g.pt, tag, `beside ${w}`, g ? `the pie's box ${g.pw} px ${g.gt === g.pt ? 'beside' : 'UNDER'} the grid's ${g.gw} px in a ${g.rw} px row (box tops ${g.gt} / ${g.pt}); the row wraps under a ${g.gw + 24 + g.fl + (g.vw - g.rw)} px window` : "no grid in the pie's row");
+      }
+      await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500);
+    }
     // a pie drawn later than the page (the Growth panels) is waited for, its first days button pressed if need be
     let s0 = await until(`(() => { const b = ${pieJS(pie.title)}; return b && b.querySelector('table.legend') ? 1 : null; })()`, 8000);
     if (!s0 && pie.days) { await ev(`[...document.querySelectorAll('main button')].find(x => x.textContent.trim() === ${JSON.stringify(pie.days)})?.click()`);
@@ -367,6 +380,21 @@ for (const pg of rig.pages) {
     if (pie.edge) {
       await mouse('mouseMoved', 3, 3);
       await until(`__pie.tip() ? null : 1`, 1000);
+      // 'flip', by construction: the window narrowed by the room the row leaves right of the pie's picture (the row's own
+      // geometry, read again after each step: the picture scales with the window), until the picture ends within 40 px of
+      // the row's end with the pie's box on its grid's row (the boxes' tops equal); the line names the window
+      let flipW = 0, flipSlack = null;
+      if (pie.edge === 'flip') {
+        for (let k = 0, w = 1600; k < 6; k++) {
+          const m = await S(pie.title, `(() => { const r = b.parentElement, gb = [...r.children].find(x => x.querySelector('table.grid')); const R = e => e.getBoundingClientRect();
+            return { slack: Math.round(R(r).right - R(b.querySelector('svg')).right), same: !!gb && Math.round(R(gb).top) === Math.round(R(b).top) }; })()`);
+          if (!m || !m.same) break;
+          flipSlack = m.slack;
+          if (m.slack <= 40) { flipW = w; break; }
+          w -= m.slack - 20;
+          await cmd('Emulation.setDeviceMetricsOverride', { width: w, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500);
+        }
+      }
       const pe = await S(pie.title, `(() => { const s = b.querySelector('svg'); s.scrollIntoView({ block: 'center' }); const sp = __pie.spans(b); let best = null;
         sp.forEach(([a, z], k) => { for (let f = a + 0.02 * (z - a); f < z; f += (z - a) / 20) { const q = __pie.point(b, f, 0.9); if (document.elementFromPoint(q.x, q.y)?.closest('svg') === s && (!best || q.x > best.x)) best = { ...q, k }; } });
         return best; })()`);
@@ -379,9 +407,10 @@ for (const pg of rig.pages) {
       const wantFlip = !!te && pe.x + 14 + (te.rect[2] - te.rect[0]) > vw[0] - 4;
       const side = te ? (te.rect[2] <= pe.x ? 'left of the pointer' : te.rect[0] >= pe.x ? 'right of the pointer' : 'over the pointer') : '';
       row(!!te && te.rect[0] >= 0 && te.rect[1] >= 0 && te.rect[2] <= vw[0] - 4 && te.rect[3] <= vw[1] && side === (wantFlip ? 'left of the pointer' : 'right of the pointer')
-        && (pie.edge !== 'flip' || wantFlip), tag, 'edge',
-        `the pointer at x ${Math.round(pe.x)} of ${vw[0]} -> the box ${te ? `at [${te.rect.map(Math.round).join(', ')}], ${side}` : 'not shown'} (inside 0 0 ${vw[0] - 4} ${vw[1]}; ${wantFlip ? 'flipped' : 'not flipped'}${pie.edge === 'flip' ? ', the flip wanted' : ''})`);
+        && (pie.edge !== 'flip' || (wantFlip && flipW > 0)), tag, 'edge',
+        `the pointer at x ${Math.round(pe.x)} of ${vw[0]} -> the box ${te ? `at [${te.rect.map(Math.round).join(', ')}], ${side}` : 'not shown'} (inside 0 0 ${vw[0] - 4} ${vw[1]}; ${wantFlip ? 'flipped' : 'not flipped'}${pie.edge === 'flip' ? `, the flip wanted; ${flipW ? `the window ${flipW} px, the picture ${flipSlack} px from the row's end` : `no window put the picture at the row's end with the pie on its row (last slack ${flipSlack})`}` : ''})`);
       await mouse('mouseMoved', 3, 3);
+      if (pie.edge === 'flip') { await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500); }
     }
     // other-click (finding 9): every slice for this draw, the select says All, the focus on it, the note says so, nothing kept
     if (pie.other && kOther >= 0) {

@@ -95,9 +95,11 @@
 #              numbers under General (X7), two at least and not all equal
 #   sqljobs    (decision (b)) the SQL Server instance's Jobs tab: graded as every page here; each job's step grid named by
 #              its job (data-sheet), no numbered repeat
-#   dbspace_i  the SQL Server instance's DB Space page: graded as every page here; its grid's allocated, used, data files and
-#              log files headed '(GB)' on the page and in the workbook, each cell a number rounded to 0.1 equal to the screen's
+#   dbspace_i  the SQL Server instance's DB Space page: graded as every page here; its grid's allocated, used, data and
+#              log headed '(GB)' on the page and in the workbook, each cell a number rounded to 0.1 equal to the screen's
 #              (used may be blank), no text
+#   dbspace_p  a PostgreSQL instance's DB Space page: graded as every page here; its grid's allocated (GB) and used (GB)
+#              only (no data / log column), allocated a number rounded to 0.1 equal to the screen's, used 'not read' throughout
 #   perf       (P03) the fleet's Performance summary: graded as every page here; its CPU histogram column (a picture of
 #              bars, the top bucket painted critical even when empty) has no fill in any row
 #   reader     the screen's colour of a cell is read on its own terms, not by export.ts's rule: a status cell, else the
@@ -590,6 +592,9 @@ if (sq) {
   // the instance's DB Space grid: its size columns in DBA Dash's unit (GB, one decimal), as the fleet grid's
   out.dbspace_i = { ...(await page(`#/dbspace?i=${sq.instance_id}`)), instance: sq.name };
 }
+// a PostgreSQL instance's DB Space page: its grid with no data / log columns, used 'not read'
+const pq_ = rows.find(r => r.engine === 'postgres' && r.platform === 'onprem') ?? rows.find(r => r.engine === 'postgres');
+if (pq_) out.dbspace_p = { ...(await page(`#/dbspace?i=${pq_.instance_id}`)), instance: pq_.name };
 out.tools = await tools();
 // ---- P03: the new menu items, each clicked and its download read ---------------------------------------------------
 const waitDl = async (before, what) => {
@@ -1471,6 +1476,8 @@ elif d.get('sqljobs'): print(f"not checked: sqljobs: the SQL Server instance {d[
 else: print("not checked: sqljobs: the demo has no SQL Server instance (its Jobs tab's step grids)")
 if d.get('dbspace_i'): PAGES.append(('dbspace_i', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_i']['instance'])))
 else: print("not checked: dbspace_i: the demo has no SQL Server instance (its DB Space grid)")
+if d.get('dbspace_p'): PAGES.append(('dbspace_p', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_p']['instance'])))
+else: print("not checked: dbspace_p: the demo has no PostgreSQL instance (its DB Space grid)")
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
 for key, tab, inst in PAGES:
@@ -1676,7 +1683,7 @@ for key, tab, inst in PAGES:
         # module-level names (want: the language) are read further on
         dsi_g = gs[0]; dsi_c = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
         dsi_cols = sorted({c for r, c in dsi_c}); dsi_hdr = [(dsi_c.get((1, c)) or (0, None, None))[2] for c in dsi_cols]
-        dsi_want = ['allocated (GB)', 'used (GB)', 'data files (GB)', 'log files (GB)']
+        dsi_want = ['allocated (GB)', 'used (GB)', 'data (GB)', 'log (GB)']
         check(dsi_g['head'][1:5] == dsi_want and dsi_hdr[1:5] == dsi_want, f"dbspace_i: the instance grid's columns 2-5 are {dsi_want}: page {dsi_g['head'][1:5]}, workbook {dsi_hdr[1:5]}")
         dsi_rows = sorted({r for r, c in dsi_c if r > 1})
         # each column: a number in every row (used: a number or blank - a SQL Server instance's unread used is blank), no
@@ -1692,6 +1699,24 @@ for key, tab, inst in PAGES:
             dsi_full = len(dsi_nums) >= 1 if dsi_w == 'used (GB)' else len(dsi_nums) == len(dsi_rows)
             check(len(dsi_rows) == dsi_g['rows'] == len(dsi_scr) and dsi_full and not dsi_texts and not dsi_odd and not dsi_diff,
                   f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}, screen read {len(dsi_scr)}), text cells {dsi_texts[:3]}, not a tenth {dsi_odd[:3]}, off the screen {dsi_diff[:3]}")
+    if key == 'dbspace_p':
+        # a PostgreSQL instance's DB Space grid: allocated (GB) and used (GB) only - no data / log column (a PostgreSQL
+        # database has no files of its own to size) - on the page and in the workbook; allocated a number in every row,
+        # rounded to 0.1, the screen's; used 'not read' in every row (the page and the workbook). Its names are its own (dsp_)
+        dsp_g = gs[0]; dsp_c = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
+        dsp_cols = sorted({c for r, c in dsp_c}); dsp_hdr = [(dsp_c.get((1, c)) or (0, None, None))[2] for c in dsp_cols]
+        dsp_want = ['allocated (GB)', 'used (GB)']
+        dsp_extra = [h for h in list(dsp_g['head']) + dsp_hdr if h and h.split(' ')[0] in ('data', 'log')]
+        check(dsp_g['head'][1:3] == dsp_want and dsp_hdr[1:3] == dsp_want and not dsp_extra, f"dbspace_p: the PostgreSQL instance grid's columns 2-3 are {dsp_want} and no data / log column: page {dsp_g['head']}, workbook {dsp_hdr}")
+        dsp_rows = sorted({r for r, c in dsp_c if r > 1}); dsp_scr = [row for row in dsp_g.get('cells') or []]
+        if len(dsp_cols) > 2:
+            dsp_a = [(dsp_c.get((r, dsp_cols[1])) or (0, None, None)) for r in dsp_rows]
+            dsp_as = [(row[1]['t'] if len(row) > 1 else '') for row in dsp_scr]
+            dsp_bad = [(t_, v) for (_, v, _), t_ in zip(dsp_a, dsp_as) if v is None or abs(v * 10 - round(v * 10)) >= 1e-9 or number(t_) is None or abs(number(t_) - v) >= 1e-9]
+            check(len(dsp_rows) == dsp_g['rows'] == len(dsp_scr) and not dsp_bad, f"dbspace_p: 'allocated (GB)' a number rounded to 0.1, the screen's, in every row ({len(dsp_rows)} rows, page {dsp_g['rows']}, screen read {len(dsp_scr)}; off {dsp_bad[:3]})")
+            dsp_u = [(dsp_c.get((r, dsp_cols[2])) or (0, None, None))[2] for r in dsp_rows]
+            dsp_us = [(row[2]['t'] if len(row) > 2 else '') for row in dsp_scr]
+            check(dsp_u and all(t_ == 'not read' for t_ in dsp_u + dsp_us), f"dbspace_p: 'used (GB)' 'not read' in every row (workbook {sorted(set(map(str, dsp_u)))[:3]}, screen {sorted(set(dsp_us))[:3]})")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
