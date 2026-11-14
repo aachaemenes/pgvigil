@@ -58,7 +58,7 @@ default: `EXEC [schema].[name] @p = @p` on SQL Server, `SELECT * FROM schema.nam
 repository (a set-returning function). PostgreSQL takes one statement per report; SQL Server takes a batch (no `GO`
 lines) and every result set it returns is drawn, at most 50.
 
-A report on the repository runs when its page opens, as DBA Dash's do; a report on instances runs on its Run button,
+A report on the repository runs when its page opens (where it may run: its login, below), as DBA Dash's do; a report on instances runs on its Run button,
 or on open when the page's address carries `run=1` (a mailed or a linked page: `#/customreports?report=12&run=1&i=3`,
 a parameter as `p.<name>=<value>`).
 
@@ -70,14 +70,36 @@ and on SQL Server a later result set of the same batch is not read.
 
 | Where | The login | What keeps it read-only |
 |---|---|---|
-| the repository | the UI's own repository login (`-dsn`, a member of `pgvigil_reader`) | a connection of its own (closed after the run: an advisory lock or a `set_config` never outlives it), `BEGIN TRANSACTION READ ONLY` rolled back, the report's timeout as `statement_timeout`, a 2 s `lock_timeout`, one statement |
+| the repository | its own login, `reports_dsn` (IN ROLE `pgvigil_reader` alone; never the UI's login) | a connection of its own (closed after the run: an advisory lock or a `set_config` never outlives it), `BEGIN TRANSACTION READ ONLY` rolled back, the report's timeout as `statement_timeout`, a 2 s `lock_timeout`, one statement |
 | a PostgreSQL instance | the instance's monitoring login (its `dsn`) | the same, and `default_transaction_read_only = on` |
 | a SQL Server instance | the instance's read login (its `dsn`) | a connection of its own, `LOCK_TIMEOUT 2000`, `DEADLOCK_PRIORITY LOW`, the report inside a transaction that is rolled back, the timeout on the request, and the login's own rights |
 
-A PostgreSQL run is refused before the report's statement when the login is a superuser or a member of
-`pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files`: a read-only transaction does not stop
-`COPY ... TO PROGRAM`. A `SET TRANSACTION READ WRITE` in a report is refused, because the transaction has run a
-query (the rights check) before the report's statement.
+A PostgreSQL run is refused before the report's statement when its SESSION user is a superuser or a member of
+`pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files` (a read-only transaction does not stop
+`COPY ... TO PROGRAM`), a member of `pgvigil_auth` (it reads the UI's password hashes) or `pgvigil_collector` (its
+import functions write the repository), or may `CREATE` in a `pgvigil` schema (the repository's owner). The session
+user, not the current role: a role set when the login connects (`ALTER ROLE ... SET role`) or inside the run is undone
+by the run itself (`set_config('role', 'none', true)`: PostgreSQL checks a role change against the session user). A
+`SET TRANSACTION READ WRITE` in a report is refused, because the transaction has run a query (the rights check)
+before the report's statement. EXPLAIN on the Plan page asks the same check of the monitoring login, and EXPLAIN
+ANALYZE's own login is refused the same way.
+
+### A report on the repository: its own login (reports_dsn)
+
+A report on the repository runs the DBA's own SQL against pgvigil's own tables, so it runs only as a login of its own,
+`reports_dsn` in `pgvigil.yaml` (`env:NAME` or `file:/path`, as every dsn), a login IN ROLE `pgvigil_reader` alone
+(`pgvigil roles` prints it: `pgvigil_reports`). The UI's own repository login holds `pgvigil_auth`, which reads every UI
+user's password hash through `pgvigil.ui_password_hash`, so a report on it could read them; a report is never run as
+it. Each run checks the login inside its own read-only transaction, on its session user: refused when it is a superuser
+or bypasses row security, a member of any role but `pgvigil_reader` (the owner, `pgvigil_auth`, `pgvigil_collector`,
+`pg_read_all_data`, `pg_monitor`, the server-file roles), may not read the schema, may read the password hashes, or
+reaches another server or database than the repository dsn's (its server's start time and the database's oid are
+compared: a replica or a copy is refused). Without the key, Run on a report on the repository is off and says:
+'a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one
+('pgvigil roles' prints it); this server's repository login holds pgvigil_auth, which reads the UI's password hashes';
+the page does not run it when it opens, and a mailed report carries the same words. `serve` says it once in a WARN at
+start and starts anyway. Behind PgBouncer, the reports login's startup settings are the UI login's (the README's
+`track_extra_parameters` line).
 
 SQL Server has no read-only session. What keeps a report from writing there is the read login's rights:
 [the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`) and no

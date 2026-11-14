@@ -15,6 +15,12 @@ what happens in the other order, and what the project's own proof showed (`scrip
 - **The grants.** Every file re-applies the access contract (`pgvigil.apply_roles()`) inside its own transaction: the
   collector's login and the UI's login get their rights on the new tables and functions with it. `pgvigil roles` is
   not run again for an upgrade, unless the release notes name a new login.
+- **A new login for custom reports on the store.** From this version a custom report on the repository runs only as
+  `reports_dsn` (a login IN ROLE `pgvigil_reader` alone, `pgvigil_reports` in `pgvigil roles`), never as the UI's
+  login, which reads the UI's password hashes. After the upgrade such a report is refused, and its page (and a mailed
+  report) says why, until the login is made and `reports_dsn` names it; reports on instances are unchanged, except
+  that a monitoring login holding `pgvigil_auth` or `pgvigil_collector`, or allowed to `CREATE` in a `pgvigil` schema,
+  is refused too ([customreports.md](customreports.md)). `install -upgrade` prints the line as a next step.
 - **Nothing else.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no migration
   changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and after.
 

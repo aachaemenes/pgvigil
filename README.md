@@ -97,7 +97,7 @@ Download the binary for your platform from the [latest release](https://github.c
    pgvigil migrate -config pgvigil.yaml          # once per upgrade
    pgvigil roles                                  # prints the CREATE ROLE statements: run them, passwords filled in
    ```
-   `roles` prints three logins: the collector's (`pgvigil_collector`: may only call the import functions), the UI's (`pgvigil_reader` + `pgvigil_auth`: reads every view and verifies UI passwords) and the monitoring login for each monitored server (`pg_monitor`), with the optional grants for pg_cron and a hidden pg_stat_statements schema, and, commented out, the actions login of the Cancel / Terminate door and the serverlog read door (the SECURITY DEFINER function `pgvigil_read_log`).
+   `roles` prints four logins: the collector's (`pgvigil_collector`: may only call the import functions), the UI's (`pgvigil_reader` + `pgvigil_auth`: reads every view and verifies UI passwords), the custom reports' on the store (`pgvigil_reports`: IN ROLE `pgvigil_reader` alone; its dsn is `reports_dsn` in `pgvigil.yaml`, and without it a custom report on the repository is refused and says why, [docs/customreports.md](docs/customreports.md)) and the monitoring login for each monitored server (`pg_monitor`), with the optional grants for pg_cron and a hidden pg_stat_statements schema, and, commented out, the actions login of the Cancel / Terminate door and the serverlog read door (the SECURITY DEFINER function `pgvigil_read_log`).
 4. The first UI user, as the owner (the password is asked for twice, at least 12 characters; `PGVIGIL_PASSWORD` or a piped line for a script):
    ```
    pgvigil user add admin -config pgvigil.yaml
@@ -111,6 +111,7 @@ Download the binary for your platform from the [latest release](https://github.c
 6. The web UI, as the UI login. On the machine itself, over loopback:
    ```
    export PGVIGIL_UI_DSN='postgres://pgvigil_ui:...@repo-host:5432/pgvigil?sslmode=require'
+   export PGVIGIL_REPORTS_DSN='postgres://pgvigil_reports:...@repo-host:5432/pgvigil?sslmode=require'   # reports_dsn: env:PGVIGIL_REPORTS_DSN in pgvigil.yaml
    pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_UI_DSN                 # http://127.0.0.1:8080/, sign in as admin
    pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_UI_DSN -open           # the same in its own window (Edge or Chrome app mode; no install, no admin right; proven on Linux, not on Windows)
    ```

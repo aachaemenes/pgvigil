@@ -47,8 +47,14 @@ The serve the app starts reads a configuration with the repository login the UI 
 ```yaml
 repository:
   dsn: "host=repo.example.internal port=5432 dbname=pgvigil user=pgvigil_ui sslmode=verify-full"
+reports_dsn: "host=repo.example.internal port=5432 dbname=pgvigil user=pgvigil_reports sslmode=verify-full"
 instances: []
 ```
+
+`reports_dsn` is the login custom reports on the store run as (`pgvigil_reports` from `pgvigil roles`, IN ROLE
+`pgvigil_reader` alone, its password on a line of its own in the user's `pgpass.conf`); without it a report on the
+store is refused and the page says why ([customreports.md](customreports.md)). The template the install writes
+carries the line with placeholders.
 
 The app looks for it in this order: `-config <file>`, the user's `%LOCALAPPDATA%\pgvigil\pgvigil.yaml`, then the machine's `%ProgramData%\pgvigil\app\pgvigil.yaml`. On a machine-wide install every user can read the machine's file, so keep the password out of it. Each user can put it in their own `%APPDATA%\postgresql\pgpass.conf`, or a user can have their own configuration in `%LOCALAPPDATA%`. pgvigil's UI login (the `pgvigil user` accounts) is on by default, and the window shows its sign-in page. A user may turn it off for their own serve (HKCU `NoLogin` = 1, below), which `serve` allows on loopback only. An administrator can forbid that with the policy `RequireLogin` = 1.
 
