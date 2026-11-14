@@ -75,6 +75,13 @@ func TestMoveAddCheck(t *testing.T) {
 		{"an IPv6 address and a port", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[fe80::1]:1433" }), ""},
 		{"an IPv6 address in brackets", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[2001:db8::5]" }), ""},
 		{"a host:port", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01:1433" }), ""},
+		// the rows web/src/move_address.test.mjs holds beside these (the page's prefill is the same rule)
+		{"an IPv4 address in brackets", "sql", "", "linux", with(func(s *moveServer) { s.Host = "[10.1.2.3]" }), "brackets"},
+		{"a port out of range in the host", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01,70000" }), "not 1 to 65535"},
+		{"an instance name with a hyphen", "sql", "", "linux", with(func(s *moveServer) { s.Host = `SQL01\MY-INST` }), "not a character of an instance name"},
+		{"an instance name of 17 characters", "sql", "", "linux", with(func(s *moveServer) { s.Host = `SQL01\` + strings.Repeat("A", 17) }), "not 1 to 16"},
+		{"a name ending in a dot", "sql", "", "linux", with(func(s *moveServer) { s.Host = "sql01." }), "not a host name"},
+		{"an IPv6 address alone", "sql", "", "linux", with(func(s *moveServer) { s.Host = "fe80::1" }), ""},
 	} {
 		err := moveAddCheck(c.auth, c.gmsa, c.goos, c.servers)
 		switch {

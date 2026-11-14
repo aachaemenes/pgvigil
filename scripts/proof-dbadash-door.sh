@@ -79,6 +79,8 @@
 #     join carries the wiring = said and used as it is) and the
 #     web bundle rebuilt, on a pgvigil repository of its own whose configuration names the DBA Dash repository and no
 #     instance, in a headless Chromium signed in as a UI user:
+#     G0 (before the walk, Node) web/src/move_address.test.mjs: the move's prefill rule - which DBA Dash connection is
+#        a network address, its host and port apart, else DBA Dash's Instance with why - every row 'ok';
 #     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists every SQL Server tab (as many
 #        as web/src/router.ts mssqlInstanceTabs holds in the tree: 33 at task 168, 53 at the release join);
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
@@ -506,6 +508,10 @@ elif (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: the j
 elif (cd "$GSRC" && git apply "$JP" 2>"$TMPD/g-apply.err"); then echo "G: the join's wiring applied to the run's copy"
 else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; fi
 (cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/g-web.log" 2>&1 && npm run build >>"$TMPD/g-web.log" 2>&1) || { tail -20 "$TMPD/g-web.log" >&2; fail "G: the web build"; }
+# G0: the move's prefill rule (web/src/move_address.ts: which DBA Dash connection is a network address) in Node
+"$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/move_address.ts" --format=esm --outfile="$TMPD/move_address.mjs" --log-level=warning || fail "G0: move_address.ts did not compile"
+node "$GSRC/web/src/move_address.test.mjs" "$TMPD/move_address.mjs" > "$TMPD/g0-unit.out" 2>&1 || { cat "$TMPD/g0-unit.out"; fail "G0: the move's prefill unit tests"; }
+echo "ok   G0: the move's prefill rule: $(tail -1 "$TMPD/g0-unit.out")"
 (cd "$GSRC" && go build -o "$TMPD/pgvigil-g" ./cmd/pgvigil) || fail "G: the build"
 BIN="$TMPD/pgvigil-g"
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $GDB" >/dev/null

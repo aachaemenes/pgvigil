@@ -7,6 +7,7 @@
 // or to a monitored server. Data from GET /api/admin/dbadash_moves, writes POST /api/admin/dbadash_moves
 // (internal/web/q_migrate.go). The section is mounted by admin_instances.ts.
 import { get } from './api';
+import { rowAddress } from './move_address';
 import { badge, el, fmtTime, offControl } from './ui';
 
 type Obj = Record<string, unknown>;
@@ -87,7 +88,8 @@ export function moveSection(): HTMLElement {
       return null;
     };
     const servers = d.servers ?? [];
-    const ticked = new Map<string, { box: HTMLInputElement; host: HTMLInputElement; name: HTMLInputElement; row: Obj }>();
+    const ticked = new Map<string, { box: HTMLInputElement; host: HTMLInputElement; port: HTMLInputElement; name: HTMLInputElement; row: Obj }>();
+    let rowN = 0;
 
     // the list: one row per server (@@SERVERNAME), a tick for the servers that can move
     const table = el('table', { class: 'grid' });
@@ -99,12 +101,16 @@ export function moveSection(): HTMLElement {
       const conns = (s.connection_ids as string[] | null) ?? [];
       let tick: HTMLElement | string = '';
       if (MOVABLE.has(state)) {
+        const at = rowAddress(srv, conns);
         const box = el('input', { type: 'checkbox', 'aria-label': `Move ${srv}` });
-        const host = el('input', { name: 'host', type: 'text', autocomplete: 'off', value: conns[0] ?? '', size: '22', 'aria-label': `Host of ${srv} (as pgvigil connects to it)` });
+        const host = el('input', { name: 'host', type: 'text', autocomplete: 'off', value: at.host, size: '22', 'aria-label': `Host of ${srv} (as pgvigil connects to it)` });
+        const port = el('input', { name: 'port', type: 'text', inputmode: 'numeric', autocomplete: 'off', value: at.port, size: '6', 'aria-label': `Port of ${srv} (empty: 1433, or the SQL Browser's for a named instance)` });
         const name = el('input', { name: 'name', type: 'text', autocomplete: 'off', value: safeName(srv), maxlength: '63', size: '22', 'aria-label': `pgvigil instance name of ${srv}` });
-        ticked.set(srv, { box, host, name, row: s });
-        if (ro) { off(box, d.off); off(host, d.off); off(name, d.off); }
-        tick = el('span', {}, box, ' ', host, ' ', name);
+        ticked.set(srv, { box, host, port, name, row: s });
+        const why = at.why ? el('span', { class: 'meta', id: `admin-move-why-${++rowN}` }, at.why) : null;
+        if (why) { host.setAttribute('aria-describedby', why.id); port.setAttribute('aria-describedby', why.id); }
+        if (ro) { off(box, d.off); off(host, d.off); off(port, d.off); off(name, d.off); }
+        tick = el('span', {}, box, ' ', host, ' ', port, ' ', name, ...(why ? [el('br', {}), why] : []));
       }
       const hist = s.job ? jobWords(s.job as Obj) : s.imported_at ? `imported ${fmtTime(s.imported_at)}` : s.counted_at ? `counted ${fmtTime(s.counted_at)}: ${countWords(s.counts as Obj)}` : '';
       tb.append(el('tr', {},
@@ -132,7 +138,7 @@ export function moveSection(): HTMLElement {
       add.disabled = true; say('Working…');
       try {
         const r = await post({ op: 'add', repo, auth: auth.value, login: login.value.trim(), password: pw.value,
-          servers: pick.map(t => ({ server: String(t.row.server), dbadash_ids: t.row.dbadash_ids, host: t.host.value.trim(), name: t.name.value.trim() })) });
+          servers: pick.map(t => ({ server: String(t.row.server), dbadash_ids: t.row.dbadash_ids, host: t.host.value.trim(), port: t.port.value.trim(), name: t.name.value.trim() })) });
         if (!r.ok) { say(`Not added: ${words(r.body)}`, true); add.disabled = false; return; }
         const res = (r.body.results as Obj[]) ?? [];
         const done = res.filter(x => x.outcome === 'done').length;
@@ -143,7 +149,7 @@ export function moveSection(): HTMLElement {
     });
     if (ro) for (const c of [auth, login, pw, add]) off(c, d.off);
     const form = el('fieldset', {}, el('legend', {}, 'Add the ticked servers to pgvigil'),
-      el('p', { class: 'meta' }, 'Each ticked server becomes an instance of this page with this sign-in (its host as DBA Dash connects to it, editable in its row); its DBA Dash history can be imported once pgvigil has read it.'),
+      el('p', { class: 'meta' }, 'Each ticked server becomes an instance of this page with this sign-in (its host and port as DBA Dash connects to it when that is a network address, else DBA Dash\'s Instance name with why - both editable in its row); its DBA Dash history can be imported once pgvigil has read it.'),
       el('div', {}, labelled('Authentication', auth), labelled('Login', login), labelled('Password', pw), ' ', add), results);
 
     // each moved server: Count, Import, XE, checklist
