@@ -24,28 +24,34 @@
 #     <tag>-pri and source database lsm; the log backup's start equal to the primary's own backupset row converted
 #     there by its own offset (within 2 s), backup_time_zone = the primary's offset / 15 (-32 or -28); the sample's
 #     latency between 0 and 5 minutes (not 480 off). TestHADRS3StatementsLive passes against the secondary as that login.
-#  C. tiers. With the defaults lsm raises nothing (a new database: created minutes ago, inside new_database_hours 24).
-#     With new_database_hours 0 from the configuration and the instance's logship_restore_age at 0.5 / 1 minute (rows
-#     of pg_thresholds, as the Thresholds page writes them): 'log restores are behind' warning once more than 30 s
-#     pass after the last restore, critical after 60 s. A log backup restored 40 s after it was taken, with
+#  C. tiers. The instance's logship_restore_age at 0.5 / 1 minute (rows of pg_thresholds inserted directly: the
+#     Thresholds page's path, import_pg_threshold, takes a SQL Server instance only with 0142, and is not proven here)
+#     while new_database_hours is the default 24: lsm raises nothing 35 s on (a new database: the exemption at work).
+#     With new_database_hours 0 from the configuration and a log restore made right then (the age counts from it):
+#     'log restores are behind' warning once more than 30 s pass after that restore, critical after 60 s. A log backup restored 40 s after it was taken, with
 #     logship_restore_latency at 0.5 / 60 minutes and the age back to 60 / 120: the latency alone makes the warning,
 #     its text naming a latency of 1 minute or less (rounded) - one finding for lsm, never two.
 #  D. sp_Blitz check 111: lsr restored WITH NORECOVERY from a full backup and nothing after it. With restoring_days 2
 #     (the default) nothing; with restoring_days 0.0005 (43 s) at the instance and 45 s waited: 'a database has been
-#     restoring for days' warning naming lsr and 'a full restore'; lsr never in 'log restores are behind'.
+#     restoring for days' warning naming lsr and 'a full restore'; with the age tiers at 0.5 / 1 minute meanwhile, lsr
+#     never in 'log restores are behind' (it was never log-restored: judged by its full restore it would be).
 #  F. SQL Server's own log shipping (msdb's procedures: a primary database lsw, its backup job, the secondary's copy and
 #     restore jobs, restore_threshold 1 minute) on the same pair: the secondary's read stores lsw twice - msdb's monitor
 #     row (kind secondary, its threshold 1) and the restore-history row - and after the restore job is disabled and
 #     65 s pass: 'log shipping is behind its threshold' (msdb's, warning) and, with the age tiers at 0.5 / 60, no
 #     'log restores are behind' warning for lsw (msdb's threshold is its warning); with the age critical at 1 minute
-#     the critical 'log restores are behind' appears for lsw beside msdb's warning. If msdb's procedures refuse on
-#     Linux, F prints 'msdb log shipping NOT PROVEN: <message>' and the rest goes on.
+#     the critical 'log restores are behind' appears for lsw beside msdb's warning. Each job is waited on until its
+#     outcome row is written. If msdb's procedures refuse on Linux, F prints 'msdb log shipping NOT PROVEN: <message>'
+#     and the rest goes on; a restore job that restores no log fails the run.
 #  G. a missing copy: lsm dropped on the secondary; the next read stores lsm as kind 'pair' (no database) with its source
 #     and raises 'a log shipping copy is missing' (warning) for it; no 'restore' row of lsm is left.
 #  H. the primary's read: none of its ONLINE databases is a restore row (the primary is not judged as a secondary).
 #  NOT PROVEN HERE: the SIMPLE-recovery exclusion of the tiers (DBA Dash's recovery_model <> 3: a SIMPLE database takes
-#  no log backup, so no real one has a log restore to judge; the clause is kept as DBA Dash's); a mirrored database (excluded: proven on the Windows mirroring lab, scripts/proof-mssql-mirroring.sh)
-#  and an availability group secondary (excluded: proven on the group lab, scripts/proof-mssql-hadr.sh S); a STANDBY
+#  no log backup, so no real one has a log restore to judge; the clause is kept as DBA Dash's); a mirrored database
+#  (excluded: proven on the Windows mirroring lab, scripts/proof-mssql-mirroring.sh M8); an availability group secondary
+#  that reads RESTORING (no lab here makes one: a group's secondary database reads ONLINE and the reader never reads it;
+#  the exclusion is proven over stub rows, scripts/proof-mssql-hadr.sh stubs); the RECOVERING-after-a-log-restore
+#  branch of the reader; backupset.time_zone 127 (unknown: this server's offset taken); the latency's critical tier; a STANDBY
 #  (read-only) secondary of SQL Server's log shipping (the restore jobs here use NORECOVERY); a share between two
 #  machines (one Docker volume stands in for it).
 set -euo pipefail
@@ -72,7 +78,7 @@ cleanup() {
     echo "cleanup of $TAG: left $left"
     [ "$left" = "0 containers, 0 networks, 0 volumes" ] || { echo "CLEANUP: the lab $TAG is not removed in full" >&2; [ $rc = 0 ] && rc=1; }
   fi
-  [ -n "$MADE_REPO" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
+  [ -n "$MADE_REPO" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || { echo "CLEANUP: database $REPO_DB not dropped" >&2; [ $rc = 0 ] && rc=1; }; }
   rm -rf "$WORK"
   exit $rc
 }
@@ -188,11 +194,14 @@ PGVIGIL_MSSQL_TEST_DSN="$MSSQL_SEC_DSN" go test -count=1 -run 'TestHADRS3Stateme
 ok "B: TestHADRS3StatementsLive passes against $SEC"
 
 echo "--- C. the tiers"
-[ -z "$(finding 'log restores are behind' lsm)" ] || fail "C: lsm judged with the defaults (a new database)"
-ok "C: no finding with the defaults (lsm is new)"
+setthr logship_restore_age 0.5 1; setthr logship_restore_latency 60 120
+sleep 35; collect "$NS"
+[ -z "$(finding 'log restores are behind' lsm)" ] || fail "C: lsm judged inside new_database_hours 24: '$(finding 'log restores are behind' lsm)'"
+ok "C: inside new_database_hours 24 nothing, with the age at 0.5 / 1 minute and the last restore 35 s old"
 config "    mssql_thresholds:
       new_database_hours: 0"
-setthr logship_restore_age 0.5 1; setthr logship_restore_latency 60 120
+# a log restore now: the age counts from it (B's collect and go test would otherwise move it by their own time)
+sp "INSERT dbo.t DEFAULT VALUES;" lsm >/dev/null; logback lsm lsm_3b.trn; logrest lsm lsm_3b.trn
 sleep 35; collect "$NS"
 [ "$(finding 'log restores are behind' lsm)" = warning ] || fail "C: after 35 s: '$(finding 'log restores are behind' lsm)', want warning"
 sleep 30; collect "$NS"
@@ -210,6 +219,7 @@ echo "--- D. sp_Blitz 111: lsr left RESTORING after a full restore"
 seed lsr FULL
 collect "$NS"
 [ -z "$(finding 'a database has been restoring for days' lsr)" ] || fail "D: lsr judged with restoring_days 2"
+setthr logship_restore_age 0.5 1   # a read of lsr by its full restore would show as 'log restores are behind'
 setthr restoring_days 0.0005 null; sleep 45; collect "$NS"
 [ "$(finding 'a database has been restoring for days' lsr)" = warning ] || fail "D: '$(finding 'a database has been restoring for days' lsr)', want warning"
 q "select detail from pgvigil.mssql_hadr_findings where instance_id = $IS and check_name = 'a database has been restoring for days' and object = 'lsr'" | grep -q 'a full restore' || fail "D: the detail does not name the full restore"
@@ -238,11 +248,15 @@ EXEC master.dbo.sp_add_log_shipping_secondary_database @secondary_database = N'l
     FOK=; echo "  msdb log shipping NOT PROVEN: the secondary's procedures: $(tr '\n' ' ' < "$OUT" | cut -c1-300)"; fi
 fi
 if [ -n "$FOK" ]; then
-  sp "EXEC msdb.dbo.sp_start_job @job_name = N'LSBackup_lsw';" >/dev/null; sleep 15
-  ss "EXEC msdb.dbo.sp_start_job @job_name = N'LSCopy_lsw';" >/dev/null; sleep 15
-  ss "EXEC msdb.dbo.sp_start_job @job_name = N'LSRestore_lsw';" >/dev/null
-  rr=; for _ in $(seq 1 30); do [ "$(ss "SELECT COUNT(*) FROM msdb.dbo.restorehistory WHERE destination_database_name = 'lsw' AND restore_type = 'L'")" -ge 1 ] && { rr=1; break; }; sleep 2; done
-  if [ -z "$rr" ]; then FOK=; echo "  msdb log shipping NOT PROVEN: the restore job restored no log ($(ss "SELECT TOP (3) CONCAT(message, ' | ') FROM msdb.dbo.log_shipping_monitor_error_detail ORDER BY log_time DESC" | tr '\n' ' ' | cut -c1-300))"; fi
+  # each job started and waited on until its outcome row (step 0) is written: the next one needs its files
+  jobruns() { $1 "SELECT COUNT(*) FROM msdb.dbo.sysjobhistory h JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id WHERE j.name = N'$2' AND h.step_id = 0"; }
+  jobrun() { local n0; n0=$(jobruns "$1" "$2"); $1 "EXEC msdb.dbo.sp_start_job @job_name = N'$2';" >/dev/null
+    for _ in $(seq 1 90); do [ "$(jobruns "$1" "$2")" -gt "$n0" ] && return 0; sleep 2; done; return 1; }
+  jobrun sp LSBackup_lsw || fail "F: LSBackup_lsw did not end in 180 s"
+  jobrun ss LSCopy_lsw || fail "F: LSCopy_lsw did not end in 180 s"
+  jobrun ss LSRestore_lsw || fail "F: LSRestore_lsw did not end in 180 s"
+  [ "$(ss "SELECT COUNT(*) FROM msdb.dbo.restorehistory WHERE destination_database_name = 'lsw' AND restore_type = 'L'")" -ge 1 ] \
+    || fail "F: the restore job restored no log ($(ss "SELECT TOP (3) CONCAT(message, ' | ') FROM msdb.dbo.log_shipping_monitor_error_detail ORDER BY log_time DESC" | tr '\n' ' ' | cut -c1-300))"
 fi
 if [ -n "$FOK" ]; then
   ss "EXEC msdb.dbo.sp_update_job @job_name = N'LSRestore_lsw', @enabled = 0; EXEC msdb.dbo.sp_update_job @job_name = N'LSCopy_lsw', @enabled = 0;" >/dev/null

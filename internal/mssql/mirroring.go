@@ -52,9 +52,10 @@ func mirroringSQL(withCounters bool) string {
   CAST(NULL AS int) AS mirrored_write_txns_type`
 	apply, hidden := "", ""
 	if withCounters {
-		// the mirror a least-privilege login sees with NULL values (above): a counter instance of its own
+		// the mirror a least-privilege login sees with NULL values (above): a counter instance of its own; for a sysadmin
+		// a NULL row is the answer
 		hidden = `
-   OR (m.mirroring_guid IS NULL AND d.state = 1 AND c.redo_queue_kb IS NOT NULL)`
+   OR (m.mirroring_guid IS NULL AND d.state = 1 AND c.redo_queue_kb IS NOT NULL AND IS_SRVROLEMEMBER('sysadmin') = 0)`
 		counters = `c.log_send_queue_kb, c.redo_queue_kb, c.log_bytes_sent_total, c.redo_bytes_total, c.txn_delay_ms_total,
   c.mirrored_write_txns_total, c.log_bytes_sent_type, c.redo_bytes_type, c.txn_delay_type, c.mirrored_write_txns_type`
 		apply = `

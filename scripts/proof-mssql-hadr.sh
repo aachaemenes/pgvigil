@@ -106,21 +106,27 @@ set -euo pipefail
 #      ag1 is MANUAL, so never); a seeding row of dagdb (COMPLETED) where sa's sys.dm_hadr_automatic_seeding lists
 #      one; a second read gives the replica and database counter rates as numbers (0 or more). TestHADRS3StatementsLive
 #      passes on d1a and d1b. Findings at rest: none of the new checks, except 'the AlwaysOn_health session is not
-#      running' on exactly the nodes where sa reads it not running or not starting with the server (said either way).
+#      running' on exactly the nodes where sa reads it not running or not starting with the server (said either way);
+#      the session is first started on d1b with STARTUP_STATE ON, so at least one node reads 1|1|1 and raises nothing.
 #  S3. a lagging secondary: a row written on d1a and read until d1a's estimate for d1b is 0 s (the secondary holds the
 #      newest commit: the estimate is the primary's last commit less the secondary's, so on an idle database it would
 #      jump at once to the age of the last commit - seen on run 1: 54 s at the first read), then dagdb's data movement
 #      suspended on d1b and a row written on d1a every few seconds; ag_data_loss set for d1a's instance at 0.25 / 0.75
-#      minutes (15 / 45 s; rows of pg_thresholds): 'a secondary would lose data in a failover' on ag1 / d1b / dagdb as
-#      a warning once two reads in a row are 15 s or more, then critical at 45 s - ONE finding of that check for the
-#      secondary at each read (beside 'a database is suspended', 0066's). 0118's 'AG secondary behind' is not read
+#      minutes (15 / 45 s; rows of pg_thresholds inserted directly, not through the Thresholds page): each read's stored
+#      estimate equals sa's own (the primary's last commit less d1b's, sys.dm_hadr_database_replica_states on d1a)
+#      within 5 s; 'a secondary would lose data in a failover' on ag1 / d1b / dagdb as a warning only once two reads in
+#      a row are 15 s or more, critical only once two are 45 s or more - ONE finding of that check for the secondary at
+#      each read (beside 'a database is suspended', 0066's). 0118's 'AG secondary behind' is not read
 #      (the join drops it). After RESUME, within 90 s, no data-loss finding.
 #  S4. a secondary's endpoint stopped (ALTER ENDPOINT Hadr_endpoint STATE = STOPPED on d1b): d1b's read raises 'the
 #      availability group endpoint is not started' (critical) and d1a's raises 'a replica is not connected' for ag1 / d1b
 #      (critical) within 60 s; after STATE = STARTED both are gone within 90 s.
-#  S5. a database not joined: pgvgj added to ag1 (seeded to d1b), then SET HADR OFF on d1b: d1a raises 'a database is not
-#      joined' (warning) for ag1 / d1b / pgvgj, and NOT 'a database is not synchronizing' for it; removed from ag1 and
-#      dropped on both: gone.
+#  S5. a database not joined: d1b's seeding mode set to MANUAL, then pgvgj made on d1a and added to ag1, so d1b never
+#      receives it (the common case: a database added on the primary and never joined on a secondary): sa on d1a reads
+#      is_database_joined 0 for d1b, and d1a raises 'a database is not joined' (warning) for ag1 / d1b / pgvgj and NOT
+#      'a database is not synchronizing' for it; removed from ag1, dropped, d1b's seeding mode AUTOMATIC again: gone.
+#      (Rewritten after runs gaps4 / gaps5: after SET HADR OFF on a SYNCHRONIZED secondary, SQL Server's d1a still read
+#      the database joined there 30 s on; gaps3's pass came from a SET HADR OFF that landed while seeding still ran.)
 #  S6. a replica not joined: d2b added to ag1 on d1a (ASYNCHRONOUS_COMMIT, MANUAL, SEEDING_MODE MANUAL) and never joined
 #      there: d1a raises 'a replica is not joined' (warning) for ag1 / d2b, and neither 'a replica is not connected' nor
 #      'a replica is not healthy' for it; the replica removed: gone.
@@ -129,14 +135,178 @@ set -euo pipefail
 #      If SQL Server refuses a list naming a replica with no URL (it does: Msg 19404 on CU27, run gaps2), the row says so
 #      and the finding is made with d1b's URL set and ALLOW_CONNECTIONS = NO instead, cleared by ALLOW_CONNECTIONS = ALL.
 #  S8. a failed seeding: pgvgf exists on d1b already, then made on d1a and added to ag1 (automatic seeding): sa reads a
-#      FAILED seeding on d1a and pgvigil raises 'automatic seeding failed' (warning) for ag1 / pgvgf -> d1b; removed.
-#      If SQL Server reports no FAILED row, the row says 'seeding failure NOT PROVEN' with what sa read.
-#  S9. log shipping's group exclusion (task 384): dagdb on d1b as sa reads its state in sys.databases (the second
-#      question of the design pass); mssql_logshipping on d1b stores no restore row of dagdb that is judged, and no
-#      log shipping finding.
+#      FAILED seeding on d1a and pgvigil raises 'automatic seeding failed' (warning) for ag1 / pgvgf -> d1b; removed
+#      from the group: the warning gone within 90 s (a FAILED seeding is judged only while its database is in the group).
+#      If SQL Server reports no FAILED row, the row says 'seeding failure NOT PROVEN' with what sa read, and so does the
+#      final line.
+#  S9. dagdb on d1b as sa reads its state in sys.databases (the second question of the design pass) and no log shipping
+#      finding on d1b. A group's secondary database reads ONLINE, so the reader never reads it and this row cannot fail
+#      on log shipping's group exclusion: that exclusion is NOT PROVEN here (it is proven over stub rows, part T); a
+#      restore row of d1b, if one is ever stored, must be marked as in a group.
 #  S10. the lab removed: 0 containers, 0 networks, 0 volumes; the repository database dropped.
-#  NOT PROVEN HERE: quorum, a cluster member down and failover readiness on a Windows cluster (WSFC; task 387's Q8);
-#  dbachecks HADR #1-#20, #22-#25, #27 (the cluster's own nodes, resources, networks and listener names: Windows only).
+#  NOT PROVEN HERE: quorum, a cluster member down and failover readiness on a Windows cluster (WSFC; task 387's Q8; a
+#  clusterless group cannot be AUTOMATIC, so 'a database is not ready for automatic failover' is proven over stub rows
+#  only, part T); log shipping's group exclusion on a real RESTORING group database (S9); dbachecks HADR #1-#20,
+#  #22-#25, #27 (the cluster's own nodes, resources, networks and listener names: Windows only).
+# PART T - 0143's rules over stub payloads: `scripts/proof-mssql-hadr.sh stubs` runs it ALONE on a fresh repository
+# migrated by this tree (PGVIGIL_REPO_DSN, a superuser keyword DSN; psql and a go toolchain; nothing of SQL Server).
+# It feeds the import functions the payloads a collector would send for what no lab here reaches - a Windows
+# cluster's quorum and members, a failover cluster instance, PENDING / UNSYNCHRONIZED mirroring, Amazon RDS, a mirror
+# re-created (its role sequence back to 1), a mirror read by a login that is not sysadmin, a log shipping copy past the
+# 14-day window, a tier set alone, a group database left RESTORING, a seeding seen from either side - and the findings
+# must equal the list in it line for line (written before the run), with three state lines. Its repository is dropped
+# on every exit path. Expected: 'T: the findings equal the expected list ...' and 'PROOF OK (part T)'.
+if [ "${1:-}" = stubs ]; then
+  set -euo pipefail
+  : "${PGVIGIL_REPO_DSN:?a superuser keyword DSN of the PostgreSQL sandbox}"
+  T_DB=pgvigil_s3stub_$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n'); T_WORK=$(mktemp -d)
+  t_cleanup() { rc=$?; psql "$PGVIGIL_REPO_DSN dbname=postgres" -XAtqc "drop database if exists $T_DB with (force)" >/dev/null 2>&1 || { echo "CLEANUP: $T_DB not dropped" >&2; [ $rc = 0 ] && rc=1; }; rm -rf "$T_WORK"; exit $rc; }
+  trap t_cleanup EXIT
+  CGO_ENABLED=0 go build -o "$T_WORK/pgvigil" ./cmd/pgvigil || { echo "FAIL: T: the build" >&2; exit 1; }
+  psql "$PGVIGIL_REPO_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create database $T_DB"
+  printf 'repository:\n  dsn: "%s dbname=%s"\ninstances: []\n' "$PGVIGIL_REPO_DSN" "$T_DB" > "$T_WORK/c.yaml"
+  "$T_WORK/pgvigil" migrate -config "$T_WORK/c.yaml" > "$T_WORK/m.out" 2>&1 || { cat "$T_WORK/m.out"; echo "FAIL: T: the migrate" >&2; exit 1; }
+  psql "$PGVIGIL_REPO_DSN dbname=$T_DB" -X -v ON_ERROR_STOP=1 -f - > "$T_WORK/t.out" 2>&1 <<'TSQL' || { cat "$T_WORK/t.out"; echo "FAIL: T: the stub rows (above)" >&2; exit 1; }
+\set ON_ERROR_STOP 1
+SET client_min_messages = warning;
+CREATE OR REPLACE FUNCTION pg_temp.ts(p text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE m text[]; v text := p;
+BEGIN
+  FOR m IN SELECT regexp_matches(p, '@-([0-9]+)@', 'g') LOOP
+    v := replace(v, '@-' || m[1] || '@', to_char((now() - make_interval(secs => m[1]::int)) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'));
+  END LOOP;
+  RETURN v::jsonb;
+END $$;
+SELECT pgvigil.ensure_instance('s3ag', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver') AS ag \gset
+SELECT pgvigil.ensure_instance('s3mir', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver') AS mir \gset
+SELECT pgvigil.ensure_instance('s3rds', 'rdssqlserver', '15.0', 150000, false, '{}', 'sqlserver') AS rds \gset
+SELECT pgvigil.ensure_instance('s3ls', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver') AS ls \gset
+SELECT pgvigil.ensure_instance('s3fci', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver') AS fci \gset
+
+-- availability groups: two reads 80 s apart
+\set agrows '[{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"WSFC","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R1","replica_server":"d1a","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"AUTOMATIC","secondary_connections":"ALL","read_only_routing_url":"TCP://d1a:1433","join_state":"JOINED_STANDALONE_INSTANCE","is_local":1,"role":"PRIMARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY","failure_condition_level":3,"health_check_timeout_ms":30000},{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"WSFC","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R2","replica_server":"d1b","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"AUTOMATIC","secondary_connections":"NO","join_state":"JOINED_STANDALONE_INSTANCE","is_local":0,"role":"SECONDARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1a","database_name":"dbh","is_local":1,"is_primary_replica":1,"synchronization_state":"SYNCHRONIZED","last_commit_utc":"@-10@"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbh","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED","last_hardened_utc":"@-130@"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbc","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED","est_data_loss_s":400},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbj","is_failover_ready":0,"is_database_joined":0},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbr","is_failover_ready":0,"is_database_joined":1},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbh","is_failover_ready":1,"is_database_joined":1},{"kind":"routing","group_id":"G1","replica_server":"d1a","routing_priority":1,"read_only_replica":"d1b"},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbs","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"endpoint","endpoint_name":"Hadr_endpoint","endpoint_state":"STOPPED","endpoint_role":"ALL","endpoint_port":5022},{"kind":"health_session","session_exists":1,"session_running":0,"session_autostart":1},{"kind":"cluster_member","cluster_name":"wsfc1","quorum_type":"NODE_MAJORITY","quorum_state":"FORCED_QUORUM","member_name":"node1","member_type":"CLUSTER_NODE","member_state":"UP","quorum_votes":1},{"kind":"cluster_member","cluster_name":"wsfc1","quorum_type":"NODE_MAJORITY","quorum_state":"FORCED_QUORUM","member_name":"node2","member_type":"CLUSTER_NODE","member_state":"DOWN","quorum_votes":1},{"kind":"replica_counters","counter_instance":"d1b","flow_control_ms_total":CTR1,"flow_controls_total":5,"resent_messages_total":0,"flow_control_type":272696576,"flow_controls_type":272696576,"third_type":272696576},{"kind":"db_counters","counter_instance":"dbc","db_flow_control_delay_total":0,"db_flow_controls_total":0,"redo_blocked_total":CTR2,"flow_control_type":272696576,"flow_controls_type":272696576,"third_type":272696576},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbr","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbz","is_failover_ready":0,"is_database_joined":1},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbz","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZING"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbs","is_failover_ready":0,"is_database_joined":0},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbx","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbk","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbk","is_failover_ready":1,"is_database_joined":1},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbk","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED"}]'
+SELECT pgvigil.import_mssql_ag(:ag, now() - interval '100 seconds', pg_temp.ts(replace(replace(:'agrows', 'CTR1', '1000'), 'CTR2', '10')));
+SELECT pgvigil.import_mssql_ag(:ag, now() - interval '20 seconds', pg_temp.ts(replace(replace(:'agrows', 'CTR1', '9000'), 'CTR2', '50')));
+
+-- mirroring: two reads 260 s apart (the 5-minute rule) on s3mir; one read on the RDS instance
+\set mirrows '[{"kind":"mirror","database_name":"m1","role":"PRINCIPAL","state":"SYNCHRONIZED","state_code":4,"role_sequence":1,"partner_instance":"p2","witness":"TCP://w:5025","witness_state":"DISCONNECTED","log_send_queue_kb":204800,"log_bytes_sent_total":SENT,"log_bytes_sent_type":272696576,"txn_delay_ms_total":DELAY,"txn_delay_type":272696576,"mirrored_write_txns_total":TXNS,"mirrored_write_txns_type":272696576},{"kind":"mirror","database_name":"m2","role":"ROLE2","state":"SYNCHRONIZED","state_code":4,"role_sequence":SEQ,"partner_instance":"p2","witness":"TCP://w:5025","witness_state":"CONNECTED"},{"kind":"mirror","database_name":"m3","role":"PRINCIPAL","state":"UNSYNCHRONIZED","state_code":5,"role_sequence":1},{"kind":"mirror","database_name":"m4","role":"PRINCIPAL","state":"SYNCHRONIZING","state_code":2,"role_sequence":1},{"kind":"mirror","database_name":"m5","role":"PRINCIPAL","state":"DISCONNECTED","state_code":1,"role_sequence":1},{"kind":"endpoint","endpoint_name":"pgv_mirroring","endpoint_state":"STOPPED","endpoint_role":"PARTNER","endpoint_port":5023},{"kind":"mirror","database_name":"m6","role":"PRINCIPAL","state":"SYNCHRONIZED","state_code":4,"role_sequence":SEQ6},{"kind":"mirror","database_name":"m7","role":"MIRROR","values_hidden":1,"redo_queue_kb":0,"database_state":"RESTORING"}]'
+SELECT pgvigil.import_mssql_mirroring(:mir, now() - interval '280 seconds',
+  replace(replace(replace(replace(replace(replace(:'mirrows', 'SENT', '1000000'), 'DELAY', '100'), 'TXNS', '50'), 'ROLE2', 'PRINCIPAL'), 'SEQ6', '5'), 'SEQ', '1')::jsonb);
+SELECT pgvigil.import_mssql_mirroring(:mir, now() - interval '20 seconds',
+  replace(replace(replace(replace(replace(replace(:'mirrows', 'SENT', '267240000'), 'DELAY', '1100'), 'TXNS', '550'), 'ROLE2', 'MIRROR'), 'SEQ6', '1'), 'SEQ', '2')::jsonb);
+SELECT pgvigil.import_mssql_mirroring(:rds, now() - interval '20 seconds',
+  '[{"kind":"mirror","database_name":"m1","role":"PRINCIPAL","state":"DISCONNECTED","state_code":1}]'::jsonb);
+
+-- log shipping from restore history
+SELECT pgvigil.import_mssql_logshipping(:ls, now() - interval '20 seconds', pg_temp.ts('[
+ {"kind":"secondary","database_name":"LS7","secondary_server":"s3ls","primary_server":"p","primary_database":"ls7","threshold_minutes":45,"last_restored_utc":"@-90000@"},
+ {"kind":"secondary","database_name":"ls12","secondary_server":"s3ls","primary_server":"p","primary_database":"ls12","threshold_minutes":45,"last_restored_utc":"@-600@"},
+ {"kind":"restore","database_name":"ls1","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":0,"last_log_restore_utc":"@-180000@","last_log_backup_start_utc":"@-180600@","source_server":"p","source_database":"ls1","last_file":"f1"},
+ {"kind":"restore","database_name":"ls2","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":0,"last_log_restore_utc":"@-90000@","last_log_backup_start_utc":"@-91800@","source_server":"p","source_database":"ls2","last_file":"f2"},
+ {"kind":"restore","database_name":"ls3","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":1,"in_availability_group":0},
+ {"kind":"restore","database_name":"ls4","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":0,"last_restore_utc":"@-259200@","last_restore_type":"D"},
+ {"kind":"pair","database_name":"ls5","source_server":"p","source_database":"ls5","last_log_restore_utc":"@-7200@","log_restores":40,"last_with_recovery":0},
+ {"kind":"pair","database_name":"ls13","source_server":"p","source_database":"ls13","last_log_restore_utc":"@-7200@","log_restores":1,"last_with_recovery":0},
+ {"kind":"pair","database_name":"ls14","source_server":"p","source_database":"ls14","last_log_restore_utc":"@-7200@","log_restores":5,"last_with_recovery":1},
+ {"kind":"restore","database_name":"ls15","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","in_availability_group":0,"last_log_restore_utc":"@-180000@","last_log_backup_start_utc":"@-180600@","source_server":"p","source_database":"ls15"},
+ {"kind":"restore","database_name":"ls6","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-3600@","is_mirrored":0,"in_availability_group":0,"last_log_restore_utc":"@-3000@","last_log_backup_start_utc":"@-3600@","source_server":"p","source_database":"ls6"},
+ {"kind":"restore","database_name":"ls7","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":0,"last_log_restore_utc":"@-90000@","last_log_backup_start_utc":"@-90060@","source_server":"p","source_database":"ls7"},
+ {"kind":"restore","database_name":"ls8","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":1,"last_log_restore_utc":"@-180000@","last_log_backup_start_utc":"@-180600@","source_server":"p","source_database":"ls8"},
+ {"kind":"restore","database_name":"ls9","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":1},
+ {"kind":"restore","database_name":"ls10","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-2592000@","is_mirrored":0,"in_availability_group":0,"last_restore_utc":"@-1728000@","last_restore_type":"L"},
+ {"kind":"restore","database_name":"ls11","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":0,"last_restore_utc":"@-259200@","last_restore_type":"D"},
+ {"kind":"restore","database_name":"ls12","database_state":"RESTORING","is_in_standby":0,"recovery_model":"FULL","created_utc":"@-864000@","is_mirrored":0,"in_availability_group":0,"last_log_restore_utc":"@-600@","last_log_backup_start_utc":"@-90600@","source_server":"p","source_database":"ls12"}]'));
+
+-- the failover cluster instance: two reads, the owner moves from n1 to n2, n1 then down
+SELECT pgvigil.import_mssql_fci(:fci, now() - interval '80 seconds',
+  '[{"kind":"node","node_name":"n1","node_status":0,"node_state":"up","is_current_owner":1,"physical_node":"n1","virtual_name":"vsql"},{"kind":"node","node_name":"n2","node_status":0,"node_state":"up","is_current_owner":0,"physical_node":"n1","virtual_name":"vsql"}]'::jsonb);
+SELECT pgvigil.import_mssql_fci(:fci, now() - interval '20 seconds',
+  '[{"kind":"node","node_name":"n1","node_status":1,"node_state":"down","is_current_owner":0,"physical_node":"n2","virtual_name":"vsql"},{"kind":"node","node_name":"n2","node_status":0,"node_state":"up","is_current_owner":1,"physical_node":"n2","virtual_name":"vsql"}]'::jsonb);
+
+
+-- s3ag also reads a mirrored database on its one endpoint (the group's arm says the endpoint once)
+SELECT pgvigil.import_mssql_mirroring(:ag, now() - interval '20 seconds',
+  '[{"kind":"mirror","database_name":"m9","role":"PRINCIPAL","state":"SYNCHRONIZED","state_code":4,"role_sequence":1},{"kind":"endpoint","endpoint_name":"Hadr_endpoint","endpoint_state":"STOPPED","endpoint_role":"ALL","endpoint_port":5022}]'::jsonb);
+-- s3ag2: a secondary's own read (d1b local); ag_data_loss with the critical tier alone; a seeding in progress from the destination's side
+SELECT pgvigil.ensure_instance('s3ag2', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver') AS ag2 \gset
+INSERT INTO pgvigil.pg_thresholds (key, level, instance_id, warn, crit, created_by, created_at) VALUES ('ag_data_loss', 'instance', :ag2, NULL, 5, 'proof', now());
+\set ag2rows '[{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"NONE","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R1","replica_server":"d1a","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"MANUAL","secondary_connections":"ALL","join_state":"JOINED_STANDALONE_INSTANCE","is_local":0,"role":"PRIMARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY"},{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"NONE","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R2","replica_server":"d1b","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"MANUAL","secondary_connections":"ALL","join_state":"JOINED_STANDALONE_INSTANCE","is_local":1,"role":"SECONDARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbl","is_local":1,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED","est_data_loss_s":400},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbq","is_failover_ready":0,"is_database_joined":0},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbq","remote_replica":"d1a","is_source":0,"seeding_state":"SEEDING","number_of_attempts":1,"start_utc":"@-60@"}]'
+SELECT pgvigil.import_mssql_ag(:ag2, now() - interval '100 seconds', pg_temp.ts(:'ag2rows'));
+SELECT pgvigil.import_mssql_ag(:ag2, now() - interval '20 seconds', pg_temp.ts(:'ag2rows'));
+-- s3ls: restoring_days with the critical tier alone for ls11 (database level)
+INSERT INTO pgvigil.pg_thresholds (key, level, instance_id, datname, warn, crit, created_by, created_at) VALUES ('restoring_days', 'database', :ls, 'ls11', NULL, 1, 'proof', now());
+
+\echo == findings
+SELECT i.name, f.severity, f.check_name, f.object
+  FROM pgvigil.mssql_hadr_findings f JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.name LIKE 's3%' ORDER BY 1, 3, 4;
+\echo == samples and state
+SELECT 'ag replica rate' AS what, replica_server, flow_control_ms_per_s FROM pgvigil.mssql_ag_replica_sample WHERE instance_id = :ag ORDER BY snapshot_at DESC LIMIT 1;
+SELECT 'mirror rates' AS what, database_name, send_rate_kb_s, txn_delay_ms FROM pgvigil.mssql_mirroring_state WHERE instance_id = :mir AND database_name = 'm1';
+SELECT 'mirror role changes' AS what, database_name, old_role, new_role, old_sequence, new_sequence FROM pgvigil.mssql_mirroring_role_changes WHERE instance_id = :mir ORDER BY 2;
+SELECT 'hidden mirror' AS what, database_name, role, state, values_hidden FROM pgvigil.mssql_mirroring_state WHERE instance_id = :mir AND database_name = 'm7';
+-- the check: the findings equal this list line for line (written before the run), and three state lines
+CREATE TEMP TABLE t_expected (name text, severity text, check_name text, object text);
+INSERT INTO t_expected VALUES
+ ('s3ag', 'warning', 'a cluster member is down', 'node2'),
+ ('s3ag', 'warning', 'a database is not joined', 'ag1 / d1b / dbj'),
+ ('s3ag', 'warning', 'a database is not joined', 'ag1 / d1b / dbs'),
+ ('s3ag', 'critical', 'a database is not ready for automatic failover', 'ag1 / d1b / dbr'),
+ ('s3ag', 'critical', 'a secondary would lose data in a failover', 'ag1 / d1b / dbc'),
+ ('s3ag', 'warning', 'a secondary would lose data in a failover', 'ag1 / d1b / dbh'),
+ ('s3ag', 'warning', 'a synchronous replica is not synchronized', 'ag1 / d1b / dbz'),
+ ('s3ag', 'warning', 'automatic seeding failed', 'ag1 / dbs -> d1b'),
+ ('s3ag', 'warning', 'read-only routing names a replica that takes no reads', 'ag1 / d1a -> d1b'),
+ ('s3ag', 'warning', 'the AlwaysOn_health session is not running', 'AlwaysOn_health'),
+ ('s3ag', 'critical', 'the availability group endpoint is not started', 'Hadr_endpoint'),
+ ('s3ag', 'critical', 'the cluster has no normal quorum', 'wsfc1'),
+ ('s3ag2', 'critical', 'a secondary would lose data in a failover', 'ag1 / d1b / dbl'),
+ ('s3fci', 'warning', 'a cluster node is not up', 'n1'),
+ ('s3fci', 'warning', 'no spare cluster node', 'vsql'),
+ ('s3fci', 'critical', 'the failover cluster instance moved to another node', 'n2'),
+ ('s3ls', 'warning', 'a database has been restoring for days', 'ls4'),
+ ('s3ls', 'critical', 'a database has been restoring for days', 'ls10'),
+ ('s3ls', 'critical', 'a database has been restoring for days', 'ls11'),
+ ('s3ls', 'warning', 'a log shipping copy is missing', 'ls5 (from p.ls5)'),
+ ('s3ls', 'critical', 'log restores are behind', 'ls1 (from p.ls1)'),
+ ('s3ls', 'warning', 'log restores are behind', 'ls2 (from p.ls2)'),
+ ('s3ls', 'warning', 'log restores are behind', 'ls12 (from p.ls12)'),
+ ('s3ls', 'warning', 'log shipping is behind its threshold', 'secondary / LS7 on s3ls'),
+ ('s3mir', 'critical', 'mirroring is disconnected or suspended', 'm5'),
+ ('s3mir', 'critical', 'mirroring is not synchronized', 'm3'),
+ ('s3mir', 'warning', 'mirroring is synchronizing', 'm4'),
+ ('s3mir', 'critical', 'the mirroring endpoint is not started', 'pgv_mirroring'),
+ ('s3mir', 'warning', 'the mirroring send queue is over its threshold', 'm1'),
+ ('s3mir', 'warning', 'the mirroring witness is disconnected', 'm1'),
+ ('s3mir', 'critical', 'the principal of a mirrored database changed', 'm2');
+DO $chk$
+DECLARE v_missing text; v_extra text; v_state text;
+BEGIN
+  SELECT string_agg(format('%s|%s|%s|%s', name, severity, check_name, object), E'\n') INTO v_missing FROM (
+    SELECT name, severity, check_name, object FROM t_expected
+    EXCEPT ALL SELECT i.name, f.severity, f.check_name, f.object FROM pgvigil.mssql_hadr_findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name LIKE 's3%') m;
+  SELECT string_agg(format('%s|%s|%s|%s', name, severity, check_name, object), E'\n') INTO v_extra FROM (
+    SELECT i.name, f.severity, f.check_name, f.object FROM pgvigil.mssql_hadr_findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name LIKE 's3%'
+    EXCEPT ALL SELECT name, severity, check_name, object FROM t_expected) x;
+  IF v_missing IS NOT NULL OR v_extra IS NOT NULL THEN
+    RAISE EXCEPTION E'T: the findings differ from the expected list\nmissing:\n%\nnot expected:\n%', coalesce(v_missing, '-'), coalesce(v_extra, '-');
+  END IF;
+  SELECT string_agg(database_name, ',' ORDER BY database_name) INTO v_state FROM pgvigil.mssql_mirroring_role_changes
+   WHERE instance_id = (SELECT instance_id FROM pgvigil.instances WHERE name = 's3mir');
+  IF v_state IS DISTINCT FROM 'm2' THEN RAISE EXCEPTION 'T: mirroring role changes stored for % (expected m2 only: m6''s sequence went 5 -> 1, a re-created session)', v_state; END IF;
+  SELECT role || '|' || coalesce(state, '') || '|' || values_hidden INTO v_state FROM pgvigil.mssql_mirroring_state
+   WHERE instance_id = (SELECT instance_id FROM pgvigil.instances WHERE name = 's3mir') AND database_name = 'm7';
+  IF v_state IS DISTINCT FROM 'MIRROR||true' THEN RAISE EXCEPTION 'T: the hidden mirror m7 stored %', v_state; END IF;
+  SELECT txn_delay_ms::text INTO v_state FROM pgvigil.mssql_mirroring_state
+   WHERE instance_id = (SELECT instance_id FROM pgvigil.instances WHERE name = 's3mir') AND database_name = 'm1';
+  IF v_state IS DISTINCT FROM '2.000' THEN RAISE EXCEPTION 'T: m1''s transaction delay per write %, expected 2.000 (1000 ms over 500 writes)', v_state; END IF;
+END $chk$;
+\echo T: the findings equal the expected list; role changes m2 only; m7 hidden MIRROR; m1 delay 2.000
+TSQL
+  cat "$T_WORK/t.out"
+  echo "PROOF OK (part T)"
+  exit 0
+fi
 if [ "${1:-}" = gaps ]; then
   : "${PGVIGIL_REPO_DSN:?a superuser connection to a PostgreSQL sandbox, in keyword form}"
   for t in docker openssl psql python3 go; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
@@ -197,6 +367,7 @@ if [ "${1:-}" = gaps ]; then
   echo "ok S1: DAG FORMED; the login on four nodes, no sysadmin"
 
   echo "--- S2. at rest"
+  SX d1b "S2: AlwaysOn_health started" "ALTER EVENT SESSION AlwaysOn_health ON SERVER WITH (STARTUP_STATE = ON); IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = 'AlwaysOn_health') ALTER EVENT SESSION AlwaysOn_health ON SERVER STATE = START;"
   sag "${S_NODES[@]}"
   for n in "${S_NODES[@]}"; do S_I[$n]=$(sq "select instance_id from pgvigil.instances where name = '${S_N[$n]}'"); done
   sleep 20; sag "${S_NODES[@]}"
@@ -215,7 +386,9 @@ if [ "${1:-}" = gaps ]; then
     want=; [ "$SAH" = "1|1|1" ] || want=warning
     [ "$(sf "$n" 'the AlwaysOn_health session is not running' AlwaysOn_health)" = "$want" ] || sfail "S2: the AlwaysOn_health finding on $n is '$(sf "$n" 'the AlwaysOn_health session is not running' AlwaysOn_health)' with sa's '$SAH'"
     echo "    AlwaysOn_health on $n (exists|running|autostart): $SAH -> finding '${want:-none}'"
+    if [ "$SAH" = "1|1|1" ]; then HOK=1; fi
   done
+  [ -n "${HOK:-}" ] || sfail "S2: no node reads AlwaysOn_health 1|1|1 after d1b's start: the 'not raised' case is not read"
   SAQ=$(SQ d1a "SELECT CONCAT(ISNULL(cluster_name, ''), '|', quorum_type_desc, '|', quorum_state_desc) FROM sys.dm_hadr_cluster" 2>&1 || true)
   PGQ=$(sq "select distinct coalesce(e->>'cluster_name', '') || '|' || (e->>'quorum_type') || '|' || (e->>'quorum_state') from pgvigil.mssql_ag_state a cross join lateral jsonb_array_elements(case when jsonb_typeof(a.cluster) = 'array' then a.cluster else '[]'::jsonb end) e where a.instance_id = ${S_I[d1a]}")
   echo "    quorum on a clusterless Linux node: sa '$SAQ', stored '$PGQ' (cluster type $(sq "select distinct cluster_type from pgvigil.mssql_ag_state where instance_id = ${S_I[d1a]} and group_name = 'ag1'"))"
@@ -245,11 +418,19 @@ if [ "${1:-}" = gaps ]; then
   zero() { [ "$(sq "select coalesce(est_data_loss_s::text, '-') from pgvigil.mssql_ag_database_state where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd1b' and database_name = 'dagdb'")" = 0 ]; }
   swait 60 d1a -- zero || sfail "S3: the estimate for d1b does not come to 0 s after a replicated write"
   SX d1b "S3: suspend" "ALTER DATABASE dagdb SET HADR SUSPEND;"
-  t0=$SECONDS; W1=; C1=; BAD=
+  t0=$SECONDS; W1=; C1=; BAD=; DIFF=; RUNW=0; RUNC=0; WRUN=; CRUN=
   while [ $((SECONDS - t0)) -lt 150 ]; do
     srow
     sag d1a
     sev=$(sf d1a 'a secondary would lose data in a failover' 'ag1 / d1b / dagdb')
+    est=$(sq "select coalesce(est_data_loss_s::text, '-') from pgvigil.mssql_ag_database_state where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd1b' and database_name = 'dagdb'")
+    sae=$(SQ d1a "SELECT DATEDIFF(second, s.last_commit_time, p.last_commit_time) FROM sys.dm_hadr_database_replica_states p JOIN sys.dm_hadr_database_replica_states s ON s.group_database_id = p.group_database_id AND s.replica_id <> p.replica_id JOIN sys.availability_replicas r ON r.replica_id = s.replica_id WHERE p.is_primary_replica = 1 AND p.is_local = 1 AND r.replica_server_name = 'd1b' AND DB_NAME(p.database_id) = 'dagdb'") || sae=ERR
+    python3 -c "import sys; sys.exit(0 if abs(int('$est') - int('$sae')) <= 5 else 1)" 2>/dev/null || DIFF="$DIFF stored $est / sa $sae at $((SECONDS - t0)) s;"
+    if [ "$est" != - ] && [ "$est" -ge 15 ]; then RUNW=$((RUNW + 1)); else RUNW=0; fi
+    if [ "$est" != - ] && [ "$est" -ge 45 ]; then RUNC=$((RUNC + 1)); else RUNC=0; fi
+    echo "    read at $((SECONDS - t0)) s: stored $est s, sa $sae s, finding '${sev:-none}'"
+    [ -n "$sev" ] && [ -z "$WRUN" ] && WRUN=$RUNW
+    [ "$sev" = critical ] && [ -z "$CRUN" ] && CRUN=$RUNC
     n=$(sq "select count(*) from pgvigil.mssql_hadr_findings where instance_id = ${S_I[d1a]} and check_name = 'a secondary would lose data in a failover' and object = 'ag1 / d1b / dagdb'")
     [ "$n" -le 1 ] || BAD="$n findings at $((SECONDS - t0)) s"
     [ "$sev" = warning ] && [ -z "$W1" ] && W1=$((SECONDS - t0))
@@ -259,11 +440,13 @@ if [ "${1:-}" = gaps ]; then
   LOSS=$(sq "select est_data_loss_s || ' s (' || coalesce(data_loss_basis, '-') || ')' from pgvigil.mssql_ag_database_state where instance_id = ${S_I[d1a]} and group_name = 'ag1' and replica_server = 'd1b' and database_name = 'dagdb'")
   [ -z "$BAD" ] || sfail "S3: more than one data-loss finding: $BAD"
   [ -n "$W1" ] && [ -n "$C1" ] || sfail "S3: the tiers: warning at '${W1:-never}' s, critical at '${C1:-never}' s (last estimate $LOSS)"
+  [ -z "$DIFF" ] || sfail "S3: the stored estimate differs from sa's by more than 5 s:$DIFF"
+  [ "${WRUN:-0}" -ge 2 ] && [ "${CRUN:-0}" -ge 2 ] || sfail "S3: a tier came before two reads in a row reached it (reads at or over 15 s when the first finding came: ${WRUN:-?}; at or over 45 s when critical came: ${CRUN:-?})"
   [ "$(sf d1a 'a database is suspended' 'ag1 / d1b / dagdb')" = critical ] || sfail "S3: 0066's suspended finding is missing"
   SX d1b "S3: resume" "ALTER DATABASE dagdb SET HADR RESUME;"
   cleared() { [ -z "$(sf d1a 'a secondary would lose data in a failover' 'ag1 / d1b / dagdb')" ]; }
   swait 90 d1a -- cleared || sfail "S3: the data-loss finding stays 90 s after RESUME"
-  echo "ok S3: one finding: warning after $W1 s, critical after $C1 s (estimate $LOSS); cleared after RESUME"
+  echo "ok S3: one finding, the estimate as sa's within 5 s at each read: warning after $W1 s (the 2nd read in a row at 15 s or more), critical after $C1 s (the 2nd at 45 s or more; estimate $LOSS); cleared after RESUME"
 
   echo "--- S4. a secondary's endpoint stopped"
   SX d1b "S4: stop the endpoint" "ALTER ENDPOINT Hadr_endpoint STATE = STOPPED;"
@@ -275,14 +458,16 @@ if [ "${1:-}" = gaps ]; then
   echo "ok S4: endpoint stopped -> both critical findings; started -> both gone"
 
   echo "--- S5. a database not joined"
-  SX d1a "S5: pgvgj" "CREATE DATABASE pgvgj; ALTER DATABASE pgvgj SET RECOVERY FULL; BACKUP DATABASE pgvgj TO DISK = 'NUL'; ALTER AVAILABILITY GROUP ag1 ADD DATABASE pgvgj;"
-  seeded() { [ "$(SQ d1b "SELECT COUNT(*) FROM sys.dm_hadr_database_replica_states WHERE database_id = DB_ID('pgvgj') AND is_local = 1")" = 1 ]; }
-  for _ in $(seq 1 30); do seeded && break; sleep 2; done; seeded || sfail "S5: pgvgj never arrived on d1b"
-  SX d1b "S5: leave the group on d1b" "ALTER DATABASE pgvgj SET HADR OFF;"
+  SX d1a "S5: d1b seeds by hand" "ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1b' WITH (SEEDING_MODE = MANUAL);"
+  SX d1a "S5: pgvgj added" "CREATE DATABASE pgvgj; ALTER DATABASE pgvgj SET RECOVERY FULL; BACKUP DATABASE pgvgj TO DISK = 'NUL'; ALTER AVAILABILITY GROUP ag1 ADD DATABASE pgvgj;"
+  sajoined() { SQ d1a "SELECT ISNULL(CAST(MAX(CAST(c.is_database_joined AS int)) AS varchar(5)), 'none') FROM sys.dm_hadr_database_replica_cluster_states c JOIN sys.availability_replicas r ON r.replica_id = c.replica_id WHERE r.replica_server_name = 'd1b' AND c.database_name = 'pgvgj'"; }
+  for _ in $(seq 1 15); do [ "$(sajoined)" = 0 ] && break; sleep 2; done
+  [ "$(sajoined)" = 0 ] || sfail "S5: sa on d1a reads pgvgj on d1b as joined '$(sajoined)' 30 s after the add (SQL Server's, not pgvigil's)"
+  [ "$(SQ d1b "SELECT COUNT(*) FROM sys.databases WHERE name = 'pgvgj'")" = 0 ] || sfail "S5: pgvgj reached d1b with its seeding mode MANUAL"
   s5set() { [ "$(sf d1a 'a database is not joined' 'ag1 / d1b / pgvgj')" = warning ]; }
-  swait 60 d1a -- s5set || sfail "S5: no 'a database is not joined' (stored: $(sq "select coalesce(string_agg(replica_server || '/' || database_name || ' joined=' || coalesce(is_database_joined::text, '-'), '; '), 'none') from pgvigil.mssql_ag_database_cluster where instance_id = ${S_I[d1a]} and database_name = 'pgvgj'"))"
+  swait 60 d1a -- s5set || sfail "S5: sa reads it not joined, pgvigil raises no 'a database is not joined' (stored: $(sq "select coalesce(string_agg(replica_server || '/' || database_name || ' joined=' || coalesce(is_database_joined::text, '-'), '; '), 'none') from pgvigil.mssql_ag_database_cluster where instance_id = ${S_I[d1a]} and database_name = 'pgvgj'"))"
   [ -z "$(sf d1a 'a database is not synchronizing' 'ag1 / d1b / pgvgj')" ] || sfail "S5: a second finding (not synchronizing) for the unjoined database"
-  SX d1a "S5: remove" "ALTER AVAILABILITY GROUP ag1 REMOVE DATABASE pgvgj;"
+  SX d1a "S5: remove" "ALTER AVAILABILITY GROUP ag1 REMOVE DATABASE pgvgj; ALTER AVAILABILITY GROUP ag1 MODIFY REPLICA ON N'd1b' WITH (SEEDING_MODE = AUTOMATIC);"
   SX d1b "S5: drop the copy" "IF DB_ID('pgvgj') IS NOT NULL DROP DATABASE pgvgj;"
   SX d1a "S5: drop" "ALTER DATABASE pgvgj SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE pgvgj;"
   s5clear() { [ -z "$(sf d1a 'a database is not joined' 'ag1 / d1b / pgvgj')" ]; }
@@ -329,9 +514,13 @@ if [ "${1:-}" = gaps ]; then
     swait 60 d1a -- s8set || sfail "S8: sa reads a FAILED seeding, no finding (stored: $(sq "select coalesce(string_agg(database_name || '->' || remote_replica || '=' || coalesce(seeding_state, '-') || '/' || coalesce(failure_state, '-'), '; '), 'none') from pgvigil.mssql_ag_seeding where instance_id = ${S_I[d1a]} and database_name = 'pgvgf'"))"
     echo "ok S8: a FAILED seeding ($(SQ d1a "SELECT TOP (1) failure_state_desc FROM sys.dm_hadr_automatic_seeding s JOIN sys.availability_databases_cluster c ON c.group_database_id = s.ag_db_id WHERE c.database_name = 'pgvgf' AND s.current_state = 'FAILED'")) -> 'automatic seeding failed'"
   else
+    S8NP=" (S8 seeding failure NOT PROVEN)"
     echo "    seeding failure NOT PROVEN: sa reads for pgvgf: $(SQ d1a "SELECT STRING_AGG(CONCAT(s.current_state, '/', s.failure_state_desc), ' ') FROM sys.dm_hadr_automatic_seeding s JOIN sys.availability_databases_cluster c ON c.group_database_id = s.ag_db_id WHERE c.database_name = 'pgvgf'")"
   fi
   SX d1a "S8: remove" "ALTER AVAILABILITY GROUP ag1 REMOVE DATABASE pgvgf; ALTER DATABASE pgvgf SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE pgvgf;"
+  s8clear() { [ -z "$(sf d1a 'automatic seeding failed' 'ag1 / pgvgf -> d1b')" ]; }
+  swait 90 d1a -- s8clear || sfail "S8: 'automatic seeding failed' stays 90 s after pgvgf left the group"
+  [ -n "${S8NP:-}" ] || echo "ok S8: removed from the group -> the warning gone"
   SX d1b "S8: drop" "IF DB_ID('pgvgf') IS NOT NULL BEGIN ALTER DATABASE pgvgf SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE pgvgf; END"
 
   echo "--- S9. log shipping leaves a group's secondary out"
@@ -341,15 +530,19 @@ if [ "${1:-}" = gaps ]; then
   LSF=$(sq "select count(*) from pgvigil.mssql_hadr_findings where instance_id = ${S_I[d1b]} and check_name in ('log restores are behind', 'a database has been restoring for days', 'a log shipping copy is missing')")
   echo "    dagdb on d1b (state|standby|in a group): $STATE; restore rows stored: $ROWS; log shipping findings: $LSF"
   [ "$LSF" = 0 ] || sfail "S9: log shipping findings on the group's secondary"
-  case "$ROWS" in none|*"ag=t"*) ;; *) sfail "S9: a restore row of d1b not marked as in a group: $ROWS";; esac
-  echo "ok S9: the group's secondary is not judged as log shipping"
+  [ "$ROWS" = none ] || [ "$(sq "select count(*) from pgvigil.mssql_logrestore_state where instance_id = ${S_I[d1b]} and not coalesce(in_availability_group, false)")" = 0 ] || sfail "S9: a restore row of d1b not marked as in a group: $ROWS"
+  if [ "$ROWS" = none ]; then
+    echo "ok S9: no log shipping finding on d1b; the group exclusion NOT PROVEN here: dagdb reads ${STATE%%|*} on the secondary, so the reader never reads it (proven over stub rows, part T)"
+  else
+    echo "ok S9: d1b's restore rows are all marked as in a group and none is judged"
+  fi
 
   echo "--- S10. the lab removed"
   bash scripts/dag/trial.sh down "$S_TAG" | tee "$S_OUT" || sfail "S10: the lab is not removed in full"
   S_LAB=
   psql "$S_ADMIN" -XAtq -c "drop database if exists $S_REPO with (force)" >/dev/null; S_MADE_REPO=
   echo "ok S10: the lab and the repository removed"
-  echo "PROOF OK (part S)"
+  echo "PROOF OK (part S)${S8NP:-}"
   exit 0
 fi
 BIN=${PGVIGIL_BIN:-bin/pgvigil}

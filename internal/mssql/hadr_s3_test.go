@@ -57,7 +57,7 @@ func TestMirroringS3Columns(t *testing.T) {
 		if !strings.Contains(q, " AS values_hidden,") || !strings.Contains(q, "COALESCE(m.mirroring_role_desc, N'MIRROR')") {
 			t.Errorf("counters %v: the statement lacks values_hidden or the MIRROR role of a hidden mirror", with)
 		}
-		if strings.Contains(q, "m.mirroring_guid IS NULL AND d.state = 1 AND c.redo_queue_kb IS NOT NULL") != with {
+		if strings.Contains(q, "m.mirroring_guid IS NULL AND d.state = 1 AND c.redo_queue_kb IS NOT NULL AND IS_SRVROLEMEMBER('sysadmin') = 0") != with {
 			t.Errorf("counters %v: a hidden mirror is read = %v", with, !with)
 		}
 	}
@@ -121,13 +121,26 @@ func TestLogRestoreText(t *testing.T) {
 			}
 		}
 	}
-	// a mirror a login that is not sysadmin sees with NULL values is still mirrored, by its counter instance
-	if !strings.Contains(logRestoreSQL(true), "m.mirroring_guid IS NOT NULL OR EXISTS (SELECT 1 FROM sys.dm_os_performance_counters pc") ||
+	// a mirror a login that is not sysadmin sees with NULL values is still mirrored, by its counter instance; for a
+	// sysadmin a NULL row is the answer
+	if !strings.Contains(logRestoreSQL(true), "m.mirroring_guid IS NOT NULL OR (IS_SRVROLEMEMBER('sysadmin') = 0 AND EXISTS (SELECT 1 FROM sys.dm_os_performance_counters pc") ||
 		!strings.Contains(logRestoreSQL(true), "'%:Database Mirroring%' AND RTRIM(pc.instance_name) = d.name") {
-		t.Error("with VIEW SERVER STATE the restore-history read does not take a mirror from its counter instance")
+		t.Error("with VIEW SERVER STATE the restore-history read does not take a mirror from its counter instance (not sysadmin only)")
 	}
-	if strings.Contains(logRestoreSQL(false), "dm_os_performance_counters") {
-		t.Error("without VIEW SERVER STATE the restore-history read reads the performance counters")
+	// without it, and not sysadmin, a RESTORING database is unknown (NULL), never 'not mirrored'
+	if strings.Contains(logRestoreSQL(false), "dm_os_performance_counters") ||
+		!strings.Contains(logRestoreSQL(false), "WHEN IS_SRVROLEMEMBER('sysadmin') = 1 OR d.state <> 1 THEN 0 END") {
+		t.Error("without VIEW SERVER STATE the restore-history read reads the counters, or calls an unclassifiable database not mirrored")
+	}
+	// restorehistory has no index on the destination: one pass per list, never a scan per database
+	for _, with := range []bool{true, false} {
+		q := logRestoreSQL(with)
+		if strings.Count(q, "ROW_NUMBER() OVER (PARTITION BY rh.destination_database_name") != 2 || strings.Contains(q, "OUTER APPLY") {
+			t.Errorf("counters %v: the restore-history read is not one pass per list", with)
+		}
+	}
+	if !strings.Contains(logRestorePairSQL, "x.log_restores, CAST(x.recovery AS int) AS last_with_recovery") {
+		t.Error("a pair row does not carry its restore count and whether the newest was WITH RECOVERY")
 	}
 	if !strings.Contains(logRestorePairSQL, "DB_ID(x.destination_database_name) IS NULL") {
 		t.Error("a pair row is not only for a destination that is gone")

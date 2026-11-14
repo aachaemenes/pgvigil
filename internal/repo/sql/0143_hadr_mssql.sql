@@ -193,7 +193,7 @@ BEGIN
          CASE WHEN (r->>'flow_control_type')::int = 272696576 THEN (r->>'db_flow_control_delay_total')::bigint END,
          CASE WHEN (r->>'flow_controls_type')::int = 272696576 THEN (r->>'db_flow_controls_total')::bigint END,
          CASE WHEN (r->>'third_type')::int = 272696576 THEN (r->>'redo_blocked_total')::bigint END,
-         pgvigil.mssql_counter_delta((r->>'db_flow_control_delay_total')::bigint, p.db_flow_control_delay_total, (r->>'flow_control_type')::int, extract(epoch FROM p_snapshot_at - p.snapshot_at)),
+         round(pgvigil.mssql_counter_delta((r->>'db_flow_control_delay_total')::bigint, p.db_flow_control_delay_total, (r->>'flow_control_type')::int, extract(epoch FROM p_snapshot_at - p.snapshot_at)) / 1000, 3),   -- the counter is in microseconds
          pgvigil.mssql_counter_delta((r->>'db_flow_controls_total')::bigint, p.db_flow_controls_total, (r->>'flow_controls_type')::int, extract(epoch FROM p_snapshot_at - p.snapshot_at)),
          pgvigil.mssql_counter_delta((r->>'redo_blocked_total')::bigint, p.redo_blocked_total, (r->>'third_type')::int, extract(epoch FROM p_snapshot_at - p.snapshot_at))
     FROM jsonb_array_elements(v_rows) r
@@ -377,10 +377,11 @@ BEGIN
                extract(epoch FROM p_snapshot_at - p.snapshot_at)) / 1024, 3),
          CASE WHEN pgvigil.mssql_counter_delta((r->>'mirrored_write_txns_total')::bigint, p.mirrored_write_txns_total,
                      (r->>'mirrored_write_txns_type')::int, extract(epoch FROM p_snapshot_at - p.snapshot_at)) > 0
-              THEN round(pgvigil.mssql_counter_delta((r->>'txn_delay_ms_total')::bigint, p.txn_delay_ms_total, (r->>'txn_delay_type')::int,
-                           extract(epoch FROM p_snapshot_at - p.snapshot_at))
-                         / pgvigil.mssql_counter_delta((r->>'mirrored_write_txns_total')::bigint, p.mirrored_write_txns_total,
-                           (r->>'mirrored_write_txns_type')::int, extract(epoch FROM p_snapshot_at - p.snapshot_at)), 3) END
+               AND pgvigil.mssql_counter_delta((r->>'txn_delay_ms_total')::bigint, p.txn_delay_ms_total, (r->>'txn_delay_type')::int,
+                     extract(epoch FROM p_snapshot_at - p.snapshot_at)) IS NOT NULL
+              -- the raw differences (each rate is rounded to 3 decimals: a ratio of two would be off at low rates)
+              THEN round(((r->>'txn_delay_ms_total')::bigint - p.txn_delay_ms_total)::numeric
+                         / ((r->>'mirrored_write_txns_total')::bigint - p.mirrored_write_txns_total), 3) END
     FROM jsonb_array_elements(v_rows) r
     LEFT JOIN LATERAL (SELECT s.* FROM pgvigil.mssql_mirroring_sample s
                         WHERE s.instance_id = p_instance_id AND s.database_name = r->>'database_name'
@@ -402,7 +403,7 @@ BEGIN
     JOIN pgvigil.mssql_mirroring_state m ON m.instance_id = p_instance_id AND m.database_name = r->>'database_name'
    WHERE r->>'kind' = 'mirror'
      AND ((m.role IS NOT NULL AND r->>'role' IS NOT NULL AND m.role <> r->>'role')
-          OR (m.role_sequence IS NOT NULL AND r->>'role_sequence' IS NOT NULL AND m.role_sequence <> (r->>'role_sequence')::int))
+          OR (m.role_sequence IS NOT NULL AND r->>'role_sequence' IS NOT NULL AND (r->>'role_sequence')::int > m.role_sequence))   -- a re-created session restarts at 1: not a swap
   ON CONFLICT DO NOTHING;
 
   SELECT r - 'kind' INTO v_endpoint FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'endpoint' ORDER BY r->>'endpoint_name' LIMIT 1;
@@ -444,6 +445,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_logrestore_state (
   last_restore_type          text,
   PRIMARY KEY (instance_id, database_name)
 );
+ALTER TABLE pgvigil.mssql_logrestore_state ADD COLUMN IF NOT EXISTS log_restores int;              -- a pair: its log restores in the 14 days
+ALTER TABLE pgvigil.mssql_logrestore_state ADD COLUMN IF NOT EXISTS last_with_recovery boolean;    -- a pair: the newest one WITH RECOVERY
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_logrestore_sample (
   instance_id            int NOT NULL,
@@ -479,12 +482,13 @@ BEGIN
   DELETE FROM pgvigil.mssql_logrestore_state WHERE instance_id = p_instance_id;
   INSERT INTO pgvigil.mssql_logrestore_state (instance_id, database_name, snapshot_at, kind, database_state, is_in_standby,
       recovery_model, created_at, is_mirrored, in_availability_group, last_log_restore_at, last_log_backup_start_at,
-      backup_time_zone, source_server, source_database, last_file, last_restore_at, last_restore_type)
+      backup_time_zone, source_server, source_database, last_file, last_restore_at, last_restore_type, log_restores, last_with_recovery)
   SELECT DISTINCT ON (r->>'database_name') p_instance_id, r->>'database_name', p_snapshot_at, r->>'kind', r->>'database_state',
          (r->>'is_in_standby')::int = 1, r->>'recovery_model', (r->>'created_utc')::timestamptz, (r->>'is_mirrored')::int = 1,
          (r->>'in_availability_group')::int = 1, (r->>'last_log_restore_utc')::timestamptz,
          (r->>'last_log_backup_start_utc')::timestamptz, (r->>'backup_time_zone')::int, r->>'source_server', r->>'source_database',
-         r->>'last_file', (r->>'last_restore_utc')::timestamptz, r->>'last_restore_type'
+         r->>'last_file', (r->>'last_restore_utc')::timestamptz, r->>'last_restore_type', (r->>'log_restores')::int,
+         (r->>'last_with_recovery')::int = 1
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' IN ('restore', 'pair') AND r->>'database_name' IS NOT NULL
    ORDER BY r->>'database_name', (r->>'kind' = 'restore') DESC;   -- a database that exists wins over a gone one of its name
@@ -628,14 +632,14 @@ WITH judged AS (
          extract(epoch FROM s.last_log_restore_at - s.last_log_backup_start_at) / 60 AS latency_min,
          ta.warn AS age_warn, ta.crit AS age_crit, tl.warn AS lat_warn, tl.crit AS lat_crit,
          EXISTS (SELECT 1 FROM pgvigil.mssql_logshipping_state m WHERE m.instance_id = s.instance_id AND m.role = 'secondary'
-                    AND m.database_name = s.database_name AND m.threshold_minutes > 0
+                    AND lower(m.database_name) = lower(s.database_name) AND m.threshold_minutes > 0
                     AND m.snapshot_at > now() - interval '15 minutes') AS msdb_judged
     FROM pgvigil.mssql_logrestore_state s
     JOIN pgvigil.mssql_hadr_limits l ON l.instance_id = s.instance_id
     CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_age', s.database_name) ta
     CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_latency', s.database_name) tl
    WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'restore' AND s.last_log_restore_at IS NOT NULL
-     AND NOT coalesce(s.is_mirrored, false) AND NOT coalesce(s.in_availability_group, false)
+     AND s.is_mirrored IS FALSE AND NOT coalesce(s.in_availability_group, false)   -- unknown (NULL): not judged
      AND coalesce(s.recovery_model, '') <> 'SIMPLE'
      AND (s.created_at IS NULL OR s.created_at <= s.snapshot_at - make_interval(secs => (l.new_database_hours * 3600)::float8))
 )
@@ -697,20 +701,20 @@ SELECT f.instance_id, 'critical', 'the primary of a group changed', f.group_name
 UNION ALL
 SELECT r.instance_id, 'info', 'a collection stores nothing where rows are expected', 'mssql_ag', r.snapshot_at,
        format('Always On is enabled on this server and mssql_ag has read no availability group in its last %s reads: no group exists yet, or the login does not see it.', r.empty_reads)
-  FROM pgvigil.mssql_hadr_reads r WHERE r.collection = 'mssql_ag' AND r.empty_reads >= 60 AND r.snapshot_at > now() - interval '5 minutes'
+  FROM pgvigil.mssql_hadr_reads r JOIN judged j USING (instance_id) WHERE r.collection = 'mssql_ag' AND r.empty_reads >= 60 AND r.snapshot_at > now() - interval '5 minutes'
 -- availability groups: the gaps (item 5)
 UNION ALL
-SELECT x.instance_id, CASE WHEN x.min_loss >= t.crit * 60 THEN 'critical' ELSE 'warning' END,
+SELECT x.instance_id, CASE WHEN t.crit > 0 AND x.min_loss >= t.crit * 60 THEN 'critical' ELSE 'warning' END,
        'a secondary would lose data in a failover', x.group_name || ' / ' || x.replica_server || ' / ' || x.database_name, x.last_at,
        format('database %s on replica %s (group %s): a failover to it now would lose about %s s of committed work (the primary''s last commit less the secondary''s%s), at least %s s in each of its last 2 reads; warning from %s s, critical from %s s.',
               x.database_name, x.replica_server, x.group_name, x.max_loss,
               CASE WHEN d.data_loss_basis = 'hardened' THEN ' last hardened log: it has redone no commit yet' ELSE '' END,
-              x.min_loss, round(t.warn * 60), round(t.crit * 60))
+              x.min_loss, coalesce(round(t.warn * 60)::text, '-'), coalesce(round(t.crit * 60)::text, '-'))
   FROM loss x
   CROSS JOIN LATERAL pgvigil.pg_threshold(x.instance_id, 'ag_data_loss') t
   LEFT JOIN pgvigil.mssql_ag_database_state d
          ON d.instance_id = x.instance_id AND d.group_name = x.group_name AND d.replica_server = x.replica_server AND d.database_name = x.database_name
- WHERE t.warn IS NOT NULL AND t.warn > 0 AND x.min_loss >= t.warn * 60
+ WHERE (t.warn > 0 AND x.min_loss >= t.warn * 60) OR (t.crit > 0 AND x.min_loss >= t.crit * 60)   -- each tier on its own
 UNION ALL
 SELECT r.instance_id, 'warning', 'a replica is not joined', r.group_name || ' / ' || r.replica_server, r.snapshot_at,
        format('replica %s is in the availability group %s but its server has not joined the group (ALTER AVAILABILITY GROUP %s JOIN on that server): it receives nothing and cannot take over.',
@@ -726,7 +730,9 @@ SELECT c.instance_id, 'warning', 'a database is not joined', c.group_name || ' /
    AND r.join_state IS DISTINCT FROM 'NOT_JOINED'                                   -- the replica's own finding says it
    AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_ag_seeding s                         -- automatic seeding is joining it now
                     WHERE s.instance_id = c.instance_id AND s.group_id = c.group_id AND s.database_name = c.database_name
-                      AND lower(s.remote_replica) = lower(c.replica_server) AND s.seeding_state NOT IN ('COMPLETED', 'FAILED'))
+                      AND (lower(s.remote_replica) = lower(c.replica_server)           -- the source's read names the destination
+                           OR (s.is_source IS FALSE AND r.is_local))                    -- the destination's read names the source
+                      AND s.seeding_state NOT IN ('COMPLETED', 'FAILED'))
 UNION ALL
 SELECT c.instance_id, 'critical', 'a database is not ready for automatic failover', c.group_name || ' / ' || c.replica_server || ' / ' || c.database_name, c.snapshot_at,
        format('database %s on the automatic-failover replica %s (group %s) is not failover-ready: an automatic failover to it would not happen, or would lose data.',
@@ -735,6 +741,11 @@ SELECT c.instance_id, 'critical', 'a database is not ready for automatic failove
   JOIN rep r ON r.instance_id = c.instance_id AND r.group_id = c.group_id AND r.replica_server = c.replica_server
  WHERE c.snapshot_at > now() - interval '5 minutes' AND c.is_failover_ready IS FALSE AND c.is_database_joined IS TRUE
    AND r.failover_mode = 'AUTOMATIC' AND lower(r.replica_server) IS DISTINCT FROM lower(r.primary_replica)
+   -- the case no other arm names: synchronized, not suspended, connected, and still not marked ready in the cluster
+   -- (synchronizing, suspended or disconnected has its own finding)
+   AND coalesce(r.connected_state, 'CONNECTED') = 'CONNECTED'
+   AND EXISTS (SELECT 1 FROM dbs d WHERE d.instance_id = c.instance_id AND d.group_id = c.group_id AND d.replica_server = c.replica_server
+                 AND d.database_name = c.database_name AND d.synchronization_state = 'SYNCHRONIZED' AND NOT coalesce(d.is_suspended, false))
 UNION ALL
 SELECT DISTINCT ON (r.instance_id) r.instance_id, 'critical', 'the cluster has no normal quorum', coalesce(nullif(m.member->>'cluster_name', ''), 'cluster'), r.snapshot_at,
        format('the Windows cluster %s under the availability group %s reports %s: the groups on it may not fail over, or run on forced quorum.',
@@ -775,6 +786,14 @@ SELECT s.instance_id, 'warning', 'automatic seeding failed', s.group_name || ' /
   FROM pgvigil.mssql_ag_seeding s JOIN judged j USING (instance_id)
  WHERE s.snapshot_at > now() - interval '5 minutes' AND s.seeding_state = 'FAILED'
    AND coalesce(s.completed_at, s.started_at) > now() - interval '24 hours'
+   AND EXISTS (SELECT 1 FROM pgvigil.mssql_ag_database_cluster c                     -- still in the group (removed: no row)
+                WHERE c.instance_id = s.instance_id AND c.group_id = s.group_id AND c.database_name = s.database_name
+                  AND c.snapshot_at > now() - interval '5 minutes')
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_ag_database_cluster c                 -- joined since (a restore by hand)
+                     JOIN rep r ON r.instance_id = c.instance_id AND r.group_id = c.group_id AND r.replica_server = c.replica_server
+                    WHERE c.instance_id = s.instance_id AND c.group_id = s.group_id AND c.database_name = s.database_name
+                      AND c.is_database_joined IS TRUE AND c.snapshot_at > now() - interval '5 minutes'
+                      AND CASE WHEN s.is_source THEN lower(c.replica_server) = lower(s.remote_replica) ELSE r.is_local END)
 UNION ALL
 SELECT r.instance_id, 'warning', 'read-only routing names a replica that takes no reads',
        r.group_name || ' / ' || r.replica_server || ' -> ' || (e->>'replica'), r.snapshot_at,
@@ -834,6 +853,8 @@ SELECT DISTINCT ON (m.instance_id) m.instance_id, 'critical', 'the mirroring end
        format('the database mirroring endpoint %s of this server (port %s) is %s: its mirrored databases cannot reach their partners (ALTER ENDPOINT %s STATE = STARTED).',
               m.endpoint->>'endpoint_name', coalesce(m.endpoint->>'endpoint_port', '?'), lower(m.endpoint->>'endpoint_state'), m.endpoint->>'endpoint_name')
   FROM mir m WHERE m.endpoint->>'endpoint_state' IS NOT NULL AND m.endpoint->>'endpoint_state' <> 'STARTED'
+   AND NOT EXISTS (SELECT 1 FROM rep r WHERE r.instance_id = m.instance_id AND r.is_local     -- one endpoint: the group's arm says it
+                     AND r.endpoint->>'endpoint_state' IS NOT NULL)
 -- log shipping: msdb's monitor (0066's arm)
 UNION ALL
 SELECT s.instance_id, 'warning', 'log shipping is behind its threshold',
@@ -863,23 +884,30 @@ SELECT x.instance_id, x.sev, 'log restores are behind', x.database_name || coale
               coalesce(round(x.latency_min::numeric)::text, '?'), coalesce(x.age_warn::text, '-'), coalesce(x.lat_warn::text, '-'),
               coalesce(x.age_crit::text, '-'), coalesce(x.lat_crit::text, '-'), coalesce(x.last_file, '?'))
   FROM (SELECT lr.*, CASE WHEN lr.age_min > lr.age_crit OR lr.latency_min > lr.lat_crit THEN 'critical'
-                          WHEN NOT lr.msdb_judged AND (lr.age_min > lr.age_warn OR lr.latency_min > lr.lat_warn) THEN 'warning' END AS sev
+                          WHEN (NOT lr.msdb_judged AND lr.age_min > lr.age_warn) OR lr.latency_min > lr.lat_warn THEN 'warning' END AS sev   -- msdb judges no latency
           FROM lr) x
  WHERE x.sev IS NOT NULL
 UNION ALL
-SELECT s.instance_id, 'warning', 'a database has been restoring for days', s.database_name, s.snapshot_at,
+SELECT s.instance_id,
+       -- a log shipping copy whose last log restore left the 14-day window is broken past every log restore tier (S4);
+       -- else restoring_days' critical when it is set
+       CASE WHEN s.last_restore_type = 'L'
+              OR (t.crit > 0 AND coalesce(s.last_restore_at, s.created_at, '-infinity'::timestamptz) < s.snapshot_at - make_interval(secs => (t.crit * 86400)::float8))
+            THEN 'critical' ELSE 'warning' END,
+       'a database has been restoring for days', s.database_name, s.snapshot_at,
        format('database %s is %s and no restore has been applied to it in %s day(s)%s: log shipping to it may be broken (sp_Blitz check 111).',
-              s.database_name, CASE WHEN s.is_in_standby THEN 'in standby' ELSE lower(s.database_state) END, t.warn,
+              s.database_name, CASE WHEN s.is_in_standby THEN 'in standby' ELSE lower(s.database_state) END, z.days,
               CASE WHEN s.last_restore_at IS NULL THEN ' (msdb lists no restore of it at all)'
                    ELSE ' (the last one, ' || CASE s.last_restore_type WHEN 'L' THEN 'a log' WHEN 'D' THEN 'a full' WHEN 'I' THEN 'a differential' ELSE 'a' END
                         || ' restore, ran ' || to_char(s.last_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"') || ')' END)
   FROM pgvigil.mssql_logrestore_state s
   CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'restoring_days', s.database_name) t
+  CROSS JOIN LATERAL (SELECT least(CASE WHEN t.warn > 0 THEN t.warn END, CASE WHEN t.crit > 0 THEN t.crit END) AS days) z   -- the lower tier set
  WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'restore' AND s.last_log_restore_at IS NULL
-   AND NOT coalesce(s.is_mirrored, false) AND NOT coalesce(s.in_availability_group, false)
-   AND t.warn IS NOT NULL AND t.warn > 0
-   AND coalesce(s.last_restore_at, s.created_at, '-infinity'::timestamptz) < s.snapshot_at - make_interval(secs => (t.warn * 86400)::float8)
-   AND (s.created_at IS NULL OR s.created_at < s.snapshot_at - make_interval(secs => (t.warn * 86400)::float8))
+   AND s.is_mirrored IS FALSE AND NOT coalesce(s.in_availability_group, false)   -- unknown (NULL): not judged
+   AND z.days IS NOT NULL
+   AND coalesce(s.last_restore_at, s.created_at, '-infinity'::timestamptz) < s.snapshot_at - make_interval(secs => (z.days * 86400)::float8)
+   AND (s.created_at IS NULL OR s.created_at < s.snapshot_at - make_interval(secs => (z.days * 86400)::float8))
 UNION ALL
 SELECT s.instance_id, 'warning', 'a log shipping copy is missing', s.database_name || coalesce(' (from ' || s.source_server || '.' || s.source_database || ')', ''), s.snapshot_at,
        format('database %s received log restores from %s.%s until %s, and no longer exists on this server: the copy was dropped or renamed.',
@@ -887,6 +915,7 @@ SELECT s.instance_id, 'warning', 'a log shipping copy is missing', s.database_na
               to_char(s.last_log_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'))
   FROM pgvigil.mssql_logrestore_state s
  WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'pair'
+   AND coalesce(s.log_restores, 0) >= 2 AND s.last_with_recovery IS FALSE   -- a stream, not a restore test or a cut-over
 -- the failover cluster instance (behind the clustered flag: an instance that is not one has no node row)
 UNION ALL
 SELECT c.instance_id, 'critical', 'the failover cluster instance moved to another node', c.new_node, c.at,
