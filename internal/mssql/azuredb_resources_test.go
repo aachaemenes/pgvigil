@@ -28,6 +28,10 @@ func TestAzureDBResourcesApplies(t *testing.T) {
 			t.Errorf("%+v: %v %q, want %v with %q", c.info, run, why, c.run, c.word)
 		}
 	}
+	// mssql_cpu's skip there names the source of the database's CPU (F5: DBA Dash's SQLCPU.sql reads this view there)
+	if run, why := (cpuCollector{}).Applies(Info{Kind: KindAzureDB, ViewServerState: true}); run || why != "on Azure SQL Database the database's CPU is read by mssql_azuredb_resources (sys.dm_db_resource_stats, as DBA Dash reads it there)" {
+		t.Errorf("mssql_cpu on Azure SQL Database: %v %q", run, why)
+	}
 	if (azureDBResourcesCollector{}).Name() != "mssql_azuredb_resources" || (azureDBResourcesCollector{}).DefaultInterval() != time.Minute {
 		t.Error("the collection is mssql_azuredb_resources, every minute")
 	}

@@ -44,6 +44,9 @@ func init() { Register(cpuCollector{}) }
 func (cpuCollector) Name() string                   { return Prefix + "cpu" }
 func (cpuCollector) DefaultInterval() time.Duration { return time.Minute }
 func (cpuCollector) Applies(info Info) (bool, string) {
+	if info.Kind == KindAzureDB { // B2a (F5): the CPU page and the Performance Summary read mssql_azuredb_minute there
+		return false, "on Azure SQL Database the database's CPU is read by mssql_azuredb_resources (sys.dm_db_resource_stats, as DBA Dash reads it there)"
+	}
 	return perfApplies(info, "sys.dm_os_ring_buffers and sys.dm_os_schedulers")
 }
 
