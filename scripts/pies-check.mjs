@@ -8,7 +8,7 @@
 // Each row prints 'ok   <page> '<pie>': <row>: ...' or 'FAIL ...'; the last line 'pies-check: every row ok' or
 // 'pies-check: N row(s) FAILED'. The row names (for the control's per-row expected in proof-pies.sh): size, labels,
 // hover, other-hover, legend, rest, away, escape, redraw, menu, export, swatch, click, grid-link, ctrl-click, no-target,
-// other-click, touch, pan, edge (a flip pie: the window narrowed to the row's end first), beside (a DB Space pie on its grid's row at 1600 / 1500 / 1400 px).
+// other-click, touch, pan, edge (a flip pie: the window narrowed to the row's end first), beside (a DB Space pie on its grid's row, reaching the row's end, at 1600 / 1500 / 1400 px), narrow (that pie's box inside its row at a 360 / 320 px window).
 import { mkdirSync, writeFileSync } from 'node:fs';
 const [port, U, SHOTS, RIG] = process.argv.slice(2);
 const rig = JSON.parse(RIG);
@@ -130,16 +130,27 @@ for (const pg of rig.pages) {
   await ev(HELP);
   for (const pie of pg.pies) {
     const tag = `${pg.name} '${pie.title}'`;
-    // beside: the pie's box on its grid's row (the two boxes' tops equal), as DBA Dash's DB Space draws it, at 1600 / 1500 /
-    // 1400 px; the line names the widths and the window under which the row wraps (the grid + 24 px + the pie box's floor,
-    // its own width where it has none, + what the window keeps beside the row)
+    // beside: the pie's box on its grid's row (the two boxes' tops equal) and taking the room the grid leaves (its right edge
+    // the row's), as DBA Dash's DB Space draws it, at 1600 / 1500 / 1400 px; the line names the widths and the window under
+    // which the row wraps (the grid + 24 px + the box's floor, 360 px in app.css's .dbs-row, + what the window keeps beside
+    // the row)
     if (pie.beside) {
       for (const w of [1600, 1500, 1400]) {
         await cmd('Emulation.setDeviceMetricsOverride', { width: w, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500);
         const g = await S(pie.title, `(() => { const r = b.parentElement, gb = r && [...r.children].find(k => k.querySelector('table.grid')); if (!gb) return null;
-          const R = e => e.getBoundingClientRect(); const fl = parseFloat(getComputedStyle(b).minWidth);
-          return { gt: Math.round(R(gb).top), pt: Math.round(R(b).top), gw: Math.round(R(gb).width), pw: Math.round(R(b).width), rw: Math.round(R(r).width), vw: innerWidth, fl: isFinite(fl) && fl > 0 ? fl : Math.round(R(b).width) }; })()`);
-        row(!!g && g.gt === g.pt, tag, `beside ${w}`, g ? `the pie's box ${g.pw} px ${g.gt === g.pt ? 'beside' : 'UNDER'} the grid's ${g.gw} px in a ${g.rw} px row (box tops ${g.gt} / ${g.pt}); the row wraps under a ${g.gw + 24 + g.fl + (g.vw - g.rw)} px window` : "no grid in the pie's row");
+          const R = e => e.getBoundingClientRect();
+          return { gt: Math.round(R(gb).top), pt: Math.round(R(b).top), gw: Math.round(R(gb).width), pw: Math.round(R(b).width), rw: Math.round(R(r).width), vw: innerWidth, pr: Math.round(R(b).right), rr: Math.round(R(r).right) }; })()`);
+        const fills = !!g && Math.abs(g.pr - g.rr) <= 1;
+        row(!!g && g.gt === g.pt && fills, tag, `beside ${w}`, g ? `the pie's box ${g.pw} px ${g.gt === g.pt ? 'beside' : 'UNDER'} the grid's ${g.gw} px in a ${g.rw} px row (box tops ${g.gt} / ${g.pt}), ${fills ? 'reaching' : 'SHORT OF'} the row's end (box right ${g.pr} / row right ${g.rr}); the row wraps under a ${g.gw + 24 + 360 + (g.vw - g.rw)} px window` : "no grid in the pie's row");
+      }
+      // narrow: under 760 px (no sidebar) the box, wrapped under its grid, stays inside its row at a 360 and a 320 px window
+      // (a phone; 1280 px at 400 % zoom): the 360 px floor gives way to a narrower row, the page never scrolls sideways for it
+      for (const w of [360, 320]) {
+        await cmd('Emulation.setDeviceMetricsOverride', { width: w, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500);
+        const n = await S(pie.title, `(() => { const r = b.parentElement; if (!r) return null; const R = e => e.getBoundingClientRect();
+          return { bl: Math.round(R(b).left), br: Math.round(R(b).right), rl: Math.round(R(r).left), rr: Math.round(R(r).right), pw: Math.round(R(b).width), rw: Math.round(R(r).width) }; })()`);
+        const inside = !!n && n.bl >= n.rl - 1 && n.br <= n.rr + 1;
+        row(inside, tag, `narrow ${w}`, n ? `the pie's box ${n.pw} px ${inside ? 'inside' : 'PAST'} its ${n.rw} px row (box ${n.bl}..${n.br}, row ${n.rl}..${n.rr})` : "no row around the pie");
       }
       await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(500);
     }

@@ -1718,8 +1718,8 @@ for key, tab, inst in PAGES:
         if key == 'drives': check('drv-status=all' in sel and p['state'].get('metrics') == 'true', f"drives: drawn as its metrics grid with every status ({p.get('state')})")
         if key == 'dbfiles': check('files-status=all' in sel, f"dbfiles: drawn with every status ({p.get('state')})")
         if key == 'dbspace':
-            # the GB columns are numbers in the workbook (the page shows the GB figure with fmtNum); a used cell left as
-            # text is only 'not read' (a PostgreSQL instance)
+            # the GB columns are numbers in the workbook (the page shows the GB figure with one decimal, fmtGB); a used cell
+            # left as text is only 'not read' (a PostgreSQL instance)
             sx = z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(); g0 = gs[0]
             check(g0['head'][1:3] == ['allocated (GB)', 'used (GB)'], f"dbspace: the grid's columns 2 and 3 are allocated (GB) and used (GB) ({g0['head'][:4]})")
             alloc = [k for r, k in re.findall(r'<c r="B(\d+)"[^>]*?(/>|><v>|t="inlineStr")', sx) if r != '1']
@@ -1730,7 +1730,7 @@ for key, tab, inst in PAGES:
             dbs_onedec('dbspace', g0, cells_of(sx, shared(z)), cx)
     if key == 'dbspace_i':
         # an instance's DB Space grid reads as DBA Dash's ('Unit: GB, Decimal Places: 1') and as the fleet grid: allocated,
-        # used, data files and log files hold the GB figure, headed '(GB)' on the page and in the workbook, numbers in the
+        # used, data and log hold the GB figure, headed '(GB)' on the page and in the workbook, numbers in the
         # workbook (this is the SQL Server instance: no text cell). Its names are its own (dsi_): the grader's
         # module-level names (want: the language) are read further on
         dsi_g = gs[0]; dsi_c = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))

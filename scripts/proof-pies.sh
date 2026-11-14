@@ -19,8 +19,9 @@
 # database': big, its databases' pages, the grid's links); a SQL Server demo instance's Storage ('Databases by size' and
 # 'Data against log': small, a row of two - files of each database / no target; 'Growth by database, 7 days': small, files);
 # its DB Space ('DB Space by database': big, files, the grid's links, touch); its files tab ('Files of <db> by size':
-# small, no target). The three DB Space pies 'beside': each pie's box on its grid's row at 1600 / 1500 / 1400 px (DBA Dash's
-# shape: its pie fills the room beside the grid); the PostgreSQL one's edge row narrows the window to the row's end first.
+# small, no target). The three DB Space pies 'beside': each pie's box on its grid's row and reaching the row's end at 1600 /
+# 1500 / 1400 px (DBA Dash's shape: its pie fills the room beside the grid), and 'narrow': the box inside its row at a 360 /
+# 320 px window; the PostgreSQL one's edge row narrows the window to the row's end first.
 # The control (finding 12): the same proof on three products in one box job.
 #  - base 54cb1d3 (the join's tip, no pie change): GREEN size on every small pie, menu, away, swatch, no-target ('Data
 #    against log', 'Files of'), click on the root DB Space and on SQL Server's 'Databases by size' (their pages existed);
