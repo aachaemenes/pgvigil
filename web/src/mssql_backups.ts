@@ -181,10 +181,16 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
     if (findings.length) sec.append(el('h3', {}, 'SQL Server backup findings'),
       el('div', { id: 'mssql-backups-fleet-findings' }, grid(findings, [{ key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) }, ...mssqlFindingCols])));
 
+    // the ages as numbers under their unit (the tab writes '16.3 h' / '2.4 d' and '1h 5m'; a unit in a cell is text in
+    // the export, X7): hours to two places, whole minutes; their colours as the tab's
+    const ageNums: Record<string, Partial<Col>> = {
+      full_age_hours: { label: 'full age (hours)', fmt: v => v == null ? '' : fmtNum(v) },
+      log_age_minutes: { label: 'log age (minutes)', fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))) },
+    };
     const fleetCols: Col[] = [
       { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
       { ...cols[0], fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', { db: String(v ?? '') }, Number(r.instance_id)) }, String(v ?? '')) },
-      ...cols.slice(1),
+      ...cols.slice(1).map(c => ageNums[c.key] ? { ...c, ...ageNums[c.key] } : c),
     ];
     const total = sum('databases');
     const pick = el('select', { id: 'mssql-backups-fleet-filter' }, el('option', { value: 'problems' }, 'Problems'), el('option', { value: 'all' }, 'All')) as HTMLSelectElement;

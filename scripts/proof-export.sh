@@ -882,8 +882,8 @@ def cells_of(x, sst=()):
     return out
 # a value column and the columns that may judge it, by the screen's headings (docs/export.md's table; a finding's
 # value is headed by what it names)
-PAIRS = {'last archived': ('archiver',), 'last start': ('last run',), 'free size': ('free',), 'last full': ('full',), 'full age': ('full',),
-         'last differential': ('differential',), 'last log': ('log',), 'log age': ('log',), 'last run': ('outcome', 'last outcome'),
+PAIRS = {'last archived': ('archiver',), 'last start': ('last run',), 'free size': ('free',), 'last full': ('full',), 'full age': ('full',), 'full age (hours)': ('full',),
+         'last differential': ('differential',), 'last log': ('log',), 'log age': ('log',), 'log age (minutes)': ('log',), 'last run': ('outcome', 'last outcome'),
          'value': ('severity', 'check'), 'role': ('severity',), 'index': ('severity',), 'database': ('severity',), 'object': ('severity',)}
 def audit(key, name, x, cx, g, sst, first=2):
     # every drawn cell against the page (E2-4'): its fill, its text colour and its weight in the file = the look the page's
