@@ -127,6 +127,49 @@ func TestSchemaCurrentReadsALowerMissingFile(t *testing.T) {
 	}
 }
 
+// schemaDef is one function or view of the pgvigil schema as the store holds it: its name, its definition as the
+// catalog prints it, and the statement that puts it back.
+type schemaDef struct{ kind, name, def, stmt string }
+
+// schemaDefinitions reads every function, procedure and view of the pgvigil schema; the list in name order, the map
+// by name to the definition, for the comparison.
+func schemaDefinitions(ctx context.Context, r *Repo) (map[string]string, error) {
+	list, err := schemaDefinitionList(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]string, len(list))
+	for _, d := range list {
+		m[d.name] = d.def
+	}
+	return m, nil
+}
+
+func schemaDefinitionList(ctx context.Context, r *Repo) ([]schemaDef, error) {
+	rows, err := r.pool.Query(ctx, `
+SELECT 'function', p.oid::regprocedure::text, pg_get_functiondef(p.oid), pg_get_functiondef(p.oid)
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'pgvigil' AND p.prokind IN ('f', 'p')
+UNION ALL
+SELECT 'view', c.oid::regclass::text, pg_get_viewdef(c.oid), 'CREATE OR REPLACE VIEW ' || c.oid::regclass::text || ' AS ' || pg_get_viewdef(c.oid)
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'pgvigil' AND c.relkind = 'v'
+ ORDER BY 1, 2`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []schemaDef
+	for rows.Next() {
+		var d schemaDef
+		if err := rows.Scan(&d.kind, &d.name, &d.def, &d.stmt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // TestSchemaCurrentBeforeSchemaMissing: a store from before the file that creates schema_missing() (the function and
 // that file's row taken out) reads behind and names the newest embedded migration, the old contract (docs/upgrade.md,
 // scripts/proof-upgrade.sh); Migrate runs that file again and the store reads current. A store that records the file
@@ -147,6 +190,38 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 	if _, err := r.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Migrate below runs the file that creates schema_missing() a second time, and that file also replaces functions and
+	// views later files replaced again (purge(), the findings view, apply_roles()): the store would keep that file's old
+	// bodies, and a later test on the same store reads them (TestPoolMinutePurgedOnAStore failed after this one). Every
+	// function and view of the schema is read now and put back as it was when the test ends; a definition that cannot be
+	// put back fails the test by name.
+	defs, err := schemaDefinitionList(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { // registered before the cleanup below, so it runs after it (the store migrated again first)
+		c := context.Background()
+		now, err := schemaDefinitions(c, r)
+		if err != nil {
+			t.Errorf("the definitions after the test: %v", err)
+			return
+		}
+		for _, d := range defs {
+			if now[d.name] == d.def {
+				continue
+			}
+			if _, err := r.pool.Exec(c, d.stmt); err != nil {
+				t.Errorf("putting back %s %s: %v", d.kind, d.name, err)
+			}
+		}
+		if after, err := schemaDefinitions(c, r); err == nil {
+			for _, d := range defs {
+				if after[d.name] != d.def {
+					t.Errorf("%s %s differs from its definition before the test", d.kind, d.name)
+				}
+			}
+		}
+	})
 	names, err := migrationNames()
 	if err != nil {
 		t.Fatal(err)
