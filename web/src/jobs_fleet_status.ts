@@ -126,8 +126,10 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('h3', {}, 'Job status'),
       el('p', { class: 'meta' }, el('label', { for: 'job-status-filter' }, 'Show '), pickSel, ' ', said),
       el('p', { class: 'meta' }, 'Every job of the instances in view, SQL Agent, pg_cron and pgAgent, judged by its thresholds (the job, its instance or the root); with none set, '
-        + 'DBA Dash\'s default: critical when the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days. The 24-hour and 7-day '
-        + 'counts are fixed windows, not the page\'s range. The last failure and success are looked for back as far as the longest threshold in force (7 days at least). '
+        + 'DBA Dash\'s default: critical when the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days. As in DBA Dash a '
+        + 'cancelled run counts as a failure and a disabled job is not judged. The 24-hour and 7-day counts are fixed windows, not the page\'s range. The last failure and '
+        + 'success are looked for back as far as the longest threshold in force (7 days at least); a job whose last run failed shows that failure however old. The 7-day '
+        + 'average is over the runs (DBA Dash averages its hourly averages, so a few long runs weigh more there). '
         + 'Pick a job for its history below.'),
       box, hist);
     draw();

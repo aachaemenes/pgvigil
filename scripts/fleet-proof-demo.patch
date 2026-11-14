@@ -1,0 +1,32 @@
+diff --git i/scripts/proof-demo.sh w/scripts/proof-demo.sh
+index efb6bd5..0883961 100755
+--- i/scripts/proof-demo.sh
++++ w/scripts/proof-demo.sh
+@@ -211,13 +211,11 @@ expected_overview() {
+   local v; v=$(P -c "select count(*) from pgvigil.vacuum_state s join pgvigil.instances i using (instance_id)
+                       where i.name = 'demo-rds-orders01' and s.snapshot_at > now() - interval '10 minutes'
+                         and extract(minute from s.snapshot_at at time zone 'UTC')::int between 30 and 35") || fail "the vacuum window query"; [[ "$v" =~ ^[0-9]+$ ]] || fail "the vacuum window query answered '$v'"
+-  # 'job failed'@aurora-crm01, one row per failed run of the last day: refresh-sales-mv's two (gen.go jobRows: its hourly
+-  # :05 runs in [anchor - 7 h, anchor - 5 h)) and every sync-contacts run ('*/20', 1 s when it fails) that starts at or
+-  # after anchor - 80 min and has ended by the seed's last tick (jobsreport_demo.go): four at the anchor, five when the
+-  # catch-up ticks pass the next 20-minute mark
+-  local f; f=$(P -c "select 2 + count(*) from (select max(snapshot_at) last from pgvigil.activity_summary) l,
+-                      generate_series((date_trunc('hour', '$SEED_ANCHOR'::timestamptz at time zone 'UTC') at time zone 'UTC') - interval '2 hours', l.last, interval '20 minutes') g
+-                     where g >= '$SEED_ANCHOR'::timestamptz - interval '80 minutes' and g + interval '1 second' <= l.last") || fail "the crm01 job failures query"; [[ "$f" =~ ^[0-9]+$ ]] || fail "the crm01 job failures query answered '$f'"
++  # 'job status'@aurora-crm01 (0137's one judge of a job, FLEET B1: one row per job that is critical or warning, no more one
++  # row per failed run): the demo seeds failures on crm01 only (fleet.go: CronFail) and no job thresholds, so DBA Dash's
++  # default rule decides - sync-contacts ('*/20') fails every run from 80 minutes before the anchor on, its last run
++  # failed: critical (jobsreport_demo.go); refresh-sales-mv failed at anchor - 7 h to - 5 h and - 74 h to - 73 h and
++  # succeeded since: a failure inside 7 days, warning (gen.go jobRows). Two rows, whatever the seed's catch-up ticks
+   # jobsreport_demo.go: export-ledger ('15 * * * *', 30 s) ran 6x as long in its last run up to the anchor; the first
+   # normal run after the anchor ends the row, so it is expected only while no run started after the anchor is stored
+   local x; x=$(P -c "select count(*) from pgvigil.job_runs r join pgvigil.jobs j using (instance_id, scheduler, job_id)
+@@ -230,7 +228,7 @@ expected_overview() {
+                      where i.name = 'demo-onprem-erp01' and h.snapshot_at > now() - interval '10 minutes' and h.cpu_pct is not null") || fail "erp01's CPU window query"; [[ "$c" =~ ^[tf]$ ]] || fail "erp01's CPU window query answered '$c'"
+   { echo "$EXPECTED_OVERVIEW_FIXED"; if [[ "$v" == 1 ]]; then echo "vacuum waiting on a lock@demo-rds-orders01"; fi
+     if [[ "$c" == t ]]; then echo "CPU over 90 % for 10 minutes@demo-onprem-erp01"; fi
+-    for _ in $(seq "$f"); do echo "job failed@demo-aurora-crm01"; done
++    echo "job status@demo-aurora-crm01"; echo "job status@demo-aurora-crm01"
+     if [[ "$x" == 0 ]]; then echo "job run over twice its average@demo-rds-billing01"; fi; } | LC_ALL=C python3 -c 'import sys; print("\n".join(sorted(sys.stdin.read().split("\n")[:-1])))'
+ }
+ check_api() {

@@ -95,7 +95,7 @@ pg_cron jobs only: a pgAgent job has no command of its own (its steps' code is n
 
 - its status against the thresholds (`job_status`: status `excluded`, the reason names the pattern);
 - the job report's checks (`job_report_checks`: the Summary's Agent Jobs column and the job findings);
-- the overview's failed-job check (`job_failures`).
+- the overview's job check (the job's status from `job_status_view`: an excluded job is never critical or warning there).
 
 The grids still list the job and its runs, marked. The exclusions are written from the Jobs page (Leave out of the checks;
 End) through `pgvigil.import_job_exclusion`, by the UI login and the actions door's audit login, as acknowledgements are; a

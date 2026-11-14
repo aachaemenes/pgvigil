@@ -13,7 +13,11 @@
 --                        (cancelled), a PostgreSQL run 'failed', 'internal error' or 'aborted', a pgAgent step 'failed'
 --                        or 'aborted' counts in the last failure, the 24 h / 7 d counts and 'the last run failed' (a
 --                        last run that was cancelled reads 'the last run was cancelled'). Before this file 0102 counted
---                        run_status 0 and 'failed' / 'internal error' only.
+--                        run_status 0 and 'failed' / 'internal error' only. The 'since' rules name the newest
+--                        failure's outcome ('cancelled N minute(s) ago' when it was a cancel).
+--   a disabled job is not judged    as in DBA Dash 4.24.1 (AgentJobStatus: enabled = 0 is N/A): a SQL Agent job not
+--                        enabled and a PostgreSQL job not active read 'none' with the reason 'the job is disabled', so a
+--                        job switched off after a failure does not stay critical with no end.
 --   job_status_view(p_ids int[])    0102's job_status for a set of instances in one statement, one row per job with
 --                        its instance_id first and horizon_min last. The last failure and the last success are looked
 --                        for inside a horizon H = the longest 'since' threshold in force for those instances (the root
@@ -21,6 +25,8 @@
 --                        and at most 400 days: no threshold can judge a failure or a success older than its own span,
 --                        so a run older than H changes no verdict. A job with no failure (no success) inside H has
 --                        last_failed_at (last_succeeded_at) NULL: the pages say 'none in the last <H>', never 'never'.
+--                        A job whose last run failed or was cancelled has its last failure looked up with no cut (DBA
+--                        Dash keeps LastFailed with none): a probe of that job's failed rows in the partial index.
 --                        'No success for N minutes' is still judged past H: a job that ran before H and has no success
 --                        inside it breaks the rule, and its reason says 'no success in the last <H>'.
 --   job_status(p_instance_id)       unchanged in name, arguments and columns: job_status_view of that one instance.
@@ -61,8 +67,8 @@ LANGUAGE sql STABLE AS $$
   ), j AS (
     SELECT m.instance_id, 'sqlagent'::text AS scheduler, m.job_id, m.name AS job_name,
            CASE m.last_outcome WHEN 0 THEN 'failed' WHEN 1 THEN 'succeeded' WHEN 2 THEN 'retry' WHEN 3 THEN 'cancelled' END AS last_outcome,
-           c.fail_24h, c.fail_7d, c.step_fail_24h, c.step_fail_7d, lf.at AS last_failed_at, ls.at AS last_succeeded_at, fr.at AS first_run_at,
-           NULL::text AS excluded_by
+           c.fail_24h, c.fail_7d, c.step_fail_24h, c.step_fail_7d, lf.at AS last_failed_at, lf.cancelled AS last_fail_cancelled,
+           ls.at AS last_succeeded_at, fr.at AS first_run_at, NULL::text AS excluded_by, NOT coalesce(m.enabled, true) AS disabled
       FROM pgvigil.mssql_jobs m
       -- the failed and cancelled rows of 7 days: mssql_job_runs_failed_idx
       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE r.step_id = 0 AND r.snapshot_at > now() - interval '24 hours') AS fail_24h,
@@ -72,10 +78,11 @@ LANGUAGE sql STABLE AS $$
                            FROM pgvigil.mssql_job_runs r
                           WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.run_status IN (0, 3)
                             AND r.snapshot_at > now() - interval '7 days' AND r.snapshot_at <= now()) c ON true
-      -- the newest failed or cancelled job row inside H: mssql_job_runs_failed_idx
-      LEFT JOIN LATERAL (SELECT r.snapshot_at AS at FROM pgvigil.mssql_job_runs r
+      -- the newest failed or cancelled job row inside H, or with no cut when the last run failed or was cancelled:
+      -- mssql_job_runs_failed_idx
+      LEFT JOIN LATERAL (SELECT r.snapshot_at AS at, r.run_status = 3 AS cancelled FROM pgvigil.mssql_job_runs r
                           WHERE r.instance_id = m.instance_id AND r.job_id = m.job_id AND r.step_id = 0 AND r.run_status IN (0, 3)
-                            AND r.snapshot_at > now() - make_interval(mins => (SELECT h.mins FROM h))
+                            AND (m.last_outcome IN (0, 3) OR r.snapshot_at > now() - make_interval(mins => (SELECT h.mins FROM h)))
                           ORDER BY r.snapshot_at DESC LIMIT 1) lf ON true
       -- the newest succeeded job row inside H: the job's newest rows in mssql_job_runs_job_idx
       LEFT JOIN LATERAL (SELECT r.snapshot_at AS at FROM pgvigil.mssql_job_runs r
@@ -89,8 +96,8 @@ LANGUAGE sql STABLE AS $$
      WHERE m.instance_id = ANY(p_ids)
     UNION ALL
     SELECT g.instance_id, g.scheduler, g.job_id::text, coalesce(g.job_name, g.job_id::text),
-           lr.outcome, c.fail_24h, c.fail_7d, coalesce(sf.step_fail_24h, 0), coalesce(sf.step_fail_7d, 0), lf.at, ls.at, fr.at,
-           pgvigil.job_exclusion(g.instance_id, coalesce(g.job_name, g.job_id::text), g.command)
+           lr.outcome, c.fail_24h, c.fail_7d, coalesce(sf.step_fail_24h, 0), coalesce(sf.step_fail_7d, 0), lf.at, lf.cancelled, ls.at, fr.at,
+           pgvigil.job_exclusion(g.instance_id, coalesce(g.job_name, g.job_id::text), g.command), NOT coalesce(g.active, true)
       FROM pgvigil.jobs g
       -- the failed and aborted runs of 7 days: job_runs_failed_idx
       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE r.start_time > now() - interval '24 hours') AS fail_24h, count(*) AS fail_7d
@@ -109,11 +116,12 @@ LANGUAGE sql STABLE AS $$
                            FROM pgvigil.job_runs r
                           WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id AND r.start_time IS NOT NULL
                           ORDER BY r.start_time DESC LIMIT 1) lr ON true
-      -- the newest failed or aborted run inside H: job_runs_failed_idx
-      LEFT JOIN LATERAL (SELECT r.start_time AS at FROM pgvigil.job_runs r
+      -- the newest failed or aborted run inside H, or with no cut when the newest run failed or was aborted:
+      -- job_runs_failed_idx
+      LEFT JOIN LATERAL (SELECT r.start_time AS at, r.status = 'aborted' AS cancelled FROM pgvigil.job_runs r
                           WHERE r.instance_id = g.instance_id AND r.scheduler = g.scheduler AND r.job_id = g.job_id
                             AND r.status IN ('failed', 'internal error', 'aborted')
-                            AND r.start_time > now() - make_interval(mins => (SELECT h.mins FROM h))
+                            AND (lr.outcome IN ('failed', 'cancelled') OR r.start_time > now() - make_interval(mins => (SELECT h.mins FROM h)))
                           ORDER BY r.start_time DESC LIMIT 1) lf ON true
       -- the newest succeeded run inside H: the job's newest rows in job_runs_job_start_idx
       LEFT JOIN LATERAL (SELECT r.start_time AS at FROM pgvigil.job_runs r
@@ -146,12 +154,13 @@ LANGUAGE sql STABLE AS $$
   )
   SELECT e.instance_id, e.scheduler, e.job_id, e.job_name, e.level, e.threshold_id, e.fail_24h, e.fail_7d, e.step_fail_24h, e.step_fail_7d,
          e.last_failed_at, e.last_succeeded_at, e.last_outcome,
-         CASE WHEN e.excluded_by IS NOT NULL THEN 'excluded'
+         CASE WHEN e.excluded_by IS NOT NULL THEN 'excluded' WHEN e.disabled THEN 'none'
               ELSE coalesce(b.sev, CASE WHEN num_nonnulls(e.fail_24h_warn, e.fail_24h_crit, e.fail_7d_warn, e.fail_7d_crit, e.step_fail_24h_warn,
                                                 e.step_fail_24h_crit, e.step_fail_7d_warn, e.step_fail_7d_crit, e.since_fail_warn_min,
                                                 e.since_fail_crit_min, e.since_ok_warn_min, e.since_ok_crit_min, e.last_fail_is) > 0
                               THEN 'ok' ELSE 'none' END) END,
-         CASE WHEN e.excluded_by IS NOT NULL THEN 'left out of the job checks (' || e.excluded_by || ')' ELSE b.why END,
+         CASE WHEN e.excluded_by IS NOT NULL THEN 'left out of the job checks (' || e.excluded_by || ')'
+              WHEN e.disabled THEN 'the job is disabled' ELSE b.why END,
          (SELECT h.mins FROM h)
     FROM e
     LEFT JOIN LATERAL (
@@ -163,7 +172,8 @@ LANGUAGE sql STABLE AS $$
           (3, 'crit', e.fail_7d >= e.fail_7d_crit, format('%s failed run(s) in 7 days (critical at %s)', e.fail_7d, e.fail_7d_crit)),
           (4, 'crit', e.step_fail_24h >= e.step_fail_24h_crit, format('%s failed step(s) in 24 hours (critical at %s)', e.step_fail_24h, e.step_fail_24h_crit)),
           (5, 'crit', e.step_fail_7d >= e.step_fail_7d_crit, format('%s failed step(s) in 7 days (critical at %s)', e.step_fail_7d, e.step_fail_7d_crit)),
-          (6, 'crit', e.fail_min <= e.since_fail_crit_min, format('failed %s minute(s) ago (critical within %s)', round(e.fail_min), e.since_fail_crit_min)),
+          (6, 'crit', e.fail_min <= e.since_fail_crit_min, format('%s %s minute(s) ago (critical within %s)',
+              CASE WHEN e.last_fail_cancelled THEN 'cancelled' ELSE 'failed' END, round(e.fail_min), e.since_fail_crit_min)),
           (7, 'crit', e.ok_min > e.since_ok_crit_min,
               CASE WHEN e.ok_past THEN format('no success in the last %s day(s) (critical over %s minute(s))', (SELECT h.mins FROM h) / 1440, e.since_ok_crit_min)
                    ELSE format('no success for %s minute(s) (critical over %s)', round(e.ok_min), e.since_ok_crit_min) END),
@@ -173,12 +183,13 @@ LANGUAGE sql STABLE AS $$
           (13, 'warn', e.fail_7d >= e.fail_7d_warn, format('%s failed run(s) in 7 days (warning at %s)', e.fail_7d, e.fail_7d_warn)),
           (14, 'warn', e.step_fail_24h >= e.step_fail_24h_warn, format('%s failed step(s) in 24 hours (warning at %s)', e.step_fail_24h, e.step_fail_24h_warn)),
           (15, 'warn', e.step_fail_7d >= e.step_fail_7d_warn, format('%s failed step(s) in 7 days (warning at %s)', e.step_fail_7d, e.step_fail_7d_warn)),
-          (16, 'warn', e.fail_min <= e.since_fail_warn_min, format('failed %s minute(s) ago (warning within %s)', round(e.fail_min), e.since_fail_warn_min)),
+          (16, 'warn', e.fail_min <= e.since_fail_warn_min, format('%s %s minute(s) ago (warning within %s)',
+              CASE WHEN e.last_fail_cancelled THEN 'cancelled' ELSE 'failed' END, round(e.fail_min), e.since_fail_warn_min)),
           (17, 'warn', e.ok_min > e.since_ok_warn_min,
               CASE WHEN e.ok_past THEN format('no success in the last %s day(s) (warning over %s minute(s))', (SELECT h.mins FROM h) / 1440, e.since_ok_warn_min)
                    ELSE format('no success for %s minute(s) (warning over %s)', round(e.ok_min), e.since_ok_warn_min) END)
         ) v(ord, sev, broken, why)
-       WHERE v.broken AND e.excluded_by IS NULL
+       WHERE v.broken AND e.excluded_by IS NULL AND NOT e.disabled
        ORDER BY v.ord LIMIT 1) b ON true
    ORDER BY e.instance_id, e.scheduler, e.job_name
 $$;

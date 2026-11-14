@@ -111,9 +111,12 @@ func (s *Server) MSSQLJobs(w http.ResponseWriter, r *http.Request) {
 // inside nul_backup_days of the read, on a database that is judged.
 const sqlBackupNulRecent = `(b.not_judged IS NULL AND b.nul_backup_days > 0 AND b.nul_at > b.snapshot_at - make_interval(secs => (b.nul_backup_days * 86400)::float8))`
 
-// sqlBackupProblem is a database the fleet page lists under Problems: a backup of any type late or never (every row a
-// backup finding names, an unseen replica's among them), or a recent backup to NUL.
-const sqlBackupProblem = `('never' IN (b.full_status, b.diff_status, b.log_status) OR 'late' IN (b.full_status, b.diff_status, b.log_status) OR coalesce(` + sqlBackupNulRecent + `, false))`
+// sqlBackupProblem is a database the fleet page lists under Problems: exactly the rows 0066's backup findings name - a
+// read younger than 130 minutes (0066's bk) with a full or log backup late or never (an unseen replica's among them),
+// a differential late or never on a database whose replicas are all monitored (0066's differential arm), or a recent
+// backup to NUL. Never NULL.
+const sqlBackupProblem = `coalesce(b.snapshot_at > now() - interval '130 minutes' AND ('never' IN (b.full_status, b.log_status) OR 'late' IN (b.full_status, b.log_status)
+          OR (b.diff_status IN ('never', 'late') AND NOT b.replicas_unseen) OR ` + sqlBackupNulRecent + `), false)`
 
 // sqlMSSQLBackups: $1 the instance (NULL = every active SQL Server instance), $2 true = the Problems rows only.
 const sqlMSSQLBackups = `

@@ -20,9 +20,10 @@ what happens in the other order, and what the project's own proof showed (`scrip
 
 - **A migration that builds an index holds the collector's writes to that table while it builds.** A file runs in one
   transaction, so its index builds cannot be `CONCURRENTLY`: reads go on, the writes wait. `0137_fleet_job_status.sql`
-  builds two partial indexes of the failed job runs (SQL Agent's `mssql_job_runs`, then `job_runs`): measured at 6.3 s
-  over 30.4 M SQL Agent and 1.9 M PostgreSQL job-run rows (200 SQL Server and 50 PostgreSQL instances, 30 jobs each,
-  32 days of runs), on a 16-CPU server under load. The jobs collections' writes wait for it and are stored by their next
+  builds two partial indexes of the failed and cancelled job runs (SQL Agent's `mssql_job_runs`, then `job_runs`):
+  measured at 6.3 s over 30.4 M SQL Agent and 1.9 M PostgreSQL job-run rows (200 SQL Server and 50 PostgreSQL instances,
+  30 jobs each, 32 days of runs), on a 16-CPU server under load. That was measured before the indexes took the
+  cancelled runs too; a build reads every row either way, and a cancelled run is rare. The jobs collections' writes wait for it and are stored by their next
   run; nothing is lost. With the collector stopped for the upgrade (below), nothing waits.
 
 Two rules follow from how the binary checks the schema:

@@ -15,8 +15,9 @@
 #                demo's three: demo-azure-sql03, which the demo gives no backups, has its row with no read); each row's
 #                counts (databases, full / diff / log ok, late, never, not judged, not judged at all, NUL) = psql's hand
 #                count from mssql_backup_judged; databases = every judged row of the three; with problems=1 exactly the
-#                rows with a backup late or never or a backup to NUL inside nul_backup_days (the hand count, the NUL
-#                database set up below among them, nul_recent true); findings = mssql_jobs_findings' backup rows of the
+#                databases a backup finding of mssql_jobs_findings names (the hand count reads the findings, not the
+#                statuses: SF2's 'Problems = every row a finding names'; the NUL database set up below among them,
+#                nul_recent true); findings = mssql_jobs_findings' backup rows of the
 #                active SQL Server instances (the hand count), the NUL database's 'a backup went to NUL' among them; the
 #                tab's call (?instance=<sql01>) answers its databases as before (the hand count of sql01's rows)
 #   B2 page      #/backups: the 'SQL Server backups' section AFTER 'Base backups (pgBackRest, barman)'; the instances
@@ -109,9 +110,10 @@ HAND=$(Q "select json_build_object(
       'not_judged', (select count(*) from pgvigil.mssql_backup_judged b where b.instance_id = i.instance_id and b.not_judged is not null)))
     from pgvigil.instances i where i.is_active and i.engine = 'sqlserver'),
   'all', (select count(*) from pgvigil.mssql_backup_judged b join pgvigil.instances i using (instance_id) where i.is_active and i.engine = 'sqlserver'),
-  'problems', (select json_agg(b.instance_id || '|' || b.database_name order by 1) from pgvigil.mssql_backup_judged b join pgvigil.instances i using (instance_id)
-                where i.is_active and i.engine = 'sqlserver' and ('late' in (b.full_status, b.diff_status, b.log_status) or 'never' in (b.full_status, b.diff_status, b.log_status)
-                   or (b.not_judged is null and b.nul_backup_days > 0 and b.nul_at > b.snapshot_at - make_interval(days => b.nul_backup_days::int)))),
+  'problems', (select json_agg(distinct f.instance_id || '|' || f.object order by f.instance_id || '|' || f.object) from pgvigil.mssql_jobs_findings f
+                join pgvigil.instances i using (instance_id)
+                where i.is_active and i.engine = 'sqlserver' and f.check_name not in ('a job failed', 'a job runs far longer than its average')
+                  and exists (select 1 from pgvigil.mssql_backup_judged b where b.instance_id = f.instance_id and b.database_name = f.object)),
   'findings', (select count(*) from pgvigil.mssql_jobs_findings f join pgvigil.instances i using (instance_id)
                 where i.is_active and f.check_name not in ('a job failed', 'a job runs far longer than its average')),
   's1', (select count(*) from pgvigil.mssql_backup_judged where instance_id = $S1))")
