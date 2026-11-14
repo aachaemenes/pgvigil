@@ -1233,7 +1233,7 @@ if (mode === 'live') {
         s.openers = await ev(`[...document.querySelectorAll('main table.grid button:not(.link)')].filter(b => b.textContent.trim() === 'Open sample').map(b => ({ name: b.getAttribute('aria-label') || '', row: b.closest('tr')?.querySelector('button.link')?.textContent.trim() ?? '' }))`);
         const via = api.tools.filter(x => x.sample)[1];
         if (via) {
-          await ev(`scrollTo(0, 0); 1`);
+          await ev(`scrollTo(0, 0); 1`); await sleep(300); await vshot(shots, `view-${label}-rows`);
           const hit = await ev(`(() => { const b = [...document.querySelectorAll('main table.grid button:not(.link)')].find(x => x.getAttribute('aria-label') === ${JSON.stringify('Open sample: ' + via.name)}); if (!b) return false; b.focus(); b.click(); return true; })()`);
           const ok = hit && await until(`!!(${panel(via.name)}?.querySelector('.demo-why'))`, 20000);
           await sleep(300);
