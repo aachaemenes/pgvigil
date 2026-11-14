@@ -14,12 +14,18 @@
 #   B    the healthy pair: hadr-s's receiver row 'streaming'; hadr-p's sender row of application_name hadrs1 'streaming';
 #        no 'receiver down', 'standby gone' or 'sender not streaming' anywhere [red ok]
 #   A0   no 'amcheck never run' finding on hadr-p (no databases collection read: 0103's arm needs a present database;
-#        0141 re-creates that view) [red ok]
+#        0141 re-creates that view) [red ok on 35e627e; red FAIL on ee6d061, whose copy lost the arm's last two filters -
+#        run red in pdfp-hadr-s1-redfoldee; A0 proves the present-database filter live, the amcheck_runs filter by the
+#        line-by-line text check only]
 #   L1   ONE row of pg_repl_link_health for link app:hadrs1@<address>: source sender, sending hadr-p, standby hadr-s,
 #        status streaming, no finding [red FAIL: no view]
-#   R1   task 370 (a): pg_basebackup -X stream at 32 kB/s from a third container, two reads of hadr-p while it runs: a
-#        stored sender row in state 'backup' [red ok]; no 'sender not streaming' naming pg_basebackup [red FAIL]
-#   R1N  the same with PGAPPNAME=bbcustom (no default name to go by: its state and its temporary slot): no 'sender not
+#   R1   task 370 (a): pg_basebackup -X stream --no-slot at 32 kB/s from a third container (its WAL streamer has no slot:
+#        only its name keeps it from being a link), two reads of hadr-p while it runs: a stored sender row in state
+#        'backup' [red ok]; no 'sender not streaming' naming pg_basebackup [red FAIL; since 371 that rule judges
+#        logical senders only, so it cannot fail on the tip]; no link row for pg_basebackup [red FAIL: no view; on 7636cca
+#        ok - the fold's row: it holds the name clause of pg_link_sender]
+#   R1N  the same with PGAPPNAME=bbcustom and a slot (no default name to go by: its state and its temporary slot): the
+#        read stored bbcustom's two senders, one in state backup and one on a temporary slot [red ok]; no 'sender not
 #        streaming' naming bbcustom while it runs [red FAIL], no link row for bbcustom [red FAIL: no view]; killed, two
 #        reads: no 'standby gone' for it [red ok]
 #   R1B  the base backups killed, two reads of hadr-p: no 'standby gone' for pg_basebackup [red ok]
@@ -58,11 +64,12 @@
 #        link rows slot:hadr_spare 'missing: physical slot inactive' (no finding) and app:hadr_absent 'missing: named in
 #        synchronous_standby_names'; hadrs1's link sync_state sync [red FAIL x3: no view]
 #   S3   task 372, in L6: app:hadr_absent's row carries 'synchronous standby absent' warning on hadr-p (num_sync 1 holds:
-#        hadrs1 is sync) and no 'synchronous commits waiting' [red FAIL: no view]; L6 and S3 undone after
+#        hadrs1 is sync) [red FAIL on 255f44c: the row is there, with no finding] and no 'synchronous commits waiting'
+#        [red ok]; L6 and S3 undone after (marks corrected after the review: 372red showed the row without a finding)
 # Task 372 (written before its first run, 2026-11-14 10:4x PST):
 #   P    pg_sync_standbys: '2 (a, b)' FIRST 2 {a,b}; 'a, b' FIRST 1 {a,b}; 'ANY 1 (*)' 'ANY *' 1 no names;
 #        '"Quoted", b' FIRST 1 {Quoted,b}; 'first 3 (x)' FIRST 3 {x}; '*' 'FIRST *' 1; '' nothing [red FAIL on 35e627e: no
-#        function; red ok on 255f44c: the function came with task 371 - mark corrected after 372's first red run]
+#        function - run red in pdfp-hadr-s1-redfold35; red ok on 255f44c: the function came with task 371]
 #   S1   synchronous_standby_names 'FIRST 1 (hadrs1)', hadrs1 sync, one read of hadr-p: no 'synchronous commits waiting'
 #        [red ok]
 #   S2   the receiver held down: an insert on the primary waits (a session in wait_event SyncRep, watched), one read of
@@ -78,14 +85,14 @@
 #   SL3  a physical slot hadr_grow reserving WAL, read; its hourly mark moved an hour back in the repository with 2 GB
 #        less retained (a stand-in for the hour: the growth arithmetic is the import's), one read: 'slot WAL growing'
 #        warning on hadr-p naming hadr_grow [red FAIL]
-#   SL2  max_slot_wal_keep_size 200MB and 'slot_safe_wal' 150 MB on hadr-p (import_pg_threshold: done [red FAIL: no
-#        such key before 374; mark added after the red run]), about 80 MB of
-#        WAL written, one read: 'slot WAL near its limit' warning for hadr_grow (one finding per slot: it outranks
-#        growing) [red FAIL]
-#   SL1  about 250 MB more and a checkpoint: the slot loses its WAL (wal_status lost), one read: 'slot invalidated'
+#   SL2  max_slot_wal_keep_size 400MB and 'slot_safe_wal' 300 MB on hadr-p (import_pg_threshold: done [red FAIL: no
+#        such key before 374]), WAL written until safe_wal_size is under 190 MB (half the limit, 200, is the floor since
+#        the review fold; 200MB / 150 MB / 80 MB written before it), one read: 'slot WAL near its limit' warning for
+#        hadr_grow (one finding per slot: it outranks growing) [red FAIL]
+#   SL1  about 300 MB more and a checkpoint: the slot loses its WAL (wal_status lost), one read: 'slot invalidated'
 #        critical, its value the stable text and its detail naming wal_removed (PostgreSQL 17 on: invalidation_reason;
-#        the run of b0e72a5 looked for the reason in the value and failed on a right finding) [red FAIL]; the slot dropped, the setting and
-#        the threshold reset
+#        the run of b0e72a5 looked for the reason in the value and failed on a right finding) [red FAIL x2]; the slot
+#        dropped, the setting and the threshold reset
 #   SP   a test_decoding slot hadr_dec, logical_decoding_work_mem 64kB, a 20000-row transaction decoded through
 #        pg_logical_slot_get_changes, one read: a slot_stats row for hadr_dec with spill_bytes over 0 [red FAIL]; undone
 #   AU   Aurora, a repository stand-in until Q7 (an Aurora reader for the proof hour) is answered - not proven on Aurora:
@@ -105,19 +112,50 @@
 #        hadr-p: 'standby gone' gone [red ok]
 #   L4   last: every sender row hadr-p stored for hadrs1 is keyed by the link - no pid in the key, one key per address
 #        [red FAIL: keyed '...#<pid>']
+# The review fold (2026-11-14 12:5x PST, written before its runs; red = 7636cca, the tree before the fold):
+#   R2X  first read after the lift (a receiver back, the fault held for one read): 'receiver down' WARNING whose detail
+#        says the receiver is back [red FAIL: critical]; second read: gone [red ok]
+#   NS2  in NS (the standby read through a login that cannot read primary_conninfo, the receiver held down), hadr-p read
+#        twice: 'standby gone' critical on hadr-p naming hadrs1 - a standby that cannot tell whether it should stream does
+#        not speak for its link [red FAIL: it spoke, nothing was raised]
+#   SL2H with max_slot_wal_keep_size 400MB and 'slot_safe_wal' 300 MB, WAL written until safe_wal_size is between 200 and
+#        300 MB, one read: no slot finding - the floor is half the limit when that is smaller [red FAIL: warning]; then
+#        SL2 below 200 MB as before, SL1 after about 300 MB more and a checkpoint
+#   AU   the writer's own row at 400 s (over both tiers): still nothing for it [red ok: the MASTER_SESSION_ID filter];
+#        aurora-r imported as a reader in recovery WITH the same aurora_replica_status rows: no 'Aurora replica lag' on
+#        aurora-r [red FAIL: a reader raised them too]
+#   RP   replay paused on hadr-s (pg_wal_replay_pause), hadr-p read once, hadr-s read once: nothing yet [red ok]; a second
+#        read: 'replay paused' critical on hadr-s, the link row 'replay paused' [red FAIL x2 on 35e627e: no rule, no view;
+#        red ok on 7636cca]; resumed, one read: gone [red ok]
+#   S2X  the waiting insert's row is in hadr_feed [red ok]
+#   read a failed read of an instance counts as a FAIL (the stopped standby's read in R3 excepted), and a failed
+#        repository query answers 'QUERY FAILED' (a negative row cannot pass on an empty answer)
 #   (info) 0118's own 'replay lag' arm (darling_alert_findings: a sender 30 s behind) is counted where L3T and L3D run;
 #        the lead drops that arm at the join; the proof does not judge it.
 # Not proven here: a promotion (the role-change drop of a server's links), a failed 'standby' or 'senders' read leaving
-# the state as it was, a receiver that connects and then fails (the hysteresis is in the import, its row R2X's).
+# the state as it was, a receiver that connects and then fails (the hysteresis is in the import, its row R2X's), the
+# 'replaced' test (a standby back under another link: a slot added or dropped, two standbys of one name), a standby
+# without restore_command (critical at once: the rig's standby always has one), 'slot WAL near its limit' critical on
+# wal_status unreserved, 'standby gone' for an unmonitored or stale standby, a server before PostgreSQL 17 (wal_status
+# lost without invalidation_reason), a database walsender (a table copy) kept out of the links, a named synchronous
+# standby whose link is down, 'sending server not read', a WAL receiver without a replay position (pg_receivewal),
+# 0006's standby-side 'replay lag' for a standby no monitored primary sends to.
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
-# L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU R3 R3X L4; L7 rides with R2W, NS with G, S3 with L6, G2 and L5 with R3); unset =
-# all.
+# L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4; a riding row runs its host: L7 R2W, NS and NS2 G, S3 L6, G2 and L5
+# R3, SL2H SL2); an unknown name stops the run; unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); FAILS=0
 fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 ok() { echo "ok   $*"; }
+ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 "
+if [[ -n "${PROOF_ONLY:-}" ]]; then   # a riding row runs its host row; an unknown name is a typo, not an empty OK
+  PO=""; for n in ${PROOF_ONLY//,/ }; do
+    case "$n" in L7) n=R2W ;; NS|NS2) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; esac
+    [[ "$ROWS" == *" $n "* ]] || { echo "FAIL PROOF_ONLY names an unknown row: $n"; exit 1; }
+    PO+="$n,"; done; PROOF_ONLY=$PO
+fi
 want() { [[ -z "${PROOF_ONLY:-}" || ",${PROOF_ONLY// /}," == *",$1,"* ]]; }
 fp() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 PW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
@@ -134,6 +172,8 @@ cleanup() {
   docker volume rm "$ARC" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   for c in "$BB" "$STB" "$PRI" "$REPO"; do docker inspect "$c" >/dev/null 2>&1 && echo "container $c LEFT"; done
+  docker volume inspect "$ARC" >/dev/null 2>&1 && echo "volume $ARC LEFT"
+  docker network inspect "$NET" >/dev/null 2>&1 && echo "network $NET LEFT"
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -160,7 +200,9 @@ for d in "$RDSN dbname=postgres" "$PDSN"; do psql "$d" -XAtqc 'select 1' >/dev/n
 psql "$RDSN dbname=postgres" -XAtqc "create database pgvigil" >/dev/null
 pq() { psql "$PDSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 sq() { psql "$SDSN" -XAtq -c "$1" 2>/dev/null; }
-q() { psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
+q() { # a failed query answers 'QUERY FAILED: <error>' (exit 1), never an empty answer a negative row would pass on
+  local o; if o=$(psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 -c "$1" 2>"$WORK/q.err"); then [[ -n "$o" ]] && printf '%s\n' "$o"; return 0; fi
+  echo "QUERY FAILED: $(tail -1 "$WORK/q.err")"; return 1; }
 pq "create role pgv login password '$MPW' in role pg_monitor" >/dev/null
 pq "create role pgvs login password '$MPW' in role pg_read_all_stats, pg_stat_scan_tables" >/dev/null
 pq "create table hadr_feed (id bigserial primary key, at timestamptz default now(), pad text)" >/dev/null
@@ -199,11 +241,14 @@ CFG=$WORK/pgvigil.yaml
 "$BIN" collect -config "$WORK/pgvigil.yaml" -once rolechange >>"$WORK/instance.out" 2>&1 || echo "  (rolechange: $(tail -1 "$WORK/instance.out"))"
 PID_=$(q "select instance_id from pgvigil.instances where name='hadr-p'")
 SID_=$(q "select instance_id from pgvigil.instances where name='hadr-s'")
-read_() { # read_ <instance> [n] [gap]: n replication reads of one instance, gap (3) seconds apart
+read_() { # read_ <instance> [n] [gap] [may-fail]: n replication reads of one instance, gap (3) seconds apart; a failed
+  # read is a FAIL (its rows would prove nothing) unless the caller expects it ('may-fail': a stopped server)
   local n=${2:-1} gap=${3:-3} i
   for ((i = 0; i < n; i++)); do
     (( i > 0 )) && sleep "$gap"
-    "$BIN" collect -config "$CFG" -once replication -instance "$1" >>"$WORK/collect.out" 2>&1 || { echo "  (read of $1 failed: $(tail -1 "$WORK/collect.out"))"; }
+    "$BIN" collect -config "$CFG" -once replication -instance "$1" >>"$WORK/collect.out" 2>&1 || {
+      if [[ "${4:-}" == may-fail ]]; then echo "  (read of $1 failed, as expected: $(tail -1 "$WORK/collect.out"))"
+      else fail "read of $1 failed: $(tail -1 "$WORK/collect.out")"; fi; }
   done
 }
 finding() { # finding <instance_id> <setting> -> 'severity|value' lines
@@ -215,8 +260,9 @@ check() { # check <instance_id> <check_name> -> 'object|state' lines of replicat
 link() { # link <link LIKE pattern> -> 'status|check_name|severity|finding instance|source' of pg_repl_link_health
   q "select status || '|' || coalesce(check_name, '') || '|' || coalesce(severity, '') || '|' || coalesce(finding_id::text, '') || '|' || source from pgvigil.pg_repl_link_health where link like '$1' order by 1"
 }
-plag() { pq "select coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)::bigint, 0) from pg_stat_replication where application_name = 'hadrs1'"; }
-lagsec() { pq "select coalesce(extract(epoch from replay_lag)::numeric(10,1), -1) from pg_stat_replication where application_name = 'hadrs1'"; }
+# never empty: an empty value inside $(( )) aborts the block it runs in (no sender row, or the primary not answering)
+plag() { local v; v=$(pq "select coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)::bigint, 0) from pg_stat_replication where application_name = 'hadrs1'" 2>/dev/null); echo "${v:-0}"; }
+lagsec() { local v; v=$(pq "select coalesce(extract(epoch from replay_lag)::numeric(10,1), -1) from pg_stat_replication where application_name = 'hadrs1'" 2>/dev/null); echo "${v:--1}"; }
 bulk_to() { # bulk_to <MB>: write on the primary until hadrs1's replay lag is past MB
   local _; for _ in $(seq 1 60); do (( $(plag) >= $1 * 1048576 )) && return 0
     pq "insert into hadr_bulk select repeat(md5(g::text), 31) from generate_series(1, 4000) g" >/dev/null; done; return 1
@@ -262,17 +308,19 @@ r=$(q "select coalesce(sending, '') || '>' || coalesce(standby, '') from pgvigil
 # ---- R1: a base backup's senders -----------------------------------------------------------------------------------
 if want R1 || want R1N || want R1B; then
   docker run -d --name "$BB" --network "$NET" -e PGPASSWORD="$PW" postgres:18 \
-    pg_basebackup -h primary -U postgres -D /tmp/bb -X stream --max-rate=32k -c fast >/dev/null
+    pg_basebackup -h primary -U postgres -D /tmp/bb -X stream --no-slot --max-rate=32k -c fast >/dev/null
   for _ in $(seq 1 30); do [[ "$(pq "select count(*) from pg_stat_replication where state = 'backup'")" -ge 1 ]] && break; sleep 1; done
   echo "  hadr-p's senders during the base backup: $(pq "select string_agg(application_name || '/' || state, ', ') from pg_stat_replication")"
   read_ hadr-p 2
   if want R1; then
     r=$(q "select count(*) from pgvigil.replication_latest where instance_id = $PID_ and kind = 'sender' and state = 'backup' and detail->>'application_name' = 'pg_basebackup'")
     [[ "$r" -ge 1 ]] && ok "R1 the read stored the base backup's sender (state backup): $r" || fail "R1 no stored sender in state 'backup' (the base backup did not run? $r)"
-    r=$(check "$PID_" 'sender not streaming' | grep -c 'pg_basebackup')
-    [[ "$r" == "0" ]] && ok "R1 no 'sender not streaming' for pg_basebackup" || fail "R1 'sender not streaming' for the base backup: $(check "$PID_" 'sender not streaming' | tr '\n' ';')"
+    r=$(q "select count(*) from pgvigil.replication_checks where instance_id = $PID_ and check_name = 'sender not streaming' and object || coalesce(state, '') like '%pg_basebackup%'")
+    [[ "$r" == "0" ]] && ok "R1 no 'sender not streaming' for pg_basebackup" || fail "R1 'sender not streaming' for the base backup: $r"
+    r=$(q "select count(*) from pgvigil.pg_repl_link_health where application_name = 'pg_basebackup'")
+    [[ "$r" == "0" ]] && ok "R1 no link row for pg_basebackup (its slotless WAL streamer)" || fail "R1 link rows for pg_basebackup: '$r'"
   fi
-  docker rm -f "$BB" >/dev/null 2>&1
+  docker rm -f -v "$BB" >/dev/null 2>&1
   for _ in $(seq 1 20); do [[ "$(pq "select count(*) from pg_stat_replication where application_name = 'pg_basebackup'")" == "0" ]] && break; sleep 1; done
   if want R1N; then   # a renamed base backup: no default name to go by
     docker run -d --name "$BB" --network "$NET" -e PGPASSWORD="$PW" -e PGAPPNAME=bbcustom postgres:18 \
@@ -280,20 +328,22 @@ if want R1 || want R1N || want R1B; then
     for _ in $(seq 1 30); do [[ "$(pq "select count(*) from pg_stat_replication where application_name = 'bbcustom' and state = 'backup'")" -ge 1 ]] && break; sleep 1; done
     echo "  hadr-p's senders during the renamed base backup: $(pq "select string_agg(r.application_name || '/' || r.state || coalesce('/slot ' || s.slot_name || case when s.temporary then ' (temporary)' else '' end, ''), ', ') from pg_stat_replication r left join pg_replication_slots s on s.active_pid = r.pid")"
     read_ hadr-p 2
-    r=$(check "$PID_" 'sender not streaming' | grep -c 'bbcustom')
-    [[ "$r" == "0" ]] && ok "R1N no 'sender not streaming' for bbcustom" || fail "R1N 'sender not streaming' for the renamed base backup: $(check "$PID_" 'sender not streaming' | tr '\n' ';')"
-    r=$(q "select count(*) from pgvigil.pg_repl_link_health where application_name = 'bbcustom'" 2>/dev/null || echo error)
+    r=$(q "select string_agg(coalesce(state, '?') || '/' || coalesce(detail->>'slot_temporary', 'none'), ',' order by state) from pgvigil.replication_latest where instance_id = $PID_ and kind = 'sender' and detail->>'application_name' = 'bbcustom'")
+    [[ "$r" == *"backup/"* && "$r" == *"/true"* ]] && ok "R1N the read stored bbcustom's senders: $r" || fail "R1N bbcustom's stored senders: '$r', expected one in backup and one on a temporary slot"
+    r=$(q "select count(*) from pgvigil.replication_checks where instance_id = $PID_ and check_name = 'sender not streaming' and object || coalesce(state, '') like '%bbcustom%'")
+    [[ "$r" == "0" ]] && ok "R1N no 'sender not streaming' for bbcustom" || fail "R1N 'sender not streaming' for the renamed base backup: $r"
+    r=$(q "select count(*) from pgvigil.pg_repl_link_health where application_name = 'bbcustom'")
     [[ "$r" == "0" ]] && ok "R1N no link row for bbcustom" || fail "R1N link rows for bbcustom: '$r'"
-    docker rm -f "$BB" >/dev/null 2>&1
+    docker rm -f -v "$BB" >/dev/null 2>&1
     for _ in $(seq 1 20); do [[ "$(pq "select count(*) from pg_stat_replication where application_name = 'bbcustom'")" == "0" ]] && break; sleep 1; done
     read_ hadr-p 2
-    r=$(finding "$PID_" 'standby gone' | grep -c 'bbcustom')
-    [[ "$r" == "0" ]] && ok "R1N no 'standby gone' for the finished renamed base backup" || fail "R1N 'standby gone' for bbcustom: $(finding "$PID_" 'standby gone' | tr '\n' ';')"
+    r=$(q "select count(*) from pgvigil.findings where instance_id = $PID_ and setting = 'standby gone' and value like '%bbcustom%'")
+    [[ "$r" == "0" ]] && ok "R1N no 'standby gone' for the finished renamed base backup" || fail "R1N 'standby gone' for bbcustom: $r"
   fi
   if want R1B; then
     read_ hadr-p 2
-    r=$(finding "$PID_" 'standby gone' | grep -c 'pg_basebackup')
-    [[ "$r" == "0" ]] && ok "R1B no 'standby gone' for the finished base backup" || fail "R1B 'standby gone' for a base backup: $(finding "$PID_" 'standby gone' | tr '\n' ';')"
+    r=$(q "select count(*) from pgvigil.findings where instance_id = $PID_ and setting = 'standby gone' and value like '%pg_basebackup%'")
+    [[ "$r" == "0" ]] && ok "R1B no 'standby gone' for the finished base backup" || fail "R1B 'standby gone' for a base backup: $r"
   fi
 fi
 
@@ -303,11 +353,12 @@ if want R2W || want R2C || want R2X; then
     feed_on
     l0=$(sq "select pg_last_wal_replay_lsn()"); sleep 8; l1=$(sq "select pg_last_wal_replay_lsn()")
     echo "  receiver held down: wal_receiver rows $(sq "select count(*) from pg_stat_wal_receiver"), replay $l0 -> $l1 through restore_command"
-    if want R2W; then
+    if want R2W || want R2C; then   # R2C alone still needs R2W's value to compare
       read_ hadr-s 2 10
-      r=$(finding "$SID_" 'receiver down')
+      r=$(finding "$SID_" 'receiver down'); R2W_VALUE=${r#*|}
+    fi
+    if want R2W; then
       [[ "$r" == warning\|* ]] && ok "R2W 'receiver down' warning on hadr-s: $r" || fail "R2W 'receiver down' on hadr-s: '$r', expected warning"
-      R2W_VALUE=${r#*|}
       r=$(check "$SID_" 'receiver down')
       [[ "$r" == *"advances through restore_command"* ]] && ok "R2W replication_checks: $r" || fail "R2W replication_checks without 'advances through restore_command': '$r'"
       read_ hadr-p 2; read_ hadr-s 1
@@ -318,22 +369,29 @@ if want R2W || want R2C || want R2X; then
     if want R2C; then
       r=$(q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"set\",\"key\":\"restore_stall\",\"level\":\"instance\",\"instance_id\":$SID_,\"crit\":1,\"ui_user\":\"proof\"}'::jsonb)->>'outcome'")
       [[ "$r" == "done" ]] && ok "R2C restore_stall set to 1 min on hadr-s" || fail "R2C the threshold was not set: '$r'"
-      # replay's last move is dated by the read that sees it: one read once the last file is restored, then the stall
-      sleep 15; read_ hadr-s 1; sleep 70; read_ hadr-s 1
+      # replay's last move is dated by the read that sees it: one read once the last file is restored (replay still
+      # for 10 s, polled), then the stall
+      for _ in $(seq 1 8); do a=$(sq "select pg_last_wal_replay_lsn()"); sleep 5; b=$(sq "select pg_last_wal_replay_lsn()"); sleep 5
+        [[ -n "$a" && "$a" == "$b" && "$b" == "$(sq "select pg_last_wal_replay_lsn()")" ]] && break; done
+      read_ hadr-s 1; sleep 70; read_ hadr-s 1
       r=$(finding "$SID_" 'receiver down')
       [[ "$r" == critical\|* ]] && ok "R2C 'receiver down' critical on hadr-s: $r" || fail "R2C 'receiver down' on hadr-s: '$r', expected critical"
       r2=$(check "$SID_" 'receiver down')
       [[ "$r2" == *"replay has stopped"* ]] && ok "R2C replication_checks: $r2" || fail "R2C replication_checks without 'replay has stopped': '$r2'"
       [[ -n "$R2W_VALUE" && "${r#*|}" == "$R2W_VALUE" ]] && ok "R2C the finding's value kept from R2W (one alert key)" || fail "R2C the value changed: '$R2W_VALUE' -> '${r#*|}'"
+      q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"inherit\",\"key\":\"restore_stall\",\"level\":\"instance\",\"instance_id\":$SID_,\"ui_user\":\"proof\"}'::jsonb)" >/dev/null
     fi
     if lift; then
       if want R2X; then
-        read_ hadr-s 2
+        read_ hadr-s 1   # the fault holds for one read with a receiver: a warning that says so
+        r=$(finding "$SID_" 'receiver down'); r2=$(check "$SID_" 'receiver down')
+        [[ "$r" == warning\|* && "$r2" == *"a WAL receiver is back"* ]] && ok "R2X held for one read as a warning: $r2" || fail "R2X the held read: '$r' / '$r2', expected a warning saying the receiver is back"
+        read_ hadr-s 1
         r=$(finding "$SID_" 'receiver down'); r2=$(check "$SID_" 'receiver down')
         [[ -z "$r$r2" ]] && ok "R2X 'receiver down' cleared after the receiver came back" || fail "R2X still raised: '$r' / '$r2'"
       fi
     else fail "R2X the receiver did not come back after the lift"; fi
-  else fail "R2 the receiver could not be held down"; fi
+  else fail "R2 the receiver could not be held down"; lift; fi
 fi
 
 # ---- G: the managed-platform gate (a repository stand-in) ----------------------------------------------------------
@@ -350,9 +408,12 @@ if want G; then
     [[ "$r" == "null" ]] && ok "NS a login without pg_read_all_settings: the standby row's conninfo_set unknown" || fail "NS the standby row's conninfo_set: '$r', expected null"
     r=$(finding "$SID_" 'receiver down')
     [[ -z "$r" ]] && ok "NS no 'receiver down' when primary_conninfo cannot be read" || fail "NS raised with primary_conninfo unknown: '$r'"
+    read_ hadr-p 2   # the standby cannot say whether it should stream: the sending side's view holds
+    r=$(finding "$PID_" 'standby gone')
+    [[ "$r" == critical\|*hadrs1* ]] && ok "NS2 'standby gone' on hadr-p while the standby cannot judge its own side: $r" || fail "NS2 'standby gone' on hadr-p: '$r', expected critical naming hadrs1"
     lift || fail "G the receiver did not come back after the lift"
-    read_ hadr-s 1
-  else fail "G the receiver could not be held down"; fi
+    read_ hadr-s 1; read_ hadr-p 1
+  else fail "G the receiver could not be held down"; lift; fi
 fi
 
 # ---- L2 / L3: lag tiers --------------------------------------------------------------------------------------------
@@ -365,7 +426,7 @@ if want L3T || want L2W || want L2C || want L2S || want L2X; then
   echo "  replay stalled: startup waiting on a lock = $(sq "select count(*) from pg_stat_activity where backend_type = 'startup' and wait_event_type = 'Lock'")"
   # a stuck apply position reports a growing replay_lag (the walsender interpolates past its last sample)
   ( for _ in $(seq 1 45); do psql "$PDSN" -XAtq -c "insert into hadr_bulk values ('t')" >/dev/null 2>&1; sleep 1; done ) & DFEED=$!
-  sleep 40
+  sleep 30; for _ in $(seq 1 30); do awk -v v="$(lagsec)" 'BEGIN { exit !(v >= 35) }' && break; sleep 1; done
   read_ hadr-p 1
   if want L3T; then
     r=$(finding "$PID_" 'standby lag')
@@ -486,6 +547,8 @@ if want S1 || want S2 || want S4 || want S6 || want S5; then
       lift || fail "S2X the receiver did not come back"
       for _ in $(seq 1 60); do kill -0 "$SYNCW" 2>/dev/null || break; sleep 0.5; done
       kill -0 "$SYNCW" 2>/dev/null && fail "S2X the waiting insert did not complete" || ok "S2X the waiting insert completed once hadrs1 was back"
+      r=$(pq "select count(*) from hadr_feed where pad = 'sync'")
+      [[ "$r" == "1" ]] && ok "S2X the waiting insert's row is in hadr_feed" || fail "S2X rows of the waiting insert: '$r'"
       SYNCW=""
       read_ hadr-p 1
       r=$(finding "$PID_" 'synchronous commits waiting')
@@ -533,17 +596,26 @@ if want SL3 || want SL2 || want SL1; then
     r=$(slotf hadr_grow)
     [[ "$r" == "warning|slot WAL growing|slot hadr_grow:"* ]] && ok "SL3 'slot WAL growing' warning: $r" || fail "SL3: '$r'"
   fi
-  pq "alter system set max_slot_wal_keep_size = '200MB'" >/dev/null; pq "select pg_reload_conf()" >/dev/null
-  r=$(thr "{\"op\":\"set\",\"key\":\"slot_safe_wal\",\"level\":\"instance\",\"instance_id\":$PID_,\"warn\":150,\"ui_user\":\"proof\"}")
+  pq "alter system set max_slot_wal_keep_size = '400MB'" >/dev/null; pq "select pg_reload_conf()" >/dev/null
+  r=$(thr "{\"op\":\"set\",\"key\":\"slot_safe_wal\",\"level\":\"instance\",\"instance_id\":$PID_,\"warn\":300,\"ui_user\":\"proof\"}")
   [[ "$r" == "done" ]] || fail "SL2 the threshold was not set: '$r'"
-  wal_mb 80
+  safe_mb() { local v; v=$(pq "select coalesce((safe_wal_size / 1048576)::int, -1) from pg_replication_slots where slot_name = 'hadr_grow'" 2>/dev/null); echo "${v:--1}"; }
+  for _ in $(seq 1 60); do (( $(safe_mb) < 290 )) && break; wal_mb 8; done
+  s=$(safe_mb); echo "  hadr_grow: safe $s MB (SL2H wants it between 200, half the limit, and 300, slot_safe_wal)"
+  read_ hadr-p 1
+  if want SL2; then
+    r=$(slotf hadr_grow)
+    if (( s > 200 && s < 300 )); then [[ -z "$r" ]] && ok "SL2H under slot_safe_wal but over half the limit: no slot finding" || fail "SL2H raised at $s MB safe: '$r'"
+    else fail "SL2H the slot's safe_wal_size $s MB is not between 200 and 300 MB (the rig wrote too much before SL2)"; fi
+  fi
+  for _ in $(seq 1 60); do (( $(safe_mb) < 190 )) && break; wal_mb 8; done
   echo "  hadr_grow: $(pq "select wal_status || ', safe ' || pg_size_pretty(safe_wal_size) from pg_replication_slots where slot_name = 'hadr_grow'")"
   read_ hadr-p 1
   if want SL2; then
     r=$(slotf hadr_grow)
     [[ "$r" == "warning|slot WAL near its limit|slot hadr_grow:"* ]] && ok "SL2 'slot WAL near its limit' warning: $r" || fail "SL2: '$r'"
   fi
-  wal_mb 260; pq "checkpoint" >/dev/null; wal_mb 8; pq "checkpoint" >/dev/null
+  wal_mb 300; pq "checkpoint" >/dev/null; wal_mb 8; pq "checkpoint" >/dev/null
   echo "  hadr_grow: $(pq "select coalesce(wal_status, '?') || ', ' || coalesce(invalidation_reason::text, '-') from pg_replication_slots where slot_name = 'hadr_grow'")"
   read_ hadr-p 1
   if want SL1; then
@@ -572,7 +644,7 @@ fi
 if want AU; then
   AW=$(q "select pgvigil.ensure_instance('aurora-w', 'aurora', 'PostgreSQL 16.6', 160006, false, '{}')")
   AR=$(q "select pgvigil.ensure_instance('aurora-r', 'aurora', 'PostgreSQL 16.6', 160006, true, '{}')")
-  q "select pgvigil.import_replication($AW, now(), '[{\"kind\":\"aurora_replica\",\"server_id\":\"aurora-w\",\"session_id\":\"MASTER_SESSION_ID\",\"replica_lag_in_msec\":0},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-1\",\"session_id\":\"s1\",\"replica_lag_in_msec\":400000},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-2\",\"session_id\":\"s2\",\"replica_lag_in_msec\":45000}]'::jsonb)" >/dev/null
+  q "select pgvigil.import_replication($AW, now(), '[{\"kind\":\"aurora_replica\",\"server_id\":\"aurora-w\",\"session_id\":\"MASTER_SESSION_ID\",\"replica_lag_in_msec\":400000},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-1\",\"session_id\":\"s1\",\"replica_lag_in_msec\":400000},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-2\",\"session_id\":\"s2\",\"replica_lag_in_msec\":45000}]'::jsonb)" >/dev/null
   r=$(q "select string_agg(severity || ' ' || value, '; ' order by value) from pgvigil.findings where instance_id = $AW and setting = 'Aurora replica lag'")
   [[ "$r" == "critical replica reader-1:"*"; warning replica reader-2:"* ]] && ok "AU 'Aurora replica lag': critical reader-1, warning reader-2" || fail "AU findings: '$r'"
   [[ "$r" != *"aurora-w"* ]] && ok "AU nothing for the writer's own row" || fail "AU the writer's row raised: '$r'"
@@ -582,7 +654,29 @@ if want AU; then
   r=$(finding "$AR" 'receiver down'); r2=$(q "select count(*) from pgvigil.pg_repl_link_health where standby_id = $AR" 2>/dev/null || echo error)
   [[ -z "$r" ]] && ok "AU no 'receiver down' on an Aurora reader" || fail "AU 'receiver down' on aurora-r: '$r'"
   [[ "$r2" == "0" ]] && ok "AU no link row for an Aurora reader" || fail "AU link rows for aurora-r: '$r2'"
+  # a reader returns the same aurora_replica_status rows: the writer alone raises them
+  q "select pgvigil.import_replication($AR, now() + interval '1 second', '[{\"kind\":\"standby\",\"has_receiver\":false,\"conninfo_set\":true,\"restore_set\":false,\"replay_lsn\":\"0/3000000\"},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-1\",\"session_id\":\"s1\",\"replica_lag_in_msec\":400000},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-2\",\"session_id\":\"s2\",\"replica_lag_in_msec\":45000}]'::jsonb)" >/dev/null
+  r=$(q "select count(*) from pgvigil.findings where instance_id = $AR and setting = 'Aurora replica lag'")
+  [[ "$r" == "0" ]] && ok "AU no 'Aurora replica lag' raised by a reader" || fail "AU a reader raised 'Aurora replica lag': '$r'"
   q "update pgvigil.instances set is_active = false where instance_id in ($AW, $AR)" >/dev/null
+fi
+
+# ---- RP: replay paused on the standby -------------------------------------------------------------------------------
+if want RP; then
+  sq "select pg_wal_replay_pause()" >/dev/null
+  for _ in $(seq 1 20); do [[ "$(sq "select pg_get_wal_replay_pause_state()")" == "paused" ]] && break; sleep 0.5; done
+  echo "  hadr-s replay: $(sq "select pg_get_wal_replay_pause_state()")"
+  read_ hadr-p 1; read_ hadr-s 1
+  r=$(finding "$SID_" 'replay paused')
+  [[ -z "$r" ]] && ok "RP one read paused: nothing yet" || fail "RP raised after one read: '$r'"
+  read_ hadr-s 1
+  r=$(finding "$SID_" 'replay paused'); r2=$(link 'app:hadrs1@%')
+  [[ "$r" == "critical|replay: replay is paused" ]] && ok "RP 'replay paused' critical on hadr-s: $r" || fail "RP 'replay paused' on hadr-s: '$r', expected critical"
+  [[ "$r2" == "replay paused|replay paused|critical|$SID_|sender" ]] && ok "RP the link row: $r2" || fail "RP link app:hadrs1@...: '$r2'"
+  sq "select pg_wal_replay_resume()" >/dev/null
+  read_ hadr-s 1
+  r=$(finding "$SID_" 'replay paused')
+  [[ -z "$r" ]] && ok "RP resumed: gone" || fail "RP still raised after the resume: '$r'"
 fi
 
 # ---- R3: the standby stopped ---------------------------------------------------------------------------------------
@@ -590,7 +684,7 @@ if want R3 || want R3X; then
   read_ hadr-p 1
   docker stop -t 10 "$STB" >/dev/null
   for _ in $(seq 1 20); do [[ "$(pq "select count(*) from pg_stat_replication where application_name = 'hadrs1'")" == "0" ]] && break; sleep 1; done
-  read_ hadr-p 1; read_ hadr-s 1
+  read_ hadr-p 1; read_ hadr-s 1 3 may-fail
   if want R3; then
     r=$(finding "$PID_" 'standby gone')
     [[ -z "$r" ]] && ok "R3 one read after the stop: nothing yet" || fail "R3 raised after one read: '$r'"
@@ -625,8 +719,10 @@ fi
 if want L4; then
   r=$(q "select count(distinct key) || '|' || count(distinct detail->>'client_addr') || '|' || count(*) filter (where key like '%#%' or key <> 'app:hadrs1@' || (detail->>'client_addr')) || '|' || count(*) from pgvigil.replication_sample where instance_id = $PID_ and kind = 'sender' and detail->>'application_name' = 'hadrs1'")
   IFS='|' read -r nk na nbad nall <<<"$r"
-  [[ -n "$nall" && "$nall" -gt 10 && "$nk" == "$na" && "$nbad" == "0" ]] && ok "L4 $nall sender rows of hadrs1, keyed app:hadrs1@<address> ($nk key(s) for $na address(es))" || fail "L4 hadrs1's sender keys: keys $nk, addresses $na, off the link key $nbad, rows $nall"
+  floor=10; [[ -n "${PROOF_ONLY:-}" ]] && floor=1   # B alone stores 2 rows; the full run stores dozens
+  [[ -n "$nall" && "$nall" -gt "$floor" && "$nk" == "$na" && "$nbad" == "0" ]] && ok "L4 $nall sender rows of hadrs1, keyed app:hadrs1@<address> ($nk key(s) for $na address(es))" || fail "L4 hadrs1's sender keys: keys $nk, addresses $na, off the link key $nbad, rows $nall"
 fi
 
+echo "rows run: ${PROOF_ONLY:-all}"
 if (( FAILS == 0 )); then echo "proof-pg-hadr: OK"; exit 0; fi
 echo "proof-pg-hadr: $FAILS FAIL"; exit 1

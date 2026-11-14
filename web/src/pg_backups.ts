@@ -325,7 +325,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
 // ---- fleet Replication page ------------------------------------------------------------------------------
 
 export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
-  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes' | 'hadr_links' | 'subscriptions'>>('pg/replication', {}), tagIds(ctx)]);
+  const [d, ids] = await Promise.all([get<Parts<'links' | 'patroni' | 'changes' | 'hadr_links' | 'subscriptions' | 'publications'>>('pg/replication', {}), tagIds(ctx)]);
   const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const links = rowsOf(d.links).filter(keep), pat = rowsOf(d.patroni).filter(keep), ch = rowsOf(d.changes).filter(keep);
   // a link is in scope when either side is (its sending server or its standby)
@@ -374,6 +374,18 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, 'Each subscription on its subscriber, its apply worker and counters, and its publisher\'s walsender (the slot) where the publisher is monitored.'),
       grid(subs, subscriptionCols(ctx), 'No logical subscription in the fleet.')));
   }
+  // the publications per database of each publisher (task 373: pgvigil.pg_logical_pubs)
+  if (d.publications != null) {
+    const pubs = rowsOf(d.publications).filter(keep);
+    out.push(el('section', {}, el('h3', {}, `Publications (${pubs.length})`),
+      el('p', { class: 'meta' }, 'Each publication per database of a publisher: a database is read when it is the connected one or a logical slot decodes it.'),
+      grid(pubs, [{ key: 'instance', label: 'publisher', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
+        { key: 'pubname', label: 'publication', fmt: (v, r) => `${String(r.datname ?? '')}.${String(v ?? '')}` },
+        { key: 'all_tables', label: 'all tables', fmt: v => yes(v) },
+        { key: 'table_count', label: 'tables', num: true },
+        { key: 'operations' },
+        { key: 'read_at', label: 'read', fmt: fmtTime }], 'No publication read in the fleet.')));
+  }
   if (pat.length) out.push(el('section', {}, el('h3', {}, 'Patroni'),
     grid(pat, [{ key: 'scope' }, { key: 'instance', label: 'read through', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgstate') }, { key: 'ok', label: 'answered', fmt: v => yes(v) },
       { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => `${String(m.member)} ${String(m.role)} ${String(m.state)}${m.lag_bytes != null ? ` lag ${fmtBytes(m.lag_bytes)}` : ''}`).join('; ') : '' },
@@ -385,9 +397,12 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
 // linkCols: one physical link per row (pg_repl_link_health) - the sending server's view (its pg_stat_replication row)
 // beside the standby's own (its WAL receiver and what it has received and not replayed), then the link's one finding.
 function linkCols(ctx: Ctx): Col[] {
-  const linkState = (v: unknown) => {
+  // the colour follows the link's finding when it has one (a 'receiver down' fed by restore_command is a warning, a
+  // paused replay critical), else the status word
+  const linkState = (v: unknown, r: Row) => {
     const t = String(v ?? '');
-    return badge(t, t.startsWith('down') ? 'crit' : t.startsWith('missing') || t === 'replay paused' ? 'warn' : t.startsWith('streaming') ? 'ok' : '');
+    const bySev = r.severity === 'critical' ? 'crit' : r.severity === 'warning' ? 'warn' : '';
+    return badge(t, bySev || (t.startsWith('down') ? 'crit' : t.startsWith('missing') || t === 'replay paused' || t === 'sending server not read' ? 'warn' : t.startsWith('streaming') ? 'ok' : ''));
   };
   const bytes = (v: unknown) => v == null ? '' : fmtBytes(v);
   return [
