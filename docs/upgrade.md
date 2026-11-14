@@ -26,6 +26,16 @@ what happens in the other order, and what the project's own proof showed (`scrip
   cancelled runs too; a build reads every row either way, and a cancelled run is rare. The jobs collections' writes wait for it and are stored by their next
   run; nothing is lost. With the collector stopped for the upgrade (below), nothing waits.
 
+- **`0139_job_stats_hourly.sql` adds the jobs' hourly statistics and builds them after the upgrade, not during it.**
+  The file creates the tables and the triggers on `mssql_job_runs` and `job_runs` (their writes wait the seconds the
+  file takes) and reads no job run: measured at 4.9 s over 30.6 M SQL Agent job-run rows (200 SQL Server and 50
+  PostgreSQL instances, 30 jobs each, 32 days of runs), most of it the grants' walk every file pays. It writes no row.
+  Each instance's hours are built whole the first time it is met afterwards - its next jobs import (5 minutes), the end
+  of a DBA Dash history import, or `pgvigil purge` for an instance that writes no more runs - in that import's own
+  transaction: measured at 0.21 to 0.67 s an instance (median 0.33 s) over 32 days of 30 jobs' runs (25 instances, the
+  slowest 38,343 job outcomes into 12,330 hour rows). Until then the fleet Jobs page's 7-day columns of that instance
+  are empty; its status grid does not depend on them.
+
 Two rules follow from how the binary checks the schema:
 
 - A binary does not run on a schema older than its own: `pgvigil run` ends with
