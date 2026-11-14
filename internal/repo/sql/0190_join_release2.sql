@@ -12,6 +12,8 @@
 --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
 --   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
 -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
+--   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
+--     'not judged'; the rest 0104's text), and the findings view's 'database xid age' arm leaves an invalid database out.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*

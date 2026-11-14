@@ -290,7 +290,8 @@ SELECT o.instance_id, o.severity, o.setting,
  WHERE o.status IN ('crit', 'warn');
 
 -- one row per database; per cell <cell>_status (ok / warn / crit / none), <cell>_severity (of a deviation) and
--- <cell>_note (the cell's words)
+-- <cell>_note (the cell's words). REPLACED WHOLE by 0190_join_release2.sql (the invalid database's xid cell): an edit
+-- here is overridden there - change both.
 CREATE OR REPLACE VIEW pgvigil.pg_db_options AS
 WITH n0 AS (    -- the newest connections read of each instance in the last 10 minutes (the collection runs every minute)
   SELECT c.instance_id, max(c.snapshot_at) AS at

@@ -48,7 +48,7 @@ column of words in the same row says it too; the Excel export carries both.
 | encoding | UTF8 | another encoding (advice) | | template0 (`CREATE DATABASE ... TEMPLATE template0` takes any encoding) |
 | collation version | the version recorded = the library's now | they differ: text indexes may be out of order (REINDEX, then `ALTER DATABASE ... REFRESH COLLATION VERSION`) | | before PostgreSQL 15; a locale without a version (C, POSIX, builtin); not read |
 | data checksums (the cluster's) | on | off (a warning self-managed, advice on a managed platform) | | Aurora (its storage checks its pages) |
-| xid age | `age(datfrozenxid)` under `autovacuum_freeze_max_age` | at or past it: the anti-wraparound vacuum is due | 1 billion or more | |
+| xid age | `age(datfrozenxid)` under `autovacuum_freeze_max_age` | at or past it: the anti-wraparound vacuum is due | 1 billion or more | an invalid database (autovacuum skips it, so its age only grows) |
 
 The sessions are the newest read of the `connections` collection (every minute; the collector's own session left out;
 a server with more than 500 connection sources folds the smallest into `(other sources)`, so a database's count there
