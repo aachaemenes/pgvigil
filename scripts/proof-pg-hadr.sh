@@ -25,7 +25,8 @@
 #        logical senders only, so it cannot fail on the tip]; no link row for pg_basebackup [red FAIL: no view; on 7636cca
 #        ok - the fold's row: it holds the name clause of pg_link_sender]
 #   R1N  the same with PGAPPNAME=bbcustom and a slot (no default name to go by: its state and its temporary slot): the
-#        read stored bbcustom's two senders, one in state backup and one on a temporary slot [red ok]; no 'sender not
+#        read stored bbcustom's two senders, one in state backup and one on a temporary slot [red FAIL on 35e627e: its
+#        collector sends no slot; ok from ee6d061]; no 'sender not
 #        streaming' naming bbcustom while it runs [red FAIL], no link row for bbcustom [red FAIL: no view]; killed, two
 #        reads: no 'standby gone' for it [red ok]
 #   R1B  the base backups killed, two reads of hadr-p: no 'standby gone' for pg_basebackup [red ok]
