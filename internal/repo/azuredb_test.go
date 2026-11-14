@@ -136,3 +136,87 @@ func TestAzureDBOnAStore(t *testing.T) {
 		t.Errorf("the first tier's row closed at %v (%v), want the change's read", closedAt, err)
 	}
 }
+
+// On a migrated store, 0145's '% Max Size' on Azure SQL Database (DBA Dash's AzureDBInfo): the PRIMARY data files'
+// allocated share of their max size, strictly over 80 % a warning and over 90 % critical, no status with an
+// unlimited file; the per-file 'max size' arm leaves Azure SQL Database out and still judges a SQL Server's file.
+func TestAzureDBMaxSizeOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := time.Now().UnixNano() % 1000000000
+	ids := map[string]int{}
+	for _, platform := range []string{"azuresqldb", "sqlserver"} {
+		var id int
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, '12.0', 120000, false, '{}'::text[], 'sqlserver')`,
+			fmt.Sprintf("maxsize-%s-%d", platform, sfx), platform).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids[platform] = id
+	}
+	defer func() {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2)`, ids["azuresqldb"], ids["sqlserver"]); err != nil {
+			t.Error(err)
+		}
+	}()
+	const mb = int64(1048576)
+	file := func(id int64, fg any, typ string, size, max, used int64, growth int64) map[string]any {
+		var mx any = max * mb
+		if max < 0 {
+			mx = nil
+		}
+		return map[string]any{"kind": "file", "database_id": 5, "database_name": "appdb", "database_state": "ONLINE", "file_id": id,
+			"file_name": fmt.Sprintf("f%d", id), "type_desc": typ, "filegroup": fg, "physical_name": "x", "state_desc": "ONLINE",
+			"size_bytes": size * mb, "used_bytes": used * mb, "used_read": 1, "used_note": nil, "max_size_bytes": mx,
+			"growth_bytes": growth * mb, "growth_pct": 0, "volume": nil}
+	}
+	judge := func(platform string, files ...map[string]any) (sev, check, detail string) {
+		t.Helper()
+		p, _ := json.Marshal(files)
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_storage($1, clock_timestamp(), $2::jsonb)`, ids[platform], string(p)); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := pool.Query(ctx, `SELECT severity, check_name, detail FROM pgvigil.mssql_storage_findings WHERE instance_id = $1 AND check_name LIKE '%max size%'`, ids[platform])
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		n := 0
+		for rows.Next() {
+			if err := rows.Scan(&sev, &check, &detail); err != nil {
+				t.Fatal(err)
+			}
+			n++
+		}
+		if n > 1 {
+			t.Errorf("%s: %d max size findings, want at most one", platform, n)
+		}
+		return sev, check, detail
+	}
+	// two PRIMARY data files 400 + 400 of 500 + 500 MB (80 %: not over), the log never counted
+	if sev, _, _ := judge("azuresqldb", file(1, "PRIMARY", "ROWS", 400, 500, 100, 64), file(3, "PRIMARY", "ROWS", 400, 500, 100, 64), file(2, nil, "LOG", 990, 1000, 1, 64)); sev != "" {
+		t.Errorf("80 %% allocated: %q, want no finding (DBA Dash's strict 'over'; the per-file arm not on Azure SQL Database)", sev)
+	}
+	if sev, check, detail := judge("azuresqldb", file(1, "PRIMARY", "ROWS", 450, 500, 100, 64), file(3, "PRIMARY", "ROWS", 450, 500, 100, 64)); sev != "warning" ||
+		check != "the database allocated over 80 % of its max size" || detail != "the data files hold 900 MB allocated of a max size of 1000 MB (90.0 %), 200 MB used inside them (20.0 %); warning over 80 %, critical over 90 % (DBA Dash's % Max Size)" {
+		t.Errorf("90 %%: %q %q %q, want a warning (90 is not over 90) with DBA Dash's words", sev, check, detail)
+	}
+	if sev, _, _ := judge("azuresqldb", file(1, "PRIMARY", "ROWS", 460, 500, 100, 64), file(3, "PRIMARY", "ROWS", 450, 500, 100, 64)); sev != "critical" {
+		t.Errorf("91 %%: %q, want critical", sev)
+	}
+	if sev, _, _ := judge("azuresqldb", file(1, "PRIMARY", "ROWS", 460, 500, 100, 64), file(3, "PRIMARY", "ROWS", 450, -1, 100, 64)); sev != "" {
+		t.Errorf("an unlimited file: %q, want no status (DBA Dash's NULL)", sev)
+	}
+	// the same file within one growth of its max on a SQL Server: 0111's per-file arm, unchanged
+	if sev, check, _ := judge("sqlserver", file(1, "PRIMARY", "ROWS", 460, 500, 100, 64)); sev != "warning" || check != "a file within one growth of its max size" {
+		t.Errorf("SQL Server: %q %q, want the per-file warning", sev, check)
+	}
+}
