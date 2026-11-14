@@ -616,6 +616,37 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
       : `ok (the root lists ${outside.length} instance(s) outside the tag; under it none; the ${repoRoot} repository-wide row(s) under it too)` });
 }
 
+// (d) the TAGTREE review A #2 / #8: under a kept tag no top folder carries whose instances are all SQL Server, the root's
+// folders offer no page that holds PostgreSQL alone (router.ts pageEngine, read from each page's SQL) and still offer
+// SQL Server options
+{
+  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'backups', 'roles', 'dms', 'custom', 'disks', 'storage', 'growth', 'indexes', 'jobs']);
+  await go('#/summary');
+  const tops = await ev(`[...document.querySelectorAll('#tree .folder > .folder-head a')].map(a => new URLSearchParams((a.getAttribute('href') || '').split('?')[1] || '').get('tag')).filter(Boolean)`);
+  const carriers = new Map();
+  for (const r of insts) for (const t of (Array.isArray(r.tags) ? r.tags : [])) { if (!carriers.has(t)) carriers.set(t, []); carriers.get(t).push(r); }
+  const msTag = [...carriers.entries()].filter(([t, rs]) => !tops.includes(t) && rs.every(r => r.engine === 'sqlserver')).map(([t]) => t).sort()[0];
+  if (!msTag) record({ scope: 'root', kind: 'tag-tree', column: 'engines', engine: 'sqlserver', link: '-', landed: `top folders: ${tops.join(', ')}`, verdict: 'FAIL no kept tag carried by SQL Server instances only: the row proves nothing' });
+  else {
+    await go(`#/summary?tag=${encodeURIComponent(msTag)}`);
+    const leaves = await ev(`(async () => { const out = [];
+      for (const g of ['conf', 'checks', 'hadr', 'storage', 'jobs']) {
+        const find = () => document.querySelector('#tree button.caret[data-key="r/' + g + '"]');
+        let c = find(); if (!c) continue;
+        if (c.getAttribute('aria-expanded') !== 'true') { c.click(); await new Promise(r => setTimeout(r, 400)); c = find(); }
+        const box = c?.closest('.tree-node')?.parentElement;
+        if (box) for (const a of box.querySelectorAll(':scope > div:not(.tree-node) a.inst')) out.push(a.getAttribute('href'));
+      }
+      return out; })()`, true);
+    const tabs = (leaves ?? []).map(tabOf), bad = tabs.filter(t => pgOnly.has(t));
+    record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: 'engines', engine: 'sqlserver', link: `#/summary?tag=${msTag}`, landed: `${tabs.length} leaves in the root's folders: ${tabs.join(' ')}`.slice(0, 260),
+      verdict: tabs.length === 0 ? "FAIL no leaf read in the root's folders"
+        : bad.length ? `FAIL page(s) of PostgreSQL alone offered for a SQL Server-only tag: ${bad.join(', ')}`
+        : !tabs.includes('mssqlrisks') ? 'FAIL SQL Server options is not offered'
+        : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options there)` });
+  }
+}
+
 // an instance whose drives' Files pages listed no file at all has proven nothing
 for (const s of storageScopes.slice(2)) if (!filesSeen.get(s.name)) record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: 'every drive', landed: 'no file listed on any drive', verdict: 'FAIL no drive of the instance lists a file' });
 
