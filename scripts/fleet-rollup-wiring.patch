@@ -398,6 +398,21 @@ index ecce0f4..f9f8d17 100644
 +	}
 +	return instances, hourRows, failed, nil
 +}
+diff --git i/internal/repo/roles_test.go w/internal/repo/roles_test.go
+index d77ec41..54a638e 100644
+--- i/internal/repo/roles_test.go
++++ w/internal/repo/roles_test.go
+@@ -28,8 +28,8 @@ func TestCollectorMayCallWhatRepoCalls(t *testing.T) {
+ 	for _, m := range regexp.MustCompile(`pgvigil\.([a-z_0-9]+)\(`).FindAllStringSubmatch(string(src), -1) {
+ 		seen[m[1]] = true
+ 	}
+-	// the owner's own calls (migrate, purge) are not the collector's
+-	for _, n := range []string{"apply_roles", "purge"} {
++	// the owner's own calls (migrate, purge; purge's heals of the job statistics, 0139: JobStatsHeal) are not the collector's
++	for _, n := range []string{"apply_roles", "purge", "job_stats_pending", "job_stats_heal_one"} {
+ 		delete(seen, n)
+ 	}
+ 	names := make([]string, 0, len(seen))
 diff --git i/internal/repo/sql/0121_collector_health.sql w/internal/repo/sql/0121_collector_health.sql
 index 46df589..ab84c7b 100644
 --- i/internal/repo/sql/0121_collector_health.sql
