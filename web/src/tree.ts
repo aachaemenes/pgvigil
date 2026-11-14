@@ -16,8 +16,8 @@
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { poolerCached } from './pooler';
-import { Ctx, href, drillHome, groupsFor, isMssql, rootGroups, rootOnly, rootOnlyGroups, rootTabs, TabGroup, tabsFor, tagPages } from './router';
-import { Fleet, forget, Level, tagsOf, worst } from './fleet';
+import { Ctx, href, drillHome, groupsFor, isMssql, pageEngine, rootGroups, rootOnly, rootOnlyGroups, rootTabs, TabGroup, tabsFor, tagPages } from './router';
+import { Fleet, forget, inTagScope, Level, tagsOf, worst } from './fleet';
 import { refreshSilenced, silencedSet, treeBell } from './instheader';
 import { hashParam, hrefWith } from './dbinfo';
 import { dot, el, fmtBytes } from './ui';
@@ -469,9 +469,12 @@ function draw() {
     const tagGroup = (g: TabGroup) => tagPages(g, engines);
     // its name keeps the page shown when the folder carries that page, else lands on its Summary (a root-only page: the
     // Collector of the fleet, Diff ... never shown 'in' a tag it ignores)
-    const carried = rootGroups.some(g => tagGroup(g).includes(rootTab)) || rootGroups[0].tabs.includes(rootTab);
+    const carried = !rootOnly.has(rootTab) && (rootGroups.some(g => tagGroup(g).includes(rootTab)) || rootGroups[0].tabs.includes(rootTab));
+    // the name is the page shown (on: a click only opens or closes the folder) only where the folder carries that page;
+    // elsewhere a click goes to the folder's Summary and the folder stays open (the TAGTREE review A #6)
+    const nameOn = tagOn && carried;
     const label = fo.tag
-      ? nameOpens(el('a', { class: 'folder-name' + (tagOn ? ' on' : ''), href: href(ctx, { tab: carried ? rootTab : 'summary', instance: undefined, tag: fo.tag }) }, text), 'f:' + fo.path, !shut, tagOn, nameFlip)
+      ? nameOpens(el('a', { class: 'folder-name' + (nameOn ? ' on' : ''), href: href(ctx, { tab: carried ? rootTab : 'summary', instance: undefined, tag: fo.tag }) }, text), 'f:' + fo.path, !shut, nameOn, nameFlip)
       : nameOpens(el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), style: 'cursor:pointer', title: depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '' }, text), 'f:' + fo.path, !shut, true, nameFlip);
     const box = el('div', { class: 'folder', style: depth ? 'margin-left:.8rem' : '' }, el('div', { class: 'folder-head' }, caret, dot(rollup(f, fo.rows)), label));
     if (!shut) {
@@ -503,7 +506,11 @@ function draw() {
   // the root's folders link the fleet (DBA Dash's root); a tag no top-level folder carries (a bookmark, a nested
   // folder's tag, a link kept by a page) stays on them, so the tree keeps a way to that scope's pages (the pass's #9)
   const rootScope = !ctx.instance && ctx.tag && !tops.some(t => t.tag === ctx.tag) ? ctx.tag : undefined;
-  const out: HTMLElement[] = [all, ...(filter ? [] : scopeFolders(ctx, rootScope, g => `r/${g}`, g => g.tabs))];
+  // under such a kept tag the root's folders hold that tag's engines' pages only, as the strip does (main.ts; the TAGTREE
+  // review A #8): a tag no instance carries has no engine, and no page of one engine is offered for it
+  const rootEngines = rootScope ? new Set(f.instances.filter(r => inTagScope(rootScope, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')) : null;
+  const rootPages = (g: TabGroup) => rootEngines ? g.tabs.filter(t => rootOnlyGroups.has(g.key) || rootOnly.has(t) || !pageEngine[t] || rootEngines.has(pageEngine[t])) : g.tabs;
+  const out: HTMLElement[] = [all, ...(filter ? [] : scopeFolders(ctx, rootScope, g => `r/${g}`, rootPages))];
   for (const fo of tops) { const e = render(fo, 0); if (e) out.push(e); }
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
   else if (filter && out.length === 1) out.push(el('p', { class: 'empty', style: 'padding:.1rem .4rem' }, 'No instance named like that.'));

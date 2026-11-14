@@ -179,7 +179,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   if (tagIds) sec.append(el('p', { class: 'meta' }, `In view: ${tagWords(ctx.tag!)} - the open alerts, their history, the held sends and the send log of its ${tagIds.size} instance(s), and those of no instance (the collector, the repository) as in every folder. The channels, silenced servers and blackouts, mute rules, known patterns, send tests and the acknowledge log are the whole repository's.`));
   // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
   sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
-    el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
+    el('a', { href: href(ctx, { tab: 'alertrules', tag: undefined }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
   sec.append(el('h3', {}, 'Channels'),
     grid(chans, channelCols(ad, redraw), 'No channel recorded: the alert sender has not run with a channel configured.'));
   sec.append(el('h3', {}, 'Open alerts'));

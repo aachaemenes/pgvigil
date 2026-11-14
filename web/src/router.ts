@@ -91,7 +91,9 @@ export const rootGroups: TabGroup[] = [
 // the Doors and Admin groups whole, and these pages of the other groups. The tree leaves them out of a tag folder's own
 // folders and the strip out of a folder's strip under ?tag=; a link to one still opens it.
 export const rootOnlyGroups = new Set(['doors', 'admin']);
-export const rootOnly = new Set(['diff', 'pgthresholds', 'retention', 'rp_recycle', 'customreports', 'community', 'reportmail']);
+// Alert rules too: the rules are the repository's and its state rows are not narrowed by a tag (the TAGTREE review A #5),
+// so a tag folder's name on it lands on the folder's Summary and the main strip links it without the tag
+export const rootOnly = new Set(['diff', 'pgthresholds', 'retention', 'rp_recycle', 'customreports', 'community', 'reportmail', 'alertrules']);
 // pageEngine: the fleet pages that hold one engine alone (their own words say so: reports.ts L430 / L577, the options
 // pages' headings, PostgreSQL's replication and extensions): a tag folder whose instances are all of the other engine
 // leaves them out, as a strip should (the wording walk's rows); every other page holds both engines
