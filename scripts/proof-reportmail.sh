@@ -440,13 +440,14 @@ ok "N: $EMPTYR, every grid on it empty ($(python3 -c 'import json,sys; print(jso
 NOWIDS="$NOWIDS $EMPTYID"
 # ---- N2 (B3 DONE-2): the demo's SQL Server instance on this signed-in plain serve is an instance without a
 # login, never a demo instance (only pgvigil demo -serve's own seeded instances are, and that serve has no login, so
-# it mails nothing): no sample, and the mail of its Community tools page with tool=sp_Blitz carries no kit's stored words
+# it mails nothing): no sample, and the mail of its Community tools page with tool=sp_Blitz carries no kit's stored words.
+# The reason is the door set's words for an instance in neither list (internal/web/doorset.go; proof-customreports' S)
 DSID=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
 DSNAME=$(q "select name from pgvigil.instances where instance_id = ${DSID:-0}")
 [[ -n $DSID && -n $DSNAME ]] || fail "N2: the demo seeded no SQL Server instance"
 [[ $(code -b "$JAR" "$U/api/community?instance=$DSID") == 200 ]] || fail "N2: GET /api/community: $(head -c 300 "$WORK/body")"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); n=sys.argv[2]
-assert d["demo"] is False and not any("sample" in t for t in d["tools"]) and d["reason"].startswith("a read login for " + n + ": this server holds none"), str(d)[:300]' "$WORK/body" "$DSNAME" \
+assert d["demo"] is False and not any("sample" in t for t in d["tools"]) and d["reason"] == "instance " + n + " has no read login on this server: it is in neither pgvigil.yaml nor Admin > Instances", str(d)[:300]' "$WORK/body" "$DSNAME" \
   || fail "N2: the demo's instance on the plain serve: $(head -c 300 "$WORK/body")"
 [[ $(code -b "$JAR" "$U/api/community/sample?instance=$DSID&tool=sp_Blitz") == 404 ]] || fail "N2: GET /api/community/sample on the plain serve: $(head -c 300 "$WORK/body")"
 drive now "$WORK" 4 "#/community?i=$DSID&tool=sp_Blitz" > "$WORK/now3.json" || fail "N2: Send now of the page: $(tail -3 "$WORK/now3.json")"
