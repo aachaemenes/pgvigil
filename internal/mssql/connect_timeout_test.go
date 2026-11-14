@@ -142,7 +142,7 @@ func TestDeadlineDialerClamp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(time.Hour))
 	done := make(chan error, 1)
 	start := time.Now()
@@ -166,7 +166,7 @@ func TestDeadlineDialerDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	d.done()
 	time.Sleep(200 * time.Millisecond)
 	if _, err := c.Read(make([]byte, 1)); err != nil {
