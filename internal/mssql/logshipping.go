@@ -9,8 +9,14 @@ import (
 )
 
 // logshippingCollector is mssql_logshipping: msdb's own monitor tables as the server keeps them, a primary's last
-// backup and a secondary's last copy and restore with the thresholds their configuration names. The tables hold
-// UTC columns beside the local ones; the UTC ones are read. A server without log shipping returns no row.
+// backup and a secondary's last copy and restore with the thresholds their configuration names (the tables hold UTC
+// columns beside the local ones; the UTC ones are read), AND log shipping as restore history shows it, whoever set
+// it up (DBA Dash's LogRestores read): every database that is RESTORING, in STANDBY, or RECOVERING after a log
+// restore, with its newest log restore of the last 14 days - when it ran, the start of the log backup it restored
+// (the primary's clock, converted by backupset.time_zone), the server and database that backup came from (the
+// pair), the file - and the newest restore of any kind; a database that is mirrored or in an availability group is
+// read with that said, so the repository leaves it out. A log restore pair of the last 14 days whose destination
+// database no longer exists is a 'pair' row with no database. A server with neither returns no row.
 type logshippingCollector struct{}
 
 func init() { Register(logshippingCollector{}) }
@@ -55,8 +61,54 @@ var logshippingSecondarySQL = `SELECT 'secondary' AS kind,
 FROM msdb.dbo.log_shipping_monitor_secondary
 ORDER BY secondary_database`
 
+// logRestoreSQL: SQL Server 2016 SP1 and later. restore_date and create_date are the server's local clock (utcText);
+// backup_start_date is the clock of the server that took the backup: backupset.time_zone is its offset from UTC in
+// 15-minute steps at the backup (127 = unknown: then this server's offset is taken, as for a backup of its own).
+// replica_id is NULL for a database in no availability group (SQL Server 2012 and later).
+var logRestoreSQL = `SELECT 'restore' AS kind, CAST(d.name AS nvarchar(128)) AS database_name,
+  CAST(d.state_desc AS nvarchar(60)) AS database_state, CAST(d.is_in_standby AS int) AS is_in_standby,
+  CAST(d.recovery_model_desc AS nvarchar(60)) AS recovery_model,
+  ` + utcText("d.create_date") + ` AS created_utc,
+  CAST(CASE WHEN m.mirroring_guid IS NOT NULL THEN 1 ELSE 0 END AS int) AS is_mirrored,
+  CAST(CASE WHEN d.replica_id IS NOT NULL THEN 1 ELSE 0 END AS int) AS in_availability_group,
+  ` + utcText("lr.restore_date") + ` AS last_log_restore_utc,
+  CASE WHEN lr.backup_start_date IS NULL THEN NULL
+       WHEN lr.time_zone IS NULL OR lr.time_zone = 127 THEN ` + utcText("lr.backup_start_date") + `
+       ELSE CONVERT(varchar(33), DATEADD(minute, -15 * lr.time_zone, lr.backup_start_date), 126) + 'Z' END AS last_log_backup_start_utc,
+  lr.time_zone AS backup_time_zone,
+  CAST(lr.server_name AS nvarchar(128)) AS source_server, CAST(lr.source_database AS nvarchar(128)) AS source_database,
+  CAST(lr.last_file AS nvarchar(500)) AS last_file,
+  ` + utcText("ar.restore_date") + ` AS last_restore_utc, CAST(ar.restore_type AS nvarchar(1)) AS last_restore_type
+FROM sys.databases d
+LEFT JOIN sys.database_mirroring m ON m.database_id = d.database_id
+OUTER APPLY (SELECT TOP (1) rh.restore_date, bs.backup_start_date, bs.time_zone, bs.server_name, bs.database_name AS source_database,
+                    bmf.physical_device_name AS last_file
+               FROM msdb.dbo.restorehistory rh
+               JOIN msdb.dbo.backupset bs ON bs.backup_set_id = rh.backup_set_id
+               LEFT JOIN msdb.dbo.backupmediafamily bmf ON bmf.media_set_id = bs.media_set_id AND bmf.family_sequence_number = 1
+              WHERE rh.destination_database_name = d.name AND rh.restore_type = 'L' AND rh.restore_date >= DATEADD(day, -14, GETDATE())
+              ORDER BY rh.restore_date DESC, rh.restore_history_id DESC) lr
+OUTER APPLY (SELECT TOP (1) rh.restore_date, rh.restore_type FROM msdb.dbo.restorehistory rh
+              WHERE rh.destination_database_name = d.name ORDER BY rh.restore_date DESC, rh.restore_history_id DESC) ar
+WHERE d.database_id > 4 AND d.source_database_id IS NULL
+  AND (d.state = 1 OR d.is_in_standby = 1 OR (d.state = 2 AND lr.restore_date IS NOT NULL))
+ORDER BY d.name`
+
+// logRestorePairSQL: a database log-restored here in the last 14 days that no longer exists: its pair, its last
+// restore. One row per destination name.
+var logRestorePairSQL = `SELECT 'pair' AS kind, CAST(x.destination_database_name AS nvarchar(128)) AS database_name,
+  CAST(x.server_name AS nvarchar(128)) AS source_server, CAST(x.source_database AS nvarchar(128)) AS source_database,
+  ` + utcText("x.restore_date") + ` AS last_log_restore_utc
+FROM (SELECT rh.destination_database_name, rh.restore_date, bs.server_name, bs.database_name AS source_database,
+             ROW_NUMBER() OVER (PARTITION BY rh.destination_database_name ORDER BY rh.restore_date DESC, rh.restore_history_id DESC) AS rn
+        FROM msdb.dbo.restorehistory rh
+        JOIN msdb.dbo.backupset bs ON bs.backup_set_id = rh.backup_set_id
+       WHERE rh.restore_type = 'L' AND rh.restore_date >= DATEADD(day, -14, GETDATE())) x
+WHERE x.rn = 1 AND DB_ID(x.destination_database_name) IS NULL
+ORDER BY 2`
+
 func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
-	for _, t := range []string{"log_shipping_monitor_primary", "log_shipping_monitor_secondary"} {
+	for _, t := range []string{"log_shipping_monitor_primary", "log_shipping_monitor_secondary", "restorehistory", "backupset", "backupmediafamily"} {
 		if err := msdbReadable(ctx, conn, t); err != nil {
 			return nil, err
 		}
@@ -70,6 +122,13 @@ func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]
 		return nil, err
 	}
 	rows = append(rows, sec...)
+	for _, q := range []string{logRestoreSQL, logRestorePairSQL} {
+		got, err := QueryRows(ctx, conn, q)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, got...)
+	}
 	if len(rows) == 0 {
 		return noRows(), nil
 	}

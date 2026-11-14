@@ -36,9 +36,13 @@
 #
 # What up makes, every name fixed here (down finds them by these names and nothing else):
 #   instances  PGVPRINCIPAL (TCP 14331, endpoint 5023, max server memory 1536 MB), PGVMIRROR (14332, 5024, 1536 MB),
-#              PGVWITNESS (14333, 5025, 512 MB): database engine and Agent only, mixed-mode authentication, the sa
-#              password made here, the running Windows user a sysadmin, TCP on with a static port, named pipes off,
-#              Agent automatic and started, no product update during setup. The SQL Server Browser keeps the start
+#              PGVWITNESS (14333, 5025, 512 MB): database engine and Agent only, installed with Windows authentication
+#              (the running Windows user a sysadmin) and switched to mixed mode right after (LoginMode 2 in the
+#              instance's own registry key, a restart, then sa's password made here and sa enabled by T-SQL), TCP on
+#              with a static port, named pipes off, Agent automatic and started, no product update during setup.
+#              Why not SECURITYMODE=SQL in setup: setup protects SAPWD with DPAPI under the running user, and a
+#              key-based OpenSSH logon (S4U) holds no credentials to open that user's DPAPI key - setup then fails with
+#              'There was an error generating the XML document' (CryptographicException: Access is denied). The SQL Server Browser keeps the start
 #              type before.json read (setup is told it explicitly). Shared features already on the host stay as
 #              they are; nothing of another instance is touched.
 #   endpoint   pgv_mirroring on each (ROLE PARTNER on the partners, WITNESS on the witness), certificate
@@ -103,6 +107,7 @@ $saFile = Join-Path $secretDir 'sa.pw'
 $labIso = Join-Path $LabDir 'media\SQLServer2022-x64-ENU-Dev.iso'
 # the lab's own children of LabDir: down removes these by name and nothing else
 $labChildren = @('before.json', 'secret', 'certs', 'xfer', 'media')
+$script:restartFor = ''   # the instance whose login mode changed and waits for its restart
 
 # Write-Host: a function's own output stays its return value (Invoke-Status returns its verdict)
 function Say([string]$text) { Write-Host "win-mirroring: $text" }
@@ -259,7 +264,7 @@ function Get-SetupFolder([object]$before) {
     return [pscustomobject]@{ Iso = $iso; SetupExe = $setupExe }
 }
 
-function Install-LabInstance([object]$inst, [string]$setupExe, [string]$saPassword, [object]$before) {
+function Install-LabInstance([object]$inst, [string]$setupExe, [object]$before) {
     # the running identity (a process started through WMI does not carry the caller's USERNAME variable)
     $sysadmin = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $browserStart = if ($before.BrowserStartType) { $before.BrowserStartType } else { 'Disabled' }
@@ -277,8 +282,6 @@ SQLSVCSTARTUPTYPE="Automatic"
 AGTSVCSTARTUPTYPE="Automatic"
 BROWSERSVCSTARTUPTYPE="$browserStart"
 SQLSYSADMINACCOUNTS="$sysadmin"
-SECURITYMODE="SQL"
-SAPWD="$saPassword"
 TCPENABLED="1"
 NPENABLED="0"
 SQLTEMPDBFILECOUNT="1"
@@ -305,15 +308,27 @@ SQLSVCINSTANTFILEINIT="True"
     } else { Say "setup $($inst.Name): exit 0" }
 }
 
-# a static TCP port on IPAll, dynamic ports off; the engine (and Agent) restarted when it changed
+# mixed-mode authentication (LoginMode 2 in the instance's own key); the restart that makes it count is Set-LabPort's
+# (forced here when the port needs no change)
+function Set-LabMixedMode([object]$inst, [string]$instanceId) {
+    $key = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer"
+    if ([int](Get-ItemProperty -LiteralPath $key -ErrorAction Stop).LoginMode -ne 2) {
+        Set-ItemProperty -LiteralPath $key -Name LoginMode -Value 2 -Type DWord -ErrorAction Stop
+        $script:restartFor = $inst.Name
+    }
+}
+
+# a static TCP port on IPAll, dynamic ports off; the engine (and Agent) restarted when it changed or when the login
+# mode just changed
 function Set-LabPort([object]$inst, [string]$instanceId) {
     $tcpKey = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Tcp\IPAll"
     $now = Get-ItemProperty -LiteralPath $tcpKey -ErrorAction Stop
     $engine = "MSSQL`$$($inst.Name)"; $agent = "SQLAgent`$$($inst.Name)"
-    if ([string]$now.TcpPort -ne [string]$inst.SqlPort -or [string]$now.TcpDynamicPorts -ne '') {
+    if ([string]$now.TcpPort -ne [string]$inst.SqlPort -or [string]$now.TcpDynamicPorts -ne '' -or $script:restartFor -eq $inst.Name) {
         Set-ItemProperty -LiteralPath $tcpKey -Name TcpDynamicPorts -Value '' -ErrorAction Stop
         Set-ItemProperty -LiteralPath $tcpKey -Name TcpPort -Value ([string]$inst.SqlPort) -ErrorAction Stop
         Restart-Service -Name $engine -Force -ErrorAction Stop
+        $script:restartFor = ''
     }
     if ((Get-Service -Name $engine -ErrorAction Stop).Status -ne 'Running') { Start-Service -Name $engine -ErrorAction Stop }
     Set-Service -Name $agent -StartupType Automatic -ErrorAction Stop
@@ -448,14 +463,19 @@ function Invoke-Up {
 
     if ($toInstall.Count -gt 0) {
         $media = Get-SetupFolder $before
-        foreach ($inst in $toInstall) { Install-LabInstance $inst $media.SetupExe $saPassword $before }
+        foreach ($inst in $toInstall) { Install-LabInstance $inst $media.SetupExe $before }
         $installed = Get-InstalledInstances
     }
     foreach ($inst in $labInstances) {
         if (-not $installed.ContainsKey($inst.Name)) { throw "$($inst.Name) is not installed after setup" }
         if (-not (Get-Service -Name "MSSQL`$$($inst.Name)" -ErrorAction SilentlyContinue)) { throw "$($inst.Name) is half-installed (no service): run -Action down, then up" }
+        Set-LabMixedMode $inst $installed[$inst.Name]
         Set-LabPort $inst $installed[$inst.Name]
         $null = Invoke-LabSql $inst "EXEC sys.sp_configure N'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure N'max server memory (MB)', $($inst.MaxMemMB); RECONFIGURE; SELECT CAST(1 AS int) AS ok;"
+        # sa: the password made here, enabled (mixed mode is in force after Set-LabPort's restart)
+        $null = Invoke-LabSql $inst "ALTER LOGIN [sa] WITH PASSWORD = '$saPassword', CHECK_POLICY = ON; ALTER LOGIN [sa] ENABLE; SELECT CAST(1 AS int) AS ok;"
+        $mode = (Invoke-LabSql $inst "SELECT CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS int) AS v")[0].v
+        if ($mode -ne 0) { throw "$($inst.Name) is still Windows authentication only after LoginMode 2 and its restart" }
     }
 
     # endpoints and certificates (the folder is written by the three engines' service accounts)
