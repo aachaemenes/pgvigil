@@ -180,22 +180,29 @@
 # Expected on Standard Edition (PGVIGIL_LAB_RDS_EDITION=se: scripts/lab/aws-rds-mssql.sh's db.m7i.large, single AZ;
 # CLOUDSQL C3's R1, written before its first run). Every row above holds as on Express, with these differences:
 #  A. Edition 'Standard Edition (64-bit)', EngineEdition 2.
-#  B. mssql_services lists SQL Server Agent beside the engine (equal to sys.dm_server_services, as above: RECORDED);
+#  B. mssql_services lists SQL Server Agent beside the engine (equal to sys.dm_server_services, as above), and its
+#     agent_expected is true (0070: EngineEdition other than 4);
 #     mssql_xe: the -form server script is ACCEPTED (a refusal is a FAIL with its words) and all four captures read
-#     'running', equal to the master user's read; mssql_jobs skipped as on Express (the master user's msdb grants are
-#     the same on every edition [inferred: AWS says only that it is in SQLAgentUserRole, which grants no SELECT on
-#     sysschedules]); mssql_ag skipped as on Express (single AZ: no availability group).
+#     'running', equal to the master user's read; mssql_jobs skipped as on Express (the collector's login holds SELECT on
+#     the three tables R checks, so the read stops at the first other one) - and a FAIL when S4 shows the master user
+#     may grant the very table the skip's note names (the note would then be false on Standard); mssql_ag skipped as
+#     on Express (single AZ: no availability group).
 #  S. Standard's own rows, each RECORDED (AWS's pages do not show them), none a FAIL by its content:
 #     S1 the master user's EXEC msdb.dbo.rds_get_high_availability_option and EXEC msdb.dbo.rds_failover_time, with
 #        their column names (C3-1 builds its read from these); expected 'Single-AZ', a failover time NULL;
 #     S2 the same two as the collector's login (refused, or its rows);
 #     S3 whether the master user may GRANT EXECUTE on each to the collector's login (a GRANT rolled back at once);
 #     S4 whether it may GRANT SELECT on each of the eleven msdb tables mssql_jobs reads (each rolled back at once);
-#     S5 where the four sessions' event files land (sys.dm_xe_session_targets' File name; AWS: D:\rdsdbdata\log) and
-#        what mssql_xe stored per capture (its target, source and new events); if the script was refused, one
-#        session of the proof's own with its file named in D:\rdsdbdata\log made and dropped by the master user (the
-#        words of either answer RECORDED: an rds form of the script would follow from them).
-#  NOT PROVEN HERE: Web and Enterprise Edition, Multi-AZ with Always On or mirroring (AWS's other HA modes), the
+#     S5 where the slow session's event file lands (the -form server script gives only that session a file; the other
+#        three are ring buffers: sys.dm_xe_session_targets' File name; AWS: D:\rdsdbdata\log) and what mssql_xe stored
+#        per capture (its target, source and new events); if the script was refused, the same script again under an
+#        install id of its own with only the slow session's file name put in D:\rdsdbdata\log (made, started, the
+#        sessions running read back, dropped by its -drop script; the words of either answer RECORDED: an rds form of
+#        the script would follow from them);
+#     S6 msdb's alerts and operators as the master user (sysalerts, sysoperators: counts, or the refusal), beside the
+#        alerts area's note.
+#  NOT PROVEN HERE: SQL Server Agent's jobs (mssql_jobs skipped: the RDS form of the login), Web and Enterprise
+#  Edition, Multi-AZ with Always On or mirroring (AWS's other HA modes), the
 #  Agent's own error log (rds_read_error_log @type = 2), RDS's other procedures (rds_* in msdb) beyond what the
 #  collections read, Windows authentication (AWS Managed Microsoft AD), RDS Custom.
 set -euo pipefail
@@ -210,8 +217,8 @@ for t in docker psql curl jq python3; do command -v "$t" >/dev/null || { echo "F
 : "${RDS_HOST:?the state file has no endpoint} ${ADMIN_USER:?} ${ADMIN_PW:?} ${MON_USER:?} ${MON_PW:?}"
 PORT_=${RDS_PORT:-1433}
 case ${PGVIGIL_LAB_RDS_EDITION:-ex} in
-  ex) RDS_ED=ex; WANT_EE=4 ;;
-  se) RDS_ED=se; WANT_EE=2 ;;
+  ex) RDS_ED=ex; WANT_EE=4; AGX=false ;;
+  se) RDS_ED=se; WANT_EE=2; AGX=true ;;
   *) echo "FAIL: PGVIGIL_LAB_RDS_EDITION is ex or se (the lab's edition)" >&2; exit 1 ;;
 esac
 SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
@@ -219,7 +226,7 @@ REPO_DB=pgvigil_rdsproof_$SUF; XEID=p$SUF; N=proof-rds-$SUF; HOSTTAG=pgvproof-$S
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
 export SQLCMDPASSWORD="$ADMIN_PW"
 export RDS_MON_DSN="sqlserver://$MON_USER:$MON_PW@$RDS_HOST:$PORT_?database=master&encrypt=true&TrustServerCertificate=true"
-MADE_DB=; MADE_XE=; MADE_FDB=; WAITER=; SRV=; LOCKER=; LOOPER=
+MADE_DB=; MADE_XE=; MADE_FDB=; WAITER=; SRV=; LOCKER=; LOOPER=; PROBE_XE=
 FAILS=()
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
 die() { echo "FAIL: $*" >&2; exit 1; }
@@ -250,6 +257,8 @@ cleanup() {
   for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form server -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
+  if [ -n "$PROBE_XE" ]; then "$BIN" mssql-xe -print -drop -form server -install-id "$PROBE_XE" > "$WORK/xe-probe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-probe-drop.sql" >/dev/null 2>&1 \
+    || echo "CLEANUP: the probe's event sessions pgvigil_${PROBE_XE}_* were NOT dropped" >&2; fi
   if [ -n "$MADE_FDB" ]; then
     sq "IF DB_ID(N'$FDB') IS NOT NULL BEGIN ALTER DATABASE [$FDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$FDB]; END" >/dev/null 2>&1 \
       || sq "EXEC msdb.dbo.rds_drop_database N'$FDB'" >/dev/null 2>&1 || echo "CLEANUP: database $FDB on the instance NOT dropped" >&2
@@ -270,6 +279,9 @@ for i in $(seq 1 6); do sq "SELECT 1" >/dev/null 2>&1 && break; [ "$i" = 6 ] && 
 rm -f "$WORK/sq-failed"   # the tries before the first answer are the wait, not failed reads
 IFS='|' read -r PV ED EE SN <<<"$(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), CAST(SERVERPROPERTY('Edition') AS nvarchar(128)), CAST(SERVERPROPERTY('EngineEdition') AS int), CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))")"
 echo "  the master user reads: $PV | $ED | engine edition $EE | $SN"
+# the edition comes from PGVIGIL_LAB_RDS_EDITION, not the state file: a shell without it would run Express's rows on a
+# billed Standard lab - stop before any of it
+[ "$EE" = "$WANT_EE" ] || die "the lab is engine edition $EE; PGVIGIL_LAB_RDS_EDITION=$RDS_ED wants $WANT_EE (ex: Express 4, se: Standard 2)"
 
 echo "--- R. the collector's rights"
 # each piece COLLATE DATABASE_DEFAULT: the catalog's permission names and msdb's object names carry different
@@ -414,7 +426,7 @@ if [[ $st == ok\|* ]]; then
 else VERDICT[mssql_instance]="FAIL"; bad "B: mssql_instance status '$st' (want ok)"; fi
 run_ok mssql_services && eq mssql_services \
   "$(q "select string_agg(service_name || '=' || coalesce(status, ''), ',' order by service_name) || '|' || (select coalesce(agent_expected::text, 'NULL') from pgvigil.mssql_health where instance_id=$iid) from pgvigil.mssql_service where instance_id=$iid and is_present")" \
-  "$(sq "SELECT ISNULL(STRING_AGG(CAST(servicename AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '=' + CAST(status_desc AS nvarchar(60)) COLLATE DATABASE_DEFAULT, ',') WITHIN GROUP (ORDER BY servicename), '') + '|false' FROM sys.dm_server_services")"
+  "$(sq "SELECT ISNULL(STRING_AGG(CAST(servicename AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '=' + CAST(status_desc AS nvarchar(60)) COLLATE DATABASE_DEFAULT, ',') WITHIN GROUP (ORDER BY servicename), '') + '|$AGX' FROM sys.dm_server_services")"
 # mssql_requests: a session of the master user that waits on WAITFOR
 WAITER=pgvproof-wait-$SUF
 docker run -d --name "$WAITER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d master -C -l 60 -H "$HOSTTAG" -Q "WAITFOR DELAY '00:02:00'" >/dev/null
@@ -615,16 +627,33 @@ if [ "$RDS_ED" = se ]; then
   for p in rds_get_high_availability_option rds_failover_time; do
     echo "  S3 GRANT EXECUTE ON msdb.dbo.$p TO the collector's login: $(sqtry "$(grant_probe "GRANT EXECUTE ON dbo.$p TO [$MON_USER];")" msdb)"
   done
+  declare -A S4
   for t in sysjobs sysjobhistory sysjobsteps sysjobschedules sysschedules syscategories sysjobactivity sysjobservers sysoperators sysproxies syssessions; do
-    echo "  S4 GRANT SELECT ON msdb.dbo.$t: $(sqtry "$(grant_probe "GRANT SELECT ON dbo.$t TO [$MON_USER];")" msdb)"
+    S4[$t]=$(sqtry "$(grant_probe "GRANT SELECT ON dbo.$t TO [$MON_USER];")" msdb)
+    echo "  S4 GRANT SELECT ON msdb.dbo.$t: ${S4[$t]}"
   done
+  # mssql_jobs' skip names the table the master user cannot grant: S4 must not show that table grantable
+  JST=$(status_of mssql_jobs); JT=$(grep -o 'msdb\.dbo\.sys[a-z_]*' <<<"$JST" | head -1); JT=${JT#msdb.dbo.}
+  if [ -n "$JT" ] && [[ "${S4[$JT]:-}" == *grantable* && "${S4[$JT]:-}" != *refused* ]]; then
+    VERDICT[mssql_jobs]="FAIL"; bad "B: mssql_jobs' skip names msdb.dbo.$JT as not grantable, and S4 granted it on Standard (the note is false here)"
+  fi
   echo "  S5 the sessions' event files: $(sqtry "SELECT s.name, CAST(t.target_data AS xml).value('(/EventFileTarget/File/@name)[1]', 'nvarchar(400)') AS file_name FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address WHERE t.target_name = N'event_file' AND s.name LIKE N'pgvigil[_]${XEID}[_]%' ORDER BY s.name;")"
   echo "  S5 mssql_xe stored (capture|state|target|source|new events): $(q "select capture || '|' || state || '|' || coalesce(target, '') || '|' || coalesce(source, '') || '|' || coalesce(new_events, -1) from pgvigil.mssql_xe_state where instance_id=$iid order by 1" | tr '\n' ' ')"
   if [ -n "$XE_FAILED" ]; then
-    S5X=pgvproof_x0_$SUF
-    echo "  S5 a session with its file in D:\\rdsdbdata\\log (the script was refused): $(sqtry "CREATE EVENT SESSION [$S5X] ON SERVER ADD EVENT sqlserver.error_reported ADD TARGET package0.event_file (SET filename = N'D:\\rdsdbdata\\log\\$S5X.xel', max_file_size = 10); SELECT 'made' AS answer;")"
-    echo "  S5 its drop: $(sqtry "IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'$S5X') DROP EVENT SESSION [$S5X] ON SERVER; SELECT COUNT(*) AS left_after FROM sys.server_event_sessions WHERE name = N'$S5X';")"
+    # the same script under its own install id, only the slow session's file put in RDS's log folder (AWS's page)
+    PROBE_XE=x$SUF
+    "$BIN" mssql-xe -print -form server -install-id "$PROBE_XE" > "$WORK/xe-probe.sql"
+    if ! python3 -c 'import sys; p, x = sys.argv[1], sys.argv[2]; s = open(p).read(); a = "filename=N\x27\x27pgvigil_%s_slow.xel" % x
+assert s.count(a) == 1, "the slow session file name was not found once"; open(p, "w").write(s.replace(a, "filename=N\x27\x27D:\\rdsdbdata\\log\\pgvigil_%s_slow.xel" % x))' "$WORK/xe-probe.sql" "$PROBE_XE"; then
+      bad "S5: the slow session's file name was not found once in the -form server script (the probe needs it)"; PROBE_XE=
+    else
+    echo "  S5 the script again with the slow file in D:\\rdsdbdata\\log: $(sqfile < "$WORK/xe-probe.sql" 2>&1 | tr -s ' \n' ' ' | cut -c1-500; echo " exit ${PIPESTATUS[0]}")"
+    echo "  S5 its sessions running: $(sqtry "SELECT s.name, t.target_name FROM sys.dm_xe_sessions s JOIN sys.dm_xe_session_targets t ON t.event_session_address = s.address WHERE s.name LIKE N'pgvigil[_]${PROBE_XE}[_]%' ORDER BY s.name, t.target_name;")"
+    "$BIN" mssql-xe -print -drop -form server -install-id "$PROBE_XE" > "$WORK/xe-probe-drop.sql"
+    if sqfile < "$WORK/xe-probe-drop.sql" >/dev/null 2>&1; then PROBE_XE=; echo "  S5 the probe's sessions dropped"; else echo "  S5 the probe's drop failed: cleanup tries again"; fi
+    fi
   fi
+  echo "  S6 msdb's alerts and operators (sysalerts|sysoperators): $(sqtry "SELECT (SELECT COUNT(*) FROM msdb.dbo.sysalerts) AS alerts, (SELECT COUNT(*) FROM msdb.dbo.sysoperators) AS operators;")"
 fi
 # --- the eleven collections of the join of wave 1 (rel-join-w1), written before their first run here: each run as the
 # collector's login and compared with the master user's read of the same view, filtered as the collector filters
