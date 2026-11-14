@@ -45,15 +45,21 @@
 #   R8 mail        the same page's Mail... Send now: the body the page builds and posts holds the header line 'Read'
 #                  with the page's words and the statements grid's note (the mail door and the send answered in the
 #                  page by stubs: nothing is sent; the server's sender is proof-reportmail's, unchanged)
-#   R9 late reply  erp01's Statements at w=60d with its statements read held 3 s (CDP Fetch), the address moved to w=1h
-#                  meanwhile: the 1-hour page shows no range-cut line when the held 60-day reply lands (red on c5c7e83)
-#   R10 own span   erp01's sizes copied 60 days back, its Storage at w=1h with the growth panel at 90 days: w stays 1h,
-#                  no range-cut line on the page, the chart's own note 'Marks are read for the newest 31 days of this
-#                  window: <from> to <to> (this chart is longer than they read).' (red on c5c7e83)
-#   R11 once       sql01's SQL Server File IO at w=60d (two cut reads asked milliseconds apart): the page's line says
-#                  'the newest 31 days of this window' once (red on c5c7e83)
+#   R9 late reply  erp01's Statements at w=60d with every reply of that page held at its response (CDP Fetch; the
+#                  statements reply among them, at least one cut by the server), the address moved to w=1h: the 1-hour
+#                  page is placed with no range-cut line, the held replies are then let through (each release
+#                  answered without an error), and 1.5 s later the 1-hour page still shows none (red on c5c7e83)
+#   R10 own span   erp01's sizes copied 60 days back, its Storage at w=1h with the 'Database growth' panel's '90 days'
+#                  pressed: w stays 1h, no range-cut line on the page, and inside that panel the note 'Marks are read
+#                  for the newest 31 days of this window: <from> to <to> (this chart is longer than they read).' (red
+#                  on c5c7e83)
+#   R11 once       sql01's SQL Server File IO at w=60d: at least two of its replies cut by the server (counted at their
+#                  responses), one range-cut line, 'the newest 31 days of this window' in it once (red on c5c7e83)
 #   R12 file rules that workbook (the one whose 'About' holds the 'Read' row) passes scripts/xlsx-check.py rules, X0-X12,
 #                  and 'About' is its last sheet
+# The R9-R11 lines were NOT written before those rows' first run: R9 and R11 first ran on 2026-11-13 (their expected
+# stood in the run's notes), these lines came the day after and were reworded when the rows changed; R12's line was
+# written before its first run.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -155,22 +161,36 @@ set +e
 RANGE_ERP=$ERP RANGE_SQL01=$SQL01 RANGE_ROWS_FROM="$hrows" RANGE_PURGE_AT="$hat" RANGE_MONTHS_FROM="$hm" RANGE_DAYS_FROM="$hd" \
   node scripts/range-check.mjs "$CDP" "$BASE" "$WORK/dl" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}; set -e
-[[ $rc -eq 0 ]] || no "range-check: a case failed"
+# ended <exit status> <which run>: a range-check run that failed, said with its status - and, when its last line is not
+# its own count of failed cases, that it stopped early (an exception in the page, a dead browser): the rows after its
+# last printed one did not run
+ended() {
+  [[ $1 -eq 0 ]] && return 0
+  local last; last=$(tail -n 1 "$WORK/check.txt" 2>/dev/null || true)
+  if [[ "$last" =~ ^FAIL\ [0-9]+\ case ]]; then no "$2: exit $1, '$last' (its FAIL rows are above)"
+  else no "$2: exit $1 and it STOPPED EARLY - its last line was '${last:0:120}': the rows after that one did not run"; fi
+}
+ended "$rc" "range-check"
 
 echo "== R10: erp01's database sizes of its oldest day copied 60 days back (more history than a part's reach), the growth panel at w=1h"
-Q "select pgvigil.ensure_month_partition('database_sizes', (select min(snapshot_at) from pgvigil.database_sizes where instance_id = $ERP) - interval '60 days')" >/dev/null
-n10=$(Q "with o as (select min(snapshot_at) m from pgvigil.database_sizes where instance_id = $ERP),
-  ins as (insert into pgvigil.database_sizes (instance_id, snapshot_at, dbid, datname, size_bytes, xid_age)
-          select s.instance_id, s.snapshot_at - interval '60 days', s.dbid, s.datname, s.size_bytes, s.xid_age
-            from pgvigil.database_sizes s, o where s.instance_id = $ERP and s.snapshot_at < o.m + interval '1 day' returning 1)
-  select count(*) from ins")
+# the copy spans a day, 60 to 59 days back: both ends' months get their partition (a day across a month's end)
+n10=0
+if Q "select pgvigil.ensure_month_partition('database_sizes', o.m - d.back) from (select min(snapshot_at) m from pgvigil.database_sizes where instance_id = $ERP) o, (values (interval '60 days'), (interval '59 days')) d(back) where o.m is not null" >/dev/null; then
+  n10=$(Q "with o as (select min(snapshot_at) m from pgvigil.database_sizes where instance_id = $ERP),
+    ins as (insert into pgvigil.database_sizes (instance_id, snapshot_at, dbid, datname, size_bytes, xid_age)
+            select s.instance_id, s.snapshot_at - interval '60 days', s.dbid, s.datname, s.size_bytes, s.xid_age
+              from pgvigil.database_sizes s, o where s.instance_id = $ERP and s.snapshot_at < o.m + interval '1 day' returning 1)
+    select count(*) from ins") || { no "R10: the copy of erp01's sizes 60 days back failed (psql above)"; n10=-1; }
+else
+  no "R10: the partitions 60 and 59 days back could not be made (psql above)"; n10=-1
+fi
 if [[ "${n10:-0}" -gt 0 ]]; then
   set +e
   RANGE_CASE=R10 RANGE_ERP=$ERP node scripts/range-check.mjs "$CDP" "$BASE" "$WORK/dl" | tee -a "$WORK/check.txt"
   rc=${PIPESTATUS[0]}; set -e
-  [[ $rc -eq 0 ]] || no "range-check R10: failed"
-else
+  ended "$rc" "range-check R10"
+elif [[ "${n10:-0}" -eq 0 ]]; then
   no "R10: no size row of erp01 to copy back"
 fi
-[[ $bad -eq 0 ]] || fail "$bad row(s) failed (above)"
+[[ $bad -eq 0 ]] || fail "$bad check(s) failed (above; a range-check run counts as one, whatever the number of its FAIL rows)"
 echo "OK: the range up to a year (RA RB R1-R12)"
