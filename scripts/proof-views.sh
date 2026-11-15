@@ -44,7 +44,7 @@ part() { [[ " $PARTS " == *" $1 "* ]]; }
 SUF=$RANDOM
 REPO=pgvigil_views_$SUF; RDR=pgvigil_views_rdr_$SUF
 PW=p$RANDOM$RANDOM$RANDOM; U1=ed$SUF; U2=vw$SUF; U1PW=a$RANDOM$RANDOM$RANDOM; U2PW=b$RANDOM$RANDOM$RANDOM
-WORK=$(mktemp -d); SRV=""; SRV2=""; ATT=0
+WORK=$(mktemp -d); SRV=""; SRV2=""; ATT=0; : > "$WORK/attempts"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 cleanup() {
@@ -116,7 +116,7 @@ call() {
   local jar=$1 m=$2 p=$3 d=${4:-} c=()
   [[ $jar != - ]] && c=(-b "$jar")
   if [[ $m == GET ]]; then curl -s -o "$WORK/out.json" -w '%{http_code}' "${c[@]}" -H 'X-Pgvigil: 1' "$U$p"
-  else ATT=$((ATT + 1)); curl -s -o "$WORK/out.json" -w '%{http_code}' "${c[@]}" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$d" "$U$p"; fi
+  else echo "$p" >> "$WORK/attempts"; curl -s -o "$WORK/out.json" -w '%{http_code}' "${c[@]}" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$d" "$U$p"; fi
 }
 body() { printf '%s' "$1" > "$WORK/in.json"; echo "$WORK/in.json"; }
 # js <python expression over d (the reply) and rows(t) (a {columns, rows} table as dicts)>
@@ -193,6 +193,7 @@ if part A; then
   c=$(call "$J2" POST /api/views/delete "$(body "{\"view_id\":$TEAM,\"version\":2}")"); expect "$c" 403 "S12: u2's delete of a shared view"
   ok "S12: a delete checks the version (409) and the right (403); the view is gone"
   # S11
+  ATT=$(wc -l < "$WORK/attempts")
   [[ $(q "select count(*) from pgvigil.ui_view_log") == "$ATT" ]] || fail "S11: $(q "select count(*) from pgvigil.ui_view_log") log rows for $ATT attempts"
   ok "S11: one ui_view_log row per attempt ($ATT): $(q "select string_agg(outcome || ' ' || n, ', ' order by outcome) from (select outcome, count(*) n from pgvigil.ui_view_log group by 1) x")"
 fi

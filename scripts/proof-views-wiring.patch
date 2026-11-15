@@ -1,3 +1,16 @@
+diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
+index a87ac1d8..bd0bea75 100644
+--- i/cmd/pgvigil/report.go
++++ w/cmd/pgvigil/report.go
+@@ -306,7 +306,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
+ // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
+ // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
+ var knownKeys = map[string]bool{
+-	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
++	"repository": true, "dsn": true, "instances": true, "views": true, "shared_editors": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+ 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
+ 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
+ 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
 index 493c261a..14fa16a5 100644
 --- i/cmd/pgvigil/serve.go
