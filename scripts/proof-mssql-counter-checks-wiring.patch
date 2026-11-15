@@ -148,20 +148,164 @@ index 2ea6318..9556f05 100644
 +      FROM x LEFT JOIN pgvigil.metric_floors f ON f.key = x.key;
 +  END LOOP;
 +END $$;
+diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
+index 25a49aa..4d242a7 100644
+--- i/internal/web/q_alert_rules.go
++++ w/internal/web/q_alert_rules.go
+@@ -38,6 +38,7 @@ WITH sc AS (
+          count(*) FILTER (WHERE s.state IN ('warning', 'critical')) AS firing,
+          count(*) FILTER (WHERE s.state = 'pending') AS pending,
+          count(*) FILTER (WHERE s.state = 'nodata') AS nodata,
++         count(*) FILTER (WHERE s.state = 'na') AS na,   -- task 402: under a metric's floor, not judged
+          string_agg(i.name || CASE WHEN s.database <> '' THEN ' [' || s.database || ']' ELSE '' END, ', ' ORDER BY i.name, s.database)
+            FILTER (WHERE s.state IN ('warning', 'critical')) AS firing_on,
+          max(s.evaluated_at) AS evaluated_at
+@@ -48,7 +49,7 @@ SELECT r.rule_id, r.name, r.metric, c.family_label, c.label, c.unit, c.engine, c
+        r.op, r.warning, r.critical, r.for_minutes, r.scope, r.tag, r.instance_name, r.instance_id, r.database, r.note,
+        r.enabled, r.replaces, r.created_by, r.created_at, r.client, r.ended_by, r.ended_at, r.ended_at IS NULL AS live,
+        coalesce(sc.covers, 0) AS covers, coalesce(ef.in_force, 0) AS in_force,
+-       coalesce(st.firing, 0) AS firing, coalesce(st.pending, 0) AS pending, coalesce(st.nodata, 0) AS nodata,
++       coalesce(st.firing, 0) AS firing, coalesce(st.pending, 0) AS pending, coalesce(st.nodata, 0) AS nodata, coalesce(st.na, 0) AS na,
+        st.firing_on, st.evaluated_at, f.last_fired_at, f.last_instance, f.fired
+   FROM pgvigil.alert_rules r
+   LEFT JOIN pgvigil.metric_catalog c ON c.key = r.metric
+@@ -65,12 +66,15 @@ SELECT r.rule_id, r.name, r.metric, c.family_label, c.label, c.unit, c.engine, c
+ const sqlAlertRuleState = `
+ SELECT s.instance_id, i.name AS instance, s.metric, c.family_label, c.label, c.unit, nullif(s.database, '') AS database,
+        s.rule_id, r.name AS rule_name, r.op, r.for_minutes, r.scope, coalesce(r.tag, r.instance_name) AS target,
+-       s.state, s.held, s.value, s.threshold, s.sample_at, s.beyond_since, s.since, s.evaluated_at
++       s.state, s.held, s.value, s.threshold, s.sample_at, s.beyond_since, s.since, s.evaluated_at,
++       -- task 402: an 'na' row's value and threshold are its floor's input and floor (0152's metric_floors), in its unit
++       fl.unit AS floor_unit
+   FROM pgvigil.alert_rule_state s
+   JOIN pgvigil.instances i USING (instance_id)
+   JOIN pgvigil.alert_rules r USING (rule_id)
+   LEFT JOIN pgvigil.metric_catalog c ON c.key = s.metric
+- ORDER BY CASE s.state WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'pending' THEN 2 WHEN 'nodata' THEN 3 ELSE 4 END,
++  LEFT JOIN pgvigil.metric_floors fl ON fl.key = s.metric
++ ORDER BY CASE s.state WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'pending' THEN 2 WHEN 'nodata' THEN 3 WHEN 'na' THEN 4 ELSE 5 END,
+           i.name, s.metric, s.database
+  LIMIT 5000`
+ 
 diff --git i/internal/web/q_metrics.go w/internal/web/q_metrics.go
-index 62f936b..83f386d 100644
+index 62f936b..ba7d3a0 100644
 --- i/internal/web/q_metrics.go
 +++ w/internal/web/q_metrics.go
-@@ -26,8 +26,11 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
+@@ -26,8 +26,14 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
         pgvigil.metric_status(g.op, g.avg_value, g.warning, g.critical) AS avg_status,
         pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical) AS current_status,
         g.rule_id, g.rule_name, g.op, g.warning, g.critical, g.for_minutes, g.rule_scope, g.rule_target, g.rule_database,
 -       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at
 +       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at,
 +       -- task 402: a seeded rule colours while off (the join file's metric_rule); the page says it sends nothing
-+       ar.enabled AS rule_enabled
++       ar.enabled AS rule_enabled,
++       -- task 402: a floored metric's floor, so the page says N/A with its words whatever the rule's state (or none)
++       fl.input_key AS floor_input, fl.unit AS floor_unit, fl.floor AS floor
    FROM pgvigil.metric_grid($1, $2, $3, make_interval(secs => $4), $5, $6) g
 +  LEFT JOIN pgvigil.alert_rules ar ON ar.rule_id = g.rule_id
++  LEFT JOIN pgvigil.metric_floors fl ON fl.key = g.key
    LEFT JOIN pgvigil.alert_rule_state s
      ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
   ORDER BY g.family_sort, g.sort`
+diff --git i/internal/web/q_perfsummary.go w/internal/web/q_perfsummary.go
+index 08bfdca..fee8172 100644
+--- i/internal/web/q_perfsummary.go
++++ w/internal/web/q_perfsummary.go
+@@ -32,8 +32,9 @@ import (
+ //                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
+ //                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
+ //                    temp_bytes_s are NULL. compiles_per_100 (SQL Server only, task 401 D6 / PBI#2): SQL
+-//                    Compilations per 100 Batch Requests over the range from the same reads, 0 under 1 batch/s (the
+-//                    'counters' metric compiles_per_100_batches' floor).
++//                    Compilations per 100 Batch Requests over the range from the same reads; NULL under the 'counters'
++//                    metric compiles_per_100_batches' floor (0152's metric_floors, 5 Batch Requests/s, task 402), with
++//                    compiles_under_floor true and compiles_floor the floor, judged on the unrounded rate.
+ //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
+ //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
+ //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
+@@ -78,7 +79,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        round((1000 * w.other_s / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
+        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
+        NULL::numeric AS signal_pct,
+-       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
++       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::boolean AS compiles_under_floor,
++       NULL::double precision AS compiles_floor, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
+        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
+        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
+@@ -192,8 +194,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
+        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
+        h.cpu_sql_avg, t.batch_s,
+-       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_raw < 1 THEN 0
++       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL OR t.batch_raw < cf.floor THEN NULL
+             ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
++       t.batch_raw < cf.floor AS compiles_under_floor, cf.floor AS compiles_floor,
+        m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
+        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
+@@ -221,6 +224,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+            (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
+       FROM pgvigil.mssql_sched_sample x
+      WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
++  -- task 402: the floor of compilations per 100 batches (0152's metric_floors; none = never under)
++  LEFT JOIN LATERAL (SELECT coalesce((SELECT f.floor FROM pgvigil.metric_floors f WHERE f.key = 'counters.compiles_per_100_batches'),
++                                     '-infinity'::double precision) AS floor) cf ON true
+   LEFT JOIN LATERAL (
+     SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
+            (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
+diff --git i/web/src/alert_rules.ts w/web/src/alert_rules.ts
+index 751c72e..e86a456 100644
+--- i/web/src/alert_rules.ts
++++ w/web/src/alert_rules.ts
+@@ -76,7 +76,8 @@ export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string =>
+   if (v == null) return '';
+   const s = String(v);
+   const kind = s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : '';
+-  const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)' : s;
++  // task 402: 'na' is grey (no kind), never OK: under the metric's floor, too few to judge
++  const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)' : s === 'na' ? 'N/A (too few to judge)' : s;
+   return badge(held ? `${words}, held (no fresh sample)` : words, kind);
+ };
+ 
+@@ -359,7 +360,8 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+         : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
+         : r.evaluated_at == null ? 'not judged yet'
+         : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
+-        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
++        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : '',
++           Number(r.na) ? `${fmtNum(r.na)} not judged (under the metric's floor)` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
+       { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
+       { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
+       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
+@@ -383,9 +385,10 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'instance' },
+     { key: 'metric', fmt: (v, r) => r.label == null ? String(v) : `${String(r.family_label)}: ${String(r.label)}` },
+     { key: 'database', fmt: v => String(v ?? '') },
+-    { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => fmtMetric(v, r.unit) },
+-    { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
+-    { key: 'beyond_since', label: 'beyond since', fmt: (v, r) => r.state === 'ok' || r.state === 'nodata' ? '' : fmtTime(v) },
++    // task 402: an 'na' row carries its floor's input (in the floor's unit a second) and the floor
++    { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => r.state === 'na' ? (v == null ? '' : `${fmtNum(v)} ${String(r.floor_unit ?? '')}/s`) : fmtMetric(v, r.unit) },
++    { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : r.state === 'na' ? `the floor ${fmtNum(v)}/s` : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
++    { key: 'beyond_since', label: 'beyond since', fmt: (v, r) => r.state === 'ok' || r.state === 'nodata' || r.state === 'na' ? '' : fmtTime(v) },
+     { key: 'sample_at', label: 'sample', fmt: fmtTime },
+     { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(r.scope, r.target)})` },
+     { key: 'since', label: 'in this state since', fmt: fmtTime },
+diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
+index 038cb29..7269c00 100644
+--- i/web/src/perfsummary.ts
++++ w/web/src/perfsummary.ts
+@@ -108,8 +108,10 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+     { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
+     { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
+-      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
+-        : Number(r.batch_s) < 1 ? muted('0', 'under 1 batch request a second: 0, not a ratio')
++      // task 402: under the floor (the SQL's flag, on the unrounded rate) N/A in words, before 'no value'
++      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter')
++        : r.compiles_under_floor === true ? (w => muted(w, w))(`N/A: too few batch requests/s over the range to judge (${fmtNum(r.batch_s)}/s, the floor ${fmtNum(r.compiles_floor)}/s)`)
++        : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
+         : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
+     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
+       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },

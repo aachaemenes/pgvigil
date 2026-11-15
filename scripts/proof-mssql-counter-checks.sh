@@ -71,7 +71,10 @@
 #     pass (ONE resolved); G6 a flap held by the clear delay (a destination with clear_after 300): critical 0 for 0
 #     minutes, a load (one firing), a quiet read (na), a load within 300 s (critical): one firing and no resolved -
 #     one open alert (a rule of 0 minutes; with more minutes a flap resolves and fires again, docs/alerts.md).
-#     G_FROM=G3 starts G at G3 (G0-G2 skipped; such a run ends PARTIAL).
+#     G_FROM=G3 starts G at G3 (G0-G2 skipped; such a run ends PARTIAL). G1 also reads FL4 through the API: the grid's
+#     compilations row has no current value, floor 5, unit 'batch requests', input counters.batch_requests_s; its
+#     state row 'na' with the unit 'batch requests' (red without 402's patch: no such columns). NOT PROVEN here: the
+#     pages' N/A words as drawn (metrics.ts, alert_rules.ts) and FL5's summary flag (no row reads them yet).
 #  F. at the end every seeded row but the ended one keeps its rule_id, op, thresholds, for_minutes and enabled false
 #     as read at A.
 # NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low page life expectancy and a database taken
@@ -504,6 +507,22 @@ for m in compiles_per_100_batches full_scans_per_search; do
   [[ -n "$under" ]] || fail "G: $m: the quiet read is over its floor (batches $rb/s, full scans $rf/s): something ran in the window"
   ok1=$([[ "$got" == "$want" ]] && echo y)
   [[ "$p" == NULL && "$st" == na && "$f" == 0 && -n "$ok1" ]] || fail "G: $m under its floor: point $p (want NULL), state $st (want na), $f finding(s) (want 0), value|threshold $got (want $want)"
+  # FL4 (the wiring's q_metrics.go and q_alert_rules.go): the grid row carries its floor, the state row its floor's unit
+  if [[ "$m" == compiles_per_100_batches ]]; then
+    curl -fs -m 20 "http://127.0.0.1:$PORT/api/metrics?instance=$SB&family=counters" > "$TMPD/g1grid.json" || fail "G1: GET /api/metrics"
+    curl -fs -m 20 "http://127.0.0.1:$PORT/api/alertrules?part=state" > "$TMPD/g1state.json" || fail "G1: GET /api/alertrules?part=state"
+    python3 - "$TMPD/g1grid.json" "$TMPD/g1state.json" <<'PY2' || fail "G1: the pages' floor words (FL4)"
+import json, sys
+def rows(f, part):
+    t = json.load(open(f))[part]; return [dict(zip(t['columns'], r)) for r in t['rows']]
+g = [r for r in rows(sys.argv[1], 'grid') if r.get('key') == 'counters.compiles_per_100_batches' and r.get('database') in (None, '')]
+s = [r for r in rows(sys.argv[2], 'state') if r.get('metric') == 'counters.compiles_per_100_batches' and r.get('instance') == 'chkbox']
+got = ((g[0].get('current_value'), g[0].get('floor'), g[0].get('floor_unit'), g[0].get('floor_input')) if g else None,
+       (s[0].get('state'), s[0].get('floor_unit')) if s else None)
+print(f'   FL4: the grid row (current, floor, unit, input) and the state row (state, unit): {got}')
+sys.exit(0 if got == ((None, 5, 'batch requests', 'counters.batch_requests_s'), ('na', 'batch requests')) else 1)
+PY2
+  fi
 done
 ok "G1, G2: under a floor compiles_per_100_batches and full_scans_per_search read 'na' with no finding; the state carries the input's value and the floor"
 else echo "   G0-G2 skipped (G_FROM=$G_FROM)"; fi
