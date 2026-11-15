@@ -78,7 +78,7 @@ BEGIN TRY
   EXEC sys.sp_executesql N'DECLARE @fe int, @fse int, @all int, @tcp int, @np int, @sm int, @port nvarchar(256), @dyn nvarchar(256);
 DECLARE @k nvarchar(200) = N''Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib'';
 EXEC master.dbo.xp_instance_regread N''HKEY_LOCAL_MACHINE'', @k, N''ForceEncryption'', @fe OUTPUT;
-EXEC master.dbo.xp_instance_regread N''HKEY_LOCAL_MACHINE'', @k, N''ForceStrictEncryption'', @fse OUTPUT;
+EXEC master.dbo.xp_instance_regread N''HKEY_LOCAL_MACHINE'', @k, N''ForceStrict'', @fse OUTPUT;
 SET @k = N''Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Tcp'';
 EXEC master.dbo.xp_instance_regread N''HKEY_LOCAL_MACHINE'', @k, N''ListenOnAllIPs'', @all OUTPUT;
 EXEC master.dbo.xp_instance_regread N''HKEY_LOCAL_MACHINE'', @k, N''Enabled'', @tcp OUTPUT;
@@ -117,9 +117,11 @@ INSERT @n5_keys (ord, label, of_instance, reg_path) VALUES
   (3, N'Tcp\IPAll', 1, N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Tcp\IPAll'),
   (4, N'Np', 1, N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Np'),
   (5, N'Sm', 1, N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Sm'),
-  (6, N'PriorityControl', 0, N'SYSTEM\CurrentControlSet\Control\PriorityControl');
+  (6, N'PriorityControl', 0, N'SYSTEM\CurrentControlSet\Control\PriorityControl'),
+  (7, N'PowerSchemes', 0, N'SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes'),
+  (8, N'PowerSettings', 0, N'SOFTWARE\Policies\Microsoft\Power\PowerSettings');
 DECLARE @n5_ord int = 1, @n5_label nvarchar(40), @n5_inst bit, @n5_path nvarchar(300), @n5_rc int;
-WHILE @n5_ord <= 6
+WHILE @n5_ord <= 8
 BEGIN
   SELECT @n5_label = label, @n5_inst = of_instance, @n5_path = reg_path FROM @n5_keys WHERE ord = @n5_ord;
   BEGIN TRY
@@ -138,15 +140,19 @@ BEGIN
 END
 SELECT CAST(N'N5|sa-enum|' + ISNULL(k, N'<NULL>') + N'|' + ISNULL(value_name, N'<NULL>') + N'|'
        + CASE WHEN value_name NOT IN (N'ForceEncryption', N'ForceStrictEncryption', N'ForceStrict', N'ListenOnAllIPs', N'Enabled', N'TcpPort', N'TcpDynamicPorts',
-                                      N'Win32PrioritySeparation') THEN N'<not printed>'
+                                      N'Win32PrioritySeparation', N'ActivePowerScheme') THEN N'<not printed>'
               WHEN value_data IS NULL THEN N'<NULL>' ELSE CAST(value_data AS nvarchar(300)) END + N'|~' AS nvarchar(900)) AS line
   FROM #n5_enum ORDER BY id;
--- the two encryption values on their own, each with its return code (0 = read; a value that is not set leaves NULL)
+-- the encryption values on their own, each with its return code (0 = read; a value that is not set leaves NULL):
+-- ForceEncryption, ForceStrict (Microsoft's name, N5b) and ForceStrictEncryption (the name 301c read, kept to show it)
 DECLARE @n5_val int;
 BEGIN TRY
   SET @n5_rc = NULL; SET @n5_val = NULL;
   EXEC @n5_rc = master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib', N'ForceEncryption', @n5_val OUTPUT;
   SELECT CAST(N'N5|sa-read|SuperSocketNetLib|ForceEncryption|rc ' + ISNULL(CAST(@n5_rc AS nvarchar(12)), N'<NULL>') + N'|' + ISNULL(CAST(@n5_val AS nvarchar(12)), N'<NULL>') + N'|~' AS nvarchar(400)) AS line;
+  SET @n5_rc = NULL; SET @n5_val = NULL;
+  EXEC @n5_rc = master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib', N'ForceStrict', @n5_val OUTPUT;
+  SELECT CAST(N'N5|sa-read|SuperSocketNetLib|ForceStrict|rc ' + ISNULL(CAST(@n5_rc AS nvarchar(12)), N'<NULL>') + N'|' + ISNULL(CAST(@n5_val AS nvarchar(12)), N'<NULL>') + N'|~' AS nvarchar(400)) AS line;
   SET @n5_rc = NULL; SET @n5_val = NULL;
   EXEC @n5_rc = master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib', N'ForceStrictEncryption', @n5_val OUTPUT;
   SELECT CAST(N'N5|sa-read|SuperSocketNetLib|ForceStrictEncryption|rc ' + ISNULL(CAST(@n5_rc AS nvarchar(12)), N'<NULL>') + N'|' + ISNULL(CAST(@n5_val AS nvarchar(12)), N'<NULL>') + N'|~' AS nvarchar(400)) AS line;

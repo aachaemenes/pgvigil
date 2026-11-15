@@ -20,7 +20,7 @@ import (
 // are built from) on a value the code reads stops the test. IpAddress holds the runner's class of the address (ipv4,
 // ipv6, loopback), never the address: the rows of this server (ListenOnAllIPs 1) do not read it.
 // readByCode: the value names netFactsFromView reads
-var readByCode = map[string]bool{"forceencryption": true, "forcestrictencryption": true, "listenonallips": true, "enabled": true,
+var readByCode = map[string]bool{"forceencryption": true, "forcestrict": true, "listenonallips": true, "enabled": true,
 	"tcpport": true, "tcpdynamicports": true, "ipaddress": true}
 
 func readWindowsFixture(t *testing.T, path string) (gate propGate, view []collect.Row, reg, prio collect.Row) {
@@ -90,8 +90,10 @@ func readWindowsFixture(t *testing.T, path string) (gate propGate, view []collec
 }
 
 // TestNetRowsOnWindowsFixture: the seven rows that readNetwork and netRows build from the lab's Windows VM's answers
-// (SQL Server 2022, the default instance; the runner's own reads beside them: ForceEncryption 0 and no
-// ForceStrictEncryption value through xp_instance_regread, TCP/IP and Shared Memory on, Named Pipes off, IPAll's static
+// (SQL Server 2022, the default instance; the runner's own reads beside them: ForceEncryption 0 through
+// xp_instance_regread and no value of the name ForceStrictEncryption - the fixture's reg line answered that name (the
+// runner at 4c7701a2), not Microsoft's ForceStrict, so its NULL stands here for 'ForceStrict absent' (N5b; the VM's own
+// ForceStrict waits for its turn); TCP/IP and Shared Memory on, Named Pipes off, IPAll's static
 // port 1433 with dynamic ports off, ListenOnAllIPs 1, Win32PrioritySeparation 2, the listeners on 1433 for any address).
 func TestNetRowsOnWindowsFixture(t *testing.T) {
 	gate, view, reg, prio := readWindowsFixture(t, "testdata/properties-windows.txt")
@@ -118,7 +120,7 @@ func TestNetRowsOnWindowsFixture(t *testing.T) {
 		keyTCPDynamic:     "no | ",
 		keyListenAll:      "yes | ",
 		keyForceEnc:       "no | ",
-		keyForceStrictEnc: " | not read: xp_instance_regread holds no ForceStrictEncryption value",
+		keyForceStrictEnc: " | not set (strict encryption off unless it is set)",
 		keyProtocols:      "Shared Memory, TCP/IP | ",
 		keyPrioritySep:    "2 | ",
 	}
@@ -154,7 +156,7 @@ func TestNetRowsOnWindowsFixtureWithoutRegread(t *testing.T) {
 		t.Errorf("partial rows: %v", partial)
 	}
 	got := netOf(in)
-	why := " | not read: sys.dm_server_registry holds no ForceEncryption or ForceStrictEncryption value here; no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [pgvigil_mon]"
+	why := " | not read: sys.dm_server_registry holds no ForceEncryption or ForceStrict value here; no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [pgvigil_mon]"
 	for _, k := range []string{keyForceEnc, keyForceStrictEnc} {
 		if !strings.HasPrefix(got[k], why) {
 			t.Errorf("%s: %q, want it to start %q", k, got[k], why)
@@ -200,7 +202,7 @@ func fixtureNet(t *testing.T, view []collect.Row, major int, gate propGate, regA
 // ForceEncryption alone; a view holding ForceEncryption only, with no right to the procedure, names the one it lacks.
 func TestNetRowsOnWindowsFixtureOtherAnswers(t *testing.T) {
 	gate, view, reg, _ := readWindowsFixture(t, "testdata/properties-windows.txt")
-	withBare := append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "1"), viewRow("", "ForceStrictEncryption", "0"))
+	withBare := append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "1"), viewRow("", "ForceStrict", "0"))
 	if got, partial, calls := fixtureNet(t, withBare, 16, gate, nil); got[keyForceEnc] != "yes | " || got[keyForceStrictEnc] != "no | " || calls != 0 || len(partial) != 0 {
 		t.Errorf("the view holding both: force %q, strict %q, %d call(s), partial %v", got[keyForceEnc], got[keyForceStrictEnc], calls, partial)
 	}
@@ -213,13 +215,36 @@ func TestNetRowsOnWindowsFixtureOtherAnswers(t *testing.T) {
 		t.Errorf("the read failing: tcp_port %q (the view's rows stand)", got[keyTCPPort])
 	}
 	got, _, calls = fixtureNet(t, view, 15, gate, func() ([]collect.Row, error) { return []collect.Row{reg}, nil })
-	if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not on this version: ForceStrictEncryption came with SQL Server 2022" || calls != 1 {
+	if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not on this version: strict encryption came with SQL Server 2022" || calls != 1 {
 		t.Errorf("SQL Server 2019: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
 	}
 	noRight := gate
 	noRight.instanceRegread = false
-	got, _, calls = fixtureNet(t, append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "0")), 16, noRight, nil)
-	if got[keyForceEnc] != "no | " || !strings.HasPrefix(got[keyForceStrictEnc], " | not read: sys.dm_server_registry holds no ForceStrictEncryption value here; no right: EXECUTE on master.dbo.xp_instance_regread") || calls != 0 {
-		t.Errorf("ForceEncryption alone in the view, no right: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
+	// the view holding the bare key's ForceEncryption without ForceStrict is the view's answer (N5b R2b): not set, no call
+	for _, g := range []propGate{noRight, gate} {
+		got, _, calls = fixtureNet(t, append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "0")), 16, g, nil)
+		if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not set (strict encryption off unless it is set)" || calls != 0 {
+			t.Errorf("ForceEncryption alone in the view (regread right %t): force %q, strict %q, %d call(s)", g.instanceRegread, got[keyForceEnc], got[keyForceStrictEnc], calls)
+		}
+	}
+	// xp_instance_regread answering ForceStrict 0 where the view holds no bare-key row: no
+	reg0 := collect.Row{}
+	for k, v := range reg {
+		reg0[k] = v
+	}
+	reg0["force_strict_encryption"] = int64(0)
+	got, _, calls = fixtureNet(t, view, 16, gate, func() ([]collect.Row, error) { return []collect.Row{reg0}, nil })
+	if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != "no | " || calls != 1 {
+		t.Errorf("ForceStrict 0 through xp_instance_regread: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
+	}
+	// neither value anywhere (the key unread): not read, never 'not set'
+	regNone := collect.Row{}
+	for k, v := range reg {
+		regNone[k] = v
+	}
+	regNone["force_encryption"] = nil
+	got, _, _ = fixtureNet(t, view, 16, gate, func() ([]collect.Row, error) { return []collect.Row{regNone}, nil })
+	if got[keyForceEnc] != " | not read: xp_instance_regread holds no ForceEncryption value" || got[keyForceStrictEnc] != " | not read: xp_instance_regread holds no ForceStrict value" {
+		t.Errorf("neither value: force %q, strict %q", got[keyForceEnc], got[keyForceStrictEnc])
 	}
 }

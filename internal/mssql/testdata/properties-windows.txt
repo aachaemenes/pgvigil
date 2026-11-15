@@ -4,6 +4,9 @@
 # (TcpPort, TcpDynamicPorts): those end at their data with neither '|~' nor the pad - sqlcmd stopped at the NUL that
 # sys.dm_server_registry keeps at the end of a REG_SZ value (inferred, not read byte by byte; the same values through
 # xp_instance_regread end '|~').
+# N5b: the reg line's second field and sa-read's ForceStrictEncryption line answered the name ForceStrictEncryption (the
+# runner at 4c7701a2), not Microsoft's ForceStrict: the tests take that NULL as 'ForceStrict absent'; the VM's own
+# ForceStrict is read at its next turn.
 N5|version|16.0.1000.6|16|Windows|3|sysadmin 1|default instance 1|~
 N5|gate|1|1|1|login named 1|~
 N5|gate-rows|1|~

@@ -502,15 +502,18 @@ func pctText(part, whole int64) string {
 
 // ---- the network rows and the processor scheduling (task 301c) -------------------------------------------------
 //
-// The TCP port, ForceEncryption, ForceStrictEncryption and the enabled protocols are SQL Server's own registry
+// The TCP port, ForceEncryption, ForceStrict (Force Strict Encryption, SQL Server 2022 and later: Microsoft's name of the
+// value) and the enabled protocols are SQL Server's own registry
 // values (SuperSocketNetLib); Win32PrioritySeparation is the machine's (HKLM\SYSTEM\CurrentControlSet\Control\
 // PriorityControl). Their keys are fixed: the checks (task 409) judge the stored rows by them.
 //
 //   - Windows: sys.dm_server_registry (VIEW SERVER STATE; VIEW SERVER PERFORMANCE STATE from SQL Server 2022), the
 //     SuperSocketNetLib rows with the IPn entries; where the view is refused or empty, xp_instance_regread for the
-//     instance's values - without the view the IPn entries cannot be listed; where the view lacks ForceEncryption or
-//     (from SQL Server 2022) ForceStrictEncryption, xp_instance_regread for those two (301c N5: the lab's 2022 VM holds
-//     no row of the bare key in the view). Win32PrioritySeparation, never in the view, through xp_regread.
+//     instance's values - without the view the IPn entries cannot be listed; where the view holds no ForceEncryption
+//     (no row of the bare key: 301c N5, the lab's 2022 VM), xp_instance_regread for the two encryption values. The bare
+//     key answered (ForceEncryption read) without ForceStrict on 2022 and later = 'not set' (strict encryption off
+//     unless it is set; no Microsoft page gives its default). Win32PrioritySeparation, never in the view, through
+//     xp_regread.
 //   - Linux: the view is empty there; xp_instance_regread answers from SQL Server on Linux's own registry, which
 //     follows mssql-conf (network.tcpport, network.forceencryption: read back on 2022 after a restart). The
 //     protocols are TCP only; ListenOnAllIPs and Win32PrioritySeparation are Windows settings ('not on Linux').
@@ -521,6 +524,10 @@ func pctText(part, whole int64) string {
 // right the rows say how to give it (a GRANT on an object names a database user: the login's user in master).
 // On Linux the protocols ('met: Linux serves TCP only') and ListenOnAllIPs ('not on Linux') need no registry read and
 // keep their words whatever the read gave.
+
+// notSetStrict: the strict row's words where the bare key answered without ForceStrict (no Microsoft page gives the
+// setting's default, so none is claimed; the page does not count it 'not read').
+const notSetStrict = "not set (strict encryption off unless it is set)"
 
 // netKeys are the seven rows' keys, fixed for the checks that judge them.
 const (
@@ -552,7 +559,7 @@ FROM sys.dm_server_registry WHERE registry_key LIKE N'%SuperSocketNetLib%'`
 const propsNetRegSQL = `DECLARE @fe int, @fse int, @all int, @tcp int, @np int, @sm int, @port nvarchar(256), @dyn nvarchar(256);
 DECLARE @k nvarchar(200) = N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib';
 EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'ForceEncryption', @fe OUTPUT;
-EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'ForceStrictEncryption', @fse OUTPUT;
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'ForceStrict', @fse OUTPUT;
 SET @k = N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Tcp';
 EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'ListenOnAllIPs', @all OUTPUT;
 EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'Enabled', @tcp OUTPUT;
@@ -664,7 +671,7 @@ func netFactsFromView(rows []collect.Row) netFacts {
 		switch {
 		case sub == "" && nm == "forceencryption":
 			f.forceEnc = num(val)
-		case sub == "" && nm == "forcestrictencryption":
+		case sub == "" && nm == "forcestrict":
 			f.forceStrict = num(val)
 		case sub == "tcp" && nm == "listenonallips":
 			f.listenAll = num(val)
@@ -924,9 +931,12 @@ func netRows(p *propList, in netRowsInput) {
 		add(keyForceEnc, "Network", "Force encryption", 730, onOff(f.forceEnc), encNote)
 		switch {
 		case in.major > 0 && in.major < 16:
-			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, nil, "not on this version: ForceStrictEncryption came with SQL Server 2022")
+			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, nil, "not on this version: strict encryption came with SQL Server 2022")
+		case f.forceStrict == nil && f.forceEnc != nil && f.encWhy == "":
+			// the bare key answered (ForceEncryption read) and holds no ForceStrict: the setting is not set
+			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, nil, notSetStrict)
 		default:
-			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, onOff(f.forceStrict), f.encNote(f.forceStrict, "ForceStrictEncryption"))
+			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, onOff(f.forceStrict), f.encNote(f.forceStrict, "ForceStrict"))
 		}
 		if linux {
 			add(keyProtocols, "Network", "Protocols enabled", 750, "TCP/IP", "met: Linux serves TCP only")
@@ -1024,9 +1034,10 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 		fail("sys.dm_server_registry", viewErr)
 	}
 	// the view holds no row of the bare SuperSocketNetLib key on some servers (the lab's Windows VM, SQL Server 2022:
-	// 301c N5): the two encryption values are then read through xp_instance_regread, where the gate allows it
-	strictToo := info.Major <= 0 || info.Major >= 16 // ForceStrictEncryption came with SQL Server 2022 (0 = not known)
-	if f := in.facts; f != nil && f.source == "sys.dm_server_registry" && (f.forceEnc == nil || (strictToo && f.forceStrict == nil)) {
+	// 301c N5): the two encryption values are then read through xp_instance_regread, where the gate allows it. A view
+	// holding ForceEncryption answered for the key: its ForceStrict, absent there, is not set (N5b).
+	strictToo := info.Major <= 0 || info.Major >= 16 // ForceStrict came with SQL Server 2022 (0 = not known)
+	if f := in.facts; f != nil && f.source == "sys.dm_server_registry" && f.forceEnc == nil {
 		switch {
 		case !gate.instanceRegread:
 			var lacks []string
@@ -1034,7 +1045,7 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 				lacks = append(lacks, "ForceEncryption")
 			}
 			if strictToo && f.forceStrict == nil {
-				lacks = append(lacks, "ForceStrictEncryption")
+				lacks = append(lacks, "ForceStrict")
 			}
 			f.encWhy = "not read: sys.dm_server_registry holds no " + strings.Join(lacks, " or ") + " value here; " + gate.noRight("xp_instance_regread")
 		default:

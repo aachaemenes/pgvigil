@@ -44,7 +44,7 @@ func TestNetworkRows(t *testing.T) {
 		f := netFactsFromView(rows)
 		return netRowsInput{kind: KindServer, major: 16, platform: "Windows", gate: gate, facts: &f, priority: int64(2)}
 	}
-	base := []collect.Row{viewRow("", "ForceEncryption", "0"), viewRow("", "ForceStrictEncryption", "0"), viewRow("Tcp", "ListenOnAllIPs", "1"),
+	base := []collect.Row{viewRow("", "ForceEncryption", "0"), viewRow("", "ForceStrict", "0"), viewRow("Tcp", "ListenOnAllIPs", "1"),
 		viewRow("Tcp", "Enabled", "1"), viewRow("Np", "Enabled", "0"), viewRow("Sm", "Enabled", "1")}
 	for _, c := range []struct {
 		name string
@@ -84,7 +84,7 @@ func TestNetworkRows(t *testing.T) {
 			in := win(append(base, viewRow(`Tcp\IPAll`, "TcpPort", "1433"))...)
 			in.major = 15
 			return in
-		}(), map[string]string{keyForceStrictEnc: " | not on this version: ForceStrictEncryption came with SQL Server 2022"}},
+		}(), map[string]string{keyForceStrictEnc: " | not on this version: strict encryption came with SQL Server 2022"}},
 		{"Windows, through xp_instance_regread: no IPn entries", func() netRowsInput {
 			f := netFactsFromRegread(collect.Row{"force_encryption": int64(1), "listen_all": int64(0), "tcp_enabled": int64(1), "np_enabled": int64(1),
 				"sm_enabled": int64(0), "ipall_port": "1433"})
@@ -92,7 +92,7 @@ func TestNetworkRows(t *testing.T) {
 		}(), map[string]string{keyTCPPort: " | not read: ListenOnAllIPs is off and the IPn entries need sys.dm_server_registry (VIEW SERVER STATE)",
 			keyTCPDynamic: " | not read: ListenOnAllIPs is off and the IPn entries need sys.dm_server_registry (VIEW SERVER STATE)",
 			keyForceEnc:   "yes | ", keyProtocols: "Named Pipes, TCP/IP | ", keyPrioritySep: "38 | ",
-			keyForceStrictEnc: " | not read: xp_instance_regread holds no ForceStrictEncryption value"}},
+			keyForceStrictEnc: " | not set (strict encryption off unless it is set)"}},
 		{"Linux, mssql-conf through the registry", func() netRowsInput {
 			f := netFactsFromRegread(collect.Row{"force_encryption": int64(1), "listen_all": int64(1), "np_enabled": int64(0), "ipall_port": "1500"})
 			return netRowsInput{kind: KindServer, major: 16, platform: "Linux", gate: gate, facts: &f}

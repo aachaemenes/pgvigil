@@ -15,7 +15,8 @@
 #     mssql-conf network.tcpport, read through its registry', tcp_port_dynamic no, force_encryption no, protocols_enabled
 #     'TCP/IP' with 'met: Linux serves TCP only', tcp_listen_all_ips 'not on Linux: mssql-conf network.ipaddress chooses
 #     the address', win32_priority_separation 'not on Linux: a Windows scheduler setting'; force_strict_encryption
-#     'not read: xp_instance_regread holds no ForceStrictEncryption value' (run 301c1 read it: Linux 2022 holds none);
+#     'no' (N5b: the value is ForceStrict, Microsoft's name; Linux 2022's registry holds ForceStrict 0 - run n5a's
+#     listing; 301c read ForceStrictEncryption, a name no page gives, and found none);
 #     power_plan 'not read: SQL Server on Linux has no Windows power plan ...'; the run neither failed nor partial.
 #  N2 `mssql-conf set network.tcpport 1500` and `network.forceencryption 1`, the server restarted, the instance read
 #     again at its new port: tcp_port 1500, force_encryption yes; mssql_property_change holds tcp_port 1433 -> 1500 and
@@ -27,7 +28,7 @@
 #     (tcp_listen_all_ips 'not on Linux: ...', protocols_enabled 'TCP/IP' 'met: Linux serves TCP only'); the run's
 #     output holds no error 229 (the procedure was not called).
 #  N4 SQL Server 2019 on Linux, a VIEW SERVER STATE login: tcp_port 1433, force_encryption no, force_strict_encryption
-#     'not on this version: ForceStrictEncryption came with SQL Server 2022', protocols_enabled 'TCP/IP'.
+#     'not on this version: strict encryption came with SQL Server 2022', protocols_enabled 'TCP/IP'.
 #  NOT PROVEN HERE: Windows (sys.dm_server_registry's rows, the IPn entries with ListenOnAllIPs off, Shared Memory and
 #  Named Pipes, Win32PrioritySeparation, the power plan's gate on a refused login): the unit tests TestNetworkRows and
 #  TestPowerPlanGate hold the rules until the one queued read-only Windows turn; Amazon RDS, Managed Instance and
@@ -109,7 +110,7 @@ SAPORT=$(regread "$SQL")
 [ "$(prop pgvnet-m win32_priority_separation)" = "|not on Linux: a Windows scheduler setting" ] || fail "N1 win32_priority_separation: $(prop pgvnet-m win32_priority_separation)"
 [[ "$(prop pgvnet-m power_plan)" == "|not read: SQL Server on Linux has no Windows power plan"* ]] || fail "N1 power_plan: $(prop pgvnet-m power_plan)"
 FSE=$(prop pgvnet-m force_strict_encryption)
-[ "$FSE" = "|not read: xp_instance_regread holds no ForceStrictEncryption value" ] || fail "N1 force_strict_encryption: $FSE"
+[ "$FSE" = "no|" ] || fail "N1 force_strict_encryption: $FSE"
 ok "N1: tcp_port $SAPORT = sa's read, dynamic no, force_encryption no, protocols TCP/IP (met), listen and Win32PrioritySeparation 'not on Linux'; force_strict_encryption '$FSE'"
 
 echo "== N2 mssql-conf: TCP port 1500 and forced encryption, a restart"
@@ -142,7 +143,7 @@ echo "== N4 SQL Server 2019 on Linux"
 if [ -n "${PROOF_SKIP_2019:-}" ]; then notproven "N4: PROOF_SKIP_2019"; else
   collect pgvnet-19 || fail "N4: the read failed"
   [ "$(prop pgvnet-19 tcp_port | cut -d'|' -f1)" = 1433 ] && [ "$(prop pgvnet-19 force_encryption | cut -d'|' -f1)" = no ] || fail "N4: tcp_port $(prop pgvnet-19 tcp_port), force_encryption $(prop pgvnet-19 force_encryption)"
-  [ "$(prop pgvnet-19 force_strict_encryption)" = "|not on this version: ForceStrictEncryption came with SQL Server 2022" ] || fail "N4 force_strict_encryption: $(prop pgvnet-19 force_strict_encryption)"
+  [ "$(prop pgvnet-19 force_strict_encryption)" = "|not on this version: strict encryption came with SQL Server 2022" ] || fail "N4 force_strict_encryption: $(prop pgvnet-19 force_strict_encryption)"
   [ "$(prop pgvnet-19 protocols_enabled)" = "TCP/IP|met: Linux serves TCP only" ] || fail "N4 protocols_enabled: $(prop pgvnet-19 protocols_enabled)"
   ok "N4: SQL Server $(echo "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))" | sqn "$SQL19" | tr -d '\r '): tcp_port 1433, force_encryption no, strict 'not on this version', TCP/IP"
 fi
