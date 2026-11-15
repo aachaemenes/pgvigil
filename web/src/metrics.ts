@@ -356,7 +356,10 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
   const endCell = (_v: unknown, r: Row) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})` }, 'End') as HTMLButtonElement;
     b.addEventListener('click', () => { void send({ op: 'end', config_id: Number(r.config_id) }); });
-    return el('span', {}, b, offControl(b, off));
+    // the page's 'Edits are off here' line carries the long reason; each row says it short, a space after the button
+    // (proof5's shot read 'Endthe counter list ...' run together and cut at the table's edge)
+    const short = off ? el('span', { class: 'off-reason' }, 'off here: the line above says why') : undefined;
+    return el('span', {}, b, ' ', offControl(b, off, short));
   };
   const where = (r: Row) => r.scope === 'tag' ? `tag ${String(r.tag)}` : r.scope === 'instance' ? String(r.instance_name) : 'the fleet';
   sec.append(el('h3', {}, 'Rows made here'), grid(rowsOf(d.config), [

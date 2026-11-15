@@ -91,6 +91,8 @@ INSERT INTO pgvigil.mssql_counter_defaults (object, counter, kind, source) VALUE
   ('Databases', 'Transactions/sec', '', 'D14'), ('Databases', 'Log Flushes/sec', '', 'D14'),
   ('Databases', 'Log Bytes Flushed/sec', '', 'D14'), ('Databases', 'Log Flush Write Time (ms)', '', 'D14'),
   ('Database Replica', 'Transaction Delay', '', 'D14'), ('Database Replica', 'Mirrored Write Transactions/sec', '', 'D14'),
+  -- the same two names under Database Mirroring, which 0124's every-minute read took too (a mirroring site keeps them)
+  ('Database Mirroring', 'Transaction Delay', '', 'D14'), ('Database Mirroring', 'Mirrored Write Transactions/sec', '', 'D14'),
   ('General Statistics', 'Active Temp Tables', '', 'D14'), ('General Statistics', 'Processes blocked', '', 'D14'),
   ('General Statistics', 'Temp Tables Creation Rate', '', 'D14'),
   ('Locks', 'Lock Requests/sec', '', 'D14'), ('Locks', 'Lock Wait Time (ms)', '', 'D14'), ('Locks', 'Lock Waits/sec', '', 'D14'),
@@ -229,13 +231,14 @@ UPDATE pgvigil.mssql_counter_defaults d SET used_by = u.why
     ('Databases', 'Active Transactions', 'the counters metric active transactions and the storage pages'),
     ('sys.dm_os_process_memory', 'physical_memory_in_use_kb', 'the counters metric memory in use of the commit limit'),
     ('sys.dm_os_process_memory', 'available_commit_limit_kb', 'the counters metric memory in use of the commit limit'),
-    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker')
+    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker and the CPU page''s scheduler trend')
   ) AS u(object, counter, why)
  WHERE d.object = u.object AND d.counter = u.counter;
 
--- the objects read by mssql_counters_db (a database or a database's replica is the instance)
+-- the objects read by mssql_counters_db (a database or a database's replica is the instance); any case, as the
+-- collector matches names (a yaml line 'databases' is the Databases object)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_scope(p_object text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN p_object IN ('Databases', 'Database Replica') THEN 'database' ELSE 'instance' END
+  SELECT CASE WHEN lower(p_object) IN ('databases', 'database replica') THEN 'database' ELSE 'instance' END
 $$;
 
 -- ---- Admin's rows -------------------------------------------------------------------------------------------------
@@ -332,12 +335,18 @@ BEGIN
       v_why := 'kind must be empty (from the type read), count, rate or gauge';
     ELSIF v_object LIKE 'sys.dm_os_%' AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_counter_defaults d WHERE d.object = v_object AND d.counter = v_counter) THEN
       v_why := format('%s has no column %s pgvigil reads', v_object, v_counter);
+    ELSIF v_object LIKE 'sys.dm_os_%' AND v_kind <> '' THEN
+      -- a DMV column's arithmetic is pgvigil's own (pseudoRows): a kind would be ignored, so it is refused in words
+      v_why := format('%s / %s is a DMV column: its kind is fixed by pgvigil, leave kind empty', v_object, v_counter);
     END IF;
-    IF v_why IS NULL AND v_action = 'remove' THEN
+    -- a counter a page or a rule reads is never removed, and its kind is never overridden (the figure that reads it
+    -- needs the arithmetic its type gives: a gauge kind on Errors/sec would store no rate)
+    IF v_why IS NULL AND (v_action = 'remove' OR v_kind <> '') THEN
       SELECT d.used_by INTO v_used FROM pgvigil.mssql_counter_defaults d
        WHERE lower(d.object) = lower(v_object) AND lower(d.counter) = lower(v_counter) AND d.used_by IS NOT NULL LIMIT 1;
       IF v_used IS NOT NULL THEN
-        v_why := format('%s / %s is read by %s: it stays in the list', v_object, v_counter, v_used);
+        v_why := CASE WHEN v_action = 'remove' THEN format('%s / %s is read by %s: it stays in the list', v_object, v_counter, v_used)
+                      ELSE format('%s / %s is read by %s: its kind stays as SQL Server types it', v_object, v_counter, v_used) END;
       END IF;
     END IF;
     IF v_scope <> 'tag' THEN v_tag := NULL; END IF;
@@ -410,8 +419,10 @@ LANGUAGE sql STABLE AS $$
      AND (c.scope = 'fleet' OR (c.scope = 'tag' AND c.tag = ANY (me.tags)) OR (c.scope = 'instance' AND c.instance_name = me.name))
 $$;
 
--- mssql_counter_list: the instance's list as counters.go reads it ([{object, counter, inst, scope, kind}]): per
--- counter the word of the highest level; a removal of a counter in use never wins (the defaults keep it).
+-- mssql_counter_list: the instance's list as counters.go reads it ([{object, counter, inst, scope, kind, except}]): per
+-- counter the word of the highest level; a removal of a counter in use never wins (the defaults keep it). A removal of
+-- one instance of a counter (a feature of Deprecated Features / Usage) names that instance in its every-instance line's
+-- except list, so the line that reads the others leaves it out.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_list(p_instance_id int, p_yaml jsonb DEFAULT '[]'::jsonb)
 RETURNS jsonb LANGUAGE sql STABLE AS $$
   WITH l AS (SELECT * FROM pgvigil.mssql_counter_layers(p_instance_id, p_yaml)),
@@ -419,11 +430,15 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
   w AS (SELECT DISTINCT ON (lower(l.object), lower(l.counter), l.inst) l.*
           FROM l
          WHERE NOT (l.action = 'remove' AND (lower(l.object), lower(l.counter)) IN (SELECT o, c FROM inuse))
-         ORDER BY lower(l.object), lower(l.counter), l.inst, l.level DESC)
+         ORDER BY lower(l.object), lower(l.counter), l.inst, l.level DESC),
+  x AS (SELECT lower(w.object) AS o, lower(w.counter) AS c, jsonb_agg(w.inst ORDER BY w.inst) AS insts
+          FROM w WHERE w.action = 'remove' AND w.inst <> '' GROUP BY 1, 2)
   SELECT coalesce(jsonb_agg(jsonb_build_object('object', w.object, 'counter', w.counter, 'inst', w.inst,
                                                'scope', pgvigil.mssql_counter_scope(w.object), 'kind', w.kind)
+                            || CASE WHEN w.inst = '' AND x.insts IS NOT NULL THEN jsonb_build_object('except', x.insts) ELSE '{}'::jsonb END
                             ORDER BY w.object, w.counter, w.inst), '[]'::jsonb)
-    FROM w WHERE w.action = 'add'
+    FROM w LEFT JOIN x ON x.o = lower(w.object) AND x.c = lower(w.counter)
+   WHERE w.action = 'add'
 $$;
 
 -- mssql_counter_yaml: pgvigil.yaml's mssql_counters lines as the runner last handed them over for an instance (the
@@ -497,13 +512,21 @@ RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_n      int;
   v_prev   timestamptz;
+  v_prev_iv real;
+  v_gap    boolean;
   v_zero   int[];
 BEGIN
   SELECT count(*) INTO v_n FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'ctr';
   -- an older read arriving late: its scope's newest read is already stored
-  SELECT c.server_utc INTO v_prev FROM pgvigil.mssql_counter_read c WHERE c.instance_id = p_instance_id AND c.scope = p_scope
+  SELECT c.server_utc, c.interval_secs INTO v_prev, v_prev_iv FROM pgvigil.mssql_counter_read c
+   WHERE c.instance_id = p_instance_id AND c.scope = p_scope
    ORDER BY c.snapshot_at DESC LIMIT 1;
   IF v_prev IS NOT NULL AND v_prev >= p_now THEN RETURN; END IF;
+  -- F15: no change and no rate after a gap in time - the scope's read before is older than twice its interval (the
+  -- read before's own interval, else the scope's default: 60 s, 300 s per database); a schedule made longer costs one
+  -- read's rates, a collector stopped for hours never puts its hours on one point
+  v_gap := v_prev IS NOT NULL AND extract(epoch FROM p_now - v_prev)
+             > 2 * greatest(coalesce(v_prev_iv, 0), CASE p_scope WHEN 'database' THEN 300 ELSE 60 END);
 
   INSERT INTO pgvigil.mssql_counter_series AS k (instance_id, object, counter, inst, cntr_type, kind)
   SELECT DISTINCT ON (r->>'object', r->>'counter', r->>'instance') p_instance_id, r->>'object', r->>'counter', r->>'instance',
@@ -530,7 +553,7 @@ BEGIN
     -- restart, a reset, or a gap in which the counter was not listed
     CROSS JOIN LATERAL (SELECT CASE WHEN ok THEN x.value - l.value END AS dvalue,
                                CASE WHEN ok AND x.base IS NOT NULL AND l.base IS NOT NULL AND x.base >= l.base THEN x.base - l.base END AS dbase
-                          FROM (SELECT l.series_id IS NOT NULL AND v_prev IS NOT NULL AND l.server_utc = v_prev AND p_now > l.server_utc
+                          FROM (SELECT l.series_id IS NOT NULL AND v_prev IS NOT NULL AND NOT v_gap AND l.server_utc = v_prev AND p_now > l.server_utc
                                        AND pgvigil.mssql_same_run(l.server_start, p_start) AND x.value >= l.value AS ok) o) d;
 
   -- a rate, count or average at raw 0 (never counted since the start): the read names it, no row is stored

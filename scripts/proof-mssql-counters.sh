@@ -48,9 +48,15 @@
 #     line (narrowest scope); an Admin instance row adding it wins over the yaml line at the same scope (read again);
 #     an Admin tag row (the instance's tag env:ctrproof) removing Plan Cache / Cache Pages takes it out, an Admin
 #     instance row adding it back wins; Admin and yaml both refuse removing Logins/sec ('read by ...'); a removal of a
-#     counter in use from the yaml is refused at load; mssql_counter_yaml holds the lines the runner used.
+#     counter in use from the yaml is refused at load; mssql_counter_yaml holds the lines the runner used. Admin and the
+#     yaml both refuse a kind on SQL Errors / Errors/sec ('its kind stays') and on a DMV column (sys.dm_os_schedulers /
+#     yield_count: 'is a DMV column'). A yaml line removing one instance of
+#     Deprecated Features / Usage (a feature the server lists) takes that feature out of the next read (no stored row,
+#     not in zero_series) while another feature of the same counter is still read; the list's every-instance line
+#     names it in 'except'.
 #  F. the gap rule: Pages Allocated/sec removed for two reads and added back: its first read back has no change and no
-#     rate; the read after has both.
+#     rate; the read after has both. F15 (a gap in time, review part 1 S3): a read 125 s after the one before (over twice
+#     the 60 s default) has no change and no rate on any series; the read 3 s after it has them.
 #  G. a restart (docker restart): the first read after it has no rate, no change and no average on any series; the
 #     read after has them.
 #  H. zero points: errors_offline_s is 0 at every instance read of the window (as many points as reads); errors_kill_s
@@ -66,13 +72,19 @@
 #     and figure columns (rows = /api/mssql/counters' now part), 'Batch response times' with 17 buckets, 'Listed but
 #     not read', the 'Counters' family grid; Admin > Counters shows 'Rows made here' (rows = the config part),
 #     'The defaults' (rows = the defaults part), 'Counters the servers have', 'Log', and its Save and End controls off
-#     with their reason on a -no-login serve; no error box, no exception.
-#  N. D6 (the rows on other slices' pages, WIRING hunks): after two mssql_cpu and mssql_memory reads with 20 batches
-#     between them: /api/perfsummary's mssql part gives ctrbox compiles_per_100 = round(100 * compilations / batch
-#     requests, 1) from mssql_sched_sample's interval-weighted rates over the same window (0 under 1 batch/s); the CPU
-#     API's sched part carries failed_to_create_worker (0 on a healthy box) at a step; the Memory API's clerk_stats
-#     names MEMORYCLERK_SQLBUFFERPOOL 'Buffer Pool'; the pages show the summary's 'compilations per 100 batches', the
-#     scheduler trend's 'schedulers that failed to create a worker' and the clerks grid's 'what it is' with Buffer Pool.
+#     with their reason on a -no-login serve (Save row: the -no-login reason beside it; each End: a space, then 'off
+#     here: the line above says why', the long reason in its title; the page's line 'Edits are off here: ...
+#     -no-login'); no error box, no exception.
+#  N. D6 (the rows on other slices' pages, WIRING hunks), over five reads (R0 early in a minute; R1 in the next, the wait
+#     busy at two batches a second; R2 after 20 distinct batches; R3 mssql_cpu alone in a later minute; R4 30 s idle
+#     after it; R0-R2 with mssql_counters): /api/perfsummary's mssql part over (R0, R2] reads at least 1 batch/s and
+#     gives ctrbox compiles_per_100 = 100 x the change in SQL Compilations / Batch Requests read by hand from SQL Server
+#     around those reads (within the 10 batches and 10 compilations the reads around the hand reads add); over (R3, R4]
+#     under 1 batch/s it gives 0 (else 'NOT PROVEN live: the floor'); the CPU API's sched part carries
+#     failed_to_create_worker on exactly the steps that hold an instance counter read (0 on a healthy box), on two steps
+#     at least, NULL on R3's; the Memory API's clerk_stats names MEMORYCLERK_SQLBUFFERPOOL 'Buffer Pool'; the pages
+#     show ctrbox's 'compilations per 100 batches' cell = the API's over the hour, the scheduler trend's 'schedulers that
+#     failed to create a worker' (listed only when a step has a value), the clerks grid's 'what it is' with Buffer Pool.
 #  L. the version run on each further image: A's setup, B's bracket and C's arithmetic, D's logins, errors and log
 #     growth, the list = every default.
 #  M. the measured size: rows per read of each scope and the sample rows stored per read, and bytes per day per instance
@@ -451,6 +463,47 @@ config "    mssql_counters:
           counter: Logins/sec"
 O=$("$TMPD/pgvigil" collect -config "$CFG" -instance ctrbox -once mssql_counters 2>&1 || true); grep -q 'is read by' <<<"$O" || fail "E: the yaml removal of Logins/sec: $O"
 config
+R=$(door '{"op":"add","ui_user":"proof-e","scope":"fleet","object":"SQL Errors","counter":"Errors/sec","action":"add","kind":"gauge"}')
+grep -q '"refused"' <<<"$R" && grep -q 'its kind stays' <<<"$R" || fail "E: a gauge kind on Errors/sec at Admin: $R"
+config "    mssql_counters:
+      add:
+        - object: SQL Errors
+          counter: Errors/sec
+          kind: gauge"
+O=$("$TMPD/pgvigil" collect -config "$CFG" -instance ctrbox -once mssql_counters 2>&1 || true); grep -q 'its kind stays' <<<"$O" || fail "E: a gauge kind on Errors/sec in the yaml: $O"
+config
+R=$(door '{"op":"add","ui_user":"proof-e","scope":"fleet","object":"sys.dm_os_schedulers","counter":"yield_count","action":"add","kind":"gauge"}')
+grep -q '"refused"' <<<"$R" && grep -q 'is a DMV column' <<<"$R" || fail "E: a gauge kind on a DMV column at Admin: $R"
+config "    mssql_counters:
+      add:
+        - object: sys.dm_os_schedulers
+          counter: yield_count
+          kind: gauge"
+O=$("$TMPD/pgvigil" collect -config "$CFG" -instance ctrbox -once mssql_counters 2>&1 || true); grep -q 'is a DMV column' <<<"$O" || fail "E: a gauge kind on a DMV column in the yaml: $O"
+config
+ok "E: Admin and the yaml refuse a kind on SQL Errors / Errors/sec (its kind stays as SQL Server types it) and on a DMV column (sys.dm_os_schedulers / yield_count)"
+# seen: a series is in the scope's newest read (a stored row or named in zero_series)
+seen() { pq "SELECT count(*) FROM pgvigil.mssql_counter_series k
+  JOIN LATERAL (SELECT * FROM pgvigil.mssql_counter_read c WHERE c.instance_id = k.instance_id AND c.scope = pgvigil.mssql_counter_scope(k.object) ORDER BY c.snapshot_at DESC LIMIT 1) r ON true
+  LEFT JOIN pgvigil.mssql_counter_last l ON l.series_id = k.series_id
+  WHERE k.instance_id = $SB AND k.object = '$1' AND k.counter = '$2' AND k.inst = '$3' AND (l.server_utc = r.server_utc OR k.series_id = ANY (r.zero_series))"; }
+col mssql_counters
+DF=$(pq "SELECT string_agg(k.inst, ' ' ORDER BY k.inst) FROM (SELECT k.inst FROM pgvigil.mssql_counter_series k WHERE k.instance_id = $SB
+  AND k.object = 'Deprecated Features' AND k.counter = 'Usage' AND k.inst ~ '^[A-Za-z_]+$' ORDER BY k.inst LIMIT 2) k")
+read -r DFX DFY <<<"$DF"
+[[ -n "$DFX" && -n "$DFY" && $(seen 'Deprecated Features' 'Usage' "$DFX") == 1 && $(seen 'Deprecated Features' 'Usage' "$DFY") == 1 ]] \
+  || fail "E: two Deprecated Features / Usage features read before the removal [$DF]"
+config "    mssql_counters:
+      remove:
+        - object: Deprecated Features
+          counter: Usage
+          instance: $DFX"
+col mssql_counters
+EX=$(pq "SELECT e->>'except' FROM jsonb_array_elements(pgvigil.mssql_counter_list($SB, pgvigil.mssql_counter_yaml_of($SB))) e WHERE e->>'object' = 'Deprecated Features' AND e->>'counter' = 'Usage' AND e->>'inst' = ''")
+[[ $(seen 'Deprecated Features' 'Usage' "$DFX") == 0 && $(seen 'Deprecated Features' 'Usage' "$DFY") == 1 && "$EX" == "[\"$DFX\"]" ]] \
+  || fail "E: one feature removed: $DFX seen $(seen 'Deprecated Features' 'Usage' "$DFX") (want 0), $DFY seen $(seen 'Deprecated Features' 'Usage' "$DFY") (want 1), except [$EX]"
+config
+ok "E: a yaml line removing one feature of Deprecated Features / Usage ($DFX) takes it out of the read; $DFY still read; the list's line says except [\"$DFX\"]"
 ok "E: an Admin fleet row loses to the instance's yaml line, an Admin instance row wins over it; a tag row removes, an instance row adds back; Admin and yaml refuse removing Logins/sec"
 
 echo "== F. the gap rule =="
@@ -462,6 +515,11 @@ sleep 2; col mssql_counters; G1=$(stored 'Access Methods' 'Pages Allocated/sec' 
 sleep 2; col mssql_counters; G2=$(stored 'Access Methods' 'Pages Allocated/sec' '_Total')
 [[ -n "$(field "$G1" 1)" && -z "$(field "$G1" 3)" && -z "$(field "$G1" 5)" && -n "$(field "$G2" 3)" && -n "$(field "$G2" 5)" ]] || fail "F: back from the gap [$G1] then [$G2]"
 ok "F: Pages Allocated/sec back after a gap: no change and no rate at its first read back [$G1], both at the next [$G2]"
+withrate() { pq "SELECT count(*) FILTER (WHERE s.rate IS NOT NULL OR s.dvalue IS NOT NULL) || '|' || count(*) FROM pgvigil.mssql_counter_sample s
+  WHERE s.instance_id = $SB AND s.snapshot_at = (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance')"; }
+sleep 125; col mssql_counters; T1=$(withrate); sleep 3; col mssql_counters; T2=$(withrate)
+[[ "$(field "$T1" 1)" == 0 && "$(field "$T2" 1)" -gt 0 ]] || fail "F: F15, after 125 s [$T1] (rows with a change or rate | rows), then [$T2]"
+ok "F: F15: the read 125 s after the one before has no change or rate on any of its $(field "$T1" 2) rows; the read 3 s later has $(field "$T2" 1)"
 
 echo "== G. a restart =="
 docker restart "$SQL" >/dev/null
@@ -575,8 +633,15 @@ for (const theme of ['light', 'dark']) {
   check(`admin ${theme}`, await ev(gridRows('Rows made here')) === cfg, `Rows made here ${await ev(gridRows('Rows made here'))}, the API ${cfg}`);
   check(`admin ${theme}`, await ev(gridRows('The defaults')) === def, `The defaults ${await ev(gridRows('The defaults'))}, the API ${def}`);
   check(`admin ${theme}`, (await ev(gridRows('Counters the servers have'))) > 300, `Counters the servers have ${await ev(gridRows('Counters the servers have'))}`);
-  const offs = await ev(`[...document.querySelectorAll('main button')].filter(b => b.textContent.trim() === 'Save row' || b.textContent.trim() === 'End').map(b => b.getAttribute('aria-disabled') === 'true' && !!document.getElementById(b.getAttribute('aria-describedby') || '')?.textContent.includes('-no-login'))`);
-  check(`admin ${theme}`, offs.length >= 1 && offs.every(Boolean), `${offs.length} Save / End control(s), each off with its -no-login reason`);
+  // Save row: off with the -no-login reason beside it; each End: off, a space, the short 'off here: the line above says
+  // why' beside it, the long reason in its title; the page's line names -no-login
+  const offs = await ev(`[...document.querySelectorAll('main button')].filter(b => b.textContent.trim() === 'Save row' || b.textContent.trim() === 'End').map(b => {
+    const n = document.getElementById(b.getAttribute('aria-describedby') || '')?.textContent || '';
+    if (b.getAttribute('aria-disabled') !== 'true') return false;
+    if (b.textContent.trim() === 'Save row') return n.includes('-no-login');
+    return n === 'off here: the line above says why' && (b.title || '').includes('-no-login') && b.parentElement.textContent.startsWith('End off here'); })`);
+  check(`admin ${theme}`, offs.length >= 1 && offs.every(Boolean), `${offs.length} Save / End control(s), each off with its reason beside it (End: a space, the short reason, -no-login in its title)`);
+  check(`admin ${theme}`, await ev(`[...document.querySelectorAll('main p.meta')].some(p => p.textContent.startsWith('Edits are off here:') && p.textContent.includes('-no-login'))`), "the page's line 'Edits are off here: ... -no-login'");
   if (shots) { const s = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); (await import('node:fs')).writeFileSync(`${shots}/admin-counters-${theme}.png`, Buffer.from(s.result.data, 'base64')); }
 }
 check('pages', thrown.length === 0, thrown.length ? thrown.slice(0, 3).join(' | ') : 'no exception');
@@ -586,31 +651,72 @@ timeout 320 node "$TMPD/page.mjs" "$CDP" "$U2" "$SB" "$SHOTS" || fail "K: a chec
 ok "K: the Metrics page's counters (rows = the API's), the histogram, the absent list, the Counters family, Admin > Counters (rows = the API's) with its controls off and their reason, light and dark"
 
 echo "== N. D6: the Performance summary, the CPU page's scheduler trend, the Memory page's clerk names =="
-col mssql_cpu mssql_memory
+# The reads (review part 5 S1-S3): the page's scheduler trend has steps of 60 s over an hour and draws a line only from
+# two steps ('a chart needs two': run proof8 read two reads in one step), so R1 lands in the minute after R0; every read
+# of R0-R2 takes mssql_counters too (failed_to_create_worker is its series); R3, mssql_cpu alone in a later minute, makes
+# a step with no counter read (its failed_to_create_worker NULL); R4, 30 s of nothing after R3, is the floor's window
+# (under 1 batch a second: compilations per 100 batches 0). Each wait to a minute is kept busy at two batches a second
+# (the summary's 1 batch/s floor). Batch Requests/sec and SQL Compilations/sec are read by hand right after R0's
+# mssql_cpu read (mssql_cpu runs last in R0) and right before R2's (first in R2): the summary over (R0, R2] is 100 x
+# their change, the reads around the hand reads adding at most 10 batches and 10 compilations to either side.
+busymin() { local w=$(( 62 - 10#$(date -u +%S) )); sq "$(for _ in $(seq 1 $((w * 2))); do echo "WAITFOR DELAY '00:00:00.500';"; echo GO; done)" >/dev/null; }
+handbc() { sq "SELECT CAST(SUM(CASE WHEN RTRIM(counter_name) = N'Batch Requests/sec' THEN cntr_value END) AS varchar(20)) + '|' + CAST(SUM(CASE WHEN RTRIM(counter_name) = N'SQL Compilations/sec' THEN cntr_value END) AS varchar(20))
+  FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE N'%:SQL Statistics' AND RTRIM(counter_name) IN (N'Batch Requests/sec', N'SQL Compilations/sec')"; }
+[[ 10#$(date -u +%S) -gt 40 ]] && sleep $(( 61 - 10#$(date -u +%S) ))
+col mssql_memory mssql_counters mssql_cpu; H0=$(handbc); NF0=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+busymin
+col mssql_cpu mssql_memory mssql_counters
 sq "$(for i in $(seq 1 20); do echo "SELECT COUNT(*) FROM sys.objects WHERE object_id > $i;"; echo GO; done)" >/dev/null
-sleep 2; col mssql_cpu mssql_memory mssql_counters
+sleep 2; H1=$(handbc); col mssql_cpu mssql_memory mssql_counters; NT1=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+busymin; col mssql_cpu; NF3=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+sleep 30; col mssql_cpu; NT3=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 NF=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); NT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
-for q in "perfsummary?part=mssql&from=$NF&to=$NT" "mssql/cpu?instance=$SB&part=sched&from=$NF&to=$NT" "mssql/memory?instance=$SB&part=clerk_stats&from=$NF&to=$NT"; do
-  n=${q%%\?*}; n=${n//\//_}; [[ $(code "$U2/api/$q") == 200 ]] || fail "N: GET $q: $(cat "$TMPD/body")"; cp "$TMPD/body" "$TMPD/n-$n.json"
+for q in "perfsummary?part=mssql&from=$NF&to=$NT" "mssql/cpu?instance=$SB&part=sched&from=$NF&to=$NT" "mssql/memory?instance=$SB&part=clerk_stats&from=$NF&to=$NT" \
+         "perfsummary?part=mssql&from=$NF0&to=$NT1" "perfsummary?part=mssql&from=$NF3&to=$NT3"; do
+  n=${q%%\?*}; n=${n//\//_}; [[ "$q" == *"from=$NF0"* ]] && n=perfsummary_hand; [[ "$q" == *"from=$NF3"* ]] && n=perfsummary_floor
+  [[ $(code "$U2/api/$q") == 200 ]] || fail "N: GET $q: $(cat "$TMPD/body")"; cp "$TMPD/body" "$TMPD/n-$n.json"
 done
-python3 - "$PGDSN" "$SB" "$NF" "$NT" "$TMPD" <<'PY2' || fail "N: an API row of D6"
+python3 - "$PGDSN" "$SB" "$NF" "$NT" "$TMPD" "$H0" "$H1" <<'PY2' || fail "N: an API row of D6"
 import json, subprocess, sys
-dsn, sb, nf, nt, d = sys.argv[1:6]
+dsn, sb, nf, nt, d, h0, h1 = sys.argv[1:8]
 rows = lambda f, p: [dict(zip(t['columns'], r)) for t in [json.load(open(f'{d}/n-{f}.json'))[p]] for r in t['rows']]
 q = lambda s: subprocess.run(['psql', dsn, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-F', '|', '-c', s], capture_output=True, text=True, check=True).stdout.strip()
 bad = []
-ps = [r for r in rows('perfsummary', 'mssql') if r.get('instance') == 'ctrbox']
-cb = q(f"""SELECT sum(batch_s * interval_secs) / nullif(sum(interval_secs) FILTER (WHERE batch_s IS NOT NULL), 0),
-                  sum(compiles_s * interval_secs) / nullif(sum(interval_secs) FILTER (WHERE compiles_s IS NOT NULL), 0)
-             FROM pgvigil.mssql_sched_sample WHERE instance_id = {sb} AND snapshot_at > '{nf}' AND snapshot_at <= '{nt}' AND interval_secs > 0""").split('|')
-b, c = round(float(cb[0]), 2), float(cb[1])
-exp = 0 if b < 1 else round(100 * c / b, 1)
-got = ps[0].get('compiles_per_100') if ps else None
-print(f'   perfsummary ctrbox: batch_s {b}, compiles_s {c:.3f}: compiles_per_100 {got} (recomputed {exp})')
-if got is None or abs(float(got) - exp) > 0.051: bad.append(f'compiles_per_100 {got} != {exp}')
-fw = [r.get('failed_to_create_worker') for r in rows('mssql_cpu', 'sched')]
-print(f'   sched steps {len(fw)}, failed_to_create_worker at {sum(v is not None for v in fw)} of them: {sorted(set(v for v in fw if v is not None))}')
-if not any(v is not None and float(v) == 0 for v in fw): bad.append('no step with failed_to_create_worker 0')
+one = lambda f: ([r for r in rows(f, 'mssql') if r.get('instance') == 'ctrbox'] or [{}])[0]
+# the summary over (R0, R2] against SQL Server's own counters read by hand (not the code's formula)
+(b0, c0), (b1, c1) = [[int(x) for x in h.split('|')] for h in (h0, h1)]
+db, dc = b1 - b0, c1 - c0
+hs = one('perfsummary_hand')
+got, bs = hs.get('compiles_per_100'), hs.get('batch_s')
+lo = 100 * max(dc - 10, 0) / (db + 10); hi = 100 * (dc + 10) / max(db - 10, 1)
+print(f'   perfsummary over (R0, R2]: batch_s {bs}, compiles_per_100 {got}; by hand +{db} batches, +{dc} compilations: {100 * dc / db:.1f} (with the reads around the hand reads {lo:.1f}-{hi:.1f})')
+if bs is None or float(bs) < 1: bad.append(f'the hand window read {bs} batches/s: under the floor, the ratio not tested')
+if got is None or not (lo - 0.05 <= float(got) <= hi + 0.05): bad.append(f'compiles_per_100 {got} outside {lo:.1f}-{hi:.1f}')
+# the floor's window (R3, R4]: 30 s with nothing of the proof running
+fl = one('perfsummary_floor')
+print(f"   perfsummary over (R3, R4]: batch_s {fl.get('batch_s')}, compiles_per_100 {fl.get('compiles_per_100')}")
+if fl.get('batch_s') is not None and float(fl['batch_s']) < 1:
+    if fl.get('compiles_per_100') is None or float(fl['compiles_per_100']) != 0: bad.append(f"under the floor compiles_per_100 {fl.get('compiles_per_100')}, want 0")
+else:
+    print(f"NOT PROVEN live: the floor (the idle window read {fl.get('batch_s')} batches/s: the server was not idle)")
+# the hour the page shows: the cell the page check compares
+ps = one('perfsummary')
+print(f"   perfsummary over the hour: compiles_per_100 {ps.get('compiles_per_100')}")
+open(f'{d}/n-expect-cell', 'w').write('' if ps.get('compiles_per_100') is None else str(ps['compiles_per_100']))
+# the scheduler trend: a value exactly in a step that holds an instance counter read; two steps with a value; R3's step NULL
+sr = rows('mssql_cpu', 'sched')
+reads = q(f"SELECT string_agg(floor(extract(epoch FROM snapshot_at) / 60)::bigint::text, ',') FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' AND snapshot_at > '{nf}' AND snapshot_at <= '{nt}'")
+have = set(int(x) for x in reads.split(',') if x)
+from datetime import datetime
+ep = lambda t: int(datetime.fromisoformat(str(t).replace('Z', '+00:00')).timestamp()) // 60
+fw = [(ep(r['snapshot_at']), r.get('failed_to_create_worker')) for r in sr]
+withv = [v for _, v in fw if v is not None]
+print(f'   sched steps {len(fw)}, failed_to_create_worker at {len(withv)} of them: {sorted(set(withv))}; steps without a counter read: {sum(1 for m, _ in fw if m not in have)}')
+if len(withv) < 2: bad.append(f'{len(withv)} step(s) with failed_to_create_worker: the trend needs two')
+if not any(float(v) == 0 for v in withv): bad.append('no step with failed_to_create_worker 0')
+for m, v in fw:
+    if (v is not None) != (m in have): bad.append(f'step {m * 60}: failed_to_create_worker {v}, a counter read in the step {m in have}')
+if not fw or fw[-1][1] is not None: bad.append("R3's step (the last, mssql_cpu alone) is not NULL")
 bp = [r for r in rows('mssql_memory', 'clerk_stats') if r.get('clerk_type') == 'MEMORYCLERK_SQLBUFFERPOOL']
 print(f"   clerk_stats: MEMORYCLERK_SQLBUFFERPOOL named [{bp[0].get('clerk_name') if bp else 'no row'}]")
 if not bp or bp[0].get('clerk_name') != 'Buffer Pool': bad.append('the buffer pool clerk not named Buffer Pool')
@@ -618,7 +724,7 @@ for x in bad: print('   FAIL ' + x)
 sys.exit(1 if bad else 0)
 PY2
 cat > "$TMPD/d6.mjs" <<'PAGE'
-const [port, base, sb] = process.argv.slice(2);
+const [port, base, sb, cellWant] = process.argv.slice(2);
 setTimeout(() => { console.log('FAIL the D6 page check did not end in 120 s'); process.exit(2); }, 120000).unref();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -634,7 +740,14 @@ const until = async (e, ms = 45000) => { const t = Date.now(); while (Date.now()
 let failed = 0; const check = (l, ok) => { if (!ok) failed++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${l}`); };
 await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Page.navigate', { url: `${base}/#/perfsummary?w=1h` });
-check("N page: the Performance summary's 'compilations per 100 batches' column", !!await until(`[...document.querySelectorAll('main th')].some(th => th.textContent.trim().startsWith('compilations per 100 batches'))`));
+// ctrbox's cell under the column holds the API's figure for the same hour (review part 5 S1: a header alone passes with
+// a wrong column key)
+const cell = await until(`(() => { for (const t of document.querySelectorAll('main table')) {
+  const i = [...t.querySelectorAll('th')].findIndex(th => th.textContent.trim().startsWith('compilations per 100 batches')); if (i < 0) continue;
+  const tr = [...t.querySelectorAll('tbody tr')].find(r => r.textContent.includes('ctrbox')); if (!tr) return null;
+  return tr.children[i]?.textContent.trim() ?? null; } return null; })()`);
+const near = (a, b) => a !== '' && b !== '' && Math.abs(parseFloat(String(a).replace(/[^0-9.\-]/g, '')) - parseFloat(b)) <= 0.051;
+check(`N page: the Performance summary's 'compilations per 100 batches' cell for ctrbox reads ${cell} (the API ${cellWant})`, cell != null && near(cell, cellWant));
 await cmd('Page.navigate', { url: `${base}/#/mssqlcpu?i=${sb}&w=1h` });
 check("N page: the CPU page's scheduler trend names 'schedulers that failed to create a worker'", !!await until(`document.querySelector('main')?.innerText.includes('schedulers that failed to create a worker')`));
 await cmd('Page.navigate', { url: `${base}/#/mssqlmemory?i=${sb}&w=1h` });
@@ -642,8 +755,8 @@ check("N page: the Memory page's clerks grid has 'what it is' with Buffer Pool",
 check('N pages: no exception', thrown.length === 0);
 process.exit(failed ? 1 : 0);
 PAGE
-timeout 140 node "$TMPD/d6.mjs" "$CDP" "$U2" "$SB" || fail "N: a D6 page check failed"
-ok "N: compiles_per_100 on the Performance summary = its recomputation from mssql_sched_sample; failed_to_create_worker on the scheduler trend's steps; Buffer Pool named on the Memory page's clerks; the three pages show them"
+timeout 140 node "$TMPD/d6.mjs" "$CDP" "$U2" "$SB" "$(cat "$TMPD/n-expect-cell")" || fail "N: a D6 page check failed"
+ok "N: compiles_per_100 on the Performance summary = SQL Server's own counters read by hand over (R0, R2], 0 under the floor; failed_to_create_worker on exactly the trend's steps with a counter read, NULL on R3's; Buffer Pool named on the Memory page's clerks; the pages show them (ctrbox's summary cell = the API's)"
 
 echo "== M. the size =="
 pq "SELECT scope, round(avg(rows_read)), count(*) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB GROUP BY 1 ORDER BY 1" | sed 's/^/   reads: /'

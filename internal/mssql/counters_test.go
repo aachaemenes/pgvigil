@@ -30,6 +30,13 @@ func TestPairCounters(t *testing.T) {
 		row("SQLServer:HTTP Storage", "Avg. Bytes/Read BASE", "", 3, typeBase),
 		row("SQLServer:FileTable", "Avg time per file I/O request", "", 5, typeAverage),
 		row("SQLServer:FileTable", "Time per file I/O request BASE", "", 2, typeBase),
+		// the three other irregular forms of irregularBases (review 401 NIT 6)
+		row("SQLServer:Broker TO Statistics", "Avg. Length of Batched Writes", "", 44, typeAverage),
+		row("SQLServer:Broker TO Statistics", "Avg. Length of Batched Writes BS", "", 11, typeBase),
+		row("SQLServer:Databases", "Avg Dist From EOL/LP Request", "sales", 900, typeAverage),
+		row("SQLServer:Databases", "Log Pool Requests Base", "sales", 30, typeBase),
+		row("SQLServer:Databases", "XTP Controller DLC Latency/Fetch", "sales", 70, typeAverage),
+		row("SQLServer:Databases", "XTP Controller DLC Latency Base", "sales", 7, typeBase),
 		row("SQLServer:Plan Cache", "Cache Hit Ratio", "SQL Plans", 5, typeFraction), // no base read
 		row("SQLServer:Deprecated Features", "Usage", "'::' function calling syntax", 3, typeRawLarge),
 		row("SQLServer:Workload Group Stats", "CPU usage %", "internal", 1, typeFraction),
@@ -42,6 +49,9 @@ func TestPairCounters(t *testing.T) {
 		{Object: "Access Methods", Counter: "Worktables From Cache Ratio", Scope: "instance"},
 		{Object: "HTTP Storage", Counter: "Avg. Bytes/Read", Scope: "instance"},
 		{Object: "FileTable", Counter: "Avg time per file I/O request", Scope: "instance"},
+		{Object: "Broker TO Statistics", Counter: "Avg. Length of Batched Writes", Scope: "instance"},
+		{Object: "Databases", Counter: "Avg Dist From EOL/LP Request", Scope: "database"},
+		{Object: "Databases", Counter: "XTP Controller DLC Latency/Fetch", Scope: "database"},
 		{Object: "Plan Cache", Counter: "Cache Hit Ratio", Scope: "instance"},
 		{Object: "Deprecated Features", Counter: "Usage", Scope: "instance", Kind: "count"},
 		{Object: "Workload Group Stats", Counter: "CPU usage %", Scope: "instance"},
@@ -55,14 +65,17 @@ func TestPairCounters(t *testing.T) {
 		kind string
 		base any
 	}{
-		"Buffer Manager|Buffer cache hit ratio|_Total":           {"fraction", int64(624)},
-		"Locks|Average Wait Time (ms)|_Total":                    {"average", int64(16)},
-		"Access Methods|Worktables From Cache Ratio|_Total":      {"fraction", int64(80)},
-		"HTTP Storage|Avg. Bytes/Read|_Total":                    {"average", int64(3)},
-		"FileTable|Avg time per file I/O request|_Total":         {"average", int64(2)},
-		"Plan Cache|Cache Hit Ratio|SQL Plans":                   {"unpaired", nil},
-		"Deprecated Features|Usage|'::' function calling syntax": {"count", nil},
-		"General Statistics|Logins/sec|_Total":                   {"rate", nil},
+		"Buffer Manager|Buffer cache hit ratio|_Total":              {"fraction", int64(624)},
+		"Locks|Average Wait Time (ms)|_Total":                       {"average", int64(16)},
+		"Access Methods|Worktables From Cache Ratio|_Total":         {"fraction", int64(80)},
+		"HTTP Storage|Avg. Bytes/Read|_Total":                       {"average", int64(3)},
+		"FileTable|Avg time per file I/O request|_Total":            {"average", int64(2)},
+		"Broker TO Statistics|Avg. Length of Batched Writes|_Total": {"average", int64(11)},
+		"Databases|Avg Dist From EOL/LP Request|sales":              {"average", int64(30)},
+		"Databases|XTP Controller DLC Latency/Fetch|sales":          {"average", int64(7)},
+		"Plan Cache|Cache Hit Ratio|SQL Plans":                      {"unpaired", nil},
+		"Deprecated Features|Usage|'::' function calling syntax":    {"count", nil},
+		"General Statistics|Logins/sec|_Total":                      {"rate", nil},
 	}
 	if len(got) != len(want) {
 		t.Errorf("%d rows, want %d: %v", len(got), len(want), got)
@@ -161,9 +174,12 @@ func TestCountersInUseMatchMigration(t *testing.T) {
 	}
 	s := string(b)
 	i := strings.Index(s, "UPDATE pgvigil.mssql_counter_defaults d SET used_by")
-	j := strings.Index(s[i:], ") AS u(object, counter, why)")
-	if i < 0 || j < 0 {
+	if i < 0 {
 		t.Fatal("0152's used_by block not found")
+	}
+	j := strings.Index(s[i:], ") AS u(object, counter, why)")
+	if j < 0 {
+		t.Fatal("0152's used_by block has no end")
 	}
 	re := regexp.MustCompile(`\('((?:[^']|'')*)', '((?:[^']|'')*)', '((?:[^']|'')*)'\)`)
 	sqlUse := map[[2]string]string{}
@@ -186,5 +202,39 @@ func TestCountersInUseMatchMigration(t *testing.T) {
 	}
 	if CounterInUse("Deprecated Features", "Usage") != "" {
 		t.Error("a counter nothing reads is in use")
+	}
+}
+
+// A list line for '_Total' reads the row SQL Server gives with no instance name (the pages show it as _Total); a line
+// for another instance does not (review part 1, S8).
+func TestMatchSpecTotal(t *testing.T) {
+	list := []CounterSpec{{Object: "Memory Manager", Counter: "Memory Grants Outstanding", Instance: "_Total", Scope: "instance", Kind: "gauge"}}
+	if s, ok := matchSpec(list, "Memory Manager", "Memory Grants Outstanding", ""); !ok || s.Kind != "gauge" {
+		t.Fatalf("a '_Total' line did not read the row with no instance name: %v %v", s, ok)
+	}
+	if _, ok := matchSpec(list, "Memory Manager", "Memory Grants Outstanding", "default"); ok {
+		t.Fatal("a '_Total' line read the instance 'default'")
+	}
+}
+
+// review 401 S5: a removal of one instance of a counter takes that instance out of the every-instance line
+func TestMatchSpecExcept(t *testing.T) {
+	list, err := ParseCounterList([]byte(`[{"object": "Deprecated Features", "counter": "Usage", "inst": "", "scope": "instance", "kind": "count", "except": ["sysdatabases"]},
+		{"object": "Buffer Manager", "counter": "Page life expectancy", "inst": "", "scope": "instance", "kind": "", "except": ["_Total"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := matchSpec(list, "Deprecated Features", "Usage", "sysdatabases"); ok {
+		t.Fatal("the removed instance 'sysdatabases' is still read")
+	}
+	if s, ok := matchSpec(list, "Deprecated Features", "Usage", "sysobjects"); !ok || s.Kind != "count" {
+		t.Fatalf("another instance is no longer read: %v %v", s, ok)
+	}
+	if _, ok := matchSpec(list, "Buffer Manager", "Page life expectancy", ""); ok {
+		t.Fatal("a removal of '_Total' still reads the row with no instance name")
+	}
+	if _, ok := matchSpec(append(list, CounterSpec{Object: "Deprecated Features", Counter: "Usage", Instance: "sysdatabases", Scope: "instance"}),
+		"Deprecated Features", "Usage", "sysdatabases"); !ok {
+		t.Fatal("a one-instance line no longer reads its instance")
 	}
 }

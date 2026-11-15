@@ -54,6 +54,8 @@ type CounterSpec struct {
 	Instance string `json:"inst,omitempty"` // one instance name; '' = every instance
 	Scope    string `json:"scope"`          // 'instance' (mssql_counters) or 'database' (mssql_counters_db)
 	Kind     string `json:"kind,omitempty"` // '' = from the type read; 'count', 'rate', 'gauge' = given
+	// Except: on an every-instance line, the instances a one-instance removal took out (read no more)
+	Except []string `json:"except,omitempty"`
 }
 
 // ListCollector is a collection whose read list comes from the repository: RunOnce asks pgvigil.mssql_counter_list
@@ -180,7 +182,7 @@ var countersInUse = map[[2]string]string{
 	{"Databases", "Active Transactions"}:                      "the counters metric active transactions and the storage pages",
 	{"sys.dm_os_process_memory", "physical_memory_in_use_kb"}: "the counters metric memory in use of the commit limit",
 	{"sys.dm_os_process_memory", "available_commit_limit_kb"}: "the counters metric memory in use of the commit limit",
-	{"sys.dm_os_schedulers", "failed_to_create_worker"}:       "the counters metric failed to create a worker",
+	{"sys.dm_os_schedulers", "failed_to_create_worker"}:       "the counters metric failed to create a worker and the CPU page's scheduler trend",
 }
 
 // CounterInUse says what reads a counter (” = nothing): config validation refuses a 'remove' of it.
@@ -388,10 +390,11 @@ func matchSpec(list []CounterSpec, object, counter, inst string) (CounterSpec, b
 		if !strings.EqualFold(s.Object, object) || !strings.EqualFold(s.Counter, counter) {
 			continue
 		}
-		if s.Instance != "" && s.Instance == inst {
+		// a line for one instance; '_Total' (as the pages show a row without an instance name) is the empty name
+		if s.Instance != "" && (s.Instance == inst || (inst == "" && strings.EqualFold(s.Instance, "_Total"))) {
 			return s, true
 		}
-		if s.Instance == "" && every == nil {
+		if s.Instance == "" && every == nil && !excepted(s.Except, inst) {
 			every = &list[i]
 		}
 	}
@@ -399,6 +402,17 @@ func matchSpec(list []CounterSpec, object, counter, inst string) (CounterSpec, b
 		return *every, true
 	}
 	return CounterSpec{}, false
+}
+
+// excepted: an instance a one-instance removal names (the same match as a one-instance line's: exact, '_Total' for the
+// row without an instance name)
+func excepted(except []string, inst string) bool {
+	for _, e := range except {
+		if e == inst || (inst == "" && strings.EqualFold(e, "_Total")) {
+			return true
+		}
+	}
+	return false
 }
 
 // pseudoQuery: one row of the listed columns of a DMV (only names of pseudoColumns reach the statement).
