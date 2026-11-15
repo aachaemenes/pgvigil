@@ -365,8 +365,16 @@ const (
 	maxSets      = 50
 )
 
-// sizer counts the bytes a run keeps so one run cannot fill the server's memory.
-type sizer struct{ n int }
+// sizer counts the bytes a run keeps so one run cannot fill the server's memory; max is its cap (0 = maxRunBytes).
+type sizer struct{ n, max int }
+
+// over says the run kept more than its cap.
+func (z *sizer) over() bool {
+	if z.max > 0 {
+		return z.n > z.max
+	}
+	return z.n > maxRunBytes
+}
 
 func (z *sizer) cell(v any) any {
 	if s, ok := v.(string); ok {
@@ -456,7 +464,7 @@ func readPG(rows pgx.Rows, maxRows int, z *sizer, stop func()) (resultSet, error
 		set.Columns[i], set.Types[i] = f.Name, pgType(f.DataTypeOID)
 	}
 	for rows.Next() {
-		if len(set.Rows) >= maxRows || z.n > maxRunBytes {
+		if len(set.Rows) >= maxRows || z.over() {
 			set.Truncated = true
 			stop()
 			return set, nil // the cancel's own error is not the run's
@@ -551,7 +559,7 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 				set.Columns[i], set.Types[i] = c.Name(), msType(c.DatabaseTypeName())
 			}
 			for rows.Next() {
-				if len(set.Rows) >= maxRows || z.n > maxRunBytes {
+				if len(set.Rows) >= maxRows || z.over() {
 					set.Truncated = true
 					stop()
 					return append(sets, set), nil // the cancel's own error is not the run's
@@ -646,6 +654,11 @@ func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
 // refusal is the check asked inside the run's transaction before the statement: nil = pgRefusal (an instance's login);
 // a store run passes the store's own (storeRefusal: IN ROLE pgvigil_reader alone, serve's own repository).
 func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
+	return runPGSized(ctx, cfg, stmt, args, timeout, maxRows, 0, refusal)
+}
+
+// runPGSized is runPG with its own byte cap (0 = maxRunBytes): the agent door's run_select keeps 1 MB.
+func runPGSized(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows, maxBytes int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
 	if refusal == nil {
 		refusal = pgRefusal
 	}
@@ -676,7 +689,7 @@ func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.Named
 	if err != nil {
 		return nil, "", err
 	}
-	z := &sizer{}
+	z := &sizer{max: maxBytes}
 	set, err := readPG(rows, maxRows, z, qcancel)
 	if err != nil {
 		return nil, "", err

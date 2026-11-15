@@ -73,3 +73,78 @@ func CheckReader(ctx context.Context, dsn string) (user string, err error) {
 	}
 	return user, nil
 }
+
+// Login is what CheckLogin found: the login's name and whether it opens the agent door (a member of pgvigil_agent).
+type Login struct {
+	User  string
+	Agent bool
+}
+
+// sqlAgentLogin reads whether the SESSION user is a member of pgvigil_agent (a role set at connect is undone by
+// reading the session user; a superuser, a member of every role, takes the reader's check and its refusal), whether the repository is a standby, and the session user's own CREATE and table writes.
+const sqlAgentLogin = `
+SELECT coalesce(pg_has_role(session_user, to_regrole('pgvigil_agent')::oid, 'MEMBER'), false)
+         AND NOT (SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = session_user),
+       pg_is_in_recovery(),
+       coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false),
+       EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                  AND has_table_privilege(session_user, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE'))`
+
+// CheckLogin checks the login before the first message. A login that is not a member of pgvigil_agent gets CheckReader,
+// as before (the reader's door). A member gets the agent door's rule instead, on its SESSION user: agentRefusal (the
+// store rule: IN ROLE pgvigil_reader, pgvigil_agent and nothing else; no superuser; no read of the UI's password
+// hashes), no CREATE in the schema and no table write, and a primary (the door writes the request's record and LISTENs
+// for new requests: a standby can do neither).
+func CheckLogin(ctx context.Context, dsn string, agentRefusal func(context.Context, pgx.Tx) (string, error)) (Login, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return Login{}, errors.New("the dsn does not parse")
+	}
+	cfg.ConnectTimeout = 15 * time.Second
+	cfg.RuntimeParams["application_name"] = "pgvigil-mcp"
+	cfg.RuntimeParams["default_transaction_read_only"] = "on"
+	cfg.RuntimeParams["statement_timeout"] = "15000"
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return Login{User: cfg.User}, fmt.Errorf("repository: %w", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var agent, standby, creates, writes bool
+	if err := conn.QueryRow(ctx, sqlAgentLogin).Scan(&agent, &standby, &creates, &writes); err != nil {
+		return Login{User: cfg.User}, fmt.Errorf("login check: %w", err)
+	}
+	if !agent {
+		u, err := CheckReader(ctx, dsn)
+		return Login{User: u}, err
+	}
+	var why []string
+	if standby {
+		why = append(why, "the repository is in recovery (a standby): the agent door writes its requests' records and listens for new requests on the primary")
+	}
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Login{User: cfg.User}, fmt.Errorf("login check: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if agentRefusal == nil {
+		return Login{User: cfg.User}, errors.New("refused: no rule for the agent door's login")
+	}
+	r, err := agentRefusal(ctx, tx)
+	if err != nil {
+		return Login{User: cfg.User}, err
+	}
+	if r != "" {
+		why = append(why, r)
+	}
+	if creates {
+		why = append(why, fmt.Sprintf("the login %s may CREATE in the pgvigil schema (its owner?)", cfg.User))
+	}
+	if writes {
+		why = append(why, fmt.Sprintf("the login %s may change the repository's tables", cfg.User))
+	}
+	if len(why) > 0 {
+		return Login{User: cfg.User, Agent: true}, fmt.Errorf("refused: %s", strings.Join(why, "; "))
+	}
+	return Login{User: cfg.User, Agent: true}, nil
+}

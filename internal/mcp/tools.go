@@ -24,6 +24,7 @@ type arg struct {
 type tool struct {
 	Name, Title, Description string
 	args                     []arg
+	writes                   bool // the agent door's claim, renew, report and release write the investigation's own record
 	run                      func(ctx context.Context, s *Server, a map[string]any) (any, error)
 }
 
@@ -124,19 +125,32 @@ func tools() []tool {
 	}
 }
 
-func toolList() []any {
+// toolList is the reader's tools as tools/list names them.
+func toolList() []any { return listOf(tools()) }
+
+func listOf(ts []tool) []any {
 	var out []any
-	for _, t := range tools() {
+	for _, t := range ts {
 		out = append(out, map[string]any{
 			"name": t.Name, "title": t.Title, "description": t.Description, "inputSchema": t.schema(),
-			"annotations": map[string]any{"title": t.Title, "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+			"annotations": map[string]any{"title": t.Title, "readOnlyHint": !t.writes, "destructiveHint": false, "idempotentHint": !t.writes, "openWorldHint": false},
 		})
 	}
 	return out
 }
 
-func toolByName(n string) (tool, bool) {
-	for _, t := range tools() {
+// served is the tools this server answers: the reader's, and with the agent door its seven.
+func (s *Server) served() []tool {
+	if s.agent == nil {
+		return tools()
+	}
+	return append(tools(), agentTools()...)
+}
+
+func toolByName(n string) (tool, bool) { return findTool(tools(), n) }
+
+func findTool(ts []tool, n string) (tool, bool) {
+	for _, t := range ts {
 		if t.Name == n {
 			return t, true
 		}

@@ -26,7 +26,8 @@
 #     also holding pgvigil_agent: a collector login (pgvigil_collector), an auth member (pgvigil_auth), a reader with
 #     DELETE on one table ("may change the repository's tables"), the superuser ('superuser'), pg_read_all_data,
 #     pg_read_server_files, pgvigil_alerter (each named), the database owner reaching the agent role through
-#     options=-c role= ('pg_database_owner': the check reads the SESSION user); the agent role on a standby ('in
+#     options=-c role= ('<that login> is a member of': the check reads the SESSION user, not the role set at connect;
+#     on 14+ the list names pg_database_owner, on 13 the role the dsn set - 13 has no pg_database_owner); the agent role on a standby ('in
 #     recovery'). The plain reader, the reports login and the UI login calling agent_investigation_list are refused:
 #     'is not a member of pgvigil_agent' (the function's own check on the session user: apply_roles grants every
 #     function outside its lists to the reader at each migrate, until the join file's agent branch takes that back) or,
@@ -227,7 +228,7 @@ refused superuser "$PGVIGIL_ADMIN_DSN dbname=$REPO" superuser
 refused read_all_data "$(dsn_of "$(L rada)")" pg_read_all_data
 refused read_server_files "$(dsn_of "$(L rsfa)")" pg_read_server_files
 refused alerter "$(dsn_of "$(L alra)")" pgvigil_alerter
-refused owner_by_role "$(dsn_of "$(L ownm)") options='-c role=$(L agr)'" pg_database_owner
+refused owner_by_role "$(dsn_of "$(L ownm)") options='-c role=$(L agr)'" "$(L ownm) is a member of"
 for who in rd rep ui; do
   out=$(as "$(L $who)" -c "select pgvigil.agent_investigation_list(null::text, null::text, 1)")
   [[ $out == *"permission denied for function agent_investigation_list"* || $out == *"is not a member of pgvigil_agent"* ]] && ok "R3 the $who login may not call the agent's functions" || bad "R3 the $who login calling agent_investigation_list: ${out:0:200}"
