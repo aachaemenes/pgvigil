@@ -156,13 +156,14 @@ const allRows = await api({});
 
 // CH7 the landings
 {
-  // the Summary's cell, one PostgreSQL row (fx-chcrit) and one SQL Server row
+  // the Summary's cell, one PostgreSQL row (fx-chcrit) and one SQL Server row; a row is found by its instance link's
+  // text - a never-read instance (fx-chcrit: planted, no last_seen) says 'not read yet' beside its name (vis-b6ch5)
   await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: U + '#/summary?w=24h' });
   for (let i = 0; i < 100 && !(await ev(`!!document.querySelector('main table thead')`)); i++) await sleep(150);
   await sleep(1500);
   for (const r of [crit, ms].filter(Boolean)) {
     const h = await ev(`(() => { for (const t of document.querySelectorAll('main table')) { const hs = [...t.querySelectorAll('thead th')].map(th => th.textContent.trim()); const k = hs.indexOf('Collection Health'); if (k < 0) continue;
-      for (const tr of t.querySelectorAll('tbody tr')) if (tr.children[0]?.textContent.trim() === ${JSON.stringify(r.name)}) return tr.children[k]?.querySelector('a')?.getAttribute('href') ?? 'no link'; } return 'no cell'; })()`);
+      for (const tr of t.querySelectorAll('tbody tr')) if ((tr.children[0]?.querySelector('a') ?? tr.children[0])?.textContent.trim() === ${JSON.stringify(r.name)}) return tr.children[k]?.querySelector('a')?.getAttribute('href') ?? 'no link'; } return 'no cell'; })()`);
     const g = route(h);
     say(g.tab === 'collectionhealth' && g.q.get('i') === String(r.instance_id), `CH7 Summary cell ${r.engine} ${r.name}`, h);
   }
