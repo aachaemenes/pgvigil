@@ -96,11 +96,16 @@ An approved proposal also gets its **cloud block** from the server's own identit
 turns `doors.page_cloud_blocks` on ([Configuration](configuration.md#cloud-blocks-on-a-page-instance)): an AWS
 PostgreSQL server its `aws:` block (its region, its DB instance and, for an Aurora member, its cluster - the cluster's
 log group is read), an Azure SQL Database its `azure:` block (its subscription, resource group and logical server, the
-source's cloud). RDS for SQL Server gets none yet. The approve writes the instance and its block in one transaction.
-The block reads with the **collector host's** default AWS chain; the source's own profile is copied only when
-`doors.page_aws_profiles` lists it, and it must then exist on the collector's host (a profile only `pgvigil serve`'s
-host holds fails there in AWS's words). An instance approved before this release has no block: give it one in Admin >
-Instances > Edit > Cloud.
+source's cloud). RDS for SQL Server gets none yet. The approve writes the instance and its block in one transaction;
+a block the repository refuses (a resource group outside its ASCII rule, say) is left out and the server approved
+without it - the approve's answer says so, and the refusal is in the admin audit. The block reads with the
+**collector host's** default AWS chain; the source's own profile is copied only when `doors.page_cloud_blocks` is on
+and `doors.page_aws_profiles` lists it **at the approve** (an approve made while either was off keeps no profile: a
+later change of the file does not add it; Clear the block and approve again, or set the instance in `pgvigil.yaml`),
+and it must then exist on the collector's host (a profile only `pgvigil serve`'s host holds fails there in AWS's
+words). The collector checks an AWS block against the endpoint RDS gives for it before its first read
+([Configuration](configuration.md#cloud-blocks-on-a-page-instance)). An instance approved before this release has no
+block: give it one in Admin > Instances > Edit > Cloud.
 
 ## Not proven
 

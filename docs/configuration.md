@@ -176,12 +176,27 @@ doors:
   resource_group, server, cloud. `aws:` on a PostgreSQL instance only (on SQL Server it waits for its own reads),
   `azure:` on a SQL Server instance of platform `azuresqldb` only. No profile is typed on the page; an approved
   proposal takes its source's profile only when `page_aws_profiles` lists it.
-- **The name match**: before a block's first read its target must be the instance's own host by name - an RDS
-  endpoint `<db_instance or cluster>.<x>.<region>.rds.amazonaws.com` (`.cluster-` and `.cluster-ro-` endpoints too;
-  `.amazonaws.com.cn` in the China regions), or `<server>.database.windows.net` (`.database.usgovcloudapi.net` with
-  `cloud: usgov`, `.database.chinacloudapi.cn` with `cloud: china`). A CNAME, a private DNS name (privatelink) or an
-  address is refused with both names: give such an instance its block in `pgvigil.yaml`, where the file's author
-  answers for it.
+- **The name match**: the block's target must be the instance's own host by name - an RDS instance endpoint
+  `<db_instance>.<x>.<region>.rds.amazonaws.com`, or a cluster's writer or reader endpoint
+  `<cluster>.cluster-[ro-]<x>.<region>.rds.amazonaws.com` (in the China regions `.amazonaws.com.cn`, either
+  `<region>.rds.` or `rds.<region>.`: not proven, no China account), or `<server>.database.windows.net`
+  (`.database.usgovcloudapi.net` with `cloud: usgov`, `.database.chinacloudapi.cn` with `cloud: china`). An instance
+  endpoint names the block's `db_instance` and a cluster endpoint its `cluster`; the other name, when given, is the
+  provider's to confirm (below). A custom cluster endpoint (`.cluster-custom-`), a CNAME, a private DNS name
+  (privatelink) or an address is refused with both names: give such an instance its block in `pgvigil.yaml`, where
+  the file's author answers for it.
+- **The provider's check (aws:)**: an RDS name is unique only inside one account, so before an `aws:` block's first
+  read the collector asks RDS - in the region and with the profile the block reads with - for the DB instance's
+  `Endpoint.Address` and the cluster's writer and reader endpoints, and keeps the block only when the instance's host
+  is one of them; a block naming both must name an instance of that cluster. A refused block is logged once ('a page
+  instance's aws: block is not used', with both names) and each collection that needs it says so as its skip; the
+  instance keeps collecting. An AWS error (no credentials, `AccessDenied`) refuses the block too, and it is asked
+  again after 5 minutes; a verdict is kept until the block or the host changes (or the collector restarts). The
+  rights are the reads' own: `rds:DescribeDBInstances`, and `rds:DescribeDBClusters` for a block naming a cluster.
+- **A resource group** is checked as ASCII letters, digits and `-_.()` on the page and in the repository alike; a
+  group named with other letters takes its block in `pgvigil.yaml`.
+- **A profile**: an approved instance's block keeps its source's profile when an edit on the page leaves the region
+  as it was (the form shows it, and has no profile field); an edit to another region, or Clear, removes it.
 - A block set, changed or cleared restarts the instance's loops within the collector's next read of the list (15 s).
   Its Clear is its own control; an emptied fieldset clears nothing.
 - Not in this release: a `gcp:` block on a page instance (its credentials file is a path on the host).
