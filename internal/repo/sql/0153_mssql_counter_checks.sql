@@ -13,7 +13,7 @@
 --   - the buffer cache hit ratio warns under 90 with no critical (a weak signal: D4).
 --   - page life expectancy is judged per 4 GB of the lowest memory node's database pages (300 s per 4 GB, D5 / F19).
 --   - a ratio under its denominator's floor is 0 (0152's metric_points): a quiet server never trips a ratio (F21);
---     the per-batch ratios and full scans per search are NOT JUDGED under a floor (metric_floors below, the lead's
+--     the per-batch ratios and full scans per search are NOT JUDGED under a floor (0152's metric_floors, the lead's
 --     19:4x): SQL Server's own telemetry (SQLServerCEIP) runs 2-3 batches a second with 140 compilations per 100 and
 --     about 0.6 full scans a second in bursts on an idle server, over both seeds' critical.
 --   - page reads, page writes and lock requests measure volume, not a fault: their notes say so (F21).
@@ -23,25 +23,9 @@
 -- client '0153 seed' marks a seeded row (the join file's metric_rule reads that mark); each seed writes one
 -- alert_rule_log row. The metric keys are frozen: a rule names its metric by key.
 
--- metric_floors: a metric judged only when the rate it is judged by reads at its floor or more (the lead's 19:4x).
--- Under a floor the metric's point has no value (0152's mssql_counter_points, the same numbers: the proof reads both)
--- and a rule on it reads 'na', not judged: no finding, the page's N/A with 'too few <unit>/s to judge (<value>/s, the
--- floor <floor>/s)' (the join file's alert_rule_eval). input_key is the rate's metric of the same read; a metric with
--- two rows is not judged under either floor, and the words name the one it is under.
-CREATE OR REPLACE VIEW pgvigil.metric_floors AS
-SELECT v.key, v.input_key, v.unit, v.floor
-  FROM (VALUES
-    ('counters.compiles_per_100_batches',    'counters.batch_requests_s', 'batch requests', 5::double precision),
-    ('counters.page_splits_per_100_batches', 'counters.batch_requests_s', 'batch requests', 5),
-    ('counters.page_lookups_per_batch',      'counters.batch_requests_s', 'batch requests', 5),
-    ('counters.full_scans_per_search',       'counters.full_scans_s',     'full scans',     1),
-    ('counters.full_scans_per_search',       'counters.index_searches_s', 'index searches', 10)
-  ) AS v(key, input_key, unit, floor);
-COMMENT ON VIEW pgvigil.metric_floors IS 'The floors under which a metric is not judged (its rule reads na): key, the rate it is judged by (input_key, a metric of the same read), its unit and floor per second.';
-
 WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
   ('SQL Server: full scans per index search', 'counters.full_scans_per_search', 'above', 0.001, 0.01, 15,
-   'SQLWATCH CHK#12. Full scans per index search; not judged (N/A) under 1 full scan or 10 index searches a second.'),
+   'SQLWATCH CHK#12. Full scans per index search; not judged (N/A) under 1 full scan a second.'),
   ('SQL Server: compilations per 100 batches', 'counters.compiles_per_100_batches', 'above', 10, 15, 15,
    'SQLWATCH CHK#13. SQL Compilations per 100 Batch Requests; not judged (N/A) under 5 batch requests a second.'),
   ('SQL Server: re-compilations per 100 compilations', 'counters.recompiles_per_100_compiles', 'above', 10, 15, 15,

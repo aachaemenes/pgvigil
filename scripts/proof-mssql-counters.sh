@@ -25,7 +25,7 @@
 #  C. from two stored reads: every rate = (value - value before) / the reads' interval by the server's clock (3
 #     places), every count's change = value - value before, every average = change in value / change in base, every
 #     fraction = 100 * value / base, as mssql_counter_newest and metric_points return them; the ratio metrics equal
-#     their rates, a floored ratio under its floor (0153's metric_floors) a point with no value (NULL).
+#     their rates, a floored ratio under its floor (0152's metric_floors) a point with no value (NULL).
 #  D. provoked between two reads with nothing else connected, each change read from the store minus pgvigil's own
 #     logins (one per collector read):
 #     Logins/sec and Logouts/sec + 40 each; SQL Errors User Errors + 12 (RAISERROR 16), Info Errors + 7 (RAISERROR 10)
@@ -299,10 +299,10 @@ rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate), 0) FROM p
 pt = lambda m: q(f"SELECT coalesce(value::text, 'NULL') FROM pgvigil.metric_points({sb}, 'counters', '{at}'::timestamptz - interval '1 second', '{at}') WHERE metric = '{m}'")
 b, c, rc = rate('SQL Statistics', 'Batch Requests/sec'), rate('SQL Statistics', 'SQL Compilations/sec'), rate('SQL Statistics', 'SQL Re-Compilations/sec')
 fs, se = rate('Access Methods', 'Full Scans/sec'), rate('Access Methods', 'Index Searches/sec')
-# the floors are 0153's metric_floors (5 Batch Requests/s; 1 Full Scan/s and 10 Index Searches/s): None = no value
+# the floors are 0152's metric_floors (5 Batch Requests/s; 1 Full Scan/s): None = no value; no index search = one
 exp = {'batch_requests_s': b, 'full_scans_s': fs, 'index_searches_s': se,
        'compiles_per_100_batches': None if b < 5 else 100 * c / b, 'recompiles_per_100_compiles': 0 if c < 1 else 100 * rc / c,
-       'full_scans_per_search': None if fs < 1 or se < 10 else fs / se}
+       'full_scans_per_search': None if fs < 1 else fs / (se if se > 0 else 1)}
 def wrong(g, e):
     if g == '': return True
     if e is None: return g != 'NULL'

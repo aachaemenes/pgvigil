@@ -683,7 +683,7 @@ $$;
 -- ---- the metrics family 'counters' ----------------------------------------------------------------------------------
 
 -- mssql_counter_metrics: the metrics of the family in metric_catalog's columns (the join file adds them to the
--- catalogue). The per-batch ratios and full scans per search have floors (the lead's 19:4x, 0153's metric_floors):
+-- catalogue). The per-batch ratios and full scans per search have floors (the lead's 19:4x, metric_floors below):
 -- under one the ratio is not judged - its point has no value - and the rates it is judged by are metrics of their own
 -- (batch_requests_s, full_scans_s, index_searches_s), so the page can say why. The other ratios' labels say their
 -- floor: under it the point is 0 (an idle server's own reads are not a ratio).
@@ -736,12 +736,28 @@ SELECT v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.u
     ('sqlserver', 'counters', 'Counters', 50, 'log_growths',                'log growths per read',                            'count', true,  1800, 44)
   ) AS v(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort);
 
+-- metric_floors: a metric judged only when the rate it is judged by reads at its floor or more (the lead's 19:4x: 5
+-- Batch Requests/s for the per-batch ratios, 1 Full Scan/s for full scans per search). One place for the numbers:
+-- mssql_counter_points reads it, and a rule on a floored metric whose point has no value reads 'na', not judged - no
+-- finding, the page's N/A with 'too few <unit>/s to judge (<value>/s, the floor <floor>/s)' (the join file's
+-- alert_rule_eval). input_key is the rate's metric of the same read; one row per key (a metric with no row is never
+-- under a floor).
+CREATE OR REPLACE VIEW pgvigil.metric_floors AS
+SELECT v.key, v.input_key, v.unit, v.floor
+  FROM (VALUES
+    ('counters.compiles_per_100_batches',    'counters.batch_requests_s', 'batch requests', 5::double precision),
+    ('counters.page_splits_per_100_batches', 'counters.batch_requests_s', 'batch requests', 5),
+    ('counters.page_lookups_per_batch',      'counters.batch_requests_s', 'batch requests', 5),
+    ('counters.full_scans_per_search',       'counters.full_scans_s',     'full scans',     1)
+  ) AS v(key, input_key, unit, floor);
+COMMENT ON VIEW pgvigil.metric_floors IS 'The floors under which a metric is not judged (its rule reads na): key, the rate it is judged by (input_key, a metric of the same read), its unit and floor per second.';
+
 -- mssql_counter_points: the family's samples in (p_from, p_to] as (at, metric, value), for metric_points. p_database
 -- names one database's series of the per-database metrics; NULL = the server's _Total. A rate read at raw 0 is 0 (the
--- read's zero_series); an average with no event in the read is 0. A floored ratio (0153's metric_floors: under 5
--- Batch Requests/s; full scans per search under 1 Full Scan/s or 10 Index Searches/s) gives a point with NO value
--- (NULL) under its floor, kept, beside its rates' points of the same read: not judged, never 0 (the lead's 19:4x); no
--- rate read = no point. The other ratios under their floor are 0.
+-- read's zero_series); an average with no event in the read is 0. A floored ratio (metric_floors, above) gives a point
+-- with NO value (NULL) under its floor, kept, beside its rates' points of the same read: not judged, never 0 (the
+-- lead's 19:4x); no rate read = no point. Full scans per search over no index search is the scans over one search
+-- (every access a scan). The other ratios under their floor are 0.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_points(p_instance_id int, p_from timestamptz, p_to timestamptz,
                                                          p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
 RETURNS TABLE (at timestamptz, metric text, value double precision)
@@ -851,13 +867,16 @@ LANGUAGE sql STABLE SET jit = off AS $$
       ('failed_to_create_worker', i.failed_worker::double precision)) AS x(metric, value)
    WHERE x.value IS NOT NULL
   UNION ALL
-  -- the floored ratios: under a floor (the same numbers as 0153's metric_floors) a point with no value, kept
-  SELECT i.snapshot_at, x.metric, CASE WHEN x.under THEN NULL ELSE (x.scale * x.num / x.den)::double precision END
+  -- the floored ratios: under its floor (metric_floors) a point with no value, kept
+  SELECT i.snapshot_at, x.metric,
+         CASE WHEN x.inp < coalesce(f.floor, '-infinity') THEN NULL
+              ELSE (x.scale * x.num / CASE WHEN x.den > 0 THEN x.den ELSE 1 END)::double precision END
     FROM i CROSS JOIN LATERAL (VALUES
-      ('compiles_per_100_batches', i.compiles, i.batch, 100.0, i.batch < 5),
-      ('page_splits_per_100_batches', i.splits, i.batch, 100.0, i.batch < 5),
-      ('page_lookups_per_batch', i.lookups, i.batch, 1.0, i.batch < 5),
-      ('full_scans_per_search', i.full_scans, i.searches, 1.0, i.full_scans < 1 OR i.searches < 10)) AS x(metric, num, den, scale, under)
+      ('compiles_per_100_batches', i.compiles, i.batch, 100.0, i.batch),
+      ('page_splits_per_100_batches', i.splits, i.batch, 100.0, i.batch),
+      ('page_lookups_per_batch', i.lookups, i.batch, 1.0, i.batch),
+      ('full_scans_per_search', i.full_scans, i.searches, 1.0, i.full_scans)) AS x(metric, num, den, scale, inp)
+    LEFT JOIN pgvigil.metric_floors f ON f.key = 'counters.' || x.metric
    WHERE x.num IS NOT NULL AND x.den IS NOT NULL
   UNION ALL
   SELECT nn.snapshot_at, 'ple_per_4gb', nn.ple4::double precision FROM nn WHERE nn.ple4 IS NOT NULL
