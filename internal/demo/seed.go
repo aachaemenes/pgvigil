@@ -65,6 +65,9 @@ type Fleet struct {
 	ids  []int
 	opts Options
 	last time.Time
+	// healthFrom: the first minute this fleet logged its runs (B6.2: the hourly collection health counts from it, so
+	// its failed runs are the errors collection_log holds)
+	healthFrom time.Time
 }
 
 // IDs are the instance ids this fleet seeded, in its order (the demo's write door writes for these and no other).
@@ -210,6 +213,10 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
+		f.healthFrom = time.Now().UTC().Truncate(time.Minute)
+		err = f.writeHealth(ctx, f.healthFrom)
+	}
+	if err == nil {
 		err = f.catchUp(ctx, &st)
 	}
 	st.Elapsed = time.Since(began)
@@ -256,6 +263,9 @@ func (f *Fleet) Tick(ctx context.Context, t time.Time) (Stats, error) {
 		}
 		return imp.logCollections(ctx, f.ids[i], f.gens[i], t)
 	})
+	if err == nil {
+		err = f.writeHealth(ctx, t)
+	}
 	if err == nil {
 		err = SeedPooler(ctx, f.pool, f.opts.Prefix, f.last, t)
 	}
@@ -334,32 +344,46 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 // statements collection's error on the instance without pg_stat_statements.
 func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.Time) error {
 	for _, c := range g.Collections() {
-		status, note := "ok", ""
-		if why := g.mssqlSkipNote(c); why != "" {
-			status, note = "skipped", why
-		}
-		if c == "host" && !g.hostDoor() {
-			status, note = "skipped", hostSkipNote
-		}
-		if (c == "vacuum" || c == "vacuum_tables") && g.Spec.Replica {
-			status, note = "skipped", vacuumSkipNote
-		}
-		if c == "plans" && g.idx%2 == 1 {
-			status, note = "skipped", plansSkipNote
-		}
-		if c == "serverlog" && g.Spec.Replica {
-			status, note = "skipped", serverlogSkipNote
-		}
-		if c == "statements" && g.Spec.StmtBroken {
-			status, note = "error", `statements on `+g.Spec.Name+`: ERROR: pg_stat_statements must be loaded via "shared_preload_libraries" (SQLSTATE 55000)`
-		}
+		status, note := runStatus(g, c, at)
 		if _, err := m.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,
-			id, c, at, 40+int(noise(g.Spec.Name+c, at)*400), status, nullIf(note)); err != nil {
+			id, c, at, runMs(g, c, at), status, nullIf(note)); err != nil {
 			return fmt.Errorf("log_collection %s: %w", c, err)
 		}
 	}
 	return nil
 }
+
+// runStatus: how the demo's run of collection c at minute at ends - skipped where it does not apply, statements failing
+// on a StmtBroken instance, onprem-hr01's activity partial 2 minutes in 10 (B6.2: a warning by rate on Collection
+// Health), else ok; the hourly collection health (health_demo.go) counts the same minutes
+func runStatus(g *Gen, c string, at time.Time) (status, note string) {
+	status, note = "ok", ""
+	if why := g.mssqlSkipNote(c); why != "" {
+		status, note = "skipped", why
+	}
+	if c == "host" && !g.hostDoor() {
+		status, note = "skipped", hostSkipNote
+	}
+	if (c == "vacuum" || c == "vacuum_tables") && g.Spec.Replica {
+		status, note = "skipped", vacuumSkipNote
+	}
+	if c == "plans" && g.idx%2 == 1 {
+		status, note = "skipped", plansSkipNote
+	}
+	if c == "serverlog" && g.Spec.Replica {
+		status, note = "skipped", serverlogSkipNote
+	}
+	if c == "statements" && g.Spec.StmtBroken {
+		status, note = "error", `statements on `+g.Spec.Name+`: ERROR: pg_stat_statements must be loaded via "shared_preload_libraries" (SQLSTATE 55000)`
+	}
+	if c == "activity" && g.is("onprem-hr01") && at.Minute()%10 < 2 {
+		status, note = "partial", "activity: the wait-event read timed out (a demo partial run: the rest of the collection was stored)"
+	}
+	return status, note
+}
+
+// runMs: the demo run's duration in ms
+func runMs(g *Gen, c string, at time.Time) int { return 40 + int(noise(g.Spec.Name+c, at)*400) }
 
 func nullIf(s string) any {
 	if s == "" {
