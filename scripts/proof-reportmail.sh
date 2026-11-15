@@ -210,8 +210,8 @@ S(('127.0.0.1', port), H).serve_forever()
 PY
 python3 "$WORK/sink.py" "$SINKP" "$WORK/sink" > "$WORK/sink.log" 2>&1 &
 SINK=$!
-PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add"
-PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" $U2USER >/dev/null 2>&1 || fail "user add (the second)"
+PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add" # the first enabled admin (B24f: the repository's first user without -role)
+PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" -role admin $U2USER >/dev/null 2>&1 || fail "user add (the second)" # adds a schedule: admin (B24f)
 U="http://127.0.0.1:$PORT"; U2="http://127.0.0.1:$PORT2"
 TZ=UTC "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" >> "$WORK/serve.log" 2>&1 &
 SRV=$!
