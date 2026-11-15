@@ -102,10 +102,12 @@ for a in sys.argv[1:]:
     k, v = a.split("=", 1)
     d[k] = os.environ[v[1:]] if v.startswith("@") else v
 print(json.dumps(d))' "$@"; }
-# api METHOD path [body]: the answer in $TMPD/ans.json (kept too under $TMPD/answers/ for the leak check), the code printed
-NANS=0; mkdir -p "$TMPD/answers"
+# api METHOD path [body]: the answer in $TMPD/ans.json, the code printed. Every answer is kept too under
+# $TMPD/answers/ for the leak check, each under a name of its own (api mostly runs inside \$(...), a subshell: a shell
+# counter would not move there and the answers would overwrite each other - run st12r)
+mkdir -p "$TMPD/answers"
 api() { local code; if [[ $# -ge 3 ]]; then printf '%s' "$3" > "$TMPD/body.json"; code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -X "$1" --data @"$TMPD/body.json" "$U/api/$2");
-  else code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/$2"); fi; NANS=$((NANS + 1)); cp "$TMPD/ans.json" "$TMPD/answers/$NANS.json"; echo "$code"; }
+  else code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/$2"); fi; cp "$TMPD/ans.json" "$(mktemp "$TMPD/answers/XXXXXXXX")"; echo "$code"; }
 ans() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); v = d
 for k in sys.argv[2].split("."):
     v = v.get(k) if isinstance(v, dict) else None
@@ -290,9 +292,10 @@ ok "R5 (PostgreSQL): the role's memberships and the door functions ($G0) equal b
 echo "== the answers hold no password and no dsn =="
 # grep answers 1 when it finds nothing - the good case here: its status is taken out of the pipeline (run st12q: under
 # pipefail the empty result ended the proof without a word)
-HITS=$(for s in "$SA_PW" "$FULL_PW" "$BARE_PW" "$ODD_PW" "$PG_PW" "$MON_PW" "$UPW" "sqlserver://" "password="; do { grep -lF -- "$s" "$TMPD"/answers/*.json 2>/dev/null || true; } | head -2; done | sort -u | tr '\n' ' ')
+HITS=$(for s in "$SA_PW" "$FULL_PW" "$BARE_PW" "$ODD_PW" "$PG_PW" "$MON_PW" "$UPW" "sqlserver://" "password="; do { grep -lF -- "$s" "$TMPD"/answers/* 2>/dev/null || true; } | head -2; done | sort -u | tr '\n' ' ')
 [[ -z "$HITS" ]] || fail "a password or a connection string is in an API answer: $HITS"
-[[ "$NANS" -ge 30 && "$(ls "$TMPD/answers" | wc -l)" == "$NANS" ]] || fail "the leak check read $(ls "$TMPD/answers" | wc -l) saved answers of $NANS (want 30 or more, all saved)"
+NANS=$(ls "$TMPD/answers" | wc -l)
+[[ "$NANS" -ge 37 ]] || fail "the leak check read $NANS saved answers (want 37 or more: every call of the run)"
 if grep -qF -e "$FULL_PW" -e "$BARE_PW" -e "$PG_PW" -e "$MON_PW" "$TMPD/serve.log"; then fail "a password is in serve's log"; fi
 ok "no password and no connection string in any of the $NANS API answers or in serve's log"
 
