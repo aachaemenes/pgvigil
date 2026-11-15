@@ -29,7 +29,10 @@
 #     critical; two quiet reads: state ok and no finding; the seed keeps its rule_id and enabled false; GET
 #     /api/alertrules?part=rules lists the seed with enabled false.
 #  D. each provoked check, judged as C at the seeded thresholds (warning or critical after the load, ok after two
-#     quiet reads): errors_kill_s (3 at severity 20), lock_timeouts_gt0_s and lock_waits_s (6 probes at LOCK_TIMEOUT
+#     quiet reads; from run chk11 the second quiet read 60 s after the first, the product's interval, and the window
+#     named: batches and RPCs by program, statistics updates, scans and seeks per object; a clear held up by named
+#     background prints 'NOT PROVEN clear: <names>' and the fire leg stays hard; held up with only pgvigil's own
+#     batches in the window = red): errors_kill_s (3 at severity 20), lock_timeouts_gt0_s and lock_waits_s (6 probes at LOCK_TIMEOUT
 #     200 behind a held lock), avg_lock_wait_ms (3 probes at LOCK_TIMEOUT 1500: over 1000 ms), compiles_per_100_batches
 #     (20 distinct batches; the quiet reads 12 s apart, so the collector's own batches stay under the ratios' 1
 #     batch/s floor), page_splits_per_100_batches (random-key inserts, 20 batches), full_scans_per_search (20
@@ -222,13 +225,83 @@ echo "== C. on by an instance rule (F20) =="
 # load, a read, the run (warning or critical); two quiet reads, the run (ok); the instance rule ended
 SEEDOF() { grep "^counters.$1|" "$TMPD/seed-a"; }
 # the quiet reads' spacing: the rule judges the newest point, so the first quiet read comes 2 s after the load's (it
-# takes what SQL Server publishes late) and the second QUIET s after it. One read of mssql_counters sends the server
-# about 19 batches of its own: QUIET 30 keeps them at about 0.6 batch/s, under the ratios' 1 batch/s floor, as the
-# 60 s interval does (run chk3 at 3 s and chk9 at 12 s read page lookups per batch over 100 at 1.3-1.6 batches/s with
-# nothing of the proof running)
-QUIET=30
+# takes what SQL Server publishes late) and the second QUIET s after it, the product's own 60 s interval (the lead's
+# 19:0x: runs chk3, chk9 and chk10 at 3, 12 and 30 s read the collector's own batches and an unnamed background over
+# the ratios' thresholds).
+QUIET=${QUIET:-60}
+# the clear leg's window (between the scope's two newest reads) is named: every batch and RPC by program and the
+# automatic statistics updates (the XE session pgv_chk_diag, started before the first quiet read), and the scans and
+# seeks per object, user and system (sys.dm_db_index_usage_stats before the first quiet read and after the second).
+# The collector's own batches carry the program 'pgvigil'. A clear held up by NAMED background (a program but pgvigil,
+# an automatic statistics update, or a user object scanned or sought) prints 'NOT PROVEN clear: <names>'; the fire
+# leg stays a hard check; a clear held up with nothing but pgvigil's own in the window is red.
+usage() { sq "SELECT DB_NAME(u.database_id) + '|' + ISNULL(OBJECT_NAME(u.object_id, u.database_id), CAST(u.object_id AS varchar(12))) + '|' + CAST(u.index_id AS varchar(6))
+  + '|' + CAST(u.user_scans AS varchar(20)) + '|' + CAST(u.user_seeks AS varchar(20)) + '|' + CAST(u.system_scans AS varchar(20)) + '|' + CAST(u.system_seeks AS varchar(20))
+  FROM sys.dm_db_index_usage_stats u" > "$1"; }
+diag_on() {
+  sqok "the diagnostic XE session" "IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'pgv_chk_diag') DROP EVENT SESSION pgv_chk_diag ON SERVER;
+CREATE EVENT SESSION pgv_chk_diag ON SERVER
+  ADD EVENT sqlserver.sql_batch_completed (ACTION (sqlserver.client_app_name)),
+  ADD EVENT sqlserver.rpc_completed (ACTION (sqlserver.client_app_name)),
+  ADD EVENT sqlserver.auto_stats (ACTION (sqlserver.client_app_name))
+  ADD TARGET package0.ring_buffer (SET max_memory = 16384) WITH (MAX_DISPATCH_LATENCY = 1 SECONDS);
+ALTER EVENT SESSION pgv_chk_diag ON SERVER STATE = START;"
+  usage "$TMPD/usage-a"; }
+# diag_read <scope>: prints the window's names; DIAG_OTHER holds the named background ('' = pgvigil's own only)
+diag_read() {
+  local w a b
+  w=$(pq "SELECT string_agg(to_char(server_utc AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US'), ' ' ORDER BY server_utc)
+    FROM (SELECT server_utc FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = '$1' ORDER BY snapshot_at DESC LIMIT 2) r")
+  read -r a b <<<"$w"
+  usage "$TMPD/usage-b"
+  sq "DECLARE @x xml = (SELECT CAST(t.target_data AS xml) FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+                     WHERE s.name = N'pgv_chk_diag' AND t.target_name = N'ring_buffer');
+SELECT 'xe|' + e.n + '|' + ISNULL(NULLIF(e.app, N''), N'(no program)') + '|' + CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(ISNULL(e.lr, 0)) AS varchar(20))
+  FROM (SELECT v.value('@name', 'nvarchar(60)') AS n, v.value('@timestamp', 'datetime2') AS ts,
+               v.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app,
+               v.value('(data[@name=\"logical_reads\"]/value)[1]', 'bigint') AS lr
+          FROM @x.nodes('/RingBufferTarget/event') x(v)) e
+ WHERE e.ts > '$a' AND e.ts <= '$b'
+ GROUP BY e.n, e.app;
+DROP EVENT SESSION pgv_chk_diag ON SERVER;" > "$TMPD/xe-w" 2>&1
+  python3 - "$TMPD/usage-a" "$TMPD/usage-b" "$TMPD/xe-w" "$a" "$b" > "$TMPD/diag-w" <<'PY'
+import sys
+def rows(p):
+    out = {}
+    for l in open(p):
+        f = l.strip().split('|')
+        if len(f) == 7 and all(x.isdigit() for x in f[3:]):
+            out[tuple(f[:3])] = [int(x) for x in f[3:]]
+    return out
+a, b = rows(sys.argv[1]), rows(sys.argv[2])
+other = []
+print(f'      the window {sys.argv[4]} .. {sys.argv[5]} UTC:')
+xe = [l.strip().split('|') for l in open(sys.argv[3]) if l.startswith('xe|')]
+for _, n, app, c, lr in sorted(xe, key=lambda r: -int(r[3])):
+    own = app == 'pgvigil'
+    tag = " (the collector's own)" if own else ""
+    print(f"      {n} by {app}{tag}: {c} events, {lr} logical reads")
+    if not own:
+        other.append(f'{app} ({n} x{c})')
+if not xe:
+    said = ' '.join(l.strip() for l in open(sys.argv[3]) if l.strip())[:300]
+    print('      no batch, RPC or statistics update in the window' + (f' (the read said: {said})' if said else ''))
+moved = []
+for k, v in b.items():
+    d = [x - y for x, y in zip(v, a.get(k, [0, 0, 0, 0]))]
+    if any(d):
+        moved.append((sum(d), k, d))
+for _, k, d in sorted(moved, reverse=True)[:8]:
+    print(f'      {k[0]}.{k[1]} index {k[2]}: user scans +{d[0]} seeks +{d[1]}, system scans +{d[2]} seeks +{d[3]} (over both quiet reads)')
+    if (d[0] or d[1]) and k[0] not in ('master', 'msdb', 'model', 'tempdb'):
+        other.append(f'{k[0]}.{k[1]} user scans +{d[0]} seeks +{d[1]}')
+print('OTHER=' + '; '.join(other))
+PY
+  grep -v '^OTHER=' "$TMPD/diag-w"
+  DIAG_OTHER=$(sed -n 's/^OTHER=//p' "$TMPD/diag-w")
+}
 judge() {
-  local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st1 st2 f1 f2 v
+  local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st1 st2 f1 f2 v v2
   s=$(SEEDOF "$m"); op=$(cut -d'|' -f3 <<<"$s"); w=$(cut -d'|' -f4 <<<"$s"); cr=$(cut -d'|' -f5 <<<"$s")
   rid=$(rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"counters.$m\",\"op_dir\":\"$op\",\"scope\":\"instance\",\"instance_name\":\"chkbox\",\"warning\":${w:-null},\"critical\":${cr:-null},\"for_minutes\":0}" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")')
@@ -237,13 +310,18 @@ judge() {
   # read a ratio's full scans and its index searches in two reads 0.3 s apart)
   col "$c"; $fn; sleep 2; col "$c"; run; st1=$(state "$m"); f1=$(findings "$m"); v=$(point "$m")
   [[ -n "${4:-}" ]] && echo "   $m's inputs at that read: $($4)"
-  sleep 2; col "$c"; sleep "$QUIET"; col "$c"; run; st2=$(state "$m"); f2=$(findings "$m")
-  [[ -n "${4:-}" && "$st2" != ok ]] && echo "   $m's inputs after the quiet reads: $($4)"
+  local scope=instance; [[ "$c" == mssql_counters_db ]] && scope=database
+  sleep 2; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"; run; st2=$(state "$m"); f2=$(findings "$m"); v2=$(point "$m")
+  [[ -n "${4:-}" ]] && echo "   $m's inputs after the quiet reads: $($4)"
   rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$rid\"}" >/dev/null
-  echo "   $m ($op ${w:-} / ${cr:-}): $v after the load -> $st1 ($f1 finding); quiet -> $st2 ($f2)"
-  [[ ( "$st1" == warning || "$st1" == critical ) && "$f1" == 1 && "$st2" == ok && "$f2" == 0 ]]
+  echo "   $m ($op ${w:-} / ${cr:-}): $v after the load -> $st1 ($f1 finding); quiet ($v2) -> $st2 ($f2)"
+  [[ ( "$st1" == warning || "$st1" == critical ) && "$f1" == 1 ]] || return 1
+  CLEARED=1; [[ "$st2" == ok && "$f2" == 0 ]] && return 0
+  CLEARED=0
+  if [[ -n "$DIAG_OTHER" ]]; then echo "NOT PROVEN clear: $m stayed $st2 at $v2 with named background in the window: $DIAG_OTHER"; return 0; fi
+  return 1
 }
-judge logins_s p_logins || fail "C: logins_s"
+judge logins_s p_logins && [[ $CLEARED == 1 ]] || fail "C: logins_s (fire and clear both hard here)"
 [[ $(pq "SELECT rule_id || '|' || enabled FROM pgvigil.alert_rules WHERE metric = 'counters.logins_s' AND client = '0153 seed' AND ended_at IS NULL") == "$LS|false" ]] \
   || fail "C: the seeded logins rule changed"
 PORT=$(freeport 29000 32499)
@@ -287,7 +365,7 @@ judge lock_requests_s p_lockreq mssql_counters d_lockreq || fail "D: lock_reques
 judge log_growths p_growth mssql_counters_db || fail "D: log_growths"
 if judge recompiles_per_100_compiles p_recompiles; then ok "D: recompiles_per_100_compiles fired and cleared"
 else echo "NOT PROVEN live: recompiles_per_100_compiles did not reach its warning with a procedure whose temp table changes shape (the line above)"; fi
-ok "D: thirteen provoked checks fired at their seeded thresholds and cleared after two quiet reads"
+ok "D: thirteen provoked checks fired at their seeded thresholds; each cleared after two quiet reads 60 s apart, or its clear is NOT PROVEN above with the background named"
 
 echo "== E. not provokable on a box: the rule's path =="
 for m in free_list_stalls_s lazy_writes_s buffer_cache_hit_pct ple_per_4gb errors_offline_s; do
