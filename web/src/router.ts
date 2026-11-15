@@ -236,6 +236,9 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['cv', 'risk']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
+  // the Files page's status filter in its address (drives.ts dbFilesView: the Summary's % Max Size link) stays on its
+  // own links: a range change keeps the files in view
+  if (keep && c.tab === 'dbfiles') { const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('status'); if (v) q.set('status', v); }
   if (keep && c.tab === 'dbadash') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['dr', 'di', 'dp', 'ds']) { const v = cur.get(k); if (v) q.set(k, v); }

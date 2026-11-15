@@ -321,8 +321,12 @@ export function cellTarget(g: Group, r: Row): Target {
 // withTarget: a target's own part of its page's address after the tab's (base: router.ts href for t.tab and t.kind):
 // the view (cv) and the status filter (status), read by the page itself from its address
 export function withTarget(base: string, t: Target): string {
-  const extra = [t.cv ? `cv=${t.cv}` : '', t.status ? `status=${t.status}` : ''].filter(Boolean).join('&');
-  return extra ? `${base}${base.includes('?') ? '&' : '?'}${extra}` : base;
+  if (!t.cv && !t.status) return base;
+  // set, never appended: a link drawn on the target's own page already carries the page's cv or status (router.ts)
+  const [path, qs] = base.split('?'); const q = new URLSearchParams(qs ?? '');
+  if (t.cv) q.set('cv', t.cv);
+  if (t.status) q.set('status', t.status);
+  return `${path}?${q}`;
 }
 
 export const cellText = (c: Cell) => c.none ? c.text ?? 'no sample' : c.text ?? (c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`);
