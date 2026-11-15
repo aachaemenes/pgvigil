@@ -21,7 +21,7 @@ const runBadge = (v: unknown, r: Row) => {
 // a short run keeps its tenths; a long one reads as minutes and hours
 const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(v) + ' s' : fmtSecs(v);
 // the value cells in the colour of the rule that judges them: the last start by the last run's outcome, the streak by its own thresholds
-const runCls = (v: unknown, r: Row) => { const s = String(r.last_status ?? ''); return !v || !s ? '' : failed.includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn'; };
+const runCls = (v: unknown, r: Row) => { const s = String(r.last_status ?? ''); return !v ? '' : !s ? 'status none' : failed.includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn'; };
 const streakCls = (v: unknown) => Number(v) >= 3 ? 'crit' : Number(v) > 0 ? 'warn' : 'ok';   // as streak(): no value reads 0
 const streak = (v: unknown) => Number(v) >= 3 ? badge(fmtNum(v), 'crit') : Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
 const fails = (v: unknown) => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';

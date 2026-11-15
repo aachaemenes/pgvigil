@@ -150,9 +150,9 @@ function planView(doc: Document): HTMLElement[] {
     { key: 'object' },
     { key: 'estRows', label: 'estimated rows (per execution)', num: true },
     { key: 'estExecs', label: 'estimated executions', num: true },
-    { key: 'actRows', label: 'actual rows (all executions)', num: true, fmt: (v, r) => v == null ? '' : off(r) ? `${fmtNum(v)} (estimate ${cost(Number(r.estAll))})` : fmtNum(v), cls: (_v, r) => off(r) ? 'warn' : '' },
+    { key: 'actRows', label: 'actual rows (all executions)', num: true, fmt: (v, r) => v == null ? '' : off(r) ? `${fmtNum(v)} (estimate ${cost(Number(r.estAll))})` : fmtNum(v), cls: (v, r) => v == null ? '' : off(r) ? 'warn' : r.estAll != null && Number(r.estAll) > 0 ? 'status ok' : 'status none'},
     { key: 'execs', label: 'actual executions', num: true },
-    { key: 'share', label: 'cost %', num: true, fmt: v => v == null ? '' : `${fmtNum(Math.round(Number(v) * 10) / 10)} %`, cls: v => v != null && Number(v) >= 50 ? 'warn' : '' },
+    { key: 'share', label: 'cost %', num: true, fmt: v => v == null ? '' : `${fmtNum(Math.round(Number(v) * 10) / 10)} %`, cls: v => v == null ? '' : Number(v) >= 50 ? 'warn' : 'status ok'},
     { key: 'subtree', label: 'subtree cost', num: true, fmt: v => v == null ? '' : cost(Number(v)) },
     { key: 'warnings', wide: true, cls: v => v ? 'warn' : '' },
   ];

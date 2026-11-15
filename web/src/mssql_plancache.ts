@@ -18,7 +18,8 @@ const LIMIT = 1000;
 const num3 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const secs = (v: unknown) => v == null ? '' : num3(Math.round(Number(v)) / 1000);
 const pct = (v: unknown) => v == null ? '' : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} %`;
-const level = (v: unknown, warn: number, info: number) => Number(v) > warn ? 'warn' : Number(v) > info ? 'info' : '';
+// over warn a warning; over info a note (N/A, as every info level); under it judged and fine (OK)
+const level = (v: unknown, warn: number, info: number) => v == null || v === '' ? '' : Number(v) > warn ? 'warn' : Number(v) > info ? 'status none' : 'status ok';
 // a statement's text, its first characters shown and the whole kept for the copy and the export
 const text = (v: unknown) => {
   const s = String(v ?? '');

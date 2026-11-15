@@ -419,7 +419,7 @@ const failedView: Render = ctx => page(ctx, 'rp_failed', [daysPicker('failed-day
     { key: 'first_failed', label: 'First Failed Login', fmt: fmtTime }, { key: 'last_failed', label: 'Last Failed Login', fmt: fmtTime },
     { key: 'snapshot_age', label: 'Snapshot Age', num: true, fmt: (_x, r) => r.snapshot_at == null ? '' : fmtSecs((Date.now() - Date.parse(text(r.snapshot_at))) / 1000) },
     { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, cls: (_x, r) => fresh(r) },
-    { key: 'read_status', label: 'Snapshot Status', fmt: (_x, r) => status(r), cls: (_x, r) => r.read_status === 'read' || r.read_status === 'ok' ? 'ok' : r.read_status == null ? '' : 'warn' }], 'No instance in this scope.')),
+    { key: 'read_status', label: 'Snapshot Status', fmt: (_x, r) => status(r), cls: (_x, r) => r.read_status === 'read' || r.read_status === 'ok' ? 'ok' : r.read_status == null ? 'status none' : 'warn'}], 'No instance in this scope.')),
   ...section('Login Summary', grid(rowsOf(d.logins), sum('Login'), 'No failed login in this time.')),
   ...section('Client Summary', grid(rowsOf(d.clients), sum('Client'), 'No failed login in this time.')),
   ...section('Message Summary', grid(rowsOf(d.messages), sum('Message'), 'No failed login in this time.')),
@@ -489,7 +489,7 @@ const rolesView: Render = ctx => page(ctx, 'rp_roles', [], async (_v, s, out) =>
       for (const i of insts) o['i:' + i] = has.has(`${i}\u0000${l}`) ? 'A' : '-'; return o; });
     const byInst = insts.map(i => { const o: Row = { instance: i, instance_id: rows.find(r => r.instance === i)?.instance_id };
       for (const l of logins) o['l:' + l] = has.has(`${i}\u0000${l}`) ? 'A' : '-'; return o; });
-    const mark = (x: unknown) => x === 'A' ? 'ok' : '';
+    const mark = (x: unknown) => x === 'A' ? 'ok' : x === '-' ? 'status none' : '';   // a membership is not judged: '-' N/A
     grids.replaceChildren(
       ...section('Normal', grid(rows, [instCol(ctx), engCol, { key: 'role_name', label: 'Role' }, { key: 'login_name', label: 'Login' }, { key: 'login_type', label: 'Type' },
         { key: 'type_desc', label: 'Type Description' }, { key: 'is_disabled', label: 'Is Disabled', fmt: yes }, { key: 'created_at', label: 'Created Date', fmt: fmtTime },
@@ -533,7 +533,7 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
   }
   // the oldest first, the unknown ages last
   const oldest = [...logins].sort((a, b) => (b.password_age_days == null ? -1 : Number(b.password_age_days)) - (a.password_age_days == null ? -1 : Number(a.password_age_days)));
-  const ageCls = (x: unknown) => x == null ? '' : Number(x) > 365 ? 'crit' : Number(x) > 90 ? 'warn' : '';
+  const ageCls = (x: unknown) => x == null ? '' : Number(x) > 365 ? 'crit' : Number(x) > 90 ? 'warn' : 'status ok';
   out.append(stateNote(rowsOf(d.state), 'The SQL logins'),
     ...(s.engines.has('sqlserver') ? [
       ...section('Summary', grid([...per.values()], [instCol(ctx), { key: 'logins', label: 'SQL Logins', num: true },
@@ -543,7 +543,7 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
         { key: 'created_at', label: 'Created Date', fmt: fmtTime }, { key: 'modified_at', label: 'Modified Date', fmt: fmtTime },
         { key: 'password_set_at', label: 'Password Last Set', fmt: fmtTime }, { key: 'password_age_days', label: 'Password Age (Days)', num: true, cls: ageCls },
         { key: 'is_policy_checked', label: 'Policy Checked', fmt: yes }, { key: 'is_expiration_checked', label: 'Expiration Checked', fmt: yes },
-        { key: 'is_expired', label: 'Expired', fmt: yes, cls: x => x === true ? 'crit' : '' }, { key: 'is_locked', label: 'Locked', fmt: yes, cls: x => x === true ? 'warn' : '' }],
+        { key: 'is_expired', label: 'Expired', fmt: yes, cls: x => x === true ? 'crit' : x === false ? 'status ok' : ''}, { key: 'is_locked', label: 'Locked', fmt: yes, cls: x => x === true ? 'warn' : x === false ? 'status ok' : ''}],
       'No SQL login password of this age.'))] : []));
   if (s.engines.has('postgres')) {
     const pg = rowsOf(d.pg);
@@ -562,14 +562,14 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
     out.append(el('h3', {}, 'PostgreSQL login roles'),
       el('p', { class: 'meta' }, 'PostgreSQL keeps no time a password was set, so there is no password age: the twin is the expiry (VALID UNTIL) and the password method (md5 is deprecated; scram-sha-256 is the default since PostgreSQL 14). The method is read from pg_authid, which only a superuser login may read; it is "not read" otherwise.'),
       grid([...pgPer.values()], [instCol(ctx), { key: 'roles', label: 'Login Roles', num: true }, { key: 'superusers', label: 'Superusers', num: true },
-        { key: 'expired', label: 'Expired', num: true, cls: x => Number(x) > 0 ? 'crit' : '' }, { key: 'expiring', label: 'Expiring in 30 Days', num: true, cls: x => Number(x) > 0 ? 'warn' : '' },
-        { key: 'no_expiry', label: 'No Expiry', num: true }, { key: 'scram', label: 'scram-sha-256', num: true }, { key: 'md5', label: 'md5', num: true, cls: x => Number(x) > 0 ? 'warn' : '' },
+        { key: 'expired', label: 'Expired', num: true, cls: x => x == null || x === '' ? '' : Number(x) > 0 ? 'crit' : 'status ok'}, { key: 'expiring', label: 'Expiring in 30 Days', num: true, cls: x => x == null || x === '' ? '' : Number(x) > 0 ? 'warn' : 'status ok'},
+        { key: 'no_expiry', label: 'No Expiry', num: true }, { key: 'scram', label: 'scram-sha-256', num: true }, { key: 'md5', label: 'md5', num: true, cls: (x, r) => x == null || x === '' ? '' : Number(x) > 0 ? 'warn' : Number(r.not_read) > 0 ? 'status none' : 'status ok'},
         { key: 'none', label: 'No Password', num: true }, { key: 'other', label: 'Other Method', num: true }, { key: 'not_read', label: 'Method Not Read', num: true }], 'No PostgreSQL login role is stored for this scope.'),
       el('h3', {}, 'PostgreSQL password expiry'),
       grid(pg, [instCol(ctx), { key: 'role_name', label: 'Role' }, { key: 'is_superuser', label: 'Superuser', fmt: yes },
         { key: 'valid_until', label: 'Valid Until', fmt: x => x == null ? 'no expiry' : fmtTime(x) },
-        { key: 'days_until_expiration', label: 'Days Until Expiration', num: true, cls: x => x == null ? '' : Number(x) < 0 ? 'crit' : Number(x) <= 30 ? 'warn' : '' },
-        { key: 'method', label: 'Password Method', fmt: (x, r) => x == null ? `not read${r.method_note ? ' (' + text(r.method_note) + ')' : ''}` : text(x), cls: x => x === 'md5' ? 'warn' : '' }],
+        { key: 'days_until_expiration', label: 'Days Until Expiration', num: true, cls: x => x == null ? '' : Number(x) < 0 ? 'crit' : Number(x) <= 30 ? 'warn' : 'status ok'},
+        { key: 'method', label: 'Password Method', fmt: (x, r) => x == null ? `not read${r.method_note ? ' (' + text(r.method_note) + ')' : ''}` : text(x), cls: x => x == null ? 'status none' : x === 'md5' ? 'warn' : 'status ok'}],
       'No PostgreSQL login role is stored for this scope.'));
   }
 });
@@ -584,12 +584,12 @@ const servicesView: Render = ctx => page(ctx, 'rp_services', [{ key: 'svc-type',
   out.append(s.engines.has('postgres') ? sqlServerOnly('PostgreSQL runs as one service the operating system keeps; its Host page has what pgvigil reads of the host.') : '',
     stateNote(rowsOf(d.state), 'The service file names'),
     ...section('Server Services', grid(rows, [instCol(ctx), { key: 'service_type', label: 'Service Type' }, { key: 'service_name', label: 'Service Name' },
-      { key: 'startup_type', label: 'Startup Type', cls: x => x === 'Automatic' ? 'ok' : x === 'Disabled' ? 'warn' : '' },
+      { key: 'startup_type', label: 'Startup Type', cls: x => x === 'Automatic' ? 'ok' : x === 'Disabled' ? 'warn' : x == null || x === '' ? '' : 'status none'},
       { key: 'status', label: 'Status', cls: x => x === 'Running' ? 'ok' : x === 'Stopped' ? 'crit' : x ? 'warn' : '' }, { key: 'process_id', label: 'Process ID', num: true },
       { key: 'last_startup_at', label: 'Last Startup Time', fmt: fmtTime }, { key: 'service_account', label: 'Service Account' },
       { key: 'is_managed_account', label: 'Managed Service Account?', fmt: yes }, { key: 'filename', label: 'FileName', wide: true },
       { key: 'is_clustered', label: 'Is Clustered', fmt: yes }, { key: 'cluster_nodename', label: 'Cluster Node Name' },
-      { key: 'ifi_enabled', label: 'Instant File Initialization Enabled', fmt: yes, cls: (x, r) => r.service_type === 'SQL Server' ? (x === true ? 'ok' : x === false ? 'warn' : '') : '' },
+      { key: 'ifi_enabled', label: 'Instant File Initialization Enabled', fmt: yes, cls: (x, r) => x !== true && x !== false ? '' : r.service_type !== 'SQL Server' ? 'status none' : x === true ? 'ok' : 'warn'},
       { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, cls: fresh }], 'No service is stored for this scope.')));
 });
 
@@ -690,7 +690,7 @@ const recycleView: Render = ctx => page(ctx, 'rp_recycle', [], async (_v, s, out
   out.append(el('p', { class: 'meta' }, 'Instances made inactive (kept with their history; nothing is collected from them) and active ones no collection has reached for a day (taken out of the configuration, or unreachable). '
     + 'Restore: name the instance in the configuration again (an inactive one is made active by its next collection). Delete: as the repository owner, DELETE FROM pgvigil.instances WHERE instance_id = <Connection ID> removes it and every row of it; the actions log keeps its rows under the instance\'s name.'),
   ...section('Recycle Bin', grid(rows, [{ key: 'instance_id', label: 'Connection ID', num: true }, { key: 'instance', label: 'Instance' }, engCol,
-    { key: 'is_active', label: 'State', fmt: x => x === false ? 'inactive' : 'not collected for a day', cls: x => x === false ? '' : 'warn' },
+    { key: 'is_active', label: 'State', fmt: x => x === false ? 'inactive' : 'not collected for a day', cls: x => x === false ? 'status none' : 'warn'},
     { key: 'last_collection', label: 'Last Collection Date', fmt: fmtTime }, { key: 'secs_since', label: 'Time Since Last Collection', num: true, fmt: fmtSecs },
     { key: 'restore', label: 'Restore', fmt: () => 'add it to the configuration' }, { key: 'delete', label: 'Delete', fmt: (_x, r) => `DELETE FROM pgvigil.instances WHERE instance_id = ${text(r.instance_id)}` }],
   'The recycle bin is empty: every instance is active and collected.')));

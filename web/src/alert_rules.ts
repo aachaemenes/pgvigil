@@ -452,7 +452,7 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
   };
   const cols: Col[] = [
     { key: 'instance' },
-    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : '') },
+    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : 'none') },
     { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
     { key: 'database', fmt: v => String(v ?? '') },
     { key: 'op', label: 'rule', fmt: (_v, r) => {

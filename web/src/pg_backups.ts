@@ -333,10 +333,10 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
   }
   const cols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
-    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : '') }, { key: 'timeline_id', label: 'timeline', num: true },
+    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : 'none') }, { key: 'timeline_id', label: 'timeline', num: true },
     { key: 'role_since', label: 'role since', fmt: fmtTime },
     { key: 'has_receiver', label: 'fed by', fmt: (v, r) => r.role === 'primary' ? '' : v ? `streaming from ${String(r.sender_host ?? '?')}` : 'restore_command (file shipping)' },
-    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : '') },
+    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : 'none') },
     { key: 'sender_state', label: 'sender' },
     { key: 'replay_lag_bytes', label: 'replay lag', num: true, fmt: (v, r) => v == null ? '' : `${fmtBytes(v)}${r.replay_lag_secs != null ? `, ${fmtSecs(Math.round(num(r.replay_lag_secs)))}` : ''}` },
     { key: 'replay_delay_secs', label: 'replay delay', num: true, fmt: v => v == null ? '' : fmtSecs(Math.round(num(v))) },

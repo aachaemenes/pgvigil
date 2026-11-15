@@ -241,7 +241,7 @@ export async function mssqlActionsLogView(ctx: Ctx): Promise<HTMLElement> {
   }));
   sec.append(el('h3', {}, 'What is on for this instance'), grid(rows, [
     { key: 'action' }, { key: 'what' },
-    { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') },
+    { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : 'none') },
     { key: 'reason', label: 'why off', wide: true },
   ]));
   sec.append(el('h3', {}, 'Attempts'),

@@ -5,7 +5,7 @@ Three collections judge a SQL Server instance the way a DBA does on the first da
 - **green**: the value is at its default or meets its best practice;
 - **yellow**: a warning or an advice rule is broken (a value that is only off its default is advice);
 - **red**: a critical rule is broken;
-- **uncoloured**: no rule covers the value, or the column is shown and not judged.
+- **grey (N/A)**: no rule covers the value, or the column is shown and not judged.
 
 A coloured cell is never the only signal: its title names the rule and says why, and on an instance's page a column of words in the same row says it too (the fleet's option pivot has the title only). Each broken rule is also a finding, with the rule that raised it (the source tool and its check number) and the number that broke it.
 

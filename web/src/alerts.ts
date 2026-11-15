@@ -728,7 +728,7 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
       }
       return el('div', {}, el('p', { class: 'meta' }, 'Each SQL Server instance\'s action switches (the configuration\'s actions: allow list and the login\'s rights) and why one is off; each instance\'s Actions page does them.'),
         grid(rows, [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'mssqlactions', instance: Number(r.instance_id) }) }, String(v)) }, { key: 'action' },
-          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
+          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : 'none') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
     }],
   ];
   let cur = new URLSearchParams(location.hash.split('?')[1] ?? '').get('atab') ?? 'servers';

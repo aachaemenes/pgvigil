@@ -33,7 +33,7 @@ const ddlText: Record<string, string> = {
 function ddlBadge(v: unknown): HTMLElement | string {
   const s = String(v ?? '');
   if (s === 'installed') return badge(ddlText[s], 'ok');
-  if (s === 'not installed' || s === '') return ddlText['not installed'];
+  if (s === 'not installed' || s === '') return badge(ddlText['not installed'], 'none');   // opt-in, not installed: nothing checked (N/A)
   return badge(ddlText[s] ?? s, 'warn');
 }
 
