@@ -56,8 +56,8 @@ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 "$BIN" migrate -config "$CFG" >/dev/null
 S=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
        values ('proof-b10c-$SUF', 'sqlserver', '{env:proofb10}', now(), now(), true, 'sqlserver') returning instance_id" | head -1)
-q "select pgvigil.mssql_ensure_day_partition('mssql_requests', now()), pgvigil.mssql_ensure_day_partition('mssql_blocking', now()),
-          pgvigil.mssql_ensure_day_partition('mssql_requests_summary', now())" >/dev/null
+# mssql_requests_summary is a plain table (0064): only the two day-partitioned tables get today's partition
+q "select pgvigil.mssql_ensure_day_partition('mssql_requests', now()), pgvigil.mssql_ensure_day_partition('mssql_blocking', now())" >/dev/null
 q "with snaps(at, n) as (values (date_trunc('minute', now()) - interval '50 minutes', 1), (date_trunc('minute', now()) - interval '30 minutes', 2),
                                 (date_trunc('minute', now()) - interval '10 minutes', 3))
    , heads as (select k, 100 + k as head from generate_series(1, 10) k)

@@ -218,7 +218,7 @@ check "$(has "$D" 'blocking events in the last hour')" no "D: three 12 s waits d
 
 echo "--- E. the hold while 'a blocking chain' stands"
 E=$(syn e sqlserver); reports "$E" 71 70 1500 25 'BEGIN TRAN; UPDATE dbo.t'; reports "$E" 72 70 1000 25 'BEGIN TRAN; UPDATE dbo.t'; reports "$E" 73 70 500 25 'BEGIN TRAN; UPDATE dbo.t'
-q "select pgvigil.mssql_ensure_day_partition('mssql_blocking', now()), pgvigil.mssql_ensure_day_partition('mssql_requests_summary', now());
+q "select pgvigil.mssql_ensure_day_partition('mssql_blocking', now());   -- mssql_requests_summary is a plain table (0064): no partition
    insert into pgvigil.mssql_requests_summary (instance_id, snapshot_at, source, sessions, requests, blocked, heads, longest_wait_ms) values ($E, now() - interval '20 seconds', 'dmv', 5, 2, 1, 1, 40000);
    insert into pgvigil.mssql_blocking (instance_id, snapshot_at, head_session_id, victims, longest_wait_ms, in_snapshot) values ($E, now() - interval '20 seconds', 70, 1, 40000, true)" >/dev/null
 check "$(has "$E" 'a blocking chain')|$(has "$E" 'blocking events in the last hour')" "yes|no" "E: 'a blocking chain' stands, the hour finding held"
