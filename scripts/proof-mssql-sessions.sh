@@ -32,7 +32,8 @@
 #     + protocol_type of the physical connection: parent_connection_id IS NULL inside the LEFT JOIN's ON), by client
 #     address, by isolation level: each dimension's rows sum to the total session count with system sessions present
 #     (a system session has no connection: it falls in the NULL bucket, kept and named 'no connection'); a session over
-#     MARS counted once; the 'other' row by the set's own is_other flag, GROUPING() naming the set (P6).
+#     MARS counted once [NOT tested by this run: no MARS client here - sqlcmd and go-mssqldb open none]; the 'other' row
+#     by the set's own is_other flag, GROUPING() naming the set (P6).
 #  P2 requests by status: a held set - a request blocked on dbo.hold (suspended, LCK_M_*), a WAITFOR DELAY (suspended,
 #     WAITFOR), a CPU loop (running or runnable), a sleeping session with an open transaction - read by mssql_sessions:
 #     the stored counts of running + runnable, suspended, sleeping and background equal a hand read of
