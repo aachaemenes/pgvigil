@@ -69,10 +69,95 @@
     "go_file": "internal/mssql/checks.go",
     "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
     "path": "Install-All-Scripts.sql",
-    "follows": "8.34 (20260702), sp_Blitz's #ConfigurationDefaults (109 rows)",
+    "follows": "8.34 (20260702), sp_Blitz's #ConfigurationDefaults (108 rows)",
     "begin": "We'll make our own list here.",
     "end": ");",
     "sha256": "",
-    "item_re": "\\(\\s*'([^']+)'\\s*,\\s*-?\\d+\\s*,\\s*\\d+\\s*\\)"
+    "item_re": "(?m)^\\s*\\(\\s*'([^']+)'\\s*,\\s*-?\\d+\\s*,\\s*\\d+\\s*\\)"
+  },
+  {
+    "name": "traceFlagNotes",
+    "go_file": "internal/mssql/checks.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "Install-All-Scripts.sql",
+    "follows": "8.34 (20260702), sp_Blitz CheckID 74's notes on global trace flags (21 flags)",
+    "begin": "CASE WHEN [T].[TraceFlag] = '652'",
+    "end": "ELSE [T].[TraceFlag] + ' is enabled globally.' END",
+    "sha256": "",
+    "item_re": "\\[T\\]\\.\\[TraceFlag\\] = '(\\d+)'"
+  },
+  {
+    "name": "databaseRules",
+    "go_file": "internal/mssql/dboptions.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "Install-All-Scripts.sql",
+    "follows": "8.34 (20260702), sp_Blitz's #DatabaseDefaults (15 rows, and is_query_store_on inside a comment)",
+    "begin": "/* Populate a list of database defaults.",
+    "end": "DECLARE DatabaseDefaultsLoop CURSOR FOR",
+    "sha256": "",
+    "item_re": "(?m)^\\s*INSERT INTO #DatabaseDefaults\\s+SELECT '([a-z_]+)'"
+  },
+  {
+    "name": "buildCatalogue",
+    "go_file": "internal/mssql/checks.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "Install-All-Scripts.sql",
+    "follows": "8.34 (20260702), SqlServerVersions.sql's builds of SQL Server 2016-2025 (214 rows)",
+    "begin": "INSERT INTO dbo.SqlServerVersions",
+    "end": "\n;\n",
+    "sha256": "",
+    "item_re": "\\((1[3-7], \\d+), '"
+  },
+  {
+    "name": "healthParserIgnorable",
+    "go_file": "internal/repo/sql/0120_darling_sysevents.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HealthParser 3.11 (20261101), its ignorable waits (81)",
+    "begin": "/*The more you ignore waits, the worser they get*/",
+    "end": "table_name = '#ignore_waits'",
+    "sha256": "",
+    "item_re": "N'([A-Z0-9_]+)'"
+  },
+  {
+    "name": "perfCheckBenignWaits",
+    "go_file": "internal/repo/sql/0115_darling_waits.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PerfCheck 2.11 (20261101), its benign waits (59)",
+    "begin": "/* Populate benign waits table */",
+    "end": "');",
+    "sha256": "",
+    "item_re": "\\(N'([A-Z0-9_]+)'\\)"
+  },
+  {
+    "name": "pmWaitingTasks",
+    "go_file": "internal/mssql/darling_waiting.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/WaitingTasksCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), WaitingTasksCollector.QueryText",
+    "begin": "private const string QueryText = @\"",
+    "end": "\";",
+    "sha256": ""
+  },
+  {
+    "name": "pmMemoryPressureEvents",
+    "go_file": "internal/mssql/memory.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/MemoryPressureEventsCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), MemoryPressureEventsCollector.QueryText",
+    "begin": "private const string QueryText = @\"",
+    "end": "\";",
+    "sha256": ""
+  },
+  {
+    "name": "pmPlanCacheStats",
+    "go_file": "internal/mssql/memory.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/PlanCacheStatsCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), PlanCacheStatsCollector.QueryText",
+    "begin": "private const string QueryText = @\"",
+    "end": "\";",
+    "sha256": ""
   }
 ]
