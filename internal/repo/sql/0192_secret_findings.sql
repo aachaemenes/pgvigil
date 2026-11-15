@@ -5,7 +5,8 @@
 -- 'the password could not be read from AWS Secrets Manager: <code>, <secret> (<message>)', never the value). The
 -- finding's object is '<code>, <secret>'; its detail says what to fix for the code. It stands while the instance's
 -- newest run is such a refusal within the last 15 minutes and no run of the instance has succeeded since. Its arm in
--- pgvigil.findings (and so in alerting and the Summary) is the join's WIRING line into 0190.
+-- pgvigil.findings (and so in alerting and the Summary) is in scripts/b24e-join-lines.sql for the next join (0300: the
+-- lead's join-file rule, 2026-11-15 - a migration above 0190 creates only its own objects).
 CREATE OR REPLACE VIEW pgvigil.secret_findings AS
 SELECT d.instance_id, 'critical'::text AS severity, 'password secret unreadable'::text AS check_name,
        d.object,
