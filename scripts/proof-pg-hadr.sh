@@ -163,7 +163,10 @@
 #        'ok' with the note 'not read on Aurora: pg_stat_get_wal_receiver() is not supported' (rolechange) / 'not read
 #        on Aurora: pg_last_wal_receive_lsn() is not supported' (backups); hadr-sa's role read stored (is_replica true)
 #        [red FAIL, the tip without the WIRING hunk (rolechange.go, backups.go, collect.go are the lead's): both reads
-#        'error' on the stand-ins, no role state]. Green = this tree with scripts/q7-aurora-reader-wiring.patch applied
+#        'error' on the stand-ins, no role state]. Since the patch's review (06:5x): hadr-sa's archiver row stored with
+#        is_replica true and no position ('true|true null' beside the role). G2R (in G, after the lift): hadr-s read on
+#        platform rds by rolechange and backups keeps 'wal receiver' and an archiver LSN [red ok: a guard - a gate
+#        written as 'every managed platform' fails it]. Green = this tree with scripts/q7-aurora-reader-wiring.patch applied
 #        (git apply; the lead's hunk for rolechange.go, backups.go and collect.go - the commit that adds it is named in
 #        the green run's first line and in 'Q7 FIX DONE')
 #   AU2  (in AU, review 21:27 #1) aurora-w made inactive (no monitored writer reads the replicas): aurora-r raises
@@ -258,7 +261,7 @@
 # read, bumped after its hour was rebuilt) and #8 (the wide-write path's own error) - races and an FK case, reasoned.
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
 # L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU AF RP R3 R3X L4 RU LK LD CC SQ CL; a riding row runs its host: L7 R2W, NS and NS2 G,
-# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, LDR LDB LD, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF); an unknown name stops the run; unset = all.
+# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, LDR LDB LD, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF2 AF; G2R G); an unknown name stops the run; unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -268,7 +271,7 @@ ok() { echo "ok   $*"; }
 ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL AF "
 if [[ -n "${PROOF_ONLY:-}" ]]; then   # a riding row runs its host row; an unknown name is a typo, not an empty OK
   PO=""; for n in ${PROOF_ONLY//,/ }; do
-    case "$n" in L7) n=R2W ;; NS|NS2) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; LDR|LDB) n=LD ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; esac
+    case "$n" in L7) n=R2W ;; NS|NS2|G2R) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; LDR|LDB) n=LD ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; AF2) n=AF ;; esac
     [[ "$ROWS" == *" $n "* ]] || { echo "FAIL PROOF_ONLY names an unknown row: $n"; exit 1; }
     PO+="$n,"; done; PROOF_ONLY=$PO
 fi
@@ -532,6 +535,14 @@ if want G; then
     [[ "$r" == critical\|*hadrs1* ]] && ok "NS2 'standby gone' on hadr-p while the standby cannot judge its own side: $r" || fail "NS2 'standby gone' on hadr-p: '$r', expected critical naming hadrs1"
     lift || fail "G the receiver did not come back after the lift"
     read_ hadr-s 1; read_ hadr-p 1
+    # G2R a guard for the Aurora wiring (its review 06:5x #5): an RDS standby keeps the rolechange and backups reads
+    # the Aurora path leaves out - the receiver's timeline and the standby's position
+    CFG=$WORK/pgvigil-rds.yaml
+    for c in rolechange backups; do "$BIN" collect -config "$CFG" -once "$c" -instance hadr-s >>"$WORK/collect.out" 2>&1 || fail "G2R a '$c' read of hadr-s on platform rds: $(tail -1 "$WORK/collect.out")"; done
+    CFG=$WORK/pgvigil.yaml
+    r=$(q "select coalesce((select timeline_source from pgvigil.pg_role_state where instance_id = $SID_), 'none') || '|' ||
+               coalesce((select current_lsn from pgvigil.backup_state where instance_id = $SID_ and kind = 'archiver'), 'none')")
+    [[ "$r" =~ ^wal\ receiver\|[0-9A-Fa-f]+/[0-9A-Fa-f]+$ ]] && ok "G2R an RDS standby keeps its receiver timeline and its archiver position ($r)" || fail "G2R on platform rds: '$r' (expected 'wal receiver|<an LSN>')"
   else fail "G the receiver could not be held down"; lift; fi
 fi
 
@@ -831,10 +842,11 @@ if want AF; then
   # here raise the same calls): each read succeeds and its log says what it could not read on Aurora
   for c in rolechange backups; do "$BIN" collect -config "$CFG" -once "$c" -instance hadr-sa >>"$WORK/collect.out" 2>&1; echo "  AF2 a '$c' read of hadr-sa exit $?"; done
   r=$(q "select coalesce(string_agg(collection || ' ' || status || ': ' || coalesce(note, ''), '; ' order by collection), 'none') from pgvigil.collection_dates where instance_id = $AFID and collection in ('rolechange', 'backups')")
-  r2=$(q "select coalesce((select is_replica::text from pgvigil.pg_role_state where instance_id = $AFID), 'none')")
-  [[ "$r" == "backups ok: not read on Aurora: pg_last_wal_receive_lsn() is not supported"*"; rolechange ok: not read on Aurora: pg_stat_get_wal_receiver() is not supported"* && "$r2" == true ]] \
-    && ok "AF2 the rolechange and backups reads of an Aurora reader succeed and say what they could not read ($r; role is_replica $r2)" \
-    || fail "AF2 rolechange / backups on an Aurora reader: '$r', role is_replica '$r2' (expected both 'ok: not read on Aurora: <function> is not supported', is_replica true)"
+  r2=$(q "select coalesce((select is_replica::text from pgvigil.pg_role_state where instance_id = $AFID), 'none') || '|' ||
+             coalesce((select is_replica::text || ' ' || coalesce(current_lsn, 'null') from pgvigil.backup_state where instance_id = $AFID and kind = 'archiver'), 'none')")
+  [[ "$r" == "backups ok: not read on Aurora: pg_last_wal_receive_lsn() is not supported"*"; rolechange ok: not read on Aurora: pg_stat_get_wal_receiver() is not supported"* && "$r2" == "true|true null" ]] \
+    && ok "AF2 the rolechange and backups reads of an Aurora reader succeed and say what they could not read ($r; role is_replica | archiver is_replica current_lsn: $r2)" \
+    || fail "AF2 rolechange / backups on an Aurora reader: '$r', '$r2' (expected both 'ok: not read on Aurora: <function> is not supported', 'true|true null': the role stored, the archiver row stored without a position)"
   q "update pgvigil.instances set is_active = false where instance_id in ($AFID, $AFW)" >/dev/null   # it is hadr-s: the later rows read hadr-s itself
   pq "drop schema aurora_fake cascade; drop role pgva" >/dev/null   # the schema first: its grants to pgva keep the role
   CFG=$OCFG
