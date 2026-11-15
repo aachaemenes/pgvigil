@@ -171,7 +171,7 @@ const reportCols: Col[] = [
   { key: 'event_at', label: 'report at', fmt: fmtTime },
   { key: 'contentious_object', label: 'object' },
   { key: 'blocking_spid', label: 'blocking session', num: true },
-  { key: 'blocking_status', label: 'its status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : text(v) },
+  { key: 'blocking_status', label: 'its status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : text(v), cls: v => v == null || v === '' || v === 'sleeping' ? '' : 'status ok' },
   { key: 'blocking_isolation', label: 'its isolation level' },
   { key: 'blocking_trancount', label: 'its open transactions', num: true },
   { key: 'blocking_transaction_name', label: 'its transaction name' },

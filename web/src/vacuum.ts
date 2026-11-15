@@ -87,7 +87,7 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'ins_ratio', label: 'inserts / threshold', num: true, fmt: ratio, cls: ratioCls },
     { key: 'anl_ratio', label: 'changes / analyze threshold', num: true, fmt: ratio, cls: ratioCls },
     { key: 'hours_over', label: 'hours over', num: true, cls: v => Number(v) >= 6 ? 'warn' : '' },
-    { key: 'autovacuum_enabled', label: 'autovacuum', fmt: (v, r) => v === false ? badge('off', 'warn') : r.has_own_settings ? 'own settings' : 'on' },
+    { key: 'autovacuum_enabled', label: 'autovacuum', fmt: (v, r) => v === false ? badge('off', 'warn') : r.has_own_settings ? 'own settings' : 'on', cls: v => v === false ? '' : 'status ok' },
     { key: 'last_autovacuum', label: 'last autovacuum', fmt: never },
     { key: 'last_vacuum', label: 'last vacuum', fmt: never },
     { key: 'last_autoanalyze', label: 'last autoanalyze', fmt: never },

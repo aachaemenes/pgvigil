@@ -271,6 +271,8 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   if (!act.enabled && sessions.length) { act.note = el('p', { class: 'meta' }, `Cancel and Terminate are off for this instance: ${act.reason || 'actions are off for this instance'}`); sec.append(act.note); }
   const waitCell = (_v: unknown, r: Row) => r.wait_event_type == null ? ''
     : r.wait_event_type === 'Lock' ? badge(`Lock: ${String(r.wait_event ?? '')}`, 'warn') : `${String(r.wait_event_type)}: ${String(r.wait_event ?? '')}`;
+  // waitCls: a wait other than a lock is OK (the column's check judged it); no wait stays plain
+  const waitCls = (_v: unknown, r: Row) => r.wait_event_type == null || r.wait_event_type === 'Lock' ? '' : 'status ok';
   const stmtCell = (v: unknown, r: Row) => sqlCell(v, { heading: `pid ${String(r.pid)}: ${isIdle(r) ? 'last statement' : 'statement'}`, title: isIdle(r) ? idleNote : undefined });
   const planCell = (_v: unknown, r: Row) => r.query ? planLink(ctx.instance!, { stmt: r.query, db: r.datname }) : '';
 
@@ -280,7 +282,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
       { key: '_role', label: 'role', fmt: v => v === 'head' ? badge('head', 'crit') : String(v ?? ''), cls: v => v && v !== 'head' ? 'status none' : '' },
       { key: '_behind', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
       { key: 'state', fmt: (v, r) => r._absent ? el('span', { class: 'meta', title: 'The head\'s own row is not in this sample (a background worker, or a session gone by the read).' }, String(v ?? '')) : String(v ?? '') },
-      { key: 'wait_event', label: 'wait', fmt: waitCell },
+      { key: 'wait_event', label: 'wait', fmt: waitCell, cls: waitCls },
       { key: 'query_secs', label: 'query age', num: true, fmt: fmtSecs },
       { key: 'xact_secs', label: 'transaction age', num: true, fmt: fmtSecs },
       { key: 'datname', label: 'database' }, { key: 'usename', label: 'user' }, { key: 'application_name', label: 'application' },
@@ -304,9 +306,9 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   const cols: Col[] = [
     { key: 'pid', num: true, fmt: v => String(v) },
     { key: 'state' },
-    { key: '_wait', label: 'wait', fmt: waitCell },
+    { key: '_wait', label: 'wait', fmt: waitCell, cls: waitCls },
     { key: '_blockedby', label: 'blocked by' },
-    { key: '_head', label: 'chain head', fmt: v => v === 'head' ? badge('head', 'crit') : v === 'cycle' ? el('span', { title: 'Blocked sessions that wait on each other: no head to name' }, 'cycle') : v ? `pid ${String(v)}` : '' },
+    { key: '_head', label: 'chain head', fmt: v => v === 'head' ? badge('head', 'crit') : v === 'cycle' ? el('span', { title: 'Blocked sessions that wait on each other: no head to name' }, 'cycle') : v ? `pid ${String(v)}` : '', cls: v => v && v !== 'head' ? 'status none' : '' },
     { key: '_behind', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
     { key: 'query_secs', label: 'query age', num: true, fmt: fmtSecs },
     { key: 'xact_secs', label: 'transaction age', num: true, fmt: fmtSecs },

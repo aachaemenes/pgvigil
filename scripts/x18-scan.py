@@ -13,7 +13,7 @@ import sys
 # (file, key, a word on the column's line that marks it: its badge's words or the helper drawing the cell)
 COLS = [
     ('admin_instances.ts', 'disabled', "'collected'"),
-    ('admin_instances.ts', 'enabled', "badge(v ? 'on'"),
+    ('admin_instances.ts', 'enabled', "'off'"),
     ('admin_instances.ts', 'state', "'gone from the source'"),
     ('blocking_history.ts', 'blocking_status', "badge('sleeping'"),
     ('blocking_history.ts', 'last_state', 'stateCell'),

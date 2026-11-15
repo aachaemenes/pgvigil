@@ -94,7 +94,7 @@ const specCols: Col[] = [
   { key: 'scope', fmt: (v, r) => v === 'database' ? `database ${text(r.database_name)}` : 'server' },
   { key: 'name', label: 'specification' },
   { key: 'is_enabled', label: 'state', fmt: v => v === true ? badge('on', 'ok') : badge('off', 'warn') },
-  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})` },
+  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})`, cls: v => v == null ? '' : 'status ok' },
   { key: 'action_count', label: 'actions', num: true },
   { key: 'actions', label: 'what it records', fmt: prose },
   { key: 'modified', label: 'modified (server clock)' },
@@ -108,7 +108,7 @@ const findingCols: Col[] = [
 const eventCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime },
   { key: 'category', fmt: v => categoryLabel[text(v)] ?? text(v) },
-  { key: 'action', fmt: (v, r) => r.succeeded === false && r.category !== 'failed sign-in' ? el('span', {}, text(v), ' ', badge('denied', 'warn')) : text(v) },
+  { key: 'action', fmt: (v, r) => r.succeeded === false && r.category !== 'failed sign-in' ? el('span', {}, text(v), ' ', badge('denied', 'warn')) : text(v), cls: (v, r) => v == null || v === '' || (r.succeeded === false && r.category !== 'failed sign-in') ? '' : r.succeeded === true ? 'status ok' : 'status none' },
   { key: 'class_name', label: 'on a' },
   { key: 'login_name', label: 'login', fmt: (v, r) => r.session_login ? `${text(v)} (session: ${text(r.session_login)})` : text(v) },
   { key: 'target_login', label: 'for login / user', fmt: (v, r) => [text(v), text(r.target_user)].filter((x, i, a) => x && a.indexOf(x) === i).join(' / ') },

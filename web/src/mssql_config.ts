@@ -73,7 +73,7 @@ export async function mssqlConfigView(ctx: Ctx): Promise<HTMLElement> {
     ], `No trace flag is on (read ${fmtTime(rowsOf(tf.read)[0].snapshot_at)}).`),
     el('h4', {}, 'History'),
     grid(rowsOf(tf.history), [{ key: 'changed_at', label: 'change date', fmt: fmtTime }, { key: 'trace_flag', label: 'trace flag', num: true },
-      { key: 'change', fmt: v => v === 'removed' ? badge('removed', 'warn') : 'added' }], 'No flag was added or removed since the first read.'));
+      { key: 'change', fmt: v => v === 'removed' ? badge('removed', 'warn') : 'added', cls: v => v === 'removed' ? '' : 'status ok' }], 'No flag was added or removed since the first read.'));
   const svcCols: Col[] = [
     { key: 'service_name', label: 'service' },
     { key: 'status', fmt: (v, r) => r.is_present === false ? 'no longer listed' : v === 'Running' ? String(v) : badge(String(v ?? ''), 'warn') },

@@ -65,7 +65,7 @@ const lineCols: Col[] = [
   { key: 'log_at', label: 'when', fmt: fmtTime },
   { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : '' },
   { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) },
-  { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v) },
+  { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v), cls: v => v == null || v === '' || v === 'corruption' ? '' : 'status ok' },
   { key: 'message', label: 'line', wide: true },
   { key: 'process' },
   { key: 'matched', label: 'matched', fmt: (v, r) => (Array.isArray(v) ? v.join(', ') : '') + (r.custom === true ? ' (own)' : '') },

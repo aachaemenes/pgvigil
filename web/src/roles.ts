@@ -23,7 +23,7 @@ const roleCols: Col[] = [
   { key: 'createrole', label: 'createrole', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && (r.super || r.is_platform) ? 'status none' : '' },
   { key: 'createdb', label: 'createdb', fmt: yes },
   { key: 'replication', fmt: yes },
-  { key: 'bypassrls', label: 'bypassrls', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '' },
+  { key: 'bypassrls', label: 'bypassrls', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && (r.super || r.is_platform) ? 'status none' : '' },
   { key: 'inherit', fmt: v => v ? '' : 'noinherit' },
   { key: 'connlimit', label: 'conn. limit', num: true, fmt: v => v == null || Number(v) === -1 ? '' : String(v) },
   { key: 'valid_until', label: 'password valid until', fmt: (v) => v == null ? '' : new Date(String(v)) < new Date() ? badge(fmtTime(v) + ' (expired)', 'warn') : fmtTime(v) },
@@ -121,7 +121,7 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
       { key: 'rule_number', label: '#', num: true }, { key: 'line_number', label: 'line', num: true },
       { key: 'type' }, { key: 'databases' }, { key: 'users' },
       { key: 'address', fmt: (v, r) => v == null ? '' : String(v) + (r.netmask ? '/' + String(r.netmask) : '') },
-      { key: 'auth_method', label: 'method', fmt: v => v === 'trust' ? badge('trust', 'warn') : String(v ?? '') },
+      { key: 'auth_method', label: 'method', fmt: v => v === 'trust' ? badge('trust', 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'trust' ? '' : 'status ok' },
       { key: 'options', wide: true }, { key: 'error', fmt: v => v ? badge(String(v), 'crit') : '' },
     ], 'The file has no rules.'));
   }

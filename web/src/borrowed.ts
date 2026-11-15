@@ -62,7 +62,7 @@ export async function tablesView(instance: number, ctx?: Ctx): Promise<HTMLEleme
     { key: 'xid_age', label: 'xid age', num: true },
     { key: 'seq_scan', label: 'seq scans', num: true },
     { key: 'idx_scan', label: 'index scans', num: true },
-    { key: 'autovacuum_off', label: 'autovacuum', fmt: v => v ? badge('off', 'warn') : 'on' },
+    { key: 'autovacuum_off', label: 'autovacuum', fmt: v => v ? badge('off', 'warn') : 'on', cls: v => v ? '' : 'status ok' },
   ];
   const unused = tabs.filter(isUnused).length;
   return el('section', {}, el('h2', {}, 'Tables'),

@@ -202,13 +202,13 @@ const stepCols: Col[] = [
   { key: 'failed', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : fmtNum(v) },
   { key: 'ignored', label: 'failed, ignored', num: true, fmt: fmtNum }, { key: 'aborted', num: true, fmt: fmtNum },
   { key: 'avg_secs', label: 'average', num: true, fmt: fmtSecs }, { key: 'max_secs', label: 'longest', num: true, fmt: fmtSecs },
-  { key: 'last_status', label: 'last', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' ? badge('aborted', 'warn') : text(v) },
+  { key: 'last_status', label: 'last', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' ? badge('aborted', 'warn') : text(v), cls: v => v == null || v === '' || v === 'failed' || v === 'aborted' ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
   { key: 'last_start', label: 'last run', fmt: fmtTime },
 ];
 const stepRunCols: Col[] = [
   { key: 'start_time', label: 'start', fmt: fmtTime }, { key: 'run_id', label: 'run', num: true },
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' },
-  { key: 'status', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' || v === 'ignored' ? badge(text(v), 'warn') : text(v) },
+  { key: 'status', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' || v === 'ignored' ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || v === 'failed' || v === 'aborted' || v === 'ignored' ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
   { key: 'result', num: true }, { key: 'duration_secs', label: 'took', num: true, fmt: fmtSecs },
   { key: 'output', wide: true, fmt: v => text(v).replace(/\s+/g, ' ').slice(0, 300) },
 ];

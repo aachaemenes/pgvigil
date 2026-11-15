@@ -59,7 +59,7 @@ const settingCols: Col[] = [
 
 const dbCols: Col[] = [
   { key: 'datname', label: 'database' },
-  { key: 'created', label: 'pgaudit extension', fmt: v => v ? 'created' : badge('not created', 'warn') },
+  { key: 'created', label: 'pgaudit extension', fmt: v => v ? 'created' : badge('not created', 'warn'), cls: v => v ? 'status ok' : '' },
   { key: 'version' },
   { key: 'read_at', label: 'read', fmt: fmtTime },
 ];
@@ -70,7 +70,8 @@ const windowText = (m: unknown): string => {
 };
 
 const ruleCols: Col[] = [
-  { key: 'fires', label: 'state', fmt: (v, r) => !r.is_enabled ? badge('off', '') : v ? badge('firing', r.severity === 'critical' ? 'crit' : r.severity === 'info' ? '' : 'warn') : 'quiet' },
+  // the state: a rule that is off, or one firing at info, is not judged warning or critical (N/A); a quiet rule OK
+  { key: 'fires', label: 'state', fmt: (v, r) => !r.is_enabled ? badge('off', '') : v ? badge('firing', r.severity === 'critical' ? 'crit' : r.severity === 'info' ? '' : 'warn') : 'quiet', cls: (v, r) => !r.is_enabled || (v && r.severity === 'info') ? 'status none' : v ? '' : 'status ok' },
   { key: 'name', label: 'rule' },
   { key: 'what', label: 'entries', fmt: (v, r) => (v === 'AUTH_FAIL' ? 'failed sign-ins' : String(v))
       + (r.command_like ? `, command like ${String(r.command_like)}` : '') + (r.object_like ? `, object like ${String(r.object_like)}` : '') },

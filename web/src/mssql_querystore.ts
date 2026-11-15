@@ -456,7 +456,7 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
     { key: 'last_execution', label: 'Last Exec', fmt: fmtTime },
     // pgvigil's duration test (task 129): the plan it names
     { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
-    { key: 'new_plan', label: 'plan seen before', fmt: (v, r) => !r.has_baseline ? '' : v ? badge('not seen before', 'warn') : 'yes' },
+    { key: 'new_plan', label: 'plan seen before', fmt: (v, r) => !r.has_baseline ? '' : v ? badge('not seen before', 'warn') : 'yes', cls: (v, r) => !r.has_baseline || v ? '' : 'status ok' },
     { key: 'forced', fmt: v => v ? badge('forced', 'ok') : '' },
     { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
     { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },

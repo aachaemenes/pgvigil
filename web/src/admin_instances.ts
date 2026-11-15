@@ -202,7 +202,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
 
   const pageCols: Col[] = [
     { key: 'name' }, { key: 'engine' }, { key: 'host' }, { key: 'port', num: true }, { key: 'auth' }, { key: 'tags', wide: true },
-    { key: 'disabled', label: 'state', fmt: v => badge(v ? 'disabled' : 'collected', v ? 'warn' : '') },
+    { key: 'disabled', label: 'state', fmt: v => v ? badge('disabled', 'warn') : 'collected', cls: v => v ? '' : 'status ok' },
     { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
     { key: 'last_collected', label: 'last collected', fmt: fmtTime },
     { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },
@@ -225,7 +225,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
 
   const sourceCols: Col[] = [
     { key: 'name' }, { key: 'kind' }, { key: 'ref', label: 'reads', wide: true }, { key: 'every_s', label: 'every (min)', num: true, fmt: v => String(Math.round(Number(v) / 60)) },
-    { key: 'enabled', fmt: v => badge(v ? 'on' : 'off', v ? '' : 'warn') }, { key: 'last_ok', label: 'last read', fmt: fmtTime }, { key: 'last_count', label: 'servers', num: true },
+    { key: 'enabled', fmt: v => v ? 'on' : badge('off', 'warn'), cls: v => v ? 'status ok' : '' }, { key: 'last_ok', label: 'last read', fmt: fmtTime }, { key: 'last_count', label: 'servers', num: true },
     { key: 'last_error', label: 'last error', wide: true }, { key: 'last_notes', label: 'not seen', wide: true },
     { key: 'regions', label: 'regions read', wide: true, fmt: (v, r) => r.kind !== 'aws' ? '' : v ? `${String(v)}${r.regions_read_at ? ` (swept ${fmtTime(r.regions_read_at)})` : ''}` : 'swept at the next read' },
     { key: 'tag_keys', label: 'cloud tags taken', wide: true, fmt: (v, r) => ['aws', 'azure', 'gcp'].includes(String(r.kind))
@@ -342,7 +342,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'info'));
       return parts.length ? el('span', {}, ...parts.flatMap((x, i) => i ? [' ', x] : [x])) : '';
     } },
-    { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : badge(String(v), v === 'proposed' ? 'info' : '') },
+    { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : String(v ?? ''), cls: (v, r) => r.gone || v == null || v === '' ? '' : 'status ok' },
     { key: 'instance_name', label: 'instance' }, { key: 'last_seen', label: 'last listed by the source', fmt: fmtTime }, { key: 'gone_at', label: 'gone since', fmt: fmtTime },
     { key: 'actions', fmt: (_v, r) => {
       const id = String(r.proposal_id), s = String(r.server);
