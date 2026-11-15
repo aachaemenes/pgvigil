@@ -150,6 +150,10 @@ BEGIN
         OR jsonb_typeof(coalesce(v_state->'layouts', '[]'::jsonb)) <> 'array'
         OR jsonb_typeof(coalesce(v_state->'range', '{}'::jsonb)) <> 'object') THEN
     v_out := 'refused'; v_why := 'a page view''s state is {params, layouts, range}: params an object of text values, layouts a list, range an object';
+  ELSIF v_kind = 'dashboard' AND coalesce(jsonb_typeof(v_state->'panels'), 'array') <> 'array' THEN
+    v_out := 'refused'; v_why := 'a dashboard''s panels are a list';
+  ELSIF v_kind = 'dashboard' AND jsonb_array_length(coalesce(v_state->'panels', '[]'::jsonb)) > 12 THEN
+    v_out := 'refused'; v_why := format('a dashboard holds at most 12 panels (this one %s): each panel is a read of its own', jsonb_array_length(v_state->'panels'));
   ELSIF octet_length(v_state::text) > 65536 THEN
     v_out := 'refused'; v_why := format('the view''s state is %s KB: a view holds at most 64 KB', octet_length(v_state::text) / 1024);
   ELSIF v_shared AND NOT v_ok THEN
