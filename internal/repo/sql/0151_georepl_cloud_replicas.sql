@@ -1,7 +1,7 @@
 -- 0151_georepl_cloud_replicas: task 390 (Allen's Q9, 2026-11-14 13:12: in v0.4.0). Part G (390a): Azure SQL Database's
--- active geo-replication links as each database sees them (mssql_georepl). Part P (390b, the provider replica metrics of
--- RDS and Cloud SQL) is added to this file before its first join. DBA Dash reads none of this (4.25.0): the shape is its
--- availability group grid, as pgvigil's AG rows already follow it (0066).
+-- active geo-replication links as each database sees them (mssql_georepl). Part P (390b, below the G2 section): the
+-- provider replica metrics of RDS and Cloud SQL. DBA Dash reads none of this (4.25.0): the shape is its availability
+-- group grid, as pgvigil's AG rows already follow it (0066).
 --
 --   mssql_georepl_read    per instance the last read: the logical server and the database it reached (behind a failover
 --                         group's listener the server changes at a failover while the configured name does not) and the
@@ -378,3 +378,275 @@ SELECT e.instance_id, 'critical', 'failover group primary moved', e.group_name, 
               e.group_name, e.old_value, e.new_value, to_char(e.prev_read_at AT TIME ZONE 'UTC', 'HH24:MI'), to_char(e.at AT TIME ZONE 'UTC', 'HH24:MI "UTC"'))
   FROM pgvigil.mssql_failover_group_events e
  WHERE e.kind = 'role' AND e.at > now() - interval '1 hour' AND e.instance_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- Part P (390b): the provider replica metrics of Amazon RDS (P1: DescribeDBInstances, CloudWatch ReplicaLag) and Google
+-- Cloud SQL (P2: Cloud SQL Admin instances.get, Cloud Monitoring replica_lag / replication state / replica_byte_lag),
+-- read through the providers' APIs by internal/cloudrepl (collection cloud_replicas, both engines).
+--   cloud_replicas         current; one row per provider resource (provider, resource_id = the RDS identifier or
+--                          project:instance, lower case) WHOEVER reads it: a source and its replica both monitored read
+--                          the same chain and store it once. source_id and replica_ids are the truth (each lag is to the
+--                          DIRECT upstream); cascaded marks a replica that is also a source. A row moves only on a read
+--                          newer than its own (an older read imported late changes nothing).
+--   cloud_replica_reads    per reading instance its newest read: its own resource (the instance's aws: / gcp: block) and
+--                          the door's failed reads in a row with the newest sentence (fold 15).
+--   cloud_replica_sample   monthly partitions; one row per datapoint (provider, resource_id, metric, snapshot_at = the
+--                          datapoint's time): a window read twice adds nothing, a newer read's value replaces an older
+--                          read's (CloudWatch revises a minute's Maximum); instance_id is the instance whose read wrote it.
+--   cloud_replica_events   a replica added to or removed from a known source, a replica promoted (it had a source and has
+--                          none), a status change (the instance's own status, or its replication status once reported).
+--   cloud_replica_findings (instance_id, severity, check_name, object, at, detail) on EVERY instance that reads the
+--                          resource (its own, its replicas, its source); its arm in pgvigil.findings, alerting and the
+--                          Summary's HA cell, and the purge lines (the partition parent cloud_replica_sample; the events
+--                          past 24 hours' window), are the join's WIRING, as part G's.
+-- The threshold: pg_threshold_keys 'provider_replica_lag' (minutes: the keys' units are minutes, hours and days; warning
+-- 10 = 600 s, critical 30 = 1800 s, pgvigil's own, above AWS's idle 'up to five minutes'); root, tag and instance (an
+-- instance level on a SQL Server instance is refused by this base's import_pg_threshold until 0142 joins: WIRING with
+-- the engines '{postgres,sqlserver}').
+
+CREATE TABLE IF NOT EXISTS pgvigil.cloud_replicas (
+  provider       text NOT NULL CHECK (provider IN ('aws', 'gcp')),
+  resource_id    text NOT NULL,
+  engine         text,
+  region         text,
+  role           text NOT NULL CHECK (role IN ('source', 'replica', 'standalone')),
+  source_id      text,                       -- a replica's direct upstream
+  replica_ids    text[] NOT NULL DEFAULT '{}',
+  cascaded       boolean NOT NULL DEFAULT false,
+  status         text,                       -- DBInstanceStatus (available ...) or the Cloud SQL state (RUNNABLE ...)
+  repl_status    text NOT NULL DEFAULT '',   -- replicating | error | stopped | terminated (RDS StatusInfos); Running | Stopped | Error (Cloud SQL); '' = not reported yet
+  repl_note      text,                       -- the provider's words when it is not normal
+  repl_since     timestamptz NOT NULL,       -- the read that first saw repl_status
+  first_seen_at  timestamptz NOT NULL,
+  snapshot_at    timestamptz NOT NULL,       -- the newest read that wrote the row
+  read_by        int REFERENCES pgvigil.instances(instance_id) ON DELETE SET NULL,
+  PRIMARY KEY (provider, resource_id)
+);
+
+CREATE TABLE IF NOT EXISTS pgvigil.cloud_replica_reads (
+  instance_id   int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  provider      text NOT NULL,
+  resource_id   text NOT NULL,              -- the instance's own resource
+  snapshot_at   timestamptz NOT NULL,
+  resources     int NOT NULL,               -- the resources this read named (0: the topology was refused)
+  door_fails    int NOT NULL DEFAULT 0,     -- reads in a row with a refused or failed call
+  door_error    text,                       -- the newest such read's sentence
+  door_since    timestamptz                 -- the first of them
+);
+
+CREATE TABLE IF NOT EXISTS pgvigil.cloud_replica_sample (
+  provider     text NOT NULL,
+  resource_id  text NOT NULL,
+  metric       text NOT NULL CHECK (metric IN ('replica_lag', 'replica_byte_lag')),
+  snapshot_at  timestamptz NOT NULL,        -- the datapoint's time
+  value        double precision NOT NULL,
+  unit         text NOT NULL,               -- s | bytes
+  instance_id  int,                         -- the instance whose read wrote it
+  read_at      timestamptz NOT NULL,        -- that read's time: a newer read's value wins
+  PRIMARY KEY (provider, resource_id, metric, snapshot_at)
+) PARTITION BY RANGE (snapshot_at);
+CREATE INDEX IF NOT EXISTS cloud_replica_sample_at_idx ON pgvigil.cloud_replica_sample (snapshot_at);
+
+CREATE TABLE IF NOT EXISTS pgvigil.cloud_replica_events (
+  provider      text NOT NULL,
+  resource_id   text NOT NULL,
+  at            timestamptz NOT NULL,       -- the read that saw the change
+  prev_read_at  timestamptz,                -- the resource's read before it: the change happened between the two
+  kind          text NOT NULL CHECK (kind IN ('added', 'removed', 'promoted', 'status')),
+  subject       text NOT NULL DEFAULT '',   -- added / removed: the replica; status: 'instance' | 'replication'
+  old_value     text,
+  new_value     text,
+  instance_id   int REFERENCES pgvigil.instances(instance_id) ON DELETE SET NULL,   -- the reading instance (the events are the resource's)
+  PRIMARY KEY (provider, resource_id, at, kind, subject)
+);
+CREATE INDEX IF NOT EXISTS cloud_replica_events_at_idx ON pgvigil.cloud_replica_events (at);
+
+INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
+  ('provider_replica_lag', 'Provider replicas: a read replica''s lag (RDS ReplicaLag, Cloud SQL replica_lag) for 10 minutes', 'minutes', 'over', 10, 30, '{root,tag,instance}', 1440)
+ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
+  warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
+
+-- cloud_replica_rows: the payload's 'resource' rows, one per resource (ids lower case, replica_ids sorted)
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_rows(p_rows jsonb)
+RETURNS TABLE (resource_id text, engine text, region text, role text, source_id text, replica_ids text[], cascaded boolean,
+               status text, repl_status text, repl_note text) LANGUAGE sql IMMUTABLE AS $$
+  SELECT DISTINCT ON (lower(r->>'resource_id')) lower(r->>'resource_id'), r->>'engine', r->>'region', r->>'role',
+         nullif(lower(r->>'source_id'), ''),
+         coalesce((SELECT array_agg(lower(e) ORDER BY lower(e)) FROM jsonb_array_elements_text(
+                    CASE WHEN jsonb_typeof(r->'replica_ids') = 'array' THEN r->'replica_ids' ELSE '[]'::jsonb END) e), '{}'),
+         coalesce((r->>'cascaded')::boolean, false), r->>'status', coalesce(r->>'repl_status', ''), nullif(r->>'repl_note', '')
+    FROM jsonb_array_elements(p_rows) r
+   WHERE r->>'kind' = 'resource' AND coalesce(r->>'resource_id', '') <> '' AND r->>'role' IN ('source', 'replica', 'standalone')
+$$;
+
+-- payload (internal/collect/cloud_replicas.go, internal/mssql/cloud_replicas.go): one 'read' row first (provider,
+-- resource_id = the instance's own, notes = the refused calls' sentences), then 'resource' rows (provider,
+-- resource_id, engine, region, role, source_id, replica_ids, cascaded, status, repl_status, repl_note) and 'point'
+-- rows (provider, resource_id, metric, unit, at, value). Each resource under its own advisory xact lock (in id order);
+-- a resource row older than the stored one changes nothing; the datapoints are stored whatever the read's age.
+CREATE OR REPLACE FUNCTION pgvigil.import_cloud_replicas(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_rows  jsonb := pgvigil.mssql_rows(p_payload);
+  v_read  jsonb;
+  v_prov  text;
+  v_self  text;
+  v_notes text;
+  v_id    text;
+  v_month timestamptz;
+BEGIN
+  SELECT r INTO v_read FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'read' LIMIT 1;
+  v_prov := v_read->>'provider';
+  v_self := lower(v_read->>'resource_id');
+  IF v_prov IS NULL OR v_self IS NULL OR v_self = '' THEN
+    RAISE EXCEPTION 'import_cloud_replicas: the payload has no read row with the provider and the instance''s resource';
+  END IF;
+  SELECT string_agg(n, '; ') INTO v_notes
+    FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(v_read->'notes') = 'array' THEN v_read->'notes' ELSE '[]'::jsonb END) n
+   WHERE n <> '';
+
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.cloud_replica_reads'), p_instance_id);
+  FOR v_id IN SELECT DISTINCT lower(r->>'resource_id') FROM jsonb_array_elements(v_rows) r
+               WHERE r->>'kind' IN ('resource', 'point') AND coalesce(r->>'resource_id', '') <> '' ORDER BY 1 LOOP
+    PERFORM pg_advisory_xact_lock(hashtext('pgvigil.cloud_replicas'), hashtext(v_prov || ':' || v_id));
+  END LOOP;
+
+  -- the datapoints: one row each, a newer read's value replacing an older read's
+  FOR v_month IN SELECT DISTINCT date_trunc('month', (r->>'at')::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                   FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'point' AND r->>'at' IS NOT NULL LOOP
+    PERFORM pgvigil.ensure_month_partition('cloud_replica_sample', v_month);
+  END LOOP;
+  INSERT INTO pgvigil.cloud_replica_sample AS x (provider, resource_id, metric, snapshot_at, value, unit, instance_id, read_at)
+  SELECT DISTINCT ON (lower(r->>'resource_id'), r->>'metric', (r->>'at')::timestamptz)
+         v_prov, lower(r->>'resource_id'), r->>'metric', (r->>'at')::timestamptz, (r->>'value')::double precision,
+         coalesce(r->>'unit', ''), p_instance_id, p_snapshot_at
+    FROM jsonb_array_elements(v_rows) r
+   WHERE r->>'kind' = 'point' AND coalesce(r->>'resource_id', '') <> '' AND r->>'at' IS NOT NULL AND r->>'value' IS NOT NULL
+     AND r->>'metric' IN ('replica_lag', 'replica_byte_lag')
+  ON CONFLICT (provider, resource_id, metric, snapshot_at) DO UPDATE
+    SET value = EXCLUDED.value, unit = EXCLUDED.unit, instance_id = EXCLUDED.instance_id, read_at = EXCLUDED.read_at
+    WHERE x.read_at < EXCLUDED.read_at;
+
+  -- the changes since the resource's read before, each once (a resource row no newer than the stored one: none)
+  INSERT INTO pgvigil.cloud_replica_events (provider, resource_id, at, prev_read_at, kind, subject, old_value, new_value, instance_id)
+  SELECT v_prov, n.resource_id, p_snapshot_at, c.snapshot_at, e.kind, e.subject, e.old_value, e.new_value, p_instance_id
+    FROM pgvigil.cloud_replica_rows(v_rows) n
+    JOIN pgvigil.cloud_replicas c ON c.provider = v_prov AND c.resource_id = n.resource_id AND c.snapshot_at < p_snapshot_at
+    CROSS JOIN LATERAL (
+      SELECT 'added', a, NULL::text, a FROM unnest(n.replica_ids) a WHERE NOT a = ANY (c.replica_ids)
+      UNION ALL
+      SELECT 'removed', d, d, NULL FROM unnest(c.replica_ids) d WHERE NOT d = ANY (n.replica_ids)
+      UNION ALL
+      SELECT 'promoted', '', c.source_id, n.role WHERE c.role = 'replica' AND n.role <> 'replica'
+      UNION ALL
+      SELECT 'status', 'instance', c.status, n.status WHERE c.status IS DISTINCT FROM n.status AND n.status IS NOT NULL
+      UNION ALL
+      SELECT 'status', 'replication', nullif(c.repl_status, ''), n.repl_status WHERE n.repl_status <> '' AND c.repl_status IS DISTINCT FROM n.repl_status
+    ) AS e(kind, subject, old_value, new_value)
+  ON CONFLICT DO NOTHING;
+
+  INSERT INTO pgvigil.cloud_replicas AS c (provider, resource_id, engine, region, role, source_id, replica_ids, cascaded, status,
+      repl_status, repl_note, repl_since, first_seen_at, snapshot_at, read_by)
+  SELECT v_prov, n.resource_id, n.engine, n.region, n.role, n.source_id, n.replica_ids, n.role = 'replica' AND n.cascaded,
+         n.status, n.repl_status, n.repl_note, p_snapshot_at, p_snapshot_at, p_snapshot_at, p_instance_id
+    FROM pgvigil.cloud_replica_rows(v_rows) n
+  ON CONFLICT (provider, resource_id) DO UPDATE SET
+      engine = EXCLUDED.engine, region = EXCLUDED.region, role = EXCLUDED.role, source_id = EXCLUDED.source_id,
+      replica_ids = EXCLUDED.replica_ids, cascaded = EXCLUDED.cascaded, status = EXCLUDED.status,
+      repl_since = CASE WHEN c.repl_status IS DISTINCT FROM EXCLUDED.repl_status THEN EXCLUDED.repl_since ELSE c.repl_since END,
+      repl_status = EXCLUDED.repl_status, repl_note = EXCLUDED.repl_note, snapshot_at = EXCLUDED.snapshot_at, read_by = EXCLUDED.read_by
+    WHERE c.snapshot_at < EXCLUDED.snapshot_at;
+
+  -- the instance's own read: the newest only; the door's failed reads in a row (a read with a note counts one)
+  INSERT INTO pgvigil.cloud_replica_reads AS g (instance_id, provider, resource_id, snapshot_at, resources, door_fails, door_error, door_since)
+  VALUES (p_instance_id, v_prov, v_self, p_snapshot_at,
+          (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'resource'),
+          CASE WHEN v_notes IS NULL THEN 0 ELSE 1 END, v_notes, CASE WHEN v_notes IS NOT NULL THEN p_snapshot_at END)
+  ON CONFLICT (instance_id) DO UPDATE SET
+      provider = EXCLUDED.provider, resource_id = EXCLUDED.resource_id, snapshot_at = EXCLUDED.snapshot_at, resources = EXCLUDED.resources,
+      door_fails = CASE WHEN EXCLUDED.door_error IS NULL THEN 0 ELSE g.door_fails + 1 END,
+      door_error = EXCLUDED.door_error,
+      door_since = CASE WHEN EXCLUDED.door_error IS NULL THEN NULL ELSE coalesce(g.door_since, EXCLUDED.door_since) END
+    WHERE g.snapshot_at < EXCLUDED.snapshot_at;
+END $$;
+
+-- cloud_replica_readers: per active instance the resources its read covers - its own, its direct replicas and its
+-- direct source (as the current rows name them)
+CREATE OR REPLACE VIEW pgvigil.cloud_replica_readers AS
+SELECT g.instance_id, g.provider, x.resource_id
+  FROM pgvigil.cloud_replica_reads g
+  JOIN pgvigil.instances i ON i.instance_id = g.instance_id AND i.is_active
+  LEFT JOIN pgvigil.cloud_replicas c ON c.provider = g.provider AND c.resource_id = g.resource_id
+ CROSS JOIN LATERAL (SELECT g.resource_id
+                     UNION SELECT unnest(coalesce(c.replica_ids, '{}'))
+                     UNION SELECT c.source_id WHERE coalesce(c.source_id, '') <> '') AS x(resource_id);
+
+-- the findings (their readers are the join's WIRING). A resource row older than 15 minutes (three reads missed) fires
+-- nothing: the Collections page says the read is stale.
+CREATE OR REPLACE VIEW pgvigil.cloud_replica_findings AS
+WITH lagged AS (   -- each replica's newest lag datapoint and the 10 minutes up to it
+  SELECT c.provider, c.resource_id, t.last_at, w.low, w.first_at
+    FROM pgvigil.cloud_replicas c
+   CROSS JOIN LATERAL (SELECT max(x.snapshot_at) AS last_at FROM pgvigil.cloud_replica_sample x
+                        WHERE x.provider = c.provider AND x.resource_id = c.resource_id AND x.metric = 'replica_lag'
+                          AND x.snapshot_at > now() - interval '15 minutes') t
+   CROSS JOIN LATERAL (SELECT min(x.value) AS low, min(x.snapshot_at) AS first_at FROM pgvigil.cloud_replica_sample x
+                        WHERE x.provider = c.provider AND x.resource_id = c.resource_id AND x.metric = 'replica_lag'
+                          AND x.snapshot_at > t.last_at - interval '10 minutes' AND x.snapshot_at <= t.last_at) w
+   WHERE c.role = 'replica' AND c.snapshot_at > now() - interval '15 minutes' AND t.last_at IS NOT NULL
+     AND w.first_at <= t.last_at - interval '9 minutes'   -- the datapoints span the 10 minutes (one a minute)
+), lim AS (
+  SELECT r.instance_id, l.*, th.warn, th.crit
+    FROM lagged l
+    JOIN pgvigil.cloud_replica_readers r ON r.provider = l.provider AND r.resource_id = l.resource_id
+   CROSS JOIN LATERAL pgvigil.pg_threshold(r.instance_id, 'provider_replica_lag') th
+)
+SELECT m.instance_id,
+       CASE WHEN m.crit IS NOT NULL AND m.low > m.crit * 60 THEN 'critical' ELSE 'warning' END AS severity,
+       'provider replica lag' AS check_name, m.resource_id AS object, m.last_at AS at,
+       format('the replica %s has lagged its source by over %s minute(s) in every datapoint of the 10 minutes to %s (%s s at the lowest; the provider''s %s)',
+              m.resource_id, CASE WHEN m.crit IS NOT NULL AND m.low > m.crit * 60 THEN m.crit ELSE m.warn END,
+              to_char(m.last_at AT TIME ZONE 'UTC', 'HH24:MI "UTC"'), round(m.low::numeric),
+              CASE m.provider WHEN 'aws' THEN 'CloudWatch ReplicaLag' ELSE 'Cloud Monitoring replica_lag' END) AS detail
+  FROM lim m
+ WHERE m.warn IS NOT NULL AND m.low > m.warn * 60
+UNION ALL
+-- stopped: only an available replica whose replication status is reported (fold 9: blank = not reported yet), in two
+-- reads (the read that saw the status and one after it)
+SELECT r.instance_id, 'critical', 'provider replica stopped', c.resource_id, c.snapshot_at,
+       format('the replica %s reports replication %s since %s%s', c.resource_id, c.repl_status,
+              to_char(c.repl_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), coalesce(': ' || c.repl_note, ''))
+  FROM pgvigil.cloud_replicas c
+  JOIN pgvigil.cloud_replica_readers r ON r.provider = c.provider AND r.resource_id = c.resource_id
+ WHERE c.role = 'replica' AND c.snapshot_at > now() - interval '15 minutes' AND c.snapshot_at > c.repl_since
+   AND lower(c.status) IN ('available', 'runnable') AND c.repl_status <> '' AND lower(c.repl_status) NOT IN ('replicating', 'running')
+UNION ALL
+SELECT r.instance_id, 'warning', 'provider lag missing', c.resource_id, c.snapshot_at,
+       format('the replica %s is %s and seen since %s, and the provider has given no lag datapoint for 15 minutes (%s)', c.resource_id, c.status,
+              to_char(c.first_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
+              CASE c.provider WHEN 'aws' THEN 'CloudWatch AWS/RDS ReplicaLag' ELSE 'Cloud Monitoring database/replication/replica_lag' END)
+  FROM pgvigil.cloud_replicas c
+  JOIN pgvigil.cloud_replica_readers r ON r.provider = c.provider AND r.resource_id = c.resource_id
+ WHERE c.role = 'replica' AND c.snapshot_at > now() - interval '15 minutes' AND c.first_seen_at < now() - interval '15 minutes'
+   AND lower(c.status) IN ('available', 'runnable')
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.cloud_replica_sample x WHERE x.provider = c.provider AND x.resource_id = c.resource_id
+                      AND x.metric = 'replica_lag' AND x.snapshot_at > now() - interval '15 minutes')
+UNION ALL
+SELECT r.instance_id, 'warning', 'replica promoted or detached', CASE e.kind WHEN 'promoted' THEN e.resource_id ELSE e.subject END, e.at,
+       CASE e.kind
+         WHEN 'promoted' THEN format('%s was a replica of %s and has no source since the read at %s (promoted, or its source deleted). Shown for 24 hours.',
+                                     e.resource_id, e.old_value, to_char(e.at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'))
+         ELSE format('%s no longer lists the replica %s since the read at %s (promoted, detached or deleted). Shown for 24 hours.',
+                     e.resource_id, e.subject, to_char(e.at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'))
+       END
+  FROM pgvigil.cloud_replica_events e
+  JOIN pgvigil.cloud_replica_readers r ON r.provider = e.provider AND r.resource_id = e.resource_id
+ WHERE e.kind IN ('promoted', 'removed') AND e.at > now() - interval '24 hours'
+UNION ALL
+-- fold 15: the door refused or failed in 3 reads in a row (a read refused whole is 0121's 'collection failing')
+SELECT g.instance_id, 'warning', 'cloud door failing', CASE g.provider WHEN 'aws' THEN 'aws replicas' ELSE 'gcp replicas' END, g.snapshot_at,
+       format('%s reads in a row since %s had a refused or failed call: %s', g.door_fails,
+              to_char(g.door_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), g.door_error)
+  FROM pgvigil.cloud_replica_reads g
+  JOIN pgvigil.instances i ON i.instance_id = g.instance_id AND i.is_active
+ WHERE g.door_fails >= 3 AND g.snapshot_at > now() - interval '15 minutes';
