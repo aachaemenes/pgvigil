@@ -222,7 +222,7 @@ func TestRefusedAndTransient(t *testing.T) {
 func TestReadDeadline(t *testing.T) {
 	r, f, _ := newTestReader(t)
 	f.set("s", "pw", "v1")
-	f.delay = 6 * time.Second   // past the read's 5 s: the endpoint never answers in time
+	f.delay = 6 * time.Second // past the read's 5 s: the endpoint never answers in time
 	start := time.Now()
 	_, err := r.Get(context.Background(), Ref{ID: "s", Region: "us-east-2"})
 	if err == nil || time.Since(start) > 5500*time.Millisecond || f.calls.Load() > 2 {
