@@ -6,6 +6,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, el, fmtTime, offControl } from './ui';
 import { fromInput, toInput } from './tz';
+import { Can, markNeed, Need, needControl, routeWhy, WriteRoute } from './needs';
 
 // AckDoor: the demo's write door (pgvigil demo -serve, task B7): the server's own writes stay off there (writable
 // false with the reason), and the door writes as its user for the instances it names and for no other.
@@ -13,6 +14,9 @@ export interface AckDoor { user: string; instances: number[] }
 
 export interface AckData {
   writable: boolean; reason?: string; user: string; door?: AckDoor | null;
+  // what the session's role may do, as the server read it for this answer (B24f; needs.ts): it decides a write
+  // control's role over the role the page signed in with
+  can?: Can | null;
   acks?: Table | null; log?: Table | null; suppressed?: Table | null; alerts?: Table | null; attention?: Table | null;
   // the page's one visible sentence for a reason EVERY off control of the page shares (a server that writes nothing at
   // all): the page that draws the sentence sets it here, and an off control without a note of its own points at it
@@ -142,13 +146,19 @@ export function jobAckCell(d: AckData, instanceId: number, jobName: string, last
 // at.instance: the instance the write names (none = a write wider than one instance; 'any' = picked later); at.name:
 // that instance as the page shows it; at.note: the page's own visible sentence when it says this reason already (without
 // one the reason is put beside the button once the caller has placed it); at.why: the words when the reason is the
-// control's own (Send test on a demo serve).
-export interface WriteAt { instance?: AckInstance; name?: string; note?: HTMLElement; why?: string | null }
+// control's own (Send test on a demo serve); at.route: the route the dialog posts to when it is not POST /api/ack (a
+// threshold, a test alert) - the button carries that route's need and is off below it with the role's words (B24f);
+// at.need / at.what: a write that needs more than its route (wideMute: a mute, silence or blackout over more than one
+// instance or with no end needs admin, checked in the handler).
+export interface WriteAt { instance?: AckInstance; name?: string; note?: HTMLElement; why?: string | null; route?: WriteRoute; need?: Need; what?: string }
+// wideMute: the need of a mute that always reaches past one instance (Mute similar, a rule from a dialog without an
+// instance field) - the server's own words for it (q_ack.go)
+export const wideMute: { need: Need; what: string } = { need: 'admin', what: 'a fleet-wide or open-ended mute' };
 export function writeButton(d: AckData, label: string, aria: string, open: () => void, at: WriteAt = {}): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
   const why = at.why ?? ackWhy(d, at.instance, at.name);
   if (why) offBeside(b, why, at.note ?? pageNote(d)); else b.addEventListener('click', open);
-  return b;
+  return needControl(b, at.route ?? 'ack', { can: d.can, need: at.need, what: at.what });
 }
 
 // offBeside: a control that is off, its reason in words on the page - the page's own sentence when one is given,
@@ -162,8 +172,8 @@ export function offBeside(b: HTMLElement, why: string, note?: HTMLElement): void
 export function endButton(id: number, aria: string, after: () => void, label = 'End'): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
   b.addEventListener('click', () => confirmDialog(aria + '?', 'The row stays in the store with who ended it and when.', label,
-    async () => { const r = await endAck(id); return r; }, after));
-  return b;
+    async () => { const r = await endAck(id); return r; }, after, [], () => true, [], '', 'ack/end'));
+  return needControl(b, 'ack/end');
 }
 
 const untilChoices: [string, number][] = [['1 hour', 1], ['4 hours', 4], ['1 day', 24], ['7 days', 168], ['no expiry', 0]];
@@ -229,24 +239,27 @@ export function ackDialog(o: AckDialog) {
     if (done === 0) throw new Error(rows.length > 1 ? `0 of ${rows.length} saved; ${refused.length} refused: ${[...new Set(refused)].join('; ')}` : refused[0] ?? 'refused');
     return { outcome: refused.length ? 'partly done' : 'done',
       detail: `${done} of ${rows.length} saved` + (refused.length ? `; ${refused.length} refused: ${[...new Set(refused)].join('; ')}` : '') };
-  }, o.after, fields, valid, [note], o.noteField === 'label' ? 'a label' : 'a note');
+  }, o.after, fields, valid, [note], o.noteField === 'label' ? 'a label' : 'a note', 'ack');
 }
 
 // confirmDialog: a modal with what the write does, its fields, Save / Back, and the answer in place
 // needs: what Save waits for while valid() is false ('a note'): said in words under the fields, and Save is off the B7
-// way meanwhile (aria-disabled, described by those words) - never a Save that is greyed without a word
+// way meanwhile (aria-disabled, described by those words) - never a Save that is greyed without a word. route: the
+// route Save posts to: below its need Save is off with the role's words in the same place (B24f), whatever the fields
+// hold - a dialog opened from a menu or a link says so before anything is typed.
 function confirmDialog(title: string, what: string, go: string, run: () => Promise<AckResult>, after: () => void,
-  fields: HTMLElement[] = [], valid: () => boolean = () => true, watch: HTMLElement[] = [], needs = '') {
-  const ok = el('button', { type: 'submit' }, go);
+  fields: HTMLElement[] = [], valid: () => boolean = () => true, watch: HTMLElement[] = [], needs = '', route: WriteRoute = 'ack') {
+  const ok = markNeed(el('button', { type: 'submit' }, go), route);
+  const role = routeWhy(route);
   const no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const needP = el('p', { class: 'meta' });
   let saving = false;
   const check = () => {
     if (saving) return;
-    const v = valid();
-    needP.textContent = v ? '' : `Saving needs ${needs || 'the fields above'}.`;
-    offControl(ok, v ? null : `Saving needs ${needs || 'the fields above'}`, needP);
+    const why = role ?? (valid() ? null : `Saving needs ${needs || 'the fields above'}`);
+    needP.textContent = why ? why + '.' : '';
+    offControl(ok, why, needP);
   };
   for (const w of watch) w.addEventListener('input', check);
   check();
@@ -259,7 +272,7 @@ function confirmDialog(title: string, what: string, go: string, run: () => Promi
   dlg.addEventListener('cancel', () => { dlg.remove(); if (done) after(); });
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
-    if (saving || !valid()) return;   // off is off: an Enter in a field submits the form too
+    if (saving || role || !valid()) return;   // off is off: an Enter in a field submits the form too
     saving = true;
     offControl(ok, null, needP);
     ok.disabled = true;

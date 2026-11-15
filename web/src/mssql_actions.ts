@@ -11,6 +11,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtTime, grid, props } from './ui';
 import { offBeside } from './ack';
+import { markNeed, needControl } from './needs';
 
 type Kind = 'kill' | 'job_start' | 'job_stop' | 'plan_evict';
 interface OnOff { enabled: boolean; reason?: string }
@@ -67,7 +68,8 @@ function button(ctx: Ctx, st: MssqlActionsState, kind: Kind, why: string, r: Row
     b.title = titles[kind];
     b.addEventListener('click', () => { void confirmAction(ctx, kind, r, after); });
   }
-  return b;
+  // the role (B24f): KILL, a job's start or stop and a plan's eviction need operator - after the instance's own reason
+  return needControl(b, 'mssql/actions/run');
 }
 
 // mssqlKillCol is the Running queries grid's last column: Kill on a row with a session_id (a user session), disabled
@@ -172,7 +174,7 @@ async function confirmAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
   const want = kind === 'kill' ? String(t.session_id) : String(t.job_name ?? '');
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', 'aria-label': kind === 'kill' ? 'type the session id to confirm' : 'type the job name to confirm', placeholder: want, autocomplete: 'off' });
-  const go = el('button', { type: 'submit', disabled: '' }, kind === 'kill' ? `Kill session ${want}` : `${labels[kind]} ${want}`);
+  const go = markNeed(el('button', { type: 'submit', disabled: '' }, kind === 'kill' ? `Kill session ${want}` : `${labels[kind]} ${want}`), 'mssql/actions/run');
   const msg = el('p', { class: 'meta', role: 'status' });
   const check = () => { go.disabled = typed.value.trim() !== want || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);

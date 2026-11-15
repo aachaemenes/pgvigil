@@ -79,7 +79,8 @@ import { tabMark, watchHiddenTab } from './tabmark';
 import { installTreeMenu } from './treemenu';
 import { installFileDrop, toolsButton } from './filedrop';
 import { retentionView } from './retention';
-import { dropMenu, el, fmtBytes, setWho } from './ui';
+import { dropMenu, el, fmtBytes } from './ui';
+import { roleLine, setWho } from './needs';
 import { cutWords, exportButtons } from './export';
 import { mailButton, mailRenderBoot, reportMailView } from './reportmail';
 import { connectionsView } from './connections';
@@ -490,8 +491,9 @@ async function render(force = false) {
   if (session.login && session.user) {
     const out = el('button', { type: 'button', class: 'link' }, 'Sign out');
     out.addEventListener('click', () => { void signOut(); });
-    // the role beside the name (B24f): what this user may change, said where it signs out
-    bar.append(el('span', { class: 'meta', title: session.role_error ?? `role: ${session.role ?? 'none'}` }, session.user, session.role ? ` (${session.role})` : ''), out);
+    // the role beside the name (B24f): what this user may change, said where it signs out; a control that is off for
+    // the role points at this sentence (needs.ts)
+    bar.append(roleLine() ?? el('span', { class: 'meta' }, session.user), out);
   }
 
   // the instance's header and its band's dot (task 177 D29), read beside the page; a failure there leaves them out

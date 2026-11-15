@@ -832,9 +832,11 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 		// Store is why a report on the store cannot run here (REPORT ROLE: reports_dsn), "" when it can; the page's
 		// Run on a store report is off with these words
 		Store string `json:"store,omitempty"`
+		// Can is what the session's role may do (B24f): a run is open to every role, a save, move or delete needs admin
+		Can map[string]bool `json:"can"`
 	}
 	why := s.customReportsOff()
-	state := onOff{Enabled: why == "", Reason: why}
+	state := onOff{Enabled: why == "", Reason: why, Can: s.roleCan(r)}
 	ctx := r.Context()
 	if state.Enabled {
 		state.Store = storeNoKey

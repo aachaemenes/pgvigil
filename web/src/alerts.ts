@@ -13,7 +13,8 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
-import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
+import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, wideMute, writeButton } from './ack';
+import { needControl, roleWhy } from './needs';
 import { fleet, fleetWideNote, folderWords, inTagScope, notReadYet, tagsOf, tagWords, writtenTag } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
@@ -58,7 +59,7 @@ function testCell(ad: AckData, r: Row, redraw: () => void): HTMLElement {
       said.textContent = ' ' + res.detail;
       window.setTimeout(redraw, 2000);
     } catch (e) { said.textContent = ' not asked: ' + (e instanceof Error ? e.message : String(e)); b.disabled = false; }
-  }, { why: ad.door ? 'Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here' : undefined });
+  }, { why: ad.door ? 'Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here' : undefined, route: 'alerts/test' });
   // a channel the configuration no longer names: off with that reason in words where the button was on (a button
   // already off keeps the reason it has); never the disabled attribute, which takes it out of the tab order
   if (!r.is_configured && b.getAttribute('aria-disabled') !== 'true') offBeside(b, 'the configuration no longer names this channel');
@@ -273,16 +274,16 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
     : undefined;
   // an action takes the ticked rows still drawn: a row hidden since by a filter or a Show toggle is left alone
   const pickedRows = () => { const on = drawnKeys(); return all.filter(r => picked.has(String(r.finding_key)) && on.has(String(r.finding_key))); };
-  const act = (label: string, run: () => void) => writeButton(ad, label, label + ' (the ticked alerts)', () => {
+  const act = (label: string, run: () => void, route: 'ack' | 'ack/end' | 'alerts/dismiss' = 'ack') => writeButton(ad, label, label + ' (the ticked alerts)', () => {
     if (!pickedRows().length) { said.textContent = 'Tick one or more alerts first.'; return; }
     run();
-  }, { instance: 'any' });
+  }, { instance: 'any', route });
   const ackSel = act('Acknowledge alerts', () => ackDialog({
     title: `Acknowledge ${picked.size} alert(s)`,
     what: 'An acknowledged alert is not sent again on its repeat interval; a rise in its severity is still sent. Who and when are kept.',
     body: pickedRows().filter(r => r.ack_id == null).map(r => ({ kind: 'alert_ack', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) })),
     expiry: true, after: redraw }));
-  const clearSel = act('Clear acknowledgement', () => endMany(pickedRows().filter(r => r.ack_id != null).map(r => Number(r.ack_id)), said, redraw));
+  const clearSel = act('Clear acknowledgement', () => endMany(pickedRows().filter(r => r.ack_id != null).map(r => Number(r.ack_id)), said, redraw), 'ack/end');
   const noteSel = act('Add notes to selected alerts', () => ackDialog({
     title: `A note on ${picked.size} alert(s)`, what: 'The note is kept on each alert with who and when.',
     body: pickedRows().map(r => ({ kind: 'note', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) })),
@@ -297,7 +298,7 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
     const keys = pickedRows().map(r => String(r.finding_key)).filter(k => !dismissed.has(k));
     if (!keys.length) { said.textContent = 'Every ticked alert is already dismissed.'; return; }
     dismissDialog(keys, redraw);
-  });
+  }, 'alerts/dismiss');
   const closedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, 'Show closed');
   const dismissedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, `Show dismissed (${all.filter(r => dismissed.has(String(r.finding_key))).length})`);
   // tick all: every row the grid draws now (its filters and the Show toggles respected; nothing redrawn)
@@ -351,7 +352,7 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
         ' · ',
         writeButton(ad, 'Mute similar', `Mute similar: ${String(r.setting ?? r.source ?? '')} on every instance`, () => ackDialog({
           title: 'Mute similar alerts', what: 'Every alert matching the fields below is held while the rule stands (every instance unless one is named), and logged under Held sends.',
-          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }), { note: muteOff })) },
+          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }), { note: muteOff, ...wideMute })) },
     ];
     wrap.replaceChildren(...(muteOff ? [muteOff] : []), grid(rows, cols, all.length ? 'Every open alert is closed or dismissed: Show closed and Show dismissed list them.' : 'No open alert: nothing sent is still standing.'));
     syncAll();
@@ -436,7 +437,7 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
     what: kind === 'mute' ? 'Alerts matching every field filled are held while the rule stands; the held sends are logged.' : 'Alerts matching every field filled carry the label; nothing is held.',
     // its dialog has no instance field: on a demo serve every rule it makes would be one on every instance, which the
     // door refuses - off there, in ackWhy's words
-    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: onDoor(ad) ? null : 'any' });
+    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: onDoor(ad) ? null : 'any', ...(kind === 'mute' ? wideMute : {}) });
   const cols: Col[] = [
     { key: 'check_key', label: 'check' },
     { key: 'instance' },
@@ -487,10 +488,10 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
       ...(kind === 'mute' ? [{ key: 'held_alerts', label: 'alerts held', num: true }, { key: 'held_last', label: 'last held', fmt: fmtTime }] as Col[] : []),
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` + (r.replaced_by != null ? ` (edited: rule ${String(r.replaced_by)})` : '') },
       { key: '_act', label: '', fmt: (_v, r) => r.state === 'ended' || r.state === 'expired' || !ackOn(ad, Number(r.instance_id) || null) ? '' : el('span', { style: 'white-space:nowrap' },
-        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts: dlgInsts, door, rule: r, after: redraw }), { instance: Number(r.instance_id) || null }), ' \u00b7 ',
+        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts: dlgInsts, door, rule: r, after: redraw }), { instance: Number(r.instance_id) || null, route: 'alerts/mute' }), ' \u00b7 ',
         ...(kind === 'mute' ? [r.paused_at != null
-          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'), { instance: Number(r.instance_id) || null })
-          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause'), { instance: Number(r.instance_id) || null }), ' \u00b7 '] : []),
+          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'), { instance: Number(r.instance_id) || null, route: 'alerts/mute' })
+          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause'), { instance: Number(r.instance_id) || null, route: 'alerts/mute' }), ' \u00b7 '] : []),
         endButton(Number(r.ack_id), `Remove the ${word} ${String(r.ack_id)}`, redraw, 'Remove')) },
     ];
     wrap.replaceChildren(grid(vis, cols, kind === 'mute' ? 'No mute rule: a quiet send log is genuine, not muted.' : 'No known pattern.'));
@@ -543,7 +544,10 @@ function muteDialog(o: MuteDialog) {
     widenBox.hidden = !(r && r.instance != null && r.instance !== '' && inst.value === '');
     checkOk();
   };
-  const ok = el('button', { type: 'submit' }, r ? 'Save the edit' : 'Save'), no = el('button', { type: 'button' }, 'Back');
+  const ok = needControl(el('button', { type: 'submit' }, r ? 'Save the edit' : 'Save'), r ? 'alerts/mute' : 'ack'), no = el('button', { type: 'button' }, 'Back');
+  // a mute over every instance or a tag, or with no end, needs the admin role (the handler checks it): below admin the
+  // dialog asks for one instance and an end, with the role's words (null for an admin and with the login off)
+  const wideWhy = o.kind === 'mute' ? roleWhy(wideMute.need, wideMute.what) : null;
   const need = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const startAt = (): Date => startNow.checked ? new Date() : fromInput(starts.value);
@@ -559,6 +563,7 @@ function muteDialog(o: MuteDialog) {
     if (o.kind === 'noise' && !note.value.trim()) return 'a label';
     if (!startNow.checked && isNaN(startAt().getTime())) return 'a start time';
     const u = untilOf();
+    if (wideWhy && (inst.value === '' || tag.value.trim() || !u)) return `one instance, no tag and an end (${wideWhy})`;
     if (u && (isNaN(u.getTime()) || u.getTime() <= Math.max(Date.now(), startAt().getTime()))) return 'an end after the start and after now';
     return '';
   };

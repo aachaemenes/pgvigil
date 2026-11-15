@@ -9,6 +9,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtTime, grid } from './ui';
 import { offBeside } from './ack';
+import { markNeed, needControl } from './needs';
 
 // note: the page's one visible sentence where Cancel and Terminate are off for the WHOLE instance (every row's buttons
 // share that reason and point at it: the page that builds the grid sets it); a row's own reason stands beside its buttons
@@ -49,7 +50,8 @@ export function actionsCol(ctx: Ctx, st: ActionsState, after: () => void): Col {
           b.title = kind === 'cancel' ? 'pg_cancel_backend: stop the running statement, keep the session' : 'pg_terminate_backend: end the session (its open transaction rolls back)';
           b.addEventListener('click', () => confirmAction(ctx, kind, r, after));
         }
-        return b;
+        // the role (B24f): a cancel or a terminate needs operator - after the instance's or the row's own reason
+        return needControl(b, kind === 'cancel' ? 'actions/cancel' : 'actions/terminate');
       };
       return el('span', { style: 'white-space:nowrap' }, mk('cancel', 'Cancel'), mk('terminate', 'Terminate'), ...(own ? [' ', own] : []));
     },
@@ -61,7 +63,7 @@ function confirmAction(ctx: Ctx, kind: 'cancel' | 'terminate', r: Row, after: ()
   const pid = String(r.pid);
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', inputmode: 'numeric', 'aria-label': 'type the pid to confirm', placeholder: pid, autocomplete: 'off' });
-  const go = el('button', { type: 'submit', disabled: '' }, kind === 'cancel' ? `Cancel pid ${pid}` : `Terminate pid ${pid}`);
+  const go = markNeed(el('button', { type: 'submit', disabled: '' }, kind === 'cancel' ? `Cancel pid ${pid}` : `Terminate pid ${pid}`), kind === 'cancel' ? 'actions/cancel' : 'actions/terminate');
   const no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta' });
   const check = () => { go.disabled = typed.value.trim() !== pid || reason.value.trim().length < 5; };

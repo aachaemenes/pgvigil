@@ -9,6 +9,7 @@ import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, showMenu, tile } from './ui';
 import { dailyMailControl } from './reportmail';
+import { routeWhy } from './needs';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView, dbLink } from './dbinfo';
@@ -665,6 +666,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const ackAll = async (key: 'dumps' | 'uptime', what: string): Promise<{ done: number; text: string }> => {
     const said = (done: number, text: string) => { note.textContent = text; return { done, text }; };
     if (!ad.writable && !ad.door) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
+    // the role (B24f): an acknowledgement needs operator - said in the server's words, nothing asked
+    const role = routeWhy('ack', ad.can);
+    if (role) return said(0, `Acknowledge is off: ${role}`);
     const open = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
     // on a demo serve the door's instances alone are acknowledged; the others are left alone - never asked for, the
     // door would refuse each - and counted in the answer
