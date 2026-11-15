@@ -163,7 +163,9 @@
 #        'ok' with the note 'not read on Aurora: pg_stat_get_wal_receiver() is not supported' (rolechange) / 'not read
 #        on Aurora: pg_last_wal_receive_lsn() is not supported' (backups); hadr-sa's role read stored (is_replica true)
 #        [red FAIL, the tip without the WIRING hunk (rolechange.go, backups.go, collect.go are the lead's): both reads
-#        'error' on the stand-ins, no role state]. Green = the tip with notes/teams/pdfp-hadr-s1-q7-wiring.patch
+#        'error' on the stand-ins, no role state]. Green = this tree with scripts/q7-aurora-reader-wiring.patch applied
+#        (git apply; the lead's hunk for rolechange.go, backups.go and collect.go - the commit that adds it is named in
+#        the green run's first line and in 'Q7 FIX DONE')
 #   AU2  (in AU, review 21:27 #1) aurora-w made inactive (no monitored writer reads the replicas): aurora-r raises
 #        'Aurora replica lag' critical reader-1 and warning reader-2 [red FAIL, 8f12dff: a reader in recovery never
 #        raises - silent]

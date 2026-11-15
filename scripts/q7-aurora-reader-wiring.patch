@@ -1,0 +1,139 @@
+# WIRING for the lead (task 374 / Q7, the lead 06:2x): on platform aurora the rolechange and backups collectors skip the
+# calls a real Aurora PostgreSQL 17.9 reader rejects (SQLSTATE 0A000: pg_stat_get_wal_receiver, pg_last_wal_receive_lsn,
+# pg_last_wal_replay_lsn) and say so in the collection log; collect.go keeps collector_note rows out of the import.
+# Apply with git apply; judged by scripts/proof-pg-hadr.sh row AF2.
+diff --git a/internal/collect/backups.go b/internal/collect/backups.go
+index 23d74b2d..1eb7bbc0 100644
+--- a/internal/collect/backups.go
++++ b/internal/collect/backups.go
+@@ -5,6 +5,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"sort"
++	"strings"
+ 	"sync"
+ 	"time"
+ 
+@@ -48,6 +49,9 @@ func (b backupsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform
+ // segment (its name is the timeline, then the segment number in two 8-hex halves; a .history, .partial or
+ // .backup name keeps the segment's 24 characters or none). The position: pg_current_wal_lsn on a primary; on a standby
+ // (where it fails) the last WAL received, else the last replayed, so a standby with archive_mode = always is measured.
++// On Aurora (backupsArchiverAuroraSQL) a reader's position is not read: Aurora rejects pg_last_wal_receive_lsn and
++// pg_last_wal_replay_lsn (SQLSTATE 0A000 "currently not supported for Aurora" on a real Aurora PostgreSQL 17.9 reader,
++// proof-pg-aurora.sh's Q7 lab run 2), so its archive lag stays NULL.
+ const backupsArchiverSQL = `
+ WITH a AS (
+   SELECT s.*, pg_size_bytes(current_setting('wal_segment_size')) AS seg, r.rec,
+@@ -67,10 +71,18 @@ SELECT 'archiver' AS kind, 'pg_stat_archiver' AS name, current_setting('archive_
+        END AS archive_lag_bytes
+   FROM a`
+ 
++// backupsArchiverAuroraSQL is backupsArchiverSQL without the standby position functions (see above).
++var backupsArchiverAuroraSQL = strings.Replace(backupsArchiverSQL,
++	"coalesce(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())", "NULL::pg_lsn", 1)
++
+ // RunInstance reads the archiver, then the AWS side when the instance is RDS or Aurora and has an aws: block;
+ // an AWS failure is a collector_error row, the archiver row still lands.
+ func (backupsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
+-	rows, err := conn.Query(ctx, backupsArchiverSQL)
++	q := backupsArchiverSQL
++	if info.Kind == platform.Aurora {
++		q = backupsArchiverAuroraSQL
++	}
++	rows, err := conn.Query(ctx, q)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("backups: pg_stat_archiver: %w", err)
+ 	}
+@@ -78,8 +90,16 @@ func (backupsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
+ 	if err != nil {
+ 		return nil, fmt.Errorf("backups: pg_stat_archiver: %w", err)
+ 	}
++	reader := false
+ 	for _, r := range out {
+ 		r["archive_warn_minutes"] = archiveWarnMinutes(in)
++		if rec, _ := r["is_replica"].(bool); rec {
++			reader = true
++		}
++	}
++	if info.Kind == platform.Aurora && reader {
++		out = append(out, Row{"kind": "collector_note", "source": "backups",
++			"message": "not read on Aurora: pg_last_wal_receive_lsn() is not supported (a reader's archive lag)"})
+ 	}
+ 	if (info.Kind != platform.RDS && info.Kind != platform.Aurora) || in.AWS == nil {
+ 		return out, nil
+diff --git a/internal/collect/collect.go b/internal/collect/collect.go
+index ae6cb94b..f13deabb 100644
+--- a/internal/collect/collect.go
++++ b/internal/collect/collect.go
+@@ -212,12 +212,24 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 		}
+ 	}
+ 	applyTextPolicy(rows, in.QueryText)
++	// a collector's note (kind collector_note: a part it does not read on this platform) goes to the collection's log,
++	// never to the import
++	var notes []string
++	kept := rows[:0]
++	for _, row := range rows {
++		if row["kind"] == "collector_note" {
++			notes = append(notes, fmt.Sprintf("%v", row["message"]))
++			continue
++		}
++		kept = append(kept, row)
++	}
++	rows = kept
+ 	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
+ 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+ 		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
+ 	}
+ 	d := time.Since(start)
+-	status, note := "ok", ""
++	status, note := "ok", strings.Join(notes, "; ")
+ 	for _, row := range rows {
+ 		if row["kind"] == "collector_error" {
+ 			status, note = "partial", fmt.Sprintf("%v: %v", row["source"], row["message"])
+diff --git a/internal/collect/rolechange.go b/internal/collect/rolechange.go
+index 81d56f34..3ebdf40f 100644
+--- a/internal/collect/rolechange.go
++++ b/internal/collect/rolechange.go
+@@ -58,6 +58,17 @@ SELECT pg_is_in_recovery() AS is_replica, pg_postmaster_start_time() AS postmast
+        (SELECT w.received_tli FROM pg_stat_wal_receiver w WHERE w.pid IS NOT NULL LIMIT 1) AS receiver_timeline,
+        EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.application_name LIKE 'Patroni%') AS patroni_session`
+ 
++// roleBaseAuroraSQL is roleBaseSQL for Aurora, which rejects pg_stat_wal_receiver (pg_stat_get_wal_receiver(): SQLSTATE
++// 0A000 "currently not supported in Aurora" on a real Aurora PostgreSQL 17.9 reader, proof-pg-aurora.sh's Q7 lab run
++// 2): no receiver timeline there - a reader's timeline comes from its last checkpoint.
++const roleBaseAuroraSQL = `
++SELECT pg_is_in_recovery() AS is_replica, pg_postmaster_start_time() AS postmaster_start, now() AS server_now,
++       nullif(current_setting('cluster_name'), '') AS cluster_name,
++       CASE WHEN pg_is_in_recovery() THEN NULL
++            ELSE ('x' || left(pg_walfile_name(pg_current_wal_lsn()), 8))::bit(32)::bigint END AS wal_timeline,
++       NULL::integer AS receiver_timeline,
++       EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.application_name LIKE 'Patroni%') AS patroni_session`
++
+ // roleControlSQL: pg_control_system / pg_control_checkpoint (superuser or pg_monitor on most platforms).
+ const roleControlSQL = `
+ SELECT (pg_control_system()).system_identifier::text AS system_identifier, (pg_control_checkpoint()).timeline_id AS checkpoint_timeline`
+@@ -73,7 +84,11 @@ const (
+ )
+ 
+ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
+-	base, err := conn.Query(ctx, roleBaseSQL)
++	q := roleBaseSQL
++	if info.Kind == platform.Aurora {
++		q = roleBaseAuroraSQL
++	}
++	base, err := conn.Query(ctx, q)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("rolechange: %w", err)
+ 	}
+@@ -108,6 +123,10 @@ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info
+ 	delete(r, "wal_timeline")
+ 	delete(r, "receiver_timeline")
+ 	out := []Row{r}
++	if info.Kind == platform.Aurora && isReplica {
++		out = append(out, Row{"kind": "collector_note", "source": "rolechange",
++			"message": "not read on Aurora: pg_stat_get_wal_receiver() is not supported (the timeline is the last checkpoint's)"})
++	}
+ 	if p, _ := r["patroni_session"].(bool); p && info.Kind != platform.RDS && info.Kind != platform.Aurora && in.DSNRaw != "" {
+ 		out = append(out, patroniRows(ctx, patroniURL(in.DSN()))...)
+ 	}
