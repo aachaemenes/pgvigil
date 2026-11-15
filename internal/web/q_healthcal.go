@@ -96,6 +96,7 @@ SELECT d.day, round((extract(epoch FROM d.day_end - d.day_start) / 3600)::numeri
     SELECT count(*) FROM pgvigil.mssql_deadlocks k
      WHERE i.engine = 'sqlserver' AND k.instance_id = i.instance_id
        AND k.event_at >= d.day_start AND k.event_at < d.day_end
+       AND NOT pgvigil.mssql_deadlock_is_monitors(k.instance_id, k.processes)   -- (0165) the monitor's own, every victim its reads
      ORDER BY 1 DESC LIMIT 1) dl ON true
   LEFT JOIN LATERAL (
     SELECT count(*) FILTER (WHERE coalesce(m.grants_pending, 0) > 0 OR m.process_low) AS pressure,

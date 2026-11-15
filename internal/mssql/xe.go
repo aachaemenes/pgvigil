@@ -538,6 +538,12 @@ func (xeCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, op
 	fail := func(source string, err error) {
 		tail = append(tail, collect.Row{"kind": "collector_error", "source": source, "message": err.Error()})
 	}
+	// the application name this connection runs under, as SQL Server writes it into a deadlock's victim list: a
+	// deadlock whose every victim ran under it was the monitor's own read losing (stored, left out of the counts)
+	var app sql.NullString
+	if err := conn.QueryRowContext(ctx, "SELECT APP_NAME()").Scan(&app); err == nil && app.Valid && app.String != "" {
+		tail = append(tail, collect.Row{"kind": "monitor_app", "app_name": app.String})
+	}
 	for _, capture := range xeCaptures {
 		s := xePick(sessions, capture)
 		state := collect.Row{"kind": "state", "capture": capture, "state": xeStateOf(s), "source": "product"}

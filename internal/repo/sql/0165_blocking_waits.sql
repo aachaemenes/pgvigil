@@ -85,3 +85,131 @@ LANGUAGE sql STABLE AS $$
    GROUP BY n.p, n.bs, n.qs, n.n
   HAVING max(n.at) > p_from
 $$;
+
+
+-- ---- the monitor's own deadlocks (PerformanceMonitor Changed 14) ----------------------------------------------------
+-- the application name the collector connects with on each SQL Server instance, read once (SELECT APP_NAME()) and
+-- stored: a deadlock whose EVERY victim ran under it was the monitor's own reads losing, not the workload's; it stays
+-- stored and shown on the Deadlocks page and leaves the counts (the finding, the calendar, the live part)
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_monitor_app (
+  instance_id int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  app_name    text NOT NULL,
+  read_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION pgvigil.mssql_deadlock_is_monitors(p_instance int, p_processes jsonb)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT coalesce((
+    SELECT bool_and(coalesce(e->>'program', '') = m.app_name) FILTER (WHERE (e->>'victim')::boolean)
+      FROM pgvigil.mssql_monitor_app m, jsonb_array_elements(CASE WHEN jsonb_typeof(p_processes) = 'array' THEN p_processes ELSE '[]'::jsonb END) e
+     WHERE m.instance_id = p_instance), false)
+$$;
+
+-- the importer: the one before (0116's), renamed import_mssql_xe_pre0165 and called with the other rows; a
+-- 'monitor_app' row stores the collector's application name. Renamed once: a rerun finds it.
+DO $$
+BEGIN
+  IF to_regprocedure('pgvigil.import_mssql_xe_pre0165(integer, timestamp with time zone, jsonb)') IS NULL THEN
+    ALTER FUNCTION pgvigil.import_mssql_xe(int, timestamptz, jsonb) RENAME TO import_mssql_xe_pre0165;
+  END IF;
+END $$;
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_xe(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO pgvigil.mssql_monitor_app (instance_id, app_name, read_at)
+  SELECT p_instance_id, r->>'app_name', p_snapshot_at FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'monitor_app' AND coalesce(r->>'app_name', '') <> '' LIMIT 1
+  ON CONFLICT (instance_id) DO UPDATE SET app_name = EXCLUDED.app_name, read_at = EXCLUDED.read_at;
+  PERFORM pgvigil.import_mssql_xe_pre0165(p_instance_id, p_snapshot_at,
+    (SELECT coalesce(jsonb_agg(r), '[]'::jsonb) FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' IS DISTINCT FROM 'monitor_app'));
+END $$;
+
+-- ---- 0065's findings: the head-statement finding's detail in waits; the monitor's own deadlocks not counted ------
+CREATE OR REPLACE VIEW pgvigil.mssql_xe_findings AS
+WITH dl AS (
+  SELECT d.instance_id, count(*) AS n, max(d.event_at) AS last_at,
+         (array_agg(d.object_names ORDER BY d.event_at DESC))[1] AS last_objects
+    FROM pgvigil.mssql_deadlocks d
+   WHERE d.event_at > now() - interval '1 hour'
+     AND NOT pgvigil.mssql_deadlock_is_monitors(d.instance_id, d.processes)   -- (0165) the monitor's own: stored, shown, not counted
+   GROUP BY d.instance_id
+), heads AS (
+  SELECT b.instance_id, b.head_key, count(*) AS reports, count(DISTINCT b.blocked_spid) AS blocked_sessions,
+         max(b.wait_ms) AS worst_wait_ms, max(b.event_at) AS last_at,
+         (array_agg(b.blocking_statement ORDER BY b.event_at DESC))[1] AS statement,
+         (array_agg(b.blocking_spid ORDER BY b.event_at DESC))[1] AS spid,
+         (array_agg(b.blocking_status ORDER BY b.event_at DESC))[1] AS status,
+         -- (0165) the waits these reports belong to (a 65 s wait is one, however many reports it gave)
+         (SELECT count(*) FROM pgvigil.mssql_block_waits(b.instance_id, now() - interval '1 hour', now()) w
+           WHERE EXISTS (SELECT 1 FROM pgvigil.mssql_blocked_reports r
+                          WHERE r.instance_id = b.instance_id AND r.head_key = b.head_key AND r.blocked_spid = w.blocked_spid
+                            AND r.blocking_spid = w.blocking_spid AND r.event_at BETWEEN w.started_at AND w.last_seen_at)) AS waits
+    FROM pgvigil.mssql_blocked_reports b
+   WHERE b.event_at > now() - interval '1 hour' AND b.head_key IS NOT NULL
+   GROUP BY b.instance_id, b.head_key
+  HAVING count(*) >= 2
+), st AS (
+  SELECT s.* FROM pgvigil.mssql_xe_state s
+   WHERE s.capture <> 'ag' AND s.snapshot_at > now() - interval '10 minutes' AND s.reads_in_state >= 2
+), ag AS (
+  SELECT e.instance_id, coalesce(e.ag_name, '(availability group)') AS ag_name, count(*) AS n, bool_or(e.is_failover) AS failover,
+         max(e.event_at) AS last_at,
+         (array_agg(coalesce(e.replica_name || ': ', '') || coalesce(e.previous_state || ' to ', '') || coalesce(e.current_state, e.statement, e.event_name)
+                    ORDER BY e.is_failover DESC, e.event_at DESC))[1] AS last_change
+    FROM pgvigil.mssql_ag_events e
+   WHERE e.event_at > now() - interval '1 hour'
+     AND (e.is_failover OR e.event_name IN ('availability_replica_state_change', 'availability_group_lease_expired'))
+   GROUP BY e.instance_id, coalesce(e.ag_name, '(availability group)')
+)
+SELECT dl.instance_id, CASE WHEN dl.n > 10 THEN 'critical' ELSE 'warning' END AS severity,
+       'deadlocks in the last hour'::text AS check_name, 'deadlocks'::text AS object, dl.last_at AS at,
+       dl.n || ' deadlock(s) in the last hour' || coalesce('; the last one on ' || nullif(dl.last_objects, ''), '') AS detail
+  FROM dl
+UNION ALL
+SELECT h.instance_id, 'warning', 'blocked-process reports naming the same head statement',
+       left(coalesce(nullif(btrim(h.statement), ''), '(no input buffer)'), 200), h.last_at,
+       h.waits || ' wait(s) in the last hour, ' || h.blocked_sessions || ' blocked session(s), the longest wait '
+         || coalesce(round(h.worst_wait_ms / 1000.0, 1)::text, '?') || ' s; the blocking session ' || coalesce(h.spid::text, '?') || ' was ' || coalesce(h.status, 'of unknown status')
+  FROM heads h
+UNION ALL
+SELECT st.instance_id, 'info', 'a capture is not installed', string_agg(st.capture, ', ' ORDER BY st.capture), max(st.snapshot_at),
+       'no Extended Events session of pgvigil for: ' || string_agg(st.capture, ', ' ORDER BY st.capture)
+         || '; the script is what `pgvigil mssql-xe -print` writes, for the server''s DBA to run (docs/sqlserver-xe.md)'
+  FROM st WHERE st.state = 'not installed'
+ GROUP BY st.instance_id
+UNION ALL
+SELECT st.instance_id, 'warning', 'a capture is stopped', string_agg(st.capture, ', ' ORDER BY st.capture), max(st.snapshot_at),
+       'the session is defined and not started: ' || string_agg(st.session_name, ', ' ORDER BY st.capture)
+         || '; stopped since ' || to_char(min(st.state_since) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC. '
+         || 'ALTER EVENT SESSION ... ON SERVER STATE = START is the DBA''s step'
+  FROM st WHERE st.state = 'stopped'
+ GROUP BY st.instance_id
+UNION ALL
+SELECT s.instance_id, 'warning', 'the ring buffer dropped events', s.capture, s.lost_at,
+       s.lost_events || ' event(s) of ' || coalesce(s.session_name, s.capture) || ' were dropped or left the buffer before they were read'
+         || coalesce(' (the buffer holds ' || s.buffer_kb || ' KB)', '')
+  FROM pgvigil.mssql_xe_state s
+ WHERE s.lost_at > now() - interval '1 hour' AND s.lost_events > 0
+UNION ALL
+SELECT ag.instance_id, CASE WHEN ag.failover THEN 'critical' ELSE 'warning' END,
+       'an availability replica changed role or state', ag.ag_name, ag.last_at,
+       ag.n || ' change(s) in the last hour' || CASE WHEN ag.failover THEN ', a failover among them' ELSE '' END
+         || coalesce('; ' || ag.last_change, '')
+  FROM ag;
+
+-- ---- the hour arm (PerformanceMonitor Changed 27, Release 6) ------------------------------------------------------
+-- 'blocking events in the last hour' (warning): 3 or more waits with the longest 15 s or more, or one of 60 s or more,
+-- SQL Server from mssql_block_waits, PostgreSQL from pg_block_waits; beside the snapshot rule 'a blocking chain'
+-- (unchanged), and HELD while that one stands for the instance: one finding for one chain
+CREATE OR REPLACE VIEW pgvigil.blocking_findings AS
+SELECT i.instance_id, 'warning'::text AS severity, 'blocking events in the last hour'::text AS check_name, 'blocking'::text AS object,
+       w.last_at AS at,
+       w.n || CASE WHEN w.n = 1 THEN ' wait' ELSE ' waits' END || ' in the last hour, the longest ' || round(w.worst / 1000.0, 1) || ' s' AS detail
+  FROM pgvigil.instances i
+  CROSS JOIN LATERAL (
+    SELECT count(*) AS n, max(x.wait_ms) AS worst, max(x.last_seen_at) AS last_at FROM (
+      SELECT q.wait_ms, q.last_seen_at FROM pgvigil.mssql_block_waits(i.instance_id, now() - interval '1 hour', now()) q WHERE i.engine = 'sqlserver'
+      UNION ALL
+      SELECT p.wait_ms, p.last_seen_at FROM pgvigil.pg_block_waits(i.instance_id, now() - interval '1 hour', now()) p WHERE i.engine = 'postgres') x) w
+ WHERE i.is_active
+   AND (w.n >= 3 AND w.worst >= 15000 OR w.worst >= 60000)
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_running_findings f WHERE f.instance_id = i.instance_id AND f.check_name = 'a blocking chain');

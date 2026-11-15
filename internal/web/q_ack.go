@@ -252,6 +252,7 @@ SELECT i.instance_id, i.name AS instance, i.engine,
     SELECT count(*), max(k.event_at) FROM pgvigil.mssql_deadlocks k
      WHERE i.engine = 'sqlserver' AND k.instance_id = i.instance_id
        AND k.event_at > $1::timestamptz - interval '1 hour' AND k.event_at <= $1
+       AND NOT pgvigil.mssql_deadlock_is_monitors(k.instance_id, k.processes)   -- (0165) the monitor's own, every victim its reads
      ORDER BY 1 DESC LIMIT 1) dl ON true
   LEFT JOIN LATERAL (
     SELECT a.ack_id, a.created_by, a.until FROM pgvigil.acks a
