@@ -42,6 +42,10 @@
 #  B. the read login gets SELECT on the dbo schema, EXECUTE on dbo.IDs and on the nine page procedures only; as that
 #     login an INSERT into dbo.Settings, EXEC dbo.Summary_Upd and EXEC dbo.Summary_Get are each refused with a
 #     permission error.
+#  CH9 (B6.3; written before the run): on 4.25.0 the tenth screen answers with its five result sets (CH9a); the same read
+#     login with dbo.CollectionHealth_Get's GRANT taken back reads 'page collectionhealth ... sets=0 ... note=not read:
+#     this login has no EXECUTE on dbo.CollectionHealth_Get' (CH9e, the review of B6.2, part b #2), then the GRANT is
+#     given again; on 4.24.1 the screen is not called and says it came with 4.25.0 (CH9c).
 #  C. the pages: TestLivePages through the read login prints 9 lines 'page <key> ok ... proven=true'; the same nine
 #     procedures called as sa by pymssql (FreeTDS: another driver, the GUI's parameters written out in T-SQL here)
 #     return, page by page, the same number of result sets, the same column names in the same order, the same row
@@ -274,6 +278,14 @@ chl=$(echo "$res" | grep '^page collectionhealth ' || true)
 if [[ "$DDV" == 4.25.0 ]]; then
   [[ "$chl" == *" sets=5 "* && "$chl" == *"note="* && "$chl" != *"not read:"* ]] || fail "CH9a: the Collection Health screen on 4.25.0: $chl"
   echo "ok   CH9a: Collection Health on 4.25.0 answers with its five result sets ($chl)"
+  # CH9e (the review of B6.2, part b #2): a 4.25.0 read login without the procedure's GRANT - OBJECT_ID cannot see what
+  # the login has no right on - reads 'no EXECUTE', never 'not in this DBA Dash repository'; the GRANT given again first
+  sqok "CH9e: the GRANT taken back" "REVOKE EXECUTE ON dbo.CollectionHealth_Get FROM [$RO]" "$DDB"
+  mkdir -p "$TMPD/pages-ch9e"
+  che=$(pages "$TMPD/pages-ch9e" | grep '^page collectionhealth ' || true)
+  sqok "CH9e: the GRANT given again" "GRANT EXECUTE ON dbo.CollectionHealth_Get TO [$RO]" "$DDB"
+  [[ "$che" == *" sets=0 "*"note=not read: this login has no EXECUTE on dbo.CollectionHealth_Get"* ]] || fail "CH9e: a 4.25.0 read login without the GRANT: $che"
+  echo "ok   CH9e: a 4.25.0 read login without the GRANT reads 'no EXECUTE' ($che)"
 else
   [[ "$chl" == *" sets=0 "*"note=not read: dbo.CollectionHealth_Get is not in this DBA Dash repository (it came with DBA Dash 4.25.0)"* ]] || fail "CH9c: the Collection Health screen on $DDV: $chl"
   echo "ok   CH9c: Collection Health on $DDV is not called and says why"
