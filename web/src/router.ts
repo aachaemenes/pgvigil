@@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin: 'Overview' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin: 'Overview' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
@@ -75,7 +75,7 @@ const legacy: Record<string, string> = { overview: 'checks' };
 // rootTabs and instanceTabs still name every page; a group only says which pages share a strip.
 export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
+  { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'azuresummary', 'slowqueries', 'running', 'findings', 'instances'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks', 'pgthresholds', 'retention'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'collectiondates', 'collector', 'corruption', 'custom'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'pgreplication', 'dms'] },
@@ -101,7 +101,7 @@ export const rootOnly = new Set(['diff', 'pgthresholds', 'retention', 'rp_recycl
 // the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
 // engine leaves them out, as a strip should; every other page holds both engines.
 export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
-  mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver',
+  mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver', azuresummary: 'sqlserver',
   pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
   tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
   storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
@@ -126,7 +126,7 @@ export const instanceGroups: TabGroup[] = [
 export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
-  mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+  mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
   mssqlqueries: 'Queries',
@@ -143,7 +143,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups', 'mssqlrestore'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool', 'mssqlazure'] },
   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
 ];

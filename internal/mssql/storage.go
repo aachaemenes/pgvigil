@@ -17,8 +17,12 @@ import (
 // kept with its allocated size and the note 'used not read'. Nothing is written on the server: the per-database
 // read is one SELECT run through that database's sys.sp_executesql, which changes no session setting.
 //
-// Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; not on Azure SQL Database
-// (no sys.master_files there).
+// Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance. On Azure SQL Database (no
+// sys.master_files, no volumes) it reads the database's own files from sys.database_files, the space used and the
+// filegroup in the same statement (B2a: DBA Dash's DBFiles there, the input of its '% Max Size'). Not proven yet
+// that a CONNECT-only user gets the used space: Microsoft says FILEPROPERTY returns NULL to a caller without
+// permission to view the object, which would read as 'used not read'; the Azure SQL Database proof asserts the used
+// space on every file as such a user.
 type storageCollector struct{}
 
 func init() { Register(storageCollector{}) }
@@ -32,7 +36,7 @@ func (storageCollector) Timeout() time.Duration { return 5 * time.Minute }
 func (storageCollector) Applies(info Info) (bool, string) {
 	switch {
 	case info.Kind == KindAzureDB:
-		return false, "not yet on Azure SQL Database (no sys.master_files; the database's own files are a later wave)"
+		return true, ""
 	case !info.ViewAnyDefinition:
 		return false, "the login lacks VIEW ANY DEFINITION: sys.master_files lists no other database's files"
 	}
@@ -74,7 +78,41 @@ const usedSQL = `EXEC %s.sys.sp_executesql N'SELECT df.file_id, CAST(df.size AS 
   CAST(FILEPROPERTY(df.name, ''SpaceUsed'') AS bigint) * 8192 AS used_bytes, fg.name AS filegroup
 FROM sys.database_files df LEFT JOIN sys.filegroups fg ON fg.data_space_id = df.data_space_id'`
 
+// azureDBFilesSQL: Azure SQL Database's own files in filesSQL's columns, with the used space and the filegroup that
+// usedSQL gives elsewhere (FILEPROPERTY reads the current database's files: the connection's database is the one).
+const azureDBFilesSQL = `SELECT 'file' AS kind, CAST(DB_ID() AS int) AS database_id, DB_NAME() AS database_name,
+  CAST(DATABASEPROPERTYEX(DB_NAME(), 'Status') AS nvarchar(60)) AS database_state,
+  df.file_id, df.name AS file_name, CAST(df.type_desc AS nvarchar(60)) AS type_desc, df.physical_name,
+  CAST(df.state_desc AS nvarchar(60)) AS state_desc,
+  CAST(df.size AS bigint) * 8192 AS size_bytes,
+  CASE WHEN df.max_size = -1 THEN NULL WHEN df.max_size = 0 THEN CAST(df.size AS bigint) * 8192 ELSE CAST(df.max_size AS bigint) * 8192 END AS max_size_bytes,
+  CASE WHEN df.max_size = 0 OR df.is_percent_growth = 1 THEN CAST(0 AS bigint) ELSE CAST(df.growth AS bigint) * 8192 END AS growth_bytes,
+  CASE WHEN df.max_size <> 0 AND df.is_percent_growth = 1 THEN CAST(df.growth AS int) ELSE 0 END AS growth_pct,
+  CAST(1 AS int) AS can_enter, QUOTENAME(DB_NAME()) AS quoted_name,
+  ` + volumeColsNone + `,
+  CAST(FILEPROPERTY(df.name, 'SpaceUsed') AS bigint) * 8192 AS used_bytes, fg.name AS filegroup
+FROM sys.database_files df LEFT JOIN sys.filegroups fg ON fg.data_space_id = df.data_space_id
+ORDER BY df.file_id`
+
+// azureDBStorageRows: the file rows of an Azure SQL Database's read, its used space applied (no volume rows: none).
+func azureDBStorageRows(raw []collect.Row) []collect.Row {
+	files, _ := storageRows(raw)
+	if len(raw) > 0 {
+		if id, ok := raw[0]["database_id"].(int64); ok {
+			applyUsed(files, id, raw)
+		}
+	}
+	return files
+}
+
 func (storageCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+	if info.Kind == KindAzureDB {
+		raw, err := QueryRows(ctx, conn, azureDBFilesSQL)
+		if err != nil {
+			return nil, fmt.Errorf("sys.database_files: %w", err)
+		}
+		return azureDBStorageRows(raw), nil
+	}
 	cols, apply := volumeCols, volumeApply
 	if !info.ViewServerState {
 		cols, apply = volumeColsNone, ""

@@ -37,7 +37,8 @@ func TestStorageApplies(t *testing.T) {
 		{"storage, full rights", storageCollector{}, full, true, ""},
 		{"storage, no VIEW SERVER STATE still runs (partial)", storageCollector{}, Info{Kind: KindServer, ViewAnyDefinition: true}, true, ""},
 		{"storage, no VIEW ANY DEFINITION", storageCollector{}, Info{Kind: KindServer, ViewServerState: true}, false, "VIEW ANY DEFINITION"},
-		{"storage, Azure SQL Database", storageCollector{}, Info{Kind: KindAzureDB, ViewServerState: true, ViewAnyDefinition: true}, false, "Azure SQL Database"},
+		// B2a: the database's own files (sys.database_files), any user of the database; no other right is asked
+		{"storage, Azure SQL Database", storageCollector{}, Info{Kind: KindAzureDB}, true, ""},
 		{"version store, full rights", versionStoreCollector{}, full, true, ""},
 		{"version store, no VIEW SERVER STATE", versionStoreCollector{}, Info{Kind: KindServer, ViewAnyDefinition: true}, false, "VIEW SERVER STATE"},
 		{"version store, Azure SQL Database", versionStoreCollector{}, Info{Kind: KindAzureDB, ViewServerState: true}, false, "Azure SQL Database"},
@@ -388,5 +389,38 @@ func TestActionsRefuseWithoutConnecting(t *testing.T) {
 	}
 	if _, why := Preview(t.Context(), Door{Monitor: "m", Actions: "a", Allow: []string{"job_stop"}}, "i", ActionJobStop, 0, "x'; --"); !strings.Contains(why, "GUID") {
 		t.Errorf("Preview of a malformed job id: %q", why)
+	}
+}
+
+// On Azure SQL Database (B2a) the read is the database's own files: sys.database_files with the space used and the
+// filegroup in one statement, no volume (the platform has none) and no missing-right row for one.
+func TestStorageAzureDBRows(t *testing.T) {
+	raw := []collect.Row{
+		{"kind": "file", "database_id": int64(5), "database_name": "appdb", "database_state": "ONLINE", "file_id": int64(1), "file_name": "data_0",
+			"type_desc": "ROWS", "physical_name": "https://x/data_0.mdf", "state_desc": "ONLINE", "size_bytes": int64(1073741824),
+			"max_size_bytes": int64(34359738368), "growth_bytes": int64(2097152), "growth_pct": int64(0), "can_enter": int64(1), "quoted_name": "[appdb]",
+			"volume_mount_point": nil, "logical_volume_name": nil, "file_system_type": nil, "total_bytes": nil, "available_bytes": nil,
+			"used_bytes": int64(536870912), "filegroup": "PRIMARY"},
+		{"kind": "file", "database_id": int64(5), "database_name": "appdb", "database_state": "ONLINE", "file_id": int64(2), "file_name": "log",
+			"type_desc": "LOG", "physical_name": "https://x/log.ldf", "state_desc": "ONLINE", "size_bytes": int64(104857600),
+			"max_size_bytes": int64(1099511627776), "growth_bytes": int64(0), "growth_pct": int64(10), "can_enter": int64(1), "quoted_name": "[appdb]",
+			"volume_mount_point": nil, "logical_volume_name": nil, "file_system_type": nil, "total_bytes": nil, "available_bytes": nil,
+			"used_bytes": int64(1048576), "filegroup": nil},
+	}
+	out := azureDBStorageRows(raw)
+	if len(out) != 2 {
+		t.Fatalf("rows %v, want the two files and nothing else", out)
+	}
+	for i, want := range []struct {
+		used int64
+		fg   any
+	}{{536870912, "PRIMARY"}, {1048576, nil}} {
+		f := out[i]
+		if f["kind"] != "file" || f["used_bytes"] != want.used || f["used_read"] != 1 || f["used_note"] != nil || f["filegroup"] != want.fg || f["volume"] != nil {
+			t.Errorf("file %d: %v, want used %d read, filegroup %v, no volume", i, f, want.used, want.fg)
+		}
+	}
+	if !strings.Contains(azureDBFilesSQL, "FROM sys.database_files df") || strings.Contains(azureDBFilesSQL, "master_files") {
+		t.Error("the Azure SQL Database read is sys.database_files")
 	}
 }

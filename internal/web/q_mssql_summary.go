@@ -53,7 +53,9 @@ WITH inst AS (
   SELECT instance_id, key, read_at, err,
          -- Elastic Pool Storage where mssql_pool never ran is n/a, not 'not yet': most servers are in no pool, and a
          -- store from before mssql_pool holds no run of it
-         CASE WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key = 'elasticpool' THEN 'n/a' ELSE 'never' END AS state
+         -- Disk on Azure SQL Database is n/a (B2a): mssql_storage reads the database's files there, and the platform has no volumes
+         CASE WHEN key = 'disk' AND EXISTS (SELECT 1 FROM pgvigil.instances x WHERE x.instance_id = runs.instance_id AND x.platform = 'azuresqldb') THEN 'n/a'
+              WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key = 'elasticpool' THEN 'n/a' ELSE 'never' END AS state
     FROM runs
 ), f AS (
   SELECT instance_id, severity, setting, value, detail,

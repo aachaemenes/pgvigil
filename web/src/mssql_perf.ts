@@ -64,9 +64,14 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
   if (!l && !cpu.length) { sec.append(empty('CPU', 'mssql_cpu', 'every minute')); return sec; }
   sec.append(stepNote(ctx));
   const box = el('div', { class: 'charts' });
-  box.append(lineChart('CPU utilization (scheduler monitor, one record a minute)', cpu,
-    [{ key: 'sql_pct', label: 'SQL Server %' }, { key: 'other_pct', label: 'other processes %' }, { key: 'total_pct', label: 'total %' }], v => fmtNum(v) + ' %'));
-  if (cpu.length && !cpu.some(r => r.machine_read)) {
+  // Azure SQL Database (B2a): the database's CPU as a share of its limit, from sys.dm_db_resource_stats (mssql_azuredb_resources)
+  const azure = cpu.some(r => r.azure);
+  box.append(azure
+    ? lineChart('CPU, % of the database\'s limit (sys.dm_db_resource_stats, mssql_azuredb_resources)', cpu,
+      [{ key: 'sql_pct', label: 'database CPU avg %' }, { key: 'total_max', label: 'largest 15-second sample %' }], v => fmtNum(v) + ' %')
+    : lineChart('CPU utilization (scheduler monitor, one record a minute)', cpu,
+      [{ key: 'sql_pct', label: 'SQL Server %' }, { key: 'other_pct', label: 'other processes %' }, { key: 'total_pct', label: 'total %' }], v => fmtNum(v) + ' %'));
+  if (cpu.length && !azure && !cpu.some(r => r.machine_read)) {
     sec.append(el('p', { class: 'meta' }, 'A Linux host: SQL Server on Linux writes no idle figure in the scheduler monitor\'s records (always 0), '
       + 'so only the SQL Server process\'s CPU is drawn; the other processes and the machine\'s total are not read.'));
   }
