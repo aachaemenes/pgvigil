@@ -67,6 +67,12 @@
 #     not read', the 'Counters' family grid; Admin > Counters shows 'Rows made here' (rows = the config part),
 #     'The defaults' (rows = the defaults part), 'Counters the servers have', 'Log', and its Save and End controls off
 #     with their reason on a -no-login serve; no error box, no exception.
+#  N. D6 (the rows on other slices' pages, WIRING hunks): after two mssql_cpu and mssql_memory reads with 20 batches
+#     between them: /api/perfsummary's mssql part gives ctrbox compiles_per_100 = round(100 * compilations / batch
+#     requests, 1) from mssql_sched_sample's interval-weighted rates over the same window (0 under 1 batch/s); the CPU
+#     API's sched part carries failed_to_create_worker (0 on a healthy box) at a step; the Memory API's clerk_stats
+#     names MEMORYCLERK_SQLBUFFERPOOL 'Buffer Pool'; the pages show the summary's 'compilations per 100 batches', the
+#     scheduler trend's 'schedulers that failed to create a worker' and the clerks grid's 'what it is' with Buffer Pool.
 #  L. the version run on each further image: A's setup, B's bracket and C's arithmetic, D's logins, errors and log
 #     growth, the list = every default.
 #  M. the measured size: rows per read of each scope and the sample rows stored per read, and bytes per day per instance
@@ -106,7 +112,7 @@ psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answe
 if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q 'ListCollector' internal/mssql/mssql.go; then
   git apply scripts/proof-mssql-counters-wiring.patch 2>/dev/null || patch -p1 --forward < scripts/proof-mssql-counters-wiring.patch >/dev/null \
     || fail "the wiring patch"
-  echo "wiring applied to this copy (config.go, mssql.go, repo.go, cpu.go, activity.go, 0190, web.go, router.ts, main.ts)"
+  echo "wiring applied to this copy (config.go, mssql.go, repo.go, cpu.go, activity.go, 0190, web.go, router.ts, main.ts; D6: q_perfsummary.go, perfsummary.ts, q_mssql_perf.go, mssql_perf.ts)"
 fi
 freeport() { local lo=$1 hi=$2 p used
   used=$(ss -Htan) || fail "ss -Htan failed: the ports in use cannot be read"
@@ -579,6 +585,66 @@ PAGE
 timeout 320 node "$TMPD/page.mjs" "$CDP" "$U2" "$SB" "$SHOTS" || fail "K: a check of the pages failed"
 ok "K: the Metrics page's counters (rows = the API's), the histogram, the absent list, the Counters family, Admin > Counters (rows = the API's) with its controls off and their reason, light and dark"
 
+echo "== N. D6: the Performance summary, the CPU page's scheduler trend, the Memory page's clerk names =="
+col mssql_cpu mssql_memory
+sq "$(for i in $(seq 1 20); do echo "SELECT COUNT(*) FROM sys.objects WHERE object_id > $i;"; echo GO; done)" >/dev/null
+sleep 2; col mssql_cpu mssql_memory mssql_counters
+NF=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); NT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
+for q in "perfsummary?part=mssql&from=$NF&to=$NT" "mssql/cpu?instance=$SB&part=sched&from=$NF&to=$NT" "mssql/memory?instance=$SB&part=clerk_stats&from=$NF&to=$NT"; do
+  n=${q%%\?*}; n=${n//\//_}; [[ $(code "$U2/api/$q") == 200 ]] || fail "N: GET $q: $(cat "$TMPD/body")"; cp "$TMPD/body" "$TMPD/n-$n.json"
+done
+python3 - "$PGDSN" "$SB" "$NF" "$NT" "$TMPD" <<'PY2' || fail "N: an API row of D6"
+import json, subprocess, sys
+dsn, sb, nf, nt, d = sys.argv[1:6]
+rows = lambda f, p: [dict(zip(t['columns'], r)) for t in [json.load(open(f'{d}/n-{f}.json'))[p]] for r in t['rows']]
+q = lambda s: subprocess.run(['psql', dsn, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-F', '|', '-c', s], capture_output=True, text=True, check=True).stdout.strip()
+bad = []
+ps = [r for r in rows('perfsummary', 'mssql') if r.get('instance') == 'ctrbox']
+cb = q(f"""SELECT sum(batch_s * interval_secs) / nullif(sum(interval_secs) FILTER (WHERE batch_s IS NOT NULL), 0),
+                  sum(compiles_s * interval_secs) / nullif(sum(interval_secs) FILTER (WHERE compiles_s IS NOT NULL), 0)
+             FROM pgvigil.mssql_sched_sample WHERE instance_id = {sb} AND snapshot_at > '{nf}' AND snapshot_at <= '{nt}' AND interval_secs > 0""").split('|')
+b, c = round(float(cb[0]), 2), float(cb[1])
+exp = 0 if b < 1 else round(100 * c / b, 1)
+got = ps[0].get('compiles_per_100') if ps else None
+print(f'   perfsummary ctrbox: batch_s {b}, compiles_s {c:.3f}: compiles_per_100 {got} (recomputed {exp})')
+if got is None or abs(float(got) - exp) > 0.051: bad.append(f'compiles_per_100 {got} != {exp}')
+fw = [r.get('failed_to_create_worker') for r in rows('mssql_cpu', 'sched')]
+print(f'   sched steps {len(fw)}, failed_to_create_worker at {sum(v is not None for v in fw)} of them: {sorted(set(v for v in fw if v is not None))}')
+if not any(v is not None and float(v) == 0 for v in fw): bad.append('no step with failed_to_create_worker 0')
+bp = [r for r in rows('mssql_memory', 'clerk_stats') if r.get('clerk_type') == 'MEMORYCLERK_SQLBUFFERPOOL']
+print(f"   clerk_stats: MEMORYCLERK_SQLBUFFERPOOL named [{bp[0].get('clerk_name') if bp else 'no row'}]")
+if not bp or bp[0].get('clerk_name') != 'Buffer Pool': bad.append('the buffer pool clerk not named Buffer Pool')
+for x in bad: print('   FAIL ' + x)
+sys.exit(1 if bad else 0)
+PY2
+cat > "$TMPD/d6.mjs" <<'PAGE'
+const [port, base, sb] = process.argv.slice(2);
+setTimeout(() => { console.log('FAIL the D6 page check did not end in 120 s'); process.exit(2); }, 120000).unref();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(tabs.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map(); const thrown = [];
+ws.addEventListener('message', m => { const d = JSON.parse(m.data);
+  if (d.method === 'Runtime.exceptionThrown') thrown.push(d.params.exceptionDetails?.exception?.description ?? 'exception');
+  if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async e => (await cmd('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true })).result?.result?.value;
+const until = async (e, ms = 45000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await ev(e); if (v) return v; await sleep(300); } return null; };
+let failed = 0; const check = (l, ok) => { if (!ok) failed++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${l}`); };
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: `${base}/#/perfsummary?w=1h` });
+check("N page: the Performance summary's 'compilations per 100 batches' column", !!await until(`[...document.querySelectorAll('main th')].some(th => th.textContent.trim().startsWith('compilations per 100 batches'))`));
+await cmd('Page.navigate', { url: `${base}/#/mssqlcpu?i=${sb}&w=1h` });
+check("N page: the CPU page's scheduler trend names 'schedulers that failed to create a worker'", !!await until(`document.querySelector('main')?.innerText.includes('schedulers that failed to create a worker')`));
+await cmd('Page.navigate', { url: `${base}/#/mssqlmemory?i=${sb}&w=1h` });
+check("N page: the Memory page's clerks grid has 'what it is' with Buffer Pool", !!await until(`[...document.querySelectorAll('main table.grid')].some(t => [...t.querySelectorAll('th')].some(th => th.textContent.trim().startsWith('what it is')) && [...t.querySelectorAll('td')].some(td => td.textContent.trim() === 'Buffer Pool'))`));
+check('N pages: no exception', thrown.length === 0);
+process.exit(failed ? 1 : 0);
+PAGE
+timeout 140 node "$TMPD/d6.mjs" "$CDP" "$U2" "$SB" || fail "N: a D6 page check failed"
+ok "N: compiles_per_100 on the Performance summary = its recomputation from mssql_sched_sample; failed_to_create_worker on the scheduler trend's steps; Buffer Pool named on the Memory page's clerks; the three pages show them"
+
 echo "== M. the size =="
 pq "SELECT scope, round(avg(rows_read)), count(*) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB GROUP BY 1 ORDER BY 1" | sed 's/^/   reads: /'
 python3 - "$PGDSN" "$SB" <<'PY'
@@ -626,4 +692,4 @@ for img in "${IMAGES[@]:1}"; do
 done
 
 echo "NOT PROVEN HERE: SQL Server 2016 (no Linux image: dba-lab-win's queue), Managed Instance, RDS, Cloud SQL, a Windows host; DB Offline Errors moving (no box can provoke it); two memory nodes (one Buffer Node in a container)"
-echo "PROOF OK: mssql counters (A B C D E F G H I J K M L)"
+echo "PROOF OK: mssql counters (A B C D E F G H I J K N M L)"

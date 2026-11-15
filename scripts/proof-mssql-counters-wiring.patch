@@ -611,3 +611,135 @@ index 2e453d1..2c3a601 100644
    // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
    { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
  ];
+diff --git i/internal/web/q_mssql_perf.go w/internal/web/q_mssql_perf.go
+index 078fe43..44bc71f 100644
+--- i/internal/web/q_mssql_perf.go
++++ w/internal/web/q_mssql_perf.go
+@@ -56,14 +56,24 @@ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snaps
+  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+  GROUP BY 1 ORDER BY 1`
+ 
++// sqlMSSQLSchedSeries: the scheduler read's steps, with the schedulers that failed to create a worker (task 401 D6 /
++// OVW#51: sys.dm_os_schedulers.failed_to_create_worker summed over the VISIBLE ONLINE schedulers by mssql_counters,
++// the most in each step; NULL in a step with no counter read).
+ const sqlMSSQLSchedSeries = `
++WITH s AS (
+ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
+        round(avg(s.runnable_tasks), 2) AS runnable_tasks, max(s.runnable_tasks) AS runnable_max, round(avg(s.work_queue), 2) AS work_queue,
+        round(avg(s.pending_io), 2) AS pending_io, round(avg(s.current_workers), 0) AS current_workers, round(avg(s.active_workers), 0) AS active_workers,
+        max(s.max_workers) AS max_workers
+   FROM pgvigil.mssql_sched_sample s
+  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+- GROUP BY 1 ORDER BY 1`
++ GROUP BY 1),
++f AS (
++SELECT to_timestamp(floor(extract(epoch FROM v.snapshot_at) / $4) * $4) AS snapshot_at, max(v.value) AS failed_to_create_worker
++  FROM pgvigil.mssql_counter_values($1, $2, $3, 'instance') v
++ WHERE v.object = 'sys.dm_os_schedulers' AND v.counter = 'failed_to_create_worker'
++ GROUP BY 1)
++SELECT s.*, f.failed_to_create_worker FROM s LEFT JOIN f USING (snapshot_at) ORDER BY 1`
+ 
+ // sqlMSSQLCounterSeries: each read's rate weighed by its interval, so a step's figure is the step's own per second.
+ const sqlMSSQLCounterSeries = `
+@@ -120,15 +130,18 @@ SELECT x.snapshot_at, x.clerk_type, round(avg(x.kb) / 1024.0, 1) AS mb
+          GROUP BY 1, 2, 3) x
+  GROUP BY 1, 2 ORDER BY 1, 2`
+ 
++// sqlMSSQLClerkStats: clerk_name is the type's friendly name (task 401 D6 / T24: pgvigil.mssql_clerk_names, Telegraf's
++// list), NULL for a type the list does not name.
+ const sqlMSSQLClerkStats = `
+-SELECT c.clerk_type, (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
++SELECT c.clerk_type, (SELECT n.name FROM pgvigil.mssql_clerk_names n WHERE n.clerk_type = c.clerk_type) AS clerk_name,
++       (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
+        round(avg(c.pages_kb), 0) AS avg_kb, min(c.pages_kb) AS min_kb, max(c.snapshot_at) AS snapshot_at,
+        round((100.0 * (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1]
+               / nullif((SELECT clerks_kb FROM pgvigil.mssql_memory_sample m WHERE m.instance_id = $1 AND m.snapshot_at = max(c.snapshot_at)), 0))::numeric, 1) AS current_pct
+   FROM pgvigil.mssql_memory_clerk c
+  WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
+  GROUP BY c.clerk_type
+- ORDER BY 2 DESC NULLS LAST`
++ ORDER BY 3 DESC NULLS LAST`
+ 
+ // sqlMSSQLFileLatency: read and write latency per step for each database and file type ('tempdb ROWS'); the five
+ // groups with the most stall over the range on their own, the rest as '(other)'.
+diff --git i/internal/web/q_perfsummary.go w/internal/web/q_perfsummary.go
+index 4e30bc2..4f8b0b4 100644
+--- i/internal/web/q_perfsummary.go
++++ w/internal/web/q_perfsummary.go
+@@ -31,7 +31,9 @@ import (
+ //   commits_s ...    PostgreSQL: dbstats, the counters' rise per restart epoch (0010) summed over the databases.
+ //                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
+ //                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
+-//                    temp_bytes_s are NULL.
++//                    temp_bytes_s are NULL. compiles_per_100 (SQL Server only, task 401 D6 / PBI#2): SQL
++//                    Compilations per 100 Batch Requests over the range from the same reads, 0 under 1 batch/s (the
++//                    'counters' metric compiles_per_100_batches' floor).
+ //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
+ //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
+ //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
+@@ -76,7 +78,7 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        round((1000 * w.other_s / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
+        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
+        NULL::numeric AS signal_pct,
+-       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
++       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
+        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
+        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
+@@ -189,7 +191,10 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        round((w.other_ms / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
+        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
+        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
+-       h.cpu_sql_avg, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
++       h.cpu_sql_avg, t.batch_s,
++       CASE WHEN t.batch_s IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_s < 1 THEN 0
++            ELSE round(100 * t.compiles_s / t.batch_s, 1) END AS compiles_per_100,
++       m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
+        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
+        CASE WHEN io.secs > 0 THEN 'virtual_file_stats' END AS io_source,
+@@ -210,7 +215,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+      WHERE s.instance_id = inst.instance_id AND s.snapshot_at > $1 AND s.snapshot_at <= $2) h ON true
+   LEFT JOIN LATERAL (
+     SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,
+-           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s
++           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s,
++           (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
+       FROM pgvigil.mssql_sched_sample x
+      WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
+   LEFT JOIN LATERAL (
+diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
+index 823b6dd..10316ca 100644
+--- i/web/src/mssql_perf.ts
++++ w/web/src/mssql_perf.ts
+@@ -115,7 +115,8 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
+   }
+   const box2 = el('div', { class: 'charts' });
+   box2.append(lineChart('CPU scheduler trend', sched,
+-    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' }]));
++    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' },
++      { key: 'failed_to_create_worker', label: 'schedulers that failed to create a worker' }]));
+   box2.append(lineChart('Workers', sched, [{ key: 'current_workers', label: 'current workers' }, { key: 'active_workers', label: 'active workers' }, { key: 'max_workers', label: 'max worker threads' }]));
+   box2.append(lineChart('Batch requests and compilations per second', counters,
+     [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }, { key: 'recompiles_s', label: 'recompilations/s' }]));
+@@ -232,6 +233,7 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(pcBox);
+   sec.append(grid(stats, [
+     { key: 'clerk_type', label: 'clerk type' },
++    { key: 'clerk_name', label: 'what it is', fmt: v => v == null ? el('span', { class: 'meta', title: 'a clerk type the name list (Telegraf\'s) does not hold' }, 'not named') : String(v) },
+     { key: 'current_kb', label: 'pages (current)', num: true, fmt: kb },
+     { key: 'current_pct', label: '% of clerks', num: true, fmt: pct },
+     { key: 'max_kb', label: 'max', num: true, fmt: kb },
+diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
+index 3863d49..ca9830f 100644
+--- i/web/src/perfsummary.ts
++++ w/web/src/perfsummary.ts
+@@ -106,6 +106,8 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'commits_s', label: 'commits/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+     { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+     { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
++    { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
++      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range; 0 under 1 batch request a second' }, fmtNum(v)) },
+     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
+       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
+     { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
