@@ -10,7 +10,7 @@ import (
 
 // Query-text policy (config query_text: full | normalized | none). Statement text is the one thing a
 // monitor stores that can carry data: a literal in a WHERE clause, a value in an INSERT. "full" keeps
-// the text as the server shows it (credentials masked on the way out, always); "normalized" replaces
+// the text as the server shows it, credentials masked (MaskCredentials, under every mode); "normalized" replaces
 // every literal with ? and drops comments before the text leaves the collector, and keys the text by a
 // hash of that normalized form (one row per statement shape, nothing of the raw text kept); "none"
 // stores no statement text and no text hash at all, only the counters. The policy runs in RunOnce on
@@ -20,15 +20,205 @@ import (
 // query; log rows carry statement and detail (a deadlock's detail quotes the other process's statement).
 var textPolicyKeys = []string{"query", "statement", "detail"}
 
+// credentialKeys are the row columns the credential mask runs over under every mode: the statement text keys, the
+// slow capture's statement shape and a message (a log line or a read's error can quote a connection string). A new
+// text path puts its text under one of these keys (task 415).
+var credentialKeys = []string{"query", "statement", "detail", "shape", "message"}
+
+// The credential mask (task 415). Every form below is replaced by <masked> in the text of every row, under every
+// text policy, on both engines, before the row leaves the collector:
+//   - a private key block: -----BEGIN ... PRIVATE KEY----- (PGP, PEM, RSA, EC ...) to its END line, or to the end of
+//     a text the server or a text cap cut before it;
+//   - every string literal inside a call of a function that takes a key or a passphrase: pgcrypto's pgp_sym_*,
+//     pgp_pub_decrypt*, encrypt*, decrypt*, hmac and crypt, SQL Server's ENCRYPTBYPASSPHRASE and DECRYPTBYPASSPHRASE
+//     ('...', E'...', N'...', $tag$...$tag$; an unterminated one to the end of the text);
+//   - the literal or 0x value after PASSWORD (= optional: T-SQL and PostgreSQL), SECRET =, IDENTIFIED BY, and a
+//     T-SQL parameter whose name holds password, passwd, pwd or secret (@rmtpassword = N'...'); an unterminated
+//     literal to the end of the text;
+//   - key = value or key: value where the key holds password, passwd, pwd, secret, passfile or sslkey (a connection
+//     string, libpq's keywords, SQLCMDPASSWORD with or without spaces);
+//   - the password of a URI's user:password@;
+//   - a command line's -P (sqlcmd, bcp, osql, isql: the value bare, quoted, or in T-SQL's doubled quotes),
+//     -Password, -pw and -pwd; ConvertTo-SecureString's string; net use's password; dtexec's /DE and /Decrypt.
+//
+// It is a text rule: a password stored as an ordinary column value in an INSERT stays under full and is gone under
+// normalized and none. The mask is idempotent: a second pass changes nothing.
+var (
+	maskKeyBlockRE = regexp.MustCompile(`(?s)-----BEGIN (?:PGP PRIVATE KEY BLOCK|[A-Z0-9 ]*PRIVATE KEY)-----.*?(?:-----END (?:PGP PRIVATE KEY BLOCK|[A-Z0-9 ]*PRIVATE KEY)-----|\z)`)
+	maskFuncRE     = regexp.MustCompile(`(?i)\b(?:pgp_sym_encrypt(?:_bytea)?|pgp_sym_decrypt(?:_bytea)?|pgp_pub_decrypt(?:_bytea)?|encrypt(?:_iv)?|decrypt(?:_iv)?|hmac|crypt|encryptbypassphrase|decryptbypassphrase)\s*\(`)
+	maskKeywordRE  = regexp.MustCompile(`(?i)(?:\bPASSWORD\b\s*=?\s*|\bSECRET\s*=\s*|\bIDENTIFIED\s+BY\s+|@\w*(?:password|passwd|pwd|secret)\w*\s*=\s*)`)
+	maskPairRE     = regexp.MustCompile(`(?i)(\b\w*(?:password|passwd|pwd|secret|passfile|sslkey)\w*\s*[=:]\s*)("[^"]*(?:"|\z)|'(?:[^']|'')*(?:'|\z)|[^;\s,)'"]+)`)
+	maskURIRE2     = regexp.MustCompile(`(://[^:/@\s'"]+:)([^@\s/'"]+)(@)`)
+	maskArgRE2     = regexp.MustCompile(`((?:^|[\s'"])(?:(?i:-Password|-pwd|-pw)\b|-P)\s*)(''(?:[^']|'''')*''|"[^"]*"|'[^']*'|(?:[^\s']|'')+)`)
+	maskSecureRE2  = regexp.MustCompile(`(?i)(ConvertTo-SecureString\s+(?:-String\s+)?)("[^"]*"|'[^']*'|\S+)`)
+	maskNetUseRE2  = regexp.MustCompile(`(?i)(\bnet\s+use\s+\S+\s+)([^/\s]\S*)`)
+	maskDtsRE2     = regexp.MustCompile(`(?i)(/(?:DE|Decrypt)\s+)("[^"]*"|\S+)`)
+)
+
+const masked = "<masked>"
+
+// MaskCredentials is s with every credential in the forms above replaced by <masked> (the comment above lists them).
+func MaskCredentials(s string) string {
+	if s == "" {
+		return s
+	}
+	s = maskKeyBlockRE.ReplaceAllString(s, masked)
+	s = maskFuncLiterals(s)
+	s = maskKeywordLiterals(s)
+	s = maskURIRE2.ReplaceAllString(s, "${1}"+masked+"${3}")
+	s = maskPairRE.ReplaceAllStringFunc(s, func(m string) string {
+		g := maskPairRE.FindStringSubmatch(m)
+		if strings.Contains(g[2], masked) {
+			return m
+		}
+		return g[1] + masked
+	})
+	s = maskArgRE2.ReplaceAllStringFunc(s, func(m string) string {
+		g := maskArgRE2.FindStringSubmatch(m)
+		return g[1] + masked
+	})
+	s = maskSecureRE2.ReplaceAllString(s, "${1}"+masked)
+	s = maskNetUseRE2.ReplaceAllString(s, "${1}"+masked)
+	return maskDtsRE2.ReplaceAllString(s, "${1}"+masked)
+}
+
+// maskFuncLiterals replaces every string literal inside the argument list of a key-taking function call (maskFuncRE)
+// with '<masked>': from the opening parenthesis to its match, or to the end of the text when the text was cut.
+func maskFuncLiterals(s string) string {
+	locs := maskFuncRE.FindAllStringIndex(s, -1)
+	if locs == nil {
+		return s
+	}
+	in := []rune(s)
+	var out strings.Builder
+	out.Grow(len(s))
+	done := 0 // runes of in already written
+	for _, loc := range locs {
+		open := len([]rune(s[:loc[1]])) // the rune after '('
+		if open <= done {
+			continue // inside a call already masked (a nested key function)
+		}
+		out.WriteString(string(in[done:open]))
+		i, depth := open, 1
+		for i < len(in) && depth > 0 {
+			if j, lit := literalAt(in, i); lit {
+				out.WriteString("'" + masked + "'")
+				i = j
+				continue
+			}
+			switch in[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			out.WriteRune(in[i])
+			i++
+		}
+		done = i
+	}
+	out.WriteString(string(in[done:]))
+	return out.String()
+}
+
+// maskKeywordLiterals replaces the value after PASSWORD, SECRET =, IDENTIFIED BY or a password-named T-SQL parameter
+// with '<masked>' when it is a literal ('...', N'...', E'...', $tag$...$tag$; an unterminated one to the end of the
+// text) or a 0x value (a hashed password); anything else (a parameter, NULL, a column) stays.
+func maskKeywordLiterals(s string) string {
+	locs := maskKeywordRE.FindAllStringIndex(s, -1)
+	if locs == nil {
+		return s
+	}
+	in := []rune(s)
+	var out strings.Builder
+	out.Grow(len(s))
+	done := 0
+	for _, loc := range locs {
+		at := len([]rune(s[:loc[1]]))
+		if at < done {
+			continue
+		}
+		if j, lit := literalAt(in, at); lit {
+			out.WriteString(string(in[done:at]))
+			out.WriteString("'" + masked + "'")
+			done = j
+			continue
+		}
+		if at+2 < len(in) && in[at] == '0' && (in[at+1] == 'x' || in[at+1] == 'X') && isHex(in[at+2]) {
+			j := at + 2
+			for j < len(in) && isHex(in[j]) {
+				j++
+			}
+			out.WriteString(string(in[done:at]))
+			out.WriteString("'" + masked + "'")
+			done = j
+		}
+	}
+	out.WriteString(string(in[done:]))
+	return out.String()
+}
+
+func isHex(r rune) bool {
+	return unicode.IsDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+// literalAt says whether a string literal opens at in[i] and returns the index after it: '...' (a doubled quote
+// inside), N'...' (T-SQL's Unicode literal), E'...' (backslash escapes) or $tag$...$tag$ (the tag matched exactly);
+// an unterminated literal runs to the end of the text. A letter that ends an identifier (name'...') is not a prefix.
+func literalAt(in []rune, i int) (int, bool) {
+	n := len(in)
+	if i >= n {
+		return i, false
+	}
+	identBefore := i > 0 && (in[i-1] == '_' || unicode.IsLetter(in[i-1]) || unicode.IsDigit(in[i-1]))
+	switch c := in[i]; {
+	case c == '\'':
+		return skipQuoted(in, i, false), true
+	case (c == 'N' || c == 'n') && i+1 < n && in[i+1] == '\'' && !identBefore:
+		return skipQuoted(in, i+1, false), true
+	case (c == 'E' || c == 'e') && i+1 < n && in[i+1] == '\'' && !identBefore:
+		return skipQuoted(in, i+1, true), true
+	case c == '$' && !identBefore && i+1 < n && !unicode.IsDigit(in[i+1]):
+		j := i + 1
+		for j < n && (in[j] == '_' || unicode.IsLetter(in[j]) || (j > i+1 && unicode.IsDigit(in[j]))) {
+			j++
+		}
+		if j < n && in[j] == '$' {
+			tag := string(in[i : j+1])
+			rest := string(in[j+1:])
+			if end := strings.Index(rest, tag); end >= 0 {
+				return j + 1 + len([]rune(rest[:end])) + len([]rune(tag)), true
+			}
+			return n, true // an unterminated dollar quote: the rest of the text is its body
+		}
+	}
+	return i, false
+}
+
+// maskRowCredentials runs the credential mask over a row's text columns (credentialKeys), whatever the policy.
+func maskRowCredentials(r Row) {
+	for _, k := range credentialKeys {
+		if s, ok := r[k].(string); ok && s != "" {
+			if m := MaskCredentials(s); m != s {
+				r[k] = m
+			}
+		}
+	}
+}
+
 // ApplyTextPolicy is the instance's query-text policy for another engine's collector package: the same rewrite
 // RunOnce applies to a PostgreSQL collection's rows.
 func ApplyTextPolicy(rows []Row, mode string) { applyTextPolicy(rows, mode) }
 
 // applyTextPolicy rewrites the text columns of rows in place according to mode; an unknown or empty
-// mode is "full" (nothing changes). A row that keys its text by query_hash (activity) gets the hash of
+// mode is "full" (the credential mask alone). A row that keys its text by query_hash (activity) gets the hash of
 // the normalized text under normalized, so identical shapes share one query_text row and the raw
-// text's fingerprint is not kept, and no hash at all under none.
+// text's fingerprint is not kept, and no hash at all under none. The credential mask runs first under every mode
+// (task 415): under full it is all that changes the text, and a server-side hash (query_hash under full) stays.
 func applyTextPolicy(rows []Row, mode string) {
+	for _, r := range rows {
+		maskRowCredentials(r)
+	}
 	if mode == "" || mode == "full" {
 		return
 	}
