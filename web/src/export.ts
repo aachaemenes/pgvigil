@@ -571,8 +571,8 @@ export function csv(s: Section): string {
 // rawValue: a cell's own value for the CSV, JSON and SQL forms (task GM; one function for the three): an empty cell null;
 // a number the number - a size in bytes, a duration in seconds (a millisecond column in milliseconds), a percent the
 // figure the page shows (12.5, never the 0.125 a workbook's percent format holds), a count of days the days; a time ISO
-// 8601 with the display zone's offset at that instant ('2026-11-14T17:00:00-08:00'); a yes / no a boolean; a date alone
-// 'YYYY-MM-DD'; anything else the words as shown. The workbook writes Excel's own forms instead (docs/export.md says
+// 8601 with the display zone's offset at that instant ('2026-11-14T17:00:00-08:00'); anything else the words as shown
+// (a yes / no cell is text today: no Kind is 'bool' or 'day', so those two cases wait for typed() to read them). The workbook writes Excel's own forms instead (docs/export.md says
 // which, per form).
 export function rawValue(c: Cell): string | number | boolean | null {
   if (c.v === '') return null;

@@ -145,7 +145,7 @@
 #     on another platform than the test server's (azuresqlmi, aurora): each line ends 'not <instance>, <its platform's
 #     words>, where the same run returns other rows.' and the mark '(<words>)'; the picker's are on the test server's
 #     platform (sqlserver, onprem): 'not <instance>.' with no clause; every line and mark says 'captured <day> UTC';
-#     the sample grid's menu 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark
+#     the sample grid's menu 'Copy > As Markdown > Standard' and 'Copy > Grid' (HTML in the colours beside the words) hand the clipboard the mark
 #     first (the tools' grid's copy carries none); the exported sample CSV opened by the bar's Tools > Open Grid or
 #     Data Set reads as the sample's own columns and rows, its note starting with the mark.
 #  U3. [B3] each state as the page draws it: threshold 0 (read live): sp_HumanEventsBlockViewer on with its note, the
@@ -1250,19 +1250,16 @@ if (mode === 'live') {
     const miss = await ev(`(() => { const td = ${cell}; if (!td) return 'the cell went away after the scroll';
       const r = td.getBoundingClientRect();
       td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
-      const bs = [...document.querySelectorAll('.menu [role=menuitem]')];
-      if (!bs.length) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
-      const b = bs.find(x => x.textContent.trim() === ${JSON.stringify(item)});
-      if (!b) return ${JSON.stringify(item)} + ' not among: ' + bs.map(x => x.textContent.trim()).join(' | ');
-      b.click(); return ''; })()`);
+      if (!document.querySelector('.menu')) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
+      return (path => { const lab = x => [...x.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(); for (const l of path) { const boxes = [...document.querySelectorAll('.menu')], box = boxes[boxes.length - 1], bs = box ? [...box.querySelectorAll(':scope > button')] : []; const b = bs.find(x => lab(x) === l); if (!b) return l + ' not among: ' + bs.map(lab).join(' | '); b.click(); } return ''; })(${JSON.stringify(item.split(' > '))}); })()`);   // item: a path through the grid menu (task GM)
     if (miss) return { error: miss };
     if (!await until(`window.__clips.length > ${n}`, 5000)) return { error: 'nothing reached the clipboard in 5 s after ' + item };
     return await ev(`window.__clips[${n}]`);
   };
   out.clip = {
-    md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as Markdown'),
-    html: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as HTML with the colours'),
-    tools: await copyFrom(`[...document.querySelectorAll('main table.grid tbody td')].find(td => !td.closest('[data-sample]') && td.closest('table').querySelector('button.link'))`, 'Copy the rows as Markdown'),
+    md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy > As Markdown > Standard'),
+    html: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy > Grid'),
+    tools: await copyFrom(`[...document.querySelectorAll('main table.grid tbody td')].find(td => !td.closest('[data-sample]') && td.closest('table').querySelector('button.link'))`, 'Copy > As Markdown > Standard'),
   };
   // the exported sample CSV opened by the bar's Tools > Open Grid or Data Set: the sample's own columns and rows
   out.reopen = null;
@@ -1571,11 +1568,11 @@ assert not bad and sum(1 for n in firsts if 'sp_Blitz' in n) == 2, f"S: the CSV 
 print(f"ok   S: Export CSV: exactly the panel's 2 files start with the mark ({', '.join(n for n in firsts if 'sp_Blitz' in n)}), none of the other {len(firsts) - 2}")
 # the grid menu's copies (review 20261112-222929 finding 2): the sample's mark first in both, the tools' grid's none
 c = d.get('clip') or {}; md, hc, tc = c.get('md') or {}, c.get('html') or {}, c.get('tools') or {}
-unmd = re.sub(r'\\([\\|*_`<\[\]])', r'\1', md.get('text', ''))
-assert unmd.startswith(p['mark'] + '\n\n') and '|' in unmd.split('\n\n', 1)[1], f"S: Copy the rows as Markdown: {md}"
-assert hc.get('plain', '').startswith(p['mark'] + '\n') and hc.get('html', '').startswith('<p>') and html.unescape(re.sub(r'<[^>]+>', '', hc['html'].split('</p>', 1)[0])) == p['mark'] and '<table' in hc['html'], f"S: Copy the rows as HTML: {str(hc)[:400]}"
+unmd = re.sub(r'\\([\\|*_`<\[\]])', r'\1', md.get('text', '')).replace('&amp;', '&')
+assert unmd.startswith(p['mark'] + '\n\n') and '|' in unmd.split('\n\n', 1)[1], f"S: Copy > As Markdown > Standard: {md}"
+assert hc.get('plain', '').startswith(p['mark'] + '\n') and hc.get('html', '').startswith('<p>') and html.unescape(re.sub(r'<[^>]+>', '', hc['html'].split('</p>', 1)[0])) == p['mark'] and '<table' in hc['html'], f"S: Copy > Grid (HTML): {str(hc)[:400]}"
 assert tc.get('kind') == 'text' and 'stored sample of' not in tc.get('text', '') and '|' in tc.get('text', ''), f"S: the tools' grid's copy: {str(tc)[:300]}"
-print(f"ok   S: the sample grid's menu: 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark first (Markdown {len(md['text'])} chars, HTML {len(hc['html'])}); the tools' grid's copy carries none")
+print(f"ok   S: the sample grid's menu: 'Copy > As Markdown > Standard' and 'Copy > Grid' hand the clipboard the mark first (Markdown {len(md['text'])} chars, HTML {len(hc['html'])}); the tools' grid's copy carries none")
 # the exported sample CSV opened by Tools > Open Grid or Data Set (finding 3): the sample's own columns and rows, the mark in the note
 ro = d.get('reopen') or {}
 assert ro and not ro.get('error') and ro['cols'] == ro['shown']['cols'] and ro['rows'] == ro['shown']['rows'] and ro['cols'] > 1 \

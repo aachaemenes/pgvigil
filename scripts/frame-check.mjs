@@ -57,24 +57,30 @@ for (let i = 0; i < 40 && !csv; i++) { await sleep(250); csv = fs.readdirSync(dl
 const lines = csv ? fs.readFileSync(`${dl}/${csv}`, 'utf8').trim().split(/\r?\n/) : [];
 check('B export', lines.length === a.n + 1, `${csv || 'no .csv downloaded'}: ${lines.length} lines for ${a.n} rows shown and the header`);
 
+// the grid menu's path click (task GM: Copy > Cell, ...): each step a button of the newest menu box by its own label
+const PICK = `(path => { const lab = x => [...x.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(); for (const l of path) { const boxes = [...document.querySelectorAll('.menu')], box = boxes[boxes.length - 1], bs = box ? [...box.querySelectorAll(':scope > button')] : []; const b = bs.find(x => lab(x) === l); if (!b) return l + ' not among: ' + bs.map(lab).join(' | '); b.click(); } return ''; })`;
 // C. the copy menu: its items, Escape from outside the menu, the clipboard for cell / row / all, the status line
 const menu = await ev(`(async () => {
   const td = document.querySelector('main table.grid tbody td:nth-child(2)'); td.tabIndex = -1; td.focus();
   td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
-  const items = [...document.querySelectorAll('.menu button')].map(b => b.textContent).join('|');
+  const lab = x => [...x.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+  const items = [...document.querySelectorAll('.menu button')].map(lab).join('|');
+  const miss = ${PICK}(['Copy']), boxes = [...document.querySelectorAll('.menu')];
+  const sub = miss || [...boxes[boxes.length - 1].querySelectorAll(':scope > button')].map(lab).join('|');
   document.body.focus();
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  return { items, openAfter: !!document.querySelector('.menu') };
+  return { items, sub, openAfter: !!document.querySelector('.menu') };
 })()`);
-// the grid's own three items first; the grid tools (gridtools.ts, task 153) add their lines after them
-check('C menu', menu.items.startsWith(`Copy cell|Copy row|Copy all ${a.n} rows shown|`) && !menu.openAfter, `${menu.items}; open after Escape elsewhere: ${menu.openAfter}`);
+// the grid menu (task GM, DBA Dash's order): Copy, Export Excel, Export file first; Copy's own items in DD:438-447's order
+check('C menu', menu.items.startsWith('Copy|Export Excel|Export file|') && menu.sub.startsWith('Grid|Column|Cell|Row|Selected|As Markdown|As JSON') && !menu.openAfter, `${menu.items}; Copy > ${menu.sub}; open after Escape elsewhere: ${menu.openAfter}`);
 const clip = [];
-for (const k of [0, 1, 2]) clip.push(await ev(`(async () => {
+for (const k of ['Cell', 'Row', 'Grid']) clip.push(await ev(`(async () => {
   const td = document.querySelector('main table.grid tbody td:nth-child(2)');
   td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
-  document.querySelectorAll('.menu button')[${k}].click(); await new Promise(r => setTimeout(r, 300));
+  const miss = ${PICK}(['Copy', '${k}']); if (miss) return { lines: 0, first: miss, cell: '', status: '' };
+  await new Promise(r => setTimeout(r, 300));
   const got = await navigator.clipboard.readText();
-  return { lines: got.split('\\n').length, first: got.split('\\n')[0], cell: td.textContent.trim(), status: td.closest('.grid-box').querySelector('.filter-count').textContent };
+  return { lines: got.split('\\n').length, first: got.split('\\n')[0], cell: td.textContent.trim(), status: td.closest('.grid-box').querySelector('.gt-stats')?.textContent ?? '' };
 })()`));
 check('C clipboard', clip[0].lines === 1 && clip[0].first === clip[0].cell && clip[1].lines === 2 && clip[1].first.startsWith('name\t') && clip[2].lines === a.n + 1 && clip[2].status.startsWith('Copied'),
   `cell '${clip[0].first}', row ${clip[1].lines} lines, all ${clip[2].lines} lines, status '${clip[2].status}'`);
@@ -119,13 +125,13 @@ for (const h of [`#/statements?i=${idOf('demo-onprem-erp01')}&w=1d`, `#/slowquer
     const outer = inner.closest('tr.trend-row').closest('table.grid');
     const td = inner.querySelector(':scope > tbody > tr > td');   // its own body: the outer tbody holds the inner thead too
     td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
-    const rowItem = [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Copy row');
-    if (!rowItem) return { page: location.hash, rowHead: false, allLines: -1, outerRows: 0, why: 'the inner cell menu: ' + [...document.querySelectorAll('.menu button')].map(b => b.textContent).join('|') + ' (td in ' + td.closest('table').className + ', row parent ' + td.parentElement.parentElement.tagName + ')' };
-    rowItem.click(); await new Promise(r => setTimeout(r, 300));
+    const rowMiss = ${PICK}(['Copy', 'Row']);
+    if (rowMiss) return { page: location.hash, rowHead: false, allLines: -1, outerRows: 0, why: 'the inner cell menu: ' + rowMiss + ' (td in ' + td.closest('table').className + ', row parent ' + td.parentElement.parentElement.tagName + ')' };
+    await new Promise(r => setTimeout(r, 300));
     const row = await navigator.clipboard.readText();
     const otd = outer.querySelector('tbody tr:not(.trend-row) td');
     otd.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
-    [...document.querySelectorAll('.menu button')].find(x => x.textContent.startsWith('Copy all')).click(); await new Promise(r => setTimeout(r, 300));
+    ${PICK}(['Copy', 'Grid']); await new Promise(r => setTimeout(r, 300));
     const all = await navigator.clipboard.readText();
     const innerHead = [...inner.querySelectorAll('thead tr:first-child th')].map(h => h.textContent).join('\\t');
     return { page: location.hash, rowHead: row.split('\\n')[0] === innerHead, allLines: all.split('\\n').length, outerRows: outer.querySelectorAll(':scope > tbody > tr:not(.trend-row)').length };
@@ -198,9 +204,8 @@ const pg = await ev(`(async () => {
   const td = t.querySelector('tbody td'); const r = td.getBoundingClientRect();
   td.tabIndex = -1; td.focus();
   td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 4, clientY: r.top + 4 }));
-  const copyAll = [...document.querySelectorAll('.menu button')].find(b => b.textContent.startsWith('Copy all'));
-  if (!copyAll) return { why: 'no Copy all in the menu: ' + [...document.querySelectorAll('.menu button')].map(b => b.textContent).join('|') };
-  copyAll.click();
+  const copyMiss = ${PICK}(['Copy', 'Grid']);
+  if (copyMiss) return { why: 'no Copy > Grid in the menu: ' + copyMiss };
   await new Promise(r => setTimeout(r, 400));
   const lines = (await navigator.clipboard.readText()).split('\\n').length, afterCopy = drawn();
   const moreBtn = btn('Show 200 more'); if (!moreBtn) return { why: "no 'Show 200 more' button on a grid of " + n + ' rows: ' + line };
@@ -208,7 +213,7 @@ const pg = await ev(`(async () => {
   const second = drawn(), focusOnLine = more.contains(document.activeElement) && document.activeElement.tagName === 'BUTTON';
   const allBtn = btn('Show all'); if (!allBtn) return { why: "no 'Show all' button after the second page of " + n + ' rows' };
   allBtn.click(); await new Promise(r => setTimeout(r, 300));
-  return { n, first, line, lines, afterCopy, second, focusOnLine, all: drawn(), hidden: more.hidden, focusGrid: document.activeElement === t.parentElement };
+  return { n, first, line, lines, afterCopy, second, focusOnLine, all: drawn(), hidden: more.hidden, focusGrid: t.contains(document.activeElement) && document.activeElement.tagName === 'TD' };
 })()`);
 check('J paging', !!pg && !pg.why && pg.n > 400 && pg.first === 200 && pg.line.startsWith(`The first 200 of ${pg.n} rows`) && pg.lines === pg.n + 1 && pg.afterCopy === 200
   && pg.second === 400 && pg.focusOnLine && pg.all === pg.n && pg.hidden && pg.focusGrid,

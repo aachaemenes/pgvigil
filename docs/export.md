@@ -147,16 +147,21 @@ dialog. In DBA Dash's order:
 - **Export Excel**: this grid's workbook (the Summary sheet and its own).
 - **Export file** > **CSV**, **JSON**, **Markdown**, **HTML** (a page of its own: the header blue, each cell's colour
   through one class per look), **SQL (INSERT) for PostgreSQL** and **for SQL Server**: a temp table `pgvigil_grid`
-  and its rows as INSERT batches of 1,000, DBA Dash's script shape for each engine. PostgreSQL's script sets
-  `standard_conforming_strings` on first (a backslash in a value is never an escape, whatever the server's setting)
-  and `client_encoding` UTF8, drops and creates `pg_temp.pgvigil_grid`, and ends with its SELECT and a commented DROP;
+  and its rows as INSERT batches of 1,000, DBA Dash's script shape for each engine. PostgreSQL's script writes every
+  string as an escape string `E'...'` with each backslash doubled, so it reads the same with
+  `standard_conforming_strings` on or off and in every client (pgAdmin's F5 or `psql -c` send the file as one query,
+  read before any `SET` in it runs); it sets `standard_conforming_strings` on and `client_encoding` UTF8, drops and creates `pg_temp.pgvigil_grid`, and ends with its SELECT and a commented DROP;
   SQL Server's starts with a UTF-8 byte-order mark (SSMS reads the encoding from it), drops `#pgvigil_grid` if it is
-  there, writes every string `N'...'`, and ends the same way. In both a string doubles its `'`, a column name its `"`
-  or `]`; an empty header is `column_<n>`, a repeated one `_1`, a name past the engine's length (SQL Server 128
+  there, writes every string `N'...'` (a backslash right before a line break, T-SQL's line continuation, ends the
+  literal there and the rest is joined with `+`, the first part `NVARCHAR(MAX)`), asks in its header for `sqlcmd -x`
+  (a value may hold what sqlcmd reads as a variable), and ends the same way. In both a string doubles its `'`, a column name its `"`
+  or `]`; an empty header is `column_<n>`, a repeated one `_1`, `_2` (the next number no other column holds;
+  on SQL Server names that differ only in case count as repeated), a name past the engine's length (SQL Server 128
   characters, PostgreSQL 63 bytes) cut with a suffix; a NUL character is dropped (neither engine stores one in text) and
   the header says how many. A column is a number type only when every non-empty cell is a number (whole numbers:
-  `bigint`); a time is `timestamptz` / `DATETIMEOFFSET`, written with its offset, the zone named in the header; anything
-  else text. Every file is named as the grid's workbook (below) with its own extension.
+  `bigint`; else `numeric` on PostgreSQL and `DECIMAL(38,10)` on SQL Server, which rounds past 10 decimals); a time is `timestamptz` / `DATETIMEOFFSET`, written with its offset, the zone named in the header; anything
+  else text. Every file is named as the grid's workbook (below) with its own extension (`.pg.sql` and `.mssql.sql` for the two
+  SQL forms). JSON objects list a header that is a whole number (`2026`) first: JavaScript orders such keys so.
 - **Transpose** > **This row**, **Selected rows**, **Grid**: the rows as columns in a dialog, with Copy; the grid form
   shows its first 50 rows and says so, its Copy takes every row.
 - **Select** > **Row**, **Column**, **All**; **Clear the selection**.
@@ -171,10 +176,11 @@ dialog. In DBA Dash's order:
   column's over every row the filters leave; a click copies the line.
 
 **The filter box's words.** A typed filter with no double quote means what it always meant: words the cell holds
-(`R & D` is those words), `!x` words it does not hold, `>5`, `<10m`, `>500 MB` a number as shown. The menu writes
+(`R & D` is those words), `!x` words it does not hold, `<>5` a number other than 5, `>5`, `<10m`, `>500 MB` a number as shown. The menu writes
 every condition quoted, joined by ` & `: `"x"` holds x, `!"x"` does not, `="x"` `<>"x"` `>"x"` ... (a number column
 compares the number shown), `like "a%"` / `not like "a%"` (`%` any run, `_` one character, `\%` `\_` `\\` themselves),
-`in:"a","b"` / `!in:"a","b"`; a quote inside a value is doubled. A typed filter in that form works the same.
+`in:"a","b"` / `!in:"a","b"`; a quote inside a value is doubled. A typed filter in that form works the same. Every filter
+compares the words as the screen shows them: a line break or a run of spaces is one space.
 
 **The values each form writes.** One value per cell for the CSV, JSON and SQL forms (export.ts `rawValue`); the
 workbook writes Excel's own forms; Markdown, HTML and the copies write the words on the screen:
@@ -182,11 +188,12 @@ workbook writes Excel's own forms; Markdown, HTML and the copies write the words
 | a cell shows | CSV | JSON, SQL | the workbook |
 | --- | --- | --- | --- |
 | nothing | an empty field | `null` / `NULL` | an empty cell |
-| a duration (`1m 5s`) | the seconds, `65` | `65` | a time under `[h]:mm:ss` (a fraction of a day) |
+| a duration (`1m 5s`) | the seconds, `65` (a millisecond column: the milliseconds) | the same | a time under `[h]:mm:ss` (a fraction of a day) |
 | a percent (`12.5 %`) | `12.5` | `12.5` | `0.125` under `0.0%` |
 | a size (`1.5 MB`) | the bytes | the bytes | the bytes under a size format |
 | a time | `2026-11-14 17:00:00` on the display zone's clock | `2026-11-14T17:00:00-08:00` (its offset) | an Excel date on the display zone's clock |
-| yes / no | the word | `true` / `false` (SQL Server `1` / `0`) | the word |
+| yes / no | the word | the word (`"yes"`; SQL: a text column) | the word |
+| a time in the hour a fall-back repeats | as shown | one of that hour's two offsets for both (the screen's clock cannot tell them apart) | as shown |
 
 **The keyboard.** A grid is one tab stop: its current cell. The arrows, Home / End (with Ctrl: the first / last row)
 and PageUp / PageDown move it (PageDown past the drawn rows reaches `Show more`); Enter or F2 reaches a cell's own link

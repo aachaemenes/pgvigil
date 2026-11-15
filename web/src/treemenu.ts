@@ -42,8 +42,6 @@ function closeAll(focusBack = true) {
   if (focusBack && o.back?.isConnected) o.back.focus();
 }
 let offSeq = 0;
-// treeMenuOpen: a menu of this module is open (the grid's keys leave it alone)
-export const treeMenuOpen = () => !!open;
 const buttonsOf = (box: HTMLElement) => [...box.querySelectorAll<HTMLButtonElement>(':scope > button')];
 
 // menuBox: one level of a menu at x, y (kept inside the window); level 0 replaces any open menu
@@ -54,7 +52,7 @@ function menuBox(items: MenuItem[], x: number, y: number, level: number, label: 
   for (const it of items) {
     if (it.sep) { box.append(el('div', { class: 'tm-sep', role: 'separator' })); continue; }
     const b = el('button', { type: 'button', role: it.checked === undefined ? 'menuitem' : 'menuitemcheckbox', class: it.info ? 'tm-info' : '' }, it.label );
-    if (it.checked !== undefined) { b.setAttribute('aria-checked', String(it.checked)); if (it.checked) b.prepend(el('span', { class: 'tm-check', 'aria-hidden': 'true' }, '\u2713 ')); }
+    if (it.checked !== undefined) { b.setAttribute('aria-checked', String(it.checked)); b.prepend(el('span', { class: 'tm-check' + (it.checked ? '' : ' tm-unchecked'), 'aria-hidden': 'true' }, it.checked ? '\u2713 ' : '')); }
     if (it.sub) {
       b.setAttribute('aria-haspopup', 'menu');
       b.setAttribute('aria-expanded', 'false');
@@ -74,6 +72,7 @@ function menuBox(items: MenuItem[], x: number, y: number, level: number, label: 
       b.setAttribute('aria-disabled', 'true');
       b.title = it.off;
       b.classList.add('tm-off');
+      b.setAttribute('aria-label', it.label);   // the name is the label; the reason is read once, as its description
       b.setAttribute('aria-describedby', why.id);
       b.append(why);
     } else {
@@ -716,14 +715,14 @@ export function gridLines(t: HTMLTableElement, td: Element | null, j: number): {
 // columnNums: a column's numbers over every row the filters leave
 function columnNums(t: HTMLTableElement, j: number): Num[] {
   const m = gridModel(t), numCol = !!heads(t)[j]?.classList.contains('num');
-  if (m?.text && m.cols.length === heads(t).length) { const c = m.cols[j]; return m.rows().map(r => numberOf(m.text!(r, c), r[c.key], numCol)).filter((x): x is Num => !!x); }
+  if (m?.text && m.cols.length === heads(t).length) { const c = m.cols[j]; return m.rows().map(r => numCol || typeof r[c.key] === 'number' ? numberOf(m.text!(r, c), r[c.key], numCol) : undefined).filter((x): x is Num => !!x); }   // a text column's cells are never built
   return dataRows(t).map(tr => tr.children[j] ? numberAt(t, tr.children[j], undefined) : undefined).filter((x): x is Num => !!x);
 }
 
 // ---- starting -----------------------------------------------------------------------------------------------------
 
 const css = '.tm-menu{min-width:14rem}.tm-menu button{display:flex;justify-content:space-between;gap:1.5rem;width:100%;text-align:left}'
-  + '.tm-menu .tm-arrow{opacity:.7}.tm-menu .tm-off{color:var(--muted);cursor:not-allowed;flex-wrap:wrap}.tm-menu .tm-off .off-reason{flex-basis:100%;font-size:.85em}.tm-menu .tm-check{margin-right:.2rem}.tm-sep{border-top:1px solid var(--line);margin:.2rem 0}'
+  + '.tm-menu .tm-arrow{opacity:.7}.tm-menu .tm-off{color:var(--muted);cursor:not-allowed;flex-wrap:wrap}.tm-menu .tm-off .off-reason{flex-basis:100%;font-size:.85em}.tm-menu .tm-check{margin-right:.2rem}.tm-menu .tm-unchecked{display:inline-block;width:.7em;height:.7em;border:1px solid currentColor;margin-right:.45rem;vertical-align:-.05em}.tm-sep{border-top:1px solid var(--line);margin:.2rem 0}'
   + '.tm-bar{display:inline-block;vertical-align:middle;width:3.2rem;height:.7rem;border:1px solid var(--line);background:var(--bg);margin-right:.2rem}'
   + '.tm-bar.none{border-style:dashed}.tm-bar>span{display:block;height:100%;background:var(--ok,#006638)}.tm-bar.warn>span{background:var(--warn,#e49325)}.tm-bar.crit>span{background:var(--crit,#ab1f26)}'
   + '.tm-dialog table.grid td,.tm-dialog table.grid th{padding:.15rem .5rem}.tm-yaml{background:var(--card);border:1px solid var(--line);padding:.4rem .6rem}'

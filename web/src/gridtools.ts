@@ -13,7 +13,7 @@
 // header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event with the
 // menu's items before it shows them, and the tools add theirs.
 import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, saveGridAs, statusOf, timeZone, typed } from './export';
-import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, offControl, quoteFilter } from './ui';
+import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter } from './ui';
 import { MenuItem, gridLines, showTreeMenu } from './treemenu';
 import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
 
@@ -201,7 +201,7 @@ function summary(ns: Num[]): string {
 // ---- the selection and its line -----------------------------------------------------------------------------
 
 // homeOf: the grid's current cell, its one tab stop (ui.ts grid); a table outside grid() itself
-const homeOf = (t: HTMLTableElement): HTMLElement | null => t.querySelector<HTMLElement>(':scope > thead > tr > th[tabindex="0"], :scope > tbody > tr > td[tabindex="0"]') ?? (t.tabIndex >= 0 ? t : null);
+const homeOf = (t: HTMLTableElement): HTMLElement | null => t.querySelector<HTMLElement>(':scope > thead > tr > th[tabindex="0"], :scope > tbody > tr > td[tabindex="0"]') ?? (t.tabIndex >= 0 ? t : t.closest<HTMLElement>('.grid-wrap[tabindex]'));   // a page's own table: its focusable wrap
 const boxOf = (t: HTMLTableElement): Element => t.closest('.grid-box') ?? t.closest('.grid-wrap') ?? t;
 const wrapOf = (t: HTMLTableElement): Element => { const w = t.closest('.grid-wrap'); return w && boxOf(t).contains(w) ? w : t; };
 // lineOf: the tools' status line of a grid, if it has one yet; line: the same, made when it is first needed
@@ -411,7 +411,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const close = () => {
     box.remove(); panels.delete(t); openPanels.delete(k);
     const to = back && back.isConnected && back.tabIndex >= 0 ? back : homeOf(t);   // else the grid's current cell (its one tab stop)
-    to.focus?.();
+    to?.focus();
   };
   // a bar ticked here keeps its style (behind the value when new); the row numbers stay as they are
   const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum });
@@ -503,8 +503,9 @@ function setFilter(t: HTMLTableElement, j: number, v: string) {
 // addCond: a condition the menu writes (quoted, ui.ts compileFilter) AND the column's filter; a typed one there is kept
 // with its meaning (words quoted as words, '!x' as not those words, an operator with its number as it is)
 function addCond(t: HTMLTableElement, j: number, cond: string) {
-  const f = filterInputs(t)[j]?.value.trim() ?? '';
-  const was = !f || f.includes('"') || /^(>=|<=|>|<|=)\s*\S/.test(f) ? f : f.startsWith('!') ? '!' + quoteFilter(f.slice(1)) : quoteFilter(f);
+  const f = filterInputs(t)[j]?.value.trim() ?? '', num = !!heads(t)[j]?.classList.contains('num');
+  const keep = !f || (f.includes('"') ? isCondList(f, num) : /^(<>|>=|<=|>|<|=)\s*\S/.test(f));
+  const was = keep ? f : f.startsWith('!') ? '!' + quoteFilter(f.slice(1)) : quoteFilter(f);
   setFilter(t, j, was ? `${was} & ${cond}` : cond);
 }
 // a dialog of the tools in the grid's own host (a grid in a modal dialog: that dialog), the focus back on close
@@ -563,7 +564,9 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
   const lines = gridLines(t, td, j);
   const out: MenuItem[] = [];
   // 1. Copy (DD:438-447: Grid, Column, Cell, Row, Selected, As Markdown, As JSON)
-  const copy: MenuItem[] = [{ label: 'Grid', off: none, act: () => { const x = g(false); void copyText(tsv(x)).then(tell(`${x.rows.length} rows`)); } }];
+  // Grid: the tab-separated words with the HTML table in the screen's colours beside them (main's 'Copy the rows as HTML
+  // with the colours' kept: a paste into a mail or a document keeps the colours), a stored sample's mark first in both
+  const copy: MenuItem[] = [{ label: 'Grid', off: none, act: () => { const x = g(false); void copyBoth((x.sample ? `<p>${html(x.sample)}</p>` : '') + toHtml(x), (x.sample ? x.sample + '\n' : '') + tsv(x)).then(tell(`${x.rows.length} rows`)); } }];
   if (j >= 0) copy.push({ label: 'Column', off: none, act: () => {
     const x = g(false), k = x.cols.indexOf(readGrid(t, true).cols[j]), at = k >= 0 ? k : 0;
     void copyText(x.rows.map(r => (r[at]?.text ?? '').replace(/[\t\r\n]+/g, ' ')).join('\n')).then(tell(`the column ${n}`));
@@ -586,7 +589,7 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
   out.push({ label: 'Copy', sub: copy });
   if (plain) { out.push({ sep: true, label: '' }, ...lines.info); return out; }
   // 2. Export Excel, 3. Export file
-  const report = (x: Promise<string>) => { void x.then(f => said(t, 'saved ' + f)(true), (e: unknown) => { const l = line(t); l.textContent = 'Export failed: ' + (e instanceof Error ? e.message : String(e)); }); };
+  const report = (x: Promise<string>) => { void x.then(f => { line(t).textContent = 'Exported ' + f; }, (e: unknown) => { const l = line(t); l.textContent = 'Export failed: ' + (e instanceof Error ? e.message : String(e)); }); };
   out.push({ label: 'Export Excel', act: () => report(exportGrid(t)) });
   const file = (label: string, ext: string, type: string, write: (x: Grid, sec: Section, m: Meta) => string) =>
     ({ label, act: () => report(saveGridAs(t, ext, (sec, m) => new Blob([write({ cols: sec.cols, rows: sec.rows, num: g(false).num, sample: sec.sample, name: sec.name }, sec, m)], { type }))) });
@@ -596,8 +599,8 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
     file('JSON', 'json', 'application/json', x => json(x, true) + '\n'),
     file('Markdown', 'md', 'text/markdown;charset=utf-8', x => markdown(x, true)),
     file('HTML', 'html', 'text/html;charset=utf-8', (x, sec, m) => htmlDoc(x, `${sec.name} - ${m.instance}`)),
-    file('SQL (INSERT) for PostgreSQL', 'sql', 'application/sql', (x, sec, m) => sqlScript(x, 'postgres', head(sec, m))),
-    file('SQL (INSERT) for SQL Server', 'sql', 'application/sql', (x, sec, m) => '﻿' + sqlScript(x, 'sqlserver', head(sec, m))),
+    file('SQL (INSERT) for PostgreSQL', 'pg.sql', 'application/sql', (x, sec, m) => sqlScript(x, 'postgres', head(sec, m))),
+    file('SQL (INSERT) for SQL Server', 'mssql.sql', 'application/sql', (x, sec, m) => '﻿' + sqlScript(x, 'sqlserver', head(sec, m))),
   ] });
   // 4. Transpose, 5. Select
   if (!th) {
@@ -630,12 +633,12 @@ export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | 
   // 7. the filters (a grid with a filter row): by the clicked value, by a selection in one column, any operator, clear
   out.push({ sep: true, label: '' });
   if (td && filterable(t)) {
-    const v = cellText(td), short = v.length > 30 ? v.slice(0, 30) + '...' : v;
+    const v = cellText(td).replace(/\s+/g, ' ').trim(), short = v.length > 30 ? v.slice(0, 30) + '...' : v;   // as the filter compares (ui.ts shownWords)
     if (v !== '') {
       out.push({ label: `Filter by value: ${short}`, act: () => addCond(t, j, '=' + quoteFilter(v)) });
       out.push({ label: `Exclude value: ${short}`, act: () => addCond(t, j, '<>' + quoteFilter(v)) });
     }
-    const inCol = sel.length > 1 && sel.every(c => colOf(c) === j) ? [...new Set(sel.map(c => cellText(c)))] : [];
+    const inCol = sel.length > 1 && sel.every(c => colOf(c) === j) ? [...new Set(sel.map(c => cellText(c).replace(/\s+/g, ' ').trim()))] : [];
     if (inCol.length) {
       const list = inCol.map(quoteFilter).join(',');
       out.push({ label: 'Filter by these values', act: () => { clear(t); addCond(t, j, 'in:' + list); } });
@@ -656,7 +659,13 @@ function emptyMenu(p: Element): MenuItem[] {
   const none = 'No data to copy';
   return [
     { label: 'Copy', sub: ['Grid', 'As Markdown', 'As JSON'].map(label => ({ label, off: none })) },
-    { label: 'Export Excel', act: () => { void exportGrid(p); } },
+    { label: 'Export Excel', act: () => { void exportGrid(p).catch((e: unknown) => {
+      const box = p.closest('.empty-grid') ?? p.parentElement;
+      if (!box) return;
+      let l = box.querySelector<HTMLElement>(':scope > .gt-stats');
+      if (!l) { l = el('p', { class: 'meta gt-stats', role: 'status' }); box.append(l); }
+      l.textContent = 'Export failed: ' + (e instanceof Error ? e.message : String(e));
+    }); } },
     { sep: true, label: '' },
     { label: 'Columns...', off: 'no rows: the columns are chosen on a grid with rows' },
     { label: 'Clear filters', off: 'no filter is set' },

@@ -1025,13 +1025,14 @@ await guard('G-stmt', async () => {
 });
 
 await guard('G-plain', async () => {
-  // a table.grid not drawn by grid() (slow.ts's own tables): the menu through the delegated handler
-  const sel = `[...document.querySelectorAll('main table.grid')].find(t => !t.closest('.grid-wrap'))?.querySelector('tbody td')`;
+  // a table.grid not drawn by grid() (slow.ts's own tables, each inside a .grid-wrap of its own; grid()'s sit in a
+  // .grid-box): the menu through the delegated handler (review-15 gm1 B1)
+  const sel = `[...document.querySelectorAll('main table.grid')].find(t => !t.closest('.grid-box'))?.querySelector('tbody td')`;
   let found = false;
   for (const h of ['#/slowqueries', `#/slowqueries?i=${erpId}`]) { await go(h); await sleep(800); found = await ev(`!!${sel}`); if (found) break; }
   const L = found ? await gmOpen(sel) : [];
   const cell = found ? await gmCopy(sel, 'Copy', 'Cell') : null, want0 = found ? await ev(`${sel}.textContent.trim()`) : null;
-  check('G-plain', found && (L[0] ?? []).some(x => x.label === 'Copy') && cell === want0, `${found ? 'slow.ts table found' : 'no table.grid outside a .grid-wrap on the slow pages'}; its menu: ${(L[0] ?? []).map(x => x.label).slice(0, 4).join(' / ') || '(no .tm-menu)'}; Copy > Cell '${cell}' (want '${want0}')`);
+  check('G-plain', found && (L[0] ?? []).some(x => x.label === 'Copy') && cell === want0, `${found ? 'slow.ts table found' : 'no table.grid outside a .grid-box on the slow pages'}; its menu: ${(L[0] ?? []).map(x => x.label).slice(0, 4).join(' / ') || '(no .tm-menu)'}; Copy > Cell '${cell}' (want '${want0}')`);
 });
 
 await guard('G-mssql', async () => {

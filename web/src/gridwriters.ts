@@ -19,15 +19,16 @@ function numberCol(g: Grid, j: number): boolean {
 }
 const words = (c: Cell | undefined) => (c?.text ?? '').replace(/[\t\r\n]+/g, ' ');
 
-// keys: the header as object keys and column names: duplicates numbered name_1, name_2 (DBA Dash's JSON); empty = ''
-function keys(cols: string[]): string[] {
-  const seen = new Map<string, number>();
-  return cols.map(c => { const n = seen.get(c) ?? 0; seen.set(c, n + 1); return n ? `${c}_${n}` : c; });
+// keys: the header as object keys and column names: a repeated one numbered name_1, name_2 - the next number no other
+// column holds (DBA Dash's JSON, DD:2597: 'a', 'a_1', 'a' gives a, a_1, a_2); ci = names equal case aside (SQL Server)
+function keys(cols: string[], ci = false): string[] {
+  const used = new Set<string>(), k = (s: string) => ci ? s.toLowerCase() : s;
+  return cols.map(c => { let n = c, i = 0; while (used.has(k(n))) n = `${c}_${++i}`; used.add(k(n)); return n; });
 }
 
 // ---- Markdown -------------------------------------------------------------------------------------------------
 
-const mdCell = (v: string) => v.replace(/[\\|*_`<[\]]/g, '\\$&');
+const mdCell = (v: string) => v.replace(/&/g, '&amp;').replace(/[\\|*_`<[\]]/g, '\\$&');   // & would start an entity (&copy;)
 // markdown: a pipe table of the words shown; standard = DBA Dash's plain form, prettified = every column padded to its
 // widest cell (one width a line); a number column right-aligned; a sample's mark the first line
 export function markdown(g: Grid, pretty: boolean): string {
@@ -89,12 +90,13 @@ const bytes = (s: string) => new TextEncoder().encode(s).length;
 // sqlNames: the header as column names: an empty one column_<n>, duplicates _1, cut to the engine's length with a
 // suffix (SQL Server 128 characters, PostgreSQL 63 bytes), each quoted ("x" with " doubled, [x] with ] doubled)
 function sqlNames(cols: string[], e: Engine): string[] {
-  const named = keys(cols.map((c, j) => c.trim() === '' ? `column_${j + 1}` : c));
+  const named = keys(cols.map((c, j) => c.trim() === '' ? `column_${j + 1}` : c), e === 'sqlserver');
+  const whole = (s: string) => s.replace(/[\ud800-\udbff]$/, '');   // a cut never ends inside a surrogate pair
   const cut = named.map((n, j) => {
-    if (e === 'sqlserver') return n.length > 128 ? n.slice(0, 120) + '_' + (j + 1) : n;
+    if (e === 'sqlserver') return n.length > 128 ? whole(n.slice(0, 120)) + '_' + (j + 1) : n;
     if (bytes(n) <= 63) return n;
     let s = n; while (bytes(s + '_' + (j + 1)) > 63) s = s.slice(0, -1);
-    return s + '_' + (j + 1);
+    return whole(s) + '_' + (j + 1);
   });
   return cut.map(n => e === 'sqlserver' ? '[' + n.replace(/]/g, ']]') + ']' : '"' + n.replace(/"/g, '""') + '"');
 }
@@ -112,15 +114,25 @@ function sqlType(g: Grid, j: number, e: Engine): string {
 }
 
 // sqlScript: a temp table and its rows as INSERT batches, DBA Dash's script shape for each engine. A string is quoted
-// with ' doubled (N'' on SQL Server); PostgreSQL's script sets standard_conforming_strings on first, so a backslash is
-// never an escape whatever the server's setting; NUL characters are dropped (neither engine stores one in text) and the
+// with ' doubled. PostgreSQL: an escape string E'...' with every backslash doubled - it reads the same with
+// standard_conforming_strings on or off and in every client (pgAdmin's F5 and psql -c send the whole file as one
+// query, lexed before any SET in it runs), the SET kept for a reader. SQL Server: N'...', and a backslash right before a
+// line break (T-SQL's line continuation: both would be dropped) ends the literal there, the rest joined with +, the
+// first part CAST to NVARCHAR(MAX) so a long value is not cut at 4,000; the header asks for sqlcmd -x (a value may
+// hold a sqlcmd variable's form; the header itself holds none). NUL characters are dropped (neither engine stores one in text) and the
 // header says so; a number is written from its value (String(n)), never the words shown; a time with its offset. The
 // header names the grid, the zone, the export time and a sample's mark, each a comment line of its own.
 export function sqlScript(g: Grid, e: Engine, head: SqlHead): string {
   const ms = e === 'sqlserver';
   const names = sqlNames(g.cols, e), types = g.cols.map((_, j) => sqlType(g, j, e));
   let nuls = 0;
-  const str = (s: string) => { const t = s.replace(/\u0000/g, () => { nuls++; return ''; }); return (ms ? "N'" : "'") + t.replace(/'/g, "''") + "'"; };
+  const q = (s: string) => s.replace(/'/g, "''");
+  const str = (s: string) => {
+    const t = s.replace(/\u0000/g, () => { nuls++; return ''; });
+    if (!ms) return "E'" + q(t.replace(/\\/g, '\\\\')) + "'";
+    const parts = t.split(/(?<=\\)(?=\r?\n)/);
+    return parts.length === 1 ? "N'" + q(t) + "'" : `CAST(N'${q(parts[0])}' AS NVARCHAR(MAX))` + parts.slice(1).map(p => " + N'" + q(p) + "'").join('');
+  };
   const text = ms ? 'NVARCHAR(MAX)' : 'text', bool = ms ? 'BIT' : 'boolean', num = new Set(ms ? ['BIGINT', 'DECIMAL(38,10)'] : ['bigint', 'numeric']);
   const lit = (c: Cell | undefined, j: number): string => {
     const v = c ? rawValue(c) : null;
@@ -141,6 +153,7 @@ export function sqlScript(g: Grid, e: Engine, head: SqlHead): string {
   const header = [
     comment(`pgvigil grid: ${head.title}; ${g.rows.length} row(s); exported ${head.at}`),
     comment(`times: ${head.zone} (each written with its own offset)`),
+    ...(ms ? [comment('sqlcmd or SQLCMD mode: run with -x (a value may hold what sqlcmd reads as a variable)')] : []),
     ...(g.sample ? [comment(g.sample)] : []),
     ...(nuls ? [comment(`${nuls} NUL character(s) dropped: neither engine stores one in text`)] : []),
   ];

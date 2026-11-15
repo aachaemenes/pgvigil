@@ -116,7 +116,7 @@ function plainNumber(text: string): number | null {
 // the decimal mark and the other groups; a lone ',' is the decimal mark only where the locale writes it so. The result
 // is written with '.' and no grouping, the form reading() takes for a unit's number.
 function typedNumber(text: string): string {
-  const t = text.replace(/[\s\u00a0\u202f]+(?=\d)/g, '');
+  const t = text.replace(/(?<=\d)[\s\u00a0\u202f]+(?=\d)/g, '');   // a space between two digits groups ('1 234'); '18m 0s' keeps its own
   const dot = t.lastIndexOf('.'), comma = t.lastIndexOf(',');
   if (dot >= 0 && comma >= 0) return dot > comma ? t.replace(/,/g, '') : t.replace(/\./g, '').replace(',', '.');
   if (comma >= 0) return localeMarks.decimal === ',' && t.indexOf(',') === comma ? t.replace(',', '.') : t.replace(/,/g, '');
@@ -140,7 +140,7 @@ function reading(text: string, typed = false): Reading | null {
 // a filter's test on one cell's words: '>5', '<10', '>=', '<=', '=3', '>500 MB', '<10m' compare a number column as
 // shown (reading()); anything else is a case-insensitive part of the words ('!x' = does not contain x)
 export function passes(f: string, words: string, num: boolean): boolean {
-  const m = num ? /^(>=|<=|>|<|=)\s*(.+)$/.exec(f) : null;
+  const m = num ? /^(<>|>=|<=|>|<|=)\s*(.+)$/.exec(f) : null;
   const want = m ? reading(typedNumber(m[2]), true) : null;
   if (m && want) {
     const got = reading(words);
@@ -149,7 +149,7 @@ export function passes(f: string, words: string, num: boolean): boolean {
     const v = want.scale === 'plain' ? (got.scale === 'plain' ? got.n : Number(/-?\d+(?:\.\d+)?/.exec(words)?.[0] ?? NaN)) : got.scale === want.scale ? got.n : NaN;
     if (Number.isNaN(v)) return false;
     const x = want.n, eq = Math.abs(v - x) <= 1e-9 * Math.max(1, Math.abs(x));
-    return m[1] === '>' ? v > x && !eq : m[1] === '<' ? v < x && !eq : m[1] === '>=' ? v > x || eq : m[1] === '<=' ? v < x || eq : eq;
+    return m[1] === '<>' ? !eq : m[1] === '>' ? v > x && !eq : m[1] === '<' ? v < x && !eq : m[1] === '>=' ? v > x || eq : m[1] === '<=' ? v < x || eq : eq;
   }
   const w = words.toLowerCase();
   return f.startsWith('!') ? !w.includes(f.slice(1).toLowerCase()) : w.includes(f.toLowerCase());
@@ -182,6 +182,7 @@ function likeRe(p: string): RegExp {
   for (let i = 0; i < p.length; i++) {
     const ch = p[i];
     if (ch === '\\' && i + 1 < p.length) { r += p[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); continue; }
+    if (ch === '%' && p[i - 1] === '%' && p[i - 2] !== '\\') continue;   // a run of % is one '.*' (no backtracking storm on a long cell)
     r += ch === '%' ? '.*' : ch === '_' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
   return new RegExp('^' + r + '$', 'is');
@@ -203,9 +204,11 @@ function condTest(c: string, num: boolean): ((w: string) => boolean) | undefined
     const set = new Set([...m[2].matchAll(new RegExp(QV, 'g'))].map(x => unq(x[1]).toLowerCase())), not = m[1] === '!';
     return w => set.has(w.toLowerCase()) !== not;
   }
-  if (/^(>=|<=|>|<|=)\s*[^"\s]/.test(c) && !c.includes('"')) return w => passes(c, w, num);
+  if (/^(<>|>=|<=|>|<|=)\s*[^"\s]/.test(c) && !c.includes('"')) return w => passes(c, w, num);
   return undefined;
 }
+// isCondList: a filter with quotes that reads as a list of conditions (else compileFilter reads it as typed words)
+export const isCondList = (f: string, num: boolean) => splitConds(f).every(c => !!condTest(c, num));
 export function compileFilter(f: string, num: boolean): (w: string) => boolean {
   if (!f.includes('"')) return w => passes(f, w, num);
   const tests = splitConds(f).map(c => condTest(c, num));
@@ -222,13 +225,14 @@ export function askGridMenu(at: Element, d: Omit<GridMenuAsk, 'done'>): boolean 
   at.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail }));
   return detail.done;
 }
-// every table.grid not drawn by grid(), the group panel's table and a grid empty from the start: one handler for all of
-// them (grid()'s own stop at their wrap)
+// every table.grid not drawn by grid() (a page's own, inside its own .grid-wrap or not), the group panel's table and a
+// grid empty from the start: one handler for all of them (grid()'s own grids stop at their wrap, and their model skips them)
 if (typeof document !== 'undefined') document.addEventListener('contextmenu', e => {
   const tgt = e.target;
-  if (!(tgt instanceof Element) || tgt.closest('input, textarea, select, a[href], .grid-wrap') || String(window.getSelection() ?? '').trim()) return;
-  const host = tgt.closest('table.grid, table.gt-table, .empty-grid');
-  if (!host) return;
+  if (!(tgt instanceof Element) || tgt.closest('input, textarea, select, a[href]') || String(window.getSelection() ?? '').trim()) return;
+  // a page's own focusable .grid-wrap (the menu key or Shift+F10 there) answers for its table
+  const host = tgt.closest('table.grid, table.gt-table, .empty-grid') ?? (tgt.matches('.grid-wrap') ? tgt.querySelector('table.grid') : null);
+  if (!host || (host instanceof HTMLTableElement && models.has(host))) return;
   const table = host.tagName === 'TABLE' ? host as HTMLTableElement : null;
   const cell = tgt.closest('td, th');
   const td = table && cell?.tagName === 'TD' && cell.closest('table') === table && cell.parentElement?.parentElement?.tagName === 'TBODY' ? cell : null;
@@ -296,7 +300,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   // an empty grid is DBA Dash's: its header row alone (G08, task P08), drawn only (aria-hidden, not a .grid: the export,
   // the copy and the report mail still find the one p.empty and its data-cols), in a box that never scrolls; the words
   // stay for a screen reader and the proofs
-  if (rows.length === 0) return el('div', { class: 'empty-grid' },
+  if (rows.length === 0) return el('div', { class: 'empty-grid', tabindex: '0', role: 'group', 'aria-label': 'Empty grid: ' + empty },
     el('table', { class: 'grid-empty', 'aria-hidden': 'true' }, el('thead', {}, el('tr', {}, ...cols.map(c => el('th', {}, el('span', { class: 'th-label' }, c.label ?? c.key)))))),
     el('p', { class: 'empty visually-hidden', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty));
   let sortKey = '', asc = true;
@@ -343,6 +347,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   thead.append(head, filterRow);
   table.append(thead, tbody);
   const fmtCell = (c: Col, r: Record<string, unknown>) => { const v = r[c.key]; return c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v)); };
+  const shownWords = (w: string) => w.replace(/\s+/g, ' ').trim();   // what a cell shows (cellText's rule), the filter's side
   const words = (out: string | Node) => typeof out === 'string' ? out : cellText(el('span', {}, out instanceof Node ? out.cloneNode(true) : String(out)));
   const count = el('p', { class: 'meta filter-count', role: 'status' });
   // a long grid draws its first GRID_PAGE rows and a 'show more' line under them; filters, sorting, Copy all and the
@@ -353,7 +358,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     let data = scope ? rows.filter(scope) : [...rows];
     if (filters.size) {
       const active = cols.filter(c => filters.has(c.key)).map(c => [c, compileFilter(filters.get(c.key)!, !!c.num)] as const);
-      data = data.filter(r => active.every(([c, t]) => t(words(fmtCell(c, r)))));
+      data = data.filter(r => active.every(([c, t]) => t(shownWords(words(fmtCell(c, r))))));
     }
     if (sortKey) {
       const col = cols.find(c => c.key === sortKey)!;
@@ -409,13 +414,22 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   // cell Enter sorts and F2 opens the filter row; the menu key or Shift+F10 opens the grid's menu at the cell
   table.setAttribute('role', 'grid');
   let cur: [number, number] = [0, 0];   // the current cell: its drawn row (-1 the header) and its column
-  const vis = (j: number) => { const h = head.children[j] as HTMLElement | undefined; return !!h && getComputedStyle(h).display !== 'none'; };
-  const cellAt = (r: number, j: number) => (r < 0 ? head.children[j] : tbody.children[r]?.children[j]) as HTMLElement | undefined;
+  // a hidden column is data-gt-hidden on its header (gridtools.ts apply), read at once - a detached table has no style
+  const vis = (j: number) => { const h = head.children[j] as HTMLElement | undefined; return !!h && !h.hasAttribute('data-gt-hidden'); };
+  // the grid's rows: a statement's History (.trend-row) is not one of them
+  const bodyRows = () => [...tbody.children].filter(tr => !tr.classList.contains('trend-row')) as HTMLElement[];
+  const cellAt = (r: number, j: number) => (r < 0 ? head.children[j] : bodyRows()[r]?.children[j]) as HTMLElement | undefined;
+  // a cell's place, null for a History row's cell
+  const at = (cell: HTMLElement): [number, number] | null => {
+    const tr = cell.parentElement!, r = tr === head ? -1 : bodyRows().indexOf(tr);
+    return tr !== head && r < 0 ? null : [r, [...tr.children].indexOf(cell)];
+  };
   const firstCol = () => { for (let j = 0; j < cols.length; j++) if (vis(j)) return j; return 0; };
   const lastCol = () => { for (let j = cols.length - 1; j >= 0; j--) if (vis(j)) return j; return 0; };
   const stepCol = (j: number, by: number) => { for (let k = j + by; k >= 0 && k < cols.length; k += by) if (vis(k)) return k; return j; };
   function rove(focus: boolean) {
-    if (cur[0] >= tbody.children.length) cur[0] = tbody.children.length - 1;
+    const n = bodyRows().length;
+    if (cur[0] >= n) cur[0] = n - 1;
     if (!vis(cur[1])) cur[1] = firstCol();
     const c = cellAt(cur[0], cur[1]) ?? cellAt(-1, cur[1]);
     table.querySelectorAll<HTMLElement>(':scope > thead > tr > th[tabindex], :scope > tbody > tr > td[tabindex]').forEach(x => { if (x !== c) x.removeAttribute('tabindex'); });
@@ -428,10 +442,12 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   table.addEventListener('keydown', e => {
     const t = e.target as HTMLElement, cell = t.closest('td, th') as HTMLElement | null;
     if (!cell || cell.closest('table') !== table || cell.parentElement === filterRow) return;
-    if (t !== cell) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cell.focus(); } return; }
-    const r = cell.parentElement === head ? -1 : [...tbody.children].indexOf(cell.parentElement!), j = [...cell.parentElement!.children].indexOf(cell);
-    cur = [r, j];
-    const last = tbody.children.length - 1;
+    const place = at(cell);
+    if (!place) return;
+    if (t !== cell) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cur = place; rove(true); } return; }
+    const [r, j] = place;
+    cur = place;
+    const last = bodyRows().length - 1;
     let to: [number, number] | null = null;
     if (e.key === 'ArrowDown') to = [Math.min(last, r + 1), j];
     else if (e.key === 'ArrowUp') to = [Math.max(-1, r - 1), j];
@@ -439,7 +455,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     else if (e.key === 'ArrowLeft') to = [r, stepCol(j, -1)];
     else if (e.key === 'Home') to = [e.ctrlKey ? 0 : r, firstCol()];
     else if (e.key === 'End') to = [e.ctrlKey ? last : r, lastCol()];
-    else if (e.key === 'PageUp') to = [Math.max(0, r - 10), j];
+    else if (e.key === 'PageUp') to = [Math.max(r < 0 ? -1 : 0, r - 10), j];
     else if (e.key === 'PageDown') {
       if (r + 10 > last && !more.hidden) { e.preventDefault(); (more.querySelector('button') as HTMLElement | null)?.focus(); return; }
       to = [Math.min(last, r + 10), j];
@@ -462,6 +478,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[],
     text: (r, c) => words(fmtCell(c, r)) });
   draw();
+  new MutationObserver(() => rove(document.activeElement === document.body)).observe(head, { attributes: true, subtree: true, attributeFilter: ['data-gt-hidden'] });
   const wrap = el('div', { class: 'grid-wrap' }, table);   // its scroll is the keyboard's through the table's current cell (one tab stop)
   const tsv = (trs: Element[]) => trs.filter(tr => !tr.classList.contains('trend-row')).map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
   const header = () => cols.map(c => c.label ?? c.key).join('\t');
@@ -476,7 +493,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   function openGrid(cell: Element | null, x: number, y: number, back: HTMLElement) {
     const td = cell?.tagName === 'TD' && cell.parentElement?.parentElement === tbody && !cell.parentElement.classList.contains('trend-row') ? cell : null;
     const th = cell?.tagName === 'TH' && cell.parentElement === head ? cell : null;
-    if (td) cur = [[...tbody.children].indexOf(td.parentElement!), [...td.parentElement!.children].indexOf(td)];
+    if (td) cur = [bodyRows().indexOf(td.parentElement!), [...td.parentElement!.children].indexOf(td)];
     else if (th) cur = [-1, [...head.children].indexOf(th)];
     if (td || th) rove(false);
     if (askGridMenu(table, { table, td, th, x, y, back: (td ?? th ?? back) as HTMLElement })) return;
