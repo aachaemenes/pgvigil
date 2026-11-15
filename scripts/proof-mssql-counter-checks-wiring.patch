@@ -1,0 +1,32 @@
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -1021,3 +1021,28 @@
+     CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
+                                                   s.cpu_count, wg.q::int) l
+ $$;
++
++-- task 402 (B4, the lead's owner line of 11-14 14:0x): a seeded rule (0153: created_by 'pgvigil', client '0153 seed')
++-- colours the Metrics grid and a row's chart whether it is on or off, as DBA Dash colours its counters with no alert
++-- set (Allen 11-11 12:18); it notifies only when on (alert_rule_scope keeps enabled rules only). A user's own disabled
++-- rule never colours. The rule in force wins: the seeded row is read only when no enabled rule covers the series, and
++-- its name says it is off.
++CREATE OR REPLACE FUNCTION pgvigil.metric_rule(p_instance_id int, p_key text, p_database text DEFAULT NULL)
++RETURNS TABLE (rule_id bigint, rule_name text, op text, warning double precision, critical double precision, for_minutes int,
++               rule_scope text, rule_target text, rule_database text)
++LANGUAGE sql STABLE AS $$
++  WITH e AS (
++    SELECT e.rule_id, e.name, e.op, e.warning, e.critical, e.for_minutes, e.scope, coalesce(e.tag, e.instance_name), e.database
++      FROM pgvigil.alert_rules_effective e
++     WHERE e.instance_id = p_instance_id AND e.metric = p_key AND e.database IS NOT DISTINCT FROM p_database)
++  SELECT * FROM e
++  UNION ALL
++  SELECT r.rule_id, r.name || ' (off: colours only, no alert)', r.op, r.warning, r.critical, r.for_minutes, r.scope, NULL::text,
++         r.database
++    FROM pgvigil.alert_rules r
++    JOIN pgvigil.instances i ON i.instance_id = p_instance_id AND i.is_active
++    JOIN pgvigil.metric_catalog c ON c.key = r.metric AND c.engine IN (i.engine, 'any')
++   WHERE r.metric = p_key AND r.scope = 'fleet' AND r.ended_at IS NULL AND NOT r.enabled
++     AND r.created_by = 'pgvigil' AND r.client = '0153 seed' AND r.database IS NOT DISTINCT FROM p_database
++     AND NOT EXISTS (SELECT 1 FROM e)
++$$;
