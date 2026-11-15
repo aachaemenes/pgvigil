@@ -54,7 +54,7 @@ func TestBackupHistorySQLReadsOnly(t *testing.T) {
 		"sets": backupSetHistorySQL(true), "sets 2019": backupSetHistorySQL(false), "restores": restoreHistorySQL,
 		"right": restoreRightSQL, "newest": restoreNewestSQL, "mark": restoreMarkSQL, "dbs": backupCheckDBsSQL(true),
 		"dbs no hadr": backupCheckDBsSQL(false), "recovery": backupRecoverySQL, "path": backupPathSQL, "path reg": backupPathRegSQL,
-		"exists": backupExistsSQL,
+		"exists": backupExistsSQL, "file sets": backupFileSetsSQL,
 	}
 	verb := regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|BACKUP|RESTORE|GRANT|DENY|REVOKE)\s`)
 	for name, q := range texts {
@@ -80,5 +80,51 @@ func TestBackupHistorySQLReadsOnly(t *testing.T) {
 func TestBackupCheckOptionsOffByDefault(t *testing.T) {
 	if a, f := backupCheckOptions(Info{}); a || f {
 		t.Errorf("opt-ins on by default: auto_close %v, files %v", a, f)
+	}
+}
+
+// TestBackupFileRoots: the file check's roots (0140's mssql_backup_root for a disk path) and directories, and which
+// newest sets are disk sets (a URL, a tape, a virtual device or NUL is 'not checked: not a disk path').
+func TestBackupFileRoots(t *testing.T) {
+	for p, want := range map[string]string{
+		`\\NAS01\SQL\app\app_1.bak`: `\\nas01\sql`,
+		`d:\Backup\db\x.bak`:        `D:\`,
+		`/var/opt/mssql/data/x.bak`: `/var/opt`,
+		`/x.bak`:                    `/`,
+		`/mnt/nfs/x.bak`:            `/mnt/nfs`,
+	} {
+		if got := backupPathRoot(p); got != want {
+			t.Errorf("root of %s: %s, want %s", p, got, want)
+		}
+	}
+	if got := backupDirOf(`/mnt/old/hdb_diff.bak`); got != "/mnt/old/" {
+		t.Errorf("dir: %s", got)
+	}
+	if got := backupDirOf(`D:\Backup\db\x.bak`); got != `D:\Backup\db\` {
+		t.Errorf("dir: %s", got)
+	}
+	sets := backupFileSetsOf([]collect.Row{
+		{"database_name": "a", "backup_type": "full", "backup_set_uuid": "u1", "device_type": int64(2), "path": "/d/a_1.bak"},
+		{"database_name": "a", "backup_type": "full", "backup_set_uuid": "u1", "device_type": int64(2), "path": "/d/a_2.bak"},
+		{"database_name": "a", "backup_type": "log", "backup_set_uuid": "u2", "device_type": int64(9), "path": "https://acct.blob.core.windows.net/c/a.trn"},
+		{"database_name": "b", "backup_type": "full", "backup_set_uuid": "u3", "device_type": int64(2), "path": "NUL"},
+		{"database_name": "c", "backup_type": "full", "backup_set_uuid": "u4", "device_type": int64(7), "path": "{4A0C1E3B-1111-2222-3333-444455556666}"},
+		{"database_name": "d", "backup_type": "diff", "backup_set_uuid": "u5", "device_type": int64(102), "path": `\\nas\sql\d.bak`},
+	})
+	got := []string{}
+	for _, s := range sets {
+		got = append(got, s.db+"/"+s.typ+"/"+strings.Join(s.paths, "+")+"/"+map[bool]string{true: "disk", false: "not disk"}[s.disk])
+	}
+	want := "a/full//d/a_1.bak+/d/a_2.bak/disk ;; a/log/https://acct.blob.core.windows.net/c/a.trn/not disk ;; b/full/NUL/not disk ;; c/full/{4A0C1E3B-1111-2222-3333-444455556666}/not disk ;; d/diff/\\\\nas\\sql\\d.bak/disk"
+	if strings.Join(got, " ;; ") != want {
+		t.Errorf("the sets:\n got %s\nwant %s", strings.Join(got, " ;; "), want)
+	}
+}
+
+// TestBackupFileCheckOffWithoutPool: the file check stays off until the WIRING patch hands the collector a pool, even
+// where the instance opted in.
+func TestBackupFileCheckOffWithoutPool(t *testing.T) {
+	if backupFileDB(Info{}) != nil {
+		t.Error("the file check's pool is set by default")
 	}
 }

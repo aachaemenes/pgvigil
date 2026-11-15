@@ -308,12 +308,195 @@ func (backupChecksCollector) Run(ctx context.Context, conn *sql.Conn, info Info)
 		delete(r, "database_id")
 	}
 	fileState := "not read: the file check is off"
-	if files {
-		fileState = "not read: the file check is not in this build"
+	if pool := backupFileDB(info); files && pool != nil {
+		var fileRows []collect.Row
+		fileRows, fileState = backupFileRows(ctx, conn, info, pool)
+		rows = append(rows, fileRows...)
 	}
 	rows = append(rows, collect.Row{"kind": "files_read", "state": fileState})
 	rows = append(rows, backupPathRow(ctx, conn, info))
 	return rows, nil
+}
+
+// backupFileDB is the instance's pool for the file check's own short-lived connections (F3: a share that does not
+// answer holds only its own connection, never the collection's). nil, the default, leaves the file check off; the
+// WIRING patch sets it from Info.
+var backupFileDB = func(Info) *sql.DB { return nil }
+
+const (
+	// backupRootTimeout caps one root's existence call on its own connection; backupFilesBudget the read's file calls.
+	backupRootTimeout = 15 * time.Second
+	backupFilesBudget = 60 * time.Second
+)
+
+// backupFileSetsSQL: per database and type the newest set of this server's own backups that is not copy-only, every
+// family of mirror 0 with its device type; a differential only when its base is the newest full (F6).
+var backupFileSetsSQL = `WITH b AS (
+  SELECT bs.backup_set_id, bs.database_name, bs.type, CAST(bs.backup_set_uuid AS varchar(36)) AS uuid,
+         CAST(bs.differential_base_guid AS varchar(36)) AS base_uuid,
+         ROW_NUMBER() OVER (PARTITION BY bs.database_name, bs.type ORDER BY ` + backupFinishUTCExpr + ` DESC, bs.backup_set_id DESC) AS rn
+    FROM msdb.dbo.backupset bs
+   WHERE bs.type IN ('D', 'I', 'L') AND bs.is_copy_only = 0 AND bs.backup_finish_date IS NOT NULL
+     AND bs.server_name IN (@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)))
+), n AS (SELECT * FROM b WHERE b.rn = 1)
+SELECT CAST(n.database_name AS nvarchar(128)) AS database_name, CASE n.type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' ELSE 'log' END AS backup_type,
+  n.uuid AS backup_set_uuid, CAST(f.family_sequence_number AS int) AS family, CAST(f.device_type AS int) AS device_type,
+  CAST(f.physical_device_name AS nvarchar(260)) AS path
+FROM n
+JOIN msdb.dbo.backupset bs ON bs.backup_set_id = n.backup_set_id
+JOIN msdb.dbo.backupmediafamily f ON f.media_set_id = bs.media_set_id AND f.mirror = 0
+WHERE n.type <> 'I' OR EXISTS (SELECT 1 FROM n d WHERE d.database_name = n.database_name AND d.type = 'D' AND d.uuid = n.base_uuid)
+ORDER BY n.database_name, n.type, f.family_sequence_number`
+
+// backupFileSet is one database's newest set of a type with its families' paths.
+type backupFileSet struct {
+	db, typ, uuid string
+	paths         []string
+	disk          bool
+}
+
+// backupFileRows checks the newest sets' files (Database#7) and says how the check went: each distinct root once on
+// its own short-lived connection (backupRootTimeout), then the files under the roots that answered on one fresh
+// connection within backupFilesBudget. A root that does not answer makes its files 'not judged'; an answered missing
+// file is 'gone', a missing directory 'folder gone' (F5).
+func backupFileRows(ctx context.Context, conn *sql.Conn, info Info, pool *sql.DB) ([]collect.Row, string) {
+	switch {
+	case info.Major < 14:
+		return nil, "not read: SQL Server 2017 and later (sys.dm_os_file_exists)"
+	case info.Kind == KindAzureMI || info.Kind == KindRDS || info.Kind == KindCloudSQL:
+		return nil, "not read: the service keeps the backups"
+	}
+	fams, err := QueryRows(ctx, conn, backupFileSetsSQL)
+	if err != nil {
+		return nil, "not judged: the backup history could not be read"
+	}
+	sets := backupFileSetsOf(fams)
+	answered := map[string]bool{}
+	for _, s := range sets {
+		if !s.disk {
+			continue
+		}
+		for _, p := range s.paths {
+			root := backupPathRoot(p)
+			if _, seen := answered[root]; !seen {
+				answered[root] = backupRootAnswers(ctx, pool, root)
+			}
+		}
+	}
+	bctx, cancel := context.WithTimeout(ctx, backupFilesBudget)
+	defer cancel()
+	fc, err := pool.Conn(bctx)
+	if err != nil {
+		return nil, "not judged: no connection for the file check"
+	}
+	defer fc.Close()
+	var rows []collect.Row
+	for _, s := range sets {
+		r := collect.Row{"kind": "file", "database_name": s.db, "backup_type": s.typ, "backup_set_uuid": s.uuid}
+		if len(s.paths) > 0 {
+			r["path"] = s.paths[0]
+		}
+		if !s.disk {
+			r["state"], r["detail"] = "not judged", "not checked: not a disk path"
+			rows = append(rows, r)
+			continue
+		}
+		state, detail := "present", ""
+		for _, p := range s.paths {
+			if root := backupPathRoot(p); !answered[root] {
+				state, detail, r["path"] = "not judged", "not judged: "+root+" did not answer", p
+				break
+			}
+			var exists, isDir, parent sql.NullInt64
+			if err := fc.QueryRowContext(bctx, backupExistsSQL, p).Scan(&exists, &isDir, &parent); err != nil {
+				state, detail, r["path"] = "not judged", "not judged: the existence check was refused", p
+				if bctx.Err() != nil {
+					detail = fmt.Sprintf("not judged: the read's %d-second budget ran out", int(backupFilesBudget.Seconds()))
+				}
+				break
+			}
+			if exists.Int64 == 1 {
+				continue
+			}
+			if parent.Int64 == 1 {
+				state, detail, r["path"] = "gone", "the file is gone", p
+			} else {
+				state, detail, r["path"] = "folder gone", "the folder "+backupDirOf(p)+" is gone", p
+			}
+			break
+		}
+		r["state"], r["detail"] = state, detail
+		rows = append(rows, r)
+	}
+	return rows, "read"
+}
+
+// backupFileSetsOf groups the family rows by database and type, in their order; a set is a disk set when every family
+// is a disk device (device_type 2 or 102) with a path that is not NUL.
+func backupFileSetsOf(fams []collect.Row) []*backupFileSet {
+	var sets []*backupFileSet
+	idx := map[string]*backupFileSet{}
+	for _, f := range fams {
+		db, _ := f["database_name"].(string)
+		typ, _ := f["backup_type"].(string)
+		uuid, _ := f["backup_set_uuid"].(string)
+		path, _ := f["path"].(string)
+		k := db + "\x00" + typ
+		s := idx[k]
+		if s == nil {
+			s = &backupFileSet{db: db, typ: typ, uuid: uuid, disk: true}
+			idx[k] = s
+			sets = append(sets, s)
+		}
+		s.paths = append(s.paths, path)
+		if intOf(f["device_type"])%100 != 2 || strings.Contains(path, "://") || strings.EqualFold(strings.TrimSuffix(path, ":"), "NUL") {
+			s.disk = false
+		}
+	}
+	return sets
+}
+
+// backupRootAnswers: whether a root answers sys.dm_os_file_exists on its own connection within backupRootTimeout (an
+// answer of any value counts: a root that is not there makes its files 'folder gone').
+func backupRootAnswers(ctx context.Context, pool *sql.DB, root string) bool {
+	rctx, cancel := context.WithTimeout(ctx, backupRootTimeout)
+	defer cancel()
+	c, err := pool.Conn(rctx)
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	var exists, isDir, parent sql.NullInt64
+	return c.QueryRowContext(rctx, backupExistsSQL, root).Scan(&exists, &isDir, &parent) == nil
+}
+
+// backupPathRoot: the part of a backup path that names where it goes, as 0140's mssql_backup_root for a disk path: a
+// share '\\host\share', a drive 'X:\', a Linux path's first two directories.
+func backupPathRoot(p string) string {
+	switch {
+	case strings.HasPrefix(p, `\\`):
+		parts := strings.SplitN(p[2:], `\`, 3)
+		if len(parts) >= 2 {
+			return `\\` + strings.ToLower(parts[0]) + `\` + strings.ToLower(parts[1])
+		}
+	case len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/'):
+		return strings.ToUpper(p[:1]) + `:\`
+	case strings.HasPrefix(p, "/"):
+		parts := strings.SplitN(p[1:], "/", 3)
+		if len(parts) == 3 {
+			return "/" + parts[0] + "/" + parts[1]
+		}
+		return backupDirOf(p)
+	}
+	return p
+}
+
+// backupDirOf: a path's directory with its separator ('/var/opt/mssql/data/' of '/var/opt/mssql/data/x.bak').
+func backupDirOf(p string) string {
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		return p[:i+1]
+	}
+	return p
 }
 
 // backupCheckDBRows: a 'database' row per database with its lsn_state, and the database_id numbers whose recovery
