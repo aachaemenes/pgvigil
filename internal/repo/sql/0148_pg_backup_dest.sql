@@ -184,7 +184,7 @@ END $$;
 
 -- pg_backup_dest_findings (the findings columns): a credential written in archive_command or restore_command (warning:
 -- every role that logs in reads both with SHOW, F5); WAL thrown away while archive_mode is on (warning, F6); the tool read
--- off for an instance whose commands name a tool (info). Their pgvigil.findings arm and the purge lines are the lead's
+-- off for an instance whose commands name a tool (info), for its configuration and for 162's base-backup listing. Their pgvigil.findings arm and the purge lines are the lead's
 -- WIRING for 0190's successor (scripts/inv-302-join-lines.sql).
 CREATE OR REPLACE VIEW pgvigil.pg_backup_dest_findings AS
 SELECT d.instance_id, 'warning'::text AS severity, 'a credential is written in the archiver''s command' AS check_name, d.source AS object,
@@ -204,4 +204,11 @@ UNION ALL
 SELECT r.instance_id, 'info', 'backup tool read off', r.tool || ' ' || r.name,
        'the server names ' || r.tool || ' ' || r.name || '; its storage and retention are in the tool''s configuration, read only with backups: read_tools: true', r.snapshot_at
   FROM pgvigil.pg_backup_dest_reads r JOIN pgvigil.instances i ON i.instance_id = r.instance_id AND i.is_active
- WHERE r.state = 'off';
+ WHERE r.state = 'off'
+UNION ALL
+-- 162's base-backup listing kept off by the same opt-in (F1): its tool row is 'not_read', so the base backups are not
+-- judged - the Summary's Backup cell maps this info finding to grey, never green (the lead's map)
+SELECT t.instance_id, 'info', 'base backups not read', t.tool || ' ' || t.name,
+       'the server names ' || t.tool || ' ' || t.name || '; its base backups are listed only with backups: read_tools: true, so they are not judged', t.snapshot_at
+  FROM pgvigil.pg_backup_tools t JOIN pgvigil.instances i ON i.instance_id = t.instance_id AND i.is_active
+ WHERE t.is_present AND t.state = 'not_read';

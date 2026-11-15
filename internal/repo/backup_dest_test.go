@@ -137,10 +137,13 @@ func TestBackupDestOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT state FROM pgvigil.pg_backup_tools WHERE instance_id = $1`, a).Scan(&st); err != nil || st != "not_read" {
 		t.Errorf("pg_backup_tools state: %q (%v)", st, err)
 	}
+	if f := findings(a); f != "info:base backups not read:pgbackrest demo | warning:WAL is discarded:archive_command" {
+		t.Errorf("a's findings with the listing off: %q", f)
+	}
 	// RDS: the service's line
 	r := inst("r", "rds")
-	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.backup_state (instance_id, kind, name, snapshot_at, retention_days, earliest_restorable_time, latest_restorable_time, backup_window)
-		VALUES ($1, 'cloud', 'db1', now(), 7, '2026-11-07 03:00+00', '2026-11-14 03:00+00', '03:00-03:30')`, r); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.backup_state (instance_id, kind, name, snapshot_at, first_seen, retention_days, earliest_restorable_time, latest_restorable_time, backup_window)
+		VALUES ($1, 'cloud', 'db1', now(), now(), 7, '2026-11-07 03:00+00', '2026-11-14 03:00+00', '03:00-03:30')`, r); err != nil {
 		t.Fatal(err)
 	}
 	var line string
