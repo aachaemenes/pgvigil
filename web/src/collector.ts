@@ -157,8 +157,9 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
     el('p', { class: 'meta' }, 'Counted at every connect a collection makes, a per-database connect included (each collection connects and closes; '
       + 'every collector of the instance summed). A login refused (PostgreSQL 28P01 / 28000, SQL Server 18456) is retried at every run: a changed password can lock the login out. '
       + 'Connect avg / max: from the call to the open connection - DNS, the TLS handshake, the login and the collector\'s own CPU; an Entra token fetch left out - over the hour. '
-      + 'An instance whose last 5 written minutes average over its connect_time threshold (1.00 s / 2.50 s by default, on Thresholds) raises \'slow connect\'; '
-      + 'most of a server\'s or a collector\'s instances slow at once raise one \'slow connects\' instead.'));
+      + 'An instance whose last 5 written minutes average over its connect_time threshold (1.00 s / 2.50 s by default; on Thresholds at the root, a tag or a PostgreSQL instance) raises \'slow connect\'; '
+      + 'most of a server\'s instances, or most of the servers a collector reads, slow at once raise one \'slow connects\' instead '
+      + '(a member over its level is still sent).'));
 
   // the repository
   const total = conns.reduce((a, r) => a + Number(r.connections ?? 0), 0);
