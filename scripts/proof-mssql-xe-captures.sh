@@ -93,6 +93,11 @@
 #    instance, p_slow run: stored (the schema is dbo); then ["xcdb.dbo.p_slo%"], p_slow run: in the file, not stored.
 #  - G10 (review 11): the counts session stopped and started, then more page splits than its total before: the next
 #    read says restarted, its delta the new total.
+#    Changed after the fold's first run (sqltb-s2-411-run1: G9's second row stored the module, G10's new total was not
+#    past the old one; the product's answers held, both rows' fixtures were short): G9 first proves the login the
+#    proof had (no way into xcdb: the schema is not read, a three-part entry keeps the module), then grants CONNECT ANY
+#    DATABASE (pgvigil's documented login) and runs the two rows with the schema read ('dbo'); G10 restarts the counts
+#    session twice, so the judged read's total is past the read before it, and wants a new session start on it.
 #  - G11 (review 7): one imported warning row with an event key, imported twice: counted once.
 #  - S: xc_lost's config says query_text none. S2b: GET part=script on xc without text: text_policy full, the script
 #    has sql_text; on xc_lost without text and with text=full: text_policy none, no sql_text (review 2). S10: a POST of
@@ -361,13 +366,26 @@ SQL
   xcend() { for id in $(q "select config_id from pgvigil.mssql_xe_capture_config where scope = 'instance' and key = '$1' and ended_at is null"); do
               q "select pgvigil.import_mssql_xe_capture_config(now(), jsonb_build_object('ui_user', 'proof', 'op', 'end', 'config_id', '$id'))->>'outcome'" >/dev/null; done; }
   xcend app_exclude
-  # G9 a three-part procedure entry's schema is matched at the read (the session's filter has its database and name)
+  # G9 a three-part procedure entry's schema is matched at the read (the session's filter has its database and name).
+  # The reader asks the server for the module's schema (OBJECT_SCHEMA_NAME(object_id, database_id)), which answers only
+  # a login that can enter that database (Microsoft: 'To specify a database ID, CONNECT permission to the database is
+  # also required, or the guest account must be enabled'). First as xc_mon so far (VIEW SERVER STATE and VIEW ANY
+  # DEFINITION, no way into xcdb): the schema is not read and a three-part entry keeps the module (never dropped on a
+  # schema nobody read). Then with CONNECT ANY DATABASE, the third right of pgvigil's documented login: matched.
+  lastschema() { q "select coalesce(schema_name, '-') from pgvigil.mssql_xe_modules where instance_id = $I and object_name = 'p_slow' order by event_at desc limit 1"; }
+  want "G9: proc_exclude xcdb.dbo.p_slo% at the instance (the login cannot enter xcdb)" "$(xcset proc_exclude '["xcdb.dbo.p_slo%"]')" "done"
+  F0=$(handmod); S0=$(storedmod)
+  sq "EXEC dbo.p_slow;" xcdb >/dev/null
+  sleep 6
+  collect mssql_xe_captures
+  want "G9: a login that cannot enter the database: in the file | stored | its schema not read" "$(( $(handmod) - F0 ))|$(( $(storedmod) - S0 ))|$(lastschema)" "1|1|-"
+  sq "GRANT CONNECT ANY DATABASE TO xc_mon;" >/dev/null || bad "G9: the grant"
   want "G9: proc_exclude xcdb.other.p_slow at the instance" "$(xcset proc_exclude '["xcdb.other.p_slow"]')" "done"
   S0=$(storedmod)
   sq "EXEC dbo.p_slow;" xcdb >/dev/null
   sleep 6
   collect mssql_xe_captures
-  want "G9: another schema's entry leaves p_slow stored" "$(( $(storedmod) - S0 ))" "1"
+  want "G9: another schema's entry leaves p_slow stored | its schema read" "$(( $(storedmod) - S0 ))|$(lastschema)" "1|dbo"
   want "G9: proc_exclude xcdb.dbo.p_slo% at the instance" "$(xcset proc_exclude '["xcdb.dbo.p_slo%"]')" "done"
   F0=$(handmod); S0=$(storedmod)
   sq "EXEC dbo.p_slow;" xcdb >/dev/null
@@ -375,13 +393,22 @@ SQL
   collect mssql_xe_captures
   want "G9: its own schema's entry: in the file | not stored" "$(( $(handmod) - F0 ))|$(( $(storedmod) - S0 ))" "1|0"
   xcend proc_exclude
-  # G10 the counts session restarted, then more page splits than its total before: the read says restarted
-  T0=$(q "select total from pgvigil.mssql_xe_warning_counts where instance_id = $I and event_name = 'page_split' order by snapshot_at desc limit 1")
-  sq "ALTER EVENT SESSION [pgvigil_cap_warncounts] ON SERVER STATE = STOP; ALTER EVENT SESSION [pgvigil_cap_warncounts] ON SERVER STATE = START;" >/dev/null || bad "G10: the restart"
-  sq "DECLARE @i int = 0; WHILE @i < 60000 BEGIN INSERT dbo.g (id) VALUES (NEWID()); SET @i += 1; END;" xcdb >/dev/null
+  # G10 the counts session restarted, then MORE page splits than the total of the read before it: only the session's
+  # start time can say restarted then (a total lower than the last one cannot). The session's first life holds every
+  # earlier part's page splits - more than one burst here makes - so it is restarted twice: the first restart's read
+  # stores a small total (a short burst, so the counter has the event), the second restart is the one judged.
+  restart_counts() { sq "ALTER EVENT SESSION [pgvigil_cap_warncounts] ON SERVER STATE = STOP; ALTER EVENT SESSION [pgvigil_cap_warncounts] ON SERVER STATE = START;" >/dev/null || bad "G10: the restart"; }
+  burst() { sq "DECLARE @i int = 0; WHILE @i < $1 BEGIN INSERT dbo.g (id) VALUES (NEWID()); SET @i += 1; END;" xcdb >/dev/null; }
+  lastsplit() { q "select $1 from pgvigil.mssql_xe_warning_counts where instance_id = $I and event_name = 'page_split' order by snapshot_at desc limit 1"; }
+  TB=$(lastsplit total)
+  restart_counts; burst 2000
   collect mssql_xe_captures
-  want "G10: page_split after the restart: past the old total | restarted | delta = the new total" \
-    "$(q "select (total > ${T0:-0}) || '|' || restarted || '|' || (delta = total) from pgvigil.mssql_xe_warning_counts where instance_id = $I and event_name = 'page_split' order by snapshot_at desc limit 1")" "true|true|true"
+  T0=$(lastsplit total); C0=$(lastsplit "coalesce(session_created, '-')")
+  restart_counts; burst 60000
+  collect mssql_xe_captures
+  echo "G10 info: page_split totals: $TB before any restart, $T0 after the first restart (session start $C0), $(lastsplit total) after the second (session start $(lastsplit "coalesce(session_created, '-')"))"
+  want "G10: page_split after the restart: past the read before | restarted | delta = the new total | a new session start, both read" \
+    "$(q "select (total > ${T0:-0}) || '|' || restarted || '|' || (delta = total) || '|' || (session_created is not null and '$C0' <> '-' and session_created <> '$C0') from pgvigil.mssql_xe_warning_counts where instance_id = $I and event_name = 'page_split' order by snapshot_at desc limit 1")" "true|true|true|true"
   # G8 imported rows: events a container does not raise on demand
   T=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
   PAY="["

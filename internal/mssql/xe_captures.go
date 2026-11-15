@@ -440,7 +440,9 @@ func parseXModule(e *xeEvent, c xeContext) collect.Row {
 
 // xcModuleNames gives each module row its own database and schema (module_end's database_name action is the CALLER's
 // database; the exclusion list and the page name the module's), each pair asked of the server once per run. A name
-// the login may not see stays NULL: the import then judges the row by its database alone.
+// the login may not see stays NULL (OBJECT_SCHEMA_NAME of another database answers only a login that can enter it:
+// CONNECT ANY DATABASE, or a user there): the import then keeps a module a three-part entry names, its schema not
+// known to be the entry's; a two-part entry needs no schema.
 type xcModuleNames struct {
 	ctx  context.Context
 	conn *sql.Conn
