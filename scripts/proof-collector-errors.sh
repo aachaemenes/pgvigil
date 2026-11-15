@@ -51,7 +51,8 @@
 #     one in AlwaysOn_health alone; out: a numberless custom-string line, an 18456 at 14, a 3041 at 16. A label
 #     'error log:17806' hides the three 17806 lines only (hits 3; the 824 stays); a label 'error log' with no text and
 #     an instance-only label hide nothing; noise=1 shows the 17806 lines labelled; tag= narrows to its instances;
-#     agstate names the instance whose AlwaysOn_health is stopped. RED: no route.
+#     agstate names the instance whose AlwaysOn_health is stopped; at the window's edges an AlwaysOn_health event whose
+#     error-log twin lies just outside the window is counted; n past a 32-bit integer is a 400. RED: no route.
 #  G. the pages (headless chromium): #/collectorerrors lists the target; at one instance per collection; Acknowledge
 #     offered with no filter over 7 days, not with coll= and not over the last hour (it would cover errors not shown); the page says pgvigil never retries; #/mssqlerrors lists 824 with its
 #     Learn link and the stopped AlwaysOn_health; Collection dates links to #/collectorerrors; the error-log finding on
@@ -344,6 +345,24 @@ check "$(py "one(T('byerror'), error_number=9002).get('occurrences')")|$(py "sor
 check "$(py "[r['instance'] for r in T('agstate')]")|$(py "'agstate' in d")" "[]|True" "F: the tag's instances read AlwaysOn_health (none stopped; the part there)"
 get "/api/mssql/errorfleet?$W"
 check "$(py "[(r['instance'], r['state']) for r in T('agstate')]")" "[('cerr-m3-$SUF', 'stopped')]" "F: an instance whose AlwaysOn_health is stopped is named"
+
+# the window's edges: an AlwaysOn_health event inside the window whose error-log twin lies just outside it is counted
+# (the twin is not in the stream); an error number past a 32-bit integer is refused
+ES=$(( $(date +%s) / 60 * 60 - 10800 )); EB=$(date -u -d "@$ES" +%Y-%m-%dT%H:%M:%SZ); EE=$(date -u -d "@$((ES + 600))" +%Y-%m-%dT%H:%M:%SZ)
+for tb in mssql_errorlog mssql_ag_events; do
+  q "select pgvigil.mssql_event_partition('$tb', '$EB'::timestamptz)" >/dev/null 2>&1 || q "select pgvigil.ensure_month_partition('$tb', '$EB'::timestamptz)" >/dev/null
+done
+q "insert into pgvigil.mssql_errorlog (instance_id, log_at, line_key, snapshot_at, logged_local, error_number, severity, error_state, class, message) values
+     ($M1, '$EB'::timestamptz - interval '1 second', 'cerr-edge1', now(), localtimestamp, 35206, 16, 1, 'availability', 'edge: the twin before the start'),
+     ($M1, '$EE'::timestamptz + interval '1 second', 'cerr-edge2', now(), localtimestamp, 35206, 16, 1, 'availability', 'edge: the twin after the end')" >/dev/null
+q "insert into pgvigil.mssql_ag_events (instance_id, event_at, event_key, snapshot_at, event_name, error_number, severity, family, message) values
+     ($M1, '$EB'::timestamptz + interval '1 second', 'cerr-edge3', now(), 'error_reported', 35206, 16, 'connection', 'edge: the event after the start'),
+     ($M1, '$EE'::timestamptz - interval '1 second', 'cerr-edge4', now(), 'error_reported', 35206, 16, 'connection', 'edge: the event before the end')" >/dev/null
+get "/api/mssql/errorfleet?from=$EB&to=$EE&n=35206"
+check "$(py "sorted((r['source'], r['message']) for r in T('lines'))")" \
+  "[('AlwaysOn_health', 'edge: the event after the start'), ('AlwaysOn_health', 'edge: the event before the end')]" \
+  "F: the window's edges - both AlwaysOn_health events counted, their error-log twins outside the window"
+check "$(curl -s -o /dev/null -w '%{http_code}' "$U2/api/mssql/errorfleet?n=3000000000&$W")" "400" "F: an error number past a 32-bit integer refused (400)"
 
 echo "--- G. the pages"
 if command -v chromium >/dev/null; then

@@ -11,7 +11,8 @@ import (
 // or more, and every number on its alert list at any severity, across the instances in scope - read from what pgvigil
 // already stores, nothing on a monitored server. Two sources: the error log's kept lines (mssql_errorlog, 0091) and
 // AlwaysOn_health's error_reported events (mssql_ag_events, 0065); an AlwaysOn_health row whose error-log twin (the same
-// instance and number within 2 s) is there is left out, so one event is counted once. The noise is the DBA's own:
+// instance and number within 2 s, inside the window: a twin outside it is not in the stream) is there is left out, so one
+// event is counted once. The noise is the DBA's own:
 // acks kind 'noise' with check_key 'error log' (a text, any number) or 'error log:<n>' (that number), an instance or a
 // tag optional, matched against the message only - a label with neither a number nor a text hides nothing. They never
 // touch an alert: an alert's source and setting are never 'error log'.
@@ -49,7 +50,7 @@ WITH scope AS (
    WHERE i.engine = 'sqlserver' AND i.is_active
      AND ($3::int IS NULL OR i.instance_id = $3) AND ($4::int[] IS NULL OR i.instance_id = ANY ($4))
      AND ($5::text IS NULL OR $5 = ANY (i.tags))
-), lbl AS (
+), lbl AS MATERIALIZED (
   SELECT a.ack_id, a.check_key, a.match_text, a.instance_name, a.tag, a.note,
          CASE WHEN a.check_key ~ '^error log:[0-9]{1,10}$' THEN substring(a.check_key from 11)::bigint END AS num
     FROM pgvigil.acks a
@@ -69,6 +70,7 @@ WITH scope AS (
      AND (g.severity >= 17 OR g.error_number = ANY ($7))
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_errorlog t
                       WHERE t.instance_id = g.instance_id AND t.error_number = g.error_number
+                        AND t.log_at >= $1 AND t.log_at < $2
                         AND t.log_at BETWEEN g.event_at - interval '2 seconds' AND g.event_at + interval '2 seconds')
 ), y AS (
   SELECT x.*, n.ack_id AS noise_id, n.note AS noise
@@ -115,11 +117,11 @@ SELECT y.at, y.instance_id, y.instance, y.error_number, y.severity, y.state, y.c
  ORDER BY y.at DESC
  LIMIT 1000`
 
-// sqlErrorFleetNoise: this page's labels and the lines each hides in the window.
+// sqlErrorFleetNoise: this page's labels and the lines each hides in the window (the stream read once).
 const sqlErrorFleetNoise = sqlErrorFleetBase + `
-SELECT l.ack_id, l.check_key, l.match_text, l.instance_name AS instance, l.tag, l.note,
-       (SELECT count(*) FROM y WHERE y.noise_id = l.ack_id)::int AS hits
+SELECT l.ack_id, l.check_key, l.match_text, l.instance_name AS instance, l.tag, l.note, coalesce(h.hits, 0)::int AS hits
   FROM lbl l
+  LEFT JOIN (SELECT y.noise_id, count(*) AS hits FROM y WHERE y.noise_id IS NOT NULL GROUP BY y.noise_id) h ON h.noise_id = l.ack_id
  ORDER BY l.check_key, l.ack_id`
 
 // sqlErrorFleetAGState: an instance in scope whose AlwaysOn_health capture was not read (its state row, 0065).
@@ -161,12 +163,12 @@ func (s *Server) MSSQLErrorFleet(w http.ResponseWriter, r *http.Request) {
 		tag = v
 	}
 	if v := q.Get("n"); v != "" {
-		n, perr := strconv.Atoi(v)
+		n, perr := strconv.ParseInt(v, 10, 32)
 		if perr != nil || n <= 0 {
 			writeErr(w, http.StatusBadRequest, errors.New("n must be an error number"))
 			return
 		}
-		num = n
+		num = int32(n)
 	}
 	noise := q.Get("noise") == "1"
 	cannot := make([]string, 0, len(mssqlErrorFleetCannot))
