@@ -291,7 +291,9 @@ if [[ ${PROM_SCALE:-1000} -gt 0 ]]; then
   python3 -I -c "import sys; sys.exit(0 if float('${RS:-99}') < 10 else 1)" || no "P8: the cold render took ${RS:-?} s (want under 10)"
   [[ ${AGE:-99999} -gt 600 || ${SER%.*} -ge $(( 20 * ${PROM_SCALE:-1000} )) ]] 2>/dev/null || no "P8: $SER series for ${PROM_SCALE:-1000} instances (want 20 per instance at least)"
   sleep 11
-  for i in $(seq 1 8); do curl -s -H "$(h "$TOK")" -H 'X-Prometheus-Scrape-Timeout-Seconds: 60' -o "$WORK/c$i.txt" "$B/metrics" & done; wait
+  # the eight scrapes' own pids waited for, never a bare 'wait': Prometheus (P7) and the scale serve are children
+  # of this shell too and never exit by themselves, so a bare 'wait' here never returned (rp1, 2026-11-15)
+  CP=(); for i in $(seq 1 8); do curl -s -m 90 -H "$(h "$TOK")" -H 'X-Prometheus-Scrape-Timeout-Seconds: 60' -o "$WORK/c$i.txt" "$B/metrics" & CP+=($!); done; wait "${CP[@]}"
   NR=$(cat "$WORK"/c*.txt | awk '/^pgvigil_metrics_last_render_timestamp_seconds /{print $2}' | sort -u | wc -l)
   NB=$(grep -l '^pgvigil_metrics_last_render_timestamp_seconds ' "$WORK"/c*.txt | wc -l)
   [[ $NB == 8 ]] || no "P8: $NB of the 8 concurrent scrapes got a body"

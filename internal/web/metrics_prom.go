@@ -317,11 +317,8 @@ func (s *Server) PromMetrics(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ok := false
 	// a live UI session, read only when the login is on (s.auth nil under -no-login: no cookie reaches it)
-	if s.auth != nil && s.sessionUser(r) != "" {
-		ok = true
-	}
+	ok := s.auth != nil && s.sessionUser(r) != ""
 	if h := r.Header.Get("Authorization"); !ok && h != "" {
 		tok, isBearer := strings.CutPrefix(h, "Bearer ")
 		tok = strings.TrimSpace(tok)
