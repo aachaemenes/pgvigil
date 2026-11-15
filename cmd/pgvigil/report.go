@@ -312,6 +312,7 @@ var knownKeys = map[string]bool{
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
+	"azure": true, "subscription": true, "resource_group": true, "server": true, "cloud": true,
 	"latency_warn_secs": true, "archive_warn_minutes": true, "import": true, "gmsa": true,
 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,

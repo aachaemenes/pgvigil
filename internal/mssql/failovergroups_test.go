@@ -141,7 +141,7 @@ func TestFailoverGroupsRead(t *testing.T) {
 // the same interval (an identity without the right never holds the server for good); a good read keeps it.
 func TestFailoverGroupsGateGivesBack(t *testing.T) {
 	fail := true
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if fail {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"error":{"code":"AuthorizationFailed","message":"no access"}}`))
@@ -170,7 +170,7 @@ func TestFailoverGroupsGateGivesBack(t *testing.T) {
 // A refusal names Resource Manager's code and the right; a throttle (429) is a skip until its Retry-After.
 func TestFailoverGroupsRefusals(t *testing.T) {
 	status := http.StatusForbidden
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if status == http.StatusTooManyRequests {
 			w.Header().Set("Retry-After", "120")
 		}
