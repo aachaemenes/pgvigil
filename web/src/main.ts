@@ -79,7 +79,7 @@ import { tabMark, watchHiddenTab } from './tabmark';
 import { installTreeMenu } from './treemenu';
 import { installFileDrop, toolsButton } from './filedrop';
 import { retentionView } from './retention';
-import { dropMenu, el, fmtBytes } from './ui';
+import { dropMenu, el, fmtBytes, setWho } from './ui';
 import { cutWords, exportButtons } from './export';
 import { mailButton, mailRenderBoot, reportMailView } from './reportmail';
 import { connectionsView } from './connections';
@@ -327,6 +327,7 @@ function showLogin(message = '') {
     btn.disabled = true; err.hidden = true;
     try {
       session = await post<Session>('login', { username: user.value.trim(), password: pass.value });
+      setWho(session);
       pass.value = '';
       loginShown = false;
       document.body.classList.remove('signin');
@@ -344,6 +345,7 @@ function showLogin(message = '') {
 async function signOut() {
   try { await post('logout'); } catch { /* the session is gone either way */ }
   session = { login: true };
+  setWho({ login: false });
   forget();
   showLogin('Signed out.');
 }
@@ -488,7 +490,8 @@ async function render(force = false) {
   if (session.login && session.user) {
     const out = el('button', { type: 'button', class: 'link' }, 'Sign out');
     out.addEventListener('click', () => { void signOut(); });
-    bar.append(el('span', { class: 'meta' }, session.user), out);
+    // the role beside the name (B24f): what this user may change, said where it signs out
+    bar.append(el('span', { class: 'meta', title: session.role_error ?? `role: ${session.role ?? 'none'}` }, session.user, session.role ? ` (${session.role})` : ''), out);
   }
 
   // the instance's header and its band's dot (task 177 D29), read beside the page; a failure there leaves them out
@@ -580,6 +583,6 @@ watchHiddenTab(() => loginShown || refreshSecs() === 0);
 mailRenderBoot();
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
-  try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  try { session = await get<Session>('session'); setWho(session); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
   void render();
 })();
