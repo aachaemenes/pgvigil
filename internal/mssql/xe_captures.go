@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,7 +85,10 @@ type XECaptureSettings struct {
 	WaitMS      int      // a wait shorter than this is not captured (ms)
 	ModuleMS    int      // a module shorter than this is not captured (ms; the script turns it into microseconds)
 	AppExclude  []string // client_app_name: an exact name, or a LIKE pattern when it holds % or _
-	ProcExclude []string // database.object_name LIKE pattern: master.sp[_]%
+	ProcExclude []string // database.name or database.schema.name, the name a LIKE pattern: master.sp[_]%
+	// Origin says in the script's header where the values came from ("" = the settings in force); the CLI, which reads
+	// no repository, prints the defaults and says so
+	Origin string
 }
 
 // DefaultXECaptureSettings: SQLWATCH's thresholds and exclusions (its waits and long-query sessions, its default
@@ -95,6 +99,29 @@ func DefaultXECaptureSettings() XECaptureSettings {
 			"SQLAgent - Job Manager", "SQLAgent - Job invocation engine", "SQLAgent - Schedule Saver", "SQLServerCEIP", "DacFx Deploy",
 			"DatabaseMail%", "SQLAgent - TSQL JobStep%"},
 		ProcExclude: []string{"master.sp[_]%", "msdb.sp[_]%"}}
+}
+
+// XECaptureDefaultsOrigin is the header's word for a script printed with the defaults (the CLI's).
+const XECaptureDefaultsOrigin = "pgvigil's defaults, not the settings in force: the XE captures tab prints the instance's own"
+
+// ProcEntry is one procedure exclusion split: its database, its schema ("" = any) and its name pattern.
+type ProcEntry struct{ DB, Schema, Name string }
+
+// SplitProcEntry splits database.name or database.schema.name; false for any other shape.
+func SplitProcEntry(p string) (ProcEntry, bool) {
+	parts := strings.Split(p, ".")
+	for _, x := range parts {
+		if x == "" {
+			return ProcEntry{}, false
+		}
+	}
+	switch len(parts) {
+	case 2:
+		return ProcEntry{DB: parts[0], Name: parts[1]}, true
+	case 3:
+		return ProcEntry{DB: parts[0], Schema: parts[1], Name: parts[2]}, true
+	}
+	return ProcEntry{}, false
 }
 
 var xcEntryRE = regexp.MustCompile(`^[^\x00-\x1f]{1,200}$`)
@@ -108,17 +135,21 @@ func CheckXECaptureSettings(s XECaptureSettings) error {
 		return errors.New("the module threshold is 100 to 3600000 ms")
 	}
 	for _, a := range s.AppExclude {
-		if !xcEntryRE.MatchString(a) {
-			return fmt.Errorf("an app name of 1 to 200 printable characters: %q", a)
+		if !xcEntryRE.MatchString(a) || xcCommentMark(a) {
+			return fmt.Errorf("an app name of 1 to 200 printable characters, with no /* or */: %q", a)
 		}
 	}
 	for _, p := range s.ProcExclude {
-		if !xcEntryRE.MatchString(p) || !strings.Contains(p, ".") {
-			return fmt.Errorf("a procedure exclusion is database.name_pattern: %q", p)
+		if _, ok := SplitProcEntry(p); !ok || !xcEntryRE.MatchString(p) || xcCommentMark(p) {
+			return fmt.Errorf("a procedure exclusion is database.name_pattern or database.schema.name_pattern, with no /* or */: %q", p)
 		}
 	}
 	return nil
 }
+
+// xcCommentMark: an entry that would open or close a T-SQL block comment (the script prints every entry; T-SQL nests
+// block comments, so even an honest /* would swallow the rest of the script).
+func xcCommentMark(s string) bool { return strings.Contains(s, "/*") || strings.Contains(s, "*/") }
 
 // tq doubles a single quote twice over: the text sits in a literal of the dynamic SQL inside the script's literal.
 func tq(s string) string { return strings.ReplaceAll(s, "'", "''''") }
@@ -138,12 +169,16 @@ func xcAppPred(apps []string) string {
 	return exact.String() + like.String()
 }
 
-// xcProcPred leaves out a module of a listed database whose object name matches the pattern.
+// xcProcPred leaves out a module OF a listed database (the event's source_database_id: the module's own database, not
+// the caller's - sp_WhoIsActive in master runs from any database) whose object name matches the pattern. The database's
+// id is found when the script runs (DB_ID; -1 when the server has no such database); a schema is matched at the read
+// (module_end carries no schema), so a three-part entry's session filter is its database and name alone.
 func xcProcPred(procs []string) string {
 	var b strings.Builder
 	for _, p := range procs {
-		db, name, _ := strings.Cut(p, ".")
-		fmt.Fprintf(&b, " AND NOT ([sqlserver].[database_name]=N''%s'' AND [sqlserver].[like_i_sql_unicode_string]([object_name],N''%s''))", tq(db), tq(name))
+		e, _ := SplitProcEntry(p)
+		fmt.Fprintf(&b, " AND NOT ([source_database_id]=(' + CAST(ISNULL(DB_ID(N'%s'), -1) AS nvarchar(20)) + N') AND [sqlserver].[like_i_sql_unicode_string]([object_name],N''%s''))",
+			strings.ReplaceAll(e.DB, "'", "''"), tq(e.Name))
 	}
 	return b.String()
 }
@@ -182,10 +217,20 @@ func XECapturesScript(installID, form, textPolicy string, captures []string, s X
 	w("  pgvigil's monitoring login cannot run it and is never asked to: it only reads what these sessions capture.\n")
 	w("  Each capture is a session of its own; a session that already exists is left exactly as it is, one that is stopped\n"+
 		"  is started, nothing else on the server changes. To change one, drop it (pgvigil mssql-xe -print -drop -captures ...)\n"+
-		"  and run this again. Made with: waits over %d ms; modules over %d ms; the app names left out: %s; the\n"+
-		"  procedures left out: %s.%s\n*/\nSET NOCOUNT ON;\n\n",
-		s.WaitMS, s.ModuleMS, strings.Join(s.AppExclude, ", "), strings.Join(s.ProcExclude, ", "),
-		map[bool]string{true: "\n  Statement text is not captured: the instance keeps none (query_text none).", false: ""}[textPolicy == "none"])
+		"  and run this again. Made with: waits over %d ms; modules over %d ms; the app names and procedures left out are\n"+
+		"  the lines below this comment, one a line.%s%s\n*/\n",
+		s.WaitMS, s.ModuleMS,
+		map[bool]string{true: "\n  Statement text is not captured: the instance keeps none (query_text none).", false: ""}[textPolicy == "none"],
+		map[bool]string{true: "\n  These are " + s.Origin + ".", false: ""}[s.Origin != ""])
+	// each entry on a line comment of its own, outside the block: a line comment cannot be closed (an entry holds no
+	// line break: CheckXECaptureSettings), so no entry can reach the T-SQL
+	for _, a := range s.AppExclude {
+		w("-- app left out: %s\n", a)
+	}
+	for _, p := range s.ProcExclude {
+		w("-- procedure left out: %s\n", p)
+	}
+	w("SET NOCOUNT ON;\n\n")
 	if form == XEFormAzureDB {
 		w("IF CAST(SERVERPROPERTY('EngineEdition') AS int) <> 5\nBEGIN\n  RAISERROR('This is the Azure SQL Database form; print the script again with the right -form.', 16, 1);\n  RETURN;\nEND;\n")
 	} else {
@@ -245,7 +290,7 @@ func XECapturesScript(installID, form, textPolicy string, captures []string, s X
 		case xcModules:
 			return "package0.event_sequence," + who
 		}
-		return "package0.event_sequence,sqlserver.database_name"
+		return "" // the counts session: an event_counter target ignores every action, each one only a cost per event
 	}
 	for _, c := range captures {
 		n := XESessionName(installID, c)
@@ -253,9 +298,13 @@ func XECapturesScript(installID, form, textPolicy string, captures []string, s X
 		for _, e := range xcEvents[c] {
 			name := e[strings.IndexByte(e, '.')+1:]
 			pkg := e[:strings.IndexByte(e, '.')]
+			act := ""
+			if a := actsOf(c); a != "" {
+				act = "ACTION(" + a + ") "
+			}
 			w("  IF EXISTS (SELECT 1 FROM sys.dm_xe_objects o JOIN sys.dm_xe_packages p ON p.guid = o.package_guid WHERE o.name = N'%s' AND p.name = N'%s' AND o.object_type = N'event')\n"+
-				"    SET @body = @body + CASE WHEN @body = N'' THEN N'' ELSE N',' + NCHAR(10) END + N'ADD EVENT %s(ACTION(%s) WHERE %s)';\n"+
-				"  ELSE PRINT 'left out (this version has no such event): %s';\n", name, pkg, e, actsOf(c), predOf(c, name), e)
+				"    SET @body = @body + CASE WHEN @body = N'' THEN N'' ELSE N',' + NCHAR(10) END + N'ADD EVENT %s(%sWHERE %s)';\n"+
+				"  ELSE PRINT 'left out (this version has no such event): %s';\n", name, pkg, e, act, predOf(c, name), e)
 		}
 		w("  IF @body <> N''\n  BEGIN\n    SET @sql = N'CREATE EVENT SESSION [%[1]s] ON %[2]s' + NCHAR(10) + @body + NCHAR(10) + N'%[3]s' + NCHAR(10) + N'%[4]s';\n"+
 			"    EXEC sys.sp_executesql @sql;\n  END;\n"+
@@ -337,7 +386,10 @@ func parseXWait(e *xeEvent, c xeContext) collect.Row {
 	return row
 }
 
-// parseXWarning: one query warning with its detail (the event's own fields that say what it was)
+// parseXWarning: one query warning with the event's own fields that say what it was. A number or a mapped value
+// (hash_warning_type=Recursion, recursion_level=1) goes under warning_detail, which the statement-text policy leaves
+// alone; a free-text field (plan_affecting_convert's expression, a column list: it can quote a literal) goes under
+// detail, which the policy rewrites or drops and the credential mask reads.
 func parseXWarning(e *xeEvent, c xeContext) collect.Row {
 	row, ok := xeBase("xwarn", e, c)
 	if !ok {
@@ -345,17 +397,28 @@ func parseXWarning(e *xeEvent, c xeContext) collect.Row {
 	}
 	xcWho(e, row)
 	row["query_plan_hash_hex"] = hashHex(e.act("query_plan_hash"))
-	var parts []string
+	var fields, texts []string
 	for _, f := range e.Data {
 		if f.Name == "" {
 			continue
 		}
+		if t := strings.TrimSpace(f.Text); t != "" && len(t) < 200 { // a map's value: its words
+			fields = append(fields, f.Name+"="+t)
+			continue
+		}
 		v := fieldStr(&f)
-		if s, ok := v.(string); ok && s != "" && len(s) < 200 {
-			parts = append(parts, f.Name+"="+s)
+		s, ok := v.(string)
+		if !ok || s == "" || len(s) >= 200 {
+			continue
+		}
+		if _, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil || strings.EqualFold(s, "true") || strings.EqualFold(s, "false") {
+			fields = append(fields, f.Name+"="+strings.TrimSpace(s))
+		} else {
+			texts = append(texts, f.Name+"="+s)
 		}
 	}
-	row["detail"] = strOrNil(strings.Join(parts, "; "))
+	row["warning_detail"] = strOrNil(strings.Join(fields, "; "))
+	row["detail"] = strOrNil(strings.Join(texts, "; "))
 	if st, _ := e.act("sql_text").(string); st != "" {
 		row["statement"] = st
 	}
@@ -371,8 +434,40 @@ func parseXModule(e *xeEvent, c xeContext) collect.Row {
 	xcWho(e, row)
 	row["object_name"], row["object_type"] = e.str("object_name"), e.mapped("object_type")
 	row["duration_us"], row["row_count"] = e.num("duration"), e.num("row_count")
-	row["source_database_id"] = e.num("source_database_id")
+	row["source_database_id"], row["object_id"] = e.num("source_database_id"), e.num("object_id")
 	return row
+}
+
+// xcModuleNames gives each module row its own database and schema (module_end's database_name action is the CALLER's
+// database; the exclusion list and the page name the module's), each pair asked of the server once per run. A name
+// the login may not see stays NULL: the import then judges the row by its database alone.
+type xcModuleNames struct {
+	ctx  context.Context
+	conn *sql.Conn
+	seen map[[2]int64][2]any
+}
+
+func (n *xcModuleNames) fill(rows []collect.Row) {
+	for _, row := range rows {
+		if row["kind"] != "xmodule" {
+			continue
+		}
+		db, _ := row["source_database_id"].(int64)
+		obj, _ := row["object_id"].(int64)
+		if db == 0 {
+			continue
+		}
+		k := [2]int64{db, obj}
+		v, ok := n.seen[k]
+		if !ok {
+			var dbn, sch sql.NullString
+			if err := n.conn.QueryRowContext(n.ctx, `SELECT CAST(DB_NAME(@p1) AS nvarchar(256)), CAST(OBJECT_SCHEMA_NAME(@p2, @p1) AS nvarchar(256))`, db, obj).Scan(&dbn, &sch); err == nil {
+				v = [2]any{strOrNil(dbn.String), strOrNil(sch.String)}
+			}
+			n.seen[k] = v
+		}
+		row["module_database"], row["schema_name"] = v[0], v[1]
+	}
 }
 
 // ---- the reader
@@ -402,7 +497,9 @@ func (xeCapturesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info 
 		return err
 	}
 	sessions := xeGroup(targets)
-	r := &xeRun{ctx: ctx, conn: conn, info: info, opt: opt, cursor: cursor, emit: emit, now: time.Now()}
+	names := &xcModuleNames{ctx: ctx, conn: conn, seen: map[[2]int64][2]any{}}
+	withNames := func(rows []collect.Row) error { names.fill(rows); return emit(rows) }
+	r := &xeRun{ctx: ctx, conn: conn, info: info, opt: opt, cursor: cursor, emit: withNames, now: time.Now()}
 	var tail []collect.Row
 	for _, capture := range XECaptureNames {
 		s := xePick(sessions, capture)
@@ -413,7 +510,7 @@ func (xeCapturesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info 
 		switch {
 		case s == nil || !s.running:
 		case capture == xcCounts:
-			tail = append(tail, xcCounterRows(s, state)...)
+			tail = append(tail, xcCounterRows(s, state, xcSessionCreated(ctx, conn, info, s.name))...)
 		default:
 			if err := r.readSession(s, "product", xcEventNames(capture), state); err != nil {
 				tail = append(tail, collect.Row{"kind": "collector_error", "source": s.name, "message": err.Error()})
@@ -424,9 +521,21 @@ func (xeCapturesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info 
 	return emit(tail)
 }
 
+// xcSessionCreated is when the running session started (its create_time), so a restart is seen even when the new
+// count has already passed the old one; nil when it cannot be read.
+func xcSessionCreated(ctx context.Context, conn *sql.Conn, info Info, name string) any {
+	_, dmv := xeScopeWords(info.Kind)
+	var at sql.NullString
+	if err := conn.QueryRowContext(ctx, fmt.Sprintf(`SELECT CONVERT(varchar(33), create_time, 126) FROM sys.dm_xe_%ssessions WHERE name = @p1`, dmv), name).Scan(&at); err != nil || !at.Valid {
+		return nil
+	}
+	return at.String
+}
+
 // xcCounterRows reads the counts session's event_counter: the count of each event since the session started (the
-// import turns two reads into a difference; a restart starts again from zero, and the import says so).
-func xcCounterRows(s *xeSession, state collect.Row) []collect.Row {
+// import turns two reads into a difference; a restart - a new create_time, or a count lower than the last - starts
+// again from zero, and the import says so).
+func xcCounterRows(s *xeSession, state collect.Row, created any) []collect.Row {
 	t, ok := s.targets["event_counter"]
 	if !ok || t.targetData == "" {
 		state["note"] = "the session has no event_counter target"
@@ -440,7 +549,7 @@ func xcCounterRows(s *xeSession, state collect.Row) []collect.Row {
 	var out []collect.Row
 	for _, p := range ct.Packages {
 		for _, e := range p.Events {
-			out = append(out, collect.Row{"kind": "xcount", "event_name": e.Name, "count": e.Count, "session_name": s.name})
+			out = append(out, collect.Row{"kind": "xcount", "event_name": e.Name, "count": e.Count, "session_name": s.name, "session_created": created})
 		}
 	}
 	state["target"] = "event_counter"

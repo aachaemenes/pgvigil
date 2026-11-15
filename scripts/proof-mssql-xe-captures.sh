@@ -79,6 +79,26 @@
 # is 2,000 to 6,000 (3 s less the head start, less up to 0.5 s of start skew), and C1 now also wants the stored wait
 # EQUAL to sa's read of the LCK_M_X duration in the file (the exact check the window never was). Rerun: v2017b 3,063,
 # v2019b 2,506, 2022 (parts MABC) 2,499 - the old floor would have failed 2022 too - each equal to sa's read; PROOF OK.
+# Changed after the review 20261114-195721-reviewer (2 blockers + 16; written before the fold's first run):
+#  - G1c is gone (it spilled nothing); G1a and G1b stay. G1 also wants a hash_warning sample's detail to name its type
+#    (hash_warning_type=Recursion: the event's own fields now sit outside the statement-text policy, review 5).
+#  - A runs `mssql-xe -print -captures all -install-id cap -text full` (-text is required with -captures now) and A4
+#    wants the CLI's header to say it carries pgvigil's defaults (review 6); A5: no app or procedure entry inside the
+#    header's block comment, each on its own '-- ' line (review 1).
+#  - C7 also runs `EXEC sp_pgvproof` FROM xcdb (master's sp_ procedure called from a user database): the modules file
+#    and the store hold no sp_pgvproof run (the session's filter names the module's own database: review 3). C7's
+#    duration is rounded to 3 places (review 18).
+#  - D2 also wants the new wait in the waits file (sa's count up by one): the filter is proven on a real event (review 15).
+#  - G9 (review 4), after G7 with SQLCMD taken off the app list again: proc_exclude ["xcdb.other.p_slow"] at the
+#    instance, p_slow run: stored (the schema is dbo); then ["xcdb.dbo.p_slo%"], p_slow run: in the file, not stored.
+#  - G10 (review 11): the counts session stopped and started, then more page splits than its total before: the next
+#    read says restarted, its delta the new total.
+#  - G11 (review 7): one imported warning row with an event key, imported twice: counted once.
+#  - S: xc_lost's config says query_text none. S2b: GET part=script on xc without text: text_policy full, the script
+#    has sql_text; on xc_lost without text and with text=full: text_policy none, no sql_text (review 2). S10: a POST of
+#    the app entry "evil */ PRINT 'X'; /*" is refused (409), logged, and the setting unchanged (review 1). S11: a
+#    PostgreSQL-shaped id - an instance of another engine - gets 400 (review 17; the proof registers one, pgx-free, by
+#    ensure_instance). The session cookie reaches node in its environment, not on its command line (review 14).
 #  G. auto create statistics off in xcdb, then: G1 a hash aggregate, a wide-build hash join and a one-key hash join (all
 #     MAX_GRANT_PERCENT = 0, row mode) - hash_warning stored as sa's read of the file has it, at least 1; G2 a predicate on a column with no statistics
 #     (dbo.g.pad) - missing_column_statistics the same, at least 1; G3 a filtered index (vc_f, WHERE id > 100) and a
@@ -165,7 +185,7 @@ export PGVIGIL_REPO_DSN="$ADMIN_DSN dbname=$REPO_DB"
 export XC_DSN="sqlserver://xc_mon:$LPW@127.0.0.1:$PORT?database=master&encrypt=true&TrustServerCertificate=true"
 CFG=$TMPD/pgvigil.yaml
 # xc_lost is never collected: part S gives it state rows of its own (the loss line)
-printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: xc\n    engine: sqlserver\n    dsn: env:XC_DSN\n  - name: xc_lost\n    engine: sqlserver\n    dsn: env:XC_DSN\n' > "$CFG"
+printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: xc\n    engine: sqlserver\n    dsn: env:XC_DSN\n  - name: xc_lost\n    engine: sqlserver\n    dsn: env:XC_DSN\n    query_text: none\n' > "$CFG"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance xc > "$TMPD/c.out" 2>&1 || bad "collect -once $1: $(tail -3 "$TMPD/c.out")"; }
 "$BIN" migrate -config "$CFG" > "$TMPD/m.out" 2>&1 || die "migrate: $(tail -3 "$TMPD/m.out")"
@@ -179,7 +199,7 @@ fi
 
 if has A; then
   echo "--- A. the script, run by sa"
-  "$BIN" mssql-xe -print -captures all -install-id cap > "$TMPD/cap.sql" || die "A: mssql-xe -print -captures all"
+  "$BIN" mssql-xe -print -captures all -install-id cap -text full > "$TMPD/cap.sql" || die "A: mssql-xe -print -captures all"
   sqs < "$TMPD/cap.sql" > "$TMPD/cap.out" 2>&1
   want "A1: the four sessions created and running" "$(sq "SELECT COUNT(*) FROM sys.dm_xe_sessions WHERE name IN (N'pgvigil_cap_waits', N'pgvigil_cap_warnings', N'pgvigil_cap_warncounts', N'pgvigil_cap_modules')")" "4"
   if [ "${PGVIGIL_VERSION_PASS:-0}" = 1 ]; then
@@ -190,6 +210,10 @@ if has A; then
   fi
   sqs < "$TMPD/cap.sql" > "$TMPD/cap2.out" 2>&1
   want "A3: a second run leaves them as they are" "$(grep -c 'exists, left as it is' "$TMPD/cap2.out")" "4"
+  want "A4: the CLI's script says it carries the defaults" "$(grep -c "pgvigil's defaults, not the settings in force" "$TMPD/cap.sql")" "1"
+  # A5: the header's block comment closes before the first entry, and each entry is a line comment of its own
+  want "A5: the entries outside the block comment, one a line" \
+    "$(awk '/^\*\/$/ && !c {c = NR} /^-- (app|procedure) left out: / && !f {f = NR} END {print (c && f > c) ? "after" : "inside"}' "$TMPD/cap.sql")|$(grep -c '^-- app left out: \|^-- procedure left out: ' "$TMPD/cap.sql")" "after|12"
   [ "$(grep -c 'created:' "$TMPD/cap.out")" = 4 ] || echo "  the script's output: $(grep -v '^$' "$TMPD/cap.out" | head -12 | tr '\n' ' ')"
 fi
 
@@ -221,6 +245,8 @@ EOF
   sq "DECLARE @c nvarchar(20) = N'12345'; SELECT COUNT(*) FROM dbo.vc WHERE code = @c;" xcdb >/dev/null
   sq "EXEC dbo.p_slow; EXEC dbo.p_fast;" xcdb >/dev/null
   sq "EXEC dbo.sp_pgvproof;" >/dev/null
+  # master's sp_ procedure called from a user database (as sp_WhoIsActive runs): module_end's database_name says xcdb
+  sq "EXEC sp_pgvproof;" xcdb >/dev/null
   collect mssql_xe_captures
   sq "DECLARE @i int = 0; WHILE @i < 20000 BEGIN INSERT dbo.g (id) VALUES (NEWID()); SET @i += 1; END;" xcdb >/dev/null
   for i in $(seq 1 20); do sq "SELECT $i + COUNT(*) FROM dbo.vc WHERE id = $i;" xcdb >/dev/null; done
@@ -251,6 +277,8 @@ if has C; then
   [ "$D" -ge 1000 ] && pass "C6: page_split between the two reads ($D)" || bad "C6: page_split between the two reads: $D"
   between "C7: the 6 s procedure" "$(q "select max(duration_ms) from pgvigil.mssql_xe_modules where instance_id = $I and object_name = 'p_slow'")" 5500 8000
   want "C7: not the 50 ms one, not sp_pgvproof" "$(q "select count(*) from pgvigil.mssql_xe_modules where instance_id = $I and object_name in ('p_fast', 'sp_pgvproof')")" "0"
+  want "C7: no sp_pgvproof run in the modules file either (called from master and from xcdb)" "$(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_cap_modules*.xel', NULL, NULL, NULL) f CROSS APPLY (SELECT CAST(f.event_data AS xml) x) e WHERE f.object_name = N'module_end' AND e.x.value('(event/data[@name=\"object_name\"]/value)[1]', 'nvarchar(256)') = N'sp_pgvproof'")" "0"
+  want "C7: the duration rounded to the microsecond | the module's own database" "$(q "select max(scale(duration_ms)) || '|' || string_agg(DISTINCT coalesce(module_database, '?'), ',') from pgvigil.mssql_xe_modules where instance_id = $I and object_name = 'p_slow'")" "3|xcdb"
   want "C8: every capture running" "$(q "select string_agg(capture || '=' || state, ' ' order by capture) from pgvigil.mssql_xe_capture_state where instance_id = $I")" \
     "modules=running waits=running warncounts=running warnings=running"
 fi
@@ -261,12 +289,14 @@ if has D; then
   cfg() { q "select pgvigil.import_mssql_xe_capture_config(now(), '$1'::jsonb)->>'outcome'"; }
   want "D1: wait_ms 5000 at the instance" "$(cfg '{"ui_user": "proof", "op": "add", "scope": "instance", "instance_name": "xc", "key": "wait_ms", "value": "5000"}')" "done"
   BEFORE=$(q "select count(*) from pgvigil.mssql_xe_waits where instance_id = $I")
+  lockfile() { sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_cap_waits*.xel', NULL, NULL, NULL) f CROSS APPLY (SELECT CAST(f.event_data AS xml) x) e WHERE f.object_name = N'wait_info' AND e.x.value('(event/data[@name=\"wait_type\"]/text)[1]', 'nvarchar(60)') = N'LCK_M_X'"; }
+  FBEFORE=$(lockfile)
   sqbg "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 2; WAITFOR DELAY '00:00:03'; ROLLBACK;"
   sleep 0.5
   sq "UPDATE dbo.t SET v = v + 1 WHERE id = (SELECT 2);" xcdb >/dev/null
   sleep 6
   collect mssql_xe_captures
-  want "D2: the new 3 s wait not stored (the read's filter)" "$(q "select count(*) from pgvigil.mssql_xe_waits where instance_id = $I")" "$BEFORE"
+  want "D2: the new 3 s wait in the file (sa's count up by one) | not stored (the read's filter)" "$(( $(lockfile) - FBEFORE ))|$(q "select count(*) from pgvigil.mssql_xe_waits where instance_id = $I")" "1|$BEFORE"
   want "D3: the refusals, each logged" "$(cfg '{"ui_user": "proof", "op": "add", "scope": "fleet", "key": "wait_ms", "value": "50"}') $(cfg '{"ui_user": "proof", "op": "add", "scope": "fleet", "key": "proc_exclude", "value": "[\"nodot\"]"}')|$(q "select count(*) from pgvigil.mssql_xe_capture_config_log where outcome = 'refused'")" "refused refused|2"
   want "D4: the settings in force" "$(q "select pgvigil.mssql_xe_capture_settings_json($I)->>'wait_ms'")" "5000"
 fi
@@ -278,10 +308,6 @@ if has G; then
   # G1 hash spills; G2 a column with no statistics; G3 a filtered index a parameterised query cannot use
   sq "/* G1a */ SELECT COUNT(*) FROM (SELECT v % 150000 AS g, COUNT(*) AS n FROM dbo.t GROUP BY v % 150000) x OPTION (HASH GROUP, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
   sq "/* G1b */ SELECT MAX(a.pad) FROM dbo.t a JOIN dbo.t b ON a.v = b.v OPTION (HASH JOIN, FORCE ORDER, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
-  sq "CREATE TABLE dbo.hw (id int NOT NULL, k int NOT NULL, pad char(2000) NOT NULL DEFAULT 'x'); INSERT dbo.hw (id, k) SELECT TOP (10000) id, 0 FROM dbo.t;" xcdb >/dev/null || bad "G1: dbo.hw"
-  T0=$SECONDS
-  sq "/* G1c */ SELECT COUNT(*) FROM dbo.hw a JOIN dbo.hw b ON a.k = b.k AND b.id < a.id - 1000000 OPTION (HASH JOIN, FORCE ORDER, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
-  echo "G1 info: G1c ran $((SECONDS - T0)) s"
   sq "SELECT COUNT(*) FROM dbo.g WHERE pad = 'y';" xcdb >/dev/null
   sq "CREATE INDEX vc_f ON dbo.vc (code) WHERE id > 100;" xcdb >/dev/null || bad "G3: the filtered index"
   sq "EXEC sp_executesql N'SELECT code FROM dbo.vc WHERE id > @p AND code = ''1''', N'@p int', @p = 200;" xcdb >/dev/null
@@ -309,6 +335,7 @@ SQL
     N=$(storedwarn $e); HN=$(handwarn $e)
     [ "$N" = "$HN" ] && [ "$HN" -ge 1 ] 2>/dev/null && pass "G1-G3: $e stored as sa's read has it ($N)" || bad "G1-G3: $e stored [$N], sa's read [$HN], want equal and at least 1"
   done
+  want "G1: a hash_warning sample's detail names its type (outside the text policy)" "$(q "select count(*) > 0 from pgvigil.mssql_xe_warning_samples where instance_id = $I and event_name = 'hash_warning' and detail like '%hash_warning_type=Recursion%'")" "t"
   CM=$(q "select coalesce(sum(delta), 0) from pgvigil.mssql_xe_warning_counts where instance_id = $I and event_name = 'sp_cache_miss'")
   [ "$CM" -ge 20 ] 2>/dev/null && pass "G4: sp_cache_miss between the reads ($CM)" || bad "G4: sp_cache_miss between the reads: $CM"
   handmod() { sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_cap_modules*.xel', NULL, NULL, NULL) f CROSS APPLY (SELECT CAST(f.event_data AS xml) x) e WHERE f.object_name = N'module_end' AND e.x.value('(event/data[@name=\"object_name\"]/value)[1]', 'nvarchar(256)') = N'p_slow'"; }
@@ -330,6 +357,31 @@ SQL
   sleep 6
   collect mssql_xe_captures
   want "G7: p_slow runs in the file | stored" "$(handmod)|$(storedmod)" "2|1"
+  xcset() { q "select pgvigil.import_mssql_xe_capture_config(now(), jsonb_build_object('ui_user', 'proof', 'op', 'add', 'scope', 'instance', 'instance_name', 'xc', 'key', '$1', 'value', '$2'))->>'outcome'"; }
+  xcend() { for id in $(q "select config_id from pgvigil.mssql_xe_capture_config where scope = 'instance' and key = '$1' and ended_at is null"); do
+              q "select pgvigil.import_mssql_xe_capture_config(now(), jsonb_build_object('ui_user', 'proof', 'op', 'end', 'config_id', '$id'))->>'outcome'" >/dev/null; done; }
+  xcend app_exclude
+  # G9 a three-part procedure entry's schema is matched at the read (the session's filter has its database and name)
+  want "G9: proc_exclude xcdb.other.p_slow at the instance" "$(xcset proc_exclude '["xcdb.other.p_slow"]')" "done"
+  S0=$(storedmod)
+  sq "EXEC dbo.p_slow;" xcdb >/dev/null
+  sleep 6
+  collect mssql_xe_captures
+  want "G9: another schema's entry leaves p_slow stored" "$(( $(storedmod) - S0 ))" "1"
+  want "G9: proc_exclude xcdb.dbo.p_slo% at the instance" "$(xcset proc_exclude '["xcdb.dbo.p_slo%"]')" "done"
+  F0=$(handmod); S0=$(storedmod)
+  sq "EXEC dbo.p_slow;" xcdb >/dev/null
+  sleep 6
+  collect mssql_xe_captures
+  want "G9: its own schema's entry: in the file | not stored" "$(( $(handmod) - F0 ))|$(( $(storedmod) - S0 ))" "1|0"
+  xcend proc_exclude
+  # G10 the counts session restarted, then more page splits than its total before: the read says restarted
+  T0=$(q "select total from pgvigil.mssql_xe_warning_counts where instance_id = $I and event_name = 'page_split' order by snapshot_at desc limit 1")
+  sq "ALTER EVENT SESSION [pgvigil_cap_warncounts] ON SERVER STATE = STOP; ALTER EVENT SESSION [pgvigil_cap_warncounts] ON SERVER STATE = START;" >/dev/null || bad "G10: the restart"
+  sq "DECLARE @i int = 0; WHILE @i < 60000 BEGIN INSERT dbo.g (id) VALUES (NEWID()); SET @i += 1; END;" xcdb >/dev/null
+  collect mssql_xe_captures
+  want "G10: page_split after the restart: past the old total | restarted | delta = the new total" \
+    "$(q "select (total > ${T0:-0}) || '|' || restarted || '|' || (delta = total) from pgvigil.mssql_xe_warning_counts where instance_id = $I and event_name = 'page_split' order by snapshot_at desc limit 1")" "true|true|true"
   # G8 imported rows: events a container does not raise on demand
   T=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
   PAY="["
@@ -340,6 +392,10 @@ SQL
   q "select pgvigil.import_mssql_xe_captures($I, now(), \$p\$$PAY\$p\$::jsonb)" >/dev/null || bad "G8: the import"
   want "G8: the imported warnings, one each" "$(q "select string_agg(event_name || '=' || events, ' ' order by event_name) from pgvigil.mssql_xe_warning_hours where instance_id = $I and database_name = 'imported'")" \
     "additional_memory_grant=1 exchange_spill=1 execution_warning=1 long_io_detected=1 optimizer_timeout=1"
+  # G11 one keyed warning row imported twice: counted once
+  DUP="[{\"kind\": \"xwarn\", \"event_at\": \"$T\", \"event_key\": \"imported-dup\", \"event_name\": \"missing_join_predicate\", \"session_name\": \"imported\", \"database_name\": \"imported\", \"program_name\": \"imported\"}]"
+  q "select pgvigil.import_mssql_xe_captures($I, now(), \$p\$$DUP\$p\$::jsonb)" >/dev/null && q "select pgvigil.import_mssql_xe_captures($I, now(), \$p\$$DUP\$p\$::jsonb)" >/dev/null || bad "G11: the imports"
+  want "G11: a keyed warning imported twice counts once" "$(q "select coalesce(sum(events), 0) from pgvigil.mssql_xe_warning_hours where instance_id = $I and database_name = 'imported' and event_name = 'missing_join_predicate'")" "1"
   want "G8: the imported external wait" "$(q "select event_name || '/' || category || '/' || duration_ms from pgvigil.mssql_xe_waits where instance_id = $I and event_key = 'imported-1'")" "wait_info_external/Preemptive/7000"
 fi
 
@@ -398,11 +454,21 @@ $1" "$TMPD/body"; }
   G="$U/api/mssql/xecaptures?instance=$XC"
   want "S1: signed in, GET 200 and writable" "$(code -b "$JAR" "$G&part=state")|$(body 'print(d.get("writable"))')" "200|True"
   want "S2: the script with the settings in force, text none" "$(code -b "$JAR" "$G&part=script&install_id=cap&text=none")|$(body 'sc = d.get("script") or ""; print("pgvigil_cap_waits" in sc, "[opcode]=(1) AND [duration]>=(5000)" in sc, "sqlserver.sql_text" in sc)')" "200|True True False"
+  want "S2b: the script's text follows the instance's policy (xc | xc_lost | xc_lost asked for full)" \
+    "$(code -b "$JAR" "$G&part=script&install_id=cap")|$(body 'print(d.get("text_policy"), "sqlserver.sql_text" in (d.get("script") or ""))')|$(code -b "$JAR" "$U/api/mssql/xecaptures?instance=$LOST&part=script&install_id=cap")|$(body 'print(d.get("text_policy"), "sqlserver.sql_text" in (d.get("script") or ""))')|$(code -b "$JAR" "$U/api/mssql/xecaptures?instance=$LOST&part=script&install_id=cap&text=full")|$(body 'print("sqlserver.sql_text" in (d.get("script") or ""))')" \
+    "200|full True|200|none False|200|False"
   want "S3: the waits by type have LCK_M_X" "$(code -b "$JAR" "$G&part=waits_by_type")|$(body "$tbl
 print(any(r.get('wait_type') == 'LCK_M_X' for r in rows(d.get('waits_by_type'))))")" "200|True"
   want "S4: module_ms 7000 at the instance through the door" "$(post "$U" "{\"op\":\"add\",\"scope\":\"instance\",\"instance_id\":$XC,\"key\":\"module_ms\",\"value\":\"7000\"}")|$(body 'print(d.get("outcome"))')|$(q "select pgvigil.mssql_xe_capture_settings_json($XC)->>'module_ms'")" "200|done|7000"
   CID=$(body 'print(d.get("config_id"))')
   want "S4: its end" "$(post "$U" "{\"op\":\"end\",\"config_id\":$CID}")|$(q "select pgvigil.mssql_xe_capture_settings_json($XC)->>'module_ms'")" "200|5000"
+  # S10 an entry that would close the script's header comment: refused, logged, nothing changed
+  APPS0=$(q "select pgvigil.mssql_xe_capture_settings_json($XC)->>'app_exclude'"); LOG0=$(q "select count(*) from pgvigil.mssql_xe_capture_config_log where outcome = 'refused'")
+  EVIL=$(python3 -c 'import json,sys; print(json.dumps({"op": "add", "scope": "instance", "instance_id": int(sys.argv[1]), "key": "app_exclude", "value": json.dumps(["evil */ PRINT 1; /*"])}))' "$XC")
+  want "S10: a comment mark refused | logged | the list unchanged" "$(post "$U" "$EVIL")|$(( $(q "select count(*) from pgvigil.mssql_xe_capture_config_log where outcome = 'refused'") - LOG0 ))|$([ "$(q "select pgvigil.mssql_xe_capture_settings_json($XC)->>'app_exclude'")" = "$APPS0" ] && echo same)" "409|1|same"
+  # S11 an instance of another engine gets no script
+  PGI=$(q "select pgvigil.ensure_instance('xc-pg', 'postgres', '17.0', 170000, false, '{}', 'postgres')")
+  want "S11: a PostgreSQL instance's id" "$(code -b "$JAR" "$U/api/mssql/xecaptures?instance=$PGI&part=script")" "400"
   want "S5: no session 401, no header 403" "$(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{}' "$U/api/mssql/xecaptures/config") $(code -b "$JAR" -H 'Content-Type: application/json' -d '{}' "$U/api/mssql/xecaptures/config")" "401 403"
   want "S6: -no-login: read-only with its reason, a write 403" "$(code "$U2/api/mssql/xecaptures?instance=$XC&part=state")|$(body 'print(d.get("writable"), "no-login" in (d.get("reason") or ""))')|$(post "$U2" "{\"op\":\"add\",\"scope\":\"fleet\",\"key\":\"module_ms\",\"value\":\"7000\"}")" "200|False True|403"
   want "S7: the loss on xc_lost" "$(code -b "$JAR" "$U/api/mssql/xecaptures?instance=$LOST&part=lost")|$(body "$tbl
@@ -414,7 +480,8 @@ print(' '.join('%s=%s' % (r['capture'], r['lost_events']) for r in rows(d.get('l
   chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu about:blank > "$TMPD/chrome.log" 2>&1 & CHR=$!
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   cat > "$TMPD/xc-page.mjs" <<'JS'
-const [port, base, axePath, xc, lost, cookie] = process.argv.slice(2);
+const [port, base, axePath, xc, lost] = process.argv.slice(2);
+const cookie = process.env.PGV_COOKIE || ''; // the session cookie comes through the environment, never argv
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -470,7 +537,7 @@ for (const theme of ['light', 'dark']) {
 console.log(JSON.stringify(out));
 ws.close();
 JS
-  page() { node "$TMPD/xc-page.mjs" "$CDP" "$1/" "$TMPD/node_modules/axe-core/axe.min.js" "$XC" "$LOST" "${2:-}" 2> "$TMPD/node.err" || echo "[]"; }
+  page() { PGV_COOKIE="${2:-}" node "$TMPD/xc-page.mjs" "$CDP" "$1/" "$TMPD/node_modules/axe-core/axe.min.js" "$XC" "$LOST" 2> "$TMPD/node.err" || echo "[]"; }
   # one word per tab and theme: ok, or what is wrong
   grade() { python3 -c 'import json,sys
 r = json.loads(sys.argv[1]); mode = sys.argv[2]; out = []

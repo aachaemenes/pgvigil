@@ -79,9 +79,12 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_modules (
   login_name       text,
   host_name        text,
   program_name     text,
-  database_name    text,
+  database_name    text,              -- the caller's database (the database_name action)
+  module_database  text,              -- the module's own database (DB_NAME(source_database_id), resolved by the reader)
+  schema_name      text,              -- the module's schema (OBJECT_SCHEMA_NAME, NULL when the login may not see it)
   PRIMARY KEY (instance_id, event_at, event_key)
 ) PARTITION BY RANGE (event_at);
+ALTER TABLE pgvigil.mssql_xe_modules ADD COLUMN IF NOT EXISTS module_database text, ADD COLUMN IF NOT EXISTS schema_name text;
 CREATE INDEX IF NOT EXISTS mssql_xe_modules_obj_idx ON pgvigil.mssql_xe_modules (instance_id, database_name, object_name, event_at);
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_warning_hours (
@@ -118,10 +121,22 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_warning_counts (
   event_name    text NOT NULL,
   session_name  text,
   total         bigint NOT NULL,
-  delta         bigint,             -- NULL on the first read; a restart (a smaller total): the total itself
+  delta         bigint,             -- NULL on the first read; a restart (a new start, or a smaller total): the total itself
   restarted     boolean NOT NULL DEFAULT false,
+  session_created text,             -- dm_xe_sessions.create_time at the read (a restart that passed the old total is seen)
   PRIMARY KEY (instance_id, snapshot_at, event_name)
 );
+ALTER TABLE pgvigil.mssql_xe_warning_counts ADD COLUMN IF NOT EXISTS session_created text;
+
+-- L7 of the 411 review: the events the warning hours have counted, by key, so a batch imported again (or an event the
+-- file read takes again at its floor's timestamp) is never counted twice; deleted with the hours (hour_at)
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_warning_keys (
+  instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  hour_at      timestamptz NOT NULL,
+  event_key    text NOT NULL,
+  PRIMARY KEY (instance_id, event_key, hour_at)
+);
+CREATE INDEX IF NOT EXISTS mssql_xe_warning_keys_at_idx ON pgvigil.mssql_xe_warning_keys (hour_at);
 CREATE INDEX IF NOT EXISTS mssql_xe_warning_counts_at_idx ON pgvigil.mssql_xe_warning_counts (snapshot_at);
 
 -- ---- the settings (0152's shape) ----------------------------------------------------------------------------------
@@ -137,7 +152,7 @@ INSERT INTO pgvigil.mssql_xe_capture_keys (key, label, value_kind, default_val) 
   ('module_ms',    'a module run shorter than this is not captured (ms)', 'ms', '5000'),
   ('app_exclude',  'program names left out (an exact name, or a LIKE pattern with % or _)', 'list',
    '["pgvigil", "Microsoft SQL Server Management Studio", "Microsoft SQL Server Management Studio - Transact-SQL IntelliSense", "SQLAgent - Job Manager", "SQLAgent - Job invocation engine", "SQLAgent - Schedule Saver", "SQLServerCEIP", "DacFx Deploy", "DatabaseMail%", "SQLAgent - TSQL JobStep%"]'),
-  ('proc_exclude', 'procedures left out (database.object_name LIKE pattern)', 'list', '["master.sp[_]%", "msdb.sp[_]%"]')
+  ('proc_exclude', 'procedures left out (database.name or database.schema.name, the name a LIKE pattern)', 'list', '["master.sp[_]%", "msdb.sp[_]%"]')
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, value_kind = EXCLUDED.value_kind, default_val = EXCLUDED.default_val;
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_capture_config (
@@ -228,12 +243,22 @@ BEGIN
       END;
       IF v_list IS NULL OR jsonb_typeof(v_list) <> 'array' OR jsonb_array_length(v_list) > 100
          OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_list) e WHERE jsonb_typeof(e) <> 'string' OR length(e #>> '{}') NOT BETWEEN 1 AND 200
-                    OR (e #>> '{}') ~ '[\x01-\x1f]' OR (v_key = 'proc_exclude' AND position('.' IN e #>> '{}') = 0)) THEN
-        v_why := CASE v_key WHEN 'proc_exclude' THEN 'a list of up to 100 database.name_pattern entries' ELSE 'a list of up to 100 names of 1 to 200 printable characters' END;
+                    OR (e #>> '{}') ~ '[\x01-\x1f]' OR position('/*' IN e #>> '{}') > 0 OR position('*/' IN e #>> '{}') > 0
+                    OR (v_key = 'proc_exclude' AND ((e #>> '{}') !~ '^[^.]+\.[^.]+(\.[^.]+)?$'))) THEN
+        v_why := CASE v_key WHEN 'proc_exclude' THEN 'a list of up to 100 database.name_pattern or database.schema.name_pattern entries, with no /* or */'
+                 ELSE 'a list of up to 100 names of 1 to 200 printable characters, with no /* or */' END;
       ELSE
         v_value := (SELECT coalesce(jsonb_agg(e ORDER BY n), '[]'::jsonb)::text FROM jsonb_array_elements(v_list) WITH ORDINALITY AS t(e, n));
       END IF;
     END IF;
+  END IF;
+  -- the table's own limits, refused here with a log row (a CHECK would roll the attempt back, its log row too)
+  IF v_why IS NULL AND v_op = 'add' AND length(v_value) > 8000 THEN
+    v_why := 'a value is 8,000 characters at most (a list: fewer or shorter entries)';
+  ELSIF v_why IS NULL AND v_op = 'add' AND v_scope = 'tag' AND length(v_tag) > 200 THEN
+    v_why := 'a tag is 200 characters at most';
+  ELSIF v_why IS NULL AND v_op = 'add' AND v_note IS NOT NULL AND length(v_note) > 500 THEN
+    v_why := 'a note is 500 characters at most';
   END IF;
   IF v_why IS NOT NULL THEN
     INSERT INTO pgvigil.mssql_xe_capture_config_log (at, ui_user, client, op, config_id, outcome, detail, payload)
@@ -301,7 +326,7 @@ $$;
 CREATE OR REPLACE FUNCTION pgvigil.mssql_xe_app_excluded(p_list jsonb, p_app text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT p_app IS NOT NULL AND EXISTS (
     SELECT 1 FROM jsonb_array_elements_text(coalesce(p_list, '[]'::jsonb)) a(e)
-     WHERE CASE WHEN a.e ~ '[%_\[]' THEN p_app ILIKE pgvigil.mssql_like_pattern(a.e) ELSE p_app = a.e END)
+     WHERE CASE WHEN a.e ~ '[%_\[]' THEN p_app ILIKE pgvigil.mssql_like_pattern(a.e) ELSE lower(p_app) = lower(a.e) END)  -- as XE's <> and LIKE: case-insensitive
 $$;
 
 -- ---- the import ----------------------------------------------------------------------------------------------------
@@ -343,27 +368,42 @@ BEGIN
      AND NOT pgvigil.mssql_xe_app_excluded(v_s->'app_exclude', r->>'program_name')
   ON CONFLICT DO NOTHING;
 
+  -- a procedure exclusion is the module's OWN database (module_database; the caller's database only when the reader
+  -- could not name it), its schema when the entry has three parts (a module whose schema the login could not see is
+  -- kept: it is not known to be the entry's), and the name as a LIKE pattern
   INSERT INTO pgvigil.mssql_xe_modules (instance_id, event_at, event_key, snapshot_at, session_name, object_name, object_type,
-      duration_ms, row_count, session_id, login_name, host_name, program_name, database_name)
+      duration_ms, row_count, session_id, login_name, host_name, program_name, database_name, module_database, schema_name)
   SELECT p_instance_id, (r->>'event_at')::timestamptz, r->>'event_key', p_snapshot_at, r->>'session_name', r->>'object_name',
-         r->>'object_type', (r->>'duration_us')::numeric / 1000, (r->>'row_count')::bigint, (r->>'session_id')::int, r->>'login_name',
-         r->>'host_name', r->>'program_name', r->>'database_name'
+         r->>'object_type', round((r->>'duration_us')::numeric / 1000, 3), (r->>'row_count')::bigint, (r->>'session_id')::int, r->>'login_name',
+         r->>'host_name', r->>'program_name', r->>'database_name', r->>'module_database', r->>'schema_name'
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'xmodule' AND r->>'event_at' IS NOT NULL AND r->>'event_key' IS NOT NULL
      AND coalesce((r->>'duration_us')::numeric, 0) >= coalesce((v_s->>'module_ms')::numeric, 0) * 1000
      AND NOT pgvigil.mssql_xe_app_excluded(v_s->'app_exclude', r->>'program_name')
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(coalesce(v_s->'proc_exclude', '[]'::jsonb)) p(e)
-                      WHERE lower(split_part(p.e, '.', 1)) = lower(coalesce(r->>'database_name', ''))
-                        AND coalesce(r->>'object_name', '') ILIKE pgvigil.mssql_like_pattern(substr(p.e, position('.' IN p.e) + 1)))
+                      CROSS JOIN LATERAL (SELECT string_to_array(p.e, '.') AS a) x
+                      WHERE lower(x.a[1]) = lower(coalesce(r->>'module_database', r->>'database_name', ''))
+                        AND (array_length(x.a, 1) = 2 OR lower(x.a[2]) = lower(r->>'schema_name'))
+                        AND coalesce(r->>'object_name', '') ILIKE pgvigil.mssql_like_pattern(x.a[array_length(x.a, 1)]))
   ON CONFLICT DO NOTHING;
 
   -- the warnings: counted per hour and key, the newest event of each key kept as its sample
-  WITH w AS (
+  -- (an event's key is kept per hour: a batch imported twice, or an event read again at the file's floor, counts once;
+  -- a row without a key - an imported one - always counts)
+  WITH w0 AS (
     SELECT date_trunc('hour', (r->>'event_at')::timestamptz) AS hour_at, r->>'event_name' AS event_name,
            coalesce(r->>'database_name', '') AS database_name, coalesce(r->>'query_plan_hash_hex', '') AS query_plan_hash, r
       FROM jsonb_array_elements(p_payload) r
      WHERE r->>'kind' = 'xwarn' AND r->>'event_at' IS NOT NULL AND r->>'event_name' IS NOT NULL
        AND NOT pgvigil.mssql_xe_app_excluded(v_s->'app_exclude', r->>'program_name')
+  ), fresh AS (
+    INSERT INTO pgvigil.mssql_xe_warning_keys (instance_id, hour_at, event_key)
+    SELECT DISTINCT p_instance_id, hour_at, r->>'event_key' FROM w0 WHERE r->>'event_key' IS NOT NULL
+    ON CONFLICT DO NOTHING
+    RETURNING hour_at, event_key
+  ), w AS (
+    SELECT w0.* FROM w0
+     WHERE w0.r->>'event_key' IS NULL OR EXISTS (SELECT 1 FROM fresh f WHERE f.hour_at = w0.hour_at AND f.event_key = w0.r->>'event_key')
   ), counted AS (
     INSERT INTO pgvigil.mssql_xe_warning_hours AS h (instance_id, hour_at, event_name, database_name, query_plan_hash, events)
     SELECT p_instance_id, hour_at, event_name, database_name, query_plan_hash, count(*) FROM w GROUP BY 2, 3, 4, 5
@@ -373,7 +413,8 @@ BEGIN
   INSERT INTO pgvigil.mssql_xe_warning_samples AS s (instance_id, hour_at, event_name, database_name, query_plan_hash, event_at,
       detail, statement, login_name, host_name, program_name, session_id)
   SELECT DISTINCT ON (hour_at, event_name, database_name, query_plan_hash)
-         p_instance_id, hour_at, event_name, database_name, query_plan_hash, (r->>'event_at')::timestamptz, r->>'detail', r->>'statement',
+         p_instance_id, hour_at, event_name, database_name, query_plan_hash, (r->>'event_at')::timestamptz,
+         nullif(concat_ws('; ', r->>'warning_detail', r->>'detail'), ''), r->>'statement',
          r->>'login_name', r->>'host_name', r->>'program_name', (r->>'session_id')::int
     FROM w ORDER BY hour_at, event_name, database_name, query_plan_hash, (r->>'event_at')::timestamptz DESC
   ON CONFLICT (instance_id, hour_at, event_name, database_name, query_plan_hash) DO UPDATE SET
@@ -382,16 +423,21 @@ BEGIN
    WHERE s.event_at < EXCLUDED.event_at;
 
   -- the counts session: the total since the session started and the difference from this instance's read before
-  INSERT INTO pgvigil.mssql_xe_warning_counts (instance_id, snapshot_at, event_name, session_name, total, delta, restarted)
+  -- a restart: the session's start (create_time) changed, or, where it was not read, a total lower than the last
+  INSERT INTO pgvigil.mssql_xe_warning_counts (instance_id, snapshot_at, event_name, session_name, total, delta, restarted, session_created)
   SELECT p_instance_id, p_snapshot_at, r->>'event_name', r->>'session_name', (r->>'count')::bigint,
          CASE WHEN prev.total IS NULL OR prev.session_name IS DISTINCT FROM r->>'session_name' THEN NULL
-              WHEN (r->>'count')::bigint < prev.total THEN (r->>'count')::bigint
+              WHEN x.restarted THEN (r->>'count')::bigint
               ELSE (r->>'count')::bigint - prev.total END,
-         prev.total IS NOT NULL AND prev.session_name IS NOT DISTINCT FROM r->>'session_name' AND (r->>'count')::bigint < prev.total
+         prev.total IS NOT NULL AND prev.session_name IS NOT DISTINCT FROM r->>'session_name' AND x.restarted,
+         r->>'session_created'
     FROM jsonb_array_elements(p_payload) r
-    LEFT JOIN LATERAL (SELECT c.total, c.session_name FROM pgvigil.mssql_xe_warning_counts c
+    LEFT JOIN LATERAL (SELECT c.total, c.session_name, c.session_created FROM pgvigil.mssql_xe_warning_counts c
                         WHERE c.instance_id = p_instance_id AND c.event_name = r->>'event_name' AND c.snapshot_at < p_snapshot_at
                         ORDER BY c.snapshot_at DESC LIMIT 1) prev ON true
+    CROSS JOIN LATERAL (SELECT CASE WHEN prev.session_created IS NOT NULL AND r->>'session_created' IS NOT NULL
+                                    THEN prev.session_created IS DISTINCT FROM r->>'session_created'
+                                    ELSE (r->>'count')::bigint < prev.total END AS restarted) x
    WHERE r->>'kind' = 'xcount' AND r->>'event_name' IS NOT NULL AND r->>'count' IS NOT NULL
   ON CONFLICT DO NOTHING;
 

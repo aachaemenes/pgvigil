@@ -24,7 +24,8 @@ import (
 // and 0065's slow events and state; the settings are written through import_mssql_xe_capture_config (0152's doors).
 //
 // GET /api/mssql/xecaptures?instance=<id>[&from=&to=][&part=][&by=login|program|host|database][&bucket=hour|day]
-// [&plan_hash=0x...][&install_id=main][&form=server|rds|cloudsql|azuresqlmi|azuresqldb][&text=full|none]:
+// [&plan_hash=0x...][&install_id=main][&form=server|rds|cloudsql|azuresqlmi|azuresqldb][&text=full|normalized|none]
+// (a SQL Server instance only; text defaults to the instance's query_text, and under none stays none):
 //
 //	state            each capture's session: not installed, stopped, running; what the last read found; its loss
 //	waits_by_type    the window's waits per type and category: count, total, average and longest (ms)
@@ -37,10 +38,12 @@ import (
 //	warning_counts   page_split and sp_cache_miss in the window (the event_counter's differences), a restart said
 //	modules          the newest 500 module runs of the window
 //	trend            the slow capture's workload per hour or day by login, program, host or database (SQLMonitor)
-//	lost             the deadlock and blocked-process captures' last loss when it falls in the window
+//	lost             the deadlock and blocked-process captures' LAST loss when it falls in the window (mssql_xe_state
+//	                 keeps the last one only: an earlier loss in a window is not kept, and the page says so)
 //	settings         the value in force per key and where it was set; config the live rows and the last attempts
 //	script, drop     the script that makes the four sessions with these settings, and the one that drops them
 //	writable, reason whether the settings can be edited on this server, and why not
+//	text_policy      the instance's statement-text policy (the script's default)
 //
 // POST /api/mssql/xecaptures/config: one edit {op add | end, scope, tag, instance_id, key, value, note, config_id}.
 
@@ -128,6 +131,16 @@ func (s *Server) MSSQLXECaptures(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// a SQL Server instance only: another engine's id gets no script built on the defaults
+	var name, engine string
+	if err := s.pool.QueryRow(r.Context(), `SELECT name, engine FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name, &engine); err != nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
+		return
+	}
+	if engine != "sqlserver" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("instance %d is not a SQL Server instance", id))
+		return
+	}
 	q := r.URL.Query()
 	by := q.Get("by")
 	if by == "" {
@@ -173,6 +186,9 @@ func (s *Server) MSSQLXECaptures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{}
+	// the instance's statement-text policy: the script's default, and the page's select starts there
+	policy := s.doorsNow().queryText(name)
+	out["text_policy"] = policy
 	why := s.xeCaptureConfigOff()
 	out["writable"] = why == ""
 	if why != "" {
@@ -180,7 +196,7 @@ func (s *Server) MSSQLXECaptures(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range ps {
 		if p.name == "script" {
-			sc, drop, err := s.xeCapturesScript(r.Context(), id, q.Get("install_id"), q.Get("form"), q.Get("text"))
+			sc, drop, err := s.xeCapturesScript(r.Context(), id, q.Get("install_id"), q.Get("form"), q.Get("text"), policy)
 			if err != nil {
 				writeErr(w, http.StatusBadRequest, err)
 				return
@@ -198,9 +214,10 @@ func (s *Server) MSSQLXECaptures(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, out, nil)
 }
 
-// xeCapturesScript writes the instance's script with the settings in force (the install id main, the server form and
-// the full text policy unless the request names others).
-func (s *Server) xeCapturesScript(ctx context.Context, id int, installID, form, text string) (string, string, error) {
+// xeCapturesScript writes the instance's script with the settings in force (the install id main and the server form
+// unless the request names others) and the instance's statement-text policy: a request may narrow it to none, never
+// widen it (under query_text none the script never captures the text: pass F14).
+func (s *Server) xeCapturesScript(ctx context.Context, id int, installID, form, text, policy string) (string, string, error) {
 	if installID == "" {
 		installID = "main"
 	}
@@ -208,10 +225,13 @@ func (s *Server) xeCapturesScript(ctx context.Context, id int, installID, form, 
 		form = mssql.XEFormServer
 	}
 	if text == "" {
-		text = "full"
+		text = policy
 	}
 	if text != "full" && text != "none" && text != "normalized" {
 		return "", "", errors.New("text must be full, normalized or none")
+	}
+	if policy == "none" {
+		text = "none"
 	}
 	var raw []byte
 	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.mssql_xe_capture_settings_json($1)::text`, id).Scan(&raw); err != nil {

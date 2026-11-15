@@ -397,7 +397,12 @@ export async function mssqlAgEvents(ctx: Ctx): Promise<HTMLElement> {
 
 type XCParts = 'state' | 'waits_by_type' | 'waits_series' | 'waits_top' | 'waits' | 'plan_text' | 'warnings_by_event' | 'warnings_top'
   | 'warning_counts' | 'modules' | 'trend' | 'lost' | 'settings' | 'config';
-type XC = Record<XCParts, Table | null> & { script?: string; drop?: string; writable?: boolean; reason?: string };
+type XC = Record<XCParts, Table | null> & { script?: string; drop?: string; writable?: boolean; reason?: string; text_policy?: string };
+
+// a list setting's entries, verbatim (a pattern's [_] and an entry's comma kept as they are)
+function listEntries(v: unknown): string[] {
+  try { const a = JSON.parse(text(v)); return Array.isArray(a) ? a.map(x => String(x)) : []; } catch { return []; }
+}
 
 async function loadXC(ctx: Ctx, extra: Record<string, string | undefined> = {}): Promise<XC> {
   return get<XC>('mssql/xecaptures', { instance: ctx.instance, ...window_(ctx), ...extra });
@@ -528,11 +533,21 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
   const body = el('div', { 'aria-live': 'polite' });
   sec.append(body);
   const form = el('select', { 'aria-label': 'The server\'s platform' }, ...['server', 'rds', 'cloudsql', 'azuresqlmi', 'azuresqldb'].map(f => el('option', { value: f }, f)));
-  const textSel = el('select', { 'aria-label': 'The instance keeps statement text' }, el('option', { value: 'full' }, 'yes'), el('option', { value: 'none' }, 'no (query_text none)'));
+  const fullOpt = el('option', { value: 'full' }, 'yes');
+  const textSel = el('select', { 'aria-label': 'The script captures statement text' }, fullOpt, el('option', { value: 'none' }, 'no (query_text none)'));
   const id = el('input', { type: 'text', value: 'main', size: '12', 'aria-label': 'The install id in the session names' });
+  let chosen: string | undefined; // the text choice the user made; until then the instance's own policy
+  const textNote = el('p', { id: 'xc-text-note', class: 'meta' });
   const render = async () => {
     try {
-      const d = await loadXC(ctx, { install_id: id.value.trim() || 'main', form: form.value, text: textSel.value });
+      const d = await loadXC(ctx, { install_id: id.value.trim() || 'main', form: form.value, text: chosen });
+      const policy = text(d.text_policy) || 'full';
+      fullOpt.disabled = policy === 'none';
+      if (chosen === undefined || policy === 'none') textSel.value = policy === 'none' ? 'none' : 'full';
+      textNote.textContent = policy === 'none'
+        ? 'This instance keeps no statement text (query_text none): the script never captures it.'
+        : `This instance's statement-text policy is ${policy}: the script starts there.`;
+      textSel.setAttribute('aria-describedby', 'xc-text-note');
       const why = d.writable ? '' : text(d.reason) || 'the settings cannot be edited on this server';
       const offNote = el('p', { id: 'xc-off-note', class: 'meta off-reason' }, `Editing is off here: ${why}.`);
       const editNote = el('div', { 'aria-live': 'polite' });
@@ -541,16 +556,21 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
       };
       const settingCols: Col[] = [
         { key: 'label', label: 'setting' },
-        { key: 'value', fmt: (v, r) => r.value_kind === 'list' ? text(v).replace(/[[\]"]/g, '').replace(/,/g, ', ') : `${text(v)} ms` },
+        { key: 'value', fmt: (v, r) => r.value_kind === 'list'
+          ? el('div', { class: 'xc-list' }, ...listEntries(v).map(x => el('div', {}, x)))
+          : `${text(v)} ms` },
         { key: 'set_at', label: 'set at', fmt: (v, r) => v === 'default' ? 'the default' : v === 'tag' ? `the tag ${text(r.set_tag)}` : v === 'fleet' ? 'the fleet' : 'this instance' },
         { key: 'key', label: 'change for this instance', fmt: (_, r) => {
-          const input = el('input', { type: 'text', size: '30', 'aria-label': `New value of ${text(r.label)}`, placeholder: r.value_kind === 'list' ? 'one, two%, ...' : 'ms' });
+          // a list is edited one entry a line, verbatim (a comma may be part of an app name, [_] stays [_])
+          const input = r.value_kind === 'list'
+            ? el('textarea', { rows: '4', cols: '40', 'aria-label': `New value of ${text(r.label)}, one entry a line` }, listEntries(r.value).join('\n'))
+            : el('input', { type: 'text', size: '30', 'aria-label': `New value of ${text(r.label)}`, placeholder: 'ms' });
           const save = el('button', { type: 'button', class: 'link' }, 'Save');
           const box = el('span', {}, input, ' ', save);
           if (why) { offControl(save, why, offNote); input.disabled = true; input.setAttribute('aria-describedby', 'xc-off-note'); return box; }
           save.addEventListener('click', () => {
             const raw = input.value.trim();
-            const value = r.value_kind === 'list' ? JSON.stringify(raw ? raw.split(',').map(x => x.trim()).filter(Boolean) : []) : raw;
+            const value = r.value_kind === 'list' ? JSON.stringify(raw ? raw.split('\n').map(x => x.trim()).filter(Boolean) : []) : raw;
             void send({ op: 'add', scope: 'instance', instance_id: Number(ctx.instance), key: text(r.key), value });
           });
           if (r.config_id != null && r.set_at !== 'default') {
@@ -575,14 +595,16 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
           + 'the session\'s own filter stays as it was made until the script runs again.'),
         ...(why ? [offNote] : []), editNote, grid(rowsOf(d.settings), settingCols),
         el('h3', {}, 'The script'),
-        el('p', { class: 'meta' }, el('label', {}, 'Platform ', form), ' ', el('label', {}, 'Keeps statement text ', textSel), ' ', el('label', {}, 'Install id ', id)),
+        el('p', { class: 'meta' }, el('label', {}, 'Platform ', form), ' ', el('label', {}, 'Captures statement text ', textSel), ' ', el('label', {}, 'Install id ', id)),
+        textNote,
         script,
         el('details', {}, el('summary', {}, 'The script that drops them'), el('pre', {}, text(d.drop))));
     } catch (e) {
       body.replaceChildren(errorBox(e));
     }
   };
-  for (const c of [form, textSel, id]) c.addEventListener('change', () => { void render(); });
+  textSel.addEventListener('change', () => { chosen = textSel.value; void render(); });
+  for (const c of [form, id]) c.addEventListener('change', () => { void render(); });
   await render();
   return sec;
 }
@@ -593,7 +615,8 @@ export async function xeLossNote(ctx: Ctx, capture: 'deadlocks' | 'blocked'): Pr
   const d = await loadXC(ctx, { part: 'lost' });
   const r = rowsOf(d.lost).find(x => x.capture === capture);
   return r ? el('p', { class: 'meta warn' }, badge('events lost', 'warn'),
-    ` ${fmtNum(r.lost_events)} event(s) of ${text(r.session_name)} were lost at the read of ${fmtTime(r.lost_at)}: this window's list may miss them.`) : null;
+    ` The last loss: ${fmtNum(r.lost_events)} event(s) of ${text(r.session_name)} were lost at the read of ${fmtTime(r.lost_at)}, so this window's list may miss them `
+    + '(only the last loss is kept: an earlier one in this window is not shown).') : null;
 }
 
 // the slow capture's trend (SQLMonitor's XEvent Trend): per hour or day, by login, program, host or database
