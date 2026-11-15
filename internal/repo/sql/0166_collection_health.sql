@@ -312,10 +312,13 @@ HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 -- as collector_connects: a cut slows the runs it does not fail); and no NEW fold for a host whose 'collector or network'
 -- stood inside the window - its alert open there on a configured channel, or held unsent by a mute (ack_suppressed; a
 -- silence or blackout names an instance and never holds it) - the cut's rows stay in the two hours, so the host is
--- judged again once the window has passed its parent. A host whose fold's alert is not cleared keeps being judged - its
--- finding present, or missing since a parent rose (B6f10 #1, B6f11 #2) - the held instances still left out; the fold
--- then comes back at more than half (its lower bar reads a present finding: an alert standing at half or less is gone
--- after one missing pass, B6f11 #1). A parent the alert sender never saw (no
+-- judged again once the window has passed its parent (a mute's hold seen up to 10 minutes before the window counts, and
+-- a sent alert cleared that long before it, less its channel's clear_after: B6f11 #5, B6f12 #4). A host whose fold's
+-- alert is not cleared keeps being judged - its finding present, or missing no more than 5 minutes before a parent of
+-- the host inside the window was sent, or later (B6f10 #1, B6f11 #2, B6f12 #1: the sender stamps the miss with its
+-- pass's time and the parent's send after it) - the held instances still left out; the fold then comes back at more
+-- than half (its lower bar reads a present finding: an alert standing at half or less is gone after one missing pass,
+-- B6f11 #1). A parent the alert sender never saw (no
 -- channel configured, quiet hours over the whole of it, every send failing, its channel removed and no mute) is not seen
 -- here: its rows are judged once it clears (docs/alerts.md).
 CREATE OR REPLACE FUNCTION pgvigil.collection_runs_long_open(p_host text)
@@ -330,26 +333,35 @@ $$;
 CREATE OR REPLACE VIEW pgvigil.collection_runs_long_rows AS
 WITH w AS (
   SELECT date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 hour' AS start
-), stood AS MATERIALIZED (   -- the hosts whose 'collector or network' stood inside the window, each with when it rose:
-                             -- sent on a configured channel, or held unsent by a mute (ack_suppressed, the lead's
-                             -- 07:5x; a hold seen up to 10 minutes before the window counts - a cut ending just before
-                             -- an hour's edge leaves its last slowed run in the next hour, B6f11 #5); read once, not per
+), stood AS MATERIALIZED (   -- the hosts whose 'collector or network' stood inside the window, each with the time the
+                             -- sender has for it: sent on a configured channel (since = its first send), or held
+                             -- unsent by a mute (ack_suppressed, the lead's 07:5x; since = that mute's FIRST hold of
+                             -- this host's parent, however long ago - first_at never moves, B6f12 #2). A cut ending
+                             -- just before an hour's edge leaves its last slowed run in the next hour, so the parent
+                             -- counts for 10 minutes past its end: a hold seen up to 10 minutes before the window
+                             -- (B6f11 #5), a sent alert cleared up to 10 minutes before it less the channel's own
+                             -- clear_after, which its cleared_at already trails by (B6f12 #4). Read once, not per
                              -- heartbeat row (B6f10 #3)
   SELECT s.value AS host, s.first_sent_at AS since
     FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
    CROSS JOIN w
-   WHERE s.source = 'pgvigil repository' AND s.setting = 'collector or network' AND (s.cleared_at IS NULL OR s.cleared_at >= w.start)
+   WHERE s.source = 'pgvigil repository' AND s.setting = 'collector or network'
+     AND (s.cleared_at IS NULL OR s.cleared_at >= w.start - make_interval(secs => greatest(600 - c.clear_after_secs, 0)))
   UNION
   SELECT x.value, x.first_at FROM pgvigil.ack_suppressed x CROSS JOIN w
    WHERE x.source = 'pgvigil repository' AND x.setting = 'collector or network' AND x.last_at >= w.start - interval '10 minutes'
 ), kept AS MATERIALIZED (    -- the hosts whose fold's alert is not cleared on a configured channel - its finding present,
                              -- or missing since a parent of the host rose (B6f10 #1: a fold that drops under a cut is
                              -- still judged; the hysteresis's collection_runs_long_open reads a present one); a fold
-                             -- already found gone BEFORE the parent rose keeps nothing: the cut's rows do not revive it
-                             -- (B6f11 #2)
+                             -- already found gone BEFORE the parent keeps nothing: the cut's rows do not revive it
+                             -- (B6f11 #2). 'Since it rose' is read with 5 minutes' room (B6f12 #1): the pass that
+                             -- first sees the parent stamps the fold's miss with its own time and records the
+                             -- parent's send after it, and 'collector not seen' rises a minute or more after its host
+                             -- stops being judged. Any parent of the host inside the window answers (B6f12 #3)
   SELECT f.value AS host FROM pgvigil.alert_state f JOIN pgvigil.alert_channels k ON k.name = f.channel AND k.is_configured
    WHERE f.cleared_at IS NULL AND f.source = 'pgvigil repository' AND f.setting = 'collections run long'
-     AND (f.missing_since IS NULL OR EXISTS (SELECT 1 FROM stood t WHERE t.host = f.value AND t.since <= f.missing_since))
+     AND (f.missing_since IS NULL
+          OR EXISTS (SELECT 1 FROM stood t WHERE t.host = f.value AND t.since <= f.missing_since + interval '5 minutes'))
 ), hb AS (    -- the host's runs not retired; the host beating; and no 'collector or network' of it inside the window,
               -- unless the host's fold's alert is not cleared: that fold keeps being judged (B6f9 #1, the lead's 07:5x
               -- (a); B6f10 #1), the instances a parent holds still left out below
