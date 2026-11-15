@@ -2,9 +2,31 @@ package mssql
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
+
+// execRe finds each call 'EXEC [@rc =] <name>' (NOEXEC is not one: no word boundary before its EXEC); dynRe finds
+// dynamic SQL, which would hide a call from execRe - the scripts hold none, so execs is every procedure they call.
+var (
+	execRe = regexp.MustCompile(`(?i)\bEXEC(?:UTE)?\s+(?:@\w+\s*=\s*)?([A-Za-z_][\w.]*)`)
+	dynRe  = regexp.MustCompile(`(?i)sp_executesql|\bEXEC(?:UTE)?\s*\(`)
+)
+
+// execs is the procedures the T-SQL calls, lower-cased, sorted, each once.
+func execs(sql string) []string {
+	var out []string
+	for _, m := range execRe.FindAllStringSubmatch(sql, -1) {
+		if name := strings.ToLower(m[1]); !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // C13 / B9d: the text of the alerts script and its drop twin (C13-8's Go row): the stop batch first, the CONFIG lines,
 // one row per severity, error and Availability Group message (each AG row 'not proven to fire'), the guard on msdb's
@@ -63,15 +85,20 @@ func TestAgentAlertsScript(t *testing.T) {
 			t.Errorf("%s is not called once with its return code read", p)
 		}
 	}
-	if strings.Count(s, "BEGIN TRY") != strings.Count(s, "END TRY") || strings.Count(s, "BEGIN CATCH") != strings.Count(s, "END CATCH") || strings.Count(s, "BEGIN TRY") != 4 {
-		t.Errorf("TRY / CATCH blocks: %d BEGIN TRY, %d END TRY, %d BEGIN CATCH, %d END CATCH (want 4 each)",
+	// five TRY blocks: sp_add_alert, sp_add_operator, sp_add_notification, and the two reads of the Agent's mail
+	// settings (DatabaseMailProfile, UseDatabaseMail)
+	if strings.Count(s, "BEGIN TRY") != strings.Count(s, "END TRY") || strings.Count(s, "BEGIN CATCH") != strings.Count(s, "END CATCH") || strings.Count(s, "BEGIN TRY") != 5 {
+		t.Errorf("TRY / CATCH blocks: %d BEGIN TRY, %d END TRY, %d BEGIN CATCH, %d END CATCH (want 5 each)",
 			strings.Count(s, "BEGIN TRY"), strings.Count(s, "END TRY"), strings.Count(s, "BEGIN CATCH"), strings.Count(s, "END CATCH"))
 	}
-	for _, never := range []string{"sp_update_alert", "sp_update_operator", "EXEC sp_configure", "dbo.sp_configure", "sys.sp_configure", "RECONFIGURE",
-		"sp_set_sqlagent_properties", "sp_altermessage", "sp_delete_"} {
-		if strings.Contains(s, never) {
-			t.Errorf("the script holds %s: it changes no setting and drops nothing", never)
-		}
+	// it changes no setting and drops nothing: the procedures it calls are exactly these (a comment or a message may
+	// NAME another - the mail note names sp_set_sqlagent_properties - but nothing else is called), with no dynamic SQL
+	// and no RECONFIGURE statement
+	if got, want := execs(s), []string{"master.dbo.xp_instance_regread", "msdb.dbo.sp_add_alert", "msdb.dbo.sp_add_notification", "msdb.dbo.sp_add_operator"}; !slices.Equal(got, want) {
+		t.Errorf("the script calls %v, want exactly %v", got, want)
+	}
+	if dynRe.MatchString(s) || regexp.MustCompile(`(?im)^\s*RECONFIGURE\b`).MatchString(s) {
+		t.Error("the script holds dynamic SQL or a RECONFIGURE statement")
 	}
 
 	o, err := AgentAlertsScript(AgentAlertsOptions{Operator: "O'Brien team", Email: "ops+sql@example.com", AG: true, DelaySeconds: 60})
@@ -108,8 +135,10 @@ func TestAgentAlertsScript(t *testing.T) {
 			t.Errorf("the drop script lacks %q", w)
 		}
 	}
-	if strings.Contains(d, "sp_delete_operator") || strings.Contains(d, "sp_add_") {
-		t.Error("the drop script touches an operator or adds something")
+	// it drops pgvigil's alerts and nothing else: sp_delete_alert is its one call (its stop words, shared with the
+	// script, NAME sp_add_alert in a message), with no dynamic SQL
+	if got := execs(d); !slices.Equal(got, []string{"msdb.dbo.sp_delete_alert"}) || dynRe.MatchString(d) {
+		t.Errorf("the drop script calls %v (want only msdb.dbo.sp_delete_alert) or holds dynamic SQL", got)
 	}
 	for _, c := range []struct {
 		platform string

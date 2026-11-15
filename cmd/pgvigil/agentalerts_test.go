@@ -17,7 +17,8 @@ func TestMSSQLAgentAlertsCommand(t *testing.T) {
 	if err != nil || !strings.Contains(out, "DECLARE @operator sysname = N'dba team';") || !strings.Contains(out, "DECLARE @include_ag bit = 1;") {
 		t.Fatalf("-print with an operator: %v\n%.300s", err, out)
 	}
-	if out, err := run("-print", "-drop"); err != nil || !strings.Contains(out, "sp_delete_alert") || strings.Contains(out, "sp_add_alert") {
+	// the drop twin calls sp_delete_alert and never sp_add_alert (its stop words NAME sp_add_alert in a message)
+	if out, err := run("-print", "-drop"); err != nil || !strings.Contains(out, "EXEC @rc = msdb.dbo.sp_delete_alert") || strings.Contains(out, "EXEC @rc = msdb.dbo.sp_add_alert") {
 		t.Fatalf("-print -drop: %v\n%.300s", err, out)
 	}
 	for name, args := range map[string][]string{
