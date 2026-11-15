@@ -26,6 +26,10 @@
 #   Q7a  the reader available; the writer and the reader answer through IAM (the first query after an auto-pause waits
 #        about 15 s: polled for about 2 minutes); the reader in recovery; the writer's roles read (the end drops only
 #        pgvigil_* roles absent from that list; no list = no run)
+#   Q7a-probe (info, not graded; review 21:27 #2) each function the Aurora 'standby' read leaves out, called on the
+#        reader as the IAM login (read only): pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn(),
+#        pg_last_xact_replay_timestamp(), pg_is_wal_replay_paused(), pg_stat_wal_receiver - its answer or its ERROR line
+#        printed (which calls Aurora rejects: no AWS page says)
 #   Q7b  'collect -once instance': pgvigil.instances holds aurora-r and aurora-w, both platform aurora
 #   Q7c  two reads of aurora-w: its aurora_replica rows hold the writer's own row (session_id MASTER_SESSION_ID) once
 #        and a row for the reader (server_id = PGVIGIL_AURORA_READER) with its lag in seconds
@@ -37,9 +41,18 @@
 #                    with warning 0 a 0 on aurora-r can come from the in-recovery exclusion alone)
 #        Q7e-writer  'Aurora replica lag' warning on aurora-w naming the reader, none for the writer's own row
 #        Q7e-reader  none raised on aurora-r (the reader is in recovery)
+#        Q7f         aurora-w made inactive in the pass's repository (a stand-in for no monitored writer: only the
+#                    reader endpoint configured, or the writer's read failing): 'Aurora replica lag' warning on aurora-r
+#                    naming the reader (review 21:27 #1: the reader raises when no fresh writer reads the replica);
+#                    aurora-w active again after [red ok: 86c4079 stores no state for the reader, so it raises anyway]
 #        Q7e-reset   the threshold inherited again on both (outcome done)
-#   Q7d-read aurora-r's replication read 'ok' (the collector's 'standby' read on an Aurora reader; every read that did
-#        not succeed is printed with its error before the threshold is reset)
+#   Q7i  (info, not graded; review 21:27, outside this task's files) one 'rolechange', 'backups' and 'dbstats' read of
+#        aurora-r: whether those collectors fail on a real reader (they call pg_stat_wal_receiver or the WAL position
+#        functions); each read's exit printed, its error in the print below
+#   Q7d-read aurora-r's replication read 'ok' (the collector's 'standby' read on an Aurora reader); every read of the
+#        pass that did not succeed is printed with its error from collection_log (every read, not only the newest of a
+#        collection: review 21:27 #3), host names masked. A failed repository query is 'not read' for Q7d and Q7d-read,
+#        never their marked failure (review 21:27 #4)
 #   red  PGVIGIL_RED_BIN = the tree before the Aurora 'standby' read (86c4079; the first lab run, 18:21 PST, red ece715d,
 #        found Q7d failing on both trees: no standby state stored for the real reader): every row as above but Q7d,
 #        Q7d-read and Q7e-reader [red FAIL: the 'standby' read raises on the reader - no state, so no reader exclusion;
@@ -75,6 +88,7 @@ C=$PGVIGIL_AURORA_CLUSTER; R=$PGVIGIL_AURORA_READER; U=$PGVIGIL_AURORA_USER
 RUNID="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
 WORK=$(mktemp -d); CREATING=0; CREATED=0; CLEANED=0; ENDFAILS=0; DBS=""; ROLES0=""; W=""; WH=""; RH=""
 mask() { sed -E 's/[0-9]{12}/<account>/g'; }   # an ARN in an aws error carries the account id
+maskh() { mask | { if [[ -n "$WH" && -n "$RH" ]]; then sed -e "s/$WH/<writer>/g" -e "s/$RH/<reader>/g"; else cat; fi; }; }   # and the endpoints
 endfail() { echo "FAIL end: $*"; ENDFAILS=$((ENDFAILS + 1)); }
 member_ids() { aws rds describe-db-clusters --db-cluster-identifier "$C" --query 'DBClusters[0].DBClusterMembers[].DBInstanceIdentifier' --output text 2>/dev/null | tr '\t' ' '; }
 writer_id() { aws rds describe-db-clusters --db-cluster-identifier "$C" --query 'DBClusters[0].DBClusterMembers[?IsClusterWriter].DBInstanceIdentifier' --output text 2>/dev/null; }
@@ -180,6 +194,10 @@ RH=$(endpoint "$R")
 [[ -n "$RH" && "$RH" != "None" ]] || { fail "Q7a no endpoint read for the reader"; exit 1; }
 wake "$WH" && wake "$RH" && ok "Q7a the reader available; the writer and the reader answer through IAM" || { fail "Q7a an instance did not answer through IAM in about 2 minutes"; exit 1; }
 [[ "$(psqlh "$RH" postgres 'select pg_is_in_recovery()')" == "t" ]] || { fail "Q7a the reader is not in recovery"; exit 1; }
+for f in 'pg_last_wal_receive_lsn()' 'pg_last_wal_replay_lsn()' 'pg_last_xact_replay_timestamp()' 'pg_is_wal_replay_paused()' '(select count(*) from pg_stat_wal_receiver)'; do
+  o=$(psqlh "$RH" postgres "select $f" 2>&1); e=$(grep -m1 ERROR <<<"$o")
+  echo "  Q7a-probe on the reader: select $f -> $(printf '%s' "${e:-answered: ${o:-null}}" | maskh)"
+done
 psqlh "$WH" postgres "select rolname from pg_roles order by 1" >"$WORK/roles0" 2>/dev/null && [[ -s "$WORK/roles0" ]] \
   || { fail "Q7a the writer's roles were not read (the end drops only pgvigil_* roles absent from that list)"; exit 1; }
 ROLES0=1
@@ -231,9 +249,9 @@ EOF
   r=$(q "select coalesce(in_recovery::text, 'null') || '|' || coalesce(has_receiver::text, 'null') from pgvigil.pg_repl_standby_state where instance_id = $AR")
   r2=$(q "select count(*) from pgvigil.findings where instance_id = $AR and setting = 'receiver down'")
   r3=$(q "select count(*) from pgvigil.pg_repl_link_health where standby_id = $AR")
-  chk Q7d "$([[ "$r" == true\|* && "$r2" == "0" && "$r3" == "0" ]] && echo 1 || echo 0)" "aurora-r in recovery (in_recovery|has_receiver: $r), 'receiver down' $r2, link rows $r3"
+  chk Q7d "$(if [[ "$r$r2$r3" == *"QUERY FAILED"* ]]; then echo x; elif [[ "$r" == true\|* && "$r2" == "0" && "$r3" == "0" ]]; then echo 1; else echo 0; fi)" "aurora-r in recovery (in_recovery|has_receiver: $r), 'receiver down' $r2, link rows $r3"
   r=$(q "select d.status || coalesce(': ' || d.note, '') from pgvigil.collection_dates d where d.instance_id = $AR and d.collection = 'replication' order by d.snapshot_at desc limit 1")
-  chk Q7d-read "$([[ "$r" == ok* ]] && echo 1 || echo 0)" "aurora-r's replication read: ${r:-none}"
+  chk Q7d-read "$(case "$r" in ok*) echo 1 ;; partial*|error*) echo 0 ;; *) echo x ;; esac)" "aurora-r's replication read: $(printf '%s' "${r:-none}" | maskh)"
   r=$(thr set "$AW" ',"warn":0,"crit":300'); r2=$(thr set "$AR" ',"warn":0,"crit":300')
   [[ "$r|$r2" == "done|done" ]] || fail "$PASS: Q7e the thresholds were not set: aurora-w '$r', aurora-r '$r2'"
   rd aurora-w 1; rd aurora-r 1
@@ -243,9 +261,17 @@ EOF
   chk Q7e-writer "$([[ "$r" == "warning replica $R:"* && "$r" != *"replica $W:"* ]] && echo 1 || echo 0)" "'Aurora replica lag' on aurora-w names the reader, not the writer's own row: ${r:-none}"
   r=$(q "select count(*) from pgvigil.findings where instance_id = $AR and setting = 'Aurora replica lag'")
   chk Q7e-reader "$(zero "$r")" "'Aurora replica lag' raised on aurora-r: $r"
-  # every read that did not succeed, with the collector's error (the evidence a failed read leaves; the first lab run lost it)
-  echo "  $PASS: the reads that did not succeed: $(q "select coalesce(string_agg(i.name || ' ' || d.collection || ' ' || d.status || ': ' || coalesce(d.note, ''), '; ' order by i.name, d.collection), 'none')
-                                                    from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where d.status <> 'ok'")"
+  q "update pgvigil.instances set is_active = false where instance_id = $AW" >/dev/null
+  r=$(q "select string_agg(severity || ' ' || value, '; ' order by value) from pgvigil.findings where instance_id = $AR and setting = 'Aurora replica lag'")
+  q "update pgvigil.instances set is_active = true where instance_id = $AW" >/dev/null
+  chk Q7f "$(if [[ "$r" == *"QUERY FAILED"* ]]; then echo x; elif [[ "$r" == *"replica $R:"* && "$r" != *"replica $W:"* ]]; then echo 1; else echo 0; fi)" "no monitored writer (aurora-w inactive): 'Aurora replica lag' on aurora-r: ${r:-none}"
+  for c in rolechange backups dbstats; do   # Q7i, info: the other collectors that read recovery state, on the real reader
+    refresh; "$BIN" collect -config "$CFG" -once "$c" -instance aurora-r >>"$WORK/$DB-collect.out" 2>&1; echo "  $PASS: Q7i (info) a '$c' read of aurora-r exit $?"
+  done
+  # every read that did not succeed, with the collector's error (the evidence a failed read leaves; the first lab run
+  # lost it): collection_log keeps each one, collection_dates only the newest of a collection
+  echo "  $PASS: the reads that did not succeed: $(q "select coalesce(string_agg(i.name || ' ' || l.collection || ' ' || to_char(l.snapshot_at at time zone 'UTC', 'HH24:MI:SS') || ' ' || l.status || ': ' || coalesce(l.note, ''), '; ' order by l.snapshot_at, i.name), 'none')
+                                                    from pgvigil.collection_log l join pgvigil.instances i using (instance_id) where l.status <> 'ok'" | maskh)"
   r=$(thr inherit "$AW" ""); r2=$(thr inherit "$AR" "")
   chk Q7e-reset "$([[ "$r|$r2" == "done|done" ]] && echo 1 || echo 0)" "the threshold inherited again: aurora-w $r, aurora-r $r2"
 }

@@ -151,7 +151,15 @@
 #        before pg_catalog (and a stand-in aurora_replica_status: the writer's row and one replica at 20 ms);
 #        'standby_replay_lag' warning 0 on it, two reads: its standby state in recovery with no receiver, its read 'ok';
 #        no 'Aurora replica lag' and no 'receiver down' on it [red FAIL, 86c4079: the 'standby' read raises - no state,
-#        the read partial, 'Aurora replica lag' raised on the reader]
+#        the read partial, 'Aurora replica lag' raised on the reader]. Since the review 21:27 fold: pg_stat_wal_receiver
+#        raises through that login too (a stand-in view; its self-check beside the functions'); the wait is for the
+#        login's last grant on hadr-s. AF runs before CC: once hadr-c streams from hadr-s, the senders read's position
+#        call reaches a stand-in and the read is partial
+#   AU2  (in AU, review 21:27 #1) aurora-w made inactive (no monitored writer reads the replicas): aurora-r raises
+#        'Aurora replica lag' critical reader-1 and warning reader-2 [red FAIL, 8f12dff: a reader in recovery never
+#        raises - silent]
+#   G    (review 21:27 #6) on platform rds the standby row keeps its receive_lsn (only Aurora takes the short read)
+#        [red ok: a guard - a gate written as 'every managed platform' fails it]
 # Task 375's rows (migration 0150), written before the first run 2026-11-14 18:0x PST; red = the tree before 375
 # (rel-hadr-s1 ef59fba: no 0150 - its functions, views and checks do not exist, so every row below fails there):
 #   RU1  the rig's own samples (hadr-p, hadr-s): every (kind, key, UTC hour) of replication_hourly equals a direct
@@ -497,6 +505,8 @@ if want G; then
     CFG=$WORK/pgvigil-rds.yaml; read_ hadr-s 2
     r=$(finding "$SID_" 'receiver down')
     [[ -z "$r" ]] && ok "G no 'receiver down' on a managed platform" || fail "G 'receiver down' raised on platform rds: '$r'"
+    r=$(q "select coalesce(detail->>'receive_lsn', 'null') from pgvigil.replication_latest where instance_id = $SID_ and kind = 'standby'")
+    [[ "$r" =~ ^[0-9A-Fa-f]+/[0-9A-Fa-f]+$ ]] && ok "G a managed standby that is not Aurora keeps the full standby read (receive_lsn $r)" || fail "G the standby row on platform rds: receive_lsn '$r' (expected an LSN: only Aurora takes the short read)"
     CFG=$WORK/pgvigil.yaml; read_ hadr-s 1
     r=$(finding "$SID_" 'receiver down')
     [[ -n "$r" ]] && ok "G onprem again: raised ($r)" || fail "G onprem again: 'receiver down' not raised"
@@ -757,6 +767,12 @@ if want AU; then
   q "select pgvigil.import_replication($AR, now() + interval '1 second', '[{\"kind\":\"standby\",\"has_receiver\":false,\"conninfo_set\":true,\"restore_set\":false,\"replay_lsn\":\"0/3000000\"},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-1\",\"session_id\":\"s1\",\"replica_lag_in_msec\":400000},{\"kind\":\"aurora_replica\",\"server_id\":\"reader-2\",\"session_id\":\"s2\",\"replica_lag_in_msec\":45000}]'::jsonb)" >/dev/null
   r=$(q "select count(*) from pgvigil.findings where instance_id = $AR and setting = 'Aurora replica lag'")
   [[ "$r" == "0" ]] && ok "AU no 'Aurora replica lag' raised by a reader" || fail "AU a reader raised 'Aurora replica lag': '$r'"
+  # AU2 no monitored writer reads the replicas (aurora-w inactive: only the reader endpoint configured, or the writer's
+  # read failing): the reader raises them
+  q "update pgvigil.instances set is_active = false where instance_id = $AW" >/dev/null
+  r=$(q "select string_agg(severity || ' ' || value, '; ' order by value) from pgvigil.findings where instance_id = $AR and setting = 'Aurora replica lag'")
+  [[ "$r" == "critical replica reader-1:"*"; warning replica reader-2:"* ]] && ok "AU2 no monitored writer: the reader raises 'Aurora replica lag' (critical reader-1, warning reader-2)" \
+    || fail "AU2 no monitored writer: '$r' (expected critical reader-1 and warning reader-2 on aurora-r)"
   q "update pgvigil.instances set is_active = false where instance_id in ($AW, $AR)" >/dev/null
 fi
 
@@ -771,15 +787,22 @@ if want AF; then
         oldest_read_view_lsn pg_lsn, last_update_timestamp timestamptz) language sql as \$\$
         select 'hadr-af-w'::text, 'MASTER_SESSION_ID'::text, '0/1'::pg_lsn, null::pg_lsn, null::pg_lsn, 1::real, 1::real, null::real, 0::real, 0::bigint, null::pg_lsn, now()
         union all select 'hadr-af-r', 'af-session', '0/1', '0/1', '0/1', 1, 1, 20, 0, 0, '0/1', now() \$\$" >/dev/null
+  # pg_stat_wal_receiver too (review 21:27 #5: the rejection a third-party report records): a view in the earlier
+  # schema hides pg_catalog's; its function scan runs first (the lateral reference) and raises
+  pq "create function aurora_fake.receiver_unavailable() returns int language plpgsql as \$\$ begin raise exception 'a stand-in Aurora reader: pg_stat_get_wal_receiver() is not available'; end \$\$" >/dev/null
+  pq "create view aurora_fake.pg_stat_wal_receiver as select w.* from aurora_fake.receiver_unavailable() u, lateral (select w0.* from pg_catalog.pg_stat_wal_receiver w0 where u is not null) w" >/dev/null
   # USAGE on the schema: a schema the role may not use is skipped in its search_path, silently (the first red run's rig fault)
-  pq "create role pgva login password '$MPW' in role pg_monitor; alter role pgva set search_path = aurora_fake, pg_catalog, public; grant usage on schema aurora_fake to pgva" >/dev/null
-  for _ in $(seq 1 30); do [[ "$(sq "select count(*) from pg_proc where proname = 'aurora_replica_status'")" == 1 ]] && break; sleep 1; done
+  pq "create role pgva login password '$MPW' in role pg_monitor; alter role pgva set search_path = aurora_fake, pg_catalog, public; grant usage on schema aurora_fake to pgva; grant select on aurora_fake.pg_stat_wal_receiver to pgva" >/dev/null
+  # replayed on hadr-s: the role, its grants and the stand-ins (review 21:27 #7: wait for the last of them, the grant)
+  for _ in $(seq 1 30); do [[ "$(sq "select has_table_privilege('pgva', 'aurora_fake.pg_stat_wal_receiver', 'select')")" == t ]] && break; sleep 1; done
   OCFG=$CFG; { cat "$OCFG"; printf '  - name: hadr-sa\n    platform: aurora\n    dsn: "host=127.0.0.1 port=%s user=pgva password=%s dbname=postgres sslmode=disable"\n' "$SP" "$MPW"; } > "$WORK/pgvigil-af.yaml"
   CFG=$WORK/pgvigil-af.yaml
   "$BIN" collect -config "$CFG" -once instance -instance hadr-sa >>"$WORK/collect.out" 2>&1 || fail "AF instance read of hadr-sa: $(tail -1 "$WORK/collect.out")"
   AFID=$(q "select instance_id from pgvigil.instances where name = 'hadr-sa'")
   r=$(psql "host=127.0.0.1 port=$SP user=pgva password=$MPW sslmode=disable dbname=postgres" -XAtq -c "select pg_last_wal_replay_lsn()" 2>&1 | grep -m1 ERROR)   # the ERROR line (psql's last is CONTEXT)
   [[ "$r" == *"stand-in Aurora reader"* ]] && ok "AF the stand-in raises through hadr-sa's login: $r" || fail "AF the stand-in does not raise: '$r'"
+  r=$(psql "host=127.0.0.1 port=$SP user=pgva password=$MPW sslmode=disable dbname=postgres" -XAtq -c "select count(*) from pg_stat_wal_receiver" 2>&1 | grep -m1 ERROR)
+  [[ "$r" == *"stand-in Aurora reader"* ]] && ok "AF the receiver stand-in raises through hadr-sa's login: $r" || fail "AF the receiver stand-in does not raise: '$r'"
   q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"set\",\"key\":\"standby_replay_lag\",\"level\":\"instance\",\"instance_id\":$AFID,\"warn\":0,\"crit\":300,\"ui_user\":\"proof\"}'::jsonb)" >/dev/null
   read_ hadr-sa 2
   r=$(q "select coalesce((select in_recovery || '|' || has_receiver from pgvigil.pg_repl_standby_state where instance_id = $AFID), 'no state') || '|' ||
