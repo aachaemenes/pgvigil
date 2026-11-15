@@ -24,8 +24,7 @@
 #     - while alert_log holds fewer than 3 failed attempts in a row for hook2: drop holds no 'alert channel failing';
 #     - the pass of the third failure: drop gets ONE firing file of it - setting 'alert channel failing', value hook2,
 #       severity warning, detail 'alert channel failing: webhook to http://127.0.0.1:<port> (json), the last 3 sends
-#       failed, ...; last error: ... 500 ...' (the file's own "source" is the file channel's "pgvigil": filedrop.go's
-#       outer field shadows the alert's, an older defect outside this task, named to the lead);
+#       failed, ...; last error: ... 500 ...', source 'pgvigil repository', sender 'pgvigil' (the file's envelope);
 #     - hook2 never gets its own: no sink body on /c names 'alert channel failing', no alert_state row of hook2 for it;
 #     - hook (floor critical) gets none either (K3 at warning: a critical-only channel is not told; the lead's 23:4x);
 #     - alert_channel_failing's at for hook2 is its first failed attempt (the streak's start), not the third;
@@ -317,6 +316,7 @@ d = json.load(open(sys.argv[1]))
 a = d['alerts'][0] if 'alerts' in d else d
 det = a.get('detail', '')
 assert a['setting'] == 'alert channel failing' and a['value'] == 'hook2' and a['severity'] == 'warning', a
+assert a['source'] == 'pgvigil repository' and d.get('sender') == 'pgvigil', a
 assert det.startswith('alert channel failing: webhook to http://127.0.0.1:%s (json), the last 3 sends failed, the newest at ' % sys.argv[2]), det
 assert '500' in det and 'token-' not in det, det
 PY

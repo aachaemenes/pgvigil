@@ -478,7 +478,7 @@ func TestFileDrop(t *testing.T) {
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, ents[0].Name()))
 	var v map[string]any
-	if err := json.Unmarshal(b, &v); err != nil || v["severity"] != "critical" || v["channel"] != "t" || v["source"] != "pgvigil" {
+	if err := json.Unmarshal(b, &v); err != nil || v["severity"] != "critical" || v["channel"] != "t" || v["sender"] != "pgvigil" || v["source"] != "pgvigil host" {
 		t.Errorf("file %s: %v", b, err)
 	}
 	if fi, _ := ents[0].Info(); fi.Mode().Perm() != 0o640 {

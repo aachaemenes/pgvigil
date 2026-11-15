@@ -88,7 +88,11 @@ alert open and quiet: no repeat, no recovery. If it rises again it is not sent a
 An SMTP message or a webhook post carries up to 25 alerts, each line cut at 600 bytes; more go in the next message of
 the same pass. A file drop
 writes one file per alert: `<UTC time>-<event>-<channel>-<key>.json`. Each file is written under a temporary name and
-renamed, so a reader never sees half of one.
+renamed, so a reader never sees half of one. A file is one JSON object: `sender` (always `pgvigil`), `channel`,
+`sent_at` (UTC, to the millisecond), then the alert's own fields - `event`, `finding_key`, `instance_id`, `instance`,
+`severity`, `source` (the finding's source: a check such as `pgvigil host`, `alert rule`, or `pgvigil repository`),
+`setting`, `value`, `detail`, `suggested`, `finding_at`, `first_sent_at`, `sent_before` and `url` (`instance_id`,
+`detail`, `suggested`, `finding_at`, `first_sent_at` and `url` are left out when empty).
 
 A send that fails moves nothing: the next pass owes the same alerts. Inside `pgvigil run`, a failing channel is tried
 again after 1, 2, 4, 8, 16 and then every 30 minutes, and the other channels go on. Delivery is **at least once**: a
