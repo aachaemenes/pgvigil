@@ -580,8 +580,10 @@ func (s *zabbixSender) push(ctx context.Context, items []zbxItem) error {
 		Result *struct {
 			Response string `json:"response"`
 			Data     []struct {
-				ItemID string `json:"itemid"`
-				Error  string `json:"error"`
+				// a Zabbix 7.0 server answers the item id as a JSON number ({"itemid":50741}), the API page's
+				// example as a string: either is taken, and it is never read (a typed field refused a pushed value)
+				ItemID json.RawMessage `json:"itemid"`
+				Error  string          `json:"error"`
 			} `json:"data"`
 		} `json:"result"`
 	}

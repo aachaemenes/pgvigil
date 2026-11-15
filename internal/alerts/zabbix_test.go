@@ -317,7 +317,7 @@ func TestZabbixAPI(t *testing.T) {
 			n := len(b["params"].([]any))
 			data := make([]map[string]any, n)
 			for i := range data {
-				data[i] = map[string]any{"itemid": "42"}
+				data[i] = map[string]any{"itemid": 50741 + i} // a number, as a Zabbix 7.0 server answers
 			}
 			out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "result": map[string]any{"response": "success", "data": data}, "id": 1})
 			a = string(out)
@@ -346,7 +346,18 @@ func TestZabbixAPI(t *testing.T) {
 		t.Errorf("param 0 %v", p0)
 	}
 	setAnswer := func(a string) { mu.Lock(); answer = a; mu.Unlock() }
-	setAnswer(`{"jsonrpc":"2.0","result":{"response":"success","data":[{"itemid":"42"},{"error":"Item is disabled."}]},"id":1}`)
+	// the answer a Zabbix 7.0 server gave the box proof (zabbix-server-pgsql alpine-7.0), byte for byte, and the
+	// API page's example form (the item id a string): both are a sent value
+	for _, a := range []string{
+		`{"jsonrpc":"2.0","result":{"response":"success","data":[{"itemid":50741}]},"id":1}`,
+		`{"jsonrpc":"2.0","result":{"response":"success","data":[{"itemid":"42"}]},"id":1}`,
+	} {
+		setAnswer(a)
+		if err := s.send(context.Background(), msg(crit)); err != nil {
+			t.Errorf("history.push answered %s: %v", a, err)
+		}
+	}
+	setAnswer(`{"jsonrpc":"2.0","result":{"response":"success","data":[{"itemid":50741},{"error":"Item is disabled."}]},"id":1}`)
 	if err := s.send(context.Background(), msg(crit, warn)); err == nil || !strings.Contains(err.Error(), "Item is disabled.") || !strings.Contains(err.Error(), "1 of 2") {
 		t.Errorf("a refused value: %v", err)
 	}
