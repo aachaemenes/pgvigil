@@ -51,6 +51,12 @@ cleanup() {
 }
 trap cleanup EXIT
 for t in docker go psql curl python3; do command -v $t >/dev/null || fail "$t is not on this machine"; done
+# the lead's file: web.go's activity handler (sqlSessionsOwn) - applied to this copy when the tree has the queries and
+# web.go lacks them (PGVIGIL_WIRING=0 leaves it out)
+if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && grep -q 'const sqlSessionsOwn = ' internal/web/queries.go 2>/dev/null && ! grep -q 'sqlSessionsOwn' internal/web/web.go; then
+  git apply scripts/proof-b24own-wiring.patch 2>/dev/null || patch -p1 < scripts/proof-b24own-wiring.patch >/dev/null || fail "the wiring patch"
+  echo "wiring applied to this copy (web.go's activity handler)"
+fi
 urlq() { V="$1" python3 -c 'import os,urllib.parse as u; print(u.quote(os.environ["V"], safe=""))'; }
 
 # ---- SQL Server ----------------------------------------------------------------------------------------------------------
