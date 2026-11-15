@@ -59,12 +59,11 @@ var (
 )
 
 // ownSourced: the body writes an own source ('pgvigil collector' / 'pgvigil repository') that is not a filter
+// (an IN list blanked first, then the comparisons left counted: a comparison inside an IN list is subtracted once - the
+// review B6f9 #5)
 func ownSourced(body string) bool {
-	n := len(ownLit.FindAllStringIndex(body, -1)) - len(ownCmp.FindAllStringIndex(body, -1))
-	for _, in := range ownIn.FindAllString(body, -1) {
-		n -= len(ownLit.FindAllStringIndex(in, -1))
-	}
-	return n > 0
+	b := ownIn.ReplaceAllString(body, "")
+	return len(ownLit.FindAllStringIndex(b, -1))-len(ownCmp.FindAllStringIndex(b, -1)) > 0
 }
 
 // ownArms (B6f4 #2): the arms of pgvigil.findings AND pgvigil.alert_findings (403b's K3 is alert_findings' arm, never
@@ -262,5 +261,24 @@ func TestCollectorFindingsOwnShapes(t *testing.T) {
 	}
 	if len(inline) != 1 || inline[0] != "findings" {
 		t.Errorf("inline own arms %v, want [findings] (the 'purge late' arm written in pgvigil.findings itself)", inline)
+	}
+}
+
+// TestOwnSourcedFilterInsideIn (the review B6f9 #5): a comparison inside an IN list is one filter, subtracted once - an
+// arm that writes its own source and filters a subquery IN (...) on another own literal is still own
+func TestOwnSourcedFilterInsideIn(t *testing.T) {
+	for _, c := range []struct {
+		body string
+		want bool
+	}{
+		{`SELECT 1, 'pgvigil repository'::text AS source FROM x WHERE i IN (SELECT y FROM pgvigil.alert_state z WHERE z.source = 'pgvigil repository')`, true},
+		{`SELECT 1, 'pgvigil repository'::text AS source FROM x`, true},
+		{`SELECT 1 FROM x WHERE x.source = 'pgvigil repository'`, false},
+		{`SELECT 1 FROM x WHERE x.source IN ('pgvigil collector', 'pgvigil repository')`, false},
+		{`SELECT 1 FROM x WHERE i IN (SELECT y FROM z WHERE z.source = 'pgvigil repository')`, false},
+	} {
+		if got := ownSourced(c.body); got != c.want {
+			t.Errorf("ownSourced(%q) = %v, want %v", c.body, got, c.want)
+		}
 	}
 }

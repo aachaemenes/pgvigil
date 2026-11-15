@@ -482,8 +482,8 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
 -- clears; an open one's repeat waits the same way, its escalation never); every other finding is sent as it is; a repository-wide alert is never 'the instance left' and resolves
 -- once its finding has been gone for the channel's clear_after. held and forming are read once per pass. B6.4 #4 / B6f7
 -- (0166, WIRING): a member's 'collection runs long' of a collection long on its standing fold's host is held at or under
--- the fold's held level; a new one waits one beat while 3 or more of its host's instances turned long in its newest
--- minute (collection_runs_long_forming).
+-- the fold's held level; a new one waits while 3 or more of its host's instances turned long within the host's span
+-- and a minute (collection_runs_long_forming).
 CREATE OR REPLACE FUNCTION pgvigil.alert_due(p_at timestamptz, p_channels jsonb)
 RETURNS TABLE (channel text, event text, finding_key text, instance_id int, instance text, severity text, source text,
                setting text, value text, detail text, suggested text, finding_at timestamptz, first_sent_at timestamptz,
@@ -506,7 +506,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
     -- collections that run long on its host (B6f7 #6) and the severity at or under which their own 'collection runs long'
     -- of those is held
     SELECT instance_id, collection, severity FROM pgvigil.collection_runs_long_held
-  ), long_forming AS MATERIALIZED (  -- B6f7 #2 (0166, WIRING): 3 or more of a host's instances newly long: new ones wait
+  ), long_forming AS MATERIALIZED (  -- B6f7 #2 (0166, WIRING): 3 or more of a host's instances long within its span and
+    -- a minute: new ones wait
     SELECT DISTINCT instance_id FROM pgvigil.collection_runs_long_forming
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,

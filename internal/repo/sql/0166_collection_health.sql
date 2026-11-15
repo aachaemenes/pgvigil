@@ -145,14 +145,21 @@ BEGIN
   -- B6f7 #2 (the lead's 07:2x (a)): the beating run's host - its judged instances running long there stamped since now
   -- (kept while they stay long), the others unstamped; collection_runs_long_forming reads the stamps. A host with no
   -- unretired run left loses its stamps.
+  -- In its own sub-block (B6f9 #2): a failure there is a WARNING and the hour rows above are kept; one host's runs
+  -- stamp in turn (an advisory lock per host; two runs of a host beat at the same second), in instance order.
   SELECT h.host INTO v_host FROM pgvigil.collector_heartbeat h WHERE h.collector_id = p_id;
   IF v_host IS NOT NULL THEN
-    SELECT coalesce(array_agg(j.instance_id), '{}') INTO v_long
-      FROM pgvigil.collection_runs_long_judged j WHERE j.host = v_host AND j.level >= 1;
-    DELETE FROM pgvigil.collection_runs_long_since s WHERE s.host = v_host AND s.instance_id <> ALL (v_long);
-    INSERT INTO pgvigil.collection_runs_long_since (host, instance_id, since)
-    SELECT v_host, x.instance_id, now() FROM unnest(v_long) AS x(instance_id)
-    ON CONFLICT (host, instance_id) DO NOTHING;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(hashtext('collection_runs_long_since'), hashtext(v_host));
+      SELECT coalesce(array_agg(j.instance_id ORDER BY j.instance_id), '{}') INTO v_long
+        FROM pgvigil.collection_runs_long_judged j WHERE j.host = v_host AND j.level >= 1;
+      DELETE FROM pgvigil.collection_runs_long_since s WHERE s.host = v_host AND s.instance_id <> ALL (v_long);
+      INSERT INTO pgvigil.collection_runs_long_since (host, instance_id, since)
+      SELECT v_host, x.instance_id, now() FROM unnest(v_long) AS x(instance_id) ORDER BY x.instance_id
+      ON CONFLICT (host, instance_id) DO NOTHING;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'collection_runs_long_since: % not stamped: %', v_host, SQLERRM;
+    END;
   END IF;
   DELETE FROM pgvigil.collection_runs_long_since s
    WHERE NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat h WHERE h.host = s.host AND h.retired_at IS NULL);
@@ -296,8 +303,8 @@ HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 -- quarter or less, or under 3, do (collection_runs_long_open: the hysteresis); critical when more than half of the
 -- judged run long at critical. Its members' own 'collection runs long' at or under its level - the higher of its level
 -- now and the level its open alert was sent at - are HELD for the collections that run long on its host (alert_due's
--- term, 0190 WIRING, through collection_runs_long_held); one above it is sent on its own, and a new one waits one beat
--- while 3 or more of the host's instances turned long in its newest minute (collection_runs_long_forming). Its alert is
+-- term, 0190 WIRING, through collection_runs_long_held); one above it is sent on its own, and a new one waits while 3
+-- or more of the host's instances turned long within its span and a minute (collection_runs_long_forming). Its alert is
 -- not resolved while the host's own 'collector or network' stands (alert_due). An arm of 0190's pgvigil.findings
 -- (WIRING). What is judged (B6f7, the review of the fold; the lead's 07:1x / 07:2x calls): the host's runs not retired,
 -- and the host only while a run of it beat within its span + 3 minutes (a stopped, retired or renamed host folds
@@ -318,16 +325,23 @@ $$;
 CREATE OR REPLACE VIEW pgvigil.collection_runs_long_rows AS
 WITH w AS (
   SELECT date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 hour' AS start
-), hb AS (    -- the host's runs not retired; the host beating, and no 'collector or network' of it sent inside the window
+), hb AS (    -- the host's runs not retired; the host beating; and no 'collector or network' of it inside the window - sent
+              -- on a configured channel, or held unsent by a mute, silence or blackout (ack_suppressed, the lead's
+              -- 07:5x) - unless the host's fold is already open: an open fold keeps being judged (B6f9 #1, the lead's
+              -- 07:5x (a)), the instances a parent holds still left out below
   SELECT h.collector_id, h.host
     FROM pgvigil.collector_heartbeat h CROSS JOIN w
    WHERE h.retired_at IS NULL
      AND EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat n
                   WHERE n.host = h.host AND n.retired_at IS NULL
                     AND n.beat_at >= now() - pgvigil.collector_span(h.host) - interval '3 minutes')
-     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
-                      WHERE s.source = 'pgvigil repository' AND s.setting = 'collector or network' AND s.value = h.host
-                        AND (s.cleared_at IS NULL OR s.cleared_at >= w.start))
+     AND ((NOT EXISTS (SELECT 1 FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
+                        WHERE s.source = 'pgvigil repository' AND s.setting = 'collector or network' AND s.value = h.host
+                          AND (s.cleared_at IS NULL OR s.cleared_at >= w.start))
+           AND NOT EXISTS (SELECT 1 FROM pgvigil.ack_suppressed x
+                            WHERE x.source = 'pgvigil repository' AND x.setting = 'collector or network' AND x.value = h.host
+                              AND x.last_at >= w.start))
+          OR pgvigil.collection_runs_long_open(h.host))
 )
 SELECT hb.host, h.instance_id, h.collection, sum(h.runs) AS runs, sum(h.runs_over_half) AS half,
        sum(h.runs_over_interval) AS over_i, max(greatest(h.last_ok_at, h.last_failure_at, h.last_partial_at)) AS at
