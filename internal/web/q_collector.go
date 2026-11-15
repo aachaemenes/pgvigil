@@ -113,7 +113,7 @@ SELECT i.instance_id, i.name AS instance, i.engine,
              / nullif(sum(l.timed) FILTER (WHERE l.minute > now() - interval '1 hour'), 0) / 1000, 3) AS connect_avg_s,
        round(max(l.connect_ms_max) FILTER (WHERE l.minute > now() - interval '1 hour' AND l.timed > 0)::numeric / 1000, 3) AS connect_max_s,
        -- B24h: the query round trip over the hour (one 'SELECT 1' a minute: the network and the server's answer)
-       round(sum(l.rt_ms_sum) FILTER (WHERE l.minute > now() - interval '1 hour')::numeric
+       round(sum(l.rt_ms) FILTER (WHERE l.minute > now() - interval '1 hour')::numeric
              / nullif(sum(l.rt_count) FILTER (WHERE l.minute > now() - interval '1 hour'), 0) / 1000, 3) AS rt_avg_s,
        round(max(l.rt_ms_max) FILTER (WHERE l.minute > now() - interval '1 hour' AND l.rt_count > 0)::numeric / 1000, 3) AS rt_max_s,
        max(pr.method) AS probe_method, max(pr.rounds) AS probe_rounds_1h, max(pr.answered) AS probe_answered_1h,
