@@ -30,7 +30,9 @@ const pct = (v: unknown) => v == null ? '' : String(Number(v));
 // B6g-2 #3) - DBA Dash's defaults where no row has a level of its own, the one set of numbers every listed row shares,
 // or where they differ a pointer to each row's Thresholds cell
 function ruleWords(rows: Row[]): string {
-  const own = rows.filter(r => r.threshold_from != null && r.threshold_from !== '');
+  // a row's level by its Thresholds cell's words, as the API sends them (vis-b6gv4ch's CH26: threshold_from is no column
+  // of the API's rows, so every page read the defaults' sentence)
+  const own = rows.filter(r => r.thresholds != null && r.thresholds !== 'DBA Dash\'s defaults');
   const words = new Set(rows.map(r => String(r.threshold_words ?? '')));
   const tail = 'N/A when the collection is off, only skipped, or set Don\'t monitor. ';
   if (!own.length) return 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
