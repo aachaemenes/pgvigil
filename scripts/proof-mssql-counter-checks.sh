@@ -221,9 +221,12 @@ echo "== C. on by an instance rule (F20) =="
 # judge <metric> <provoke> [collection]: an enabled instance rule at the seed's thresholds for 0 minutes; a read, the
 # load, a read, the run (warning or critical); two quiet reads, the run (ok); the instance rule ended
 SEEDOF() { grep "^counters.$1|" "$TMPD/seed-a"; }
-# the quiet reads' spacing: the collector's own batches must stay under the ratios' 1 batch/s floor between two reads
-# (3 s apart they did not: run chk3 read compilations per 100 batches at warning with nothing else running)
-QUIET=12
+# the quiet reads' spacing: the rule judges the newest point, so the first quiet read comes 2 s after the load's (it
+# takes what SQL Server publishes late) and the second QUIET s after it. One read of mssql_counters sends the server
+# about 19 batches of its own: QUIET 30 keeps them at about 0.6 batch/s, under the ratios' 1 batch/s floor, as the
+# 60 s interval does (run chk3 at 3 s and chk9 at 12 s read page lookups per batch over 100 at 1.3-1.6 batches/s with
+# nothing of the proof running)
+QUIET=30
 judge() {
   local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st1 st2 f1 f2 v
   s=$(SEEDOF "$m"); op=$(cut -d'|' -f3 <<<"$s"); w=$(cut -d'|' -f4 <<<"$s"); cr=$(cut -d'|' -f5 <<<"$s")
@@ -234,7 +237,7 @@ judge() {
   # read a ratio's full scans and its index searches in two reads 0.3 s apart)
   col "$c"; $fn; sleep 2; col "$c"; run; st1=$(state "$m"); f1=$(findings "$m"); v=$(point "$m")
   [[ -n "${4:-}" ]] && echo "   $m's inputs at that read: $($4)"
-  sleep "$QUIET"; col "$c"; sleep "$QUIET"; col "$c"; run; st2=$(state "$m"); f2=$(findings "$m")
+  sleep 2; col "$c"; sleep "$QUIET"; col "$c"; run; st2=$(state "$m"); f2=$(findings "$m")
   [[ -n "${4:-}" && "$st2" != ok ]] && echo "   $m's inputs after the quiet reads: $($4)"
   rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$rid\"}" >/dev/null
   echo "   $m ($op ${w:-} / ${cr:-}): $v after the load -> $st1 ($f1 finding); quiet -> $st2 ($f2)"
