@@ -102,22 +102,34 @@ func (s *Server) keptWrite(ctx context.Context, op, by, who, client string, pay 
 	return s.importJSON(ctx, "import_report_mail_kept", pay)
 }
 
+// dailyApplyTimeout bounds one try of the file's setting (its reads and its one write), under the minute between tries
+const dailyApplyTimeout = 45 * time.Second
+
 // applyDailyChecks applies the file's setting: called by RunReportMail at its start and each minute; it does nothing
 // once the repository has answered. It never runs where report mail is off (RunReportMail returns before it).
+// RunReportMail's loop is its one caller, so no two tries run at once: the reads and the write run outside the lock
+// and under a deadline, and a repository that stalls never holds the Daily checks page (its part takes the same lock).
 func (s *Server) applyDailyChecks(ctx context.Context) {
 	st := s.dailyChecksOf()
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.settled {
+	block, settled := st.block, st.settled
+	st.mu.Unlock()
+	if settled {
 		return
 	}
-	why, done := s.applyDailyChecksOnce(ctx, st.block)
+	actx, cancel := context.WithTimeout(ctx, dailyApplyTimeout)
+	why, done := s.applyDailyChecksOnce(actx, block)
+	cancel()
+	if ctx.Err() != nil {
+		return // the server is stopping: what the try found is no state of the setting
+	}
+	st.mu.Lock()
 	st.why, st.settled = why, done
-	if why != st.logged {
-		st.logged = why
-		if why != "" {
-			s.log.Warn("daily checks mail: the setting is not applied", "setting", reportmail.DailyChecksKey, "reason", why)
-		}
+	said := why == st.logged
+	st.logged = why
+	st.mu.Unlock()
+	if !said && why != "" {
+		s.log.Warn("daily checks mail: the setting is not applied", "setting", reportmail.DailyChecksKey, "reason", why)
 	}
 }
 
@@ -143,6 +155,8 @@ func (s *Server) applyDailyChecksOnce(ctx context.Context, block *reportmail.Dai
 			s.log.Info("daily checks mail: "+what, "detail", res["detail"])
 			return "", true
 		case "unchanged":
+			// said once, at the settle: the try ran and found the repository as the file says
+			s.log.Info("daily checks mail: the setting is as kept: nothing written", "detail", res["detail"])
 			return "", true
 		}
 		// a refusal of the setting's own values: trying again each minute would only fill the log
@@ -211,12 +225,15 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 	if err := s.pool.QueryRow(ctx, sqlKeptMigrated).Scan(&migrated); err != nil {
 		return nil, err
 	}
-	live, err := s.keptLive(ctx)
-	if err != nil {
-		return nil, err
+	var live keptRow // none on a repository that is not migrated yet: the part says so in words, with nothing read
+	if migrated {
+		var err error
+		if live, err = s.keptLive(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if live.id != 0 {
-		out["kept"], out["schedule_id"], out["kept_by"] = true, live.id, live.by
+		out["kept"], out["schedule_id"], out["kept_by"], out["cron"] = true, live.id, live.by, live.cron
 		out["at"], out["timezone"], out["recipients"], out["channel"], out["as"], out["attach_xlsx"] = reportmail.AtOfCron(live.cron), live.tz, live.to, live.channel, live.owner, live.xlsx
 		if live.next != nil {
 			out["next_at"] = live.next.UTC().Format(time.RFC3339)
@@ -238,12 +255,19 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 		reason = "Mailing the Daily checks needs a migrated repository: " + dailyNotMigrated + "."
 	case owner == "file":
 		reason = "The Daily checks mail is kept by pgvigil.yaml (" + reportmail.DailyChecksKey + "): change it there."
-		if fileWhy != "" {
+		switch {
+		case fileWhy != "" && live.id != 0:
+			// the line above says "on, next send ...": that is the schedule kept before, not what the file now says
+			reason += " " + dailyNotApplied(fileWhy)
+		case fileWhy != "":
 			reason += " It is not kept yet: " + fileWhy + "."
 		}
 	case owner == "file-off":
 		reason = "The Daily checks mail is turned off in pgvigil.yaml (" + reportmail.DailyChecksKey + ".enabled: false)."
-		if fileWhy != "" {
+		switch {
+		case fileWhy != "" && live.id != 0:
+			reason += " " + dailyNotApplied(fileWhy)
+		case fileWhy != "":
 			reason += " " + fileWhy + "."
 		}
 	case channels == 0 && live.id == 0:
@@ -254,6 +278,13 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 		out["browser_note"] = "no Chromium-family browser on this server (PGVIGIL_BROWSER names one): the daily mail cannot be drawn here, and each turn is a failed mail"
 	}
 	return out, nil
+}
+
+// dailyNotApplied is the page's sentence for a setting of the file that could not be applied while a schedule kept
+// before is live: that schedule goes on mailing as it was (its hour, its addresses), and the page must not read as if
+// the file's change were in force.
+func dailyNotApplied(why string) string {
+	return "The file's change is not applied: the schedule still runs as before (" + why + ")."
 }
 
 // dailyRequest is POST /api/reportmail's body for the ops daily_keep and daily_drop

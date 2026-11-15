@@ -673,18 +673,18 @@ for f in sorted(glob.glob(os.path.join(W, 'sink', '*.eml'))):
         mails[int(m['X-Pgvigil-Report'])] = m
 class P(HTMLParser):
     def __init__(s):
-        super().__init__(convert_charrefs=True); s.tags = set(); s.bad = []; s.grids = []; s.h3 = None; s.cur = None; s.cell = None; s.unstyled = 0; s.inh3 = False; s.skip = False; s.ps = []; s.p = None
+        super().__init__(convert_charrefs=True); s.tags = set(); s.bad = []; s.grids = []; s.h3 = None; s.cur = None; s.cell = None; s.unstyled = 0; s.inh3 = False; s.skip = False; s.ps = []; s.p = None; s.last = None
     def handle_starttag(s, t, a):
         a = dict(a); s.tags.add(t)
         if 'class' in a: s.bad.append('class=' + a['class'])
         for k, v in a.items():
             if k.startswith('on'): s.bad.append(k)
             if v and 'javascript:' in v.lower(): s.bad.append('javascript:')
-        if t == 'h3': s.inh3 = True; s.h3 = ''
+        if t == 'h3': s.inh3 = True; s.h3 = ''; s.last = None
         if t == 'p': s.p = ''
         if t == 'table':
             s.skip = a.get('role') == 'presentation'
-            if not s.skip: s.cur = {'name': s.h3, 'head': [], 'rows': []}
+            if not s.skip: s.cur = {'name': s.h3, 'head': [], 'rows': [], 'after': []}   # after: the paragraphs under the table, up to the next heading
         if t == 'tr' and s.cur is not None and not s.skip: s.row = []
         if t in ('th', 'td'):
             if 'style' not in a: s.unstyled += 1
@@ -693,7 +693,10 @@ class P(HTMLParser):
             s.cell = {'t': '', 'bg': bg and bg.group(1), 'fg': fg and fg.group(1), 'th': t == 'th', 'bold': 'font-weight:bold' in st}
     def handle_endtag(s, t):
         if t == 'h3': s.inh3 = False
-        if t == 'p' and s.p is not None: s.ps.append(re.sub(r'\s+', ' ', s.p).strip()); s.p = None
+        if t == 'p' and s.p is not None:
+            s.ps.append(re.sub(r'\s+', ' ', s.p).strip())
+            if s.last is not None: s.last['after'].append(s.ps[-1])
+            s.p = None
         if t in ('th', 'td') and s.cell is not None and s.cur is not None and not s.skip:
             s.cell['t'] = re.sub(r'\s+', ' ', s.cell['t']).strip(); s.row.append(s.cell)
         if t in ('th', 'td'): s.cell = None
@@ -701,7 +704,7 @@ class P(HTMLParser):
             if s.row and all(c['th'] for c in s.row) and not s.cur['head']: s.cur['head'] = s.row
             else: s.cur['rows'].append(s.row)
         if t == 'table':
-            if s.cur is not None and not s.skip: s.grids.append(s.cur)
+            if s.cur is not None and not s.skip: s.grids.append(s.cur); s.last = s.cur
             s.cur = None; s.skip = False
     def handle_data(s, d):
         if s.inh3: s.h3 += d
@@ -768,6 +771,7 @@ for sid, s in sorted(sends.items()):
         if sg.get('empty') and not g['rows']:
             empties += 1
             if sg.get('words') and sg['words'] not in p.ps: problems.append(f'mail {sid} {sg["named"]}: the empty grid\'s sentence {sg["words"]!r} is not in the body ({[x for x in p.ps if x][:4]})')
+            if sg.get('words') and 'No rows.' in g['after']: problems.append(f'mail {sid} {sg["named"]}: No rows. stands under the empty grid beside its own sentence {sg["words"]!r}')
         for i, (mr, sr) in enumerate(zip(g['rows'], sg['cells'])):
             rows_i = [sr] + [ag['cells'][i] for ag in ags if i < len(ag['cells']) and len(ag['cells'][i]) == len(sr)]
             miss = lambda r: sum(1 for mc, c in zip(mr, r) if mc['t'] != c['t'])

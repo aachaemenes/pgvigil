@@ -78,8 +78,18 @@ while the sender has recorded no smtp channel; on a server with no browser it sa
 `pgvigil serve` applies the block once, at its start (it reads `pgvigil.yaml` once): the schedule is made, updated in
 place or ended, and a block equal to what is kept writes nothing. A setting that cannot be kept yet - the sender has
 not recorded the channel, the repository is not migrated, the user cannot sign in - is tried again each minute
-without a write, its reason logged once and shown on the page. Two servers on one repository carry the same block;
-with different blocks the last one started wins and nothing is rewritten after that.
+without a write, its reason logged once and shown on the page. While a schedule kept before is live, that schedule
+goes on as it was (its hour, its addresses, its user) until the file's setting can be kept: the page then says *The
+file's change is not applied: the schedule still runs as before (<why>)*, so a change that also took an address out
+is not in force until the reason is gone. Two servers on one repository carry the same block; with different blocks
+the last one started wins and nothing is rewritten after that. A setting equal to what is kept is logged once as
+*the setting is as kept: nothing written*.
+
+An hour or a zone changed while that day's turn is being drawn refuses the turn being drawn and moves the next send
+to the new hour's next time, as an edit of any schedule does: when that time is tomorrow, that day has no Daily
+checks mail. A change of the addresses, the user or the channel keeps the turn and draws it again with the new
+values. A refusal of the block names the key and the line of the file it stands on, never the value written there
+(`pgvigil report` prints it in its configuration check line).
 
 The mail goes out every day, also on a day every check passes: its body then holds the checks grid's header row and
 *All checks pass: ...*. The page shows the state at the send (its range applies to the instance tabs), so the

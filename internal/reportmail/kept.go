@@ -17,7 +17,6 @@ package reportmail
 // control decides; off: the mail is off and the page says the file turned it off).
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -48,17 +47,22 @@ type DailyChecks struct {
 	Channel string   `yaml:"channel"`
 }
 
-// reportsBlock is pgvigil.yaml's reports: block: the keys it knows, read strictly
-type reportsBlock struct {
-	DailyChecks *DailyChecks `yaml:"daily_checks"`
+// dailyKeys are the block's keys in the order the docs list them, each with what its value is (the words of a refusal)
+var dailyKeys = []struct{ key, is string }{
+	{"enabled", "true or false"},
+	{"at", "the hour of the daily mail, HH:MM (one value)"},
+	{"tz", "the time zone of at, an IANA name or UTC (one value)"},
+	{"to", "a list of mail addresses, as [dba@example.org]"},
+	{"as", "the name of a UI user (one value)"},
+	{"channel", "the name of an smtp channel of the alerts: block (one value)"},
 }
 
 // On says whether the block turns the mail on.
 func (d *DailyChecks) On() bool { return d != nil && d.Enabled != nil && *d.Enabled }
 
 // LoadDailyChecks reads pgvigil.yaml's reports.daily_checks: nil when the file has no such block, the checked block
-// otherwise. An unknown key under reports: or under the block, a block without `enabled`, or an enabled block with a
-// key missing or wrong is an error that names the key.
+// otherwise. An unknown or repeated key under reports: or under the block, a value of the wrong kind, a block without
+// `enabled`, or an enabled block with a key missing or wrong is an error that names the key.
 func LoadDailyChecks(path string) (*DailyChecks, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -71,7 +75,10 @@ func LoadDailyChecks(path string) (*DailyChecks, error) {
 	return d, nil
 }
 
-// ParseDailyChecks is LoadDailyChecks on the file's bytes.
+// ParseDailyChecks is LoadDailyChecks on the file's bytes. The block is read key by key from the file's own nodes, so a
+// refusal names the key in plain words with the line it stands on in the file, never the value (the support report
+// prints the refusal), and an alias (`to: *dba_list`, its anchor anywhere in the file) or a merge key reads as what it
+// stands for.
 func ParseDailyChecks(raw []byte) (*DailyChecks, error) {
 	var top struct {
 		Reports yaml.Node `yaml:"reports"`
@@ -79,30 +86,153 @@ func ParseDailyChecks(raw []byte) (*DailyChecks, error) {
 	if err := yaml.Unmarshal(raw, &top); err != nil {
 		return nil, err
 	}
-	if top.Reports.Kind == 0 || top.Reports.Tag == "!!null" {
+	reports := aliased(&top.Reports)
+	if reports.Kind == 0 || isNull(reports) {
 		return nil, nil
 	}
-	if top.Reports.Kind != yaml.MappingNode {
-		return nil, errors.New("reports: is a block of keys (daily_checks)")
+	if reports.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("reports: is a block of keys (daily_checks) (line %d of the file)", top.Reports.Line)
 	}
-	// the block again through a strict decoder: yaml.Node.Decode takes any key, a Decoder with KnownFields does not
-	sub, err := yaml.Marshal(&top.Reports)
+	pairs, err := blockPairs(reports, "reports", []string{KeptDailyChecks})
 	if err != nil {
-		return nil, fmt.Errorf("reports: %w", err)
-	}
-	var rb reportsBlock
-	dec := yaml.NewDecoder(bytes.NewReader(sub))
-	dec.KnownFields(true)
-	if err := dec.Decode(&rb); err != nil {
-		return nil, fmt.Errorf("reports: %s (the keys are reports.daily_checks: enabled, at, tz, to, as, channel)", strings.TrimPrefix(err.Error(), "yaml: "))
-	}
-	if rb.DailyChecks == nil {
-		return nil, nil
-	}
-	if err := rb.DailyChecks.Check(); err != nil {
 		return nil, err
 	}
-	return rb.DailyChecks, nil
+	at, there := pairs[KeptDailyChecks]
+	if !there || isNull(aliased(at)) {
+		return nil, nil
+	}
+	block := aliased(at)
+	keys := make([]string, len(dailyKeys))
+	for i, k := range dailyKeys {
+		keys[i] = k.key
+	}
+	if block.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s: is a block of keys (%s) (line %d of the file)", DailyChecksKey, strings.Join(keys, ", "), at.Line)
+	}
+	if pairs, err = blockPairs(block, DailyChecksKey, keys); err != nil {
+		return nil, err
+	}
+	d := &DailyChecks{}
+	for _, k := range dailyKeys {
+		v, there := pairs[k.key]
+		if !there || isNull(aliased(v)) {
+			continue // not written, or a key with nothing after it: Check names it as required
+		}
+		good := true
+		switch k.key {
+		case "enabled":
+			var on bool
+			if good = v.Decode(&on) == nil; good {
+				d.Enabled = &on
+			}
+		case "at":
+			d.At, good = oneValue(v)
+		case "tz":
+			d.TZ, good = oneValue(v)
+		case "to":
+			d.To, good = valueList(v)
+		case "as":
+			d.As, good = oneValue(v)
+		case "channel":
+			d.Channel, good = oneValue(v)
+		}
+		if !good {
+			return nil, fmt.Errorf("%s: %s is %s (line %d of the file)", DailyChecksKey, k.key, k.is, v.Line)
+		}
+	}
+	if err := d.Check(); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// aliased is the node an alias stands for (the node itself when it is none)
+func aliased(n *yaml.Node) *yaml.Node {
+	for i := 0; n != nil && n.Kind == yaml.AliasNode && n.Alias != nil && i < 16; i++ {
+		n = n.Alias
+	}
+	return n
+}
+
+func isNull(n *yaml.Node) bool { return n.Kind == yaml.ScalarNode && n.Tag == "!!null" }
+
+// blockPairs is a block's keys with their values: its own pairs, and behind them what a merge key (<<) brings in (a
+// key of the block's own goes first, then the merged blocks in their order). A key the block does not know, or one
+// written twice, is refused by its name with the line it stands on in the file.
+func blockPairs(n *yaml.Node, where string, known []string) (map[string]*yaml.Node, error) {
+	out := map[string]*yaml.Node{}
+	var merges []*yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "" || k.Tag == "!" || k.Tag == "!!merge") {
+			merges = append(merges, v)
+			continue
+		}
+		is := false
+		for _, name := range known {
+			is = is || k.Kind == yaml.ScalarNode && k.Value == name
+		}
+		if !is {
+			name := "a key that is no plain word"
+			if k.Kind == yaml.ScalarNode {
+				name = k.Value
+			}
+			return nil, fmt.Errorf("%s: %s is not a key of the block (line %d of the file); its keys: %s", where, name, k.Line, strings.Join(known, ", "))
+		}
+		if _, twice := out[k.Value]; twice {
+			return nil, fmt.Errorf("%s: %s is written twice (line %d of the file)", where, k.Value, k.Line)
+		}
+		out[k.Value] = v
+	}
+	for _, m := range merges {
+		blocks := []*yaml.Node{m}
+		if aliased(m).Kind == yaml.SequenceNode {
+			blocks = aliased(m).Content
+		}
+		for _, b := range blocks {
+			if aliased(b).Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("%s: << merges a block of keys (line %d of the file)", where, b.Line)
+			}
+			more, err := blockPairs(aliased(b), where, known)
+			if err != nil {
+				return nil, err
+			}
+			for key, v := range more {
+				if _, own := out[key]; !own {
+					out[key] = v
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// oneValue is a key's one value as the file writes it (07:00 and "07:00" are the same text), false for a list or a block
+func oneValue(v *yaml.Node) (string, bool) {
+	v = aliased(v)
+	if v.Kind != yaml.ScalarNode {
+		return "", false
+	}
+	return v.Value, true
+}
+
+// valueList is a key's list of values, false for anything but a list of single values
+func valueList(v *yaml.Node) ([]string, bool) {
+	v = aliased(v)
+	if v.Kind != yaml.SequenceNode {
+		return nil, false
+	}
+	var out []string
+	for _, c := range v.Content {
+		c = aliased(c)
+		if c.Kind != yaml.ScalarNode {
+			return nil, false
+		}
+		if !isNull(c) {
+			out = append(out, c.Value)
+		}
+	}
+	return out, true
 }
 
 // Check says why the block cannot be used, nil when it can. An off block is checked for `enabled` alone: its other
@@ -129,8 +259,17 @@ func (d *DailyChecks) Check() error {
 	if len(d.To) == 0 {
 		return fmt.Errorf("%s: to is required (one to %d mail addresses)", DailyChecksKey, MaxRecipients)
 	}
+	// the refusals name the entry by its place, never its value: the support report prints them (pgvigil report)
+	for i, a := range d.To {
+		if strings.TrimSpace(a) == "" {
+			continue
+		}
+		if _, err := Recipients([]string{a}); err != nil {
+			return fmt.Errorf("%s: to: address %d of the list is not one mail address with a domain", DailyChecksKey, i+1)
+		}
+	}
 	if _, err := Recipients(d.To); err != nil {
-		return fmt.Errorf("%s: to: %w", DailyChecksKey, err)
+		return fmt.Errorf("%s: to: %w", DailyChecksKey, err) // the count only: at least one, at most MaxRecipients
 	}
 	if strings.TrimSpace(d.As) == "" {
 		return fmt.Errorf("%s: as is required (the UI user the page is drawn as: a scheduled page is drawn in that user's session)", DailyChecksKey)
@@ -140,12 +279,12 @@ func (d *DailyChecks) Check() error {
 		return fmt.Errorf("%s: channel is required (an smtp channel of the alerts: block)", DailyChecksKey)
 	}
 	if strings.HasPrefix(ch, "contact-") {
-		return fmt.Errorf("%s: channel %s is an application contact's route: the mail goes through an smtp channel of the alerts: block", DailyChecksKey, ch)
+		return fmt.Errorf("%s: channel names an application contact's route (contact-...): the mail goes through an smtp channel of the alerts: block", DailyChecksKey)
 	}
 	return nil
 }
 
-// Cron is the block's daily line ('MM HH * * *').
+// Cron is the block's daily line ('M H * * *').
 func (d *DailyChecks) Cron() (string, error) { return CronFor("daily", d.At, nil, "") }
 
 // KeptRequest is one keep of the kept schedule: the block's fields, or the Daily checks page's dialog.

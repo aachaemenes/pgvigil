@@ -121,8 +121,11 @@ reports:
 ```
 
 Off by default: no block, no mail (the Daily checks page's own **Mail daily...** then decides). With `enabled: true`
-every key is required, and a key the block does not know, or a block without `enabled`, stops `pgvigil serve` at its
-start with the key's name. `pgvigil serve` reads the block once, at its start. What it keeps, who wins between the
+every key is required, and a key the block does not know or writes twice, a value of the wrong kind (`to:` is a list,
+`enabled:` is true or false), or a block without `enabled`, stops `pgvigil serve` at its start with the key's name
+and its line in the file; `pgvigil report`'s configuration check line says the same. There is no separate check
+command: `pgvigil serve` and `pgvigil report` are where the block is checked. An alias (`to: *dba_list`) and a merge
+key read as what they stand for. `pgvigil serve` reads the block once, at its start. What it keeps, who wins between the
 file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily checks mail*. In a support report
 (`pgvigil report`) the switch, the hour and the zone are shown; the addresses, the user and the channel are masked.
 

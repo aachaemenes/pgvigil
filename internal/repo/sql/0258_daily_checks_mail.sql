@@ -42,7 +42,8 @@ CREATE OR REPLACE FUNCTION pgvigil.report_mail_kept_name(p_kept_as text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT CASE p_kept_as WHEN 'daily_checks' THEN 'Daily checks' END $$;
 
 -- import_report_mail_kept: one attempt on the kept schedule. p_payload: {op, by, ui_user, client, kept_as} and
---   keep:  as (the UI user the page is drawn as), recipients, channel, cron (a daily line, 'MM HH * * *'), timezone,
+--   keep:  as (the UI user the page is drawn as), recipients, channel, cron (a daily line, 'M H * * *': a minute
+--          0-59 and an hour 0-23 without a leading zero, as internal/reportmail CronFor writes it), timezone,
 --          attach_xlsx, next_at (the server's: the cron line's next time in the zone; checked only to be in the future,
 --          and used only when the row is made or its hour or zone changes)
 --   drop:  nothing more (the live row is ended; no live row is 'unchanged')
@@ -120,8 +121,9 @@ BEGIN
       END IF;
       IF v_why IS NULL AND v_tz IS NULL THEN
         v_why := 'the Daily checks mail needs its time zone';
-      ELSIF v_why IS NULL AND v_cron !~ '^[0-9]{1,2} [0-9]{1,2} [*] [*] [*]$' THEN
-        v_why := 'the Daily checks mail is sent once a day: its cron line is MM HH * * *';
+      ELSIF v_why IS NULL AND v_cron !~ '^([0-9]|[1-5][0-9]) ([0-9]|1[0-9]|2[0-3]) [*] [*] [*]$' THEN
+        -- a minute 0-59 and an hour 0-23 as the server writes them (no leading zero): equal settings compare equal
+        v_why := 'the Daily checks mail is sent once a day: its cron line is M H * * * (a minute 0-59, an hour 0-23)';
       END IF;
       IF v_why IS NULL AND v_old.schedule_id IS NOT NULL
          AND v_old.recipients = v_rcpt AND v_old.channel = v_chan AND v_old.cron = v_cron AND v_old.timezone = v_tz

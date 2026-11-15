@@ -127,7 +127,9 @@ export function routeOf(hash = location.hash): string {
 // bodySections: the mail body's sections in the page's order - every grid, one with no row too (its header row and
 // the sentence the screen shows for it) - with each one's number columns and, for an empty grid, its sentence. The
 // sections with their empties are export.ts's (the workbook's); which of them is an empty grid is read from the page in
-// the same order (a table, or a p.empty that names columns). Should the two ever disagree, the body is the tables alone.
+// the same order (a table, or a p.empty that names columns). Should the two ever disagree, the body is the tables alone
+// (both readings use one selector and one filter today, so that branch is not reached; on a page whose grids are all
+// empty it would mail the header lines and no grid).
 function bodySections(root: ParentNode, fallback: string): { secs: Section[]; nums: boolean[][]; words: (string | undefined)[] } {
   const tables = sections(root, fallback), tnums = numbers(root);
   const all = sections(root, fallback, true);
@@ -435,7 +437,7 @@ async function act(op: string, id: unknown, words: string): Promise<string> {
 
 interface DailyState {
   kept: boolean; owner: string; writable: boolean; reason?: string; user?: string; kept_by?: string; schedule_id?: number;
-  at?: string; timezone?: string; recipients?: string[]; channel?: string; as?: string; next_at?: string; attach_xlsx?: boolean;
+  at?: string; cron?: string; timezone?: string; recipients?: string[]; channel?: string; as?: string; next_at?: string; attach_xlsx?: boolean;
   as_off?: string; browser_note?: string;
 }
 
@@ -447,11 +449,14 @@ export async function dailyMailControl(ctx: Ctx): Promise<HTMLElement | null> {
   if (ctx.tag || ctx.instance != null) return null;
   const line = el('p', { class: 'meta daily-mail' });
   let d: DailyState;
-  try { d = (await get<{ daily: DailyState }>('reportmail', { part: 'daily' })).daily; }
-  catch (e) { line.textContent = `Mail daily: its state could not be read (${message(e)}).`; return line; }
+  try {
+    const got = (await get<{ daily?: DailyState }>('reportmail', { part: 'daily' })).daily;
+    if (!got) throw new Error('the server answered without the state of the mail');
+    d = got;
+  } catch (e) { line.textContent = `Mail daily: its state could not be read (${message(e)}).`; return line; }
   const n = d.recipients?.length ?? 0;
   line.append(d.kept ? badge('on', 'ok') : badge('off', 'none'), ' ',
-    d.kept ? `Mail daily: on, next send ${d.next_at ? fmtTime(d.next_at) : 'not set'} (${d.at ?? ''} ${d.timezone ?? ''}) to ${n} address${n === 1 ? '' : 'es'}, drawn as ${d.as ?? ''}. `
+    d.kept ? `Mail daily: on, next send ${d.next_at ? fmtTime(d.next_at) : 'not set'} (${d.at || d.cron || ''} ${d.timezone ?? ''}) to ${n} address${n === 1 ? '' : 'es'}, drawn as ${d.as ?? ''}. `
       : 'Mail daily: off. ');
   const why = el('span', { class: 'off-reason' });
   const off = d.writable ? null : (d.reason || 'the Daily checks mail cannot be changed here');

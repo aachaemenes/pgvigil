@@ -84,7 +84,8 @@ func TestParseDailyChecks(t *testing.T) {
 		{"no channel", drop("channel"), "channel is required"},
 		{"a bad hour", strings.Replace(dailyWhole, "at: 07:00", "at: 25:00", 1), "at:"},
 		{"a bad zone", strings.Replace(dailyWhole, "America/Los_Angeles", "Mars/Olympus", 1), "tz:"},
-		{"a bad address", strings.Replace(dailyWhole, "DBA@Example.org", "nobody", 1), "to:"},
+		{"a bad address", strings.Replace(dailyWhole, "DBA@Example.org", "nobody", 1), "to: address 1 of the list is not one mail address"},
+		{"a bad second address", strings.Replace(dailyWhole, "second@example.org", "second@", 1), "to: address 2 of the list"},
 		{"51 addresses", strings.Replace(dailyWhole, "[DBA@Example.org, second@example.org]", "["+strings.Join(many, ", ")+"]", 1), "at most 50"},
 		{"an application contact's route", strings.Replace(dailyWhole, "channel: mail", "channel: contact-7", 1), "application contact"},
 	} {
@@ -92,6 +93,84 @@ func TestParseDailyChecks(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: want an error naming %q, got %+v, %v", c.name, c.want, d, err)
 		}
+		// a value the person wrote is never in the refusal (the hour and the zone are settings, shown in the report anyway)
+		for _, no := range []string{"nobody", "second@", "contact-7", "Mars/Olympus"} {
+			if err != nil && strings.Contains(err.Error(), no) && !strings.Contains(c.name, "zone") {
+				t.Errorf("%s: the refusal holds the value %q: %v", c.name, no, err)
+			}
+		}
+	}
+}
+
+// the refusal a person reads: the key by its name in plain words, with the line it stands on in the file, and never
+// the value (the support report prints the refusal); no Go type, no YAML tag, one line
+func TestParseDailyChecksWords(t *testing.T) {
+	for _, c := range []struct{ name, yaml, want string }{
+		{"a typo of the block's name", strings.Replace(dailyWhole, "daily_checks:", "daily_check:", 1),
+			"reports: daily_check is not a key of the block (line 5 of the file); its keys: daily_checks"},
+		{"a typo of enabled", strings.Replace(dailyWhole, "enabled: true", "enable: true", 1),
+			"reports.daily_checks: enable is not a key of the block (line 6 of the file); its keys: enabled, at, tz, to, as, channel"},
+		{"an unknown key at the end", dailyWhole + "    only_failing: true\n", "reports.daily_checks: only_failing is not a key of the block (line 12 of the file)"},
+		{"a key written twice", dailyWhole + "    at: 08:00\n", "reports.daily_checks: at is written twice (line 12 of the file)"},
+		{"to as one string", strings.Replace(dailyWhole, "[DBA@Example.org, second@example.org]", "DBA@Example.org", 1),
+			"reports.daily_checks: to is a list of mail addresses, as [dba@example.org] (line 9 of the file)"},
+		{"enabled: maybe", strings.Replace(dailyWhole, "enabled: true", "enabled: maybe", 1), "reports.daily_checks: enabled is true or false (line 6 of the file)"},
+		{"at as a list", strings.Replace(dailyWhole, "at: 07:00", "at: [7, 0]", 1), "reports.daily_checks: at is the hour of the daily mail, HH:MM (one value) (line 7 of the file)"},
+		{"as as a block", strings.Replace(dailyWhole, "as: Alice", "as: {name: Alice}", 1), "reports.daily_checks: as is the name of a UI user (one value) (line 10 of the file)"},
+		{"at: 0700", strings.Replace(dailyWhole, "at: 07:00", "at: 0700", 1), "reports.daily_checks: at: "},
+		{"the block as a list", "reports:\n  daily_checks: [a]\n", "reports.daily_checks: is a block of keys (enabled, at, tz, to, as, channel) (line 2 of the file)"},
+		{"reports as a list", "reports: [a]\n", "reports: is a block of keys (daily_checks) (line 1 of the file)"},
+		{"an unknown key in a merged block", "base: &b {tz: UTC, colour: blue}\nreports:\n  daily_checks:\n    <<: *b\n    enabled: false\n",
+			"reports.daily_checks: colour is not a key of the block (line 1 of the file)"},
+	} {
+		d, err := ParseDailyChecks([]byte(c.yaml))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want an error holding %q, got %+v, %v", c.name, c.want, d, err)
+			continue
+		}
+		for _, no := range []string{"yaml", "unmarshal", "reportmail.", "!!", "\n", "DBA@Example", "maybe", "Alice"} {
+			if strings.Contains(err.Error(), no) {
+				t.Errorf("%s: the refusal holds %q: %v", c.name, no, err)
+			}
+		}
+	}
+
+	// an alias reads as what it stands for, its anchor anywhere in the file (config.Load takes the same file); a merge
+	// key brings its keys in, and a key of the block's own goes first
+	const anchored = `
+alerts:
+  - name: mail
+    kind: smtp
+    smtp: {host: relay.example.org, to: &dba_list [dba@example.org, second@example.org]}
+defaults: &daily
+  tz: UTC
+  channel: mail
+reports:
+  daily_checks:
+    <<: *daily
+    enabled: true
+    at: 07:00
+    tz: America/Los_Angeles
+    to: *dba_list
+    as: alice
+`
+	d, err := ParseDailyChecks([]byte(anchored))
+	if err != nil || d == nil || !d.On() || len(d.To) != 2 || d.To[1] != "second@example.org" || d.TZ != "America/Los_Angeles" || d.Channel != "mail" {
+		t.Errorf("an alias from another block and a merge key: %+v, %v", d, err)
+	}
+	if d, err := ParseDailyChecks([]byte("shared: &rep\n  daily_checks:\n    enabled: false\nreports: *rep\n")); err != nil || d == nil || d.On() {
+		t.Errorf("reports: as an alias: %+v, %v", d, err)
+	}
+	// yes and no are a switch as everywhere in the file (YAML 1.1's words, read as the file's other switches read them)
+	if d, err := ParseDailyChecks([]byte(strings.Replace(dailyWhole, "enabled: true", "enabled: yes", 1))); err != nil || d == nil || !d.On() {
+		t.Errorf("enabled: yes: %+v, %v", d, err)
+	}
+	if d, err := ParseDailyChecks([]byte(strings.Replace(dailyWhole, "enabled: true", "enabled: no", 1))); err != nil || d == nil || d.On() {
+		t.Errorf("enabled: no: %+v, %v", d, err)
+	}
+	// a key with nothing after it is a missing key, named as required
+	if d, err := ParseDailyChecks([]byte(strings.Replace(dailyWhole, "channel: mail", "channel:", 1))); err == nil || !strings.Contains(err.Error(), "channel is required") {
+		t.Errorf("channel: with nothing after it: %+v, %v", d, err)
 	}
 }
 

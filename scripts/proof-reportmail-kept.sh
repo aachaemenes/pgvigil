@@ -9,13 +9,18 @@
 #       calls are refused (permission denied); the reader reads kept_as.
 #   K2  keep twice: the first (the user and an address in capitals) makes ONE live row stored in lower case; the second
 #       (lower case) is 'unchanged': changed_at NULL, next_at unmoved, one log row in all.
-#   K3  two sessions: the first holds its keep (another hour) open for 4 s, the second asks the same keep 1 s later: it
-#       WAITS (2 s or more), answers 'unchanged', one live row, one log row more (the first's).
+#   K3  two sessions and NO live row (K2's row dropped first): the first holds its keep open for 6 s; the second asks
+#       the same keep only once pg_locks shows the first's advisory lock granted: it WAITS (2 s or more) and answers
+#       'unchanged'; one live row (a new schedule), ONE keep logged (the first's, done), none refused. With a live row
+#       the row's own lock would give the same answer, lock or no lock; with none, only the advisory lock makes the
+#       second wait before it looks - without it the index would refuse it ('another live Daily checks mail exists').
 #   K4  the ordinary door on the kept row: import_report_mail end / disable / enable refused with 'kept by the Daily
 #       checks mail setting'; the page's keep and drop on the file-kept row refused ('kept by pgvigil.yaml'); a second
 #       live kept row inserted by hand is refused by the unique index; drop ends it, again is 'unchanged'.
 #   K5  the page's state (GET /api/reportmail?part=daily): on the signed-in serve owner page, off, writable; on the
-#       -no-login serve writable false with the reason naming -no-login, and its POST 403.
+#       -no-login serve writable false with the reason naming -no-login, and its POST 403. (A -no-login serve answers
+#       the part to any caller, with a kept row's addresses, channel and user: the exposure its schedules part has
+#       there already, not a new one; this row checks writable and the reason only.)
 #   K6  the page's keep through the door (op daily_keep as the signed-in user): a row kept_by page, drawn as that user,
 #       next send the next 07:00 UTC; the Report mail door's end of it 409 with the setting's words.
 #   K7  the control on the Daily checks page (a headless Chromium): the line says 'Mail daily: on, next send ...,
@@ -28,12 +33,18 @@
 #       as another user in capitals) updates the SAME schedule_id: kept_by file, drawn as that user, the cron and the
 #       zone the file's; its page state is owner file, read only with 'kept by pgvigil.yaml'; its POST daily_drop 409;
 #       the plain serve's daily_keep 409 too; the turn brought due is drawn as the NEW user (requested_by).
-#   K10 the same block again (the serve restarted): nothing written (the log's count and changed_at unmoved).
+#   K10 the same block again (the serve restarted): its log says once more 'the setting is as kept: nothing written'
+#       (the try ran), and nothing is written (the log's count, changed_at and the next send unmoved).
 #   K11 enabled: false: the serve ends the row (ended_by pgvigil.yaml); its page says 'turned off in pgvigil.yaml'; a
 #       page-made row is ended by it too.
 #   K12 the block removed: a row the file made is ended at the start of a serve whose file has no block.
-#   K13 an `as` user who cannot sign in: nothing kept, nothing written, the page's reason says so.
-#   K14 a block that is not whole stops serve at start by the key's name: 'enable:' (a typo), no channel.
+#   K13 an `as` user who cannot sign in: nothing kept, nothing written, the page's reason says so ('It is not kept
+#       yet'). Then, with a schedule kept before (made by the page on the plain serve) while the file's setting still
+#       cannot be applied: the row is untouched and that serve's page says 'on' with 'The file's change is not applied:
+#       the schedule still runs as before (<why>)'.
+#   K14 a block that is not whole stops serve at start (an exit code that is neither 0 nor timeout's 124) with words
+#       only the refusal has: 'reports.daily_checks: enable is not a key of the block (line <n> of the file)', <n> the
+#       line of the typo in that file; 'reports.daily_checks: channel is required'.
 #   G1  a repository migrated and never seeded, the sender never run: the page-owner serve says the mail needs an smtp
 #       channel (writable false).
 #   G2  the block on there: for 130 s (three tries) nothing is kept, NOTHING is written to report_mail_log, the serve's
@@ -96,16 +107,28 @@ r=$(kept "$(kbody keep file pgvigil.yaml "$UIUSER" '5 7 * * *' '["daily@pgvigil.
 [[ $(kj "$r" outcome) == unchanged && $(klive "changed_at is null") == true && $(klive next_at) == "$KNEXT" && $(nlog) == 1 && $(nlive) == 1 ]] || fail "K2: the same again: $r, log $(nlog), next $(klive next_at) (was $KNEXT)"
 ok "K2: keep makes one live row (schedule $KID, the user and the address stored in lower case); the same again is 'unchanged': nothing written, nothing logged"
 
-# ---- K3: two sessions ------------------------------------------------------------------------------------------------
+# ---- K3: two sessions and no live row: the advisory lock ----------------------------------------------------------------
+r=$(kept '{"op":"drop","by":"file","ui_user":"pgvigil.yaml"}')
+[[ $(kj "$r" outcome) == done && $(nlive) == 0 ]] || fail "K3: the drop before the two sessions: $r, live $(nlive)"
+nkeep() { q "select count(*) from pgvigil.report_mail_log where op = 'keep'"; }
+# klock: the granted advisory locks on the kept schedule's key (a bigint key is classid, its high half, and objid)
+klock() { q "select count(*) from pg_locks l where l.locktype = 'advisory' and l.granted and l.database = (select d.oid from pg_database d where d.datname = current_database()) and ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended('pgvigil.report_mail_kept:daily_checks', 0)"; }
+[[ $(klock) == 0 ]] || fail "K3: the kept schedule's advisory lock is held before the two sessions"
+K3KEEP=$(nkeep); K3LOG=$(nlog)
 B8=$(kbody keep file pgvigil.yaml "$UIUSER" '0 8 * * *' '["daily@pgvigil.test"]')
-psql "$(dsn "$COL")" -XAtq -c "begin" -c "select pgvigil.import_report_mail_kept(clock_timestamp(), '$B8'::jsonb)" -c "select pg_sleep(4)" -c "commit" > "$WORK/k3a.out" 2>&1 &
+psql "$(dsn "$COL")" -XAtq -c "begin" -c "select pgvigil.import_report_mail_kept(clock_timestamp(), '$B8'::jsonb)" -c "select pg_sleep(6)" -c "commit" > "$WORK/k3a.out" 2>&1 &
 K3A=$!
-sleep 1
+held=n
+for _ in $(seq 1 100); do [[ $(klock) == 1 ]] && { held=y; break; }; sleep 0.1; done
+[[ $held == y ]] || fail "K3: the first session's advisory lock was never seen granted: $(cat "$WORK/k3a.out")"
 T0=$(date +%s); r=$(kept "$B8"); T1=$(date +%s)
 wait "$K3A" || fail "K3: the first session: $(cat "$WORK/k3a.out")"
-[[ $(kj "$r" outcome) == unchanged && $((T1 - T0)) -ge 2 && $(nlive) == 1 && $(klive cron) == "0 8 * * *" && $(klive schedule_id) == "$KID" && $(nlog) == 2 ]] \
-  || fail "K3: the second session: $r after $((T1 - T0)) s; live $(nlive), cron $(klive cron), log $(nlog); the first: $(cat "$WORK/k3a.out")"
-ok "K3: two sessions keeping at once: the second waited $((T1 - T0)) s for the first and answered 'unchanged'; one live row, the same schedule, one log row more"
+[[ $(kj "$(sed -n 1p "$WORK/k3a.out")" outcome) == done ]] || fail "K3: the first session's keep: $(cat "$WORK/k3a.out")"
+[[ $(kj "$r" outcome) == unchanged && $((T1 - T0)) -ge 2 && $(nlive) == 1 && $(klive cron) == "0 8 * * *" && $(klive schedule_id) != "$KID" && $(nkeep) == $((K3KEEP + 1)) && $(nlog) == $((K3LOG + 1)) ]] \
+  || fail "K3: the second session: $r after $((T1 - T0)) s; live $(nlive), cron $(klive cron), schedule $(klive schedule_id) (K2's was $KID), keeps logged $(nkeep) (were $K3KEEP), log $(nlog) (was $K3LOG); the first: $(cat "$WORK/k3a.out")"
+[[ $(q "select count(*) from pgvigil.report_mail_log where op = 'keep' and outcome = 'refused'") == 0 ]] || fail "K3: a keep was refused: $(q "select detail from pgvigil.report_mail_log where op = 'keep' and outcome = 'refused'")"
+KID=$(klive schedule_id)
+ok "K3: two sessions keeping at once with no live row: the second started once the first held the advisory lock, waited $((T1 - T0)) s and answered 'unchanged'; one live row (schedule $KID), one keep logged, none refused"
 
 # ---- K4: the refusals ------------------------------------------------------------------------------------------------
 for op in end disable enable; do
@@ -287,10 +310,13 @@ waitsent "$SEND" || fail "K9: mail $SEND not answered in 3 minutes"
 [[ $(q "select outcome || ' ' || requested_by from pgvigil.report_mail_sends where send_id = $SEND") == "sent $K3USER" ]] || fail "K9: the turn after the take-over: $(q "select outcome, requested_by, coalesce(error, render_error) from pgvigil.report_mail_sends where send_id = $SEND")"
 ok "K9: a serve with the block on took schedule $KID over in place (kept_by file, drawn as $K3USER, 06:30 America/Los_Angeles, two addresses in lower case); its page is read only ('kept by pgvigil.yaml'), its daily_drop and the plain serve's daily_keep 409; the next turn was drawn as $K3USER (mail $SEND)"
 L1=$(nlog); C1=$(klive changed_at); N1=$(klive next_at)
+naskept() { grep -c 'the setting is as kept' "$WORK/servek.log" || true; }
+A1=$(naskept)
 kstop "$SK"; kserve "$WORK/cfg-kon.yaml" "$PK" servek.log; SK=$KPID
-sleep 8
+askept() { [[ $(naskept) -gt $A1 ]] && echo y || echo n; }
+kwait 30 askept || fail "K10: the restarted serve did not say its setting is as kept within 30 s (said $(naskept) time(s), $A1 before): $(grep -i 'daily checks' "$WORK/servek.log" | tail -2)"
 [[ $(nlog) == "$L1" && $(klive changed_at) == "$C1" && $(klive next_at) == "$N1" && $(nlive) == 1 ]] || fail "K10: the same block again wrote: log $(nlog) (was $L1), changed_at $(klive changed_at) (was $C1)"
-ok "K10: the serve restarted with the same block: nothing written (the log, changed_at and the next send unmoved)"
+ok "K10: the serve restarted with the same block: it said 'the setting is as kept: nothing written', and nothing was written (the log, changed_at and the next send unmoved)"
 
 # ---- K11, K12: enabled: false ends it, a page-made one too; the block removed ends a file-made one ----------------------
 kstop "$SK"; kserve "$WORK/cfg-koff.yaml" "$PK" servekoff.log; SK=$KPID
@@ -315,15 +341,29 @@ kstop "$SK"; L2=$(nlog); kserve "$WORK/cfg-kgone.yaml" "$PK" servekgone.log; SK=
 sleep 8
 curl -s -c "$WORK/jark" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$UK/api/login" >/dev/null
 [[ $(nlive) == 0 && $(nlog) == "$L2" && $(kget "$UK" "$WORK/jark") == 200 && $(jget "d['daily']['reason']") == *"$U2USER is not a UI user who can sign in"* ]] || fail "K13: as a disabled user: live $(nlive), log $(nlog) (was $L2), $(cat "$WORK/body")"
+# a schedule kept before (here made by the page, on the plain serve) while the file's setting still cannot be applied
+c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}')
+[[ $c == 200 && $(klive kept_by) == page ]] || fail "K13: the plain serve's keep: $c $(cat "$WORK/body")"
+L3=$(nlog); KID=$(klive schedule_id)
+sleep 8
+[[ $(kget "$UK" "$WORK/jark") == 200 && $(jget "d['daily']['kept']") == True && $(jget "d['daily']['kept_by']") == page \
+   && $(jget "d['daily']['reason']") == *"The file's change is not applied: the schedule still runs as before (as: $U2USER is not a UI user who can sign in"* ]] \
+  || fail "K13: the file's serve's state over a schedule kept before: $(cat "$WORK/body")"
+[[ $(nlive) == 1 && $(klive schedule_id) == "$KID" && $(klive kept_by) == page && $(klive "recipients[1]") == page@pgvigil.test && $(nlog) == "$L3" ]] || fail "K13: the schedule kept before changed: $(klive "schedule_id::text || ' ' || kept_by || ' ' || recipients::text"), log $(nlog) (was $L3)"
 kstop "$SK"
-ok "K13: as: $U2USER (disabled): nothing kept, nothing written, the page says the user cannot sign in"
+c=$(postj reportmail '{"op":"daily_drop"}')
+[[ $c == 200 && $(nlive) == 0 ]] || fail "K13: the plain serve's Turn off of the page-made row: $c $(cat "$WORK/body")"
+ok "K13: as: $U2USER (disabled): nothing kept, nothing written, the page says the user cannot sign in; over a schedule kept before, that schedule is untouched and the page says the file's change is not applied and the schedule still runs as before"
 kcfg "$WORK/cfg-kbad1.yaml" "    enable: true\n    at: 06:30\n    tz: UTC\n    to: [a@pgvigil.test]\n    as: $UIUSER\n    channel: mail\n"
 kcfg "$WORK/cfg-kbad2.yaml" "    enabled: true\n    at: 06:30\n    tz: UTC\n    to: [a@pgvigil.test]\n    as: $UIUSER\n"
-for pair in "cfg-kbad1.yaml|enable" "cfg-kbad2.yaml|channel is required"; do
-  out=$(timeout 20 "$BIN" serve -config "$WORK/${pair%%|*}" -listen "127.0.0.1:$(freeport)" 2>&1) && fail "K14: serve started with ${pair%%|*}"
-  [[ $out == *"${pair##*|}"* ]] || fail "K14: ${pair%%|*}: serve's words do not name '${pair##*|}': $(tail -2 <<<"$out")"
+KBADLINE=$(( $(wc -l < "$CFG") + 3 ))   # kcfg: the file, then 'reports:', '  daily_checks:', and the block's first line
+for pair in "cfg-kbad1.yaml|reports.daily_checks: enable is not a key of the block (line $KBADLINE of the file)" "cfg-kbad2.yaml|reports.daily_checks: channel is required"; do
+  rc=0; out=$(timeout 20 "$BIN" serve -config "$WORK/${pair%%|*}" -listen "127.0.0.1:$(freeport)" 2>&1) || rc=$?
+  # 0: it ran and ended by itself; 124: it started and ran until timeout ended it - neither is a refusal at start
+  [[ $rc != 0 && $rc != 124 ]] || fail "K14: serve with ${pair%%|*} was not stopped at its start (exit $rc; 124 = it ran its 20 s): $(tail -2 <<<"$out")"
+  [[ $out == *"${pair##*|}"* ]] || fail "K14: ${pair%%|*} (exit $rc): serve's words are not '${pair##*|}': $(tail -2 <<<"$out")"
 done
-ok "K14: a block with 'enable:' for enabled, and one without its channel, each stop serve at start by the key's name"
+ok "K14: a block with 'enable:' for enabled (named with line $KBADLINE of its file), and one without its channel, each stop serve at start (a refusal's exit code, the refusal's own words)"
 
 # ---- G: the green day, on a repository migrated and never seeded ------------------------------------------------------
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO2" >/dev/null
