@@ -170,10 +170,10 @@ index 3de2666..cb5eac7 100644
  func checkPurgeDays(days int) error {
 diff --git i/internal/repo/collector_rollup_findings_test.go w/internal/repo/collector_rollup_findings_test.go
 new file mode 100644
-index 0000000..b5aab71
+index 0000000..25a1364
 --- /dev/null
 +++ w/internal/repo/collector_rollup_findings_test.go
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,127 @@
 +package repo
 +
 +import (
@@ -190,8 +190,10 @@ index 0000000..b5aab71
 +// (FLEET STATS ROLLUP, 0139's 'rollup failed' rows in collection_log): one finding per instance and source while its
 +// newest 'rollup failed' row of the last day has no 'rollup healed' row of that source after it - warning, source
 +// 'pgvigil collector', the value the source, the detail the row's note; a 'rollup healed' row clears it; a failure
-+// after the heal raises it again; a row older than a day raises nothing; another source's heal does not clear it.
-+// The rows are written as 0139 writes them (job_stats_failed / job_stats_heal's notes), so the store needs no 0139.
++// after the heal raises it again; a row older than a day raises nothing; another source's heal does not clear it; a
++// heal and then a failure in ONE transaction (one now(): equal snapshot_at) leave the finding standing ('after' is by
++// log_id). Most rows are written in 0139's note shape by hand (the store needs no 0139); on a store with 0139 one
++// instance's rows come from 0139's own job_stats_failed and job_stats_heal_one, so a change of their notes shows here.
 +func TestCollectorFindingsRollupNotRolledUp(t *testing.T) {
 +	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 +	if dsn == "" {
@@ -204,18 +206,18 @@ index 0000000..b5aab71
 +		t.Fatal(err)
 +	}
 +	t.Cleanup(pool.Close)
-+	var a, b int
++	var a, b, c int
 +	sfx := time.Now().UnixNano() % 1000000000
-+	for i, id := range []*int{&a, &b} {
++	for i, id := range []*int{&a, &b, &c} {
 +		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
 +			fmt.Sprintf("rollupfind-%d-%d", i, sfx)).Scan(id); err != nil {
 +			t.Fatal(err)
 +		}
 +	}
 +	t.Cleanup(func() {
-+		c, stop := context.WithTimeout(context.Background(), 10*time.Second)
++		cx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 +		defer stop()
-+		if _, err := pool.Exec(c, `DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2)`, a, b); err != nil {
++		if _, err := pool.Exec(cx, `DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2, $3)`, a, b, c); err != nil {
 +			t.Logf("cleanup: %v", err)
 +		}
 +	})
@@ -264,9 +266,43 @@ index 0000000..b5aab71
 +	want("a failure after the heal raises it again, one per source", findings(a), "warning job_runs pgvigil collector, warning mssql_job_runs pgvigil collector")
 +	logRow(b, 26*time.Hour, "error", failed("mssql_job_runs"))
 +	want("a row older than a day raises nothing", findings(b), "none")
++
++	// a heal, then a failure, in one transaction: equal snapshot_at, the failure is the newer
++	tx, err := pool.Begin(ctx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, r := range [][2]string{{"ok", healed("job_runs")}, {"error", failed("job_runs")}} {
++		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note) VALUES ($1, 'job_stats_hourly', now(), $2, $3)`, b, r[0], r[1]); err != nil {
++			_ = tx.Rollback(ctx)
++			t.Fatal(err)
++		}
++	}
++	if err := tx.Commit(ctx); err != nil {
++		t.Fatal(err)
++	}
++	want("a heal then a failure in one transaction: the failure stands", findings(b), "warning job_runs pgvigil collector")
++
++	// 0139's own writers, where the store has them
++	var with0139 bool
++	if err := pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.job_stats_heal_one(integer)') IS NOT NULL`).Scan(&with0139); err != nil {
++		t.Fatal(err)
++	}
++	if !with0139 {
++		t.Log("no 0139 on this store: its own writers not driven")
++		return
++	}
++	if _, err := pool.Exec(ctx, `SELECT pgvigil.job_stats_failed($1, 'mssql_job_runs', now() - interval '2 hours', now() - interval '1 hour', 'a table in the way')`, c); err != nil {
++		t.Fatal(err)
++	}
++	want("0139's job_stats_failed raises it", findings(c), "warning mssql_job_runs pgvigil collector")
++	if _, err := pool.Exec(ctx, `SELECT pgvigil.job_stats_heal_one($1)`, c); err != nil {
++		t.Fatal(err)
++	}
++	want("0139's heal ('rollup healed') clears it", findings(c), "none")
 +}
 diff --git i/internal/repo/repo.go w/internal/repo/repo.go
-index ecce0f4..f9f8d17 100644
+index ecce0f4..89ff61c 100644
 --- i/internal/repo/repo.go
 +++ w/internal/repo/repo.go
 @@ -416,11 +416,64 @@ func (r *Repo) Purge(ctx context.Context, days int) (int64, error) {
@@ -349,7 +385,7 @@ index ecce0f4..f9f8d17 100644
  	if err != nil {
  		return nil, fmt.Errorf("purge candidates: %w", err)
  	}
-@@ -445,3 +500,48 @@ SELECT c.relname
+@@ -445,3 +500,54 @@ SELECT c.relname
  	}
  	return out, rows.Err()
  }
@@ -357,8 +393,8 @@ index ecce0f4..f9f8d17 100644
 +// JobStatsHeal builds the job statistics' hours (0139) of every instance still waiting - a failed rollup, a lapsed
 +// history import, the first build after the upgrade (pgvigil.job_stats_pending) - each instance in its own statement
 +// and transaction (job_stats_heal_one), never all in one. It returns the instances built, their hour rows and the
-+// instances that failed (they stay for the next run; the failure goes to the collection log). A store without 0139
-+// heals nothing.
++// instances that failed (they stay for the next run; the failure goes to the collection log as a trigger's does). A
++// store without 0139 heals nothing.
 +func (r *Repo) JobStatsHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
 +	var have bool
 +	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.job_stats_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
@@ -388,8 +424,14 @@ index ecce0f4..f9f8d17 100644
 +				return instances, hourRows, failed, ctx.Err()
 +			}
 +			failed++
-+			_, _ = r.pool.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
-+			                         VALUES ($1, 'job_stats_hourly', now(), 'error', 'rollup heal failed in purge (the hours stay for the next run): ' || $2)`,
++			// recorded as a trigger's failure is (0139's job_stats_failed: per source, merged into the instance's dirty
++			// range, a 'rollup failed' row at most once an hour - the Collector page's finding reads it); an instance
++			// whose first build failed has no range yet: its whole range is queued again
++			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.job_stats_failed($1, s.source, s.from_at, s.to_at, 'in pgvigil purge: ' || $2)
++			                           FROM (SELECT d.source, d.from_at, d.to_at FROM pgvigil.job_stats_dirty d WHERE d.instance_id = $1
++			                                 UNION ALL
++			                                 SELECT x, '-infinity'::timestamptz, 'infinity'::timestamptz FROM unnest(ARRAY['mssql_job_runs', 'job_runs']) x
++			                                  WHERE NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_dirty d WHERE d.instance_id = $1)) s`,
 +				id, err.Error())
 +			continue
 +		}
@@ -399,25 +441,26 @@ index ecce0f4..f9f8d17 100644
 +	return instances, hourRows, failed, nil
 +}
 diff --git i/internal/repo/roles_test.go w/internal/repo/roles_test.go
-index d77ec41..54a638e 100644
+index d77ec41..6e13153 100644
 --- i/internal/repo/roles_test.go
 +++ w/internal/repo/roles_test.go
-@@ -28,8 +28,8 @@ func TestCollectorMayCallWhatRepoCalls(t *testing.T) {
+@@ -28,8 +28,9 @@ func TestCollectorMayCallWhatRepoCalls(t *testing.T) {
  	for _, m := range regexp.MustCompile(`pgvigil\.([a-z_0-9]+)\(`).FindAllStringSubmatch(string(src), -1) {
  		seen[m[1]] = true
  	}
 -	// the owner's own calls (migrate, purge) are not the collector's
 -	for _, n := range []string{"apply_roles", "purge"} {
-+	// the owner's own calls (migrate, purge; purge's heals of the job statistics, 0139: JobStatsHeal) are not the collector's
-+	for _, n := range []string{"apply_roles", "purge", "job_stats_pending", "job_stats_heal_one"} {
++	// the owner's own calls (migrate, purge; purge's heals of the job statistics, 0139: JobStatsHeal and its failure's
++	// record) are not the collector's
++	for _, n := range []string{"apply_roles", "purge", "job_stats_pending", "job_stats_heal_one", "job_stats_failed"} {
  		delete(seen, n)
  	}
  	names := make([]string, 0, len(seen))
 diff --git i/internal/repo/sql/0121_collector_health.sql w/internal/repo/sql/0121_collector_health.sql
-index 46df589..ab84c7b 100644
+index 46df589..46fe931 100644
 --- i/internal/repo/sql/0121_collector_health.sql
 +++ w/internal/repo/sql/0121_collector_health.sql
-@@ -552,4 +552,23 @@ SELECT d.instance_id, 'critical', 'collected by more than one collector', d.coll
+@@ -552,4 +552,29 @@ SELECT d.instance_id, 'critical', 'collected by more than one collector', d.coll
    JOIN pgvigil.instances i ON i.instance_id = d.instance_id AND i.is_active
    CROSS JOIN LATERAL (SELECT string_agg(DISTINCT format('%s (pid %s)', h.host, h.pid), ', ') AS hosts
                          FROM pgvigil.collector_load l2 JOIN pgvigil.collector_heartbeat h USING (collector_id)
@@ -428,20 +471,26 @@ index 46df589..ab84c7b 100644
 +-- failed' row of the last day (collection_log, collection 'job_stats_hourly') with no 'rollup healed' row of that
 +-- source after it (the heal writes one when it rebuilds a range that was logged). The runs are stored and the alerting
 +-- grid reads them; the fleet Jobs page's 7-day columns are behind. A failing range is logged once an hour, so the
-+-- newest row stands for the whole fault and the heal clears it (not 'the last hour': that would drop between rows)
++-- newest row stands for the whole fault and the heal clears it (not 'the last hour': that would drop between rows).
++-- 'After' is by log_id: both writers hold the instance's lock, so log_id follows their order, while snapshot_at is the
++-- transaction's start (a heal and a failure of one statement share it). collection_log_job_stats_idx (below) serves both reads
 +SELECT f.instance_id, 'warning', 'job statistics not rolled up', f.src, true, 'the hours rebuilt by the next import or pgvigil purge', 'all',
 +       f.note, 'pgvigil collector', f.snapshot_at
 +  FROM (SELECT DISTINCT ON (l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'))
-+               l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours') AS src, l.note, l.snapshot_at
++               l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours') AS src, l.note, l.snapshot_at, l.log_id
 +          FROM pgvigil.collection_log l
 +         WHERE l.collection = 'job_stats_hourly' AND l.status = 'error' AND l.note LIKE 'rollup failed for the %'
 +           AND l.snapshot_at > now() - interval '1 day'
-+         ORDER BY l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'), l.snapshot_at DESC) f
++         ORDER BY l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'), l.log_id DESC) f
 +  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
 + WHERE f.src IS NOT NULL
 +   AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_log h
 +                    WHERE h.instance_id = f.instance_id AND h.collection = 'job_stats_hourly' AND h.status = 'ok'
-+                      AND h.note LIKE 'rollup healed: the ' || f.src || ' hours %' AND h.snapshot_at >= f.snapshot_at);
++                      AND h.note LIKE 'rollup healed: the ' || f.src || ' hours %' AND h.log_id > f.log_id);
++
++-- the job statistics' rows of collection_log (0139's 'rollup failed' / 'rollup healed'), per instance newest first: the
++-- arm 'job statistics not rolled up' above reads only these (the log keeps every collection's errors and skips)
++CREATE INDEX IF NOT EXISTS collection_log_job_stats_idx ON pgvigil.collection_log (instance_id, log_id DESC) WHERE collection = 'job_stats_hourly';
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
 index 3e4fc9e..fa9d99d 100644
 --- i/internal/repo/sql/0190_join_release2.sql
