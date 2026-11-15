@@ -41,12 +41,21 @@ func NotRunning(cfg *config.Config, in config.Instance, pg *platform.Info, ms *m
 		switch engine {
 		case config.EngineSQLServer:
 			c, ok := mssql.Get(s.Name)
-			if !ok || ms == nil {
+			if !ok {
 				continue
 			}
-			// (390a's mssql.Configurer joins here at the join: a WIRING line)
-			if ok, why := c.Applies(*ms); !ok {
-				out = append(out, NotRun{s.Name, why})
+			// RunOnce's order: the detected server's Applies, then the configuration's door (390a's mssql.Configurer:
+			// the azure: block), which needs no detection
+			if ms != nil {
+				if ok, why := c.Applies(*ms); !ok {
+					out = append(out, NotRun{s.Name, why})
+					continue
+				}
+			}
+			if cf, ok := c.(mssql.Configurer); ok {
+				if ok, why := cf.Configured(in); !ok {
+					out = append(out, NotRun{s.Name, why})
+				}
 			}
 		default:
 			c, ok := collect.Get(s.Name)
