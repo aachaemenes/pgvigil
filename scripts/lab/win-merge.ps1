@@ -79,7 +79,7 @@
 #           distributor: sp_adddistpublisher refuses a working directory that does not exist, Msg 21037);
 #           'distributor: distribution made, working directory <the instance's ReplData>'; 'grant:
 #           NT Service\SQLAgent$PGVPRINCIPAL Modify on <ReplData> (read back)'; 'snapshot: succeeded' within 180 s;
-#           'merge agent job <name>: started'; 'pgvmerge_sub: 100 rows, merge triggers in place' within 300 s; 'both
+#           'merge agent job <name>: started' (or 'running already' / 'requested already' / 'SQL Server Agent had started it by itself': the Agent may start a new continuous agent's job before up does); 'pgvmerge_sub: 100 rows, merge triggers in place' within 300 s; 'both
 #           ways: 120 rows on each side' within 180 s; 'grant: removed (read back, children included)' (any inherited
 #           entry of the Agent below the folder said apart); the status block; 'VERDICT UP', exit 0.
 #   status  the publication pgvm_merge (merge, 1 article), the push subscription to pgvmerge_sub, the merge job running
@@ -490,8 +490,30 @@ function Invoke-Up {
         Invoke-LabSql $pubInst "EXEC sp_addmergepushsubscription_agent @publication = N'$publication', @subscriber = @sub, @subscriber_db = N'$subDb', @subscriber_security_mode = 0, @subscriber_login = N'sa', @subscriber_password = @pw, @publisher_security_mode = 1, @job_login = NULL, @job_password = NULL, @frequency_type = 64;" $pubDb @{ sub = $subName; pw = $sapw } | Out-Null
         $agentRow = Get-MergeAgent
         if ($null -eq $agentRow -or -not $agentRow.job) { throw 'no merge agent job was made' }
-        Invoke-LabSql $pubInst 'EXEC msdb.dbo.sp_start_job @job_name = @job;' 'master' @{ job = $agentRow.job } | Out-Null
-        Say "merge agent job $($agentRow.job): started"
+        # SQL Server Agent may start the new continuous agent's job by itself: on SQL Server 2022 RTM up's own start right
+        # after sp_addmergepushsubscription_agent was refused 'the job already has a pending request from User sa' while
+        # the job ran and synchronized. So the job is started only when this Agent session shows it neither running nor
+        # requested, and the Agent's own refusal for a job already starting (Msg 22022) counts as started, said.
+        $actRows = Invoke-LabSql $pubInst @'
+SELECT TOP (1) CASE WHEN a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL THEN 'running'
+                    WHEN a.start_requested_date IS NOT NULL AND a.start_execution_date IS NULL THEN 'requested'
+                    ELSE 'idle' END AS job_state
+  FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id
+ WHERE j.name = @job AND a.session_id = (SELECT MAX(s.session_id) FROM msdb.dbo.syssessions s)
+ ORDER BY a.start_requested_date DESC;
+'@ 'master' @{ job = $agentRow.job }
+        $jobState = if ($actRows.Count -gt 0 -and $actRows[0].job_state) { [string]$actRows[0].job_state } else { 'idle' }
+        if ($jobState -ne 'idle') {
+            Say "merge agent job $($agentRow.job): $jobState already (SQL Server Agent started it by itself)"
+        } else {
+            try {
+                Invoke-LabSql $pubInst 'EXEC msdb.dbo.sp_start_job @job_name = @job;' 'master' @{ job = $agentRow.job } | Out-Null
+                Say "merge agent job $($agentRow.job): started"
+            } catch {
+                if ("$_" -notmatch 'already has a pending request|is already running') { throw }
+                Say "merge agent job $($agentRow.job): SQL Server Agent had started it by itself ($(("$_" -split "`n")[0]))"
+            }
+        }
         if (-not (Wait-Until 300 { (Get-RowCount $subInst $subDb) -eq 100 -and (Get-MergeTriggers) -ge 1 })) {
             $mergeText = Invoke-LabSql $pubInst "SELECT TOP (5) x.runstatus, CAST(LEFT(y.comments, 400) AS nvarchar(400)) AS comments FROM dbo.MSmerge_agents a JOIN dbo.MSmerge_sessions x ON x.agent_id = a.id LEFT JOIN dbo.MSmerge_history y ON y.agent_id = a.id AND y.session_id = x.session_id WHERE a.publication = N'$publication' ORDER BY x.session_id DESC, y.timestamp DESC" $distDb
             foreach ($mergeRow in $mergeText) { Say "merge history: $($mergeRow.runstatus) $($mergeRow.comments)" }
