@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Proof of task 402 (B4): the checks over SQL Server's performance counters - 0153's twenty-one fleet rules seeded OFF
-# (twenty on the 'counters' metrics of 0152; one on the client timeouts per minute, B24 Fixed 1, part T), the join
-# file's metric_rule (a seeded rule colours the Metrics grid on or off, and notifies only when on), each rule switched
+# (twenty on the 'counters' metrics of 0152; one on the client timeouts per minute, B24 Fixed 1, part T; with task 412
+# in the tree 0153 ends with a twenty-second, wait seconds per core per minute, which A counts and 412's proof
+# judges), the join file's metric_rule (a seeded rule colours the Metrics grid on or off, and notifies only when on), each rule switched
 # on through an enabled instance rule, its condition provoked on a SQL Server container (the client timeouts by a Go
 # client's cancels), alert_rules_run's state and finding read, the load stopped and the clear read.
 # Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, curl, python3, ss, and:
@@ -10,7 +11,9 @@
 #   PGVIGIL_IMAGE   the SQL Server image (default 2022-latest).
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-mssql-counters-wiring.patch (401's) when the tree lacks the
 #                   counters' runner hook, then scripts/proof-mssql-counter-checks-wiring.patch (this task's) when the
-#                   join file lacks the seeded rules' metric_rule; 0 = the tree as it is. A patch the run applied is
+#                   join file lacks the seeded rules' metric_rule, then scripts/proof-mssql-waits-percore-wiring.patch
+#                   (task 412's) when the join file lacks its 'waits' family (the twenty-second seed's metric is in
+#                   the catalogue only then); 0 = the tree as it is. A patch the run applied is
 #                   reversed at its exit (402 review part B: the tree is left as it was).
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment. Only the
@@ -18,9 +21,11 @@
 # the seeded thresholds (F20: the seeded fleet row is never edited), so a run stays short.
 #
 # Expected (written before the first run; red on 16240ee at A: '0 seeded rules', no 0153 there):
-#  A. the seed (F22): after migrate, 21 rules at fleet scope (the twenty counters and B24 Fixed 1's client timeouts at
-#     9.999 / 59.999 for 0 minutes), created_by 'pgvigil', client '0153 seed', enabled false, their thresholds and
-#     for_minutes as the design's table; 21 alert_rule_log rows 'seed'; a second migrate adds nothing (21 and 21); the page reads rule ended through import_alert_rule, then 0153 run again by hand: no new
+#  A. the seed (F22): after migrate, 22 rules at fleet scope (the twenty counters, B24 Fixed 1's client timeouts at
+#     9.999 / 59.999 for 0 minutes, and task 412's wait seconds per core per minute at 180 / 299.999 for 0 minutes -
+#     the 412 merge's seam: 21 before it), created_by 'pgvigil', client '0153 seed', enabled false, their thresholds and
+#     for_minutes as the design's table; 22 alert_rule_log rows 'seed'; a second migrate adds nothing (22 and 22); the
+#     page reads rule ended through import_alert_rule, then 0153 run again by hand: no new
 #     page reads rule and no new log row (a metric that ever had a fleet rule is never seeded again).
 #  B. the owner line (the join file's metric_rule): 60 logins between two reads: metric_grid's counters.logins_s row
 #     carries the seed's rule_id, 2 and 5, a name ending '(off: colours only, no alert)', and metric_status
@@ -198,6 +203,12 @@ if [[ "${PGVIGIL_WIRING:-1}" == 1 ]]; then
       || fail "402's wiring patch"
     APPLIED="scripts/proof-mssql-counter-checks-wiring.patch $APPLIED"; echo "402's wiring applied to this copy (0190: metric_rule)"
   fi
+  # task 412's (after 401's and 402's, as its own proof applies it): the tree's 0153 seeds a rule on its metric
+  if [[ -f scripts/proof-mssql-waits-percore-wiring.patch ]] && ! grep -q 'mssql_wait_core_points' internal/repo/sql/0190_join_release2.sql; then
+    git apply scripts/proof-mssql-waits-percore-wiring.patch 2>/dev/null || patch -p1 --forward < scripts/proof-mssql-waits-percore-wiring.patch >/dev/null \
+      || fail "412's wiring patch"
+    APPLIED="scripts/proof-mssql-waits-percore-wiring.patch $APPLIED"; echo "412's wiring applied to this copy (0190: the waits family)"
+  fi
 fi
 freeport() { local lo=$1 hi=$2 p used
   used=$(ss -Htan) || fail "ss -Htan failed: the ports in use cannot be read"
@@ -257,7 +268,7 @@ col mssql_instance mssql_counters mssql_counters_db
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'chkbox'")
 seeds() { pq "SELECT count(*) FROM pgvigil.alert_rules WHERE created_by = 'pgvigil' AND client = '0153 seed'"; }
 slog() { pq "SELECT count(*) FROM pgvigil.alert_rule_log WHERE op = 'seed' AND client = '0153 seed'"; }
-NS=$(seeds); [[ "$NS" == 21 ]] || fail "A: $NS seeded rules (want 21)"
+NS=$(seeds); [[ "$NS" == 22 ]] || fail "A: $NS seeded rules (want 22)"
 pq "SELECT metric || '|' || rule_id || '|' || op || '|' || coalesce(warning::text, '') || '|' || coalesce(critical::text, '') || '|' || for_minutes || '|' || enabled || '|' || scope
       FROM pgvigil.alert_rules WHERE created_by = 'pgvigil' AND client = '0153 seed' ORDER BY metric" > "$TMPD/seed-a"
 python3 - "$TMPD/seed-a" <<'PY' || fail "A: a seeded rule differs from the design's table"
@@ -270,7 +281,8 @@ want = {'full_scans_per_search': ('above', 0.001, 0.01, 15), 'compiles_per_100_b
         'lock_timeouts_gt0_s': ('above', 0, 1, 15), 'lock_waits_s': ('above', 0.1, 0.9995, 15), 'readahead_pct': ('above', 20, 25, 15),
         'buffer_cache_hit_pct': ('below', 90, None, 15), 'ple_per_4gb': ('below', 300, 200, 15), 'logins_s': ('above', 2, 5, 15),
         'errors_kill_s': ('above', 0, 1, 0), 'errors_offline_s': ('above', 0, 1, 0), 'log_growths': ('above', 0, None, 0),
-        'client_timeouts_per_min': ('above', 9.999, 59.999, 0)}
+        'client_timeouts_per_min': ('above', 9.999, 59.999, 0),
+        'wait_s_per_core_min': ('above', 180, 299.999, 0)}   # task 412's seed at 0153's end (family 'waits')
 got, bad = {}, []
 for l in open(sys.argv[1]):
     m, rid, op, w, c, f, en, sc = l.rstrip('\n').split('|')
@@ -280,17 +292,17 @@ for k, v in want.items():
     if got.get(k) != v: bad.append(f'{k}: {got.get(k)} != {v}')
 print(f'   {len(got)} seeded rules read; differences: {len(bad)}')
 for b in bad: print('   FAIL ' + b)
-sys.exit(1 if bad or len(got) != 21 else 0)
+sys.exit(1 if bad or len(got) != 22 else 0)
 PY
-NL=$(slog); [[ "$NL" == 21 ]] || fail "A: $NL seed log rows (want 21)"
+NL=$(slog); [[ "$NL" == 22 ]] || fail "A: $NL seed log rows (want 22)"
 "$TMPD/pgvigil" migrate -config "$CFG" > "$TMPD/migrate2.out" 2>&1 || { cat "$TMPD/migrate2.out" >&2; fail "A: the second migrate"; }
-[[ "$(seeds)|$(slog)" == "21|21" ]] || fail "A: the second migrate: $(seeds) rules, $(slog) log rows"
+[[ "$(seeds)|$(slog)" == "22|22" ]] || fail "A: the second migrate: $(seeds) rules, $(slog) log rows"
 PR=$(pq "SELECT rule_id FROM pgvigil.alert_rules WHERE metric = 'counters.page_reads_s' AND client = '0153 seed'")
 rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$PR\"}" | grep -q '"done"' || fail "A: ending the page reads rule"
 psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0153_mssql_counter_checks.sql >/dev/null || fail "A: 0153 run again by hand"
-[[ "$(seeds)|$(slog)" == "21|21" && $(pq "SELECT count(*) FROM pgvigil.alert_rules WHERE metric = 'counters.page_reads_s' AND ended_at IS NULL") == 0 ]] \
+[[ "$(seeds)|$(slog)" == "22|22" && $(pq "SELECT count(*) FROM pgvigil.alert_rules WHERE metric = 'counters.page_reads_s' AND ended_at IS NULL") == 0 ]] \
   || fail "A: 0153 again after the end: $(seeds) rules, $(slog) log rows"
-ok "A: 21 rules seeded off at fleet scope as the design's table, 21 log rows; a second migrate and 0153 again after an end add nothing"
+ok "A: 22 rules seeded off at fleet scope as the design's table (412's waits row among them), 22 log rows; a second migrate and 0153 again after an end add nothing"
 
 # the provocations; each ends with nothing of its own still running
 # 60 logins in one container session's loop (a docker exec per login is too slow to pass 5 a second)
