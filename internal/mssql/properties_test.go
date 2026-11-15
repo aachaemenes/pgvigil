@@ -65,6 +65,21 @@ func TestNetworkRows(t *testing.T) {
 				keyListenAll: "no | ", keyProtocols: "TCP/IP | ", keyForceEnc: " | not read: sys.dm_server_registry holds no ForceEncryption value"}},
 		{"Windows, two static ports on IPAll", win(append(base, viewRow(`Tcp\IPAll`, "TcpPort", "1533,1433"))...),
 			map[string]string{keyTCPPort: "1433, 1533 | ", keyTCPDynamic: "no | "}},
+		{"Windows, IPAll a static port and a dynamic one: both listen", win(append(base, viewRow(`Tcp\IPAll`, "TcpPort", "1433"), viewRow(`Tcp\IPAll`, "TcpDynamicPorts", "51234"))...),
+			map[string]string{keyTCPPort: "1433, 51234 | a static port and a dynamic one: TcpDynamicPorts is set, so the instance listens on both; the dynamic one may change at the next start",
+				keyTCPDynamic: "yes | "}},
+		{"Windows, IPAll a static port and dynamic 0", win(append(base, viewRow(`Tcp\IPAll`, "TcpPort", "1433"), viewRow(`Tcp\IPAll`, "TcpDynamicPorts", "0"))...),
+			map[string]string{keyTCPPort: "1433 | dynamic ports are on as well (TcpDynamicPorts 0): SQL Server chooses one at its next start besides the static port", keyTCPDynamic: "yes | "}},
+		{"Windows, dynamic 0 alone", win(append(base, viewRow(`Tcp\IPAll`, "TcpDynamicPorts", "0"))...),
+			map[string]string{keyTCPPort: " | dynamic ports are on and none is chosen yet (TcpDynamicPorts 0: SQL Server chooses it at its next start)", keyTCPDynamic: "yes | "}},
+		{"Windows, TCP/IP disabled: no port listens", win(viewRow("Tcp", "ListenOnAllIPs", "1"), viewRow("Tcp", "Enabled", "0"), viewRow("Np", "Enabled", "1"),
+			viewRow(`Tcp\IPAll`, "TcpPort", "1433")),
+			map[string]string{keyTCPPort: " | not listening: TCP/IP is disabled, so the instance listens on no TCP port",
+				keyTCPDynamic: " | not listening: TCP/IP is disabled, so the instance listens on no TCP port", keyProtocols: "Named Pipes | "}},
+		{"Linux, ListenOnAllIPs 0 in the registry: IPAll's port all the same", func() netRowsInput {
+			f := netFactsFromRegread(collect.Row{"force_encryption": int64(0), "listen_all": int64(0), "ipall_port": "1433"})
+			return netRowsInput{kind: KindServer, major: 16, platform: "Linux", gate: gate, facts: &f}
+		}(), map[string]string{keyTCPPort: "1433 | SQL Server on Linux: mssql-conf network.tcpport, read through its registry", keyTCPDynamic: "no | "}},
 		{"Windows, SQL Server 2019: no strict encryption", func() netRowsInput {
 			in := win(append(base, viewRow(`Tcp\IPAll`, "TcpPort", "1433"))...)
 			in.major = 15
@@ -87,7 +102,8 @@ func TestNetworkRows(t *testing.T) {
 			keyProtocols: "TCP/IP | met: Linux serves TCP only", keyPrioritySep: " | not on Linux: a Windows scheduler setting"}},
 		{"no right to the procedure", netRowsInput{kind: KindServer, major: 16, platform: "Linux", gate: propGate{read: true, login: "a]b"},
 			factsWhy: propGate{login: "a]b"}.noRight("xp_instance_regread")},
-			map[string]string{keyTCPPort: " | no right: GRANT EXECUTE ON master.dbo.xp_instance_regread TO [a]]b]", keyProtocols: " | no right: GRANT EXECUTE ON master.dbo.xp_instance_regread TO [a]]b]",
+			map[string]string{keyTCPPort: " | no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [a]]b] FOR LOGIN [a]]b] when it has none, then GRANT EXECUTE ON dbo.xp_instance_regread TO [a]]b]", keyForceEnc: " | no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [a]]b] FOR LOGIN [a]]b] when it has none, then GRANT EXECUTE ON dbo.xp_instance_regread TO [a]]b]",
+				keyProtocols: "TCP/IP | met: Linux serves TCP only", keyListenAll: " | not on Linux: mssql-conf network.ipaddress chooses the address",
 				keyPrioritySep: " | not on Linux: a Windows scheduler setting"}},
 		{"Amazon RDS", netRowsInput{kind: KindRDS, platform: "Windows"},
 			map[string]string{keyTCPPort: " | not applicable: Amazon RDS runs the host", keyPrioritySep: " | not applicable: Amazon RDS runs the host"}},
@@ -113,12 +129,13 @@ func TestNetworkRows(t *testing.T) {
 func TestPowerPlanGate(t *testing.T) {
 	g := propGate{read: true, login: "pgvigil_mon"}
 	v, note := powerPlan(context.Background(), nil, Info{Kind: KindServer}, "Windows", true, "", g)
-	if v != nil || note != "no right: GRANT EXECUTE ON master.dbo.xp_regread TO [pgvigil_mon]" {
+	nrReg := "no right: EXECUTE on master.dbo.xp_regread - in master, CREATE USER [pgvigil_mon] FOR LOGIN [pgvigil_mon] when it has none, then GRANT EXECUTE ON dbo.xp_regread TO [pgvigil_mon]"
+	if v != nil || note != nrReg {
 		t.Errorf("power plan without the right: %v | %s", v, note)
 	}
 	in, partial := readNetwork(context.Background(), nil, Info{Kind: KindServer, Major: 16}, "Windows", g)
-	if len(partial) != 0 || in.facts != nil || !strings.HasPrefix(in.factsWhy, "no right: GRANT EXECUTE ON master.dbo.xp_instance_regread TO [pgvigil_mon]") ||
-		in.prioWhy != "no right: GRANT EXECUTE ON master.dbo.xp_regread TO [pgvigil_mon]" {
+	if len(partial) != 0 || in.facts != nil || !strings.HasPrefix(in.factsWhy, "no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [pgvigil_mon]") ||
+		!strings.HasSuffix(in.factsWhy, "(or GRANT VIEW SERVER STATE TO [pgvigil_mon], which reads sys.dm_server_registry)") || in.prioWhy != nrReg {
 		t.Errorf("no rights: %+v %v", in, partial)
 	}
 }

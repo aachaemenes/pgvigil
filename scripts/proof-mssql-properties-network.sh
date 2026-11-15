@@ -20,14 +20,17 @@
 #  N2 `mssql-conf set network.tcpport 1500` and `network.forceencryption 1`, the server restarted, the instance read
 #     again at its new port: tcp_port 1500, force_encryption yes; mssql_property_change holds tcp_port 1433 -> 1500 and
 #     force_encryption no -> yes for the instance.
-#  N3 a login with VIEW SERVER STATE but DENY EXECUTE on xp_instance_regread: the six network rows say 'no right: GRANT
-#     EXECUTE ON master.dbo.xp_instance_regread TO [pgvnet_deny]'; the run's output holds no error 229 (the procedure
-#     was not called).
+#  N3 a login with VIEW SERVER STATE but DENY EXECUTE on xp_instance_regread: the four rows the registry gives
+#     (tcp_port, tcp_port_dynamic, force_encryption, force_strict_encryption) say 'no right: EXECUTE on
+#     master.dbo.xp_instance_regread - in master, CREATE USER [pgvnet_deny] FOR LOGIN [pgvnet_deny] when it has none,
+#     then GRANT EXECUTE ON dbo.xp_instance_regread TO [pgvnet_deny]'; the two Linux rows keep their words
+#     (tcp_listen_all_ips 'not on Linux: ...', protocols_enabled 'TCP/IP' 'met: Linux serves TCP only'); the run's
+#     output holds no error 229 (the procedure was not called).
 #  N4 SQL Server 2019 on Linux, a VIEW SERVER STATE login: tcp_port 1433, force_encryption no, force_strict_encryption
 #     'not on this version: ForceStrictEncryption came with SQL Server 2022', protocols_enabled 'TCP/IP'.
 #  NOT PROVEN HERE: Windows (sys.dm_server_registry's rows, the IPn entries with ListenOnAllIPs off, Shared Memory and
 #  Named Pipes, Win32PrioritySeparation, the power plan's gate on a refused login): the unit tests TestNetworkRows and
-#  TestPowerPlanGate hold the rules until the one queued read-only turn on dba-lab-win; Amazon RDS, Managed Instance and
+#  TestPowerPlanGate hold the rules until the one queued read-only Windows turn; Amazon RDS, Managed Instance and
 #  Cloud SQL ('not applicable: <platform> runs the host': the unit tests).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -127,11 +130,13 @@ echo "== N3 a login denied EXECUTE on xp_instance_regread"
 export MSSQL_D_DSN="$(dsn pgvnet_deny "$PD" "$P22B")"
 collect pgvnet-d || fail "N3: the read failed"
 grep -q "229\|EXECUTE permission was denied" "$OUT" && fail "N3: the procedure was called: $(cat "$OUT")"
-NR="no right: GRANT EXECUTE ON master.dbo.xp_instance_regread TO [pgvnet_deny]"
-for k in tcp_port tcp_port_dynamic tcp_listen_all_ips force_encryption force_strict_encryption protocols_enabled; do
+NR="no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [pgvnet_deny] FOR LOGIN [pgvnet_deny] when it has none, then GRANT EXECUTE ON dbo.xp_instance_regread TO [pgvnet_deny]"
+for k in tcp_port tcp_port_dynamic force_encryption force_strict_encryption; do
   [ "$(prop pgvnet-d "$k")" = "|$NR" ] || fail "N3 $k: $(prop pgvnet-d "$k")"
 done
-ok "N3: the six network rows say '$NR'; no error 229 in the run"
+[ "$(prop pgvnet-d tcp_listen_all_ips)" = "|not on Linux: mssql-conf network.ipaddress chooses the address" ] || fail "N3 tcp_listen_all_ips: $(prop pgvnet-d tcp_listen_all_ips)"
+[ "$(prop pgvnet-d protocols_enabled)" = "TCP/IP|met: Linux serves TCP only" ] || fail "N3 protocols_enabled: $(prop pgvnet-d protocols_enabled)"
+ok "N3: the four registry rows say '$NR'; listen-all and the protocols keep their Linux words; no error 229 in the run"
 
 echo "== N4 SQL Server 2019 on Linux"
 if [ -n "${PROOF_SKIP_2019:-}" ]; then notproven "N4: PROOF_SKIP_2019"; else
@@ -141,6 +146,6 @@ if [ -n "${PROOF_SKIP_2019:-}" ]; then notproven "N4: PROOF_SKIP_2019"; else
   [ "$(prop pgvnet-19 protocols_enabled)" = "TCP/IP|met: Linux serves TCP only" ] || fail "N4 protocols_enabled: $(prop pgvnet-19 protocols_enabled)"
   ok "N4: SQL Server $(echo "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))" | sqn "$SQL19" | tr -d '\r '): tcp_port 1433, force_encryption no, strict 'not on this version', TCP/IP"
 fi
-notproven "Windows live (sys.dm_server_registry, the IPn entries, Shared Memory / Named Pipes, Win32PrioritySeparation, the power plan's gate): the unit tests until the queued read-only turn on dba-lab-win"
+notproven "Windows live (sys.dm_server_registry, the IPn entries, a static and a dynamic port together, TCP/IP disabled, Shared Memory / Named Pipes, Win32PrioritySeparation, the power plan's gate): the unit tests until the queued read-only Windows turn"
 notproven "Amazon RDS, Managed Instance, Cloud SQL: 'not applicable' by the unit tests"
 echo "ALL ROWS GREEN"

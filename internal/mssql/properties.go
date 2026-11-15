@@ -500,7 +500,9 @@ func pctText(part, whole int64) string {
 //
 // The two procedures are undocumented and a site may take EXECUTE away from public: each is called only after
 // HAS_PERMS_BY_NAME says the login may execute it (a refused object is never asked for every hour); without the
-// right the rows say which GRANT gives it.
+// right the rows say how to give it (a GRANT on an object names a database user: the login's user in master).
+// On Linux the protocols ('met: Linux serves TCP only') and ListenOnAllIPs ('not on Linux') need no registry read and
+// keep their words whatever the read gave.
 
 // netKeys are the seven rows' keys, fixed for the checks that judge them.
 const (
@@ -571,9 +573,13 @@ func readPropGate(ctx context.Context, conn *sql.Conn) propGate {
 	return propGate{read: true, registryView: one("can_registry_view"), instanceRegread: one("can_instance_regread"), regread: one("can_regread"), login: login}
 }
 
-// noRight is the words of a refused procedure: the GRANT that gives the right, the login quoted as QUOTENAME does.
+// noRight is the words of a refused procedure: how the right is given, the login quoted as QUOTENAME does. A GRANT on
+// an object names a database principal, so the login's user in master (made first when it has none: a GRANT to a
+// login's name alone fails with Msg 15151).
 func (g propGate) noRight(proc string) string {
-	return "no right: GRANT EXECUTE ON master.dbo." + proc + " TO [" + strings.ReplaceAll(g.login, "]", "]]") + "]"
+	l := "[" + strings.ReplaceAll(g.login, "]", "]]") + "]"
+	return "no right: EXECUTE on master.dbo." + proc + " - in master, CREATE USER " + l + " FOR LOGIN " + l +
+		" when it has none, then GRANT EXECUTE ON dbo." + proc + " TO " + l
 }
 
 // ipEntry is one Tcp\IPn key of the registry view.
@@ -687,35 +693,50 @@ func portsOf(v string) []int {
 }
 
 // tcpPorts is the tcp_port row: the ports the instance listens on, ascending, whether any is dynamic, and the note.
-// With ListenOnAllIPs (the default) IPAll's static port wins over its dynamic one; with it off, the enabled IPn
-// entries' ports, each named in the note.
-func tcpPorts(f netFacts) (value any, dynamic any, note string) {
+// A static port and a dynamic one both listen: TcpDynamicPorts is blank only while dynamic ports are off (Learn, the
+// IP Addresses tab), and '0' means they are on with the port chosen at the next start. With ListenOnAllIPs (the
+// default) IPAll's ports; with it off, the enabled IPn entries' ports, each named in the note. With TCP/IP disabled
+// the instance listens on no TCP port, whatever the ports configured. On Linux ListenOnAllIPs is not read (mssql-conf
+// network.ipaddress chooses the address; the view of the IPn entries is empty there): IPAll's ports.
+func tcpPorts(f netFacts, linux bool) (value any, dynamic any, note string) {
+	if !linux && f.tcpOn != nil && *f.tcpOn == 0 {
+		return nil, nil, "not listening: TCP/IP is disabled, so the instance listens on no TCP port"
+	}
 	seen := map[int]bool{}
 	var ports []int
-	dyn := false
-	addAll := func(static, dynv string) bool {
-		if ps := portsOf(static); len(ps) > 0 {
-			for _, p := range ps {
-				if !seen[p] {
-					seen[p] = true
-					ports = append(ports, p)
-				}
+	dyn, dynPending, both := false, false, false
+	add := func(ps []int) {
+		for _, p := range ps {
+			if !seen[p] {
+				seen[p] = true
+				ports = append(ports, p)
 			}
-			return true
 		}
-		if ps := portsOf(dynv); len(ps) > 0 {
-			dyn = true
-			for _, p := range ps {
-				if !seen[p] {
-					seen[p] = true
-					ports = append(ports, p)
-				}
-			}
-			return true
-		}
-		return false
 	}
-	if f.listenAll != nil && *f.listenAll == 0 {
+	addAll := func(static, dynv string) bool {
+		got := false
+		if ps := portsOf(static); len(ps) > 0 {
+			add(ps)
+			got = true
+		}
+		if strings.TrimSpace(dynv) != "" {
+			both = both || got
+			dyn, got = true, true
+			if ps := portsOf(dynv); len(ps) > 0 {
+				add(ps)
+			} else {
+				dynPending = true
+			}
+		}
+		return got
+	}
+	portText := func(static, dynv string) string {
+		if strings.TrimSpace(static) != "" && strings.TrimSpace(dynv) != "" {
+			return strings.TrimSpace(static) + " and dynamic " + strings.TrimSpace(dynv)
+		}
+		return firstNonEmpty(static, dynv)
+	}
+	if !linux && f.listenAll != nil && *f.listenAll == 0 {
 		if !f.ipsRead {
 			return nil, nil, "not read: ListenOnAllIPs is off and the IPn entries need sys.dm_server_registry (VIEW SERVER STATE)"
 		}
@@ -725,22 +746,31 @@ func tcpPorts(f netFacts) (value any, dynamic any, note string) {
 				continue
 			}
 			if addAll(e.port, e.dynamic) {
-				named = append(named, strings.TrimSpace(e.name+" "+e.address)+": "+firstNonEmpty(e.port, e.dynamic))
+				named = append(named, strings.TrimSpace(e.name+" "+e.address)+": "+portText(e.port, e.dynamic))
 			}
 		}
-		if len(ports) == 0 {
+		if len(named) == 0 {
 			return nil, nil, "not read: ListenOnAllIPs is off and no enabled IPn entry names a port"
 		}
 		note = "ListenOnAllIPs is off: " + strings.Join(named, "; ")
 	} else if !addAll(f.ipAllPort, f.ipAllDynamic) {
 		return nil, nil, "not read: IPAll names no static or dynamic TCP port"
 	}
+	if len(ports) == 0 {
+		return nil, true, "dynamic ports are on and none is chosen yet (TcpDynamicPorts 0: SQL Server chooses it at its next start)"
+	}
 	sortInts(ports)
 	text := make([]string, len(ports))
 	for i, p := range ports {
 		text[i] = strconv.Itoa(p)
 	}
-	if dyn && note == "" {
+	switch {
+	case note != "":
+	case both && dynPending:
+		note = "dynamic ports are on as well (TcpDynamicPorts 0): SQL Server chooses one at its next start besides the static port"
+	case both:
+		note = "a static port and a dynamic one: TcpDynamicPorts is set, so the instance listens on both; the dynamic one may change at the next start"
+	case dyn:
 		note = "a dynamic port: SQL Server chose it at its start and may choose another at the next"
 	}
 	return strings.Join(text, ", "), dyn, note
@@ -819,11 +849,18 @@ func netRows(p *propList, in netRowsInput) {
 	linux := in.platform == "Linux"
 	if in.facts == nil {
 		for _, l := range labels[:6] {
-			add(l.key, l.grp, l.label, l.ord, nil, in.factsWhy)
+			switch {
+			case linux && l.key == keyListenAll:
+				add(l.key, l.grp, l.label, l.ord, nil, "not on Linux: mssql-conf network.ipaddress chooses the address")
+			case linux && l.key == keyProtocols:
+				add(l.key, l.grp, l.label, l.ord, "TCP/IP", "met: Linux serves TCP only")
+			default:
+				add(l.key, l.grp, l.label, l.ord, nil, in.factsWhy)
+			}
 		}
 	} else {
 		f := *in.facts
-		port, dyn, portNote := tcpPorts(f)
+		port, dyn, portNote := tcpPorts(f, linux)
 		if linux && portNote == "" {
 			portNote = "SQL Server on Linux: mssql-conf network.tcpport, read through its registry"
 		}
@@ -903,12 +940,15 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 		partial = append(partial, collect.Row{"kind": "collector_error", "source": source, "message": err.Error()})
 		return "not read: " + err.Error()
 	}
-	// the view first (Windows; empty on Linux), then xp_instance_regread
+	// the view first (Windows; empty on Linux), then xp_instance_regread; the view's error is a partial run only when
+	// the procedure read nothing either
+	var viewErr error
 	if platform == "Windows" && gate.registryView {
 		rows, err := QueryRows(ctx, conn, propsNetViewSQL)
 		switch {
 		case err != nil:
-			in.factsWhy = fail("sys.dm_server_registry", err)
+			viewErr = err
+			in.factsWhy = "not read: " + err.Error()
 		case len(rows) > 0:
 			f := netFactsFromView(rows)
 			in.facts = &f
@@ -917,7 +957,7 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 	if in.facts == nil {
 		switch {
 		case !gate.instanceRegread && platform == "Windows" && !gate.registryView:
-			in.factsWhy = gate.noRight("xp_instance_regread") + " (or GRANT VIEW SERVER STATE, which reads sys.dm_server_registry)"
+			in.factsWhy = gate.noRight("xp_instance_regread") + " (or GRANT VIEW SERVER STATE TO [" + strings.ReplaceAll(gate.login, "]", "]]") + "], which reads sys.dm_server_registry)"
 		case !gate.instanceRegread:
 			in.factsWhy = gate.noRight("xp_instance_regread")
 		default:
@@ -933,6 +973,9 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 				in.factsWhy = ""
 			}
 		}
+	}
+	if viewErr != nil && in.facts == nil {
+		fail("sys.dm_server_registry", viewErr)
 	}
 	if platform == "Windows" {
 		switch {
