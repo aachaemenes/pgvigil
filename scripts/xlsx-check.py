@@ -65,7 +65,8 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X18 a column with a status fill (OK, Warning, Critical, Acknowledged) on any row has a status or N/A on every cell that
       holds a value: no plain cell beside coloured ones (DBA Dash paints N/A where no threshold applies)
   X8 also: a date column (a number cell under the date or day format) holds no words: a date with no value is an empty
-      cell. An Item | Value sheet's Value column is typed by its own content and is not judged by X8's date-column part,
+      cell; a date with a note in brackets after it ('<time> (on SQL02)', an availability group's replica) is the page's
+      words and passes. An Item | Value sheet's Value column is typed by its own content and is not judged by X8's date-column part,
       X15 or X16.
 Not checkable from a file (proof-export.sh holds them): the page order of a page's sheets, a grid's own export holding
 that grid alone, a chart's series as its sheet, a number being the one the grid shows.
@@ -119,6 +120,8 @@ SEP_ = r'(?:[/-]|\.\s?)'   # a day's separator: '/', '-', '.' or '. ' (cs-CZ, hu
 DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?'   # ISO
                        r'|\d{1,4}' + SEP_ + r'\d{1,2}' + SEP_ + r'\d{1,4}\.?,?(?:\s+|T)\d{1,2}[:h.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?'   # a locale date-time
                        r'|\d{1,2}' + SEP_ + r'\d{1,2}' + SEP_ + r'\d{4}\.?|\d{4}/\d{1,2}/\d{1,2})\s*$')                     # a locale day
+# (X8) a date followed by a note in brackets ('<time> (on SQL02)', '<time> (expired)'): a date column may hold it as words
+DATED_NOTE = re.compile(r'\s*(.+?) \([^()]+\)\s*')
 BOOL_TEXT = re.compile(r'\s*(true|false|yes|no)\s*', re.I)
 # a read time in a sheet name: a day with a 4-digit year and a clock after it (its ':' refused, a space or a dot), the
 # export's compact stamp, a clock of hours, minutes and seconds; not an address, a version or a day alone (a job's own words)
@@ -599,6 +602,8 @@ def check(book, page=None, measured=None):
                         out['X18'].append("'%s'!%s '%s' %s without a status in a status column" % (nm, c['ref'], h, str(c['v'])[:20]))
             if not free_value and any((c['xf']['fmt'] or '') in (DATE_FMT, DAY_FMT) for c in nums):
                 for c in texts:
+                    if DATED_NOTE.fullmatch(c['v']) and DATE_TEXT.match(DATED_NOTE.fullmatch(c['v']).group(1)):
+                        continue   # a date with its note in brackets ('<time> (on SQL02)'): the page's words, the date in them
                     out['X8'].append("'%s'!%s '%s' words in a date column '%s'" % (nm, c['ref'], h, c['v'][:40]))
     # X13 the decimals the page shows, per column
     book.judged = None

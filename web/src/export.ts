@@ -813,8 +813,11 @@ export function gridSection(s: Section): Section {
       c.v = (c.v as number) / 100; c.kind = 'pct';
     }
     // (X8) a date column's cell with no date in it ('none in the last 7 days', 'never'): empty, as DBA Dash leaves a date
-    // with no value; the page keeps its words
-    if (nums.some(c => c.kind === 'date' || c.kind === 'day')) for (const r of rows) { const c = r[j]; if (c && typeof c.v === 'string' && c.v !== '') { c.v = ''; c.kind = 'text'; } }
+    // with no value; the page keeps its words. A date with a note in brackets after it (an availability group's backup
+    // '<time> (on SQL02)', a password's '<time> (expired)', a first read '(inside the range)') keeps the page's words:
+    // the date and its note are both the cell's
+    const dated = (t: string) => { const m = /^(.+?) \([^()]+\)$/.exec(t); return !!m && !!(shownTime(m[1]) ?? dayCell(m[1])); };
+    if (nums.some(c => c.kind === 'date' || c.kind === 'day')) for (const r of rows) { const c = r[j]; if (c && typeof c.v === 'string' && c.v !== '' && !dated(c.v)) { c.v = ''; c.kind = 'text'; } }
     const largest = (k: Kind, per = false) => nums.filter(c => c.kind === k && !!c.per === per).reduce<Cell | undefined>((a, c) => !a || Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a, undefined);
     // a size per day: the unit the column's figures show most (zero left out of the count; a tie: the largest's)
     const rate = nums.filter(c => c.kind === 'bytes' && c.per);

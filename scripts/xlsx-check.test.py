@@ -352,6 +352,9 @@ PROBES = [
     ('X18 N/A beside a plain cell: no status column', 'X18', 'PASS', lambda: grid1(ST, [['a', 3], ['b', 4]], {'B2': ('fill', NA)})),
     # X8: a date column holds no words
     ('X8 words in a date column', 'X8', 'FAIL', lambda: grid1(DATE, [['a', 46339.5], ['b', 'none in the last 7 days']], {'B2': ('date', None)})),
+    ('X8 a date with its note in brackets in a date column', 'X8', 'PASS', lambda: grid1(DATE, [['a', 46339.5], ['b', '11/14/2026, 10:00:00 (on SQL02)']], {'B2': ('date', None)})),
+    ('X8 an ISO date with its note in brackets', 'X8', 'PASS', lambda: grid1(DATE, [['a', 46339.5], ['b', '2026-11-14 10:00 (expired)']], {'B2': ('date', None)})),
+    ('X8 words in brackets after words, not a date', 'X8', 'FAIL', lambda: grid1(DATE, [['a', 46339.5], ['b', 'none yet (new database)']], {'B2': ('date', None)})),
     ('X8 an empty cell in a date column', 'X8', 'PASS', lambda: grid1(DATE, [['a', 46339.5], ['b', '']], {'B2': ('date', None)})),
     ('X8 an Item | Value sheet\'s Value: a date and words', 'X8', 'PASS', lambda: grid1(['Item', 'Value'], [['read', 46339.5], ['note', 'none in the last 7 days']], {'B2': ('date', None)}, name='Server')),
     # X17: the measured cell carries its row's status, by the page's map
