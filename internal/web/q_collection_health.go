@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,7 +25,8 @@ import (
 const chReach = 31 * 24 * time.Hour
 
 // the scope and range filters every part shares: $1 from, $2 to, $3 instance (0 = none), $4 instance ids (NULL = all),
-// $5 collection (” = all); $6 the part's own (every part references $1-$6: an unreferenced parameter is refused)
+// $5 collection (empty = all); $6 the part's own (each part of these six references $1-$6: an unreferenced parameter is
+// refused; part=thresholds takes its own two)
 const chScope = `($3::int = 0 OR %[1]s.instance_id = $3) AND ($4::int[] IS NULL OR %[1]s.instance_id = ANY ($4)) AND ($5::text = '' OR %[1]s.collection = $5)`
 
 func chScopeOf(alias string) string { return strings.ReplaceAll(chScope, "%[1]s", alias) }
@@ -91,7 +93,9 @@ const chCols = `
        r.reads_sum AS logical_reads, round(r.reads_sum::numeric / nullif(r.cpu_runs, 0)) AS avg_logical_reads,
        r.rows_written AS rows, r.errors,
        -- B6g-2: where the numbers come from (DBA Dash's defaults, or the scopes that set them), the numbers in the title
-       coalesce('set on ' || r.threshold_from, 'DBA Dash''s defaults') AS thresholds, r.threshold_words, r.errors_from, r.errors_to,
+       -- a row per collection whose instances differ: 'each instance its own' (the review of B6g-2 #12: it read 'set on
+       -- each instance its own' though an instance on the defaults is set nowhere)
+       CASE WHEN r.threshold_from = 'differ by instance' THEN 'each instance its own' ELSE coalesce('set on ' || r.threshold_from, 'DBA Dash''s defaults') END AS thresholds, r.threshold_words, r.errors_from, r.errors_to,
        ` + chHourFrom + ` AS rate_from, least(` + chHourTo + `, now()) AS rate_to`
 
 // sqlCHInstance: Row per collection per instance (DBA Dash's default), worst first
@@ -121,7 +125,7 @@ var sqlCHCollection = `WITH x AS (` + sqlCHRows + `), r AS (
          -- words read it - a PostgreSQL collection's 'not read by pgvigil' (the review of B6g-1 part b #1)
          CASE WHEN min(x.engine) = max(x.engine) THEN min(x.engine) END AS engine,
          -- one source and one set of numbers over the instances, else said as differing
-         CASE WHEN count(DISTINCT coalesce(x.threshold_from, '')) = 1 THEN min(x.threshold_from) ELSE 'each instance its own' END AS threshold_from,
+         CASE WHEN count(DISTINCT coalesce(x.threshold_from, '')) = 1 THEN min(x.threshold_from) ELSE 'differ by instance' END AS threshold_from,
          CASE WHEN count(DISTINCT x.threshold_words) = 1 THEN min(x.threshold_words) ELSE 'each instance its own' END AS threshold_words
     FROM x
    GROUP BY x.collection
@@ -153,7 +157,7 @@ SELECT to_timestamp(floor(extract(epoch FROM h.hour) / $6::int) * $6::int) AS at
  GROUP BY 1 ORDER BY 1`
 
 // sqlCHErrors: the error list - collection_log's errors in scope between from and to (the Failed / Errors links: the
-// range; Last Failure: errors_from .. errors_to), newest first, 500 at most; $6 a text the message holds (” = any:
+// range; Last Failure: errors_from .. errors_to), newest first, 500 at most; $6 a text the message holds (empty = any:
 // matched as text, never as a pattern)
 var sqlCHErrors = `
 SELECT l.instance_id, i.name AS instance, l.collection, l.snapshot_at AS at, l.duration_ms, l.note AS message
@@ -272,7 +276,7 @@ func chPartNames(part string) []string {
 // CHThresholdWrite is POST /api/collectionhealth/thresholds (B6g-2, N33 / N41): DBA Dash's per-collection thresholds,
 // set or inherited at one scope - an instance's collection, every collection of an instance, a collection on every
 // instance, everything (instance_id / collection left out). Any signed-in user writes them (the lead's 07:4x ROLE (a)),
-// audited in the table's history; the demo door carries one demo instance's scopes and refuses the two wider ones in
+// audited in the table's history - admin-gated once B24f's role gate lands (the lead's 07:4x: on B24f's list); the demo door carries one demo instance's scopes and refuses the two wider ones in
 // words. import_collection_health_threshold answers done or refused (409 with its words).
 func (s *Server) CHThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	seat, ok := s.seat(w, r, strings.Replace(s.ackOff(), "acknowledgements", "Collection Health thresholds", 1))
@@ -300,7 +304,9 @@ func (s *Server) CHThresholdWrite(w http.ResponseWriter, r *http.Request) {
 		if v, ok := in[k]; ok && v != nil {
 			// a number is passed on as its text: the function checks the shape before it casts
 			if f, isNum := v.(float64); isNum {
-				v = strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", f), "0"), ".")
+				// as sent, never rounded (the review of B6g-2 #8: 0.999 became 1): the function refuses what is not a
+				// whole number or a per cent to two places
+				v = strconv.FormatFloat(f, 'f', -1, 64)
 			}
 			pay[k] = v
 		}

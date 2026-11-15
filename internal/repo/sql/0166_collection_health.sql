@@ -229,13 +229,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.collection_health_threshold (
   instance_id        int REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
   instance_name      text,
   collection         text CHECK (length(collection) BETWEEN 1 AND 100),
-  warn_fails_in_row  int CHECK (warn_fails_in_row >= 1),
-  warn_fail_minutes  int CHECK (warn_fail_minutes >= 0),
-  crit_fails_in_row  int CHECK (crit_fails_in_row >= 1),
-  crit_fail_minutes  int CHECK (crit_fail_minutes >= 0),
+  warn_fails_in_row  int CHECK (warn_fails_in_row BETWEEN 1 AND 100000),   -- DBA Dash's dialog ranges
+  warn_fail_minutes  int CHECK (warn_fail_minutes BETWEEN 0 AND 1000000),
+  crit_fails_in_row  int CHECK (crit_fails_in_row BETWEEN 1 AND 100000),
+  crit_fail_minutes  int CHECK (crit_fail_minutes BETWEEN 0 AND 1000000),
   warn_fail_pct      numeric(5,2) CHECK (warn_fail_pct BETWEEN 0 AND 100),
   crit_fail_pct      numeric(5,2) CHECK (crit_fail_pct BETWEEN 0 AND 100),
-  min_runs           int CHECK (min_runs >= 1),
+  min_runs           int CHECK (min_runs BETWEEN 1 AND 100000),
   dont_monitor       boolean,
   created_by         text NOT NULL,
   created_at         timestamptz NOT NULL,
@@ -287,8 +287,10 @@ BEGIN
       v_why := 'instance_id must be an instance''s number, or none for every instance';
     ELSE
       v_inst := (p_payload->>'instance_id')::int;
-      SELECT i.name INTO v_name FROM pgvigil.instances i WHERE i.instance_id = v_inst AND i.is_active;
-      IF v_name IS NULL THEN v_why := format('no active instance %s', v_inst); END IF;
+      -- an inherit ends an inactive instance's own row too (the review of B6g-2 #14: else it comes back in force when
+      -- the instance does); a set needs an active one
+      SELECT i.name INTO v_name FROM pgvigil.instances i WHERE i.instance_id = v_inst AND (i.is_active OR v_op = 'inherit');
+      IF v_name IS NULL THEN v_why := format(CASE WHEN v_op = 'inherit' THEN 'no instance %s' ELSE 'no active instance %s' END, v_inst); END IF;
     END IF;
   END IF;
   IF v_why IS NULL AND (v_op IS NULL OR v_op NOT IN ('set', 'inherit')) THEN
@@ -299,8 +301,13 @@ BEGIN
     FOREACH k IN ARRAY ARRAY['warn_fails_in_row', 'crit_fails_in_row', 'warn_fail_minutes', 'crit_fail_minutes', 'min_runs'] LOOP
       IF p_payload ? k AND jsonb_typeof(p_payload->k) <> 'null' THEN
         v_given := v_given + 1;
-        IF (p_payload->>k) !~ '^[0-9]{1,6}$' OR (k IN ('warn_fails_in_row', 'crit_fails_in_row', 'min_runs') AND (p_payload->>k)::int < 1) THEN
-          v_why := format('%s must be a whole number from %s, or null to inherit', k, CASE WHEN k LIKE '%minutes' THEN 0 ELSE 1 END);
+        -- DBA Dash's ranges (the dialog's NumericUpDown): 1 to 100000 in a row and runs, 0 to 1000000 minutes (the review
+        -- of B6g-2 #4: 1000000 passed the dialog and was refused in words that called it valid)
+        IF (p_payload->>k) !~ '^[0-9]{1,7}$'
+           OR (p_payload->>k)::int < CASE WHEN k LIKE '%minutes' THEN 0 ELSE 1 END
+           OR (p_payload->>k)::int > CASE WHEN k LIKE '%minutes' THEN 1000000 ELSE 100000 END THEN
+          v_why := format('%s must be a whole number from %s to %s, or null to inherit', k,
+                          CASE WHEN k LIKE '%minutes' THEN 0 ELSE 1 END, CASE WHEN k LIKE '%minutes' THEN 1000000 ELSE 100000 END);
           EXIT;
         END IF;
       END IF;
@@ -397,10 +404,15 @@ LANGUAGE sql STABLE SET jit = off AS $$
            k.ok + k.partial + k.failed AS known
       FROM k JOIN pgvigil.instances i ON i.instance_id = k.instance_id
      WHERE i.is_active
+  ), live AS MATERIALIZED (
+    -- B6g-2: the thresholds in force, read once and joined four times (the review of B6g-2 #6: the history table's
+    -- rows, ended ones too, under four joins per instance and collection)
+    SELECT * FROM pgvigil.collection_health_threshold WHERE ended_at IS NULL
   ), th AS (
     -- B6g-2: each threshold resolved on its own - this instance and collection, this instance's row for every
     -- collection, this collection's row for every instance, the row for everything, then DBA Dash's defaults
-    SELECT j.instance_id, j.collection,
+    -- (CollectionHealthStatus.sql's order); pgvigil.collection_dont_monitor resolves dm the same way: keep in step
+    SELECT j.*,
            coalesce(ic.warn_fails_in_row, ia.warn_fails_in_row, ac.warn_fails_in_row, aa.warn_fails_in_row, 1) AS wfr,
            coalesce(ic.warn_fail_minutes, ia.warn_fail_minutes, ac.warn_fail_minutes, aa.warn_fail_minutes, 10) AS wfm,
            coalesce(ic.crit_fails_in_row, ia.crit_fails_in_row, ac.crit_fails_in_row, aa.crit_fails_in_row, 3) AS cfr,
@@ -414,21 +426,24 @@ LANGUAGE sql STABLE SET jit = off AS $$
                             CASE WHEN ac.threshold_id IS NOT NULL THEN 'this collection on every instance' END,
                             CASE WHEN aa.threshold_id IS NOT NULL THEN 'everything' END), '') AS th_from
       FROM j
-      LEFT JOIN pgvigil.collection_health_threshold ic ON ic.ended_at IS NULL AND ic.instance_id = j.instance_id AND ic.collection = j.collection
-      LEFT JOIN pgvigil.collection_health_threshold ia ON ia.ended_at IS NULL AND ia.instance_id = j.instance_id AND ia.collection IS NULL
-      LEFT JOIN pgvigil.collection_health_threshold ac ON ac.ended_at IS NULL AND ac.instance_id IS NULL AND ac.collection = j.collection
-      LEFT JOIN pgvigil.collection_health_threshold aa ON aa.ended_at IS NULL AND aa.instance_id IS NULL AND aa.collection IS NULL
+      LEFT JOIN live ic ON ic.instance_id = j.instance_id AND ic.collection = j.collection
+      LEFT JOIN live ia ON ia.instance_id = j.instance_id AND ia.collection IS NULL
+      LEFT JOIN live ac ON ac.instance_id IS NULL AND ac.collection = j.collection
+      LEFT JOIN live aa ON aa.instance_id IS NULL AND aa.collection IS NULL
+     WHERE j.in_range OR j.last_run_at >= now() - make_interval(secs => greatest(3 * j.iv, 86400))
   ), t AS (
-    SELECT j.*, th.dm, th.th_from,
+    -- the rate as DBA Dash judges it (CollectionHealthStatus.sql L94-98): only with a failure to count, so a 0 %
+    -- threshold means any failure, never every run (the review of B6g-2 #1); the per cent to two places as its
+    -- DECIMAL(5,2) (#9)
+    SELECT th.*,
            format('in a row %s / %s, failing %s / %s min, failed %s / %s %% of %s runs or more', th.wfr, th.cfr, th.wfm, th.cfm,
                   trim_scale(th.wpct), trim_scale(th.cpct), th.mr) AS th_words,
-           CASE WHEN j.cf >= th.cfr AND (j.fm IS NULL OR j.fm >= th.cfm) THEN 2
-                WHEN j.cf >= th.wfr AND (j.fm IS NULL OR j.fm >= th.wfm) THEN 1 ELSE 0 END AS st,
-           CASE WHEN j.known >= th.mr AND j.failed * 100 >= th.cpct * j.known AND j.last_status = 'error' THEN 2
-                WHEN j.known >= th.mr AND (j.failed + j.partial) * 100 >= th.wpct * j.known THEN 1 ELSE 0 END AS rt,
-           j.iv = 0 OR th.dm OR (j.known = 0 AND j.cf = 0) AS na
-      FROM j JOIN th ON th.instance_id = j.instance_id AND th.collection = j.collection
-     WHERE j.in_range OR j.last_run_at >= now() - make_interval(secs => greatest(3 * j.iv, 86400))
+           CASE WHEN th.cf >= th.cfr AND (th.fm IS NULL OR th.fm >= th.cfm) THEN 2
+                WHEN th.cf >= th.wfr AND (th.fm IS NULL OR th.fm >= th.wfm) THEN 1 ELSE 0 END AS st,
+           CASE WHEN th.known >= th.mr AND th.failed > 0 AND round(100.0 * th.failed / th.known, 2) >= th.cpct AND th.last_status = 'error' THEN 2
+                WHEN th.known >= th.mr AND th.failed + th.partial > 0 AND round(100.0 * (th.failed + th.partial) / th.known, 2) >= th.wpct THEN 1 ELSE 0 END AS rt,
+           th.iv = 0 OR th.dm OR (th.known = 0 AND th.cf = 0) AS na
+      FROM th
   )
   SELECT t.instance_id, t.collection,
          CASE WHEN t.na THEN 'n/a' WHEN greatest(t.st, t.rt) = 2 THEN 'critical' WHEN greatest(t.st, t.rt) = 1 THEN 'warning' ELSE 'ok' END,

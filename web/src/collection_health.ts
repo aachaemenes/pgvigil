@@ -26,6 +26,19 @@ const shows: [string, string][] = [['instance', 'Row per collection per instance
 // the lead's words (23:2x 11-14) where DBA Dash shows its Import Lag chart
 export const importLagWords = 'pgvigil writes into the repository inside the run that collected: no queue stands between the two, so there is no import lag (Avg Import is the write\'s own time)';
 const pct = (v: unknown) => v == null ? '' : String(Number(v));
+// ruleWords: the status rule above the grid in the numbers its rows are judged by (the design fold's #9; the review of
+// B6g-2 #3) - DBA Dash's defaults where no row has a level of its own, the one set of numbers every listed row shares,
+// or where they differ a pointer to each row's Thresholds cell
+function ruleWords(rows: Row[]): string {
+  const own = rows.filter(r => r.threshold_from != null && r.threshold_from !== '');
+  const words = new Set(rows.map(r => String(r.threshold_words ?? '')));
+  const tail = 'N/A when the collection is off, only skipped, or set Don\'t monitor. ';
+  if (!own.length) return 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
+    + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial (DBA Dash\'s defaults); ' + tail;
+  if (words.size === 1) return `Status by the thresholds every row listed holds (${[...words][0]}: warning / critical): critical at the critical failures in a row and minutes from the last success to the latest failure, or the critical per cent of the runs failed with the last run failed; warning at the warning ones, the per cent counting partial runs too; ` + tail;
+  return 'Status by each row\'s own thresholds - its Thresholds cell says where they come from and its title the numbers (DBA Dash\'s defaults: in a row 1 / 3, failing 10 / 30 min, failed 10 / 50 % of 5 runs or more); ' + tail;
+}
+
 // the write's noun in the seat's sentence (the server's CHThresholdWrite says the same)
 const thNoun = 'Collection Health thresholds';
 
@@ -43,7 +56,7 @@ function thresholdsDialog(ad: AckData, r: Row, after: () => void) {
   let live: Row[] = [], cur: CHScope = scopes[0], done = false, readOk = false;
   const pick = el('select', { id: 'ch-th-scope' }, ...scopes.map((x, i) => el('option', { value: String(i) }, x.words)));
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const levelLine = el('p', { class: 'meta' });
+  const levelLine = el('p', { class: 'meta', id: 'ch-th-level' });
   const offNote = el('p', { class: 'meta', hidden: '' });
   const ctl = new Map<CHSettingKey, { tick: HTMLInputElement; val: HTMLInputElement; inh: HTMLElement; inherited: number | boolean }>();
   const tbody = el('tbody');
@@ -85,6 +98,13 @@ function thresholdsDialog(ad: AckData, r: Row, after: () => void) {
   };
   // the level picked: its own values ticked, every value's inherited one beside it
   const fill = () => {
+    // a read that failed shows no number as if read (the review of B6g-2 #5: the defaults read as inherited)
+    if (!readOk) {
+      levelLine.textContent = 'The thresholds of this level could not be read.';
+      for (const c of ctl.values()) { c.tick.checked = false; c.inh.textContent = 'Inherited: not read'; if (c.val.type === 'checkbox') c.val.checked = false; else c.val.value = ''; }
+      drawButtons();
+      return;
+    }
     const own = ownRow(live, cur);
     levelLine.textContent = own
       ? `${cur.words}: set by ${String(own.created_by ?? '?')} ${fmtTime(own.created_at)}.`
@@ -109,13 +129,14 @@ function thresholdsDialog(ad: AckData, r: Row, after: () => void) {
     }
     fill();
   };
-  const form = el('form', { method: 'dialog' }, el('h3', {}, 'Collection Health Thresholds'),
+  const form = el('form', { method: 'dialog' }, el('h3', { id: 'ch-th-title' }, 'Collection Health Thresholds'),
     el('p', {}, 'A run of failures counts once it is long enough in runs and has gone on long enough since the collection last succeeded - so a collection that runs every minute has to fail for a while before it shows, while one that runs daily shows on its first failure.  '
       + 'The failure rate is over the page\'s range (the Summary\'s over the last 24hrs), once there are enough runs.  It is only critical while the latest run failed.  '
       + 'Untick a value to inherit it from the level above.  Who set a level and when is kept.'),
     el('div', {}, el('label', { for: 'ch-th-scope' }, 'Apply to: '), pick), levelLine,
     el('table', { class: 'ch-th' }, tbody), offNote, msg, btns);
-  const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:44rem', 'aria-label': `Collection Health Thresholds: ${scopes[0].words}` }, form);
+  // named by its heading, described by the level picked (the review of B6g-2 #10: a fixed label never followed the level)
+  const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:44rem', 'aria-labelledby': 'ch-th-title', 'aria-describedby': 'ch-th-level' }, form);
   function shut() { dlg.close(); dlg.remove(); if (done) after(); }
   dlg.addEventListener('cancel', () => { dlg.remove(); if (done) after(); });
   pick.addEventListener('change', () => { cur = scopes[Number(pick.value)] ?? scopes[0]; msg.textContent = ''; fill(); });
@@ -140,6 +161,8 @@ function thresholdsDialog(ad: AckData, r: Row, after: () => void) {
     msg.textContent = 'Saving...';
     void post<{ outcome: string; detail: string }>('collectionhealth/thresholds', pay).then(async res => {
       done = true;
+      // closed by Escape while the save was out: the page reads it again now (the review of B6g-2 #10)
+      if (!dlg.isConnected) { after(); return; }
       await load();
       msg.replaceChildren(badge(res.outcome, 'ok'), ' ', `Saved for ${cur.words}.  The page picks it up when it next reads (Close reads it again).`);
     }, (e: unknown) => {
@@ -262,7 +285,10 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'thresholds', label: 'Thresholds', fmt: (v, r) => {
         const b = el('button', { type: 'button', class: 'link', title: String(r.threshold_words ?? ''),
           'aria-label': `Collection Health thresholds of ${String(r.collection)}${r.instance_id != null ? ` on ${String(r.instance ?? '')}` : ''}: ${String(v ?? '')}` }, String(v ?? ''));
-        b.addEventListener('click', () => thresholdsDialog(ad, r, () => void draw()));
+        // after a save the grid is drawn again and the focus goes back to this row's cell (the review of B6g-2 #10)
+        const label = b.getAttribute('aria-label')!.replace(/: [^:]*$/, ':');
+        b.addEventListener('click', () => thresholdsDialog(ad, r, () => void draw().then(() =>
+          ([...document.querySelectorAll<HTMLButtonElement>('main .ch-grid button.link')].find(x => (x.getAttribute('aria-label') ?? '').startsWith(label)))?.focus())));
         return b;
       } },
     ];
@@ -295,8 +321,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
     body.replaceChildren(
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s)${folder}${onlyColl ? `, collection ${onlyColl}` : ''}: ${n('critical')} critical, ${n('warning')} warning, ${n('n/a')} N/A, ${n('ok')} OK. `
         // the rule in docs/collection-health.md's words (0166; the review of B6.2, part b #10)
-        + 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
-        + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults; where a level sets its own, the row\'s Thresholds cell says so and opens them, and Don\'t monitor makes it N/A). '
+        + ruleWords(rows)
         + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
         + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end (a run cut by its own timeout is not read); a PostgreSQL row says not read by pgvigil. '
         + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads (and the Cost chart\'s Import CPU line), the highest logical reads of one run; '

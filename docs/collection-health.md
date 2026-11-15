@@ -14,7 +14,7 @@ The repository judges each collection of each instance (`pgvigil.collection_heal
 |---|---|
 | Critical | 3 or more failures in a row and 30 minutes or more from the last success to the latest failure (never succeeded: the 3 failures alone), or 50 % or more of 5 or more runs failed with the last run failed |
 | Warning | 1 or more failures in a row and 10 minutes or more from the last success to the latest failure (never succeeded: the failure alone), or 10 % or more of 5 or more runs failed or ended partial |
-| N/A | the collection is off for the instance, or it only skipped |
+| N/A | the collection is off for the instance, it only skipped, or its thresholds set Don't monitor |
 | OK | otherwise |
 
 A partial run counts as a success for the failures in a row and for Last Success, and as a problem in the warning
@@ -87,9 +87,15 @@ every collection of one instance, one collection on every instance, or everythin
 next level up - this instance and collection, this instance, this collection on every instance, everything, then DBA
 Dash's defaults (in a row 1 / 3, failing 10 / 30 minutes, failed 10 / 50 % of 5 runs or more). Don't monitor makes the
 collection N/A ('not monitored'); a level's 'monitor' over a wider Don't monitor judges it again. The Thresholds cell
-says where a row's numbers come from, and its title the numbers. Any signed-in user sets them (POST
-/api/collectionhealth/thresholds), each change kept with who and when; the demo's door sets them on one demo instance
-only.
+says where a row's numbers come from, and its title the numbers; a row per collection whose instances differ says
+'each instance its own'. Any signed-in user sets them (POST /api/collectionhealth/thresholds), each change kept with
+who and when - an admin's write once the role gate (B24f) lands; the demo's door sets them on one demo instance only.
+The ranges are DBA Dash's: 1 to 100,000 failures in a row and runs, 0 to 1,000,000 minutes, 0 to 100 % to two places;
+a 0 % rate means any failure (a rate is judged only with a failure to count, as DBA Dash judges it).
+
+Don't monitor reaches further than the page: the collection raises no 'collection failing' finding (an alert already open for
+it is then the sender's as any finding that stopped standing) and the overview's daily check of the same name leaves it out. The Instances list's
+failing collections, an instance's header and the Collector page's streaks still show its failures.
 
 The Thresholds cell opens DBA Dash's Collection Health Thresholds dialog for its row: Apply to picks the level (a row
 per collection over the instances offers the two without an instance), each setting is ticked to set it at that level

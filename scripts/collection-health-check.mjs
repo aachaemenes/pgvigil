@@ -240,9 +240,12 @@ const allRows = await api({});
   const defs = ['1', '10', '3', '30', '10', '50', '5', 'No'].map(v => `Inherited: ${v} (DBA Dash's default)`);
   say(!!d0 && JSON.stringify(d0.inherited) === JSON.stringify(defs), 'CH18 every value inherits DBA Dash\'s default', d0 ? d0.inherited.join(' | ') : 'no dialog');
   // a level over every instance: off on the demo door, its words in the dialog; back on at the instance's level
-  await ev(`(() => { const s = document.querySelector('#ch-th-scope'); if (s) { s.value = '3'; s.dispatchEvent(new Event('change')); } })()`); await sleep(300);
-  const d1 = await dlg();
-  say(!!d1 && d1.off === 'true' && /reach past the demo's instances/.test(d1.text), 'CH19 All collections on all instances: Save off with the door\'s words', d1 ? `aria-disabled ${d1.off}; ${(d1.text.match(/Not written here:[^.]*\./) ?? [''])[0]}` : 'no dialog');
+  // both levels over every instance (the review of B6g-2 #11: index 3 alone passed a door that refused only everything)
+  for (const [ix, words] of [['2', 'activity on all instances'], ['3', 'All collections on all instances']]) {
+    await ev(`(() => { const s = document.querySelector('#ch-th-scope'); if (s) { s.value = '${ix}'; s.dispatchEvent(new Event('change')); } })()`); await sleep(300);
+    const d1 = await dlg();
+    say(!!d1 && d1.off === 'true' && /reach past the demo's instances/.test(d1.text), `CH19 ${words}: Save off with the door\'s words`, d1 ? `aria-disabled ${d1.off}; ${(d1.text.match(/Not written here:[^.]*\./) ?? [''])[0]}` : 'no dialog');
+  }
   await ev(`(() => { const s = document.querySelector('#ch-th-scope'); if (s) { s.value = '0'; s.dispatchEvent(new Event('change')); } })()`); await sleep(300);
   const d2 = await dlg();
   say(!!d2 && d2.off !== 'true', `CH19 activity on ${inst}: Save on`, d2 ? `aria-disabled '${d2.off}'` : 'no dialog');
@@ -263,15 +266,19 @@ const allRows = await api({});
   if (d3) await ev(`(() => { const d = document.querySelector('dialog.act-dialog[open]'); [...d.querySelectorAll('button')].find(b => b.textContent === 'Inherit All').click(); d.querySelector('button[type=submit]').click(); })()`);
   const back = d3 ? await until(async () => { const d = await dlg(); return d && /^(done|not saved)/.test(d.msg.trim()) ? d : null; }) : null;
   await ev(`[...document.querySelectorAll('dialog.act-dialog[open] button')].find(b => b.textContent === 'Close')?.click()`);
+  // the row judged again: its status as the API judges it now (the review of B6g-2 #13: a 24-hour page that crossed an
+  // hour since the first read may have dropped an hour, so the status before the writes is no measure)
+  const iid0 = insts.find(r => r.name === inst)?.instance_id;
+  const now3 = iid0 == null ? null : (await api({ instance: iid0 }))?.find(x => x.collection === 'activity');
   const p3 = await open('#/collectionhealth?w=24h');
   const r3 = (p3?.rows ?? []).find(r => r['Instance']?.text === inst && r['Collection']?.text === 'activity');
-  say(!!back && back.msg.includes('Saved for') && !!r3 && r3['Status']?.text === row?.['Status']?.text && r3['Thresholds']?.text === row?.['Thresholds']?.text,
-    'CH20 Inherit All + Save: the row back as before', `${back ? back.msg.slice(0, 80) : 'no answer'} | before ${row?.['Status']?.text} / ${row?.['Thresholds']?.text}, after ${r3?.['Status']?.text} / ${r3?.['Thresholds']?.text}`);
+  say(!!back && back.msg.includes('Saved for') && !!r3 && !!now3 && r3['Status']?.text === word[now3.status] && r3['Status']?.text !== 'N/A' && r3['Thresholds']?.text === row?.['Thresholds']?.text,
+    'CH20 Inherit All + Save: the row judged again, its thresholds as before', `${back ? back.msg.slice(0, 80) : 'no answer'} | API ${now3?.status}, page ${r3?.['Status']?.text} / ${r3?.['Thresholds']?.text} (before ${row?.['Thresholds']?.text})`);
   // a refusal of the repository's function, in its words on the page (as post() shows it: the body's error)
   const iid = insts.find(r => r.name === inst)?.instance_id;
   const ref = iid == null ? null : await ev(`fetch('/api/collectionhealth/thresholds', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
     body: JSON.stringify({ op: 'set', instance_id: ${Number(iid)}, collection: 'activity', warn_fails_in_row: 0 }) }).then(async r => r.status + ' ' + ((await r.json()).error ?? '(no error key)'))`);
-  say(/^409 refused: warn_fails_in_row must be a whole number from 1/.test(ref ?? ''), 'CH21 a refusal reaches the page in its words', String(ref).slice(0, 160));
+  say(/^409 refused: warn_fails_in_row must be a whole number from 1/.test(ref ?? ''), 'CH21 the API\'s 409 carries the refusal\'s words (what the page\'s post() shows)', String(ref).slice(0, 160));
 }
 
 // CH7 the landings

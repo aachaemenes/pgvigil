@@ -18,7 +18,7 @@ const call = (what, fn, want) => {
 if (m) {
   const live = [
     { instance_id: 7, collection: 'activity', warn_fails_in_row: 2 },                   // this instance and collection
-    { instance_id: 7, collection: null, warn_fail_minutes: 20, min_runs: 8 },             // this instance, every collection
+    { instance_id: 7, collection: null, warn_fail_minutes: 20, min_runs: 8, crit_fail_pct: 30 },   // this instance, every collection
     { instance_id: null, collection: 'activity', crit_fail_pct: '40.00' },                // this collection, every instance (numeric as text)
     { instance_id: null, collection: null, min_runs: 6, dont_monitor: false },            // everything
     { instance_id: 9, collection: 'activity', warn_fails_in_row: 5 },                     // another instance's: never read here
@@ -33,9 +33,13 @@ if (m) {
   call('another instance\'s row is never this scope\'s', () => m.ownRow([live[4]], ic), null);
   // what each scope inherits, setting by setting
   call('this instance and collection inherits minutes from this instance\'s row', () => m.inheritedOf(live, sc, ic, 'warn_fail_minutes'), { value: 20, from: 'All collections on sql07' });
-  call('... the critical per cent from this collection\'s row on every instance', () => m.inheritedOf(live, sc, ic, 'crit_fail_pct'), { value: 40, from: 'activity on all instances' });
+  // the review of B6g-2 #2: the middle levels' order - this instance's row over this collection's row on every instance
+  call('... the critical per cent from this instance\'s row, over this collection\'s on every instance', () => m.inheritedOf(live, sc, ic, 'crit_fail_pct'), { value: 30, from: 'All collections on sql07' });
+  const live2 = [{ instance_id: null, collection: 'activity', crit_fail_pct: '40.00' }, { instance_id: null, collection: null, crit_fail_pct: 45, min_runs: 6 }];
+  call('... and this collection\'s row on every instance over everything\'s', () => m.inheritedOf(live2, sc, ic, 'crit_fail_pct'), { value: 40, from: 'activity on all instances' });
   call('... a setting no level sets: DBA Dash\'s default', () => m.inheritedOf(live, sc, ic, 'crit_fails_in_row'), { value: 3, from: 'DBA Dash\'s default' });
-  call('every collection on the instance inherits from everything, never from one collection\'s row', () => m.inheritedOf(live, sc, ia, 'crit_fail_pct'), { value: 50, from: 'DBA Dash\'s default' });
+  call('every collection on the instance inherits from everything, never from one collection\'s row', () => m.inheritedOf(live, sc, ia, 'crit_fails_in_row'), { value: 3, from: 'DBA Dash\'s default' });
+  call('... everything\'s value over the default', () => m.inheritedOf(live2, sc, ia, 'crit_fail_pct'), { value: 45, from: 'All collections on all instances' });
   call('... and the minimum runs from everything', () => m.inheritedOf(live, sc, ia, 'min_runs'), { value: 6, from: 'All collections on all instances' });
   call('this collection on every instance never reads this instance\'s row', () => m.inheritedOf(live, sc, ac, 'warn_fail_minutes'), { value: 10, from: 'DBA Dash\'s default' });
   call('everything inherits the defaults, never its own row', () => m.inheritedOf(live, sc, aa, 'min_runs'), { value: 5, from: 'DBA Dash\'s default' });
