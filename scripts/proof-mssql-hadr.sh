@@ -67,7 +67,8 @@
 #     (SET NOEXEC ON) and RUN as the monitoring login by TestHADRStatementsLive (with the backup sink and time-zone
 #     tests: a seeding stream, a NUL backup and their look-alikes told apart; time_zone -32 = UTC + 8 h); the replication statements are also
 #     run against the stand-in database and return its rows (one publication, one subscription with 7 undelivered
-#     commands, three agents).
+#     commands, three agents; on a tree whose replication read takes a merge agent as its subscription
+#     (replMergeSubscriptions, task 385's merge rows): two subscriptions and two agents).
 #  F. stubbed rows through the import functions on a stub instance: a mirrored database DISCONNECTED -> critical; a
 #     log shipping secondary 3 hours behind a 45-minute threshold -> warning; a failed distribution agent and 250,000
 #     undistributed commands -> two warnings; six minutes of samples with a redo queue over its threshold -> 'the
@@ -767,7 +768,8 @@ CREATE TABLE dbo.MSlogreader_history (agent_id int, runstatus int, start_time da
 CREATE TABLE dbo.MSsnapshot_agents (id int, name nvarchar(100), publisher_id smallint, publisher_db sysname, publication sysname, publication_type int);
 CREATE TABLE dbo.MSsnapshot_history (agent_id int, runstatus int, start_time datetime, time datetime, duration int, comments nvarchar(1000), delivered_transactions int, delivered_commands int, delivery_rate float, error_id int, timestamp timestamp);
 CREATE TABLE dbo.MSmerge_agents (id int, name nvarchar(100), publisher_id smallint, publisher_db sysname, publication sysname, subscriber_id smallint, subscriber_db sysname, subscriber_name sysname NULL);
-CREATE TABLE dbo.MSmerge_sessions (session_id int, agent_id int, start_time datetime, end_time datetime, duration int, runstatus int, timestamp timestamp);
+CREATE TABLE dbo.MSmerge_sessions (session_id int, agent_id int, start_time datetime, end_time datetime, duration int, delivery_rate float NULL, runstatus int, timestamp timestamp);
+CREATE TABLE dbo.MSmerge_subscriptions (publisher_id smallint, publisher_db sysname, publication_id int, subscriber_id smallint, subscriber_db sysname, subscription_type int, sync_type tinyint, status tinyint, subscription_time datetime);
 CREATE TABLE dbo.MSsubscriptions (publisher_database_id int, article_id int, agent_id int, status tinyint);
 CREATE TABLE dbo.MSrepl_errors (id int, time datetime, error_code sysname NULL, error_text ntext NULL);
 CREATE TABLE dbo.MSrepl_transactions (publisher_database_id int, xact_seqno varbinary(16), entry_time datetime);
@@ -785,6 +787,7 @@ INSERT dbo.MSlogreader_history (agent_id, runstatus, start_time, time, comments,
 INSERT dbo.MSsnapshot_agents VALUES (1, N'snapshot-1', 0, N'sales', N'pub_orders', 0);
 INSERT dbo.MSsnapshot_history (agent_id, runstatus, start_time, time, comments) VALUES (1, 2, GETDATE(), GETDATE(), N'A snapshot of 2 article(s) was generated.');
 INSERT dbo.MSmerge_agents VALUES (1, N'merge-1', 0, N'crm', N'pub_crm', 0, N'crm_copy', NULL);
+INSERT dbo.MSmerge_subscriptions VALUES (0, N'crm', 2, 0, N'crm_copy', 0, 1, 0, GETDATE());
 INSERT dbo.MSmerge_sessions (session_id, agent_id, start_time, end_time, duration, runstatus) VALUES (1, 1, DATEADD(hour, -1, GETDATE()), DATEADD(minute, -59, GETDATE()), 60, 2), (2, 1, DATEADD(minute, -5, GETDATE()), NULL, 0, 5);
 INSERT dbo.MSmerge_history (session_id, agent_id, comments) VALUES (2, 1, N'The merge process is retrying.');" "$DDB"
 
@@ -1034,7 +1037,9 @@ echo "NOT PROVEN: no log shipping on this sandbox (mssql_logshipping ran, found 
 echo "NOT PROVEN: no distributor on this sandbox (mssql_replication ran, found none, stored nothing)"
 PGVIGIL_MSSQL_TEST_DSN="$MSSQL_N1_DSN" PGVIGIL_MSSQL_TEST_DISTRIBUTION="$DDB" go test ./internal/mssql -run 'TestHADRStatementsLive|TestAgentDateTimeLive|TestBackupSinkLive|TestBackupUTCLive' -count=1 -v >"$OUT" 2>&1 || { cat "$OUT"; fail "E: the live statement tests on the primary"; }
 grep -E "replication (publications|subscriptions|agents): [0-9]+ row" "$OUT" | sed 's/^ *[a-z_.0-9]*: /  stand-in distribution database: /' || true
-grep -q "replication publications: 1 row" "$OUT" && grep -q "replication subscriptions: 1 row" "$OUT" && grep -q "replication agents: 3 row" "$OUT" || { cat "$OUT"; fail "E: the replication statements over the stand-in database"; }
+# merge-1: an agent row, or (a tree with task 385's merge rows) a subscription row and no agent row
+if grep -q 'func replMergeSubscriptions' internal/mssql/replication.go; then RSUB=2; RAG=2; else RSUB=1; RAG=3; fi
+grep -q "replication publications: 1 row" "$OUT" && grep -q "replication subscriptions: $RSUB row" "$OUT" && grep -q "replication agents: $RAG row" "$OUT" || { cat "$OUT"; fail "E: the replication statements over the stand-in database (want $RSUB subscriptions, $RAG agents)"; }
 PGVIGIL_MSSQL_TEST_DSN="$MSSQL_N2_DSN" go test ./internal/mssql -run 'TestHADRStatementsLive' -count=1 >"$OUT" 2>&1 || { cat "$OUT"; fail "E: the live statement test on the secondary"; }
 # the same statements through the collector's row shaping into the import, against the stand-in, read by hand
 SUBS=$(sqn "$CT1" "$DDB" "SELECT CAST(SUM(UndelivCmdsInDistDB) AS varchar(12)) FROM dbo.MSdistribution_status WHERE agent_id = 1")
