@@ -57,7 +57,8 @@ const dbadash = {
   // PostgreSQL's statement store has its own column, which SQL Server has no cell in
   'QS':                  { sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS' },
   'pg_stat_statements':  { postgres: ['pgstate'], dd: 'no DBA Dash column: PostgreSQL has no Query Store, its statement store is on Server state' },
-  'Custom Checks':       { postgres: ['custom'], dd: 'Custom Checks -> Checks > Custom Checks' },
+  // a SQL Server row's cell since ST6b (its custom findings, DBA Dash's custom check rows among them)
+  'Custom Checks':       { postgres: ['custom'], sqlserver: ['custom'], dd: 'Custom Checks -> Checks > Custom Checks' },
   'Snapshot Age':        { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'Snapshot Age -> Checks > Collection Dates' },
   'Identity Columns':    { sqlserver: ['mssqlchecks'], cv: { sqlserver: 'identity' }, dd: 'Identity Columns -> Checks > Identity Columns' },
   'Database State':      { postgres: ['pgdboptions'], sqlserver: ['mssqlchecks'], cv: { sqlserver: 'databases' }, dd: 'Database State -> Configuration > DB Options' },

@@ -48,6 +48,11 @@ const sqlCustomInstance = `SELECT engine FROM pgvigil.instances WHERE instance_i
 // only then
 const sqlCustomFleet = `SELECT EXISTS (SELECT 1 FROM pgvigil.instances WHERE engine = 'sqlserver' AND is_active) AS sqlserver`
 
+// sqlCustomStatusRows is each status check's current rows on the instance (DBA Dash's custom check, ST6b: 0269), the
+// worst first
+const sqlCustomStatusRows = `SELECT check_name, test, context, status, info, snapshot_at FROM pgvigil.custom_status_rows
+ WHERE instance_id = $1 ORDER BY check_name, status, test, context`
+
 // Custom serves one instance's Custom tab, or the fleet's Custom report without instance.
 func (s *Server) Custom(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("instance") == "" {
@@ -70,5 +75,6 @@ func (s *Server) Custom(w http.ResponseWriter, r *http.Request) {
 		{"findings", sqlCustomFindings, []any{id}},
 		{"gone", sqlCustomGone, []any{id}},
 		{"instance", sqlCustomInstance, []any{id}},
+		{"statusrows", sqlCustomStatusRows, []any{id}},
 	})
 }

@@ -22,14 +22,30 @@ function statusCell(r: Row): Node {
   return span;
 }
 const num = (v: unknown) => v == null ? '' : fmtNum(v);
-const valueCell = (r: Row): string => r.status === 'error' ? '' : r.rule === 'rows' ? `${fmtNum(r.row_count)} rows` : r.value == null ? 'no value' : num(r.value);
+const valueCell = (r: Row): string => r.status === 'error' ? '' : r.rule === 'rows' ? `${fmtNum(r.row_count)} rows`
+  : r.rule === 'status' ? `${num(r.value ?? 0)} of ${fmtNum(r.row_count ?? 0)} rows at warning or critical` : r.value == null ? 'no value' : num(r.value);
 const thresholds = (r: Row): string => {
+  if (r.rule === 'status') return 'each row\'s Status';
   const p: string[] = [];
   if (r.warning != null) p.push(`warning ${String(r.compare)} ${num(r.warning)}`);
   if (r.critical != null) p.push(`critical ${String(r.compare)} ${num(r.critical)}`);
   return p.length ? p.join(', ') : 'none';
 };
-const ruleCell = (r: Row): string => r.rule === 'rows' ? 'row count' : `value${r.value_column ? ' (' + String(r.value_column) + ')' : ''}`;
+const ruleCell = (r: Row): string => r.rule === 'rows' ? 'row count' : r.rule === 'status' ? 'status (each row its own)'
+  : `value${r.value_column ? ' (' + String(r.value_column) + ')' : ''}`;
+
+// a status check's rows (DBA Dash's custom check, ST6b): Status 1 critical, 2 warning, 3 N/A, 4 OK
+const statusWord: Record<number, [string, string]> = { 1: ['critical', 'crit'], 2: ['warning', 'warn'], 3: ['N/A', ''], 4: ['OK', 'ok'] };
+function statusGrid(rows: Row[], note: unknown): HTMLElement {
+  const box = el('div');
+  box.append(grid(rows, [
+    { key: 'test' }, { key: 'context' },
+    { key: 'status', num: true, fmt: v => { const w = statusWord[Number(v)] ?? [String(v ?? ''), '']; return badge(w[0], w[1]); } },
+    { key: 'info', wide: true, fmt: v => v == null ? '' : String(v) },
+  ], 'The latest run returned no rows (DBA Dash\'s N/A).'));
+  if (note) box.append(el('p', { class: 'meta' }, String(note)));
+  return box;
+}
 
 const checkCols: Col[] = [
   { key: 'check_name', label: 'check' },
@@ -55,7 +71,8 @@ function rowsGrid(r: Row): HTMLElement {
 
 export async function customView(ctx: Ctx): Promise<HTMLElement> {
   const w = window_(ctx);
-  const d = await get<Record<'checks' | 'series' | 'findings' | 'gone' | 'instance', Table | null>>('custom', { instance: ctx.instance, from: w.from, to: w.to });
+  const d = await get<Record<'checks' | 'series' | 'findings' | 'gone' | 'instance' | 'statusrows', Table | null>>('custom', { instance: ctx.instance, from: w.from, to: w.to });
+  const statusRows = rowsOf(d.statusrows);
   const checks = withRank(rowsOf(d.checks)), series = rowsOf(d.series), gone = rowsOf(d.gone);
   // a SQL Server instance's checks are written for it (engine: sqlserver, ST6) and run behind another fence
   const ms = rowsOf(d.instance)[0]?.engine === 'sqlserver';
@@ -85,6 +102,7 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
       : 'Each check is the DBA\'s own SQL from the configuration, run by the collector as the instance\'s monitoring login in a read-only '
       + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a write to a table (or anything else PostgreSQL refuses in a read-only transaction) fails and is shown as the check\'s error. ')
     + 'A value check judges its value column (or the column named value, else the first) of the first row; a row-count check judges the rows returned. '
+    + (ms ? 'A status check (DBA Dash\'s custom check, such as dbo.DBADash_CustomCheck) returns Test, Context, Status and Info: each row is judged by its own Status (1 critical, 2 warning, 3 N/A, 4 OK), one finding per row at 1 or 2. ' : '')
     + 'Critical is tested before warning; no value (no row, or NULL) judges nothing. At most 100 rows of a run are kept, and only under query_text full. '
     + 'Not run in 2 cadences: the collection still visits the instance but the check\'s latest run is more than two cadences behind it.'));
   sec.append(el('h3', {}, 'Checks'), grid(checks, checkCols));
@@ -108,7 +126,8 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Latest rows and SQL'));
   for (const c of checks) {
     const det = el('details', { 'data-sheet': String(c.check_name) }, el('summary', {}, `${String(c.check_name)}: ${c.status ? String(c.status) : 'never run'}, ${fmtNum(c.row_count ?? 0)} rows`));
-    det.append(rowsGrid(c), el('pre', { class: 'sql', tabindex: '0' }, String(c.sql ?? '')));
+    det.append(c.rule === 'status' ? statusGrid(statusRows.filter(x => x.check_name === c.check_name), c.note) : rowsGrid(c),
+      el('pre', { class: 'sql', tabindex: '0' }, String(c.sql ?? '')));
     sec.append(det);
   }
   if (gone.length) sec.append(el('h3', {}, 'Taken off this instance'), grid(gone, [{ key: 'check_name', label: 'check' }, { key: 'targets', label: 'ran on' }, { key: 'gone_at', label: 'gone since', fmt: fmtTime }]));

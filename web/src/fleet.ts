@@ -85,7 +85,8 @@ export const groups: Group[] = [
   { key: 'elasticpool', label: 'Elastic Pool Storage', checks: [], tab: 'summary', mssql: ['elasticpool', 'mssqlpool', 'Elastic pool'], mssqlOnly: true, dd: true },
   // QS is SQL Server's Query Store alone: PostgreSQL has none, its statement store is the column pg_stat_statements below
   { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true, dd: true },
-  { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', dd: true },
+  // a SQL Server row's cell: mssql/summary's 'custom' (its custom findings, DBA Dash's custom check rows among them: ST6b)
+  { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', mssql: ['custom', 'custom', 'Custom checks'], dd: true },
   { key: 'errors', label: 'Collection Errors (24hrs)', checks: ['collection failing'], tab: 'collectiondates', mssql: ['errors', 'collectiondates', 'Collection errors'], dd: true, both: true },
   { key: 'snapshot', label: 'Snapshot Age', checks: ['collection stale'], tab: 'collectiondates', mssql: ['snapshot', 'collectiondates', 'Collection'], dd: true, both: true },
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true, dd: true, plain: true },
@@ -246,7 +247,8 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
           out[g.key] = { level: crit ? 2 : 1, n: crit || warn, detail: why ? [...detail, why] : detail,
             text: m.value != null ? `${String(m.value)} ${word}${late}` : late ? `${crit || warn} ${word}${late}` : undefined };
           out[g.key].since = m.since; out[g.key].value = m.value == null ? undefined : String(m.value);
-        } else if (state === 'n/a') out[g.key] = none('n/a', 'the collections of this group do not run on this kind of server');
+        } else if (state === 'n/a') out[g.key] = none('n/a', g.key === 'custom' ? 'no custom check runs on this instance: the configuration\'s custom: list names none for it'
+          : 'the collections of this group do not run on this kind of server');
         else if (state === 'failed') out[g.key] = none('read failed', why);
         else if (state === 'stale') out[g.key] = none('stale', why);
         else if (!m.sampled) out[g.key] = none('not read', detail[0] ?? 'this part was not readable with the login\'s rights');
