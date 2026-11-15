@@ -155,7 +155,9 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
 // a tag folder; instLink makes the instance name a link to its Job report tab).
 // status: the Job status section (jobs_fleet_status.ts, every engine's jobs judged by job_status) drawn first; its tiles
 // count every job, so PostgreSQL's own tiles below it say they are PostgreSQL's
-export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node, ctx?: Ctx, status?: HTMLElement): Promise<HTMLElement> {
+// pgInView false (a scope with no PostgreSQL instance): the Job status section alone, no PostgreSQL schedule checks.
+export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node, ctx?: Ctx, status?: HTMLElement, pgInView = true): Promise<HTMLElement> {
+  if (status && !pgInView) return el('section', {}, el('h2', {}, 'Jobs'), status);
   const d = await get<Record<'counts' | 'jobs', Table | null>>('jobsreport');
   let rows = withRank(rowsOf(d.jobs));
   if (keep) rows = rows.filter(keep);

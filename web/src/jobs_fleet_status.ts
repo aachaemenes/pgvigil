@@ -39,6 +39,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
   try {
     const inView = (await fleet()).instances.filter(r => !ctx.tag || (ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag)));
     const ids = inView.map(r => Number(r.instance_id));
+    // the schedulers named in the page's sentence: only the engines in view (a SQL Server-only tag folder says SQL Agent alone)
+    const msIn = inView.some(r => r.engine === 'sqlserver'), pgIn = inView.some(r => r.engine !== 'sqlserver');
+    const engineJobs = msIn && pgIn ? 'SQL Agent, pg_cron and pgAgent' : msIn ? 'SQL Agent' : pgIn ? 'pg_cron and pgAgent' : 'every scheduler';
     const names = new Map(inView.map(r => [Number(r.instance_id), String(r.name)]));
     const d = await get<Record<'status', Table | null>>('jobsreport', { part: 'status', ids: ids.join(',') || '0' });
     const rows = rowsOf(d.status);
@@ -164,7 +167,7 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     pickSel.addEventListener('change', draw);
     sec.append(el('h3', {}, 'Job status'),
       el('p', { class: 'meta' }, el('label', { for: 'job-status-filter' }, 'Show '), pickSel, ' ', said),
-      el('p', { class: 'meta' }, 'Every job of the instances in view, SQL Agent, pg_cron and pgAgent, judged by its thresholds (the job, its instance or the root); with none set, '
+      el('p', { class: 'meta' }, `Every job of the instances in view, ${engineJobs}, judged by its thresholds (the job, its instance or the root); with none set, `
         + 'DBA Dash\'s default: critical when the last run failed or a run failed in the last 60 minutes, warning when a run failed in the last 7 days. As in DBA Dash a '
         + 'cancelled run counts as a failure and a disabled job is not judged. The 24-hour and 7-day counts are fixed windows, not the page\'s range. The last failure and '
         + 'success are looked for back as far as the longest threshold in force (7 days at least); a job whose last run failed shows that failure however old. The 7-day '

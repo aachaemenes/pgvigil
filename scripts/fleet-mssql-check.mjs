@@ -86,15 +86,16 @@ try {
 
   // B4. one engine, one instance
   await go('#/backups?tag=erp&w=1h');
-  const erp = await ev(state);
+  // a PostgreSQL-only scope draws no SQL Server section at all (f8e89d2: its heading would name the other engine)
+  const erp = await ev(`(() => ({ sec: !!document.querySelector('#mssql-backups-fleet'), h2s: [...document.querySelectorAll('main h2')].map(h => h.textContent) }))()`);
   await go('#/backups?tag=sales&w=1h');
   const sales = await ev(state);
   await go('#/backups?tag=ledger&w=1h');
   const ledger = await ev(state);
   const salesPg = sales ? sales.h2s.filter(h => h === 'Base backups (pgBackRest, barman)') : [];
-  check('B4 views', erp?.empty === 'No SQL Server instance in this view.' && sales?.pgEmpty.includes('No PostgreSQL instance in this view.') && salesPg.length === 0 && sales?.inst.length === 2
+  check('B4 views', erp && !erp.sec && erp.h2s.some(h => h.startsWith('Backups')) && !erp.h2s.some(h => h.includes('SQL Server')) && sales?.pgEmpty.includes('No PostgreSQL instance in this view.') && salesPg.length === 0 && sales?.inst.length === 2
     && ledger?.filter === 'all' && ledger?.inst.length === 1 && ledger.inst[0][ledger.inst[0].length - 1] === 'mssql_backups has not run on this server yet' && ledger.dbs.length === 0,
-    `erp '${erp?.empty ?? 'no section'}'; sales ${JSON.stringify(sales?.pgEmpty)}, PostgreSQL's Base backups ${salesPg.length ? 'DRAWN' : 'not drawn'}, ${sales?.inst.length} instance rows; ledger filter ${ledger?.filter}, `
+    `erp: SQL Server section ${erp ? (erp.sec ? 'DRAWN' : 'not drawn') : 'no read'}, headings ${JSON.stringify(erp?.h2s)}; sales ${JSON.stringify(sales?.pgEmpty)}, PostgreSQL's Base backups ${salesPg.length ? 'DRAWN' : 'not drawn'}, ${sales?.inst.length} instance rows; ledger filter ${ledger?.filter}, `
       + `${ledger?.inst.length} instance row(s) ${JSON.stringify(ledger?.inst.map(r => r[r.length - 1]))}, ${ledger?.dbs.length} databases (sql03 = ${s3})`);
 
   // J2-J4. the fleet Jobs page
