@@ -361,7 +361,13 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       } catch (e) { list.replaceChildren(errorBox(e)); }
     };
     qBox.addEventListener('change', () => void read());
-    errorsBox.replaceChildren(el('h3', {}, 'Errors'), el('div', { class: 'toolbar' }, back, ' ', el('label', { for: 'ch-q' }, 'Message ', qBox)), list);
+    // B6g-5 (the lead's 10:2x B6G-5 (a): no second roll-up): the same errors on the Collector errors page - its types,
+    // stages, the service's own failures and Acknowledge Errors (B24o's, DBA Dash's ErrorLog) - this list's scope,
+    // collection and window, a row per error
+    const wv0 = window_(ctx), ceHref = href(ctx, { tab: 'collectorerrors', range: { from: wv0.from, to: wv0.to } });
+    const ce = el('a', { href: ceHref + (ceHref.includes('?') ? '&' : '?') + 'view=error' + (onlyColl ? '&coll=' + encodeURIComponent(onlyColl) : ''), 'data-land': 'collectorerrors',
+      title: 'Collector errors: these errors by type and stage, the service\'s own failures, and Acknowledge' }, 'The same errors on Collector errors');
+    errorsBox.replaceChildren(el('h3', {}, 'Errors'), el('div', { class: 'toolbar' }, back, ' ', ce, ' ', el('label', { for: 'ch-q' }, 'Message ', qBox)), list);
     await read();
   }
 

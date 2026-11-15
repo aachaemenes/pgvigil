@@ -207,6 +207,15 @@ const allRows = await api({});
     await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: U + href }); await sleep(2000);
     const listed = await ev(`document.querySelectorAll('main .ch-errors tbody tr').length`);
     say(listed === 3, `CH17 ${col} -> the error list`, `${listed} listed, the fixture's 3 errors (${href})`);
+    // CH25 (B6g-5, the lead's 10:2x B6G-5 (a)): the list links to the same errors on the Collector errors page (B24o's:
+    // its types, stages and Acknowledge) - its instance, the collection, a row per error, the list's own window. The
+    // page itself joins with B24o: its landing is proven on the joined tree, the address here
+    if (col === 'Failed') {
+      const ce = await ev(`document.querySelector('main .ch-errors a[data-land="collectorerrors"]')?.getAttribute('href') ?? ''`);
+      const r0 = route(ce), r1 = route(href);
+      say(r0.tab === 'collectorerrors' && r0.q.get('i') === String(byName('fx-chimport')?.instance_id ?? '') && r0.q.get('coll') === 'activity' && r0.q.get('view') === 'error'
+        && !!r0.q.get('from') && Date.parse(r0.q.get('from')) === Date.parse(r1.q.get('from')) && Date.parse(r0.q.get('to')) === Date.parse(r1.q.get('to')), 'CH25 the error list links to Collector errors with its instance, collection and window', ce || 'no link');
+    }
   }
 }
 

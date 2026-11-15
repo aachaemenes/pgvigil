@@ -79,6 +79,10 @@ UPDATE pgvigil.hours_retention SET days = 30, changed_at = now() WHERE table_nam
 
 or `pgvigil purge -hours collection_health_hour=30`. More than 30 is refused.
 
+The error list (Failed, Import Failed, Errors and Last Failure open it) links to the same errors on the Collector
+errors page - its types, stages, the service's own failures and Acknowledge Errors - with the list's instance,
+collection and window, a row per error (B6g-5; pgvigil keeps one error list, as DBA Dash's ErrorLog).
+
 ## Thresholds
 
 DBA Dash's per-collection thresholds: failures in a row and minutes failing for a warning and a critical, the failed
