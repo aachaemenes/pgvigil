@@ -388,7 +388,7 @@ index 2ea63181..75f3d046 100644
 +  END LOOP;
 +END $$;
 diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
-index 25a49aaf..4d242a7b 100644
+index 25a49aaf..3ea47aa8 100644
 --- i/internal/web/q_alert_rules.go
 +++ w/internal/web/q_alert_rules.go
 @@ -38,6 +38,7 @@ WITH sc AS (
@@ -408,29 +408,32 @@ index 25a49aaf..4d242a7b 100644
         st.firing_on, st.evaluated_at, f.last_fired_at, f.last_instance, f.fired
    FROM pgvigil.alert_rules r
    LEFT JOIN pgvigil.metric_catalog c ON c.key = r.metric
-@@ -65,12 +66,15 @@ SELECT r.rule_id, r.name, r.metric, c.family_label, c.label, c.unit, c.engine, c
+@@ -65,12 +66,18 @@ SELECT r.rule_id, r.name, r.metric, c.family_label, c.label, c.unit, c.engine, c
  const sqlAlertRuleState = `
  SELECT s.instance_id, i.name AS instance, s.metric, c.family_label, c.label, c.unit, nullif(s.database, '') AS database,
         s.rule_id, r.name AS rule_name, r.op, r.for_minutes, r.scope, coalesce(r.tag, r.instance_name) AS target,
 -       s.state, s.held, s.value, s.threshold, s.sample_at, s.beyond_since, s.since, s.evaluated_at
 +       s.state, s.held, s.value, s.threshold, s.sample_at, s.beyond_since, s.since, s.evaluated_at,
 +       -- task 402: an 'na' row's value and threshold are its floor's input and floor (0152's metric_floors), in its unit
-+       fl.unit AS floor_unit
++       fl.unit AS floor_unit,
++       -- a metric not judged under a condition of its own (0152's metric_na_reasons): its words
++       nr.why AS na_why
    FROM pgvigil.alert_rule_state s
    JOIN pgvigil.instances i USING (instance_id)
    JOIN pgvigil.alert_rules r USING (rule_id)
    LEFT JOIN pgvigil.metric_catalog c ON c.key = s.metric
 - ORDER BY CASE s.state WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'pending' THEN 2 WHEN 'nodata' THEN 3 ELSE 4 END,
 +  LEFT JOIN pgvigil.metric_floors fl ON fl.key = s.metric
++  LEFT JOIN pgvigil.metric_na_reasons nr ON nr.key = s.metric
 + ORDER BY CASE s.state WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'pending' THEN 2 WHEN 'nodata' THEN 3 WHEN 'na' THEN 4 ELSE 5 END,
            i.name, s.metric, s.database
   LIMIT 5000`
  
 diff --git i/internal/web/q_metrics.go w/internal/web/q_metrics.go
-index 62f936bf..ba7d3a04 100644
+index 62f936bf..e3841456 100644
 --- i/internal/web/q_metrics.go
 +++ w/internal/web/q_metrics.go
-@@ -26,8 +26,14 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
+@@ -26,8 +26,17 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
         pgvigil.metric_status(g.op, g.avg_value, g.warning, g.critical) AS avg_status,
         pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical) AS current_status,
         g.rule_id, g.rule_name, g.op, g.warning, g.critical, g.for_minutes, g.rule_scope, g.rule_target, g.rule_database,
@@ -439,10 +442,13 @@ index 62f936bf..ba7d3a04 100644
 +       -- task 402: a seeded rule colours while off (the join file's metric_rule); the page says it sends nothing
 +       ar.enabled AS rule_enabled,
 +       -- task 402: a floored metric's floor, so the page says N/A with its words whatever the rule's state (or none)
-+       fl.input_key AS floor_input, fl.unit AS floor_unit, fl.floor AS floor
++       fl.input_key AS floor_input, fl.unit AS floor_unit, fl.floor AS floor,
++       -- a metric not judged under a condition of its own (0152's metric_na_reasons): the N/A cell's words
++       nr.why AS na_why
    FROM pgvigil.metric_grid($1, $2, $3, make_interval(secs => $4), $5, $6) g
 +  LEFT JOIN pgvigil.alert_rules ar ON ar.rule_id = g.rule_id
 +  LEFT JOIN pgvigil.metric_floors fl ON fl.key = g.key
++  LEFT JOIN pgvigil.metric_na_reasons nr ON nr.key = g.key
    LEFT JOIN pgvigil.alert_rule_state s
      ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
   ORDER BY g.family_sort, g.sort`
@@ -508,7 +514,7 @@ index 08bfdcaf..fee8172f 100644
      SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
             (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
 diff --git i/web/src/alert_rules.ts w/web/src/alert_rules.ts
-index 751c72e1..e28df5ec 100644
+index 751c72e1..0f4db5b2 100644
 --- i/web/src/alert_rules.ts
 +++ w/web/src/alert_rules.ts
 @@ -28,7 +28,7 @@ interface RuleResult { outcome: string; detail: string; rule_id?: number | null
@@ -528,17 +534,24 @@ index 751c72e1..e28df5ec 100644
      case 'bytes_per_s': return fmtBytes(n) + '/s';
      case 'bytes': return fmtBytes(n);
      case 'mb': return fmtNum(n) + ' MB';
-@@ -76,7 +77,8 @@ export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string =>
+@@ -72,11 +73,14 @@ export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = fa
+     + (narrower ? ', each where no narrower rule on the same metric overrides it (an instance rule over a tag rule over a fleet rule).' : '.');
+ }
+ 
+-export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string => {
++export const stateBadge = (v: unknown, held?: unknown, naWhy?: unknown): HTMLElement | string => {
    if (v == null) return '';
    const s = String(v);
    const kind = s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : '';
 -  const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)' : s;
-+  // task 402: 'na' is grey (no kind), never OK: under the metric's floor, too few to judge
-+  const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)' : s === 'na' ? 'N/A (too few to judge)' : s;
++  // task 402: 'na' is grey (no kind), never OK: under the metric's floor, too few to judge - or the metric's own reason
++  // (0152's metric_na_reasons: never a bare N/A)
++  const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)'
++    : s === 'na' ? (naWhy != null && String(naWhy) !== '' ? `N/A (${String(naWhy)})` : 'N/A (too few to judge)') : s;
    return badge(held ? `${words}, held (no fresh sample)` : words, kind);
  };
  
-@@ -359,7 +361,8 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -359,7 +363,8 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
          : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
          : r.evaluated_at == null ? 'not judged yet'
          : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
@@ -548,7 +561,12 @@ index 751c72e1..e28df5ec 100644
        { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
        { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
        { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
-@@ -383,9 +386,10 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -379,13 +384,14 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+   }
+ 
+   const stateCols: Col[] = [
+-    { key: 'state', fmt: (v, r) => stateBadge(v, r.held) },
++    { key: 'state', fmt: (v, r) => stateBadge(v, r.held, r.na_why) },
      { key: 'instance' },
      { key: 'metric', fmt: (v, r) => r.label == null ? String(v) : `${String(r.family_label)}: ${String(r.label)}` },
      { key: 'database', fmt: v => String(v ?? '') },

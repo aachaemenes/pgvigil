@@ -104,14 +104,16 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
     const figure = (key: string, label: string): Col => ({
       key, label, num: true,
       // task 402: a floored row under its floor is N/A, grey ('status none', the not-judged class of mssql_backups.ts)
-      cls: (v, r) => { if (v == null && r.floor != null && Number(r.samples) > 0) return 'status none';
+      cls: (v, r) => { if (v == null && (r.floor != null || r.na_why != null) && Number(r.samples) > 0) return 'status none';
         const c = statusClass(r[key.replace('_value', '_status')]); return c ? 'status ' + c : ''; },
       fmt: (v, r) => {
         if (v == null) {
           // task 402: a floored metric (0152's metric_floors) under its floor has no value: N/A, grey, in words, with or
           // without a rule's state; the current cell names the input's current rate from the same grid
-          if (r.floor == null || Number(r.samples) === 0) return '';
+          if ((r.floor == null && r.na_why == null) || Number(r.samples) === 0) return '';
           if (key !== 'current_value') return 'N/A';
+          // a metric not judged under a condition of its own (0152's metric_na_reasons): its reason, never a bare N/A
+          if (r.na_why != null) return `N/A: ${String(r.na_why)}`;
           const inp = famRows.find(x => x.key === r.floor_input && (x.database ?? null) === (r.database ?? null))?.current_value;
           return `N/A: too few ${String(r.floor_unit)}/s to judge (${inp == null ? 'not read' : fmtNum(Math.floor(100 * Number(inp)) / 100)}/s, the floor ${fmtNum(Number(r.floor))}/s)`;
         }
@@ -134,7 +136,7 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'rule_id', label: 'rule', fmt: (v, r) => v == null ? '' : el('span', {},
         `${Number(r.for_minutes) > 0 ? `for ${String(r.for_minutes)} min` : 'at the first sample'}, ${scopeWords(r.rule_scope, r.rule_target)}${r.rule_database != null ? `, database ${String(r.rule_database)}` : ''}: `,
         // task 402: a seeded rule that is off colours the row and sends nothing; its state is never judged
-        r.rule_enabled === false ? 'off: colours only, no alert' : r.rule_state == null ? 'not judged yet' : stateBadge(r.rule_state, r.rule_held)) },
+        r.rule_enabled === false ? 'off: colours only, no alert' : r.rule_state == null ? 'not judged yet' : stateBadge(r.rule_state, r.rule_held, r.na_why)) },
       { key: '_threshold', label: 'threshold', fmt: (_v, r) => thresholdCell(d, ctx.instance!, r, cut(r)) },
       { key: '_chart', label: 'chart', fmt: (_v, r) => {
         const b = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(open.has(String(r.key))), 'aria-label': `Chart ${famLabel}: ${String(r.label)}` }, 'Chart');

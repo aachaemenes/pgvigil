@@ -752,6 +752,14 @@ SELECT v.key, v.input_key, v.unit, v.floor
   ) AS v(key, input_key, unit, floor);
 COMMENT ON VIEW pgvigil.metric_floors IS 'The floors under which a metric is not judged (its rule reads na): key, the rate it is judged by (input_key, a metric of the same read), its unit and floor per second.';
 
+-- metric_na_reasons: a metric whose own points function gives a point no value under a condition of its own read, not a
+-- per-second floor (so no metric_floors row): its rule's 'na' and the Metrics grid's N/A say this reason in words, never
+-- a bare N/A (the lead's 11-15 06:4x). No row here: a slice's join lines add its own (B24c: G32 under 10 % of the
+-- machine), the join re-creating the view whole.
+CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS
+SELECT v.key, v.why FROM (VALUES (NULL::text, NULL::text)) AS v(key, why) WHERE false;
+COMMENT ON VIEW pgvigil.metric_na_reasons IS 'A metric not judged under a condition of its own read (its point has no value there): key and the words its N/A says.';
+
 -- mssql_counter_points: the family's samples in (p_from, p_to] as (at, metric, value), for metric_points. p_database
 -- names one database's series of the per-database metrics; NULL = the server's _Total. A rate read at raw 0 is 0 (the
 -- read's zero_series); an average with no event in the read is 0. A floored ratio (metric_floors, above) gives a point

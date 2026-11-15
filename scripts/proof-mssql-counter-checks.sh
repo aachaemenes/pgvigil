@@ -71,6 +71,10 @@
 #     under its floor (the proof's own floored() line; the product's page words are NOT PROVEN, as G says) - a hard
 #     clear either way, no NOT PROVEN for it; a clear read over its floor that still holds takes up to two more quiet
 #     pairs, each printed, and stays hard (finding 6).
+#  G7 (the lead's 11-15 06:4x, written before its first run): with a metric_na_reasons row for compiles_per_100_batches
+#     made in the run's own repository while that rule reads 'na', GET /api/metrics' grid row and GET /api/alertrules
+#     ?part=state's row carry na_why "not judged: the proof's own words" (the state 'na'); the view emptied after. The
+#     pages' words as drawn NOT PROVEN (as G's other page words).
 #  T. client timeouts (B24 Fixed 1, written before its first run): T0 mssql_attention_left_out on fifteen built cases in
 #     PerformanceMonitor's order: 'under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio
 #     metadata|Azure Data Studio metadata|counts|Azure Data Studio metadata|pgvigil's own reads|counts|counts|counts|under
@@ -1034,6 +1038,24 @@ got = ((g[0].get('current_value'), g[0].get('floor'), g[0].get('floor_unit'), g[
 print(f'   FL4: the grid row (current, floor, unit, input) and the state row (state, unit): {got}')
 sys.exit(0 if got == ((None, 5, 'batch requests', 'counters.batch_requests_s'), ('na', 'batch requests')) else 1)
 PY2
+    # G7 (the lead's 11-15 06:4x, red on 799423e4: no na_why): a metric's own N/A reason (0152's metric_na_reasons, a
+    # slice's join line in a release) reaches the state row and the grid row; the view made empty again after
+    pq "CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS SELECT v.key, v.why FROM (VALUES ('counters.compiles_per_100_batches'::text, 'not judged: the proof''s own words'::text)) AS v(key, why)" >/dev/null
+    curl -fs -m 20 "http://127.0.0.1:$PORT/api/metrics?instance=$SB&family=counters" > "$TMPD/g7grid.json" || fail "G7: GET /api/metrics"
+    curl -fs -m 20 "http://127.0.0.1:$PORT/api/alertrules?part=state" > "$TMPD/g7state.json" || fail "G7: GET /api/alertrules?part=state"
+    pq "CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS SELECT v.key, v.why FROM (VALUES (NULL::text, NULL::text)) AS v(key, why) WHERE false" >/dev/null
+    python3 - "$TMPD/g7grid.json" "$TMPD/g7state.json" <<'PY2' || fail "G7: the N/A reason's words"
+import json, sys
+def rows(f, part):
+    t = json.load(open(f))[part]; return [dict(zip(t['columns'], r)) for r in t['rows']]
+g = [r for r in rows(sys.argv[1], 'grid') if r.get('key') == 'counters.compiles_per_100_batches' and r.get('database') in (None, '')]
+s = [r for r in rows(sys.argv[2], 'state') if r.get('metric') == 'counters.compiles_per_100_batches' and r.get('instance') == 'chkbox']
+got = (g[0].get('na_why') if g else 'no grid row', (s[0].get('state'), s[0].get('na_why')) if s else 'no state row')
+print(f'   G7: the grid row na_why and the state row (state, na_why): {got}')
+w = "not judged: the proof's own words"
+sys.exit(0 if got == (w, ('na', w)) else 1)
+PY2
+    ok "G7: a metric's own N/A reason reaches the grid row and the 'na' state row in its words (never a bare N/A)"
   fi
 done
 QUIET_FS=0
