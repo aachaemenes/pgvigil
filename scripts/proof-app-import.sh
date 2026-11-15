@@ -690,11 +690,12 @@ nb=$(q "select count(*) from pgvigil.app_assignments a join pgvigil.app_applicat
 python3 -I -c 'import sys; open(sys.argv[1], "w").write("instance,database,application\n" + "".join("imp-big%03d,b%03d,F Big2\n" % (k, j) for k in range(100) for j in range(200)))' "$WORK/b20k2.csv"
 IB=$(q "select instance_id from pgvigil.instances where name = 'imp-big050'"); FBG=$(q "select app_id from pgvigil.app_applications where name = 'F Big'")
 p27=$(imp "$WORK/b20k2.csv" "dry=1"); D27=$(dig); c27=$(cnt targets_changed)
-WK=$(q "select hashtext('pgvigil.app_writes')::bigint")
-# held: the apply's backend holds the applications' write lock (a bigint key: classid its high half, objid its low)
-held() { q "select count(*) from pg_locks l join pg_stat_activity s using (pid) where s.pid <> pg_backend_pid() and l.locktype = 'advisory'
-  and l.granted and l.objsubid = 1 and l.classid::bigint = (($WK >> 32) & 4294967295) and l.objid::bigint = ($WK & 4294967295)
-  and s.query like '%import_app_file%'"; }
+# held: the apply's backend holds the applications' write lock (a bigint key: classid its high half, objid its low,
+# objsubid 1). The key is made bigint inside the SQL: a literal pasted in is an int4, and an int4 shifted by 32 is not
+# the high half (t-im-r6 / g8: 'lock seen 0')
+held() { q "select count(*) from pg_locks l join pg_stat_activity s using (pid), (select hashtext('pgvigil.app_writes')::bigint k) w
+  where s.pid <> pg_backend_pid() and l.locktype = 'advisory' and l.granted and l.objsubid = 1
+  and l.classid::bigint = ((w.k >> 32) & 4294967295) and l.objid::bigint = (w.k & 4294967295) and s.query like '%import_app_file%'"; }
 curl -s -o "$WORK/ans27.json" -w '%{http_code}' -b "$WORK/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/octet-stream' --data-binary @"$WORK/b20k2.csv" \
   "$U/api/admin/applications/import?source=proof&dry=0&digest=$D27" > "$WORK/code27" & AP=$!
 h0=0; for _ in $(seq 1 150); do [[ $(held) == 1 ]] && { h0=1; break; }; sleep 0.2; done
