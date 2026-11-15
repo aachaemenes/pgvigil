@@ -280,7 +280,10 @@ pages() { PGVIGIL_DBADASH_PAGE_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_PAGE_ID="$ID" PG
   PGVIGIL_DBADASH_PAGE_SNAPSHOT="${2:-}" go test -count=1 -run '^TestLivePages$' -v ./internal/dbadash 2>&1 | grep '^page ' || true; }
 echo "page read at $(date +%s) (the page side; the doorage review, finding 2: the gap to the pymssql read)"
 res=$(pages); echo "$res"
-[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == 10 ]] || fail "C: not every page answered ok and proven"
+# the page count, derived once (the review B6f8 #6: a literal 10 in C and F): every PageDef of pages.go answers a line
+NPAGE=$(echo "$res" | grep -c '^page ' || true); NDEF=$(grep -cE '^\s*\{Key: "' internal/dbadash/pages.go || true)
+[[ "$NPAGE" == "$NDEF" && "$NPAGE" -gt 0 ]] || fail "C: $NPAGE page line(s) for $NDEF PageDef(s) in internal/dbadash/pages.go"
+[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == "$NPAGE" ]] || fail "C: not every page answered ok and proven"
 # CH9: the tenth screen (B6.3) - on 4.25.0 its five result sets; on 4.24.1 no call, the gate's words
 chl=$(echo "$res" | grep '^page collectionhealth ' || true)
 if [[ "$DDV" == 4.25.0 ]]; then
@@ -627,7 +630,7 @@ echo "== F. the version pin =="
 sqok "F: the version row" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES (DATEADD(day, 1, SYSUTCDATETIME()), '9.9.9')" "$DDB"
 res=$(pages)
 sqok "F: the version row's removal" "DELETE FROM dbo.DBVersionHistory WHERE Version = '9.9.9'" "$DDB"
-[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == 10 ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
+[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == "$NPAGE" ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
 for pj in "$TMPD"/pages/*.json; do jget "$pj" note | grep -q 'not proven on source version 9.9.9' || fail "F: the note of $(basename "$pj"): $(jget "$pj" note)"; done
 echo "ok   F: on a repository at 9.9.9 every page says proven=false: '$(jget "$TMPD/pages/alerts.json" note)'; the row removed"
 
@@ -716,7 +719,8 @@ for (const h of tabs) {
   const r = await ev(`(() => { const m = document.querySelector('main'); const s = m.querySelector('[data-source]');
     const rows = [...m.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty') && tr.children.length > 0).length;
     return JSON.stringify({ src: s?.dataset.source ?? 'native', rows: s?.dataset.rows ?? '-', trs: rows, charts: m.querySelectorAll('canvas, svg').length,
-      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length, named: /DBA ?Dash/.test(m.innerText) ? 1 : 0 }); })()`);
+      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length,
+      named: (() => { const c = m.cloneNode(true); c.querySelectorAll('table.grid tbody').forEach(e => e.remove()); return /DBA ?Dash/.test(c.textContent) ? 1 : 0; })() }); })()`);
   const o = JSON.parse(r);
   console.log(`tab ${key} render=yes source=${o.src} rows=${o.rows} trs=${o.trs} charts=${o.charts} notread=${o.notread} named=${o.named} errors=${o.errors}`);
 }
@@ -740,7 +744,7 @@ G168="availability counters findings jobstimeline mssql_blocked mssql_deadlocks 
 for k in $G168; do [[ " $GKEYS " == *" $k "* ]] || fail "G: task 168's SQL Server tab $k is no longer in router.ts mssqlInstanceTabs"; done
 # gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
 gtabs() {
-  local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage $GDATA " n line k
+  local out="$1" store=" $2 " screen=" $3 " n line k
   n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == "$GWANT" ]] || fail "$4: $n tabs walked (want $GWANT, router.ts mssqlInstanceTabs): $out"
   local walked; walked=$(echo "$out" | awk '/^tab /{print $2}' | LC_ALL=C sort | tr '\n' ' ')
   [[ "$walked" == "$(printf '%s\n' "${GK[@]}" | LC_ALL=C sort | tr '\n' ' ')" ]] || fail "$4: the walked tabs ($walked) are not router.ts mssqlInstanceTabs ($GKEYS)"
@@ -750,8 +754,9 @@ gtabs() {
   while read -r line; do
     k=$(echo "$line" | awk '{print $2}')
     [[ "$line" == *" render=yes "* && "$line" == *" errors=0" ]] || fail "$4: $line"
-    # pgvigil's own words name no source product; a live screen's rows are the source's data and may (a session's program name)
-    [[ "$data" == *" $k "* || "$line" == *" named=0 "* ]] || fail "$4: $k names the source product in pgvigil's words: $line"
+    # pgvigil's own words name no source product: named is read with every grid's rows left out (the source's data may:
+    # a session's program name), so no tab is exempt (the review B6f8 #7)
+    [[ "$line" == *" named=0 "* ]] || fail "$4: $k names the source product in pgvigil's words: $line"
     if [[ "$store" == *" $k "* ]]; then
       [[ "$line" == *" source=store "* ]] || fail "$4: $k is not pgvigil's own page over the imported rows: $line"
       t=$(echo "$line" | sed -n 's/.* trs=\([0-9]*\) charts=\([0-9]*\) .*/\1 \2/p'); (( ${t% *} + ${t#* } > 0 )) || fail "$4: $k shows no imported row: $line"
@@ -770,8 +775,8 @@ SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mss
 # B6.3: the tenth screen by version (dbadash.ts tabSources: collectionhealth is a screen on both) - on 4.25.0 the
 # repository's screen with rows, which are the source's data as the live screens' rows are; on 4.24.1 the screen makes
 # no call: no row, no grid, its gate's words (read by CH9b below), and pgvigil's words name no source product
-GDATA=""; GGATED=" collectionhealth "
-[[ "$DDV" == 4.25.0 ]] && { SCREENS="$SCREENS collectionhealth"; GDATA="collectionhealth"; GGATED=""; }
+GGATED=" collectionhealth "
+[[ "$DDV" == 4.25.0 ]] && { SCREENS="$SCREENS collectionhealth"; GGATED=""; }
 # the Drives screen's rows as part C read them (DrivesReport_Get through the read login)
 n_drv=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(s.get("rows") or []) for s in d.get("results") or []))' "$TMPD/pages/drives.json")
 g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
@@ -810,14 +815,18 @@ const g = await ev(`(() => { for (const t of document.querySelectorAll('main tab
     links: [...t.querySelectorAll('tbody tr')].map(tr => tr.children[k]?.querySelector('a')?.getAttribute('href') ?? '') }; } return null; })()`);
 say(!!g && g.label === LABEL[ver], 'CH9b header', g ? g.label : 'no Collection column');
 say(!!g && g.title === TIP[ver], 'CH9b header tooltip', g ? g.title.slice(0, 80) : '-');
+// each row's link (the review B6f8 #5: a cell with no link passed as 'not collectionhealth'): the instance asked, on
+// 4.25.0 its Collection Health tab, on 4.24.1 its page with no tab (DBA Dash's old landing)
 const lands = (g?.links ?? []).map(h => new URLSearchParams(h.split('?')[1] ?? '').get('dp'));
-say(!!g && g.links.length > 0 && lands.every(d => ver === '4.25.0' ? d === 'collectionhealth' : d !== 'collectionhealth'), 'CH9b each row\'s landing', `${g?.links.length ?? 0} row(s): ${[...new Set(lands)].join(', ')}`);
+say(!!g && g.links.length > 0 && g.links.every((h, n) => h !== '' && h.includes(`di=${id}`) && (ver === '4.25.0' ? lands[n] === 'collectionhealth' : lands[n] === null)),
+  'CH9b each row\'s landing', `${g?.links.length ?? 0} row(s): ${(g?.links ?? []).join(' ')}`);
 await go(`#/dbadash?dr=lab&di=${id}&dp=collectionhealth&w=24h`);
 const s = await ev(`(() => { const m = document.querySelector('main'); const h3 = [...m.querySelectorAll('h3')].map(h => h.textContent.trim()); const h4 = [...m.querySelectorAll('h4')].map(h => h.textContent.trim());
   const t = m.querySelector('table.grid'); const heads = t ? [...t.querySelectorAll('thead tr:first-child th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()) : [];
   const k = heads.indexOf('Status Reason');
   return { h3, h4, heads, rows: t ? t.querySelectorAll('tbody tr').length : 0, coloured: k < 0 || !t ? false : [...t.querySelectorAll('tbody tr')].every(tr => tr.children[k]?.classList.contains('status')),
-    notRead: m.textContent.includes('not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)'), grids: m.querySelectorAll('table.grid').length }; })()`);
+    notRead: m.textContent.includes('not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)'), grids: m.querySelectorAll('table.grid').length,
+    calledNow: m.textContent.includes('called now') }; })()`);
 if (ver === '4.25.0') {
   say(s.h3.includes('Collection Health') && JSON.stringify(s.h4.slice(0, 5)) === JSON.stringify(['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights']), 'CH9b the screen\'s headings', `${s.h3.join(' | ')} / ${s.h4.join(' | ')}`);
   // every key chHidden hides that comes back at @GroupByInstance = 1 (the review B6f3 #4), and No Status (UnknownCount's alias)
@@ -825,7 +834,8 @@ if (ver === '4.25.0') {
     'MaxLogicalReads', 'TotalLogicalReads', 'TotalImportMs', 'AvgImportLogicalReads', 'TotalImportLogicalReads'].filter(h => s.heads.includes(h));
   say(s.heads.length > 0 && hidden.length === 0 && s.rows > 0 && s.coloured, 'CH9b the Collections grid', `${s.rows} row(s); ${s.heads.join(' | ')}${hidden.length ? '; shown though DBA Dash hides: ' + hidden.join(', ') : ''}`);
 } else {
-  say(s.notRead && s.grids === 0, 'CH9b the screen on ' + ver, `not read line ${s.notRead}, ${s.grids} grid(s)`);
+  // the review B6f8 #4: the gated screen makes no call and says so (its meta line said 'called now ... (0 ms)')
+  say(s.notRead && s.grids === 0 && !s.calledNow, 'CH9b the screen on ' + ver, `not read line ${s.notRead}, ${s.grids} grid(s), 'called now' ${s.calledNow}`);
 }
 console.log('NOT COVERED: CH9b on a mixed fleet (a 4.25.0 and a 4.24.1 repository in one rig)');
 console.log(fails ? `ch9b: ${fails} FAIL` : 'ch9b: 0 FAIL');

@@ -512,11 +512,14 @@ async function screenInto(sec: HTMLElement, ctx: Ctx, m: Mode, page: string, sna
     sec.append(errorBox(e));
     return 0;
   }
-  sec.append(el('h3', {}, d.title, page === 'sessions' ? (snapshot ? ` at ${fmtTime(snapshot)}` : ' (the latest snapshot)') : ''),
-    el('p', { class: 'meta' }, `The repository's own ${d.procedure}, called now for this instance through its read login (${d.ms} ms); version ${d.version || '(no version row)'}.`));
-  if (!d.proven) sec.append(el('p', { class: 'error', role: 'status' }, d.note ?? 'not proven on this source version'));
-  // a screen gated by its procedure's version or right (B6.3: 'not read: ...'), on a proven version too
+  // a screen gated by its procedure's version or right (B6.3: 'not read: ...'), on a proven version too: the server
+  // makes no call then (pages.go returns before callProc), so the meta line says so (the review B6f8 #4)
   const gated = !!d.note && d.note.includes('not read:');
+  sec.append(el('h3', {}, d.title, page === 'sessions' ? (snapshot ? ` at ${fmtTime(snapshot)}` : ' (the latest snapshot)') : ''),
+    el('p', { class: 'meta' }, gated
+      ? `The repository's own ${d.procedure} is not called for this instance; version ${d.version || '(no version row)'}.`
+      : `The repository's own ${d.procedure}, called now for this instance through its read login (${d.ms} ms); version ${d.version || '(no version row)'}.`));
+  if (!d.proven) sec.append(el('p', { class: 'error', role: 'status' }, d.note ?? 'not proven on this source version'));
   if (d.proven && gated) sec.append(el('p', { class: 'meta', role: 'status' }, d.note!));
   // the actions: the SQL Server instance pgvigil collects under the same server name AND machine name (a host renamed
   // without sp_dropserver keeps its old @@SERVERNAME, which a new server may carry), on the latest snapshot only (a past
