@@ -33,7 +33,9 @@
 #      NORECOVERY, then its log WITH RECOVERY: two restores stored for pgbh2r - D (recovery no) and L (recovery yes),
 #      each with the uuid of the set it restored; restore_at = msdb's restore_date + 8 hours, and within 10 minutes of
 #      the repository's now(). The monitoring login's msdb user DENIED SELECT on restorehistory: the next read says
-#      'no right' (the cursor row's restore_state), no error, the two restores stay; the DENY revoked after.
+#      'not read: no right (SELECT on msdb.dbo.restorehistory)' (the cursor row's restore_state), no error, the two
+#      restores stay; the DENY revoked after. (Changed after run 301bp3: the want was the collector's payload word
+#      'no right'; the import stores these words - TestBackupHistoryOnAStore asserts them.)
 #  H3  (reads.backup_files on) pgbh3: a full in /backups/h3/, a differential in /backups/h3d/, a log in /backups/h3/; the log's
 #      file removed and the folder /backups/h3d removed: cells full 'present', log 'the file is gone', differential 'the
 #      folder /backups/h3d/ is gone'; findings 'backup file missing' for 'pgbh3 (diff)' and 'pgbh3 (log)' (warning).
@@ -288,7 +290,7 @@ sq "DENY SELECT ON OBJECT::dbo.restorehistory TO pgbh_mon;" msdb >/dev/null
 reads bh-m mssql_backup_history
 S=$(q "select restore_state from pgvigil.mssql_backup_history_cursor where instance_id=$I"); NR=$(q "select count(*) from pgvigil.mssql_restore_history where instance_id=$I and destination_database_name='pgbh2r'")
 sq "REVOKE SELECT ON OBJECT::dbo.restorehistory FROM pgbh_mon;" msdb >/dev/null
-[ "$S" = "no right" ] && [ "$NR" = 2 ] || fail "H2 no right: the state '$S' (want 'no right'), $NR restores kept (want 2): $(cat "$OUT")"
+[ "$S" = "not read: no right (SELECT on msdb.dbo.restorehistory)" ] && [ "$NR" = 2 ] || fail "H2 no right: the state '$S' (want 'not read: no right (SELECT on msdb.dbo.restorehistory)'), $NR restores kept (want 2): $(cat "$OUT")"
 ok "H2: SELECT on restorehistory denied: the read said '$S' with no error and kept the $NR restores"
 
 echo "== H3 the newest backups' files (Database#7)"

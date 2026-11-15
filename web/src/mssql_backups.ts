@@ -298,8 +298,8 @@ function checkProps(p: Row | undefined): [string, string | Node][] {
   return [
     ['default backup path', p.checks_at ? path : run(null, p.checks_status, p.checks_note, 'mssql_backup_checks')],
     ['backup checks', `${run(p.checks_at, p.checks_status, p.checks_note, 'mssql_backup_checks')}; the files: ${String(p.files_state ?? 'not read')}`],
-    ['backup and restore history', run(p.history_at, p.history_status, p.history_note, 'mssql_backup_history') + (p.restore_state === 'no right'
-      ? '; the restores: not read - the login may not SELECT msdb.dbo.restorehistory (the restores read before stay)' : '')],
+    ['backup and restore history', run(p.history_at, p.history_status, p.history_note, 'mssql_backup_history') + (p.restore_state && p.restore_state !== 'read'
+      ? `; the restores: ${String(p.restore_state)} - the restores read before stay` : '')],
   ];
 }
 

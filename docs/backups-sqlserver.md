@@ -86,8 +86,8 @@ The history is read as the newest sets are: from a cursor on `backup_set_id` (an
 first read whole, a replaced msdb or a database listed again sending the next read back to the start; the repository
 keeps 10 sets per database, type and copy-only and 20 restores per destination and restore type, the oldest pruned at
 each read. A database created anew under an old name starts without the old one's sets (the hour of slack holds as
-above). A login denied SELECT on `restorehistory` reads no restores: the read says 'no right' and the restores read
-before stay.
+above). A login denied SELECT on `restorehistory` reads no restores: the read says 'not read: no right (SELECT on
+msdb.dbo.restorehistory)' and the restores read before stay.
 
 **The time of a restore.** msdb records `restore_date` and `stop_at` in the server's local time with no offset (a
 backup's own times carry `backupset.time_zone`; a restore's do not). pgvigil turns them to UTC with the server's offset
