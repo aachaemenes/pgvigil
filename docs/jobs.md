@@ -21,9 +21,9 @@ One line per job:
 | enabled | `no` when the job (pg_cron: `active`) is off |
 | schedule | pg_cron's cron text; pgAgent's schedule is in the job's definition (Changes); SQL Server's schedules in words ("every day every 15 minutes between 00:00 and 23:59:59"), on the server's clock |
 | last run, outcome | when the newest run started and how it ended; coloured by the outcome (see Status and thresholds) |
-| last failure | when the newest failed run started, the step that failed and its message: the first 200 characters on one line, the whole text on a click |
+| last failure | when the newest failed or cancelled run started (`(cancelled)` after the time when it was a cancel: a SQL Agent run_status 3, a PostgreSQL run aborted), the step that failed and its message: the first 200 characters on one line, the whole text on a click |
 | next run | pg_cron: pgvigil's own reading of the schedule; pgAgent: its own `jobnextrun`; SQL Server: the Agent's |
-| runs, failures | the runs that started in the page's range, and how many failed |
+| runs, failures | the runs that started in the page's range, and how many failed or were cancelled (one judge with the status: a cancel is a failure, as in DBA Dash); a job whose last run failed or was cancelled is listed first |
 | changed | the number of changes to the definition in the range, and when the last one was seen |
 | status | the job against its thresholds, and the door to them (see Status and thresholds) |
 | dropped | a job no longer on the server is kept, marked with the time the read first missed it |
