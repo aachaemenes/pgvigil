@@ -75,6 +75,8 @@ A kill rolls the session's open transaction back. A long transaction takes about
 
 ## The log
 
+Actions run only on an instance of `pgvigil.yaml` (its `dsn`, `actions_dsn` and `actions:`); on an instance added in Admin > Instances every action is off with 'actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it from Admin > Instances', so `pgvigil.actions_log` keeps no door column.
+
 Every attempt is written to `pgvigil.actions_log` in the repository before the reply is sent: the UI user and their address, the instance, the action, the statement, the target (session id, login, program and host, or the job's name and id), the reason, the outcome and the server's message.
 
 | Outcome | Meaning |

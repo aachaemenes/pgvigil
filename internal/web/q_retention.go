@@ -6,7 +6,8 @@ package web
 //   GET /api/retention[?days=N]               every table of the repository's schema: its size with its partitions,
 //                                             what the retention does to it (read from pgvigil.purge()'s own text and
 //                                             the text of the *_purge functions it calls, so the page follows the
-//                                             functions as installed), its oldest partition or oldest row, the days that
+//                                             functions as installed; an hours table's own age from
+//                                             pgvigil.hours_retention, 0139), its oldest partition or oldest row, the days that
 //                                             oldest row is from now, whether that age can be judged against the purge
 //                                             age, and what a purge with -days N would drop (N 1-3650, default 30: the
 //                                             deploy timer's)
@@ -79,6 +80,19 @@ SELECT t.relname AS table_name, t.relkind = 'p' AS partitioned,
            AND (p.day + interval '1 day') AT TIME ZONE 'UTC' < now() - make_interval(days => $1)), 0)::bigint AS drop_days_bytes
   FROM t
  ORDER BY size_bytes DESC, t.relname`
+
+// sqlRetentionHours is every hours table of pgvigil.hours_retention (0139): its own age in days (not purge's -days) and
+// the monthly partitions that age drops (its function, called by purge()'s last block, holds the drop; purge()'s text
+// does not name these parents).
+const sqlRetentionHours = `
+SELECT h.table_name, h.days,
+       count(c.oid) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => h.days))::int AS drop_months,
+       coalesce(sum(pg_total_relation_size(c.oid)) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
+                                                             < now() - make_interval(days => h.days)), 0)::bigint AS drop_bytes
+  FROM pgvigil.hours_retention h
+  LEFT JOIN pg_inherits i ON i.inhparent = to_regclass('pgvigil.' || h.table_name)
+  LEFT JOIN pg_class c ON c.oid = i.inhrelid AND c.relname ~ '_[0-9]{6}$'
+ GROUP BY h.table_name, h.days`
 
 // del is one DELETE of the purge functions: the time column it compares with the age, whether it takes only the rows
 // no longer present, the table whose rows keep these (its first NOT EXISTS), and whether it is a pure age rule (the
@@ -277,6 +291,20 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rules := purgeRules(srcs)
+	// the hours tables (0139's hours_retention): their own age, read from their rows; none on a store without 0139
+	hours := map[string][]any{}
+	if hv, err := s.query(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`); err == nil && len(hv.Rows) == 1 && hv.Rows[0][0] == true {
+		ht, err := s.query(ctx, sqlRetentionHours)
+		if err != nil {
+			s.reply(w, r, nil, fmt.Errorf("hours tables: %w", err))
+			return
+		}
+		for _, hr := range ht.Rows {
+			if n, ok := hr[0].(string); ok {
+				hours[n] = hr
+			}
+		}
+	}
 	t, err := s.query(ctx, sqlRetentionTables, days)
 	if err != nil {
 		s.reply(w, r, nil, fmt.Errorf("tables: %w", err))
@@ -305,6 +333,11 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
 			drop, dropBytes = row[col["drop_months"]], row[col["drop_months_bytes"]]
 		} else if ru != nil && ru.kind == "daily" {
 			drop, dropBytes = row[col["drop_days"]], row[col["drop_days_bytes"]]
+		}
+		if hr, ok := hours[name]; ok {
+			// an hours table keeps its own age, whatever the -days previewed: its words and drops say that age
+			words, judged, note = fmt.Sprintf("monthly partitions kept %v days, its own age (pgvigil.hours_retention; 'pgvigil purge -hours %s=<days>' sets it)", hr[1], name), false, ""
+			drop, dropBytes = hr[2], hr[3]
 		}
 		var actual, oldest any
 		if p, ok := row[col["oldest_partition"]].(time.Time); ok {

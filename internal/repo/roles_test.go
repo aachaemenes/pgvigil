@@ -28,8 +28,8 @@ func TestCollectorMayCallWhatRepoCalls(t *testing.T) {
 	for _, m := range regexp.MustCompile(`pgvigil\.([a-z_0-9]+)\(`).FindAllStringSubmatch(string(src), -1) {
 		seen[m[1]] = true
 	}
-	// the owner's own calls (migrate, purge) are not the collector's
-	for _, n := range []string{"apply_roles", "purge"} {
+	// the owner's own calls (migrate, purge; purge's heals of the job statistics, 0139: JobStatsHeal) are not the collector's
+	for _, n := range []string{"apply_roles", "purge", "job_stats_pending", "job_stats_heal_one"} {
 		delete(seen, n)
 	}
 	names := make([]string, 0, len(seen))

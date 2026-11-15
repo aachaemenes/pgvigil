@@ -167,10 +167,14 @@ SELECT 'settings' AS kind, current_setting('autovacuum') AS autovacuum, current_
           FROM pg_settings WHERE name = 'autovacuum_vacuum_cost_delay') AS cost_delay_ms,
        (SELECT setting::int FROM pg_settings WHERE name = 'log_autovacuum_min_duration') AS log_min_duration_ms`
 
+// vacuumWrapSQL leaves out an invalid database (datconnlimit -2: an interrupted DROP DATABASE left it, PostgreSQL 13.12,
+// 14.9, 15.4, 16 and later): autovacuum and the clog truncation skip it, so its ages only grow and say nothing about
+// wraparound; the import then marks it absent, and no 'wraparound' finding, tile or grid cell judges it.
 const vacuumWrapSQL = `
 SELECT 'wrap' AS kind, d.oid::bigint AS dbid, d.datname::text AS datname, d.datallowconn AS allow_conn,
        age(d.datfrozenxid)::bigint AS xid_age, mxid_age(d.datminmxid)::bigint AS mxid_age
-  FROM pg_database d`
+  FROM pg_database d
+ WHERE d.datconnlimit <> -2`
 
 // vacuumThresholdCTE computes each user table's autovacuum thresholds as autovacuum does
 // (relation_needs_vacanalyze): base + scale factor x reltuples, the table's reloption over the server

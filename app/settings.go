@@ -132,6 +132,10 @@ func ConfigTemplate() string {
 # %APPDATA%\postgresql\pgpass.conf, or write the dsn as file:<a path only that user can read>.
 repository:
   dsn: "host=<repository host> port=5432 dbname=pgvigil user=<ui login> sslmode=verify-full"
+# Custom reports on the store run as a login of their own, IN ROLE pgvigil_reader alone ('pgvigil roles' prints it),
+# its password in the same pgpass.conf (a line of its own); without it a report on the store is refused and the page
+# says why.
+reports_dsn: "host=<repository host> port=5432 dbname=pgvigil user=<reports login> sslmode=verify-full"
 instances: []
 `
 }

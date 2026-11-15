@@ -307,6 +307,13 @@ export function worst(f: Fleet, r: Row): Level {
 
 export const levelClass = ['ok', 'warn', 'crit'];
 export const cellClass = (c: Cell) => c.none ? 'none' : levelClass[c.level];
+// cellTarget: the page a group's cell opens for an instance (DBA Dash's tabMapping): the group's tab on PostgreSQL (with
+// its Metrics family), its SQL Server tab and the view that tab opens on - the fleet Summary's links and the verdict card's
+export function cellTarget(g: Group, r: Row): { tab: string; kind?: string; cv?: string } {
+  const ms = r.engine === 'sqlserver';
+  return { tab: ms ? g.mssql?.[1] ?? 'summary' : g.tab, ...(!ms && g.kind ? { kind: g.kind } : {}), ...((ms ? g.mssql?.[3] : g.cv) ? { cv: ms ? g.mssql?.[3] : g.cv } : {}) };
+}
+
 export const cellText = (c: Cell) => c.none ? c.text ?? 'no sample' : c.text ?? (c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`);
 
 // notReadYet: an instance added on Admin > Instances whose server has not answered a read yet (no server version:

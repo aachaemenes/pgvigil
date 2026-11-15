@@ -533,3 +533,140 @@ BEGIN
   RETURN jsonb_build_object('outcome', 'done', 'detail', v_op || ' ' || v_name)
          || CASE WHEN v_op = 'run' THEN jsonb_build_object('run_id', v_m.run_id + 1) ELSE '{}' END;
 END $$;
+
+-- DBA Dash's own Extended Events sessions on a server (DBADash_%), as the collector's XE read saw them (task 206, W8):
+-- the move's checklist lists them, each with the DROP EVENT SESSION line for the server's DBA (pgvigil reads none of
+-- their events and drops none). A read that listed the sessions replaces the instance's list whole (an older read
+-- arriving late replaces nothing); a read that failed before the list leaves the last one. mssql_xe_foreign_read keeps
+-- when the list was last read, also when it held none.
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_foreign (
+  instance_id  int NOT NULL REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
+  name         text NOT NULL,
+  running      boolean NOT NULL,
+  targets      text[] NOT NULL DEFAULT '{}',
+  read_at      timestamptz NOT NULL,
+  PRIMARY KEY (instance_id, name)
+);
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_xe_foreign_read (
+  instance_id  int PRIMARY KEY REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
+  read_at      timestamptz NOT NULL,
+  sessions     int NOT NULL
+);
+
+-- The importer: 0116's wrapper renamed import_mssql_xe_w0116 and called first (renamed once: a rerun finds it), then
+-- the list of DBA Dash's sessions this read carries ('foreign_session' rows, the 'sessions_read' marker)
+DO $$
+BEGIN
+  IF to_regprocedure('pgvigil.import_mssql_xe_w0116(integer, timestamp with time zone, jsonb)') IS NULL THEN
+    ALTER FUNCTION pgvigil.import_mssql_xe(int, timestamptz, jsonb) RENAME TO import_mssql_xe_w0116;
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_xe(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_rows jsonb := pgvigil.mssql_rows(p_payload);
+  v_n int;
+  v_new jsonb;
+  v_old jsonb;
+BEGIN
+  PERFORM pgvigil.import_mssql_xe_w0116(p_instance_id, p_snapshot_at, p_payload);
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'sessions_read') THEN
+    RETURN;
+  END IF;
+  -- the instance's row first (its lock orders two reads of one instance); an older read arriving late changes nothing
+  INSERT INTO pgvigil.mssql_xe_foreign_read AS f (instance_id, read_at, sessions) VALUES (p_instance_id, p_snapshot_at, 0)
+  ON CONFLICT (instance_id) DO UPDATE SET read_at = EXCLUDED.read_at WHERE f.read_at <= EXCLUDED.read_at;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  IF v_n = 0 THEN
+    RETURN;
+  END IF;
+  -- the list as this read carries it, against the stored one: rewritten only when it changed (every SQL Server
+  -- instance's XE read comes once a minute; an unchanged list costs the read row's one update, nothing more)
+  SELECT coalesce(jsonb_agg(jsonb_build_object('name', n.name, 'running', n.running, 'targets', to_jsonb(n.targets)) ORDER BY n.name), '[]')
+    INTO v_new
+    FROM (SELECT DISTINCT ON (left(r->>'name', 128)) left(r->>'name', 128) AS name, coalesce((r->>'running')::boolean, false) AS running,
+                 coalesce(ARRAY(SELECT left(x, 60) FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(r->'targets') = 'array' THEN r->'targets' ELSE '[]' END) x), '{}') AS targets
+            FROM jsonb_array_elements(v_rows) r
+           WHERE r->>'kind' = 'foreign_session' AND coalesce(r->>'name', '') <> '' AND upper(r->>'name') LIKE 'DBADASH\_%'
+           ORDER BY left(r->>'name', 128)) n;
+  SELECT coalesce(jsonb_agg(jsonb_build_object('name', f.name, 'running', f.running, 'targets', to_jsonb(f.targets)) ORDER BY f.name), '[]')
+    INTO v_old FROM pgvigil.mssql_xe_foreign f WHERE f.instance_id = p_instance_id;
+  IF v_new = v_old THEN
+    RETURN;
+  END IF;
+  DELETE FROM pgvigil.mssql_xe_foreign WHERE instance_id = p_instance_id;
+  INSERT INTO pgvigil.mssql_xe_foreign (instance_id, name, running, targets, read_at)
+  SELECT p_instance_id, x->>'name', (x->>'running')::boolean, ARRAY(SELECT jsonb_array_elements_text(x->'targets')), p_snapshot_at
+    FROM jsonb_array_elements(v_new) x;
+  UPDATE pgvigil.mssql_xe_foreign_read SET sessions = jsonb_array_length(v_new) WHERE instance_id = p_instance_id;
+END $$;
+
+-- dbadash_move_list: the page's list for one repository (W2): one row per server - DBA Dash's present instances
+-- grouped by their Instance (@@SERVERNAME), so a server DBA Dash lists twice is one move - with its InstanceIDs,
+-- ConnectionIDs and display names, the move if there is one (its instance, sign-in, collect_from, the collector's first
+-- CPU / job reads, the dry run's counts, the run, the checklist), the instance pgvigil collects it as without a move,
+-- the instance an import made of it, and the state:
+--   'not yet'               neither collected nor imported by pgvigil
+--   'imported only'         pgvigil import dbadash made an instance under its display name, pgvigil does not collect it
+--   'collected by pgvigil'  an active instance read under that @@SERVERNAME, not moved here
+--   'moving'                moved, pgvigil has not read it yet (no collect_from)
+--   'collecting'            moved and read, its history not imported (or not yet ended ok)
+--   'importing'             a history import runs now (its beat within 15 minutes)
+--   'partial' / 'import failed'  the last import's outcome
+--   'ready to switch'       collecting and its history imported (a run that ended ok)
+--   'disabled'              moved, then disabled on Admin > Instances
+CREATE OR REPLACE FUNCTION pgvigil.dbadash_move_list(p_repository text)
+RETURNS TABLE (server text, dbadash_ids int[], move_ids int[], connection_ids text[], display_names text[], last_collection timestamptz,
+               state text, instance_id int, instance_name text, auth text, added_at timestamptz, added_by text,
+               collect_from timestamptz, cpu_read_at timestamptz, jobs_read_at timestamptz,
+               counted_at timestamptz, counted_by text, counts jsonb,
+               run_id bigint, run_by text, run_started timestamptz, run_beat timestamptz, run_ended timestamptz, run_outcome text,
+               imported jsonb, imported_at timestamptz, ticks jsonb,
+               collected_as text, imported_as text)
+LANGUAGE sql STABLE AS $$
+  WITH g AS (
+    SELECT min(d.instance) AS server, upper(d.instance) AS key,
+           array_agg(d.instance_id ORDER BY d.instance_id) AS ids,
+           array_agg(DISTINCT d.connection_id) FILTER (WHERE d.connection_id IS NOT NULL) AS conns,
+           array_agg(DISTINCT d.display_name) AS names, max(d.last_collection) AS last_collection
+      FROM pgvigil.dbadash_instances d
+     -- a moved server stays listed once DBA Dash stops listing it (removed in DBA Dash's GUI after the move): its
+     -- checklist, XE lines, counts and command are still the DBA's
+     WHERE d.repository = p_repository
+       AND (d.is_present OR EXISTS (SELECT 1 FROM pgvigil.dbadash_move_ids mi WHERE mi.repository = d.repository AND mi.dbadash_id = d.instance_id))
+     GROUP BY upper(d.instance))
+  SELECT g.server, g.ids,
+         (SELECT array_agg(mi.dbadash_id ORDER BY mi.dbadash_id) FROM pgvigil.dbadash_move_ids mi WHERE mi.instance_id = m.instance_id),
+         coalesce(g.conns, '{}'), g.names, g.last_collection,
+         -- the latest run decides: a run that ended failed or partial after an earlier ok one is not ready to switch; a
+         -- run with no end and no beat for 15 minutes was cut off (its serve or CLI stopped) and says so
+         CASE
+           WHEN m.instance_id IS NOT NULL AND NOT i.is_active THEN 'disabled'
+           WHEN m.instance_id IS NOT NULL AND m.collect_from IS NULL THEN 'moving'
+           WHEN m.instance_id IS NOT NULL AND m.run_started IS NOT NULL AND m.run_ended IS NULL AND m.run_beat > now() - interval '15 minutes' THEN 'importing'
+           WHEN m.instance_id IS NOT NULL AND m.run_started IS NOT NULL AND m.run_ended IS NULL THEN 'import interrupted'
+           WHEN m.instance_id IS NOT NULL AND m.run_outcome = 'failed' THEN 'import failed'
+           WHEN m.instance_id IS NOT NULL AND m.run_outcome = 'partial' THEN 'partial'
+           WHEN m.instance_id IS NOT NULL AND m.imported_at IS NOT NULL THEN 'ready to switch'
+           WHEN m.instance_id IS NOT NULL THEN 'collecting'
+           WHEN c.name IS NOT NULL THEN 'collected by pgvigil'
+           WHEN imp.name IS NOT NULL THEN 'imported only'
+           ELSE 'not yet'
+         END,
+         m.instance_id, i.name, m.auth, m.added_at, m.added_by, m.collect_from, m.cpu_read_at, m.jobs_read_at,
+         m.counted_at, m.counted_by, m.counts, m.run_id, m.run_by, m.run_started, m.run_beat, m.run_ended, m.run_outcome,
+         m.imported, m.imported_at, m.ticks, c.name, imp.name
+    FROM g
+    LEFT JOIN pgvigil.dbadash_moves m ON m.repository = p_repository AND upper(m.server) = g.key
+    LEFT JOIN pgvigil.instances i ON i.instance_id = m.instance_id
+    LEFT JOIN LATERAL (SELECT ci.name FROM pgvigil.instances ci JOIN pgvigil.mssql_instance mi ON mi.instance_id = ci.instance_id
+                        WHERE ci.engine = 'sqlserver' AND ci.is_active AND upper(mi.server_name) = g.key
+                        ORDER BY ci.instance_id LIMIT 1) c ON true
+    -- the door's imported match (sqlDBADashImported): an active SQL Server instance under a display name, never read
+    LEFT JOIN LATERAL (SELECT ii.name FROM pgvigil.instances ii
+                        WHERE ii.engine = 'sqlserver' AND ii.is_active AND upper(ii.name) = ANY (SELECT upper(n) FROM unnest(g.names) n)
+                          AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance x WHERE x.instance_id = ii.instance_id)
+                        ORDER BY ii.instance_id LIMIT 1) imp ON true
+   ORDER BY g.server
+$$;

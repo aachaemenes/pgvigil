@@ -53,15 +53,17 @@ type InstancesAdmin struct {
 	File       []config.Instance
 	// DBADash maps a dbadash: repository's name in pgvigil.yaml to its connection string's reference (env:/file:).
 	DBADash map[string]string
+	// GMSA is the configuration's gmsa: (task 206): the Windows sign-in of a server moved from DBA Dash, on Windows only.
+	GMSA string
 }
 
 var instancesAdmins sync.Map // *Server -> *InstancesAdmin
 
 // SetInstancesAdmin gives the server the page's settings (serve calls it after Open).
-func (s *Server) SetInstancesAdmin(a InstancesAdmin) { instancesAdmins.Store(s, &a) }
+func (s *Server) SetInstancesAdmin(a InstancesAdmin) { instancesAdmins.Store(s.self(), &a) }
 
 func (s *Server) instAdmin() *InstancesAdmin {
-	if v, ok := instancesAdmins.Load(s); ok {
+	if v, ok := instancesAdmins.Load(s.self()); ok {
 		return v.(*InstancesAdmin)
 	}
 	return &InstancesAdmin{}
@@ -518,8 +520,14 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 		// the row names the new file now (or no file: a remove); the old one goes after the collector's next read
 		s.removeSecretLater(a.secretDir(), previous, name)
 	}
+	var extra map[string]any
+	if ans.Outcome == "done" {
+		if d := s.doorsAfterWrite(ctx); d != "" {
+			extra = map[string]any{"doors": d}
+		}
+	}
 	s.log.Info("admin instance", "op", op, "name", name, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
-	s.answer(w, ans, raw, nil)
+	s.answer(w, ans, raw, extra)
 }
 
 func slicesContains(l []string, v string) bool {

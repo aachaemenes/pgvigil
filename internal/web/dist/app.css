@@ -363,6 +363,9 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 .donut-body svg { width: clamp(150px, 12vw, 200px); height: auto; aspect-ratio: 1; flex: none; }
 .donut { position: relative; }
 .donut.big .donut-body svg { width: min(clamp(300px, 34vw, 520px), 100%); }
+/* the DB Space rows (drives.ts dbSpaceView): the pie's box takes the room beside its grid, 360 px at least (under it below),
+   never wider than its row (a phone, a high zoom: the page does not scroll sideways) */
+.dbs-row > .donut.big { flex: 1 1 0; min-width: min(360px, 100%); }
 /* DBA Dash's pies (dbadash-pies/): the hovered slice pops out - a class only, so no serialized copy of the picture (the
    menu's image, the workbook's) carries it; a slice with a page has the hand */
 .donut-body svg path, .donut-body svg circle, .donut-body svg text { transition: transform .12s ease-out; }
@@ -458,6 +461,15 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 /* Silence / Unsilence bordered as PerformanceMonitor's .silence-btn */
 button.link.silence-btn { border: var(--bw) solid var(--line); border-radius: var(--r-sm); padding: 0 var(--sp-2); color: var(--text-muted); text-decoration: none; font-size: var(--fs-sm); line-height: var(--lh); }
 button.link.silence-btn:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--text); }
+/* the verdict card (verdict.ts) on the instance's Summary, under the header's chips: the card surface with its state's
+   stripe (as a chip's band), the sentence strong beside its badge, the reasons a short list (each a link, the cell's
+   own text after it), the notes and the acknowledged / not judged lines muted */
+.verdict-card { margin-top: var(--sp-3); padding: var(--sp-2) var(--sp-3); border: var(--bw) solid transparent; border-left: var(--stripe) solid var(--na); border-radius: var(--r-sm); background: var(--surface-card); }
+.verdict-card.ok { border-left-color: var(--ok); } .verdict-card.warn { border-left-color: var(--warn); } .verdict-card.crit { border-left-color: var(--crit); }
+.verdict-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); }
+.verdict-sentence { font-weight: var(--fw-strong); }
+.verdict-reasons { margin: var(--sp-1) 0 0; padding-left: var(--sp-5); }
+.verdict-card .meta { margin: var(--sp-1) 0 0; }
 .counts .offline-count.muted { color: var(--text-muted); }
 /* task 177 D29: the daily health calendar - a day on its state's tint (--ok-bg / --warn-bg / --crit-bg: --text on them
    13.0-14.3:1 light, 11.9-12.8:1 dark; the state's border on its tint 4.7-4.9:1 light, 5.8-7.2:1 dark), no data

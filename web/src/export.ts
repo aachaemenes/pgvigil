@@ -109,6 +109,11 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
     if (norm(fmtNum(raw)) === text || String(raw) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
     // a figure the page rounds to a whole number first ('61,075' for 61074.6: fmtNum(Math.round(v))): the raw value
     if (norm(fmtNum(Math.round(n))) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
+    // a figure the page writes in a fixed count of decimals ('12.0': DB Space's one decimal always, DBA Dash's; fr-FR
+    // '12,0'; a custom report's column of set decimals): the number, a decimal even when it is whole, so its column's
+    // format shows the decimals the page shows ('0.0')
+    const fx = digitsOf(text).split('.')[1]?.length ?? 0;
+    if (fx >= 1 && fx <= 6 && norm(n.toLocaleString(undefined, { minimumFractionDigits: fx, maximumFractionDigits: fx })) === text) return { v: n, kind: 'dec' };
   }
   return { v: text, kind: 'text' };
 }

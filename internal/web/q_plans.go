@@ -56,10 +56,10 @@ type PlansConfig struct {
 var plansConfigs sync.Map // *Server -> PlansConfig
 
 // SetPlans gives the server its Plan page configuration (serve calls it after Open).
-func (s *Server) SetPlans(c PlansConfig) { plansConfigs.Store(s, c) }
+func (s *Server) SetPlans(c PlansConfig) { plansConfigs.Store(s.self(), c) }
 
 func (s *Server) plansConfig() PlansConfig {
-	if v, ok := plansConfigs.Load(s); ok {
+	if v, ok := plansConfigs.Load(s.self()); ok {
 		return v.(PlansConfig)
 	}
 	return PlansConfig{}
@@ -104,7 +104,11 @@ type planButtons struct {
 	AnalyzeReason string `json:"analyze_reason,omitempty"`
 }
 
-func (s *Server) planButtons(name string) planButtons {
+func (s *Server) planButtons(name string) planButtons { return s.planButtonsOn(s.doorsNow(), name) }
+
+// planButtonsOn: the buttons on the request's door set. A page door (Admin > Instances) never plans: EXPLAIN and the
+// index advisor stay on pgvigil.yaml's instances in this release, checked on the door's Page flag.
+func (s *Server) planButtonsOn(ds *doorSet, name string) planButtons {
 	a := s.actions
 	var b planButtons
 	switch {
@@ -112,12 +116,14 @@ func (s *Server) planButtons(name string) planButtons {
 		b.ExplainReason = "actions are off on this server"
 	case a.off != "":
 		b.ExplainReason = a.off
-	case a.doors[name].Monitor == "":
+	case ds.PG[name].Page:
+		b.ExplainReason = fileOnly(name)
+	case ds.PG[name].Monitor == "":
 		b.ExplainReason = fmt.Sprintf("instance %s has no monitoring dsn in this server's config", name)
 	default:
 		b.Explain = true
 	}
-	switch g := s.plansConfig().Gates[name]; {
+	switch g := ds.Gates[name]; {
 	case !b.Explain:
 		b.AnalyzeReason = b.ExplainReason
 	case g.Off(name) != "":
@@ -250,10 +256,19 @@ func (a *Actions) planRequest(w http.ResponseWriter, r *http.Request) (in explai
 	return in, name, user, true
 }
 
+// queryText: an instance's statement-text policy on the set - its own, else the configuration's default (never an
+// empty policy read as full text)
+func (ds *doorSet) queryText(name string) string {
+	if qt, ok := ds.QueryText[name]; ok {
+		return qt
+	}
+	return ds.DefaultQT
+}
+
 // storePlan writes a plan row through the door's repository login, after the instance's query-text policy, and
 // returns its plan_id (0 when the policy keeps no plan).
-func (a *Actions) storePlan(ctx context.Context, instanceID int, name string, row plans.Row) (int64, string, error) {
-	if !collect.MaskPlan(&row, a.s.plansConfig().QueryText[name]) {
+func (a *Actions) storePlan(ctx context.Context, ds *doorSet, instanceID int, name string, row plans.Row) (int64, string, error) {
+	if !collect.MaskPlan(&row, ds.queryText(name)) {
 		return 0, "the instance's query_text policy is none: the plan was not stored", nil
 	}
 	payload, err := json.Marshal([]plans.Row{row})
@@ -274,19 +289,20 @@ func (a *Actions) Explain(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if b := a.s.planButtons(name); !b.Explain {
+	ds := a.doorsNow() // the request's one door set
+	if b := a.s.planButtonsOn(ds, name); !b.Explain {
 		writeErr(w, http.StatusForbidden, errors.New(b.ExplainReason))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), plans.ExplainTimeout+20*time.Second)
 	defer cancel()
-	row, err := plans.Explain(ctx, a.doors[name].Monitor, in.Datname, in.Statement)
+	row, err := plans.Explain(ctx, ds.PG[name].Monitor, in.Datname, in.Statement, pgRefusal)
 	a.s.log.Info("plans: explain", "instance", name, "datname", in.Datname, "user", user, "err", err)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	id, note, err := a.storePlan(ctx, in.InstanceID, name, row)
+	id, note, err := a.storePlan(ctx, ds, in.InstanceID, name, row)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -310,18 +326,18 @@ func (a *Actions) ExplainAnalyze(w http.ResponseWriter, r *http.Request) {
 		Reason: in.Reason, User: user, Client: clientIP(r)}
 	var res actions.Result
 	var row *plans.Row
-	if strings.TrimSpace(strings.ToLower(in.Confirm)) != "analyze" {
+	ds := a.doorsNow() // the request's one door set
+	switch {
+	case ds.PG[name].Page:
+		res = actions.Result{Outcome: actions.Refused, Detail: fileOnly(name)}
+	case strings.TrimSpace(strings.ToLower(in.Confirm)) != "analyze":
 		res = actions.Result{Outcome: actions.Refused, Detail: `the typed confirmation is not "analyze"`}
-	} else {
-		res, row = actions.ExplainAnalyze(ctx, a.doors[name], a.s.plansConfig().Gates[name], req)
+	default:
+		res, row = actions.ExplainAnalyze(ctx, ds.PG[name], ds.Gates[name], req)
 	}
 	at := time.Now()
 	audited := req
-	qt, ok := a.s.plansConfig().QueryText[name]
-	if !ok {
-		qt = a.s.plansConfig().DefaultQueryText
-	}
-	audited.Statement = collect.PolicyText(req.Statement, qt) // the audit follows the query-text policy
+	audited.Statement = collect.PolicyText(req.Statement, ds.queryText(name)) // the audit follows the query-text policy
 	payload, err := json.Marshal([]actions.ExplainLogRow{actions.ExplainRow(at, audited, res)})
 	if err == nil {
 		_, err = a.audit.Exec(context.WithoutCancel(ctx), actions.ImportSQL, in.InstanceID, at, string(payload))
@@ -341,7 +357,7 @@ func (a *Actions) ExplainAnalyze(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusBadGateway
 	}
 	if row != nil {
-		id, note, err := a.storePlan(ctx, in.InstanceID, name, *row)
+		id, note, err := a.storePlan(ctx, ds, in.InstanceID, name, *row)
 		switch {
 		case err != nil:
 			out["note"] = err.Error()
@@ -459,11 +475,13 @@ func (s *Server) PlanSuggest(w http.ResponseWriter, r *http.Request) {
 
 // hypoButton says whether the planner check works for an instance, and why not: the actions door on (the UI login and
 // the instance's monitoring dsn, as EXPLAIN) and the instance's own switch (hypo_index in the config; off by default).
-func (s *Server) hypoButton(name string) (bool, string) {
-	if b := s.planButtons(name); !b.Explain {
+func (s *Server) hypoButton(name string) (bool, string) { return s.hypoButtonOn(s.doorsNow(), name) }
+
+func (s *Server) hypoButtonOn(ds *doorSet, name string) (bool, string) {
+	if b := s.planButtonsOn(ds, name); !b.Explain {
 		return false, b.ExplainReason
 	}
-	if !s.plansConfig().Hypo[name] {
+	if !ds.Hypo[name] {
 		return false, fmt.Sprintf("the planner check is off on instance %s: it is turned on per instance in the config (hypo_index: true), off by default", name)
 	}
 	return true, ""
@@ -523,7 +541,8 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 	var ddl string
 	res := actions.Result{Outcome: actions.Done}
 	var hr plans.HypoResult
-	switch on, why := a.s.hypoButton(p.Instance); {
+	ds := a.doorsNow() // the request's one door set
+	switch on, why := a.s.hypoButtonOn(ds, p.Instance); {
 	case !on:
 		res = actions.Result{Outcome: actions.Refused, Detail: why}
 	case len([]rune(strings.TrimSpace(in.Reason))) < actions.MinReason:
@@ -536,7 +555,7 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 		res = actions.Result{Outcome: actions.Refused, Detail: "the plan has no statement text (the query-text policy keeps none): nothing to plan"}
 	default:
 		ddl = sug[in.N].DDL
-		hr, err = plans.Hypo(ctx, a.doors[p.Instance].Monitor, deref0(p.Datname), deref0(p.Query), ddl)
+		hr, err = plans.Hypo(ctx, ds.PG[p.Instance].Monitor, deref0(p.Datname), deref0(p.Query), ddl, pgRefusal)
 		switch {
 		case err != nil:
 			res = actions.Result{Outcome: actions.Failed, Detail: err.Error()}
@@ -551,7 +570,7 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 	row := actions.ExplainRow(at, req, res)
 	row.Action = actions.Kind("hypo_index")
 	stmt := ddl
-	if q := collect.PolicyText(deref0(p.Query), a.s.plansConfig().QueryText[p.Instance]); q != "" { // the audit follows the query-text policy
+	if q := collect.PolicyText(deref0(p.Query), ds.queryText(p.Instance)); q != "" { // the audit follows the query-text policy
 		stmt = strings.TrimSpace(stmt + "\n-- for: " + q)
 	}
 	if rs := []rune(stmt); len(rs) > plans.MaxStatement {

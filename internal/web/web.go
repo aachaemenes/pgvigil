@@ -51,6 +51,11 @@ type Server struct {
 	version string
 	// demo is the demo's write door (demodoor.go); nil on every serve.
 	demo *demoDoor
+	// origin is the server a render's copy was made from (renderCopy, q_reportmail.go); nil on the server itself. A
+	// setting kept in a map keyed by *Server keys by self(), so the copy reads the server's own.
+	origin *Server
+	// reports is the store-report login (REPORT ROLE, reportrole.go); never nil after Open.
+	reports *reportsDoor
 }
 
 // Options shape a Server beyond its repository connection.
@@ -74,6 +79,9 @@ type Options struct {
 	Version string
 	// DemoDoor opens the demo's write door (demodoor.go): only `pgvigil demo -serve` sets it; nil on every serve.
 	DemoDoor *DemoDoor
+	// Reports is the config's reports_dsn: the login a custom report on the store runs as (REPORT ROLE, reportrole.go);
+	// nil or empty = store reports are off, with the words.
+	Reports *ReportsConfig
 }
 
 // Expected is the interval map of the stale check.
@@ -142,6 +150,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
 	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags, version: o.Version}
+	s.reports = s.newReportsDoor(ctx, o.Reports)
 	if o.Login {
 		var n int64
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_user_count()`).Scan(&n); err != nil {
@@ -185,7 +194,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 }
 
 // Close releases the audit pool and the pool.
-func (s *Server) Close() { s.actions.Close(); s.demo.close(); s.pool.Close() }
+func (s *Server) Close() { s.closeMoveJobs(); s.actions.Close(); s.demo.close(); s.pool.Close() }
 
 // Handler returns the routes: /api/... (behind the login when it is on) and the embedded frontend.
 // The shell and its assets are public: they hold no data.
@@ -223,8 +232,20 @@ func (s *Server) Handler() http.Handler {
 	// task 204: Admin > Instances (q_instances_admin.go)
 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
 	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)
+	// task 310: applications (q_applications.go)
+	api.HandleFunc("GET /api/applications", s.ApplicationsList)
+	api.HandleFunc("GET /api/applications/unassigned", s.ApplicationsUnassigned)
+	api.HandleFunc("GET /api/applications/{id}", s.ApplicationOne)
+	api.HandleFunc("GET /api/applications/{id}/contacts", s.ApplicationContacts)
+	api.HandleFunc("POST /api/admin/applications", s.ApplicationsWrite)
+	api.HandleFunc("POST /api/admin/applications/contacts", s.ApplicationContactsWrite)
+	api.HandleFunc("POST /api/admin/applications/assign", s.ApplicationsAssignWrite)
+	api.HandleFunc("POST /api/admin/applications/routes", s.ApplicationRoutesWrite)
 	api.HandleFunc("POST /api/admin/sources", s.SourcesAdminWrite)
 	api.HandleFunc("POST /api/admin/proposals", s.ProposalsAdminWrite)
+	// task 206: Admin > Instances' Move from DBA Dash (q_migrate.go)
+	api.HandleFunc("GET /api/admin/dbadash_moves", s.DBADashMoves)
+	api.HandleFunc("POST /api/admin/dbadash_moves", s.DBADashMovesWrite)
 	api.HandleFunc("GET /api/uptime", s.Uptime)
 	api.HandleFunc("GET /api/pgconfig", s.PGConfig)
 	api.HandleFunc("GET /api/pg/dboptions", s.PGDBOptions)

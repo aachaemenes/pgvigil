@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -36,6 +37,22 @@ type Config struct {
 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
 	// collects nothing from SQL Server itself.
 	DBADash []DBADashRepo `yaml:"dbadash"`
+	// GMSA names the group Managed Service Account pgvigil's Windows service runs as (DOMAIN\\name$, task 206): the
+	// Windows sign-in of a server moved from DBA Dash on Admin > Instances is this account, offered only when it is set
+	// and serve runs on Windows (each moved server then needs CREATE LOGIN [DOMAIN\\name$] FROM WINDOWS and the rights
+	// of docs/sqlserver-cloud.md). Never the machine account (DOMAIN\\HOST$): no other service of the host shares a gMSA.
+	// Empty (the default) = no Windows sign-in on that page.
+	GMSA string `yaml:"gmsa"`
+	// Doors holds the switches of serve's doors that only this file turns on, never the page (pagedoor.go):
+	// doors: page_instance_reads: on lets Community tools and custom reports run on instances added in Admin > Instances.
+	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
+	// where this file's off still wins (file off > profile > page).
+	Doors Doors `yaml:"doors"`
+	// ReportsDSNRaw is the login a custom report on the store (the repository) runs as: IN ROLE pgvigil_reader alone
+	// ('pgvigil roles' prints it), on the repository the repository dsn names; env:NAME or file:/path like every dsn.
+	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
+	// report is refused with words, never run as serve's login (REPORT ROLE, internal/web/reportrole.go).
+	ReportsDSNRaw string `yaml:"reports_dsn"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -47,6 +64,9 @@ type Repository struct {
 
 // DSN resolves the repository connection string.
 func (r Repository) DSN() string { return Resolve(r.DSNRaw) }
+
+// ReportsDSN resolves reports_dsn ("" when the key is not set or resolves to nothing).
+func (c Config) ReportsDSN() string { return Resolve(c.ReportsDSNRaw) }
 
 // The engines an instance can be.
 const (
@@ -123,6 +143,22 @@ type DBADashRepo struct {
 	DSNRaw string `yaml:"dsn"`
 	// Interval is how often it is read (default 5m; at least 1m).
 	Interval Duration `yaml:"interval"`
+	// Import lets Admin > Instances' 'Move from DBA Dash' run the history import of a server moved from this repository
+	// inside serve (task 206). Off (the default): the page prints the 'pgvigil import dbadash' command instead.
+	Import bool `yaml:"import"`
+}
+
+// gmsaName is DOMAIN\name$: a NetBIOS domain of 1 to 15 characters and an account of 1 to 15 before its one '$' (the
+// sAMAccountName rule), neither holding a character Windows refuses in a name.
+var gmsaName = regexp.MustCompile(`^[^\\/:*?"<>|\s.@\[\]]{1,15}\\[^\\/:*?"<>|\s@\[\]$]{1,15}\$$`)
+
+// validateGMSA trims the gmsa: key and refuses a form that is not DOMAIN\name$.
+func (c *Config) validateGMSA() error {
+	c.GMSA = strings.TrimSpace(c.GMSA)
+	if c.GMSA != "" && !gmsaName.MatchString(c.GMSA) {
+		return fmt.Errorf("gmsa %q must be DOMAIN\\name$ (the group Managed Service Account the service runs as: a domain of at most 15 characters, a name of at most 15 before its '$')", c.GMSA)
+	}
+	return nil
 }
 
 // DefaultDBADashInterval is the read cadence of a DBADash repository.
@@ -453,6 +489,9 @@ func (c *Config) Validate() error {
 		c.UI.EnvOrder = DefaultEnvOrder
 	}
 	if err := c.validateDBADash(); err != nil {
+		return err
+	}
+	if err := c.validateGMSA(); err != nil {
 		return err
 	}
 	seen := map[string]bool{}

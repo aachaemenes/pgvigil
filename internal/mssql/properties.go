@@ -16,7 +16,9 @@ import (
 // page), and the repository keeps the history of each value's changes (0084).
 //
 //   - Server: edition, version and level, collation, clustered, Always On enabled, the machine's and the server's
-//     name, max degree of parallelism and the cost threshold (SERVERPROPERTY and sys.configurations: any login).
+//     name, max degree of parallelism and the cost threshold (SERVERPROPERTY and sys.configurations: any login); on
+//     Amazon RDS also its high availability mode and last failover (rds_ha.go: EXECUTE on two msdb procedures,
+//     optional).
 //   - Processor: logical CPUs, sockets, cores per socket, the hyperthread ratio, NUMA nodes, soft NUMA, the affinity
 //     type, the schedulers online and offline, max worker threads, the hypervisor (sys.dm_os_sys_info and
 //     sys.dm_os_schedulers) and the Windows power plan.
@@ -273,6 +275,11 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 	}
 	p.add("host_distribution", "Host", "Distribution", 610, hval("host_distribution"), distNote)
 	p.add("host_release", "Host", "Release", 620, hval("host_release"), hnote())
+	if info.Kind == KindRDS {
+		// Amazon RDS's high availability mode and last failover (rds_ha.go), read last: rds_failover_time searches the
+		// error logs, and a slow answer must not take the run's time from the rows above (ord places the two rows)
+		partial = append(partial, rdsHAProps(p, readRDSHA(ctx, conn))...)
+	}
 	return append(p.rows, partial...), nil
 }
 

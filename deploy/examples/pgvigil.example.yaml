@@ -4,6 +4,11 @@
 repository:
   dsn: env:PGVIGIL_REPO_DSN          # postgres://pgvigil:...@repo-host:5432/pgvigil
 
+# The login a custom report on the store (the repository) runs as: IN ROLE pgvigil_reader alone ('pgvigil roles'
+# prints pgvigil_reports), on the repository above. serve's own login reads the UI's password hashes, so without this a
+# report on the store is refused and the page says why (docs/customreports.md).
+reports_dsn: env:PGVIGIL_REPORTS_DSN # postgres://pgvigil_reports:...@repo-host:5432/pgvigil
+
 # Global overrides of a collection's default interval; "disabled" turns one off everywhere.
 schedules:
   instance: 1h

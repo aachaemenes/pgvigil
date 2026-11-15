@@ -27,12 +27,18 @@ func TestConfigDBADash(t *testing.T) {
   - name: lab
     dsn: "sqlserver://reader@sql1:1433?database=DBADashDB"
     interval: 2m
+    import: true
+gmsa: " CORP\\pgvigil-gmsa$ "
 `)
 	if err != nil {
 		t.Fatalf("valid config refused: %v", err)
 	}
 	if len(c.DBADash) != 2 || c.DBADash[0].Every() != 5*time.Minute || c.DBADash[1].Every() != 2*time.Minute {
 		t.Fatalf("got %+v", c.DBADash)
+	}
+	// task 206: the import switch is off unless set; the gMSA trimmed
+	if c.DBADash[0].Import || !c.DBADash[1].Import || c.GMSA != `CORP\pgvigil-gmsa$` {
+		t.Fatalf("import %v / %v, gmsa %q; want false / true, CORP\\pgvigil-gmsa$", c.DBADash[0].Import, c.DBADash[1].Import, c.GMSA)
 	}
 	t.Setenv("DBADASH_DSN", "server=sql1;user id=r;password=p")
 	if c.DBADash[0].DSN() != "server=sql1;user id=r;password=p" {
@@ -63,11 +69,23 @@ func TestConfigDBADash(t *testing.T) {
 		"no dsn":              "dbadash:\n  - name: a\n",
 		"slash in name":       "dbadash:\n  - name: a/b\n    dsn: env:X\n",
 		"interval too short":  "dbadash:\n  - name: a\n    dsn: env:X\n    interval: 30s\n",
+		"import not a bool":   "dbadash:\n  - name: a\n    dsn: env:X\n    import: maybe\n",
+		"gmsa no domain":      "gmsa: pgvigil-gmsa$\n",
+		"gmsa no dollar":      "gmsa: CORP\\pgvigil-gmsa\n",
+		"gmsa a UPN":          "gmsa: pgvigil-gmsa$@corp.example.com\n",
+		"gmsa name too long":  "gmsa: CORP\\pgvigil-collector$\n",
+		"gmsa FQDN domain":    "gmsa: corp.example.com\\pgvigil$\n",
+		// review 206f 13: the account's 15-character limit at its edge, and '$' only at its end
+		"gmsa name of 16": "gmsa: CORP\\abcdefghijklmnop$\n",
+		"gmsa a $ inside": "gmsa: CORP\\a$$\n",
 	}
 	for name, body := range bad {
 		if _, err := loadYAML(t, body); err == nil {
 			t.Errorf("%s: accepted, want refused", name)
 		}
+	}
+	if c, err := loadYAML(t, "gmsa: CORP\\abcdefghijklmno$\n"); err != nil || c.GMSA != `CORP\abcdefghijklmno$` {
+		t.Errorf("a gmsa name of 15: %v %q, want accepted", err, c.GMSA)
 	}
 }
 

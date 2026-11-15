@@ -64,6 +64,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/plans"
 	"github.com/aachaemenes/pgvigil/internal/platform"
 )
 
@@ -398,22 +399,29 @@ func (cc *customCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ pl
 	return rows, nil
 }
 
-// customRightsSQL reads the session login's rights beyond pg_monitor that READ ONLY does not stop.
+// customRightsSQL reads the login's rights beyond pg_monitor that READ ONLY does not stop, on the SESSION user: a role
+// set at connect (ALTER ROLE ... SET role) can be set back by the check's own statement (set_config('role', 'none',
+// true)), so the current role's rights say nothing; a member of a superuser role (plans.SuperMemberCol, NOINHERIT too)
+// counts as a superuser, since the statement can SET ROLE to it (CUSTOMRIGHTS, after REPORT ROLE's pgRefusal).
 const customRightsSQL = `SELECT r.rolsuper,
-       pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER'),
-       pg_has_role(current_user, 'pg_write_server_files', 'MEMBER'),
-       pg_has_role(current_user, 'pg_read_server_files', 'MEMBER')
-  FROM pg_roles r WHERE r.rolname = current_user`
+       ` + plans.SuperMemberCol + `,
+       pg_has_role(session_user, 'pg_execute_server_program', 'MEMBER'),
+       pg_has_role(session_user, 'pg_write_server_files', 'MEMBER'),
+       pg_has_role(session_user, 'pg_read_server_files', 'MEMBER')
+  FROM pg_roles r WHERE r.rolname = session_user`
 
 // customRights refuses a login with more than the collector's standing right (pg_monitor) for the DBA's own SQL.
 func customRights(ctx context.Context, conn *pgx.Conn) error {
-	var super, prog, write, read bool
-	if err := conn.QueryRow(ctx, customRightsSQL).Scan(&super, &prog, &write, &read); err != nil {
+	var super, superMember, prog, write, read bool
+	if err := conn.QueryRow(ctx, customRightsSQL).Scan(&super, &superMember, &prog, &write, &read); err != nil {
 		return fmt.Errorf("custom: reading the login's rights: %w", err)
 	}
 	var too []string
 	if super {
 		too = append(too, "superuser")
+	}
+	if superMember && !super {
+		too = append(too, "a member of a superuser role")
 	}
 	if prog {
 		too = append(too, "pg_execute_server_program")

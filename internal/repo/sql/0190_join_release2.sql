@@ -12,6 +12,8 @@
 --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
 --   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
 -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
+--   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
+--     'not judged'; the rest 0104's text), and the findings view's 'database xid age' arm leaves an invalid database out.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
@@ -412,6 +414,14 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_failed_logins WHERE logged_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- 0139 (FLEET STATS ROLLUP): the hours tables last, each by its own age in pgvigil.hours_retention (not p_days), so
+  -- no runs table is locked after an hours parent; the months dropped join this run's partitions_dropped. The hours'
+  -- heals are not here (one transaction for all): 'pgvigil purge' runs them after this, one instance per transaction
+  IF to_regprocedure('pgvigil.job_stats_hourly_purge()') IS NOT NULL THEN
+    n := n - cardinality(v_dropped);
+    v_dropped := v_dropped || pgvigil.job_stats_hourly_purge();
+    n := n + cardinality(v_dropped);
+  END IF;
   -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
   INSERT INTO pgvigil.purge_runs (started_at, finished_at, days, partitions_dropped, rows_deleted, total)
   VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);
@@ -454,13 +464,16 @@ LANGUAGE sql STABLE SET jit = off AS $$
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
-           coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery
+           coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery,
+           coalesce(c.repo_wide, true) AS repo_wide
       FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
-           AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean)
-  ), sc AS (   -- every finding in a channel's scope, any severity
+           AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
+                repo_wide boolean)
+  ), sc AS (   -- every finding in a channel's scope, any severity (a repository-wide one: every channel but a route's,
+               -- task 310 - an application contact's route says repo_wide false)
     SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, f.*
       FROM ch JOIN pgvigil.alert_findings f
-        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR f.source = 'pgvigil repository'
+        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide)
      ORDER BY ch.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC
   ), m AS (    -- the ones at or above its floor that nothing holds
     SELECT * FROM sc WHERE pgvigil.severity_rank(sc.severity) >= sc.floor

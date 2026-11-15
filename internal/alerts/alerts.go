@@ -243,6 +243,9 @@ func Validate(chs []Channel) error {
 		if !nameRE.MatchString(c.Name) {
 			return fmt.Errorf("alerts[%d]: name %q must be lower-case letters, digits, '_', '.' or '-' (1..63, starting with a letter or digit)", i, c.Name)
 		}
+		if strings.HasPrefix(c.Name, routePrefix) {
+			return fmt.Errorf("alerts[%d]: name %q starts with %q, the names of application contacts' routes (Admin > Applications): choose another name", i, c.Name, routePrefix)
+		}
 		if seen[c.Name] {
 			return fmt.Errorf("alerts %q is listed twice", c.Name)
 		}
@@ -618,6 +621,10 @@ type Result struct {
 	Tests, TestsFailed int
 	// TestsErr is why the Send test requests were not read (a repository before 0093 has none: nil).
 	TestsErr error
+	// Routes is how many application contacts' routes sent through a derived channel this pass (routes.go);
+	// RoutesErr is why the routes were not read (their door failed: no route sent, none closed).
+	Routes    int
+	RoutesErr error
 }
 
 func (r Result) String() string {
@@ -642,6 +649,12 @@ func (r Result) String() string {
 	}
 	if r.TestsErr != nil {
 		s += "; test requests not read: " + strings.Join(strings.Fields(r.TestsErr.Error()), " ")
+	}
+	if r.Routes > 0 {
+		s += fmt.Sprintf("; %d contact route(s)", r.Routes)
+	}
+	if r.RoutesErr != nil {
+		s += "; contact routes not read: " + strings.Join(strings.Fields(r.RoutesErr.Error()), " ")
 	}
 	return s
 }
@@ -712,8 +725,36 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		err := record(ctx, conn.Exec, now, attempt{Outcome: "none", Error: "no channel configured: nothing sent"})
 		return res, outcome, err
 	}
-	if err := syncChannels(ctx, conn.Exec, chs, now); err != nil {
+	// the application contacts' routes (routes.go), read before the sync: ONE sync records the configuration's channels
+	// and the derived ones together (a second would mark the other set not configured). A door that failed sends no
+	// route and closes none; the configuration's channels go on.
+	rs, haveRoutes, rerr := readRoutes(ctx, conn)
+	if rerr != nil {
+		res.RoutesErr = rerr
+	}
+	ds := derive(chs, rs)
+	all := make([]Channel, 0, len(chs)+len(ds)) // a new slice: the caller's chs is never appended to
+	all = append(all, chs...)
+	routed := map[string]bool{}
+	for _, d := range ds {
+		if d.note == "" {
+			all = append(all, d.ch)
+			routed[d.ch.Name] = true
+		}
+	}
+	res.Routes = len(routed)
+	if err := syncChannels(ctx, conn.Exec, all, now); err != nil {
 		return res, nil, err
+	}
+	if haveRoutes && rerr == nil {
+		if err := routeNotes(ctx, conn, now, ds); err != nil {
+			return res, nil, err
+		}
+		n, err := closeGone(ctx, conn, now, routed)
+		if err != nil {
+			return res, nil, err
+		}
+		res.Cleared += n
 	}
 	// the rules are judged before the quiet-hours cut: a channel in its quiet hours is owed what fired meanwhile when
 	// they end. A failure here (or the server's cut at rulesTimeout) costs this pass's fresh rule states only: the
@@ -730,8 +771,8 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	}
 	var due []map[string]any
 	byName := map[string]*Channel{}
-	for i := range chs {
-		c := &chs[i]
+	for i := range all {
+		c := &all[i]
 		byName[c.Name] = c
 		if c.Quiet(now) {
 			res.Held = append(res.Held, c.Name)
@@ -742,7 +783,8 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 		due = append(due, map[string]any{"name": c.Name, "min_severity": c.MinSeverity, "instances": nonNil(c.Instances),
 			"tags": nonNil(c.Tags), "repeat_secs": int(c.RepeatEvery().Seconds()),
-			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery()})
+			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery(),
+			"repo_wide": !routed[c.Name]}) // a route never takes the repository-wide findings (0190 alert_due)
 	}
 	if len(due) == 0 {
 		return res, outcome, nil
@@ -842,7 +884,7 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 		outcome[c.Name] = chErr
 	}
-	for _, c := range chs {
+	for _, c := range all {
 		if _, ok := outcome[c.Name]; !ok && !c.Quiet(now) && !skip[c.Name] {
 			outcome[c.Name] = nil
 		}
@@ -987,6 +1029,26 @@ const Every = time.Minute
 // maxBackoff caps how long a failing channel waits before the next try.
 const maxBackoff = 30 * time.Minute
 
+// logPass logs one pass of Run: its result when something moved, and each part it could not read - on a quiet pass
+// too, where nothing else would say it.
+func logPass(log *slog.Logger, res Result, err error) {
+	switch {
+	case err != nil:
+		log.Warn("alerts pass failed", "err", err)
+	case res.Sent+res.Failed+res.Cleared+res.Capped+res.Tests > 0:
+		log.Info("alerts pass", "result", res.String())
+	}
+	if res.RulesErr != nil {
+		log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
+	}
+	if res.TestsErr != nil {
+		log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
+	}
+	if res.RoutesErr != nil {
+		log.Warn("alerts: the contact routes were not read in this pass", "err", res.RoutesErr)
+	}
+}
+
 // Run is the loop inside `pgvigil run`: a pass every minute until ctx ends. With no channel it logs "alerts off" and
 // returns without touching the repository: nothing is ever sent, and the collector's login needs no alert right.
 func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error {
@@ -1026,18 +1088,7 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 			}
 		}
 		res, outcome, err := Pass(ctx, pool, chs, now, skip)
-		switch {
-		case err != nil:
-			log.Warn("alerts pass failed", "err", err)
-		case res.Sent+res.Failed+res.Cleared+res.Capped+res.Tests > 0:
-			log.Info("alerts pass", "result", res.String())
-		}
-		if res.RulesErr != nil {
-			log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
-		}
-		if res.TestsErr != nil {
-			log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
-		}
+		logPass(log, res, err)
 		for n, e := range outcome {
 			if e == nil {
 				delete(backoff, n)
