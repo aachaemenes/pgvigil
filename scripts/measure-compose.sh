@@ -44,7 +44,7 @@ set -uo pipefail
 : "${PGVIGIL_ADMIN_DSN:?}"
 cd "$(dirname "$0")/.."
 
-DAYS=91
+DAYS=${PGVIGIL_FILL_DAYS:-91}   # the days filled; a run whose ranges stop at 7 days needs 8 (a tenth of the disk)
 PG_N=40; MS_N=40; BIG_DBS=150; SMALL_DBS=3
 IO_ROWS=${PGVIGIL_IO_ROWS:-30}
 ALL_STAGES="activity_summary dbstats serverstats iostats host_sample mssql_requests_summary mssql_cpu_sample mssql_sched_sample mssql_memory_sample"
