@@ -490,6 +490,7 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	SetPageCloud(c.Doors) // the page's cloud blocks follow this file's doors (B24p): every Merge of the process reads them
 	return &c, nil
 }
 
@@ -565,9 +566,6 @@ func (c *Config) Validate() error {
 			default:
 				return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
 			}
-			if in.Azure != nil {
-				return fmt.Errorf("instance %q: the azure: block is SQL Server's (an Azure SQL Database's failover groups)", in.Name)
-			}
 			// a PostgreSQL instance's cancel and terminate are on with its actions_dsn; its job actions (task 161) only
 			// where actions: names them
 			seenPG := map[string]bool{}
@@ -620,12 +618,6 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: explain_dsn, explain_analyze and hypo_index are PostgreSQL's", in.Name)
 			case strings.TrimSpace(in.PgBouncerDSNRaw) != "":
 				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
-			case in.AWS != nil:
-				return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
-			case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):
-				return fmt.Errorf("instance %q: the azure: block names subscription, resource_group and server", in.Name)
-			case in.Azure != nil && !validAzureCloud(in.Azure.Cloud):
-				return fmt.Errorf("instance %q: azure.cloud is public, usgov or china, not %q", in.Name, in.Azure.Cloud)
 			case in.Backups != nil:
 				return fmt.Errorf("instance %q: the backups: block is PostgreSQL's", in.Name)
 			}
@@ -636,6 +628,9 @@ func (c *Config) Validate() error {
 			if _, err := ParseTag(s); err != nil {
 				return fmt.Errorf("instance %q: %w", in.Name, err)
 			}
+		}
+		if err := validateCloud(*in); err != nil {
+			return err
 		}
 		if err := validatePasswordSecret(*in); err != nil {
 			return err
@@ -649,15 +644,32 @@ func (c *Config) Validate() error {
 		if v := strings.TrimSpace(in.ExplainDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: explain_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}
-		if in.AWS != nil && in.AWS.DMS != nil {
-			for _, t := range in.AWS.DMS.Tasks {
-				if strings.TrimSpace(t) == "" {
-					return fmt.Errorf("instance %q: aws.dms.tasks holds an empty name", in.Name)
-				}
+	}
+	return nil
+}
+
+// validateCloud is the aws: and azure: blocks' rules, one function for pgvigil.yaml's instances (Validate) and the
+// page's (Merge, after PageCloudShape: task B24p's fold 6): the azure: block is SQL Server's with its three names and a
+// known cloud, the aws: block PostgreSQL's (on SQL Server it waits for 390b), DMS's task names.
+func validateCloud(in Instance) error {
+	switch {
+	case in.Engine == EnginePostgres && in.Azure != nil:
+		return fmt.Errorf("instance %q: the azure: block is SQL Server's (an Azure SQL Database's failover groups)", in.Name)
+	case in.Engine == EngineSQLServer && in.AWS != nil:
+		return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
+	case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):
+		return fmt.Errorf("instance %q: the azure: block names subscription, resource_group and server", in.Name)
+	case in.Azure != nil && !validAzureCloud(in.Azure.Cloud):
+		return fmt.Errorf("instance %q: azure.cloud is public, usgov or china, not %q", in.Name, in.Azure.Cloud)
+	}
+	if in.AWS != nil && in.AWS.DMS != nil {
+		for _, t := range in.AWS.DMS.Tasks {
+			if strings.TrimSpace(t) == "" {
+				return fmt.Errorf("instance %q: aws.dms.tasks holds an empty name", in.Name)
 			}
-			if in.AWS.DMS.LatencyWarnSecs < 0 {
-				return fmt.Errorf("instance %q: aws.dms.latency_warn_secs must be 0 or more", in.Name)
-			}
+		}
+		if in.AWS.DMS.LatencyWarnSecs < 0 {
+			return fmt.Errorf("instance %q: aws.dms.latency_warn_secs must be 0 or more", in.Name)
 		}
 	}
 	return nil

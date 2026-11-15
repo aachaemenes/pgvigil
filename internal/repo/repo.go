@@ -233,51 +233,16 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
 	return g, err
 }
 
-// Inventory is the page's instance list and its generation, read in one statement (0157's admin_inventory(),
-// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
+// Inventory is the page's instance list and its generation, read in one statement (0193's admin_inventory(),
+// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty) and
+// one scan shared with serve's reader (config.InventorySQL / ScanInventory: B24p's fold 5).
 func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans FROM pgvigil.admin_inventory()`)
+	rows, err := r.pool.Query(ctx, config.InventorySQL)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []config.PageInstance
-	var gen int64
-	for rows.Next() {
-		var name, engine, platform, ref, auth, options *string
-		var tags []string
-		var disabled, runningPlans *bool
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans); err != nil {
-			return nil, 0, err
-		}
-		if name == nil {
-			continue
-		}
-		p := config.PageInstance{Name: *name, Tags: tags}
-		if engine != nil {
-			p.Engine = *engine
-		}
-		if platform != nil {
-			p.Platform = *platform
-		}
-		if ref != nil {
-			p.DSNRef = *ref
-		}
-		if disabled != nil {
-			p.Disabled = *disabled
-		}
-		if auth != nil {
-			p.Auth = *auth
-		}
-		if options != nil {
-			p.Options = *options
-		}
-		if runningPlans != nil {
-			p.RunningPlans = *runningPlans
-		}
-		out = append(out, p)
-	}
-	return out, gen, rows.Err()
+	return config.ScanInventory(rows)
 }
 
 // EnsureInstance upserts the instance row and returns its id.

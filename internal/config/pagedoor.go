@@ -21,6 +21,14 @@ type Doors struct {
 	// PageInstanceReads turns on Community tools and custom reports for the instances added in Admin > Instances.
 	// Off by default.
 	PageInstanceReads bool `yaml:"page_instance_reads"`
+	// PageCloudBlocks lets an instance of Admin > Instances (added on the page or approved from discovery) carry an
+	// aws: or azure: block (task B24p): its cloud reads run under THIS collector host's own cloud identity, so they
+	// are an admin's opt-in here (Allen's Q15: the locked-down default). Off by default: every page block is dropped
+	// (its reason logged and on the page) and the instance keeps collecting.
+	PageCloudBlocks bool `yaml:"page_cloud_blocks"`
+	// PageAWSProfiles are the AWS profiles a page block may name (a discovered instance's source profile: the lead's
+	// Q5); empty (the default) = none, the host's default chain only.
+	PageAWSProfiles []string `yaml:"page_aws_profiles"`
 }
 
 // PageReadsOff is the refusal while the switch is off.

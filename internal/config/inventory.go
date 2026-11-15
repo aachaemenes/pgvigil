@@ -50,6 +50,12 @@ type PageInstance struct {
 	// door reads them for its words (pagedoor.go), the collector does not
 	Auth    string
 	Options string
+	// Host is the row's host as the page stored it (the name match of its cloud blocks, B24p)
+	Host string
+	// AWS and Azure are the row's cloud blocks (0193; nil = none): set on the Instance by Merge only through
+	// PageCloudRefusal (pagecloud.go)
+	AWS   *PageAWS
+	Azure *PageAzure
 }
 
 // InventoryReader is the repository's side: the generation alone (cheap, polled) and the list with its generation.
@@ -74,6 +80,13 @@ func RefOK(v string) bool {
 // way Validate makes a file instance (platform auto when empty, the file-level query_text). A page instance that
 // breaks a rule is left out with its reason in skipped (the page refuses those on write; this guards a hand edit).
 func Merge(file []Instance, page []PageInstance, queryText string) (all []Instance, skipped []string) {
+	all, skipped, _ = MergeNotes(file, page, queryText)
+	return all, skipped
+}
+
+// MergeNotes is Merge with the page blocks not used (B24p): each '<name>: its cloud block is not used: <why>' - the
+// instance itself is kept and collects without the block.
+func MergeNotes(file []Instance, page []PageInstance, queryText string) (all []Instance, skipped, dropped []string) {
 	all = append(all, file...)
 	inFile := map[string]bool{}
 	for _, in := range file {
@@ -115,8 +128,11 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
 		if p.Engine == EngineSQLServer && p.RunningPlans {
 			all[len(all)-1].PageDefaults = map[string]Duration{"mssql_running_plans": {Duration: time.Minute}}
 		}
+		if why := pageCloud(p, &all[len(all)-1]); why != "" {
+			dropped = append(dropped, why)
+		}
 	}
-	return all, skipped
+	return all, skipped, dropped
 }
 
 // Fingerprint names what makes an instance's loops differ: a change in any of these restarts its loops.
@@ -133,7 +149,16 @@ func Fingerprint(in Instance) string {
 	sort.Strings(dis)
 	tags := slices.Clone(in.Tags)
 	sort.Strings(tags)
-	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ",")}, "\x1f")
+	// the cloud blocks (B24p's fold 1): a collection whose Configured was false has no loop, so a block set, edited
+	// or cleared restarts the instance's loops
+	cloud := ""
+	if a := in.AWS; a != nil {
+		cloud += "aws:" + strings.Join([]string{a.Region, a.Profile, a.Cluster, a.DBInstance, a.LogGroup}, "/")
+	}
+	if a := in.Azure; a != nil {
+		cloud += ";azure:" + a.ServerKey() + "/" + a.Cloud
+	}
+	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ","), cloud}, "\x1f")
 }
 
 // Diff names the instances to stop (gone or changed) and to start (new or changed), by name, each sorted.
@@ -239,9 +264,12 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 			return
 		}
 		failing = false
-		all, skipped := Merge(file, page, queryText)
+		all, skipped, dropped := MergeNotes(file, page, queryText)
 		for _, s := range skipped {
 			log.Warn("instances: a page instance is left out", "why", s)
+		}
+		for _, s := range dropped {
+			log.Warn("instances: a page instance's cloud block is not used", "why", s)
 		}
 		log.Info("instances: list read", "generation", gen, "from_file", len(file), "from_page", len(all)-len(file))
 		have = gen

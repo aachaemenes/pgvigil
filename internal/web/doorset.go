@@ -328,7 +328,7 @@ func pageDSNRefusal(name, engine, dsn string) string {
 	return ""
 }
 
-// poolInventory reads Admin > Instances' list on serve's own pool (repo.go Inventory's statement; 0131 lets
+// poolInventory reads Admin > Instances' list on serve's own pool (config.InventorySQL, as repo.Inventory; 0131 lets
 // pgvigil_reader call admin_inventory()).
 type poolInventory struct{ pool *pgxpool.Pool }
 
@@ -339,38 +339,12 @@ func (p poolInventory) InventoryGeneration(ctx context.Context) (int64, error) {
 }
 
 func (p poolInventory) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
-	rows, err := p.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation FROM pgvigil.admin_inventory()`)
+	rows, err := p.pool.Query(ctx, config.InventorySQL) // the collector's statement and scan (B24p's fold 5)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []config.PageInstance
-	var gen int64
-	for rows.Next() {
-		var name, engine, platform, ref, auth, options *string
-		var tags []string
-		var disabled *bool
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen); err != nil {
-			return nil, 0, err
-		}
-		if name == nil {
-			continue
-		}
-		pi := config.PageInstance{Name: *name, Tags: tags}
-		for _, f := range []struct {
-			to   *string
-			from *string
-		}{{&pi.Engine, engine}, {&pi.Platform, platform}, {&pi.DSNRef, ref}, {&pi.Auth, auth}, {&pi.Options, options}} {
-			if f.from != nil {
-				*f.to = *f.from
-			}
-		}
-		if disabled != nil {
-			pi.Disabled = *disabled
-		}
-		out = append(out, pi)
-	}
-	return out, gen, rows.Err()
+	return config.ScanInventory(rows)
 }
 
 // DoorEvery is how often serve's watcher reads the inventory's generation (another serve's write reaches this one
