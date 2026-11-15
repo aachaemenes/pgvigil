@@ -887,6 +887,13 @@ sample() {
      values ($HID, now() - interval '2 seconds', $3, 1, 5, $1, 0, $2, 0, ${4:-1}, 1, 1, 100)" >/dev/null
   q "select pgvigil.alert_rules_run(now())" >/dev/null
 }
+# collected: the activity collector's run recorded as the collector records it (collection_dates 'activity', ok). An
+# instance's finding is resolved only when a collection NEWER than the pass that first missed it says so (0190's
+# alert_due), so a row that wants a recovery runs: the pass that marks it missing, collected, the pass that sends it.
+collected() { q "insert into pgvigil.collection_dates (instance_id, collection, snapshot_at, status) values ($HID, 'activity', clock_timestamp(), 'ok')
+     on conflict (instance_id, collection) do update set snapshot_at = excluded.snapshot_at, status = 'ok', note = null" >/dev/null; }
+# gone <tag>: a finding gone, then proven gone: the marking pass, a collection after it, the pass that owes the recovery
+gone() { pass "$1-mark"; collected; pass "$1"; }
 # apass <tag>: a pass whose drop files are told apart from every earlier part's (an alert's key turns its numbers into
 # '#', so another part's finding on the same metric has the same key); dropnew <event> <key> <severity> [text] counts
 # the files this pass wrote
@@ -942,7 +949,7 @@ g=$(sl gap $((SL0 + 2)) $((SL0 + 3))); awk "BEGIN{exit !($g >= 0.9)}" || fail "S
 TS2=$(tsof "$KS"); [[ $TS2 != "$TS1" ]] || fail "S3: the thread did not move to the new post"
 [[ $(q "select older_ts[1] from pgvigil.alert_threads where channel = 'sb' and finding_key = '$KS' order by posted_at desc limit 1") == "$TS1" ]] || fail "S3: older_ts does not keep the first post $TS1"
 ok "S3: a reply Slack refused as a reply went as a new post ${g} s later; the thread is now $TS2, the first post $TS1 kept in older_ts (its buttons still act)"
-endrule "$R1"; sample 0 0 1; pass S4
+endrule "$R1"; sample 0 0 1; gone S4
 i=$((SL0 + 4))
 [[ $(sl count) == $((SL0 + 5)) && $(sl body $i thread_ts) == "$TS2" && -z $(sl body $i reply_broadcast) && $(sl has $i RESOLVED) == yes ]] || fail "S4: the recovery: $(( $(sl count) - SL0 )) calls (wanted 5), thread_ts '$(sl body $i thread_ts)' resolved $(sl has $i RESOLVED); $(sdiag "$KS" "$R1")"
 ok "S4: the recovery is a reply in thread $TS2, not broadcast"
@@ -954,7 +961,7 @@ R2=$(rule sessions.total 9 1000); back "$KS2"; sample 50 0 20; pass S7
 [[ $(sl count) == $((SL0 + 8)) ]] || fail "S7: $(( $(sl count) - SL0 - 6 )) calls (wanted a post and a reply)"
 [[ -z $(sl body $((SL0 + 6)) thread_ts) && -n $(sl body $((SL0 + 7)) thread_ts) ]] || fail "S7: the post first, then the reply"
 ok "S7: a new firing and a repeat in one pass: a post, then a reply ($(sl gap $((SL0 + 6)) $((SL0 + 7))) s apart), two attempts"
-endrule "$R1"; endrule "$R2"; sample 0 0 1; pass S8
+endrule "$R1"; endrule "$R2"; sample 0 0 1; gone S8
 fi
 
 if [[ $PART == *A* ]]; then
@@ -975,7 +982,7 @@ ok "A2: a warning finding on the anchor's instance: held 'attached' on drop and 
 RC=$(rule sessions.idle_in_txn 39 40); sample 50 9 20; CK=$(q "select finding_key from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and severity = 'critical' limit 1"); apass A3
 [[ $(dropnew firing "$CK" critical) == 1 ]] || fail "A3: the critical finding was not sent on drop"
 ok "A3: a critical finding beside the anchor is sent (never attached)"
-endrule "$RA"; sample 50 0 20; apass A4
+endrule "$RA"; sample 50 0 20; pass A4-mark; collected; apass A4
 [[ $(dropnew resolved "$AK" warning 'attached while it stood: ') == 1 ]] || fail "A4: the anchor's recovery lists nothing attached"
 [[ $(dropnew firing "$BK" warning) == 0 ]] || fail "A4: the attached finding fired in its anchor's recovery pass (the anchor stands until its recovery)"
 ok "A4: the anchor's rule ended: its recovery lists what was attached while it stood; the attached finding is still held in that pass"
