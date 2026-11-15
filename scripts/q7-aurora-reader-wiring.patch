@@ -1,11 +1,39 @@
 # WIRING for the lead (task 374 / Q7, the lead 06:2x): on platform aurora the rolechange and backups collectors skip the
 # calls a real Aurora PostgreSQL 17.9 reader rejects (SQLSTATE 0A000: pg_stat_get_wal_receiver, pg_last_wal_receive_lsn,
-# pg_last_wal_replay_lsn) and say so in the collection log; collect.go keeps collector_note rows out of the import.
+# pg_last_wal_replay_lsn) and say so in the collection log; collect.go keeps collector_note rows out of the import (aurora_sql_test.go pins the Aurora SQL).
 # Apply with git apply; judged by scripts/proof-pg-hadr.sh row AF2.
-diff --git a/internal/collect/backups.go b/internal/collect/backups.go
+diff --git c/internal/collect/aurora_sql_test.go i/internal/collect/aurora_sql_test.go
+new file mode 100644
+index 00000000..09db3be0
+--- /dev/null
++++ i/internal/collect/aurora_sql_test.go
+@@ -0,0 +1,22 @@
++package collect
++
++import (
++	"strings"
++	"testing"
++)
++
++// TestAuroraSQLLeavesOutRejectedCalls: the Aurora variants of the rolechange and backups reads leave out every call a
++// real Aurora PostgreSQL 17.9 reader rejects (SQLSTATE 0A000, proof-pg-aurora.sh's Q7 lab run 2); a strings.Replace
++// that matched nothing would bring the failure back silently.
++func TestAuroraSQLLeavesOutRejectedCalls(t *testing.T) {
++	if backupsArchiverAuroraSQL == backupsArchiverSQL {
++		t.Fatal("backupsArchiverAuroraSQL equals backupsArchiverSQL: the replace matched nothing")
++	}
++	for name, q := range map[string]string{"backupsArchiverAuroraSQL": backupsArchiverAuroraSQL, "roleBaseAuroraSQL": roleBaseAuroraSQL} {
++		for _, f := range []string{"pg_last_wal_receive_lsn", "pg_last_wal_replay_lsn", "pg_last_xact_replay_timestamp", "pg_is_wal_replay_paused", "pg_stat_wal_receiver"} {
++			if strings.Contains(q, f) {
++				t.Errorf("%s calls %s, which Aurora rejects", name, f)
++			}
++		}
++	}
++}
+diff --git c/internal/collect/backups.go i/internal/collect/backups.go
 index 23d74b2d..1eb7bbc0 100644
---- a/internal/collect/backups.go
-+++ b/internal/collect/backups.go
+--- c/internal/collect/backups.go
++++ i/internal/collect/backups.go
 @@ -5,6 +5,7 @@ import (
  	"errors"
  	"fmt"
@@ -61,11 +89,11 @@ index 23d74b2d..1eb7bbc0 100644
  	}
  	if (info.Kind != platform.RDS && info.Kind != platform.Aurora) || in.AWS == nil {
  		return out, nil
-diff --git a/internal/collect/collect.go b/internal/collect/collect.go
-index ae6cb94b..f13deabb 100644
---- a/internal/collect/collect.go
-+++ b/internal/collect/collect.go
-@@ -212,12 +212,24 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+diff --git c/internal/collect/collect.go i/internal/collect/collect.go
+index ae6cb94b..dbb55211 100644
+--- c/internal/collect/collect.go
++++ i/internal/collect/collect.go
+@@ -212,15 +212,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
  		}
  	}
  	applyTextPolicy(rows, in.QueryText)
@@ -91,10 +119,16 @@ index ae6cb94b..f13deabb 100644
  	for _, row := range rows {
  		if row["kind"] == "collector_error" {
  			status, note = "partial", fmt.Sprintf("%v: %v", row["source"], row["message"])
-diff --git a/internal/collect/rolechange.go b/internal/collect/rolechange.go
-index 81d56f34..3ebdf40f 100644
---- a/internal/collect/rolechange.go
-+++ b/internal/collect/rolechange.go
++			if len(notes) > 0 { // a failed part does not hide what was not read on this platform
++				note += "; " + strings.Join(notes, "; ")
++			}
+ 			break
+ 		}
+ 	}
+diff --git c/internal/collect/rolechange.go i/internal/collect/rolechange.go
+index 81d56f34..fedb54bc 100644
+--- c/internal/collect/rolechange.go
++++ i/internal/collect/rolechange.go
 @@ -58,6 +58,17 @@ SELECT pg_is_in_recovery() AS is_replica, pg_postmaster_start_time() AS postmast
         (SELECT w.received_tli FROM pg_stat_wal_receiver w WHERE w.pid IS NOT NULL LIMIT 1) AS receiver_timeline,
         EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.application_name LIKE 'Patroni%') AS patroni_session`
@@ -126,13 +160,17 @@ index 81d56f34..3ebdf40f 100644
  	if err != nil {
  		return nil, fmt.Errorf("rolechange: %w", err)
  	}
-@@ -108,6 +123,10 @@ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info
+@@ -108,6 +123,14 @@ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info
  	delete(r, "wal_timeline")
  	delete(r, "receiver_timeline")
  	out := []Row{r}
 +	if info.Kind == platform.Aurora && isReplica {
++		from := "no timeline read"
++		if src != "" {
++			from = "the timeline from the " + src
++		}
 +		out = append(out, Row{"kind": "collector_note", "source": "rolechange",
-+			"message": "not read on Aurora: pg_stat_get_wal_receiver() is not supported (the timeline is the last checkpoint's)"})
++			"message": "not read on Aurora: pg_stat_get_wal_receiver() is not supported (" + from + ")"})
 +	}
  	if p, _ := r["patroni_session"].(bool); p && info.Kind != platform.RDS && info.Kind != platform.Aurora && in.DSNRaw != "" {
  		out = append(out, patroniRows(ctx, patroniURL(in.DSN()))...)
