@@ -209,7 +209,7 @@ if fn mssql_block_waits; then
 else check "no mssql_block_waits" "1|true|report" "A: the reports are ONE wait of 70 s or more"; fi
 check "$(api healthcal "$MSID" blocking)" 1 "A: the day counts 1 wait"
 check "$(api ack "$MSID" blocking)" 1 "A: the live part counts 1 wait"
-grep -q "waits/hr" web/src/healthcal.ts && echo "ok   A: healthcal.ts names 'waits/hr'" || { echo "FAIL A: healthcal.ts does not name 'waits/hr'"; bad=$((bad + 1)); }
+grep -q "waits/hr" "$(dirname "$0")/../web/src/healthcal.ts" 2>/dev/null && echo "ok   A: healthcal.ts names 'waits/hr'" || { echo "FAIL A: healthcal.ts does not name 'waits/hr'"; bad=$((bad + 1)); }
 
 echo "--- B. the hour arm, real; the monitor's own APP_NAME stored"
 check "$(has "$MSID" 'blocking events in the last hour')" yes "B: one wait of 60 s or more fires 'blocking events in the last hour'"
