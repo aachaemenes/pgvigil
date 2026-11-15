@@ -1002,19 +1002,34 @@ SELECT x.instance_id,
            AND NOT coalesce((r.detail->>'temporary')::boolean, false) AND NOT coalesce((r.detail->>'synced')::boolean, false)) x
  WHERE x.check_name IS NOT NULL
 UNION ALL
--- task 374: an Aurora reader, judged by aurora_replica_status on the writer alone (the writer's own row is left out)
+-- task 374: an Aurora replica, judged by aurora_replica_status on the writer (the writer's own row is left out); a
+-- reader returns the same rows and raises only when no monitored writer reads that replica fresh - only the reader
+-- endpoint configured, the writer's read failing, every member in recovery (a global database's secondary) - and then
+-- once, on the lowest such reader (review 21:27 #1: with the reader's state stored since the Q7 fix, the writer-alone
+-- rule left those cases silent)
 SELECT a.instance_id, CASE WHEN t.crit IS NOT NULL AND a.lag_secs >= t.crit THEN 'critical' ELSE 'warning' END, 'Aurora replica lag',
        'replica ' || a.key, a.snapshot_at,
-       format('the Aurora replica %s is %s s behind the writer (aurora_replica_status; warning %s s, critical %s s, %s)', a.key, round(a.lag_secs::numeric, 1),
+       format('the Aurora replica %s is %s s behind the writer (aurora_replica_status%s; warning %s s, critical %s s, %s)', a.key, round(a.lag_secs::numeric, 1),
+              CASE WHEN a.on_reader THEN ' read on a reader: no monitored writer reads this replica' ELSE '' END,
               coalesce(trim_scale(t.warn)::text, '-'), coalesce(trim_scale(t.crit)::text, '-'), t.level),
        1, 'the Aurora replica is behind the writer'
-  FROM pgvigil.replication_latest a
-  JOIN pgvigil.instances i ON i.instance_id = a.instance_id AND i.is_active
+  FROM (SELECT r.*, EXISTS (SELECT 1 FROM pgvigil.pg_repl_standby_state st WHERE st.instance_id = r.instance_id AND st.in_recovery) AS on_reader
+          FROM pgvigil.replication_latest r
+          JOIN pgvigil.instances i ON i.instance_id = r.instance_id AND i.is_active
+         WHERE r.kind = 'aurora_replica' AND r.snapshot_at > now() - interval '30 minutes' AND coalesce(r.state, '') <> 'MASTER_SESSION_ID') a
   CROSS JOIN LATERAL pgvigil.pg_threshold(a.instance_id, 'standby_replay_lag') t
- WHERE a.kind = 'aurora_replica' AND a.snapshot_at > now() - interval '30 minutes'
-   AND coalesce(a.state, '') <> 'MASTER_SESSION_ID' AND coalesce(t.warn, t.crit) IS NOT NULL AND a.lag_secs >= coalesce(t.warn, t.crit)
-   -- a reader returns the same aurora_replica_status rows: the writer alone raises (one finding per lagging replica)
-   AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_standby_state st WHERE st.instance_id = a.instance_id AND st.in_recovery)
+ WHERE coalesce(t.warn, t.crit) IS NOT NULL AND a.lag_secs >= coalesce(t.warn, t.crit)
+   AND (NOT a.on_reader
+        OR (NOT EXISTS (SELECT 1 FROM pgvigil.replication_latest w
+                          JOIN pgvigil.instances wi ON wi.instance_id = w.instance_id AND wi.is_active
+                         WHERE w.kind = 'aurora_replica' AND w.key = a.key AND w.instance_id <> a.instance_id
+                           AND w.snapshot_at > now() - interval '30 minutes'
+                           AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_standby_state ws WHERE ws.instance_id = w.instance_id AND ws.in_recovery))
+            AND NOT EXISTS (SELECT 1 FROM pgvigil.replication_latest o
+                              JOIN pgvigil.instances oi ON oi.instance_id = o.instance_id AND oi.is_active
+                              JOIN pgvigil.pg_repl_standby_state os ON os.instance_id = o.instance_id AND os.in_recovery
+                             WHERE o.kind = 'aurora_replica' AND o.key = a.key AND o.instance_id < a.instance_id
+                               AND o.snapshot_at > now() - interval '30 minutes')))
 UNION ALL
 -- task 375 (0150): the checks across a cluster's members
 SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail, c.reads, c.stable
