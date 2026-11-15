@@ -68,7 +68,16 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   // to read again after each of this page's writes, and redrawing this page after an add of its own
   const moves = moveSection(() => { void draw(); });
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); };
+  const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); notRun.replaceChildren(); };
+  // N59: the Test's 'Will not run here' list (DBA Dash's add-connection review notes: what will not be collected, and why)
+  const notRun = el('div', { class: 'not-running' });
+  const showNotRun = (b: Record<string, unknown>) => {
+    const rows = Array.isArray(b.not_running) ? b.not_running as { name: string; why: string }[] : [];
+    if (!b.ok || b.collections == null) return;
+    const list = el('ul', {}, ...rows.map(x => el('li', {}, el('code', {}, x.name), ` - ${x.why}`)));
+    notRun.replaceChildren(el('details', { open: '' }, el('summary', {}, `Will not run here: ${rows.length} of ${String(b.collections)} collections`),
+      ...(b.list_note ? [el('p', { class: 'meta' }, String(b.list_note))] : []), rows.length ? list : el('p', { class: 'meta' }, 'Every collection runs here.')));
+  };
 
   async function draw(): Promise<void> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
@@ -82,7 +91,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
         d.secret_dir ? `Credentials are written to their own files in ${d.secret_dir}; the repository keeps only each file's name.` : ''),
       // read only on this server: a note, not an error (the page works; the join's w9c)
       d.writable ? '' : el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${d.why_not}.`),
-      status,
+      status, notRun,
       instanceForm(d),
       el('h3', {}, 'Instances added here'),
       // task 406: what the running plans box collects, in words, beside the grid that holds it (only where a SQL Server
@@ -167,6 +176,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       const v = values();
       const r = await send('admin/instances', editing && !v.password ? { op: 'test', name: editing } : { op: 'test', ...v });
       say(r.ok ? (r.body.ok ? String(r.body.detail) : `The connection failed: ${String(r.body.detail)}`) : `Not tested: ${why(r.body)}`, !(r.ok && r.body.ok));
+      if (r.ok) showNotRun(r.body);
     });
     f.addEventListener('submit', async ev => {
       ev.preventDefault();
@@ -233,7 +243,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       test.addEventListener('click', async () => {
         say(`Connecting to ${n}…`);
         const res = await send('admin/instances', { op: 'test', name: n });
-        if (res.ok) { await draw(); say(res.body.ok ? `${n}: ${String(res.body.detail)}` : `${n}: the connection failed: ${String(res.body.detail)}`, !res.body.ok); } else say(`Not tested: ${why(res.body)}`, true);
+        if (res.ok) { await draw(); say(res.body.ok ? `${n}: ${String(res.body.detail)}` : `${n}: the connection failed: ${String(res.body.detail)}`, !res.body.ok); showNotRun(res.body); } else say(`Not tested: ${why(res.body)}`, true);
       });
       const edit = el('button', { type: 'button', class: 'link', 'aria-label': `Edit ${n}` }, 'Edit');
       edit.addEventListener('click', () => formRef?.fill?.(r));
