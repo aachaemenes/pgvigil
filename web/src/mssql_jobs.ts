@@ -285,6 +285,41 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
   dlg.showModal();
 }
 
+// jobCards (B9-12; SQLWATCH PBI#11): the instance's runs over the page's range from 0139's hourly statistics (the hours
+// that started in the range) - tiles failed or cancelled (a cancel counts as a failure, 0149's rule), succeeded and
+// retries attempted (SQL Server's step retries; pg_cron and pgAgent do not retry a run), and the five longest, most
+// frequent and most failed jobs; 'being built' while the instance's hours of the range are not built yet. Data:
+// /api/jobs/history?part=cards and ?part=top.
+async function jobCards(into: HTMLElement, ctx: Ctx, engine: 'pg' | 'mssql', w: { from: string; to: string }): Promise<void> {
+  const head = () => el('h3', {}, `Runs, ${rangeLabel(ctx)}`);
+  into.replaceChildren(head(), el('p', { class: 'meta' }, 'Reading the hourly statistics...'));
+  try {
+    const q = { engine, instance: ctx.instance, ...w };
+    const [c, t] = await Promise.all([get<Record<'cards', Table | null>>('jobs/history', { ...q, part: 'cards' }),
+      get<Record<'top', Table | null>>('jobs/history', { ...q, part: 'top' })]);
+    if (!into.isConnected) return;
+    const k = rowsOf(c.cards)[0] ?? {};
+    if (k.building === true) {
+      into.replaceChildren(head(), el('p', { class: 'meta' }, 'Being built: the hourly statistics of this instance\'s runs in the range are not built yet (after an upgrade, an import or a late read); they fill in by themselves.'));
+      return;
+    }
+    const top = rowsOf(t.top);
+    const list = (name: string, title: string, col: Col) => el('div', {}, el('h4', {}, title),
+      grid(top.filter(r => r.list === name), [{ key: 'job_name', label: 'job' }, col], name === 'failed' ? 'No failed or cancelled run in the range.' : 'No finished run in the range.'));
+    into.replaceChildren(head(),
+      el('div', { class: 'tiles' },
+        tile('failed or cancelled', fmtNum(k.failed ?? 0), Number(k.failed) > 0 ? 'crit' : ''),
+        tile('succeeded', fmtNum(k.succeeded ?? 0)),
+        tile('retries attempted', engine === 'mssql' ? fmtNum(k.retries ?? 0) : 'none')),
+      el('p', { class: 'meta' }, `${fmtNum(k.runs ?? 0)} run(s) in the hours that started in the range, from the hourly statistics; a cancelled run counts as a failure, as in DBA Dash. `
+        + (engine === 'mssql' ? 'Retries are the step retries msdb recorded in the range.' : 'pg_cron and pgAgent do not retry a run.')),
+      el('div', { class: 'job-top' },
+        list('longest', 'Longest 5', { key: 'max_secs', label: 'longest run', num: true, fmt: v => v == null ? '' : fmtSecs(v) }),
+        list('frequent', 'Most frequent 5', { key: 'runs', num: true }),
+        list('failed', 'Most failed 5', { key: 'failed', label: 'failed or cancelled', num: true })));
+  } catch (e) { if (into.isConnected) into.replaceChildren(head(), errorBox(e)); }
+}
+
 // jobsPanel: the one-line-per-job grid and, under it, the picked job's History and Changes. extra = the engine's own
 // columns after the shared ones (the PostgreSQL page's database, user and command).
 export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] = []): Promise<HTMLElement> {
@@ -401,7 +436,10 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'changes', label: 'changed', num: true, fmt: (v, r) => Number(v) > 0 ? `${fmtNum(v)} (${fmtTime(r.last_change_at)})` : '' },
     ...extra,
   ];
-  box.append(...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
+  // B9-12: the range's runs as tiles and top 5 lists, from the hourly statistics, read after the grid (its own parts)
+  const cards = el('section', { class: 'job-cards', 'aria-label': 'The runs of the range' });
+  box.append(cards, ...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
+  void jobCards(cards, ctx, engine, w);
   if (jobs.length) detail.append(el('p', { class: 'meta' }, 'Pick a job for its history and its versions (the script, the diff, the job as it was).'));
   // a SQL Agent job named in the address (the fleet Job status grid's 'Open the job on its instance': job=<name>) opens
   // picked, its history under the grid
