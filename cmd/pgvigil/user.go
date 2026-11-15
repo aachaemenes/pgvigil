@@ -18,14 +18,17 @@ import (
 
 // runUser manages the web UI's logins, as the repository owner (the config's repository dsn):
 //
-//	pgvigil user add     -config pgvigil.yaml <name>    asks for the password (or PGVIGIL_PASSWORD, or one line on stdin)
+//	pgvigil user add     -config pgvigil.yaml [-role viewer|operator|admin] <name>
+//	                     asks for the password (or PGVIGIL_PASSWORD, or one line on stdin); without -role the
+//	                     repository's first enabled admin, else a viewer
+//	pgvigil user role    -config pgvigil.yaml <name> <viewer|operator|admin>
 //	pgvigil user passwd  -config pgvigil.yaml <name>
 //	pgvigil user disable|enable|remove -config pgvigil.yaml <name>
 //	pgvigil user list    -config pgvigil.yaml
 //
 // The password is hashed here (argon2id) and only the hash reaches the repository.
 func runUser(ctx context.Context, log *slog.Logger, args []string) error {
-	verb, name, path, err := userArgs(args)
+	verb, name, role, path, err := userArgs(args)
 	if err != nil {
 		return err
 	}
@@ -59,20 +62,32 @@ func runUser(ctx context.Context, log *slog.Logger, args []string) error {
 			fmt.Println("no UI users; pgvigil user add <name>")
 			return nil
 		}
-		fmt.Printf("%-32s %-8s %-20s %s\n", "user", "state", "created", "password set")
+		fmt.Printf("%-32s %-8s %-8s %-20s %s\n", "user", "role", "state", "created", "password set")
 		for _, u := range users {
 			state := "enabled"
 			if u.Disabled {
 				state = "disabled"
 			}
-			fmt.Printf("%-32s %-8s %-20s %s\n", u.Name, state, u.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"), u.PasswordSetAt.UTC().Format("2006-01-02 15:04 UTC"))
+			fmt.Printf("%-32s %-8s %-8s %-20s %s\n", u.Name, u.Role, state, u.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"), u.PasswordSetAt.UTC().Format("2006-01-02 15:04 UTC"))
 		}
 		return nil
 	case "add":
-		if err := r.UIUserAdd(ctx, name, hash); err != nil {
+		got, first, err := r.UIUserAdd(ctx, name, hash, role)
+		if err != nil {
 			return err
 		}
-		log.Info("ui user added", "user", name)
+		if first {
+			fmt.Printf("%s is admin: the first enabled admin of this repository (the next user without -role is a viewer)\n", name)
+		} else {
+			fmt.Printf("%s is %s %s ('pgvigil user role %s <role>' changes it)\n", name, article(got), got, name)
+		}
+		log.Info("ui user added", "user", name, "role", got)
+	case "role":
+		if err := r.UIUserSetRole(ctx, name, role); err != nil {
+			return err
+		}
+		fmt.Printf("%s is now %s %s: an open session follows at its next request\n", name, article(role), role)
+		log.Info("ui user role changed", "user", name, "role", role)
 	case "passwd":
 		if err := r.UIUserSetPassword(ctx, name, hash); err != nil {
 			return err
@@ -89,46 +104,73 @@ func runUser(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 		log.Info("ui user removed", "user", name)
 	default:
-		return fmt.Errorf("unknown verb %q: add, passwd, enable, disable, remove or list", verb)
+		return fmt.Errorf("unknown verb %q: add, role, passwd, enable, disable, remove or list", verb)
 	}
 	return nil
 }
 
-// userArgs reads `<verb> [-config file] [name]` with the name before or after the flags: Go's flag
-// parsing stops at the first positional argument, and `pgvigil user add admin -config f` reads naturally.
-func userArgs(args []string) (verb, name, path string, err error) {
-	usage := errors.New("usage: pgvigil user <add|passwd|enable|disable|remove|list> [-config file] [name]")
+// article is 'an' before admin and operator, 'a' before viewer
+func article(role string) string {
+	if role == "viewer" {
+		return "a"
+	}
+	return "an"
+}
+
+// userArgs reads `<verb> [-config file] [-role r] [name] [role]` with the positionals before or after the flags: Go's
+// flag parsing stops at the first positional argument, and `pgvigil user add admin -config f` reads naturally. A role
+// is checked here, before a password is asked or the repository touched.
+func userArgs(args []string) (verb, name, role, path string, err error) {
+	usage := errors.New("usage: pgvigil user <add|role|passwd|enable|disable|remove|list> [-config file] [name]")
 	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
-		return "", "", "", usage
+		return "", "", "", "", usage
 	}
 	verb = args[0]
 	switch verb {
-	case "add", "passwd", "enable", "disable", "remove", "list":
+	case "add", "role", "passwd", "enable", "disable", "remove", "list":
 	default:
-		return "", "", "", fmt.Errorf("unknown verb %q: add, passwd, enable, disable, remove or list", verb)
+		return "", "", "", "", fmt.Errorf("unknown verb %q: add, role, passwd, enable, disable, remove or list", verb)
 	}
 	fs := flag.NewFlagSet("user "+verb, flag.ContinueOnError)
 	cfgPath := fs.String("config", "pgvigil.yaml", "path to the configuration file")
+	roleFlag := new(string)
+	if verb == "add" {
+		roleFlag = fs.String("role", "", "viewer, operator or admin (default: the repository's first enabled admin, else viewer)")
+	}
 	if err := fs.Parse(args[1:]); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	var positional []string
 	for rest := fs.Args(); len(rest) > 0; rest = fs.Args() {
 		positional = append(positional, rest[0])
 		if err := fs.Parse(rest[1:]); err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
 	}
-	switch {
-	case verb == "list" && len(positional) != 0, verb != "list" && len(positional) != 1:
-		return "", "", "", fmt.Errorf("usage: pgvigil user %s [-config file]%s", verb, map[bool]string{true: "", false: " <name>"}[verb == "list"])
+	want := map[string]int{"list": 0, "role": 2}[verb]
+	if verb != "list" && verb != "role" {
+		want = 1
+	}
+	if len(positional) != want {
+		return "", "", "", "", fmt.Errorf("usage: pgvigil user %s [-config file]%s", verb,
+			map[string]string{"list": "", "role": " <name> <viewer|operator|admin>", "add": " [-role viewer|operator|admin] <name>"}[verb]+
+				map[bool]string{true: " <name>", false: ""}[verb != "list" && verb != "role" && verb != "add"])
 	}
 	if verb != "list" {
 		if name, err = repo.UserName(positional[0]); err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
 	}
-	return verb, name, *cfgPath, nil
+	switch {
+	case verb == "role":
+		role, err = repo.RoleName(positional[1])
+	case verb == "add" && *roleFlag != "":
+		role, err = repo.RoleName(*roleFlag)
+	}
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return verb, name, role, *cfgPath, nil
 }
 
 // readPassword takes PGVIGIL_PASSWORD when set, else a prompt without echo (twice for a new
