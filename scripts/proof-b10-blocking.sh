@@ -345,7 +345,8 @@ check "$(has "$K2" 'deadlocks in the last hour')|$(has "$K2" 'a deadlock between
 check "$(has "$K3" 'deadlocks in the last hour')|$(has "$K3" 'a deadlock between a new pair of statements')" "no|no" "K: 2 of a known pair fire neither"
 
 echo "--- L. one window per wait (an hour's end crossed)"
-LS=$(syn ls sqlserver); LP=$(syn lp postgres); BEND="date_trunc('hour', now()) - interval '1 hour'"
+# the hour's end read once (an expression would be read again by each statement: an hour turning inside L moved it)
+LS=$(syn ls sqlserver); LP=$(syn lp postgres); BEND="'$(q "select date_trunc('hour', now()) - interval '1 hour'")'::timestamptz"
 q "select pgvigil.mssql_event_partition('mssql_blocked_reports', $BEND - interval '2 minutes'), pgvigil.mssql_event_partition('mssql_blocked_reports', $BEND + interval '1 minute');
    insert into pgvigil.mssql_blocked_reports (instance_id, event_at, event_key, snapshot_at, database_name, wait_ms, blocked_spid, blocking_spid, blocked_statement, blocking_statement, head_key)
    select $LS, $BEND - interval '20 seconds' + make_interval(secs => k * 5), 'b10-l-' || k, now(), 'b10', k * 5000, 91, 90, 'UPDATE dbo.l SET v = 1', 'UPDATE dbo.l', md5('l')
