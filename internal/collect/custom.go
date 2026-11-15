@@ -31,7 +31,8 @@ package collect
 //	    every: 5m                          # cadence: at least 1m, at most 24h (default 5m)
 //	    instances: [erp01]                 # configured instance names; and / or
 //	    tags: [env:prod]                   # tags (the instance's configured tags); neither = every instance
-//	    rule: value                        # value (default) | rows (the row count is the value)
+//	    rule: value                        # value (default) | rows (the row count is the value) | status (SQL Server:
+//	                                       # DBA Dash's custom check, each row its own Test / Context / Status / Info)
 //	    value: value                       # the value column (default: a column named value, else the first)
 //	    compare: ">"                       # > (default) >= < <= = !=
 //	    warning: 5
@@ -263,15 +264,29 @@ func (c *CustomCheck) validate(i int) error {
 	switch c.Rule {
 	case "":
 		c.Rule = "value"
-	case "value", "rows":
+	case "value", "rows", "status":
 	default:
-		return fmt.Errorf("custom %q: rule must be value or rows (got %q)", c.Name, c.Rule)
+		return fmt.Errorf("custom %q: rule must be value, rows or status (got %q)", c.Name, c.Rule)
 	}
 	c.Value = strings.TrimSpace(c.Value)
 	if c.Rule == "rows" && c.Value != "" {
 		return fmt.Errorf("custom %q: value names a column, which a rows rule does not read", c.Name)
 	}
 	c.Compare = strings.TrimSpace(c.Compare)
+	// rule status (ST6b): DBA Dash's custom check - each row of the first result set carries its own Test, Context,
+	// Status (1 critical, 2 warning, 3 N/A, 4 OK) and Info, so nothing beside it judges
+	if c.Rule == "status" {
+		switch {
+		case c.Engine != config.EngineSQLServer:
+			return fmt.Errorf("custom %q: rule status reads DBA Dash's custom check columns (Test, Context, Status, Info): a SQL Server check's (engine: sqlserver, or a procedure:)", c.Name)
+		case c.Warning != nil || c.Critical != nil:
+			return fmt.Errorf("custom %q: rule status takes no warning or critical: each row carries its own Status (1 critical, 2 warning, 3 N/A, 4 OK)", c.Name)
+		case c.Compare != "":
+			return fmt.Errorf("custom %q: rule status takes no compare: each row carries its own Status", c.Name)
+		case c.Value != "":
+			return fmt.Errorf("custom %q: rule status takes no value column: it reads the columns Test, Context, Status and Info", c.Name)
+		}
+	}
 	switch c.Compare {
 	case "":
 		c.Compare = ">"
