@@ -29,6 +29,13 @@ what happens in the other order, and what the project's own proof showed (`scrip
   `%ProgramData%\pgvigil\app\pgvigil.yaml`, [app.md](app.md)), its connection string in that serve's environment or
   file, never only in the collector's unit (`pgvigil serve` is not part of it). `serve` reads `reports_dsn` when it
   starts: restart it after the line is in.
+- **The web UI's users get roles.** From this version every user of the web UI is a viewer (reads), an operator (acts
+  on a monitored server and acknowledges) or an admin (changes configuration others live with). The upgrade makes
+  every user that exists an admin, so nobody loses what they could do; a user added after it starts as a viewer
+  unless `pgvigil user add -role operator|admin` says otherwise, and `pgvigil user role <name> <role>` changes one.
+  A change above a user's role is refused with its words, and the pages show its control off with them. Until the
+  per-login instance scope lands, every role sees every instance. A `pgvigil serve` of an older version on the
+  upgraded repository signs in admins only: upgrade it with the repository ([roles.md](roles.md)).
 - **EXPLAIN asks the same check.** Plain EXPLAIN (Plans > a statement's EXPLAIN) and the index advisor's hypothetical
   index now refuse, in words, a monitoring login that is a superuser or a member of `pg_execute_server_program`,
   `pg_write_server_files` or `pg_read_server_files`, besides the logins above: they plan the DBA's statement on that
