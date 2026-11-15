@@ -99,6 +99,9 @@ var webhookFormats = map[string]bool{"teams": true, "slack": true, "discord": tr
 const (
 	discordLimit    = 2000
 	googleChatLimit = 4096
+	// teamsLines: a Teams card's alert lines; each line with a page address also carries an 'Open in pgvigil' button
+	// (the address twice), so a card stays near 24 KB at most [unverified: Teams' card limit, about 28 KB, not read]
+	teamsLines = 14000
 )
 
 func (s *webhookSender) budget() int {
@@ -107,6 +110,8 @@ func (s *webhookSender) budget() int {
 		return discordLimit - maxLine - 8
 	case "googlechat":
 		return googleChatLimit - maxLine - 8
+	case "teams":
+		return teamsLines
 	}
 	return 0
 }
@@ -275,6 +280,13 @@ func (s *webhookSender) payload(m Message) ([]byte, error) {
 				tb["color"] = "Warning"
 			}
 			body = append(body, tb)
+			// task 403b (A38, the lead's D1 = a): a button that opens the alert's own page in pgvigil, where the UI
+			// login and its roles apply and the acknowledge is done; a Teams button that acts by itself would need a
+			// bot app registered in the tenant
+			if a.URL != "" && a.Event != "resolved" && a.Event != "test" {
+				body = append(body, map[string]any{"type": "ActionSet", "actions": []map[string]any{
+					{"type": "Action.OpenUrl", "title": "Open in pgvigil", "url": a.URL}}})
+			}
 		}
 		return json.Marshal(map[string]any{"type": "message", "attachments": []map[string]any{{
 			"contentType": "application/vnd.microsoft.card.adaptive",

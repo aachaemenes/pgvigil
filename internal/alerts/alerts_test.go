@@ -424,6 +424,34 @@ func TestLineCap(t *testing.T) {
 	}
 }
 
+// task 403b (A38, D1 = a): a Teams card gives each alert with a page an 'Open in pgvigil' button, and a pass's long
+// alerts with their addresses split into cards that stay under 24 KB each
+func TestTeamsOpenButton(t *testing.T) {
+	a := crit
+	a.Detail = strings.Repeat("x", 2000)
+	a.URL = "https://pgvigil.example.org/#/alert?k=" + strings.Repeat("f", 64) + "&t=1800000000"
+	r := a
+	r.Event = "resolved"
+	ws := &webhookSender{format: "teams"}
+	b, _ := ws.payload(msg(a, r))
+	if strings.Count(string(b), `"Action.OpenUrl"`) != 1 || !strings.Contains(string(b), `"Open in pgvigil"`) {
+		t.Errorf("one button, for the firing alert only: %s", b)
+	}
+	var m []Alert
+	for range maxPerMessage {
+		m = append(m, a)
+	}
+	parts := batchesWithin(m, false, ws.budget())
+	if len(parts) < 2 {
+		t.Errorf("25 long alerts in %d card(s)", len(parts))
+	}
+	for i, p := range parts {
+		if b, _ := ws.payload(msg(p...)); len(b) > 24<<10 {
+			t.Errorf("card %d is %d bytes", i, len(b))
+		}
+	}
+}
+
 func TestDotSafe(t *testing.T) {
 	if s := dotSafe("a\r\n.\r\nb\nc\rd"); strings.ContainsAny(s, "\r\n") {
 		t.Errorf("%q", s)
