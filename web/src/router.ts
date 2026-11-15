@@ -22,6 +22,38 @@ export interface Ctx {
   db?: string;
   app?: string;
   ms?: number;           // slow queries: the threshold in milliseconds
+  own?: boolean;         // B24 OWN: pgvigil's own sessions shown (own=1) on the pages that hide them by default
+}
+
+// ownTabs: the pages that hide pgvigil's own sessions unless own=1; own rides every link between them on one instance
+export const ownTabs = new Set(['activity', 'mssql_running', 'waiting', 'mssql_waiting', 'mssqlqueries']);
+// viewPageKeys: the pages that take a saved view (views.ts), by page key ('root:<tab>' | 'instance:<tab>'), and each
+// page's own address keys a view stores (VIEWS slice B). They are read from the address when a link is built (never
+// from a Ctx parsed earlier: a page writes them with noteAddress, so a link drawn before that would carry old values),
+// and view= with them; a tab change drops them all.
+export const viewPageKeys: Record<string, string[]> = {
+  'root:summary': ['focus', 'tests', 'tmax', 'sort'],
+  'root:perfsummary': [],
+  'root:slowqueries': ['ms', 'g', 'gdb', 'top', 'ev', 'fit'],
+  'instance:slowqueries': ['ms', 'g', 'gdb', 'top', 'ev', 'fit'],
+  'instance:mssql_slow': ['g', 'gdb', 'top', 'ev', 'fit'],
+};
+export const pageKeyOf = (c: { tab: string; instance?: number }): string => `${c.instance ? 'instance' : 'root'}:${c.tab}`;
+// hashKeys: the current address's parameters (a page's own keys, read where it is drawn)
+export const hashKeys = (): URLSearchParams => new URLSearchParams(location.hash.split('?')[1] ?? '');
+// noteAddress: a page writes its own keys into the address without a navigation (a toggle, a pick in a panel); keys
+// set to undefined or '' leave it. The shell is told (main.ts: the next refresh is the same page, no 'Loading...'),
+// and the View control reads it ('pgvigil:address').
+let noted: ((h: string) => void) | null = null;
+export function onAddressNoted(f: (h: string) => void) { noted = f; }
+export function noteAddress(keys: Record<string, string | undefined>) {
+  const [path] = location.hash.split('?');
+  const q = hashKeys();
+  for (const [k, v] of Object.entries(keys)) { if (v === undefined || v === '') q.delete(k); else q.set(k, v); }
+  const h = `${path}?${q}`;
+  history.replaceState(null, '', location.pathname + location.search + h);
+  noted?.(h);
+  window.dispatchEvent(new CustomEvent('pgvigil:address'));
 }
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
@@ -187,6 +219,7 @@ export function parse(): Ctx {
     db: name === 'activity' ? q.get('db')?.slice(0, 64) || undefined : undefined,
     app: name === 'activity' ? q.get('app')?.slice(0, 64) || undefined : undefined,
     ms: q.has('ms') && Number.isFinite(Number(q.get('ms'))) ? Math.min(86400000, Math.max(0, Math.trunc(Number(q.get('ms'))))) : undefined,
+    own: ownTabs.has(name) && q.get('own') === '1' ? true : undefined,
   };
 }
 
@@ -219,6 +252,17 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     for (const k of ['sg', 'sdb', 'suser', 'scl']) for (const v of cur.getAll(k)) q.append(k, v);
   }
   if (c.tab === 'slowqueries') page('ms', 'ms');
+  // pgvigil's own sessions shown (B24 OWN) ride the links between the pages that hide them, on one instance
+  if (ownTabs.has(c.tab)) {
+    const v = 'own' in over ? over.own : c.instance === ctx.instance && ownTabs.has(ctx.tab) ? ctx.own : undefined;
+    if (v) q.set('own', '1');
+  }
+  // a view page's own keys and its view (VIEWS slice B) stay on its own links: read from the address now (noteAddress)
+  const vk = viewPageKeys[pageKeyOf(c)];
+  if (keep && vk) {
+    const cur = hashKeys();
+    for (const k of [...vk.filter(x => x !== 'ms'), 'view']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
   // the Query Store page's view, sort and database (mssql_querystore.ts) stay on its own links
   if (keep && c.tab === 'mssqlqs') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');

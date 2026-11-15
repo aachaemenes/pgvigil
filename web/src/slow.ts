@@ -16,7 +16,8 @@
 import { planLink } from './plan';
 import { slowCols } from './borrowed';
 import { get, Row, rowsOf, Table } from './api';
-import { Ctx, href, rangeLabel, window_ } from './router';
+import { Ctx, hashKeys, href, noteAddress, rangeLabel, window_ } from './router';
+import { viewControl } from './views';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
 import { sqlCell, whatIsThis } from './sqlview';
 import { trendCol } from './stmt_trend';
@@ -52,9 +53,14 @@ const bands: [string, string, string][] = [
 ];
 
 // picker: the threshold choices as links (the current one marked), and the log's own floor.
+// Each link's address is built again when it is clicked: the Group by panel writes its picks into the address after the
+// links were drawn (VIEWS slice B: a threshold click keeps them).
 function picker(ctx: Ctx, ms: number, tab: string): HTMLElement {
-  return el('div', { class: 'subtabs' }, el('span', {}, 'Threshold:'), ...thresholds.map(([v, l]) =>
-    el('a', { href: href(ctx, { tab, ms: v }), class: v === ms ? 'on' : '' }, l)));
+  return el('div', { class: 'subtabs' }, el('span', {}, 'Threshold:'), ...thresholds.map(([v, l]) => {
+    const a = el('a', { href: href(ctx, { tab, ms: v }), class: v === ms ? 'on' : '' }, l);
+    a.addEventListener('click', e => { if (e.button || e.ctrlKey || e.metaKey || e.shiftKey) return; e.preventDefault(); location.hash = href(ctx, { tab, ms: v }); });
+    return a;
+  }));
 }
 
 // histogram: one row per day, a bar per duration band scaled to the busiest day, the count and the total.
@@ -211,7 +217,15 @@ export const slowGroupBy: [string, string][] = [
   ['event_type', 'Event Type'], ['object', 'Object Name'], ['result', 'Result'], ['session', 'Session ID'], ['text', 'Text'],
   ['hour', 'Time - Hour'], ['day', 'Time - Day'], ['engine', 'Engine'],
 ];
-const topChoices = [20, 50, 100, 500];
+// D26: Top 10 / 20 / 50 / 100 / 500 / 1000 / ALL (ALL: at most 5,000 groups, the server's cap, said when it cut)
+const topChoices: (number | 'all')[] = [10, 20, 50, 100, 500, 1000, 'all'];
+export const ALL_CAP = 5000;
+const topOf = (v: string | null): number | 'all' => {
+  if (v === 'all') return 'all';
+  const n = Number(v);
+  if (!v || !Number.isFinite(n)) return 20;
+  return (topChoices.filter(c => c !== 'all') as number[]).find(c => c >= n) ?? 1000;   // a hand-typed 37 reads 50
+};
 const secs = (v: unknown) => v == null || v === '' ? '' : fmtNum(v);
 const resultBadge = (v: unknown) => v == null ? '' : badge(String(v), v === 'OK' ? 'ok' : 'crit');
 
@@ -223,13 +237,30 @@ export interface SlowGroupsOpts {
 // totalsGrid: the All row's grid, named for an export (data-sheet: its sheet is 'Group by totals', export.ts headings)
 function totalsGrid(g: HTMLElement): HTMLElement {
   g.setAttribute('data-sheet', 'Group by totals');
-  return g;
+  return named(g, 'Group by totals');
 }
+// named: a grid's name in a saved view (gridtools gridName): the two grids under 'Group by' are told apart
+const named = (g: HTMLElement, n: string) => { g.querySelector('table.grid')?.setAttribute('data-grid-name', n); return g; };
 
-// slowGroupsPanel: the grid and its drill; its own state (group, database, top) lives in the panel, not the hash.
+// slowGroupsPanel: the grid and its drill. Its picks (Group By g, Database gdb, Top top, Events ev) and Auto Size
+// Columns (fit) live in the address (VIEWS slice B: a saved view and a shared link carry them), written as they change;
+// the page's View control (DBA Dash's View drop-down, D26) sits first in its toolbar.
 export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
   const fleet = !ctx.instance;
-  let group = fleet ? 'instance' : 'database', db = '', top = 20, events_ = 'calls';
+  const hk = hashKeys();
+  let group = slowGroupBy.some(g => g[0] === hk.get('g')) ? hk.get('g')! : fleet ? 'instance' : 'database';
+  let db = hk.get('gdb') ?? '', top: number | 'all' = topOf(hk.get('top')), events_ = hk.get('ev') === 'all' ? 'all' : 'calls';
+  let fit = hk.get('fit') === '1';
+  const fitWords = 'Auto Size Columns: long text on one line, the grid scrolling sideways';
+  const applyFit = () => {
+    box.closest('section')?.classList.toggle('fit-cols', fit);
+    // the whole text of a one-line cell in its title (its first 400 characters: what the server keeps of an example)
+    for (const td of box.querySelectorAll<HTMLElement>('table.grid td.wide')) { if (fit) td.title = (td.textContent ?? '').slice(0, 400); else td.removeAttribute('title'); }
+  };
+  const vc = viewControl(ctx, {
+    read: () => ({ ...(ctx.tab === 'slowqueries' ? { ms: String(thresholdOf(ctx)) } : {}), g: group, gdb: db, top: String(top), ev: events_, fit: fit ? '1' : '0' }),
+    items: () => [[`${fit ? '✓ ' : ''}${fitWords}`, () => { fit = !fit; noteAddress({ fit: fit ? '1' : '0' }); applyFit(); }]],
+  });
   // a reply that arrives after a newer request was sent is dropped (a quick change of Group By, two count clicks)
   let drawSeq = 0, drillSeq = 0;
   // the window is taken once per drawing, so a count and its drill read the same window
@@ -299,12 +330,16 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
     body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     drill.replaceChildren();
     try {
-      const d = await get<Record<'groups' | 'totals' | 'dbs', Table | null>>('slow/groups', { ...base(), top: o.keep ? 500 : top });
+      // under a tag folder the fleet's groups are read (at least 500, or ALL) and the folder's kept here
+      const ask = top === 'all' ? 'all' : o.keep ? Math.max(top, 500) : top;
+      const d = await get<Record<'groups' | 'totals' | 'dbs', Table | null>>('slow/groups', { ...base(), top: ask });
       if (seq !== drawSeq) return;
       let rows = rowsOf(d.groups);
+      const cut = top === 'all' && rows.length >= ALL_CAP;
+      const lim = top === 'all' ? ALL_CAP : top;
       // under a tag folder an instance group is kept when it is one of the folder's (other groups mix instances)
-      if (o.keep && group === 'instance') rows = rows.filter(o.keep).slice(0, top);
-      else if (o.keep) rows = rows.slice(0, top);
+      if (o.keep && group === 'instance') rows = rows.filter(o.keep).slice(0, lim);
+      else if (o.keep) rows = rows.slice(0, lim);
       const tot = rowsOf(d.totals)[0] ?? {};
       const dbs = rowsOf(d.dbs).map(r => [String(r.database), `${String(r.database)} (${fmtNum(r.events)})`] as [string, string]);
       const valueCol: Col = {
@@ -332,16 +367,21 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
         { key: 'total_duration_s', label: 'Total Duration (sec)', num: true, fmt: secs }, { key: 'total_cpu_s', label: 'Total CPU (sec)', num: true, fmt: secs },
         { key: 'groups', label: 'groups', num: true }];
       body.replaceChildren(
-        el('div', { class: 'toolbar' },
-          select('Group By', slowGroupBy, group, v => { group = v; void draw(); }),
-          select('Database', [['', 'all databases'], ...dbs], db, v => { db = v; void draw(); }),
-          select('Top', topChoices.map(n => [String(n), String(n)] as [string, string]), String(top), v => { top = Number(v); void draw(); }),
-          select('Events', [['calls', 'calls'], ['all', 'calls and their statements']], events_, v => { events_ = v; void draw(); })),
+        el('div', { class: 'toolbar' }, vc.button,
+          select('Group By', slowGroupBy, group, v => { group = v; noteAddress({ g: v }); void draw(); }),
+          select('Database', [['', 'all databases'], ...dbs], db, v => { db = v; noteAddress({ gdb: v || undefined }); void draw(); }),
+          select('Top', topChoices.map(n => [String(n), n === 'all' ? 'ALL' : String(n)] as [string, string]), String(top), v => { top = topOf(v); noteAddress({ top: String(top) }); void draw(); }),
+          select('Events', [['calls', 'calls'], ['all', 'calls and their statements']], events_, v => { events_ = v; noteAddress({ ev: v }); void draw(); })),
+        vc.notes,
+        cut ? el('p', { class: 'meta' }, o.keep ? `ALL reads the fleet's first ${fmtNum(ALL_CAP)} groups (of ${fmtNum(tot.groups ?? 0)}): this folder's groups among them are listed.`
+          : `The first ${fmtNum(ALL_CAP)} groups of ${fmtNum(tot.groups ?? 0)} (ALL's cap).`) : '',
         o.keep ? el('p', { class: 'meta' }, group === 'instance' ? 'Under a tag folder the grid keeps the folder\'s instances; the All row counts the whole fleet.'
           : 'Under a tag folder only Group By Instance keeps the folder\'s instances: this grouping and the All row count the whole fleet.') : '',
-        grid(rows, cols, 'No slow event in this window.'),
+        named(grid(rows, cols, 'No slow event in this window.'), 'Group by'),
         // the All row's grid under the same heading: its own name in an export (data-sheet, export.ts headings)
         Number(tot.total) ? totalsGrid(grid([totalRow], totCols)) : '');
+      applyFit();
+      window.dispatchEvent(new CustomEvent('pgvigil:drawn'));   // the View control counts a view's layouts that found no grid
     } catch (e) {
       if (seq === drawSeq) body.replaceChildren(errorBox(e));
     }

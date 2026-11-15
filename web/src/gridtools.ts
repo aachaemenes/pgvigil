@@ -52,13 +52,22 @@ function names(t: HTMLTableElement): string[] {
     return n > 1 ? `${base} (${n})` : base;
   });
 }
-function headingOf(t: HTMLTableElement): string {
+function rawHeading(t: HTMLTableElement): string {
   let h = '';
   for (const e of document.querySelectorAll('h2, h3, h4, table.grid')) {
     if (e === t) break;
     if (e.tagName !== 'TABLE') h = label(e);
   }
-  return h.replace(/\s*\(.*\)$/, '');   // 'Jobs (last 24 hours)': the range is not part of the grid's name
+  return h;
+}
+function headingOf(t: HTMLTableElement): string {
+  return rawHeading(t).replace(/\s*\(.*\)$/, '');   // 'Jobs (last 24 hours)': the range is not part of the grid's name
+}
+// gridName: a grid's name in a saved view (VIEWS slice B): the page's own data-grid-name, else its heading without the
+// scope ('Summary - tag x', fleet.ts tagWords) and then without the range ('Performance summary (last hour)'), so a
+// view saved at the root applies under a tag folder and over another range
+export function gridName(t: HTMLTableElement): string {
+  return t.dataset.gridName || rawHeading(t).replace(/\s+-\s+(tag .*|the untagged instances|\(no [^)]*\))$/, '').replace(/\s*\(.*\)$/, '').trim();
 }
 function hash(s: string): string {
   let h = 5381;
@@ -67,8 +76,44 @@ function hash(s: string): string {
 }
 const keyOf = (t: HTMLTableElement) => `pgvigil.grid.${(/^#\/([A-Za-z_]+)/.exec(location.hash)?.[1] ?? 'summary')}.${hash(headingOf(t) + '|' + names(t).join('|'))}`;
 
+// ---- a saved view's layouts (VIEWS slice B, views.ts) ------------------------------------------------------------
+// While a view is loaded its layouts are a layer over the browser's own choices: every grid of the page is drawn from
+// the layer alone (one the view does not name: with nothing hidden, frozen or barred - never the viewer's own), a
+// change made meanwhile goes to the layer and marks the view changed, and dropping the layer ({None}, another page)
+// gives the browser's own choices back. A layout matches a grid by its name (gridName); its hidden and barred columns
+// apply where those columns still exist, its frozen count as far as the grid allows.
+export interface Layout { grid: string; columns: string[]; hidden: string[]; frozen: number; bars: string[] }
+let layer: Map<string, Prefs> | null = null;
+const layerSeen = new Set<string>();
+let layerEdited = false;
+export function setLayer(ls: Layout[] | null) {
+  layer = ls ? new Map(ls.filter(l => l && typeof l.grid === 'string').map(l => [l.grid, {
+    hidden: Array.isArray(l.hidden) ? l.hidden.filter(x => typeof x === 'string') : [],
+    frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(l.frozen) || 0))),
+    bars: Array.isArray(l.bars) ? l.bars.filter(x => typeof x === 'string') : [] }])) : null;
+  layerSeen.clear();
+  layerEdited = false;
+  for (const t of document.querySelectorAll<HTMLTableElement>('table.grid')) apply(t);
+}
+// layerState: a view's layer is on; it was changed since it was set; the layouts it names whose grid has not been drawn
+export function layerState(): { on: boolean; edited: boolean; missing: string[] } {
+  return { on: layer !== null, edited: layerEdited, missing: layer ? [...layer.keys()].filter(n => !layerSeen.has(n)) : [] };
+}
+// layoutsOf: every grid of the page as a view keeps it (what the layer or the browser draws it with now)
+export function layoutsOf(root: ParentNode = document): Layout[] {
+  const out = new Map<string, Layout>();
+  for (const t of root.querySelectorAll<HTMLTableElement>('main table.grid')) {
+    const n = gridName(t);
+    if (!n || out.has(n)) continue;
+    const p = load(t);
+    out.set(n, { grid: n, columns: names(t), hidden: p.hidden, frozen: p.frozen, bars: p.bars });
+  }
+  return [...out.values()];
+}
+
 function load(t: HTMLTableElement): Prefs {
   const none: Prefs = { hidden: [], frozen: 0, bars: [] }, k = keyOf(t);
+  if (layer) { const n = gridName(t); layerSeen.add(n); return layer.get(n) ?? none; }
   let raw: string | null = null;
   try { raw = localStorage.getItem(k); } catch { /* the browser refuses storage: what this page load chose is in mem */ }
   if (raw === null) return mem.get(k) ?? none;
@@ -80,6 +125,13 @@ function load(t: HTMLTableElement): Prefs {
   } catch { return none; }   // a value another version wrote
 }
 function save(t: HTMLTableElement, p: Prefs) {
+  if (layer) {   // a loaded view's grid: the change is the view's until it is saved (views.ts), the browser's own untouched
+    layer.set(gridName(t), p);
+    layerEdited = true;
+    window.dispatchEvent(new CustomEvent('pgvigil:layer'));
+    apply(t, p);
+    return;
+  }
   const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !p.bars.length;
   if (empty) mem.delete(k); else mem.set(k, p);
   try {
