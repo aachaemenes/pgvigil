@@ -228,7 +228,9 @@ SELECT ag.instance_id, CASE WHEN ag.failover THEN 'critical' ELSE 'warning' END,
 -- one row per instance and finished hour: its waits and its deadlocks (the monitor's own left out; PostgreSQL's from
 -- the log), written once: from the instance's first sight, at most 7 days back, each hour once it ended 15 minutes ago
 -- (a deadlock imported a minute late and a log read minutes behind are in by then), at most 24 hours per instance per
--- call (a new store's 7 days fill over 7 calls), one caller at a time (an advisory lock; a second caller returns 0).
+-- call (a new store's 7 days fill over 7 calls), one caller at a time (an advisory lock; a second caller returns 0);
+-- p_limit caps the instance-hours of one call, the oldest hours first (a large fleet's first fill in pieces: a call cut
+-- by its timeout keeps nothing, so the caller repeats while a call returns its cap).
 -- The Extended Events import calls it; any caller may (a repository without SQL Server needs one of its own). The
 -- spike's usual reads it: a store kept under 28 days rides on the floor alone
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_block_hourly (
@@ -238,7 +240,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_block_hourly (
   deadlocks   int NOT NULL,
   PRIMARY KEY (instance_id, hour)
 );
-CREATE OR REPLACE FUNCTION pgvigil.rollup_block_hourly(p_now timestamptz DEFAULT now())
+CREATE OR REPLACE FUNCTION pgvigil.rollup_block_hourly(p_now timestamptz DEFAULT now(), p_limit int DEFAULT NULL)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE n int := 0; r record; v_last timestamptz := date_trunc('hour', p_now - interval '15 minutes') - interval '1 hour';
 BEGIN
@@ -254,7 +256,9 @@ BEGIN
              coalesce((SELECT max(b.hour) + interval '1 hour' FROM pgvigil.mssql_block_hourly b WHERE b.instance_id = i.instance_id), '-infinity'::timestamptz)) AS h0) f
       CROSS JOIN LATERAL generate_series(f.h0, least(v_last, f.h0 + interval '23 hours'), interval '1 hour') h(hour)
      WHERE i.is_active AND i.engine IN ('sqlserver', 'postgres')
+     ORDER BY h.hour, i.instance_id
   LOOP
+    EXIT WHEN p_limit IS NOT NULL AND n >= p_limit;
     INSERT INTO pgvigil.mssql_block_hourly (instance_id, hour, waits, deadlocks)
     VALUES (r.instance_id, r.hour,
             CASE WHEN r.engine = 'sqlserver' THEN (SELECT count(*) FROM pgvigil.mssql_block_waits(r.instance_id, r.hour, r.hour + interval '1 hour'))
@@ -274,8 +278,8 @@ END $$;
 -- with no SQL Server, whose Extended Events import never runs, is rolled too; the import's own call stays (the
 -- rollup's advisory lock keeps the two apart). apply_roles makes an import_ function SECURITY DEFINER for
 -- pgvigil_collector
-CREATE OR REPLACE FUNCTION pgvigil.import_block_hourly(p_now timestamptz DEFAULT now())
-RETURNS int LANGUAGE sql AS $$ SELECT pgvigil.rollup_block_hourly(p_now) $$;
+CREATE OR REPLACE FUNCTION pgvigil.import_block_hourly(p_now timestamptz DEFAULT now(), p_limit int DEFAULT NULL)
+RETURNS int LANGUAGE sql AS $$ SELECT pgvigil.rollup_block_hourly(p_now, p_limit) $$;
 
 -- ---- PostgreSQL deadlocks from the log -----------------------------------------------------------------------------
 -- each deadlock's two statements as the log's DETAIL gives them ('Process 4242: UPDATE ...'), sorted, as one pair
