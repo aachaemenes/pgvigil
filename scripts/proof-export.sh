@@ -165,9 +165,8 @@
 #              named colour pairs only, the fixed header, one table each, no pane, the formats General / '0' / '0.0%' /
 #              '0.00%' / 'yyyy-MM-dd HH:mm' / 'yyyy-MM-dd' and a fixed count of decimals '0.0' .., booleans, widths, no app
 #              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook. X18 (a status column has a status
-#              or N/A on every cell) is graded on the pages compared with DBA Dash's exports of the same data - the fleet
-#              Summary, Backups, Jobs, DB Space, Drives and Performance summary and an instance's Backups, Jobs, DB Space and
-#              Drives; another page's X18 line is printed 'NOT GRADED X18' and fails nothing (its cells are a later change)
+#              or N/A on every cell) on every page; scripts/x18-scan.py first: each column of its list (a warning or
+#              critical badge on some rows, words on the others) gives its other cells a status by its cls
 #   decimals   (X13) no number cell shows more decimals than its column shows on the screen (nor fewer under a fixed
 #              format): the read-back takes each grid column's most decimals from the screen's text (a grid drawn whole;
 #              not a chart's series: the driver reads one point of it) into page-<lang>.json and runs
@@ -207,6 +206,9 @@ ok "sheet names: $(tail -1 "$WORK/names-unit.out")"
 echo "== the X rules' own tests (scripts/xlsx-check.test.py: built workbooks, a probe per shape)"
 python3 -I scripts/xlsx-check.test.py "$XCHECK" > "$WORK/xcheck-unit.out" 2>&1 || { cat "$WORK/xcheck-unit.out"; fail "the X rules' own tests"; }
 ok "X rules' tests: $(tail -1 "$WORK/xcheck-unit.out")"
+echo "== a status column's other cells on the screen (scripts/x18-scan.py)"
+python3 -I scripts/x18-scan.py web/src > "$WORK/x18-scan.out" 2>&1 || { cat "$WORK/x18-scan.out"; fail "a status column's other cells (scripts/x18-scan.py)"; }
+ok "x18-scan: $(tail -1 "$WORK/x18-scan.out")"
 # the same module as a script for the page (the driver runs it there: window.__pgvColours)
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
 
@@ -2330,18 +2332,8 @@ for L in en-US fr-FR; do
   echo "== the X rules on every workbook ($L): scripts/xlsx-check.py rules"
   XRC=0; python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt" || XRC=$?   # exit 1 = a rule failed (set -e: caught)
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$WORK/drive-$L.json" "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; }
-  # X18 on the compared pages only (the header's xcheck line); any other exit than 0 / 1 is the check's own failure
-  X18P='^(fleet_(Summary|Backups|Jobs|DB-Space|Drives|Performance-summary)|[^_]+_(Backups|Jobs|DB-Space|Drives))(_[A-Za-z-]+)?_[0-9]{8}-'
-  if [[ $XRC == 1 ]]; then
-    XRC=0
-    while IFS= read -r xl; do
-      xf=$(basename "$(sed -E 's/^FAIL X[0-9]+ ([^:]+): .*/\1/' <<< "$xl")")
-      if [[ $xl == "FAIL X18 "* && ! $xf =~ $X18P ]]; then echo "NOT GRADED X18 $xf (a page outside the DBA Dash comparison): ${xl#*: }" | cut -c1-400
-      else echo "$xl" | cut -c1-400; XRC=1; fi
-    done < <(grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true)
-  else
-    { grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true; } | cut -c1-400   # no FAIL line: grep's exit 1 must not end the proof (pipefail)
-  fi
+  # every rule on every page (X18 too); any other exit than 0 / 1 is the check's own failure
+  { grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true; } | cut -c1-400   # no FAIL line: grep's exit 1 must not end the proof (pipefail)
   NW=$(ls "$DL"/*.xlsx | wc -l)
   for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do
     n=$(grep -c "^FAIL $r " "$WORK/xcheck-$L.txt" || true); np=$(grep -c "^PASS $r " "$WORK/xcheck-$L.txt" || true)
