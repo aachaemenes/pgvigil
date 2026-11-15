@@ -62,7 +62,8 @@
 #     [the version views (C01), the lead 2026-11-14; red first: no run of this proof clicked them - uidoor-u3's H has no
 #     such line] On the Jobs tab, pgv161_diff (pg_cron) picked by its name: '<job>: versions' with 3 versions, the newest
 #     version's script against the one before in each view - Side by side diff (a table 'side by side diff: ...'): one
-#     removed line holding select 1 and one added line holding select 2, both tinted, the changed word boxed; Inline
+#     removed line holding select 1 and one added line holding select 2, both tinted (against the panel), exactly the
+#     changed token boxed ('1' / '2'; the review's should 1); Inline
 #     diff (a table 'inline diff: ...'): the same two lines marked - and +, tinted, boxed; Code view (a table 'the script'):
 #     the script alone, no line marked; then pgv161_agent (pgAgent) picked: 2 versions, the same three views over
 #     select 1 -> select 3; each a line 'ok   the version views (<scheduler> <job>): ...'; no exception, no error box.
@@ -261,7 +262,7 @@ check('the Jobs tab: no exception, no error', thrown.length === 0, thrown.join('
 // the version views (C01): a job picked by its name in the jobs grid, its versions listed, the newest version's script
 // against the one before in each of the three views; the changed line tinted (its background not the unchanged lines')
 // and the changed word boxed
-const views = async (sched, name, n, was, now) => {
+const views = async (sched, name, n, was, now, wasW, nowW) => {
   thrown = [];
   const picked = await ev(`(() => { const t = [...document.querySelectorAll('main table')].find(t => [...t.querySelectorAll('th')].some(th => th.textContent.trim() === 'enabled'));
     const b = [...(t ?? document).querySelectorAll('button.link')].find(b => b.textContent.trim() === ${JSON.stringify(name)}); if (!b) return false; b.click(); return true; })()`);
@@ -272,12 +273,15 @@ const views = async (sched, name, n, was, now) => {
     const rb = d.querySelector('input[type=radio][value=${mode}]'); if (!rb || rb.disabled) return { off: true }; rb.click();
     const t = d.querySelector('.tdiff table'); if (!t) return null; const bg = td => getComputedStyle(td).backgroundColor;
     const del = [...t.querySelectorAll('td.tx.del')], add = [...t.querySelectorAll('td.tx.add')];
+    // an unchanged line's cell has no background of its own: the colour the eye sees there is the panel's (.tdiff)
     const plain = [...t.querySelectorAll('td.tx')].find(td => !/\\b(add|del|gap)\\b/.test(td.className));
+    const base = plain && bg(plain) !== 'rgba(0, 0, 0, 0)' ? bg(plain) : getComputedStyle(t.closest('.tdiff') ?? t).backgroundColor;
     return { table: (t.getAttribute('aria-label') || '').split(':')[0], del: del.map(td => td.textContent.trim()), add: add.map(td => td.textContent.trim()),
-      tinted: del.length + add.length > 0 && [...del, ...add].every(td => bg(td) !== 'rgba(0, 0, 0, 0)' && (!plain || bg(td) !== bg(plain))),
-      boxed: !!t.querySelector('td.tx.del del.w') && !!t.querySelector('td.tx.add ins.w') }; })()`);
+      tinted: del.length + add.length > 0 && [...del, ...add].every(td => bg(td) !== 'rgba(0, 0, 0, 0)' && bg(td) !== base),
+      // the words boxed, exactly: the changed token alone (a digit is a token of its own, diff.ts tokens)
+      delW: [...t.querySelectorAll('td.tx.del del.w')].map(x => x.textContent).join('|'), addW: [...t.querySelectorAll('td.tx.add ins.w')].map(x => x.textContent).join('|') }; })()`);
   const side = kept ? await read('side') : null, inline = kept ? await read('inline') : null, code = kept ? await read('code') : null;
-  const pair = v => v && v.del.length === 1 && v.del[0].includes(was) && v.add.length === 1 && v.add[0].includes(now) && v.tinted && v.boxed;
+  const pair = v => v && v.del.length === 1 && v.del[0].includes(was) && v.add.length === 1 && v.add[0].includes(now) && v.tinted && v.delW === wasW && v.addW === nowW;
   const ok = picked && kept === n && side?.table === 'side by side diff' && pair(side) && inline?.table === 'inline diff' && pair(inline)
     && code?.table === 'the script' && code.del.length === 0 && code.add.length === 0;
   check(`the version views (${sched} ${name})`, ok, JSON.stringify({ picked, versions: kept, side, inline, code: code && { table: code.table, marked: code.del.length + code.add.length } }).slice(0, 900));
@@ -285,8 +289,8 @@ const views = async (sched, name, n, was, now) => {
   thrown.push(...(await ev(errBoxes)).map(x => 'error box: ' + x));
   check(`the version views (${sched} ${name}): no exception, no error`, thrown.length === 0, thrown.join(' | ') || 'none');
 };
-await views('pg_cron', 'pgv161_diff', 3, '$cmd$select 1$cmd$', '$cmd$select 2$cmd$');
-await views('pgagent', 'pgv161_agent', 2, '$code$select 1$code$', '$code$select 3$code$');
+await views('pg_cron', 'pgv161_diff', 3, '$cmd$select 1$cmd$', '$cmd$select 2$cmd$', '1', '2');
+await views('pgagent', 'pgv161_agent', 2, '$code$select 1$code$', '$code$select 3$code$', '1', '3');
 ws.close();
 process.exit(failed ? 1 : 0);
 PAGE
