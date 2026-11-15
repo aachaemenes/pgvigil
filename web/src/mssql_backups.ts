@@ -108,7 +108,8 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
 
 type FleetParts = 'by_instance' | 'databases' | 'findings';
 const n0 = (v: unknown) => v == null ? 0 : Number(v);
-const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => bad && n0(v) > 0 ? bad : '' });
+// a count judged by its rule (bad over 0) is OK at 0: every cell of a status column carries a status, as DBA Dash's grids do
+const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => !bad || v == null ? '' : n0(v) > 0 ? bad : 'ok' });
 // a rate under a header that names its unit ('full MB/s'): the cell is the number, so the export keeps a number (X7)
 const rate = (v: unknown) => v == null ? '' : fmtNum(v);
 // where the thresholds are set, for the Configure control that cannot act here
@@ -141,7 +142,7 @@ const byInstanceCols = (ctx: Ctx): Col[] => [
   // no read: the tab's own line; a collection that last failed says its status and note beside its last read
   { key: 'snapshot_at', label: 'read', fmt: (v, r) => !v ? (r.status ? `${String(r.status)}: ${String(r.note ?? '')}` : 'mssql_backups has not run on this server yet')
     : fmtTime(v) + (r.status && r.status !== 'ok' ? ` (last run ${String(r.status)}: ${String(r.note ?? '')})` : ''),
-    cls: (v, r) => !v || (r.status && r.status !== 'ok') ? 'warn' : '' },
+    cls: (v, r) => !v || (r.status && r.status !== 'ok') ? 'warn' : 'ok' },
 ];
 
 export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
