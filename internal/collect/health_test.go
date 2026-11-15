@@ -169,3 +169,23 @@ func TestOutcomeOf(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectionHealthStartHour (the review B6f3 #1): a run is filed under the UTC hour it STARTED in - the hour of its
+// collection_log row (snapshot_at = the run's start) - so a failure that crosses an hour edge is counted and listed on
+// the same side; the row's last times are the run's start too. A Result with no start is filed by the clock (now).
+func TestCollectionHealthStartHour(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	start := time.Date(2026, 11, 14, 9, 59, 45, 0, time.UTC)
+	h.record("i1", "postgres", "activity", Result{Start: start, Duration: 30 * time.Second, Err: errors.New("timeout")}, start.Add(30*time.Second), time.Minute)
+	b := h.take()
+	if len(b.Health) != 1 {
+		t.Fatalf("health rows %d, want 1: %+v", len(b.Health), b.Health)
+	}
+	g := b.Health[0]
+	if want := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC); !g.Hour.Equal(want) || g.Error != 1 {
+		t.Errorf("row hour %v error %d, want %v error 1 (the hour the run started in)", g.Hour, g.Error, want)
+	}
+	if g.LastError == nil || !g.LastError.Equal(start) {
+		t.Errorf("last error %v, want the run's start %v", g.LastError, start)
+	}
+}

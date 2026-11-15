@@ -12,6 +12,7 @@ import { href, window_ } from './router';
 import { fleet, inTagScope, tagWords } from './fleet';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 import { lineChart } from './chart';
+import { chartHours } from './chhealth';
 
 const word: Record<string, string> = { critical: 'Critical', warning: 'Warning', 'n/a': 'N/A', ok: 'OK' };
 const kind: Record<string, string> = { critical: 'crit', warning: 'warn', 'n/a': '', ok: 'ok' };
@@ -125,8 +126,8 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
     const cost = rowsOf(parts.cost).map(r => ({ snapshot_at: r.at, collecting_s: Number(r.collecting_s ?? 0) }));
     // the charts are hourly (the rows are): a range of under two whole hours has one bucket at most, said in each
     // chart's place rather than a chart's 'needs two reads' (the review of B6.2, part b #8)
-    const hourMs = 3600000, wr = window_(ctx);
-    const wholeHours = Math.round((Math.ceil(Date.parse(wr.to) / hourMs) - Math.floor(Date.parse(wr.from) / hourMs)));
+    // the whole hours up to now: a range ending in the future has no hourly row past now (chhealth.ts, B6f3 #9)
+    const wr = window_(ctx), wholeHours = chartHours(wr.from, wr.to);
     const hourly = (title: string) => el('div', { class: 'chart' }, el('h3', {}, title), el('p', { class: 'meta' }, 'The charts are hourly: pick a range of 2 hours or more.'));
     charts.replaceChildren(
       // Runs as stacked areas, not the design's stacked columns: the data are running totals (failed, failed + partial,
@@ -139,7 +140,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s)${folder}${onlyColl ? `, collection ${onlyColl}` : ''}: ${n('critical')} critical, ${n('warning')} warning, ${n('n/a')} N/A, ${n('ok')} OK. `
         // the rule in docs/collection-health.md's words (0166; the review of B6.2, part b #10)
         + 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
-        + 'warning at 1 or more failures in a row and 10 minutes or more since the last success, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
+        + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
         + 'Failed % 24hrs is the Summary\'s rate. Not shown, as pgvigil has no source for them: Warnings, Retried, Import Failed, No Status, CPU, Logical Reads, '
         + 'the import columns; no Steps (pgvigil has no run steps); Runs and Max Duration are not links (no Collection Performance report yet); '
         + 'the Status column shows the word as well as the colour.'),

@@ -105,6 +105,9 @@ func All() []Collector {
 
 // Result is what one run produced.
 type Result struct {
+	// Start: when the run began - collection_log's snapshot_at for it; the hourly health rows file the run under its
+	// hour (the review B6f3 #1). Zero = not known (the clock at the record is used).
+	Start    time.Time
 	Rows     int
 	Duration time.Duration
 	Note     string // " (skipped: <why>)" when the collection does not apply
@@ -150,12 +153,18 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 }
 
 // RunOnce runs one collection against one instance and stores the rows.
-func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) Result {
+func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) (res Result) {
 	c, ok := Get(name)
 	if !ok {
 		return Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
 	}
 	start := time.Now()
+	// every return carries the run's start, the time its collection_log row is written under (B6f3 #1)
+	defer func() {
+		if res.Start.IsZero() {
+			res.Start = start
+		}
+	}()
 	if skip, why := Gated(c, in); skip {
 		return Result{Note: " (skipped: " + why + ")"}
 	}

@@ -21,6 +21,7 @@ import { mssqlJobCol, mssqlKillCol } from './mssql_actions';
 import { offBeside } from './ack';
 import { Ctx, href, mssqlInstanceGroups, mssqlInstanceTabs, window_ } from './router';
 import { hashParam } from './dbinfo';
+import { errColTips, repoHealthOf } from './chhealth';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtTime, grid, props, tile } from './ui';
 
 interface DBADashData { repositories: Table | null; fleet: Table | null; checks: Table | null; imported?: Table | null }
@@ -179,18 +180,8 @@ function instanceHref(ctx: Ctx, d: DBADashData, repo: string, id: unknown): stri
   return pv ? href(ctx, { tab: 'summary', instance: pv.instanceId, tag: undefined }) : dbadashHref(ctx, repo, id);
 }
 
-// B6.3: DBA Dash 4.25.0's own tooltip for its Summary's Collection Health column, quoted from its GUI
-// (DBADashGUI/Checks/Summary.Designer.cs L433, CollectionErrorStatus.ToolTipText) - the lead's 23:4x call B6.3-c
-// DBA Dash 4.24.1's tooltip of its errors column (Checks/Summary.Designer.cs L433), word for word
-const collectionErrorsTip241 = 'Count of errors encountered by the DBA Dash service during data collection or import for the instance.  Retries are highlighted as warning, failures are critical.';
-// a repository version at 4.25.0 or later: 0138's dbadash_health_version, word for word in its rule
-const healthVersion = (v: unknown) => {
-  const s = String(v ?? '');
-  if (!/^[0-9]{1,9}(\.[0-9]{1,9})*$/.test(s)) return false;
-  const p = s.split('.').map(Number);
-  return p[0] > 4 || (p[0] === 4 && (p[1] ?? 0) >= 25);
-};
-const collectionHealthTip = 'Collections at warning or critical: failing in a row for long enough, or a high failure rate since errors were acknowledged (24hrs at most) - thresholds configured in the Collection Health tab.  For an instance whose DBA Dash service predates collection health, the count of collection and import errors in the last 24hrs.  Click to see collection health.';
+// the two tooltips, healthVersion (0138's rule), each header's tips and each row's landing: chhealth.ts (unit-tested,
+// the review B6f3 #11)
 
 // the fleet grid: one row per instance, one cell per Summary status in the source's column order; a repository at 4.25.0
 // or later (the column named 'Collection Health') has DBA Dash's tooltip on it and its cell opens the instance's
@@ -198,7 +189,7 @@ const collectionHealthTip = 'Collections at warning or critical: failing in a ro
 function fleetGrid(ctx: Ctx, d: DBADashData, rows: Row[], checks: Row[]): HTMLElement {
   // each row's repository at 4.25.0 or later (0138's dbadash_health_version): its cell lands on Collection Health, a
   // 4.24.1 one's on the old landing, whatever the other repositories are (the review of B6.2, part b #5)
-  const repoHealth = new Map(rowsOf(d.repositories).map(r => [String(r.repository), healthVersion(r.version)]));
+  const repoHealth = repoHealthOf(rowsOf(d.repositories));
   const cols: Col[] = [
     { key: 'level', label: 'level', fmt: v => ldot(Number(v ?? 0), levelWords[Number(v ?? 0)]) },
     { key: 'display_name', label: 'instance', fmt: (v, r) => el('a', { href: instanceHref(ctx, d, String(r.repository), r.instance_id) }, String(v)) },
@@ -209,7 +200,7 @@ function fleetGrid(ctx: Ctx, d: DBADashData, rows: Row[], checks: Row[]): HTMLEl
       const errCol = c.status_key === 'CollectionErrorStatus', label = ownLabel(c.label);
       // the header's tooltip: 4.25.0's for 'Collection Health', 4.24.1's for 'Collection errors (24hrs)', both (4.25.0's
       // first) on a mixed fleet's 'Collection Health / Collection errors (24hrs)' (the review of B6.2, part b #6)
-      const tips = errCol ? [label.startsWith('Collection Health') ? collectionHealthTip : '', /Collection errors/.test(label) ? collectionErrorsTip241 : ''].filter(Boolean) : [];
+      const tips = errCol ? errColTips(label) : [];
       return {
         key: 's_' + String(c.status_key), label, ...(tips.length ? { title: tips.join('\n') } : {}),
         cls: (_v: unknown, r: Row) => 'status ' + codeClass(num((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)])),

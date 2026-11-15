@@ -465,12 +465,18 @@ func rowValue(dbType string, v any) any {
 // under RunTimeout; every repository write gets its own repoTimeout on a context the run's deadline (and a
 // shutdown's cancel) does not cut, so a run that timed out is recorded as an error instead of leaving the
 // previous ok row in place.
-func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) collect.Result {
+func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) (res collect.Result) {
 	c, ok := Get(name)
 	if !ok {
 		return collect.Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
 	}
 	start := time.Now()
+	// every return carries the run's start, the time its collection_log row is written under (B6f3 #1)
+	defer func() {
+		if res.Start.IsZero() {
+			res.Start = start
+		}
+	}()
 	limit := runTimeout(c)
 	sctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()

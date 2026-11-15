@@ -12,8 +12,11 @@
 // Failed link's counted window). The review of B6.2, part b added: each status alone = the API's count, every row drawn,
 // the tag and instance levels by their rows, Last Failure by the run's own times and opened, Instances opened, the
 // words and pickers of #8 - #11, and a FAIL per named row on a red run.
-// usage: node scripts/collection-health-check.mjs <cdp port> <base url ending in />
+// usage: CH_NOW=<the fixtures' clock, ISO UTC> CH_HOUR=<fx-chhour's hour, ISO UTC> node scripts/collection-health-check.mjs <cdp port> <base url ending in />
+// (proof-collection-health.sh sets both from its one clock read: the rows grade the fixtures by their own times, never
+// the check's clock - the review B6f3 #3 / #12)
 const [port, U] = process.argv.slice(2);
+const fxNow = Date.parse(process.env.CH_NOW ?? ''), fxHour = Date.parse(process.env.CH_HOUR ?? '');
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(tabs.find(t => t.type === 'page').webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r));
@@ -139,9 +142,9 @@ const allRows = await api({});
     await ev(`(() => { for (const i of document.querySelectorAll('main input[name=ch-status]')) { i.checked = false; i.dispatchEvent(new Event('change', { bubbles: true })); } return true; })()`);
     await drawnAs('|instance');
     const t = await ev(`(() => { const sec = [...document.querySelectorAll('main section')].find(s => s.querySelector('h2')?.textContent.trim() === 'Collection Health');
-      return { empty: (sec?.textContent ?? '').includes('No status is picked'), canvases: sec?.querySelectorAll('.chart canvas, .chart svg, .u-wrap').length ?? 0, note: (sec?.textContent ?? '').includes('from the last success to the latest failure') }; })()`);
+      return { empty: (sec?.textContent ?? '').includes('No status is picked'), canvases: sec?.querySelectorAll('.chart canvas, .chart svg, .u-wrap').length ?? 0, note: (sec?.textContent ?? '').split('from the last success to the latest failure').length - 1 === 2 && !(sec?.textContent ?? '').includes('since the last success') }; })()`);
     say(t.empty && t.canvases > 0, 'CH6 no status ticked: the charts still drawn', JSON.stringify(t));
-    // #10 the status rule in the docs' words
+    // #10 the status rule in the docs' words: both halves measure from the last success to the latest failure (B6f3 #7)
     say(t.note, 'CH6 the status rule in docs/collection-health.md\'s words', String(t.note));
   } else for (const r of ['no status ticked: the charts still drawn', 'the status rule in docs/collection-health.md\'s words']) say(false, 'CH6 ' + r, 'no tab');
   // #8 a range of one whole hour: the charts' place says they are hourly
@@ -188,10 +191,12 @@ const allRows = await api({});
     // Last Failure (the review of B6.2, part b #3d): the window by the rule over the run's own times - from its last
     // success (fx-chcrit: ok, then 3 failures), to its last failure + 1 hour - and its landing lists the 3 failures
     const lfh = row['Last Failure'].links.lastfailure, lf = route(lfh);
-    const okAt = mine[0]?.last_success, failAt = mine[0]?.last_failure;
+    // the window's start graded against the fixture's own ok run (CH_NOW - 40 min, within a second; B6f3 #12), its end
+    // against the last failure the API reads + 1 h
+    const okAt = isFinite(fxNow) ? fxNow - 40 * 60e3 : NaN, failAt = mine[0]?.last_failure;
     const wantTo = failAt ? Date.parse(failAt) + 3600e3 : NaN;
-    say(lf.tab === 'collectionhealth' && !!okAt && Date.parse(lf.q.get('from')) === Date.parse(okAt) && Date.parse(lf.q.get('to')) === wantTo, 'CH7 Last Failure window',
-      `${lfh ?? 'no link'} vs the last success ${okAt} .. the last failure + 1 h`);
+    say(lf.tab === 'collectionhealth' && isFinite(okAt) && Math.abs(Date.parse(lf.q.get('from')) - okAt) <= 1000 && Date.parse(lf.q.get('to')) === wantTo, 'CH7 Last Failure window',
+      `${lfh ?? 'no link'} vs fx-chcrit's ok run ${isFinite(okAt) ? new Date(okAt).toISOString() : 'CH_NOW not set'} .. the last failure + 1 h`);
     if (lfh) {
       await cmd('Page.navigate', { url: U + lfh }); await sleep(2000);
       const listed = await ev(`document.querySelectorAll('main .ch-errors tbody tr').length`);
@@ -214,8 +219,8 @@ const allRows = await api({});
   // into the hour of its one failure counts it, and the list Failed opens holds it
   const hr = byName('fx-chhour');
   if (hr) {
-    const h0 = Math.floor(Date.now() / 3600e3) * 3600e3;
-    const p4 = await open(`#/collectionhealth?i=${hr.instance_id}&from=${encodeURIComponent(new Date(h0 - 40 * 60e3).toISOString())}&to=${encodeURIComponent(new Date().toISOString())}`);
+    // the hour of its failure as the fixture wrote it (CH_HOUR; B6f3 #3), the range from 20 minutes into it
+    const p4 = isFinite(fxHour) ? await open(`#/collectionhealth?i=${hr.instance_id}&from=${encodeURIComponent(new Date(fxHour + 20 * 60e3).toISOString())}&to=${encodeURIComponent(new Date().toISOString())}`) : null;
     const r4 = p4?.rows.find(x => x.Collection?.text === 'activity');
     const fh = r4?.Failed?.links?.failed;
     if (fh) {

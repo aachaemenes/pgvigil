@@ -83,7 +83,7 @@ var sqlCHInstance = `WITH r AS (` + sqlCHRows + `)
 SELECT r.instance_id, r.instance, r.engine, r.collection, r.status, r.status_reason,` + chCols + `
   FROM r
  WHERE $6::text[] IS NULL OR r.status = ANY ($6)
- ORDER BY CASE r.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'n/a' THEN 3 WHEN 'ok' THEN 4 END, failed_pct DESC NULLS LAST, r.instance, r.collection   -- DBA Dash's: Status, FailedPct DESC, Name`
+ ORDER BY CASE r.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'n/a' THEN 3 WHEN 'ok' THEN 4 END, failed_pct DESC NULLS LAST, r.collection, r.instance   -- DBA Dash's: Status, FailedPct DESC, Name (the collection: CollectionHealth_Get.sql L521); then the instance`
 
 // sqlCHCollection: Row per collection over the instances in scope (CollectionHealth_Get.sql:395-440, :508-517): the
 // sums, the latest times, the worst status but N/A (all N/A = N/A), the errors' window the widest; Instance and Status
@@ -129,7 +129,7 @@ SELECT to_timestamp(floor(extract(epoch FROM h.hour) / $6::int) * $6::int) AS at
 var sqlCHErrors = `
 SELECT l.instance_id, i.name AS instance, l.collection, l.snapshot_at AS at, l.duration_ms, l.note AS message
   FROM pgvigil.collection_log l
-  JOIN pgvigil.instances i ON i.instance_id = l.instance_id
+  JOIN pgvigil.instances i ON i.instance_id = l.instance_id AND i.is_active   -- as 0166's j counts Failed (B6f3 #2)
  WHERE l.status = 'error' AND l.snapshot_at >= $1::timestamptz AND l.snapshot_at < $2::timestamptz AND ` + chScopeOf("l") + `
    AND ($6::text = '' OR strpos(lower(coalesce(l.note, '')), lower($6)) > 0)
  ORDER BY l.snapshot_at DESC

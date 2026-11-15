@@ -35,14 +35,14 @@ type demoHealth struct {
 // healthRows: the totals of every instance and collection for each UTC hour, over the minutes from .. to (both
 // included) that known holds (nil = every one): a known run (ok, partial, error) counts its duration, a skip does not;
 // the last ok includes a partial (a success for Last Success, as the collector's)
-func healthRows(gens []*Gen, ids []int, from, to time.Time, known func(time.Time) bool) []demoHealth {
+func healthRows(gens []*Gen, ids []int, from, to time.Time, known func(int, time.Time) bool) []demoHealth {
 	from, to = from.UTC().Truncate(time.Minute), to.UTC().Truncate(time.Minute)
 	var out []demoHealth
 	for i, g := range gens {
 		for _, c := range g.Collections() {
 			idx := map[time.Time]int{}
 			for m := from; !m.After(to); m = m.Add(time.Minute) {
-				if known != nil && !known(m) {
+				if known != nil && !known(i, m) {
 					continue
 				}
 				h := m.Truncate(time.Hour)
@@ -81,9 +81,32 @@ func healthRows(gens []*Gen, ids []int, from, to time.Time, known func(time.Time
 	return out
 }
 
-// known: a minute the hourly rows count - inside the seeded 24 hours, or one a Tick logged
-func (f *Fleet) known(m time.Time) bool {
-	return (!f.histFrom.IsZero() && !m.Before(f.histFrom) && !m.After(f.histTo)) || f.ticked[m]
+// known: a minute instance i's hourly rows count - inside the seeded 24 hours, or one a Tick logged for it
+func (f *Fleet) known(i int, m time.Time) bool {
+	if !f.histFrom.IsZero() && !m.Before(f.histFrom) && !m.After(f.histTo) {
+		return true
+	}
+	f.tickMu.Lock()
+	defer f.tickMu.Unlock()
+	return f.ticked[i][m]
+}
+
+// markTicked: minute t is logged for instance i; its minutes older than 3 hours are let go
+func (f *Fleet) markTicked(i int, t time.Time) {
+	f.tickMu.Lock()
+	defer f.tickMu.Unlock()
+	if f.ticked == nil {
+		f.ticked = map[int]map[time.Time]bool{}
+	}
+	if f.ticked[i] == nil {
+		f.ticked[i] = map[time.Time]bool{}
+	}
+	f.ticked[i][t] = true
+	for m := range f.ticked[i] {
+		if m.Before(t.Add(-3 * time.Hour)) {
+			delete(f.ticked[i], m)
+		}
+	}
 }
 
 // writeHealth writes the hour of t and the hour before it (its last minutes land in the next hour's first tick), from

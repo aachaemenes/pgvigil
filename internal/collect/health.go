@@ -72,9 +72,14 @@ type beatHealth struct {
 	LastPartial  *time.Time `json:"last_partial_at,omitempty"`
 }
 
-// health counts one run into its hour (under h.mu, from record()): the hour is UTC's, never the collector's zone; a
+// health counts one run into its hour (under h.mu, from record()): the hour is UTC's, never the collector's zone, and
+// the run's START's (its collection_log row's snapshot_at), so a run crossing an hour edge is counted where it is
+// listed (the review B6f3 #1); the row's last times are the start too; a run with no start known is filed by now. A
 // connect failure is an error; a run over half its interval, and over all of it, counted for 'runs long' (B6.4)
 func (h *Heartbeat) health(instance, collection string, res Result, now time.Time, every time.Duration) {
+	if !res.Start.IsZero() {
+		now = res.Start
+	}
 	hour := now.UTC().Truncate(time.Hour)
 	if h.hourly == nil {
 		h.hourly = map[healthKey]*healthAgg{}

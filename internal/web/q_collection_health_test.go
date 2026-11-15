@@ -137,3 +137,15 @@ func TestCollectionHealthFailedWindowShape(t *testing.T) {
 		t.Errorf("collection_health.ts: the Failed link does not open the counted window")
 	}
 }
+
+// TestCHFoldB6f3Shapes (the review B6f3 #2, #8): the error lists read the active instances only, as 0166's j counts
+// Failed (an instance set inactive keeps its errors in collection_log); the per-instance grid breaks a tie by the
+// collection, DBA Dash's Name (CollectionHealth_Get.sql L521: Status, FailedPct DESC, Name), then the instance
+func TestCHFoldB6f3Shapes(t *testing.T) {
+	if !regexp.MustCompile(`JOIN pgvigil\.instances i ON i\.instance_id = l\.instance_id AND i\.is_active`).MatchString(sqlCHErrors) {
+		t.Errorf("sqlCHErrors reads inactive instances' errors (no i.is_active on its join)")
+	}
+	if !regexp.MustCompile(`failed_pct DESC NULLS LAST, r\.collection, r\.instance\s`).MatchString(sqlCHInstance) {
+		t.Errorf("sqlCHInstance's tie-break is not the collection, then the instance")
+	}
+}

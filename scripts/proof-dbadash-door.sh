@@ -802,7 +802,9 @@ const s = await ev(`(() => { const m = document.querySelector('main'); const h3 
     notRead: /not read: dbo\.CollectionHealth_Get is not in this DBA Dash repository \(it came with DBA Dash 4\.25\.0\)/.test(m.textContent), grids: m.querySelectorAll('table.grid').length }; })()`);
 if (ver === '4.25.0') {
   say(s.h3.includes('Collection Health') && JSON.stringify(s.h4.slice(0, 5)) === JSON.stringify(['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights']), 'CH9b the screen\'s headings', `${s.h3.join(' | ')} / ${s.h4.join(' | ')}`);
-  const hidden = ['No Status', 'InstanceID', 'Reference', 'Step', 'Status', 'ErrorsFrom', 'ErrorsTo'].filter(h => s.heads.includes(h));
+  // every key chHidden hides that comes back at @GroupByInstance = 1 (the review B6f3 #4), and No Status (UnknownCount's alias)
+  const hidden = ['No Status', 'InstanceID', 'Reference', 'Step', 'Status', 'LastStatus', 'ErrorsFrom', 'ErrorsTo', 'LastDurationMs', 'TotalDurationMs',
+    'MaxLogicalReads', 'TotalLogicalReads', 'TotalImportMs', 'AvgImportLogicalReads', 'TotalImportLogicalReads'].filter(h => s.heads.includes(h));
   say(s.heads.length > 0 && hidden.length === 0 && s.rows > 0 && s.coloured, 'CH9b the Collections grid', `${s.rows} row(s); ${s.heads.join(' | ')}${hidden.length ? '; shown though DBA Dash hides: ' + hidden.join(', ') : ''}`);
 } else {
   say(s.notRead && s.grids === 0, 'CH9b the screen on ' + ver, `not read line ${s.notRead}, ${s.grids} grid(s)`);

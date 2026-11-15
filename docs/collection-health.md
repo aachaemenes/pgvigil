@@ -13,7 +13,7 @@ The repository judges each collection of each instance (`pgvigil.collection_heal
 | Status | When |
 |---|---|
 | Critical | 3 or more failures in a row and 30 minutes or more from the last success to the latest failure (never succeeded: the 3 failures alone), or 50 % or more of 5 or more runs failed with the last run failed |
-| Warning | 1 or more failures in a row and 10 minutes or more since the last success (never succeeded: the failure alone), or 10 % or more of 5 or more runs failed or ended partial |
+| Warning | 1 or more failures in a row and 10 minutes or more from the last success to the latest failure (never succeeded: the failure alone), or 10 % or more of 5 or more runs failed or ended partial |
 | N/A | the collection is off for the instance, or it only skipped |
 | OK | otherwise |
 
@@ -33,7 +33,8 @@ a scheduled `pgvigil collect` has no heartbeat: it is judged by its failures in 
   once over the instances shown, with how many instances list it (**Instances**, a link to its rows per instance; an N/A row counts) and how many
   failed at their last run (**Failing Instances**), and the worst status of its instances but N/A.
 - **Status**: Critical, Warning, N/A, OK - each can be turned off.
-- **Failed** and **Errors** open the list of the errors logged for the row over the range; **Last Failure** opens it
+- **Failed** opens the errors of the hours it counts (from the hour that holds the start to the end of the hour that
+  holds the end, up to now); **Errors** opens the errors of the range; **Last Failure** opens the list
   around the last failure (from the last success while the collection fails now, else from 10 minutes before the
   failure, to an hour after it). The list has a text filter on the message.
 - The charts: **Runs** per bucket by outcome (Failed, Partial, Succeeded) and **Time spent collecting**.
