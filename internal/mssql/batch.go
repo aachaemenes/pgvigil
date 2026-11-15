@@ -111,6 +111,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	// every batch's write is timed (B6g-1, N27); the run is 'import failed' only when it ENDED as an error at the
 	// repository's side (stage 'import') - a batch refused while the run went on leaves it 'partial', as its log row says
 	var imp collect.Result
+	var lastImport error // the import error last handed back to the reader: the run ended at it, or went on
 	opt := BatchOptions{QueryText: in.QueryText, AuditText: in.AuditText, Deadline: start.Add(limit - batchMargin)}
 	if dl, ok := sctx.Deadline(); ok && dl.Add(-batchMargin).Before(opt.Deadline) {
 		opt.Deadline = dl.Add(-batchMargin)
@@ -134,6 +135,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		rctx, cancel := repoCtx()
 		defer cancel()
 		if err := imp.TimedImport(func() error { return st.Import(rctx, instanceID, name, start, rows) }); err != nil {
+			lastImport = err
 			repoFailed("import: " + err.Error())
 			return err
 		}
@@ -155,7 +157,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		err = timeoutNote(sctx, limit, err)
 		logRun("error", err.Error())
 		out := collect.Result{Rows: n, Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start), Import: imp.Import, Imported: imp.Imported}
-		if stage == "import" {
+		if collect.EndedAtImport(err, lastImport) {
 			out.Outcome = collect.OutcomeImportFailed
 		}
 		return out

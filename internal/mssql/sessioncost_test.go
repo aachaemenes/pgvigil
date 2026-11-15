@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
 // A driver that answers one query with fixed rows and keeps what it was asked: the run's end read needs no SQL Server
@@ -106,5 +108,38 @@ func TestSessionCost(t *testing.T) {
 	d.rows = nil
 	if cpu, reads = sessionCost(context.Background(), conn); cpu != nil || reads != nil {
 		t.Errorf("no row gave %v / %v, want nil / nil", cpu, reads)
+	}
+}
+
+// TestEndRead (the review of B6g-1 part a, #7): the run's deferred step. A run cut by pgvigil's own stop (its error
+// set, the parent context over) makes NO end read - its result is dropped anyway, and the read would stand between the
+// stop and the loop's end; every other return reads - a failed run on a live context, and a run that ended well just
+// as the stop came.
+func TestEndRead(t *testing.T) {
+	d := &costDriver{rows: [][]driver.Value{{int64(7), int64(9)}}}
+	db := sql.OpenDB(costConnector{d})
+	defer func() { _ = db.Close() }()
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	over, cancel := context.WithCancel(context.Background())
+	cancel()
+	cut := collect.Result{Err: context.Canceled}
+	endRead(over, conn, &cut)
+	if d.query != "" || cut.CPUMs != nil || cut.Reads != nil {
+		t.Errorf("a run cut by the stop: asked %q, cpu %v - want no end read", d.query, cut.CPUMs)
+	}
+	failed := collect.Result{Err: errors.New("waits on s1: read")}
+	endRead(context.Background(), conn, &failed)
+	if failed.CPUMs == nil || *failed.CPUMs != 7 || failed.Reads == nil || *failed.Reads != 9 {
+		t.Errorf("a failed run on a live context: cpu %v, reads %v - want 7 and 9", failed.CPUMs, failed.Reads)
+	}
+	d.query = ""
+	ok := collect.Result{Rows: 3}
+	endRead(over, conn, &ok)
+	if d.query == "" || ok.CPUMs == nil {
+		t.Errorf("a run that ended well as the stop came: asked %q, cpu %v - want its end read", d.query, ok.CPUMs)
 	}
 }

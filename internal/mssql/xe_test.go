@@ -586,7 +586,8 @@ func (f *fakeStore) LogCollectionStage(_ context.Context, _ int, _ string, _ tim
 type fakeBatches struct {
 	total, size int
 	tail        []collect.Row
-	swallow     bool // a failed batch's import becomes a collector_error row and the run goes on, as xe's fail() does
+	swallow     bool  // a failed batch's import becomes a collector_error row and the run goes on, as xe's fail() does
+	readErr     error // the reader's own failure after its batches: the run ends as an error at a READ
 }
 
 func (fakeBatches) Name() string                   { return Prefix + "fake" }
@@ -615,11 +616,17 @@ func (b fakeBatches) RunBatches(ctx context.Context, _ *sql.Conn, _ Info, opt Ba
 			if !b.swallow {
 				return err
 			}
-			return emit(append(b.tail, collect.Row{"kind": "collector_error", "source": "src", "message": err.Error()}))
+			if err := emit(append(b.tail, collect.Row{"kind": "collector_error", "source": "src", "message": err.Error()})); err != nil {
+				return err
+			}
+			return b.readErr
 		}
 		at = end
 	}
-	return emit(b.tail)
+	if err := emit(b.tail); err != nil {
+		return err
+	}
+	return b.readErr
 }
 
 func TestRunBatched(t *testing.T) {
@@ -674,6 +681,19 @@ func TestRunBatched(t *testing.T) {
 	res = run(sw, fakeBatches{total: 25, size: 10, swallow: true, tail: []collect.Row{{"kind": "collector_error", "source": "src_read", "message": "the ring buffer is gone"}}})
 	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || sw.note != "import: the repository is away; src_read: the ring buffer is gone" {
 		t.Fatalf("a read error before a swallowed import: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
+	}
+	// B6g-1 (the review of part a, #2 / #3): a run that ended as an error at a READ is a plain error - with every batch
+	// imported, and also after a batch that was refused and swallowed (the lead 11-15 10:3x: 'import failed' only when
+	// the run ENDED as an error at an import; the refused batch's stage stays 'import' on its log row)
+	rd := &fakeStore{cursors: map[string]Cursor{}}
+	res = run(rd, fakeBatches{total: 25, size: 10, readErr: errors.New("the ring buffer is gone")})
+	if res.Err == nil || res.Outcome != "" || !res.Imported || rd.status != "error" || rd.stage != "" {
+		t.Errorf("a read error after good batches: outcome %q, imported %v, err %v, status %s, stage %q - want a plain error with its imports timed", res.Outcome, res.Imported, res.Err, rd.status, rd.stage)
+	}
+	rd = &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
+	res = run(rd, fakeBatches{total: 25, size: 10, swallow: true, readErr: errors.New("the ring buffer is gone")})
+	if res.Err == nil || res.Outcome != "" || rd.status != "error" || rd.stage != "import" {
+		t.Errorf("a read error after a swallowed refused batch: outcome %q, err %v, status %s, stage %q - want a plain error (the run ended at a read), the log's stage still 'import'", res.Outcome, res.Err, rd.status, rd.stage)
 	}
 	// the next run goes on from the stored cursor: events 11 to 25, none twice
 	st.failAt = 0

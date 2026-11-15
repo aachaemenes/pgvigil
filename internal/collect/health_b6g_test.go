@@ -11,8 +11,8 @@ import (
 // TestCollectionHealthImportAndCPU (B6g-1; N25, N26, N27 - rows G1 and G2's counting half): the hour's new totals.
 // The import's time is counted apart from the run's (the r.Import calls only; the run's Duration stays the whole run)
 // for every run that attempted one - a failed import too, a 0 ms one too; a run whose read succeeded and whose write
-// failed is 'import failed': an ERROR for every count that judges (Failed includes it, as DBA Dash's FailedCount holds
-// ImportFailedCount) and counted once more as Import Failed. A run that read its own session at its end (SQL Server)
+// failed is 'import failed': an ERROR for every count that judges (pgvigil's failed holds it; DBA Dash keeps the two
+// counts apart and judges their sum) and counted once more as Import Failed. A run that read its own session at its end (SQL Server)
 // adds its CPU and logical reads and is a 'cpu run' - also when the run itself failed; a run that did not read them
 // (PostgreSQL; an end read that failed) is not, and a skip adds nothing anywhere.
 func TestCollectionHealthImportAndCPU(t *testing.T) {
@@ -21,7 +21,7 @@ func TestCollectionHealthImportAndCPU(t *testing.T) {
 	m, sec, ms := time.Minute, time.Second, time.Millisecond
 	n := func(v int64) *int64 { return &v }
 	h.record("s1", "sqlserver", "waits", Result{Duration: 200 * ms, Rows: 4, Imported: true, Import: 30 * ms, CPUMs: n(12), Reads: n(900)}, at, m)
-	h.record("s1", "sqlserver", "waits", Result{Duration: 500 * ms, Err: errors.New("import waits from s1: boom"), Outcome: OutcomeImportFailed,
+	h.record("s1", "sqlserver", "waits", Result{Duration: 500 * ms, Rows: 7, Err: errors.New("import waits from s1: boom"), Outcome: OutcomeImportFailed, // its rows are NOT counted
 		Imported: true, Import: 400 * ms, CPUMs: n(20), Reads: n(100)}, at.Add(1*sec), m)
 	h.record("s1", "sqlserver", "waits", Result{Duration: 50 * ms, Err: errors.New("waits on s1: read"), CPUMs: n(5), Reads: n(10)}, at.Add(2*sec), m)
 	h.record("s1", "sqlserver", "waits", Result{Duration: 10 * ms, Rows: 1, Imported: true}, at.Add(3*sec), m)
@@ -59,6 +59,14 @@ func TestOutcomeImportFailed(t *testing.T) {
 	}
 	if got := outcomeOf(Result{Err: errors.New("x on i: read"), Outcome: OutcomePartial}); got != OutcomeError {
 		t.Errorf("outcomeOf(a read error) = %q, want %q", got, OutcomeError)
+	}
+	// 'import failed' is an ERROR's outcome: with no error it is nothing (no producer returns it so; the hour and the
+	// failing streak, which judges by Err, must never count one run two ways - the review of B6g-1 part a, #6)
+	if got := outcomeOf(Result{Outcome: OutcomeImportFailed}); got != OutcomeOK {
+		t.Errorf("outcomeOf('import failed' with no error) = %q, want %q", got, OutcomeOK)
+	}
+	if got := outcomeOf(Result{Outcome: OutcomeImportFailed, Note: " (skipped: why)"}); got != OutcomeSkipped {
+		t.Errorf("outcomeOf('import failed' with no error and a skip note) = %q, want %q", got, OutcomeSkipped)
 	}
 }
 

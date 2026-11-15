@@ -506,7 +506,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	defer func() { _ = conn.Close(); _ = db.Close() }()
 	// B6g-1 (N25 / N26): the run's own cost, read at its end on the run's one connection. Registered after the close
 	// above, so it runs before it; every return below carries it - a failed read, a skip, a timeout, a failed import
-	defer func() { res.CPUMs, res.Reads = sessionCost(ctx, conn) }()
+	defer func() { endRead(ctx, conn, &res) }()
 
 	info, err := Detect(sctx, conn, in.Platform)
 	if err != nil {
@@ -608,6 +608,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
 	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status),
 		Import: imp.Import, Imported: imp.Imported}
+}
+
+// endRead is a run's deferred last step on its connection: the session's cost into the result. A run cut by pgvigil's
+// own stop (its error set, the parent context over) is not read - its result is dropped (the scheduler counts no run a
+// stop cut short), and the read would stand between the stop and the loop's end
+func endRead(ctx context.Context, conn *sql.Conn, res *collect.Result) {
+	if res.Err != nil && ctx.Err() != nil {
+		return
+	}
+	res.CPUMs, res.Reads = sessionCost(ctx, conn)
 }
 
 // sessionCostSQL: the session's own running totals. A session always sees its own row of sys.dm_exec_sessions: the

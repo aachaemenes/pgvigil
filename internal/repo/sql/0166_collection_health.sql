@@ -119,7 +119,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.collection_health_hour (
   reads_sum        bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (hour, instance_id, collection, collector_id)
 ) WITH (fillfactor = 70);
--- a store that applied this file before B6g-1 has the table without them (the file is edited in place until v0.4.0)
+-- a store that applied this file before B6g-1 has the table without them. 'pgvigil migrate' applies a recorded file
+-- no second time (such a store is made fresh, as every store of an untagged build is until v0.4.0); this ALTER and
+-- the DROP before collection_health() below let the file be applied again by hand, whole
 ALTER TABLE pgvigil.collection_health_hour
   ADD COLUMN IF NOT EXISTS import_failed int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS import_runs int NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS import_ms_sum bigint NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS import_ms_max int NOT NULL DEFAULT 0,
@@ -212,6 +214,9 @@ END $$;
 -- p_instances / p_collection (the review of B6.2, part a #4): the page's scope applied inside, on the hourly scan and on
 -- the run status side, so an instance's page never aggregates the fleet; the durations and rows written come from the
 -- same scan (the page read them twice). NULL = every instance / every collection (the Summary's call)
+-- its result grew (B6g-1): CREATE OR REPLACE cannot change a result's columns, so an earlier form is dropped first
+-- (nothing depends on it: collection_health_summary's body is text, the page reads it by name)
+DROP FUNCTION IF EXISTS pgvigil.collection_health(timestamptz, jsonb, timestamptz, int[], text);
 CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL, p_rate_to timestamptz DEFAULT NULL,
                                                      p_instances int[] DEFAULT NULL, p_collection text DEFAULT NULL)
 RETURNS TABLE (instance_id int, collection text, status text, status_reason text, failing_minutes int, consecutive_failures int,

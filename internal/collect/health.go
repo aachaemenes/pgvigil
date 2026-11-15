@@ -2,7 +2,9 @@ package collect
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,8 +16,9 @@ const (
 	OutcomeError   = "error"
 	OutcomeSkipped = "skipped"
 	// OutcomeImportFailed (B6g-1, N27): the read succeeded and a write into the repository failed, so the run ended
-	// as an error at its import (collection_log: 'error', stage 'import'). An error for every count that judges;
-	// counted once more as Import Failed (DBA Dash's ImportFailedCount is inside its FailedCount)
+	// as an error at its import (collection_log: 'error', stage 'import'). An error for every count that judges, and
+	// counted once more as Import Failed. DBA Dash keeps its FailedCount and ImportFailedCount apart and judges their
+	// sum; pgvigil's failed holds both and the page shows failed - import_failed beside Import Failed
 	OutcomeImportFailed = "import failed"
 )
 
@@ -37,7 +40,7 @@ func outcomeOf(res Result) string {
 		return OutcomeImportFailed
 	case res.Err != nil:
 		return OutcomeError
-	case res.Outcome != "":
+	case res.Outcome != "" && res.Outcome != OutcomeImportFailed: // 'import failed' is an error's outcome: nothing without one
 		return res.Outcome
 	case skipped(res):
 		return OutcomeSkipped
@@ -242,4 +245,11 @@ func amcheckUnchecked(rows []Row) []Row {
 			"message": fmt.Sprintf("%v: %d relation(s) not checked", r["check_name"], n)})
 	}
 	return out
+}
+
+// EndedAtImport: whether err, the error that ended a batched run, is the import error last handed back to its reader
+// (lastImport) - by its chain, or by its text where a reader wrapped it without one. A run whose part was refused and
+// which then ended at a READ did not end at an import.
+func EndedAtImport(err, lastImport error) bool {
+	return err != nil && lastImport != nil && (errors.Is(err, lastImport) || strings.Contains(err.Error(), lastImport.Error()))
 }
