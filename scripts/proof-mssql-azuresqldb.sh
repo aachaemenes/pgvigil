@@ -124,7 +124,9 @@
 #     its first run: over the window from 4 hours back, GET /api/mssql/azuredb gives the instance the stored minutes'
 #     sample sum and at least one gap, GET /api/azuredb/summary the same sample sum for it; the Azure tab over 6 hours
 #     names the gap ('gap(s) in this window'); the Properties tab shows the eleven Azure SQL Database rows by their
-#     labels and still says 'mssql_properties is skipped'].
+#     labels [corrected after lab 1's third run, the lead 18:0x (a): no 'mssql_properties is skipped' line - the tab
+#     is in no mssqlTabRuns entry (web/src/main.ts, at 232222d too), so it never printed one; its eleven rows are
+#     what it shows there, nothing unexplained]].
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
 #     permissions, role members and event sessions read by the setup login after the proof's own setup equal the
 #     same read after every collector run.
@@ -679,8 +681,8 @@ else
     T=$(text < "$WORK/p-mssqlproperties.html"); PMISS=()
     for l in 'Edition' 'Service objective' 'Service level objective (with hardware)' 'Elastic pool' 'DTU limit' 'vCore limit' 'Max size (MB)' 'Max sessions' 'Max worker threads' 'Max log rate (MB/s)' 'MAXDOP (user workload group)'; do
       grep -qF "$l" <<<"$T" || PMISS+=("$l"); done
-    if [ ${#PMISS[@]} -eq 0 ] && grep -qF 'mssql_properties is skipped' <<<"$T"; then SHOWS+=("the Properties tab: the eleven Azure SQL Database rows and mssql_properties' skip line")
-    else bad "C: the Properties tab: missing row label(s) [${PMISS[*]}] or no 'mssql_properties is skipped' line"; fi
+    if [ ${#PMISS[@]} -eq 0 ]; then SHOWS+=("the Properties tab: the eleven Azure SQL Database rows")
+    else bad "C: the Properties tab: missing row label(s) [${PMISS[*]}]"; fi
     [ ${#SHOWS[@]} -eq 3 ] && echo "  B2a's pages: ${SHOWS[0]}; ${SHOWS[1]}; ${SHOWS[2]}"
   else bad "C: chromium is not on this machine: the pages were not rendered"; fi
 fi
