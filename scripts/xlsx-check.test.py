@@ -330,7 +330,8 @@ PROBES = [
     ('X14 free % 13.4 under 0.0', 'X14', 'FAIL', lambda: grid1(PCT, [['c', 13.4]], {'B2': ('fmt', '0.0')})),
     ('X14 free % 13.4 under General', 'X14', 'FAIL', lambda: grid1(PCT, [['c', 13.4]])),
     ('X14 free % 0.134 under 0.0%', 'X14', 'PASS', lambda: grid1(PCT, [['c', 0.134]], {'B2': ('fmt', '0.0%')})),
-    ('X14 free % 13.4 under 0.0% (a percent number, not a fraction)', 'X14', 'FAIL', lambda: grid1(PCT, [['c', 13.4]], {'B2': ('fmt', '0.0%')})),
+    ('X14 a share past 1,000 % under 0% (a run at 15 times its average; its size is the proof\'s)', 'X14', 'PASS', lambda: grid1(['job', '% of average'], [['c', 15.0]], {'B2': ('fmt', '0%')})),
+    ('X14 a growth of +4,900 % under 0.0%', 'X14', 'PASS', lambda: grid1(['query', 'Duration +%'], [['q', 49.0]], {'B2': ('fmt', '0.0%')})),
     ('X14 free (GB) 13.4 under 0.0: no percent', 'X14', 'PASS', lambda: grid1(['name', 'free (GB)'], [['c', 13.4]], {'B2': ('fmt', '0.0')})),
     ('X14 free % with words only', 'X14', 'PASS', lambda: grid1(PCT, [['c', 'n/a']])),
     # X15: a unit column holds no number as text

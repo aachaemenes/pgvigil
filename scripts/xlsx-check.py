@@ -55,7 +55,8 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
       rounded to what its grid shows (1.6 under General), pgvigil keeps the value exact under the page's decimals
       ('0.0': the cell reads 1.6, the formula bar 1.6328125) - both pass; a file alone cannot say what its page showed
   X14 a column whose header names a percent ('%') holds fractions under '0%' / '0.0%' / '0.00%' (13.4 % is 0.134): no
-      percent number under another format, none above 10 (1000 %) under a percent format
+      percent number under another format. A share's size is the page's (a query's +4,900 % is 49, a run at 15 times its
+      average 15.0): proof-export.sh holds it against the screen's figure
   X15 a column whose header ends with its unit in brackets ('(ms/s)', '(s)', '(GB)') holds no text that starts with a
       number ('463.71 warning', '1m 9s'): the number is the cell, its unit the header, its status the fill
   X16 no text cell that is one number and a unit symbol ('0 h', '12 min', '1.5 GB', '13.4 %'): a number with its unit in
@@ -581,13 +582,6 @@ def check(book, page=None, measured=None):
                     fmt = c['xf']['fmt'] or 'General'
                     if not PERCENT.fullmatch(fmt):
                         out['X14'].append("'%s'!%s '%s' %s under %s: not a fraction under a percent format" % (nm, c['ref'], h, c['v'], fmt))
-                    else:
-                        try:
-                            big = abs(float(c['v'])) > 10
-                        except ValueError:
-                            big = False
-                        if big:
-                            out['X14'].append("'%s'!%s '%s' %s under %s: a percent number, not a fraction" % (nm, c['ref'], h, c['v'], fmt))
             if UNIT_HEAD.search(h) and not free_value:
                 for c in texts:
                     if NUM_START.match(c['v']):

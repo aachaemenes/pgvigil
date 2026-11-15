@@ -1603,6 +1603,21 @@ for key, tab, inst in PAGES:
                 CONVERTED[0] += ncmp
                 if ncmp or off_:
                     check(not off_, f"{key}: sheet '{names[gsheet[i] - 1]}' {ncmp} figure(s) in its unit-headed columns = the screen's, converted, within the shown precision ({off_[:3]})")
+                # (X14) a percent column's share = the screen's figure / 100 within its shown precision: the file alone cannot
+                # tell 13.4 % from 1,340 % (a query's +4,900 % is a real share of 49, a run at 15 times its average 15.0)
+                poff, npct = [], 0
+                for j, c_ in enumerate(cols):
+                    if '%' not in (c_ or ''): continue
+                    for k_, r_ in enumerate(g['cells']):
+                        if j >= len(r_): continue
+                        _sid, v_, _t = cells.get((k_ + 2, j), (0, None, None)); mp = re.fullmatch(r'\+?(-?[\d.,\s\u202f\u00a0]*\d)\s?%?', r_[j]['t'] or '')
+                        if v_ is None or not mp: continue
+                        e_, kd = digits_(mp.group(1))
+                        if e_ is None: continue
+                        npct += 1
+                        if abs(v_ - e_ / 100) > 0.5 * 10 ** -kd / 100 + 1e-9: poff.append(f"{colname(j)}{k_ + 2} '{r_[j]['t']}' -> {v_}, want {e_ / 100:.6g}")
+                if npct or poff:
+                    check(not poff, f"{key}: sheet '{names[gsheet[i] - 1]}' {npct} share(s) in its percent columns = the screen's figure / 100, within the shown precision ({poff[:3]})")
                 # (X13) the most decimals the screen shows in each column of this grid, for xlsx-check's page - a grid the
                 # screen drew whole only (a long grid's rows past the drawn ones can show more: the writer reads them all)
                 if len(g['cells']) == g['rows']:
