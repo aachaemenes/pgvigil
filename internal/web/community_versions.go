@@ -116,7 +116,9 @@ func readVersions(ctx context.Context, conn *sql.Conn, db string, azure bool, na
 	win := func(pats ...string) string {
 		parts := make([]string, 0, len(pats))
 		for _, p := range pats {
-			parts = append(parts, "NULLIF(PATINDEX(N'"+p+"', m.definition), 0)")
+			// under a case-insensitive collation: the definition's own (a case-sensitive database or server) would
+			// miss the Kit's '@Version' against the pattern's '@version'
+			parts = append(parts, "NULLIF(PATINDEX(N'"+p+"', m.definition COLLATE Latin1_General_100_CI_AS), 0)")
 		}
 		return "SUBSTRING(m.definition, COALESCE(" + strings.Join(parts, ", ") + ", 0), 120)"
 	}
