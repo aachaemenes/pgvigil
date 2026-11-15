@@ -389,7 +389,7 @@ func backupFileRows(ctx context.Context, conn *sql.Conn, info Info, pool *sql.DB
 	if err != nil {
 		return nil, "not judged: no connection for the file check"
 	}
-	defer fc.Close()
+	defer func() { _ = fc.Close() }()
 	var rows []collect.Row
 	for _, s := range sets {
 		r := collect.Row{"kind": "file", "database_name": s.db, "backup_type": s.typ, "backup_set_uuid": s.uuid}
@@ -465,7 +465,7 @@ func backupRootAnswers(ctx context.Context, pool *sql.DB, root string) bool {
 	if err != nil {
 		return false
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	var exists, isDir, parent sql.NullInt64
 	return c.QueryRowContext(rctx, backupExistsSQL, root).Scan(&exists, &isDir, &parent) == nil
 }
