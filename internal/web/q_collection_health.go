@@ -1,8 +1,11 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -242,4 +245,73 @@ func chPartNames(part string) []string {
 		return []string{"collections", "runs", "cost", "errors"}
 	}
 	return []string{"collections", "runs", "cost"}
+}
+
+// CHThresholdWrite is POST /api/collectionhealth/thresholds (B6g-2, N33 / N41): DBA Dash's per-collection thresholds,
+// set or inherited at one scope - an instance's collection, every collection of an instance, a collection on every
+// instance, everything (instance_id / collection left out). Any signed-in user writes them (the lead's 07:4x ROLE (a)),
+// audited in the table's history; the demo door carries one demo instance's scopes and refuses the two wider ones in
+// words. import_collection_health_threshold answers done or refused (409 with its words).
+func (s *Server) CHThresholdWrite(w http.ResponseWriter, r *http.Request) {
+	seat, ok := s.seat(w, r, strings.Replace(s.ackOff(), "acknowledgements", "Collection Health thresholds", 1))
+	if !ok {
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+	if err != nil || len(raw) > 4096 {
+		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 4 KB"))
+		return
+	}
+	if strings.Contains(string(raw), `\u0000`) || strings.ContainsRune(string(raw), 0) {
+		writeErr(w, http.StatusBadRequest, errors.New("the request holds a NUL character: nothing was written"))
+		return
+	}
+	var in map[string]any
+	if err := json.Unmarshal(raw, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
+		return
+	}
+	// only the named keys travel on; who and from where are the server's to say
+	pay := map[string]any{"ui_user": seat.user, "client": seat.client}
+	for _, k := range []string{"op", "instance_id", "collection", "warn_fails_in_row", "warn_fail_minutes", "crit_fails_in_row", "crit_fail_minutes",
+		"warn_fail_pct", "crit_fail_pct", "min_runs", "dont_monitor"} {
+		if v, ok := in[k]; ok && v != nil {
+			// a number is passed on as its text: the function checks the shape before it casts
+			if f, isNum := v.(float64); isNum {
+				v = strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", f), "0"), ".")
+			}
+			pay[k] = v
+		}
+	}
+	b, _ := json.Marshal(pay)
+	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+	defer wcancel()
+	pool, ok := seat.poolFor(wctx, w, scopeOfCHThreshold(pay))
+	if !ok {
+		return
+	}
+	var out []byte
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.import_collection_health_threshold($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+		s.log.Error("collection health threshold: not written", "user", seat.user, "err", err)
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
+		return
+	}
+	var res struct {
+		Outcome     string `json:"outcome"`
+		Detail      string `json:"detail"`
+		ThresholdID *int64 `json:"threshold_id"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("import_collection_health_threshold answered %q", out))
+		return
+	}
+	s.log.Info("collection health threshold: attempt", "op", pay["op"], "instance_id", pay["instance_id"], "collection", pay["collection"], "user", seat.user, "outcome", res.Outcome, "detail", res.Detail)
+	code := http.StatusOK
+	if res.Outcome != "done" {
+		code = http.StatusConflict
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": res.Outcome, "detail": res.Detail, "threshold_id": res.ThresholdID})
 }
