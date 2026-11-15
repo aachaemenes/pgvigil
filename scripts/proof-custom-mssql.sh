@@ -62,7 +62,9 @@
 #     Status 7: 'Status 7 is not 1 to 4'; a pair twice: 'Test "t" and Context "c" come twice'). On st6-dd (the same
 #     login, query_text: none): its rows without Info and db1's finding = 'Status 1'; after the table loses its Status 1
 #     and 2 rows, the next run ok, value 0, its set two rows (jobs, na), its findings none; then (the code review's S4)
-#     the procedure made to fail (1/0): the run an error, its set unchanged (jobs, na), the error finding there; and
+#     the procedure made one column (SELECT 1 / 0 AS Test): an error 'the check returns no column Context' (the shape
+#     is read before the row, run 3), its set unchanged; then made to fail on its row (DBA Dash's four columns, Status
+#     CAST(N'x' AS tinyint)): the run an error 'Conversion failed', its set unchanged (jobs, na), the error finding; and
 #     d_big (1,001 rows, the last one Status 1; the code review's B1): critical, 1 of 1001, 1,000 rows kept with db1001
 #     among them, its one critical finding. The Summary (GET /api/mssql/summary, in R): the Custom Checks cell of
 #     st6-mon critical 1 with db1's finding first, state ok; of st6-sa (refused, no check stored) 'failed' with the
@@ -326,13 +328,20 @@ collect "$DD"
 [[ $(res "$DD" d_big "status || ' ' || value || ' ' || row_count") == "critical 1 1001" && $(q "select count(*) || '|' || count(*) filter (where test = 'db1001' and status = 1) from pgvigil.custom_status_rows r join pgvigil.instances i using (instance_id) where i.name = '$DD' and r.check_name = 'd_big'") == "1000|1" \
    && $(cfind "$DD" d_big) == "critical|custom check d_big: db1001 (c)|Status 1" && $(res "$DD" d_big "note") == *"1000 of 1001 status rows kept: every row at critical or warning first"* ]] \
   || fail "D: d_big (1,001 rows, the last critical): $(res "$DD" d_big "status || ' ' || coalesce(value::text, '') || ' ' || coalesce(row_count::text, '') || ' ' || coalesce(note, '') || ' ' || coalesce(error, '')"), findings $(cfind "$DD" d_big)"
-# an ALTER PROCEDURE opens its own batch: through stdin (sq's -Q sends 'SET NOCOUNT ON; ' before it: Msg 111, run 2)
+# an ALTER PROCEDURE opens its own batch: through stdin (sq's -Q sends 'SET NOCOUNT ON; ' before it: Msg 111, run 2).
+# The shape is read before the rows: a procedure of one column (Test) whose row would fail is refused by its shape
+# (run 3); a procedure with DBA Dash's four columns fails on its row (a conversion error: raised whatever the session's
+# ANSI_WARNINGS, which a division by zero is not)
 printf 'USE pgvp_util;\nGO\nALTER PROCEDURE dbo.DBADash_CustomCheck AS SELECT 1 / 0 AS Test;\nGO\n' | sqs >/dev/null
 collect "$DD"
-[[ $(res "$DD" d_dbadash "status") == error && $(res "$DD" d_dbadash "error") == *"Divide by zero"* && $(srows "$DD" d_dbadash) == "jobs/agent/4 na/x/3" \
+[[ $(res "$DD" d_dbadash "status") == error && $(res "$DD" d_dbadash "error") == *"the check returns no column Context"* && $(srows "$DD" d_dbadash) == "jobs/agent/4 na/x/3" ]] \
+  || fail "D: a procedure of one column on $DD: $(res "$DD" d_dbadash "status || ' ' || coalesce(error, '')"), rows $(srows "$DD" d_dbadash)"
+printf "USE pgvp_util;\nGO\nALTER PROCEDURE dbo.DBADash_CustomCheck AS SELECT CAST(N't' AS nvarchar(128)) AS Test, CAST(N'c' AS nvarchar(128)) AS Context, CAST(N'x' AS tinyint) AS Status, CAST(NULL AS nvarchar(max)) AS Info;\nGO\n" | sqs >/dev/null
+collect "$DD"
+[[ $(res "$DD" d_dbadash "status") == error && $(res "$DD" d_dbadash "error") == *"Conversion failed"* && $(srows "$DD" d_dbadash) == "jobs/agent/4 na/x/3" \
    && $(q "select count(*) from pgvigil.custom_findings f join pgvigil.instances i using (instance_id) where i.name = '$DD' and f.setting = 'custom check d_dbadash' and f.value = '(error)'") == 1 ]] \
-  || fail "D: a failing procedure on $DD: $(res "$DD" d_dbadash "status || ' ' || coalesce(error, '')"), rows $(srows "$DD" d_dbadash)"
-ok "D: under query_text none the rows keep no Info (db1's finding says 'Status 1'); the next run's set replaced the stored one (ok, 0 of 2), its findings gone; 1,001 rows with the last critical: 1,000 kept with it, its finding raised; a failing procedure: its error, the set kept"
+  || fail "D: a failing procedure on $DD: $(res "$DD" d_dbadash "status || ' ' || coalesce(error, '')"), rows $(srows "$DD" d_dbadash), error findings $(q "select count(*) from pgvigil.custom_findings f join pgvigil.instances i using (instance_id) where i.name = '$DD' and f.setting = 'custom check d_dbadash' and f.value = '(error)'")"
+ok "D: under query_text none the rows keep no Info (db1's finding says 'Status 1'); the next run's set replaced the stored one (ok, 0 of 2), its findings gone; 1,001 rows with the last critical: 1,000 kept with it, its finding raised; a procedure of one column: its shape refused before its row; a failing procedure: its error, the set kept, the error finding"
 
 echo "--- F: the fence, one login at a time"
 for pair in "sa|role sysadmin" "ctl|CONTROL SERVER" "conn|ALTER ANY CONNECTION" "imp|IMPERSONATE on login sa" "bulk|ADMINISTER BULK OPERATIONS" "dw|in database pgvp_app DELETE, INSERT, UPDATE" \
