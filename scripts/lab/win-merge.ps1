@@ -19,15 +19,18 @@
 #           xp_instance_regread and raises 21028 when it is absent, 0 or unread) by setup.exe /QUIET /ACTION=Install /FEATURES=Replication
 #           /INSTANCENAME=<it> /IACCEPTSQLSERVERLICENSETERMS /UPDATEENABLED=False, run as SYSTEM through this script's
 #           one-shot task (removed on every path); the instance is named in <LabDir>\merge-feature.txt BEFORE setup
-#           runs, and the check is read back. SQL Server Agent loads its job subsystems only when it starts, and the
-#           feature's setup adds Snapshot / LogReader / Distribution / Merge rows to msdb.dbo.syssubsystems without
-#           restarting it (an Agent started before the feature refuses the snapshot job: 'The Snapshot subsystem failed
-#           to load ... The job has been suspended'): so the Agent of each instance the feature was added to is
-#           restarted (the Agent service only, never the engine: the mirroring session is untouched; a run of
-#           win-mirroring.ps1's 1-minute Database Mirroring Monitor Job caught by it is cut, the next minute's runs) and
-#           read back: the service Running, and the newest '[432] There are <n> subsystems in the subsystems cache'
-#           line its SQLAGENT.OUT (the instance's SQLServerAgent\ErrorLogFile registry value) has written since the
-#           restart, n equal to msdb.dbo.syssubsystems' rows, Snapshot and Merge among them. Then builds, in Microsoft's documented
+#           runs, and the check is read back. SQL Server Agent builds its list of job subsystems only when it starts
+#           (msdb.dbo.sp_enum_sqlagent_subsystems_internal: the rows of msdb.dbo.syssubsystems and of
+#           sys.fn_sqlagent_subsystems(), WITHOUT Snapshot / LogReader / Distribution / Merge / QueueReader while the
+#           instance's Replication\IsInstalled registry value is 0 - the value sp_MS_replication_installed reads), and
+#           the feature's setup does not restart it: an Agent started before the feature refuses the snapshot job ('The
+#           Snapshot subsystem failed to load ... The job has been suspended'). So the Agent of each instance the feature
+#           was added to is restarted (the Agent service only, never the engine: the mirroring session is untouched; a
+#           run of win-mirroring.ps1's 1-minute Database Mirroring Monitor Job caught by it is cut, the next minute's
+#           runs) and read back: the service Running, and the newest '[432] There are <n> subsystems in the subsystems
+#           cache' line its SQLAGENT.OUT (the instance's SQLServerAgent\ErrorLogFile registry value) has written since
+#           the restart, n above the count the log held before the restart (with no earlier count: at least
+#           msdb.dbo.syssubsystems' rows); a restart that loaded nothing new throws. Then builds, in Microsoft's documented
 #           order (sp_adddistributor, sp_adddistributiondb, sp_adddistpublisher, sp_replicationdboption 'merge
 #           publish', sp_addmergepublication, sp_addpublication_snapshot, sp_addmergearticle,
 #           sp_startpublication_snapshot, sp_addmergesubscription, sp_addmergepushsubscription_agent with
@@ -68,9 +71,10 @@
 #           'replication feature <inst>: absent - setup as SYSTEM (a few minutes)', '... setup /ACTION=Install as SYSTEM
 #           exit 0' (or 3010), '... read back: installed' (a few minutes each), the mirroring roles of pgvmirror printed after (a feature setup may restart an engine); the
 #           ISO 'dismounted' when this script mounted it; for each instance the feature was added to 'SQL Server Agent
-#           SQLAgent$<inst>: restarting (... msdb.dbo.syssubsystems has 11)' and '... Running; <its SQLAGENT.OUT>
-#           '[432] There are 11 subsystems in the subsystems cache' (msdb.dbo.syssubsystems 11)' within seconds (11 on
-#           SQL Server 2022 with the feature: hour 4's read; the check is n = the rows, not the number); the folder's rights printed
+#           SQLAgent$<inst>: restarting (... its log's last [432] count 7, msdb.dbo.syssubsystems 11)' and '... Running;
+#           <its SQLAGENT.OUT> '[432] There are 12 subsystems in the subsystems cache' (before the restart 7,
+#           msdb.dbo.syssubsystems 11)' within seconds (7 = an engine-only instance's count as read on the lab host; 12
+#           = 7 and the five replication subsystems, not yet read on Windows: 11 passes too, the check is the rise); the folder's rights printed
 #           ('ReplData before: ...', when it exists); 'folder: <ReplData> made' when it was absent (before the
 #           distributor: sp_adddistpublisher refuses a working directory that does not exist, Msg 21037);
 #           'distributor: distribution made, working directory <the instance's ReplData>'; 'grant:
@@ -314,17 +318,20 @@ function Get-AgentSubsystemCount([string]$logFile, [datetime]$since) {
 }
 
 # the instance's SQL Server Agent restarted (the Agent service only: the engine and its mirroring session untouched) so
-# it loads the subsystems the Replication feature added, read back: Running, and its log's [432] count since the restart
-# equal to msdb.dbo.syssubsystems' rows, Snapshot and Merge among them; any difference throws
+# its subsystem list is built again with the Replication feature installed, read back: Running, and its log's [432]
+# count since the restart. The Agent is judged against itself: the count must have risen over the one its log held
+# before the restart (the five replication subsystems join the list together), or reach msdb.dbo.syssubsystems' rows
+# where no earlier count can be read; neither = the restart loaded nothing new, and that throws. The count is never
+# compared for equality with the rows: the Agent's list is not that table (sp_enum_sqlagent_subsystems_internal adds
+# sys.fn_sqlagent_subsystems()' rows and leaves the replication ones out while the feature is not installed).
 function Restart-LabAgent([object]$inst) {
     $svcName = "SQLAgent`$$($inst.Name)"
     $logFile = Get-AgentLogPath $inst
-    $rowsWant = [int](Get-LabValue $inst 'SELECT COUNT(*) FROM msdb.dbo.syssubsystems')
-    $replRows = [int](Get-LabValue $inst "SELECT COUNT(*) FROM msdb.dbo.syssubsystems WHERE subsystem IN (N'Snapshot', N'Merge')")
-    if ($replRows -ne 2) { throw "msdb.dbo.syssubsystems on $($inst.Name) holds $replRows of Snapshot / Merge after the feature (2 wanted)" }
+    $rowsNow = [int](Get-LabValue $inst 'SELECT COUNT(*) FROM msdb.dbo.syssubsystems')
+    $before = Get-AgentSubsystemCount $logFile ([datetime]::MinValue)   # the running Agent's own count (-1: none in its log)
     $now = Get-Date
     $since = $now.AddTicks(-($now.Ticks % [TimeSpan]::TicksPerSecond))   # the log's times are whole seconds
-    Say "SQL Server Agent ${svcName}: restarting (it loads its job subsystems only when it starts; msdb.dbo.syssubsystems has $rowsWant)"
+    Say "SQL Server Agent ${svcName}: restarting (it builds its subsystem list only when it starts; its log's last [432] count $(if ($before -ge 0) { $before } else { 'not found' }), msdb.dbo.syssubsystems $rowsNow)"
     Restart-Service -Name $svcName -ErrorAction Stop
     if (-not (Wait-Until 60 { [string](Get-Service -Name $svcName -ErrorAction Stop).Status -eq 'Running' })) {
         throw "$svcName is $([string](Get-Service -Name $svcName -ErrorAction Stop).Status) 60 s after its restart"
@@ -333,8 +340,11 @@ function Restart-LabAgent([object]$inst) {
     if (-not (Wait-Until 120 { $hold.n = Get-AgentSubsystemCount $logFile $since; $hold.n -ge 0 })) {
         throw "no '[432] ... subsystems in the subsystems cache' line in $logFile since $($since.ToString('yyyy-MM-dd HH:mm:ss')), 120 s after the restart"
     }
-    Say "SQL Server Agent ${svcName}: Running; $logFile '[432] There are $($hold.n) subsystems in the subsystems cache' (msdb.dbo.syssubsystems $rowsWant)"
-    if ($hold.n -ne $rowsWant) { throw "the Agent of $($inst.Name) loaded $($hold.n) subsystems; msdb.dbo.syssubsystems has $rowsWant" }
+    Say "SQL Server Agent ${svcName}: Running; $logFile '[432] There are $($hold.n) subsystems in the subsystems cache' (before the restart $(if ($before -ge 0) { $before } else { 'not found' }), msdb.dbo.syssubsystems $rowsNow)"
+    $rose = ($before -ge 0 -and $hold.n -gt $before)
+    if (-not $rose -and $hold.n -lt $rowsNow) {
+        throw "the restart of $svcName loaded no new subsystem: its [432] count is $($hold.n) (before the restart $(if ($before -ge 0) { $before } else { 'not found' }), msdb.dbo.syssubsystems $rowsNow)"
+    }
 }
 
 # the names this script makes, as found now (each a count; 0 = absent)
