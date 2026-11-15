@@ -360,7 +360,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
 	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
 	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
-	// the fleet's SQL Server error stream (B24o)
+	// the fleet's SQL Server error stream (mssql_errorlog + AlwaysOn_health)
 	api.HandleFunc("GET /api/mssql/errorfleet", s.MSSQLErrorFleet)
 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
 	api.HandleFunc("GET /api/mssql/syshealth", s.MSSQLSysHealth)

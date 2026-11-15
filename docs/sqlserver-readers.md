@@ -122,6 +122,35 @@ processes used 50 % of the CPU or more, and memory utilization 50 or less.
 On SQL Server on Linux the scheduler monitor writes the idle CPU as 0 in every sample, so pgvigil stores the idle share as
 not read there (as the CPU reader does): other processes' share is unknown and no 'other processes' finding is raised.
 
+## SQL Server errors: the fleet's stream
+
+Checks > SQL Server errors (`#/mssqlerrors`, at the root and in a tag folder; on an instance under Logs) is SQLMonitor's
+'All Servers - Alert History' over what pgvigil already stores: every error of severity 17 or more, and the numbers
+SQLMonitor alerts on at any severity - 1480, 976, 983, 3402, 19406, 35206, 35250, 35264, 35273-35276, 41091, 41131,
+41142, 41406, 41414 (Availability Group role, state and data movement), 823, 824, 825, 15457 and 5084 (configuration
+changes). Nothing is set up on a monitored server: SQLMonitor creates an Agent alert and a job on each server; SQL
+Server Agent reads the Windows application log, and a message written there is also written to the error log, which
+pgvigil already reads.
+
+- **Sources**: the error log's kept lines (above) and AlwaysOn_health's `error_reported` events (`mssql_ag_events`). An
+  event in both - the same instance and number within 2 seconds - is counted once (its error-log line). An
+  AlwaysOn_health row has no state; its class is its family (lease, connection, role, data movement).
+- **By error number**: the worst severity, the occurrences, the instances, the first and last time, the latest message,
+  and Microsoft's page for the number (not every number has one). Severity 20 or more is critical, 17 to 19 a warning.
+- **Every message**: newest first (the newest 1,000), each instance linking to its Error log tab; the database is the one
+  the message names (`database 'x'`, `database "x"`, or `database ID n` with the name the instance's files give that id
+  today, since an id is reused after a drop), empty when it names none.
+- **Known noise** is the DBA's own, never a list built in: Mark as known noise on a number writes a `noise` label
+  (`check_key 'error log:<n>'`; `'error log'` with a text for a text under any number; a tag or a text narrows it). Its
+  lines leave the counts and come back with Show known noise. A label with neither a number nor a text hides nothing.
+  The labels also show in the Alerts page's list of known noise, where they match no alert (an alert's source and
+  setting are never `error log`), and they are ended on either page.
+- **Not here**: a listed number pgvigil keeps no row of is named under Not kept (15457: a configuration change is logged
+  at severity 0 and matches none of the reader's search strings - add an instance's own search string to keep it); an
+  instance whose AlwaysOn_health capture was not read (stopped) is named at the top.
+- The error log's finding 'error log: errors of severity 17 or higher' links to this page at its instance.
+- PostgreSQL has no fleet stream of its log errors yet: each instance's Logs page holds them.
+
 ## Findings
 
 | Finding | Severity | When |
@@ -153,6 +182,8 @@ not read there (as the CPU reader does): other processes' share is unknown and n
   lines, classes and search.
 - `GET /api/mssql/defaulttrace?instance=<id>[&from=&to=][&part=]`: state, findings, growth_summary, growths,
   dbcc_summary, dbcc, ddl.
+- `GET /api/mssql/errorfleet?[instance=|instances=][&tag=][&from=&to=][&n=][&noise=1]`: byerror, lines, noise, agstate,
+  cannot.
 - `GET /api/mssql/syshealth?instance=<id>[&from=&to=][&part=]`: state, findings, latest, issues, system,
   query_processing, io, resource, series, spinlocks, broker, node_oom, scheduler, scheduler_samples, waits, event_findings.
 

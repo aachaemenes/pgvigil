@@ -9,9 +9,10 @@
 --                  collection_error_class reads it from the note then ('connect: ' -> connect, 'rollup ' -> other,
 --                  else collect). DBA Dash has a WMI stage; pgvigil reads nothing through WMI
 --   log_collection a 7-argument form with p_stage and NO default: a default would make every 6-argument call ambiguous
---                  ('function is not unique'), and every caller drops its error. The 6-argument form stays and calls it
---                  with NULL, so a caller that names no stage is unchanged. apply_roles grants every form of the name
---                  to the collector (0110)
+--                  ('function is not unique'), and every caller drops its error. The 6-argument form (0001) is not
+--                  touched: it names no stage, so its rows carry NULL. apply_roles grants every form of the name to the
+--                  collector (0110). This file creates its own objects only: no arm of a joined view or function (0190)
+--                  reads them
 --   the classifier collection_error_class(status, note, stage): the type ('error' -> Error, 'partial' -> Warning: the
 --                  run finished carrying a collector_error row, 'skipped' -> Skipped) and the stage as the pages show
 --                  them. pgvigil never retries a run, so DBA Dash's Retry type has no rows here. 'ok' rows (0139's
@@ -46,12 +47,6 @@ BEGIN
     VALUES (p_instance_id, p_collection, p_snapshot_at, p_duration_ms, p_status, p_note, p_stage);
   END IF;
 END $$;
-
-CREATE OR REPLACE FUNCTION pgvigil.log_collection(
-  p_instance_id int, p_collection text, p_snapshot_at timestamptz, p_duration_ms int, p_status text, p_note text)
-RETURNS void LANGUAGE sql AS $$
-  SELECT pgvigil.log_collection(p_instance_id, p_collection, p_snapshot_at, p_duration_ms, p_status, p_note, NULL::text)
-$$;
 
 CREATE OR REPLACE FUNCTION pgvigil.collection_error_class(p_status text, p_note text, p_stage text,
                                                           OUT error_type text, OUT error_stage text)

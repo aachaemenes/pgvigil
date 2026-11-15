@@ -11,7 +11,7 @@ import (
 // '(the service)' rows); its rows are removed and written again at each seed.
 const demoServiceChannel = "demo-collector-errors"
 
-// SeedCollectorErrors gives the Collector errors and SQL Server errors pages something to show (0198, B24o): on the
+// SeedCollectorErrors gives the Collector errors and SQL Server errors pages something to show (0198): on the
 // first PostgreSQL demo instance an import refused, a batch part refused (partial), a failed connection and a skip;
 // on the SQL Server demo instances two collections denied a right (the rights suggestion) and a batch import part
 // refused; two alert sends of the service that did not go out; an acknowledgement of the PostgreSQL instance's errors;
