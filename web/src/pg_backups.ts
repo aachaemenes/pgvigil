@@ -396,6 +396,14 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       : `Thresholds are read only here: ${rootWhy}`);
     const out: HTMLElement[] = [el('h2', {}, 'Thresholds' + (scoped ? ` - ${tagWords(scoped)}` : '')),
       el('p', { class: 'meta' }, 'State thresholds: the root applies to every instance, a tag to its instances (the first of an instance\'s tags in sort order that has a row), an instance to itself, a database to one database (amcheck). The nearest level wins; with none, the built-in default. Two keys judge SQL Server instances too: uptime (the Summary\'s Instance Uptime: a root or tag row set here colours every SQL Server Uptime cell under it as well) and crash (the Summary\'s Memory Dump - Crash restarts on a scope with no SQL Server instance: SQL Server\'s memory dumps, PostgreSQL\'s crash restarts).')];
+    // under a tag folder its scope lines stand just under the heading (the review of rel-tagall #8: before the levels and the form)
+    if (ids) {
+      const left = rowsAll.length - rows.length;
+      out.splice(1, 0, el('p', { class: 'meta' }, `In view: ${tagWords(scoped!)} - the levels that reach one of its ${fmtNum(ids.size)} instance(s): the root, a tag one of them carries, one of its instances or their databases.`
+        + (left ? ` Not listed here: ${fmtNum(left)} level(s) of other tags and instances (All instances lists them).` : '')));
+      const wide = fleetWideNote(ctx, 'The root level of each threshold is one setting');
+      if (wide) out.splice(2, 0, wide);
+    }
     const keyCols: Col[] = [
       { key: 'label', label: 'threshold' }, { key: 'unit' },
       { key: 'warn_default', label: 'built in', fmt: (_v, r) => thresholdLine({ ...r, warn: r.warn_default, crit: r.crit_default, level: 'default' }) },
@@ -455,13 +463,6 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'created_by', label: 'set by' }, { key: 'created_at', label: 'set', fmt: fmtTime },
     ];
     out.push(el('section', {}, el('h3', {}, `Set levels (${rows.length})`), grid(rows, rowCols, 'Nothing is set: every instance takes the built-in defaults.')));
-    if (ids) {
-      const left = rowsAll.length - rows.length;
-      out.push(el('p', { class: 'meta' }, `In view: ${tagWords(scoped!)} - the levels that reach one of its ${fmtNum(ids.size)} instance(s): the root, a tag one of them carries, one of its instances or their databases.`
-        + (left ? ` Not listed here: ${fmtNum(left)} level(s) of other tags and instances (All instances lists them).` : '')));
-      const wide = fleetWideNote(ctx, 'The root level of each threshold is one setting');
-      if (wide) out.push(wide);
-    }
     box.replaceChildren(...out);
   };
   await draw();
