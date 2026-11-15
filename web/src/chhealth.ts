@@ -39,8 +39,8 @@ export function chartHours(from: string, to: string, now = Date.now()): number {
 
 // costWords (B6g-1; N25, N26): what a cost cell - CPU, logical reads - says when it holds no number. pgvigil reads a
 // run's own session cost on SQL Server only, so a PostgreSQL row says 'not read by pgvigil' (no more is said of why);
-// any other empty cell (a SQL Server row none of whose runs reached its end read, a row per collection over
-// PostgreSQL instances alone) says 'not read'. null = the cell holds a number, zero too
+// any other empty cell (a SQL Server row none of whose runs reached its end read, a row per collection whose instances
+// do not share one engine) says 'not read'. null = the cell holds a number, zero too
 export function costWords(v: unknown, engine: unknown): string | null {
   if (v != null && v !== '') return null;
   return engine === 'postgres' ? 'not read by pgvigil' : 'not read';

@@ -551,7 +551,8 @@ func TestCursorRow(t *testing.T) {
 type fakeStore struct {
 	cursors  map[string]Cursor
 	imported [][]map[string]any
-	failAt   int // the import call (1-based) that fails; 0: none
+	failAt   int   // the import call (1-based) that fails; 0: none
+	failErr  error // that call's error (nil: 'the repository is away')
 	calls    int
 	status   string
 	note     string
@@ -566,6 +567,9 @@ func (f *fakeStore) MSSQLCursor(_ context.Context, _ int, source string) (string
 func (f *fakeStore) Import(_ context.Context, _ int, _ string, _ time.Time, rows []map[string]any) error {
 	f.calls++
 	if f.calls == f.failAt {
+		if f.failErr != nil {
+			return f.failErr
+		}
 		return errors.New("the repository is away")
 	}
 	f.imported = append(f.imported, rows)
@@ -694,6 +698,13 @@ func TestRunBatched(t *testing.T) {
 	res = run(rd, fakeBatches{total: 25, size: 10, swallow: true, readErr: errors.New("the ring buffer is gone")})
 	if res.Err == nil || res.Outcome != "" || rd.status != "error" || rd.stage != "import" {
 		t.Errorf("a read error after a swallowed refused batch: outcome %q, err %v, status %s, stage %q - want a plain error (the run ended at a read), the log's stage still 'import'", res.Outcome, res.Err, rd.status, rd.stage)
+	}
+	// the review of B6g-1's folds #1: a swallowed import that timed out waiting for the pool (a bare deadline) and then a
+	// READ that met the run's deadline - the two errors share a cause, not an identity: a plain error, never 'import failed'
+	rd = &fakeStore{cursors: map[string]Cursor{}, failAt: 2, failErr: context.DeadlineExceeded}
+	res = run(rd, fakeBatches{total: 25, size: 10, swallow: true, readErr: fmt.Errorf("the audit specification of x: %w", context.DeadlineExceeded)})
+	if res.Err == nil || res.Outcome != "" {
+		t.Errorf("a read deadline after a swallowed import deadline: outcome %q, err %v - want a plain error", res.Outcome, res.Err)
 	}
 	// the next run goes on from the stored cursor: events 11 to 25, none twice
 	st.failAt = 0

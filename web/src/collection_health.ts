@@ -151,7 +151,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       // all) and uPlot's bars of running totals draw the tallest over the others (the review of B6.2, part b #14)
       wholeHours < 2 ? hourly('Runs') : lineChart('Runs', runs, [{ key: 'failed', label: 'Failed', color: '--crit' }, { key: 'fp', label: 'Partial', color: '--warn' }, { key: 'all', label: 'Succeeded', color: '--ok' }],
         v => v.toLocaleString(), { stacked: true, marks: false }),
-      wholeHours < 2 ? hourly('Time spent collecting (sec)') : lineChart('Time spent collecting (sec)', cost, [{ key: 'collecting_s', label: 'collecting' }, { key: 'cpu_s', label: 'collecting CPU' }, { key: 'importing_s', label: 'importing' }], v => v.toLocaleString(), { marks: false, unit: 's' }),
+      wholeHours < 2 ? hourly('Time spent collecting and importing (sec)') : lineChart('Time spent collecting and importing (sec)', cost, [{ key: 'collecting_s', label: 'collecting' }, { key: 'cpu_s', label: 'collecting CPU' }, { key: 'importing_s', label: 'importing' }], v => v.toLocaleString(), { marks: false, unit: 's' }),
       el('div', { class: 'chart' }, el('h3', {}, 'Import Lag'), el('p', { class: 'meta' }, importLagWords)));
     body.replaceChildren(
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s)${folder}${onlyColl ? `, collection ${onlyColl}` : ''}: ${n('critical')} critical, ${n('warning')} warning, ${n('n/a')} N/A, ${n('ok')} OK. `

@@ -121,7 +121,10 @@ CREATE TABLE IF NOT EXISTS pgvigil.collection_health_hour (
 ) WITH (fillfactor = 70);
 -- a store that applied this file before B6g-1 has the table without them. 'pgvigil migrate' applies a recorded file
 -- no second time (such a store is made fresh, as every store of an untagged build is until v0.4.0); this ALTER and
--- the DROP before collection_health() below let the file be applied again by hand, whole
+-- the DROP before collection_health() below let the file be applied again by hand, whole and in one transaction, with
+-- the roles put back after it: psql -1 -f 0166_collection_health.sql -c 'SELECT pgvigil.apply_roles()' (CREATE OR
+-- REPLACE resets SECURITY DEFINER, which migrate puts back after every file: without it the collector's heartbeat
+-- import is refused)
 ALTER TABLE pgvigil.collection_health_hour
   ADD COLUMN IF NOT EXISTS import_failed int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS import_runs int NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS import_ms_sum bigint NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS import_ms_max int NOT NULL DEFAULT 0,

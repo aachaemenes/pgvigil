@@ -321,18 +321,19 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 	// every part's write is timed (B6g-1, N27); the run is 'import failed' only when it ENDED as an error at an import
 	// - a part that was refused while the run went on leaves it 'partial' (its stage 'import' is on the error log)
 	var imp Result
-	var lastImport error // the import error last handed back to the reader: the run ended at it, or went on
+	var lastImport *ImportError // the import error last handed back to the reader: the run ended at it, or went on
 	err := br.RunBatches(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
 		return r.LogCursor(ctx, instanceID, source)
 	}, func(rows []Row) error {
 		applyTextPolicy(rows, in.QueryText)
 		if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, name, start, rows) }); err != nil {
-			lastImport = err
+			ie := &ImportError{Err: err}
+			lastImport = ie
 			stage = "import"
 			if importErr == "" {
 				importErr = "import: " + err.Error()
 			}
-			return err
+			return ie
 		}
 		parts++
 		for _, row := range rows {

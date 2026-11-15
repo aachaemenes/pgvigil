@@ -197,6 +197,10 @@ const allRows = await api({});
   const row = (p?.rows ?? []).find(r => r['Instance']?.text === 'fx-chimport' && r['Collection']?.text === 'activity');
   say(!!row && row['Failed'].text === '1' && row['Import Failed'].text === '2', 'CH17 fx-chimport Failed 1, Import Failed 2',
     row ? `Failed ${row['Failed'].text}, Import Failed ${row['Import Failed'].text}` : 'not in the grid');
+  // the two links open THE SAME list - the hours both counts are over (the review of B6g-1's folds #4: 'listed === 3'
+  // alone passed whatever range Import Failed's link carried)
+  const hf = row?.['Failed']?.links?.failed, hi = row?.['Import Failed']?.links?.importfailed;
+  say(!!hf && !!hi && route(hf).q.get('from') === route(hi).q.get('from') && route(hf).q.get('to') === route(hi).q.get('to'), 'CH17 Import Failed opens the window Failed opens', `${hf ?? 'no link'} | ${hi ?? 'no link'}`);
   for (const [col, land] of [['Failed', 'failed'], ['Import Failed', 'importfailed']]) {
     const href = row?.[col]?.links?.[land];
     if (!href) { say(false, `CH17 ${col} -> the error list`, 'no link'); continue; }

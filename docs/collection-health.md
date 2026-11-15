@@ -39,7 +39,7 @@ a scheduled `pgvigil collect` has no heartbeat: it is judged by its failures in 
   around the last failure (from the last success while the collection fails now, else from 10 minutes before the
   failure, to an hour after it). The list has a text filter on the message.
 - The charts: **Runs** per bucket by outcome (Failed, Partial, Succeeded; Failed holds the import failures, as DBA
-  Dash's does) and **Time spent collecting** - collecting (the whole runs), its CPU where it was read (SQL Server) and
+  Dash's does) and **Time spent collecting and importing** - collecting (the whole runs), its CPU where it was read (SQL Server) and
   importing (the writes alone).
 
 A collection whose runs take longer than its interval is also a finding, *collection runs long*, on the Collector page
@@ -51,8 +51,8 @@ the time of the writes into the repository alone, over the runs that wrote into 
 Avg Duration and Max Duration are the whole run and include them. **Avg CPU**, **Max CPU**, **Total CPU**, **Avg Logical
 Reads** and **Total Logical Reads** (DBA Dash's order and words) are the run's own session's on SQL Server (`cpu_time` and `logical_reads` of `sys.dm_exec_sessions`,
 read at the run's end, over the runs that read them); a PostgreSQL row says *not read by pgvigil*. A run cut by its own
-timeout is not read: the SQL Server driver drops the connection of a statement that hit its deadline, so the CPU columns
-leave such runs out. **Import Failed** is DBA Dash's: the runs whose write of collected rows failed. The collector's
+timeout is not read: the SQL Server driver drops the connection of a statement that hit its deadline, so the five CPU and
+logical reads columns leave such runs out. **Import Failed** is DBA Dash's: the runs whose write of collected rows failed. The collector's
 error log calls a wider set of failures stage *Import* - any failure on the repository's side, a cursor read or a
 thresholds store among them - which Collection Health counts as plain failures.
 

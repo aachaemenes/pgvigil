@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -249,9 +248,17 @@ func amcheckUnchecked(rows []Row) []Row {
 	return out
 }
 
+// ImportError is a batched run's failed write of collected rows, a value of its own: EndedAtImport tells it by its
+// identity, so a later error that only shares a cause with it (a deadline, a dropped connection) is not taken for it
+// (the review of B6g-1's folds #1). Unwrap keeps the cause in the chain (a stop's context.Canceled stays readable).
+type ImportError struct{ Err error }
+
+func (e *ImportError) Error() string { return e.Err.Error() }
+func (e *ImportError) Unwrap() error { return e.Err }
+
 // EndedAtImport: whether err, the error that ended a batched run, is the import error last handed back to its reader
-// (lastImport) - by its chain, or by its text where a reader wrapped it without one. A run whose part was refused and
-// which then ended at a READ did not end at an import.
-func EndedAtImport(err, lastImport error) bool {
-	return err != nil && lastImport != nil && (errors.Is(err, lastImport) || strings.Contains(err.Error(), lastImport.Error()))
+// (lastImport, an *ImportError) - by identity through the chain: every reader wraps what emit returned with %w or
+// returns it as it is. A run whose part was refused and which then ended at a READ did not end at an import.
+func EndedAtImport(err error, lastImport *ImportError) bool {
+	return err != nil && lastImport != nil && errors.Is(err, lastImport)
 }

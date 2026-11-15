@@ -53,7 +53,7 @@ func TestCollectionHealthCostOnAStore(t *testing.T) {
 	         rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s, last_ok_at, last_failure_at,
 	         import_failed, import_runs, import_ms_sum, import_ms_max, cpu_runs, cpu_ms_sum, cpu_ms_max, reads_sum)
 	  VALUES ($1, $2, $5, 'c1', 10, 6, 0, 4, 0, 60, 5000, 900, 0, 0, 60, $1, $1, 3, 9, 900, 300, 10, 500, 120, 20000),
-	         ($1, $3, $5, 'c1', 2, 0, 0, 2, 0, 0, 300, 200, 0, 0, 60, NULL, $1, 0, 0, 0, 0, 2, 60, 40, 1000),
+	         ($1, $3, $5, 'c1', 3, 0, 0, 3, 0, 0, 450, 200, 0, 0, 60, NULL, $1, 0, 0, 0, 0, 2, 60, 40, 1000),   -- 3 runs, 2 read (one cut by its own timeout: the review of the folds #2)
 	         ($1, $4, $6, 'c1', 5, 5, 0, 0, 0, 25, 500, 150, 0, 0, 60, $1, NULL, 0, 5, 50, 20, 0, 0, 0, 0)`,
 		hour, ids["s1"], ids["s2"], ids["p"], coll, pcoll); err != nil {
 		t.Fatalf("the hour rows (the step's eight columns): %v", err)
@@ -87,7 +87,7 @@ func TestCollectionHealthCostOnAStore(t *testing.T) {
 	byInst := read(sqlCHInstance, "r.instance_id")
 	for _, c := range []struct{ key, want, what string }{
 		{"s1", "1|3|40.00|100|300|500|50|120|20000|2000", "s1 (4 failed, 3 at the import)"},
-		{"s2", "2|0|100.00|NULL|NULL|60|30|40|1000|500", "s2 (2 failed at the read, no import attempted: no import figure)"},
+		{"s2", "3|0|100.00|NULL|NULL|60|30|40|1000|500", "s2 (3 failed at the read, 2 of them read their session; no import attempted: no import figure)"},
 		{"p", "0|0|0.00|10|20|NULL|NULL|NULL|NULL|NULL", "p (PostgreSQL: no session read)"},
 	} {
 		if got := byInst[fmt.Sprint(ids[c.key])]; got != c.want {
@@ -95,9 +95,9 @@ func TestCollectionHealthCostOnAStore(t *testing.T) {
 		}
 	}
 	// a row per collection: the sums, the HIGHER maximum (s1's 120 and s2's 40: a sum would read 160), the averages over
-	// the runs that have them (CPU over 12 reads: 560 / 12 = 47; the import over s1's 9 attempts alone)
+	// the runs that have them (CPU over the 12 runs that read it, of 13: 560 / 12 = 47; the import over s1's 9 attempts)
 	byColl := read(sqlCHCollection, "r.collection")
-	if got, want := byColl[coll], "3|3|50.00|100|300|560|47|120|21000|1750"; got != want {
+	if got, want := byColl[coll], "4|3|53.85|100|300|560|47|120|21000|1750"; got != want {
 		t.Errorf("the SQL Server collection's row per collection (%s):\n got  %s\n want %s", head, got, want)
 	}
 	if got, want := byColl[pcoll], "0|0|0.00|10|20|NULL|NULL|NULL|NULL|NULL"; got != want {
