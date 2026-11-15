@@ -88,14 +88,22 @@ WITH l AS (
     FROM pgvigil.collector_load l
    WHERE l.minute > now() - interval '24 hours' AND ($1::int = 0 OR l.instance_id = $1)
    GROUP BY l.instance_id, l.minute
+), ihh AS (
+  -- the instance's probed host per collector host over the HOUR's load rows, as the probes below are read (the review of
+  -- B24h-1 part b #15: collector_instance_hosts keeps 20 minutes, so an instance whose collector stopped 25 minutes ago
+  -- showed no probe though the hour held them); its newest target
+  SELECT DISTINCT ON (h.host, l.instance_id) h.host AS collector_host, l.instance_id, pgvigil.collector_target_host(l.target) AS host
+    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute > now() - interval '1 hour' AND l.target IS NOT NULL AND h.retired_at IS NULL AND ($1::int = 0 OR l.instance_id = $1)
+   ORDER BY h.host, l.instance_id, l.minute DESC
 ), prh AS (
-  -- B24h (0254): the instance's host's probe over the hour - its probed host through collector_instance_hosts, every
-  -- collector host summed; when its address last answered (collector_probe_host). One row per probed host: an
-  -- instance two collector hosts read under two dial names has two
+  -- B24h (0254): the instance's host's probe over the hour - its probed host over the hour (ihh), every collector host
+  -- summed; when its address last answered (collector_probe_host). One row per probed host: an instance two collector
+  -- hosts read under two dial names has two
   SELECT ih.instance_id, max(p.method) AS method, count(*) FILTER (WHERE p.answered IS NOT NULL) AS rounds,
          sum(p.answered) AS answered, sum(p.ms_sum) AS ms_sum, max(p.ms_max) FILTER (WHERE p.answered > 0) AS ms_max,
          (SELECT max(ph.last_answered) FROM pgvigil.collector_probe_host ph WHERE ph.host = ih.host) AS last_answered
-    FROM pgvigil.collector_instance_hosts ih
+    FROM ihh ih
     JOIN pgvigil.collector_heartbeat h ON h.host = ih.collector_host
     JOIN pgvigil.collector_probe p ON p.collector_id = h.collector_id AND p.host = ih.host AND p.minute > now() - interval '1 hour'
    WHERE ($1::int = 0 OR ih.instance_id = $1)

@@ -72,3 +72,54 @@ func TestProbeImportFoldOnAStore(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectorLoadProbeHourOnAStore (the review of B24h-1 part b #15): the Collector page reads an hour of probes, so
+// it maps an instance to its probed host over the hour's load rows too - an instance whose collector last wrote 30
+// minutes ago (outside collector_instance_hosts' 20) still shows the probe rounds the hour holds.
+func TestCollectorLoadProbeHourOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	sfx := time.Now().UnixNano() % 1000000000
+	var id int
+	if err := tx.QueryRow(ctx, `INSERT INTO pgvigil.instances (name, platform) VALUES ($1, 'self-managed') RETURNING instance_id`,
+		fmt.Sprintf("probehour-%d", sfx)).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	coll := fmt.Sprintf("probehour-%d", sfx)
+	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_heartbeat (collector_id, host, os, runs_as, version, pid, started_at, beat_at)
+		VALUES ($1, $1, 'linux', 'console', 'x', 1, now() - interval '2 hours', now() - interval '30 minutes')`, coll); err != nil {
+		t.Fatal(err)
+	}
+	target := fmt.Sprintf("postgres:dbh-%d:5432", sfx)
+	for m := 30; m <= 32; m++ {
+		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures, target)
+			VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, 1, 1, 1, 0, 0, $4)`, m, id, coll, target); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_probe (minute, collector_id, host, address, method, sent, answered, ms_sum, ms_max)
+			VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, '10.9.3.1:5432', 'tcp', 1, 1, 4, 4)`, m, coll, fmt.Sprintf("dbh-%d", sfx)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rounds int
+	if err := tx.QueryRow(ctx, `SELECT coalesce(probe_rounds_1h, 0)::int FROM (`+sqlCollectorLoad+`) x`, id).Scan(&rounds); err != nil {
+		t.Fatalf("the Collector page's load query: %v", err)
+	}
+	if rounds != 3 {
+		t.Errorf("an instance last written 30 minutes ago: %d probe round(s) over the hour, want 3", rounds)
+	}
+}
