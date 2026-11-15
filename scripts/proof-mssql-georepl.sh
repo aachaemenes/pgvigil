@@ -43,7 +43,7 @@ set -Eeuo pipefail
 trap 'echo "STOPPED: line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection to a PostgreSQL in keyword form, no dbname}"
-: "${PGVIGIL_PROOF_MY_IP:?this machine's public IPv4}"
+: "${PGVIGIL_PROOF_MY_IP:?the public IPv4 of this machine}"
 STATE=${PGVIGIL_LAB_STATE:-.lab/azure-sqldb.env}
 IMG=${PGVIGIL_SQLCMD_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 LAB=scripts/lab/azure-sqldb.sh
