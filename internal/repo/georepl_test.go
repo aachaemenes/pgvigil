@@ -130,3 +130,81 @@ func TestGeoReplOnAStore(t *testing.T) {
 		t.Error("a removed link is not a warning")
 	}
 }
+
+// 0151's failover groups (task 390a G2): one row a server and group whoever reads it; a role change (the group's
+// primary moved), a policy change and a group gone are each one event; an older read of the server (another of its
+// databases, imported late) changes nothing; an Activity Log operation is stored once; a moved primary is critical.
+func TestFailoverGroupsOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ids := make([]int, 2)
+	for i := range ids {
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'azuresqldb', '12.0', 120000, false, '{}'::text[], 'sqlserver')`,
+			fmt.Sprintf("fg-%d-%d", i, time.Now().UnixNano()%1000000000)).Scan(&ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := fmt.Sprintf("s/g/pgv-%d", time.Now().UnixNano()%1000000000)
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.mssql_failover_groups WHERE server_key = $1`, key)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.mssql_failover_group_events WHERE server_key = $1`, key)
+		for _, id := range ids {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = $1`, id)
+		}
+	}()
+	group := func(role, policy string) map[string]any {
+		return map[string]any{"kind": "group", "group_name": "fg1", "role": role, "replication_state": "CATCH_UP", "secondary_type": "Geo",
+			"rw_policy": policy, "grace_minutes": 60, "ro_policy": "Disabled", "ro_target": "",
+			"partners": `[{"server":"pgv-b","location":"East US","role":"Secondary"}]`, "databases": `["db1"]`}
+	}
+	imp := func(id int, at time.Time, rows ...map[string]any) {
+		t.Helper()
+		rows = append([]map[string]any{{"kind": "read", "server_key": key, "cloud": ""}}, rows...)
+		p, _ := json.Marshal(rows)
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_failover_groups($1, $2, $3::jsonb)`, id, at, string(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events := func(kind string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM pgvigil.mssql_failover_group_events WHERE server_key = $1 AND kind = $2`, key, kind).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	imp(ids[0], now.Add(-10*time.Minute), group("Primary", "Manual"))
+	imp(ids[1], now.Add(-5*time.Minute), group("Primary", "Automatic"))
+	if events("policy") != 1 {
+		t.Fatalf("policy change read through another database: %d events", events("policy"))
+	}
+	imp(ids[0], now.Add(-7*time.Minute), group("Secondary", "Manual")) // an older read of the server, imported late
+	if events("role") != 0 {
+		t.Fatal("a late older read made a role event")
+	}
+	op := map[string]any{"kind": "operation", "event_id": "e1", "at": now.Add(-time.Minute).Format(time.RFC3339), "operation": "failover",
+		"status": "Succeeded", "group_name": "fg1"}
+	imp(ids[0], now, group("Secondary", "Automatic"), op)
+	imp(ids[0], now.Add(time.Second), group("Secondary", "Automatic"), op)
+	if events("role") != 1 || events("operation") != 1 {
+		t.Fatalf("role %d operation %d, want 1 and 1", events("role"), events("operation"))
+	}
+	var sev string
+	if err := pool.QueryRow(ctx, `SELECT severity FROM pgvigil.mssql_georepl_findings WHERE instance_id = $1 AND check_name = 'failover group primary moved'`, ids[0]).Scan(&sev); err != nil || sev != "critical" {
+		t.Errorf("failover group primary moved: %q %v, want critical", sev, err)
+	}
+	imp(ids[0], now.Add(2*time.Second))
+	if events("removed") != 1 {
+		t.Fatalf("a group gone: %d removed events", events("removed"))
+	}
+}
