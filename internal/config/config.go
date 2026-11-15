@@ -791,8 +791,8 @@ func keywordPassword(v string) bool {
 // SecretRef is the instance's password_secret as the reader takes it (nil = none). Load's Validate refused a block
 // that does not parse, so an error here is a configuration built past Validate: it rides on the reference
 // (secrets.Ref.Invalid) and every read refuses it - never a connect without the password.
-func (in Instance) SecretRef() *secrets.Ref {
-	ps := in.PasswordSecret
+func (i Instance) SecretRef() *secrets.Ref {
+	ps := i.PasswordSecret
 	if ps == nil {
 		return nil
 	}

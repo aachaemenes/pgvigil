@@ -53,6 +53,11 @@ func TestEveryInstanceDSNCallerIsKnown(t *testing.T) {
 		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == ".git" || filepath.Clean(p) == filepath.Join(root, "web")) {
 			return filepath.SkipDir // the top-level web/ (TypeScript) alone: internal/web is Go and is read
 		}
+		// the go tool's own rule for ./...: a directory whose name starts with '.' or '_', or named testdata, holds
+		// no package of the build (an untracked copy of old sources there is not a caller)
+		if d.IsDir() && p != root && (strings.HasPrefix(d.Name(), ".") || strings.HasPrefix(d.Name(), "_") || d.Name() == "testdata") {
+			return filepath.SkipDir
+		}
 		if d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
