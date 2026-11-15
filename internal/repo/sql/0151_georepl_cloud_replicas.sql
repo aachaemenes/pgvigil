@@ -461,6 +461,30 @@ CREATE TABLE IF NOT EXISTS pgvigil.cloud_replica_events (
 );
 CREATE INDEX IF NOT EXISTS cloud_replica_events_at_idx ON pgvigil.cloud_replica_events (at);
 
+-- P3 (task 14, the lead's 00:2x): the provider's own failover events of the reading instance's resource - RDS
+-- DescribeEvents (category failover: RDS-EVENT-0013 started; 0015 / 0049 completed; 0050 / 0051 an activation) and
+-- Cloud SQL FAILOVER operations (start; end when DONE) - each phase once. The import hands them to 404's
+-- instance_events (0155) where that table exists: the provider's word wins (an RDS Multi-AZ DB instance's or a Cloud SQL
+-- HA failover reads 'restart' in 0155, its standby running no engine until it takes over): a 0155 'restart' of the
+-- instance within 10 minutes of a phase becomes 'failover' (its starts kept, source '<the provider's source>: <its
+-- words>'); a failover no read saw is written at its first completion (old_value NULL, the provider's words), and a
+-- read's restart or failover arriving later replaces that row. On a base without 0155 the events are stored and handed
+-- over at the join's first read (WIRING: 0155 on the join; the instance_events arms of the findings and the chart marks
+-- are 0155's). The events keep 14 days (RDS's own; purge's line is WIRING).
+CREATE TABLE IF NOT EXISTS pgvigil.cloud_failover_events (
+  provider       text NOT NULL,
+  resource_id    text NOT NULL,
+  at             timestamptz NOT NULL,
+  phase          text NOT NULL CHECK (phase IN ('started', 'completed')),
+  message        text NOT NULL,
+  source         text NOT NULL,             -- rds events | cloud sql operations
+  event_id       text,                      -- Cloud SQL: the operation's name
+  first_read_at  timestamptz NOT NULL,
+  instance_id    int REFERENCES pgvigil.instances(instance_id) ON DELETE SET NULL,
+  PRIMARY KEY (provider, resource_id, at, phase, message)
+);
+CREATE INDEX IF NOT EXISTS cloud_failover_events_at_idx ON pgvigil.cloud_failover_events (at);
+
 INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
   ('provider_replica_lag', 'Provider replicas: a read replica''s lag (RDS ReplicaLag, Cloud SQL replica_lag) for 10 minutes', 'minutes', 'over', 10, 30, '{root,tag,instance}', 1440)
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
@@ -481,8 +505,9 @@ $$;
 
 -- payload (internal/collect/cloud_replicas.go, internal/mssql/cloud_replicas.go): one 'read' row first (provider,
 -- resource_id = the instance's own, notes = the refused calls' sentences), then 'resource' rows (provider,
--- resource_id, engine, region, role, source_id, replica_ids, cascaded, status, repl_status, repl_note) and 'point'
--- rows (provider, resource_id, metric, unit, at, value). Each resource under its own advisory xact lock (in id order);
+-- resource_id, engine, region, role, source_id, replica_ids, cascaded, status, repl_status, repl_note), 'point'
+-- rows (provider, resource_id, metric, unit, at, value) and 'failover' rows (P3: provider, resource_id, at, phase,
+-- message, source, event_id). Each resource under its own advisory xact lock (in id order);
 -- a resource row older than the stored one changes nothing; the datapoints are stored whatever the read's age.
 CREATE OR REPLACE FUNCTION pgvigil.import_cloud_replicas(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
@@ -568,6 +593,62 @@ BEGIN
       door_error = EXCLUDED.door_error,
       door_since = CASE WHEN EXCLUDED.door_error IS NULL THEN NULL ELSE coalesce(g.door_since, EXCLUDED.door_since) END
     WHERE g.snapshot_at < EXCLUDED.snapshot_at;
+
+  -- P3: the instance's own provider failover phases, each once
+  INSERT INTO pgvigil.cloud_failover_events (provider, resource_id, at, phase, message, source, event_id, first_read_at, instance_id)
+  SELECT DISTINCT ON ((r->>'at')::timestamptz, r->>'phase', r->>'message')
+         v_prov, v_self, (r->>'at')::timestamptz, r->>'phase', r->>'message', coalesce(nullif(r->>'source', ''), v_prov), nullif(r->>'event_id', ''),
+         p_snapshot_at, p_instance_id
+    FROM jsonb_array_elements(v_rows) r
+   WHERE r->>'kind' = 'failover' AND lower(r->>'resource_id') = v_self AND r->>'at' IS NOT NULL AND r->>'phase' IN ('started', 'completed')
+     AND coalesce(r->>'message', '') <> ''
+  ON CONFLICT DO NOTHING;
+
+  -- ... handed to 0155's instance_events, the provider's word winning (plpgsql reads instance_events only here: a base
+  -- without 0155 never runs these statements)
+  IF to_regclass('pgvigil.instance_events') IS NOT NULL
+     AND EXISTS (SELECT 1 FROM pgvigil.cloud_failover_events f
+                  WHERE f.provider = v_prov AND f.resource_id = v_self AND f.at > p_snapshot_at - interval '1 day') THEN
+    -- a read's restart inside a phase's 10 minutes is the failover (the completion's words before the start's)
+    WITH f AS (
+      SELECT f.at, f.phase, f.message, f.source FROM pgvigil.cloud_failover_events f
+       WHERE f.provider = v_prov AND f.resource_id = v_self AND f.at > p_snapshot_at - interval '1 day'
+    ), r AS (
+      DELETE FROM pgvigil.instance_events e
+       WHERE e.instance_id = p_instance_id AND e.kind = 'restart'
+         AND EXISTS (SELECT 1 FROM f WHERE e.at BETWEEN f.at - interval '10 minutes' AND f.at + interval '10 minutes')
+      RETURNING e.instance_id, e.at, e.old_value, e.new_value, e.seen_at, e.prev_at
+    )
+    INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
+    SELECT r.instance_id, r.at, 'failover', r.old_value, r.new_value,
+           (SELECT f.source || ': ' || f.message FROM f
+             WHERE r.at BETWEEN f.at - interval '10 minutes' AND f.at + interval '10 minutes'
+             ORDER BY f.phase = 'completed' DESC, abs(extract(epoch FROM f.at - r.at)) LIMIT 1),
+           r.seen_at, r.prev_at
+      FROM r
+    ON CONFLICT DO NOTHING;
+    -- the provider's own row (no read saw that failover when it was written) goes once a read's event covers it
+    DELETE FROM pgvigil.instance_events e
+     WHERE e.instance_id = p_instance_id AND e.kind = 'failover' AND e.old_value IS NULL
+       AND (e.source LIKE 'rds events%' OR e.source LIKE 'cloud sql operations%')
+       AND EXISTS (SELECT 1 FROM pgvigil.instance_events o
+                    WHERE o.instance_id = e.instance_id AND o.kind IN ('restart', 'failover') AND o.old_value IS NOT NULL
+                      AND o.at BETWEEN e.at - interval '15 minutes' AND e.at + interval '10 minutes');
+    -- a failover no read saw: at its first completion (a second completion message within 15 minutes is the same one)
+    INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
+    SELECT p_instance_id, c.at, 'failover', NULL, 'the provider: ' || c.message, c.source, p_snapshot_at,
+           (SELECT max(s.at) FROM pgvigil.cloud_failover_events s
+             WHERE s.provider = v_prov AND s.resource_id = v_self AND s.phase = 'started' AND s.at <= c.at AND s.at > c.at - interval '30 minutes')
+      FROM pgvigil.cloud_failover_events c
+     WHERE c.provider = v_prov AND c.resource_id = v_self AND c.phase = 'completed' AND c.at > p_snapshot_at - interval '1 day'
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.cloud_failover_events c2
+                        WHERE c2.provider = c.provider AND c2.resource_id = c.resource_id AND c2.phase = 'completed'
+                          AND c2.at < c.at AND c2.at > c.at - interval '15 minutes')
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events o
+                        WHERE o.instance_id = p_instance_id AND o.kind IN ('restart', 'failover')
+                          AND o.at BETWEEN c.at - interval '15 minutes' AND c.at + interval '10 minutes')
+    ON CONFLICT DO NOTHING;
+  END IF;
 END $$;
 
 -- SQL Server's collection is mssql_cloud_replicas (every SQL Server collection's name starts mssql_): the same import

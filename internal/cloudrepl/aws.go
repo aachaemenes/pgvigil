@@ -73,9 +73,10 @@ const (
 // AWSReader is P1: a region's RDS and CloudWatch clients (one credential chain, the instance's aws: block) and the
 // run's listings.
 type AWSReader struct {
-	RDS func(ctx context.Context, region string) (RDSAPI, error)
-	CW  func(ctx context.Context, region string) (CWAPI, error)
-	Now func() time.Time
+	RDS    func(ctx context.Context, region string) (RDSAPI, error)
+	CW     func(ctx context.Context, region string) (CWAPI, error)
+	Events func(ctx context.Context, region string) (RDSEventsAPI, error) // P3 (events.go)
+	Now    func() time.Time
 
 	mu    sync.Mutex
 	lists map[string]awsList

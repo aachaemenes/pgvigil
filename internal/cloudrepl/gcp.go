@@ -34,6 +34,7 @@ const (
 	byteLagReplay  = "replay_location"
 	callAdminGet   = "cloudsql.instances.get"
 	callMonitoring = "monitoring.timeSeries.list"
+	callOperations = "cloudsql operations.list"
 )
 
 // GCPReader is P2: Cloud SQL Admin (instances.get) for the topology and status, Cloud Monitoring (timeSeries.list)
@@ -404,14 +405,18 @@ func (g *GCPReader) call(ctx context.Context, call, project, u string, out any) 
 	case resp.StatusCode == http.StatusNotFound && call == callAdminGet:
 		return &gcpNotFound{msg: fmt.Sprintf("%s in project %s: not found (%s)", call, project, msg)}
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return fmt.Errorf("%s in project %s refused (%s: %s): the identity needs %s (%s)", call, project, code, msg, call, gcpRole(call))
+		return fmt.Errorf("%s in project %s refused (%s: %s): the identity needs %s", call, project, code, msg, gcpNeeds(call))
 	}
 	return fmt.Errorf("%s in project %s failed (%s: %s)", call, project, code, msg)
 }
 
-func gcpRole(call string) string {
-	if call == callMonitoring {
-		return "roles/monitoring.viewer"
+// gcpNeeds: the right a call needs, in words (Google's IAM permissions table, read 2026-11-15)
+func gcpNeeds(call string) string {
+	switch call {
+	case callMonitoring:
+		return "monitoring.timeSeries.list (roles/monitoring.viewer)"
+	case callOperations:
+		return "cloudsql.instances.get and cloudsql.instances.list (Google's table names both for operations.list; roles/cloudsql.viewer)"
 	}
-	return "roles/cloudsql.viewer"
+	return "cloudsql.instances.get (roles/cloudsql.viewer)"
 }

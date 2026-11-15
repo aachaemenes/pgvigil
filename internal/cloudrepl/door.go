@@ -59,13 +59,15 @@ const restFor = awsListAge
 
 // Rows is one read of the instance's door as the import's rows: a 'read' row first (provider, resource_id = the
 // instance's own, notes = the sentences of the calls refused or failed), then a 'resource' row per resource and a
-// 'point' row per datapoint; a read with notes adds a collector_error row (the run is partial). A throttle is a read
+// 'point' row per datapoint and a 'failover' row per phase of the instance's own provider failover (P3); a read with
+// notes adds a collector_error row (the run is partial). A throttle is a read
 // with its sentence and no call until the door's rest ends. A read that cannot start (no credentials, the instance not
 // found) is an error.
 func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, error) {
 	provider, why := Which(in)
 	var self, key string
 	var read func() ([]Resource, []Point, []string, error)
+	var failovers func() ([]Failover, error)
 	switch provider {
 	case "aws":
 		region := strings.TrimSpace(in.AWS.Region)
@@ -79,6 +81,7 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 		self, key = strings.ToLower(strings.TrimSpace(in.AWS.DBInstance)), "aws|"+in.AWS.Profile+"|"+region
 		r := d.awsReader(in.AWS.Profile)
 		read = func() ([]Resource, []Point, []string, error) { return r.Read(ctx, region, self) }
+		failovers = func() ([]Failover, error) { return r.Failovers(ctx, region, self) }
 	case "gcp":
 		self, key = in.GCP.ResourceID(), "gcp|"+in.GCP.CredentialsFile+"|"+strings.ToLower(in.GCP.Project)
 		r, err := d.gcpReader(in.GCP.CredentialsFile)
@@ -86,6 +89,7 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 			return nil, err
 		}
 		read = func() ([]Resource, []Point, []string, error) { return r.Read(ctx, in.GCP.Project, in.GCP.Instance) }
+		failovers = func() ([]Failover, error) { return r.Failovers(ctx, in.GCP.Project, in.GCP.Instance) }
 	default:
 		return nil, errors.New(why)
 	}
@@ -102,6 +106,14 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 	if err != nil {
 		return nil, err
 	}
+	// P3: the instance's own failover events under the same door; a refusal or a throttle is a note, the read stands
+	fs, ferr := failovers()
+	if errors.As(ferr, &th) {
+		d.rest(key, th.Error())
+		notes = append(notes, th.Error())
+	} else if ferr != nil {
+		notes = append(notes, ferr.Error())
+	}
 	rows := noteRows(provider, self, notes)
 	head := rows[0]
 	rows = rows[1:]
@@ -117,6 +129,10 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 	for _, p := range pts {
 		rows = append(rows, map[string]any{"kind": "point", "provider": provider, "resource_id": p.ResourceID, "metric": p.Metric,
 			"unit": p.Unit, "at": p.At.UTC().Format(time.RFC3339), "value": p.Value})
+	}
+	for _, f := range fs {
+		rows = append(rows, map[string]any{"kind": "failover", "provider": provider, "resource_id": f.ResourceID, "at": f.At.UTC().Format(time.RFC3339),
+			"phase": f.Phase, "message": f.Message, "source": f.Source, "event_id": f.ID})
 	}
 	return append([]map[string]any{head}, rows...), nil
 }
@@ -244,6 +260,13 @@ func newAWSReader(profile string) *AWSReader {
 				return nil, err
 			}
 			return cloudwatch.NewFromConfig(c), nil
+		},
+		Events: func(ctx context.Context, region string) (RDSEventsAPI, error) {
+			c, err := cfgFor(ctx, region)
+			if err != nil {
+				return nil, err
+			}
+			return rds.NewFromConfig(c), nil
 		},
 		Now: time.Now,
 	}
