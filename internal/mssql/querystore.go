@@ -541,7 +541,10 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 		for _, x := range xml {
 			// kind_of 'plan': its statement column is kept under the full policy only (a showplan carries the
 			// statement's text and the compiled parameter values)
-			out = append(out, collect.Row{"kind": "plan_xml", "kind_of": "plan", "database_name": name, "plan_id": x["plan_id"], "statement": x["plan_xml"]})
+			px, _ := x["plan_xml"].(string)
+			out = append(out, collect.Row{"kind": "plan_xml", "kind_of": "plan", "database_name": name, "plan_id": x["plan_id"], "statement": MaskPlanXML(px)})
+			// the statistics the plan was compiled with (names and counts, no text: kept under every policy)
+			out = append(out, statsRows(px, collect.Row{"database_name": name, "plan_id": x["plan_id"]})...)
 		}
 	}
 	if qsHasWaits(info) {

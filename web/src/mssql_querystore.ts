@@ -145,7 +145,12 @@ async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPane
       { key: 'initial_compile', label: 'first compiled', fmt: fmtTime }, { key: 'last_compile', label: 'last compiled', fmt: fmtTime },
       { key: 'plan_hash', label: 'plan hash' },
       { key: 'xml_state', label: 'plan XML', fmt: (v, r) => planFile(ctx, row.database_name, r.plan_id, v, r.xml_note, r.in_store) },
+      // PerformanceMonitor 3.13's Statistics Used (task 406): the statistics the plan was compiled with
+      { key: 'stats_used', label: 'statistics', fmt: (_, r) => openButton('Statistics used', `of plan ${text(r.plan_id)}`, () => {
+        statsBox.replaceChildren(planStatsPanel(ctx, { source: 'qs', db: text(row.database_name), plan: text(r.plan_id) }, `plan ${text(r.plan_id)}`));
+      }) },
     ];
+    const statsBox = el('div', { class: 'qs-stats' }), everyBox = el('div', { class: 'qs-every' });
     const pd = pivot(series, 'plan_id', 'avg_duration_ms'), pc = pivot(series, 'plan_id', 'avg_cpu_ms');
     const charts = el('div', { class: 'charts' },
       lineChart('Average duration per interval, by plan', pd.rows, pd.keys.map(k => ({ key: k, label: k })), v => fmtNum(v) + ' ms'),
@@ -159,9 +164,14 @@ async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPane
         ['plans', `${fmtNum(plans.length)} in this range's stored rows; the store holds ${q?.plan_count == null ? '?' : fmtNum(q.plan_count)}`],
         ['last execution', fmtTime(q?.last_execution)],
       ]),
+      row.query_hash ? el('p', {}, openButton('On every instance', `query hash ${text(row.query_hash)}`, () => {
+        everyBox.replaceChildren(everywherePanel(ctx, text(row.query_hash)));
+      })) : '',
+      everyBox,
       el('pre', { class: 'sql', tabindex: '0' }, text(q?.query) || '(no statement text is stored: the query_text policy of this instance is "none", or the query left the store)'),
       el('h4', {}, 'Plans'),
       grid(plans, cols, 'No stored row of this query in this range.'),
+      statsBox,
       charts,
       numbersOf(series, [
         { key: 'snapshot_at', label: 'interval from', fmt: fmtTime }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
@@ -519,7 +529,58 @@ function forcedView(ctx: Ctx, d: QS): HTMLElement[] {
       + 'A force failure means SQL Server could not use the forced plan and ran the query with another: the reason names why (an index dropped, a hint that no longer fits). '
       + 'pgvigil forces and unforces nothing: sys.sp_query_store_force_plan and sp_query_store_unforce_plan are the DBA\'s.'),
     grid(rows, cols, 'No forced plan in the stores read.'),
+    forceFailSection(ctx),
   ];
+}
+
+// forceFailSection: each forced plan's failures since it was last forced (PerformanceMonitor 3.13's Changed 15: the
+// first failure is held; a second within 24 hours pages), read from the history pgvigil keeps of force_failure_count.
+function forceFailSection(ctx: Ctx): HTMLElement {
+  const box = el('div', {}, el('h4', {}, 'Failures since forced'), el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
+  get<Record<'plans' | 'reads', Table | null>>('mssql/forcefail', { instance: ctx.instance }).then(d => {
+    box.replaceChildren(el('h4', {}, 'Failures since forced'),
+      el('p', { class: 'meta' }, 'Each change of a forced plan\'s failure count that a read saw, since the plan was last forced (forcing it anew sets the count to 0 and starts again). '
+        + 'The finding \'a forced plan fails\' is a warning when one read saw 2 or more failures or two failures were read within 24 hours of each other; with one failure it is held as an info.'),
+      grid(rowsOf(d.plans), [
+        { key: 'database' }, { key: 'query_id', label: 'query', num: true, fmt: v => text(v) }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
+        { key: 'paged', label: 'judged', fmt: v => v ? badge('pages (warning)', 'warn') : badge('held (info)', 'info') },
+        { key: 'failures', num: true }, { key: 'failure_reads', label: 'reads with a failure', num: true },
+        { key: 'first_failure', label: 'first failure read', fmt: fmtTime }, { key: 'last_failure', label: 'last failure read', fmt: fmtTime },
+        { key: 'force_failure_reason', label: 'last reason' },
+      ], 'No forced plan has failed since it was forced.'),
+      el('h4', {}, 'The reads that saw a change'),
+      grid(rowsOf(d.reads), [
+        { key: 'database' }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) }, { key: 'seen_at', label: 'read', fmt: fmtTime },
+        { key: 'count_before', label: 'count before', num: true }, { key: 'count_after', label: 'count after', num: true },
+        { key: 'rise', label: 'failures', num: true }, { key: 'reset', label: 'forced anew', fmt: yes },
+      ], 'None yet.'));
+  }).catch(e => box.replaceChildren(el('h4', {}, 'Failures since forced'), errorBox(e)));
+  return box;
+}
+
+// planStatsPanel: the statistics a plan was compiled with (PerformanceMonitor 3.13's Statistics Used), read from the
+// plan's OptimizerStatsUsage when pgvigil stored it: modified % against the table's rows at the last index read and the
+// auto-update line, stale at compile when the modifications had passed the line.
+export function planStatsPanel(ctx: Ctx, key: Record<string, string | number>, title: string): HTMLElement {
+  const box = el('section', { class: 'detail', 'aria-live': 'polite' }, el('h4', { tabindex: '-1' }, `Statistics used by ${title}`), el('p', { class: 'meta' }, 'Reading ...'));
+  get<Record<'stats', Table | null>>('mssql/planstats', { instance: ctx.instance, ...key }).then(d => {
+    const rows = rowsOf(d.stats);
+    box.replaceChildren(el('h4', { tabindex: '-1' }, `Statistics used by ${title}`),
+      el('p', { class: 'meta' }, 'The statistics the optimizer loaded to compile the plan, as it saw them then (SQL Server 2017 and 2016 SP2 write them into the plan; an older plan has none). '
+        + 'Rows changed is the count at compile; the table\'s rows are pgvigil\'s last index read. The auto-update line is 500 rows up to 500, past that 500 + 20 %, '
+        + 'or from compatibility level 130 the smaller of that and the square root of 1,000 x rows: a statistic past it was stale at compile '
+        + '(AUTO_UPDATE_STATISTICS off, asynchronous updates or NORECOMPUTE).'),
+      grid(rows, [
+        { key: 'stale_at_compile', label: 'stale at compile', fmt: (v, r) => v === true ? badge('stale', 'warn') : v === false ? 'no' : String(r.not_judged ?? 'not judged') },
+        { key: 'stmt', label: 'statement', num: true }, { key: 'database' }, { key: 'schema' }, { key: 'table' }, { key: 'statistic' },
+        { key: 'modification_count', label: 'rows changed', num: true }, { key: 'table_rows', label: 'table rows', num: true },
+        { key: 'modified_pct', label: 'modified %', num: true }, { key: 'update_line', label: 'auto-update line', num: true },
+        { key: 'sampling_pct', label: 'sampled %', num: true }, { key: 'last_update', label: 'last updated (server clock)' },
+        { key: 'compatibility_level', label: 'compat level', num: true },
+      ], 'No statistics are stored for this plan: it was not read since pgvigil keeps them, or the plan names none (SQL Server before 2017 or 2016 SP2).'));
+    (box.firstElementChild as HTMLElement).focus();
+  }).catch(e => box.replaceChildren(el('h4', {}, `Statistics used by ${title}`), errorBox(e)));
+  return box;
 }
 
 // ---- Tuning
@@ -658,9 +719,82 @@ export async function mssqlQueryStoreView(ctx: Ctx): Promise<HTMLElement> {
     const body = view === 'regressed' ? regressedView(ctx, d, base) : view === 'forced' ? forcedView(ctx, d) : view === 'tuning' ? tuningView(d)
       : view === 'state' ? stateView(d) : topView(ctx, d, order);
     sec.append(...body);
+    if (view === 'top') sec.append(statementSearch(ctx));
   } catch (e) {
     sec.append(errorBox(e));
   }
   refocus = '';   // a control this draw did not rebuild (an empty view) must not take the focus at a later draw
   return sec;
+}
+
+// ---- one statement on every instance; statements containing a text (task 406, PerformanceMonitor 3.13 Added 14, 15) --
+
+// everywherePanel: one query hash on every SQL Server instance the repository holds, over the range (the plan cache's
+// samples and the Query Store's intervals), the most CPU first.
+export function everywherePanel(ctx: Ctx, hash: string): HTMLElement {
+  const title = `Query hash ${hash} on every instance (${rangeLabel(ctx)})`;
+  const box = el('section', { class: 'detail', 'aria-live': 'polite' }, el('h4', { tabindex: '-1' }, title), el('p', { class: 'meta' }, 'Reading ...'));
+  get<{ rows: Table | null; note?: string }>('mssql/everywhere', { hash, ...window_(ctx) }).then(d => {
+    box.replaceChildren(el('h4', { tabindex: '-1' }, title),
+      el('p', { class: 'meta' }, 'SQL Server computes a query hash from the statement\'s shape, so the same statement has the same hash on every server. '
+        + 'Each row is one instance, database and source over the range; a plan cache figure is a floor when a read was cut (capped reads), '
+        + 'and the Query Store keeps each interval\'s top plans only.'),
+      d.note ? el('p', { class: 'meta' }, `${d.note}.`) : '',
+      grid(rowsOf(d.rows), [
+        { key: 'instance' }, { key: 'database' }, { key: 'source' }, { key: 'executions', num: true },
+        { key: 'cpu_ms', label: 'CPU (ms)', num: true }, { key: 'duration_ms', label: 'duration (ms)', num: true },
+        { key: 'logical_reads', label: 'logical reads', num: true }, { key: 'first_seen', label: 'first seen', fmt: fmtTime },
+        { key: 'last_seen', label: 'last seen', fmt: fmtTime }, { key: 'capped_reads', label: 'capped reads', num: true },
+      ], 'No instance ran this query hash in this range.'));
+    (box.firstElementChild as HTMLElement).focus();
+  }).catch(e => box.replaceChildren(el('h4', {}, title), errorBox(e)));
+  return box;
+}
+
+type SearchReply = { sources: { source: string; rows: Table | null; note?: string }[]; text_indexes: Table | null; no_text: string[] | null; normalized: string[] | null; note?: string };
+
+// statementSearch: 'Find statements containing' over the stored SQL Server statement texts of this instance, or of
+// every instance with the box ticked.
+export function statementSearch(ctx: Ctx): HTMLElement {
+  const input = el('input', { type: 'search', minlength: '3', maxlength: '400', 'aria-label': 'Text the statement holds', placeholder: 'part of a statement' }) as HTMLInputElement;
+  const every = el('input', { type: 'checkbox' }) as HTMLInputElement;
+  const go = el('button', { type: 'submit' }, 'Find');
+  const out = el('div', { 'aria-live': 'polite' });
+  const form = el('form', { class: 'toolbar', role: 'search', 'aria-label': 'Find statements containing a text' },
+    el('label', {}, 'Find statements containing ', input), el('label', {}, every, ' every instance'), go) as HTMLFormElement;
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const q = input.value.trim();
+    if (q.length < 3) { out.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Type 3 characters or more.')); return; }
+    out.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Searching ...'));
+    try {
+      const d = await get<SearchReply>('mssql/search', { q, instance: every.checked ? undefined : ctx.instance });
+      const idx = rowsOf(d.text_indexes);
+      const usable = idx.filter(r => r.valid === true && r.ready === true).length;
+      const kids: (Node | string)[] = [
+        el('p', { class: 'meta' }, `The stored statement texts are searched as they are kept (case ignored; % and _ are plain characters). `
+          + (usable === idx.length && idx.length ? 'The trigram indexes over them are built and in use.'
+            : 'Without the optional trigram indexes each source stops after 4 seconds (docs: Query Store, finding statements by their text).')),
+      ];
+      if (d.no_text?.length) kids.push(el('p', { class: 'meta' }, `Not searched (query_text "none" keeps no text): ${d.no_text.join(', ')}.`));
+      if (d.normalized?.length) kids.push(el('p', { class: 'meta' }, `Kept normalized (literals stored as ?, so a literal is not found): ${d.normalized.join(', ')}.`));
+      if (d.note) kids.push(el('p', { class: 'meta' }, `${d.note}.`));
+      for (const src of d.sources) {
+        kids.push(el('h4', {}, `From the ${src.source}`));
+        if (src.note) kids.push(el('p', { class: 'meta' }, `${src.note}.`));
+        else kids.push(grid(rowsOf(src.rows), [
+          { key: 'instance' }, { key: 'database' }, { key: 'object_name', label: 'module' }, { key: 'statement', fmt: stmt, wide: true },
+          { key: 'statement_key', label: 'query hash' }, { key: 'seen_at', label: 'last seen', fmt: fmtTime },
+          { key: 'every', label: 'every instance', fmt: (_, r) => /^0x[0-9A-F]{1,16}$/i.test(text(r.statement_key))
+            ? openButton('On every instance', `query hash ${text(r.statement_key)}`, () => { everyOut.replaceChildren(everywherePanel(ctx, text(r.statement_key))); }) : '' },
+        ], 'No stored statement holds this text.'));
+      }
+      kids.push(everyOut);
+      out.replaceChildren(...kids);
+    } catch (e) {
+      out.replaceChildren(errorBox(e));
+    }
+  });
+  const everyOut = el('div');
+  return el('section', { class: 'qs-search' }, el('h3', {}, 'Find statements'), form, out);
 }

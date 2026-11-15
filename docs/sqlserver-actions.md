@@ -1,6 +1,6 @@
 # SQL Server: actions
 
-pgvigil reads. On a SQL Server instance it can also do three things, and only when the instance is set up for them: end a session, start an Agent job, stop an Agent job. This page is how that door works and how to open it.
+pgvigil reads. On a SQL Server instance it can also do four things, and only when the instance is set up for them: end a session, start an Agent job, stop an Agent job, and remove one plan from the plan cache. This page is how that door works and how to open it.
 
 The door is off by default. It is off for an instance until that instance has a separate actions login AND a list that names the action.
 
@@ -11,6 +11,7 @@ The door is off by default. It is off for an instance until that instance has a 
 | `kill` | `KILL <session id>` | `ALTER ANY CONNECTION` |
 | `job_start` | `EXEC msdb.dbo.sp_start_job @job_id = '<id>'` | `SQLAgentOperatorRole` in msdb |
 | `job_stop` | `EXEC msdb.dbo.sp_stop_job @job_id = '<id>'` | `SQLAgentOperatorRole` in msdb |
+| `plan_evict` | `EXEC master.dbo.pgvigil_evict_plan @plan_handle = <handle>`, or `DBCC FREEPROCCACHE (<handle>)` where the server has no such procedure; the handle is sent as a varbinary parameter | `EXECUTE` on the signed procedure below (documented), or `ALTER SERVER STATE` (the alternative, with what it gives) |
 
 Nothing else. The read login never sends any of these.
 
@@ -32,6 +33,42 @@ ALTER ROLE SQLAgentOperatorRole ADD MEMBER [pgvigil_actions];
 
 pgvigil refuses an actions login that is `sysadmin` or holds `CONTROL SERVER`, and one that is the read login. `SQLAgentOperatorRole` is the smallest role SQL Server has for starting and stopping a job the login does not own, and it carries more than that: its member can also read every local job with its history, enable or disable local jobs and schedules, and delete a local job's history. pgvigil sends none of those; weigh them before you grant the role.
 
+### For plan_evict: a certificate-signed procedure (the documented grant)
+
+`DBCC FREEPROCCACHE (<plan handle>)` needs `ALTER SERVER STATE`, a right far wider than one plan: see the alternative below. The documented route keeps that right off the actions login. A procedure in master removes the one plan it is given; a certificate signs it, the certificate's own login holds `ALTER SERVER STATE`, and the actions login may only `EXECUTE` the procedure. Run as a sysadmin, once per server:
+
+```sql
+USE master;
+CREATE CERTIFICATE pgvigil_evict_cert ENCRYPTION BY PASSWORD = '<a long random password>'
+  WITH SUBJECT = 'pgvigil: remove one cached plan', EXPIRY_DATE = '2036-01-01';
+GO
+-- removes the plan the handle names, and nothing else; a handle with no plan in the cache is an error
+CREATE PROCEDURE dbo.pgvigil_evict_plan @plan_handle varbinary(64)
+AS
+BEGIN
+  SET NOCOUNT ON;
+  IF NOT EXISTS (SELECT 1 FROM sys.dm_exec_cached_plans WHERE plan_handle = @plan_handle)
+    THROW 50001, 'no plan under this handle in the plan cache', 1;
+  DBCC FREEPROCCACHE (@plan_handle) WITH NO_INFOMSGS;
+END;
+GO
+ADD SIGNATURE TO dbo.pgvigil_evict_plan BY CERTIFICATE pgvigil_evict_cert WITH PASSWORD = '<the password above>';
+CREATE LOGIN pgvigil_evict_signer FROM CERTIFICATE pgvigil_evict_cert;
+GRANT ALTER SERVER STATE TO pgvigil_evict_signer;
+CREATE USER [pgvigil_actions] FOR LOGIN [pgvigil_actions];   -- once: the actions login in master
+GRANT EXECUTE ON dbo.pgvigil_evict_plan TO [pgvigil_actions];
+```
+
+Changing the procedure drops its signature: sign it again after any `ALTER PROCEDURE`. pgvigil sends the procedure when `master.dbo.pgvigil_evict_plan` exists, and `DBCC FREEPROCCACHE` itself when it does not.
+
+**The alternative, the direct grant** (`GRANT ALTER SERVER STATE TO [pgvigil_actions];`). It works, and it gives the actions login three things pgvigil never uses:
+
+- it reads every session's statement text and plan (ALTER SERVER STATE includes VIEW SERVER STATE), so the actions login is no longer a login that cannot see other sessions;
+- it can empty the whole plan cache (`DBCC FREEPROCCACHE` with no handle), and every query on the server compiles again;
+- it can reset the wait and latch statistics (`DBCC SQLPERF`), which breaks the wait history of every monitor reading them, pgvigil's included.
+
+The Actions log tab says, for an instance whose list names `plan_evict`, whether its actions login holds VIEW SERVER STATE and ALTER SERVER STATE and whether it may run the signed procedure. Not offered on Azure SQL Database (there `DBCC FREEPROCCACHE` needs `##MS_ServerStateManager##` and empties the plans of every database of an elastic pool); not proven on Amazon RDS or Managed Instance.
+
 To take the door away again:
 
 ```sql
@@ -49,7 +86,7 @@ instances:
     engine: sqlserver
     dsn: env:SALES_SQL01_DSN
     actions_dsn: env:SALES_SQL01_ACTIONS_DSN   # env: or file: only, never inline
-    actions: [kill, job_start, job_stop]       # empty or absent = nothing
+    actions: [kill, job_start, job_stop, plan_evict]   # empty or absent = nothing
 ```
 
 - `actions_dsn` is the actions login's connection string. It must come through `env:` or `file:`.
@@ -61,7 +98,9 @@ instances:
 
 1. **The button.** Kill is offered only on a live range (a preset range that ends now): there it is on every session row of the newest Running queries snapshot while that snapshot is at most 5 minutes old (DBA Dash's kill window), and as `kill this head` on each holder head of the blocking chain tree, and an older snapshot offers no Kill and the page says why. A past range, or an `at=` link widened to the hour before it, offers no Kill. Before the dialog opens, the button reads the live session and refuses when its login or login time is not the row's (the id went to a new session); Start and Stop are on a row of Jobs. A button is disabled, with the reason as its title, when the action is off for the instance.
 2. **The preview.** The server reads the target through the read login and shows it: for a session its login, host, program, database, open transaction count and last statement; for a job its name, owner and current state. The statement that would be sent is shown too.
-3. **The confirm step.** You type a reason (kept in the log) and the session id, or the job's name. The request carries the values you were shown.
+3. **The confirm step.** You type a reason (kept in the log) and the session id, or the job's name, or for a plan the code shown beside it (the first 8 hex digits of SHA-256 over its whole handle: a handle's own last digits are zero padding, the same for nearly every plan). The request carries the values you were shown.
+
+For `plan_evict` the button is on each cache entry of a Plan cache row (Cached plans). The preview reads the plan by its handle: its kind (objtype), what it is the plan of, its compile time, how many statements it holds (each compiles again at its next run: a procedure's plan holds all its statements), its uses and size, the route (the signed procedure or the direct statement), and the batch's first 400 characters under the instance's `query_text` policy `full` only. The run reads the plan again and sends nothing when it is gone or is now another plan (another kind or compile time), refuses a SQL handle (it names no plan), and reads it back after the statement: the log says 'gone' or 'compiled again at <time>'.
 4. **The check.** The server reads the target again. A session id whose login or login time differs now belongs to another session: the one you saw has ended and its id was reused. It is refused. A job whose name differs is refused.
 5. **The statement.** It goes through the actions login. What the server answers is kept.
 

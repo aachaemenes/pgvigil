@@ -1,0 +1,672 @@
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index 812798e..85fe592 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -179,7 +179,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	doors := map[string]mssql.Door{}
+ 	for _, in := range cfg.Instances {
+ 		if in.Engine == config.EngineSQLServer {
+-			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions}
++			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions,
++				Platform: in.Platform} // task 406: plan_evict is not offered on Azure SQL Database
+ 		}
+ 	}
+ 	srv.SetMSSQLActions(doors)
+diff --git i/docs/sqlserver-indexes.md w/docs/sqlserver-indexes.md
+index 7e7b0cc..763ba63 100644
+--- i/docs/sqlserver-indexes.md
++++ w/docs/sqlserver-indexes.md
+@@ -45,6 +45,22 @@ Findings (a read older than three hours raises nothing):
+ | single-use plans in the cache | single-use ad hoc or prepared plans are over 10 % of a user database's compiled plans (info) or over 75 % (warning), with 100 at least |
+ | one statement compiled into many plans | statements of a query hash with several plans are over 5 % of a user database's cached statements (info) or over 75 % (warning), with 100 at least |
+ 
++### Cached plans, read on demand
++
++A row of the Plan cache tab's statements has **Cached plans**: each entry the last read held (plan handle, the statement's offsets, plan hash, compile time), with **Download .sqlplan** and **Open** of the statement's plan or the whole batch's, read from the server when asked through the read login (`sys.dm_exec_text_query_plan`). A plan is read under the instance's `query_text` policy `full` only (a plan carries the statement's text and its compiled values) and its T-SQL password forms are masked. Every read writes a row in the custom reports' log first (op `plan_read`: who, from where, the instance, the handle and offsets and what was read, never the plan), through the actions door's audit login: a serve without it (`-no-login`, or no audit login) reads no plan and says why. A read login in `sysadmin` is not refused here, unlike for custom reports: these are pgvigil's own fixed reads, the ones its collections make on that login. The reply says when the plan's hash is not the sample's (compiled again since), when the cache no longer holds it, when the handle holds a parameterized statement's shell, and when the module is encrypted. **Evict** removes the plan through the actions door (`plan_evict`, off by default: [actions](sqlserver-actions.md)). **On every instance** lists the statement's query hash on every SQL Server instance over the range.
++
++### Plans of running queries
++
++`mssql_running_plans` and `mssql_live_plans` are off by default, on every instance: a plan carries the statement's text and its literals (passwords masked), and it is kept only under the `query_text` policy `full`. An instance added on Admin > Instances is switched on by its **running plans** box there (an admin's tick; off again by clearing it; the collector takes it within 15 seconds). For an instance of the configuration file add to it:
++
++```yaml
++    schedules:
++      mssql_running_plans: 1m
++      mssql_live_plans: 1m      # where the build allows it (the table above)
++```
++
++and restart the collector. The file's global `schedules:` line for `mssql_running_plans` comes before the page's box: `0` turns it off for every instance whose own `schedules:` does not name it, the ticked page instances too, and any other value reads every SQL Server instance, ticked or not. When the policy leaves `full`, the plans and live plans kept are dropped at the next read and no longer shown. The tab's **Plans of running queries** lists each plan kept, why (CPU, memory grant, running time, requests), the largest figures a read saw, its plan and its newest live plan, and **Statistics used** (the statistics the plan was compiled with, stale at compile when their changes had passed the auto-update line). A slow query's or a running request's **Plan** lists every plan pgvigil holds or can read for its query and plan hash.
++
+ ## Indexes (`mssql_indexes`)
+ 
+ There is one row per index of every user table and indexed view. Each row holds:
+diff --git i/docs/sqlserver-querystore.md w/docs/sqlserver-querystore.md
+index cdcb5c1..1fc6d26 100644
+--- i/docs/sqlserver-querystore.md
++++ w/docs/sqlserver-querystore.md
+@@ -77,6 +77,24 @@ A window takes every interval of the store that overlaps it: with 60-minute inte
+ 
+ A cleared store (`ALTER DATABASE ... SET QUERY_STORE CLEAR`) numbers its queries and plans again from 1. Rows read before the clear keep the hashes they were read with and never show the text of the query that took their number; they show without text. A plan number that comes back under another query loses the XML stored for it.
+ 
++### Statistics used, forced plans that fail, one statement everywhere
++
++- A plan's **Statistics used** lists the statistics the optimizer loaded to compile it (the plan's OptimizerStatsUsage, written by SQL Server 2017 and 2016 SP2): rows changed at compile, the table's rows, modified %, the auto-update line and **stale at compile**; 'a plan compiled on stale statistics' is an info finding.
++- **Failures since forced** (under Forced plans): each read that saw a forced plan's failure count change. 'A forced plan fails' is a warning when one read saw 2 or more failures, or two failures were read within 24 hours of each other; one failure alone is held as an info (PerformanceMonitor 3.13's rule); forcing the plan anew starts again.
++- **On every instance**: a query hash on every SQL Server instance over the range, from the plan cache and the Query Store, the most CPU first. A PostgreSQL statement's identifier is its own server's, so PostgreSQL instances are not compared.
++
++### Finding statements by their text
++
++**Find statements** (Top view and the Plan cache tab) searches the stored statement texts of this instance, or every SQL Server instance, for a text (3 to 400 characters, case ignored, `%` and `_` as they are). An instance under `query_text: none` keeps no text and is named, not searched; under `normalized` a literal is stored as `?` and is not found. Without an index each source stops after 4 seconds and says so. The DBA may build the optional trigram indexes, as the repository's owner, outside a transaction:
++
++```sql
++CREATE EXTENSION IF NOT EXISTS pg_trgm;
++CREATE INDEX CONCURRENTLY IF NOT EXISTS mssql_pc_text_query_trgm ON pgvigil.mssql_pc_text USING gin (query gin_trgm_ops);
++CREATE INDEX CONCURRENTLY IF NOT EXISTS mssql_qs_query_text_trgm ON pgvigil.mssql_qs_query USING gin (query_text gin_trgm_ops);
++```
++
++The search says whether each index is there and valid (a failed `CONCURRENTLY` build leaves an invalid one: drop it and build it again). pgvigil never builds them.
++
+ ## The Queries page
+ 
+ The Performance row's Queries tab (in Plan cache's place: the full Plan cache grid keeps its address and opens from the page) is PerformanceMonitor 3.12.0's Queries view in its section order, on what pgvigil stores. Each section reads when it first comes into view, by itself, and the page is not refreshed every 30 s.
+diff --git i/docs/sqlserver.md w/docs/sqlserver.md
+index 3ec1c5e..3e0e515 100644
+--- i/docs/sqlserver.md
++++ w/docs/sqlserver.md
+@@ -87,6 +87,8 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
+ | `mssql_audit` | 5 min | the server audits, their server and database specifications and their state; the events of a file audit read forward from a cursor (role, permission, DDL and audit changes and failed sign-ins as rows, the rest counted) | VIEW ANY DEFINITION and VIEW SERVER STATE; VIEW SERVER SECURITY AUDIT for the events (2022) | skipped (its blob target is not built) | [SQL Server Audit](sqlserver-audit.md) |
+ | `mssql_plancache` | 5 min | `sys.dm_exec_query_stats`: per cached statement, what changed between two reads (the place of Query Store where it is off) | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE) | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
++| `mssql_running_plans` | off (1 min once on) | the plan of a running query past DBA Dash 4.25.0's thresholds (1 s of CPU, 50 MB granted, 10 s running, or two requests on one plan), kept once an hour per plan; off for every instance until an admin ticks its running plans box on Admin > Instances, or an instance of this file names it in `schedules: {mssql_running_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
++| `mssql_live_plans` | off (1 min once on) | the plan with its operator counters of a request past 60 s of CPU or 5 minutes running unblocked, 10 a read at most; SQL Server 2016 SP1, 2017 CU26, 2019 CU12 and later, Managed Instance, Azure SQL Database; before 2019 lightweight profiling needs trace flag 7412; switched on with `schedules: {mssql_live_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
+ | `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
+diff --git i/docs/upgrade.md w/docs/upgrade.md
+index e803d2c..6ad2ab7 100644
+--- i/docs/upgrade.md
++++ w/docs/upgrade.md
+@@ -37,6 +37,14 @@ what happens in the other order, and what the project's own proof showed (`scrip
+   that may `CREATE` in a `pgvigil` schema, and, in the repository's own database, a member of its owner or of
+   `pg_read_all_data` - the grant `pgvigil roles` prints for `pgvigil_explain`, so EXPLAIN ANALYZE of a statement in the
+   repository database itself is refused with that login; every other database is unchanged.
++- **A SQL Server plan read by its handle is audited.** Plan cache > Cached plans > Download .sqlplan and Open now write a
++  row in the custom reports' log (op `plan_read`: who, the instance, the handle and offsets, never the plan) before the
++  plan is answered, through the actions door's audit login (the config's repository dsn), as a Community tools run is. A
++  serve without it (`pgvigil serve -no-login`, a repository login that may not write the actions log, or one that may not
++  call `import_custom_report_run`) no longer reads plans: the buttons are off and say why.
++- **Plans of running queries are off on every instance.** `mssql_running_plans` and `mssql_live_plans` are new and off
++  by default; an instance added on Admin > Instances has a running plans box, unticked, and an instance of the file
++  takes `schedules:` ([plans of running queries](sqlserver-indexes.md#plans-of-running-queries)).
+ - **Nothing else.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no migration
+   changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and after.
+ 
+diff --git i/internal/config/config.go w/internal/config/config.go
+index 07e6a24..91a65a0 100644
+--- i/internal/config/config.go
++++ w/internal/config/config.go
+@@ -79,6 +79,9 @@ type Instance struct {
+ 	// word is the key "tag". The repository keeps them as written; 'pgvigil tag' overrides a key there.
+ 	Tags      []string            `yaml:"tags"`
+ 	Schedules map[string]Duration `yaml:"schedules"`
++	// PageDefaults are an instance's intervals that Admin > Instances gives it (task 406: its running plans
++	// switch); never read from the file. Interval reads them after the file's schedules:, its own and the global.
++	PageDefaults map[string]Duration `yaml:"-"`
+ 	// Disabled lists collections that never run on this instance.
+ 	Disabled []string `yaml:"disabled"`
+ 	// QueryText overrides the file-level query_text for this instance (full | normalized | none);
+@@ -91,7 +94,7 @@ type Instance struct {
+ 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
+ 	// accepted: the password of a login that can stop sessions never sits in the file.
+ 	ActionsDSNRaw string `yaml:"actions_dsn"`
+-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop; on PostgreSQL job_stop and
++	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, plan_evict; on PostgreSQL job_stop and
+ 	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
+ 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
+ 	// alone turns them on.
+@@ -529,9 +532,9 @@ func (c *Config) Validate() error {
+ 			seen := map[string]bool{}
+ 			for _, a := range in.Actions {
+ 				switch a {
+-				case "kill", "job_start", "job_stop":
++				case "kill", "job_start", "job_stop", "plan_evict":
+ 				default:
+-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop)", in.Name, a)
++					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, plan_evict)", in.Name, a)
+ 				}
+ 				if seen[a] {
+ 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
+@@ -609,7 +612,8 @@ func Resolve(v string) string {
+ }
+ 
+ // Interval returns the effective interval of a collection for an instance:
+-// the instance's override, then the global override, then the default; zero = disabled.
++// the instance's override, then the global override, then the page's default (PageDefaults), then the
++// collection's default; zero = disabled.
+ func (c *Config) Interval(in Instance, collection string, def time.Duration) time.Duration {
+ 	for _, d := range in.Disabled {
+ 		if d == collection {
+@@ -622,5 +626,8 @@ func (c *Config) Interval(in Instance, collection string, def time.Duration) tim
+ 	if v, ok := c.Schedules[collection]; ok {
+ 		return v.Duration
+ 	}
++	if v, ok := in.PageDefaults[collection]; ok {
++		return v.Duration
++	}
+ 	return def
+ }
+diff --git i/internal/config/inventory.go w/internal/config/inventory.go
+index ee4135f..a8bff5d 100644
+--- i/internal/config/inventory.go
++++ w/internal/config/inventory.go
+@@ -44,6 +44,8 @@ type PageInstance struct {
+ 	DSNRef   string
+ 	Tags     []string
+ 	Disabled bool
++	// RunningPlans is the page's running plans box (task 406): mssql_running_plans each minute when ticked
++	RunningPlans bool
+ 	// Auth and Options: the sign-in and the driver options as the page stored them (never a password); serve's page
+ 	// door reads them for its words (pagedoor.go), the collector does not
+ 	Auth    string
+@@ -108,6 +110,11 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
+ 			plat = "auto"
+ 		}
+ 		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
++		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
++		// it, Q15) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
++		if p.Engine == EngineSQLServer && p.RunningPlans {
++			all[len(all)-1].PageDefaults = map[string]Duration{"mssql_running_plans": {Duration: time.Minute}}
++		}
+ 	}
+ 	return all, skipped
+ }
+@@ -118,6 +125,9 @@ func Fingerprint(in Instance) string {
+ 	for k, v := range in.Schedules {
+ 		sch = append(sch, k+"="+v.String())
+ 	}
++	for k, v := range in.PageDefaults {
++		sch = append(sch, "page:"+k+"="+v.String())
++	}
+ 	sort.Strings(sch)
+ 	dis := slices.Clone(in.Disabled)
+ 	sort.Strings(dis)
+diff --git i/internal/config/inventory_runningplans_test.go w/internal/config/inventory_runningplans_test.go
+new file mode 100644
+index 0000000..93dcffd
+--- /dev/null
++++ w/internal/config/inventory_runningplans_test.go
+@@ -0,0 +1,44 @@
++package config
++
++import (
++	"testing"
++	"time"
++)
++
++// TestRunningPlansSwitch: task 406's running plans of a page instance are off until its box is ticked, then each
++// minute; the file's global schedules: beats the page (0 = off for all); a file instance keeps its own schedules:.
++func TestRunningPlansSwitch(t *testing.T) {
++	file := []Instance{{Name: "f1", Engine: EngineSQLServer, Schedules: map[string]Duration{"mssql_running_plans": {Duration: 2 * time.Minute}}}}
++	page := []PageInstance{
++		{Name: "p_off", Engine: EngineSQLServer, DSNRef: "file:/x/p_off"},
++		{Name: "p_on", Engine: EngineSQLServer, DSNRef: "file:/x/p_on", RunningPlans: true},
++		{Name: "pg_on", Engine: EnginePostgres, DSNRef: "file:/x/pg_on", RunningPlans: true},
++	}
++	all, skipped := Merge(file, page, "full")
++	if len(skipped) != 0 || len(all) != 4 {
++		t.Fatalf("merge: %d instances, skipped %v", len(all), skipped)
++	}
++	by := map[string]Instance{}
++	for _, in := range all {
++		by[in.Name] = in
++	}
++	c := &Config{}
++	for _, x := range []struct {
++		name string
++		want time.Duration
++	}{{"f1", 2 * time.Minute}, {"p_off", 0}, {"p_on", time.Minute}, {"pg_on", 0}} {
++		if got := c.Interval(by[x.name], "mssql_running_plans", 0); got != x.want {
++			t.Errorf("%s: %v, want %v", x.name, got, x.want)
++		}
++	}
++	c.Schedules = map[string]Duration{"mssql_running_plans": {Duration: 0}}
++	if got := c.Interval(by["p_on"], "mssql_running_plans", 0); got != 0 {
++		t.Errorf("a ticked page instance under the global schedules: 0 runs every %v", got)
++	}
++	if got := c.Interval(by["f1"], "mssql_running_plans", 0); got != 2*time.Minute {
++		t.Errorf("a file instance's own schedules: under the global 0: %v", got)
++	}
++	if Fingerprint(by["p_on"]) == Fingerprint(Instance{Name: "p_on", Engine: EngineSQLServer, Platform: "auto", DSNRaw: "file:/x/p_on", QueryText: "full"}) {
++		t.Error("ticking the box does not change the instance's fingerprint: its loops would not restart")
++	}
++}
+diff --git i/internal/mcp/tools.go w/internal/mcp/tools.go
+index 7afb52b..0c83504 100644
+--- i/internal/mcp/tools.go
++++ w/internal/mcp/tools.go
+@@ -111,6 +111,16 @@ func tools() []tool {
+ 			Description: "Volumes with free space, growth per day over 7 and 30 days and the days until full, soonest first; with instance, also its database and table growth and storage checks.",
+ 			args:        []arg{{name: "instance", typ: "string", desc: "one instance (name or instance_id); without it, the whole fleet and the repository's own size"}},
+ 			run:         storageForecast},
++		// task 406 (PerformanceMonitor 3.13 Added 14 and 15): tools_mssql_statements.go
++		{Name: "statement_everywhere", Title: "Statement on every instance (SQL Server)",
++			Description: "SQL Server only: one query hash on every SQL Server instance over a window, per instance, database and source (plan cache, Query Store): executions, CPU, duration, reads, the most CPU first. PostgreSQL statements are not compared (a queryid is its own server's).",
++			args:        []arg{{name: "query_hash", typ: "string", desc: "the query hash, 0x and up to 16 hex digits", required: true}, argFrom, argTo, argHours},
++			run:         statementEverywhere},
++		{Name: "find_statements", Title: "Find statements by text (SQL Server)",
++			Description: "SQL Server only: the stored statement texts holding a text (3 to 400 characters, case ignored), from the plan cache and the Query Store, of one instance or every one, each with its query hash for statement_everywhere. Instances whose query_text policy keeps no text are named, not searched; PostgreSQL instances are not searched.",
++			args: []arg{{name: "text", typ: "string", desc: "the text the statement holds", required: true},
++				{name: "instance", typ: "string", desc: "one SQL Server instance (name or instance_id); without it every one"}},
++			run: findStatements},
+ 	}
+ }
+ 
+diff --git i/internal/mcp/tools_mssql_statements.go w/internal/mcp/tools_mssql_statements.go
+new file mode 100644
+index 0000000..867d24a
+--- /dev/null
++++ w/internal/mcp/tools_mssql_statements.go
+@@ -0,0 +1,57 @@
++package mcp
++
++// The two SQL Server statement tools of task 406 (PerformanceMonitor 3.13 Added 14 and 15): they read the web API's
++// /api/mssql/everywhere and /api/mssql/search as every tool reads its page's API.
++
++import (
++	"context"
++	"errors"
++	"net/url"
++	"regexp"
++)
++
++var queryHashForm = regexp.MustCompile(`^0x[0-9A-Fa-f]{1,16}$`)
++
++func statementEverywhere(ctx context.Context, s *Server, a map[string]any) (any, error) {
++	h, err := str(a, "query_hash")
++	if err != nil {
++		return nil, err
++	}
++	if !queryHashForm.MatchString(h) {
++		return nil, errors.New("query_hash must be 0x and up to 16 hex digits")
++	}
++	q, err := window(a, 24)
++	if err != nil {
++		return nil, err
++	}
++	q.Set("hash", h)
++	v, err := s.get(ctx, "/api/mssql/everywhere", q)
++	if err != nil {
++		return nil, err
++	}
++	out := map[string]any{"query_hash": h, "from": q.Get("from"), "to": q.Get("to"), "rows": records(field(v, "rows"))}
++	if n := field(v, "note"); n != nil {
++		out["note"] = n
++	}
++	return readNote(out, v), nil
++}
++
++func findStatements(ctx context.Context, s *Server, a map[string]any) (any, error) {
++	t, err := str(a, "text")
++	if err != nil {
++		return nil, err
++	}
++	q := url.Values{"q": {t}}
++	if _, ok := a["instance"]; ok {
++		in, err := s.resolve(ctx, a, "instance")
++		if err != nil {
++			return nil, err
++		}
++		q.Set("instance", in.ID)
++	}
++	v, err := s.get(ctx, "/api/mssql/search", q)
++	if err != nil {
++		return nil, err
++	}
++	return v, nil
++}
+diff --git i/internal/mssql/mssql.go w/internal/mssql/mssql.go
+index d9e4822..fbab89a 100644
+--- i/internal/mssql/mssql.go
++++ w/internal/mssql/mssql.go
+@@ -527,6 +527,10 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 		logRun(instanceID, "error", err.Error())
+ 		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
+ 	}
++	// task 406: a collector that must learn its rows were stored (mssql_running_plans marks the plans it sent)
++	if as, ok := c.(AfterStorer); ok {
++		as.AfterStore(info, rows)
++	}
+ 	d := time.Since(start)
+ 	status, note := "ok", ""
+ 	for _, row := range rows {
+diff --git i/internal/repo/repo.go w/internal/repo/repo.go
+index 32b4b27..9fdf779 100644
+--- i/internal/repo/repo.go
++++ w/internal/repo/repo.go
+@@ -232,10 +232,10 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
+ 	return g, err
+ }
+ 
+-// Inventory is the page's instance list and its generation, read in one statement (0131's admin_inventory(),
++// Inventory is the page's instance list and its generation, read in one statement (0157's admin_inventory(),
+ // SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
+ func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
+-	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation FROM pgvigil.admin_inventory()`)
++	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans FROM pgvigil.admin_inventory()`)
+ 	if err != nil {
+ 		return nil, 0, err
+ 	}
+@@ -245,8 +245,8 @@ func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, err
+ 	for rows.Next() {
+ 		var name, engine, platform, ref, auth, options *string
+ 		var tags []string
+-		var disabled *bool
+-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen); err != nil {
++		var disabled, runningPlans *bool
++		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans); err != nil {
+ 			return nil, 0, err
+ 		}
+ 		if name == nil {
+@@ -271,6 +271,9 @@ func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, err
+ 		if options != nil {
+ 			p.Options = *options
+ 		}
++		if runningPlans != nil {
++			p.RunningPlans = *runningPlans
++		}
+ 		out = append(out, p)
+ 	}
+ 	return out, gen, rows.Err()
+diff --git i/internal/repo/sql/0110_join_release.sql w/internal/repo/sql/0110_join_release.sql
+index 68128c5..dc6e79e 100644
+--- i/internal/repo/sql/0110_join_release.sql
++++ w/internal/repo/sql/0110_join_release.sql
+@@ -425,7 +425,9 @@ BEGIN
+       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_auth', f.sig);
+     ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
+-                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set') THEN
++                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
++                        -- task 406, 0157: they delete or write for the imports, and the reader never calls them
++                        'mssql_qs_plans_purge', 'mssql_plan_stats_store', 'mssql_plans_policy_drop') THEN
+       -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
+       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+     ELSE
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 40526c2..80f76d9 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -11,6 +11,9 @@
+ --   task 177 D14 (0124): the mssql_cpu_findings arm; mssql_counter_sample, mssql_counter_read, mssql_session_summary,
+ --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
+ --   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
++--   task 406 B12 (0157): no findings arm here (mssql_querystore_findings is 0083's view, re-created by 0157); purge() calls
++--     pgvigil.mssql_qs_plans_purge(p_days); apply_roles() (0110's) keeps mssql_qs_plans_purge, mssql_plan_stats_store and
++--     mssql_plans_policy_drop owner only.
+ -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
+ 
+ CREATE OR REPLACE VIEW pgvigil.findings AS
+@@ -332,6 +335,7 @@ BEGIN
+   n := n + pgvigil.mssql_running_purge(p_days);
+   n := n + pgvigil.mssql_reads_purge(p_days);
+   n := n + pgvigil.mssql_plancache_purge(p_days);
++  n := n + pgvigil.mssql_qs_plans_purge(p_days);   -- task 406 (0157): running plans, live captures, plan statistics, forced-plan failures
+   -- the PostgreSQL job step runs (161, 0102) past the retention, as job_runs
+   DELETE FROM pgvigil.job_step_runs WHERE start_time < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+diff --git i/internal/web/q_instances_admin.go w/internal/web/q_instances_admin.go
+index 77fb5f7..a3f730c 100644
+--- i/internal/web/q_instances_admin.go
++++ w/internal/web/q_instances_admin.go
+@@ -229,7 +229,7 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
+ 	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.instancesOff() == "", "why_not": s.instancesOff()}
+ 	parts := []struct{ k, q string }{
+ 		{"page", `SELECT a.name, a.engine, a.platform, a.auth, a.host, a.port, a.dbname, a.login, a.options, array_to_string(a.tags, ' ') AS tags,
+-		        a.disabled, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
++		        a.disabled, a.running_plans, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
+ 		        a.tested_at, a.tested_ok, a.tested_detail, i.instance_id, i.last_seen,
+ 		        (SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id AND c.status = 'ok') AS last_collected,
+ 		        -- task 205's design pass: an approved server its source no longer lists
+@@ -436,6 +436,24 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
+ 		s.instanceTest(w, r, user, in)
+ 		return
+ 	}
++	// task 406: the running plans box of a SQL Server instance added here (0157: off for every instance until ticked)
++	if op == "running_plans" {
++		on, isBool := in["on"].(bool)
++		if !isBool {
++			writeErr(w, http.StatusBadRequest, errors.New("on must be true or false"))
++			return
++		}
++		pay["on"] = on
++		ans, raw, err := s.callImport(ctx, "import_admin_running_plans", pay)
++		if err != nil {
++			s.log.Error("admin instance: not written", "user", user, "op", op, "name", name, "err", err)
++			writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
++			return
++		}
++		s.log.Info("admin instance", "op", op, "name", name, "on", on, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
++		s.answer(w, ans, raw, nil)
++		return
++	}
+ 	dir := a.secretDir()
+ 	if dir == "" && (op == "add" || op == "edit") {
+ 		writeErr(w, http.StatusConflict, errors.New("this server was started without a config file path: credentials cannot be written"))
+@@ -499,7 +517,7 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
+ 			previous = have.Ref
+ 		}
+ 	default:
+-		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove or test"))
++		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans or test"))
+ 		return
+ 	}
+ 	ans, raw, err := s.callImport(ctx, "import_admin_instance", pay)
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6b3933a..88bd142 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -344,6 +344,15 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
+ 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
+ 	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
++	api.HandleFunc("GET /api/mssql/plancache/entries", s.MSSQLPlanCacheEntries) // task 406 (q_mssql_qs_plans.go)
++	api.HandleFunc("GET /api/mssql/plancache/plan", s.MSSQLPlanCachePlan)
++	api.HandleFunc("GET /api/mssql/runningplans", s.MSSQLRunningPlans)
++	api.HandleFunc("GET /api/mssql/runningplans/plan", s.MSSQLRunningPlan)
++	api.HandleFunc("GET /api/mssql/planstats", s.MSSQLPlanStats)
++	api.HandleFunc("GET /api/mssql/forcefail", s.MSSQLForceFail)
++	api.HandleFunc("GET /api/mssql/everywhere", s.MSSQLEverywhere)
++	api.HandleFunc("GET /api/mssql/search", s.MSSQLSearch)
++	api.HandleFunc("GET /api/mssql/plansources", s.MSSQLPlanSources)
+ 	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
+ 	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
+ 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
+diff --git i/web/src/admin_instances.ts w/web/src/admin_instances.ts
+index e8af1ed..d7388f3 100644
+--- i/web/src/admin_instances.ts
++++ w/web/src/admin_instances.ts
+@@ -81,6 +81,12 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
+       status,
+       instanceForm(d),
+       el('h3', {}, 'Instances added here'),
++      // task 406: what the running plans box collects, in words, beside the grid that holds it (only where a SQL Server
++      // instance was added here: a PostgreSQL-only list names no SQL Server collection)
++      !page.some(r => r.engine === 'sqlserver') ? '' : el('p', { class: 'meta', id: 'admin-running-plans-note' }, 'Running plans (SQL Server): a ticked instance reads the plans of its running queries each minute, '
++        + 'the ones over DBA Dash\'s plan threshold. A plan carries the statement\'s text and its literals: passwords are masked, and it is kept only under the query_text policy full. '
++        + 'Off for every instance until an admin ticks it here; an instance of pgvigil.yaml takes schedules: mssql_running_plans: 1m in the file. '
++        + 'The file\'s global schedules: line for mssql_running_plans comes before this box: 0 turns it off for every instance here, and any other value reads every SQL Server instance here, ticked or not.'),
+       grid(page, pageCols, 'No instance was added here yet.'),
+       el('h3', {}, 'Instances from pgvigil.yaml'),
+       el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
+@@ -103,7 +109,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
+   // never brings an enabled write button back under the read-only note
+   let whyNot = '';
+   function lock(cell: HTMLElement): HTMLElement {
+-    if (whyNot) for (const b of cell.querySelectorAll('button')) offRead(b, whyNot);
++    if (whyNot) for (const b of cell.querySelectorAll('button, input')) offRead(b, whyNot);
+     return cell;
+   }
+ 
+@@ -195,6 +201,21 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
+   const pageCols: Col[] = [
+     { key: 'name' }, { key: 'engine' }, { key: 'host' }, { key: 'port', num: true }, { key: 'auth' }, { key: 'tags', wide: true },
+     { key: 'disabled', label: 'state', fmt: v => badge(v ? 'disabled' : 'collected', v ? 'warn' : '') },
++    { key: 'running_plans', label: 'running plans', fmt: (v, r) => {
++      if (r.engine !== 'sqlserver') return ''; // read on SQL Server only: a PostgreSQL row's cell is empty
++      const n = String(r.name);
++      const cb = el('input', { type: 'checkbox', 'aria-label': `Read the plans of running queries on ${n} each minute`, 'aria-describedby': 'admin-running-plans-note' }) as HTMLInputElement;
++      cb.checked = v === true;
++      cb.addEventListener('change', async () => {
++        const on = cb.checked;
++        cb.disabled = true; // one request at a time; a refusal or a failure puts the box back as the server holds it
++        const done = await act('admin/instances', { op: 'running_plans', name: n, on },
++          on ? `${n}: the plans of its running queries are read each minute from the collector's next read of the list (15 seconds).`
++            : `${n}: the plans of its running queries are no longer read (from the collector's next read of the list, 15 seconds).`);
++        if (!done) { cb.checked = !on; cb.disabled = false; }
++      });
++      return lock(el('label', {}, cb, ' each minute'));
++    } },
+     { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
+     { key: 'last_collected', label: 'last collected', fmt: fmtTime },
+     { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },
+diff --git i/web/src/filedrop.ts w/web/src/filedrop.ts
+index 0a0c61d..4f6201d 100644
+--- i/web/src/filedrop.ts
++++ w/web/src/filedrop.ts
+@@ -13,6 +13,7 @@ import { Row } from './api';
+ import { DlGraph, deadlockSvg, graphFromXml, resourceKind, sessionName } from './deadlock_graph';
+ import { Col, el, fmtNum, grid } from './ui';
+ import { showTreeMenu } from './treemenu';
++import { looksLikeStatistics, MAX_TEXT, readSaved, statsioView } from './mssql_statsio';
+ 
+ const MAX_BYTES = 64 * 1024 * 1024;
+ 
+@@ -250,13 +251,14 @@ function dataSetView(name: string, text: string): HTMLElement[] {
+ 
+ // ---- opening ----------------------------------------------------------------------------------------------------
+ 
+-type What = 'xdl' | 'sqlplan' | 'grid';
++type What = 'xdl' | 'sqlplan' | 'grid' | 'statsio';
+ // openText: the text of a file (or a paste) in the viewer its contents or its name call for
+ export function openText(name: string, text: string, back: HTMLElement | null = null, want?: What): HTMLDialogElement {
+   const head = text.slice(0, 4000);
+   // the extension decides first (a CSV of system_health rows holds deadlock XML); the contents only when it says nothing
+-  const kind: What | undefined = want ?? (/\.xdl$/i.test(name) ? 'xdl' : /\.sqlplan$/i.test(name) ? 'sqlplan' : /\.(json|csv)$/i.test(name) ? 'grid'
+-    : /<deadlock[\s>]/.test(head) ? 'xdl' : /<ShowPlanXML[\s>]/.test(head) ? 'sqlplan' : /^\s*[[{]/.test(head) ? 'grid' : undefined);
++  // task 406: a saved STATISTICS IO / TIME file (.statistics.json) and messages text
++  const kind: What | undefined = want ?? (/\.statistics\.json$/i.test(name) || readSaved(head.length < text.length ? '' : text) ? 'statsio' : /\.xdl$/i.test(name) ? 'xdl' : /\.sqlplan$/i.test(name) ? 'sqlplan' : /\.(json|csv)$/i.test(name) ? 'grid'
++    : /<deadlock[\s>]/.test(head) ? 'xdl' : /<ShowPlanXML[\s>]/.test(head) ? 'sqlplan' : /^\s*[[{]/.test(head) ? 'grid' : looksLikeStatistics(head) ? 'statsio' : undefined);
+   try {
+     if (kind === 'xdl') {
+       const g = graphFromXml(text);
+@@ -273,10 +275,15 @@ export function openText(name: string, text: string, back: HTMLElement | null =
+       return viewer(`Query plan: ${name}`, back, ...planView(doc));
+     }
+     if (kind === 'grid') return viewer(`Grid: ${name}`, back, ...dataSetView(name, text));
++    if (kind === 'statsio') {
++      const body = el('div', {}, note('Reading the messages ...'));
++      void statsioView(name, text).then(k => body.replaceChildren(...k)).catch(e => body.replaceChildren(el('p', { class: 'error' }, String(e))));
++      return viewer(`STATISTICS IO / TIME: ${name}`, back, body);
++    }
+   } catch (e) {
+     return viewer(name, back, el('p', { class: 'error' }, 'Could not read the file: ' + (e instanceof Error ? e.message : String(e))));
+   }
+-  return viewer(name, back, el('p', { class: 'error' }, 'Not a file pgvigil opens: a deadlock graph (.xdl), a query plan (.sqlplan), or a grid (.json, .csv, either .gz).'));
++  return viewer(name, back, el('p', { class: 'error' }, 'Not a file pgvigil opens: a deadlock graph (.xdl), a query plan (.sqlplan), a grid (.json, .csv, either .gz), or STATISTICS IO / TIME messages (.txt, .statistics.json).'));
+ }
+ 
+ async function readFile(f: File): Promise<string> {
+@@ -316,7 +323,7 @@ export async function openFile(f: File, back: HTMLElement | null = null, want?:
+ 
+ // pick: the browser's file chooser for one kind
+ function pick(want: What, back: HTMLElement | null) {
+-  const accept = want === 'xdl' ? '.xdl,.xml' : want === 'sqlplan' ? '.sqlplan,.xml' : '.json,.csv,.gz';
++  const accept = want === 'xdl' ? '.xdl,.xml' : want === 'sqlplan' ? '.sqlplan,.xml' : want === 'statsio' ? '.txt,.rpt,.json' : '.json,.csv,.gz';
+   const input = el('input', { type: 'file', accept, hidden: '', 'aria-hidden': 'true' }) as HTMLInputElement;
+   input.addEventListener('change', () => { const f = input.files?.[0]; input.remove(); if (f) void openFile(f, back, want); });
+   input.addEventListener('cancel', () => { input.remove(); back?.focus(); });
+@@ -326,11 +333,12 @@ function pick(want: What, back: HTMLElement | null) {
+ 
+ // toolsButton: the bar's Tools menu (main.ts puts it in the bar)
+ export function toolsButton(): HTMLElement {
+-  const b = el('button', { type: 'button', 'aria-haspopup': 'menu', title: 'Open a deadlock graph, a query plan or a saved grid' }, 'Tools');
++  const b = el('button', { type: 'button', 'aria-haspopup': 'menu', title: 'Open a deadlock graph, a query plan, a saved grid or STATISTICS IO / TIME messages' }, 'Tools');
+   const items = () => [
+     { label: 'Open Deadlock Graph | *.xdl', act: () => pick('xdl', b) },
+     { label: 'Open Query Plan | *.sqlplan', act: () => pick('sqlplan', b) },
+     { label: 'Open Grid or Data Set | *.json;*.csv;*.gz', act: () => pick('grid', b) },
++    { label: 'Open STATISTICS IO / TIME messages | *.txt;*.statistics.json', act: () => pick('statsio', b) },
+   ];
+   b.setAttribute('aria-expanded', 'false');
+   b.addEventListener('click', () => {
+@@ -368,8 +376,10 @@ export function installFileDrop() {
+     if (inField(e.target) || document.querySelector('dialog[open]')) return;
+     const t = e.clipboardData?.getData('text/plain') ?? '';
+     const head = t.slice(0, 4000);
+-    if (!/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head)) return;
++    const stats = !/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head) && looksLikeStatistics(head);
++    if (!/<deadlock[\s>]/.test(head) && !/<ShowPlanXML[\s>]/.test(head) && !stats) return;
+     e.preventDefault();
+-    openText(/<deadlock[\s>]/.test(head) ? 'pasted deadlock graph' : 'pasted query plan', t, document.activeElement as HTMLElement | null);
++    if (t.length > MAX_TEXT) { viewer('pasted text', document.activeElement as HTMLElement | null, el('p', { class: 'error' }, `The pasted text is over ${MAX_TEXT / 1048576} MB: not read.`)); return; }
++    openText(stats ? 'pasted messages' : /<deadlock[\s>]/.test(head) ? 'pasted deadlock graph' : 'pasted query plan', t, document.activeElement as HTMLElement | null, stats ? 'statsio' : undefined);
+   });
+ }
+diff --git i/web/src/mssql_running.ts w/web/src/mssql_running.ts
+index 807fcc3..c4595aa 100644
+--- i/web/src/mssql_running.ts
++++ w/web/src/mssql_running.ts
+@@ -21,6 +21,7 @@ import { foldedGrid } from './running';
+ import { firstChars, sqlCell, whatIsThis } from './sqlview';
+ import { mssqlBlockingTrend } from './blocking_history';
+ import { mssqlKillCol } from './mssql_actions';
++import { planSourcesCol } from './mssql_plancache';
+ import { timeStrip } from './timestrip';
+ 
+ interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null; headshare?: Table | null }
+@@ -227,12 +228,15 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
+     all.delete('wait');
+     box.append(el('p', { class: 'meta wait-only' }, `Only requests waiting on ${wait}. `, el('a', { href: `#/mssql_running?${all}` }, 'Show all active queries')));
+   }
++  // task 406 (SQLWATCH COL#27): each request's plan by its hashes, listed under the grid
++  const planBox = el('div', { class: 'running-plans' });
++  const withPlan = [...cols, planSourcesCol({ instance } as Ctx, planBox)];
+   box.append(foldedGrid({
+-    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...cols, killNow] : cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
++    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...withPlan, killNow] : withPlan, empty: 'Nothing ran and no transaction was open at this snapshot.',
+     blocked: nBlocked, inChain, waiting: r => Number(r.blocking_session_id) > 0,
+     age: r => r.elapsed_ms == null ? null : Math.floor(Number(r.elapsed_ms) / 1000), ageLabel: 'longest running for',
+     groups: [['database', text('database_name')], ['login', text('login_name')], ['program', text('program_name')], ['status', text('status')], ['wait', text('wait_type')]],
+-  }));
++  }), planBox);
+   return box;
+ }
+ 
+diff --git i/web/src/mssql_xe.ts w/web/src/mssql_xe.ts
+index 87040eb..0db1f2f 100644
+--- i/web/src/mssql_xe.ts
++++ w/web/src/mssql_xe.ts
+@@ -10,6 +10,7 @@ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
+ import { stripGrid } from './timestrip';
++import { planSourcesCol } from './mssql_plancache';
+ 
+ type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'block_findings' | 'block_rollup' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
+ type XE = Record<XEParts, Table | null>;
+@@ -303,13 +304,15 @@ const attentionCols: Col[] = [
+ ];
+ 
+ async function openShape(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
++  const planBox = el('div', { class: 'xe-plans' });
+   try {
+     const t = await get<Table>('mssql/xe/slow', { instance: ctx.instance, ...window_(ctx), shape: text(row.shape_key) });
+     panel.show(
+       el('pre', { class: 'sql', tabindex: '0' }, text(row.shape) || '(no statement text is stored for these events)'),
+       el('p', { class: 'meta' }, 'The slowest 500 completions of this shape in the window. A completion\'s query hash and plan hash are those of the '
+         + 'longest statement it ran (SQL Server gives the completion itself none); they match Query Store and sys.dm_exec_query_stats.'),
+-      grid(rowsOf(t), eventCols, 'No completion of this shape in this window.'),
++      grid(rowsOf(t), [...eventCols, planSourcesCol(ctx, planBox)], 'No completion of this shape in this window.'),
++      planBox,   // task 406 (SQLWATCH COL#27): a completion's plan by its hashes
+     );
+   } catch (e) {
+     panel.show(errorBox(e));

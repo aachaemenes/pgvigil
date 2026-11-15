@@ -2,10 +2,16 @@ package mssql
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/xml"
+	"errors"
 	"fmt"
+	"html"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -553,4 +559,692 @@ func (planCacheHealthCollector) Run(ctx context.Context, conn *sql.Conn, info In
 		out = append(out, rows...)
 	}
 	return out, nil
+}
+
+// ---- a cached plan read on demand by its handle (task 406, Opserver's Detail > Query Plan "Download") ----------------
+
+// PlanByHandleMaxBytes is the largest plan (DATALENGTH of the showplan text, UTF-16) a read by handle returns; a larger
+// one is answered with its size and no XML.
+const PlanByHandleMaxBytes = 16 << 20
+
+// PlanFetch is what a read by handle found. State is one of:
+//
+//	ok            the plan of the statement (or of the batch), its QueryPlanHash the one the row was read with
+//	changed       a plan, but its QueryPlanHash is not the row's: the statement was compiled again since the sample
+//	gone          the cache holds no plan under the handle (evicted, recompiled under a new handle, a restart)
+//	parameterized the handle's plan is the shell of a parameterized statement: the server gives its text, no plan
+//	encrypted     the plan of an encrypted module: the server gives none
+//	too_large     over PlanByHandleMaxBytes
+//	no_plan       the server answered with no showplan for the statement (NULL: a statement it compiles at each run)
+type PlanFetch struct {
+	State    string `json:"state"`
+	Words    string `json:"words"`
+	XML      string `json:"-"`
+	PlanHash string `json:"plan_hash,omitempty"` // the QueryPlanHash of the plan read (0x text)
+	ObjType  string `json:"objtype,omitempty"`   // Proc, Adhoc, Prepared, Trigger ... (sys.dm_exec_cached_plans)
+	Database string `json:"database,omitempty"`
+	Object   string `json:"object,omitempty"` // schema.module of a module's plan
+	Bytes    int64  `json:"bytes,omitempty"`
+}
+
+var planHandleForm = regexp.MustCompile(`^0[xX](?:[0-9A-Fa-f]{2}){1,64}$`)
+
+// ParsePlanHandle turns a handle as the pages carry it (0x text, an even number of hex digits, varbinary(64) at most)
+// into its bytes.
+// PlanConfirm is the code typed to evict a plan: the first 8 hex digits (upper case) of SHA-256 over the handle's
+// bytes, the whole handle. A handle's own digits do not name its plan: its tail is zero padding (00000000 for nearly
+// every plan) and its object id or batch hash is shared by a procedure's plans under other SET options. "" for a
+// handle that does not parse.
+func PlanConfirm(handle string) string {
+	b, err := ParsePlanHandle(handle)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return strings.ToUpper(hex.EncodeToString(sum[:4]))
+}
+
+func ParsePlanHandle(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if !planHandleForm.MatchString(s) {
+		return nil, fmt.Errorf("a plan handle is 0x and 2 to 128 hex digits, an even count")
+	}
+	b := make([]byte, (len(s)-2)/2)
+	for i := range b {
+		var v byte
+		for _, c := range s[2+2*i : 4+2*i] {
+			v <<= 4
+			switch {
+			case c >= '0' && c <= '9':
+				v |= byte(c - '0')
+			case c >= 'a' && c <= 'f':
+				v |= byte(c-'a') + 10
+			default:
+				v |= byte(c-'A') + 10
+			}
+		}
+		b[i] = v
+	}
+	return b, nil
+}
+
+// planByHandleSQL reads the plan the cache holds under @h for the statement at the offsets (0, -1 = the whole batch).
+// The cached-plans view drives the read, so no row = no plan under the handle. The XML is returned only under the
+// size cap; DATALENGTH says how large it is either way.
+const planByHandleSQL = `SELECT CAST(cp.objtype AS nvarchar(20)) AS objtype, CAST(DB_NAME(p.dbid) AS nvarchar(128)) AS database_name,
+  CAST(ISNULL(p.encrypted, 0) AS int) AS encrypted, CAST(DATALENGTH(p.query_plan) AS bigint) AS plan_bytes,
+  CASE WHEN DATALENGTH(p.query_plan) <= @max THEN p.query_plan END AS query_plan,
+  CAST(p.dbid AS int) AS dbid, CAST(p.objectid AS int) AS objectid
+FROM sys.dm_exec_cached_plans cp
+OUTER APPLY sys.dm_exec_text_query_plan(cp.plan_handle, @start, @end) p
+WHERE cp.plan_handle = @h`
+
+// planObjectSQL names a module's plan apart: OBJECT_NAME waits behind a schema change, and the plan is worth having
+// without its name.
+const planObjectSQL = `SELECT CAST(OBJECT_SCHEMA_NAME(@obj, @db) + N'.' + OBJECT_NAME(@obj, @db) AS nvarchar(260))`
+
+var (
+	queryPlanHashRE = regexp.MustCompile(`\bQueryPlanHash="(0x[0-9A-Fa-f]+)"`)
+	queryPlanElemRE = regexp.MustCompile(`<QueryPlan[\s>]`)
+	paramShellRE    = regexp.MustCompile(`\bParameterizedPlanHandle="`)
+)
+
+// PlanByHandle reads one cached plan on demand through conn (the instance's read login). wantHash is the plan hash the
+// page's row was read with (0x text; "" = no compare). start and end are the statement's offsets; 0 and -1 read the
+// whole batch.
+func PlanByHandle(ctx context.Context, conn *sql.Conn, handle []byte, start, end int, wantHash string) (PlanFetch, error) {
+	var f PlanFetch
+	var objtype, dbname, xml sql.NullString
+	var enc, dbid, objid sql.NullInt64
+	var size sql.NullInt64
+	err := conn.QueryRowContext(ctx, planByHandleSQL, sql.Named("h", handle), sql.Named("start", start), sql.Named("end", end),
+		sql.Named("max", int64(PlanByHandleMaxBytes))).Scan(&objtype, &dbname, &enc, &size, &xml, &dbid, &objid)
+	if errors.Is(err, sql.ErrNoRows) {
+		f.State, f.Words = "gone", "the plan cache holds no plan under this handle now: it was evicted, compiled again under another handle, or the server restarted since the sample"
+		return f, nil
+	}
+	if err != nil {
+		return f, err
+	}
+	f.ObjType, f.Database, f.Bytes = objtype.String, dbname.String, size.Int64
+	if objid.Valid && objid.Int64 != 0 && dbid.Valid {
+		var name sql.NullString
+		if conn.QueryRowContext(ctx, planObjectSQL, sql.Named("obj", objid.Int64), sql.Named("db", dbid.Int64)).Scan(&name) == nil {
+			f.Object = name.String
+		}
+	}
+	f.State, f.Words, f.PlanHash, f.XML = planState(enc.Int64 == 1, size.Int64, xml.Valid, xml.String, wantHash)
+	f.XML = MaskPlanXML(f.XML)
+	return f, nil
+}
+
+// planState judges what the server returned for a handle (PlanByHandle's rules, apart for the tests): the state, its
+// words, the plan's own QueryPlanHash and the XML worth returning ("" when none).
+func planState(encrypted bool, size int64, has bool, xml, wantHash string) (state, words, hash, out string) {
+	switch {
+	case encrypted:
+		return "encrypted", "the plan belongs to an encrypted module: SQL Server gives no plan for it", "", ""
+	case size > PlanByHandleMaxBytes:
+		return "too_large", fmt.Sprintf("the plan is %.1f MB, over the %d MB this page reads on demand", float64(size)/(1<<20), PlanByHandleMaxBytes>>20), "", ""
+	case !has || xml == "":
+		return "no_plan", "SQL Server answered with no plan for this statement (none is kept for it, or it is compiled at each run)", "", ""
+	case !queryPlanElemRE.MatchString(xml):
+		if paramShellRE.MatchString(xml) {
+			return "parameterized", "the handle holds the shell of a parameterized statement: SQL Server gives its text and the parameterized plan's handle, not a plan", "", ""
+		}
+		return "no_plan", "the showplan SQL Server returned holds no QueryPlan element", "", ""
+	}
+	if m := queryPlanHashRE.FindStringSubmatch(xml); m != nil {
+		hash = "0x" + strings.ToUpper(m[1][2:])
+	}
+	if wantHash != "" && hash != "" && !strings.EqualFold(wantHash, hash) {
+		return "changed", fmt.Sprintf("the cached plan changed since this sample: its plan hash is %s, the sample's %s", hash, strings.ToUpper(wantHash)), hash, xml
+	}
+	return "ok", "the cached plan", hash, xml
+}
+
+// ---- the plans of running queries (task 406, DBA Dash 4.25.0's running query plans and live plans, row N55) --------
+
+// runningPlansCollector is mssql_running_plans: the statement plan of a running query whose plan is worth keeping,
+// read every minute once the instance's schedules: switch it on (off by default: DefaultInterval 0). The running
+// requests are grouped as DBA Dash 4.25.0 groups them (DBCollector.cs GetPlansMeetingThreshold): by plan handle,
+// plan hash and the statement's offsets, a zero plan hash left out (a statement not compiled yet); a group is kept
+// when any of DBA Dash's default thresholds is met (PlanCollectionThreshold.DefaultThreshold): its requests' CPU
+// summed to 1,000 ms, their granted memory summed to 6,400 pages (50 MB), 2 requests on the plan, or the oldest
+// running 10 s. Each kept group sends a 'running' row with its figures every read; its plan (sys.dm_exec_text_query_plan
+// at the offsets) travels when this process has not sent that plan in runningPlanEvery, as plancache's texts do.
+// The plan follows the instance's query_text policy (kind_of 'plan': stored under full only) and qsPlanXMLMaxBytes.
+// The repository keys a plan as DBA Dash does: query hash, plan hash and offsets (0157).
+//
+// liveplansCollector is mssql_live_plans: the plan with its operator counters so far (sys.dm_exec_query_statistics_xml)
+// of a long running request, off by default, on a build where that function is safe to call every minute (SQL Server
+// 2016 SP1 and later; 2017 from CU26 and 2019 from CU12, the builds that took ParameterRuntimeValue out of it after the
+// access violation Microsoft's page names; 2022 and later; Managed Instance and Azure SQL Database), at most
+// livePlanMax requests a read, the most CPU first, each over DBA Dash's LiveProfileThreshold.DefaultThreshold (60 s of
+// CPU, or 300 s running while not blocked) and on a plan that meets the plan threshold above. Without lightweight
+// profiling (before SQL Server 2019 trace flag 7412 turns it on) the function returns no plan: the run says so.
+//
+// Rights: VIEW SERVER STATE (VIEW SERVER PERFORMANCE STATE on 2022). Nothing is written on the server.
+type runningPlansCollector struct{}
+type livePlansCollector struct{}
+
+func init() {
+	Register(runningPlansCollector{})
+	Register(livePlansCollector{})
+}
+
+const (
+	// DBA Dash 4.25.0's PlanCollectionThreshold.DefaultThreshold
+	runningPlanCPUms      = 1000
+	runningPlanGrantPages = 6400
+	runningPlanCount      = 2
+	runningPlanRunningMs  = 10000
+	// DBA Dash 4.25.0's LiveProfileThreshold.DefaultThreshold and DefaultMaxPerCollection
+	livePlanCPUms     = 60000
+	livePlanRunningMs = 300000
+	livePlanMax       = 10
+	// runningPlanEvery is how long a plan this process sent is not sent again (its figures are, every read)
+	runningPlanEvery = time.Hour
+	// runningPlanReadsPerRun and runningPlanBytesPerRun bound the plans one read asks for, the most CPU first; the rest
+	// travel with their figures only and are asked for at a later read
+	runningPlanReadsPerRun = 20
+	runningPlanBytesPerRun = 16 << 20
+	// livePlanCallTimeout bounds one sys.dm_exec_query_statistics_xml call; livePlanRunBudget the calls of one read
+	// (under RunTimeout, so a slow server ends the read with what it has, never with the run's own deadline)
+	livePlanCallTimeout = 10 * time.Second
+	livePlanRunBudget   = 40 * time.Second
+)
+
+func (runningPlansCollector) Name() string                   { return Prefix + "running_plans" }
+func (runningPlansCollector) DefaultInterval() time.Duration { return 0 }
+func (runningPlansCollector) Applies(info Info) (bool, string) {
+	if !info.ViewServerState && info.Kind != KindAzureMI && info.Major < 16 {
+		return false, "the login lacks VIEW SERVER STATE: the running requests of other logins cannot be read"
+	}
+	return true, ""
+}
+
+func (livePlansCollector) Name() string                   { return Prefix + "live_plans" }
+func (livePlansCollector) DefaultInterval() time.Duration { return 0 }
+func (livePlansCollector) Applies(info Info) (bool, string) {
+	if ok, why := LivePlanBuildOK(info); !ok {
+		return false, why
+	}
+	return runningPlansCollector{}.Applies(info)
+}
+
+// LivePlanBuildOK is the build gate of mssql_live_plans (and of any live plan read): sys.dm_exec_query_statistics_xml
+// exists from SQL Server 2016 SP1; on 2017 before CU26 and 2019 before CU12 it can hit the access violation those
+// updates fixed by taking ParameterRuntimeValue out, so it is not called there.
+func LivePlanBuildOK(info Info) (bool, string) {
+	if info.Kind == KindAzureDB || info.Kind == KindAzureMI {
+		return true, ""
+	}
+	switch {
+	case info.Major == 13 && info.Build < 4001:
+		return false, fmt.Sprintf("SQL Server 2016 before SP1 (build %s) has no sys.dm_exec_query_statistics_xml", info.ProductVersion)
+	case info.Major == 14 && info.Build < 3411:
+		return false, fmt.Sprintf("off on SQL Server 2017 before CU26 (build %s; CU26 is 14.0.3411.3): sys.dm_exec_query_statistics_xml can raise an access violation there (Microsoft's page, Limitations)", info.ProductVersion)
+	case info.Major == 15 && info.Build < 4153:
+		return false, fmt.Sprintf("off on SQL Server 2019 before CU12 (build %s; CU12 is 15.0.4153.1): sys.dm_exec_query_statistics_xml can raise an access violation there (Microsoft's page, Limitations)", info.ProductVersion)
+	case info.Major > 0 && info.Major < 13:
+		return false, "SQL Server before 2016 has no sys.dm_exec_query_statistics_xml"
+	}
+	return true, ""
+}
+
+// runningReqSQL: the user requests running now with a compiled plan (DBA Dash's columns), the server's clock with them.
+// running_ms is how long the request has run; blocked says another session holds it up (it does not count toward the
+// live plan's running time).
+const runningReqSQL = `SELECT r.session_id AS session_id, r.request_id AS request_id, r.plan_handle AS plan_handle, r.query_hash AS query_hash,
+  r.query_plan_hash AS plan_hash, CAST(r.statement_start_offset AS int) AS stmt_start, CAST(r.statement_end_offset AS int) AS stmt_end,
+  CAST(r.cpu_time AS bigint) AS cpu_ms, CAST(r.granted_query_memory AS bigint) AS grant_pages,
+  CAST(DATEDIFF_BIG(millisecond, r.start_time, GETDATE()) AS bigint) AS running_ms,
+  CAST(CASE WHEN r.blocking_session_id > 0 THEN 1 ELSE 0 END AS int) AS blocked,
+  CAST(DB_NAME(r.database_id) AS nvarchar(128)) AS database_name, CAST(d.compatibility_level AS int) AS compat
+FROM sys.dm_exec_requests r
+JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id
+LEFT JOIN sys.databases d ON d.database_id = r.database_id
+WHERE r.session_id <> @@SPID AND s.is_user_process = 1 AND r.plan_handle IS NOT NULL
+  AND r.query_plan_hash IS NOT NULL AND r.query_plan_hash <> 0x0000000000000000`
+
+// runningReq is one row of runningReqSQL.
+type runningReq struct {
+	session, request             int64
+	handle, qhash, phash, dbname string
+	start, end                   int64
+	cpu, grant, running          int64
+	compat                       int64 // the database's compatibility level; 0 = not read
+	blocked                      bool
+}
+
+func runningReqs(rows []collect.Row) []runningReq {
+	out := make([]runningReq, 0, len(rows))
+	for _, r := range rows {
+		s := func(k string) string { v, _ := r[k].(string); return v }
+		n := func(k string) int64 { v, _ := r[k].(int64); return v }
+		out = append(out, runningReq{session: n("session_id"), request: n("request_id"), handle: s("plan_handle"), qhash: s("query_hash"),
+			phash: s("plan_hash"), dbname: s("database_name"), start: n("stmt_start"), end: n("stmt_end"), cpu: n("cpu_ms"),
+			grant: n("grant_pages"), running: n("running_ms"), compat: n("compat"), blocked: n("blocked") == 1})
+	}
+	return out
+}
+
+// planGroup is the running requests of one plan and statement (DBA Dash's key: handle, plan hash, offsets).
+type planGroup struct {
+	key                 string
+	first               runningReq
+	requests            int
+	cpu, grant, longest int64
+	reasons             []string
+	meets               bool
+}
+
+// groupRunning groups the requests and judges each group against the plan threshold, the most CPU first.
+func groupRunning(reqs []runningReq) []*planGroup {
+	by := map[string]*planGroup{}
+	var order []*planGroup
+	for _, q := range reqs {
+		if q.phash == "" || zeroHash.MatchString(q.phash) || q.handle == "" {
+			continue
+		}
+		k := fmt.Sprintf("%s|%s|%d|%d", q.handle, q.phash, q.start, q.end)
+		g := by[k]
+		if g == nil {
+			g = &planGroup{key: k, first: q}
+			by[k] = g
+			order = append(order, g)
+		}
+		g.requests++
+		g.cpu += q.cpu
+		g.grant += q.grant
+		if q.running > g.longest {
+			g.longest = q.running
+		}
+	}
+	for _, g := range order {
+		if g.cpu >= runningPlanCPUms {
+			g.reasons = append(g.reasons, "cpu")
+		}
+		if g.grant >= runningPlanGrantPages {
+			g.reasons = append(g.reasons, "grant")
+		}
+		if g.requests >= runningPlanCount {
+			g.reasons = append(g.reasons, "count")
+		}
+		if g.longest >= runningPlanRunningMs {
+			g.reasons = append(g.reasons, "duration")
+		}
+		g.meets = len(g.reasons) > 0
+	}
+	sort.SliceStable(order, func(i, j int) bool { return order[i].cpu > order[j].cpu })
+	return order
+}
+
+// livePicks are the requests whose live plan a read asks for: on a plan that meets the plan threshold, over 60 s of
+// CPU or 300 s running while not blocked, the most CPU first, livePlanMax at most.
+func livePicks(reqs []runningReq) []runningReq {
+	meets := map[string]bool{}
+	for _, g := range groupRunning(reqs) {
+		meets[g.key] = g.meets
+	}
+	var out []runningReq
+	for _, q := range reqs {
+		k := fmt.Sprintf("%s|%s|%d|%d", q.handle, q.phash, q.start, q.end)
+		if !meets[k] {
+			continue
+		}
+		if q.cpu >= livePlanCPUms || (!q.blocked && q.running >= livePlanRunningMs) {
+			out = append(out, q)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].cpu > out[j].cpu })
+	if len(out) > livePlanMax {
+		out = out[:livePlanMax]
+	}
+	return out
+}
+
+// sentMemo remembers when this process last sent something per key (a server's plan), so it travels once in a while.
+type sentMemo struct {
+	mu sync.Mutex
+	at map[string]time.Time
+	// every is how long a key sent is not sent again
+	every time.Duration
+}
+
+func (m *sentMemo) due(key string, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.at[key]
+	return !ok || now.Sub(t) >= m.every
+}
+
+func (m *sentMemo) mark(key string, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, t := range m.at { // forget what is long past, so the memo never grows without bound
+		if now.Sub(t) >= 2*m.every {
+			delete(m.at, k)
+		}
+	}
+	m.at[key] = now
+}
+
+// runningPlanSent remembers which plans this process sent, per server and key, for runningPlanEvery.
+var runningPlanSent = &sentMemo{at: map[string]time.Time{}, every: runningPlanEvery}
+
+// runningPlanSQL reads one statement's plan by handle and offsets, under the size cap.
+const runningPlanSQL = `SELECT CAST(DATALENGTH(p.query_plan) AS bigint) AS plan_bytes,
+  CASE WHEN DATALENGTH(p.query_plan) <= @max THEN p.query_plan END AS query_plan, CAST(ISNULL(p.encrypted, 0) AS int) AS encrypted
+FROM sys.dm_exec_text_query_plan(CONVERT(varbinary(64), @h, 1), @start, @end) p`
+
+func (runningPlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+	reqs, err := QueryRows(ctx, conn, runningReqSQL)
+	if err != nil {
+		return nil, err
+	}
+	server := info.ServerName
+	now := time.Now()
+	// the policy row: kind_of 'plan' carries the instance's text policy to the import (the policy empties its statement
+	// unless it is full), which then drops every running plan and live capture a wider policy stored
+	out := []collect.Row{policyRow()}
+	asked, budget := 0, int64(runningPlanBytesPerRun)
+	for _, g := range groupRunning(runningReqs(reqs)) {
+		if !g.meets {
+			continue
+		}
+		q := g.first
+		row := collect.Row{"kind": "running", "query_hash_hex": q.qhash, "plan_hash_hex": q.phash, "stmt_start": q.start, "stmt_end": q.end,
+			"plan_handle": q.handle, "database_name": q.dbname, "requests": g.requests, "cpu_ms": g.cpu, "grant_kb": g.grant * 8,
+			"longest_ms": g.longest, "reasons": strings.Join(g.reasons, ",")}
+		if q.compat > 0 {
+			row["compatibility_level"] = q.compat
+		}
+		if runningPlanSent.due(runningPlanKey(server, row), now) && asked < runningPlanReadsPerRun && budget > 0 {
+			asked++
+			var size sql.NullInt64
+			var xml sql.NullString
+			var enc int64
+			err := conn.QueryRowContext(ctx, runningPlanSQL, sql.Named("h", q.handle), sql.Named("start", q.start), sql.Named("end", q.end),
+				sql.Named("max", min(int64(qsPlanXMLMaxBytes), budget))).Scan(&size, &xml, &enc)
+			switch {
+			case errors.Is(err, sql.ErrNoRows) || (err == nil && !size.Valid && enc == 0):
+				row["plan_state"] = "gone" // the request ended and its plan left the cache between the two reads
+			case err != nil:
+				if ctx.Err() != nil {
+					return out, err
+				}
+				row["plan_state"] = "error"
+				row["plan_note"] = "the plan was not read: " + err.Error()
+			case enc == 1:
+				row["plan_state"] = "encrypted"
+			case size.Int64 > qsPlanXMLMaxBytes:
+				row["plan_state"], row["plan_bytes"] = "too large", size.Int64
+			case size.Int64 > budget:
+				delete(row, "plan_state") // over what is left of this read's share: asked for again at a later read
+			case xml.Valid && xml.String != "":
+				// kind_of 'plan': the policy empties statement unless it is full
+				row["kind_of"], row["statement"], row["plan_bytes"], row["plan_state"] = "plan", MaskPlanXML(xml.String), size.Int64, "read"
+				budget -= size.Int64
+				out = append(out, statsRows(xml.String, collect.Row{"query_hash_hex": q.qhash, "plan_hash_hex": q.phash, "stmt_start": q.start,
+					"stmt_end": q.end, "database_name": q.dbname})...)
+			default:
+				row["plan_state"] = "no plan"
+			}
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// runningPlanKey is the memo's key of a running row: the server and DBA Dash's key.
+func runningPlanKey(server string, r collect.Row) string {
+	return fmt.Sprint(server, "|", r["query_hash_hex"], "|", r["plan_hash_hex"], "|", r["stmt_start"], "|", r["stmt_end"])
+}
+
+// AfterStore marks the plans of a stored run as sent (read, too large, encrypted: the same answer for an hour), so a
+// run whose rows were not stored (its deadline, a failed import) asks for them again at the next read. RunOnce calls
+// it after the import (the wiring patch's mssql.go hunk); without it every read asks again, within the per-run share.
+func (runningPlansCollector) AfterStore(info Info, rows []collect.Row) {
+	now := time.Now()
+	for _, r := range rows {
+		if r["kind"] != "running" {
+			continue
+		}
+		switch r["plan_state"] {
+		case "read", "too large", "encrypted":
+			runningPlanSent.mark(runningPlanKey(info.ServerName, r), now)
+		}
+	}
+}
+
+// AfterStorer is what a collector adds when it must learn that its run's rows were stored.
+type AfterStorer interface {
+	AfterStore(info Info, rows []collect.Row)
+}
+
+// policyRow carries the instance's text policy to the import: kind_of 'plan' (the policy empties statement unless
+// it is full); an import that sees it emptied drops the instance's running plans and live captures.
+func policyRow() collect.Row {
+	return collect.Row{"kind": "plan_policy", "kind_of": "plan", "statement": "kept"}
+}
+
+// liveTraceSQL: before SQL Server 2019 lightweight profiling is on only with trace flag 7412 (globally).
+const liveTraceSQL = `DECLARE @t TABLE (TraceFlag int, Status int, Global int, Session int);
+INSERT @t EXEC (N'DBCC TRACESTATUS(7412, -1) WITH NO_INFOMSGS');
+SELECT CAST(ISNULL(MAX(Global), 0) AS int) FROM @t`
+
+// livePlanSQL: the live plan under the size cap (its bytes always; the XML only when they fit).
+const livePlanSQL = `SELECT x.request_id, CONVERT(varchar(140), x.plan_handle, 1), CAST(DATALENGTH(c.t) AS bigint),
+  CASE WHEN DATALENGTH(c.t) <= @max THEN c.t END
+FROM sys.dm_exec_query_statistics_xml(@sid) x CROSS APPLY (SELECT CAST(x.query_plan AS nvarchar(max)) AS t) c`
+
+func (livePlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+	reqs, err := QueryRows(ctx, conn, runningReqSQL)
+	if err != nil {
+		return nil, err
+	}
+	picks := livePicks(runningReqs(reqs))
+	if len(picks) == 0 {
+		return []collect.Row{policyRow(), {"kind": "live_read", "asked": 0, "read": 0}}, nil
+	}
+	note := ""
+	if info.Kind == KindServer || info.Kind == KindRDS {
+		if info.Major > 0 && info.Major < 15 {
+			var on int64
+			if err := conn.QueryRowContext(ctx, liveTraceSQL).Scan(&on); err == nil && on == 0 {
+				note = "lightweight profiling is off on this server (before SQL Server 2019 trace flag 7412 turns it on): no live plan is returned"
+			}
+		}
+	}
+	out := []collect.Row{policyRow()}
+	read, asked, over := 0, 0, 0
+	budget := int64(runningPlanBytesPerRun) // the live plans of one read, as the running plans' share
+	began := time.Now()
+	for _, q := range picks {
+		if time.Since(began) >= livePlanRunBudget {
+			note = fmt.Sprintf("the read stopped after %d of %d requests: its %d s for live plans were spent", asked, len(picks), int(livePlanRunBudget.Seconds()))
+			break
+		}
+		asked++
+		cctx, cancel := context.WithTimeout(ctx, livePlanCallTimeout)
+		var reqID, size sql.NullInt64
+		var handle, xml sql.NullString
+		err := conn.QueryRowContext(cctx, livePlanSQL, sql.Named("sid", q.session), sql.Named("max", min(int64(qsPlanXMLMaxBytes), budget))).Scan(&reqID, &handle, &size, &xml)
+		cancel()
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if err != nil || !size.Valid || !strings.EqualFold(handle.String, q.handle) || reqID.Int64 != q.request {
+			continue // the request ended or moved on, or no live plan is kept for it
+		}
+		row := collect.Row{"kind": "live", "query_hash_hex": q.qhash, "plan_hash_hex": q.phash, "stmt_start": q.start,
+			"stmt_end": q.end, "session_id": q.session, "request_id": q.request, "cpu_ms": q.cpu, "running_ms": q.running,
+			"database_name": q.dbname, "plan_bytes": size.Int64}
+		switch {
+		case size.Int64 > qsPlanXMLMaxBytes:
+			row["plan_state"] = "too large" // its bytes kept, no XML (no kind_of: nothing for the policy to empty)
+		case size.Int64 > budget:
+			over++ // over what is left of this read's share: asked for again at a later read
+			continue
+		case xml.Valid && xml.String != "":
+			row["kind_of"], row["statement"] = "plan", MaskPlanXML(xml.String)
+			budget -= size.Int64
+		default:
+			continue
+		}
+		read++
+		out = append(out, row)
+	}
+	r := collect.Row{"kind": "live_read", "asked": len(picks), "read": read}
+	if over > 0 {
+		note = strings.TrimPrefix(note+fmt.Sprintf("; %d live plan(s) left out: over the read's %d MB", over, runningPlanBytesPerRun>>20), "; ")
+	}
+	if note != "" && (read == 0 || asked < len(picks) || over > 0) {
+		r["note"] = note
+	}
+	return append(out, r), nil
+}
+
+// MaskPlanXML masks the password forms of collect.MaskJobText (PASSWORD = '...', SECRET = '...', @...pwd = N'...', a
+// connection string's Pwd=, sqlcmd's -P, net use) in a showplan. A showplan's text is in its attribute values
+// (StatementText, ParameterCompiledValue, ParameterRuntimeValue, ScalarString, ConstValue): each value is decoded (SQL
+// Server writes a literal's quotes as &apos; and &quot;), masked, and written back escaped only when the mask changed
+// it, so the document stays XML and every value the mask leaves alone keeps its bytes. Every plan this package sends or
+// a page returns goes through it, the query_text policy 'full' included ("credentials masked on the way out, always").
+// A value only the parameter's name marks (ParameterCompiledValue of @pwd) is not seen: that is the policy's job.
+func MaskPlanXML(x string) string {
+	if x == "" {
+		return x
+	}
+	return planAttrRE.ReplaceAllStringFunc(x, func(m string) string {
+		g := planAttrRE.FindStringSubmatch(m)
+		head, raw, q := g[1], g[2], g[3]
+		if raw == "" {
+			head, raw, q = g[4], g[5], g[6]
+		}
+		if raw == "" {
+			return m
+		}
+		val := html.UnescapeString(raw)
+		masked := collect.MaskJobText(val)
+		if masked == val {
+			return m
+		}
+		return head + planAttrEscape(masked) + q
+	})
+}
+
+// planAttrRE is one attribute and its value, in double quotes or single quotes (a value holds no raw delimiter).
+var planAttrRE = regexp.MustCompile(`(\s[A-Za-z_][\w.:-]*\s*=\s*")([^"<]*)(")|(\s[A-Za-z_][\w.:-]*\s*=\s*')([^'<]*)(')`)
+
+// planAttrEscape writes a value for an attribute: the five entities and the line ends as SQL Server writes them.
+func planAttrEscape(v string) string {
+	var b strings.Builder
+	for _, r := range v {
+		switch r {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '"':
+			b.WriteString("&quot;")
+		case '\'':
+			b.WriteString("&apos;")
+		case '\r':
+			b.WriteString("&#xD;")
+		case '\n':
+			b.WriteString("&#xA;")
+		case '\t':
+			b.WriteString("&#x9;")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// ---- the statistics a plan was compiled with (task 406, PerformanceMonitor 3.13's Added 1) -------------------------
+
+// StatUsed is one StatisticsInfo of a showplan's OptimizerStatsUsage: a statistic the optimizer loaded to compile the
+// statement, as it saw it then (SQL Server 2017 and 2016 SP2 write the element; an older plan has none).
+type StatUsed struct {
+	Stmt        int    // the statement's place in the plan, from 1
+	Database    string // as the plan writes it, brackets taken off
+	Schema      string
+	Table       string
+	Statistics  string
+	ModCount    int64   // ModificationCount: rows changed since the statistic's last update, at compile
+	SamplingPct float64 // SamplingPercent
+	LastUpdate  string  // LastUpdate as written (the server's clock, no zone)
+}
+
+func unbracket(s string) string {
+	if len(s) >= 2 && s[0] == '[' && s[len(s)-1] == ']' {
+		return strings.ReplaceAll(s[1:len(s)-1], "]]", "]")
+	}
+	return s
+}
+
+// PlanStatsUsed reads every StatisticsInfo of a showplan (encoding/xml, nothing evaluated); a document that does not
+// parse gives what was read before the fault.
+func PlanStatsUsed(plan string) []StatUsed {
+	var out []StatUsed
+	if !strings.Contains(plan, "StatisticsInfo") {
+		return nil
+	}
+	dec := xml.NewDecoder(strings.NewReader(plan))
+	stmt := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return out
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		switch se.Name.Local {
+		case "StmtSimple", "StmtCond", "StmtCursor", "StmtReceive", "StmtUseDb":
+			stmt++
+		case "StatisticsInfo":
+			s := StatUsed{Stmt: max(stmt, 1)}
+			for _, a := range se.Attr {
+				switch a.Name.Local {
+				case "Database":
+					s.Database = unbracket(a.Value)
+				case "Schema":
+					s.Schema = unbracket(a.Value)
+				case "Table":
+					s.Table = unbracket(a.Value)
+				case "Statistics":
+					s.Statistics = unbracket(a.Value)
+				case "ModificationCount":
+					s.ModCount, _ = strconv.ParseInt(a.Value, 10, 64)
+				case "SamplingPercent":
+					s.SamplingPct, _ = strconv.ParseFloat(a.Value, 64)
+				case "LastUpdate":
+					s.LastUpdate = a.Value
+				}
+			}
+			out = append(out, s)
+		}
+	}
+}
+
+// statsRows turns a plan's statistics into collect rows of kind 'plan_stats' carrying the plan's key fields.
+func statsRows(plan string, key collect.Row) []collect.Row {
+	var out []collect.Row
+	for _, s := range PlanStatsUsed(plan) {
+		r := collect.Row{"kind": "plan_stats", "stmt": s.Stmt, "stat_database": s.Database, "stat_schema": s.Schema, "stat_table": s.Table,
+			"stat_name": s.Statistics, "modification_count": s.ModCount, "sampling_pct": s.SamplingPct, "last_update": s.LastUpdate}
+		for k, v := range key {
+			r[k] = v
+		}
+		out = append(out, r)
+	}
+	return out
 }

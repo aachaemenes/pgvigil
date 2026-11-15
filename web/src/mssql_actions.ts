@@ -12,11 +12,13 @@ import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtTime, grid, props } from './ui';
 import { offBeside } from './ack';
 
-type Kind = 'kill' | 'job_start' | 'job_stop';
+type Kind = 'kill' | 'job_start' | 'job_stop' | 'plan_evict';
 interface OnOff { enabled: boolean; reason?: string }
 // notes: per action, the page's visible sentence where it is off for the WHOLE instance (every row's button of that
 // kind shares the reason and points at it); a row's own reason ('a system session') stands beside its button
-export interface MssqlActionsState { actions: Record<Kind, OnOff>; log: Table | null; notes?: Partial<Record<Kind, HTMLElement>> }
+// actions_login: what the actions login holds, when plan_evict is on the instance's list (task 406)
+export interface ActionsLoginRights { view_server_state: boolean; alter_server_state: boolean; signed_procedure: boolean; may_execute: boolean; error?: string }
+export interface MssqlActionsState { actions: Record<Kind, OnOff>; log: Table | null; notes?: Partial<Record<Kind, HTMLElement>>; actions_login?: ActionsLoginRights }
 // an actions column and, where its action is off for the whole instance, the sentence that says why: the page that
 // builds the grid places it above the grid (the column's off buttons point at it)
 // rows: the page's rows, handed over before the grid draws: the sentence is then given to the page only where a row
@@ -30,7 +32,7 @@ interface Target {
 interface Preview { ok: boolean; reason?: string; statement: string; target: Target }
 
 const off = (why: string): MssqlActionsState => ({
-  actions: { kill: { enabled: false, reason: why }, job_start: { enabled: false, reason: why }, job_stop: { enabled: false, reason: why } }, log: null,
+  actions: { kill: { enabled: false, reason: why }, job_start: { enabled: false, reason: why }, job_stop: { enabled: false, reason: why }, plan_evict: { enabled: false, reason: why } }, log: null,
 });
 
 export async function mssqlActionsState(instance: number | undefined): Promise<MssqlActionsState> {
@@ -43,11 +45,12 @@ export async function mssqlActionsState(instance: number | undefined): Promise<M
   }
 }
 
-const labels: Record<Kind, string> = { kill: 'Kill', job_start: 'Start', job_stop: 'Stop' };
+const labels: Record<Kind, string> = { kill: 'Kill', job_start: 'Start', job_stop: 'Stop', plan_evict: 'Evict' };
 const titles: Record<Kind, string> = {
   kill: 'KILL: end the session (its open transaction rolls back)',
   job_start: 'sp_start_job: start the job now',
   job_stop: 'sp_stop_job: stop the running job',
+  plan_evict: 'DBCC FREEPROCCACHE (plan handle): remove one plan from the plan cache (its statements compile again)',
 };
 
 // own: the cell's one note for a reason that is the ROW's own (a row with two buttons says it once, after the pair)
@@ -236,7 +239,7 @@ export async function mssqlActionsLogView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(errorBox(e));
     return sec;
   }
-  const rows: Row[] = (['kill', 'job_start', 'job_stop'] as Kind[]).map(k => ({
+  const rows: Row[] = (['kill', 'job_start', 'job_stop', 'plan_evict'] as Kind[]).map(k => ({
     action: k, what: titles[k], state: st.actions[k]?.enabled ? 'on' : 'off', reason: st.actions[k]?.reason ?? '',
   }));
   sec.append(el('h3', {}, 'What is on for this instance'), grid(rows, [
@@ -244,6 +247,17 @@ export async function mssqlActionsLogView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') },
     { key: 'reason', label: 'why off', wide: true },
   ]));
+  // task 406: the rights of the actions login when plan_evict is on its list (docs/sqlserver-actions.md)
+  const lr = st.actions_login;
+  if (lr) {
+    const yes = (v: boolean) => v ? 'yes' : 'no';
+    sec.append(el('h3', {}, 'The actions login (plan_evict)'), lr.error ? el('p', { class: 'meta' }, `Not read: ${lr.error}.`) : props([
+      ['holds VIEW SERVER STATE (reads every session\'s text and plan)', yes(lr.view_server_state)],
+      ['holds ALTER SERVER STATE (the direct route: can also empty the whole cache and reset wait statistics)', yes(lr.alter_server_state)],
+      ['the signed procedure master.dbo.pgvigil_evict_plan', lr.signed_procedure ? 'present' : 'absent'],
+      ['may EXECUTE it', yes(lr.may_execute)],
+    ]));
+  }
   sec.append(el('h3', {}, 'Attempts'),
     el('p', { class: 'meta' }, 'Every attempt is kept: done, refused (a check said no and nothing was sent) or failed (the server refused the statement; its message is beside it). The newest 500.'),
     grid(rowsOf(st.log), logCols, 'No action has been attempted on this instance.'));
