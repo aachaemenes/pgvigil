@@ -456,16 +456,17 @@ func (w *Worker) start(ctx context.Context, r Request, raw []byte) {
 		w.mu.Lock()
 		cancelled, why := rr.cancelled, rr.why
 		w.mu.Unlock()
-		if cancelled && end.State == "done" {
+		switch {
+		case cancelled && end.State == "done":
 			// the cancel landed after the runner had finished: it ran whole, so its end stays done (for a kill, a
 			// 'cancelled' here would be a false word)
 			end.Outcome = strings.TrimSpace(end.Outcome + " (the cancel came after it had ended)")
-		} else if cancelled && end.State != "refused" {
+		case cancelled && end.State != "refused":
 			end.State, end.Result = "cancelled", nil
 			if end.Outcome == "" {
 				end.Outcome = why
 			}
-		} else if errors.Is(rctx.Err(), context.DeadlineExceeded) && end.State != "done" && end.State != "refused" {
+		case errors.Is(rctx.Err(), context.DeadlineExceeded) && end.State != "done" && end.State != "refused":
 			end.State = "failed"
 			end.Outcome = "the run passed its time (its request expired while it ran)"
 		}

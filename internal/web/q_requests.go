@@ -172,7 +172,7 @@ func (q *queueState) ask(ctx context.Context, kind, instance, user, client strin
 }
 
 // replyAsk answers a POST that became an ask: 202 with the request's id, or 400 with the refusal's words.
-func (s *Server) replyAsk(w http.ResponseWriter, r *http.Request, m map[string]any, err error) {
+func (s *Server) replyAsk(w http.ResponseWriter, _ *http.Request, m map[string]any, err error) {
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("the request could not be written to the repository: %v", err))
 		return

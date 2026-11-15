@@ -56,11 +56,13 @@ var Kinds = map[string]Kind{
 // The payloads, one type per kind: the direct handlers' own request bodies (internal/web at 56b7467) less what serve
 // checks before the insert (the typed confirm, the session user, the instance id: the request names the instance).
 type (
+	// PGSignal is the payload of pg_cancel and pg_terminate.
 	PGSignal struct {
 		PID          int    `json:"pid"`
 		BackendStart string `json:"backend_start"`
 		Reason       string `json:"reason"`
 	}
+	// PGJob is the payload of pg_job_start and pg_job_stop.
 	PGJob struct {
 		Scheduler string `json:"scheduler"`
 		JobID     int64  `json:"job_id"`
@@ -69,28 +71,33 @@ type (
 		JobPID    int    `json:"job_pid,omitempty"`
 		Reason    string `json:"reason"`
 	}
+	// MSPreview is the payload of mssql_preview.
 	MSPreview struct {
 		Action     string `json:"action"`
 		SessionID  int    `json:"session_id,omitempty"`
 		JobID      string `json:"job_id,omitempty"`
 		PlanHandle string `json:"plan_handle,omitempty"`
 	}
+	// MSKill is the payload of mssql_kill.
 	MSKill struct {
 		SessionID int    `json:"session_id"`
 		LoginTime string `json:"login_time"`
 		Login     string `json:"login"`
 		Reason    string `json:"reason"`
 	}
+	// MSJob is the payload of mssql_job_start and mssql_job_stop.
 	MSJob struct {
 		JobID   string `json:"job_id"`
 		JobName string `json:"job_name"`
 		Reason  string `json:"reason"`
 	}
+	// MSPlanEvict is the payload of mssql_plan_evict.
 	MSPlanEvict struct {
 		PlanHandle string `json:"plan_handle"`
 		Confirm    string `json:"confirm"`
 		Reason     string `json:"reason"`
 	}
+	// CommunityRun is the payload of community_run.
 	CommunityRun struct {
 		Tool        string            `json:"tool"`
 		Database    string            `json:"database,omitempty"`
@@ -99,10 +106,12 @@ type (
 		QueryName   string            `json:"query_name,omitempty"`
 		Text        string            `json:"text,omitempty"`
 	}
+	// CommunityHelp is the payload of community_help.
 	CommunityHelp struct {
 		Tool     string `json:"tool"`
 		Database string `json:"database,omitempty"`
 	}
+	// CustomReport is the payload of custom_report.
 	CustomReport struct {
 		ReportID int64              `json:"report_id"`
 		EditedAt string             `json:"edited_at"`
@@ -110,26 +119,32 @@ type (
 		To       string             `json:"to,omitempty"`
 		Params   map[string]*string `json:"params,omitempty"`
 	}
+	// Explain is the payload of explain.
 	Explain struct {
 		Statement string `json:"statement"`
 		Datname   string `json:"datname,omitempty"`
 	}
+	// ExplainAnalyze is the payload of explain_analyze.
 	ExplainAnalyze struct {
 		Statement   string `json:"statement"`
 		Datname     string `json:"datname,omitempty"`
 		Reason      string `json:"reason"`
 		TimeoutSecs int    `json:"timeout_secs,omitempty"`
 	}
+	// HypoIndex is the payload of hypo_index.
 	HypoIndex struct {
 		PlanID int64  `json:"plan_id"`
 		N      int    `json:"n"`
 		Reason string `json:"reason"`
 		DDL    string `json:"ddl,omitempty"`
 	}
+	// IndexAdvisor is the payload of index_advisor.
 	IndexAdvisor struct {
 		Database string `json:"database"`
 	}
-	AdminTest  struct{}
+	// AdminTest is the payload of admin_test.
+	AdminTest struct{}
+	// CollectNow is the payload of collect_now.
 	CollectNow struct {
 		Collection string `json:"collection"`
 	}

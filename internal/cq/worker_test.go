@@ -120,7 +120,7 @@ func TestWorkerOnAStore(t *testing.T) {
 	var mu sync.Mutex
 	running, maxAll := 0, 0
 	perInst, maxInst := map[string]int{}, 0
-	slow := standIn{fn: func(ctx context.Context, env *Env, r Request) End {
+	slow := standIn{fn: func(ctx context.Context, _ *Env, r Request) End {
 		mu.Lock()
 		running++
 		perInst[r.Instance]++
@@ -134,17 +134,17 @@ func TestWorkerOnAStore(t *testing.T) {
 		}
 		return End{State: "done", Outcome: "slow"}
 	}}
-	registerForTest(t, "admin_test", standIn{fn: func(ctx context.Context, env *Env, r Request) End {
+	registerForTest(t, "admin_test", standIn{fn: func(_ context.Context, env *Env, _ Request) End {
 		return End{State: "done", Outcome: "tested on " + env.Instance.Name, Rows: 1,
 			Result: map[string]any{"sets": []any{map[string]any{"columns": []string{"ok"}, "rows": [][]any{{true}}}}}}
 	}})
-	registerForTest(t, "index_advisor", standIn{fn: func(ctx context.Context, env *Env, r Request) End {
+	registerForTest(t, "index_advisor", standIn{fn: func(ctx context.Context, _ *Env, _ Request) End {
 		<-ctx.Done()
 		return End{State: "done"}
 	}})
 	registerForTest(t, "explain", slow)
 	var urgentRan atomic.Bool
-	registerForTest(t, "pg_terminate", standIn{fn: func(ctx context.Context, env *Env, r Request) End {
+	registerForTest(t, "pg_terminate", standIn{fn: func(context.Context, *Env, Request) End {
 		urgentRan.Store(true)
 		return End{State: "done", Outcome: "terminated"}
 	}})
@@ -300,7 +300,7 @@ func TestWorkerDeadlineOnAStore(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.action_requests WHERE instance = $1`, inst)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.cq_workers WHERE collector_id = $1`, w.id)
 	})
-	registerForTest(t, "admin_test", standIn{fn: func(ctx context.Context, env *Env, r Request) End {
+	registerForTest(t, "admin_test", standIn{fn: func(ctx context.Context, _ *Env, _ Request) End {
 		<-ctx.Done()
 		return End{State: "failed", Outcome: "the stand-in saw its context end"}
 	}})

@@ -366,8 +366,8 @@ func cqPublishTools(ctx context.Context, env *cq.Env) error {
 				row.Why = hard(c.Tools[t.ID]) // a procedure's id is its name
 			}
 			installed := c.Installed[strings.ToLower(t.Name)] // keyed lower-case, as Community reads it
-			switch {
-			case t.Kind == "proc":
+			switch t.Kind {
+			case "proc":
 				row.Present = installed && row.Why == ""
 				if row.Present && conn != nil {
 					if params, _, found, err := readProcParams(ctx, conn, msDB(c.DB), t.Name, t.Help); err == nil && found {

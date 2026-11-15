@@ -84,7 +84,7 @@ func TestCommunityThroughTheQueueOnAStore(t *testing.T) {
 	wctx, wstop := context.WithCancel(ctx)
 	wdone := make(chan error, 1)
 	go func() { wdone <- cq.Run(wctx, slog.New(slog.DiscardHandler), cfg, cqNoPage{}) }()
-	defer func() { wstop(); <-wdone }()
+	defer func() { wstop(); _ = <-wdone }()
 
 	waitFor := func(what string, d time.Duration, ok func() bool) {
 		t.Helper()

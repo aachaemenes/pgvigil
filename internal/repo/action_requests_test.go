@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -49,11 +50,12 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	sfx := time.Now().UnixNano() % 1000000000
 	i1, i2 := fmt.Sprintf("cq-a-%d", sfx), fmt.Sprintf("cq-b-%d", sfx)
 	w1, w2 := fmt.Sprintf("cq-w1-%d", sfx), fmt.Sprintf("cq-w2-%d", sfx)
+	ix, wx := fmt.Sprintf("cq-x-%d", sfx), fmt.Sprintf("cq-wx-%d", sfx) // a foreign worker: the store is shared
 	t.Cleanup(func() {
 		c, stop := context.WithTimeout(context.Background(), 20*time.Second)
 		defer stop()
 		_, _ = pool.Exec(c, `DELETE FROM pgvigil.action_requests WHERE instance = ANY($1)`, []string{i1, i2})
-		_, _ = pool.Exec(c, `DELETE FROM pgvigil.cq_workers WHERE collector_id = ANY($1)`, []string{w1, w2})
+		_, _ = pool.Exec(c, `DELETE FROM pgvigil.cq_workers WHERE collector_id = ANY($1)`, []string{w1, w2, wx})
 	})
 	exec := func(sql string, args ...any) {
 		t.Helper()
@@ -66,11 +68,13 @@ func TestActionRequestsOnAStore(t *testing.T) {
 		Detail    string `json:"detail"`
 		RequestID int64  `json:"request_id"`
 	}
-	ask := func(kind, inst, user string, args string) answer {
+	askOn := func(q interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	}, kind, inst, user string, args string) answer {
 		t.Helper()
 		var raw []byte
 		body := fmt.Sprintf(`{"kind": %q, "instance": %q, "ui_user": %q, "client": "test", "args": %s}`, kind, inst, user, args)
-		if err := pool.QueryRow(ctx, `SELECT pgvigil.import_action_request($1::jsonb)::text`, body).Scan(&raw); err != nil {
+		if err := q.QueryRow(ctx, `SELECT pgvigil.import_action_request($1::jsonb)::text`, body).Scan(&raw); err != nil {
 			t.Fatalf("import_action_request %s: %v", body, err)
 		}
 		var a answer
@@ -78,6 +82,28 @@ func TestActionRequestsOnAStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		return a
+	}
+	ask := func(kind, inst, user string, args string) answer {
+		t.Helper()
+		return askOn(pool, kind, inst, user, args)
+	}
+	// askWithNoWorker asks on a store with no live worker, whatever else runs on it: G runs ./internal/cq and
+	// ./internal/web beside this package on one store, and their workers beat cq_workers rows meanwhile. The state is
+	// built in a transaction no other session sees - the table locked against writes (reads go on; a beat waits the
+	// few milliseconds), every lease ended, the ask, rolled back - so nothing of it outlives the call.
+	askWithNoWorker := func(kind, inst, user string, args string) answer {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		for _, sql := range []string{`LOCK TABLE pgvigil.cq_workers IN EXCLUSIVE MODE`, `UPDATE pgvigil.cq_workers SET beat_at = NULL`} {
+			if _, err := tx.Exec(ctx, sql); err != nil {
+				t.Fatalf("%v\n%s", err, sql)
+			}
+		}
+		return askOn(tx, kind, inst, user, args)
 	}
 	refused := func(a answer, want string) {
 		t.Helper()
@@ -151,8 +177,11 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	}
 	run := `{"tool": "sp_WhoIsActive"}`
 
-	// no worker, then a worker of another instance, then a held instance without a door
-	refused(ask("community_run", i1, "Alice", run), "no collector takes requests (cq.enabled")
+	// no worker, then a worker of another instance, then a held instance without a door. A foreign live worker is
+	// beaten first, as the packages G runs beside this one do: the plain ask would answer 'no collector takes requests
+	// for <instance>' (r01's red), so the no-worker ask is built in its own transaction.
+	beat(wx, nil, ix)
+	refused(askWithNoWorker("community_run", i1, "Alice", run), "no collector takes requests (cq.enabled")
 	beat(w1, nil, i2)
 	refused(ask("community_run", i1, "alice", run), "no collector takes requests for "+i1)
 	beat(w1, nil, i1, i2)
