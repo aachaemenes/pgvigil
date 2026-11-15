@@ -133,7 +133,10 @@ func TestGeoReplOnAStore(t *testing.T) {
 
 // 0151's failover groups (task 390a G2): one row a server and group whoever reads it; a role change (the group's
 // primary moved), a policy change and a group gone are each one event; an older read of the server (another of its
-// databases, imported late) changes nothing; an Activity Log operation is stored once; a moved primary is critical.
+// databases, imported late) changes nothing; an Activity Log operation is stored once - one row per operation (its
+// correlationId) however many of its events (Started, Accepted, Succeeded) and reads carry it, at its first event's
+// time, with its newest status; a role change that flips the partners' roles is no 'partner' event; a moved primary
+// is critical; the instance that read the server removed, the server's events stay (the review's findings 2, 3, 13).
 func TestFailoverGroupsOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -157,14 +160,19 @@ func TestFailoverGroupsOnAStore(t *testing.T) {
 	defer func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.mssql_failover_groups WHERE server_key = $1`, key)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.mssql_failover_group_events WHERE server_key = $1`, key)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.mssql_failover_group_reads WHERE server_key = $1`, key)
 		for _, id := range ids {
 			_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = $1`, id)
 		}
 	}()
 	group := func(role, policy string) map[string]any {
+		partnerRole := "Secondary"
+		if role == "Secondary" {
+			partnerRole = "Primary" // a failover flips both ends
+		}
 		return map[string]any{"kind": "group", "group_name": "fg1", "role": role, "replication_state": "CATCH_UP", "secondary_type": "Geo",
 			"rw_policy": policy, "grace_minutes": 60, "ro_policy": "Disabled", "ro_target": "",
-			"partners": `[{"server":"pgv-b","location":"East US","role":"Secondary"}]`, "databases": `["db1"]`}
+			"partners": `[{"server":"pgv-b","location":"East US","role":"` + partnerRole + `"}]`, "databases": `["db1"]`}
 	}
 	imp := func(id int, at time.Time, rows ...map[string]any) {
 		t.Helper()
@@ -192,12 +200,26 @@ func TestFailoverGroupsOnAStore(t *testing.T) {
 	if events("role") != 0 {
 		t.Fatal("a late older read made a role event")
 	}
-	op := map[string]any{"kind": "operation", "event_id": "e1", "at": now.Add(-time.Minute).Format(time.RFC3339), "operation": "failover",
-		"status": "Succeeded", "group_name": "fg1"}
-	imp(ids[0], now, group("Secondary", "Automatic"), op)
-	imp(ids[0], now.Add(time.Second), group("Secondary", "Automatic"), op)
+	opEvent := func(id, status string, at time.Time) map[string]any {
+		return map[string]any{"kind": "operation", "event_id": id, "correlation_id": "c1", "at": at.Format(time.RFC3339), "operation": "failover",
+			"status": status, "group_name": "fg1"}
+	}
+	started, accepted, succeeded := now.Add(-3*time.Minute), now.Add(-2*time.Minute), now.Add(-time.Minute)
+	// the first read sees the operation Started; the next sees its three events (the log's window is two hours)
+	imp(ids[0], now, group("Secondary", "Automatic"), opEvent("e1", "Started", started))
+	imp(ids[0], now.Add(time.Second), group("Secondary", "Automatic"), opEvent("e1", "Started", started), opEvent("e2", "Accepted", accepted),
+		opEvent("e3", "Succeeded", succeeded))
 	if events("role") != 1 || events("operation") != 1 {
-		t.Fatalf("role %d operation %d, want 1 and 1", events("role"), events("operation"))
+		t.Fatalf("role %d operation %d, want 1 and 1 (one operation, however many of its events)", events("role"), events("operation"))
+	}
+	var opAt time.Time
+	var opStatus string
+	if err := pool.QueryRow(ctx, `SELECT at, old_value FROM pgvigil.mssql_failover_group_events WHERE server_key = $1 AND kind = 'operation'`, key).Scan(&opAt, &opStatus); err != nil ||
+		!opAt.Equal(started) || opStatus != "Succeeded" {
+		t.Errorf("the operation row: at %v status %q (%v), want its first event's time %v and its newest status Succeeded", opAt, opStatus, err, started)
+	}
+	if n := events("partner"); n != 0 {
+		t.Errorf("a failover (both ends' roles flipped) made %d 'partner' events, want 0: the role event says it", n)
 	}
 	var sev string
 	if err := pool.QueryRow(ctx, `SELECT severity FROM pgvigil.mssql_georepl_findings WHERE instance_id = $1 AND check_name = 'failover group primary moved'`, ids[0]).Scan(&sev); err != nil || sev != "critical" {
@@ -206,5 +228,15 @@ func TestFailoverGroupsOnAStore(t *testing.T) {
 	imp(ids[0], now.Add(2*time.Second))
 	if events("removed") != 1 {
 		t.Fatalf("a group gone: %d removed events", events("removed"))
+	}
+	// the instance whose reads saw the server's events removed: the server's history stays
+	var before, after int
+	_ = pool.QueryRow(ctx, `SELECT count(*)::int FROM pgvigil.mssql_failover_group_events WHERE server_key = $1`, key).Scan(&before)
+	if _, err := pool.Exec(ctx, `DELETE FROM pgvigil.instances WHERE instance_id = $1`, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	_ = pool.QueryRow(ctx, `SELECT count(*)::int FROM pgvigil.mssql_failover_group_events WHERE server_key = $1`, key).Scan(&after)
+	if before == 0 || after != before {
+		t.Errorf("the reading instance removed: the server's events %d -> %d, want them kept", before, after)
 	}
 }
