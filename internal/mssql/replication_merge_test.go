@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -119,6 +120,21 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 	for _, r := range agents {
 		if r["agent_type"] == "merge" {
 			t.Errorf("%v: still read as an agent row", r["agent_name"])
+		}
+	}
+}
+
+// A failed probe's row must keep nothing at the import: 0142's keep rule matches a collector_error whose source, cut at
+// '.dbo.', equals a stored distribution database (and 'published databases' for the publisher side).
+func TestReplicationProbeErrorKeepsNothing(t *testing.T) {
+	for _, db := range []string{"distribution", "dist.prod", "Distribution2"} {
+		r := replProbeError(db, errors.New("lock request time out"))
+		src, _ := r["source"].(string)
+		if r["kind"] != "collector_error" || r["message"] != "lock request time out" {
+			t.Errorf("%s: %v", db, r)
+		}
+		if strings.SplitN(src, ".dbo.", 2)[0] == db || src == "published databases" {
+			t.Errorf("%s: the source %q keeps the database's last rows at the import", db, src)
 		}
 	}
 }

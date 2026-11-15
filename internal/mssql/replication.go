@@ -155,6 +155,13 @@ func replPublicationsSQL(db string) string  { return replPublicationsFor(db, fal
 func replSubscriptionsSQL(db string) string { return replSubscriptionsFor(db, false) }
 func replAgentsSQL(db string) string        { return replAgentsFor(db, false) }
 
+// replProbeError: a failed merge-tables probe as a collector_error row. Its source is never '<database>' alone nor
+// '<database>.dbo.<table>': import_mssql_replication keeps a kind's last rows for those, and the reads that did work
+// would then sit beside stale rows (TestReplicationProbeErrorKeepsNothing; part T's T6 imports this source).
+func replProbeError(name string, err error) collect.Row {
+	return collect.Row{"kind": "collector_error", "source": name + " (merge tables check)", "message": err.Error()}
+}
+
 // replMergeTablesSQL asks whether a distribution database has the four merge tables the merge arm reads (has_merge =
 // 1): the subscriptions statement carries its merge arm only then, so a database without them still reads its
 // transactional subscriptions. (Never the alias 'merge': MERGE is a T-SQL keyword, Msg 156.)
@@ -385,7 +392,7 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			rows = append(rows, collect.Row{"kind": "collector_error", "source": name + " (merge tables check)", "message": err.Error()})
+			rows = append(rows, replProbeError(name, err))
 		} else if len(m) == 1 {
 			v, _ := m[0]["has_merge"].(int64)
 			hasMerge = v == 1
