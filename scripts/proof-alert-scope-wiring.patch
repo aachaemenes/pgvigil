@@ -40,3 +40,16 @@ index a994399..61ce6a5 100644
         AND NOT (pgvigil.collector_shared_cause(sc.source, sc.setting)
                  AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
    ), s AS (
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6290ed6..56b60de 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -257,6 +257,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
+ 	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
+ 	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
++	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
++	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
+ 	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
+ 	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
+ 	api.HandleFunc("POST /api/alerts/mute", s.AlertMute)
