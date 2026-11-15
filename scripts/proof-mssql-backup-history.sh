@@ -522,8 +522,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const until = async (expr, s = 30) => { for (let i = 0; i < s * 4; i++) { if (await ev(expr)) return true; await sleep(250); } return false; };
 const heads = sel => `[...document.querySelectorAll('${sel} table.grid > thead > tr:first-child > th')].map(h => (h.childNodes[0]?.textContent ?? h.textContent).trim())`;
 await cmd('Page.navigate', { url: U }); await sleep(800);
-await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(user)}, password: ${JSON.stringify(pass)} }) }).then(r => r.status)`, true);
-const out = {};
+const login = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(user)}, password: ${JSON.stringify(pass)} }) }).then(r => r.status)`, true);
+// the app read its session when it loaded (signed out): a whole reload, so it starts signed in (a hash change alone
+// keeps the page it loaded)
+await cmd('Page.reload'); await sleep(800);
+const out = { login };
 for (const theme of ['light', 'dark']) {
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
@@ -531,7 +534,8 @@ for (const theme of ['light', 'dark']) {
                                      ['rest', `#/mssqlbackups?i=${inst}&db=pgbh2r`, `!!document.querySelector('#mssql-backups-restores-grid table.grid')`]]) {
     await cmd('Page.navigate', { url: U + hash }); await sleep(300);
     const drawn = await until(ready);
-    const r = { drawn, errors: await ev(`document.querySelectorAll('main .error').length`) };
+    const r = { drawn, errors: await ev(`document.querySelectorAll('main .error').length`),
+                errText: await ev(`[...document.querySelectorAll('main .error')].map(e => e.textContent.trim().slice(0, 300)).join(' | ')`) };
     if (theme === 'light' && name === 'hist') {
       r.head = await ev(heads('#mssql-backups-history-grid'));
       r.rows = await ev(`document.querySelectorAll('#mssql-backups-history-grid table.grid > tbody > tr').length`);
@@ -562,8 +566,9 @@ want = ["database", "recovery model", "type", "start date", "finish date", "dura
         "compression algorithm", "last verify", "to (the first file)", "files", "position in the file", "device", "taken by", "machine", "set name",
         "copy-only", "first LSN", "last LSN", "checkpoint LSN", "database backup LSN", "base (a differential's full)", "backup set"]
 bad = []
+if d.pop("login", None) != 200: bad.append("the page's sign-in did not answer 200")
 for k, r in d.items():
-    if not r["drawn"] or r["errors"]: bad.append(f"{k}: drawn {r['drawn']}, error boxes {r['errors']}")
+    if not r["drawn"] or r["errors"]: bad.append(f"{k}: drawn {r['drawn']}, error boxes {r['errors']}: {r.get('errText', '')}")
     n = sum(v["n"] for v in r["violations"])
     if n: bad.append(f"{k}: {n} axe violation node(s): {r['violations']}")
 h = d["hist-light"]
