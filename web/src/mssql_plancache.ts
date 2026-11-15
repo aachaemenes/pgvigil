@@ -187,6 +187,14 @@ function planWords(p: PlanReply): string {
   return `${p.words}${what ? ' (' + what + ')' : ''}${p.bytes ? `, ${fmtNum(Math.round(p.bytes / 1024))} KB` : ''}.`;
 }
 
+// openPlan draws a plan in the viewer with the reply's own words at its top: where it came from, and on the demo that it
+// is demo data (the status line under the grid sits behind the dialog)
+function openPlan(p: PlanReply, back: HTMLElement) {
+  if (!p.plan || !p.file) return;
+  const dlg = openText(p.file, p.plan, back, 'sqlplan');
+  dlg.querySelector('.fd-body')?.prepend(el('p', { class: 'meta plan-words' }, planWords(p)));
+}
+
 // readPlan reads one entry's plan on demand: the statement at its offsets, or the whole batch.
 async function readPlan(ctx: Ctx, e: Row, batch: boolean): Promise<PlanReply> {
   return get<PlanReply>('mssql/plancache/plan', {
@@ -241,7 +249,7 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
         const p = await readPlan(ctx, e, batch);
         status.textContent = planWords(p);
         if (p.plan && p.file) {
-          if (open) openText(p.file, p.plan, b, 'sqlplan');
+          if (open) openPlan(p, b);
           else saveFile(p.file, p.plan);
         }
       } catch (err) {
@@ -285,7 +293,7 @@ function runningPlansSection(ctx: Ctx): HTMLElement {
     try {
       const p = await get<PlanReply>('mssql/runningplans/plan', { instance: ctx.instance, ...q });
       status.textContent = `${p.words}.`;
-      if (p.plan && p.file) { if (open) openText(p.file, p.plan, b, 'sqlplan'); else saveFile(p.file, p.plan); }
+      if (p.plan && p.file) { if (open) openPlan(p, b); else saveFile(p.file, p.plan); }
     } catch (e) {
       status.textContent = e instanceof Error ? e.message : String(e);
     }
@@ -320,11 +328,11 @@ function runningPlansSection(ctx: Ctx): HTMLElement {
         { key: 'max_grant_kb', label: 'grant (KB)', num: true }, { key: 'max_longest_ms', label: 'running (ms)', num: true },
         { key: 'first_seen', label: 'first seen', fmt: fmtTime }, { key: 'last_seen', label: 'last seen', fmt: fmtTime }, { key: 'reads', num: true },
         { key: 'plan', label: 'plan', fmt: (_, r) => r.has_plan
-          ? el('span', {}, btn('Download .sqlplan', `Download the plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, key(r), false); }), ' ',
+          ? el('span', {}, btn('Download .sqlplan', `Download .sqlplan: the plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, key(r), false); }), ' ',
             btn('Open', `Open the plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, key(r), true); }))
           : el('span', { class: 'meta' }, r.plan_state === 'policy' ? 'not kept: query_text is not "full"' : r.plan_state ? String(r.plan_state) + (r.plan_note ? ': ' + String(r.plan_note) : '') : 'not read yet') },
         { key: 'live', label: 'live plan', fmt: (_, r) => r.live_newest != null
-          ? btn(`Open live (${fmtNum(r.live_captures)})`, `Open the newest live plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, { ...key(r), live: Number(r.live_newest) }, true); })
+          ? btn(`Open live (${fmtNum(r.live_captures)})`, `Open live (${fmtNum(r.live_captures)}): the newest live plan of ${String(r.query_hash)}`, b => { void fetchPlan(b, { ...key(r), live: Number(r.live_newest) }, true); })
           : el('span', { class: 'meta' }, Number(r.live_captures) > 0 ? 'not kept: query_text is not "full"' : 'none') },
         { key: 'stats_used', label: 'statistics', fmt: (_, r) => r.has_plan
           ? btn('Statistics used', `Statistics used by the plan of ${String(r.query_hash)}`, () => { statsBox.replaceChildren(planStatsPanel(ctx, { source: 'running', ...key(r) }, `the plan of ${String(r.query_hash)}`)); })
@@ -444,7 +452,7 @@ async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HT
         p = await get<PlanReply>('mssql/plancache/plan', { instance: ctx.instance, handle: String(r.plan_handle), start: Number(r.stmt_start), end: Number(r.stmt_end), hash: ph });
       }
       status.textContent = planWords(p);
-      if (p.plan && p.file) { if (open) openText(p.file, p.plan, b, 'sqlplan'); else saveFile(p.file, p.plan); }
+      if (p.plan && p.file) { if (open) openPlan(p, b); else saveFile(p.file, p.plan); }
     } catch (e) {
       status.textContent = e instanceof Error ? e.message : String(e);
     }

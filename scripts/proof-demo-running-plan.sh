@@ -18,6 +18,11 @@
 #     list a 'running' row with Open; Open draws the plan: a 'Query plan:' dialog holding 'Statement 1' and an operator
 #     grid of 1+ rows, the status line naming demo data, no error box. On #/activity?i=<erp01> (PostgreSQL's Running
 #     queries) the page says 'PostgreSQL keeps no plan of a running statement'.
+#  [review fold (drpa-fallback), before the rerun: S1: a request with a kept row holds it as above; a request without
+#  one must be below DBA Dash's plan threshold in that snapshot (CPU 1,000 ms, a 6,400-page grant, 10 s running; a row
+#  kept at an earlier snapshot stays); sql01 and sql03 each show one request with its kept plan; S3's plan carries
+#  the '<!-- demo data' comment inside its root (a downloaded file says it too); C reads 'demo data' INSIDE the plan
+#  dialog (its first line, the reply's words), not the status line behind it; a page slower than 15 s fails by name]
 #  Red on 24c1b7c7 (rel-j15-fix): S1 no row; S2 interval_secs 0 or no row; S3 404; C no 'running' source (the sources
 #  answer 'pgvigil holds no plan of these hashes'), and the PostgreSQL words absent.
 set -euo pipefail
@@ -64,23 +69,26 @@ WITH newest AS (
   SELECT s.instance_id, max(s.snapshot_at) AS at FROM pgvigil.mssql_requests_summary s
    WHERE s.instance_id IN ($MSALL) GROUP BY s.instance_id),
 req AS (
-  SELECT r.instance_id, r.session_id, r.query_hash AS qh, r.query_plan_hash AS ph, r.stmt_start, r.stmt_end
+  SELECT r.instance_id, r.session_id, r.query_hash AS qh, r.query_plan_hash AS ph, r.stmt_start, r.stmt_end,
+         coalesce(r.cpu_ms, 0) >= 1000 OR coalesce(r.granted_memory_kb, 0) / 8 >= 6400 OR coalesce(r.elapsed_ms, 0) >= 10000 AS meets
     FROM pgvigil.mssql_requests_v r JOIN newest n ON n.instance_id = r.instance_id AND n.at = r.snapshot_at
    WHERE r.query_plan_hash IS NOT NULL AND r.query_plan_hash !~* '^0x0+\$')
 SELECT i.name || ':' || q.session_id || ':' ||
-       coalesce(p.plan_state, 'NO ROW') || ':' ||
+       CASE WHEN p.instance_id IS NULL THEN CASE WHEN q.meets THEN 'NO ROW over the threshold' ELSE 'no row, below the threshold' END ELSE
+       coalesce(p.plan_state, 'no state') || ':' ||
        CASE WHEN p.plan_xml IS NULL THEN 'no plan'
             WHEN p.plan_xml LIKE '<ShowPlanXML%' AND strpos(p.plan_xml, 'QueryHash=\"' || q.qh || '\"') > 0
                  AND strpos(p.plan_xml, 'QueryPlanHash=\"' || q.ph || '\"') > 0 THEN 'hashes match'
             ELSE 'hashes differ' END || ':' ||
-       CASE WHEN p.plan_note ILIKE '%demo data%' THEN 'demo note' ELSE 'no demo note' END
+       CASE WHEN p.plan_note ILIKE '%demo data%' THEN 'demo note' ELSE 'no demo note' END END
   FROM req q JOIN pgvigil.instances i USING (instance_id)
   LEFT JOIN pgvigil.mssql_running_plan p ON p.instance_id = q.instance_id AND p.query_hash = q.qh AND p.plan_hash = q.ph
                                         AND p.stmt_start = q.stmt_start AND p.stmt_end = q.stmt_end
  ORDER BY 1")
 echo "$S1" | sed 's/^/     S1 /'
 for inst in sql01 sql03; do echo "$S1" | grep -q -- "-$inst:" || { echo "DIFF S1: $inst's newest snapshot holds no request with a plan hash"; FAILED=1; }; done
-if echo "$S1" | grep -v -E ':read:hashes match:demo note$' | grep -q .; then echo "DIFF S1: a request without its kept plan (above)"; FAILED=1; fi
+for inst in sql01 sql03; do echo "$S1" | grep -E -- "-$inst:" | grep -q ':read:hashes match:demo note$' || { echo "DIFF S1: no request of $inst's newest snapshot with its kept plan"; FAILED=1; }; done
+if echo "$S1" | grep -v -E ':(read:hashes match:demo note|no row, below the threshold)$' | grep -q .; then echo "DIFF S1: a request without its kept plan (above)"; FAILED=1; fi
 PGROWS=$(q "select count(*) from pgvigil.mssql_running_plan p join pgvigil.instances i using (instance_id) where i.engine <> 'sqlserver'")
 [[ "$PGROWS" == 0 ]] || { echo "DIFF S1: $PGROWS running plan row(s) on a PostgreSQL instance"; FAILED=1; }
 [[ $FAILED == 0 ]] && ok "S1: every request of sql01's and sql03's newest snapshot (and sql02's, if any) has its kept plan, hashes matching, said as demo data"
@@ -117,6 +125,8 @@ if code != '200': print(f"DIFF S3: HTTP {code} {open(sys.argv[1]).read()[:200]}"
 d = json.load(open(sys.argv[1]))
 if d.get('state') != 'ok' or 'demo data' not in (d.get('words') or ''): print(f"DIFF S3: state {d.get('state')} words {d.get('words')!r}"); sys.exit(1)
 ET.fromstring(d['plan'])
+root = d['plan'].find('<ShowPlanXML'); end = d['plan'].find('>', root)
+if not d['plan'][end + 1:].startswith('<!-- demo data'): print(f"DIFF S3: the plan file carries no demo-data comment inside its root: {d['plan'][end + 1:end + 80]!r}"); sys.exit(1)
 print(f"     S3 words: {d['words']}; file {d.get('file')}; {len(d['plan'])} bytes")
 PY
 fi

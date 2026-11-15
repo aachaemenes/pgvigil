@@ -399,10 +399,13 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	file := fmt.Sprintf("plan-%s-%s-%s-%s.sqlplan", safeFileName(deref(inst)), safeFileName(deref(db)), tag, strings.ToLower(strings.TrimPrefix(ph, "0x")))
-	// the stored note rides with the plan: a failed later read's reason (the plan shown is the one read before it), or
-	// the demo's 'demo data' line
+	// the stored note rides with the plan: a later read that failed keeps the plan read before it (0157's import) and
+	// says why; the demo's plans say they are demo data
 	words := "the plan kept for this running query"
-	if n := strings.TrimSpace(deref(note)); n != "" {
+	switch n := strings.TrimSpace(deref(note)); {
+	case strings.HasPrefix(n, "the plan was not read: "):
+		words += "; a later read failed (" + strings.TrimPrefix(n, "the plan was not read: ") + "), so this is the plan read before it"
+	case n != "":
 		words += "; " + n
 	}
 	s.reply(w, r, map[string]any{"state": "ok", "words": words, "plan": mssql.MaskPlanXML(*xml), "file": file}, nil)

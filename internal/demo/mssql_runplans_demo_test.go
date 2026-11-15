@@ -43,8 +43,16 @@ func TestRunningPlansDemo(t *testing.T) {
 				t.Fatalf("%s at %v: the first row is not the policy row: %v", s.Name, b.At, b.Rows)
 			}
 			byKey := map[string]Row{}
+			statsOf := map[string]int{}
 			for _, r := range b.Rows[1:] {
-				byKey[toStr(r["query_hash_hex"])+toStr(r["plan_hash_hex"])] = r
+				switch r["kind"] {
+				case "running":
+					byKey[toStr(r["query_hash_hex"])+toStr(r["plan_hash_hex"])] = r
+				case "plan_stats":
+					statsOf[toStr(r["query_hash_hex"])+toStr(r["plan_hash_hex"])]++
+				default:
+					t.Fatalf("%s at %v: a row of kind %v", s.Name, b.At, r["kind"])
+				}
 			}
 			for _, q := range reqs[b.At.String()] {
 				if q["kind"] != "request" || q["plan_handle"] == nil {
@@ -69,6 +77,13 @@ func TestRunningPlansDemo(t *testing.T) {
 				}
 				if r["kind_of"] != "plan" || r["plan_state"] != "read" || !strings.HasPrefix(toStr(r["plan_note"]), "demo data") {
 					t.Fatalf("%s at %v: a plan row without its state or note: %v", s.Name, b.At, r)
+				}
+				// the file says what it is wherever it is opened, and the statistics it names travel with it
+				if !strings.Contains(x, runPlanFileNote) {
+					t.Fatalf("%s at %v: the plan carries no demo-data comment", s.Name, b.At)
+				}
+				if want := strings.Count(x, "<StatisticsInfo "); statsOf[k] != want || want == 0 {
+					t.Fatalf("%s at %v: %d plan_stats row(s) for a plan naming %d statistic(s)", s.Name, b.At, statsOf[k], want)
 				}
 				var doc struct {
 					XMLName xml.Name

@@ -1,7 +1,7 @@
 // The demo's running plans, clicked (scripts/proof-demo-running-plan.sh part C): on each SQL Server instance's Running
 // queries (#/mssql_running?i=N) a request's Plan button lists the plans pgvigil holds for its hashes; the 'running'
-// row's Open draws the plan (the 'Query plan:' viewer: Statement 1, an operator grid, no error box) and the status line
-// says demo data. On a PostgreSQL instance's Running queries (#/activity?i=N) the page says PostgreSQL keeps no plan of
+// row's Open draws the plan (the 'Query plan:' viewer: Statement 1, an operator grid, no error box) and the dialog's
+// first line (the reply's words) says demo data. On a PostgreSQL instance's Running queries (#/activity?i=N) the page says PostgreSQL keeps no plan of
 // a running statement. Usage (a headless Chromium on the CDP port, the demo served at the base url):
 //   node scripts/click-running-plan.mjs <cdp port> <base url/> <sql server ids, comma separated> <postgresql id>
 // Prints one line per instance; exit 1 on a FAIL.
@@ -44,6 +44,7 @@ for (const ms of msIds.split(',').filter(Boolean)) {
     await ev(`document.querySelectorAll('main button[aria-label^="Plans of query hash"]')[${k}].click()`);
     const listed = await until(`(() => { const b = document.querySelector('main .running-plans'); const t = b?.innerText ?? '';
       return /Reading/.test(t) || !t ? null : t; })()`);
+    if (listed == null) { console.log(`     #/mssql_running?i=${ms} Plan ${k + 1} of ${n}: the plan sources never drew in 15 s`); continue; }
     const open = await ev(`!!document.querySelector('main .running-plans button[aria-label="Open: the running plan"]')`);
     if (!open) { console.log(`     #/mssql_running?i=${ms} Plan ${k + 1} of ${n}: no running plan listed (${String(listed).replace(/\s+/g, ' ').slice(0, 200)})`); continue; }
     await ev(`document.querySelector('main .running-plans button[aria-label="Open: the running plan"]').click()`);
@@ -51,8 +52,8 @@ for (const ms of msIds.split(',').filter(Boolean)) {
       const h3 = d.querySelector('h3')?.textContent ?? ''; const ops = d.querySelectorAll('table tbody tr').length;
       const err = [...d.querySelectorAll('p.error')].map(e => e.textContent).join(' | ');
       const stmt = [...d.querySelectorAll('h4')].some(h => /^Statement 1/.test(h.textContent));
-      const status = document.querySelector('main .running-plans > p[role="status"]')?.textContent ?? '';
-      return { h3, ops, err, stmt, status }; })()`);
+      const words = d.querySelector('.fd-body > p.plan-words')?.textContent ?? '';
+      return { h3, ops, err, stmt, words }; })()`);
     if (!drawn) console.log(`     #/mssql_running?i=${ms} Plan ${k + 1}: Open drew no viewer (${await ev(`document.querySelector('main .running-plans > p[role="status"]')?.textContent ?? ''`)})`);
   }
   if (!drawn) { fail(`#/mssql_running?i=${ms}: no Plan button of ${n} lands on a drawn plan`); continue; }
@@ -61,9 +62,9 @@ for (const ms of msIds.split(',').filter(Boolean)) {
   if (!drawn.stmt) why.push('no Statement 1');
   if (drawn.ops < 1) why.push('no operator row');
   if (drawn.err) why.push(`an error box: ${drawn.err}`);
-  if (!/demo data/.test(drawn.status)) why.push(`the status line does not say demo data: ${JSON.stringify(drawn.status)}`);
+  if (!/demo data/.test(drawn.words)) why.push(`the plan dialog does not say demo data: ${JSON.stringify(drawn.words)}`);
   if (why.length) fail(`#/mssql_running?i=${ms}: ${why.join('; ')}`);
-  else console.log(`ok   #/mssql_running?i=${ms}: Plan -> running -> Open drew '${drawn.h3}', ${drawn.ops} operator row(s); status: ${drawn.status}`);
+  else console.log(`ok   #/mssql_running?i=${ms}: Plan -> running -> Open drew '${drawn.h3}', ${drawn.ops} operator row(s); its first line: ${drawn.words}`);
   await ev(`document.querySelector('dialog.fd-viewer[open]')?.close()`);
 }
 
