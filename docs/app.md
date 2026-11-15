@@ -59,6 +59,10 @@ the app again (serve reads it at start).
 
 The app looks for it in this order: `-config <file>`, the user's `%LOCALAPPDATA%\pgvigil\pgvigil.yaml`, then the machine's `%ProgramData%\pgvigil\app\pgvigil.yaml`. On a machine-wide install every user can read the machine's file, so keep the password out of it. Each user can put it in their own `%APPDATA%\postgresql\pgpass.conf`, or a user can have their own configuration in `%LOCALAPPDATA%`. pgvigil's UI login (the `pgvigil user` accounts) is on by default, and the window shows its sign-in page. A user may turn it off for their own serve (HKCU `NoLogin` = 1, below), which `serve` allows on loopback only. An administrator can forbid that with the policy `RequireLogin` = 1.
 
+The app's serve connects to nothing but the repository, so on its own it runs no community tool and no action. A
+site that runs a collector with `cq: enabled: true` can give the app's login `pgvigil_requester` and the app's
+configuration `actions: via: queue`: the community tools then run on the collector ([queue.md](queue.md)).
+
 ## What the app does
 
 - **Start.** One app runs per user session; a second launch shows the running one's window (a start-at-login launch does not). Unless a serve already answers at the attach address (default `http://127.0.0.1:8080/`, loopback only) and runs as the same Windows user, the app runs `pgvigil serve -config <the configuration> -listen 127.0.0.1:0`. That serve picks a free port, runs with no console window, and sits in a Windows job object, so it ends with the app even if the app crashes. With `-tray` (the start-at-login entry) the window stays closed until the tray icon is clicked.
