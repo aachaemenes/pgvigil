@@ -116,8 +116,8 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       // a failure count opens the collector's error log of that collection over 24 h, its errors only (the count is the
       // heartbeat's runs that ended with an error, the list collection_log's rows: the two can differ)
       { key: 'runs', num: true, fmt: fmtNum }, { key: 'failures', num: true, fmt: (v, r) => !Number(v) ? fmtNum(v) : el('a', {
-        href: `#/collectorerrors?${ctx.tag ? `tag=${encodeURIComponent(ctx.tag)}&` : ''}w=24h&view=error&type=Error&coll=${encodeURIComponent(String(r.collection))}`,
-        title: 'The errors kept for this collection in the last 24 hours. The count is the collector\'s runs that ended with an error; the list is the error log\'s rows: the two can differ.' }, fmtNum(v)) },
+        href: `#/collectorerrors?w=24h&view=error&type=Error&coll=${encodeURIComponent(String(r.collection))}`,
+        title: 'The errors kept for this collection in the last 24 hours, on every instance. The count is the collector\'s runs that ended with an error, over the whole repository and per engine; the list is the error log\'s rows: the two can differ.' }, fmtNum(v)) },
       { key: 'failure_pct', label: 'failure %', num: true, fmt: v => v == null ? '' : `${v}` },
       { key: 'avg_ms', label: 'avg (ms)', num: true, fmt: fmtNum }, { key: 'p50_ms', label: 'p50 (ms)', num: true, fmt: fmtNum },
       { key: 'p95_ms', label: 'p95 (ms)', num: true, fmt: fmtNum }, { key: 'max_ms', label: 'max (ms)', num: true, fmt: fmtNum },

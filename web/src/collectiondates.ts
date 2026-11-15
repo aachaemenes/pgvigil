@@ -55,7 +55,7 @@ export async function collectionDatesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'next_run', label: 'next run', fmt: fmtTime },
       { key: 'last_success', label: 'last success', fmt: (v, r) => v == null ? (r.last_status === 'error' ? 'not kept (the last run failed)' : r.last_status === 'skipped' ? 'not kept (the last run was skipped)' : '') : fmtTime(v) },
       // the last error opens the collector's error log at this instance and collection
-      { key: 'last_error_at', label: 'last error', fmt: (v, r) => v == null ? '' : el('a', { href: href(ctx, { tab: 'collectorerrors', instance: Number(r.instance_id), tag: undefined })
+      { key: 'last_error_at', label: 'last error', fmt: (v, r) => v == null ? '' : el('a', { href: href(ctx, { tab: 'collectorerrors', instance: Number(r.instance_id), tag: undefined, range: { preset: '30d' } })
         + `&view=error&coll=${encodeURIComponent(String(r.collection))}` }, fmtTime(v)) },
       { key: 'duration_ms', label: 'duration (ms)', num: true, fmt: fmtNum },
       { key: 'note', wide: true },

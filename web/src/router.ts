@@ -233,6 +233,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
+  // the Collector errors and SQL Server errors pages' filters stay on their own links: a range change keeps them
+  if (keep && (c.tab === 'collectorerrors' || c.tab === 'mssqlerrors')) {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['view', 'coll', 'type', 'stage', 'q', 'skipped', 'service', 'n', 'noise']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
   // the Checks page's view and risk filter (mssql_checks.ts) stay on its own links
   if (keep && c.tab === 'pgdboptions') { const cur = new URLSearchParams(location.hash.split('?')[1] ?? ''); const v = cur.get('risk'); if (v) q.set('risk', v); }
   if (keep && c.tab === 'mssqlchecks') {
