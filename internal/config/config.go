@@ -31,6 +31,12 @@ type Config struct {
 	// certificate function, a private key block); a password held as an ordinary value stays under full only.
 	// An instance's own query_text overrides it.
 	QueryText string `yaml:"query_text"`
+	// Probe (B24h; dbachecks Instance#3, Server#4 / #5): how the collector checks that a host answers - icmp (the
+	// default: an unprivileged ICMP socket where the system allows it, else the TCP connect time), tcp (the TCP
+	// handshake to the instance's own port), off. ProbeEveryMinute probes every host each minute (an admin's opt-in:
+	// a per-minute sweep can trip an IDS); by default a host is probed only after a collection of it failed.
+	Probe            string `yaml:"probe"`
+	ProbeEveryMinute bool   `yaml:"probe_every_minute"`
 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
 	UI UI `yaml:"ui"`
 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
@@ -468,6 +474,11 @@ func (c *Config) Validate() error {
 	}
 	if !validQueryText(c.QueryText) {
 		return fmt.Errorf("query_text must be full, normalized or none (got %q)", c.QueryText)
+	}
+	switch c.Probe {
+	case "", "icmp", "tcp", "off":
+	default:
+		return fmt.Errorf("probe must be icmp, tcp or off (got %q)", c.Probe)
 	}
 	if len(c.UI.GroupBy) > MaxGroupLevels {
 		return fmt.Errorf("ui.group_by: at most %d levels (got %d)", MaxGroupLevels, len(c.UI.GroupBy))
