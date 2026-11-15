@@ -1,5 +1,5 @@
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index a994399..ff5e286 100644
+index a994399a..0dd90c91 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
 @@ -189,9 +189,12 @@ BEGIN
@@ -17,7 +17,18 @@ index a994399..ff5e286 100644
       -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
       -- ACCESS EXCLUSIVE on its parent)
       ORDER BY p.relname, c.relname
-@@ -468,16 +471,19 @@ LANGUAGE sql STABLE SET jit = off AS $$
+@@ -438,7 +441,9 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
+        f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at
+   FROM (SELECT x.instance_id, x.severity, x.setting, x.value, x.suggested, x.detail, x.source, x.at FROM pgvigil.findings x
+         UNION ALL
+-        SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y) f
++        SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y
++        UNION ALL   -- task 403b (0154): a configured channel whose last three sends failed ('pgvigil repository', no instance)
++        SELECT z.instance_id, z.severity, z.setting, z.value, z.suggested, z.detail, z.source, z.at FROM pgvigil.alert_channel_failing z) f
+   LEFT JOIN pgvigil.instances i USING (instance_id)
+   LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
+  WHERE i.is_active OR f.source = 'pgvigil repository';
+@@ -468,16 +473,19 @@ LANGUAGE sql STABLE SET jit = off AS $$
             coalesce(c.repo_wide, true) AS repo_wide
        FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
             AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
@@ -42,7 +53,7 @@ index a994399..ff5e286 100644
                  AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
    ), s AS (
 diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
-index 5ce8225..2e76b44 100644
+index 5ce82256..2e76b44a 100644
 --- i/internal/web/q_alert_rules.go
 +++ w/internal/web/q_alert_rules.go
 @@ -105,12 +105,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
@@ -62,7 +73,7 @@ index 5ce8225..2e76b44 100644
         coalesce(t.tags, '{}'::text[]) AS tags
    FROM pgvigil.alert_rules_effective e
 diff --git i/internal/web/web.go w/internal/web/web.go
-index 6290ed6..56b60de 100644
+index 6290ed6e..56b60de4 100644
 --- i/internal/web/web.go
 +++ w/internal/web/web.go
 @@ -257,6 +257,8 @@ func (s *Server) Handler() http.Handler {

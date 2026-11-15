@@ -601,6 +601,19 @@ func (a Alert) line() string {
 	return s
 }
 
+// channelFailing is the setting of the repository's own finding that a channel's last three sends failed (0154's
+// alert_channel_failing, task 403b: PerformanceMonitor Fixed 21 / 27); its value is the channel's name.
+const channelFailing = "alert channel failing"
+
+// failingChannel names the channel an 'alert channel failing' alert is about, "" for any other alert. The pass sends it
+// on every channel but that one.
+func (a Alert) failingChannel() string {
+	if a.Source == "pgvigil repository" && a.Setting == channelFailing {
+		return a.Value
+	}
+	return ""
+}
+
 // sender delivers one message to one channel's destination.
 type sender interface {
 	send(ctx context.Context, m Message) error
@@ -880,6 +893,9 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		c := byName[name]
 		var send, cleared []Alert
 		for _, a := range owed[name] {
+			if a.failingChannel() == c.Name {
+				continue // its own 'alert channel failing' (0154): it would fail there, or arrive after the channel recovered
+			}
 			// a cleared finding (its instance retired, or the channel no longer covers it) is recorded without a
 			// message - nothing was fixed - except on PagerDuty and Opsgenie, where the open incident must be resolved
 			// or it stays open for good

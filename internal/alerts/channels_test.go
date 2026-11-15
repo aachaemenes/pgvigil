@@ -107,3 +107,20 @@ func TestRetryWaitEndsWithTheSend(t *testing.T) {
 		t.Fatalf("retryWait past the send's deadline: err %v after %s, want the context's error at once", err, time.Since(start))
 	}
 }
+
+// task 403b: the 'alert channel failing' alert goes on every channel but the one it names.
+func TestFailingChannel(t *testing.T) {
+	own := Alert{Event: "firing", Source: "pgvigil repository", Setting: "alert channel failing", Value: "dba-mail"}
+	if got := own.failingChannel(); got != "dba-mail" {
+		t.Fatalf("failingChannel %q, want dba-mail", got)
+	}
+	for _, a := range []Alert{
+		{Source: "pgvigil repository", Setting: "collector or network", Value: "dba-mail"},
+		{Source: "alert rule", Setting: "alert channel failing", Value: "dba-mail"},
+		crit,
+	} {
+		if got := a.failingChannel(); got != "" {
+			t.Errorf("%s / %s: failingChannel %q, want none", a.Source, a.Setting, got)
+		}
+	}
+}
