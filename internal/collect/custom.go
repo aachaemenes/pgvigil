@@ -64,6 +64,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssqlread"
 	"github.com/aachaemenes/pgvigil/internal/plans"
 	"github.com/aachaemenes/pgvigil/internal/platform"
 )
@@ -80,6 +81,27 @@ const (
 	// customSlack lets a check run on the scheduler's tick that comes a little before its cadence is up
 	customSlack = 10 * time.Second
 )
+
+// The limits of one run of a custom check, the same on both engines (the SQL Server collection, internal/mssql
+// mssql_custom, reads them here).
+const (
+	CustomMaxRows  = customMaxRows
+	CustomMaxCols  = customMaxCols
+	CustomMaxCell  = customMaxCell
+	CustomMaxError = customMaxError
+	CustomSlack    = customSlack
+)
+
+// JudgeCustom is a check's status from its value: critical before warning, nothing to judge without a value (ok).
+func JudgeCustom(v *float64, cmp string, warn, crit *float64) string {
+	return judge(v, cmp, warn, crit)
+}
+
+// CapCustomText cuts a text to n characters, saying so (a cell, an error).
+func CapCustomText(s string, n int) string { return capText(s, n) }
+
+// MaskCustomText takes secrets out of an error's text as the PostgreSQL custom checks do.
+func MaskCustomText(s string) string { return maskText(s) }
 
 // CustomCheck is one entry of the custom: list.
 type CustomCheck struct {
@@ -177,10 +199,10 @@ func (c CustomCheck) AppliesTo(in config.Instance) bool {
 
 var customNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
 
-// CustomProcRE is a procedure: name, as custom reports take one (internal/web reportProcName): 1 to 3 parts, each a
-// letter or '_' and then letters, digits, '_', '$' or '#', at most 128 characters; no bracket, quote or space, so the
-// name pgvigil quotes into its EXEC is the name the file wrote.
-var CustomProcRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$#]{0,127}(\.[A-Za-z_][A-Za-z0-9_$#]{0,127}){0,2}$`)
+// CustomProcRE is a procedure: name, as custom reports take one (mssqlread.ProcName): 1 to 3 parts, each a letter or
+// '_' and then letters, digits, '_', '$' or '#', at most 128 characters; no bracket, quote or space, so the name
+// pgvigil quotes into its EXEC is the name the file wrote.
+var CustomProcRE = mssqlread.ProcName
 
 // customDatabaseRE is a database: name: 1 to 128 characters, none of them a control character or a bracket (the
 // run quotes it into USE [name]).

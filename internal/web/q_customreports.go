@@ -59,9 +59,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	mssqldb "github.com/microsoft/go-mssqldb"
 
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/mssqlread"
 	"github.com/aachaemenes/pgvigil/internal/plans"
 )
 
@@ -119,7 +119,7 @@ var (
 		"contains": true, "not_contains": true, "begins": true, "ends": true, "isnull": true, "notnull": true, "all": true}
 	reportStatuses  = map[string]bool{"ok": true, "warn": true, "crit": true}
 	reportParamName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
-	reportProcName  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$#]{0,127}(\.[A-Za-z_][A-Za-z0-9_$#]{0,127}){0,2}$`)
+	reportProcName  = mssqlread.ProcName // 1-3 parts, no bracket or quote (one pattern with custom: procedure, ST6)
 	reportBuiltins  = map[string]bool{"from": true, "to": true, "instance_ids": true}
 	pgIdent         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]{0,62}$`)
 )
@@ -284,10 +284,7 @@ func procCall(engine, name string, params []reportParam, given map[string]any) s
 	parts := strings.Split(strings.TrimSpace(name), ".")
 	var b strings.Builder
 	if engine == "sqlserver" {
-		for i, p := range parts {
-			parts[i] = "[" + strings.ReplaceAll(p, "]", "]]") + "]"
-		}
-		b.WriteString("EXEC " + strings.Join(parts, "."))
+		b.WriteString("EXEC " + mssqlread.QuoteProc(name))
 		n := 0
 		for _, p := range params {
 			if given[p.Name] == nil {
@@ -473,62 +470,12 @@ func readPG(rows pgx.Rows, maxRows int, z *sizer, stop func()) (resultSet, error
 	return set, rows.Err()
 }
 
-// msType is the page's type of a SQL Server column.
-func msType(name string) string {
-	switch strings.ToUpper(name) {
-	case "INT", "BIGINT", "SMALLINT", "TINYINT", "DECIMAL", "NUMERIC", "MONEY", "SMALLMONEY", "FLOAT", "REAL":
-		return "number"
-	case "DATETIMEOFFSET":
-		return "time"
-	}
-	return "text"
-}
+// msType is the page's type of a SQL Server column (mssqlread.Type).
+func msType(name string) string { return mssqlread.Type(name) }
 
-// msCell turns a go-mssqldb value into the JSON answer's form (see pgCell); a datetime without an offset is the
-// server's wall clock and stays one (no zone, never moved to the reader's).
-func msCell(v any, typ string) any {
-	t := strings.ToUpper(typ)
-	switch x := v.(type) {
-	case nil, bool, string, float32:
-		return x
-	case float64:
-		if math.IsNaN(x) || math.IsInf(x, 0) {
-			return strconv.FormatFloat(x, 'g', -1, 64)
-		}
-		return x
-	case int64:
-		if x > 1<<53 || x < -(1<<53) {
-			return strconv.FormatInt(x, 10)
-		}
-		return x
-	case time.Time:
-		switch t {
-		case "DATE":
-			return x.Format("2006-01-02")
-		case "TIME":
-			return x.Format("15:04:05.9999999")
-		case "DATETIMEOFFSET":
-			return x.UTC().Format(time.RFC3339Nano)
-		}
-		return x.Format("2006-01-02 15:04:05.999")
-	case []byte:
-		switch t {
-		case "DECIMAL", "NUMERIC", "MONEY", "SMALLMONEY":
-			s := string(x)
-			if f, err := strconv.ParseFloat(s, 64); err == nil && len(strings.TrimLeft(strings.Replace(s, ".", "", 1), "-0")) <= 15 {
-				return f
-			}
-			return s
-		case "UNIQUEIDENTIFIER":
-			var u mssqldb.UniqueIdentifier
-			if err := u.Scan(x); err == nil {
-				return u.String()
-			}
-		}
-		return "0x" + strings.ToUpper(hex.EncodeToString(x))
-	}
-	return fmt.Sprint(v)
-}
+// msCell turns a go-mssqldb value into the JSON answer's form (mssqlread.Cell; see pgCell); a datetime without an
+// offset is the server's wall clock and stays one (no zone, never moved to the reader's).
+func msCell(v any, typ string) any { return mssqlread.Cell(v, typ) }
 
 // readMS reads every result set of a SQL Server request (at most maxRows rows each, at most maxSets sets). At a cap it
 // calls stop, which cancels the request (an attention: the server stops), and keeps what it read: a later result set
@@ -744,11 +691,35 @@ func openMS(ctx context.Context, dsn, app string) (*sql.DB, *sql.Conn, string, e
 
 // runMS runs one batch on the read login inside a transaction that is rolled back (rollback = true) or as it is.
 func runMS(ctx context.Context, dsn, stmt string, args []any, timeout time.Duration, maxRows int, rollback bool) (sets []resultSet, refused string, err error) {
+	return runMSWith(ctx, dsn, stmt, args, timeout, maxRows, rollback, nil)
+}
+
+// reportFence is a custom report's check of the read login before its SQL runs (ST6's one fence, mssqlread.Fence): a
+// login with any right outside the documented read login's, server-wide or in the dsn's database, is refused by name.
+func reportFence(ctx context.Context, conn *sql.Conn) (string, error) {
+	why, err := mssqlread.Fence(ctx, conn, "")
+	if why != "" {
+		why = "custom reports run only as the documented read login: " + why
+	}
+	return why, err
+}
+
+// runMSWith is runMS with a fence read on the connection before the batch (nil = the sysadmin check of openMS alone).
+func runMSWith(ctx context.Context, dsn, stmt string, args []any, timeout time.Duration, maxRows int, rollback bool,
+	fence func(context.Context, *sql.Conn) (string, error)) (sets []resultSet, refused string, err error) {
 	db, conn, why, err := openMS(ctx, dsn, "pgvigil-report")
 	if err != nil || why != "" {
 		return nil, why, err
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
+	if fence != nil {
+		fctx, fcancel := context.WithTimeout(ctx, 15*time.Second)
+		why, err := fence(fctx, conn)
+		fcancel()
+		if err != nil || why != "" {
+			return nil, why, err
+		}
+	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	z := &sizer{}
@@ -1364,7 +1335,7 @@ func (s *Server) runOnInstance(ctx context.Context, ds *doorSet, d *reportDef, t
 				args = append(args, sql.Named(p.Name, v))
 			}
 		}
-		sets, why, err := runMS(ctx, dsn, stmt, args, timeout, d.MaxRows, true)
+		sets, why, err := runMSWith(ctx, dsn, stmt, args, timeout, d.MaxRows, true, reportFence)
 		run.finish(t0, sets, why, err)
 		return run
 	}
