@@ -199,6 +199,8 @@ The thresholds of the SQL Server day-one checks (internal/mssql/checks.go, dbopt
 
 The SQL Server running-queries collection calls sp_WhoIsActive (GPL-3.0) where a server's DBA installed it, with its documented parameters only; no line of it is in pgvigil and pgvigil does not ship it. The storage, version store, availability group, mirroring, log shipping and replication reads are written from Microsoft's documentation of the views and tables.
 
+The provider replica read (internal/cloudrepl, task 390b) calls Amazon RDS and CloudWatch through the AWS SDK for Go v2, and the Cloud SQL Admin and Cloud Monitoring REST APIs through golang.org/x/oauth2 (BSD 3-Clause, Copyright 2009 The Go Authors; v0.38.0) with cloud.google.com/go/compute/metadata (Apache-2.0, Google LLC; v0.10.0) for Application Default Credentials, each licence read from the module at its version on 2026-11-15 UTC and both listed with every module in docs/notices.md; the request shapes and metric names are written from Google's and Amazon's API documentation, no code of theirs is copied.
+
 ## dbatools (task 304: the restore chain)
 
 pgvigil's restore chain (internal/mssql/restore_chain.go, internal/repo/sql/0147_restore_chain.sql) chooses its full and

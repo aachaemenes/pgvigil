@@ -4,6 +4,7 @@ Every Go module linked into `pgvigil` (`./cmd/pgvigil`), and every package of on
 
 | Module | Licence | Licence file |
 |---|---|---|
+| `cloud.google.com/go/compute/metadata` | Apache-2.0 | [LICENSE](https://github.com/googleapis/google-cloud-go/blob/compute/metadata/v0.10.0/compute/metadata/LICENSE) |
 | `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/aws/protocol/eventstream/v1.7.26/aws/protocol/eventstream/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/config` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.33.16/config/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/credentials` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/credentials/v1.20.16/credentials/LICENSE.txt) |
@@ -53,6 +54,7 @@ Every Go module linked into `pgvigil` (`./cmd/pgvigil`), and every package of on
 | `github.com/shopspring/decimal` | MIT | [LICENSE](https://github.com/shopspring/decimal/blob/v1.4.0/LICENSE) |
 | `golang.org/x/crypto` | BSD-3-Clause | [v0.58.0:LICENSE](https://cs.opensource.google/go/x/crypto/+/v0.58.0:LICENSE) |
 | `golang.org/x/net` | BSD-3-Clause | [v0.60.0:LICENSE](https://cs.opensource.google/go/x/net/+/v0.60.0:LICENSE) |
+| `golang.org/x/oauth2` | BSD-3-Clause | [v0.38.0:LICENSE](https://cs.opensource.google/go/x/oauth2/+/v0.38.0:LICENSE) |
 | `golang.org/x/sync` | BSD-3-Clause | [v0.24.0:LICENSE](https://cs.opensource.google/go/x/sync/+/v0.24.0:LICENSE) |
 | `golang.org/x/sys` | BSD-3-Clause | [v0.49.0:LICENSE](https://cs.opensource.google/go/x/sys/+/v0.49.0:LICENSE) |
 | `golang.org/x/term` | BSD-3-Clause | [v0.47.0:LICENSE](https://cs.opensource.google/go/x/term/+/v0.47.0:LICENSE) |
