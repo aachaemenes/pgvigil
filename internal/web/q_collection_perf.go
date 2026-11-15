@@ -41,7 +41,10 @@ WITH h AS (
      AND ` + chScopeOf("h") + `
    GROUP BY h.hour, h.instance_id, h.collection
 ), r AS (
-  SELECT l.snapshot_at, l.instance_id, l.collection, 'Run'::text, CASE l.status WHEN 'error' THEN 'Failed' ELSE 'Partial' END,
+  SELECT l.snapshot_at, l.instance_id, l.collection, 'Run'::text,
+         -- DBA Dash's outcomes: a run that failed at its write into the repository is Import Failed (0198's stage; its
+         -- review #4)
+         CASE WHEN l.status = 'error' AND l.stage = 'import' THEN 'Import Failed' WHEN l.status = 'error' THEN 'Failed' ELSE 'Partial' END,
          1::bigint, (l.status = 'error')::int::bigint, (l.status = 'partial')::int::bigint,
          l.duration_ms::bigint, l.duration_ms::bigint, NULL::bigint, NULL::bigint, NULL::bigint
     FROM pgvigil.collection_log l
@@ -74,11 +77,12 @@ SELECT h.hour AS at, sum(h.ok)::bigint AS succeeded, sum(h.partial)::bigint AS p
  GROUP BY h.hour
  ORDER BY h.hour`
 
-// sqlCollPerfMeta: how long the hourly rows are kept (hours_retention, 8 days by default, 30 at most: 0166) and the
-// hour the report can read from - a range starting before it says so on the page
+// sqlCollPerfMeta: how long the hourly rows are kept (hours_retention, 8 days by default, clamped to 1-30 as 0166's trim
+// clamps it) and the first hour still kept - the trim deletes every hour before now() - days, so the hour that holds
+// that instant is gone too: rounded UP (its review #2: rounded down it named an hour already deleted)
 var sqlCollPerfMeta = `
-SELECT r.days, date_trunc('hour', now() - make_interval(days => r.days)) AS kept_from
-  FROM (SELECT coalesce((SELECT days FROM pgvigil.hours_retention WHERE table_name = 'collection_health_hour'), 8) AS days) r`
+SELECT r.days, date_trunc('hour', now() - make_interval(days => r.days) + interval '1 hour' - interval '1 microsecond') AS kept_from
+  FROM (SELECT least(greatest(coalesce(max(h.days), 8), 1), 30) AS days FROM pgvigil.hours_retention h WHERE h.table_name = 'collection_health_hour') r`
 
 // CollectionPerf is GET /api/collectionperf: instance= or instances= (none = every instance), collection= (none =
 // every collection), from= / to= (the Collection Health page's range; reach as Collection Health's); part= one of rows,

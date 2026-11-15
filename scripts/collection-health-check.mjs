@@ -328,11 +328,12 @@ const allRows = await api({});
   const p = await open('#/collectionhealth?w=24h');
   const row = (p?.rows ?? []).find(r => r['Instance']?.text === 'fx-chimport' && r['Collection']?.text === 'activity');
   const want = { tab: 'collectionperf', i: String(byName('fx-chimport')?.instance_id ?? ''), collection: 'activity' };
-  const lands = [['Collection', 'perf-collection'], ['Runs', 'perf-runs'], ['Avg Duration (ms)', 'perf-avg'], ['Max Duration (ms)', 'perf-max'], ['Total CPU (ms)', 'perf-cpu']];
+  const lands = [['Collection', 'perf-collection'], ['Runs', 'perf-runs'], ['Avg Duration (ms)', 'perf-avg'], ['Max Duration (ms)', 'perf-max'], ['Total CPU (ms)', 'perf-cpu'],
+    ['Avg CPU (ms)', 'perf-avgcpu'], ['Avg Import (ms)', 'perf-avgimport']];   // DBA Dash's PerformanceLink cells (the review of B6g-3 #8)
   const hrefs = lands.map(([c, l]) => row?.[c]?.links?.[l]);
   const bad = hrefs.map((h, k) => [lands[k][0], h]).filter(([, h]) => { const r = route(h); return !h || r.tab !== want.tab || r.q.get('i') !== want.i || r.q.get('collection') !== want.collection || !r.q.get('from') || !r.q.get('to'); });
   const same = new Set(hrefs.map(h => { const r = route(h); return `${r.q.get('from')}|${r.q.get('to')}`; })).size === 1;
-  say(!!row && bad.length === 0 && same, 'CH22 a row per instance: its five cells open the report of its instance and collection over one range',
+  say(!!row && bad.length === 0 && same, 'CH22 a row per instance: its seven cells open the report of its instance and collection over one range',
     row ? (bad.length ? bad.map(([c, h]) => `${c}: ${h ?? 'no link'}`).join('; ') : `${hrefs[0]}`) : 'no fx-chimport row');
   // a row per collection: the links keep the scope (no i=)
   await ev(`(() => { const s = document.querySelector('#ch-show'); if (s) { s.value = 'collection'; s.dispatchEvent(new Event('change', { bubbles: true })); } })()`);
@@ -358,8 +359,17 @@ const allRows = await api({});
       'CH23 the report: its heading and its four charts drawn', rep ? `${rep.title} | ${rep.charts.map(c => `${c.title} ${c.drawn ? 'drawn' : 'NOT drawn'}`).join(', ')}` : 'no report');
     say(!!rep && apiRows != null && rep.rows.length === apiRows, 'CH23 its rows are the API\'s', `${rep?.rows.length ?? 'no'} drawn, the API ${apiRows}`);
     const runs = (rep?.rows ?? []).filter(r => r['Period'] === 'Run'), hours = (rep?.rows ?? []).filter(r => r['Period'] === 'Hour');
-    say(runs.length === 3 && runs.every(r => r['Outcome'] === 'Failed' && r['CPU (ms)'] === 'hourly only' && r['Import (ms)'] === 'hourly only') && hours.length >= 1 && hours.every(r => r['Import Lag (sec)'] === 'not read'),
-      'CH23 fx-chimport: its three failed runs one by one (hourly only), its hour', `${runs.length} Run row(s) [${runs.map(r => r['Outcome'] + ' / ' + r['CPU (ms)']).join('; ')}], ${hours.length} Hour row(s)`);
+    // the review of B6g-3 #4: a run that failed at its write is DBA Dash's Import Failed (fx-chimport's two, logged at 'import')
+    const oc = k => runs.filter(r => r['Outcome'] === k).length;
+    say(runs.length === 3 && oc('Failed') === 1 && oc('Import Failed') === 2 && runs.every(r => r['CPU (ms)'] === 'hourly only' && r['Import (ms)'] === 'hourly only') && hours.length >= 1 && hours.every(r => r['Import Lag (sec)'] === 'not read'),
+      'CH23 fx-chimport: its runs one by one (1 Failed, 2 Import Failed; hourly only), its hours', `${runs.length} Run row(s) [${runs.map(r => r['Outcome'] + ' / ' + r['CPU (ms)']).join('; ')}], ${hours.length} Hour row(s)`);
+    // CH27 (the review of B6g-3 #1): a range change on the report keeps its collection - the address and the read
+    // the range picker's 'earlier' step (rangepicker.ts: the first .range-step) moves the range through href()
+    await ev(`(() => { const b = document.querySelector('.range .range-step'); if (b) b.click(); return !!b; })()`);
+    await sleep(2500);
+    const after = await ev(`location.hash`);
+    const meta2 = await ev(`document.querySelector('main section.collectionperf p.meta')?.textContent ?? ''`);
+    say(route(after).q.get('collection') === 'activity' && /^Collection activity/.test(meta2) && after !== h0, 'CH27 a range change on the report keeps its collection', `${after.slice(0, 120)} | ${meta2.slice(0, 60)}`);
     say(!!rep && !/are gone, so the report starts there/.test(rep.meta) && !/rows are listed: the range holds more/.test(rep.meta), 'CH24 a range inside the hourly rows, few rows: no cut, no cap said', (rep?.meta ?? '').slice(0, 160));
   } else for (const r of ['the report: its heading and its four charts drawn', 'its rows are the API\'s', 'fx-chimport: its three failed runs one by one (hourly only), its hour', 'a range inside the hourly rows, few rows: no cut, no cap said']) say(false, 'CH23 ' + r, 'no Runs link');
 }

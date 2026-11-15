@@ -221,8 +221,10 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
   // B6g-3 (N42): the Collection Performance report of the row's collection - its instance on a row per collection per
   // instance, the page's scope on a row per collection - over the range this grid was read with (DBA Dash's
   // PerformanceLink on Collection, Runs, Avg / Max Duration and Total CPU)
+  // the range the grid was read with (its review #3: window_ again per cell gave a preset's later rows a later range)
+  let readWin = window_(ctx);
   const perfLink = (r: Row, content: string | Node, landing: string, perInstance: boolean) => {
-    const wr = window_(ctx), id = perInstance && r.instance_id != null ? Number(r.instance_id) : undefined;
+    const wr = readWin, id = perInstance && r.instance_id != null ? Number(r.instance_id) : undefined;
     const h = href(ctx, { tab: 'collectionperf', range: { from: wr.from, to: wr.to }, ...(id ? { instance: id, tag: undefined } : {}) });
     return el('a', { href: h + (h.includes('?') ? '&' : '?') + 'collection=' + encodeURIComponent(String(r.collection)), 'data-land': landing,
       title: 'The collection\'s performance over this range: Collection Performance' }, content);
@@ -245,7 +247,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
     try {
       const sc = await scope();
       folder = sc.folder;
-      const w = window_(ctx);
+      const w = window_(ctx); readWin = w;
       const ask = { ...sc.params, ...w, grain, ...(onlyColl ? { collection: onlyColl } : {}) };
       // no status ticked: the grid lists nothing, the charts still read every collection - DBA Dash's charts read its
       // #Source, never the status-filtered rows (CollectionHealth_Get.sql L94-98; the review of B6.2, part b #9)
@@ -289,10 +291,11 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       // Reads, Total Logical Reads, Avg Import, Max Import; the review of B6g-1 part b #5)
       ...([['avg_cpu_ms', 'Avg CPU (ms)'], ['max_cpu_ms', 'Max CPU (ms)'], ['total_cpu_ms', 'Total CPU (ms)'], ['avg_logical_reads', 'Avg Logical Reads'], ['logical_reads', 'Total Logical Reads']] as const)
         .map(([key, label]): Col => ({ key, label, num: true, fmt: (v, r) => key === 'total_cpu_ms'
-          ? perfLink(r, costWords(v, r.engine) ?? fmtNum(v), 'perf-cpu', grain === 'instance') : costWords(v, r.engine) ?? fmtNum(v),
+          ? perfLink(r, costWords(v, r.engine) ?? fmtNum(v), 'perf-cpu', grain === 'instance')
+          : key === 'avg_cpu_ms' ? perfLink(r, costWords(v, r.engine) ?? fmtNum(v), 'perf-avgcpu', grain === 'instance') : costWords(v, r.engine) ?? fmtNum(v),
           title: 'Of the run\'s own session on SQL Server (cpu_time, logical_reads of sys.dm_exec_sessions), read at the run\'s end, over the runs that read it.  A run cut by its own timeout is not read: the driver drops its connection.' })),
       // B6g-1 (N27): the write into the repository alone, over the runs that wrote or tried to (the durations hold it too)
-      { key: 'avg_import_ms', label: 'Avg Import (ms)', num: true, fmt: fmtNum, title: 'The time of the writes into the repository alone, over the runs that wrote into it or tried to (a failed write too).  Avg Duration includes it.' },
+      { key: 'avg_import_ms', label: 'Avg Import (ms)', num: true, fmt: (v, r) => v == null ? '' : perfLink(r, fmtNum(v), 'perf-avgimport', grain === 'instance'), title: 'The time of the writes into the repository alone, over the runs that wrote into it or tried to (a failed write too).  Avg Duration includes it.' },
       { key: 'max_import_ms', label: 'Max Import (ms)', num: true, fmt: fmtNum },
       { key: 'rows', label: 'Rows', num: true, fmt: fmtNum },
       { key: 'errors', label: 'Errors', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'errors') : fmtNum(v) },

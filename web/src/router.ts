@@ -255,6 +255,12 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['k', 't', 'v']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
+  // B6g-3: the Collection Performance report's collection stays on a range change or a chart's drag (its review #1:
+  // the report read every collection after one)
+  if (keep && c.tab === 'collectionperf') {
+    const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('collection');
+    if (v) q.set('collection', v);
+  }
   // the Diff page's picks (diff.ts: mode, the two sides, their databases and times, identical rows) stay on a range change
   if (keep && c.tab === 'diff') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');

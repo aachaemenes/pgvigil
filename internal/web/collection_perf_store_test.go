@@ -133,13 +133,64 @@ func TestCollectionPerfOnAStore(t *testing.T) {
 	if want := hm(0) + "|13|1|1|83|300|8|30|9|20|889 ; " + hm(time.Hour) + "|2|0|0|25|30|4|5|5|6|100"; charts != want {
 		t.Errorf("the charts:\n got %s\nwant %s", charts, want)
 	}
-	// the hourly rows' retention and the hour the report can read from
+	// the review of B6g-3 #7: the range's edges and an inactive instance - an hour row at h-2h read from h-90m (its hour
+	// holds the start: in), one at h+2h and a log row at h+2h (the end: out), a log row a second before the start (out),
+	// an inactive instance's hour and error rows (never listed); the charts over p alone (no CPU read: '-')
+	var off int32
+	if err := tx.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '16.0', 160000, false, '{}'::text[], 'sqlserver')`, fmt.Sprintf("cperf-off-%d", tag)).Scan(&off); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $1`, off); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_health_hour (hour, instance_id, collection, collector_id, runs, ok, partial, failed, skipped,
+	         rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s, last_ok_at, last_failure_at)
+	  VALUES ($1::timestamptz - interval '2 hours', $3, $5, 'c1', 1, 1, 0, 0, 0, 1, 7, 7, 0, 0, 60, $1, NULL),
+	         ($1::timestamptz + interval '2 hours', $3, $5, 'c1', 1, 1, 0, 0, 0, 1, 7, 7, 0, 0, 60, $1, NULL),
+	         ($1, $4, $5, 'c1', 1, 0, 0, 1, 0, 0, 7, 7, 0, 0, 60, NULL, $1)`, h, nil, s1, off, coll); err != nil {
+		t.Fatalf("the edge hour rows: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, duration_ms, status, note)
+	  VALUES ($1, $3, $4::timestamptz + interval '2 hours', 5, 'error', 'proof: at the end'),
+	         ($1, $3, $4::timestamptz - interval '90 minutes' - interval '1 second', 5, 'error', 'proof: before the start'),
+	         ($2, $3, $4::timestamptz + interval '5 minutes', 5, 'error', 'proof: an inactive instance')`, s1, off, coll, h); err != nil {
+		t.Fatalf("the edge log rows: %v", err)
+	}
+	from, to = h.Add(-90*time.Minute), h.Add(2*time.Hour)
+	if got, want := read(0, 5000, coll), strings.Join(append(strings.Split(all, " ; "), "s1|c|"+hm(-2*time.Hour)+"|Hour|-|1|0|0|7|7|-|-|-|sqlserver"), " ; "); got != want {
+		t.Errorf("the edges (from h-90m, to h+2h) with an inactive instance:\n got %s\nwant %s", got, want)
+	}
+	var pcharts string
+	if err := tx.QueryRow(ctx, `SELECT string_agg(concat_ws('|', c.succeeded, coalesce(c.cpu_max_ms::text, '-')), ' ; ' ORDER BY c.at)
+	      FROM (`+sqlCollPerfCharts+"\n"+`) c`, h.Add(-time.Hour), h.Add(2*time.Hour), 0, []int32{p}, coll).Scan(&pcharts); err != nil {
+		t.Fatalf("the charts over p: %v", err)
+	}
+	if pcharts != "5|-" {
+		t.Errorf("the charts over p alone: %s, want 5|- (no session read: no CPU, never 0)", pcharts)
+	}
+	// the review of B6g-3 #2: the first hour kept is the trim's own - hour rows at the edge of the retention, the trim
+	// run (import_collection_health), then kept_from must be the oldest hour left
 	var days int
-	var keptFrom, want time.Time
-	if err := tx.QueryRow(ctx, `SELECT m.days, m.kept_from, date_trunc('hour', now() - make_interval(days => m.days)) FROM (`+sqlCollPerfMeta+"\n"+`) m`).Scan(&days, &keptFrom, &want); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT m.days FROM (`+sqlCollPerfMeta+"\n"+`) m`).Scan(&days); err != nil {
 		t.Fatalf("the report's meta: %v", err)
 	}
-	if days < 1 || days > 30 || !keptFrom.Equal(want) {
-		t.Errorf("the meta: days %d, kept from %v, want 1-30 days and %v", days, keptFrom, want)
+	edge := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Truncate(time.Hour)
+	for _, d := range []time.Duration{-time.Hour, 0, time.Hour, 2 * time.Hour} {
+		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_health_hour (hour, instance_id, collection, collector_id, runs, ok, partial, failed, skipped,
+		         rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s) VALUES ($1, $2, $3, 'edge', 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 60)`,
+			edge.Add(d), p, coll+"-edge"); err != nil {
+			t.Fatalf("the retention edge rows: %v", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `SELECT pgvigil.import_collection_health('edge', '{}'::jsonb)`); err != nil {
+		t.Fatalf("the trim: %v", err)
+	}
+	var keptFrom, oldest time.Time
+	if err := tx.QueryRow(ctx, `SELECT m.kept_from, (SELECT min(hour) FROM pgvigil.collection_health_hour WHERE instance_id = $1 AND collection = $2)
+	      FROM (`+sqlCollPerfMeta+"\n"+`) m`, p, coll+"-edge").Scan(&keptFrom, &oldest); err != nil {
+		t.Fatalf("the meta after the trim: %v", err)
+	}
+	if !keptFrom.Equal(oldest) {
+		t.Errorf("the first hour kept: kept_from %v, the oldest hour left %v (days %d)", keptFrom, oldest, days)
 	}
 }

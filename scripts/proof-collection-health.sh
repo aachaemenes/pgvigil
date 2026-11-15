@@ -91,8 +91,9 @@ q "select pgvigil.import_collection_health('proof', jsonb_build_object('health',
 # (import_failed 2), and their 3 errors logged: Failed reads 1 and Import Failed 2, each a link to the same list of 3
 q "insert into pgvigil.instances (name, platform, engine) values ('fx-chimport', 'onprem', 'postgres')" >/dev/null
 logrun fx-chimport '20 min' error "'proof: read failed'"
-logrun fx-chimport '10 min' error "'proof: import failed 1'"
-logrun fx-chimport '0 min' error "'proof: import failed 2'"
+# the two import failures logged at the write (0198's stage: the review of B6g-3 #4, the report's Import Failed)
+q "select pgvigil.log_collection(i.instance_id, 'activity', $NOWZ - interval '10 min', 10, 'error', 'proof: import failed 1', 'import') from pgvigil.instances i where i.name = 'fx-chimport'" >/dev/null
+q "select pgvigil.log_collection(i.instance_id, 'activity', $NOWZ - interval '0 min', 10, 'error', 'proof: import failed 2', 'import') from pgvigil.instances i where i.name = 'fx-chimport'" >/dev/null
 q "select pgvigil.import_collection_health('proof', jsonb_build_object('health', jsonb_build_array(jsonb_build_object('instance', 'fx-chimport', 'collection', 'activity',
      'hour', date_trunc('hour', '$CH_NOW'::timestamp) at time zone 'UTC', 'runs', 3, 'ok', 0, 'partial', 0, 'error', 3, 'skipped', 0,
      'rows', 0, 'dur_ms_sum', 30, 'dur_ms_max', 10, 'over_half', 0, 'over_interval', 0, 'interval_s', 60,

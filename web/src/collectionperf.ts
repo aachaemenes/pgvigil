@@ -25,7 +25,7 @@ export async function collectionPerfView(ctx: Ctx): Promise<HTMLElement> {
       params = { instances: f.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => Number(r.instance_id)).join(',') || '0' };
       folder = ` of ${tagWords(ctx.tag)}`;
     }
-  } catch (e) { sec.append(errorBox(e)); return sec; }
+  } catch (e) { sec.append(errorBox(e)); sec.dataset.drawn = '1'; return sec; }
   const w = window_(ctx);
   let d: Record<'rows' | 'charts' | 'meta', Table | null>;
   try { d = await get<Record<'rows' | 'charts' | 'meta', Table | null>>('collectionperf', { ...params, ...w, ...(coll ? { collection: coll } : {}) }); }
@@ -61,9 +61,9 @@ export async function collectionPerfView(ctx: Ctx): Promise<HTMLElement> {
   const cols: Col[] = [
     ...(ctx.instance ? [] : [{ key: 'instance', label: 'Instance' } as Col]),
     { key: 'collection', label: 'Collection' },
-    { key: 'at', label: 'Date', fmt: fmtTime, title: 'When the run ended - or the hour, for an Hour row' },
+    { key: 'at', label: 'Date', fmt: fmtTime, title: 'When the run started - or the hour, for an Hour row' },
     { key: 'period', label: 'Period', title: 'Run: one run that failed or was partial (pgvigil keeps no ok run one by one).  Hour: every run of the hour, summed over the collectors that ran it.' },
-    { key: 'outcome', label: 'Outcome', fmt: v => v == null ? '' : badge(String(v), v === 'Failed' ? 'crit' : 'warn') },
+    { key: 'outcome', label: 'Outcome', fmt: v => v == null ? '' : badge(String(v), v === 'Partial' ? 'warn' : 'crit') },
     { key: 'runs', label: 'Runs', num: true, fmt: fmtNum },
     { key: 'failed', label: 'Failed', num: true, fmt: fmtNum, title: 'Failed runs, those that failed at the write into the repository too (DBA Dash\'s Failed and Import Failed together).' },
     { key: 'partial', label: 'Partial', num: true, fmt: fmtNum, title: 'Runs that ended partial (DBA Dash\'s Retried / Partial: pgvigil retries nothing).' },
