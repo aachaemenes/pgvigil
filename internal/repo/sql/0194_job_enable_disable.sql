@@ -6,8 +6,9 @@
 -- file; the actions stay off until an instance's actions: list names them.
 --
 --   actions_log_action_check   dropped and added again: 0157's list (task 406, rel-j15: plan_evict on SQL Server) with
---                              job_enable and job_disable on both engines. A file after this one that re-creates the
---                              CHECK carries all of these in turn (CQ's 0200-0209).
+--                              job_enable and job_disable on both engines, so this branch's proof accepts them; the
+--                              two kinds are named again in scripts/b9c-join-lines.sql for the join's 0300, which
+--                              re-creates the CHECKs once with every slice's actions (the lead's 03:3x: BOTH).
 --   actions_log_pid_check      dropped and added again: 0157's list with the two kinds (no pid).
 --   import_pg_job_actions_log  replaced WHOLE (0102's text, its only definition on every branch read 11-14 23:5x): its
 --                              action list takes job_enable and job_disable; nothing else changes.

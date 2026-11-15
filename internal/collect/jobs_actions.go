@@ -544,6 +544,9 @@ SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgagent
             WHEN NOT $1::boolean THEN ''
             WHEN to_regclass('pgagent.pga_schedule') IS NULL OR to_regclass('pgagent.pga_exception') IS NULL THEN 'schedule'
             WHEN NOT (has_table_privilege('pgagent.pga_schedule', 'SELECT') AND has_table_privilege('pgagent.pga_exception', 'SELECT')) THEN 'schedule'
+            WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                          WHERE n.nspname = 'pgagent' AND p.proname IN ('pga_next_schedule', 'pga_is_leap_year')
+                            AND NOT has_function_privilege(p.oid, 'EXECUTE')) THEN 'function'
             ELSE '' END`, on).Scan(&miss); err != nil {
 		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("the actions login's grant check failed: %v", err)
 		return res
@@ -553,6 +556,8 @@ SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgagent
 		return refuse("the actions login may not change jobenabled (GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions; GRANT SELECT (jobid, jobenabled), UPDATE (jobenabled) ON pgagent.pga_job TO pgvigil_actions)")
 	case "schedule":
 		return refuse("the actions login may not read the job's schedules, which an enable needs (pgAgent's trigger on pga_job computes the next run as the caller): GRANT SELECT ON pgagent.pga_schedule, pgagent.pga_exception TO pgvigil_actions")
+	case "function":
+		return refuse("the actions login may not call pgAgent's schedule functions, which an enable needs (the trigger calls them as the caller): GRANT EXECUTE ON FUNCTION pgagent.pga_next_schedule, pgagent.pga_is_leap_year TO pgvigil_actions (with their argument lists)")
 	}
 	var name *string
 	var enabled bool
@@ -582,9 +587,18 @@ SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgagent
 	}
 	res.Outcome = actions.Done
 	if on {
-		res.Detail = "jobenabled set to true: pgAgent runs the job again at its schedules (pgAgent's trigger computed the next run from them)"
+		res.Detail = "jobenabled set to true"
+		var next *time.Time
+		if err := mon.QueryRow(ctx, `SELECT jobnextrun FROM pgagent.pga_job WHERE jobid = $1`, r.JobID).Scan(&next); err != nil {
+			res.Detail += fmt.Sprintf("; its next run was not read back: %v", err)
+		} else if next == nil {
+			res.Detail += ": no enabled schedule gives it a next run, so pgAgent runs it only once a schedule is enabled"
+		} else {
+			res.Detail += ": pgAgent's next run of it is " + next.UTC().Format("2006-01-02 15:04 UTC")
+		}
+		res.Detail += "; the grid shows the change after the next jobs read"
 	} else {
-		res.Detail = "jobenabled set to false: pgAgent starts no new run of the job; a run going now goes on (Stop ends it)"
+		res.Detail = "jobenabled set to false: pgAgent starts no new run of the job; a run going now goes on (Stop ends it); the grid shows the change after the next jobs read"
 	}
 	return res
 }
@@ -640,7 +654,7 @@ SELECT current_user::text,
 	case "database":
 		return refuse("actions_dsn connects to a database without pg_cron's schema: it must name pg_cron's database (cron.database_name), as the instance's dsn does")
 	case "grant":
-		return refuse("the actions login may not call cron.alter_job (GRANT USAGE ON SCHEMA cron TO pgvigil_actions; GRANT EXECUTE ON FUNCTION %s TO pgvigil_actions: pg_cron 1.4.0 revokes it from public)", cronAlterJob)
+		return refuse("the actions login may not call cron.alter_job or read cron.job (GRANT USAGE ON SCHEMA cron TO pgvigil_actions; GRANT EXECUTE ON FUNCTION %s TO pgvigil_actions: pg_cron 1.4.0 revokes it from public; pg_cron's install grants SELECT ON cron.job to public: where that was revoked, GRANT SELECT ON cron.job TO pgvigil_actions)", cronAlterJob)
 	}
 	// through the actions login: pg_cron's row security shows a login its own jobs, which are the ones it may change
 	var name, owner *string
@@ -675,9 +689,15 @@ SELECT current_user::text,
 	var now *bool
 	if err := act.QueryRow(ctx, `SELECT j.active FROM cron.job j WHERE j.jobid = $1`, r.JobID).Scan(&now); err != nil {
 		res.Detail += fmt.Sprintf("; the read back failed: %v", err)
-	} else if now != nil {
+	} else if now == nil || *now != on {
+		// cron.alter_job returns without an error and without a change in a few cases (a concurrent change among them)
+		res.Outcome = actions.Failed
+		res.Detail = fmt.Sprintf("cron.alter_job returned, but cron.job.active reads %s, not %t: the job was not changed as asked", map[bool]string{true: "true", false: "false"}[now != nil && *now], on)
+		return res
+	} else {
 		res.Detail += fmt.Sprintf("; cron.job.active reads %t now", *now)
 	}
+	res.Detail += "; the grid shows the change after the next jobs read"
 	return res
 }
 

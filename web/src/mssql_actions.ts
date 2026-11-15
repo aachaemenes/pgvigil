@@ -88,12 +88,14 @@ function offSentences(st: MssqlActionsState, kinds: Kind[]): HTMLElement | undef
   if (!offKinds.length) return undefined;
   const notes: Partial<Record<Kind, HTMLElement>> = {};
   const said: HTMLElement[] = [];
-  if (offKinds.length === kinds.length && new Set(kinds.map(why)).size === 1) {
-    const p = el('p', { class: 'meta' }, `${andList(kinds.map(k => labels[k]))} ${kinds.length > 1 ? 'are' : 'is'} off for this instance: ${why(kinds[0])}`);
-    for (const k of kinds) notes[k] = p;
+  // one sentence per reason: kinds whose reasons differ only by their own name (the actions: list leaves each out)
+  // share it, the names joined ('does not name job_enable or job_disable')
+  const groups = new Map<string, Kind[]>();
+  for (const k of offKinds) { const g = why(k).split(k).join('\u0000'); groups.set(g, [...(groups.get(g) ?? []), k]); }
+  for (const [g, ks] of groups) {
+    const p = el('p', { class: 'meta' }, `${andList(ks.map(k => labels[k]))} ${ks.length > 1 ? 'are' : 'is'} off for this instance: ${g.split('\u0000').join(ks.join(' or '))}`);
+    for (const k of ks) notes[k] = p;
     said.push(p);
-  } else {
-    for (const k of offKinds) { const p = el('p', { class: 'meta' }, `${labels[k]} is off for this instance: ${why(k)}`); notes[k] = p; said.push(p); }
   }
   st.notes = { ...st.notes, ...notes };
   return said.length === 1 ? said[0] : el('div', {}, ...said);
@@ -121,15 +123,23 @@ export async function mssqlKillCol(ctx: Ctx, after: () => void): Promise<ActionC
 export async function mssqlJobCol(ctx: Ctx, after: () => void, opts: { toggle?: boolean } = {}): Promise<ActionCol> {
   const st = await mssqlActionsState(ctx.instance);
   const kinds: Kind[] = opts.toggle ? ['job_start', 'job_stop', 'job_enable', 'job_disable'] : ['job_start', 'job_stop'];
-  const note = offSentences(st, kinds);
-  // a row whose Start and Stop point at the sentence: a job with its id (a row without one says its own)
+  // the sentences say only the kinds a button of this grid points at (Enable where a live job is disabled, Disable where
+  // one is enabled; a dropped job or a row without an id says its own reason): set once the rows are known
+  let note = offSentences(st, kinds);
+  const live = (r: Row) => r.job_id != null && r.job_id !== '' && r.dropped_at == null;
   let shown: boolean | undefined;
   return {
     key: '_actions', label: 'action',
-    rows(all: Row[]) { shown = all.some(r => r.job_id != null && r.job_id !== ''); },
+    rows(all: Row[]) {
+      shown = all.some(live);
+      const used = kinds.filter(k => k === 'job_start' || k === 'job_stop' ? shown
+        : all.some(r => live(r) && typeof r.enabled === 'boolean' && (k === 'job_enable' ? !r.enabled : r.enabled)));
+      st.notes = {};
+      note = used.length ? offSentences(st, used) : undefined;
+    },
     get offNote() { return shown === false ? undefined : note; },
     fmt: (_v, r) => {
-      const why = r.job_id == null || r.job_id === '' ? 'this row has no job id' : '';
+      const why = r.job_id == null || r.job_id === '' ? 'this row has no job id' : r.dropped_at != null ? 'the job is no longer on the server' : '';
       // the row's own reason once in the cell: both buttons point at it
       const own = why ? el('span', { class: 'off-reason' }, why) : undefined;
       // Enable or Disable by the row's own flag; a row that carries none gets neither

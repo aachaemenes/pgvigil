@@ -146,8 +146,12 @@ type Target struct {
 	JobState string `json:"job_state,omitempty"` // running | idle
 	// JobEnabled is msdb.dbo.sysjobs.enabled as read (nil: not read)
 	JobEnabled *bool `json:"job_enabled,omitempty"`
-	// JobMultiserver: the job has a target server (msdb.dbo.sysjobservers.server_id <> 0): its master server owns it
+	// JobMultiserver: msdb treats the job as a multiserver one (sp_update_job refuses it to SQLAgentOperatorRole): it
+	// came from a master server (sysjobs.originating_server_id <> 0, Msg 14274), it is in a multi-server category
+	// (syscategories.category_type = 2, Msg 14396), or it has a target server (sysjobservers.server_id <> 0)
 	JobMultiserver bool `json:"job_multiserver,omitempty"`
+	// JobMultiserverWhy names which of the three the read found
+	JobMultiserverWhy string `json:"job_multiserver_why,omitempty"`
 	// set by the read, never sent back
 	userProcess bool
 	readerSPID  int
@@ -290,12 +294,16 @@ OUTER APPLY sys.dm_exec_input_buffer(s.session_id, NULL) ib
 WHERE s.session_id = @p1`
 
 // jobSQL reads one Agent job as the read login sees it (db_datareader in msdb). Running = the newest Agent
-// session's activity row for the job has started and not stopped. Multiserver = a target server row
-// (sysjobservers.server_id <> 0; a local job's row has server_id 0).
+// session's activity row for the job has started and not stopped. Multiserver (the cases msdb's sp_update_job refuses
+// to a non-sysadmin): 2 = the job came from a master server (originating_server_id <> 0: a target server's downloaded
+// job, Msg 14274), 3 = a multi-server category (category_type 2, Msg 14396), 1 = a target server row (sysjobservers
+// server_id <> 0: this server is its master); 0 = a local job.
 const jobSQL = `SELECT CAST(j.job_id AS nvarchar(36)), j.name, ISNULL(SUSER_SNAME(j.owner_sid), ''),
   CASE WHEN a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL THEN 'running' ELSE 'idle' END,
   CAST(j.enabled AS int),
-  CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysjobservers js WHERE js.job_id = j.job_id AND js.server_id <> 0) THEN 1 ELSE 0 END,
+  CASE WHEN j.originating_server_id <> 0 THEN 2
+       WHEN EXISTS (SELECT 1 FROM msdb.dbo.syscategories c WHERE c.category_id = j.category_id AND c.category_type = 2) THEN 3
+       WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysjobservers js WHERE js.job_id = j.job_id AND js.server_id <> 0) THEN 1 ELSE 0 END,
   @@SPID, SUSER_SNAME()
 FROM msdb.dbo.sysjobs j
 OUTER APPLY (SELECT TOP (1) ja.start_execution_date, ja.stop_execution_date
@@ -337,7 +345,9 @@ func readJob(ctx context.Context, mon *sql.Conn, jobID string) (Target, error) {
 	}
 	if err == nil {
 		on := enabled == 1
-		t.JobEnabled, t.JobMultiserver = &on, multi == 1
+		t.JobEnabled, t.JobMultiserver = &on, multi != 0
+		t.JobMultiserverWhy = map[int]string{1: "it has a target server: this server is its master", 2: "it came from a master server (a target server's downloaded job)",
+			3: "it is in a multi-server job category"}[multi]
 	}
 	return t, err
 }
@@ -352,7 +362,7 @@ func toggleRefusal(k ActionKind, t Target) string {
 	}
 	switch {
 	case t.JobMultiserver:
-		return fmt.Sprintf("job %q is a multiserver job (its master server owns it): enable or disable it on the master server; nothing was sent", t.JobName)
+		return fmt.Sprintf("job %q is a multiserver job (%s): msdb lets only a sysadmin change it; enable or disable it on its master server; nothing was sent", t.JobName, t.JobMultiserverWhy)
 	case t.JobEnabled == nil:
 		return fmt.Sprintf("job %q: its enabled flag was not read; nothing was sent", t.JobName)
 	case k == ActionJobEnable && *t.JobEnabled:
@@ -532,9 +542,9 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 		case err != nil:
 			res.Detail += fmt.Sprintf("; the read back failed: %v", err)
 		case now.JobEnabled != nil && *now.JobEnabled:
-			res.Detail += "; the job reads enabled now"
+			res.Detail += "; the job reads enabled now; the grid shows the change after the next jobs read"
 		case now.JobEnabled != nil:
-			res.Detail += "; the job reads disabled now"
+			res.Detail += "; the job reads disabled now; the grid shows the change after the next jobs read"
 		}
 	}
 	return res

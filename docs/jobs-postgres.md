@@ -35,7 +35,7 @@ GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions;
 GRANT SELECT (jobid, jobenabled, jobagentid), UPDATE (jobnextrun) ON pgagent.pga_job TO pgvigil_actions;
 ```
 
-Enable and Disable on a pgAgent job need that one column too, and an enable reads the job's schedules: pgAgent's own
+Enable and Disable on a pgAgent job need one column of their own, `jobenabled`, and an enable reads the job's schedules and calls pgAgent's schedule functions: pgAgent's own
 trigger on `pga_job` (`pga_job_trigger`, BEFORE UPDATE, not SECURITY DEFINER) computes the next run from `pga_schedule`
 through `pga_next_schedule`, which reads `pga_exception`, as the login that sends the update:
 
@@ -43,6 +43,9 @@ through `pga_next_schedule`, which reads `pga_exception`, as the login that send
 GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions;
 GRANT SELECT (jobid, jobenabled), UPDATE (jobenabled) ON pgagent.pga_job TO pgvigil_actions;
 GRANT SELECT ON pgagent.pga_schedule, pgagent.pga_exception TO pgvigil_actions;   -- for job_enable
+-- only where the database's default privileges revoke EXECUTE on functions from PUBLIC (pgAgent's own script grants
+-- none): the schedule functions the trigger calls
+-- GRANT EXECUTE ON FUNCTION pgagent.pga_next_schedule(...), pgagent.pga_is_leap_year(...) TO pgvigil_actions;
 ```
 
 On pg_cron, `cron.alter_job` (pg_cron 1.4.0 and later) changes a job only for the job's owner or a superuser (its own
@@ -106,7 +109,10 @@ since is gone at the next read, within a minute):
 The Jobs grid gains two columns on PostgreSQL: the pg_cron schedule in words ("every 5 minutes", "at 04:10 every day",
 "at minute 0 of hours 8 to 18 on Monday to Friday"; an expression it does not read is shown as it is) and the job's
 actions: Run now on a pgAgent job, and Disable on an enabled job or Enable on a disabled one (a pg_cron job's only where
-the actions login owns it).
+the actions login owns it - the actions login being the user its `actions_dsn` names; a role it sets through options
+is not followed). The grants above and pg_cron's version (1.4.0 or later) are checked when the button is clicked, as
+Run now's grant is: a button on an instance that lacks them is refused at the click with the GRANT to run, and nothing
+is sent. A disabled job, or one dropped since, says so in its own row. The grid shows a change after the next jobs read.
 
 ## pgAgent's step log
 
@@ -184,9 +190,10 @@ pgAgent's step failures in its step counts), and `job_report_checks` and `job_fa
 
 | Route | What |
 | --- | --- |
-| `GET /api/jobs/running?instance=N` | Running now, which job actions are on (and why not), the job actions' audit |
+| `GET /api/jobs/running?instance=N` | Running now, which job actions are on (and why not), the job actions' audit; `actions_login` where Enable or Disable is on |
 | `POST /api/jobs/actions/stop` | `{instance_id, scheduler, job_id, job_name, run_id, job_pid, reason, confirm}` |
 | `POST /api/jobs/actions/start` | `{instance_id, scheduler: "pgagent", job_id, job_name, reason, confirm}` |
+| `POST /api/jobs/actions/enable`, `/disable` | `{instance_id, scheduler, job_id, job_name, reason, confirm}` (pgAgent, or pg_cron 1.4.0+ on the actions login's own job) |
 | `GET /api/jobs/steps?instance=N&job=J[&run=R]` | pgAgent's step stats over the range and the step runs |
 | `GET /api/jobs/exclusions?instance=N`, `POST` | the live exclusions; `{op: add, level, instance_id, match_on, pattern, note}` or `{op: end, exclusion_id}` |
 | `GET /api/pg/deadlocks?instance=N` | the deadlocks, groups, breakdowns, trend and counter of the range |

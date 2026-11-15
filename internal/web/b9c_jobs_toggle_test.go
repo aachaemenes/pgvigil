@@ -127,3 +127,40 @@ func TestJobToggleAuditOnAStore(t *testing.T) {
 		t.Fatalf("/api/jobs/running's log: actions %v (want job_enable and job_disable among them)", seen)
 	}
 }
+
+// TestJobToggleAuditGateOnAStore (B9c review fold, A2 / B1): the enable / disable gate reads the repository itself. On
+// a migrated store it is open on both engines; inside a transaction that puts 0157's CHECK back (no job_enable /
+// job_disable), it is closed with words on both engines - so serve on a repository not migrated
+// to 0194 sends nothing. The transaction is rolled back.
+func TestJobToggleAuditGateOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for _, pg := range []bool{false, true} {
+		if off := toggleAuditOff(ctx, pool, pg); off != "" {
+			t.Errorf("a store at 0194 (pg %v): %s, want open", pg, off)
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `ALTER TABLE pgvigil.actions_log DROP CONSTRAINT actions_log_action_check;
+		ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_action_check CHECK (action IN ('cancel', 'terminate', 'kill', 'job_start', 'job_stop', 'plan_evict')) NOT VALID`); err != nil {
+		t.Fatal(err)
+	}
+	for _, pg := range []bool{false, true} {
+		if off := toggleAuditOff(ctx, tx, pg); !strings.Contains(off, "0194") {
+			t.Errorf("a store without 0194's CHECK (pg %v): %q, want closed naming 0194", pg, off)
+		}
+	}
+}

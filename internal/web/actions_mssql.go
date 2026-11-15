@@ -182,6 +182,12 @@ func (m *MSSQLActions) Run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := mssql.ActionKind(in.Action)
+	if kind == mssql.ActionJobEnable || kind == mssql.ActionJobDisable {
+		if off := toggleAuditOff(ctx, m.a.audit, false); off != "" {
+			writeErr(w, http.StatusServiceUnavailable, errors.New(off+"; nothing was sent"))
+			return
+		}
+	}
 	req := mssql.ActionRequest{Instance: name, Kind: kind, SessionID: in.SessionID, LoginTime: in.LoginTime, Login: in.Login,
 		JobID: in.JobID, JobName: in.JobName, Reason: in.Reason, User: user, Client: clientIP(r)}
 	var res mssql.ActionResult

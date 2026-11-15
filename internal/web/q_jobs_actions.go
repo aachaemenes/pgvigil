@@ -72,8 +72,31 @@ func (s *Server) pgJobAuditOff(ctx context.Context) string {
 	return ""
 }
 
+// sqlToggleAuditReady: the repository takes an enable / disable audit row - actions_log's CHECK names both kinds (0194)
+// and, for PostgreSQL, import_pg_job_actions_log accepts them (0194 replaced 0102's, which raises on any kind but
+// job_stop and job_start). serve does not check the schema's version (only run does), so an install of this binary on a
+// repository not yet migrated would otherwise send the statement and then fail its audit row.
+const sqlToggleAuditReady = `SELECT EXISTS (SELECT 1 FROM pg_constraint c
+                WHERE c.conrelid = to_regclass('pgvigil.actions_log') AND c.conname = 'actions_log_action_check'
+                  AND pg_get_constraintdef(c.oid) LIKE '%job_enable%' AND pg_get_constraintdef(c.oid) LIKE '%job_disable%')
+       AND (NOT $1::bool OR coalesce((SELECT position('job_enable' IN p.prosrc) > 0 AND position('job_disable' IN p.prosrc) > 0 FROM pg_proc p
+                                      WHERE p.oid = to_regprocedure('pgvigil.import_pg_job_actions_log(int, timestamptz, jsonb)')), false))`
+
+// toggleAuditOff is why the repository cannot take an enable / disable audit row ("" when it can); pg = the PostgreSQL
+// door (its import function checked too).
+func toggleAuditOff(ctx context.Context, q rowQuerier, pg bool) string {
+	var ok bool
+	if err := q.QueryRow(ctx, sqlToggleAuditReady, pg).Scan(&ok); err != nil {
+		return "the actions log could not be checked for job_enable / job_disable: " + err.Error()
+	}
+	if !ok {
+		return "the actions log cannot take job_enable / job_disable yet: the repository is not migrated to 0194 (run 'pgvigil migrate')"
+	}
+	return ""
+}
+
 // pgJobOff is why a job action is off on an instance, or "" when it is on; auditOff is pgJobAuditOff's answer, read once
-// per request.
+// per request (for job_enable / job_disable it carries toggleAuditOff's too: see toggleOffFor).
 func (s *Server) pgJobOff(ds *doorSet, instance, kind, auditOff string) string {
 	a := s.actions
 	switch {
@@ -89,6 +112,14 @@ func (s *Server) pgJobOff(ds *doorSet, instance, kind, auditOff string) string {
 		return fmt.Sprintf("instance %s's actions: list does not name %s: the job actions are off by default (add it to the instance's actions: in the config)", instance, kind)
 	}
 	return auditOff
+}
+
+// toggleOffFor: auditOff for kind - for job_enable / job_disable also the repository's readiness for their rows.
+func (s *Server) toggleOffFor(ctx context.Context, kind, auditOff string) string {
+	if auditOff != "" || (kind != collect.JobEnable && kind != collect.JobDisable) || s.actions == nil || s.actions.audit == nil {
+		return auditOff
+	}
+	return toggleAuditOff(ctx, s.actions.audit, true)
 }
 
 const sqlJobsRunning = `SELECT * FROM pgvigil.pg_jobs_running($1)`
@@ -128,14 +159,22 @@ func (s *Server) JobsRunning(w http.ResponseWriter, r *http.Request) {
 		auditOff = s.pgJobAuditOff(ctx)
 	}
 	ds := s.doorsNow()
+	toggleOff := ""
+	if s.actions != nil && s.actions.off == "" && auditOff == "" {
+		toggleOff = s.toggleOffFor(ctx, collect.JobEnable, auditOff)
+	}
 	for _, k := range []string{collect.JobStop, collect.JobStart, collect.JobEnable, collect.JobDisable} {
-		why := s.pgJobOff(ds, name, k, auditOff)
+		off := auditOff
+		if k == collect.JobEnable || k == collect.JobDisable {
+			off = toggleOff
+		}
+		why := s.pgJobOff(ds, name, k, off)
 		acts[k] = state{On: why == "", Reason: why}
 	}
 	out["actions"] = acts
 	// the role the actions login connects as: the page offers a pg_cron job's Enable and Disable only where the job's
 	// owner (its run_as) is that role - the server checks it again before anything is sent
-	if d, ok := ds.PG[name]; ok && d.Actions != "" {
+	if d, ok := ds.PG[name]; ok && d.Actions != "" && (acts[collect.JobEnable].On || acts[collect.JobDisable].On) {
 		if who := collect.ActionsLoginName(d.Actions); who != "" {
 			out["actions_login"] = who
 		}
@@ -230,7 +269,7 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("the actions log cannot be written (%v): nothing was sent", err))
 		return
 	}
-	if off := s.pgJobAuditOff(ctx); off != "" {
+	if off := s.toggleOffFor(ctx, kind, s.pgJobAuditOff(ctx)); off != "" {
 		writeErr(w, http.StatusServiceUnavailable, errors.New(off+"; nothing was sent"))
 		return
 	}

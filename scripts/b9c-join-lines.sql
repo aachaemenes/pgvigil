@@ -1,0 +1,15 @@
+-- B9c (migration 0194, above 0190): the lines for the next join's own file 0300_join_release3.sql (the lead's 03:3x:
+-- the actions_log CHECKs = BOTH - 0194 keeps widening them so this branch's proof accepts its actions, and 0300
+-- re-creates each CHECK ONCE with every slice's actions, so a list a later file failed to copy cannot drop one). Not a
+-- migration of its own; the record of what the join places.
+--
+-- actions_log_action_check: B9c's actions, both engines -
+--   engine = 'postgres':  'job_enable', 'job_disable'
+--   engine = 'sqlserver': 'job_enable', 'job_disable'
+-- actions_log_pid_check: the same two kinds on both engines among the actions that carry no pid (0194 L50+).
+-- import_pg_job_actions_log (0102's, replaced whole in 0194): its action list takes 'job_enable' and 'job_disable'
+--   beside 'job_stop' and 'job_start' (the raise's words name all four); nothing else of it changes.
+--
+-- 0194 was written from 0157's lists (task 406, plan_evict on SQL Server); 0191's actions (inv-s1's 301b, verify_backup
+-- and its kin) are not in 0194 (0191 was on no local branch at 03:3x 11-15): 0300's CHECKs take them from inv's lines.
+-- No other joined object: B9c adds no findings arm, no purge() line and no apply_roles line.

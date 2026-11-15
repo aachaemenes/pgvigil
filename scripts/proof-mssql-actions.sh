@@ -55,9 +55,10 @@
 #     instance's actions: list'; job_disable: 200 done, its detail 'reads disabled now', and the read login reads
 #     sysjobs.enabled 0; job_disable again: 409 'already disabled'; job_enable: 200 done 'reads enabled now', the read
 #     login reads 1; a target server row seeded in msdb.dbo.sysjobservers (server_id 1: a stand-in, the proof sets up no
-#     master server) makes the preview and the run refuse it as a 'multiserver job' (409), and with the row removed the
+#     master server) makes the preview and the run refuse it as a 'multiserver job' (409; the fold adds a job put in msdb's
+#     multi-server category: refused the same, its category put back; the audit then full:refused=4), and with the row removed the
 #     preview is ok again; the two done rows carry 'EXEC msdb.dbo.sp_update_job @job_id = '<ID>', @enabled = 0' and
-#     '... = 1', the job's name and id, no pid, owner sa. H's own counts: full done 2 / refused 3, jobstart refused 1,
+#     '... = 1', the job's name and id, no pid, owner sa. H's own counts: full done 2 / refused 4, jobstart refused 1,
 #     noright failed 1.
 #  NOT PROVEN HERE: a Windows login as the actions login, Azure SQL Managed Instance and RDS (no SQL Server Agent
 #     rights of this shape were tried there), a session id reused inside the milliseconds between the check and KILL.
@@ -360,12 +361,20 @@ sq "INSERT INTO msdb.dbo.sysjobservers (job_id, server_id, last_run_outcome, las
 expect "job_disable on a multiserver job" "$(post run "$(job_req "$I1" job_disable "$JOB" "$JOB")")" 409 refused "multiserver job"
 sq "DELETE FROM msdb.dbo.sysjobservers WHERE job_id = '$JOBID' AND server_id <> 0;" >/dev/null || fail "H: the seeded row was not removed"
 [ "$(ren)" = 1 ] || fail "H: the multiserver refusal changed the job"
+# a second stand-in (the build review's fold): a job in msdb's multi-server category (category_type 2; sp_update_job
+# refuses it to a non-sysadmin, Msg 14396) - its category put back at once after
+HCAT=$(sq "SELECT category_id FROM msdb.dbo.sysjobs WHERE job_id = '$JOBID';")
+sq "UPDATE msdb.dbo.sysjobs SET category_id = (SELECT TOP (1) category_id FROM msdb.dbo.syscategories WHERE category_type = 2 AND category_class = 1 ORDER BY category_id) WHERE job_id = '$JOBID';" >/dev/null || fail "H: the multi-server category"
+[ "$(post preview "{\"instance_id\":${IID[$I1]},\"action\":\"job_disable\",\"job_id\":\"$JOBID\"}")" = 200 ] && [ "$(jb '[.ok, .target.job_multiserver] | join("|")')" = "false|true" ] || fail "H: the multi-server category preview: $(head -c 300 "$BODY")"
+expect "job_disable on a job of a multi-server category" "$(post run "$(job_req "$I1" job_disable "$JOB" "$JOB")")" 409 refused "multi-server job category"
+sq "UPDATE msdb.dbo.sysjobs SET category_id = $HCAT WHERE job_id = '$JOBID';" >/dev/null || fail "H: the category was not put back"
+[ "$(ren)" = 1 ] || fail "H: the multi-server category refusal changed the job"
 [ "$(post preview "{\"instance_id\":${IID[$I1]},\"action\":\"job_disable\",\"job_id\":\"$JOBID\"}")" = 200 ] && [ "$(jb .ok)" = true ] || fail "H: the preview after the seeded row went: $(cat "$BODY")"
 [ "$(q "select string_agg(action || '|' || statement || '|' || target || '|' || target_id || '|' || coalesce(pid::text, 'no pid') || '|' || target_user, ' ; ' order by action_id) from pgvigil.actions_log where instance_name = '$I1' and outcome = 'done' and action in ('job_enable', 'job_disable')")" \
   = "job_disable|EXEC msdb.dbo.sp_update_job @job_id = '$UJ', @enabled = 0|$JOB|$JOBID|no pid|sa ; job_enable|EXEC msdb.dbo.sp_update_job @job_id = '$UJ', @enabled = 1|$JOB|$JOBID|no pid|sa" ] \
   || fail "H: the audit rows: $(q "select action, statement, target, target_id, pid, target_user from pgvigil.actions_log where instance_name = '$I1' and action in ('job_enable', 'job_disable')")"
 HGOT=$(q "select string_agg(n || ':' || outcome || '=' || c, ' ' order by n, outcome) from (select split_part(instance_name, '-', 3) n, outcome, count(*) c from pgvigil.actions_log where instance_name like 'proof-act-%-$SUF' and action in ('job_enable', 'job_disable') group by 1, 2) x")
-[ "$HGOT" = "full:done=2 full:refused=3 jobstart:refused=1 noright:failed=1" ] || fail "H: the toggles' audit holds '$HGOT'"
+[ "$HGOT" = "full:done=2 full:refused=4 jobstart:refused=1 noright:failed=1" ] || fail "H: the toggles' audit holds '$HGOT'"
 echo "  $HGOT ($((N - H0)) attempts)"
 : > "$BODY"
 echo "H: OK"

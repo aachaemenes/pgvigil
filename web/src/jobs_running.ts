@@ -101,13 +101,13 @@ export async function runningState(instance: number | undefined): Promise<Runnin
   return get<RunningState>('jobs/running', { instance });
 }
 
-function actButton(ctx: Ctx, st: RunningState, kind: Kind, why: string, r: Row, after: () => void): HTMLButtonElement {
+function actButton(ctx: Ctx, st: RunningState, kind: Kind, why: string, r: Row, after: () => void, own?: HTMLElement): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'act-' + kind, style: 'font-size:12px;padding:0 .4rem;margin-right:.2rem' }, labels[kind]);
   const reason = why || offWhy(st, kind);
   if (reason) {
     // off: reachable by keyboard, its reason words on the page - the page's one sentence where the action is off for
     // the whole instance, beside the button where the reason is this row's own
-    offBeside(b, reason, why ? undefined : st.notes?.[kind]);
+    offBeside(b, reason, why ? own : st.notes?.[kind]);
     b.style.opacity = '.55';
     b.style.cursor = 'not-allowed';
   } else {
@@ -172,11 +172,13 @@ export async function pgJobActionCol(ctx: Ctx, after: () => void): Promise<Actio
     fmt: (_v, r) => {
       if (!handed) mark(r);   // a caller that hands over no rows: the rows drawn so far
       const row = { ...r, job_name: r.name };
-      const run = r.scheduler !== 'pgagent'
-        ? el('span', { class: 'meta', title: 'pg_cron runs a job at its schedule only: it has no run-now call', style: 'margin-right:.2rem' }, '-')
-        : actButton(ctx, st, 'job_start', rowWhy(r, 'job_start'), row, after);
+      const run = el('span', { class: 'meta', title: 'pg_cron runs a job at its schedule only: it has no run-now call', style: 'margin-right:.2rem' }, '-');
       const f = flip(r);
-      return el('span', { style: 'white-space:nowrap' }, run, ...(f ? [actButton(ctx, st, f, rowWhy(r, f), row, after)] : []));
+      // one reason the row's two buttons share (a dropped job) is said once in the cell, both buttons pointing at it
+      const wr = r.scheduler === 'pgagent' ? rowWhy(r, 'job_start') : '', wf = f ? rowWhy(r, f) : '';
+      const own = wr !== '' && wr === wf ? el('span', { class: 'off-reason' }, wr) : undefined;
+      const runB = r.scheduler !== 'pgagent' ? run : actButton(ctx, st, 'job_start', wr, row, after, own);
+      return el('span', { style: 'white-space:nowrap' }, runB, ...(f ? [actButton(ctx, st, f, wf, row, after, own)] : []), ...(own ? [' ', own] : []));
     },
   };
 }
