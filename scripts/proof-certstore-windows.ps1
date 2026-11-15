@@ -372,7 +372,15 @@ try {
             Test-Line 'P5 grant' $grant.Text "The key's access list now \(the undo"
             Test-Line 'P5 grant' $grant.Text '^Granted: '
             $back = [regex]::Match($grant.Text, 'The access list read back: (\S+)').Groups[1].Value
-            $entries = [regex]::Matches($back, "\(A;[^;]*;(FR|0x120089);;;$([regex]::Escape($script:userSid))\)").Count
+            # an Allow entry for the user whose rights hold all of FILE_GENERIC_READ (0x120089): the Microsoft Software Key
+            # Storage Provider reads the entry pgvigil writes as 0x120089 back as 0x80120089 (GENERIC_READ added, seen on
+            # dba-lab-win 2026-11-15), and certlm.msc may write FR or GR
+            $entries = 0
+            foreach ($m in [regex]::Matches($back, "\(A;[^;]*;([^;]+);;;$([regex]::Escape($script:userSid))\)")) {
+                $r = $m.Groups[1].Value
+                if ($r -match '^(FR|GR)$') { $entries++ }
+                elseif ($r -match '^0x[0-9a-fA-F]{1,8}$' -and (([Convert]::ToUInt32($r.Substring(2), 16) -band 0x120089) -eq 0x120089)) { $entries++ }
+            }
             if ($entries -eq 1) { Ok "P5 the read-back SDDL holds one Read entry for $script:userSid" } else { Fail "P5 the read-back SDDL holds $entries Read entries for $script:userSid : $back" }
             if ($keyFile -and (Test-Path -LiteralPath $keyFile)) {
                 $rules = @((Get-Acl -LiteralPath $keyFile).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $script:userSid })
