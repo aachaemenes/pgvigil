@@ -176,7 +176,7 @@ freeport() {
   local p
   for _ in $(seq 1 50); do
     p=$((20000 + RANDOM % 20000))
-    ss -ltn | awk '{print $4}' | grep -qE "(^|[:\]])$p$" || { echo "$p"; return; }
+    ss -ltn | awk '{print $4}' | grep -E "(^|[:\]])$p$" >/dev/null || { echo "$p"; return; }
   done
   fail "no free port"
 }
@@ -358,7 +358,7 @@ for k in 1 2 3 4 5 6; do
 done
 [[ -n $reached ]] || fail "C: hook2 never reached 3 failures in a row: $(streak)"
 [[ $(dropfiles firing) == 1 ]] || fail "C: the pass of the third failure: $(dropfiles firing) firing file(s) on drop (the tests go first)"
-f=$(grep -l '"alert channel failing"' "$WORK/drop"/* | xargs grep -l '"firing"' | head -1)
+f=$(grep -l '"alert channel failing"' "$WORK/drop"/* | xargs grep -l '"firing"' | sed -n 1p)
 python3 - "$f" "$SPORT" <<'PY' || fail "C: the firing file's fields: $(head -c 800 "$f")"
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -425,11 +425,11 @@ fi
 # ---- P: alert_history -----------------------------------------------------------------------------------------------------
 if [[ $PART == *P* ]]; then
 IA=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
-        values ('proof-chan-a-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
+        values ('proof-chan-a-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | sed -n 1p)
 IB=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
-        values ('proof-chan-b-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
+        values ('proof-chan-b-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | sed -n 1p)
 IC=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
-        values ('proof-chan-c-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
+        values ('proof-chan-c-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | sed -n 1p)
 st() {   # st <instance id> <key prefix> <n> <fired SQL> <cleared SQL or NULL>
   q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity,
        first_sent_at, last_sent_at, cleared_at)
@@ -511,7 +511,7 @@ fi
 if [[ $PART == *O* || $PART == *U* || $PART == *Z* || $PART == *S* || $PART == *A* || $PART == *B* ]]; then
 INSTH=proof-chan-h-$SUF
 HID=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
-         values ('$INSTH', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
+         values ('$INSTH', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | sed -n 1p)
 RID=""
 # endall: every live rule of the seeded instance ended, found by query (newfinding runs inside $(...), a subshell, so a
 # rule id it keeps in a variable never reaches the next call)
@@ -1046,7 +1046,7 @@ stop_b
 ok "B0: the door off: 404"
 CFGB=$WORK/cfg-slackdoor.yaml; slackcfg "$CFGB" true; CFG=$CFGB
 serve_b "$CFGB"
-grep -q 'the Slack door is on.*A0PROOF0001' "$WORK/serve.b.log" || fail "B1: no start line: $(grep -i slack "$WORK/serve.b.log" | head -2)"
+grep -q 'the Slack door is on.*A0PROOF0001' "$WORK/serve.b.log" || fail "B1: no start line: $(grep -i slack "$WORK/serve.b.log" | sed -n 1,2p)"
 SLB=$(sl count)
 RK=$(rule sessions.idle_in_txn 39 40); sample 50 0 1; KB=$(keyof "idle in")
 set +e; "$BINB" alerts -config "$CFGB" >"$WORK/pass.B1.out" 2>&1; set -e

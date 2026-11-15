@@ -138,7 +138,7 @@ freeport() {
   local p
   for _ in $(seq 1 50); do
     p=$((20000 + RANDOM % 20000))
-    ss -ltn | awk '{print $4}' | grep -qE "(^|[:\]])$p$" || { echo "$p"; return; }
+    ss -ltn | awk '{print $4}' | grep -E "(^|[:\]])$p$" >/dev/null || { echo "$p"; return; }
   done
   fail "no free port"
 }
@@ -255,7 +255,7 @@ ok "C: checks"
 
 # ---- a seeded instance and its samples (H, K, F, Y, D) -------------------------------------------------------------------
 HID=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
-         values ('$INSTH', 'self-managed', '{env:proofh,app:h}', now(), now(), true, 'postgres') returning instance_id" | head -1)
+         values ('$INSTH', 'self-managed', '{env:proofh,app:h}', now(), now(), true, 'postgres') returning instance_id" | sed -n 1p)
 [[ $(q "select array_to_string(tags, ',') from pgvigil.instance_tags_merged where instance_id = $HID") == *env:proofh* ]] || fail "the seeded instance's tags are not merged"
 sample() {   # sample <a SQL time expression> <idle_in_txn>: one activity sample of the seeded instance
   q "insert into pgvigil.activity_summary (instance_id, snapshot_at, total, active, idle, idle_in_txn, idle_in_txn_aborted, waiting_lock,
