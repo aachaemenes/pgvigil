@@ -105,7 +105,7 @@ Each tab is served from pgvigil's store where the import fills the tables its pa
 | Jobs | screen `dbo.AgentJobsReport_Get` with Start / Stop through a collected instance, then the SQL Agent alerts `dbo.Alerts_Get` | the same |
 | Database files | screen `dbo.DBFilesReport_Get` | the same |
 | Configuration | screen `dbo.Configuration_Get` | the same |
-| Collection Health | screen `dbo.CollectionHealth_Get` (DBA Dash 4.25.0 and later; 4.24.1: 'not read: ... it came with DBA Dash 4.25.0'; a 4.25.0 read login without its GRANT: 'not read: this login has no EXECUTE ...') | the same |
+| Collection Health | screen `dbo.CollectionHealth_Get` (DBA Dash 4.25.0 and later; 4.24.1: 'not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)'; a 4.25.0 read login without its GRANT: 'not read: this login has no EXECUTE on dbo.CollectionHealth_Get (the GRANT in docs/dbadash.md, version 4.25.0 and later)') | the same |
 | Properties | the instance's facts as the repository records them (the stored read) | the same |
 | CPU | pgvigil's CPU page over the CPU minutes the import copied (`mssql_cpu_sample`) | not read: the import copies them |
 | Storage | the newest size of each database the import copied (pgvigil's store, `mssql_database_size`), then screen `dbo.DrivesReport_Get` (pgvigil's own Storage page lists the databases of its own file read, which an imported server has not; the import's volume samples wait for the server to be collected) | screen `dbo.DrivesReport_Get` |

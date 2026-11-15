@@ -157,7 +157,8 @@ var Pages = []PageDef{
 }
 
 // gateNote: why a page whose procedure came with a later DBA Dash (Since) is not read - the procedure absent from the
-// repository, or the login without EXECUTE on it; "" to read it (and for every page with no Since)
+// repository, or the login without EXECUTE on it - in words that name no source product (task 168: the source is
+// named once, on the import's settings line; the lead 11-15 06:0x); "" to read it (and for every page with no Since)
 func gateNote(def PageDef, exists, canExec bool, version string) string {
 	switch {
 	case def.Since == "":
@@ -165,11 +166,11 @@ func gateNote(def PageDef, exists, canExec bool, version string) string {
 	case !exists && versionAtLeast(version, def.Since):
 		// OBJECT_ID is NULL for an object the login has no right on (SQL Server's metadata visibility): on a repository
 		// of the procedure's version or later an unseen procedure is the missing GRANT (the review of B6.2, part b #2)
-		return fmt.Sprintf("not read: this login has no EXECUTE on %s (docs/dbadash.md's GRANT, on DBA Dash %s and later)", def.Procedure, def.Since)
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (the GRANT in docs/dbadash.md, version %s and later)", def.Procedure, def.Since)
 	case !exists:
-		return fmt.Sprintf("not read: %s is not in this DBA Dash repository (it came with DBA Dash %s)", def.Procedure, def.Since)
+		return fmt.Sprintf("not read: %s is not in this repository (it came with version %s)", def.Procedure, def.Since)
 	case !canExec:
-		return fmt.Sprintf("not read: this login has no EXECUTE on %s (docs/dbadash.md's GRANT, on DBA Dash %s and later)", def.Procedure, def.Since)
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (the GRANT in docs/dbadash.md, version %s and later)", def.Procedure, def.Since)
 	}
 	return ""
 }

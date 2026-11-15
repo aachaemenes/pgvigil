@@ -45,7 +45,8 @@
 #  CH9 (B6.3; written before the run): on 4.25.0 the tenth screen answers with its five result sets (CH9a); the same read
 #     login with dbo.CollectionHealth_Get's GRANT taken back reads 'page collectionhealth ... sets=0 ... note=not read:
 #     this login has no EXECUTE on dbo.CollectionHealth_Get' (CH9e, the review of B6.2, part b #2), then the GRANT is
-#     given again; on 4.24.1 the screen is not called and says it came with 4.25.0 (CH9c). CH9b (part G, Chromium): the
+#     given again; on 4.24.1 the screen is not called and says it came with version 4.25.0 (CH9c); neither note names
+#     the source product (task 168; the lead 11-15 06:0x). CH9b (part G, Chromium): the
 #     fleet grid's header ('Collection Health' on 4.25.0, 'Collection errors (24hrs)' on 4.24.1) with DBA Dash's own
 #     tooltip, each row's landing by the version, on 4.25.0 the screen's h3 and five h4s and its Collections grid without
 #     the columns DBA Dash hides, on 4.24.1 the 'not read' line alone; a mixed fleet NOT COVERED (one release per rig).
@@ -285,15 +286,15 @@ if [[ "$DDV" == 4.25.0 ]]; then
   [[ "$chl" == *" sets=5 "* && "$chl" == *"note="* && "$chl" != *"not read:"* ]] || fail "CH9a: the Collection Health screen on 4.25.0: $chl"
   echo "ok   CH9a: Collection Health on 4.25.0 answers with its five result sets ($chl)"
   # CH9e (the review of B6.2, part b #2): a 4.25.0 read login without the procedure's GRANT - OBJECT_ID cannot see what
-  # the login has no right on - reads 'no EXECUTE', never 'not in this DBA Dash repository'; the GRANT given again first
+  # the login has no right on - reads 'no EXECUTE', never 'not in this repository'; the GRANT given again first
   sqok "CH9e: the GRANT taken back" "REVOKE EXECUTE ON dbo.CollectionHealth_Get FROM [$RO]" "$DDB"
   mkdir -p "$TMPD/pages-ch9e"
   che=$(pages "$TMPD/pages-ch9e" | grep '^page collectionhealth ' || true)
   sqok "CH9e: the GRANT given again" "GRANT EXECUTE ON dbo.CollectionHealth_Get TO [$RO]" "$DDB"
-  [[ "$che" == *" sets=0 "*"note=not read: this login has no EXECUTE on dbo.CollectionHealth_Get"* ]] || fail "CH9e: a 4.25.0 read login without the GRANT: $che"
+  [[ "$che" == *" sets=0 "*"note=not read: this login has no EXECUTE on dbo.CollectionHealth_Get (the GRANT in docs/dbadash.md, version 4.25.0 and later)"* ]] || fail "CH9e: a 4.25.0 read login without the GRANT: $che"
   echo "ok   CH9e: a 4.25.0 read login without the GRANT reads 'no EXECUTE' ($che)"
 else
-  [[ "$chl" == *" sets=0 "*"note=not read: dbo.CollectionHealth_Get is not in this DBA Dash repository (it came with DBA Dash 4.25.0)"* ]] || fail "CH9c: the Collection Health screen on $DDV: $chl"
+  [[ "$chl" == *" sets=0 "*"note=not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)"* ]] || fail "CH9c: the Collection Health screen on $DDV: $chl"
   echo "ok   CH9c: Collection Health on $DDV is not called and says why"
 fi
 # the exact snapshot: one SnapshotDateUTC as the running page printed it, back through the sessions page
@@ -809,7 +810,7 @@ const s = await ev(`(() => { const m = document.querySelector('main'); const h3 
   const t = m.querySelector('table.grid'); const heads = t ? [...t.querySelectorAll('thead tr:first-child th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()) : [];
   const k = heads.indexOf('Status Reason');
   return { h3, h4, heads, rows: t ? t.querySelectorAll('tbody tr').length : 0, coloured: k < 0 || !t ? false : [...t.querySelectorAll('tbody tr')].every(tr => tr.children[k]?.classList.contains('status')),
-    notRead: /not read: dbo\.CollectionHealth_Get is not in this DBA Dash repository \(it came with DBA Dash 4\.25\.0\)/.test(m.textContent), grids: m.querySelectorAll('table.grid').length }; })()`);
+    notRead: /not read: dbo\.CollectionHealth_Get is not in this repository \(it came with version 4\.25\.0\)/.test(m.textContent), grids: m.querySelectorAll('table.grid').length }; })()`);
 if (ver === '4.25.0') {
   say(s.h3.includes('Collection Health') && JSON.stringify(s.h4.slice(0, 5)) === JSON.stringify(['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights']), 'CH9b the screen\'s headings', `${s.h3.join(' | ')} / ${s.h4.join(' | ')}`);
   // every key chHidden hides that comes back at @GroupByInstance = 1 (the review B6f3 #4), and No Status (UnknownCount's alias)
