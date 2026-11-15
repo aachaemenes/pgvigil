@@ -713,7 +713,11 @@ func ActionRow(at time.Time, r ActionRequest, res ActionResult) ActionLogRow {
 		if t.ObjType != "" {
 			what = PlanWhat(t)
 		}
-		row.Target, row.TargetID = nul(what), nul(strings.ToUpper(r.JobID))
+		id := r.JobID
+		if b, err := ParsePlanHandle(id); err == nil {
+			id = fmt.Sprintf("0x%X", b) // pgvigil's form of a handle: 0x and upper-case digits
+		}
+		row.Target, row.TargetID = nul(what), nul(id)
 		return row
 	}
 	row.Target, row.TargetID, row.TargetUser = nul(first(t.JobName, r.JobName)), nul(r.JobID), nul(t.JobOwner)

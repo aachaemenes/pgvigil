@@ -1,8 +1,47 @@
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index 812798e..85fe592 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -179,7 +179,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	doors := map[string]mssql.Door{}
+ 	for _, in := range cfg.Instances {
+ 		if in.Engine == config.EngineSQLServer {
+-			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions}
++			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions,
++				Platform: in.Platform} // task 406: plan_evict is not offered on Azure SQL Database
+ 		}
+ 	}
+ 	srv.SetMSSQLActions(doors)
+diff --git i/internal/config/config.go w/internal/config/config.go
+index 07e6a24..44ab676 100644
+--- i/internal/config/config.go
++++ w/internal/config/config.go
+@@ -91,7 +91,7 @@ type Instance struct {
+ 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
+ 	// accepted: the password of a login that can stop sessions never sits in the file.
+ 	ActionsDSNRaw string `yaml:"actions_dsn"`
+-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop; on PostgreSQL job_stop and
++	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, plan_evict; on PostgreSQL job_stop and
+ 	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
+ 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
+ 	// alone turns them on.
+@@ -529,9 +529,9 @@ func (c *Config) Validate() error {
+ 			seen := map[string]bool{}
+ 			for _, a := range in.Actions {
+ 				switch a {
+-				case "kill", "job_start", "job_stop":
++				case "kill", "job_start", "job_stop", "plan_evict":
+ 				default:
+-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop)", in.Name, a)
++					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, plan_evict)", in.Name, a)
+ 				}
+ 				if seen[a] {
+ 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
 diff --git i/internal/config/inventory.go w/internal/config/inventory.go
-index a04766f..445e14f 100644
+index ee4135f..18196b2 100644
 --- i/internal/config/inventory.go
 +++ w/internal/config/inventory.go
-@@ -104,6 +104,11 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
+@@ -108,6 +108,11 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
  			plat = "auto"
  		}
  		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
@@ -99,10 +138,10 @@ index 0000000..867d24a
 +	return v, nil
 +}
 diff --git i/internal/web/web.go w/internal/web/web.go
-index 5def140..b065c80 100644
+index 6b3933a..997502a 100644
 --- i/internal/web/web.go
 +++ w/internal/web/web.go
-@@ -335,6 +335,14 @@ func (s *Server) Handler() http.Handler {
+@@ -344,6 +344,14 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
  	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
  	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)

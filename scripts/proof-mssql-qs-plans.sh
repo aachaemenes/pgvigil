@@ -100,13 +100,30 @@
 #     (sqlcmd, SET STATISTICS IO, TIME ON, NOCOUNT OFF, two statements at MAXDOP 1): the reader's logical reads and
 #     rows per statement equal the server's last_logical_reads and last_rows (sys.dm_exec_query_stats).
 #     Red on f8e89d2: no web/src/mssql_statsio.ts.
+#  H. evict one plan through the actions door (Opserver O4b.13, F2-F5, F16, F17, P4); actions logins: one with
+#     EXECUTE on the certificate-signed master.dbo.pgvigil_evict_plan (docs/sqlserver-actions.md's script, as is), one
+#     with ALTER SERVER STATE, one with nothing, one sysadmin; instances ev_signed, ev_off (plan_evict not on its list),
+#     ev_noright, ev_sa, ev_none (query_text none), ev_direct; the plan of dbo.p_two read by hand:
+#     H1 ev_off: preview not ok, 'not on the instance's actions: list'; H2 a handle of odd length: the preview says
+#        'plan_handle: ...', the run is refused (409) before any connection; H3 p_two's SQL handle: 'no plan under this
+#        handle'; H4 ev_noright: failed (502) with the server's own message, the plan still cached; H5 ev_sa: refused,
+#        'sysadmin or holds CONTROL SERVER'; H6 a compile time other than the one shown: refused, 'another plan under
+#        this handle'; H7 ev_none's preview: no batch text, a note naming the policy 'none'; H10 a wrong typed
+#        confirmation: refused;
+#     H8 ev_signed: the preview says Proc dbo.p_two in pgvqs, 2 statements, the signed procedure's route; the run with the
+#        handle's last 8 hex digits: done, 'gone from the cache'; the plan absent by hand; its actions_log row
+#        (plan_evict, done, target 'Proc dbo.p_two in pgvqs', target_id the handle); H9 the same handle again: refused;
+#     H11 the procedure dropped, a new plan: ev_direct's route is DBCC FREEPROCCACHE itself, done, gone;
+#     H12 GET actions/state: ev_signed's actions login may EXECUTE the procedure and holds neither VIEW nor ALTER SERVER
+#        STATE; ev_direct's holds both.
+#     Red on f8e89d2: the gate refuses the action (400 'action must be one of kill, job_start, job_stop').
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
 ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
 IMG_SQL=${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 EXTRACT=${PGVIGIL_PLAN_EXTRACT:-.lab/extract.py}
-PARTS=${PGVIGIL_PARTS:-ABCDEFG}
+PARTS=${PGVIGIL_PARTS:-ABCDEFGH}
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 SQL=pgvqs-sql-$SUF; SQL2=pgvqs-sql2-$SUF; LBL=pgvigil-proof=406
 PGDB=pgv_qs_$SUF; MON=pgv_qmon_$SUF; USR=proofdba$SUF
@@ -715,6 +732,75 @@ PYEND
 node web/src/mssql_statsio.test.mjs "$TMPD/mssql_statsio.mjs" "$TMPD/captured.txt" > "$TMPD/g.out" 2>&1 || { cat "$TMPD/g.out"; head -40 "$TMPD/captured.txt"; fail "G: the reader's tests"; }
 grep -E '^ok   captured|of [0-9]+ ok' "$TMPD/g.out"
 echo "ok   G: the reader's unit tests, and a captured messages file read equal to the server's own figures"
+fi
+
+if part H; then
+echo "== H. evict one plan through the actions door =="
+ACT1=pgv_ev1_$SUF; ACT2=pgv_ev2_$SUF; ACT3=pgv_ev3_$SUF; ACTS=pgv_evs_$SUF; P1=$(pw); P2=$(pw); P3=$(pw); PS=$(pw); CERTPW=$(pw)
+sqok "H: the logins" "CREATE LOGIN [$ACT1] WITH PASSWORD = '$P1', CHECK_POLICY = OFF; CREATE LOGIN [$ACT2] WITH PASSWORD = '$P2', CHECK_POLICY = OFF;
+  CREATE LOGIN [$ACT3] WITH PASSWORD = '$P3', CHECK_POLICY = OFF; CREATE LOGIN [$ACTS] WITH PASSWORD = '$PS', CHECK_POLICY = OFF;
+  GRANT ALTER SERVER STATE TO [$ACT2]; ALTER SERVER ROLE sysadmin ADD MEMBER [$ACTS];"
+# docs/sqlserver-actions.md's script, the actions login's name and the passwords put in
+python3 - docs/sqlserver-actions.md "$ACT1" "$CERTPW" > "$TMPD/signed.sql" <<'PYEND' || fail "H: the documented script"
+import re, sys
+doc, act, pw = sys.argv[1:]
+t = open(doc).read().split('### For plan_evict: a certificate-signed procedure')[1]
+sql = re.search(r'```sql\n(.*?)```', t, re.S).group(1)
+print(sql.replace('[pgvigil_actions]', '[' + act + ']').replace('<a long random password>', pw).replace('<the password above>', pw).replace('USE master;', ''))
+PYEND
+docker cp "$TMPD/signed.sql" "$SQL:/tmp/signed.sql" >/dev/null
+docker exec --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -d master -i /tmp/signed.sql' >"$TMPD/signed.out" 2>&1 || { cat "$TMPD/signed.out"; fail "H: the signed procedure (the docs' script)"; }
+dsn() { echo "sqlserver://$1:$(urlq "$2")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"; }
+export EV1="$(dsn "$ACT1" "$P1")" EV2="$(dsn "$ACT2" "$P2")" EV3="$(dsn "$ACT3" "$P3")" EVS="$(dsn "$ACTS" "$PS")"
+for spec in "ev_signed EV1 [plan_evict] full" "ev_off EV1 [kill] full" "ev_noright EV3 [plan_evict] full" "ev_sa EVS [plan_evict] full" "ev_none EV1 [plan_evict] none" "ev_direct EV2 [plan_evict] full"; do
+  read -r n a l qt <<<"$spec"
+  printf '  - name: %s\n    engine: sqlserver\n    dsn: env:PGV_Q_MON\n    actions_dsn: env:%s\n    actions: %s\n    query_text: %s\n' "$n" "$a" "$l" "$qt" >> "$TMPD/m.yaml"
+  pq "SELECT pgvigil.ensure_instance('$n', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')" >/dev/null
+done
+kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null || true
+"$TMPD/pgvigil" serve -config "$TMPD/m.yaml" -listen "127.0.0.1:$WPORT" >"$TMPD/serve2.out" 2>&1 & SRVPID=$!
+for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
+kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve2.out" >&2; fail "H: serve exited (a binary without the wiring refuses plan_evict in actions:)"; }
+[[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "H: the API login"
+iid() { pq "SELECT instance_id FROM pgvigil.instances WHERE name = '$1'"; }
+# act <preview|run> <instance> <json fields>: the code; the reply in $TMPD/h.json
+act() { local body; body=$(python3 -c 'import json, sys; d = json.loads(sys.argv[2]); d["instance_id"] = int(sys.argv[1]); d["action"] = "plan_evict"; print(json.dumps(d))' "$(iid "$2")" "$3")
+  curl -s -o "$TMPD/h.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "$body" "$U/api/mssql/actions/$1"; }
+jv() { python3 -c 'import json, sys; v = json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."): v = v.get(k) if isinstance(v, dict) else None
+print("" if v is None else v)' "$TMPD/h.json" "$1"; }
+plan2() { sq "EXEC dbo.p_two;" pgvqs >/dev/null
+  sq "SELECT CONVERT(varchar(140), cp.plan_handle, 1) + '|' + CONVERT(varchar(140), MIN(qs.sql_handle), 1) FROM sys.dm_exec_cached_plans cp CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) t
+       JOIN sys.dm_exec_query_stats qs ON qs.plan_handle = cp.plan_handle WHERE t.objectid = OBJECT_ID('pgvqs.dbo.p_two') AND t.dbid = DB_ID('pgvqs') GROUP BY cp.plan_handle"; }
+HH=$(plan2); PH=${HH%%|*}; SH=${HH##*|}; PH="0x${PH:2}"; PH=${PH^^}; PH="0x${PH:2}"; [[ ${#PH} -gt 10 ]] || fail "H0: no plan of dbo.p_two in the cache ($HH)"
+L8=${PH: -8}
+C=$(act preview ev_off "{\"plan_handle\":\"$PH\"}"); [[ $C == 200 && "$(jv ok)" == False && "$(jv reason)" == *"not on the instance's actions: list"* ]] || fail "H1: $C $(cat "$TMPD/h.json")"
+C=$(act preview ev_signed '{"plan_handle":"0x123"}'); [[ "$(jv reason)" == plan_handle:* ]] || fail "H2 preview: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_signed '{"plan_handle":"0x123","objtype":"Proc","reason":"the proof asks","confirm":"123"}'); [[ $C == 409 ]] || fail "H2 run: $C $(cat "$TMPD/h.json")"
+C=$(act preview ev_signed "{\"plan_handle\":\"$SH\"}"); [[ "$(jv ok)" == False && "$(jv reason)" == *"no plan under this handle"* ]] || fail "H3: $C $(cat "$TMPD/h.json")"
+C=$(act preview ev_signed "{\"plan_handle\":\"$PH\"}"); [[ $C == 200 && "$(jv ok)" == True ]] || fail "H8 preview: $C $(cat "$TMPD/h.json")"
+CREATED=$(jv target.plan_created); [[ "$(jv target.objtype)" == Proc && "$(jv what)" == "Proc dbo.p_two in pgvqs" && "$(jv target.plan_statements)" == 2 && "$(jv target.plan_route)" == "signed procedure" ]] || fail "H8 preview's target: $(cat "$TMPD/h.json")"
+C=$(act preview ev_none "{\"plan_handle\":\"$PH\"}"); [[ -z "$(jv target.plan_batch)" && "$(jv note)" == *'"none"'* ]] || fail "H7: $C $(cat "$TMPD/h.json")"
+run_body() { echo "{\"plan_handle\":\"$PH\",\"objtype\":\"Proc\",\"plan_created\":\"$1\",\"job_name\":\"Proc dbo.p_two in pgvqs\",\"reason\":\"the proof asks for it\",\"confirm\":\"$2\"}"; }
+C=$(act run ev_noright "$(run_body "$CREATED" "$L8")"); [[ $C == 502 && "$(jv server_message)" == Msg* ]] || fail "H4: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_sa "$(run_body "$CREATED" "$L8")"); [[ $C == 409 && "$(jv detail)" == *"sysadmin or holds CONTROL SERVER"* ]] || fail "H5: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_signed "$(run_body "2001-01-01T00:00:00" "$L8")"); [[ $C == 409 && "$(jv detail)" == *"another plan under this handle"* ]] || fail "H6: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_signed "$(run_body "$CREATED" "00000000")"); [[ $C == 409 && "$(jv detail)" == *"typed confirmation"* ]] || fail "H10: $C $(cat "$TMPD/h.json")"
+[[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_cached_plans WHERE plan_handle = $PH")" == 1 ]] || fail "H4-H10: the plan left the cache before the evict"
+C=$(act run ev_signed "$(run_body "$CREATED" "${L8,,}")"); [[ $C == 200 && "$(jv outcome)" == done && "$(jv detail)" == *"gone from the cache"* ]] || fail "H8 run: $C $(cat "$TMPD/h.json")"
+[[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_cached_plans WHERE plan_handle = $PH")" == 0 ]] || fail "H8: the plan is still cached"
+LOGROW=$(pq "SELECT action || '|' || outcome || '|' || coalesce(target, '') || '|' || coalesce(target_id, '') FROM pgvigil.actions_log WHERE instance_name = 'ev_signed' AND outcome = 'done'")
+[[ "$LOGROW" == "plan_evict|done|Proc dbo.p_two in pgvqs|$PH" ]] || fail "H8: the audit row '$LOGROW'"
+C=$(act run ev_signed "$(run_body "$CREATED" "$L8")"); [[ $C == 409 && "$(jv detail)" == *"no plan under"* ]] || fail "H9: $C $(cat "$TMPD/h.json")"
+C=$(curl -s -o "$TMPD/h.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/mssql/actions/state?instance=$(iid ev_signed)")
+[[ "$(jv actions_login.may_execute)" == True && "$(jv actions_login.view_server_state)" == False && "$(jv actions_login.alter_server_state)" == False ]] || fail "H12 ev_signed: $(cat "$TMPD/h.json" | head -c 400)"
+sqok "H11: the procedure dropped" "DROP PROCEDURE dbo.pgvigil_evict_plan;"
+HH=$(plan2); PH=${HH%%|*}; PH="0x${PH:2}"; PH=${PH^^}; PH="0x${PH:2}"; L8=${PH: -8}
+C=$(act preview ev_direct "{\"plan_handle\":\"$PH\"}"); CREATED=$(jv target.plan_created); [[ "$(jv target.plan_route)" == direct ]] || fail "H11 preview: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_direct "$(run_body "$CREATED" "$L8")"); [[ $C == 200 && "$(jv detail)" == *"gone from the cache"* && "$(jv statement)" == "DBCC FREEPROCCACHE ($PH)" ]] || fail "H11 run: $C $(cat "$TMPD/h.json")"
+C=$(curl -s -o "$TMPD/h.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/mssql/actions/state?instance=$(iid ev_direct)")
+[[ "$(jv actions_login.alter_server_state)" == True && "$(jv actions_login.view_server_state)" == True ]] || fail "H12 ev_direct: $(head -c 400 "$TMPD/h.json")"
+echo "ok   H: refused when off, malformed, a SQL handle, another plan, a wrong confirmation, a sysadmin login; failed with the server's words without the right; done through the signed procedure and directly, the plan gone, the audit row; the actions login's rights"
 fi
 
 echo "PASS: proof-mssql-qs-plans parts $PARTS on SQL Server $VER"
