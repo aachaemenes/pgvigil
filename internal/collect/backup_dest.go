@@ -1148,7 +1148,7 @@ var (
 func pgbrConfig(stanza, cmd, serverConfig string, inline map[string]string) (opts map[string]string, from map[string]string, why string) {
 	opts, from = map[string]string{}, map[string]string{}
 	rank := map[string]int{}
-	files := []string{}
+	var files []string
 	switch {
 	case serverConfig != "":
 		files = []string{serverConfig}

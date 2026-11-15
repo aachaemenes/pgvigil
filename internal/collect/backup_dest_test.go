@@ -272,7 +272,7 @@ func TestBackupDestToolReads(t *testing.T) {
 	origLook, origRun := lookTool, runTool
 	defer func() { lookTool, runTool = origLook, origRun }()
 	lookTool = func(string) (string, error) { return "/stand-in", nil }
-	runTool = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+	runTool = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 		ran++
 		return []byte(`{"pg": {"conninfo": "host=pg1 user=barman password=hunter2", "ssh_command": "ssh postgres@pg1", "post_backup_script": "/x.sh",
 			"barman_home": "/var/lib/barman", "backup_directory": "/var/lib/barman/pg", "basebackups_directory": "s3://bk/pg/base",
