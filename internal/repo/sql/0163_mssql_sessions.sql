@@ -6,7 +6,8 @@
 -- PerformanceMonitor's rule, which the activity read's total used before 413: its WIRING patch moves the total too).
 --
 --   mssql_session_count   one row per minute (mssql_sessions, sessions.go; monthly partitions): sessions by user /
---                         system x status, requests by user / system x status, the waiting tasks of user sessions (the
+--                         system x status (a session's status: running, sleeping, dormant, preconnect; 'background'
+--                         is a request's status only), requests by user / system x status, the waiting tasks of user sessions (the
 --                         benign waits of waits.go left out) and the longest of their waits; pgvigil's own reading
 --                         session left out and counted apart (own_sessions).
 --   mssql_session_by      one row per dimension and name per 5-minute activity read (monthly partitions): the sessions
@@ -26,7 +27,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_session_count (
   instance_id         int NOT NULL,
   snapshot_at         timestamptz NOT NULL,
   user_running        int, user_sleeping int, user_dormant int, user_preconnect int, user_other int,
-  system_running      int, system_sleeping int, system_background int, system_other int,
+  system_running      int, system_sleeping int, system_dormant int, system_preconnect int, system_other int,
   req_user_running    int, req_user_runnable int, req_user_suspended int, req_user_sleeping int, req_user_background int, req_user_other int,
   req_system_running  int, req_system_runnable int, req_system_suspended int, req_system_sleeping int, req_system_background int, req_system_other int,
   waiting_tasks       int,          -- the waiting tasks of user sessions, the benign waits left out
@@ -63,13 +64,14 @@ BEGIN
   END IF;
   INSERT INTO pgvigil.mssql_session_count (instance_id, snapshot_at,
       user_running, user_sleeping, user_dormant, user_preconnect, user_other,
-      system_running, system_sleeping, system_background, system_other,
+      system_running, system_sleeping, system_dormant, system_preconnect, system_other,
       req_user_running, req_user_runnable, req_user_suspended, req_user_sleeping, req_user_background, req_user_other,
       req_system_running, req_system_runnable, req_system_suspended, req_system_sleeping, req_system_background, req_system_other,
       waiting_tasks, waiting_longest_ms, own_sessions)
   VALUES (p_instance_id, p_snapshot_at,
       (v_c->>'user_running')::int, (v_c->>'user_sleeping')::int, (v_c->>'user_dormant')::int, (v_c->>'user_preconnect')::int, (v_c->>'user_other')::int,
-      (v_c->>'system_running')::int, (v_c->>'system_sleeping')::int, (v_c->>'system_background')::int, (v_c->>'system_other')::int,
+      (v_c->>'system_running')::int, (v_c->>'system_sleeping')::int, (v_c->>'system_dormant')::int, (v_c->>'system_preconnect')::int,
+      (v_c->>'system_other')::int,
       (v_c->>'req_user_running')::int, (v_c->>'req_user_runnable')::int, (v_c->>'req_user_suspended')::int, (v_c->>'req_user_sleeping')::int,
       (v_c->>'req_user_background')::int, (v_c->>'req_user_other')::int,
       (v_c->>'req_system_running')::int, (v_c->>'req_system_runnable')::int, (v_c->>'req_system_suspended')::int, (v_c->>'req_system_sleeping')::int,

@@ -17,8 +17,8 @@
 #  A. the container: a monitor login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE); three logins
 #     l1-l3; database pgvss with dbo.t (100,000 rows) and dbo.hold (one row).
 #  P1 sessions by status x user / system: the held set below plus l1-l3 idle sessions (sleeping) and a dormant-free box:
-#     the stored per-minute counts (mssql_sessions) of user running / sleeping / dormant / preconnect and system
-#     running / sleeping / background equal a hand read of sys.dm_exec_sessions GROUP BY is_user_process, status taken
+#     the stored per-minute counts (mssql_sessions) of user and system running / sleeping / dormant / preconnect (a
+#     session's own statuses; 'background' is a request's) equal a hand read of sys.dm_exec_sessions GROUP BY is_user_process, status taken
 #     before and after the collector's read in the same minute (both equal, or retried, at most 5 cycles); pgvigil's own
 #     reading session is left out of both (its program name) and the hand read says how many it left out.
 #  P1b the activity total under the rule (the WIRING patch): the 5-minute total's sessions = every session the hand read
