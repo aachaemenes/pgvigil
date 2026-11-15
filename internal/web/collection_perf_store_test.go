@@ -145,9 +145,9 @@ func TestCollectionPerfOnAStore(t *testing.T) {
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_health_hour (hour, instance_id, collection, collector_id, runs, ok, partial, failed, skipped,
 	         rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s, last_ok_at, last_failure_at)
-	  VALUES ($1::timestamptz - interval '2 hours', $3, $5, 'c1', 1, 1, 0, 0, 0, 1, 7, 7, 0, 0, 60, $1, NULL),
-	         ($1::timestamptz + interval '2 hours', $3, $5, 'c1', 1, 1, 0, 0, 0, 1, 7, 7, 0, 0, 60, $1, NULL),
-	         ($1, $4, $5, 'c1', 1, 0, 0, 1, 0, 0, 7, 7, 0, 0, 60, NULL, $1)`, h, nil, s1, off, coll); err != nil {
+	  VALUES ($1::timestamptz - interval '2 hours', $2, $4, 'c1', 1, 1, 0, 0, 0, 1, 7, 7, 0, 0, 60, $1, NULL),
+	         ($1::timestamptz + interval '2 hours', $2, $4, 'c1', 1, 1, 0, 0, 0, 1, 7, 7, 0, 0, 60, $1, NULL),
+	         ($1, $3, $4, 'c1', 1, 0, 0, 1, 0, 0, 7, 7, 0, 0, 60, NULL, $1)`, h, s1, off, coll); err != nil {
 		t.Fatalf("the edge hour rows: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, duration_ms, status, note)
