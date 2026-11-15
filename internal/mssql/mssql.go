@@ -452,6 +452,20 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			log.Warn("the collection's result was not recorded", "instance", in.Name, "collection", name, "status", status, "err", err)
 		}
 	}
+	// a collection that does not apply to the instance as its last detect saw it is skipped without a connection
+	// (detectcache.go); the instance's row is kept as a connecting run keeps it
+	if info, ok := cachedDetect(in, start); ok {
+		if applies, why := c.Applies(info); !applies {
+			ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+			ecancel()
+			if err != nil {
+				return collect.Result{Err: err, Duration: time.Since(start)}
+			}
+			logRun(instanceID, "skipped", why)
+			return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
+		}
+	}
 	db, conn, err := Connect(sctx, in)
 	if err != nil {
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
@@ -472,10 +486,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, timeoutNote(sctx, limit, err)), Duration: time.Since(start)}
 	}
-	for _, t := range in.TagPairs() {
-		if t.Key == "pool" {
-			info.PoolTag = t.Value
-		}
+	rememberDetect(in, info, start)
+	if tag := poolTag(in); tag != "" {
+		info.PoolTag = tag
 	}
 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
