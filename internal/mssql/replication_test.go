@@ -81,7 +81,13 @@ FROM `+quoteName(stub)+`.dbo.MSdistribution_agents a`)
 	if err != nil || len(want) == 0 {
 		t.Fatalf("the stub's expectations: %v %v", want, err)
 	}
-	got, err := QueryRows(ctx, conn, replSubscriptionsFor(stub, false))
+	// as the collector does: the merge arm only where the database has the merge tables (this stub has none: the
+	// statement without them must still read its distribution agents - the guard of replMergeTablesSQL)
+	mt, err := QueryRows(ctx, conn, replMergeTablesSQL(stub))
+	if err != nil || len(mt) != 1 {
+		t.Fatalf("the merge tables of the stub: %v %v", mt, err)
+	}
+	got, err := QueryRows(ctx, conn, replSubscriptionsOf(stub, false, mt[0]["merge"] == int64(1)))
 	if err != nil {
 		t.Fatalf("the subscriptions read of the stub: %v", err)
 	}
