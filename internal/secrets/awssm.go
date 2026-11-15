@@ -45,6 +45,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
 // Prefix is the reference's scheme.
@@ -264,21 +265,18 @@ func (r *Reader) siteFor(ctx context.Context, ref Ref) (site, error) {
 	return s, nil
 }
 
-// endpointOf is the URL a read posts to: a configured endpoint, else AWS's own host (FIPS when asked; the China
-// partition's domain for a cn- region)
-func endpointOf(region string, s site) string {
+// endpointOf is the URL a read posts to: a configured endpoint, else the host Secrets Manager's own endpoint resolver
+// gives the region (its partition's domain, FIPS when asked) - pgvigil writes no partition (task 205's rule); only the
+// host comes from the service module, the read stays one signed POST
+func endpointOf(ctx context.Context, region string, s site) (string, error) {
 	if s.base != "" {
-		return strings.TrimRight(s.base, "/") + "/"
+		return strings.TrimRight(s.base, "/") + "/", nil
 	}
-	host := "secretsmanager"
-	if s.fips {
-		host += "-fips"
+	e, err := secretsmanager.NewDefaultEndpointResolverV2().ResolveEndpoint(ctx, secretsmanager.EndpointParameters{Region: aws.String(region), UseFIPS: aws.Bool(s.fips)})
+	if err != nil {
+		return "", err
 	}
-	domain := ".amazonaws.com"
-	if strings.HasPrefix(region, "cn-") {
-		domain = ".amazonaws.com.cn"
-	}
-	return "https://" + host + "." + region + domain + "/"
+	return strings.TrimRight(e.URI.String(), "/") + "/", nil
 }
 
 // Endpoint is the URL this reader reads the reference from (the collector prints it at start).
@@ -290,7 +288,7 @@ func (r *Reader) Endpoint(ctx context.Context, ref Ref) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return endpointOf(ref.Region, s), nil
+	return endpointOf(ctx, ref.Region, s)
 }
 
 func invalid(ref Ref) error {
@@ -449,7 +447,11 @@ func (r *Reader) call(ctx context.Context, s site, ref Ref, body []byte) (getOut
 	if err != nil {
 		return getOut{}, &ReadError{Secret: ref.ID, Code: "Credentials", Message: err.Error()}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointOf(ref.Region, s), bytes.NewReader(body))
+	u, err := endpointOf(ctx, ref.Region, s)
+	if err != nil {
+		return getOut{}, &ReadError{Secret: ref.ID, Code: "Endpoint", Message: err.Error()}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return getOut{}, &ReadError{Secret: ref.ID, Code: "Endpoint", Message: err.Error()}
 	}

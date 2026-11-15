@@ -20,6 +20,7 @@ Every Go module linked into `pgvigil` (`./cmd/pgvigil`), and every package of on
 | `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/internal/presigned-url/v1.14.11/service/internal/presigned-url/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/pi` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/pi/v1.46.8/service/pi/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/rds` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/rds/v1.132.2/service/rds/LICENSE.txt) |
+| `github.com/aws/aws-sdk-go-v2/service/secretsmanager` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/secretsmanager/v1.50.11/service/secretsmanager/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/signin` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/signin/v1.12.4/service/signin/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/sso` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/sso/v1.39.4/service/sso/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/ssooidc` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/ssooidc/v1.44.4/service/ssooidc/LICENSE.txt) |
