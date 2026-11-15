@@ -406,7 +406,11 @@ function linkCols(ctx: Ctx): Col[] {
   };
   const bytes = (v: unknown) => v == null ? '' : fmtBytes(v);
   return [
-    { key: 'link', label: 'link', fmt: (v, r) => String(r.application_name ?? r.standby ?? v ?? '') + (r.slot_name ? ` (slot ${String(r.slot_name)})` : '') },
+    // the link's lag and its year are charted on the sending server's Replication tab (task 375: one series read, no chart here)
+    { key: 'link', label: 'link', fmt: (v, r) => {
+      const t = String(r.application_name ?? r.standby ?? v ?? '') + (r.slot_name ? ` (slot ${String(r.slot_name)})` : '');
+      return r.sending_id == null ? t : instLink(ctx, t, r.sending_id, 'replication');
+    } },
     { key: 'sending', label: 'from', fmt: (v, r) => r.sending_id == null ? String(r.sender_host ?? '') : instLink(ctx, v, r.sending_id, 'replication') },
     { key: 'standby', label: 'to', fmt: (v, r) => r.standby_id == null ? String(r.client_addr ?? '') : instLink(ctx, v, r.standby_id, 'replication') },
     { key: 'status', fmt: linkState },
