@@ -83,17 +83,26 @@ const (
 
 // CustomCheck is one entry of the custom: list.
 type CustomCheck struct {
-	Name        string          `yaml:"name"`
-	Description string          `yaml:"description"`
-	SQL         string          `yaml:"sql"`
-	Every       config.Duration `yaml:"every"`
-	Instances   []string        `yaml:"instances"`
-	Tags        []string        `yaml:"tags"`
-	Rule        string          `yaml:"rule"`
-	Value       string          `yaml:"value"`
-	Compare     string          `yaml:"compare"`
-	Warning     *float64        `yaml:"warning"`
-	Critical    *float64        `yaml:"critical"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	// Engine is the engine of the instances the check runs on: postgres (the default, so every file before ST6 reads as
+	// it did) or sqlserver; a check runs on the instances of its own engine only (AppliesTo). A procedure: check is a
+	// SQL Server check.
+	Engine string `yaml:"engine"`
+	SQL    string `yaml:"sql"`
+	// Procedure is a SQL Server check's other form (DBA Dash's custom collection): the name of a procedure on the
+	// server, 1 to 3 parts ([database.][schema.]name), executed with no parameter in place of sql:.
+	Procedure string `yaml:"procedure"`
+	// Database is the database a SQL Server sql: check runs in (default: the one the instance's dsn connects to).
+	Database  string          `yaml:"database"`
+	Every     config.Duration `yaml:"every"`
+	Instances []string        `yaml:"instances"`
+	Tags      []string        `yaml:"tags"`
+	Rule      string          `yaml:"rule"`
+	Value     string          `yaml:"value"`
+	Compare   string          `yaml:"compare"`
+	Warning   *float64        `yaml:"warning"`
+	Critical  *float64        `yaml:"critical"`
 }
 
 // Cadence returns the check's interval (the default when unset).
@@ -119,9 +128,30 @@ func (c CustomCheck) Targets() string {
 	return strings.Join(parts, "; ")
 }
 
-// AppliesTo says whether the check runs on the instance: no instances and no tags = every instance; else the
-// instance is named, or carries one of the tags (key and value, as config.ParseTag reads both).
+// EngineOf is the check's engine: sqlserver for a SQL Server check (engine: sqlserver, or a procedure:), else postgres.
+func (c CustomCheck) EngineOf() string {
+	if strings.EqualFold(strings.TrimSpace(c.Engine), config.EngineSQLServer) || (strings.TrimSpace(c.Engine) == "" && strings.TrimSpace(c.Procedure) != "") {
+		return config.EngineSQLServer
+	}
+	return config.EnginePostgres
+}
+
+// instanceEngine is the engine an instance runs (an instance whose engine was never set is PostgreSQL's, as
+// config.Load reads it).
+func instanceEngine(in config.Instance) string {
+	if in.Engine == config.EngineSQLServer {
+		return config.EngineSQLServer
+	}
+	return config.EnginePostgres
+}
+
+// AppliesTo says whether the check runs on the instance: never on an instance of the other engine; no instances and
+// no tags = every instance of its engine; else the instance is named, or carries one of the tags (key and value, as
+// config.ParseTag reads both).
 func (c CustomCheck) AppliesTo(in config.Instance) bool {
+	if c.EngineOf() != instanceEngine(in) {
+		return false
+	}
 	if len(c.Instances) == 0 && len(c.Tags) == 0 {
 		return true
 	}
@@ -147,19 +177,62 @@ func (c CustomCheck) AppliesTo(in config.Instance) bool {
 
 var customNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
 
+// CustomProcRE is a procedure: name, as custom reports take one (internal/web reportProcName): 1 to 3 parts, each a
+// letter or '_' and then letters, digits, '_', '$' or '#', at most 128 characters; no bracket, quote or space, so the
+// name pgvigil quotes into its EXEC is the name the file wrote.
+var CustomProcRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$#]{0,127}(\.[A-Za-z_][A-Za-z0-9_$#]{0,127}){0,2}$`)
+
+// customDatabaseRE is a database: name: 1 to 128 characters, none of them a control character or a bracket (the
+// run quotes it into USE [name]).
+var customDatabaseRE = regexp.MustCompile(`^[^\x00-\x1f\x7f\[\]]{1,128}$`)
+
 // validate checks one entry and fills its defaults (the instance names it lists are checked by the caller).
 func (c *CustomCheck) validate(i int) error {
 	c.Name = strings.TrimSpace(c.Name)
 	if !customNameRE.MatchString(c.Name) {
 		return fmt.Errorf("custom[%d]: name %q must be lower-case letters, digits, '_', '.' or '-' (1..63, starting with a letter or digit)", i, c.Name)
 	}
+	c.Engine = strings.ToLower(strings.TrimSpace(c.Engine))
+	c.Procedure = strings.TrimSpace(c.Procedure)
+	c.Database = strings.TrimSpace(c.Database)
+	switch c.Engine {
+	case "":
+		c.Engine = c.EngineOf()
+	case config.EnginePostgres, config.EngineSQLServer:
+	default:
+		return fmt.Errorf("custom %q: engine must be postgres or sqlserver (got %q)", c.Name, c.Engine)
+	}
 	c.SQL = strings.TrimSpace(c.SQL)
 	c.SQL = strings.TrimSpace(strings.TrimSuffix(c.SQL, ";"))
-	if c.SQL == "" {
+	if c.Procedure != "" {
+		if c.Engine == config.EnginePostgres {
+			return fmt.Errorf("custom %q: procedure: is a SQL Server check's (engine: sqlserver); a PostgreSQL check is its sql:", c.Name)
+		}
+		if c.SQL != "" {
+			return fmt.Errorf("custom %q: sql: and procedure: are two forms of a check: give one of them", c.Name)
+		}
+		if !CustomProcRE.MatchString(c.Procedure) {
+			return fmt.Errorf("custom %q: procedure must be a name of 1 to 3 parts ([database.][schema.]name: letters, digits, '_', '$', '#', each part starting with a letter or '_'), no bracket or quote", c.Name)
+		}
+		if c.Database != "" {
+			return fmt.Errorf("custom %q: database: is for a sql: check; a procedure names its database in its own name (database.schema.name)", c.Name)
+		}
+	} else if c.SQL == "" {
+		if c.Engine == config.EngineSQLServer {
+			return fmt.Errorf("custom %q: sql or procedure is required", c.Name)
+		}
 		return fmt.Errorf("custom %q: sql is required", c.Name)
 	}
 	if len(c.SQL) > customMaxSQL {
 		return fmt.Errorf("custom %q: sql is longer than %d characters", c.Name, customMaxSQL)
+	}
+	if c.Database != "" {
+		if c.Engine != config.EngineSQLServer {
+			return fmt.Errorf("custom %q: database: is a SQL Server check's; a PostgreSQL check runs in the database its instance's dsn connects to (another database is another instance entry)", c.Name)
+		}
+		if !customDatabaseRE.MatchString(c.Database) {
+			return fmt.Errorf("custom %q: database must be a database name of 1 to 128 characters, without a bracket or a control character", c.Name)
+		}
 	}
 	if d := c.Every.Duration; d != 0 && (d < customMinEvery || d > customMaxEvery) {
 		return fmt.Errorf("custom %q: every must be between 1m and 24h (got %s)", c.Name, d)
@@ -238,8 +311,10 @@ func ParseCustomChecksWarn(b []byte, instances []config.Instance) (checks []Cust
 		return nil, false, nil, nil
 	}
 	known := map[string]bool{}
+	engineOf := map[string]string{}
 	for _, in := range instances {
 		known[in.Name] = true
+		engineOf[in.Name] = instanceEngine(in)
 	}
 	seen := map[string]bool{}
 	out := *f.Custom
@@ -250,6 +325,8 @@ func ParseCustomChecksWarn(b []byte, instances []config.Instance) (checks []Cust
 		for _, n := range out[i].Instances {
 			if !known[n] {
 				warnings = append(warnings, fmt.Sprintf("custom %q: instance %q is not in the file's instances: list (it runs if the page holds it)", out[i].Name, n))
+			} else if e := out[i].EngineOf(); engineOf[n] != e {
+				warnings = append(warnings, fmt.Sprintf("custom %q: instance %q is a %s instance and the check is engine: %s: it does not run there (engine: %s for a check of that instance)", out[i].Name, n, engineName(engineOf[n]), e, engineOf[n]))
 			}
 		}
 		// a check whose instances and tags match no instance of the file (env:prd for env:prod) runs only where the
@@ -270,6 +347,14 @@ func ParseCustomChecksWarn(b []byte, instances []config.Instance) (checks []Cust
 		seen[out[i].Name] = true
 	}
 	return out, true, warnings, nil
+}
+
+// engineName is an engine as the words of a warning name it.
+func engineName(e string) string {
+	if e == config.EngineSQLServer {
+		return "SQL Server"
+	}
+	return "PostgreSQL"
 }
 
 // LoadCustomChecks reads the custom: list of the configuration file at path (after config.Load) and makes it the
