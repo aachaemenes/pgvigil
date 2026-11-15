@@ -388,12 +388,12 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'last_outcome', label: 'outcome', cls: (v, r) => r.dropped_at ? '' : outcomeCls(v),
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     ...(th ? [statusCol(th)] : []),
-    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
+    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.last_failed_outcome === 'cancelled' ? ' (cancelled)' : ''}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
     { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), lastFailOf(r), ackRedraw, ackOffP ?? undefined, ackName) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
-    // failed runs in the range (run_status 0 / 'failed'); a job the judge holds critical or warning (a cancel among them)
-    // is never green here
+    // failed or cancelled runs in the range (0137's judge: run_status 0 or 3; PostgreSQL failed, internal error or
+    // aborted); a job the judge holds critical or warning is never green here
     { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : judged(r) ? '' : 'status ok',
       fmt: (v, r) => Number(v) > 0 ? (jobAcked(r) ? `${fmtNum(v)} (acknowledged)` : badge(fmtNum(v), 'crit')) : '0' },
     { key: 'avg_s', label: 'average (good runs)', num: true, fmt: dur },
@@ -415,7 +415,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
 const outcomeText = (v: unknown) => v === 0 ? 'failed' : v === 1 ? 'succeeded' : v === 2 ? 'retry' : v === 3 ? 'cancelled' : v === 4 ? 'in progress' : v === 5 ? 'never run' : '';
 
 const failedCols: Col[] = [
-  { key: 'run_at', label: 'run', fmt: fmtTime }, { key: 'job' },
+  { key: 'run_at', label: 'run', fmt: fmtTime }, { key: 'job' }, { key: 'outcome', cls: outcomeCls, fmt: outcomeBadge },
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'step name' },
   { key: 'duration_s', label: 'took', num: true, fmt: fmtSecs },
   { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
@@ -458,8 +458,9 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     if (!read.snapshot_at) return sec;   // never read: only the reason above
     sec.append(el('div', { class: 'tiles' },
       tile('jobs', fmtNum(jobs.length)),
-      tile('last outcome failed', fmtNum(jobs.filter(j => j.last_outcome === 0).length), jobs.some(j => j.last_outcome === 0) ? 'crit' : ''),
-      tile('failed runs in the range', fmtNum(failed.length), failed.length ? 'warn' : ''),
+      tile('last outcome failed or cancelled', fmtNum(jobs.filter(j => j.last_outcome === 0 || j.last_outcome === 3).length),
+        jobs.some(j => j.last_outcome === 0 || j.last_outcome === 3) ? 'crit' : ''),
+      tile('failed or cancelled runs in the range', fmtNum(failed.length), failed.length ? 'warn' : ''),
       tile('running now', fmtNum(running.length)),
       tile('disabled', fmtNum(jobs.filter(j => j.enabled === false).length)),
     ));
@@ -473,7 +474,7 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     // job's Start and Stop point at it
     const jobsBox = await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]);
     sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), ...(act.offNote ? [act.offNote] : []), jobsBox);
-    sec.append(el('h3', {}, 'Failed runs in this range'), grid(failed, failedCols, 'No job failed in this range.'));
+    sec.append(el('h3', {}, 'Failed or cancelled runs in this range'), grid(failed, failedCols, 'No job failed or was cancelled in this range.'));
     // the steps of each job as last read, one disclosure per job: reachable by keyboard, named by the job (data-sheet: the
     // job's name names its grid's sheet in an export, export.ts headings)
     const withSteps = jobs.filter(j => jsonRows(j.steps).length);
