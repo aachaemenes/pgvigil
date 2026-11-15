@@ -48,6 +48,8 @@ type Config struct {
 	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
 	// report is refused with words, never run as serve's login (REPORT ROLE, internal/web/reportrole.go).
 	ReportsDSNRaw string `yaml:"reports_dsn"`
+	// Export is the repository's read-only export to Parquet (`pgvigil export`); absent = off (export.go).
+	Export *Export `yaml:"export"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -488,6 +490,11 @@ func (c *Config) Validate() error {
 	}
 	if err := c.validateGMSA(); err != nil {
 		return err
+	}
+	if c.Export != nil {
+		if err := c.Export.validate(); err != nil {
+			return err
+		}
 	}
 	seen := map[string]bool{}
 	for i := range c.Instances {

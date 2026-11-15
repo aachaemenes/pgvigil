@@ -307,7 +307,7 @@ BEGIN
 END $$""")
 def seed_F():
     w = Wk(2)
-    q(f"INSERT INTO pgvigil.ui_users (username, password_hash, is_disabled, created_at, password_set_at) VALUES ('pq-{SUF}', 'x', true, now(), now())")
+    q(f"INSERT INTO pgvigil.ui_users (username, password_hash, is_disabled, created_at, password_set_at) VALUES ('pq-{SUF}', '$argon2id$proof', true, now(), now())")
     q(f"INSERT INTO pgvigil.report_mail_sends (kind, name, route, requested_by, requested_at, channel, recipients, subject, html, xlsx) VALUES "
       f"('now', 'f-send', '#/summary', 'proof', CAST({lit(w[0] + dt.timedelta(minutes=9))} AS timestamptz), 'mail', '{{\"a@example.invalid\"}}', 'f subject', '<p>f body</p>', '\\x504b0304')")
     q(f"INSERT INTO pgvigil.mssql_errorlog (instance_id, log_at, line_key, snapshot_at, logged_local, class, matched, custom, message) VALUES "
