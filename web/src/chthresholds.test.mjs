@@ -38,7 +38,9 @@ if (m) {
   const live2 = [{ instance_id: null, collection: 'activity', crit_fail_pct: '40.00' }, { instance_id: null, collection: null, crit_fail_pct: 45, min_runs: 6 }];
   call('... and this collection\'s row on every instance over everything\'s', () => m.inheritedOf(live2, sc, ic, 'crit_fail_pct'), { value: 40, from: 'activity on all instances' });
   call('... a setting no level sets: DBA Dash\'s default', () => m.inheritedOf(live, sc, ic, 'crit_fails_in_row'), { value: 3, from: 'DBA Dash\'s default' });
-  call('every collection on the instance inherits from everything, never from one collection\'s row', () => m.inheritedOf(live, sc, ia, 'crit_fails_in_row'), { value: 3, from: 'DBA Dash\'s default' });
+  // the fold review part a #4: the key a collection's row on every instance sets (40), so a read of ac for the ia level
+  // fails here
+  call('every collection on the instance inherits from everything, never from one collection\'s row', () => m.inheritedOf(live, sc, ia, 'crit_fail_pct'), { value: 50, from: 'DBA Dash\'s default' });
   call('... everything\'s value over the default', () => m.inheritedOf(live2, sc, ia, 'crit_fail_pct'), { value: 45, from: 'All collections on all instances' });
   call('... and the minimum runs from everything', () => m.inheritedOf(live, sc, ia, 'min_runs'), { value: 6, from: 'All collections on all instances' });
   call('this collection on every instance never reads this instance\'s row', () => m.inheritedOf(live, sc, ac, 'warn_fail_minutes'), { value: 10, from: 'DBA Dash\'s default' });

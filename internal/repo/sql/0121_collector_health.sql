@@ -1149,8 +1149,13 @@ SELECT x.instance_id
 -- collection_dont_monitor (B6g-2, the lead's 07:4x DONT-MONITOR (a)): a collection its Collection Health threshold sets
 -- Don't monitor raises no 'collection failing' (below). Its body is 0166's (the thresholds' table is made there, after
 -- this file): this stub lets the view name it on a fresh store, and 0166's CREATE OR REPLACE gives it the body
-CREATE OR REPLACE FUNCTION pgvigil.collection_dont_monitor(p_instance_id int, p_collection text)
-RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT false $$;
+-- (made only where it is absent: a re-run of this file after 0166 keeps 0166's body - the review of B6g-2's fold part a #5)
+DO $do$ BEGIN
+  IF to_regprocedure('pgvigil.collection_dont_monitor(integer,text)') IS NULL THEN
+    CREATE FUNCTION pgvigil.collection_dont_monitor(p_instance_id int, p_collection text)
+    RETURNS boolean LANGUAGE sql STABLE AS $f$ SELECT false $f$;
+  END IF;
+END $do$;
 
 CREATE OR REPLACE VIEW pgvigil.collector_findings AS
 -- the parent: its value is the host alone (one alert per collector, whatever its why: a restart inside the hold, or a

@@ -35,7 +35,8 @@ function ruleWords(rows: Row[]): string {
   const tail = 'N/A when the collection is off, only skipped, or set Don\'t monitor. ';
   if (!own.length) return 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
     + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial (DBA Dash\'s defaults); ' + tail;
-  if (words.size === 1) return `Status by the thresholds every row listed holds (${[...words][0]}: warning / critical): critical at the critical failures in a row and minutes from the last success to the latest failure, or the critical per cent of the runs failed with the last run failed; warning at the warning ones, the per cent counting partial runs too; ` + tail;
+  // a row per collection whose instances differ says 'each instance its own': no one set (the fold review part a #2)
+  if (words.size === 1 && !words.has('each instance its own')) return `Status by the thresholds every row listed holds (${[...words][0]}: warning / critical): critical at the critical failures in a row and minutes from the last success to the latest failure, or the critical per cent of the runs failed with the last run failed; warning at the warning ones, the per cent counting partial runs too; ` + tail;
   return 'Status by each row\'s own thresholds - its Thresholds cell says where they come from and its title the numbers (DBA Dash\'s defaults: in a row 1 / 3, failing 10 / 30 min, failed 10 / 50 % of 5 runs or more); ' + tail;
 }
 
@@ -48,7 +49,7 @@ const thNoun = 'Collection Health thresholds';
 // or unticked to inherit it ('Inherited: n', and from where), Save, Inherit All (unticks every value; Save then ends the
 // level's own row), Close. Where the write cannot be made the dialog still reads, its Save off with the reason in words
 // (the seat's: a server that writes nothing; on a demo serve an instance not the demo's, or a level over every instance).
-function thresholdsDialog(ad: AckData, r: Row, after: () => void) {
+function thresholdsDialog(ad: AckData, r: Row, after: () => void, pageMsg?: (words: string) => void) {
   const id = r.instance_id != null && Number(r.instance_id) > 0 ? Number(r.instance_id) : null;
   const name = String(r.instance ?? '');
   const coll = String(r.collection ?? '');
@@ -166,7 +167,10 @@ function thresholdsDialog(ad: AckData, r: Row, after: () => void) {
       await load();
       msg.replaceChildren(badge(res.outcome, 'ok'), ' ', `Saved for ${cur.words}.  The page picks it up when it next reads (Close reads it again).`);
     }, (e: unknown) => {
-      msg.replaceChildren(badge('not saved', 'crit'), ' ', e instanceof Error ? e.message : String(e));
+      const why = e instanceof Error ? e.message : String(e);
+      // closed by Escape while the save was out: the refusal on the page itself, never lost (the fold review part a #8)
+      if (!dlg.isConnected) { pageMsg?.(`The thresholds of ${cur.words} were not saved: ${why}`); return; }
+      msg.replaceChildren(badge('not saved', 'crit'), ' ', why);
     });
   });
   document.body.append(dlg);
@@ -195,6 +199,8 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
   const errorsBox = el('div', { class: 'ch-errors' });
   const charts = el('div', { class: 'chart-row' });
   const body = el('div', { class: 'ch-grid' });
+  // the page's own word line for a dialog closed while its save was out (the fold review part a #8)
+  const pageMsg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   let seq = 0;
 
   // the scope's parameters: an instance, a tag folder's instances, or the fleet
@@ -298,7 +304,8 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
         // after a save the grid is drawn again and the focus goes back to this row's cell (the review of B6g-2 #10)
         const label = b.getAttribute('aria-label')!.replace(/: [^:]*$/, ':');
         b.addEventListener('click', () => thresholdsDialog(ad, r, () => void draw().then(() =>
-          ([...document.querySelectorAll<HTMLButtonElement>('main .ch-grid button.link')].find(x => (x.getAttribute('aria-label') ?? '').startsWith(label)))?.focus())));
+          ([...document.querySelectorAll<HTMLButtonElement>('main .ch-grid button.link')].find(x => (x.getAttribute('aria-label') ?? '').startsWith(label)))?.focus()),
+          w => { pageMsg.textContent = w; }));
         return b;
       } },
     ];
@@ -375,7 +382,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
   show.addEventListener('change', () => void draw());
   refresh.addEventListener('click', () => void draw());
   sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'ch-show' }, 'Show ', show), ' ',
-    el('span', { role: 'group', 'aria-label': 'Status' }, 'Status ', ...boxes.flatMap(([b, l]) => [b, l, ' ']))), errorsBox, charts, body);
+    el('span', { role: 'group', 'aria-label': 'Status' }, 'Status ', ...boxes.flatMap(([b, l]) => [b, l, ' ']))), pageMsg, errorsBox, charts, body);
   await Promise.all([draw(), drawErrors()]);
   return sec;
 }

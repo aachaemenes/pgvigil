@@ -295,6 +295,27 @@ const allRows = await api({});
   const ref = iid == null ? null : await evAwait(`fetch('/api/collectionhealth/thresholds', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
     body: JSON.stringify({ op: 'set', instance_id: ${Number(iid)}, collection: 'activity', warn_fails_in_row: 0 }) }).then(async r => r.status + ' ' + ((await r.json()).error ?? '(no error key)'))`);
   say(/^409 refused: warn_fails_in_row must be a whole number from 1/.test(ref ?? ''), 'CH21 the API\'s 409 carries the refusal\'s words (what the page\'s post() shows)', String(ref).slice(0, 160));
+  // CH21b (the fold review part a #8 / the B6g-2 review #8): a number is passed on as sent, never rounded into a valid one
+  const post2 = body => iid == null ? null : evAwait(`fetch('/api/collectionhealth/thresholds', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+    body: JSON.stringify(${JSON.stringify(body)}) }).then(async r => r.status + ' ' + ((await r.json()).error ?? '(no error key)'))`);
+  const q1 = await post2({ op: 'set', instance_id: Number(iid), collection: 'activity', min_runs: 0.999 });
+  const q2 = await post2({ op: 'set', instance_id: Number(iid), collection: 'activity', crit_fail_pct: 12.345 });
+  say(/^409 refused: min_runs must be a whole number from 1 to 100000/.test(q1 ?? '') && /^409 refused: crit_fail_pct must be a percentage/.test(q2 ?? ''),
+    'CH21b 0.999 runs and 12.345 % refused as sent', `${String(q1).slice(0, 90)} | ${String(q2).slice(0, 90)}`);
+  // CH26 (the fold review part a #2): the rule sentence over the grid in three cases - every row at DBA Dash's defaults;
+  // one demo instance's page with its every-collection level set (every row listed holds one set); a row per collection
+  // whose instances differ (each row's own: never 'every row listed holds (each instance its own ...)'). Cleaned after
+  const sentence = () => ev(`[...document.querySelectorAll('main .ch-grid p.meta')].map(p => p.textContent).join(' ')`);
+  const s0 = await (async () => { await open('#/collectionhealth?w=24h'); return sentence(); })();
+  const w1 = iid == null ? null : await post2({ op: 'set', instance_id: Number(iid), min_runs: 7 });
+  await open(`#/collectionhealth?i=${iid}&w=24h`);
+  const s1 = await sentence();
+  await open('#/collectionhealth?w=24h&grain=collection');
+  const s2 = await sentence();
+  const w2 = iid == null ? null : await post2({ op: 'inherit', instance_id: Number(iid) });
+  say(/DBA Dash's defaults/.test(s0) && /every row listed holds \(in a row 1 \/ 3, failing 10 \/ 30 min, failed 10 \/ 50 % of 7 runs or more/.test(s1)
+    && /each row's own thresholds/.test(s2) && !/every row listed holds \(each instance its own/.test(s2) && /^200/.test(w1 ?? '') && /^200/.test(w2 ?? ''),
+    'CH26 the rule sentence: the defaults, one shared set, each row\'s own', `${s0.match(/Status[^;]*/)?.[0]?.slice(0, 60)} | ${s1.match(/Status by[^(]*\([^)]*\)/)?.[0] ?? s1.slice(0, 80)} | ${s2.match(/Status by each[^-]*/)?.[0] ?? s2.slice(0, 80)} (writes ${String(w1).slice(0, 20)} / ${String(w2).slice(0, 20)})`);
 }
 
 // CH22-CH24 (B6g-3, N42, design G4): DBA Dash's Collection Performance report. CH22 every link of a row per collection

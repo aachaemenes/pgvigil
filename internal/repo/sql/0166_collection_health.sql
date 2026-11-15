@@ -277,6 +277,8 @@ DECLARE
   v_old   bigint;
   v_new   bigint;
   v_given int := 0;
+  v_lo    int;
+  v_hi    int;
   k       text;
 BEGIN
   IF v_user IS NULL THEN
@@ -303,11 +305,12 @@ BEGIN
         v_given := v_given + 1;
         -- DBA Dash's ranges (the dialog's NumericUpDown): 1 to 100000 in a row and runs, 0 to 1000000 minutes (the review
         -- of B6g-2 #4: 1000000 passed the dialog and was refused in words that called it valid)
-        IF (p_payload->>k) !~ '^[0-9]{1,7}$'
-           OR (p_payload->>k)::int < CASE WHEN k LIKE '%minutes' THEN 0 ELSE 1 END
-           OR (p_payload->>k)::int > CASE WHEN k LIKE '%minutes' THEN 1000000 ELSE 100000 END THEN
-          v_why := format('%s must be a whole number from %s to %s, or null to inherit', k,
-                          CASE WHEN k LIKE '%minutes' THEN 0 ELSE 1 END, CASE WHEN k LIKE '%minutes' THEN 1000000 ELSE 100000 END);
+        -- the bounds first: an IF's condition ends at its first THEN, a CASE's too (vis-b6g0166: 4e4a4fe4's CASE inside
+        -- the condition made 0166 fail to apply, 'syntax error at end of input')
+        v_lo := CASE WHEN k LIKE '%minutes' THEN 0 ELSE 1 END;
+        v_hi := CASE WHEN k LIKE '%minutes' THEN 1000000 ELSE 100000 END;
+        IF (p_payload->>k) !~ '^[0-9]{1,7}$' OR (p_payload->>k)::int < v_lo OR (p_payload->>k)::int > v_hi THEN
+          v_why := format('%s must be a whole number from %s to %s, or null to inherit', k, v_lo, v_hi);
           EXIT;
         END IF;
       END IF;
@@ -453,7 +456,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
               WHEN t.st > 0 AND t.st >= t.rt
                 THEN t.cf || ' failure(s) in a row' || CASE WHEN t.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || t.fm || ' min' END
               WHEN t.rt > 0
-                THEN round(100.0 * t.failed / t.known) || ' % failed, ' || round(100.0 * t.partial / t.known) || ' % partial of ' || t.known || ' runs'
+                THEN trim_scale(round(100.0 * t.failed / t.known, 1)) || ' % failed, ' || trim_scale(round(100.0 * t.partial / t.known, 1)) || ' % partial of ' || t.known || ' runs'   -- one place, as DBA Dash's DECIMAL(5,1) (part a #6: 1 of 300 read '0 %')
               ELSE '' END,
          t.fm, t.cf, t.runs, t.ok, t.partial, t.failed, t.skipped,
          CASE WHEN t.known > 0 THEN round(100.0 * t.failed / t.known, 1) END,
