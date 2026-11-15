@@ -1,0 +1,85 @@
+package web
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+)
+
+// ---- sessions and connections (task 413, B22) -----------------------------------------------------------------------
+//   GET /api/mssql/sessions?instance=N[&from=&to=][&at=<a group read's time>][&n=5|10|25][&part=...]
+//        the Connections page's 'Sessions and requests' part (web/src/mssql_sessions.ts):
+//          counts      the per-minute counts over the window (mssql_sessions: sessions and requests by user / system x
+//                      status, the waiting tasks of user sessions)                       <- 0163 mssql_session_counts_between
+//          reads       the 5-minute group reads of the window, newest first (the 'at' picker) <- mssql_session_by_reads
+//          login, status, interface, address, isolation
+//                      each dimension at the read 'at' (else the newest of the window), the 'other' row last
+//          top         the top requests over the window per measure (CPU, logical reads, tempdb, memory grant,
+//                      duration) from mssql_requests, n each (5 by default; 10 or 25), the statement only under the
+//                      instance's query_text policy 'full' or 'normalized' (as stored), none under 'none'
+//          policy      the instance's query_text policy now
+//        One user / system rule on every part: sys.dm_exec_sessions.is_user_process over all sessions (the lead 11-15).
+//                                                                                          -> Server.MSSQLSessions
+
+const sqlMSSQLSessionsTop = `
+SELECT t.measure, t.rank, t.value, t.session_id, t.request_id, t.start_time, t.first_seen, t.last_seen, t.login_name,
+       t.program_name, t.host_name, t.database_name,
+       CASE WHEN $5 THEN left(st.statement, 4000) END AS statement, CASE WHEN $5 THEN st.full_chars END AS full_chars
+  FROM pgvigil.mssql_requests_top($1, $2, $3, $4) t
+  LEFT JOIN pgvigil.mssql_statement_text st ON st.text_id = t.text_id
+ ORDER BY t.measure, t.rank`
+
+// MSSQLSessions is GET /api/mssql/sessions.
+func (s *Server) MSSQLSessions(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	q := r.URL.Query()
+	var at any // NULL: the newest group read of the window
+	if v := q.Get("at"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, errBadAt)
+			return
+		}
+		at = t
+	}
+	n := 5
+	if v := q.Get("n"); v != "" {
+		k, err := strconv.Atoi(v)
+		if err != nil || (k != 5 && k != 10 && k != 25) {
+			writeErr(w, http.StatusBadRequest, errBadTopN)
+			return
+		}
+		n = k
+	}
+	name, ok := s.mssqlInstanceName(w, r, id)
+	if !ok {
+		return
+	}
+	// the statement text follows the instance's query_text policy as this serve reads it now: under 'none' no text is
+	// returned, whatever an earlier policy stored
+	policy := s.doorsNow().planPolicy(name)
+	showText := policy != "none"
+	dim := func(d string) part {
+		return part{d, `SELECT * FROM pgvigil.mssql_session_by_at($1, $2, $3, $4, $5)`, []any{id, from, to, d, at}}
+	}
+	s.multiPart(w, r, []part{
+		{"counts", `SELECT * FROM pgvigil.mssql_session_counts_between($1, $2, $3)`, []any{id, from, to}},
+		{"reads", `SELECT * FROM pgvigil.mssql_session_by_reads($1, $2, $3)`, []any{id, from, to}},
+		dim("login"), dim("status"), dim("interface"), dim("address"), dim("isolation"),
+		{"top", sqlMSSQLSessionsTop, []any{id, from, to, n, showText}},
+		{"policy", `SELECT $1::text AS query_text`, []any{policy}},
+	})
+}
+
+var (
+	errBadAt   = badParam("at must be a group read's time (RFC 3339)")
+	errBadTopN = badParam("n must be 5, 10 or 25")
+)
+
+type badParam string
+
+func (e badParam) Error() string { return string(e) }
