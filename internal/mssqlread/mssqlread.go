@@ -181,6 +181,75 @@ const sqlDatabaseRights = `SELECT CAST(permission_name AS nvarchar(300)) FROM sy
 UNION ALL SELECT CAST(N'IMPERSONATE on user ' + p.name AS nvarchar(300)) FROM sys.database_principals p
  WHERE p.type IN ('S', 'U', 'G', 'E', 'X', 'C', 'K') AND p.principal_id <> USER_ID() AND HAS_PERMS_BY_NAME(p.name, 'USER', 'IMPERSONATE') = 1`
 
+// sqlEveryDatabaseRights is sqlDatabaseRights in every database the session can open, in one batch the server loops
+// (a check's own T-SQL can reach any of them: USE, or a three-part name). A database it cannot open now (offline,
+// restoring, a secondary that refuses reads) is skipped: a check run as the same login cannot open it either.
+const sqlEveryDatabaseRights = `SET NOCOUNT ON;
+DECLARE @pgv_r TABLE (db sysname, p nvarchar(300));
+DECLARE @pgv_db sysname, @pgv_s nvarchar(max);
+DECLARE pgv_c CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1;
+OPEN pgv_c;
+FETCH NEXT FROM pgv_c INTO @pgv_db;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+  SET @pgv_s = N'USE ' + QUOTENAME(@pgv_db) + N'; SELECT DB_NAME(), CAST(permission_name AS nvarchar(300)) FROM sys.fn_my_permissions(NULL, ''DATABASE'')
+    UNION ALL SELECT DB_NAME(), CAST(N''IMPERSONATE on user '' + p.name AS nvarchar(300)) FROM sys.database_principals p
+     WHERE p.type IN (''S'', ''U'', ''G'', ''E'', ''X'', ''C'', ''K'') AND p.principal_id <> USER_ID() AND HAS_PERMS_BY_NAME(p.name, ''USER'', ''IMPERSONATE'') = 1;';
+  BEGIN TRY
+    INSERT @pgv_r EXEC (@pgv_s);
+  END TRY
+  BEGIN CATCH
+  END CATCH
+  FETCH NEXT FROM pgv_c INTO @pgv_db;
+END
+CLOSE pgv_c;
+DEALLOCATE pgv_c;
+SELECT db, p FROM @pgv_r;`
+
+// DatabasesRefusal reads the login's rights in every database it can open and says why the DBA's own SQL may not run
+// as it ("" = it may): each database where it holds a right outside DatabaseAllowed, with those rights.
+func DatabasesRefusal(ctx context.Context, conn *sql.Conn) (string, error) {
+	rows, err := conn.QueryContext(ctx, sqlEveryDatabaseRights)
+	if err != nil {
+		return "", fmt.Errorf("reading the login's rights in each database: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	extra := map[string]map[string]bool{}
+	for rows.Next() {
+		var db, p string
+		if err := rows.Scan(&db, &p); err != nil {
+			return "", fmt.Errorf("reading the login's rights in each database: %w", err)
+		}
+		if !DatabaseAllowed(p) {
+			if extra[db] == nil {
+				extra[db] = map[string]bool{}
+			}
+			extra[db][p] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("reading the login's rights in each database: %w", err)
+	}
+	if len(extra) == 0 {
+		return "", nil
+	}
+	dbs := make([]string, 0, len(extra))
+	for db := range extra {
+		dbs = append(dbs, db)
+	}
+	sort.Strings(dbs)
+	var parts []string
+	for _, db := range dbs {
+		ps := make([]string, 0, len(extra[db]))
+		for p := range extra[db] {
+			ps = append(ps, p)
+		}
+		sort.Strings(ps)
+		parts = append(parts, "in database "+db+" "+strings.Join(ps, ", "))
+	}
+	return "the read login holds " + strings.Join(parts, "; ") + ": the DBA's own SQL can reach every database the login opens (USE, a three-part name), so it runs only where the login can read and not write in each (CONNECT, SELECT, EXECUTE, REFERENCES, SHOWPLAN, VIEW ...)", nil
+}
+
 // ServerRefusal reads the login's server rights and says why the DBA's own SQL may not run as it ("" = it may): every
 // right outside ServerAllowed, by name, sorted. azureDB: an Azure SQL Database answers no server scope (its rights are
 // the database's: DatabaseRefusal), and the read is skipped there.
@@ -257,18 +326,21 @@ func DatabaseRefusal(ctx context.Context, conn *sql.Conn, database string) (stri
 }
 
 // Fence is the one check before the DBA's own SQL runs as the read login on a SQL Server: the server rights
-// (ServerRefusal; skipped on an Azure SQL Database, which answers database rights only), then the rights in database
-// ("" = the session's own: DatabaseRefusal). "" = it may run.
-func Fence(ctx context.Context, conn *sql.Conn, database string) (string, error) {
+// (ServerRefusal), then the rights in every database the login can open (DatabasesRefusal). An Azure SQL Database
+// answers no server scope and no other database: its own database's rights alone (DatabaseRefusal). "" = it may run.
+func Fence(ctx context.Context, conn *sql.Conn) (string, error) {
 	var edition sql.NullInt64
 	if err := conn.QueryRowContext(ctx, "SELECT CAST(SERVERPROPERTY('EngineEdition') AS int)").Scan(&edition); err != nil {
 		return "", fmt.Errorf("reading the server's edition: %w", err)
 	}
-	why, err := ServerRefusal(ctx, conn, edition.Valid && edition.Int64 == 5)
+	if edition.Valid && edition.Int64 == 5 {
+		return DatabaseRefusal(ctx, conn, "")
+	}
+	why, err := ServerRefusal(ctx, conn, false)
 	if err != nil || why != "" {
 		return why, err
 	}
-	return DatabaseRefusal(ctx, conn, database)
+	return DatabasesRefusal(ctx, conn)
 }
 
 // asMSSQL finds the server's error inside err.

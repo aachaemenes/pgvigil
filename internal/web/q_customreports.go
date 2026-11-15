@@ -695,9 +695,10 @@ func runMS(ctx context.Context, dsn, stmt string, args []any, timeout time.Durat
 }
 
 // reportFence is a custom report's check of the read login before its SQL runs (ST6's one fence, mssqlread.Fence): a
-// login with any right outside the documented read login's, server-wide or in the dsn's database, is refused by name.
+// login with any right outside the documented read login's, server-wide or in any database it can open, is refused by
+// name.
 func reportFence(ctx context.Context, conn *sql.Conn) (string, error) {
-	why, err := mssqlread.Fence(ctx, conn, "")
+	why, err := mssqlread.Fence(ctx, conn)
 	if why != "" {
 		why = "custom reports run only as the documented read login: " + why
 	}
