@@ -93,6 +93,12 @@ func pageAWSVerdict(ctx context.Context, log *slog.Logger, in config.Instance, n
 	}
 	k = pageAWSKept{why: why, failed: err != nil, at: now}
 	pageAWSMu.Lock()
+	// two checks of one block can run at once (a new instance's first collections): an AWS error is no verdict, so
+	// a failed check never replaces a verdict a parallel check stored meanwhile (review 20261115-094955 finding 6)
+	if had, ok := pageAWSVerdicts[key]; ok && !had.failed && k.failed {
+		pageAWSMu.Unlock()
+		return had.why
+	}
 	pageAWSVerdicts[key] = k
 	pageAWSMu.Unlock()
 	if why != "" {
