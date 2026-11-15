@@ -555,7 +555,7 @@ for c, stale in want.items():
     r = rows[0]
     if r[0] != mc: bad.append(f"D {c}: modification_count {r[0]} != the plan's {mc}")
     if r[1] != '20000' or r[2] != '4472': bad.append(f"D {c}: table rows {r[1]} / line {r[2]} (want 20000 / 4472)")
-    if r[3] != stale[0]: bad.append(f"D {c}: stale_at_compile {r[3]} (want {stale}; modification count {r[0]})")
+    if r[3] != {'t': 'true', 'f': 'false'}[stale]: bad.append(f"D {c}: stale_at_compile {r[3]} (want {stale}; modification count {r[0]})")
     f = q(f"SELECT count(*) FROM pgvigil.mssql_querystore_findings WHERE instance_id = {iid} AND check_name = 'a plan compiled on stale statistics' AND object LIKE 'pgvqs2: query %, plan {plan_id}'")
     if (f[0][0] == '1') != (stale == 't'): bad.append(f"D {c}: the finding count {f[0][0]} (stale {stale})")
     print(f"D {c}: plan {plan_id} rows changed {r[0]} of {r[1]} ({r[4]} %), line {r[2]}, stale {r[3]}")
