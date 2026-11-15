@@ -151,7 +151,9 @@
 #        before pg_catalog (and a stand-in aurora_replica_status: the writer's row and one replica at 20 ms);
 #        'standby_replay_lag' warning 0 on it, two reads: its standby state in recovery with no receiver, its read 'ok';
 #        no 'Aurora replica lag' and no 'receiver down' on it [red FAIL, 86c4079: the 'standby' read raises - no state,
-#        the read partial, 'Aurora replica lag' raised on the reader]. Since the review 21:27 fold: pg_stat_wal_receiver
+#        the read partial, 'Aurora replica lag' raised on the reader]. The reader is judged WITH its cluster's writer
+#        monitored (a stand-in instance hadr-af-w whose aurora_replica rows read hadr-af-r fresh; added 05:1x after
+#        q7green3: with no monitored writer the Q7 review's fold lets the reader raise - AU2's case). Since the review 21:27 fold: pg_stat_wal_receiver
 #        raises through that login too (a stand-in view; its self-check beside the functions'); the wait is for the
 #        login's last grant on hadr-s. AF runs before CC: once hadr-c streams from hadr-s, the senders read's position
 #        call reaches a stand-in and the read is partial
@@ -804,6 +806,10 @@ if want AF; then
   r=$(psql "host=127.0.0.1 port=$SP user=pgva password=$MPW sslmode=disable dbname=postgres" -XAtq -c "select count(*) from pg_stat_wal_receiver" 2>&1 | grep -m1 ERROR)
   [[ "$r" == *"stand-in Aurora reader"* ]] && ok "AF the receiver stand-in raises through hadr-sa's login: $r" || fail "AF the receiver stand-in does not raise: '$r'"
   q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"set\",\"key\":\"standby_replay_lag\",\"level\":\"instance\",\"instance_id\":$AFID,\"warn\":0,\"crit\":300,\"ui_user\":\"proof\"}'::jsonb)" >/dev/null
+  # the cluster's writer, monitored (a stand-in instance reading the replica fresh): since the Q7 review's fold a reader
+  # raises 'Aurora replica lag' only when no monitored writer reads that replica (AU2) - AF judges the reader WITH one
+  AFW=$(q "select pgvigil.ensure_instance('hadr-af-w', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")
+  q "select pgvigil.import_replication($AFW, now(), '[{\"kind\":\"aurora_replica\",\"server_id\":\"hadr-af-w\",\"session_id\":\"MASTER_SESSION_ID\",\"replica_lag_in_msec\":0},{\"kind\":\"aurora_replica\",\"server_id\":\"hadr-af-r\",\"session_id\":\"af-session\",\"replica_lag_in_msec\":20}]'::jsonb)" >/dev/null
   read_ hadr-sa 2
   r=$(q "select coalesce((select in_recovery || '|' || has_receiver from pgvigil.pg_repl_standby_state where instance_id = $AFID), 'no state') || '|' ||
              coalesce((select d.status || ' ' || coalesce(d.note, '') from pgvigil.collection_dates d where d.instance_id = $AFID and d.collection = 'replication'
@@ -811,7 +817,7 @@ if want AF; then
   r2=$(finding "$AFID" 'Aurora replica lag'); r3=$(finding "$AFID" 'receiver down')
   [[ "$r" == "true|false|ok"* && -z "$r2$r3" ]] && ok "AF hadr-sa (platform aurora, its WAL functions raise): in recovery, no receiver, the read ok ($r); no 'Aurora replica lag', no 'receiver down' on it" \
     || fail "AF hadr-sa: '$r' (expected true|false|ok), 'Aurora replica lag' '$r2', 'receiver down' '$r3' (expected none)"
-  q "update pgvigil.instances set is_active = false where instance_id = $AFID" >/dev/null   # it is hadr-s: the later rows read hadr-s itself
+  q "update pgvigil.instances set is_active = false where instance_id in ($AFID, $AFW)" >/dev/null   # it is hadr-s: the later rows read hadr-s itself
   pq "drop schema aurora_fake cascade; drop role pgva" >/dev/null   # the schema first: its grants to pgva keep the role
   CFG=$OCFG
 fi
