@@ -44,6 +44,13 @@ number, and the page never sorts or computes with them.
    lists its last 7 days ('not read whole: ...'); the database is in a distributed availability group, whose other side
    pgvigil does not merge ('not judged (the distributed availability group ...)').
 
+When it is decided: at each read of `mssql_restore_chain`, for the instance and for the same database on the other
+members of its group; and again at a read of `mssql_backups` whose availability-group rows changed - a replica's first
+read, a database that joins or leaves a group, a database gone from a replica - for every member of the old and the new
+group that has a chain read of it. The members are known from `mssql_backups`' rows, and the collector reads the two
+collections on their own schedules, so a chain read can come first. An instance made inactive or removed leaves its
+group's verdicts until their next chain read.
+
 The verdict per database:
 
 | Verdict | When |
