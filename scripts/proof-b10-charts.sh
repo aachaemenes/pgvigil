@@ -28,7 +28,7 @@
 #     120's two stretches: no transaction start, a snapshot passed without it), each with its first and last sight, its
 #     longest wait (k x 40 s; 120's 10 s), the head's login and program; 101's first chain seen in two snapshots, its
 #     second in one; 120's two in one each. RED: the part is refused or absent.
-#  E. the Blocked reports page draws 'Chains over the range': one bar per chain (11), coloured by its longest wait as
+#  E. the Blocked reports page draws 'Chains over the range': one bar per chain (13), coloured by its longest wait as
 #     'a blocking chain' judges one (over 300 s critical: 3; over 30 s warning: 8; 120's two neither), each bar's title
 #     naming the head's login and program, and a grid of 13 rows under it; the drawing in a box that scrolls (its bars
 #     keep their height however many chains), a time axis of 5 labelled ticks, and the grid's 'as a blocking chain'

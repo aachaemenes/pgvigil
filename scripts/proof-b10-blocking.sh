@@ -51,7 +51,7 @@
 #     at 10 past the next hour, at 20 past); an instance first seen 3 days ago gets 24 hours per call (24, then 48).
 #     RED: no table.
 #  J. PostgreSQL (activity_sample every 15 s): pid 101 waits on a Lock in samples 0-60 s and again 105-135 s under the
-#     same query_start (a 45 s gap, over two intervals): 2 waits; pid 102 waits 30 s once: 1; pgvigil.pg_block_waits
+#     same query_start (a 45 s gap, over 1.5 intervals): 2 waits; pid 102 waits 30 s once: 1; pgvigil.pg_block_waits
 #     gives 3, the day and the live part 3, and the hour arm fires (3 waits, the longest 60 s). RED: 2 (one per query).
 #     J2, sampled once a minute (snapshots at 0, 60, 61, 120, 180 s: the median gap 59 s): pid 104 in a Lock wait at 0 and
 #     120 s and not waiting at 60 s = 2 waits; pid 106 in a Lock wait at 0, 60 and 120 s = 1 wait; 3 in all. RED: 5 (the
