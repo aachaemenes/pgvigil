@@ -839,6 +839,7 @@ import json, os, sys
 f, cmd = sys.argv[1], sys.argv[2]
 r = [json.loads(l) for l in open(f)] if os.path.exists(f) else []
 if cmd == 'count': print(len(r))
+elif int(sys.argv[3]) >= len(r) or (cmd == 'gap' and int(sys.argv[4]) >= len(r)): print('no' if cmd == 'has' else '')   # no such call
 elif cmd == 'body': v = json.loads(r[int(sys.argv[3])]['body']).get(sys.argv[4]); print('' if v is None else (json.dumps(v) if not isinstance(v, str) else v))
 elif cmd == 'auth': print(r[int(sys.argv[3])]['auth'])
 elif cmd == 'gap': print('%.2f' % (r[int(sys.argv[4])]['t'] - r[int(sys.argv[3])]['t']))
@@ -1028,6 +1029,13 @@ ok "A11: two anchors of one post (2 h old): the held alert stays under the secon
 fi
 
 if [[ $PART == *B* ]]; then
+# a clean slate on sb and drop: an alert rule's key turns its numbers into '#', so an alert an earlier part left open
+# (A3's critical idle_in_txn, ended at A6 with no collection after it) is the SAME alert as B1's and only repeats after
+# an hour - B1 would post nothing. Every rule ended, the findings gone and proven gone (gone: a collection after the
+# marking pass), then no rule's alert open on sb
+endall; sample 0 0 1; gone B-clean
+[[ $(q "select count(*) from pgvigil.alert_state where channel in ('sb', 'drop') and source = 'alert rule' and cleared_at is null") == 0 ]] \
+  || fail "B: an earlier part's alert is still open: $(q "select string_agg(channel || ' ' || left(finding_key, 10) || ' ' || severity || ' missing ' || coalesce(to_char(missing_since, 'HH24:MI:SS'), '-'), '; ') from pgvigil.alert_state where channel in ('sb', 'drop') and source = 'alert rule' and cleared_at is null")"
 BINB=$WORK/pgvigil-slackproof
 (cd "$TREE" && go build -ldflags "-X github.com/aachaemenes/pgvigil/internal/alerts.slackProofHooks=on" -o "$BINB" ./cmd/pgvigil) || fail "go build (the proof knob)"
 if [[ $(q "select count(*) from pgvigil.ui_users where username = '$UIUSER'") == 0 ]]; then   # part P may have added it
@@ -1051,7 +1059,7 @@ SLB=$(sl count)
 RK=$(rule sessions.idle_in_txn 39 40); sample 50 0 1; KB=$(keyof "idle in")
 set +e; "$BINB" alerts -config "$CFGB" >"$WORK/pass.B1.out" 2>&1; set -e
 i=$SLB
-[[ $(sl has $i "\"$KB|sb\"") == yes && $(sl has $i pgv_mute1h) == yes && $(sl has $i '"confirm"') == yes ]] || fail "B1: the post's buttons: $(sl body $i blocks | cut -c1-300)"
+[[ $(sl has $i "\"$KB|sb\"") == yes && $(sl has $i pgv_mute1h) == yes && $(sl has $i '"confirm"') == yes ]] || fail "B1: the post's buttons: '$(sl body $i blocks | cut -c1-300)'; $(( $(sl count) - SLB )) call(s) in the pass; key '$KB'; $(sdiag "$KB" "$RK"); the pass: $(tr '\n' ' ' < "$WORK/pass.B1.out" | cut -c1-300)"
 bl=$(sl body $i blocks | wc -c); (( bl * 20 < 128 * 1024 )) || fail "B1: one alert's blocks $bl bytes: 20 would pass half the cap"
 PTS=$(tsof "$KB")
 ok "B1: the door on (start line), the post carries Acknowledge '$KB|sb' and Mute 1 h with its confirm; $bl bytes of blocks a post (20 under half of 256 KB)"
