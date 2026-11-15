@@ -29,6 +29,13 @@ const ev = async expr => {
   return d.result?.result?.value;
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// evAwait: an expression whose value is a Promise (a fetch from the page), awaited by the page (vis-b6gch7: ev's plain
+// evaluate handed CH21 the Promise itself, '[object Object]')
+const evAwait = async expr => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300));
+  return d.result?.result?.value;
+};
 await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
 
@@ -285,7 +292,7 @@ const allRows = await api({});
     'CH20 Inherit All + Save: the row judged again, its thresholds as before', `${back ? back.msg.slice(0, 80) : 'no answer'} | API ${now3?.status}, page ${r3?.['Status']?.text} / ${r3?.['Thresholds']?.text} (before ${row?.['Thresholds']?.text})`);
   // a refusal of the repository's function, in its words on the page (as post() shows it: the body's error)
   const iid = insts.find(r => r.name === inst)?.instance_id;
-  const ref = iid == null ? null : await ev(`fetch('/api/collectionhealth/thresholds', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+  const ref = iid == null ? null : await evAwait(`fetch('/api/collectionhealth/thresholds', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
     body: JSON.stringify({ op: 'set', instance_id: ${Number(iid)}, collection: 'activity', warn_fails_in_row: 0 }) }).then(async r => r.status + ' ' + ((await r.json()).error ?? '(no error key)'))`);
   say(/^409 refused: warn_fails_in_row must be a whole number from 1/.test(ref ?? ''), 'CH21 the API\'s 409 carries the refusal\'s words (what the page\'s post() shows)', String(ref).slice(0, 160));
 }
