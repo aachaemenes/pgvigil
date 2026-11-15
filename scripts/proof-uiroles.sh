@@ -25,7 +25,7 @@
 #     *_ui_roles.sql; M3 the first 'user add' without -role makes an admin and says 'first enabled admin', the second a
 #     viewer FAIL; M4 'user add -role operator' and 'user role <name> viewer' FAIL (no flag, no command); M5 a bad role
 #     refused by the CLI with the three names and by the CHECK FAIL; M6 ui_password_hash answers admins only (an older
-#     serve on this store) FAIL - it answers everyone; M7 ui_login_of: one row (hash, role) for an enabled user, NULLs
+#     serve on this store) FAIL - no operator can be made; M7 ui_login_of: one row (hash, role) for an enabled user, NULLs
 #     for an unknown or a disabled one FAIL - no function.
 #   U (the users): each 'user add -role' FAILs, and the user is added without a role so R1 still runs.
 #   R1 (each route x viewer / operator / admin): every row below its need FAIL - the route answers as it does today
@@ -33,8 +33,10 @@
 #     'anyone' ones by the login and logout rows.
 #   SRC (SourcesAdminWrite, the lead 00:1x): an operator's and a viewer's add / edit / enable / disable / remove / sync
 #     / sweep FAIL (not refused); the source rows unchanged ok.
-#   S5 (a fleet-wide or open-ended mute or blackout needs admin): the operator's three wide rows FAIL; the operator's
-#     one-instance row with an end ok; the admin's fleet-wide mute ok.
+#   S5 (a fleet-wide or open-ended mute or blackout needs admin): the operator's four wide rows FAIL (a mute on every
+#     instance, over a tag, with no end; a blackout with no end); the operator's one-instance blackout with an end ok;
+#     the admin's fleet-wide mute ok. (A blackout over a tag is refused for everyone already: 'a blackout names one
+#     instance', no row.)
 #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
 #     disabled user ok (401, as today); the lookup error FAIL (no ui_login_of to move aside); -no-login's words ok
 #     (unchanged); logout ok.
@@ -115,7 +117,9 @@ else bad "M5: -role boss: role '$(roleof boss$SUF)', said '$out'"; fi
 out=$(q "update pgvigil.ui_users set role = 'boss' where username = 'second$SUF'")
 [[ $out == *"check constraint"* ]] && ok "M5: the CHECK refuses role 'boss'" || bad "M5: an UPDATE to 'boss': $out"
 hv=$(q "select coalesce(pgvigil.ui_password_hash('op$SUF'), 'NULL')"); ha=$(q "select coalesce(pgvigil.ui_password_hash('first$SUF'), 'NULL')")
-[[ $hv == NULL && $ha == \$argon2id\$* ]] && ok "M6: ui_password_hash answers an admin only (an older serve admits admins)" || bad "M6: ui_password_hash: operator '${hv:0:20}', admin '${ha:0:20}'"
+# the operator must exist with its role: a NULL for a user that is not there proves nothing (roles-red1 graded M6 ok
+# on a base where no operator could be made)
+[[ $(roleof op$SUF) == operator && $hv == NULL && $ha == \$argon2id\$* ]] && ok "M6: ui_password_hash answers an admin only (an older serve admits admins)" || bad "M6: ui_password_hash: operator ('$(roleof op$SUF)') '${hv:0:20}', admin '${ha:0:20}'"
 a=$(q "select (password_hash like '\$argon2id\$%')::text || '|' || coalesce(role, 'NULL') from pgvigil.ui_login_of('OP$SUF')")
 u=$(q "select count(*) || '|' || count(password_hash) || '|' || count(role) from pgvigil.ui_login_of('nobody$SUF')")
 if [[ $a == "true|operator" && $u == "1|0|0" ]]; then ok "M7: ui_login_of: (hash, role) for an enabled user (any case), one row of NULLs for an unknown"
@@ -198,7 +202,9 @@ s5() {   # s5 <user> <want: admin|own> <body> <what>
 }
 s5 o$SUF admin "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every instance"
 s5 o$SUF admin '{"kind":"blackout","instance_id":999999}' "a blackout with no end"
-s5 o$SUF admin "{\"kind\":\"blackout\",\"tag\":\"prod\",$END}" "a blackout over a tag"
+s5 o$SUF admin "{\"kind\":\"mute\",\"tag\":\"prod\",\"check_key\":\"x\",$END}" "a mute over a tag"
+s5 o$SUF admin '{"kind":"mute","instance_id":999999,"check_key":"x"}' "a mute with no end"
+# a blackout over a tag is refused for every user before B24f ('a blackout names one instance', 409: roles-red1): no row
 s5 o$SUF own "{\"kind\":\"blackout\",\"instance_id\":999999,$END}" "a blackout of one instance with an end"
 s5 a$SUF own "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every instance"
 
