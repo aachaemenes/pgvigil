@@ -17,7 +17,7 @@ if (m) {
   call('... shown once ticked', () => m.visibleFamilies(fams, true).map(f => f[0]), ['sessions', 'database', 'host', 'collection']);
   call('a family read cut by its own sub-series: the collection family by the collection', () => [m.subSeries('collection', 'sales', 'activity'), m.subSeries('database', 'sales', 'activity'), m.subSeries('sessions', 'sales', 'activity')],
     ['activity', 'sales', 'sales']);
-  call('no collection cut: the instance\'s collections summed', () => m.subSeries('collection', 'sales', undefined), undefined);
+  call('no collection cut: the instance\'s series (the worst collection each hour)', () => m.subSeries('collection', 'sales', undefined), undefined);
   // the B6g-4 fold (the lead's 14:5x #6 (a)): the empty cut of the Collection family is the worst collection each hour
   call('the picker\'s words', () => [m.subWords('collection'), m.subWords('database')],
     [{ noun: 'collection', all: 'the worst collection', label: 'Collection', none: 'the worst collection each hour' },

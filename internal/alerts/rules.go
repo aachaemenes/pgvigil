@@ -92,6 +92,12 @@ func RulePayload(in RuleRequest, forced string, inst func(id int) string) (map[s
 	if strings.HasPrefix(in.Metric, "collection.") && (in.ForMinutes == nil || *in.ForMinutes < 60) {
 		return nil, errors.New("a rule on the Collection family takes a window of 60 minutes or more (for_minutes): its points are hourly")
 	}
+	// the review of the B6g-4 fold #4: with no collection named the series is the worst (highest) collection each hour,
+	// so 'below' would mean every collection below - a 'below' rule names its collection (the store's
+	// alert_rules_collection_below too)
+	if strings.HasPrefix(in.Metric, "collection.") && in.Dir == "below" && strings.TrimSpace(in.Database) == "" {
+		return nil, errors.New("a 'below' rule on the Collection family names a collection: with none it reads the worst (highest) collection each hour")
+	}
 	switch in.Scope {
 	case "fleet":
 	case "tag":

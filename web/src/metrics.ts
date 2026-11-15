@@ -78,7 +78,7 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
   // the fold's #13 / #14: what the family holds and does not, and its freshness, said where it is ticked
   sec.append(el('div', { class: 'toolbar' }, tick, ' ', el('label', { for: 'metrics-collection' }, 'Collection Metrics'),
     el('span', { class: 'meta' }, ' - each collection\'s duration, CPU and logical reads (SQL Server only), import and failed per cent: one point an hour, at the hour\'s end. '
-      + 'Not read: DBA Dash\'s Import CPU, Import Logical Reads and Import Lag. A collection that runs less often than every 2 hours reads no data between its points.')));
+      + 'Not read: DBA Dash\'s Import CPU, Import Logical Reads and Import Lag. A collection that runs less often than every 2 hours reads no data between its points, and a range under an hour may hold no point.')));
   if (!families.length) { sec.append(el('p', { class: 'empty' }, 'No counter is known for this instance.')); return sec; }
 
   for (const [i, [famKey, famLabel]] of shown.entries()) {

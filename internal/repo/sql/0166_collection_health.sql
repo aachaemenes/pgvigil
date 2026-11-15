@@ -767,11 +767,13 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autova
 
 -- ===== B6g-4 (N30 / N31, design L12 / L56; the lead's 07:4x SERIES (a)): the Metrics family 'collection' =====
 -- The collection counters chartable and alertable, as DBA Dash's: per collection (the sub-series slot 'database' carries
--- the collection; the instance's series is the worst collection each hour - a rule with no collection named fires on
--- any one: the B6g-4 fold, the lead's 14:5x (a) #6), from the hour rows (one point an hour, stamped at the hour's END so
--- two points are exactly 60 minutes apart and an hourly collection's 60-minute rule never turns on a few ms of ticker
--- jitter: #2; every collector summed; fresh for 2 hours - a collection run less often reads 'no data' between its
--- points: #14): duration, CPU and logical reads (SQL Server's runs alone read their session, so those two are SQL
+-- the collection; the instance's series is the worst collection each hour: the B6g-4 fold, the lead's 14:5x (a) #6 - a
+-- rule naming no collection watches that series, so its run may pass from one collection to another hour by hour, and
+-- its alert names no collection; a 'below' rule must name one, the worst being the highest), from the hour rows (one
+-- point an hour, stamped at the hour's END so two points are exactly 60 minutes apart and an hourly collection's
+-- 60-minute rule never turns on a few ms of ticker jitter: #2 - so a failure at 10:17 is 'beyond since 11:00', and a
+-- page range under an hour may hold no point; every collector summed; fresh for 2 hours - a collection run less often
+-- reads 'no data' between its points: #14): duration, CPU and logical reads (SQL Server's runs alone read their session, so those two are SQL
 -- Server's rows - no rule on them judges a PostgreSQL instance: #13), import duration, and the failed per cent.
 -- DBA Dash's Import CPU, Import Logical Reads and Import Lag are not read (the page says so).
 -- metric_catalog keeps 0085's rows and every row another file adds there: its live definition is read and this
@@ -838,9 +840,15 @@ END $$;
 -- The Collection family's 60-minute floor in the store too (the B6g-4 fold #8): RulePayload refuses a shorter window in
 -- words; a call of import_alert_rule past the API meets this check, which the function's own 'refused by the store'
 -- path turns into a refused row of alert_rule_log. NOT VALID: no stored row is judged (no release carried the family).
+-- And a 'below' rule on the family names its collection (the review of the fold #4): with none it would read the
+-- worst - the highest - collection, so 'below' would mean every collection below.
 DO $do$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'alert_rules_collection_window' AND conrelid = 'pgvigil.alert_rules'::regclass) THEN
     ALTER TABLE pgvigil.alert_rules ADD CONSTRAINT alert_rules_collection_window
       CHECK (metric NOT LIKE 'collection.%' OR for_minutes >= 60) NOT VALID;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'alert_rules_collection_below' AND conrelid = 'pgvigil.alert_rules'::regclass) THEN
+    ALTER TABLE pgvigil.alert_rules ADD CONSTRAINT alert_rules_collection_below
+      CHECK (metric NOT LIKE 'collection.%' OR op = 'above' OR database IS NOT NULL) NOT VALID;
   END IF;
 END $do$;

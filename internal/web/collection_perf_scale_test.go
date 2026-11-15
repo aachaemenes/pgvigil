@@ -91,8 +91,15 @@ func TestCollectionPerfScaleJ5(t *testing.T) {
 // slowNodes: a plan's nodes whose actual total time is min ms or more, outermost first, with their rows and what they
 // spilled or sorted (the J5 rows read at the root over every collection: 124.7 s in vis-scale3, the cause unread)
 func slowNodes(n map[string]any, min float64, out *[]string) {
-	if ms, _ := n["Actual Total Time"].(float64); ms >= min {
-		s := fmt.Sprintf("%v %.0f ms, %.0f rows", n["Node Type"], ms, n["Actual Rows"])
+	// a node's time and rows are per loop: times its loops (the review of the B6g-4 fold #7 - an inner node of a nested
+	// loop at 0.5 ms x 10,000 loops is 5 s)
+	loops, _ := n["Actual Loops"].(float64)
+	if loops < 1 {
+		loops = 1
+	}
+	if per, _ := n["Actual Total Time"].(float64); per*loops >= min {
+		rows, _ := n["Actual Rows"].(float64)
+		s := fmt.Sprintf("%v %.0f ms, %.0f rows over %.0f loop(s)", n["Node Type"], per*loops, rows*loops, loops)
 		for _, k := range []string{"Relation Name", "Index Name", "Strategy", "Sort Method", "Sort Space Type", "Sort Space Used",
 			"Peak Memory Usage", "Disk Usage", "HashAgg Batches", "Workers Launched", "Presorted Key"} {
 			if v, ok := n[k]; ok {
