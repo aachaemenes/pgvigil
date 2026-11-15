@@ -22,6 +22,17 @@
 #     R7b live: 'optimize for ad hoc workloads' on, 400 distinct ad hoc batches run once each, mssql_memory: the
 #        newest read holds Compiled Plan Stub rows and the summary's compiled_plans counts them (400 or more single-use
 #        compiled plans); the memory findings' plan cache sentence, when a level is reached, names 'compiled plans'.
+#  R9. parallelism advice (Fixed 24, F10): R9a on ctrsyn's built rows (16 CPUs on one NUMA node; MAXDOP 0 and cost
+#     threshold 5 in force 2 h to 1 h ago, 8 and 50 since; cost threshold 50 alone 3 h to 2 h ago): mssql_advised_maxdop
+#     8 ('16 logical processors on one NUMA node: up to 8'), 16 with 32 CPUs over 2 nodes; the CXPACKET advice 90 min
+#     ago 'This server's MAXDOP is 0 and cost threshold for parallelism is 5 (advised MAXDOP 8: ...). Bring them to
+#     guidance: raise cost threshold for parallelism to 50, cap MAXDOP at 8 (...)', now 'Both are within topology
+#     guidance', 150 min ago 'check the other setting by hand', 5 h ago none (the static text stays); the THREADPOOL
+#     advice now 'Resolve the dominant cause ... Both are within topology guidance, so if it is parallelism the driver
+#     is the volume of concurrent parallel queries'. R9b live: mssql_activity and mssql_checks read; the advisor equals
+#     dbatools' rule over the container's own cpu_count and numa_node_count read by hand, and the advice now names the
+#     container's MAXDOP and cost threshold (5: 'raise cost threshold for parallelism to 50'). Red on f8e89d2: no
+#     mssql_advised_maxdop.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -121,4 +132,36 @@ FT=$(pq "SELECT coalesce(string_agg(detail, ' / '), '') FROM pgvigil.mssql_memor
 [[ -z "$FT" || "$FT" == *"compiled plans are used once"* ]] || fail "R7b: the plan cache finding's sentence [$FT]"
 ok "R7b: with optimize for ad hoc workloads on, $LV single-use stubs read live and counted as compiled plans by the summary ($LS)"
 
-echo "PROOF OK: pm313 rules (A R7)"
+echo "== R9. parallelism advice (Fixed 24) =="
+pq "INSERT INTO pgvigil.mssql_cpu_info (instance_id, snapshot_at, info) VALUES ($SY, now(), '{\"cpu_count\": 16, \"numa_node_count\": 1}')" >/dev/null
+ch() { pq "INSERT INTO pgvigil.mssql_config_history (instance_id, name, valid_from, valid_to, value, value_in_use)
+  VALUES ($SY, '$1', now() - interval '$2 minutes', $([[ -n "$3" ]] && echo "now() - interval '$3 minutes'" || echo NULL), $4, $4)" >/dev/null; }
+ch 'cost threshold for parallelism' 180 120 50
+ch 'max degree of parallelism' 120 60 0; ch 'cost threshold for parallelism' 120 60 5
+ch 'max degree of parallelism' 60 '' 8; ch 'cost threshold for parallelism' 60 '' 50
+adv() { pq "SELECT coalesce(pgvigil.mssql_parallelism_advice($SY, now() - interval '$1 minutes', '$2'), 'NULL')"; }
+AM=$(pq "SELECT maxdop || '|' || basis FROM pgvigil.mssql_advised_maxdop($SY)")
+C90=$(adv 90 cx); C0=$(adv 0 cx); C150=$(adv 150 cx); C300=$(adv 300 cx); T0=$(adv 0 threadpool)
+for x in "$AM" "$C90" "$C0" "$C150" "$C300" "$T0"; do echo "   $x"; done
+[[ "$AM" == "8|16 logical processors on one NUMA node: up to 8" ]] || fail "R9a: the advisor [$AM]"
+[[ "$C90" == "This server's MAXDOP is 0 and cost threshold for parallelism is 5 (advised MAXDOP 8: 16 logical processors on one NUMA node: up to 8). Bring them to guidance: raise cost threshold for parallelism to 50, cap MAXDOP at 8 (16 logical processors on one NUMA node: up to 8). Most OLTP"* ]] \
+  || fail "R9a: 90 minutes ago [$C90]"
+[[ "$C0" == *"Both are within topology guidance, so the parallelism is coming from the plans themselves"* ]] || fail "R9a: now [$C0]"
+[[ "$C150" == "This server's MAXDOP is not readable this window and cost threshold for parallelism is 50"*"check the other setting by hand"* ]] || fail "R9a: 150 minutes ago [$C150]"
+[[ "$C300" == NULL ]] || fail "R9a: 5 hours ago, nothing read [$C300]"
+[[ "$T0" == "Resolve the dominant cause: parallelism or blocking. This server's MAXDOP is 8"*"so if it is parallelism the driver is the volume of concurrent parallel queries"* ]] || fail "R9a: THREADPOOL now [$T0]"
+pq "UPDATE pgvigil.mssql_cpu_info SET info = '{\"cpu_count\": 32, \"numa_node_count\": 2}' WHERE instance_id = $SY" >/dev/null
+AM2=$(pq "SELECT maxdop FROM pgvigil.mssql_advised_maxdop($SY)"); [[ "$AM2" == 16 ]] || fail "R9a: 32 CPUs over 2 nodes [$AM2] (want 16)"
+ok "R9a: the advisor 8 and 16; the four CXPACKET cases (off guidance, within, one by hand, none read) and THREADPOOL's within"
+col mssql_activity mssql_checks
+HW=$(sq "SELECT CAST(cpu_count AS varchar(10)) + '|' + CAST(numa_node_count AS varchar(10)) FROM sys.dm_os_sys_info")
+LM=$(pq "SELECT maxdop FROM pgvigil.mssql_advised_maxdop($SB)")
+WANT=$(python3 -c "import sys; c, n = map(int, sys.argv[1].split('|')); print(min(c, 8) if n <= 1 else min(max(c // n, 1), 16))" "$HW")
+CL=$(pq "SELECT coalesce(pgvigil.mssql_parallelism_advice($SB, now(), 'cx'), 'NULL')")
+MD=$(sq "SELECT CAST(value_in_use AS varchar(10)) FROM sys.configurations WHERE name = 'max degree of parallelism'")
+echo "   live: sys_info cpus|nodes $HW, advised $LM (dbatools' rule $WANT); MAXDOP $MD; advice: $CL"
+[[ "$LM" == "$WANT" ]] || fail "R9b: the advisor $LM, dbatools' rule over the container's own facts $WANT"
+[[ "$CL" == "This server's MAXDOP is $MD and cost threshold for parallelism is 5 "*"raise cost threshold for parallelism to 50"* ]] || fail "R9b: the live advice [$CL]"
+ok "R9b: the advisor equals dbatools' rule over the container's cpu_count and numa_node_count ($LM); the advice names its MAXDOP $MD and cost threshold 5"
+
+echo "PROOF OK: pm313 rules (A R7 R9)"
