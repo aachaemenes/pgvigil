@@ -161,7 +161,8 @@
 #        direct lag() over the samples [red FAIL]
 #   RU2  a late sample at H+59m50s (8): H rise 16, H+1 rise 1; the hours recomputed twice are the same rows (an md5 of
 #        the rows read twice: the first red run passed it on two failed reads alike) [red FAIL]
-#   RU3  inside BEGIN ... ROLLBACK: a pair across the next month's first second - the trigger makes that month's
+#   RU3  inside BEGIN ... ROLLBACK: a pair across the first second of the month after next (since review A's fold the
+#        migration makes this month's and next month's hours partitions: RU3 [red ok on e6b2501]) - the trigger makes that month's
 #        partition, the pair's rise 4 in the new month's first hour; nothing left after the rollback [red FAIL]
 #   RU4  a table holding the partition name of the month 3 back (no other row's month; review 19:0x): an import of a sample there commits (the sample stored), one
 #        'rollup failed' row, its hours marked; the table dropped, the next import heals them ('rollup healed', the
@@ -905,7 +906,7 @@ SQL
   m2=$(q "select md5(string_agg(h::text, ',' order by kind, key, snapshot_at)) from pgvigil.replication_hourly h where instance_id = $RU")
   [[ "$m1" =~ ^[0-9a-f]{32}$ && "$m1" == "$m2" && "$r" != *ERROR* ]] && ok "RU2 the hours recomputed twice are the same rows" || fail "RU2 twice != once ($m1 / $m2; $r)"   # an md5, not two failed reads alike
   # RU3 the month boundary, inside BEGIN ... ROLLBACK (a future sample must not stay: replication_latest takes the newest)
-  M=$(q "select to_char(date_trunc('month', now() at time zone 'UTC') + interval '1 month', 'YYYY-MM-DD 00:00:00+00')")
+  M=$(q "select to_char(date_trunc('month', now() at time zone 'UTC') + interval '2 months', 'YYYY-MM-DD 00:00:00+00')")   # the migration made next month's
   MP=$(q "select to_char('$M'::timestamptz at time zone 'UTC', 'YYYYMM')")
   r=$(psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 2>&1 <<SQL
 begin;

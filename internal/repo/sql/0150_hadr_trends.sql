@@ -25,8 +25,8 @@
 --                      recomputes ONLY those hours: it takes the instance's advisory lock with pg_try_advisory_xact_lock
 --                      and, when a heal or a build holds it, merges the hours into the instance's 'mark' range and
 --                      returns at once (the import never waits); after its hours it heals a 'mark' range of a day or
---                      less under the budget (pgvigil.replication_heal_ms, 2000 ms), each chunk's cost estimated before
---                      it from the chunk before
+--                      less under the budget (pgvigil.replication_heal_ms, 2000 ms), one UTC hour a chunk, each chunk's
+--                      cost estimated before it from its own samples at the rate of the chunks before
 --   the first build    none in this file (no migration writes a stored row): 'pgvigil purge' builds each instance
 --                      (replication_hourly_pending; replication_hourly_months in its own transaction first - a partition
 --                      made inside the build would lock the table for every other instance's rollup until the build
@@ -45,8 +45,9 @@
 --                      starts at the UTC hour of p_from (its first point may hold up to 59 minutes before p_from); the
 --                      max per bucket (a spike survives the switch); metric 'lag' or 'conflicts' (the rise)
 --
--- Locks: CREATE TRIGGER takes SHARE ROW EXCLUSIVE on replication_sample until this file commits (the replication
--- collection's writes wait the few milliseconds the file takes; nothing here scans the samples). lock_timeout bounds it.
+-- Locks: CREATE TRIGGER takes SHARE ROW EXCLUSIVE on replication_sample, and the ALTER TABLE of pg_repl_standby_state
+-- ACCESS EXCLUSIVE on that table (one row per instance), until this file commits (the replication collection's writes
+-- wait the few milliseconds the file takes; nothing here scans the samples). lock_timeout bounds it.
 -- Partition parents for purge(): replication_hourly, dropped by replication_hourly_purge, not purge()'s list.
 SET LOCAL lock_timeout = '20s';
 
@@ -69,6 +70,14 @@ CREATE TABLE IF NOT EXISTS pgvigil.replication_hourly (
   gap_rise       jsonb,                      -- counter kinds: the rise of the longer pairs (a collector gap)
   PRIMARY KEY (instance_id, kind, key, snapshot_at)
 ) PARTITION BY RANGE (snapshot_at);
+
+-- this month's and next month's partitions made here, so no import's rollup makes one: making a partition locks the
+-- whole table until the import that made it commits (review A #1); purge makes each next month ahead after this
+DO $$
+BEGIN
+  PERFORM pgvigil.ensure_month_partition('replication_hourly', now());
+  PERFORM pgvigil.ensure_month_partition('replication_hourly', (date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC');
+END $$;
 
 -- the hours not (re)built yet: 'build' = an instance's first build, its range shrunk from the newest end as chunks are
 -- done; 'mark' = hours a locked or failed trigger call could not write, merged into one range
@@ -127,8 +136,11 @@ LANGUAGE sql STABLE AS $$
                             AND o.snapshot_at < p_from - interval '15 minutes' AND o.snapshot_at >= s.snapshot_at - interval '1 day'
                           ORDER BY o.snapshot_at DESC LIMIT 1) b ON true
      WHERE s.snapshot_at >= p_from
+       -- bounded to the range as well (review A #3: unbounded, the planner may hash every 'standby' sample of the
+       -- instance - its whole history - on every import)
        AND (s.kind <> 'conflict' OR EXISTS (SELECT 1 FROM pgvigil.replication_sample r
-                                             WHERE r.instance_id = p_instance_id AND r.snapshot_at = s.snapshot_at AND r.kind = 'standby')))
+                                             WHERE r.instance_id = p_instance_id AND r.snapshot_at = s.snapshot_at AND r.kind = 'standby'
+                                               AND r.snapshot_at >= p_from AND r.snapshot_at < p_to)))
   SELECT p.kind, p.key, p.snapshot_at, c.counter,
          CASE WHEN (p.detail->>c.counter)::numeric >= (p.p_detail->>c.counter)::numeric
               THEN (p.detail->>c.counter)::numeric - (p.p_detail->>c.counter)::numeric
@@ -232,18 +244,22 @@ BEGIN
   END IF;
 END $$;
 
--- replication_hourly_heal: one instance's dirty ranges rebuilt, newest hours first, in chunks sized by a row estimate
--- (about 200,000 samples a chunk, 1 to 168 hours, from the samples of the hour below the chunk); the caller holds the
--- instance's lock. p_build = also the 'build' range, and an instance with samples and no first build queued first
--- (purge); else only a 'mark' range of a day or less (the trigger). With a budget (p_budget_ms) each chunk's cost is
--- estimated before it from the chunk before (ms per sample): the heal stops before a chunk that would pass the budget
--- and keeps the rest of the range (a range widened meanwhile by an unlocked writer is kept whole). A range done is
--- removed as it was read; one that had a 'rollup failed' row gets a 'rollup healed' row. Returns the hour rows written.
+-- replication_hourly_heal: one instance's dirty ranges rebuilt, newest hours first; the caller holds the instance's
+-- lock. p_build = also the 'build' range, and an instance with samples and no first build queued first (purge), in
+-- chunks sized by a row estimate (about 200,000 samples a chunk, 1 to 168 hours, from the samples of the hour below the
+-- chunk); else only a 'mark' range of a day or less (the trigger). 'build' first, 'mark' last and read only after the
+-- build: a heal holds a row it deletes until its commit, and every import of the instance merges its hours into the
+-- 'mark' row - deleted at a build's start it would hold each of them for the whole build (review A #2). With a budget
+-- (p_budget_ms, the trigger) one UTC hour a chunk, its cost estimated before it from its own samples at the rate of the
+-- chunks before (0.05 ms a sample until 1,000 are done); the first chunk always runs (an hour, never a day: review A
+-- #4); the heal stops before a chunk that would pass the budget and keeps the rest of the range. A range done is
+-- removed only as it was read (from, to and noted_at: a writer that merged hours into it meanwhile keeps it whole); one
+-- that had a 'rollup failed' row gets a 'rollup healed' row. Returns the hour rows written.
 CREATE OR REPLACE FUNCTION pgvigil.replication_hourly_heal(p_instance_id int, p_budget_ms int DEFAULT NULL, p_build boolean DEFAULT false)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
-  v record; v_n int := 0; v_t0 timestamptz := clock_timestamp(); v_lo timestamptz; v_hi timestamptz; v_cut timestamptz;
-  v_rph numeric; v_hours int; v_ms_per_row numeric; v_c0 timestamptz; v_rows numeric;
+  v record; v_src text; v_n int := 0; v_t0 timestamptz := clock_timestamp(); v_lo timestamptz; v_hi timestamptz; v_cut timestamptz;
+  v_rph numeric; v_hours int; v_rows numeric; v_c0 timestamptz; v_chunks int := 0; v_done_rows numeric := 0; v_done_ms numeric := 0;
 BEGIN
   IF p_build AND NOT EXISTS (SELECT 1 FROM pgvigil.replication_hourly_first_build b WHERE b.instance_id = p_instance_id) THEN
     SELECT min(s.snapshot_at), max(s.snapshot_at) INTO v_lo, v_hi FROM pgvigil.replication_sample s WHERE s.instance_id = p_instance_id;
@@ -255,30 +271,39 @@ BEGIN
     END IF;
     INSERT INTO pgvigil.replication_hourly_first_build (instance_id) VALUES (p_instance_id) ON CONFLICT (instance_id) DO NOTHING;
   END IF;
-  FOR v IN SELECT d.source, d.from_at, d.to_at, d.logged_at FROM pgvigil.replication_hourly_dirty d
-            WHERE d.instance_id = p_instance_id AND (d.source = 'build' AND p_build OR d.source = 'mark' AND (p_build OR d.to_at - d.from_at <= interval '1 day'))
-            ORDER BY d.source DESC LOOP   -- 'mark' first (the newer hours)
+  FOREACH v_src IN ARRAY ARRAY['build', 'mark'] LOOP   -- each read at its turn: 'mark' after the build
+    SELECT d.source, d.from_at, d.to_at, d.noted_at, d.logged_at INTO v FROM pgvigil.replication_hourly_dirty d
+     WHERE d.instance_id = p_instance_id AND d.source = v_src
+       AND (v_src = 'build' AND p_build OR v_src = 'mark' AND (p_build OR d.to_at - d.from_at <= interval '1 day'));
+    CONTINUE WHEN NOT FOUND;
     v_lo := date_trunc('hour', v.from_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
     v_hi := v.to_at;
     WHILE v_hi > v_lo LOOP
-      SELECT count(*) INTO v_rph FROM pgvigil.replication_sample s
-       WHERE s.instance_id = p_instance_id AND s.snapshot_at >= v_hi - interval '1 hour' AND s.snapshot_at < v_hi;
-      v_hours := greatest(1, least(168, floor(200000 / greatest(v_rph, 1))))::int;
-      v_cut := greatest(v_lo, v_hi - make_interval(hours => v_hours));
-      v_rows := greatest(v_rph, 1) * extract(epoch FROM v_hi - v_cut) / 3600;
-      IF p_budget_ms IS NOT NULL AND v_ms_per_row IS NOT NULL
-         AND extract(epoch FROM clock_timestamp() - v_t0) * 1000 + v_rows * v_ms_per_row > p_budget_ms THEN
-        UPDATE pgvigil.replication_hourly_dirty d SET to_at = v_hi, noted_at = now()
-         WHERE d.instance_id = p_instance_id AND d.source = v.source AND d.from_at = v.from_at AND d.to_at = v.to_at;
-        RETURN v_n;
+      IF p_budget_ms IS NULL THEN
+        SELECT count(*) INTO v_rph FROM pgvigil.replication_sample s
+         WHERE s.instance_id = p_instance_id AND s.snapshot_at >= v_hi - interval '1 hour' AND s.snapshot_at < v_hi;
+        v_hours := greatest(1, least(168, floor(200000 / greatest(v_rph, 1))))::int;
+        v_cut := greatest(v_lo, v_hi - make_interval(hours => v_hours));
+      ELSE
+        v_cut := greatest(v_lo, date_trunc('hour', (v_hi - interval '1 microsecond') AT TIME ZONE 'UTC') AT TIME ZONE 'UTC');
+        SELECT count(*) INTO v_rows FROM pgvigil.replication_sample s   -- the chunk's hour as replication_hours widens it
+         WHERE s.instance_id = p_instance_id AND s.snapshot_at >= v_cut AND s.snapshot_at < v_cut + interval '1 hour';
+        IF v_chunks > 0 AND extract(epoch FROM clock_timestamp() - v_t0) * 1000
+                            + v_rows * CASE WHEN v_done_rows >= 1000 THEN v_done_ms / v_done_rows ELSE 0.05 END > p_budget_ms THEN
+          UPDATE pgvigil.replication_hourly_dirty d SET to_at = v_hi, noted_at = now()
+           WHERE d.instance_id = p_instance_id AND d.source = v.source AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
+          RETURN v_n;
+        END IF;
       END IF;
       v_c0 := clock_timestamp();
       v_n := v_n + pgvigil.replication_hours(p_instance_id, v_cut, v_hi);
-      v_ms_per_row := extract(epoch FROM clock_timestamp() - v_c0) * 1000 / v_rows;
+      v_done_ms := v_done_ms + extract(epoch FROM clock_timestamp() - v_c0) * 1000;
+      v_done_rows := v_done_rows + coalesce(v_rows, 0);
+      v_chunks := v_chunks + 1;
       v_hi := v_cut;
     END LOOP;
     DELETE FROM pgvigil.replication_hourly_dirty d
-     WHERE d.instance_id = p_instance_id AND d.source = v.source AND d.from_at = v.from_at AND d.to_at = v.to_at;
+     WHERE d.instance_id = p_instance_id AND d.source = v.source AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
     IF FOUND AND v.logged_at IS NOT NULL THEN
       INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
       VALUES (p_instance_id, 'replication_hourly', now(), 'ok',
@@ -338,12 +363,13 @@ BEGIN
   -- every lock the rollup waits for is waited 1 s at most (a month's partition made while a heal holds the table, a row
   -- a heal writes): past it the hours are marked and the import commits - it never waits out the repository timeout
   PERFORM set_config('lock_timeout', '1s', true);
-  IF v_to - v_from > interval '1 day' THEN   -- a wide write (a delete of an instance's history): purge's heal rebuilds it
-    PERFORM pgvigil.replication_hourly_mark(p_instance_id, v_from, v_to, 'a write over more than a day of samples');
-    PERFORM set_config('lock_timeout', v_lt, true);
-    RETURN;
-  END IF;
   BEGIN
+    IF v_to - v_from > interval '1 day' THEN   -- a wide write (a delete of an instance's history): purge's heal rebuilds it
+      -- inside the handler's block: its error (a lock wait past 1 s) never fails the writer (review A #8)
+      PERFORM pgvigil.replication_hourly_mark(p_instance_id, v_from, v_to, 'a write over more than a day of samples');
+      PERFORM set_config('lock_timeout', v_lt, true);
+      RETURN;
+    END IF;
     IF NOT pg_try_advisory_xact_lock(hashtext('pgvigil.replication_hourly'), p_instance_id) THEN
       PERFORM pgvigil.replication_hourly_mark(p_instance_id, v_from, v_to, 'the instance''s hours were being built or healed');
       PERFORM set_config('lock_timeout', v_lt, true);
@@ -524,22 +550,43 @@ INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
   warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
 
+-- a standby's last slot kept past its promotion (review A #5): import_replication (0141) stores primary_slot only while
+-- the server is in recovery, and 'two primaries' pairs a promoted standby with its old primary's link by that slot (a
+-- standby's walreceiver sends cluster_name, else 'walreceiver': with neither set the link names no one)
+ALTER TABLE pgvigil.pg_repl_standby_state ADD COLUMN IF NOT EXISTS last_primary_slot text, ADD COLUMN IF NOT EXISTS last_slot_at timestamptz;
+UPDATE pgvigil.pg_repl_standby_state SET last_primary_slot = primary_slot, last_slot_at = read_at
+ WHERE in_recovery AND primary_slot IS NOT NULL AND last_primary_slot IS DISTINCT FROM primary_slot;
+CREATE OR REPLACE FUNCTION pgvigil.pg_repl_standby_last_slot_tg()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.in_recovery AND NEW.primary_slot IS NOT NULL THEN   -- else the row keeps the slot it last streamed through
+    NEW.last_primary_slot := NEW.primary_slot;
+    NEW.last_slot_at := NEW.read_at;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS pg_repl_standby_last_slot ON pgvigil.pg_repl_standby_state;
+CREATE TRIGGER pg_repl_standby_last_slot BEFORE INSERT OR UPDATE ON pgvigil.pg_repl_standby_state
+  FOR EACH ROW EXECUTE FUNCTION pgvigil.pg_repl_standby_last_slot_tg();
+
 -- pg_cluster_checks: the checks across the members of one PostgreSQL cluster (one system identifier), the columns of
 -- pg_hadr_checks. Members: active instances with a role read (rolechange, every minute), managed platforms out (the
 -- provider's); fresh = read in the last 3 minutes.
 --   'two primaries'             critical on EACH of two fresh primaries of one cluster when B was promoted after A's
---                               role began, A was read as primary after B's promotion and both were read as primary
---                               twice since (55 s apart: the minute's reads), and the two are one topology: a link
---                               between them in 7 days (pg_repl_link_seen: the link's application_name is the other's
---                               name or cluster_name), a common upstream that sent to both, or one 'cluster' tag value
---                               on both. A promoted copy that never streamed, and a switchover whose old primary is
---                               stopped, raise nothing. Patroni clusters too (the detail names Patroni's leader).
+--                               role began, both were read as primary 55 s or more after the collector saw B's
+--                               promotion (detected_at: the collector's clock for both sides, never the promoted
+--                               server's changed_at - review A #9), and the two are one topology: a link between them
+--                               in 7 days (pg_repl_link_seen: the link's application_name is the other's name or
+--                               cluster_name, or its slot is the one the other last streamed through, kept past its
+--                               promotion), a common upstream that sent to both, or one 'cluster' tag value on both. A
+--                               promoted copy that never streamed, and a switchover whose old primary is stopped, raise
+--                               nothing. Patroni clusters too (the detail names Patroni's leader).
 --   'cluster without a primary' critical, ONE finding on the member last seen primary (else the lowest instance id), when
 --                               no fresh member is primary, every fresh standby of the identifier has had its receiver
---                               down for 2 reads or more or is cascaded (a fresh standby of the cluster streams to it now:
---                               its receiver stays up), at least one is down, and a member was read as primary in the
---                               last 7 days; never
---                               where a fresh Patroni read covers a member (task 376's 'no leader' says it). A primary
+--                               down for 2 reads or more or is cascaded (a fresh standby of the cluster streams to it now,
+--                               the link named for it or through its slot: its receiver stays up), at least one is down,
+--                               and a member was read as primary in the last 7 days; never where a fresh Patroni read
+--                               covers a member (task 376's 'no leader' says it). A primary
 --                               not read while its standbys stream raises nothing here.
 --   'standby queries cancelled' warning on a standby in recovery, one per database, when a read in the last 2 minutes
 --                               saw the database's confl_* counters rise by the 'standby_conflicts' threshold (3) or
@@ -547,10 +594,13 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
 --                               out); the detail names each counter's rise. Every platform.
 CREATE OR REPLACE VIEW pgvigil.pg_cluster_checks AS
 WITH m AS (
-  SELECT rs.instance_id, i.name, rs.system_identifier AS sysid, rs.is_replica, rs.read_at, rs.since, rs.cluster_name,
-         rs.read_at > now() - interval '3 minutes' AS fresh
+  SELECT rs.instance_id, i.name, rs.system_identifier AS sysid, rs.is_replica, rs.read_at, rs.since,
+         nullif(rs.cluster_name, '') AS cluster_name,   -- an empty name matches no link (review A #5)
+         rs.read_at > now() - interval '3 minutes' AS fresh,
+         CASE WHEN ss.last_slot_at > now() - interval '7 days' THEN ss.last_primary_slot END AS last_slot
     FROM pgvigil.pg_role_state rs
     JOIN pgvigil.instances i ON i.instance_id = rs.instance_id AND i.is_active
+    LEFT JOIN pgvigil.pg_repl_standby_state ss ON ss.instance_id = rs.instance_id
    WHERE rs.system_identifier IS NOT NULL AND i.platform NOT IN ('rds', 'aurora', 'azure', 'cloudsql', 'alloydb')
 ),
 prom AS (
@@ -565,17 +615,17 @@ split AS (    -- a: the primary whose role began first; b: promoted after it
     JOIN prom p ON p.instance_id = b.instance_id
    WHERE a.fresh AND b.fresh AND NOT a.is_replica AND NOT b.is_replica
      AND coalesce(a.since, '-infinity') < p.changed_at
-     AND a.read_at >= p.changed_at + interval '55 seconds'
+     AND a.read_at >= p.detected_at + interval '55 seconds'
      AND b.read_at >= p.detected_at + interval '55 seconds'
      AND (EXISTS (SELECT 1 FROM pgvigil.pg_repl_link_seen l
                    WHERE l.last_seen > now() - interval '7 days'
-                     AND ((l.instance_id = a.instance_id AND lower(l.application_name) IN (lower(b.name), lower(coalesce(b.cluster_name, ''))))
-                       OR (l.instance_id = b.instance_id AND lower(l.application_name) IN (lower(a.name), lower(coalesce(a.cluster_name, ''))))))
+                     AND ((l.instance_id = a.instance_id AND (lower(l.application_name) IN (lower(b.name), lower(b.cluster_name)) OR l.slot_name = b.last_slot))
+                       OR (l.instance_id = b.instance_id AND (lower(l.application_name) IN (lower(a.name), lower(a.cluster_name)) OR l.slot_name = a.last_slot))))
           OR EXISTS (SELECT 1 FROM pgvigil.pg_repl_link_seen la
                        JOIN pgvigil.pg_repl_link_seen lb ON lb.instance_id = la.instance_id
                       WHERE la.last_seen > now() - interval '7 days' AND lb.last_seen > now() - interval '7 days'
-                        AND lower(la.application_name) IN (lower(a.name), lower(coalesce(a.cluster_name, '')))
-                        AND lower(lb.application_name) IN (lower(b.name), lower(coalesce(b.cluster_name, ''))))
+                        AND (lower(la.application_name) IN (lower(a.name), lower(a.cluster_name)) OR la.slot_name = a.last_slot)
+                        AND (lower(lb.application_name) IN (lower(b.name), lower(b.cluster_name)) OR lb.slot_name = b.last_slot))
           OR EXISTS (SELECT 1 FROM pgvigil.instance_tag_pairs ta
                        JOIN pgvigil.instance_tag_pairs tb ON tb.key = ta.key AND tb.value = ta.value
                       WHERE ta.instance_id = a.instance_id AND tb.instance_id = b.instance_id AND ta.key = 'cluster'))
@@ -596,10 +646,11 @@ headless AS (
             FROM (SELECT m.*, st.in_recovery AS st_in_recovery, st.down_reads, st.read_at AS st_read_at,
                          EXISTS (SELECT 1 FROM pgvigil.pg_patroni_read pr
                                   WHERE pr.instance_id = m.instance_id AND pr.ok AND pr.snapshot_at > now() - interval '3 minutes') AS patroni_fresh,
-                         -- a cascaded standby: a fresh standby of the cluster streams to it now (its receiver stays up)
+                         -- a cascaded standby: a fresh standby of the cluster streams to it now (its receiver stays
+                         -- up), the link named for it or through its slot
                          EXISTS (SELECT 1 FROM pgvigil.pg_repl_link_seen l JOIN m u ON u.instance_id = l.instance_id AND u.sysid = m.sysid AND u.fresh AND u.is_replica
                                   WHERE l.checked_at > now() - interval '3 minutes' AND l.gone_reads = 0 AND l.last_state = 'streaming'
-                                    AND lower(l.application_name) IN (lower(m.name), lower(coalesce(m.cluster_name, '')))) AS cascaded
+                                    AND (lower(l.application_name) IN (lower(m.name), lower(m.cluster_name)) OR l.slot_name = st.primary_slot)) AS cascaded
                     FROM m LEFT JOIN pgvigil.pg_repl_standby_state st ON st.instance_id = m.instance_id) mm
            GROUP BY mm.sysid
           HAVING count(*) FILTER (WHERE mm.fresh AND NOT mm.is_replica) = 0
