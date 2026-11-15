@@ -25,7 +25,7 @@ import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
 import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState, Target, withTarget } from './fleet';
 import { Ctx, href, isMssql } from './router';
-import { summaryCellAction } from './uptimedialog';
+import { ownPageAction } from './rowjump';
 import { verdict, verdictCard } from './verdict';
 import { el, fmtTime, pill } from './ui';
 
@@ -277,11 +277,10 @@ function reasonLine(ctx: Ctx, b: ReturnType<typeof instBand>, r: Row): HTMLEleme
     ...b.items.map(i => ({ key: i.key, text: `${i.label} ${cellText(i.cell)}`, tab: i.target.tab, href: to(i.target) }))];
   const box = el('div', { class: `meta inst-reason ${b.cls}` });
   const one = (x: typeof links[number]): HTMLElement => {
-    if (x.tab !== ctx.tab) return el('a', { class: 'cell-link', href: x.href }, x.text);
-    if (x.key !== 'uptime') return el('span', { class: 'reason-text', 'data-nolink': 'this page' }, x.text);
-    const a = el('a', { class: 'cell-link', href: x.href }, x.text) as HTMLAnchorElement;
-    summaryCellAction(a, 'uptime', r);
-    return a;
+    const a = el('a', { class: 'cell-link', href: x.href, 'data-group': x.key }, x.text) as HTMLAnchorElement;
+    // a reason whose page is this one answers here (rowjump.ts: Instance Uptime's dialog, a Server card row), else text
+    if (x.tab !== ctx.tab || ownPageAction(a, x.key, Number(r.instance_id))) return a;
+    return el('span', { class: 'reason-text', 'data-group': x.key, 'data-nolink': 'this page' }, x.text);
   };
   const draw = (all: boolean) => {
     const parts: (string | HTMLElement)[] = [];

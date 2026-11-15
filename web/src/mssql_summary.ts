@@ -7,12 +7,14 @@ import { cellClass, cells, cellTarget, cellText, fleet, groups, withTarget } fro
 import { Ctx, href } from './router';
 import { badge, el, fmtTime, grid, props, Col } from './ui';
 import { healthCalendar } from './healthcal';
+import { jumpWhenDrawn, markRows, ownPageAction } from './rowjump';
 
 const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 // the check opens the finding's own page (alert_page.ts: the finding as it stands, its fix, its firings), as a row of
 // the Alerts page does; one link a row, the cells beside it text (DBA Dash's grids)
 const findingCols = (ctx: Ctx): Col[] => [
-  { key: 'severity', fmt: sev },
+  // the severity is a status text: a link where the check's link goes
+  { key: 'severity', fmt: (v, r) => r.finding_key == null ? sev(v) : el('a', { href: alertHref(r.finding_key, undefined, ctx), class: 'cell-link' }, sev(v)) },
   { key: 'setting', label: 'check', fmt: (v, r) => r.finding_key == null ? String(v ?? '') : el('a', { href: alertHref(r.finding_key, undefined, ctx) }, String(v ?? '')) },
   { key: 'value', label: 'object' },
   { key: 'detail' }, { key: 'at', label: 'seen', fmt: fmtTime },
@@ -38,10 +40,12 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
   // every group named is a link to its page - the header's own target (cellTarget: the tab, the view it opens on and
   // its status filter, so 'Suspect pages' opens the checks page's Build view here as its reason does in the header);
   // one whose page is this Summary (DB Mail: DBA Dash's text cell) is text
+  // one whose page is this Summary answers here (rowjump.ts: Memory dumps and DB Mail jump to their Server card row,
+  // Instance Uptime opens its dialog)
   const named = (g: typeof mine[number], words: string, cls = '') => {
     const t = cellTarget(g, r);
-    return t.tab === ctx.tab ? el('span', { class: cls, 'data-nolink': 'this page' }, words)
-      : el('a', { class: cls, href: withTarget(href(ctx, { tab: t.tab }), t) }, words);
+    const a = el('a', { class: cls, href: withTarget(href(ctx, { tab: t.tab }), t), 'data-group': g.key }, words) as HTMLAnchorElement;
+    return t.tab !== ctx.tab || ownPageAction(a, g.key, Number(r.instance_id)) ? a : el('span', { class: cls, 'data-group': g.key, 'data-nolink': 'this page' }, words);
   };
   const sep = (xs: HTMLElement[]) => xs.flatMap((a, i) => i ? [', ', a] : [a]);
   sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? 'No warning or critical' : 'Not OK: ',
@@ -55,7 +59,7 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
     ...(notHere.length ? ['; skipped on this instance (each page says why): ', ...sep(notHere.map(g => named(g, g.mssql?.[2] ?? g.label))), '.'] : ['.'])));
   const mem = (v: unknown) => v == null ? '' : `${(Number(v) / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`;
   const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
-  sec.append(el('h3', {}, 'Server'), props([
+  const server = props([
     ['version', [s.product_version, s.product_level, s.product_update_level].filter(Boolean).map(String).join(' ') || String(r.server_version ?? '')],
     ['edition', String(s.edition ?? '')],
     ['server', [s.server_name, s.machine_name && s.machine_name !== s.server_name ? `(machine ${String(s.machine_name)})` : ''].filter(Boolean).map(String).join(' ')],
@@ -70,7 +74,11 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
     ['virtual machine', String(s.virtual_machine_type ?? '').toLowerCase()],
     ['tags', Array.isArray(r.tags) ? r.tags.map(String).join(', ') : ''],
     ['description read', s.snapshot_at ? fmtTime(s.snapshot_at) : 'not yet'],
-  ]));
+  ]);
+  // the rows a status text of this page jumps to (Memory dumps, DB Mail), and the one the address names (row=)
+  markRows(server);
+  sec.append(el('h3', {}, 'Server'), server);
+  jumpWhenDrawn(sec);
   const rows = rowsOf(fi).filter(x => Number(x.instance_id) === ctx.instance && x.severity !== 'info').map(x => {
     const k = seen.get(`${String(x.setting ?? '')}\x1f${String(x.value ?? '')}`);
     return { ...x, _occ: k?.occurrences ?? null, _first: k?.first_seen ?? null };

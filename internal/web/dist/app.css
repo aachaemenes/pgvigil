@@ -450,6 +450,9 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 .inst-header .status-line.awaiting { color: var(--warn); }
 .inst-reason { margin: var(--sp-1) 0 0; }
 .inst-reason.crit { color: var(--crit); } .inst-reason.warn { color: var(--warn); }
+/* a status text of this page jumps to its row (rowjump.ts): the row clear of the sticky header and tabs, marked 2 s */
+table.props tr[data-row] { scroll-margin-top: 7rem; }
+table.props tr.row-flash { outline: var(--focus-w) solid var(--accent); outline-offset: calc(-1 * var(--focus-w)); }
 /* the header's reasons and status line are links: they keep the state colour of their line (never the link colour) */
 .inst-reason a, .inst-header .status-line a { color: inherit; }
 .chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }

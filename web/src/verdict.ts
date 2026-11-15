@@ -9,6 +9,7 @@ import { Cell, cellTarget, cellText, groups, humanize, labelOf, Target, withTarg
 import type { BandItem, Freshness, InstBand } from './instheader';
 import { Ctx, href } from './router';
 import { el } from './ui';
+import { ownPageAction } from './rowjump';
 
 // a group's plain phrase: one for both engines, or PostgreSQL's and SQL Server's; a pair [warning, critical] where the
 // level changes the words. No DMV, setting or SQL name (the card's rule): what a reader would say to a colleague.
@@ -122,7 +123,6 @@ export function verdict(r: Row, live: Row | undefined, now: number, b: InstBand,
   return { state, word, sentence, reasons, notes, acked: b.acked, notJudged };
 }
 
-const plainGroups = new Set(groups.filter(g => g.plain).map(g => g.key));
 const stateCls: Record<VerdictState, string> = { ok: 'ok', warning: 'warn', problem: 'crit', unread: 'none' };
 
 // verdictCard: the card on the instance's Summary (instheader.ts instanceFrame places it under the header)
@@ -137,22 +137,24 @@ export function verdictCard(ctx: Ctx, v: Verdict): HTMLElement {
       el('span', { class: `badge verdict-word ${stateCls[v.state]}` }, v.word), ' ', el('span', { class: 'verdict-sentence' }, v.sentence))));
   if (v.reasons.length) {
     card.append(el('ul', { class: 'verdict-reasons' }, ...v.reasons.map(q => {
-      // a reason links to its Summary cell's page; one whose page is this one (a SQL Server Memory Dump, Instance Uptime,
-      // DB Mail) or a group the Summary shows as plain text is text, as the fleet Summary shows it
+      // a reason links to its Summary cell's page, as the header's reason does; one whose page is this one answers
+      // here (rowjump.ts: Instance Uptime's dialog, a SQL Server Memory dumps / DB Mail Server card row) or is text
       // the cell's own text ('(1 warning)') is inside the link: a click on it goes where the phrase goes
-      const text = q.target.tab === ctx.tab || plainGroups.has(q.key);
       const words = [q.phrase, q.cell ? ` (${cellText(q.cell)})` : ''];
-      const a = text ? el('span', { class: 'verdict-text' }, ...words) : el('a', { href: to(q.target) }, ...words);
+      const link = el('a', { href: to(q.target) }, ...words) as HTMLAnchorElement;
+      const text = q.target.tab === ctx.tab && !ownPageAction(link, q.key, ctx.instance ?? 0);
+      const a = text ? el('span', { class: 'verdict-text' }, ...words) : link;
       if (q.cell?.detail.length) a.title = q.cell.detail.join('\n');
-      return el('li', { class: q.level >= 2 ? 'crit' : 'warn', 'data-group': q.key, 'data-phrase': q.phrase, ...(text ? { 'data-nolink': q.target.tab === ctx.tab ? 'this page' : 'plain' } : {}) }, a);
+      return el('li', { class: q.level >= 2 ? 'crit' : 'warn', 'data-group': q.key, 'data-phrase': q.phrase, ...(text ? { 'data-nolink': 'this page' } : {}) }, a);
     })));
   }
   for (const n of v.notes) card.append(el('p', { class: 'meta verdict-note' }, n));
-  // each group named is a link to its Summary cell's page (text where that page is this one, or a group the Summary
-  // shows as plain text, as the reasons above)
-  const groupEl = (x: { key: string; label: string; target: VerdictReason['target'] }) => x.target.tab === ctx.tab || plainGroups.has(x.key)
-    ? el('span', { 'data-group': x.key, 'data-nolink': x.target.tab === ctx.tab ? 'this page' : 'plain' }, x.label)
-    : el('a', { 'data-group': x.key, href: to(x.target) }, x.label);
+  // each group named is a link to its Summary cell's page (where that page is this one: its action here, or text, as
+  // the reasons above)
+  const groupEl = (x: { key: string; label: string; target: VerdictReason['target'] }) => {
+    const a = el('a', { 'data-group': x.key, href: to(x.target) }, x.label) as HTMLAnchorElement;
+    return x.target.tab !== ctx.tab || ownPageAction(a, x.key, ctx.instance ?? 0) ? a : el('span', { 'data-group': x.key, 'data-nolink': 'this page' }, x.label);
+  };
   const list = (cls: string, lead: string, xs: { key: string; label: string; target: VerdictReason['target'] }[]) => xs.length
     ? el('p', { class: `meta ${cls}` }, lead, ...xs.flatMap((x, i) => [i ? ', ' : '', groupEl(x)])) : null;
   const acked = list('verdict-acked', 'Acknowledged, not counted: ', v.acked);
