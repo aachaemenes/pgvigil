@@ -6,7 +6,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, el, fmtTime, offControl } from './ui';
 import { fromInput, toInput } from './tz';
-import { Can, markNeed, Need, needControl, routeWhy, WriteRoute } from './needs';
+import { Can, markNeed, Need, needControl, roleWhy, routeWhy, WriteRoute } from './needs';
 
 // AckDoor: the demo's write door (pgvigil demo -serve, task B7): the server's own writes stay off there (writable
 // false with the reason), and the door writes as its user for the instances it names and for no other.
@@ -191,8 +191,15 @@ export interface AckDialog {
 // ackDialog: the one dialog every write goes through - what it does, its fields, then the server's answer
 export function ackDialog(o: AckDialog) {
   const fields: HTMLElement[] = [];
-  const untilSel = el('select', { 'aria-label': 'until' }, ...untilChoices.map(([t, h]) => el('option', { value: String(h) }, t)));
-  if (o.expiry) { untilSel.value = '24'; fields.push(el('label', {}, 'Until ', untilSel)); }
+  // a mute, a silence or a blackout with no end needs the admin role (the handler checks it: wideMute). Below admin the
+  // dialog does not offer 'no expiry' and says why (null for an admin and with the login off)
+  const openEnded = (Array.isArray(o.body) ? o.body : [o.body]).some(b => b.kind === 'mute' || b.kind === 'silence' || b.kind === 'blackout')
+    ? roleWhy(wideMute.need, wideMute.what) : null;
+  const untilSel = el('select', { 'aria-label': 'until' }, ...untilChoices.filter(([, h]) => h > 0 || !openEnded).map(([t, h]) => el('option', { value: String(h) }, t)));
+  if (o.expiry) {
+    untilSel.value = '24'; fields.push(el('label', {}, 'Until ', untilSel));
+    if (openEnded) fields.push(el('p', { class: 'meta' }, `'no expiry' is not offered here: ${openEnded}.`));
+  }
   const change = el('input', { type: 'checkbox', checked: '' });
   if (o.untilChange) fields.push(el('label', {}, change, ' or until the check changes'));
   const note = el('textarea', { rows: '3', maxlength: '2000', 'aria-label': o.noteField === 'label' ? 'label' : 'note', style: 'width:100%' });
