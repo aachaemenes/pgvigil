@@ -1,0 +1,114 @@
+name: kitwatch
+
+# KITWATCH: the community kits pgvigil runs - the First Responder Kit, DarlingData, sp_WhoIsActive - at the versions
+# pgvigil was built against and at their newest, each run through pgvigil on one SQL Server 2022 container
+# (scripts/kitwatch.sh). Red = a change pgvigil's code or page depends on (BREAK), a kit that did not install or a
+# tool that failed, or a job that could not run; the lines are in the job summary, DRIFT lines as warnings on a green
+# run. GitHub mails a failed scheduled run to the user who last changed the cron line below. A scheduled workflow is
+# turned off after 60 days without repository activity: `gh workflow enable kitwatch` turns it on again.
+# Nothing is written to the repository and nothing secret is used: the job's own token reads GitHub's public API.
+
+on:
+  schedule:
+    - cron: "30 4 * * 1"   # Monday 04:30 UTC
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "the pinned kits only: write shapes.json and ports.json as an artifact to commit with the code"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/kitwatch.yml
+      - scripts/kitwatch.sh
+      - scripts/lib/kitsetup.sh
+      - internal/community/kits/**
+      - cmd/kitshape/**
+
+permissions:
+  contents: read
+  actions: read   # the previous run's report (lines new since the last run)
+
+concurrency:
+  group: kitwatch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kitwatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: kitwatch
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # SQL Server 2022 CU28 = 16.0.4325.4, the build the stored samples were captured on (com.microsoft.version)
+      MSSQL_IMAGE: mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04@sha256:e10cd49443c94dbdcb7a050987db22ff4d8c87052ac53768abe1ed848d3fcef6
+      PGVIGIL_ADMIN_DSN: "host=localhost port=5432 user=postgres password=kitwatch sslmode=disable"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: the previous run's report
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          id=$(gh run list --workflow kitwatch --branch main --event schedule --status completed --limit 1 --json databaseId -q '.[0].databaseId' || true)
+          if [ -n "$id" ]; then gh run download "$id" -n kitwatch-report -D "$RUNNER_TEMP/prev" || true; fi
+      - name: kitwatch
+        env:
+          KITWATCH_OUT: ${{ runner.temp }}/kitwatch
+          BASELINE: ${{ inputs.baseline }}
+        run: |
+          if [ -f "$RUNNER_TEMP/prev/report.json" ]; then export KITWATCH_PREV="$RUNNER_TEMP/prev/report.json"; fi
+          # the first run of a branch without a baseline writes it (a workflow_dispatch input runs only from main)
+          if [ "$BASELINE" = "true" ] || [ ! -f internal/community/kits/shapes.json ]; then
+            bash scripts/kitwatch.sh -baseline
+          else
+            bash scripts/kitwatch.sh
+          fi
+      - name: the summary
+        if: always()
+        env:
+          KITWATCH_OUT: ${{ runner.temp }}/kitwatch
+        run: |
+          {
+            echo '```'
+            if [ -f "$KITWATCH_OUT/report.txt" ]; then cat "$KITWATCH_OUT/report.txt"; else echo "kitwatch wrote no report"; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$KITWATCH_OUT/report.json" ]; then
+            python3 - "$KITWATCH_OUT/report.json" <<'PY'
+          import json, sys
+          for l in json.load(open(sys.argv[1])).get("lines", []):
+              if l.get("class") == "DRIFT":
+                  print("::warning title=kitwatch DRIFT::" + (l["tool"] + " " + l["kind"] + ": " + l["what"]).replace("\n", " ")[:900])
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kitwatch-report
+          path: |
+            ${{ runner.temp }}/kitwatch/report.json
+            ${{ runner.temp }}/kitwatch/report.txt
+          if-no-files-found: ignore
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kitwatch-baseline
+          path: |
+            ${{ runner.temp }}/kitwatch/shapes.json
+            ${{ runner.temp }}/kitwatch/ports.json
+          if-no-files-found: ignore
+          retention-days: 30
