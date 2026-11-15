@@ -20,7 +20,7 @@ import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl }
 type Mode = 'i' | 't' | 'd';
 interface Picks { m: Mode; a?: number; b?: number; dba?: string; dbb?: string; ta?: string; tb?: string; all: boolean }
 const keys = ['m', 'a', 'b', 'dba', 'dbb', 'ta', 'tb', 'all'];
-const modes: [Mode, string][] = [['i', 'Two instances'], ['t', 'One instance at two times'], ['d', 'Two databases of one instance (PostgreSQL)']];
+const modes: [Mode, string][] = [['i', 'Two instances'], ['t', 'One instance at two times'], ['d', 'Two databases of one instance']];
 const lsKey = 'pgvigil.diff';
 // a tag folder keeps its own picks (TAGALL): its pickers list its instances only, so a pick of another instance is dropped
 // there and the root's are kept; a folder with none of its own starts from the root's
@@ -67,8 +67,8 @@ function diffHref(ctx: Ctx, p: Picks): string {
   return `#/diff?${q}`;
 }
 
-// incomplete: why the picks are not enough for a diff ('' = they are); engine = instance A's
-function incomplete(p: Picks, _engine?: string): string {
+// incomplete: why the picks are not enough for a diff ('' = they are)
+function incomplete(p: Picks): string {
   if (!p.a) return p.m === 'i' ? 'Pick instance A.' : 'Pick the instance.';
   if (p.m === 'i') {
     if (!p.b) return 'Pick instance B.';
@@ -180,7 +180,7 @@ function schemaBlock(d: Record<string, Table | null>, cap: number, note: string,
     { key: 'differs', label: 'what differs', fmt: (v, r) => r.status === 'different' ? String(v ?? '')
       // a database on one side only: why (one instance at two times), and its object count
       : r.kind === 'database' ? `the database${Number(r.children) > 0 ? ` (${fmtNum(r.children)} objects)` : ''}${v ? ': ' + String(v) : ''}`
-        : Number(r.children) > 0 ? `with its ${fmtNum(r.children)} dependent object(s) (columns, indexes, constraints, triggers, owned sequences)` : '' },
+        : Number(r.children) > 0 ? `with its ${fmtNum(r.children)} dependent object(s) (its columns, indexes, constraints and triggers; on PostgreSQL its owned sequences too)` : '' },
     { key: 'a_definition', label: 'A', fmt: side('a') },
     { key: 'b_definition', label: 'B', fmt: side('b') },
   ];
@@ -264,7 +264,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
       s.value = cur ?? '';
     };
     let rows: Row[] = [], failed = '';
-    if (a && b && engineOf(a) !== 'sqlserver') {
+    if (a && b) {
       try { rows = rowsOf((await get<{ databases: Table | null }>('diff', { a, b, part: 'databases' })).databases); }
       catch (e) { failed = `The databases could not be listed (${e instanceof Error ? e.message : String(e)}). `; }
     }
@@ -272,7 +272,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     const namesOf = (id?: number) => rows.filter(r => Number(r.instance_id) === id).map(r => String(r.datname));
     const none = p.m === 'i' ? '(all, paired by name)' : p.m === 't' ? '(all databases)' : '(pick a database)';
     set(dbA, namesOf(a), p.dba, none); set(dbB, namesOf(b), p.dbb, none);
-    hint.textContent = failed + incomplete(p, engineOf(p.a));
+    hint.textContent = failed + incomplete(p);
   }
   // sync: the form shows the fields its mode uses; the picks are remembered
   function sync(refill = true) {
@@ -282,14 +282,12 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     fB.hidden = p.m !== 'i';
     fDbB.hidden = p.m === 't';
     fTA.hidden = fTB.hidden = p.m !== 't';
-    const sql = engineOf(p.a) === 'sqlserver';
-    fDbA.hidden = sql && p.m !== 'd'; if (sql && p.m !== 'd') fDbB.hidden = true;
-    hint.textContent = incomplete(p, engineOf(p.a));
+    hint.textContent = incomplete(p);
     try { localStorage.setItem(lsKeyOf(ctx), JSON.stringify({ m: p.m, a: String(p.a ?? ''), b: String(p.b ?? ''), dba: p.dba ?? '', dbb: p.dbb ?? '', all: p.all ? '1' : '' })); } catch { /* private window */ }
     if (refill) void fillDatabases();
   }
   go.addEventListener('click', () => {
-    const why = incomplete(p, engineOf(p.a));
+    const why = incomplete(p);
     if (why) { hint.textContent = why; return; }
     focusResult = true;
     const to = diffHref(ctx, p);
@@ -307,7 +305,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   const result = el('div', { tabindex: '-1', role: 'region', 'aria-label': 'Diff result' });
   sec.append(result);
   const asked = keys.some(k => hashParam(k) !== undefined);
-  const why = incomplete(p, engineOf(p.a));
+  const why = incomplete(p);
   if (!asked || why) {
     result.append(el('p', { class: 'empty' }, asked ? why : 'Pick the two sides and press Compare.'));
     return sec;

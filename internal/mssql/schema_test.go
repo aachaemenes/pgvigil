@@ -64,42 +64,62 @@ func TestSchemaIdentities(t *testing.T) {
 }
 
 // A1 (the lead's 13:4x) and B2: a body is text under full (masked), a sha line otherwise; the hash and def_hash are
-// the same under every policy, so a change of query_text is never a schema change; a view's text is kept always.
+// the same under every policy, so a change of query_text is never a schema change; a view's text is kept always. The
+// B+C review's B2: a body that names a password or a secret (the DDL log's own test) is never kept as text, under any
+// policy - its sha line and the words (red on d3ea6294: its masked text was stored).
 func TestSchemaFormsAndHashes(t *testing.T) {
+	const withheld = "(body text not kept: it names a password or a secret)"
 	db := userDB{id: 7, name: "shop"}
-	proc := schemaObj{kind: "procedure", schema: "dbo", name: "p", def: "procedure P parameters []", hasBody: true, owner: "dbo",
-		body: "CREATE PROCEDURE dbo.p AS OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = 'S3cret'; SELECT 1"}
-	full, none, norm := schemaRow(db, proc, "full"), schemaRow(db, proc, "none"), schemaRow(db, proc, "normalized")
+	plain := schemaObj{kind: "procedure", schema: "dbo", name: "p", def: "procedure P parameters []", hasBody: true, owner: "dbo",
+		body: "CREATE PROCEDURE dbo.p AS SELECT name FROM sys.objects; SELECT 1"}
+	full, none, norm := schemaRow(db, plain, "full"), schemaRow(db, plain, "none"), schemaRow(db, plain, "normalized")
 	if full["hash"] != none["hash"] || full["hash"] != norm["hash"] || full["def_hash"] != none["def_hash"] {
 		t.Fatalf("the hashes differ by policy: full %v / %v, none %v / %v", full["hash"], full["def_hash"], none["hash"], none["def_hash"])
 	}
 	fd, nd := full["definition"].(string), none["definition"].(string)
-	if !strings.Contains(fd, "CREATE PROCEDURE dbo.p") || strings.Contains(fd, "S3cret") {
-		t.Errorf("under full the body is not the masked text: %q", fd)
+	if !strings.Contains(fd, "CREATE PROCEDURE dbo.p") {
+		t.Errorf("under full the body is not its text: %q", fd)
 	}
 	if strings.Contains(nd, "CREATE PROCEDURE") || !strings.Contains(nd, "body sha256:") {
 		t.Errorf("under none the body is not its sha line: %q", nd)
 	}
-	if def := schemaRow(db, proc, "")["definition"].(string); def != fd {
+	if def := schemaRow(db, plain, "")["definition"].(string); def != fd {
 		t.Errorf("no policy set (the configuration's default, full) stores %q, want the text", def)
 	}
-	// the mask never changes the hash; a body change always does
-	changed := proc
-	changed.body = strings.Replace(proc.body, "SELECT 1", "SELECT 2", 1)
+	// a body change always changes the hash
+	changed := plain
+	changed.body = strings.Replace(plain.body, "SELECT 1", "SELECT 2", 1)
 	if schemaRow(db, changed, "none")["hash"] == none["hash"] {
 		t.Error("a body change left the hash unchanged")
 	}
-	rotated := proc
-	rotated.body = strings.Replace(proc.body, "S3cret", "N3wPass", 1)
-	if schemaRow(db, rotated, "full")["definition"] != fd {
-		t.Error("a password rotated inside a masked part changed the stored text")
+	// a body naming a password: its sha line and the words under every policy, never its text; the hash as ever
+	secret := plain
+	secret.body = "CREATE PROCEDURE dbo.p AS OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = 'S3cret'; EXEC (N'ALTER LOGIN a WITH PASSWORD = ''Tw0''')"
+	for _, mode := range []string{"full", ""} {
+		d := schemaRow(db, secret, mode)["definition"].(string)
+		if strings.Contains(d, "S3cret") || strings.Contains(d, "Tw0") || strings.Contains(d, "OPEN SYMMETRIC") ||
+			!strings.Contains(d, "body sha256:") || !strings.HasSuffix(d, "\n"+withheld) {
+			t.Errorf("a body naming a password under %q stores %q, want its sha line and %q", mode, d, withheld)
+		}
+	}
+	if schemaRow(db, secret, "full")["hash"] != schemaRow(db, secret, "none")["hash"] {
+		t.Error("a withheld body's hash differs by policy")
+	}
+	rotated := secret
+	rotated.body = strings.Replace(secret.body, "S3cret", "N3wPass", 1)
+	if r := schemaRow(db, rotated, "full"); r["hash"] == schemaRow(db, secret, "full")["hash"] || strings.Contains(r["definition"].(string), "N3wPass") {
+		t.Errorf("a rotated password: the hash must change and the text never hold it: %v", r["definition"])
 	}
 	view := schemaObj{kind: "view", schema: "dbo", name: "v", def: "view", hasBody: true, body: "CREATE VIEW dbo.v AS SELECT 1 AS x"}
 	if d := schemaRow(db, view, "none")["definition"].(string); !strings.Contains(d, "CREATE VIEW dbo.v") {
 		t.Errorf("a view's text is not kept under none: %q", d)
 	}
+	secretView := schemaObj{kind: "view", schema: "dbo", name: "v2", def: "view", hasBody: true, body: "CREATE VIEW dbo.v2 AS SELECT secret_value FROM dbo.k"}
+	if d := schemaRow(db, secretView, "none")["definition"].(string); strings.Contains(d, "secret_value") || !strings.HasSuffix(d, withheld) {
+		t.Errorf("a view naming a secret under none stores %q, want its sha line and the words", d)
+	}
 	// the stored text is cut at 20,000 characters; the hash is taken before the cut
-	long := proc
+	long := plain
 	long.body = strings.Repeat("x", 50000)
 	r := schemaRow(db, long, "full")
 	if n := len([]rune(r["definition"].(string))); n > schemaMaxDef {

@@ -12,7 +12,7 @@ to, it reads one row per object:
 | index                       | `pg_get_indexdef`, marked `(INVALID)` when invalid                                     |
 | constraint                  | `pg_get_constraintdef`, marked `NOT VALID` when not validated                          |
 | trigger                     | `pg_get_triggerdef`, marked when disabled, replica or always                           |
-| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source; where the instance's `query_text` is `full` (the default) the source's text follows it, a password in it masked (since A26: the history shows what changed) |
+| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source; where the instance's `query_text` is `full` (the default) the source's text follows it, masked (since A26: the history shows what changed) - except a body that names a password or a secret (the DDL log's own test: `password`, `secret`, `pwd`, a `user:password@` address, `CREATE` / `ALTER SERVER`, `USER MAPPING`, `SUBSCRIPTION`), kept as its hash with the words "body text not kept", and a database whose bodies fell back to hashes (over 160 MB); a `BEGIN ATOMIC` SQL function's source is empty in the catalog, so its text is an empty line |
 | view, materialized view     | `pg_get_viewdef`                                                                       |
 | sequence                    | the type, start, increment, min, max, cache, cycle, and the column that owns it (an owned sequence belongs to that table) |
 
@@ -181,10 +181,12 @@ EXECUTE AS, SCHEMABINDING, ANSI_NULLS and QUOTED_IDENTIFIER, encryption, a CLR m
 types. Owners are kept, permissions are not.
 
 **A module's body** is kept as **text** where the instance's `query_text` is `full` (the configuration's default),
-with a password in it masked as the job and audit texts are (`PASSWORD = '...'`, `@...pwd`, `Pwd=`), and as
-`body sha256:<16 hex>` where it is `normalized` or `none`: the Schema tab then shows that a body changed, not how. A
-view's text is kept under every policy. The object's hash is taken over the body's SHA-256, never its text, so a
-change of `query_text` (or of a masked password) is never recorded as a schema change. A definition is stored up to
+masked as the job and audit texts are, and as `body sha256:<16 hex>` where it is `normalized` or `none`: the Schema
+tab then shows that a body changed, not how. A view's text is kept under every policy. A body (or a view) that names a
+password or a secret - the DDL log's own test, so `PASSWORD = '...'`, `CREATE CREDENTIAL ... SECRET`, a
+`user:password@` address - is kept as its `body sha256:` line with the words "body text not kept", under every
+policy. The object's hash is taken over the body's SHA-256, never its text, so a change of `query_text` is never
+recorded as a schema change. A definition is stored up to
 20,000 characters; a change past that point is still found.
 
 **When a database is read.** Every 15 minutes a pass reads the databases that are due, by reason in this order, then
@@ -208,8 +210,8 @@ the two reads. A name two schemas share, or several statements in the interval, 
 during the read leaves it unstored (read again next pass). A database without VIEW DEFINITION for the login is "not
 readable" and records no change. Over 10,000 tables and views, or over 160 MB of definitions even with the bodies as
 hashes, a database is not snapshotted and its stored snapshot is kept. An owner change (the default trace's event
-153, which the reader leaves out) is found at the daily read. A change inside a masked part of a body (a password) or
-past the 20,000-character cut is recorded with the same stored text on both sides, and the compare says so. SQL
+153, which the reader leaves out) is found at the daily read. A change inside a masked part of a body or past the
+20,000-character cut is recorded with the same stored text on both sides, and the compare says so. SQL
 Server 2016 or later, Azure SQL Managed Instance, Azure SQL Database.
 
 **Rights**: VIEW ANY DEFINITION (or VIEW DEFINITION in each database), CONNECT ANY DATABASE (or a user in each), SELECT

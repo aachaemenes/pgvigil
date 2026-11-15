@@ -34,7 +34,8 @@ import (
 // What a definition holds: the catalog's facts in a fixed order, and for a module (procedure, function, trigger) its
 // signature - parameters, EXECUTE AS, SCHEMABINDING, ANSI_NULLS, QUOTED_IDENTIFIER, ENCRYPTION, a CLR method - then
 // its body: as TEXT under the instance's query_text 'full' (credentials masked, collect.MaskJobText), as
-// 'body sha256:<16 hex>' under 'normalized' or 'none'. A view's text is kept (masked) under every policy. The hash
+// 'body sha256:<16 hex>' under 'normalized' or 'none'. A view's text is kept (masked) under every policy. A body that
+// names a password or a secret (the DDL log's own test) is never kept as text: its sha line and words. The hash
 // and def_hash are ALWAYS taken over the signature and the body's sha, never the text: a change of query_text, or a
 // mask, is never a schema change.
 //
@@ -156,7 +157,8 @@ func sha16(s string) string {
 
 // schemaForms returns the stored definition (under the policy) and the hashed form (policy-free): the facts, then for
 // a body 'body sha256:<16 hex>' of the raw text. The body's text is stored (masked) under 'full' (or no policy set:
-// the configuration's default) and, for a view, always.
+// the configuration's default) and, for a view, always - except a body the DDL log's test says names a password or a
+// secret (collect.SchemaBodyNamesSecret): its hashed form then, with collect.SchemaBodyWithheld after it.
 func schemaForms(o schemaObj, mode string) (stored, hashed string) {
 	hashed = o.def
 	if o.hasBody {
@@ -164,7 +166,11 @@ func schemaForms(o schemaObj, mode string) (stored, hashed string) {
 	}
 	stored = hashed
 	if o.hasBody && (o.kind == "view" || mode == "" || mode == "full") {
-		stored = o.def + "\n" + collect.MaskJobText(o.body)
+		if collect.SchemaBodyNamesSecret(o.body) {
+			stored = hashed + "\n" + collect.SchemaBodyWithheld
+		} else {
+			stored = o.def + "\n" + collect.MaskJobText(o.body)
+		}
 	}
 	return stored, hashed
 }

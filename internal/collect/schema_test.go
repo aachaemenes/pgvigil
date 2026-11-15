@@ -238,7 +238,7 @@ func TestSchemaFinishModeBodies(t *testing.T) {
 	mk := func() Row {
 		return Row{"kind": "obj", "object_kind": "function", "identity": "public.f(integer)", "owner": "app", "acl": "",
 			"definition": "function returns integer language plpgsql",
-			"body":       "begin perform dblink_connect('host=x password=S3cret'); alter role r password 'Two'; return 1; end"}
+			"body":       "begin perform dblink_connect('host=x sslkey=/k/client.key'); return 1; end"}
 	}
 	full, none := mk(), mk()
 	schemaFinishMode([]Row{full}, "full")
@@ -250,8 +250,32 @@ func TestSchemaFinishModeBodies(t *testing.T) {
 	if !strings.HasPrefix(fd, nd+"\n") || !strings.Contains(fd, "dblink_connect") {
 		t.Errorf("under full the definition is not the hashed form and the body's text: %q", fd)
 	}
-	if strings.Contains(fd, "S3cret") || strings.Contains(fd, "Two") {
-		t.Errorf("a password stayed in the stored text: %q", fd)
+	if strings.Contains(fd, "/k/client.key") {
+		t.Errorf("maskBody's sslkey rule did not mask: %q", fd)
+	}
+	// the B+C review's B2: a body the DDL log's test matches keeps no text under any policy - each case the masks
+	// missed (red on rel-a26b: their text was stored)
+	const withheld = "(body text not kept: it names a password or a secret)"
+	for _, body := range []string{
+		"begin execute 'alter role app password ''Hunter2'''; end",
+		"begin perform dblink_connect('postgresql://app:Hunter2xyz@h/db'); end",
+		"begin perform dblink_connect('host=h password = Hunter2'); end",
+		"begin execute format('alter role %I password %L', r, 'Hunter2'); end",
+		"begin create server s foreign data wrapper w options (host 'h'); end",
+	} {
+		r := mk()
+		r["body"] = body
+		schemaFinishMode([]Row{r}, "full")
+		d := r["definition"].(string)
+		if strings.Contains(d, "Hunter2") || strings.Contains(d, "begin") || !strings.HasSuffix(d, "\n"+withheld) {
+			t.Errorf("a body naming a secret stores %q, want its hashed form and %q", d, withheld)
+		}
+		h := mk()
+		h["body"] = body
+		schemaFinish([]Row{h})
+		if h["hash"] != r["hash"] {
+			t.Errorf("a withheld body's hash differs by policy: %v / %v", h["hash"], r["hash"])
+		}
 	}
 	if full[schemaHashedKey] != nd {
 		t.Errorf("the fall-back form %q, want the hashed form %q", full[schemaHashedKey], nd)

@@ -83,12 +83,15 @@ function compareCell(ctx: Ctx): (v: unknown, r: Row) => Node {
         const c = rowsOf(d.change)[0];
         if (!c) { box.replaceChildren(el('p', { class: 'empty' }, 'The change is no longer held (past the retention).')); return; }
         const before = c.before == null ? undefined : String(c.before), after = c.after == null ? '' : String(c.after);
-        const hashed = /\nbody sha256:[0-9a-f]{16}$/.test(before ?? '') || /\nbody sha256:[0-9a-f]{16}$/.test(after);
+        // SQL Server's hashed form puts the body's sha on its own line, PostgreSQL's after a space (its bytes predate A26)
+        const hashed = /[\n ]body sha256:[0-9a-f]{16}$/.test(before ?? '') || /[\n ]body sha256:[0-9a-f]{16}$/.test(after);
+        const withheld = [before ?? '', after].some(x => x.endsWith('\n(body text not kept: it names a password or a secret)'));
         // a change whose stored text is the same on both sides: it is inside a masked part, or past the stored cut
         const same = r.change === 'changed' && before !== undefined && before === after;
         box.replaceChildren(
-          same ? el('p', { class: 'meta' }, 'Changed inside a masked part (a password or a secret, kept masked) or past the 20,000-character cut: the stored text is the same on both sides.') : '',
+          same ? el('p', { class: 'meta' }, 'Changed inside a masked part or past the 20,000-character cut: the stored text is the same on both sides.') : '',
           hashed ? el('p', { class: 'meta' }, 'A body kept as its SHA-256 shows only that its text changed: its text is kept where the instance\'s query_text is full.') : '',
+          withheld ? el('p', { class: 'meta' }, 'A body that names a password or a secret is kept as its SHA-256 alone under every query_text policy (the DDL log withholds such statements the same way): the SHA-256 shows that it changed, never what.') : '',
           textDiffView(before, after, `before (read ${fmtTime(c.prev_at)})`, `after (read ${fmtTime(c.snapshot_at)})`));
       } catch (e) {
         box.replaceChildren(errorBox(e));
@@ -213,13 +216,15 @@ const aboutText = 'Read hourly on every database the monitoring login can connec
   + 'The statement text needs the opt-in event trigger (pgvigil roles prints it; a superuser installs it per database): '
   + 'where it is installed the client\'s query text (every statement sent together) and its role stand beside the change; '
   + 'elsewhere the change is still found, without them. A text that may carry a password is not kept; a function\'s body is kept as text, '
-  + 'a password in it masked, where the instance\'s query_text is full (the default), as its SHA-256 otherwise.';
+  + 'masked, where the instance\'s query_text is full (the default), as its SHA-256 otherwise - and as its SHA-256 alone, under every policy, '
+  + 'when it names a password or a secret, or when the database\'s bodies are over 160 MB.';
 
 const mssqlAboutText = 'Read on the databases of the instance\'s mssql_schema.databases (pgvigil.yaml; none = the collection is off): '
   + 'schemas, tables with each column, index, constraint and DML trigger, views, procedures, functions, synonyms, sequences and user types. '
   + 'A database\'s first read is its baseline; it is read whole again when the default trace shows a CREATE, ALTER or DROP in it, '
   + 'after a restore, and once a day. A procedure\'s, function\'s or trigger\'s body is kept as text where the instance\'s query_text is full '
-  + '(a password in it masked), as its SHA-256 otherwise; a view\'s text is kept always. Who made a change is the default trace\'s login, host '
+  + '(masked), as its SHA-256 otherwise; a view\'s text is kept always; a body that names a password or a secret is kept as its SHA-256 alone, '
+  + 'under every policy. Who made a change is the default trace\'s login, host '
   + 'and program for the object\'s name between the two reads; the trace keeps no schema, so a name two schemas share lists every candidate.';
 
 // traceWords (SQL Server): how changes are found on this instance, in words - never silence when the trace cannot help

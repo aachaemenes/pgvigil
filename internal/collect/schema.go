@@ -445,20 +445,15 @@ func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platfor
 				break
 			}
 		}
-		switch {
-		case readErr != nil:
+		if readErr != nil {
 			dbErr(db, readErr.Error())
 			continue
-		case schemaPayloadSize(objs) > maxPayload:
-			// bodies as text past the cap: this database's bodies as their hashes (the hash is the same: no change is
-			// recorded), said; still over = not snapshotted, as before
-			if schemaHashesOnly(objs) && schemaPayloadSize(objs) <= maxPayload {
-				final = append(final, Row{"kind": "collector_error", "source": "schema text:" + db,
-					"message": fmt.Sprintf("bodies kept as hashes in %s: their text is over the %d MB one import takes", db, maxPayload>>20)})
-				break
-			}
-			dbErr(db, fmt.Sprintf("about %d MB of definitions, over the %d MB one import takes: the database is not snapshotted",
-				schemaPayloadSize(objs)>>20, maxPayload>>20))
+		}
+		switch fit, note := schemaFit(objs, db, maxPayload); fit {
+		case schemaFitHashes:
+			final = append(final, note)
+		case schemaFitOver:
+			dbErr(db, note["message"].(string))
 			continue
 		}
 		schemaDropHashed(objs)
@@ -609,6 +604,29 @@ func schemaDDLCursor(datname string, last time.Time) Row {
 	return Row{"kind": "ddl_cursor", "datname": datname, "read_to": last.Add(time.Hour - time.Microsecond)}
 }
 
+// schemaFit is what a database's read does under the payload cap: fits as it is; over it with bodies as text, so the
+// bodies go back to their hashes (the hash is the same: no change is recorded) and a 'schema text:' collector_error
+// row says so; or over it even with the hashes: not snapshotted (the note's message says why).
+type schemaFitResult int
+
+const (
+	schemaFitAsIs schemaFitResult = iota
+	schemaFitHashes
+	schemaFitOver
+)
+
+func schemaFit(objs []Row, db string, maxPayload int) (schemaFitResult, Row) {
+	if schemaPayloadSize(objs) <= maxPayload {
+		return schemaFitAsIs, nil
+	}
+	if schemaHashesOnly(objs) && schemaPayloadSize(objs) <= maxPayload {
+		return schemaFitHashes, Row{"kind": "collector_error", "source": "schema text:" + db,
+			"message": fmt.Sprintf("bodies kept as hashes in %s: their text is over the %d MB one import takes", db, maxPayload>>20)}
+	}
+	return schemaFitOver, Row{"message": fmt.Sprintf("about %d MB of definitions, over the %d MB one import takes: the database is not snapshotted",
+		schemaPayloadSize(objs)>>20, maxPayload>>20)}
+}
+
 // schemaFinish is schemaFinishMode under 'none': a function's body as its hash only.
 func schemaFinish(objs []Row) { schemaFinishMode(objs, "none") }
 
@@ -626,7 +644,8 @@ func maskBody(s string) string {
 // definition with its body's hash at the end ('body sha256:<16 hex>'), and the hash of kind, hashed form, owner and
 // ACL, and def_hash, are taken over it - the same bytes as before A26 under every policy, so a change of query_text
 // (or the upgrade) records no change. The definition stored is the hashed form, followed under query_text 'full' (or
-// no policy: the configuration's default) by the body's text with what may be a password masked. A definition over
+// no policy: the configuration's default) by the body's text with what may be a password masked - or, for a body the
+// DDL log's test says names a password or a secret, by SchemaBodyWithheld instead of its text. A definition over
 // schemaMaxDef is cut after hashing, so a change past the cut still shows as a change.
 func schemaFinishMode(objs []Row, mode string) {
 	for _, o := range objs {
@@ -651,7 +670,11 @@ func schemaFinishMode(objs []Row, mode string) {
 		o["def_hash"] = hex.EncodeToString(dh[:])
 		stored := def
 		if hasBody && (mode == "" || mode == "full") {
-			stored = def + "\n" + maskBody(body)
+			if SchemaBodyNamesSecret(body) {
+				stored = def + "\n" + SchemaBodyWithheld
+			} else {
+				stored = def + "\n" + maskBody(body)
+			}
 			o[schemaHashedKey] = schemaCut(def, schemaMaxDef)
 		}
 		o["definition"] = schemaCut(stored, schemaMaxDef)

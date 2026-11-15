@@ -17,8 +17,8 @@ import (
 // Three modes, by what the two sides are:
 //
 //	instances  a <> b: two instances as last read (at_a and at_b are refused: the stores hold one instance's past,
-//	           not two instances at one past moment worth comparing). Settings, jobs and, on PostgreSQL, schema
-//	           objects; db_a with db_b picks one pair of databases instead of pairing them by name.
+//	           not two instances at one past moment worth comparing). Settings, jobs and schema objects; db_a with
+//	           db_b picks one pair of databases instead of pairing them by name.
 //	snapshots  a = b with at_a (at_b: default the newest read; at_a before at_b): one instance at two times, from
 //	           the change histories. db_a narrows the schema part to one database.
 //	databases  a = b without at_a, db_a and db_b two different databases: their schema objects as last read.
