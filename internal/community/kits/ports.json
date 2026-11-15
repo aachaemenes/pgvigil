@@ -232,5 +232,57 @@
     "end": "RAISERROR('Inserting #block_findings, check_id 2147483647', 0, 1) WITH NOWAIT;",
     "sha256": "",
     "item_re": "Inserting #block_findings, check_id ([0-9.]+)'"
+  },
+  {
+    "name": "perfmonCounters",
+    "go_file": "internal/mssql/cpu.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PressureDetector 6.11 (20261101), its perfmon read: the instance names left out (7, perfmonSkip) and the counter list (59)",
+    "begin": "p.instance_name NOT IN",
+    "end": "N'Lock Timeouts/sec'",
+    "sha256": "",
+    "item_re": "N'([^']+)'"
+  },
+  {
+    "name": "cpuInfoColumns",
+    "go_file": "internal/mssql/activity.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PressureDetector 6.11 (20261101), its CPU details columns (8)",
+    "begin": "@cpu_details_columns += N'' +",
+    "end": "ELSE N''",
+    "sha256": "",
+    "item_re": "WHEN ac.name = N'([a-z_]+)'"
+  },
+  {
+    "name": "pressureDetectorTempdb",
+    "go_file": "internal/mssql/activity.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PressureDetector 6.11 (20261101), its tempdb section (the sessions holding tempdb)",
+    "begin": "RAISERROR('Checking tempdb config and usage', 0, 1) WITH NOWAIT;",
+    "end": "RAISERROR('Checking memory pressure', 0, 1) WITH NOWAIT;",
+    "sha256": ""
+  },
+  {
+    "name": "pressureDetectorMemory",
+    "go_file": "internal/mssql/memory.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PressureDetector 6.11 (20261101), its memory section (cache_memory, available memory, the low-memory indicators)",
+    "begin": "RAISERROR('Checking memory pressure', 0, 1) WITH NOWAIT;",
+    "end": "RAISERROR('Checking queries with memory grants', 0, 1) WITH NOWAIT;",
+    "sha256": ""
+  },
+  {
+    "name": "pressureDetectorGrants",
+    "go_file": "internal/mssql/memory.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PressureDetector 6.11 (20261101), its memory grant list, the grant cap and reduced grants",
+    "begin": "RAISERROR('Checking queries with memory grants', 0, 1) WITH NOWAIT;",
+    "end": "RAISERROR('Checking CPU config', 0, 1) WITH NOWAIT;",
+    "sha256": ""
   }
 ]
