@@ -227,3 +227,116 @@ func TestTextPolicyMessageOnEventsOnly(t *testing.T) {
 		t.Errorf("none kept a log event's message: %v", rows[1]["message"])
 	}
 }
+
+// Task 415: the credential mask runs under every text policy, full included, on both engines' text. Each case names
+// the secret that must be gone; want, when set, is the whole masked text (the rest of the statement is kept).
+func TestMaskCredentials(t *testing.T) {
+	cases := []struct{ name, in, secret, want string }{
+		// T-SQL: a PASSWORD / SECRET literal and a password-named parameter (MaskJobText's set, which maskText missed)
+		{"tsql login", "CREATE LOGIN app WITH PASSWORD = N'Tq1secret', CHECK_POLICY = ON", "Tq1secret",
+			"CREATE LOGIN app WITH PASSWORD = '<masked>', CHECK_POLICY = ON"},
+		{"tsql credential", "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET='Tq2secret'", "Tq2secret",
+			"CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET='<masked>'"},
+		{"tsql parameter", "EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = N'Tq3secret'", "Tq3secret",
+			"EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = '<masked>'"},
+		{"tsql hashed", "CREATE LOGIN app WITH PASSWORD = 0x0200AB12CD34EF HASHED", "0x0200AB12CD34EF",
+			"CREATE LOGIN app WITH PASSWORD = '<masked>' HASHED"},
+		// finding 10: a statement cut by the text cap inside the literal keeps nothing of the secret
+		{"tsql unterminated", "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'Tq4secretcutby", "Tq4secret",
+			"CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = '<masked>'"},
+		// a command line inside a T-SQL literal: sqlcmd / bcp / osql / isql -P, the doubled-quote form (finding 10)
+		{"sqlcmd -P", "EXEC xp_cmdshell 'sqlcmd -S . -U app -P Cl1secret -Q \"select 1\"'", "Cl1secret",
+			"EXEC xp_cmdshell 'sqlcmd -S . -U app -P <masked> -Q \"select 1\"'"},
+		{"sqlcmd -P doubled quotes", "EXEC xp_cmdshell 'sqlcmd -S . -P''Cl2secret'' -Q x'", "Cl2secret",
+			"EXEC xp_cmdshell 'sqlcmd -S . -P<masked> -Q x'"},
+		{"bcp -P at the end", "EXEC xp_cmdshell 'bcp db.dbo.t out f.dat -c -U app -P Cl3secret'", "Cl3secret",
+			"EXEC xp_cmdshell 'bcp db.dbo.t out f.dat -c -U app -P <masked>'"},
+		{"osql -P", "osql -E -S . -P Cl4secret", "Cl4secret", "osql -E -S . -P <masked>"},
+		{"SQLCMDPASSWORD with spaces", "SET SQLCMDPASSWORD = Cl5secret && sqlcmd -S .", "Cl5secret",
+			"SET SQLCMDPASSWORD = <masked> && sqlcmd -S ."},
+		{"SQLCMDPASSWORD bare", "SQLCMDPASSWORD=Cl6secret sqlcmd -S .", "Cl6secret", "SQLCMDPASSWORD=<masked> sqlcmd -S ."},
+		// connection strings and URIs
+		{"connection string", "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=Cs1secret;', 'SELECT 1')", "Cs1secret",
+			"SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=<masked>;', 'SELECT 1')"},
+		{"uri", "select dblink('postgresql://app:Cs2secret@db/x', 'select 1')", "Cs2secret",
+			"select dblink('postgresql://app:<masked>@db/x', 'select 1')"},
+		{"libpq keyword", "select dblink_connect('host=h user=u password=Cs3secret dbname=d')", "Cs3secret",
+			"select dblink_connect('host=h user=u password=<masked> dbname=d')"},
+		// SQL Server passphrase functions with a literal
+		{"encryptbypassphrase", "SELECT ENCRYPTBYPASSPHRASE('Pp1secret', N'data') FROM t", "Pp1secret",
+			"SELECT ENCRYPTBYPASSPHRASE('<masked>', '<masked>') FROM t"},
+		{"decryptbypassphrase N", "select DecryptByPassPhrase(N'Pp2secret', c) from t", "Pp2secret",
+			"select DecryptByPassPhrase('<masked>', c) from t"},
+		{"passphrase variable stays", "SELECT ENCRYPTBYPASSPHRASE(@p, @x)", "", "SELECT ENCRYPTBYPASSPHRASE(@p, @x)"},
+		// PostgreSQL: roles, pgcrypto with every literal form (finding 10)
+		{"pg role", "ALTER ROLE app PASSWORD 'Pg1secret' VALID UNTIL 'infinity'", "Pg1secret",
+			"ALTER ROLE app PASSWORD '<masked>' VALID UNTIL 'infinity'"},
+		{"pg role escape", "CREATE ROLE a LOGIN ENCRYPTED PASSWORD E'Pg2\\'secret'", "Pg2", "CREATE ROLE a LOGIN ENCRYPTED PASSWORD '<masked>'"},
+		{"pgp_sym_encrypt", "select pgp_sym_encrypt('data', 'Pg3secret')", "Pg3secret", "select pgp_sym_encrypt('<masked>', '<masked>')"},
+		{"pgp dollar quote", "select pgp_sym_decrypt(col, $k$Pg4secret$k$) from t", "Pg4secret", "select pgp_sym_decrypt(col, '<masked>') from t"},
+		{"encrypt E''", "select encrypt('d'::bytea, E'Pg5secret'::bytea, 'aes')", "Pg5secret",
+			"select encrypt('<masked>'::bytea, '<masked>'::bytea, '<masked>')"},
+		{"crypt", "select crypt('Pg6secret', gen_salt('bf'))", "Pg6secret", "select crypt('<masked>', gen_salt('<masked>'))"},
+		{"hmac nested", "SELECT HMAC(convert_to(x, 'UTF8'), 'Pg7secret', 'sha256') FROM t", "Pg7secret",
+			"SELECT HMAC(convert_to(x, '<masked>'), '<masked>', '<masked>') FROM t"},
+		{"pgcrypto unterminated", "select pgp_sym_encrypt('data', 'Pg8secretcut", "Pg8secret", "select pgp_sym_encrypt('<masked>', '<masked>'"},
+		// private key blocks: whole, or from BEGIN to the end of a text cut before END
+		{"pgp block", "select dearmor('-----BEGIN PGP PRIVATE KEY BLOCK-----\nKb1secret\n-----END PGP PRIVATE KEY BLOCK-----') as k",
+			"Kb1secret", "select dearmor('<masked>') as k"},
+		{"pgp block cut", "select length('-----BEGIN PGP PRIVATE KEY BLOCK----- Kb2secret xxxxxxxx", "Kb2secret", "select length('<masked>"},
+		{"pem key", "-----BEGIN RSA PRIVATE KEY-----\nKb3secret\n-----END RSA PRIVATE KEY----- after", "Kb3secret", "<masked> after"},
+		// the PowerShell and Windows forms MaskJobText covers
+		{"securestring", "ConvertTo-SecureString 'Ps1secret' -AsPlainText -Force", "Ps1secret", "ConvertTo-SecureString <masked> -AsPlainText -Force"},
+		{"net use", `net use \\h\s Ps2secret /user:u`, "Ps2secret", `net use \\h\s <masked> /user:u`},
+		// nothing to mask: text unchanged (a column whose name holds 'password' compared with a column, not a literal)
+		{"plain", "SELECT a, b FROM t WHERE k = 'value' AND n = 3", "", "SELECT a, b FROM t WHERE k = 'value' AND n = 3"},
+		{"loginproperty", "SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins", "",
+			"SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins"},
+	}
+	for _, c := range cases {
+		got := MaskCredentials(c.in)
+		if c.secret != "" && strings.Contains(got, c.secret) {
+			t.Errorf("%s: the secret %q is still there: %q", c.name, c.secret, got)
+		}
+		if c.want != "" && got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+		if again := MaskCredentials(got); again != got {
+			t.Errorf("%s: a second pass changed the text: %q -> %q", c.name, got, again)
+		}
+	}
+}
+
+// Task 415 (408 pass finding 1): under full, the default, the text keys of every row are masked on the way to the
+// repository; normalized and none keep their own rules after the mask.
+func TestApplyTextPolicyMasksUnderEveryMode(t *testing.T) {
+	mk := func() []Row {
+		return []Row{
+			{"kind": "request", "statement": "SELECT 1 WHERE N'sqlcmd -S . -P Rw1secret' <> name", "session_id": 52},
+			{"kind": "session", "query": "select pgp_sym_encrypt('d', 'Rw2secret')", "query_hash": int64(5)},
+			{"kind": "event", "statement": "ALTER LOGIN a WITH PASSWORD = 'Rw3secret'", "detail": "Process 9: CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'Rw4secret'"},
+			{"kind": "slow", "statement": "exec p @password = N'Rw5secret'", "shape": "p"},
+			{"kind": "collector_error", "message": "login failed: password=Rw6secret"},
+			{"kind": "plan_xml", "kind_of": "plan", "statement": "<StmtSimple StatementText=\"SELECT ENCRYPTBYPASSPHRASE('Rw7secret', x)\"/>"},
+		}
+	}
+	secrets := []string{"Rw1secret", "Rw2secret", "Rw3secret", "Rw4secret", "Rw5secret", "Rw6secret", "Rw7secret"}
+	for _, mode := range []string{"", "full", "normalized", "none"} {
+		rows := mk()
+		applyTextPolicy(rows, mode)
+		b, _ := json.Marshal(rows)
+		for _, s := range secrets {
+			if strings.Contains(string(b), s) {
+				t.Errorf("mode %q: %s survived: %s", mode, s, b)
+			}
+		}
+		if rows[0]["session_id"] != 52 || rows[3]["shape"] != "p" {
+			t.Errorf("mode %q: a non-text column changed: %v %v", mode, rows[0]["session_id"], rows[3]["shape"])
+		}
+	}
+	rows := mk()
+	applyTextPolicy(rows, "full")
+	if rows[0]["statement"] != "SELECT 1 WHERE N'sqlcmd -S . -P <masked>' <> name" || rows[1]["query_hash"] != int64(5) {
+		t.Errorf("full: the rest of the text or the server's hash changed: %v | %v", rows[0]["statement"], rows[1]["query_hash"])
+	}
+}

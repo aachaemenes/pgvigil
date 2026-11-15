@@ -21,9 +21,13 @@ type Config struct {
 	// Schedules overrides the default interval of a collection for every instance,
 	// e.g. activity: 30s. An instance's own Schedules override these.
 	Schedules map[string]Duration `yaml:"schedules"`
-	// QueryText says what statement text the repository may hold: full (default; credentials
-	// always masked), normalized (every literal replaced by ?), none (no statement text at all,
-	// only hashes and counters). An instance's own query_text overrides it.
+	// QueryText says what statement text the repository may hold: full (default: the text as the server
+	// shows it), normalized (every literal replaced by ?), none (no statement text at all, only hashes and
+	// counters). Under every one, both engines, the password-shaped parts of a text are masked before it is
+	// stored (collect.MaskCredentials: a PASSWORD / SECRET / IDENTIFIED BY literal, a password-named T-SQL
+	// parameter, a connection string's or a URI's password, a command line's -P, a literal given to a key or
+	// passphrase function, a private key block); a password held as an ordinary value stays under full only.
+	// An instance's own query_text overrides it.
 	QueryText string `yaml:"query_text"`
 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
 	UI UI `yaml:"ui"`
