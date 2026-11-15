@@ -565,3 +565,160 @@ func TestLoadTarget(t *testing.T) {
 		}
 	}
 }
+
+// slowPG is a PostgreSQL server for one purpose: it accepts, reads the startup message, waits delay, then logs the
+// client in (AuthenticationOk, the parameters pgx reads, ReadyForQuery) and answers every simple query with one
+// CommandComplete after qdelay - an instance whose login takes delay and whose session setup takes qdelay (the
+// slow-connect tier's TestConnectTimed: the session setup after the connect must stay outside its time).
+func slowPG(t *testing.T, delay, qdelay time.Duration) (port int, stop func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := func(typ byte, body []byte) []byte {
+		b := []byte{typ, 0, 0, 0, 0}
+		n := uint32(len(body) + 4)
+		b[1], b[2], b[3], b[4] = byte(n>>24), byte(n>>16), byte(n>>8), byte(n)
+		return append(b, body...)
+	}
+	param := func(k, v string) []byte { return msg('S', []byte(k+"\x00"+v+"\x00")) }
+	serve := func(c net.Conn) {
+		defer func() { _ = c.Close() }()
+		hdr := make([]byte, 4)
+		if _, err := io.ReadFull(c, hdr); err != nil {
+			return
+		}
+		n := int(hdr[0])<<24 | int(hdr[1])<<16 | int(hdr[2])<<8 | int(hdr[3])
+		if _, err := io.ReadFull(c, make([]byte, n-4)); err != nil {
+			return
+		}
+		time.Sleep(delay)
+		var out []byte
+		out = append(out, msg('R', []byte{0, 0, 0, 0})...)
+		out = append(out, param("server_version", "16.0")...)
+		out = append(out, param("client_encoding", "UTF8")...)
+		out = append(out, param("standard_conforming_strings", "on")...)
+		out = append(out, msg('K', []byte{0, 0, 0, 1, 0, 0, 0, 2})...)
+		out = append(out, msg('Z', []byte{'I'})...)
+		if _, err := c.Write(out); err != nil {
+			return
+		}
+		for {
+			h := make([]byte, 5)
+			if _, err := io.ReadFull(c, h); err != nil {
+				return
+			}
+			n := int(h[1])<<24 | int(h[2])<<16 | int(h[3])<<8 | int(h[4])
+			if _, err := io.ReadFull(c, make([]byte, n-4)); err != nil {
+				return
+			}
+			switch h[0] {
+			case 'X':
+				return
+			case 'Q':
+				time.Sleep(qdelay)
+				if _, err := c.Write(append(msg('C', []byte("SET\x00")), msg('Z', []byte{'I'})...)); err != nil {
+					return
+				}
+			}
+		}
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serve(c)
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port, func() { _ = ln.Close() }
+}
+
+// loadJSON is one instance's load row of a beat as the repository reads it (its JSON keys)
+func loadJSON(t *testing.T, b beat, instance string) map[string]any {
+	t.Helper()
+	for _, l := range b.Load {
+		if l.Instance != instance {
+			continue
+		}
+		raw, err := json.Marshal(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	t.Fatalf("no load row for %s", instance)
+	return nil
+}
+
+// TestConnectTimed: the slow-connect tier's measure (the design's S1, the pass's #6) - a connect that opens is timed
+// where it is made, the instance's own (Connect) and a collection's per-database one (connectCounted) alike: the beat's
+// load row carries 'timed' 1 and its time in 'connect_ms_sum' / 'connect_ms_max' (300 ms or more for a login answered
+// 300 ms late, under 1 s: the session setup Connect runs after it answers 1 s late and is not counted); a connect that
+// fails is counted, never timed.
+func TestConnectTimed(t *testing.T) {
+	port, stop := slowPG(t, 300*time.Millisecond, time.Second)
+	defer stop()
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
+	dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=x dbname=x sslmode=disable", port)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := Connect(ctx, config.Instance{Name: "slow1", DSNRaw: dsn})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	_ = c.Close(ctx)
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := connectCounted(ctx, "slow2", cfg)
+	if err != nil {
+		t.Fatalf("connectCounted: %v", err)
+	}
+	_ = c2.Close(ctx)
+	bad, err := pgx.ParseConfig("host=127.0.0.1 port=1 user=x dbname=x sslmode=disable connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c3, err := connectCounted(ctx, "slow3", bad); err == nil {
+		_ = c3.Close(ctx)
+		t.Fatal("connectCounted: connected to port 1")
+	}
+	b := h.take()
+	for _, name := range []string{"slow1", "slow2"} {
+		m := loadJSON(t, b, name)
+		timed, sum, mx := m["timed"], m["connect_ms_sum"], m["connect_ms_max"]
+		if timed != float64(1) {
+			t.Errorf("%s: timed %v, want 1 (the load row: %v)", name, timed, m)
+		}
+		if s, ok := sum.(float64); !ok || s < 300 || s >= 1000 {
+			t.Errorf("%s: connect_ms_sum %v, want 300 to under 1000 (the session setup's 1 s not counted)", name, sum)
+		}
+		if x, ok := mx.(float64); !ok || x < 300 || x >= 1000 {
+			t.Errorf("%s: connect_ms_max %v, want 300 to under 1000", name, mx)
+		}
+	}
+	if m := loadJSON(t, b, "slow3"); m["timed"] != nil && m["timed"] != float64(0) {
+		t.Errorf("slow3 (a failed connect): timed %v, want none", m["timed"])
+	}
+}
+
+// TestConnTookFloor: an opened PostgreSQL connect is always timed - a clock that moves in ticks (Windows' 15.6 ms one)
+// reads a short connect as 0, which countConnectTimed would leave untimed: connTook never answers under a nanosecond
+func TestConnTookFloor(t *testing.T) {
+	if got := connTook(time.Now().Add(time.Hour)); got != time.Nanosecond {
+		t.Errorf("connTook of a reading under 0: %v, want 1ns", got)
+	}
+	if got := connTook(time.Now().Add(-2 * time.Second)); got < 2*time.Second {
+		t.Errorf("connTook of a 2 s connect: %v, want 2 s or more", got)
+	}
+}

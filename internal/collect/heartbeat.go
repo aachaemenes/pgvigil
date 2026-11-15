@@ -52,6 +52,10 @@ type loadAgg struct {
 	attempts, opened, runs, failures, auth int
 	noanswer                               int           // failed connects the server never answered (NoAnswer: N8)
 	every                                  time.Duration // the fastest configured interval of the runs counted (0: none known)
+	// the slow-connect tier: the opened connects that were timed, their time summed and the longest, in milliseconds
+	timed     int
+	connMsSum int64
+	connMsMax int
 }
 
 type streak struct {
@@ -105,19 +109,32 @@ func skipped(res Result) bool { return res.Err == nil && strings.Contains(res.No
 // CountConnect counts one connection attempt to an instance: opened when err is nil, a login refused when the server
 // said so (AuthFailure). A collection's per-database connects call it (connectCounted); the instance's own connect
 // (collect.Connect, the SQL Server connector) goes through InstanceConnect, which counts the same way.
-func CountConnect(instance string, err error) {
+func CountConnect(instance string, err error) { CountConnectTimed(instance, err, 0) }
+
+// CountConnectTimed is CountConnect with the connect's own time (the slow-connect tier: from the call to the open
+// connection - DNS, TCP, TLS, the startup and the login); an opened connect with a time above 0 is 'timed' on the
+// beat's load row, its time added to the minute's sum and kept when it is the longest. took 0: not timed.
+func CountConnectTimed(instance string, err error, took time.Duration) {
 	if h := current.Load(); h != nil {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		h.countConnect(instance, err)
+		h.countConnectTimed(instance, err, took)
 	}
 }
 
-func (h *Heartbeat) countConnect(instance string, err error) {
+func (h *Heartbeat) countConnect(instance string, err error) { h.countConnectTimed(instance, err, 0) }
+
+func (h *Heartbeat) countConnectTimed(instance string, err error, took time.Duration) {
 	l := h.loadOf(instance)
 	l.attempts++
 	if err == nil {
 		l.opened++
+		if took > 0 {
+			ms := took.Milliseconds()
+			l.timed++
+			l.connMsSum += ms
+			l.connMsMax = max(l.connMsMax, int(ms))
+		}
 	} else if AuthFailure(err) {
 		l.auth++
 	}
@@ -198,11 +215,14 @@ const connectStreak = "(connect)"
 // as CountConnect does and keeps the instance's connect streak: a failure that is not a refused login adds one, an
 // opened or refused connect ends it (the server answered), a stop's cancel touches nothing. It returns err marked as
 // the instance's connect failure (its text unchanged; errors.Is / errors.As see through the mark).
-func InstanceConnect(instance string, err error) error {
+func InstanceConnect(instance string, err error) error { return InstanceConnectTimed(instance, err, 0) }
+
+// InstanceConnectTimed is InstanceConnect with the connect's own time (CountConnectTimed's rule; took 0: not timed).
+func InstanceConnectTimed(instance string, err error, took time.Duration) error {
 	if h := current.Load(); h != nil {
 		now := time.Now()
 		h.name(instance, now) // before the connect's outcome is reported: its failed read finds the instance covered
-		return h.instanceConnect(instance, err, now)
+		return h.instanceConnectTimed(instance, err, now, took)
 	}
 	if err == nil {
 		return nil
@@ -257,12 +277,16 @@ func (h *Heartbeat) name(instance string, now time.Time) {
 }
 
 func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) error {
+	return h.instanceConnectTimed(instance, err, now, 0)
+}
+
+func (h *Heartbeat) instanceConnectTimed(instance string, err error, now time.Time, took time.Duration) error {
 	if err != nil && errors.Is(err, context.Canceled) {
 		return &connectError{err} // a stop cut it: no attempt, no streak
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.countConnect(instance, err)
+	h.countConnectTimed(instance, err, took)
 	sk := [2]string{instance, connectStreak}
 	s := h.streaks[sk]
 	if s == nil {
@@ -308,10 +332,16 @@ func withConnectTimeout(cfg *pgx.ConnConfig) {
 func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
 	withConnectTimeout(cfg)
 	InstanceTarget(instance, PgTarget(cfg))
+	t0 := time.Now()
 	conn, err := pgx.ConnectConfig(ctx, cfg)
-	CountConnect(instance, err)
+	CountConnectTimed(instance, err, connTook(t0)) // the slow-connect tier times the per-database connects too (#6)
 	return conn, err
 }
+
+// connTook: a PostgreSQL connect's time from t0, never under a nanosecond - a clock that moves in ticks (Windows'
+// 15.6 ms one) reads a short connect as 0, which countConnectTimed would leave untimed; an opened connect is always
+// timed, as SQL Server's connectTook (internal/mssql)
+func connTook(t0 time.Time) time.Duration { return max(time.Since(t0), time.Nanosecond) }
 
 func (h *Heartbeat) loadOf(instance string) *loadAgg {
 	l := h.load[instance]
@@ -432,6 +462,11 @@ type beatLoad struct {
 	// NoAnswer: the minute's failed connects the server never answered; Target: the instance's dial target (N8)
 	NoAnswer int    `json:"noanswer,omitempty"`
 	Target   string `json:"target,omitempty"`
+	// the slow-connect tier: the minute's timed connects, their milliseconds summed and the longest (none: left out;
+	// an older repository ignores them, an older collector's beat leaves them NULL - 0121's coalesce)
+	Timed        int   `json:"timed,omitempty"`
+	ConnectMsSum int64 `json:"connect_ms_sum,omitempty"`
+	ConnectMsMax int   `json:"connect_ms_max,omitempty"`
 }
 
 type beatStreak struct {
@@ -468,7 +503,8 @@ func (h *Heartbeat) take() beat {
 	now := time.Now()
 	for name, l := range h.load {
 		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth,
-			IntervalS: int(l.every / time.Second), NoAnswer: l.noanswer, Target: h.targets[name]})
+			IntervalS: int(l.every / time.Second), NoAnswer: l.noanswer, Target: h.targets[name],
+			Timed: l.timed, ConnectMsSum: l.connMsSum, ConnectMsMax: l.connMsMax})
 		if h.seen == nil {
 			h.seen = map[string]time.Time{}
 		}

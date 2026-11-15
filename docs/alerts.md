@@ -193,6 +193,55 @@ A cut that drops packets instead of refusing them makes each connect hang until 
 ends it (or the DSN's own timeout; without either the operating system gives up after about 2 minutes on Linux). A run
 is counted when it ends, so the parent can rise a little later than for a refused connection.
 
+## When connects are slow
+
+The collector times every connect it opens - an instance's own and a collection's per-database ones - from the call
+to the open connection: DNS, the TCP and TLS handshakes, the login, and the collector's own CPU and scheduling. On a
+SQL Server instance that signs in with Entra the time the identity provider takes to hand over the token is left out
+(it is the provider's, not the server's); a Kerberos exchange with the domain controller is counted. A failed connect
+is never timed (it is *server unreachable* or *authentication failing*).
+
+**slow connect** (warning or critical, source `pgvigil collector`): an instance whose connects over its last 5 written
+minutes average over its `connect_time` threshold - 1.00 s for a warning and 2.50 s for a critical by default. The
+Thresholds page sets it at the root, at a tag or at a PostgreSQL instance; a SQL Server instance takes the root's or
+its tag's, as Instance Uptime does (the page lists PostgreSQL instances and their tags; a SQL Server instance's own row
+is taken through the API). A level set with one box empty is not judged at that level (warning 3.00 s with no
+critical never turns critical). It needs 3 or more timed connects in those minutes (an instance read every minute has
+about 13 a minute, some 65 in the 5; one slow connect among them does not alert, a server slow at every login does),
+and its newest written minute within the collector's span plus 3 minutes of now: a stopped collector's last minutes
+judge nothing. The Collector page shows each instance's connect average and longest of the
+hour, and the instance's line on Collection dates says the same.
+
+When most of one server's instances, or most of the servers one collector reads, are slow at once, ONE alert speaks
+for them, **slow connects** (source `pgvigil repository`), and the members' own *slow connect* alerts are held while
+it stands (a member over the alert's level is still sent):
+- a **server** (a dial target: a SQL Server, an Azure SQL logical server and its databases, a PostgreSQL host and
+  port) with 3 or more judged instances is slow when 3 or more of them and more than half are over their own warning -
+  its gateway or its login, not the collector; the alert's value is the server;
+- a **collector** is slow when 3 or more of the servers it reads and more than half are slow (a server of 1 or 2
+  instances counts as slow when all of them are) - the collector's own CPU, DNS or network, not the servers; its value
+  is the collector's host, and the servers' own *slow connects* at or under its level are held under it (a server
+  critical under a warning collector alert is sent).
+It becomes critical when more than half are over their critical value (for a collector: more than half of its servers
+slow and over their critical). It forms at more than half and clears only at a quarter or less (or under 3) while its
+alert is open on a configured channel, so a count that hovers at half does not send and resolve every minute; while 3
+or more of a collector's instances cross their warning in the same minute (slow now, not slow in the 5 minutes before),
+a new *slow connect* waits up to a minute for the fold to form. A member above the level the alert was sent at (one
+server critical under a warning alert; a critical one while a critical alert falls to warning is still held) is sent
+on its own. While the collector's own *collector or network* stands, its *slow connects* is not resolved. The detail
+names the counts, the members' average over their last 5 written minutes with the first minute of that window ('the
+window from', not the minute the slowdown began: the alert's own first send is the nearest time to that) and the 3
+slowest instances. A
+collector's own *collector or network* comes first: the instances it holds are not judged.
+
+What the time costs and why the collections start spread: a collector spends about 2 ms of its own CPU on each
+PostgreSQL connect with TLS and a password login (measured 2026-11-14 on a 4-CPU client, flat with the load). Each
+collection's first run after the collector starts falls at a random moment within its interval, 5 minutes at most,
+then repeats at the interval: a site's minute collections spread over the whole minute (about 25,000 connects a minute
+cost about 0.8 of a CPU, every connect under 10 ms at the 95th percentile on that rig) instead of all firing in the first
+10 seconds, which would queue them behind the collector's CPU and read as slow connects everywhere. An hourly or daily
+collection still runs within 5 minutes of a start.
+
 ## The address of an alert, templates, the send cap, Send test
 
 - **Every alert carries the address of its page.** With `alerts_base_url` set (the UI's address as a reader opens it:

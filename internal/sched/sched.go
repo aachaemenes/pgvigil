@@ -310,9 +310,24 @@ func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *con
 	return started
 }
 
+// firstStartSpread: the window a collection's first run after a start falls in - each loop waits a random offset in
+// it, then ticks at its interval from there, so every instance's collections do not fire together: min(interval,
+// 5 min). The minute collections spread over their whole minute and the 5-minute ones over 5 minutes (measured
+// 11-14, M0: a collector spends about 2.4 ms of its CPU per PostgreSQL connect with TLS and a SCRAM login, so a site's
+// minute collections all started inside 10 s queue every connect behind it - the slow-connect tier would read that);
+// an hourly or daily collection's first run still comes within 5 minutes of a start.
+func firstStartSpread(iv time.Duration) time.Duration { return min(iv, 5*time.Minute) }
+
+// firstStart: one loop's random offset in its spread (0 when the spread is none).
+func firstStart(iv time.Duration) time.Duration {
+	if sp := firstStartSpread(iv); sp > 0 {
+		return time.Duration(mrand.Int64N(int64(sp)))
+	}
+	return 0
+}
+
 func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, iv time.Duration) {
-	// a small random offset so every instance's minute collections do not fire together
-	jitter := time.Duration(mrand.Int64N(int64(min(iv, 10*time.Second))))
+	jitter := firstStart(iv)
 	select {
 	case <-ctx.Done():
 		return
