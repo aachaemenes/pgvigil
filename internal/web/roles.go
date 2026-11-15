@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // The web UI's roles (task B24f). viewer reads; operator acts on a monitored server (cancel, terminate, KILL, job
@@ -68,7 +69,7 @@ func article(role string) string {
 
 // routeWhat names what a route does, for its refusal ("<what> needs the <need> role: ...")
 var routeWhat = map[string]string{
-	"POST /api/indexes/advise":              "reading an index advice",
+	"POST /api/indexes/advise":              "running the index advisor",
 	"POST /api/mssql/actions/preview":       "previewing an action",
 	"POST /api/community/glenn/parse":       "reading a diagnostic file",
 	"POST /api/community/params":            "reading a tool's parameters",
@@ -139,6 +140,23 @@ func (s *Server) roleOK(w http.ResponseWriter, r *http.Request, n need, what str
 		return false
 	}
 	return true
+}
+
+// muteCeiling is the longest end an operator may give a mute, a silence or a blackout (the lead 11-15 13:3x): an end
+// more than 7 days after now, or after its start when that is later, is open-ended and needs admin with the same words
+// as no end at all (review-18 b24f1 S2: the store takes any end in the future, 9999-12-31 included).
+const muteCeiling = 7 * 24 * time.Hour
+
+// openEnded says whether a mute, silence or blackout's end makes it open-ended: none, or past muteCeiling
+func openEnded(starts, until *time.Time, now time.Time) bool {
+	if until == nil {
+		return true
+	}
+	from := now
+	if starts != nil && starts.After(from) {
+		from = *starts
+	}
+	return until.Sub(from) > muteCeiling
 }
 
 // roleErr is a role refusal a handler raises from its own body read, where its caller writes the reply (alertDoor's

@@ -347,7 +347,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/perfsummary", s.PerfSummary)
 	api.HandleFunc("GET /api/performance", s.Performance)
 	api.HandleFunc("GET /api/indexes", s.Indexes)
-	s.post(api, "POST /api/indexes/advise", needViewer, s.IndexAdvisor)
+	s.post(api, "POST /api/indexes/advise", needOperator, s.IndexAdvisor) // hypopg and EXPLAIN on the monitored server: as plans/hypo (the lead 13:3x)
 	api.HandleFunc("GET /api/dmsio", s.DMSIO)
 	api.HandleFunc("GET /api/tags", s.Tags(s.tags))
 	s.post(api, "POST /api/actions/cancel", needOperator, s.actions.Cancel)

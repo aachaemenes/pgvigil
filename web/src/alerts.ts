@@ -563,7 +563,10 @@ function muteDialog(o: MuteDialog) {
     if (o.kind === 'noise' && !note.value.trim()) return 'a label';
     if (!startNow.checked && isNaN(startAt().getTime())) return 'a start time';
     const u = untilOf();
-    if (wideWhy && (inst.value === '' || tag.value.trim() || !u)) return `one instance, no tag and an end (${wideWhy})`;
+    // one alert (a rule that names its finding) is one scope; an end more than 7 days after the start is open-ended
+    // (the lead 13:3x; q_ack.go openEnded)
+    if (wideWhy && ((inst.value === '' && r?.finding_key == null) || tag.value.trim() || !u
+      || u.getTime() - Math.max(Date.now(), startAt().getTime()) > 7 * 86400e3)) return `one instance, no tag and an end within 7 days (${wideWhy})`;
     if (u && (isNaN(u.getTime()) || u.getTime() <= Math.max(Date.now(), startAt().getTime()))) return 'an end after the start and after now';
     return '';
   };

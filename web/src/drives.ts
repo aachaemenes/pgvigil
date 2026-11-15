@@ -18,7 +18,7 @@ import { hrefWith } from './dbinfo';
 import { mssqlFilesTab } from './mssql_storage';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid } from './ui';
 import { loadAckSafe, offBeside, onDoor, pageNote, seatWhy } from './ack';
-import { needControl } from './needs';
+import { needControl, needWords } from './needs';
 
 type Parts<K extends string> = Record<K, Table | null>;
 const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -94,8 +94,10 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
   const save = el('button', { type: 'submit' }, 'Set'), inherit = el('button', { type: 'button' }, 'Inherit'), back = el('button', { type: 'button' }, 'Back');
   // nothing of this level's own to end: Inherit is off with that reason beside it (it already inherits)
   if (!own) offBeside(inherit, 'this level has no threshold of its own: it already inherits the level above');
-  // the role (B24f): a threshold needs admin - below it both are off with the role's words beside them
-  needControl(save, 'drives/thresholds'); needControl(inherit, 'drives/thresholds');
+  // the role (B24f): a threshold needs admin - below it both are off, described by one sentence of the dialog's
+  // (review-18 b24f2 N4: one note, not one per button)
+  const roleP = el('p', { class: 'meta off-reason' }, needWords('drives/thresholds'));
+  needControl(save, 'drives/thresholds', { note: roleP }); needControl(inherit, 'drives/thresholds', { note: roleP });
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Drive space thresholds: ${p.where}`),
     el('p', {}, 'A drive with less free space than the warning per cent is a warning, less than the critical per cent a critical. '
       + 'The drive\'s own threshold wins, then its instance\'s, a tag\'s (when two of the instance\'s tags carry one, the tag first by name), the root\'s; the default is warning under 20 %, critical under 10 %. '
@@ -103,7 +105,7 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
     el('p', { class: 'meta' }, `In force now: ${inForce}.`),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Warning under (% free) ', warn)),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Critical under (% free) ', crit)),
-    msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
+    roleP, msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', back));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:36rem', 'aria-label': `Drive space thresholds: ${p.where}` }, form);
   let done = false;
   const close = () => { dlg.close(); dlg.remove(); if (done) after(); };

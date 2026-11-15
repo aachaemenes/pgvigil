@@ -13,7 +13,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, props } from './ui';
 import { loadAckSafe, offBeside, onDoor, seatWhy } from './ack';
-import { markNeed, needControl } from './needs';
+import { dialogRole, needControl } from './needs';
 import { fleet } from './fleet';
 
 type Kind = 'job_stop' | 'job_start';
@@ -150,9 +150,12 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
   const msg = el('p', { class: 'meta', role: 'status' });
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', 'aria-label': "type the job's name to confirm", placeholder: job, autocomplete: 'off' });
-  const go = markNeed(el('button', { type: 'submit', disabled: '' }, `${labels[kind]} ${job}`), kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start');
+  const go = el('button', { type: 'submit', disabled: '' }, `${labels[kind]} ${job}`);
+  // the role (B24f, review-18 b24f2 B1): below the need the dialog reads, and go stays off with the role's words
+  // whatever is typed - the tree's job menu opens it too
+  const role = dialogRole(go, kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start');
   let busy = false;   // one action per dialog: a keystroke after the send never arms the button again
-  const check = () => { go.disabled = busy || typed.value.trim() !== job || reason.value.trim().length < 5; };
+  const check = () => { if (!role.why) go.disabled = busy || typed.value.trim() !== job || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);
   typed.addEventListener('input', check);
   const shown = kind === 'job_stop'
@@ -168,7 +171,7 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
       : 'Run now sets the job\'s next run to now (UPDATE pgagent.pga_job SET jobnextrun = now()): pgAgent starts it at its next poll, from its first step.'),
     shown,
     el('label', {}, 'Reason', el('br'), reason), el('br'),
-    el('label', {}, 'Type the job\'s name to confirm ', typed), el('br'), msg);
+    el('label', {}, 'Type the job\'s name to confirm ', typed), el('br'), role.note, msg);
   const form = el('form', { method: 'dialog' }, el('h3', {}, what), body, el('div', { style: 'margin-top:.6rem' }, go, ' ', no));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:40rem', 'aria-label': what }, form);
   let sent = false;
@@ -179,7 +182,7 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
   reason.focus();
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
-    if (busy) return;
+    if (busy || role.why) return;
     busy = true; sent = true;          // sent from here: a dialog closed while the request runs still redraws the grid
     go.disabled = true; reason.readOnly = true; typed.readOnly = true;
     msg.textContent = 'Sending...';

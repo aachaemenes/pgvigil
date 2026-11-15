@@ -10,11 +10,11 @@
 #
 # The needs (docs/roles.md's table is the same list; internal/web/roles_test.go compares it with web.go):
 #   anyone   login, logout
-#   viewer   indexes/advise, mssql/actions/preview, community/glenn/parse, community/params, customreports/run,
+#   viewer   mssql/actions/preview, community/glenn/parse, community/params, customreports/run,
 #            reportmail/rendered
 #   operator actions/cancel, actions/terminate, mssql/actions/run (KILL, job start / stop, plan evict), jobs/actions/
 #            stop and start, ack, ack/end, alerts/dismiss, alerts/mute, alerts/test, plans/explain, plans/analyze,
-#            plans/hypo, community/run, reportmail/send, reportmail/test
+#            plans/hypo, indexes/advise (the lead 13:3x), community/run, reportmail/send, reportmail/test
 #   admin    admin/instances, admin/sources, admin/proposals, admin/dbadash_moves, admin/applications (and contacts,
 #            assign, routes, import), alertrules, alertrules/end, drives/thresholds, pg/thresholds, jobs/thresholds,
 #            jobs/exclusions, customreports, reportmail
@@ -41,7 +41,9 @@
 #     FAIL (not refused: the edit is role-checked no further than operator); the operator's edit of a one-instance
 #     rule that keeps its instance and an end ok; the admin's edit to every instance ok.
 #   The fold of review-18 (b24f1 N5 / S4; written before the run that carries it): S5 the operator's one-alert mute
-#     (finding_key, no instance) with an end: its own answer, not the role's words; A4 GET /api/applications/
+#     (finding_key, no instance) with an end: its own answer, not the role's words; the 7-day ceiling (the lead 13:3x):
+#     the operator's mute of one instance ending in 30 days and blackout ending 9999-12-31 refused with the admin
+#     words, its edit to an end 30 days away refused; R1's indexes/advise row at operator; A4 GET /api/applications/
 #     unassigned as a viewer and an operator: can_edit false, why_not 'changing an application needs the admin role:
 #     <user> is a viewer / an operator ...'; as the admin: can_edit true.
 #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
@@ -174,7 +176,7 @@ grade() {
   fi
 }
 ROUTES=(
-  "viewer /api/indexes/advise" "viewer /api/mssql/actions/preview" "viewer /api/community/glenn/parse" "viewer /api/community/params"
+  "operator /api/indexes/advise" "viewer /api/mssql/actions/preview" "viewer /api/community/glenn/parse" "viewer /api/community/params"
   "viewer /api/customreports/run" "viewer /api/reportmail/rendered"
   "operator /api/actions/cancel" "operator /api/actions/terminate" "operator /api/mssql/actions/run" "operator /api/jobs/actions/stop"
   "operator /api/jobs/actions/start" "operator /api/ack" "operator /api/ack/end" "operator /api/alerts/dismiss" "operator /api/alerts/mute"
@@ -199,7 +201,9 @@ done
 [[ $(q "select count(*) from pgvigil.admin_sources" 2>&1) == "$before" ]] && ok "SRC: the source rows unchanged ($before)" || bad "SRC: the source rows: $before before, $(q "select count(*) from pgvigil.admin_sources") after"
 
 # ---- S5: a fleet-wide or open-ended mute or blackout needs admin ----------------------------------------------------
-END='"until":"2030-01-01T00:00:00Z"'
+# an end inside the 7-day ceiling (the lead 13:3x: an end more than 7 days away is open-ended), and one past it
+END="\"until\":\"$(date -u -d '+2 days' +%Y-%m-%dT%H:%M:%SZ)\""
+FAR="\"until\":\"$(date -u -d '+30 days' +%Y-%m-%dT%H:%M:%SZ)\""
 s5() {   # s5 <user> <want: admin|own> <body> <what>
   local res code; res=$(post "$1" /api/ack "$3"); code=${res%% *}
   if [[ $2 == admin ]]; then
@@ -212,6 +216,8 @@ s5 o$SUF admin "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every i
 s5 o$SUF admin '{"kind":"blackout","instance_id":999999}' "a blackout with no end"
 s5 o$SUF admin "{\"kind\":\"mute\",\"tag\":\"prod\",\"check_key\":\"x\",$END}" "a mute over a tag"
 s5 o$SUF admin '{"kind":"mute","instance_id":999999,"check_key":"x"}' "a mute with no end"
+s5 o$SUF admin "{\"kind\":\"mute\",\"instance_id\":999999,\"check_key\":\"x\",$FAR}" "a mute of one instance with an end 30 days away"
+s5 o$SUF admin "{\"kind\":\"blackout\",\"instance_id\":999999,\"until\":\"9999-12-31T00:00:00Z\"}" "a blackout of one instance ending 9999-12-31"
 # a blackout over a tag is refused for every user before B24f ('a blackout names one instance', 409: roles-red1): no row
 s5 o$SUF own "{\"kind\":\"blackout\",\"instance_id\":999999,$END}" "a blackout of one instance with an end"
 s5 a$SUF own "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every instance"
@@ -251,6 +257,7 @@ else
   s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"any_instance\":true,\"check_key\":\"y\",$END}" "an edit to every instance"
   s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"y\",\"tag\":\"prod\",$END}" "an edit that adds a tag"
   s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"y\"}" "an edit with no end"
+  s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"y\",$FAR}" "an edit with an end 30 days away"
   s5e o$SUF own "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"z\",$END}" "an edit that keeps its one instance and an end"
   s5e a$SUF own "{\"op\":\"edit\",\"ack_id\":$(one),\"any_instance\":true,\"check_key\":\"z\",$END}" "an edit to every instance"
 fi
