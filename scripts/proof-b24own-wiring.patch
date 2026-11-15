@@ -1,0 +1,62 @@
+diff --git i/docs/running-queries.md w/docs/running-queries.md
+index b1b2444b..d7dca0f7 100644
+--- i/docs/running-queries.md
++++ w/docs/running-queries.md
+@@ -57,3 +57,13 @@ A statement cell is a button: a click, or Enter, opens the whole text in a dialo
+ - `GET /api/running/fleet`: the fleet page's rows (`rows`).
+ - `GET /api/running/snapshots?instance=<id>[&at=<RFC 3339>]`: the snapshot shown (the newest at or before `at`), the one before, the one after and the newest (`steps`).
+ - `GET /api/activity?instance=<id>[&at=]` and `GET /api/mssql/running?instance=<id>&from=&to=[&at=]`: one snapshot in full.
++
++## pgvigil's own sessions (hidden by default)
++
++The Running queries and Waiting tasks reads leave out pgvigil's own sessions unless you ask for them (own=1; the page's
++'Show pgvigil's own sessions' switch), and say how many they left out. The collector decides 'own' on the server itself:
++a backend whose application_name starts with `pgvigil` AND whose session user is the collector's login;
++the actions door's sessions (`pgvigil-actions*`) are never own. A session that blocks or is blocked, runs a request or a
++transaction over 60 seconds, sits idle in a transaction over 60 seconds, is
++shown even when it is pgvigil's own. A backend another tool opens under the collector's login with an application_name starting
++with `pgvigil` is pgvigil's by this rule and is hidden by default too.
+diff --git i/docs/sqlserver-running.md w/docs/sqlserver-running.md
+index acdbf587..a0dd06ac 100644
+--- i/docs/sqlserver-running.md
++++ w/docs/sqlserver-running.md
+@@ -108,3 +108,13 @@ Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([versions](s
+ ## Sources
+ 
+ The snapshot's shape is ported from DBA Dash's `SQLRunningQueries.sql` (MIT, Copyright 2022 Trimble, Inc.). The list of idle background waits is the rows marked ignorable in sp_BlitzFirst's wait categories (SQL Server First Responder Kit, MIT, Copyright (c) 2022 Brent Ozar Unlimited). The wait categories are sp_PressureDetector's wait list (DarlingData, MIT, Copyright (c) 2021 Darling Data, LLC). sp_WhoIsActive is called, never copied.
++
++## pgvigil's own sessions (hidden by default)
++
++The Running queries and Waiting tasks reads leave out pgvigil's own sessions unless you ask for them (own=1; the page's
++'Show pgvigil's own sessions' switch), and say how many they left out. The collector decides 'own' on the server itself:
++a session whose program name is the collector's own (or starts with `pgvigil`) AND whose login is the collector's login;
++the actions door's sessions (`pgvigil-actions*`) are never own. A session that blocks or is blocked, runs a request or a
++transaction over 60 seconds, sits idle in a transaction over 60 seconds, or holds a memory grant or tempdb over 100 MB is
++shown even when it is pgvigil's own. A session another tool opens under the monitor's login with pgvigil's app name - or
++an admin's DSN that names that app name - is pgvigil's by this rule and is hidden by default too.
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 9e87cd1d..d767d714 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -762,6 +762,7 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
+ 		Summary    *table     `json:"summary"`
+ 		Sessions   *table     `json:"sessions"`
+ 		Chains     *table     `json:"chains"`
++		OwnHidden  *table     `json:"own_hidden"` // B24 OWN: how many sessions the default hid (own=1 shows them)
+ 	}{SnapshotAt: snap}
+ 	if snap == nil {
+ 		s.reply(w, r, out, nil)
+@@ -771,7 +772,12 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
+ 		s.reply(w, r, nil, err)
+ 		return
+ 	}
+-	if out.Sessions, err = s.query(ctx, sqlSessions, id, *snap); err != nil {
++	own := r.URL.Query().Get("own") == "1" // pgvigil's own sessions shown (B24 OWN; hidden by default)
++	if out.Sessions, err = s.query(ctx, sqlSessionsOwn, id, *snap, own); err != nil {
++		s.reply(w, r, nil, err)
++		return
++	}
++	if out.OwnHidden, err = s.query(ctx, sqlSessionsOwnHidden, id, *snap, own); err != nil {
+ 		s.reply(w, r, nil, err)
+ 		return
+ 	}

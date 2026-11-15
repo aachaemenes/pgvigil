@@ -115,6 +115,10 @@ SELECT
   CAST(s.login_name AS nvarchar(128)) AS login_name,
   CAST(s.host_name AS nvarchar(128)) AS host_name,
   CAST(s.program_name AS nvarchar(128)) AS program_name,
+  -- pgvigil's own session (B24 OWN, 0265): decided here, on the server, by the program and the login together - never
+  -- the actions door's (it runs a customer's statement)
+  CAST(CASE WHEN (s.program_name = PROGRAM_NAME() OR s.program_name LIKE N'pgvigil%') AND s.login_name = SUSER_SNAME()
+            AND s.program_name NOT LIKE N'pgvigil-actions%' THEN 1 ELSE 0 END AS bit) AS is_own,
   CAST(DB_NAME(ISNULL(r.database_id, s.database_id)) AS nvarchar(128)) AS database_name,
   ISNULL(r.sql_handle, c.most_recent_sql_handle) AS sql_handle,
   CAST(CASE WHEN r.sql_handle IS NOT NULL THEN r.statement_start_offset ELSE -1 END AS int) AS stmt_start,

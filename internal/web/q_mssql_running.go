@@ -37,8 +37,11 @@ SELECT s.snapshot_at, s.server_utc, s.source, s.source_note, s.sessions, s.reque
  ORDER BY s.snapshot_at DESC
  LIMIT 1500`
 
-// sqlMssqlRunningRows: one snapshot, the newest at or before $2. A chain's rows come together, the head first.
-const sqlMssqlRunningRows = `
+// sqlMssqlRunningInner: one snapshot, the newest at or before $2, each row with is_own (the collector's flag, 0265: the
+// program and the login together, decided on the server) and hide - own and none of the reasons to show it
+// (own_shown_mssql: blocked, in a chain, a request over 60 s, a transaction idle over 60 s, a grant or tempdb over
+// 100 MB; or another row names it as its blocker). is_own NULL (read before 0265) is never hidden.
+const sqlMssqlRunningInner = `
 SELECT q.snapshot_at, q.server_utc, q.source, q.session_id, q.request_id, q.status, q.command, q.wait_type, q.wait_ms, q.wait_resource,
        q.wait_is_benign, q.blocking_session_id, q.open_tran, q.transaction_id, q.tran_start, q.tran_age_ms, q.tran_log_bytes,
        q.is_implicit_tran, q.isolation_level, q.cpu_ms, q.reads, q.writes, q.logical_reads, q.granted_memory_kb, q.tempdb_alloc_kb,
@@ -46,12 +49,29 @@ SELECT q.snapshot_at, q.server_utc, q.source, q.session_id, q.request_id, q.stat
        q.last_request_start, q.last_request_end, q.login_time, q.login_name, q.host_name, q.program_name, q.database_name,
        q.sql_handle, q.stmt_start, q.stmt_end, left(q.statement, 4000) AS statement, q.full_chars, q.plan_handle, q.query_hash,
        q.query_plan_hash, q.session_waits::text AS session_waits, q.is_user_process, q.head_session_id, q.chain_depth, q.victims,
-       q.longest_victim_wait_ms, q.in_cycle, q.chain_note
+       q.longest_victim_wait_ms, q.in_cycle, q.chain_note, o.is_own,
+       coalesce(o.is_own, false)
+         AND NOT (pgvigil.own_shown_mssql(q.session_id, q.blocking_session_id, q.head_session_id, q.in_cycle, q.elapsed_ms, q.request_id,
+                                          q.open_tran, q.last_request_end, q.granted_memory_kb, q.tempdb_alloc_kb, q.tran_age_ms,
+                                          q.snapshot_at)
+                  OR EXISTS (SELECT 1 FROM pgvigil.mssql_requests b WHERE b.instance_id = q.instance_id AND b.snapshot_at = q.snapshot_at
+                               AND b.blocking_session_id = q.session_id AND b.session_id <> q.session_id)) AS hide
   FROM pgvigil.mssql_requests_v q
+  LEFT JOIN LATERAL (SELECT r.is_own FROM pgvigil.mssql_requests r
+                      WHERE r.instance_id = q.instance_id AND r.snapshot_at = q.snapshot_at AND r.session_id = q.session_id
+                        AND r.request_id IS NOT DISTINCT FROM q.request_id LIMIT 1) o ON true
  WHERE q.instance_id = $1
-   AND q.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_requests_summary s WHERE s.instance_id = $1 AND s.snapshot_at <= $2)
- ORDER BY q.head_session_id NULLS LAST, q.chain_depth, q.session_id, q.request_id NULLS FIRST
+   AND q.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_requests_summary s WHERE s.instance_id = $1 AND s.snapshot_at <= $2)`
+
+// sqlMssqlRunningRows: the snapshot's rows, pgvigil's own hidden unless $3 (own=1) or a reason shows them. A chain's rows
+// come together, the head first.
+const sqlMssqlRunningRows = `SELECT x.* FROM (` + sqlMssqlRunningInner + `) x
+ WHERE $3::boolean OR NOT x.hide
+ ORDER BY x.head_session_id NULLS LAST, x.chain_depth, x.session_id, x.request_id NULLS FIRST
  LIMIT 5000`
+
+// sqlMssqlRunningOwnHidden: how many of the snapshot's rows the default hid (0 with own=1), counted before any LIMIT.
+const sqlMssqlRunningOwnHidden = `SELECT count(*) FILTER (WHERE x.hide AND NOT $3::boolean) AS rows FROM (` + sqlMssqlRunningInner + `) x`
 
 // sqlMssqlBlocking: the heads of that snapshot, the one with the longest wait behind it first.
 const sqlMssqlBlocking = `
@@ -84,10 +104,12 @@ func (s *Server) MssqlRunning(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	own := r.URL.Query().Get("own") == "1" // pgvigil's own sessions shown (B24 OWN; hidden by default)
 	parts := []part{
 		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_requests"}}},
 		{"snapshots", sqlMssqlSnapshots, []any{id, from, to}},
-		{"rows", sqlMssqlRunningRows, []any{id, at}},
+		{"rows", sqlMssqlRunningRows, []any{id, at, own}},
+		{"own_hidden", sqlMssqlRunningOwnHidden, []any{id, at, own}},
 		{"blocking", sqlMssqlBlocking, []any{id, at}},
 	}
 	if r.URL.Query().Get("part") == "headshare" {

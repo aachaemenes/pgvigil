@@ -106,6 +106,35 @@ SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usenam
  WHERE s.instance_id = $1 AND s.snapshot_at = $2
  ORDER BY s.is_blocker DESC, cardinality(s.blocking_pids) > 0 DESC, s.query_start NULLS LAST`
 
+// sqlSessionsOwnInner: sqlSessions' snapshot with is_own (the collector's flag, 0265: the name and the login together,
+// decided on the server) and hide - own and none of the reasons to show it (own_shown_pg: a lock waiter, a blocker,
+// active over 60 s, idle in a transaction over 60 s). is_own NULL (read before 0265) is never hidden.
+const sqlSessionsOwnInner = `
+SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usename, s.application_name, s.client, s.state,
+       s.wait_event_type, s.wait_event, s.blocking_pids, s.is_blocker,
+       extract(epoch FROM s.snapshot_at - s.query_start)::int AS query_secs,
+       extract(epoch FROM s.snapshot_at - s.xact_start)::int  AS xact_secs,
+       extract(epoch FROM s.snapshot_at - s.state_change)::int AS state_secs,
+       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query, s.is_own,
+       coalesce(s.is_own, false)
+         AND NOT pgvigil.own_shown_pg(s.wait_event_type, s.is_blocker, s.state, s.query_start, s.state_change, s.xact_start,
+                                    s.snapshot_at) AS hide,
+       s.query_start AS order_query_start
+  FROM pgvigil.activity_sample s
+  LEFT JOIN pgvigil.query_text q ON q.query_hash = s.query_hash
+ WHERE s.instance_id = $1 AND s.snapshot_at = $2`
+
+// sqlSessionsOwn: the activity snapshot (sqlSessions' rows and order) with pgvigil's own hidden unless $3 (own=1) or a
+// reason shows them (B24 OWN; the activity handler's WIRING uses it); sqlSessionsOwnHidden counts what the default hid.
+const sqlSessionsOwn = `SELECT x.pid, x.backend_start, x.leader_pid, x.backend_type, x.datname, x.usename, x.application_name, x.client,
+       x.state, x.wait_event_type, x.wait_event, x.blocking_pids, x.is_blocker, x.query_secs, x.xact_secs, x.state_secs,
+       x.backend_xmin_age, x.xid_assigned, x.query_id, x.query, x.is_own
+  FROM (` + sqlSessionsOwnInner + `) x
+ WHERE $3::boolean OR NOT x.hide
+ ORDER BY x.is_blocker DESC, cardinality(x.blocking_pids) > 0 DESC, x.order_query_start NULLS LAST`
+
+const sqlSessionsOwnHidden = `SELECT count(*) FILTER (WHERE x.hide AND NOT $3::boolean) AS sessions FROM (` + sqlSessionsOwnInner + `) x`
+
 // sqlCounters are per-second rates per snapshot, summed over databases (db) or IO rows (io).
 var sqlCounters = map[string]string{
 	"db": `
