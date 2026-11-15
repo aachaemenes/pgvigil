@@ -62,7 +62,9 @@
 #        ixsa: refused (sysadmin);
 #     F5 the columnstore, XML and spatial indexes' rows: state none with the index type's reason, no step (an index whose
 #        type keeps no statistic of its own is answered by its type, whether or not sys.stats lists it);
-#     F6 a GET: 405; a POST without X-Pgvigil: 403; a serve with -no-login: off, 'needs a signed-in user', nothing sent;
+#     F6 a GET: 404 'no such endpoint' (web.go's GET /api/ catch-all answers a GET on any POST-only route; the first
+#        expected said 405, written before that line was read: corrected after run 414c-2022, the product unchanged); a POST
+#        without X-Pgvigil: 403; a serve with -no-login: off, 'needs a signed-in user', nothing sent;
 #     F7 nothing written to the repository but the audit rows (row counts of every pgvigil table before and after).
 #     Red on f8e89d2: no route (POST /api/mssql/stats/histogram is not JSON with steps).
 #  G. fragmentation as a job (SQLWATCH REP#1, F1, F4, F6, F7, O2):
@@ -485,7 +487,7 @@ for st in "cs ncci_cs columnstore" "x px_x XML" "g sx_g spatial"; do
   [[ "$(jget "$TMPD/f5$1.json" 'd["state"] == "none" and not d.get("steps")')" == True && "$(jget "$TMPD/f5$1.json" 'str(d.get("words"))')" == *"$3"* ]] || fail "F5: $2 $(cat "$TMPD/f5$1.json")"
 done
 echo "ok   F5: the columnstore, XML and spatial indexes: no histogram, with the reason"
-[[ "$(curl -s -o /dev/null -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/stats/histogram")" == 405 ]] || fail "F6: a GET is not 405"
+[[ "$(curl -s -o "$TMPD/f6g.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/stats/histogram")" == 404 ]] && grep -q 'no such endpoint' "$TMPD/f6g.json" || fail "F6: a GET: $(cat "$TMPD/f6g.json")"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -b "$TMPD/cj" -H 'Content-Type: application/json' --data "{\"instance_id\":$ION,\"database\":\"pgvix\",\"schema\":\"dbo\",\"table\":\"t\",\"stats\":\"ix_a\"}" "$U/api/mssql/stats/histogram")" == 403 ]] || fail "F6: without X-Pgvigil not 403"
 W2=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 "$TMPD/pgvigil" serve -config "$TMPD/m.yaml" -listen "127.0.0.1:$W2" -no-login >"$TMPD/serve-nologin.out" 2>&1 & SRV2PID=$!
@@ -493,7 +495,7 @@ for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$W2/api/session
 curl -s -o "$TMPD/f6.json" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "{\"instance_id\":$ION,\"database\":\"pgvix\",\"schema\":\"dbo\",\"table\":\"t\",\"stats\":\"ix_a\"}" "http://127.0.0.1:$W2/api/mssql/stats/histogram"
 kill "$SRV2PID" 2>/dev/null; wait "$SRV2PID" 2>/dev/null || true; SRV2PID=
 [[ "$(jget "$TMPD/f6.json" 'd["state"]+"|"+d["words"]')" == "off|"*"needs a signed-in user"* ]] || fail "F6: -no-login $(cat "$TMPD/f6.json")"
-echo "ok   F6: GET 405, no X-Pgvigil 403, -no-login off ('needs a signed-in user')"
+echo "ok   F6: GET 404 'no such endpoint', no X-Pgvigil 403, -no-login off ('needs a signed-in user')"
 C1=$(counts)
 python3 - "$C0" "$C1" <<'PY' || fail "F7: see above"
 import sys
