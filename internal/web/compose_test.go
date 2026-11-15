@@ -59,7 +59,7 @@ func TestComposeWindow(t *testing.T) {
 	day := 24 * time.Hour
 	old := composeFamilyRange
 	defer func() { composeFamilyRange = old }()
-	composeFamilyRange = map[string]time.Duration{"database": 31 * day}
+	composeFamilyRange = map[string]time.Duration{"database": 31 * day, "cpu": 7 * day}
 	f, to, cut := composeWindow(PanelSpec{}, "sessions", 0, now.Add(-10*day), now.Add(-day), now)
 	if !f.Equal(now.Add(-10*day)) || !to.Equal(now.Add(-day)) || cut != "" {
 		t.Errorf("a window inside the range: %v .. %v %q", f, to, cut)
@@ -76,14 +76,21 @@ func TestComposeWindow(t *testing.T) {
 	if !f.Equal(now.Add(-composeMaxRange)) || cut == "" {
 		t.Errorf("past the longest range: %v %q", f, cut)
 	}
-	// a narrower scope reads proportionally longer: database's 31 days at 40 instances = 310 days at 4, held to 90
-	f, _, _ = composeWindow(PanelSpec{}, "database", 4, now.Add(-200*day), now, now)
-	if !f.Equal(now.Add(-composeMaxRange)) {
-		t.Errorf("4 instances of database: from %v, want the 90-day ceiling", f)
+	// a read grows with instances x days: cpu's 7 days at 40 instances = 70 at 4, 14 at 20, 3.5 at 80
+	for _, c := range []struct {
+		n    int
+		want time.Duration
+	}{{4, 70 * day}, {20, 14 * day}, {80, 84 * time.Hour}, {0, 7 * day}} {
+		if f, _, _ := composeWindow(PanelSpec{}, "cpu", c.n, now.Add(-200*day), now, now); !f.Equal(now.Add(-c.want)) {
+			t.Errorf("cpu at %d instances: from %v, want %v back", c.n, f, c.want)
+		}
 	}
-	f, _, _ = composeWindow(PanelSpec{}, "database", 20, now.Add(-200*day), now, now)
-	if !f.Equal(now.Add(-62 * day)) {
-		t.Errorf("20 instances of database: from %v, want 62 days back (31 x 40 / 20)", f)
+	// the database family never scales up (its cost follows the databases), only down
+	if f, _, _ := composeWindow(PanelSpec{}, "database", 4, now.Add(-200*day), now, now); !f.Equal(now.Add(-31 * day)) {
+		t.Errorf("database at 4 instances: from %v, want 31 days back", f)
+	}
+	if _, _, cut := composeWindow(PanelSpec{}, "cpu", 80, now.Add(-30*day), now, now); !strings.Contains(cut, "3.5 days") {
+		t.Errorf("a cut's words: %q", cut)
 	}
 }
 
@@ -94,11 +101,11 @@ func TestComposeBucket(t *testing.T) {
 		span time.Duration
 		want int
 	}{
-		{"auto", time.Hour, 60}, {"auto", 24 * time.Hour, 300}, {"auto", 7 * 24 * time.Hour, 3600},
+		{"auto", time.Hour, 300}, {"auto", 24 * time.Hour, 300}, {"auto", 7 * 24 * time.Hour, 3600},
 		{"auto", 31 * 24 * time.Hour, 6 * 3600}, {"auto", 90 * 24 * time.Hour, 6 * 3600}, {"auto", 400 * 24 * time.Hour, 86400}, {"minute", 90 * 24 * time.Hour, 60},
 		{"day", time.Hour, 86400},
 	} {
-		if got := composeBucket(PanelSpec{Bucket: c.b}, c.span); got != c.want {
+		if got := composeBucket(PanelSpec{Bucket: c.b}, c.span, composeBucketFloorOneMinute); got != c.want {
 			t.Errorf("%s over %v: %d s, want %d", c.b, c.span, got, c.want)
 		}
 	}
@@ -109,7 +116,7 @@ func TestComposeBucket(t *testing.T) {
 func TestCompilePanel(t *testing.T) {
 	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	from := now.Add(-7 * 24 * time.Hour)
-	c, err := compilePanel(PanelSpec{Aggregate: "sum", Shape: "over_time"}, composeGauge, ComposeScope{}, from, now, "", now)
+	c, err := compilePanel(PanelSpec{Aggregate: "sum", Shape: "over_time"}, composeGauge, ComposeScope{}, from, now, "", 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +131,7 @@ func TestCompilePanel(t *testing.T) {
 	}
 	c, err = compilePanel(PanelSpec{Aggregate: "sum", Shape: "top_over_time", GroupBy: "database", Top: 5, Other: true,
 		Filters: []PanelFilter{{Dim: "database", Op: "is_not", Values: []string{"template1"}}}}, composeCount,
-		ComposeScope{Kind: "instances", Instances: []int{7}}, from, now, "", now)
+		ComposeScope{Kind: "instances", Instances: []int{7}}, from, now, "", 1, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +148,7 @@ func TestCompilePanel(t *testing.T) {
 		t.Errorf("a per-database panel over 7 days: from %v, cut %q", c.From, c.Cut)
 	}
 	c, err = compilePanel(PanelSpec{Aggregate: "p95", Shape: "ranked", GroupBy: "tag", TagKey: "e'nv", Top: 3}, composeHost,
-		ComposeScope{Kind: "tag", Tag: "region:west"}, from, now, "", now)
+		ComposeScope{Kind: "tag", Tag: "region:west"}, from, now, "", 12, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,14 +159,45 @@ func TestCompilePanel(t *testing.T) {
 	if c.Args[5] != "any" || c.Args[6] != "region:west" {
 		t.Errorf("host's engine and the scope's tag as parameters: %v", c.Args)
 	}
-	if _, err := compilePanel(PanelSpec{Aggregate: "avg", Shape: "over_time"}, composeGauge, ComposeScope{Kind: "tag"}, from, now, "", now); err == nil {
+	if _, err := compilePanel(PanelSpec{Aggregate: "avg", Shape: "over_time"}, composeGauge, ComposeScope{Kind: "tag"}, from, now, "", 0, now); err == nil {
 		t.Error("a tag scope with no tag was compiled")
 	}
-	c, _ = compilePanel(PanelSpec{Aggregate: "avg", Shape: "single"}, composeRatio, ComposeScope{}, from, now, "app", now)
+	c, _ = compilePanel(PanelSpec{Aggregate: "avg", Shape: "single"}, composeRatio, ComposeScope{}, from, now, "app", 0, now)
 	if !strings.Contains(c.SQL, "extract(epoch FROM $3::timestamptz) / $5") || c.BucketSecs != int(c.To.Sub(c.From).Seconds()) || c.UTCDays {
 		t.Errorf("a single value is one roll-up per instance over the window: bucket %d s\n%s", c.BucketSecs, c.SQL)
 	}
 	if !strings.Contains(c.SQL, "interval '15 minutes', $7) p") || c.Args[6] != "app" {
 		t.Errorf("the $database variable: %v\n%s", c.Args, c.SQL)
+	}
+	// the review's rows: a per-database panel reads one instance; a minute bucket only by instance over time; the points
+	// cap; a scope past 200 instances; the engine filter; the window starts on a bucket's edge, the last bucket partial
+	if _, err := compilePanel(PanelSpec{Aggregate: "sum", Shape: "over_time", GroupBy: "database"}, composeCount, ComposeScope{}, from, now, "", 40, now); err == nil ||
+		!strings.Contains(err.Error(), "one instance") {
+		t.Errorf("by database at fleet scope: %v", err)
+	}
+	if _, err := compilePanel(PanelSpec{Aggregate: "sum", Shape: "over_time", Bucket: "minute"}, composeGauge, ComposeScope{}, from, now, "", 2, now); err == nil ||
+		!strings.Contains(err.Error(), "minute") {
+		t.Errorf("a minute bucket across instances: %v", err)
+	}
+	if _, err := compilePanel(PanelSpec{Aggregate: "avg", Shape: "over_time", GroupBy: "instance", Bucket: "minute"}, composeGauge,
+		ComposeScope{Kind: "instances", Instances: []int{1}}, now.Add(-3*24*time.Hour), now, "", 1, now); err == nil || !strings.Contains(err.Error(), "points") {
+		t.Errorf("4,320 minute points: %v", err)
+	}
+	if _, err := compilePanel(PanelSpec{Aggregate: "avg", Shape: "over_time"}, composeGauge, ComposeScope{}, from, now, "", 201, now); err == nil ||
+		!strings.Contains(err.Error(), "201 instances") {
+		t.Errorf("201 instances: %v", err)
+	}
+	c, err = compilePanel(PanelSpec{Aggregate: "avg", Shape: "over_time", GroupBy: "instance", Filters: []PanelFilter{{Dim: "engine", Op: "is", Values: []string{"postgres"}}}},
+		composeHost, ComposeScope{}, now.Add(-90*time.Minute).Add(17*time.Second), now.Add(-30*time.Minute).Add(17*time.Second), "", 3, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.SQL, "i.engine = ANY ($7::text[])") || c.From.Unix()%int64(c.BucketSecs) != 0 || !c.LastPart ||
+		!strings.Contains(c.SQL, "count(*) OVER () AS ng") || !strings.Contains(c.SQL, "ELSE '(other)' END AS series") {
+		t.Errorf("by instance over time with an engine filter: from %v, bucket %d, last partial %v\n%s", c.From, c.BucketSecs, c.LastPart, c.SQL)
+	}
+	q, qa, err := countScope(PanelSpec{Filters: []PanelFilter{{Dim: "tag", Op: "is_not", Values: []string{"env:test"}}}}, composeGauge, ComposeScope{Kind: "tag", Tag: "env:prod"})
+	if err != nil || !strings.Contains(q, "$2 = ANY (i.tags)") || !strings.Contains(q, "NOT (i.tags && $3::text[])") || len(qa) != 3 {
+		t.Errorf("countScope: %v %v\n%s", err, qa, q)
 	}
 }

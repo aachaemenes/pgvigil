@@ -39,7 +39,7 @@ type PanelSpec struct {
 
 // PanelFilter keeps (is) or drops (is_not) instances or databases by name, or instances by tag ('key:value').
 type PanelFilter struct {
-	Dim    string   `json:"dim"` // instance | tag | database
+	Dim    string   `json:"dim"` // instance | tag | engine | database
 	Op     string   `json:"op"`  // is | is_not
 	Values []string `json:"values"`
 }
@@ -64,8 +64,10 @@ type composed struct {
 	BucketSecs int
 	From, To   time.Time
 	Cut        string // why the window was cut ("" = read as asked)
-	Read       string // the read in words: the function, its family, the level-1 roll-up and the aggregate
+	Read       string // the read in words: the function, its family, the scope, the level-1 roll-up and the aggregate
 	UTCDays    bool
+	Instances  int  // the scope's instances read
+	LastPart   bool // the last bucket ends after the window: it holds part of its time
 }
 
 var (
@@ -103,12 +105,21 @@ var (
 	composePerDatabaseRange = 6 * time.Hour
 )
 
+// composeFamilyEvery: each family's default read interval (the collections' DefaultInterval); a bucket that aggregates
+// across instances is at least composeBucketFloor of it - an instance read every 5 minutes has no row in most minute
+// buckets, so a minute sum across instances would saw between the instances present
+var composeFamilyEvery = map[string]int{"io": 300}
+
 const (
-	composeMaxInstances = 200 // a panel's instances (the measurement's fleet is 40 per engine)
-	composeMaxTop       = 1000
-	composeMaxTopSeries = 8 // the most series a chart draws
-	composeMaxFilters   = 10
-	composeMaxValues    = 100
+	composeBucketFloorOneMinute  = 300 // a 1-minute family's floor: also covers a 5-minute schedule an instance names
+	composeBucketFloorFiveMinute = 600
+	composeMaxPoints             = 2000 // buckets a series
+	composeMaxSeries             = 24   // an over-time panel's groups past it fold into '(other)'
+	composeMaxInstances          = 200  // a panel's instances (the measurement's fleet is 40 per engine)
+	composeMaxTop                = 1000
+	composeMaxTopSeries          = 8 // the most series a chart draws
+	composeMaxFilters            = 10
+	composeMaxValues             = 100
 )
 
 // checkPanel refuses, in words, a spec the compiler would not draw honestly.
@@ -126,6 +137,9 @@ func checkPanel(p *PanelSpec, m catalogMetric) error {
 	}
 	if _, ok := composeBuckets[p.Bucket]; !ok && p.Bucket != "auto" && p.Bucket != "" {
 		return fmt.Errorf("bucket %q: one of auto, minute, hour, day", p.Bucket)
+	}
+	if p.Bucket == "minute" && !(p.Shape == "over_time" && p.GroupBy == "instance") {
+		return errors.New("a minute bucket only for an over-time panel by instance: across instances read at other times a minute sum saws (auto takes 5 minutes or more)")
 	}
 	switch p.GroupBy {
 	case "", "none":
@@ -177,20 +191,20 @@ func checkPanel(p *PanelSpec, m catalogMetric) error {
 			return fmt.Errorf("a filter names 1 to %d values", composeMaxValues)
 		}
 		switch f.Dim {
-		case "instance", "tag":
+		case "instance", "tag", "engine":
 		case "database":
 			if !m.PerDatabase {
 				return fmt.Errorf("%s has no per-database series: a database filter cannot apply", m.Key)
 			}
 		default:
-			return fmt.Errorf("filter on %q: instance, tag or database", f.Dim)
+			return fmt.Errorf("filter on %q: instance, tag, engine or database", f.Dim)
 		}
 	}
 	return nil
 }
 
 // composeWindow is the window a panel reads: its pinned window, else the dashboard's; cut to the family's longest
-// range for the scope's instances (n; 0 = a fleet or tag scope, taken as the measured fleet), counted back from the end
+// range for the scope's instances (n, counted by serve; 0 = not counted, taken as the measured fleet), counted back from the end
 // or now, whichever is earlier.
 func composeWindow(p PanelSpec, family string, n int, from, to, now time.Time) (time.Time, time.Time, string) {
 	if to.After(now) {
@@ -201,7 +215,9 @@ func composeWindow(p PanelSpec, family string, n int, from, to, now time.Time) (
 	}
 	limit := composeMaxRange
 	if d, ok := composeFamilyRange[family]; ok {
-		if n > 0 && n < composeMeasuredInstances {
+		// a read grows with instances x days: scaled to the scope's instances both ways - but never up for the database
+		// family, whose cost follows the databases (one instance of 150 held most of the measured rows)
+		if n > composeMeasuredInstances || (n > 0 && family != "database") {
 			d = time.Duration(float64(d) * float64(composeMeasuredInstances) / float64(n))
 		}
 		if d < limit {
@@ -215,18 +231,24 @@ func composeWindow(p PanelSpec, family string, n int, from, to, now time.Time) (
 }
 
 func fmtDays(d time.Duration) string {
-	if d%(24*time.Hour) == 0 {
+	switch {
+	case d%(24*time.Hour) == 0:
 		return fmt.Sprintf("%d days", int(d/(24*time.Hour)))
+	case d >= 48*time.Hour:
+		return fmt.Sprintf("%.1f days", d.Hours()/24)
 	}
-	return d.String()
+	return fmt.Sprintf("%d hours", int(d.Hours()))
 }
 
-// composeBucket is the bucket in seconds: the named one, or auto's step for about 600 points.
-func composeBucket(p PanelSpec, span time.Duration) int {
+// composeBucket is the bucket in seconds: the named one, or auto's step for about 600 points, at least floor.
+func composeBucket(p PanelSpec, span time.Duration, floor int) int {
 	if s, ok := composeBuckets[p.Bucket]; ok {
 		return s
 	}
 	want := int(math.Ceil(span.Seconds() / 600))
+	if want < floor {
+		want = floor
+	}
 	for _, s := range composeAutoSteps {
 		if s >= want {
 			return s
@@ -235,21 +257,74 @@ func composeBucket(p PanelSpec, span time.Duration) int {
 	return composeAutoSteps[len(composeAutoSteps)-1]
 }
 
-// compilePanel builds the panel's one statement. Its parameters: $1 family, $2 metric, $3 from, $4 to, $5 the bucket
-// in seconds, $6 the engine ('any' = both), $7.. the scope's and the filters' values.
-func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.Time, database string, now time.Time) (composed, error) {
+// scopeWhere: the instances' conditions - active, of the metric's engine (args[0] the engine), in the scope, through the
+// instance, tag and engine filters - each value a parameter arg returns.
+func scopeWhere(sc ComposeScope, filters []PanelFilter, engineArg string, arg func(any) string) ([]string, error) {
+	where := []string{"i.is_active", "(" + engineArg + " = 'any' OR i.engine = " + engineArg + ")"}
+	switch sc.Kind {
+	case "", "fleet":
+	case "tag":
+		if sc.Tag == "" {
+			return nil, errors.New("a tag scope names its tag ('key:value')")
+		}
+		where = append(where, arg(sc.Tag)+" = ANY (i.tags)")
+	case "instances":
+		if len(sc.Instances) == 0 || len(sc.Instances) > composeMaxInstances {
+			return nil, fmt.Errorf("an instances scope names 1 to %d instances", composeMaxInstances)
+		}
+		where = append(where, "i.instance_id = ANY ("+arg(sc.Instances)+"::int[])")
+	default:
+		return nil, fmt.Errorf("scope %q: fleet, tag or instances", sc.Kind)
+	}
+	for _, f := range filters {
+		not := f.Op == "is_not"
+		col := map[string]string{"instance": "i.name", "engine": "i.engine"}[f.Dim]
+		switch {
+		case col != "" && not:
+			where = append(where, col+" <> ALL ("+arg(f.Values)+"::text[])")
+		case col != "":
+			where = append(where, col+" = ANY ("+arg(f.Values)+"::text[])")
+		case f.Dim == "tag" && not:
+			where = append(where, "NOT (i.tags && "+arg(f.Values)+"::text[])")
+		case f.Dim == "tag":
+			where = append(where, "i.tags && "+arg(f.Values)+"::text[]")
+		}
+	}
+	return where, nil
+}
+
+// countScope is the statement serve runs first: the scope's instances (the cap's scale; past composeMaxInstances
+// the panel is refused in words, never cut).
+func countScope(p PanelSpec, m catalogMetric, sc ComposeScope) (string, []any, error) {
+	args := []any{m.Engine}
+	where, err := scopeWhere(sc, p.Filters, "$1", func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) })
+	if err != nil {
+		return "", nil, err
+	}
+	return "SELECT count(*) FROM pgvigil.instances i WHERE " + strings.Join(where, " AND "), args, nil
+}
+
+// compilePanel builds the panel's one statement for a scope of n instances (countScope's). Its parameters: $1 family,
+// $2 metric, $3 from, $4 to, $5 the bucket in seconds, $6 the engine ('any' = both), $7.. the scope's and the
+// filters' values.
+func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.Time, database string, n int, now time.Time) (composed, error) {
 	if err := checkPanel(&p, m); err != nil {
 		return composed{}, err
 	}
-	n := 0
-	if sc.Kind == "instances" {
-		n = len(sc.Instances)
-	}
-	from, to, cut := composeWindow(p, m.Family, n, from, to, now)
 	perDB := p.GroupBy == "database"
 	for _, f := range p.Filters {
 		perDB = perDB || f.Dim == "database"
 	}
+	if perDB && !(sc.Kind == "instances" && len(sc.Instances) == 1) {
+		return composed{}, errors.New("a panel by database (grouped or filtered by database) reads one instance: an instances scope of one (the same database name on two instances is two databases)")
+	}
+	if n > composeMaxInstances {
+		return composed{}, fmt.Errorf("the scope holds %d instances of this engine: a panel reads at most %d - narrow it by a tag or a set of instances", n, composeMaxInstances)
+	}
+	if n == 0 && sc.Kind == "instances" {
+		n = len(sc.Instances)
+	}
+	from, to, cut := composeWindow(p, m.Family, n, from, to, now)
 	if perDB && to.Sub(from) > composePerDatabaseRange {
 		from = to.Add(-composePerDatabaseRange)
 		cut = "the database family per database is read at most 6 hours at a time (one read a database)"
@@ -257,86 +332,84 @@ func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.T
 	if !from.Before(to) {
 		return composed{}, errors.New("the window is empty: from must be before to")
 	}
-	c := composed{From: from, To: to, Cut: cut, BucketSecs: composeBucket(p, to.Sub(from))}
-	c.UTCDays = c.BucketSecs == 86400
-	args := []any{m.Family, m.Metric, from, to, c.BucketSecs, m.Engine}
+	floor := composeBucketFloorOneMinute
+	if composeFamilyEvery[m.Family] >= 300 {
+		floor = composeBucketFloorFiveMinute
+	}
+	if p.Bucket == "minute" {
+		floor = 60
+	}
+	window := p.Shape == "single" || p.Shape == "ranked"
+	c := composed{To: to, Cut: cut, Instances: n}
+	if window {
+		c.From, c.BucketSecs = from, int(to.Sub(from).Seconds())
+	} else {
+		c.BucketSecs = composeBucket(p, to.Sub(from), floor)
+		b := int64(c.BucketSecs)
+		// the first bucket whole: the window starts on a bucket's edge (metric_points reads (from, to]: a read on the
+		// edge itself belongs to the bucket it starts); the last says whether it is only partly in the window
+		c.From = time.Unix(from.Unix()/b*b, 0).UTC()
+		c.LastPart = to.Unix()%b != 0
+		if pts := (to.Unix() - c.From.Unix() + b - 1) / b; pts > composeMaxPoints {
+			return composed{}, fmt.Errorf("%d points a series at %s buckets: at most %d - a coarser bucket or a shorter window", pts, bucketWords(c.BucketSecs), composeMaxPoints)
+		}
+	}
+	c.UTCDays = !window && c.BucketSecs == 86400
+	readFrom := c.From
+	if !window {
+		readFrom = c.From.Add(-time.Microsecond)
+	}
+	args := []any{m.Family, m.Metric, readFrom, to, c.BucketSecs, m.Engine}
 	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
-
-	// the instances: active, of the metric's engine, in the scope, through the filters
-	where := []string{"i.is_active", "($6 = 'any' OR i.engine = $6)"}
-	switch sc.Kind {
-	case "", "fleet":
-	case "tag":
-		if sc.Tag == "" {
-			return composed{}, errors.New("a tag scope names its tag ('key:value')")
-		}
-		where = append(where, arg(sc.Tag)+" = ANY (i.tags)")
-	case "instances":
-		if len(sc.Instances) == 0 || len(sc.Instances) > composeMaxInstances {
-			return composed{}, fmt.Errorf("an instances scope names 1 to %d instances", composeMaxInstances)
-		}
-		where = append(where, "i.instance_id = ANY ("+arg(sc.Instances)+"::int[])")
-	default:
-		return composed{}, fmt.Errorf("scope %q: fleet, tag or instances", sc.Kind)
+	where, err := scopeWhere(sc, p.Filters, "$6", arg)
+	if err != nil {
+		return composed{}, err
 	}
 	var dbWhere []string
 	for _, f := range p.Filters {
-		not := f.Op == "is_not"
-		switch f.Dim {
-		case "instance":
-			if not {
-				where = append(where, "i.name <> ALL ("+arg(f.Values)+"::text[])")
-			} else {
-				where = append(where, "i.name = ANY ("+arg(f.Values)+"::text[])")
-			}
-		case "tag":
-			if not {
-				where = append(where, "NOT (i.tags && "+arg(f.Values)+"::text[])")
-			} else {
-				where = append(where, "i.tags && "+arg(f.Values)+"::text[]")
-			}
-		case "database":
-			if not {
-				dbWhere = append(dbWhere, "d.datname <> ALL ("+arg(f.Values)+"::text[])")
-			} else {
-				dbWhere = append(dbWhere, "d.datname = ANY ("+arg(f.Values)+"::text[])")
-			}
+		if f.Dim != "database" {
+			continue
+		}
+		if f.Op == "is_not" {
+			dbWhere = append(dbWhere, "d.datname <> ALL ("+arg(f.Values)+"::text[])")
+		} else {
+			dbWhere = append(dbWhere, "d.datname = ANY ("+arg(f.Values)+"::text[])")
 		}
 	}
-	// level 1: per instance (and database) per bucket, by grain
+	// level 1: per instance (and database) per bucket - or over the whole window for single and ranked - by grain
 	roll := "avg(p.value)"
 	if m.Grain == "interval_count" {
 		roll = "sum(p.value)"
 	}
 	bucket := "to_timestamp(floor(extract(epoch FROM p.at) / $5) * $5)"
-	window := p.Shape == "single" || p.Shape == "ranked"
 	if window {
 		// one roll-up per instance (and database) over the whole window - a gauge's window average, an interval count's
 		// window total - before the aggregate across the group: per-bucket cells would weigh an instance by the buckets
 		// it has rows in (a 5-minute instance misses a partial hour) and a sum would add a gauge's hours together
 		bucket = "to_timestamp(floor(extract(epoch FROM $3::timestamptz) / $5) * $5)"
-		c.BucketSecs = int(to.Sub(from).Seconds())
-		c.UTCDays = false
 	}
-	var src, key string
+	var src, key, dbWords string
 	hasWhere := false
 	switch {
-	case p.GroupBy == "database" || len(dbWhere) > 0:
-		// each database of each instance: the database family's per-database read (its databases from dbstats in the window)
+	case perDB:
+		// each database of the one instance: the database family's per-database read (its databases from dbstats in the window)
 		dbs := "SELECT DISTINCT s.datname FROM pgvigil.dbstats s WHERE s.instance_id = inst.instance_id AND s.snapshot_at > $3 AND s.snapshot_at <= $4"
 		src = "inst CROSS JOIN LATERAL (" + dbs + ") d CROSS JOIN LATERAL pgvigil.metric_points(inst.instance_id, $1, $3, $4, interval '15 minutes', d.datname) p"
 		if len(dbWhere) > 0 {
 			src += " WHERE " + strings.Join(dbWhere, " AND ")
 			hasWhere = true
 		}
-		key = "d.datname"
+		key, dbWords = "d.datname", " and each database"
 	case database != "" && m.PerDatabase:
 		// the $database variable: one database's series of each instance
 		src = "inst CROSS JOIN LATERAL pgvigil.metric_points(inst.instance_id, $1, $3, $4, interval '15 minutes', " + arg(database) + ") p"
-		key = "NULL::text"
+		key, dbWords = "NULL::text", ", database "+database
 	default:
 		src = "inst CROSS JOIN LATERAL pgvigil.metric_points(inst.instance_id, $1, $3, $4) p"
 		key = "NULL::text"
+		if database != "" {
+			dbWords = " (the $database variable does not apply: " + m.Key + " has no per-database series)"
+		}
 	}
 	metricWhere := " WHERE p.metric = $2"
 	if hasWhere {
@@ -366,35 +439,48 @@ func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.T
 			arg(likePrefix(p.TagKey)) + ") t ON true"
 	}
 	head := "WITH inst AS (SELECT i.instance_id, i.name, i.tags FROM pgvigil.instances i WHERE " + strings.Join(where, " AND ") +
-		" ORDER BY i.instance_id LIMIT " + fmt.Sprint(composeMaxInstances) + "),\nl1 AS (" + l1 + "),\ngl AS (SELECT " + g +
-		" AS g, l1.bucket, l1.v FROM " + from1 + ")\n"
+		"),\nl1 AS (" + l1 + "),\ngl AS (SELECT " + g + " AS g, l1.bucket, l1.v FROM " + from1 + ")\n"
 	aggG := fmt.Sprintf(composeAggregates[p.Aggregate], "gl.v")
-	switch p.Shape {
-	case "over_time":
+	// the groups ranked by the panel's aggregate over the window; ng = how many groups there are
+	rank := ", rk AS (SELECT gl.g, row_number() OVER (ORDER BY " + aggG + " DESC NULLS LAST, gl.g) AS r, count(*) OVER () AS ng FROM gl GROUP BY gl.g)\n"
+	switch {
+	case p.Shape == "over_time" && p.GroupBy == "none":
 		c.SQL = head + "SELECT gl.bucket, gl.g AS series, " + aggG + " AS value FROM gl GROUP BY 1, 2 ORDER BY 1, 2"
-	case "single":
-		c.SQL = head + "SELECT " + aggG + " AS value, count(DISTINCT gl.bucket) AS buckets FROM gl"
-	case "top_over_time", "ranked":
+	case p.Shape == "over_time":
+		// every group up to composeMaxSeries, the rest folded into '(other)' (groups says how many there are)
+		top := arg(composeMaxSeries)
+		c.SQL = head + rank + "SELECT gl.bucket, CASE WHEN rk.r <= " + top + " THEN gl.g ELSE '(other)' END AS series, " + aggG +
+			" AS value, max(rk.ng) AS groups FROM gl JOIN rk USING (g) GROUP BY 1, 2 ORDER BY 1, 2"
+	case p.Shape == "single":
+		c.SQL = head + "SELECT " + aggG + " AS value FROM gl"
+	default: // top_over_time, ranked
 		top := arg(p.Top)
-		rank := "rk AS (SELECT gl.g, row_number() OVER (ORDER BY " + aggG + " DESC NULLS LAST, gl.g) AS r FROM gl GROUP BY gl.g)\n"
 		series := "CASE WHEN rk.r <= " + top + " THEN gl.g ELSE '(other)' END"
 		keep := ""
 		if !p.Other {
 			keep = " WHERE rk.r <= " + top
 		}
 		if p.Shape == "top_over_time" {
-			c.SQL = head + ", " + rank + "SELECT gl.bucket, " + series + " AS series, " + aggG + " AS value FROM gl JOIN rk USING (g)" + keep +
+			c.SQL = head + rank + "SELECT gl.bucket, " + series + " AS series, " + aggG + " AS value, max(rk.ng) AS groups FROM gl JOIN rk USING (g)" + keep +
 				" GROUP BY 1, 2 ORDER BY 1, 2"
 		} else {
-			c.SQL = head + ", " + rank + "SELECT " + series + " AS series, " + aggG + " AS value, min(rk.r) AS rank FROM gl JOIN rk USING (g)" + keep +
+			c.SQL = head + rank + "SELECT " + series + " AS series, " + aggG + " AS value, min(rk.r) AS rank, max(rk.ng) AS groups FROM gl JOIN rk USING (g)" + keep +
 				" GROUP BY 1 ORDER BY 3, 1"
 		}
 	}
 	c.Args = args
-	c.Read = fmt.Sprintf("pgvigil.metric_points(each instance%s, '%s', %s, %s): %s per instance%s per %s, then %s across the %s",
-		map[bool]string{true: " and each database", false: ""}[key == "d.datname"], m.Family,
-		from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339), map[bool]string{true: "summed", false: "averaged"}[roll == "sum(p.value)"],
-		map[bool]string{true: " and database", false: ""}[key == "d.datname"], map[bool]string{true: "the window", false: bucketWords(c.BucketSecs)}[window], p.Aggregate,
+	per := bucketWords(c.BucketSecs)
+	if window {
+		per = "the window"
+	}
+	filters := ""
+	if len(p.Filters) > 0 {
+		filters = fmt.Sprintf(", %d filter(s)", len(p.Filters))
+	}
+	c.Read = fmt.Sprintf("pgvigil.metric_points(each of %d instances%s, '%s', %s, %s)%s: %s per instance%s per %s, then %s across the %s",
+		n, dbWords, m.Family, c.From.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339), filters,
+		map[bool]string{true: "summed", false: "averaged"}[roll == "sum(p.value)"],
+		map[bool]string{true: " and database", false: ""}[key == "d.datname"], per, p.Aggregate,
 		map[string]string{"none": "scope", "instance": "instances", "tag": p.TagKey + " values", "database": "databases"}[p.GroupBy])
 	return c, nil
 }

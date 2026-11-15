@@ -79,10 +79,10 @@ index ce855797..2edcdbb1 100644
  type UI struct {
  	// GroupBy lists tag keys, one folder level each, in order (e.g. [env, team]); empty = one folder per tag.
 diff --git i/internal/web/web.go w/internal/web/web.go
-index 9e87cd1d..eb66e45e 100644
+index 9e87cd1d..9569d5d9 100644
 --- i/internal/web/web.go
 +++ w/internal/web/web.go
-@@ -261,6 +261,12 @@ func (s *Server) Handler() http.Handler {
+@@ -261,6 +261,13 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/alertrules", s.AlertRules)
  	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
  	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
@@ -92,6 +92,7 @@ index 9e87cd1d..eb66e45e 100644
 +	api.HandleFunc("POST /api/views/delete", s.ViewDelete)
 +	// a dashboard's composed panel, compiled and read (VIEWS slice C; compose.go, q_compose.go)
 +	api.HandleFunc("POST /api/compose/run", s.ComposeRun)
++	api.HandleFunc("GET /api/compose/catalog", s.ComposeCatalog)
  	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
  	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
  	api.HandleFunc("POST /api/alerts/mute", s.AlertMute)

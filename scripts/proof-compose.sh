@@ -28,6 +28,13 @@
 #     time, a window of 2d.
 #  R2 a window from 200 days ago: the reply's cut says the family's longest range, its from = to - that range.
 #  R3 a dashboard of 13 panels saved through POST /api/views -> 400 'at most 12 panels'; 12 -> 200.
+#  [review C fold, written before the rerun] The window starts on a bucket's edge and the reply says the scope's
+#  instances (2) and whether its last bucket is partial: C1 and C6 compare EVERY bucket but a partial last one with the
+#  hand reads over the reply's window (no edge cut), and no bucket the hand read lacks; C1b the same at bucket auto: 5-
+#  minute buckets (a 1-minute family's floor), each 40 - no saw between A's minutes and B's 5-minute reads; C9 a single
+#  value's sum of the gauge = 40 (each instance's window average, summed); R2 the cut is exactly 90 days (the scope
+#  counts 2 instances: sessions' 7 days at 40 scale past the 90-day ceiling); R4 a panel by
+#  database at fleet scope -> 400 'one instance'; R5 a minute bucket across instances -> 400.
 #  Red on b0e9c414 (before the compiler): POST /api/compose/run answers 405 (no route).
 set -uo pipefail
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -115,21 +122,35 @@ expect() { [[ $1 == "$2" ]] || fail "$3: HTTP $1, want $2: $(head -c 400 "$WORK/
 c=$(run '{"metric":"sessions.total","aggregate":"sum","shape":"over_time","bucket":"hour"}')
 [[ $c == 404 || $c == 405 ]] && fail "C1: POST /api/compose/run: HTTP $c (red before the compiler: no route)"
 expect "$c" 200 "C1"
-HAND=$(q "select json_agg(json_build_array(b, v) order by b) from (select extract(epoch from b)::bigint b, sum(v)::float8 v from (
-   select instance_id, to_timestamp(floor(extract(epoch from snapshot_at) / 3600) * 3600) b, avg(total) v from pgvigil.activity_summary
-    where instance_id in ($IA, $IB) and snapshot_at > to_timestamp($NOW) - interval '3 hours' and snapshot_at <= to_timestamp($NOW)
-    group by 1, 2) x group by 1) y")
-python3 - "$(rowsj)" "$HAND" <<'PY' || fail "C1: see above"
+RFROM=$(python3 -c "import json,datetime; print(int(datetime.datetime.fromisoformat(json.load(open('$WORK/out.json'))['from'].replace('Z','+00:00')).timestamp()))")
+hand_sessions() {   # hand_sessions <bucket secs>: per instance per bucket averaged, then summed, over the reply's window
+  q "select json_agg(json_build_array(b, v) order by b) from (select extract(epoch from b)::bigint b, sum(v)::float8 v from (
+   select instance_id, to_timestamp(floor(extract(epoch from snapshot_at) / $1) * $1) b, avg(total) v from pgvigil.activity_summary
+    where instance_id in ($IA, $IB) and snapshot_at >= to_timestamp($RFROM) and snapshot_at <= to_timestamp($NOW)
+    group by 1, 2) x group by 1) y"; }
+HAND=$(hand_sessions 3600)
+check_buckets() {   # check_buckets <label> <want>: every bucket = the hand read's, no extra; every bucket but a partial last = want
+python3 - "$(rowsj)" "$HAND" "$2" "$1" "$WORK/out.json" <<'PY' || fail "$1: see above"
 import json, sys
+d = json.load(open(sys.argv[5]))
 api = {r['bucket']: r['value'] for r in json.loads(sys.argv[1])}; hand = {b: v for b, v in json.loads(sys.argv[2])}
 bad = [b for b in hand if abs(api.get(b, -1) - hand[b]) > 1e-9] + [b for b in api if b not in hand]
-full = [v for b, v in sorted(api.items())[1:-1]]
-if bad or not full or any(abs(v - 40) > 1e-9 for v in full): print('DIFF api', api, 'hand', hand); sys.exit(1)
-print(f"     C1 {len(api)} buckets, the full hours {full}")
+keys = sorted(api)
+whole = keys[:-1] if d.get('last_partial') else keys
+if bad or not whole or any(abs(api[b] - float(sys.argv[3])) > 1e-9 for b in whole) or d.get('instances') != 2:
+    print('DIFF', sys.argv[4], 'api', api, 'hand', hand, 'instances', d.get('instances'), 'last_partial', d.get('last_partial')); sys.exit(1)
+print(f"     {sys.argv[4]} {len(api)} buckets of {d['bucket_secs']} s, every whole one {sys.argv[3]} (last partial: {d.get('last_partial')}), = the hand read")
 PY
-ok "C1: a gauge's fleet sum per hour = the per-instance hourly averages summed (40), bucket by bucket equal to the hand read; the SQL Server instance in none"
+}
+check_buckets C1 40
+ok "C1: a gauge's fleet sum per hour = the per-instance hourly averages summed (40), every bucket equal to the hand read (no edge cut); the SQL Server instance in none"
+c=$(run '{"metric":"sessions.total","aggregate":"sum","shape":"over_time","bucket":"auto"}'); expect "$c" 200 "C1b"
+[[ $(python3 -c "import json; print(json.load(open('$WORK/out.json'))['bucket_secs'])") == 300 ]] || fail "C1b: auto's bucket: $(head -c 300 "$WORK/out.json")"
+RFROM=$(python3 -c "import json,datetime; print(int(datetime.datetime.fromisoformat(json.load(open('$WORK/out.json'))['from'].replace('Z','+00:00')).timestamp()))")
+HAND=$(hand_sessions 300); check_buckets C1b 40
+ok "C1b: at bucket auto, 5-minute buckets each 40 - no saw between the 1- and 5-minute instances"
 c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"over_time","bucket":"hour"}'); expect "$c" 200 "C2"
-python3 -c "import json,sys; v=[r['value'] for r in json.loads(sys.argv[1])][1:-1]; sys.exit(0 if v and all(abs(x-20)<1e-9 for x in v) else 1)" "$(rowsj)" || fail "C2: $(rowsj)"
+python3 -c "import json,sys; d=json.load(open('$WORK/out.json')); v=[r['value'] for r in json.loads(sys.argv[1])]; v=v[:-1] if d.get('last_partial') else v; sys.exit(0 if v and all(abs(x-20)<1e-9 for x in v) else 1)" "$(rowsj)" || fail "C2: $(rowsj)"
 ok "C2: avg across the instances = 20 an hour"
 c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"over_time","bucket":"hour","group_by":"instance"}'); expect "$c" 200 "C3"
 python3 -c "
@@ -148,20 +169,14 @@ c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"ranked","group_by
 [[ $(python3 -c "import json,sys; print([(x['series'], float(x['value']), x['rank']) for x in json.loads(sys.argv[1])])" "$(rowsj)") == "[('b', 30.0, 1), ('a', 10.0, 2)]" ]] || fail "C5: $(rowsj)"
 ok "C5: ranked by env: b 30 first, a 10 second"
 c=$(run '{"metric":"database.deadlocks","aggregate":"sum","shape":"over_time","bucket":"hour"}'); expect "$c" 200 "C6"
+RFROM=$(python3 -c "import json,datetime; print(int(datetime.datetime.fromisoformat(json.load(open('$WORK/out.json'))['from'].replace('Z','+00:00')).timestamp()))")
 HAND=$(q "select json_agg(json_build_array(b, v) order by b) from (select extract(epoch from b)::bigint b, sum(v)::float8 v from (
    select instance_id, to_timestamp(floor(extract(epoch from snapshot_at) / 3600) * 3600) b, sum(d) v from (
      select instance_id, snapshot_at, deadlocks - lag(deadlocks) over (partition by instance_id order by snapshot_at) d from pgvigil.dbstats
       where instance_id in ($IA, $IB)) z
-    where d is not null and snapshot_at > to_timestamp($NOW) - interval '3 hours' and snapshot_at <= to_timestamp($NOW) group by 1, 2) x group by 1) y")
-python3 - "$(rowsj)" "$HAND" <<'PY' || fail "C6: see above"
-import json, sys
-api = {r['bucket']: r['value'] for r in json.loads(sys.argv[1])}; hand = {b: v for b, v in json.loads(sys.argv[2])}
-full = [api[b] for b in sorted(api)][1:-1]
-if any(abs(api.get(b, -1) - hand[b]) > 1e-9 for b in hand) or not full or any(abs(v - 120) > 1e-9 for v in full):
-    print('DIFF api', api, 'hand', hand); sys.exit(1)
-print(f"     C6 the full hours {full}")
-PY
-ok "C6: a count per interval summed per instance, then across (120 a full hour), equal to the hand read of dbstats' differences"
+    where d is not null and snapshot_at >= to_timestamp($RFROM) and snapshot_at <= to_timestamp($NOW) group by 1, 2) x group by 1) y")
+check_buckets C6 120
+ok "C6: a count per interval summed per instance, then across (120 every whole hour), every bucket equal to the hand read of dbstats' differences"
 c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"single","bucket":"hour"}'); expect "$c" 200 "C7"
 python3 -c "
 import json,sys; d=json.load(open('$WORK/out.json')); r=d['rows']; v=dict(zip(r['columns'], r['rows'][0]))
@@ -169,6 +184,9 @@ ok = abs(v['value']-20)<1e-9 and 'metric_points' in d['read'] and 'averaged per 
 sys.exit(0 if ok else 1)" || fail "C7: $(head -c 400 "$WORK/out.json")"
 c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"over_time","bucket":"day"}'); expect "$c" 200 "C7 day"
 [[ $(python3 -c "import json; print(json.load(open('$WORK/out.json'))['utc_days'])") == True ]] || fail "C7: a day bucket not said UTC"
+c2=$(run '{"metric":"sessions.total","aggregate":"sum","shape":"single"}'); expect "$c2" 200 "C9"
+python3 -c "import json; d=json.load(open('$WORK/out.json')); v=dict(zip(d['rows']['columns'], d['rows']['rows'][0]))['value']; import sys; sys.exit(0 if abs(v-40)<1e-9 else 1)" || fail "C9: $(head -c 300 "$WORK/out.json")"
+ok "C9: a single value's sum of the gauge = 40 (each instance's window average, summed)"
 ok "C7: a single value 20; the read named ($(python3 -c "import json; print(json.load(open('$WORK/out.json'))['read'][:90])")); a day bucket said UTC"
 c=$(run '{"metric":"database.deadlocks","aggregate":"sum","shape":"over_time","bucket":"hour","group_by":"database"}' "{\"kind\":\"instances\",\"instances\":[$IA]}"); expect "$c" 200 "C8"
 python3 -c "
@@ -191,7 +209,7 @@ F200=$(q "select to_char((to_timestamp($NOW) - interval '200 days') at time zone
 c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"single"}' '{}' "$F200"); expect "$c" 200 "R2"
 python3 -c "
 import json,datetime; d=json.load(open('$WORK/out.json')); f=datetime.datetime.fromisoformat(d['from'].replace('Z','+00:00')); t=datetime.datetime.fromisoformat(d['to'].replace('Z','+00:00'))
-import sys; sys.exit(0 if d['cut'] and 'at most' in d['cut'] and (t-f).days < 200 else 1)" || fail "R2: $(head -c 300 "$WORK/out.json")"
+import sys; sys.exit(0 if d['cut'] and 'at most' in d['cut'] and (t-f).total_seconds() == 90*86400 and d.get('instances') == 2 else 1)" || fail "R2: $(head -c 300 "$WORK/out.json")"
 ok "R2: a 200-day window cut and said: $(python3 -c "import json; print(json.load(open('$WORK/out.json'))['cut'])")"
 for n in 13 12; do
   python3 -c "import json; print(json.dumps({'kind':'dashboard','name':'d$n','state':{'panels':[{'kind':'composed','panel':{'metric':'sessions.total'}}]*$n}}))" > "$WORK/dash.json"
@@ -199,4 +217,8 @@ for n in 13 12; do
   if [[ $n == 13 ]]; then expect "$c" 400 "R3 13 panels"; [[ $(cat "$WORK/out.json") == *"at most 12 panels"* ]] || fail "R3: the words"; else expect "$c" 200 "R3 12 panels"; fi
 done
 ok "R3: a dashboard of 13 panels refused in words, 12 saved"
+c=$(run '{"metric":"database.deadlocks","aggregate":"sum","shape":"over_time","bucket":"hour","group_by":"database"}'); expect "$c" 400 "R4"
+[[ $(cat "$WORK/out.json") == *"one instance"* ]] || fail "R4: the words: $(cat "$WORK/out.json")"
+c=$(run '{"metric":"sessions.total","aggregate":"sum","shape":"over_time","bucket":"minute"}'); expect "$c" 400 "R5"
+ok "R4: a panel by database at fleet scope refused (same-named databases are different databases); R5: a minute bucket across instances refused"
 echo "PASS: proof-compose"
