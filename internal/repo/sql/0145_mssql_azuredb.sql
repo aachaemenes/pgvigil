@@ -284,7 +284,9 @@ BEGIN
 END $$;
 
 -- mssql_hadr_cursor (0083's, its sources unchanged) gains 'azdb_since': the newest stored minute's start of
--- mssql_azuredb_minute, as epoch seconds (the next read asks for the rows ending after that minute's end)
+-- mssql_azuredb_minute, as epoch seconds (the next read asks for the rows ending after that minute's end). 0140 (task
+-- 301) replaced the same function before this file with 'backup_sets' / 'backup_sets_mark': this later file carries
+-- that arm too (the join j15), so the backup files' cursor is not lost
 CREATE OR REPLACE FUNCTION pgvigil.mssql_hadr_cursor(p_instance_id int, p_source text)
 RETURNS bigint LANGUAGE sql STABLE AS $$
   SELECT CASE
@@ -301,6 +303,9 @@ RETURNS bigint LANGUAGE sql STABLE AS $$
         WHERE p.instance_id = p_instance_id AND p.plan_id = split_part(p_source, ':', 2)::bigint
           AND p.database_name = substr(p_source, length(split_part(p_source, ':', 2)) + 10)
           AND (p.xml_state = 'stored' OR (p.xml_state = 'policy' AND p.xml_checked_at > now() - interval '24 hours')))
+    WHEN p_source IN ('backup_sets', 'backup_sets_mark') THEN
+      (SELECT CASE p_source WHEN 'backup_sets' THEN c.last_set_id ELSE c.mark END
+         FROM pgvigil.mssql_backup_files_cursor c WHERE c.instance_id = p_instance_id)
     WHEN p_source = 'azdb_since' THEN
       (SELECT floor(extract(epoch FROM a.newest_minute))::bigint
          FROM pgvigil.mssql_azuredb_read a WHERE a.instance_id = p_instance_id)
