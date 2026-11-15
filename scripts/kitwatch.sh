@@ -56,6 +56,11 @@ DD_PIN=205fc5137eb0       # 2026-11-01 (@version_date 20261101); newest = the de
 WIA_REPO=amachanic/sp_whoisactive; WIA_FILE=sp_WhoIsActive.sql
 WIA_PIN=20260409          # v2200.20260409; newest = the latest release's tag
 PM_REPO=erikdarlingdata/PerformanceMonitor
+# the parameters the page's community checks can preset, per tool (internal/web/q_community.go's c.Preset lines; on
+# another server than this one a check presets what this server's needs not): each entry's presets are the page's own
+# for this server AND these, so a kit that drops one is a BREAK (TestPinnedShapes holds this line to the code)
+KW_PRESETS="sp_IndexCleanup:@database_name sp_HumanEventsBlockViewer:@session_name sp_QuickieStore:@database_name"
+export KW_PRESETS
 PM_PIN=65bdb5f946f7       # 3.12.0's XE sessions (ports only, nothing installed); newest = the default branch's head
 
 envfail() {
@@ -66,12 +71,15 @@ envfail() {
 }
 fail() { envfail "$*"; }   # the setup library's failures are the environment's
 cleanup() {
+  # the work folder first, and nothing here may stop on an unset name (set -u in a trap ends it, the exit then 1)
   local p
+  rm -rf -- "${WORK:?}"
   for p in "${HOLD[@]}" "$SRV"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   [[ -n "$MADE_CT" ]] && docker rm -f -v "$CT" >/dev/null 2>&1 || true
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO with (force)" >/dev/null 2>&1 || true
-  rm -rf "$WORK"
+  if [[ -n ${PGVIGIL_ADMIN_DSN:-} ]]; then
+    psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO with (force)" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 [[ -n ${PGVIGIL_ADMIN_DSN:-} ]] || envfail "PGVIGIL_ADMIN_DSN (a PostgreSQL superuser, keyword form) is not set"
@@ -95,13 +103,29 @@ jget() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' 
 # ---- the kits: the pinned refs and the newest ------------------------------------------------------------------------
 FRK_NEW=$FRK_PIN; DD_NEW=$DD_PIN; WIA_NEW=$WIA_PIN; PM_NEW=$PM_PIN
 if [[ $MODE == check && ${KITWATCH_NEWEST:-} != pinned ]]; then
-  FRK_NEW=$(api "$FRK_REPO/releases/latest" | jget tag_name)
-  DD_NEW=$(api "$DD_REPO/commits/main" | jget sha); DD_NEW=${DD_NEW:0:12}
-  WIA_NEW=$(api "$WIA_REPO/releases/latest" | jget tag_name)
-  PM_NEW=$(api "$PM_REPO/commits/main" | jget sha); PM_NEW=${PM_NEW:0:12}
+  # each read at the top level: an envfail inside $(...) ends only the subshell (pipefail would then hand set -e the
+  # parse's exit 1, the BREAK code)
+  j=$(api "$FRK_REPO/releases/latest") || envfail "GitHub's API refused https://api.github.com/repos/$FRK_REPO/releases/latest"
+  FRK_NEW=$(jget tag_name <<<"$j") || envfail "no tag_name in $FRK_REPO's latest release"
+  j=$(api "$DD_REPO/commits/main") || envfail "GitHub's API refused https://api.github.com/repos/$DD_REPO/commits/main"
+  DD_NEW=$(jget sha <<<"$j") || envfail "no sha in $DD_REPO's main"; DD_NEW=${DD_NEW:0:12}
+  j=$(api "$WIA_REPO/releases/latest") || envfail "GitHub's API refused https://api.github.com/repos/$WIA_REPO/releases/latest"
+  WIA_NEW=$(jget tag_name <<<"$j") || envfail "no tag_name in $WIA_REPO's latest release"
+  j=$(api "$PM_REPO/commits/main") || envfail "GitHub's API refused https://api.github.com/repos/$PM_REPO/commits/main"
+  PM_NEW=$(jget sha <<<"$j") || envfail "no sha in $PM_REPO's main"; PM_NEW=${PM_NEW:0:12}
 fi
 mkdir -p "$WORK/pinned" "$WORK/newest"
 raw "$FRK_REPO" "$FRK_PIN" "$FRK_FILE" "$WORK/pinned/frk.sql"; raw "$DD_REPO" "$DD_PIN" "$DD_FILE" "$WORK/pinned/dd.sql"; raw "$WIA_REPO" "$WIA_PIN" "$WIA_FILE" "$WORK/pinned/wia.sql"
+# the pinned files are the ones shapes.json was made from: the First Responder Kit and sp_WhoIsActive are pinned by
+# tag, and a tag can be moved - a pinned file that changed would make every comparison against another file (-baseline
+# writes the new sums, so it is not checked there)
+if [[ $MODE == check && -f internal/community/kits/shapes.json ]]; then
+  for k in frk dd wia; do
+    want=$(python3 -c 'import json,sys; print(next((x.get("sha256", "") for x in json.load(open(sys.argv[1]))["kits"] if x["kit"] == sys.argv[2]), ""))' internal/community/kits/shapes.json "$k")
+    have=$(sha256sum < "$WORK/pinned/$k.sql" | cut -c1-64)
+    [[ -z $want || $want == "$have" ]] || envfail "the pinned $k file is not the one shapes.json was made from (sha256 $have, shapes.json $want): its tag moved - pin its commit and re-baseline"
+  done
+fi
 if [[ $MODE == check ]]; then
   raw "$FRK_REPO" "$FRK_NEW" "$FRK_FILE" "$WORK/newest/frk.sql"; raw "$DD_REPO" "$DD_NEW" "$DD_FILE" "$WORK/newest/dd.sql"; raw "$WIA_REPO" "$WIA_NEW" "$WIA_FILE" "$WORK/newest/wia.sql"
 fi
@@ -193,12 +217,14 @@ runtool() {
 # allparams <tool>: every parameter of the installed procedure (name, type, output), tab-separated
 allparams() { sq "SELECT p.name + CHAR(9) + TYPE_NAME(p.user_type_id) + CHAR(9) + CAST(p.is_output AS varchar(1)) FROM sys.parameters p WHERE p.object_id = OBJECT_ID(N'dbo.$1', N'P') ORDER BY p.parameter_id" || true; }
 
-# entry <dir> <name> <tool> <kit> <version> <date> <sha> <read by name> <hard siblings> <presets json>: one kits.Run
+# entry <dir> <name> <tool> <kit> <version> <date> <sha> <read by name> <hard siblings> <presets json> [<siblings
+# unknown: why>]: one kits.Run
 entry() {
   allparams "$3" > "$1/$2.allparams.tsv"
   python3 - "$@" <<'PY'
-import json, sys
+import json, os, sys
 d, name, tool, kit, ver, date, sha, rbn, sibs, presets = sys.argv[1:11]
+sibu = sys.argv[11] if len(sys.argv) > 11 else ""
 run = json.load(open(f"{d}/{name}.run.json"))["runs"][0]
 form = json.load(open(f"{d}/{name}.params.json"))
 outcome = "declined" if run.get("declined") else run.get("outcome", "failed")
@@ -225,8 +251,10 @@ for line in open(f"{d}/{name}.allparams.tsv").read().splitlines():
 e = {"tool": name, "kit": kit, "version": ver, "version_date": date, "sha256": sha, "outcome": outcome, "message": msg[:500],
      "sets": sets, "at_set_cap": bool(run.get("at_set_cap")), "form_params": [p["name"] for p in form.get("params", [])],
      "all_params": allp, "described": sum(1 for p in form.get("params", []) if p.get("help")),
-     "presets": sorted(json.loads(presets).keys()), "read_by_name": [x for x in rbn.split(",") if x],
-     "hard_siblings": [x for x in sibs.split(",") if x]}
+     "presets": sorted(set(json.loads(presets).keys()) | {x.split(":", 1)[1] for x in os.environ.get("KW_PRESETS", "").split() if x.split(":", 1)[0] == tool}),
+     "read_by_name": [x for x in rbn.split(",") if x], "hard_siblings": [x for x in sibs.split(",") if x]}
+if sibu:
+    e["siblings_unknown"] = sibu[:300]
 json.dump(e, open(f"{d}/{name}.entry.json", "w"))
 PY
 }
@@ -265,6 +293,17 @@ pass() {
   if [[ $label == pinned ]]; then KURL[frk]="$FRK_REPO@$FRK_PIN"; KURL[dd]="$DD_REPO@$DD_PIN"; KURL[wia]="$WIA_REPO@$WIA_PIN"
   else KURL[frk]="$FRK_REPO@$FRK_NEW"; KURL[dd]="$DD_REPO@$DD_NEW"; KURL[wia]="$WIA_REPO@$WIA_NEW"; fi
   kitver frk sp_Blitz "$label"; kitver dd sp_PressureDetector "$label"; kitver wia sp_WhoIsActive "$label"
+  # production's own version read (mssql_kits: the server cuts the snippets out, kits.ParseVersion reads them) on the
+  # same procedures - an entry each: 'read' or 'not read' (the newest pass's 'not read' is a BREAK against the pinned
+  # pass's 'read'); the rows of the last pass go first, so a run that ends before it writes reads none
+  q "delete from pgvigil.mssql_kit_versions where instance_id = $MSID" >/dev/null
+  "$BIN" collect -config "$CFG" -once mssql_kits >"$d/kits.log" 2>&1 || true
+  local kp kv
+  for kp in sp_Blitz sp_PressureDetector sp_WhoIsActive; do
+    kv=$(q "select coalesce((select version from pgvigil.mssql_kit_versions where instance_id = $MSID and database_name = 'master' and procedure_name = '$kp'), '')")
+    if [[ -n $kv ]]; then printf 'read\t%s\n' "$kv"; else printf 'not read\t%s\n' "$(tail -n 2 "$d/kits.log" | tr '\n\t' '  ' | cut -c1-300)"; fi > "$d/kits.$kp.tsv"
+    if [[ $label == pinned && -z $kv ]]; then envfail "mssql_kits did not read the pinned $kp version: $(cut -f2 "$d/kits.$kp.tsv")"; fi
+  done
   # the page's advice call: its outcome is a tool line of its own (F3)
   local advice=done
   ks_keeper || advice="failed: $KS_WHY"
@@ -291,6 +330,9 @@ pass() {
   runphase chain
   # the collector entry: sp_WhoIsActive with exactly the collector's parameters, and the collector itself
   runtool "$d" sp_WhoIsActive "$WIA_ARGS" "sp_WhoIsActive (collector)"
+  # the pinned pass's row goes first: collection_dates holds one row per instance and collection, so a newest run
+  # that ends before it logs would read the pinned pass's 'ok'
+  q "delete from pgvigil.collection_dates where instance_id = $MSID and collection = 'mssql_requests'" >/dev/null
   "$BIN" collect -config "$CFG" -once mssql_requests >"$d/collector.log" 2>&1 || true
   ks_chain_release
   runphase after
@@ -305,27 +347,38 @@ pass() {
     printf 'none\tno collection_dates row; collect -once said: %s\n' "${why:-nothing}" > "$d/collector.tsv"
   fi
   echo "collector mssql_requests ($label): $(tr '\t' ' ' < "$d/collector.tsv")"
-  # the siblings (F3): every other kit procedure revoked from the read login, the tool run with its form's defaults;
-  # a tool that then fails is run again with one procedure revoked at a time (those its own definition names)
-  local others p sibs
+  # the siblings (F3): first a control run (the form's defaults, every grant) - a tool not done there (a timeout on a
+  # slow runner, a state) has siblings 'unknown' and no search; then every other kit procedure revoked from the read
+  # login, the tool run with the defaults; a tool that then fails is run again with one procedure revoked at a time
+  # (those its own definition names): a run that fails is a hard sibling, a run that timed out leaves it unknown
+  local others p sibs unk
   others=$(sq "SELECT name FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1 AND name LIKE N'sp[_]%' ORDER BY name")
-  declare -A SIB=()
+  declare -A SIB=() SIBU=()
+  okrun() { grep -qE '"outcome": ?"done"|"declined": ?true' "$1"; }
+  slowrun() { grep -qiE '"outcome": ?"timeout"|"error": ?"[^"]*(deadline exceeded|timeout)' "$1"; }
   for row in "${KS_SQL_RUNS[@]}"; do
     IFS='~' read -r tool _ _ _ _ <<<"$row"
+    runtool "$d" "$tool" '{}' "$tool.control"
+    if ! okrun "$d/$tool.control.run.json"; then
+      SIBU[$tool]="the control run (the form's defaults, every grant) was not done: $(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["runs"][0]; print((r.get("outcome") or "failed") + ": " + (r.get("error") or "")[:200])' "$d/$tool.control.run.json")"
+      continue
+    fi
     for p in $others; do [[ $p == "$tool" ]] || sq "REVOKE EXECUTE ON dbo.$p FROM pgvigil_read;" >/dev/null; done
     runtool "$d" "$tool" '{}' "$tool.revoked"
     ks_grant_kits
-    if ! grep -qE '"outcome": ?"done"|"declined": ?true' "$d/$tool.revoked.run.json"; then
+    if ! okrun "$d/$tool.revoked.run.json"; then
       local def; def=$(ks_definition "$tool")
-      sibs=""
+      sibs=""; unk=""
       for p in $others; do
         [[ $p != "$tool" ]] && grep -qi -- "$p" <<<"$def" || continue
         sq "REVOKE EXECUTE ON dbo.$p FROM pgvigil_read;" >/dev/null
         runtool "$d" "$tool" '{}' "$tool.no-$p"
         sq "GRANT EXECUTE ON dbo.$p TO pgvigil_read;" >/dev/null
-        grep -qE '"outcome": ?"done"|"declined": ?true' "$d/$tool.no-$p.run.json" || sibs+="$p,"
+        if okrun "$d/$tool.no-$p.run.json"; then continue; fi
+        if slowrun "$d/$tool.no-$p.run.json"; then unk+="$p "; else sibs+="$p,"; fi
       done
       SIB[$tool]=${sibs%,}
+      [[ -z $unk ]] || SIBU[$tool]="the run without ${unk% } timed out"
     fi
   done
   # the declines a container can reach (F3): each run through the Run path, its outcome 'declined' or not
@@ -334,13 +387,17 @@ pass() {
   sq "GRANT EXECUTE ON sys.xp_readerrorlog TO pgvigil_read;" >/dev/null
   runtool "$d" sp_HumanEventsBlockViewer '{"@session_name":"kitwatch_none"}' "sp_HumanEventsBlockViewer (decline: no such session)"
   runtool "$d" sp_IndexCleanup '{"@database_name":"kitwatch_none"}' "sp_IndexCleanup (decline: no valid database)"
+  # sp_HumanEventsBlockViewer as a site without its default session runs it (this server's keeper session makes the
+  # page preset nothing here): the form reads system_health
+  runtool "$d" sp_HumanEventsBlockViewer '{"@session_name":"system_health"}' "sp_HumanEventsBlockViewer (system_health)"
   srcdefs
   # the entries
   for row in "${KS_SQL_RUNS[@]}"; do
     IFS='~' read -r tool _ _ _ _ <<<"$row"; k=$(kitof "$tool")
-    entry "$d" "$tool" "$tool" "$k" "${KV[$k]}" "${KD[$k]}" "${KSHA[$k]}" "" "${SIB[$tool]:-}" "$(presets "$tool")"
+    entry "$d" "$tool" "$tool" "$k" "${KV[$k]}" "${KD[$k]}" "${KSHA[$k]}" "" "${SIB[$tool]:-}" "$(presets "$tool")" "${SIBU[$tool]:-}"
   done
   entry "$d" "sp_WhoIsActive (collector)" sp_WhoIsActive wia "${KV[wia]}" "${KD[wia]}" "${KSHA[wia]}" "$READ_BY_NAME" "" '{}'
+  entry "$d" "sp_HumanEventsBlockViewer (system_health)" sp_HumanEventsBlockViewer dd "${KV[dd]}" "${KD[dd]}" "${KSHA[dd]}" "" "" '{"@session_name":"system_health"}'
   for k in "sp_LogHunter (decline: no EXECUTE on xp_readerrorlog)" "sp_HumanEventsBlockViewer (decline: no such session)" "sp_IndexCleanup (decline: no valid database)"; do
     entry "$d" "$k" "${k%% *}" dd "${KV[dd]}" "${KD[dd]}" "${KSHA[dd]}" "" "" '{}'
   done
@@ -349,7 +406,11 @@ pass() {
 import json, os, re, sys
 d, label = sys.argv[1], sys.argv[2]
 st, _, note = open(f"{d}/collector.tsv").read().rstrip("\n").partition("\t")
-extra = [{"tool": "mssql_requests (the collector)", "kit": "wia", "outcome": st, "message": note[:500], "sets": [], "described": 0},
+extra = [{"tool": "mssql_requests (the collector)", "kit": "wia", "outcome": st, "message": note[:500], "sets": [], "described": 0}]
+for kp, kk in (("sp_Blitz", "frk"), ("sp_PressureDetector", "dd"), ("sp_WhoIsActive", "wia")):
+    kst, _, kv = open(f"{d}/kits.{kp}.tsv").read().rstrip("\n").partition("\t")
+    extra.append({"tool": f"{kp} (mssql_kits' version read)", "kit": kk, "outcome": kst, "message": kv[:300], "sets": [], "described": 0})
+extra += [
          {"tool": "sp_HumanEvents (the page's advice call)", "kit": "dd", "outcome": "done" if os.environ["ADVICE"] == "done" else "failed",
           "message": os.environ["ADVICE"][:500], "sets": [], "described": 0}]
 # q_community.go's declines a container cannot reach: present in the installed definition, raised as an error
@@ -437,7 +498,12 @@ if [[ -f internal/community/kits/ports.json ]]; then
   while IFS=$'\t' read -r repo path; do
     case $repo in "$FRK_REPO") ref=$FRK_NEW ;; "$DD_REPO") ref=$DD_NEW ;; "$WIA_REPO") ref=$WIA_NEW ;; "$PM_REPO") ref=$PM_NEW ;; *) continue ;; esac
     mkdir -p "$WORK/files/$repo/$(dirname "$path")"
-    curl -sf --retry 1 --max-time 120 "${auth[@]}" -o "$WORK/files/$repo/$path" "https://raw.githubusercontent.com/$repo/$ref/$path" || true
+    code=$(curl -s --retry 1 --max-time 120 "${auth[@]}" -o "$WORK/files/$repo/$path" -w '%{http_code}' "https://raw.githubusercontent.com/$repo/$ref/$path" || true)
+    case $code in
+      200) ;;
+      404) rm -f -- "$WORK/files/$repo/$path" ;;   # gone from the newest kit: kitshape ports says 'file gone' (DRIFT)
+      *)   envfail "fetch https://raw.githubusercontent.com/$repo/$ref/$path answered ${code:-nothing}" ;;
+    esac
   done < "$WORK/portfiles.tsv"
   if [[ ${KITWATCH_PLANT:-} == port-edit ]]; then   # KW-B: a ported list's block edited in the fetched file (DRIFT list)
     plant "$WORK/files/$DD_REPO/$DD_FILE" "/\\/\\*Disk\\*\\//,/N'RESMGR_THROTTLED'/s/N'PAGEIOLATCH_SH',/N'PAGEIOLATCH_SH', N'KITWATCH_PLANTED_WAIT',/" "N'KITWATCH_PLANTED_WAIT'"

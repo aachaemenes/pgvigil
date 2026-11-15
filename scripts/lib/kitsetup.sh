@@ -64,12 +64,12 @@ ks_install() {
   [[ -z $miss ]] || { KS_WHY="installed without:$miss"; return 1; }
 }
 
-# ks_drop_kits: every procedure of the three kits out of master (kitwatch's second pass installs the newest over none)
+# ks_drop_kits: every procedure the kits left in master out of it (kitwatch's second pass installs the newest over none):
+# every dbo procedure not shipped with SQL Server - the container's master holds only the kits, and a list of names
+# would keep one a kit adds (sp_DatabaseRestore, a sibling of sp_Blitz, stayed and was read in the newest pass)
 ks_drop_kits() {
-  local p
-  for p in $KS_PROCS_FRK sp_BlitzBackups sp_BlitzQueryStore sp_ineachdb sp_BlitzAnalysis $KS_PROCS_DARLING sp_PerfCheck $KS_PROCS_WIA; do
-    sq "IF OBJECT_ID(N'dbo.$p', N'P') IS NOT NULL DROP PROCEDURE dbo.$p;" >/dev/null
-  done
+  sq "DECLARE @s nvarchar(max) = N''; SELECT @s += N'DROP PROCEDURE dbo.' + QUOTENAME(name) + N'; ' FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1; EXEC (@s);" >/dev/null
+  [[ $(sq "SELECT COUNT(*) FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1") == 0 ]] || fail "the kits' procedures are still in master after the drop"
   sq "IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'keeper_HumanEvents_blocking') DROP EVENT SESSION keeper_HumanEvents_blocking ON SERVER;" >/dev/null
 }
 
