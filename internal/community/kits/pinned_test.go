@@ -58,6 +58,43 @@ func TestPinnedShapes(t *testing.T) {
 			t.Errorf("requestsWIA reads w.%s, which the stored collector shape does not have", c)
 		}
 	}
+	// every preset parameter the community checks pass (internal/web/q_community.go's c.Preset lines) is a parameter of
+	// its tool in the stored shape: a kit that renames one turns the preset into a refused click. The table names each
+	// line's tool (three of them write c.Preset[tool] through a const); a preset line added or removed fails the count
+	// until the table follows it.
+	presets := []struct{ tool, param string }{
+		{"sp_IndexCleanup", "@database_name"},
+		{"sp_HumanEventsBlockViewer", "@session_name"},
+		{"sp_HumanEventsBlockViewer", "@session_name"},
+		{"sp_HumanEventsBlockViewer", "@session_name"},
+		{"sp_QuickieStore", "@database_name"},
+	}
+	cs, err := os.ReadFile("../../web/q_community.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := regexp.MustCompile(`c\.Preset\[[^\]]+\] = map\[string\]string\{"(@[A-Za-z_]+)"`).FindAllStringSubmatch(string(cs), -1)
+	if len(lines) != len(presets) {
+		t.Fatalf("q_community.go sets %d presets, the table names %d: the table follows the code", len(lines), len(presets))
+	}
+	for i, p := range presets {
+		if lines[i][1] != p.param {
+			t.Errorf("q_community.go's preset line %d passes %s, the table says %s", i+1, lines[i][1], p.param)
+		}
+		var tool *Run
+		for j := range shapes.Runs {
+			if shapes.Runs[j].Tool == p.tool {
+				tool = &shapes.Runs[j]
+			}
+		}
+		if tool == nil {
+			t.Errorf("shapes.json holds no %s entry", p.tool)
+			continue
+		}
+		if !slices.ContainsFunc(tool.AllParams, func(a Param) bool { return a.Name == p.param }) {
+			t.Errorf("the community checks preset %s's %s, which the stored shape does not have", p.tool, p.param)
+		}
+	}
 	dates := map[string]string{"frk": "20260702", "dd": "20261101", "wia": "20260409"}
 	for _, k := range shapes.Kits {
 		if want, ok := dates[k.Kit]; ok && k.VersionDate != want {
