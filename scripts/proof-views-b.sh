@@ -6,7 +6,7 @@
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a PostgreSQL 13+ cluster as a superuser: the proof makes a repository
 #                      database, seeds the demo fleet into it (7 days) and drops it on every exit path the shell can catch
 #   PGVIGIL_VB_CASES   the browser cases to run (default: all of views-b-check.mjs)
-# The tree is copied into the proof's folder first; the two wiring patches (slice A's and B24 OWN's) and the web bundle
+# The tree is copied into the proof's folder first; the wiring patches (slice A's, B24 OWN's, this slice's docs) and the web bundle
 # are applied and built THERE, never in this checkout (the FOLD P3).
 #
 # Expected (written before the first run; u1 and u3 are views.shared_editors, u2 is not):
@@ -66,10 +66,13 @@ freeport() {
 # the copy: the wiring patches and the bundle are built there (P3)
 SRC=$WORK/src; mkdir -p "$SRC"
 rsync -a --exclude .git --exclude web/node_modules --exclude bin ./ "$SRC/" || fail "copy the tree"
-for p in proof-views-wiring.patch proof-b24own-wiring.patch; do
+# slice A's, B24 OWN's, then this slice's docs (proof-views-b-wiring.patch: docs only, written over the other two)
+for p in proof-views-wiring.patch proof-b24own-wiring.patch proof-views-b-wiring.patch; do
   if [[ -f "$SRC/scripts/$p" ]] && (cd "$SRC" && git apply --check "scripts/$p" 2>/dev/null); then
     (cd "$SRC" && git apply "scripts/$p") || fail "the wiring patch $p"
     echo "wiring applied to the copy: $p"
+  elif [[ -f "$SRC/scripts/$p" ]]; then
+    echo "wiring NOT applied (does not apply here; a joined tree may hold it already): $p"
   fi
 done
 (cd "$SRC/web" && npm ci --silent --no-audit --no-fund >/dev/null 2>&1 && npm run build --silent >/dev/null 2>"$WORK/web-build.err") || { tail -20 "$WORK/web-build.err" >&2; fail "the web bundle (npm ci; npm run build)"; }
