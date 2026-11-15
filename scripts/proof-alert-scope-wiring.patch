@@ -45,7 +45,7 @@ index 7afb52bc..5153c508 100644
  
  func toolList() []any {
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index a994399a..70059f06 100644
+index a994399a..a7a7d776 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
 @@ -189,9 +189,12 @@ BEGIN
@@ -63,7 +63,15 @@ index a994399a..70059f06 100644
       -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
       -- ACCESS EXCLUSIVE on its parent)
       ORDER BY p.relname, c.relname
-@@ -438,7 +441,9 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
+@@ -202,6 +205,7 @@ BEGIN
+   END LOOP;
+   DELETE FROM pgvigil.job_runs WHERE start_time < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  n := n + pgvigil.alert_threads_purge();   -- task 403b K2 (0154): the Slack bot's threads of closed occurrences, after 90 days
+   DELETE FROM pgvigil.activity_summary WHERE snapshot_at < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   DELETE FROM pgvigil.statements_info WHERE snapshot_at < now() - make_interval(days => p_days);
+@@ -438,7 +442,9 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
         f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at
    FROM (SELECT x.instance_id, x.severity, x.setting, x.value, x.suggested, x.detail, x.source, x.at FROM pgvigil.findings x
          UNION ALL
@@ -74,7 +82,7 @@ index a994399a..70059f06 100644
    LEFT JOIN pgvigil.instances i USING (instance_id)
    LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
   WHERE i.is_active OR f.source = 'pgvigil repository';
-@@ -468,16 +473,19 @@ LANGUAGE sql STABLE SET jit = off AS $$
+@@ -468,16 +474,19 @@ LANGUAGE sql STABLE SET jit = off AS $$
             coalesce(c.repo_wide, true) AS repo_wide
        FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
             AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,

@@ -103,6 +103,8 @@ type Channel struct {
 	Zabbix      *Zabbix          `yaml:"zabbix"`   // task B24k (zabbix.go)
 	// AzureMonitor is task B24k's Logs Ingestion API channel (azuremonitor.go).
 	AzureMonitor *AzureMonitor `yaml:"azuremonitor"`
+	// task 403b K2 (slack.go): the Slack bot, a thread per alert
+	Slack *SlackBot `yaml:"slack"`
 	// MaxPerHour caps the alerts the channel sends in any hour (0 = no cap): what is over it is held, logged as
 	// outcome 'capped', and sent by a later pass once the hour allows.
 	MaxPerHour int        `yaml:"max_per_hour"`
@@ -349,13 +351,13 @@ func (c *Channel) validate() error {
 	}
 	c.tpl = tpl
 	blocks := 0
-	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil, c.Pushover != nil, c.Zabbix != nil, c.AzureMonitor != nil} {
+	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil, c.Pushover != nil, c.Zabbix != nil, c.AzureMonitor != nil, c.Slack != nil} {
 		if set {
 			blocks++
 		}
 	}
 	if blocks != 1 {
-		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty:, opsgenie:, pushover:, zabbix: or azuremonitor: is required")
+		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty:, opsgenie:, pushover:, zabbix:, azuremonitor: or slack: is required")
 	}
 	switch c.Kind {
 	case "smtp":
@@ -404,8 +406,13 @@ func (c *Channel) validate() error {
 			return errors.New("kind azuremonitor needs an azuremonitor: block")
 		}
 		c.sender, err = c.AzureMonitor.build()
+	case "slack":
+		if c.Slack == nil {
+			return errors.New("kind slack needs a slack: block")
+		}
+		c.sender, err = c.Slack.build()
 	default:
-		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty, opsgenie, pushover, zabbix or azuremonitor (got %q)", c.Kind)
+		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty, opsgenie, pushover, zabbix, azuremonitor or slack (got %q)", c.Kind)
 	}
 	return err
 }
@@ -660,6 +667,15 @@ type holding interface {
 // records the newest after each send (0154's alert_channel_quota).
 type quotaed interface {
 	lastQuota() *channelQuota
+}
+
+// threader is a sender that keeps a thread per alert (the Slack bot, task 403b K2): the pass posts what has no thread
+// and replies in the threads it knows, each its own send and attempt (sendThreaded), and keeps each post's thread
+// with its attempt (0154's alert_record_threads).
+type threader interface {
+	slackChannel() string
+	post(ctx context.Context, m Message) (string, error)
+	reply(ctx context.Context, m Message, threadTS string, broadcast bool) error
 }
 
 // refusedError marks a send refused for its destination (a redirect, a plain connection off loopback).
@@ -988,6 +1004,14 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 				res.Capped += len(held)
 			}
 		}
+		if th, ok := c.sender.(threader); ok {
+			chErr, err := c.sendThreaded(ctx, conn, th, send, now, &res)
+			if err != nil {
+				return res, outcome, err
+			}
+			outcome[c.Name] = chErr
+			continue
+		}
 		budget := 0
 		if b, ok := c.sender.(budgeted); ok {
 			budget = b.budget()
@@ -1037,6 +1061,135 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 	}
 	return res, outcome, nil
+}
+
+// threadKey names one occurrence's thread: its finding key and its first send.
+func threadKey(key string, first time.Time) string {
+	return key + "\x00" + first.UTC().Format(time.RFC3339Nano)
+}
+
+// sendThreaded sends a Slack bot channel's owed alerts (task 403b K2): the threads its open alerts have are read for
+// the channel's Slack channel; an alert without one (a new firing, or a state that predates the channel) goes in a
+// top-level post of at most slackPerPost alerts, the others as one reply each in their thread (an escalation broadcast
+// to the channel, a repeat and the recovery in the thread only). Urgent ones go first (escalated and critical), the
+// posts before the replies, at most slackReplies replies a pass (the rest stay owed: nothing is recorded for them).
+// A reply Slack refuses as a reply goes as a new post. Each send is its own attempt; a post's threads are written with
+// it. A failed send ends the channel's pass, as for every channel. It returns the channel's outcome and an error only
+// when the repository failed.
+func (c *Channel) sendThreaded(ctx context.Context, conn *pgxpool.Conn, th threader, send []Alert, now time.Time, res *Result) (error, error) {
+	known := map[string]string{}
+	var keys []string
+	for _, a := range send {
+		if a.FirstSentAt != nil && a.Event != "firing" {
+			keys = append(keys, a.FindingKey)
+		}
+	}
+	withThreads := true
+	if err := conn.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.alert_record_threads(timestamp with time zone, jsonb, jsonb)') IS NOT NULL`).Scan(&withThreads); err != nil {
+		return nil, err
+	}
+	if withThreads && len(keys) > 0 {
+		rows, err := conn.Query(ctx, `SELECT finding_key, first_sent_at, ts FROM pgvigil.alert_threads
+		     WHERE channel = $1 AND slack_channel = $2 AND finding_key = ANY($3)`, c.Name, th.slackChannel(), keys)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var k, ts string
+			var first time.Time
+			if err := rows.Scan(&k, &first, &ts); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			known[threadKey(k, first)] = ts
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	type reply struct {
+		a  Alert
+		ts string
+	}
+	var posts []Alert
+	var replies []reply
+	for _, a := range send {
+		if a.FirstSentAt != nil && a.Event != "firing" {
+			if ts, ok := known[threadKey(a.FindingKey, *a.FirstSentAt)]; ok {
+				replies = append(replies, reply{a, ts})
+				continue
+			}
+		}
+		posts = append(posts, a)
+	}
+	urgent := func(a Alert) bool {
+		return a.Event == "escalated" || (a.Severity == "critical" && a.Event != "resolved")
+	}
+	sort.SliceStable(posts, func(i, j int) bool { return urgent(posts[i]) && !urgent(posts[j]) })
+	sort.SliceStable(replies, func(i, j int) bool { return urgent(replies[i].a) && !urgent(replies[j].a) })
+	// note records one send's attempt (with the threads a post opened) and counts it
+	note := func(items []Alert, sendErr error, ts string) error {
+		at := attempt{Channel: c.Name, Kind: c.Kind, Destination: c.Destination(), Outcome: "sent", Items: items}
+		if sendErr != nil {
+			at.Outcome, at.Error = "failed", sendErr.Error()
+			var re *refusedError
+			if errors.As(sendErr, &re) {
+				at.Outcome = "refused"
+			}
+			res.Failed += len(items)
+			res.Errors = append(res.Errors, c.Name+": "+sendErr.Error())
+		} else {
+			res.Sent += len(items)
+		}
+		var threads []map[string]string
+		if sendErr == nil && ts != "" && withThreads {
+			for _, a := range items {
+				if a.Event != "resolved" {
+					threads = append(threads, map[string]string{"finding_key": a.FindingKey, "slack_channel": th.slackChannel(), "ts": ts})
+				}
+			}
+		}
+		if len(threads) == 0 {
+			return record(context.WithoutCancel(ctx), conn.Exec, time.Now(), at)
+		}
+		pay, _ := json.Marshal(at)
+		tj, _ := json.Marshal(threads)
+		_, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pgvigil.alert_record_threads($1, $2::jsonb, $3::jsonb)`, time.Now(), string(pay), string(tj))
+		return err
+	}
+	for i := 0; i < len(posts); i += slackPerPost {
+		batch := posts[i:min(i+slackPerPost, len(posts))]
+		sctx, cancel := context.WithTimeout(ctx, sendTimeout)
+		ts, err := th.post(sctx, Message{Channel: c.Name, SentAt: now.UTC(), Alerts: batch, Subject: c.subject(batch)})
+		cancel()
+		if rerr := note(batch, err, ts); rerr != nil {
+			return nil, rerr
+		}
+		if err != nil {
+			return err, nil // the destination failed: the rest waits for the next pass
+		}
+	}
+	for n, r := range replies {
+		if n >= slackReplies {
+			break // owed: the next pass sends them
+		}
+		m := Message{Channel: c.Name, SentAt: now.UTC(), Alerts: []Alert{r.a}, Subject: c.subject([]Alert{r.a})}
+		sctx, cancel := context.WithTimeout(ctx, sendTimeout)
+		err := th.reply(sctx, m, r.ts, r.a.Event == "escalated")
+		ts := ""
+		if err != nil && threadRefused(err) {
+			ts, err = th.post(sctx, m) // the thread takes no reply: the alert opens a new one
+		}
+		cancel()
+		if rerr := note(m.Alerts, err, ts); rerr != nil {
+			return nil, rerr
+		}
+		if err != nil {
+			return err, nil
+		}
+	}
+	return nil, nil
 }
 
 // recordQuota stores a destination's quota as its last answer gave it (0154's alert_channel_quota_put); a repository

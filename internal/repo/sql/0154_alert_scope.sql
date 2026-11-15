@@ -1239,3 +1239,52 @@ CREATE OR REPLACE VIEW pgvigil.alert_channel_findings AS
 SELECT f.instance_id, f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at FROM pgvigil.alert_channel_failing f
 UNION ALL
 SELECT q.instance_id, q.severity, q.setting, q.value, q.suggested, q.detail, q.source, q.at FROM pgvigil.alert_channel_quota_low q;
+
+-- ---- task 403b K2: the Slack bot's threads ------------------------------------------------------------------------
+-- alert_threads: the post that carries an alert's occurrence on a Slack bot channel (its ts), so a repeat, an
+-- escalation and the recovery go as replies in that thread (internal/alerts/slack.go). Keyed by the occurrence
+-- (alert_state's own key) and keeping the Slack channel's id: a re-fire after a clear, or a channel pointed at another
+-- Slack channel, starts a new thread.
+CREATE TABLE IF NOT EXISTS pgvigil.alert_threads (
+  channel       text NOT NULL,
+  finding_key   text NOT NULL,
+  first_sent_at timestamptz NOT NULL,
+  slack_channel text NOT NULL,
+  ts            text NOT NULL,
+  posted_at     timestamptz NOT NULL,
+  PRIMARY KEY (channel, finding_key, first_sent_at)
+);
+GRANT SELECT, INSERT, UPDATE ON pgvigil.alert_threads TO pgvigil_alerter;
+
+-- alert_record_threads: one send's attempt (0190's alert_record) and the threads its post opened, in one transaction;
+-- each thread row takes its occurrence's first_sent_at from alert_state as the record left it (an item that did not
+-- open or keep an occurrence there writes no thread).
+CREATE OR REPLACE FUNCTION pgvigil.alert_record_threads(p_at timestamptz, p_payload jsonb, p_threads jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pgvigil.alert_record(p_at, p_payload);
+  INSERT INTO pgvigil.alert_threads AS t (channel, finding_key, first_sent_at, slack_channel, ts, posted_at)
+  SELECT s.channel, s.finding_key, s.first_sent_at, x.slack_channel, x.ts, p_at
+    FROM jsonb_to_recordset(coalesce(p_threads, '[]'::jsonb)) AS x(finding_key text, slack_channel text, ts text)
+    JOIN pgvigil.alert_state s ON s.channel = p_payload->>'channel' AND s.finding_key = x.finding_key AND s.cleared_at IS NULL
+   WHERE x.ts IS NOT NULL AND x.slack_channel IS NOT NULL
+  ON CONFLICT (channel, finding_key, first_sent_at) DO UPDATE
+     SET slack_channel = EXCLUDED.slack_channel, ts = EXCLUDED.ts, posted_at = EXCLUDED.posted_at;
+END $$;
+GRANT EXECUTE ON FUNCTION pgvigil.alert_record_threads(timestamptz, jsonb, jsonb) TO pgvigil_alerter;
+
+-- alert_threads_purge: the threads of occurrences no longer open, once 90 days old (0190's purge calls it: a wiring
+-- line); an open occurrence keeps its thread however old.
+CREATE OR REPLACE FUNCTION pgvigil.alert_threads_purge()
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  v_rows bigint;
+BEGIN
+  DELETE FROM pgvigil.alert_threads t
+   WHERE t.posted_at < now() - interval '90 days'
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_state s
+                      WHERE s.channel = t.channel AND s.finding_key = t.finding_key AND s.first_sent_at = t.first_sent_at
+                        AND s.cleared_at IS NULL);
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows;
+END $$;
