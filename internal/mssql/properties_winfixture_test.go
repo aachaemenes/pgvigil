@@ -119,3 +119,38 @@ func TestNetRowsOnWindowsFixture(t *testing.T) {
 		t.Errorf("%d rows, want %d: %v", len(got), len(want), got)
 	}
 }
+
+// TestNetRowsOnWindowsFixtureWithoutRegread: the same answers for a login without EXECUTE on xp_instance_regread - the
+// two encryption rows name the GRANT, the procedure is never sent, the other rows stand on the view alone.
+func TestNetRowsOnWindowsFixtureWithoutRegread(t *testing.T) {
+	gate, view, _, prio := readWindowsFixture(t, "testdata/properties-windows.txt")
+	gate.instanceRegread = false
+	old := netQuery
+	defer func() { netQuery = old }()
+	netQuery = func(_ context.Context, _ *sql.Conn, q string, _ ...any) ([]collect.Row, error) {
+		switch q {
+		case propsNetViewSQL:
+			return view, nil
+		case propsPrioritySQL:
+			return []collect.Row{prio}, nil
+		}
+		t.Errorf("sent without the right: %.60q", q)
+		return nil, fmt.Errorf("no right")
+	}
+	in, partial := readNetwork(context.Background(), nil, Info{Kind: KindServer, Major: 16}, "Windows", gate)
+	if len(partial) != 0 {
+		t.Errorf("partial rows: %v", partial)
+	}
+	got := netOf(in)
+	why := " | not read: sys.dm_server_registry holds no SuperSocketNetLib encryption value here; no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [pgvigil_mon]"
+	for _, k := range []string{keyForceEnc, keyForceStrictEnc} {
+		if !strings.HasPrefix(got[k], why) {
+			t.Errorf("%s: %q, want it to start %q", k, got[k], why)
+		}
+	}
+	for k, w := range map[string]string{keyTCPPort: "1433 | ", keyTCPDynamic: "no | ", keyListenAll: "yes | ", keyProtocols: "Shared Memory, TCP/IP | ", keyPrioritySep: "2 | "} {
+		if got[k] != w {
+			t.Errorf("%s: %q, want %q", k, got[k], w)
+		}
+	}
+}

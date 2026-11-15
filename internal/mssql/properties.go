@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
@@ -611,6 +612,28 @@ type netFacts struct {
 	ipAllPort, ipAllDynamic                             string
 	ips                                                 []ipEntry
 	ipsRead                                             bool // the IPn entries were listed (the view only)
+	// encSource names the read the two encryption values came from when it is not source (the view holds no row of the
+	// bare SuperSocketNetLib key: xp_instance_regread then); encWhy is why that read was not made or failed
+	encSource, encWhy string
+}
+
+// encNote is the note of an encryption value the reads did not find.
+func (f netFacts) encNote(p *int64, name string) string {
+	switch {
+	case p != nil:
+		return ""
+	case f.encWhy != "":
+		return f.encWhy
+	case f.encSource != "":
+		return missing(p, name, f.encSource)
+	}
+	return missing(p, name, f.source)
+}
+
+// regValue is a registry value as sys.dm_server_registry gives it, without the spaces and the terminating NUL a REG_SZ
+// value keeps there (301c N5: the lab's Windows VM, SQL Server 2022 - '1433' + NUL, a lone NUL for a blank value).
+func regValue(v string) string {
+	return strings.TrimFunc(v, func(r rune) bool { return r == 0 || unicode.IsSpace(r) })
 }
 
 // netFactsFromView turns sys.dm_server_registry's SuperSocketNetLib rows into the facts.
@@ -619,7 +642,7 @@ func netFactsFromView(rows []collect.Row) netFacts {
 	ips := map[string]*ipEntry{}
 	var order []string
 	num := func(v string) *int64 {
-		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			return nil
 		}
@@ -628,7 +651,8 @@ func netFactsFromView(rows []collect.Row) netFacts {
 	for _, r := range rows {
 		key, _ := r["registry_key"].(string)
 		name, _ := r["value_name"].(string)
-		val, _ := r["value_data"].(string)
+		raw, _ := r["value_data"].(string)
+		val := regValue(raw)
 		i := strings.Index(strings.ToLower(key), `supersocketnetlib`)
 		if i < 0 {
 			continue
@@ -649,9 +673,9 @@ func netFactsFromView(rows []collect.Row) netFacts {
 		case sub == "sm" && nm == "enabled":
 			f.smOn = num(val)
 		case sub == `tcp\ipall` && nm == "tcpport":
-			f.ipAllPort = strings.TrimSpace(val)
+			f.ipAllPort = val
 		case sub == `tcp\ipall` && nm == "tcpdynamicports":
-			f.ipAllDynamic = strings.TrimSpace(val)
+			f.ipAllDynamic = val
 		case strings.HasPrefix(sub, `tcp\ip`):
 			n := key[strings.LastIndex(key, `\`)+1:]
 			e, ok := ips[n]
@@ -666,11 +690,11 @@ func netFactsFromView(rows []collect.Row) netFacts {
 					e.enabled = true
 				}
 			case "ipaddress":
-				e.address = strings.TrimSpace(val)
+				e.address = val
 			case "tcpport":
-				e.port = strings.TrimSpace(val)
+				e.port = val
 			case "tcpdynamicports":
-				e.dynamic = strings.TrimSpace(val)
+				e.dynamic = val
 			}
 		}
 	}
@@ -891,7 +915,7 @@ func netRows(p *propList, in netRowsInput) {
 		} else {
 			add(keyListenAll, "Network", "Listen on all IP addresses", 720, onOff(f.listenAll), missing(f.listenAll, "ListenOnAllIPs", f.source))
 		}
-		encNote := missing(f.forceEnc, "ForceEncryption", f.source)
+		encNote := f.encNote(f.forceEnc, "ForceEncryption")
 		if linux && f.forceEnc != nil {
 			encNote = "SQL Server on Linux: mssql-conf network.forceencryption, read through its registry"
 		}
@@ -900,7 +924,7 @@ func netRows(p *propList, in netRowsInput) {
 		case in.major > 0 && in.major < 16:
 			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, nil, "not on this version: ForceStrictEncryption came with SQL Server 2022")
 		default:
-			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, onOff(f.forceStrict), missing(f.forceStrict, "ForceStrictEncryption", f.source))
+			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, onOff(f.forceStrict), f.encNote(f.forceStrict, "ForceStrictEncryption"))
 		}
 		if linux {
 			add(keyProtocols, "Network", "Protocols enabled", 750, "TCP/IP", "met: Linux serves TCP only")
@@ -996,6 +1020,32 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 	}
 	if viewErr != nil && in.facts == nil {
 		fail("sys.dm_server_registry", viewErr)
+	}
+	// the view holds no row of the bare SuperSocketNetLib key on some servers (the lab's Windows VM, SQL Server 2022:
+	// 301c N5): the two encryption values are then read through xp_instance_regread, where the gate allows it
+	strictToo := info.Major <= 0 || info.Major >= 16 // ForceStrictEncryption came with SQL Server 2022 (0 = not known)
+	if f := in.facts; f != nil && f.source == "sys.dm_server_registry" && (f.forceEnc == nil || (strictToo && f.forceStrict == nil)) {
+		switch {
+		case !gate.instanceRegread:
+			f.encWhy = "not read: sys.dm_server_registry holds no SuperSocketNetLib encryption value here; " + gate.noRight("xp_instance_regread")
+		default:
+			rows, err := netQuery(ctx, conn, propsNetRegSQL)
+			switch {
+			case err != nil:
+				f.encWhy = fail("xp_instance_regread", err)
+			case len(rows) != 1:
+				f.encWhy = "not read: xp_instance_regread returned no row"
+			default:
+				r := netFactsFromRegread(rows[0])
+				if f.forceEnc == nil {
+					f.forceEnc = r.forceEnc
+				}
+				if f.forceStrict == nil {
+					f.forceStrict = r.forceStrict
+				}
+				f.encSource = r.source
+			}
+		}
 	}
 	if platform == "Windows" {
 		switch {
