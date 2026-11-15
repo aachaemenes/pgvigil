@@ -12,7 +12,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href, window_ } from './router';
-import { fleet } from './fleet';
+import { fleet, inTagScope, tagWords } from './fleet';
 import { hashParam } from './dbinfo';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 
@@ -21,6 +21,9 @@ interface Picks { m: Mode; a?: number; b?: number; dba?: string; dbb?: string; t
 const keys = ['m', 'a', 'b', 'dba', 'dbb', 'ta', 'tb', 'all'];
 const modes: [Mode, string][] = [['i', 'Two instances'], ['t', 'One instance at two times'], ['d', 'Two databases of one instance (PostgreSQL)']];
 const lsKey = 'pgvigil.diff';
+// a tag folder keeps its own picks (TAGALL): its pickers list its instances only, so a pick of another instance is dropped
+// there and the root's are kept; a folder with none of its own starts from the root's
+const lsKeyOf = (ctx: Ctx) => ctx.tag && !ctx.instance ? `${lsKey}.tag.${ctx.tag}` : lsKey;
 let focusResult = false;   // the Compare button asked for this render: the result takes the focus
 
 const isoOrUndef = (v?: string) => v && !isNaN(Date.parse(v)) ? new Date(v).toISOString() : undefined;
@@ -40,7 +43,7 @@ function loadPicks(ctx: Ctx): Picks {
   });
   if (keys.some(k => hashParam(k) !== undefined)) return read(hashParam);
   let saved: Record<string, string> = {};
-  try { saved = JSON.parse(localStorage.getItem(lsKey) ?? '{}') as Record<string, string>; } catch { /* private window, or not JSON */ }
+  try { saved = JSON.parse(localStorage.getItem(lsKeyOf(ctx)) ?? localStorage.getItem(lsKey) ?? '{}') as Record<string, string>; } catch { /* private window, or not JSON */ }
   const p = read(k => typeof saved[k] === 'string' && saved[k] !== '' ? saved[k] : undefined);
   // a remembered pair of times is of another day's question: the two times start from the page's range
   const w = window_(ctx);
@@ -189,13 +192,19 @@ function schemaBlock(d: Record<string, Table | null>, cap: number, note: string,
 }
 
 export async function diffView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', {}, el('h2', {}, 'Diff'));
+  // under a tag folder (TAGALL) the heading names it and both pickers list its instances only
+  const tag = ctx.tag && !ctx.instance ? ctx.tag : undefined;
+  const sec = el('section', {}, el('h2', {}, 'Diff' + (tag ? ` - ${tagWords(tag)}` : '')));
   // the Compare button's wish holds for this render alone, however it ends
   const wantFocus = focusResult; focusResult = false;
   const p = loadPicks(ctx);
-  const insts = (await fleet()).instances.map(r => ({ id: Number(r.instance_id), name: String(r.name ?? ''), engine: String(r.engine ?? 'postgres') }))
+  const insts = (await fleet()).instances.filter(r => !tag || inTagScope(tag, r)).map(r => ({ id: Number(r.instance_id), name: String(r.name ?? ''), engine: String(r.engine ?? 'postgres') }))
     .sort((x, y) => x.name.localeCompare(y.name));
   const engineOf = (id?: number) => insts.find(i => i.id === id)?.engine;
+  if (tag && insts.length === 0) {
+    sec.append(el('p', { class: 'empty' }, `No instance is in the folder ${tagWords(tag)}.`));
+    return sec;
+  }
 
   // ---- the form: nothing is read until Compare
   const modeBox = el('fieldset', { class: 'filters' }, el('legend', {}, 'Compare'),
@@ -276,7 +285,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     const sql = engineOf(p.a) === 'sqlserver';
     fDbA.hidden = sql && p.m !== 'd'; if (sql && p.m !== 'd') fDbB.hidden = true;
     hint.textContent = incomplete(p, engineOf(p.a));
-    try { localStorage.setItem(lsKey, JSON.stringify({ m: p.m, a: String(p.a ?? ''), b: String(p.b ?? ''), dba: p.dba ?? '', dbb: p.dbb ?? '', all: p.all ? '1' : '' })); } catch { /* private window */ }
+    try { localStorage.setItem(lsKeyOf(ctx), JSON.stringify({ m: p.m, a: String(p.a ?? ''), b: String(p.b ?? ''), dba: p.dba ?? '', dbb: p.dbb ?? '', all: p.all ? '1' : '' })); } catch { /* private window */ }
     if (refill) void fillDatabases();
   }
   go.addEventListener('click', () => {
