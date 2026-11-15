@@ -32,8 +32,10 @@
 # <dir>/aws-rds-replica.env and handed to the AWS CLI in a mode-600 request file removed right after the call, to psql
 # in PGPASSWORD: never on a command line, in the output or in a log.
 # down: both instances deleted with no final snapshot and their automated backups deleted, then the parameter group
-# and the security group; the listing read back (the instances, the groups, every resource carrying the tag, backups and
-# snapshots of either instance) and the state file removed only when nothing is left.
+# (the source's and the replica's: one group, named <id>-replica) and the security group; the listing read back (the
+# instances, the groups, every resource carrying the tag, backups and snapshots of either instance - the snapshots for
+# up to 5 minutes: an automated one goes a little after its instance) and the state file removed only when nothing is
+# left; a snapshot still listed then is named with its kind and what removes it.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 DIR=${PGVIGIL_LAB_DIR:-.lab}
@@ -153,6 +155,10 @@ PY
   [ "${G%% *}" = "$PG_GROUP" ] || fail "the replica's parameter group is '$G', not the source's $PG_GROUP: the proof's hold would not hold (down removes it)"
   V=$(PGPASSWORD="$ADMIN_PW" psql "host=$REP_HOST port=5432 user=$ADMIN_USER dbname=postgres sslmode=require connect_timeout=20" -XAtqc 'show max_standby_streaming_delay' 2>/dev/null || echo 'not read')
   echo "replica: $REP_HOST:5432 (the source's logins replicate to it); parameter group $G; max_standby_streaming_delay on it: $V"
+  # a replica that answers another value would hold no replay (AWS: 'wait at least 5 minutes' between a group's modify
+  # and the first instance made with it): said here, before the proof's hold rests on it; 'not read' = 5432 does not
+  # reach from this machine, the proof's own row is then the judge
+  [ "$V" = 'not read' ] || [ "$V" = -1 ] || fail "the replica answers max_standby_streaming_delay $V, not -1 (parameter group $G): the proof's hold would not hold - reboot the replica if the group is pending-reboot, else down"
   ;;
 allow)
   need_aws; load; shift
@@ -233,6 +239,10 @@ down)
   done
   LEFT_TAG=$(aw resourcegroupstaggingapi get-resources --tag-filters "Key=pgvigil-proof,Values=$PGVIGIL_LAB_PROOF" --query 'ResourceTagMappingList[].ResourceARN' --output text)
   echo "read back: instances $LEFT_DB, parameter groups $LEFT_PG, security groups $LEFT_SG, automated backups $LEFT_BK, snapshots $LEFT_SN; tagged resources listed: ${LEFT_TAG:-none}"
+  if [ "$LEFT_SN" != 0 ]; then
+    aw rds describe-db-snapshots --query "DBSnapshots[?DBInstanceIdentifier=='$SRC_ID' || DBInstanceIdentifier=='$REP_ID'].[DBSnapshotIdentifier,SnapshotType,Status]" --output text | sed 's/^/  snapshot left: /' || true
+    echo "  an automated snapshot goes by itself: run down again in a few minutes; a manual one: aws rds delete-db-snapshot --db-snapshot-identifier <id>"
+  fi
   [ "$LEFT_DB|$LEFT_PG|$LEFT_SG|$LEFT_BK|$LEFT_SN" = "0|0|0|0|0" ] || fail "something is left (above): the state file $STATE stays"
   [ -z "$LEFT_TAG" ] || echo "note: the tagging index still lists the ARNs above; the services themselves read 0 (it catches up in minutes)"
   rm -f "$STATE"
