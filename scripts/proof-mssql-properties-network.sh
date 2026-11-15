@@ -15,7 +15,7 @@
 #     mssql-conf network.tcpport, read through its registry', tcp_port_dynamic no, force_encryption no, protocols_enabled
 #     'TCP/IP' with 'met: Linux serves TCP only', tcp_listen_all_ips 'not on Linux: mssql-conf network.ipaddress chooses
 #     the address', win32_priority_separation 'not on Linux: a Windows scheduler setting'; force_strict_encryption
-#     printed (P1 did not read it: 'no', or 'not read: xp_instance_regread holds no ForceStrictEncryption value');
+#     'not read: xp_instance_regread holds no ForceStrictEncryption value' (run 301c1 read it: Linux 2022 holds none);
 #     power_plan 'not read: SQL Server on Linux has no Windows power plan ...'; the run neither failed nor partial.
 #  N2 `mssql-conf set network.tcpport 1500` and `network.forceencryption 1`, the server restarted, the instance read
 #     again at its new port: tcp_port 1500, force_encryption yes; mssql_property_change holds tcp_port 1433 -> 1500 and
@@ -106,7 +106,7 @@ SAPORT=$(regread "$SQL")
 [ "$(prop pgvnet-m win32_priority_separation)" = "|not on Linux: a Windows scheduler setting" ] || fail "N1 win32_priority_separation: $(prop pgvnet-m win32_priority_separation)"
 [[ "$(prop pgvnet-m power_plan)" == "|not read: SQL Server on Linux has no Windows power plan"* ]] || fail "N1 power_plan: $(prop pgvnet-m power_plan)"
 FSE=$(prop pgvnet-m force_strict_encryption)
-case "$FSE" in "no|"|"|not read: xp_instance_regread holds no ForceStrictEncryption value") ;; *) fail "N1 force_strict_encryption: $FSE" ;; esac
+[ "$FSE" = "|not read: xp_instance_regread holds no ForceStrictEncryption value" ] || fail "N1 force_strict_encryption: $FSE"
 ok "N1: tcp_port $SAPORT = sa's read, dynamic no, force_encryption no, protocols TCP/IP (met), listen and Win32PrioritySeparation 'not on Linux'; force_strict_encryption '$FSE'"
 
 echo "== N2 mssql-conf: TCP port 1500 and forced encryption, a restart"
