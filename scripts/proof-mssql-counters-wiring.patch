@@ -1027,7 +1027,7 @@ index 078fe43..44bc71f 100644
  // sqlMSSQLFileLatency: read and write latency per step for each database and file type ('tempdb ROWS'); the five
  // groups with the most stall over the range on their own, the rest as '(other)'.
 diff --git i/internal/web/q_perfsummary.go w/internal/web/q_perfsummary.go
-index 4e30bc2..4f8b0b4 100644
+index 4e30bc2..08bfdca 100644
 --- i/internal/web/q_perfsummary.go
 +++ w/internal/web/q_perfsummary.go
 @@ -31,7 +31,9 @@ import (
@@ -1056,18 +1056,20 @@ index 4e30bc2..4f8b0b4 100644
         round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
 -       h.cpu_sql_avg, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
 +       h.cpu_sql_avg, t.batch_s,
-+       CASE WHEN t.batch_s IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_s < 1 THEN 0
-+            ELSE round(100 * t.compiles_s / t.batch_s, 1) END AS compiles_per_100,
++       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_raw < 1 THEN 0
++            ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
 +       m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
         NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
         CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
         CASE WHEN io.secs > 0 THEN 'virtual_file_stats' END AS io_source,
-@@ -210,7 +215,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+@@ -210,7 +215,10 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
       WHERE s.instance_id = inst.instance_id AND s.snapshot_at > $1 AND s.snapshot_at <= $2) h ON true
    LEFT JOIN LATERAL (
      SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,
 -           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s
 +           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s,
++           -- the floor and the ratio read the rate before rounding (task 401 D6, review part 5 NIT 4)
++           (sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric AS batch_raw,
 +           (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
        FROM pgvigil.mssql_sched_sample x
       WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
@@ -1107,20 +1109,27 @@ index 7fe364d..06f6420 100644
    summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
    tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
 diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
-index 823b6dd..10316ca 100644
+index 823b6dd..1705681 100644
 --- i/web/src/mssql_perf.ts
 +++ w/web/src/mssql_perf.ts
-@@ -115,7 +115,8 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
+@@ -114,8 +114,14 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
+     }
    }
    const box2 = el('div', { class: 'charts' });
-   box2.append(lineChart('CPU scheduler trend', sched,
+-  box2.append(lineChart('CPU scheduler trend', sched,
 -    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' }]));
++  // the schedulers that failed to create a worker come from mssql_counters' reads: a range with none of them leaves
++  // the series out and says why (review part 5 NIT 8)
++  const fw = sched.some(r => r.failed_to_create_worker != null);
++  const trend = lineChart('CPU scheduler trend', sched,
 +    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' },
-+      { key: 'failed_to_create_worker', label: 'schedulers that failed to create a worker' }]));
++      ...(fw ? [{ key: 'failed_to_create_worker', label: 'schedulers that failed to create a worker' }] : [])]);
++  if (!fw && sched.length) trend.append(el('p', { class: 'meta' }, 'Schedulers that failed to create a worker: not read in this range (mssql_counters is off for this instance, or has not read yet).'));
++  box2.append(trend);
    box2.append(lineChart('Workers', sched, [{ key: 'current_workers', label: 'current workers' }, { key: 'active_workers', label: 'active workers' }, { key: 'max_workers', label: 'max worker threads' }]));
    box2.append(lineChart('Batch requests and compilations per second', counters,
      [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }, { key: 'recompiles_s', label: 'recompilations/s' }]));
-@@ -232,6 +233,7 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
+@@ -232,6 +238,7 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
    sec.append(pcBox);
    sec.append(grid(stats, [
      { key: 'clerk_type', label: 'clerk type' },
@@ -1129,15 +1138,25 @@ index 823b6dd..10316ca 100644
      { key: 'current_pct', label: '% of clerks', num: true, fmt: pct },
      { key: 'max_kb', label: 'max', num: true, fmt: kb },
 diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
-index 3863d49..ca9830f 100644
+index 3863d49..038cb29 100644
 --- i/web/src/perfsummary.ts
 +++ w/web/src/perfsummary.ts
-@@ -106,6 +106,8 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+@@ -77,6 +77,7 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+     el('li', {}, `CPU max: warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} %`),
+     el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
+     el('li', {}, 'every other cell is plain; a value not held is a muted word, never 0'),
++    el('li', {}, 'compilations per 100 batches: a muted 0 under 1 batch request a second (not a ratio)'),
+     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
+     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only')));
+   sec.append(th);
+@@ -106,6 +107,10 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
      { key: 'commits_s', label: 'commits/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
      { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
      { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
 +    { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
-+      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range; 0 under 1 batch request a second' }, fmtNum(v)) },
++      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
++        : Number(r.batch_s) < 1 ? muted('0', 'under 1 batch request a second: 0, not a ratio')
++        : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
      { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
        : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
      { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')

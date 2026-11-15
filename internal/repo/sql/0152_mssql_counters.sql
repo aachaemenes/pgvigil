@@ -231,7 +231,7 @@ UPDATE pgvigil.mssql_counter_defaults d SET used_by = u.why
     ('Databases', 'Active Transactions', 'the counters metric active transactions and the storage pages'),
     ('sys.dm_os_process_memory', 'physical_memory_in_use_kb', 'the counters metric memory in use of the commit limit'),
     ('sys.dm_os_process_memory', 'available_commit_limit_kb', 'the counters metric memory in use of the commit limit'),
-    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker')
+    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker and the CPU page''s scheduler trend')
   ) AS u(object, counter, why)
  WHERE d.object = u.object AND d.counter = u.counter;
 
