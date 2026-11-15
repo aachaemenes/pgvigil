@@ -137,6 +137,10 @@ On Azure SQL Database the login block is the first three lines only, run in `mas
 
 A collection that needs a right the login lacks does not fail the instance: it stores what it could read, and its row on the Collections page says `partial` with the missing right.
 
+The DBA's own SQL - [custom checks](custom.md#sql-server-checks) and [custom reports](customreports.md) - runs only as
+this login with no right more: one more server right, an impersonation, or a right that writes in any database refuses
+it, by the right's name.
+
 ## Agent, Database Mail and memory dumps (`mssql_services`, every 5 minutes)
 
 Three columns of the Summary, read with the same login:

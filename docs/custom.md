@@ -1,7 +1,8 @@
 # Custom checks
 
 pgvigil runs the DBA's own SQL as checks, the way DBADash runs custom collections: each check is a statement in the
-configuration's `custom:` list, run by the collector on the instances or tag folders it names, at its own cadence,
+configuration's `custom:` list (PostgreSQL's by default; a SQL Server check says `engine: sqlserver`, or names a
+procedure: [SQL Server checks](#sql-server-checks)), run by the collector on the instances or tag folders it names, at its own cadence,
 judged against its own thresholds. Every run's value, its rows and its error are kept in the repository; a check
 that crosses a threshold, fails, or stops running becomes a finding. Each instance has a **Custom** tab (each check's
 latest value, its chart over the time range, the rows of its latest run, its SQL) and the root has the **Custom
@@ -87,7 +88,69 @@ custom:
   (at least 5 minutes). A collection that stops visiting (switched off, disabled, failing to connect)
   is the daily checks' "collection stale" or "collection failing", not a finding of each check.
 
-`pgvigil collect -once custom` runs every check that applies, due or not.
+`pgvigil collect -once custom` runs every check that applies, due or not (`pgvigil collect -once mssql_custom` the SQL
+Server checks).
+
+## SQL Server checks
+
+A check written for SQL Server runs on the SQL Server instances its `instances:` and `tags:` reach (on every SQL Server
+instance when it names neither), never on a PostgreSQL one, and a check without `engine:` never runs on SQL Server.
+It is the collection `mssql_custom` (every minute, `schedules: mssql_custom`), which visits no SQL Server instance while
+the file has no SQL Server check.
+
+```yaml
+custom:
+  - name: failed_job_outcomes
+    engine: sqlserver                  # a SQL Server check (postgres is the default)
+    sql: SELECT COUNT(*) AS value FROM dbo.sysjobhistory WHERE run_status = 0 AND step_id = 0
+    database: msdb                     # optional: the database the batch runs in (default: the dsn's)
+    every: 15m
+    warning: 0
+  - name: order_backlog
+    procedure: Utility.dbo.pgvigil_check_backlog   # DBA Dash's form: [database.][schema.]name, run with no parameter
+    rule: rows
+    critical: 100
+```
+
+- **What runs.** A `sql:` check is a T-SQL batch; a `procedure:` check is the EXEC of the procedure the DBA made on the
+  server (DBA Dash's custom collection), 1 to 3 parts of letters, digits, `_`, `$` and `#`, each part quoted by pgvigil;
+  exactly one of the two. `database:` is for a `sql:` check (a procedure names its database in its own name).
+- **The rights are the fence.** SQL Server has no read-only transaction, and a transaction does not hold the DBA's own
+  T-SQL: a `COMMIT` in the text ends it, and a trace it makes outlives the rollback. So before any check the run reads
+  the read login's rights and refuses the whole collection on the instance, naming each right, when the login holds
+  one outside the documented [read login](sqlserver.md#the-login)'s on the server (`VIEW SERVER STATE`, `VIEW ANY
+  DEFINITION`, `CONNECT ANY DATABASE`, `ALTER TRACE`, and the rows SQL Server 2022 splits them into), may impersonate
+  another login, or holds a right that writes in ANY database it can open (a check's T-SQL reaches each of them with
+  `USE` or a three-part name): only `CONNECT`, `SELECT`, `EXECUTE`, `REFERENCES`, `SHOWPLAN` and the `VIEW` rights pass
+  there. A sysadmin, `CONTROL SERVER`, `ALTER ANY CONNECTION`, `bulkadmin` or `db_datawriter` anywhere is refused in
+  those words; a right a later SQL Server adds is refused by its name until pgvigil names it. Custom reports take the
+  same fence ([customreports.md](customreports.md)); community tools keep their own, which refuses a sysadmin alone,
+  because they run named procedures pgvigil knows, some of which need rights outside a read-only list (sp_HumanEvents
+  makes event sessions).
+- **How a check runs.** Each check on a connection of its own (closed after it, so a `SET`, `CONTEXT_INFO`,
+  `SESSION_CONTEXT`, an applock or an `EXECUTE AS` it leaves reaches no other check), as `SET XACT_ABORT ON; BEGIN
+  TRANSACTION; EXEC sys.sp_executesql <the check>; ROLLBACK`, under the session's `READ UNCOMMITTED` (a check never
+  waits on the application, and may read rows not yet committed), at most 30 s each (and the run 10 minutes at most).
+  Its result is its FIRST result set (a later one is counted in the run's note); its value column takes the integer
+  types, `real`, `float`, `decimal`, `numeric`, `money` and `bit`; at most 100 rows, 50 columns and 1,000 characters a
+  cell are kept, and the rows only under `query_text: full`, as on PostgreSQL. Unlike PostgreSQL, a batch may hold
+  more than one statement: the transaction and the fence above cover each of them.
+- **A check's error, in words.** A check that ends its own transaction (a `COMMIT` or `ROLLBACK` in it), one that
+  makes, starts, stops or closes a trace (`ALTER TRACE` is the read login's: pgvigil reads `sys.traces` before and
+  after each check and leaves the trace as it is - stopping it is the DBA's hand), a procedure that does not exist
+  (Msg 2812) or that the login may not run (Msg 229: `GRANT EXECUTE` on it to the read login), a write the login may
+  not make, a value column that is no number, and a check past its 30 s are each that check's error, shown on its tab
+  and raised as a finding.
+- **What the fence does not see.** A procedure's own body is the procedure's: a `dbo` procedure reading or writing
+  `dbo` tables needs only `EXECUTE` (ownership chaining), as in DBA Dash, so review it as the DBA's own code. A write
+  through an EXISTING linked server whose login mapping holds rights on the remote server is the remote server's and
+  is not undone by the local rollback: pgvigil cannot see the mapping.
+- **Not DBA Dash's storage.** DBA Dash puts a collection's rows in a table of the user's (`UserData.<name>`, made by a
+  script the user runs in its repository, with its own retention); pgvigil keeps each run's value, row count and at
+  most 100 rows in its own store, with the purge, as PostgreSQL's checks.
+- **NOT PROVEN** (scripts/proof-custom-mssql.sh runs on SQL Server 2017, 2019 and 2022 in Linux containers): SQL
+  Server on Windows, Azure SQL Database (whose rights are read in its one database), Azure SQL Managed Instance and
+  Amazon RDS.
 
 ## The catalogue of ready-made checks
 
