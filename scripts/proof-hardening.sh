@@ -5,7 +5,7 @@
 # Expected: deploy/pgvigil.service, deploy/pgvigil-purge.service and deploy/pgvigil-export.service each score an overall exposure of
 # 1.5 or under ("OK" on systemd's scale, where the unhardened unit scored 7.7 "EXPOSED"); the unit the
 # installer renders is byte-identical to deploy/pgvigil.service (TestUnitMatchesDeployFile); every
-# directive the hardening relies on is present in both units; the controls that are deliberately left
+# directive the hardening relies on is present in each unit; the controls that are deliberately left
 # open are exactly the network ones (the collector reaches the monitored servers and the repository,
 # so AF_INET / AF_INET6 / AF_UNIX stay, no PrivateNetwork, no IPAddressDeny), PrivateUsers (user
 # namespaces are not available on every host and container) and @resources (Go raises its own file

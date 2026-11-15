@@ -154,15 +154,46 @@ func (d *folder) List(_ context.Context, prefix string) ([]string, error) {
 	return keys, err
 }
 
-// CheckDestination proves the destination can be written: one tiny object put and removed.
+// CheckDestination tries on the destination everything a run does there: a manifest written where none is, a
+// second one refused, the list, the read back, the removal. A place that takes a plain write and fails one of
+// these (a folder on a file system without hard links, a store that ignores If-None-Match, a bucket that may not
+// be listed) would pass a lesser check and fail every run.
 func CheckDestination(ctx context.Context, d Destination) error {
 	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
 		return err
 	}
-	key := "_check_" + hex.EncodeToString(b)
-	if err := d.Put(ctx, key, []byte("pgvigil export -check\n"), false); err != nil {
-		return fmt.Errorf("the destination (%s) cannot be written: %w", d, err)
+	key := "_manifests/_check_" + hex.EncodeToString(b)
+	body := []byte("pgvigil export -check\n")
+	fail := func(what string, err error) error {
+		_ = d.Delete(ctx, key)
+		return fmt.Errorf("the destination (%s) %s: %w", d, what, err)
+	}
+	if err := d.Put(ctx, key, body, true); err != nil {
+		return fail("cannot be written", err)
+	}
+	switch err := d.Put(ctx, key, []byte("a second writer\n"), true); {
+	case err == nil:
+		return fail("lets a second manifest replace the first", errors.New("a write that must be refused where the object exists was taken"))
+	case !errors.Is(err, errExists):
+		return fail("cannot refuse a second manifest", err)
+	}
+	keys, err := d.List(ctx, "_manifests/")
+	if err != nil {
+		return fail("cannot be listed", err)
+	}
+	found := false
+	for _, k := range keys {
+		found = found || k == key
+	}
+	if !found {
+		return fail("does not list what was written", errors.New("the check object is not in the list"))
+	}
+	if got, err := d.Get(ctx, key); err != nil || string(got) != string(body) {
+		if err == nil {
+			err = errors.New("another body came back")
+		}
+		return fail("does not give back what was written", err)
 	}
 	if err := d.Delete(ctx, key); err != nil {
 		return fmt.Errorf("the destination (%s) took the check object and will not give it up: %w", d, err)

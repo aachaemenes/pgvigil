@@ -36,7 +36,14 @@ This page is also the **file contract** (contract version 1): what a consumer ma
 
 4. Schedule `pgvigil export -config pgvigil.yaml` hourly: `deploy/pgvigil-export.service` and
    `deploy/pgvigil-export.timer` (minute 35, away from the purge), a cron line, or a Windows scheduled task.
-   Two runs never overlap: the second says it is locked and exits 0.
+   Two runs never overlap: the second says it is locked and exits 0. The unit may write only its state folder
+   (`/var/lib/pgvigil/export`): a folder destination needs a drop-in
+   (`systemctl edit pgvigil-export.service`, `[Service]` `ReadWritePaths=/srv/pgvigil-export`), and the unit's
+   `UMask=0077` makes the files readable by its own account only - give a loader that runs as another account a
+   group in the drop-in (`UMask=0027`, `Group=`), or read the folder as `pgvigil`.
+
+To turn it off: stop the timer, run `pgvigil export -off` (it removes the export's rows from the repository, so
+nothing calls it late), then remove the `export:` section. `-off` before the timer stops is undone by the next run.
 
 ## What a run does
 
@@ -48,7 +55,9 @@ manifests - they are its only memory - and exports every window that is due, old
 - **The final pass**: once the window is `final_after_hours` (24) old it is exported again under the same names,
   with what was stored since under a time inside it - a job run that ended later, a Query Store interval read an
   hour late, an hour row rebuilt. The manifest says `"pass": "final"`, and a marker
-  `_manifests/_final/<name>__<from>__<to>` follows it. Replace a window's rows when a newer manifest for it arrives.
+  `_manifests/_final/<name>__<from>__<to>` follows it. Replace a window's rows table by table: when a newer
+  manifest for the window arrives, each table it lists replaces that table's rows of the window. A table the
+  final pass gave up is in its `failed` and keeps its earlier entry and files (its entry's `note` says so).
   A window that has its first pass gets its final pass at any age: an export that was down for days catches up on
   them when it next runs.
 - A row stored more than `final_after_hours` after its own time is in neither pass. Re-export those hours by hand:
@@ -59,7 +68,7 @@ manifests - they are its only memory - and exports every window that is due, old
   `-status` lists it. `pgvigil export -gap <from> <to>` accepts the hole: it writes a manifest with `"gap": true`
   and no table for each such hour, and its final marker (no later pass fills it; `-from / -to` does, by hand). A new export on an old repository starts `max_window_age_hours` back and names
   nothing before its first window.
-- One table cannot stop the export. A table whose read fails leaves its window without a manifest (exit 1) and is
+- One table cannot stop the export. A table whose read or upload fails leaves its window without a manifest (exit 1) and is
   tried again by the next run; on the third failed run the window completes without it and the manifest's
   `failed` list names it with the error.
 
@@ -83,15 +92,16 @@ hour aged out; 2 usage; 3 the configuration or the login is refused.
   values. Pages are ZSTD. Every column is OPTIONAL and the columns are in the table's own order. A text, bytes or
   JSON column has no statistics in its page headers (a page's largest value would sit there whole, and a reader
   refuses a header of many megabytes); its row group's minimum and maximum are in the footer, whole.
-- A subset run (`-tables a,b` with `-from / -to`) writes a manifest and files marked `__t<8 hex>`: it never
-  replaces a full window's.
+- A subset run (`-tables a,b` with `-from / -to`) writes a manifest and files marked `__t<8 hex>`, and its
+  manifest says `"subset": true`: it stands for the tables it lists only, and never replaces a full window's.
 - Two machines exporting one repository to one destination are not supported (the lock is per machine); a manifest
   is written only where none is, so the second writer fails instead of replacing the first's.
 
 ### The manifest
 
 `contract_version` (1, the first key), `repository`, `window` (`from_utc`, `to_utc`), `pass` (1 or `"final"`),
-`gap`, `pgvigil_version`, `schema_migrations`, `started_at`, `finished_at`, and:
+`gap` and `subset` (present only when true), `pgvigil_version`, `schema_migrations`, `started_at`, `finished_at`,
+and (`time_column` and `note` present only when set):
 
 - `tables[]`: `table`, `kind`, `time_column`, `key_columns`, `output_files[]` (`path` under `<prefix>/<name>/`,
   `row_count`, `byte_size`, `sha256`), `row_count`, `byte_size`, `columns[]` (`name`, `pg_type`, `parquet_type`,
@@ -177,7 +187,9 @@ from an older file is null. The repository's encoding must be UTF8.
 
 ## Destinations and their rights
 
-- `folder`: `path`. Each object is written beside its place and renamed.
+- `folder`: `path`. Each object is written beside its place and renamed; a manifest goes in by a hard link (so
+  that a second writer is refused), so the file system must have hard links - not a share or a mount without
+  them (CIFS without the unix extensions, blobfuse, s3fs). `-check` tries it.
 - `s3`: `bucket`, `prefix`, `region`, and for an S3-compatible store its `endpoint`; `profile` to name one.
   Credentials come from the AWS default chain, never from this file. Rights on the prefix: `s3:PutObject`,
   `s3:GetObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload`, and `s3:ListBucket` on the bucket. A file over
@@ -188,14 +200,16 @@ from an older file is null. The repository's encoding must be UTF8.
 
 ## The reading session
 
-Every session of the export is `pgvigil-export` in `pg_stat_activity`, read only from its first statement
-(`default_transaction_read_only`), with `statement_timeout` (120 s, `export.statement_timeout`), `lock_timeout`
+Every reading session of the export is `pgvigil-export` in `pg_stat_activity`, read only from its first statement
+(`default_transaction_read_only`) - the one other session, the door's, runs only the record of a window, for 30
+seconds at most - with `statement_timeout` (120 s, `export.statement_timeout`), `lock_timeout`
 5 s, `work_mem` 16MB and no parallel workers. Each table of a window is read in one
 `REPEATABLE READ READ ONLY` transaction that has ended before anything is uploaded, by one statement that starts
 with `/* pgvigil-export:<table> */`. A window table is read one instance at a time through its
 (instance_id, time) index, for every row of `instances`, active or not (a removed instance's history stays, and
 is exported). JIT is off in the session: on a read this small the compilation costs more than the read. Behind
-PgBouncer these startup settings must be in `track_extra_parameters`.
+PgBouncer these startup settings must be in `track_extra_parameters` (`plan_cache_mode`, `jit`, `TimeZone`
+among them).
 
 ## Seeing it
 
@@ -220,6 +234,10 @@ and to Azurite in containers. It does not prove:
 - a session through PgBouncer;
 - the build with FIPS 140-3 on, and the Windows file lock;
 - the Collector page's panel drawn in a browser (the proof reads what it draws from, `GET /api/export`).
+- the door refusing a write that is not the export's own beyond the cases the proof seeds; the `sas_url` and
+  `account_url` ways into Blob (the proof uses a connection string); `-check` against S3 and Blob; a table given
+  up after upload failures; the 90-day trim of `export_runs`; the export running under its systemd unit (the
+  unit is scored offline only).
 
 The layout, the manifest and the rules above follow the file contract of PerformanceMonitor's exporter closely
 (MIT; see THIRD-PARTY-NOTICES.md).

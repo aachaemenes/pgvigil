@@ -667,6 +667,11 @@ func linuxItems(inst installOptions, _ bool) []removal {
 		}
 		return nil
 	}})
+	for _, d := range []string{xTimer + ".d", xSvc + ".d"} {
+		if present(d) {
+			items = append(items, removal{what: "the export unit's drop-in folder " + d, present: true, kept: "an operator's overrides, not the installer's: remove it by hand"})
+		}
+	}
 	items = append(items, removal{what: "the service pgvigil (systemd unit " + unitPath + ")", present: present(unitPath), remove: func() error {
 		if systemdRunning() {
 			if out, err := systemctl("disable", "--now", "pgvigil.service"); err != nil {

@@ -32,6 +32,14 @@ func manifestKey(name string, w Hour, mark string) string {
 // finalKey marks a window whose final pass is done. It is written after the final manifest.
 func finalKey(name string, w Hour) string { return "_manifests/_final/" + windowName(name, w) }
 
+// pendingKey holds, while a window that had a manifest is written again, the manifest it had: it is put before
+// that manifest is removed and removed after the new one is written. A window with this object and no manifest is
+// an unfinished pass - done again by the next run at any age, never counted as aged out - and the object says
+// which files the pass before had written.
+func pendingKey(name string, w Hour) string {
+	return "_manifests/_pending/" + windowName(name, w) + ".json"
+}
+
 // fileBase is a table's file name for a window, without a part mark and without .parquet.
 func fileBase(table, name string, w Hour, mark string) string {
 	return table + "__" + windowName(name, w) + mark
@@ -50,12 +58,17 @@ func subsetMark(tables []string) string {
 func windowOfKey(key, name string) (Hour, bool) {
 	base := key[strings.LastIndex(key, "/")+1:]
 	base = strings.TrimSuffix(base, ".json")
-	parts := strings.Split(base, "__")
-	if len(parts) != 3 || parts[0] != name {
+	// the name is the key's own prefix, whatever characters it holds
+	rest, ok := strings.CutPrefix(base, name+"__")
+	if !ok {
 		return Hour{}, false
 	}
-	from, err1 := time.Parse("20060102T1504Z", parts[1])
-	to, err2 := time.Parse("20060102T1504Z", parts[2])
+	parts := strings.Split(rest, "__")
+	if len(parts) != 2 {
+		return Hour{}, false
+	}
+	from, err1 := time.Parse("20060102T1504Z", parts[0])
+	to, err2 := time.Parse("20060102T1504Z", parts[1])
 	if err1 != nil || err2 != nil || !to.Equal(from.Add(time.Hour)) {
 		return Hour{}, false
 	}
@@ -69,6 +82,7 @@ type Manifest struct {
 	Window           ManifestWindow  `json:"window"`
 	Pass             any             `json:"pass"` // 1, or "final" for the pass that re-exports a window once it is old enough
 	Gap              bool            `json:"gap,omitempty"`
+	Subset           bool            `json:"subset,omitempty"` // a -tables run: it stands for the tables it lists only
 	PgvigilVersion   string          `json:"pgvigil_version"`
 	SchemaMigrations int             `json:"schema_migrations"`
 	StartedAt        string          `json:"started_at"`

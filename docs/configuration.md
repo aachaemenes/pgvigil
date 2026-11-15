@@ -234,7 +234,8 @@ export:
                                   #               | account_url (the default credential)
   settle_minutes: 20              # a window is first exported this long after it ends
   final_after_hours: 24           # it is exported again, as final, once it is this old
-  max_window_age_hours: 48        # how far back a run looks; an older hour with no manifest is named as aged out
+  max_window_age_hours: 48        # how far back a run looks for hours to export; an older hour with no manifest is
+                                  #   named as aged out (its final pass is owed at any age)
   max_windows_per_run: 12
   snapshot_max_bytes: 256MB       # a whole-table export over it (its size on disk with its indexes) is left out and
                                   #   named; 0 = no line

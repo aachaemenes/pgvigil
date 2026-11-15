@@ -187,7 +187,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
     ...xstate.map(r => el('p', { class: 'meta' }, `${r.name} to ${r.destination}: newest window ended ${r.newest_window_to ? fmtTime(r.newest_window_to) : 'never'}`
       + (r.hours_behind == null ? '' : ` (${fmtNum(r.hours_behind)} h ago)`) + `; last run ${fmtTime(r.last_run_at)}.`)),
     grid(xruns, [
-      { key: 'window_from', label: 'window from', fmt: fmtTime }, { key: 'pass' },
+      { key: 'name', label: 'export' }, { key: 'window_from', label: 'window from', fmt: fmtTime }, { key: 'pass' },
       { key: 'outcome', fmt: (v: unknown) => badge(String(v), v === 'ok' ? 'ok' : 'crit') },
       { key: 'finished_at', label: 'finished', fmt: fmtTime }, { key: 'duration_ms', label: 'duration (ms)', num: true, fmt: fmtNum },
       { key: 'tables', num: true, fmt: fmtNum }, { key: 'files', num: true, fmt: fmtNum }, { key: 'rows', num: true, fmt: fmtNum },

@@ -14,9 +14,9 @@
 --                        pgvigil_exporter, else it raises (apply_roles grants every function outside its lists to
 --                        pgvigil_reader, so the check is inside, as alert_contact_routes does it). It writes one
 --                        export_runs row and keeps export_state; nothing else.
---   export_off           removes an export's export_state row (the same check).
---   export_service       the lines for the service's own row: an export whose last run failed, or whose newest
---                        window ended more than 3 hours ago, while it is configured.
+--   export_off           removes an export's export_state row and its runs (the same check).
+--   export_service       the lines for the service's own row, while an export is configured: a window whose last
+--                        attempt failed, or the newest window ended more than 3 hours ago.
 
 CREATE TABLE IF NOT EXISTS pgvigil.export_runs (
   run_id       bigserial PRIMARY KEY,
@@ -66,6 +66,12 @@ BEGIN
   IF NOT pg_has_role(session_user, 'pgvigil_exporter', 'MEMBER') THEN
     RAISE EXCEPTION 'export_run_record: % is not an export login (IN ROLE pgvigil_exporter)', session_user USING ERRCODE = '42501';
   END IF;
+  -- a row is of an hour that has passed, started about now, of an export name the configuration allows
+  IF p_name !~ '^[a-z]([a-z0-9_-]{0,29}[a-z0-9])?$' OR p_to IS NULL OR p_from IS NULL OR NOT isfinite(p_to) OR NOT isfinite(p_from)
+     OR p_to > now() + interval '5 minutes' OR p_from >= p_to
+     OR p_started IS NULL OR p_started > now() + interval '5 minutes' OR p_started < now() - interval '1 day' THEN
+    RAISE EXCEPTION 'export_run_record: a row out of bounds (name %, window % .. %, started %)', p_name, p_from, p_to, p_started USING ERRCODE = '22023';
+  END IF;
   INSERT INTO pgvigil.export_runs (name, window_from, window_to, pass, started_at, outcome, tables, files, rows, bytes, error, login)
   VALUES (p_name, p_from, p_to, p_pass, p_started, p_outcome, coalesce(p_tables, 0), coalesce(p_files, 0), coalesce(p_rows, 0),
           coalesce(p_bytes, 0), left(p_error, 2000), session_user)
@@ -91,6 +97,7 @@ BEGIN
   END IF;
   DELETE FROM pgvigil.export_state WHERE name = p_name;
   GET DIAGNOSTICS v_n = ROW_COUNT;
+  DELETE FROM pgvigil.export_runs WHERE name = p_name; -- nothing would trim them once the export no longer runs
   RETURN v_n;
 END $$;
 
@@ -99,11 +106,21 @@ REVOKE ALL ON FUNCTION pgvigil.export_off(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pgvigil.export_run_record(text, text, timestamptz, timestamptz, text, timestamptz, text, int, int, bigint, bigint, text) TO pgvigil_exporter;
 GRANT EXECUTE ON FUNCTION pgvigil.export_off(text) TO pgvigil_exporter;
 
--- the service's own lines: a configured export whose last run failed, or which is more than 3 hours behind
+-- the service's own lines, for a configured export: a window whose LAST attempt failed (another window's success
+-- does not hide it; its own export, or its acceptance as a gap, clears it), or the export more than 3 hours behind
 CREATE OR REPLACE VIEW pgvigil.export_service AS
+WITH last AS (
+  SELECT DISTINCT ON (r.name, r.window_from) r.name, r.window_from, r.outcome, r.error
+    FROM pgvigil.export_runs r
+   ORDER BY r.name, r.window_from, r.started_at DESC, r.run_id DESC),
+bad AS (
+  SELECT l.name, count(*) AS windows, min(l.window_from) AS oldest,
+         (array_agg(l.error ORDER BY l.window_from))[1] AS error
+    FROM last l WHERE l.outcome = 'failed' GROUP BY l.name)
 SELECT s.name,
-       CASE WHEN s.last_outcome = 'failed'
-            THEN 'Parquet export ' || s.name || ': the last run failed' || coalesce(': ' || s.last_error, '')
+       CASE WHEN b.windows IS NOT NULL
+            THEN 'Parquet export ' || s.name || ': ' || b.windows || ' window(s) failed at their last attempt, the oldest ' ||
+                 to_char(b.oldest AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC' || coalesce(': ' || b.error, '')
             ELSE 'Parquet export ' || s.name || ': ' ||
                  floor(extract(epoch FROM now() - coalesce(s.newest_window_to, s.configured_at)) / 3600)::int ||
                  ' hours behind (its newest window ended ' ||
@@ -111,5 +128,6 @@ SELECT s.name,
        END AS detail,
        s.last_run_at, s.last_outcome, s.newest_window_to
   FROM pgvigil.export_state s
- WHERE s.last_outcome = 'failed'
+  LEFT JOIN bad b ON b.name = s.name
+ WHERE b.windows IS NOT NULL
     OR coalesce(s.newest_window_to, s.configured_at) < now() - interval '3 hours';

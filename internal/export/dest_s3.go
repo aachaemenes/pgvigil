@@ -124,7 +124,7 @@ func (d *s3Dest) Put(ctx context.Context, key string, body []byte, onlyNew bool)
 		in.IfNoneMatch = aws.String("*")
 	}
 	_, err := d.c.PutObject(ctx, in)
-	if s3Code(err, "PreconditionFailed") {
+	if s3Code(err, "PreconditionFailed", "ConditionalRequestConflict") {
 		return errExists
 	}
 	return err

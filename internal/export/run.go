@@ -72,6 +72,9 @@ func (s *session) record(ctx context.Context, w Hour, final bool, started time.T
 	if !s.door || s.c.NoRecord {
 		return
 	}
+	// a repository that stops answering must not hold the run and its lock for the row's sake
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	conn, err := connectDoor(ctx, s.c.DSN)
 	if err == nil {
 		defer conn.Close(context.Background())
@@ -151,6 +154,7 @@ type job struct {
 // destState is what the destination's manifests say: the windows done, the final passes done.
 type destState struct {
 	done, final map[time.Time]bool
+	pending     map[time.Time]bool // a window whose manifest a pass removed to write it again
 	oldest      time.Time
 	newest      time.Time
 }
@@ -160,60 +164,79 @@ func (s *session) readState(ctx context.Context) (*destState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the destination's manifests (%s): %w", s.c.Dest, err)
 	}
-	st := &destState{done: map[time.Time]bool{}, final: map[time.Time]bool{}}
+	st := &destState{done: map[time.Time]bool{}, final: map[time.Time]bool{}, pending: map[time.Time]bool{}}
 	for _, k := range keys {
 		w, ok := windowOfKey(k, s.c.Name)
 		if !ok {
 			continue
 		}
-		if strings.HasPrefix(k, "_manifests/_final/") {
+		switch {
+		case strings.HasPrefix(k, "_manifests/_final/"):
 			st.final[w.From] = true
-			continue
-		}
-		if !strings.HasSuffix(k, ".json") || strings.Count(k, "/") != 1 {
-			continue
-		}
-		st.done[w.From] = true
-		if st.oldest.IsZero() || w.From.Before(st.oldest) {
-			st.oldest = w.From
-		}
-		if w.From.After(st.newest) {
-			st.newest = w.From
+		case strings.HasPrefix(k, "_manifests/_pending/"):
+			st.pending[w.From] = true
+		case strings.HasSuffix(k, ".json") && strings.Count(k, "/") == 1:
+			st.done[w.From] = true
+			if st.oldest.IsZero() || w.From.Before(st.oldest) {
+				st.oldest = w.From
+			}
+			if w.From.After(st.newest) {
+				st.newest = w.From
+			}
 		}
 	}
 	return st, nil
 }
 
-// due lays the hours against the manifests: the windows to export now (oldest first), and the hours that aged out -
-// between the export's first window and the reach of a run, with no manifest.
+// due lays the hours against the manifests (dueJobs), by the repository's clock.
 func (s *session) due(st *destState) (todo []job, aged []Hour) {
-	reach := s.now.Add(-s.c.MaxAge)
+	return dueJobs(s.now, s.c.Settle, s.c.MaxAge, s.c.FinalAfter, st)
+}
+
+// dueJobs says what a run takes, in order, and which hours aged out.
+//
+//  1. A window whose manifest an unfinished pass removed (its pending object is there, no manifest): at any age.
+//     It is a hole a consumer can see, and past the reach nothing else would ever fill it.
+//  2. The hours in reach with no manifest, oldest first: the ones a deadline can lose.
+//  3. The final passes owed - a window that has its first pass and is final_after_hours old - oldest first, at
+//     any age: an export that was down for days must not leave windows at their first pass for good, and they
+//     have no deadline, so they wait behind 2.
+//
+// Aged out: an hour with no manifest that ended before the reach, from the export's first window on.
+func dueJobs(now time.Time, settle, maxAge, finalAfter time.Duration, st *destState) (todo []job, aged []Hour) {
+	finalDue := func(w Hour) bool { return !w.To.Add(finalAfter).After(now) }
+	var unfinished []time.Time
+	for a := range st.pending {
+		if !st.done[a] {
+			unfinished = append(unfinished, a)
+		}
+	}
+	sort.Slice(unfinished, func(i, j int) bool { return unfinished[i].Before(unfinished[j]) })
+	for _, a := range unfinished {
+		w := Hour{a, a.Add(time.Hour)}
+		todo = append(todo, job{w, finalDue(w)})
+	}
+	reach := now.Add(-maxAge)
 	first := reach.Truncate(time.Hour)
 	if !st.oldest.IsZero() && st.oldest.Before(first) {
 		first = st.oldest
 	}
-	for a := first; !a.Add(time.Hour).Add(s.c.Settle).After(s.now); a = a.Add(time.Hour) {
+	var finals []job
+	for a := first; !a.Add(time.Hour).Add(settle).After(now); a = a.Add(time.Hour) {
 		w := Hour{a, a.Add(time.Hour)}
-		finalDue := !w.To.Add(s.c.FinalAfter).After(s.now)
-		if !w.To.After(reach) { // it ended before the reach of a run
-			switch {
-			case !st.done[a]:
-				aged = append(aged, w)
-			case finalDue && !st.final[a]:
-				// its first pass is there: the final pass is owed at any age (an export that was down for days, or a
-				// reach set shorter than final_after_hours, must not leave windows at their first pass for good)
-				todo = append(todo, job{w, true})
-			}
-			continue
-		}
 		switch {
-		case !st.done[a]:
-			todo = append(todo, job{w, finalDue})
-		case finalDue && !st.final[a]:
-			todo = append(todo, job{w, true})
+		case st.done[a]:
+			if finalDue(w) && !st.final[a] {
+				finals = append(finals, job{w, true})
+			}
+		case st.pending[a]: // taken above
+		case w.To.After(reach):
+			todo = append(todo, job{w, finalDue(w)})
+		default:
+			aged = append(aged, w)
 		}
 	}
-	return todo, aged
+	return append(todo, finals...), aged
 }
 
 func (s *session) lock() (release func(), held bool, err error) {
@@ -247,6 +270,11 @@ func Run(ctx context.Context, c Config) error {
 		s.record(context.WithoutCancel(ctx), Hour{h.Add(-time.Hour), h}, false, s.clock(), false, windowStats{}, oneLine(err.Error()))
 		return err
 	}
+	for a := range st.pending {
+		if st.done[a] { // a pass that wrote its manifest and was cut before it cleared its note
+			_ = c.Dest.Delete(ctx, pendingKey(c.Name, Hour{a, a.Add(time.Hour)}))
+		}
+	}
 	todo, aged := s.due(st)
 	more := 0
 	if len(todo) > c.PerRun {
@@ -269,6 +297,11 @@ func Run(ctx context.Context, c Config) error {
 	for _, w := range aged {
 		fmt.Fprintf(c.Err, "pgvigil export: the hour %s has no manifest and is older than max_window_age_hours: pgvigil export -config %s -from %s -to %s (or -gap, to accept the hole)\n",
 			isoUTC(w.From), c.ConfigPath, isoUTC(w.From), isoUTC(w.To))
+	}
+	if len(aged) > 0 {
+		// on the Collector page too: under the oldest such hour, until it is filled or accepted
+		s.record(context.WithoutCancel(ctx), aged[0], false, s.clock(), false, windowStats{},
+			fmt.Sprintf("%d hour(s) from %s have no manifest and are older than max_window_age_hours: export them with -from / -to, or accept the hole with -gap", len(aged), isoUTC(aged[0].From)))
 	}
 	if incomplete || len(aged) > 0 {
 		return errIncomplete
@@ -368,26 +401,44 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 
 	// a window done again: what the old manifest listed is known before it goes, the manifest goes first (a cut
 	// after this point leaves no manifest, so the window counts as not done), the marker with it
-	mkey := manifestKey(c.Name, w, mark)
+	mkey, pkey := manifestKey(c.Name, w, mark), pendingKey(c.Name, w)
 	old := map[string]bool{}
-	if b, err := c.Dest.Get(ctx, mkey); err == nil {
+	was, err := c.Dest.Get(ctx, mkey)
+	had := err == nil
+	if err != nil && !errors.Is(err, errAbsent) {
+		return false, st, fmt.Errorf("window %s: the destination (%s): %w", isoUTC(w.From), c.Dest, err)
+	}
+	if !had && mark == "" {
+		// no manifest: a pass that did not finish may have left the one it removed, which names its files
+		if was, err = c.Dest.Get(ctx, pkey); err != nil && !errors.Is(err, errAbsent) {
+			return false, st, fmt.Errorf("window %s: the destination (%s): %w", isoUTC(w.From), c.Dest, err)
+		}
+	}
+	before := map[string]ManifestTable{} // the earlier pass's entries: a table this pass gives up keeps its own
+	if len(was) > 0 {
 		var m Manifest
-		if json.Unmarshal(b, &m) == nil {
+		if json.Unmarshal(was, &m) == nil {
 			for _, t := range m.Tables {
+				before[t.Table] = t
 				for _, f := range t.OutputFiles {
 					old[f.Path] = true
 				}
 			}
 		}
+	}
+	if had {
+		// kept before it goes (a failure from here on leaves the window to be done again, at any age), then the
+		// marker, then the manifest: never a marker without its manifest, never a manifest over files in change
+		if mark == "" {
+			if err := c.Dest.Put(ctx, pkey, was, false); err != nil {
+				return false, st, fmt.Errorf("window %s: the destination (%s) did not take the note of a window being written again: %w", isoUTC(w.From), c.Dest, err)
+			}
+			if err := c.Dest.Delete(ctx, finalKey(c.Name, w)); err != nil {
+				return false, st, fmt.Errorf("window %s: the old marker cannot be removed: %w", isoUTC(w.From), err)
+			}
+		}
 		if err := c.Dest.Delete(ctx, mkey); err != nil {
 			return false, st, fmt.Errorf("window %s: the old manifest cannot be removed: %w", isoUTC(w.From), err)
-		}
-	} else if !errors.Is(err, errAbsent) {
-		return false, st, fmt.Errorf("window %s: the destination (%s): %w", isoUTC(w.From), c.Dest, err)
-	}
-	if mark == "" {
-		if err := c.Dest.Delete(ctx, finalKey(c.Name, w)); err != nil {
-			return false, st, fmt.Errorf("window %s: the old marker cannot be removed: %w", isoUTC(w.From), err)
 		}
 	}
 
@@ -397,6 +448,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 	if final {
 		m.Pass = "final"
 	}
+	m.Subset = mark != "" // a subset run's manifest replaces only the tables it lists
 	att := s.loadAttempts()
 	wkey := c.Dest.String() + " " + windowName(c.Name, w) + mark // per destination: a side copy (-out) counts for itself
 	retry := 0
@@ -417,12 +469,14 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 		}
 		t0 := time.Now()
 		entry, files, err := s.exportTable(ctx, r, w, mark, tmp)
+		uploaded := false
 		if err == nil {
 			for _, f := range files {
 				if err = c.Dest.Upload(ctx, f.Path, f.local); err != nil {
 					err = fmt.Errorf("upload to %s: %w", c.Dest, err)
 					break
 				}
+				uploaded = true
 				os.Remove(f.local)
 				delete(old, f.Path)
 			}
@@ -438,6 +492,15 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 			msg := oneLine(err.Error())
 			if att[wkey][r.Name] >= giveUpAfter {
 				m.Failed = append(m.Failed, FailedTable{r.Name, msg})
+				// the earlier pass's rows of this table stay what the window holds: its entry and files are kept, said
+				// in its note (unless this pass overwrote one of its files before it failed)
+				if e, ok := before[r.Name]; ok && !uploaded {
+					e.Note = "carried from the earlier pass: this pass failed on the table (see failed)"
+					m.Tables = append(m.Tables, e)
+					for _, f := range e.OutputFiles {
+						delete(old, f.Path)
+					}
+				}
 				fmt.Fprintf(c.Err, "pgvigil export: window %s: %s failed on %d runs and is left out of the window: %s\n", isoUTC(w.From), r.Name, att[wkey][r.Name], msg)
 			} else {
 				retry++
@@ -482,7 +545,14 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 	if err != nil {
 		return false, st, err
 	}
-	if err := c.Dest.Put(ctx, mkey, body, true); err != nil {
+	err = c.Dest.Put(ctx, mkey, body, true)
+	if errors.Is(err, errExists) {
+		// a write the client sent twice (a retry after a lost answer) finds its own first: the same bytes are there
+		if got, gerr := c.Dest.Get(ctx, mkey); gerr == nil && string(got) == string(body) {
+			err = nil
+		}
+	}
+	if err != nil {
 		if errors.Is(err, errExists) {
 			return false, st, fmt.Errorf("window %s: its manifest was written by another run while this one worked: two exports of one repository to one destination are not supported", isoUTC(w.From))
 		}
@@ -495,6 +565,11 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 			fmt.Fprintf(c.Err, "pgvigil export: window %s: its final manifest is written and its marker is not: %v\n", isoUTC(w.From), err)
 			st.reason = "the final manifest is written and its marker is not: " + oneLine(err.Error())
 			return false, st, nil
+		}
+	}
+	if mark == "" {
+		if err := c.Dest.Delete(ctx, pkey); err != nil { // the window is whole again; a note left behind is cleared by the next run
+			fmt.Fprintf(c.Err, "pgvigil export: window %s: its note of being written again could not be removed: %v\n", isoUTC(w.From), err)
 		}
 	}
 	delete(att, wkey)
@@ -738,7 +813,12 @@ func Status(ctx context.Context, c Config, asJSON bool) error {
 			fmt.Fprintf(c.Out, "  aged out: pgvigil export -config %s -from %s -to %s\n", c.ConfigPath, w.FromUTC, w.ToUTC)
 		}
 	}
-	if len(out.Missing) > 0 || len(out.AgedOut) > 0 {
+	// exit 1 for an hour that aged out or is more than an hour late - not for one that only waits for the next run
+	late := false
+	for _, j := range todo {
+		late = late || (!st.done[j.w.From] && j.w.To.Add(c.Settle).Add(time.Hour).Before(s.now))
+	}
+	if late || len(out.AgedOut) > 0 {
 		return errIncomplete
 	}
 	return nil
@@ -761,6 +841,23 @@ func Gap(ctx context.Context, c Config, from, to time.Time) error {
 	if err != nil {
 		return err
 	}
+	_, aged := s.due(st)
+	isAged := map[time.Time]bool{}
+	for _, w := range aged {
+		isAged[w.From] = true
+	}
+	var not []string
+	for a := from; a.Before(to); a = a.Add(time.Hour) {
+		if !st.done[a] && !isAged[a] {
+			not = append(not, isoUTC(a))
+		}
+	}
+	if len(not) > 0 {
+		if len(not) > 4 {
+			not = append(not[:4], fmt.Sprintf("and %d more", len(not)-4))
+		}
+		return fmt.Errorf("-gap accepts hours that aged out and no other: %s not aged out (still in reach of a run, not yet passed, or before the export's first window): nothing written", strings.Join(not, ", "))
+	}
 	n := 0
 	for a := from; a.Before(to); a = a.Add(time.Hour) {
 		if st.done[a] {
@@ -782,6 +879,7 @@ func Gap(ctx context.Context, c Config, from, to time.Time) error {
 		if err := c.Dest.Put(ctx, finalKey(c.Name, w), []byte(now+"\n"), false); err != nil {
 			return fmt.Errorf("the gap marker of %s: %w", isoUTC(w.From), err)
 		}
+		s.record(context.WithoutCancel(ctx), w, false, s.clock(), true, windowStats{}, "") // the hole is accepted: the page's line for it goes
 		n++
 	}
 	fmt.Fprintf(c.Out, "pgvigil export: %d gap manifest(s) written to %s\n", n, c.Dest)

@@ -657,7 +657,7 @@ const purgeYAML = "pgvigil-purge.yaml"
 // (README fixes no task name, so the actions are read, through PowerShell's ScheduledTasks module).
 func purgeTasks() ([]string, error) {
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-		`Get-ScheduledTask | Where-Object { @($_.Actions | Where-Object { $_.Execute -like '*pgvigil*' -and " $($_.Arguments) " -match '\spurge\s' }).Count -gt 0 } | ForEach-Object { $_.TaskPath + $_.TaskName }`).Output()
+		`Get-ScheduledTask | Where-Object { @($_.Actions | Where-Object { $_.Execute -like '*pgvigil*' -and " $($_.Arguments) " -match '\s(purge|export)\s' }).Count -gt 0 } | ForEach-Object { $_.TaskPath + $_.TaskName }`).Output()
 	if err != nil {
 		return nil, err
 	}

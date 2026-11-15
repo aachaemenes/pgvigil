@@ -21,7 +21,8 @@
 # Times: H0 is the start of the repository's current clock hour; Wk is the window [H0 - k h, H0 - (k - 1) h), so W1
 # is the newest complete hour. Wd is the newest complete window that starts at 00:00 UTC (the day's first window).
 # Every config has settle_minutes 0 unless a row says otherwise. The proof waits for the hour to turn when fewer
-# than 10 minutes of it are left.
+# than 25 minutes of it are left (its rows take about 4 minutes on the box), and a row that reads due windows says
+# so, not FAIL, if the hour turned under it all the same.
 #
 # Expected (written before the first run):
 #  I.  off by default: with no `export:` section `pgvigil export` exits 3 and its one line names the section; `pgvigil
@@ -62,12 +63,16 @@
 #      and writes nothing.
 #  E.  guards: a login that could write is refused before any read, exit 3, the line naming why - a member of the
 #      collector role, of the alerter role, a NOINHERIT member of the owner, a superuser, a login with a stray UPDATE
-#      grant. The reading session: a row-security probe on database_sizes raises unless the transaction is READ ONLY
+#      grant on a table, on one column, on a sequence, CREATE on the schema, CREATEROLE, or EXECUTE granted to it on
+#      an import function. The reading session: a row-security probe on database_sizes raises unless the transaction is READ ONLY
 #      and REPEATABLE READ, application_name is pgvigil-export, lock_timeout 5s, work_mem 16MB, no parallel workers,
 #      statement_timeout 2min and the statement starts with /* pgvigil-export:database_sizes */ - the export reads
 #      the table (its rows are in the file) while the same login in a plain session is refused by the probe. A table
 #      whose read outlasts statement_timeout fails its window twice (exit 1, no manifest) and on the third run is in
-#      the manifest's failed[] with the window complete (exit 1).
+#      the manifest's failed[] with the window complete (exit 1); a table a FINAL pass gives up keeps its pass-1 file,
+#      listed in the final manifest with a note. A FINAL pass that fails on a window which ended
+#      before the reach leaves that window without its manifest - and the next run does it again (it is not called
+#      aged out): final manifest, every sha256 its file's own, exit 0.
 #  F.  left out and dropped: no ui_users file, the table in `skipped`; report_mail_sends is carried without html,
 #      xlsx, recipients, subject and error (a mail server's reply) whatever is carried, and without requested_by and
 #      client unless audit is carried, each named in dropped_columns; without audit a failed sign-in of the server
@@ -85,14 +90,18 @@
 #  H.  the page door: a run by a login in the exporter role leaves one export_runs row per window (outcome ok, its
 #      files / rows / bytes the manifest's) and the export_state row; the same login's own INSERT into export_runs is
 #      refused; GET /api/export lists the runs, and answers nothing (not an error) where the repository has no
-#      export record; a run whose destination does not answer (a path under a file) exits
+#      export record; a window whose last attempt failed keeps the service's line while other windows succeed, and
+#      loses it when it is exported; a run whose destination does not answer (a path under a file) exits
 #      1 and is a row with outcome failed and its error, and export_service names 'the last run failed'; the newest run moved 4 hours back makes it name the hours
-#      behind; after `pgvigil export -off` export_state is empty and export_service has no row.
+#      behind; after `pgvigil export -off` export_state and export_runs are empty and export_service has no row. A
+#      reader login that is no exporter is refused by both door functions (42501); the door refuses a row out of
+#      bounds (22023).
 #  J.  doors and caps: `-plan -json` lists the three due windows and each table's kind and writes nothing; `-check`
 #      exits 0 on a good folder (left empty) and 3 on a destination that cannot be written; a hole between the
 #      oldest manifest and the age line is named with its -from / -to line, exit 1, and `-status -json` lists it;
 #      `-gap` writes gap manifests and the next run exits 0; a window that ended before the reach and has its first
-#      pass still gets its final pass, and an accepted hole stays a hole; 1,000,001 rows of one table and window come out as two
+#      pass still gets its final pass, and an accepted hole stays a hole; `-gap` over hours that are not aged out
+#      (in reach, or not yet passed) is refused and writes nothing; 1,000,001 rows of one table and window come out as two
 #      files (the second __p2) of 1,000,000 and 1 rows in row groups of at most 50,000; `-out` writes an explicit
 #      window to another folder and leaves the configured destination as it was.
 set -euo pipefail
@@ -162,7 +171,7 @@ RD = login('rd', 'IN ROLE pgvigil_reader'); EXP_DSN = dsn(RD, PW)
 
 # ---- time ----------------------------------------------------------------------------------------------------
 left = q1("SELECT extract(epoch FROM date_trunc('hour', now()) + interval '1 hour' - now())")
-if not SEED_ONLY and left < 600:
+if not SEED_ONLY and left < 1500:   # the rows that read due windows must all run inside one clock hour
     print(f'waiting {int(left) + 5} s for the hour to turn'); sys.stdout.flush(); time.sleep(float(left) + 5)
 H0 = q1("SELECT date_trunc('hour', now())")
 HR = dt.timedelta(hours=1); US = dt.timedelta(microseconds=1)
@@ -244,7 +253,7 @@ q('CREATE SCHEMA pqproof'); q('GRANT USAGE ON SCHEMA pqproof TO public')
 q("CREATE FUNCTION pqproof.slow(secs float8) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(secs); RETURN true; END $$")
 
 I1 = inst('i1'); I2 = inst('i2'); I3 = inst('i3'); I4 = inst('i4'); M1 = inst('m1', 'sqlserver')
-for t in (H0, H0 - 31 * 24 * HR):
+for t in sorted({Wk(k)[0].replace(day=1, hour=0) for k in range(0, 8)} | {(H0 - 31 * 24 * HR).replace(day=1, hour=0)}):
     for tb in ('host_sample', 'database_sizes', 'mssql_job_runs', 'mssql_qs_interval', 'mssql_cpu_sample', 'job_stats_hourly',
                'mssql_pool_minute', 'activity_sample', 'table_sizes', 'log_events', 'pgaudit_events'):
         part(tb, t)
@@ -307,7 +316,8 @@ def seed_D():
     for k in (1, 2, 3, 4): hs(I2, Wk(k)[0] + dt.timedelta(minutes=7), f'd-{k}')
 def seed_E():
     for n in range(4): ds(I1, Wk(2)[0] + dt.timedelta(minutes=5 * n + 2), 200 + n, f'e-{n}')
-    q(f"INSERT INTO pgvigil.table_sizes (instance_id, snapshot_at, dbid, relid) VALUES ({I1}, CAST({lit(Wk(1)[0] + dt.timedelta(minutes=3))} AS timestamptz), 1, 88)")
+    q(f"INSERT INTO pgvigil.table_sizes (instance_id, snapshot_at, dbid, relid) VALUES ({I1}, CAST({lit(Wk(1)[0] + dt.timedelta(minutes=3))} AS timestamptz), 1, 88), "
+      f"({I1}, CAST({lit(Wk(3)[0] + dt.timedelta(minutes=3))} AS timestamptz), 1, 89), ({I1}, CAST({lit(Wk(2)[0] + dt.timedelta(minutes=3))} AS timestamptz), 1, 90)")
     q("""CREATE FUNCTION pqproof.probe(tbl text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE want text[] := ARRAY['transaction_read_only', 'on', 'transaction_isolation', 'repeatable read', 'application_name', 'pgvigil-export',
                              'lock_timeout', '5s', 'work_mem', '16MB', 'max_parallel_workers_per_gather', '0', 'statement_timeout', '2min'];
@@ -543,7 +553,7 @@ def row_C():
     subs = [f for f in os.listdir(f'{root("c")}/_manifests') if re.fullmatch(re.escape(mname(w3)[:-5]) + r'__t[0-9a-f]{8}\.json', f)]
     ms = json.load(open(f'{root("c")}/_manifests/{subs[0]}')) if subs else None
     mark = subs[0][-15:-5] if subs else '?'
-    check(rc3 == 0 and len(subs) == 1 and ms and [t['table'] for t in ms['tables']] == ['database_sizes'] and all(mark in p for p in files(ms, 'database_sizes')) and not sums_hold('c', ms),
+    check(rc3 == 0 and len(subs) == 1 and ms and ms.get('subset') is True and 'subset' not in man('c', w3) and [t['table'] for t in ms['tables']] == ['database_sizes'] and all(mark in p for p in files(ms, 'database_sizes')) and not sums_hold('c', ms),
           f'C: a subset run writes its own manifest and files marked {mark} (rc {rc3}, {subs}: {err3.strip()[:120]})')
     check(not sums_hold('c', man('c', w3)), 'C: the full manifest\'s sha256 still hold beside the subset\'s')
 
@@ -551,7 +561,7 @@ def row_D():
     c = cfg('d', max_window_age_hours=3, max_windows_per_run=2)
     have = lambda: [k for k in (4, 3, 2, 1) if man('d', Wk(k)) is not None]
     r1 = export(c); h1 = have(); r2 = export(c); h2 = have(); r3 = export(c); h3 = have()
-    check(r1[0] == 0 and h1 == [3, 2] and '1' in (r1[1] + r1[2]) and 'due' in (r1[1] + r1[2]), f'D: the first run writes the two oldest due windows and says one more is due (rc {r1[0]}, W{h1}: {(r1[1] + r1[2]).strip()[-160:]})')
+    check(r1[0] == 0 and h1 == [3, 2] and re.search(r'\b1 more window\(s\) due', r1[1] + r1[2]), f'D: the first run writes the two oldest due windows and says one more is due (rc {r1[0]}, W{h1}: {(r1[1] + r1[2]).strip()[-160:]})')
     t3 = os.path.getmtime(f'{root("d")}/_manifests/{mname(Wk(3))}'); t2 = os.path.getmtime(f'{root("d")}/_manifests/{mname(Wk(2))}')
     check(t3 <= t2, 'D: oldest first')
     check(r2[0] == 0 and h2 == [3, 2, 1], f'D: the second run writes the third (rc {r2[0]}, W{h2})')
@@ -574,13 +584,18 @@ def row_E():
              ('alr', 'IN ROLE pgvigil_reader, pgvigil_alerter', 'pgvigil_alerter', None),
              ('noi', f'NOINHERIT IN ROLE pgvigil_reader, {owner}', owner, None),
              ('sup', 'SUPERUSER IN ROLE pgvigil_reader', 'superuser', None),
-             ('upd', 'IN ROLE pgvigil_reader', 'host_state', 'GRANT UPDATE ON pgvigil.host_state TO {}')]
+             ('upd', 'IN ROLE pgvigil_reader', 'host_state', 'GRANT UPDATE ON pgvigil.host_state TO {}'),
+             ('ucol', 'IN ROLE pgvigil_reader', 'host_state', 'GRANT UPDATE (host_name) ON pgvigil.host_state TO {}'),
+             ('seq', 'IN ROLE pgvigil_reader', 'instances_instance_id_seq', 'GRANT UPDATE ON SEQUENCE pgvigil.instances_instance_id_seq TO {}'),
+             ('cre', 'IN ROLE pgvigil_reader', 'CREATE', 'GRANT CREATE ON SCHEMA pgvigil TO {}'),
+             ('crr', 'CREATEROLE IN ROLE pgvigil_reader', 'CREATEROLE', None),
+             ('fn', 'IN ROLE pgvigil_reader', 'import_dbstats', 'GRANT EXECUTE ON FUNCTION pgvigil.import_dbstats(int, timestamptz, jsonb) TO {}')]
     for tag, clause, word, grant in cases:
         n = login(tag, clause)
         if grant: q(grant.format(n))
-        rc, out, err = window(c, Wk(2), dsn_=dsn(n, PW))
-        check(rc == 3 and word in err and not tree(f'{W}/dest-e'), f'E: a login that could write is refused, exit 3, naming {word} (rc {rc}: {err.strip()[:140]})')
-        if grant: q(f'REVOKE UPDATE ON pgvigil.host_state FROM {n}')
+        rc, out, err = window(cfg('e-' + tag), Wk(2), dsn_=dsn(n, PW))
+        check(rc == 3 and word in err and not tree(f'{W}/dest-e-{tag}'), f'E: a login that could write is refused, exit 3, naming {word} (rc {rc}: {err.strip()[:140]})')
+        if grant: q(grant.format(n).replace('GRANT ', 'REVOKE ', 1).replace(' TO ', ' FROM '))
     q('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pqproof TO public')
     policy('database_sizes', "pqproof.probe('database_sizes')", RD)
     try:
@@ -601,8 +616,32 @@ def row_E():
         unpolicy('table_sizes')
     f = (m3 or {}).get('failed') or []
     check([x[0] for x in r] == [1, 1] and m12 is None, f'E: a table over the timeout fails its window twice: exit 1, no manifest (rc {[x[0] for x in r]})')
+    # (the window had no earlier pass: nothing to carry)
     check(r3[0] == 1 and m3 is not None and [x['table'] for x in f] == ['table_sizes'] and entry(m3, 'host_sample') is not None and entry(m3, 'table_sizes') is None,
           f'E: on the third run the table is in failed[] and the window complete, exit 1 (rc {r3[0]}, failed {f})')
+    # a final pass that fails on a window which ended before the reach: done again by the next run, never 'aged out'
+    d4 = {'type': 'folder', 'path': f'{W}/dest-e4'}
+    c4 = cfg('e4', dest=d4, state=f'{W}/state-e4'); r41 = [window(c4, Wk(k)) for k in (3, 2)]
+    c4f = cfg('e4f', dest=d4, state=f'{W}/state-e4', max_window_age_hours=1, final_after_hours=2, statement_timeout='1s')
+    pass1 = files(man('e4', Wk(2)), 'table_sizes')
+    policy('table_sizes', 'pqproof.slow(3)', RD)
+    try: r42 = export(c4f)
+    finally: unpolicy('table_sizes')
+    gone = man('e4', Wk(3)) is None
+    r43 = export(c4f); m43 = man('e4', Wk(3))
+    check(all(r[0] == 0 for r in r41) and r42[0] == 1 and gone and r43[0] == 0 and m43 is not None and m43['pass'] == 'final' and not sums_hold('e4', m43)
+          and entry(m43, 'table_sizes') is not None and '-from' not in r43[2],
+          f'E: a final pass that failed on a window before the reach is done again by the next run, not called aged out (first passes rc {[r[0] for r in r41]}, the failing run rc {r42[0]}, no manifest then {gone}, the next run rc {r43[0]}, pass {m43 and m43["pass"]}: {r43[2].strip()[-160:]})')
+    # W2's final pass gives table_sizes up on its third failed run: its pass-1 file stays, listed with a note
+    c4g = cfg('e4g', dest=d4, state=f'{W}/state-e4', max_window_age_hours=1, final_after_hours=1, statement_timeout='1s')
+    policy('table_sizes', 'pqproof.slow(3)', RD)
+    try:
+        for _ in range(3): r44 = export(c4g)
+    finally: unpolicy('table_sizes')
+    m44 = man('e4', Wk(2)); e44 = entry(m44, 'table_sizes') or {}
+    check(m44 is not None and m44['pass'] == 'final' and [x['table'] for x in m44.get('failed') or []] == ['table_sizes'] and pass1
+          and files(m44, 'table_sizes') == pass1 and 'earlier pass' in (e44.get('note') or '') and not sums_hold('e4', m44),
+          f'E: a table a final pass gives up keeps its pass-1 file, listed with a note (pass1 {pass1}, now {files(m44, "table_sizes")}, note {e44.get("note")!r}, failed {m44 and m44.get("failed")})')
 
 def row_F():
     w = Wk(2); c = cfg('f'); ct = cfg('ft', carry=['text'])
@@ -708,6 +747,16 @@ def row_H():
     try: conn(ex, PW, DB).run("INSERT INTO pgvigil.export_runs (window_from, window_to, started_at, outcome) VALUES (now(), now(), now(), 'ok')")
     except Exception as e: refused = str(e)
     check('permission denied' in refused, f'H: the login\'s own INSERT into export_runs is refused ({refused[:90]})')
+    nrows = q('SELECT count(*) FROM pgvigil.export_runs')[0][0]; codes = []
+    for sql in (f"SELECT pgvigil.export_run_record('{NAME}', 'x', now() - interval '2 hours', now() - interval '1 hour', '1', now(), 'ok', 0, 0, 0, 0, NULL)",
+                f"SELECT pgvigil.export_off('{NAME}')"):
+        try: conn(RD, PW, DB).run(sql); codes.append('ran')
+        except Exception as e: codes.append((e.args[0] if e.args and isinstance(e.args[0], dict) else {}).get('C', str(e)[:40]))
+    check(codes == ['42501', '42501'] and q('SELECT count(*) FROM pgvigil.export_runs')[0][0] == nrows and q('SELECT count(*) FROM pgvigil.export_state')[0][0] == 1,
+          f'H: a reader login that is no exporter is refused by both doors (42501) and writes nothing ({codes})')
+    try: conn(ex, PW, DB).run(f"SELECT pgvigil.export_run_record('{NAME}', 'x', now(), 'infinity', '1', now(), 'ok', 0, 0, 0, 0, NULL)"); oob = 'ran'
+    except Exception as e: oob = (e.args[0] if e.args and isinstance(e.args[0], dict) else {}).get('C', str(e)[:40])
+    check(oob == '22023', f'H: the door refuses a row out of bounds (a window that ends at infinity: {oob})')
     port = free_port()
     p = subprocess.Popen([BIN, 'serve', '-config', c, '-dsn', 'env:PGVIGIL_REPO_DSN', '-listen', f'127.0.0.1:{port}', '-no-login'], env=dict(ENV0, PGVIGIL_EXPORT_DSN=xd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -733,13 +782,17 @@ def row_H():
     open(f'{W}/notadir', 'w').write('x'); cb = cfg('hb', dest={'type': 'folder', 'path': f'{W}/notadir/x'}, state=f'{W}/state-h', max_window_age_hours=2)
     rcb, _, errb = export(cb, dsn_=xd)
     lastrun = q("SELECT outcome, error FROM pgvigil.export_runs ORDER BY started_at DESC, run_id DESC LIMIT 1")[0]
-    check(rcb == 1 and lastrun[0] == 'failed' and lastrun[1] and any('the last run failed' in d for d in svc()), f'H: a run whose destination does not answer is a row with its error and the service row names it (rc {rcb}, {lastrun[0]}, {svc()})')
-    rc2, _, _ = window(c, Wk(1), dsn_=xd)
+    check(rcb == 1 and lastrun[0] == 'failed' and lastrun[1] and any('failed' in d for d in svc()), f'H: a run whose destination does not answer is a row with its error and the service row names it (rc {rcb}, {lastrun[0]}, {svc()})')
+    rco2, _, _ = window(c, Wk(2), dsn_=xd); still = svc()
+    rc2, _, _ = window(c, Wk(1), dsn_=xd); cleared = svc()
+    check(rco2 == 0 and any('failed' in d for d in still) and rc2 == 0 and cleared == [],
+          f'H: a window whose last attempt failed keeps the line while another window succeeds, and loses it when it is exported ({still}, then {cleared})')
     q("UPDATE pgvigil.export_runs SET window_from = window_from - interval '4 hours', window_to = window_to - interval '4 hours', started_at = started_at - interval '4 hours', finished_at = finished_at - interval '4 hours'")
     q("UPDATE pgvigil.export_state SET last_run_at = last_run_at - interval '4 hours', newest_window_to = newest_window_to - interval '4 hours'")
     check(rc2 == 0 and any('behind' in d for d in svc()), f'H: four hours behind is a service row ({svc()})')
     rco, _, erro = export(c, '-off', dsn_=xd)
-    check(rco == 0 and q('SELECT count(*) FROM pgvigil.export_state')[0][0] == 0 and svc() == [], f'H: after -off no export_state row and no service row (rc {rco}: {erro.strip()[:120]})')
+    check(rco == 0 and q('SELECT count(*) FROM pgvigil.export_state')[0][0] == 0 and svc() == [] and q('SELECT count(*) FROM pgvigil.export_runs')[0][0] == 0,
+          f'H: after -off no export_state row, no runs and no service row (rc {rco}: {erro.strip()[:120]})')
 
 def row_J():
     c = cfg('j', max_window_age_hours=3)
@@ -769,6 +822,8 @@ def row_J():
     rf = export(cf); m6 = man('j', w6); g5b = man('j', Wk(5))
     check(rf[0] == 0 and m6 and m6['pass'] == 'final' and mkj(w6) and (man('j', Wk(3)) or {}).get('pass') == 1 and g5b and g5b.get('gap') is True and mkj(Wk(5)),
           f'J: a window past the reach that has its first pass still gets its final pass; an accepted hole stays a hole (rc {rf[0]}, W6 pass {m6 and m6["pass"]}, marker {mkj(w6)}, the hole still a gap {bool(g5b and g5b.get("gap"))}: {rf[2].strip()[:120]})')
+    before = tree(root('j')); rgf = export(c, '-gap', iso(H0 - HR), iso(H0 + 3 * HR))
+    check(rgf[0] != 0 and 'aged out' in rgf[2] and tree(root('j')) == before, f'J: -gap over hours that are not aged out is refused and writes nothing (rc {rgf[0]}: {rgf[2].strip()[:140]})')
     w5 = Wk(5); cb = cfg('jbig'); rb = window(cb, w5); mb = man('jbig', w5); fs = files(mb, 'host_sample')
     counts = [pq.ParquetFile(f'{root("jbig")}/{p}').metadata for p in fs]
     check(rb[0] == 0 and len(fs) == 2 and fs[1].endswith('__p2.parquet') and not re.search(r'__p\d+\.parquet$', fs[0]) and [m.num_rows for m in counts] == [1000000, 1]
