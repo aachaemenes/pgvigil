@@ -46,8 +46,9 @@
 #   colours    (X0) every cell of every row the page draws (a grid draws its first 200 rows; the read must return
 #              exactly those), against the page: the status the screen shows on it (read by the driver's own code, not
 #              export_colours.ts: the cell's status, else a badge's in it, a link) is its named pair in the file, any
-#              other cell plain - no fill, no text colour of its own, not bold; the two Table Size cells the driver gives
-#              a bare class (crit, warn) take their named pairs (export.ts statusOf reads a bare class as its status).
+#              other cell plain - no fill, no text colour of its own, not bold; the two Table Size columns the driver gives
+#              a bare class (crit, warn on the first row, ok on the others: a whole column, as X18 wants) take their
+#              named pairs (export.ts statusOf reads a bare class as its status).
 #              Counted per sheet (the lines 'cells:')
 #   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0%', DBA Dash's P1) whose value is the screen's percent / 100;
 #              its CSV keeps the percent figure itself (12.5, not 0.125)
@@ -457,10 +458,13 @@ const page = async (hash, sortBy, filterNone) => {
     // the page's last grid filtered to nothing: a grid without rows keeps the plain sheet filter, no Excel table
     await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].pop(); t.querySelector('thead .filter-btn').click(); const i = t.querySelector('thead tr.filters input'); i.value = 'zzzz-no-such-row'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await sleep(600);
-    // and two cells of the page's first grid given a class as a page's own rule gives one (ui.ts adds a Col's cls to the
-    // cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
+    // and two columns of the page's first grid given a class as a page's own rule gives one (ui.ts adds a Col's cls to
+    // the cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
     const drawn = await ev(`(() => { const t = document.querySelector('main table.grid'); if (Number(t.dataset.rows ?? 0) > 200) return false;   // past its page the export builds the rows off the screen
-      const tr = t.querySelector(':scope > tbody > tr'); tr.children[1].classList.add('crit'); tr.children[2].classList.add('warn'); return true; })()`);
+      // every row of the two columns classed, as a page's rule classes its whole column (X18: a status column has a
+      // status on every cell): the first row crit / warn, the others ok
+      const trs = [...t.querySelectorAll(':scope > tbody > tr')]; trs[0].children[1].classList.add('crit'); trs[0].children[2].classList.add('warn');
+      trs.slice(1).forEach(tr => { tr.children[1].classList.add('ok'); tr.children[2].classList.add('ok'); }); return true; })()`);
     if (!drawn) throw new Error('the first grid of the Table Size tab has over 200 rows: the class check needs a grid drawn whole');
   }
   if (sortBy) {
@@ -1799,7 +1803,9 @@ for key, tab, inst in PAGES:
         # the screen read marks it; the audit above held both cells to that)
         x0 = z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(); c0 = cells_of(x0, sst)
         two = [cx[c0.get((2, j), (0, None, None))[0]] for j in (1, 2)]
-        check(classed == 2 and [q['fill'] for q in two] == [fill['crit'], fill['warn']], f"empty: the two cells given a bare class (crit, warn) take their named pairs (X0 ({classed} cells, {[q['fill'] for q in two]})")
+        rest = [cx[c0.get((k + 3, j), (0, None, None))[0]]['fill'] for k in range(tg[0]['rows'] - 1) for j in (1, 2)]
+        check(classed == 2 * tg[0]['rows'] and [q['fill'] for q in two] == [fill['crit'], fill['warn']] and all(f == fill['ok'] for f in rest),
+              f"empty: the two columns given a bare class (crit, warn on the first row, ok on the {tg[0]['rows'] - 1} others) take their named pairs (X0 ({classed} cells, {[q['fill'] for q in two]}, {len(rest)} ok cells: {sorted(set(map(str, rest)))})")
     if openpyxl is not None:
         try:
             wb = openpyxl.load_workbook(f"{dl}/{p['xlsx']}")
