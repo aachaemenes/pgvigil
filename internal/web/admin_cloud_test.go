@@ -218,7 +218,7 @@ func TestCloudRefusalAuditAsCollector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close) // registered first, so it runs after every cleanup below that uses it
 	sfx := time.Now().UnixNano() % 1000000000
 	name := fmt.Sprintf("b24p-aud-%d", sfx)
 	t.Cleanup(func() {
@@ -257,7 +257,7 @@ func TestApproveWithoutRefusedBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close) // registered first, so it runs after every cleanup below that uses it
 	sfx := time.Now().UnixNano() % 1000000000
 	src, inst := fmt.Sprintf("b24p-src-%d", sfx), fmt.Sprintf("b24p-apr-%d", sfx)
 	t.Cleanup(func() {
