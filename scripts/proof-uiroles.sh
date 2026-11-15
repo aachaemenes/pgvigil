@@ -43,7 +43,10 @@
 #   The fold of review-18 (b24f1 N5 / S4; written before the run that carries it): S5 the operator's one-alert mute
 #     (finding_key, no instance) with an end: its own answer, not the role's words; the 7-day ceiling (the lead 13:3x):
 #     the operator's mute of one instance ending in 30 days and blackout ending 9999-12-31 refused with the admin
-#     words, its edit to an end 30 days away refused; R1's indexes/advise row at operator; A4 GET /api/applications/
+#     words, its edit to an end 30 days away refused; R1's indexes/advise row at operator; review-18 part 3: R1's
+#     routes read from docs/roles.md's table (39), the admin's row first and every row at or above the need held to
+#     the admin's code and never 000 / 405 / 5xx; S5's operator blackout of one instance and the admin's fleet-wide
+#     mute written (done); S9's lookup error with GET /api/session 200 and role_error; A4 GET /api/applications/
 #     unassigned as a viewer and an operator: can_edit false, why_not 'changing an application needs the admin role:
 #     <user> is a viewer / an operator ...'; as the admin: can_edit true.
 #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
@@ -156,41 +159,36 @@ post() {   # post <user> <path> <body>: prints '<code> <body>'
   local c; c=$(curl -s -o "$WORK/post.body" -w '%{http_code}' -b "$WORK/$1.jar" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "$3" "$U$2")
   echo "$c $(tr -d '\n' < "$WORK/post.body" | cut -c1-220)"
 }
+f0=$FAILS
 for u in v$SUF o$SUF a$SUF dem$SUF dis$SUF; do
   c=$(login "$u"); [[ $c == 200 ]] || bad "login $u: $c $(cat "$WORK/login.body")"
 done
-ok "login: every user signs in with no session first (anyone)"
+(( FAILS == f0 )) && ok "login: every user signs in with no session first (anyone)"
 art() { [[ $1 == viewer ]] && echo a || echo an; }
 rank() { case $1 in viewer) echo 1 ;; operator) echo 2 ;; admin) echo 3 ;; *) echo 0 ;; esac; }
 ROLEWORDS='needs the (viewer|operator|admin) role'
-# grade <user> <need> <path> <body> [what]
+# grade <user> <need> <path> <body> [what] [ref]: below the need, 403 with the role's words; at or above it, the route's
+# own answer - never 401, a lost connection (000), the mux's 405 (a route not registered) or a 5xx, and the same code
+# as the admin's for the same body (ref; review-18 b24f3 1: a route that is gone or that crashes is no green row)
 grade() {
-  local u=$1 need=$2 p=$3 body=$4 what=${5:-$3} role=${ROLE[$1]} res code
-  res=$(post "$u" "$p" "$body"); code=${res%% *}
+  local u=$1 need=$2 p=$3 body=$4 what=${5:-$3} ref=${6:-} role=${ROLE[$1]} res code
+  res=$(post "$u" "$p" "$body"); code=${res%% *}; LAST=$code
   if (( $(rank "$role") < $(rank "$need") )); then
     if [[ $code == 403 && $res =~ needs\ the\ $need\ role && $res == *"$u is $(art "$role") $role"* ]]; then ok "R1 $role $what: refused ($res)"
     else bad "R1 $role $what (needs $need): not refused with the role's words: $res"; fi
   else
-    if [[ $code != 401 && ! $res =~ $ROLEWORDS ]]; then ok "R1 $role $what: its own answer ($code)"
-    else bad "R1 $role $what (needs $need): $res"; fi
+    if [[ $code != 401 && $code != 000 && $code != 405 && $code != 5* && ! $res =~ $ROLEWORDS && ( -z $ref || $code == "$ref" ) ]]; then ok "R1 $role $what: its own answer ($code)"
+    else bad "R1 $role $what (needs $need): $res${ref:+ (the admin answered $ref)}"; fi
   fi
 }
-ROUTES=(
-  "operator /api/indexes/advise" "viewer /api/mssql/actions/preview" "viewer /api/community/glenn/parse" "viewer /api/community/params"
-  "viewer /api/customreports/run" "viewer /api/reportmail/rendered"
-  "operator /api/actions/cancel" "operator /api/actions/terminate" "operator /api/mssql/actions/run" "operator /api/jobs/actions/stop"
-  "operator /api/jobs/actions/start" "operator /api/ack" "operator /api/ack/end" "operator /api/alerts/dismiss" "operator /api/alerts/mute"
-  "operator /api/alerts/test" "operator /api/plans/explain" "operator /api/plans/analyze" "operator /api/plans/hypo" "operator /api/community/run"
-  "operator /api/reportmail/send" "operator /api/reportmail/test"
-  "admin /api/admin/instances" "admin /api/admin/sources" "admin /api/admin/proposals" "admin /api/admin/dbadash_moves"
-  "admin /api/admin/applications" "admin /api/admin/applications/contacts" "admin /api/admin/applications/assign"
-  "admin /api/admin/applications/routes" "admin /api/admin/applications/import" "admin /api/alertrules" "admin /api/alertrules/end"
-  "admin /api/drives/thresholds" "admin /api/pg/thresholds" "admin /api/jobs/thresholds" "admin /api/jobs/exclusions"
-  "admin /api/customreports" "admin /api/reportmail"
-)
-echo "== R1: ${#ROUTES[@]} routes (and login, logout) x viewer / operator / admin"
+# the routes from docs/roles.md's table, which TestRolesDocMatches holds equal to web.go's s.post lines (review-18
+# b24f3 2: a route added to both is called here too)
+mapfile -t ROUTES < <(awk -F'|' '$2 ~ /POST \/api\// { r = $2; gsub(/[ \140]/, "", r); sub(/^POST/, "", r); n = $3; gsub(/ /, "", n); if (n != "anyone") print n " " r }' docs/roles.md)
+(( ${#ROUTES[@]} >= 39 )) || bad "R1: docs/roles.md's table gave ${#ROUTES[@]} routes"
+echo "== R1: ${#ROUTES[@]} routes (and login, logout) x viewer / operator / admin, the admin first"
 for r in "${ROUTES[@]}"; do
-  for u in v$SUF o$SUF a$SUF; do grade "$u" ${r%% *} "${r#* }" '{}'; done
+  grade "a$SUF" ${r%% *} "${r#* }" '{}'; REF=$LAST
+  for u in o$SUF v$SUF; do grade "$u" ${r%% *} "${r#* }" '{}' "${r#* }" "$REF"; done
 done
 
 # ---- SRC: SourcesAdminWrite's ops (the lead 00:1x) ------------------------------------------------------------------
@@ -201,13 +199,17 @@ done
 [[ $(q "select count(*) from pgvigil.admin_sources" 2>&1) == "$before" ]] && ok "SRC: the source rows unchanged ($before)" || bad "SRC: the source rows: $before before, $(q "select count(*) from pgvigil.admin_sources") after"
 
 # ---- S5: a fleet-wide or open-ended mute or blackout needs admin ----------------------------------------------------
+# an instance registered for the rows that write (S5, S5e)
+IID=$(q "select pgvigil.ensure_instance('roles-i$SUF', 'onprem', '18', 180000, false, '{}')")
 # an end inside the 7-day ceiling (the lead 13:3x: an end more than 7 days away is open-ended), and one past it
 END="\"until\":\"$(date -u -d '+2 days' +%Y-%m-%dT%H:%M:%SZ)\""
 FAR="\"until\":\"$(date -u -d '+30 days' +%Y-%m-%dT%H:%M:%SZ)\""
-s5() {   # s5 <user> <want: admin|own> <body> <what>
+s5() {   # s5 <user> <want: admin|own|done> <body> <what>
   local res code; res=$(post "$1" /api/ack "$3"); code=${res%% *}
   if [[ $2 == admin ]]; then
     [[ $code == 403 && $res == *"a fleet-wide or open-ended mute needs the admin role"* ]] && ok "S5 ${ROLE[$1]} $4: refused ($res)" || bad "S5 ${ROLE[$1]} $4: $res"
+  elif [[ $2 == done ]]; then   # a real write at the user's role: the store's done (review-18 b24f3 9)
+    [[ $code == 200 && $res == *'"outcome":"done"'* ]] && ok "S5 ${ROLE[$1]} $4: done ($res)" || bad "S5 ${ROLE[$1]} $4: $res"
   else
     [[ $code != 401 && ! $res =~ $ROLEWORDS ]] && ok "S5 ${ROLE[$1]} $4: its own answer ($res)" || bad "S5 ${ROLE[$1]} $4: $res"
   fi
@@ -219,8 +221,8 @@ s5 o$SUF admin '{"kind":"mute","instance_id":999999,"check_key":"x"}' "a mute wi
 s5 o$SUF admin "{\"kind\":\"mute\",\"instance_id\":999999,\"check_key\":\"x\",$FAR}" "a mute of one instance with an end 30 days away"
 s5 o$SUF admin "{\"kind\":\"blackout\",\"instance_id\":999999,\"until\":\"9999-12-31T00:00:00Z\"}" "a blackout of one instance ending 9999-12-31"
 # a blackout over a tag is refused for every user before B24f ('a blackout names one instance', 409: roles-red1): no row
-s5 o$SUF own "{\"kind\":\"blackout\",\"instance_id\":999999,$END}" "a blackout of one instance with an end"
-s5 a$SUF own "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every instance"
+s5 o$SUF done "{\"kind\":\"blackout\",\"instance_id\":$IID,\"starts_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",$END}" "a blackout of one instance with an end"
+s5 a$SUF done "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every instance"
 # a one-alert mute (finding_key) is one scope whatever instance it names (review-18 b24f1 N5)
 s5 o$SUF own "{\"kind\":\"mute\",\"finding_key\":\"proof-one-$SUF\",$END}" "a one-alert mute with an end"
 
@@ -238,7 +240,6 @@ done
 
 # S5e: an edit writes the rule's successor, a mute like any other. Two rules of the admin's: one on every instance,
 # one on an instance registered for these rows
-IID=$(q "select pgvigil.ensure_instance('roles-i$SUF', 'onprem', '18', 180000, false, '{}')")
 post a$SUF /api/ack "{\"kind\":\"mute\",\"instance_id\":$IID,\"check_key\":\"y\",$END}" > /dev/null
 WIDE=$(q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id is null and ended_at is null")
 ONE=$(q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id = $IID and ended_at is null")
@@ -280,20 +281,23 @@ r=$(post dis$SUF /api/ack '{"kind":"note","note":"x"}')
 out=$(q "alter function pgvigil.ui_login_of(text) rename to ui_login_of_away")
 if [[ $out == *ERROR* ]]; then bad "S9 the lookup error: the function could not be moved aside ($out)"
 else
-  r=$(post a$SUF /api/ack '{"kind":"note","note":"x"}'); g=$(curl -s -o /dev/null -w '%{http_code}' -b "$WORK/a$SUF.jar" "$U/api/session")
+  r=$(post a$SUF /api/ack '{"kind":"note","note":"x"}'); g=$(curl -s -o "$WORK/sess.body" -w '%{http_code}' -b "$WORK/a$SUF.jar" "$U/api/session")
   q "alter function pgvigil.ui_login_of_away(text) rename to ui_login_of" >/dev/null
-  [[ ${r%% *} == 503 && $r == *"the role could not be read"* ]] && ok "S9 the role lookup failing: a POST 503 ($r); GET /api/session $g" || bad "S9 the lookup error: $r (GET $g)"
+  # a page still reads (docs/roles.md): the session answers 200 with the role's error (review-18 b24f3 11)
+  [[ ${r%% *} == 503 && $r == *"the role could not be read"* && $g == 200 && $(cat "$WORK/sess.body") == *role_error* ]] \
+    && ok "S9 the role lookup failing: a POST 503 ($r); GET /api/session 200 with role_error" || bad "S9 the lookup error: $r (GET $g $(head -c 200 "$WORK/sess.body"))"
 fi
 P2=$(freeport)
 "$BIN" serve -config "$CFG" -listen "127.0.0.1:$P2" -no-login > "$WORK/serve2.log" 2>&1 & SRV2=$!
 for _ in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$P2/" && break; sleep 0.5; done
 c=$(curl -s -o "$WORK/nl.body" -w '%{http_code}' -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data '{}' "http://127.0.0.1:$P2/api/admin/applications")
 [[ $c == 403 && $(cat "$WORK/nl.body") == *"runs with -no-login"* ]] && ok "S9 -no-login: its words unchanged ($(cat "$WORK/nl.body"))" || bad "S9 -no-login: $c $(cat "$WORK/nl.body")"
+f0=$FAILS
 for u in v$SUF o$SUF a$SUF; do
   c=$(curl -s -o /dev/null -w '%{http_code}' -b "$WORK/$u.jar" -H 'X-Pgvigil: 1' -X POST "$U/api/logout")
   [[ $c == 204 ]] || bad "S9 logout $u: $c"
 done
-ok "S9 logout: each user (anyone)"
+(( FAILS == f0 )) && ok "S9 logout: each user (anyone)"
 
 echo "proof-uiroles: $FAILS FAIL"
 (( FAILS == 0 )) && echo "PASS: proof-uiroles" || exit 1

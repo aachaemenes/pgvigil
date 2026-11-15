@@ -10,7 +10,9 @@ page.
 | admin | what an operator may, and change configuration others live with - instances, discovery sources, proposals, DBA Dash moves, applications and their contacts, alert rules, drive / PostgreSQL / job thresholds, job exclusions, custom reports and their folders, report mail schedules, a mute or blackout over every instance, a tag, or with no end |
 
 Each action still needs what it needed before the roles: an instance's own opt-in (`actions:`, `explain_analyze`,
-`hypo_index`), a typed confirmation, the actions door's audit login. The server checks the role first, then those.
+`hypo_index`), a typed confirmation, the actions door's audit login. The server checks the route's role first, then those;
+a write whose body asks for more than its route (a wide or open-ended mute) is checked for the admin role after the
+server's own door, so a server with no actions door says that first.
 
 ## In the pages
 
@@ -74,7 +76,8 @@ refused with 503 "the role could not be read".
 The role migration (`0257_ui_roles.sql`) makes every user that exists then an admin, so nobody loses what they could
 do; a user added later starts as a viewer. A pgvigil serve older than the migration, on a repository that holds it,
 signs in admins only (it knows no role, so it admits only who could do everything); a newer serve on an older
-repository refuses to start and says to run `pgvigil migrate`.
+repository refuses to start with the login on and says to run `pgvigil migrate` (a `-no-login` serve reads no role and
+starts).
 
 ## Where roles do not apply
 
