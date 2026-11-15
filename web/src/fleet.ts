@@ -192,9 +192,10 @@ const midnights = (v: unknown): number => { const d = new Date(String(v)), n = n
 // dump or corruption, 'N days' since the oldest good CHECKDB or 'Never', the last alert 'Nhrs' / 'N days' or 'Never'),
 // the error count, the snapshot ages; nothing where DBA Dash shows nothing (a green Is Agent Running, DB Mail). A
 // cell without a read keeps pgvigil's word for it ('not yet', 'read failed', 'stale'), and a column the engine does
-// not have is empty.
+// not have is empty. Every cell with a text is a link, DBA Dash's text cells (plain: Memory Dump, Is Agent Running,
+// DB Mail) too, to where their Needs attention reason goes: a status text that answers no click is a dead one.
 export function summaryText(g: Group, c: Cell, r: Row, all: Record<string, Cell>): { text: string; link: boolean } {
-  const out = (text: string) => ({ text, link: !g.plain && text !== '' });
+  const out = (text: string) => ({ text, link: text !== '' });
   if (c.none) return out(c.text === 'n/a' ? '' : c.text ?? 'no sample');
   const ms = r.engine === 'sqlserver';
   switch (g.key) {
@@ -312,20 +313,25 @@ export const cellClass = (c: Cell) => c.none ? 'none' : levelClass[c.level];
 // cellTarget: the page a group's cell opens for an instance (DBA Dash's tabMapping): the group's tab on PostgreSQL (with
 // its Metrics family), its SQL Server tab, the view that tab opens on and the status filter it opens with - the fleet
 // Summary's links, the header's reasons, the verdict card's and the SQL Server Summary's own line
-export interface Target { tab: string; kind?: string; cv?: string; status?: string }
+// row: on a SQL Server instance's Summary, the Server card row of a check that has no page of its own (Memory dumps,
+// DB Mail: rowjump.ts) - the Summary jumps to it
+export interface Target { tab: string; kind?: string; cv?: string; status?: string; row?: string }
+const ownRows = new Set(['dumps', 'dbmail']);
 export function cellTarget(g: Group, r: Row): Target {
   const ms = r.engine === 'sqlserver';
-  return { tab: ms ? g.mssql?.[1] ?? 'summary' : g.tab, ...(!ms && g.kind ? { kind: g.kind } : {}), ...((ms ? g.mssql?.[3] : g.cv) ? { cv: ms ? g.mssql?.[3] : g.cv } : {}),
-    ...(ms && g.mssqlStatus ? { status: g.mssqlStatus } : {}) };
+  const tab = ms ? g.mssql?.[1] ?? 'summary' : g.tab;
+  return { tab, ...(!ms && g.kind ? { kind: g.kind } : {}), ...((ms ? g.mssql?.[3] : g.cv) ? { cv: ms ? g.mssql?.[3] : g.cv } : {}),
+    ...(ms && g.mssqlStatus ? { status: g.mssqlStatus } : {}), ...(ms && tab === 'summary' && ownRows.has(g.key) ? { row: g.key } : {}) };
 }
 // withTarget: a target's own part of its page's address after the tab's (base: router.ts href for t.tab and t.kind):
 // the view (cv) and the status filter (status), read by the page itself from its address
 export function withTarget(base: string, t: Target): string {
-  if (!t.cv && !t.status) return base;
+  if (!t.cv && !t.status && !t.row) return base;
   // set, never appended: a link drawn on the target's own page already carries the page's cv or status (router.ts)
   const [path, qs] = base.split('?'); const q = new URLSearchParams(qs ?? '');
   if (t.cv) q.set('cv', t.cv);
   if (t.status) q.set('status', t.status);
+  if (t.row) q.set('row', t.row);
   return `${path}?${q}`;
 }
 

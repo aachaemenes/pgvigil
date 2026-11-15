@@ -375,12 +375,14 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       const text = ak ? `ack: ${t.text || cellText(c)}` : t.text;
       const reading = cellText(c);
       const tip = (ak ? ackWords(ak) + (c.detail.length ? '\n' : '') : '') + c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
+      // the check (data-group) and its instance (data-inst): a text and its Needs attention reason are twins
+      const tw = { 'data-group': g.key, 'data-inst': String(r.instance_id) };
       if (!t.link) {
-        const s = el('span', { 'data-text': reading }, text);
+        const s = el('span', { 'data-text': reading, ...tw }, text);
         if (tip) s.title = tip;
         return s;
       }
-      const a = el('a', { href: cellHref(g, r), class: 'cell-link', 'aria-label': `${labelOf(g, !isMssql(r.engine))}: ${text}${text === reading ? '' : ` (${reading})`}${ak ? ', ' + ackWords(ak) : ''}`, 'data-text': reading }, text);
+      const a = el('a', { href: cellHref(g, r), class: 'cell-link', 'aria-label': `${labelOf(g, !isMssql(r.engine))}: ${text}${text === reading ? '' : ` (${reading})`}${ak ? ', ' + ackWords(ak) : ''}`, 'data-text': reading, ...tw }, text);
       if (tip) a.title = tip;
       summaryCellAction(a, g.key, r);
       return a;
@@ -584,10 +586,10 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   let allLines = false;
   // a line's reasons: the first four as links, then '+n more', a button that shows the rest of that line in place
-  const reasonLine = (links: { text: string; href: string }[]): HTMLElement => {
+  const reasonLine = (links: { text: string; href: string; key?: string }[]): HTMLElement => {
     const box = el('span', { style: 'flex:1' });
     const draw = (all: boolean) => {
-      const show = (all ? links : links.slice(0, 4)).map(x => el('a', { href: x.href, class: 'cell-link' }, x.text));
+      const show = (all ? links : links.slice(0, 4)).map(x => el('a', { href: x.href, class: 'cell-link', ...(x.key ? { 'data-group': x.key } : {}) }, x.text));
       const parts: (string | HTMLElement)[] = [];
       show.forEach((a, i) => { if (i) parts.push(' · '); parts.push(a); });
       if (!all && links.length > 4) {
@@ -616,7 +618,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       // to that cell's page (cellHref)
       const ms = isMssql(r.engine);
       const pageOf = (tab: string) => href(ctx, { tab, instance: Number(r.instance_id), tag: undefined });
-      const links: { text: string; href: string }[] = [];
+      const links: { text: string; href: string; key?: string }[] = [];
       const rt = rates.get(Number(r.instance_id));
       const per = (k: string, label: string) => {
         const v = Number(rt?.[k] ?? 0), mins = Number(rt?.window_minutes ?? 15);
@@ -625,12 +627,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       const bl = per('blocking', 'Blocking'), dl = per('deadlocks', 'Deadlocks');
       if (bl) links.push({ text: bl, href: pageOf(ms ? 'mssql_blocked' : 'activity') });
       if (dl) links.push({ text: dl, href: pageOf(ms ? 'mssql_deadlocks' : 'pg_deadlocks') });
-      open.forEach((g, i) => links.push({ text: reasons[i], href: cellHref(g, r) }));
+      open.forEach((g, i) => links.push({ text: reasons[i], href: cellHref(g, r), key: g.key }));
       const shown = links.map(x => x.text);
       const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellState(c[g.key], g.key) }));
       const lvl = Number(r._worst);
       every.push({ item: String(r.name), value: shown.join(' · '), status: lvl === 2 ? 'crit' : 'warn' });
-      return el('div', { class: 'attention-row', style: `display:flex;gap:.8rem;align-items:baseline;padding:.25rem .5rem;border-left:3px solid var(${lvl === 2 ? '--crit' : '--warn'});margin:.2rem 0` },
+      return el('div', { class: 'attention-row', 'data-inst': String(r.instance_id), style: `display:flex;gap:.8rem;align-items:baseline;padding:.25rem .5rem;border-left:3px solid var(${lvl === 2 ? '--crit' : '--warn'});margin:.2rem 0` },
         dot(lvl), el('strong', {}, instLink(ctx, String(r.name), r.instance_id)),
         reasonLine(links),
         badge(lvl === 2 ? 'Critical' : 'Warning', lvl === 2 ? 'crit' : 'warn'),
@@ -763,7 +765,8 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
     ['last activity sample', r.activity_at == null ? '' : el('a', { class: 'cell-link', href: href(ctx, { tab: 'activity' }) }, fmtTime(r.activity_at))],
   ])));
   const checkCols: Col[] = [
-    { key: 'severity', fmt: v => badge(String(v), v === 'critical' ? 'crit' : 'warn') },
+    // the severity is a status text: a link where the check's link goes, as the check is
+    { key: 'severity', fmt: (v, x) => el('a', { href: href(ctx, { tab: groupTab(x.check_group) }), class: 'cell-link' }, badge(String(v), v === 'critical' ? 'crit' : 'warn')) },
     { key: 'check_name', label: 'check', fmt: (v, x) => link(String(v), href(ctx, { tab: groupTab(x.check_group) })) },
     { key: 'object' },
     { key: 'at', label: 'when', fmt: fmtTime },
