@@ -10,11 +10,13 @@ CALLS.jsonl holds one call a line:
     {"barrier": "<path>"}                      wait (30 s at most) until the file exists - two clients start a call at once
     {"touch": "<path>"}                        make a file (tells the proof a step was reached)
     {"sleep": <seconds>}
-A string value "$claim" anywhere in args is replaced by the claim_id of the latest successful claim_investigation, and
-"$open" by the list of request ids in the latest wait_for_investigations answer's open set.
+A string value "$claim" anywhere in args is replaced by the claim_id of the latest successful claim_investigation,
+"$open" by the list of request ids in the latest wait_for_investigations answer's open set, and "$known" by that
+answer's known list (its open ids where the answer has none).
 OUT.jsonl gets one line a call: {"i", "call", "ms", "reply", "isError", "body"} (body = the first content text parsed as
-JSON when it is JSON, else the text), then {"exit": <code>, "stderr": <its last 4 KB>}. When the server exits before a
-call (a refused login exits 3 before the first message), the remaining calls are skipped and the exit line says so.
+JSON when it is JSON, else the text), then {"exit": <code>, "skipped": <calls not sent>, "stderr": <its last 4 KB>}.
+When the server exits before a call (a refused login exits 3 before the first message), the remaining calls are skipped
+and the exit line counts them.
 """
 import argparse
 import json
@@ -57,7 +59,8 @@ def main():
         for line in p.stderr:
             err.append(line)
 
-    threading.Thread(target=read_out, daemon=True).start()
+    reader = threading.Thread(target=read_out, daemon=True)
+    reader.start()
     threading.Thread(target=read_err, daemon=True).start()
     out = sys.stdout
     nid = [0]
@@ -78,14 +81,21 @@ def main():
         with cv:
             while i not in replies:
                 left = end - time.monotonic()
-                if left <= 0 or p.poll() is not None and i not in replies:
-                    return replies.get(i)
+                if left <= 0:
+                    return None
+                if p.poll() is not None:
+                    break
                 cv.wait(min(left, 0.2))
-            return replies.pop(i)
+            else:
+                return replies.pop(i)
+        # the server exited: its last replies may still be in the pipe - the reader ends at EOF
+        reader.join(timeout=5)
+        with cv:
+            return replies.pop(i, None)
 
     def subst(v, vars_):
         if isinstance(v, str):
-            return vars_[v[1:]] if v in ("$claim", "$open") and vars_.get(v[1:]) is not None else v
+            return vars_[v[1:]] if v in ("$claim", "$open", "$known") and vars_.get(v[1:]) is not None else v
         if isinstance(v, list):
             return [subst(x, vars_) for x in v]
         if isinstance(v, dict):
@@ -102,9 +112,11 @@ def main():
         if alive:
             p.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
             p.stdin.flush()
-    vars_ = {"claim": None, "open": None}
+    vars_ = {"claim": None, "open": None, "known": None}
+    skipped = 0
     for n, c in enumerate(calls):
         if not alive or p.poll() is not None:
+            skipped = sum(1 for x in calls[n:] if "tool" in x or "rpc" in x)
             break
         if "barrier" in c:
             end = time.monotonic() + 30
@@ -136,6 +148,7 @@ def main():
             vars_["claim"] = body["claim_id"]
         if c.get("tool") == "wait_for_investigations" and is_err is False and isinstance(body, dict):
             vars_["open"] = [x.get("id") for x in body.get("open") or [] if isinstance(x, dict)]
+            vars_["known"] = body["known"] if isinstance(body.get("known"), list) else vars_["open"]
         emit({"i": n, "call": c, "ms": ms, "reply": r, "isError": is_err, "body": body})
     try:
         p.stdin.close()
@@ -147,7 +160,7 @@ def main():
         p.kill()
         rc = p.wait()
     time.sleep(0.1)
-    emit({"exit": rc, "stderr": "".join(err)[-4096:]})
+    emit({"exit": rc, "skipped": skipped, "stderr": "".join(err)[-4096:]})
 
 
 if __name__ == "__main__":

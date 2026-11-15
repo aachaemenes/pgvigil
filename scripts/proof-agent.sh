@@ -30,10 +30,9 @@
 #     on 14+ the list names pg_database_owner, on 13 the role the dsn set - 13 has no pg_database_owner); the agent role on a standby ('in
 #     recovery'). The plain reader, the reports login and the UI login calling agent_investigation_list are refused:
 #     'is not a member of pgvigil_agent' (the function's own check on the session user: apply_roles grants every
-#     function outside its lists to the reader at each migrate, until the join file's agent branch takes that back) or,
-#     after the join, 'permission denied for function'; the agent login's own INSERT into pgvigil.investigations:
-#     permission denied. [R3's words widened after the red run, before any code: the migration cannot take the
-#     reader's EXECUTE back while apply_roles grants it at every migrate.]
+#     function outside its lists to the reader at each migrate) or, once apply_roles leaves the agent's functions to
+#     pgvigil_agent, 'permission denied for function'; the agent login's own INSERT into pgvigil.investigations:
+#     permission denied.
 #  Q. the request: POST /api/investigations without a session 401, without X-Pgvigil 403; with both 200 and an id; the
 #     row is kind finding, state open, asked_by the UI user; its journal holds 'asked'; its snapshot is serve's read of
 #     the finding (its setting), and a 'snapshot' the body carries is not in it. A user's 11th open request: 409 'already
@@ -43,8 +42,8 @@
 #     a lapsed lease reads open and is claimed again by the other login (claims 2); the first claimer's renew and report
 #     refused 'not your claim'; a login with another login's claim id refused 'not your claim'; the third lapse reads
 #     expired and a claim is refused 'expired'; a renew past expires_at refused 'expired'; release -> open, journal
-#     'released', its reason only in the ui_ text table; wait_for_investigations answers within 2 s of a request made
-#     1 s after it started; two requests committed out of order (an owner's INSERT held open 4 s while a request through
+#     'released', its reason only in the ui_ text table; wait_for_investigations answers a request made 1 s after
+#     it started within 3.5 s of its start; two requests committed out of order (an owner's INSERT held open 4 s while a request through
 #     serve takes the next id and commits first - the request function's own cap lock keeps its requests in id order)
 #     both reach a waiting agent; with the agent's listening session terminated, a wait still answers (the 5 s poll) within 8 s.
 #  B. the brief: claim answers request.snapshot.setting = the finding's setting, request.note, next_calls[0] =
@@ -82,7 +81,25 @@
 #  U. the pages (headless Chromium, the session cookie set): #/findings shows an Investigate button on a finding row;
 #     #/investigations shows the Ask box, the grid with the requests and a report's 'unreviewed' line; the serve
 #     without agents: no Investigate button; axe-core finds 0 violation nodes on #/investigations in both themes.
-#  Not here: queue mode (CQ's request queue is not in this tree: its two lines are WIRING at the join); the real agent's
+#  Added later, each row written before its fix and failing without it (scripts/proof-pgproxy.py, a wire proxy, breaks a
+#  call between the agent's login and the repository):
+#  C12. a request in the waiting agent's known list that lapses back to open wakes the wait within 8 s (the wait answers
+#     known as '<id>:<claims>' keys: a request that reopened is new to it).
+#  C13. the claim's answer lost after its commit (the proxy holds the server's answer, then closes): the claim is sent
+#     once (a write whose outcome is unknown is not sent again), one 'claimed' row, the reply says the outcome is
+#     unknown; the next call answers on a new connection.
+#  S9. run_select with no answer from the repository (the proxy holds its statement) ends within 25 s with words; the
+#     next call answers. S10. the record's answer lost after its commit: one 'select' row left 'running', no run, the
+#     reply says unknown. S11. a write (renew) with no answer ends within 25 s; the next call answers on a new
+#     connection. S12. a SELECT holding '@@to_tsquery(' runs as written (no named-argument rewrite). S13. run_select's
+#     session is named pgvigil-mcp-select. S14. the outcome write's answer lost: the rows answer, with a 'record' line
+#     saying the outcome is unknown. S15. a function the agent may EXECUTE that writes (a claim of another request), run
+#     through run_select: refused 'read-only transaction'. S5 reads pg_locks by a later call while the agent runs.
+#  R2 superuser_by_role: the superuser connecting with options=-c role=<the plain reader> refused 'superuser'.
+#  P6. a finding's report carrying sql refused 'only an ask'; a finding reported 'answered' refused "a finding's
+#     verdict"; an evidence entry that is not an object refused 'evidence entry 1'; a queries_run entry that is not a
+#     statement refused 'queries_run entry 1'; the claim still holds: a good report accepted.
+#  Not here: queue mode (the request queue is not in this tree); the real agent's
 #  run (its own job); go test ./internal/repo (secdef_reader_test.go: the runner's repo part).
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 97
@@ -110,7 +127,7 @@ freeport() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0
 qa() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 q() { psql "$PGVIGIL_ADMIN_DSN dbname=$REPO" -XAtq -v ON_ERROR_STOP=1 -c "$1" 2>&1; }
 dsn_of() { printf 'host=%s port=%s dbname=%s user=%s password=%s sslmode=disable' "$HOST" "$DBPORT" "$REPO" "$1" "$PW"; }
-as() { local who=$1; shift; psql "$(dsn_of "$who")" -XAtq "$@" 2>&1; }
+as() { local who=$1; shift; PGPASSWORD=$PW psql "$(dsn_of "$who" | sed 's/ password=[^ ]*//')" -XAtq "$@" 2>&1; }
 
 BIN=${PGVIGIL_BIN:-}
 if [[ -z "$BIN" ]]; then go build -o "$WORK/pgvigil" ./cmd/pgvigil || die "go build"; BIN=$WORK/pgvigil; fi
@@ -147,7 +164,7 @@ HAS0268=$(q "select to_regclass('pgvigil.investigations') is not null")
 echo "migration 0268 applied: $HAS0268"
 mk() { # mk <name> <roles...>: a login IN ROLE pgvigil_reader-like roles; each role granted on its own line (a role the base lacks fails alone)
   local n; n=$(L "$1"); shift
-  qa "create role $n login password '$PW'" >/dev/null || die "create role $n"
+  printf "create role %s login password '%s'" "$n" "$PW" | psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -f - >/dev/null || die "create role $n"
   for r in "$@"; do qa "grant $r to $n" >/dev/null 2>&1 || echo "note: grant $r to $n failed (absent on this tree?)"; done
 }
 mk ag1 pgvigil_reader pgvigil_agent; mk ag2 pgvigil_reader pgvigil_agent; mk rd pgvigil_reader; mk ui pgvigil_reader pgvigil_auth
@@ -160,6 +177,14 @@ mk ownm "$(L agr)"; qa "alter database $REPO owner to $(L ownm)" >/dev/null || d
 export AG1_DSN; AG1_DSN=$(dsn_of "$(L ag1)"); export AG2_DSN; AG2_DSN=$(dsn_of "$(L ag2)"); export RD_DSN; RD_DSN=$(dsn_of "$(L rd)")
 export UI_DSN; UI_DSN=$(dsn_of "$(L ui)"); export REPORTS_DSN; REPORTS_DSN=$(dsn_of "$(L rep)")
 export AG1S_DSN="$AG1_DSN default_query_exec_mode=simple_protocol"
+# the wire proxy between the agent login and the repository (C13, S9-S11, S14 break a call there)
+PXPORT=$(freeport); : > "$WORK/px.rules"; : > "$WORK/px.log"
+python3 -I scripts/proof-pgproxy.py --listen "$PXPORT" --target "$HOST:$DBPORT" --rules "$WORK/px.rules" --log "$WORK/px.log" >"$WORK/px.err" 2>&1 &
+SRVS+=($!)
+for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$PXPORT") 2>/dev/null && break; sleep 0.1; done
+export AGP_DSN; AGP_DSN=$(printf 'host=127.0.0.1 port=%s dbname=%s user=%s password=%s sslmode=disable' "$PXPORT" "$REPO" "$(L ag1)" "$PW")
+px() { : > "$WORK/px.log"; printf '%s\n' "$@" > "$WORK/px.rules"; }   # px '<action> <text>' ...: the proxy's rules, its log emptied
+pxn() { grep -c -F -x -- "$1" "$WORK/px.log"; }                       # pxn '<log line>': how many times it was logged
 for u in u1 u2 u3; do PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" "agt$u$SUF" >/dev/null 2>&1 || die "user add $u"; done
 U1=agtu1$SUF; U2=agtu2$SUF; U3=agtu3$SUF
 
@@ -176,13 +201,14 @@ grep -v '^reports_dsn:' "$CFG" > "$WORK/cfg-norep.yaml"
 start_serve() { # start_serve <cfg> -> prints the URL
   local port; port=$(freeport)
   "$BIN" serve -config "$1" -dsn env:UI_DSN -listen "127.0.0.1:$port" >"$WORK/serve-$port.log" 2>&1 &
-  SRVS+=($!)
+  echo $! > "$WORK/serve-$port.pid"   # a $(...) subshell: the caller adds the pid to SRVS
   for n in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.5; done
   echo "http://127.0.0.1:$port"
 }
 S1=$(start_serve "$CFG"); S2=$(start_serve "$WORK/cfg-off.yaml"); S3=$(start_serve "$WORK/cfg-norep.yaml")
+for f in "$WORK"/serve-*.pid; do SRVS+=("$(cat "$f")"); done
 curl -sf -o /dev/null "$S1/" || die "serve did not answer: $(tail -3 "$WORK"/serve-*.log)"
-login() { curl -s -c "$WORK/jar-$2-$3" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$3\",\"password\":\"$UIPW\"}" "$1/api/login" >/dev/null; }
+login() { printf '{"username":"%s","password":"%s"}' "$3" "$UIPW" | curl -s -c "$WORK/jar-$2-$3" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d @- "$1/api/login" >/dev/null; }
 login "$S1" s1 "$U1"; login "$S1" s1 "$U2"; login "$S1" s1 "$U3"; login "$S2" s2 "$U1"; login "$S3" s3 "$U1"
 code() { curl -s --max-time 60 -o "$WORK/body" -w '%{http_code}' "$@"; }
 # api <serve> <serve tag> <user> <method> <path> [body]
@@ -227,6 +253,7 @@ refused collector "$(dsn_of "$(L cola)")" pgvigil_collector
 refused auth "$(dsn_of "$(L autha)")" pgvigil_auth
 refused writer "$(dsn_of "$(L wra)")" "may change the repository's tables"
 refused superuser "$PGVIGIL_ADMIN_DSN dbname=$REPO" superuser
+refused superuser_by_role "$PGVIGIL_ADMIN_DSN dbname=$REPO options='-c role=$(L rd)'" superuser
 if [[ $(qa "select count(*) from pg_roles where rolname = 'pg_read_all_data'") == 1 ]]; then refused read_all_data "$(dsn_of "$(L rada)")" pg_read_all_data
 else NOTPROVEN+=("R2 pg_read_all_data on this server: the role exists from PostgreSQL 14"); fi
 refused read_server_files "$(dsn_of "$(L rsfa)")" pg_read_server_files
@@ -251,7 +278,7 @@ else
   PRIIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$PRI")
   printf 'repository:\n  dsn: env:SBP_DSN\ninstances: []\n' > "$WORK/cfg-sb.yaml"
   SBP_DSN="host=$PRIIP port=5432 user=postgres dbname=sb sslmode=disable" "$BIN" migrate -config "$WORK/cfg-sb.yaml" >"$WORK/sb-migrate.log" 2>&1 || echo "note: the standby's primary did not migrate: $(tail -2 "$WORK/sb-migrate.log")"
-  docker exec "$PRI" psql -h 127.0.0.1 -U postgres -d sb -XAtqc "create role sbagent login password '$PW' in role pgvigil_reader, pgvigil_agent" >/dev/null 2>&1
+  printf "create role sbagent login password '%s' in role pgvigil_reader, pgvigil_agent" "$PW" | docker exec -i "$PRI" psql -h 127.0.0.1 -U postgres -d sb -XAtq -f - >/dev/null 2>&1
   docker run -d --name "$STB" --network "$NET" --entrypoint bash "$IMG" -c "until pg_basebackup -h $PRI -U postgres -D /tmp/sb -R -X stream -c fast; do sleep 1; done; chown -R postgres /tmp/sb; chmod 700 /tmp/sb; exec su postgres -c 'postgres -D /tmp/sb -c listen_addresses=*'" >/dev/null
   STBIP=""; for _ in $(seq 1 150); do STBIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$STB" 2>/dev/null); docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t && break; sleep 1; done
   if docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t; then
@@ -278,7 +305,7 @@ for n in $(seq 1 25); do u=$U1; ((n > 9)) && u=$U2; ((n > 17)) && u=$U3
 done; wait
 n200=$(cat "$WORK"/cc-*.code | grep -c '^200$'); n409=$(cat "$WORK"/cc-*.code | grep -c '^409$'); w=$(grep -l '20 investigations in the last hour' "$WORK"/cc-[0-9]* 2>/dev/null | wc -l)
 [[ $n200 == 20 && $n409 == 5 && $w == 5 ]] && ok "Q4 25 requests at once from three users: 20 accepted, 5 refused '20 investigations in the last hour'" || bad "Q4 25 at once: $n200 accepted, $n409 refused, $w with the words"
-NOTPROVEN+=("Q5 / K7 queue mode: CQ's request queue (pgvigil_requester, customReportsOff in queue mode) is not in this tree; its lines are WIRING at the join")
+NOTPROVEN+=("Q5 / K7 queue mode: the request queue (pgvigil_requester, custom reports off in queue mode) is not in this tree")
 
 echo "--- C. claim"
 reset_inv
@@ -342,7 +369,8 @@ psql "$PGVIGIL_REPO_DSN" -XAtq -c "begin" -c "with i as (insert into pgvigil.inv
 pp=$!; sleep 1; C6=$(ask_q "second insert, first commit"); wait $pp $po
 C5=$(q "select id from pgvigil.investigations where kind = 'ask' and asked_by = '$U1' order by id limit 1")
 seen=$(jq -r 'select(.i == 1 or .i == 2) | .body.open[]?.id' "$WORK/c_oo.out" 2>/dev/null | sort -u | paste -sd,)
-[[ -n "$C5" && -n "$C6" && ",$seen," == *",$C5,"* && ",$seen," == *",$C6,"* && $C5 -lt $C6 ]] && ok "C10 two requests committed out of order ($C5 committed after $C6) both reach the waiting agent" || bad "C10 out of order: ids $C5 / $C6, seen '$seen' ($(head -c 200 "$WORK/oo1"))"
+first=$(jq -r 'select(.i == 1) | [.body.open[]?.id | tostring] | join(",")' "$WORK/c_oo.out" 2>/dev/null)
+[[ -n "$C5" && -n "$C6" && $first == "$C6" && ",$seen," == *",$C5,"* && ",$seen," == *",$C6,"* && $C5 -lt $C6 ]] && ok "C10 two requests committed out of order ($C5 committed after $C6) both reach the waiting agent" || bad "C10 out of order: ids $C5 / $C6, the first answer '$first', seen '$seen' ($(head -c 200 "$WORK/oo1"))"
 reset_inv; rm -f "$WORK/w3"
 calls c_ld '{"touch":"'"$WORK"'/w3"}' '{"sleep":3}' "$(tc wait_for_investigations '{"known":[],"timeout_s":20}')"
 mc AG1_DSN c_ld & pl=$!
@@ -351,6 +379,23 @@ killed=$(q "select count(pg_terminate_backend(pid)) from pg_stat_activity where 
 sleep 4; C7=$(ask_q "after the listener died"); wait $pl
 ms=$(Rr c_ld 2 '.ms'); got=$(Rr c_ld 2 "[.body.open[]? | select(.id == ${C7:-0})] | length")
 [[ $killed -ge 1 && $got == 1 && ${ms:-99999} -le 8000 ]] && ok "C11 with the listening session terminated ($killed), wait still answered in ${ms} ms" || bad "C11 the listener dropped: terminated '$killed', seen '$got' in '${ms}' ms ($(R c_ld 2 '.body' | cut -c1-160))"
+# C12: a request the waiting agent knows that lapses back to open wakes the wait
+reset_inv; rm -f "$WORK/w4" "$WORK/w5"
+C8=$(ask_q "reopen wakes")
+calls c_rk "$(tc wait_for_investigations '{"known":[],"timeout_s":5}')" '{"touch":"'"$WORK"'/w4"}' '{"barrier":"'"$WORK"'/w5"}' "$(tc wait_for_investigations '{"known":"$known","timeout_s":20}')"
+mc AG1_DSN c_rk & pk=$!
+for _ in $(seq 1 100); do [[ -f "$WORK/w4" ]] && break; sleep 0.1; done
+calls c_rk2 "$(tc claim_investigation "{\"id\":${C8:-0},\"agent\":\"agent-k2\"}")"; mc AG2_DSN c_rk2
+touch "$WORK/w5"; sleep 1; lapse "${C8:-0}"; wait $pk
+ms=$(Rr c_rk 3 '.ms'); got=$(Rr c_rk 3 "[.body.open[]? | select(.id == ${C8:-0})] | length"); to=$(Rr c_rk 3 '.body.timed_out')
+[[ $(Rr c_rk 0 '.body.open | length') == 1 && $(Rr c_rk2 0 '.isError') == false && $got == 1 && $to == false && ${ms:-99999} -le 8000 ]] && ok "C12 a known request that lapses back to open wakes the wait (${ms} ms)" || bad "C12 the lapsed known request: seen '$got', timed_out '$to' in '${ms}' ms (the first wait's open $(Rr c_rk 0 '.body.open | length'), the other login's claim isError $(Rr c_rk2 0 '.isError'))"
+# C13: the claim's answer lost after its commit
+reset_inv; C9=$(ask_q "the claim's answer lost")
+px "drop agent_investigation_claim("
+calls c_dr "$(tc claim_investigation "{\"id\":${C9:-0},\"agent\":\"agent-dr\"}")" "$(tc list_investigations '{"limit":5}')"
+mc AGP_DSN c_dr; f=$(pxn "fired drop agent_investigation_claim("); n=$(pxn "seen agent_investigation_claim("); px
+cl=$(q "select count(*) from pgvigil.investigation_journal where investigation_id = ${C9:-0} and event = 'claimed'"); b=$(Rr c_dr 0 '.body')
+[[ $f == 1 && $n == 1 && $cl == 1 && $(Rr c_dr 0 '.isError') == true && $b == *"unknown"* && $(Rr c_dr 1 '.isError') == false ]] && ok "C13 the claim's answer lost after its commit: sent once, one claim row, '${b:0:100}'; the next call answers" || bad "C13 the lost claim answer: fired $f, sent $n time(s), $cl claim row(s), reply isError '$(Rr c_dr 0 '.isError')' '${b:0:160}', the next call isError '$(Rr c_dr 1 '.isError')'"
 
 echo "--- B. the brief"
 reset_inv
@@ -382,7 +427,8 @@ calls s_1 "$(tc claim_investigation "{\"id\":${S1R:-0},\"agent\":\"agent-s\"}")"
   "$(sel "SELECT pg_sleep(20)")" \
   "$(sel "SELECT g FROM generate_series(1, 5000) g")" \
   "$(sel "SELECT pg_advisory_lock(4242) IS NOT NULL AS got")" \
-  "$(tc run_select "{\"id\":${S1R:-0},\"claim_id\":\"bogus\",\"sql\":\"SELECT 1\"}")"
+  "$(tc run_select "{\"id\":${S1R:-0},\"claim_id\":\"bogus\",\"sql\":\"SELECT 1\"}")" \
+  "$(sel "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND objid = 4242")"
 mc AG1_DSN s_1
 n=$(Rr s_1 1 '.body.rows[0][0]')
 [[ $(Rr s_1 1 '.isError') == false && $n == "$NINST" ]] && ok "S1 a SELECT answers its rows (instances: $n)" || bad "S1 the SELECT: $(R s_1 1 '.body' | cut -c1-200) (want $NINST)"
@@ -394,7 +440,7 @@ ms=$(Rr s_1 9 '.ms'); b=$(Rr s_1 9 '.body')
 [[ $(Rr s_1 9 '.isError') == true && $b == *"statement timeout"* && ${ms:-99999} -lt 19000 ]] && ok "S3 pg_sleep(20) cut by the statement timeout in $ms ms" || bad "S3 pg_sleep(20): ${b:0:160} in $ms ms"
 [[ $(Rr s_1 10 '.body.row_count') == 1000 && $(Rr s_1 10 '.body.cut') == true ]] && ok "S4 5,000 rows answer 1,000, cut true" || bad "S4 5,000 rows: $(R s_1 10 '.body | {row_count, cut}')"
 held=$(q "select count(*) from pg_locks where locktype = 'advisory' and objid = 4242")
-[[ $(Rr s_1 11 '.isError') == false && $held == 0 ]] && ok "S5 an advisory lock taken in one call is not held after it" || bad "S5 the advisory lock: $(R s_1 11 '.body' | cut -c1-120), held now $held"
+[[ $(Rr s_1 11 '.isError') == false && $(Rr s_1 13 '.body.rows[0][0]') == 0 && $held == 0 ]] && ok "S5 an advisory lock taken in one call is not held after it (read by the next call while the agent runs)" || bad "S5 the advisory lock: $(R s_1 11 '.body' | cut -c1-120), held at the next call $(R s_1 13 '.body.rows' | cut -c1-60), held now $held"
 [[ $(Rr s_1 12 '.isError') == true && $(Rr s_1 12 '.body') == *"not your claim"* ]] && ok "S6 a bogus claim id: 'not your claim'" || bad "S6 a bogus claim id: $(R s_1 12 '.body' | cut -c1-160)"
 S2R=$(ask_q "simple protocol")
 calls s_2 "$(tc claim_investigation "{\"id\":${S2R:-0},\"agent\":\"agent-s2\"}")" "$(tc run_select "$(jq -cn --argjson i "${S2R:-0}" '{id:$i,claim_id:"$claim",sql:"SELECT 1) AS q; COMMIT; SET statement_timeout = 0; SELECT pg_sleep(60); SELECT * FROM (SELECT 1"}')")"
@@ -402,22 +448,53 @@ mc AG1S_DSN s_2
 slept=$(q "select count(*) from pg_stat_activity where usename = '$(L ag1)' and query like '%pg_sleep(60)%' and pid <> pg_backend_pid()")
 ms=$(Rr s_2 1 '.ms')
 [[ $(Rr s_2 1 '.isError') == true && ${ms:-99999} -lt 10000 && $slept == 0 ]] && ok "S7 the multi-statement text on a simple_protocol DSN refused in $ms ms, its pg_sleep never ran" || bad "S7 simple_protocol: $(R s_2 1 '.body' | cut -c1-160) in $ms ms, sleeping $slept ($(jq -r 'select(.exit != null) | .stderr' "$WORK/s_2.out" | tail -1 | cut -c1-120))"
-# J: every run_select of s_1 with a valid claim (11; the bogus claim id is refused before the record) is one select row
+# J: every run_select of s_1 with a valid claim (12; the bogus claim id is refused before the record) is one select row
 nsel=$(q "select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0} and event = 'select'")
 nms=$(q "select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0} and event = 'select' and ms is not null and outcome is not null")
 ntx=$(q "select count(*) from pgvigil.ui_investigation_journal_text t join pgvigil.investigation_journal j on j.id = t.journal_id where j.investigation_id = ${S1R:-0} and j.event = 'select'")
 nref=$(q "select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0} and event = 'select' and outcome like 'refused%'")
-[[ $nsel == 11 && $nms == 11 && $ntx == 11 && $nref -ge 8 ]] && ok "J1 the record: 11 select rows (rows, ms, outcome; $nref refused), 11 texts in the ui_ table" || bad "J1 the record: $nsel select rows, $nms with ms and outcome, $ntx texts, $nref refused (want 11, 11, 11, >= 8)"
+[[ $nsel == 12 && $nms == 12 && $ntx == 12 && $nref -ge 8 ]] && ok "J1 the record: 12 select rows (rows, ms, outcome; $nref refused), 12 texts in the ui_ table" || bad "J1 the record: $nsel select rows, $nms with ms and outcome, $ntx texts, $nref refused (want 12, 12, 12, >= 8)"
 a=$(as "$(L rd)" -c "select count(*) from pgvigil.investigation_journal"); b=$(as "$(L rd)" -c "select count(*) from pgvigil.ui_investigation_journal_text")
 [[ $a =~ ^[0-9]+$ && $b == *"permission denied"* ]] && ok "J2 the plain reader reads the journal ($a rows), not its texts" || bad "J2 the plain reader: journal '${a:0:80}', texts '${b:0:120}'"
 api "$S1" s1 "$U2" GET "investigations?id=${S1R:-0}" >/dev/null
-[[ $(B '[.journal[]? | select(.event == "select") | .text] | map(select(. != null)) | length') == 11 && $(B '[.journal[]? | .text] | any(. == "SELECT count(*) AS n FROM pgvigil.instances")') == true ]] && ok "J3 serve shows a signed-in user each statement's text" || bad "J3 serve's journal: $(head -c 240 "$WORK/body")"
+[[ $(B '[.journal[]? | select(.event == "select") | .text] | map(select(. != null)) | length') == 12 && $(B '[.journal[]? | .text] | any(. == "SELECT count(*) AS n FROM pgvigil.instances")') == true ]] && ok "J3 serve shows a signed-in user each statement's text" || bad "J3 serve's journal: $(head -c 240 "$WORK/body")"
 # filled to 198: the lapse the claim settles writes row 199, the claim row 200, the run's would be the 201st
 q "insert into pgvigil.investigation_journal (investigation_id, at, event, login, outcome) select ${S1R:-0}, now(), 'select', 'proof', 'filler' from generate_series(1, greatest(0, 198 - (select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0})))" >/dev/null
 calls s_3 "$(tc claim_investigation "{\"id\":${S1R:-0},\"agent\":\"agent-s\"}")" "$(sel "SELECT 1")"
 q "update pgvigil.investigations set lease_until = now() - interval '1 second' where id = ${S1R:-0}" >/dev/null
 mc AG1_DSN s_3
-[[ $(Rr s_3 1 '.isError') == true && $(Rr s_3 1 '.body') == *"the request's record is full"* ]] && ok "S8 a request whose record holds 200 rows refuses the next run" || bad "S8 the full record: $(R s_3 1 '.body' | cut -c1-200) (claim: $(R s_3 0 '.body' | cut -c1-100))"
+[[ $(Rr s_3 0 '.isError') == false && $(Rr s_3 1 '.isError') == true && $(Rr s_3 1 '.body') == *"the request's record is full"* ]] && ok "S8 a request whose record holds 200 rows refuses the next run" || bad "S8 the full record: $(R s_3 1 '.body' | cut -c1-200) (claim: $(R s_3 0 '.body' | cut -c1-100))"
+# S9-S15: S9 / S11 the proxy holds a statement, S10 / S14 it loses a committed write's answer
+xsel() { tc run_select "$(jq -cn --argjson i "$1" --arg s "$2" '{id:$i,claim_id:"$claim",sql:$s}')"; }
+xclaim() { tc claim_investigation "{\"id\":${1:-0},\"agent\":\"agent-x\"}"; }
+S9R=$(ask_q "stalled select"); px "stall stall_$SUF"
+calls s_9 "$(xclaim "$S9R")" "$(xsel "${S9R:-0}" "SELECT 'stall_$SUF' AS s")" "$(tc list_investigations '{"limit":5}')"
+mc AGP_DSN s_9; f=$(pxn "fired stall stall_$SUF"); px
+ms=$(Rr s_9 1 '.ms'); b=$(Rr s_9 1 '.body')
+[[ $f == 1 && $(Rr s_9 1 '.isError') == true && ${ms:-99999} -le 25000 && $(Rr s_9 2 '.isError') == false ]] && ok "S9 run_select with no answer from the repository ends in $ms ms: '${b:0:100}'; the next call answers" || bad "S9 the held run_select: fired $f, isError '$(Rr s_9 1 '.isError')' in '${ms}' ms '${b:0:120}', the next call isError '$(Rr s_9 2 '.isError')'"
+S10R=$(ask_q "the record's answer lost"); px "drop agent_investigation_journal_select("
+calls s_10 "$(xclaim "$S10R")" "$(xsel "${S10R:-0}" "SELECT 'once_$SUF' AS s")"
+mc AGP_DSN s_10; f=$(pxn "fired drop agent_investigation_journal_select("); n=$(pxn "seen agent_investigation_journal_select("); px
+oc=$(q "select string_agg(outcome, ',' order by id) from pgvigil.investigation_journal where investigation_id = ${S10R:-0} and event = 'select'"); b=$(Rr s_10 1 '.body')
+[[ $f == 1 && $n == 1 && $oc == running && $(Rr s_10 1 '.isError') == true && $b == *"unknown"* ]] && ok "S10 the record's answer lost after its commit: one select row left 'running', no run, '${b:0:100}'" || bad "S10 the lost record answer: fired $f, sent $n time(s), select rows '$oc', reply isError '$(Rr s_10 1 '.isError')' '${b:0:160}'"
+S11R=$(ask_q "stalled renew"); px "stall agent_investigation_renew("
+calls s_11 "$(xclaim "$S11R")" "$(tc renew_investigation "{\"id\":${S11R:-0},\"claim_id\":\"\$claim\"}")" "$(tc list_investigations '{"limit":5}')"
+mc AGP_DSN s_11; f=$(pxn "fired stall agent_investigation_renew("); px
+ms=$(Rr s_11 1 '.ms'); b=$(Rr s_11 1 '.body')
+[[ $f == 1 && $(Rr s_11 1 '.isError') == true && ${ms:-99999} -le 25000 && $(Rr s_11 2 '.isError') == false ]] && ok "S11 a write with no answer (renew) ends in $ms ms: '${b:0:100}'; the next call answers on a new connection" || bad "S11 the held renew: fired $f, isError '$(Rr s_11 1 '.isError')' in '${ms}' ms '${b:0:120}', the next call isError '$(Rr s_11 2 '.isError')'"
+S12R=$(ask_q "operators"); S15R=$(ask_q "never claimed")
+calls s_12 "$(xclaim "$S12R")" "$(xsel "${S12R:-0}" "SELECT to_tsvector('simple', 'a b')@@to_tsquery('simple', 'a') AS m")" "$(xsel "${S12R:-0}" "SELECT current_setting('application_name') AS a")" \
+  "$(xsel "${S12R:-0}" "SELECT pgvigil.agent_investigation_claim(${S15R:-0}, 'ro') AS c")"
+mc AG1_DSN s_12
+[[ $(Rr s_12 1 '.isError') == false && $(Rr s_12 1 '.body.rows[0][0]') == true ]] && ok "S12 a SELECT holding '@@to_tsquery(' runs as written" || bad "S12 the @@ operator: $(R s_12 1 '.body' | cut -c1-200)"
+[[ $(Rr s_12 2 '.body.rows[0][0]') == pgvigil-mcp-select ]] && ok "S13 run_select's session is named pgvigil-mcp-select" || bad "S13 run_select's application_name: $(R s_12 2 '.body' | cut -c1-160)"
+st=$(q "select state from pgvigil.investigations where id = ${S15R:-0}")
+[[ $(Rr s_12 3 '.isError') == true && $(Rr s_12 3 '.body') == *"read-only transaction"* && $st == open ]] && ok "S15 a function the agent may EXECUTE that writes (a claim), run through run_select: refused 'read-only transaction', the request still open" || bad "S15 the read-only run: $(R s_12 3 '.body' | cut -c1-200), the request '$st'"
+S14R=$(ask_q "the outcome's answer lost"); px "drop agent_investigation_journal_done("
+calls s_14 "$(xclaim "$S14R")" "$(xsel "${S14R:-0}" "SELECT 1 AS one")"
+mc AGP_DSN s_14; f=$(pxn "fired drop agent_investigation_journal_done("); n=$(pxn "seen agent_investigation_journal_done("); px
+rc=$(Rr s_14 1 '.body.record // empty')
+[[ $f == 1 && $n == 1 && $(Rr s_14 1 '.isError') == false && $(Rr s_14 1 '.body.row_count') == 1 && $rc == *"unknown"* ]] && ok "S14 the outcome write's answer lost: the rows answer with the record line '${rc:0:100}'" || bad "S14 the lost outcome answer: fired $f, sent $n time(s), reply $(R s_14 1 '.body' | cut -c1-200)"
 
 echo "--- P. the report"
 reset_inv
@@ -440,6 +517,15 @@ a=$(as "$(L rd)" -c "select verdict from pgvigil.investigations where id = ${P1:
 c=$(api "$S1" s1 "$U1" POST investigations/close "{\"id\":${P1:-0},\"reason\":\"done $SUF\"}")
 r=$(q "select state || '|' || closed_by from pgvigil.investigations where id = ${P1:-0}"); j=$(q "select count(*) from pgvigil.investigation_journal where investigation_id = ${P1:-0} and event = 'closed'")
 [[ $c == 200 && $r == "closed|$U1" && $j == 1 ]] && ok "P5 close with a reason: closed by $U1, journal 'closed'" || bad "P5 close: http $c, '$r', journal $j ($(head -c 160 "$WORK/body"))"
+# P6: a report's sql only on an ask, the verdict matched to the kind, the entries' shapes
+P6R=$(ask_finding "P6")
+rp() { tc report_investigation "$(jq -cn --argjson i "${P6R:-0}" --argjson x "$1" '{id:$i,claim_id:"$claim",summary:"s",body:"b"} + $x')"; }
+calls p_6 "$(tc claim_investigation "{\"id\":${P6R:-0},\"agent\":\"agent-p6\"}")" "$(rp '{"verdict":"real","sql":"CREATE INDEX ON t (a)"}')" "$(rp '{"verdict":"answered"}')" \
+  "$(rp '{"verdict":"real","evidence":["x"]}')" "$(rp '{"verdict":"real","queries_run":[{"a":1}]}')" "$(rp '{"verdict":"needs_person","evidence":[{"tool":"instance_findings","arguments":{},"key_numbers":"1","basis":"inferred"}],"queries_run":["SELECT 1"]}')"
+mc AG1_DSN p_6
+w=""; for pair in "1:only an ask" "2:a finding's verdict" "3:evidence entry 1" "4:queries_run entry 1"; do i=${pair%%:*}
+  [[ $(Rr p_6 "$i" '.isError') == true && $(Rr p_6 "$i" '.body') == *"${pair#*:}"* ]] || w+=" [$i: $(R p_6 "$i" '.body' | cut -c1-100)]"; done
+[[ -z $w && $(Rr p_6 5 '.isError') == false ]] && ok "P6 refused: a finding's sql, a finding 'answered', an evidence entry and a queries_run entry of the wrong shape; then a good report accepted" || bad "P6 the report's shapes:$w the good report $(R p_6 5 '.body' | cut -c1-120)"
 
 echo "--- K. the ask"
 reset_inv
@@ -544,7 +630,8 @@ if [[ -n "${PGVIGIL_SKIP_PAGES:-}" ]]; then NOTPROVEN+=("U the pages (PGVIGIL_SK
   chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank >"$WORK/chrome.log" 2>&1 & CHR=$!
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   cat > "$WORK/u.mjs" <<'JS'
-const [port, base, cookie, hash, axePath, theme] = process.argv.slice(2);
+const [port, base, hash, axePath, theme] = process.argv.slice(2);
+const cookie = process.env.PGAGT_COOKIE;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
 const ws = new WebSocket(t.webSocketDebuggerUrl);
@@ -575,11 +662,11 @@ await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
 process.exit(0);
 JS
   CK1=$(awk '$6 == "pgvigil_session" {print $7}' "$WORK/jar-s1-$U1"); CK2=$(awk '$6 == "pgvigil_session" {print $7}' "$WORK/jar-s2-$U1")
-  pg() { timeout 90 node "$WORK/u.mjs" "$CDP" "$1/" "$2" "$3" "${4:-}" "${5:-}" 2>&1 | tail -1; }
+  pg() { PGAGT_COOKIE=$2 timeout 90 node "$WORK/u.mjs" "$CDP" "$1/" "$3" "${4:-}" "${5:-}" 2>&1 | tail -1; }
   f=$(pg "$S1" "$CK1" "#/findings"); i=$(pg "$S1" "$CK1" "#/investigations?id=${U1R:-0}"); off=$(pg "$S2" "$CK2" "#/findings")
   [[ $(jq -r '.investigate' <<<"$f" 2>/dev/null) -ge 1 ]] && ok "U1 #/findings: an Investigate button on a finding row" || bad "U1 #/findings: $f"
   [[ $(jq -r '[.ask, (.rows >= 1), .unreviewed] | all' <<<"$i" 2>/dev/null) == true ]] && ok "U2 #/investigations: the Ask box, the grid, the report's 'unreviewed' line" || bad "U2 #/investigations: $i"
-  [[ $(jq -r '.investigate' <<<"$off" 2>/dev/null) == 0 ]] && ok "U3 the serve without agents: no Investigate button" || bad "U3 the serve without agents: $off"
+  [[ $(jq -r '(.investigate == 0) and (.rows >= 1)' <<<"$off" 2>/dev/null) == true ]] && ok "U3 the serve without agents: the findings drawn, no Investigate button" || bad "U3 the serve without agents: $off"
   for th in light dark; do a=$(pg "$S1" "$CK1" "#/investigations?id=${U1R:-0}" "$WORK/node_modules/axe-core/axe.min.js" "$th")
     [[ $(jq -r '.axeNodes' <<<"$a" 2>/dev/null) == 0 ]] && ok "U4 axe-core on #/investigations ($th): 0 violation nodes" || bad "U4 axe-core ($th): $a"; done
 fi
