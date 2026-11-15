@@ -27,8 +27,12 @@
 #     DELETE on one table ("may change the repository's tables"), the superuser ('superuser'), pg_read_all_data,
 #     pg_read_server_files, pgvigil_alerter (each named), the database owner reaching the agent role through
 #     options=-c role= ('pg_database_owner': the check reads the SESSION user); the agent role on a standby ('in
-#     recovery'). The plain reader, the reports login and the UI login calling agent_investigation_list: permission
-#     denied; the agent login's own INSERT into pgvigil.investigations: permission denied.
+#     recovery'). The plain reader, the reports login and the UI login calling agent_investigation_list are refused:
+#     'is not a member of pgvigil_agent' (the function's own check on the session user: apply_roles grants every
+#     function outside its lists to the reader at each migrate, until the join file's agent branch takes that back) or,
+#     after the join, 'permission denied for function'; the agent login's own INSERT into pgvigil.investigations:
+#     permission denied. [R3's words widened after the red run, before any code: the migration cannot take the
+#     reader's EXECUTE back while apply_roles grants it at every migrate.]
 #  Q. the request: POST /api/investigations without a session 401, without X-Pgvigil 403; with both 200 and an id; the
 #     row is kind finding, state open, asked_by the UI user; its journal holds 'asked'; its snapshot is serve's read of
 #     the finding (its setting), and a 'snapshot' the body carries is not in it. A user's 11th open request: 409 'already
@@ -226,7 +230,7 @@ refused alerter "$(dsn_of "$(L alra)")" pgvigil_alerter
 refused owner_by_role "$(dsn_of "$(L ownm)") options='-c role=$(L agr)'" pg_database_owner
 for who in rd rep ui; do
   out=$(as "$(L $who)" -c "select pgvigil.agent_investigation_list(null::text, null::text, 1)")
-  [[ $out == *"permission denied for function agent_investigation_list"* ]] && ok "R3 the $who login may not call the agent's functions" || bad "R3 the $who login calling agent_investigation_list: ${out:0:200}"
+  [[ $out == *"permission denied for function agent_investigation_list"* || $out == *"is not a member of pgvigil_agent"* ]] && ok "R3 the $who login may not call the agent's functions" || bad "R3 the $who login calling agent_investigation_list: ${out:0:200}"
 done
 out=$(as "$(L ag1)" -c "insert into pgvigil.investigations (kind) values ('ask')")
 [[ $out == *"permission denied for table investigations"* ]] && ok "R4 the agent login has no INSERT on investigations" || bad "R4 the agent login's INSERT: ${out:0:200}"
@@ -236,7 +240,9 @@ else
   docker network create "$NET" >/dev/null && MADE_NET=$NET && MADE_CT+=("$PRI" "$STB")
   docker run -d --name "$PRI" --network "$NET" -e POSTGRES_HOST_AUTH_METHOD=trust "$IMG" -c wal_level=replica >/dev/null
   for _ in $(seq 1 60); do docker exec "$PRI" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
-  docker exec "$PRI" bash -c "echo 'host replication all all trust' >> /var/lib/postgresql/data/pg_hba.conf && psql -U postgres -XAtqc 'select pg_reload_conf()' -c 'create database sb'" >/dev/null
+  # the image's own data folder ($PGDATA: /var/lib/postgresql/18/docker on 18, .../data before), read inside the container
+  docker exec "$PRI" bash -c 'echo "host replication all all trust" >> "$PGDATA/pg_hba.conf" && psql -U postgres -XAtqc "select pg_reload_conf()" -c "create database sb"' >/dev/null \
+    || echo "note: the primary's replication line or its database sb: $(docker exec "$PRI" bash -c 'echo $PGDATA; ls "$PGDATA" | head -3' 2>&1 | tr '\n' ' ')"
   PRIIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$PRI")
   printf 'repository:\n  dsn: env:SBP_DSN\ninstances: []\n' > "$WORK/cfg-sb.yaml"
   SBP_DSN="host=$PRIIP port=5432 user=postgres dbname=sb sslmode=disable" "$BIN" migrate -config "$WORK/cfg-sb.yaml" >"$WORK/sb-migrate.log" 2>&1 || echo "note: the standby's primary did not migrate: $(tail -2 "$WORK/sb-migrate.log")"
