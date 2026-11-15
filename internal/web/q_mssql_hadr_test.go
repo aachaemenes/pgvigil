@@ -32,17 +32,27 @@ import (
 //	            the first change after its stable SECONDARY_NORMAL, Changed Before the PRIMARY_NORMAL event); the
 //	            Snapshot row 40 s after it on A hidden (an XE row within 2 minutes); the Snapshot failover 10 minutes
 //	            ago: 'Became Primary' on A and 'No Longer Primary' on B, both Failover Type Forced with the statement
-//	            (a FAILOVER DDL in phase rollback on B counts for nothing). Health events (A): the DDL row present.
+//	            (B's row matched by its lower-cased old_primary); E, a third replica of the group with its own copy
+//	            of that failover row, no row. B's failover 40 minutes ago, whose window holds only a FAILOVER DDL in
+//	            phase 'rollback' (lower case): 'No Longer Primary', Failover Type and Reason empty (review 383u B1).
+//	            The distributed group dag-<sfx> on A (its local replica the member group ag-<sfx>): XE 'Became
+//	            Primary' from FORWARDER to GLOBAL_PRIMARY (review 383b S2). ag2-<sfx>, held by B and E only, failed
+//	            over from B to E 20 minutes ago: in the folder read B 'No Longer Primary' and E 'Became Primary'; in
+//	            A's own read (the other replicas' changes included) none of the two (review 383b S1). instances=0:
+//	            no row. Health events (A): the DDL row present.
 //	Mirroring   C: Principal 2, Synchronized 2, Witness Connected 1, status warning (mdb2 has no witness: DBA Dash's MIN
 //	            rule, D7); D: Mirror 1, hidden 1, Synchronized 0. Detail: D's row 'shown on the principal ...', its
 //	            partner found the other way round (C's row names SRVD) with partner state 4; C's mdb partner D.
-//	            Role changes: 'Became Principal' on C for mdb.
+//	            Role changes: 'Became Principal' on C for mdb; C's mdb2 'PRINCIPAL => PRINCIPAL (role sequence 3 => 5)'.
 //	Log shipping C's detail (status all): ls_ok ok, ls_late warning (30 h > 1440 min), ls_msdb warning (msdb's own
-//	            threshold 45 min; its age tier left to msdb), ls_stale na 'not read in 15 minutes', ls_none na 'no log
-//	            restore yet', ls_new na 'New Database', ls_gone warning and missing (a stream pair); no row for ls_mirror,
-//	            ls_simple or ls_test (a pair of one restore). Every critical / warning row equals the worst finding
-//	            mssql_hadr_findings holds for that database, and no ok / na row has one. status=critical,warning gives
-//	            the three warnings only. Summary C: warning, Log Shipped DBs 3, Warning 3, Critical 0, Missing 1, New 1.
+//	            threshold 45 min; its age tier left to msdb), ls_crit critical (50 h > 2880 min; msdb's warning beside
+//	            it: the worst counts), ls_stale na 'not read in 15 minutes', ls_none na 'no log restore yet', ls_new na
+//	            'New Database', ls_new0 na 'New Database' (made an hour ago, its full restore only: New Database before
+//	            'no log restore yet', DBA Dash's order - review 383a S1), ls_gone warning and missing (a stream pair);
+//	            no row for ls_mirror, ls_simple or ls_test (a pair of one restore). Every critical / warning row
+//	            equals the worst finding mssql_hadr_findings holds for that database, and no ok / na row has one.
+//	            status=critical,warning gives the four only; status=none no row. Summary C: critical, Log Shipped DBs
+//	            4, Warning 3, Critical 1, Missing 1, New 2, the age key's threshold in force (default 1440 / 2880).
 func TestHADRFleetOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -62,9 +72,23 @@ func TestHADRFleetOnAStore(t *testing.T) {
 			t.Fatalf("%v\n%s", err, sql)
 		}
 	}
-	names := map[string]string{"A": "SRVA-" + sfx, "B": "SRVB-" + sfx, "C": "SRVC-" + sfx, "D": "SRVD-" + sfx}
+	names := map[string]string{"A": "SRVA-" + sfx, "B": "SRVB-" + sfx, "C": "SRVC-" + sfx, "D": "SRVD-" + sfx, "E": "SRVE-" + sfx}
 	ids := map[string]int{}
-	for _, k := range []string{"A", "B", "C", "D", "P"} {
+	defer func() { // registered first: a Fatal while the instances are made still removes the ones made
+		var all []int
+		for _, id := range ids {
+			all = append(all, id)
+		}
+		for _, tb := range []string{"mssql_ag_events", "mssql_ag_sample", "mssql_mirroring_sample", "collection_dates"} {
+			if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.`+tb+` WHERE instance_id = ANY ($1)`, all); err != nil {
+				t.Error(err)
+			}
+		}
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, all); err != nil {
+			t.Error(err)
+		}
+	}()
+	for _, k := range []string{"A", "B", "C", "D", "E", "P"} {
 		engine, platform := "sqlserver", "sqlserver"
 		if k == "P" {
 			engine, platform = "postgres", "onprem"
@@ -81,21 +105,10 @@ func TestHADRFleetOnAStore(t *testing.T) {
 			exec(`INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, server_name) VALUES ($1, now(), $2)`, id, names[k])
 		}
 	}
-	defer func() {
-		all := []int{ids["A"], ids["B"], ids["C"], ids["D"], ids["P"]}
-		for _, tb := range []string{"mssql_ag_events", "mssql_ag_sample", "mssql_mirroring_sample", "collection_dates"} {
-			if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.`+tb+` WHERE instance_id = ANY ($1)`, all); err != nil {
-				t.Error(err)
-			}
-		}
-		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, all); err != nil {
-			t.Error(err)
-		}
-	}()
-	A, B, C, D := ids["A"], ids["B"], ids["C"], ids["D"]
+	A, B, C, D, E := ids["A"], ids["B"], ids["C"], ids["D"], ids["E"]
 	G, ag := "G-"+sfx, "ag-"+sfx
 	now := time.Now().UTC().Truncate(time.Second)
-	for _, k := range []string{"A", "B", "C", "D"} {
+	for _, k := range []string{"A", "B", "C", "D", "E"} {
 		for _, c := range []string{"mssql_ag", "mssql_mirroring", "mssql_logshipping"} {
 			exec(`INSERT INTO pgvigil.collection_dates (instance_id, collection, snapshot_at, status) VALUES ($1, $2, now(), 'ok')
 			      ON CONFLICT (instance_id, collection) DO UPDATE SET snapshot_at = excluded.snapshot_at, status = excluded.status`, ids[k], c)
@@ -109,6 +122,13 @@ func TestHADRFleetOnAStore(t *testing.T) {
 	exec(rep, A, G, names["B"], ag, false, "SECONDARY", "READ_ONLY")
 	exec(rep, B, G, names["A"], ag, false, "PRIMARY", "NO")
 	exec(rep, B, G, names["B"], ag, true, "SECONDARY", "READ_ONLY")
+	exec(rep, E, G, names["E"], ag, true, "SECONDARY", "NO") // a third replica of the group
+	G2, ag2 := "G2-"+sfx, "ag2-"+sfx
+	exec(rep, B, G2, names["B"], ag2, true, "SECONDARY", "NO")
+	exec(rep, E, G2, names["E"], ag2, true, "PRIMARY", "NO")
+	DG, dag := "DG-"+sfx, "dag-"+sfx // the distributed group: A's local replica is the member group ag-<sfx>
+	exec(`INSERT INTO pgvigil.mssql_ag_state (instance_id, group_id, replica_server, snapshot_at, group_name, is_local, is_distributed, role)
+	      VALUES ($1, $2, $3, now(), $4, true, true, 'PRIMARY')`, A, DG, ag, dag)
 	dbr := `INSERT INTO pgvigil.mssql_ag_database_state (instance_id, group_id, replica_server, database_name, snapshot_at, group_name, is_local,
 	          is_primary_replica, synchronization_state, synchronization_health, is_suspended, redo_queue_kb, est_data_loss_s)
 	        VALUES ($1, $2, $3, 'db1', now(), $4, $5, $6, $7, $8, false, $9, $10)`
@@ -117,26 +137,36 @@ func TestHADRFleetOnAStore(t *testing.T) {
 	exec(dbr, B, G, names["B"], ag, true, false, "NOT SYNCHRONIZING", "NOT_HEALTHY", 100, nil)
 	// the reads before the failover, the failover 10 minutes ago seen by both, AlwaysOn_health's rows
 	t10 := now.Add(-10 * time.Minute)
-	exec(`SELECT pgvigil.ensure_month_partition('mssql_ag_sample', $1)`, t10)
+	exec(`SELECT pgvigil.ensure_month_partition('mssql_ag_sample', $1)`, t10.Add(-time.Minute))
 	exec(`INSERT INTO pgvigil.mssql_ag_sample (instance_id, snapshot_at, group_name, replica_server, database_name) VALUES ($1, $2, $3, $4, 'db1')`,
 		A, t10.Add(-time.Minute), ag, names["A"])
 	fo := `INSERT INTO pgvigil.mssql_ag_failovers (instance_id, group_id, at, group_name, old_primary, new_primary) VALUES ($1, $2, $3, $4, $5, $6)`
-	exec(fo, A, G, t10, ag, strings.ToLower(names["B"]), names["A"])
-	exec(fo, B, G, t10, ag, names["B"], names["A"])
+	exec(fo, A, G, t10, ag, names["B"], names["A"])
+	exec(fo, B, G, t10, ag, strings.ToLower(names["B"]), names["A"]) // B matched through old_primary, in another case
+	exec(fo, E, G, t10, ag, names["B"], names["A"])                  // E is neither: no row
+	t20, t40 := now.Add(-20*time.Minute), now.Add(-40*time.Minute)
+	exec(fo, B, G2, t20, ag2, names["B"], names["E"])
+	exec(fo, E, G2, t20, ag2, names["B"], names["E"])
+	exec(fo, B, G, t40, ag, names["B"], names["A"]) // its window holds only the rolled-back FAILOVER below
 	t0 := now.Add(-2 * time.Hour)
 	exec(fo, A, G, t0.Add(48*time.Second), ag, names["B"], names["A"]) // the snapshot twin of the XE row below: hidden
 	ev := `INSERT INTO pgvigil.mssql_ag_events (instance_id, event_at, event_key, snapshot_at, event_name, ag_name, replica_name, previous_state,
 	         current_state, ddl_action, ddl_phase, statement) VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8, $9, $10, $11)`
-	exec(`SELECT pgvigil.ensure_month_partition('mssql_ag_events', $1)`, t0.Add(-time.Hour))
-	exec(`SELECT pgvigil.ensure_month_partition('mssql_ag_events', $1)`, now)
+	tD := now.Add(-90 * time.Minute)
+	for _, at := range []time.Time{t0.Add(-time.Hour), tD.Add(-time.Hour), t40.Add(-20 * time.Second), t10.Add(-30 * time.Second), now} {
+		exec(`SELECT pgvigil.ensure_month_partition('mssql_ag_events', $1)`, at)
+	}
 	exec(ev, A, t0.Add(-time.Hour), "k0", "availability_replica_state_change", ag, names["A"], "RESOLVING_NORMAL", "SECONDARY_NORMAL", nil, nil, nil)
 	exec(ev, A, t0, "k1", "availability_replica_state_change", ag, names["A"], "SECONDARY_NORMAL", "RESOLVING_NORMAL", nil, nil, nil)
 	exec(ev, A, t0.Add(5*time.Second), "k2", "availability_replica_state_change", ag, names["A"], "RESOLVING_NORMAL", "PRIMARY_PENDING", nil, nil, nil)
 	exec(ev, A, t0.Add(8*time.Second), "k3", "availability_replica_state_change", ag, names["A"], "PRIMARY_PENDING", "PRIMARY_NORMAL", nil, nil, nil)
 	exec(ev, A, t10.Add(-30*time.Second), "k4", "alwayson_ddl_executed", ag, nil, nil, nil, "alter", "commit",
 		"ALTER AVAILABILITY GROUP ["+ag+"] FORCE_FAILOVER_ALLOW_DATA_LOSS")
-	exec(ev, B, t10.Add(-20*time.Second), "k5", "alwayson_ddl_executed", ag, nil, nil, nil, "alter", "rollback",
+	exec(ev, B, t40.Add(-20*time.Second), "k5", "alwayson_ddl_executed", ag, nil, nil, nil, "alter", "rollback",
 		"ALTER AVAILABILITY GROUP ["+ag+"] FAILOVER")
+	exec(ev, A, tD.Add(-time.Hour), "d0", "availability_replica_state_change", dag, ag, "RESOLVING_NORMAL", "FORWARDER", nil, nil, nil)
+	exec(ev, A, tD, "d1", "availability_replica_state_change", dag, ag, "FORWARDER", "RESOLVING_NORMAL", nil, nil, nil)
+	exec(ev, A, tD.Add(6*time.Second), "d2", "availability_replica_state_change", dag, ag, "RESOLVING_NORMAL", "GLOBAL_PRIMARY", nil, nil, nil)
 
 	// ---- mirroring: C the principal of mdb (D its mirror, read by a login that is not sysadmin) and of mdb2 (no witness)
 	mir := `INSERT INTO pgvigil.mssql_mirroring_state (instance_id, database_name, snapshot_at, role, state, state_code, partner_instance,
@@ -144,11 +174,13 @@ func TestHADRFleetOnAStore(t *testing.T) {
 	exec(mir, C, "mdb", "PRINCIPAL", "SYNCHRONIZED", 4, names["D"], "TCP://w:5022", "CONNECTED", false)
 	exec(mir, C, "mdb2", "PRINCIPAL", "SYNCHRONIZED", 4, "OTHER-"+sfx, nil, nil, false)
 	exec(mir, D, "mdb", "MIRROR", nil, nil, nil, nil, nil, true)
-	exec(`SELECT pgvigil.ensure_month_partition('mssql_mirroring_sample', $1)`, now)
+	exec(`SELECT pgvigil.ensure_month_partition('mssql_mirroring_sample', $1)`, now.Add(-6*time.Minute))
 	exec(`INSERT INTO pgvigil.mssql_mirroring_sample (instance_id, snapshot_at, database_name, role) VALUES ($1, $2, 'mdb', 'MIRROR')`,
 		C, now.Add(-6*time.Minute))
 	exec(`INSERT INTO pgvigil.mssql_mirroring_role_changes (instance_id, database_name, at, old_role, new_role, old_sequence, new_sequence, partner)
 	      VALUES ($1, 'mdb', $2, 'MIRROR', 'PRINCIPAL', 1, 2, $3)`, C, now.Add(-5*time.Minute), names["D"])
+	exec(`INSERT INTO pgvigil.mssql_mirroring_role_changes (instance_id, database_name, at, old_role, new_role, old_sequence, new_sequence, partner)
+	      VALUES ($1, 'mdb2', $2, 'PRINCIPAL', 'PRINCIPAL', 3, 5, $3)`, C, now.Add(-4*time.Minute), "OTHER-"+sfx)
 
 	// ---- log shipping from restore history on C
 	lrs := `INSERT INTO pgvigil.mssql_logrestore_state (instance_id, database_name, snapshot_at, kind, database_state, recovery_model,
@@ -163,12 +195,16 @@ func TestHADRFleetOnAStore(t *testing.T) {
 	exec(lrs, C, "ls_stale", ago(20), "restore", "FULL", old, false, ago(30), ago(35), ago(30), "L", nil, nil)
 	exec(lrs, C, "ls_none", now, "restore", "FULL", old, false, nil, nil, ago(60), "D", nil, nil)
 	exec(lrs, C, "ls_new", now, "restore", "FULL", ago(60), false, ago(5), ago(8), ago(5), "L", nil, nil)
+	exec(lrs, C, "ls_new0", now, "restore", "FULL", ago(60), false, nil, nil, ago(60), "D", nil, nil)
+	exec(lrs, C, "ls_crit", now, "restore", "FULL", old, false, ago(3000), ago(3005), ago(3000), "L", nil, nil)
 	exec(lrs, C, "ls_mirror", now, "restore", "FULL", old, true, ago(5), ago(8), ago(5), "L", nil, nil)
 	exec(lrs, C, "ls_simple", now, "restore", "SIMPLE", old, false, ago(5), ago(8), ago(5), "L", nil, nil)
 	exec(lrs, C, "ls_gone", now, "pair", nil, nil, nil, ago(60), ago(65), ago(60), "L", 3, false)
 	exec(lrs, C, "ls_test", now, "pair", nil, nil, nil, ago(60), ago(65), ago(60), "L", 1, true)
 	exec(`INSERT INTO pgvigil.mssql_logshipping_state (instance_id, role, database_name, snapshot_at, primary_server, primary_database, secondary_server,
 	        threshold_minutes, last_restored_at) VALUES ($1, 'secondary', 'ls_msdb', now(), $2, 'ls_msdb', '', 45, $3)`, C, "PRIM-"+sfx, ago(90))
+	exec(`INSERT INTO pgvigil.mssql_logshipping_state (instance_id, role, database_name, snapshot_at, primary_server, primary_database, secondary_server,
+	        threshold_minutes, last_restored_at) VALUES ($1, 'secondary', 'ls_crit', now(), $2, 'ls_crit', '', 45, $3)`, C, "PRIM-"+sfx, ago(3000))
 
 	s := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	call := func(q string) map[string]*table {
@@ -212,7 +248,10 @@ func TestHADRFleetOnAStore(t *testing.T) {
 			t.Errorf("%s = %v, want %v", what, got, exp)
 		}
 	}
-	scope := fmt.Sprintf("instances=%d,%d,%d,%d,%d", A, B, C, D, ids["P"])
+	scope := fmt.Sprintf("instances=%d,%d,%d,%d,%d,%d", A, B, C, D, E, ids["P"])
+	if z := call("page=ag&instances=0"); z["summary"] != nil && len(z["summary"].Rows) != 0 {
+		t.Errorf("instances=0: %d summary rows, want none", len(z["summary"].Rows))
+	}
 
 	// ---- AG summary and detail
 	d := call("page=ag&" + scope)
@@ -247,20 +286,31 @@ func TestHADRFleetOnAStore(t *testing.T) {
 	want("A detail primary connections", det[0]["primary_connections"], "ALL")
 
 	// ---- role changes: the folder read (A and B in scope)
-	var rc []string
-	for _, r := range rowsOf(d["role_changes"]) {
-		rc = append(rc, fmt.Sprintf("%v|%v|%v|%v|%v", r["instance_id"], r["change"], r["source"], r["failover_type"], r["reason"]))
+	rcLines := func(tb *table) string {
+		var out []string
+		for _, r := range rowsOf(tb) {
+			out = append(out, fmt.Sprintf("%v|%v|%v|%v|%v|%v", r["instance_id"], r["group_name"], r["change"], r["source"], r["failover_type"], r["reason"]))
+		}
+		sort.Strings(out)
+		return strings.Join(out, "\n")
 	}
-	sort.Strings(rc)
-	wantRC := []string{
-		fmt.Sprintf("%d|Became Primary|Snapshot|Forced|ALTER AVAILABILITY GROUP [%s] FORCE_FAILOVER_ALLOW_DATA_LOSS", A, ag),
-		fmt.Sprintf("%d|Became Primary|XE|<nil>|<nil>", A),
-		fmt.Sprintf("%d|No Longer Primary|Snapshot|Forced|ALTER AVAILABILITY GROUP [%s] FORCE_FAILOVER_ALLOW_DATA_LOSS", B, ag),
+	forced := "Forced|ALTER AVAILABILITY GROUP [" + ag + "] FORCE_FAILOVER_ALLOW_DATA_LOSS"
+	ownRC := []string{
+		fmt.Sprintf("%d|%s|Became Primary|Snapshot|%s", A, ag, forced),
+		fmt.Sprintf("%d|%s|Became Primary|XE|<nil>|<nil>", A, ag),
+		fmt.Sprintf("%d|%s|Became Primary|XE|<nil>|<nil>", A, dag),
+		fmt.Sprintf("%d|%s|No Longer Primary|Snapshot|%s", B, ag, forced),
+		fmt.Sprintf("%d|%s|No Longer Primary|Snapshot|<nil>|<nil>", B, ag),
 	}
+	wantRC := append(append([]string{}, ownRC...), fmt.Sprintf("%d|%s|No Longer Primary|Snapshot|<nil>|<nil>", B, ag2),
+		fmt.Sprintf("%d|%s|Became Primary|Snapshot|<nil>|<nil>", E, ag2))
 	sort.Strings(wantRC)
-	want("role changes", strings.Join(rc, "\n"), strings.Join(wantRC, "\n"))
+	want("role changes (the folder)", rcLines(d["role_changes"]), strings.Join(wantRC, "\n"))
+	// A's own read: its changes and the other replicas' changes of the groups A holds (ag, dag), never ag2's
+	sort.Strings(ownRC)
+	want("role changes (A, others included)", rcLines(call(fmt.Sprintf("page=ag&instance=%d&part=role_changes", A))["role_changes"]), strings.Join(ownRC, "\n"))
 	for _, r := range rowsOf(d["role_changes"]) {
-		if r["source"] == "XE" {
+		if r["source"] == "XE" && r["group_name"] == ag {
 			at := func(v any) time.Time { x, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(v)); return x }
 			want("XE changed_after", at(r["changed_after"]).Equal(t0), true)
 			want("XE changed_before", at(r["changed_before"]).Equal(t0.Add(8*time.Second)), true)
@@ -303,11 +353,12 @@ func TestHADRFleetOnAStore(t *testing.T) {
 			want("C mdb partner monitored as", r["partner_monitored_as"], "hadr383d-"+sfx)
 		}
 	}
-	mrc := rowsOf(m["role_changes"])
-	if len(mrc) != 1 {
-		t.Fatalf("mirroring role changes = %v", m["role_changes"])
+	var mch []string
+	for _, r := range rowsOf(m["role_changes"]) {
+		mch = append(mch, fmt.Sprintf("%v|%v", r["database_name"], r["change"]))
 	}
-	want("mirroring change", mrc[0]["change"], "Became Principal")
+	sort.Strings(mch)
+	want("mirroring changes", strings.Join(mch, ";"), "mdb2|PRINCIPAL => PRINCIPAL (role sequence 3 => 5);mdb|Became Principal")
 
 	// ---- log shipping: the page's status against the findings view
 	ls := call(fmt.Sprintf("page=logshipping&instance=%d", C))
@@ -318,7 +369,7 @@ func TestHADRFleetOnAStore(t *testing.T) {
 	wantLS := map[string]string{
 		"ls_ok": "ok|<nil>|false", "ls_late": "warning|<nil>|false", "ls_msdb": "warning|<nil>|false",
 		"ls_stale": "na|not read in 15 minutes|false", "ls_none": "na|no log restore yet|false", "ls_new": "na|New Database|false",
-		"ls_gone": "warning|<nil>|true",
+		"ls_new0": "na|New Database|false", "ls_crit": "critical|<nil>|false", "ls_gone": "warning|<nil>|true",
 	}
 	want("log shipping detail", fmt.Sprint(got), fmt.Sprint(wantLS))
 	frs, err := pool.Query(ctx, `SELECT object, severity FROM pgvigil.mssql_hadr_findings WHERE instance_id = $1
@@ -358,15 +409,19 @@ func TestHADRFleetOnAStore(t *testing.T) {
 		}
 	}
 	cw := rowsOf(call(fmt.Sprintf("page=logshipping&instance=%d&status=critical,warning&part=detail", C))["detail"])
-	want("critical,warning rows", len(cw), 3)
+	want("critical,warning rows", len(cw), 4)
+	nr := call(fmt.Sprintf("page=logshipping&instance=%d&status=none&part=detail", C))["detail"]
+	want("status=none rows", nr != nil && len(nr.Rows) > 0, false)
 	sum := rowsOf(ls["summary"])
 	if len(sum) != 1 {
 		t.Fatalf("log shipping summary = %v", ls["summary"])
 	}
-	want("summary status", sum[0]["status"], "warning")
-	for k, v := range map[string]float64{"log_shipped_dbs": 3, "warning_count": 3, "critical_count": 0, "missing_count": 1, "new_database_count": 1} {
+	want("summary status", sum[0]["status"], "critical")
+	for k, v := range map[string]float64{"log_shipped_dbs": 4, "warning_count": 3, "critical_count": 1, "missing_count": 1, "new_database_count": 2,
+		"age_warn": 1440, "age_crit": 2880} {
 		want("summary "+k, num(sum[0][k]), v)
 	}
+	want("summary age_level", sum[0]["age_level"], "default")
 }
 
 // TestHADRFleetProof is driven by scripts/proof-mssql-hadr.sh part U (the real two-node group of part S):

@@ -589,7 +589,11 @@ END $$;
 -- is about and its role (msdb's primary rows are 'primary'), then one status row for every restoring database read
 -- from restore history that has no finding of its own: na_reason NULL = judged by the restore-history check and OK,
 -- else why it is not judged. pgvigil.mssql_hadr_findings takes its log shipping arms from here (severity NOT NULL)
--- and the Log Shipping page its Status, so the two cannot differ.
+-- and the Log Shipping page its Status, so a database's Status and its findings come from one judge. Two cases the
+-- page cannot show as the findings do: a server whose restore history was not read (the msdb arm still judges it;
+-- the page has no restore row for it), and two restoring databases whose names differ only in case on a
+-- case-sensitive server (a finding is matched to its row by lower(database_name)).
+-- The thresholds are read only for the rows that are judged (lr), not for every restoring database.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_logship_judged()
 RETURNS TABLE (instance_id int, database_name text, role text, severity text, check_name text, object text,
                at timestamptz, detail text, na_reason text)
@@ -598,29 +602,33 @@ WITH base AS (
   SELECT s.*, l.new_database_hours,
          extract(epoch FROM s.snapshot_at - s.last_log_restore_at) / 60 AS age_min,
          extract(epoch FROM s.last_log_restore_at - s.last_log_backup_start_at) / 60 AS latency_min,
-         ta.warn AS age_warn, ta.crit AS age_crit, tl.warn AS lat_warn, tl.crit AS lat_crit,
-         EXISTS (SELECT 1 FROM pgvigil.mssql_logshipping_state m WHERE m.instance_id = s.instance_id AND m.role = 'secondary'
-                    AND lower(m.database_name) = lower(s.database_name) AND m.threshold_minutes > 0
-                    AND m.snapshot_at > now() - interval '15 minutes') AS msdb_judged,
          -- why a row is not judged (NULL = judged): lr's WHERE, one condition each, in this order. The page shows no
-         -- row for the first three (DBA Dash's LogShippingStatus.sql leaves mirrored and SIMPLE databases out)
+         -- row for the first three (DBA Dash's LogShippingStatus.sql leaves mirrored and SIMPLE databases out); a new
+         -- database is N/A (New Database) before 'no log restore' (DBA Dash's order: IsNewDatabase before
+         -- TimeSinceLast IS NULL), so a copy made an hour ago with only its full restore reads New Database
          CASE WHEN s.is_mirrored IS TRUE THEN 'mirrored'
               WHEN coalesce(s.in_availability_group, false) THEN 'availability group'
               WHEN coalesce(s.recovery_model, '') = 'SIMPLE' THEN 'SIMPLE recovery'
               WHEN s.snapshot_at <= now() - interval '15 minutes' THEN 'not read in 15 minutes'
               WHEN s.is_mirrored IS NULL THEN 'mirroring unknown (the login cannot see it)'
-              WHEN s.last_log_restore_at IS NULL THEN 'no log restore yet'
-              WHEN l.instance_id IS NULL THEN 'no thresholds read'
+              WHEN l.instance_id IS NULL THEN 'not a SQL Server instance'
               WHEN s.created_at IS NOT NULL AND s.created_at > s.snapshot_at - make_interval(secs => (l.new_database_hours * 3600)::float8)
                 THEN 'New Database'
+              -- restore history is read for 14 days: an older last log restore leaves last_log_restore_at empty
+              WHEN s.last_log_restore_at IS NULL THEN CASE WHEN s.last_restore_type = 'L' THEN 'no log restore in the last 14 days' ELSE 'no log restore yet' END
          END AS na_reason
     FROM pgvigil.mssql_logrestore_state s
     LEFT JOIN pgvigil.mssql_hadr_limits l ON l.instance_id = s.instance_id
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_age', s.database_name) ta
-    CROSS JOIN LATERAL pgvigil.pg_threshold(s.instance_id, 'logship_restore_latency', s.database_name) tl
    WHERE s.kind = 'restore'
 ), lr AS (
-  SELECT b.* FROM base b WHERE b.na_reason IS NULL
+  SELECT b.*, ta.warn AS age_warn, ta.crit AS age_crit, tl.warn AS lat_warn, tl.crit AS lat_crit,
+         EXISTS (SELECT 1 FROM pgvigil.mssql_logshipping_state m WHERE m.instance_id = b.instance_id AND m.role = 'secondary'
+                    AND lower(m.database_name) = lower(b.database_name) AND m.threshold_minutes > 0
+                    AND m.snapshot_at > now() - interval '15 minutes') AS msdb_judged
+    FROM base b
+    CROSS JOIN LATERAL pgvigil.pg_threshold(b.instance_id, 'logship_restore_age', b.database_name) ta
+    CROSS JOIN LATERAL pgvigil.pg_threshold(b.instance_id, 'logship_restore_latency', b.database_name) tl
+   WHERE b.na_reason IS NULL
 ), f AS (
 -- log shipping: msdb's monitor (0066's arm)
 SELECT s.instance_id, s.database_name, s.role, 'warning'::text AS severity, 'log shipping is behind its threshold'::text AS check_name,

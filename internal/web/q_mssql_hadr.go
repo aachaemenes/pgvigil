@@ -297,7 +297,7 @@ SELECT d.database_name, d.group_name, d.replica_server, d.synchronization_state,
        d.secondary_lag_s,
        CASE WHEN coalesce(d.is_primary_replica, false) THEN -1
             WHEN upper(replace(d.synchronization_state, '_', ' ')) = 'SYNCHRONIZED' THEN 0
-            ELSE coalesce(d.est_data_loss_s, -2) END AS data_loss_s,
+            ELSE d.est_data_loss_s END AS data_loss_s,
        CASE WHEN coalesce(d.is_primary_replica, false) THEN -1 WHEN d.redo_queue_kb IS NULL THEN -2 WHEN d.redo_queue_kb = 0 THEN 0
             ELSE coalesce(d.est_recovery_s, -2) END AS recovery_s,
        d.redo_queue_kb, d.redo_rate_kb_s, d.log_send_queue_kb, d.log_send_rate_kb_s,
@@ -346,40 +346,64 @@ WITH ` + hadrScope + `, rs AS (
     FROM pgvigil.instances i
     JOIN rs ON rs.instance_id = i.instance_id
     LEFT JOIN pgvigil.mssql_instance mi ON mi.instance_id = i.instance_id
+), ln AS (
+  -- every name a replica of the instance goes by: its server name and each local replica row's name - a distributed
+  -- group's local replica is its member group, and its state changes and failover rows name that group (DBA Dash
+  -- matches any is_local replica name, AGHealthEvents_Upd.sql:125-133)
+  SELECT DISTINCT ON (x.instance_id, lower(x.lname)) x.instance_id, x.lname
+    FROM (SELECT n.instance_id, n.server_name AS lname FROM names n WHERE n.server_name IS NOT NULL
+          UNION ALL
+          SELECT a.instance_id, a.replica_server FROM pgvigil.mssql_ag_state a JOIN rs ON rs.instance_id = a.instance_id
+           WHERE a.is_local AND a.replica_server IS NOT NULL) x
+   ORDER BY x.instance_id, lower(x.lname), x.lname
 ), ev AS (
-  SELECT e.instance_id, e.ag_name, e.replica_name, e.event_at,
+  SELECT e.instance_id, e.ag_name, e.replica_name, e.event_at, e.event_key,
          CASE WHEN upper(e.previous_state) IN ('PRIMARY_NORMAL', 'GLOBAL_PRIMARY') THEN 1 WHEN upper(e.previous_state) IN ('SECONDARY_NORMAL', 'FORWARDER') THEN 2 END AS prev_stable,
          CASE WHEN upper(e.current_state) IN ('PRIMARY_NORMAL', 'GLOBAL_PRIMARY') THEN 1 WHEN upper(e.current_state) IN ('SECONDARY_NORMAL', 'FORWARDER') THEN 2 END AS cur_stable
     FROM pgvigil.mssql_ag_events e
     JOIN names n ON n.instance_id = e.instance_id
-   WHERE lower(e.event_name) = 'availability_replica_state_change' AND e.event_at <= $4::timestamptz AND e.event_at > $3::timestamptz - interval '30 days'
-     AND (n.server_name IS NULL OR lower(e.replica_name) = lower(n.server_name))      -- the instance's own replica
+   -- a day past the range's end: a change that began before a custom end and finished after it is kept (the final
+   -- WHERE's overlap rule, DBA Dash's :114-115)
+   WHERE lower(e.event_name) = 'availability_replica_state_change' AND e.event_at <= $4::timestamptz + interval '1 day' AND e.event_at > $3::timestamptz - interval '30 days'
+     AND (NOT EXISTS (SELECT 1 FROM ln WHERE ln.instance_id = e.instance_id)        -- nothing local known: every replica
+          OR EXISTS (SELECT 1 FROM ln WHERE ln.instance_id = e.instance_id AND lower(ln.lname) = lower(e.replica_name)))
+), ew AS (
+  -- per replica in time order: grp = how many stable states came before the event (the events after one stable state
+  -- up to the next share it); stable_no numbers the stable events. One pass of window functions, not a scan of the
+  -- replica's events per event (review 383b S4)
+  SELECT e.*,
+         count(e.cur_stable) OVER (PARTITION BY e.instance_id, lower(e.ag_name), lower(e.replica_name) ORDER BY e.event_at, e.event_key
+                                   ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS grp,
+         CASE WHEN e.cur_stable IS NOT NULL
+              THEN count(e.cur_stable) OVER (PARTITION BY e.instance_id, lower(e.ag_name), lower(e.replica_name) ORDER BY e.event_at, e.event_key
+                                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) END AS stable_no
+    FROM ev e
+), eg AS (
+  -- the first change after the previous stable state (Changed After) and its stable previous state
+  SELECT w.*, first_value(w.event_at) OVER g AS grp_first_at, first_value(w.prev_stable) OVER g AS grp_first_prev
+    FROM ew w
+  WINDOW g AS (PARTITION BY w.instance_id, lower(w.ag_name), lower(w.replica_name), w.grp ORDER BY w.event_at, w.event_key)
 ), xe AS (
   SELECT e.instance_id, e.ag_name AS group_name, e.replica_name AS replica_server, pr.prev_role, e.cur_stable AS new_role,
-         fc.event_at AS changed_after, e.event_at AS changed_before, 'XE'::text AS source
-    FROM ev e
-    LEFT JOIN LATERAL (SELECT p.event_at, p.cur_stable FROM ev p
-                        WHERE p.instance_id = e.instance_id AND lower(p.ag_name) = lower(e.ag_name) AND lower(p.replica_name) = lower(e.replica_name)
-                          AND p.cur_stable IS NOT NULL AND p.event_at < e.event_at
-                        ORDER BY p.event_at DESC LIMIT 1) pv ON true
-    LEFT JOIN LATERAL (SELECT f.event_at, f.prev_stable FROM ev f
-                        WHERE f.instance_id = e.instance_id AND lower(f.ag_name) = lower(e.ag_name) AND lower(f.replica_name) = lower(e.replica_name)
-                          AND f.event_at <= e.event_at AND (pv.event_at IS NULL OR f.event_at > pv.event_at)
-                        ORDER BY f.event_at LIMIT 1) fc ON true
-    CROSS JOIN LATERAL (SELECT coalesce(fc.prev_stable, pv.cur_stable) AS prev_role) pr
+         e.grp_first_at AS changed_after, e.event_at AS changed_before, 'XE'::text AS source
+    FROM eg e
+    LEFT JOIN ew p ON p.instance_id = e.instance_id AND lower(p.ag_name) = lower(e.ag_name) AND lower(p.replica_name) = lower(e.replica_name)
+                  AND p.stable_no = e.grp                                       -- the previous stable state
+    CROSS JOIN LATERAL (SELECT coalesce(e.grp_first_prev, p.cur_stable) AS prev_role) pr
    WHERE e.cur_stable IS NOT NULL AND pr.prev_role IS NOT NULL AND pr.prev_role <> e.cur_stable
 ), sn AS (
-  SELECT f.instance_id, f.group_name, n.server_name AS replica_server,
-         CASE WHEN lower(f.new_primary) = lower(n.server_name) THEN 2 ELSE 1 END AS prev_role,
-         CASE WHEN lower(f.new_primary) = lower(n.server_name) THEN 1 ELSE 2 END AS new_role,
+  SELECT f.instance_id, f.group_name, l.lname AS replica_server,
+         CASE WHEN lower(f.new_primary) = lower(l.lname) THEN 2 ELSE 1 END AS prev_role,
+         CASE WHEN lower(f.new_primary) = lower(l.lname) THEN 1 ELSE 2 END AS new_role,
          b.snapshot_at AS changed_after, f.at AS changed_before, 'Snapshot'::text AS source, f.group_id
     FROM pgvigil.mssql_ag_failovers f
-    JOIN names n ON n.instance_id = f.instance_id
+    JOIN ln l ON l.instance_id = f.instance_id AND lower(l.lname) IN (lower(f.new_primary), lower(f.old_primary))
+    -- the instance's read before the failover: up to a day back (an old primary down for hours writes the failover
+    -- row at its first read after the restart; DBA Dash takes the previous snapshot however old)
     LEFT JOIN LATERAL (SELECT s.snapshot_at FROM pgvigil.mssql_ag_sample s
-                        WHERE s.instance_id = f.instance_id AND s.snapshot_at < f.at AND s.snapshot_at > f.at - interval '1 hour'
+                        WHERE s.instance_id = f.instance_id AND s.snapshot_at < f.at AND s.snapshot_at > f.at - interval '1 day'
                         ORDER BY s.snapshot_at DESC LIMIT 1) b ON true
-   WHERE lower(n.server_name) IN (lower(f.new_primary), lower(f.old_primary))
-     AND f.at <= $4::timestamptz AND f.at > $3::timestamptz - interval '1 day'
+   WHERE f.at <= $4::timestamptz + interval '1 day' AND f.at > $3::timestamptz - interval '1 day'
 ), rc AS (
   SELECT x.instance_id, x.group_name, x.replica_server, x.prev_role, x.new_role, x.changed_after, x.changed_before, x.source,
          (SELECT a.group_id FROM pgvigil.mssql_ag_state a WHERE a.instance_id = x.instance_id AND lower(a.group_name) = lower(x.group_name) LIMIT 1) AS group_id
@@ -415,11 +439,12 @@ SELECT rc.instance_id, n.name AS instance, rc.group_name, rc.replica_server,
            coalesce(bool_or(lower(e.event_name) = 'availability_group_lease_expired'), false) AS is_lease,
            max(e.statement) FILTER (WHERE lower(e.event_name) = 'alwayson_ddl_executed' AND e.statement ILIKE '%FAILOVER%') AS statement
       FROM pgvigil.mssql_ag_events e
-     WHERE lower(e.ag_name) = lower(rc.group_name) AND e.event_at >= w.w_from AND e.event_at <= w.w_to
+     WHERE e.instance_id IN (SELECT a.instance_id FROM pgvigil.mssql_ag_state a
+                              WHERE lower(a.group_name) = lower(rc.group_name)
+                                AND CASE WHEN rc.group_id IS NULL THEN a.instance_id = rc.instance_id ELSE lower(a.group_id) = lower(rc.group_id) END)
+       AND e.event_at >= w.w_from AND e.event_at <= w.w_to AND lower(e.ag_name) = lower(rc.group_name)
        AND lower(e.event_name) IN ('alwayson_ddl_executed', 'availability_group_lease_expired')
-       AND upper(coalesce(e.ddl_phase, '')) <> 'ROLLBACK'
-       AND EXISTS (SELECT 1 FROM pgvigil.mssql_ag_state a WHERE a.instance_id = e.instance_id AND lower(a.group_name) = lower(e.ag_name)
-                     AND (rc.group_id IS NULL OR lower(a.group_id) = lower(rc.group_id)))) age
+       AND upper(coalesce(e.ddl_phase, '')) <> 'ROLLBACK') age
   LEFT JOIN LATERAL (
     SELECT CASE WHEN lower(e.event_name) = 'availability_replica_manager_state_change'
                 THEN concat('HADR manager ', e.current_state, ' on ', ri.name)
@@ -427,27 +452,32 @@ SELECT rc.instance_id, n.name AS instance, rc.group_name, rc.replica_server,
            CASE WHEN lower(e.event_name) = 'availability_replica_manager_state_change' THEN 3 ELSE 4 END AS priority
       FROM pgvigil.mssql_ag_events e
       JOIN pgvigil.instances ri ON ri.instance_id = e.instance_id
-     WHERE e.event_at >= w.w_from AND e.event_at <= w.w_to
-       AND (e.instance_id = rc.instance_id
-            OR EXISTS (SELECT 1 FROM pgvigil.mssql_ag_state a WHERE a.instance_id = e.instance_id AND rc.group_id IS NOT NULL
-                         AND lower(a.group_id) = lower(rc.group_id)))
+     WHERE e.instance_id IN (SELECT rc.instance_id
+                              UNION SELECT a.instance_id FROM pgvigil.mssql_ag_state a WHERE rc.group_id IS NOT NULL AND lower(a.group_id) = lower(rc.group_id))
+       AND e.event_at >= w.w_from AND e.event_at <= w.w_to
        AND (lower(e.event_name) = 'error_reported'
             OR (lower(e.event_name) = 'availability_replica_manager_state_change' AND upper(coalesce(e.current_state, '')) <> 'ONLINE'))
      ORDER BY 2, e.event_at LIMIT 1) ie ON true
  WHERE rc.changed_before >= $3::timestamptz AND coalesce(rc.changed_after, rc.changed_before) < $4::timestamptz
+   -- the instance's own changes, or ($5) another replica's change of a group the instance itself holds
+   -- (AvailabilityGroupRoleChanges_Get.sql:122-129: AR.group_id = RC.group_id with the instance in @InstanceIDs)
+   AND (rc.instance_id IN (SELECT sc.instance_id FROM sc)
+        OR ($5::boolean AND lower(rc.group_id) IN (SELECT lower(a.group_id) FROM pgvigil.mssql_ag_state a JOIN sc ON sc.instance_id = a.instance_id)))
  ORDER BY rc.changed_before DESC, rc.group_name, n.name`
 
 // AvailabilityGroupHealthEvents_Get.sql:9-25: one instance's AlwaysOn_health events of the range, newest first.
-// Database and Component are not stored by pgvigil's reader (empty columns).
+// Database and Component are not stored by pgvigil's reader (empty columns, as DBA Dash's grid has them). At most 5001
+// rows: the page shows the newest 5000 and says when there were more.
 var sqlHADRAgHealthEvents = `
 WITH ` + hadrScope + `
-SELECT e.event_at, e.event_name, e.ag_name, e.replica_name, e.previous_state, e.current_state, e.ddl_action, e.ddl_phase,
+SELECT e.event_at, e.event_name, e.ag_name, e.replica_name, NULL::text AS database_name, NULL::text AS component,
+       e.previous_state, e.current_state, e.ddl_action, e.ddl_phase,
        e.error_number, coalesce(e.statement, e.message) AS details
   FROM pgvigil.mssql_ag_events e
   JOIN sc ON sc.instance_id = e.instance_id
  WHERE e.event_at >= $3::timestamptz AND e.event_at < $4::timestamptz
  ORDER BY e.event_at DESC
- LIMIT 5000`
+ LIMIT 5001`
 
 // DatabaseMirroringSummary_Get.sql:6-30: per instance, by sys.database_mirroring.mirroring_state (0143's
 // state_code): synchronized 4 / 6, suspended 0, disconnected 1, synchronizing 2, pending failover 3, not
@@ -561,7 +591,9 @@ WITH ` + hadrScope + `, ` + hadrReads("mssql_logshipping") + `, j AS (
          extract(epoch FROM now() - s.last_log_backup_start_at) / 60 AS total_time_behind_min,
          extract(epoch FROM now() - s.snapshot_at) / 60 AS snapshot_age_min,
          rd.snap_status AS collection_status,
-         ta.level AS threshold_level, ta.tag AS threshold_tag, ta.warn AS age_warn, ta.crit AS age_crit, tl.warn AS latency_warn, tl.crit AS latency_crit,
+         ta.level AS threshold_level, ta.tag AS threshold_tag, ta.warn AS age_warn, ta.crit AS age_crit,
+         tl.level AS latency_level, tl.tag AS latency_tag, tl.warn AS latency_warn, tl.crit AS latency_crit,
+         extract(epoch FROM now() - s.created_at)::bigint AS database_age_s,
          ms.primary_server AS msdb_primary_server
     FROM pgvigil.mssql_logrestore_state s
     JOIN sc ON sc.instance_id = s.instance_id
@@ -597,8 +629,14 @@ SELECT * FROM (` + sqlHADRLogShippingRows + `) x
           x.instance, x.database_name`
 
 // LogShippingReport_Get.sql:80-177: per secondary instance, the worst non-N/A status (N/A where all are), the counts,
-// and the durations and dates over the non-N/A rows; the instance level's own threshold (Configure's bold).
+// and the durations and dates over the non-N/A rows; each key's threshold in force at the instance (Configure's
+// dialogs; bold where either is the instance's own); ordered by the status's rank as DBA Dash (:177: 1 Critical,
+// 2 Warning, 3 N/A, 4 OK), not its text.
 var sqlHADRLogShippingSummary = `
+SELECT g.*, ia.level AS age_level, ia.tag AS age_tag, ia.warn AS age_warn, ia.crit AS age_crit,
+       il.level AS latency_level, il.tag AS latency_tag, il.warn AS latency_warn, il.crit AS latency_crit,
+       (ia.level = 'instance' OR il.level = 'instance') AS instance_level_threshold
+  FROM (
 SELECT x.instance_id, x.instance,
        CASE min(CASE x.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'ok' THEN 4 END)
             WHEN 1 THEN 'critical' WHEN 2 THEN 'warning' WHEN 4 THEN 'ok' ELSE 'na' END AS status,
@@ -622,18 +660,26 @@ SELECT x.instance_id, x.instance,
        max(x.last_log_backup_start_at) FILTER (WHERE x.status <> 'na') AS backup_date_of_newest_file,
        min(x.last_log_restore_at) FILTER (WHERE x.status <> 'na') AS restore_date_of_oldest_file,
        max(x.last_log_restore_at) FILTER (WHERE x.status <> 'na') AS restore_date_of_newest_file,
-       EXISTS (SELECT 1 FROM pgvigil.pg_threshold(x.instance_id, 'logship_restore_age') t WHERE t.level = 'instance') AS instance_level_threshold
+       min(CASE x.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'na' THEN 3 ELSE 4 END) AS status_rank
   FROM (` + sqlHADRLogShippingRows + `) x
- GROUP BY x.instance_id, x.instance
- ORDER BY 3, max(x.total_time_behind_min) DESC NULLS LAST, x.instance`
+ GROUP BY x.instance_id, x.instance) g
+  CROSS JOIN LATERAL pgvigil.pg_threshold(g.instance_id, 'logship_restore_age') ia
+  CROSS JOIN LATERAL pgvigil.pg_threshold(g.instance_id, 'logship_restore_latency') il
+ ORDER BY g.status_rank, g.max_total_time_behind_min DESC NULLS LAST, g.instance`
 
-// the two keys' rows (Configure's dialog: pg_backups.ts thresholdDialog) and the live thresholds of the scope
+// the two keys' rows (Configure's dialog: pg_backups.ts thresholdDialog) with the root's own live row of each (the
+// toolbar's Thresholds (Root): NULL = the root has none, the default applies)
 const sqlHADRLogShippingThresholds = `
-SELECT k.key, k.label, k.unit, k.direction, k.warn_default, k.crit_default, k.levels, k.max_value
-  FROM pgvigil.pg_threshold_keys k WHERE k.key IN ('logship_restore_age', 'logship_restore_latency') ORDER BY k.key`
+SELECT k.key, k.label, k.unit, k.direction, k.warn_default, k.crit_default, k.levels, k.max_value,
+       r.warn AS root_warn, r.crit AS root_crit, r.threshold_id IS NOT NULL AS root_own
+  FROM pgvigil.pg_threshold_keys k
+  LEFT JOIN LATERAL (SELECT t.warn, t.crit, t.threshold_id FROM pgvigil.pg_thresholds t
+                      WHERE t.ended_at IS NULL AND t.key = k.key AND t.level = 'root' LIMIT 1) r ON true
+ WHERE k.key IN ('logship_restore_age', 'logship_restore_latency') ORDER BY k.key`
 
-// hadrStatuses: the Log Shipping status filter's words (DBA Dash's Critical, Warning, N/A, OK)
-var hadrStatuses = map[string]bool{"critical": true, "warning": true, "na": true, "ok": true}
+// hadrStatuses: the Log Shipping status filter's words (DBA Dash's Critical, Warning, N/A, OK; none = every box
+// cleared: no Detail row)
+var hadrStatuses = map[string]bool{"critical": true, "warning": true, "na": true, "ok": true, "none": true}
 
 // hadrRange reads from / to for the event grids: the last 30 days by default (AG.cs:599), at most a year and a day.
 func hadrRange(r *http.Request) (from, to time.Time, err error) {
@@ -704,7 +750,7 @@ func (s *Server) MSSQLHADRFleet(w http.ResponseWriter, r *http.Request) {
 		if v := r.URL.Query().Get("status"); v != "" && v != "all" {
 			for _, f := range splitList(v) {
 				if !hadrStatuses[f] {
-					writeErr(w, http.StatusBadRequest, errors.New("status must be all, or critical, warning, na and ok separated by commas"))
+					writeErr(w, http.StatusBadRequest, errors.New("status must be all, none, or critical, warning, na and ok separated by commas"))
 					return
 				}
 				statuses = append(statuses, f)

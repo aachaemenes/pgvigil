@@ -144,14 +144,18 @@ set -euo pipefail
 #      on log shipping's group exclusion: that exclusion is NOT PROVEN here (it is proven over stub rows, part T); a
 #      restore row of d1b, if one is ever stored, must be marked as in a group.
 #  U (task 383, before S10): the HA/DR folder's AG page over d1a and d1b (TestHADRFleetProof, the handler as served).
-#  U1. at rest, after a fresh read of both: each node's FLEET counts (local and remote, by state) equal the counts of
-#      its stored mssql_ag_database_state rows by the DMV's own state text (upper, '_' as ' ').
+#  U1. at rest, after a fresh read of both: each node's FLEET counts (local and remote, by state) equal sa's own counts
+#      of sys.dm_hadr_database_replica_states on that node (joined to sys.availability_groups and
+#      sys.availability_replicas as the collector reads it; state upper, '_' as ' '), and its stored rows' counts.
 #  U2. dagdb suspended on d1b, both read: sa on d1b reads its local dagdb row 'NOT SYNCHRONIZING' (the DMV's text, with a
 #      space), the stored text is the same, d1b's Not Synchronizing is 1 or more and equals the stored count; d1a's
-#      Remote Not Synchronizing equals its stored count. Resumed after.
-#  U3. ag1 failed over by hand (FORCE_FAILOVER_ALLOW_DATA_LOSS on d1b, ROLE = SECONDARY on d1a: a clusterless group),
-#      both read: Role Changes hold 'Became Primary' for d1b and 'No Longer Primary' for d1a on ag1. Failover Type
-#      'Forced' only where AlwaysOn_health's DDL row is stored (mssql_xe is not read by this part: said NOT PROVEN).
+#      Remote Not Synchronizing is 1 or more and equals its stored count. Resumed after.
+#  U3. ag1 failed over by hand (FORCE_FAILOVER_ALLOW_DATA_LOSS on d1b - a group with CLUSTER_TYPE NONE takes no other
+#      failover, so 'Manual' cannot occur here - and ROLE = SECONDARY on d1a), both read again until both rows are there
+#      (60 s): Role Changes hold 'Became Primary' for d1b and 'No Longer Primary' for d1a on ag1. mssql_xe is read on
+#      both (AlwaysOn_health, S2 started it on d1b): Failover Type 'Forced' where its DDL row is stored, else the final
+#      line says 'U3 Failover Type NOT PROVEN'. U3 leaves the lab changed (ag1's primary d1b, dag1's listener URL still
+#      d1a's): S10 removes it whole.
 #  S10. the lab removed: 0 containers, 0 networks, 0 volumes; the repository database dropped.
 #  NOT PROVEN HERE: quorum, a cluster member down and failover readiness on a Windows cluster (WSFC; task 387's Q8; a
 #  clusterless group cannot be AUTOMATIC, so 'a database is not ready for automatic failover' is proven over stub rows
@@ -193,7 +197,7 @@ SELECT pgvigil.ensure_instance('s3ls', 'sqlserver', '16.0', 160000, false, '{}',
 SELECT pgvigil.ensure_instance('s3fci', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver') AS fci \gset
 
 -- availability groups: two reads 80 s apart
-\set agrows '[{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"WSFC","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R1","replica_server":"d1a","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"AUTOMATIC","secondary_connections":"ALL","read_only_routing_url":"TCP://d1a:1433","join_state":"JOINED_STANDALONE_INSTANCE","is_local":1,"role":"PRIMARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY","failure_condition_level":3,"health_check_timeout_ms":30000},{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"WSFC","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R2","replica_server":"d1b","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"AUTOMATIC","secondary_connections":"NO","join_state":"JOINED_STANDALONE_INSTANCE","is_local":0,"role":"SECONDARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1a","database_name":"dbh","is_local":1,"is_primary_replica":1,"synchronization_state":"SYNCHRONIZED","last_commit_utc":"@-10@"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbh","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED","last_hardened_utc":"@-130@"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbc","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED","est_data_loss_s":400},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbj","is_failover_ready":0,"is_database_joined":0},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbr","is_failover_ready":0,"is_database_joined":1},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbh","is_failover_ready":1,"is_database_joined":1},{"kind":"routing","group_id":"G1","replica_server":"d1a","routing_priority":1,"read_only_replica":"d1b"},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbs","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"endpoint","endpoint_name":"Hadr_endpoint","endpoint_state":"STOPPED","endpoint_role":"ALL","endpoint_port":5022},{"kind":"health_session","session_exists":1,"session_running":0,"session_autostart":1},{"kind":"cluster_member","cluster_name":"wsfc1","quorum_type":"NODE_MAJORITY","quorum_state":"FORCED_QUORUM","member_name":"node1","member_type":"CLUSTER_NODE","member_state":"UP","quorum_votes":1},{"kind":"cluster_member","cluster_name":"wsfc1","quorum_type":"NODE_MAJORITY","quorum_state":"FORCED_QUORUM","member_name":"node2","member_type":"CLUSTER_NODE","member_state":"DOWN","quorum_votes":1},{"kind":"replica_counters","counter_instance":"d1b","flow_control_ms_total":CTR1,"flow_controls_total":5,"resent_messages_total":0,"flow_control_type":272696576,"flow_controls_type":272696576,"third_type":272696576},{"kind":"db_counters","counter_instance":"dbc","db_flow_control_delay_total":0,"db_flow_controls_total":0,"redo_blocked_total":CTR2,"flow_control_type":272696576,"flow_controls_type":272696576,"third_type":272696576},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbr","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbz","is_failover_ready":0,"is_database_joined":1},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbz","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZING"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbs","is_failover_ready":0,"is_database_joined":0},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbx","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbk","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbk","is_failover_ready":1,"is_database_joined":1},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbk","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED"}]'
+\set agrows '[{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"WSFC","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R1","replica_server":"d1a","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"AUTOMATIC","secondary_connections":"ALL","primary_connections":"READ_WRITE","read_only_routing_url":"TCP://d1a:1433","join_state":"JOINED_STANDALONE_INSTANCE","is_local":1,"role":"PRIMARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY","failure_condition_level":3,"health_check_timeout_ms":30000},{"kind":"replica","group_id":"G1","group_name":"ag1","cluster_type":"WSFC","is_distributed":0,"primary_replica":"d1a","group_health":"HEALTHY","replica_id":"R2","replica_server":"d1b","availability_mode":"SYNCHRONOUS_COMMIT","failover_mode":"AUTOMATIC","secondary_connections":"NO","join_state":"JOINED_STANDALONE_INSTANCE","is_local":0,"role":"SECONDARY","connected_state":"CONNECTED","synchronization_health":"HEALTHY"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1a","database_name":"dbh","is_local":1,"is_primary_replica":1,"synchronization_state":"SYNCHRONIZED","last_commit_utc":"@-10@"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbh","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED","last_hardened_utc":"@-130@"},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbc","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED","est_data_loss_s":400},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbj","is_failover_ready":0,"is_database_joined":0},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbr","is_failover_ready":0,"is_database_joined":1},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbh","is_failover_ready":1,"is_database_joined":1},{"kind":"routing","group_id":"G1","replica_server":"d1a","routing_priority":1,"read_only_replica":"d1b"},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbs","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"endpoint","endpoint_name":"Hadr_endpoint","endpoint_state":"STOPPED","endpoint_role":"ALL","endpoint_port":5022},{"kind":"health_session","session_exists":1,"session_running":0,"session_autostart":1},{"kind":"cluster_member","cluster_name":"wsfc1","quorum_type":"NODE_MAJORITY","quorum_state":"FORCED_QUORUM","member_name":"node1","member_type":"CLUSTER_NODE","member_state":"UP","quorum_votes":1},{"kind":"cluster_member","cluster_name":"wsfc1","quorum_type":"NODE_MAJORITY","quorum_state":"FORCED_QUORUM","member_name":"node2","member_type":"CLUSTER_NODE","member_state":"DOWN","quorum_votes":1},{"kind":"replica_counters","counter_instance":"d1b","flow_control_ms_total":CTR1,"flow_controls_total":5,"resent_messages_total":0,"flow_control_type":272696576,"flow_controls_type":272696576,"third_type":272696576},{"kind":"db_counters","counter_instance":"dbc","db_flow_control_delay_total":0,"db_flow_controls_total":0,"redo_blocked_total":CTR2,"flow_control_type":272696576,"flow_controls_type":272696576,"third_type":272696576},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbr","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbz","is_failover_ready":0,"is_database_joined":1},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbz","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZING"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbs","is_failover_ready":0,"is_database_joined":0},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbx","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"seeding","group_id":"G1","group_name":"ag1","database_name":"dbk","remote_replica":"d1b","is_source":1,"seeding_state":"FAILED","failure_state":"FAILED_AT_DESTINATION","error_code":0,"number_of_attempts":1,"start_utc":"@-600@","completion_utc":"@-590@"},{"kind":"db_cluster","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbk","is_failover_ready":1,"is_database_joined":1},{"kind":"database","group_id":"G1","group_name":"ag1","replica_server":"d1b","database_name":"dbk","is_local":0,"is_primary_replica":0,"synchronization_state":"SYNCHRONIZED"}]'
 SELECT pgvigil.import_mssql_ag(:ag, now() - interval '100 seconds', pg_temp.ts(replace(replace(:'agrows', 'CTR1', '1000'), 'CTR2', '10')));
 SELECT pgvigil.import_mssql_ag(:ag, now() - interval '20 seconds', pg_temp.ts(replace(replace(:'agrows', 'CTR1', '9000'), 'CTR2', '50')));
 
@@ -309,8 +313,11 @@ BEGIN
   SELECT txn_delay_ms::text INTO v_state FROM pgvigil.mssql_mirroring_state
    WHERE instance_id = (SELECT instance_id FROM pgvigil.instances WHERE name = 's3mir') AND database_name = 'm1';
   IF v_state IS DISTINCT FROM '2.000' THEN RAISE EXCEPTION 'T: m1''s transaction delay per write %, expected 2.000 (1000 ms over 500 writes)', v_state; END IF;
+  SELECT primary_connections INTO v_state FROM pgvigil.mssql_ag_state
+   WHERE instance_id = (SELECT instance_id FROM pgvigil.instances WHERE name = 's3ag') AND replica_server = 'd1a';
+  IF v_state IS DISTINCT FROM 'READ_WRITE' THEN RAISE EXCEPTION 'T: d1a''s primary_connections stored %, expected READ_WRITE', v_state; END IF;
 END $chk$;
-\echo T: the findings equal the expected list; role changes m2 only; m7 hidden MIRROR; m1 delay 2.000
+\echo T: the findings equal the expected list; role changes m2 only; m7 hidden MIRROR; m1 delay 2.000; primary_connections READ_WRITE
 TSQL
   cat "$T_WORK/t.out"
   echo "PROOF OK (part T)"
@@ -558,34 +565,50 @@ if [ "${1:-}" = gaps ]; then
         [ "$(ucount "$n" "remote_$k")" = "$(ustored "$n" false "$st")" ] || sfail "U: $n remote_$k: page $(ucount "$n" "remote_$k"), stored $(ustored "$n" false "$st")"
       done
     done; }
+  # sa's own count of the DMV rows the collector reads (agDatabaseSQL's joins), by local / remote and state
+  usa() { SQ "$1" "SELECT COUNT(*) FROM sys.dm_hadr_database_replica_states drs JOIN sys.availability_groups ag ON ag.group_id = drs.group_id
+                   JOIN sys.availability_replicas ar ON ar.replica_id = drs.replica_id
+                   WHERE drs.is_local = $2 AND UPPER(REPLACE(drs.synchronization_state_desc, '_', ' ')) = '$3'"; }
+  usacheck() { local n k st
+    for n in d1a d1b; do
+      for st in 'NOT SYNCHRONIZING' SYNCHRONIZING SYNCHRONIZED REVERTING INITIALIZING; do
+        k=$(echo "$st" | tr 'A-Z ' 'a-z_')
+        [ "$(ucount "$n" "$k")" = "$(usa "$n" 1 "$st")" ] || sfail "U1: $n $k: page $(ucount "$n" "$k"), sa's DMV $(usa "$n" 1 "$st")"
+        [ "$(ucount "$n" "remote_$k")" = "$(usa "$n" 0 "$st")" ] || sfail "U1: $n remote_$k: page $(ucount "$n" "remote_$k"), sa's DMV $(usa "$n" 0 "$st")"
+      done
+    done; }
   for n in d1a d1b; do sread "$n" mssql_instance; done   # each server's own name, as a deployment reads it on every instance
-  sag d1a d1b; ufleet; ucheck
-  echo "ok U1: the page's counts on d1a and d1b equal their stored rows by state ($(grep '^FLEET' "$S_OUT" | sed "s/^FLEET ${S_I[d1a]}/d1a/; s/^FLEET ${S_I[d1b]}/d1b/" | tr '\n' ';'))"
+  sag d1a d1b; ufleet; ucheck; usacheck
+  echo "ok U1: the page's counts on d1a and d1b equal sa's DMV counts and their stored rows by state ($(grep '^FLEET' "$S_OUT" | sed "s/^FLEET ${S_I[d1a]}/d1a/; s/^FLEET ${S_I[d1b]}/d1b/" | tr '\n' ';'))"
   SX d1b "U2: suspend" "ALTER DATABASE dagdb SET HADR SUSPEND"
   sleep 3; sag d1b d1a; ufleet; ucheck
-  SAT=$(SQ d1b "SELECT synchronization_state_desc FROM sys.dm_hadr_database_replica_states WHERE is_local = 1 AND database_id = DB_ID('dagdb')")
+  SAT=$(SQ d1b "SELECT synchronization_state_desc FROM sys.dm_hadr_database_replica_states WHERE is_local = 1 AND database_id = DB_ID('dagdb')") || sfail "U2: sa's read of dagdb's state on d1b failed"
   PGT=$(sq "select synchronization_state from pgvigil.mssql_ag_database_state where instance_id = ${S_I[d1b]} and database_name = 'dagdb' and is_local and group_name = 'ag1'")
   [ "$SAT" = "NOT SYNCHRONIZING" ] && [ "$PGT" = "$SAT" ] || sfail "U2: dagdb on d1b: sa '$SAT', stored '$PGT' (want the DMV's 'NOT SYNCHRONIZING')"
   [ "$(ucount d1b not_synchronizing)" -ge 1 ] || sfail "U2: d1b's Not Synchronizing is $(ucount d1b not_synchronizing)"
+  [ "$(ucount d1a remote_not_synchronizing)" -ge 1 ] || sfail "U2: d1a's Remote Not Synchronizing is $(ucount d1a remote_not_synchronizing)"
   echo "ok U2: sa and the store read '$SAT' (with a space); d1b Not Synchronizing $(ucount d1b not_synchronizing), d1a Remote Not Synchronizing $(ucount d1a remote_not_synchronizing) - each equal to the stored rows"
   SX d1b "U2: resume" "ALTER DATABASE dagdb SET HADR RESUME"
   sleep 5
   SX d1b "U3: failover" "ALTER AVAILABILITY GROUP ag1 FORCE_FAILOVER_ALLOW_DATA_LOSS"
   SX d1a "U3: demote" "ALTER AVAILABILITY GROUP ag1 SET (ROLE = SECONDARY)"
-  sleep 5; sag d1b d1a; ufleet
-  RC=$(grep '^RC ' "$S_OUT" | grep '|ag1|' || true)
+  # AlwaysOn_health through the collector (a read that fails is said, not fatal: the Failover Type is then not proven)
+  xeread() { "$BIN" collect -config "$S_CFG" -once mssql_xe -instance "${S_N[$1]}" > "$S_WORK/xe.out" 2>&1 \
+    || echo "    the mssql_xe read of $1 failed: $(tail -1 "$S_WORK/xe.out")"; }
+  u3ok() { xeread d1b; xeread d1a; ufleet; RC=$(grep '^RC ' "$S_OUT" | grep '|ag1|' || true)
+    printf '%s\n' "$RC" | grep -q "^RC ${S_I[d1b]}|ag1|Became Primary|" && printf '%s\n' "$RC" | grep -q "^RC ${S_I[d1a]}|ag1|No Longer Primary|"; }
+  swait 60 d1b d1a -- u3ok || { printf '%s\n' "$RC" | sed 's/^/    /'; sfail "U3: Role Changes do not hold 'Became Primary' for d1b and 'No Longer Primary' for d1a on ag1 within 60 s"; }
   printf '%s\n' "$RC" | sed "s/^RC ${S_I[d1a]}/    d1a/; s/^RC ${S_I[d1b]}/    d1b/"
-  printf '%s\n' "$RC" | grep -q "^RC ${S_I[d1b]}|ag1|Became Primary|" || sfail "U3: no 'Became Primary' for d1b on ag1"
-  printf '%s\n' "$RC" | grep -q "^RC ${S_I[d1a]}|ag1|No Longer Primary|" || sfail "U3: no 'No Longer Primary' for d1a on ag1"
   if printf '%s\n' "$RC" | grep -q '|Forced|'; then echo "ok U3: the failover in Role Changes on both sides, Failover Type Forced"
-  else echo "ok U3: the failover in Role Changes on both sides; its Failover Type NOT PROVEN here (AlwaysOn_health's DDL row is not read by this part)"; fi
+  else U3NP=" - U3 Failover Type NOT PROVEN (no AlwaysOn_health DDL row stored)"
+    echo "ok U3: the failover in Role Changes on both sides; its Failover Type NOT PROVEN here (no AlwaysOn_health DDL row stored by the mssql_xe read)"; fi
 
   echo "--- S10. the lab removed"
   bash scripts/dag/trial.sh down "$S_TAG" | tee "$S_OUT" || sfail "S10: the lab is not removed in full"
   S_LAB=
   psql "$S_ADMIN" -XAtq -c "drop database if exists $S_REPO with (force)" >/dev/null; S_MADE_REPO=
   echo "ok S10: the lab and the repository removed"
-  echo "PROOF OK (part S, part U)${S8NP:-}"
+  echo "PROOF OK (part S, part U)${S8NP:-}${U3NP:-}"
   exit 0
 fi
 BIN=${PGVIGIL_BIN:-bin/pgvigil}

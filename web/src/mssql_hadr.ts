@@ -350,11 +350,14 @@ const healthCls = (v: unknown) => v == null ? '' : v === 'HEALTHY' ? 'status ok'
 const statusWord: Record<string, string> = { critical: 'Critical', warning: 'Warning', warninglow: 'Warning (low)', ok: 'OK', na: 'N/A' };
 
 // the scope of a page: one instance, a tag folder's SQL Server instances, or the fleet
-async function hadrScope(ctx: Ctx): Promise<{ params: Record<string, string | number>; folder: boolean }> {
-  if (ctx.instance) return { params: { instance: ctx.instance }, folder: false };
-  if (!ctx.tag) return { params: {}, folder: true };
+// (a folder holding exactly one SQL Server instance is shown as that instance, as DBA Dash shows Detail when its
+// InstanceIDs.Count is 1; one is that instance's id then)
+async function hadrScope(ctx: Ctx): Promise<{ params: Record<string, string | number>; folder: boolean; one?: number }> {
+  if (ctx.instance) return { params: { instance: ctx.instance }, folder: false, one: ctx.instance };
   const f = await fleet();
-  const ids = f.instances.filter(r => r.engine === 'sqlserver' && inTagScope(ctx.tag!, r)).map(r => Number(r.instance_id));
+  const ids = f.instances.filter(r => r.engine === 'sqlserver' && (!ctx.tag || inTagScope(ctx.tag, r))).map(r => Number(r.instance_id));
+  if (ids.length === 1) return { params: { instance: ids[0] }, folder: false, one: ids[0] };
+  if (!ctx.tag) return { params: {}, folder: true };
   return { params: { instances: ids.join(',') || '0' }, folder: true };
 }
 
@@ -368,7 +371,10 @@ function instLink(ctx: Ctx, tab: string, id: unknown, name: unknown): HTMLElemen
 }
 function backButton(ctx: Ctx, tab: string): HTMLElement {
   let to: string | null = null;
-  try { to = ctx.instance ? sessionStorage.getItem(backKey(tab)) : null; } catch { to = null; }
+  try {
+    if (ctx.instance) to = sessionStorage.getItem(backKey(tab));
+    else sessionStorage.removeItem(backKey(tab));   // at the folder: a key the browser's own Back left is stale
+  } catch { to = null; }
   const b = el('button', { type: 'button', title: 'Navigate Back: the folder this instance was opened from' }, 'Back');
   if (!to) b.setAttribute('disabled', '');
   b.addEventListener('click', () => { try { sessionStorage.removeItem(backKey(tab)); } catch { /* */ } if (to) location.hash = to; });
@@ -389,14 +395,18 @@ function eventsRange(onChange: () => void): { node: HTMLElement; params: () => R
     ...rangeChoices.map(([lab, h]) => el('option', { value: String(h) }, lab)), el('option', { value: 'custom' }, 'Custom'));
   sel.value = rangeChoices.some(([, h]) => String(h) === saved) || saved === 'custom' ? saved : '720';
   const from = el('input', { type: 'datetime-local', 'aria-label': 'from' }), to = el('input', { type: 'datetime-local', 'aria-label': 'to' });
-  const custom = el('span', {}, ' from ', from, ' to ', to);
+  const note = el('span', { class: 'meta', role: 'status' });
+  const custom = el('span', {}, ' from ', from, ' to ', to, ' ', note);
   custom.hidden = sel.value !== 'custom';
   const fire = () => { custom.hidden = sel.value !== 'custom'; try { localStorage.setItem(rangeKey, sel.value); } catch { /* */ } onChange(); };
   sel.addEventListener('change', fire); from.addEventListener('change', fire); to.addEventListener('change', fire);
   const params = (): Record<string, string> => {
+    note.textContent = '';
     if (sel.value === 'custom') {
       const f = from.value ? new Date(from.value) : null, t = to.value ? new Date(to.value) : null;
-      return f && t && t.getTime() - f.getTime() >= 3600e3 ? { from: f.toISOString(), to: t.toISOString() } : {};
+      if (f && t && t.getTime() - f.getTime() >= 3600e3) return { from: f.toISOString(), to: t.toISOString() };
+      note.textContent = 'Custom needs a from and a to an hour or more apart: the last 30 days are shown.';
+      return {};
     }
     const now = Date.now();
     return { from: new Date(now - Number(sel.value) * 3600e3).toISOString(), to: new Date(now).toISOString() };
@@ -414,10 +424,10 @@ function roleChangeCols(ctx: Ctx, tab: string, first: Col[]): Col[] {
   return [
     { key: 'instance', label: 'Instance', fmt: (v, r) => instLink(ctx, tab, r.instance_id, v) },
     ...first,
-    { key: 'change', label: 'Change', cls: v => String(v).startsWith('Became') ? 'status warn' : 'status info' },
+    { key: 'change', label: 'Change', cls: v => String(v).startsWith('Became') ? 'status warn' : '' },   // DBA Dash's Information rows: uncoloured
     { key: 'previous_role', label: 'Previous Role' }, { key: 'new_role', label: 'New Role' },
     { key: 'changed_after', label: 'Changed After', fmt: fmtTime }, { key: 'changed_before', label: 'Changed Before', fmt: fmtTime },
-    { key: 'duration_s', label: 'Duration', fmt: ddDuration },
+    { key: 'duration_s', label: 'Duration', num: true, fmt: ddDuration },
     { key: 'failover_type', label: 'Failover Type' }, { key: 'reason', label: 'Reason', wide: true }, { key: 'source', label: 'Source' },
   ];
 }
@@ -445,7 +455,8 @@ export async function mssqlAgView(ctx: Ctx): Promise<HTMLElement> {
         // its twin Remote Not Synchronizing still is: pgvigil follows the 2022 rule (the lead's D3)
         { key: 'not_synchronizing', label: 'Not Synchronizing', num: true, cls: countCls(0) },
         { key: 'synchronizing', label: 'Synchronizing', num: true },
-        { key: 'synchronized', label: 'Synchronized', num: true, cls: (_, r) => stCls(r.synchronized_status) },
+        { key: 'synchronized', label: 'Synchronized', num: true, cls: (_, r) => stCls(r.synchronized_status),
+          fmt: (v, r) => r.synchronized_status === 'warninglow' ? el('span', { title: 'Warning (low)', 'aria-label': `${String(v ?? '')}, Warning (low)` }, String(v ?? '')) : String(v ?? '') },
         { key: 'reverting', label: 'Reverting', num: true, cls: countCls(0) }, { key: 'initializing', label: 'Initializing', num: true, cls: countCls(0) },
         { key: 'remote_not_synchronizing', label: 'Remote Not Synchronizing', num: true, cls: countCls(0) },
         { key: 'remote_synchronizing', label: 'Remote Synchronizing', num: true }, { key: 'remote_synchronized', label: 'Remote Synchronized', num: true },
@@ -453,9 +464,9 @@ export async function mssqlAgView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'remote_initializing', label: 'Remote Initializing', num: true, cls: countCls(0) },
         { key: 'sync_health', label: 'Sync Health', cls: healthCls },
         ...snapCols('snapshot_date'),
-        { key: 'max_secondary_lag_s', label: 'Max Secondary Lag', fmt: ddDuration },
-        { key: 'max_data_loss_s', label: 'Max Estimated Data Loss', fmt: estimate },
-        { key: 'max_recovery_s', label: 'Max Estimated Recovery Time', fmt: estimate },
+        { key: 'max_secondary_lag_s', label: 'Max Secondary Lag', num: true, fmt: ddDuration },
+        { key: 'max_data_loss_s', label: 'Max Estimated Data Loss', num: true, fmt: estimate },
+        { key: 'max_recovery_s', label: 'Max Estimated Recovery Time', num: true, fmt: estimate },
         { key: 'avg_redo_queue_kb', label: 'Avg Redo Queue Size (KB)', num: true }, { key: 'avg_send_queue_kb', label: 'Avg Log Send Queue Size (KB)', num: true },
       ];
       body.replaceChildren(el('h3', {}, 'Availability Group Summary'), grid(rowsOf(d.summary), cols, 'No availability group database on these instances.'),
@@ -470,18 +481,22 @@ export async function mssqlAgView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'failover_mode', label: 'Failover Mode' }, { key: 'is_primary', label: 'Is Primary', fmt: yes },
         { key: 'primary_connections', label: 'Primary Connections' }, { key: 'secondary_connections', label: 'Secondary Connections' },
         ...snapCols('snapshot_date'),
-        { key: 'secondary_lag_s', label: 'Secondary Lag', fmt: (v, r) => r.secondary_lag_words != null ? String(r.secondary_lag_words) : ddDuration(v) },
-        { key: 'data_loss_s', label: 'Estimated Data Loss', fmt: estimate }, { key: 'recovery_s', label: 'Estimated Recovery Time', fmt: estimate },
+        { key: 'secondary_lag_s', label: 'Secondary Lag', num: true, fmt: (v, r) => r.secondary_lag_words != null ? String(r.secondary_lag_words) : ddDuration(v) },
+        { key: 'data_loss_s', label: 'Estimated Data Loss', num: true, fmt: estimate }, { key: 'recovery_s', label: 'Estimated Recovery Time', num: true, fmt: estimate },
         { key: 'redo_queue_kb', label: 'Log Redo Queue Size (KB)', num: true }, { key: 'log_send_queue_kb', label: 'Log Send Queue Size (KB)', num: true },
       ];
       const evCols: Col[] = [
         { key: 'event_at', label: 'Event Time', fmt: fmtTime }, { key: 'event_name', label: 'Event' }, { key: 'ag_name', label: 'Availability Group' },
-        { key: 'replica_name', label: 'Replica' }, { key: 'previous_state', label: 'Previous State' }, { key: 'current_state', label: 'Current State' },
+        { key: 'replica_name', label: 'Replica' }, { key: 'database_name', label: 'Database' }, { key: 'component', label: 'Component' },
+        { key: 'previous_state', label: 'Previous State' }, { key: 'current_state', label: 'Current State' },
         { key: 'ddl_action', label: 'DDL Action' }, { key: 'ddl_phase', label: 'DDL Phase' }, { key: 'error_number', label: 'Error Number', num: true },
         { key: 'details', label: 'Details', wide: true },
       ];
+      const he = rowsOf(d.health_events);
       body.replaceChildren(el('h3', {}, 'Availability Group Detail'), grid(rowsOf(d.detail), cols, 'No availability group database on this instance.'),
-        el('h3', {}, 'Role Changes'), rc, el('h3', {}, 'AlwaysOn Health Events'), grid(rowsOf(d.health_events), evCols, 'No AlwaysOn_health event in this range.'));
+        el('h3', {}, 'Role Changes'), rc, el('h3', {}, 'AlwaysOn Health Events'),
+        ...(he.length > 5000 ? [el('p', { class: 'meta', role: 'status' }, 'More than 5000 events in this range: the newest 5000 are shown. Narrow the range to see older ones.')] : []),
+        grid(he.slice(0, 5000), evCols, 'No AlwaysOn_health event in this range.'));
     }
   }
   refresh.addEventListener('click', () => void draw());
@@ -489,7 +504,8 @@ export async function mssqlAgView(ctx: Ctx): Promise<HTMLElement> {
     el('p', { class: 'meta' }, 'Counts are of database replicas, as DBA Dash counts them. Estimated Data Loss is pgvigil\'s own estimate (the commit-time '
       + 'difference, with the last hardened time where that is not read); Not Synchronizing is red from 1, as DBA Dash\'s own grid had it before its '
       + '4.x port; Snapshot Age is coloured as the Collection dates page judges the read. Role changes come from AlwaysOn_health (XE, exact times) or '
-      + 'from pgvigil\'s reads (Snapshot, the minute before); a primary left in RESOLVING writes no Snapshot row. DBA Dash\'s Configure Metrics and '
+      + 'from pgvigil\'s reads (Snapshot, the minute before); a primary left in RESOLVING writes no Snapshot row. Health Events\' Database and Component '
+      + 'are empty: pgvigil\'s reader does not store them. DBA Dash\'s Configure Metrics and '
       + 'Trigger Collection are not here: pgvigil stores every read and collects on its own interval.'), body);
   await draw();
   return sec;
@@ -546,7 +562,7 @@ export async function mssqlMirroringView(ctx: Ctx): Promise<HTMLElement> {
   }
   refresh.addEventListener('click', () => void draw());
   toggle.addEventListener('click', () => { summary = !summary; toggle.textContent = summary ? 'Detail' : 'Summary'; void draw(); });
-  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', toggle, ' ', range.node),
+  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', toggle, ' ', backButton(ctx, tab), ' ', range.node),
     el('p', { class: 'meta' }, 'Synchronized Count is green when every database is synchronized with its witness connected or unknown, amber when one is '
       + 'synchronizing or has no witness (DBA Dash\'s rule; pgvigil\'s Findings raise nothing for a session without a witness), red otherwise. A mirror '
       + 'read by a login that is not sysadmin shows its state on the principal only (Microsoft\'s rule for sys.database_mirroring): it counts in Mirror '
@@ -564,29 +580,37 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { class: 'mssql-hadr-logshipping' }, el('h2', {}, 'Log Shipping'));
   const body = el('div');
   const sc = await hadrScope(ctx);
-  // the status filter narrows the Detail only, Critical + Warning in a folder and every status at one instance
-  // (LogShippingReport_Get.sql:4-7, LogShippingView.cs:278-284); not kept: a drill resets it as DBA Dash does
-  const status = el('select', { 'aria-label': 'Status' },
-    el('option', { value: 'critical,warning' }, 'Critical, Warning'), el('option', { value: 'all' }, 'All'),
-    el('option', { value: 'critical' }, 'Critical'), el('option', { value: 'warning' }, 'Warning'), el('option', { value: 'na' }, 'N/A'), el('option', { value: 'ok' }, 'OK'));
-  status.value = sc.folder ? 'critical,warning' : 'all';
+  // the status filter narrows the Detail only: DBA Dash's four check boxes, Critical + Warning in a folder and every
+  // status at one instance (LogShippingReport_Get.sql:4-7, LogShippingView.cs:278-284); not kept: a drill resets it
+  const stBoxes = (['critical', 'warning', 'na', 'ok'] as const).map(v => {
+    const b = el('input', { type: 'checkbox', value: v, 'aria-label': statusWord[v] });
+    b.checked = !sc.folder || v === 'critical' || v === 'warning';
+    return b;
+  });
+  const statusParam = () => { const on = stBoxes.filter(b => b.checked).map(b => b.value); return on.length === 4 ? 'all' : on.length ? on.join(',') : 'none'; };
+  const statusText = () => { const on = stBoxes.filter(b => b.checked).map(b => statusWord[b.value]); return on.length ? on.join(', ') : 'no status'; };
   const refresh = el('button', { type: 'button' }, 'Refresh');
   let keys: Row[] = [];
   const keyOf = (k: string) => keys.find(r => r.key === k);
-  const configure = (place: ThresholdPlace, cur: Row) => {
+  // Configure: one dialog per key, each opened with that key's threshold in force at the place (its level, tag, values)
+  type KeyCur = (k: 'age' | 'latency') => Row;
+  const configure = (place: ThresholdPlace, cur: KeyCur) => {
     const box = el('span', { class: 'meta' }, ' ');
-    for (const [k, lab, w, c] of [['logship_restore_age', 'time since the last restore', 'age_warn', 'age_crit'], ['logship_restore_latency', 'latency of the last', 'latency_warn', 'latency_crit']] as const) {
-      const a = el('button', { type: 'button', class: 'link' }, lab);
-      a.addEventListener('click', () => { const key = keyOf(k); if (key) thresholdDialog(key, place, { level: cur.threshold_level, tag: cur.threshold_tag, warn: cur[w], crit: cur[c] }, () => void draw()); });
+    for (const [k, short, lab] of [['logship_restore_age', 'age', 'time since the last restore'], ['logship_restore_latency', 'latency', 'latency of the last']] as const) {
+      const a = el('button', { type: 'button', class: 'link', 'aria-label': `Configure ${lab} at ${place.where}` }, lab);
+      a.addEventListener('click', () => { const key = keyOf(k); if (key) thresholdDialog(key, place, cur(short), () => void draw()); });
       box.append(a, ' ');
     }
     return box;
   };
+  const curOf = (r: Row): KeyCur => k => ({ level: r[`${k === 'age' ? 'threshold' : 'latency'}_level`] ?? r[`${k}_level`], tag: r[`${k === 'age' ? 'threshold' : 'latency'}_tag`] ?? r[`${k}_tag`],
+    warn: r[`${k}_warn`], crit: r[`${k}_crit`] });
   const mins = (v: unknown) => v == null ? '' : ddDuration(Number(v) * 60);
   async function draw() {
     let d: Record<string, Table | null>;
-    try { d = await get<Record<string, Table | null>>('mssql/hadr/fleet', { page: 'logshipping', ...sc.params, status: status.value }); } catch (e) { body.replaceChildren(errorBox(e)); return; }
+    try { d = await get<Record<string, Table | null>>('mssql/hadr/fleet', { page: 'logshipping', ...sc.params, status: statusParam() }); } catch (e) { body.replaceChildren(errorBox(e)); return; }
     keys = rowsOf(d.thresholds);
+    summaryRows = rowsOf(d.summary);
     const sumCols: Col[] = [
       { key: 'instance', label: 'Instance', fmt: (v, r) => instLink(ctx, tab, r.instance_id, v) },
       { key: 'primary_instances', label: 'Primary Instance' },
@@ -594,19 +618,18 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'log_shipped_dbs', label: 'Log Shipped DBs', num: true }, { key: 'warning_count', label: 'Warning', num: true },
       { key: 'critical_count', label: 'Critical', num: true }, { key: 'missing_count', label: 'Missing', num: true },
       { key: 'new_database_count', label: 'New DBs', num: true },
-      { key: 'max_total_time_behind_min', label: 'Max Total Time Behind', fmt: mins }, { key: 'min_total_time_behind_min', label: 'Min Total Time Behind', fmt: mins },
-      { key: 'avg_total_time_behind_min', label: 'Avg Total Time Behind', fmt: mins },
-      { key: 'max_latency_of_last_min', label: 'Max Latency of Last', fmt: mins }, { key: 'min_latency_of_last_min', label: 'Min Latency of Last', fmt: mins },
-      { key: 'avg_latency_of_last_min', label: 'Avg Latency of Last', fmt: mins },
-      { key: 'max_time_since_last_min', label: 'Max Time Since Last', fmt: mins }, { key: 'min_time_since_last_min', label: 'Min Time Since Last', fmt: mins },
-      { key: 'avg_time_since_last_min', label: 'Avg Time Since Last', fmt: mins },
-      { key: 'snapshot_age_min', label: 'Snapshot Age', fmt: mins, cls: (_, r) => stCls(r.collection_status) },
+      { key: 'max_total_time_behind_min', label: 'Max Total Time Behind', num: true, fmt: mins }, { key: 'min_total_time_behind_min', label: 'Min Total Time Behind', num: true, fmt: mins },
+      { key: 'avg_total_time_behind_min', label: 'Avg Total Time Behind', num: true, fmt: mins },
+      { key: 'max_latency_of_last_min', label: 'Max Latency of Last', num: true, fmt: mins }, { key: 'min_latency_of_last_min', label: 'Min Latency of Last', num: true, fmt: mins },
+      { key: 'avg_latency_of_last_min', label: 'Avg Latency of Last', num: true, fmt: mins },
+      { key: 'max_time_since_last_min', label: 'Max Time Since Last', num: true, fmt: mins }, { key: 'min_time_since_last_min', label: 'Min Time Since Last', num: true, fmt: mins },
+      { key: 'avg_time_since_last_min', label: 'Avg Time Since Last', num: true, fmt: mins },
+      { key: 'snapshot_age_min', label: 'Snapshot Age', num: true, fmt: mins, cls: (_, r) => stCls(r.collection_status) },
       { key: 'backup_date_of_oldest_file', label: 'Backup Date of Oldest File', fmt: fmtTime }, { key: 'backup_date_of_newest_file', label: 'Backup Date of Newest File', fmt: fmtTime },
       { key: 'restore_date_of_oldest_file', label: 'Restore Date of Oldest File', fmt: fmtTime }, { key: 'restore_date_of_newest_file', label: 'Restore Date of Newest File', fmt: fmtTime },
       { key: 'instance_level_threshold', label: 'Configure', fmt: (v, r) => {
-        const n = configure({ level: 'instance', instance_id: Number(r.instance_id), where: `the instance ${String(r.instance)}` },
-          { threshold_level: v === true ? 'instance' : 'default' });
-        if (v === true) n.style.fontWeight = 'bold';
+        const n = configure({ level: 'instance', instance_id: Number(r.instance_id), where: `the instance ${String(r.instance)}` }, curOf(r));
+        if (v === true) n.style.fontWeight = 'bold';   // either key has the instance's own threshold
         return n;
       } },
     ];
@@ -615,38 +638,49 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'status', label: 'Status', fmt: (v, r) => (statusWord[String(v)] ?? String(v ?? '')) + (r.is_missing === true ? ' (Missing)' : r.is_new_database === true ? ' (New Database)' : ''), cls: stCls },
       { key: 'excluded_by', label: 'Excluded By' },
       { key: 'last_log_restore_at', label: 'Restore Date', fmt: fmtTime }, { key: 'last_log_backup_start_at', label: 'Backup Start Date', fmt: fmtTime },
-      { key: 'total_time_behind_min', label: 'Total Time Behind', fmt: mins }, { key: 'latency_of_last_min', label: 'Latency of Last', fmt: mins },
-      { key: 'time_since_last_min', label: 'Time Since Last', fmt: mins },
-      { key: 'snapshot_age_min', label: 'Snapshot Age', fmt: mins, cls: (_, r) => stCls(r.snapshot_age_status) },
+      { key: 'total_time_behind_min', label: 'Total Time Behind', num: true, fmt: mins }, { key: 'latency_of_last_min', label: 'Latency of Last', num: true, fmt: mins },
+      { key: 'time_since_last_min', label: 'Time Since Last', num: true, fmt: mins },
+      { key: 'snapshot_age_min', label: 'Snapshot Age', num: true, fmt: mins, cls: (_, r) => stCls(r.snapshot_age_status) },
       { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime },
       { key: 'last_file', label: 'Last File', fmt: v => v == null ? '' : String(v).split(/[\\/]/).pop() ?? '' },
       { key: 'created_at', label: 'Create Date', fmt: fmtTime },
-      { key: 'created_at', label: 'Database Age', fmt: v => v == null ? '' : ddDuration((Date.now() - new Date(String(v)).getTime()) / 1000) },
+      { key: 'database_age_s', label: 'Database Age', num: true, fmt: v => v == null ? '' : ddDuration(v) },
       { key: 'threshold_level', label: 'Threshold Level', fmt: (v, r) => v === 'default' || v == null ? 'Root' : v === 'tag' ? `Tag ${String(r.threshold_tag)}` : String(v)[0].toUpperCase() + String(v).slice(1) },
-      { key: 'checks', label: 'finding', wide: true },
       { key: 'kind', label: 'Configure', fmt: (v, r) => {
         if (v !== 'restore') return '';
-        const n = configure({ level: 'database', instance_id: Number(r.instance_id), datname: String(r.database_name), where: `the database ${String(r.database_name)} on ${String(r.instance)}` }, r);
-        if (r.threshold_level === 'database') n.style.fontWeight = 'bold';
+        const n = configure({ level: 'database', instance_id: Number(r.instance_id), datname: String(r.database_name), where: `the database ${String(r.database_name)} on ${String(r.instance)}` }, curOf(r));
+        if (r.threshold_level === 'database' || r.latency_level === 'database') n.style.fontWeight = 'bold';   // DBA Dash: ThresholdConfiguredLevel = 'Database'
         return n;
       } },
+      // pgvigil's own, after DBA Dash's columns
+      { key: 'checks', label: 'finding', wide: true },
     ];
     body.replaceChildren(el('h3', {}, 'Summary'), grid(rowsOf(d.summary), sumCols, 'No log shipped database on these instances.'),
-      el('h3', {}, 'Detail'), grid(rowsOf(d.detail), detCols, `No database matches the filter (${status.options[status.selectedIndex].text}).`));
+      el('h3', {}, 'Detail'), grid(rowsOf(d.detail), detCols, `No database matches the filter (${statusText()}).`));
   }
-  const instOpt = el('option', { value: 'instance' }, 'Thresholds (Instance)');
-  instOpt.disabled = !ctx.instance;   // the instance level needs one instance in scope (LogShippingView.cs:131-133)
-  const cfg = el('select', { 'aria-label': 'Configure' }, el('option', { value: '' }, 'Configure'), el('option', { value: 'root' }, 'Thresholds (Root)'), instOpt);
+  let summaryRows: Row[] = [];
+  // the toolbar's Configure: each key at the root, and at the instance where one instance is in scope
+  // (LogShippingView.cs:131-133); each dialog opened with the threshold in force there
+  const keyNames = { logship_restore_age: 'time since the last restore', logship_restore_latency: 'latency of the last' } as const;
+  const cfg = el('select', { 'aria-label': 'Configure' }, el('option', { value: '' }, 'Configure'),
+    ...Object.entries(keyNames).map(([k, lab]) => el('option', { value: `root:${k}` }, `Thresholds (Root): ${lab}`)),
+    ...Object.entries(keyNames).map(([k, lab]) => { const o = el('option', { value: `instance:${k}` }, `Thresholds (Instance): ${lab}`); o.disabled = !sc.one; return o; }));
   cfg.addEventListener('change', () => {
-    const v = cfg.value; cfg.value = '';
-    const key = keyOf('logship_restore_age');
+    const [lv, k] = cfg.value.split(':'); cfg.value = '';
+    const key = keyOf(k);
     if (!key) return;
-    if (v === 'root') thresholdDialog(key, { level: 'root', where: 'the root (every SQL Server instance)' }, undefined, () => void draw());
-    if (v === 'instance' && ctx.instance) thresholdDialog(key, { level: 'instance', instance_id: ctx.instance, where: 'this instance' }, undefined, () => void draw());
+    if (lv === 'root') thresholdDialog(key, { level: 'root', where: 'the root (every SQL Server instance)' },
+      key.root_own === true ? { level: 'root', warn: key.root_warn, crit: key.root_crit } : { level: 'default', warn: key.warn_default, crit: key.crit_default }, () => void draw());
+    if (lv === 'instance' && sc.one) {
+      const r = summaryRows.find(x => Number(x.instance_id) === sc.one);
+      const short = k === 'logship_restore_age' ? 'age' : 'latency';
+      thresholdDialog(key, { level: 'instance', instance_id: sc.one, where: 'this instance' }, r ? curOf(r)(short) : undefined, () => void draw());
+    }
   });
   refresh.addEventListener('click', () => void draw());
-  status.addEventListener('change', () => void draw());
-  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', {}, 'Status ', status), ' ', cfg, ' ', backButton(ctx, tab)),
+  for (const b of stBoxes) b.addEventListener('change', () => void draw());
+  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('span', { role: 'group', 'aria-label': 'Status' }, 'Status ',
+      ...stBoxes.flatMap(b => [el('label', {}, b, ' ', statusWord[b.value]), ' '])), ' ', cfg, ' ', backButton(ctx, tab)),
     el('p', { class: 'meta' }, 'Status is the judgment the Findings raise, from the same rows: the worst finding of the database, else OK where restore '
       + 'history judges it, else N/A with the reason in Excluded By (not read in 15 minutes; no log restore yet - DBA Dash calls that Critical, pgvigil waits '
       + 'for the restoring-days check; mirroring unknown). Mirrored, availability group and SIMPLE-recovery databases have no row, as in DBA Dash. Missing '

@@ -77,7 +77,7 @@ const dialogColumns = new Set(['Instance Uptime']);
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
   'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
   // task 383: a scope with SQL Server names this column 'Availability Groups' (a PostgreSQL-only one 'Replication', below)
-  'Availability Groups': 'mssqlag', 'Mirroring': 'mssqlmirroring', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
+  'Availability Groups': 'mssqlag', 'Mirroring': 'mssqlmirroring', 'Log Shipping': 'mssqllogshipping', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
   // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
   'Last amcheck': 'corruption', 'WAL archive': 'backups', 'Jobs': 'jobs', 'Replication': 'pgreplication' };
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
@@ -697,6 +697,43 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
         : sbad.length ? `FAIL the strip offers page(s) of PostgreSQL alone for a SQL Server-only tag: ${sbad.join(', ')}`
         : 'ok (the Configuration strip holds no page of PostgreSQL alone)' });
   }
+}
+
+// (e) task 383, the HA/DR folder's pages (design section 8; the router's strips are the join's W9): a folder page's
+// Instance link lands on the same page at that instance with Back on, and Back returns to the folder; a SQL Server
+// instance's HA/DR strip holds DBA Dash's four tabs in its order; a PostgreSQL instance's strip none of the three
+{
+  const haOrder = ['mssqlbackups', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag'];
+  for (const t of ['mssqlag', 'mssqlmirroring', 'mssqllogshipping']) {
+    await go(`#/${t}`);
+    const link = await ev(`(() => { const x = [...document.querySelectorAll('main table a')].find(a => /[?&]i=\\d+/.test(a.getAttribute('href') || '')); return x ? x.getAttribute('href') : null; })()`);
+    if (!link) {
+      record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link: `#/${t}`, landed: 'no row with an Instance link',
+        verdict: t === 'mssqlmirroring' ? 'not proven: no Mirroring row with an Instance link in this data (its links are in Role Changes)' : 'FAIL the folder page has no Instance link' });
+      continue;
+    }
+    await ev(`(() => { [...document.querySelectorAll('main table a')].find(a => a.getAttribute('href') === ${JSON.stringify(link)})?.click(); })()`);
+    await sleep(500); await settled();
+    const got = await landing();
+    const back = await ev(`(() => { const b = [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back'); return b ? !b.disabled : null; })()`);
+    let backTo = '';
+    if (back) { await ev(`(() => { [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back')?.click(); })()`); await sleep(500); await settled(); backTo = (await landing()).hash; }
+    record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link, landed: `${got.hash}; Back ${back === null ? 'absent' : back ? 'on' : 'off'}${backTo ? ' -> ' + backTo : ''}`,
+      verdict: tabOf(got.hash) !== t || !paramsOf(got.hash).get('i') ? `FAIL want ${t} at the instance, got ${got.hash}`
+        : got.err.length ? `FAIL the landing shows an error: ${got.err[0]}`
+        : back !== true ? 'FAIL Back is not on after the drill'
+        : tabOf(backTo) !== t || paramsOf(backTo).get('i') ? `FAIL Back went to ${backTo}, want the folder's ${t}`
+        : 'ok (DBA Dash: Instance -> the same page at that instance; Navigate Back -> the folder)' });
+  }
+  await go(`#/mssqlag?i=${ms.instance_id}`);
+  const msStrip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf).filter(t => haOrder.includes(t));
+  record({ scope: `instance ${ms.name}`, kind: 'hadr', column: 'HA/DR strip', engine: 'sqlserver', link: `#/mssqlag?i=${ms.instance_id}`, landed: msStrip.join(' '),
+    verdict: msStrip.join(' ') === haOrder.join(' ') ? 'ok (DBA Dash: Backups, Log Shipping, Mirroring, Availability Groups)' : `FAIL want ${haOrder.join(' ')}` });
+  await go(`#/backups?i=${pg.instance_id}`);
+  const pgStrip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
+  const pgBad = pgStrip.filter(t => haOrder.slice(1).includes(t));
+  record({ scope: `instance ${pg.name}`, kind: 'hadr', column: 'HA/DR strip', engine: 'postgres', link: `#/backups?i=${pg.instance_id}`, landed: pgStrip.join(' ').slice(0, 200),
+    verdict: pgBad.length ? `FAIL a PostgreSQL instance's strip offers ${pgBad.join(', ')}` : 'ok (none of the three SQL Server pages)' });
 }
 
 // an instance whose drives' Files pages listed no file at all has proven nothing
