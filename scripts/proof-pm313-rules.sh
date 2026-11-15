@@ -509,7 +509,9 @@ TM=$(pq "SELECT to_char((date_trunc('hour', now()) - interval '3 hours') AT TIME
 # rmrec <record id> <node or ''> <minutes after TM>: one RING_BUFFER_RESOURCE_MONITOR row of a payload (never a function
 # named rm: the cleanup trap's rm would call it; 405 review part B, B2)
 rmrec() { local n=; [[ -n "$2" ]] && n=",\"memory_node_id\":$2"
-  echo "{\"kind\":\"rmon\",\"server_start\":\"2026-11-01T00:00:00\",\"record_id\":$1$n,\"sample_at\":\"$(pq "SELECT to_char(('$TM'::timestamptz + interval '$3 minutes') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
+  local at; at=$(pq "SELECT to_char(('$TM'::timestamptz + interval '$3 minutes') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+  [[ "$at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || echo "FAIL: rmrec $1: the event time [$at]" >&2
+  echo "{\"kind\":\"rmon\",\"server_start\":\"2026-11-01T00:00:00\",\"record_id\":$1$n,\"sample_at\":\"$at\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
 mem() { local at=$1; shift; local rows; rows=$(IFS=,; echo "$*")
   pq "SELECT pgvigil.import_mssql_memory($SY, '$at'::timestamptz, '[{\"kind\":\"memory\"},$rows]'::jsonb)" >/dev/null; }
 nrm() { pq "SELECT count(*) FROM pgvigil.mssql_memory_rmon WHERE instance_id = $SY"; }
@@ -546,7 +548,9 @@ ok "R8b: the Memory page's records carry their node (0:3 1:1 none:1)"
 S8C=2026-11-03T00:00:00; T8C=$(pq "SELECT date_trunc('hour', now()) - interval '6 hours'")
 # rc <record id> <node or ''> <ms after T8C> <ring_ms or ''>: one record, its time to the microsecond
 rc() { local n= g=; [[ -n "$2" ]] && n=",\"memory_node_id\":$2"; [[ -n "$4" ]] && g=",\"ring_ms\":$4"
-  echo "{\"kind\":\"rmon\",\"server_start\":\"$S8C\",\"record_id\":$1$n$g,\"sample_at\":\"$(pq "SELECT to_char(('$T8C'::timestamptz + $3 * interval '1 millisecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
+  local at; at=$(pq "SELECT to_char(('$T8C'::timestamptz + $3 * interval '1 millisecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")
+  [[ "$at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$ ]] || echo "FAIL: rc $1: the event time [$at]" >&2
+  echo "{\"kind\":\"rmon\",\"server_start\":\"$S8C\",\"record_id\":$1$n$g,\"sample_at\":\"$at\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
 n8c() { pq "SELECT count(*) FROM pgvigil.mssql_memory_rmon WHERE instance_id = $SY AND server_start = '$S8C'"; }
 mem "$(pq "SELECT now() - interval '9 minutes'")" "$(rc 200 '' 1000 '')" "$(rc 201 '' 2000 '')" "$(rc 202 '' 3000 '')"; C1=$(n8c)
 mem "$(pq "SELECT now() - interval '8 minutes'")" "$(rc 200 0 1000.3 5001000)" "$(rc 201 0 2000.3 5002000)" "$(rc 202 0 3000.3 5003000)" "$(rc 203 0 4000.3 5004000)"; C2=$(n8c)
