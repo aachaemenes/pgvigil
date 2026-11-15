@@ -86,23 +86,54 @@
 #     the finding's key. Not graded: whether TLS opens the connection before the ZBXD header (a TLS send to a server
 #     that answers only TLS succeeding is what is read). The containers, their network and volumes are removed after
 #     and read back gone.
-# Parts S, A and B (K2 the Slack bot channel, K4 the attachment, K5 the buttons) are added after their design pass.
+#  S. (K2) the Slack bot against a loopback stand-in of chat.postMessage (NOT PROVEN LIVE: no bot token is ever stored).
+#     A channel sb (kind slack, the seeded instance, repeat 1h, clear_after 0) and a critical rule finding:
+#     - S1 one top-level post (no thread_ts) to C0PROOF0001 with 'Bearer xoxb-proof-...' and an 'Open in pgvigil'
+#       button and no Acknowledge (the door is off); alert_threads holds the post's ts for the occurrence;
+#     - S2 a repeat (last_sent_at moved 2 h back): one reply with that thread_ts, no reply_broadcast, its own attempt;
+#     - S3 the stand-in refusing the reply (cannot_reply_to_message): the alert goes as a new post in the same pass,
+#       at least 0.9 s after the refused call; alert_threads' ts is the new post's;
+#     - S4 the rule ended: the recovery is a reply in the thread, no reply_broadcast, '[RESOLVED]';
+#     - S5 a new rule on the same series fires again: a top-level post, never a reply into the old thread;
+#     - S7 one pass with a new firing and a repeat: two calls (a post, a reply), two 'sent' attempts.
+#  A. (K4) attachment, a channel drop (file) beside sb:
+#     - A0 every 'metric' row of alert_anchor_checks names a metric_catalog key (the table printed);
+#     - A1 an anchor (a rule on sessions.waiting_lock at warning) is sent on drop and sb;
+#     - A2 a warning finding on the same instance next pass: no firing file on drop, an alert_held 'attached' row
+#       under the anchor on drop and sb, one Slack reply in the anchor's thread ('attached under this alert');
+#     - A3 a critical finding: a firing file on drop (a critical is never attached);
+#     - A4 the anchor's rule ended: drop's 'resolved' file of the anchor says 'attached while it stood: ';
+#     - A5 the next pass: the attached finding, still standing, fires on drop as itself, 'was attached to '.
+#  B. (K5) the Slack door, a served pgvigil built with the proof knob (alerts.slackProofHooks: a loopback stand-in of
+#     Slack's hooks host) and requests the proof signs itself (NOT PROVEN LIVE: no public address):
+#     - B0 the door off: POST /api/slack/actions answers 404;
+#     - B1 the door on: serve logs 'the Slack door is on' with the app; a new post carries Acknowledge (value
+#       '<key>|sb') and Mute 1 h with its confirm; 20 such alerts' blocks stay under half of the 256 KB cap;
+#     - B2 a signed Acknowledge: 200; the stand-in hooks get one in_channel 'Acknowledged in pgvigil by <user>'; acks
+#       holds the alert_ack by that user; ack_log's row has client 'slack:T0PROOF0001/U0PROOF0001' and slack_user;
+#     - B3 another signed Acknowledge: an ephemeral 'Already acknowledged by'; B4 B2's exact request again: 200, nothing
+#       new; B5 a bad signature, a stale timestamp, a JSON content type: 401 each, nothing at the hooks;
+#     - B6 an unmapped Slack user: ephemeral 'not mapped'; a user mapped to no pgvigil user: 'disabled or gone';
+#     - B7 Mute 1 h: in_channel 'Muted for 1 h', a mute of the key until about an hour on; again: 'Already muted until';
+#     - B8 a click on a post whose occurrence cleared (a newer post carries the open one): ephemeral 'cleared at';
+#     - B9 the link button's click: 200, nothing written, nothing at the hooks.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 : "${PGVIGIL_ADMIN_DSN:?}"
-PART=${PGVIGIL_PROOF_PART:-MCRPOUZ}
+PART=${PGVIGIL_PROOF_PART:-MCRPOUZSAB}
 SUF=$RANDOM
 REPO=pgvigil_s2chan_$SUF
 ALR=pgvigil_s2chan_alr_$SUF; RDR=pgvigil_s2chan_rdr_$SUF
 PW=p$RANDOM$RANDOM$RANDOM; UIUSER=proofuser; UIPW=ui$RANDOM$RANDOM$RANDOM
-WORK=$(mktemp -d); SRV=""; SINK=""; VEND=""; ZCLEAN=""
+WORK=$(mktemp -d); SRV=""; SINK=""; VEND=""; ZCLEAN=""; SLK=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
 cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$SINK" ]] && kill "$SINK" 2>/dev/null || true
   [[ -n "$VEND" ]] && kill "$VEND" 2>/dev/null || true
+  [[ -n "$SLK" ]] && kill "$SLK" 2>/dev/null || true
   if [[ -n "$ZCLEAN" ]]; then
     docker rm -f -v "$ZCLEAN-web" "$ZCLEAN-srv" "$ZCLEAN-db" >/dev/null 2>&1 || true
     docker network rm "$ZCLEAN" >/dev/null 2>&1 || true
@@ -420,7 +451,7 @@ out=$(mcpcall "{\"instance\":\"proof-chan-a-$SUF\",\"from\":\"$(date -u -d '-91 
 ok "P: the instance's alerts filtered before the limit; the MCP tool over 90 days and its bounds"
 fi
 # ---- a seeded instance and its rule findings (O, U, Z) -------------------------------------------------------------------
-if [[ $PART == *O* || $PART == *U* || $PART == *Z* ]]; then
+if [[ $PART == *O* || $PART == *U* || $PART == *Z* || $PART == *S* || $PART == *A* || $PART == *B* ]]; then
 INSTH=proof-chan-h-$SUF
 HID=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
          values ('$INSTH', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
@@ -580,6 +611,249 @@ pass U2
 [[ $(newest_alert az) == failed*InvalidStream* ]] || fail "U2: the 400's attempt: $(newest_alert az)"
 cp "$WORK/cfg.base.yaml" "$CFG"
 ok "U: Azure Monitor Logs: one token, one upload with the row; a 400 with Azure's words"
+fi
+
+# ---- S / A / B: the Slack bot, attachment, the Slack door (task 403b K2 / K4 / K5) --------------------------------------
+if [[ $PART == *S* || $PART == *A* || $PART == *B* ]]; then
+cat > "$WORK/slack.py" <<'PY'
+import json, os, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+work, port = sys.argv[1], int(sys.argv[2])
+n = [0]
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode('utf-8', 'replace')
+        name = 'hooks' if self.path.startswith('/hooks/') else 'slack'
+        with open(os.path.join(work, name + '.log'), 'a') as f:
+            f.write(json.dumps({'t': time.time(), 'path': self.path, 'auth': self.headers.get('Authorization', ''), 'body': body}) + '\n')
+        ans = {'ok': True}
+        if name == 'slack':
+            a, qf = '', os.path.join(work, 'answers.slack')
+            if os.path.exists(qf):
+                lines = open(qf).read().splitlines()
+                if lines:
+                    a = lines[0]
+                    open(qf, 'w').write(''.join(l + '\n' for l in lines[1:]))
+            n[0] += 1
+            ans = {'ok': False, 'error': a[4:]} if a.startswith('err:') else {'ok': True, 'ts': '1800000000.%06d' % n[0], 'channel': 'C0PROOF0001'}
+        b = json.dumps(ans).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+ThreadingHTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+# sl <log> count | body <i> <field> | auth <i> | gap <i> <j> | has <i> <text>: the stand-in's records
+cat > "$WORK/sl.py" <<'PY'
+import json, os, sys
+f, cmd = sys.argv[1], sys.argv[2]
+r = [json.loads(l) for l in open(f)] if os.path.exists(f) else []
+if cmd == 'count': print(len(r))
+elif cmd == 'body': v = json.loads(r[int(sys.argv[3])]['body']).get(sys.argv[4]); print('' if v is None else (json.dumps(v) if not isinstance(v, str) else v))
+elif cmd == 'auth': print(r[int(sys.argv[3])]['auth'])
+elif cmd == 'gap': print('%.2f' % (r[int(sys.argv[4])]['t'] - r[int(sys.argv[3])]['t']))
+elif cmd == 'has': print('yes' if sys.argv[4] in r[int(sys.argv[3])]['body'] else 'no')
+PY
+sl() { python3 "$WORK/sl.py" "$WORK/slack.log" "$@"; }
+hk() { python3 "$WORK/sl.py" "$WORK/hooks.log" "$@"; }
+LPORT=$(freeport)
+python3 "$WORK/slack.py" "$WORK" "$LPORT" & SLK=$!
+for n in $(seq 1 40); do
+  curl -s -o /dev/null -X POST "http://127.0.0.1:$LPORT/hooks/ping" && break
+  [[ $n == 40 ]] && fail "the Slack stand-in did not answer"
+  sleep 0.25
+done
+rm -f "$WORK/hooks.log"
+export PGV_PROOF_SLACK="xoxb-proof-$SUF" PGV_PROOF_SIGN="sign-$SUF-$RANDOM"
+mkdir -p "$WORK/drop"; rm -f "$WORK/drop"/*
+# slackcfg <file> <door: true|false>: sb and drop on the seeded instance
+slackcfg() {
+  cat > "$1" <<EOF
+repository:
+  dsn: env:PGVIGIL_REPO_DSN
+alerts_dsn: env:PGV_PROOF_ALERTS_DSN
+alerts_base_url: https://pgvigil.proof.example/
+doors: {slack_actions: $2}
+slack_apps:
+  - {app_id: A0PROOF0001, team_id: T0PROOF0001, signing_secret: env:PGV_PROOF_SIGN, users: {U0PROOF0001: $UIUSER, U0PROOF0002: nobody$SUF}}
+alerts:
+  - {name: sb, kind: slack, min_severity: warning, repeat: 1h, clear_after: 0, instances: [$INSTH], slack: {bot_token: env:PGV_PROOF_SLACK, channel: C0PROOF0001, api_url: "http://127.0.0.1:$LPORT/api", app_id: A0PROOF0001}}
+  - {name: drop, kind: file, min_severity: warning, clear_after: 0, instances: [$INSTH], file: {dir: $WORK/drop}}
+EOF
+}
+CFG=$WORK/cfg-slack.yaml; slackcfg "$CFG" false
+# rule <metric> <warning> <critical>: a live rule on the seeded instance; prints its id
+rule() {
+  local id
+  id=$(q "select pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"proof\",\"metric\":\"$1\",\"op_dir\":\"above\",\"warning\":$2,\"critical\":$3,\"for_minutes\":0,\"scope\":\"instance\",\"instance_name\":\"$INSTH\"}'::jsonb)->>'rule_id'")
+  [[ $id =~ ^[0-9]+$ ]] || fail "the rule on $1 was not made: $id"
+  echo "$id"
+}
+endrule() { q "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"proof\",\"rule_id\":$1}'::jsonb)->>'outcome'" >/dev/null; }
+# sample <idle_in_txn> <waiting_lock> <total>: a fresh activity sample, then the rules judged
+sample() {
+  q "insert into pgvigil.activity_summary (instance_id, snapshot_at, total, active, idle, idle_in_txn, idle_in_txn_aborted, waiting_lock,
+       active_client_wait, longest_active_secs, longest_idle_txn_secs, oldest_xmin_age, max_connections)
+     values ($HID, now() - interval '2 seconds', $3, 1, 5, $1, 0, $2, 0, 1, 1, 1, 100)" >/dev/null
+  q "select pgvigil.alert_rules_run(now())" >/dev/null
+}
+keyof() { q "select string_agg(finding_key, ',') from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and setting ilike '%$1%'"; }
+back() { q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '2 hours' where channel = 'sb' and finding_key = '$1' and cleared_at is null" >/dev/null; }
+tsof() { q "select ts from pgvigil.alert_threads where channel = 'sb' and finding_key = '$1' order by posted_at desc limit 1"; }
+[[ -n $RID ]] && { endrule "$RID"; RID=""; }
+sample 0 0 1; pass sab0   # the earlier parts' findings cleared on these channels
+SL0=$(sl count)
+fi
+
+if [[ $PART == *S* ]]; then
+R1=$(rule sessions.idle_in_txn 39 40); sample 50 0 1; KS=$(keyof "idle in")
+[[ $KS =~ ^[0-9a-f]+$ ]] || fail "S: the rule's finding is '$KS'"
+pass S1
+[[ $(sl count) == $((SL0 + 1)) ]] || fail "S1: $(( $(sl count) - SL0 )) calls (wanted one post)"
+i=$SL0
+[[ -z $(sl body $i thread_ts) && $(sl body $i channel) == C0PROOF0001 && $(sl auth $i) == "Bearer xoxb-proof-$SUF" ]] || fail "S1: the post: thread_ts '$(sl body $i thread_ts)', channel $(sl body $i channel), auth $(sl auth $i | cut -c1-12)"
+[[ $(sl has $i pgv_open) == yes && $(sl has $i pgv_ack) == no ]] || fail "S1: the post's buttons (open $(sl has $i pgv_open), ack $(sl has $i pgv_ack))"
+TS1=$(tsof "$KS"); [[ $TS1 == 1800000000.* ]] || fail "S1: alert_threads holds '$TS1'"
+ok "S1: one top-level post (the link button, no Acknowledge with the door off), its thread $TS1 kept"
+back "$KS"; pass S2
+i=$((SL0 + 1))
+[[ $(sl count) == $((SL0 + 2)) && $(sl body $i thread_ts) == "$TS1" && -z $(sl body $i reply_broadcast) ]] || fail "S2: the repeat: thread_ts '$(sl body $i thread_ts)' broadcast '$(sl body $i reply_broadcast)'"
+[[ $(q "select count(*) from pgvigil.alert_log where channel = 'sb' and outcome = 'sent' and n_repeat = 1") -ge 1 ]] || fail "S2: no 'sent' repeat attempt"
+ok "S2: the repeat is a reply in thread $TS1, not broadcast, its own attempt"
+echo 'err:cannot_reply_to_message' > "$WORK/answers.slack"
+back "$KS"; pass S3
+[[ $(sl count) == $((SL0 + 4)) ]] || fail "S3: $(( $(sl count) - SL0 - 2 )) calls (wanted the refused reply and a new post)"
+[[ $(sl body $((SL0 + 2)) thread_ts) == "$TS1" && -z $(sl body $((SL0 + 3)) thread_ts) ]] || fail "S3: the refused reply then a post"
+g=$(sl gap $((SL0 + 2)) $((SL0 + 3))); awk "BEGIN{exit !($g >= 0.9)}" || fail "S3: the two calls $g s apart (wanted at least 0.9)"
+TS2=$(tsof "$KS"); [[ $TS2 != "$TS1" ]] || fail "S3: the thread did not move to the new post"
+ok "S3: a reply Slack refused as a reply went as a new post ${g} s later; the thread is now $TS2"
+endrule "$R1"; sample 0 0 1; pass S4
+i=$((SL0 + 4))
+[[ $(sl count) == $((SL0 + 5)) && $(sl body $i thread_ts) == "$TS2" && -z $(sl body $i reply_broadcast) && $(sl has $i RESOLVED) == yes ]] || fail "S4: the recovery: thread_ts '$(sl body $i thread_ts)' resolved $(sl has $i RESOLVED)"
+ok "S4: the recovery is a reply in thread $TS2, not broadcast"
+R1=$(rule sessions.idle_in_txn 39 40); sample 50 0 1; KS2=$(keyof "idle in"); pass S5
+i=$((SL0 + 5))
+[[ $(sl count) == $((SL0 + 6)) && -z $(sl body $i thread_ts) ]] || fail "S5: the re-fire: thread_ts '$(sl body $i thread_ts)'"
+ok "S5: the re-fire is a new top-level post (the key $([[ $KS2 == "$KS" ]] && echo the same || echo new), $(q "select count(*) from pgvigil.alert_threads where channel = 'sb' and finding_key = '$KS2'") thread row(s))"
+R2=$(rule sessions.total 9 1000); back "$KS2"; sample 50 0 20; pass S7
+[[ $(sl count) == $((SL0 + 8)) ]] || fail "S7: $(( $(sl count) - SL0 - 6 )) calls (wanted a post and a reply)"
+[[ -z $(sl body $((SL0 + 6)) thread_ts) && -n $(sl body $((SL0 + 7)) thread_ts) ]] || fail "S7: the post first, then the reply"
+ok "S7: a new firing and a repeat in one pass: a post, then a reply ($(sl gap $((SL0 + 6)) $((SL0 + 7))) s apart), two attempts"
+endrule "$R1"; endrule "$R2"; sample 0 0 1; pass S8
+fi
+
+if [[ $PART == *A* ]]; then
+[[ $(q "select count(*) from pgvigil.alert_anchor_checks a where a.match = 'metric' and not exists (select 1 from pgvigil.metric_catalog c where c.key = a.name)") == 0 ]] || fail "A0: a metric row of alert_anchor_checks names no metric_catalog key"
+q "select match || ' ' || source || ' ' || name || ' -> ' || kind from pgvigil.alert_anchor_checks order by kind, match, name" | sed 's/^/     /'
+ok "A0: every metric row of alert_anchor_checks is a metric_catalog key"
+SLA=$(sl count)
+RA=$(rule sessions.waiting_lock 3 1000); sample 0 9 1; AK=$(keyof "waiting on a lock"); pass A1
+[[ $AK =~ ^[0-9a-f]+$ && $(dropcount firing "$AK" warning) == 1 && $(sl count) == $((SLA + 1)) ]] || fail "A1: the anchor '$AK': drop $(dropcount firing "$AK" warning), slack $(( $(sl count) - SLA ))"
+ATS=$(tsof "$AK")
+ok "A1: the anchor (sessions.waiting_lock, warning) sent on drop and sb (thread $ATS)"
+RB=$(rule sessions.total 9 1000); sample 0 9 20; BK=$(keyof "sessions"); BK=$(q "select finding_key from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and finding_key <> '$AK' limit 1"); pass A2
+[[ $(dropcount firing "$BK" warning) == 0 ]] || fail "A2: the attached finding was sent on drop"
+[[ $(q "select count(*) from pgvigil.alert_held where hold_kind = 'attached' and finding_key = '$BK' and anchor_key = '$AK' and channel in ('drop', 'sb')") == 2 ]] || fail "A2: alert_held: $(q "select string_agg(channel || ':' || hold_kind || ':' || coalesce(anchor_key, '-'), ' ') from pgvigil.alert_held where finding_key = '$BK'")"
+i=$((SLA + 1))
+[[ $(sl count) == $((SLA + 2)) && $(sl body $i thread_ts) == "$ATS" && $(sl has $i "attached under this alert") == yes ]] || fail "A2: the Slack reply: $(( $(sl count) - SLA - 1 )) call(s), thread_ts '$(sl body $i thread_ts)'"
+ok "A2: a warning finding on the anchor's instance: held 'attached' on drop and sb, one reply in the anchor's thread"
+RC=$(rule sessions.idle_in_txn 39 40); sample 50 9 20; CK=$(q "select finding_key from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and severity = 'critical' limit 1"); pass A3
+[[ $(dropcount firing "$CK" critical) == 1 ]] || fail "A3: the critical finding was not sent on drop"
+ok "A3: a critical finding beside the anchor is sent (never attached)"
+endrule "$RA"; sample 50 0 20; pass A4
+grep -l '"resolved"' "$WORK/drop"/* 2>/dev/null | xargs -r grep -l "\"$AK\"" | xargs -r grep -l 'attached while it stood: ' >/dev/null || fail "A4: the anchor's recovery lists nothing attached"
+ok "A4: the anchor's recovery lists what was attached while it stood"
+pass A5
+grep -l '"firing"' "$WORK/drop"/* 2>/dev/null | xargs -r grep -l "\"$BK\"" | xargs -r grep -l 'was attached to ' >/dev/null || fail "A5: the released finding did not fire, or says nothing of its anchor"
+ok "A5: the still-standing finding fires as itself, 'was attached to ...'"
+endrule "$RB"; endrule "$RC"; sample 0 0 1; pass A6
+fi
+
+if [[ $PART == *B* ]]; then
+BINB=$WORK/pgvigil-slackproof
+(cd "$TREE" && go build -ldflags "-X github.com/aachaemenes/pgvigil/internal/alerts.slackProofHooks=on" -o "$BINB" ./cmd/pgvigil) || fail "go build (the proof knob)"
+PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" "$UIUSER" >/dev/null 2>&1 || fail "B: user add"
+PORT=$(freeport); U="http://127.0.0.1:$PORT"
+serve_b() {
+  "$BINB" serve -config "$1" -listen "127.0.0.1:$PORT" > "$WORK/serve.b.log" 2>&1 & SRV=$!
+  for _ in $(seq 1 60); do curl -sf -o /dev/null "$U/" && return; kill -0 "$SRV" 2>/dev/null || fail "B: serve died: $(tail -3 "$WORK/serve.b.log")"; sleep 0.5; done
+  fail "B: serve did not answer"
+}
+stop_b() { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null || true; SRV=""; }
+serve_b "$CFG"
+[[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data 'payload=%7B%7D' "$U/api/slack/actions") == 404 ]] || fail "B0: the door off does not answer 404"
+stop_b
+ok "B0: the door off: 404"
+CFGB=$WORK/cfg-slackdoor.yaml; slackcfg "$CFGB" true; CFG=$CFGB
+serve_b "$CFGB"
+grep -q 'the Slack door is on.*A0PROOF0001' "$WORK/serve.b.log" || fail "B1: no start line: $(grep -i slack "$WORK/serve.b.log" | head -2)"
+SLB=$(sl count)
+RK=$(rule sessions.idle_in_txn 39 40); sample 50 0 1; KB=$(keyof "idle in")
+set +e; "$BINB" alerts -config "$CFGB" >"$WORK/pass.B1.out" 2>&1; set -e
+i=$SLB
+[[ $(sl has $i "\"$KB|sb\"") == yes && $(sl has $i pgv_mute1h) == yes && $(sl has $i '"confirm"') == yes ]] || fail "B1: the post's buttons: $(sl body $i blocks | cut -c1-300)"
+bl=$(sl body $i blocks | wc -c); (( bl * 20 < 128 * 1024 )) || fail "B1: one alert's blocks $bl bytes: 20 would pass half the cap"
+PTS=$(tsof "$KB")
+ok "B1: the door on (start line), the post carries Acknowledge '$KB|sb' and Mute 1 h with its confirm; $bl bytes of blocks a post (20 under half of 256 KB)"
+# click <user> <action> <value> <post ts> [ts offset] [content type] [secret]: a signed request; prints the HTTP code
+cat > "$WORK/sign.py" <<'PY'
+import hashlib, hmac, json, sys, time, urllib.parse
+secret, user, action, value, mts, off, hooks, out = sys.argv[1:9]
+ts = str(int(time.time()) + int(off))
+p = {'type': 'block_actions', 'api_app_id': 'A0PROOF0001', 'team': {'id': 'T0PROOF0001'}, 'user': {'id': user},
+     'container': {'message_ts': mts, 'channel_id': 'C0PROOF0001'}, 'response_url': hooks, 'token': 'ignored',
+     'actions': [{'action_id': action, 'value': value, 'action_ts': ts + '.000100'}]}
+body = urllib.parse.urlencode({'payload': json.dumps(p)})
+sig = 'v0=' + hmac.new(secret.encode(), ('v0:' + ts + ':' + body).encode(), hashlib.sha256).hexdigest()
+open(out, 'w').write(json.dumps({'ts': ts, 'sig': sig, 'body': body}))
+PY
+REQ=$WORK/req.json
+mkreq() { python3 "$WORK/sign.py" "${7:-$PGV_PROOF_SIGN}" "$1" "$2" "$3" "$4" "${5:-0}" "http://127.0.0.1:$LPORT/hooks/$RANDOM" "$REQ"; }
+sendreq() {
+  local ts sig body
+  ts=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ts"])' "$REQ")
+  sig=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sig"])' "$REQ")
+  python3 -c 'import json,sys; open(sys.argv[2],"w").write(json.load(open(sys.argv[1]))["body"])' "$REQ" "$WORK/req.body"
+  curl -s -o /dev/null -w '%{http_code}' -X POST -H "Content-Type: ${1:-application/x-www-form-urlencoded}" -H "X-Slack-Request-Timestamp: $ts" -H "X-Slack-Signature: $sig" --data-binary "@$WORK/req.body" "$U/api/slack/actions"
+}
+waithooks() { for _ in $(seq 1 40); do [[ $(hk count) -ge $1 ]] && return; sleep 0.25; done; fail "$2: the stand-in hooks got $(hk count) answer(s) (wanted $1)"; }
+mkreq U0PROOF0001 pgv_ack "$KB|sb" "$PTS"; [[ $(sendreq) == 200 ]] || fail "B2: the signed click"
+cp "$REQ" "$WORK/req.b2.json"
+waithooks 1 B2
+[[ $(hk has 0 '"in_channel"') == yes && $(hk has 0 "Acknowledged in pgvigil by $UIUSER") == yes ]] || fail "B2: the answer: $(hk body 0 text)"
+[[ $(q "select count(*) from pgvigil.acks where kind = 'alert_ack' and finding_key = '$KB' and created_by = '$UIUSER'") == 1 ]] || fail "B2: acks"
+[[ $(q "select count(*) from pgvigil.ack_log where client = 'slack:T0PROOF0001/U0PROOF0001' and payload->>'slack_user' = 'U0PROOF0001' and outcome = 'done'") == 1 ]] || fail "B2: ack_log's Slack identity"
+ok "B2: a signed Acknowledge: 200, 'Acknowledged in pgvigil by $UIUSER', the alert_ack and its audit row with the Slack identity"
+mkreq U0PROOF0001 pgv_ack "$KB|sb" "$PTS"; [[ $(sendreq) == 200 ]] || fail "B3: the second click"; waithooks 2 B3
+[[ $(hk has 1 '"ephemeral"') == yes && $(hk has 1 'Already acknowledged by') == yes ]] || fail "B3: $(hk body 1 text)"
+cp "$WORK/req.b2.json" "$REQ"; [[ $(sendreq) == 200 ]] || fail "B4: the replay's code"; sleep 2
+[[ $(hk count) == 2 && $(q "select count(*) from pgvigil.acks where finding_key = '$KB'") == 1 ]] || fail "B4: the replay wrote or answered"
+ok "B3/B4: a second Acknowledge: 'Already acknowledged by'; the exact request replayed: 200, nothing new"
+mkreq U0PROOF0001 pgv_ack "$KB|sb" "$PTS" 0 x wrong-secret; c1=$(sendreq)
+mkreq U0PROOF0001 pgv_ack "$KB|sb" "$PTS" -400; c2=$(sendreq)
+mkreq U0PROOF0001 pgv_ack "$KB|sb" "$PTS"; c3=$(sendreq application/json)
+[[ "$c1 $c2 $c3" == "401 401 401" ]] || fail "B5: bad signature, stale, JSON type answered $c1 $c2 $c3"; sleep 1
+[[ $(hk count) == 2 ]] || fail "B5: a refused request was answered at the hooks"
+ok "B5: a bad signature, a stale timestamp and a JSON body: 401 each, nothing at the hooks"
+mkreq U0PROOF0009 pgv_ack "$KB|sb" "$PTS"; sendreq >/dev/null; waithooks 3 B6
+mkreq U0PROOF0002 pgv_ack "$KB|sb" "$PTS"; sendreq >/dev/null; waithooks 4 B6
+[[ $(hk has 2 'not mapped') == yes && $(hk has 3 'disabled or gone') == yes && $(hk has 2 '"ephemeral"') == yes ]] || fail "B6: $(hk body 2 text) / $(hk body 3 text)"
+ok "B6: an unmapped Slack user and a user mapped to no pgvigil user: refused to the clicker alone"
+mkreq U0PROOF0001 pgv_mute1h "$KB|sb" "$PTS"; sendreq >/dev/null; waithooks 5 B7
+[[ $(hk has 4 'Muted for 1 h in pgvigil by') == yes && $(q "select count(*) from pgvigil.acks where kind = 'mute' and finding_key = '$KB' and until between now() + interval '55 minutes' and now() + interval '65 minutes'") == 1 ]] || fail "B7: $(hk body 4 text)"
+mkreq U0PROOF0001 pgv_mute1h "$KB|sb" "$PTS"; sendreq >/dev/null; waithooks 6 B7
+[[ $(hk has 5 'Already muted until') == yes ]] || fail "B7 again: $(hk body 5 text)"
+ok "B7: Mute 1 h: written until about an hour on; again: 'Already muted until'"
+q "update pgvigil.alert_state set cleared_at = now() where channel = 'sb' and finding_key = '$KB' and cleared_at is null" >/dev/null
+mkreq U0PROOF0001 pgv_ack "$KB|sb" "$PTS"; sendreq >/dev/null; waithooks 7 B8
+[[ $(hk has 6 'cleared at') == yes ]] || fail "B8: $(hk body 6 text)"
+ok "B8: a click on a post whose occurrence cleared: 'cleared at'"
+mkreq U0PROOF0001 pgv_open "" "$PTS"; [[ $(sendreq) == 200 ]] || fail "B9: the link click"; sleep 1
+[[ $(hk count) == 7 ]] || fail "B9: the link click was answered"
+ok "B9: the link button's click: 200, nothing written or answered"
+stop_b; endrule "$RK"
 fi
 
 # ---- Z: Zabbix live in containers -----------------------------------------------------------------------------------------
