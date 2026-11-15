@@ -84,7 +84,7 @@ index 7afb52bc..5153c508 100644
  
  func toolList() []any {
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index a994399a..a7a7d776 100644
+index a994399a..13642c62 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
 @@ -189,9 +189,12 @@ BEGIN
@@ -121,8 +121,13 @@ index a994399a..a7a7d776 100644
    LEFT JOIN pgvigil.instances i USING (instance_id)
    LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
   WHERE i.is_active OR f.source = 'pgvigil repository';
-@@ -468,16 +474,19 @@ LANGUAGE sql STABLE SET jit = off AS $$
-            coalesce(c.repo_wide, true) AS repo_wide
+@@ -465,19 +471,23 @@ LANGUAGE sql STABLE SET jit = off AS $$
+     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
+            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
+            coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery,
+-           coalesce(c.repo_wide, true) AS repo_wide
++           coalesce(c.repo_wide, true) AS repo_wide,
++           coalesce(c.checks, '{}') AS checks, coalesce(c.digest, false) AS digest   -- task 403a (0154: A31, the digest hold)
        FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
             AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
 -                repo_wide boolean)
