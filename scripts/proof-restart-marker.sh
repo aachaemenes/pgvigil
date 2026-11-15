@@ -144,7 +144,7 @@ pg_run() { docker run -d --name "$PG" --label "$LBL-$SUF" --network "$2" --env-f
 evs() { pq "SELECT coalesce(string_agg(kind || '=' || n, ' ' ORDER BY kind), 'none') FROM (SELECT kind, count(*) n FROM pgvigil.instance_event_list WHERE instance_id = $1 GROUP BY kind) x"; }
 # times are compared as epoch seconds (psql prints in its session's zone, the DMV in the container's)
 newest() { pq "SELECT extract(epoch FROM at) FROM pgvigil.instance_events WHERE instance_id = $1 AND kind = '$2' ORDER BY at DESC LIMIT 1"; }
-dmvstart() { sq "SELECT CAST(DATEDIFF_BIG(MILLISECOND, '19700101', sqlserver_start_time) / 1000.0 AS decimal(20, 3))"; }
+dmvstart() { sq "SELECT CAST(DATEDIFF_BIG(MILLISECOND, '19700101', sqlserver_start_time) / 1000.0 AS decimal(20, 3)) FROM sys.dm_os_sys_info"; }
 # ms_aged: wait until the running SQL Server started over 150 s ago, so its next start moves by over 0155's 120 s (404
 # review B, 1: B and C came 20-100 s after the start before); the container's clock is this host's
 ms_aged() { local st; st=$(dmvstart | tr -d '[:space:]'); [[ "$st" =~ ^[0-9]+ ]] || fail "the server's start [$st]"
