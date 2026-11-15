@@ -72,7 +72,8 @@
 //                     filters -> n rows each time; Export Excel -> an .xlsx (PK, a worksheet) downloaded; (run 4) a version
 //                     cell ('17.10', a text column): no Sum line, the menu ends with 'Rows: ...'
 //   T  tools          the bar's Tools: 'Open Deadlock Graph | *.xdl|Open Query Plan | *.sqlplan|Open Grid or Data Set |
-//                     *.json;*.csv;*.gz', the button aria-expanded true; the picker given dl.xdl -> 'Deadlock graph: dl.xdl',
+//                     *.json;*.csv;*.gz|Open STATISTICS IO / TIME messages | *.txt;*.statistics.json' (the fourth since
+//                     task 406's reader), the button aria-expanded true; the picker given dl.xdl -> 'Deadlock graph: dl.xdl',
 //                     an svg, 2 sessions with 'Session 55' the victim, 2 locked resources; a right-click in its grid opens the
 //                     grid menu inside the dialog with the focus in it (run 3); the picker given a UTF-16 p16.sqlplan
 //                     (SSMS's own encoding, a byte-order mark) -> 'Query plan: p16.sqlplan' with its 3 operators
@@ -582,7 +583,7 @@ await guard('T tools', async () => {
   const p16 = await ev(`(() => { const d = document.querySelector('dialog.fd-viewer[open]'); return d ? d.getAttribute('aria-label') + ': ' + (d.querySelector('table.grid')?.querySelectorAll('tbody tr').length ?? 0) : 'none'; })()`);
   await send('Page.setInterceptFileChooserDialog', { enabled: false });
   await closeDialogs();
-  check('T tools', m[0] === 'Open Deadlock Graph | *.xdl|Open Query Plan | *.sqlplan|Open Grid or Data Set | *.json;*.csv;*.gz' && exp === 'true' && d && d.title === 'Deadlock graph: dl.xdl' && d.svg && d.sessions === 2 && d.victim === 'Session 55' && d.resources === 2 && inside && p16 === 'Query plan: p16.sqlplan: 3',
+  check('T tools', m[0] === 'Open Deadlock Graph | *.xdl|Open Query Plan | *.sqlplan|Open Grid or Data Set | *.json;*.csv;*.gz|Open STATISTICS IO / TIME messages | *.txt;*.statistics.json' && exp === 'true' && d && d.title === 'Deadlock graph: dl.xdl' && d.svg && d.sessions === 2 && d.victim === 'Session 55' && d.resources === 2 && inside && p16 === 'Query plan: p16.sqlplan: 3',
     `${m[0]}; expanded ${exp}; ${JSON.stringify(d)}; the grid menu inside the viewer ${inside}; UTF-16 plan: ${p16}`);
 });
 await guard('X drop and paste', async () => {
