@@ -42,7 +42,8 @@
 #     metric without a per-database series.
 #     [Added before run 4, with the family read: GET /api/metrics with family=sessions answers the sessions rows alone
 #     and sessions.active's five figures again equal the hand query; part=families answers the five PostgreSQL
-#     families and no grid; family=nope 400.]
+#     families and no grid; family=nope 400.] [B6g-4's fold: 0166's Collection family is both engines' - the sixth
+#     family in part=families and in each engine's whole grid; part V's list of nine families is its own and stays.]
 #  S. a SQL Server instance's grid (seeded, not collected: the grid is a repository read; the collectors that fill
 #     these tables have their own proofs). mssql_requests_summary seeded with blocked = 3, 1, 7, 2, 0 (oldest to
 #     newest): requests.blocked reads max 7, min 0, avg 2.6, current 0, 5 samples. With an instance rule 'above 5
@@ -363,7 +364,7 @@ got="$(cell "$WORK/gm.json" requests.blocked max_status) $(cell "$WORK/gm.json" 
 [[ $got == "critical ok warning ok instance" ]] || fail "S: the statuses and scope read '$got'"
 fams() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["grid"]; c=d["columns"]; print(" ".join(sorted({r[c.index("family")] for r in d["rows"]})))' "$1"; }
 [[ $(fams "$WORK/gm.json") == "collection cpu host memory requests scheduler" ]] || fail "S: the SQL Server grid's families: $(fams "$WORK/gm.json")"
-[[ $(fams "$WORK/ga.json") == "database host io server sessions" ]] || fail "S: the PostgreSQL grid's families: $(fams "$WORK/ga.json")"
+[[ $(fams "$WORK/ga.json") == "collection database host io server sessions" ]] || fail "S: the PostgreSQL grid's families: $(fams "$WORK/ga.json")"
 ok "S: requests.blocked reads 7 / 0 / 2.6 / 0 over 5 samples; against above 2 / 6 the max is critical, the average warning, the rest ok; each engine lists its own families"
 
 # ---- F: fires once, clears once ----------------------------------------------------------------------------------------
