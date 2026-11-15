@@ -674,9 +674,12 @@ ZK=$(pq "SELECT count(*) FILTER (WHERE value = 0) || '|' || count(*) FROM pgvigi
 # errors_kill_s at D's severe-phase read (review part 4, finding 3): above 0 there, equal to that read's stored rate
 KR=$(pq "SELECT s.rate FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_sample s ON s.instance_id = k.instance_id AND s.series_id = k.series_id
   WHERE k.instance_id = $SB AND k.object = 'SQL Errors' AND k.counter = 'Errors/sec' AND k.inst = 'Kill Connection Errors' AND s.snapshot_at = '$EKAT'")
-KP=$(pq "SELECT value FROM pgvigil.metric_points($SB, 'counters', '$EKAT'::timestamptz - interval '1 second', '$EKAT') WHERE metric = 'errors_kill_s'")
+# metric_points hands back the lookback point before the window too (401proof14: '0' and '3.935' on two lines): the
+# point AT the severe read only
+KP=$(pq "SELECT coalesce(string_agg(value::text, ',' ORDER BY at), '') FROM pgvigil.metric_points($SB, 'counters', '$EKAT'::timestamptz - interval '1 second', '$EKAT')
+  WHERE metric = 'errors_kill_s' AND at = '$EKAT'::timestamptz")
 echo "   errors_kill_s at D's severe read: point [$KP], the stored rate [$KR]"
-python3 -c "import sys; p, r = '$KP', '$KR'; sys.exit(0 if p and r and float(p) > 0 and abs(float(p) - float(r)) < 1e-6 else 1)" \
+python3 -c "import sys; p, r = sys.argv[1], sys.argv[2]; sys.exit(0 if p and r and ',' not in p and float(p) > 0 and abs(float(p) - float(r)) < 1e-6 else 1)" "$KP" "$KR" 2>/dev/null \
   || fail "H: errors_kill_s at D's severe read [$KP] (want above 0 and equal to the stored rate [$KR])"
 ok "H: errors_offline_s is 0 at every one of the $NRD instance reads (the counter at raw 0, named in zero_series); errors_kill_s $KP at D's severe read, its stored rate"
 
