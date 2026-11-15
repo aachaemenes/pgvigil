@@ -13,7 +13,7 @@
 // The address's tool=<id> opens that tool's panel as the page loads (a mailed page carries it).
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, tabsFor } from './router';
-import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 
 // a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
@@ -189,10 +189,15 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     if (d.install_script) {
       const script = d.install_script;
       const copy = el('button', { type: 'button' }, 'Copy');
-      copy.addEventListener('click', () => { void navigator.clipboard?.writeText(script); });
+      // the clipboard's async API exists on a secure origin only: copyText falls back to a hidden textarea, and the
+      // status line says what happened (on a refusal: select the text below)
+      const said = el('span', { role: 'status', class: 'meta' });
+      copy.addEventListener('click', () => {
+        void copyText(script).then(ok => { said.textContent = ok ? 'Copied' : 'Not copied: select the text below and copy it'; });
+      });
       box.append(el('details', { class: 'install-script' }, el('summary', {}, 'Print the install script'),
         el('p', { class: 'meta' }, 'pgvigil prints this script and runs none of it: with dbatools it installs what is missing, older than tested or of no readable version here.'),
-        copy, el('pre', { class: 'mono' }, script)));
+        copy, ' ', said, el('pre', { class: 'mono' }, script)));
     }
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));

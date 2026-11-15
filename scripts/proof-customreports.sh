@@ -192,7 +192,8 @@
 #     that reply's (the same database, the page's own check), the status cell the word itself in its badge (ok for the
 #     tested version, warn for older and unread); master: 13 rows, every one 'the tested version', no mixed-versions note;
 #     'Print the install script' opens on its summary's click to the reply's install_script exactly ('nothing to install'),
-#     with its Copy button, and the click sends no request; pgcr_v (the stubs of V again) typed and Look again: its four
+#     the click sending no request, its Copy button's status line 'Copied' or 'Not copied: select the text below ...';
+#     pgcr_v (the stubs of V again) typed and Look again: its four
 #     words on their rows (warn on the older and the unread), the note 'First Responder Kit: mixed versions' above the grid
 #     with its badge, the printed script's three installs for pgcr_v; nothing run (no custom_report_log row; no stub in
 #     sys.dm_exec_procedure_stats). U's axe rows on the SQL Server community page read the grid too (0 expected).
@@ -1086,6 +1087,10 @@ try {
     return { open: !!d?.open, script: p ? p.textContent : null, shown: !!p && p.getClientRects().length > 0,
       copy: !!d && [...d.querySelectorAll('button')].some(b => b.textContent === 'Copy') }; })()`));
   out.sent = reqs.slice(n0).filter(u => /\/api\/community/.test(u));
+  // Copy: the status line beside it says what happened (the clipboard's API, or the textarea fallback, or select it)
+  await ev(`(() => { const b = [...document.querySelectorAll('main details.install-script button')].find(x => x.textContent === 'Copy'); if (b) b.click(); return 1; })()`);
+  await until(`!!document.querySelector('main details.install-script [role=status]')?.textContent`, 5000);
+  out.said = await ev(`document.querySelector('main details.install-script [role=status]')?.textContent ?? null`);
 } catch (e) { out.error = String(e?.message ?? e).slice(0, 400); }
 console.log(JSON.stringify(out));
 await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
@@ -1117,6 +1122,7 @@ assert not bad, f"UV {db}: cells unlike the reply's: {bad[:4]}"
 assert p.get('script') == a.get('install_script') and p.get('open') and p.get('shown') and p.get('copy'), \
     f"UV {db}: the printed script (open {p.get('open')}, shown {p.get('shown')}, Copy {p.get('copy')}): page {str(p.get('script'))[:200]!r}, reply {str(a.get('install_script'))[:200]!r}"
 assert not p.get('sent'), f"UV {db}: opening the script sent {p['sent']}"
+assert p.get('said') in ('Copied', 'Not copied: select the text below and copy it'), f"UV {db}: Copy's status line: {p.get('said')!r}"
 words = {n: r['status'] for n, r in rows.items()}
 notes = p.get('notes') or []
 if db == 'master':
@@ -2003,6 +2009,7 @@ assert len(api) == 13 and all(t.get('version_word') == 'the tested version' for 
 assert not p.get('notes'), f"DV {who}: notes {p.get('notes')}"
 assert p.get('script') == a.get('install_script') and 'nothing to install' in (p.get('script') or '') and p.get('open') and p.get('copy'), f"DV {who}: the script {str(p.get('script'))[:200]!r}"
 assert not p.get('sent'), f"DV {who}: opening the script sent {p['sent']}"
+assert p.get('said') in ('Copied', 'Not copied: select the text below and copy it'), f"DV {who}: Copy's status line: {p.get('said')!r}"
 print(f"ok   DV: {who}: 13 rows, every one 'the tested version' at its kit's tested version and date, no database, no note; the script 'nothing to install' as the demo serve's reply")
 PY
   done
