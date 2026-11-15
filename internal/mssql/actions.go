@@ -272,23 +272,40 @@ const (
 )
 
 // planTargetSQL reads one cached plan by its handle as the read login sees it: no row = no plan under the handle (a
-// SQL handle is no plan handle and finds none). The batch text is the first 400 characters; the platform and the
-// signed procedure come with it.
+// SQL handle is no plan handle and finds none). The batch text is the first 400 characters; the platform comes with it.
+// The route (the signed procedure or DBCC itself) is not read here: it is the actions login's (planRoute).
 const planTargetSQL = `SELECT CAST(cp.objtype AS nvarchar(20)), ISNULL(CONVERT(varchar(33), qs.created, 126), ''), CAST(ISNULL(qs.statements, 0) AS int),
   CAST(cp.usecounts AS bigint), CAST(cp.size_in_bytes / 1024 AS bigint), CAST(ISNULL(t.dbid, 0) AS int), ISNULL(CAST(DB_NAME(t.dbid) AS nvarchar(128)), ''),
   ISNULL(CAST(LEFT(t.text, 400) AS nvarchar(400)), ''), CAST(ISNULL(t.objectid, 0) AS int),
-  CAST(SERVERPROPERTY('EngineEdition') AS int), CAST(CASE WHEN OBJECT_ID(N'master.dbo.pgvigil_evict_plan', N'P') IS NOT NULL THEN 1 ELSE 0 END AS int)
+  CAST(SERVERPROPERTY('EngineEdition') AS int)
 FROM sys.dm_exec_cached_plans cp
 OUTER APPLY (SELECT MIN(q.creation_time) AS created, COUNT(*) AS statements FROM sys.dm_exec_query_stats q WHERE q.plan_handle = cp.plan_handle) qs
 OUTER APPLY sys.dm_exec_sql_text(cp.plan_handle) t
 WHERE cp.plan_handle = @p1`
 
+// planRouteSQL: may the actions login EXECUTE the signed procedure (1) - asked on the actions login's own connection,
+// so a read login that cannot see the procedure (no VIEW ANY DEFINITION) never picks the route.
+const planRouteSQL = `SELECT CAST(ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.pgvigil_evict_plan', N'OBJECT', N'EXECUTE'), 0) AS int)`
+
+// planRoute is the evict's route for this actions login: the signed procedure when it may EXECUTE it, else DBCC
+// FREEPROCCACHE itself (its ALTER SERVER STATE: docs/sqlserver-actions.md's alternative).
+func planRoute(ctx context.Context, act *sql.Conn) (string, error) {
+	var may int
+	if err := act.QueryRowContext(ctx, planRouteSQL).Scan(&may); err != nil {
+		return "", err
+	}
+	if may == 1 {
+		return "signed procedure", nil
+	}
+	return "direct", nil
+}
+
 // readPlan reads a cached plan by its handle (errNoTarget: none under it).
 func readPlan(ctx context.Context, mon *sql.Conn, handle []byte) (Target, error) {
 	var t Target
-	var dbid, objid, edition, signed int
+	var dbid, objid, edition int
 	err := mon.QueryRowContext(ctx, planTargetSQL, handle).Scan(&t.ObjType, &t.PlanCreated, &t.PlanStatements, &t.PlanUses, &t.PlanSizeKB,
-		&dbid, &t.PlanDatabase, &t.PlanBatch, &objid, &edition, &signed)
+		&dbid, &t.PlanDatabase, &t.PlanBatch, &objid, &edition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, errNoTarget
 	}
@@ -297,10 +314,6 @@ func readPlan(ctx context.Context, mon *sql.Conn, handle []byte) (Target, error)
 	}
 	t.PlanHandle = fmt.Sprintf("0x%X", handle)
 	t.planSystem, t.planAzureDB = dbid == 32767, edition == 5
-	t.PlanRoute = "direct"
-	if signed == 1 {
-		t.PlanRoute = "signed procedure"
-	}
 	if objid != 0 && dbid != 0 {
 		var name sql.NullString
 		if mon.QueryRowContext(ctx, `SELECT CAST(OBJECT_SCHEMA_NAME(@p1, @p2) + N'.' + OBJECT_NAME(@p1, @p2) AS nvarchar(260))`, objid, dbid).Scan(&name) == nil {
@@ -485,7 +498,19 @@ func Preview(ctx context.Context, d Door, instance string, k ActionKind, session
 		case err != nil:
 			return t, fmt.Sprintf("the read of the plan failed: %v", err)
 		}
-		return t, planRefusal(t)
+		if why := planRefusal(t); why != "" {
+			return t, why
+		}
+		// the route as the run will choose it: the actions login's own right on the signed procedure ("" when that
+		// login cannot be asked now: the run asks again)
+		if d.Actions != "" {
+			if adb, act, err := openAction(ctx, d.Actions, "pgvigil-actions-route"); err == nil {
+				t.PlanRoute, _ = planRoute(ctx, act)
+				_ = act.Close()
+				_ = adb.Close()
+			}
+		}
+		return t, ""
 	}
 	if k == ActionKill {
 		t, err = readSession(ctx, mon, sessionID)
@@ -601,6 +626,9 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 		}
 		if why := planRefusal(t); why != "" {
 			return refuse(t, "%s", why)
+		}
+		if t.PlanRoute, err = planRoute(ctx, act); err != nil {
+			return refuse(t, "the actions login's right on master.dbo.pgvigil_evict_plan was not read: %v; nothing was sent", err)
 		}
 		send := planEvictDirectSQL
 		if t.PlanRoute == "signed procedure" {

@@ -363,7 +363,9 @@ async function evictDialog(ctx: Ctx, handle: string, back: HTMLElement, after: (
   const facts: [string, string][] = [
     ['removes', `the plan of ${pv.what ?? 'this batch'}: ${fmtNum(t.plan_statements ?? 0)} statement(s) compile again at their next run`],
     ['kind (objtype)', t.objtype ?? ''], ['compiled (server clock)', t.plan_created ?? ''], ['uses', fmtNum(t.plan_uses ?? 0)],
-    ['size', `${fmtNum(t.plan_size_kb ?? 0)} KB`], ['route', t.plan_route === 'signed procedure' ? 'the signed procedure master.dbo.pgvigil_evict_plan' : 'DBCC FREEPROCCACHE itself (the actions login holds ALTER SERVER STATE)'],
+    ['size', `${fmtNum(t.plan_size_kb ?? 0)} KB`], ['route', t.plan_route === 'signed procedure' ? 'the signed procedure master.dbo.pgvigil_evict_plan (the actions login may EXECUTE it)'
+      : t.plan_route === 'direct' ? 'DBCC FREEPROCCACHE itself (the actions login may not EXECUTE the signed procedure; DBCC needs its ALTER SERVER STATE)'
+      : 'chosen when the evict runs, by the actions login\'s right on the signed procedure (it could not be asked now)'],
     ['plan handle', t.plan_handle ?? handle], ['statement', pv.statement],
   ];
   const kids: (Node | string)[] = [el('dl', { class: 'props' }, ...facts.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)]))];
@@ -420,7 +422,7 @@ export function planSourcesCol(ctx: Ctx, box: HTMLElement): Col {
 async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HTMLElement) {
   const title = `Plans of query hash ${qh}, plan hash ${ph} in ${db}`;
   box.replaceChildren(el('h4', { tabindex: '-1' }, title), el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
-  let d: { sources: Table | null };
+  let d: { sources: Table | null; fetch_off?: string; running_off?: string };
   try {
     d = await get('mssql/plansources', { instance: ctx.instance, db, qh, ph });
   } catch (e) {
@@ -447,8 +449,13 @@ async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HT
       status.textContent = e instanceof Error ? e.message : String(e);
     }
   };
+  // a source the server cannot read here is off with its words (the plan cache's: the policy, the read login, the audit
+  // door; a running plan's: the policy)
+  const offNote = el('p', { class: 'meta' }, [d.fetch_off ? `Plan cache: ${d.fetch_off}` : '', d.running_off ? `Running: ${d.running_off}.` : ''].filter(Boolean).join(' '));
   const btn = (label: string, r: Row, open: boolean) => {
-    const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: the ${String(r.source)} plan` }, label);
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: the ${String(r.source)} plan` }, label) as HTMLButtonElement;
+    const off = r.source === 'plan cache' ? d.fetch_off : r.source === 'running' ? d.running_off : '';
+    if (off) return offControl(b, off, offNote);
     b.addEventListener('click', () => { void show(b, r, open); });
     return b;
   };
@@ -458,6 +465,6 @@ async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HT
       { key: 'source' }, { key: 'database' }, { key: 'plan_id', label: 'Query Store plan', num: true }, { key: 'seen_at', label: 'last seen', fmt: fmtTime },
       { key: 'get', label: 'plan', fmt: (_, r) => r.has_plan ? el('span', {}, btn('Download .sqlplan', r, false), ' ', btn('Open', r, true)) : el('span', { class: 'meta' }, 'no plan kept') },
     ], 'pgvigil holds no plan of these hashes: the Query Store did not keep it, no running read met the thresholds, and the plan cache no longer holds it.'),
-    status);
+    d.fetch_off || d.running_off ? offNote : '', status);
   (box.firstElementChild as HTMLElement).focus();
 }

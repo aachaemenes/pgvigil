@@ -41,7 +41,10 @@
 #     B11 every read above wrote its custom_report_log row first (op plan_read, done, the UI user, door file, the handle;
 #        no row holds a plan); sqlsa (the read login is sa, a sysadmin) gets the plan (ok) and its row (task 406's FOLD);
 #     B12 a serve with -no-login (no audit door): the read answers off, 'needs a signed-in user', no plan; the server's
-#        Logins/sec count moves by the hand read's own login only, no plan_read row added.
+#        Logins/sec count moves by the hand read's own login only, no plan_read row added; B12b signed in, the config's
+#        repository login a reader (the actions log not writable: the audit off) and B12c a collector the audit function
+#        import_custom_report_run was taken from: the read off with the words, the entries' fetch_off the same, nothing
+#        sent, no row (NOT PROVEN when the cluster has no pgvigil roles).
 #     Red on f8e89d2: the two routes do not exist (B1 is not a JSON reply with entries).
 #  C. the plans of running queries (rows N55 and SQLWATCH COL#27's capture, F6, F7, F18 P1); instances rpon (schedules:
 #     mssql_running_plans and mssql_live_plans 1m), rpoff (no schedules), rpnone (query_text none, schedules on):
@@ -70,8 +73,9 @@
 #        plan cache read, and the running capture's plan reads as ShowPlanXML; a plan hash no plan has lists none.
 #     C8 rpon's query_text full -> none, then its read: no plan or live plan kept (plan_state policy); serve again: the
 #        running and live plan reads answer none with the policy's words, no plan (review B1).
-#     C9 purge(30) (0190's line in the wiring): a running plan, a live capture and a plan statistic aged 40 days gone, the
-#        rest kept; pgvigil_reader may not EXECUTE mssql_qs_plans_purge or mssql_plans_policy_drop (review finding 6).
+#     C9 purge(30) (0190's line in the wiring): a running plan, a live capture, a plan statistic and a forced-plan failure
+#        aged 40 days (an aged row inserted where the table has none) gone, the rest kept; pgvigil_reader may not EXECUTE
+#        mssql_qs_plans_purge or mssql_plans_policy_drop (NOT PROVEN without the role) (review finding 6).
 #     Red on f8e89d2: no such collection (collect -once refuses mssql_running_plans).
 #  D. the statistics a plan was compiled with (PerformanceMonitor 3.13 Added 1, F10, P5), database pgvqs2 with Query Store
 #     on: four tables of 20,000 rows, each with a statistic on v made WITH FULLSCAN, 30 % of rows changed, then one query
@@ -131,7 +135,10 @@
 #        code = the first 8 hex digits of SHA-256 over the handle (computed here); the run with that code (lower case):
 #        done, 'gone from the cache'; the plan absent by hand, the other plan of p_two still cached; its actions_log row
 #        (plan_evict, done, target 'Proc dbo.p_two in pgvqs', target_id the handle); H9 the same handle again: refused;
-#     H11 the procedure dropped, a new plan: ev_direct's route is DBCC FREEPROCCACHE itself, done, gone;
+#     H11 the route is the actions login's own right (review 20261114-183110 finding 1): ev_direct (ALTER SERVER STATE, no
+#        EXECUTE) while the procedure exists: preview 'direct', DBCC FREEPROCCACHE itself, done, gone; H13 ev_rd, whose
+#        read login lacks VIEW ANY DEFINITION (it cannot see the procedure): preview 'signed procedure', the EXEC, done;
+#        H11b the procedure dropped: ev_signed's preview 'direct', ev_direct done again;
 #     H12 GET actions/state: ev_signed's actions login may EXECUTE the procedure and holds neither VIEW nor ALTER SERVER
 #        STATE; ev_direct's holds both.
 #     Red on f8e89d2: the gate refuses the action (400 'action must be one of kill, job_start, job_stop').
@@ -437,7 +444,38 @@ kill "$NLPID" 2>/dev/null; wait "$NLPID" 2>/dev/null || true
 [[ "$CODE" == 200 ]] && grep -q '"state":"off"' "$TMPD/b12.json" && grep -q 'needs a signed-in user' "$TMPD/b12.json" && ! grep -q ShowPlanXML "$TMPD/b12.json" \
   || fail "B12: without the audit door: HTTP $CODE $(head -c 300 "$TMPD/b12.json")"
 [[ $((L1 - L0)) == 1 && "$N1" == "$N0" ]] || fail "B12: logins on the server $L0 -> $L1 (want +1: the hand read's own), plan_read rows $N0 -> $N1"
-echo "ok   B: entries equal the hand read; the statement's plan (ok, its hash, Proc dbo.p_two, one statement, extract.py reads it), the batch's; changed; encrypted; parameterized; the mask; none / normalized refused with their words; 404 once evicted; 400 on bad input; no pgvigil-plan session left open; every read audited (plan_read, no plan in the row), a sysadmin read login served and audited; no audit door: refused, nothing sent"
+# B12b / B12c: signed in, but the config's repository login (the audit login) is a reader (no actions log: the door's
+# audit is off), or a collector the read's audit function was taken from: the entries' fetch_off and the read say so in
+# words, nothing is sent, no row
+if [[ "$(pq "SELECT count(*) FROM pg_roles WHERE rolname IN ('pgvigil_reader', 'pgvigil_auth', 'pgvigil_collector')")" == 3 ]]; then
+  ARO=pgv_qro_$SUF; AAU=pgv_qau_$SUF; ARO_PW=$(pw); AAU_PW=$(pw)
+  printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_reader, pgvigil_auth;\nCREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_collector, pgvigil_reader, pgvigil_auth;\n" "$ARO" "$ARO_PW" "$AAU" "$AAU_PW" | psql "$ADMIN_DSN" -Xq -v ON_ERROR_STOP=1 >/dev/null
+  for case in "b12b $ARO $ARO_PW" "b12c $AAU $AAU_PW"; do
+    read -r tag who wpw <<<"$case"
+    [[ $tag == b12c ]] && pq "REVOKE EXECUTE ON FUNCTION pgvigil.import_custom_report_run(timestamptz, jsonb) FROM pgvigil_collector" >/dev/null
+    sed "s|dsn: \"$PGDSN\"|dsn: \"host=127.0.0.1 port=5432 user=$who password=$wpw dbname=$PGDB\"|" "$TMPD/m.yaml" > "$TMPD/m-$tag.yaml"
+    NPORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+    "$TMPD/pgvigil" serve -config "$TMPD/m-$tag.yaml" -listen "127.0.0.1:$NPORT" >"$TMPD/serve-$tag.out" 2>&1 & NLPID=$!
+    for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$NPORT/api/session" 2>/dev/null && break; sleep 0.1; done
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj-$tag" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "http://127.0.0.1:$NPORT/api/login")" == 200 ]] || { cat "$TMPD/serve-$tag.out" >&2; fail "$tag: the API login"; }
+    N0=$(pq "SELECT count(*) FROM pgvigil.custom_report_log WHERE op = 'plan_read'"); L0=$(sq "$LOGINS")
+    CE=$(curl -s -o "$TMPD/$tag-e.json" -w '%{http_code}' -b "$TMPD/cj-$tag" -H 'X-Pgvigil: 1' "http://127.0.0.1:$NPORT/api/mssql/plancache/entries?instance=$ISA&db=$(sq "SELECT DB_ID('pgvqs')")&key=0x0000000000000001")
+    CODE=$(curl -s -o "$TMPD/$tag.json" -w '%{http_code}' -b "$TMPD/cj-$tag" -H 'X-Pgvigil: 1' "http://127.0.0.1:$NPORT/api/mssql/plancache/plan?instance=$ISA&handle=$SXH&start=$SXS&end=$SXE")
+    L1=$(sq "$LOGINS"); N1=$(pq "SELECT count(*) FROM pgvigil.custom_report_log WHERE op = 'plan_read'")
+    kill "$NLPID" 2>/dev/null; wait "$NLPID" 2>/dev/null || true
+    [[ $tag == b12c ]] && pq "GRANT EXECUTE ON FUNCTION pgvigil.import_custom_report_run(timestamptz, jsonb) TO pgvigil_collector" >/dev/null
+    want='audit login, and it is off'; [[ $tag == b12c ]] && want='import_custom_report_run'
+    [[ "$CODE" == 200 ]] && grep -q '"state":"off"' "$TMPD/$tag.json" && grep -q "$want" "$TMPD/$tag.json" && ! grep -q ShowPlanXML "$TMPD/$tag.json" \
+      || fail "$tag: the read: HTTP $CODE $(head -c 300 "$TMPD/$tag.json")"
+    [[ "$CE" == 200 ]] && grep -q "$want" "$TMPD/$tag-e.json" || fail "$tag: the entries' fetch_off: HTTP $CE $(head -c 300 "$TMPD/$tag-e.json")"
+    [[ $((L1 - L0)) == 1 && "$N1" == "$N0" ]] || fail "$tag: logins on the server $L0 -> $L1 (want +1), plan_read rows $N0 -> $N1"
+    echo "$tag: refused in words ('$want'), the entries' buttons off with the same words, nothing sent, no row"
+  done
+  psql "$ADMIN_DSN" -Xqc "DROP ROLE IF EXISTS $ARO; DROP ROLE IF EXISTS $AAU;" >/dev/null 2>&1 || true
+else
+  echo "NOT PROVEN B12b / B12c: the cluster has no pgvigil_reader, pgvigil_auth and pgvigil_collector roles ('pgvigil roles' not run on it)"
+fi
+echo "ok   B: entries equal the hand read; the statement's plan (ok, its hash, Proc dbo.p_two, one statement, extract.py reads it), the batch's; changed; encrypted; parameterized; the mask; none / normalized refused with their words; 404 once evicted; 400 on bad input; no pgvigil-plan session left open; every read audited (plan_read, no plan in the row), a sysadmin read login served and audited; no audit door (no login, a reader as the audit login, a collector without import_custom_report_run): refused in words, the buttons off before a click, nothing sent"
 fi
 
 if part C; then
@@ -551,6 +589,11 @@ srcs = [dict(zip(b['sources']['columns'], r)) for r in b.get('sources', {}).get(
 kinds = {x['source'] for x in srcs}
 if code != 200 or 'running' not in kinds or not any(x['source'] == 'running' and x['has_plan'] for x in srcs): bad.append(f"C7 plansources: HTTP {code} {srcs}")
 if 'plan cache' not in kinds: bad.append(f"C7 no plan cache entry for the duration case after it completed and a plan cache read: {sorted(kinds)}")
+if code == 200 and (b.get('fetch_off') or b.get('running_off')): bad.append(f"C7 a source is off on rpon (full, the audit door open): {b.get('fetch_off')} / {b.get('running_off')}")
+for x in srcs:
+    if x['source'] == 'running' and x['has_plan']:
+        c2, p2 = api('mssql/runningplans/plan', instance=iid['rpon'], qh=dur.get('qh'), ph=dur.get('ph'), start=x['stmt_start'], end=x['stmt_end'])
+        if c2 != 200 or p2.get('state') != 'ok' or '<ShowPlanXML' not in p2.get('plan', ''): bad.append(f"C7 the running capture's plan: HTTP {c2} {str(p2)[:200]}")
 code, b = api('mssql/plansources', instance=iid['rpon'], db='pgvqs', qh=dur.get('qh'), ph='0x1234')
 if code != 200 or b.get('sources', {}).get('rows'): bad.append(f"C7 a plan hash with no plan: HTTP {code} {str(b)[:200]}")
 for x in bad: print('DIFF', x)
@@ -663,23 +706,33 @@ echo "ok   C6: the box is off for every page instance (rppage present at the upg
 AGE="interval '40 days'"
 pq "UPDATE pgvigil.mssql_running_plan SET first_seen = first_seen - $AGE, last_seen = last_seen - $AGE WHERE (instance_id, query_hash, plan_hash, stmt_start, stmt_end) IN
       (SELECT instance_id, query_hash, plan_hash, stmt_start, stmt_end FROM pgvigil.mssql_running_plan ORDER BY last_seen LIMIT 1)" >/dev/null
-pq "UPDATE pgvigil.mssql_live_plan SET captured_at = captured_at - $AGE WHERE live_id = (SELECT min(live_id) FROM pgvigil.mssql_live_plan)" >/dev/null
+# a table with no row of its own here (2017 keeps no live plan; E's failures are another part) gets one aged row
+pq "INSERT INTO pgvigil.mssql_live_plan (instance_id, captured_at, query_hash, plan_hash, stmt_start, stmt_end, plan_state)
+      SELECT instance_id, now() - $AGE, '0x01', '0x01', 0, -1, 'policy' FROM pgvigil.instances WHERE name = 'rpon' AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_live_plan)" >/dev/null
+pq "INSERT INTO pgvigil.mssql_qs_force_fail (instance_id, database_name, plan_id, seen_at, count_before, count_after, rise)
+      SELECT instance_id, 'pgvqs', -1, now() - $AGE, 0, 1, 1 FROM pgvigil.instances WHERE name = 'rpon'" >/dev/null
+pq "UPDATE pgvigil.mssql_live_plan SET captured_at = captured_at - $AGE WHERE live_id = (SELECT min(live_id) FROM pgvigil.mssql_live_plan) AND captured_at > now() - interval '30 days'" >/dev/null
 pq "UPDATE pgvigil.mssql_plan_stat SET captured_at = captured_at - $AGE WHERE ctid = (SELECT ctid FROM pgvigil.mssql_plan_stat LIMIT 1)" >/dev/null
 CNT="SELECT (SELECT count(*) FROM pgvigil.mssql_running_plan WHERE last_seen < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_running_plan)
        || '|' || (SELECT count(*) FROM pgvigil.mssql_live_plan WHERE captured_at < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_live_plan)
-       || '|' || (SELECT count(*) FROM pgvigil.mssql_plan_stat WHERE captured_at < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_plan_stat)"
-IFS='|' read -r A1 T1 A2 T2 A3 T3 <<<"$(pq "$CNT")"
+       || '|' || (SELECT count(*) FROM pgvigil.mssql_plan_stat WHERE captured_at < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_plan_stat)
+       || '|' || (SELECT count(*) FROM pgvigil.mssql_qs_force_fail WHERE seen_at < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_qs_force_fail)"
+IFS='|' read -r A1 T1 A2 T2 A3 T3 A4 T4 <<<"$(pq "$CNT")"
 pq "SELECT pgvigil.purge(30)" >/dev/null || fail "C9: purge(30)"
-IFS='|' read -r B1 U1 B2 U2 B3 U3 <<<"$(pq "$CNT")"
-echo "C9 aged / all before: running $A1/$T1, live $A2/$T2, statistics $A3/$T3; after: running $B1/$U1, live $B2/$U2, statistics $B3/$U3"
+IFS='|' read -r B1 U1 B2 U2 B3 U3 B4 U4 <<<"$(pq "$CNT")"
+echo "C9 aged / all before: running $A1/$T1, live $A2/$T2, statistics $A3/$T3, forced-plan failures $A4/$T4; after: running $B1/$U1, live $B2/$U2, statistics $B3/$U3, failures $B4/$U4"
 [[ "$A1" == 1 && "$B1" == 0 && "$U1" == $((T1 - 1)) ]] || fail "C9: the aged running plan"
-(( A2 == 0 )) || [[ "$B2" == 0 && "$U2" == $((T2 - A2)) ]] || fail "C9: the aged live capture"
-(( A3 == 0 )) || [[ "$B3" == 0 && "$U3" == $((T3 - A3)) ]] || fail "C9: the aged plan statistic"
+[[ "$A2" -ge 1 && "$B2" == 0 && "$U2" == $((T2 - A2)) ]] || fail "C9: the aged live capture"
+[[ "$A3" -ge 1 && "$B3" == 0 && "$U3" == $((T3 - A3)) ]] || fail "C9: the aged plan statistic (none to age: the running plans stored no statistics)"
+[[ "$A4" -ge 1 && "$B4" == 0 && "$U4" == $((T4 - A4)) ]] || fail "C9: the aged forced-plan failure"
 if [[ "$(pq "SELECT count(*) FROM pg_roles WHERE rolname = 'pgvigil_reader'")" == 1 ]]; then
   [[ "$(pq "SELECT has_function_privilege('pgvigil_reader', 'pgvigil.mssql_qs_plans_purge(int)', 'EXECUTE')::text || '|' || has_function_privilege('pgvigil_reader', 'pgvigil.mssql_plans_policy_drop(int, jsonb)', 'EXECUTE')::text")" == "false|false" ]] \
     || fail "C9: the reader may call mssql_qs_plans_purge or mssql_plans_policy_drop"
+  RDR="the reader may not call the purge"
+else
+  RDR="NOT PROVEN: the reader's grant (no pgvigil_reader role on this cluster)"
 fi
-echo "ok   C9: purge(30) removed the aged running plan, live capture and plan statistic and kept the rest; the reader may not call the purge"
+echo "ok   C9: purge(30) removed the aged running plan, live capture, plan statistic and forced-plan failure and kept the rest; $RDR"
 fi
 
 if part D || part E; then
@@ -921,9 +974,13 @@ PYEND
 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -d master -i /dev/stdin' <"$TMPD/signed.sql" >"$TMPD/signed.out" 2>&1 || { cat "$TMPD/signed.out"; fail "H: the signed procedure (the docs' script)"; }
 dsn() { echo "sqlserver://$1:$(urlq "$2")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"; }
 export EV1="$(dsn "$ACT1" "$P1")" EV2="$(dsn "$ACT2" "$P2")" EV3="$(dsn "$ACT3" "$P3")" EVS="$(dsn "$ACTS" "$PS")"
-for spec in "ev_signed EV1 [plan_evict] full" "ev_off EV1 [kill] full" "ev_noright EV3 [plan_evict] full" "ev_sa EVS [plan_evict] full" "ev_none EV1 [plan_evict] none" "ev_direct EV2 [plan_evict] full"; do
-  read -r n a l qt <<<"$spec"
-  printf '  - name: %s\n    engine: sqlserver\n    dsn: env:PGV_Q_MON\n    actions_dsn: env:%s\n    actions: %s\n    query_text: %s\n' "$n" "$a" "$l" "$qt" >> "$TMPD/m.yaml"
+# a read login without VIEW ANY DEFINITION (docs/sqlserver.md calls it optional): it cannot see the signed procedure
+MONV=pgv_qmonv_$SUF; MONV_PW=$(pw)
+sqok "H: the read login without VIEW ANY DEFINITION" "CREATE LOGIN [$MONV] WITH PASSWORD = '$MONV_PW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$MONV]; GRANT CONNECT ANY DATABASE TO [$MONV];"
+export PGV_Q_MONV="$(dsn "$MONV" "$MONV_PW")"
+for spec in "ev_signed EV1 [plan_evict] full" "ev_off EV1 [kill] full" "ev_noright EV3 [plan_evict] full" "ev_sa EVS [plan_evict] full" "ev_none EV1 [plan_evict] none" "ev_direct EV2 [plan_evict] full" "ev_rd EV1 [plan_evict] full PGV_Q_MONV"; do
+  read -r n a l qt rd <<<"$spec"
+  printf '  - name: %s\n    engine: sqlserver\n    dsn: env:%s\n    actions_dsn: env:%s\n    actions: %s\n    query_text: %s\n' "$n" "${rd:-PGV_Q_MON}" "$a" "$l" "$qt" >> "$TMPD/m.yaml"
   pq "SELECT pgvigil.ensure_instance('$n', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')" >/dev/null
 done
 kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null || true
@@ -974,13 +1031,23 @@ LOGROW=$(pq "SELECT action || '|' || outcome || '|' || coalesce(target, '') || '
 C=$(act run ev_signed "$(run_body "$CREATED" "$CODE")"); [[ $C == 409 && "$(jv detail)" == *"no plan under"* ]] || fail "H9: $C $(cat "$TMPD/h.json")"
 C=$(curl -s -o "$TMPD/h.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/mssql/actions/state?instance=$(iid ev_signed)")
 [[ "$(jv actions_login.may_execute)" == True && "$(jv actions_login.view_server_state)" == False && "$(jv actions_login.alter_server_state)" == False ]] || fail "H12 ev_signed: $(cat "$TMPD/h.json" | head -c 400)"
-sqok "H11: the procedure dropped" "DROP PROCEDURE dbo.pgvigil_evict_plan;"
+# H11: the route is the actions login's: ev_direct (ALTER SERVER STATE, no EXECUTE on the procedure) while the procedure
+# exists goes direct; H13: ev_rd (its read login cannot see the procedure) goes through it
 HH=$(plan2); PH=$(up0x "$(sed -n 1p <<<"$HH" | cut -d'|' -f1)")
 C=$(act preview ev_direct "{\"plan_handle\":\"$PH\"}"); CREATED=$(jv target.plan_created); [[ "$(jv target.plan_route)" == direct && "$(jv confirm)" == "$(code "$PH")" ]] || fail "H11 preview: $C $(cat "$TMPD/h.json")"
-C=$(act run ev_direct "$(run_body "$CREATED" "$(code "$PH")")"); [[ $C == 200 && "$(jv detail)" == *"gone from the cache"* && "$(jv statement)" == "DBCC FREEPROCCACHE ($PH)" ]] || fail "H11 run: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_direct "$(run_body "$CREATED" "$(code "$PH")")"); [[ $C == 200 && "$(jv detail)" == *"gone from the cache"* && "$(jv statement)" == "DBCC FREEPROCCACHE ($PH)" ]] || fail "H11 run (the procedure in master): $C $(cat "$TMPD/h.json")"
+[[ "$(sq "SELECT CAST(CASE WHEN OBJECT_ID(N'master.dbo.pgvigil_evict_plan', N'P') IS NULL THEN 0 ELSE 1 END AS varchar(1))")" == 1 ]] || fail "H11: the procedure is gone before H13"
+HH=$(plan2); PH=$(up0x "$(sed -n 1p <<<"$HH" | cut -d'|' -f1)")
+C=$(act preview ev_rd "{\"plan_handle\":\"$PH\"}"); CREATED=$(jv target.plan_created); [[ "$(jv target.plan_route)" == "signed procedure" ]] || fail "H13 preview: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_rd "$(run_body "$CREATED" "$(code "$PH")")"); [[ $C == 200 && "$(jv detail)" == *"gone from the cache"* && "$(jv statement)" == "EXEC master.dbo.pgvigil_evict_plan @plan_handle = $PH" ]] || fail "H13 run (a read login without VIEW ANY DEFINITION): $C $(cat "$TMPD/h.json")"
+sqok "H11b: the procedure dropped" "DROP PROCEDURE dbo.pgvigil_evict_plan;"
+HH=$(plan2); PH=$(up0x "$(sed -n 1p <<<"$HH" | cut -d'|' -f1)")
+C=$(act preview ev_signed "{\"plan_handle\":\"$PH\"}"); [[ "$(jv target.plan_route)" == direct ]] || fail "H11b: without the procedure ev_signed's route: $C $(cat "$TMPD/h.json")"
+C=$(act preview ev_direct "{\"plan_handle\":\"$PH\"}"); CREATED=$(jv target.plan_created); [[ "$(jv target.plan_route)" == direct ]] || fail "H11b preview: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_direct "$(run_body "$CREATED" "$(code "$PH")")"); [[ $C == 200 && "$(jv detail)" == *"gone from the cache"* && "$(jv statement)" == "DBCC FREEPROCCACHE ($PH)" ]] || fail "H11b run: $C $(cat "$TMPD/h.json")"
 C=$(curl -s -o "$TMPD/h.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/mssql/actions/state?instance=$(iid ev_direct)")
 [[ "$(jv actions_login.alter_server_state)" == True && "$(jv actions_login.view_server_state)" == True ]] || fail "H12 ev_direct: $(head -c 400 "$TMPD/h.json")"
-echo "ok   H: refused when off, malformed, a SQL handle, another plan, a wrong confirmation (00000000, the other plan's code), a sysadmin login; two plans of one procedure, two codes; failed with the server's words without the right; done through the signed procedure and directly, the plan gone, the audit row; the actions login's rights"
+echo "ok   H: refused when off, malformed, a SQL handle, another plan, a wrong confirmation (00000000, the other plan's code), a sysadmin login; two plans of one procedure, two codes; failed with the server's words without the right; done through the signed procedure and directly, the plan gone, the audit row; the route by the actions login's right (direct with the procedure present, signed with a read login that cannot see it); the actions login's rights"
 fi
 
 echo "PASS: proof-mssql-qs-plans parts $PARTS on SQL Server $VER"

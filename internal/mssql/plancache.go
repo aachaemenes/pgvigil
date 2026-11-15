@@ -1059,7 +1059,8 @@ func (livePlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		}
 	}
 	out := []collect.Row{policyRow()}
-	read, asked := 0, 0
+	read, asked, over := 0, 0, 0
+	budget := int64(runningPlanBytesPerRun) // the live plans of one read, as the running plans' share
 	began := time.Now()
 	for _, q := range picks {
 		if time.Since(began) >= livePlanRunBudget {
@@ -1070,7 +1071,7 @@ func (livePlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		cctx, cancel := context.WithTimeout(ctx, livePlanCallTimeout)
 		var reqID, size sql.NullInt64
 		var handle, xml sql.NullString
-		err := conn.QueryRowContext(cctx, livePlanSQL, sql.Named("sid", q.session), sql.Named("max", int64(qsPlanXMLMaxBytes))).Scan(&reqID, &handle, &size, &xml)
+		err := conn.QueryRowContext(cctx, livePlanSQL, sql.Named("sid", q.session), sql.Named("max", min(int64(qsPlanXMLMaxBytes), budget))).Scan(&reqID, &handle, &size, &xml)
 		cancel()
 		if ctx.Err() != nil {
 			return out, ctx.Err()
@@ -1084,8 +1085,12 @@ func (livePlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		switch {
 		case size.Int64 > qsPlanXMLMaxBytes:
 			row["plan_state"] = "too large" // its bytes kept, no XML (no kind_of: nothing for the policy to empty)
+		case size.Int64 > budget:
+			over++ // over what is left of this read's share: asked for again at a later read
+			continue
 		case xml.Valid && xml.String != "":
 			row["kind_of"], row["statement"] = "plan", MaskPlanXML(xml.String)
+			budget -= size.Int64
 		default:
 			continue
 		}
@@ -1093,7 +1098,10 @@ func (livePlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		out = append(out, row)
 	}
 	r := collect.Row{"kind": "live_read", "asked": len(picks), "read": read}
-	if note != "" && (read == 0 || asked < len(picks)) {
+	if over > 0 {
+		note = strings.TrimPrefix(note+fmt.Sprintf("; %d live plan(s) left out: over the read's %d MB", over, runningPlanBytesPerRun>>20), "; ")
+	}
+	if note != "" && (read == 0 || asked < len(picks) || over > 0) {
 		r["note"] = note
 	}
 	return append(out, r), nil

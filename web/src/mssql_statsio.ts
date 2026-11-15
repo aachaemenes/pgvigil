@@ -166,7 +166,7 @@ export function totals(run: Run, sql?: string): Totals {
         : 'Without the query\'s text the messages cannot tell a statement that called others from the ones it called: the total lies between the longest single block and all of them summed. Paste the query to narrow it.');
     }
     if (top?.dml) warnings.push('The query modifies data: a trigger\'s statements report their own times and I/O, which may count them twice.');
-    if (top && top.count > 0 && timed.length < top.count) warnings.push(`The text holds ${top.count} statements and the messages only ${timed.length} time blocks: the text may not be the one that ran; the total is the range above.`);
+    if (top && top.count > 0 && timed.length < top.count) warnings.push(`The text holds ${top.count} statements and the messages only ${timed.length} time blocks: the text may not be the one that ran; ${timed.length > 1 ? 'the total is the range above' : 'the one block is the total'}.`);
   }
   const io = withIO.length ? st.flatMap(s => s.io) : null;
   return {

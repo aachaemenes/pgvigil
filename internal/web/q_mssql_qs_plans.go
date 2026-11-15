@@ -62,6 +62,25 @@ func (ds *doorSet) planFetchOff(name string) string {
 	return ""
 }
 
+// planReadOff is why a plan cannot be read by its handle for the instance on this server and door set, or "": the
+// policy and the read login (planFetchOff), then the audit door every read writes its row through (serverOff, and
+// whether the audit login may call import_custom_report_run). The entries and plan sources replies carry it, so the
+// buttons are off with these words before a click.
+func (s *Server) planReadOff(ctx context.Context, ds *doorSet, name string) string {
+	if why := ds.planFetchOff(name); why != "" {
+		return why
+	}
+	if why := s.serverOff(); why != "" {
+		return "Reading a plan by its handle needs " + why + "."
+	}
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditBudget)
+	defer cancel()
+	if err := s.mayAudit(actx); err != nil {
+		return strings.Replace(err.Error(), "nothing was run", "no plan is read", 1)
+	}
+	return ""
+}
+
 // mssqlInstanceName is the SQL Server instance's name, or a 400 / 404 already written.
 func (s *Server) mssqlInstanceName(w http.ResponseWriter, r *http.Request, id int) (string, bool) {
 	name, engine, err := s.communityInstance(r.Context(), id)
@@ -120,7 +139,7 @@ func (s *Server) MSSQLPlanCacheEntries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ds := s.doorsNow()
-	s.reply(w, r, map[string]any{"entries": t, "fetch_off": ds.planFetchOff(name), "policy": ds.planPolicy(name)}, nil)
+	s.reply(w, r, map[string]any{"entries": t, "fetch_off": s.planReadOff(r.Context(), ds, name), "policy": ds.planPolicy(name)}, nil)
 }
 
 // openPlanRead opens one short connection on the read login for a read on demand. Unlike a custom report's, the
@@ -199,14 +218,10 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ds := s.doorsNow() // the request's one door set: the policy, the read login and the generation the audit names
-	if why := ds.planFetchOff(name); why != "" {
-		s.reply(w, r, map[string]any{"state": "off", "words": why}, nil)
-		return
-	}
 	// a plan carries the statement's literals: every read is audited (op plan_read in the custom reports' log, as a
 	// community tool's run), the row written before the answer; a server without the audit door sends nothing
-	if why := s.serverOff(); why != "" {
-		s.reply(w, r, map[string]any{"state": "off", "words": "Reading a plan by its handle needs " + why + "."}, nil)
+	if why := s.planReadOff(r.Context(), ds, name); why != "" {
+		s.reply(w, r, map[string]any{"state": "off", "words": why}, nil)
 		return
 	}
 	user := s.sessionUser(r)
@@ -214,11 +229,11 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
 		return
 	}
-	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
-	defer acancel()
-	if err := s.mayAudit(actx); err != nil {
-		s.reply(w, r, map[string]any{"state": "off", "words": strings.Replace(err.Error(), "nothing was run", "the plan was not read", 1)}, nil)
-		return
+	// each audit row gets its own budget, made when it is written: the read before it may take up to planReadBudget
+	auditRow := func(row map[string]any) error {
+		actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
+		defer acancel()
+		return s.auditRun(actx, row)
 	}
 	// a sysadmin read login is not refused (task 406's FOLD): these are pgvigil's own fixed reads, the ones the
 	// collectors already make on that login; openMS refuses one because a custom report runs the DBA's own SQL
@@ -231,7 +246,7 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 	db, conn, err := openPlanRead(ctx, dsn)
 	if err != nil {
 		row["outcome"], row["detail"], row["duration_ms"] = "failed", "the read login could not connect: "+err.Error(), time.Since(t0).Milliseconds()
-		if aerr := s.auditRun(actx, row); aerr != nil {
+		if aerr := auditRow(row); aerr != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the read's audit row could not be written: %v", aerr))
 			return
 		}
@@ -242,7 +257,7 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 	f, err := mssql.PlanByHandle(ctx, conn, handle, start, end, want)
 	if err != nil {
 		row["outcome"], row["detail"], row["duration_ms"] = "failed", "the plan was not read: "+err.Error(), time.Since(t0).Milliseconds()
-		if aerr := s.auditRun(actx, row); aerr != nil {
+		if aerr := auditRow(row); aerr != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the read's audit row could not be written: %v", aerr))
 			return
 		}
@@ -252,7 +267,7 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 	// the row names what was read (the state, the plan's hash, object and size), never the plan
 	row["outcome"], row["duration_ms"] = "done", time.Since(t0).Milliseconds()
 	row["detail"] = fmt.Sprintf("%s: %s (plan hash %s, %s %s, %d bytes)", f.State, f.Words, f.PlanHash, f.ObjType, f.Object, f.Bytes)
-	if err := s.auditRun(actx, row); err != nil {
+	if err := auditRow(row); err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("the read's audit row could not be written (%v): its plan is withheld", err))
 		return
 	}
@@ -626,6 +641,22 @@ func (s *Server) MSSQLPlanSources(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("db, qh and ph must be a database name, a query hash and a plan hash"))
 		return
 	}
+	name, ok := s.mssqlInstanceName(w, r, id)
+	if !ok {
+		return
+	}
 	up := func(h string) string { return "0x" + strings.ToUpper(h[2:]) }
-	s.multi(w, r, []part{{"sources", `SELECT * FROM pgvigil.mssql_plan_sources($1, $2, $3, $4)`, []any{id, db, up(qh), up(ph)}}})
+	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.mssql_plan_sources($1, $2, $3, $4)`, id, db, up(qh), up(ph))
+	if err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	ds := s.doorsNow()
+	// fetch_off: the plan cache's entries are read on demand (the policy, the read login, the audit door); running_off:
+	// a kept running plan is shown under the policy full only
+	runningOff := ""
+	if qt := ds.planPolicy(name); qt != "full" {
+		runningOff = fmt.Sprintf("not shown: this instance's query_text policy is %q", qt)
+	}
+	s.reply(w, r, map[string]any{"sources": t, "fetch_off": s.planReadOff(r.Context(), ds, name), "running_off": runningOff}, nil)
 }

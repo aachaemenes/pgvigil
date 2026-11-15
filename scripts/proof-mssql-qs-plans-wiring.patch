@@ -13,7 +13,7 @@ index 812798e..85fe592 100644
  	}
  	srv.SetMSSQLActions(doors)
 diff --git i/docs/sqlserver-indexes.md w/docs/sqlserver-indexes.md
-index 7e7b0cc..938f10f 100644
+index 7e7b0cc..763ba63 100644
 --- i/docs/sqlserver-indexes.md
 +++ w/docs/sqlserver-indexes.md
 @@ -45,6 +45,22 @@ Findings (a read older than three hours raises nothing):
@@ -34,7 +34,7 @@ index 7e7b0cc..938f10f 100644
 +      mssql_live_plans: 1m      # where the build allows it (the table above)
 +```
 +
-+and restart the collector. The file's global `schedules: {mssql_running_plans: 0}` turns it off for every instance whose own `schedules:` does not name it, the ticked page instances too. When the policy leaves `full`, the plans and live plans kept are dropped at the next read and no longer shown. The tab's **Plans of running queries** lists each plan kept, why (CPU, memory grant, running time, requests), the largest figures a read saw, its plan and its newest live plan, and **Statistics used** (the statistics the plan was compiled with, stale at compile when their changes had passed the auto-update line). A slow query's or a running request's **Plan** lists every plan pgvigil holds or can read for its query and plan hash.
++and restart the collector. The file's global `schedules:` line for `mssql_running_plans` comes before the page's box: `0` turns it off for every instance whose own `schedules:` does not name it, the ticked page instances too, and any other value reads every SQL Server instance, ticked or not. When the policy leaves `full`, the plans and live plans kept are dropped at the next read and no longer shown. The tab's **Plans of running queries** lists each plan kept, why (CPU, memory grant, running time, requests), the largest figures a read saw, its plan and its newest live plan, and **Statistics used** (the statistics the plan was compiled with, stale at compile when their changes had passed the auto-update line). A slow query's or a running request's **Plan** lists every plan pgvigil holds or can read for its query and plan hash.
 +
  ## Indexes (`mssql_indexes`)
  
@@ -82,17 +82,18 @@ index 3ec1c5e..3e0e515 100644
  | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
  | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
 diff --git i/docs/upgrade.md w/docs/upgrade.md
-index e803d2c..59b4fc5 100644
+index e803d2c..6ad2ab7 100644
 --- i/docs/upgrade.md
 +++ w/docs/upgrade.md
-@@ -37,6 +37,13 @@ what happens in the other order, and what the project's own proof showed (`scrip
+@@ -37,6 +37,14 @@ what happens in the other order, and what the project's own proof showed (`scrip
    that may `CREATE` in a `pgvigil` schema, and, in the repository's own database, a member of its owner or of
    `pg_read_all_data` - the grant `pgvigil roles` prints for `pgvigil_explain`, so EXPLAIN ANALYZE of a statement in the
    repository database itself is refused with that login; every other database is unchanged.
 +- **A SQL Server plan read by its handle is audited.** Plan cache > Cached plans > Download .sqlplan and Open now write a
 +  row in the custom reports' log (op `plan_read`: who, the instance, the handle and offsets, never the plan) before the
-+  plan is answered, through the actions door's audit login, as a Community tools run is. A serve without that login
-+  (`pgvigil serve -no-login`, or a repository the audit login cannot write to) no longer reads plans: the page says why.
++  plan is answered, through the actions door's audit login (the config's repository dsn), as a Community tools run is. A
++  serve without it (`pgvigil serve -no-login`, a repository login that may not write the actions log, or one that may not
++  call `import_custom_report_run`) no longer reads plans: the buttons are off and say why.
 +- **Plans of running queries are off on every instance.** `mssql_running_plans` and `mssql_live_plans` are new and off
 +  by default; an instance added on Admin > Instances has a running plans box, unticked, and an instance of the file
 +  takes `schedules:` ([plans of running queries](sqlserver-indexes.md#plans-of-running-queries)).
@@ -480,21 +481,22 @@ index 6b3933a..88bd142 100644
  	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
  	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
 diff --git i/web/src/admin_instances.ts w/web/src/admin_instances.ts
-index e8af1ed..f4a2198 100644
+index e8af1ed..ff92410 100644
 --- i/web/src/admin_instances.ts
 +++ w/web/src/admin_instances.ts
-@@ -81,6 +81,10 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
+@@ -81,6 +81,11 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
        status,
        instanceForm(d),
        el('h3', {}, 'Instances added here'),
 +      // task 406: what the running plans box collects, in words, beside the grid that holds it
 +      el('p', { class: 'meta', id: 'admin-running-plans-note' }, 'Running plans (SQL Server): a ticked instance reads the plans of its running queries each minute, '
 +        + 'the ones over DBA Dash\'s plan threshold. A plan carries the statement\'s text and its literals: passwords are masked, and it is kept only under the query_text policy full. '
-+        + 'Off for every instance until an admin ticks it here; an instance of pgvigil.yaml takes schedules: mssql_running_plans: 1m in the file, and the file\'s global schedules: mssql_running_plans: 0 turns it off for all.'),
++        + 'Off for every instance until an admin ticks it here; an instance of pgvigil.yaml takes schedules: mssql_running_plans: 1m in the file. '
++        + 'The file\'s global schedules: line for mssql_running_plans comes before this box: 0 turns it off for every instance here, and any other value reads every SQL Server instance here, ticked or not.'),
        grid(page, pageCols, 'No instance was added here yet.'),
        el('h3', {}, 'Instances from pgvigil.yaml'),
        el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
-@@ -103,7 +107,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
+@@ -103,7 +108,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
    // never brings an enabled write button back under the read-only note
    let whyNot = '';
    function lock(cell: HTMLElement): HTMLElement {
@@ -503,7 +505,7 @@ index e8af1ed..f4a2198 100644
      return cell;
    }
  
-@@ -195,6 +199,19 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
+@@ -195,6 +200,21 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
    const pageCols: Col[] = [
      { key: 'name' }, { key: 'engine' }, { key: 'host' }, { key: 'port', num: true }, { key: 'auth' }, { key: 'tags', wide: true },
      { key: 'disabled', label: 'state', fmt: v => badge(v ? 'disabled' : 'collected', v ? 'warn' : '') },
@@ -512,11 +514,13 @@ index e8af1ed..f4a2198 100644
 +      const n = String(r.name);
 +      const cb = el('input', { type: 'checkbox', 'aria-label': `Read the plans of running queries on ${n} each minute`, 'aria-describedby': 'admin-running-plans-note' }) as HTMLInputElement;
 +      cb.checked = v === true;
-+      cb.addEventListener('change', () => {
++      cb.addEventListener('change', async () => {
 +        const on = cb.checked;
-+        void act('admin/instances', { op: 'running_plans', name: n, on },
++        cb.disabled = true; // one request at a time; a refusal or a failure puts the box back as the server holds it
++        const done = await act('admin/instances', { op: 'running_plans', name: n, on },
 +          on ? `${n}: the plans of its running queries are read each minute from the collector's next read of the list (15 seconds).`
 +            : `${n}: the plans of its running queries are no longer read (from the collector's next read of the list, 15 seconds).`);
++        if (!done) { cb.checked = !on; cb.disabled = false; }
 +      });
 +      return lock(el('label', {}, cb, ' each minute'));
 +    } },
