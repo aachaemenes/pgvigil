@@ -248,11 +248,24 @@ SELECT d.instance_id, count(*)::int AS n,
 // stale') and how many failed at their last run, and the errors collection_log holds for the last 24 hours. $1 the
 // intervals as the daily checks read them.
 const sqlSummaryCollect = `
-WITH c AS (
+WITH m AS (
+  -- the collector's errors acknowledged on the error log page (0198): the highest log_id of the instance's live
+  -- 'collector errors' rows; a seen_state not of the form 'log_id:<n>' is never read (a CASE, so no cast can fail)
+  SELECT a.instance_id, max(CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END) AS mark
+    FROM pgvigil.acks a
+   WHERE a.kind = 'ack' AND a.check_key = 'collector errors' AND a.instance_id IS NOT NULL
+     AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, now())
+   GROUP BY a.instance_id
+), c AS (
   SELECT c.instance_id, c.collection, c.status, c.snapshot_at,
-         coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
+         coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv,
+         -- a failing collection whose failed run is at or under the mark is acknowledged (DBA Dash's Summary_Upd L123):
+         -- the run's row found by instance, collection and snapshot (log_collection writes both tables from one time)
+         coalesce(c.status = 'error' AND (SELECT max(l.log_id) FROM pgvigil.collection_log l
+                    WHERE l.instance_id = c.instance_id AND l.collection = c.collection AND l.snapshot_at = c.snapshot_at) <= m.mark, false) AS acked
     FROM pgvigil.collection_dates c
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
+    LEFT JOIN m ON m.instance_id = c.instance_id
 )
 SELECT i.instance_id,
        -- the ages count from runs that ended well only: log_collection moves snapshot_at on a failed run too, and a
@@ -262,13 +275,14 @@ SELECT i.instance_id,
        (max(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_max_secs,
        count(*) FILTER (WHERE c.status NOT IN ('skipped', 'error') AND c.iv IS DISTINCT FROM 0
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END))::int AS stale,
-       count(*) FILTER (WHERE c.status = 'error' AND c.iv IS DISTINCT FROM 0)::int AS failing,
+       count(*) FILTER (WHERE c.status = 'error' AND NOT c.acked AND c.iv IS DISTINCT FROM 0)::int AS failing,
        coalesce(array_agg(c.collection || CASE WHEN c.status = 'error' THEN ': the last run failed' ELSE ': stale, the last run ' || to_char(c.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC' END
                           ORDER BY c.status <> 'error', c.collection)
-                FILTER (WHERE c.iv IS DISTINCT FROM 0 AND (c.status = 'error' OR (c.status <> 'skipped'
+                FILTER (WHERE c.iv IS DISTINCT FROM 0 AND NOT c.acked AND (c.status = 'error' OR (c.status <> 'skipped'
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END)))), '{}') AS detail,
        (SELECT count(*) FROM pgvigil.collection_log l
-         WHERE l.instance_id = i.instance_id AND l.status = 'error' AND l.snapshot_at > now() - interval '24 hours')::int AS errors_24h
+         WHERE l.instance_id = i.instance_id AND l.status = 'error' AND l.snapshot_at > now() - interval '24 hours'
+           AND l.log_id > coalesce((SELECT m.mark FROM m WHERE m.instance_id = i.instance_id), 0))::int AS errors_24h
   FROM pgvigil.instances i
   LEFT JOIN c ON c.instance_id = i.instance_id
  WHERE i.is_active
