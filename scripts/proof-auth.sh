@@ -37,7 +37,7 @@ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 psql "$PGVIGIL_REPO_DSN" -XAt -c "select 1 from pgvigil.schema_version where version = '0015_ui_login.sql'" | grep -q 1 || fail "0015 not applied"
 PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$CFG" "$USR" 2>/dev/null || fail "user add"
 # a producer piped into grep -q loses the race when it prints a second line after the match (EPIPE under pipefail): grep without -q reads it all
-"$BIN" user list -config "$CFG" | grep "^$USR  *enabled" >/dev/null || fail "user list does not show $USR enabled"
+"$BIN" user list -config "$CFG" | grep "^$USR  *admin  *enabled" >/dev/null || fail "user list does not show $USR admin and enabled (the first enabled admin)"
 [[ $(psql "$PGVIGIL_REPO_DSN" -XAt -c "select password_hash like '\$argon2id\$v=19\$%' from pgvigil.ui_users where username = '$USR'") == t ]] || fail "the stored hash is not argon2id"
 if PGVIGIL_PASSWORD="short" "$BIN" user add -config "$CFG" "other$RANDOM" 2>/dev/null; then fail "a short password was accepted"; fi
 if PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$CFG" "$USR" 2>/dev/null; then fail "a second add of one name succeeded"; fi
