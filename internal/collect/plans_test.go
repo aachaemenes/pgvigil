@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -69,5 +70,24 @@ func TestMaskPlanReal(t *testing.T) {
 	}
 	if PolicyText("select * from t where id = 42", "none") != "select * from t where id = ?" || PolicyText("select 42", "full") != "select 42" {
 		t.Errorf("PolicyText: %q", PolicyText("select * from t where id = 42", "none"))
+	}
+}
+
+// task 415: an auto_explain plan read from the log is masked under full too (the log reader's own mask knows PASSWORD
+// and password= only), its query, its text and every string of its JSON
+func TestPlanRowsFromLogMasked(t *testing.T) {
+	plan := `Query Text: select pgp_sym_decrypt(data, 'Ae1secret') from t
+Seq Scan on t  (cost=0.00..1.01 rows=1 width=32)
+  Output: pgp_sym_decrypt(data, 'Ae2secret'::text)`
+	rows := []Row{{"kind": "event", "kind_of": "plan", "statement": plan, "at": time.Unix(1700000000, 0), "duration_ms": 1500.0, "datname": "d"}}
+	out := planRowsFromLog("logs", rows, "full")
+	if len(out) != 1 {
+		t.Fatalf("plan rows: %d", len(out))
+	}
+	b, _ := json.Marshal(out[0])
+	for _, s := range []string{"Ae1secret", "Ae2secret"} {
+		if strings.Contains(string(b), s) {
+			t.Errorf("%s survived in the plan row: %s", s, b)
+		}
 	}
 }

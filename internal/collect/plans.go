@@ -211,7 +211,10 @@ func planRowsFromLog(collection string, rows []Row, mode string) []Row {
 		if !ok || !plans.Mask(&pr, mode, normalizeSQL) {
 			continue
 		}
-		out = append(out, pr.Map())
+		// the credential mask under every policy (task 415): the plan's query, its text and every string of its JSON
+		m := pr.Map()
+		maskRowCredentials(m)
+		out = append(out, m)
 	}
 	return out
 }

@@ -74,37 +74,14 @@ SELECT 'job' AS kind, 'pgagent' AS scheduler, j.jobid::bigint AS job_id, j.jobna
            FROM pgagent.pga_jobstep st WHERE st.jstjobid = j.jobid), '{}'::jsonb)) AS definition
   FROM pgagent.pga_job j`
 
-// Masking of a job's text (a step's command or code, a connection string, a run's output), both engines: the value
-// of every password-shaped item is replaced by <masked> before the row leaves the collector. Covered: T-SQL
-// PASSWORD = '...' / SECRET = '...' and any @...password / @passwd / @...pwd / @...secret parameter; key = value
-// pairs whose key holds password, passwd, pwd or secret (a connection string, libpq's keywords, quoted or not); the
-// user:password@ of a URI; the -P of sqlcmd and bcp and -Password / -pw / -pwd of a command line; the string given
-// to ConvertTo-SecureString; the password of 'net use \\host\share <password>'; dtexec's /DE and /Decrypt.
-var (
-	maskTSQLRE   = regexp.MustCompile(`(?i)((?:\bPASSWORD|\bSECRET|@\w*(?:password|passwd|pwd|secret)\w*)\s*=\s*)(N?'(?:[^']|'')*')`)
-	maskKVRE     = regexp.MustCompile(`(?i)(\b\w*(?:password|passwd|pwd|secret)\w*\s*[=:]\s*)("[^"]*"|'(?:[^']|'')*'|[^;\s,)'"]+)`)
-	maskURIRE    = regexp.MustCompile(`(://[^:/@\s]+:)([^@\s/]+)(@)`)
-	maskArgRE    = regexp.MustCompile(`((?:^|\s)(?:(?i:-Password|-pwd|-pw)\b|-P)\s*)("[^"]*"|'[^']*'|\S+)`)
-	maskSecureRE = regexp.MustCompile(`(?i)(ConvertTo-SecureString\s+(?:-String\s+)?)("[^"]*"|'[^']*'|\S+)`)
-	maskNetUseRE = regexp.MustCompile(`(?i)(\bnet\s+use\s+\S+\s+)([^/\s]\S*)`)
-	maskDtsRE    = regexp.MustCompile(`(?i)(/(?:DE|Decrypt)\s+)("[^"]*"|\S+)`)
-)
+// Masking of a job's text (a step's command or code, a connection string, a run's output), both engines: every
+// password it carries is replaced by <masked> before the row leaves the collector, by MaskCredentials (textpolicy.go,
+// task 415): the one mask of every stored text, which reads a value in T-SQL's doubled quotes inside a literal as one
+// value (the job mask's own expressions read it as an empty literal and kept the password after it).
 
-// MaskJobText is a job's text with every password it carries, in the forms above, replaced by <masked>.
+// MaskJobText is a job's text with every password it carries replaced by <masked>.
 func MaskJobText(s string) string {
-	s = maskTSQLRE.ReplaceAllString(s, "${1}'<masked>'")
-	s = maskURIRE.ReplaceAllString(s, "${1}<masked>${3}")
-	s = maskKVRE.ReplaceAllStringFunc(s, func(m string) string {
-		g := maskKVRE.FindStringSubmatch(m)
-		if strings.Contains(g[2], "<masked>") {
-			return m
-		}
-		return g[1] + "<masked>"
-	})
-	s = maskArgRE.ReplaceAllString(s, "${1}<masked>")
-	s = maskSecureRE.ReplaceAllString(s, "${1}<masked>")
-	s = maskNetUseRE.ReplaceAllString(s, "${1}<masked>")
-	return maskDtsRE.ReplaceAllString(s, "${1}<masked>")
+	return MaskCredentials(s)
 }
 
 // maskTree masks every string of a decoded jsonb value (a job's definition) in place.
