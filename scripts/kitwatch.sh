@@ -530,19 +530,41 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 sys.exit(0 if r.get("install_failed") or any(x["outcome"] == "failed" for x in r["runs"] if "(decline" not in x["tool"]) else 1)
 PY
-# the summary: the date, each kit pinned and newest, then the lines (the deny list ran over them in kitshape report)
-python3 - "$WORK/run-pinned.json" "$WORK/run-newest.json" "$WORK/lines.txt" "$rc" > "$OUT/report.txt" <<'PY'
+# the summary: the date, each kit pinned and newest (the fetched file's address and its sha256), then the lines (the
+# deny list ran over them in kitshape report), then 'checked:' - every entry of the newest pass and every port by name,
+# so a tool or a port the run skipped shows by its absence
+PORTS_M=""; PORTS_L=""
+[[ -f $WORK/lines-ports.json ]] && { PORTS_M=internal/community/kits/ports.json; PORTS_L=$WORK/lines-ports.json; }
+python3 - "$WORK/run-pinned.json" "$WORK/run-newest.json" "$WORK/lines.txt" "$rc" "$PORTS_M" "$PORTS_L" "frk=$FRK_FILE dd=$DD_FILE wia=$WIA_FILE" > "$OUT/report.txt" <<'PY'
 import datetime, json, sys
 p, n = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+manifest, plines, kfiles = (sys.argv[5:8] + ["", "", ""])[:3]
+files = dict(x.split("=", 1) for x in kfiles.split())
 print(f"KITWATCH {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d %H:%M} UTC on {n['engine']} - exit {sys.argv[4]}")
 names = {"frk": "First Responder Kit", "dd": "DarlingData", "wia": "sp_WhoIsActive"}
+def kit(k):
+    # the entry keeps 'repo@ref'; the line names the file fetched from it
+    repo, _, ref = k["url"].partition("@")
+    url = f"https://raw.githubusercontent.com/{repo}/{ref}/{files[k['kit']]}" if ref and k["kit"] in files else k["url"]
+    return f"{k['version']} ({k['version_date']}, {url}, sha256 {k['sha256']})"
 for a, b in zip(p["kits"], n["kits"]):
     same = "same file" if a["sha256"] == b["sha256"] else ("same version, file changed" if a["version"] == b["version"] else "NEWER")
-    print(f"  {names[a['kit']]}: pinned {a['version']} ({a['version_date']}, {a['url']}) / newest {b['version']} ({b['version_date']}, {b['url']}) - {same}")
+    print(f"  {names[a['kit']]}: pinned {kit(a)} / newest {kit(b)} - {same}")
 if n.get("install_failed"):
     print(f"  INSTALL FAILED (newest): {n['install_failed']}")
 print()
 print(open(sys.argv[3]).read(), end="")
+ports = json.load(open(manifest)) if manifest else []
+changed = {}
+for l in (json.load(open(plines)) if plines else None) or []:
+    changed.setdefault(l["tool"], []).append(f"{l['class']} {l['kind']}")
+print()
+print(f"checked: {len(n['runs'])} entries of the newest pass, {len(ports)} ports")
+for x in n["runs"]:
+    s = x.get("sets") or []
+    print(f"  entry {x['tool']}: {x['outcome']}, {len(s) if isinstance(s, list) else s} sets")
+for q in ports:
+    print(f"  port {q['name']} ({q['go_file']}): {'; '.join(changed.get(q['name'], ['same']))}")
 PY
 "$KS" deny "$OUT/report.txt" >/dev/null || { printf 'KITWATCH: the report held a denied word and is withheld; see the run log.\n' > "$OUT/report.txt"; }
 cat "$OUT/report.txt"

@@ -328,7 +328,9 @@ The community tools change upstream without asking pgvigil, so pgvigil watches t
 - **Taking a change**: accommodate the code, then run the workflow by hand with its baseline input (or
   `bash scripts/kitwatch.sh -baseline` with a PostgreSQL superuser in `PGVIGIL_ADMIN_DSN`) and commit the new
   `shapes.json` and `ports.json` with the code change, so the stored shapes are always the ones the code was proven
-  against. The run keeps two artifacts: `kitwatch-report` (its report) and, when the run wrote them,
+  against. The run keeps two artifacts: `kitwatch-report` (its report: each kit's fetched file with its address and
+  sha256, the lines, then every entry of the newest pass and every ported block by name with its outcome, so a tool or
+  a port the run skipped shows by its absence) and, when the run wrote them,
   `kitwatch-baseline` (shapes.json and ports.json: result shapes, parameter names and the ported blocks' anchors, no
   kit code). No kit file is stored or committed (sp_WhoIsActive is GPL-3.0); the pinned kit files are checked against
   the sha256 shapes.json holds (a moved tag stops the run).
