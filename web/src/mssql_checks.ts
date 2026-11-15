@@ -13,7 +13,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { tagScopeIds, tagWords } from './fleet';
 import type { Ctx } from './router';
-import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
 
 // The tab key of the instance page and of the fleet page (the router's entries carry the same keys).
 export const mssqlChecksTab = 'mssqlchecks';
@@ -82,7 +82,7 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
     case 'databases': sec.append(...databasesView(rowsOf(d.databases), rowsOf(d.columns), q.get('risk') ?? '')); break;
     case 'flags': sec.append(...flagsView(rowsOf(d.flags))); break;
     case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect))); break;
-    case 'alerts': sec.append(...alertsView(rowsOf(d.alerts), rowsOf(d.operators), rowsOf(d.alerting)[0])); break;
+    case 'alerts': sec.append(...alertsView(rowsOf(d.alerts), rowsOf(d.operators), rowsOf(d.alerting)[0], alertsScript(ctx, rowsOf(d.findings), rowsOf(d.areas)))); break;
     case 'identity': sec.append(...identityView(rowsOf(d.identity), rowsOf(d.identity_scan))); break;
     case 'findings': sec.append(findingsGrid(rowsOf(d.findings))); break;
     default: sec.append(...summaryView(rowsOf(d.areas), rowsOf(d.findings)));
@@ -214,7 +214,37 @@ function buildView(b: Row | undefined, suspect: Row[]): HTMLElement[] {
   return out;
 }
 
-function alertsView(alerts: Row[], ops: Row[], g: Row | undefined): HTMLElement[] {
+// the alerts area's findings that the script answers (agentalerts.go: sp_Blitz 61, 30 and 96)
+const scriptChecks = new Set(['no alerts for severity 19 to 25', 'alerts missing for some severities', 'no alerts for corruption errors']);
+
+// alertsScript (C13, B9d): 'The script that creates them', beside a missing-alert finding - or, where the area was not
+// read (the login could not read msdb), with words that say so (the script checks the server itself). Where the
+// platform rules alerts out the server says why and there is no script. pgvigil prints the script and never runs it.
+function alertsScript(ctx: Ctx, findings: Row[], areas: Row[]): HTMLElement | null {
+  const area = areas.find(a => a.area === 'alerts');
+  const missing = findings.some(f => f.area === 'alerts' && scriptChecks.has(String(f.check_name)));
+  const unread = area != null && area.is_read !== true;
+  if (!missing && !unread) return null;
+  const box = el('div', { class: 'agent-alerts-script' }, el('p', { class: 'meta', role: 'status' }, 'Reading the script that creates them...'));
+  void get<{ applicable: boolean; reason?: string; operator?: string; script?: string }>('mssql/agent-alerts-script', { instance: ctx.instance }).then(s => {
+    if (!s.applicable) { box.replaceChildren(el('p', { class: 'meta' }, `The script that creates them: not applicable: ${s.reason ?? ''}.`)); return; }
+    const text = s.script ?? '';
+    const said = el('span', { class: 'meta', role: 'status' });
+    const copy = el('button', { type: 'button' }, 'Copy');
+    copy.addEventListener('click', () => { void copyText(text).then(ok => { said.textContent = ok ? ' Copied.' : ' Not copied: select the text and copy it.'; }); });
+    box.replaceChildren(el('details', { 'data-sheet': 'agent alerts script' }, el('summary', {}, 'The script that creates them'),
+      el('p', { class: 'meta' },
+        ...(unread && !missing ? ['The alerts were not read on this instance (its login could not read msdb): the script checks the server itself before it creates anything. '] : []),
+        'pgvigil prints this and never runs it: the server\'s DBA reads it and runs it as a sysadmin. It creates only what is missing and changes no setting. ',
+        s.operator ? `Each alert e-mails the operator ${s.operator} (enabled and with an address at the last read). ` : 'No enabled operator with an e-mail address was read: name one in its @operator line, or the alerts notify nobody. ',
+        'The Availability Group alerts are made only where Availability Groups are on, and are not proven to fire. Undo: pgvigil mssql-agent-alerts -print -drop.'),
+      el('p', {}, copy, said),
+      el('pre', { class: 'sql', style: 'white-space:pre;max-height:28rem;overflow:auto;margin:0' }, text)));
+  }, (e: unknown) => { box.replaceChildren(errorBox(e)); });
+  return box;
+}
+
+function alertsView(alerts: Row[], ops: Row[], g: Row | undefined, script: HTMLElement | null): HTMLElement[] {
   return [
     el('h3', {}, 'Alerts'),
     grid(alerts, [
@@ -225,6 +255,7 @@ function alertsView(alerts: Row[], ops: Row[], g: Row | undefined): HTMLElement[
       { key: 'has_job', label: 'starts a job', fmt: yn }, { key: 'include_event_description', label: 'error text in the message', fmt: yn },
       { key: 'occurrence_count', label: 'raised', num: true }, { key: 'last_occurrence_at', label: 'last raised', fmt: fmtTime },
     ], 'No alert is defined: a severe error is written to the log and nobody is told.'),
+    ...(script ? [script] : []),
     el('h3', {}, 'Operators'),
     el('p', { class: 'meta' }, g ? (g.failsafe_read !== true ? 'The fail-safe operator was not readable with the login\'s rights.'
       : g.failsafe_operator ? `Fail-safe operator: ${String(g.failsafe_operator)}.` : 'No fail-safe operator is set.') : ''),
