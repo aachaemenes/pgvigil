@@ -73,8 +73,10 @@
 #     pairs, each printed, and stays hard (finding 6).
 #  G7 (the lead's 11-15 06:4x, written before its first run): with a metric_na_reasons row for compiles_per_100_batches
 #     made in the run's own repository while that rule reads 'na', GET /api/metrics' grid row and GET /api/alertrules
-#     ?part=state's row carry na_why "not judged: the proof's own words" (the state 'na'); the view emptied after. The
-#     pages' words as drawn NOT PROVEN (as G's other page words).
+#     ?part=state's row carry na_why "not judged: the proof's own words" (the state 'na'); the view's own definition
+#     put back after. G7 proves a metric with both a floor and a reason (the reason's words win over the floor's); a
+#     reason with no floor (B24c's G32, 412's waits) is NOT PROVEN here. The pages' words as drawn NOT PROVEN (as G's
+#     other page words).
 #  T. client timeouts (B24 Fixed 1, written before its first run): T0 mssql_attention_left_out on fifteen built cases in
 #     PerformanceMonitor's order: 'under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio
 #     metadata|Azure Data Studio metadata|counts|Azure Data Studio metadata|pgvigil's own reads|counts|counts|counts|under
@@ -980,9 +982,9 @@ echo "== G. the floors: not judged under a floor (FL6) =="
 gpart() { [[ -z "$G_FROM" || "${1#G}" -ge "${G_FROM#G}" ]]; }
 # GC: one CHECK on alert_rule_state.state, naming 'na' (a DROP CONSTRAINT IF EXISTS of a wrong name passes silently)
 if [[ -z "$G_FROM" ]]; then
-GC=$(pq "SELECT count(*) || '|' || coalesce(bool_and(pg_get_constraintdef(oid) LIKE '%''na''%'), false) FROM pg_constraint
+GC=$(pq "SELECT count(*) || '|' || coalesce(bool_and(pg_get_constraintdef(oid) LIKE '%''na''%'), false)::text FROM pg_constraint
   WHERE conrelid = 'pgvigil.alert_rule_state'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%state%'")
-[[ "$GC" == "1|t" ]] || fail "GC: alert_rule_state's checks on state [$GC] (want one, naming 'na')"
+[[ "$GC" == "1|true" ]] || fail "GC: alert_rule_state's checks on state [$GC] (want one, naming 'na')"
 ok "GC: one check on alert_rule_state.state, 'na' in it"
 fi
 # instance rule helpers: on <metric> <warning> <critical> -> rule_id; off <rule_id>
@@ -1047,11 +1049,13 @@ print(f'   FL4: the grid row (current, floor, unit, input) and the state row (st
 sys.exit(0 if got == ((None, 5, 'batch requests', 'counters.batch_requests_s'), ('na', 'batch requests')) else 1)
 PY2
     # G7 (the lead's 11-15 06:4x, red on 799423e4: no na_why): a metric's own N/A reason (0152's metric_na_reasons, a
-    # slice's join line in a release) reaches the state row and the grid row; the view made empty again after
+    # slice's join line in a release) reaches the state row and the grid row; the view's own definition put back after
+    # (a later slice's rows in it stay: boxfix N4)
+    G7DEF=$(pq "SELECT pg_get_viewdef('pgvigil.metric_na_reasons'::regclass, true)"); [[ -n "$G7DEF" ]] || fail "G7: metric_na_reasons' definition"
     pq "CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS SELECT v.key, v.why FROM (VALUES ('counters.compiles_per_100_batches'::text, 'not judged: the proof''s own words'::text)) AS v(key, why)" >/dev/null
     curl -fs -m 20 "http://127.0.0.1:$PORT/api/metrics?instance=$SB&family=counters" > "$TMPD/g7grid.json" || fail "G7: GET /api/metrics"
     curl -fs -m 20 "http://127.0.0.1:$PORT/api/alertrules?part=state" > "$TMPD/g7state.json" || fail "G7: GET /api/alertrules?part=state"
-    pq "CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS SELECT v.key, v.why FROM (VALUES (NULL::text, NULL::text)) AS v(key, why) WHERE false" >/dev/null
+    pq "CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS $G7DEF" >/dev/null || fail "G7: metric_na_reasons put back"
     python3 - "$TMPD/g7grid.json" "$TMPD/g7state.json" <<'PY2' || fail "G7: the N/A reason's words"
 import json, sys
 def rows(f, part):

@@ -111,11 +111,13 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
           // task 402: a floored metric (0152's metric_floors) under its floor has no value: N/A, grey, in words, with or
           // without a rule's state; the current cell names the input's current rate from the same grid
           if ((r.floor == null && r.na_why == null) || Number(r.samples) === 0) return '';
-          if (key !== 'current_value') return 'N/A';
           // a metric not judged under a condition of its own (0152's metric_na_reasons): its reason, never a bare N/A
-          if (r.na_why != null) return `N/A: ${String(r.na_why)}`;
           const inp = famRows.find(x => x.key === r.floor_input && (x.database ?? null) === (r.database ?? null))?.current_value;
-          return `N/A: too few ${String(r.floor_unit)}/s to judge (${inp == null ? 'not read' : fmtNum(Math.floor(100 * Number(inp)) / 100)}/s, the floor ${fmtNum(Number(r.floor))}/s)`;
+          const why = r.na_why != null ? `N/A: ${String(r.na_why)}`
+            : `N/A: too few ${String(r.floor_unit)}/s to judge (${inp == null ? 'not read' : fmtNum(Math.floor(100 * Number(inp)) / 100)}/s, the floor ${fmtNum(Number(r.floor))}/s)`;
+          if (key === 'current_value') return why;
+          // the max, min and average cells: N/A with the same words as their title (boxfix S1: never a bare N/A)
+          return el('span', { title: why, 'aria-label': why }, 'N/A');
         }
         const st = r[key.replace('_value', '_status')];
         if (st == null) return fmtMetric(v, r.unit);
