@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
 // TestAzureDBFleetScaleOnAStore (B2a, the design's 'the collector's fan-out with two more minute collections at 1,819
@@ -70,14 +72,23 @@ func TestAzureDBFleetScaleOnAStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// the seed is the store a release with B2a and before 0167 leaves (B2a-N2's first build): the hours' trigger is held
+	// off for it, the minutes go in time order as the collector writes them (a minute of every database, then the next:
+	// one database's day spread over the heap, the pass's finding 7), and 'pgvigil purge' builds the hours after
+	if _, err := pool.Exec(ctx, `ALTER TABLE pgvigil.mssql_azuredb_minute DISABLE TRIGGER mssql_azuredb_hour_ins`); err != nil {
+		t.Fatal(err)
+	}
 	tag, err := pool.Exec(ctx, `INSERT INTO pgvigil.mssql_azuredb_minute (instance_id, snapshot_at, samples, avg_cpu_percent, max_cpu_percent,
 	     avg_data_io_percent, max_data_io_percent, avg_log_write_percent, max_log_write_percent, dtu_limit, avg_dtu_percent, max_dtu_percent,
 	     avg_dtu, max_dtu, dtu_buckets, cpu_buckets, data_buckets, log_buckets)
 	   SELECT i, $2::timestamptz + m * interval '1 minute', 4, (i + m) % 100, (i + m) % 100 + 0.5, m % 50, m % 50, i % 30, i % 30, 50,
 	          (i + m) % 100, (i + m) % 100 + 0.5, (i + m) % 100 / 2.0, ((i + m) % 100 + 0.5) / 2.0,
 	          ARRAY[1,0,0,0,0,0,0,0,0,3]::smallint[], ARRAY[0,1,0,0,0,0,0,0,3,0]::smallint[], ARRAY[4,0,0,0,0,0,0,0,0,0]::smallint[], ARRAY[0,0,4,0,0,0,0,0,0,0]::smallint[]
-	     FROM unnest($1::int[]) i, generate_series(0, 1439) m`, ids, from24)
+	     FROM generate_series(0, 1439) m, unnest($1::int[]) i ORDER BY m, i`, ids, from24)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE pgvigil.mssql_azuredb_minute ENABLE TRIGGER mssql_azuredb_hour_ins`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `ANALYZE pgvigil.mssql_azuredb_minute`); err != nil {
@@ -97,10 +108,42 @@ func TestAzureDBFleetScaleOnAStore(t *testing.T) {
 		}
 	}
 	imp := time.Since(start)
-	t.Logf("one minute's writes of %d databases, one after another: %v (%v a database)", fleet, imp.Round(time.Millisecond), (imp / fleet).Round(time.Microsecond))
+	t.Logf("one minute's writes of %d databases during the first build (each trigger call heals 200 ms at most): %v (%v a database)", fleet, imp.Round(time.Millisecond), (imp / fleet).Round(time.Microsecond))
 	if imp > 30*time.Second {
 		t.Errorf("one minute's writes of the fleet took %v, want under 30 s", imp)
 	}
+	// the first build by 'pgvigil purge' (one instance a transaction), then one minute's writes on built hours
+	start = time.Now()
+	r, err := repo.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, hourRows, failed, err := r.AzureDBHoursHeal(ctx)
+	r.Close()
+	if err != nil || failed != 0 {
+		t.Fatalf("the first build: %v, %d failed", err, failed)
+	}
+	t.Logf("the first build of %d databases' day (purge): %d instances, %d hour rows in %v", fleet, built, hourRows, time.Since(start).Round(time.Millisecond))
+	payload2, _ := json.Marshal([]map[string]any{{"kind": "minute", "minute": now.Add(time.Minute).Format(time.RFC3339), "samples": 4, "avg_cpu_percent": 12.5,
+		"max_cpu_percent": 40.0, "dtu_limit": 50.0, "avg_dtu_percent": 12.5, "max_dtu_percent": 40.0, "avg_dtu": 6.25, "max_dtu": 20.0,
+		"dtu_buckets": []int{2, 1, 0, 0, 1, 0, 0, 0, 0, 0}, "cpu_buckets": []int{2, 1, 0, 0, 1, 0, 0, 0, 0, 0},
+		"data_buckets": []int{4, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "log_buckets": []int{4, 0, 0, 0, 0, 0, 0, 0, 0, 0}}})
+	start = time.Now()
+	for _, id := range ids {
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_azuredb_resources($1, $2, $3::jsonb)`, id, now.Add(100*time.Second), string(payload2)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	imp2 := time.Since(start)
+	t.Logf("one minute's writes of %d databases on built hours (the trigger's recompute): %v", fleet, imp2.Round(time.Millisecond))
+	if imp2 > 30*time.Second {
+		t.Errorf("one minute's writes on built hours took %v, want under 30 s", imp2)
+	}
+	var heap, idx int64
+	_ = pool.QueryRow(ctx, `SELECT coalesce(sum(pg_relation_size(c.oid)), 0), coalesce(sum(pg_indexes_size(c.oid)), 0)
+	  FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'pgvigil.mssql_azuredb_hour'::regclass`).Scan(&heap, &idx)
+	t.Logf("the hours of a day at %d databases: heap %d bytes, key %d bytes (x 730 for two years: heap %.1f GB, key %.1f GB)", fleet, heap, idx,
+		float64(heap)*730/1e9, float64(idx)*730/1e9)
 
 	// the readers over the fleet
 	idset := map[int32]bool{}
