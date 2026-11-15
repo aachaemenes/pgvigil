@@ -468,7 +468,9 @@ RL=$(pq "SELECT count(*) FROM pgvigil.alert_log WHERE outcome = 'cleared' AND er
 RD=$(pq "SELECT count(*) FROM pgvigil.alert_due(now(), '[{\"name\":\"drop\",\"recovery\":true,\"clear_after_secs\":0}]'::jsonb) WHERE finding_key = 'proofkey-user'")
 psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql >/dev/null || fail "R1: 0156 a third time"
 RL2=$(pq "SELECT count(*) FROM pgvigil.alert_log WHERE outcome = 'cleared' AND error LIKE 'rule retired (task 405, D1)%'")
-[[ "$RU" == "t|t" && "$RD" == 0 && "$RT" == t && "$RL" == 1 && "$RL2" == 1 ]] || fail "R1: the retirement: user file [$RU] (want cleared, no recovery), alert_due rows for it $RD (want 0), tempdb open [$RT], log rows $RL then $RL2 (want 1, 1)"
+# RU joins two booleans with ||, which PostgreSQL writes as 'true' / 'false' (psql's own t / f is only for a bare boolean):
+# box run 405green2 read [true|true] with every value right
+[[ "$RU" == "true|true" && "$RD" == 0 && "$RT" == t && "$RL" == 1 && "$RL2" == 1 ]] || fail "R1: the retirement: user file [$RU] (want cleared, no recovery), alert_due rows for it $RD (want 0), tempdb open [$RT], log rows $RL then $RL2 (want 1, 1)"
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $IO" >/dev/null
 ok "R1: the open alert on a user data file closed as 'rule retired' with no recovery, tempdb's kept; a re-run adds nothing"
 
