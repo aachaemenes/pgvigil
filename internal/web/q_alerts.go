@@ -254,7 +254,11 @@ func (s *Server) alertDoor(w http.ResponseWriter, r *http.Request, fn string, bu
 	defer cancel()
 	pay := map[string]any{"ui_user": user, "client": seat.client}
 	if err := build(ctx, pay); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		code := http.StatusBadRequest
+		if errors.As(err, &roleErr{}) {
+			code = http.StatusForbidden // a write its body puts above the route's need (B24f, review-16 S5)
+		}
+		writeErr(w, code, err)
 		return
 	}
 	b, _ := json.Marshal(pay)
@@ -369,6 +373,17 @@ func (s *Server) AlertMute(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.AnyInstance && in.InstanceID > 0 {
 			return errors.New("any_instance and instance_id name two scopes: send one")
+		}
+		// an edit writes the rule's successor, a mute like any other (review-16 S5): one over more than one instance
+		// (every instance, a tag) or with no end needs admin. The edit keeps the old rule's kind, and its instance
+		// where it names none, so both are read here; a rule that is not there is the store's answer below.
+		var kind string
+		var oldInst *int
+		if err := s.pool.QueryRow(ctx, `SELECT kind, instance_id FROM pgvigil.acks WHERE ack_id = $1`, in.AckID).Scan(&kind, &oldInst); err == nil && kind == "mute" &&
+			(in.AnyInstance || in.Tag != "" || in.Until == nil || (in.InstanceID <= 0 && oldInst == nil)) {
+			if err := s.needErr(r, needAdmin, "a fleet-wide or open-ended mute"); err != nil {
+				return err
+			}
 		}
 		if in.AnyInstance {
 			pay["any_instance"] = true

@@ -15,6 +15,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { ackOn, ackWhy, addAck, checkAcks, endAck, loadAckSafe, liveRows, offBeside, onDoor, seatWhy } from './ack';
 import { humanize, sinceState } from './fleet';
 import { badge, el, fmtTime } from './ui';
+import { needControl } from './needs';
 
 // a POST that shows a refusal as '<outcome>: <detail>' (the thresholds write answers 409 with {outcome, detail, error})
 async function send(body: Record<string, unknown>): Promise<{ outcome: string; detail: string }> {
@@ -123,6 +124,9 @@ export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Pr
   const clrOff = clrWhy ?? (root ? (clearAll ? null : "opened from an instance's dialog: Clear ALL Alerts is on the Summary's Options menu (Instance Uptime)")
     : started == null ? "the instance's start is not read yet" : acked ? 'acknowledged since this start' : null);
   if (clrOff) offBeside(clear, clrOff, clrWhy && clrWhy === updWhy && updNote ? updNote : undefined);
+  // the role (B24f): a threshold needs admin, an acknowledgement operator - after the server's own reasons above
+  needControl(update, 'pg/thresholds', { can: ad.can });
+  needControl(clear, 'ack', { can: ad.can });
   rootLink.addEventListener('click', () => { f.dlg.close(); void openUptimeDialog(-1, clearAll); });
   clear.addEventListener('click', async () => {
     clear.disabled = true;
@@ -217,6 +221,10 @@ export async function openDumpDialog(acknowledge?: Acked, pg = false, scope?: nu
     row(el('span', { style: 'flex:1' }), cancel, update), updNote ?? '');
   if (updWhy && updNote) offBeside(update, updWhy, updNote);
   else if (!r) offBeside(update, 'the threshold could not be read', f.form.querySelector<HTMLElement>('p.threshold-now') ?? undefined);
+  // the role (B24f), after the server's own reasons above
+  needControl(update, 'pg/thresholds', { can: ad.can });
+  needControl(ackLink, 'ack', { can: ad.can });
+  needControl(clearLink, 'ack/end', { can: ad.can });
   cancel.addEventListener('click', () => f.dlg.close());
   ackLink.addEventListener('click', async () => {
     ackLink.disabled = true;

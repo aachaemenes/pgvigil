@@ -94,6 +94,7 @@ func (s *Server) JobThresholds(w http.ResponseWriter, r *http.Request) {
 		out["reason"] = s.offWords(why, "thresholds")
 		out["demo"] = s.demo != nil // the page reads the door from GET /api/ack; this says which reason it lacks when that read fails
 	}
+	out["can"] = s.roleCan(r) // the session's role (B24f): a threshold needs admin
 	for _, p := range ps {
 		t, err := s.query(r.Context(), p.sql, p.args...)
 		if err != nil {

@@ -84,10 +84,12 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
   // a grid draws its rows again at each sort, filter and 'Show more' through the columns' formats: each actions cell
   // locks its own controls, so a redraw never brings a write control back on a read-only server
   function lock(cell: HTMLElement): HTMLElement {
+    for (const c of cell.querySelectorAll<HTMLElement>('button, input')) c.dataset.need = 'admin';   // the role proof reads it (B24f)
     if (whyNot) for (const c of cell.querySelectorAll('button, input')) offRead(c, whyNot);
     return cell;
   }
   function readOnly(): void {
+    for (const c of root.querySelectorAll<HTMLElement>('form button, .actions button, .actions input')) c.dataset.need = 'admin';
     if (!whyNot) return;
     for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button, .actions input')) offRead(c, whyNot);
   }
@@ -120,7 +122,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       el('h2', {}, 'Applications' + (tag ? ` - ${tagWords(tag)}` : '')),
       el('p', { class: 'meta' }, `${apps.length} application(s); ${un.length} database(s) with none. `,
         'An application is set on a whole server (its databases inherit it) or on one database (its own beats the server\'s); every server it is on carries the tag application:<name>, ',
-        'which thresholds, acknowledgements and alert rules may be scoped by. Until the viewer / operator / admin roles exist, any signed-in user may change applications.'),
+        'which thresholds, acknowledgements and alert rules may be scoped by. Changing an application needs the admin role.'),
       // under a tag folder (TAGALL) the databases are the folder's; the applications and their log are every folder's
       // a tag folder lists the applications its servers carry (each server an application is on carries application:<name>);
       // the change log stays one list, and so do the inventory and its import (one file of every server and database)

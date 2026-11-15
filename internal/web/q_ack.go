@@ -323,6 +323,8 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 	if why != "" {
 		out["reason"] = why
 	}
+	// what the session's role may do (B24f, review-16 S6): beside writable / reason, which stay the server's own
+	out["can"] = s.roleCan(r)
 	out["user"] = ""
 	if s.auth != nil {
 		out["user"] = s.sessionUser(r)

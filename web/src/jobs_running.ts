@@ -13,6 +13,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, props } from './ui';
 import { loadAckSafe, offBeside, onDoor, seatWhy } from './ack';
+import { markNeed, needControl } from './needs';
 import { fleet } from './fleet';
 
 type Kind = 'job_stop' | 'job_start';
@@ -104,7 +105,8 @@ function actButton(ctx: Ctx, st: RunningState, kind: Kind, why: string, r: Row, 
     b.title = kind === 'job_stop' ? 'cancel the backend that runs this run (pg_cancel_backend)' : 'run the job now (jobnextrun = now())';
     b.addEventListener('click', () => { void confirmJobAction(ctx, kind, r, after); });
   }
-  return b;
+  // the role (B24f): a job's stop or start needs operator - after the instance's own reason above
+  return needControl(b, kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start');
 }
 
 // pgJobActionCol is the PostgreSQL jobs grid's column: Run now on a pgAgent job (pg_cron has no run-now call).
@@ -148,7 +150,7 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
   const msg = el('p', { class: 'meta', role: 'status' });
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', 'aria-label': "type the job's name to confirm", placeholder: job, autocomplete: 'off' });
-  const go = el('button', { type: 'submit', disabled: '' }, `${labels[kind]} ${job}`);
+  const go = markNeed(el('button', { type: 'submit', disabled: '' }, `${labels[kind]} ${job}`), kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start');
   let busy = false;   // one action per dialog: a keystroke after the send never arms the button again
   const check = () => { go.disabled = busy || typed.value.trim() !== job || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);
@@ -238,13 +240,13 @@ const exclCols = (endWhy: (r: Row) => string, after: () => void, noteOf: (r: Row
     key: 'exclusion_id', label: 'end', fmt: (v, r) => {
       const b = el('button', { type: 'button', style: 'font-size:12px;padding:0 .4rem' }, 'End');
       const why = endWhy(r);
-      if (why) { offBeside(b, why, noteOf(r)); return b; }
+      if (why) { offBeside(b, why, noteOf(r)); return needControl(b, 'jobs/exclusions'); }
       b.setAttribute('aria-label', `End exclusion ${text(v)}`);
       b.addEventListener('click', async () => {
         b.textContent = '...';
         try { await post('jobs/exclusions', { op: 'end', exclusion_id: Number(v) }); after(); } catch (e) { b.replaceWith(errorBox(e)); }
       });
-      return b;
+      return needControl(b, 'jobs/exclusions');   // the role (B24f): a job exclusion needs admin
     },
   },
 ];
@@ -262,7 +264,7 @@ function exclusionForm(ctx: Ctx, after: () => void, rootWhy = ''): HTMLElement {
   const on = el('select', { 'aria-label': 'match on' }, el('option', { value: 'name' }, 'the job\'s name'), el('option', { value: 'command' }, 'the job\'s command'));
   const pat = el('input', { type: 'text', maxlength: '300', 'aria-label': 'pattern', placeholder: 'tmp_* or *VACUUM*', autocomplete: 'off' });
   const note = el('input', { type: 'text', maxlength: '500', 'aria-label': 'note', placeholder: 'why (optional)' });
-  const add = el('button', { type: 'submit' }, 'Leave out of the checks');
+  const add = needControl(el('button', { type: 'submit' }, 'Leave out of the checks'), 'jobs/exclusions');
   const msg = el('span', { class: 'meta', role: 'status' });
   const f = el('form', { class: 'excl-form' }, 'Leave jobs whose ', on, ' is like ', pat, ' on ', level, ' ', note, ' ', add, ' ', msg, rootNote ?? '');
   f.addEventListener('submit', async ev => {
