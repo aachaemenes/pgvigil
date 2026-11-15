@@ -52,7 +52,8 @@ SELECT q.snapshot_at, q.server_utc, q.source, q.session_id, q.request_id, q.stat
        q.longest_victim_wait_ms, q.in_cycle, q.chain_note, o.is_own,
        coalesce(o.is_own, false)
          AND NOT (pgvigil.own_shown_mssql(q.session_id, q.blocking_session_id, q.head_session_id, q.in_cycle, q.elapsed_ms, q.request_id,
-                                          q.open_tran, q.last_request_end, q.granted_memory_kb, q.tempdb_alloc_kb, q.snapshot_at)
+                                          q.open_tran, q.last_request_end, q.granted_memory_kb, q.tempdb_alloc_kb, q.tran_age_ms,
+                                          q.snapshot_at)
                   OR EXISTS (SELECT 1 FROM pgvigil.mssql_requests b WHERE b.instance_id = q.instance_id AND b.snapshot_at = q.snapshot_at
                                AND b.blocking_session_id = q.session_id AND b.session_id <> q.session_id)) AS hide
   FROM pgvigil.mssql_requests_v q

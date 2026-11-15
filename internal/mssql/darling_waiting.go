@@ -256,14 +256,7 @@ func (waitingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]c
 	notes := decodeResources(ctx, conn, info, tasks)
 	out := make([]collect.Row, 0, len(tasks)+1)
 	for _, t := range tasks {
-		out = append(out, collect.Row{
-			"kind": "task", "session_id": t["session_id"], "exec_context_id": t["exec_context_id"], "wait_type": t["wait_type"],
-			"wait_ms": t["wait_duration_ms"], "blocking_session_id": t["blocking_session_id"],
-			"blocking_exec_context_id": t["blocking_exec_context_id"], "resource_description": t["resource_description"],
-			"resource_kind": t["resource_kind"], "database_name": t["database_name"], "object_name": t["object_name"],
-			"index_name": t["index_name"], "request_status": t["request_status"], "command": t["command"],
-			"statement": t["statement"],
-		})
+		out = append(out, waitingTaskRow(t))
 	}
 	summary := collect.Row{
 		"kind": "summary", "server_utc": serverUTC, "tasks": total, "stored": len(tasks), "sessions": len(sessions),
@@ -453,4 +446,17 @@ func decodeResources(ctx context.Context, conn *sql.Conn, info Info, tasks []col
 		}
 	}
 	return notes
+}
+
+// waitingTaskRow is one waiting task's payload row: the read's columns under the import's keys, is_own (B24 OWN, 0265:
+// decided on the server by the program and the login together) among them.
+func waitingTaskRow(t collect.Row) collect.Row {
+	return collect.Row{
+		"kind": "task", "session_id": t["session_id"], "exec_context_id": t["exec_context_id"], "wait_type": t["wait_type"],
+		"wait_ms": t["wait_duration_ms"], "blocking_session_id": t["blocking_session_id"],
+		"blocking_exec_context_id": t["blocking_exec_context_id"], "resource_description": t["resource_description"],
+		"resource_kind": t["resource_kind"], "database_name": t["database_name"], "object_name": t["object_name"],
+		"index_name": t["index_name"], "request_status": t["request_status"], "command": t["command"],
+		"statement": t["statement"], "is_own": t["is_own"],
+	}
 }

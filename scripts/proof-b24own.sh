@@ -10,14 +10,20 @@
 # Expected (written before the first run):
 #  S1 SQL Server, the stored flag (mssql_requests.is_own): sessions of pgvigil's login named pgvigil-proof (idle in a
 #     WAITFOR), pgvigil-proof2 (blocked behind l1) and pgvigil-proof3 (a 120 s WAITFOR) are own; pgvigil-actions-proof is
-#     NOT [refined after the red, before any green: the collector never marks an actions-door session own - it runs a
+#     not own [refined after the red, before any green: the collector never marks an actions-door session own - it runs a
 #     customer's statement, and waiting tasks store no program for a read-time rule]; a session named pgvigil-x under
 #     ANOTHER login (l1) and l1's blocker are not.
 #  S2 GET /api/mssql/running at that snapshot, own absent: pgvigil-proof and pgvigil-proof3 absent, pgvigil-x shown (the
 #     lead's red: a pgvigil-labelled session not of pgvigil's login stays visible), own_hidden = the stored own rows less
-#     the never-hidden ones (2); own=1 shows all, own_hidden 0.
-#  S3 never hidden even when own: pgvigil-proof2 (blocked) and pgvigil-actions-proof (the actions door) shown and marked
-#     own; S3b pgvigil-proof3 read again past 60 s: shown by default.
+#     the never-hidden ones (3 after the review fold: pgvigil-proof, -proof3, -proof5 young at the first read); own=1
+#     shows all, own_hidden 0.
+#  S3 never hidden: pgvigil-proof2 (own, blocked) shown carrying is_own; pgvigil-actions-proof (the actions door, never
+#     own) shown; S3b pgvigil-proof3 read again past 60 s: shown by default; S3c [review fold B2] pgvigil-proof5, own, in a
+#     transaction over 60 s whose current request is new: shown by default.
+#  [review fold, before the rerun] Only own rows are written: a not-own row's is_own reads null (shown, as false would);
+#  S1 also: pgvigil-proof2's stored waiting task is own (B1: the collector's row kept it); S5 own_hidden.tasks = 1 (the
+#  staged task); P2 own_hidden.sessions >= 1; P4 [B2] an own backend in a transaction over 60 s, its current statement
+#  new: shown by default. Every hold 4 minutes (a loaded box's reads come late).
 #  S4 a row stored before 0265 (is_own NULL) shown in both switch states.
 #  S5 waiting tasks (mssql_waiting_tasks.is_own, GET /api/waiting part tasks): pgvigil-proof2's lock wait shown (blocked);
 #     a stored own task with no blocker and a 1 s wait hidden by default, shown with own=1.
@@ -68,7 +74,7 @@ for _ in $(seq 1 150); do [[ "$(sq "SELECT CASE WHEN DATABASEPROPERTYEX('msdb', 
 PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 sq "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON];
     CREATE LOGIN [l1] WITH PASSWORD = '$LP_PW', CHECK_POLICY = OFF; CREATE DATABASE pgvb24;" >/dev/null || fail "SQL Server logins"
-sq "CREATE TABLE dbo.hold (id int PRIMARY KEY, v int NOT NULL); INSERT dbo.hold VALUES (1, 0);
+sq "CREATE TABLE dbo.hold (id int PRIMARY KEY, v int NOT NULL); INSERT dbo.hold VALUES (1, 0), (2, 0);
     CREATE USER [$MON] FOR LOGIN [$MON]; CREATE USER [l1] FOR LOGIN [l1]; GRANT SELECT, UPDATE ON dbo.hold TO [$MON], [l1];" pgvb24 >/dev/null || fail "dbo.hold"
 
 # ---- PostgreSQL: the repository, the target, the collector's login and another --------------------------------------
@@ -97,19 +103,23 @@ hold() { PGV_HOLD_DSN="sqlserver://$1:$(urlq "$2")@127.0.0.1:$PORT_SQL?database=
   setsid "$WORK/hold" "$4" "$5" > "$WORK/hold-$3.out" 2>&1 & BG+=($!); }
 hold l1 "$LP_PW" l1-blocker 300 "BEGIN TRAN; UPDATE dbo.hold SET v = v + 1 WHERE id = 1;"
 sleep 2
-hold "$MON" "$MON_PW" pgvigil-proof 300 "WAITFOR DELAY '00:00:50';"
+hold "$MON" "$MON_PW" pgvigil-proof 300 "WAITFOR DELAY '00:04:00';"
 hold "$MON" "$MON_PW" pgvigil-proof2 300 "UPDATE dbo.hold SET v = v + 1 WHERE id = 1;"
-hold "$MON" "$MON_PW" pgvigil-actions-proof 300 "WAITFOR DELAY '00:00:50';"
-hold "$MON" "$MON_PW" pgvigil-proof3 300 "WAITFOR DELAY '00:02:00';"
-hold l1 "$LP_PW" pgvigil-x 300 "WAITFOR DELAY '00:00:50';"
-for _ in $(seq 1 60); do [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.program_name IN ('pgvigil-proof', 'pgvigil-proof2', 'pgvigil-actions-proof', 'pgvigil-proof3', 'pgvigil-x')") == 5 ]] && break; sleep 0.5; done
+hold "$MON" "$MON_PW" pgvigil-actions-proof 300 "WAITFOR DELAY '00:04:00';"
+hold "$MON" "$MON_PW" pgvigil-proof3 300 "WAITFOR DELAY '00:04:00';"
+hold "$MON" "$MON_PW" pgvigil-proof5 300 "BEGIN TRAN; UPDATE dbo.hold SET v = v + 1 WHERE id = 2; WAITFOR DELAY '00:01:05'; SELECT 1; WAITFOR DELAY '00:04:00';"
+hold l1 "$LP_PW" pgvigil-x 300 "WAITFOR DELAY '00:04:00';"
+for _ in $(seq 1 60); do [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.program_name IN ('pgvigil-proof', 'pgvigil-proof2', 'pgvigil-actions-proof', 'pgvigil-proof3', 'pgvigil-proof5', 'pgvigil-x')") == 6 ]] && break; sleep 0.5; done
 col ss mssql_requests; col ss mssql_waiting_tasks
 SNAP=$(q "select max(snapshot_at) from pgvigil.mssql_requests where instance_id = $ISS")
 OWNCOL=$(q "select count(*) from information_schema.columns where table_schema = 'pgvigil' and table_name = 'mssql_requests' and column_name = 'is_own'")
 [[ $OWNCOL == 1 ]] || fail "S1: no column is_own on pgvigil.mssql_requests (red before 0265)"
 GOT=$(q "select string_agg(program_name || '=' || coalesce(is_own::text, 'null'), ' ' order by program_name collate \"C\") from pgvigil.mssql_requests
-          where instance_id = $ISS and snapshot_at = '$SNAP' and (program_name like 'pgvigil%' or program_name = 'l1-blocker')")
-[[ $GOT == "l1-blocker=false pgvigil-actions-proof=false pgvigil-proof=true pgvigil-proof2=true pgvigil-proof3=true pgvigil-x=false" ]] || fail "S1: the stored flags: $GOT"
+          where instance_id = $ISS and snapshot_at = '$SNAP' and program_name in ('l1-blocker', 'pgvigil-actions-proof', 'pgvigil-proof', 'pgvigil-proof2', 'pgvigil-proof3', 'pgvigil-x')")
+[[ $GOT == "l1-blocker=null pgvigil-actions-proof=null pgvigil-proof=true pgvigil-proof2=true pgvigil-proof3=true pgvigil-x=null" ]] || fail "S1: the stored flags: $GOT"
+P2SID=$(q "select session_id from pgvigil.mssql_requests where instance_id = $ISS and snapshot_at = '$SNAP' and program_name = 'pgvigil-proof2'")
+[[ $(q "select coalesce(bool_or(is_own)::text, 'none') from pgvigil.mssql_waiting_tasks where instance_id = $ISS and session_id = $P2SID
+        and snapshot_at = (select max(snapshot_at) from pgvigil.mssql_waiting_tasks where instance_id = $ISS)") == true ]] || fail "S1: pgvigil-proof2's waiting task not stored own (B1)"
 ok "S1: is_own stored by the collector: pgvigil's login's three sessions own; the actions door's, pgvigil-x under l1 and l1's blocker not ($GOT)"
 
 # ---- serve -------------------------------------------------------------------------------------------------------------------
@@ -136,10 +146,10 @@ c=$(get "/api/mssql/running?instance=$ISS&at=$SNAPU"); [[ $c == 200 ]] || fail "
 P=$(progs rows)
 [[ " $P " == *" pgvigil-x "* && " $P " != *" pgvigil-proof "* && " $P " != *" pgvigil-proof3 "* ]] || fail "S2: the default's programs: $P"
 [[ " $P " == *" pgvigil-proof2 "* && " $P " == *" pgvigil-actions-proof "* ]] || fail "S3: a never-hidden own session hidden: $P"
-[[ $(hid rows) == 2 ]] || fail "S2: own_hidden $(hid rows), want 2 (pgvigil-proof, pgvigil-proof3)"
+[[ $(hid rows) == 3 ]] || fail "S2: own_hidden $(hid rows), want 3 (pgvigil-proof, -proof3, -proof5)"
 c=$(get "/api/mssql/running?instance=$ISS&at=$SNAPU&own=1"); [[ $c == 200 ]] || fail "S2 own=1: HTTP $c"
 P1=$(progs rows); [[ " $P1 " == *" pgvigil-proof "* && " $P1 " == *" pgvigil-proof3 "* && " $P1 " == *" pgvigil-x "* && $(hid rows) == 0 ]] || fail "S2 own=1: $P1 / $(hid rows)"
-ok "S2: by default pgvigil's own idle sessions hidden (own_hidden 2), pgvigil-x of another login shown; own=1 shows all. S3: the blocked and the actions-door own sessions shown"
+ok "S2: by default pgvigil's own idle sessions hidden (own_hidden 3), pgvigil-x of another login shown; own=1 shows all. S3: the blocked and the actions-door own sessions shown"
 python3 -c "
 import json; d=json.load(open('$WORK/out.json')); t=d['rows']; rows=[dict(zip(t['columns'], r)) for r in t['rows']]
 m={r['program_name']: r.get('is_own') for r in rows if r.get('program_name')}
@@ -149,7 +159,8 @@ sleep 62; col ss mssql_requests
 SNAP2=$(q "select to_char(max(snapshot_at) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') from pgvigil.mssql_requests where instance_id = $ISS")
 get "/api/mssql/running?instance=$ISS&at=$SNAP2" >/dev/null; P2=$(progs rows)
 [[ " $P2 " == *" pgvigil-proof3 "* ]] || fail "S3b: pgvigil-proof3 past 60 s hidden: $P2"
-ok "S3b: an own request past 60 s shown by default"
+[[ " $P2 " == *" pgvigil-proof5 "* ]] || fail "S3c: pgvigil-proof5 (a transaction over 60 s, a new request) hidden: $P2"
+ok "S3b: an own request past 60 s shown by default; S3c: an own transaction over 60 s with a new request shown"
 # S4: stored before 0265
 q "update pgvigil.mssql_requests set is_own = null where instance_id = $ISS and snapshot_at = '$SNAP' and program_name = 'pgvigil-proof'" >/dev/null
 get "/api/mssql/running?instance=$ISS&at=$SNAPU" >/dev/null; P4=$(progs rows)
@@ -167,24 +178,32 @@ get "/api/waiting?instance=$ISS&part=tasks&at=$WSU" >/dev/null
 python3 -c "import json,sys; d=json.load(open('$WORK/out.json')); t=d['tasks']; sys.exit(0 if all(r[t['columns'].index('session_id')] != 9999 for r in (t['rows'] or [])) else 1)" || fail "S5: the staged own task shown by default"
 get "/api/waiting?instance=$ISS&part=tasks&at=$WSU&own=1" >/dev/null
 python3 -c "import json,sys; d=json.load(open('$WORK/out.json')); t=d['tasks']; sys.exit(0 if any(r[t['columns'].index('session_id')] == 9999 for r in (t['rows'] or [])) else 1)" || fail "S5: own=1 does not show the staged own task"
+get "/api/waiting?instance=$ISS&part=own_hidden&at=$WSU" >/dev/null
+[[ $(hid tasks) == 1 ]] || fail "S5: own_hidden.tasks $(hid tasks), want 1 (the staged task)"
 ok "S5: waiting tasks: the blocked own task shown; a stored own task with no blocker hidden by default, shown with own=1"
 
 # ---- PostgreSQL ---------------------------------------------------------------------------------------------------------------
 pgbg() { PGAPPNAME=$1 setsid psql "$PGVIGIL_ADMIN_DSN dbname=$TGT user=$2 password=$PGPW" -XAtq -c "$3" > /dev/null 2>&1 & BG+=($!); }
-pgbg pgvigil-x "$PGOTHER" "begin; lock table hold in access exclusive mode; select pg_sleep(60); commit"
+pgbg pgvigil-x "$PGOTHER" "begin; lock table hold in access exclusive mode; select pg_sleep(240); commit"
 sleep 1
-pgbg pgvigil-proof "$PGCOL" "select pg_sleep(50)"
+pgbg pgvigil-proof "$PGCOL" "select pg_sleep(240)"
+pgbg pgvigil-proof4 "$PGCOL" "begin isolation level repeatable read; select 1; select pg_sleep(65); select pg_sleep(240); commit"
 pgbg pgvigil-proof2 "$PGCOL" "select * from hold"
 for _ in $(seq 1 30); do [[ $(psql "$PGVIGIL_ADMIN_DSN dbname=$TGT" -XAtq -c "select count(*) from pg_stat_activity where application_name in ('pgvigil-x', 'pgvigil-proof', 'pgvigil-proof2')") == 3 ]] && break; sleep 0.5; done
 col pg activity
 GOTP=$(q "select string_agg(application_name || '=' || coalesce(is_own::text, 'null'), ' ' order by application_name collate \"C\") from pgvigil.activity_sample
            where instance_id = $IPG and snapshot_at = (select max(snapshot_at) from pgvigil.activity_sample where instance_id = $IPG)
              and application_name in ('pgvigil-proof', 'pgvigil-proof2', 'pgvigil-x')")
-[[ $GOTP == "pgvigil-proof=true pgvigil-proof2=true pgvigil-x=false" ]] || fail "P1: the stored flags: $GOTP"
+[[ $GOTP == "pgvigil-proof=true pgvigil-proof2=true pgvigil-x=null" ]] || fail "P1: the stored flags: $GOTP"
 ok "P1: is_own stored: the collector's login's backends own, pgvigil-x under another login not"
 get "/api/activity?instance=$IPG" >/dev/null; PA=$(progs sessions)
 [[ " $PA " == *" pgvigil-x "* && " $PA " != *" pgvigil-proof "* && " $PA " == *" pgvigil-proof2 "* ]] || fail "P2/P3: the default's applications: $PA"
 get "/api/activity?instance=$IPG&own=1" >/dev/null; PB=$(progs sessions)
 [[ " $PB " == *" pgvigil-proof "* ]] || fail "P2: own=1: $PB"
-ok "P2: by default the own backend in pg_sleep hidden, pgvigil-x shown, own=1 shows it; P3: the own backend waiting on the lock shown"
+get "/api/activity?instance=$IPG" >/dev/null; (( $(hid sessions) >= 1 )) || fail "P2: own_hidden.sessions $(hid sessions)"
+ok "P2: by default the own backend in pg_sleep hidden (own_hidden $(hid sessions)), pgvigil-x shown, own=1 shows it; P3: the own backend waiting on the lock shown"
+sleep 66; col pg activity
+get "/api/activity?instance=$IPG" >/dev/null; PC=$(progs sessions)
+[[ " $PC " == *" pgvigil-proof4 "* ]] || fail "P4: an own backend in a transaction over 60 s, its statement new, hidden: $PC"
+ok "P4: an own backend in a transaction over 60 s with a new statement shown by default (it holds the xmin horizon)"
 echo "PASS: proof-b24own"

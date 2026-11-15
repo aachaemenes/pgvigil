@@ -52,7 +52,7 @@ SELECT 'session'                                              AS kind,
        a.usename::text                                        AS usename,
        a.application_name,
        -- pgvigil's own backend (B24 OWN, 0265): its name and the collector's login together, never the actions door's
-       (a.application_name LIKE 'pgvigil%%' AND a.usename = current_user AND a.application_name NOT LIKE 'pgvigil-actions%%') AS is_own,
+       (a.application_name LIKE 'pgvigil%%' AND a.usename = session_user AND a.application_name NOT LIKE 'pgvigil-actions%%') AS is_own,
        coalesce(a.client_hostname, host(a.client_addr))       AS client,
        a.state,
        a.wait_event_type,

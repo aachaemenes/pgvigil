@@ -117,7 +117,8 @@ SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usenam
        extract(epoch FROM s.snapshot_at - s.state_change)::int AS state_secs,
        s.backend_xmin_age, s.xid_assigned, s.query_id, q.query, s.is_own,
        coalesce(s.is_own, false)
-         AND NOT pgvigil.own_shown_pg(s.wait_event_type, s.is_blocker, s.state, s.query_start, s.state_change, s.snapshot_at) AS hide,
+         AND NOT pgvigil.own_shown_pg(s.wait_event_type, s.is_blocker, s.state, s.query_start, s.state_change, s.xact_start,
+                                    s.snapshot_at) AS hide,
        s.query_start AS order_query_start
   FROM pgvigil.activity_sample s
   LEFT JOIN pgvigil.query_text q ON q.query_hash = s.query_hash
