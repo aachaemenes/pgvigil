@@ -10,9 +10,11 @@
 --   mssql_parallelism_advice         Fixed 24: PerformanceMonitor's composed CXPACKET and THREADPOOL advice from the
 --                                    settings in force at the window's end (mssql_config_history).
 --   mssql_wait_findings_between      0115's body; its Parallelism and THREADPOOL advice composed.
+--   mssql_memory_suggestion          Fixed 8: PerformanceMonitor's max server memory audit and number over checks.go's RAM.
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
--- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827. The lead's calls on the design pass (20261114-141436-reviewer) are the build's
--- shape; each behaviour change at an upgraded site has its release-note line (no site runs pgvigil before v0.4.0).
+-- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85.
+-- The lead's calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
+-- upgraded site has its release-note line (no site runs pgvigil before v0.4.0).
 
 -- ---- plan cache bloat (Fixed 10) -------------------------------------------------------------------------------------
 
@@ -350,4 +352,51 @@ LANGUAGE sql STABLE AS $$
                                  ELSE ' ' || CASE r.priority WHEN 10 THEN 'Critical' WHEN 20 THEN 'High' WHEN 30 THEN 'Medium' ELSE 'Low' END END),
          r.source, r.source_check, r.priority, r.value
     FROM fr r
+$$;
+
+-- ---- max server memory (Fixed 8) ------------------------------------------------------------------------------------
+
+-- mssql_memory_suggestion: PerformanceMonitor 3.13.0's max server memory audit (ConfigAuditGuidance.cs AuditMaxMemory)
+-- over the RAM checks.go weighs it against (sys_info's physical memory, stored in mssql_instance) and the value in use
+-- (mssql_config): the OS reserve is the larger of 4,096 MB and 10 % of RAM but never more than half of it, the
+-- suggestion RAM minus the reserve (whole MB); unlimited (2147483647) = warning, over 95 % of RAM or under 50 % of more
+-- than 8,192 MB = review, else ok. No row on Managed Instance or Azure SQL Database (engine edition 8 or 5: the
+-- platform sets the memory) or before the configuration was read.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_memory_suggestion(p_instance_id int)
+RETURNS TABLE (ram_mb bigint, reserve_mb bigint, suggested_mb bigint, max_server_memory_mb bigint, status text, message text)
+LANGUAGE sql STABLE AS $$
+  WITH x AS (
+    SELECT coalesce(m.physical_memory_mb, 0)::double precision AS ram,
+           (SELECT c.value_in_use FROM pgvigil.mssql_config c
+             WHERE c.instance_id = p_instance_id AND c.name = 'max server memory (MB)' AND c.is_present)::bigint AS msm
+      FROM pgvigil.instances i LEFT JOIN pgvigil.mssql_instance m ON m.instance_id = i.instance_id
+     WHERE i.instance_id = p_instance_id AND i.engine = 'sqlserver' AND coalesce(m.engine_edition, 0) NOT IN (5, 8)),
+  s AS (SELECT x.ram, x.msm,
+               CASE WHEN x.ram <= 0 THEN 0 ELSE least(greatest(4096, x.ram * 0.10), x.ram / 2) END AS reserve,
+               CASE WHEN x.ram <= 0 THEN 0 ELSE trunc(x.ram - least(greatest(4096, x.ram * 0.10), x.ram / 2))::bigint END AS sugg,
+               CASE WHEN x.ram > 0 THEN x.msm / x.ram END AS ratio
+          FROM x WHERE x.msm IS NOT NULL)
+  SELECT s.ram::bigint, round(s.reserve)::bigint,
+         CASE WHEN s.msm = 2147483647 AND s.ram <= 0 THEN s.msm WHEN s.msm = 2147483647 OR s.ratio > 0.95 OR (s.ratio < 0.50 AND s.ram > 8192) THEN s.sugg
+              ELSE s.msm END,
+         s.msm,
+         CASE WHEN s.msm = 2147483647 THEN 'warning' WHEN s.ram <= 0 THEN 'ok' WHEN s.ratio > 0.95 OR (s.ratio < 0.50 AND s.ram > 8192) THEN 'review'
+              ELSE 'ok' END,
+         CASE WHEN s.msm = 2147483647 AND s.ram > 0
+                THEN format('Max server memory is at the default (unlimited). SQL Server will consume all available RAM, starving the OS and '
+                            'other processes. With %s MB physical RAM, set max server memory to ~%s MB (leaving %s MB for the OS).',
+                            to_char(s.ram, 'FM999,999,999,990'), to_char(s.sugg, 'FM999,999,999,990'), to_char(round(s.reserve), 'FM999,999,999,990'))
+              WHEN s.msm = 2147483647
+                THEN 'Max server memory is at the default (unlimited). SQL Server will consume all available RAM. Set this to total physical '
+                     'memory minus the OS reserve (the larger of 4 GB and 10% of RAM, but never more than half of RAM) to leave room for the OS.'
+              WHEN s.ram <= 0 THEN format('Max server memory is set to %s MB.', to_char(s.msm, 'FM999,999,999,990'))
+              WHEN s.ratio > 0.95
+                THEN format('Max server memory (%s MB) is %s%% of physical RAM (%s MB). Consider reducing to ~%s MB to leave room for the OS.',
+                            to_char(s.msm, 'FM999,999,999,990'), round(100 * s.ratio), to_char(s.ram, 'FM999,999,999,990'), to_char(s.sugg, 'FM999,999,999,990'))
+              WHEN s.ratio < 0.50 AND s.ram > 8192
+                THEN format('Max server memory (%s MB) is only %s%% of physical RAM (%s MB). SQL Server may be under-utilizing available memory. '
+                            'Consider raising to ~%s MB unless other applications need the remaining RAM.',
+                            to_char(s.msm, 'FM999,999,999,990'), round(100 * s.ratio), to_char(s.ram, 'FM999,999,999,990'), to_char(s.sugg, 'FM999,999,999,990'))
+              ELSE format('Max server memory (%s MB) looks reasonable for %s MB physical RAM.', to_char(s.msm, 'FM999,999,999,990'), to_char(s.ram, 'FM999,999,999,990')) END
+    FROM s
 $$;

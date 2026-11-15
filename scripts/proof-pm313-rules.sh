@@ -33,6 +33,14 @@
 #     dbatools' rule over the container's own cpu_count and numa_node_count read by hand, and the advice now names the
 #     container's MAXDOP and cost threshold (5: 'raise cost threshold for parallelism to 50'). Red on f8e89d2: no
 #     mssql_advised_maxdop.
+#  R6. max server memory (Fixed 8, F13): R6a on ctrsyn's built rows (mssql_instance's RAM, mssql_config's value in
+#     use): 65,536 MB RAM unlimited = warning '... set max server memory to ~58,982 MB (leaving 6,554 MB for the OS)';
+#     64,000 MB = review '... is 98% of physical RAM ... reducing to ~58,982 MB'; 16,000 MB = review '... is only 24%
+#     ... raising to ~58,982 MB'; 50,000 MB = ok 'looks reasonable'; 4,096 MB RAM unlimited = warning ~2,048 MB (the
+#     reserve capped at half); engine edition 8 (Managed Instance) = no row. R6b live: the container's RAM as
+#     sys.dm_os_sys_info reads it (printed beside free -m in the container), max server memory at the default, then
+#     at 97 % and 60 % of that RAM (mssql_instance, mssql_checks read each time): warning, review, ok, each suggestion
+#     = RAM minus the reserve. Red on f8e89d2: no mssql_memory_suggestion.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -164,4 +172,34 @@ echo "   live: sys_info cpus|nodes $HW, advised $LM (dbatools' rule $WANT); MAXD
 [[ "$CL" == "This server's MAXDOP is $MD and cost threshold for parallelism is 5 "*"raise cost threshold for parallelism to 50"* ]] || fail "R9b: the live advice [$CL]"
 ok "R9b: the advisor equals dbatools' rule over the container's cpu_count and numa_node_count ($LM); the advice names its MAXDOP $MD and cost threshold 5"
 
-echo "PROOF OK: pm313 rules (A R7 R9)"
+echo "== R6. max server memory (Fixed 8) =="
+pq "INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, physical_memory_mb, engine_edition) VALUES ($SY, now(), 65536, 3)
+    ON CONFLICT (instance_id) DO UPDATE SET physical_memory_mb = EXCLUDED.physical_memory_mb, engine_edition = EXCLUDED.engine_edition" >/dev/null
+msm() { pq "INSERT INTO pgvigil.mssql_config (instance_id, name, value, value_in_use, snapshot_at, is_present) VALUES ($SY, 'max server memory (MB)', $1, $1, now(), true)
+    ON CONFLICT (instance_id, name) DO UPDATE SET value = EXCLUDED.value, value_in_use = EXCLUDED.value_in_use, snapshot_at = EXCLUDED.snapshot_at" >/dev/null
+  pq "SELECT status || '|' || suggested_mb || '|' || message FROM pgvigil.mssql_memory_suggestion($SY)"; }
+M1=$(msm 2147483647); M2=$(msm 64000); M3=$(msm 16000); M4=$(msm 50000)
+pq "UPDATE pgvigil.mssql_instance SET physical_memory_mb = 4096 WHERE instance_id = $SY" >/dev/null; M5=$(msm 2147483647)
+pq "UPDATE pgvigil.mssql_instance SET physical_memory_mb = 65536, engine_edition = 8 WHERE instance_id = $SY" >/dev/null
+M6=$(pq "SELECT count(*) FROM pgvigil.mssql_memory_suggestion($SY)")
+for x in "$M1" "$M2" "$M3" "$M4" "$M5" "MI rows: $M6"; do echo "   $x"; done
+[[ "$M1" == "warning|58982|Max server memory is at the default (unlimited). SQL Server will consume all available RAM, starving the OS and other processes. With 65,536 MB physical RAM, set max server memory to ~58,982 MB (leaving 6,554 MB for the OS)." ]] || fail "R6a: unlimited [$M1]"
+[[ "$M2" == "review|58982|Max server memory (64,000 MB) is 98% of physical RAM (65,536 MB). Consider reducing to ~58,982 MB to leave room for the OS." ]] || fail "R6a: 98 % [$M2]"
+[[ "$M3" == "review|58982|Max server memory (16,000 MB) is only 24% of physical RAM (65,536 MB)."* ]] || fail "R6a: 24 % [$M3]"
+[[ "$M4" == "ok|50000|Max server memory (50,000 MB) looks reasonable for 65,536 MB physical RAM." ]] || fail "R6a: 76 % [$M4]"
+[[ "$M5" == "warning|2048|"*"set max server memory to ~2,048 MB (leaving 2,048 MB for the OS)." ]] || fail "R6a: 4 GB of RAM [$M5]"
+[[ "$M6" == 0 ]] || fail "R6a: a Managed Instance has a row ($M6)"
+ok "R6a: unlimited warning, 98 % and 24 % review, 76 % ok, the reserve capped at half on 4 GB, no row on Managed Instance"
+RAM=$(sq "SELECT CAST(physical_memory_kb / 1024 AS varchar(20)) FROM sys.dm_os_sys_info"); FREE=$(docker exec "$SQL" free -m | awk '/^Mem:/{print $2}')
+echo "   the container: sys.dm_os_sys_info physical memory $RAM MB; free -m total $FREE MB"
+live() { [[ "$1" == default ]] && v=2147483647 || v=$(( RAM * $1 / 100 ))
+  sqok "max server memory $v" "EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'max server memory (MB)', $v; RECONFIGURE;"
+  col mssql_instance mssql_checks; pq "SELECT status || '|' || suggested_mb || '|' || ram_mb FROM pgvigil.mssql_memory_suggestion($SB)"; }
+WANTS=$(python3 -c "import sys; r = int(sys.argv[1]); print(int(r - min(max(4096, r * 0.10), r / 2)))" "$RAM")
+L1=$(live default); L2=$(live 97); L3=$(live 60)
+echo "   live: default [$L1], 97 % [$L2], 60 % [$L3]; the suggestion by hand $WANTS"
+[[ "$L1" == "warning|$WANTS|$RAM" && "$L2" == "review|$WANTS|$RAM" && "$L3" == "ok|$(( RAM * 60 / 100 ))|$RAM" ]] || fail "R6b: live [$L1] [$L2] [$L3] (want warning, review at $WANTS, ok)"
+sqok "max server memory back to the default" "EXEC sp_configure 'max server memory (MB)', 2147483647; RECONFIGURE;"
+ok "R6b: on the container's $RAM MB: unlimited warning, 97 % review, 60 % ok, the suggestion $WANTS MB"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6)"
