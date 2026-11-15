@@ -775,7 +775,14 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
 // above), and the rule series marked flapping now. A repository before 0154 shows neither.
 const holdWords: Record<string, string> = {
   blackout: 'a blackout window', mute: 'a mute window', digest: 'held for the daily digest', flapping: 'flapping: sent once, its repeats held',
+  attached: 'attached under a standing CPU, blocking or deadlock alert',
 };
+// heldBy names what holds a row: the rule, the anchor alert (an attached hold's hold_id is its anchor's first send,
+// not an id), or the window
+const heldBy = (r: Row): string =>
+  r.hold_source === 'rule' ? `rule ${String(r.hold_id)}`
+    : r.hold_source === 'anchor' ? `under ${r.anchor != null && r.anchor !== '' ? String(r.anchor) : 'an alert no longer open'}`
+      : `window ${String(r.hold_id)}`;
 async function whyHeldView(ctx: Ctx, inLog: (r: Row) => boolean): Promise<HTMLElement> {
   const box = el('div', {});
   let held: Row[], flapping: Row[];
@@ -784,9 +791,9 @@ async function whyHeldView(ctx: Ctx, inLog: (r: Row) => boolean): Promise<HTMLEl
       .filter(r => r.hold_source !== 'ack').map(r => ({ ...r, instance: r.instance_name })).filter(inLog);
     flapping = rowsOf((await get<{ flapping?: Table | null }>('alertscope', { part: 'flapping' })).flapping);
   } catch { return box; }
-  box.append(el('h3', {}, `Why held: windows, digest and flapping ${rangeLabel(ctx)} `, whatIsThis('One line per alert and channel a window, the daily digest or the flapping hold kept from that channel: which hold (the window or the rule), the first and last pass that held it and how many. A digest-held alert reaches its channel in the daily digest only; a flapping one was sent once, then its repeats were held until its last 12 results steady.', 'Why held')),
+  box.append(el('h3', {}, `Why held: windows, digest, flapping and attached ${rangeLabel(ctx)} `, whatIsThis('One line per alert and channel a window, the daily digest, the flapping hold or a standing CPU, blocking or deadlock alert kept from that channel: which hold (the window, the rule or the anchor alert), the first and last pass that held it and how many. A digest-held alert reaches its channel in the daily digest only; a flapping one was sent once, then its repeats were held until its last 12 results steady; an attached one is listed in its anchor's recovery, or fires as itself if it still stands when the anchor ends.', 'Why held')),
     grid(held, [
-      { key: 'hold_kind', label: 'why', fmt: (v, r) => `${holdWords[String(v)] ?? String(v)} (${r.hold_source === 'rule' ? 'rule' : 'window'} ${String(r.hold_id)})` },
+      { key: 'hold_kind', label: 'why', fmt: (v, r) => `${holdWords[String(v)] ?? String(v)} (${heldBy(r)})` },
       { key: 'instance_name', label: 'instance' },
       { key: 'setting', label: 'alert', fmt: (v, r) => [r.source, v].filter(x => x != null && x !== '').map(String).join(': ') },
       { key: 'severity' },
@@ -794,7 +801,7 @@ async function whyHeldView(ctx: Ctx, inLog: (r: Row) => boolean): Promise<HTMLEl
       { key: 'first_at', label: 'first held', fmt: fmtTime },
       { key: 'last_at', label: 'last held', fmt: fmtTime },
       { key: 'passes', num: true },
-    ], 'Nothing held by a window, the digest or the flapping hold in the time range.'),
+    ], 'Nothing held by a window, the digest, the flapping hold or an anchor alert in the time range.'),
     el('h3', {}, 'Flapping now'),
     grid(flapping, [
       { key: 'flapping_since', label: 'flapping since', fmt: fmtTime },

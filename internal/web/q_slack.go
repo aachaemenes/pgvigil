@@ -162,9 +162,11 @@ func (s *Server) slackClick(d *alerts.SlackDoor, c *alerts.SlackClick) {
 		refuse("The pgvigil user mapped to you is disabled or gone.")
 		return
 	}
+	// the clicked post is the occurrence's post, or one of its earlier ones (a reply Slack refused opened a new post:
+	// the first post's buttons still act while the occurrence stands)
 	var first time.Time
 	if err := s.pool.QueryRow(ctx, `SELECT first_sent_at FROM pgvigil.alert_threads
-	     WHERE channel = $1 AND finding_key = $2 AND slack_channel = $3 AND ts = $4`,
+	     WHERE channel = $1 AND finding_key = $2 AND slack_channel = $3 AND ($4 = ts OR $4 = ANY (older_ts))`,
 		c.Channel, c.FindingKey, c.SlackChannel, c.MessageTS).Scan(&first); err != nil {
 		refuse("pgvigil does not know this post's alert (or its record is gone): open it in pgvigil.")
 		return

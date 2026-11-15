@@ -23,11 +23,14 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // SlackBodyMax caps a click's body before the signature is checked: a block_actions payload carries the whole message
@@ -45,7 +48,7 @@ var (
 	slackTeamRE = regexp.MustCompile(`^T[A-Z0-9]{8,20}$`)
 	slackEntRE  = regexp.MustCompile(`^E[A-Z0-9]{8,20}$`)
 	slackUserRE = regexp.MustCompile(`^[UW][A-Z0-9]{8,20}$`)
-	pgvUserRE   = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,64}$`)
+	pgvUserRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9._@-]{0,63}$`) // the store's ui_users.username check (0015)
 )
 
 // slackDoorSwitch is the door's switch as this package reads it (config.Doors carries the same key for task 330).
@@ -82,9 +85,13 @@ func (a *SlackApp) check() error {
 		if !slackUserRE.MatchString(su) {
 			return fmt.Errorf("slack_apps %s: users: %q is not a Slack user id (U0123ABCD): map by id, never by name", a.AppID, su)
 		}
-		if !pgvUserRE.MatchString(pu) {
-			return fmt.Errorf("slack_apps %s: users: %s maps to %q, not a pgvigil user name", a.AppID, su, pu)
+		// a pgvigil user name as the UI login reads it (lowercased), so an acknowledgement is written under the
+		// one spelling the store holds
+		lc := strings.ToLower(strings.TrimSpace(pu))
+		if !pgvUserRE.MatchString(lc) {
+			return fmt.Errorf("slack_apps %s: users: %s maps to %q, not a pgvigil user name (a-z, 0-9 and . _ @ -, a letter or digit first)", a.AppID, su, pu)
 		}
+		a.Users[su] = lc
 	}
 	return nil
 }
@@ -119,13 +126,47 @@ type SlackDoor struct {
 	apps   []slackDoorApp
 	global *bucket // every request, before its body is read
 	mu     sync.Mutex
-	users  map[string]*bucket // per workspace and Slack user, after verification
-	seen   map[string]time.Time
+	users  map[string]*bucket   // per workspace and Slack user, after verification
+	seen   map[string]time.Time // a taken signature: until when its timestamp is still inside the window
 }
 
 type slackDoorApp struct {
 	SlackApp
 	secret []byte
+}
+
+// LoadSlackDoor reads only the door's part of a configuration file - doors.slack_actions and slack_apps:, never the
+// channels (their tokens are not on serve) - and returns the door with its apps' signing secrets read, or nil, nil
+// while the switch is off. With the switch on, any fault (an app's entry, a secret, no app listed) is an error:
+// serve refuses to start with it, rather than leave the door off while the collector posts the buttons.
+func LoadSlackDoor(path string) (*SlackDoor, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("doors.slack_actions: %w", err)
+	}
+	return ParseSlackDoor(b)
+}
+
+// ParseSlackDoor is LoadSlackDoor on a configuration file's text.
+func ParseSlackDoor(b []byte) (*SlackDoor, error) {
+	var part struct {
+		Doors     slackDoorSwitch `yaml:"doors"`
+		SlackApps []SlackApp      `yaml:"slack_apps"`
+	}
+	if err := yaml.Unmarshal(b, &part); err != nil {
+		return nil, fmt.Errorf("doors.slack_actions: the file: %w", err)
+	}
+	if !part.Doors.SlackActions {
+		return nil, nil
+	}
+	if len(part.SlackApps) == 0 {
+		return nil, errors.New("doors.slack_actions is on but slack_apps lists no app: list the app (its id, workspace, signing secret and users) or turn the door off")
+	}
+	s := Settings{Doors: part.Doors, SlackApps: part.SlackApps}
+	if err := checkSlackDoor(&s); err != nil {
+		return nil, fmt.Errorf("doors.slack_actions: %w", err)
+	}
+	return s.SlackDoor()
 }
 
 // SlackDoor reads the door's secrets (serve only; the collector never reads them). Off = nil, nil.
@@ -180,7 +221,8 @@ func malformed(why string) error    { return &SlackRefusal{Status: http.StatusBa
 func (d *SlackDoor) Allow(now time.Time) bool { return d.global.take(now) }
 
 // Verify checks one request and reads its click; raw is the whole body (the caller read at most SlackBodyMax + 1
-// bytes and refused more). A replay of a signature seen in the last 6 minutes is refused (409: nothing written twice).
+// bytes and refused more). A replay of a signature seen while its timestamp is still taken is refused (409: nothing
+// written twice): a signature is kept until its own timestamp is 300 s past, however far serve's clock is from Slack's.
 func (d *SlackDoor) Verify(h http.Header, raw []byte, now time.Time) (*SlackClick, error) {
 	if len(raw) > SlackBodyMax {
 		return nil, malformed("the body is over the cap")
@@ -211,13 +253,13 @@ func (d *SlackDoor) Verify(h http.Header, raw []byte, now time.Time) (*SlackClic
 		return nil, unauthorized("no app's signature matches")
 	}
 	d.mu.Lock()
-	for k, at := range d.seen {
-		if now.Sub(at) > 6*time.Minute {
+	for k, until := range d.seen {
+		if now.After(until) {
 			delete(d.seen, k)
 		}
 	}
 	_, replay := d.seen[sig]
-	d.seen[sig] = now
+	d.seen[sig] = time.Unix(ts+301, 0) // the window above takes this timestamp until ts + 300 s
 	d.mu.Unlock()
 	if replay {
 		return nil, &SlackRefusal{Status: http.StatusConflict, Why: "a replay of a request already taken"}

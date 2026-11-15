@@ -92,7 +92,10 @@ renamed, so a reader never sees half of one. A file is one JSON object: `sender`
 `sent_at` (UTC, to the millisecond), then the alert's own fields - `event`, `finding_key`, `instance_id`, `instance`,
 `severity`, `source` (the finding's source: a check such as `pgvigil host`, `alert rule`, or `pgvigil repository`),
 `setting`, `value`, `detail`, `suggested`, `finding_at`, `first_sent_at`, `sent_before` and `url` (`instance_id`,
-`detail`, `suggested`, `finding_at`, `first_sent_at` and `url` are left out when empty).
+`detail`, `suggested`, `finding_at`, `first_sent_at` and `url` are left out when empty). Changed after v0.3.0: a file
+of v0.3.0 carried `"source": "pgvigil"` on every alert (the envelope's constant hid the alert's own source); `source`
+is now the alert's own, and the constant moved to `sender`. A reader that matched `"source": "pgvigil"` to know a
+pgvigil file reads `sender` instead.
 
 A send that fails moves nothing: the next pass owes the same alerts. Inside `pgvigil run`, a failing channel is tried
 again after 1, 2, 4, 8, 16 and then every 30 minutes, and the other channels go on. Delivery is **at least once**: a
@@ -405,8 +408,10 @@ alerts:
 ```
 
 With the door on, a Slack bot channel's posts carry *Acknowledge* and *Mute 1 h* on each new or escalated alert. serve
-mounts `POST /api/slack/actions` (404 while the door is off), reads only the listed apps' signing secrets (never a
-channel's token), and refuses to start under `-no-login`. Each request is checked before anything in it is read: its
+mounts `POST /api/slack/actions` (404 while the door is off) and reads only the door's part of the file and the listed
+apps' signing secrets, never a channel's token: a serve host needs no bot token. With the switch on, serve refuses to
+start under `-no-login`, or with a fault in that part (an app's entry, a secret it cannot read, no app listed), and
+says which. Each request is checked before anything in it is read: its
 size, its form type, a timestamp within 5 minutes, and Slack's signature (HMAC-SHA256 over the raw body, compared in
 constant time) against the app's secret; then the payload's app and workspace must be that app's. A replayed request
 is not taken twice. A click is then refused, to the clicker alone, when the Slack user is not mapped, the mapped

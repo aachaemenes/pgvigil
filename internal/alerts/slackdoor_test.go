@@ -57,12 +57,51 @@ func TestSlackDoorSettings(t *testing.T) {
 		"no users":      strings.Replace(doorYAML, "users: {U0UUUUUUUU1: alice}", "users: {}", 1),
 		"twice":         strings.Replace(doorYAML, "A0AAAAAAAA2", "A0AAAAAAAA1", 1),
 		"bad team":      strings.Replace(doorYAML, "T0TTTTTTTT1", "workspace", 1),
+		"leading dot":   strings.Replace(doorYAML, "U0UUUUUUUU1: alice", "U0UUUUUUUU1: .alice", 1),
+		"leading at":    strings.Replace(doorYAML, "U0UUUUUUUU1: alice", "U0UUUUUUUU1: \"@alice\"", 1),
 	} {
 		if _, err := Parse([]byte(bad)); err == nil {
 			t.Errorf("%s: accepted", name)
 		} else if strings.Contains(err.Error(), "s3cr3t") {
 			t.Errorf("%s: the secret is in the error: %v", name, err)
 		}
+	}
+}
+
+// the K2-K5 review's finding 2: serve reads the door's part only - a file whose Slack bot channel's token is not on
+// this host still gives the door; the switch on with a fault is an error, off is nil
+func TestParseSlackDoorWithoutChannelToken(t *testing.T) {
+	doorEnv(t)
+	t.Setenv("PGV_TEST_SLACK", "") // the channels' bot token is not on this host
+	cfg := doorYAML
+	if _, err := Parse([]byte(cfg)); err == nil || !strings.Contains(err.Error(), "slack.bot_token") {
+		t.Fatalf("the whole file without the token (the old door start's read): %v", err)
+	}
+	d, err := ParseSlackDoor([]byte(cfg))
+	if err != nil || d == nil || strings.Join(d.AppIDs(), ",") != "A0AAAAAAAA1,A0AAAAAAAA2" {
+		t.Fatalf("the door without a channel token: %v %v", d, err)
+	}
+	if d, err := ParseSlackDoor([]byte(strings.Replace(cfg, "slack_actions: true", "slack_actions: false", 1))); d != nil || err != nil {
+		t.Errorf("off: %v %v", d, err)
+	}
+	if _, err := ParseSlackDoor([]byte(strings.Replace(cfg, "env:PGV_TEST_SIGN1", "s3cr3t-one", 1))); err == nil {
+		t.Error("an inline secret with the switch on: no error")
+	}
+	if _, err := ParseSlackDoor([]byte("doors: {slack_actions: true}\n")); err == nil {
+		t.Error("the switch on with no app: no error")
+	}
+}
+
+// the K2-K5 review's finding 13: a pgvigil user name is read as the UI login reads it (lowercased), so an
+// acknowledgement is written under the store's one spelling
+func TestSlackDoorUserLowercase(t *testing.T) {
+	doorEnv(t)
+	s, err := Parse([]byte(strings.Replace(doorYAML, "U0UUUUUUUU1: alice", "U0UUUUUUUU1: Alice", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := s.SlackApps[0].Users["U0UUUUUUUU1"]; u != "alice" {
+		t.Errorf("mapped to %q", u)
 	}
 }
 
@@ -112,6 +151,18 @@ func TestSlackDoorVerify(t *testing.T) {
 	}
 	if _, err := d.Verify(h, b, now); status(err) != http.StatusConflict {
 		t.Errorf("a replay: %v", err)
+	}
+	// the K2-K5 review's finding 14: serve's clock 250 s behind Slack's - the request's timestamp is taken until 550 s
+	// after it arrives, so its signature is kept that long (6 minutes would free it at 360 s)
+	h, b = signed(t, "s3cr3t-one", now.Unix()+250, click("A0AAAAAAAA1", "T0TTTTTTTT1", "U0UUUUUUUU1", "pgv_ack", "k9|sb"))
+	if _, err := d.Verify(h, b, now); err != nil {
+		t.Fatalf("a click 250 s ahead: %v", err)
+	}
+	if _, err := d.Verify(h, b, now.Add(400*time.Second)); status(err) != http.StatusConflict {
+		t.Errorf("its replay 400 s on: %v", err)
+	}
+	if _, err := d.Verify(h, b, now.Add(560*time.Second)); status(err) != http.StatusUnauthorized {
+		t.Errorf("its replay 560 s on (its timestamp 310 s past): %v", err)
 	}
 	// the second app's secret picks the second app; its user map applies
 	h, b = signed(t, "s3cr3t-two", now.Unix(), click("A0AAAAAAAA2", "T0TTTTTTTT2", "U0UUUUUUUU2", "pgv_mute1h", "k2|sb"))

@@ -662,6 +662,13 @@ type budgeted interface {
 	budget() int // bytes of alert lines one message may carry; 0 = no limit beyond maxPerMessage
 }
 
+// costed is a budgeted sender whose message grows by more than an alert's line: a Teams card carries each line
+// JSON-escaped (json.Marshal writes &, < and > as six bytes each) and its 'Open in pgvigil' button; lineCost is
+// what one alert adds to the message, in the budget's bytes.
+type costed interface {
+	lineCost(a Alert) int
+}
+
 // holding is a sender whose destination's answer can hold the channel across passes (Pushover's 429 until its reset,
 // another 4xx until the configuration changes): held reads the channel's newest attempt's error text, as the sender
 // wrote it, and says whether it holds at now and why. A Send test is never held, and one that goes through ends the hold.
@@ -998,6 +1005,10 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	if err := conn.QueryRow(ctx, `SELECT to_regclass('pgvigil.alert_anchor_checks') IS NOT NULL`).Scan(&anchors); err != nil {
 		return res, nil, err
 	}
+	// the Slack bot channels last: their calls are paced (at least 1 s apart), so a page owed to any other channel
+	// never waits behind their posts and replies
+	threaded := func(name string) bool { _, ok := byName[name].sender.(threader); return ok }
+	sort.SliceStable(order, func(i, j int) bool { return !threaded(order[i]) && threaded(order[j]) })
 	for _, name := range order {
 		c := byName[name]
 		if anchors {
@@ -1041,9 +1052,6 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 		if th, ok := c.sender.(threader); ok {
 			chErr, err := c.sendThreaded(ctx, conn, th, send, now, &res)
-			if err == nil && chErr == nil && anchors {
-				chErr, err = c.attachedNotices(ctx, conn, th, now, &res)
-			}
 			if err != nil {
 				return res, outcome, err
 			}
@@ -1054,8 +1062,12 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		if b, ok := c.sender.(budgeted); ok {
 			budget = b.budget()
 		}
+		var cost func(Alert) int
+		if cs, ok := c.sender.(costed); ok {
+			cost = cs.lineCost
+		}
 		var chErr error
-		for _, batch := range batchesWithin(send, c.sender.perAlert(), budget) {
+		for _, batch := range batchesCost(send, c.sender.perAlert(), budget, cost) {
 			sctx, cancel := context.WithTimeout(ctx, sendTimeout)
 			err := c.sender.send(sctx, Message{Channel: c.Name, SentAt: now.UTC(), Alerts: batch, Subject: c.subject(batch)})
 			cancel()
@@ -1088,6 +1100,22 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 		outcome[c.Name] = chErr
 	}
+	// the attached alerts' notices (task 403b K4) on every Slack bot channel that is not quiet, not held or backing
+	// off and did not just fail - whether or not it owed anything else this pass: an attached alert is held, so a pass
+	// whose only news on the channel is that alert owes it nothing. A notice that fails is told in the result only:
+	// it never backs off the channel (its pages would wait) and is tried again next pass.
+	if anchors {
+		for i := range all {
+			c := &all[i]
+			th, ok := c.sender.(threader)
+			if !ok || c.Quiet(now) || skipped[c.Name] || outcome[c.Name] != nil {
+				continue
+			}
+			if err := c.attachedNotices(ctx, conn, th, now, &res); err != nil {
+				return res, outcome, err
+			}
+		}
+	}
 	// the daily digests (digest.go): after the alerts, to every channel owed one that is not quiet, not backing off and
 	// did not just fail
 	if err := runDigests(ctx, conn, all, now, skipped, outcome, &res); err != nil {
@@ -1106,10 +1134,14 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 // recovery lists what was attached under that occurrence while it stood.
 func attachedLines(ctx context.Context, conn *pgxpool.Conn, channel string, owed []Alert, now time.Time) error {
 	var firing, resolved []string
+	critical := map[string]bool{} // a firing alert that is critical now: never held, whatever its anchor does
 	for _, a := range owed {
 		switch a.Event {
 		case "firing":
 			firing = append(firing, a.FindingKey)
+			if a.Severity == "critical" {
+				critical[a.FindingKey] = true
+			}
 		case "resolved":
 			resolved = append(resolved, a.FindingKey)
 		}
@@ -1139,7 +1171,10 @@ func attachedLines(ctx context.Context, conn *pgxpool.Conn, channel string, owed
 		}
 		if _, seen := released[key]; !seen && last.After(now.Add(-15*time.Minute)) {
 			why := "which no longer anchors it"
-			if cleared != nil {
+			switch {
+			case critical[key]:
+				why = "and is critical now (a critical alert is never held)"
+			case cleared != nil:
 				why = "which resolved " + cleared.UTC().Format("15:04") + " UTC"
 			}
 			released[key] = fmt.Sprintf("was attached to %s on %s, %s", aSet, aInst, why)
@@ -1167,19 +1202,22 @@ func attachedLines(ctx context.Context, conn *pgxpool.Conn, channel string, owed
 	return nil
 }
 
-// attachedNotices (task 403b K4) posts, on a Slack bot channel, one reply in the anchor's thread per alert attached
-// under it that was not shown yet (at most slackReplies a pass), and marks each shown (0154's alert_attached_noticed).
-// An anchor whose thread is not known shows nothing here: its recovery lists them.
-func (c *Channel) attachedNotices(ctx context.Context, conn *pgxpool.Conn, th threader, now time.Time, res *Result) (error, error) {
+// attachedNotices (task 403b K4) posts, on a Slack bot channel, one reply in the anchor's thread per alert held
+// attached under it this pass that was not shown yet (at most slackReplies a pass), and marks each shown (0154's
+// alert_attached_noticed). An anchor whose thread is not known shows nothing here: its recovery lists them. A reply
+// Slack refuses as a reply (the thread is locked or takes none) is marked shown too: the recovery still lists it. Any
+// other failure goes in the result's errors and ends the notices for this pass; it never counts as the channel's
+// failure. It returns an error only when the repository failed.
+func (c *Channel) attachedNotices(ctx context.Context, conn *pgxpool.Conn, th threader, now time.Time, res *Result) error {
 	rows, err := conn.Query(ctx, `SELECT d.finding_key, d.instance_id, coalesce(d.instance_name, ''), coalesce(d.severity, 'warning'),
 	       coalesce(d.source, ''), coalesce(d.setting, ''), coalesce(d.value, ''), coalesce(d.detail, ''), t.ts
 	  FROM pgvigil.alert_held d
 	  JOIN pgvigil.alert_threads t
 	    ON t.channel = d.channel AND t.finding_key = d.anchor_key AND t.first_sent_at = d.anchor_first_sent_at AND t.slack_channel = $2
 	 WHERE d.hold_kind = 'attached' AND d.channel = $1 AND d.noticed_at IS NULL AND d.last_at >= $3
-	 ORDER BY d.first_at LIMIT $4`, c.Name, th.slackChannel(), now.Add(-15*time.Minute), slackReplies)
+	 ORDER BY d.first_at LIMIT $4`, c.Name, th.slackChannel(), now, slackReplies)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	type notice struct {
 		a  Alert
@@ -1190,35 +1228,37 @@ func (c *Channel) attachedNotices(ctx context.Context, conn *pgxpool.Conn, th th
 		var n notice
 		if err := rows.Scan(&n.a.FindingKey, &n.a.InstanceID, &n.a.Instance, &n.a.Severity, &n.a.Source, &n.a.Setting, &n.a.Value, &n.a.Detail, &n.ts); err != nil {
 			rows.Close()
-			return nil, err
+			return err
 		}
 		n.a.Event = "attached"
 		ns = append(ns, n)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
 	var done []string
-	var sendErr error
 	for _, n := range ns {
 		m := Message{Channel: c.Name, SentAt: now.UTC(), Alerts: []Alert{n.a}, Subject: "pgvigil: attached under this alert (no page while it stands)"}
 		sctx, cancel := context.WithTimeout(ctx, sendTimeout)
 		err := th.reply(sctx, m, n.ts, false)
 		cancel()
 		if err != nil {
-			sendErr = err
 			res.Errors = append(res.Errors, c.Name+": an attached alert's reply: "+err.Error())
+			if threadRefused(err) {
+				done = append(done, n.a.FindingKey) // the thread takes no reply: shown by the anchor's recovery instead
+				continue
+			}
 			break
 		}
 		done = append(done, n.a.FindingKey)
 	}
 	if len(done) > 0 {
 		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pgvigil.alert_attached_noticed($1, $2, $3)`, now, c.Name, done); err != nil {
-			return sendErr, err
+			return err
 		}
 	}
-	return sendErr, nil
+	return nil
 }
 
 // threadKey names one occurrence's thread: its finding key and its first send.
@@ -1335,11 +1375,15 @@ func (c *Channel) sendThreaded(ctx context.Context, conn *pgxpool.Conn, th threa
 		m := Message{Channel: c.Name, SentAt: now.UTC(), Alerts: []Alert{r.a}, Subject: c.subject([]Alert{r.a})}
 		sctx, cancel := context.WithTimeout(ctx, sendTimeout)
 		err := th.reply(sctx, m, r.ts, r.a.Event == "escalated")
+		cancel()
 		ts := ""
 		if err != nil && threadRefused(err) {
-			ts, err = th.post(sctx, m) // the thread takes no reply: the alert opens a new one
+			// the thread takes no reply: the alert opens a new one, on its own time (the reply may have spent its
+			// own on Retry-After waits)
+			pctx, pcancel := context.WithTimeout(ctx, sendTimeout)
+			ts, err = th.post(pctx, m)
+			pcancel()
 		}
-		cancel()
 		if rerr := note(m.Alerts, err, ts); rerr != nil {
 			return nil, rerr
 		}
@@ -1367,6 +1411,14 @@ func batches(a []Alert, perAlert bool) [][]Alert { return batchesWithin(a, perAl
 // batchesWithin cuts the alerts into messages of at most maxPerMessage (1 for a per-alert sender) whose lines, one
 // newline each, stay within budget bytes (0 = no budget); a message always carries at least one alert.
 func batchesWithin(a []Alert, perAlert bool, budget int) [][]Alert {
+	return batchesCost(a, perAlert, budget, nil)
+}
+
+// batchesCost is batchesWithin with each alert costing cost(a) bytes of the budget (nil = its line and a newline).
+func batchesCost(a []Alert, perAlert bool, budget int, cost func(Alert) int) [][]Alert {
+	if cost == nil {
+		cost = func(x Alert) int { return len(x.Line()) + 1 }
+	}
 	n := maxPerMessage
 	if perAlert {
 		n = 1
@@ -1375,7 +1427,7 @@ func batchesWithin(a []Alert, perAlert bool, budget int) [][]Alert {
 	for len(a) > 0 {
 		k, used := 0, 0
 		for k < len(a) && k < n {
-			l := len(a[k].Line()) + 1
+			l := cost(a[k])
 			if budget > 0 && k > 0 && used+l > budget {
 				break
 			}

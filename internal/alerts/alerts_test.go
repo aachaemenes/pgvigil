@@ -441,7 +441,7 @@ func TestTeamsOpenButton(t *testing.T) {
 	for range maxPerMessage {
 		m = append(m, a)
 	}
-	parts := batchesWithin(m, false, ws.budget())
+	parts := batchesCost(m, false, ws.budget(), ws.lineCost)
 	if len(parts) < 2 {
 		t.Errorf("25 long alerts in %d card(s)", len(parts))
 	}
@@ -449,6 +449,24 @@ func TestTeamsOpenButton(t *testing.T) {
 		if b, _ := ws.payload(msg(p...)); len(b) > 24<<10 {
 			t.Errorf("card %d is %d bytes", i, len(b))
 		}
+	}
+	// the K2-K5 review's finding 16: lines full of SQL's <> (six bytes each once JSON-escaped) still make cards
+	// under 24 KB, and no alert is lost between them
+	sql := a
+	sql.Detail = strings.Repeat("a <> b AND c <> d ", 60)
+	m = m[:0]
+	for range maxPerMessage {
+		m = append(m, sql)
+	}
+	n := 0
+	for i, p := range batchesCost(m, false, ws.budget(), ws.lineCost) {
+		n += len(p)
+		if b, _ := ws.payload(msg(p...)); len(b) > 24<<10 {
+			t.Errorf("an escaped card %d is %d bytes (%d alerts)", i, len(b), len(p))
+		}
+	}
+	if n != len(m) {
+		t.Errorf("%d of %d alerts in the cards", n, len(m))
 	}
 }
 

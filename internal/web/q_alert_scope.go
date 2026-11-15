@@ -49,8 +49,15 @@ SELECT w.window_id, w.name, w.action, w.scope, w.scope_tags, w.instance_name, w.
 
 const sqlAlertHeld = `
 SELECT h.hold_kind, h.hold_id, h.hold_source, h.channel, h.finding_key, h.instance_name, h.severity, h.source, h.setting,
-       h.value, h.first_at, h.last_at, h.passes
+       h.value, h.first_at, h.last_at, h.passes, an.anchor
   FROM pgvigil.alert_held_all h
+  LEFT JOIN LATERAL (   -- an attached hold's anchor, as its alert reads (task 403b K4)
+        SELECT concat_ws(' on ', concat_ws(': ', st.source, st.setting), st.instance_name) AS anchor
+          FROM pgvigil.alert_held d
+          JOIN pgvigil.alert_state st
+            ON st.channel = d.channel AND st.finding_key = d.anchor_key AND st.first_sent_at = d.anchor_first_sent_at
+         WHERE h.hold_source = 'anchor' AND d.hold_kind = 'attached' AND d.hold_id = h.hold_id
+           AND d.channel = h.channel AND d.finding_key = h.finding_key) an ON true
  WHERE h.last_at >= $1 AND h.last_at <= $2
  ORDER BY h.last_at DESC
  LIMIT 1000`

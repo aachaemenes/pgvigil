@@ -213,6 +213,8 @@ BEGIN
     ALTER TYPE pgvigil.alert_hold_t ADD ATTRIBUTE anchor text;
   END IF;
 END $$;
+-- a hold is tested by its kind ((h).kind IS NULL = no hold): anchor is NULL on every hold but 'attached', so the row
+-- test 'h IS NOT NULL' is false for them and 'h IS NULL' false for every hold
 
 -- alert_hold (the one hold test) is defined after the rules part below: its flapping hold reads alert_rule_findings'
 -- mark. alert_mark is plpgsql and calls it at run time only.
@@ -224,6 +226,7 @@ CREATE OR REPLACE FUNCTION pgvigil.alert_mark(p_at timestamptz, p_channels jsonb
 RETURNS void LANGUAGE plpgsql SET jit = off AS $$
 DECLARE
   v_names text[] := ARRAY(SELECT e->>'name' FROM jsonb_array_elements(coalesce(p_channels, '[]'::jsonb)) e);
+  v_attach jsonb;
 BEGIN
   UPDATE pgvigil.alert_state s SET missing_since = p_at
    WHERE s.cleared_at IS NULL AND s.missing_since IS NULL AND s.channel = ANY (v_names)
@@ -236,11 +239,16 @@ BEGIN
    WHERE d.hold_kind = 'digest' AND d.missing_since IS NULL AND d.channel = ANY (v_names)
      AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = d.finding_key);
 
+  -- every hold but 'attached' first: an anchor counts only while it holds nothing this pass (alert_anchor reads
+  -- alert_held_all at p_at), and inside one statement the rows it writes are not seen. The alerts this first read
+  -- finds attached are kept in v_attach and judged again by the second statement, which sees this one's rows.
   WITH h AS MATERIALIZED (
-    SELECT x.channel, x.finding_key, x.instance_id, x.instance, x.severity, x.source, x.setting, x.value, x.detail,
+    SELECT x.channel, x.finding_key, x.instance_id, x.instance, x.tags, x.severity, x.source, x.setting, x.value, x.detail,
+           x.clear_after_secs, x.digest,
            (x.hold).kind AS kind, (x.hold).hold_id AS hold_id, (x.hold).via AS via, (x.hold).anchor AS anchor
       FROM (SELECT DISTINCT ON (c.name, f.finding_key) c.name AS channel, f.finding_key, f.instance_id, f.instance,
-                   f.severity, f.source, f.setting, f.value, f.detail,
+                   f.tags, f.severity, f.source, f.setting, f.value, f.detail, c.clear_after_secs,
+                   coalesce(c.digest, false) AS digest,
                    pgvigil.alert_hold(p_at, c.name, f.instance, f.tags, f.finding_key, f.source, f.setting, f.value,
                                       f.severity, c.clear_after_secs, coalesce(c.digest, false)) AS hold
               FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
@@ -254,7 +262,8 @@ BEGIN
                -- never holds a repository-wide alert: alert_window_matches)
                AND NOT (f.source = 'pgvigil repository' AND f.setting = 'alert channel failing' AND f.value = c.name)
              ORDER BY c.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC) x
-     WHERE x.hold IS NOT NULL
+     WHERE (x.hold).kind IS NOT NULL   -- never 'x.hold IS NOT NULL': a row is NOT NULL only when every field is, and
+                                       -- a hold's anchor is NULL but an attached one's
   ), a AS (
     INSERT INTO pgvigil.ack_suppressed AS s (ack_id, channel, finding_key, instance_id, instance_name, severity, source,
                                              setting, value, first_at, last_at, passes)
@@ -262,17 +271,43 @@ BEGIN
       FROM h WHERE h.via = 'ack'
     ON CONFLICT (ack_id, channel, finding_key) DO UPDATE SET last_at = EXCLUDED.last_at, passes = s.passes + 1,
       severity = EXCLUDED.severity, value = EXCLUDED.value
+  ), w AS (
+    INSERT INTO pgvigil.alert_held AS y (hold_kind, hold_id, channel, finding_key, instance_id, instance_name, severity,
+                                         source, setting, value, detail, first_at, last_at, passes)
+    SELECT h.kind, h.hold_id, h.channel, h.finding_key, h.instance_id, h.instance, h.severity, h.source, h.setting,
+           h.value, h.detail, p_at, p_at, 1
+      FROM h WHERE h.via NOT IN ('ack', 'anchor')
+    ON CONFLICT (hold_kind, hold_id, channel, finding_key) DO UPDATE SET last_at = EXCLUDED.last_at,
+      passes = y.passes + 1, severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail,
+      missing_since = NULL
+  )
+  SELECT coalesce(jsonb_agg(jsonb_build_object('channel', h.channel, 'finding_key', h.finding_key,
+           'instance_id', h.instance_id, 'instance', h.instance, 'tags', h.tags, 'severity', h.severity,
+           'source', h.source, 'setting', h.setting, 'value', h.value, 'detail', h.detail,
+           'clear_after_secs', h.clear_after_secs, 'digest', h.digest)), '[]'::jsonb)
+    INTO v_attach
+    FROM h WHERE h.via = 'anchor';
+
+  -- then 'attached', judged again now that this pass's other holds are written (an anchor muted or in a window this
+  -- pass anchors nothing). A hold is one anchor post's (hold_id: its first send): two anchors sent in one post share
+  -- it, and the row names the anchor that holds it now.
+  WITH x AS MATERIALIZED (
+    SELECT c.*, pgvigil.alert_hold(p_at, c.channel, c.instance, c.tags, c.finding_key, c.source, c.setting, c.value,
+                                   c.severity, c.clear_after_secs, c.digest) AS hold
+      FROM jsonb_to_recordset(v_attach)
+           AS c(channel text, finding_key text, instance_id int, instance text, tags text[], severity text, source text,
+                setting text, value text, detail text, clear_after_secs int, digest boolean)
   )
   INSERT INTO pgvigil.alert_held AS y (hold_kind, hold_id, channel, finding_key, instance_id, instance_name, severity,
                                        source, setting, value, detail, first_at, last_at, passes, anchor_key,
                                        anchor_first_sent_at)
-  SELECT h.kind, h.hold_id, h.channel, h.finding_key, h.instance_id, h.instance, h.severity, h.source, h.setting,
-         h.value, h.detail, p_at, p_at, 1, h.anchor,
-         CASE WHEN h.kind = 'attached' THEN timestamptz 'epoch' + h.hold_id * interval '1 microsecond' END
-    FROM h WHERE h.via <> 'ack'
+  SELECT (x.hold).kind, (x.hold).hold_id, x.channel, x.finding_key, x.instance_id, x.instance, x.severity, x.source,
+         x.setting, x.value, x.detail, p_at, p_at, 1, (x.hold).anchor,
+         timestamptz 'epoch' + (x.hold).hold_id * interval '1 microsecond'
+    FROM x WHERE (x.hold).via = 'anchor'
   ON CONFLICT (hold_kind, hold_id, channel, finding_key) DO UPDATE SET last_at = EXCLUDED.last_at,
     passes = y.passes + 1, severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail,
-    missing_since = NULL;
+    missing_since = NULL, anchor_key = EXCLUDED.anchor_key, anchor_first_sent_at = EXCLUDED.anchor_first_sent_at;
 END $$;
 
 -- import_alert_window: one attempt from the UI (the actions door's audit login; minimum role operator, B24f).
@@ -1001,28 +1036,35 @@ RETURNS text LANGUAGE sql STABLE AS $$
 $$;
 
 -- alert_anchor: the anchor one alert on one channel attaches to at p_at, or none - an alert open on the channel on the
--- same instance, of an anchor kind, that counts: no hold on it this pass (alert_mark logged none at p_at), not a
--- flapping rule's. The alert attaches when it is not critical, not an anchor itself, and either is attached under that
--- very occurrence already, or was never sent on the channel while the anchor's first send is at most 60 minutes old.
+-- same instance, not a repository-wide one's, that counts: no hold on it this pass (alert_mark logged none at p_at:
+-- it writes the other holds before the attached ones), not a flapping rule's. The alert attaches when it is not
+-- critical, not repository-wide, not an anchor itself and was never sent on the channel (no open occurrence there: an
+-- alert that went out is never attached again), and either the anchor is of an anchor kind and its first send is at
+-- most 60 minutes old, or the alert is attached under that anchor post already (hold_id: two anchors sent in one post
+-- share it, so the other still holds it when one resolves) and the anchor is still the one it sits under or is of an
+-- anchor kind. A rule anchor whose rule stopped firing keeps what sits under it until its recovery: alert_anchor_kind
+-- finds a rule anchor only while it fires.
 CREATE OR REPLACE FUNCTION pgvigil.alert_anchor(p_at timestamptz, p_channel text, p_instance text, p_finding_key text,
                                                 p_source text, p_setting text, p_severity text)
 RETURNS TABLE (anchor_key text, anchor_first timestamptz) LANGUAGE sql STABLE AS $$
   SELECT s.finding_key, s.first_sent_at
     FROM pgvigil.alert_state s
-   WHERE p_severity IS DISTINCT FROM 'critical'
+   WHERE p_severity IS DISTINCT FROM 'critical' AND p_source IS DISTINCT FROM 'pgvigil repository'
      AND s.channel = p_channel AND s.cleared_at IS NULL AND s.instance_name = p_instance AND s.finding_key <> p_finding_key
+     AND s.source IS DISTINCT FROM 'pgvigil repository'
      AND pgvigil.alert_anchor_kind(p_finding_key, p_source, p_setting) IS NULL
-     AND pgvigil.alert_anchor_kind(s.finding_key, s.source, s.setting) IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_state st
+                      WHERE st.channel = p_channel AND st.finding_key = p_finding_key AND st.cleared_at IS NULL)
      AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_held_all h WHERE h.channel = p_channel AND h.finding_key = s.finding_key AND h.last_at >= p_at)
      AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_rule_findings y
                       WHERE s.source = 'alert rule' AND y.flapping_since IS NOT NULL
                         AND pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) = s.finding_key)
-     AND (EXISTS (SELECT 1 FROM pgvigil.alert_held d
-                   WHERE d.hold_kind = 'attached' AND d.channel = p_channel AND d.finding_key = p_finding_key
-                     AND d.anchor_key = s.finding_key AND d.anchor_first_sent_at = s.first_sent_at)
-          OR (s.first_sent_at >= p_at - interval '60 minutes'
-              AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_state st
-                               WHERE st.channel = p_channel AND st.finding_key = p_finding_key AND st.cleared_at IS NULL)))
+     AND ((s.first_sent_at >= p_at - interval '60 minutes'
+           AND pgvigil.alert_anchor_kind(s.finding_key, s.source, s.setting) IS NOT NULL)
+          OR EXISTS (SELECT 1 FROM pgvigil.alert_held d
+                      WHERE d.hold_kind = 'attached' AND d.channel = p_channel AND d.finding_key = p_finding_key
+                        AND d.anchor_first_sent_at = s.first_sent_at
+                        AND (d.anchor_key = s.finding_key OR pgvigil.alert_anchor_kind(s.finding_key, s.source, s.setting) IS NOT NULL)))
    ORDER BY s.first_sent_at DESC, s.finding_key
    LIMIT 1
 $$;
@@ -1306,13 +1348,15 @@ WITH f AS MATERIALIZED (   -- the failing channels: three failed attempts in a r
                               WHERE b.channel = c.name AND b.snapshot_at > m.snapshot_at
                                 AND b.outcome IN ('failed', 'refused') AND b.keys <> '{}')) h ON true
    WHERE c.is_configured AND ((l.n = 3 AND l.all_failed) OR h.held_at IS NOT NULL)
+), ck AS MATERIALIZED (   -- the critical findings' keys, read once (and only when a channel is failing: a CTE is
+                          -- read as its rows are asked for)
+  SELECT pgvigil.alert_key(cf.instance_id, cf.source, cf.setting, cf.value) AS key
+    FROM (SELECT f2.instance_id, f2.source, f2.setting, f2.value FROM pgvigil.findings f2 WHERE f2.severity = 'critical'
+          UNION ALL
+          SELECT r.instance_id, r.source, r.setting, r.value FROM pgvigil.alert_rule_findings r WHERE r.severity = 'critical') cf
 )
 SELECT NULL::int AS instance_id,
-       CASE WHEN EXISTS (SELECT 1
-                           FROM (SELECT f2.instance_id, f2.source, f2.setting, f2.value FROM pgvigil.findings f2 WHERE f2.severity = 'critical'
-                                 UNION ALL
-                                 SELECT r.instance_id, r.source, r.setting, r.value FROM pgvigil.alert_rule_findings r WHERE r.severity = 'critical') cf
-                          WHERE pgvigil.alert_key(cf.instance_id, cf.source, cf.setting, cf.value) = ANY (kk.keys))
+       CASE WHEN EXISTS (SELECT 1 FROM ck WHERE ck.key = ANY (kk.keys))
             THEN 'critical' ELSE 'warning' END::text AS severity,
        'alert channel failing'::text AS setting, f.name AS value,
        'fix the destination or its credentials (the Alerts page lists the channel''s errors), then press its Send test: a test that goes through ends this alert; alerts owed to it are sent once it answers'::text AS suggested,
@@ -1398,6 +1442,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.alert_threads (
   slack_channel text NOT NULL,
   ts            text NOT NULL,
   posted_at     timestamptz NOT NULL,
+  older_ts      text[] NOT NULL DEFAULT '{}',   -- the occurrence's earlier posts in this Slack channel, newest first (at
+                                                -- most 10): their buttons still act while the occurrence stands
   PRIMARY KEY (channel, finding_key, first_sent_at)
 );
 GRANT SELECT, INSERT, UPDATE ON pgvigil.alert_threads TO pgvigil_alerter;
@@ -1416,7 +1462,10 @@ BEGIN
     JOIN pgvigil.alert_state s ON s.channel = p_payload->>'channel' AND s.finding_key = x.finding_key AND s.cleared_at IS NULL
    WHERE x.ts IS NOT NULL AND x.slack_channel IS NOT NULL
   ON CONFLICT (channel, finding_key, first_sent_at) DO UPDATE
-     SET slack_channel = EXCLUDED.slack_channel, ts = EXCLUDED.ts, posted_at = EXCLUDED.posted_at;
+     SET slack_channel = EXCLUDED.slack_channel, ts = EXCLUDED.ts, posted_at = EXCLUDED.posted_at,
+         older_ts = CASE WHEN t.slack_channel <> EXCLUDED.slack_channel THEN '{}'::text[]
+                         WHEN t.ts = EXCLUDED.ts THEN t.older_ts
+                         ELSE (ARRAY[t.ts] || t.older_ts)[1:10] END;
 END $$;
 GRANT EXECUTE ON FUNCTION pgvigil.alert_record_threads(timestamptz, jsonb, jsonb) TO pgvigil_alerter;
 
