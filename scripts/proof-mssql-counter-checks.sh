@@ -107,9 +107,11 @@
 #     counted point 0, state ok, the left-out point as recomputed. T3c under
 #     'azdata' 10 'create table #sver ...' batches (the marker after the statement) left out as Azure Data Studio
 #     metadata, 10 query-editor batches counted; the counted point as recomputed. The XE API's attentions carry
-#     left_out with those reasons. Every live cancel under 1 ms came with its statement and counts (a cancel with no
-#     statement is proven on the function and the import only, T0 / T6). T3n (the lead's 11-15 F1 FLOOR EDGE (1), the
-#     red row: on ccbed981 the 10 read 'under 1 ms'): the same server read as a second instance chkboxnone under
+#     left_out with those reasons. Every live cancel under 1 ms of the proof's own batches came with its statement and is
+#     not left out by the 1 ms floor; another cancel under 1 ms on the server is printed with its reasons, not judged (a
+#     cancel with no statement is proven on the function and the import only, T0 / T6). T3n (the lead's 11-15 F1 FLOOR EDGE (1), the
+#     red row: on ccbed981 the four-argument call fails, no such function; through its three arguments the 10 would read
+#     'under 1 ms'): the same server read as a second instance chkboxnone under
 #     query_text none (its own config file), 10 cancels under 'proof-none': 10 rows, no statement stored, has_text on
 #     every one, each counted; a run with no cancel under 1 ms says 'NOT PROVEN live' for the floor's edge. The reads table's cost printed after T3 (F1 part B, finding 2; the design's F3): its rows, bytes a
 #     row (pg_column_size), the table with its indexes, the attentions' read index over its partitions, and bytes a
@@ -931,13 +933,17 @@ CS=$(pq "SELECT count(*) || ' reads, ' || coalesce(round(avg(pg_column_size(a.*)
 CT=$(pq "SELECT pg_size_pretty(pg_total_relation_size('pgvigil.mssql_attention_reads')) || ' the reads table with its indexes; '
   || pg_size_pretty(coalesce((SELECT sum(pg_relation_size(t.relid)) FROM pg_partition_tree('pgvigil.mssql_attentions_read_idx') t), 0)) || ' the attentions'' read index over its partitions'")
 echo "   the cost: $CS; $CT"
-# every live cancel under 1 ms here came with its statement (the proof's own batches): each counts unless a name or a
-# shape leaves it out; one with no statement is the function's and the import's (T0, T6)
+# every live cancel under 1 ms of the proof's own batches (their marker in the statement) came with its statement: none
+# reads no statement, none is left out by the 1 ms floor (a name or a shape may leave it out); one with no statement is
+# the function's and the import's (T0, T6). Any other cancel under 1 ms on the server (pgvigil's own reads, a cancel of
+# a command already done) is printed with its reasons, not judged: the floor exists for that noise (f1floor SHOULD-1)
 NS1=$(pq "SELECT count(*) || '|' || count(*) FILTER (WHERE has_text IS NOT TRUE) || '|' || count(*) FILTER (WHERE pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text) = 'under 1 ms')
-  FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000")
-echo "   T3: live cancels under 1 ms, with no statement sent, left out as under 1 ms: $NS1"
+  FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000 AND statement LIKE '%pgvchk-t3%'")
+NO1=$(pq "SELECT count(*) || coalesce(' (' || string_agg(DISTINCT coalesce(left(has_text::text, 1), '-') || ':' || coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text), 'counts'), ', ') || ')', '')
+  FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000 AND coalesce(statement, '') NOT LIKE '%pgvchk-t3%'")
+echo "   T3: the proof's own live cancels under 1 ms, with no statement sent, left out as under 1 ms: $NS1; other cancels under 1 ms (printed, not judged): $NO1"
 [[ "${NS1#*|}" == "0|0" ]] || fail "T3: a live cancel with its statement read as no statement or left out under 1 ms [$NS1]"
-[[ "${NS1%%|*}" -gt 0 ]] && ok "T3: ${NS1%%|*} live cancel(s) under 1 ms with their statement, each counted (none left out by the floor)" \
+[[ "${NS1%%|*}" -gt 0 ]] && ok "T3: ${NS1%%|*} of the proof's live cancel(s) under 1 ms with their statement, none left out by the 1 ms floor" \
   || echo "NOT PROVEN live: no cancel under 1 ms (the floor is proven on the function and the import, T0 / T6)"
 curl -fs -m 20 "http://127.0.0.1:$PORT/api/mssql/xe?instance=$SB&part=attentions&from=$(urlq "$(date -u -d '-30 min' +%Y-%m-%dT%H:%M:%SZ)")&to=$(urlq "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" > "$TMPD/att.json" \
   || fail "T3: GET /api/mssql/xe?part=attentions: $(tail -3 "$TMPD/serve.log")"

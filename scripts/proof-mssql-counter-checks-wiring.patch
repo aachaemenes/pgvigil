@@ -601,7 +601,7 @@ index 87040eb5..ce3181bc 100644
 +        + 'The statement is what was running; the time shown is how long the interrupt itself took, not how long the request had run. '
 +        + '\'left out\' names why an attention is not in the client timeouts rate (Metrics, Extended Events): SSMS IntelliSense, the VS Code '
 +        + 'mssql metadata connections, a cancel under 1 ms that came with no statement (a command that had already finished), Azure Data Studio\'s '
-+        + 'metadata statements, pgvigil\'s own reads; a blank one counts. A real timeout usually takes under 1 ms to interrupt too: it counts by its statement.'),
++        + 'metadata statements, pgvigil\'s own reads; a blank one counts. A real timeout usually takes under 1 ms to interrupt too: it counts when the server sent its statement (recorded even when none is stored).'),
        grid(rowsOf(d.attentions), attentionCols, 'No attention in this window.'));
      sec.append(att);
    } catch (e) {

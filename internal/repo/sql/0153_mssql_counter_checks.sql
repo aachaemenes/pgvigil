@@ -119,7 +119,8 @@ SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.nam
 -- rate rounded to 2 places as PerformanceMonitor rounds it: 9.995 reads 10.00 and fires); the
 -- rate is PerformanceMonitor's (the event_counter's change scaled by the stored share, so a ring buffer that dropped
 -- events between reads still counts them; missed_events keeps the count per read); the floors only (PerformanceMonitor's 3 x / 10 x a server's p99.9 needs a baseline the
--- rule engine has not); pgvigil's own reads are left out.
+-- rule engine has not); pgvigil's own reads are left out; the 1 ms floor (#7061) only for an attention that came with no
+-- statement (has_text not true): real client timeouts took 255-713 us to interrupt on the box (402full3) and carried theirs.
 SET LOCAL lock_timeout = '20s';
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_attention_reads (
@@ -180,7 +181,8 @@ BEGIN
      AND a.snapshot_at = p_snapshot_at;
 END $$;
 
--- the three-argument rule of an earlier build of this file (a sandbox that ran it); nothing else calls it
+-- the three-argument rule of an earlier build of this file: only a hand run of this file over that build meets it (pgvigil
+-- migrate never runs a recorded 0153 again, repo.go); nothing else calls it
 DROP FUNCTION IF EXISTS pgvigil.mssql_attention_left_out(text, text, bigint);
 
 CREATE OR REPLACE FUNCTION pgvigil.mssql_attention_left_out(p_program text, p_statement text, p_interrupt_us bigint,
