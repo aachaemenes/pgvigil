@@ -238,6 +238,12 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
 
+## SQL Server schema history (mssql_schema)
+
+A SQL Server instance's `mssql_schema: {databases: [...]}` turns the schema history on for those databases (`*` every
+user database, a name that one, `-name` leaves one out); without it the collection `mssql_schema` is off. What it
+reads and keeps, and the rights it needs: [schema snapshots, SQL Server](schema.md#sql-server-mssql_schema).
+
 ## The repository's own sessions run without jit
 
 Every `pgvigil migrate` (and so `install -upgrade` and `demo`) sets `jit = off` on the repository database

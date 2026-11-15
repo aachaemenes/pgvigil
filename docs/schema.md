@@ -154,6 +154,60 @@ under every policy.
 - **schema: a definition changed** (info): how many objects were added and how many changed, and the newest change.
   A dropped partition (a retention job's routine) is counted here, not in the warning.
 
+## SQL Server (mssql_schema)
+
+The SQL Server collection **mssql_schema** keeps the same history for the databases a SQL Server instance names, in
+the same tables, on the same Schema tab (an instance's Configuration row). It is off until the instance names its
+databases in `pgvigil.yaml`:
+
+```yaml
+instances:
+  - name: erp01
+    engine: sqlserver
+    mssql_schema:
+      databases: ['*', '-scratch']   # every user database but scratch; or a list of names
+```
+
+`*` is every user database, a name is that database, `-name` leaves one out (case ignored). Nothing is created on the
+server. The databases of an availability group's secondary replica, an offline or restoring database are kept as
+they were (their primary or their return is read); a database the login cannot enter is kept and said so.
+
+**What is kept.** One row per object: schemas; tables (temporal and history tables, memory-optimized with its
+durability, lock escalation, the partition scheme and column), each column (its id, type, nullability, identity,
+computed text, collation, sparse), each index (type, unique, key columns in order, included columns, filter, data
+space), each constraint (primary key, unique, foreign key with its columns and actions, check, default) and each DML
+trigger as its own row with its table as parent; views; procedures, functions and triggers (their parameters,
+EXECUTE AS, SCHEMABINDING, ANSI_NULLS and QUOTED_IDENTIFIER, encryption, a CLR method); synonyms, sequences and user
+types. Owners are kept, permissions are not.
+
+**A module's body** is kept as **text** where the instance's `query_text` is `full` (the configuration's default),
+with a password in it masked as the job and audit texts are (`PASSWORD = '...'`, `@...pwd`, `Pwd=`), and as
+`body sha256:<16 hex>` where it is `normalized` or `none`: the Schema tab then shows that a body changed, not how. A
+view's text is kept under every policy. The object's hash is taken over the body's SHA-256, never its text, so a
+change of `query_text` (or of a masked password) is never recorded as a schema change. A definition is stored up to
+20,000 characters; a change past that point is still found.
+
+**When a database is read.** Every 15 minutes a pass reads, oldest first and within 5 minutes (120 seconds a
+database), the databases that are due: never read, another database on a reused id, a restore over it (msdb's restore
+history), a `CREATE`, `ALTER` or `DROP` the default trace's reader (`mssql_defaulttrace`) stored since its last read,
+a gap the reader reported, a read that met a change halfway, and the daily read of every database. A database is read
+whole: the default trace keeps neither the schema nor the id of an object. Where there is no default trace to trust -
+Azure SQL Database, a server that switched it off, a login without ALTER TRACE, a reader that is failing or behind -
+changes are found at the daily read alone, and the Schema tab says so with the reason and how old the oldest read is.
+
+**Who made a change** is the default trace's login, host and program for the object's name (or its table's) between
+the two reads. A name two schemas share, or several statements in the interval, list every candidate with the words
+"matched by name"; a change no trace row fits says so.
+
+**Limits.** A read runs under READ COMMITTED with a 5-second lock timeout, never uncommitted; a change that lands
+during the read leaves it unstored (read again next pass). A database without VIEW DEFINITION for the login is "not
+readable" and records no change. Over 10,000 tables and views, or over 160 MB of definitions even with the bodies as
+hashes, a database is not snapshotted and its stored snapshot is kept. An owner change (the default trace's event
+153, which the reader leaves out) is found at the daily read. SQL Server 2016 or later.
+
+**Rights**: VIEW ANY DEFINITION (or VIEW DEFINITION in each database), CONNECT ANY DATABASE (or a user in each), SELECT
+on `msdb.dbo.restorehistory`; ALTER TRACE for the default trace's reader.
+
 ## The repository (migration 0058)
 
 | Table / function                                  | Holds                                                                           |
@@ -165,5 +219,12 @@ under every policy.
 | `import_schema(i, at, payload)`                   | the collector's import: the diff, the snapshot, the log rows, the cursor         |
 | `schema_changes_window(i, from, to, dbid)`        | the changes of a window (2,000 newest), each with its matched statement          |
 | `schema_findings`                                 | the two findings above                                                           |
+| `mssql_schema_dbs` (0267)                         | SQL Server: each database the collection has seen - its id, name, create date, newest restore, the last pass's state and note, `read_at` (the server's UTC clock before its last whole read) |
+| `import_mssql_schema(i, at, payload)` (0267)      | SQL Server's import: another database on a reused id becomes a new baseline (a restore, a rename keep the history), then `import_schema` |
+| `import_mssql_schema_due(i, at, payload)` (0267)  | which databases a pass reads whole, and why                                      |
+| `mssql_schema_changes_window(i, from, to, dbid)` (0267) | SQL Server's changes of a window, each with the default trace's candidates |
+
+Since 0267 a database gone from a read takes its objects with it (they were left present before, on both engines),
+so purge removes them with the database.
 
 A late import (a one-off `collect` that finishes after the daemon's newer read) changes nothing.
