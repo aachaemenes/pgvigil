@@ -15,6 +15,12 @@
 --                         a partner change on the same link (a failover seen through the group's listener), a replication
 --                         state change; with the read that saw it and the read before (the window it happened in: the
 --                         view cannot tell a planned failover from a forced one).
+--   mssql_failover_groups  current; one row per logical server (its key: subscription/resource group/server) and failover
+--                         group, read from Azure Resource Manager by mssql_failover_groups (no T-SQL view shows a group),
+--                         whichever of the server's databases read it; mssql_failover_group_reads per server the newest read
+--                         (an older one, through another database and imported late, changes nothing).
+--   mssql_failover_group_events  a group added or removed, its primary moved (role), its policy or grace changed, its partners
+--                         changed, and each failover operation of the Activity Log once (planned or forced, its status).
 --   mssql_georepl_findings (instance_id, severity, check_name, object, at, detail), the engine's own view (0143 redefines
 --                         mssql_hadr_findings, so an arm there would collide; 0143's mssql_repl_findings is the precedent).
 --                         Its arm in pgvigil.findings, alerting and the Summary's HA cell, and the purge lines (the
@@ -175,6 +181,113 @@ BEGIN
       database_name = EXCLUDED.database_name, links = EXCLUDED.links;
 END $$;
 
+-- ---------------------------------------------------------------------------------------------------------------
+-- G2: failover groups (Azure Resource Manager)
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_failover_groups (
+  server_key         text NOT NULL,          -- subscription/resource group/server, lower case
+  group_name         text NOT NULL,
+  role               text,                   -- Primary | Secondary (this server's)
+  replication_state  text,
+  secondary_type     text,                   -- Geo | Standby (a Standby secondary takes no reads)
+  rw_policy          text,                   -- Manual | Automatic
+  grace_minutes      numeric,                -- failoverWithDataLossGracePeriodMinutes (Automatic only)
+  ro_policy          text,                   -- Disabled | Enabled
+  ro_target          text,
+  partners           jsonb NOT NULL DEFAULT '[]',   -- [{server, location, role}]
+  databases          jsonb NOT NULL DEFAULT '[]',   -- the databases' names
+  cloud              text,
+  read_by            int REFERENCES pgvigil.instances(instance_id) ON DELETE SET NULL,
+  snapshot_at        timestamptz NOT NULL,
+  PRIMARY KEY (server_key, group_name)
+);
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_failover_group_reads (
+  server_key   text PRIMARY KEY,
+  snapshot_at  timestamptz NOT NULL,
+  read_by      int REFERENCES pgvigil.instances(instance_id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_failover_group_events (
+  server_key    text NOT NULL,
+  group_name    text NOT NULL,
+  at            timestamptz NOT NULL,   -- the read that saw the change; an operation's own time for an Activity Log row
+  kind          text NOT NULL CHECK (kind IN ('added', 'removed', 'role', 'policy', 'partner', 'operation')),
+  instance_id   int REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,   -- the database whose read saw it
+  prev_read_at  timestamptz,
+  old_value     text,
+  new_value     text,
+  event_id      text,                   -- the Activity Log's eventDataId
+  PRIMARY KEY (server_key, group_name, at, kind)
+);
+CREATE INDEX IF NOT EXISTS mssql_failover_group_events_at_idx ON pgvigil.mssql_failover_group_events (at);
+
+-- payload (internal/mssql/failovergroups.go): one 'read' row (server_key, cloud), 'group' rows, 'operation' rows (the
+-- Activity Log's failovers: event_id, at, operation, status, group_name) and maybe one 'collector_error' row (the
+-- Activity Log refused: the groups were read). The server's own lock; an older read of the server stores its
+-- operations only.
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_failover_groups(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_rows jsonb := pgvigil.mssql_rows(p_payload);
+  v_key  text;
+  v_last timestamptz;
+BEGIN
+  SELECT lower(r->>'server_key') INTO v_key FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'read' LIMIT 1;
+  IF v_key IS NULL OR v_key = '' THEN
+    RAISE EXCEPTION 'import_mssql_failover_groups: the payload has no read row with the server';
+  END IF;
+  PERFORM pgvigil.mssql_hadr_read(p_instance_id, 'mssql_failover_groups', p_snapshot_at,
+            (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'group'));
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.mssql_failover_groups'), hashtext(v_key));
+
+  INSERT INTO pgvigil.mssql_failover_group_events (server_key, group_name, at, kind, instance_id, new_value, old_value, event_id)
+  SELECT v_key, coalesce(r->>'group_name', ''), (r->>'at')::timestamptz, 'operation', p_instance_id, r->>'operation', r->>'status', r->>'event_id'
+    FROM jsonb_array_elements(v_rows) r
+   WHERE r->>'kind' = 'operation' AND r->>'at' IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+  SELECT g.snapshot_at INTO v_last FROM pgvigil.mssql_failover_group_reads g WHERE g.server_key = v_key;
+  IF v_last IS NOT NULL AND v_last >= p_snapshot_at THEN
+    RETURN;   -- an older (or the same) read of the server: the newer one stands
+  END IF;
+
+  INSERT INTO pgvigil.mssql_failover_group_events (server_key, group_name, at, kind, instance_id, prev_read_at, old_value, new_value)
+  SELECT v_key, r->>'group_name', p_snapshot_at, e.kind, p_instance_id, v_last, e.old_value, e.new_value
+    FROM jsonb_array_elements(v_rows) r
+    LEFT JOIN pgvigil.mssql_failover_groups g ON g.server_key = v_key AND g.group_name = r->>'group_name'
+    CROSS JOIN LATERAL (VALUES
+      ('added',   NULL::text, r->>'role', g.group_name IS NULL),
+      ('role',    g.role, r->>'role', g.group_name IS NOT NULL AND g.role IS DISTINCT FROM r->>'role'),
+      ('policy',  concat_ws(' ', g.rw_policy, g.grace_minutes::text), concat_ws(' ', r->>'rw_policy', (r->>'grace_minutes')::numeric::text),
+                  g.group_name IS NOT NULL AND (g.rw_policy IS DISTINCT FROM r->>'rw_policy' OR g.grace_minutes IS DISTINCT FROM (r->>'grace_minutes')::numeric)),
+      ('partner', g.partners::text, r->>'partners', g.group_name IS NOT NULL AND g.partners IS DISTINCT FROM coalesce((r->>'partners')::jsonb, '[]'))
+    ) AS e(kind, old_value, new_value, happened)
+   WHERE r->>'kind' = 'group' AND e.happened
+  ON CONFLICT DO NOTHING;
+  INSERT INTO pgvigil.mssql_failover_group_events (server_key, group_name, at, kind, instance_id, prev_read_at, old_value)
+  SELECT v_key, g.group_name, p_snapshot_at, 'removed', p_instance_id, v_last, g.role
+    FROM pgvigil.mssql_failover_groups g
+   WHERE g.server_key = v_key
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'group' AND r->>'group_name' = g.group_name)
+  ON CONFLICT DO NOTHING;
+
+  DELETE FROM pgvigil.mssql_failover_groups g
+   WHERE g.server_key = v_key
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'group' AND r->>'group_name' = g.group_name);
+  INSERT INTO pgvigil.mssql_failover_groups AS g (server_key, group_name, role, replication_state, secondary_type, rw_policy,
+      grace_minutes, ro_policy, ro_target, partners, databases, cloud, read_by, snapshot_at)
+  SELECT v_key, r->>'group_name', r->>'role', r->>'replication_state', r->>'secondary_type', r->>'rw_policy',
+         (r->>'grace_minutes')::numeric, r->>'ro_policy', nullif(r->>'ro_target', ''), coalesce((r->>'partners')::jsonb, '[]'),
+         coalesce((r->>'databases')::jsonb, '[]'), (SELECT x->>'cloud' FROM jsonb_array_elements(v_rows) x WHERE x->>'kind' = 'read' LIMIT 1),
+         p_instance_id, p_snapshot_at
+    FROM jsonb_array_elements(v_rows) r
+   WHERE r->>'kind' = 'group' AND r->>'group_name' IS NOT NULL
+  ON CONFLICT (server_key, group_name) DO UPDATE SET role = EXCLUDED.role, replication_state = EXCLUDED.replication_state,
+      secondary_type = EXCLUDED.secondary_type, rw_policy = EXCLUDED.rw_policy, grace_minutes = EXCLUDED.grace_minutes,
+      ro_policy = EXCLUDED.ro_policy, ro_target = EXCLUDED.ro_target, partners = EXCLUDED.partners, databases = EXCLUDED.databases,
+      cloud = EXCLUDED.cloud, read_by = EXCLUDED.read_by, snapshot_at = EXCLUDED.snapshot_at;
+  INSERT INTO pgvigil.mssql_failover_group_reads AS x (server_key, snapshot_at, read_by) VALUES (v_key, p_snapshot_at, p_instance_id)
+  ON CONFLICT (server_key) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, read_by = EXCLUDED.read_by;
+END $$;
+
 -- the findings (the engine's own view; its readers are the join's WIRING)
 CREATE OR REPLACE VIEW pgvigil.mssql_georepl_findings AS
 WITH lim AS (
@@ -235,4 +348,10 @@ SELECT e.instance_id, 'warning', 'geo-replication link removed', e.partner, e.at
   FROM pgvigil.mssql_georepl_events e
   JOIN pgvigil.mssql_georepl_read g ON g.instance_id = e.instance_id AND g.snapshot_at >= e.at
  WHERE e.kind = 'removed' AND e.at > now() - interval '24 hours'
-   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_georepl_state s WHERE s.instance_id = e.instance_id AND s.link_guid = e.link_guid);
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_georepl_state s WHERE s.instance_id = e.instance_id AND s.link_guid = e.link_guid)
+UNION ALL
+SELECT e.instance_id, 'critical', 'failover group primary moved', e.group_name, e.at,
+       format('failover group %s: this server went from %s to %s between %s and %s (a failover of the group). Shown for an hour.',
+              e.group_name, e.old_value, e.new_value, to_char(e.prev_read_at AT TIME ZONE 'UTC', 'HH24:MI'), to_char(e.at AT TIME ZONE 'UTC', 'HH24:MI "UTC"'))
+  FROM pgvigil.mssql_failover_group_events e
+ WHERE e.kind = 'role' AND e.at > now() - interval '1 hour' AND e.instance_id IS NOT NULL;
