@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -476,6 +477,46 @@ func (s *Server) MSSQLFragCost(w http.ResponseWriter, r *http.Request) {
 		"cost_words": fragCostWords}, nil)
 }
 
+// jobDSN is the read login's dsn for the fragmentation job: 'connection timeout' set to 0. go-mssqldb (v1.11.2,
+// net.go timeoutConn) applies that setting as a deadline on every read of the connection for its whole life, so a read
+// held on a lock up to its 30 s timeout, or one that reads a large heap before its first row, would end in an i/o
+// timeout; the job's own context (fragBudget) and openMS's 15 s connect bound it instead. Every other key is kept.
+func jobDSN(dsn string) string {
+	isTimeout := func(k string) bool {
+		k = strings.ToLower(strings.TrimSpace(k))
+		return k == "connection timeout" || k == "connect timeout"
+	}
+	if strings.HasPrefix(strings.ToLower(dsn), "sqlserver://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return dsn
+		}
+		q := u.Query()
+		for k := range q {
+			if isTimeout(k) {
+				q.Del(k)
+			}
+		}
+		q.Set("connection timeout", "0")
+		u.RawQuery = q.Encode()
+		return u.String()
+	}
+	prefix, body := "", dsn
+	if strings.HasPrefix(strings.ToLower(dsn), "odbc:") {
+		prefix, body = dsn[:5], dsn[5:]
+	}
+	parts := []string{}
+	for _, p := range strings.Split(body, ";") {
+		if k, _, ok := strings.Cut(p, "="); ok && isTimeout(k) {
+			continue
+		}
+		if strings.TrimSpace(p) != "" {
+			parts = append(parts, p)
+		}
+	}
+	return prefix + strings.Join(append(parts, "connection timeout=0"), ";")
+}
+
 // fragCall runs one of 0164's fragmentation functions through the audit login.
 func (s *Server) fragCall(fn string, payload map[string]any, into any) error {
 	b, err := json.Marshal(payload)
@@ -527,7 +568,7 @@ func (s *Server) MSSQLFragStart(w http.ResponseWriter, r *http.Request) {
 	// the connection is opened here (its refusals answer this request) and handed to the job, which closes it
 	octx, ocancel := context.WithTimeout(r.Context(), histogramBudget)
 	defer ocancel()
-	db, conn, refused, err := openMS(octx, dsn, "pgvigil-fragmentation")
+	db, conn, refused, err := openMS(octx, jobDSN(dsn), "pgvigil-fragmentation")
 	if err != nil || refused != "" {
 		why := refused
 		if err != nil {
