@@ -337,7 +337,16 @@ var databaseRules = []dbRule{
 			wait = "nothing holds it now"
 		}
 		size, _ := d.r["log_size_mb"].(float64)
-		return sev, "dbachecks LogfilePercentUsed", fmt.Sprintf("%.1f %% of the %.0f MB log is in use (warning at %d, critical at %d); log reuse wait: %s", pct, size, logWarnPct, logCritPct, wait)
+		detail := fmt.Sprintf("%.1f %% of the %.0f MB log is in use (warning at %d, critical at %d; read by DBCC SQLPERF(LOGSPACE)); log reuse wait: %s", pct, size, logWarnPct, logCritPct, wait)
+		// task 407 (SQLMonitor's LogSaver, never its KILL): the transaction that keeps the log from clearing
+		if wait == "ACTIVE_TRANSACTION" {
+			holder := d.text("log_holder")
+			if holder == "" {
+				holder = "holder unknown (no open transaction wrote to this log at the read)"
+			}
+			detail += "; " + holder
+		}
+		return sev, "dbachecks LogfilePercentUsed", detail
 	}},
 	{"vlf_count", AreaLog, "virtual log files", func(d dbFacts, _ serverFacts) (string, string, string) {
 		n, ok := d.num("vlf_count")
@@ -532,6 +541,7 @@ func runDatabases(ctx context.Context, conn *sql.Conn, info Info, perf bool, c *
 				}
 			}
 		}
+		applyLogHolders(ctx, conn, raw, c)
 	}
 
 	checked := 0
@@ -831,4 +841,96 @@ func identityRows(database string, raw []collect.Row) (rows []collect.Row, findi
 		rows = append(rows, row)
 	}
 	return rows, findings
+}
+
+// logHolderSQL (task 407): per database, tempdb included, the oldest open transaction that wrote to its log
+// (database_transaction_begin_time is set at its first log record), ranked on the transaction views alone; only the
+// winner of each database is joined to its session and the session's most recent statement. A transaction no session
+// holds is named by its unit of work (a distributed one in doubt or orphaned) or by its id. VIEW SERVER STATE.
+const logHolderSQL = `SELECT x.database_id, x.transaction_id, st.session_id, s.login_name, s.host_name, s.program_name, x.uow, x.started_at_utc,
+       LEFT(qt.text, 2000) AS statement
+FROM (SELECT dt.database_id, CAST(dt.transaction_id AS bigint) AS transaction_id, CAST(at.transaction_uow AS nvarchar(40)) AS uow,
+             CONVERT(varchar(33), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), dt.database_transaction_begin_time), 126) + 'Z' AS started_at_utc,
+             ROW_NUMBER() OVER (PARTITION BY dt.database_id ORDER BY dt.database_transaction_begin_time, dt.transaction_id) AS rn
+        FROM sys.dm_tran_database_transactions dt
+        JOIN sys.dm_tran_active_transactions at ON at.transaction_id = dt.transaction_id
+       WHERE dt.database_transaction_begin_time IS NOT NULL) x
+LEFT JOIN sys.dm_tran_session_transactions st ON st.transaction_id = x.transaction_id
+LEFT JOIN sys.dm_exec_sessions s ON s.session_id = st.session_id
+LEFT JOIN sys.dm_exec_connections c ON c.session_id = st.session_id AND c.parent_connection_id IS NULL
+OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) qt
+WHERE x.rn = 1`
+
+// needsLogHolder: a database whose log is past the warning line and waits on an active transaction.
+func needsLogHolder(r collect.Row) bool {
+	pct, ok := r["log_used_pct"].(float64)
+	return ok && pct >= logWarnPct && dbFacts{r}.text("log_reuse_wait") == "ACTIVE_TRANSACTION"
+}
+
+// applyLogHolders reads the holders only when a database needs one (needsLogHolder) and writes each such database's
+// holder as a sentence (log_holder) for the log rule.
+func applyLogHolders(ctx context.Context, conn *sql.Conn, raw []collect.Row, c *checksRun) {
+	need := false
+	for _, r := range raw {
+		if needsLogHolder(r) {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return
+	}
+	rows, err := QueryRows(ctx, conn, logHolderSQL)
+	if err != nil {
+		c.add(collect.Row{"kind": "collector_error", "source": "sys.dm_tran_database_transactions", "message": "the log's holder was not read: " + err.Error()})
+	}
+	mapLogHolders(raw, rows, err)
+}
+
+// mapLogHolders writes log_holder on each database that needs one: the holder read for its database id; 'holder not
+// read: <error>' when the read failed (never a denial that one exists); nothing when the read found none (the rule
+// then says no open transaction wrote to the log).
+func mapLogHolders(raw, holders []collect.Row, readErr error) {
+	by := map[int64]collect.Row{}
+	for _, h := range holders {
+		if id, ok := asInt64(h["database_id"]); ok {
+			by[id] = h
+		}
+	}
+	for _, r := range raw {
+		if !needsLogHolder(r) {
+			continue
+		}
+		if readErr != nil {
+			r["log_holder"] = "holder not read: " + readErr.Error()
+			continue
+		}
+		if h, ok := by[dbFacts{r}.id()]; ok {
+			r["log_holder"] = logHolderText(h)
+		}
+	}
+}
+
+// logHolderText: 'held by session 57 (login, host, program), open since ..., last statement: ...', or the unit of work of
+// a transaction no session holds.
+func logHolderText(h collect.Row) string {
+	str := func(k, none string) string {
+		if v, _ := h[k].(string); v != "" {
+			return v
+		}
+		return none
+	}
+	sid, ok := asInt64(h["session_id"])
+	if !ok || sid < 0 {
+		// a transaction no session holds: distributed (in doubt or orphaned) when it has a unit of work; a local one
+		// (a deferred transaction after recovery, a system transaction) has the all-zero uow
+		if uow := str("uow", ""); uow != "" && strings.Trim(uow, "0-") != "" {
+			return fmt.Sprintf("held by a distributed transaction, uow %s, open since %s (no session holds it: an in-doubt or orphaned transaction)",
+				uow, str("started_at_utc", "not read"))
+		}
+		tid, _ := asInt64(h["transaction_id"])
+		return fmt.Sprintf("holder unknown (no session holds transaction %d, open since %s)", tid, str("started_at_utc", "not read"))
+	}
+	return fmt.Sprintf("held by session %d (%s, %s, %s), open since %s; last statement: %s", sid, str("login_name", "login not read"),
+		str("host_name", "host not read"), str("program_name", "program not read"), str("started_at_utc", "not read"), str("statement", "not read"))
 }
