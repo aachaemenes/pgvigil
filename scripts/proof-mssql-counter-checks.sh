@@ -203,10 +203,15 @@ p_writes() { sq "UPDATE dbo.big SET pad = REPLICATE(CHAR(65 + ABS(CHECKSUM(NEWID
   sq "DECLARE @i int = 0; WHILE @i < 600 BEGIN UPDATE dbo.big SET pad = 'w' WHERE id = ABS(CHECKSUM(NEWID())) % 60000 + 1; CHECKPOINT; SET @i += 1; END" pgvctr >/dev/null; }
 p_lockreq() { sq "DECLARE @i int = 0, @x int; WHILE @i < 6000 BEGIN SELECT @x = v FROM dbo.t WITH (ROWLOCK, HOLDLOCK) WHERE id = @i % 2000 + 1; SET @i += 1; END" pgvctr >/dev/null; }
 p_recompiles() { sq "$(for _ in $(seq 1 20); do echo "EXEC dbo.rc;"; echo GO; done)" pgvctr >/dev/null; }
-# the log is shrunk to 1 MB first: D's earlier loads leave it far larger than this one transaction (run chk11 read no
-# growth with a 36 MB log; chk12, those checks skipped, read +5)
-p_growth() { sq "CHECKPOINT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS; CHECKPOINT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS;" pgvctr >/dev/null
-  echo "   pgvctr's log before the load: $(sq "SELECT CAST(size / 128 AS varchar(10)) + ' MB' FROM sys.database_files WHERE type = 1" pgvctr)"
+# the log is shrunk to a few MB first: D's earlier loads leave it larger than this one transaction (run chk11 read no
+# growth with a 36 MB log; chk12, those checks skipped, read +5). The full backup at the setup started the log chain, so
+# only a log backup frees it (chk13's CHECKPOINT and shrink left 77 MB): a log backup and a shrink, twice; a log over
+# 4 MB after them fails here, so the check never passes on the log's own history
+p_growth() { sq "BACKUP LOG pgvctr TO DISK = N'/var/opt/mssql/data/pgvctr_log.trn' WITH INIT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS;
+BACKUP LOG pgvctr TO DISK = N'/var/opt/mssql/data/pgvctr_log.trn' WITH INIT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS;" pgvctr >/dev/null
+  local mb; mb=$(sq "SELECT CAST(size / 128 AS varchar(10)) FROM sys.database_files WHERE type = 1" pgvctr | tr -d '[:space:]')
+  echo "   pgvctr's log before the load: $mb MB"
+  [[ "$mb" =~ ^[0-9]+$ && "$mb" -le 4 ]] || fail "D: log_growths: the shrink left pgvctr's log at [$mb] MB"
   sq "INSERT dbo.t (id, pad) SELECT TOP (30000) 200000 + ROW_NUMBER() OVER (ORDER BY (SELECT 1)) + (SELECT count(*) FROM dbo.t), REPLICATE('g', 200) FROM sys.all_objects a CROSS JOIN sys.all_objects b" pgvctr >/dev/null; }
 
 echo "== B. the owner line: a seeded rule colours while off and raises nothing =="
