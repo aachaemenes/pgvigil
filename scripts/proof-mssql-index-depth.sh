@@ -570,7 +570,7 @@ frag "$IDEF" LIMITED "$TMPD/g3.json" >/dev/null
 echo "ok   G3: ixdef off ('an admin turns it on'), no row"
 # G4: three tables held in turn, each under 30 s: the read over 75 s, the POST answered at once
 hold f1; hold f2; hold f3
-t0=$(date +%s%N); frag "$ION" LIMITED "$TMPD/g4.json" >/dev/null; t1=$(date +%s%N); RID=$(jget "$TMPD/g4.json" 'd.get("read_id")')
+t0=$(date +%s%N); frag "$ION" LIMITED "$TMPD/g4.json" >/dev/null; t1=$(date +%s%N); RID=$(jget "$TMPD/g4.json" 'd.get("read_id")'); [[ "$RID" =~ ^[0-9]+$ ]] || fail "G4: the start answered no read id: $(cat "$TMPD/g4.json")"
 [[ "$(jget "$TMPD/g4.json" 'd["state"]')" == running && $(( (t1 - t0) / 1000000 )) -lt 5000 ]] || fail "G4: start $(cat "$TMPD/g4.json")"
 # each holder is ended 26 s after the job's request is first seen waiting on it (under the read's 30 s lock timeout)
 declare -A SINCE=(); ORDER=
@@ -590,7 +590,7 @@ echo "     G4: the read waited on the holders in the order:$ORDER"
 echo "ok   G4: the POST answered in $(( (t1 - t0) / 1000000 )) ms; the job ran $secs s (past serve's 75 s write timeout) and ended done"
 # G5: one at a time; Cancel ends the job's own request on the server
 hold f1
-frag "$ION" LIMITED "$TMPD/g5a.json" >/dev/null; RID=$(jget "$TMPD/g5a.json" 'd.get("read_id")')
+frag "$ION" LIMITED "$TMPD/g5a.json" >/dev/null; RID=$(jget "$TMPD/g5a.json" 'd.get("read_id")'); [[ "$RID" =~ ^[0-9]+$ ]] || fail "G5: the start answered no read id: $(cat "$TMPD/g5a.json")"
 frag "$ION" SAMPLED "$TMPD/g5b.json" >/dev/null
 [[ "$(jget "$TMPD/g5b.json" 'd["state"]+"|"+d["words"]')" == "refused|"*"one at a time"* ]] || fail "G5: the second start $(cat "$TMPD/g5b.json")"
 sleep 3; [[ "$(jobreqs)" -ge 1 ]] || fail "G5: the job's request is not on the server before the Cancel"
@@ -602,14 +602,14 @@ echo "ok   G5: a second start refused ('one at a time'); Cancel: the request gon
 release
 # G6: a held Sch-M lock: the read ends near 30 s, the rows before kept, where it stopped named
 hold f1 schm
-frag "$ION" LIMITED "$TMPD/g6.json" >/dev/null; RID=$(jget "$TMPD/g6.json" 'd.get("read_id")')
+frag "$ION" LIMITED "$TMPD/g6.json" >/dev/null; RID=$(jget "$TMPD/g6.json" 'd.get("read_id")'); [[ "$RID" =~ ^[0-9]+$ ]] || fail "G6: the start answered no read id: $(cat "$TMPD/g6.json")"
 st=$(poll "$RID" 60); secs=$(readcol secs); note=$(readcol note); kept=$(readcol rows_kept)
 [[ "$st" == failed && "$secs" -ge 28 && "$secs" -le 42 && "$note" == *"index maintenance"* && "$note" == *"after "* && "$kept" -ge 1 ]] || fail "G6: $st after $secs s, $kept kept: $note"
 echo "ok   G6: the Sch-M lock ended the read after $secs s; $kept row(s) kept; the note: $note"
 release
 # G7: serve killed during a held read; serve again: the row stopped after 60 s without a beat, a new start taken
 hold f1
-frag "$ION" LIMITED "$TMPD/g7.json" >/dev/null; RID=$(jget "$TMPD/g7.json" 'd.get("read_id")')
+frag "$ION" LIMITED "$TMPD/g7.json" >/dev/null; RID=$(jget "$TMPD/g7.json" 'd.get("read_id")'); [[ "$RID" =~ ^[0-9]+$ ]] || fail "G7: the start answered no read id: $(cat "$TMPD/g7.json")"
 sleep 3; kill -9 "$SRVPID"; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 serve_start g7
 gone=; for _ in $(seq 1 60); do [[ "$(jobsess)" == 0 ]] && gone=$_ && break; sleep 1; done

@@ -589,10 +589,13 @@ func (s *Server) MSSQLFragStart(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, map[string]any{"state": "refused", "words": err.Error()}, nil)
 		return
 	}
-	heap, _, _, err := mssql.HeapSize(octx, conn, quoted)
-	if err != nil {
-		s.reply(w, r, map[string]any{"state": "refused", "words": "the database's sizes were not read: " + err.Error()}, nil)
-		return
+	// the heap size is what the row shows beside the read; a schema change holding a table (the read login's 2 s lock
+	// timeout on the catalog) leaves it unknown, and the read starts all the same and meets the lock with its own 30 s
+	var heap any
+	if hp, _, _, err := mssql.HeapSize(octx, conn, quoted); err == nil {
+		heap = hp
+	} else {
+		s.log.Info("fragmentation read: the heap size was not read at the start", "instance", name, "database", in.Database, "err", err)
 	}
 	var started []byte
 	if err := s.fragCall("import_mssql_fragmentation_start", map[string]any{"ui_user": user, "client": clientIP(r), "instance_id": in.InstanceID,
