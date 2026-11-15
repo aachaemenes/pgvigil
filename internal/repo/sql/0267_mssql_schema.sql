@@ -326,6 +326,9 @@ BEGIN
     SELECT l.dbid, s.read_at,
            CASE
              WHEN s.database_id IS NULL OR s.state = 'gone' OR s.read_at IS NULL THEN 'new'
+             -- its snapshot is not present (marked gone: another database on the id, seen but not yet read): a baseline
+             WHEN NOT EXISTS (SELECT 1 FROM pgvigil.schema_databases sd
+                               WHERE sd.instance_id = p_instance_id AND sd.dbid = l.dbid AND sd.is_present) THEN 'new'
              WHEN s.create_date IS DISTINCT FROM l.create_date
                   AND NOT (l.restored_at IS NOT NULL AND l.restored_at > s.read_at) THEN 'new'
              WHEN (l.restored_at IS NOT NULL AND l.restored_at > s.read_at)

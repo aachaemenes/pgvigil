@@ -315,8 +315,11 @@ func TestMssqlSchemaDueOnAStore(t *testing.T) {
 	created := now.Add(-100 * 24 * time.Hour)
 	fresh, old := now.Add(-20*time.Minute), now.Add(-30*time.Hour)
 	end := map[string]any{"kind": "end"}
-	s.importWith("import_mssql_schema", now.Add(-time.Hour), mdb(1, "quiet", created, nil, "read", &fresh),
-		mdb(2, "busy", created, nil, "read", &fresh), mdb(3, "stale", created, nil, "read", &old), end)
+	snap := func(dbid int, name string, at time.Time) map[string]any {
+		return map[string]any{"kind": "db", "dbid": dbid, "datname": name, "objects": 0, "read_at": at}
+	}
+	s.importWith("import_mssql_schema", now.Add(-time.Hour), mdb(1, "quiet", created, nil, "read", &fresh), snap(1, "quiet", fresh),
+		mdb(2, "busy", created, nil, "read", &fresh), snap(2, "busy", fresh), mdb(3, "stale", created, nil, "read", &old), snap(3, "stale", old), end)
 	list := func(extra ...map[string]any) []map[string]any {
 		out := []map[string]any{{"database_id": 1, "name": "quiet", "create_date": created}, {"database_id": 2, "name": "busy", "create_date": created},
 			{"database_id": 3, "name": "stale", "create_date": created}}
