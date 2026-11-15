@@ -45,7 +45,10 @@
 #     hour''s usual' (warning); a second instance with one week of history and 6 waits: the blocking one fires worded
 #     as a first occurrence ('no usual yet'); a third with 4 weeks and 4 waits (under the floor of 5): none; a fourth with
 #     4 weeks at 0 and 6 waits: fires, its detail 'none in this weekday and hour over the 4 weeks before' (never empty).
-#     pgvigil.rollup_block_hourly() writes one row per instance and finished hour, again a no-op. RED: no table.
+#     pgvigil.rollup_block_hourly(at) writes one row per instance and finished hour since its first sight (the hours
+#     counted, not assumed), A's hour with its 1 wait, again a no-op; an hour is rolled once it ended 15 minutes ago (not
+#     at 10 past the next hour, at 20 past); an instance first seen 3 days ago gets 24 hours per call (24, then 48).
+#     RED: no table.
 #  J. PostgreSQL (activity_sample every 15 s): pid 101 waits on a Lock in samples 0-60 s and again 105-135 s under the
 #     same query_start (a 45 s gap, over two intervals): 2 waits; pid 102 waits 30 s once: 1; pgvigil.pg_block_waits
 #     gives 3, the day and the live part 3, and the hour arm fires (3 waits, the longest 60 s). RED: 2 (one per query).
@@ -227,10 +230,27 @@ if tab mssql_block_hourly; then
   check "$(finding "$I2" "blocking at 3x this hour''s usual" | grep -c 'no usual yet')" 1 "I: one week of history fires on the floor, worded 'no usual yet'"
   check "$(has "$I3" "blocking at 3x this hour''s usual")" no "I: 4 waits are under the floor of 5"
   check "$(finding "$I4" "blocking at 3x this hour''s usual" | grep -c '^warning|6 waits in the hour from .*, none in this weekday and hour over the 4 weeks before$')" 1 "I: a usual of 0 and 6 waits: fires, its detail not empty"
+  # the settle: the hour before T0 is rolled at T0 + 20 min, not at T0 + 10 min
+  RS=$(syn rs sqlserver); q "update pgvigil.instances set first_seen = now() - interval '3 hours' where instance_id = $RS" >/dev/null
+  T0=$(q "select date_trunc('hour', now())")
+  rs() { q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $RS and hour = '$T0'::timestamptz - interval '1 hour'"; }
+  q "select pgvigil.rollup_block_hourly('$T0'::timestamptz + interval '10 minutes')" >/dev/null; S1=$(rs)
+  q "select pgvigil.rollup_block_hourly('$T0'::timestamptz + interval '20 minutes')" >/dev/null; S2=$(rs)
+  check "$S1|$S2" "0|1" "I: an hour is rolled once it ended 15 minutes ago (not at 10 past, at 20 past)"
+  # A's instance: every finished hour since its first sight once, A's hour with its one wait (one fixed clock)
   q "delete from pgvigil.mssql_block_hourly where instance_id = $MSID" >/dev/null
-  q "select pgvigil.rollup_block_hourly(now() + interval '1 hour')" >/dev/null; R1=$(q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $MSID")
-  q "select pgvigil.rollup_block_hourly(now() + interval '1 hour')" >/dev/null; R2=$(q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $MSID")
-  check "$R1|$R2|$(q "select waits from pgvigil.mssql_block_hourly where instance_id = $MSID order by hour desc limit 1")" "1|1|1" "I: the rollup writes A's hour once (1 wait)"
+  RT=$(q "select now() + interval '2 hours'")
+  q "select pgvigil.rollup_block_hourly('$RT'::timestamptz)" >/dev/null; R1=$(q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $MSID")
+  q "select pgvigil.rollup_block_hourly('$RT'::timestamptz)" >/dev/null; R2=$(q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $MSID")
+  RE=$(q "select count(*) from pgvigil.instances i, generate_series(date_trunc('hour', i.first_seen), date_trunc('hour', '$RT'::timestamptz - interval '15 minutes') - interval '1 hour', interval '1 hour') g where i.instance_id = $MSID")
+  RA=$(q "select coalesce((select waits from pgvigil.mssql_block_hourly where instance_id = $MSID and hour = (select date_trunc('hour', max(last_seen_at)) from pgvigil.mssql_block_waits($MSID, now() - interval '1 hour', now()))), -1)")
+  check "$R1|$R2|$RA" "$RE|$RE|1" "I: the rollup writes each finished hour since the instance's first sight once ($RE), A's hour with its 1 wait"
+  # the cap: 24 hours per instance per call
+  RC=$(syn rc sqlserver); q "update pgvigil.instances set first_seen = now() - interval '3 days' where instance_id = $RC" >/dev/null
+  rc() { q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $RC"; }
+  q "select pgvigil.rollup_block_hourly('$RT'::timestamptz)" >/dev/null; C1=$(rc)
+  q "select pgvigil.rollup_block_hourly('$RT'::timestamptz)" >/dev/null; C2=$(rc)
+  check "$C1|$C2" "24|48" "I: an instance first seen 3 days ago: 24 hours per call"
 else check "no mssql_block_hourly" "yes" "I: the spike against the hour's usual"; fi
 
 echo "--- J. PostgreSQL waits split at a gap"
