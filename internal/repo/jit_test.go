@@ -67,7 +67,7 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer plain.Close(ctx)
+	defer func() { _ = plain.Close(ctx) }()
 	// pg_jit_available() answers true only while jit is on in the asking session, so it is asked under SET LOCAL jit = on
 	var available bool
 	if tx, err := plain.Begin(ctx); err != nil {
@@ -142,7 +142,7 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer own.Close(ctx)
+	defer func() { _ = own.Close(ctx) }()
 	if err := own.QueryRow(ctx, `SHOW jit`).Scan(&jit); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 		if n == 1 {
 			want = 1
 		}
-		if len(lines) != want || (n == 1 && !(strings.Contains(lines[0], "level=INFO") && strings.Contains(lines[0], "jit set off"))) {
+		if len(lines) != want || (n == 1 && (!strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], "jit set off"))) {
 			t.Errorf("migrate %d logged %d jit line(s) %q; want %d (the first an INFO 'jit set off')", n, len(lines), lines, want)
 		}
 	}
@@ -298,7 +298,7 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 // TestPgBool: a setting's boolean read as PostgreSQL's parse_bool reads it.
 func TestPgBool(t *testing.T) {
 	for in, want := range map[string][2]bool{
-		"on": {true, true}, "ON": {true, true}, " on ": {true, true}, "off": {false, true}, "OFF": {false, true}, "of": {false, true},
+		"on": {true, true}, "ON": {true, true}, "off": {false, true}, "OFF": {false, true}, "of": {false, true},
 		"true": {true, true}, "t": {true, true}, "TRU": {true, true}, "false": {false, true}, "f": {false, true}, "fa": {false, true},
 		"yes": {true, true}, "y": {true, true}, "no": {false, true}, "n": {false, true}, "1": {true, true}, "0": {false, true},
 		"o": {false, false}, "": {false, false}, "2": {false, false}, "onn": {false, false}, "offf": {false, false}, "nope": {false, false},
@@ -306,5 +306,9 @@ func TestPgBool(t *testing.T) {
 		if v, ok := pgBool(in); v != want[0] || ok != want[1] {
 			t.Errorf("pgBool(%q) = %v, %v; want %v, %v", in, v, ok, want[0], want[1])
 		}
+	}
+	// the space around a value is not part of it (PostgreSQL trims it)
+	if v, ok := pgBool("\t on \n"); !v || !ok {
+		t.Errorf("pgBool with space around on = %v, %v; want true, true", v, ok)
 	}
 }

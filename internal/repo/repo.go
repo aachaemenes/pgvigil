@@ -94,15 +94,15 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 );`); err != nil {
 		return 0, fmt.Errorf("schema_version: %w", err)
 	}
-	if info, warn, err := repositoryJITOff(ctx, c.Conn()); err != nil {
+	info, warn, err := repositoryJITOff(ctx, c.Conn())
+	if err != nil {
 		return 0, fmt.Errorf("repository jit setting: %w", err)
-	} else {
-		if info != "" {
-			r.logger().Info(info)
-		}
-		if warn != "" {
-			r.logger().Warn(warn)
-		}
+	}
+	if info != "" {
+		r.logger().Info(info)
+	}
+	if warn != "" {
+		r.logger().Warn(warn)
 	}
 	names, err := migrationNames()
 	if err != nil {
@@ -255,15 +255,18 @@ func pgBool(v string) (val, ok bool) {
 		return false, false
 	case s == "on", s == "1":
 		return true, true
-	case s == "0", len(s) >= 2 && strings.HasPrefix("off", s):
+	case s == "0", len(s) >= 2 && prefixOf(s, "off"):
 		return false, true
-	case strings.HasPrefix("true", s), strings.HasPrefix("yes", s):
+	case prefixOf(s, "true"), prefixOf(s, "yes"):
 		return true, true
-	case strings.HasPrefix("false", s), strings.HasPrefix("no", s):
+	case prefixOf(s, "false"), prefixOf(s, "no"):
 		return false, true
 	}
 	return false, false
 }
+
+// prefixOf: s is a leading part of word ("fa" of "false").
+func prefixOf(s, word string) bool { return len(s) <= len(word) && word[:len(s)] == s }
 
 // migrationNames is the embedded migration files in name order, the order Migrate applies them in.
 func migrationNames() ([]string, error) {
