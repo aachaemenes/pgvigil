@@ -3,8 +3,9 @@
 //   two instances            as each was last read (one engine on both sides)
 //   one instance, two times  from the change histories the repository keeps (settings, job versions, schema changes)
 //   two databases            of one instance: their schema objects as last read
-// Settings and jobs compare on both engines; schema objects on PostgreSQL only (the repository holds none of a SQL
-// Server instance), and the page says which sections it compared and how far back each store reaches. The picks ride
+// Settings, jobs and schema objects compare on both engines (a SQL Server instance's schema since task A26, where its
+// mssql_schema.databases names its databases), and the page says which sections it compared and how far back each
+// store reaches. The picks ride
 // in the hash (m, a, b, dba, dbb, ta, tb, all), so a diff is a link, and the last ones are kept in this browser.
 // Data: /api/diff (part=databases: the databases behind the two pickers).
 // The file also holds the text diff (lineDiff, textDiffView: code view, side by side, inline) and the structured compare of
@@ -67,9 +68,8 @@ function diffHref(ctx: Ctx, p: Picks): string {
 }
 
 // incomplete: why the picks are not enough for a diff ('' = they are); engine = instance A's
-function incomplete(p: Picks, engine?: string): string {
+function incomplete(p: Picks, _engine?: string): string {
   if (!p.a) return p.m === 'i' ? 'Pick instance A.' : 'Pick the instance.';
-  if (p.m === 'd' && engine === 'sqlserver') return 'Two databases are compared by their schema objects, which the repository holds for PostgreSQL only: pick a PostgreSQL instance.';
   if (p.m === 'i') {
     if (!p.b) return 'Pick instance B.';
     if (p.b === p.a) return 'A and B are the same instance: pick another B, or compare it at two times.';
@@ -115,7 +115,7 @@ function sidesBlock(sides: Row[], mode: string): HTMLElement {
     { key: 'at', label: 'as of', fmt: v => v == null ? 'the newest read' : fmtTime(v) },
     { key: 'settings_read', label: 'settings read', fmt: (v, r) => two(t(v), v == null ? '' : r.settings_from ? `history from ${fmtTime(r.settings_from)}` : r.engine === 'sqlserver' ? 'one earlier value per setting' : '') },
     { key: 'jobs_read', label: 'newest job version', fmt: (v, r) => two(t(v), r.jobs_from ? `versions from ${fmtTime(r.jobs_from)}` : '') },
-    { key: 'schema_read', label: 'schema read', fmt: (v, r) => r.engine === 'sqlserver' ? 'not collected' : two(t(v),
+    { key: 'schema_read', label: 'schema read', fmt: (v, r) => two(t(v),
       v == null ? '' : `${fmtNum(r.schema_databases)} database(s), first read ${fmtTime(r.schema_from)}`
         + (mode === 'snapshots' ? `; changes held from ${r.schema_changes_from ? fmtTime(r.schema_changes_from) : 'none yet'}` : '')) },
   ];
@@ -298,8 +298,8 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   });
   sec.append(modeBox, form,
     el('p', { class: 'meta' }, 'Two instances are compared as each was last read; one instance at two times from its change histories; '
-      + 'two databases of one instance by their schema objects. Settings and jobs compare on PostgreSQL and on SQL Server; schema '
-      + 'objects on PostgreSQL only (the repository holds none of a SQL Server instance). Differences only, unless identical rows are asked for.'));
+      + 'two databases of one instance by their schema objects. Settings, jobs and schema objects compare on PostgreSQL and on SQL Server '
+      + '(a SQL Server instance\'s schema where its mssql_schema.databases names its databases). Differences only, unless identical rows are asked for.'));
   sync(false);
   await fillDatabases();
 
