@@ -8,16 +8,25 @@
 // The findings, the signal ratio and SOS_SCHEDULER_YIELD tiles, the roll-up by category and the grant semaphores by
 // resource pool (task 177, D03) come from /api/mssql/waitfindings: sp_PerfCheck's, sp_BlitzFirst's and sp_Blitz's
 // checks and thresholds over the same range (0115).
-import { neutralColor, seriesColors } from './chart';
+// Task 412 (B19, SQLMonitor C53 / A10): wait seconds per core per minute, a tile and a chart from /api/metrics/series
+// (the 'waits' family of metric_points: 0152's mssql_wait_core_points), and each wait type's documentation links
+// (doclinks.ts: Microsoft's wait types list, then SQLskills' page of the type).
+import { lineChart, neutralColor, seriesColors } from './chart';
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 import { waitingLink } from './darling_waiting';
 import { runningWaitLink } from './mssql_running';
+import { waitDocs, waitDocsNote } from './doclinks';
 
 interface WaitsData { state: Table | null; reads: Table | null; events: Table | null; series: Table | null }
 interface WaitInfo { cores: Table | null; rates: Table | null; types: Table | null; families: Table | null }
 interface WaitFindings { findings: Table | null; shares: Table | null; rollup: Table | null; pools: Table | null }
+interface SeriesData { step_secs: number; series: Table | null; metric: Table | null }
+// task 412: the metric's key, its unit's words and the words of a point with no value (0152's metric_na_reasons)
+const perCoreKey = 'waits.wait_s_per_core_min';
+const perCoreNA = 'N/A: not judged: no scheduler count (the mssql_cpu collection is off, or Azure SQL Database)';
+const sCore = (v: unknown) => v == null ? '' : `${fmtNum(v)} s/core/min`;
 
 const paletteNow = () => [...seriesColors(), neutralColor()];
 const msSecs = (v: unknown) => v == null ? '' : fmtSecs(Math.round(Number(v) / 1000));
@@ -60,7 +69,7 @@ const poolCols: Col[] = [
 
 const eventCols: Col[] = [
   { key: 'wait_type', label: 'wait type', fmt: v => el('span', {}, waitingLink(String(v), String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v)), ' ',
-    runningWaitLink(String(v), 'requests')) },
+    runningWaitLink(String(v), 'requests'), waitDocs(v)) },
   { key: 'category', fmt: (v, r) => r.is_benign ? badge(String(v), '') : String(v ?? '') },
   { key: 'wait_ms', label: 'wait time', num: true, fmt: msSecs },
   { key: 'pct', label: 'share', num: true, fmt: pct },
@@ -160,14 +169,46 @@ function stackedChart(title: string, p: { rows: Row[]; types: string[] }): HTMLE
   return box;
 }
 
+// perCoreSection (task 412): SQLMonitor's wait seconds per core per minute over the range: the newest point and the
+// range's peak as tiles, the points as a chart with the rule's thresholds in force; a point with no value says why
+function perCoreSection(pc: SeriesData | null, err: string): HTMLElement {
+  const box = el('div', {}, el('h3', {}, 'Wait seconds per core per minute (SQLMonitor\'s figure)'), el('p', { class: 'meta' },
+    'At each wait read: the waits of the newest five minutes of reads, benign waits and SQLMonitor\'s per-core list left out '
+    + '(its 84 types: the benign ones and 27 more, CXCONSUMER among them; the grid below keeps them), in seconds, over the schedulers that ran '
+    + 'user work (VISIBLE ONLINE, from the CPU collection), per minute. SQLMonitor\'s dashboard flags a server above 180. No point until '
+    + 'five minutes of reads are covered. The grid\'s ms/sec/core of one wait type is the same measure per second: 1 ms/sec/core = 0.06 s/core/min.'));
+  if (!pc) { box.append(el('p', { class: 'meta' }, `Not read (${err}).`)); return box; }
+  const pts = rowsOf(pc.series), m = rowsOf(pc.metric)[0] ?? {};
+  if (!pts.length) { box.append(el('p', { class: 'empty' }, 'No point in this range: under five minutes of wait reads, or the first reads after a restart.')); return box; }
+  // a long range comes bucketed (step_secs): a bucket's value is its average, max_value its highest point, so the peak
+  // reads max_value (the point itself when not bucketed) and the newest tile says it is an average
+  const bucketed = Number(pc.step_secs) > 1, stepMin = fmtNum(Number(pc.step_secs) / 60);
+  const newest = pts[pts.length - 1], vals = pts.map(p => p.max_value ?? p.value).filter(v => v != null).map(Number);
+  const peak = vals.length ? Math.max(...vals) : null;
+  // the rule's direction as metric_status reads it (0085): 'below' is past a threshold under it
+  const op = String(m.op ?? 'above'), past = (v: number, t: unknown) => t != null && (op === 'below' ? v < Number(t) : v > Number(t));
+  const level = (v: number | null) => v == null ? '' : past(v, m.critical) ? 'crit' : past(v, m.warning) ? 'warn' : 'ok';
+  box.append(el('div', { class: 'tiles' },
+    tile(bucketed ? `wait s per core per minute, the newest ${stepMin} min (their average)` : 'wait s per core per minute, the newest point',
+      newest.value == null ? perCoreNA : sCore(newest.value), newest.value == null ? '' : level(Number(newest.value))),
+    tile('the highest point of the range', peak == null ? perCoreNA : sCore(peak), level(peak))));
+  const series = [{ key: 'value', label: bucketed ? `wait s per core per minute (average per ${stepMin} min)` : 'wait s per core per minute' },
+    ...(m.warning != null ? [{ key: 'warning', label: `warning (${op} ${sCore(m.warning)})` }] : []),
+    ...(m.critical != null ? [{ key: 'critical', label: `critical (${op} ${sCore(m.critical)})` }] : [])];
+  box.append(el('div', { class: 'charts' }, lineChart('Wait seconds per core per minute (s/core/min)',
+    pts.map(p => ({ ...p, warning: m.warning ?? null, critical: m.critical ?? null })), series, sCore)));
+  return box;
+}
+
 export async function mssqlWaitsView(ctx: Ctx): Promise<HTMLElement> {
   // one window for both reads, so the rates are over the same reads as the grid
   const win = window_(ctx);
-  let infoErr = '', findErr = '';
-  const [d, info, wf] = await Promise.all([
+  let infoErr = '', findErr = '', coreErr = '';
+  const [d, info, wf, pc] = await Promise.all([
     get<WaitsData>('mssql/waits', { instance: ctx.instance, ...win }),
     get<WaitInfo>('mssql/waitinfo', { instance: ctx.instance, ...win }).catch((e: unknown) => { infoErr = e instanceof Error ? e.message : String(e); return null; }),
     get<WaitFindings>('mssql/waitfindings', { instance: ctx.instance, ...win }).catch((e: unknown) => { findErr = e instanceof Error ? e.message : String(e); return null; }),
+    get<SeriesData>('metrics/series', { instance: ctx.instance, metric: perCoreKey, ...win }).catch((e: unknown) => { coreErr = e instanceof Error ? e.message : String(e); return null; }),
   ]);
   const events = rowsOf(d.events), st = rowsOf(d.state)[0], reads = rowsOf(d.reads)[0];
   if (info) describe(events, info);
@@ -201,6 +242,7 @@ export async function mssqlWaitsView(ctx: Ctx): Promise<HTMLElement> {
       : tile('SOS_SCHEDULER_YIELD, share of the time read (listed from 10 %)', sos == null ? '0 %' : pct(sos), sh.sos_listed ? 'warn' : 'ok'),
     tile('lock waits', waitMs ? pct(Math.round(1000 * lockMs / waitMs) / 10) : '-', lockMs > 0 ? 'warn' : 'ok'),
     tile('reads in the range', fmtNum(reads?.reads ?? 0))));
+  sec.append(perCoreSection(pc, coreErr));
   const found = wf ? rowsOf(wf.findings) : [];
   sec.append(el('h3', {}, 'Findings over this range'), el('p', { class: 'meta' }, !wf
     ? `The findings were not read (${findErr}).`
@@ -220,6 +262,7 @@ export async function mssqlWaitsView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Wait types'), el('p', { class: 'meta' },
     'Share is of the wait time of the real waits. Signal share is the part of a wait spent runnable, waiting for a CPU: a high one over all '
     + 'waits points at CPU pressure. The rows marked "Idle background work" are queue readers and timers waiting for work; they are kept and never ranked.'),
+    waitDocsNote(),
     el('p', { class: 'meta' }, !info
       ? `The rates per second and the descriptions were not read (${infoErr}).`
       : 'Wait time (ms/sec) is a wait type\'s time over the seconds the range\'s reads cover: 1,000 means one task waiting the whole time. '

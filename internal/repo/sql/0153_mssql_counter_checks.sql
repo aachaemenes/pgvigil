@@ -283,3 +283,23 @@ WITH made AS (
 INSERT INTO pgvigil.alert_rule_log (at, ui_user, client, op, rule_id, metric, outcome, detail)
 SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.name || ': seeded off by the upgrade (0153)'
   FROM made m;
+
+-- task 412 (B19; SQLMonitor A10): the seed of wait seconds per core per minute (0152's mssql_wait_core_points), off, at
+-- fleet scope, by the same rule (only when the fleet never had a rule on the metric, live or ended), one log row.
+-- SQLMonitor's dashboard mail flags a server above 180 (its colours: yellow from 180, orange 240, red 300); each point
+-- already spans five minutes of reads, so for_minutes 0.
+WITH made AS (
+  INSERT INTO pgvigil.alert_rules (name, metric, op, warning, critical, for_minutes, scope, note, enabled, created_by,
+                                   created_at, client)
+  SELECT 'SQL Server: wait seconds per core per minute', 'waits.wait_s_per_core_min', 'above', 180, 299.999, 0, 'fleet',
+         'SQLMonitor''s waits per core per minute (usp_waits_per_core_per_minute): the waits of the newest five minutes of '
+         || 'reads, benign waits and SQLMonitor''s per-core list left out, over the visible online schedulers, per minute. '
+         || 'Its dashboard mail flags above 180 and colours red from 300. Seeded off: a figure for a DBA to read against '
+         || 'the server''s own normal before it alerts.',
+         false, 'pgvigil', now(), '0153 seed'
+   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.alert_rules r WHERE r.metric = 'waits.wait_s_per_core_min' AND r.scope = 'fleet')
+  RETURNING rule_id, metric, name
+)
+INSERT INTO pgvigil.alert_rule_log (at, ui_user, client, op, rule_id, metric, outcome, detail)
+SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.name || ': seeded off by the upgrade (0153)'
+  FROM made m;

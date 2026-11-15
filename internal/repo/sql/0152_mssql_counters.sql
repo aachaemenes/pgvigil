@@ -851,10 +851,14 @@ COMMENT ON VIEW pgvigil.metric_floors IS 'The floors under which a metric is not
 
 -- metric_na_reasons: a metric whose own points function gives a point no value under a condition of its own read, not a
 -- per-second floor (so no metric_floors row): its rule's 'na' and the Metrics grid's N/A say this reason in words, never
--- a bare N/A (the lead's 11-15 06:4x). No row here: a slice's join lines add its own (B24c: G32 under 10 % of the
--- machine), the join re-creating the view whole.
+-- a bare N/A (the lead's 11-15 06:4x). Task 412's row here (mssql_wait_core_points, the end of this file); a slice above
+-- 0190 adds its own in its join lines (B24c: G32 under 10 % of the machine), the join re-creating the view whole with
+-- every row.
 CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS
-SELECT v.key, v.why FROM (VALUES (NULL::text, NULL::text)) AS v(key, why) WHERE false;
+SELECT v.key, v.why FROM (VALUES
+    ('waits.wait_s_per_core_min'::text,
+     'not judged: no scheduler count (the mssql_cpu collection is off, or Azure SQL Database)'::text)
+  ) AS v(key, why);
 COMMENT ON VIEW pgvigil.metric_na_reasons IS 'A metric not judged under a condition of its own read (its point has no value there): key and the words its N/A says.';
 
 -- mssql_counter_points: the family's samples in (p_from, p_to] as (at, metric, value), for metric_points. p_database
@@ -1123,3 +1127,103 @@ INSERT INTO pgvigil.mssql_clerk_names (clerk_type, name) VALUES
   ('CACHESTORE_QDSCONTEXTSETTINGS', 'QDS Unique Context Settings'),
   ('MEMORYCLERK_QUERYDISKSTORE', 'QDS General'),
   ('MEMORYCLERK_QUERYDISKSTORE_HASHMAP', 'QDS Query/Plan Hash Table');
+
+-- task 412 (B19; SQLMonitor C53 / A10): wait seconds per core per minute, SQLMonitor's figure (usp_waits_per_core_per_minute,
+-- MIT, Copyright (c) 2022 Ajay Dwivedi): the waits of the newest five minutes of reads over the server's schedulers. A
+-- wait counts when it ends (mssql_waits stores the change of every wait type per read, 0064).
+-- mssql_wait_percore_ignored: SQLMonitor's per-core list beyond pgvigil's benign waits (is_benign, sp_BlitzFirst 8.34's
+-- Ignorable, waits.go). SQLMonitor's BlitzFirst_WaitStats_Categories (DDLs/SCH-Create-All-Objects.sql at de87d37, 543 rows)
+-- marks 84 types IgnorableOnPerCoreMetric: pgvigil's 57 and these 27, as data, for this figure only (the Waits page's
+-- per-type figures keep them; the lead's 11-15 D-412-1 (b)).
+CREATE OR REPLACE VIEW pgvigil.mssql_wait_percore_ignored AS
+SELECT v.wait_type FROM (VALUES
+    ('CHKPT'), ('CXCONSUMER'), ('EXECSYNC'), ('FSAGENT'), ('MEMORY_ALLOCATION_EXT'), ('PREEMPTIVE_OS_FLUSHFILEBUFFERS'),
+    ('PREEMPTIVE_XE_GETTARGETSTATE'), ('PVS_PREALLOCATE'), ('PWAIT_ALL_COMPONENTS_INITIALIZED'),
+    ('PWAIT_DIRECTLOGCONSUMER_GETNEXT'), ('PWAIT_EXTENSIBILITY_CLEANUP_TASK'), ('SERVER_IDLE_CHECK'), ('SLEEP_BPOOL_FLUSH'),
+    ('SLEEP_DBSTARTUP'), ('SLEEP_DCOMSTARTUP'), ('SLEEP_MASTERDBREADY'), ('SLEEP_MASTERMDREADY'), ('SLEEP_MASTERUPGRADED'),
+    ('SLEEP_MSDBSTARTUP'), ('SLEEP_TEMPDBSTARTUP'), ('SQLTRACE_WAIT_ENTRIES'), ('VDI_CLIENT_OTHER'), ('WAITFOR_TASKSHUTDOWN'),
+    ('WAIT_XTP_CKPT_CLOSE'), ('WAIT_XTP_HOST_WAIT'), ('WAIT_XTP_RECOVERY'), ('XE_DISPATCHER_JOIN')
+  ) AS v(wait_type);
+COMMENT ON VIEW pgvigil.mssql_wait_percore_ignored IS 'SQLMonitor''s per-core list beyond the benign waits: wait types left out of wait seconds per core per minute only.';
+
+-- mssql_wait_core_points: a point per stored wait read R in (p_from, p_to] as (at, metric, value), for metric_points'
+-- 'waits' family. The span (PerformanceMonitor's rule, as mssql_attention_points): the instance's stored reads newest
+-- first from R within (R - 10 min, R], taken while the reads taken before sum under 300 s, so at least five minutes; the
+-- value = their waits not left out (is_benign, or the list above; a SLEEP_TASK the collector marked a hash spill is not
+-- benign and counts) in seconds / the schedulers / the span in minutes, 2 decimals. No point when the reads within 10
+-- minutes sum under 300 s (a fresh instance, a single read seconds after the one before, collect -once) or at a read
+-- with no stored pair (a restart's, a clear's: 0064 stores none). S = the newest scheduler count of mssql_sched_sample
+-- at or before R and after R - 15 min, above 0 (VISIBLE ONLINE schedulers, cpu.go); none (mssql_cpu off or skipped,
+-- Azure SQL Database) = a point with NO value (not judged: metric_na_reasons says why). One range scan of
+-- mssql_wait_sample per call; each read's own 10 minutes gathered once by a window function (the walk then runs over those
+-- few reads only, so the cost grows with the window, not its square: the 412 build review's S1); the scheduler count per
+-- point through the (instance_id, snapshot_at) index of each month partition (0002).
+CREATE OR REPLACE FUNCTION pgvigil.mssql_wait_core_points(p_instance_id int, p_from timestamptz, p_to timestamptz)
+RETURNS TABLE (at timestamptz, metric text, value double precision)
+LANGUAGE sql STABLE AS $$
+  WITH r AS (
+    SELECT w.snapshot_at AS at, max(w.interval_secs)::double precision AS secs,
+           coalesce(sum(w.wait_ms) FILTER (WHERE NOT w.is_benign AND i.wait_type IS NULL), 0)::double precision / 1000 AS wait_s
+      FROM pgvigil.mssql_wait_sample w
+      LEFT JOIN pgvigil.mssql_wait_percore_ignored i ON i.wait_type = w.wait_type
+     WHERE w.instance_id = p_instance_id AND w.snapshot_at > p_from - interval '10 minutes' AND w.snapshot_at <= p_to
+     GROUP BY w.snapshot_at),
+  k AS (
+    SELECT s.snapshot_at, s.schedulers
+      FROM pgvigil.mssql_sched_sample s
+     WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from - interval '15 minutes' AND s.snapshot_at <= p_to
+       AND s.schedulers > 0),
+  -- each read with the reads of [R - 10 min, R] as three aligned arrays (one frame feeds all three in one row order); the
+  -- walk below drops R - 10 min itself, so the span stays (R - 10 min, R]
+  a AS (
+    SELECT r.at, array_agg(r.at) OVER f AS ats, array_agg(r.secs) OVER f AS secs, array_agg(r.wait_s) OVER f AS waits
+      FROM r
+    WINDOW f AS (ORDER BY r.at RANGE BETWEEN interval '10 minutes' PRECEDING AND CURRENT ROW)),
+  sp AS (
+    SELECT a.at, x.span, x.wait_s
+      FROM a
+      CROSS JOIN LATERAL (
+        SELECT sum(y.secs) AS span, sum(y.wait_s) AS wait_s
+          FROM (SELECT q.secs, q.wait_s,
+                       coalesce(sum(q.secs) OVER (ORDER BY q.at DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS before
+                  FROM unnest(a.ats, a.secs, a.waits) AS q(at, secs, wait_s)
+                 WHERE q.at > a.at - interval '10 minutes') y
+         WHERE y.before < 300) x
+     WHERE a.at > p_from)
+  SELECT sp.at, 'wait_s_per_core_min'::text,
+         CASE WHEN k1.schedulers IS NOT NULL
+              THEN round((sp.wait_s / k1.schedulers / (sp.span / 60))::numeric, 2)::double precision END
+    FROM sp
+    LEFT JOIN LATERAL (SELECT k.schedulers FROM k
+                        WHERE k.snapshot_at <= sp.at AND k.snapshot_at > sp.at - interval '15 minutes'
+                        ORDER BY k.snapshot_at DESC LIMIT 1) k1 ON true
+   WHERE sp.span >= 300
+   ORDER BY sp.at
+$$;
+
+-- mssql_wait_core_summary: the figure over a whole window for the Performance summary, time-weighted (never an average
+-- of points): the waits not left out of the stored reads in (p_from, p_to] in seconds / S / their summed interval in
+-- minutes, 2 decimals; S = the window's newest scheduler count above 0, in (p_from - 15 min, p_to]. NULL with no count
+-- or under 300 s of reads.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_wait_core_summary(p_instance_id int, p_from timestamptz, p_to timestamptz)
+RETURNS double precision
+LANGUAGE sql STABLE AS $$
+  WITH r AS (
+    SELECT sum(x.secs) AS span, sum(x.wait_s) AS wait_s
+      FROM (SELECT max(w.interval_secs)::double precision AS secs,
+                   coalesce(sum(w.wait_ms) FILTER (WHERE NOT w.is_benign AND i.wait_type IS NULL), 0)::double precision / 1000 AS wait_s
+              FROM pgvigil.mssql_wait_sample w
+              LEFT JOIN pgvigil.mssql_wait_percore_ignored i ON i.wait_type = w.wait_type
+             WHERE w.instance_id = p_instance_id AND w.snapshot_at > p_from AND w.snapshot_at <= p_to
+             GROUP BY w.snapshot_at) x),
+  k AS (
+    SELECT s.schedulers
+      FROM pgvigil.mssql_sched_sample s
+     WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from - interval '15 minutes' AND s.snapshot_at <= p_to
+       AND s.schedulers > 0
+     ORDER BY s.snapshot_at DESC
+     LIMIT 1)
+  SELECT round((r.wait_s / k.schedulers / (r.span / 60))::numeric, 2)::double precision
+    FROM r, k
+   WHERE r.span >= 300
+$$;
