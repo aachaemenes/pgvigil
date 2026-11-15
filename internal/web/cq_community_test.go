@@ -160,8 +160,9 @@ func TestCommunityThroughTheQueueOnAStore(t *testing.T) {
 		t.Fatalf("queue %v / %d rows, direct %v / %d rows", queued.Sets[0].Columns, len(queued.Sets[0].Rows), direct.Sets[0].Columns, len(direct.Sets[0].Rows))
 	}
 	var via string
-	if err := pool.QueryRow(ctx, `SELECT params->>'via' FROM pgvigil.custom_report_log
-		WHERE op = 'community_run' AND instance = $1 AND tool = 'pg_settings_changed' AND params->>'request_id' = $2`, ia, fmt.Sprint(id)).Scan(&via); err != nil || via != "queue" {
+	// the row's params are stored in custom_report_log.payload (import_custom_report_run: p_payload->'params')
+	if err := pool.QueryRow(ctx, `SELECT payload->>'via' FROM pgvigil.custom_report_log
+		WHERE op = 'community_run' AND instance = $1 AND tool = 'pg_settings_changed' AND payload->>'request_id' = $2`, ia, fmt.Sprint(id)).Scan(&via); err != nil || via != "queue" {
 		t.Fatalf("the audit row of request %d: %q %v", id, via, err)
 	}
 

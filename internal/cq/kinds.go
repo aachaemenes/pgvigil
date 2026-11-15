@@ -246,7 +246,9 @@ type Door struct {
 
 // Runner runs one kind: Doors says, from this collector's configuration alone, which doors of the kind the instance
 // has (the words are the direct path's own); Run runs a request whose doors were open at the claim and are checked
-// again by the worker before Run.
+// again by the worker before Run. Run returns done only when its work completed: a run its context cut returns
+// failed (the worker then records a cancel's own words, or the deadline's), since the worker reads a done that comes
+// with a cancel as a run that had ended before the cancel landed.
 type Runner interface {
 	Doors(env *Env) []Door
 	Run(ctx context.Context, env *Env, r Request) End

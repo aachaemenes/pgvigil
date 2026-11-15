@@ -131,6 +131,7 @@ func TestWorkerOnAStore(t *testing.T) {
 		select {
 		case <-release:
 		case <-ctx.Done():
+			return End{State: "failed", Outcome: "the stand-in saw its context end"} // Runner's contract: done only when whole
 		}
 		return End{State: "done", Outcome: "slow"}
 	}}
@@ -140,7 +141,7 @@ func TestWorkerOnAStore(t *testing.T) {
 	}})
 	registerForTest(t, "index_advisor", standIn{fn: func(ctx context.Context, _ *Env, _ Request) End {
 		<-ctx.Done()
-		return End{State: "done"}
+		return End{State: "failed", Outcome: "the stand-in saw its context end"} // Runner's contract: done only when whole
 	}})
 	registerForTest(t, "explain", slow)
 	var urgentRan atomic.Bool

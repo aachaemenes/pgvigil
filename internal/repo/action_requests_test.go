@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -227,6 +228,7 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(lc.Release) // before pool.Close's cleanup (a second Release is a no-op): a Fatal below never hangs the close
 	if _, err := lc.Exec(ctx, `LISTEN pgvigil_request`); err != nil {
 		t.Fatal(err)
 	}
@@ -235,15 +237,35 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	if a1.Outcome != "waiting" || a1.RequestID == 0 {
 		t.Fatalf("an open door's ask: %+v", a1)
 	}
-	nctx, nstop := context.WithTimeout(ctx, 3*time.Second)
-	n, err := lc.Conn().WaitForNotification(nctx)
+	// the store is shared (G runs ./internal/cq and ./internal/web beside this package and their asks notify on this
+	// channel too): a payload of another instance's request is skipped; a request of this test's instances before a1's
+	// is the refused ask notifying; every payload is an id alone
+	nctx, nstop := context.WithTimeout(ctx, 5*time.Second)
+	for {
+		n, err := lc.Conn().WaitForNotification(nctx)
+		if err != nil {
+			nstop()
+			t.Fatalf("no notify for request %d: %v", a1.RequestID, err)
+		}
+		id, perr := strconv.ParseInt(n.Payload, 10, 64)
+		if n.Channel != "pgvigil_request" || perr != nil {
+			nstop()
+			t.Fatalf("notify %s %q: want pgvigil_request with the id only", n.Channel, n.Payload)
+		}
+		if id == a1.RequestID {
+			break
+		}
+		var mine bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pgvigil.action_requests WHERE request_id = $1 AND instance = ANY ($2))`, id, []string{i1, i2}).Scan(&mine); err != nil {
+			nstop()
+			t.Fatal(err)
+		}
+		if mine {
+			nstop()
+			t.Fatalf("notify %d, a request of this test's before %d's (the refused ask must not notify)", id, a1.RequestID)
+		}
+	}
 	nstop()
-	if err != nil {
-		t.Fatalf("no notify for request %d: %v", a1.RequestID, err)
-	}
-	if n.Channel != "pgvigil_request" || n.Payload != fmt.Sprint(a1.RequestID) {
-		t.Fatalf("notify %s %q, want pgvigil_request %d (the refused ask must not notify, and the payload is the id only)", n.Channel, n.Payload, a1.RequestID)
-	}
 	_, _ = lc.Exec(ctx, `UNLISTEN *`)
 	lc.Release()
 
