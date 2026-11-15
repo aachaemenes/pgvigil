@@ -219,7 +219,7 @@ assert q and d and q[0]['columns'] == d[0]['columns'], (q[:1], d[:1])
 PY
   IDS="$IDS,$ID3,$ID4,$ID5"; NIDS=5
 fi
-read -r n nid <<<"$(rq "select count(*), count(instance_id) from pgvigil.custom_report_log where params->>'via' = 'queue' and (params->>'request_id')::bigint in ($IDS)" | tr '|' ' ')"
+read -r n nid <<<"$(rq "select count(*), count(instance_id) from pgvigil.custom_report_log where payload->>'via' = 'queue' and (payload->>'request_id')::bigint in ($IDS)" | tr '|' ' ')"
 [[ $n == "$NIDS" && $nid == "$NIDS" ]] || fail "P1: $n audit row(s) with via queue for requests $IDS, $nid with the instance's id (want $NIDS each)"
 ok "P1: $NIDS community runs through serve's container, each done with its sets and its audit row (via queue, the instance's id); pg_settings_changed equal to the direct run, sp_WhoIsActive's columns equal"
 
@@ -302,7 +302,7 @@ if [[ -n "$MS" ]]; then
   [[ $late =~ ^-?[0-9]+$ && $late -le 35 ]] || fail "P5: lost '$late' s after its last renewal (want 30 + 5 for the sweep)"
   RUN2=$(startrun "$WORK/col.yaml" "$WORK/run2.log"); sleep 20
   [[ $(rq "select state || '/' || taken_by from pgvigil.action_requests where request_id = $id") == "lost/$holder" ]] || fail "P5: the lost request changed: $(rq "select state, taken_by from pgvigil.action_requests where request_id = $id")"
-  [[ $(rq "select count(*) from pgvigil.custom_report_log where params->>'request_id' = '$id'") == 0 ]] || fail "P5: the lost request has an audit row: someone finished it"
+  [[ $(rq "select count(*) from pgvigil.custom_report_log where payload->>'request_id' = '$id'") == 0 ]] || fail "P5: the lost request has an audit row: someone finished it"
   ok "P5: a healthy 45 s run done (never lost); an ask with the minute heartbeat ${age} s old accepted and done; a SIGKILLed collector's run lost ${late} s after its last renewal, still lost and unfinished (no audit row) after the next collector ran 20 s"
   RUN1=$RUN2; RUN2=""
 else NOTPROVEN+=("P5 (a run long enough to kill under needs sp_WhoIsActive)"); fi
@@ -321,7 +321,7 @@ for round in $(seq 1 20); do
 done
 P9=$(paste -sd, "$WORK/p9")
 read -r done_n holders <<<"$(rq "select count(*) filter (where state = 'done'), count(distinct taken_by) from pgvigil.action_requests where request_id in ($P9)" | tr '|' ' ')"
-read -r arows aids <<<"$(rq "select count(*), count(distinct params->>'request_id') from pgvigil.custom_report_log where (params->>'request_id')::bigint in ($P9)" | tr '|' ' ')"
+read -r arows aids <<<"$(rq "select count(*), count(distinct payload->>'request_id') from pgvigil.custom_report_log where (payload->>'request_id')::bigint in ($P9)" | tr '|' ' ')"
 [[ $done_n == 200 && $arows == 200 && $aids == 200 && $holders == 2 ]] || fail "P9: done $done_n, audit rows $arows, distinct ids $aids (want 200 each), taken by $holders collector(s) (want 2)"
 ok "P9: two collectors (2 live leases), 200 asks: 200 done, 200 audit rows of 200 distinct requests, taken by both"
 kill "$RUN2" 2>/dev/null; RUN2=""
