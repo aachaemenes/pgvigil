@@ -270,7 +270,7 @@ m0=$(appmd5); x=$(imp "$WORK/f4.csv" "dry=0&digest=$D4"); xd=$(js "print(d.get('
 [[ $pw == 200 && $pa == "F Gamma|entered" && $x == 409 && $xd == *"changed since the preview"* && $m1 == "$m0" ]] && ok "F4 a page write between the preview and the apply (f2 re-assigned by hand): refused whole ('${xd:0:80}'), nothing written" || bad "F4 page write $pw (f2 $pa); apply $x '$xd'; md5 same: $([[ $m1 == "$m0" ]] && echo yes || echo no)"
 # F5: f2 is now entered by hand, so the file's line 2 is a conflict: ticked (t2), the collector's read between
 imp "$WORK/f4.csv" "dry=1" >/dev/null; D5=$(dig); i5=$(item 2)
-seen() { q "select coalesce(engine_db_id::text, '-') || '|' || coalesce(last_seen::text, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f2'"; }
+seen() { q "select coalesce(a.engine_db_id::text, '-') || '|' || coalesce(a.last_seen::text, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f2'"; }
 s0=$(seen)
 # review P, M-5: f2 made again on its server under a new dbid, so the list read moves both columns the digest leaves out
 dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81202 f2), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
