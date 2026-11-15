@@ -10,8 +10,29 @@ page.
 | admin | what an operator may, and change configuration others live with - instances, discovery sources, proposals, DBA Dash moves, applications and their contacts, alert rules, drive / PostgreSQL / job thresholds, job exclusions, custom reports and their folders, report mail schedules, a mute or blackout over every instance, a tag, or with no end |
 
 Each action still needs what it needed before the roles: an instance's own opt-in (`actions:`, `explain_analyze`,
-`hypo_index`), a typed confirmation, the actions door's audit login. The role is checked first; the page says the
-first reason that holds.
+`hypo_index`), a typed confirmation, the actions door's audit login. The server checks the role first, then those.
+
+## In the pages
+
+The header shows the role beside the user's name, with what it may do: `alice (viewer: a viewer reads; a change needs
+the operator or the admin role)`.
+
+A control that makes a change is drawn for every role. Below the role it needs, it is off - still reachable with the
+keyboard - and says why in the server's own refusal words (its title; its description is the header's sentence, or a
+note beside it inside a dialog). A page that is read only as a whole below a role (Admin > Instances, Applications,
+the DBA Dash move, custom reports' folders) says the words once, in its "Read only" sentence.
+
+A control that is off for a reason of the server's own - no actions door, an instance not opted in, the demo - says
+that reason and not the role's: it is the first that would have to change. A dialog that only reads opens for every
+role (a job's thresholds, a rule's values); its Save is the one that is off.
+
+A mute, a silence or a blackout over more than one instance (every instance, a tag) or with no end needs the admin
+role, whichever page asks: `Mute similar` is off below admin, and the mute dialog asks an operator for one instance
+and an end. The edit of a mute rule is held to the same rule as a new one.
+
+The answers the pages read say what the session's role may do (`can: {operator, admin}`) beside their own `writable`
+and `reason`, so a page shows a role changed since it was loaded at its next read; the server decides at every
+request whatever a page shows.
 
 ## Until the per-login instance scope lands
 
@@ -83,7 +104,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/ack` | operator | acknowledge, note, mute or black out one instance with an end (wider or open-ended: admin) |
 | `POST /api/ack/end` | operator | end an acknowledgement |
 | `POST /api/alerts/dismiss` | operator | dismiss an alert |
-| `POST /api/alerts/mute` | operator | pause, resume or edit an alert's mute |
+| `POST /api/alerts/mute` | operator | pause, resume or edit a mute rule (an edit to every instance, a tag or no end: admin) |
 | `POST /api/alerts/test` | operator | send a test alert |
 | `POST /api/plans/explain` | operator | EXPLAIN (stores a plan row) |
 | `POST /api/plans/analyze` | operator | EXPLAIN ANALYZE (runs the statement) |

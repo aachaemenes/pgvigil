@@ -102,6 +102,7 @@ Download the binary for your platform from the [latest release](https://github.c
    ```
    pgvigil user add admin -config pgvigil.yaml
    ```
+   The first user is an admin. A user added later starts as a viewer (reads only); `-role operator` or `-role admin` gives more, and `pgvigil user role <name> <role>` changes it ([docs/roles.md](docs/roles.md)).
 5. The collector, as the collector login:
    ```
    export PGVIGIL_REPO_DSN='postgres://pgvigil_agent:...@repo-host:5432/pgvigil?sslmode=require'

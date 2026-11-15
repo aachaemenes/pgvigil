@@ -58,7 +58,7 @@ irm https://pgvigil.com/install.ps1 | iex</code></pre>
   <ol class="steps">
     <li>Download the file for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and check it against <code>SHA256SUMS</code>; the <a href="https://github.com/aachaemenes/pgvigil#releases-and-how-to-verify-one">README</a> shows the two commands.</li>
     <li>Create an empty database on a PostgreSQL 13 or later server for pgvigil's history (tested on 13, 16 and 18), and copy <code>pgvigil.example.yaml</code>. Keep passwords in the environment or a file, not in the config: pgvigil refuses an inline one for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login or the repository.</li>
-    <li>Create the tables, the logins and the first web user. The login that owns pgvigil's database needs CREATEROLE: <code>migrate</code> creates pgvigil's own roles.</li>
+    <li>Create the tables, the logins and the first web user. The login that owns pgvigil's database needs CREATEROLE: <code>migrate</code> creates pgvigil's own roles. The first web user is an admin; a user added later starts as a viewer, and <code>pgvigil user add -role operator</code> or <code>-role admin</code> gives more.</li>
     <li>Start the collector and the web page, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
   </ol>
 <pre tabindex="0"><code>pgvigil migrate -config pgvigil.yaml
