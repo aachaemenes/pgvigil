@@ -612,7 +612,7 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
   }
 }
 
-// TAGALL (Allen 11-15 04:55: 'It should have all the stuff the main pgvigil all instances have under prod or dev tag
+// TAGALL (the owner's report 11-15: 'It should have all the stuff the main pgvigil all instances have under prod or dev tag
 // too'): every page a folder of 'All instances' lists (its caret key r/<group>) is listed by the tag folder's folder of the
 // same group (t:<folder>/<group>), each link carrying tag=<tag>, and the tag's main strip carries every page of the root's
 // main strip; the tag holds both engines (`tag` above), so no page is excused by its engine. One row per page missing.
