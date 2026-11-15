@@ -284,7 +284,8 @@ BEGIN
     INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
     VALUES (p_instance_id, 'job_stats_hourly', now(), 'error',
             format('rollup failed for the %s hours %s to %s (the runs are stored; the hours are rebuilt by the next import or purge): %s',
-                   p_source, to_char(p_from AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), to_char(p_to AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), p_why));
+                   p_source, coalesce(to_char(p_from AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), p_from::text),
+                   coalesce(to_char(p_to AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), p_to::text), p_why));
   END IF;
 END $$;
 
