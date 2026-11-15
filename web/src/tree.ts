@@ -472,8 +472,8 @@ function draw() {
     // the folder's engines: its own folders hold only their pages (router.ts tagPages, the pass's #7)
     const engines = new Set(fo.rows.map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres'));
     const tagGroup = (g: TabGroup) => tagPages(g, engines);
-    // its name keeps the page shown when the folder carries that page, else lands on its Summary (a root-only page: the
-    // Collector of the fleet, Diff ... never shown 'in' a tag it ignores)
+    // its name keeps the page shown when the folder carries that page (every root page since TAGALL, but one of an engine
+    // the folder holds no instance of), else lands on its Summary
     const carried = rootGroups.some(g => tagGroup(g).includes(rootTab)) || rootGroups[0].tabs.includes(rootTab);
     // the name is the page shown (on: a click only opens or closes the folder) only where the folder carries that page;
     // elsewhere a click goes to the folder's Summary and the folder stays open (the TAGTREE review A #6)

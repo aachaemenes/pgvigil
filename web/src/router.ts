@@ -86,8 +86,7 @@ export const rootGroups: TabGroup[] = [
   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
 ];
-// TAGALL (the owner's report 11-15: 'It should have all the stuff the main pgvigil all instances have under prod or dev tag
-// too'): a tag folder carries EVERY page of the root, the Doors and Admin folders too - DBA Dash keeps its custom reports,
+// TAGALL: a tag folder carries EVERY page of the root, the Doors and Admin folders too - DBA Dash keeps its custom reports,
 // community tools and Recycle Bin at the root only (CustomReports.cs L19-23, Main.cs L210), pgvigil does not. Each page
 // opened under ?tag= narrows what it lists or picks to the tag's instances; what a page holds as one setting or one list
 // for the whole repository it says so in one line under a tag (fleet.ts fleetWideNote) and shows as the root does.
