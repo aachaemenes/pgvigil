@@ -71,7 +71,8 @@ jobs:
           BASELINE: ${{ inputs.baseline }}
         run: |
           if [ -f "$RUNNER_TEMP/prev/report.json" ]; then export KITWATCH_PREV="$RUNNER_TEMP/prev/report.json"; fi
-          # the first run of a branch without a baseline writes it (a workflow_dispatch input runs only from main)
+          # the first run of a branch without a baseline writes it (a workflow_dispatch runs on the branch it is given:
+          # any branch that holds this file, its baseline input included)
           if [ "$BASELINE" = "true" ] || [ ! -f internal/community/kits/shapes.json ]; then
             bash scripts/kitwatch.sh -baseline
           else

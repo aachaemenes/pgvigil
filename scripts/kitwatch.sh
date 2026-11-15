@@ -33,7 +33,9 @@
 #        column-swap (DRIFT reordered), pd-set (BREAK set removed), cache-retype (DRIFT type), decline-reword and
 #        decline-throw (BREAK outcome), preset-rename (BREAK preset parameter removed), new-param (BREAK new form
 #        parameter), help-layout (BREAK help), sibling-call (BREAK new hard sibling), port-edit (DRIFT list; once the
-#        pinned ports.json is committed), missing-state (exit 3), cut-frk - each sed written against the pinned files.
+#        pinned ports.json is committed), missing-state (exit 3), cut-frk - each sed written against the pinned files;
+#        the build review's: collector-norepo (the newest pass's collector cannot log: BREAK outcome ok -> none) and
+#        version-unspaced (DarlingData's '@version='x'': mssql_kits still reads it, no line).
 #   KW-C a kit file cut at a GO (KITWATCH_PLANT=cut-frk): 'installed without' and the FRK tools missing, exit 2.
 #   KW-D (a RUN) the newest kits: exit 0 or 1; three kits with URL, sha256 and version; 14 tool lines, the collector
 #        line, every port line; deny 0.
@@ -149,7 +151,8 @@ if [[ -n ${KITWATCH_PLANT:-} ]]; then
     new-param)    plant "$P/frk.sql" '/^ALTER PROCEDURE dbo\.sp_BlitzWho $/{n;s/@Help TINYINT = 0 ,/@Help TINYINT = 0 , @KitwatchPlanted INT = 0 ,/}' '@KitwatchPlanted INT = 0' ;;
     help-layout)  plant "$P/dd.sql" '/^    dbo\.sp_PressureDetector$/,/^ *description =$/s/^\( *\)description =$/\1explanation_planted =/' 'explanation_planted =' ;;
     sibling-call) plant "$P/dd.sql" "/^    dbo\\.sp_PressureDetector\$/,/@version_date = '20261101';/s/@version_date = '20261101';/&\\nEXECUTE (N'EXECUTE dbo.sp_BlitzWho @VersionCheckMode = 1;'); \\/* kitwatch: sibling call *\\//" 'kitwatch: sibling call' ;;
-    missing-state|port-edit) ;;   # set further on: a MARK no tool holds (once the setup library is read), a port's file (once fetched)
+    version-unspaced) plant "$P/dd.sql" "s/@version = '\([0-9][0-9.]*\)'/@version='\1'/g" "@version='" ;;   # review finding 5: production's read
+    missing-state|port-edit|collector-norepo) ;;   # set further on: a MARK no tool holds (once the setup library is read), a port's file (once fetched)
     cut-frk)      head -c "$(( $(wc -c < "$P/frk.sql") / 2 ))" "$P/frk.sql" > "$P/frk.cut" && mv "$P/frk.cut" "$P/frk.sql"
                   printf '\nGO\n' >> "$P/frk.sql" ;;
     *)            envfail "unknown plant $KITWATCH_PLANT" ;;
@@ -333,7 +336,14 @@ pass() {
   # the pinned pass's row goes first: collection_dates holds one row per instance and collection, so a newest run
   # that ends before it logs would read the pinned pass's 'ok'
   q "delete from pgvigil.collection_dates where instance_id = $MSID and collection = 'mssql_requests'" >/dev/null
-  "$BIN" collect -config "$CFG" -once mssql_requests >"$d/collector.log" 2>&1 || true
+  local ccfg=$CFG
+  if [[ ${KITWATCH_PLANT:-} == collector-norepo && $label == newest ]]; then   # KW-B (review finding 2): the newest
+    # pass's collector ends before it can log (its repository refused): the line must say so, never the pinned 'ok'
+    sed 's|dsn: env:KW_REPO_DSN|dsn: "host=127.0.0.1 port=1 user=kitwatch_none connect_timeout=3"|' "$CFG" > "$WORK/cfg-norepo.yaml"
+    grep -q 'kitwatch_none' "$WORK/cfg-norepo.yaml" || envfail "the plant collector-norepo changed nothing"
+    ccfg=$WORK/cfg-norepo.yaml
+  fi
+  "$BIN" collect -config "$ccfg" -once mssql_requests >"$d/collector.log" 2>&1 || true
   ks_chain_release
   runphase after
   # the run's own status: collection_dates holds every collection's latest run (collection_log only the runs that

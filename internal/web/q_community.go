@@ -398,6 +398,7 @@ type toolVersion struct {
 	InstalledDate string     `json:"installed_date,omitempty"`
 	Database      string     `json:"database,omitempty"`
 	Readable      bool       `json:"readable"`
+	Present       bool       `json:"present,omitempty"` // the last read found the procedure (else read_at is that read's, or absent: never read)
 	ReadAt        *time.Time `json:"read_at,omitempty"`
 	Checked       string     `json:"checked"`
 	CheckedDate   string     `json:"checked_date"`
@@ -422,17 +423,27 @@ func (s *Server) kitVersions(ctx context.Context, id int, db string, tools []too
 			continue
 		}
 		if _, seen := got[proc]; !seen {
-			v.ReadAt = &at
+			v.ReadAt, v.Present = &at, true
 			got[proc] = v
 		}
 	}
 	rows.Close()
+	// the instance's last mssql_kits read: a tool it did not find shows that read's time (not installed then), a tool
+	// never read none (a read with no procedure stores no row, so the rows alone cannot tell the two apart)
+	var lastRead *time.Time
+	var lr time.Time
+	if s.pool.QueryRow(ctx, `SELECT snapshot_at FROM pgvigil.collection_dates WHERE instance_id = $1 AND collection = 'mssql_kits' AND status IN ('ok', 'partial')`, id).Scan(&lr) == nil {
+		lastRead = &lr
+	}
 	for i := range tools {
 		c, ok := kits.Checked(tools[i].Name)
 		if !ok {
 			continue
 		}
-		v := got[tools[i].Name]
+		v, found := got[tools[i].Name]
+		if !found {
+			v.ReadAt = lastRead
+		}
 		v.Checked, v.CheckedDate = c.Version, c.Date
 		v.Newer = kits.NewerThanChecked(tools[i].Name, v.InstalledDate)
 		tools[i].Version = &v

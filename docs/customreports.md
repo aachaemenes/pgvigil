@@ -314,9 +314,13 @@ The community tools change upstream without asking pgvigil, so pgvigil watches t
   every tool is run through pgvigil itself - the form, the Run path with every preset, the collector's call, the
   siblings each tool cannot run without, the refusals pgvigil words as 'declined' - and compared. A **BREAK** line (a
   column pgvigil reads by name, a coarse type, a set or column removed, a preset's parameter, the help's descriptions,
-  a new form parameter pgvigil's write filter does not take out, a new sibling, a run that stops succeeding) turns the
-  run red with its lines in the run's summary; a **DRIFT** line (a column or set added, an exact type inside one
-  coarse type, nullability, order, a ported block or list that moved) is a warning on a green run. A section that had
+  a new form parameter pgvigil's write filter does not take out, a new sibling, a run that stops succeeding, a version
+  the daily `mssql_kits` read cannot read) turns the run red with its lines in the run's summary; a **DRIFT** line (a
+  column or set added, an exact type inside one coarse type, nullability, order, a ported block or list that moved, a
+  ported file gone from the kit) is a warning on a green run. A preset is checked for every parameter the page can
+  preset on any server (sp_HumanEventsBlockViewer's `@session_name` too, which the test server's own session never
+  needs), and the siblings are searched only after the tool ran with every grant: a run that did not finish leaves its
+  siblings 'unknown' (an info line), never a new sibling. A section that had
   no rows in one of the two runs (sp_HealthParser's one-column 'finding' set, sp_PressureDetector's 'THREADPOOL') is an
   info line, its columns not compared that week: its shape follows the server's data, not the kit. The pinned pass is
   also compared with `shapes.json`, so a change of pgvigil's own code, its driver or the runner is told apart from a
@@ -324,7 +328,10 @@ The community tools change upstream without asking pgvigil, so pgvigil watches t
 - **Taking a change**: accommodate the code, then run the workflow by hand with its baseline input (or
   `bash scripts/kitwatch.sh -baseline` with a PostgreSQL superuser in `PGVIGIL_ADMIN_DSN`) and commit the new
   `shapes.json` and `ports.json` with the code change, so the stored shapes are always the ones the code was proven
-  against. The run's artifact holds its report only: no kit file is stored or committed (sp_WhoIsActive is GPL-3.0).
+  against. The run keeps two artifacts: `kitwatch-report` (its report) and, when the run wrote them,
+  `kitwatch-baseline` (shapes.json and ports.json: result shapes, parameter names and the ported blocks' anchors, no
+  kit code). No kit file is stored or committed (sp_WhoIsActive is GPL-3.0); the pinned kit files are checked against
+  the sha256 shapes.json holds (a moved tag stops the run).
 - **Keeping it running**: GitHub turns a scheduled workflow off after 60 days without repository activity; before a
   release `gh workflow view kitwatch` must say it is enabled (`gh workflow enable kitwatch` if not).
 

@@ -24,7 +24,7 @@ interface Tool {
   installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[];
   state: string; on: boolean; needs?: Need[]; preset?: Record<string, string>; sample?: SampleMark;
   // KITWATCH K4.3: the version installed here (the server's definition, read daily) beside the one pgvigil was checked against
-  version?: { installed?: string; installed_date?: string; database?: string; readable: boolean; read_at?: string; checked: string; checked_date: string; newer?: boolean };
+  version?: { installed?: string; installed_date?: string; database?: string; readable: boolean; present?: boolean; read_at?: string; checked: string; checked_date: string; newer?: boolean };
 }
 // a stored sample's mark (q_community.go sampleMark): line = the words above it, mark = what an export carries (a demo
 // serve mails nothing)
@@ -163,8 +163,11 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const v = t.version;
     if (!v) return '';
     const checked = `checked ${v.checked}`;
-    if (!v.readable && v.read_at) return el('span', {}, `not readable here (no VIEW DEFINITION); ${checked}`);
-    if (!v.installed) return v.read_at ? `no version line; ${checked}` : checked;
+    // never read (mssql_kits reads each day) and read but not found are two things, each said
+    if (!v.read_at) return `not read yet (mssql_kits reads each day); ${checked}`;
+    if (!v.present) return `not found at the last read; ${checked}`;
+    if (!v.readable) return el('span', {}, `not readable here (no VIEW DEFINITION); ${checked}`);
+    if (!v.installed) return `no version line; ${checked}`;
     const here = `${v.installed}${v.database ? ` in ${v.database}` : ''}`;
     return v.newer ? el('span', {}, `${here}; ${checked} `, badge('newer than checked', 'warn')) : `${here}; ${checked}`;
   };
