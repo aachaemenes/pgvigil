@@ -36,7 +36,10 @@
 #   S5 (a fleet-wide or open-ended mute or blackout needs admin): the operator's four wide rows FAIL (a mute on every
 #     instance, over a tag, with no end; a blackout with no end); the operator's one-instance blackout with an end ok;
 #     the admin's fleet-wide mute ok. (A blackout over a tag is refused for everyone already: 'a blackout names one
-#     instance', no row.)
+#     instance', no row.) S5e, the edit of a mute rule (POST /api/alerts/mute op edit writes its successor): the
+#     operator's edit of a fleet-wide rule, and of a one-instance rule to every instance, over a tag or with no end
+#     FAIL (not refused: the edit is role-checked no further than operator); the operator's edit of a one-instance
+#     rule that keeps its instance and an end ok; the admin's edit to every instance ok.
 #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
 #     disabled user ok (401, as today); the lookup error FAIL (no ui_login_of to move aside); -no-login's words ok
 #     (unchanged); logout ok.
@@ -208,6 +211,31 @@ s5 o$SUF admin '{"kind":"mute","instance_id":999999,"check_key":"x"}' "a mute wi
 # a blackout over a tag is refused for every user before B24f ('a blackout names one instance', 409: roles-red1): no row
 s5 o$SUF own "{\"kind\":\"blackout\",\"instance_id\":999999,$END}" "a blackout of one instance with an end"
 s5 a$SUF own "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every instance"
+
+# S5e: an edit writes the rule's successor, a mute like any other. Two rules of the admin's: one on every instance,
+# one on an instance registered for these rows
+IID=$(q "select pgvigil.ensure_instance('roles-i$SUF', 'onprem', '18', 180000, false, '{}')")
+post a$SUF /api/ack "{\"kind\":\"mute\",\"instance_id\":$IID,\"check_key\":\"y\",$END}" > /dev/null
+WIDE=$(q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id is null and ended_at is null")
+ONE=$(q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id = $IID and ended_at is null")
+if [[ $WIDE == 0 || $ONE == 0 ]]; then bad "S5e: the admin's two mute rules are not in the store (every instance: $WIDE, one instance: $ONE): no edit row ran"
+else
+  s5e() {   # s5e <user> <want: admin|own> <body> <what>
+    local res code; res=$(post "$1" /api/alerts/mute "$3"); code=${res%% *}
+    if [[ $2 == admin ]]; then
+      [[ $code == 403 && $res == *"a fleet-wide or open-ended mute needs the admin role"* && $res == *"$1 is"* ]] && ok "S5e ${ROLE[$1]} $4: refused ($res)" || bad "S5e ${ROLE[$1]} $4: $res"
+    else
+      [[ $code == 200 && $res == *done* ]] && ok "S5e ${ROLE[$1]} $4: done ($res)" || bad "S5e ${ROLE[$1]} $4: $res"
+    fi
+  }
+  one() { q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id = $IID and ended_at is null"; }
+  s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$WIDE,\"check_key\":\"x\",$END}" "the edit of a rule on every instance"
+  s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"any_instance\":true,\"check_key\":\"y\",$END}" "an edit to every instance"
+  s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"y\",\"tag\":\"prod\",$END}" "an edit that adds a tag"
+  s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"y\"}" "an edit with no end"
+  s5e o$SUF own "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"z\",$END}" "an edit that keeps its one instance and an end"
+  s5e a$SUF own "{\"op\":\"edit\",\"ack_id\":$(one),\"any_instance\":true,\"check_key\":\"z\",$END}" "an edit to every instance"
+fi
 
 # ---- S9 --------------------------------------------------------------------------------------------------------------
 aud0=$(q "select count(*) from pgvigil.admin_audit"); ack0=$(q "select count(*) from pgvigil.acks")
