@@ -1,9 +1,21 @@
 package collect
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/platform"
 )
 
 // backup_dest (task 302): where a self-managed PostgreSQL server's WAL and base backups go, read from the server's own
@@ -156,6 +168,8 @@ var (
 	reRepoN      = regexp.MustCompile(`^(?:pgbackrest-)?repo[0-9]+-`)
 	reDestScheme = regexp.MustCompile(`^[a-z][a-z0-9+.-]{0,15}$`)
 	reEnvName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+	// a barman retention policy as its docs write one ('RECOVERY WINDOW OF 4 WEEKS', 'REDUNDANCY 2')
+	reBarmanPolicy = regexp.MustCompile(`^[A-Za-z0-9 ]{1,64}$`)
 )
 
 // secretName says whether an option's or a variable's name is one whose value is a credential. Exact words only: the
@@ -937,4 +951,467 @@ func parseDestLibrary(lib, basicDir string) []backupDest {
 		d.tool, d.detail = "library", "an archive library: the destination is the module's own setting - not known"
 	}
 	return []backupDest{d}
+}
+
+// ---- the collection backup_dest -------------------------------------------------------------------------------------
+
+// backupDestCollector is the collection backup_dest: every 15 minutes (backup_tools' interval, F11), the server's
+// settings into destinations, and with read_tools on the backup tool's own configuration on the collector's host.
+// Rows: one {kind:'settings'}, {kind:'dest'} per destination, {kind:'read'} per tool read (state off | ok | no_binary |
+// error, the fixed words). Read only; nothing is run unless the instance opted in.
+type backupDestCollector struct{}
+
+func init() { Register(backupDestCollector{}) }
+
+func (backupDestCollector) Name() string                   { return "backup_dest" }
+func (backupDestCollector) DefaultInterval() time.Duration { return 15 * time.Minute }
+func (backupDestCollector) Applies(info platform.Info) (bool, string) {
+	return backupToolsCollector{}.Applies(info)
+}
+
+func (b backupDestCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error) {
+	return b.RunInstance(ctx, conn, info, config.Instance{}, nil)
+}
+
+// backupDestSettingsSQL: the archiver's settings (archive_library from PostgreSQL 15, basic_archive's directory where
+// the module is loaded: missing_ok) and whether the server is a standby.
+const backupDestSettingsSQL = `
+SELECT pg_is_in_recovery() AS is_replica, current_setting('archive_mode') AS archive_mode,
+       current_setting('archive_command') AS archive_command,
+       coalesce(current_setting('archive_library', true), '') AS archive_library,
+       coalesce(current_setting('restore_command', true), '') AS restore_command,
+       coalesce(current_setting('basic_archive.archive_directory', true), '') AS basic_archive_dir`
+
+func (backupDestCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, inst config.Instance, _ CursorFunc) ([]Row, error) {
+	rows, err := conn.Query(ctx, backupDestSettingsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("backup_dest: the settings: %w", err)
+	}
+	set, err := rowsToMaps(rows)
+	if err != nil || len(set) != 1 {
+		return nil, fmt.Errorf("backup_dest: the settings: %v", err)
+	}
+	str := func(k string) string { v, _ := set[0][k].(string); return v }
+	isReplica, _ := set[0]["is_replica"].(bool)
+	st := destSettings{archiveMode: str("archive_mode"), archiveCmd: str("archive_command"), archiveLib: str("archive_library"),
+		restoreCmd: str("restore_command"), basicDir: str("basic_archive_dir"), isReplica: isReplica}
+	out := destRows(st)
+	readOn := backupReadTools(inst)
+	for _, t := range destTools(st) {
+		out = append(out, readDestTool(t, readOn)...)
+	}
+	return out, nil
+}
+
+// destSettings is what the settings read gave.
+type destSettings struct {
+	archiveMode, archiveCmd, archiveLib, restoreCmd, basicDir string
+	isReplica                                                 bool
+}
+
+// destOf parses the settings into destinations: F7 - a non-empty archive_library is the archiver on every version;
+// archive_mode off = 'WAL is not archived'; base backups go where pgBackRest's, wal-g's, barman's or barman-cloud's WAL
+// goes (a row of role base, its detail saying so), and are 'not known' for a plain copy (the view says it).
+func destOf(st destSettings) []backupDest {
+	var out []backupDest
+	switch {
+	case st.archiveMode == "off":
+		out = append(out, backupDest{role: "wal", seq: 1, source: "archive_mode", tool: "none", detail: "WAL is not archived (archive_mode off)"})
+	case strings.TrimSpace(st.archiveLib) != "":
+		out = append(out, parseDestLibrary(st.archiveLib, st.basicDir)...)
+	default:
+		wal := parseDestCommand(st.archiveCmd, "archive_command", "wal")
+		if len(wal) == 0 {
+			wal = []backupDest{{role: "wal", seq: 1, source: "archive_command", tool: "none", detail: "WAL is not archived (archive_command is empty)"}}
+		}
+		out = append(out, wal...)
+	}
+	for _, d := range out {
+		switch d.tool {
+		case "pgbackrest", "wal-g", "wal-e", "barman", "barman-cloud":
+			b := d
+			b.role, b.detail = "base", strings.TrimSpace(d.detail+" (base backups go where its WAL goes)")
+			if d.detail == "" {
+				b.detail = "base backups go where its WAL goes"
+			}
+			out = append(out, b)
+		}
+	}
+	out = append(out, parseDestCommand(st.restoreCmd, "restore_command", "restore")...)
+	return out
+}
+
+// destRows: the settings row and a dest row per destination. F12: a standby with archive_mode on (not always) does not
+// archive; a restore_command on a primary is set, not in use.
+func destRows(st destSettings) []Row {
+	out := []Row{{"kind": "settings", "is_replica": st.isReplica, "archive_mode": st.archiveMode,
+		"archive_command_set": st.archiveCmd != "" && st.archiveCmd != "(disabled)", "archive_library_set": strings.TrimSpace(st.archiveLib) != "",
+		"restore_command_set": st.restoreCmd != "",
+		"standby_archives":    !st.isReplica || st.archiveMode == "always"}}
+	for _, d := range destOf(st) {
+		r := destRow(d)
+		switch {
+		case d.role == "wal" && st.isReplica && st.archiveMode == "on":
+			r["detail"] = strings.TrimSpace(d.detail + " (this standby does not archive: archive_mode on archives on a primary only, always in recovery too)")
+		case d.role == "restore" && !st.isReplica:
+			r["detail"] = strings.TrimSpace(d.detail + " (set, not in use: this server is a primary)")
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// destTool is a tool whose own configuration names its storage: a pgBackRest stanza (with the options inline in the
+// server's command, which win for that server) or a barman server.
+type destTool struct {
+	tool, name string
+	inline     map[string]string // pgBackRest's inline where-options, by their name without dashes
+	config     string            // a --config the server's command names
+}
+
+// destTools: the tools the server's commands name whose configuration read_tools may read.
+func destTools(st destSettings) []destTool {
+	var out []destTool
+	seen := map[string]bool{}
+	for _, c := range []string{st.archiveCmd, st.restoreCmd} {
+		segs, why := lexCommand(c)
+		if why != "" {
+			continue
+		}
+		for _, raw := range segs {
+			s := peelSegment(raw)
+			if len(s.words) == 0 {
+				continue
+			}
+			switch path.Base(s.words[0].text) {
+			case "pgbackrest":
+				t := destTool{tool: "pgbackrest", inline: map[string]string{}}
+				for i := 1; i < len(s.words); i++ {
+					w := s.words[i]
+					name, val, has := optSplit(w.text)
+					if name == "" || w.tainted || secretName(name) {
+						continue
+					}
+					if !has && i+1 < len(s.words) && !strings.HasPrefix(s.words[i+1].text, "-") {
+						val = s.words[i+1].text
+						i++
+					}
+					n := strings.TrimLeft(name, "-")
+					switch {
+					case n == "stanza" && reToolName.MatchString(val):
+						t.name = val
+					case n == "config":
+						t.config = destPathOf(val)
+					case pgbrWhere[reRepoN.ReplaceAllString(n, "")] && reRepoN.MatchString(n):
+						t.inline[n] = val
+					}
+				}
+				if t.name != "" && !seen["pgbackrest|"+t.name] {
+					seen["pgbackrest|"+t.name] = true
+					out = append(out, t)
+				}
+			case "barman-wal-archive", "barman-wal-restore":
+				var d backupDest
+				destBarmanWAL(&d, s.words[1:])
+				if srv := strings.TrimPrefix(d.detail, "barman server "); srv != d.detail && !seen["barman|"+srv] {
+					seen["barman|"+srv] = true
+					out = append(out, destTool{tool: "barman", name: srv})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// pgbrWhere: the pgBackRest repository options read (where the repository is, its encryption's type, its retention) -
+// a whitelist: any other option's value, a key or a passphrase above all, is never taken into a variable.
+var pgbrWhere = map[string]bool{"type": true, "path": true, "host": true, "s3-bucket": true, "s3-endpoint": true, "s3-region": true, "s3-uri-style": true,
+	"azure-account": true, "azure-container": true, "azure-endpoint": true, "gcs-bucket": true, "gcs-endpoint": true, "sftp-host": true,
+	"storage-host": true, "cipher-type": true, "retention-full": true, "retention-full-type": true, "retention-diff": true, "retention-archive": true,
+	"retention-archive-type": true}
+
+// pgbrFiles is where pgBackRest reads its configuration when nothing names another: the file (the old default when the
+// new one is missing) and the include directory's *.conf.
+var pgbrFiles = struct{ file, oldFile, include string }{"/etc/pgbackrest/pgbackrest.conf", "/etc/pgbackrest.conf", "/etc/pgbackrest/conf.d"}
+
+// pgbrGetenv and pgbrEnviron read the collector's environment; a test sets them.
+var (
+	pgbrGetenv  = os.Getenv
+	pgbrEnviron = os.Environ
+)
+
+// pgbrConfig reads the where-options of a stanza's repositories as the collector host's pgBackRest would for the command
+// cmd (archive-push for the WAL, backup for the base backups), F8: [stanza:cmd] over [stanza] over [global:cmd] over
+// [global]; --config (or PGBACKREST_CONFIG) loads that file alone (no include directory), else the default file and
+// the include directory; PGBACKREST_REPOn_* in the environment win over the files; the server's inline options win over
+// all. Returns the options by name (repo1-path ...), where each came from, and the fixed words of a failure.
+func pgbrConfig(stanza, cmd, serverConfig string, inline map[string]string) (opts map[string]string, from map[string]string, why string) {
+	opts, from = map[string]string{}, map[string]string{}
+	rank := map[string]int{}
+	files := []string{}
+	switch {
+	case serverConfig != "":
+		files = []string{serverConfig}
+	case pgbrGetenv("PGBACKREST_CONFIG") != "":
+		files = []string{pgbrGetenv("PGBACKREST_CONFIG")}
+	default:
+		f := pgbrFiles.file
+		if p := pgbrGetenv("PGBACKREST_CONFIG_PATH"); p != "" {
+			f = filepath.Join(p, "pgbackrest.conf")
+		} else if _, err := os.Stat(f); err != nil {
+			f = pgbrFiles.oldFile
+		}
+		files = []string{f}
+		inc := pgbrFiles.include
+		if p := pgbrGetenv("PGBACKREST_CONFIG_INCLUDE_PATH"); p != "" {
+			inc = p
+		} else if p := pgbrGetenv("PGBACKREST_CONFIG_PATH"); p != "" {
+			inc = filepath.Join(p, "conf.d")
+		}
+		if m, err := filepath.Glob(filepath.Join(inc, "*.conf")); err == nil {
+			sort.Strings(m)
+			files = append(files, m...)
+		}
+	}
+	sections := map[string]int{"global": 1, "global:" + cmd: 2, stanza: 3, stanza + ":" + cmd: 4}
+	readAny := false
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		readAny = true
+		sec := ""
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+				sec = strings.TrimSpace(line[1 : len(line)-1])
+				continue
+			}
+			eq := strings.IndexByte(line, '=')
+			if eq < 0 {
+				continue
+			}
+			key := strings.TrimSpace(line[:eq])
+			r, ok := sections[sec]
+			if !ok || !reRepoN.MatchString(key) || !pgbrWhere[reRepoN.ReplaceAllString(key, "")] {
+				continue // the value of an option not on the list is never read
+			}
+			if r >= rank[key] {
+				rank[key], opts[key], from[key] = r, strings.TrimSpace(line[eq+1:]), f
+			}
+		}
+	}
+	for _, kv := range pgbrEnviron() {
+		k, v, _ := strings.Cut(kv, "=")
+		if !strings.HasPrefix(k, "PGBACKREST_REPO") {
+			continue
+		}
+		key := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(k, "PGBACKREST_"), "_", "-"))
+		if reRepoN.MatchString(key) && pgbrWhere[reRepoN.ReplaceAllString(key, "")] {
+			opts[key], from[key] = v, "environment"
+		}
+	}
+	for k, v := range inline {
+		opts[k], from[k] = v, "the server's command"
+	}
+	if !readAny && len(opts) == 0 {
+		return opts, from, "file not readable"
+	}
+	return opts, from, ""
+}
+
+// readDestTool reads one tool's configuration on the collector's host (read_tools on): a {kind:'read'} row with its
+// state and fixed words, and the destinations it names (source 'pgbackrest configuration' or 'barman').
+func readDestTool(t destTool, readOn bool) []Row {
+	rd := Row{"kind": "read", "tool": t.tool, "name": t.name}
+	if !readOn {
+		rd["state"], rd["message"] = "off", backupNotRead
+		return []Row{rd}
+	}
+	switch t.tool {
+	case "pgbackrest":
+		var out []Row
+		for _, c := range []struct{ cmd, role string }{{"archive-push", "wal"}, {"backup", "base"}} {
+			opts, from, why := pgbrConfig(t.name, c.cmd, t.config, t.inline)
+			if why != "" {
+				rd["state"], rd["message"] = "error", why
+				return []Row{rd}
+			}
+			for _, d := range pgbrDests(t.name, c.role, opts, from) {
+				out = append(out, destRow(d))
+			}
+		}
+		rd["state"] = "ok"
+		return append([]Row{rd}, out...)
+	case "barman":
+		bin, err := lookTool("barman")
+		if err != nil {
+			rd["state"], rd["message"] = "no_binary", "barman is not on the collector host's PATH"
+			return []Row{rd}
+		}
+		raw, err := runTool(context.Background(), bin, "-f", "json", "show-servers", "--", t.name)
+		if err != nil {
+			rd["state"], rd["message"] = "error", "barman show-servers: "+err.Error()
+			return []Row{rd}
+		}
+		ds, why := barmanDests(raw, t.name)
+		if why != "" {
+			rd["state"], rd["message"] = "error", why
+			return []Row{rd}
+		}
+		rd["state"] = "ok"
+		out := []Row{rd}
+		for _, d := range ds {
+			out = append(out, destRow(d))
+		}
+		return out
+	}
+	return nil
+}
+
+func destRow(d backupDest) Row {
+	return Row{"kind": "dest", "role": d.role, "seq": d.seq, "source": d.source, "tool": nilIfEmpty(d.tool), "dest_kind": nilIfEmpty(d.kind),
+		"host": nilIfEmpty(d.host), "container": nilIfEmpty(d.container), "path": nilIfEmpty(d.path), "repo_key": nilIfEmpty(d.repoKey),
+		"detail": nilIfEmpty(d.detail), "secret_seen": d.secretSeen}
+}
+
+// pgbrDests turns a stanza's options into a destination per repository: its type (posix by default, said), its path
+// (pgBackRest's default /var/lib/pgbackrest, said), bucket or container, host or endpoint, encryption and retention -
+// where each value came from in the detail. F2: a repoN-host = that host's configuration holds the storage, not read.
+func pgbrDests(stanza, role string, opts, from map[string]string) []backupDest {
+	repos := map[string]bool{}
+	for k := range opts {
+		repos[strings.TrimSuffix(reRepoN.FindString(k), "-")] = true
+	}
+	if len(repos) == 0 {
+		repos["repo1"] = true // pgBackRest's default repository: posix at /var/lib/pgbackrest
+	}
+	keys := make([]string, 0, len(repos))
+	for k := range repos {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []backupDest
+	for i, r := range keys {
+		get := func(k string) (string, string) { return opts[r+"-"+k], from[r+"-"+k] }
+		d := backupDest{role: role, seq: i + 1, source: "pgbackrest configuration", tool: "pgbackrest", repoKey: r}
+		var said []string
+		if h, f := get("host"); h != "" {
+			if reDestHost.MatchString(h) {
+				d.kind, d.host = "host", h
+				d.detail = "stanza " + stanza + "; repository host " + h + " (" + f + "): its storage is in that host's configuration, not read"
+			} else {
+				d.detail = "stanza " + stanza + ": not known (a repository host pgvigil cannot read)"
+			}
+			out = append(out, d)
+			continue
+		}
+		typ, tf := get("type")
+		if typ == "" {
+			typ, tf = "posix", "pgBackRest's default"
+		}
+		switch typ {
+		case "posix", "cifs", "s3", "gcs", "azure", "sftp":
+			d.kind = typ
+			said = append(said, "type "+typ+" ("+tf+")")
+		default:
+			d.detail = "stanza " + stanza + ": not known (repository type)"
+			out = append(out, d)
+			continue
+		}
+		p, pf := get("path")
+		if p == "" {
+			p, pf = "/var/lib/pgbackrest", "pgBackRest's default"
+		}
+		if pp := destPathOf(strings.TrimRight(p, "/") + "/"); pp != "" {
+			d.path = pp
+			said = append(said, "path ("+pf+")")
+		}
+		for _, k := range []string{"s3-bucket", "gcs-bucket", "azure-container"} {
+			if v, f := get(k); v != "" && reDestBucket.MatchString(v) {
+				d.container = v
+				said = append(said, k+" ("+f+")")
+			}
+		}
+		for _, k := range []string{"s3-endpoint", "gcs-endpoint", "azure-endpoint", "sftp-host", "storage-host", "azure-account"} {
+			if v, f := get(k); v != "" && reDestHost.MatchString(v) {
+				d.host = v
+				said = append(said, k+" ("+f+")")
+				break
+			}
+		}
+		if c, _ := get("cipher-type"); c != "" && c != "none" {
+			said = append(said, "encrypted")
+		} else {
+			said = append(said, "not encrypted")
+		}
+		if n, _ := get("retention-full"); reDestPort.MatchString(n) {
+			t, _ := get("retention-full-type")
+			if t == "" {
+				t = "count"
+			}
+			said = append(said, "retention "+n+" full ("+map[string]string{"count": "backups", "time": "days"}[t]+")")
+		}
+		d.detail = "stanza " + stanza + "; " + strings.Join(said, ", ")
+		out = append(out, d)
+	}
+	return out
+}
+
+// barmanShow is barman show-servers' answer for one server, the whitelisted keys only (F3: conninfo,
+// streaming_conninfo, ssh_command and every *_script are never decoded).
+type barmanShow struct {
+	BarmanHome           string          `json:"barman_home"`
+	BackupDirectory      string          `json:"backup_directory"`
+	BasebackupsDirectory string          `json:"basebackups_directory"`
+	WalsDirectory        string          `json:"wals_directory"`
+	BackupMethod         string          `json:"backup_method"`
+	Archiver             json.RawMessage `json:"archiver"`
+	StreamingArchiver    json.RawMessage `json:"streaming_archiver"`
+	RetentionPolicy      string          `json:"retention_policy"`
+	WalRetentionPolicy   string          `json:"wal_retention_policy"`
+}
+
+// barmanDests: the base backups' and the WAL's directories (a local path, or a cloud URL through the URL rule) of a
+// barman server, with its method and retention.
+func barmanDests(raw []byte, server string) ([]backupDest, string) {
+	var all map[string]barmanShow
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, "barman show-servers: not the JSON expected"
+	}
+	b, ok := all[server]
+	if !ok {
+		return nil, "barman show-servers: server " + server + " is not in the answer"
+	}
+	var said []string
+	if reToolName.MatchString(b.BackupMethod) {
+		said = append(said, "backup method "+b.BackupMethod)
+	}
+	if rp := strings.TrimSpace(b.RetentionPolicy); reBarmanPolicy.MatchString(rp) {
+		said = append(said, "retention "+rp)
+	}
+	var out []backupDest
+	for i, c := range []struct{ role, dir string }{{"base", b.BasebackupsDirectory}, {"wal", b.WalsDirectory}} {
+		dir := c.dir
+		if dir == "" && b.BackupDirectory != "" {
+			dir = strings.TrimRight(b.BackupDirectory, "/") + map[string]string{"base": "/base", "wal": "/wals"}[c.role]
+		}
+		d := backupDest{role: c.role, seq: i + 1, source: "barman", tool: "barman", detail: strings.TrimSpace("barman server " + server + "; " + strings.Join(said, ", "))}
+		switch {
+		case strings.Contains(dir, "://"):
+			if !destFromURLWord(&d, lexWord{text: dir}) {
+				d.kind, d.host, d.container, d.path, d.detail = "", "", "", "", "barman server "+server+": not known (the directory)"
+			}
+		case destPathOf(strings.TrimRight(dir, "/")+"/") != "":
+			d.kind, d.path = "posix", destPathOf(strings.TrimRight(dir, "/")+"/")
+		default:
+			d.detail = "barman server " + server + ": not known (the directory)"
+		}
+		out = append(out, d)
+	}
+	return out, ""
 }
