@@ -19,7 +19,7 @@ const maxAlertHours = 90 * 24
 func alertTools() []tool {
 	return []tool{
 		{Name: "alert_history", Title: "Alert history",
-			Description: "One instance's alerts over a window of up to 90 days: each firing with when it cleared, its severity, check, value and threshold, the channels it went to and its sends; and the instance's findings history in the same window (each finding's open, close, severity change and hourly sample, whether or not it was sent).",
+			Description: "One instance's alerts over a window of up to 90 days: each firing with when it cleared, its severity, check, value and threshold, the channels it went to and its sends; and the instance's findings history in the same window, newest first (each finding's open, close, severity change and hourly sample, whether or not it was sent).",
 			args: []arg{argInstance, argFrom, argTo,
 				{name: "hours", typ: "integer", desc: "window length in hours when from is not given (1..2160: 90 days, the alert log's reach; default 24)"}},
 			run: alertHistory},
@@ -60,6 +60,13 @@ func alertHistory(ctx context.Context, s *Server, a map[string]any) (any, error)
 		}
 		t := field(v, p.part)
 		rows := records(t)
+		if p.part == "history" {
+			// the API gives the history oldest first; the reply's row cap (Server.limit) keeps a list's head, so the
+			// tool turns it newest first: a cut reply keeps the recent end
+			for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
 		cut := false
 		for _, r := range rows {
 			if c, ok := r["cut"].(bool); ok && c {
@@ -70,7 +77,7 @@ func alertHistory(ctx context.Context, s *Server, a map[string]any) (any, error)
 		}
 		out[p.key] = rows
 		if cut {
-			out[p.key+"_note"] = fmt.Sprintf("the newest %d rows of the window only: ask a shorter window for the rest", len(rows))
+			out[p.key+"_note"] = fmt.Sprintf("the newest %d rows of the window only (newest first): ask a shorter window for the rest", len(rows))
 		}
 	}
 	if len(out["alerts"].([]map[string]any)) == 0 {

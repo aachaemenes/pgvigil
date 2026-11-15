@@ -103,12 +103,17 @@ fails that send as above, and the log's error says which.
 **Alert channel failing.** When a channel's last three send attempts (alerts or a Send test) all failed or were
 refused, the repository raises its own finding *alert channel failing* (warning, instance `pgvigil`, its value the
 channel's name; critical while one of those failed sends carried an alert that is critical now, so a channel losing
-criticals is told to the channels at a critical floor too), and the other channels are sent it like any repository-wide
-alert: every channel at or under its severity,
-scoped ones too, never an application contact's route. The detail names the channel's kind and destination (a
-webhook's scheme and host only), the newest failed attempt and its error. The failing channel itself is never sent its
-own alert. The next send that goes through ends it, and the other channels get its recovery. A channel whose floor is
-critical hears it only while criticals are being lost: set one channel at warning to hear of every failing channel.
+criticals is told to the channels at a critical floor too), and the other channels are sent it like any
+repository-wide alert: every channel at or under its severity, scoped ones too, never an application contact's route.
+A channel whose `checks:` list leaves out *alert channel failing* (or `pgvigil repository`) is not told, and a channel
+in its quiet hours is told after them while it stands; no window or digest holds it (none holds a repository-wide
+alert). The detail names the channel's kind and destination (a webhook's scheme and host only), the newest failed
+attempt and its error; its time is the first failed attempt of the streak (failing since). The failing channel itself
+is never sent its own alert. The next send that goes through ends it, and the other channels get its recovery. A
+channel that nothing is owed to makes no attempt, so the alert stands, repeating on the other channels, until a send
+goes through: once the destination is fixed, press the channel's **Send test** on the Alerts page, and a test that
+goes through ends it. A channel whose floor is critical hears it only while criticals are being lost: set one channel
+at warning to hear of every failing channel.
 
 One collector sends alerts: name the `alerts:` list in one configuration. A collector without the list leaves the
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings

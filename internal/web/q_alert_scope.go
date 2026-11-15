@@ -70,29 +70,35 @@ SELECT o.rule_id, o.by_rule_id, b.name AS by_rule_name, o.instances
   JOIN pgvigil.alert_rules b ON b.rule_id = o.by_rule_id
  ORDER BY o.rule_id, o.instances DESC`
 
-// the newest 20,000 rows of the window, oldest first (a long window keeps its recent end; cut = the page says so)
+// the newest 20,000 rows of the window, oldest first (a long window keeps its recent end; cut = the page says so):
+// 20,001 are read, cut = the 20,001st exists, and it (the oldest) is dropped
 const sqlFindingsHistory = `
-SELECT x.*, count(*) OVER () = 20000 AS cut
-  FROM (SELECT h.snapshot_at, h.finding_key, h.instance_id, h.instance_name, h.source, h.setting, h.value, h.event,
-               h.severity, h.metric_value
-          FROM pgvigil.findings_history h
-         WHERE h.snapshot_at >= greatest($1::timestamptz, now() - interval '90 days') AND h.snapshot_at <= $2
-           AND ($3::int IS NULL OR h.instance_id = $3)
-         ORDER BY h.snapshot_at DESC, h.finding_key
-         LIMIT 20000) x
- ORDER BY x.snapshot_at, x.finding_key`
+SELECT y.*
+  FROM (SELECT x.*, count(*) OVER () > 20000 AS cut
+          FROM (SELECT h.snapshot_at, h.finding_key, h.instance_id, h.instance_name, h.source, h.setting, h.value,
+                       h.event, h.severity, h.metric_value
+                  FROM pgvigil.findings_history h
+                 WHERE h.snapshot_at >= greatest($1::timestamptz, now() - interval '90 days') AND h.snapshot_at <= $2
+                   AND ($3::int IS NULL OR h.instance_id = $3)
+                 ORDER BY h.snapshot_at DESC, h.finding_key
+                 LIMIT 20001) x
+         ORDER BY x.snapshot_at DESC, x.finding_key
+         LIMIT 20000) y
+ ORDER BY y.snapshot_at, y.finding_key`
 
 // task 403b: one instance's alerts open at some point of the window [$1, $2) - the Alerts page's history part
-// (sqlAlertHistory) for one instance, filtered BEFORE the limit, so a busy fleet never pushes the instance's rows out
+// (sqlAlertHistory) for one instance, filtered BEFORE the limit, so a busy fleet never pushes the instance's rows out;
+// 1,001 are read, cut = the 1,001st exists, and it (the oldest) is dropped
 const sqlInstanceAlerts = `
-SELECT x.*, count(*) OVER () = 1000 AS cut
+SELECT x.*, count(*) OVER () > 1000 AS cut
   FROM (SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source, o.setting, o.value,
                ` + alertThreshold + ` AS threshold, o.channels, o.sends, o.occurrence, o.finding_key
           FROM pgvigil.alert_occurrences o
          WHERE o.instance_id = $3 AND o.fired_at < $2 AND (o.cleared_at IS NULL OR o.cleared_at >= $1)
-         ORDER BY o.fired_at DESC
-         LIMIT 1000) x
- ORDER BY x.fired_at DESC`
+         ORDER BY o.fired_at DESC, o.occurrence
+         LIMIT 1001) x
+ ORDER BY x.fired_at DESC, x.occurrence
+ LIMIT 1000`
 
 const sqlAlertScopeRules = `
 SELECT r.rule_id, r.scope_tags, pgvigil.alert_scope_text(r.scope_tags) AS scope_text, r.op_family, r.band_pct, r.zone,

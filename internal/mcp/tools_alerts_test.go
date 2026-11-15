@@ -31,7 +31,8 @@ func TestAlertHistory(t *testing.T) {
 				[]any{"2026-11-13T10:00:00Z", "critical", "server unreachable", 2, false})})
 		case "history":
 			_ = json.NewEncoder(w).Encode(map[string]any{"history": tbl([]string{"snapshot_at", "event", "instance_id", "cut"},
-				[]any{"2026-11-14T10:00:00Z", "open", 2, true})})
+				[]any{"2026-11-14T09:00:00Z", "open", 2, true},
+				[]any{"2026-11-14T10:00:00Z", "sample", 2, true})})
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 		}
@@ -71,7 +72,11 @@ func TestAlertHistory(t *testing.T) {
 	if _, ok := m["alerts_note"]; ok {
 		t.Errorf("alerts not cut, but noted: %v", m["alerts_note"])
 	}
-	if n, _ := m["findings_history_note"].(string); !strings.Contains(n, "newest 1 rows") {
+	// the API's history is oldest first; the tool turns it newest first so the reply's row cap keeps the recent end
+	if hist := m["findings_history"].([]map[string]any); len(hist) != 2 || hist[0]["event"] != "sample" || hist[1]["event"] != "open" {
+		t.Errorf("findings history %v, want the two rows newest first", hist)
+	}
+	if n, _ := m["findings_history_note"].(string); !strings.Contains(n, "newest 2 rows") {
 		t.Errorf("findings history cut: note %q, want the newest rows named", n)
 	}
 	for name, a := range map[string]map[string]any{

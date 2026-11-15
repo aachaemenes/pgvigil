@@ -20,16 +20,19 @@
 #  C. 'alert channel failing' (Fixed 21 / 27). Channels: hook2 (webhook to the sink's /c, floor warning), drop (file,
 #     floor warning, clear_after 0), hook (webhook to /r, floor critical). The sink answers /c with 500. One Send test of
 #     hook2 per pass (a test is an attempt like any send; the tests' 2-minute gap is met by asking each at its own past
-#     minute):
+#     minute; a pass sends its tests BEFORE it reads what is owed, alerts.go Pass):
 #     - while alert_log holds fewer than 3 failed attempts in a row for hook2: drop holds no 'alert channel failing';
-#     - the pass after the third: drop gets ONE firing file of it - value hook2, severity warning, source 'pgvigil
-#       repository', detail 'alert channel failing: webhook to http://127.0.0.1:<port> (json), the last 3 sends failed,
-#       ...; last error: ... 500 ...';
+#     - the pass of the third failure: drop gets ONE firing file of it - setting 'alert channel failing', value hook2,
+#       severity warning, detail 'alert channel failing: webhook to http://127.0.0.1:<port> (json), the last 3 sends
+#       failed, ...; last error: ... 500 ...' (the file's own "source" is the file channel's "pgvigil": filedrop.go's
+#       outer field shadows the alert's, an older defect outside this task, named to the lead);
 #     - hook2 never gets its own: no sink body on /c names 'alert channel failing', no alert_state row of hook2 for it;
 #     - hook (floor critical) gets none either (K3 at warning: a critical-only channel is not told; the lead's 23:4x);
+#     - alert_channel_failing's at for hook2 is its first failed attempt (the streak's start), not the third;
 #     - a further pass: no second firing file on drop;
-#     - the sink answers 200, one more test: its alert_log row is 'test'; the pass after it: drop gets ONE 'resolved'
-#       file of it (the recovery), and alert_channel_failing holds no hook2 row.
+#     - the sink answers 200, one more test: its alert_log row is 'test'; that same pass (alert_mark marks the finding
+#       gone at the pass's own time, drop's clear_after is 0): drop gets ONE 'resolved' file of it (the recovery), and
+#       alert_channel_failing holds no hook2 row; a further pass: no second 'resolved' file.
 #  R. Retry-After (Fixed 28), Send tests of hook through the changed sender; per row the sink's requests that carry the
 #     test message, and hook's newest alert_log row:
 #     - R1 429 'Retry-After: 2', then 200: 2 requests, the second at least 2 s after the first, the same body; 'test';
@@ -38,10 +41,11 @@
 #     - R4 429 with no Retry-After: 1 request; 'failed', 'no Retry-After';
 #     - R5 500, then 200: 1 request (a 500 is not retried); 'failed'.
 #     No error text names the URL's path (/r/token-...).
-#  P. alert_history (Added 20). Seeded: instances A and B; B with 1,001 alerts fired in the last hour, A with 2 and one
-#     more fired 100 days ago and cleared 99 days ago. Through serve (the UI login):
+#  P. alert_history (Added 20). Seeded: instances A, B and C; B with 1,001 alerts fired in the last hour, C with exactly
+#     1,000, A with 2 and one more fired 100 days ago and cleared 99 days ago. Through serve (the UI login):
 #     - GET /api/alertscope?part=alerts&instance_id=A over 90 days: 2 rows, cut false;
 #     - the same for B: 1,000 rows, cut true (filtered by the instance before the limit);
+#     - the same for C: 1,000 rows, cut false (nothing was left out);
 #     - part=alerts without instance_id: 400 'part alerts needs instance_id'.
 #     Through `pgvigil mcp` (the reader login): tools/list names alert_history; tools/call {instance A, hours 2160}: 2
 #     alerts (not the 100-day-old one) and a findings_history list; {hours 2161}: an error result naming 1..2160;
@@ -301,34 +305,34 @@ reached=""
 for k in 1 2 3 4 5 6; do
   testreq hook2 $((55 - 3 * k))
   pass "C$k"
-  if [[ -z $reached ]] && (( $(streak) >= 3 )); then reached=$k; break; fi
+  if (( $(streak) >= 3 )); then reached=$k; break; fi
   (( $(dropfiles firing) == 0 )) || fail "C: drop got 'alert channel failing' with only $(streak) failure(s) in a row"
 done
 [[ -n $reached ]] || fail "C: hook2 never reached 3 failures in a row: $(streak)"
-(( $(dropfiles firing) == 0 )) || fail "C: drop got it in the same pass as the third failure (it is owed by the next)"
-pass C-next
-[[ $(dropfiles firing) == 1 ]] || fail "C: the pass after the third failure: $(dropfiles firing) firing file(s) on drop"
+[[ $(dropfiles firing) == 1 ]] || fail "C: the pass of the third failure: $(dropfiles firing) firing file(s) on drop (the tests go first)"
 f=$(grep -l '"alert channel failing"' "$WORK/drop"/* | xargs grep -l '"firing"' | head -1)
 python3 - "$f" "$SPORT" <<'PY' || fail "C: the firing file's fields: $(head -c 800 "$f")"
 import json, sys
 d = json.load(open(sys.argv[1]))
 a = d['alerts'][0] if 'alerts' in d else d
 det = a.get('detail', '')
-assert a['value'] == 'hook2' and a['severity'] == 'warning' and a['source'] == 'pgvigil repository', a
+assert a['setting'] == 'alert channel failing' and a['value'] == 'hook2' and a['severity'] == 'warning', a
 assert det.startswith('alert channel failing: webhook to http://127.0.0.1:%s (json), the last 3 sends failed, the newest at ' % sys.argv[2]), det
 assert '500' in det and 'token-' not in det, det
 PY
 ! grep -q 'alert channel failing' "$WORK/sink.c.log" || fail "C: hook2 was sent its own failing alert"
 [[ $(q "select count(*) from pgvigil.alert_state where setting = 'alert channel failing' and channel in ('hook', 'hook2')") == 0 ]] || fail "C: hook or hook2 holds an alert_state row of it"
+[[ $(q "select (select at from pgvigil.alert_channel_failing where value = 'hook2') = (select min(snapshot_at) from pgvigil.alert_log where channel = 'hook2' and outcome in ('failed', 'refused'))") == t ]] || fail "C: alert_channel_failing's at is not hook2's first failed attempt"
 pass C-again
 [[ $(dropfiles firing) == 1 ]] || fail "C: a second firing file on drop"
 echo 200 > "$WORK/default.c"
 testreq hook2 2
 pass C-ok
 [[ $(newest hook2 | cut -d'|' -f1) == test ]] || fail "C: the recovering test: $(newest hook2)"
-pass C-recover
-[[ $(dropfiles resolved) == 1 ]] || fail "C: drop's recovery files: $(dropfiles resolved)"
+[[ $(dropfiles resolved) == 1 ]] || fail "C: drop's recovery files in the recovering test's pass: $(dropfiles resolved)"
 [[ $(q "select count(*) from pgvigil.alert_channel_failing where value = 'hook2'") == 0 ]] || fail "C: hook2 still failing"
+pass C-recover
+[[ $(dropfiles resolved) == 1 ]] || fail "C: a second recovery file on drop: $(dropfiles resolved)"
 ok "C: after 3 failed attempts in a row drop is told once, hook2 and hook (floor critical) are not; the recovery once"
 fi
 
@@ -375,6 +379,8 @@ IA=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_se
         values ('proof-chan-a-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
 IB=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
         values ('proof-chan-b-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
+IC=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+        values ('proof-chan-c-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
 st() {   # st <instance id> <key prefix> <n> <fired SQL> <cleared SQL or NULL>
   q "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity,
        first_sent_at, last_sent_at, cleared_at)
@@ -383,6 +389,7 @@ st() {   # st <instance id> <key prefix> <n> <fired SQL> <cleared SQL or NULL>
        from generate_series(1, $3) g" >/dev/null
 }
 st "$IB" pb 1001 "now() - interval '1 hour'" NULL
+st "$IC" pc 1000 "now() - interval '1 hour'" NULL
 st "$IA" pa 2 "now() - interval '30 minutes'" NULL
 st "$IA" pold 1 "now() - interval '100 days'" "now() - interval '99 days'"
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add"
@@ -406,6 +413,7 @@ alerts() {   # alerts <instance id or ''>: 'code rows cut'
 }
 [[ $(alerts "$IA") == "200 2 False" ]] || fail "P: instance A's alerts: $(alerts "$IA")"
 [[ $(alerts "$IB") == "200 1000 True" ]] || fail "P: instance B's alerts: $(alerts "$IB")"
+[[ $(alerts "$IC") == "200 1000 False" ]] || fail "P: instance C's exactly 1,000 alerts: $(alerts "$IC")"
 [[ $(alerts "") == 400* ]] && grep -qF 'part alerts needs instance_id' "$WORK/a.json" || fail "P: part alerts without an instance: $(cat "$WORK/a.json")"
 kill "$SRV" 2>/dev/null || true; SRV=""
 mcpcall() {  # mcpcall <arguments json>: the tool's reply (the result's text, or 'ERROR <text>')

@@ -249,6 +249,10 @@ BEGIN
               JOIN pgvigil.alert_findings f ON pgvigil.alert_in_scope(f.instance, f.tags, coalesce(c.instances, '{}'), coalesce(c.tags, '{}'))
              WHERE pgvigil.severity_rank(f.severity) >= pgvigil.severity_rank(c.min_severity)
                AND pgvigil.alert_checks_match(c.checks, f.source, f.setting)
+               -- a failing channel's own 'alert channel failing' is never sent to it (alerts.go), so it is never held
+               -- there either: no 'why held' line of an acknowledgement on it (task 403b; a window, a digest's too,
+               -- never holds a repository-wide alert: alert_window_matches)
+               AND NOT (f.source = 'pgvigil repository' AND f.setting = 'alert channel failing' AND f.value = c.name)
              ORDER BY c.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC) x
      WHERE x.hold IS NOT NULL
   ), a AS (
@@ -1256,13 +1260,17 @@ END $$;
 -- were refused is a finding of the repository itself (source 'pgvigil repository', no instance), so 0190's
 -- alert_findings carries it (through alert_channel_findings below, its third arm: a wiring line) and alert_due sends it
 -- as a repository-wide alert:
--- to every channel past its floor, scoped ones too, never a contact's route, resolved (the recovery) once it has been
--- gone for the channel's clear_after - that is, once the channel's next send went. The failing channel's own copy is
--- left out by the sender (alerts.go): it would fail there, and it would arrive only after the channel recovered.
--- The detail opens with the fixed words 'alert channel failing: ', so alert_due's repository-wide claim
--- (collector_claim: the text before the first ': ') never changes and never adds a repeat; the rest of it (the
--- destination, the newest attempt, the last error cut at 300 characters) is the channel's own record from alert_log,
--- which the Alerts page already shows. The value is the channel's name: one alert per failing channel.
+-- to every channel past its floor whose checks list takes it, scoped ones too, never a contact's route, resolved (the
+-- recovery) once it has been gone for the channel's clear_after - that is, once a send or a Send test of the channel
+-- went. A channel nothing is owed to makes no attempt, so the finding stands until its Send test (its suggested text
+-- says so). The failing channel's own copy is left out by the sender (alerts.go) and by alert_mark's held rows: it
+-- would fail there, and it would arrive only after the channel recovered. No window or digest holds it (a window never
+-- holds a repository-wide alert); quiet hours do (the sender skips a quiet channel).
+-- The detail opens with the fixed words 'alert channel failing: ' (stable words for B6.4); a repeat of it is the
+-- channel's repeat_secs only (alert_record keeps a claim, alert_state.why, for 'collector or network' alone, so the
+-- claim-change repeat never applies here); the rest of it (the destination, the newest attempt, the last error cut at
+-- 300 characters) is the channel's own record from alert_log, which the Alerts page already shows. The value is the
+-- channel's name: one alert per failing channel; its at is the streak's first failed attempt (failing since).
 -- The index serves the three newest attempts per channel (each month's partition takes it).
 CREATE INDEX IF NOT EXISTS alert_log_channel_at_idx ON pgvigil.alert_log (channel, snapshot_at DESC);
 
@@ -1279,11 +1287,11 @@ SELECT NULL::int AS instance_id,
                           WHERE pgvigil.alert_key(cf.instance_id, cf.source, cf.setting, cf.value) = ANY (kk.keys))
             THEN 'critical' ELSE 'warning' END::text AS severity,
        'alert channel failing'::text AS setting, c.name AS value,
-       'fix the destination or its credentials (the Alerts page lists the channel''s errors); alerts owed to it are sent once it answers'::text AS suggested,
+       'fix the destination or its credentials (the Alerts page lists the channel''s errors), then press its Send test: a test that goes through ends this alert; alerts owed to it are sent once it answers'::text AS suggested,
        'alert channel failing: ' || c.kind || ' to ' || c.destination || ', the last ' || l.n || ' sends failed, the newest at '
          || to_char(l.last_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
          || coalesce('; last error: ' || left(l.err, 300), '') AS detail,
-       'pgvigil repository'::text AS source, l.first_at AS at
+       'pgvigil repository'::text AS source, fs.since AS at
   FROM pgvigil.alert_channels c
  CROSS JOIN LATERAL (
         SELECT count(*)::int AS n, min(x.snapshot_at) AS first_at, max(x.snapshot_at) AS last_at,
@@ -1297,6 +1305,13 @@ SELECT NULL::int AS instance_id,
           FROM (SELECT a.keys FROM pgvigil.alert_log a
                  WHERE a.channel = c.name AND a.outcome IN ('sent', 'failed', 'refused', 'test')
                  ORDER BY a.snapshot_at DESC LIMIT 3) y, unnest(y.keys) k) kk
+ CROSS JOIN LATERAL (   -- failing since: the first failed or refused attempt after the channel's newest one that went
+        SELECT coalesce(min(a.snapshot_at), l.first_at) AS since
+          FROM pgvigil.alert_log a
+         WHERE a.channel = c.name AND a.outcome IN ('failed', 'refused')
+           AND a.snapshot_at > coalesce((SELECT b.snapshot_at FROM pgvigil.alert_log b
+                                          WHERE b.channel = c.name AND b.outcome IN ('sent', 'test')
+                                          ORDER BY b.snapshot_at DESC LIMIT 1), '-infinity')) fs
  WHERE c.is_configured;
 
 -- ---- task B24k: the channel kinds pushover, zabbix and azuremonitor; a destination's monthly quota -----------------

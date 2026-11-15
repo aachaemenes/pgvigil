@@ -179,6 +179,10 @@ func retryAfter(h string, now time.Time) (time.Duration, bool) {
 		if n < 0 {
 			return 0, false
 		}
+		if int64(n) > int64(maxRetryAfter/time.Second) {
+			// over the wait before the multiplication: a huge value would overflow time.Duration into a negative wait
+			return time.Duration(min(int64(n), 1<<32)) * time.Second, false
+		}
 		d = time.Duration(n) * time.Second
 	} else if t, err := http.ParseTime(h); err == nil {
 		d = max(t.Sub(now), 0)

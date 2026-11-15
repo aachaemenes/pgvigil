@@ -24,6 +24,8 @@ func TestRetryAfter(t *testing.T) {
 		{" 10 ", 10 * time.Second, true},
 		{"0", 0, true},
 		{"11", 11 * time.Second, false},
+		{"9223372037", 0, false},  // n seconds overflows time.Duration: refused, never a negative (immediate) wait
+		{"10000000000", 0, false}, // the review's case
 		{"", 0, false},
 		{"-1", 0, false},
 		{"soon", 0, false},
