@@ -246,6 +246,19 @@ index 40526c2..fb9c47a 100644
 +  CROSS JOIN LATERAL pgvigil.pg_poison_wait_findings(i.instance_id, now()) p
 + WHERE i.engine = 'postgres' AND i.is_active AND p.severity IN ('warning', 'critical');
 +COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30, task 405): dead tuples, replay lag, slot WAL, a volume under 5 GB free, an AG secondary behind, the runnable queue per scheduler, long-running requests, a server unreachable, the PostgreSQL poison wait.';
+diff --git i/internal/web/q_mssql_perf.go w/internal/web/q_mssql_perf.go
+index 078fe43..dd5de4b 100644
+--- i/internal/web/q_mssql_perf.go
++++ w/internal/web/q_mssql_perf.go
+@@ -325,7 +325,7 @@ const (
+ 	sqlMSSQLPoolSeries       = `SELECT at AS snapshot_at, pool_id, coalesce(pool_name, 'pool ' || pool_id) AS pool, waiters,
+        round(granted_kb / 1024.0, 1) AS granted_mb, round(available_kb / 1024.0, 1) AS available_mb, timeouts, forced_grants
+   FROM pgvigil.mssql_grant_series_between($1, $2, $3, $4)`
+-	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
++	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, memory_node_id, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
+   FROM pgvigil.mssql_memory_rmon WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+  ORDER BY snapshot_at DESC, record_id DESC LIMIT 1000`
+ 	sqlMSSQLRmonHourly = `SELECT * FROM pgvigil.mssql_memory_rmon_hourly($1, $2, $3)`
 diff --git i/internal/web/q_mssql_protection.go w/internal/web/q_mssql_protection.go
 new file mode 100644
 index 0000000..5c1e24d
@@ -585,6 +598,22 @@ index 7fe364d..3aaaafb 100644
  const instancePages: Record<string, Render> = {
    summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
    tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
+diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
+index 823b6dd..7dc2e07 100644
+--- i/web/src/mssql_perf.ts
++++ w/web/src/mssql_perf.ts
+@@ -426,6 +426,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
+   grid(rmon, [
+     { key: 'sample_at', label: 'time', fmt: fmtTime },
+     { key: 'notification', label: 'notification' },
++    // PerformanceMonitor 3.13.0's Node column (sql-memory.js pressureColumns): each memory node writes its own record of
++    // one event, so the column shows only when the rows hold 2 or more distinct nodes (a record read before the node
++    // column has none: 'not read')
++    ...(new Set(rmon.map(r => r.memory_node_id).filter(v => v != null)).size >= 2
++      ? [{ key: 'memory_node_id', label: 'node', num: true, fmt: (v: unknown) => v == null ? 'not read' : String(v) }] : []),
+     { key: 'ind_process', label: 'process', num: true },
+     { key: 'ind_system', label: 'system', num: true },
+     { key: 'avail_phys_kb', label: 'available physical', num: true, fmt: mbOf },
 diff --git i/web/src/router.ts w/web/src/router.ts
 index 2e453d1..433d0d7 100644
 --- i/web/src/router.ts

@@ -80,6 +80,10 @@
 #     without the node column, record 103, stores it (5); mssql_memory_rmon_hourly counts each event once (5 at
 #     indicator 2, not 7). The live record's NodeId (0 on the container) waits for memory.go's WIRING; NOT PROVEN live on
 #     two nodes (a container has one).
+#     R8b (with the wiring patch) the Memory page's records under pgvigil serve: GET /api/mssql/memory?part=rmon for
+#     ctrsyn over the hours of R8's records answers 200 with a memory_node_id column, the 5 records per node
+#     '0:3 1:1 none:1' (node 1's own 52; 103 read before the node column). Red without the patch: no such column. The
+#     page's Node column itself (shown with 2+ nodes) waits for a page shot.
 #  R4. the PostgreSQL poison wait (Changed 19, D4 changed): on built PostgreSQL instances' wait_sample rows judged at a
 #     fixed time: IPC:BufferIO 700 s in the newest 10 minutes and 650 s in the 10 before = warning (1.17 and 1.08), its
 #     query naming 'queryid 42: SELECT pgv_poison' from statement_text; IPC:BtreePage 6,100 s in the newest alone =
@@ -435,6 +439,25 @@ echo "   records stored after each read: $N1 $N2 $N3; watermark $WM; events at i
 [[ "$N1" == 3 && "$WM" == '{"0": 101, "1": 52}' && "$N2" == 4 && "$N3" == 5 && "$HR" == 5 ]] \
   || fail "R8: stored $N1 $N2 $N3 (want 3 4 5), watermark [$WM] (want {0: 101, 1: 52}), hourly $HR (want 5)"
 ok "R8: records keyed per node, the copies of one event stored once, the watermark per node, a collector without nodes still read"
+# R8b: the Memory page's records through the API (the wiring patch's q_mssql_perf.go line), the window in UTC words
+TA=$(pq "SELECT to_char(('$TM'::timestamptz - interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+TB=$(pq "SELECT to_char(('$TM'::timestamptz + interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+[[ $(code -b "$JAR" "$U/api/mssql/memory?instance=$SY&part=rmon&from=$TA&to=$TB") == 200 ]] || fail "R8b: GET rmon: $(cat "$TMPD/body")"
+NB=$(python3 - "$TMPD/body" <<'PY3'
+import json, sys
+t = json.load(open(sys.argv[1])).get('rmon') or {}
+cols = t.get('columns') or []
+rows = [dict(zip(cols, r)) for r in t.get('rows') or []]
+c = {}
+for r in rows:
+    k = 'none' if r.get('memory_node_id') is None else str(r['memory_node_id'])
+    c[k] = c.get(k, 0) + 1
+print(' '.join(f'{k}:{c[k]}' for k in sorted(c)) if 'memory_node_id' in cols else 'no memory_node_id column')
+PY3
+)
+echo "   the API's records per node: $NB"
+[[ "$NB" == "0:3 1:1 none:1" ]] || fail "R8b: /api/mssql/memory's rmon per node [$NB] (want 0:3 1:1 none:1)"
+ok "R8b: the Memory page's records carry their node (0:3 1:1 none:1)"
 
 echo "== R4. the PostgreSQL poison wait (Changed 19) =="
 TP=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '1 hour', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
