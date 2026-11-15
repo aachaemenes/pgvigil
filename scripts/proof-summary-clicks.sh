@@ -22,6 +22,14 @@
 #  GREEN: the same 0 FAIL there, the plain rows only headings and a properties table's labels.
 #  GREEN after the fix: 'clicks: <n>; 0 FAIL; <k> plain' at every scope, the plain rows only DBA Dash's text cells
 #  (Memory Dump / Crash restarts, Is Agent Running, DB Mail).
+#  REVISED 2026-11-14 19:4x PST, before run 3 (the walk now clicks an instance page one text node at a time, so a
+#  label is clicked apart from the links after it): on an instance page plain is also a properties table's VALUE
+#  (DBA Dash's instance info is text), a label whose words end with ':' ('Not OK:', 'Not judged (...):') and a text
+#  marked data-nolink (DB Mail, a page's own name). Every chip, health tile, the verdict word and sentence, each
+#  verdict reason WITH its count, each acknowledged / not judged group, and each name of the counts line ('not read
+#  yet', 'skipped') is a link. Run 3's own expectation: 0 FAIL at the root and the tag folder; on the two instance
+#  pages FAIL rows may remain only in their grids' plain cells (a finding's severity, object, time) - read them, then
+#  decide. A hang or a closed CDP socket is a FAIL line of its own ('the page hung ...'), never a silent exit.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"

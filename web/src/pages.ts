@@ -34,7 +34,7 @@ import type { AttentionBox } from './export';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
 import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
-import { bandClass, cellState, Chip, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
+import { bandClass, cellState, Chip, chipTab, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
 export type { Ctx };
 const range = window_;
@@ -254,6 +254,8 @@ export { errorBox };
 // cellState (what 'until the check changes' compares) lives in instheader.ts: the instance header judges the band
 // with it too
 
+// the Summary's pick key of the counts line's filters (an instance's own level), beside the test grid's group keys
+const LEVEL = '_level';
 // the Summary's own settings, kept per browser: Test Summary Max Height % (DBA Dash's 10 % ... 90 %, 70 % by default)
 // and Show Test Summary
 const maxHeights = [10, 20, 30, 40, 50, 60, 70, 80, 90];
@@ -302,7 +304,13 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       _worst: Math.max(0, ...groups.filter(g => !acked[g.key]).map(g => c[g.key].level)) };
     for (const ch of chips) row['m_' + ch.key] = ch.band === 'unknown' ? -1 : ch.band === 'crit' ? 2 : ch.band === 'warn' ? 1 : 0;
     row.m_measured = measured(chips)[0];
-    for (const g of groups) row['g_' + g.key] = acked[g.key] ? -1 : c[g.key].level * 1000 + c[g.key].n;   // sorts by level, then count
+    // a status column's sort key: DBA Dash's status order (DBADashStatusEnum: Critical 1, Warning 2, N/A 3, OK 4,
+    // Acknowledged 5), so the first click on a heading puts the worst first, as DBA Dash's ascending sort does; within
+    // a level the larger count first. A string of fixed width: the grid compares a column without 'num' as text.
+    for (const g of groups) {
+      const x = c[g.key], rank = acked[g.key] ? 5 : x.none ? 3 : x.level === 2 ? 1 : x.level === 1 ? 2 : 4;
+      row['g_' + g.key] = `${rank}${String(9999 - Math.min(9999, x.level ? x.n : 0)).padStart(4, '0')}`;
+    }
     return row;
   });
   // Sort (Darling's): severity (then name), name, or CPU (the newest host sample, highest first; none last)
@@ -323,13 +331,32 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const nAck = rows.reduce((a, r) => a + Object.keys(r._acked as Acked).length, 0);
   // one line of counts where a row of tiles stood: the grid is the page (DBA Dash's Summary)
   const waiters = insts.reduce((a, r) => a + Number(r.waiting_lock ?? 0), 0);
+  // (declared before the counts line: levelBtn reads them as the line is built - a later const throws)
+  // the counts line's filters (pick key LEVEL): an instance's own level as the line counts it - offline first (b 'na'),
+  // then its worst cell not acknowledged; 'ack' = an instance with an acknowledged check
+  const levelWords: Partial<Record<Bucket, string>> = { crit: 'critical', warn: 'warning', ok: 'OK', na: 'offline', ack: 'with an acknowledged check' };
+  const levelIs = (r: Row, b: Bucket): boolean => b === 'ack' ? Object.keys(r._acked as Acked).length > 0
+    : b === 'na' ? r._fresh === 'offline' : r._fresh !== 'offline' && Number(r._worst) === (b === 'crit' ? 2 : b === 'warn' ? 1 : 0);
+  // each count is a filter of the instance grid below (the test grid's counts' way: the same count again, or Clear
+  // Filter, shows them all), the instance count shows the grid, the blocking counts open Running queries
+  const levelBtn = (b: Bucket, text: string, cls = '') => {
+    const bt = el('button', { type: 'button', class: `link ${cls}`.trim(), 'aria-label': `${text}: show ${b === 'na' ? 'the offline instances' : `the instances ${levelWords[b]}`} below` }, text);
+    bt.addEventListener('click', () => { setPick(pick && pick.key === LEVEL && pick.b === b ? null : { key: LEVEL, label: 'level', b }); drawLower(); showResult(); });
+    return bt;
+  };
+  const allBtn = el('button', { type: 'button', class: 'link', 'aria-label': 'show every instance below' }, `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances`);
+  allBtn.addEventListener('click', () => { setPick(null); drawLower(); showResult(); });
+  const running = (text: string, cls: string, title?: string) => el('a', { class: `cell-link ${cls}`.trim(), href: href(ctx, { tab: 'running', instance: undefined }), ...(title ? { title } : {}) }, text);
   const tiles = el('p', { class: 'meta counts' },
-    `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances: `,
-    el('span', { class: n[2] ? 'crit' : '' }, `${n[2]} critical`), ', ', el('span', { class: n[1] ? 'warn' : '' }, `${n[1]} warning`), `, ${n[0]} OK, `,
-    el('span', { class: offline ? 'muted offline-count' : 'offline-count' }, `${offline} offline`), `, ${nAck} check(s) acknowledged; `,
-    el('span', { class: `blocking-recent ${blockWorst}`, title: 'Blocking (recent): the blocking events of every instance in the last hour, coloured by the worst instance\'s band (PerformanceMonitor\'s: 5 / 20 an hour, 10 / 60 seconds of wait)' },
-      `${blockRecent} blocking (recent)`),
-    waiters ? `; ${waiters} lock waiters now` : '');
+    allBtn, ': ',
+    levelBtn('crit', `${n[2]} critical`, n[2] ? 'crit' : ''), ', ', levelBtn('warn', `${n[1]} warning`, n[1] ? 'warn' : ''), ', ', levelBtn('ok', `${n[0]} OK`), ', ',
+    levelBtn('na', `${offline} offline`, offline ? 'muted offline-count' : 'offline-count'), ', ', levelBtn('ack', `${nAck} check(s) acknowledged`), '; ',
+    running(`${blockRecent} blocking (recent)`, `blocking-recent ${blockWorst}`, 'Blocking (recent): the blocking events of every instance in the last hour, coloured by the worst instance\'s band (PerformanceMonitor\'s: 5 / 20 an hour, 10 / 60 seconds of wait)'),
+    ...(waiters ? ['; ', running(`${waiters} lock waiters now`, '')] : []));
+  // ownLink: a pgvigil column's value as a link to the instance's page behind it (the value its words: the filter, the
+  // export and a screen reader read it as before)
+  const ownLink = (r: Row, tab: string, text: string): HTMLElement =>
+    el('a', { class: 'cell-link', 'data-text': text, href: href(ctx, { tab, instance: Number(r.instance_id), tag: undefined }) }, text);
   // a cell's page: the column's tab for the instance (DBA Dash's tabMapping), with the view a SQL Server tab opens on
   const cellHref = (g: Group, r: Row): string => {
     const t = cellTarget(g, r);
@@ -369,7 +396,11 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       fmt: (_v, r) => {
         const c = (r._chips as Chip[]).find(x => x.key === k);
         if (!c) return '';
-        const s = el('span', { 'data-text': c.value }, c.value, c.detail ? el('span', { class: 'visually-hidden' }, `, ${c.detail}`) : null);
+        // the value is a link to the chip's page on the instance, as the header's chip is (instheader.ts chipTab)
+        const t = chipTab(k, isMssql(r.engine));
+        const kids = [c.value, c.detail ? el('span', { class: 'visually-hidden' }, `, ${c.detail}`) : null];
+        const s = t ? el('a', { class: 'cell-link', 'data-text': c.value, href: href(ctx, { tab: t, instance: Number(r.instance_id), tag: undefined }) }, ...kids)
+          : el('span', { 'data-text': c.value }, ...kids);
         if (c.detail) s.title = c.detail;
         return s;
       },
@@ -385,23 +416,26 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     // PerformanceMonitor's server card as columns (task 177 D29): each chip's value, its detail in the cell's title
     // and its name, its band the fill; then 'N of M measured', the instance's freshness and its silence
     ...(['cpu', 'threads', 'memory', 'blocking', 'collectors'] as const).map(k => chipCol(k)),
-    { key: 'm_measured', label: 'Measured', num: true, fmt: (_v, r) => { const [a, b] = measured(r._chips as Chip[]); return el('span', { 'data-text': `${a} of ${b}` }, `${a} of ${b}`); } },
+    // pgvigil's own columns are links too (no text of the Summary is dead): each to the instance's page behind it
+    { key: 'm_measured', label: 'Measured', num: true, fmt: (_v, r) => { const [a, b] = measured(r._chips as Chip[]); return ownLink(r, 'summary', `${a} of ${b}`); } },
     { key: '_fresh', label: 'Collection', fmt: (_v, r) => {
       const lv = r._live as Row | undefined, fr = r._fresh as ReturnType<typeof freshness>;
       const t = fr === 'awaiting' ? statusWord.awaiting : fr === 'offline' ? `${statusWord.offline} · ${lastCollected(lv, nowMs)}`
         : `${statusWord[fr]} · last collect ${clockOf(lv?.last_collect_at)}`;
-      return el('span', { class: fr === 'offline' ? 'muted' : fr === 'online' ? '' : 'warn' }, t);
+      const a = ownLink(r, 'collectiondates', t);
+      if (fr === 'offline') a.classList.add('muted'); else if (fr !== 'online') a.classList.add('warn');
+      return a;
     } },
     { key: '_silence', label: 'Alerts', fmt: (_v, r) => {
       const lv = r._live as Row | undefined;
       return el('span', { class: 'silence-cell' }, silencedMark(lv) ?? '', ' ', silenceButton(ad, r, lv, () => { forget(); window.dispatchEvent(new HashChangeEvent('hashchange')); }));
     } },
-    { key: 'platform', label: 'Platform' },
-    { key: 'is_replica', label: 'Role', fmt: v => v ? 'replica' : 'primary' },
-    { key: 'total', label: 'Sessions', num: true },
+    { key: 'platform', label: 'Platform', fmt: (v, r) => v == null || v === '' ? '' : ownLink(r, 'summary', String(v)) },
+    { key: 'is_replica', label: 'Role', fmt: (v, r) => ownLink(r, isMssql(r.engine) ? 'availability' : 'replication', v ? 'replica' : 'primary') },
+    { key: 'total', label: 'Sessions', num: true, fmt: (v, r) => v == null ? '' : ownLink(r, isMssql(r.engine) ? 'mssql_running' : 'activity', fmtNum(v)) },
     // no colour here: the Activity cell judges lock waits, and acknowledging it takes the line out of the colour
-    { key: 'waiting_lock', label: 'Lock Waits', num: true },
-    { key: 'activity_at', label: 'Last Sample', fmt: fmtTime },
+    { key: 'waiting_lock', label: 'Lock Waits', num: true, fmt: (v, r) => v == null ? '' : ownLink(r, isMssql(r.engine) ? 'mssql_blocked' : 'activity', fmtNum(v)) },
+    { key: 'activity_at', label: 'Last Sample', fmt: (v, r) => v == null ? '' : ownLink(r, isMssql(r.engine) ? 'mssql_running' : 'activity', fmtTime(v)) },
   ];
   const broken = f.checks.filter(r => r.instance_id == null);
   // The test grid (DBA Dash's upper grid): one row per test over the scope the tree gives (the fleet, a tag folder, the
@@ -418,6 +452,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   let pick: { key: string; label: string; b: Bucket } | null = (() => {
     try {
       const p = JSON.parse(sessionStorage.getItem('pgvigil.summaryPick') ?? 'null') as { key?: string; b?: string } | null;
+      if (p && p.key === LEVEL && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na' || p.b === 'ack')) return { key: LEVEL, label: 'level', b: p.b as Bucket };
       const g = p && groups.find(x => x.key === p.key);
       return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na' || p.b === 'ack' || p.b === 'bad') ? { key: g.key, label: labelOf(g, pgOnly), b: p.b as Bucket } : null;
     } catch { return null; }
@@ -454,14 +489,14 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const keep = new Set(live.map(g => 'g_' + g.key));
     let shown = base();
     const inFocus = shown.length;
-    if (pick && !live.some(g => g.key === pick!.key) && pick.b !== 'na') setPick(null);   // its test is not on the page (the focused view, a new scope)
-    if (pick) shown = rows.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
+    if (pick && pick.key !== LEVEL && !live.some(g => g.key === pick!.key) && pick.b !== 'na') setPick(null);   // its test is not on the page (the focused view, a new scope)
+    if (pick) shown = pick.key === LEVEL ? rows.filter(r => levelIs(r, pick!.b)) : rows.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
     for (const [k, b] of countBtns) b.setAttribute('aria-pressed', String(!!pick && k === pick.key + '|' + pick.b));
     clearNote.textContent = pick ? '' : 'no count is picked';
     offControl(clear, pick ? null : 'No count is picked: there is no filter to clear', clearNote);
-    said.replaceChildren(pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}.` : focus ? `${inFocus} of ${rows.length} instance(s) need a look.` : `${rows.length} instance(s).`);
+    said.replaceChildren(pick ? (pick.key === LEVEL ? `${shown.length} instance(s) ${levelWords[pick.b] ?? words[pick.b]}.` : `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}.`) : focus ? `${inFocus} of ${rows.length} instance(s) need a look.` : `${rows.length} instance(s).`);
     // a picked test: its column alone among the status columns (DBA Dash's FilterByStatus hides the others)
-    const shownCols = cols.filter(c => !c.key.startsWith('g_') || (pick ? c.key === 'g_' + pick.key : keep.has(c.key)));
+    const shownCols = cols.filter(c => !c.key.startsWith('g_') || (pick && pick.key !== LEVEL ? c.key === 'g_' + pick.key : keep.has(c.key)));
     // DBA Dash's empty grid is its header row alone; the words stay for a screen reader
     lower.replaceChildren(grid(shown, shownCols,
       rows.length === 0 ? 'No instances yet: run the collector.' : pick ? 'No instance matches.' : focus ? 'Nothing needs a look: every sampled check is OK.' : 'No instance matches.'));
@@ -494,6 +529,10 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     drawUpper(); drawLower();
   };
   clear.addEventListener('click', () => { setPick(null); drawLower(); });
+  // a filter's result is the instance grid below: when its first line is out of sight (the test grid fills the screen
+  // above it), the window goes to it, so the click shows what it did (DBA Dash's split window keeps both grids on
+  // screen); a result already in view moves nothing
+  const showResult = () => { const t = said.getBoundingClientRect().top; if (t > window.innerHeight - 60 || t < 0) said.scrollIntoView({ block: 'start' }); };
   const countCol = (b: Bucket, label: string): Col => ({
     key: b, label, num: true,
     cls: v => 'status ' + (b === 'ok' || Number(v) === 0 ? 'ok' : b === 'na' ? 'none' : b === 'ack' ? 'none ack' : b),
@@ -502,7 +541,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       countBtns.set(String(r.key) + '|' + b, bt);
       bt.addEventListener('click', () => {
         setPick(pick && pick.key === r.key && pick.b === b ? null : { key: String(r.key), label: String(r.test), b });
-        drawLower();
+        drawLower(); showResult();
       });
       return bt;
     },
@@ -522,7 +561,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const b = el('button', { type: 'button', class: 'cell-link link', 'aria-label': `${text}: show the instances where it is a warning or a critical` }, text);
     b.addEventListener('click', () => {
       setPick(pick && pick.key === r.key && pick.b === 'bad' ? null : { key: String(r.key), label: text, b: 'bad' });
-      drawLower();
+      drawLower(); showResult();
     });
     return b;
   };
@@ -540,6 +579,23 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   sortSel.value = sortBy;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   let allLines = false;
+  // a line's reasons: the first four as links, then '+n more', a button that shows the rest of that line in place
+  const reasonLine = (links: { text: string; href: string }[]): HTMLElement => {
+    const box = el('span', { style: 'flex:1' });
+    const draw = (all: boolean) => {
+      const show = all ? links : links.slice(0, 4);
+      const parts: (string | HTMLElement)[] = [];
+      show.forEach((x, i) => { if (i) parts.push(' · '); parts.push(el('a', { href: x.href, class: 'cell-link' }, x.text)); });
+      if (!all && links.length > 4) {
+        const more = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false' }, `+${links.length - 4} more`);
+        more.addEventListener('click', () => draw(true));
+        parts.push(' · ', more);
+      }
+      box.replaceChildren(...parts);
+    };
+    draw(false);
+    return box;
+  };
   const drawStrip = () => {
     // every line with every reason, for the export (export.ts AttentionBox: the page draws 8 lines and 4 reasons of each)
     const every: { item: string; value: string; status: 'crit' | 'warn' }[] = [];
@@ -549,18 +605,28 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       const open = groups.filter(g => !c[g.key].none && c[g.key].level > 0 && !acked[g.key]);
       const pgRow = !isMssql(r.engine);
       const reasons = open.map(g => `${labelOf(g, pgRow)} ${cellText(c[g.key])}`);
+      // each reason is a link to the page behind it, as the cell it names is: blocking and deadlocks to the instance's
+      // own Blocking and Deadlocks pages (the instance calendar's 'View Blocking' / 'View Deadlocks'), a cell's reason
+      // to that cell's page (cellHref)
+      const ms = isMssql(r.engine);
+      const pageOf = (tab: string) => href(ctx, { tab, instance: Number(r.instance_id), tag: undefined });
+      const links: { text: string; href: string }[] = [];
       const rt = rates.get(Number(r.instance_id));
       const per = (k: string, label: string) => {
         const v = Number(rt?.[k] ?? 0), mins = Number(rt?.window_minutes ?? 15);
         return v > 0 ? `${label} ${v} (${(v * 60 / mins).toFixed(1)}/hr)` : '';
       };
-      const shown = [per('blocking', 'Blocking'), per('deadlocks', 'Deadlocks'), ...reasons].filter(Boolean);
+      const bl = per('blocking', 'Blocking'), dl = per('deadlocks', 'Deadlocks');
+      if (bl) links.push({ text: bl, href: pageOf(ms ? 'mssql_blocked' : 'activity') });
+      if (dl) links.push({ text: dl, href: pageOf(ms ? 'mssql_deadlocks' : 'pg_deadlocks') });
+      open.forEach((g, i) => links.push({ text: reasons[i], href: cellHref(g, r) }));
+      const shown = links.map(x => x.text);
       const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellState(c[g.key], g.key) }));
       const lvl = Number(r._worst);
       every.push({ item: String(r.name), value: shown.join(' · '), status: lvl === 2 ? 'crit' : 'warn' });
       return el('div', { class: 'attention-row', style: `display:flex;gap:.8rem;align-items:baseline;padding:.25rem .5rem;border-left:3px solid var(${lvl === 2 ? '--crit' : '--warn'});margin:.2rem 0` },
         dot(lvl), el('strong', {}, instLink(ctx, String(r.name), r.instance_id)),
-        el('span', { style: 'flex:1' }, shown.slice(0, 4).join(' · ') + (shown.length > 4 ? ` · +${shown.length - 4} more` : '')),
+        reasonLine(links),
         badge(lvl === 2 ? 'Critical' : 'Warning', lvl === 2 ? 'crit' : 'warn'),
         writeButton(ad, 'Acknowledge', `Acknowledge ${String(r.name)}: ${reasons.join(', ')}`, () => ackDialog({
           title: `Acknowledge ${String(r.name)}`,

@@ -24,7 +24,7 @@
 import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
 import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
-import { Ctx, href } from './router';
+import { Ctx, href, isMssql } from './router';
 import { verdict, verdictCard } from './verdict';
 import { el, fmtTime, pill } from './ui';
 
@@ -162,13 +162,31 @@ export function measured(chips: Chip[]): [number, number] { return [chips.filter
 export const bandClass = (b: Band) => b === 'crit' ? 'crit' : b === 'warn' ? 'warn' : b === 'ok' ? 'ok' : 'none';
 const bandBadge: Partial<Record<Band, string>> = { crit: 'CRIT', warn: 'WARN' };
 
-// the chip as PerformanceMonitor draws it: label (with CRIT / WARN), value, detail; its band is its edge colour
-export function chipEl(c: Chip): HTMLElement {
+// chipTab: the page a chip opens on its instance (a chip is a link, as every status text of the Summary is): CPU the
+// host's (PostgreSQL) or the CPU page (SQL Server), Threads the connections (PostgreSQL has no worker-thread pool) or
+// the CPU page's schedulers, Memory, Blocking and Deadlocks their own pages, Collectors the collection dates
+export function chipTab(key: string, ms: boolean): string | undefined {
+  switch (key) {
+    case 'cpu': return ms ? 'mssqlcpu' : 'host';
+    case 'threads': return ms ? 'mssqlcpu' : 'connections';
+    case 'memory': return ms ? 'mssqlmemory' : 'memory';
+    case 'blocking': return ms ? 'mssql_blocked' : 'activity';
+    case 'deadlocks': return ms ? 'mssql_deadlocks' : 'pg_deadlocks';
+    case 'collectors': return 'collectiondates';
+  }
+  return undefined;
+}
+
+// the chip as PerformanceMonitor draws it: label (with CRIT / WARN), value, detail; its band is its edge colour; with
+// a target (to) the whole chip is a link to its page
+export function chipEl(c: Chip, to?: string): HTMLElement {
   const b = bandBadge[c.band];
-  return el('div', { class: `chip band-${bandClass(c.band)}`, role: 'group', 'aria-label': `${c.label}: ${c.value}${c.detail ? `, ${c.detail}` : ''}${b ? `, ${c.band === 'crit' ? 'critical' : 'warning'}` : ''}` },
-    el('div', { class: 'chip-label' }, c.label, b ? hidden(pill(b, bandClass(c.band))) : null),
+  const name = `${c.label}: ${c.value}${c.detail ? `, ${c.detail}` : ''}${b ? `, ${c.band === 'crit' ? 'critical' : 'warning'}` : ''}`;
+  const kids = [el('div', { class: 'chip-label' }, c.label, b ? hidden(pill(b, bandClass(c.band))) : null),
     el('div', { class: 'chip-value' }, c.value),
-    c.detail ? el('div', { class: 'chip-detail' }, c.detail) : null);
+    c.detail ? el('div', { class: 'chip-detail' }, c.detail) : null];
+  return to ? el('a', { class: `chip band-${bandClass(c.band)}`, href: to, 'aria-label': name }, ...kids)
+    : el('div', { class: `chip band-${bandClass(c.band)}`, role: 'group', 'aria-label': name }, ...kids);
 }
 
 // the instance's band as the Summary judges it: its worst check not acknowledged, Offline first. Its items are the
@@ -243,6 +261,23 @@ export async function refreshSilenced(): Promise<boolean> {
 function hidden(n: HTMLElement): HTMLElement { n.setAttribute('aria-hidden', 'true'); return n; }
 export const treeBell = (): HTMLElement => el('span', { class: 'silenced-bell', role: 'img', 'aria-label': 'Alerts silenced', title: 'Alerts silenced for this server' });
 
+// reasonLine: the header's reasons, each a link to the page of its cell (the Summary cell's own target, cellTarget),
+// 'Offline' to the collection dates; the first six, then '+n more', a button that shows the rest in place
+function reasonLine(ctx: Ctx, b: ReturnType<typeof instBand>): HTMLElement {
+  const to = (t: { tab: string; kind?: string; cv?: string }) => { const base = href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) }); return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base; };
+  const links = [...(b.offline ? [{ text: 'Offline - no recent collection', href: href(ctx, { tab: 'collectiondates' }) }] : []),
+    ...b.items.map(i => ({ text: `${i.label} ${cellText(i.cell)}`, href: to(i.target) }))];
+  const box = el('div', { class: `meta inst-reason ${b.cls}` });
+  const draw = (all: boolean) => {
+    const parts: (string | HTMLElement)[] = [];
+    (all ? links : links.slice(0, 6)).forEach((x, i) => { if (i) parts.push(', '); parts.push(el('a', { class: 'cell-link', href: x.href }, x.text)); });
+    if (!all && links.length > 6) { const more = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false' }, `+${links.length - 6} more`); more.addEventListener('click', () => draw(true)); parts.push(', ', more); }
+    box.replaceChildren(...parts);
+  };
+  draw(false);
+  return box;
+}
+
 // instanceFrame: one read for every instance page (main.ts): the header - the band dot and word (the Not OK reasons
 // its title), the freshness line ('Online · last collect <time> · N of M measured'), the silence, the six chips - and
 // the band's dot for the breadcrumb
@@ -263,14 +298,16 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
     : `${statusWord[fr]} · ${fr === 'offline' ? lastCollected(live, now) : `last collect ${clockOf(live?.last_collect_at)}`}${n < m ? ` · ${n} of ${m} measured` : ''}`;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   // data-groups: the band's items in order (an offline band 'offline' first): the verdict card's reasons are these
-  const word = el('span', { class: `badge band-word ${b.cls}`, 'data-groups': [...(b.offline ? ['offline'] : []), ...b.items.map(i => i.key)].join(' ') }, b.word);
+  // the band word opens the instance's Findings (every finding behind the band, with its detail); no text of the
+  // header is dead
+  const word = el('a', { class: `badge band-word ${b.cls}`, href: href(ctx, { tab: 'findings' }), 'data-groups': [...(b.offline ? ['offline'] : []), ...b.items.map(i => i.key)].join(' ') }, b.word);
   if (b.reasons.length) word.title = b.reasons.join('\n');
   const header = el('section', { class: 'inst-header panel', 'aria-label': `${String(r.name)}: ${b.word}` },
     el('div', { class: 'inst-header-top' }, bandDot(b), ' ', el('a', { href: href(ctx, { tab: 'summary' }), class: 'inst-name' }, String(r.name)), ' ', word,
-      silencedMark(live) ?? '', el('span', { class: `meta status-line${fr === 'awaiting' ? ' awaiting' : ''}` }, status),
+      silencedMark(live) ?? '', el('span', { class: `meta status-line${fr === 'awaiting' ? ' awaiting' : ''}` }, el('a', { class: 'cell-link', href: href(ctx, { tab: 'collectiondates' }) }, status)),
       el('span', { style: 'margin-left:auto' }, silenceButton(ad, r, live, redraw))),
-    b.reasons.length ? el('div', { class: `meta inst-reason ${b.cls}` }, b.reasons.slice(0, 6).join(', ') + (b.reasons.length > 6 ? `, +${b.reasons.length - 6} more` : '')) : null,
-    el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(chipEl)),
+    b.reasons.length ? reasonLine(ctx, b) : null,
+    el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(c => { const t = chipTab(c.key, isMssql(r.engine)); return chipEl(c, t ? href(ctx, { tab: t }) : undefined); })),
     // the verdict card on the instance's Summary (both engines): a reading of this band and freshness, never another;
     // a fault in it leaves the header standing (instanceFrame's caller drops the whole header on a throw)
     ctx.tab === 'summary' ? (() => { try { return verdictCard(ctx, verdict(r, live, now, b, fr)); } catch { return null; } })() : null);

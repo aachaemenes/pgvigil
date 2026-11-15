@@ -30,15 +30,22 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
   const notOk = mine.filter(g => !c[g.key].none && c[g.key].level > 0);
   const unread = mine.filter(g => c[g.key].none && c[g.key].text !== 'n/a');
   const notHere = mine.filter(g => c[g.key].none && c[g.key].text === 'n/a');
+  // every group named is a link to its page; one whose page is this Summary (DB Mail: DBA Dash's text cell) is text
+  const named = (g: typeof mine[number], words: string, cls = '') => {
+    const tab = g.mssql?.[1] ?? 'summary';
+    return tab === ctx.tab ? el('span', { class: cls, 'data-nolink': 'this page' }, words)
+      : el('a', { class: cls, href: href(ctx, { tab }) }, words);
+  };
+  const sep = (xs: HTMLElement[]) => xs.flatMap((a, i) => i ? [', ', a] : [a]);
   sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? 'No warning or critical' : 'Not OK: ',
-    ...notOk.flatMap((g, i) => {
+    ...sep(notOk.map(g => {
       const x = c[g.key];
-      const a = el('a', { class: cellClass(x), href: href(ctx, { tab: g.mssql?.[1] ?? 'summary' }) }, `${g.mssql?.[2] ?? g.label} ${cellText(x)}`);
+      const a = named(g, `${g.mssql?.[2] ?? g.label} ${cellText(x)}`, cellClass(x));
       if (x.detail.length) a.title = x.detail.join('\n');
-      return i ? [', ', a] : [a];
-    }),
-    unread.length ? `; not read yet: ${unread.map(g => g.mssql?.[2] ?? g.label).join(', ')}` : '',
-    notHere.length ? `; skipped on this instance (each page says why): ${notHere.map(g => g.mssql?.[2] ?? g.label).join(', ')}.` : '.'));
+      return a;
+    })),
+    ...(unread.length ? ['; not read yet: ', ...sep(unread.map(g => named(g, g.mssql?.[2] ?? g.label)))] : []),
+    ...(notHere.length ? ['; skipped on this instance (each page says why): ', ...sep(notHere.map(g => named(g, g.mssql?.[2] ?? g.label))), '.'] : ['.'])));
   const mem = (v: unknown) => v == null ? '' : `${(Number(v) / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`;
   const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
   sec.append(el('h3', {}, 'Server'), props([

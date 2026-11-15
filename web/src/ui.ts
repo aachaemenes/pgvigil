@@ -246,8 +246,13 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       if (open) inputs.get(c.key)!.focus();
     });
     const th = el('th', c.num ? { class: 'num' } : {}, el('span', { class: 'th-label' }, name), fb);
+    // a heading's click sorts and says so: aria-sort on it (app.css draws the arrow from it, so no text is added to
+    // the heading's words, which the export and the proofs read), cleared on the others - a sort of equal values
+    // still shows that it happened (DBA Dash's sort glyph)
     th.addEventListener('click', () => {
       asc = sortKey === c.key ? !asc : true; sortKey = c.key;
+      for (const h of head.children) h.removeAttribute('aria-sort');
+      th.setAttribute('aria-sort', asc ? 'ascending' : 'descending');
       draw();
     });
     head.append(th);
@@ -425,11 +430,12 @@ export function dot(level: number, title = ''): HTMLElement {
 // (.tile-v) is the first child and the label (.tile-l) holds only its words: the proofs read both; app.css draws the
 // label above the figure.
 // A label that is itself a state's word ('Critical', 'Warnings') takes no pill: it would say the state twice.
-export interface TileOpts { unit?: string; sub?: string | Node; pill?: string | false }
+// href: the tile is a link to that page (the whole card answers a click; Allen 11-14 18:25)
+export interface TileOpts { unit?: string; sub?: string | Node; pill?: string | false; href?: string }
 export function tile(label: string, value: string, kind = '', o: TileOpts = {}): HTMLElement {
   const said = /^(critical|warnings?|ok|healthy)$/i.test(label.trim());
   const word = o.pill === false || said ? '' : o.pill ?? (kind === 'crit' ? 'CRIT' : kind === 'warn' ? 'WARN' : '');
-  return el('div', { class: 'tile ' + kind },
+  return el(o.href ? 'a' : 'div', o.href ? { class: 'tile tile-link ' + kind, href: o.href } : { class: 'tile ' + kind },
     el('div', { class: 'tile-v' }, value, o.unit ? el('span', { class: 'tile-unit' }, ' ' + o.unit) : null),
     el('div', { class: 'tile-l' }, label),
     word ? pill(word, kind) : null,

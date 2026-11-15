@@ -3,7 +3,7 @@
 // /api/tiles, the newest activity read of the window and the cache hit over the window.
 import { get, rowsOf, Table } from './api';
 import type { Ctx } from './router';
-import { window_ } from './router';
+import { href, window_ } from './router';
 import { el, fmtNum, fmtSecs, fmtTime, tile } from './ui';
 import { whatIsThis } from './sqlview';
 
@@ -53,8 +53,10 @@ export function safety(name: string, v: unknown): number | null {
 export async function tileWall(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<{ tiles: Table | null }>('tiles', { instance: ctx.instance, ...window_(ctx) });
   const t = rowsOf(d.tiles)[0] ?? {};
-  const one = (label: string, value: unknown, text: string, l: number | null, help: string) => {
-    const e = tile(label, value == null ? 'not read' : text, kindOf(l));
+  // each tile is a link to the page that shows what it measures (the sessions on Running queries, the settings on
+  // Configuration)
+  const one = (label: string, value: unknown, text: string, l: number | null, help: string, tab: string) => {
+    const e = tile(label, value == null ? 'not read' : text, kindOf(l), { href: href(ctx, { tab }) });
     e.setAttribute('title', `${help} (${words(l)})`);
     // the colour's meaning as text for a screen reader (the tile's own text is read as it is); the pill says it to the eye
     e.querySelector('.pill')?.setAttribute('aria-hidden', 'true');
@@ -64,22 +66,22 @@ export async function tileWall(ctx: Ctx): Promise<HTMLElement> {
   const idleL = Math.max(level(t.idle_in_txn, tileLimits.idleInTxn) ?? -1, Number(t.idle_in_txn) > 0 ? level(t.longest_idle_txn_secs, tileLimits.idleTxnSecs) ?? -1 : -1);
   const numbers = tileRow('Instance health',
     one('xmin horizon age', t.oldest_xmin_age, fmtNum(t.oldest_xmin_age), level(t.oldest_xmin_age, tileLimits.xminAge),
-      'age(backend_xmin) of the oldest client session: how many transactions vacuum is held back by'),
+      'age(backend_xmin) of the oldest client session: how many transactions vacuum is held back by', 'vacuum'),
     one('idle in transaction', t.idle_in_txn,
       fmtNum(t.idle_in_txn) + (Number(t.idle_in_txn) > 0 && t.longest_idle_txn_secs != null ? ` (${fmtSecs(t.longest_idle_txn_secs)})` : ''),
-      idleL < 0 ? null : idleL, 'sessions idle inside an open transaction, and the longest of them'),
+      idleL < 0 ? null : idleL, 'sessions idle inside an open transaction, and the longest of them', 'activity'),
     one('blocked sessions', t.waiting_lock, fmtNum(t.waiting_lock), level(t.waiting_lock, tileLimits.blocked),
-      'sessions waiting on a lock (wait_event_type Lock)'),
+      'sessions waiting on a lock (wait_event_type Lock)', 'activity'),
     one('longest query', t.longest_active_secs, fmtSecs(t.longest_active_secs), level(t.longest_active_secs, tileLimits.longestSecs),
-      'the longest running statement of an active session'),
+      'the longest running statement of an active session', 'activity'),
     one('connections used', t.conn_used_pct, `${fmtNum(t.conn_used_pct)} % (${fmtNum(t.total)} / ${fmtNum(t.max_connections)})`,
-      level(t.conn_used_pct, tileLimits.connPct), 'client connections of max_connections'),
+      level(t.conn_used_pct, tileLimits.connPct), 'client connections of max_connections', 'connections'),
     one('cache hit', t.hit_pct, fmtNum(t.hit_pct) + ' %', level(t.hit_pct, tileLimits.hitPct, true),
-      'blks_hit / (blks_hit + blks_read) over the window, every database'),
+      'blks_hit / (blks_hit + blks_read) over the window, every database', 'memory'),
   );
   const set = (name: string, label: string, help: string) => {
     const v = t[name], l = safety(name, v);
-    return one(label, v, String(v ?? ''), l, help);
+    return one(label, v, String(v ?? ''), l, help, 'config');
   };
   const settings = tileRow('Safety settings',
     set('fsync', 'fsync', 'off: a crash can corrupt the cluster'),

@@ -10,9 +10,11 @@
 // Usage:
 //   node scripts/summary-clicks.mjs <cdp port> <base url/> <out dir>
 //   chromium --headless=new --remote-debugging-port=<p> about:blank &   pgvigil demo ... -serve -listen 127.0.0.1:<port>
-// Writes <out dir>/summary-clicks.json (every click, its effect, its verdict) and <out dir>/summary-<scope>-dead.png
-// (the Summary with every dead text outlined, the whole page). Prints one line per click and
-// 'clicks: <n>; <m> FAIL; <k> plain' last; exit 1 on a FAIL.
+// Writes <out dir>/summary-clicks.json (every click, its effect, its verdict; saved after each scope) and
+// <out dir>/summary-<scope>-dead.png (the Summary with every dead text outlined, the whole page). Prints one line per
+// click and 'clicks: <n>; <m> FAIL; <k> plain' last; exit 1 on a FAIL. Every CDP call has 15 s: a hung page or a
+// closed socket FAILS the click it was on, a new tab is opened and the walk goes on (three in a row end the scope);
+// a browser dialog is dismissed and counted as the click's effect.
 const [port, U, outDir] = process.argv.slice(2);
 const fs = await import('node:fs');
 fs.mkdirSync(outDir, { recursive: true });
@@ -35,12 +37,49 @@ const scopes = [...(want.has('root') ? [['root', '#/summary']] : []), ...(tag &&
 // DBA Dash's text cells (not links): a dead click there is DBA Dash's too
 const plainColumns = new Set(['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB Mail']);
 
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
-await new Promise(r => ws.addEventListener('open', r));
-let id = 0; const wait = new Map();
-ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
-const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+// the browser: one tab over CDP; every call has a time limit (a hung page or a closed socket FAILS the click it was
+// on, then a new tab is opened and the walk goes on from the next target); a browser dialog (alert, confirm) is
+// dismissed and recorded as the click's effect
+const CALL_MS = 15000;
+let ws = null, targetId = '', id = 0;
+const wait = new Map(), dialogs = [];
+const cmd = (method, params = {}, ms = CALL_MS) => new Promise((res, rej) => {
+  if (!ws || ws.readyState !== 1) return rej(new Error('the CDP socket is not open'));
+  const i = ++id;
+  const t = setTimeout(() => { wait.delete(i); rej(new Error(`the page hung (${method} over ${ms / 1000} s)`)); }, ms);
+  wait.set(i, { res: d => { clearTimeout(t); res(d); }, rej: e => { clearTimeout(t); rej(e); } });
+  ws.send(JSON.stringify({ id: i, method, params }));
+});
+const connect = async (url, tid) => {
+  const sock = new WebSocket(url);
+  await new Promise((res, rej) => { sock.addEventListener('open', res, { once: true }); sock.addEventListener('error', () => rej(new Error('the CDP socket did not open')), { once: true }); });
+  sock.addEventListener('message', m => {
+    const d = JSON.parse(m.data);
+    if (d.method === 'Page.javascriptDialogOpening') {
+      dialogs.push(String(d.params?.message ?? ''));
+      sock.send(JSON.stringify({ id: ++id, method: 'Page.handleJavaScriptDialog', params: { accept: false } }));
+      return;
+    }
+    if (wait.has(d.id)) { const w = wait.get(d.id); wait.delete(d.id); w.res(d); }
+  });
+  sock.addEventListener('close', () => { if (ws !== sock) return; for (const w of wait.values()) w.rej(new Error('the CDP socket closed')); wait.clear(); });
+  ws = sock; targetId = tid;
+  await cmd('Page.enable'); await cmd('Runtime.enable');
+  await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+};
+// a new tab (the old one closed when it still answers)
+const freshTab = async () => {
+  const old = targetId;
+  try { ws?.close(); } catch { /* gone already */ }
+  const t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
+  await connect(t.webSocketDebuggerUrl, t.id);
+  if (old) await fetch(`http://127.0.0.1:${port}/json/close/${old}`).catch(() => null);
+};
+{
+  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  const pg = list.find(t => t.type === 'page');
+  await connect(pg.webSocketDebuggerUrl, pg.id);
+}
 const ev = async (expr, awaitPromise = false) => {
   const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise });
   if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
@@ -59,8 +98,6 @@ const drawn = async (ms = 20000) => {
   }
   return false;
 };
-await cmd('Page.enable'); await cmd('Runtime.enable');
-await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
 const go = async hash => { await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: U + hash }); await sleep(300); return drawn(); };
 // a fresh Summary: an open dialog or menu closed (Escape), no count picked (the pick survives in sessionStorage), the
 // page drawn again by the app's own redraw (a hashchange; the address set back when a click left it), the window at
@@ -112,18 +149,25 @@ const PARTS = `
 // every target of the page now (enumerated once per scope; each is found again after a reload)
 const enumerate = full => ev(`(() => { ${PARTS}
   const out = [];
-  // an instance's Summary: every element with its own short words (a direct text node), visible, outside a form
-  // control; its place is a child-index path from main (the page draws the same shape on a reload)
+  // an instance's Summary: every short text node, visible, outside a form control, one target each (an element's
+  // texts around its links are clicked apart: 'Not OK: ' is not the link after it); its place is a child-index path
+  // from main (the page draws the same shape on a reload). Plain by kind: a heading, a properties table's label or
+  // value, a label (its words end with ':'), a text marked data-nolink (DBA Dash's text cells, a page's own name)
   if (/[?&]i=/.test(location.hash)) {
     const m = document.querySelector('main');
     const pathOf = e => { const p = []; while (e && e !== m) { p.unshift([...e.parentElement.children].indexOf(e)); e = e.parentElement; } return p; };
     for (const e of m.querySelectorAll('*')) {
       if (e.closest('select, option, input, textarea, script, style, svg, [hidden]')) continue;
-      const own = [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').replace(/\s+/g, ' ').trim();
-      if (!own || own.length > 80 || /^[·,:;()\/|-]+$/.test(own)) continue;
       const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
-      const kind = e.closest('h1, h2, h3, h4, h5, h6') ? 'heading' : e.closest('table.props th, dt') ? 'label' : e.closest('a, button') ? 'control' : 'text';
-      out.push({ part: 'inst', path: pathOf(e), label: (e.closest('[class]')?.className || e.tagName).toString().split(' ')[0], text: own, kind });
+      const base = e.closest('h1, h2, h3, h4, h5, h6') ? 'heading' : e.closest('table.props th, dt') ? 'label' : e.closest('table.props td, dd') ? 'value'
+        : e.closest('a, button') ? 'control' : e.closest('[data-nolink]') ? 'nolink' : 'text';
+      for (const n of e.childNodes) {
+        if (n.nodeType !== 3) continue;
+        const own = n.textContent.replace(/\\s+/g, ' ').trim();
+        if (!own || own.length > 80 || /^[·,:;.()\\/|+-]+$/.test(own)) continue;
+        const kind = base === 'text' && /:$/.test(own) ? 'label' : base;
+        out.push({ part: 'inst', path: pathOf(e), label: (e.closest('[class]')?.className || e.tagName).toString().split(' ')[0], text: own, kind });
+      }
     }
     return out;
   }
@@ -199,54 +243,86 @@ const mouse = async (type, x, y) => cmd('Input.dispatchMouseEvent', { type, x, y
 const results = [];
 let fails = 0, plain = 0;
 const line = r => `${r.verdict.startsWith('FAIL') ? 'FAIL' : r.verdict.startsWith('plain') ? 'plain' : 'ok  '} | ${r.scope} | ${r.part} | ${r.label} | ${String(r.text).slice(0, 40)}${r.row ? ' @ ' + r.row : ''} | ${r.effect}`;
+const fail = r => { results.push(r); fails++; console.log(line(r)); };
+const save = () => fs.writeFileSync(`${outDir}/summary-clicks.json`, JSON.stringify({ scopes, results, dialogs }, null, 1));
+const plainKinds = { heading: 'a heading: it names what is beside it', label: 'a label: it names what is beside it',
+  value: "a properties table's value", nolink: "marked as text (DBA Dash's text cell, or this page's own name)" };
+// one click: the verdict of one target (throws when the page hangs or the socket closes)
+const clickOne = async (scope, t) => {
+  const p = await locate(t);
+  const r = { scope, ...t, engine: t.part === 'instcell' ? engineByName.get(t.row) ?? '' : '' };
+  if (p.why) { r.effect = p.why; r.verdict = 'FAIL ' + p.why; return { r, dirty: false }; }
+  await mouse('mouseMoved', p.x, p.y); await sleep(150);
+  const before = await snap(), d0 = dialogs.length;
+  await mouse('mousePressed', p.x, p.y); await mouse('mouseReleased', p.x, p.y);
+  await sleep(700);
+  let after = await snap();
+  if (after.hash !== before.hash) { await drawn(); after = await snap(); }
+  const effects = [];
+  if (after.hash !== before.hash) effects.push('lands on ' + after.hash);
+  if (dialogs.length > d0) effects.push('opens a browser dialog: ' + dialogs.slice(d0).join(' / ').slice(0, 80));
+  if (after.modal > before.modal) effects.push('opens a dialog or a menu');
+  if (after.sort !== before.sort) effects.push('sort mark ' + (after.sort || 'none'));
+  if (after.hash === before.hash && after.view !== before.view) effects.push('changes the view');
+  const offView = after.hash === before.hash && after.view === before.view && after.all !== before.all;
+  r.hit = p.hit;
+  r.effect = effects.length ? effects.join('; ') : offView ? 'nothing in view (a change below the fold only)' : 'nothing';
+  let dirty = offView;
+  if (effects.length) { r.verdict = 'ok'; dirty = true; }
+  else if (t.part === 'instcell' && plainColumns.has(t.label)) r.verdict = 'plain (DBA Dash: a text cell, not a link)';
+  else if (t.part === 'inst' && plainKinds[t.kind]) r.verdict = `plain (${plainKinds[t.kind]})`;
+  else r.verdict = 'FAIL dead click: ' + r.effect;
+  await mouse('mouseMoved', 2, 2);
+  return { r, dirty };
+};
+// after a hang: a new tab, the scope loaded again
+const recover = async hash => { await freshTab(); await reset(hash, true); };
 for (const [scope, hash] of scopes) {
-  await reset(hash, true);
-  const targets = thin(await enumerate(process.env.CLICK_ALL === '1'), process.env.CLICK_ALL === '1');
-  if (!scope.startsWith('instance') && (!targets.some(t => t.part === 'insthead') || !targets.some(t => t.part === 'testhead'))) {
-    results.push({ scope, part: 'page', label: 'Summary', text: hash, effect: 'the Summary drew no test grid or no instance grid', verdict: 'FAIL' }); fails++; continue;
+  let targets;
+  try {
+    await reset(hash, true);
+    targets = thin(await enumerate(process.env.CLICK_ALL === '1'), process.env.CLICK_ALL === '1');
+  } catch (e) {
+    fail({ scope, part: 'page', label: 'Summary', text: hash, effect: 'the page did not load: ' + e.message, verdict: 'FAIL' });
+    await freshTab().catch(() => null); save(); continue;
   }
-  let dirty = false;
+  if (!scope.startsWith('instance') && (!targets.some(t => t.part === 'insthead') || !targets.some(t => t.part === 'testhead'))) {
+    fail({ scope, part: 'page', label: 'Summary', text: hash, effect: 'the Summary drew no test grid or no instance grid', verdict: 'FAIL' }); save(); continue;
+  }
+  let dirty = false, hangs = 0;
   for (const t of targets) {
-    if (dirty) { await reset(hash); dirty = false; }
-    const p = await locate(t);
-    const r = { scope, ...t, engine: t.part === 'instcell' ? engineByName.get(t.row) ?? '' : '' };
-    if (p.why) { r.effect = p.why; r.verdict = 'FAIL ' + p.why; results.push(r); fails++; console.log(line(r)); continue; }
-    await mouse('mouseMoved', p.x, p.y); await sleep(150);
-    const before = await snap();
-    await mouse('mousePressed', p.x, p.y); await mouse('mouseReleased', p.x, p.y);
-    await sleep(700);
-    let after = await snap();
-    if (after.hash !== before.hash) { await drawn(); after = await snap(); }
-    const effects = [];
-    if (after.hash !== before.hash) effects.push('lands on ' + after.hash);
-    if (after.modal > before.modal) effects.push('opens a dialog or a menu');
-    if (after.sort !== before.sort) effects.push('sort mark ' + (after.sort || 'none'));
-    if (after.hash === before.hash && after.view !== before.view) effects.push('changes the view');
-    const offView = after.hash === before.hash && after.view === before.view && after.all !== before.all;
-    r.hit = p.hit;
-    r.effect = effects.length ? effects.join('; ') : offView ? 'nothing in view (a change below the fold only)' : 'nothing';
-    if (effects.length) { r.verdict = 'ok'; dirty = true; }
-    else if (t.part === 'instcell' && plainColumns.has(t.label)) { r.verdict = 'plain (DBA Dash: a text cell, not a link)'; plain++; if (offView) dirty = true; }
-    else if (t.part === 'inst' && (t.kind === 'heading' || t.kind === 'label')) { r.verdict = `plain (a ${t.kind}: it names what is beside it)`; plain++; if (offView) dirty = true; }
-    else { r.verdict = 'FAIL dead click: ' + r.effect; fails++; if (offView) dirty = true; }
-    results.push(r);
-    console.log(line(r));
-    await mouse('mouseMoved', 2, 2);
+    try {
+      if (dirty) { await reset(hash); dirty = false; }
+      const o = await clickOne(scope, t);
+      results.push(o.r); console.log(line(o.r));
+      if (o.r.verdict.startsWith('FAIL')) fails++; else if (o.r.verdict.startsWith('plain')) plain++;
+      dirty = o.dirty; hangs = 0;
+    } catch (e) {
+      fail({ scope, ...t, effect: e.message, verdict: 'FAIL ' + e.message });
+      if (++hangs >= 3) { fail({ scope, part: 'page', label: 'Summary', text: hash, effect: 'three hangs in a row: the rest of this scope is not clicked', verdict: 'FAIL' }); break; }
+      try { await recover(hash); dirty = false; } catch (e2) { fail({ scope, part: 'page', label: 'Summary', text: hash, effect: 'no new tab after a hang: ' + e2.message, verdict: 'FAIL' }); break; }
+    }
   }
   // the picture: the Summary with every dead text of this scope outlined in red, the whole page
-  await reset(hash);
-  const dead = results.filter(r => r.scope === scope && r.verdict.startsWith('FAIL') && r.part !== 'page');
-  await ev(`(() => { ${PARTS}
-    for (const d of ${JSON.stringify(dead)}) { const e = find(d); const box = d.part === 'inst' ? e : e?.closest('td, th, .attention-row, p') ?? e; if (box) box.style.outline = '3px solid #d00'; }
-    window.scrollTo(0, 0); return true; })()`);
-  const h = await ev('Math.ceil(document.documentElement.scrollHeight)');
-  await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: Math.min(Math.max(h, 1000), 8000), deviceScaleFactor: 1, mobile: false });
-  await sleep(500);
-  const shot = await cmd('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(`${outDir}/summary-${scope.replace(/[^a-z0-9]+/gi, '-')}-dead.png`, Buffer.from(shot.result.data, 'base64'));
-  await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+  try {
+    await reset(hash);
+    const dead = results.filter(r => r.scope === scope && r.verdict.startsWith('FAIL') && r.part !== 'page');
+    await ev(`(() => { ${PARTS}
+      for (const d of ${JSON.stringify(dead)}) { const e = find(d); const box = d.part === 'inst' ? e : e?.closest('td, th, .attention-row, p') ?? e; if (box) box.style.outline = '3px solid #d00'; }
+      window.scrollTo(0, 0); return true; })()`);
+    const h = await ev('Math.ceil(document.documentElement.scrollHeight)');
+    await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: Math.min(Math.max(h, 1000), 8000), deviceScaleFactor: 1, mobile: false });
+    await sleep(500);
+    const shot = await cmd('Page.captureScreenshot', { format: 'png' }, 60000);
+    fs.writeFileSync(`${outDir}/summary-${scope.replace(/[^a-z0-9]+/gi, '-')}-dead.png`, Buffer.from(shot.result.data, 'base64'));
+    await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+  } catch (e) {
+    console.log(`note | ${scope} | no picture: ${e.message}`);
+    await freshTab().catch(() => null);
+  }
+  save();
 }
-fs.writeFileSync(`${outDir}/summary-clicks.json`, JSON.stringify({ scopes, results }, null, 1));
+save();
 // the dead list by part and column (what the fix works from)
 const byCol = new Map();
 for (const r of results.filter(x => x.verdict.startsWith('FAIL'))) {
@@ -256,5 +332,5 @@ for (const r of results.filter(x => x.verdict.startsWith('FAIL'))) {
 console.log('== dead, by part and column:');
 for (const [k, n] of [...byCol.entries()].sort()) console.log(`DEAD ${k}: ${n}`);
 console.log(`clicks: ${results.length}; ${fails} FAIL; ${plain} plain`);
-ws.close();
+try { ws?.close(); } catch { /* gone */ }
 process.exit(fails ? 1 : 0);

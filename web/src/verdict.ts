@@ -5,7 +5,7 @@
 // Problem (Critical and Offline: the header's badge keeps its own words) and 'pgvigil has not read <name> yet' (no
 // collection ever, or no live read answered); a collection that is late (the header's 'Warning' status) is named.
 import { Row } from './api';
-import { Cell, cellText, groups, humanize, labelOf } from './fleet';
+import { Cell, cellTarget, cellText, groups, humanize, labelOf } from './fleet';
 import type { BandItem, Freshness, InstBand } from './instheader';
 import { Ctx, href } from './router';
 import { el } from './ui';
@@ -62,7 +62,7 @@ export function phraseOf(key: string, level: number, pg: boolean): string {
 
 export type VerdictState = 'ok' | 'warning' | 'problem' | 'unread';
 export interface VerdictReason { key: string; phrase: string; level: number; cell?: Cell; target: { tab: string; kind?: string; cv?: string } }
-export interface Verdict { state: VerdictState; word: string; sentence: string; reasons: VerdictReason[]; notes: string[]; acked: BandItem[]; notJudged: { key: string; label: string }[] }
+export interface Verdict { state: VerdictState; word: string; sentence: string; reasons: VerdictReason[]; notes: string[]; acked: BandItem[]; notJudged: { key: string; label: string; target: VerdictReason['target'] }[] }
 
 // verdict: ONE function over the header's own band and freshness (instheader.ts instBand, freshness: the caller reads
 // them once for both); task 90's role views list one card per instance from it
@@ -88,7 +88,7 @@ export function verdict(r: Row, live: Row | undefined, now: number, b: InstBand,
   const notJudged = groups.filter(g => {
     const c = b.cells[g.key];
     return c != null && c.none && c.text !== 'n/a';
-  }).map(g => ({ key: g.key, label: labelOf(g, pg) }));
+  }).map(g => ({ key: g.key, label: labelOf(g, pg), target: cellTarget(g, r) }));
   let state: VerdictState, sentence: string;
   if (b.offline) {
     const at = Date.parse(String(live?.last_collect_at ?? ''));
@@ -131,21 +131,31 @@ export function verdictCard(ctx: Ctx, v: Verdict): HTMLElement {
     const base = href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) });
     return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base;
   };
+  // the word and the sentence are one link to the instance's Findings (the header's band word goes there too: Allen
+  // 11-14 18:25, no text of the Summary that does nothing on a click)
   const card = el('section', { class: `verdict-card ${stateCls[v.state]}`, 'data-state': v.state, 'aria-label': `In plain words: ${v.word}` },
-    el('div', { class: 'verdict-head' }, el('span', { class: `badge verdict-word ${stateCls[v.state]}` }, v.word), ' ', el('span', { class: 'verdict-sentence' }, v.sentence)));
+    el('div', { class: 'verdict-head' }, el('a', { class: 'verdict-link', href: href(ctx, { tab: 'findings' }) },
+      el('span', { class: `badge verdict-word ${stateCls[v.state]}` }, v.word), ' ', el('span', { class: 'verdict-sentence' }, v.sentence))));
   if (v.reasons.length) {
     card.append(el('ul', { class: 'verdict-reasons' }, ...v.reasons.map(q => {
       // a reason links to its Summary cell's page; one whose page is this one (a SQL Server Memory Dump, Instance Uptime,
       // DB Mail) or a group the Summary shows as plain text is text, as the fleet Summary shows it
+      // the cell's own text ('(1 warning)') is inside the link: a click on it goes where the phrase goes
       const text = q.target.tab === ctx.tab || plainGroups.has(q.key);
-      const a = text ? el('span', { class: 'verdict-text' }, q.phrase) : el('a', { href: to(q.target) }, q.phrase);
+      const words = [q.phrase, q.cell ? ` (${cellText(q.cell)})` : ''];
+      const a = text ? el('span', { class: 'verdict-text' }, ...words) : el('a', { href: to(q.target) }, ...words);
       if (q.cell?.detail.length) a.title = q.cell.detail.join('\n');
-      return el('li', { class: q.level >= 2 ? 'crit' : 'warn', 'data-group': q.key, 'data-phrase': q.phrase, ...(text ? { 'data-nolink': q.target.tab === ctx.tab ? 'this page' : 'plain' } : {}) }, a, q.cell ? ` (${cellText(q.cell)})` : '');
+      return el('li', { class: q.level >= 2 ? 'crit' : 'warn', 'data-group': q.key, 'data-phrase': q.phrase, ...(text ? { 'data-nolink': q.target.tab === ctx.tab ? 'this page' : 'plain' } : {}) }, a);
     })));
   }
   for (const n of v.notes) card.append(el('p', { class: 'meta verdict-note' }, n));
-  const list = (cls: string, lead: string, xs: { key: string; label: string }[]) => xs.length
-    ? el('p', { class: `meta ${cls}` }, lead, ...xs.flatMap((x, i) => [i ? ', ' : '', el('span', { 'data-group': x.key }, x.label)])) : null;
+  // each group named is a link to its Summary cell's page (text where that page is this one, or a group the Summary
+  // shows as plain text, as the reasons above)
+  const groupEl = (x: { key: string; label: string; target: VerdictReason['target'] }) => x.target.tab === ctx.tab || plainGroups.has(x.key)
+    ? el('span', { 'data-group': x.key, 'data-nolink': x.target.tab === ctx.tab ? 'this page' : 'plain' }, x.label)
+    : el('a', { 'data-group': x.key, href: to(x.target) }, x.label);
+  const list = (cls: string, lead: string, xs: { key: string; label: string; target: VerdictReason['target'] }[]) => xs.length
+    ? el('p', { class: `meta ${cls}` }, lead, ...xs.flatMap((x, i) => [i ? ', ' : '', groupEl(x)])) : null;
   const acked = list('verdict-acked', 'Acknowledged, not counted: ', v.acked);
   const nj = list('verdict-notjudged', 'Not judged (no data yet, or the read failed): ', v.notJudged);
   if (acked) card.append(acked);
