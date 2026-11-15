@@ -1,0 +1,322 @@
+table	class	time_column	carry	text_columns	dropped_columns
+ack_log	window	at	audit		
+ack_suppressed	state				
+acks	state				
+acl_databases	state		audit		
+acl_default_privileges	state		audit		
+acl_schemas	state		audit		
+actions_log	window	at	audit		
+activity_sample	window	snapshot_at			
+activity_summary	window	snapshot_at			
+admin_audit	window	at	audit		
+admin_instances	left-out				
+admin_inventory_state	left-out				
+admin_page_holder	left-out				
+admin_proposals	left-out				
+admin_removed	left-out				
+admin_sources	left-out				
+alert_channels	state				destination
+alert_dismissals	state				
+alert_log	window	snapshot_at			destination
+alert_rule_fired	state				
+alert_rule_log	window	at	audit		
+alert_rule_state	state				
+alert_rules	state				
+alert_state	state				
+alert_tests	left-out				
+amcheck_runs	window	snapshot_at			
+app_applications	state				
+app_assignments	state				
+app_field_source	state				
+app_not_application	state				
+backup_sample	window	snapshot_at			
+backup_state	state				
+buffercache_sample	window	snapshot_at			
+cloud_io_sample	window	snapshot_at			
+collection_dates	state				
+collection_log	window	snapshot_at			
+collector_beats	window	at			
+collector_heartbeat	state				
+collector_instances	state				
+collector_load	window	minute			
+collector_runs	window	minute			
+collector_spells	state				
+collector_streaks	state				
+compare_findings_cache	left-out				
+compare_state	state				
+conn_sources	window	snapshot_at			
+custom_checks	state			sql	
+custom_report_folders	state				
+custom_report_log	window	at	audit		
+custom_reports	state			body	
+custom_results	window	snapshot_at		columns,rows	
+darling_benign_waits	state				
+database_collations	state				
+database_extensions	state				
+database_sizes	window	snapshot_at			
+databases	state				
+db_checks	state				
+dbadash_instances	state				
+dbadash_move_ids	left-out				
+dbadash_moves	left-out				
+dbadash_repositories	state				
+dbadash_summary	state				
+dbadash_summary_history	window	snapshot_at			
+dbstats	window	snapshot_at			
+dbstats_last	left-out				
+depth_databases	state				
+dms_instances	state				
+dms_ri_sample	window	snapshot_at			
+dms_table_stats	state				
+dms_task_sample	window	snapshot_at			
+dms_tasks	state				
+drive_thresholds	state				
+extension_history	window	changed_at			
+function_stats	window	snapshot_at			
+hba_rules	state		audit		
+host_disk_history	window	snapshot_at			
+host_disks	state				
+host_io	window	snapshot_at			
+host_sample	window	snapshot_at			
+host_state	state				
+hours_retention	state				
+index_bloat	state				
+index_databases	state				
+index_inventory	state				
+index_state	state				
+index_usage_daily	window	snapshot_at			
+instance_extension_settings	state				
+instance_extensions	state				
+instance_setting_history	window	changed_at			
+instance_state	state				
+instance_tag_overrides	state				
+instance_versions	state				
+instances	state				
+iostats	window	snapshot_at			
+job_exclusions	state				
+job_runs	window	start_time		command,return_message	
+job_stats_defer	left-out				
+job_stats_dirty	left-out				
+job_stats_first_build	left-out				
+job_stats_hourly	window	snapshot_at			
+job_step_runs	window	start_time		output	
+job_thresholds	state				
+job_versions	state			definition,changes,script	
+jobs	state			command	
+log_cursor	left-out				
+log_events	window	snapshot_at		statement,detail,message	
+mssql_activity_read	window	snapshot_at			
+mssql_ag_database_state	state				
+mssql_ag_events	window	event_at		statement,message	
+mssql_ag_failovers	window	at			
+mssql_ag_sample	window	snapshot_at			
+mssql_ag_state	state				
+mssql_agent_alert	state				
+mssql_agent_alerting	state				
+mssql_agent_operator	state				
+mssql_attentions	window	event_at		statement	
+mssql_audit	state				
+mssql_audit_counts	window	hour_at	audit		
+mssql_audit_events	window	event_at	audit		
+mssql_audit_read	state				
+mssql_audit_spec	state				
+mssql_backup_state	state				
+mssql_blocked_reports	window	event_at		blocked_statement,blocking_statement,report	
+mssql_blocking	window	snapshot_at			
+mssql_build	state				
+mssql_check_area	state				
+mssql_check_finding	state				
+mssql_config	state				
+mssql_config_history	state				
+mssql_counter_last	left-out				
+mssql_counter_read	window	snapshot_at			
+mssql_counter_sample	window	snapshot_at			
+mssql_counter_series	state				
+mssql_cpu_info	state				
+mssql_cpu_sample	window	snapshot_at			
+mssql_cursor	left-out				
+mssql_database_option	state				
+mssql_database_size	window	snapshot_at			
+mssql_deadlocks	window	event_at		victim_statement,processes,resources,graph	
+mssql_errorlog	window	log_at		message	
+mssql_failed_logins	window	logged_at	audit		
+mssql_fileio_last	left-out				
+mssql_fileio_read	window	snapshot_at			
+mssql_fileio_sample	window	snapshot_at			
+mssql_files	state				
+mssql_hadr_reads	state				
+mssql_hadr_thresholds	state				
+mssql_health	state				
+mssql_health_components	window	event_at			
+mssql_identity_column	state				
+mssql_identity_scan	state				
+mssql_index	state				
+mssql_index_db	state				
+mssql_indexlock_last	left-out				
+mssql_indexlock_read	window	snapshot_at			
+mssql_indexlock_sample	window	snapshot_at			
+mssql_indexlock_state	state				
+mssql_instance	state				
+mssql_job_runs	window	snapshot_at		message,failed_message	
+mssql_jobs	state			last_message	
+mssql_jobs_cursor	left-out				
+mssql_logshipping_state	state				
+mssql_memory_cache	window	snapshot_at			
+mssql_memory_clerk	window	snapshot_at			
+mssql_memory_grant_query	window	snapshot_at		statement	
+mssql_memory_numa	state				
+mssql_memory_pool	window	snapshot_at			
+mssql_memory_reads	state				
+mssql_memory_rmon	window	snapshot_at			
+mssql_memory_sample	window	snapshot_at			
+mssql_mirroring_state	state				
+mssql_missing_index	state				
+mssql_pc_database	state				
+mssql_pc_handles	left-out				
+mssql_pc_health	state				
+mssql_pc_health_state	state				
+mssql_pc_last	left-out				
+mssql_pc_list	state			query	
+mssql_pc_read	window	snapshot_at			
+mssql_pc_sample	window	snapshot_at			
+mssql_pc_state	state				
+mssql_pc_text	dimension	seen_at	text		
+mssql_perf_counter_last	left-out				
+mssql_plancache_type	window	snapshot_at			
+mssql_pool_member	state				
+mssql_pool_minute	window	snapshot_at			
+mssql_pool_thresholds	state				
+mssql_proc_last	left-out				
+mssql_proc_read	window	snapshot_at			
+mssql_proc_sample	window	snapshot_at			
+mssql_proc_state	state				
+mssql_property	state				
+mssql_property_change	window	changed_at			
+mssql_pvs	state				
+mssql_qs_interval	window	snapshot_at			
+mssql_qs_plan	dimension	snapshot_at		plan_xml	
+mssql_qs_query	dimension	snapshot_at		query_text	
+mssql_qs_runtime	window	snapshot_at			
+mssql_qs_store	state				
+mssql_qs_tuning	state			script	
+mssql_qs_tuning_option	state				
+mssql_reader_state	state				
+mssql_replication_state	state				
+mssql_requests	window	snapshot_at			
+mssql_requests_summary	window	snapshot_at			
+mssql_rg_group	state				
+mssql_rg_pool	state				
+mssql_sched_sample	window	snapshot_at			
+mssql_server_option	state				
+mssql_server_role_members	state		audit		
+mssql_service	state				
+mssql_service_ext	state				
+mssql_session_group	window	snapshot_at			
+mssql_session_summary	window	snapshot_at			
+mssql_session_tempdb	window	snapshot_at			
+mssql_slow_events	window	event_at		statement,shape	
+mssql_sql_logins	state		audit		
+mssql_stat	state				
+mssql_statement_text	dimension	last_seen	text		
+mssql_stats_db	state				
+mssql_suspect_page	state				
+mssql_table_size	window	snapshot_at			
+mssql_tempdb	state				
+mssql_tempdb_files	state				
+mssql_trace_events	window	event_at		statement	
+mssql_trace_flag_history	window	changed_at			
+mssql_trace_flags	state				
+mssql_trace_flags_read	state				
+mssql_versionstore_db	state				
+mssql_versionstore_sample	window	snapshot_at		holder_statement	
+mssql_volume_sample	window	snapshot_at			
+mssql_volumes	state				
+mssql_wait_last	left-out				
+mssql_wait_sample	window	snapshot_at			
+mssql_wait_state	state				
+mssql_waiting_summary	window	snapshot_at			
+mssql_waiting_tasks	window	snapshot_at		statement	
+mssql_xe_foreign	state				
+mssql_xe_foreign_read	state				
+mssql_xe_state	state				
+pg_backup_detect	state				
+pg_backup_tools	state				
+pg_base_backups	state				
+pg_db_role_settings	state				
+pg_db_role_settings_read	state				
+pg_patroni_members	state				api_url
+pg_patroni_read	state				url
+pg_role_changes	window	changed_at	audit		
+pg_role_passwords	state		audit		
+pg_role_state	state				
+pg_threshold_keys	state				
+pg_thresholds	state				
+pg_wal_replay	state				
+pgaudit_count_secs	window	sec	audit		
+pgaudit_counts	window	snapshot_at	audit		
+pgaudit_events	window	snapshot_at	audit		
+pgaudit_rules	state				
+pgaudit_settings	state				
+pgaudit_state	state				
+pi_load	window	snapshot_at			
+pi_sql	dimension	last_seen	text		
+pi_state	state				
+plans	dimension	captured_at	text		
+pooler_conn_sample	window	snapshot_at			
+pooler_sample	window	snapshot_at			
+pooler_state	state				
+purge_runs	window	started_at			
+query_text	dimension	last_seen	text		
+replication_sample	window	snapshot_at			
+report_db_properties	state				
+report_mail_log	window	at	audit		
+report_mail_schedules	state				claim_token,recipients
+report_mail_sends	window	requested_at			html,xlsx,recipients,subject
+report_read_state	state				
+role_attributes	state		audit		
+role_databases	state				
+role_history	window	changed_at	audit		
+role_member_closure	state		audit		
+role_members	state		audit		
+role_state	state				
+schema_changes	window	snapshot_at		before,after	
+schema_databases	state				
+schema_ddl_log	window	snapshot_at		statement	
+schema_objects	state			definition	
+schema_version	state				
+sequence_state	state				
+serverless_sample	window	snapshot_at			
+serverless_scaling	state				
+serverstats	window	snapshot_at			
+session_sets	dimension	last_seen		value,query	
+session_sets_sample	window	snapshot_at			
+session_sets_state	state				
+slru_sample	window	snapshot_at			
+statement_text	dimension	last_seen	text		
+statements_current	left-out				
+statements_delta	window	snapshot_at			
+statements_info	window	snapshot_at			
+statements_monitor_seen	left-out				
+statements_monitor_total	left-out				
+storage_sample	window	snapshot_at			
+storage_state	state				
+table_activity	window	snapshot_at			
+table_databases	state				
+table_sizes	window	snapshot_at			
+tables	state				
+temp_sample	window	snapshot_at			
+ui_app_contact_routes	left-out				
+ui_app_contacts	left-out				
+ui_users	left-out				
+vacuum_databases	state				
+vacuum_holders	state				
+vacuum_runs	window	started_at			
+vacuum_sample	window	snapshot_at		query	
+vacuum_state	state				
+vacuum_tables	state				
+version_history	window	changed_at			
+version_pending	state				
+version_upgrade_targets	state				
+wait_profile_current	left-out				
+wait_sample	window	snapshot_at			
+wal_state_sample	window	snapshot_at			
