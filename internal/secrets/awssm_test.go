@@ -229,3 +229,18 @@ func TestReadDeadline(t *testing.T) {
 		t.Errorf("a slow endpoint: %v after %v and %d calls (want a failure within about 5 s, 2 calls at most)", err, time.Since(start), f.calls.Load())
 	}
 }
+
+// The libpq string with the secret: the keyword form quoted (a password holding a quote, a backslash, a space), the
+// user added only when the string names none; the URL form's userinfo.
+func TestWithLibpqPassword(t *testing.T) {
+	got := withLibpqPassword("host=h dbname=d", "pgv", `p'a\ss w`)
+	if got != `host=h dbname=d password='p\'a\\ss w' user='pgv'` {
+		t.Errorf("keyword: %s", got)
+	}
+	if got := withLibpqPassword("host=h user=mon dbname=d", "pgv", "x"); got != "host=h user=mon dbname=d password='x'" {
+		t.Errorf("keyword with a user: %s", got)
+	}
+	if got := withLibpqPassword("postgres://mon@h:5432/d", "pgv", "p@ss:/%"); got != "postgres://mon:p%40ss%3A%2F%25@h:5432/d" {
+		t.Errorf("url: %s", got)
+	}
+}

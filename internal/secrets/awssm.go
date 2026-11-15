@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -299,4 +300,53 @@ func extract(ref Ref, out getOut) (Value, error) {
 		return Value{}, &ReadError{Secret: ref.ID, Code: "NoKey", Message: "a #key needs a JSON secret", Refused: true}
 	}
 	return Value{Password: s, Version: out.VersionID}, nil
+}
+
+// PGWithSecret returns a libpq string with the password (and, when the string names no user, the login) of a
+// password_secret set, for a connect that takes a string (the actions door's monitoring login, EXPLAIN's check, the
+// job actions; task B24e). The string lives only for that connect: it is never logged or stored (pgx redacts a
+// password in its errors). ps nil = the string as it is.
+func PGWithSecret(ctx context.Context, dsn, ref, region, profile string) (string, error) {
+	if strings.TrimSpace(ref) == "" {
+		return dsn, nil
+	}
+	r, err := ParseRef(ref, region, profile)
+	if err != nil {
+		return "", err
+	}
+	v, err := Default.Get(ctx, r)
+	if err != nil {
+		return "", err
+	}
+	return withLibpqPassword(dsn, v.User, v.Password), nil
+}
+
+// withLibpqPassword sets password (and user when the string names none) on a libpq keyword or URL string
+func withLibpqPassword(dsn, user, password string) string {
+	if strings.Contains(dsn, "://") {
+		if u, err := url.Parse(dsn); err == nil {
+			name := ""
+			if u.User != nil {
+				name = u.User.Username()
+			}
+			if name == "" {
+				name = user
+			}
+			u.User = url.UserPassword(name, password)
+			return u.String()
+		}
+		return dsn
+	}
+	q := func(v string) string { return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(v) + "'" }
+	out := dsn + " password=" + q(password)
+	hasUser := false
+	for _, f := range strings.Fields(dsn) {
+		if k, _, ok := strings.Cut(f, "="); ok && strings.EqualFold(k, "user") {
+			hasUser = true
+		}
+	}
+	if !hasUser && user != "" {
+		out += " user=" + q(user)
+	}
+	return out
 }

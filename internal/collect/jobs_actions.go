@@ -181,7 +181,11 @@ func ExecuteJobAction(ctx context.Context, d actions.Door, r JobActionRequest) J
 	if d.Monitor == "" {
 		return jobRefused("instance %s: the monitoring dsn resolved to an empty string", r.Instance)
 	}
-	mon, err := jobConn(ctx, d.Monitor, "pgvigil-actions-check", true)
+	monDSN, err := d.MonitorDSN(ctx)
+	if err != nil {
+		return jobRefused("the monitoring login's password: %v", err)
+	}
+	mon, err := jobConn(ctx, monDSN, "pgvigil-actions-check", true)
 	if err != nil {
 		return jobRefused("the monitoring login could not connect to check the target: %v", err)
 	}

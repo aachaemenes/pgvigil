@@ -137,7 +137,11 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	stmt := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(r.Statement), ";"))
 
 	// the two logins must reach one server (the monitoring login's is the instance the user looked at)
-	mon, err := plans.Connect(ctx, d.Monitor, "", "pgvigil-actions-check", 5*time.Second)
+	monDSN, err := d.monitorDSN(ctx)
+	if err != nil {
+		return refused("the monitoring login's password: %v", err), nil
+	}
+	mon, err := plans.Connect(ctx, monDSN, "", "pgvigil-actions-check", 5*time.Second)
 	if err != nil {
 		return refused("the monitoring login could not connect to check the server: %v", err), nil
 	}
