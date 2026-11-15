@@ -137,6 +137,9 @@ func TestCompilePanel(t *testing.T) {
 	if strings.Contains(c.SQL, " WHERE rk.r <=") {
 		t.Errorf("other: true still drops the rest:\n%s", c.SQL)
 	}
+	if !c.From.Equal(now.Add(-composePerDatabaseRange)) || !strings.Contains(c.Cut, "per database") {
+		t.Errorf("a per-database panel over 7 days: from %v, cut %q", c.From, c.Cut)
+	}
 	c, err = compilePanel(PanelSpec{Aggregate: "p95", Shape: "ranked", GroupBy: "tag", TagKey: "e'nv", Top: 3}, composeHost,
 		ComposeScope{Kind: "tag", Tag: "region:west"}, from, now, "", now)
 	if err != nil {

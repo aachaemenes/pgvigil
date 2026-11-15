@@ -93,9 +93,13 @@ var (
 		"requests":  7 * 24 * time.Hour,  // 1.9 s at 7 days, 11.5 s at 31
 		"scheduler": 7 * 24 * time.Hour,  // 2.5 s at 7 days, 11.8 s at 31
 		"memory":    7 * 24 * time.Hour,  // 4.7 s at 7 days, past 15 s at 31
-		"io":        24 * time.Hour,      // past 15 s at 7 days (30 rows a 5-minute read)
-		"database":  24 * time.Hour,      // dbstats_rate over every database
+		"io":        24 * time.Hour,      // 0.8 s at 6 hours, 3.1 s at 1 day, 11.3 s at 2, past 15 s at 7 (30 rows a read)
+		"database":  24 * time.Hour,      // dbstats_rate over every database: 5.0 s at 1 day, 8.6 s at 2, past 15 s at 7
 	}
+	// composePerDatabaseRange: the database family read per database (grouped or filtered by database; one call a
+	// database, each reading the instance's databases): 3.6 s at 6 hours, 14.2 s warm and past 15 s cold at 1 day, on an
+	// instance of 150 databases
+	composePerDatabaseRange = 6 * time.Hour
 )
 
 const (
@@ -241,6 +245,14 @@ func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.T
 		n = len(sc.Instances)
 	}
 	from, to, cut := composeWindow(p, m.Family, n, from, to, now)
+	perDB := p.GroupBy == "database"
+	for _, f := range p.Filters {
+		perDB = perDB || f.Dim == "database"
+	}
+	if perDB && to.Sub(from) > composePerDatabaseRange {
+		from = to.Add(-composePerDatabaseRange)
+		cut = "the database family per database is read at most 6 hours at a time (one read a database)"
+	}
 	if !from.Before(to) {
 		return composed{}, errors.New("the window is empty: from must be before to")
 	}
