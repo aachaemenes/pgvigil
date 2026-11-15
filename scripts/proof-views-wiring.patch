@@ -1,8 +1,8 @@
-diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
-index a87ac1d8..bd0bea75 100644
---- i/cmd/pgvigil/report.go
-+++ w/cmd/pgvigil/report.go
-@@ -306,7 +306,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
+diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
+index a7afc66f..7a8f3fa8 100644
+--- c/cmd/pgvigil/report.go
++++ i/cmd/pgvigil/report.go
+@@ -312,7 +312,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
  // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
  // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
  var knownKeys = map[string]bool{
@@ -11,11 +11,11 @@ index a87ac1d8..bd0bea75 100644
  	"doors": true, "page_instance_reads": true, "reports_dsn": true,
  	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
  	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
-diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
-index 493c261a..14fa16a5 100644
---- i/cmd/pgvigil/serve.go
-+++ w/cmd/pgvigil/serve.go
-@@ -165,6 +165,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
+index f350bb33..6b103ca9 100644
+--- c/cmd/pgvigil/serve.go
++++ i/cmd/pgvigil/serve.go
+@@ -171,6 +171,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
  		return err
  	}
  	defer srv.Close()
@@ -23,13 +23,13 @@ index 493c261a..14fa16a5 100644
  	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
  	// check); serve starts either way and the page says the same words
  	if why := srv.StoreReportsOff(ctx); why != "" {
-diff --git i/docs/configuration.md w/docs/configuration.md
-index f7e3ca71..724eacc7 100644
---- i/docs/configuration.md
-+++ w/docs/configuration.md
-@@ -107,6 +107,23 @@ database than the repository dsn's is refused, with words. Without the key (or w
- the store is refused and the page and a mailed report say why; `serve` starts anyway, with one WARN. Reports on
- instances need nothing here. The rules and the words: [customreports.md](customreports.md).
+diff --git c/docs/configuration.md i/docs/configuration.md
+index 264b71f0..6bd3c688 100644
+--- c/docs/configuration.md
++++ i/docs/configuration.md
+@@ -129,6 +129,23 @@ key read as what they stand for. `pgvigil serve` reads the block once, at its st
+ file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily checks mail*. In a support report
+ (`pgvigil report`) the switch, the hour and the zone are shown; the addresses, the user and the channel are masked.
  
 +## Saved views: who writes shared ones (views.shared_editors)
 +
@@ -51,10 +51,10 @@ index f7e3ca71..724eacc7 100644
  ## Instances added in the page
  
  Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
-diff --git i/internal/config/config.go w/internal/config/config.go
+diff --git c/internal/config/config.go i/internal/config/config.go
 index ce855797..2edcdbb1 100644
---- i/internal/config/config.go
-+++ w/internal/config/config.go
+--- c/internal/config/config.go
++++ i/internal/config/config.go
 @@ -33,6 +33,8 @@ type Config struct {
  	QueryText string `yaml:"query_text"`
  	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
@@ -78,10 +78,10 @@ index ce855797..2edcdbb1 100644
  // UI is the ui: block: the tree's folder levels and the order of the values in them.
  type UI struct {
  	// GroupBy lists tag keys, one folder level each, in order (e.g. [env, team]); empty = one folder per tag.
-diff --git i/internal/web/web.go w/internal/web/web.go
+diff --git c/internal/web/web.go i/internal/web/web.go
 index 9e87cd1d..9569d5d9 100644
---- i/internal/web/web.go
-+++ w/internal/web/web.go
+--- c/internal/web/web.go
++++ i/internal/web/web.go
 @@ -261,6 +261,13 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/alertrules", s.AlertRules)
  	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
