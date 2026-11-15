@@ -11,7 +11,7 @@
 // (pgvigil run) through an smtp channel of the alerts: block; this page shows each send's answer.
 import { get, post, Row, rowsOf, Table } from './api';
 import { cutWords, Meta, Section, exportName, pageBook, sections, timeZone, workbook, zip } from './export';
-import { fleet } from './fleet';
+import { fleet, fleetWideNote, tagScopeIds, tagWords } from './fleet';
 import { toHtml } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
 import { browserZone, stamp, zoneName, zones } from './tz';
@@ -414,16 +414,39 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
   doorCache = { at: Date.now(), d };
   const door0 = d.door;
   const box = el('section', { 'aria-label': 'Report mail' });
+  // under a tag folder (TAGALL): the schedules and sends of the folder's pages - an address under its tag or of one of its
+  // instances (a schedule is a page's address, its route: nothing else ties it to an instance) - and the attempts on them
+  let ids: Set<number> | null = null;
+  try { ids = await tagScopeIds(ctx); } catch (e) { box.append(el('h2', {}, 'Report mail'), errorBox(e)); return box; }
+  const routeIn = (route: unknown) => {
+    const q = new URLSearchParams(String(route ?? '').split('?')[1] ?? '');
+    return q.get('tag') === ctx.tag || !!ids?.has(Number(q.get('i')));
+  };
+  const allSched = rowsOf(d.schedules), allSends = rowsOf(d.sends), allLog = rowsOf(d.log);
+  const schedRows = ids ? allSched.filter(r => routeIn(r.route)) : allSched;
+  const sendRows = ids ? allSends.filter(r => routeIn(r.route)) : allSends;
+  const schedIds = new Set([...schedRows, ...sendRows].map(r => Number(r.schedule_id)).filter(n => n > 0));
+  const sendIds = new Set(sendRows.map(r => Number(r.send_id)));
+  const logRows = ids ? allLog.filter(r => schedIds.has(Number(r.schedule_id)) || sendIds.has(Number(r.send_id))) : allLog;
   const doorLine = el('p', {}, door0.writable ? badge('on', 'ok') : badge('off', 'warn'), ' ', door0.writable ? `signed in as ${door0.user}` : door0.reason ?? '',
     door0.writable && !door0.browser ? ' ' : '', door0.writable && !door0.browser ? badge('no browser', 'warn') : '', door0.writable && !door0.browser ? ' ' + (door0.browser_reason ?? '') : '');
-  box.append(el('h2', {}, 'Report mail'),
+  box.append(el('h2', {}, 'Report mail' + (ids ? ` - ${tagWords(ctx.tag!)}` : '')),
     el('p', { class: 'meta' }, 'Any page mailed now (the bar\'s Mail... on the page) or on a schedule (below): the mail body is the page\'s grids in the colours, numbers and dates the screen shows, and the page\'s workbook is attached. The alert sender (pgvigil run) mails it through an smtp channel of the alerts: block.'),
     doorLine);
   const add = el('button', { type: 'button' }, 'New schedule...');
   // off: the door line above says why (their description)
   if (!door0.writable) offControl(add, door0.reason || 'report mail is off on this server', doorLine);
-  add.addEventListener('click', () => { void scheduleDialog({}); });
+  // a new schedule under a tag folder starts as the folder's Summary
+  add.addEventListener('click', () => { void scheduleDialog(ids ? { route: '#/summary?' + new URLSearchParams({ tag: ctx.tag! }).toString() } : {}); });
   box.append(el('p', {}, add));
+  if (ids) {
+    const left = [[allSched.length - schedRows.length, 'schedule'], [allSends.length - sendRows.length, 'send'], [allLog.length - logRows.length, 'attempt']]
+      .filter(([n]) => Number(n) > 0).map(([n, w]) => `${fmtNum(n)} ${String(w)}${n === 1 ? '' : 's'}`);
+    box.append(el('p', { class: 'meta' }, `In view: ${tagWords(ctx.tag!)} - the schedules and sends of a page under this folder or of one of its ${fmtNum(ids.size)} instance(s), and the attempts on them.`
+      + (left.length ? ` Not listed here: ${left.join(', ')} of other pages (All instances lists them).` : '')));
+    const wide = fleetWideNote(ctx, 'The smtp channels and whether report mail is on are one setting');
+    if (wide) box.append(wide);
+  }
 
   // a schedule's action: off with the door's reason, or its own (offWhy: a test needs the server's headless browser)
   const button = (label: string, aria: string, offWhy: string | null, run: () => void) => {
@@ -457,7 +480,7 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
       }), ' ',
       button('End', `End schedule ${String(r.name)}`, null, () => { confirmAct(`End ${String(r.name)}`, 'The schedule ends for good; its sends stay in the log.', 'End', 'end', v); })) },
   ];
-  box.append(el('h3', {}, 'Schedules'), grid(rowsOf(d.schedules), sched, 'No schedule yet: open a page, press Mail... and Schedule this page, or New schedule above.'));
+  box.append(el('h3', {}, 'Schedules'), grid(schedRows, sched, 'No schedule yet: open a page, press Mail... and Schedule this page, or New schedule above.'));
 
   const sends: Col[] = [
     whenCol('requested_at', 'asked'),
@@ -474,13 +497,13 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'outcome', label: 'outcome', fmt: v => outcomeBadge(String(v)) },
     { key: 'error', label: 'error', wide: true },
   ];
-  box.append(el('h3', {}, `Sends (${rangeLabel(ctx)})`), grid(rowsOf(d.sends), sends, 'No mail in this window.'));
+  box.append(el('h3', {}, `Sends (${rangeLabel(ctx)})`), grid(sendRows, sends, 'No mail in this window.'));
 
   const log: Col[] = [
     whenCol('at', 'at'), { key: 'ui_user', label: 'user' }, { key: 'client', label: 'from' }, { key: 'op', label: 'op' },
     { key: 'schedule_id', label: 'schedule', num: true }, { key: 'send_id', label: 'send', num: true },
     { key: 'outcome', label: 'outcome', fmt: v => badge(String(v), v === 'done' ? 'ok' : 'warn') }, { key: 'detail', label: 'detail', wide: true },
   ];
-  box.append(el('h3', {}, `Attempts (${rangeLabel(ctx)})`), grid(rowsOf(d.log), log, 'No attempt in this window.'));
+  box.append(el('h3', {}, `Attempts (${rangeLabel(ctx)})`), grid(logRows, log, 'No attempt in this window.'));
   return box;
 }
