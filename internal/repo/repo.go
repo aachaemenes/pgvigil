@@ -448,8 +448,32 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
 	if !validIdent(collection) {
 		return fmt.Errorf("collection name %q is not a valid identifier", collection)
 	}
-	_, err = r.pool.Exec(ctx, fmt.Sprintf(`SELECT pgvigil.import_%s($1, $2, $3::jsonb)`, collection), instanceID, snapshotAt, string(payload))
-	return err
+	q := fmt.Sprintf(`SELECT pgvigil.import_%s($1, $2, $3::jsonb)`, collection)
+	for attempt := 1; ; attempt++ {
+		_, err = r.pool.Exec(ctx, q, instanceID, snapshotAt, string(payload))
+		if err == nil || attempt == importDeadlockTries || !isDeadlock(err) || ctx.Err() != nil {
+			return err
+		}
+		// An import that makes a new month's partition holds the parent table's lock until it ends, and another
+		// import that already holds a shared row (query_text) can wait on it: PostgreSQL ends one of the two
+		// with 40P01 and rolls it back whole, so taking it again is safe and stores it once.
+		r.logger().Warn("an import was ended by a deadlock; taking it again", "collection", collection,
+			"instance_id", instanceID, "snapshot_at", snapshotAt, "attempt", attempt)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):
+		}
+	}
+}
+
+// importDeadlockTries is how many times Import runs one import that PostgreSQL ends with a deadlock.
+const importDeadlockTries = 3
+
+// isDeadlock: PostgreSQL ended the statement's transaction as a deadlock's victim (SQLSTATE 40P01).
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
 // LogCursor returns how far a log source was read for an instance (false: never).
