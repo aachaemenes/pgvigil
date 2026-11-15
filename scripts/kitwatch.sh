@@ -30,8 +30,10 @@
 #   KW-B the pinned kits with run-time plants (KITWATCH_NEWEST=pinned KITWATCH_PLANT=<name>: sed on the second pass's
 #        copy, the planted string asserted present): each flagged with its kind and class, exit 1 (the missing-state
 #        plant: exit 3). In the table below now: wia-column (BREAK read by name), blitz-column (DRIFT column added),
-#        column-swap (DRIFT reordered), pd-set (BREAK set removed), cache-retype (DRIFT type), missing-state (exit 3),
-#        cut-frk; the rest of the design's F18 list is written against the pinned files (each sed needs the kit's text).
+#        column-swap (DRIFT reordered), pd-set (BREAK set removed), cache-retype (DRIFT type), decline-reword and
+#        decline-throw (BREAK outcome), preset-rename (BREAK preset parameter removed), new-param (BREAK new form
+#        parameter), help-layout (BREAK help), sibling-call (BREAK new hard sibling), port-edit (DRIFT list; once the
+#        pinned ports.json is committed), missing-state (exit 3), cut-frk - each sed written against the pinned files.
 #   KW-C a kit file cut at a GO (KITWATCH_PLANT=cut-frk): 'installed without' and the FRK tools missing, exit 2.
 #   KW-D (a RUN) the newest kits: exit 0 or 1; three kits with URL, sha256 and version; 14 tool lines, the collector
 #        line, every port line; deny 0.
@@ -117,7 +119,13 @@ if [[ -n ${KITWATCH_PLANT:-} ]]; then
     column-swap)  plant "$P/frk.sql" '/--TOURSTOP05--/,/FROM    #BlitzResults/{s/\[FindingsGroup\] ,$/@@FG@@/;s/\[Finding\] ,$/[FindingsGroup] ,/;s/@@FG@@/[Finding] , \/* kitwatch: swapped *\//}' 'kitwatch: swapped' ;;
     pd-set)       plant "$P/dd.sql" "s/THREADPOOL = N'No current THREADPOOL waits';/@pass = @pass; \\/* kitwatch: set dropped *\\//" 'kitwatch: set dropped' ;;
     cache-retype) plant "$P/frk.sql" '/CREATE TABLE ##BlitzCacheResults (/,/);/s/CheckID INT,$/CheckID BIGINT, \/* kitwatch: retyped *\//' 'kitwatch: retyped' ;;
-    missing-state) ;;   # a MARK no tool can hold, set once the setup library is read (below)
+    decline-reword) plant "$P/dd.sql" 's/Current user does not have EXECUTE permission on xp_readerrorlog, so/Current user lacks EXECUTE on xp_readerrorlog, so/' 'Current user lacks EXECUTE on xp_readerrorlog' ;;
+    decline-throw) plant "$P/dd.sql" "s/RAISERROR(N'This will not run on Azure SQL DB because it''s horrible.', 11, 1) WITH NOWAIT;/THROW 50001, N'This will not run on Azure SQL DB because it''s horrible.', 1;/" "THROW 50001, N'This will not run on Azure SQL DB" ;;
+    preset-rename) plant "$P/dd.sql" '/^    dbo\.sp_IndexCleanup$/,/^GO$/s/@database_name\b/@kitwatch_db_planted/g' '@kitwatch_db_planted' ;;
+    new-param)    plant "$P/frk.sql" '/^ALTER PROCEDURE dbo\.sp_BlitzWho $/{n;s/@Help TINYINT = 0 ,/@Help TINYINT = 0 , @KitwatchPlanted INT = 0 ,/}' '@KitwatchPlanted INT = 0' ;;
+    help-layout)  plant "$P/dd.sql" '/^    dbo\.sp_PressureDetector$/,/^ *description =$/s/^\( *\)description =$/\1explanation_planted =/' 'explanation_planted =' ;;
+    sibling-call) plant "$P/dd.sql" "/^    dbo\\.sp_PressureDetector\$/,/@version_date = '20261101';/s/@version_date = '20261101';/&\\nEXECUTE (N'EXECUTE dbo.sp_BlitzWho @VersionCheckMode = 1;'); \\/* kitwatch: sibling call *\\//" 'kitwatch: sibling call' ;;
+    missing-state|port-edit) ;;   # set further on: a MARK no tool holds (once the setup library is read), a port's file (once fetched)
     cut-frk)      head -c "$(( $(wc -c < "$P/frk.sql") / 2 ))" "$P/frk.sql" > "$P/frk.cut" && mv "$P/frk.cut" "$P/frk.sql"
                   printf '\nGO\n' >> "$P/frk.sql" ;;
     *)            envfail "unknown plant $KITWATCH_PLANT" ;;
@@ -426,6 +434,9 @@ if [[ -f internal/community/kits/ports.json ]]; then
     mkdir -p "$WORK/files/$repo/$(dirname "$path")"
     curl -sf --retry 1 --max-time 120 "${auth[@]}" -o "$WORK/files/$repo/$path" "https://raw.githubusercontent.com/$repo/$ref/$path" || true
   done < "$WORK/portfiles.tsv"
+  if [[ ${KITWATCH_PLANT:-} == port-edit ]]; then   # KW-B: a ported list's block edited in the fetched file (DRIFT list)
+    plant "$WORK/files/$DD_REPO/$DD_FILE" "/\\/\\*Disk\\*\\//,/N'RESMGR_THROTTLED'/s/N'PAGEIOLATCH_SH',/N'PAGEIOLATCH_SH', N'KITWATCH_PLANTED_WAIT',/" "N'KITWATCH_PLANTED_WAIT'"
+  fi
   "$KS" ports -manifest internal/community/kits/ports.json -dir "$WORK/files" -out "$WORK/lines-ports.json" || envfail "kitshape ports"
   LINES+=",$WORK/lines-ports.json"
 fi
