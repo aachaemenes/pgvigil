@@ -943,6 +943,14 @@ echo "ok   G2: after L2, M and N no password (the read-only login's and the door
 # names; pg-cloud's io row moves every 20 s while the block is set, and after the clear (the collector's list read at
 # the clear's generation) it does not move for 70 s.
 echo "== P. B24p: cloud blocks on page instances =="
+# N stopped both serves (N2: one renderer of report mail; the door serve after N7): P has a serve of its own on
+# pgvigil.yaml (doors: none, so its first row gets the switch's refusal) on a fresh port, the UI login again (the
+# cookie jar of a stopped serve is void); the cleanup stops it
+PORTP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); U="http://127.0.0.1:$PORTP"
+(umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORTP") >"$TMPD/serve-p.log" 2>&1 & SRVPID=$!
+for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
+kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve-p.log" >&2; fail "P: its serve exited"; }
+[[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "P: the UI login on its serve"
 PRX="pgvproof-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 CLOUDH="$PRX.c0proof.us-east-2.rds.amazonaws.com"; AZH="$PRX.database.windows.net"
 for h in "$CLOUDH" "$AZH" "billing-$PRX.corp.example"; do getent hosts "$h" >/dev/null && fail "P: $h resolves (a random name must not: no stranger's server is dialled)"; done
@@ -990,5 +998,7 @@ lr=0; for _ in $(seq 1 30); do grep -E "instances: list read.*generation=$GC( |$
 sleep 2; T0=$(iot); sleep 70; T1=$(iot)
 [[ "$T0" == "$T1" ]] || fail "P: pg-cloud's io ran after its block was cleared ($T0 -> $T1)"
 kill -0 "$RUNPID" 2>/dev/null || fail "P: the cloud collector stopped"
+kill -0 "$SRVPID" 2>/dev/null || { tail -20 "$TMPD/serve-p.log" >&2; fail "P: its serve stopped"; }
+kill "$SRVPID" 2>/dev/null || true; SRVPID=
 echo "ok   P: B24p - a Cloud part refused in doors.page_cloud_blocks' words on serve with the switch off (nothing written); with the switch on in the collector, pg-cloud's aws: block and ms-cloud's azure: block kept at the merge (io and mssql_failover_groups loops: their rows the failed connect's, random hosts that do not resolve); pg-alias's block (host not an RDS endpoint) dropped with both names in the log, no io row, the instance kept; pg-cloud's io row moved every 20 s with the block and not in 70 s after the list read at the clear's generation"
 echo "proof-instances: OK (B24p's page cloud blocks (P); the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login and with the audit login off, no error box; a page instance never read says so until its first read; the NOT PROVEN lines above stand; the page door: off on a fresh install, on with doors.page_instance_reads, serve's own identity refused, EXPLAIN / the advisor / actions off, at once on this serve, report mail as the owner, sp_start_job refused)"
