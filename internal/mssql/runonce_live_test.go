@@ -15,12 +15,13 @@ import (
 )
 
 // A run whose collection does not apply to the instance opens no connection to it (task B2a-N1): an Azure SQL
-// Database skips 7 of the 12 minute collections, and each skip used to connect and detect first. Counted by the
-// server itself: SQL Server's 'Logins/sec' counter is the cumulative count of logins since the server started, read
-// on the test's own connection (opened before the runs) around three runs of a collection this server is not
-// (mssql_azuredb_resources is Azure SQL Database's). The run before them connects and detects as always. Needs a
-// SQL Server (PGVIGIL_MSSQL_TEST_DSN, a login that may read sys.dm_os_performance_counters) that nothing else logs
-// in to meanwhile, and a repository (PGVIGIL_REPO_TEST_DSN, migrated by the test).
+// Database skips 7 of the 12 minute collections, and each skip used to connect and detect first. Counted twice: by
+// Connect's own count in this process (the assertion) and by the server, whose 'Logins/sec' counter is the cumulative
+// count of logins since it started, read on the test's own connection (opened before the runs) around three runs of a
+// collection this server is not (mssql_azuredb_resources is Azure SQL Database's) - the server's count confirms that
+// no other path logged in. The run before them connects and detects as always. Needs a SQL Server
+// (PGVIGIL_MSSQL_TEST_DSN, a login that may read sys.dm_os_performance_counters) and a repository
+// (PGVIGIL_REPO_TEST_DSN, migrated by the test); the instance row it makes is removed at the end.
 func TestRunOnceSkipOpensNoConnectionLive(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_MSSQL_TEST_DSN")
 	rdsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
@@ -40,6 +41,19 @@ func TestRunOnceSkipOpensNoConnectionLive(t *testing.T) {
 	}
 	in := config.Instance{Name: "runonce-skip-" + time.Now().UTC().Format("150405.000"), Engine: config.EngineSQLServer,
 		DSNRaw: "env:PGVIGIL_MSSQL_TEST_DSN_RESOLVED"}
+	pc, err := pgx.Connect(ctx, rdsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { // after the test's defers: the row goes, then this connection
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		if _, err := pc.Exec(cctx, `DELETE FROM pgvigil.instances WHERE name = $1`, in.Name); err != nil {
+			t.Errorf("removing the test's instance row: %v", err)
+		}
+		_ = pc.Close(cctx)
+		detectCache.Delete(in.Name)
+	})
 	db, conn, err := Connect(ctx, in)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +78,7 @@ func TestRunOnceSkipOpensNoConnectionLive(t *testing.T) {
 		t.Fatalf("the applicable run logged in %d time(s), want 1 (another client is logging in to this server?)", n)
 	}
 	before := logins()
+	opened := connects.Load()
 	const skips = 3
 	for i := 0; i < skips; i++ {
 		res := RunOnce(ctx, log, r, in, Prefix+"azuredb_resources")
@@ -71,16 +86,15 @@ func TestRunOnceSkipOpensNoConnectionLive(t *testing.T) {
 			t.Fatalf("skipped run %d: %+v", i+1, res)
 		}
 	}
+	if n := connects.Load() - opened; n != 0 {
+		t.Errorf("%d skipped runs opened %d connection(s), want 0: a run whose collection does not apply connected", skips, n)
+	}
 	if n := logins() - before; n != 0 {
-		t.Errorf("%d skipped runs logged in %d time(s), want 0: a run whose collection does not apply connected", skips, n)
+		t.Errorf("the server counted %d login(s) during the %d skipped runs, want 0 (pgvigil opened %d: the rest are another client's)",
+			n, skips, connects.Load()-opened)
 	}
 
 	// the skip is recorded as before: the collection's current row says skipped and why
-	pc, err := pgx.Connect(ctx, rdsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = pc.Close(ctx) }()
 	var status, note string
 	if err := pc.QueryRow(ctx, `SELECT d.status, coalesce(d.note, '') FROM pgvigil.collection_dates d
 		JOIN pgvigil.instances i USING (instance_id) WHERE i.name = $1 AND d.collection = $2`,

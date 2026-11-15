@@ -306,6 +306,7 @@ func msTarget(p msdsn.Config) string {
 // A DSN that sets no 'connection timeout' (or sets 0) has the connect and the session setup end after
 // collect.DefaultConnectTimeout (10 s), as a PostgreSQL instance's; one that sets it keeps its own.
 func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error) {
+	connects.Add(1)
 	dsn := in.DSN()
 	if strings.TrimSpace(dsn) == "" {
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (unset variable or unreadable file)", in.Name))
@@ -453,16 +454,22 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		}
 	}
 	// a collection that does not apply to the instance as its last detect saw it is skipped without a connection
-	// (detectcache.go); the instance's row is kept as a connecting run keeps it
-	if info, ok := cachedDetect(in, start); ok {
+	// (detectcache.go): recorded on the instance the connecting run named, its row (last_seen, version) left as that
+	// run wrote it - nothing was read; an instance row gone meanwhile (removed and added again) is made again first
+	if info, instanceID, ok := cachedDetect(in, start); ok {
 		if applies, why := c.Applies(info); !applies {
-			ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
-			instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
-			ecancel()
+			lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			err := r.LogCollection(lctx, instanceID, name, start, time.Since(start), "skipped", why)
+			lcancel()
 			if err != nil {
-				return collect.Result{Err: err, Duration: time.Since(start)}
+				ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+				instanceID, err = r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+				ecancel()
+				if err != nil {
+					return collect.Result{Err: err, Duration: time.Since(start)}
+				}
+				logRun(instanceID, "skipped", why)
 			}
-			logRun(instanceID, "skipped", why)
 			return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 		}
 	}
@@ -486,7 +493,6 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, timeoutNote(sctx, limit, err)), Duration: time.Since(start)}
 	}
-	rememberDetect(in, info, start)
 	if tag := poolTag(in); tag != "" {
 		info.PoolTag = tag
 	}
@@ -496,6 +502,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return collect.Result{Err: err, Duration: time.Since(start)}
 	}
+	rememberDetect(in, info, instanceID, start)
 	if ok, why := c.Applies(info); !ok {
 		logRun(instanceID, "skipped", why)
 		return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
