@@ -18,6 +18,7 @@ import { fmtMetric } from './alert_rules';
 import { exportButtons } from './export';
 import { loadAckSafe, AckData, offBeside, writeButton } from './ack';
 import { whatIsThis } from './sqlview';
+import { withMark } from './own';
 
 interface AlertPageData { card: Table | null; occurrences: Table | null; sends: Table | null; notes: Table | null }
 
@@ -136,7 +137,9 @@ const msCols = ['session_id', 'blocking_session_id', 'head_session_id', 'status'
 function liveGrid(rows: Row[], keys: string[], empty: string, idleLast: boolean): HTMLElement {
   if (idleLast) rows = [...rows.filter(r => r.state !== 'idle'), ...rows.filter(r => r.state === 'idle')];
   const have = keys.filter(k => rows.some(r => k in r));
-  const cols: Col[] = have.map(k => ({ key: k, ...(/query|statement/.test(k) ? { wide: true } : {}) }));
+  // the session id carries the 'pgvigil' mark on pgvigil's own rows (the reads ask own=1: review part 2 L4)
+  const cols: Col[] = have.map(k => ({ key: k, ...(/query|statement/.test(k) ? { wide: true } : {}),
+    ...(k === 'pid' || k === 'session_id' ? { fmt: (v: unknown, r: Row) => withMark(String(v ?? ''), r) } : {}) }));
   const g = grid(rows.slice(0, 20), cols, empty);
   return rows.length > 20 ? el('div', {}, g, el('p', { class: 'meta' }, `${rows.length - 20} more not shown: the instance's running queries page at that time holds them all.`)) : g;
 }

@@ -260,7 +260,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   // pgvigil's own sessions (B24 OWN): the switch; the sessions / active / idle counts above are the server's own count of
   // every backend, pgvigil's included (the longest statement and the oldest transaction follow the switch)
   const oh = ownOf(a.own_hidden);
-  sec.append(ownBar(ctx, { hidden: Number(oh.sessions ?? 0), includes: Number(oh.own_sessions ?? 0), includesWhat: 'the session counts above',
+  sec.append(ownBar(ctx, { hidden: Number(oh.sessions ?? 0), includes: Number(oh.own_sessions ?? 0), includesWhat: 'the sessions above',
     snapshotAt: a.snapshot_at, since: oh.since }).bar);
   if (pc && rowsOf(pc.read).length) {
     const trace = rowsOf(pc.trace);

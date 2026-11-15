@@ -299,7 +299,7 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
     const hid = (x: Record<string, Table | null>) => { const n = Number(ownOf(x.own_hidden).sessions ?? 0); return n && !ctx.own ? ` pgvigil's own sessions (${n} hidden): the Running queries page's switch shows them.` : ''; };
     const at = el('p', { class: 'meta' }, snaps.length ? `The newest snapshot of the range, ${fmtTime(snaps[0].snapshot_at)}: its first ${HEAD} requests.${hid(d)}` : '');
     let asked = 0;   // a newer drag's answer wins: an older, slower one is dropped
-    const strip = timeStrip('Requests per snapshot', t0, t1, snaps.map(s => Date.parse(text(s.snapshot_at))), (_a, b) => {
+    const strip = timeStrip('Requests per snapshot (every session, pgvigil\'s own included)', t0, t1, snaps.map(s => Date.parse(text(s.snapshot_at))), (_a, b) => {
       const when = b === undefined ? undefined : iso(Math.min(b, t1)), mine = ++asked;
       void get<Record<string, Table | null>>('mssql/running', { ...q, at: when, own: ownParam(ctx) }).then(x => {
         if (mine !== asked) return;

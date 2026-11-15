@@ -25,20 +25,38 @@ export const withMark = (text: string | HTMLElement, r: Record<string, unknown>)
   return el('span', { 'data-own-id': String(r.session_id ?? r.pid ?? '') }, text, ...(m ? [' ', m] : []));
 };
 
-// ownBar: the switch with '(n hidden)', the words for the figures counted from the server's summary ('includes n of
-// pgvigil's own', where includes is given) and, for a read stored before since, that nothing in it is hidden.
-// set(): the same bar for a newer reply (a page that reads without a navigation).
-export function ownBar(ctx: Ctx, o: { hidden: number; includes?: number; includesWhat?: string; snapshotAt?: unknown; since?: unknown }): { bar: HTMLElement; set: (n: typeof o) => void } {
+// ownBar: the switch with '(n hidden)', the words for the one figure counted from the server's summary that n belongs to
+// ('n of the sessions above are pgvigil's own', where includes is given) and, for a read stored before since, that
+// nothing in it is hidden. o.at: the snapshot on screen when the page moved to it without a navigation (a slider):
+// ticking the switch keeps it (review part 2 M1). o.hiddenWhere: words after 'n hidden' when the grid shows a cut of
+// the read (a wait filter: ' in this snapshot'). set(): the same bar for a newer reply.
+// The switch navigates; the focus comes back to it after the page draws again (WCAG 2.4.3, review part 2 M3).
+let refocusOwn = false;
+export function ownBar(ctx: Ctx, o: { hidden: number; includes?: number; includesWhat?: string; snapshotAt?: unknown; since?: unknown; at?: string; hiddenWhere?: string }): { bar: HTMLElement; set: (n: typeof o) => void } {
   const box = el('input', { type: 'checkbox', 'data-own-switch': '' }) as HTMLInputElement;
   box.checked = !!ctx.own;
-  box.addEventListener('change', () => { location.hash = href(ctx, { tab: ctx.tab, own: box.checked ? true : undefined }); });
+  let cur = o;
+  box.addEventListener('change', () => {
+    let h = href(ctx, { tab: ctx.tab, own: box.checked ? true : undefined });
+    if (cur.at) { const [path, qs] = h.split('?'); const q = new URLSearchParams(qs); q.set('at', cur.at); h = `${path}?${q}`; }
+    refocusOwn = true;
+    location.hash = h;
+  });
+  if (refocusOwn) {
+    refocusOwn = false;
+    let tries = 0;
+    const back = () => { if (box.isConnected) box.focus(); else if (++tries < 60) requestAnimationFrame(back); };
+    requestAnimationFrame(back);
+  }
   const label = el('label', { class: 'own-switch' });
   const words = el('span', { class: 'meta' });
-  const note = el('p', { class: 'meta own-note', role: 'status' });
+  // the note is the page's own text for that read (no role=status: nothing changes under the reader)
+  const note = el('p', { class: 'meta own-note' });
   const bar = el('div', { class: 'own-bar' }, label, ' ', words, note);
   const set = (n: typeof o) => {
-    label.replaceChildren(box, ` Show pgvigil's own sessions${ctx.own ? '' : ` (${n.hidden} hidden)`}`);
-    words.textContent = n.includes ? `${n.includesWhat ?? 'the counts above'} include ${n.includes} of pgvigil's own` : '';
+    cur = n;
+    label.replaceChildren(box, ` Show pgvigil's own sessions${ctx.own ? '' : ` (${n.hidden} hidden${n.hiddenWhere ?? ''})`}`);
+    words.textContent = n.includes ? `${n.includes} of ${n.includesWhat ?? 'the sessions above'} ${n.includes === 1 ? 'is' : 'are'} pgvigil's own` : '';
     const before = n.snapshotAt != null && (n.since == null || Date.parse(String(n.snapshotAt)) < Date.parse(String(n.since)));
     note.textContent = before ? 'this read is from before pgvigil marked its own sessions: nothing in it is hidden' : '';
     note.hidden = !before;

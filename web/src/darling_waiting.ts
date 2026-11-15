@@ -81,17 +81,21 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   }
   const blocked = tasks.filter(byOther).length;
   const sessions = new Set(tasks.map(r => r.session_id)).size;
+  const hiddenTasks = Number(ownOf(d.own_hidden).tasks ?? 0);
+  const shownLongest = tasks.reduce<number | null>((m, r) => r.wait_ms == null ? m : Math.max(m ?? 0, Number(r.wait_ms)), null);
+  const ownLongest = !ctx.own && hiddenTasks > 0 ? shownLongest : snap?.longest_ms == null ? null : Number(snap.longest_ms);
   sec.append(el('div', { class: 'tiles' },
     tile(wt ? `Tasks waiting on ${wt}` : 'Tasks waiting', fmtNum(wt ? tasks.length : Number(snap?.tasks ?? tasks.length))),
     tile('Sessions', fmtNum(wt ? sessions : Number(snap?.sessions ?? sessions))),
     tile('Blocked by a session', fmtNum(blocked), blocked ? 'warn' : 'ok'),
     tile('THREADPOOL waiters', fmtNum(Number(snap?.threadpool ?? 0)), Number(snap?.threadpool ?? 0) ? 'crit' : 'ok'),
-    tile('Longest wait', snap?.longest_ms == null ? 'none' : ms(snap.longest_ms))),
+    // with pgvigil's own tasks hidden the tile is the shown tasks' longest (the design's figure table: it follows the switch)
+    tile('Longest wait', ownLongest == null ? 'none' : ms(ownLongest))),
     readNav(ctx, 'mssql_waiting', reads, cur, wt, 'Read at'), filterLine(ctx, 'mssql_waiting', cur, wt, 'tasks'));
   // pgvigil's own sessions (B24 OWN): Tasks waiting and Sessions without a wait type are the read's own count of every
   // task; with one, and the grid, they follow the switch
   const oh = ownOf(d.own_hidden);
-  sec.append(ownBar(ctx, { hidden: Number(oh.tasks ?? 0), includes: wt ? 0 : Number(oh.own_tasks ?? 0), includesWhat: 'the task counts above',
+  sec.append(ownBar(ctx, { hidden: Number(oh.tasks ?? 0), includes: wt ? 0 : Number(oh.own_tasks ?? 0), includesWhat: 'the waiting tasks above',
     snapshotAt: cur, since: oh.since }).bar);
   if (snap && Number(snap.stored) < Number(snap.tasks)) sec.append(el('p', { class: 'meta' }, `The ${fmtNum(Number(snap.stored))} longest of ${fmtNum(Number(snap.tasks))} waiting tasks are kept for this read.`));
   if (snap?.decode_note) sec.append(el('p', { class: 'meta' }, `Not every resource was named: ${String(snap.decode_note)}.`));

@@ -210,8 +210,12 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
   // server's count of every session, pgvigil's included (implicit transactions follow the switch)
   if (ownCtx) {
     const oh = ownOf(d.own_hidden);
-    box.append(ownBar(ownCtx, { hidden: Number(oh.sessions ?? 0), includes: Number(oh.own_sessions ?? 0), includesWhat: 'the session and request counts above',
-      snapshotAt: sum.snapshot_at, since: oh.since }).bar);
+    // the snapshot on screen when the slider moved to it (no navigation): the switch keeps it (review part 2 M1); with a
+    // wait filter the count is the snapshot's, not the cut the grid shows (L5)
+    const snapRows = rowsOf(d.snapshots), newest = snapRows.length ? snapRows[snapRows.length - 1].snapshot_at : undefined;
+    const onScreen = picked != null && newest != null && String(picked) !== String(newest) ? String(picked) : undefined;
+    box.append(ownBar(ownCtx, { hidden: Number(oh.sessions ?? 0), includes: Number(oh.own_sessions ?? 0), includesWhat: 'the sessions above',
+      snapshotAt: sum.snapshot_at, since: oh.since, at: onScreen, hiddenWhere: waitOnly() ? ' in this snapshot' : undefined }).bar);
   }
   // the snapshot's time as DBA Dash's toolbar has it, and where the read came from
   box.prepend(el('div', { class: 'picker' }, el('b', { class: 'snap-time', title: `The server's own clock: ${fmtTime(sum.server_utc)}` }, 'Snapshot ' + fmtTime(sum.snapshot_at)),
