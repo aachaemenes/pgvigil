@@ -411,9 +411,10 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 		return
 	}
 	// a fleet-wide, tag-wide or open-ended mute, silence or blackout needs admin (review-16 S5: configuration others
-	// live with); an operator mutes or blacks out ONE instance with an end. The body's scope is read here, before
-	// the instance lookup and the door's scope
-	if op == "add" && (in.Kind == "mute" || in.Kind == "silence" || in.Kind == "blackout") && (in.InstanceID <= 0 || in.Tag != "" || in.Until == nil) && !s.roleOK(w, r, needAdmin, "a fleet-wide or open-ended mute") {
+	// live with); an operator mutes or blacks out ONE instance, or mutes one alert (finding_key: review-18 b24f1 N5),
+	// with an end. The body's scope is read here, before the instance lookup and the door's scope
+	one := in.InstanceID > 0 || (in.Kind == "mute" && in.FindingKey != "")
+	if op == "add" && (in.Kind == "mute" || in.Kind == "silence" || in.Kind == "blackout") && (!one || in.Tag != "" || in.Until == nil) && !s.roleOK(w, r, needAdmin, "a fleet-wide or open-ended mute") {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

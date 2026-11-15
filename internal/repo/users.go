@@ -82,17 +82,31 @@ func (r *Repo) UIUsers(ctx context.Context) ([]UIUser, error) {
 }
 
 // UIUserAdd creates a user with the given argon2id hash and role (checked by RoleName). An empty role makes an admin
-// when the repository has no enabled admin (its first: the review's B2 - a repository is never left without one),
-// else a viewer (the locked-down default). It returns the role written and whether it was that first admin.
+// when the repository has no enabled admin (its first: the review's B2 - a fresh install's first user can change
+// what an admin may), else a viewer (the locked-down default). Demoting, disabling or removing the last admin is
+// allowed: the repository owner's 'pgvigil user role <name> admin' (or an add without -role) is the way back. Two adds
+// at once take one advisory lock, so only one of them can be that first admin (review-18 b24f1 N2). It returns the
+// role written and whether it was that first admin.
 func (r *Repo) UIUserAdd(ctx context.Context, name, hash, role string) (string, bool, error) {
 	var got string
 	var first bool
-	err := r.pool.QueryRow(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return "", false, uiErr("add", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('pgvigil.ui_users: the first admin'))`); err != nil {
+		return "", false, uiErr("add", err)
+	}
+	err = tx.QueryRow(ctx, `
 INSERT INTO pgvigil.ui_users (username, password_hash, role)
 SELECT $1, $2, coalesce(nullif($3, ''), CASE WHEN f.first THEN 'admin' ELSE 'viewer' END)
   FROM (SELECT NOT EXISTS (SELECT 1 FROM pgvigil.ui_users WHERE role = 'admin' AND NOT is_disabled) AS first) f
 RETURNING role, $3 = '' AND role = 'admin'`, name, hash, role).Scan(&got, &first)
 	if err != nil {
+		return "", false, uiErr("add", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return "", false, uiErr("add", err)
 	}
 	return got, first, nil
