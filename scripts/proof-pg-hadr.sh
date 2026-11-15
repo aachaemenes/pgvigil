@@ -185,8 +185,9 @@
 #        two rules once, on hadr-ab-w ('no snapshot in 24 h' and 'retention under 7 days'); backup_status.
 #        cluster_backups_on 'hadr-ab-w' on hadr-ab-r and NULL on hadr-ab-w [red FAIL: four findings, both instances;
 #        no column cluster_backups_on]
-#   AB2  hadr-ab-x the writer of another cluster ab-two keeps its own two findings [red ok: a guard - a dedupe that
-#        ignores the cluster's name fails it]
+#   AB2  hadr-ab-x the writer of another cluster ab-two keeps its own two findings (judged on hadr-ab-x alone: the
+#        review 08:05 #2 - on red hadr-ab-r still raises) [red ok: a guard - a dedupe that ignores the cluster's name
+#        fails it]
 #   AB3  a failover (hadr-ab-r read as the writer, hadr-ab-w as a reader): the findings move to hadr-ab-r, the cell of
 #        hadr-ab-w names hadr-ab-r [red FAIL]
 #   AB4  the writer's reads stop (hadr-ab-r's rows read 2 hours ago): hadr-ab-w, a reader read fresh, raises the two
@@ -201,6 +202,15 @@
 #        its own two findings [red ok: a guard - a match by the identifier alone fails it]
 #   AB7  hadr-ab-z read as a reader with hadr-ab-y's ARN: the two once, on hadr-ab-y; hadr-ab-z's cell names hadr-ab-y
 #        [red FAIL: both raise; no column cluster_backups_on]
+#   (the review 08:05 #1, written 08:1x before their runs: a row with no ARN - read by a collector before the ARN, for
+#   one read after the upgrade - takes the one ARN its identifier carries among the rows, else stays on its identifier;
+#   one holder per cluster key, so a mix never silences a cluster - it may raise twice until the next read)
+#   AB8  hadr-ab-a (made first) a reader with ARN m and hadr-ab-e the writer with no ARN, identifier ab-mix: the two
+#        once, on hadr-ab-e; hadr-ab-a's cell names hadr-ab-e [red FAIL: both raise]
+#   AB9  hadr-ab-d the writer of another ab-mix (ARN n): no cluster silent - hadr-ab-d keeps its two; hadr-ab-e (no ARN,
+#        two ARNs carry its identifier now) and hadr-ab-a each raise theirs (six) [red ok: a guard - b8c5a400's match
+#        (the ARN when both rows carry one, else the identifier) does not chain: hadr-ab-e, the lowest writer, holds for
+#        hadr-ab-d and hadr-ab-a and only it raises]
 # Task 375's rows (migration 0150), written before the first run 2026-11-14 18:0x PST; red = the tree before 375
 # (rel-hadr-s1 ef59fba: no 0150 - its functions, views and checks do not exist, so every row below fails there):
 #   RU1  the rig's own samples (hadr-p, hadr-s): every (kind, key, UTC hour) of replication_hourly equals a direct
@@ -293,7 +303,7 @@
 # read, bumped after its hour was rebuilt) and #8 (the wide-write path's own error) - races and an FK case, reasoned.
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
 # L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU AF AB RP R3 R3X L4 RU LK LD CC SQ CL; a riding row runs its host: L7 R2W, NS and NS2 G,
-# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, LDR LDB LD, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF2 AF; G2R G; AB2-AB7 AB); an unknown name stops the run; unset = all.
+# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, LDR LDB LD, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF2 AF; G2R G; AB2-AB9 AB); an unknown name stops the run; unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -303,7 +313,7 @@ ok() { echo "ok   $*"; }
 ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL AF AB "
 if [[ -n "${PROOF_ONLY:-}" ]]; then   # a riding row runs its host row; an unknown name is a typo, not an empty OK
   PO=""; for n in ${PROOF_ONLY//,/ }; do
-    case "$n" in L7) n=R2W ;; NS|NS2|G2R) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; LDR|LDB) n=LD ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; AF2) n=AF ;; AB[2-7]) n=AB ;; esac
+    case "$n" in L7) n=R2W ;; NS|NS2|G2R) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; LDR|LDB) n=LD ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; AF2) n=AF ;; AB[2-9]) n=AB ;; esac
     [[ "$ROWS" == *" $n "* ]] || { echo "FAIL PROOF_ONLY names an unknown row: $n"; exit 1; }
     PO+="$n,"; done; PROOF_ONLY=$PO
 fi
@@ -894,9 +904,9 @@ if want AB; then
     q "select pgvigil.import_backups($1, now(), '[{\"kind\":\"archiver\",\"name\":\"pg_stat_archiver\",\"archive_mode\":\"on\",\"archive_set\":true,
         \"archived_count\":0,\"failed_count\":0,\"is_replica\":$2},{\"kind\":\"cloud\",\"name\":\"$3\",\"resource_kind\":\"cluster\",\"retention_days\":1$arn},
         {\"kind\":\"snapshots_read\",\"name\":\"snapshots\",\"count\":0}]'::jsonb)" >"$WORK/ab.out" || fail "AB the import of instance $1: $(cat "$WORK/ab.out")"; }
-  abf() { # the cloud findings of the hadr-ab-* instances: '<instance> <rule>' lines in one string
+  abf() { # abf [name pattern]: the cloud findings of the hadr-ab-* instances (or those named): '<instance> <rule>' lines in one string
     q "select coalesce(string_agg(i.name || ' ' || f.setting, ', ' order by i.name, f.setting), 'none') from pgvigil.findings f join pgvigil.instances i using (instance_id)
-        where i.name like 'hadr-ab-%' and (f.setting like 'retention %' or f.setting = 'no snapshot in 24 h')"; }
+        where i.name like '${1:-hadr-ab-%}' and (f.setting like 'retention %' or f.setting = 'no snapshot in 24 h')"; }
   abcell() { # each active hadr-ab-* instance's cluster_backups_on: '<instance>=<holder or ->' (QUERY FAILED where the column is absent)
     q "select string_agg(instance || '=' || coalesce(cluster_backups_on, '-'), ' ' order by instance) from pgvigil.backup_status where instance like 'hadr-ab-%'"; }
   abread "$ABR" true ab-one; abread "$ABW" false ab-one
@@ -907,9 +917,9 @@ if want AB; then
   [[ "$r2" == "hadr-ab-r=hadr-ab-w hadr-ab-w=-" ]] && ok "AB the reader's backups cell names the writer that holds the cluster's backups ($r2)" \
     || fail "AB cluster_backups_on: '$r2' (expected 'hadr-ab-r=hadr-ab-w hadr-ab-w=-')"
   abread "$ABX" false ab-two
-  r=$(abf)
-  [[ "$r" == "hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days, hadr-ab-x no snapshot in 24 h, hadr-ab-x retention under 7 days" ]] \
-    && ok "AB2 another cluster's writer keeps its own findings ($r)" || fail "AB2 a second cluster: '$r' (expected hadr-ab-w's two and hadr-ab-x's two)"
+  r=$(abf hadr-ab-x)
+  [[ "$r" == "hadr-ab-x no snapshot in 24 h, hadr-ab-x retention under 7 days" ]] \
+    && ok "AB2 another cluster's writer keeps its own findings ($r)" || fail "AB2 a second cluster: '$r' (expected hadr-ab-x's two)"
   q "update pgvigil.instances set is_active = false where instance_id = $ABX" >/dev/null
   abread "$ABR" false ab-one; abread "$ABW" true ab-one   # a failover: hadr-ab-r is the writer now
   r=$(abf); r2=$(abcell)
@@ -937,6 +947,22 @@ if want AB; then
   [[ "$r" == "hadr-ab-y no snapshot in 24 h, hadr-ab-y retention under 7 days" && "$r2" == "hadr-ab-y=- hadr-ab-z=hadr-ab-y" ]] \
     && ok "AB7 a writer and a reader of one ARN: the two once, on the writer ($r; $r2)" || fail "AB7 one ARN, a writer and a reader: '$r', cells '$r2' (expected only hadr-ab-y's two, 'hadr-ab-y=- hadr-ab-z=hadr-ab-y')"
   q "update pgvigil.instances set is_active = false where instance_id in ($ABY, $ABZ)" >/dev/null
+  # AB8 / AB9 (the review 08:05 #1): a row with no ARN beside rows with one, of one identifier
+  ABA=$(q "select pgvigil.ensure_instance('hadr-ab-a', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")   # first: the lowest id
+  ABE=$(q "select pgvigil.ensure_instance('hadr-ab-e', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")
+  ABD=$(q "select pgvigil.ensure_instance('hadr-ab-d', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")
+  ARNM='arn:aws:rds:region-a:000000000000:cluster:ab-mix'; ARNN='arn:aws:rds:region-b:000000000000:cluster:ab-mix'
+  abread "$ABA" true ab-mix "$ARNM"; abread "$ABE" false ab-mix
+  r=$(abf); r2=$(abcell)
+  [[ "$r" == "hadr-ab-e no snapshot in 24 h, hadr-ab-e retention under 7 days" && "$r2" == "hadr-ab-a=hadr-ab-e hadr-ab-e=-" ]] \
+    && ok "AB8 a writer read without an ARN and a reader with one, of one identifier: the two once, on the writer ($r; $r2)" \
+    || fail "AB8 the ARN and no ARN: '$r', cells '$r2' (expected only hadr-ab-e's two, 'hadr-ab-a=hadr-ab-e hadr-ab-e=-')"
+  abread "$ABD" false ab-mix "$ARNN"
+  r=$(abf)
+  [[ "$r" == "hadr-ab-a no snapshot in 24 h, hadr-ab-a retention under 7 days, hadr-ab-d no snapshot in 24 h, hadr-ab-d retention under 7 days, hadr-ab-e no snapshot in 24 h, hadr-ab-e retention under 7 days" ]] \
+    && ok "AB9 two ARNs and a row without one, of one identifier: no cluster silent, hadr-ab-d keeps its two ($r)" \
+    || fail "AB9 the mix: '$r' (expected the two of each of hadr-ab-a, hadr-ab-d, hadr-ab-e)"
+  q "update pgvigil.instances set is_active = false where instance_id in ($ABA, $ABE, $ABD)" >/dev/null
 fi
 
 # ---- RP: replay paused on the standby -------------------------------------------------------------------------------
