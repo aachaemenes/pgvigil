@@ -27,8 +27,10 @@
 --                         partition parent mssql_georepl_sample; events past the window) are the join's WIRING.
 --
 -- The threshold: pg_threshold_keys 'georepl_data_loss' (minutes; warning 1 = sp_Blitz check 268's 60 s for an AG
--- secondary, critical 5 = pgvigil's own, the numbers 0143 gives ag_data_loss; root, tag, instance). 0143's ag_data_loss
--- (the lead's Q2) is not on this file's base; when 0142 / 0143 join, the key gains engines '{sqlserver}' (WIRING).
+-- secondary, critical 5 = pgvigil's own, the numbers 0143 gives ag_data_loss; root and tag: on this base
+-- import_pg_threshold refuses an instance level for a SQL Server instance, which 0142 teaches). 0143's ag_data_loss (the
+-- lead's Q2) is not on this file's base; when 0142 / 0143 join, the key gains engines '{sqlserver}' and the instance
+-- level (WIRING).
 -- "For 5 minutes" is 0066's rule: in every read of the last 5.5 minutes, the first at least 4 minutes old and the last
 -- at most 2 minutes old. A state row older than 5 minutes fires nothing (the Collections page says the read is stale).
 
@@ -92,7 +94,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_georepl_events (
 CREATE INDEX IF NOT EXISTS mssql_georepl_events_at_idx ON pgvigil.mssql_georepl_events (at);
 
 INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
-  ('georepl_data_loss', 'Geo-replication: a primary''s replication lag or unsent window', 'minutes', 'over', 1, 5, '{root,tag,instance}', 1440)
+  ('georepl_data_loss', 'Geo-replication: a primary''s replication lag or unsent window', 'minutes', 'over', 1, 5, '{root,tag}', 1440)
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
   warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
 
