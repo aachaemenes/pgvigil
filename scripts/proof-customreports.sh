@@ -174,6 +174,16 @@
 #     to ...'; pgcr-np: Top statements off 'created in postgres but not loaded' beside 'not created in the database
 #     pgcr_nx', each its description. The paused instance is the check that times out (it accepts the connection and
 #     never answers, as a hanging listener does).
+#  V. the community tools' versions (DBA Dash's Check Versions; nothing deployed, nothing run): with the three scripts of
+#     PGVIGIL_COMMUNITY_DIR installed in master, GET /api/community (fresh) gives each procedure its version read from
+#     its own text, the tested one and a word: the First Responder Kit 8.34, Darling Data 3.11, sp_WhoIsActive
+#     2200.20260409, every one 'the tested version'; the reply's install_script says nothing to install. A database
+#     pgcr_v of stubs (sp_BlitzCache at 8.30, sp_Blitz at 8.40, sp_PressureDetector without a version line; each would
+#     raise an error if run): 'older than tested', 'newer than tested (not tested by pgvigil)', 'version not read', the
+#     rest 'not installed'; version_notes says the Kit's procedures are at mixed versions; install_script holds
+#     Install-DbaFirstResponderKit, Install-DbaDarlingData and Install-DbaWhoIsActive, each with -Database pgcr_v, and
+#     the comment naming -LocalFile and the tested releases; no stub ran (sys.dm_exec_procedure_stats holds none of
+#     pgcr_v). RED (ebf9a9c): no version on any tool, no install_script.
 #  A. the audit: the log's run rows (run, community_run, community_help) = the runs this proof made.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -541,6 +551,30 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   fi
   [[ $(getc "community?instance=$MRID&database=tempdb") == 200 && $(js "sum(1 for t in d['tools'] if t['kind']=='proc' and t['installed'] is False and t['url'])") == 13 ]] || fail "M: tempdb: $(cat "$WORK/body")"
   ok "M: 14 tools on $MSR, the procedures installed in master; none in tempdb, each with its URL"
+  # ---- V: each procedure's version against the tested one, read from its own text; the install script printed
+  if [[ ${#INSTALLED[@]} == 3 ]]; then
+    [[ $(getc "community?instance=$MRID&fresh=1") == 200 ]] || fail "V: GET community: $(cat "$WORK/body")"
+    V1=$(tl "'|'.join(sorted({'%s=%s/%s' % (x['group'], x.get('version'), x.get('version_word')) for x in d['tools'] if x['kind'] == 'proc'}))")
+    [[ $V1 == "Darling Data=3.11/the tested version|First Responder Kit=8.34/the tested version|sp_WhoIsActive=2200.20260409/the tested version" ]] || fail "V: master's versions: $V1"
+    [[ $(js "str(d.get('install_script', '')).count('Install-Dba')") == 0 && $(js "'nothing to install' in str(d.get('install_script', ''))") == True ]] || fail "V: master's script: $(js "d.get('install_script')")"
+    ok "V: every procedure in master at the tested version (8.34, 3.11, 2200.20260409); the script says nothing to install"
+    sq "CREATE DATABASE pgcr_v" >/dev/null
+    sq "EXEC('CREATE PROCEDURE dbo.sp_BlitzCache AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.30'', @VersionDate = ''20250101''; RAISERROR(''a stub: never run'', 16, 1); END');
+        EXEC('CREATE PROCEDURE dbo.sp_Blitz AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.40'', @VersionDate = ''20270101''; RAISERROR(''a stub: never run'', 16, 1); END');
+        EXEC('CREATE PROCEDURE dbo.sp_PressureDetector AS BEGIN RAISERROR(''a stub: never run'', 16, 1); END');" pgcr_v >/dev/null
+    [[ $(getc "community?instance=$MRID&database=pgcr_v&fresh=1") == 200 ]] || fail "V: GET community pgcr_v: $(cat "$WORK/body")"
+    V2=$(tl "'|'.join('%s=%s/%s' % (k, t[k].get('version'), t[k].get('version_word')) for k in ('sp_BlitzCache', 'sp_Blitz', 'sp_PressureDetector', 'sp_WhoIsActive'))")
+    [[ $V2 == "sp_BlitzCache=8.30/older than tested|sp_Blitz=8.40/newer than tested (not tested by pgvigil)|sp_PressureDetector=None/version not read|sp_WhoIsActive=None/not installed" ]] || fail "V: pgcr_v's words: $V2"
+    [[ $(js "any('First Responder Kit' in n and 'mixed versions' in n for n in d.get('version_notes') or [])") == True ]] || fail "V: no mixed-versions note: $(js "d.get('version_notes')")"
+    VS=$(js "d.get('install_script') or ''")
+    for c in Install-DbaFirstResponderKit Install-DbaDarlingData Install-DbaWhoIsActive; do
+      grep -qE "^$c .*-Database 'pgcr_v'" <<< "$VS" || fail "V: the script lacks $c for pgcr_v: $VS"
+    done
+    grep -q -- "-LocalFile" <<< "$VS" && grep -q "8\.34" <<< "$VS" && grep -q "3\.11" <<< "$VS" || fail "V: the script's comment on -LocalFile and the tested releases: $VS"
+    [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgcr_v')") == 0 ]] || fail "V: a stub ran"
+    sq "DROP DATABASE pgcr_v" >/dev/null
+    ok "V: pgcr_v older / newer / version not read / not installed, the Kit's mixed versions said, the script's three installs for pgcr_v with -LocalFile named; no stub ran"
+  else NOTPROVEN+=("V: the versions need all three community scripts (PGVIGIL_COMMUNITY_DIR)"); fi
   have() { for f in "${INSTALLED[@]}"; do [[ $f == "$1" ]] && return 0; done; return 1; }
   if have sp_WhoIsActive.sql; then
     tick; [[ $(post community/params "{\"instance_id\":$MRID,\"tool\":\"sp_WhoIsActive\"}") == 200 ]] || fail "M: the form: $(cat "$WORK/body")"
