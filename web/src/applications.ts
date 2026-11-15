@@ -12,6 +12,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { fleet, inTagScope } from './fleet';
 import { Ctx } from './router';
 import { Col, el, fmtTime, grid, gridModel, offControl } from './ui';
+import { appFileSection } from './app_import';   // task 312: the inventory file
 
 // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
 // described by that sentence (admin_instances.ts's way: a button aria-disabled with its reason, a field disabled)
@@ -74,6 +75,11 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
   let seq = 0;              // the latest draw: an older one that ends later is dropped
   let busy = false;         // a write in flight: no second write, no Open, until its redraw (review C, MINOR 2)
   const picked = new Set<string>();   // the Unassigned rows ticked (instance_id TAB database)
+  // task 312: the Inventory and Import, one section kept across redraws (a preview survives them)
+  // the inventory is read again only after a change (a write here or an import), not at each Open or Show (review C, 9);
+  // an import's redraw leaves the focus to the import's result
+  let invDirty = true;
+  const file = appFileSection({ whyNot: () => whyNot, changed: () => draw().catch((e: unknown) => say(`The page could not be read again: ${(e as Error).message}`, true)) });
 
   // a grid draws its rows again at each sort, filter and 'Show more' through the columns' formats: each actions cell
   // locks its own controls, so a redraw never brings a write control back on a read-only server
@@ -129,11 +135,17 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       selectedForm(apps),
       el('h3', {}, `Marked not an application (${marked.length})`),
       grid(marked, markedCols, 'No database is marked.'),
+      file.el,
       el('h3', {}, 'Changes (the last 200)'),
       grid(audit, [{ key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'client' }, { key: 'op' }, { key: 'target' },
         { key: 'outcome' }, { key: 'detail', wide: true }], 'No change yet.'),
     );
     readOnly();
+    if (invDirty) {
+      invDirty = false;
+      await file.refresh();
+      readOnly();
+    }
   }
 
   // after a redraw the control that had the focus is gone: the opened application's heading takes it, else the page's
@@ -155,6 +167,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
     if (!r.ok) { busy = false; for (const b of off) b.disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
     // done: its words and the state it sets come before the redraw, so the redraw shows what they set (review C, MINOR 1)
     const msg = done(r.body);
+    invDirty = true;
     try { await draw(); } catch (e) {
       busy = false; say(`${msg} The page could not be read again: ${(e as Error).message}`, true); return true;
     }
