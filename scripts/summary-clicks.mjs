@@ -4,9 +4,11 @@
 // counts line is clicked where a person clicks it (the middle of its text, after scrolling it into view), and the page
 // is read before and after. A click is ALIVE when the address changes, a dialog or a menu opens, a sort mark changes,
 // or the text in view changes (a sort, a filter, a panel drawn, a scroll to the result); DEAD otherwise, and a dead
-// click FAILS, except where DBA Dash's own cell is text, not a link (Checks/Summary.Designer.cs: Memory Dump, Is Agent
-// Running, DB Mail are DataGridViewTextBoxColumn) - their headings still sort and are clicked like every other.
-// A dead click whose change landed only outside the view ('below the fold') is a FAIL too: nobody saw it.
+// click FAILS.
+// A dead click whose change landed only outside the view ('below the fold') is a FAIL too: nobody saw it. Every status
+// text answers a click, DBA Dash's text cells (Memory Dump, Is Agent Running, DB Mail) too: a text left plain FAILS as
+// 'dead twin' where a link of the same check (data-group) is on its page, and as 'dead status text' where it is in the
+// warning or critical band's colour, unless it is a heading.
 // Usage:
 //   node scripts/summary-clicks.mjs <cdp port> <base url/> <out dir>
 //   chromium --headless=new --remote-debugging-port=<p> about:blank &   pgvigil demo ... -serve -listen 127.0.0.1:<port>
@@ -42,8 +44,6 @@ const want = new Set((process.env.SUMCLICK_SCOPES || 'root,tag,instance').split(
 // page it is on changes nothing in the walk either (the review of 823e113, finding 2)
 const scopes = [...(want.has('root') ? [['root', '#/summary?w=1h']] : []), ...(tag && want.has('tag') ? [[`tag ${tag}`, '#/summary?tag=' + encodeURIComponent(tag) + '&w=1h']] : []),
   ...(want.has('instance') ? [pgI, msI].filter(Boolean).map(r => [`instance ${r.name}`, `#/summary?i=${r.instance_id}&w=1h`]) : [])];
-// DBA Dash's text cells (not links): a dead click there is DBA Dash's too
-const plainColumns = new Set(['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB Mail']);
 
 // the browser: one tab over CDP; every call has a time limit (a hung page or a closed socket FAILS the click it was
 // on, then a new tab is opened and the walk goes on from the next target); a browser dialog (alert, confirm) is
@@ -294,7 +294,18 @@ const locate = d => ev(`(() => { ${PARTS}
   // the point a person clicks must be on the target itself: another element over it (a sticky bar, a menu) would take
   // the click, and its effect would be counted as the target's (the review of 823e113, finding 13)
   if (hit && !(e === hit || e.contains(hit) || hit.contains(e))) return { why: 'another element is over its text: ' + hit.tagName.toLowerCase() + (typeof hit.className === 'string' && hit.className ? '.' + hit.className.split(' ')[0] : '') };
-  return { x, y, hit: hit ? hit.tagName.toLowerCase() + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.split(' ')[0] : '') : '' };
+  // the twin rule: a text of a check (data-group, on a fleet page with its instance's data-inst) beside which a link
+  // of the same check is on the page - the text is dead where its twin answers
+  const grp = e.closest('[data-group]') ?? e.querySelector('[data-group]'), gk = grp ? grp.getAttribute('data-group') : '', gi = grp?.closest('[data-inst]')?.getAttribute('data-inst') ?? '';
+  const live = x => x.matches('a[href], button:not(:disabled)') || !!x.querySelector('a[href], button:not(:disabled)');
+  const twin = !!gk && [...document.querySelectorAll('main [data-group]')].some(o => o !== grp && !o.contains(e) && !e.contains(o)
+    && o.getAttribute('data-group') === gk && (o.closest('[data-inst]')?.getAttribute('data-inst') ?? '') === gi && live(o)) ? gk : '';
+  // the status rule: a text in the warning or the critical band's colour (its own colour, or a status cell's or a
+  // badge's tint), never a heading
+  const tint = c => { const q = document.createElement('span'); q.style.color = c; document.body.append(q); const v = getComputedStyle(q).color; q.remove(); return v; };
+  const band = new Set([tint('var(--warn)'), tint('var(--crit)')]);
+  const status = !e.closest('h1, h2, h3, h4, h5, h6') && (band.has(getComputedStyle(e).color) || !!e.closest('td.status.warn, td.status.crit, .badge.warn, .badge.crit'));
+  return { x, y, twin, status, hit: hit ? hit.tagName.toLowerCase() + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.split(' ')[0] : '') : '' };
 })()`);
 // what a person can see, and what the page holds: the text in view by place, the text anywhere, the sort marks, an
 // open dialog or menu, the address (the Refresh Time's clock left out: it moves by itself)
@@ -373,7 +384,8 @@ const clickOne = async (scope, t) => {
   r.effect = effects.length ? effects.join('; ') : offView ? 'nothing in view (a change below the fold only)' : 'nothing';
   let dirty = offView;
   if (effects.length) { r.verdict = 'ok'; dirty = true; }
-  else if (t.part === 'instcell' && plainColumns.has(t.label)) r.verdict = 'plain (DBA Dash: a text cell, not a link)';
+  else if (p.twin) r.verdict = `FAIL dead twin: a link of the same check (${p.twin}) is on the page`;
+  else if (p.status) r.verdict = 'FAIL dead status text: a warning or critical text that answers no click';
   else if (t.part === 'inst' && plainKinds[t.kind]) r.verdict = `plain (${plainKinds[t.kind]})`;
   else r.verdict = 'FAIL dead click: ' + r.effect;
   await mouse('mouseMoved', 2, 2);
