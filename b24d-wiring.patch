@@ -1,5 +1,5 @@
 diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
-index ec97781a..1704c9af 100644
+index ec97781a..3276375c 100644
 --- i/cmd/pgvigil/serve.go
 +++ w/cmd/pgvigil/serve.go
 @@ -101,6 +101,21 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
@@ -18,7 +18,7 @@ index ec97781a..1704c9af 100644
 +			log.Warn(w)
 +		}
 +		if err != nil {
-+			return err
++			return &configError{err} // exit 3: a unit with RestartPreventExitStatus=3 does not loop on it
 +		}
 +	}
  	// bind first: the accepted Host values follow the bound port (-listen 127.0.0.1:0 picks one, as demo does)

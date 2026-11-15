@@ -123,6 +123,10 @@ func CheckMetricsToken(c *MetricsConfig, login bool) (warns []string, err error)
 	}
 	tok, _, err := readMetricsToken(c.Token)
 	if err != nil {
+		// a value without file: / env: may be the token itself: never printed
+		if !strings.HasPrefix(c.Token, "file:") && !strings.HasPrefix(c.Token, "env:") {
+			return warns, errors.New("metrics.token is not file:/path or env:NAME (its value is not shown: it may be the token itself)")
+		}
 		return warns, fmt.Errorf("metrics.token %s: %v", c.Token, err)
 	}
 	if len(tok) < metricsTokenMin {
@@ -140,6 +144,7 @@ type promToken struct {
 	prevUntil time.Time
 	mtime     time.Time
 	checked   time.Time
+	warned    bool
 }
 
 func (t *promToken) refresh(now time.Time, warn func(string)) {
@@ -150,19 +155,17 @@ func (t *promToken) refresh(now time.Time, warn func(string)) {
 		return
 	}
 	t.checked = now
-	if t.have {
-		if st, err := os.Stat(strings.TrimPrefix(t.spec, "file:")); err == nil && st.ModTime().Equal(t.mtime) {
-			return
-		}
-	}
+	// read again at most once a second and judged by the content's digest (not the mtime: a rewrite within one mtime
+	// tick would be missed); a read that fails or is short keeps the token in use, warned once per content
 	tok, mt, err := readMetricsToken(t.spec)
 	if err != nil || len(tok) < metricsTokenMin {
-		if t.have {
+		if t.have && !t.warned {
 			warn(fmt.Sprintf("metrics.token %s could not be read again or is under %d bytes: the token in use stays", t.spec, metricsTokenMin))
-			t.mtime = mt
+			t.warned = true
 		}
 		return
 	}
+	t.warned = false
 	d := sha256.Sum256([]byte(tok))
 	if t.have && d != t.cur {
 		t.prev, t.prevUntil = t.cur, now.Add(60*time.Second)
@@ -195,6 +198,25 @@ type promLimiter struct {
 	mu    sync.Mutex
 	fails map[string]failRecord
 	warns map[string]time.Time
+	swept time.Time
+}
+
+// sweepLocked drops the records older than a minute, at most once a minute (l.mu held).
+func (l *promLimiter) sweepLocked(now time.Time) {
+	if now.Sub(l.swept) < time.Minute {
+		return
+	}
+	l.swept = now
+	for k, f := range l.fails {
+		if !now.Before(f.reset) {
+			delete(l.fails, k)
+		}
+	}
+	for k, t := range l.warns {
+		if now.Sub(t) >= time.Minute {
+			delete(l.warns, k)
+		}
+	}
 }
 
 func (l *promLimiter) wait(ip string, now time.Time) time.Duration {
@@ -212,11 +234,7 @@ func (l *promLimiter) fail(ip string, now time.Time) {
 	if l.fails == nil {
 		l.fails = map[string]failRecord{}
 	}
-	for k, f := range l.fails { // a minute's records only
-		if !now.Before(f.reset) {
-			delete(l.fails, k)
-		}
-	}
+	l.sweepLocked(now)
 	f := l.fails[ip]
 	if !now.Before(f.reset) {
 		f = failRecord{reset: now.Add(failWindow)}
@@ -234,11 +252,7 @@ func (l *promLimiter) warnOnce(ip string, now time.Time) bool {
 	if t, ok := l.warns[ip]; ok && now.Sub(t) < time.Minute {
 		return false
 	}
-	for k, t := range l.warns {
-		if now.Sub(t) >= time.Minute {
-			delete(l.warns, k)
-		}
-	}
+	l.sweepLocked(now)
 	l.warns[ip] = now
 	return true
 }
@@ -308,16 +322,17 @@ func (s *Server) PromMetrics(w http.ResponseWriter, r *http.Request) {
 		ok = true
 	}
 	if h := r.Header.Get("Authorization"); !ok && h != "" {
-		if d := st.limit.wait(ip, now); d > 0 {
-			st.refused.Add(1)
-			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(d.Seconds()))))
-			writeErr(w, http.StatusTooManyRequests, errors.New("too many refused tokens from this address: wait a minute"))
-			return
-		}
 		tok, isBearer := strings.CutPrefix(h, "Bearer ")
 		tok = strings.TrimSpace(tok)
+		// the right token passes even while the address is locked out (a shared address - NAT, a proxy - must not let
+		// another sender keep Prometheus out); a wrong one meets the lockout first
 		if !isBearer || tok == "" || st.token == nil || !st.token.match(tok, now, warn) {
 			st.refused.Add(1)
+			if d := st.limit.wait(ip, now); d > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(d.Seconds()))))
+				writeErr(w, http.StatusTooManyRequests, errors.New("too many refused tokens from this address: wait a minute"))
+				return
+			}
 			st.limit.fail(ip, now)
 			writeErr(w, http.StatusUnauthorized, errors.New("the token is refused"))
 			return
@@ -338,6 +353,9 @@ func (s *Server) PromMetrics(w http.ResponseWriter, r *http.Request) {
 		wait = time.Duration(v*float64(time.Second)) - 500*time.Millisecond
 		if wait < time.Second {
 			wait = time.Second
+		}
+		if wait > 70*time.Second { // serve's WriteTimeout is 75 s: a 503 with words, never a cut connection
+			wait = 70 * time.Second
 		}
 	}
 	body, gz, err := st.get(r.Context(), wait, s.renderMetrics)
@@ -422,7 +440,7 @@ func (st *promState) startLocked(render func(context.Context, *promState) ([]byt
 		}
 		st.mu.Lock()
 		if err == nil {
-			st.body, st.gz, st.at, st.lastErr = body, gz, time.Now(), nil
+			st.body, st.gz, st.at, st.lastErr = body, gz, t0, nil // its age from the read's start, not its end
 		} else {
 			st.lastErr = err
 		}
@@ -601,18 +619,18 @@ func (b *promBody) bytes() []byte {
 	return out.Bytes()
 }
 
-// promLookback is the rate lookback of the whole set: the web layer's rule (3 x the longest interval of dbstats,
-// serverstats and iostats over the defaults and every instance's own, 900 s at least).
-func (s *Server) promLookback() time.Duration {
+// promLookback is one instance's rate lookback, rateLookback's rule (web.go) over its three rate collections: 3 x the
+// longest of its dbstats, serverstats and iostats intervals (its own where pgvigil.yaml sets one, else the default),
+// 900 s at least. One instance's long cadence widens its own read only: the render groups the instances by lookback.
+func (s *Server) promLookback(name string) time.Duration {
 	secs := 0
 	for _, c := range []string{"dbstats", "serverstats", "iostats"} {
-		if v := s.expected.Defaults[c]; v > secs {
-			secs = v
+		v := s.expected.Defaults[c]
+		if o, ok := s.expected.Instances[name][c]; ok && o > 0 {
+			v = o
 		}
-		for _, m := range s.expected.Instances {
-			if v := m[c]; v > secs {
-				secs = v
-			}
+		if v > secs {
+			secs = v
 		}
 	}
 	lb := 3 * secs
@@ -622,11 +640,13 @@ func (s *Server) promLookback() time.Duration {
 	return time.Duration(lb) * time.Second
 }
 
+// promInst is an active instance as the body labels it.
+type promInst struct{ name, engine string }
+
 // renderMetrics reads every figure and writes the body.
 func (s *Server) renderMetrics(ctx context.Context, st *promState) ([]byte, error) {
 	t0 := time.Now()
-	type inst struct{ name, engine string }
-	insts := map[int32]inst{}
+	insts := map[int32]promInst{}
 	var b promBody
 	b.declare("pgvigil_instance_info", "gauge", "An active instance pgvigil collects from (1); labels server, engine, platform, version"+map[bool]string{true: ", tags (sorted, comma-wrapped)", false: ""}[st.cfg.Tags]+".")
 	rows, err := s.pool.Query(ctx, `SELECT i.instance_id, i.name, i.engine, coalesce(i.platform, ''), coalesce(i.server_version, ''), coalesce(t.tags, '{}'::text[])
@@ -643,7 +663,7 @@ func (s *Server) renderMetrics(ctx context.Context, st *promState) ([]byte, erro
 			rows.Close()
 			return nil, fmt.Errorf("instances: %w", err)
 		}
-		insts[id] = inst{name, engine}
+		insts[id] = promInst{name, engine}
 		l := [][2]string{{"server", name}, {"engine", engine}, {"platform", platform}, {"version", version}}
 		if st.cfg.Tags {
 			sort.Strings(tags)
@@ -668,50 +688,21 @@ func (s *Server) renderMetrics(ctx context.Context, st *promState) ([]byte, erro
 	}
 	b.declare("pgvigil_metrics_databases_cut", "gauge", "The databases of an instance left out of the per-database series (metrics.max_databases).")
 	include := st.cfg.IncludeDatabases
-	rows, err = s.pool.Query(ctx, `SELECT instance_id, family, metric, database, value, secs FROM pgvigil.metrics_newest(NULL, $1, $2, $3, $4)`,
-		s.promLookback(), st.cfg.Databases, st.cfg.maxDatabases(), include)
-	if err != nil {
-		return nil, fmt.Errorf("metrics_newest: %w", err)
+	if len(include) == 0 {
+		include = nil // an empty list is no list: the databases go by size
 	}
-	for rows.Next() {
-		var id int32
-		var family, metric string
-		var database *string
-		var value float64
-		var secs *int32
-		if err := rows.Scan(&id, &family, &metric, &database, &value, &secs); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("metrics_newest: %w", err)
-		}
-		in, ok := insts[id]
-		if !ok {
-			continue
-		}
-		if family == "database" && metric == "cut" {
-			b.add("pgvigil_metrics_databases_cut", [][2]string{{"server", in.name}}, value)
-			continue
-		}
-		p, ok := byKey[family+"."+metric]
-		if !ok {
-			continue // a key the table does not name: the test fails on it, the endpoint stays up
-		}
-		v, ok := promValue(p.unit, value, secs)
-		if !ok {
-			continue
-		}
-		if database != nil {
-			if p.dbName != "" {
-				b.add(p.dbName, [][2]string{{"server", in.name}, {"engine", in.engine}, {"database", *database}}, v)
-			}
-			continue
-		}
-		b.add(p.name, [][2]string{{"server", in.name}, {"engine", in.engine}}, v)
+	// one statement per lookback (most installs: one), its instances' ids in it
+	groups := map[time.Duration][]int32{}
+	for id, in := range insts {
+		lb := s.promLookback(in.name)
+		groups[lb] = append(groups[lb], id)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("metrics_newest: %w", err)
+	for lb, ids := range groups {
+		if err := s.promNewest(ctx, &b, insts, byKey, ids, lb, st.cfg, include); err != nil {
+			return nil, err
+		}
 	}
-	b.declare("pgvigil_sample_timestamp_seconds", "gauge", "The Unix time of an instance's newest sample of a metric family within the last day, fresh or stale (alert on time() - this).")
+	b.declare("pgvigil_sample_timestamp_seconds", "gauge", "The Unix time of an instance's newest sample of a metric family, fresh or stale, no age bound (alert on time() - this).")
 	rows, err = s.pool.Query(ctx, `SELECT instance_id, family, extract(epoch FROM at)::float8 FROM pgvigil.metrics_sample_times(NULL) ORDER BY 1, 2`)
 	if err != nil {
 		return nil, fmt.Errorf("metrics_sample_times: %w", err)
@@ -783,4 +774,53 @@ func (s *Server) renderMetrics(ctx context.Context, st *promState) ([]byte, erro
 	st.series = series
 	st.mu.Unlock()
 	return b.bytes(), nil
+}
+
+// promNewest reads metrics_newest for one group of instances (one lookback) into the body.
+func (s *Server) promNewest(ctx context.Context, b *promBody, insts map[int32]promInst, byKey map[string]promName, ids []int32,
+	lb time.Duration, cfg *MetricsConfig, include []string) error {
+	rows, err := s.pool.Query(ctx, `SELECT instance_id, family, metric, database, value, secs FROM pgvigil.metrics_newest($1::int[], $2, $3, $4, $5)`,
+		ids, lb, cfg.Databases, cfg.maxDatabases(), include)
+	if err != nil {
+		return fmt.Errorf("metrics_newest: %w", err)
+	}
+	for rows.Next() {
+		var id int32
+		var family, metric string
+		var database *string
+		var value float64
+		var secs *int32
+		if err := rows.Scan(&id, &family, &metric, &database, &value, &secs); err != nil {
+			rows.Close()
+			return fmt.Errorf("metrics_newest: %w", err)
+		}
+		in, ok := insts[id]
+		if !ok {
+			continue
+		}
+		if family == "database" && metric == "cut" {
+			b.add("pgvigil_metrics_databases_cut", [][2]string{{"server", in.name}}, value)
+			continue
+		}
+		p, ok := byKey[family+"."+metric]
+		if !ok {
+			continue // a key the table does not name: the test fails on it, the endpoint stays up
+		}
+		v, ok := promValue(p.unit, value, secs)
+		if !ok {
+			continue
+		}
+		if database != nil {
+			if p.dbName != "" {
+				b.add(p.dbName, [][2]string{{"server", in.name}, {"engine", in.engine}, {"database", *database}}, v)
+			}
+			continue
+		}
+		b.add(p.name, [][2]string{{"server", in.name}, {"engine", in.engine}}, v)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("metrics_newest: %w", err)
+	}
+	return nil
 }

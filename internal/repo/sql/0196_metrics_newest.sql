@@ -7,18 +7,23 @@
 --   so its first rate has its previous read) of all instances read once per source table, never metric_points or a
 --   *_rate function per instance (3,000 calls at 1,000 instances). The arithmetic is metric_points' (0085) and the
 --   *_rate functions' (0004), so a value equals the Metrics grid's 'current' (metric_grid: the newest non-NULL point
---   per metric) whenever that point is fresh: the same units (count, pct, secs, ms, per_s, bytes_per_s, bytes, mb,
+--   per metric) whenever that point is fresh - two edges apart: a rate's lookback is counted from now() less the
+--   family's freshness, not from the grid's window start, so the first read after a gap longer than both gives no point
+--   here where the grid over an hour shows one (the next read has it); and the per-database series lag by dbid without
+--   the grid's filter on the name, so the first read after a database is renamed has a point here and none in the grid: the same units (count, pct, secs, ms, per_s, bytes_per_s, bytes, mb,
 --   xids); the exporter converts to base units. secs = the interval of a rate's point (NULL for a gauge), so the
 --   per-interval counts (database.deadlocks, server.checkpoints, server.checkpoints_req) can be given per second.
 --   database NULL = the instance's figure (the database family: its databases summed per read, as metric_points with
---   no database); with p_databases, each database's own series as well, the set chosen by size (the newest
---   database_sizes row of the last 2 days, largest first) or, when p_include is not NULL, the databases named there
+--   no database); with p_databases, each database's own series as well, the set chosen by size (pgvigil.databases'
+--   current size_bytes, one row per database, largest first) or, when p_include is not NULL, the databases named there
 --   (never by backends: the set must not churn), cut at p_max_databases; cut = the databases left out (on the
 --   instance's rows only, NULL elsewhere: a key 'database.cut' with value = the count).
 --   A stale point (older than its fresh_secs) is left out; a reset interval gives no point (metric_points' rule).
 -- metrics_sample_times(p_ids)
---   the newest sample of each family of each instance within the last day, stale or not (one index probe of the
---   (instance_id, snapshot_at) index per partition per instance), for pgvigil_sample_timestamp_seconds.
+--   the newest sample of each family of each instance, stale or not, with no age bound (one backward probe of the
+--   (instance_id, snapshot_at) index per partition per instance; purge keeps a few months), for
+--   pgvigil_sample_timestamp_seconds: an instance silent for days keeps its series, so time() - it keeps firing.
+-- The newest point per key is picked by a hash aggregate (max(at) per key, joined back), not a sort of every point.
 --
 -- Rights: STABLE readers of the stored samples, owned by the migration's owner like metric_points; serve's reader login
 -- (pgvigil_reader) gets EXECUTE from apply_roles' general rule (every pgvigil function not on its owner-only, collector
@@ -42,7 +47,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
         ('longest_active_secs', x.longest_active_secs::double precision),
         ('longest_idle_txn_secs', x.longest_idle_txn_secs::double precision),
         ('oldest_xmin_age', x.oldest_xmin_age::double precision)) AS v(metric, value)
-     WHERE x.instance_id = ANY ((SELECT a FROM ids)) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'sessions')
+     WHERE x.instance_id = ANY ((SELECT a FROM ids)::int[]) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'sessions')
        AND x.snapshot_at <= now() AND v.value IS NOT NULL),
   req AS (
     SELECT x.instance_id, x.snapshot_at AS at, v.metric, v.value
@@ -51,7 +56,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
         ('sessions', x.sessions::double precision), ('requests', x.requests::double precision),
         ('blocked', x.blocked::double precision), ('heads', x.heads::double precision),
         ('longest_wait_ms', x.longest_wait_ms::double precision)) AS v(metric, value)
-     WHERE x.instance_id = ANY ((SELECT a FROM ids)) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'requests')
+     WHERE x.instance_id = ANY ((SELECT a FROM ids)::int[]) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'requests')
        AND x.snapshot_at <= now() AND v.value IS NOT NULL),
   hst AS (                                   -- one row per read (two sources of one instance: the higher figure)
     SELECT h.instance_id, h.snapshot_at AS at, v.metric, v.value
@@ -59,7 +64,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
                    max(100.0 * x.mem_used / nullif(x.mem_total, 0)) AS mem_used_pct, min(x.mem_free) AS mem_free,
                    max(x.swap_used) AS swap_used, max(x.load1) AS load1
               FROM pgvigil.host_sample x
-             WHERE x.instance_id = ANY ((SELECT a FROM ids)) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'host')
+             WHERE x.instance_id = ANY ((SELECT a FROM ids)::int[]) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'host')
                AND x.snapshot_at <= now()
              GROUP BY x.instance_id, x.snapshot_at) h
       CROSS JOIN LATERAL (VALUES
@@ -71,7 +76,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT c.instance_id, c.snapshot_at AS at, v.metric, v.value
       FROM (SELECT x.instance_id, x.snapshot_at, max(x.sql_pct) AS sql_pct, max(x.other_pct) AS other_pct, max(100 - x.idle_pct) AS total_pct
               FROM pgvigil.mssql_cpu_sample x
-             WHERE x.instance_id = ANY ((SELECT a FROM ids)) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'cpu')
+             WHERE x.instance_id = ANY ((SELECT a FROM ids)::int[]) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'cpu')
                AND x.snapshot_at <= now()
              GROUP BY x.instance_id, x.snapshot_at) c
       CROSS JOIN LATERAL (VALUES
@@ -85,7 +90,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
                    max(x.work_queue) AS work_queue, max(x.pending_io) AS pending_io, max(x.active_workers) AS active_workers,
                    max(x.current_workers) AS current_workers
               FROM pgvigil.mssql_sched_sample x
-             WHERE x.instance_id = ANY ((SELECT a FROM ids)) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'scheduler')
+             WHERE x.instance_id = ANY ((SELECT a FROM ids)::int[]) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'scheduler')
                AND x.snapshot_at <= now()
              GROUP BY x.instance_id, x.snapshot_at) c
       CROSS JOIN LATERAL (VALUES
@@ -102,7 +107,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
                    max(x.buffer_pool_kb) AS buffer_pool_kb, max(x.plan_cache_kb) AS plan_cache_kb, max(x.stolen_kb) AS stolen_kb,
                    min(x.available_kb) AS available_kb, max(x.physical_kb) AS physical_kb
               FROM pgvigil.mssql_memory_sample x
-             WHERE x.instance_id = ANY ((SELECT a FROM ids)) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'memory')
+             WHERE x.instance_id = ANY ((SELECT a FROM ids)::int[]) AND x.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'memory')
                AND x.snapshot_at <= now()
              GROUP BY x.instance_id, x.snapshot_at) c
       CROSS JOIN LATERAL (VALUES
@@ -126,7 +131,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
            d.tup_deleted, lag(d.tup_deleted) OVER k AS p9, d.temp_bytes, lag(d.temp_bytes) OVER k AS p12,
            d.deadlocks, lag(d.deadlocks) OVER k AS p13
       FROM pgvigil.dbstats d
-     WHERE d.instance_id = ANY ((SELECT a FROM ids))
+     WHERE d.instance_id = ANY ((SELECT a FROM ids)::int[])
        AND d.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'database') - p_lookback AND d.snapshot_at <= now()
     WINDOW k AS (PARTITION BY d.instance_id, d.dbid ORDER BY d.snapshot_at)),
   dd AS (
@@ -160,10 +165,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
                    count(*) OVER (PARTITION BY c.instance_id) AS n
               FROM (SELECT DISTINCT ON (z.instance_id, z.datname) z.instance_id, z.datname, s.size_bytes AS size
                       FROM (SELECT DISTINCT y.instance_id, y.datname FROM dd y WHERE p_databases AND y.datname IS NOT NULL) z
-                      LEFT JOIN LATERAL (SELECT s.size_bytes FROM pgvigil.database_sizes s
-                                          WHERE s.instance_id = z.instance_id AND s.datname = z.datname
-                                            AND s.snapshot_at > now() - interval '2 days' AND s.snapshot_at <= now()
-                                          ORDER BY s.snapshot_at DESC LIMIT 1) s ON true
+                      LEFT JOIN LATERAL (SELECT max(s.size_bytes) AS size_bytes FROM pgvigil.databases s
+                                          WHERE s.instance_id = z.instance_id AND s.datname = z.datname AND s.is_present) s ON true
                      WHERE p_include IS NULL OR z.datname = ANY (p_include)) c) q),
   dbd AS (
     SELECT r.instance_id, r.datname, r.snapshot_at AS at, r.secs, v.metric, v.value
@@ -189,7 +192,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
            s.buffers_backend, lag(s.buffers_backend) OVER k AS p8, s.buffers_alloc, lag(s.buffers_alloc) OVER k AS p10,
            s.wal_records, lag(s.wal_records) OVER k AS p11, s.wal_bytes, lag(s.wal_bytes) OVER k AS p13
       FROM pgvigil.serverstats s
-     WHERE s.instance_id = ANY ((SELECT a FROM ids))
+     WHERE s.instance_id = ANY ((SELECT a FROM ids)::int[])
        AND s.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'server') - p_lookback AND s.snapshot_at <= now()
     WINDOW k AS (PARTITION BY s.instance_id ORDER BY s.snapshot_at)),
   srv AS (
@@ -219,7 +222,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
            i.extends, lag(i.extends) OVER k AS p9, i.extend_bytes, lag(i.extend_bytes) OVER k AS p10,
            i.hits, lag(i.hits) OVER k AS p12, i.fsyncs, lag(i.fsyncs) OVER k AS p15
       FROM pgvigil.iostats i
-     WHERE i.instance_id = ANY ((SELECT a FROM ids))
+     WHERE i.instance_id = ANY ((SELECT a FROM ids)::int[])
        AND i.snapshot_at > now() - (SELECT keep FROM fr WHERE fr.family = 'io') - p_lookback AND i.snapshot_at <= now()
     WINDOW k AS (PARTITION BY i.instance_id, i.backend_type, i.object, i.context ORDER BY i.snapshot_at)),
   io AS (
@@ -248,9 +251,10 @@ LANGUAGE sql STABLE SET jit = off AS $$
     UNION ALL SELECT 'database', s.datname, s.instance_id, s.at, s.secs, s.metric, s.value FROM dbd s
     UNION ALL SELECT 'server', NULL, s.instance_id, s.at, s.secs, s.metric, s.value FROM srv s
     UNION ALL SELECT 'io', NULL, s.instance_id, s.at, s.secs, s.metric, s.value FROM io s)
-  SELECT n.instance_id, n.family, n.metric, n.database, n.value, n.at, n.secs
-    FROM (SELECT DISTINCT ON (p.instance_id, p.family, p.database, p.metric) p.*
-            FROM pts p ORDER BY p.instance_id, p.family, p.database, p.metric, p.at DESC) n
+  , nw AS (SELECT p.instance_id, p.family, p.database, p.metric, max(p.at) AS at FROM pts p GROUP BY 1, 2, 3, 4)
+  SELECT p.instance_id, p.family, p.metric, p.database, p.value, p.at, p.secs
+    FROM pts p JOIN nw ON nw.instance_id = p.instance_id AND nw.family = p.family AND nw.metric = p.metric
+                     AND nw.database IS NOT DISTINCT FROM p.database AND nw.at = p.at
   UNION ALL
   SELECT k.instance_id, 'database', 'cut', NULL, (max(k.n) - p_max_databases)::double precision, NULL, NULL
     FROM pick k GROUP BY k.instance_id HAVING max(k.n) > p_max_databases
@@ -265,18 +269,18 @@ LANGUAGE sql STABLE SET jit = off AS $$
     FROM pgvigil.instances i
     CROSS JOIN LATERAL (SELECT DISTINCT c.family FROM pgvigil.metric_catalog c WHERE c.engine IN (i.engine, 'any')) f
     CROSS JOIN LATERAL (SELECT CASE f.family
-             WHEN 'sessions'  THEN (SELECT max(x.snapshot_at) FROM pgvigil.activity_summary x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'database'  THEN (SELECT max(x.snapshot_at) FROM pgvigil.dbstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'server'    THEN (SELECT max(x.snapshot_at) FROM pgvigil.serverstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'io'        THEN (SELECT max(x.snapshot_at) FROM pgvigil.iostats x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'host'      THEN (SELECT max(x.snapshot_at) FROM pgvigil.host_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'requests'  THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_requests_summary x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'cpu'       THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_cpu_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'scheduler' THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
-             WHEN 'memory'    THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_memory_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at > now() - interval '1 day' AND x.snapshot_at <= now())
+             WHEN 'sessions'  THEN (SELECT max(x.snapshot_at) FROM pgvigil.activity_summary x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'database'  THEN (SELECT max(x.snapshot_at) FROM pgvigil.dbstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'server'    THEN (SELECT max(x.snapshot_at) FROM pgvigil.serverstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'io'        THEN (SELECT max(x.snapshot_at) FROM pgvigil.iostats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'host'      THEN (SELECT max(x.snapshot_at) FROM pgvigil.host_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'requests'  THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_requests_summary x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'cpu'       THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_cpu_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'scheduler' THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'memory'    THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_memory_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
            END AS at) t
    WHERE i.instance_id = ANY (coalesce(p_ids, ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active)))
      AND t.at IS NOT NULL
 $$;
 COMMENT ON FUNCTION pgvigil.metrics_sample_times(int[]) IS
-  'The newest sample of each metric family of each instance within the last day, stale or not (pgvigil_sample_timestamp_seconds).';
+  'The newest sample of each metric family of each instance, stale or not, no age bound (pgvigil_sample_timestamp_seconds).';
