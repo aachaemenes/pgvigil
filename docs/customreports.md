@@ -303,11 +303,12 @@ The community tools change upstream without asking pgvigil, so pgvigil watches t
   readable' (never an error). The Community tools page shows the installed version beside the checked one, and says
   when it is newer; `pgvigil.kit_versions_fleet` counts the fleet's instances per procedure and version.
 - **The collector's own call**: `mssql_requests` reads 14 of sp_WhoIsActive's columns by name. When the call fails the
-  DMV read runs instead and the run is partial; after 5 such runs in a row over at least 5 minutes with an error that
+  DMV read runs instead and the run is partial; after 5 such reads in a row (each read's own summary row, so a good
+  read between two fallbacks ends the streak) over at least 5 minutes with an error that
   means a changed shape (207 a column, 8144 / 8145 a parameter, 213 the column count, 2812 no such procedure, or 50000
   about the schema) the finding 'sp_WhoIsActive unusable' (warning) is raised, with the server's own error; another
-  repeated error (a deadlock victim, a lock timeout) is 'sp_WhoIsActive failing' (info). The first run that is not
-  the fallback clears it. The view is `pgvigil.kit_findings`.
+  repeated error (a deadlock victim, a lock timeout) is 'sp_WhoIsActive failing' (info). The next read that is not
+  the fallback clears it at once. The view is `pgvigil.kit_findings`.
 - **Every week** (`.github/workflows/kitwatch.yml`, Monday): the pinned kits and the newest (the First Responder Kit's
   and sp_WhoIsActive's latest release, DarlingData's default branch) are installed on one SQL Server container and
   every tool is run through pgvigil itself - the form, the Run path with every preset, the collector's call, the
