@@ -52,6 +52,7 @@ WITH scope AS (
      AND ($5::text IS NULL OR $5 = ANY (i.tags))
 ), lbl AS MATERIALIZED (
   SELECT a.ack_id, a.check_key, a.match_text, a.instance_name, a.tag, a.note,
+         coalesce(a.instance_id, (SELECT i.instance_id FROM pgvigil.instances i WHERE i.name = a.instance_name)) AS instance_id,
          CASE WHEN a.check_key ~ '^error log:[0-9]{1,10}$' THEN substring(a.check_key from 11)::bigint END AS num
     FROM pgvigil.acks a
    WHERE a.kind = 'noise' AND (a.check_key = 'error log' OR a.check_key ~ '^error log:[0-9]{1,10}$')
@@ -117,9 +118,10 @@ SELECT y.at, y.instance_id, y.instance, y.error_number, y.severity, y.state, y.c
  ORDER BY y.at DESC
  LIMIT 1000`
 
-// sqlErrorFleetNoise: this page's labels and the lines each hides in the window (the stream read once).
+// sqlErrorFleetNoise: this page's labels and the lines each hides in the window (the stream read once); instance_id
+// the instance a label names (its End is offered where a write for it can be made).
 const sqlErrorFleetNoise = sqlErrorFleetBase + `
-SELECT l.ack_id, l.check_key, l.match_text, l.instance_name AS instance, l.tag, l.note, coalesce(h.hits, 0)::int AS hits
+SELECT l.ack_id, l.check_key, l.match_text, l.instance_id, l.instance_name AS instance, l.tag, l.note, coalesce(h.hits, 0)::int AS hits
   FROM lbl l
   LEFT JOIN (SELECT y.noise_id, count(*) AS hits FROM y WHERE y.noise_id IS NOT NULL GROUP BY y.noise_id) h ON h.noise_id = l.ack_id
  ORDER BY l.check_key, l.ack_id`
