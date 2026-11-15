@@ -57,8 +57,9 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X14 a column whose header names a percent ('%') holds fractions under '0%' / '0.0%' / '0.00%' (13.4 % is 0.134): no
       percent number under another format. A share's size is the page's (a query's +4,900 % is 49, a run at 15 times its
       average 15.0): proof-export.sh holds it against the screen's figure
-  X15 a column whose header ends with its unit in brackets ('(ms/s)', '(s)', '(GB)') holds no text that starts with a
-      number ('463.71 warning', '1m 9s'): the number is the cell, its unit the header, its status the fill
+  X15 a column whose header ends with its unit in brackets ('(ms/s)', '(s)', '(GB)', a unit's name) holds no text that
+      starts with a number ('463.71 warning', '1m 9s'): the number is the cell, its unit the header, its status the fill;
+      a bracket of other words ('held by session (mode)': '62 (X)') names no unit
   X16 no text cell that is one number and a unit symbol ('0 h', '12 min', '1.5 GB', '13.4 %'): a number with its unit in
       the header; an age in words ('1 day', '41 minutes, 16 seconds') is prose, as DBA Dash's Summary writes it
   X17 (with the page's map) a mapped column's cell carries its row's status, as DBA Dash colours the measured cell: the
@@ -108,8 +109,9 @@ PAIRS = {
 PLAIN_TEXT = {None, 'FF000000', 'auto', 'theme:1', 'indexed:8', 'indexed:64'}
 MAX_WIDTH = 150 + 5 / 7 + 1e-6   # 150 characters and Excel's 5 px of padding: DBA Dash's capped column is stored 150.71
 RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12', 'X13', 'X14', 'X15', 'X16', 'X17', 'X18']
-# (X15) a header that names its unit in brackets at its end: '(ms/s)', '(s)', '(GB)', '(hours)'
-UNIT_HEAD = re.compile(r'\(([^()\s]{1,12})\)\s*$')
+# (X15) a header that names its unit in brackets at its end: '(ms/s)', '(s)', '(GB)', '(hours)', '(MB/day)'; a bracket of
+# other words ('(mode)', '(server)', '(estimate)') names no unit
+UNIT_HEAD = re.compile(r'\((?:ms|s|secs?|seconds|min|mins|minutes|h|hrs?|hours|d|days|B|KB|MB|GB|TB|PB|%)(?:/(?:s|sec|min|h|hr|day|d))?\)\s*$', re.I)
 NUM_START = re.compile(r'\s*[-+]?\d')
 # (X16) a whole text cell that is one number and a unit symbol ('0 h', '12 min', '1.5 GB', '13.4 %'); words ('1 day') are prose
 UNIT_TEXT = re.compile(r'\s*[-+]?\d[\d,]*(?:\.\d+)?\s?(?:ms|s|sec|min|h|hr|d|B|KB|MB|GB|TB|%)\s*', re.I)

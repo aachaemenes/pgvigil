@@ -339,6 +339,10 @@ PROBES = [
     ('X15 log age (s) text 1m 9s', 'X15', 'FAIL', lambda: grid1(['name', 'log age (s)'], [['a', '1m 9s']])),
     ('X15 lock (ms/s) text n/a', 'X15', 'PASS', lambda: grid1(UNIT, [['a', 'n/a']])),
     ('X15 lock (ms/s) the number 463.71', 'X15', 'PASS', lambda: grid1(UNIT, [['a', 463.71]])),
+    ('X15 a one-word bracket that is no unit: (mode)', 'X15', 'PASS', lambda: grid1(['resource', 'held by session (mode)'], [['a', '62 (X), 71 (U)']])),
+    ('X15 (server) holding an address', 'X15', 'PASS', lambda: grid1(['name', 'source (server)'], [['a', '10.0.0.5']])),
+    ('X15 (minutes) text 1m 9s', 'X15', 'FAIL', lambda: grid1(['name', 'log age (minutes)'], [['a', '1m 9s']])),
+    ('X15 (MB/day) text 3 MB', 'X15', 'FAIL', lambda: grid1(['name', 'growth (MB/day)'], [['a', '3 MB']])),
     ('X15 a bracket that is no unit (words inside)', 'X15', 'PASS', lambda: grid1(['name', 'rows (from the page)'], [['a', '3 rows']])),
     # X16: no number-and-unit text
     ('X16 full age text 0 h', 'X16', 'FAIL', lambda: grid1(['name', 'full age'], [['a', '0 h']])),
