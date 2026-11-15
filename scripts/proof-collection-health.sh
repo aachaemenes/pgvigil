@@ -60,12 +60,18 @@ CH_HOUR=$(q "select to_char(date_trunc('hour', '$CH_NOW'::timestamp) - interval 
 NOWZ="'$CH_NOW'::timestamp at time zone 'UTC'"
 HOURZ="'$CH_HOUR'::timestamp at time zone 'UTC'"
 q "insert into pgvigil.instances (name, platform, engine) values ('fx-chcrit', 'onprem', 'postgres'), ('fx-chrate', 'onprem', 'postgres'), ('fx-chskip', 'onprem', 'postgres')" >/dev/null
-q "select pgvigil.log_collection(i.instance_id, 'activity', $NOWZ - r.ago, 10, r.st, r.note)
-     from pgvigil.instances i
-     join (values ('fx-chcrit', interval '40 min', 'ok', null), ('fx-chcrit', interval '30 min', 'error', 'proof: failed 1'),
-                  ('fx-chcrit', interval '15 min', 'error', 'proof: failed 2'), ('fx-chcrit', interval '0 min', 'error', 'proof: failed 3'),
-                  ('fx-chrate', interval '5 min', 'ok', null), ('fx-chrate', interval '0 min', 'error', 'proof: failed'),
-                  ('fx-chskip', interval '0 min', 'skipped', 'proof: not on this kind of server')) r(name, ago, st, note) on r.name = i.name" >/dev/null
+# each run its own statement, oldest first, as a collector writes them: the run status keeps the newest run and an
+# older one written late never moves it back (0166's collection_run_status_take). One SELECT over a join called
+# log_collection in the plan's row order - on the box (vis-b6ch4) the newest failure first, and fx-chcrit read
+# '1 failure(s) in a row, never succeeded'
+logrun() { q "select pgvigil.log_collection(i.instance_id, 'activity', $NOWZ - interval '$2', 10, '$3', $4) from pgvigil.instances i where i.name = '$1'" >/dev/null; }
+logrun fx-chcrit '40 min' ok null
+logrun fx-chcrit '30 min' error "'proof: failed 1'"
+logrun fx-chcrit '15 min' error "'proof: failed 2'"
+logrun fx-chrate '5 min' ok null
+logrun fx-chcrit '0 min' error "'proof: failed 3'"
+logrun fx-chrate '0 min' error "'proof: failed'"
+logrun fx-chskip '0 min' skipped "'proof: not on this kind of server'"
 q "select pgvigil.import_collection_health('proof', jsonb_build_object('health', jsonb_agg(jsonb_build_object('instance', x.name, 'collection', 'activity',
      'hour', date_trunc('hour', '$CH_NOW'::timestamp) at time zone 'UTC', 'runs', x.ok + x.err, 'ok', x.ok, 'partial', 0, 'error', x.err, 'skipped', x.skip,
      'rows', 1, 'dur_ms_sum', 10 * (x.ok + x.err), 'dur_ms_max', 10, 'over_half', 0, 'over_interval', 0, 'interval_s', 60))))
