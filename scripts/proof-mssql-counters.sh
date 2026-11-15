@@ -13,6 +13,9 @@
 #   PGVIGIL_WIRING     1 (default) applies scripts/proof-mssql-counters-wiring.patch (the lead's files) to the run's own copy
 #                      of the tree (under its folder) when it lacks the counters' runner hook; 0 = the copy as it is. The
 #                      web bundle and the binary are built in that copy; the tree the proof runs from is never changed.
+#   PGVIGIL_LOGINS_WANT  the count the logins rows of D and L want (default 41: the 40 provoked and the collector's
+#                      own). Any other value is the red row of the rows' own witness: the proof stops at D with the
+#                      FAIL line carrying what its event session saw (see lgs_start).
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment. Only the
 # collection a step names runs (pgvigil collect -once): no other mssql_* collection reads the server meanwhile.
@@ -41,7 +44,9 @@
 #     no longer hides under the floor).
 #  D. provoked between two reads with nothing else connected, each change read from the store minus pgvigil's own
 #     logins (one per collector read):
-#     Logins/sec and Logouts/sec + 40 each; Batch Requests/sec + 200 (200 batches) over the collector's own count per
+#     Logins/sec and Logouts/sec + 40 each, exact (under the proof's own event session on login, logout and error
+#     18456 by program, read only when the count is off: its rows in the FAIL line; PGVIGIL_LOGINS_WANT=40 is its red
+#     row); Batch Requests/sec + 200 (200 batches) over the collector's own count per
 #     read (the least of three quiet pairs; review part 4, finding 2), more than 20 over it printed as background;
 #     SQL Errors User Errors + 12 (RAISERROR 16), Info Errors + 7 (RAISERROR 10) and two more per login in the window
 #     (5701 / 5703: runs proof4-proof6 read + 13) - read and printed, not judged, Kill Connection Errors + 3 (RAISERROR 20 WITH LOG, three connections, in a
@@ -207,6 +212,43 @@ listed() { pq "SELECT count(*) FROM jsonb_array_elements(pgvigil.import_mssql_co
 readat() { pq "SELECT count(*) FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_last l ON l.series_id = k.series_id
   WHERE k.instance_id = $SB AND k.object = '$1' AND k.counter = '$2'
     AND l.server_utc = (SELECT server_utc FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = pgvigil.mssql_counter_scope('$1') ORDER BY snapshot_at DESC LIMIT 1)"; }
+# The logins rows' own witness (the lead's 11-15 10:5x): an event session of the proof's own on login, logout and the
+# failed login's error (18456), by program, started before a logins phase's first read and read ONLY when the count is
+# not the one wanted. Its rows go into the FAIL line, so a red names the program of an extra login: box run 401m1 read
+# +42 / +42 once and no log named it (a failed login moves both counters, one each, and the 2022 image makes no login by
+# itself in its first four minutes: the box probe of 11-15). The verdict stays exact.
+LGW=${PGVIGIL_LOGINS_WANT:-41}
+lgs_start() { sqok "$1: the proof's login event session" "IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'pgv_proof_logins') DROP EVENT SESSION pgv_proof_logins ON SERVER;
+CREATE EVENT SESSION pgv_proof_logins ON SERVER
+  ADD EVENT sqlserver.login (ACTION (sqlserver.client_app_name, sqlserver.server_principal_name, sqlserver.client_hostname)),
+  ADD EVENT sqlserver.logout (ACTION (sqlserver.client_app_name, sqlserver.server_principal_name, sqlserver.client_hostname)),
+  ADD EVENT sqlserver.error_reported (ACTION (sqlserver.client_app_name, sqlserver.client_hostname) WHERE ([error_number] = (18456)))
+  ADD TARGET package0.ring_buffer (SET max_memory = 8192)
+  WITH (MAX_DISPATCH_LATENCY = 1 SECONDS, STARTUP_STATE = OFF);
+ALTER EVENT SESSION pgv_proof_logins ON SERVER STATE = START;"; }
+lgs_drop() { sq "IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'pgv_proof_logins') DROP EVENT SESSION pgv_proof_logins ON SERVER;" >/dev/null 2>&1 || true; }
+# lgs_rows: the session's rows as one line, each group placed by the server's own clock at the phase's two reads (as
+# stored): BETWEEN the reads is what the counters' change is made of; read after the session's 1 s dispatch latency
+lgs_rows() { local t out
+  sleep 2
+  t=$(pq "SELECT string_agg(to_char(server_utc AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US'), '|' ORDER BY snapshot_at) FROM (SELECT server_utc, snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 2) r" 2>/dev/null) || t=
+  out=$(sq "DECLARE @t0 datetime2(6) = TRY_CONVERT(datetime2(6), '${t%%|*}'), @t1 datetime2(6) = TRY_CONVERT(datetime2(6), '${t##*|}');
+WITH x AS (SELECT CAST(t.target_data AS xml) AS d FROM sys.dm_xe_sessions s JOIN sys.dm_xe_session_targets t ON t.event_session_address = s.address
+            WHERE s.name = N'pgv_proof_logins' AND t.target_name = N'ring_buffer'),
+     e AS (SELECT n.value('@name', 'varchar(30)') AS ev, n.value('@timestamp', 'datetime2(3)') AS ts,
+                  n.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(128)') AS app,
+                  n.value('(action[@name=\"server_principal_name\"]/value)[1]', 'nvarchar(128)') AS who,
+                  n.value('(action[@name=\"client_hostname\"]/value)[1]', 'nvarchar(128)') AS host,
+                  n.value('(data[@name=\"is_cached\"]/value)[1]', 'varchar(10)') AS cached,
+                  n.value('(data[@name=\"message\"]/value)[1]', 'nvarchar(200)') AS msg
+             FROM x CROSS APPLY x.d.nodes('/RingBufferTarget/event') q(n)),
+     p AS (SELECT CASE WHEN ts > @t0 AND ts <= @t1 THEN 0 WHEN ts <= @t0 THEN -1 WHEN ts > @t1 THEN 1 ELSE 2 END AS side, ev, app, who, host, cached, msg FROM e),
+     g AS (SELECT side, ev, app, who, host, cached, msg, COUNT(*) AS n FROM p GROUP BY side, ev, app, who, host, cached, msg)
+SELECT CASE side WHEN 0 THEN 'BETWEEN the reads' WHEN -1 THEN 'before them' WHEN 1 THEN 'after them' ELSE 'time not placed' END + ': ' + ev + ' x' + CAST(n AS varchar(10))
+       + ' program [' + ISNULL(app, '') + '] login [' + ISNULL(who, '') + '] host [' + ISNULL(host, '') + ']' + CASE WHEN cached = 'true' THEN ' (pooled)' ELSE '' END
+       + ISNULL(' [' + msg + ']', '')
+  FROM g ORDER BY CASE side WHEN 0 THEN 0 ELSE 1 END, side, ev, n DESC;" 2>&1 | tr '\n' ';') || true
+  echo "the proof's own event session, placed by the server's clock at the two reads (${t:-not read} UTC), saw: ${out:-no row}"; }
 
 # start <image>: a container of the image, the database and the monitor login; PORT_SQL
 start() {
@@ -421,12 +463,15 @@ python3 -c "import sys; sys.exit(0 if float('${CPS:-0}') >= 1 and float('${RCP:-
 ok "C: every rate, change, average, fraction and gauge equals its recomputation from the stored raw pairs; the ratios equal their rates"
 
 echo "== D. the provoked counters =="
-# a phase: one read, the provocation, one read; each change read from the store
+# a phase: one read, the provocation, one read; each change read from the store. The logins phase takes a read of its
+# own first, after the proof's event session started (lgs_start; the session is read only on a red and dropped after)
+lgs_start D; col mssql_counters
 for _ in $(seq 1 40); do sq "SELECT 1" >/dev/null; done
 col mssql_counters
 DL=$(chg 'General Statistics' 'Logins/sec' '_Total'); DO=$(chg 'General Statistics' 'Logouts/sec' '_Total')
 # the collector's own login of this read is counted (+1); its logout of the read before happened after that read
-[[ "$DL" == 41 && "$DO" == 41 ]] || fail "D: logins +$DL logouts +$DO (want 41 each: 40 and the collector's own)"
+[[ "$DL" == "$LGW" && "$DO" == "$LGW" ]] || fail "D: logins +$DL logouts +$DO (want $LGW each: 40 and the collector's own); $(lgs_rows)"
+lgs_drop
 ok "D: Logins/sec and Logouts/sec + 40 each beside the collector's own (+41 stored)"
 # Batch Requests/sec over the collector's own (review part 4, finding 2): its own batches per read, the least of three
 # quiet pairs, then 200 batches between two reads
@@ -1105,15 +1150,20 @@ for img in "${IMAGES[@]:1}"; do
   bracket "L $img" || fail "L: $img: a cumulative value outside its hand reads"
   sleep 2; colv mssql_counters
   arith "L $img" || fail "L: $img: a figure differs from its recomputation (arith $?: 1 a stored figure, 2 a ratio metric)"
+  # the logins phase with a read of its own first and the proof's event session around it, as D's (the session is
+  # dropped at the end of the image's run: nothing of it falls into the error and log growth windows below)
+  lgs_start "L $img"; colv mssql_counters
   for _ in $(seq 1 40); do sq "SELECT 1" >/dev/null; done
   sleep 1; colv mssql_counters; DL=$(chg 'General Statistics' 'Logins/sec' '_Total')
+  [[ "$DL" == "$LGW" ]] || fail "L: $img logins +$DL (want $LGW: 40 and the collector's own); $(lgs_rows)"
   sq "$(printf "RAISERROR('pgvigil proof user error', 16, 1);\n%.0s" $(seq 1 12))" >/dev/null 2>&1 || true
   sleep 1; colv mssql_counters; EU=$(chg 'SQL Errors' 'Errors/sec' 'User Errors')
   colv mssql_counters_db
   sq "DECLARE @i int = 0; WHILE @i < 500 BEGIN UPDATE dbo.t SET v = v + 1 WHERE id = @i % 2000 + 1; SET @i += 1; END" pgvctr >/dev/null
   sq "INSERT dbo.t (id, pad) SELECT TOP (30000) 100000 + ROW_NUMBER() OVER (ORDER BY (SELECT 1)), REPLICATE('g', 200) FROM sys.all_objects a CROSS JOIN sys.all_objects b" pgvctr >/dev/null
   colv mssql_counters_db; LG=$(chg 'Databases' 'Log Growths' 'pgvctr')
-  [[ "$DL" == 41 && "$EU" == 12 && -n "$LG" && "$LG" -ge 1 ]] || fail "L: $img logins +$DL, user errors +$EU, pgvctr log growths +$LG"
+  [[ "$EU" == 12 && -n "$LG" && "$LG" -ge 1 ]] || fail "L: $img logins +$DL, user errors +$EU, pgvctr log growths +$LG"
+  lgs_drop
   ok "L: $img ($(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))")): the list = every default, the bracket, C's arithmetic, Logins/sec +40 and the collector's own, User Errors +12, pgvctr Log Growths +$LG"
 done
 
