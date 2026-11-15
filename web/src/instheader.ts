@@ -182,11 +182,16 @@ export function chipTab(key: string, ms: boolean): string | undefined {
 // a target (to) the whole chip is a link to its page
 export function chipEl(c: Chip, to?: string): HTMLElement {
   const b = bandBadge[c.band];
-  const name = `${c.label}: ${c.value}${c.detail ? `, ${c.detail}` : ''}${b ? `, ${c.band === 'crit' ? 'critical' : 'warning'}` : ''}`;
-  const kids = [el('div', { class: 'chip-label' }, c.label, b ? hidden(pill(b, bandClass(c.band))) : null),
+  const word = b ? (c.band === 'crit' ? 'critical' : 'warning') : '';
+  const name = `${c.label}: ${c.value}${c.detail ? `, ${c.detail}` : ''}${word ? `, ${word}` : ''}`;
+  // the link's name is its content: an aria-label that does not hold the words in view fails WCAG 2.5.3 (axe's
+  // label-content-name-mismatch), so the link carries none and the band's word - the pill shows it as CRIT / WARN,
+  // kept out of the reading - is text only a screen reader gets
+  const kids = [el('div', { class: 'chip-label' }, c.label, b ? hidden(pill(b, bandClass(c.band))) : null,
+      to && word ? el('span', { class: 'visually-hidden' }, `, ${word}`) : null),
     el('div', { class: 'chip-value' }, c.value),
     c.detail ? el('div', { class: 'chip-detail' }, c.detail) : null];
-  return to ? el('a', { class: `chip band-${bandClass(c.band)}`, href: to, 'aria-label': name }, ...kids)
+  return to ? el('a', { class: `chip band-${bandClass(c.band)}`, href: to }, ...kids)
     : el('div', { class: `chip band-${bandClass(c.band)}`, role: 'group', 'aria-label': name }, ...kids);
 }
 
