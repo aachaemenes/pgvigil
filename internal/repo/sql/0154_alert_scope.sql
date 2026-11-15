@@ -19,7 +19,10 @@
 --                       (the timeline); monthly partitions, kept 90 days (findings_history_days; the purge line is a
 --                       wiring line). No detail is stored: a detail can carry statement text (0029's plan findings).
 --   alert_channel_failing  (task 403b) a configured channel whose last three send attempts failed: a repository-wide
---                       finding 'alert channel failing' (0190's alert_findings takes it through a wiring line).
+--                       finding 'alert channel failing'.
+--   alert_channel_quota  (task B24k) a destination's monthly quota from its newest answer; under 10 % left the
+--                       repository-wide finding 'pushover quota low' (alert_channel_quota_low). alert_channel_findings
+--                       is both findings, the one view 0190's alert_findings takes them from (a wiring line).
 --
 -- Digest holds apply only on a channel that has a daily digest (its digest_hour; the sender passes 'digest'): on any
 -- other channel a digest window holds nothing, so no alert is held for a digest that never comes.
@@ -1160,7 +1163,8 @@ END $$;
 -- ---- task 403b: 'alert channel failing' (PerformanceMonitor Fixed 21 / Fixed 27) --------------------------------
 -- A configured channel whose last three send attempts (sent, failed, refused, or a Send test answered) all failed or
 -- were refused is a finding of the repository itself (source 'pgvigil repository', no instance), so 0190's
--- alert_findings carries it through its third arm (a wiring line) and alert_due sends it as a repository-wide alert:
+-- alert_findings carries it (through alert_channel_findings below, its third arm: a wiring line) and alert_due sends it
+-- as a repository-wide alert:
 -- to every channel past its floor, scoped ones too, never a contact's route, resolved (the recovery) once it has been
 -- gone for the channel's clear_after - that is, once the channel's next send went. The failing channel's own copy is
 -- left out by the sender (alerts.go): it would fail there, and it would arrive only after the channel recovered.
@@ -1187,3 +1191,51 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'alert channel fai
                  ORDER BY a.snapshot_at DESC LIMIT 3) x
         HAVING count(*) = 3 AND bool_and(x.outcome IN ('failed', 'refused'))) l
  WHERE c.is_configured;
+
+-- ---- task B24k: the channel kinds pushover, zabbix and azuremonitor; a destination's monthly quota -----------------
+ALTER TABLE pgvigil.alert_channels DROP CONSTRAINT IF EXISTS alert_channels_kind_check;
+ALTER TABLE pgvigil.alert_channels ADD CONSTRAINT alert_channels_kind_check
+  CHECK (kind IN ('smtp', 'webhook', 'file', 'pagerduty', 'opsgenie', 'pushover', 'zabbix', 'azuremonitor'));
+
+-- alert_channel_quota: a destination's monthly quota as its newest answer gave it (Pushover's X-Limit-App-Limit,
+-- -Remaining and -Reset), one row per channel, written by the sender after each send; an older answer never
+-- overwrites a newer one.
+CREATE TABLE IF NOT EXISTS pgvigil.alert_channel_quota (
+  channel    text PRIMARY KEY,
+  at         timestamptz NOT NULL,
+  remaining  int NOT NULL CHECK (remaining >= 0),
+  quota      int NOT NULL CHECK (quota > 0),
+  reset_at   timestamptz NOT NULL
+);
+GRANT SELECT, INSERT, UPDATE ON pgvigil.alert_channel_quota TO pgvigil_alerter;
+
+CREATE OR REPLACE FUNCTION pgvigil.alert_channel_quota_put(p_at timestamptz, p_channel text, p_remaining int, p_quota int,
+                                                           p_reset timestamptz)
+RETURNS void LANGUAGE sql AS $$
+  INSERT INTO pgvigil.alert_channel_quota AS q (channel, at, remaining, quota, reset_at)
+  VALUES (p_channel, p_at, greatest(p_remaining, 0), p_quota, p_reset)
+  ON CONFLICT (channel) DO UPDATE SET at = EXCLUDED.at, remaining = EXCLUDED.remaining, quota = EXCLUDED.quota,
+                                      reset_at = EXCLUDED.reset_at
+   WHERE q.at <= EXCLUDED.at
+$$;
+GRANT EXECUTE ON FUNCTION pgvigil.alert_channel_quota_put(timestamptz, text, int, int, timestamptz) TO pgvigil_alerter;
+
+-- alert_channel_quota_low: 'pushover quota low', a repository-wide finding while a configured channel's newest answer
+-- leaves under 10 % of the month's messages before the reset. Its detail opens with the fixed words 'pushover quota
+-- low: ' (the repository-wide claim, as alert_channel_failing's). It ends at the reset, or when a later answer leaves more.
+CREATE OR REPLACE VIEW pgvigil.alert_channel_quota_low AS
+SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'pushover quota low'::text AS setting, q.channel AS value,
+       'the month''s messages may run out before the reset: raise the application''s limit at Pushover, or send the channel less (min_severity, checks, max_per_hour)'::text AS suggested,
+       'pushover quota low: channel ' || q.channel || ' has ' || q.remaining || ' of ' || q.quota || ' messages left until '
+         || to_char(q.reset_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC' AS detail,
+       'pgvigil repository'::text AS source, q.at AS at
+  FROM pgvigil.alert_channel_quota q
+  JOIN pgvigil.alert_channels c ON c.name = q.channel AND c.is_configured
+ WHERE q.reset_at > now() AND q.remaining < q.quota * 0.10;
+
+-- alert_channel_findings: the repository's own findings about its alert channels (task 403b's failing channel, B24k's
+-- quota), the one view 0190's alert_findings reads for them (its third arm, a wiring line).
+CREATE OR REPLACE VIEW pgvigil.alert_channel_findings AS
+SELECT f.instance_id, f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at FROM pgvigil.alert_channel_failing f
+UNION ALL
+SELECT q.instance_id, q.severity, q.setting, q.value, q.suggested, q.detail, q.source, q.at FROM pgvigil.alert_channel_quota_low q;

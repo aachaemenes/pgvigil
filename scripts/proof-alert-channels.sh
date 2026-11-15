@@ -13,7 +13,8 @@
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on 5e53c86 the build has no alert_channel_failing, part M fails):
-#  M. a fresh store migrated by BIN: alert_findings' definition reads alert_channel_failing (the wiring's third arm);
+#  M. a fresh store migrated by BIN: alert_findings' definition reads alert_channel_findings (the wiring's third arm:
+#     alert_channel_failing and B24k's alert_channel_quota_low);
 #     the index alert_log_channel_at_idx stands; alert_channel_failing answers. The alerter login may read it through
 #     alert_findings (a pass runs as that login below).
 #  C. 'alert channel failing' (Fixed 21 / 27). Channels: hook2 (webhook to the sink's /c, floor warning), drop (file,
@@ -211,11 +212,12 @@ EOF
 
 # ---- M: the store ------------------------------------------------------------------------------------------------------
 newrepo
-[[ $(q "select pg_get_viewdef('pgvigil.alert_findings'::regclass)") == *alert_channel_failing* ]] || fail "M: alert_findings does not read alert_channel_failing (the wiring's third arm)"
+[[ $(q "select pg_get_viewdef('pgvigil.alert_findings'::regclass)") == *alert_channel_findings* ]] || fail "M: alert_findings does not read alert_channel_findings (the wiring's third arm)"
+[[ $(q "select pg_get_viewdef('pgvigil.alert_channel_findings'::regclass)") == *alert_channel_failing*alert_channel_quota_low* ]] || fail "M: alert_channel_findings is not the failing and quota views"
 [[ $(q "select to_regclass('pgvigil.alert_log_channel_at_idx') is not null") == t ]] || fail "M: no index alert_log_channel_at_idx"
 q "select count(*) from pgvigil.alert_channel_failing" >/dev/null || fail "M: alert_channel_failing does not answer"
 [[ $(psql "$PGV_PROOF_ALERTS_DSN" -XAt -c "select count(*) >= 0 from pgvigil.alert_findings" 2>&1) == t ]] || fail "M: the alerter cannot read alert_findings"
-ok "M: alert_findings reads alert_channel_failing; its index stands; the alerter reads it"
+ok "M: alert_findings reads alert_channel_findings; the index stands; the alerter reads it"
 
 # ---- C: 'alert channel failing' -----------------------------------------------------------------------------------------
 pass C0   # records the channels (the Send test door needs them), the sink answers 200

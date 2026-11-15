@@ -45,7 +45,7 @@ index 7afb52bc..5153c508 100644
  
  func toolList() []any {
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index a994399a..0dd90c91 100644
+index a994399a..70059f06 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
 @@ -189,9 +189,12 @@ BEGIN
@@ -69,8 +69,8 @@ index a994399a..0dd90c91 100644
          UNION ALL
 -        SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y) f
 +        SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y
-+        UNION ALL   -- task 403b (0154): a configured channel whose last three sends failed ('pgvigil repository', no instance)
-+        SELECT z.instance_id, z.severity, z.setting, z.value, z.suggested, z.detail, z.source, z.at FROM pgvigil.alert_channel_failing z) f
++        UNION ALL   -- tasks 403b / B24k (0154): the alert channels' own findings (failing, quota low; 'pgvigil repository', no instance)
++        SELECT z.instance_id, z.severity, z.setting, z.value, z.suggested, z.detail, z.source, z.at FROM pgvigil.alert_channel_findings z) f
    LEFT JOIN pgvigil.instances i USING (instance_id)
    LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
   WHERE i.is_active OR f.source = 'pgvigil repository';

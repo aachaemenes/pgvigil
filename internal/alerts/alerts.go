@@ -25,6 +25,7 @@
 //	    webhook: {url: env:TEAMS_URL, format: teams}   # teams | slack | discord | googlechat | json; the URL through env: or file: only
 //	    file: {dir: /var/spool/pgvigil/alerts}
 //	    pagerduty: {routing_key: env:PD_KEY}            # Events API v2; one incident per finding, resolved when it clears
+//	    pushover: {token: env:PO_TOKEN, user: env:PO_USER}   # task B24k: one phone notification per alert (pushover.go)
 //
 // Each pass (every minute inside `pgvigil run`, once for `pgvigil alerts`) records the channels, stamps the open alerts
 // whose finding is gone (pgvigil.alert_mark), asks the repository what is owed (pgvigil.alert_due: firing, escalated,
@@ -96,6 +97,7 @@ type Channel struct {
 	File        *FileDrop        `yaml:"file"`
 	PagerDuty   *PagerDuty       `yaml:"pagerduty"`
 	Opsgenie    *Opsgenie        `yaml:"opsgenie"`
+	Pushover    *Pushover        `yaml:"pushover"` // task B24k (pushover.go)
 	// MaxPerHour caps the alerts the channel sends in any hour (0 = no cap): what is over it is held, logged as
 	// outcome 'capped', and sent by a later pass once the hour allows.
 	MaxPerHour int        `yaml:"max_per_hour"`
@@ -342,13 +344,13 @@ func (c *Channel) validate() error {
 	}
 	c.tpl = tpl
 	blocks := 0
-	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil} {
+	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil, c.Pushover != nil} {
 		if set {
 			blocks++
 		}
 	}
 	if blocks != 1 {
-		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty: or opsgenie: is required")
+		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty:, opsgenie: or pushover: is required")
 	}
 	switch c.Kind {
 	case "smtp":
@@ -382,8 +384,13 @@ func (c *Channel) validate() error {
 			return errors.New("kind opsgenie sends every recovery (recovery: false would leave its alerts open)")
 		}
 		c.sender, err = c.Opsgenie.build()
+	case "pushover":
+		if c.Pushover == nil {
+			return errors.New("kind pushover needs a pushover: block")
+		}
+		c.sender, err = c.Pushover.build()
 	default:
-		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty or opsgenie (got %q)", c.Kind)
+		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty, opsgenie or pushover (got %q)", c.Kind)
 	}
 	return err
 }
@@ -627,6 +634,19 @@ type budgeted interface {
 	budget() int // bytes of alert lines one message may carry; 0 = no limit beyond maxPerMessage
 }
 
+// holding is a sender whose destination's answer can hold the channel across passes (Pushover's 429 until its reset,
+// another 4xx until the configuration changes): held reads the channel's newest attempt's error text, as the sender
+// wrote it, and says whether it holds at now and why. A Send test is never held, and one that goes through ends the hold.
+type holding interface {
+	held(lastErr string, now time.Time) (bool, string)
+}
+
+// quotaed is a sender whose answers carry the destination's monthly quota (Pushover's X-Limit-App-* headers): the pass
+// records the newest after each send (0154's alert_channel_quota).
+type quotaed interface {
+	lastQuota() *channelQuota
+}
+
 // refusedError marks a send refused for its destination (a redirect, a plain connection off loopback).
 type refusedError struct{ msg string }
 
@@ -651,8 +671,10 @@ type Result struct {
 	Failed   int // alerts in failed or refused messages
 	Cleared  int
 	Held     []string // channels in their quiet hours
-	Skipped  bool     // another sender held the lock
-	Errors   []string // channel: error
+	// HeldBy is each channel its destination's last answer holds (task B24k: 'name: why'): nothing is owed it this pass.
+	HeldBy  []string
+	Skipped bool     // another sender held the lock
+	Errors  []string // channel: error
 	// RulesFiring is how many alert rule rows (a rule on one instance and series) fire after this pass's evaluation.
 	RulesFiring int
 	// RulesErr is why the alert rules were not judged in this pass (the summary line says it; Errors stays the
@@ -685,6 +707,9 @@ func (r Result) String() string {
 	s := fmt.Sprintf("%d channel(s): %d alert(s) sent, %d failed, %d cleared", r.Channels, r.Sent, r.Failed, r.Cleared)
 	if len(r.Held) > 0 {
 		s += "; quiet hours: " + strings.Join(r.Held, ", ")
+	}
+	if len(r.HeldBy) > 0 {
+		s += "; held by the destination: " + strings.Join(r.HeldBy, "; ")
 	}
 	if r.RulesFiring > 0 {
 		s += fmt.Sprintf("; %d alert rule row(s) firing", r.RulesFiring)
@@ -836,6 +861,29 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	if err := runTests(ctx, conn, chs, now, &res); err != nil {
 		res.TestsErr = err
 	}
+	// a channel its destination's last answer holds (holding: Pushover's 429 or another 4xx) is skipped like a channel
+	// backing off: nothing is owed it, its digest waits
+	skipped := map[string]bool{}
+	for n, v := range skip {
+		skipped[n] = v
+	}
+	for i := range all {
+		c := &all[i]
+		h, ok := c.sender.(holding)
+		if !ok || skipped[c.Name] || c.Quiet(now) {
+			continue
+		}
+		var last string
+		if err := conn.QueryRow(ctx, `SELECT coalesce((SELECT coalesce(l.error, '') FROM pgvigil.alert_log l
+		     WHERE l.channel = $1 AND l.outcome IN ('sent', 'failed', 'refused', 'test') ORDER BY l.snapshot_at DESC LIMIT 1), '')`,
+			c.Name).Scan(&last); err != nil {
+			return res, nil, err
+		}
+		if yes, why := h.held(last, now); yes {
+			skipped[c.Name] = true
+			res.HeldBy = append(res.HeldBy, c.Name+": "+why)
+		}
+	}
 	var due []map[string]any
 	byName := map[string]*Channel{}
 	for i := range all {
@@ -845,7 +893,7 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 			res.Held = append(res.Held, c.Name)
 			continue
 		}
-		if skip[c.Name] {
+		if skipped[c.Name] {
 			continue
 		}
 		due = append(due, map[string]any{"name": c.Name, "min_severity": c.MinSeverity, "instances": nonNil(c.Instances),
@@ -950,6 +998,13 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 			if rerr := record(context.WithoutCancel(ctx), conn.Exec, time.Now(), at); rerr != nil {
 				return res, outcome, rerr
 			}
+			if qs, ok := c.sender.(quotaed); ok {
+				if q := qs.lastQuota(); q != nil {
+					if qerr := recordQuota(context.WithoutCancel(ctx), conn, now, c.Name, q); qerr != nil {
+						res.Errors = append(res.Errors, c.Name+": its quota not recorded: "+qerr.Error())
+					}
+				}
+			}
 			if err != nil {
 				break // the destination failed: the rest waits for the next pass
 			}
@@ -958,7 +1013,7 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	}
 	// the daily digests (digest.go): after the alerts, to every channel owed one that is not quiet, not backing off and
 	// did not just fail
-	if err := runDigests(ctx, conn, all, now, skip, outcome, &res); err != nil {
+	if err := runDigests(ctx, conn, all, now, skipped, outcome, &res); err != nil {
 		res.DigestErr = err
 	}
 	for _, c := range all {
@@ -967,6 +1022,18 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 	}
 	return res, outcome, nil
+}
+
+// recordQuota stores a destination's quota as its last answer gave it (0154's alert_channel_quota_put); a repository
+// before 0154 has no such function, and the quota goes unrecorded without an error.
+func recordQuota(ctx context.Context, conn rowQuerier, now time.Time, channel string, q *channelQuota) error {
+	var have bool
+	if err := conn.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.alert_channel_quota_put(timestamp with time zone, text, integer, integer, timestamp with time zone)') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return err
+	}
+	var done bool
+	return conn.QueryRow(ctx, `SELECT true FROM (SELECT pgvigil.alert_channel_quota_put($1, $2, $3, $4, $5)) x`,
+		now, channel, q.Remaining, q.Limit, q.Reset).Scan(&done)
 }
 
 func batches(a []Alert, perAlert bool) [][]Alert { return batchesWithin(a, perAlert, 0) }
