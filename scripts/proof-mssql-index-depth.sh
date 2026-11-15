@@ -517,10 +517,14 @@ sqh() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$2" | timeout 300 docker exec -i --e
 hold() { # hold <table> [schm]: a session (host pgvhold_<table>) holding the table X (or Sch-M) for up to 4 minutes, in the background, confirmed granted
   local stmt="BEGIN TRAN; SELECT TOP (1) id FROM dbo.$1 WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:04:00'; COMMIT;" mode=X
   [[ "${2:-}" == schm ]] && stmt="BEGIN TRAN; ALTER TABLE dbo.$1 ADD zz int NULL; WAITFOR DELAY '00:04:00'; ROLLBACK;" mode=Sch-M
+  # the table's id read BEFORE the hold: OBJECT_ID on a table under an uncommitted schema change does not answer it
+  # (414h: the check never saw a Sch-M held for 240 s)
+  local oid; oid=$(sq "SELECT OBJECT_ID('dbo.$1')" pgvix)
   { t0h=$(date +%s); sqh "pgvhold_$1" "$stmt"; echo "[the holder's exit $? after $(( $(date +%s) - t0h )) s]"; } >"$TMPD/hold-$1.out" 2>&1 & BG+=($!)
-  for _ in $(seq 1 120); do
+  local until=$(( $(date +%s) + 30 ))
+  while [[ $(date +%s) -lt $until ]]; do
     [[ "$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id = DB_ID('pgvix') AND resource_type = 'OBJECT'
-      AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.$1') AND request_mode = '$mode' AND request_status = 'GRANT'")" -ge 1 ]] && return 0
+      AND resource_associated_entity_id = $oid AND request_mode = '$mode' AND request_status = 'GRANT'")" -ge 1 ]] && return 0
     sleep 0.25
   done
   echo "     the holder printed: $(head -c 600 "$TMPD/hold-$1.out"); its shell $(kill -0 "${BG[-1]}" 2>/dev/null && echo alive || echo gone)"
@@ -529,7 +533,7 @@ hold() { # hold <table> [schm]: a session (host pgvhold_<table>) holding the tab
       ' blocked by ', r.blocking_session_id, ' resource ', r.wait_resource) FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id
     WHERE s.host_name LIKE 'pgvhold_%' OR s.program_name LIKE 'pgvigil%' OR r.blocking_session_id > 0" || true
   sq "SELECT CONCAT('     lock ', request_session_id, ' ', resource_type, ' ', request_mode, ' ', request_status) FROM sys.dm_tran_locks
-    WHERE resource_database_id = DB_ID('pgvix') AND resource_type = 'OBJECT' AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.$1')" || true
+    WHERE resource_database_id = DB_ID('pgvix') AND resource_type = 'OBJECT' AND resource_associated_entity_id = $oid" || true
   fail "the hold on dbo.$1 ($mode) was not granted in 30 s"; }
 # release [table]: the holders ended (KILL rolls their transactions back), and their shells waited for
 release() { sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE host_name LIKE 'pgvhold_${1:-}%'; EXEC (@k);" >/dev/null 2>&1 || true
@@ -597,10 +601,6 @@ st=$(poll "$RID" 20); [[ "$st" == cancelled ]] || fail "G5: the row is $st"
 echo "ok   G5: a second start refused ('one at a time'); Cancel: the request gone from sys.dm_exec_requests within 5 s, the row cancelled"
 release
 # G6: a held Sch-M lock: the read ends near 30 s, the rows before kept, where it stopped named
-t0h=$(date +%s); out=$(sqh pgvtry "BEGIN TRAN; ALTER TABLE dbo.f1 ADD zz int NULL; WAITFOR DELAY '00:00:05'; ROLLBACK;" 2>&1); echo "     G6: the Sch-M statement alone in the foreground (5 s): exit $?, $(( $(date +%s) - t0h )) s, output '$out'"
-{ sqh pgvtry2 "BEGIN TRAN; TRUNCATE TABLE dbo.f2; WAITFOR DELAY '00:00:20'; ROLLBACK;"; echo "[exit $?]"; } >"$TMPD/try2.out" 2>&1 &
-sleep 4; echo "     G6: TRUNCATE in the background, 4 s in: $(sq "SELECT CONCAT(request_mode, ' ', request_status) FROM sys.dm_tran_locks WHERE resource_type = 'OBJECT' AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.f2')" | tr '\n' ' ')"
-wait $! 2>/dev/null; echo "     G6: TRUNCATE's holder printed: $(cat "$TMPD/try2.out")"
 hold f1 schm
 frag "$ION" LIMITED "$TMPD/g6.json" >/dev/null; RID=$(jget "$TMPD/g6.json" 'd.get("read_id")')
 st=$(poll "$RID" 60); secs=$(readcol secs); note=$(readcol note); kept=$(readcol rows_kept)
