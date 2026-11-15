@@ -436,7 +436,7 @@ func TestConnectTimeoutDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	start = time.Now()
-	if c, err := connectCounted(ctx, "bh2", cfg); err == nil {
+	if c, err := connectCounted(ctx, config.Instance{Name: "bh2"}, cfg); err == nil {
 		_ = c.Close(ctx)
 		t.Fatal("connectCounted: connected to a server that never answers")
 	}
@@ -680,7 +680,7 @@ func TestConnectTimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := connectCounted(ctx, "slow2", cfg)
+	c2, err := connectCounted(ctx, config.Instance{Name: "slow2"}, cfg)
 	if err != nil {
 		t.Fatalf("connectCounted: %v", err)
 	}
@@ -689,7 +689,7 @@ func TestConnectTimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c3, err := connectCounted(ctx, "slow3", bad); err == nil {
+	if c3, err := connectCounted(ctx, config.Instance{Name: "slow3"}, bad); err == nil {
 		_ = c3.Close(ctx)
 		t.Fatal("connectCounted: connected to port 1")
 	}

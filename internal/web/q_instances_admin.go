@@ -43,7 +43,11 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/discover"
+	"github.com/aachaemenes/pgvigil/internal/engines"
+	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/platform"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // InstancesAdmin is what serve hands the page: where the config lives (the credential files go beside it), the
@@ -569,6 +573,18 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 		return
 	}
 	stored := have != nil && rawStr(in, "password") == "" && str(in, "host") == ""
+	// Q8 (N59): a configuration-file instance by name - its own read login (and password_secret), resolved here and
+	// never sent to the page; nothing is kept on a row (it has none)
+	if have == nil && rawStr(in, "password") == "" && str(in, "host") == "" && name != "" {
+		if t, ok := s.testConfigured(ctx, name); ok {
+			out := map[string]any{"ok": t.ok, "detail": t.detail}
+			if t.ok {
+				out["not_running"], out["collections"], out["list_note"] = t.notRun, t.collections, t.listNote
+			}
+			s.reply(w, r, out, nil)
+			return
+		}
+	}
 	if stored {
 		engine = have.Engine
 		if dsn, err = resolveRef(have.Ref); err != nil {
@@ -585,8 +601,12 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 			return
 		}
 	}
-	okc, detail := testConnection(ctx, engine, dsn)
+	t := testConnectionList(ctx, engine, dsn, name)
+	okc, detail := t.ok, t.detail
 	out := map[string]any{"ok": okc, "detail": detail}
+	if okc {
+		out["not_running"], out["collections"], out["list_note"] = t.notRun, t.collections, t.listNote
+	}
 	if stored {
 		ans, _, err := s.callImport(ctx, "import_admin_instance", map[string]any{"op": "tested", "ui_user": user, "client": clientIP(r), "name": name, "ok": okc, "detail": detail})
 		if err != nil || ans.Outcome != "done" {
@@ -598,33 +618,81 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 
 // testConnection opens one connection (10 s) and reads who answered.
 func testConnection(ctx context.Context, engine, dsn string) (bool, string) {
+	t := testConnectionList(ctx, engine, dsn, "")
+	return t.ok, t.detail
+}
+
+// testResult is a connection test's answer and, N59, the collections that will not run on that server and why
+type testResult struct {
+	ok          bool
+	detail      string
+	notRun      []engines.NotRun
+	collections int
+	listNote    string // why the list is missing or partial ("" = read)
+}
+
+// testConnectionList opens one connection (10 s in all), reads who answered, then on the same connection the engine's
+// detect and the collections that will not run there (the scheduler's rule with the defaults: a page instance has no
+// disabled: list or schedules; each engine's Applies on what the detect read). A detect cut off by the 10 s says so.
+func testConnectionList(ctx context.Context, engine, dsn, name string) testResult {
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	in := config.Instance{Name: name, Engine: engine}
 	switch engine {
 	case config.EngineSQLServer:
 		db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-admin-test"))
 		if err != nil {
-			return false, "the connection string: " + err.Error()
+			return testResult{detail: "the connection string: " + err.Error()}
 		}
 		defer func() { _ = db.Close() }()
-		var srv, ver, login string
-		if err := db.QueryRowContext(cctx, `SELECT CAST(@@SERVERNAME AS nvarchar(256)), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), SUSER_SNAME()`).Scan(&srv, &ver, &login); err != nil {
-			return false, err.Error()
+		db.SetMaxOpenConns(1)
+		conn, err := db.Conn(cctx)
+		if err != nil {
+			return testResult{detail: err.Error()}
 		}
-		return true, fmt.Sprintf("connected: %s, SQL Server %s, as %s", srv, ver, login)
+		defer func() { _ = conn.Close() }()
+		var srv, ver, login string
+		if err := conn.QueryRowContext(cctx, `SELECT CAST(@@SERVERNAME AS nvarchar(256)), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), SUSER_SNAME()`).Scan(&srv, &ver, &login); err != nil {
+			return testResult{detail: err.Error()}
+		}
+		t := testResult{ok: true, detail: fmt.Sprintf("connected: %s, SQL Server %s, as %s", srv, ver, login)}
+		info, err := mssql.Detect(cctx, conn, "")
+		if err != nil {
+			t.listNote = listNoteFor(cctx, err)
+			t.notRun, t.collections = engines.NotRunning(nil, in, nil, nil)
+			return t
+		}
+		t.notRun, t.collections = engines.NotRunning(nil, in, nil, &info)
+		return t
 	case config.EnginePostgres:
 		conn, err := pgx.Connect(cctx, dsn)
 		if err != nil {
-			return false, err.Error()
+			return testResult{detail: err.Error()}
 		}
 		defer func() { _ = conn.Close(context.Background()) }()
 		var ver, login string
 		if err := conn.QueryRow(cctx, `SELECT current_setting('server_version'), current_user`).Scan(&ver, &login); err != nil {
-			return false, err.Error()
+			return testResult{detail: err.Error()}
 		}
-		return true, fmt.Sprintf("connected: PostgreSQL %s, as %s", ver, login)
+		t := testResult{ok: true, detail: fmt.Sprintf("connected: PostgreSQL %s, as %s", ver, login)}
+		info, err := platform.Detect(cctx, conn, "")
+		if err != nil {
+			t.listNote = listNoteFor(cctx, err)
+			t.notRun, t.collections = engines.NotRunning(nil, in, nil, nil)
+			return t
+		}
+		t.notRun, t.collections = engines.NotRunning(nil, in, &info, nil)
+		return t
 	}
-	return false, "unknown engine " + engine
+	return testResult{detail: "unknown engine " + engine}
+}
+
+// listNoteFor: why the list of collections is only the configuration's
+func listNoteFor(ctx context.Context, err error) string {
+	if ctx.Err() != nil {
+		return "the list was not read within 10 s: only the configuration's reasons are shown"
+	}
+	return "the server's detect failed (" + err.Error() + "): only the configuration's reasons are shown"
 }
 
 // sourceCred is a source's credential file's content: what an approved server connects with.
@@ -1560,4 +1628,90 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("admin proposal", "op", op, "proposal", id, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
 	s.answer(w, ans, raw, nil)
+}
+
+// testConfigured tests a configuration-file instance by name with its own door (Q8, N59), and adds the collections
+// its configuration switches off (the scheduler's own intervals, Expected.Instances: 0 = off); ok false = no such
+// configured instance on this server
+func (s *Server) testConfigured(ctx context.Context, name string) (testResult, bool) {
+	ds := s.doorsNow()
+	if ds == nil {
+		return testResult{}, false
+	}
+	engine, dsn := "", ""
+	var sec *config.PasswordSecret
+	if d, ok := ds.MS[name]; ok && !d.Page {
+		engine, dsn, sec = config.EngineSQLServer, d.Monitor, d.Secret
+	} else if d, ok := ds.PG[name]; ok && !d.Page {
+		engine, dsn, sec = config.EnginePostgres, d.Monitor, d.Secret
+	} else {
+		return testResult{}, false
+	}
+	if dsn == "" {
+		return testResult{detail: "instance " + name + ": its read login's dsn resolved to an empty string on this server"}, true
+	}
+	var t testResult
+	switch {
+	case sec != nil && engine == config.EnginePostgres:
+		full, err := secrets.PGWithSecret(ctx, dsn, sec.Ref, sec.Region, sec.Profile)
+		if err != nil {
+			return testResult{detail: err.Error()}, true
+		}
+		t = testConnectionList(ctx, engine, full, name)
+	case sec != nil:
+		t = testMSWithSecret(ctx, dsn, name, sec)
+	default:
+		t = testConnectionList(ctx, engine, dsn, name)
+	}
+	if t.ok {
+		listed := map[string]bool{}
+		for _, n := range t.notRun {
+			listed[n.Name] = true
+		}
+		for _, sp := range engines.Specs(engine) {
+			if iv, ok := s.expected.Instances[name][sp.Name]; ok && iv == 0 && !listed[sp.Name] {
+				t.notRun = append(t.notRun, engines.NotRun{Name: sp.Name, Why: "switched off in pgvigil.yaml (disabled: or schedules:)"})
+			}
+		}
+	}
+	return t, true
+}
+
+// testMSWithSecret is testConnectionList for a SQL Server login whose password is in AWS Secrets Manager
+func testMSWithSecret(ctx context.Context, dsn, name string, sec *config.PasswordSecret) testResult {
+	ref, err := secrets.ParseRef(sec.Ref, sec.Region, sec.Profile)
+	if err != nil {
+		return testResult{detail: err.Error()}
+	}
+	v, err := secrets.Default.Get(ctx, ref)
+	if err != nil {
+		return testResult{detail: err.Error()}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	db, err := mssqlopen.OpenDialerCredentials(mssqlApp(dsn, "pgvigil-admin-test"), v.User, v.Password, nil)
+	if err != nil {
+		return testResult{detail: "the connection string: " + err.Error()}
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	conn, err := db.Conn(cctx)
+	if err != nil {
+		return testResult{detail: err.Error()}
+	}
+	defer func() { _ = conn.Close() }()
+	var srv, ver, login string
+	if err := conn.QueryRowContext(cctx, `SELECT CAST(@@SERVERNAME AS nvarchar(256)), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), SUSER_SNAME()`).Scan(&srv, &ver, &login); err != nil {
+		return testResult{detail: err.Error()}
+	}
+	t := testResult{ok: true, detail: fmt.Sprintf("connected: %s, SQL Server %s, as %s", srv, ver, login)}
+	in := config.Instance{Name: name, Engine: config.EngineSQLServer}
+	info, err := mssql.Detect(cctx, conn, "")
+	if err != nil {
+		t.listNote = listNoteFor(cctx, err)
+		t.notRun, t.collections = engines.NotRunning(nil, in, nil, nil)
+		return t
+	}
+	t.notRun, t.collections = engines.NotRunning(nil, in, nil, &info)
+	return t
 }

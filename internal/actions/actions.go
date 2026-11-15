@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -56,6 +57,8 @@ const (
 // Door is the pair of connection strings an action uses on one monitored server (resolved).
 type Door struct {
 	Monitor string // the instance's monitoring login (dsn)
+	// Secret is the monitoring login's password_secret (task B24e): its password is set at each connect; nil = none
+	Secret  *config.PasswordSecret
 	Actions string // the actions login (actions_dsn); "" = no actions on this instance
 	// Configured says actions_dsn is set in the config, so an empty Actions means it did not resolve
 	// (an unset variable or an unreadable file), not that the instance has none.
@@ -89,7 +92,7 @@ func DoorsFromConfig(cfg *config.Config) map[string]Door {
 		if in.Engine == config.EngineSQLServer {
 			continue // its door is internal/mssql's (kill, job_start, job_stop)
 		}
-		m[in.Name] = Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != ""}
+		m[in.Name] = Door{Monitor: in.DSN(), Secret: in.PasswordSecret, Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != ""}
 	}
 	return m
 }
@@ -170,7 +173,11 @@ func Execute(ctx context.Context, d Door, r Request) Result {
 	}
 
 	// 1. the target as the monitoring login sees it
-	mon, err := connect(ctx, d.Monitor, "pgvigil-actions-check")
+	monDSN, err := d.monitorDSN(ctx)
+	if err != nil {
+		return refused("the monitoring login's password: %v", err)
+	}
+	mon, err := connect(ctx, monDSN, "pgvigil-actions-check")
 	if err != nil {
 		return refused("the monitoring login could not connect to check the target: %v", err)
 	}
@@ -326,3 +333,14 @@ func fmtTS(t *time.Time) string {
 	}
 	return t.UTC().Format(time.RFC3339Nano)
 }
+
+// monitorDSN is the monitoring login's string for one connect, with its password_secret's password set (B24e)
+func (d Door) monitorDSN(ctx context.Context) (string, error) {
+	if d.Secret == nil {
+		return d.Monitor, nil
+	}
+	return secrets.PGWithSecret(ctx, d.Monitor, d.Secret.Ref, d.Secret.Region, d.Secret.Profile)
+}
+
+// MonitorDSN is monitorDSN for the other packages' actions (the job actions)
+func (d Door) MonitorDSN(ctx context.Context) (string, error) { return d.monitorDSN(ctx) }

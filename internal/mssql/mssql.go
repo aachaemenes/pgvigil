@@ -26,6 +26,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // Prefix starts the name of every SQL Server collection.
@@ -363,7 +364,12 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	}
 	// through mssqlopen as every SQL Server reader (CLOUDSQL C1: fedauth, Kerberos off Windows), with the dialer on
 	// the connector it chooses (the join of 201 DONE-2)
-	db, err := mssqlopen.OpenDialer(withAppName(dsn), dl)
+	// a password from AWS Secrets Manager (B24e) is read before anything opens: its failure is not the server's
+	sec, err := readSecret(ctx, in, dsn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect %s: %w", in.Name, err)
+	}
+	db, err := sec.open(withAppName(dsn), dl)
 	if err != nil {
 		// a string mssqlopen refuses after it parses (a fedauth it does not open, fedauth with an authenticator, an
 		// identity with a password, a principal without its secret) is a configuration error, not a dial: no target is
@@ -374,6 +380,13 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	db.SetMaxOpenConns(1)
 	t0 := time.Now()
 	conn, err := db.Conn(ctx)
+	if db2, conn2, retried := sec.retry(ctx, err, withAppName(dsn), dl); retried {
+		_ = db.Close()
+		db, conn, err = db2, conn2, nil
+		if conn2 == nil {
+			err = errors.New("the login was refused again with the secret's new version")
+		}
+	}
 	took := connectTook(time.Since(t0), dl.heldTotal()) // the slow-connect tier: the connect, its token fetch left out
 	err = collect.InstanceConnectTimed(in.Name, dl.withNetwork(ctx, err), took)
 	if err != nil {
@@ -523,6 +536,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
 		// pgvigil's own shutdown (the parent ctx cancelled) is not recorded - the run's own timeout (sctx) still is
 		cerr := timeoutNote(sctx, limit, err)
+		var se *secrets.ReadError
+		if errors.As(err, &se) && ctx.Err() == nil {
+			// the password could not be read from AWS Secrets Manager (B24e): the collection's error, not the server's
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			if lerr := r.LogSecretFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
+				log.Warn("the secret's failure was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			rcancel()
+			return collect.Result{Err: err, Duration: time.Since(start)}
+		}
 		if ctx.Err() == nil {
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			if lerr := r.LogConnectFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), cerr); lerr != nil {
@@ -628,4 +651,69 @@ func partialNote(status, note string) string {
 		return ""
 	}
 	return " (partial: " + note + ")"
+}
+
+// instanceSecret is an instance's password from AWS Secrets Manager for one connect (task B24e); the zero value = none.
+type instanceSecret struct {
+	ref  *secrets.Ref
+	val  secrets.Value
+	user string
+}
+
+// readSecret reads the instance's secret (none: the zero value); the dsn's own login, when it names one, must be the
+// secret's username
+func readSecret(ctx context.Context, in config.Instance, dsn string) (instanceSecret, error) {
+	ps := in.PasswordSecret
+	if ps == nil {
+		return instanceSecret{}, nil
+	}
+	ref, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile)
+	if err != nil {
+		return instanceSecret{}, err
+	}
+	v, err := secrets.Default.Get(ctx, ref)
+	if err != nil {
+		return instanceSecret{}, err
+	}
+	s := instanceSecret{ref: &ref, val: v}
+	p, perr := msdsn.Parse(dsn)
+	switch {
+	case perr == nil && p.User != "" && v.User != "" && !strings.EqualFold(p.User, v.User):
+		return instanceSecret{}, fmt.Errorf("the dsn's login %q is not the secret's username %q", p.User, v.User)
+	case perr == nil && p.User == "":
+		s.user = v.User
+	}
+	return s, nil
+}
+
+// open opens the string as mssqlopen would, with the secret's login and password set on its parsed config
+func (s instanceSecret) open(dsn string, dl *deadlineDialer) (*sql.DB, error) {
+	if s.ref == nil {
+		return mssqlopen.OpenDialer(dsn, dl)
+	}
+	return mssqlopen.OpenDialerCredentials(dsn, s.user, s.val.Password, dl)
+}
+
+// retry: after a refused login (18456) with a secret, one Refresh; a new version opens and connects once more
+func (s instanceSecret) retry(ctx context.Context, err error, dsn string, dl *deadlineDialer) (*sql.DB, *sql.Conn, bool) {
+	var me mssqldb.Error
+	if s.ref == nil || err == nil || !errors.As(err, &me) || me.Number != 18456 {
+		return nil, nil, false
+	}
+	nv, retry, rerr := secrets.Default.Refresh(ctx, *s.ref, s.val.Version)
+	if rerr != nil || !retry {
+		return nil, nil, false
+	}
+	s.val = nv
+	db, oerr := s.open(dsn, dl)
+	if oerr != nil {
+		return nil, nil, false
+	}
+	db.SetMaxOpenConns(1)
+	conn, cerr := db.Conn(ctx)
+	if cerr != nil {
+		_ = db.Close()
+		return nil, nil, true
+	}
+	return db, conn, true
 }

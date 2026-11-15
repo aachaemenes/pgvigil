@@ -104,6 +104,9 @@ type Instance struct {
 	// Azure names an Azure SQL Database's logical server in Azure Resource Manager for the failover group read
 	// (mssql_failover_groups, task 390a); nil = no Azure door (no call to Resource Manager). SQL Server only.
 	Azure *Azure `yaml:"azure"`
+	// PasswordSecret reads the read login's password from AWS Secrets Manager at connect (task B24e); nil = the dsn
+	// holds the sign-in as today. Configuration-file instances only.
+	PasswordSecret *PasswordSecret `yaml:"password_secret"`
 	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT
 	// pg_signal_backend, never a superuser) the UI's Cancel and Terminate buttons use on this server.
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
@@ -391,6 +394,15 @@ func (a Azure) ServerKey() string {
 	return strings.ToLower(a.Subscription + "/" + a.ResourceGroup + "/" + a.Server)
 }
 
+// PasswordSecret is an instance's password in AWS Secrets Manager (task B24e): the reference
+// aws-secretsmanager:<name or ARN>[#key], its region (an ARN's own wins) and the profile of the SDK's chain. Its own
+// region and profile, never the aws: block's (that block turns CloudWatch reads on).
+type PasswordSecret struct {
+	Ref     string `yaml:"ref"`
+	Region  string `yaml:"region"`
+	Profile string `yaml:"profile"`
+}
+
 // DMS is the AWS DMS part of an instance's AWS door: which replication tasks to read and the latency
 // threshold the overview check applies to them.
 type DMS struct {
@@ -622,6 +634,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: %w", in.Name, err)
 			}
 		}
+		if err := validatePasswordSecret(*in); err != nil {
+			return err
+		}
 		if v := strings.TrimSpace(in.ActionsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: actions_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}
@@ -696,6 +711,44 @@ func validAzureCloud(c string) bool {
 	switch strings.ToLower(strings.TrimSpace(c)) {
 	case "", "public", "usgov", "china":
 		return true
+	}
+	return false
+}
+
+// validatePasswordSecret: the reference and its region; a dsn that carries a password, or an Entra / Windows sign-in
+// (fedauth=, authenticator=), refused beside it - the dsn is read for the check as the collector reads it (env:, file:)
+func validatePasswordSecret(in Instance) error {
+	ps := in.PasswordSecret
+	if ps == nil {
+		return nil
+	}
+	ref := strings.TrimSpace(ps.Ref)
+	if !strings.HasPrefix(ref, "aws-secretsmanager:") || len(ref) == len("aws-secretsmanager:") {
+		return fmt.Errorf("instance %q: password_secret.ref is aws-secretsmanager:<name or ARN>[#key]", in.Name)
+	}
+	if strings.TrimSpace(ps.Region) == "" && !strings.HasPrefix(strings.TrimPrefix(ref, "aws-secretsmanager:"), "arn:") {
+		return fmt.Errorf("instance %q: password_secret needs its region (or an ARN)", in.Name)
+	}
+	dsn := in.DSN()
+	if inlinePassword(dsn) || keywordPassword(dsn) {
+		return fmt.Errorf("instance %q: password_secret and a dsn that carries a password: the password comes from one place", in.Name)
+	}
+	l := strings.ToLower(dsn)
+	if strings.Contains(l, "fedauth=") || strings.Contains(l, "authenticator=") {
+		return fmt.Errorf("instance %q: password_secret is a SQL or PostgreSQL login's password: not with fedauth= or authenticator= in the dsn", in.Name)
+	}
+	return nil
+}
+
+// keywordPassword: a libpq keyword/value string (host=h user=u password=p) that sets a password
+func keywordPassword(v string) bool {
+	if strings.Contains(v, "://") {
+		return false
+	}
+	for _, f := range strings.Fields(v) {
+		if k, _, ok := strings.Cut(f, "="); ok && strings.EqualFold(strings.TrimSpace(k), "password") {
+			return true
+		}
 	}
 	return false
 }

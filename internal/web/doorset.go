@@ -147,15 +147,19 @@ func noDoorWords(name string) string {
 // none and what opens it. engine is 'sqlserver' or a PostgreSQL one.
 func (ds *doorSet) readLogin(engine, name string) (dsn, kind string, no noDoor) {
 	var monitor string
-	var ok, page bool
+	var ok, page, secret bool
 	if engine == config.EngineSQLServer {
 		d, has := ds.MS[name]
-		monitor, ok, page = d.Monitor, has, d.Page
+		monitor, ok, page, secret = d.Monitor, has, d.Page, d.Secret != nil
 	} else {
 		d, has := ds.PG[name]
-		monitor, ok, page = d.Monitor, has, d.Page
+		monitor, ok, page, secret = d.Monitor, has, d.Page, d.Secret != nil
 	}
 	switch {
+	case secret:
+		// B24e: these readers take the login as a string; an instance whose password is in AWS Secrets Manager is
+		// refused in words here rather than connecting without its password (a NOT PROVEN line of B24e's DONE)
+		return "", "", noDoor{"instance " + name + ": its read login's password comes from AWS Secrets Manager (password_secret): custom reports, the community tools and Query Store plans do not read it yet", howFile}
 	case ds.NoDoor[name].Why != "":
 		return "", "", ds.NoDoor[name]
 	case !ok && ds.Unread:

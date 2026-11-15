@@ -32,7 +32,9 @@ import (
 
 	mssqldb "github.com/microsoft/go-mssqldb"
 
+	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // ActionKind is one action of the door.
@@ -78,6 +80,8 @@ const (
 // Door is what an action needs on one SQL Server instance (resolved connection strings).
 type Door struct {
 	Monitor string // the instance's read login (dsn)
+	// Secret is the read login's password_secret (task B24e): its password set at each connect; nil = none
+	Secret  *config.PasswordSecret
 	Actions string // the actions login (actions_dsn); "" = none
 	// Configured says actions_dsn is set in the config, so an empty Actions means it did not resolve.
 	Configured bool
@@ -485,7 +489,7 @@ func Preview(ctx context.Context, d Door, instance string, k ActionKind, session
 	} else if k != ActionKill && !jobIDForm.MatchString(jobID) {
 		return t, "job_id must be a job's id (a GUID)"
 	}
-	db, mon, err := openAction(ctx, d.Monitor, "pgvigil-actions-check")
+	db, mon, err := d.openMonitor(ctx)
 	if err != nil {
 		return t, fmt.Sprintf("the read login could not connect to read the target: %v", err)
 	}
@@ -562,7 +566,7 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 	// never one that may do everything. Whether it holds the right for THIS statement is the server's to say: a
 	// login without ALTER ANY CONNECTION or outside SQLAgentOperatorRole gets the server's own error, kept as the
 	// attempt's message
-	mdb, mon, err := openAction(ctx, d.Monitor, "pgvigil-actions-check")
+	mdb, mon, err := d.openMonitor(ctx)
 	if err != nil {
 		return refuse(Target{}, "the read login could not connect to check the target: %v", err)
 	}
@@ -800,4 +804,36 @@ func ReadActionsLoginRights(ctx context.Context, d Door) ActionsLoginRights {
 	}
 	r.ViewServerState, r.AlterServerState, r.SignedProcedure, r.MayExecute = v == 1, a == 1, s == 1, x == 1
 	return r
+}
+
+// openMonitor opens the read login for an action's check, its password_secret's login and password set on the
+// parsed string (B24e) when it has one
+func (d Door) openMonitor(ctx context.Context) (*sql.DB, *sql.Conn, error) {
+	if d.Secret == nil {
+		return openAction(ctx, d.Monitor, "pgvigil-actions-check")
+	}
+	ref, err := secrets.ParseRef(d.Secret.Ref, d.Secret.Region, d.Secret.Profile)
+	if err != nil {
+		return nil, nil, err
+	}
+	v, err := secrets.Default.Get(ctx, ref)
+	if err != nil {
+		return nil, nil, err
+	}
+	db, err := mssqlopen.OpenDialerCredentials(withApp(d.Monitor, "pgvigil-actions-check"), v.User, v.Password, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	db.SetMaxOpenConns(1)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	if _, err := conn.ExecContext(ctx, sessionSetup); err != nil {
+		_ = conn.Close()
+		_ = db.Close()
+		return nil, nil, err
+	}
+	return db, conn, nil
 }
