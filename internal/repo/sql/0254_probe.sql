@@ -120,6 +120,25 @@ SELECT DISTINCT ON (h.host, l.instance_id) h.host AS collector_host, l.instance_
  WHERE l.minute > now() - interval '20 minutes' AND l.target IS NOT NULL AND h.retired_at IS NULL
  ORDER BY h.host, l.instance_id, l.minute DESC;
 
+-- collector_probe_thresholds: B24h's two keys in force for EVERY active instance at once - pg_threshold's own rule (0103:
+-- the instance's level, then a tag of its (the first by name), then the root, then the key's default; the row of the
+-- best level wins, so an empty level is off, never the next one's value: keep in step with pg_threshold), as one
+-- set-based read (the B24h-1 review part b #4, vis-b24hbj2g: pg_threshold called twice per instance, each reading the
+-- merged tags, cost the judged view about half a second at 2,124 instances)
+CREATE OR REPLACE VIEW pgvigil.collector_probe_thresholds AS
+WITH i AS MATERIALIZED (
+  SELECT i.instance_id, coalesce(m.tags, '{}'::text[]) AS tags
+    FROM pgvigil.instances i LEFT JOIN pgvigil.instance_tags_merged m USING (instance_id) WHERE i.is_active
+), cand AS (
+  SELECT i.instance_id, t.key, t.warn, CASE t.level WHEN 'instance' THEN 2 WHEN 'tag' THEN 3 ELSE 4 END AS rank, t.tag
+    FROM pgvigil.pg_thresholds t
+    JOIN i ON t.level = 'root' OR (t.level = 'instance' AND t.instance_id = i.instance_id) OR (t.level = 'tag' AND t.tag = ANY (i.tags))
+   WHERE t.ended_at IS NULL AND t.key IN ('round_trip_time', 'ping_time')
+  UNION ALL
+  SELECT i.instance_id, k.key, k.warn_default, 9, NULL FROM i CROSS JOIN pgvigil.pg_threshold_keys k WHERE k.key IN ('round_trip_time', 'ping_time')
+)
+SELECT DISTINCT ON (instance_id, key) instance_id, key, warn FROM cand ORDER BY instance_id, key, rank, tag NULLS LAST;
+
 -- collector_round_trips: per collector host and instance, the round trips of its last 5 measured minutes of the 20 -
 -- JUDGED with 3 or more and the newest within 8 minutes; its average and longest in seconds, its own warning, slow over it
 CREATE OR REPLACE VIEW pgvigil.collector_round_trips AS
@@ -136,7 +155,7 @@ WITH m AS (
 SELECT w.host AS collector_host, w.instance_id, i.name, w.n, round(w.ms::numeric / w.n / 1000, 3) AS avg_s, round(w.mx::numeric / 1000, 3) AS max_s,
        th.warn, coalesce(w.ms::numeric / w.n / 1000 > th.warn, false) AS slow
   FROM w JOIN pgvigil.instances i ON i.instance_id = w.instance_id AND i.is_active
-  CROSS JOIN LATERAL pgvigil.pg_threshold(w.instance_id, 'round_trip_time') th
+  LEFT JOIN pgvigil.collector_probe_thresholds th ON th.instance_id = w.instance_id AND th.key = 'round_trip_time'
  WHERE w.n >= 3 AND w.newest >= now() - interval '8 minutes';
 
 -- collector_pings: per collector host and probed address, its probed minutes of the last 5 of the 20 (answered or not;
@@ -186,7 +205,7 @@ SELECT ih.collector_host, ih.instance_id, i.name, ih.host,
   LEFT JOIN pgs pg ON pg.collector_host = ih.collector_host AND pg.host = ih.host
   LEFT JOIN ans an ON an.collector_host = ih.collector_host AND an.address = pg.address
   LEFT JOIN op o ON o.collector_host = ih.collector_host AND o.instance_id = ih.instance_id
-  CROSS JOIN LATERAL pgvigil.pg_threshold(ih.instance_id, 'ping_time') th
+  LEFT JOIN pgvigil.collector_probe_thresholds th ON th.instance_id = ih.instance_id AND th.key = 'ping_time'
  WHERE rt.instance_id IS NOT NULL OR pg.host IS NOT NULL;
 
 -- collector_probe_fold: B24h's own fold over its two measures (the fold's #3, SLOW-CONNECT's form): per collector host,
@@ -210,14 +229,20 @@ SELECT c.collector_host, c.hosts, c.slow_hosts
 -- collector_probe_held: the probe findings alert_due holds (its term is WIRING: scripts/b24h-join-lines.sql) - every
 -- instance's probe finding under a standing collector fold; an instance's own ping rows under its host's row (one alert
 -- a host, the fold's #2); collector_probe_held_hosts: a host's rows under a standing collector fold
+-- (each reads the judged rows and the fold once: the B24h-1 review part b #4, vis-b24hbj2g - the held set's per-row
+-- check of the fold cost it 6.4 s at 2,124 instances)
 CREATE OR REPLACE VIEW pgvigil.collector_probe_held AS
+WITH j AS MATERIALIZED (SELECT * FROM pgvigil.collector_probe_judged),
+     f AS MATERIALIZED (SELECT DISTINCT collector_host FROM pgvigil.collector_probe_fold)
 SELECT j.instance_id, s.setting
-  FROM pgvigil.collector_probe_judged j
+  FROM j
   CROSS JOIN (VALUES ('query round trip slow'), ('ping slow'), ('host not answering ping')) s(setting)
- WHERE EXISTS (SELECT 1 FROM pgvigil.collector_probe_fold f WHERE f.collector_host = j.collector_host)
+  LEFT JOIN f ON f.collector_host = j.collector_host
+ WHERE f.collector_host IS NOT NULL
     OR (s.setting = 'ping slow' AND j.ping_slow) OR (s.setting = 'host not answering ping' AND j.not_answering);
 CREATE OR REPLACE VIEW pgvigil.collector_probe_held_hosts AS
-SELECT DISTINCT j.host FROM pgvigil.collector_probe_judged j JOIN pgvigil.collector_probe_fold f ON f.collector_host = j.collector_host;
+WITH f AS MATERIALIZED (SELECT DISTINCT collector_host FROM pgvigil.collector_probe_fold)
+SELECT DISTINCT j.host FROM pgvigil.collector_probe_judged j JOIN f ON f.collector_host = j.collector_host;
 
 -- collector_probe_findings: the findings shape (pgvigil.findings' arms; the arm is WIRING): an instance's round trip;
 -- its host's ping and silence on the instance (held) and once for the host (source 'pgvigil repository', the host as
