@@ -171,10 +171,11 @@ const allRows = await api({});
   const pgBad = pg.filter(r => !cost.every(k => r[k]?.text === 'not read by pgvigil'));
   say(pg.length > 0 && pgBad.length === 0, 'CH16 PostgreSQL rows: the five cost cells say not read by pgvigil',
     `${pg.length} row(s) with a run, ${pgBad.length} otherwise${pgBad.length ? ': ' + pgBad.slice(0, 3).map(r => r['Instance'].text + ' ' + r['Collection'].text + ' [' + cost.map(k => r[k]?.text).join(' | ') + ']').join('; ') : ''}`);
-  const wrote = ran.filter(r => num(r['Succeeded']) > 0);
+  // the demo's own instances: the proof's fixtures (fx-...) write their hour rows by hand, with no import in them
+  const wrote = ran.filter(r => num(r['Succeeded']) > 0 && !r['Instance'].text.startsWith('fx-'));
   const noImp = wrote.filter(r => !(num(r['Avg Import (ms)']) > 0 && num(r['Max Import (ms)']) > 0 && num(r['Max Import (ms)']) <= num(r['Max Duration (ms)'])));   // the longest import is inside the longest run (an average over failed runs too may be under it)
-  say(wrote.length > 0 && noImp.length === 0, 'CH16 a row with a success has an import time, inside its duration',
-    `${wrote.length} row(s) with a success, ${noImp.length} without${noImp.length ? ': ' + noImp.slice(0, 3).map(r => r['Instance'].text + ' ' + r['Collection'].text + ' [' + r['Avg Import (ms)']?.text + ' avg, max ' + r['Max Import (ms)']?.text + ' of ' + r['Max Duration (ms)']?.text + ']').join('; ') : ''}`);
+  say(wrote.length > 0 && noImp.length === 0, 'CH16 a demo row with a success has an import time, inside its longest run',
+    `${wrote.length} demo row(s) with a success, ${noImp.length} without${noImp.length ? ': ' + noImp.slice(0, 3).map(r => r['Instance'].text + ' ' + r['Collection'].text + ' [' + r['Avg Import (ms)']?.text + ' avg, max ' + r['Max Import (ms)']?.text + ' of ' + r['Max Duration (ms)']?.text + ']').join('; ') : ''}`);
   const impFailed = ran.filter(r => num(r['Import Failed']) !== 0);
   say(ran.length > 0 && impFailed.length === 0, 'CH16 Import Failed is 0 on the demo', `${ran.length} row(s) with a run, ${impFailed.length} with an import failure`);
 }
