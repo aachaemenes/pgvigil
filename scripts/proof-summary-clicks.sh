@@ -81,9 +81,18 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 mkdir -p "$OUT"
 node scripts/summary-clicks.mjs "$CDP" "http://127.0.0.1:$PORT/" "$OUT" | tee "$OUT/summary-clicks.txt"
 RC=${PIPESTATUS[0]}
-# a walk that clicked little proves little: both grids' headings and cells at each scope
-for part in testhead testcell insthead instcell; do
-  grep -q " | $part | " "$OUT/summary-clicks.txt" || fail "the walk clicked no $part"
-done
+# a walk that clicked little proves little: at the fleet scopes (root, tag) both grids' headings and cells - those
+# parts are on the fleet Summary alone -, at the instance scope the header's chips and reasons and a grid's cells
+SC=",${SUMCLICK_SCOPES:-root,tag,instance},"
+if [[ $SC == *,root,* || $SC == *,tag,* ]]; then
+  for part in testhead testcell insthead instcell; do
+    grep -q " | $part | " "$OUT/summary-clicks.txt" || fail "the walk clicked no $part"
+  done
+fi
+if [[ $SC == *,instance,* ]]; then
+  for label in chip-label cell-link grid; do
+    grep -q " | inst | $label | " "$OUT/summary-clicks.txt" || fail "the walk clicked no $label on an instance's Summary"
+  done
+fi
 [[ $RC == 0 ]] || fail "dead clicks on the Summary (the DEAD lines above)"
 echo "PROOF OK: every text of the Summary answers a click"
