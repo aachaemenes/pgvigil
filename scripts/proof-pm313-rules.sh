@@ -341,7 +341,9 @@ U=http://127.0.0.1:$SPORT; U2=http://127.0.0.1:$SPORT2; JAR=$TMPD/jar
 code() { curl -s -m 20 -o "$TMPD/body" -w '%{http_code}' "$@"; }
 NOW_LOG=$(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log")
 [[ $(code -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/mssql/protection") == 401 ]] || fail "R5b: a POST without a session: $(cat "$TMPD/body")"
-curl -s -m 20 -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$U/api/login" > /dev/null
+# the password from a file, never curl's argv (the header's rule; 401 review part 4, finding 9)
+printf '{"username":"%s","password":"%s"}' "$UIUSER" "$UIPW" > "$TMPD/login.json"
+[[ $(code -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login") == 200 ]] || fail "R5b: the UI login: $(cat "$TMPD/body")"
 [[ $(code -b "$JAR" -X POST -d '{}' "$U/api/mssql/protection") == 403 ]] || fail "R5b: a POST without the header"
 [[ $(code -b "$JAR" "$U/api/mssql/protection?instance=$SB") == 200 ]] || fail "R5b: GET: $(cat "$TMPD/body")"
 python3 - "$TMPD/body" <<'PY2' || fail "R5b: GET's parts"
