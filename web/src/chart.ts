@@ -142,6 +142,7 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
                           fmt: (v: number) => string = v => v.toLocaleString(), o: ChartOpts = {}): HTMLElement {
   if (o.measure) { const k = chartKind(o.measure); o = { ...o, stacked: o.stacked || k === 'stacked', bars: o.bars || k === 'bars' }; }
   const box = el('div', { class: 'chart' }, el('h3', {}, title));
+  if (o.stacked) box.dataset.stacked = 'true';   // a page's proof reads the form it was drawn in
   if (rows.length < 2) {
     box.append(chartState('empty', rows.length ? 'Only one read in this window: a chart needs two.' : o.ownSpan ? 'No data in this span.' : undefined));
     // a drag narrower than two reads leaves the charts empty: the way back stays (once the chart is in the page: a page
