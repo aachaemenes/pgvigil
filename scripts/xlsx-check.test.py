@@ -347,6 +347,9 @@ PROBES = [
     # X16: no number-and-unit text
     ('X16 full age text 0 h', 'X16', 'FAIL', lambda: grid1(['name', 'full age'], [['a', '0 h']])),
     ('X16 compressed text 5.6 MB', 'X16', 'FAIL', lambda: grid1(['name', 'compressed'], [['a', '5.6 MB']])),
+    ('X16 a growth column mixing a size and a percent', 'X16', 'PASS', lambda: grid1(['file', 'growth'], [['a', '64 MB'], ['b', '10 %']])),
+    ('X16 a growth column of sizes alone', 'X16', 'FAIL', lambda: grid1(['file', 'growth'], [['a', '64 MB'], ['b', '1024 MB']])),
+    ('X16 ages in hours and days (two times, one unit)', 'X16', 'FAIL', lambda: grid1(['name', 'full age'], [['a', '12.5 h'], ['b', '2.1 d']])),
     ('X16 an age in words (DBA Dash\'s Summary)', 'X16', 'PASS', lambda: grid1(['name', 'uptime'], [['a', '41 minutes, 16 seconds']])),
     ('X16 a version', 'X16', 'PASS', lambda: grid1(['name', 'version'], [['a', '16.0.4325.4']])),
     ('X16 an Item | Value sheet\'s Value with a unit', 'X16', 'PASS', lambda: grid1(['Item', 'Value'], [['memory', '2 GB']], name='Server')),

@@ -61,7 +61,8 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
       starts with a number ('463.71 warning', '1m 9s'): the number is the cell, its unit the header, its status the fill;
       a bracket of other words ('held by session (mode)': '62 (X)') names no unit
   X16 no text cell that is one number and a unit symbol ('0 h', '12 min', '1.5 GB', '13.4 %'): a number with its unit in
-      the header; an age in words ('1 day', '41 minutes, 16 seconds') is prose, as DBA Dash's Summary writes it
+      the header; an age in words ('1 day', '41 minutes, 16 seconds') is prose, as DBA Dash's Summary writes it; a column
+      that mixes a size and a percent ('64 MB' beside '10 %', a file's growth) has no one unit and passes
   X17 (with the page's map) a mapped column's cell carries its row's status, as DBA Dash colours the measured cell: the
       fill of the row's status column (a header), any status or N/A ('*'), or N/A ('N/A'); an empty cell is not judged
   X18 a column with a status fill (OK, Warning, Critical, Acknowledged) on any row has a status or N/A on every cell that
@@ -115,6 +116,10 @@ UNIT_HEAD = re.compile(r'\((?:ms|s|secs?|seconds|min|mins|minutes|h|hrs?|hours|d
 NUM_START = re.compile(r'\s*[-+]?\d')
 # (X16) a whole text cell that is one number and a unit symbol ('0 h', '12 min', '1.5 GB', '13.4 %'); words ('1 day') are prose
 UNIT_TEXT = re.compile(r'\s*[-+]?\d[\d,]*(?:\.\d+)?\s?(?:ms|s|sec|min|h|hr|d|B|KB|MB|GB|TB|%)\s*', re.I)
+def unit_family(t):
+    # (X16) the family of a number-and-unit text's unit: a size, a percent or a time
+    u = re.sub(r'^[\s\d.,+-]+', '', t).strip().lower()
+    return 'pct' if u == '%' else 'size' if u in ('b', 'kb', 'mb', 'gb', 'tb') else 'time'
 # (X17, X18) the status fills (OK, Critical, Warning, Acknowledged pgvigil / DBA Dash) and N/A
 STATUS_FILLS = {'FF006638': 'OK', 'FFAB1F26': 'Critical', 'FFE49325': 'Warning', 'FF1B6AA3': 'Acknowledged', 'FF217CBB': 'Acknowledged'}
 NA_FILL = 'FFE0E1E9'
@@ -589,9 +594,13 @@ def check(book, page=None, measured=None):
                     if NUM_START.match(c['v']):
                         out['X15'].append("'%s'!%s '%s' text '%s': the number of a unit column as text" % (nm, c['ref'], h, c['v'][:40]))
             if not free_value:
-                for c in texts:
-                    if UNIT_TEXT.fullmatch(c['v']):
-                        out['X16'].append("'%s'!%s '%s' text '%s': a number and its unit as text" % (nm, c['ref'], h, c['v']))
+                hits = [c for c in texts if UNIT_TEXT.fullmatch(c['v'])]
+                # a column that mixes a size and a percent ('64 MB' beside '10 %': a file's growth) has no one unit to head
+                # it: the page's words, as export.ts keeps them (two times, '12.5 h' beside '2.1 d', still have one)
+                if {unit_family(c['v']) for c in hits} == {'size', 'pct'}:
+                    hits = []
+                for c in hits:
+                    out['X16'].append("'%s'!%s '%s' text '%s': a number and its unit as text" % (nm, c['ref'], h, c['v']))
             if any(c['xf']['fill'] in STATUS_FILLS for c in cells):
                 for c in cells:
                     if str(c['v'] if c['v'] is not None else '').strip() and c['xf']['fill'] not in STATUS_FILLS and c['xf']['fill'] != NA_FILL:
