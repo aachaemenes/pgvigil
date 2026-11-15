@@ -471,6 +471,10 @@ func TestZabbixPinWithoutSAN(t *testing.T) {
 // B24k review 2: every value's (clock, ns) is new, across messages and channels of one pass (Zabbix keys an item's
 // history by them).
 func TestZabbixStamps(t *testing.T) {
+	// the stamps are process-wide: an earlier test's later message would push this one's first value past its second
+	zbxClock.Lock()
+	zbxClock.last = time.Time{}
+	zbxClock.Unlock()
 	a := zabbixFor(t, Zabbix{Server: "127.0.0.1:10051", Host: "pgvigil"})
 	b := zabbixFor(t, Zabbix{Server: "127.0.0.1:10052", Host: "pgvigil"})
 	m := msg(crit, crit, crit)

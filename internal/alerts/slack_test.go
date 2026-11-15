@@ -138,8 +138,9 @@ func TestSlackPostReply(t *testing.T) {
 	if strings.Contains(string(all), "<!channel>") || strings.Contains(string(all), "<@U123>") {
 		t.Errorf("a finding's text reached Slack unescaped: %s", all)
 	}
-	if !strings.Contains(string(all), `&lt;!channel&gt;`) && !strings.Contains(string(all), "&lt;!channel&gt;") {
-		t.Errorf("the escaped mention is missing: %s", all)
+	// read from the decoded text: a re-marshalled body writes & as \u0026
+	if txt, _ := p["text"].(string); !strings.Contains(txt, "&lt;!channel&gt;") || !strings.Contains(txt, "&lt;@U123&gt;") {
+		t.Errorf("the escaped mention is missing: %q", txt)
 	}
 	// the post carries the link button only (the door is off); replies carry no actions
 	if !strings.Contains(blocksOf(p), `"pgv_open"`) || strings.Contains(blocksOf(p), `"pgv_ack"`) {
