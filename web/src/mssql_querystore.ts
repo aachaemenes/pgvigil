@@ -569,17 +569,21 @@ function tuningView(d: QS): HTMLElement[] {
 function stateView(d: QS): HTMLElement[] {
   const rows = rowsOf(d.state);
   const lower = (v: unknown) => text(v).toLowerCase().replace(/_/g, ' ');
-  const stateCls = (_: unknown, r: Row) => r.severity === 'critical' ? 'status crit' : r.severity === 'warning' ? 'status warn' : '';
+  // the cell's status: critical / warning as judged; a store not read or a note N/A; OK and a store off that nobody asked
+  // for (a choice, not a fault: judged and nothing wrong) OK
+  const flag = (r: Row) => r.severity === 'critical' || r.severity === 'warning';
+  const stateCls = (_: unknown, r: Row) => r.severity === 'critical' ? 'status crit' : r.severity === 'warning' ? 'status warn'
+    : !r.options_read || r.severity === 'info' ? 'status none' : 'status ok';
   const cols: Col[] = [
     { key: 'database_name', label: 'database' },
     { key: 'severity', label: 'status', cls: stateCls,
       fmt: (v, r) => {
-        const b = !r.options_read ? badge('not read', '') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn')
-          : v === 'info' ? badge('note', '') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok');
-        return stateCls(v, r) ? tinted(b) : b;
+        const b = !r.options_read ? badge('not read', 'none') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn')
+          : v === 'info' ? badge('note', 'none') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok');
+        return flag(r) ? tinted(b) : b;
       } },
     { key: 'desired_state', label: 'desired state', fmt: lower },
-    { key: 'actual_state', label: 'actual state', fmt: (v, r) => stateCls(v, r) ? tinted(lower(v)) : lower(v), cls: stateCls },
+    { key: 'actual_state', label: 'actual state', fmt: (v, r) => flag(r) ? tinted(lower(v)) : lower(v), cls: (v, r) => v == null || v === '' ? '' : stateCls(v, r) },
     { key: 'readonly_reasons', label: 'read-only reason', fmt: (v, r) => text(v) || (Number(r.readonly_reason) ? `reason ${text(r.readonly_reason)}` : '') },
     { key: 'capture_mode', label: 'query capture mode', fmt: lower },
     { key: 'cleanup_mode', label: 'size-based cleanup', fmt: lower },
