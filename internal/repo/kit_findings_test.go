@@ -109,3 +109,58 @@ func TestKitFindingsOnAStore(t *testing.T) {
 		t.Errorf("collector_findings' 0139 arm: %d row(s) %v, want 1", n, err)
 	}
 }
+
+// K4.3: import_mssql_kits keeps an instance's kits as last read (each read replaces the last), and
+// pgvigil.kit_versions_fleet counts the instances per procedure and version - one line per tool version for the
+// fleet, never a finding per instance (F14).
+func TestKitVersionsOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sfx := time.Now().UnixNano() % 1000000000
+	ids := make([]int, 2)
+	for i := range ids {
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+			fmt.Sprintf("kitver-%d-%d", i, sfx)).Scan(&ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		c, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		_, _ = pool.Exec(c, `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, ids)
+	})
+	imp := func(id int, payload string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_kits($1, now(), $2::jsonb)`, id, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proc := func(name, ver, date string) string {
+		return fmt.Sprintf(`{"kind":"proc","database_name":"master","procedure_name":%q,"version":%q,"version_date":%q,"modify_date":"2026-11-01T00:00:00","readable":true}`, name, ver, date)
+	}
+	imp(ids[0], `[{"kind":"read"},`+proc("sp_Blitz", "8.34", "20260702")+`,`+proc("sp_WhoIsActive", "v2200.20260409", "20260409")+`]`)
+	imp(ids[1], `[{"kind":"read"},`+proc("sp_Blitz", "8.35", "20261114")+`]`)
+	imp(ids[0], `[{"kind":"read"},`+proc("sp_Blitz", "8.35", "20261114")+`]`) // the next read replaces the last
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.mssql_kit_versions WHERE instance_id = $1`, ids[0]).Scan(&n); err != nil || n != 1 {
+		t.Errorf("after the second read: %d row(s) %v, want 1 (sp_WhoIsActive gone)", n, err)
+	}
+	// the fleet line counts every instance of the store holding that version (another test's rows included)
+	var fleet, direct int
+	if err := pool.QueryRow(ctx, `SELECT coalesce((SELECT instances FROM pgvigil.kit_versions_fleet WHERE procedure_name = 'sp_Blitz' AND version = '8.35'), 0),
+	                                     (SELECT count(DISTINCT instance_id) FROM pgvigil.mssql_kit_versions WHERE procedure_name = 'sp_Blitz' AND version = '8.35')`).Scan(&fleet, &direct); err != nil {
+		t.Fatal(err)
+	}
+	if fleet != direct || direct < 2 {
+		t.Errorf("the fleet line for sp_Blitz 8.35: %d instance(s), the rows hold %d (want equal, at least this test's 2)", fleet, direct)
+	}
+}

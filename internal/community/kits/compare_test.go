@@ -222,3 +222,19 @@ func TestMarkNew(t *testing.T) {
 		t.Errorf("new marks: %+v", now)
 	}
 }
+
+// K4.3: the versions pgvigil was checked against (shapes.json's pinned kits), by tool; an installed version is
+// compared with them by date.
+func TestChecked(t *testing.T) {
+	for tool, date := range map[string]string{"sp_Blitz": "20260702", "sp_BlitzCache": "20260702", "sp_PressureDetector": "20261101", "sp_WhoIsActive": "20260409"} {
+		if c, ok := Checked(tool); !ok || c.Date != date {
+			t.Errorf("%s: %+v %v, want date %s", tool, c, ok, date)
+		}
+	}
+	if _, ok := Checked("sp_Unknown"); ok {
+		t.Error("a tool pgvigil does not run has a checked version")
+	}
+	if !NewerThanChecked("sp_Blitz", "20261114") || NewerThanChecked("sp_Blitz", "20260702") || NewerThanChecked("sp_Unknown", "20991231") {
+		t.Error("NewerThanChecked")
+	}
+}
