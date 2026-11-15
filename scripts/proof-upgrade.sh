@@ -51,7 +51,7 @@
 #                 prints this build's version, the config and the env file are byte for byte the old ones, the unit is
 #                 active with 0 restarts and runs as pgvigil
 #   F collector   under the collector login (no owner right) an activity sample newer than the restart arrives; every
-#                 collection that ended ok under the old version ends ok again within 180 s, and none ends error or
+#                 collection that ended ok under the old version ends ok again within 350 s, and none ends error or
 #                 partial that did not under the old version
 #   G pages       this build's 'serve' under the UI login (pgvigil_reader + pgvigil_auth) on loopback: every page the
 #                 tab strips list - the root's and every instance's (12 demo instances and the live one) - and one page
@@ -281,11 +281,12 @@ grep -q 'installed and running' "$WORK/i2.out" || fail "the second install did n
 TID=""; for _ in $(seq 1 90); do TID=$(rq "select i.instance_id from pgvigil.instances i where i.name = 'proof-target' and exists (select 1 from pgvigil.activity_summary s where s.instance_id = i.instance_id)"); [[ -n "$TID" ]] && break; sleep 1; done
 [[ -n "$TID" ]] || fail "no activity sample of proof-target under $OLD within 90 s"
 # statuses <since> [name...]: 'collection=status' for every collection of the live instance that ran since then: with names,
-# once each of them has run again (180 s at most); without, once no new name has come for 10 s. pgvigil.collection_dates
+# once each of them has run again (350 s at most: a collection's first run after a start falls anywhere in min(its
+# interval, 5 min)); without, once no new name has come for 10 s. pgvigil.collection_dates
 # holds the newest result of each collection (collection_log keeps the results that are not ok alone)
 statuses() {
   local since=$1 n prev=-1 same=0 want; shift; want=$#
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 175); do
     if (( want )); then
       n=$(rq "select count(*) from pgvigil.collection_dates where instance_id = $TID and snapshot_at >= '$since' and collection = any(string_to_array('$*', ' '))")
       (( n >= want )) && break
@@ -395,8 +396,8 @@ docker exec "$REPO" psql -U postgres -XAtq -c "drop database pgvigil_seedcount w
 got=$(compare "$WORK/before.all" "$WORK/after.all" strict "$APPLIED" "$WORK/seed.all" 2>&1) || fail "row counts changed over the migrate: $got"
 ok "migrate applied $APPLIED files in $MIGMS ms (the store's $OLDFILES to this tree's $NFILES), a second one 0; this build refused to run before it (exit 1); row counts kept: $got; the rows themselves, in the columns $OLD had: the same md5 per table in all $NHASH tables that hold rows ($NEMPTY hold none)"
 # the stamp BEFORE the install restarts the unit (stopped since the start of E, so nothing else writes in between): each
-# collection first runs up to 10 s after the start, and 'install' returns half a second or more after it, so a stamp read
-# after it would miss an hourly collection that had already run
+# collection first runs at a random moment in min(its interval, 5 min) after the start, and 'install' returns half a
+# second or more after it, so a stamp read after it would miss a collection that had already run
 T1=$(rq "select now()")
 insys sh -c 'cd /root && ./pgvigil install' >"$WORK/i4.out" 2>&1 || fail "./pgvigil install of $NEW: $(cat "$WORK/i4.out")"
 grep -q 'installed and running' "$WORK/i4.out" || fail "the install of $NEW did not end with 'installed and running': $(cat "$WORK/i4.out")"
@@ -415,7 +416,7 @@ OLDOK=$(sed -n 's/=ok$//p' <<<"$OLDST" | tr '\n' ' ')
 # shellcheck disable=SC2086  # the names are plain words, one argument each
 NEWST=$(statuses "$T1" $OLDOK)
 notes() { rq "select collection || ' ' || status || ': ' || coalesce(note, '') from pgvigil.collection_dates where instance_id = $TID and snapshot_at >= '$T1' and status <> 'ok' order by 1" | sed 's/^/  /' >&2; }
-lost=""; for c in $OLDOK; do grep -qx "$c=ok" <<<"$NEWST" || lost+="$c ($(sed -n "s/^$c=//p" <<<"$NEWST" | grep . || echo 'did not run in 180 s')) "; done
+lost=""; for c in $OLDOK; do grep -qx "$c=ok" <<<"$NEWST" || lost+="$c ($(sed -n "s/^$c=//p" <<<"$NEWST" | grep . || echo 'did not run in 350 s')) "; done
 if [[ -n "$lost" ]]; then notes; fail "collection(s) ok under $OLD and not under $NEW: $lost"; fi
 worse=""; while IFS= read -r l; do [[ "$l" == *=error || "$l" == *=partial ]] || continue; grep -qx "$l" <<<"$OLDST" || worse+="${l%%=*} "; done <<<"$NEWST"
 if [[ -n "$worse" ]]; then notes; fail "collection(s) ending error or partial under $NEW that did not under $OLD: $worse"; fi

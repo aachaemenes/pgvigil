@@ -730,8 +730,9 @@ if want SV; then
 fi
 # ---- SC7 / SL the slow-connect tier on the service: a proxy that delays new connections, the root's connect_time
 # threshold low and warning = critical (0.10 / 0.10 s): one slow minute in an instance's 5-minute window is over it, and
-# a slow member is critical with its fold (a member above a WARNING fold is sent on its own, as designed: the SQL row
-# C27l proves that edge, not this case). The delay starts only after 5 written minutes through the new address (a
+# a slow member is critical with its fold (a member above a WARNING fold is sent on its own, as designed: the SQL rows
+# C27l (one instance) and C27n (a server under a warning collector fold) prove that edge, C27p a fold falling from
+# critical to warning, not this case). The delay starts only after 5 written minutes through the new address (a
 # restart runs every collection once within 5 minutes: those minutes hold far more connects than a later one, and a
 # window full of them would dilute the first slow minute); it is lifted at :57, so a connect held 2 s ends before the
 # minute turns and the lift's minute is fast
@@ -852,9 +853,12 @@ if want SL; then
   fi
 fi
 if want SC7 || want SL; then
-  sc_thr2=$(thr 1.00 2.50); docker rm -f -v "$SLP" >/dev/null 2>&1 || true
+  # the dial back first (slowp still answers while the service restarts), then slowp removed; the root's connect_time
+  # row ended ('inherit': the built-in default again, no row left behind)
   docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc12.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
-  [[ "$sc_thr" != done || "$sc_thr2" == done ]] || fail "SC7 / SL: the root's connect_time back to 1.00 / 2.50 s: '$sc_thr2'"
+  docker rm -f -v "$SLP" >/dev/null 2>&1 || true
+  sc_thr2=$(q "SELECT pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'inherit', 'ui_user', 'proof', 'key', 'connect_time', 'level', 'root'))->>'outcome'" || echo error)
+  [[ "$sc_thr" != done || "$sc_thr2" == done ]] || fail "SC7 / SL: the root's connect_time row ended ('inherit'): '$sc_thr2'"
 fi
 # ---- SC7 / SL end
 # shellcheck disable=SC2086
