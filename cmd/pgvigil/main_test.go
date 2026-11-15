@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +109,17 @@ func TestCustomChecksOverNoFileInstance(t *testing.T) {
 	}
 	if _, _, err := loadConfig([]string{"-config", p}, false); err != nil {
 		t.Fatalf("custom checks over no file instance: %v", err)
+	}
+}
+
+// TestRunSaysItSends (B6.2 part c #3): pgvigil run's heartbeat is told whether the run sends - its alerts: list names a
+// channel (alerts.Run sends nothing without one)
+func TestRunSaysItSends(t *testing.T) {
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`collect\.StartHeartbeat\([^\n]*HeartbeatInfo\{[^}]*SendsAlerts: len\(ast\.Channels\) > 0`).Match(b) {
+		t.Errorf("main.go's StartHeartbeat call does not pass SendsAlerts: len(ast.Channels) > 0")
 	}
 }

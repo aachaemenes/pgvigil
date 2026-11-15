@@ -259,11 +259,12 @@ percentile and its longest run: one collection running long moves no 95th percen
 **alert sender idle** (warning, source `pgvigil repository`, no instance): alert channels are configured (a contact's
 route is not one) and no alert rule has been judged for more than 180 s while a collector beats - the same line as the
 Alert rules page's. It is shown and never sent: an idle sender cannot send its own news. The sender runs inside
-`pgvigil run`; when alerts are turned off on purpose (the run's `alerts:` list removed), it no longer runs and the
-channels it last recorded stay configured, so the finding would stand: once the run has restarted without alerts, run
-`UPDATE pgvigil.alert_channels SET is_configured = false;` as the repository owner. After a run crashes, the finding can
-show for up to about a minute (a run counts as beating for 3 minutes after its last beat) before *collector not seen*
-replaces it.
+`pgvigil run`, and each run's beat says whether its `alerts:` list names a channel: the finding is judged only while a
+live run says it sends. Alerts turned off on purpose (the `alerts:` list removed from every run) raise nothing, with no
+step to take. A scheduled `pgvigil alerts` pass beside runs that name no channel beats nothing, so its stop raises no
+finding: the Alert rules page still says how old the rules' states are. After a run crashes, the finding can show for
+up to about a minute (a run counts as beating for 3 minutes after its last beat) before *collector not seen* replaces
+it.
 
 **repository autovacuum behind** (warning, source `pgvigil repository`): a table of the `pgvigil` schema (a partition
 alone, named with its parent), or its TOAST table, whose dead tuples are past autovacuum's own trigger and at least

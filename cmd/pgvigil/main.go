@@ -328,7 +328,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		return fmt.Errorf("repository schema is behind this binary (needs %s): run 'pgvigil migrate' as the repository owner", latest)
 	}
 	// task 201: the heartbeat (the Collector page; many collectors may share a repository, one per host)
-	waitBeat, err := collect.StartHeartbeat(ctx, log, cfg.Repository.DSN(), collect.HeartbeatInfo{Version: version})
+	waitBeat, err := collect.StartHeartbeat(ctx, log, cfg.Repository.DSN(), collect.HeartbeatInfo{Version: version, SendsAlerts: len(ast.Channels) > 0})
 	if err != nil {
 		return err
 	}

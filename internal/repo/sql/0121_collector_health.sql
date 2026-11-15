@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat (
   instances     int,                              -- instances it ran a collection on in the last minute
   repo_conns    int,                              -- the repository's sessions named pgvigil* at the beat (every pgvigil process)
   span_s        int,                              -- the host's span at this run's newest beat (collector_span_take); NULL: no interval known
-  beat_minute   timestamptz                       -- the newest minute this run's beat wrote, on the collector's clock (collector_reading)
+  beat_minute   timestamptz,                      -- the newest minute this run's beat wrote, on the collector's clock (collector_reading)
+  sends_alerts  boolean                           -- this run sends alerts (its alerts: list names a channel), as its beat says; NULL before its first beat ('alert sender idle', 0166)
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.collector_beats (
@@ -270,6 +271,7 @@ BEGIN
      SET beat_at = now(), mem_bytes = (p_beat->>'mem_bytes')::bigint, goroutines = (p_beat->>'goroutines')::int,
          instances = (p_beat->>'instances')::int, repo_conns = v_conns,
          beat_minute = greatest(beat_minute, p_minute),
+         sends_alerts = coalesce((p_beat->>'sends_alerts')::boolean, sends_alerts),
          -- a run still beating 2 minutes after it was retired was retired by mistake (a second host of that name, the
          -- door run for a host that is not gone): the mark goes. A beat sooner than that is a stopping service's last
          -- one and must not undo its uninstall's retire

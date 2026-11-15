@@ -36,6 +36,9 @@ var RunsAs string
 // HeartbeatInfo is what the caller knows about this collector.
 type HeartbeatInfo struct {
 	Version string
+	// SendsAlerts: this run sends alerts (its alerts: list names a channel); each beat says so ('alert sender idle'
+	// counts only the live runs that send: B6.2 part c #3)
+	SendsAlerts bool
 }
 
 const histBuckets = 19 // b 0 = under 1 ms, b n = 2^(n-1) to 2^n ms, b 18 = 131 s and over
@@ -482,13 +485,14 @@ type beatStreak struct {
 }
 
 type beat struct {
-	MemBytes   uint64       `json:"mem_bytes"`
-	Goroutines int          `json:"goroutines"`
-	Instances  int          `json:"instances"`
-	Runs       []beatRun    `json:"runs"`
-	Load       []beatLoad   `json:"load"`
-	Streaks    []beatStreak `json:"streaks"`
-	Health     []beatHealth `json:"-"` // B6.1: running totals per instance, collection and UTC hour - their own body (healthBody)
+	MemBytes    uint64       `json:"mem_bytes"`
+	Goroutines  int          `json:"goroutines"`
+	Instances   int          `json:"instances"`
+	SendsAlerts bool         `json:"sends_alerts"`
+	Runs        []beatRun    `json:"runs"`
+	Load        []beatLoad   `json:"load"`
+	Streaks     []beatStreak `json:"streaks"`
+	Health      []beatHealth `json:"-"` // B6.1: running totals per instance, collection and UTC hour - their own body (healthBody)
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -498,7 +502,7 @@ func (h *Heartbeat) take() beat {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
-	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load),
+	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load), SendsAlerts: h.info.SendsAlerts,
 		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Health: h.takeHealth()}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,

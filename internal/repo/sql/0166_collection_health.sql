@@ -272,8 +272,10 @@ HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 
 -- 'alert sender idle' (CHK#35; source 'pgvigil repository', no instance): alert channels configured (a contact's route is
 -- not one) and the rules last judged more than 180 s ago - ONE number with the Alert rules page's line (alert_rules.ts
--- 'ago > 180'). Never when no collector beats ('collector not seen' is the cause then: the sender runs inside pgvigil
--- run), nor before the sender's first pass (the page says so in words). SHOWN, NEVER SENT: 0190's alert_findings leaves
+-- 'ago > 180'). Only while a live run says it sends (its beat's sends_alerts: B6.2 part c #3, the lead's 03:2x) - never
+-- when no collector beats ('collector not seen' is the cause then: the sender runs inside pgvigil run), nor when every
+-- live run has no channel (alerts turned off on purpose), nor before the sender's first pass (the page says so in
+-- words). A scheduled 'pgvigil alerts' beside runs with no channel beats nothing: its stop raises no finding. SHOWN, NEVER SENT: 0190's alert_findings leaves
 -- it out (a WIRING term) - an idle sender cannot send its own news.
 CREATE OR REPLACE VIEW pgvigil.alert_sender_idle_findings AS
 SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'alert sender idle'::text AS setting, NULL::text AS value, NULL::boolean AS is_set,
@@ -285,7 +287,7 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'alert sender idle
   FROM (SELECT max(r.evaluated_at) AS evaluated_at FROM pgvigil.alert_rule_state r) s
  WHERE s.evaluated_at < now() - interval '180 seconds'
    AND EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.is_configured AND c.name NOT LIKE 'contact-%')
-   AND EXISTS (SELECT 1 FROM pgvigil.collector_live);
+   AND EXISTS (SELECT 1 FROM pgvigil.collector_live l WHERE l.sends_alerts);
 
 -- 'repository autovacuum behind' (PM Added 12; source 'pgvigil repository', warning): a table of the pgvigil schema
 -- (each partition judged alone, named with its parent), or its TOAST table (autovacuum judges one on its own; purge's

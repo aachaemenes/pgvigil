@@ -426,3 +426,34 @@ func TestRepositoryAutovacuumTrigger(t *testing.T) {
 		}
 	}
 }
+
+// TestAlertSenderIdleReadsSenders (B6.2 part c #3, the lead's 03:2x (a)): 'alert sender idle' counts only live runs
+// whose beat says they send - collector_heartbeat.sends_alerts (0121's CREATE TABLE), written by import_collector_beat
+// from its p_beat's sends_alerts - so alerts turned off on every run raise no finding and need no owner step
+func TestAlertSenderIdleReadsSenders(t *testing.T) {
+	read := func(file, head string) string {
+		b, err := migrations.ReadFile("sql/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(b)
+		i := strings.Index(s, head)
+		if i < 0 {
+			t.Fatalf("%s has no %q", file, head)
+		}
+		s = s[i:]
+		if j := strings.Index(s, ";\n\n"); j > 0 {
+			s = s[:j]
+		}
+		return s
+	}
+	if tbl := read("0121_collector_health.sql", "CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat ("); !regexp.MustCompile(`\bsends_alerts\s+boolean`).MatchString(tbl) {
+		t.Errorf("collector_heartbeat has no sends_alerts boolean")
+	}
+	if beat := read("0121_collector_health.sql", "CREATE OR REPLACE FUNCTION pgvigil.import_collector_beat("); !regexp.MustCompile(`sends_alerts\s*=\s*coalesce\(\(p_beat->>'sends_alerts'\)::boolean`).MatchString(beat) {
+		t.Errorf("import_collector_beat does not write sends_alerts from p_beat's sends_alerts")
+	}
+	if v := read("0166_collection_health.sql", "CREATE OR REPLACE VIEW pgvigil.alert_sender_idle_findings AS"); !regexp.MustCompile(`EXISTS \(SELECT 1 FROM pgvigil\.collector_live \w+ WHERE \w+\.sends_alerts\)`).MatchString(v) {
+		t.Errorf("alert_sender_idle_findings does not read only the live runs that send")
+	}
+}
