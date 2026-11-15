@@ -74,11 +74,12 @@ ks_drop_kits() {
 }
 
 # ks_definition <procedure>: its definition (VIEW DEFINITION's read: nothing is executed), for the version lines,
-# the decline texts and the sibling names. Not through sq: sqlcmd returns at most -y characters of an nvarchar(max)
-# (256 by default) and sq's -W cannot be combined with -y, so -y 0 (the whole value) here and no -W.
+# the decline texts and the sibling names - one row per line, in order. sqlcmd returns at most -y characters (256 by
+# default) of an nvarchar(max) and sq's -W cannot be combined with -y, so each line is an nvarchar(4000), which -Y's
+# default (0, unlimited) returns whole; a line over 4000 characters is cut (in the pinned kits only sp_HumanEvents'
+# binary view text has one, and nothing here reads that procedure). A procedure that does not exist reads as nothing.
 ks_definition() {
-  docker exec -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -h -1 -y 0 \
-    -U sa -d master -Q "SET NOCOUNT ON; SELECT OBJECT_DEFINITION(OBJECT_ID(N'dbo.$1'));" 2>/dev/null || true
+  sq "SELECT CAST(s.value AS nvarchar(4000)) FROM STRING_SPLIT(REPLACE(OBJECT_DEFINITION(OBJECT_ID(N'dbo.$1')), NCHAR(13), N''), NCHAR(10), 1) AS s ORDER BY s.ordinal;" || true
 }
 
 # ks_sales: the database, its tables and rows, Query Store, the logins orders_app and stock_job, pgvigil_read
