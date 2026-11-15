@@ -256,8 +256,9 @@ pass() {
       rc=0; ks_mark "$d/$tool.run.json" "$tool" "$mark" "$nokit" >"$d/$tool.mark" || rc=$?
       cat "$d/$tool.mark"
       # the state is the pinned pass's to prove: a missing subject there is the environment's (exit 3); in the
-      # newest pass the rows are the kit's own
-      [[ $rc == 2 && $label == pinned ]] && envfail "state not reached: $(cat "$d/$tool.mark")"
+      # newest pass the rows are the kit's own (an if, not '&&': a false test as the loop's last command would make
+      # runphase return 1, and set -e would end the script after the table's last row)
+      if [[ $rc == 2 && $label == pinned ]]; then envfail "state not reached: $(cat "$d/$tool.mark")"; fi
     done
   }
   runphase before
