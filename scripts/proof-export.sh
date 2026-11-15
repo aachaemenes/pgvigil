@@ -631,7 +631,9 @@ if (sq && pq_) {
   out.dbs_after_mb = await dbsRead();
   if (out.dbs_pick_mb.ok) {
     out.dbs_api_i = await dbsApi();
-    out.dbspace_imb = { ...(await page(`#/dbspace?i=${sq.instance_id}`)), instance: sq.name };
+    // a window of its own (3h): the instance's DB Space was exported above in the default window, and two downloads in
+    // one minute would take one file name; the unit and decimals kept across the navigation
+    out.dbspace_imb = { ...(await page(`#/dbspace?i=${sq.instance_id}&w=3h`)), instance: sq.name };
     await cmd('Page.navigate', { url: U + '#/dbspace' }); await sleep(300); await settled();
     out.dbs_folder = await dbsRead();
     await cmd('Page.reload', {}); await sleep(800); await settled();
@@ -641,7 +643,7 @@ if (sq && pq_) {
     out.dbs_after_tb0 = await dbsRead();
     out.dbs_pick_tb = await dbsPick('TB', '3'); await sleep(500);
     out.dbs_api_p = await dbsApi();
-    out.dbspace_ptb = { ...(await page(`#/dbspace?i=${pq_.instance_id}`)), instance: pq_.name };
+    out.dbspace_ptb = { ...(await page(`#/dbspace?i=${pq_.instance_id}&w=3h`)), instance: pq_.name };   // its own window, as above
     out.dbs_pick_back = await dbsPick('GB', '1'); await sleep(500);
     out.dbs_back = await dbsRead();
   }
