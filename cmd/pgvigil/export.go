@@ -71,10 +71,15 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 		return &configError{fmt.Errorf("export: is not configured in %s: add an export: section to turn the Parquet export on (docs/parquet-export.md); nothing was read or written", *path)}
 	}
 	var dest export.Destination
-	if *out != "" {
+	switch {
+	case *out != "":
 		dest = export.NewFolder(filepath.Join(*out, e.Name))
-	} else if dest, err = exportDestination(ctx, e); err != nil {
-		return &configError{err}
+	case *list || *off:
+		dest = export.NewFolder("") // neither reads nor writes the destination: it is not opened
+	default:
+		if dest, err = exportDestination(ctx, e); err != nil {
+			return &configError{err}
+		}
 	}
 	c := export.Config{Name: e.Name, DSN: e.DSN(), StateDir: e.StateDir, Dest: dest, Settle: e.Settle(), MaxAge: e.MaxAge(),
 		FinalAfter: e.FinalAfter(), PerRun: e.PerRun(), MaxBytes: e.MaxBytes(), Timeout: e.Timeout(), Carry: e.Carry,
@@ -109,6 +114,9 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 			if t = strings.TrimSpace(t); t != "" {
 				only = append(only, t)
 			}
+		}
+		if *tables != "" && len(only) == 0 {
+			return &usageError{errors.New("export: -tables names no table")}
 		}
 		return export.RunWindows(ctx, c, a, b, only)
 	}

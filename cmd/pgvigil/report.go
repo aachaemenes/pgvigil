@@ -345,7 +345,7 @@ var (
 // address (its path is the token), a routing key.
 func secretKey(k string) bool {
 	k = strings.ToLower(k)
-	for _, w := range []string{"dsn", "pass", "pwd", "secret", "token", "key", "url", "credential", "auth", "sig", "pgbouncer"} {
+	for _, w := range []string{"dsn", "pass", "pwd", "secret", "token", "key", "url", "credential", "auth", "sig", "pgbouncer", "connection"} {
 		if strings.Contains(k, w) {
 			return true
 		}

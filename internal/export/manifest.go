@@ -77,6 +77,7 @@ type Manifest struct {
 	Skipped          []SkippedTable  `json:"skipped"`
 	Failed           []FailedTable   `json:"failed"`
 	DroppedColumns   []DroppedColumn `json:"dropped_columns"`
+	FilteredRows     []FilteredRows  `json:"filtered_rows"`
 }
 
 // ManifestWindow is the hour, UTC.
@@ -96,6 +97,7 @@ type ManifestTable struct {
 	ByteSize    int64            `json:"byte_size"`
 	Columns     []ManifestColumn `json:"columns"`
 	ReadMS      int64            `json:"read_ms"`
+	Note        string           `json:"note,omitempty"`
 }
 
 // ManifestColumn is a column of a file.
@@ -116,6 +118,13 @@ type SkippedTable struct {
 type FailedTable struct {
 	Table string `json:"table"`
 	Error string `json:"error"`
+}
+
+// FilteredRows names rows of a table left behind, and why.
+type FilteredRows struct {
+	Table  string `json:"table"`
+	Rows   string `json:"rows"` // the predicate, over the table's own columns
+	Reason string `json:"reason"`
 }
 
 // DroppedColumn is a column left behind, and why.

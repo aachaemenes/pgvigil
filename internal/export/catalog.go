@@ -39,11 +39,14 @@ const (
 type Table struct {
 	Name  string
 	Class Class
-	Time  string    // Window: the time column. Dimension: the column that says when a row was last seen.
-	Carry string    // "", CarryText or CarryAudit: the whole table leaves only with that carry
-	Text  []string  // columns of statement, plan or log text: dropped unless the carry holds text
-	Drop  []Dropped // columns that never leave
-	Why   string    // LeftOut: the reason
+	Time  string   // Window: the time column. Dimension: the column that says when a row was last seen.
+	Carry string   // "", CarryText or CarryAudit: the whole table leaves only with that carry
+	Text  []string // columns of statement, plan, definition or log text: dropped unless the carry holds text
+	Audit []string // columns that say who did what, or hold grants: dropped unless the carry holds audit
+	// AuditRows is a predicate over the table's own columns: the rows it names leave only with the audit carry
+	AuditRows string
+	Drop      []Dropped // columns that never leave
+	Why       string    // LeftOut: the reason
 }
 
 // Dropped is a column left behind and why.
@@ -55,12 +58,16 @@ const (
 	whyBaseline  = "the last cumulative counters a delta is computed from"
 	whyMark      = "a queue, a mark or a cache of the service"
 	whyInventory = "the service's own inventory: connection references, hosts and logins"
+	whyGuard     = "a duplicate guard of an import, kept for minutes"
 
 	dropMail    = "a mail's subject, body or attachment"
 	dropAddress = "an address a message is sent to"
 	dropToken   = "a claim token"
 	dropURL     = "an address that can carry credentials"
+	dropReply   = "a mail server's reply: it can quote the address it refused"
 	dropText    = "statement, plan or log text: carried only with export.carry: [text]"
+	dropAudit   = "who did what, or a grant: carried only with export.carry: [audit]"
+	rowsAudit   = "carried only with export.carry: [audit]"
 )
 
 func window(name, time string) Table    { return Table{Name: name, Class: Window, Time: time} }
@@ -70,6 +77,8 @@ func out(name, why string) Table        { return Table{Name: name, Class: LeftOu
 
 func (t Table) carry(c string) Table       { t.Carry = c; return t }
 func (t Table) text(cols ...string) Table  { t.Text = cols; return t }
+func (t Table) audit(cols ...string) Table { t.Audit = cols; return t }
+func (t Table) auditRows(p string) Table   { t.AuditRows = p; return t }
 func (t Table) drop(col, why string) Table { t.Drop = append(t.Drop, Dropped{col, why}); return t }
 
 // tables is the map, in name order. A table of the schema it does not name stops every run (Resolve): a new
@@ -77,11 +86,11 @@ func (t Table) drop(col, why string) Table { t.Drop = append(t.Drop, Dropped{col
 var tables = []Table{
 	window("ack_log", "at").carry(CarryAudit),
 	state("ack_suppressed"),
-	state("acks"),
+	state("acks").audit("created_by", "client", "ended_by", "paused_by"),
 	state("acl_databases").carry(CarryAudit),
 	state("acl_default_privileges").carry(CarryAudit),
 	state("acl_schemas").carry(CarryAudit),
-	window("actions_log", "at").carry(CarryAudit),
+	window("actions_log", "at").carry(CarryAudit).text("statement", "server_message"),
 	window("activity_sample", "snapshot_at"),
 	window("activity_summary", "snapshot_at"),
 	window("admin_audit", "at").carry(CarryAudit),
@@ -92,46 +101,46 @@ var tables = []Table{
 	out("admin_removed", whyInventory),
 	out("admin_sources", whyInventory),
 	state("alert_channels").drop("destination", dropAddress),
-	state("alert_dismissals"),
-	window("alert_log", "snapshot_at").drop("destination", dropAddress),
+	state("alert_dismissals").audit("created_by", "client", "ended_by"),
+	window("alert_log", "snapshot_at").drop("destination", dropAddress).drop("error", dropReply),
 	state("alert_rule_fired"),
 	window("alert_rule_log", "at").carry(CarryAudit),
 	state("alert_rule_state"),
-	state("alert_rules"),
+	state("alert_rules").audit("created_by", "client", "ended_by"),
 	state("alert_state"),
 	out("alert_tests", whyMark),
 	window("amcheck_runs", "snapshot_at"),
-	state("app_applications"),
-	state("app_assignments"),
-	state("app_field_source"),
-	state("app_not_application"),
+	state("app_applications").audit("created_by"),
+	state("app_assignments").audit("set_by"),
+	state("app_field_source").audit("set_by"),
+	state("app_not_application").audit("set_by"),
 	window("backup_sample", "snapshot_at"),
 	state("backup_state"),
 	window("buffercache_sample", "snapshot_at"),
 	window("cloud_io_sample", "snapshot_at"),
-	state("collection_dates"),
-	window("collection_log", "snapshot_at"),
+	state("collection_dates").text("note"),
+	window("collection_log", "snapshot_at").text("note"),
 	window("collector_beats", "at"),
 	state("collector_heartbeat"),
 	state("collector_instances"),
 	window("collector_load", "minute"),
 	window("collector_runs", "minute"),
 	state("collector_spells"),
-	state("collector_streaks"),
+	state("collector_streaks").text("last_error"),
 	out("compare_findings_cache", whyMark),
 	state("compare_state"),
 	window("conn_sources", "snapshot_at"),
 	state("custom_checks").text("sql"),
-	state("custom_report_folders"),
-	window("custom_report_log", "at").carry(CarryAudit),
-	state("custom_reports").text("body"),
+	state("custom_report_folders").audit("created_by"),
+	window("custom_report_log", "at").carry(CarryAudit).text("statement", "payload"),
+	state("custom_reports").text("body").audit("created_by", "updated_by", "deleted_by"),
 	window("custom_results", "snapshot_at").text("columns", "rows"),
 	state("darling_benign_waits"),
 	state("database_collations"),
 	state("database_extensions"),
 	window("database_sizes", "snapshot_at"),
 	state("databases"),
-	state("db_checks"),
+	state("db_checks").text("fix_sql"),
 	state("dbadash_instances"),
 	out("dbadash_move_ids", whyInventory),
 	out("dbadash_moves", whyInventory),
@@ -146,7 +155,7 @@ var tables = []Table{
 	state("dms_table_stats"),
 	window("dms_task_sample", "snapshot_at"),
 	state("dms_tasks"),
-	state("drive_thresholds"),
+	state("drive_thresholds").audit("created_by", "client", "ended_by"),
 	window("export_runs", "started_at"),
 	out("export_state", whyMark),
 	window("extension_history", "changed_at"),
@@ -158,31 +167,31 @@ var tables = []Table{
 	window("host_sample", "snapshot_at"),
 	state("host_state"),
 	state("hours_retention"),
-	state("index_bloat"),
+	state("index_bloat").text("reindex_sql"),
 	state("index_databases"),
-	state("index_inventory"),
-	state("index_state"),
+	state("index_inventory").text("columns", "index_def"),
+	state("index_state").text("covered_by_def", "index_def", "drop_sql", "undo_sql"),
 	window("index_usage_daily", "snapshot_at"),
 	state("instance_extension_settings"),
 	state("instance_extensions"),
 	window("instance_setting_history", "changed_at"),
 	state("instance_state"),
-	state("instance_tag_overrides"),
+	state("instance_tag_overrides").audit("set_by"),
 	state("instance_versions"),
 	state("instances"),
 	window("iostats", "snapshot_at"),
-	state("job_exclusions"),
+	state("job_exclusions").audit("created_by", "client", "ended_by"),
 	window("job_runs", "start_time").text("command", "return_message"),
 	out("job_stats_defer", whyMark),
 	out("job_stats_dirty", whyMark),
 	out("job_stats_first_build", whyMark),
 	window("job_stats_hourly", "snapshot_at"),
 	window("job_step_runs", "start_time").text("output"),
-	state("job_thresholds"),
+	state("job_thresholds").audit("created_by", "client", "ended_by"),
 	state("job_versions").text("definition", "changes", "script"),
 	state("jobs").text("command"),
 	out("log_cursor", whyCursor),
-	window("log_events", "snapshot_at").text("statement", "detail", "message"),
+	window("log_events", "snapshot_at").text("statement", "detail", "message").auditRows("kind = 'auth_fail'"),
 	window("mssql_activity_read", "snapshot_at"),
 	state("mssql_ag_database_state"),
 	window("mssql_ag_events", "event_at").text("statement", "message"),
@@ -195,7 +204,7 @@ var tables = []Table{
 	window("mssql_attentions", "event_at").text("statement"),
 	state("mssql_audit"),
 	window("mssql_audit_counts", "hour_at").carry(CarryAudit),
-	window("mssql_audit_events", "event_at").carry(CarryAudit),
+	window("mssql_audit_events", "event_at").carry(CarryAudit).text("statement"),
 	state("mssql_audit_read"),
 	state("mssql_audit_spec"),
 	state("mssql_backup_state"),
@@ -217,7 +226,7 @@ var tables = []Table{
 	window("mssql_database_size", "snapshot_at"),
 	window("mssql_deadlocks", "event_at").text("victim_statement", "processes", "resources", "graph"),
 	window("mssql_errorlog", "log_at").text("message"),
-	window("mssql_failed_logins", "logged_at").carry(CarryAudit),
+	window("mssql_failed_logins", "logged_at").carry(CarryAudit).text("message"),
 	out("mssql_fileio_last", whyBaseline),
 	window("mssql_fileio_read", "snapshot_at"),
 	window("mssql_fileio_sample", "snapshot_at"),
@@ -228,7 +237,7 @@ var tables = []Table{
 	window("mssql_health_components", "event_at"),
 	state("mssql_identity_column"),
 	state("mssql_identity_scan"),
-	state("mssql_index"),
+	state("mssql_index").text("filter_definition"),
 	state("mssql_index_db"),
 	out("mssql_indexlock_last", whyBaseline),
 	window("mssql_indexlock_read", "snapshot_at"),
@@ -276,7 +285,7 @@ var tables = []Table{
 	dimension("mssql_qs_query", "snapshot_at").text("query_text"),
 	window("mssql_qs_runtime", "snapshot_at"),
 	state("mssql_qs_store"),
-	state("mssql_qs_tuning").text("script"),
+	state("mssql_qs_tuning").text("script", "rec_details"),
 	state("mssql_qs_tuning_option"),
 	state("mssql_reader_state"),
 	state("mssql_replication_state"),
@@ -294,7 +303,7 @@ var tables = []Table{
 	window("mssql_session_tempdb", "snapshot_at"),
 	window("mssql_slow_events", "event_at").text("statement", "shape"),
 	state("mssql_sql_logins").carry(CarryAudit),
-	state("mssql_stat"),
+	state("mssql_stat").text("filter_definition"),
 	dimension("mssql_statement_text", "last_seen").carry(CarryText),
 	state("mssql_stats_db"),
 	state("mssql_suspect_page"),
@@ -324,15 +333,15 @@ var tables = []Table{
 	state("pg_db_role_settings_read"),
 	state("pg_patroni_members").drop("api_url", dropURL),
 	state("pg_patroni_read").drop("url", dropURL),
-	window("pg_role_changes", "changed_at").carry(CarryAudit),
+	window("pg_role_changes", "changed_at"),
 	state("pg_role_passwords").carry(CarryAudit),
 	state("pg_role_state"),
 	state("pg_threshold_keys"),
-	state("pg_thresholds"),
+	state("pg_thresholds").audit("created_by", "client", "ended_by"),
 	state("pg_wal_replay"),
-	window("pgaudit_count_secs", "sec").carry(CarryAudit),
+	out("pgaudit_count_secs", whyGuard),
 	window("pgaudit_counts", "snapshot_at").carry(CarryAudit),
-	window("pgaudit_events", "snapshot_at").carry(CarryAudit),
+	window("pgaudit_events", "snapshot_at").carry(CarryAudit).text("statement", "parameters"),
 	state("pgaudit_rules"),
 	state("pgaudit_settings"),
 	state("pgaudit_state"),
@@ -347,9 +356,9 @@ var tables = []Table{
 	dimension("query_text", "last_seen").carry(CarryText),
 	window("replication_sample", "snapshot_at"),
 	state("report_db_properties"),
-	window("report_mail_log", "at").carry(CarryAudit),
-	state("report_mail_schedules").drop("claim_token", dropToken).drop("recipients", dropAddress),
-	window("report_mail_sends", "requested_at").drop("html", dropMail).drop("xlsx", dropMail).drop("recipients", dropAddress).drop("subject", dropMail),
+	window("report_mail_log", "at").carry(CarryAudit).drop("payload", dropAddress),
+	state("report_mail_schedules").audit("created_by", "client", "changed_by", "ended_by").drop("claim_token", dropToken).drop("recipients", dropAddress),
+	window("report_mail_sends", "requested_at").audit("requested_by", "client").drop("html", dropMail).drop("xlsx", dropMail).drop("recipients", dropAddress).drop("subject", dropMail).drop("error", dropReply),
 	state("report_read_state"),
 	state("role_attributes").carry(CarryAudit),
 	state("role_databases"),
@@ -359,8 +368,8 @@ var tables = []Table{
 	state("role_state"),
 	window("schema_changes", "snapshot_at").text("before", "after"),
 	state("schema_databases"),
-	window("schema_ddl_log", "snapshot_at").text("statement"),
-	state("schema_objects").text("definition"),
+	window("schema_ddl_log", "snapshot_at").text("statement").audit("role_name"),
+	state("schema_objects").text("definition").audit("acl"),
 	state("schema_version"),
 	state("sequence_state"),
 	window("serverless_sample", "snapshot_at"),
@@ -432,12 +441,16 @@ type Column struct {
 // Resolved is a table of the map as this repository holds it and this configuration carries it.
 type Resolved struct {
 	Table
-	Key         []string  // the primary key
-	Columns     []Column  // the columns exported, in the table's own order
-	Dropped     []Dropped // the columns left behind under this configuration
-	HasInstance bool      // it has a NOT NULL instance_id: read one instance at a time
-	Bytes       int64     // its size with its indexes (a partitioned table: its partitions')
-	Skip        string    // why it is not exported under this configuration ("" = exported)
+	Key          []string  // the primary key
+	Columns      []Column  // the columns exported, in the table's own order
+	Dropped      []Dropped // the columns left behind under this configuration
+	HasInstance  bool      // it has a NOT NULL instance_id: read one instance at a time
+	TimeNullable bool      // a window table whose time column may be NULL: such rows are read in the day's first window
+	NoWhole      bool      // a dimension over the size line: its whole copy in the day's first window is left out
+	Filter       string    // a predicate naming the rows left behind under this configuration ("" = none)
+	Note         string    // said in the manifest's entry
+	Bytes        int64     // its size on disk with its indexes (a partitioned table: its partitions')
+	Skip         string    // why it is not exported under this configuration ("" = exported)
 }
 
 // Querier is the part of a connection or a transaction Resolve needs.
@@ -465,48 +478,31 @@ SELECT c.relname::text, a.attname::text, format_type(a.atttypid, a.atttypmod), a
  ORDER BY c.relname, a.attnum`
 )
 
-// Resolve reads the repository's tables (a partition is never a table of its own) and lays the map over them. A
-// table of the schema the map does not name is an error before anything is read: its class cannot be guessed.
-// A table of the map this repository does not have yet (an older schema) is left out of the result.
+// storeTable is a table as the repository's catalogs give it.
+type storeTable struct {
+	Name  string
+	Key   []string
+	Bytes int64
+}
+
+// Resolve reads the repository's tables (a partition is never a table of its own) and lays the map over them.
 func Resolve(ctx context.Context, q Querier, opt Options) ([]Resolved, error) {
-	byName := make(map[string]Table, len(tables))
-	for _, t := range tables {
-		byName[t.Name] = t
-	}
-	excluded := map[string]bool{}
-	for _, x := range opt.Exclude {
-		excluded[strings.TrimSpace(x)] = true
-	}
-	var out []Resolved
-	at := map[string]int{}
-	var unclassed []string
+	var store []storeTable
 	rows, err := q.Query(ctx, storeTablesSQL)
 	if err != nil {
 		return nil, fmt.Errorf("the repository's tables: %w", err)
 	}
 	for rows.Next() {
-		var name string
-		var key []string
-		var size int64
-		if err := rows.Scan(&name, &key, &size); err != nil {
+		var t storeTable
+		if err := rows.Scan(&t.Name, &t.Key, &t.Bytes); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("the repository's tables: %w", err)
 		}
-		t, ok := byName[name]
-		if !ok {
-			unclassed = append(unclassed, name)
-			continue
-		}
-		at[name] = len(out)
-		out = append(out, Resolved{Table: t, Key: key, Bytes: size})
+		store = append(store, t)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("the repository's tables: %w", err)
-	}
-	if len(unclassed) > 0 {
-		sort.Strings(unclassed)
-		return nil, fmt.Errorf("table %s is not classed: class it in internal/export/catalog.go from how its import writes it (nothing was read or written)", strings.Join(unclassed, ", "))
 	}
 	all := map[string][]Column{}
 	rows, err = q.Query(ctx, storeColumnsSQL)
@@ -526,48 +522,111 @@ func Resolve(ctx context.Context, q Querier, opt Options) ([]Resolved, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("the repository's columns: %w", err)
 	}
+	return lay(tables, store, all, opt)
+}
+
+// lay puts the map over the repository's tables. It stops, before anything is read, on a table of the schema the
+// map does not name (its class cannot be guessed), on a column the map names that the table does not have (a
+// rename would otherwise let it leave), and on a name in export.tables.exclude that is no table (a mistyped name
+// would otherwise let the table leave). A table of the map this repository does not have yet (an older schema) is
+// left out of the result.
+func lay(m []Table, store []storeTable, all map[string][]Column, opt Options) ([]Resolved, error) {
+	byName := make(map[string]Table, len(m))
+	for _, t := range m {
+		byName[t.Name] = t
+	}
+	var out []Resolved
+	var unclassed []string
+	have := map[string]bool{}
+	for _, st := range store {
+		t, ok := byName[st.Name]
+		if !ok {
+			unclassed = append(unclassed, st.Name)
+			continue
+		}
+		have[st.Name] = true
+		out = append(out, Resolved{Table: t, Key: st.Key, Bytes: st.Bytes})
+	}
+	if len(unclassed) > 0 {
+		sort.Strings(unclassed)
+		return nil, fmt.Errorf("table %s is not classed: class it in internal/export/catalog.go from how its import writes it (nothing was read or written)", strings.Join(unclassed, ", "))
+	}
+	excluded := map[string]bool{}
+	for _, x := range opt.Exclude {
+		switch x = strings.TrimSpace(x); {
+		case x == "":
+		case x == "instances":
+			return nil, refused("export.tables.exclude names instances: it gives every instance_id its name and is in every window (nothing was read or written)")
+		case !have[x]:
+			return nil, refused("export.tables.exclude names %s, which is no table of the repository: a mistyped name would let the table leave (nothing was read or written)", x)
+		default:
+			excluded[x] = true
+		}
+	}
 	for i := range out {
 		r := &out[i]
-		left := map[string]string{}
-		for _, d := range r.Drop {
-			left[d.Column] = d.Reason
+		cols := map[string]Column{}
+		for _, c := range all[r.Name] {
+			cols[c.Name] = c
 		}
+		named := append(append([]string{}, r.Text...), r.Audit...)
+		for _, d := range r.Drop {
+			named = append(named, d.Column)
+		}
+		if r.Time != "" {
+			named = append(named, r.Time)
+		}
+		for _, c := range named {
+			if _, ok := cols[c]; !ok {
+				return nil, fmt.Errorf("catalog: %s has no column %s, which the map names: read the table again in internal/export/catalog.go (nothing was read or written)", r.Name, c)
+			}
+		}
+		if r.Time != "" {
+			tc := cols[r.Time]
+			if !strings.HasPrefix(tc.Type, "timestamp") {
+				return nil, fmt.Errorf("catalog: %s.%s is %s, not a time", r.Name, tc.Name, tc.Type)
+			}
+			r.TimeNullable = r.Class == Window && !tc.NotNull
+		}
+		r.HasInstance = cols["instance_id"].NotNull // a nullable instance_id (a line of the service itself) is read without the join
+		left := map[string]string{}
 		if !opt.carries(CarryText) {
 			for _, c := range r.Text {
 				left[c] = dropText
 			}
 		}
-		timeSeen := r.Time == ""
+		if !opt.carries(CarryAudit) {
+			for _, c := range r.Audit {
+				left[c] = dropAudit
+			}
+			r.Filter = r.AuditRows
+		}
+		for _, d := range r.Drop {
+			left[d.Column] = d.Reason
+		}
 		for _, c := range all[r.Name] {
-			if c.Name == "instance_id" && c.NotNull {
-				r.HasInstance = true // a nullable instance_id (a line of the service itself) is read without the join
-			}
-			if c.Name == r.Time {
-				timeSeen = true
-				if !strings.HasPrefix(c.Type, "timestamp") {
-					return nil, fmt.Errorf("catalog: %s.%s is %s, not a time", r.Name, c.Name, c.Type)
-				}
-			}
 			if why, gone := left[c.Name]; gone {
 				r.Dropped = append(r.Dropped, Dropped{c.Name, why})
 				continue
 			}
 			r.Columns = append(r.Columns, c)
 		}
+		over := opt.StateMaxBytes > 0 && r.Bytes > opt.StateMaxBytes
 		switch {
 		case r.Class == LeftOut:
 			r.Skip = r.Why
-		case !timeSeen:
-			return nil, fmt.Errorf("catalog: %s has no column %s", r.Name, r.Time)
 		case excluded[r.Name]:
 			r.Skip = "left out by the configuration (export.tables.exclude)"
 		case r.Carry != "" && !opt.carries(r.Carry):
 			r.Skip = fmt.Sprintf("carried only with export.carry: [%s]", r.Carry)
-		case r.Class != Window && r.Name != "instances" && opt.StateMaxBytes > 0 && r.Bytes > opt.StateMaxBytes: // instances names every id: always carried
-			r.Skip = fmt.Sprintf("%d bytes, over export.snapshot_max_bytes (%d): a whole-table export of it is left out", r.Bytes, opt.StateMaxBytes)
+		case r.Class == State && r.Name != "instances" && over: // instances names every id: always carried
+			r.Skip = fmt.Sprintf("%d bytes on disk with its indexes, over export.snapshot_max_bytes (%d): a whole-table export of it is left out", r.Bytes, opt.StateMaxBytes)
+		case r.Class == Dimension && over:
+			r.NoWhole = true
+			r.Note = fmt.Sprintf("%d bytes on disk with its indexes, over export.snapshot_max_bytes (%d): its whole copy in the day's first window is left out; the rows seen since a window's start are carried", r.Bytes, opt.StateMaxBytes)
 		}
 		if r.Skip != "" {
-			r.Columns, r.Dropped = nil, nil
+			r.Columns, r.Dropped, r.Filter = nil, nil, ""
 		}
 	}
 	return out, nil

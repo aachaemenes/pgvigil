@@ -45,7 +45,8 @@ type session struct {
 	c          Config
 	conn       *pgx.Conn
 	tables     []Resolved
-	now        time.Time
+	now        time.Time // the repository's clock when the session opened
+	opened     time.Time // this host's clock at that moment: only the time since then is taken from it
 	migrations int
 	door       bool // the login holds the door (it is IN ROLE pgvigil_exporter and migration 0256 is applied)
 }
@@ -96,7 +97,7 @@ func (s *session) record(ctx context.Context, w Hour, final bool, started time.T
 
 // window exports one window and leaves its row.
 func (s *session) window(ctx context.Context, w Hour, final bool, only map[string]bool, mark string) (bool, error) {
-	started := time.Now()
+	started := s.clock()
 	ok, st, err := s.exportWindow(ctx, w, final, only, mark)
 	if mark == "" {
 		msg := ""
@@ -127,7 +128,7 @@ func open(ctx context.Context, c Config) (*session, error) {
 		conn.Close(ctx)
 		return nil, fmt.Errorf("the repository's clock: %w", err)
 	}
-	s.now = s.now.UTC()
+	s.now, s.opened = s.now.UTC(), time.Now()
 	if err := conn.QueryRow(ctx, doorSQL).Scan(&s.door); err != nil {
 		conn.Close(ctx)
 		return nil, fmt.Errorf("the export's door: %w", err)
@@ -136,6 +137,10 @@ func open(ctx context.Context, c Config) (*session, error) {
 }
 
 func (s *session) close() { s.conn.Close(context.Background()) }
+
+// clock is the repository's time now: every time the export writes down (a manifest's, a run row's) is the
+// repository's, as the windows are.
+func (s *session) clock() time.Time { return s.now.Add(time.Since(s.opened)) }
 
 // job is one window to export and the pass it is.
 type job struct {
@@ -239,7 +244,7 @@ func Run(ctx context.Context, c Config) error {
 		// a destination that does not answer is the likeliest failure of all: it leaves its row too, under the newest
 		// complete hour, so that the Collector page says it before the export is hours behind
 		h := s.now.Truncate(time.Hour)
-		s.record(context.WithoutCancel(ctx), Hour{h.Add(-time.Hour), h}, false, time.Now(), false, windowStats{}, oneLine(err.Error()))
+		s.record(context.WithoutCancel(ctx), Hour{h.Add(-time.Hour), h}, false, s.clock(), false, windowStats{}, oneLine(err.Error()))
 		return err
 	}
 	todo, aged := s.due(st)
@@ -387,13 +392,13 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 	}
 
 	m := Manifest{ContractVersion: ContractVersion, Repository: c.Name, Window: ManifestWindow{isoUTC(w.From), isoUTC(w.To)},
-		Pass: 1, PgvigilVersion: c.Version, SchemaMigrations: s.migrations, StartedAt: isoUTC(time.Now()),
-		Tables: []ManifestTable{}, Skipped: []SkippedTable{}, Failed: []FailedTable{}, DroppedColumns: []DroppedColumn{}}
+		Pass: 1, PgvigilVersion: c.Version, SchemaMigrations: s.migrations, StartedAt: isoUTC(s.clock()),
+		Tables: []ManifestTable{}, Skipped: []SkippedTable{}, Failed: []FailedTable{}, DroppedColumns: []DroppedColumn{}, FilteredRows: []FilteredRows{}}
 	if final {
 		m.Pass = "final"
 	}
 	att := s.loadAttempts()
-	wkey := windowName(c.Name, w) + mark
+	wkey := c.Dest.String() + " " + windowName(c.Name, w) + mark // per destination: a side copy (-out) counts for itself
 	retry := 0
 	for i := range s.tables {
 		r := &s.tables[i]
@@ -404,7 +409,10 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 			m.Skipped = append(m.Skipped, SkippedTable{r.Name, r.Skip})
 			continue
 		}
-		if r.Class != Window && !w.firstOfDay() && r.Name != "instances" && r.Class != Dimension {
+		if r.Class == State && !w.firstOfDay() && r.Name != "instances" {
+			if only != nil {
+				fmt.Fprintf(c.Err, "pgvigil export: %s is a state table: it is exported in the day's first window (00:00 UTC) only; window %s carries none of it\n", r.Name, isoUTC(w.From))
+			}
 			continue // a state table: in the day's first window only
 		}
 		t0 := time.Now()
@@ -444,7 +452,11 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 			continue
 		}
 		entry.ReadMS = time.Since(t0).Milliseconds()
+		entry.Note = r.Note
 		m.Tables = append(m.Tables, entry)
+		if r.Filter != "" {
+			m.FilteredRows = append(m.FilteredRows, FilteredRows{r.Name, r.Filter, rowsAudit})
+		}
 		for _, d := range r.Dropped {
 			m.DroppedColumns = append(m.DroppedColumns, DroppedColumn{r.Name, d.Column, d.Reason})
 		}
@@ -465,7 +477,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 			return false, st, fmt.Errorf("window %s: an old file cannot be removed: %w", isoUTC(w.From), err)
 		}
 	}
-	m.FinishedAt = isoUTC(time.Now())
+	m.FinishedAt = isoUTC(s.clock())
 	body, err := json.MarshalIndent(m, "", " ")
 	if err != nil {
 		return false, st, err
@@ -516,16 +528,26 @@ func readSQL(r *Resolved, cols []pcol, w Hour) (string, []any) {
 	head := "/* pgvigil-export:" + r.Name + " */ "
 	table := "pgvigil." + quoteIdent(r.Name)
 	tcol := quoteIdent(r.Time)
+	// the rows this configuration leaves behind (IS NOT TRUE: a row the predicate cannot judge is carried)
+	keep := ""
+	if r.Filter != "" {
+		keep = " AND (" + r.Filter + ") IS NOT TRUE"
+	}
+	in := tcol + " >= $1 AND " + tcol + " < $2"
+	if r.TimeNullable && w.firstOfDay() {
+		// a row with no time yet (a job run that never started) belongs to no hour: the day's first window carries it
+		in = "((" + in + ") OR " + tcol + " IS NULL)"
+	}
 	switch {
 	case r.Class == Window && r.HasInstance:
 		return head + "SELECT x.* FROM pgvigil.instances i CROSS JOIN LATERAL (SELECT " + list + " FROM " + table +
-			" WHERE instance_id = i.instance_id AND " + tcol + " >= $1 AND " + tcol + " < $2 ORDER BY " + tcol + ") x", []any{w.From, w.To}
+			" WHERE instance_id = i.instance_id AND " + in + keep + " ORDER BY " + tcol + ") x", []any{w.From, w.To}
 	case r.Class == Window:
-		return head + "SELECT " + list + " FROM " + table + " WHERE " + tcol + " >= $1 AND " + tcol + " < $2 ORDER BY " + tcol, []any{w.From, w.To}
-	case r.Class == Dimension && !w.firstOfDay():
-		return head + "SELECT " + list + " FROM " + table + " WHERE " + tcol + " >= $1", []any{w.From}
+		return head + "SELECT " + list + " FROM " + table + " WHERE " + in + keep + " ORDER BY " + tcol, []any{w.From, w.To}
+	case r.Class == Dimension && (!w.firstOfDay() || r.NoWhole):
+		return head + "SELECT " + list + " FROM " + table + " WHERE " + tcol + " >= $1" + keep, []any{w.From}
 	}
-	return head + "SELECT " + list + " FROM " + table, nil
+	return head + "SELECT " + list + " FROM " + table + " WHERE true" + keep, nil
 }
 
 // exportTable reads one table for one window inside one REPEATABLE READ READ ONLY transaction and writes its
@@ -745,10 +767,10 @@ func Gap(ctx context.Context, c Config, from, to time.Time) error {
 			continue
 		}
 		w := Hour{a, a.Add(time.Hour)}
-		now := isoUTC(time.Now())
+		now := isoUTC(s.clock())
 		m := Manifest{ContractVersion: ContractVersion, Repository: c.Name, Window: ManifestWindow{isoUTC(w.From), isoUTC(w.To)}, Pass: 1, Gap: true,
 			PgvigilVersion: c.Version, SchemaMigrations: s.migrations, StartedAt: now, FinishedAt: now,
-			Tables: []ManifestTable{}, Skipped: []SkippedTable{}, Failed: []FailedTable{}, DroppedColumns: []DroppedColumn{}}
+			Tables: []ManifestTable{}, Skipped: []SkippedTable{}, Failed: []FailedTable{}, DroppedColumns: []DroppedColumn{}, FilteredRows: []FilteredRows{}}
 		body, err := json.MarshalIndent(m, "", " ")
 		if err != nil {
 			return err
@@ -776,6 +798,8 @@ type ListItem struct {
 	Carry          string   `json:"carry,omitempty"`
 	TextColumns    []string `json:"text_columns,omitempty"`
 	DroppedColumns []string `json:"dropped_columns,omitempty"`
+	AuditColumns   []string `json:"audit_columns,omitempty"`
+	AuditRows      string   `json:"audit_rows,omitempty"`
 	Exported       bool     `json:"exported"`
 	Reason         string   `json:"reason,omitempty"`
 }
@@ -789,7 +813,8 @@ func List(ctx context.Context, c Config, asJSON bool) error {
 	defer s.close()
 	items := make([]ListItem, 0, len(s.tables))
 	for _, r := range s.tables {
-		it := ListItem{Table: r.Name, Class: string(r.Class), TimeColumn: r.Time, KeyColumns: r.Key, Carry: r.Carry, TextColumns: r.Text, Exported: r.Skip == "", Reason: r.Skip}
+		it := ListItem{Table: r.Name, Class: string(r.Class), TimeColumn: r.Time, KeyColumns: r.Key, Carry: r.Carry, TextColumns: r.Text,
+			AuditColumns: r.Audit, AuditRows: r.AuditRows, Exported: r.Skip == "", Reason: r.Skip}
 		if it.KeyColumns == nil {
 			it.KeyColumns = []string{}
 		}

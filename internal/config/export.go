@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -60,6 +61,22 @@ type ExportDestination struct {
 	Container           string `yaml:"container"`
 	ConnectionStringRaw string `yaml:"connection_string"`
 	SASURLRaw           string `yaml:"sas_url"`
+}
+
+// UnmarshalYAML reads the section with every key checked: a key it does not know is an error, not a silence (a
+// mistyped tables.exclude would let a table leave).
+func (e *Export) UnmarshalYAML(n *yaml.Node) error {
+	b, err := yaml.Marshal(n)
+	if err != nil {
+		return err
+	}
+	type plain Export
+	d := yaml.NewDecoder(bytes.NewReader(b))
+	d.KnownFields(true)
+	if err := d.Decode((*plain)(e)); err != nil {
+		return fmt.Errorf("export: %w", err)
+	}
+	return nil
 }
 
 // DSN resolves the export login's connection string.
@@ -125,18 +142,18 @@ func (b *ByteSize) UnmarshalYAML(n *yaml.Node) error {
 		}
 	}
 	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || v < 0 {
+	if err != nil || v < 0 || v > (1<<62)/mult {
 		return fmt.Errorf("a size like 256MB, 1GB or a number of bytes (got %q)", n.Value)
 	}
 	b.N, b.set = v*mult, true
 	return nil
 }
 
-var exportName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,30}$`)
+var exportName = regexp.MustCompile(`^[a-z]([a-z0-9_-]{0,29}[a-z0-9])?$`)
 
 func (e *Export) validate() error {
 	if !exportName.MatchString(e.Name) || strings.Contains(e.Name, "__") {
-		return fmt.Errorf("export.name: lower-case letters, digits, '_' and '-', a letter first, no '__', at most 31 characters (got %q)", e.Name)
+		return fmt.Errorf("export.name: lower-case letters, digits, '_' and '-', a letter first, a letter or a digit last, no '__', at most 31 characters (got %q)", e.Name)
 	}
 	if strings.TrimSpace(e.DSNRaw) == "" {
 		return fmt.Errorf("export.dsn is required: the export's own login, IN ROLE pgvigil_reader alone (env:NAME or file:/path)")
@@ -161,13 +178,22 @@ func (e *Export) validate() error {
 		if strings.TrimSpace(d.Container) == "" {
 			return fmt.Errorf("export.destination: azure_blob needs its container")
 		}
-		if d.ConnectionStringRaw == "" && d.SASURLRaw == "" && strings.TrimSpace(d.AccountURL) == "" {
-			return fmt.Errorf("export.destination: azure_blob needs connection_string, sas_url or account_url (the default credential)")
+		ways := 0
+		for _, v := range []string{d.ConnectionStringRaw, d.SASURLRaw, d.AccountURL} {
+			if strings.TrimSpace(v) != "" {
+				ways++
+			}
+		}
+		if ways != 1 {
+			return fmt.Errorf("export.destination: azure_blob takes exactly one way in: connection_string, sas_url or account_url (the default credential)")
 		}
 		for _, v := range []string{d.ConnectionStringRaw, d.SASURLRaw} {
-			if v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
+			if v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") && !strings.HasPrefix(v, "dpapi:") {
 				return fmt.Errorf("export.destination: connection_string and sas_url are secrets: name them by env:NAME or file:/path")
 			}
+		}
+		if strings.Contains(d.AccountURL, "?") {
+			return fmt.Errorf("export.destination: account_url carries a query: a SAS URL is a secret, name it by sas_url: env:NAME")
 		}
 	default:
 		return fmt.Errorf("export.destination.type must be folder, s3 or azure_blob (got %q)", d.Type)
@@ -181,7 +207,10 @@ func (e *Export) validate() error {
 		return fmt.Errorf("export.settle_minutes must be 0 or more")
 	}
 	if e.MaxWindowAgeHours < 0 || e.MaxWindowsPerRun < 0 || e.FinalAfterHours < 0 {
-		return fmt.Errorf("export: max_window_age_hours, max_windows_per_run and final_after_hours must be positive")
+		return fmt.Errorf("export: max_window_age_hours, max_windows_per_run and final_after_hours must be 0 (the default) or more")
+	}
+	if e.StatementTimeout.Duration < 0 {
+		return fmt.Errorf("export.statement_timeout must be more than 0")
 	}
 	return nil
 }

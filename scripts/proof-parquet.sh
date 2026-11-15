@@ -27,22 +27,26 @@
 #  I.  off by default: with no `export:` section `pgvigil export` exits 3 and its one line names the section; `pgvigil
 #      serve` with an `export:` section opens no session named pgvigil-export and writes nothing at the destination.
 #  A.  the catalogue: `-tables-list -json` names every table of the schema that is not a partition, each once, none a
-#      partition (partitions of two months exist); class, time column, carry, text columns and dropped columns equal
-#      scripts/proof-parquet-census.tsv line by line (that list was read from how each import writes its table), the
-#      key columns equal the primary key in the catalogs. A table the map does not name stops a run before any read:
+#      partition (partitions of two months exist); class, time column, carry, text columns, dropped columns, audit
+#      columns and audit rows equal scripts/proof-parquet-census.tsv line by line (that list was read from how each
+#      import writes its table), the key columns equal the primary key in the catalogs; every text, JSON and bytes
+#      column of an exported table is one the census names (a column a later migration adds fails here until it is
+#      read and classed). A table the map does not name stops a run before any read:
 #      exit 1, 'is not classed', nothing at the destination.
 #  A2. classes: a state table (host_state) is absent from an hourly window's manifest and whole in Wd's; `instances`
 #      is in both; with carry [text] a dimension (statement_text) carries in an hourly window the text last seen in
 #      or after it and not the one last seen before it, and both in Wd; without carry it is in `skipped` with the
 #      carry it needs, as an audit table (hba_rules) is. With snapshot_max_bytes 1 every state table is in `skipped`
-#      naming that key, and `instances` is carried all the same.
+#      naming that key, `instances` is carried all the same, and a dimension keeps its hourly read (its entry says its
+#      whole copy is left out). A job run with no start time (a window table whose time column may be NULL) is in
+#      the day's first window, and in no hourly one.
 #  B.  a window and the types: of five host_sample rows (at the window's start, inside, 1 microsecond before its end,
 #      at its end, 1 microsecond before its start) W2's file holds exactly the first three; an event stored now with
 #      event_at in W4 is in W4's file and not in W2's. Read back by pyarrow: every column OPTIONAL and in the table's
 #      own order, pages ZSTD, and one seeded value of each of the schema's 19 column types under its Parquet type
 #      (the list is in the row), NULLs as nulls; a timestamp of infinity and a NaN in a DECIMAL column are null and
-#      the manifest's column says 'infinite as null'; the three identity figures are DECIMAL(38, 0) and hold
-#      18446744073709551615 exactly.
+#      the manifest's column says 'infinite as null'; the identity figures are text holding their exact digits
+#      (18446744073709551615, 9223372036854775807, -5: a 16-byte DECIMAL's statistics would misorder a negative).
 #  B2. the final pass: after pass 1 of W4 (manifest pass 1) a job run and a Query Store interval are stored with
 #      their time in W4; a run with final_after_hours 2 exports W4 again under the same names: the manifest says
 #      final, both late rows are in the files, the marker _manifests/_final/<window> exists; a table whose only row
@@ -65,10 +69,14 @@
 #      whose read outlasts statement_timeout fails its window twice (exit 1, no manifest) and on the third run is in
 #      the manifest's failed[] with the window complete (exit 1).
 #  F.  left out and dropped: no ui_users file, the table in `skipped`; report_mail_sends is carried without html,
-#      xlsx, recipients and subject, the four named in dropped_columns; mssql_errorlog is carried without message
+#      xlsx, recipients, subject and error (a mail server's reply) whatever is carried, and without requested_by and
+#      client unless audit is carried, each named in dropped_columns; without audit a failed sign-in of the server
+#      log is not carried and the manifest's filtered_rows says so, with it it is; under carry [audit] alone an audit
+#      trail is carried WITHOUT its statement and parameters (text); mssql_errorlog is carried without message
 #      (named in dropped_columns as text) and with it under carry [text], where a value of 9 MB reads back whole (a
 #      page's header must not hold the page's largest value: readers refuse a header past 16 MB); a table named in tables.exclude is in
-#      `skipped` naming that key, the others carried.
+#      `skipped` naming that key, the others carried; a name there that is no table, and `instances`, are refused
+#      (exit 3).
 #  G.  destinations: one window written to a folder, to the S3-compatible server and to Azurite: the three listings
 #      hold the same names, every file's sha256 is the one its own manifest gives, each table's rows are equal across
 #      the three, each manifest is the newest object of its window; a table of about 175 MB of text (over the 64 MB
@@ -238,7 +246,7 @@ q("CREATE FUNCTION pqproof.slow(secs float8) RETURNS boolean LANGUAGE plpgsql AS
 I1 = inst('i1'); I2 = inst('i2'); I3 = inst('i3'); I4 = inst('i4'); M1 = inst('m1', 'sqlserver')
 for t in (H0, H0 - 31 * 24 * HR):
     for tb in ('host_sample', 'database_sizes', 'mssql_job_runs', 'mssql_qs_interval', 'mssql_cpu_sample', 'job_stats_hourly',
-               'mssql_pool_minute', 'activity_sample', 'table_sizes'):
+               'mssql_pool_minute', 'activity_sample', 'table_sizes', 'log_events', 'pgaudit_events'):
         part(tb, t)
 for k in range(0, 8):
     part('mssql_requests', H0 - k * HR, 'day'); part('mssql_attentions', H0 - k * HR, 'event'); part('mssql_errorlog', H0 - k * HR, 'event')
@@ -256,6 +264,8 @@ def seed_A2():
       f"({I1}, 9001, CAST({lit(wn[0] - 5 * HR)} AS timestamptz), now(), 'select a2 active'), "
       f"({I1}, 9002, CAST({lit(wn[0] - 30 * HR)} AS timestamptz), CAST({lit(wn[0] - HR)} AS timestamptz), 'select a2 old')")
     q(f"INSERT INTO pgvigil.hba_rules (instance_id, file_name, line_number, snapshot_at, type, auth_method) VALUES ({I1}, 'pg_hba.conf', 1, now(), 'host', 'scram-sha-256')")
+    q(f"INSERT INTO pgvigil.job_runs (instance_id, scheduler, job_id, run_id, snapshot_at, start_time, status) VALUES "
+      f"({I1}, 'pg_cron', 7, 1, now(), NULL, 'failed'), ({I1}, 'pg_cron', 7, 2, now(), CAST({lit(wn[0] + dt.timedelta(minutes=4))} AS timestamptz), 'succeeded')")
 def seed_B():
     a, b = Wk(2)
     hs(I1, a, 'in-a', ', cpu_pct, mem_total, connections', ', 12.5, 34359738368, 7')
@@ -274,7 +284,8 @@ def seed_B():
     q(f"INSERT INTO pgvigil.activity_sample (instance_id, snapshot_at, pid, is_blocker, blocking_pids) VALUES ({I1}, CAST({lit(mid)} AS timestamptz), 4242, false, '{{11,12}}')")
     q(f"INSERT INTO pgvigil.mssql_identity_column (instance_id, database_name, schema_name, table_name, column_name, status, snapshot_at, last_value, max_value, anchor_value, pct_used, per_day, days_left) VALUES "
       f"({M1}, 'd', 's', 't', 'big', 'ok', now(), 9223372036854775807, 18446744073709551615, 18446744073709551615, 50.25, 1234.5, 'NaN'), "
-      f"({M1}, 'd', 's', 't', 'nan', 'ok', now(), 1, 2, NULL, 'NaN', NULL, NULL)")
+      f"({M1}, 'd', 's', 't', 'nan', 'ok', now(), 1, 2, NULL, 'NaN', NULL, NULL), "
+      f"({M1}, 'd', 's', 't', 'neg', 'ok', now(), -5, 2147483647, NULL, NULL, NULL, NULL)")
     q(f"INSERT INTO pgvigil.mssql_pool_thresholds (server, pool, warning, critical) VALUES ('s-{SUF}', 'p1', 0.8125, 0.9)")
     q(f"INSERT INTO pgvigil.mssql_build (instance_id, snapshot_at, known, exact, newer, status, release_date) VALUES ({M1}, now(), true, true, false, 'ok', DATE '2026-03-14')")
     q(f"INSERT INTO pgvigil.pg_wal_replay (instance_id, snapshot_at, is_present, replay_lsn) VALUES ({I1}, now(), true, '16/B374D848')")
@@ -319,6 +330,11 @@ def seed_F():
     q(f"INSERT INTO pgvigil.mssql_errorlog (instance_id, log_at, line_key, snapshot_at, logged_local, class, matched, custom, message) VALUES "
       f"({M1}, CAST({lit(w[0] + dt.timedelta(minutes=40))} AS timestamptz), 'f-1', now(), TIMESTAMP '2026-01-02 03:04:05', 'general', '{{}}', false, 'f secret text'), "
       f"({M1}, CAST({lit(w[0] + dt.timedelta(minutes=41))} AS timestamptz), 'f-big', now(), TIMESTAMP '2026-01-02 03:04:06', 'general', '{{}}', false, repeat('m', 9000000))")
+    q(f"INSERT INTO pgvigil.log_events (instance_id, snapshot_at, kind, source, event_key, usename, client, statement, message) VALUES "
+      f"({I1}, CAST({lit(w[0] + dt.timedelta(minutes=12))} AS timestamptz), 'auth_fail', 'log', 'f-auth', 'intruder', '10.0.0.9', NULL, 'password authentication failed'), "
+      f"({I1}, CAST({lit(w[0] + dt.timedelta(minutes=13))} AS timestamptz), 'slow', 'log', 'f-slow', 'app', '10.0.0.8', 'select f slow', NULL)")
+    q(f"INSERT INTO pgvigil.pgaudit_events (instance_id, snapshot_at, audit_type, class, command, source, event_key, statement, parameters) VALUES "
+      f"({I1}, CAST({lit(w[0] + dt.timedelta(minutes=14))} AS timestamptz), 'SESSION', 'READ', 'SELECT', 'log', 'f-aud', 'select f audited', '42')")
 def seed_G():
     w = Wk(3)
     for n in range(5): hs(I3, w[0] + dt.timedelta(minutes=11 * n + 1), f'g-{n}')
@@ -369,11 +385,20 @@ def row_A():
     for t in lst:
         e = cen.get(t['table'])
         if e is None: bad.append(t['table'] + ': not in the census'); continue
-        got = (t['class'], t.get('time_column') or '', t.get('carry') or '', ','.join(t.get('text_columns') or []), ','.join(t.get('dropped_columns') or []))
-        want = (e['class'], e['time_column'], e['carry'], e['text_columns'], e['dropped_columns'])
+        got = (t['class'], t.get('time_column') or '', t.get('carry') or '', ','.join(t.get('text_columns') or []), ','.join(t.get('dropped_columns') or []),
+               ','.join(t.get('audit_columns') or []), t.get('audit_rows') or '')
+        want = (e['class'], e['time_column'], e['carry'], e['text_columns'], e['dropped_columns'], e['audit_columns'], e['audit_rows'])
         if got != want: bad.append(f"{t['table']}: {got} against the census {want}")
         if (t.get('key_columns') or []) != (store.get(t['table']) or []): bad.append(f"{t['table']}: key {t.get('key_columns')} against {store.get(t['table'])}")
-    check(not bad, f'A: class, time column, carry, text and dropped columns equal the census, the key the primary key ({len(lst)} tables; {len(bad)} differ: {bad[:4]})')
+    check(not bad, f'A: class, time column, carry, text, dropped and audit columns equal the census, the key the primary key ({len(lst)} tables; {len(bad)} differ: {bad[:4]})')
+    live = {}
+    for tn, cn in q("SELECT c.relname, a.attname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND a.attnum > 0 AND NOT a.attisdropped "
+                    "AND format_type(a.atttypid, NULL) IN ('text', 'jsonb', 'json', 'bytea', 'text[]', 'character varying', 'xml') ORDER BY c.relname, a.attnum"):
+        live.setdefault(tn, set()).add(cn)
+    pin = {n: set(filter(None, e['string_columns'].split(','))) for n, e in cen.items() if e['class'] != 'left-out'}
+    badpin = [f'{n}: {sorted(live.get(n, set()) ^ p)}' for n, p in pin.items() if live.get(n, set()) != p]
+    check(len(pin) > 250 and not badpin, f'A: every text, JSON and bytes column of an exported table is one the census names ({sum(map(len, pin.values()))} columns of {len(pin)} tables; {len(badpin)} tables differ: {badpin[:3]})')
     q(f'CREATE TABLE pgvigil.pq_new_{SUF} (instance_id int, snapshot_at timestamptz)')
     try:
         rc, out, err = window(c, Wk(2))
@@ -398,9 +423,15 @@ def row_A2():
     s1 = skipped(m3, 'statement_text'); s2 = skipped(m3, 'hba_rules')
     check(r3[0] == 0 and entry(m3, 'statement_text') is None and s1 and 'text' in s1['reason'] and s2 and 'audit' in s2['reason'] and not os.path.isdir(f'{root("a2n")}/statement_text') and not os.path.isdir(f'{root("a2n")}/hba_rules'),
           f'A2: without carry the text and the audit table are skipped, each naming its carry ({s1}, {s2})')
-    c3 = cfg('a2m', snapshot_max_bytes=1); r4 = window(c3, WD); m4 = man('a2m', WD); s3 = skipped(m4, 'host_state')
+    c3 = cfg('a2m', carry=['text'], snapshot_max_bytes=1); r4 = window(c3, WD); m4 = man('a2m', WD); s3 = skipped(m4, 'host_state')
     check(r4[0] == 0 and s3 and 'snapshot_max_bytes' in s3['reason'] and entry(m4, 'host_state') is None and len(rows('a2m', m4, 'instances')) == ninst,
           f'A2: a state table over snapshot_max_bytes is skipped naming the key; instances is carried all the same ({s3})')
+    ed = entry(m4, 'statement_text') or {}
+    check(skipped(m4, 'statement_text') is None and 'snapshot_max_bytes' in (ed.get('note') or '') and 9001 in {r['queryid'] for r in rows('a2m', m4, 'statement_text')},
+          f'A2: a dimension over snapshot_max_bytes keeps its hourly read and says its whole copy is left out (note {ed.get("note")!r})')
+    jn = {r['run_id'] for r in rows('a2', mn, 'job_runs') if r['instance_id'] == I1 and r['job_id'] == 7}
+    jd = {r['run_id'] for r in rows('a2', md, 'job_runs') if r['instance_id'] == I1 and r['job_id'] == 7}
+    check(jn == {2} and jd == {1}, f'A2: a job run with no start time is in the day\'s first window and in no hourly one (hourly {sorted(jn)}, the day\'s first {sorted(jd)})')
 
 def pcol(pf, name):   # (physical type, logical type, max definition level) of a top-level column, its first leaf
     sc = pf.schema
@@ -437,7 +468,7 @@ def row_B():
         ('numeric(5,4)', md, 'mssql_pool_thresholds', 'warning', None, 'Decimal(precision=5, scale=4)', one(md, 'mssql_pool_thresholds', lambda r: r['server'] == f's-{SUF}') or {}, D('0.8125')),
         ('numeric(9,2)', md, 'mssql_identity_column', 'pct_used', None, 'Decimal(precision=9, scale=2)', idc, D('50.25')),
         ('numeric', md, 'mssql_identity_column', 'per_day', 'DOUBLE', '', idc, 1234.5),
-        ('numeric as DECIMAL(38, 0)', md, 'mssql_identity_column', 'max_value', None, 'Decimal(precision=38, scale=0)', idc, D('18446744073709551615')),
+        ('numeric whole figure as text', md, 'mssql_identity_column', 'max_value', 'BYTE_ARRAY', 'String', idc, '18446744073709551615'),
         ('timestamp without time zone', m2, 'mssql_errorlog', 'logged_local', 'INT64', 'isAdjustedToUTC=false, timeUnit=microseconds', erl, dt.datetime(2026, 1, 2, 3, 4, 5, 678901)),
         ('text[]', m2, 'mssql_errorlog', 'matched', 'BYTE_ARRAY', 'String', erl, ['one', 'two words']),
         ('boolean', m2, 'mssql_errorlog', 'custom', 'BOOLEAN', '', erl, True),
@@ -456,7 +487,9 @@ def row_B():
             check((phys is None or ph == phys) and logical.lower() in lg.lower() and dl >= 1 and okv, f'B: {pgt} -> {ph} {lg}, OPTIONAL, {table}.{col} = {v!r}')
         except Exception as e:
             check(False, f'B: {pgt} ({table}.{col}): {type(e).__name__}: {str(e)[:160]}')
-    check(idc.get('last_value') == D('9223372036854775807') and idc.get('anchor_value') == D('18446744073709551615'), f'B: the identity figures exact past the bigint line ({idc.get("last_value")}, {idc.get("anchor_value")})')
+    idg = one(md, 'mssql_identity_column', lambda r: r['column_name'] == 'neg') or {}
+    check(idc.get('last_value') == '9223372036854775807' and idc.get('anchor_value') == '18446744073709551615' and idg.get('last_value') == '-5' and idg.get('max_value') == '2147483647',
+          f'B: the identity figures exact as text, past the bigint line and below zero ({idc.get("last_value")}, {idc.get("anchor_value")}, {idg.get("last_value")})')
     check(hsr.get('swap_total', 0) is None and idn.get('anchor_value', 0) is None and 'load1' in hsr, 'B: a NULL is a null and its column is still in the file')
     inb = one(m2, 'host_sample', lambda r: r['source'] == 'in-b') or {}
     note = lambda m, t, c: next((x.get('note') or '' for x in (entry(m, t) or {}).get('columns', []) if x['name'] == c), None)
@@ -579,20 +612,36 @@ def row_F():
     check(s is not None and entry(m, 'ui_users') is None and not os.path.isdir(f'{root("f")}/ui_users'), f'F: ui_users has no file and is in skipped ({s})')
     dc = lambda mm, t: sorted(x['column'] for x in mm.get('dropped_columns', []) if x['table'] == t)
     sends = [r for r in rows('f', m, 'report_mail_sends') if r['name'] == 'f-send']
-    check(len(sends) == 1 and not ({'html', 'xlsx', 'recipients', 'subject'} & set(sends[0])) and dc(m, 'report_mail_sends') == ['html', 'recipients', 'subject', 'xlsx'],
-          f'F: report_mail_sends carried without its mail columns, the four named ({dc(m, "report_mail_sends")})')
+    check(len(sends) == 1 and not ({'html', 'xlsx', 'recipients', 'subject', 'error', 'requested_by', 'client'} & set(sends[0]))
+          and dc(m, 'report_mail_sends') == ['client', 'error', 'html', 'recipients', 'requested_by', 'subject', 'xlsx'],
+          f'F: report_mail_sends carried without its mail columns, the server\'s reply, and who asked from where, each named ({dc(m, "report_mail_sends")})')
+    ca = cfg('fa', carry=['audit']); ra = window(ca, w); ma = man('fa', w) or {}
+    sa = [r for r in rows('fa', ma, 'report_mail_sends') if r['name'] == 'f-send']
+    check(ra[0] == 0 and len(sa) == 1 and sa[0].get('requested_by') == 'proof' and 'error' not in sa[0] and dc(ma, 'report_mail_sends') == ['error', 'html', 'recipients', 'subject', 'xlsx'],
+          f'F: with carry audit who asked is carried; the mail columns and the reply never ({dc(ma, "report_mail_sends") if ma else None}: {ra[2].strip()[:120]})')
+    lf = {r['event_key']: r for r in rows('f', m, 'log_events') if r['instance_id'] == I1}; la = {r['event_key'] for r in rows('fa', ma, 'log_events') if r['instance_id'] == I1}
+    fr = next((x for x in (m.get('filtered_rows') or []) if x['table'] == 'log_events'), None)
+    check(set(lf) == {'f-slow'} and 'statement' not in lf['f-slow'] and fr is not None and 'audit' in fr['reason'] and la == {'f-auth', 'f-slow'} and not (ma.get('filtered_rows') or []),
+          f'F: without audit a failed sign-in of the server log is not carried and the manifest says so; with it it is (no carry {sorted(lf)}, audit {sorted(la)}, {fr})')
+    pa = [r for r in rows('fa', ma, 'pgaudit_events') if r['event_key'] == 'f-aud']
+    check(skipped(m, 'pgaudit_events') is not None and len(pa) == 1 and 'statement' not in pa[0] and 'parameters' not in pa[0] and pa[0]['command'] == 'SELECT'
+          and dc(ma, 'pgaudit_events') == ['parameters', 'statement'],
+          f'F: under carry audit alone an audit trail is carried without its statement and parameters, both named ({dc(ma, "pgaudit_events") if ma else None})')
     e1 = [r for r in rows('f', m, 'mssql_errorlog') if r['line_key'] == 'f-1']
     try: el = rows('ft', mt, 'mssql_errorlog'); elerr = ''
     except Exception as e: el = []; elerr = f'{type(e).__name__}: {str(e)[:200]}'
     e2 = [r for r in el if r['line_key'] == 'f-1']; big = [r for r in el if r['line_key'] == 'f-big']
     reason = next((x.get('reason', '') for x in m.get('dropped_columns', []) if x['table'] == 'mssql_errorlog' and x['column'] == 'message'), '')
     check(len(e1) == 1 and 'message' not in e1[0] and 'text' in reason, f'F: the log\'s text column is dropped without carry text and named ({reason!r})')
-    check(len(e2) == 1 and e2[0].get('message') == 'f secret text' and 'message' not in dc(mt, 'mssql_errorlog') and dc(mt, 'report_mail_sends') == ['html', 'recipients', 'subject', 'xlsx'],
+    check(len(e2) == 1 and e2[0].get('message') == 'f secret text' and 'message' not in dc(mt, 'mssql_errorlog') and dc(mt, 'report_mail_sends') == ['client', 'error', 'html', 'recipients', 'requested_by', 'subject', 'xlsx'],
           f'F: with carry text the text column is carried; the mail columns stay dropped {elerr}')
     check(len(big) == 1 and len(big[0].get('message') or '') == 9000000, f'F: a text value of 9 MB reads back whole ({len(big)} row, {len((big[0].get("message") or "")) if big else 0} characters) {elerr}')
     cx = cfg('fx', tables={'exclude': ['host_sample']}); r3 = window(cx, w); mx = man('fx', w); sx = skipped(mx, 'host_sample')
     check(r3[0] == 0 and sx and 'exclude' in sx['reason'] and entry(mx, 'host_sample') is None and entry(mx, 'database_sizes') is not None,
           f'F: a table named in tables.exclude is skipped naming the key, the others carried ({sx})')
+    rb = window(cfg('fbad', tables={'exclude': ['host_sampel']}), w); ri = window(cfg('finst', tables={'exclude': ['instances']}), w)
+    check(rb[0] == 3 and 'host_sampel' in rb[2] and ri[0] == 3 and 'instances' in ri[2] and not tree(f'{W}/dest-fbad') and not tree(f'{W}/dest-finst'),
+          f'F: a name in tables.exclude that is no table, and instances, are refused before anything is written (rc {rb[0]}, {ri[0]}: {rb[2].strip()[:100]})')
 
 def row_G():
     import boto3, botocore
@@ -608,8 +657,8 @@ def row_G():
     for _ in range(60):
         try: az.create_container(); break
         except Exception: time.sleep(1)
-    cf = cfg('g'); cs = cfg('gs', dest={'type': 's3', 'bucket': 'pq-proof', 'prefix': 'px', 'region': 'us-east-1', 'endpoint': s3url})
-    ca = cfg('ga', dest={'type': 'azure_blob', 'container': 'pq-proof', 'prefix': 'px', 'connection_string': 'env:PQ_AZ_CONN'})
+    cf = cfg('g', carry=['text']); cs = cfg('gs', carry=['text'], dest={'type': 's3', 'bucket': 'pq-proof', 'prefix': 'px', 'region': 'us-east-1', 'endpoint': s3url})
+    ca = cfg('ga', carry=['text'], dest={'type': 'azure_blob', 'container': 'pq-proof', 'prefix': 'px', 'connection_string': 'env:PQ_AZ_CONN'})
     env = {'AWS_ACCESS_KEY_ID': ak, 'AWS_SECRET_ACCESS_KEY': sk, 'PQ_AZ_CONN': azconn}
     rs = [window(c, w, env=env) for c in (cf, cs, ca)]
     if not check(all(r[0] == 0 for r in rs), f'G: the window exports to the folder, the S3-compatible server and Azurite (rc {[r[0] for r in rs]}: {"".join(r[2] for r in rs).strip()[:240]})'): return

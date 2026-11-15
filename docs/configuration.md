@@ -223,7 +223,7 @@ Absent = off. [parquet-export.md](parquet-export.md) is the whole page; these ar
 ```yaml
 export:
   name: prod-repo                 # required: the folder under the destination and part of every file name
-                                  #   (lower case, a letter first, no '__', at most 31 characters)
+                                  #   (lower case, a letter first, a letter or digit last, no '__', at most 31)
   dsn: env:PGVIGIL_EXPORT_DSN     # required: the export's login, IN ROLE pgvigil_exporter (or pgvigil_reader) alone;
                                   #   env:NAME or file:/path - a connection string written here is refused
   state_dir: /var/lib/pgvigil/export   # required: the lock and the files being built
@@ -236,9 +236,13 @@ export:
   final_after_hours: 24           # it is exported again, as final, once it is this old
   max_window_age_hours: 48        # how far back a run looks; an older hour with no manifest is named as aged out
   max_windows_per_run: 12
-  snapshot_max_bytes: 256MB       # a whole-table export (a state or dimension table) over it is left out and named
+  snapshot_max_bytes: 256MB       # a whole-table export over it (its size on disk with its indexes) is left out and
+                                  #   named; 0 = no line
   statement_timeout: 120s         # of the reading session
   carry: []                       # text (statement, plan and log text), audit (action logs, audit trails, logins,
                                   #   roles and grants): each OFF unless named
-  tables: { exclude: [] }         # more tables left out by name; what the map leaves out cannot be put back in
+  tables: { exclude: [] }         # more tables left out by name (a name that is no table is refused); what the map
+                                  #   leaves out cannot be put back in
 ```
+
+A key the section does not know is refused (exit 3): a mistyped key must not pass as a default.

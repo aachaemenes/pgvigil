@@ -1,8 +1,10 @@
 package export
 
 import (
+	"bytes"
 	"crypto/rand"
-	"math/big"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strings"
 	"testing"
@@ -21,8 +23,15 @@ func TestMapColumn(t *testing.T) {
 		{"t", "a", "double precision", "DOUBLE", `"a"`},
 		{"t", "a", "numeric", "DOUBLE", `"a"::float8`},
 		{"t", "a", "numeric(5,2)", "DECIMAL(5,2)", `"a"::text`},
-		{"t", "a", "numeric(40,2)", "DOUBLE", `"a"::float8`},
-		{"mssql_identity_column", "max_value", "numeric", "DECIMAL(38,0)", `trunc("max_value")::text`},
+		{"t", "a", "numeric(18,0)", "DECIMAL(18,0)", `"a"::text`},
+		{"t", "a", "numeric(20,2)", "STRING", `"a"::text`},
+		{"mssql_identity_column", "max_value", "numeric", "STRING", `trunc("max_value")::text`},
+		{"t", "a", "character varying(20)", "STRING", `"a"`},
+		{"t", "a", "character(3)", "STRING", `"a"`},
+		{"t", "a", "timestamp(3) with time zone", "TIMESTAMP(MICROS, UTC)", `"a"`},
+		{"t", "a", "timestamp(0) without time zone", "TIMESTAMP(MICROS, local)", `"a"`},
+		{"t", "a", "bigint[]", "LIST<INT64>", `to_jsonb("a")::text`},
+		{"t", "a", "numeric[]", "STRING", `to_jsonb("a")::text`},
 		{"t", "a", "timestamp with time zone", "TIMESTAMP(MICROS, UTC)", `"a"`},
 		{"t", "a", "timestamp without time zone", "TIMESTAMP(MICROS, local)", `"a"`},
 		{"t", "a", "date", "DATE", `"a"`},
@@ -43,6 +52,12 @@ func TestMapColumn(t *testing.T) {
 	if p := mapColumn("t", Column{Name: "a", Type: "point"}); p.note != "as text" {
 		t.Errorf("a type with no line of its own says so: note %q", p.note)
 	}
+	if p := mapColumn("sequence_state", Column{Name: "col_max", Type: "numeric"}); p.note != "exact digits as text" {
+		t.Errorf("a whole figure past the bigint line says how it leaves: note %q", p.note)
+	}
+	if p := mapColumn("t", Column{Name: "a", Type: "character varying(20)"}); p.Type != "character varying(20)" {
+		t.Errorf("the manifest keeps the column's own type: %q", p.Type)
+	}
 }
 
 func TestUnscaled(t *testing.T) {
@@ -61,11 +76,76 @@ func TestUnscaled(t *testing.T) {
 			t.Errorf("unscaled(%q, %d, %d) = %v, %v; want %s, %v", c.in, c.scale, c.prec, u, ok, c.want, c.ok)
 		}
 	}
-	if b := twosComplement(big.NewInt(-2), 2); b[0] != 0xff || b[1] != 0xfe {
-		t.Errorf("twosComplement(-2, 2) = %x", b)
+}
+
+// A date is whole days since 1970-01-01 by the calendar, before it and centuries from it.
+func TestDaysSinceEpoch(t *testing.T) {
+	for _, c := range []struct {
+		y, m, d int
+		want    int64
+	}{{1970, 1, 1, 0}, {1970, 1, 2, 1}, {1969, 12, 31, -1}, {2026, 3, 14, 20526}, {2500, 1, 1, 193579}, {1600, 1, 1, -135140}} {
+		if got := daysSinceEpoch(time.Date(c.y, time.Month(c.m), c.d, 0, 0, 0, 0, time.UTC)); got != c.want {
+			t.Errorf("%04d-%02d-%02d: %d days, want %d", c.y, c.m, c.d, got, c.want)
+		}
 	}
-	if b := twosComplement(big.NewInt(258), 4); b[2] != 1 || b[3] != 2 || b[0] != 0 {
-		t.Errorf("twosComplement(258, 4) = %x", b)
+}
+
+// What a list holds: every digit of a bigint, a null element, and a note when the value is no list.
+func TestListValues(t *testing.T) {
+	c := mapColumn("t", Column{Name: "a", Type: "bigint[]"})
+	row, _ := appendValue(nil, &c, 0, `[9007199254740993, null, -1]`)
+	if len(row) != 3 || row[0].Int64() != 9007199254740993 || !row[1].IsNull() || row[1].DefinitionLevel() != 2 || row[2].Int64() != -1 || row[2].RepetitionLevel() != 1 {
+		t.Errorf("a bigint list: %v", row)
+	}
+	row, _ = appendValue(nil, &c, 0, `not json`)
+	if len(row) != 1 || !row[0].IsNull() || c.note == "" {
+		t.Errorf("a value that is no list is a null list with a note: %v, %q", row, c.note)
+	}
+}
+
+// Exactly two full row groups: no empty third one; and the file's sha256 is of the bytes on disk.
+func TestFileWriterExactGroups(t *testing.T) {
+	cols := []pcol{mapColumn("t", Column{Name: "n", Type: "integer"}), mapColumn("t", Column{Name: "d", Type: "date"}),
+		mapColumn("t", Column{Name: "b", Type: "bytea"}), mapColumn("t", Column{Name: "ts", Type: "timestamp without time zone"}),
+		mapColumn("t", Column{Name: "j", Type: "jsonb"}), mapColumn("t", Column{Name: "tags", Type: "text[]"})}
+	fw := newFileWriter(t.TempDir(), "t", "t__x", cols)
+	day, ts := time.Date(2026, 3, 14, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 2, 3, 4, 5, 678901000, time.UTC)
+	for i := 0; i < 2*maxGroupRows; i++ {
+		if err := fw.add([]any{int32(i), day, []byte{6, 0, 255}, ts, `{"k": 1}`, `["a"]`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := fw.finish()
+	if err != nil || len(files) != 1 {
+		t.Fatalf("files %v, %v", files, err)
+	}
+	b, err := os.ReadFile(files[0].local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != files[0].SHA256 || int64(len(b)) != files[0].ByteSize {
+		t.Errorf("sha256 or byte_size is not the file's own")
+	}
+	pf, err := parquet.OpenFile(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var groups []int64
+	for _, g := range pf.RowGroups() {
+		groups = append(groups, g.NumRows())
+	}
+	if len(groups) != 2 || groups[0] != maxGroupRows || groups[1] != maxGroupRows {
+		t.Errorf("row groups %v, want two of %d", groups, maxGroupRows)
+	}
+	rows := make([]parquet.Row, 1)
+	rr := pf.RowGroups()[0].Rows()
+	defer rr.Close()
+	if k, _ := rr.ReadRows(rows); k != 1 {
+		t.Fatalf("read %d rows", k)
+	}
+	r := rows[0]
+	if len(r) != 6 || r[0].Int32() != 0 || r[1].Int32() != 20526 || string(r[2].ByteArray()) != "\x06\x00\xff" || r[3].Int64() != ts.UnixMicro() || r[4].String() != `{"k": 1}` || r[5].String() != "a" {
+		t.Errorf("a date, bytes, a plain timestamp, JSON and a list read back: %v", r)
 	}
 }
 

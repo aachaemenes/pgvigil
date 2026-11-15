@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -58,17 +57,22 @@ type pcol struct {
 	kind        kind
 	elem        kind   // kList: its elements
 	prec, scale int    // kDecimal
-	fixed       int    // kDecimal: 0 = INT32 / INT64 by precision, else the FIXED_LEN_BYTE_ARRAY length
 	expr        string // the SELECT expression
 	parquet     string // the manifest's parquet_type
 	note        string // the manifest's note
 	nulled      bool   // a value that has no Parquet form (infinity, NaN) was written as null
 }
 
-var numericMod = regexp.MustCompile(`^numeric\((\d+),(\d+)\)$`)
+var (
+	numericMod = regexp.MustCompile(`^numeric\((\d+),(\d+)\)$`)
+	typeMod    = regexp.MustCompile(`^(character varying|character|timestamp|time)\(\d+\)(.*)$`)
+)
 
 // wholeFigures are the numeric columns that hold whole figures up to the bigint line and past it (an identity's or
-// a sequence's last and largest value): a DOUBLE would merge neighbours there, so they are DECIMAL(38, 0).
+// a sequence's last and largest value). A DOUBLE would merge neighbours there. They leave as text holding their
+// exact digits: a DECIMAL(38, 0) is 16 bytes, and the writer orders 16-byte values unsigned, so the statistics of a
+// column that holds a negative figure (an identity seeded below zero) would name the wrong minimum and maximum and
+// a reader that trusts them would lose rows.
 var wholeFigures = map[string]bool{
 	"mssql_identity_column.last_value": true, "mssql_identity_column.max_value": true,
 	"mssql_identity_column.anchor_value": true, "sequence_state.col_max": true,
@@ -78,6 +82,9 @@ var wholeFigures = map[string]bool{
 // carried as the text PostgreSQL prints, and the manifest says so - never dropped silently.
 func mapColumn(table string, c Column) pcol {
 	p := pcol{Column: c, expr: quoteIdent(c.Name)}
+	if m := typeMod.FindStringSubmatch(c.Type); m != nil {
+		c.Type = m[1] + m[2] // character varying(20), timestamp(3) with time zone: the type without its modifier
+	}
 	scalar := func(t string) (kind, string, bool) {
 		switch t {
 		case "boolean":
@@ -90,7 +97,7 @@ func mapColumn(table string, c Column) pcol {
 			return kFloat, "FLOAT", true
 		case "double precision":
 			return kDouble, "DOUBLE", true
-		case "text", "character varying", "name", "uuid", "inet", "cidr", "pg_lsn", "\"char\"", "interval", "time without time zone", "time with time zone":
+		case "text", "character varying", "character", "name", "uuid", "inet", "cidr", "pg_lsn", "\"char\"", "interval", "time without time zone", "time with time zone":
 			return kString, "STRING", true
 		}
 		return 0, "", false
@@ -107,21 +114,19 @@ func mapColumn(table string, c Column) pcol {
 	case t == "json" || t == "jsonb":
 		p.kind, p.parquet, p.expr = kJSON, "JSON", p.expr+"::text"
 	case t == "numeric" && wholeFigures[table+"."+c.Name]:
-		p.kind, p.prec, p.scale, p.fixed, p.parquet, p.expr = kDecimal, 38, 0, 16, "DECIMAL(38,0)", "trunc("+p.expr+")::text"
+		p.kind, p.parquet, p.note, p.expr = kString, "STRING", "exact digits as text", "trunc("+p.expr+")::text"
 	case t == "numeric":
 		p.kind, p.parquet, p.expr = kDouble, "DOUBLE", p.expr+"::float8"
 	case numericMod.MatchString(t):
 		m := numericMod.FindStringSubmatch(t)
 		p.prec, _ = strconv.Atoi(m[1])
 		p.scale, _ = strconv.Atoi(m[2])
-		if p.prec > 38 {
-			p.kind, p.parquet, p.expr = kDouble, "DOUBLE", p.expr+"::float8"
+		if p.prec > 18 {
+			// past 18 digits a DECIMAL is 16 bytes, whose statistics the writer cannot order (see wholeFigures)
+			p.kind, p.parquet, p.note, p.expr = kString, "STRING", "exact digits as text", p.expr+"::text"
 			break
 		}
 		p.kind, p.parquet, p.expr = kDecimal, fmt.Sprintf("DECIMAL(%d,%d)", p.prec, p.scale), p.expr+"::text"
-		if p.prec > 18 {
-			p.fixed = 16
-		}
 	case strings.HasSuffix(t, "[]"):
 		if k, name, ok := scalar(strings.TrimSuffix(t, "[]")); ok {
 			p.kind, p.elem, p.parquet, p.expr = kList, k, "LIST<"+name+">", "to_jsonb("+p.expr+")::text"
@@ -131,7 +136,7 @@ func mapColumn(table string, c Column) pcol {
 	default:
 		if k, name, ok := scalar(t); ok {
 			p.kind, p.parquet = k, name
-			if k == kString && t != "text" && t != "character varying" && t != "name" {
+			if k == kString && t != "text" && t != "character varying" && t != "character" && t != "name" {
 				p.expr += "::text"
 			}
 			break
@@ -156,11 +161,8 @@ func leafNode(k kind, p *pcol) parquet.Node {
 	case kDouble:
 		return parquet.Leaf(parquet.DoubleType)
 	case kDecimal:
-		switch {
-		case p.fixed > 0:
-			return parquet.Decimal(p.scale, p.prec, parquet.FixedLenByteArrayType(p.fixed)) // the scale first
-		case p.prec > 9:
-			return parquet.Decimal(p.scale, p.prec, parquet.Int64Type)
+		if p.prec > 9 {
+			return parquet.Decimal(p.scale, p.prec, parquet.Int64Type) // the scale first
 		}
 		return parquet.Decimal(p.scale, p.prec, parquet.Int32Type)
 	case kTimestampTZ:
@@ -377,7 +379,14 @@ func appendValue(row parquet.Row, c *pcol, col int, v any) (parquet.Row, int) {
 	}
 	if c.kind == kList {
 		var elems []any
-		if s, ok := v.(string); !ok || json.Unmarshal([]byte(s), &elems) != nil {
+		s, ok := v.(string)
+		if ok {
+			d := json.NewDecoder(strings.NewReader(s))
+			d.UseNumber() // a bigint element keeps every digit
+			ok = d.Decode(&elems) == nil
+		}
+		if !ok {
+			c.nulled, c.note = true, "a list that could not be read as null"
 			return append(row, parquet.NullValue().Level(0, 0, col)), 0
 		}
 		if len(elems) == 0 {
@@ -420,16 +429,22 @@ func listElement(c *pcol, e any) (parquet.Value, bool, int) {
 		if c.elem == kBool {
 			return parquet.BooleanValue(x), true, 1
 		}
-	case float64:
+	case json.Number:
 		switch c.elem {
-		case kInt32:
-			return parquet.Int32Value(int32(x)), true, 4
-		case kInt64:
-			return parquet.Int64Value(int64(x)), true, 8
-		case kFloat:
-			return parquet.FloatValue(float32(x)), true, 4
-		case kDouble:
-			return parquet.DoubleValue(x), true, 8
+		case kInt32, kInt64:
+			if n, err := x.Int64(); err == nil {
+				if c.elem == kInt32 {
+					return parquet.Int32Value(int32(n)), true, 4
+				}
+				return parquet.Int64Value(n), true, 8
+			}
+		case kFloat, kDouble:
+			if f, err := x.Float64(); err == nil {
+				if c.elem == kFloat {
+					return parquet.FloatValue(float32(f)), true, 4
+				}
+				return parquet.DoubleValue(f), true, 8
+			}
 		}
 	}
 	if c.elem == kString {
@@ -442,7 +457,16 @@ func listElement(c *pcol, e any) (parquet.Value, bool, int) {
 	return parquet.Value{}, false, 0
 }
 
-var epochDay = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+// daysSinceEpoch is a date as Parquet's DATE: whole days since 1970-01-01, by the calendar and at any distance (a
+// Duration between two times saturates at about 292 years).
+func daysSinceEpoch(t time.Time) int64 {
+	s := t.Unix()
+	d := s / 86400
+	if s%86400 < 0 {
+		d--
+	}
+	return d
+}
 
 // scalarValue turns a value as pgx gives it into its Parquet value; ok false = written as null (and c says why).
 func scalarValue(c *pcol, k kind, v any) (parquet.Value, bool, int) {
@@ -489,7 +513,7 @@ func scalarValue(c *pcol, k kind, v any) (parquet.Value, bool, int) {
 	case kDate:
 		switch x := v.(type) {
 		case time.Time:
-			return parquet.Int32Value(int32(math.Floor(x.Sub(epochDay).Hours() / 24))), true, 4
+			return parquet.Int32Value(int32(daysSinceEpoch(x))), true, 4
 		case pgtype.InfinityModifier:
 			return infinite()
 		}
@@ -513,10 +537,7 @@ func scalarValue(c *pcol, k kind, v any) (parquet.Value, bool, int) {
 		if !ok {
 			return infinite() // NaN, Infinity, or more digits than the column's precision holds
 		}
-		switch {
-		case c.fixed > 0:
-			return parquet.FixedLenByteArrayValue(twosComplement(u, c.fixed)), true, c.fixed
-		case c.prec > 9:
+		if c.prec > 9 {
 			return parquet.Int64Value(u.Int64()), true, 8
 		}
 		return parquet.Int32Value(int32(u.Int64())), true, 4
@@ -547,16 +568,4 @@ func unscaled(s string, scale, prec int) (*big.Int, bool) {
 		u.Neg(u)
 	}
 	return u, true
-}
-
-// twosComplement is u as n bytes, big endian, two's complement (the DECIMAL form of FIXED_LEN_BYTE_ARRAY).
-func twosComplement(u *big.Int, n int) []byte {
-	out := make([]byte, n)
-	if u.Sign() >= 0 {
-		u.FillBytes(out)
-		return out
-	}
-	m := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), uint(8*n)), u)
-	m.FillBytes(out)
-	return out
 }

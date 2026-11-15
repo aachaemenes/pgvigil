@@ -95,10 +95,13 @@ hour aged out; 2 usage; 3 the configuration or the login is refused.
 
 - `tables[]`: `table`, `kind`, `time_column`, `key_columns`, `output_files[]` (`path` under `<prefix>/<name>/`,
   `row_count`, `byte_size`, `sha256`), `row_count`, `byte_size`, `columns[]` (`name`, `pg_type`, `parquet_type`,
-  `note`), `read_ms`.
+  `note`), `read_ms`, `note`.
 - `skipped[]`: a table not exported under this configuration, and why.
 - `failed[]`: a table given up after three failed runs, and its error.
 - `dropped_columns[]`: a column left behind, and why.
+- `filtered_rows[]`: rows of a table left behind (`table`, `rows` - the predicate, `reason`).
+
+Every time in a manifest is the repository's clock.
 
 Hold every file to its `sha256`: it is the export's end-to-end check, whatever the store.
 
@@ -118,15 +121,32 @@ never exported by a guess.
   `instance_id`: `instances` gives the names.
 - **Text is off unless you carry it.** Statement, plan and log text can hold literals. Without
   `carry: [text]` the tables that are text (statement and plan texts) are skipped, and the text columns of every
-  other table (a blocked statement, a deadlock graph, a job's command, a log line's message) are dropped and named
-  in `dropped_columns`; the rest of the table is carried.
-- **Audit is off unless you carry it.** Without `carry: [audit]` these are skipped: pgvigil's own action logs (who
-  acknowledged, ran, changed what), the servers' audit trails and their counts, failed logins, and the posture
-  tables (logins and roles, role members, grants, hba rules).
-- Never exported: the web UI's logins; the collector's cursors and counter baselines; the service's queues and
-  marks; its inventory of connection references, hosts and logins. And these columns of tables that are carried:
-  a mail's recipients, subject, body and attachment, an alert channel's address, a claim token, a Patroni URL.
-- A `state` or `dimension` table over `snapshot_max_bytes` (256MB) is left out and named in `skipped`.
+  other table are dropped and named in `dropped_columns`, the rest of the table carried: a blocked statement, a
+  deadlock graph, a job's command and its output, a log or error-log line's message, an audited statement and its
+  parameters, an index's or an object's definition and a filter's predicate, the SQL a check proposes, and the
+  error text of a failed collection (a driver's words can quote a value, a host or a login).
+- **Audit is off unless you carry it.** Without `carry: [audit]`:
+  - these tables are skipped: pgvigil's own action logs (who acknowledged, ran, changed what), the servers'
+    audit trails and their counts, SQL Server's failed logins, and the posture tables (logins and roles, role
+    members, grants, hba rules);
+  - these columns are dropped and named in `dropped_columns`: who made, changed or ended one of pgvigil's own
+    rules, thresholds, acknowledgements, reports and schedules and from which address (`created_by`, `client`,
+    `ended_by` and the like), an object's grants (`schema_objects.acl`), and who ran a DDL statement
+    (`schema_ddl_log.role_name`);
+  - PostgreSQL's failed sign-ins (`log_events` of kind `auth_fail`) are left behind, and the manifest's
+    `filtered_rows` says so.
+  A table that leaves only with the audit carry still leaves without its text unless `text` is carried too.
+- Never exported: the web UI's logins; the collector's cursors, counter baselines and duplicate guards; the
+  service's queues and marks; its inventory of connection references, hosts and logins. And these columns of
+  tables that are carried: a mail's recipients, subject, body and attachment, a mail server's reply (it can quote
+  the address it refused), an alert channel's address, a claim token, a Patroni URL.
+- Every text, JSON and bytes column of every exported table is classed by name: one a later version adds is not
+  exported by a guess (pgvigil's own proof fails until it is read and classed).
+- A window table's row whose time is not set yet (a job run that never started) belongs to no hour: it is in the
+  day's first window, every day, until it has its time.
+- A `state` table over `snapshot_max_bytes` (256MB; its size on disk with its indexes) is left out and named in
+  `skipped`; `instances` never is. A `dimension` table over it loses only its whole copy in the day's first
+  window - the rows seen since each window's start are still carried - and its entry's `note` says so.
 - Views are not exported: the findings are derived, not stored.
 - What leaves the repository cannot be called back: that is why both carries are off by default.
 
@@ -138,15 +158,17 @@ never exported by a guess.
 | smallint, integer | INT32 |
 | bigint | INT64 |
 | real / double precision | FLOAT / DOUBLE |
-| numeric(p, s), p up to 38 | DECIMAL(p, s) |
-| numeric with no precision | DOUBLE - except the identity and sequence figures that reach past the bigint line, which are DECIMAL(38, 0) |
+| numeric(p, s), p up to 18 | DECIMAL(p, s) |
+| numeric(p, s), p over 18 | STRING holding the exact digits (`exact digits as text`) |
+| numeric with no precision | DOUBLE - except the identity and sequence figures that reach past the bigint line, which are STRING holding their exact digits (`exact digits as text`; a 16-byte DECIMAL's statistics cannot be written right for a negative figure) |
 | timestamp with time zone | TIMESTAMP(MICROS, adjusted to UTC) |
 | timestamp without time zone | TIMESTAMP(MICROS, not adjusted) |
 | date | DATE |
 | text, varchar, name, uuid, inet, pg_lsn | STRING |
 | bytea | BYTE_ARRAY |
 | json, jsonb | STRING with the JSON annotation |
-| an array of one of the scalars above | LIST of it, its elements OPTIONAL |
+| an array of booleans, integers, floats or strings | LIST of it, its elements OPTIONAL |
+| any other array | STRING holding its JSON text (`as JSON text`) |
 | anything else | STRING holding PostgreSQL's text form; the manifest's column says `as text` |
 
 A timestamp of infinity, and a NaN in a DECIMAL column, are written as null and the manifest's column says
