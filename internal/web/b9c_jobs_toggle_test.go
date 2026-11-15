@@ -19,7 +19,8 @@ import (
 // TestJobToggleAuditOnAStore (B9c, B9-13; migration 0194): on a migrated repository (PGVIGIL_REPO_TEST_DSN, skipped
 // without it):
 //   - import_mssql_actions_log takes a job_enable and a job_disable row with no pid on a SQL Server instance, and a
-//     plan_evict row too (0194's CHECK holds 0157's list: a later file that re-creates it must not drop task 406's kind);
+//     plan_evict row too (0194's CHECK holds 0157's list: a later file that re-creates it must not drop task 406's kind),
+//     and a verify_backup row with no pid (0191's kind, inv's 301b: 0194 sorts after 0191 and copies its list too);
 //   - import_pg_job_actions_log takes a job_enable and a job_disable row with no pid on a PostgreSQL instance, and
 //     still refuses an action outside its list ('kill');
 //   - the table still refuses a sqlserver row with action 'terminate' and a kill without a pid;
@@ -72,6 +73,9 @@ func TestJobToggleAuditOnAStore(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_actions_log($1, now(), $2::jsonb)`, ms, row(msName, "plan_evict", `,"target_id":"0x06000500"`)); err != nil {
 		t.Fatalf("plan_evict: a store at 0194 must still take task 406's kind: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_actions_log($1, now(), $2::jsonb)`, ms, row(msName, "verify_backup", `,"target":"b9c-db"`)); err != nil {
+		t.Fatalf("verify_backup: a store at 0194 must still take 0191's kind, with no pid: %v", err)
 	}
 	var n int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.actions_log WHERE instance_id = ANY($1) AND pid IS NULL AND action IN ('job_enable', 'job_disable')`, []int{ms, pg}).Scan(&n); err != nil || n != 4 {

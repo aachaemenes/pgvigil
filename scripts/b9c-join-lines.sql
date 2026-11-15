@@ -10,6 +10,7 @@
 -- import_pg_job_actions_log (0102's, replaced whole in 0194): its action list takes 'job_enable' and 'job_disable'
 --   beside 'job_stop' and 'job_start' (the raise's words name all four); nothing else of it changes.
 --
--- 0194 was written from 0157's lists (task 406, plan_evict on SQL Server); 0191's actions (inv-s1's 301b, verify_backup
--- and its kin) are not in 0194 (0191 was on no local branch at 03:3x 11-15): 0300's CHECKs take them from inv's lines.
+-- 0194 copies 0157's lists (task 406, plan_evict on SQL Server) and 0191's (inv-s1's 301b, rel-inv 0c55b7b5:
+-- verify_backup on SQL Server, no pid) whole, so the chain 0157 -> 0191 -> 0194 drops no kind; 0191's outcome CHECK is
+-- not touched by 0194. 0300's CHECKs take verify_backup from inv's own lines.
 -- No other joined object: B9c adds no findings arm, no purge() line and no apply_roles line.
