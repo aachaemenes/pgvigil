@@ -766,12 +766,106 @@ SELECT s.instance_id, s.database_name, 'secondary', 'warning', 'a log shipping c
   FROM pgvigil.mssql_logrestore_state s
  WHERE s.snapshot_at > now() - interval '15 minutes' AND s.kind = 'pair'
    AND coalesce(s.log_restores, 0) >= 2 AND s.last_with_recovery IS FALSE   -- a stream, not a restore test or a cut-over
+-- log shipping's own jobs, as its configuration names them (backup on the primary, copy and restore on the secondary,
+-- the monitor's alert job): missing = SQL Server Agent no longer has the job; disabled = the job is disabled or has
+-- no enabled schedule. Backup, copy and restore stop log shipping (critical); the alert job stops only its alert
+-- (warning). The last run is mssql_jobs' (the jobs collection), where it holds the job.
+UNION ALL
+SELECT c.instance_id, c.database_name, c.role, CASE WHEN c.job_role = 'alert' THEN 'warning' ELSE 'critical' END,
+       CASE WHEN c.job_exists IS FALSE THEN 'a log shipping job is missing' ELSE 'a log shipping job is disabled' END,
+       c.role || CASE WHEN c.database_name <> '' THEN ' / ' || c.database_name ELSE '' END || ' / '
+         || coalesce(c.job_name, c.job_role || ' job ' || c.job_id),
+       c.snapshot_at,
+       format('the %s job %s%s %s: %s.%s', c.job_role, coalesce(c.job_name, 'with id ' || c.job_id),
+              CASE WHEN c.database_name <> '' THEN format(' of the %s database %s', c.role, c.database_name) ELSE ' of log shipping''s monitor' END,
+              CASE WHEN c.job_exists IS FALSE THEN 'no longer exists in SQL Server Agent while the log shipping configuration still names it'
+                   WHEN c.job_enabled IS FALSE THEN 'is disabled'
+                   ELSE 'has no enabled schedule' END,
+              CASE c.job_role WHEN 'backup' THEN 'no log backup is taken for log shipping, and its secondaries fall behind'
+                              WHEN 'copy' THEN 'no log backup reaches this secondary, and it falls behind'
+                              WHEN 'restore' THEN 'no log backup is restored, and this copy falls behind'
+                              ELSE 'log shipping raises no alert of its own when a backup or restore threshold is passed' END,
+              CASE WHEN mj.last_run_at IS NULL THEN ''
+                   ELSE format(' Its last run %s, %s.',
+                               CASE mj.last_outcome WHEN 1 THEN 'succeeded' WHEN 0 THEN 'failed' WHEN 3 THEN 'was cancelled' ELSE 'has no known outcome' END,
+                               to_char(mj.last_run_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')) END)
+  FROM pgvigil.mssql_logship_config c
+  LEFT JOIN pgvigil.mssql_jobs mj ON mj.instance_id = c.instance_id AND mj.job_id = c.job_id
+ WHERE c.snapshot_at > now() - interval '15 minutes' AND c.job_id IS NOT NULL
+   AND (c.job_exists IS FALSE OR c.job_enabled IS FALSE OR coalesce(c.enabled_schedules, 0) = 0)
+-- a log backup of a log-shipped primary database that log shipping did not take (not copy-only, outside its folders):
+-- the secondaries never receive it, so nothing after it can be restored there. One finding per database for the 24
+-- hours read: how many, since when, the newest file. The job named is a guess and said as one: a job of this server,
+-- other than log shipping's own, whose run (mssql_job_runs, step 0) spans the newest backup's start.
+UNION ALL
+SELECT g.instance_id, g.database_name, 'primary', 'critical', 'a log backup outside log shipping broke the chain',
+       'primary / ' || g.database_name, g.snapshot_at,
+       format('database %s is a log shipping primary, and %s %s not copy-only %s written outside its log shipping folder %s in the last 24 hours (the first at %s); the newest, at %s, went to %s. The secondaries never receive such a backup, so their restores stop before it until that file is restored there by hand or the copy is re-initialised. %s',
+              g.database_name, g.n, CASE WHEN g.n = 1 THEN 'log backup that is' ELSE 'log backups that are' END,
+              CASE WHEN g.n = 1 THEN 'was' ELSE 'were' END, coalesce(g.backup_directory, '?'),
+              to_char(g.first_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), to_char(g.finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
+              coalesce(nullif(g.file_name, ''), 'a ' || coalesce(g.device, 'backup') || ' device'),
+              CASE WHEN jr.jobs IS NOT NULL THEN format('It was probably the job %s: its run spans that backup''s start.', jr.jobs)
+                   ELSE 'The job that took it is not known (no job run read from this server spans its start).' END)
+  FROM (SELECT DISTINCT ON (fl.instance_id, fl.database_name) fl.*, count(*) OVER w AS n, min(fl.finished_at) OVER w AS first_at
+          FROM pgvigil.mssql_logship_foreign_logs fl
+         WHERE fl.snapshot_at > now() - interval '15 minutes'
+        WINDOW w AS (PARTITION BY fl.instance_id, fl.database_name)
+         ORDER BY fl.instance_id, fl.database_name, fl.finished_at DESC) g
+  LEFT JOIN LATERAL (SELECT string_agg(DISTINCT r.job_name, ', ') AS jobs
+                       FROM pgvigil.mssql_job_runs r
+                      WHERE r.instance_id = g.instance_id AND r.step_id = 0 AND r.job_name IS NOT NULL
+                        AND r.snapshot_at BETWEEN g.started_at - interval '1 day' AND g.started_at + interval '5 seconds'
+                        AND r.snapshot_at + make_interval(secs => (coalesce(r.duration_s, 0) + 5)::float8) >= g.started_at
+                        AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_logship_config c
+                                         WHERE c.instance_id = r.instance_id AND c.job_id = r.job_id)) jr ON true
+-- a log shipping primary that left FULL recovery: SIMPLE stops log shipping (Microsoft's Configure Log Shipping page,
+-- quoted); BULK_LOGGED works, with the two limits of a log backup that holds a bulk-logged change
+UNION ALL
+SELECT c.instance_id, c.database_name, 'primary', CASE c.recovery_model WHEN 'SIMPLE' THEN 'critical' ELSE 'warning' END,
+       'a log-shipped database is in ' || c.recovery_model || ' recovery', 'primary / ' || c.database_name, c.snapshot_at,
+       CASE c.recovery_model WHEN 'SIMPLE' THEN
+         format('database %s is a log shipping primary and its recovery model is SIMPLE: no log backup can be taken, so log shipping has stopped (Microsoft: "The primary database must use the full or bulk-logged recovery model; switching the database to simple recovery will cause log shipping to stop functioning"). Back in FULL, its secondaries need a new full or differential backup restored before log restores can go on.', c.database_name)
+       ELSE
+         format('database %s is a log shipping primary in BULK_LOGGED recovery: log shipping works, but a log backup that holds a bulk-logged change also reads the data files (it fails when they are damaged) and cannot be restored to a point in time inside it.', c.database_name)
+       END
+  FROM pgvigil.mssql_logship_config c
+ WHERE c.snapshot_at > now() - interval '15 minutes' AND c.role = 'primary' AND c.job_role = 'backup'
+   AND c.recovery_model IN ('SIMPLE', 'BULK_LOGGED')
+-- msdb's own alert (Microsoft's errors 14420 and 14421) turned off for a configured database, or its threshold under
+-- three times the interval of the job it watches (Microsoft's words on both error pages): info - the checks above
+-- judge the database either way
+UNION ALL
+SELECT s.instance_id, s.database_name, s.role, 'info', 'the log shipping alert is off',
+       s.role || ' / ' || s.database_name || CASE WHEN s.secondary_server <> '' THEN ' on ' || s.secondary_server ELSE '' END, s.snapshot_at,
+       format('%s database %s: log shipping''s own %s alert is turned off (threshold_alert_enabled = 0 in msdb''s monitor row), so SQL Server raises no error %s when %s for longer than its threshold of %s minutes. The checks here judge the database either way.',
+              s.role, s.database_name, CASE s.role WHEN 'primary' THEN 'backup' ELSE 'restore' END,
+              CASE s.role WHEN 'primary' THEN '14420' ELSE '14421' END,
+              CASE s.role WHEN 'primary' THEN 'no log backup is taken' ELSE 'no log backup is restored' END, coalesce(s.threshold_minutes::text, '?'))
+  FROM pgvigil.mssql_logshipping_state s
+ WHERE s.snapshot_at > now() - interval '15 minutes' AND s.alert_enabled IS FALSE
+UNION ALL
+SELECT s.instance_id, s.database_name, s.role, 'info', 'a log shipping alert threshold is under three times its job interval',
+       s.role || ' / ' || s.database_name || CASE WHEN s.secondary_server <> '' THEN ' on ' || s.secondary_server ELSE '' END, s.snapshot_at,
+       format('%s database %s: its %s alert threshold is %s minutes and the job %s runs every %s %s: under three times that interval, so one or two late runs raise the alert (Microsoft, error %s: "Ideally, this value is set to at least three times the frequency of the %s job").',
+              s.role, s.database_name, c.job_role, s.threshold_minutes, coalesce(c.job_name, '?'),
+              trim(trailing '.' from trim(trailing '0' from round(c.interval_min, 2)::text)),
+              CASE WHEN c.interval_min = 1 THEN 'minute' ELSE 'minutes' END,
+              CASE s.role WHEN 'primary' THEN '14420' ELSE '14421' END, c.job_role)
+  FROM pgvigil.mssql_logshipping_state s
+  JOIN pgvigil.mssql_logship_config c ON c.instance_id = s.instance_id AND c.role = s.role AND lower(c.database_name) = lower(s.database_name)
+                                     AND c.job_role = CASE s.role WHEN 'primary' THEN 'backup' ELSE 'restore' END
+ WHERE s.snapshot_at > now() - interval '15 minutes' AND c.snapshot_at > now() - interval '15 minutes'
+   AND s.threshold_minutes > 0 AND c.interval_min > 0 AND c.job_exists AND c.job_enabled
+   AND s.threshold_minutes < 3 * c.interval_min
 )
 SELECT f.instance_id, f.database_name, f.role, f.severity, f.check_name, f.object, f.at, f.detail, NULL::text FROM f
 UNION ALL
+-- a database's own row (OK, or why it is not judged) wherever no critical or warning finding carries it: an info
+-- finding never takes it away (the page would read the database N/A)
 SELECT b.instance_id, b.database_name, 'secondary', NULL, NULL, NULL, b.snapshot_at, NULL, b.na_reason
   FROM base b
- WHERE NOT EXISTS (SELECT 1 FROM f WHERE f.instance_id = b.instance_id AND f.role = 'secondary'
+ WHERE NOT EXISTS (SELECT 1 FROM f WHERE f.instance_id = b.instance_id AND f.role = 'secondary' AND f.severity <> 'info'
                      AND lower(f.database_name) = lower(b.database_name))
 $fn$;
 
