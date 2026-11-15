@@ -107,6 +107,25 @@ database than the repository dsn's is refused, with words. Without the key (or w
 the store is refused and the page and a mailed report say why; `serve` starts anyway, with one WARN. Reports on
 instances need nothing here. The rules and the words: [customreports.md](customreports.md).
 
+## The Daily checks mail (reports.daily_checks)
+
+```yaml
+reports:
+  daily_checks:
+    enabled: true               # required when the block is there; false = off, and the page says the file turned it off
+    at: "07:00"                 # HH:MM
+    tz: America/Los_Angeles     # an IANA name, or UTC
+    to: [dba@example.org]       # 1 to 50 addresses
+    as: alice                   # the UI user the page is drawn as
+    channel: mail               # an smtp channel of the alerts: block
+```
+
+Off by default: no block, no mail (the Daily checks page's own **Mail daily...** then decides). With `enabled: true`
+every key is required, and a key the block does not know, or a block without `enabled`, stops `pgvigil serve` at its
+start with the key's name. `pgvigil serve` reads the block once, at its start. What it keeps, who wins between the
+file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily checks mail*. In a support report
+(`pgvigil report`) the switch, the hour and the zone are shown; the addresses, the user and the channel are masked.
+
 ## Instances added in the page
 
 Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click

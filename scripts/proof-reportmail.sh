@@ -73,6 +73,12 @@
 #      'can no longer sign in' and alerted the same way; the scheduled turn moved on all the same.
 #   P  the Report mail page (#/reportmail): the Schedules grid lists the five schedules, the Sends grid the mails with
 #      their outcomes; the New schedule dialog has every field labelled and closes on Escape.
+#   K  the Daily checks mail (migration 0258): its rows K1-K14 and G1-G4 and their Expected are in
+#      scripts/proof-reportmail-kept.sh, sourced after P. Needs the wiring (scripts/proof-dailymail-wiring.patch).
+# Changed with the Daily checks mail (written before its first run): a grid with no row is in a mail's body too - its
+# header row, no data row and the sentence the screen shows for it in place of 'No rows.' (before: no table for it, and
+# a scheduled page whose grids were all empty failed with 'the page drew no grid'). C reads the body so: every grid of
+# the page in order, an empty one with its sentence; the count of empty grids is in each mail's line.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -831,5 +837,8 @@ if not d['closed']: bad.append('the dialog did not close on Escape')
 print('\n'.join('     ' + b for b in bad)) if bad else print(f'ok   P: Schedules 5 rows, Sends with sent and failed, the New schedule dialog {d["fields"]} fields all labelled, Escape closes it')
 sys.exit(1 if bad else 0)
 PY
+# ---- K: the Daily checks mail (its Expected and its rows: scripts/proof-reportmail-kept.sh) ---------------------------------
+source scripts/proof-reportmail-kept.sh
+
 echo "== the machine's load at the end: $(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo unknown) (at the start: $LOAD)"
 echo "PROOF OK"
