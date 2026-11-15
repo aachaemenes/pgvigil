@@ -62,13 +62,18 @@ const dbadash = {
   'Identity Columns':    { sqlserver: ['mssqlchecks'], cv: { sqlserver: 'identity' }, dd: 'Identity Columns -> Checks > Identity Columns' },
   'Database State':      { postgres: ['pgdboptions'], sqlserver: ['mssqlchecks'], cv: { sqlserver: 'databases' }, dd: 'Database State -> Configuration > DB Options' },
   '% Max Size':          { sqlserver: ['dbfiles'], dd: '% Max Size -> Storage > Files' },
+  // DBA Dash's text cells (no tab): pgvigil links them where their Needs attention reason links - the instance's Summary,
+  // onto the Server card's row of the check (row=), or the check's page - every status text answers a click
+  'Memory Dump':         { sqlserver: ['summary'], row: { sqlserver: 'dumps' }, dd: 'Memory Dump -> DBA Dash: text; pgvigil: the instance Summary\'s Server card row' },
+  'DB Mail':             { sqlserver: ['summary'], row: { sqlserver: 'dbmail' }, dd: 'DB Mail -> DBA Dash: text; pgvigil: the instance Summary\'s Server card row' },
+  'Is Agent Running':    { sqlserver: ['mssqljobs'], dd: 'Is Agent Running -> DBA Dash: text; pgvigil: the Jobs page, as its reason' },
   // the landing checked, the difference from DBA Dash's page named in the verdict (argued in the report)
   'Collection Errors (24hrs)': { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'DBA Dash Errors (24hrs) -> Checks > DBA Dash ErrorLog',
     diff: 'pgvigil has no error-log page yet (E205, parity task P13): Collection dates, whose rows carry each collection\'s last error' },
 };
 // the differences named (pgvigil lands elsewhere, argued in the report): column -> words
 const named = {};
-// DBA Dash's cells that are text, not links (Checks/Summary.cs: no tab, no dialog)
+// DBA Dash's text cells (Checks/Summary.cs: no tab, no dialog): pgvigil's are links wherever they hold a text
 const plainColumns = ['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB Mail'];
 // Instance Uptime: DBA Dash's Summary opens the Instance Uptime threshold dialog over the grid; the click must too
 const dialogColumns = new Set(['Instance Uptime']);
@@ -269,6 +274,8 @@ for (const sc of scopes) {
     else verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : 'ok';
     const stWant = (l.kind === 'cell' && engine === 'sqlserver') || l.kind === 'test' ? statusWant[l.column] : undefined;
     if (stWant && !verdict.startsWith('FAIL') && paramsOf(l.href).get('status') !== stWant) verdict = `FAIL the ${l.column} ${l.kind} does not open its page on its status filter (status=${stWant}; its href: ${l.href})`;
+    const rwWant = l.kind === 'cell' ? dbadash[l.column]?.row?.[engine] : undefined;
+    if (rwWant && !verdict.startsWith('FAIL') && paramsOf(l.href).get('row') !== rwWant) verdict = `FAIL the ${l.column} cell does not name its Server card row (row=${rwWant}; its href: ${l.href})`;
     const key = `${l.kind}|${l.column}|${engine}`;
     let landed = `${tab} (href)`;
     if (l.kind === 'cell' && dialogColumns.has(l.column)) {
@@ -300,6 +307,15 @@ for (const sc of scopes) {
         else landed += `, Status ${sel} over a stored All`;
       }
       if (stWant) await ev(`(() => { for (const k of ['pgvigil.filesStatus.folder', 'pgvigil.filesStatus.instance']) localStorage.removeItem(k); return true; })()`);
+      if (rwWant && !verdict.startsWith('FAIL')) {
+        // the landing holds the check's Server card row at the top of the view, with the focus (the jump follows the header)
+        let at = null;
+        for (let i = 0; i < 40 && !(at = await ev(`(() => { const r = document.querySelector('main [data-row="${rwWant}"]'); if (!r || document.activeElement !== r) return null; const b = r.getBoundingClientRect(); return { top: Math.round(b.top), vh: innerHeight, addr: location.hash }; })()`)); i++) await sleep(250);
+        if (!at) verdict = `FAIL the landing's Server card row '${rwWant}' never took the focus`;
+        else if (at.top < 0 || at.top > at.vh / 3) verdict = `FAIL the row '${rwWant}' is not at the top of the view (${at.top} px of ${at.vh})`;
+        else if (paramsOf(at.addr).get('row')) verdict = `FAIL the address keeps row= after the jump (${at.addr})`;
+        else landed += `, the Server card row '${rwWant}' at ${at.top} px, focused`;
+      }
     }
     record({ scope: sc.name, kind: l.kind, column: l.column, engine, link: l.text, inst: l.inst, landed, href: l.href, verdict });
   }
@@ -387,7 +403,8 @@ else {
       cells[o.Instance ? o.Instance.text : ''] = o;
     }
     const plain = ${JSON.stringify(plainColumns)};
-    const plainLinks = [...m.querySelectorAll('a.cell-link')].map(a => (a.getAttribute('aria-label') ?? '').split(':')[0]).filter(c => plain.includes(c));
+    const plainLinks = [];
+    for (const [name, o] of Object.entries(cells)) for (const c of plain) if (o[c] && o[c].text && !o[c].link) plainLinks.push(c + ' @ ' + name + ' (' + o[c].text + ')');
     const tb = m.querySelector('.summary-toolbar'), rt = tb && tb.querySelector('.refresh-time'), icon = rt && rt.querySelector('[role="img"]'), upper = m.querySelector('.tests');
     return { th: head(tests), ih, testRows, cells, plainLinks, buttons: tb ? [...tb.querySelectorAll('button')].map(b => b.textContent.trim()) : [],
       rt: rt ? rt.textContent : '', icon: icon ? icon.getAttribute('aria-label') : '', maxH: upper ? upper.style.maxHeight : '', upperHidden: upper ? upper.hidden : null };
@@ -405,7 +422,7 @@ else {
   const pos = sh.ih.map(h => ddOrder.indexOf(h)), dd = pos.filter(x => x >= 0), firstOwn = pos.findIndex(x => x < 0);
   const inOrder = sh.ih[0] === 'Instance' && dd.every((x, i) => i === 0 || x > dd[i - 1]) && (firstOwn < 0 || pos.slice(firstOwn).every(x => x < 0));
   shape('instance grid columns', sh.ih.slice(0, 26).join(' | '), inOrder, inOrder ? `Instance, ${dd.length - 1} of DBA Dash's columns in its order, then pgvigil's` : 'not in DBA Dash\'s order');
-  shape('plain cells', sh.plainLinks.length ? sh.plainLinks.join(', ') : 'no link', !sh.plainLinks.length, sh.plainLinks.length ? 'a link where DBA Dash\'s cell is text' : 'Memory Dump, Is Agent Running and DB Mail are text, as DBA Dash\'s');
+  shape('status text cells', sh.plainLinks.length ? sh.plainLinks.join(', ') : 'every one with a text is a link', !sh.plainLinks.length, sh.plainLinks.length ? 'a status text that answers no click (Allen 11-14 18:25)' : 'Memory Dump, Crash restarts, Is Agent Running and DB Mail: a link wherever they hold a text');
   for (const [inst, want] of Object.entries(expectText)) for (const [col, text] of Object.entries(want)) {
     const got = sh.cells[inst] && sh.cells[inst][col];
     const good = !!got && (text.endsWith('*') ? got.text.startsWith(text.slice(0, -1)) : got.text === text);
@@ -528,6 +545,23 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     for (let i = 0; i < 40 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('#crumb .band-dot') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(250);
     const dot = await ev(`(() => { const d = document.querySelector('#crumb .band-dot'); return d ? d.getAttribute('aria-label') : null; })()`);
     pm(`${eng} ${inst.name}`, 'breadcrumb dot', eng, String(dot), ['OK', 'Warning', 'Critical', 'Offline'].includes(dot), 'the band dot before the name in the breadcrumb, named by its word');
+    // the own-page status texts (the lead 14:2x, 2A): a SQL Server Summary's Memory dumps / DB Mail reason - in the
+    // header, the verdict card and the Not OK line - is a link that jumps to its Server card row, the address unchanged
+    if (eng === 'sqlserver') for (const [where, sel] of [['header reason', 'main .inst-reason [data-group="KEY"]'], ['verdict reason', 'main .verdict-reasons li[data-group="KEY"]'], ['Not OK name', 'main p.counts [data-group="KEY"]']]) for (const key of ['dumps', 'dbmail']) {
+      const q = sel.replace('KEY', key);
+      const was = await ev('location.hash');
+      const got = await ev(`(async () => { const x = document.querySelector(${JSON.stringify(q)}); if (!x) return null;
+        const a = x.matches('a[href]') ? x : x.querySelector('a[href]'); if (!a) return { link: false, text: x.textContent.trim().slice(0, 50) };
+        window.scrollTo(0, 0); a.click();
+        for (let i = 0; i < 20 && document.activeElement?.getAttribute('data-row') !== ${JSON.stringify(key)}; i++) await new Promise(r => setTimeout(r, 150));
+        const r = document.querySelector('main [data-row="${key}"]'), b = r?.getBoundingClientRect();
+        return { link: true, text: a.textContent.trim().slice(0, 50), focused: document.activeElement === r && !!r, top: b ? Math.round(b.top) : null, vh: innerHeight, addr: location.hash }; })()`, true);
+      if (!got) { pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, 'not on this page', true, `not seen: ${key} is not a reason of ${inst.name} now`); continue; }
+      const good = got.link && got.focused && got.top != null && got.top >= 0 && got.top <= got.vh / 3 && got.addr === was;
+      pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, got.link ? `'${got.text}': focus ${got.focused}, the row at ${got.top} px of ${got.vh}, the address ${got.addr === was ? 'unchanged' : 'now ' + got.addr}` : `'${got.text}' is text`, good,
+        "a status text whose page is this one jumps to its Server card row: at the top of the view, focused, the address unchanged");
+      await ev('window.scrollTo(0, 0)');
+    }
     // the calendar's month buttons
     const monthOf = () => ev(`document.querySelector('main .healthcal-month')?.textContent ?? ''`);
     const clickNav = async (name) => { await ev(`[...document.querySelectorAll('main .healthcal-nav button')].find(b => (b.getAttribute('aria-label') ?? b.textContent) === ${JSON.stringify(name)})?.click()`); for (let i = 0; i < 30 && await ev(`!!document.querySelector('main .healthcal-body p.meta') && /^Loading/.test(document.querySelector('main .healthcal-body p.meta').textContent)`); i++) await sleep(100); await sleep(200); };
