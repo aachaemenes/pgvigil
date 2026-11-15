@@ -284,5 +284,65 @@
     "begin": "RAISERROR('Checking queries with memory grants', 0, 1) WITH NOWAIT;",
     "end": "RAISERROR('Checking CPU config', 0, 1) WITH NOWAIT;",
     "sha256": ""
+  },
+  {
+    "name": "healthParserWaitDuration",
+    "go_file": "internal/mssql/readers_sysevents.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HealthParser 3.11 (20261101), its significant-wait filter's default (500 ms)",
+    "begin": "@wait_duration_ms bigint = 500,",
+    "end": "/*Minimum duration to show query waits*/",
+    "sha256": ""
+  },
+  {
+    "name": "healthParserWaitQueries",
+    "go_file": "internal/mssql/readers_sysevents.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HealthParser 3.11 (20261101), the queries with significant waits (wait_info)",
+    "begin": "RAISERROR('Parsing queries with significant waits', 0, 0) WITH NOWAIT;",
+    "end": "RAISERROR('Parsing #waits_by_count', 0, 0) WITH NOWAIT;",
+    "sha256": ""
+  },
+  {
+    "name": "healthParserMemoryBroker",
+    "go_file": "internal/mssql/readers_sysevents.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HealthParser 3.11 (20261101), the memory broker's notifications",
+    "begin": "RAISERROR('Parsing memory broker data', 0, 0) WITH NOWAIT;",
+    "end": "RAISERROR('Parsing memory node OOM data', 0, 0) WITH NOWAIT;",
+    "sha256": ""
+  },
+  {
+    "name": "healthParserMemoryNodeOOM",
+    "go_file": "internal/mssql/readers_sysevents.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HealthParser 3.11 (20261101), a memory node's out-of-memory records",
+    "begin": "RAISERROR('Parsing memory node OOM data', 0, 0) WITH NOWAIT;",
+    "end": "RAISERROR('Parsing system stuff', 0, 0) WITH NOWAIT;",
+    "sha256": ""
+  },
+  {
+    "name": "healthParserSchedulerMonitor",
+    "go_file": "internal/web/q_mssql_errorlog.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HealthParser 3.11 (20261101), the scheduler monitor's samples and warnings",
+    "begin": "RAISERROR('Parsing scheduler monitor data', 0, 0) WITH NOWAIT;",
+    "end": "RAISERROR('Parsing error_reported data', 0, 0) WITH NOWAIT;",
+    "sha256": ""
+  },
+  {
+    "name": "healthParserBlockedTasks",
+    "go_file": "internal/mssql/xe_shred.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HealthParser 3.11 (20261101), the blocked queries from queryProcessing/blockingTasks (blockingTasks)",
+    "begin": "RAISERROR('Parsing blocked queries', 0, 0) WITH NOWAIT;",
+    "end": "RAISERROR('Parsing blocking queries', 0, 0) WITH NOWAIT;",
+    "sha256": ""
   }
 ]
