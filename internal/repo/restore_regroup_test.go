@@ -260,8 +260,8 @@ func TestRestoreRegroupRacesOnAStore(t *testing.T) {
 	fullTo := f.now.Add(-2 * h)
 	full := func(id int64) map[string]any { return f.set("dbx", "full", id, 1000, 1010, -2*h, 1000) }
 	logOf := func(id int64) map[string]any { return f.set("dbx", "log", id, 1010, 1020, -h, 1000) }
-	// beside: run fn on a second connection while tx stays open, then commit tx and wait for fn
-	beside := func(step string, tx execer, commit func() error, fn func() error) error {
+	// beside: run fn on a second connection while the first import's transaction stays open, then commit it and wait for fn
+	beside := func(step string, commit func() error, fn func() error) error {
 		t.Helper()
 		done := make(chan error, 1)
 		go func() { done <- fn() }()
@@ -290,7 +290,7 @@ func TestRestoreRegroupRacesOnAStore(t *testing.T) {
 	if err := f.call(tx, "import_mssql_restore_chain", s, f.snap(1), []map[string]any{f.db("dbx", g), logOf(32), {"kind": "read"}}); err != nil {
 		t.Fatalf("R1: s's chain import: %v", err)
 	}
-	if err := beside("R1", tx, func() error { return tx.Commit(f.ctx) }, func() error {
+	if err := beside("R1", func() error { return tx.Commit(f.ctx) }, func() error {
 		return f.call(f.pool, "import_mssql_backups", s, f.snap(1), []map[string]any{f.db("dbx", g)})
 	}); err != nil {
 		t.Fatalf("R1: s's backups import: %v", err)
@@ -316,7 +316,7 @@ func TestRestoreRegroupRacesOnAStore(t *testing.T) {
 	if err := f.call(tx, "import_mssql_backups", s, f.snap(1), []map[string]any{f.db("dbx", "")}); err != nil {
 		t.Fatalf("R2: s's backups import: %v", err)
 	}
-	if err := beside("R2", tx, func() error { return tx.Commit(f.ctx) }, func() error {
+	if err := beside("R2", func() error { return tx.Commit(f.ctx) }, func() error {
 		return f.call(f.pool, "import_mssql_restore_chain", p, f.snap(1), []map[string]any{f.db("dbx", g), full(41), {"kind": "read"}})
 	}); err != nil {
 		t.Errorf("R2: p's chain import beside s's backups import: %v (want no error)", err)
