@@ -499,6 +499,7 @@ stopbg() { for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || true; done; BG=(
 req() { sq "SELECT TOP (1) CONVERT(varchar(40), r.query_hash, 1) + '|' + CONVERT(varchar(40), r.query_plan_hash, 1) + '|' + CAST(r.statement_start_offset AS varchar(10)) + '|' + CAST(r.statement_end_offset AS varchar(10))
   + '|' + CAST(r.cpu_time AS varchar(20)) + '|' + CAST(r.granted_query_memory AS varchar(20)) + '|' + CAST(DATEDIFF_BIG(millisecond, r.start_time, GETDATE()) AS varchar(20))
   FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE t.text LIKE '%$1%' AND t.text NOT LIKE '%dm_exec_requests%' ORDER BY r.cpu_time DESC"; }
+waitn() { local n=0; for _ in $(seq 1 60); do n=$(sq "SELECT COUNT(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE t.text LIKE '%$1%' AND t.text NOT LIKE '%dm_exec_requests%'" 2>/dev/null || echo 0); [[ "$n" -ge "$2" ]] && return 0; sleep 0.5; done; return 1; }
 waitreq() { local v=; for _ in $(seq 1 60); do v=$(req "$1" 2>/dev/null || true); [[ -n "$v" ]] && { echo "$v"; return 0; }; sleep 0.5; done
   sq "SELECT s.host_name + '|' + s.status + '|' + ISNULL(r.status, '-') + '|' + ISNULL(r.wait_type, '-') + '|' + CAST(ISNULL(r.blocking_session_id, 0) AS varchar(10)) + '|' + ISNULL(LEFT(t.text, 120), '-')
     FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE s.host_name LIKE 'pgvqs-%'" >&2 || true
@@ -524,7 +525,10 @@ DURQ=$(req pgvc-dur); stopbg
 bg cpu 60 "SELECT COUNT_BIG(*) FROM dbo.t a CROSS JOIN dbo.t b CROSS JOIN (SELECT TOP 8 1 x FROM dbo.t) c WHERE a.pad <> b.pad OR a.a > b.a OPTION (MAXDOP 1) /* pgvc-cpu */"
 waitreq pgvc-cpu >/dev/null; sleep 3; echo "cpu|$(req pgvc-cpu)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 # C1 count: two sessions on one plan, blocked 3 s
-hold 6 100; bg cnt1 100 "$(victim cnt 6) /* pgvc-cnt */"; bg cnt2 100 "$(victim cnt 6) /* pgvc-cnt */"; waitreq pgvc-cnt >/dev/null; sleep 3
+hold 6 100; bg cnt1 100 "$(victim cnt 6) /* pgvc-cnt */"; bg cnt2 100 "$(victim cnt 6) /* pgvc-cnt */"; waitreq pgvc-cnt >/dev/null
+# both sessions' requests must have started before the 3 s count: under a loaded box the second sqlcmd login can start
+# its request seconds after the first, and 'collect -once' then sees one session on the plan (j15h 11-15: 'DIFF C1 count')
+waitn pgvc-cnt 2 || fail "C1 count: the second session's request never started"; sleep 3
 echo "count|$(req pgvc-cnt)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
 # C1 grant: a sort over dbo.big holding its grant while it waits on a locked row
 bg holdbig 100 "BEGIN TRAN; UPDATE dbo.big SET pad = REVERSE(pad) WHERE id = 300000; WAITFOR DELAY '00:03:00'; ROLLBACK;"; held holdbig
