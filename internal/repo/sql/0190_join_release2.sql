@@ -15,7 +15,12 @@
 --   task 406 B12 (0157): no findings arm here (mssql_querystore_findings is 0083's view, re-created by 0157); purge() calls
 --     pgvigil.mssql_qs_plans_purge(p_days); apply_roles() (0110's) keeps mssql_qs_plans_purge, mssql_plan_stats_store and
 --     mssql_plans_policy_drop owner only.
--- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
+--   task 301 (0140): the mssql_backup_loc_findings arm; purge() keeps mssql_backup_roots_seen 400 days at least.
+--   task 304 (0147): the mssql_restore_findings arm; nothing for purge() (its tables are current state, cascaded).
+--   SLOW-CONNECT (0121): alert_due's slow-connect terms; the 'connect_time' threshold key (and 'seconds' in
+--     pg_threshold_keys' unit check); import_pg_threshold is 0117's with connect_time taken at a SQL Server instance.
+-- The view is 0110's with the new arms; purge() is 0110's with the new parents and lines; apply_roles() is not here
+-- (0110's, its owner-only list extended in 0110 itself).
 --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
 --     'not judged'; the rest 0104's text), and the findings view's 'database xid age' arm leaves an invalid database out.
 

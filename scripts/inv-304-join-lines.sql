@@ -1,6 +1,6 @@
--- Task 304 (migration 0147): the line for the lead's NEXT join migration - never an edit of 0190 (the migrator skips a
--- recorded file, so an edit of 0190 never reaches a repository that has it). Not a migration of its own: one piece to
--- place where its comment says.
+-- Task 304 (migration 0147): the lines for the join's migration 0190, placed there (its one piece, each
+-- where its comment says): 0190 is extended in place until the release, nothing of it having been released yet.
+-- Not a migration of its own; kept as the record of what the join placed.
 
 -- (1) pgvigil.findings: one more UNION ALL arm, after task 301's mssql_backup_loc arm, in the shape of the other mssql_* arms:
     UNION ALL

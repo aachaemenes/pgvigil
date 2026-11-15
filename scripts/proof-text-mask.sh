@@ -40,7 +40,10 @@
 #  X (the fold): Extended Events. Before part A the proof sets 'blocked process threshold (s)' to 5 on its container
 #     and runs `pgvigil mssql-xe -print` there; part A's two waiting UPDATEs then raise blocked process reports, which
 #     hold each blocked session's input buffer. `collect -once mssql_xe` stores them: X1 at least one report of the
-#     -P session is stored and its report holds '<masked>'; the dump checks of A1-A4 then cover the reports too. A
+#     -P session is stored, and each such report holds '&lt;masked&gt;' and is a well-formed XML document (the join
+#     with task 406, written before its first run: the mask writes <masked> escaped inside an XML document - a raw
+#     <masked> in an input buffer was an unclosed tag, and the report page could not parse it); the dump checks of
+#     A1-A4 then cover the reports too. A
 #     report of the passphrase session is written down as the server gives it (the server withheld its text in the
 #     requests sample).
 #  B. PostgreSQL, query_text full: one session runs SELECT pg_sleep(...) with pgp_sym_encrypt(..., '<P1>'),
@@ -180,9 +183,9 @@ N_NORM=$(q "select count(distinct r.instance_id) from pgvigil.mssql_requests_v r
 STORED=$(q "select statement from pgvigil.mssql_requests_v where instance_id = $FULL_ID and session_id = $SID and statement is not null limit 1")
 case "$STORED" in *"-P <masked> -Q"*"-P<masked> -Q"*"SQLCMDPASSWORD = <masked>"*) pass "A7: the stored statement holds the three masked forms" ;;
   *) bad "A7: the stored statement: $STORED" ;; esac
-NREP=$(q "select count(*) || '|' || count(*) filter (where report like '%<masked>%') from pgvigil.mssql_blocked_reports where instance_id = $FULL_ID and report like '%sqlcmd%'")
+NREP=$(q "select count(*) || '|' || count(*) filter (where report like '%&lt;masked&gt;%' and xml_is_well_formed_document(report)) from pgvigil.mssql_blocked_reports where instance_id = $FULL_ID and report like '%sqlcmd%'")
 case "$NREP" in 0\|*) bad "X1: no blocked process report of the -P session stored ($(tail -2 "$TMPD/c-xe.out"))" ;;
-  *) [ "${NREP%%|*}" = "${NREP##*|}" ] && pass "X1: the -P session's blocked process reports are stored, masked ($NREP)" || bad "X1: reports|masked = $NREP" ;; esac
+  *) [ "${NREP%%|*}" = "${NREP##*|}" ] && pass "X1: the -P session's blocked process reports are stored, masked and well-formed XML ($NREP)" || bad "X1: reports|masked and well-formed = $NREP" ;; esac
 echo "  the passphrase session's report as stored: $(q "select coalesce(left(substring(report from 'ENCRYPTBYPASSPHRASE.{0,40}'), 60), '(no report holds the call)') from pgvigil.mssql_blocked_reports where instance_id = $FULL_ID and report like '%ENCRYPTBYPASSPHRASE%' limit 1")"
 sq "KILL $SID; KILL $SID2;" >/dev/null 2>&1
 

@@ -951,8 +951,7 @@ $$;
 -- collector_findings: the findings shape (pgvigil.findings' arms). Source 'pgvigil repository' marks the
 -- repository-wide ones (no instance: every channel past its severity floor takes them); 'pgvigil collector' an
 -- instance's.
--- ===== the slow-connect tier (Allen 11-14 06:40; the design S1-S6, 'SLOWCONNECT FOLD' K1-K9 and the pass
--- 20261114-091104 #1-#9 as the lead took them 10:2x) =====
+-- ===== the slow-connect tier =====
 -- collector_connects: per collector host and instance, its connects over its last 5 written minutes of the 20 (its
 -- window) and over the 5 before its newest (the window a minute ago): the timed connects, their average and the longest
 -- in seconds, its own warning and critical (pg_threshold 'connect_time': 1.00 / 2.50 s by default), its dial target

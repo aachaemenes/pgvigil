@@ -93,7 +93,7 @@
 #  age had the same rounding), the expectation unchanged.]
 #  [Run 2, s162-proof2, 15:45 PST, PG 18: every part as expected, PROOF OK. Run 3, s162-proof3, 15:50 PST: PROOF OK on 13
 #  (A4 not run) and 16.]
-#  [The review's fold (agent-runs/20261111-154515-reviewer), expected before run 4:
+#  [The review's fold, expected before run 4:
 #   A3 one more refusal: archive_age warn 0.4 (whole minutes only).
 #   A4 the barman answer as barman writes a failed and a running backup (no end, no size): 4 backups, the newest ended
 #      one FAILED (20261111T110000): one 'newest backup failed' row, warning, object pg1; the FAILED and running ones

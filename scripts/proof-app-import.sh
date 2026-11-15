@@ -43,7 +43,7 @@
 #  F18 (R18) a second import while one holds the lock: refused at once;  F19 (R19) a credential-shaped cell refused,
 #      its text in no answer or audit row;  F21 (R21) '(none)': nothing on an inheriting database (the preview says so),
 #      a conflict on a person's own assignment (removed when ticked), a change on an import's (any case of the word)
-#  The review's rows (agent-runs 20261114-151618 / 152723 / 153929 / 155152): F22 a ticked application conflict's words
+#  The review's rows: F22 a ticked application conflict's words
 #  name every field it writes; F23 a line refused later adds or refuses no application; F24 an .xlsx with a repeated
 #  row number refused in words; F25 a server-level line applied, its tag move counted; F26 (P-6, as built) an import's
 #  re-assign of its own row under a person's server is a change; F19b one cell at a time for the credential check
