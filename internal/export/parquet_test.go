@@ -198,6 +198,11 @@ func TestFileSplitByBytes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// what a file may hold beside its values: each row group's minimum and maximum once, and the small parts. A
+		// page header that carried the page's bounds whole would add four more values a group.
+		if room := f.RowCount*8200 + int64(len(pf.RowGroups()))*2*8200 + 16<<10; f.ByteSize > room {
+			t.Errorf("%s is %d bytes for %d rows in %d groups: over %d, something holds values twice", f.Path, f.ByteSize, f.RowCount, len(pf.RowGroups()), room)
+		}
 		if i < len(files)-1 && len(pf.RowGroups()) < 2 {
 			t.Errorf("%s has %d row group(s): the byte line closes one about every 8 rows", f.Path, len(pf.RowGroups()))
 		}

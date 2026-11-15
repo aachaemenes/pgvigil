@@ -66,7 +66,8 @@
 #      the manifest's failed[] with the window complete (exit 1).
 #  F.  left out and dropped: no ui_users file, the table in `skipped`; report_mail_sends is carried without html,
 #      xlsx, recipients and subject, the four named in dropped_columns; mssql_errorlog is carried without message
-#      (named in dropped_columns as text) and with it under carry [text]; a table named in tables.exclude is in
+#      (named in dropped_columns as text) and with it under carry [text], where a value of 9 MB reads back whole (a
+#      page's header must not hold the page's largest value: readers refuse a header past 16 MB); a table named in tables.exclude is in
 #      `skipped` naming that key, the others carried.
 #  G.  destinations: one window written to a folder, to the S3-compatible server and to Azurite: the three listings
 #      hold the same names, every file's sha256 is the one its own manifest gives, each table's rows are equal across
@@ -75,7 +76,8 @@
 #      one row group.
 #  H.  the page door: a run by a login in the exporter role leaves one export_runs row per window (outcome ok, its
 #      files / rows / bytes the manifest's) and the export_state row; the same login's own INSERT into export_runs is
-#      refused; GET /api/export lists the runs; a run whose destination does not answer (a path under a file) exits
+#      refused; GET /api/export lists the runs, and answers nothing (not an error) where the repository has no
+#      export record; a run whose destination does not answer (a path under a file) exits
 #      1 and is a row with outcome failed and its error, and export_service names 'the last run failed'; the newest run moved 4 hours back makes it name the hours
 #      behind; after `pgvigil export -off` export_state is empty and export_service has no row.
 #  J.  doors and caps: `-plan -json` lists the three due windows and each table's kind and writes nothing; `-check`
@@ -314,7 +316,8 @@ def seed_F():
     q(f"INSERT INTO pgvigil.report_mail_sends (kind, name, route, requested_by, requested_at, channel, recipients, subject, html, xlsx) VALUES "
       f"('now', 'f-send', '#/summary', 'proof', CAST({lit(w[0] + dt.timedelta(minutes=9))} AS timestamptz), 'mail', '{{\"a@example.invalid\"}}', 'f subject', '<p>f body</p>', '\\x504b0304')")
     q(f"INSERT INTO pgvigil.mssql_errorlog (instance_id, log_at, line_key, snapshot_at, logged_local, class, matched, custom, message) VALUES "
-      f"({M1}, CAST({lit(w[0] + dt.timedelta(minutes=40))} AS timestamptz), 'f-1', now(), TIMESTAMP '2026-01-02 03:04:05', 'general', '{{}}', false, 'f secret text')")
+      f"({M1}, CAST({lit(w[0] + dt.timedelta(minutes=40))} AS timestamptz), 'f-1', now(), TIMESTAMP '2026-01-02 03:04:05', 'general', '{{}}', false, 'f secret text'), "
+      f"({M1}, CAST({lit(w[0] + dt.timedelta(minutes=41))} AS timestamptz), 'f-big', now(), TIMESTAMP '2026-01-02 03:04:06', 'general', '{{}}', false, repeat('m', 9000000))")
 def seed_G():
     w = Wk(3)
     for n in range(5): hs(I3, w[0] + dt.timedelta(minutes=11 * n + 1), f'g-{n}')
@@ -469,7 +472,7 @@ def row_B2():
     ca = cfg('b2', dest=dest, state=state); w4 = Wk(4); w5 = Wk(5); w1 = Wk(1)
     rc, out, err = export(ca); m = man('b2', w4)
     if not check(rc == 0 and m and m['pass'] == 1 and [r['job_name'] for r in rows('b2', m, 'mssql_job_runs')] == ['b2 early'], f'B2: pass 1 of W4 holds what was stored then (rc {rc}, pass {m and m["pass"]}: {err.strip()[:160]})'): return
-    gone = glob.glob(f'{root("b2")}/database_sizes/*{stamp(w4[0])}*')
+    gone = glob.glob(f'{root("b2")}/database_sizes/*__{stamp(w4[0])}__{stamp(w4[1])}*')
     check(len(gone) == 1 and entry(m, 'database_sizes')['row_count'] == 1, f'B2: pass 1 wrote the file of a row that is deleted before the final pass ({len(gone)} file)')
     seed_B2_late(); q("DELETE FROM pgvigil.database_sizes WHERE datname = 'b2-gone'")
     cb = cfg('b2f', dest=dest, state=state, final_after_hours=2)
@@ -481,14 +484,14 @@ def row_B2():
         unpolicy('table_sizes')
         for s in export_sessions(): q(f'SELECT pg_terminate_backend({s[0]})')
     mk = lambda w: os.path.exists(f'{root("b2")}/_manifests/_final/{NAME}__{stamp(w[0])}__{stamp(w[1])}')
-    rewritten = [f for f in glob.glob(f'{root("b2")}/database_sizes/*{stamp(w5[0])}*') if os.path.getmtime(f) >= t_cut - 1]
+    rewritten = [f for f in glob.glob(f'{root("b2")}/database_sizes/*__{stamp(w5[0])}__{stamp(w5[1])}*') if os.path.getmtime(f) >= t_cut - 1]
     check(reading and man('b2', w5) is None and not mk(w5) and rewritten, f'B2: a final pass killed while it reads leaves its files, no manifest and no marker for its window (reading seen {reading}, files written again {len(rewritten)}, manifest {man("b2", w5) is not None}, marker {mk(w5)})')
     rc, out, err = export(cb); m5 = man('b2', w5); m4 = man('b2', w4); m1 = man('b2', w1)
     check(rc == 0 and m5 and m5['pass'] == 'final' and mk(w5) and not sums_hold('b2', m5), f'B2: the next run does the cut window again (rc {rc}, pass {m5 and m5["pass"]}, marker {mk(w5)})')
     jr = sorted(r['job_name'] for r in rows('b2', m4, 'mssql_job_runs')); qs = [r['database_name'] for r in rows('b2', m4, 'mssql_qs_interval')]
     check(m4 and m4['pass'] == 'final' and jr == ['b2 early', 'b2 late'] and qs == ['b2db'] and mk(w4), f'B2: the final pass carries the rows stored after pass 1 under the same names (pass {m4 and m4["pass"]}, job runs {jr}, intervals {qs}, marker {mk(w4)})')
     e4 = entry(m4, 'database_sizes') or {}
-    left = glob.glob(f'{root("b2")}/database_sizes/*{stamp(w4[0])}*')
+    left = glob.glob(f'{root("b2")}/database_sizes/*__{stamp(w4[0])}__{stamp(w4[1])}*')
     check(e4.get('row_count') == 0 and not e4.get('output_files') and not left, f'B2: a table with no row any more has row_count 0 in the final manifest and its pass-1 file is gone (row_count {e4.get("row_count")}, files left {len(left)})')
     check(m1 and m1['pass'] == 1 and not mk(w1), f'B2: a window younger than final_after_hours stays pass 1 with no marker (pass {m1 and m1["pass"]}, marker {mk(w1)})')
 
@@ -577,11 +580,15 @@ def row_F():
     sends = [r for r in rows('f', m, 'report_mail_sends') if r['name'] == 'f-send']
     check(len(sends) == 1 and not ({'html', 'xlsx', 'recipients', 'subject'} & set(sends[0])) and dc(m, 'report_mail_sends') == ['html', 'recipients', 'subject', 'xlsx'],
           f'F: report_mail_sends carried without its mail columns, the four named ({dc(m, "report_mail_sends")})')
-    e1 = [r for r in rows('f', m, 'mssql_errorlog') if r['line_key'] == 'f-1']; e2 = [r for r in rows('ft', mt, 'mssql_errorlog') if r['line_key'] == 'f-1']
+    e1 = [r for r in rows('f', m, 'mssql_errorlog') if r['line_key'] == 'f-1']
+    try: el = rows('ft', mt, 'mssql_errorlog'); elerr = ''
+    except Exception as e: el = []; elerr = f'{type(e).__name__}: {str(e)[:200]}'
+    e2 = [r for r in el if r['line_key'] == 'f-1']; big = [r for r in el if r['line_key'] == 'f-big']
     reason = next((x.get('reason', '') for x in m.get('dropped_columns', []) if x['table'] == 'mssql_errorlog' and x['column'] == 'message'), '')
     check(len(e1) == 1 and 'message' not in e1[0] and 'text' in reason, f'F: the log\'s text column is dropped without carry text and named ({reason!r})')
     check(len(e2) == 1 and e2[0].get('message') == 'f secret text' and 'message' not in dc(mt, 'mssql_errorlog') and dc(mt, 'report_mail_sends') == ['html', 'recipients', 'subject', 'xlsx'],
-          'F: with carry text the text column is carried; the mail columns stay dropped')
+          f'F: with carry text the text column is carried; the mail columns stay dropped {elerr}')
+    check(len(big) == 1 and len(big[0].get('message') or '') == 9000000, f'F: a text value of 9 MB reads back whole ({len(big)} row, {len((big[0].get("message") or "")) if big else 0} characters) {elerr}')
     cx = cfg('fx', tables={'exclude': ['host_sample']}); r3 = window(cx, w); mx = man('fx', w); sx = skipped(mx, 'host_sample')
     check(r3[0] == 0 and sx and 'exclude' in sx['reason'] and entry(mx, 'host_sample') is None and entry(mx, 'database_sizes') is not None,
           f'F: a table named in tables.exclude is skipped naming the key, the others carried ({sx})')
@@ -660,6 +667,15 @@ def row_H():
             except Exception: time.sleep(0.5)
         t = (api or {}).get('runs') or {}
         check(api is not None and 'outcome' in t.get('columns', []) and len(t.get('rows', [])) == 2, f'H: GET /api/export lists the runs ({len(t.get("rows", []))} rows)')
+        # a repository that has no export record yet (an older schema): the page's read answers nothing, not an error
+        q('ALTER TABLE pgvigil.export_runs RENAME TO export_runs_aside')
+        try:
+            old = None; code = 0
+            try: old = json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/api/export', timeout=5)); code = 200
+            except Exception as e: code = getattr(e, 'code', -1)
+        finally:
+            q('ALTER TABLE pgvigil.export_runs_aside RENAME TO export_runs')
+        check(code == 200 and not (old or {}).get('runs'), f'H: on a repository without the export record GET /api/export answers 200 and no runs (status {code}, {old})')
     finally:
         p.kill(); p.wait()
     svc = lambda: [r[0] for r in q('SELECT detail FROM pgvigil.export_service')]

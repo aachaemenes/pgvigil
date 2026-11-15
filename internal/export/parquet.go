@@ -264,8 +264,20 @@ func (fw *fileWriter) open() error {
 	}
 	fw.f, fw.sum = f, sha256.New()
 	fw.n = &countWriter{w: io.MultiWriter(f, fw.sum)}
-	fw.w = parquet.NewWriter(fw.n, fw.schema, parquet.Compression(&zstd.Codec{Level: zstd.DefaultLevel}),
-		parquet.CreatedBy("pgvigil", "export", "1"))
+	opts := []parquet.WriterOption{fw.schema, parquet.Compression(&zstd.Codec{Level: zstd.DefaultLevel}), parquet.CreatedBy("pgvigil", "export", "1")}
+	// No statistics in the page headers of a text, bytes or JSON column: the writer would put the page's smallest and
+	// largest value there whole, four times over - megabytes for a plan or a log line, and past the 16 MB a common
+	// reader allows a page header. The row group's own minimum and maximum and the column index stay.
+	for i := range fw.cols {
+		c := &fw.cols[i]
+		switch {
+		case c.kind == kString || c.kind == kJSON || c.kind == kBytes:
+			opts = append(opts, parquet.SkipPageStatistics(c.Name))
+		case c.kind == kList && c.elem == kString:
+			opts = append(opts, parquet.SkipPageStatistics(c.Name, "list", "element"))
+		}
+	}
+	fw.w = parquet.NewWriter(fw.n, opts...)
 	fw.fileRows, fw.groupRows, fw.groupBytes = 0, 0, 0
 	return nil
 }
