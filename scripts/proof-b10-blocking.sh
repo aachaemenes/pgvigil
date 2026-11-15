@@ -189,7 +189,14 @@ sqfile "$DDL" > "$OUT" 2>&1 || { cat "$OUT"; fail "A: the printed script"; }
 xe A0
 MSID=$(q "select instance_id from pgvigil.instances where name = '$N1'")
 ( work "BEGIN TRAN; UPDATE dbo.b10 SET v = 10 WHERE id = 1; SELECT @@SPID; WAITFOR DELAY '00:01:20'; ROLLBACK;" -h -1 -W > "$OUT.head" 2>&1 || true ) & W1=$!
-sleep 2
+# the waiter starts once the head holds its row's X key lock (a fixed sleep let a slow start of the head, under load,
+# come after the waiter's: nothing blocked, or a wait cut under 70 s)
+HL=0; HT=$SECONDS
+while [ $((SECONDS - HT)) -lt 30 ]; do
+  HL=$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id = DB_ID(N'$DB') AND resource_type = N'KEY' AND request_mode = N'X' AND request_status = N'GRANT'" 2>/dev/null | tr -d '[:space:]' || true)
+  [ "$HL" = 1 ] && break; sleep 0.2
+done
+check "$HL" 1 "A: the head holds its row's lock before the waiter starts"
 ( work "UPDATE dbo.b10 SET v = 11 WHERE id = 1;" > /dev/null 2>&1 || true ) & W2=$!
 wait $W1 $W2; sleep 7; xe A
 check "$(q "select count(*) >= 12 from pgvigil.mssql_blocked_reports where instance_id = $MSID and database_name = '$DB'")" t "A: 12 or more reports of the pair stored"
