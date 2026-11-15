@@ -66,7 +66,9 @@
 #     minutes'; reads 9, 7 and 6 minutes before T (none in 5 minutes) read their average over 'the newest 3 reads'
 #     (within 10 minutes); reads 11, 9 and 7 minutes before read nothing (no evaluation); reads every 5 minutes, the
 #     newest 5.5 minutes before T, read the newest 3 (the window 4 x 5 minutes = 20). The arm of darling_alert_findings
-#     that reads it is WIRING (proven with the wiring patch). Red on f8e89d2: no mssql_runnable_queue.
+#     that reads it is WIRING: with the wiring patch, reads 9, 7 and 6 minutes ago at 10 per scheduler give a
+#     'runnable queue per scheduler' warning 'over the newest 3 reads' (red on 0118's arm: under 3 reads in 5 minutes,
+#     nothing). Red on f8e89d2: no mssql_runnable_queue.
 #  R8. memory nodes (Fixed 20, F4): three payloads through import_mssql_memory for ctrsyn: read 1 with node 0's records 100
 #     and 101 and node 1's 50 and 51 (copies: the same times and notification) and node 1's own 52 at another time stores 3
 #     records (red on f8e89d2: 2, node 1's own lost under node 0's higher ids), the watermark {0: 101, 1: 52}; read 2 with
@@ -78,7 +80,9 @@
 #     fixed time: IPC:BufferIO 700 s in the newest 10 minutes and 650 s in the 10 before = warning (1.17 and 1.08), its
 #     query naming 'queryid 42: SELECT pgv_poison' from statement_text; IPC:BtreePage 6,100 s in the newest alone =
 #     critical (10.17); 700 s then 300 s = nothing; an instance with no wait_sample row = one info row 'not judged: needs
-#     pg_wait_sampling'. NOT PROVEN live: no PostgreSQL image on the box carries pg_wait_sampling.
+#     pg_wait_sampling'; with the wiring patch an active instance's IPC:BtreePage at 6,100 s in the last 10 minutes
+#     is a critical 'poison wait' in darling_alert_findings, the info row is not. NOT PROVEN live: no PostgreSQL image on
+#     the box carries pg_wait_sampling.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -363,6 +367,13 @@ for x in "$V1" "$V2" "$V3" "$V4"; do echo "   $x"; done
 [[ "$V3" == none ]] || fail "R3: three reads, the oldest 11 minutes back [$V3] (want no evaluation)"
 [[ "$V4" == "9.00|3|the newest 3 reads (fewer than 3 in the last 5 minutes; the 3 within 20 minutes)" ]] || fail "R3: reads every 5 minutes [$V4]"
 ok "R3: the 5-minute average, the newest-3 fallback (10 minutes, 20 at a 5-minute spacing), no evaluation past it"
+pq "SELECT pgvigil.ensure_month_partition('mssql_sched_sample', now())" >/dev/null
+Q5=$(rq rqsyn5); for t in 540 420 360; do pq "INSERT INTO pgvigil.mssql_sched_sample (instance_id, snapshot_at, schedulers, runnable_tasks)
+  VALUES ($Q5, now() - make_interval(secs => $t), 4, 40)" >/dev/null; done
+RA=$(pq "SELECT coalesce(string_agg(severity || '|' || detail, ' ; '), 'none') FROM pgvigil.darling_alert_findings WHERE instance_id = $Q5 AND setting = 'runnable queue per scheduler'")
+echo "   the arm: $RA"
+[[ "$RA" == "warning|runnable tasks averaged 10.0 per scheduler over the newest 3 reads"* ]] || fail "R3: darling_alert_findings' runnable arm on a late collector [$RA]"
+ok "R3: darling_alert_findings' runnable arm judges a late collector's newest 3 reads"
 
 echo "== R8. memory nodes (Fixed 20) =="
 TM=$(pq "SELECT to_char(date_trunc('hour', now()) - interval '3 hours', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
@@ -405,5 +416,14 @@ for x in "$P1" "$P2" "$P3" "$P4" "$P1D"; do echo "   $x"; done
 [[ "$P3" == none ]] || fail "R4: 1.17 then 0.5 [$P3] (want none)"
 [[ "$P4" == "info|not judged|" ]] || fail "R4: no wait_sample [$P4] (want the info row)"
 ok "R4: warning over two windows at 1.0+, critical at once at 10.0+, nothing on one window, 'not judged: needs pg_wait_sampling' without the samples"
+pq "SELECT pgvigil.ensure_month_partition('wait_sample', now())" >/dev/null
+pw5=$(pgi pgsyn5); pq "UPDATE pgvigil.instances SET is_active = true WHERE instance_id IN ($pw5, $pw4)" >/dev/null
+pq "INSERT INTO pgvigil.wait_sample (instance_id, snapshot_at, interval_secs, source, event_type, event, queryid, samples, wait_secs)
+  VALUES ($pw5, now() - interval '2 minutes', 300, 'pg_wait_sampling', 'IPC', 'BtreePage', 7, 1, 6100)" >/dev/null
+PA=$(pq "SELECT coalesce(string_agg(instance_id || '|' || severity || '|' || value, ' ; ' ORDER BY instance_id), 'none') FROM pgvigil.darling_alert_findings WHERE setting = 'poison wait' AND instance_id IN ($pw5, $pw4)")
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id IN ($pw5, $pw4)" >/dev/null
+echo "   the arm: $PA"
+[[ "$PA" == "$pw5|critical|IPC:BtreePage" ]] || fail "R4: darling_alert_findings' poison arm [$PA] (want $pw5's critical only, no info row of $pw4)"
+ok "R4: darling_alert_findings' poison arm: the critical in, the 'not judged' info row out"
 
 echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3 R8 R4)"
