@@ -25,8 +25,10 @@
 -- subscription whose agent runs continuously is judged on it: a scheduled agent's commands wait for its next run. The time between the publisher's commit and
 -- the transaction's entry into the distribution database is the log reader's; it is judged from the publisher side
 -- ('replicated transactions wait in the log of a published database').
--- Not stored or judged here: tracer tokens (a write), merge agents' failing time and error text (merge replication
--- is not proven: SQL Server on Linux has none), peer-to-peer and Oracle publishing.
+-- A merge agent is read as its subscription (kind 'subscription', agent_type 'merge': its newest session, failing time
+-- and error; no state, commands or latency - the distributor keeps none for merge): no latency is judged for it and
+-- 'stopped' applies to it without an active subscription row (Q10's lines, edited in place while 0142 is unreleased).
+-- Not stored or judged here: tracer tokens (a write), peer-to-peer and Oracle publishing.
 -- The join's parts: the purge of mssql_repl_sample's partitions (its name in the purge list), the page.
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -453,10 +455,11 @@ SELECT c.instance_id, 'warning', 'a replication agent is stopped', c.obj, c.snap
                    ELSE ': nothing is delivered to the subscriber' END)
   FROM ctx c
  WHERE c.continuous AND pgvigil.mssql_repl_stopped(c.job_state)
-   AND EXISTS (SELECT 1 FROM pgvigil.mssql_replication_state a
-                WHERE a.instance_id = c.instance_id AND a.kind = 'subscription' AND (a.subscription_status = 'active' OR a.agent_type = 'merge')
+   AND (c.agent_type = 'merge'   -- a merge agent is its own subscription; the distributor keeps no state for it
+        OR EXISTS (SELECT 1 FROM pgvigil.mssql_replication_state a
+                WHERE a.instance_id = c.instance_id AND a.kind = 'subscription' AND a.subscription_status = 'active'
                   AND a.distribution_db = c.distribution_db AND a.publisher_db = c.publisher_db AND a.publisher IS NOT DISTINCT FROM c.publisher
-                  AND (c.agent_type = 'logreader' OR a.agent_name = c.agent_name))
+                  AND (c.agent_type = 'logreader' OR a.agent_name = c.agent_name)))
    AND (SELECT count(*) FILTER (WHERE q.stopped) = 2
           FROM (SELECT x.continuous AND pgvigil.mssql_repl_stopped(x.job_state) AS stopped
                   FROM pgvigil.mssql_repl_sample x

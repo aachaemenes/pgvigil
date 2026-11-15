@@ -227,7 +227,7 @@ warning:a replication agent is stopped:merge / merge-stopped
 warning:a replication agent keeps failing or retrying:merge / merge-failing'
   GOT=$(q "select severity || ':' || check_name || ':' || object from pgvigil.mssql_repl_findings where instance_id = $ST order by check_name, object")
   if [ "$GOT" = "$WANT" ]; then ok "T4: the findings as expected"; else red "T4-findings"; diff <(echo "$WANT") <(echo "$GOT") | sed 's/^/    /' || true; fi
-  LAT=$(q "select string_agg(agent_type || '/' || coalesce(subscriber_db, '?') || '=' || coalesce(latency_s::text, 'null'), ',' order by agent_type, subscriber_db) from pgvigil.mssql_repl_sample where instance_id = $ST and snapshot_at = '$T2'::timestamptz")
+  LAT=$(q "select string_agg(agent_type || '/' || coalesce(subscriber_db, '?') || '=' || coalesce(latency_s::text, 'null'), ',' order by agent_type, subscriber_db) from pgvigil.mssql_repl_sample where instance_id = $ST and snapshot_at = '$T2'::timestamptz and kind = 'subscription'")
   if [ "$LAT" = "distribution/d1=0,distribution/d2=0,merge/s1=null,merge/s2=null,merge/s3=null,merge/s4=null,merge/s9=null" ]; then ok "T4: the samples' latency (merge NULL): $LAT"; else red "T4-samples" "$LAT"; fi
   echo "--- T5. removed (cleanup follows)"
   if [ ${#RED[@]} -gt 0 ]; then echo "PART T RED: ${RED[*]}"; exit 1; fi
@@ -418,6 +418,8 @@ for _ in $(seq 1 36); do
   sleep 5
 done
 echo "    sa's newest session runstatus ${FAILED:-none in 180 s}; sa's sessions:"; sa_sessions
+echo "    sa's newest MSrepl_errors rows (the failure's stack, as SQL Server wrote it):"
+S p "SELECT TOP (6) CONCAT(id, ' ', CONVERT(varchar(23), time, 126), ' code ', ISNULL(error_code, ''), ': ', LEFT(CAST(error_text AS nvarchar(max)), 140)) FROM $D.MSrepl_errors ORDER BY time DESC, id DESC" | mask | sed 's/^/      /'
 newest_rs() { S p "SELECT TOP (1) x.runstatus FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge' ORDER BY x.session_id DESC"; }
 if [ -n "$FAILED" ]; then
   R1=$(newest_rs); rd; R2=$(newest_rs)
@@ -465,6 +467,10 @@ rd
 ok "MG5: stopped -> '$(q "select detail from pgvigil.mssql_repl_findings where instance_id = $I limit 1" || true)' none after the start" 
 
 echo "--- MG6. the statements as the monitoring login"
+# printed for the read's cost and its match (review q10a, could not verify): the merge tables' indexes, and whether
+# MSmerge_subscriptions' publication_id is MSpublications' on this distributor
+S p "SELECT CONCAT(t.name, ': ', i.name, ' (', STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal), ')') FROM distribution.sys.indexes i JOIN distribution.sys.tables t ON t.object_id = i.object_id JOIN distribution.sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.key_ordinal > 0 JOIN distribution.sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id WHERE t.name IN ('MSmerge_sessions', 'MSmerge_history', 'MSmerge_agents', 'MSmerge_subscriptions') GROUP BY t.name, i.name ORDER BY t.name, i.name" | sed 's/^/    index /'
+echo "    publication ids (MSpublications | MSmerge_subscriptions): $(S p "SELECT CONCAT(p.publication_id, '|', m.publication_id) FROM $D.MSpublications p JOIN $D.MSmerge_subscriptions m ON m.publisher_id = p.publisher_id AND m.publisher_db = p.publisher_db WHERE p.publication = N'pgvm_merge'" | tr '\n' ' ')"
 if PGVIGIL_MSSQL_TEST_DSN="$MSSQL_MERGE_PUB_DSN" PGVIGIL_MSSQL_TEST_DISTRIBUTION=distribution \
    go test ./internal/mssql/ -run 'TestHADRStatementsLive|TestReplicationStatementsLive' -count=1 -v > "$OUT" 2>&1 \
    && [ "$(grep -c -E '^--- PASS: (TestHADRStatementsLive|TestReplicationStatementsLive)' "$OUT")" = 2 ]; then

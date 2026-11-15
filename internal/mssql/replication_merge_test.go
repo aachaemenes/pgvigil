@@ -21,7 +21,10 @@ func TestReplicationMergeShape(t *testing.T) {
 		if strings.Contains(agents, "MSmerge_agents") {
 			t.Errorf("mapped %v: the agents statement still reads the merge agents (they are subscriptions now)", mapped)
 		}
-		up := strings.ToUpper(sub)
+		if without := replSubscriptionsOf("d", mapped, false); strings.Contains(without, "MSmerge_") {
+			t.Errorf("mapped %v: the statement without the merge tables still reads them", mapped)
+		}
+		up := strings.ToUpper(sub + replMergeTablesSQL("d"))
 		for _, never := range []string{"INSERT ", "UPDATE ", "DELETE ", "EXEC ", "EXECUTE ", "CREATE ", "ALTER ", "DROP "} {
 			if strings.Contains(up, never) {
 				t.Errorf("mapped %v: the subscriptions statement contains %q", mapped, never)

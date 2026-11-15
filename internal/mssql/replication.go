@@ -155,6 +155,15 @@ func replPublicationsSQL(db string) string  { return replPublicationsFor(db, fal
 func replSubscriptionsSQL(db string) string { return replSubscriptionsFor(db, false) }
 func replAgentsSQL(db string) string        { return replAgentsFor(db, false) }
 
+// replMergeTablesSQL asks whether a distribution database has the four merge tables the merge arm reads (merge = 1):
+// the subscriptions statement carries its merge arm only then, so a database without them still reads its
+// transactional subscriptions
+func replMergeTablesSQL(db string) string {
+	n := func(t string) string { return `OBJECT_ID(` + literal(quoteName(db)+".dbo."+t) + `)` }
+	return `SELECT CASE WHEN ` + n("MSmerge_agents") + ` IS NULL OR ` + n("MSmerge_sessions") + ` IS NULL OR ` + n("MSmerge_history") +
+		` IS NULL OR ` + n("MSmerge_subscriptions") + ` IS NULL THEN 0 ELSE 1 END AS merge`
+}
+
 func replPublicationsFor(db string, mapped bool) string {
 	d := quoteName(db)
 	return `SELECT 'publication' AS kind, ` + literal(db) + ` AS distribution_db,
@@ -167,14 +176,24 @@ LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = p.publisher_id
 ORDER BY 3, 4, 5`
 }
 
-// replSubscriptionsSQL: one row per distribution agent (a subscription). oldest_pending_utc is the entry time of the
+// replSubscriptionsSQL: one row per distribution agent (a subscription), and per merge agent (replMergeSubscriptions;
+// replSubscriptionsOf without it where the database lacks the merge tables). oldest_pending_utc is the entry time of the
 // oldest transaction past the agent's last delivered one (the newest xact_seqno of its history, as
 // MSdistribution_status counts) that holds a command of an article it subscribes to; read only while commands wait.
 // oldest_pending_age_s is its age on the distributor's own clock (no skew against the collector's).
 // The reads of MSrepl_transactions and MSrepl_commands take no shared locks (READUNCOMMITTED, as
 // MSdistribution_status itself reads them): the log reader and the cleanup job write there all the time.
 func replSubscriptionsFor(db string, mapped bool) string {
+	return replSubscriptionsOf(db, mapped, true)
+}
+
+func replSubscriptionsOf(db string, mapped, merge bool) string {
 	d := quoteName(db)
+	mergeArm := ``
+	if merge {
+		mergeArm = `
+UNION ALL` + replMergeSubscriptions(db, mapped)
+	}
 	return `SELECT 'subscription' AS kind, ` + literal(db) + ` AS distribution_db, a.id AS agent_id,
   CAST(srv.name AS nvarchar(128)) AS publisher, CAST(a.publisher_db AS nvarchar(128)) AS publisher_db,
   CAST(a.publication AS nvarchar(128)) AS publication,
@@ -205,8 +224,7 @@ OUTER APPLY (SELECT TOP (1) t.entry_time FROM ` + d + `.dbo.MSrepl_transactions 
                               JOIN ` + d + `.dbo.MSsubscriptions s ON s.publisher_database_id = c.publisher_database_id AND s.article_id = c.article_id
                              WHERE c.publisher_database_id = t.publisher_database_id AND c.xact_seqno = t.xact_seqno AND s.agent_id = a.id)
               ORDER BY t.xact_seqno) old` + replFailing(d, "MSdistribution_history", true) + `
-WHERE a.subscriber_db <> N'virtual'
-UNION ALL` + replMergeSubscriptions(db, mapped) + `
+WHERE a.subscriber_db <> N'virtual'` + mergeArm + `
 ORDER BY 4, 5, 6, 7, 8`
 }
 
@@ -254,7 +272,11 @@ OUTER APPLY (SELECT TOP (1) y.error_id FROM ` + d + `.dbo.MSmerge_history y
 OUTER APPLY (SELECT TOP (1) CAST(e0.error_code AS nvarchar(128)) AS error_code,
                     CAST(LEFT(CAST(e0.error_text AS nvarchar(max)), 1000) AS nvarchar(1000)) AS error_text
                FROM ` + d + `.dbo.MSrepl_errors e0 WHERE e0.id = mh.error_id
-              ORDER BY CASE WHEN ISNULL(e0.error_code, N'') IN (N'', N'0') THEN 1 ELSE 0 END, e0.time DESC) me`
+              ORDER BY CASE WHEN ISNULL(e0.error_code, N'') IN (N'', N'0') THEN 1 ELSE 0 END, e0.time DESC,
+                       -- one stack's rows share their second: the engine's cause (18456, 2627) before replication's own
+                       -- message (14000-14999, 20000-21999), then the code, so a read picks the same row every time
+                       CASE WHEN TRY_CAST(e0.error_code AS int) BETWEEN 14000 AND 14999 OR TRY_CAST(e0.error_code AS int) BETWEEN 20000 AND 21999 THEN 1 ELSE 0 END,
+                       e0.error_code) me`
 }
 
 // replAgentsSQL: the log reader and snapshot agents (a merge agent is read as its subscription: replMergeSubscriptions).
@@ -355,6 +377,13 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 			rows = append(rows, replNoAccess(name))
 			continue
 		}
+		hasMerge := true
+		if m, err := QueryRows(ctx, conn, replMergeTablesSQL(name)); err == nil && len(m) == 1 {
+			v, _ := m[0]["merge"].(int64)
+			hasMerge = v == 1
+		} else if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		mapped := false
 		if m, err := QueryRows(ctx, conn, replServersSQL(name)); err != nil {
 			if ctx.Err() != nil {
@@ -368,7 +397,7 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 		}
 		reads := []struct{ what, text string }{
 			{"MSpublications", replPublicationsFor(name, mapped)},
-			{"MSdistribution_agents", replSubscriptionsFor(name, mapped)},
+			{"MSdistribution_agents", replSubscriptionsOf(name, mapped, hasMerge)},
 			{"MSlogreader_agents", replAgentsFor(name, mapped)},
 		}
 		if jobsWhy == "" {

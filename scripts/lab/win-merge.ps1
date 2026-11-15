@@ -36,11 +36,13 @@
 # distributor needs it for nothing after; sp_dropdistributor does not ask for it).
 #
 # Expected (written before the first run on the host):
-#   up      'publisher <host>\PGVPRINCIPAL, subscriber <host>\PGVMIRROR (16.0.1000.6)'; 'distributor: distribution
-#           made, working directory <the instance's ReplData>'; 'grant: NT Service\SQLAgent$PGVPRINCIPAL Modify on
-#           <ReplData> (read back)'; 'snapshot: succeeded' within 180 s; 'merge agent job <name>: started';
-#           'pgvmerge_sub: 100 rows' within 300 s; 'both ways: 120 rows on each side' within 180 s; 'grant: removed
-#           (read back, children included)'; the status block; 'VERDICT UP', exit 0.
+#   up      'publisher <host>\PGVPRINCIPAL, subscriber <host>\PGVMIRROR (16.0.1000.6)'; the folder's rights printed
+#           ('ReplData before: ...', when it exists); 'distributor: distribution made, working directory <the instance's
+#           ReplData>'; 'grant: NT Service\SQLAgent$PGVPRINCIPAL Modify on <ReplData> (read back)'; 'snapshot:
+#           succeeded' within 180 s; 'merge agent job <name>: started'; 'pgvmerge_sub: 100 rows, merge triggers in
+#           place' within 300 s; 'grant: removed (read back, children included)' (any inherited entry of the Agent
+#           below the folder said apart); 'both ways: 120 rows on each side' within 180 s; the status block; 'VERDICT
+#           UP', exit 0.
 #   status  the publication pgvm_merge (merge, 1 article), the push subscription to pgvmerge_sub, the merge job running
 #           and continuous, the newest session's runstatus, 120 / 120 rows, no grant; 'VERDICT UP'.
 #   down    'stopped: <job>' for a running lab job; 'dropped: subscription', 'cleanup: subscriber', 'dropped:
@@ -119,18 +121,28 @@ function Get-ReplDataPath {
     return (Join-Path $sqlPath 'ReplData')
 }
 
-# the Agent account's entries on the folder and below it (icacls /T lists every child); none = no grant
+# the Agent account's EXPLICIT entries on the folder and below it (icacls /T lists every child): the grant this script
+# makes; none = no grant. An inherited entry ('(I)') is not one: the folder's own inheritable rights (CREATOR OWNER on
+# a file the Agent made) can name the account; those are listed apart (Get-InheritedLines) and go with the files.
+# Callers wrap the result in @(): a function's array is unrolled, so no match is $null and one match a bare string.
 function Get-GrantLines([string]$folder) {
     if (-not (Test-Path -LiteralPath $folder)) { return @() }
     $lines = & icacls.exe $folder /T /C 2>&1
-    return @($lines | Where-Object { "$_" -like "*$agentAccount*" })
+    return @($lines | Where-Object { "$_" -like "*$agentAccount*" -and "$_" -notlike '*(I)*' })
+}
+function Get-InheritedLines([string]$folder) {
+    if (-not (Test-Path -LiteralPath $folder)) { return @() }
+    $lines = & icacls.exe $folder /T /C 2>&1
+    return @($lines | Where-Object { "$_" -like "*$agentAccount*" -and "$_" -like '*(I)*' })
 }
 
 function Remove-Grant([string]$folder) {
     if (-not (Test-Path -LiteralPath $folder)) { return $true }
     $null = & icacls.exe $folder /remove:g $agentAccount /T /C /Q
-    $left = Get-GrantLines $folder
-    if ($left.Count -gt 0) { Say "grant: NOT removed: $($left.Count) entr$(if ($left.Count -eq 1) { 'y' } else { 'ies' }) left"; return $false }
+    $left = @(Get-GrantLines $folder)
+    $inherited = @(Get-InheritedLines $folder)
+    if ($inherited.Count -gt 0) { Say "grant: $($inherited.Count) inherited entr$(if ($inherited.Count -eq 1) { 'y' } else { 'ies' }) of the Agent account below the folder (the folder's own inheritance, not this script's grant)" }
+    if ($left.Count -gt 0) { Say "grant: NOT removed: $($left.Count) explicit entr$(if ($left.Count -eq 1) { 'y' } else { 'ies' }) left"; return $false }
     Say 'grant: removed (read back, children included)'
     return $true
 }
@@ -153,8 +165,13 @@ function Get-MergeAgent {
     return $rows[0]
 }
 
+# the table's rows, -1 while it does not exist (an IF: a CASE over a missing table fails at bind time, Msg 208)
 function Get-RowCount([object]$inst, [string]$database) {
-    return [int](Get-LabValue $inst "SELECT CASE WHEN OBJECT_ID(N'dbo.t_merge') IS NULL THEN -1 ELSE (SELECT COUNT(*) FROM dbo.t_merge) END" $database)
+    return [int](Get-LabValue $inst "IF OBJECT_ID(N'dbo.t_merge') IS NULL SELECT -1 AS n ELSE SELECT COUNT(*) AS n FROM dbo.t_merge;" $database)
+}
+# the merge triggers the agent puts on the subscriber's table after its bulk load (rows written before them are not tracked)
+function Get-MergeTriggers {
+    return [int](Get-LabValue $subInst "SELECT COUNT(*) FROM sys.triggers WHERE parent_id = OBJECT_ID(N'dbo.t_merge') AND name LIKE N'MSmerge[_]ins%'" $subDb)
 }
 
 # wait until the block returns true, at most $seconds; returns whether it did
@@ -181,11 +198,12 @@ function Invoke-Status {
             $sessionText = if ($session.Count -gt 0) { "session $($session[0].session_id) runstatus $($session[0].runstatus) ($($session[0].started) - $($session[0].ended))" } else { 'no session' }
             Say "status: merge agent $($agentRow.agent), job '$($agentRow.job)' $jobState, continuous $([int]$continuous -gt 0), $sessionText"
             if ($jobState -ne 'running') { $problems.Add("merge job $jobState") }
+            if ([int]$continuous -eq 0) { $problems.Add('merge job not continuous') }
         }
         $pubRows = Get-RowCount $pubInst $pubDb; $subRows = Get-RowCount $subInst $subDb
         Say "status: rows $pubDb $pubRows, $subDb $subRows"
         if ($pubRows -ne $subRows -or $pubRows -lt 100) { $problems.Add("rows $pubRows / $subRows") }
-        $grantLeft = Get-GrantLines (Get-ReplDataPath)
+        $grantLeft = @(Get-GrantLines (Get-ReplDataPath))
         if ($grantLeft.Count -gt 0) { $problems.Add('the snapshot folder grant is still there') }
     } catch { $problems.Add("unread: $($_.Exception.Message)") }
     if ($problems.Count -eq 0) { Say 'VERDICT UP'; return $true }
@@ -200,14 +218,18 @@ function Invoke-Up {
         $subName = Get-LabValue $subInst 'SELECT CAST(@@SERVERNAME AS nvarchar(256))'
         $version = Get-LabValue $pubInst "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(40))"
     } catch { Stop-Refused "a lab instance does not answer: $($_.Exception.Message)" }
-    $names = Get-LabNames
+    try {
+        $names = Get-LabNames
+        $agentActual = Get-LabValue $pubInst "SELECT CAST(service_account AS nvarchar(256)) FROM sys.dm_server_services WHERE servicename LIKE N'SQL Server Agent%'"
+        $replData = Get-ReplDataPath
+        $grantBefore = @(Get-GrantLines $replData)
+    } catch { Stop-Refused "a read before any change failed: $($_.Exception.Message)" }
     $taken = @($names.PSObject.Properties | Where-Object { $_.Value -gt 0 } | ForEach-Object { $_.Name })
     if ($taken.Count -gt 0) { Stop-Refused "already present: $($taken -join ', ') (down first)" }
-    $agentActual = Get-LabValue $pubInst "SELECT CAST(service_account AS nvarchar(256)) FROM sys.dm_server_services WHERE servicename LIKE N'SQL Server Agent%'"
     if ($agentActual -ne $agentAccount) { Stop-Refused "the Agent service account is '$agentActual', not '$agentAccount'" }
-    $replData = Get-ReplDataPath
-    if ((Get-GrantLines $replData).Count -gt 0) { Stop-Refused "$agentAccount already has a right on $replData" }
+    if ($grantBefore.Count -gt 0) { Stop-Refused "$agentAccount already has an explicit right on $replData" }
     Say "publisher $pubName, subscriber $subName ($version)"
+    if (Test-Path -LiteralPath $replData) { foreach ($aclLine in @(& icacls.exe $replData 2>&1)) { if ("$aclLine".Trim()) { Say "ReplData before: $("$aclLine".Trim())" } } }
 
     $sapw = (Get-Content -LiteralPath $saFile -Raw -ErrorAction Stop).Trim()
     $made = $false
@@ -222,7 +244,7 @@ function Invoke-Up {
         $made = $true
         $null = & icacls.exe $replData /grant "${agentAccount}:(OI)(CI)M" /Q
         if ($LASTEXITCODE -ne 0) { throw "icacls could not grant $agentAccount on $replData (exit $LASTEXITCODE)" }
-        if ((Get-GrantLines $replData).Count -eq 0) { throw "the grant on $replData is not read back" }
+        if (@(Get-GrantLines $replData).Count -eq 0) { throw "the grant on $replData is not read back" }
         Say "grant: $agentAccount Modify on $replData (read back)"
 
         Invoke-LabSql $subInst "CREATE DATABASE [$subDb];" | Out-Null
@@ -246,12 +268,15 @@ function Invoke-Up {
         if ($null -eq $agentRow -or -not $agentRow.job) { throw 'no merge agent job was made' }
         Invoke-LabSql $pubInst 'EXEC msdb.dbo.sp_start_job @job_name = @job;' 'master' @{ job = $agentRow.job } | Out-Null
         Say "merge agent job $($agentRow.job): started"
-        if (-not (Wait-Until 300 { (Get-RowCount $subInst $subDb) -eq 100 })) {
+        if (-not (Wait-Until 300 { (Get-RowCount $subInst $subDb) -eq 100 -and (Get-MergeTriggers) -ge 1 })) {
             $mergeText = Invoke-LabSql $pubInst "SELECT TOP (5) x.runstatus, CAST(LEFT(y.comments, 400) AS nvarchar(400)) AS comments FROM dbo.MSmerge_agents a JOIN dbo.MSmerge_sessions x ON x.agent_id = a.id LEFT JOIN dbo.MSmerge_history y ON y.agent_id = a.id AND y.session_id = x.session_id WHERE a.publication = N'$publication' ORDER BY x.session_id DESC, y.timestamp DESC" $distDb
             foreach ($mergeRow in $mergeText) { Say "merge history: $($mergeRow.runstatus) $($mergeRow.comments)" }
-            throw "$subDb did not reach 100 rows in 300 s ($(Get-RowCount $subInst $subDb))"
+            throw "$subDb did not reach 100 rows with its merge triggers in 300 s ($(Get-RowCount $subInst $subDb) rows, $(Get-MergeTriggers) trigger(s))"
         }
-        Say "${subDb}: 100 rows"
+        Say "${subDb}: 100 rows, merge triggers in place"
+        # the grant was for the snapshot and its first apply only: removed now (the finally stays the failure path's)
+        $made = $false
+        if (-not (Remove-Grant $replData)) { Say 'VERDICT NOT UP: the snapshot folder grant is still there'; exit 1 }
         Invoke-LabSql $pubInst "INSERT dbo.t_merge (id, v) SELECT 1000 + n, N'from the publisher' FROM (SELECT TOP (10) ROW_NUMBER() OVER (ORDER BY (SELECT 0)) AS n FROM sys.all_objects) x;" $pubDb | Out-Null
         Invoke-LabSql $subInst "INSERT dbo.t_merge (id, v) SELECT 2000 + n, N'from the subscriber' FROM (SELECT TOP (10) ROW_NUMBER() OVER (ORDER BY (SELECT 0)) AS n FROM sys.all_objects) x;" $subDb | Out-Null
         if (-not (Wait-Until 180 { (Get-RowCount $pubInst $pubDb) -eq 120 -and (Get-RowCount $subInst $subDb) -eq 120 })) {
@@ -275,18 +300,24 @@ function Invoke-Up {
 
 function Invoke-Down {
     $failures = New-Object System.Collections.Generic.List[string]
-    $pubName = Get-LabValue $pubInst 'SELECT CAST(@@SERVERNAME AS nvarchar(256))'
-    $subName = Get-LabValue $subInst 'SELECT CAST(@@SERVERNAME AS nvarchar(256))'
+    $pubName = $null; $subName = $null
+    try { $pubName = Get-LabValue $pubInst 'SELECT CAST(@@SERVERNAME AS nvarchar(256))' } catch { Say "FAILED: $($pubInst.Name) does not answer: $($_.Exception.Message)"; $failures.Add("$($pubInst.Name) does not answer") }
+    try { $subName = Get-LabValue $subInst 'SELECT CAST(@@SERVERNAME AS nvarchar(256))' } catch { Say "FAILED: $($subInst.Name) does not answer: $($_.Exception.Message)"; $failures.Add("$($subInst.Name) does not answer") }
     # each step: run when its object is there, report, go on (one failed step never keeps the others from running)
     function Step([string]$label, [scriptblock]$body) {
         try { & $body; Say $label } catch { Say "FAILED $label`: $($_.Exception.Message)"; $failures.Add($label) }
     }
-    $hasDist = [int](Get-LabValue $pubInst "SELECT COUNT(*) FROM sys.databases WHERE name = N'$distDb' AND is_distributor = 1") -gt 0
-    $hasPubDb = [int](Get-LabValue $pubInst "SELECT COUNT(*) FROM sys.databases WHERE name = N'$pubDb'") -gt 0
-    $hasSubDb = [int](Get-LabValue $subInst "SELECT COUNT(*) FROM sys.databases WHERE name = N'$subDb'") -gt 0
+    $hasDist = $false; $hasPubDb = $false; $hasSubDb = $false
+    try { $hasDist = [int](Get-LabValue $pubInst "SELECT COUNT(*) FROM sys.databases WHERE name = N'$distDb' AND is_distributor = 1") -gt 0
+          $hasPubDb = [int](Get-LabValue $pubInst "SELECT COUNT(*) FROM sys.databases WHERE name = N'$pubDb'") -gt 0 } catch { Say "FAILED read of $($pubInst.Name): $($_.Exception.Message)"; $failures.Add("$($pubInst.Name) unread") }
+    try { $hasSubDb = [int](Get-LabValue $subInst "SELECT COUNT(*) FROM sys.databases WHERE name = N'$subDb'") -gt 0 } catch { Say "FAILED read of $($subInst.Name): $($_.Exception.Message)"; $failures.Add("$($subInst.Name) unread") }
+    $runningSql = "SELECT CAST(j.name AS nvarchar(200)) AS job FROM msdb.dbo.sysjobs j WHERE j.job_id IN (SELECT CAST(job_id AS uniqueidentifier) FROM [$distDb].dbo.MSmerge_agents WHERE publication = N'$publication' UNION SELECT CAST(job_id AS uniqueidentifier) FROM [$distDb].dbo.MSsnapshot_agents WHERE publication = N'$publication') AND EXISTS (SELECT 1 FROM msdb.dbo.sysjobactivity a WHERE a.job_id = j.job_id AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL)"
     if ($hasDist) {
-        $jobs = Invoke-LabSql $pubInst "SELECT CAST(j.name AS nvarchar(200)) AS job FROM msdb.dbo.sysjobs j WHERE j.job_id IN (SELECT CAST(job_id AS uniqueidentifier) FROM [$distDb].dbo.MSmerge_agents WHERE publication = N'$publication' UNION SELECT CAST(job_id AS uniqueidentifier) FROM [$distDb].dbo.MSsnapshot_agents WHERE publication = N'$publication') AND EXISTS (SELECT 1 FROM msdb.dbo.sysjobactivity a WHERE a.job_id = j.job_id AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL)"
+        $jobs = @()
+        try { $jobs = Invoke-LabSql $pubInst $runningSql } catch { Say "FAILED read of the running jobs: $($_.Exception.Message)"; $failures.Add('jobs unread') }
         foreach ($jobRow in $jobs) { Step "stopped: $($jobRow.job)" { Invoke-LabSql $pubInst 'EXEC msdb.dbo.sp_stop_job @job_name = @job;' 'master' @{ job = $jobRow.job } | Out-Null } }
+        # sp_stop_job only asks: the agents may hold the distribution database for seconds (60 s at most)
+        if ($jobs.Count -gt 0 -and -not (Wait-Until 60 { @(Invoke-LabSql $pubInst $runningSql).Count -eq 0 })) { Say 'a lab job still runs 60 s after its stop'; $failures.Add('a job did not stop') }
     }
     if ($hasPubDb -and [int](Get-LabValue $pubInst "SELECT CASE WHEN OBJECT_ID(N'dbo.sysmergepublications') IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM dbo.sysmergepublications WHERE name = N'$publication') END" $pubDb) -gt 0) {
         if ([int](Get-LabValue $pubInst "SELECT COUNT(*) FROM dbo.sysmergesubscriptions s JOIN dbo.sysmergepublications p ON p.pubid = s.pubid WHERE p.name = N'$publication' AND s.db_name = N'$subDb'" $pubDb) -gt 0) {
@@ -308,12 +339,15 @@ function Invoke-Down {
     if ($hasPubDb) { Step "dropped: $pubDb" { Invoke-LabSql $pubInst "ALTER DATABASE [$pubDb] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$pubDb];" | Out-Null } }
     if ($hasSubDb) { Step "dropped: $subDb" { Invoke-LabSql $subInst "ALTER DATABASE [$subDb] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$subDb];" | Out-Null } }
     $replData = Get-ReplDataPath
-    if ((Get-GrantLines $replData).Count -gt 0) { if (-not (Remove-Grant $replData)) { $failures.Add('the grant') } }
+    if (@(Get-GrantLines $replData).Count -gt 0) { if (-not (Remove-Grant $replData)) { $failures.Add('the grant') } }
     # read back every name
-    $names = Get-LabNames
-    foreach ($prop in $names.PSObject.Properties) { if ($prop.Value -gt 0) { $failures.Add("$($prop.Name) left ($($prop.Value))") } }
-    if ((Get-GrantLines $replData).Count -gt 0) { $failures.Add('grant left') }
-    Say "read back: distribution database $($names.DistDb), distributor entry $($names.Distributor), REPL- jobs $($names.ReplJobs), $pubDb $($names.PubDb), $subDb $($names.SubDb), grant entries $((Get-GrantLines $replData).Count)"
+    try {
+        $names = Get-LabNames
+        foreach ($prop in $names.PSObject.Properties) { if ($prop.Value -gt 0) { $failures.Add("$($prop.Name) left ($($prop.Value))") } }
+        $grantLeft = @(Get-GrantLines $replData).Count
+        if ($grantLeft -gt 0) { $failures.Add('grant left') }
+        Say "read back: distribution database $($names.DistDb), distributor entry $($names.Distributor), REPL- jobs $($names.ReplJobs), $pubDb $($names.PubDb), $subDb $($names.SubDb), explicit grant entries $grantLeft"
+    } catch { Say "FAILED read back: $($_.Exception.Message)"; $failures.Add('read back failed') }
     if ($failures.Count -eq 0) { Say 'VERDICT CLEAN'; exit 0 }
     Say "VERDICT NOT CLEAN: $($failures -join '; ')"
     exit 1
