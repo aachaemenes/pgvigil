@@ -149,6 +149,7 @@ type deadlineDialer struct {
 	until     time.Time
 	keepAlive time.Duration
 	conns     []*watchedConn
+	lastAddr  string // the address of the TCP connection it opened last, whatever its deadline (B24h-1's probe target)
 	netErr    error
 	over      bool
 	held      bool // Hold: the deadline lifted while the sign-in waits on a third party
@@ -195,6 +196,11 @@ func (d *deadlineDialer) DialContext(ctx context.Context, network, addr string) 
 	w := &watchedConn{Conn: c, d: d}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// every TCP connection's address, with or without the dialer's deadline (the review of B24h-1 part a #2: a DSN with
+	// its own 'connection timeout' kept none, so it was never probed); the Browser's UDP dial is not one
+	if strings.HasPrefix(network, "tcp") && c.RemoteAddr() != nil {
+		d.lastAddr = c.RemoteAddr().String()
+	}
 	if !d.until.IsZero() {
 		_ = c.SetDeadline(d.until)
 		d.conns = append(d.conns, w)
@@ -377,16 +383,11 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	return db, conn, nil
 }
 
-// lastRemote: the address (ip:port) of the connection the dialer opened last ("" when none)
+// lastRemote: the address (ip:port) of the TCP connection the dialer opened last ("" when none)
 func (d *deadlineDialer) lastRemote() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for i := len(d.conns) - 1; i >= 0; i-- {
-		if c := d.conns[i]; c != nil && c.Conn != nil && c.RemoteAddr() != nil {
-			return c.RemoteAddr().String()
-		}
-	}
-	return ""
+	return d.lastAddr
 }
 
 // QueryRows runs one statement and returns its rows keyed by the result's column names as written. The contract
