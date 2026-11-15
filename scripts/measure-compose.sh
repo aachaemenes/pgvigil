@@ -334,7 +334,7 @@ measure() {
   done
 }
 # a bucket per range as a panel would draw it; to_timestamp(floor(...)) stands in for date_bin (PostgreSQL 14+ only)
-RANGES="7:3600 31:21600 90:86400"
+RANGES=${PGVIGIL_RANGES:-"7:3600 31:21600 90:86400"}   # days:bucket seconds; a fraction of a day is taken (0.25 = 6 hours)
 measure_family() {   # measure_family <family>: its three ranges at fleet scope; database-perdb is one instance's databases
   local fam=$1 engine metric ids r days secs
   if [[ $fam == database-perdb ]]; then
