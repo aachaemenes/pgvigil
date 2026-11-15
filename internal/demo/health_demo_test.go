@@ -126,3 +126,47 @@ func TestDemoLogCollectionsOneStatement(t *testing.T) {
 		t.Error("logCollections runs its statement inside the loop over the collections")
 	}
 }
+
+// TestDemoHealthCost (B6g-1: the demo feeds the page's new columns, so none of them is empty on the demo): every run
+// that did not fail at its read wrote into the repository - its import counted and timed inside its duration, never an
+// import failure (the demo has none); a SQL Server instance's runs each read their own session at their end, the
+// failed ones too - CPU within the run's time, logical reads above 0; a PostgreSQL instance's runs read none, so its
+// CPU and reads stay 0 runs (the page: 'not read by pgvigil')
+func TestDemoHealthCost(t *testing.T) {
+	end := time.Date(2026, 11, 14, 10, 30, 0, 0, time.UTC)
+	var gens []*Gen
+	var ids []int
+	for i, s := range Specs("demo-", 20) {
+		gens = append(gens, NewGen(s, i, 1, end.Add(-2*time.Hour), end))
+		ids = append(ids, 100+i)
+	}
+	rows := healthRows(gens, ids, time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC), time.Date(2026, 11, 14, 10, 29, 0, 0, time.UTC), nil)
+	engine := map[int]string{}
+	for i, g := range gens {
+		engine[ids[i]] = g.Spec.Engine
+	}
+	seen := map[string]int{}
+	for _, r := range rows {
+		if r.Runs == 0 {
+			continue
+		}
+		wrote := r.Ok + r.Partial
+		if r.ImportFailed != 0 || r.ImportRuns != wrote || (wrote > 0 && (r.ImportSum <= 0 || r.ImportSum >= r.DurSum || r.ImportMax <= 0 || r.ImportMax > r.DurMax)) || (wrote == 0 && r.ImportSum != 0) {
+			t.Fatalf("instance %d %s: imports %+v, want %d import runs (ok + partial), no import failure, their time above 0 and inside the durations (%d ms, max %d)", r.InstanceID, r.Collection, r, wrote, r.DurSum, r.DurMax)
+		}
+		if engine[r.InstanceID] == EngineSQLServer {
+			seen["sqlserver"]++
+			if r.CPURuns != r.Runs || r.CPUSum <= 0 || r.CPUSum > r.DurSum || r.CPUMax <= 0 || r.CPUMax > r.DurMax || r.ReadsSum <= 0 {
+				t.Fatalf("SQL Server instance %d %s: %+v, want every run a CPU run, CPU above 0 and within the durations, reads above 0", r.InstanceID, r.Collection, r)
+			}
+		} else {
+			seen["postgres"]++
+			if r.CPURuns != 0 || r.CPUSum != 0 || r.CPUMax != 0 || r.ReadsSum != 0 {
+				t.Fatalf("PostgreSQL instance %d %s: %+v, want no CPU run and no reads", r.InstanceID, r.Collection, r)
+			}
+		}
+	}
+	if seen["sqlserver"] == 0 || seen["postgres"] == 0 {
+		t.Fatalf("rows judged: %v, want both engines", seen)
+	}
+}
