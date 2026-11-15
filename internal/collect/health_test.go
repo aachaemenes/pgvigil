@@ -189,3 +189,27 @@ func TestCollectionHealthStartHour(t *testing.T) {
 		t.Errorf("last error %v, want the run's start %v", g.LastError, start)
 	}
 }
+
+// TestCollectionHealthLongRun (the review B6f5 #1): a run longer than an hour (started 10:58, recorded 12:05) is not a
+// clock step back - the hours held for every instance stay (12:00 keeps the runs sent before it) and the long run is
+// filed under the oldest hour still held (11:00), its duration with it; the clock step is read by the record clock
+func TestCollectionHealthLongRun(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	at := func(hh, mm int) time.Time { return time.Date(2026, 11, 14, hh, mm, 0, 0, time.UTC) }
+	h.record("i1", "postgres", "activity", Result{Start: at(12, 1), Duration: 2 * time.Second}, at(12, 1).Add(2*time.Second), time.Minute)
+	h.record("i2", "postgres", "schema", Result{Start: at(10, 58), Duration: 67 * time.Minute}, at(12, 5), time.Hour)
+	h.record("i1", "postgres", "activity", Result{Start: at(12, 5), Duration: 2 * time.Second}, at(12, 5).Add(2*time.Second), time.Minute)
+	got := map[string]beatHealth{}
+	for _, g := range h.take().Health {
+		got[g.Instance+" "+g.Hour.Format("15:04")] = g
+	}
+	if g, ok := got["i1 12:00"]; !ok || g.Runs != 2 || g.Ok != 2 {
+		t.Errorf("i1's 12:00 row %+v (present %v), want runs 2, ok 2 (the hour held across the long run)", g, ok)
+	}
+	if g, ok := got["i2 11:00"]; !ok || g.Runs != 1 || g.DurMax != int((67*time.Minute).Milliseconds()) {
+		t.Errorf("i2's long run %+v (present %v), want runs 1 under 11:00 (the oldest hour held) with its 67 min", g, ok)
+	}
+	if len(got) != 2 {
+		t.Errorf("rows %v, want i1 12:00 and i2 11:00 only", got)
+	}
+}

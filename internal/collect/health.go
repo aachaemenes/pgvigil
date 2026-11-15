@@ -74,13 +74,37 @@ type beatHealth struct {
 
 // health counts one run into its hour (under h.mu, from record()): the hour is UTC's, never the collector's zone, and
 // the run's START's (its collection_log row's snapshot_at), so a run crossing an hour edge is counted where it is
-// listed (the review B6f3 #1); the row's last times are the start too; a run with no start known is filed by now. A
-// connect failure is an error; a run over half its interval, and over all of it, counted for 'runs long' (B6.4)
+// listed (the review B6f3 #1); the row's last times are the start too; a run with no start known is filed by now. The
+// newest hour and a clock step are read by the record clock (now), never by the start: a run longer than an hour is
+// no clock step (the review B6f5 #1) - it is filed under the oldest hour still held. A connect failure is an error; a
+// run over half its interval, and over all of it, counted for 'runs long' (B6.4)
 func (h *Heartbeat) health(instance, collection string, res Result, now time.Time, every time.Duration) {
+	end := now.UTC().Truncate(time.Hour)
+	switch {
+	case end.After(h.hourNew):
+		h.hourNew = end
+	case end.Before(h.hourNew.Add(-time.Hour)):
+		// the clock stepped back (NTP after a clock that ran fast, a VM resumed): this hour is the newest again, and
+		// the hours ahead of it, sent already, are sent no more (takeHealth would otherwise drop this run's hour)
+		h.hourNew = end
+		for k := range h.hourly {
+			if k.hour.After(end) {
+				delete(h.hourly, k)
+			}
+		}
+	}
 	if !res.Start.IsZero() {
 		now = res.Start
 	}
+	// filed by the start's hour within the two hours held: a start before the oldest (a run over an hour) under the
+	// oldest, a start ahead of the newest (the clock stepped back during the run) under the newest
 	hour := now.UTC().Truncate(time.Hour)
+	if hour.After(h.hourNew) {
+		hour = h.hourNew
+	}
+	if old := h.hourNew.Add(-time.Hour); hour.Before(old) {
+		hour = old
+	}
 	if h.hourly == nil {
 		h.hourly = map[healthKey]*healthAgg{}
 	}
@@ -89,19 +113,6 @@ func (h *Heartbeat) health(instance, collection string, res Result, now time.Tim
 	if a == nil {
 		a = &healthAgg{}
 		h.hourly[k] = a
-	}
-	switch {
-	case hour.After(h.hourNew):
-		h.hourNew = hour
-	case hour.Before(h.hourNew.Add(-time.Hour)):
-		// the clock stepped back (NTP after a clock that ran fast, a VM resumed): this hour is the newest again, and
-		// the hours ahead of it, sent already, are sent no more (takeHealth would otherwise drop this run's hour)
-		h.hourNew = hour
-		for k := range h.hourly {
-			if k.hour.After(hour) {
-				delete(h.hourly, k)
-			}
-		}
 	}
 	if s := int(every / time.Second); s > 0 && (a.intervalS == 0 || s < a.intervalS) {
 		a.intervalS = s

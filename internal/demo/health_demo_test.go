@@ -1,6 +1,9 @@
 package demo
 
 import (
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,5 +101,28 @@ func TestDemoHealthKnownPerInstance(t *testing.T) {
 	}
 	if d := runs(all, 2) - runs(some, 2); d != 0 || runs(all, 2) == 0 {
 		t.Errorf("instance 2: %d fewer runs of %d, want 0 fewer (it logged the minute)", d, runs(all, 2))
+	}
+}
+
+// TestDemoLogCollectionsOneStatement (the review B6f5 #2): a tick's collections of one instance and minute are logged
+// in ONE statement (the logHistoryErrors form), so a sibling's cancel leaves that minute logged whole or not at all -
+// never logged in part and unmarked (an error counted on the list and not in Failed)
+func TestDemoLogCollectionsOneStatement(t *testing.T) {
+	b, err := os.ReadFile("seed.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := regexp.MustCompile(`(?s)func \(m \*importer\) logCollections\(.*?\n}\n`).Find(b)
+	if body == nil {
+		t.Fatal("no logCollections in seed.go")
+	}
+	if n := strings.Count(string(body), ".Exec("); n != 1 {
+		t.Errorf("logCollections runs %d statements, want 1", n)
+	}
+	if !strings.Contains(string(body), "unnest(") {
+		t.Error("logCollections does not log the minute's collections in one statement over unnest(...)")
+	}
+	if regexp.MustCompile(`(?s)for [^\n]*\{[^}]*\.Exec\(`).Match(body) {
+		t.Error("logCollections runs its statement inside the loop over the collections")
 	}
 }

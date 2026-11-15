@@ -366,14 +366,23 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 }
 
 // logCollections records each collection's last run as the collector would: ok, or the
-// statements collection's error on the instance without pg_stat_statements.
+// statements collection's error on the instance without pg_stat_statements. The minute's collections go in ONE
+// statement (the logHistoryErrors form; the review B6f5 #2): a sibling's cancel leaves the minute logged whole or not
+// at all, so a logged minute is always a marked one (Tick marks it after this returns)
 func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.Time) error {
+	var cs, sts []string
+	var mss []int
+	var notes []*string // nil: NULL (no note)
 	for _, c := range g.Collections() {
 		status, note := runStatus(g, c, at)
-		if _, err := m.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,
-			id, c, at, runMs(g, c, at), status, nullIf(note)); err != nil {
-			return fmt.Errorf("log_collection %s: %w", c, err)
+		cs, sts, mss, notes = append(cs, c), append(sts, status), append(mss, runMs(g, c, at)), append(notes, nil)
+		if note != "" {
+			notes[len(notes)-1] = &note
 		}
+	}
+	if _, err := m.pool.Exec(ctx, `SELECT count(pgvigil.log_collection($1, x.c, $2, x.ms, x.st, x.note))
+  FROM unnest($3::text[], $4::int[], $5::text[], $6::text[]) AS x(c, ms, st, note)`, id, at, cs, mss, sts, notes); err != nil {
+		return fmt.Errorf("log_collection at %s: %w", at.Format(time.RFC3339), err)
 	}
 	return nil
 }

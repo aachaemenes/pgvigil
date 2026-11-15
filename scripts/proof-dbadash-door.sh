@@ -99,6 +99,7 @@
 #     instance, in a headless Chromium signed in as a UI user:
 #     G0 (before the walk, Node) web/src/move_address.test.mjs: the move's prefill rule - which DBA Dash connection is
 #        a network address, its host and port apart, else DBA Dash's Instance with why - every row 'ok';
+#        and web/src/chhealth.test.mjs (the review B6f5 #3): the Collection Health helpers' rows, 'chhealth: 0 FAIL';
 #     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists every SQL Server tab (as many
 #        as web/src/router.ts mssqlInstanceTabs holds in the tree: 33 at task 168, 53 at the release join);
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
@@ -643,6 +644,12 @@ else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; f
 "$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/move_address.ts" --format=esm --outfile="$TMPD/move_address.mjs" --log-level=warning || fail "G0: move_address.ts did not compile"
 node "$GSRC/web/src/move_address.test.mjs" "$TMPD/move_address.mjs" > "$TMPD/g0-unit.out" 2>&1 || { cat "$TMPD/g0-unit.out"; fail "G0: the move's prefill unit tests"; }
 echo "ok   G0: the move's prefill rule: $(tail -1 "$TMPD/g0-unit.out")"
+# G0 (the review B6f5 #3): the Collection Health helpers (web/src/chhealth.ts: the Summary column's version rule and
+# tooltips, the chart's hours) - their rows run here, not only in a lane's light checks
+"$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/chhealth.ts" --bundle --format=esm --platform=neutral --outfile="$TMPD/chhealth.mjs" --log-level=warning || fail "G0: chhealth.ts did not compile"
+node "$GSRC/web/src/chhealth.test.mjs" "$TMPD/chhealth.mjs" > "$TMPD/g0-ch.out" 2>&1 || { cat "$TMPD/g0-ch.out"; fail "G0: the Collection Health helpers' rows"; }
+grep -q '^chhealth: 0 FAIL' "$TMPD/g0-ch.out" || fail "G0: the Collection Health helpers: $(tail -1 "$TMPD/g0-ch.out")"
+echo "ok   G0: the Collection Health helpers: $(grep '^chhealth' "$TMPD/g0-ch.out" | tail -1)"
 (cd "$GSRC" && go build -o "$TMPD/pgvigil-g" ./cmd/pgvigil) || fail "G: the build"
 BIN="$TMPD/pgvigil-g"
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $GDB" >/dev/null
