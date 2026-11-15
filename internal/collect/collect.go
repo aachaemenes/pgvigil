@@ -112,7 +112,27 @@ type Result struct {
 	Duration time.Duration
 	Note     string // " (skipped: <why>)" when the collection does not apply
 	Err      error
-	Outcome  string // OutcomePartial when the run ended with a collector error row; "" = derived (outcomeOf)
+	Outcome  string // OutcomePartial when the run ended with a collector error row, OutcomeImportFailed; "" = derived (outcomeOf)
+	// B6g-1 (N27): the time the run spent writing into the repository (the Import calls only), apart from its read;
+	// Imported = a write was attempted (its time counts, 0 ms too). Duration stays the whole run.
+	Import   time.Duration
+	Imported bool
+	// B6g-1 (N25 / N26): the run's own session's cpu_time (ms) and logical_reads, read at the run's end on SQL
+	// Server; nil = not read (PostgreSQL has no such read in pgvigil; an end read that failed)
+	CPUMs, Reads *int64
+}
+
+// TimedImport runs one write into the repository and adds its time to the run's import time; a write that fails
+// marks the run 'import failed' (its caller returns the error as the run's Err). Two imports of one run sum.
+func (res *Result) TimedImport(write func() error) error {
+	t0 := time.Now()
+	err := write()
+	res.Import += time.Since(t0)
+	res.Imported = true
+	if err != nil {
+		res.Outcome = OutcomeImportFailed
+	}
+	return err
 }
 
 // sessionSetup keeps a collector from joining a convoy on a busy server: read
@@ -226,16 +246,19 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	// query-text policy before the text policy below empties the log row's own copy under normalized and none. They
 	// are imported BEFORE the log batch: the batch carries the reader's cursor, so a failed plans import leaves the
 	// cursor where it was and the next run reads the same lines again (import_plans is idempotent on the plan key).
+	var imp Result // the run's import time and, when a write fails, its outcome (B6g-1, N27)
 	if extra := planRowsFromLog(name, rows, in.QueryText); len(extra) > 0 {
-		if err := r.Import(ctx, instanceID, "plans", start, extra); err != nil {
+		if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, "plans", start, extra) }); err != nil {
 			_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
-			return Result{Err: fmt.Errorf("import plans from %s's %s: %w", in.Name, name, err), Duration: time.Since(start)}
+			return Result{Err: fmt.Errorf("import plans from %s's %s: %w", in.Name, name, err), Duration: time.Since(start),
+				Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 		}
 	}
 	applyTextPolicy(rows, in.QueryText)
-	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
+	if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, name, start, rows) }); err != nil {
 		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
-		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start),
+			Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 	}
 	d := time.Since(start)
 	status, note := "ok", ""
@@ -247,5 +270,5 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
-	return Result{Rows: len(rows), Duration: d, Outcome: partialOutcome(status)}
+	return Result{Rows: len(rows), Duration: d, Outcome: partialOutcome(status), Import: imp.Import, Imported: imp.Imported}
 }

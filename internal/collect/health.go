@@ -13,6 +13,10 @@ const (
 	OutcomePartial = "partial"
 	OutcomeError   = "error"
 	OutcomeSkipped = "skipped"
+	// OutcomeImportFailed (B6g-1, N27): the read succeeded and a write into the repository failed, so the run ended
+	// as an error at its import (collection_log: 'error', stage 'import'). An error for every count that judges;
+	// counted once more as Import Failed (DBA Dash's ImportFailedCount is inside its FailedCount)
+	OutcomeImportFailed = "import failed"
 )
 
 // PartialOutcome: OutcomePartial for a run whose logged status is "partial", "" for any other (the SQL Server
@@ -29,6 +33,8 @@ func partialOutcome(status string) string {
 // outcomeOf: a run's outcome - an error first, then the producer's own (partial), then skipped, else ok
 func outcomeOf(res Result) string {
 	switch {
+	case res.Err != nil && res.Outcome == OutcomeImportFailed:
+		return OutcomeImportFailed
 	case res.Err != nil:
 		return OutcomeError
 	case res.Outcome != "":
@@ -47,7 +53,10 @@ type healthKey struct {
 type healthAgg struct {
 	runs, ok, partial, errs, skipped, overHalf, overInterval, durMax, intervalS int
 	rows, durSum                                                                int64
-	lastOk, lastErr, lastPartial                                                time.Time // lastOk: an ok or a partial run
+	// B6g-1: the imports (N27) and the runs that read their own session's CPU and logical reads at their end (N25 / N26)
+	importFailed, importRuns, importMax, cpuRuns, cpuMax int
+	importSum, cpuSum, readsSum                          int64
+	lastOk, lastErr, lastPartial                         time.Time // lastOk: an ok or a partial run
 }
 
 // beatHealth: one instance, collection and UTC hour's running totals since this run began (the repository keeps them
@@ -70,6 +79,18 @@ type beatHealth struct {
 	LastOk       *time.Time `json:"last_ok_at,omitempty"`
 	LastError    *time.Time `json:"last_error_at,omitempty"`
 	LastPartial  *time.Time `json:"last_partial_at,omitempty"`
+	// B6g-1 (N27): ImportFailed is inside Error; ImportRuns are the runs that attempted an import (the divisor of the
+	// average), ImportSum / ImportMax their time in ms, apart from the run's own duration (which holds it too)
+	ImportFailed int   `json:"import_failed"`
+	ImportRuns   int   `json:"import_runs"`
+	ImportSum    int64 `json:"import_ms_sum"`
+	ImportMax    int   `json:"import_ms_max"`
+	// B6g-1 (N25 / N26): CPURuns are the runs that read their session's cpu_time and logical_reads at their end (SQL
+	// Server); the sums and the highest CPU are over those runs alone
+	CPURuns  int   `json:"cpu_runs"`
+	CPUSum   int64 `json:"cpu_ms_sum"`
+	CPUMax   int   `json:"cpu_ms_max"`
+	ReadsSum int64 `json:"reads_sum"`
 }
 
 // health counts one run into its hour (under h.mu, from record()): the hour is UTC's, never the collector's zone, and
@@ -134,9 +155,26 @@ func (h *Heartbeat) health(instance, collection string, res Result, now time.Tim
 	default:
 		a.errs++
 		a.lastErr = now
+		if o == OutcomeImportFailed {
+			a.importFailed++
+		}
 	}
-	if o != OutcomeError {
+	if o != OutcomeError && o != OutcomeImportFailed {
 		a.rows += int64(res.Rows)
+	}
+	if res.Imported {
+		ims := int(res.Import.Milliseconds())
+		a.importRuns++
+		a.importSum += int64(ims)
+		a.importMax = max(a.importMax, ims)
+	}
+	if res.CPUMs != nil {
+		a.cpuRuns++
+		a.cpuSum += *res.CPUMs
+		a.cpuMax = max(a.cpuMax, int(*res.CPUMs))
+		if res.Reads != nil {
+			a.readsSum += *res.Reads
+		}
 	}
 	ms := int(res.Duration.Milliseconds())
 	a.durSum += int64(ms)
@@ -161,7 +199,9 @@ func (h *Heartbeat) takeHealth() []beatHealth {
 		}
 		r := beatHealth{Instance: k.instance, Collection: k.collection, Hour: k.hour, Runs: a.runs, Ok: a.ok, Partial: a.partial,
 			Error: a.errs, Skipped: a.skipped, Rows: a.rows, DurSum: a.durSum, DurMax: a.durMax, OverHalf: a.overHalf,
-			OverInterval: a.overInterval, IntervalS: a.intervalS}
+			OverInterval: a.overInterval, IntervalS: a.intervalS,
+			ImportFailed: a.importFailed, ImportRuns: a.importRuns, ImportSum: a.importSum, ImportMax: a.importMax,
+			CPURuns: a.cpuRuns, CPUSum: a.cpuSum, CPUMax: a.cpuMax, ReadsSum: a.readsSum}
 		r.LastOk, r.LastError, r.LastPartial = timePtr(a.lastOk), timePtr(a.lastErr), timePtr(a.lastPartial)
 		out = append(out, r)
 	}
