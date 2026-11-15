@@ -46,7 +46,8 @@ type toolVersion struct{ Version, Date string }
 var (
 	reVersion = regexp.MustCompile(`(?i)@version\s*=\s*'([0-9][0-9.]*)'`)
 	reVerDate = regexp.MustCompile(`(?i)@version_?date\s*=\s*'([0-9]{8})'`)
-	reWhoIs   = regexp.MustCompile(`Who Is Active\? v([0-9]+)\.([0-9]{8})`)
+	// sp_WhoIsActive's header: 'v2200.20260409' (its date in the version) or the older 'v12.00 (2021-11-10)'
+	reWhoIs = regexp.MustCompile(`Who Is Active\? v([0-9]+)\.([0-9]+)(?: \(([0-9]{4}-[0-9]{2}-[0-9]{2})\))?`)
 )
 
 // parseVersion reads a version and its date from the windows of a procedure's text.
@@ -54,7 +55,12 @@ func parseVersion(windows ...string) toolVersion {
 	var v toolVersion
 	for _, w := range windows {
 		if m := reWhoIs.FindStringSubmatch(w); m != nil && v.Version == "" {
-			v.Version, v.Date = m[1]+"."+m[2], m[2][:4]+"-"+m[2][4:6]+"-"+m[2][6:]
+			v.Version = m[1] + "." + m[2]
+			if len(m[2]) == 8 {
+				v.Date = m[2][:4] + "-" + m[2][4:6] + "-" + m[2][6:]
+			} else {
+				v.Date = m[3]
+			}
 		}
 		if m := reVersion.FindStringSubmatch(w); m != nil && v.Version == "" {
 			v.Version = m[1]

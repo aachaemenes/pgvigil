@@ -13,6 +13,8 @@ func TestParseVersion(t *testing.T) {
 		{[]string{"@Version = '8.34', @VersionDate = '20260702';", "@VersionDate = '20260702';", ""}, toolVersion{"8.34", "2026-07-02"}},
 		{[]string{"@version = '3.11',\n    @version_date = '20261101';", "@version_date = '20261101';", ""}, toolVersion{"3.11", "2026-11-01"}},
 		{[]string{"", "", "Who Is Active? v2200.20260409 (2026-04-09)"}, toolVersion{"2200.20260409", "2026-04-09"}},
+		{[]string{"", "", "Who Is Active? v12.00 (2021-11-10)"}, toolVersion{"12.00", "2021-11-10"}},
+		{[]string{"", "", "Who Is Active? v11.32"}, toolVersion{"11.32", ""}},
 		{[]string{"", "", ""}, toolVersion{}},
 	}
 	for _, c := range cases {
@@ -43,6 +45,7 @@ func TestCompareAndWord(t *testing.T) {
 		{true, "2.11", "sp_IndexCleanup", "the tested version"},
 		{true, "3.11", "sp_PressureDetector", "older than tested"},
 		{true, "1.0", "sp_NotInTheCatalogue", "version not read"},
+		{true, "12.00", "sp_WhoIsActive", "older than tested"},
 	} {
 		if got := versionWord(c.installed, toolVersion{Version: c.v}, c.name); got != c.want {
 			t.Errorf("versionWord(%v, %q, %q) = %q, want %q", c.installed, c.v, c.name, got, c.want)
