@@ -66,9 +66,18 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer plain.Close(ctx)
+	// pg_jit_available() answers true only while jit is on in the asking session, so it is asked under SET LOCAL jit = on
 	var available bool
-	if err := plain.QueryRow(ctx, `SELECT pg_jit_available()`).Scan(&available); err != nil {
+	if tx, err := plain.Begin(ctx); err != nil {
 		t.Fatal(err)
+	} else {
+		if _, err := tx.Exec(ctx, `SET LOCAL jit = on`); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.QueryRow(ctx, `SELECT pg_jit_available()`).Scan(&available); err != nil {
+			t.Fatal(err)
+		}
+		_ = tx.Rollback(ctx)
 	}
 	if !available {
 		t.Fatal("the control cannot run: pg_jit_available() is false on this server (a PostgreSQL with its LLVM module is needed)")
