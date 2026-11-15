@@ -182,11 +182,15 @@ const enumerate = full => ev(`(() => { ${PARTS}
   if (/[?&]i=/.test(location.hash)) {
     const m = document.querySelector('main');
     const pathOf = e => { const p = []; while (e && e !== m) { p.unshift([...e.parentElement.children].indexOf(e)); e = e.parentElement; } return p; };
+    // a box clipped to a pixel (a screen reader's words: .visually-hidden, a chart legend's Time row): nobody sees its
+    // text, nobody clicks it - a click at its place lands on whatever is drawn there
+    const clips = [...m.querySelectorAll('*')].filter(a => { const r = a.getBoundingClientRect(); return r.width <= 1 && r.height <= 1 && (r.width > 0 || r.height > 0) && getComputedStyle(a).overflow !== 'visible'; });
     for (const e of m.querySelectorAll('*')) {
       if (e.closest('select, option, input, textarea, script, style, svg, [hidden]')) continue;
       const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
       // drawn off the page (a screen reader's words: position absolute, left -10000px): nobody clicks it
       if (r.right <= 0 || r.left >= document.documentElement.scrollWidth) continue;
+      if (clips.some(c => c.contains(e))) continue;
       // a disabled control is plain only when it says why (its title, or the off-reason words beside it)
       const offBtn = e.closest('button:disabled, [aria-disabled="true"]');
       // a control first (the review of 823e113, finding 4): a link or a button inside a heading, a label or a value is
@@ -194,7 +198,7 @@ const enumerate = full => ev(`(() => { ${PARTS}
       const base = offBtn && (offBtn.title || offBtn.parentElement?.querySelector('.off-reason')) ? 'off'
         : e.closest('a, button') ? 'control'
         : e.closest('h1, h2, h3, h4, h5, h6') ? 'heading'
-        : e.closest('table.props th, dt, .healthcal-head, .healthcal-month, .off-reason, .u-legend .u-series:first-child') ? 'label'
+        : e.closest('table.props th, dt, .healthcal-head, .healthcal-month, .healthcal > p.meta, .off-reason, .u-legend .u-series:first-child') ? 'label'
         : e.closest('table.props td, dd') ? 'value'
         : e.closest('[data-nolink]') ? 'nolink'
         : e.closest('tbody td') && e.closest('tr')?.querySelector('a[href], button:not(:disabled)') ? 'cell' : 'text';
