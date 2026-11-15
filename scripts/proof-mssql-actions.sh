@@ -322,6 +322,8 @@ WANT="full:done=3 full:refused=9 jobstart:refused=2 nodsn:refused=1 noright:fail
 pgi=$(q "select pgvigil.ensure_instance('proof-act-pg-$SUF', 'onprem', '18', 180000, false, '{}')")
 q "select pgvigil.import_actions_log($pgi, now(), '[{\"instance_name\":\"proof-act-pg-$SUF\",\"ui_user\":\"u\",\"action\":\"cancel\",\"pid\":7,\"reason\":\"a postgres row\",\"outcome\":\"done\"}]'::jsonb)" >/dev/null
 q "select pgvigil.import_actions_log($pgi, now(), '[{\"instance_name\":\"proof-act-pg-$SUF\",\"ui_user\":\"u\",\"action\":\"explain_analyze\",\"reason\":\"a postgres row without a pid\",\"outcome\":\"done\"}]'::jsonb)" >/dev/null
+# the two rows above match audit()'s pattern (proof-act-%-<suf>): N counts them, so H's first expect reads the true total
+N=$((N + 2))
 [ "$(q "select string_agg(engine || '|' || action || '|' || coalesce(pid::text, 'no pid'), ' ; ' order by action_id) from pgvigil.actions_log where instance_name = 'proof-act-pg-$SUF'")" = "postgres|cancel|7 ; postgres|explain_analyze|no pid" ] \
   || fail "G: the PostgreSQL-shaped rows: $(q "select engine, action, pid from pgvigil.actions_log where instance_name = 'proof-act-pg-$SUF'")"
 if q "select pgvigil.import_mssql_actions_log(${IID[$I1]}, now(), '[{\"instance_name\":\"$I1\",\"ui_user\":\"u\",\"action\":\"kill\",\"reason\":\"a kill without a session id\",\"outcome\":\"done\"}]'::jsonb)" >"$TMPD/bad.out" 2>&1; then fail "G: a kill without a pid was stored"; fi
