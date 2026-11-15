@@ -76,7 +76,7 @@ export async function mssqlErrorFleetView(ctx: Ctx): Promise<HTMLElement> {
     // names none, and a tag or a text in the dialog narrows it. No expiry, as the Alerts page's known patterns: it lasts
     // until it is ended under Known noise.
     const one = ctx.instance ? Number(ctx.instance) : null;
-    const markNoise = (n: number) => writeButton(ad, 'Mark as known noise', `Mark error ${n} as known noise`, () => ackDialog({
+    const markNoise = (n: number) => writeButton(ad, 'Mark as known noise', `Mark as known noise: error ${n}`, () => ackDialog({   // the name holds the visible words (WCAG 2.5.3)
       title: `Mark error ${n} as known noise`,
       what: `Its lines leave this page's counts (${one ? 'on this instance only' : 'on every instance, or those of the tag you give'}; with a text, only the lines whose message holds it) and come back with Show known noise. The label lasts until you End it under Known noise. The check 'error log:${n}' is this number; 'error log' with a text is the text under any number. Nothing is held: no alert matches these labels.`,
       body: { kind: 'noise', check_key: `error log:${n}`, ...(one ? { instance_id: one } : {}) }, expiry: false, noteField: 'label', matchFields: true, after: () => { void draw(); },
