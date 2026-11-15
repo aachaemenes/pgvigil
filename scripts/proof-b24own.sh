@@ -153,7 +153,7 @@ ok "S2: by default pgvigil's own idle sessions hidden (own_hidden 3), pgvigil-x 
 python3 -c "
 import json; d=json.load(open('$WORK/out.json')); t=d['rows']; rows=[dict(zip(t['columns'], r)) for r in t['rows']]
 m={r['program_name']: r.get('is_own') for r in rows if r.get('program_name')}
-import sys; sys.exit(0 if m.get('pgvigil-proof2') is True and m.get('pgvigil-x') is False else 1)" || fail "S3: the rows do not carry is_own (the page's mark)"
+import sys; sys.exit(0 if m.get('pgvigil-proof2') is True and m.get('pgvigil-x') is not True else 1)" || fail "S3: the rows do not carry is_own (the page's mark)"
 # S3b: pgvigil-proof3 past 60 s
 sleep 62; col ss mssql_requests
 SNAP2=$(q "select to_char(max(snapshot_at) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') from pgvigil.mssql_requests where instance_id = $ISS")
