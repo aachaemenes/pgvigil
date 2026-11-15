@@ -7,7 +7,8 @@ check judged the row and found nothing, N/A where it did not judge it. Two ways 
   - the column is on the REVIEWED list below (read one by one: its other cells are empty, or each is a badge whose
     class is a status), and every badge it draws - in its text and in its helpers - has a status class: never ''
     and never 'info' (a badge with no status class is a plain cell beside coloured ones).
-A status column that does neither is a FAIL; a REVIEWED entry that matches no status column is a FAIL too (the list
+The scan reads that a cls is there, not what it returns: each cls's values are read by review. A status column that
+does neither is a FAIL; a REVIEWED entry that matches no status column is a FAIL too (the list
 follows the source).
 
 usage: x18-scan.py <the web/src folder>   prints one line per FAIL, then the counts; exit 1 on any FAIL

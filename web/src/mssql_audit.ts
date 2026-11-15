@@ -94,7 +94,7 @@ const specCols: Col[] = [
   { key: 'scope', fmt: (v, r) => v === 'database' ? `database ${text(r.database_name)}` : 'server' },
   { key: 'name', label: 'specification' },
   { key: 'is_enabled', label: 'state', fmt: v => v === true ? badge('on', 'ok') : badge('off', 'warn') },
-  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})`, cls: v => v == null ? '' : 'status ok' },
+  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})`, cls: (v, r) => v == null ? '' : r.audit_state === 'started' ? 'status ok' : r.audit_state === 'failed' ? 'crit' : r.audit_state === 'stopped' || r.audit_state === 'shutting down' ? 'warn' : 'status none' },
   { key: 'action_count', label: 'actions', num: true },
   { key: 'actions', label: 'what it records', fmt: prose },
   { key: 'modified', label: 'modified (server clock)' },

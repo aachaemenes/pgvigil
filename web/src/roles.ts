@@ -121,7 +121,7 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
       { key: 'rule_number', label: '#', num: true }, { key: 'line_number', label: 'line', num: true },
       { key: 'type' }, { key: 'databases' }, { key: 'users' },
       { key: 'address', fmt: (v, r) => v == null ? '' : String(v) + (r.netmask ? '/' + String(r.netmask) : '') },
-      { key: 'auth_method', label: 'method', fmt: v => v === 'trust' ? badge('trust', 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'trust' ? '' : 'status ok' },
+      { key: 'auth_method', label: 'method', fmt: v => v === 'trust' ? badge('trust', 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'trust' ? '' : v === 'password' || v === 'md5' ? 'status none' : 'status ok' },
       { key: 'options', wide: true }, { key: 'error', fmt: v => v ? badge(String(v), 'crit') : '' },
     ], 'The file has no rules.'));
   }

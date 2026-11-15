@@ -122,7 +122,7 @@ function optionsView(rows: Row[]): HTMLElement[] {
     { key: 'default_value', label: 'default', num: true, fmt: fmtNum },
     { key: 'advised', label: 'advised', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
     { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
-    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : 'status ok' },
+    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : r.status === 'ok' ? 'status ok' : 'status none' },
     { key: 'detail', label: 'why', wide: true },
     { key: 'rule' },
   ];
