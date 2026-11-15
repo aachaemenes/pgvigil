@@ -210,6 +210,70 @@ const allRows = await api({});
   }
 }
 
+// CH18-CH21 (B6g-2, N33 / N41; design G3): the Thresholds cell opens DBA Dash's Collection Health Thresholds dialog
+// (CollectionHealthThresholdsDialog.cs) on a demo instance's activity row - its four 'Apply to' levels, its eight
+// settings in DBA Dash's words, each 'Inherited:' at DBA Dash's default; on the demo door a level over every instance is
+// off with the door's words; Don't monitor saved on this instance and collection makes the row N/A with its reason and
+// its Thresholds cell 'set on this instance and collection', Inherit All + Save brings the row back; a refusal of the
+// repository's function reaches the page in its words (409, 'refused: ...')
+{
+  const th = async (inst, coll) => ev(`(() => {
+    const t = document.querySelector('main .ch-grid table'); if (!t) return false;
+    const heads = [...t.querySelectorAll('thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim());
+    const ki = heads.indexOf('Instance'), kc = heads.indexOf('Collection'), kt = heads.indexOf('Thresholds');
+    const tr = [...t.querySelectorAll('tbody tr')].find(tr => tr.children[ki]?.textContent.trim() === ${JSON.stringify(inst)} && tr.children[kc]?.textContent.trim() === ${JSON.stringify(coll)});
+    const b = tr?.children[kt]?.querySelector('button'); if (!b) return false; b.click(); return true; })()`);
+  const dlg = () => ev(`(() => { const d = document.querySelector('dialog.act-dialog[open]'); if (!d) return null;
+    return { title: d.querySelector('h3')?.textContent ?? '', scopes: [...d.querySelectorAll('#ch-th-scope option')].map(o => o.textContent),
+      labels: [...d.querySelectorAll('tbody td label')].map(l => l.textContent.trim()), inherited: [...d.querySelectorAll('tbody td span.meta')].map(x => x.textContent),
+      off: d.querySelector('button[type=submit]')?.getAttribute('aria-disabled') ?? '', text: d.textContent ?? '', msg: d.querySelector('p[role=status]')?.textContent ?? '' }; })()`);
+  const until = async (f, ms = 10000) => { for (let i = 0; i < ms / 150; i++) { const v = await f(); if (v) return v; await sleep(150); } return null; };
+  const loaded = () => until(async () => { const d = await dlg(); return d && d.inherited.length === 8 && d.inherited.every(x => x.startsWith('Inherited:')) ? d : null; });
+  const p = await open('#/collectionhealth?w=24h');
+  const row = (p?.rows ?? []).find(r => (r['Instance']?.text ?? '').startsWith('demo-') && r['Collection']?.text === 'activity');
+  const inst = row?.['Instance']?.text ?? '';
+  const opened = row ? await th(inst, 'activity') : false;
+  const d0 = opened ? await loaded() : null;
+  say(!!d0 && d0.title === 'Collection Health Thresholds' && JSON.stringify(d0.scopes) === JSON.stringify([`activity on ${inst}`, `All collections on ${inst}`, 'activity on all instances', 'All collections on all instances'])
+    && JSON.stringify(d0.labels) === JSON.stringify(['Failed runs in a row', 'And failing for at least (minutes)', 'Failed runs in a row', 'And failing for at least (minutes)', 'Warning: failed or partly failed %', 'Critical: failed %', 'Only with at least this many runs', 'Don\'t monitor (always N/A)']),
+    'CH18 the Thresholds cell opens the dialog: its four levels and eight settings in DBA Dash\'s words', d0 ? `${inst}: ${d0.scopes.join(' / ')} | ${d0.labels.join(' / ')}` : (row ? 'no dialog' : 'no demo activity row'));
+  const defs = ['1', '10', '3', '30', '10', '50', '5', 'No'].map(v => `Inherited: ${v} (DBA Dash's default)`);
+  say(!!d0 && JSON.stringify(d0.inherited) === JSON.stringify(defs), 'CH18 every value inherits DBA Dash\'s default', d0 ? d0.inherited.join(' | ') : 'no dialog');
+  // a level over every instance: off on the demo door, its words in the dialog; back on at the instance's level
+  await ev(`(() => { const s = document.querySelector('#ch-th-scope'); if (s) { s.value = '3'; s.dispatchEvent(new Event('change')); } })()`); await sleep(300);
+  const d1 = await dlg();
+  say(!!d1 && d1.off === 'true' && /reach past the demo's instances/.test(d1.text), 'CH19 All collections on all instances: Save off with the door\'s words', d1 ? `aria-disabled ${d1.off}; ${(d1.text.match(/Not written here:[^.]*\./) ?? [''])[0]}` : 'no dialog');
+  await ev(`(() => { const s = document.querySelector('#ch-th-scope'); if (s) { s.value = '0'; s.dispatchEvent(new Event('change')); } })()`); await sleep(300);
+  const d2 = await dlg();
+  say(!!d2 && d2.off !== 'true', `CH19 activity on ${inst}: Save on`, d2 ? `aria-disabled '${d2.off}'` : 'no dialog');
+  // Don't monitor ticked and Yes on this instance and collection, saved
+  await ev(`(() => { const d = document.querySelector('dialog.act-dialog[open]'); const rows = [...d.querySelectorAll('tbody tr')].filter(tr => tr.querySelector('td'));
+    const last = rows[rows.length - 1]; const [tick, val] = last.querySelectorAll('input'); tick.click(); if (!val.checked) val.click();
+    d.querySelector('button[type=submit]').click(); })()`);
+  const saved = await until(async () => { const d = await dlg(); return d && /^(done|not saved)/.test(d.msg.trim()) ? d : null; });
+  say(!!saved && saved.msg.includes(`Saved for activity on ${inst}`), 'CH20 Don\'t monitor saved on this instance and collection', saved ? saved.msg.slice(0, 160) : 'no answer in 10 s');
+  await ev(`[...document.querySelectorAll('dialog.act-dialog[open] button')].find(b => b.textContent === 'Close')?.click()`);
+  const p2 = await open('#/collectionhealth?w=24h');
+  const r2 = (p2?.rows ?? []).find(r => r['Instance']?.text === inst && r['Collection']?.text === 'activity');
+  say(!!r2 && r2['Status']?.text === 'N/A' && r2['Status Reason']?.text === 'not monitored (its Collection Health threshold)' && /set on this instance and collection/.test(r2['Thresholds']?.text ?? ''),
+    'CH20 the row N/A, its reason and its Thresholds cell', r2 ? `${r2['Status']?.text} | ${r2['Status Reason']?.text} | ${r2['Thresholds']?.text}` : 'not in the grid');
+  // Inherit All, Save: the level's own row ended, the row judged again
+  const again = r2 ? await th(inst, 'activity') : false;
+  const d3 = again ? await loaded() : null;
+  if (d3) await ev(`(() => { const d = document.querySelector('dialog.act-dialog[open]'); [...d.querySelectorAll('button')].find(b => b.textContent === 'Inherit All').click(); d.querySelector('button[type=submit]').click(); })()`);
+  const back = d3 ? await until(async () => { const d = await dlg(); return d && /^(done|not saved)/.test(d.msg.trim()) ? d : null; }) : null;
+  await ev(`[...document.querySelectorAll('dialog.act-dialog[open] button')].find(b => b.textContent === 'Close')?.click()`);
+  const p3 = await open('#/collectionhealth?w=24h');
+  const r3 = (p3?.rows ?? []).find(r => r['Instance']?.text === inst && r['Collection']?.text === 'activity');
+  say(!!back && back.msg.includes('Saved for') && !!r3 && r3['Status']?.text === row?.['Status']?.text && r3['Thresholds']?.text === row?.['Thresholds']?.text,
+    'CH20 Inherit All + Save: the row back as before', `${back ? back.msg.slice(0, 80) : 'no answer'} | before ${row?.['Status']?.text} / ${row?.['Thresholds']?.text}, after ${r3?.['Status']?.text} / ${r3?.['Thresholds']?.text}`);
+  // a refusal of the repository's function, in its words on the page (as post() shows it: the body's error)
+  const iid = insts.find(r => r.name === inst)?.instance_id;
+  const ref = iid == null ? null : await ev(`fetch('/api/collectionhealth/thresholds', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+    body: JSON.stringify({ op: 'set', instance_id: ${Number(iid)}, collection: 'activity', warn_fails_in_row: 0 }) }).then(async r => r.status + ' ' + ((await r.json()).error ?? '(no error key)'))`);
+  say(/^409 refused: warn_fails_in_row must be a whole number from 1/.test(ref ?? ''), 'CH21 a refusal reaches the page in its words', String(ref).slice(0, 160));
+}
+
 // CH7 the landings
 {
   // the Summary's cell, one PostgreSQL row (fx-chcrit) and one SQL Server row; a row is found by its instance link's

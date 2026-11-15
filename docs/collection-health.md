@@ -91,3 +91,12 @@ says where a row's numbers come from, and its title the numbers. Any signed-in u
 /api/collectionhealth/thresholds), each change kept with who and when; the demo's door sets them on one demo instance
 only.
 
+The Thresholds cell opens DBA Dash's Collection Health Thresholds dialog for its row: Apply to picks the level (a row
+per collection over the instances offers the two without an instance), each setting is ticked to set it at that level
+or left unticked to inherit it, with 'Inherited: n' and the level it comes from beside it. Save writes the ticked
+values (nothing ticked ends the level's own row: the level above applies), Inherit All unticks every value, Close
+reads the page again after a save. Where the write cannot be made (a server that writes nothing; on the demo an
+instance that is not the demo's, or a level over every instance) the dialog still shows the values, Save off with the
+reason in words. A refused value comes back in the repository's own words. One difference from DBA Dash: the rate's
+range is the page's (the Summary's last 24 hours), as pgvigil has no Acknowledge Errors yet.
+

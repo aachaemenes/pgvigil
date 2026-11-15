@@ -164,6 +164,19 @@ SELECT l.instance_id, i.name AS instance, l.collection, l.snapshot_at AS at, l.d
  ORDER BY l.snapshot_at DESC
  LIMIT 500`
 
+// sqlCHThresholds: the thresholds dialog's read (B6g-2, N33 / N41) - the live rows of the four 'Apply to' levels of one
+// instance's collection, most specific first (DBA Dash's CollectionHealthThresholds_Get reads the same four for its
+// 'Inherited:' values): this instance and collection, this instance and every collection, this collection on every
+// instance, everything. $1 the instance (0 = none: the collection grain), $2 the collection (empty = none).
+var sqlCHThresholds = `
+SELECT t.threshold_id, t.instance_id, t.collection, t.warn_fails_in_row, t.warn_fail_minutes, t.crit_fails_in_row, t.crit_fail_minutes,
+       t.warn_fail_pct, t.crit_fail_pct, t.min_runs, t.dont_monitor, t.created_by, t.created_at
+  FROM pgvigil.collection_health_threshold t
+ WHERE t.ended_at IS NULL
+   AND (t.instance_id IS NULL OR t.instance_id = nullif($1::int, 0))
+   AND (t.collection IS NULL OR t.collection = nullif($2::text, ''))
+ ORDER BY t.instance_id NULLS LAST, t.collection NULLS LAST`
+
 // chStatuses: the status filter's words (DBA Dash's four; 'na' for N/A), NULL for all four
 func chStatuses(v string) ([]string, error) {
 	if v == "" {
@@ -236,6 +249,7 @@ func (s *Server) CollectionHealth(w http.ResponseWriter, r *http.Request) {
 		"runs":        {"runs", sqlCHRuns, with(chBucket(from, to))},
 		"cost":        {"cost", sqlCHCost, with(chBucket(from, to))},
 		"errors":      {"errors", sqlCHErrors, with(q.Get("q"))},
+		"thresholds":  {"thresholds", sqlCHThresholds, []any{id, coll}},
 	}
 	var ps []part
 	for _, n := range chPartNames(q.Get("part")) {
@@ -245,10 +259,12 @@ func (s *Server) CollectionHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // chPartNames: the parts a read offers multiPart (which runs the one part= names, or every one offered); the error list
-// only when part=errors asks for it (the Errors link's list) - the page's main read draws no error list
+// only when part=errors asks for it (the Errors link's list), the thresholds' live rows only when part=thresholds asks
+// (the dialog's read: instance= and collection= name the row) - the page's main read draws neither
 func chPartNames(part string) []string {
-	if part == "errors" {
-		return []string{"collections", "runs", "cost", "errors"}
+	switch part {
+	case "errors", "thresholds":
+		return []string{"collections", "runs", "cost", part}
 	}
 	return []string{"collections", "runs", "cost"}
 }
@@ -313,11 +329,14 @@ func (s *Server) CHThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("collection health threshold: attempt", "op", pay["op"], "instance_id", pay["instance_id"], "collection", pay["collection"], "user", seat.user, "outcome", res.Outcome, "detail", res.Detail)
 	code := http.StatusOK
+	o := map[string]any{"outcome": res.Outcome, "detail": res.Detail, "threshold_id": res.ThresholdID}
 	if res.Outcome != "done" {
+		// a refusal's words as the other writes give them (q_ack.go, q_drives.go): the page's post() shows 'error'
 		code = http.StatusConflict
+		o["error"] = "refused: " + res.Detail
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": res.Outcome, "detail": res.Detail, "threshold_id": res.ThresholdID})
+	_ = json.NewEncoder(w).Encode(o)
 }

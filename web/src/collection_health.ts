@@ -5,8 +5,13 @@
 // collection per instance (DBA Dash's default, at every level) or per collection over the instances. Status filter:
 // DBA Dash's four. Landings as DBA Dash's: Instances -> that collection's per-instance rows; Failed and Errors -> the
 // error list of the row over the range; Last Failure -> the error list around the last failure (from the last success
-// while it fails now); an instance's name -> its own tab. Data from GET /api/collectionhealth.
-import { get, Row, rowsOf, Table } from './api';
+// while it fails now); an instance's name -> its own tab; Thresholds -> the row's thresholds dialog (B6g-2: DBA Dash's
+// CollectionHealthThresholdsDialog, its four 'Apply to' levels). Data from GET /api/collectionhealth.
+import { get, post, Row, rowsOf, Table } from './api';
+import type { AckData } from './ack';
+import { loadAckSafe, offBeside, seatWhy } from './ack';
+import type { CHScope, CHSettingKey } from './chthresholds';
+import { chFormat, chPayload, chScopes, chSettings, chValue, inheritedOf, ownRow } from './chthresholds';
 import type { Ctx } from './router';
 import { href, window_ } from './router';
 import { fleet, inTagScope, tagWords } from './fleet';
@@ -21,9 +26,136 @@ const shows: [string, string][] = [['instance', 'Row per collection per instance
 // the lead's words (23:2x 11-14) where DBA Dash shows its Import Lag chart
 export const importLagWords = 'pgvigil writes into the repository inside the run that collected: no queue stands between the two, so there is no import lag (Avg Import is the write\'s own time)';
 const pct = (v: unknown) => v == null ? '' : String(Number(v));
+// the write's noun in the seat's sentence (the server's CHThresholdWrite says the same)
+const thNoun = 'Collection Health thresholds';
+
+// thresholdsDialog: DBA Dash's Collection Health Thresholds dialog (CollectionHealthThresholdsDialog.cs, 4.25.0) for one
+// row of the grid - 'Apply to' its levels (this instance and collection, this instance, this collection on every
+// instance, everything; the collection grain the two without an instance), each setting ticked to set it at that level
+// or unticked to inherit it ('Inherited: n', and from where), Save, Inherit All (unticks every value; Save then ends the
+// level's own row), Close. Where the write cannot be made the dialog still reads, its Save off with the reason in words
+// (the seat's: a server that writes nothing; on a demo serve an instance not the demo's, or a level over every instance).
+function thresholdsDialog(ad: AckData, r: Row, after: () => void) {
+  const id = r.instance_id != null && Number(r.instance_id) > 0 ? Number(r.instance_id) : null;
+  const name = String(r.instance ?? '');
+  const coll = String(r.collection ?? '');
+  const scopes = chScopes(id, name, coll);
+  let live: Row[] = [], cur: CHScope = scopes[0], done = false, readOk = false;
+  const pick = el('select', { id: 'ch-th-scope' }, ...scopes.map((x, i) => el('option', { value: String(i) }, x.words)));
+  const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const levelLine = el('p', { class: 'meta' });
+  const offNote = el('p', { class: 'meta', hidden: '' });
+  const ctl = new Map<CHSettingKey, { tick: HTMLInputElement; val: HTMLInputElement; inh: HTMLElement; inherited: number | boolean }>();
+  const tbody = el('tbody');
+  let group = '';
+  for (const st of chSettings) {
+    if (st.group !== group) {
+      group = st.group;
+      tbody.append(el('tr', {}, el('th', { colspan: '3', scope: 'colgroup', style: 'text-align:left;padding-top:.6rem' }, group)));
+    }
+    const tick = el('input', { type: 'checkbox', 'aria-label': `Set '${st.label}' (${st.group}) at this level` });
+    const val = st.kind === 'bool'
+      ? el('input', { type: 'checkbox', 'aria-label': st.label })
+      : el('input', { type: 'number', min: String(st.min), max: String(st.max), step: st.kind === 'pct' ? '0.01' : '1', 'aria-label': `${st.label} (${st.group})`, style: 'width:7rem' });
+    const inh = el('span', { class: 'meta' });
+    const c = { tick, val, inh, inherited: st.def };
+    ctl.set(st.key, c);
+    // unticked shows the inherited value, read only (DBA Dash's ShowOverride)
+    tick.addEventListener('change', () => { if (!tick.checked) put(st.key, c.inherited); val.disabled = !tick.checked || !!whyOf(); });
+    tbody.append(el('tr', {}, el('td', {}, el('label', {}, tick, ' ', st.label)), el('td', {}, val), el('td', {}, inh)));
+  }
+  const put = (k: CHSettingKey, v: number | boolean) => {
+    const c = ctl.get(k)!;
+    if (c.val.type === 'checkbox') c.val.checked = v === true; else c.val.value = String(v);
+  };
+  const whyOf = () => seatWhy(ad, thNoun, cur.instance_id ?? undefined, cur.instance_id != null ? name : undefined);
+  const btns = el('div', { style: 'margin-top:.6rem' });
+  // the buttons of the level picked (DBA Dash's order: Close, Save, Inherit All): Save and Inherit All off with the
+  // level's reason where it cannot be written
+  const drawButtons = () => {
+    const close = el('button', { type: 'button' }, 'Close'), save = el('button', { type: 'submit' }, 'Save'), all = el('button', { type: 'button' }, 'Inherit All');
+    close.addEventListener('click', shut);
+    const why = !readOk ? 'the thresholds could not be read' : whyOf();
+    offNote.hidden = !why;
+    offNote.textContent = why ? `Not written here: ${why}.` : '';
+    if (why) { offBeside(save, why, offNote); offBeside(all, why, offNote); }
+    else all.addEventListener('click', () => { for (const [k, c] of ctl) { c.tick.checked = false; put(k, c.inherited); c.val.disabled = true; } msg.textContent = 'Every value inherits: Save ends this level\'s own thresholds.'; });
+    btns.replaceChildren(close, ' ', save, ' ', all);
+    for (const c of ctl.values()) { c.tick.disabled = !!why; c.val.disabled = !!why || !c.tick.checked; }
+  };
+  // the level picked: its own values ticked, every value's inherited one beside it
+  const fill = () => {
+    const own = ownRow(live, cur);
+    levelLine.textContent = own
+      ? `${cur.words}: set by ${String(own.created_by ?? '?')} ${fmtTime(own.created_at)}.`
+      : `${cur.words} has no thresholds of its own: every value inherits.`;
+    for (const st of chSettings) {
+      const c = ctl.get(st.key)!, v = chValue(own, st.key), inh = inheritedOf(live, scopes, cur, st.key);
+      c.inherited = inh.value;
+      c.inh.textContent = `Inherited: ${chFormat(inh.value)} (${inh.from})`;
+      c.tick.checked = v != null;
+      put(st.key, v ?? inh.value);
+    }
+    drawButtons();
+  };
+  const load = async () => {
+    try {
+      const d = await get<Record<'thresholds', Table | null>>('collectionhealth', { instance: id ?? undefined, collection: coll, part: 'thresholds' });
+      live = rowsOf(d.thresholds);
+      readOk = true;
+    } catch (e) {
+      readOk = false;
+      msg.replaceChildren(badge('not read', 'crit'), ' ', `The thresholds could not be read: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    fill();
+  };
+  const form = el('form', { method: 'dialog' }, el('h3', {}, 'Collection Health Thresholds'),
+    el('p', {}, 'A run of failures counts once it is long enough in runs and has gone on long enough since the collection last succeeded - so a collection that runs every minute has to fail for a while before it shows, while one that runs daily shows on its first failure.  '
+      + 'The failure rate is over the page\'s range (the Summary\'s over the last 24hrs), once there are enough runs.  It is only critical while the latest run failed.  '
+      + 'Untick a value to inherit it from the level above.  Who set a level and when is kept.'),
+    el('div', {}, el('label', { for: 'ch-th-scope' }, 'Apply to: '), pick), levelLine,
+    el('table', { class: 'ch-th' }, tbody), offNote, msg, btns);
+  const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:44rem', 'aria-label': `Collection Health Thresholds: ${scopes[0].words}` }, form);
+  function shut() { dlg.close(); dlg.remove(); if (done) after(); }
+  dlg.addEventListener('cancel', () => { dlg.remove(); if (done) after(); });
+  pick.addEventListener('change', () => { cur = scopes[Number(pick.value)] ?? scopes[0]; msg.textContent = ''; fill(); });
+  form.addEventListener('submit', ev => {
+    ev.preventDefault();
+    if (whyOf() || !readOk) return;
+    const values: Partial<Record<CHSettingKey, number | boolean | null>> = {};
+    for (const st of chSettings) {
+      const c = ctl.get(st.key)!;
+      if (!c.tick.checked) { values[st.key] = null; continue; }
+      if (st.kind === 'bool') { values[st.key] = c.val.checked; continue; }
+      const n = Number(c.val.value);
+      if (c.val.value.trim() === '' || !Number.isFinite(n) || n < st.min || n > st.max || (st.kind === 'int' && !Number.isInteger(n))) {
+        msg.replaceChildren(badge('not saved', 'crit'), ' ', `${st.label} (${st.group}): ${st.kind === 'int' ? 'a whole number' : 'a number'} from ${st.min} to ${st.max}, or untick it to inherit.`);
+        c.val.focus();
+        return;
+      }
+      values[st.key] = n;
+    }
+    const pay = chPayload(cur, values, ownRow(live, cur));
+    if (!pay) { msg.textContent = 'Nothing to save: every value inherits already.'; return; }
+    msg.textContent = 'Saving...';
+    void post<{ outcome: string; detail: string }>('collectionhealth/thresholds', pay).then(async res => {
+      done = true;
+      await load();
+      msg.replaceChildren(badge(res.outcome, 'ok'), ' ', `Saved for ${cur.words}.  The page picks it up when it next reads (Close reads it again).`);
+    }, (e: unknown) => {
+      msg.replaceChildren(badge('not saved', 'crit'), ' ', e instanceof Error ? e.message : String(e));
+    });
+  });
+  document.body.append(dlg);
+  dlg.showModal();
+  drawButtons();
+  void load();
+}
 
 export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Collection Health'));
+  // who may set a threshold here (the acknowledgement seat: the server's thresholds write asks the same one)
+  const ad = await loadAckSafe(['acks']);
   const own = new URLSearchParams(location.hash.split('?')[1] ?? '');
   const onlyColl = own.get('collection') ?? '';
   const errorsOf = own.get('errors') === '1';
@@ -125,8 +257,14 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'max_import_ms', label: 'Max Import (ms)', num: true, fmt: fmtNum },
       { key: 'rows', label: 'Rows', num: true, fmt: fmtNum },
       { key: 'errors', label: 'Errors', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'errors') : fmtNum(v) },
-      // B6g-2: where the row's numbers come from; the numbers themselves in the title
-      { key: 'thresholds', label: 'Thresholds', fmt: (v, r) => el('span', { title: String(r.threshold_words ?? '') }, String(v ?? '')) },
+      // B6g-2: where the row's numbers come from, the numbers themselves in the title; a link to the row's thresholds
+      // dialog (DBA Dash's Thresholds link: 'Click to configure them'), which reads wherever it cannot write
+      { key: 'thresholds', label: 'Thresholds', fmt: (v, r) => {
+        const b = el('button', { type: 'button', class: 'link', title: String(r.threshold_words ?? ''),
+          'aria-label': `Collection Health thresholds of ${String(r.collection)}${r.instance_id != null ? ` on ${String(r.instance ?? '')}` : ''}: ${String(v ?? '')}` }, String(v ?? ''));
+        b.addEventListener('click', () => thresholdsDialog(ad, r, () => void draw()));
+        return b;
+      } },
     ];
     const cols: Col[] = grain === 'collection'
       ? [{ key: 'collection', label: 'Collection' }, statusCol,
@@ -158,7 +296,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s)${folder}${onlyColl ? `, collection ${onlyColl}` : ''}: ${n('critical')} critical, ${n('warning')} warning, ${n('n/a')} N/A, ${n('ok')} OK. `
         // the rule in docs/collection-health.md's words (0166; the review of B6.2, part b #10)
         + 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
-        + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
+        + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults; where a level sets its own, the row\'s Thresholds cell says so and opens them, and Don\'t monitor makes it N/A). '
         + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
         + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end (a run cut by its own timeout is not read); a PostgreSQL row says not read by pgvigil. '
         + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads (and the Cost chart\'s Import CPU line), the highest logical reads of one run; '
