@@ -57,22 +57,23 @@ index 38434c30..475fa17f 100644
  
  | Item | Opens |
 diff --git a/docs/running-queries.md b/docs/running-queries.md
-index d7dca0f7..2255dd20 100644
+index d7dca0f7..a2a4a8a8 100644
 --- a/docs/running-queries.md
 +++ b/docs/running-queries.md
-@@ -67,3 +67,12 @@ the actions door's sessions (`pgvigil-actions*`) are never own. A session that b
+@@ -67,3 +67,13 @@ the actions door's sessions (`pgvigil-actions*`) are never own. A session that b
  transaction over 60 seconds, sits idle in a transaction over 60 seconds, is
  shown even when it is pgvigil's own. A backend another tool opens under the collector's login with an application_name starting
  with `pgvigil` is pgvigil's by this rule and is hidden by default too.
 +
-+On the page: the switch reads `Show pgvigil's own sessions (n hidden)`, n being what this read left out, and rides the
-+page's address (`own=1`), so a link, Earlier / Later / Latest and a reload keep it, and it stays on between Running
-+queries and Waiting tasks of one instance. A row of pgvigil's own that is shown carries the word `pgvigil` beside its
-+id; its title says why it is shown. Where the page counts sessions or tasks above its grids, a line beside the switch
-+says how many of them are pgvigil's own ('the session counts above include n of pgvigil's own'), since those counts are
-+the whole server's. A read stored before pgvigil began to mark its own sessions (migration 0265) says so under the
-+switch: nothing in it is hidden. An alert's page always shows pgvigil's own sessions: a blocking head is never hidden
-+from an alert.
++On the page: the switch reads `Show pgvigil's own sessions (n hidden)`, n being what this read left out (with a wait
++filter: `(n hidden in this snapshot)`, the whole snapshot's count), and rides the page's address (`own=1`), so a link,
++Earlier / Later / Latest and a reload keep it, and it stays on between Running queries and Waiting tasks of one
++instance; ticking it keeps the snapshot on screen. A row of pgvigil's own that is shown carries the word `pgvigil`
++beside its id, its title saying why it is shown (an alert's page marks them too). The session counts above the grids
++are the whole server's: a line beside the switch says how many of those sessions are pgvigil's own ('n of the sessions
++above are pgvigil's own'; Waiting tasks: 'n of the waiting tasks above'), and Waiting tasks' Longest wait follows the
++switch. A read stored before pgvigil began to mark its own sessions (migration 0265) says so under the switch: nothing
++in it is hidden. An alert's page always shows pgvigil's own sessions: a blocking head is never hidden from an alert.
 diff --git a/docs/slow-queries.md b/docs/slow-queries.md
 index a9770c68..059940bf 100644
 --- a/docs/slow-queries.md
@@ -111,22 +112,23 @@ index a9770c68..059940bf 100644
  | `GET /api/stmttrend` | `instance`, `from`, `to`, and `queryid` (with `db`) or `shape` (with `min`) | `meta`, `trend` |
  | `GET /api/jobs/timeline` | `instance` (none = the fleet), `from`, `to`, and on an instance `scheduler` with `job` | `runs`, `meta`, `steps` (SQL Server) |
 diff --git a/docs/sqlserver-running.md b/docs/sqlserver-running.md
-index a0dd06ac..98d7e4c8 100644
+index a0dd06ac..acc53277 100644
 --- a/docs/sqlserver-running.md
 +++ b/docs/sqlserver-running.md
-@@ -118,3 +118,15 @@ the actions door's sessions (`pgvigil-actions*`) are never own. A session that b
+@@ -118,3 +118,16 @@ the actions door's sessions (`pgvigil-actions*`) are never own. A session that b
  transaction over 60 seconds, sits idle in a transaction over 60 seconds, or holds a memory grant or tempdb over 100 MB is
  shown even when it is pgvigil's own. A session another tool opens under the monitor's login with pgvigil's app name - or
  an admin's DSN that names that app name - is pgvigil's by this rule and is hidden by default too.
 +
-+On the page: the switch reads `Show pgvigil's own sessions (n hidden)`, n being what this read left out, and rides the
-+page's address (`own=1`), so a link, Earlier / Later / Latest and a reload keep it, and it stays on between Running
-+queries and Waiting tasks of one instance. A row of pgvigil's own that is shown carries the word `pgvigil` beside its
-+id; its title says why it is shown. Where the page counts sessions or tasks above its grids, a line beside the switch
-+says how many of them are pgvigil's own ('the session counts above include n of pgvigil's own'), since those counts are
-+the whole server's. A read stored before pgvigil began to mark its own sessions (migration 0265) says so under the
-+switch: nothing in it is hidden. An alert's page always shows pgvigil's own sessions: a blocking head is never hidden
-+from an alert.
++On the page: the switch reads `Show pgvigil's own sessions (n hidden)`, n being what this read left out (with a wait
++filter: `(n hidden in this snapshot)`, the whole snapshot's count), and rides the page's address (`own=1`), so a link,
++Earlier / Later / Latest and a reload keep it, and it stays on between Running queries and Waiting tasks of one
++instance; ticking it keeps the snapshot on screen. A row of pgvigil's own that is shown carries the word `pgvigil`
++beside its id, its title saying why it is shown (an alert's page marks them too). The session counts above the grids
++are the whole server's: a line beside the switch says how many of those sessions are pgvigil's own ('n of the sessions
++above are pgvigil's own'; Waiting tasks: 'n of the waiting tasks above'), and Waiting tasks' Longest wait follows the
++switch. A read stored before pgvigil began to mark its own sessions (migration 0265) says so under the switch: nothing
++in it is hidden. An alert's page always shows pgvigil's own sessions: a blocking head is never hidden from an alert.
 +
 +The Queries page reads with the same default and says after its snapshot line how many of pgvigil's own sessions
 +it left out; the Running queries page's switch shows them.
