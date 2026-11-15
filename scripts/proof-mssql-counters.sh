@@ -334,7 +334,9 @@ echo "== C. the arithmetic from the stored pairs =="
 # between C's two reads: 20 runs of a procedure whose temp table changes shape each run (a recompile each) and 20
 # distinct batches, so compilations run at 1/s or more and the recompile ratio is judged, not floored (review part 4,
 # finding 11)
-sqok "C: the recompiling procedure" "CREATE OR ALTER PROCEDURE dbo.pgv_rc AS BEGIN CREATE TABLE #r (a int); INSERT #r VALUES (1); ALTER TABLE #r ADD b int; SELECT a, b FROM #r; END" pgvctr
+# GO first: sqb puts SET NOCOUNT ON ahead of every batch, and CREATE PROCEDURE must lead its own (box run 401proof11: Msg 111)
+sqok "C: the recompiling procedure" "GO
+CREATE OR ALTER PROCEDURE dbo.pgv_rc AS BEGIN CREATE TABLE #r (a int); INSERT #r VALUES (1); ALTER TABLE #r ADD b int; SELECT a, b FROM #r; END" pgvctr
 sleep 2; col mssql_counters
 sq "$(for i in $(seq 1 20); do echo "EXEC dbo.pgv_rc;"; echo GO; echo "SELECT v FROM dbo.t WHERE id = $((i * 13)) AND pad <> 'c$i';"; echo GO; done)" pgvctr >/dev/null
 col mssql_counters
