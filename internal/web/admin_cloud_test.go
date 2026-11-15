@@ -221,7 +221,9 @@ func TestCloudRefusalAuditAsCollector(t *testing.T) {
 	defer pool.Close()
 	sfx := time.Now().UnixNano() % 1000000000
 	name := fmt.Sprintf("b24p-aud-%d", sfx)
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_instances WHERE name = $1`, name) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_instances WHERE name = $1`, name)
+	})
 	s := &Server{pool: pool, log: discardLog(), actions: &Actions{audit: collectorPool(ctx, t, pool, dsn, sfx)}}
 	pay := map[string]any{"op": "add", "ui_user": "b24p", "client": "t", "name": name, "engine": "postgres", "platform": "rds",
 		"dsn_ref": "file:/x/" + name + ".dsn", "host": "db1.c9akciq32.us-east-2.rds.amazonaws.com", "auth": "password"}
