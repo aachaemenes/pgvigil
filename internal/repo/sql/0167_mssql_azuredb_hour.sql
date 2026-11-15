@@ -51,28 +51,28 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_azuredb_hour (
   samples      int NOT NULL,
   cpu_total numeric(20,4),          -- the sum of each minute's avg_cpu_percent x its samples
   cpu_counted int,                   -- the samples of the minutes that carry avg_cpu_percent
-  max_cpu_percent numeric(12,4),
+  max_cpu_percent numeric(5,2),
   data_io_total numeric(20,4),          -- the sum of each minute's avg_data_io_percent x its samples
   data_io_counted int,                   -- the samples of the minutes that carry avg_data_io_percent
-  max_data_io_percent numeric(12,4),
+  max_data_io_percent numeric(5,2),
   log_write_total numeric(20,4),          -- the sum of each minute's avg_log_write_percent x its samples
   log_write_counted int,                   -- the samples of the minutes that carry avg_log_write_percent
-  max_log_write_percent numeric(12,4),
+  max_log_write_percent numeric(5,2),
   memory_usage_total numeric(20,4),          -- the sum of each minute's avg_memory_usage_percent x its samples
   memory_usage_counted int,                   -- the samples of the minutes that carry avg_memory_usage_percent
-  max_memory_usage_percent numeric(12,4),
+  max_memory_usage_percent numeric(5,2),
   xtp_storage_total numeric(20,4),          -- the sum of each minute's avg_xtp_storage_percent x its samples
   xtp_storage_counted int,                   -- the samples of the minutes that carry avg_xtp_storage_percent
-  max_xtp_storage_percent numeric(12,4),
+  max_xtp_storage_percent numeric(5,2),
   instance_cpu_total numeric(20,4),          -- the sum of each minute's avg_instance_cpu_percent x its samples
   instance_cpu_counted int,                   -- the samples of the minutes that carry avg_instance_cpu_percent
-  max_instance_cpu_percent numeric(12,4),
+  max_instance_cpu_percent numeric(5,2),
   instance_memory_total numeric(20,4),          -- the sum of each minute's avg_instance_memory_percent x its samples
   instance_memory_counted int,                   -- the samples of the minutes that carry avg_instance_memory_percent
-  max_instance_memory_percent numeric(12,4),
+  max_instance_memory_percent numeric(5,2),
   dtu_percent_total numeric(20,4),          -- the sum of each minute's avg_dtu_percent x its samples
   dtu_percent_counted int,                   -- the samples of the minutes that carry avg_dtu_percent
-  max_dtu_percent numeric(12,4),
+  max_dtu_percent numeric(5,2),
   dtu_total numeric(20,4),          -- the sum of each minute's avg_dtu x its samples
   dtu_counted int,                   -- the samples of the minutes that carry avg_dtu
   max_dtu numeric(12,4),
