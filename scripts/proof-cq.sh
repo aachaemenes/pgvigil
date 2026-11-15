@@ -135,7 +135,9 @@ done
 [[ $(rq "select count(*) from pgvigil.action_doors where kind = 'community_run' and name = '' and open") -ge $want ]] || fail "the collector published no open community door: $(tail -5 "$WORK/run1.log")"
 for _ in $(seq 1 90); do [[ $(rq "select count(*) from pgvigil.cq_tools where present") -ge 3 ]] && break; sleep 1; done
 ok "the collector holds $want instance(s), the community doors open, $(rq "select count(*) from pgvigil.cq_tools where present") tool(s) published present"
-"$BIN" cert -hosts "localhost,127.0.0.1,$SCT" -out "$WORK" >/dev/null 2>&1 || fail "pgvigil cert"
+# the proof reaches serve as https://127.0.0.1:$SP (curl -k): the container's name ($SCT, with an underscore, which a
+# certificate's DNS name cannot hold) is not one of the certificate's hosts
+CERT_OUT=$("$BIN" cert -hosts "localhost,127.0.0.1" -out "$WORK" 2>&1) || fail "pgvigil cert: $CERT_OUT"
 { printf 'repository:\n  dsn: "host=%s port=5432 user=cq_col password=%s dbname=pgvigil"\nactions:\n  via: queue\ninstances:\n' "$RCT" "$PW"; inst CQ_NONE CQ_NONE; } > "$WORK/serve.yaml"
 UIUSER=cq_alice; UIPW="Ui$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"; UI2=cq_bob
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$WORK/owner.yaml" $UIUSER >/dev/null 2>&1 || fail "user add"
