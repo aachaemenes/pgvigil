@@ -212,13 +212,19 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_failover_group_events (
   group_name    text NOT NULL,
   at            timestamptz NOT NULL,   -- the read that saw the change; an operation's own time for an Activity Log row
   kind          text NOT NULL CHECK (kind IN ('added', 'removed', 'role', 'policy', 'partner', 'operation')),
-  instance_id   int REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,   -- the database whose read saw it
+  -- the database whose read saw it: the events are the SERVER's, so removing that instance keeps them (SET NULL)
+  instance_id   int REFERENCES pgvigil.instances(instance_id) ON DELETE SET NULL,
   prev_read_at  timestamptz,
-  old_value     text,
+  old_value     text,                   -- an operation: its newest status
   new_value     text,
-  event_id      text,                   -- the Activity Log's eventDataId
-  PRIMARY KEY (server_key, group_name, at, kind)
+  event_id      text,                   -- an operation: its correlationId (one row per operation, however many events)
+  last_at       timestamptz             -- an operation: its newest event's time (at = its first event's)
 );
+-- a change seen by a read once; an operation once per correlationId
+CREATE UNIQUE INDEX IF NOT EXISTS mssql_failover_group_events_seen ON pgvigil.mssql_failover_group_events (server_key, group_name, at, kind)
+  WHERE kind <> 'operation';
+CREATE UNIQUE INDEX IF NOT EXISTS mssql_failover_group_events_op ON pgvigil.mssql_failover_group_events (server_key, event_id)
+  WHERE kind = 'operation';
 CREATE INDEX IF NOT EXISTS mssql_failover_group_events_at_idx ON pgvigil.mssql_failover_group_events (at);
 
 -- payload (internal/mssql/failovergroups.go): one 'read' row (server_key, cloud), 'group' rows, 'operation' rows (the
@@ -240,11 +246,23 @@ BEGIN
             (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'group'));
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.mssql_failover_groups'), hashtext(v_key));
 
-  INSERT INTO pgvigil.mssql_failover_group_events (server_key, group_name, at, kind, instance_id, new_value, old_value, event_id)
-  SELECT v_key, coalesce(r->>'group_name', ''), (r->>'at')::timestamptz, 'operation', p_instance_id, r->>'operation', r->>'status', r->>'event_id'
-    FROM jsonb_array_elements(v_rows) r
-   WHERE r->>'kind' = 'operation' AND r->>'at' IS NOT NULL
-  ON CONFLICT DO NOTHING;
+  -- the Activity Log's operations: one row per correlationId (its Started, Accepted and Succeeded events are one
+  -- operation), at its first event's time, with its newest status; a later read that sees more of its events moves the
+  -- first time back and the status forward (the log's two-hour window is read every 5 minutes)
+  INSERT INTO pgvigil.mssql_failover_group_events AS e (server_key, group_name, at, kind, instance_id, new_value, old_value, event_id, last_at)
+  SELECT v_key, o.group_name, o.first_at, 'operation', p_instance_id, o.operation, o.status, o.corr, o.last_at
+    FROM (SELECT coalesce(r->>'correlation_id', r->>'event_id') AS corr,
+                 min((r->>'at')::timestamptz) AS first_at, max((r->>'at')::timestamptz) AS last_at,
+                 (array_agg(coalesce(r->>'group_name', '') ORDER BY (r->>'at')::timestamptz))[1] AS group_name,
+                 (array_agg(r->>'operation' ORDER BY (r->>'at')::timestamptz))[1] AS operation,
+                 (array_agg(r->>'status' ORDER BY (r->>'at')::timestamptz DESC))[1] AS status
+            FROM jsonb_array_elements(v_rows) r
+           WHERE r->>'kind' = 'operation' AND r->>'at' IS NOT NULL AND coalesce(r->>'correlation_id', r->>'event_id') IS NOT NULL
+           GROUP BY 1) o
+  ON CONFLICT (server_key, event_id) WHERE kind = 'operation' DO UPDATE
+    SET at = least(e.at, EXCLUDED.at),
+        old_value = CASE WHEN EXCLUDED.last_at >= e.last_at THEN EXCLUDED.old_value ELSE e.old_value END,
+        last_at = greatest(e.last_at, EXCLUDED.last_at);
 
   SELECT g.snapshot_at INTO v_last FROM pgvigil.mssql_failover_group_reads g WHERE g.server_key = v_key;
   IF v_last IS NOT NULL AND v_last >= p_snapshot_at THEN
@@ -260,7 +278,10 @@ BEGIN
       ('role',    g.role, r->>'role', g.group_name IS NOT NULL AND g.role IS DISTINCT FROM r->>'role'),
       ('policy',  concat_ws(' ', g.rw_policy, g.grace_minutes::text), concat_ws(' ', r->>'rw_policy', (r->>'grace_minutes')::numeric::text),
                   g.group_name IS NOT NULL AND (g.rw_policy IS DISTINCT FROM r->>'rw_policy' OR g.grace_minutes IS DISTINCT FROM (r->>'grace_minutes')::numeric)),
-      ('partner', g.partners::text, r->>'partners', g.group_name IS NOT NULL AND g.partners IS DISTINCT FROM coalesce((r->>'partners')::jsonb, '[]'))
+      -- the partners without their roles (a failover flips both ends' roles: the 'role' event says it)
+      ('partner', g.partners::text, r->>'partners', g.group_name IS NOT NULL AND
+                  (SELECT coalesce(jsonb_agg(x - 'role' ORDER BY x->>'server'), '[]') FROM jsonb_array_elements(g.partners) x) IS DISTINCT FROM
+                  (SELECT coalesce(jsonb_agg(x - 'role' ORDER BY x->>'server'), '[]') FROM jsonb_array_elements(coalesce((r->>'partners')::jsonb, '[]')) x))
     ) AS e(kind, old_value, new_value, happened)
    WHERE r->>'kind' = 'group' AND e.happened
   ON CONFLICT DO NOTHING;

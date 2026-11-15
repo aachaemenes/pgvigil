@@ -8,9 +8,27 @@ import "net/http"
 // _events (mssql_failover_groups, matched to the database by the logical server its read reached), the findings of
 // mssql_georepl_findings, and the collections' last runs (collection_dates).
 
-// the last read of the database and the collections' runs (why a block is empty)
-const sqlGeoRead = `
-SELECT g.snapshot_at, g.server_read, g.database_name, g.links,
+// the failover groups' servers of a database ($1): the server its read reached, the server its own reads of the groups
+// named (its azure: block), and any server whose group lists the reached server as a partner - so a database
+// monitored through a group's listener keeps its group after a failover moves it to the partner (the review's finding 7)
+const sqlGeoServers = `
+SELECT f.server_key
+  FROM pgvigil.mssql_georepl_read g
+  JOIN pgvigil.mssql_failover_groups f
+    ON split_part(f.server_key, '/', 3) = lower(g.server_read) OR f.read_by = g.instance_id
+    OR EXISTS (SELECT 1 FROM jsonb_array_elements(f.partners) p WHERE lower(p->>'server') = lower(g.server_read))
+ WHERE g.instance_id = $1
+UNION
+SELECT r.server_key FROM pgvigil.mssql_failover_group_reads r WHERE r.read_by = $1`
+
+// the last read of the database and the collections' runs (why a block is empty); has = a link, a failover group of
+// its servers, or an event of the last 24 hours (the tab stays after a link is removed: the review's finding 12);
+// platform: the block is an Azure SQL Database's alone
+var sqlGeoRead = `
+SELECT i.platform, coalesce(g.links, 0) > 0
+         OR EXISTS (SELECT 1 FROM pgvigil.mssql_failover_groups f WHERE f.server_key IN (` + sqlGeoServers + `))
+         OR EXISTS (SELECT 1 FROM pgvigil.mssql_georepl_events e WHERE e.instance_id = i.instance_id AND e.at > now() - interval '24 hours') AS has,
+       g.snapshot_at, g.server_read, g.database_name, g.links,
        (SELECT d.status FROM pgvigil.collection_dates d WHERE d.instance_id = i.instance_id AND d.collection = 'mssql_georepl') AS georepl_status,
        (SELECT d.note FROM pgvigil.collection_dates d WHERE d.instance_id = i.instance_id AND d.collection = 'mssql_georepl') AS georepl_note,
        (SELECT d.status FROM pgvigil.collection_dates d WHERE d.instance_id = i.instance_id AND d.collection = 'mssql_failover_groups') AS groups_status,
@@ -20,25 +38,32 @@ SELECT g.snapshot_at, g.server_read, g.database_name, g.links,
  WHERE i.instance_id = $1`
 
 // one row per link with both ends: this database's row and, when the partner database is monitored too (an instance
-// whose read reached that server and database), its link row by link_guid and its instance
+// whose read reached the link's partner server and database: never another read of this same database, as through a
+// group's listener - the review's finding 8), its link row by link_guid and its instance, the newest one
 const sqlGeoLinks = `
 SELECT s.link_guid, s.role_desc, s.partner_server, s.partner_database, s.replication_state_desc, s.state_since,
        s.replication_lag_sec, round(s.unsent_s) AS unsent_s, s.ack_age_s, s.last_replication, s.last_commit,
        s.secondary_allow_connections_desc, s.server_read, s.snapshot_at,
        p.instance_id AS partner_instance_id, p.role_desc AS partner_role, p.last_commit AS partner_last_commit
   FROM pgvigil.mssql_georepl_state s
-  LEFT JOIN pgvigil.mssql_georepl_state p ON p.link_guid = s.link_guid AND p.instance_id <> s.instance_id
+  LEFT JOIN LATERAL (
+    SELECT x.instance_id, x.role_desc, x.last_commit
+      FROM pgvigil.mssql_georepl_state x
+      JOIN pgvigil.mssql_georepl_read pr ON pr.instance_id = x.instance_id
+     WHERE x.link_guid = s.link_guid AND x.instance_id <> s.instance_id
+       AND lower(pr.server_read) = lower(s.partner_server) AND lower(pr.database_name) = lower(s.partner_database)
+     ORDER BY x.snapshot_at DESC LIMIT 1) p ON true
  WHERE s.instance_id = $1
  ORDER BY s.partner_server, s.partner_database`
 
-// the failover groups of the logical server this database's read reached, those that hold it first
-const sqlGeoGroups = `
+// the failover groups of the database's servers (sqlGeoServers), those that hold it first
+var sqlGeoGroups = `
 SELECT f.group_name, f.role, f.replication_state, f.secondary_type, f.rw_policy, f.grace_minutes, f.ro_policy, f.ro_target,
        f.partners, f.databases, f.snapshot_at, f.server_key,
        EXISTS (SELECT 1 FROM jsonb_array_elements_text(f.databases) d WHERE lower(d) = lower(g.database_name)) AS holds_database
-  FROM pgvigil.mssql_georepl_read g
-  JOIN pgvigil.mssql_failover_groups f ON split_part(f.server_key, '/', 3) = lower(g.server_read)
- WHERE g.instance_id = $1
+  FROM pgvigil.mssql_failover_groups f
+  LEFT JOIN pgvigil.mssql_georepl_read g ON g.instance_id = $1
+ WHERE f.server_key IN (` + sqlGeoServers + `)
  ORDER BY holds_database DESC, f.group_name`
 
 // the window's samples (newest first, at most a day of minutes; the hours past a day are B2a-N2's shape)
@@ -49,16 +74,15 @@ SELECT x.snapshot_at, x.link_guid, x.role, x.replication_state, x.replication_la
  ORDER BY x.snapshot_at DESC
  LIMIT 1440`
 
-// the window's events: the links' and the groups' (the groups' by the server the read reached)
-const sqlGeoEvents = `
+// the window's events: the links' and the groups' (the groups' of the database's servers, sqlGeoServers)
+var sqlGeoEvents = `
 SELECT e.at, e.prev_read_at, 'link' AS what, e.kind, e.old_value, e.new_value, e.partner AS object
   FROM pgvigil.mssql_georepl_events e
  WHERE e.instance_id = $1 AND e.at >= $2 AND e.at < $3
 UNION ALL
 SELECT e.at, e.prev_read_at, 'failover group', e.kind, e.old_value, e.new_value, e.group_name
-  FROM pgvigil.mssql_georepl_read g
-  JOIN pgvigil.mssql_failover_group_events e ON split_part(e.server_key, '/', 3) = lower(g.server_read)
- WHERE g.instance_id = $1 AND e.at >= $2 AND e.at < $3
+  FROM pgvigil.mssql_failover_group_events e
+ WHERE e.server_key IN (` + sqlGeoServers + `) AND e.at >= $2 AND e.at < $3
  ORDER BY 1 DESC
  LIMIT 500`
 

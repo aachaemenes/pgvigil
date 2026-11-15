@@ -23,15 +23,27 @@ import (
 // groups, read from Azure Resource Manager - no T-SQL view shows a group (Microsoft: the geo-replication commands "only
 // apply to active geo-replication and do not apply to failover groups"). List By Server (api-version 2025-01-01)
 // gives each group's role, replication state, read-write failover policy and grace period, read-only policy and
-// target, secondary type (Geo | Standby: a Standby secondary takes no reads), partner servers and databases. The
-// server's failover operations of the last two hours are read from the Activity Log (a trial: Microsoft names the
-// entry "Failover Azure SQL failover group"; it arrives 3-20 minutes late), each stored once, so an event can say
-// planned (failover/action), forced (forceFailoverAllowDataLoss/action) or Microsoft-initiated when the log has it.
-// The caller is never kept (it names a person).
+// target, secondary type (Geo | Standby: a Standby secondary takes no reads), partner servers and databases. Each
+// group's failover operations of the last two hours are read from the Activity Log (a trial: Microsoft names the entry
+// "Failover Azure SQL failover group"; it arrives 3-20 minutes late) on the GROUP's resource, on this server and on
+// each partner (resourceUri is an exact match, and a planned failover is logged on the new primary's group: the
+// review's finding 1), paged by nextLink; an operation is matched on the failover group's own prefix (a database's
+// replicationLinks/failover/action is not one) and stored once per correlationId (its Started, Accepted and Succeeded
+// events are one operation), so an event can say planned (failover/action), forced (forceFailoverAllowDataLoss/action),
+// planned before forced (tryPlannedBeforeForcedFailover/action) or Microsoft-initiated when the log has it. A fixed
+// two-hour window each read, not a high-water mark (the design fold 7's): the log is late by up to 20 minutes, the
+// store keeps each operation once, and a read that failed loses nothing within the two hours. The caller is never
+// kept (it names a person).
 //
 // The door is the instance's azure: block; the token is mssqlopen.ARMToken's. One read a server an interval in this
-// collector (the server's other databases say 'read by <instance>'); the import takes the server's own lock and refuses
-// an older read. A refusal names Resource Manager's code and the right; a throttle (429) skips until its Retry-After.
+// process: the first database of the server to run takes it (the server's other databases say 'read by <instance>'),
+// and a read that fails gives it back, so the next database's run reads it (an identity without the right never
+// holds a server for good: the review's finding 4). A departure from the design fold 11 ('the lowest active
+// instance_id'): first come, the slot given back on a failure; two collector processes each read, and the import's
+// server lock and its newer-read rule keep one row. Three failed runs in a row are 0121's 'collection failing'
+// (critical, the error's sentence): the fold 15's 'cloud door failing' for this door. The import takes the server's
+// own lock and refuses an older read. A refusal names Resource Manager's code and the right; a throttle (429) skips
+// until its Retry-After.
 type failoverGroupsCollector struct{}
 
 func init() { Register(failoverGroupsCollector{}) }
@@ -60,21 +72,28 @@ func (c failoverGroupsCollector) RunInstance(ctx context.Context, _ *sql.Conn, _
 	if ok, why := c.Configured(in); !ok {
 		return nil, fmt.Errorf("%s: %w", why, collect.ErrSkip)
 	}
-	key := in.Azure.ServerKey()
-	if !fgGate.take(key, in.Name, time.Now(), c.DefaultInterval()) {
-		return nil, fmt.Errorf("the server's failover groups were read by %s in this interval: %w", fgGate.by(key), collect.ErrSkip)
-	}
 	arm, _, err := azureARM(in.Azure.Cloud)
 	if err != nil {
 		return nil, err
 	}
-	d := fgDoor{arm: arm, http: &http.Client{Timeout: 30 * time.Second}, now: time.Now,
-		token: func(ctx context.Context, dsn, aud string) (string, error) { return mssqlopen.ARMToken(ctx, dsn, aud) }}
+	return c.runDoor(ctx, in, fgDoor{arm: arm, http: &http.Client{Timeout: 30 * time.Second}, now: time.Now, token: mssqlopen.ARMToken})
+}
+
+// runDoor: the server's slot for this interval, the read, and the slot given back when the read fails (a throttle
+// keeps it until its Retry-After)
+func (c failoverGroupsCollector) runDoor(ctx context.Context, in config.Instance, d fgDoor) ([]collect.Row, error) {
+	key := in.Azure.ServerKey()
+	if !fgGate.take(key, in.Name, time.Now(), c.DefaultInterval()) {
+		return nil, fmt.Errorf("the server's failover groups were read by %s in this interval: %w", fgGate.by(key), collect.ErrSkip)
+	}
 	rows, err := d.read(ctx, in)
 	var th throttled
 	if asThrottled(err, &th) {
 		fgGate.hold(key, time.Now().Add(th.after))
 		return nil, fmt.Errorf("%s: %w", err.Error(), collect.ErrSkip)
+	}
+	if err != nil {
+		fgGate.release(key, in.Name)
 	}
 	return rows, err
 }
@@ -124,6 +143,7 @@ func (d fgDoor) read(ctx context.Context, in config.Instance) ([]collect.Row, er
 	server := "/subscriptions/" + url.PathEscape(a.Subscription) + "/resourceGroups/" + url.PathEscape(a.ResourceGroup) +
 		"/providers/Microsoft.Sql/servers/" + url.PathEscape(a.Server)
 	rows := []collect.Row{{"kind": "read", "server_key": a.ServerKey(), "cloud": strings.ToLower(a.Cloud)}}
+	var logOn []string // each group's resource on this server and on its partners: the Activity Log's reads
 	next := d.arm + server + "/failoverGroups?api-version=2025-01-01"
 	for page := 0; next != "" && page < 20; page++ {
 		var body struct {
@@ -174,53 +194,80 @@ func (d fgDoor) read(ctx context.Context, in config.Instance) ([]collect.Row, er
 				"replication_state": p.ReplicationState, "secondary_type": p.SecondaryType, "rw_policy": p.ReadWrite.FailoverPolicy,
 				"grace_minutes": grace, "ro_policy": p.ReadOnly.FailoverPolicy, "ro_target": lastSegment(p.ReadOnly.TargetServer),
 				"partners": string(pj), "databases": string(dj)})
+			logOn = append(logOn, server+"/failoverGroups/"+url.PathEscape(g.Name))
+			for _, x := range p.Partners {
+				if x.ID != "" {
+					logOn = append(logOn, strings.TrimRight(x.ID, "/")+"/failoverGroups/"+url.PathEscape(g.Name))
+				}
+			}
 		}
 		next = body.NextLink
 	}
-	// the Activity Log (a trial): the server's failover operations of the last two hours; a refusal here is a note,
-	// never the read's failure (the groups were read)
-	ops, err := d.operations(ctx, tok, server)
-	if err != nil {
-		rows = append(rows, collect.Row{"kind": "collector_error", "source": "activity_log", "message": err.Error()})
+	// the Activity Log (a trial): each group's failover operations of the last two hours, on its resource here and on
+	// each partner's; a refusal here is a note, never the read's failure (the groups were read), and stops the log's
+	// reads of this run
+	for _, res := range logOn {
+		ops, err := d.operations(ctx, tok, res)
+		if err != nil {
+			rows = append(rows, collect.Row{"kind": "collector_error", "source": "activity_log", "message": err.Error()})
+			break
+		}
+		rows = append(rows, ops...)
 	}
-	return append(rows, ops...), nil
+	return rows, nil
 }
 
-func (d fgDoor) operations(ctx context.Context, tok, server string) ([]collect.Row, error) {
+// operations: one resource's failover group operations of the last two hours (resourceUri is an exact match: the
+// group's own id), every page, each event a row with its operation's correlationId
+func (d fgDoor) operations(ctx context.Context, tok, resource string) ([]collect.Row, error) {
 	since := d.now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	filter := fmt.Sprintf("eventTimestamp ge '%s' and resourceUri eq '%s'", since, server)
-	u := d.arm + "/subscriptions/" + url.PathEscape(strings.Split(strings.TrimPrefix(server, "/subscriptions/"), "/")[0]) +
+	filter := fmt.Sprintf("eventTimestamp ge '%s' and resourceUri eq '%s'", since, resource)
+	next := d.arm + "/subscriptions/" + url.PathEscape(strings.Split(strings.TrimPrefix(resource, "/subscriptions/"), "/")[0]) +
 		"/providers/Microsoft.Insights/eventtypes/management/values?api-version=2015-04-01&$filter=" + url.QueryEscape(filter)
-	var body struct {
-		Value []struct {
-			ID        string `json:"eventDataId"`
-			At        string `json:"eventTimestamp"`
-			Operation struct {
-				Value string `json:"value"`
-			} `json:"operationName"`
-			Status struct {
-				Value string `json:"value"`
-			} `json:"status"`
-			ResourceID string `json:"resourceId"`
-		} `json:"value"`
-	}
-	if err := d.get(ctx, u, tok, &body, "Microsoft.Insights/eventtypes/values/read"); err != nil {
-		return nil, err
-	}
 	var out []collect.Row
-	for _, e := range body.Value {
-		op := strings.ToLower(e.Operation.Value)
-		kind := ""
-		switch {
-		case strings.HasSuffix(op, "/forcefailoverallowdataloss/action"):
-			kind = "forced failover"
-		case strings.HasSuffix(op, "/failover/action"):
-			kind = "failover"
-		default:
-			continue
+	for page := 0; next != "" && page < 20; page++ {
+		var body struct {
+			Value []struct {
+				ID          string `json:"eventDataId"`
+				Correlation string `json:"correlationId"`
+				At          string `json:"eventTimestamp"`
+				Operation   struct {
+					Value string `json:"value"`
+				} `json:"operationName"`
+				Status struct {
+					Value string `json:"value"`
+				} `json:"status"`
+				ResourceID string `json:"resourceId"`
+			} `json:"value"`
+			NextLink string `json:"nextLink"`
 		}
-		out = append(out, collect.Row{"kind": "operation", "event_id": e.ID, "at": e.At, "operation": kind,
-			"status": e.Status.Value, "group_name": lastSegment(e.ResourceID)})
+		if err := d.get(ctx, next, tok, &body, "Microsoft.Insights/eventtypes/values/read"); err != nil {
+			return nil, err
+		}
+		for _, e := range body.Value {
+			op := strings.ToLower(e.Operation.Value)
+			if !strings.HasPrefix(op, "microsoft.sql/servers/failovergroups/") {
+				continue // a database's own replicationLinks/failover/action is not a group's
+			}
+			kind := ""
+			switch {
+			case strings.HasSuffix(op, "/forcefailoverallowdataloss/action"):
+				kind = "forced failover"
+			case strings.HasSuffix(op, "/tryplannedbeforeforcedfailover/action"):
+				kind = "planned before forced failover"
+			case strings.HasSuffix(op, "/failover/action"):
+				kind = "failover"
+			default:
+				continue
+			}
+			corr := e.Correlation
+			if corr == "" {
+				corr = e.ID
+			}
+			out = append(out, collect.Row{"kind": "operation", "event_id": e.ID, "correlation_id": corr, "at": e.At, "operation": kind,
+				"status": e.Status.Value, "group_name": lastSegment(e.ResourceID)})
+		}
+		next = body.NextLink
 	}
 	return out, nil
 }
@@ -288,6 +335,15 @@ func (g *serverGate) take(key, name string, now time.Time, every time.Duration) 
 	}
 	g.last[key] = gateEntry{at: now, by: name}
 	return true
+}
+
+// release gives the server's slot back after a failed read by name (the next database of the server reads it now)
+func (g *serverGate) release(key, name string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if e, ok := g.last[key]; ok && e.by == name && e.until.IsZero() {
+		delete(g.last, key)
+	}
 }
 
 func (g *serverGate) hold(key string, until time.Time) {

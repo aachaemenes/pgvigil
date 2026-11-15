@@ -145,10 +145,11 @@ VALS=$(q "SELECT max(replication_lag_sec) FILTER (WHERE snapshot_at > now() - in
              FROM pgvigil.mssql_georepl_sample WHERE instance_id = $(iid p)")
 echo "  burst max lag|unsent, idle max lag|unsent|ack age: $VALS"
 IFS='|' read -r BL BU IL IU IA <<<"$VALS"
-TIER=$(python3 -c "b=max(float('${BL:-0}' or 0), float('${BU:-0}' or 0)); i=max(float('${IL:-0}' or 0), float('${IU:-0}' or 0)); print(round(((b+i)/2)/60, 4) if b > i else '')")
+TIER=$(python3 -c "b=max(float('${BL:-0}' or 0), float('${BU:-0}' or 0)); i=max(float('${IL:-0}' or 0), float('${IU:-0}' or 0)); t=((b+i)/2)/60; print(f'{max(round(t, 2), 0.01):.2f}' if b > i else '')")   # import_pg_threshold takes 2 decimals (0190: ^[0-9]{1,7}(\.[0-9]{1,2})?$)
 if [ -z "$TIER" ]; then NOTPROVEN+=("G-C: the burst raised no lag over the idle values ($VALS): the tier row not run")
 else
   q "SELECT pgvigil.import_pg_threshold(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"key\":\"georepl_data_loss\",\"level\":\"tag\",\"tag\":\"$TAG\",\"warn\":$TIER}'::jsonb)" > "$WORK/tier.out"
+  if grep -q refused "$WORK/tier.out"; then bad "G-C: the tier $TIER was refused: $(cat "$WORK/tier.out")"; fi
   burst 400; BP=$!
   for i in $(seq 1 7); do sleep 60; run p mssql_georepl; done
   FD=$(q "SELECT severity FROM pgvigil.mssql_georepl_findings WHERE instance_id = $(iid p) AND check_name = 'geo-replication data loss'")
@@ -213,10 +214,11 @@ echo "--- G-H the rights and the doors"
 run nr mssql_instance; run nr mssql_georepl; run conn mssql_instance; run conn mssql_georepl
 run noaz mssql_instance; run noaz mssql_failover_groups; run deny mssql_instance; run deny mssql_failover_groups
 NR=$(status nr mssql_georepl); CN=$(status conn mssql_georepl); NA=$(status noaz mssql_failover_groups); DN=$(status deny mssql_failover_groups)
-echo "  CONNECT only: $NR"; echo "  pgv_conn (one trial): $CN"; echo "  no azure: block: $NA"; echo "  a server the identity cannot read: $DN"
+echo "  CONNECT only: $NR"; echo "  pgv_conn (one trial): $CN"; echo "  no azure: block: $NA"; echo "  a server that does not exist (404): $DN"
 [[ $NR == "skipped|the login lacks VIEW DATABASE STATE"* ]] || bad "G-H: the CONNECT-only user's mssql_georepl is '$NR'"
 [[ $NA == "skipped|no azure: block"* ]] || bad "G-H: no azure: block gives '$NA'"
-[[ $DN == error*"Resource Manager answered"* ]] || bad "G-H: a server the identity cannot read gives '$DN' (want Resource Manager's refusal with its code)"
+[[ $DN == error*"Resource Manager answered 404"* ]] || bad "G-H: a server that does not exist gives '$DN' (want Resource Manager's 404 with its code, stored, no crash)"
+NOTPROVEN+=("G-H: a 403 for an identity without failoverGroups/read, and the docs' read-only custom role: every G2 read runs on the laptop's own az sign-in, and no identity of the lab's own is made in the tenant (a Go case covers the 403's words)")
 
 echo "=== NOT PROVEN: Managed Instance (a second instance), a SUSPENDED link (no way to make one), several secondaries (preview), the usgov / china clouds (no lab)${NOTPROVEN:+; }${NOTPROVEN[*]:-}"
 if [ ${#FAILS[@]} -eq 0 ]; then echo "=== proof-mssql-georepl: PASS"; else printf '=== proof-mssql-georepl: FAIL (%s)\n' "${#FAILS[@]}"; printf '  %s\n' "${FAILS[@]}"; exit 1; fi

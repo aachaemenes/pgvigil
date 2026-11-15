@@ -74,6 +74,10 @@ need_az() {
 }
 az_() { "$AZ" "$@" --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" --only-show-errors; }
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
+# the failover group's primary server now (an update or a delete runs there: Microsoft's Set- / Remove-AzSqlDatabaseFailoverGroup
+# pages, "The Failover Group's primary server should be used"; the CLI's page is silent)
+fg_primary() { local r; r=$(az_ sql failover-group show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" --query replicationRole -o tsv 2>/dev/null || true)
+  if [ "$r" = Secondary ]; then echo "$GEO_SERVER"; else echo "$AZ_SERVER"; fi; }
 # load: the state file, which names the scope up used; a call under another subscription, group or tag would read
 # the wrong place and could say 0 left while the server runs, so it is refused
 load() { [ -r "$STATE" ] || fail "no state file $STATE (run up first)"; # shellcheck disable=SC1090
@@ -335,7 +339,11 @@ geo-up)
   need_az; load; : "${PGVIGIL_LAB_AZ_GEO_REGION:?the region of the second server}"
   [ "${AZ_TIER:-}" = basic ] || fail "geo-up is the basic tier's (a Basic geo-secondary of a Basic database)"
   [ -z "${GEO_SERVER:-}" ] || fail "the geo-secondary's server $GEO_SERVER is in the state already (status, or down)"
-  [ "$PGVIGIL_LAB_AZ_GEO_REGION" != "${PGVIGIL_LAB_AZ_REGION:-}" ] || fail "the geo region must differ from the primary's (a failover group's secondary can't be in the same region)"
+  # the primary server's own region, read (the state file keeps none for the basic tier, and the proof sets no PGVIGIL_LAB_AZ_REGION)
+  PRI_REGION=$(az_ sql server show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$AZ_SERVER" --query location -o tsv)
+  [ -n "$PRI_REGION" ] || fail "the primary server $AZ_SERVER's region was not read"
+  [ "$(printf %s "$PGVIGIL_LAB_AZ_GEO_REGION" | tr -d ' ' | tr '[:upper:]' '[:lower:]')" != "$(printf %s "$PRI_REGION" | tr -d ' ' | tr '[:upper:]' '[:lower:]')" ] ||
+    fail "the geo region $PGVIGIL_LAB_AZ_GEO_REGION is the primary's ($PRI_REGION): a failover group's secondary can't be in the same region"
   CAP=$(az_ sql db list-editions -l "$PGVIGIL_LAB_AZ_GEO_REGION" --edition Basic --query '[0].status' -o tsv)
   case $CAP in Available|Default) ;; *) fail "the region $PGVIGIL_LAB_AZ_GEO_REGION refuses Basic for this subscription ($CAP)" ;; esac
   G=${AZ_SERVER}-geo
@@ -382,9 +390,9 @@ fg-make)
 fg-policy)
   need_az; load; [ -n "${FG_NAME:-}" ] || fail "no failover group in this lab"
   case ${2:-} in
-    Manual) az_ sql failover-group update -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" --failover-policy Manual \
+    Manual) az_ sql failover-group update -g "$PGVIGIL_LAB_AZ_GROUP" -s "$(fg_primary)" -n "$FG_NAME" --failover-policy Manual \
               --query '[name,readWriteEndpoint.failoverPolicy]' -o tsv ;;
-    Automatic) az_ sql failover-group update -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" --failover-policy Automatic --grace-period 1 \
+    Automatic) az_ sql failover-group update -g "$PGVIGIL_LAB_AZ_GROUP" -s "$(fg_primary)" -n "$FG_NAME" --failover-policy Automatic --grace-period 1 \
                  --query '[name,readWriteEndpoint.failoverPolicy,readWriteEndpoint.failoverWithDataLossGracePeriodMinutes]' -o tsv ;;
     *) fail "fg-policy Manual|Automatic" ;;
   esac
@@ -403,7 +411,7 @@ fg-failover)
 geo-unlink)
   need_az; load; [ -n "${GEO_SERVER:-}" ] || fail "no geo link in this lab"
   if [ -n "${FG_NAME:-}" ] && az_ sql failover-group show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" >/dev/null 2>&1; then
-    az_ sql failover-group delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME"; echo "deleted: failover group $FG_NAME"
+    az_ sql failover-group delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$(fg_primary)" -n "$FG_NAME"; echo "deleted: failover group $FG_NAME"
   fi
   P=$(az_ sql db replica list-links -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" --query '[0].role' -o tsv 2>/dev/null || true)
   if [ "$P" = Primary ]; then PRI=$AZ_SERVER; SEC=$GEO_SERVER; else PRI=$GEO_SERVER; SEC=$AZ_SERVER; fi
@@ -446,7 +454,7 @@ down)
   fi
   if [ -n "${GEO_SERVER:-}" ]; then
     if [ -n "${FG_NAME:-}" ] && az_ sql failover-group show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" >/dev/null 2>&1; then
-      az_ sql failover-group delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME"; echo "deleted: failover group $FG_NAME"
+      az_ sql failover-group delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$(fg_primary)" -n "$FG_NAME"; echo "deleted: failover group $FG_NAME"
     fi
     if az_ sql server show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$GEO_SERVER" >/dev/null 2>&1; then
       az_ sql server delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$GEO_SERVER" --yes

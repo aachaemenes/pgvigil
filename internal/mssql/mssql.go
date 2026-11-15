@@ -51,8 +51,6 @@ type Collector interface {
 	Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error)
 }
 
-// Timeouter is what a collector adds when one run needs more (or must take less) than RunTimeout on the SQL
-// Server side: a reader of an Extended Events file, a pass over every database.
 // InstanceRunner is a collection that reads the instance's configuration too (a cloud door: task 390a's azure:
 // block); RunOnce calls RunInstance in place of Run.
 type InstanceRunner interface {
@@ -65,6 +63,8 @@ type Configurer interface {
 	Configured(in config.Instance) (bool, string)
 }
 
+// Timeouter is what a collector adds when one run needs more (or must take less) than RunTimeout on the SQL
+// Server side: a reader of an Extended Events file, a pass over every database.
 type Timeouter interface {
 	Timeout() time.Duration
 }

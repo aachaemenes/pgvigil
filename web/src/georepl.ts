@@ -44,17 +44,20 @@ const eventCols: Col[] = [
   { key: 'old_value', label: 'from' }, { key: 'new_value', label: 'to' },
 ];
 
-// hasGeoRepl: whether the database has a link or its server a failover group read (the shell's check for the tab)
+// hasGeoRepl: whether the database has a link, a failover group of its servers, or an event of the last 24 hours (the
+// shell's check for the tab: it stays after a link is removed, with the 'link removed' row)
 export async function hasGeoRepl(instance: number): Promise<boolean> {
   const d = await get<Parts>('mssql/georepl', { instance, part: 'read' });
   const r = rowsOf(d.read)[0];
-  return r != null && Number(r.links ?? 0) > 0;
+  return r != null && r.has === true;
 }
 
 export async function geoReplBlock(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { id: 'georepl' }, el('h3', {}, 'Geo-replication and failover groups'));
   const d = await get<Parts>('mssql/georepl', { instance: ctx.instance, ...window_(ctx) });
   const read = rowsOf(d.read)[0], links = rowsOf(d.links), groups = rowsOf(d.groups), findings = rowsOf(d.findings);
+  // an Availability tab of another platform (an availability group's server) shows nothing of this block
+  if (read?.platform !== 'azuresqldb') return el('span');
   if (!read || read.snapshot_at == null) {
     const why = read?.georepl_status === 'skipped' ? `mssql_georepl is skipped: ${String(read.georepl_note ?? '')}.`
       : read?.georepl_status === 'error' ? `mssql_georepl failed: ${String(read.georepl_note ?? '')}.`
