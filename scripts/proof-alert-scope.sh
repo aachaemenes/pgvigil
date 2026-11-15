@@ -13,10 +13,14 @@
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on the base 6178b52 the build has no 0154 and part M fails):
-#  M. migration order. Store 1, migrated fresh by BIN: 0154 applied BEFORE 0190 (schema_version.applied_at). Store 2,
-#     migrated by BIN0 (no 0154), then by BIN: 0154 applied AFTER 0190. On both: alert_hold(...) on a key nothing holds
-#     is NULL; alert_rule_findings has op_family; alert_findings and alert_rules_effective answer; the index
-#     alert_rules_live_uq is gone and alert_rules_live_family_uq stands.
+#  M. migration order (the lead 22:4x: until v0.4.0 the join edits 0190 in place; a store already at 0190 is rebuilt or
+#     has 0190's functions re-created by hand at the join). Store 1, migrated fresh by BIN (the wiring applied to its
+#     tree): 0154 applied BEFORE 0190 (schema_version.applied_at); alert_due's definition calls alert_hold and
+#     alert_checks_match and no longer ack_hold; purge's names findings_history and greatest(p_days, 90). Store 2,
+#     migrated by BIN0 (no 0154), then by BIN: 0154 applies AFTER 0190 without an error and the store reads; its
+#     alert_due is still 0190's unwired one (no alert_hold), which is why such a store is rebuilt at the join. On both:
+#     alert_hold(...) on a key nothing holds is NULL; alert_rule_findings has op_family; alert_findings and
+#     alert_rules_effective answer; the index alert_rules_live_uq is gone and alert_rules_live_family_uq stands.
 #  R. the role contract (store 1). A login IN ROLE pgvigil_collector may EXECUTE import_alert_window and is refused
 #     INSERT on alert_windows. A login IN ROLE pgvigil_alerter may INSERT into alert_held, digest_log, findings_history
 #     (has_table_privilege) and runs findings_history_run (an integer back). A login IN ROLE pgvigil_reader may INSERT
@@ -169,10 +173,16 @@ CFG=$WORK/cfg.yaml
 "$BIN" migrate -config "$CFG" >"$WORK/m1.log" 2>&1 || fail "migrate store 1: $(tail -3 "$WORK/m1.log")"
 order() { "$1" "select string_agg(version, ' ' ORDER BY applied_at, version) FROM pgvigil.schema_version WHERE version IN ('0154_alert_scope.sql', '0190_join_release2.sql')"; }
 [[ $(order q) == "0154_alert_scope.sql 0190_join_release2.sql" ]] || fail "M: store 1's order: $(order q)"
+fdef() { "$1" "select pg_get_functiondef(p.oid) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname = '$2'"; }
+d=$(fdef q alert_due)
+[[ $d == *"alert_hold("* && $d == *"alert_checks_match("* && $d != *"ack_hold("* ]] || fail "M: store 1's alert_due is not the wired one"
+d=$(fdef q purge)
+[[ $d == *"findings_history"* && $d == *"greatest(p_days, 90)"* ]] || fail "M: store 1's purge lacks the history's or the alert log's days"
 "$BIN0" migrate -config "$WORK/cfg2.yaml" >"$WORK/m2a.log" 2>&1 || fail "migrate store 2 without 0154: $(tail -3 "$WORK/m2a.log")"
 [[ $(q2 "select count(*) from pgvigil.schema_version where version = '0154_alert_scope.sql'") == 0 ]] || fail "M: store 2 holds 0154 before BIN"
 "$BIN" migrate -config "$WORK/cfg2.yaml" >"$WORK/m2b.log" 2>&1 || fail "migrate store 2 with 0154 last: $(tail -3 "$WORK/m2b.log")"
 [[ $(order q2) == "0190_join_release2.sql 0154_alert_scope.sql" ]] || fail "M: store 2's order: $(order q2)"
+[[ $(fdef q2 alert_due) != *"alert_hold("* ]] || fail "M: store 2's alert_due is wired: BIN0 was not built from the unwired tree"
 for f in q q2; do
   [[ $($f "select pgvigil.alert_hold(now(), 'c', 'i', '{}', 'k', 's', 'x', 'v', 'warning') is null") == t ]] || fail "M ($f): alert_hold on nothing is not NULL"
   [[ $($f "select count(*) from information_schema.columns where table_schema = 'pgvigil' and table_name = 'alert_rule_findings' and column_name = 'op_family'") == 1 ]] || fail "M ($f): no op_family"
@@ -180,7 +190,7 @@ for f in q q2; do
   $f "select count(*) from pgvigil.alert_rules_effective" >/dev/null || fail "M ($f): alert_rules_effective"
   [[ $($f "select (to_regclass('pgvigil.alert_rules_live_uq') is null)::text || (to_regclass('pgvigil.alert_rules_live_family_uq') is not null)::text") == truetrue ]] || fail "M ($f): the rule index"
 done
-ok "M: 0154 before 0190 on a fresh store, after it on a store at 0190; both read"
+ok "M: a fresh store holds 0154 then the wired 0190 (alert_due through alert_hold, purge's days); 0154 applies on a store at 0190"
 
 # ---- R: the role contract ----------------------------------------------------------------------------------------------
 dsn() { echo "$PGVIGIL_ADMIN_DSN dbname=$REPO user=$1 password=$PW"; }
