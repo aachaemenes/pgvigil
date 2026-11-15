@@ -287,8 +287,11 @@
 #        a budgeted heal now stops at 2 s; the build's imports a second apart fill an hour 60 times a collector's rate)
 #   LD_JIT=off (the lead 11:4x, chain 9; written 11:4x before its run): the proof store's database set jit = off
 #        before LD (ALTER DATABASE pgvigil SET jit = off: every later session of the rig), the setting printed; LDR
-#        also times the rises read with the session's jit on and off and prints its EXPLAIN (ANALYZE, BUFFERS) both
-#        ways (the JIT section's timing; 'Function Scan on replication_rises' = not inlined). Expected: the rises read
+#        also times the rises read with the session's jit on and off (alternated three times) and prints its EXPLAIN
+#        (ANALYZE, BUFFERS, SETTINGS) both ways (the JIT section's timing; 'Function Scan on replication_rises' = not
+#        inlined), and pgvigil.pg_cluster_checks' plan both ways (the conflicts check's own read); pg_jit_available()
+#        and the jit thresholds printed (a 'jit on' without a provider is no JIT at all); every LD / LDR / LDB verdict
+#        tagged '[LD_JIT=off ...]', the database's jit reset at LD's end (the review 12:08 fold). Expected: the rises read
 #        under 300 ms with jit off = 375's bound closes on rel-jit's landing (every migrate sets jit off); still over
 #        300 ms with jit off = a fourth change as its own task (an index / a narrower read). Unset: the server's jit
 #        (on), the timings and plans printed all the same.
@@ -1190,8 +1193,11 @@ if want LK; then
 fi
 # ---- LD: the first build of 30 days at 300 databases, the imports going on (F1) -------------------------------------
 if want LD; then
-  if [[ "${LD_JIT:-}" == off ]]; then q "alter database pgvigil set jit = off" >/dev/null || fail "LD_JIT=off: the ALTER DATABASE failed"; fi
-  echo "  LD the store's jit for a new session: $(q "select current_setting('jit')") (LD_JIT='${LD_JIT:-}')"
+  # the review 12:08 #5: the ALTER's error kept; an unknown value refused
+  if [[ "${LD_JIT:-}" == off ]]; then r=$(q "alter database pgvigil set jit = off") || fail "LD_JIT=off: the ALTER DATABASE failed: $r"
+  elif [[ -n "${LD_JIT:-}" ]]; then fail "LD_JIT='$LD_JIT': only 'off' is known"; fi
+  JT="${LD_JIT:+ [LD_JIT=$LD_JIT: the proof store set jit off]}"   # the review #1: every LD / LDR / LDB verdict says so
+  echo "  LD the store's jit for a new session: $(q "select current_setting('jit')") (LD_JIT='${LD_JIT:-}'); a session with jit on: $(q "set jit = on; select 'pg_jit_available ' || pg_jit_available()::text || ', jit_above_cost ' || current_setting('jit_above_cost') || ', jit_optimize_above_cost ' || current_setting('jit_optimize_above_cost') || ', jit_inline_above_cost ' || current_setting('jit_inline_above_cost')")"
   LD=$(q "select pgvigil.ensure_instance('ld-standin', 'self-managed', '18.0', 180000, true, '{}')")
   t0=$(date +%s)
   r=$(psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 2>&1 <<SQL
@@ -1220,7 +1226,7 @@ SQL
   r=$(q "select count(*) filter (where to_regclass('pgvigil.replication_hourly_' || to_char(m, 'YYYYMM')) is not null) || '|' || count(*)
            from (select distinct date_trunc('month', snapshot_at at time zone 'UTC') as m from pgvigil.replication_sample where instance_id = $LD) x")
   r2=$(q "select pgvigil.replication_hourly_months($LD)")
-  [[ "$r" == 0\|* && "$r2" =~ ^[1-9] ]] && ok "LD the history's months had no hours partition ($r of them existed|months) and replication_hourly_months made $r2 before the build" || fail "LD months before the build: '$r' (expected 0|<n>), made '$r2'"
+  [[ "$r" == 0\|* && "$r2" =~ ^[1-9] ]] && ok "LD$JT the history's months had no hours partition ($r of them existed|months) and replication_hourly_months made $r2 before the build" || fail "LD$JT months before the build: '$r' (expected 0|<n>), made '$r2'"
   # review A #2: a 'mark' range when the first build starts (a lock miss before the first purge) - the build must not
   # hold that row: each import of LD meanwhile merges its hours into it
   q "select pgvigil.replication_hourly_mark($LD, date_trunc('hour', now()) - interval '3 hours', date_trunc('hour', now()) - interval '2 hours', 'a stand-in: a lock miss before the first purge')" >/dev/null
@@ -1248,15 +1254,15 @@ SQL
               (select count(*) from pgvigil.replication_hourly where instance_id = $RU and key = 'ru_ld')")
   echo "  LD the build: $b; $n imports of LD during it (slowest $worst ms) and $n of another instance (slowest $worst2 ms); failed imports $bad; (receiver hours|first build|build range left) $r; (LD samples added|the other's dirty ranges|its ru_ld hours) $r3"
   [[ "$b" == rc\ 0\ * && "$n" -ge 1 && "$worst" -lt 2000 && "$worst2" -lt 2000 && "$bad" == 0 && "$r" == 72[0-9]\|1\|0 && "${r3%%|*}" == "$(( n * 301 ))" && "$r3" == *\|0\|[1-9]* ]] \
-    && ok "LD the first build ($b) ran beside $n imports of it and $n of another instance, each under 2 s (slowest $worst / $worst2 ms), every one stored ($r3); 72x receiver hours" \
-    || fail "LD build '$b', $n imports, slowest $worst / $worst2 ms, failed $bad, '$r', '$r3' (expected rc 0, every import under 2000 ms and stored ($(( n * 301 ))|0|<hours>), 72x|1|0)"
+    && ok "LD$JT the first build ($b) ran beside $n imports of it and $n of another instance, each under 2 s (slowest $worst / $worst2 ms), every one stored ($r3); 72x receiver hours" \
+    || fail "LD$JT build '$b', $n imports, slowest $worst / $worst2 ms, failed $bad, '$r', '$r3' (expected rc 0, every import under 2000 ms and stored ($(( n * 301 ))|0|<hours>), 72x|1|0)"
   # the hours marked before and during the build: the next import heals what its 2 s budget holds (one UTC hour a
   # chunk since review A's #4), purge's next pass (heal_one) the rest
   imp "$LD" "now()" "$CONF"
   r1=$(q "select coalesce((select round(extract(epoch from to_at - from_at) / 3600, 1)::text from pgvigil.replication_hourly_dirty where instance_id = $LD and source = 'mark'), 'none')")
   q "select pgvigil.replication_hourly_heal_one($LD)" >/dev/null
   r=$(q "select count(*) from pgvigil.replication_hourly_dirty where instance_id = $LD")
-  [[ "$r" == 0 ]] && ok "LD the hours marked before and during the build healed (left after the next import: $r1 hours; then purge's heal_one: none)" || fail "LD dirty ranges after the next import ($r1 hours left) and heal_one: $r"
+  [[ "$r" == 0 ]] && ok "LD$JT the hours marked before and during the build healed (left after the next import: $r1 hours; then purge's heal_one: none)" || fail "LD$JT dirty ranges after the next import ($r1 hours left) and heal_one: $r"
   # the build's imports came a second apart (60 times a collector's rate): removed before the rows below, which
   # measure a collector's rate - five reads a minute apart, then the timed ones (the AFTER DELETE trigger recomputes
   # the hours the delete touches)
@@ -1275,15 +1281,24 @@ SQL
   rr=$(q "select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from (select count(*) from pgvigil.replication_rises($LD, now() - interval '12 minutes', now() + interval '1 minute')) x")
   # chain 9 (the lead 11:4x): the same read with the session's jit on and off, and its plan both ways
   rq="select count(*) from pgvigil.replication_rises($LD, now() - interval '12 minutes', now() + interval '1 minute')"
-  ron=$(q "set jit = on; select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from ($rq) x")
-  roff=$(q "set jit = off; select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from ($rq) x")
-  echo "  LDR the rises read: $rr ms with the store's default, $ron ms with the session's jit on, $roff ms with it off"
-  for j in on off; do
-    echo "  LDR EXPLAIN (ANALYZE, BUFFERS) of the rises read, jit $j:"
-    psql "$RDSN dbname=pgvigil" -XAtq -c "set jit = $j; explain (analyze, buffers) $rq" 2>&1 | sed 's/^/    | /'
+  ons=""; offs=""   # the review #4: on and off alternated three times (each a new session)
+  for k in 1 2 3; do
+    ons+="$(q "set jit = on; select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from ($rq) x") "
+    offs+="$(q "set jit = off; select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from ($rq) x") "
   done
-  [[ "$worst" -lt 1000 && "$rr" =~ ^[0-9]+$ && "$rr" -lt 300 ]] && ok "LDR 5 imports of LD with its rollup running at 30 days: server ms $svs; the conflicts check's rises read $rr ms" \
-    || fail "LDR imports with the rollup running: server ms $svs(expected each under 1000), the rises read '$rr' ms (expected under 300)"
+  echo "  LDR the rises read: $rr ms with the store's default; the session's jit on / off alternated: on ${ons}ms | off ${offs}ms"
+  for j in on off; do
+    echo "  LDR EXPLAIN (ANALYZE, BUFFERS, SETTINGS) of the rises read, jit $j:"
+    psql "$RDSN dbname=pgvigil" -XAtq -c "set jit = $j; explain (analyze, buffers, settings) $rq" 2>&1 | sed 's/^/    | /'
+  done
+  # the review #3: the conflicts check's own read - pg_cluster_checks calls replication_rises per standby inside a far
+  # larger statement, whose cost decides JIT for it
+  for j in on off; do
+    echo "  LDR EXPLAIN (ANALYZE, BUFFERS, SETTINGS) of pgvigil.pg_cluster_checks (the conflicts check's read), jit $j:"
+    psql "$RDSN dbname=pgvigil" -XAtq -c "set jit = $j; explain (analyze, buffers, settings) select * from pgvigil.pg_cluster_checks" 2>&1 | sed 's/^/    | /'
+  done
+  [[ "$worst" -lt 1000 && "$rr" =~ ^[0-9]+$ && "$rr" -lt 300 ]] && ok "LDR$JT 5 imports of LD with its rollup running at 30 days: server ms $svs; the conflicts check's rises read $rr ms" \
+    || fail "LDR$JT imports with the rollup running: server ms $svs(expected each under 1000), the rises read '$rr' ms (expected under 300)"
   # LDB review A #4: a 24-hour mark inside LD's history whose newest hour holds one read (the hour below sizes a chunk);
   # one import heals part of it under the 2 s budget
   TE=$(q "select max(snapshot_at) from pgvigil.replication_sample where instance_id = $LD and snapshot_at < now() - interval '100 days'")
@@ -1291,13 +1306,14 @@ SQL
   sv=$(q "with i as (select pgvigil.import_replication($LD, now(), '$CONF'::jsonb)) select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from i")
   r=$(q "select coalesce((select (to_at < '$TE'::timestamptz + interval '59 minutes' and to_at > from_at) || ' ' || round(extract(epoch from to_at - from_at) / 3600, 1)
                             from pgvigil.replication_hourly_dirty where instance_id = $LD and source = 'mark'), 'none')")
-  [[ "$sv" =~ ^[0-9]+$ && "$sv" -lt 3000 && "$r" == true\ * ]] && ok "LDB one import healed part of a 24-hour mark under the budget: server $sv ms, the range kept and shrunk (kept|hours left): $r" \
-    || fail "LDB the 24-hour mark: server '$sv' ms (expected under 3000), range '$r' (expected 'true <hours under 24>')"
+  [[ "$sv" =~ ^[0-9]+$ && "$sv" -lt 3000 && "$r" == true\ * ]] && ok "LDB$JT one import healed part of a 24-hour mark under the budget: server $sv ms, the range kept and shrunk (kept|hours left): $r" \
+    || fail "LDB$JT the 24-hour mark: server '$sv' ms (expected under 3000), range '$r' (expected 'true <hours under 24>')"
   t1=$(date +%s%N); r=$(q "select count(*) from pgvigil.replication_series($LD, now() - interval '190 days', now() - interval '160 days', 4320, 'conflicts')"); a=$(( ($(date +%s%N) - t1) / 1000000 ))
   t1=$(date +%s%N); r2=$(q "select count(*) from pgvigil.replication_series($LD, now() - interval '162 days', now() - interval '160 days', 288, 'conflicts')"); b2=$(( ($(date +%s%N) - t1) / 1000000 ))
   echo "  LD the conflicts series of 300 databases: 30 days (hours) $r rows in $a ms, 2 days (samples) $r2 rows in $b2 ms"
   echo "  LD measured: $(q "select (select count(*) from pgvigil.replication_hourly) || ' hour rows in ' || count(*) || ' partitions, ' || pg_size_pretty(sum(pg_total_relation_size(c.oid))) || ' with indexes, ' || coalesce(round(sum(pg_total_relation_size(c.oid)) / nullif((select count(*) from pgvigil.replication_hourly), 0)), 0) || ' B a row; HOT updates ' || coalesce(sum(s.n_tup_hot_upd), 0) || ' of ' || coalesce(sum(s.n_tup_upd), 0)
                           from pg_inherits i join pg_class c on c.oid = i.inhrelid left join pg_stat_user_tables s on s.relid = c.oid where i.inhparent = 'pgvigil.replication_hourly'::regclass" 2>&1)"
+  if [[ "${LD_JIT:-}" == off ]]; then q "alter database pgvigil reset jit" >/dev/null || fail "LD_JIT=off: the RESET failed"; fi
 fi
 # ---- 375: a cascaded standby, standby queries cancelled, the cluster checks (CL ends the rig) ------------------------
 rc_() { local i; for i in "$@"; do "$BIN" collect -config "$CFG" -once rolechange -instance "$i" >>"$WORK/collect.out" 2>&1 || echo "  (rolechange of $i failed: $(tail -1 "$WORK/collect.out"))"; done; }
