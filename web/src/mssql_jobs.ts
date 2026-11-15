@@ -44,8 +44,10 @@ const outcomeBadge = (v: unknown): string | Node => {
 // the level of an outcome by outcomeBadge's own rule, as a status cell's class ('' = not judged)
 const outcomeCls = (v: unknown): string => {
   const s = String(v ?? '');
-  return s === 'failed' ? 'status crit' : s === 'cancelled' || s === 'retry' ? 'status warn' : s === 'succeeded' ? 'status ok' : '';
+  return s === 'failed' ? 'status crit' : s === 'cancelled' || s === 'retry' ? 'status warn' : s === 'succeeded' ? 'status ok' : s ? 'status none' : '';
 };
+// a job's level against its thresholds as a status cell's class: 'excluded' (not checked) is N/A, as 'none'
+const levelCls = (v: unknown): string => `status ${v === 'excluded' ? 'none' : String(v)}`;
 const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(Math.round(Number(v) * 10) / 10) + ' s' : fmtSecs(v);
 
 // strip: the runs' durations over time as bars (oldest left); a failed or cancelled run is a hollow bar with a mark,
@@ -364,7 +366,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   // status: the job against the thresholds in force for it, and the door to its three levels
   const statusCol = (t: Thresholds): Col => ({
     key: '_status', label: 'status',
-    cls: (_v, r) => { const x = st(r); return x && !r.dropped_at ? `status ${String(x.status)}` : ''; },
+    cls: (_v, r) => { const x = st(r); return x && !r.dropped_at ? levelCls(x.status) : ''; },
     fmt: (_v, r) => {
       const x = st(r);
       if (r.dropped_at || !x) return '';
@@ -376,14 +378,14 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   });
   // the measured cells carry the job's status, as DBA Dash colours its Job Name and Last Failed (the status column
   // stays): the status the thresholds give, or N/A where they give none; no thresholds in force: plain, as the status
-  const jobCls = (r: Row) => { if (!th) return ''; const x = st(r); return x && !r.dropped_at ? `status ${String(x.status)}` : 'status none'; };
+  const jobCls = (r: Row) => { if (!th) return ''; const x = st(r); return x && !r.dropped_at ? levelCls(x.status) : 'status none'; };
   const cols: Col[] = [
     { key: 'name', label: 'job', fmt: (v, r) => {
       const b = el('button', { class: 'link', type: 'button' }, String(v ?? ''));
       b.addEventListener('click', () => { void pick(r); });
       return b;
     }, cls: (_v, r) => jobCls(r) },
-    { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
+    { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
     { key: 'schedule', fmt: oneLine },
     // the value cells carry the outcome's level, so the screen and the export show one colour
     { key: 'last_run_at', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null || r.dropped_at ? '' : outcomeCls(r.last_outcome) },

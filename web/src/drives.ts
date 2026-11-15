@@ -35,6 +35,8 @@ const statusWord: Record<string, string> = { critical: 'Critical', warning: 'War
 const statusKind: Record<string, string> = { critical: 'crit', warning: 'warn', ok: 'ok', unknown: '' };
 // a grey N/A cell's words when the mouse rests on it
 const noThreshold = 'no threshold set';
+// a status the thresholds do not give ('Size not read') is N/A, as every other cell of a status column carries one
+const naStatus = (v: unknown) => v == null || v === '' || statusKind[String(v)] ? '' : 'status none';
 const statusColor: Record<string, string> = { critical: 'var(--crit)', warning: 'var(--warn)', ok: 'var(--ok)', unknown: 'var(--muted)' };
 
 // the folder's instances (a tag folder: its own; the root: every one) and each instance's engine
@@ -256,13 +258,13 @@ function drivesGrid(ctx: Ctx, rows: Row[], folder: boolean): HTMLElement {
   const cols: Col[] = [
     ...(folder ? [{ key: 'instance', fmt: (v: unknown, r: Row) => el('a', { href: instHref(ctx, r.instance_id, 'drives') }, String(v ?? '')) } as Col] : []),
     { key: 'drive' }, { key: 'label', label: 'volume' },
-    { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? '') },
+    { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? ''), cls: naStatus },
     { key: 'total_bytes', label: 'size', num: true, fmt: fmtBytes }, { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
     // the measured cell carries the drive's status, as DBA Dash colours its Free %: free % the status its thresholds give
     // (N/A where none applies), free the N/A grey (the thresholds are percents: no size threshold is set); the status
     // column stays
     { key: 'free_bytes', label: 'free', num: true, fmt: v => el('span', { title: noThreshold }, fmtBytes(v)), cls: () => 'status none' },
-    { key: 'free_pct', label: 'free %', num: true, cls: (_v, r) => statusKind[String(r.status)] || 'status none' },
+    { key: 'free_pct', label: 'free %', num: true, fmt: (v, r) => statusKind[String(r.status)] ? fmtNum(v) : el('span', { title: noThreshold }, fmtNum(v)), cls: (_v, r) => statusKind[String(r.status)] || 'status none' },
     { key: 'warn_pct', label: 'warning under %', num: true }, { key: 'crit_pct', label: 'critical under %', num: true },
     { key: 'threshold_level', label: 'threshold set on', fmt: (v, r) => v === 'tag' ? `tag ${String(r.threshold_tag)}` : String(v ?? '') },
     { key: 'engine' }, { key: 'source', label: 'read from' }, { key: 'snapshot_at', label: 'updated', fmt: fmtTime },
@@ -429,7 +431,7 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'free_bytes', label: 'free', num: true, fmt: fmtBytes }, { key: 'free_pct', label: 'free %', num: true },
       { key: 'max_size_bytes', label: 'max size', num: true, fmt: (v, r) => v == null ? (r.engine === 'sqlserver' ? 'unlimited' : '') : fmtBytes(v) },
       { key: 'growth' }, { key: 'drive' },
-      { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? '') },
+      { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? ''), cls: naStatus },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(

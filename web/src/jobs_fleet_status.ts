@@ -116,10 +116,10 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       { key: 'platform' },
       { key: 'scheduler', fmt: scheduler },
       { key: 'job_name', label: 'job', fmt: (v, r) => { const b = el('button', { type: 'button', class: 'link', 'aria-label': `History of ${String(v)} on ${String(r.instance)}` }, String(v ?? '')); b.addEventListener('click', () => { void pick(r); }); return b; }, cls: (_v, r) => rowCls(r) },
-      { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
+      { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
       { key: 'category' },
       { key: 'description', wide: true },
-      { key: 'status', cls: (v, r) => ackd(r) ? 'status none ack' : statusCls(v), fmt: (v, r) => ackd(r)
+      { key: 'status', cls: (v, r) => ackd(r) ? 'status none ack' : statusCls(v) || (v == null || v === '' ? '' : 'status none'), fmt: (v, r) => ackd(r)
         ? el('span', {}, badge('acknowledged', ''), r.reason ? ` ${String(r.reason)}` : '')
         : el('span', {}, badge(statusWords[String(v)] ?? String(v ?? ''), v === 'crit' ? 'crit' : v === 'warn' ? 'warn' : v === 'ok' ? 'ok' : ''),
           r.reason ? ` ${String(r.reason)}` : '', acked(r) ? ' (acknowledged)' : '') },
