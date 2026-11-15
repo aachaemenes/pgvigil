@@ -7,6 +7,7 @@
 #   PGVIGIL_SUMCLICK_OUT    the folder that gets summary-clicks.json and the pictures (default: a temporary one)
 #   CLICK_ALL=1             every instance-grid cell, not one per column, engine and text shape
 #   SUMCLICK_SCOPES         root,tag,instance (default all three): the fleet Summary, a tag folder, two instances
+#   SUMCLICK_SELFTEST_ONLY  1: the walk's planted twin / status self-test alone, on the first scope's page
 # Expected (written before the first run, 2026-11-14 18:3x PST):
 #  RED on main 1aba474 and on rel-j14pre 70c86da (the fault as reported: many texts of the Summary, the Deadlocks
 #  cell among them, do nothing on a click): FAIL rows at least for the Needs attention strip's reasons (their
@@ -96,6 +97,11 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 mkdir -p "$OUT"
 node scripts/summary-clicks.mjs "$CDP" "http://127.0.0.1:$PORT/" "$OUT" | tee "$OUT/summary-clicks.txt"
 RC=${PIPESTATUS[0]}
+# the self-test alone (SUMCLICK_SELFTEST_ONLY=1): its own line decides, nothing else was clicked
+if [[ "${SUMCLICK_SELFTEST_ONLY:-}" == 1 ]]; then
+  grep -q '^twin self-test | ' "$OUT/summary-clicks.txt" || fail "the twin self-test did not pass ($(grep -m1 'twin self-test' "$OUT/summary-clicks.txt" || echo 'no line'))"
+  echo "PROOF OK: the twin self-test"; exit 0
+fi
 # a walk that clicked little proves little: at the fleet scopes (root, tag) both grids' headings and cells - those
 # parts are on the fleet Summary alone -, at the instance scope the header's chips and reasons and a grid's cells
 SC=",${SUMCLICK_SCOPES:-root,tag,instance},"

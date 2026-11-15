@@ -397,10 +397,36 @@ const clickLive = async (scope, t) => {
 };
 // after a hang: a new tab, the scope loaded again
 const recover = async hash => { await freshTab(); await reset(hash, true); };
+// the planted self-test of the twin and status rules (once, on the first scope's page): three texts planted at the top
+// of the page, each marked as text (data-nolink) - a twin of a planted link of its own group, a text in the critical
+// band's colour (a badge), plain words - and clicked as any target. Wanted: 'FAIL dead twin', 'FAIL dead status text',
+// 'plain'. A walk without the rules calls all three plain, and the self-test fails the walk
+let selfTested = false;
+const selfTest = async (scope) => {
+  selfTested = true;
+  await ev(`(() => { const m = document.querySelector('main'); const p = document.createElement('p'); p.setAttribute('data-walkplant', '1');
+    p.innerHTML = '<span data-group="walkplant" data-nolink="this page">planted twin</span> <a data-group="walkplant" href="#/findings">planted link</a> <span class="badge crit" data-nolink="this page">planted critical</span> <span data-nolink="this page">planted words</span>';
+    m.prepend(p); window.scrollTo(0, 0); return true; })()`);
+  const want = [['planted twin', 0, 'FAIL dead twin'], ['planted critical', 2, 'FAIL dead status text'], ['planted words', 3, 'plain']];
+  const got = []; let right = 0;
+  for (const [text, i, w] of want) {
+    const o = await clickOne(scope, { part: 'inst', path: [0, i], nth: 0, label: 'self-test', text, kind: 'nolink' });
+    got.push(`${text} -> ${o.r.verdict.slice(0, 48)}`);
+    if (o.r.verdict.startsWith(w)) right++;
+  }
+  const said = `twin self-test | ${scope} | ${got.join(' | ')} | ${right} of ${want.length} as wanted`;
+  if (right === want.length) console.log(said);
+  else { fails++; console.log(`FAIL | ${said}`); results.push({ scope, part: 'self-test', label: 'twin self-test', text: got.join('; '), effect: `${right} of ${want.length}`, verdict: 'FAIL the twin self-test' }); }
+};
 for (const [scope, hash] of scopes) {
   let targets;
   try {
     await reset(hash, true);
+    if (!selfTested) {
+      await selfTest(scope);
+      if (process.env.SUMCLICK_SELFTEST_ONLY === '1') break;
+      await reset(hash);
+    }
     targets = thin(await enumerate(process.env.CLICK_ALL === '1'), process.env.CLICK_ALL === '1');
   } catch (e) {
     fail({ scope, part: 'page', label: 'Summary', text: hash, effect: 'the page did not load: ' + e.message, verdict: 'FAIL' });
