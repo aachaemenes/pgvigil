@@ -130,8 +130,13 @@ try {
     const ja = await ev(jstate);
     const clicked = await ev(`(() => { const b = [...document.querySelectorAll('#job-status-grid button')].find(b => b.textContent === ${JSON.stringify(sj)}); b?.click(); return !!b; })()`);
     await sleep(3000);
-    const j4 = await ev(`(() => { const h = document.querySelector('#job-status-history'); return { head: h?.querySelector('h3')?.textContent ?? '',
-      runs: [...(h?.querySelectorAll('table.grid > tbody > tr') ?? [])].length, open: h?.querySelector('a')?.getAttribute('href') ?? '' }; })()`);
+    // the seeded job runs now (J7's running_since): its history lists the running run first (the runs part's running
+    // arm), then the two finished runs, newest first - the outcome column read by its header
+    const j4 = await ev(`(() => { const h = document.querySelector('#job-status-history'); const t = h?.querySelector('table.grid');
+      const oc = t ? [...t.querySelectorAll('thead th')].findIndex(th => th.textContent.trim() === 'outcome') : -1;
+      const trs = [...(t?.querySelectorAll(':scope > tbody > tr') ?? [])];
+      return { head: h?.querySelector('h3')?.textContent ?? '', runs: trs.length, outcomes: trs.map(tr => oc < 0 ? '' : (tr.children[oc]?.textContent ?? '').trim()),
+        open: h?.querySelector('a')?.getAttribute('href') ?? '' }; })()`);
     // the page's rows in the order the API gives at this moment (DBA Dash's; J1 checks the API's order by its rule)
     const live = await (await fetch(base + 'api/jobsreport?part=status')).json();
     const jorder = live.status.rows.map(r => r[live.status.columns.indexOf('job_name')]);
@@ -145,8 +150,9 @@ try {
       await go(j4.open);
       tabHead = await ev(`[...document.querySelectorAll('main .jobdetail h3')].map(h => h.textContent).find(t => t.startsWith(${JSON.stringify(sj + ': history')})) ?? ''`);
     }
-    check('J4 history', clicked && j4.head === `demo-onprem-sql01 | ${sj}` && j4.runs === 2 && oq.get('i') === s1 && oq.get('job') === sj && tabHead !== '',
-      clicked ? `'${j4.head}', ${j4.runs} run row(s); its link '${j4.open}' -> the tab's picked history '${tabHead}'` : `no button '${sj}' in the grid`);
+    check('J4 history', clicked && j4.head === `demo-onprem-sql01 | ${sj}` && j4.runs === 3 && JSON.stringify(j4.outcomes) === '["running","succeeded","failed"]'
+      && oq.get('i') === s1 && oq.get('job') === sj && tabHead !== '',
+      clicked ? `'${j4.head}', ${j4.runs} run row(s) ${JSON.stringify(j4.outcomes)} (want 3: running, succeeded, failed); its link '${j4.open}' -> the tab's picked history '${tabHead}'` : `no button '${sj}' in the grid`);
 
     // J8 (B9b, B9-12): the tab's runs of a FIXED range of whole hours (to = an hour before the current hour, so no import
     // lands in it while the row reads) - tiles equal to the API's cards part and to the RAW runs counted by hand over the
@@ -157,7 +163,10 @@ try {
       await sleep(2500);
       const pageCards = await ev(`(() => { const c = document.querySelector('main .job-cards'); if (!c) return null;
         const tiles = Object.fromEntries([...c.querySelectorAll('.tile')].map(t => [t.querySelector('.tile-l')?.textContent ?? '', t.querySelector('.tile-v')?.textContent ?? '']));
-        const after = c.compareDocumentPosition(document.querySelector('main table.grid') ?? c) & Node.DOCUMENT_POSITION_FOLLOWING;
+        // above the instance's jobs grid: the first grid of the cards' own box that is not one of the cards' top 5 lists
+        // (a 'Running now' or 'Findings' grid of the tab above the box is not the jobs grid)
+        const jg = [...(c.parentElement?.querySelectorAll('table.grid') ?? [])].find(g => !c.contains(g));
+        const after = !!jg && (c.compareDocumentPosition(jg) & Node.DOCUMENT_POSITION_FOLLOWING);
         return { head: c.querySelector('h3')?.textContent ?? '', tiles, from: c.dataset.from ?? '', to: c.dataset.to ?? '',
                  h4s: [...c.querySelectorAll('h4')].map(h => h.textContent), grids: c.querySelectorAll('table.grid, .empty-grid').length, above: !!after }; })()`);
       if (!pageCards) return { pageCards: null };
