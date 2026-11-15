@@ -1,8 +1,8 @@
 diff --git i/docs/performance.md w/docs/performance.md
-index daea736..572c9df 100644
+index daea736..50afe86 100644
 --- i/docs/performance.md
 +++ w/docs/performance.md
-@@ -52,6 +52,29 @@ with a sample in any chart). Each title opens the detailed page.
+@@ -52,6 +52,31 @@ with a sample in any chart). Each title opens the detailed page.
  API: `GET /api/performance?instance=N&from=&to=[&part=]` - parts `meta`, `grid` and, per engine, `cpu`, `sessions`,
  `waits`, `db`, `io` (PostgreSQL) or `cpu`, `sessions`, `waits`, `db`, `io` (SQL Server).
  
@@ -20,7 +20,9 @@ index daea736..572c9df 100644
 +  address reads restart, and a promotion behind a virtual IP or over a Unix socket reads failover. "The read before" is
 +  the server's own clock at that read. Two edges read restart, since the timeline is not read: a standby created and
 +  promoted between two reads, and a managed high-availability failover whose standby runs no PostgreSQL until it takes
-+  over (an Amazon RDS Multi-AZ DB instance, Cloud SQL HA); the event's words keep both addresses.
++  over (an Amazon RDS Multi-AZ DB instance, Cloud SQL HA); the event's words keep both addresses. The managed edge
++  stays until task 390b, which reads the provider's own failover events (RDS events, Cloud SQL operations) for an
++  instance with its cloud block; the provider's word then wins.
 +- A crash restart (PostgreSQL 15 and later): the statistics were reset with the postmaster kept, the server's crash
 +  recovery; a crash the server log already reports is one finding, the log's. On 14 and older only the server log's
 +  finding names it.

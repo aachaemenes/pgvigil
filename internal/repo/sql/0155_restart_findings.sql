@@ -24,9 +24,10 @@
 --                     read 'restart' (the timeline is not read): a standby created and promoted between two reads, and
 --                     a managed HA failover whose standby runs no PostgreSQL until it takes over (an Amazon RDS
 --                     Multi-AZ DB instance, Cloud SQL HA: its PostgreSQL starts after the read before; the words keep
---                     both addresses). A start equal to the newest restart or failover's new one writes nothing: 0086's
---                     import keeps no read-time guard, so a late read of the old node can come between two reads of the
---                     new one (404 review B, 12).
+--                     both addresses; task 390b hands this the provider's own failover event, whose word then wins: a
+--                     WIRING at that join). A start equal to the newest restart or failover's new one writes nothing:
+--                     0086's import keeps no read-time guard, so a late read of the old node can come between two reads
+--                     of the new one (404 review B, 12).
 --     dbstats_last    0011's restart epoch rose with the postmaster start unchanged, the commits fell, and stats_reset
 --                     unchanged or NULL = 'crash restart' (the postmaster stays up through crash recovery; a manual
 --                     pg_stat_reset moves stats_reset to a time; PostgreSQL 15 and later drop every statistics entry
