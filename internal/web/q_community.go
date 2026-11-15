@@ -1318,6 +1318,8 @@ type communityBody struct {
 	TimeoutSecs int               `json:"timeout_secs"`
 	Text        string            `json:"text"`
 	QueryName   string            `json:"query_name"`
+	// ExactTypes: the answer's sets carry the driver's SQL type and nullability too (KITWATCH K4.1, opt-in)
+	ExactTypes bool `json:"exact_types"`
 }
 
 // communityGate is a POST's shared part: the gate, the body, the tool, the instance of the tool's engine.
@@ -1610,7 +1612,7 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		rows, err := conn.QueryContext(rctx, stmt, args...)
 		var sets []resultSet
 		if err == nil {
-			sets, err = readMS(rows, 5000, &sizer{}, rcancel)
+			sets, run.AtSetCap, err = readMSWith(rows, 5000, &sizer{}, rcancel, in.ExactTypes)
 		}
 		rcancel()
 		_ = conn.Close()
