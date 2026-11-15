@@ -482,7 +482,9 @@ rq() { pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last
 # sch <instance> <seconds before TQ> <runnable tasks> (4 schedulers)
 sch() { pq "INSERT INTO pgvigil.mssql_sched_sample (instance_id, snapshot_at, schedulers, runnable_tasks)
   VALUES ($1, '$TQ'::timestamptz - make_interval(secs => $2), 4, $3)" >/dev/null; }
-rqv() { pq "SELECT coalesce(round(per_sched, 2)::text || '|' || reads || '|' || window_text, 'none') FROM pgvigil.mssql_runnable_queue($1, '$TQ'::timestamptz)"; }
+# 'none' when the function gives no row (no evaluation): the coalesce goes round a scalar subquery (box run 405green3 read
+# '' for rqsyn3, the function rightly returning nothing)
+rqv() { pq "SELECT coalesce((SELECT round(per_sched, 2)::text || '|' || reads || '|' || window_text FROM pgvigil.mssql_runnable_queue($1, '$TQ'::timestamptz)), 'none')"; }
 Q1=$(rq rqsyn1); for t in 0 60 120 180 240; do sch "$Q1" $t 40; done
 Q2=$(rq rqsyn2); sch "$Q2" 540 40; sch "$Q2" 420 32; sch "$Q2" 360 48
 Q3=$(rq rqsyn3); sch "$Q3" 660 40; sch "$Q3" 540 40; sch "$Q3" 420 40
