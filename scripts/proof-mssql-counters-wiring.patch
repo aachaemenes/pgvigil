@@ -1,0 +1,613 @@
+diff --git i/internal/config/config.go w/internal/config/config.go
+index d8b09d7..d6cb8c8 100644
+--- i/internal/config/config.go
++++ w/internal/config/config.go
+@@ -31,6 +31,9 @@ type Config struct {
+ 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
+ 	// collects nothing from SQL Server itself.
+ 	DBADash []DBADashRepo `yaml:"dbadash"`
++	// MSSQLCounters adds counters to every SQL Server instance's counter list or removes them (docs/configuration.md,
++	// 'mssql_counters'); an instance's own lines are narrower and win.
++	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
+ 	// Flags carries command-line choices; never read from the file.
+ 	Flags Flags `yaml:"-"`
+ }
+@@ -106,6 +109,58 @@ type Instance struct {
+ 	PgBouncerDSNRaw string `yaml:"pgbouncer"`
+ 	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
+ 	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
++	// MSSQLCounters adds counters to this SQL Server instance's counter list or removes them (docs/configuration.md).
++	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
++	// MSSQLCountersRoot is the file's root mssql_counters, copied here by Validate (the runner reads one instance).
++	MSSQLCountersRoot CounterEdits `yaml:"-"`
++}
++
++// CounterEdits are pgvigil.yaml's additions to and removals from the SQL Server counter list.
++type CounterEdits struct {
++	Add    []CounterRef `yaml:"add"`
++	Remove []CounterRef `yaml:"remove"`
++}
++
++// CounterRef names a counter: its object (without the instance's prefix) and name, one instance of it or every one
++// (instance empty), and for an addition its kind (” from the type read; 'count' for a 65792 counter that counts since
++// the server started).
++type CounterRef struct {
++	Object   string `yaml:"object" json:"object"`
++	Counter  string `yaml:"counter" json:"counter"`
++	Instance string `yaml:"instance" json:"inst,omitempty"`
++	Kind     string `yaml:"kind" json:"kind,omitempty"`
++}
++
++// CounterInUse says what reads a counter (” = nothing); the SQL Server collector sets it (a removal of a counter in
++// use is refused).
++var CounterInUse = func(_, _ string) string { return "" }
++
++// validateCounterEdits checks one mssql_counters block.
++func validateCounterEdits(where string, e CounterEdits) error {
++	for _, set := range []struct {
++		name string
++		refs []CounterRef
++	}{{"add", e.Add}, {"remove", e.Remove}} {
++		for i, r := range set.refs {
++			if strings.TrimSpace(r.Object) == "" || strings.TrimSpace(r.Counter) == "" {
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: object and counter are required", where, set.name, i)
++			}
++			if len(r.Object) > 128 || len(r.Counter) > 128 || len(r.Instance) > 128 {
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: a name is 128 characters at most", where, set.name, i)
++			}
++			switch r.Kind {
++			case "", "count", "rate", "gauge":
++			default:
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: kind must be empty, count, rate or gauge (got %q)", where, set.name, i, r.Kind)
++			}
++			if set.name == "remove" {
++				if why := CounterInUse(r.Object, r.Counter); why != "" {
++					return fmt.Errorf("%s.mssql_counters.remove[%d]: %s / %s is read by %s and stays in the list", where, i, r.Object, r.Counter, why)
++				}
++			}
++		}
++	}
++	return nil
+ }
+ 
+ // DBADashRepo is one DBADash repository of the dbadash: list.
+@@ -450,12 +505,19 @@ func (c *Config) Validate() error {
+ 	if err := c.validateDBADash(); err != nil {
+ 		return err
+ 	}
++	if err := validateCounterEdits("root", c.MSSQLCounters); err != nil {
++		return err
++	}
+ 	seen := map[string]bool{}
+ 	for i := range c.Instances {
+ 		in := &c.Instances[i]
+ 		if strings.TrimSpace(in.Name) == "" {
+ 			return fmt.Errorf("instances[%d]: name is required", i)
+ 		}
++		if err := validateCounterEdits(fmt.Sprintf("instance %q", in.Name), in.MSSQLCounters); err != nil {
++			return err
++		}
++		in.MSSQLCountersRoot = c.MSSQLCounters
+ 		if seen[in.Name] {
+ 			return fmt.Errorf("instance %q is listed twice", in.Name)
+ 		}
+@@ -595,11 +657,15 @@ func Resolve(v string) string {
+ 	}
+ }
+ 
++// renamedCollections: a collection whose read moved to another (task 401: the counters of mssql_cpu and mssql_activity
++// are mssql_counters' and mssql_counters_db's): a site that disabled the old one keeps the read off.
++var renamedCollections = map[string]string{"mssql_cpu": "mssql_counters", "mssql_activity": "mssql_counters_db"}
++
+ // Interval returns the effective interval of a collection for an instance:
+ // the instance's override, then the global override, then the default; zero = disabled.
+ func (c *Config) Interval(in Instance, collection string, def time.Duration) time.Duration {
+ 	for _, d := range in.Disabled {
+-		if d == collection {
++		if d == collection || renamedCollections[d] == collection {
+ 			return 0
+ 		}
+ 	}
+diff --git i/internal/mssql/activity.go w/internal/mssql/activity.go
+index dc8b2fe..e1001ef 100644
+--- i/internal/mssql/activity.go
++++ w/internal/mssql/activity.go
+@@ -141,7 +141,7 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
+ 		out = append(out, keep(rows)...)
+ 	}
+ 	apart("sys.dm_db_session_space_usage", activityTempdbSQL, func(r []collect.Row) []collect.Row { return r })
+-	apart("sys.dm_os_performance_counters", activityDBCounterSQL, func(r []collect.Row) []collect.Row { return cpuCounterRows(r, true) })
++	// the per-database counters are mssql_counters_db's (task 401): one writer per series
+ 	if q, err := cpuInfoSQL(ctx, conn); err != nil {
+ 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info", "message": err.Error()})
+ 	} else if q != "" {
+diff --git i/internal/mssql/cpu.go w/internal/mssql/cpu.go
+index c55c51a..c5e3e47 100644
+--- i/internal/mssql/cpu.go
++++ w/internal/mssql/cpu.go
+@@ -145,7 +145,12 @@ func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]colle
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	out = append(out, cpuCounterRows(counters, false)...)
++	// the four throughput rows only: the counter list is mssql_counters' (task 401), one writer per series
++	for _, r := range cpuCounterRows(counters, false) {
++		if r["kind"] == "counter" {
++			out = append(out, r)
++		}
++	}
+ 	// the ring buffer is read on its own: a server that refuses it (a build without the record) keeps the rest
+ 	ring, err := QueryRows(ctx, conn, cpuRingSQL)
+ 	if err != nil {
+diff --git i/internal/mssql/mssql.go w/internal/mssql/mssql.go
+index d9e4822..980e63d 100644
+--- i/internal/mssql/mssql.go
++++ w/internal/mssql/mssql.go
+@@ -9,6 +9,7 @@ import (
+ 	"context"
+ 	"database/sql"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -506,6 +507,20 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 			defer ccancel()
+ 			return r.MSSQLSeqCursor(cctx, instanceID, source)
+ 		})
++	} else if lc, ok := c.(ListCollector); ok {
++		// a collection whose list is the repository's (task 401): the defaults, pgvigil.yaml's lines and Admin's rows
++		var list []CounterSpec
++		lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
++		raw, lerr := r.MSSQLCounterList(lctx, instanceID, counterEditsJSON(in))
++		lcancel()
++		if lerr == nil {
++			list, lerr = ParseCounterList(raw)
++		}
++		if lerr != nil {
++			logRun(instanceID, "error", lerr.Error())
++			return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, lerr), Duration: time.Since(start)}
++		}
++		rows, err = lc.RunList(sctx, conn, info, list)
+ 	} else {
+ 		rows, err = c.Run(sctx, conn, info)
+ 	}
+@@ -540,6 +555,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note)}
+ }
+ 
++// counterEditsJSON: pgvigil.yaml's mssql_counters lines of an instance (the root's, then its own) as the repository's
++// list function takes them.
++func counterEditsJSON(in config.Instance) []byte {
++	out := []map[string]string{}
++	for _, l := range []struct {
++		layer string
++		e     config.CounterEdits
++	}{{"root", in.MSSQLCountersRoot}, {"instance", in.MSSQLCounters}} {
++		for _, set := range []struct {
++			action string
++			refs   []config.CounterRef
++		}{{"add", l.e.Add}, {"remove", l.e.Remove}} {
++			for _, r := range set.refs {
++				out = append(out, map[string]string{"layer": l.layer, "action": set.action, "object": r.Object, "counter": r.Counter,
++					"inst": r.Instance, "kind": r.Kind})
++			}
++		}
++	}
++	b, _ := json.Marshal(out)
++	return b
++}
++
++func init() { config.CounterInUse = CounterInUse }
++
+ // timeoutNote says so when an error is the run's own deadline: the driver's text for it names no cause.
+ func timeoutNote(sctx context.Context, limit time.Duration, err error) error {
+ 	if errors.Is(sctx.Err(), context.DeadlineExceeded) {
+diff --git i/internal/repo/repo.go w/internal/repo/repo.go
+index ecce0f4..0f51eeb 100644
+--- i/internal/repo/repo.go
++++ w/internal/repo/repo.go
+@@ -362,6 +362,16 @@ func (r *Repo) MSSQLSeqCursor(ctx context.Context, instanceID int, source string
+ 	return *n, true, nil
+ }
+ 
++// MSSQLCounterList returns an instance's SQL Server counter list (pgvigil.import_mssql_counter_list, task 401): the
++// defaults, pgvigil.yaml's lines (yaml, a JSON array the runner builds) and Admin's rows, the narrowest scope winning.
++func (r *Repo) MSSQLCounterList(ctx context.Context, instanceID int, yaml []byte) ([]byte, error) {
++	var b []byte
++	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.import_mssql_counter_list($1, $2::jsonb)::text`, instanceID, string(yaml)).Scan(&b); err != nil {
++		return nil, fmt.Errorf("import_mssql_counter_list: %w", err)
++	}
++	return b, nil
++}
++
+ // LogCollection records when a collection ran and how it ended.
+ func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note string) error {
+ 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 40526c2..2ea6318 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -698,3 +698,326 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
+             WHEN 'warn' IN (j.conn_status, j.allow_status, j.encoding_status, j.collation_status, j.checksums_status, j.xid_status) THEN 'warn'
+             ELSE 'ok' END AS worst
+   FROM j;
++
++
++-- ---- task 401 (0152, B3): the SQL Server counters --------------------------------------------------------------------
++-- metric_catalog and metric_points are 0085's whole with the family 'counters' (0152's mssql_counter_metrics and
++-- mssql_counter_points); mssql_cpu_newest is 0124's with its Workload Group Stats taken from the instance counter read
++-- nearest the scheduler read (the counters are mssql_counters' own read since 401: an exact match on mssql_cpu's read
++-- time would never find them).
++
++CREATE OR REPLACE VIEW pgvigil.metric_catalog AS
++SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.unit,
++       v.per_database, v.fresh_secs, v.sort
++  FROM (SELECT * FROM (VALUES
++    ('postgres',  'sessions',  'Sessions',          10, 'total',                 'sessions',                          'count',       false,  600,  1),
++    ('postgres',  'sessions',  'Sessions',          10, 'active',                'active sessions',                   'count',       false,  600,  2),
++    ('postgres',  'sessions',  'Sessions',          10, 'idle_in_txn',           'idle in transaction',               'count',       false,  600,  3),
++    ('postgres',  'sessions',  'Sessions',          10, 'waiting_lock',          'waiting on a lock',                 'count',       false,  600,  4),
++    ('postgres',  'sessions',  'Sessions',          10, 'connections_pct',       'connections used',                  'pct',         false,  600,  5),
++    ('postgres',  'sessions',  'Sessions',          10, 'longest_active_secs',   'longest active statement',          'secs',        false,  600,  6),
++    ('postgres',  'sessions',  'Sessions',          10, 'longest_idle_txn_secs', 'longest idle in transaction',       'secs',        false,  600,  7),
++    ('postgres',  'sessions',  'Sessions',          10, 'oldest_xmin_age',       'oldest xmin age',                   'xids',        false,  600,  8),
++    ('postgres',  'database',  'Database',          20, 'commits_s',             'commits',                           'per_s',       true,   600,  1),
++    ('postgres',  'database',  'Database',          20, 'rollbacks_s',           'rollbacks',                         'per_s',       true,   600,  2),
++    ('postgres',  'database',  'Database',          20, 'blks_read_s',           'blocks read',                       'per_s',       true,   600,  3),
++    ('postgres',  'database',  'Database',          20, 'blks_hit_s',            'blocks hit',                        'per_s',       true,   600,  4),
++    ('postgres',  'database',  'Database',          20, 'cache_hit_pct',         'buffer cache hit ratio',            'pct',         true,   600,  5),
++    ('postgres',  'database',  'Database',          20, 'tup_read_s',            'tuples read',                       'per_s',       true,   600,  6),
++    ('postgres',  'database',  'Database',          20, 'tup_written_s',         'tuples written',                    'per_s',       true,   600,  7),
++    ('postgres',  'database',  'Database',          20, 'temp_bytes_s',          'temp bytes',                        'bytes_per_s', true,   600,  8),
++    ('postgres',  'database',  'Database',          20, 'deadlocks',             'deadlocks per interval',            'count',       true,   600,  9),
++    ('postgres',  'database',  'Database',          20, 'backends',              'backends',                          'count',       true,   600, 10),
++    ('postgres',  'server',    'Server',            30, 'checkpoints',           'checkpoints per interval',          'count',       false,  600,  1),
++    ('postgres',  'server',    'Server',            30, 'checkpoints_req',       'requested checkpoints per interval', 'count',      false,  600,  2),
++    ('postgres',  'server',    'Server',            30, 'buffers_written_s',     'buffers written',                   'per_s',       false,  600,  3),
++    ('postgres',  'server',    'Server',            30, 'buffers_alloc_s',       'buffers allocated',                 'per_s',       false,  600,  4),
++    ('postgres',  'server',    'Server',            30, 'wal_bytes_s',           'WAL bytes',                         'bytes_per_s', false,  600,  5),
++    ('postgres',  'server',    'Server',            30, 'wal_records_s',         'WAL records',                       'per_s',       false,  600,  6),
++    ('postgres',  'io',        'IO (pg_stat_io)',   40, 'read_bytes_s',          'read bytes',                        'bytes_per_s', false, 1800,  1),
++    ('postgres',  'io',        'IO (pg_stat_io)',   40, 'write_bytes_s',         'write bytes',                       'bytes_per_s', false, 1800,  2),
++    ('postgres',  'io',        'IO (pg_stat_io)',   40, 'extend_bytes_s',        'extend bytes',                      'bytes_per_s', false, 1800,  3),
++    ('postgres',  'io',        'IO (pg_stat_io)',   40, 'hits_s',                'buffer hits',                       'per_s',       false, 1800,  4),
++    ('postgres',  'io',        'IO (pg_stat_io)',   40, 'fsyncs_s',              'fsyncs',                            'per_s',       false, 1800,  5),
++    ('sqlserver', 'requests',  'Requests',          10, 'sessions',              'sessions',                          'count',       false,  600,  1),
++    ('sqlserver', 'requests',  'Requests',          10, 'requests',              'requests running',                  'count',       false,  600,  2),
++    ('sqlserver', 'requests',  'Requests',          10, 'blocked',               'processes blocked',                 'count',       false,  600,  3),
++    ('sqlserver', 'requests',  'Requests',          10, 'heads',                 'blocking chain heads',              'count',       false,  600,  4),
++    ('sqlserver', 'requests',  'Requests',          10, 'longest_wait_ms',       'longest wait',                      'ms',          false,  600,  5),
++    ('sqlserver', 'cpu',       'CPU',               20, 'sql_pct',               'SQL Server CPU',                    'pct',         false,  600,  1),
++    ('sqlserver', 'cpu',       'CPU',               20, 'other_pct',             'other processes CPU',               'pct',         false,  600,  2),
++    ('sqlserver', 'cpu',       'CPU',               20, 'total_pct',             'machine CPU',                       'pct',         false,  600,  3),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'batch_s',               'batch requests',                    'per_s',       false,  600,  1),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'transactions_s',        'transactions',                      'per_s',       false,  600,  2),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'compiles_s',            'SQL compilations',                  'per_s',       false,  600,  3),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'recompiles_s',          'SQL re-compilations',               'per_s',       false,  600,  4),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'runnable_tasks',        'runnable tasks',                    'count',       false,  600,  5),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'work_queue',            'work queue',                        'count',       false,  600,  6),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'pending_io',            'pending disk IO',                   'count',       false,  600,  7),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'active_workers',        'active workers',                    'count',       false,  600,  8),
++    ('sqlserver', 'scheduler', 'Scheduler',         30, 'current_workers',       'current workers',                   'count',       false,  600,  9),
++    ('sqlserver', 'memory',    'Memory',            40, 'ple',                   'page life expectancy',              'secs',        false,  600,  1),
++    ('sqlserver', 'memory',    'Memory',            40, 'grants_pending',        'memory grants pending',             'count',       false,  600,  2),
++    ('sqlserver', 'memory',    'Memory',            40, 'grants_outstanding',    'memory grants outstanding',         'count',       false,  600,  3),
++    ('sqlserver', 'memory',    'Memory',            40, 'total_mb',              'total server memory',               'mb',          false,  600,  4),
++    ('sqlserver', 'memory',    'Memory',            40, 'target_mb',             'target server memory',              'mb',          false,  600,  5),
++    ('sqlserver', 'memory',    'Memory',            40, 'buffer_pool_mb',        'database cache memory',             'mb',          false,  600,  6),
++    ('sqlserver', 'memory',    'Memory',            40, 'plan_cache_mb',         'plan cache memory',                 'mb',          false,  600,  7),
++    ('sqlserver', 'memory',    'Memory',            40, 'stolen_mb',             'stolen server memory',              'mb',          false,  600,  8),
++    ('sqlserver', 'memory',    'Memory',            40, 'available_mb',          'available physical memory',         'mb',          false,  600,  9),
++    ('sqlserver', 'memory',    'Memory',            40, 'os_used_pct',           'physical memory used',              'pct',         false,  600, 10),
++    ('any',       'host',      'Host',              90, 'cpu_pct',               'host CPU',                          'pct',         false,  900,  1),
++    ('any',       'host',      'Host',              90, 'cpu_iowait_pct',        'host CPU in IO wait',               'pct',         false,  900,  2),
++    ('any',       'host',      'Host',              90, 'mem_used_pct',          'host memory used',                  'pct',         false,  900,  3),
++    ('any',       'host',      'Host',              90, 'mem_free',              'host memory free',                  'bytes',       false,  900,  4),
++    ('any',       'host',      'Host',              90, 'swap_used',             'host swap used',                    'bytes',       false,  900,  5),
++    ('any',       'host',      'Host',              90, 'load1',                 'load average (1 min)',              'count',       false,  900,  6)
++  ) AS v(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort)
++  -- task 401 (0152): the SQL Server counters family
++  UNION ALL
++  SELECT m.engine, m.family, m.family_label, m.family_sort, m.metric, m.label, m.unit, m.per_database, m.fresh_secs, m.sort
++    FROM pgvigil.mssql_counter_metrics m) AS v;
++
++CREATE OR REPLACE FUNCTION pgvigil.metric_points(p_instance_id int, p_family text, p_from timestamptz, p_to timestamptz,
++                                                 p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
++RETURNS TABLE (at timestamptz, metric text, value double precision)
++LANGUAGE plpgsql STABLE SET jit = off AS $$
++#variable_conflict use_column
++BEGIN
++  IF p_family = 'sessions' THEN
++    RETURN QUERY
++    SELECT s.snapshot_at, v.metric, v.value
++      FROM pgvigil.activity_summary s
++      CROSS JOIN LATERAL (VALUES
++        ('total', s.total::double precision), ('active', s.active::double precision),
++        ('idle_in_txn', s.idle_in_txn::double precision), ('waiting_lock', s.waiting_lock::double precision),
++        ('connections_pct', (100.0 * s.total / nullif(s.max_connections, 0))::double precision),
++        ('longest_active_secs', s.longest_active_secs::double precision),
++        ('longest_idle_txn_secs', s.longest_idle_txn_secs::double precision),
++        ('oldest_xmin_age', s.oldest_xmin_age::double precision)) AS v(metric, value)
++     WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from AND s.snapshot_at <= p_to AND v.value IS NOT NULL;
++  ELSIF p_family = 'database' AND p_database IS NOT NULL THEN
++    -- one database's series reads that database's rows alone (dbstats_rate reads every database of the instance
++    -- before a filter on the name can apply: 150 databases over 31 days ran past the page's 15 s). The same rule as
++    -- dbstats_rate: a delta per read (pgvigil.delta), an interval with a reset gives no point.
++    RETURN QUERY
++    WITH w AS (
++      SELECT d.snapshot_at, d.numbackends,
++             extract(epoch FROM d.snapshot_at - lag(d.snapshot_at) OVER k)::int AS interval_secs,
++             (d.stats_reset IS DISTINCT FROM lag(d.stats_reset) OVER k) AS reset,
++             d.xact_commit, lag(d.xact_commit) OVER k AS p1, d.xact_rollback, lag(d.xact_rollback) OVER k AS p2,
++             d.blks_read, lag(d.blks_read) OVER k AS p3, d.blks_hit, lag(d.blks_hit) OVER k AS p4,
++             d.tup_returned, lag(d.tup_returned) OVER k AS p5, d.tup_fetched, lag(d.tup_fetched) OVER k AS p6,
++             d.tup_inserted, lag(d.tup_inserted) OVER k AS p7, d.tup_updated, lag(d.tup_updated) OVER k AS p8,
++             d.tup_deleted, lag(d.tup_deleted) OVER k AS p9, d.temp_bytes, lag(d.temp_bytes) OVER k AS p12,
++             d.deadlocks, lag(d.deadlocks) OVER k AS p13
++        FROM pgvigil.dbstats d
++       WHERE d.instance_id = p_instance_id AND d.datname = p_database
++         AND d.snapshot_at > p_from - p_lookback AND d.snapshot_at <= p_to
++      WINDOW k AS (PARTITION BY d.dbid ORDER BY d.snapshot_at)
++    ), r AS (
++      SELECT w.snapshot_at, max(w.interval_secs) AS secs,
++             sum(pgvigil.delta(w.xact_commit, w.p1, w.reset)) AS c, sum(pgvigil.delta(w.xact_rollback, w.p2, w.reset)) AS rb,
++             sum(pgvigil.delta(w.blks_read, w.p3, w.reset)) AS br, sum(pgvigil.delta(w.blks_hit, w.p4, w.reset)) AS bh,
++             sum(pgvigil.delta(w.tup_returned, w.p5, w.reset) + pgvigil.delta(w.tup_fetched, w.p6, w.reset)) AS tr,
++             sum(pgvigil.delta(w.tup_inserted, w.p7, w.reset) + pgvigil.delta(w.tup_updated, w.p8, w.reset)
++                 + pgvigil.delta(w.tup_deleted, w.p9, w.reset)) AS tw,
++             sum(pgvigil.delta(w.temp_bytes, w.p12, w.reset)) AS tb, sum(pgvigil.delta(w.deadlocks, w.p13, w.reset)) AS dl,
++             sum(w.numbackends) AS nb
++        FROM w
++       WHERE w.interval_secs > 0 AND w.snapshot_at > p_from
++       GROUP BY w.snapshot_at
++      HAVING NOT bool_or(w.reset)
++    )
++    SELECT r.snapshot_at, v.metric, v.value
++      FROM r
++      CROSS JOIN LATERAL (VALUES
++        ('commits_s', (r.c / r.secs)::double precision), ('rollbacks_s', (r.rb / r.secs)::double precision),
++        ('blks_read_s', (r.br / r.secs)::double precision), ('blks_hit_s', (r.bh / r.secs)::double precision),
++        ('cache_hit_pct', (100.0 * r.bh / nullif(r.bh + r.br, 0))::double precision),
++        ('tup_read_s', (r.tr / r.secs)::double precision), ('tup_written_s', (r.tw / r.secs)::double precision),
++        ('temp_bytes_s', (r.tb / r.secs)::double precision), ('deadlocks', r.dl::double precision),
++        ('backends', r.nb::double precision)) AS v(metric, value)
++     WHERE v.value IS NOT NULL;
++  ELSIF p_family = 'database' THEN
++    RETURN QUERY
++    WITH r AS (
++      SELECT d.snapshot_at, max(d.interval_secs) AS secs,
++             sum(d.xact_commit) AS c, sum(d.xact_rollback) AS rb, sum(d.blks_read) AS br, sum(d.blks_hit) AS bh,
++             sum(d.tup_returned + d.tup_fetched) AS tr, sum(d.tup_inserted + d.tup_updated + d.tup_deleted) AS tw,
++             sum(d.temp_bytes) AS tb, sum(d.deadlocks) AS dl, sum(d.numbackends) AS nb
++        FROM pgvigil.dbstats_rate(p_instance_id, p_from, p_to, p_lookback) d
++       WHERE d.interval_secs > 0
++       GROUP BY d.snapshot_at
++      HAVING NOT bool_or(d.reset)              -- a database reset in this interval: no point, not a dip
++    )
++    SELECT r.snapshot_at, v.metric, v.value
++      FROM r
++      CROSS JOIN LATERAL (VALUES
++        ('commits_s', (r.c / r.secs)::double precision), ('rollbacks_s', (r.rb / r.secs)::double precision),
++        ('blks_read_s', (r.br / r.secs)::double precision), ('blks_hit_s', (r.bh / r.secs)::double precision),
++        ('cache_hit_pct', (100.0 * r.bh / nullif(r.bh + r.br, 0))::double precision),
++        ('tup_read_s', (r.tr / r.secs)::double precision), ('tup_written_s', (r.tw / r.secs)::double precision),
++        ('temp_bytes_s', (r.tb / r.secs)::double precision), ('deadlocks', r.dl::double precision),
++        ('backends', r.nb::double precision)) AS v(metric, value)
++     WHERE v.value IS NOT NULL;
++  ELSIF p_family = 'server' THEN
++    RETURN QUERY
++    SELECT s.snapshot_at, v.metric, v.value
++      FROM pgvigil.serverstats_rate(p_instance_id, p_from, p_to, p_lookback) s
++      CROSS JOIN LATERAL (VALUES
++        ('checkpoints', (s.checkpoints_timed + s.checkpoints_req)::double precision),
++        ('checkpoints_req', s.checkpoints_req::double precision),
++        -- a version without one of the three counters stores it NULL; all three NULL = no figure, not 0
++        ('buffers_written_s', (CASE WHEN num_nonnulls(s.buffers_checkpoint, s.buffers_clean, s.buffers_backend) > 0 THEN
++            (coalesce(s.buffers_checkpoint, 0) + coalesce(s.buffers_clean, 0) + coalesce(s.buffers_backend, 0))::numeric / s.interval_secs END)::double precision),
++        ('buffers_alloc_s', (s.buffers_alloc::numeric / s.interval_secs)::double precision),
++        ('wal_bytes_s', (s.wal_bytes / s.interval_secs)::double precision),
++        ('wal_records_s', (s.wal_records::numeric / s.interval_secs)::double precision)) AS v(metric, value)
++     WHERE s.interval_secs > 0 AND s.reset IS NOT TRUE AND v.value IS NOT NULL;
++  ELSIF p_family = 'io' THEN
++    RETURN QUERY
++    WITH r AS (
++      SELECT o.snapshot_at, max(o.interval_secs) AS secs, sum(o.read_bytes) AS rb, sum(o.write_bytes) AS wb,
++             sum(o.extend_bytes) AS eb, sum(o.hits) AS h, sum(o.fsyncs) AS f
++        FROM pgvigil.iostats_rate(p_instance_id, p_from, p_to, p_lookback) o
++       WHERE o.interval_secs > 0
++       GROUP BY o.snapshot_at
++      HAVING NOT bool_or(o.reset)              -- an IO row reset in this interval: no point, not a dip
++    )
++    SELECT r.snapshot_at, v.metric, v.value
++      FROM r
++      CROSS JOIN LATERAL (VALUES
++        ('read_bytes_s', (r.rb / r.secs)::double precision), ('write_bytes_s', (r.wb / r.secs)::double precision),
++        ('extend_bytes_s', (r.eb / r.secs)::double precision), ('hits_s', (r.h / r.secs)::double precision),
++        ('fsyncs_s', (r.f / r.secs)::double precision)) AS v(metric, value)
++     WHERE v.value IS NOT NULL;
++  ELSIF p_family = 'host' THEN
++    RETURN QUERY
++    WITH h AS (                                 -- one row per read (two sources of one instance: the higher figure)
++      SELECT x.snapshot_at, max(x.cpu_pct) AS cpu_pct, max(x.cpu_iowait_pct) AS cpu_iowait_pct,
++             max(100.0 * x.mem_used / nullif(x.mem_total, 0)) AS mem_used_pct, min(x.mem_free) AS mem_free,
++             max(x.swap_used) AS swap_used, max(x.load1) AS load1
++        FROM pgvigil.host_sample x
++       WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
++       GROUP BY x.snapshot_at
++    )
++    SELECT h.snapshot_at, v.metric, v.value
++      FROM h
++      CROSS JOIN LATERAL (VALUES
++        ('cpu_pct', h.cpu_pct::double precision), ('cpu_iowait_pct', h.cpu_iowait_pct::double precision),
++        ('mem_used_pct', h.mem_used_pct::double precision), ('mem_free', h.mem_free::double precision),
++        ('swap_used', h.swap_used::double precision), ('load1', h.load1::double precision)) AS v(metric, value)
++     WHERE v.value IS NOT NULL;
++  ELSIF p_family = 'requests' THEN
++    RETURN QUERY
++    SELECT s.snapshot_at, v.metric, v.value
++      FROM pgvigil.mssql_requests_summary s
++      CROSS JOIN LATERAL (VALUES
++        ('sessions', s.sessions::double precision), ('requests', s.requests::double precision),
++        ('blocked', s.blocked::double precision), ('heads', s.heads::double precision),
++        ('longest_wait_ms', s.longest_wait_ms::double precision)) AS v(metric, value)
++     WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from AND s.snapshot_at <= p_to AND v.value IS NOT NULL;
++  ELSIF p_family = 'cpu' THEN
++    RETURN QUERY
++    WITH c AS (                                 -- one row per record time
++      SELECT x.snapshot_at, max(x.sql_pct) AS sql_pct, max(x.other_pct) AS other_pct, max(100 - x.idle_pct) AS total_pct
++        FROM pgvigil.mssql_cpu_sample x
++       WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
++       GROUP BY x.snapshot_at
++    )
++    SELECT c.snapshot_at, v.metric, v.value
++      FROM c
++      CROSS JOIN LATERAL (VALUES
++        ('sql_pct', c.sql_pct::double precision), ('other_pct', c.other_pct::double precision),
++        ('total_pct', c.total_pct::double precision)) AS v(metric, value)
++     WHERE v.value IS NOT NULL;
++  ELSIF p_family = 'scheduler' THEN
++    RETURN QUERY
++    WITH c AS (
++      SELECT x.snapshot_at, max(x.batch_s) AS batch_s, max(x.transactions_s) AS transactions_s, max(x.compiles_s) AS compiles_s,
++             max(x.recompiles_s) AS recompiles_s, max(x.runnable_tasks) AS runnable_tasks, max(x.work_queue) AS work_queue,
++             max(x.pending_io) AS pending_io, max(x.active_workers) AS active_workers, max(x.current_workers) AS current_workers
++        FROM pgvigil.mssql_sched_sample x
++       WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
++       GROUP BY x.snapshot_at
++    )
++    SELECT c.snapshot_at, v.metric, v.value
++      FROM c
++      CROSS JOIN LATERAL (VALUES
++        ('batch_s', c.batch_s::double precision), ('transactions_s', c.transactions_s::double precision),
++        ('compiles_s', c.compiles_s::double precision), ('recompiles_s', c.recompiles_s::double precision),
++        ('runnable_tasks', c.runnable_tasks::double precision), ('work_queue', c.work_queue::double precision),
++        ('pending_io', c.pending_io::double precision), ('active_workers', c.active_workers::double precision),
++        ('current_workers', c.current_workers::double precision)) AS v(metric, value)
++     WHERE v.value IS NOT NULL;
++  ELSIF p_family = 'memory' THEN
++    RETURN QUERY
++    WITH c AS (
++      SELECT x.snapshot_at, max(x.ple) AS ple, max(x.grants_pending) AS grants_pending, max(x.grants_outstanding) AS grants_outstanding,
++             max(x.total_kb) AS total_kb, max(x.target_kb) AS target_kb, max(x.buffer_pool_kb) AS buffer_pool_kb,
++             max(x.plan_cache_kb) AS plan_cache_kb, max(x.stolen_kb) AS stolen_kb, min(x.available_kb) AS available_kb,
++             max(x.physical_kb) AS physical_kb
++        FROM pgvigil.mssql_memory_sample x
++       WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
++       GROUP BY x.snapshot_at
++    )
++    SELECT c.snapshot_at, v.metric, v.value
++      FROM c
++      CROSS JOIN LATERAL (VALUES
++        ('ple', c.ple::double precision), ('grants_pending', c.grants_pending::double precision),
++        ('grants_outstanding', c.grants_outstanding::double precision),
++        ('total_mb', (c.total_kb / 1024.0)::double precision), ('target_mb', (c.target_kb / 1024.0)::double precision),
++        ('buffer_pool_mb', (c.buffer_pool_kb / 1024.0)::double precision),
++        ('plan_cache_mb', (c.plan_cache_kb / 1024.0)::double precision), ('stolen_mb', (c.stolen_kb / 1024.0)::double precision),
++        ('available_mb', (c.available_kb / 1024.0)::double precision),
++        ('os_used_pct', (100.0 * (c.physical_kb - c.available_kb) / nullif(c.physical_kb, 0))::double precision)) AS v(metric, value)
++     WHERE v.value IS NOT NULL;
++  ELSIF p_family = 'counters' THEN
++    -- task 401 (0152): the SQL Server counters family
++    RETURN QUERY SELECT * FROM pgvigil.mssql_counter_points(p_instance_id, p_from, p_to, p_lookback, p_database);
++  ELSE
++    RAISE EXCEPTION 'metric_points: no metric family %', p_family USING ERRCODE = '22023';
++  END IF;
++END $$;
++
++CREATE OR REPLACE FUNCTION pgvigil.mssql_cpu_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)
++RETURNS TABLE (snapshot_at timestamptz, schedulers int, cpu_count int, runnable_tasks int, work_queue int, current_workers int,
++               active_workers int, max_workers int, offline_cpus int, nodes_total int, nodes_online int,
++               level text, verdict text, pm_level text, pm_recommendation text,
++               rg_active_requests bigint, rg_queued_requests bigint, rg_blocked_tasks bigint, rg_parallel_threads bigint,
++               requests_at timestamptz, requests bigint, runnable_requests bigint, runnable_pct numeric,
++               threadpool_at timestamptz, threadpool int, threadpool_longest_ms bigint, cpu_info jsonb)
++LANGUAGE sql STABLE AS $$
++  WITH s AS (SELECT * FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
++              ORDER BY x.snapshot_at DESC LIMIT 1),
++  -- task 401: the counters are mssql_counters' own read now (not mssql_cpu's): the instance counter read nearest the
++  -- scheduler read within 30 s, as rq and tp take theirs
++  cr AS (SELECT c.snapshot_at FROM s, pgvigil.mssql_counter_read c
++          WHERE c.instance_id = p_instance_id AND c.scope = 'instance'
++            AND c.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
++          ORDER BY abs(extract(epoch FROM c.snapshot_at - s.snapshot_at)) LIMIT 1),
++  wg AS (SELECT sum(c.value) FILTER (WHERE k.counter = 'Active requests') AS act, sum(c.value) FILTER (WHERE k.counter = 'Queued requests') AS q,
++                sum(c.value) FILTER (WHERE k.counter = 'Blocked tasks') AS blk, sum(c.value) FILTER (WHERE k.counter = 'Active parallel threads') AS par
++           FROM cr JOIN pgvigil.mssql_counter_sample c ON c.instance_id = p_instance_id AND c.snapshot_at = cr.snapshot_at
++           JOIN pgvigil.mssql_counter_series k ON k.series_id = c.series_id AND k.object = 'Workload Group Stats'),
++  rq AS (SELECT q.snapshot_at FROM s, pgvigil.mssql_requests_summary q
++          WHERE q.instance_id = p_instance_id AND q.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
++          ORDER BY abs(extract(epoch FROM q.snapshot_at - s.snapshot_at)) LIMIT 1),
++  rc AS (SELECT count(*) AS n, count(*) FILTER (WHERE r.status = 'runnable') AS runnable
++           FROM rq JOIN pgvigil.mssql_requests r ON r.instance_id = p_instance_id AND r.snapshot_at = rq.snapshot_at
++          WHERE r.session_id > 50 AND coalesce(r.status, '') NOT IN ('background', 'sleeping')),
++  tp AS (SELECT w.snapshot_at, w.threadpool, w.threadpool_longest_ms FROM s, pgvigil.mssql_waiting_summary w
++          WHERE w.instance_id = p_instance_id AND w.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
++          ORDER BY abs(extract(epoch FROM w.snapshot_at - s.snapshot_at)) LIMIT 1)
++  SELECT s.snapshot_at, s.schedulers, s.cpu_count, s.runnable_tasks, s.work_queue, s.current_workers, s.active_workers, s.max_workers,
++         s.offline_cpus, s.nodes_total, s.nodes_online, l.level, l.verdict, l.pm_level, l.pm_recommendation,
++         wg.act, wg.q, wg.blk, wg.par,
++         rq.snapshot_at, rc.n, rc.runnable, CASE WHEN rc.n > 0 THEN round(100.0 * rc.runnable / rc.n, 2) END,
++         tp.snapshot_at, tp.threadpool, tp.threadpool_longest_ms,
++         (SELECT i.info FROM pgvigil.mssql_cpu_info i WHERE i.instance_id = p_instance_id)
++    FROM s
++    LEFT JOIN wg ON true LEFT JOIN rq ON true LEFT JOIN rc ON rq.snapshot_at IS NOT NULL LEFT JOIN tp ON true
++    CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
++                                                  s.cpu_count, wg.q::int) l
++$$;
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 5def140..048e2bc 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -318,6 +318,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+ 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
+ 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
++	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
++	api.HandleFunc("POST /api/mssql/counteradmin", s.MSSQLCounterAdminWrite)
+ 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
+ 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
+ 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)
+diff --git i/web/src/main.ts w/web/src/main.ts
+index 7fe364d..06f6420 100644
+--- i/web/src/main.ts
++++ w/web/src/main.ts
+@@ -89,6 +89,7 @@ import { collectionDatesView } from './collectiondates';
+ import { collectorView } from './collector';
+ import { aboutLink, aboutView } from './about';
+ import { adminInstancesView } from './admin_instances';
++import { adminCountersView } from './metrics';
+ import { reportPages } from './reports';
+ import { customReportsView } from './customreports';
+ import { communityView } from './community';
+@@ -142,7 +143,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
+ };
+ const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
+ const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
+-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages, admin: adminView };
++const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_counters: adminCountersView, ...reportPages, admin: adminView };
+ const instancePages: Record<string, Render> = {
+   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
+   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
+diff --git i/web/src/router.ts w/web/src/router.ts
+index 2e453d1..2c3a601 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
+   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
+ }
+ 
+-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin: 'Overview' };
++export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_counters: 'Counters (admin)', admin: 'Overview' };
+ export const instanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
+   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+@@ -82,7 +82,7 @@ export const rootGroups: TabGroup[] = [
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
+   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+-  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin'] },
++  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_counters', 'admin'] },
+   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
+   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
+ ];

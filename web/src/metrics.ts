@@ -7,12 +7,12 @@
 // evaluation read the same samples (pgvigil.metric_points). Data from /api/metrics and /api/metrics/series. The page
 // keeps the old Counters address: ?kind= is the family (db, server, io and sessions still open theirs; none = all) and
 // ?mdb= one database's series of the Database family. The route and the tab are the shell's.
-import { get, Row, rowsOf, Table } from './api';
+import { get, post, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { conditionWords, fmtMetric, ruleButton, ruleDialog, RulesDoor, scopeWords, stateBadge, unitWord } from './alert_rules';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
-import { Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 
 interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null }
 interface SeriesData { step_secs: number; series: Table | null; metric: Table | null }
@@ -163,69 +163,241 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
 const pmDefaultCounters = ['Batch Requests/sec', 'SQL Compilations/sec', 'SQL Re-Compilations/sec', 'Query optimizations/sec', 'Network IO waits'];
 const maxCharted = 10;
 
-// mssqlCounters (task 177 D14): a SQL Server instance's performance counters in PerformanceMonitor's perfmon panel's
-// shape: the newest read as a grid (sp_PressureDetector's and PerformanceMonitor's counter list; instance counters
+// what a series' figure is, by its kind (0152: the arithmetic follows the type SQL Server gives the counter)
+const kindWords: Record<string, string> = {
+  rate: 'per second', count: 'change per read', fraction: '% of its base', average: 'average per event over the read',
+  gauge: 'value as it stands', unpaired: 'as read (its base was not in the read)',
+};
+
+// the figure of a row in words: a fraction in %, the rest as numbers; a rate before its second read says so
+function figureText(r: Row): string {
+  const k = String(r.kind ?? 'gauge');
+  if (r.figure == null) {
+    if (k === 'rate' || k === 'count') return 'no rate yet';
+    if (k === 'average') return r.dbase === 0 ? 'no event in the read' : 'no average yet';
+    if (k === 'unpaired') return fmtNum(r.value);
+    return '';
+  }
+  return k === 'fraction' ? fmtNum(Number(r.figure).toFixed(2)) + ' %' : fmtNum(r.figure);
+}
+
+// mssqlCounters (task 177 D14, task 401 B3): a SQL Server instance's performance counters in PerformanceMonitor's
+// perfmon panel's shape: the newest read as a grid (the instance's counter list: Admin > Counters; instance counters
 // every minute, per-database ones every 5 minutes) and a chart of up to ten series picked in it, one series per
-// counter and instance (PerformanceMonitor picks by counter name). A cumulative counter is its rate per second over the
-// interval and its total since the counter started; a gauge is its value. Data from /api/mssql/counters.
+// counter and instance. Each row's figure follows its kind: a rate per second, a count's change per read, a fraction
+// of its base in %, an average over its base between two reads, a gauge as it stands. Then the batch response
+// histogram (Batch Resp Statistics) over the range and the listed counters the newest read did not have. Data from
+// /api/mssql/counters and /api/mssql/counteradmin.
 async function mssqlCounters(ctx: Ctx): Promise<HTMLElement> {
   const box = el('div', { class: 'mssql-counters' }, el('h3', {}, 'Performance counters (sys.dm_os_performance_counters)'));
   const w = window_(ctx);
   let rows: Row[];
   try { rows = rowsOf((await get<Record<'now', Table | null>>('mssql/counters', { instance: ctx.instance, ...w, part: 'now' })).now); } catch (e) { box.append(errorBox(e)); return box; }
+  box.append(el('p', { class: 'meta' }, 'The counters read are the instance\'s list: ',
+    el('a', { href: href(ctx, { tab: 'admin_counters', instance: undefined }) }, 'Admin > Counters'), ' adds or removes one for the fleet, a tag or this instance.'));
   if (!rows.length) {
-    box.append(el('p', { class: 'empty' }, 'No performance counter read in this range: mssql_cpu reads the instance counters every minute, mssql_activity the per-database ones every 5 minutes.'));
-    return box;
+    box.append(el('p', { class: 'empty' }, 'No performance counter read in this range: mssql_counters reads the instance counters every minute, mssql_counters_db the per-database ones every 5 minutes.'));
+  } else {
+    const key = (r: Row) => String(r.series_id);
+    const name = (r: Row) => `${String(r.counter)}${r.inst && r.inst !== '_Total' ? ` [${String(r.inst)}]` : ''}`;
+    const picked = new Set<string>();
+    for (const c of pmDefaultCounters) {
+      const hit = rows.find(r => r.scope === 'instance' && r.counter === c && (r.inst === '_Total' || !rows.some(x => x.counter === c && x.inst === '_Total')));
+      if (hit && picked.size < maxCharted) picked.add(key(hit));
+    }
+    const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+    const chartBox = el('div', { class: 'charts' });
+    const draw = async () => {
+      const ids = [...picked];
+      said.textContent = `${ids.length} of at most ${maxCharted} series charted.`;
+      if (!ids.length) { chartBox.replaceChildren(el('p', { class: 'meta' }, 'Check at least one counter to chart it.')); return; }
+      try {
+        const s = rowsOf((await get<Record<'series', Table | null>>('mssql/counters', { instance: ctx.instance, ...w, part: 'series', series: ids.join(',') })).series);
+        const at = new Map<string, Row>();
+        for (const p of s) {
+          const k = String(p.snapshot_at);
+          const row = at.get(k) ?? { snapshot_at: p.snapshot_at };
+          row['s' + String(p.series_id)] = p.value;
+          at.set(k, row);
+        }
+        const byId = new Map(rows.map(r => [key(r), r]));
+        chartBox.replaceChildren(lineChart('Performance counters (each series in its own figure: see the kind column)', [...at.values()],
+          ids.map(id => ({ key: 's' + id, label: byId.has(id) ? `${name(byId.get(id)!)} (${kindWords[String(byId.get(id)!.kind)] ?? ''})` : id })), v => fmtNum(v)));
+      } catch (e) { chartBox.replaceChildren(errorBox(e)); }
+    };
+    const boxes: HTMLInputElement[] = [];
+    const cap = () => { for (const b of boxes) b.disabled = !b.checked && picked.size >= maxCharted; };
+    const cols: Col[] = [
+      { key: '_pick', label: 'chart', fmt: (_v, r) => {
+        const b = el('input', { type: 'checkbox', 'aria-label': `Chart ${name(r)} (${String(r.object)})` }) as HTMLInputElement;
+        b.checked = picked.has(key(r));
+        b.addEventListener('change', () => { if (b.checked) picked.add(key(r)); else picked.delete(key(r)); cap(); void draw(); });
+        boxes.push(b);
+        return b;
+      } },
+      { key: 'object' }, { key: 'counter' }, { key: 'inst', label: 'instance' },
+      { key: 'figure', num: true, fmt: (_v, r) => figureText(r) },
+      { key: 'kind', fmt: v => el('span', { title: kindWords[String(v)] ?? '' }, String(v ?? '')) },
+      { key: 'value', label: 'raw value', num: true, fmt: v => fmtNum(v) },
+      { key: 'base', num: true, fmt: (v, r) => r.kind === 'fraction' || r.kind === 'average' ? fmtNum(v) : '' },
+      { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' },
+      { key: 'snapshot_at', label: 'newest read', fmt: fmtTime },
+    ];
+    box.append(el('p', { class: 'meta' }, `${rows.length} counter row(s) at the newest read. A rate, count or average that never counted since the server started has the figure 0 (the read names it, no row is stored for it); a gauge has its row at every read.`),
+      grid(rows, cols), said, chartBox);
+    cap();
+    await draw();
   }
-  const key = (r: Row) => String(r.series_id);
-  const name = (r: Row) => `${String(r.counter)}${r.inst && r.inst !== '_Total' ? ` [${String(r.inst)}]` : ''}`;
-  const picked = new Set<string>();
-  for (const c of pmDefaultCounters) {
-    const hit = rows.find(r => r.scope === 'instance' && r.counter === c && (r.inst === '_Total' || !rows.some(x => x.counter === c && x.inst === '_Total')));
-    if (hit && picked.size < maxCharted) picked.add(key(hit));
-  }
-  const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const chartBox = el('div', { class: 'charts' });
-  const draw = async () => {
-    const ids = [...picked];
-    said.textContent = `${ids.length} of at most ${maxCharted} series charted.`;
-    if (!ids.length) { chartBox.replaceChildren(el('p', { class: 'meta' }, 'Check at least one counter to chart it.')); return; }
-    try {
-      const s = rowsOf((await get<Record<'series', Table | null>>('mssql/counters', { instance: ctx.instance, ...w, part: 'series', series: ids.join(',') })).series);
-      const at = new Map<string, Row>();
-      for (const p of s) {
-        const k = String(p.snapshot_at);
-        const row = at.get(k) ?? { snapshot_at: p.snapshot_at };
-        row['s' + String(p.series_id)] = p.value;
-        at.set(k, row);
-      }
-      const byId = new Map(rows.map(r => [key(r), r]));
-      chartBox.replaceChildren(lineChart('Performance counters (per second for a cumulative counter, the value for a gauge)', [...at.values()],
-        ids.map(id => ({ key: 's' + id, label: byId.has(id) ? name(byId.get(id)!) : id })), v => fmtNum(v)));
-    } catch (e) { chartBox.replaceChildren(errorBox(e)); }
-  };
-  const boxes: HTMLInputElement[] = [];
-  const cap = () => { for (const b of boxes) b.disabled = !b.checked && picked.size >= maxCharted; };
-  const cols: Col[] = [
-    { key: '_pick', label: 'chart', fmt: (_v, r) => {
-      const b = el('input', { type: 'checkbox', 'aria-label': `Chart ${name(r)} (${String(r.object)})` }) as HTMLInputElement;
-      b.checked = picked.has(key(r));
-      b.addEventListener('change', () => { if (b.checked) picked.add(key(r)); else picked.delete(key(r)); cap(); void draw(); });
-      boxes.push(b);
-      return b;
-    } },
-    { key: 'object' }, { key: 'counter' }, { key: 'inst', label: 'instance' },
-    { key: 'rate', label: 'per second', num: true, fmt: (v, r) => r.cumulative ? (v == null ? 'no rate yet' : fmtNum(v)) : '' },
-    { key: 'value', label: 'total since the counter started', num: true, fmt: (v, r) => r.cumulative ? fmtNum(v) : '' },
-    { key: '_level', label: 'value', num: true, fmt: (_v, r) => r.cumulative ? '' : fmtNum(r.value) },
-    { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' },
-    { key: 'snapshot_at', label: 'newest read', fmt: fmtTime },
-  ];
-  box.append(el('p', { class: 'meta' }, `${rows.length} counter row(s) at the newest read (sp_PressureDetector's and PerformanceMonitor's list). A cumulative counter that never counted since the server started has no row; a gauge has its row at every read, 0 included.`),
-    grid(rows, cols), said, chartBox);
-  cap();
-  await draw();
+  box.append(await counterHistogram(ctx), await counterAbsent(ctx));
   return box;
+}
+
+// counterHistogram: the Batch Resp Statistics buckets over the range (T41): how many batches ended in each elapsed-time
+// bucket and how many used that much CPU, the changes of the cumulative buckets summed over the range's reads; each
+// row's bar is its share of the range's batches, the number beside it
+async function counterHistogram(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('div', {}, el('h3', {}, `Batch response times (Batch Resp Statistics, ${rangeLabel(ctx)})`));
+  let rows: Row[];
+  try { rows = rowsOf((await get<Record<'histogram', Table | null>>('mssql/counteradmin', { instance: ctx.instance, ...window_(ctx), part: 'histogram' })).histogram); } catch (e) { sec.append(errorBox(e)); return sec; }
+  const total = (k: string) => rows.reduce((a, r) => a + Number(r[k] ?? 0), 0);
+  const te = total('elapsed_batches'), tc = total('cpu_batches');
+  if (!rows.length || !rows.some(r => Number(r.reads) > 0)) {
+    sec.append(el('p', { class: 'empty' }, 'No two reads of Batch Resp Statistics in this range: the histogram is the change between reads (the server counts since it started).'));
+    return sec;
+  }
+  const bar = (n: unknown, t: number) => {
+    const pct = t > 0 ? 100 * Number(n ?? 0) / t : 0;
+    return el('span', { style: 'display:inline-flex;align-items:center;gap:.4rem' },
+      el('span', { 'aria-hidden': 'true', style: `display:inline-block;height:.7rem;width:${Math.max(0, Math.min(100, pct)) * 1.2}px;background:var(--accent, currentColor)` }),
+      `${fmtNum(n)} (${pct.toFixed(1)} %)`);
+  };
+  const label = (r: Row) => r.hi_ms == null ? `${fmtNum(r.lo_ms)} ms or more` : `${fmtNum(r.lo_ms)} to ${fmtNum(r.hi_ms)} ms`;
+  sec.append(el('p', { class: 'meta' }, `${fmtNum(te)} batch(es) ended in the range by elapsed time, ${fmtNum(tc)} by CPU time.`),
+    grid(rows, [
+      { key: 'bucket', label: 'bucket', fmt: (_v, r) => label(r) },
+      { key: 'elapsed_batches', label: 'batches by elapsed time', fmt: v => bar(v, te) },
+      { key: 'elapsed_total_ms', label: 'their elapsed ms', num: true, fmt: v => fmtNum(v) },
+      { key: 'cpu_batches', label: 'batches by CPU time', fmt: v => bar(v, tc) },
+      { key: 'cpu_total_ms', label: 'their CPU ms', num: true, fmt: v => fmtNum(v) },
+    ]));
+  return sec;
+}
+
+// counterAbsent: the instance's listed counters its newest read did not have, and why (a version or edition without
+// it, listed after the read, the catalogue not read yet)
+async function counterAbsent(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('div', {}, el('h3', {}, 'Listed but not read'));
+  try {
+    const rows = rowsOf((await get<Record<'absent', Table | null>>('mssql/counteradmin', { instance: ctx.instance, part: 'absent' })).absent);
+    sec.append(rows.length
+      ? grid(rows, [{ key: 'object' }, { key: 'counter' }, { key: 'inst', label: 'instance', fmt: v => String(v || 'every instance') }, { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' }, { key: 'why' }])
+      : el('p', { class: 'meta' }, 'Every listed counter was in the newest read.'));
+  } catch (e) { sec.append(errorBox(e)); }
+  return sec;
+}
+
+// adminCountersView (Admin > Counters, task 401): the SQL Server counter list. Admin's rows (add or remove a counter
+// for the fleet, a tag or one instance; the narrowest scope wins, and at one scope Admin's row wins over
+// pgvigil.yaml's line), the defaults with what reads each, one instance's list with where each word comes from, the
+// counters its server has, and the page's log. A counter a page or a rule reads cannot be removed: the store refuses
+// it and says what reads it. Writes ride the UI login and the actions door's audit login; off, every control says why.
+export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('section', {}, el('h2', {}, 'Counters (SQL Server)'));
+  type AdminData = { writable?: boolean; reason?: string; config: Table | null; defaults: Table | null; log: Table | null; catalog: Table | null };
+  let d: AdminData;
+  try { d = await get<AdminData>('mssql/counteradmin'); } catch (e) { sec.append(errorBox(e)); return sec; }
+  const off = d.writable ? null : (d.reason ?? 'not writable here');
+  sec.append(el('p', { class: 'meta' }, 'Each SQL Server instance reads the counters of its list: the defaults below, then pgvigil.yaml\'s mssql_counters lines (the root\'s, the instance\'s), then the rows here. For each counter the narrowest scope wins (an instance over a tag over the fleet); at one scope a row here wins over pgvigil.yaml. A change is read at the instance\'s next read.'),
+    ...(off ? [el('p', { class: 'meta' }, `Edits are off here: ${off}`)] : []));
+  const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const send = async (body: Record<string, unknown>) => {
+    try {
+      const r = await post<{ outcome: string; detail: string }>('mssql/counteradmin', body);
+      said.textContent = `${r.outcome}: ${r.detail}`;
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    } catch (e) { said.textContent = 'Not written: ' + (e instanceof Error ? e.message : String(e)); }
+  };
+
+  // the add form
+  const cat = rowsOf(d.catalog);
+  const objects = [...new Set(cat.map(r => String(r.object)))].sort();
+  const list = el('datalist', { id: 'ctr-objects' }, ...objects.map(o => el('option', { value: o })));
+  const clist = el('datalist', { id: 'ctr-counters' });
+  const scope = el('select', { 'aria-label': 'Scope' }, el('option', { value: 'fleet' }, 'the fleet'), el('option', { value: 'tag' }, 'a tag'), el('option', { value: 'instance' }, 'one instance')) as HTMLSelectElement;
+  const tag = el('input', { type: 'text', 'aria-label': 'Tag', placeholder: 'tag (key:value or value)', maxlength: '200' }) as HTMLInputElement;
+  const inst = el('select', { 'aria-label': 'Instance' }) as HTMLSelectElement;
+  const object = el('input', { type: 'text', list: 'ctr-objects', 'aria-label': 'Object', placeholder: 'object, e.g. General Statistics', maxlength: '128' }) as HTMLInputElement;
+  const counter = el('input', { type: 'text', list: 'ctr-counters', 'aria-label': 'Counter', placeholder: 'counter, e.g. Logins/sec', maxlength: '128' }) as HTMLInputElement;
+  const cinst = el('input', { type: 'text', 'aria-label': 'Counter instance (empty = every instance)', placeholder: 'instance (empty = every one)', maxlength: '128' }) as HTMLInputElement;
+  const action = el('select', { 'aria-label': 'Action' }, el('option', { value: 'add' }, 'add'), el('option', { value: 'remove' }, 'remove')) as HTMLSelectElement;
+  const kind = el('select', { 'aria-label': 'Kind' }, el('option', { value: '' }, 'kind from its type'), el('option', { value: 'count' }, 'count since the start (65792)'), el('option', { value: 'rate' }, 'rate'), el('option', { value: 'gauge' }, 'gauge')) as HTMLSelectElement;
+  const note = el('input', { type: 'text', 'aria-label': 'Note', placeholder: 'note (optional)', maxlength: '500' }) as HTMLInputElement;
+  object.addEventListener('change', () => {
+    clist.replaceChildren(...cat.filter(r => r.object === object.value).map(r => el('option', { value: String(r.counter) })));
+  });
+  const showScope = () => { tag.hidden = scope.value !== 'tag'; inst.hidden = scope.value !== 'instance'; };
+  scope.addEventListener('change', showScope);
+  try {
+    const all = rowsOf(await get<Table>('instances')).filter(r => r.engine === 'sqlserver');
+    inst.replaceChildren(...all.map(r => el('option', { value: String(r.instance_id) }, String(r.name))));
+  } catch { /* the instance list is optional for fleet and tag rows */ }
+  showScope();
+  const save = el('button', { type: 'button' }, 'Save row') as HTMLButtonElement;
+  save.addEventListener('click', () => {
+    if (!object.value.trim() || !counter.value.trim()) { said.textContent = 'Name the object and the counter.'; return; }
+    void send({ op: 'add', scope: scope.value, tag: tag.value, instance_id: Number(inst.value || 0), object: object.value.trim(), counter: counter.value.trim(),
+      inst: cinst.value.trim(), action: action.value, kind: kind.value, note: note.value.trim() });
+  });
+  const saveNote = offControl(save, off);
+  sec.append(el('h3', {}, 'Add or remove a counter'), list, clist,
+    el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, object, counter, cinst, action, kind, note, save, saveNote), said);
+
+  // Admin's live rows, each with its End
+  const endCell = (_v: unknown, r: Row) => {
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})` }, 'End') as HTMLButtonElement;
+    b.addEventListener('click', () => { void send({ op: 'end', config_id: Number(r.config_id) }); });
+    return el('span', {}, b, offControl(b, off));
+  };
+  const where = (r: Row) => r.scope === 'tag' ? `tag ${String(r.tag)}` : r.scope === 'instance' ? String(r.instance_name) : 'the fleet';
+  sec.append(el('h3', {}, 'Rows made here'), grid(rowsOf(d.config), [
+    { key: 'scope', label: 'for', fmt: (_v, r) => where(r) }, { key: 'action' }, { key: 'object' }, { key: 'counter' },
+    { key: 'inst', label: 'instance', fmt: v => String(v || 'every one') }, { key: 'kind', fmt: v => String(v || 'from its type') },
+    { key: 'note' }, { key: 'created_by', label: 'by' }, { key: 'created_at', label: 'at', fmt: fmtTime }, { key: '_end', label: 'end', fmt: endCell },
+  ], 'No row: every instance reads the defaults and pgvigil.yaml\'s lines.'));
+
+  // one instance's list, where each word comes from
+  const pick = el('select', { 'aria-label': 'Instance to show' }, el('option', { value: '' }, 'pick an instance'), ...[...inst.options].map(o => el('option', { value: o.value }, o.text))) as HTMLSelectElement;
+  const one = el('div', {});
+  pick.addEventListener('change', async () => {
+    if (!pick.value) { one.replaceChildren(); return; }
+    one.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Reading...'));
+    try {
+      const x = await get<{ layers: Table | null; catalog: Table | null; absent: Table | null }>('mssql/counteradmin', { instance: pick.value, part: 'layers' });
+      const lr = rowsOf(x.layers);
+      const yr = lr.find(r => r.yaml_read_at != null)?.yaml_read_at;
+      one.replaceChildren(
+        el('p', { class: 'meta' }, yr ? `pgvigil.yaml's lines as its collector last handed them over at ${fmtTime(yr)}.` : 'Its collector has not run since this version: pgvigil.yaml\'s lines show after its first run.'),
+        grid(lr, [
+          { key: 'wins', label: 'in force', fmt: v => v ? 'yes' : 'no (a narrower word wins)' }, { key: 'object' }, { key: 'counter' },
+          { key: 'inst', label: 'instance', fmt: v => String(v || 'every one') }, { key: 'action' }, { key: 'source', label: 'from' },
+          { key: 'used_by', label: 'read by' }, { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' },
+        ]));
+    } catch (e) { one.replaceChildren(errorBox(e)); }
+  });
+  sec.append(el('h3', {}, 'One instance\'s list'), el('label', {}, 'Instance ', pick), one);
+
+  sec.append(el('h3', {}, 'The defaults'), grid(rowsOf(d.defaults), [
+    { key: 'object' }, { key: 'counter' }, { key: 'kind', fmt: v => String(v || 'from its type') }, { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' },
+    { key: 'used_by', label: 'read by (never removed)' }, { key: 'source', label: 'rows' },
+  ]));
+  sec.append(el('h3', {}, 'Counters the servers have'), el('p', { class: 'meta' }, 'Read once a day by mssql_counter_catalog on each SQL Server instance.'),
+    grid(cat, [{ key: 'object' }, { key: 'counter' }, { key: 'cntr_type', label: 'type', num: true }, { key: 'servers', num: true }, { key: 'read_at', label: 'newest read', fmt: fmtTime }],
+      'No catalogue read yet.'));
+  sec.append(el('h3', {}, 'Log'), grid(rowsOf(d.log), [
+    { key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'op' }, { key: 'action' }, { key: 'object' }, { key: 'counter' },
+    { key: 'scope' }, { key: 'outcome' }, { key: 'detail' },
+  ], 'No attempt yet.'));
+  return sec;
 }
 
 // thresholdCell: the row's write links - a new threshold where none is in force; Edit for the rule in force, and

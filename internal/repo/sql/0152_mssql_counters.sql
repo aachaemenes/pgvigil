@@ -426,6 +426,36 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
     FROM w WHERE w.action = 'add'
 $$;
 
+-- mssql_counter_yaml: pgvigil.yaml's mssql_counters lines as the runner last handed them over for an instance (the
+-- Admin page shows them beside Admin's rows: the serve process does not read the collector's file)
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_counter_yaml (
+  instance_id  int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  lines        jsonb NOT NULL,
+  read_at      timestamptz NOT NULL
+);
+
+-- import_mssql_counter_list: the runner's door to the list (the collector login holds no SELECT: apply_roles makes every
+-- import_* function SECURITY DEFINER and grants the collector EXECUTE on it). It keeps the yaml lines it was handed
+-- (mssql_counter_yaml) and answers the list.
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_counter_list(p_instance_id int, p_yaml jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_yaml jsonb := CASE WHEN jsonb_typeof(p_yaml) = 'array' THEN p_yaml ELSE '[]'::jsonb END;
+BEGIN
+  IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
+    RAISE EXCEPTION 'import_mssql_counter_list: instance % is not a SQL Server instance', p_instance_id;
+  END IF;
+  INSERT INTO pgvigil.mssql_counter_yaml AS y (instance_id, lines, read_at) VALUES (p_instance_id, v_yaml, now())
+  ON CONFLICT (instance_id) DO UPDATE SET lines = EXCLUDED.lines, read_at = EXCLUDED.read_at
+   WHERE y.lines IS DISTINCT FROM EXCLUDED.lines OR y.read_at < now() - interval '1 hour';
+  RETURN pgvigil.mssql_counter_list(p_instance_id, v_yaml);
+END $$;
+
+-- the yaml lines the runner last used for an instance ('[]' before its first run)
+CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_yaml_of(p_instance_id int) RETURNS jsonb LANGUAGE sql STABLE AS $$
+  SELECT coalesce((SELECT y.lines FROM pgvigil.mssql_counter_yaml y WHERE y.instance_id = p_instance_id), '[]'::jsonb)
+$$;
+
 -- ---- the catalogue -----------------------------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_counter_catalog (
@@ -626,3 +656,316 @@ LANGUAGE sql STABLE AS $$
     FROM r CROSS JOIN LATERAL unnest(coalesce(r.zero_series, '{}')) z(id)
     JOIN pgvigil.mssql_counter_series k ON k.series_id = z.id
 $$;
+
+-- ---- the metrics family 'counters' ----------------------------------------------------------------------------------
+
+-- mssql_counter_metrics: the metrics of the family in metric_catalog's columns (the join file adds them to the
+-- catalogue). A ratio's label says its floor: under it the point is 0 (an idle server's own reads are not a ratio).
+CREATE OR REPLACE VIEW pgvigil.mssql_counter_metrics AS
+SELECT v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.unit, v.per_database, v.fresh_secs, v.sort
+  FROM (VALUES
+    ('sqlserver', 'counters', 'Counters', 50, 'logins_s',                   'logins/sec',                                      'per_s', false,  600,  1),
+    ('sqlserver', 'counters', 'Counters', 50, 'logouts_s',                  'logouts/sec',                                     'per_s', false,  600,  2),
+    ('sqlserver', 'counters', 'Counters', 50, 'connection_resets_s',        'connection resets/sec',                           'per_s', false,  600,  3),
+    ('sqlserver', 'counters', 'Counters', 50, 'user_connections',           'user connections',                                'count', false,  600,  4),
+    ('sqlserver', 'counters', 'Counters', 50, 'errors_user_s',              'user errors/sec',                                 'per_s', false,  600,  5),
+    ('sqlserver', 'counters', 'Counters', 50, 'errors_kill_s',              'kill connection errors/sec',                      'per_s', false,  600,  6),
+    ('sqlserver', 'counters', 'Counters', 50, 'errors_offline_s',           'DB offline errors/sec',                           'per_s', false,  600,  7),
+    ('sqlserver', 'counters', 'Counters', 50, 'errors_info_s',              'info errors/sec',                                 'per_s', false,  600,  8),
+    ('sqlserver', 'counters', 'Counters', 50, 'errors_total_s',             'errors/sec (all)',                                'per_s', false,  600,  9),
+    ('sqlserver', 'counters', 'Counters', 50, 'compiles_per_100_batches',   'compilations per 100 batch requests (0 under 1 batch/s)', 'pct', false, 600, 10),
+    ('sqlserver', 'counters', 'Counters', 50, 'recompiles_per_100_compiles','re-compilations per 100 compilations (0 under 1 compilation/s)', 'pct', false, 600, 11),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_splits_per_100_batches','page splits per 100 batch requests (0 under 1 batch/s)', 'count', false, 600, 12),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_lookups_per_batch',     'page lookups per batch request (0 under 1 batch/s)', 'count', false, 600, 13),
+    ('sqlserver', 'counters', 'Counters', 50, 'full_scans_per_search',      'full scans per index search (0 under 10 searches/s)', 'count', false, 600, 14),
+    ('sqlserver', 'counters', 'Counters', 50, 'readahead_pct',              'read-ahead pages per 100 page reads (0 under 1 read/s)', 'pct', false, 600, 15),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_reads_s',               'page reads/sec (volume)',                         'per_s', false,  600, 16),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_writes_s',              'page writes/sec (volume)',                        'per_s', false,  600, 17),
+    ('sqlserver', 'counters', 'Counters', 50, 'lazy_writes_s',              'lazy writes/sec',                                 'per_s', false,  600, 18),
+    ('sqlserver', 'counters', 'Counters', 50, 'free_list_stalls_s',         'free list stalls/sec',                            'per_s', false,  600, 19),
+    ('sqlserver', 'counters', 'Counters', 50, 'lock_requests_s',            'lock requests/sec (volume)',                      'per_s', false,  600, 20),
+    ('sqlserver', 'counters', 'Counters', 50, 'lock_waits_s',               'lock waits/sec',                                  'per_s', false,  600, 21),
+    ('sqlserver', 'counters', 'Counters', 50, 'lock_timeouts_gt0_s',        'lock timeouts (timeout > 0)/sec',                 'per_s', false,  600, 22),
+    ('sqlserver', 'counters', 'Counters', 50, 'avg_lock_wait_ms',           'average lock wait (0 with no wait in the read)',  'ms',    false,  600, 23),
+    ('sqlserver', 'counters', 'Counters', 50, 'latch_waits_s',              'latch waits/sec',                                 'per_s', false,  600, 24),
+    ('sqlserver', 'counters', 'Counters', 50, 'avg_latch_wait_ms',          'average latch wait (0 with no wait in the read)', 'ms',    false,  600, 25),
+    ('sqlserver', 'counters', 'Counters', 50, 'buffer_cache_hit_pct',       'buffer cache hit ratio',                          'pct',   false,  600, 26),
+    ('sqlserver', 'counters', 'Counters', 50, 'ple_per_4gb',                'page life expectancy per 4 GB of buffer pool (the lowest memory node)', 'secs', false, 600, 27),
+    ('sqlserver', 'counters', 'Counters', 50, 'misguided_plans_s',          'misguided plan executions/sec',                   'per_s', false,  600, 28),
+    ('sqlserver', 'counters', 'Counters', 50, 'update_conflict_pct',        'snapshot update conflicts per 100 snapshot updates', 'pct', false,  600, 29),
+    ('sqlserver', 'counters', 'Counters', 50, 'memory_commit_pct',          'memory in use of the commit limit',               'pct',   false,  600, 30),
+    ('sqlserver', 'counters', 'Counters', 50, 'failed_to_create_worker',    'schedulers that failed to create a worker',       'count', false,  600, 31),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_active_jobs',          'SQL Agent jobs running',                          'count', false,  900, 32),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_started',         'SQL Agent jobs started per read',                 'count', false,  900, 33),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_failed',          'SQL Agent jobs failed or cancelled per read',     'count', false,  900, 34),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_succeeded',       'SQL Agent jobs succeeded per read',               'count', false,  900, 35),
+    ('sqlserver', 'counters', 'Counters', 50, 'write_transactions_s',       'write transactions/sec',                          'per_s', true,  1800, 36),
+    ('sqlserver', 'counters', 'Counters', 50, 'log_flush_waits_s',          'log flush waits/sec',                             'per_s', true,  1800, 37),
+    ('sqlserver', 'counters', 'Counters', 50, 'log_flush_wait_ms_s',        'log flush wait time per second',                  'ms',    true,  1800, 38),
+    ('sqlserver', 'counters', 'Counters', 50, 'percent_log_used',           'log used',                                        'pct',   true,  1800, 39),
+    ('sqlserver', 'counters', 'Counters', 50, 'active_transactions',        'active transactions',                             'count', true,  1800, 40),
+    ('sqlserver', 'counters', 'Counters', 50, 'log_growths',                'log growths per read',                            'count', true,  1800, 41)
+  ) AS v(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort);
+
+-- mssql_counter_points: the family's samples in (p_from, p_to] as (at, metric, value), for metric_points. p_database
+-- names one database's series of the per-database metrics; NULL = the server's _Total. A rate read at raw 0 is 0 (the
+-- read's zero_series); an average with no event in the read is 0; a ratio under its floor is 0.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_points(p_instance_id int, p_from timestamptz, p_to timestamptz,
+                                                         p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
+RETURNS TABLE (at timestamptz, metric text, value double precision)
+LANGUAGE sql STABLE SET jit = off AS $$
+  WITH iv AS (SELECT * FROM pgvigil.mssql_counter_values(p_instance_id, p_from, p_to, 'instance')),
+  i AS (
+    SELECT v.snapshot_at,
+      max(v.rate) FILTER (WHERE v.object = 'General Statistics' AND v.counter = 'Logins/sec') AS logins,
+      max(v.rate) FILTER (WHERE v.object = 'General Statistics' AND v.counter = 'Logouts/sec') AS logouts,
+      max(v.rate) FILTER (WHERE v.object = 'General Statistics' AND v.counter = 'Connection Reset/sec') AS resets,
+      max(v.value) FILTER (WHERE v.object = 'General Statistics' AND v.counter = 'User Connections') AS user_conn,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Errors' AND v.inst = 'User Errors') AS err_user,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Errors' AND v.inst = 'Kill Connection Errors') AS err_kill,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Errors' AND v.inst = 'DB Offline Errors') AS err_offline,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Errors' AND v.inst = 'Info Errors') AS err_info,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Errors' AND v.inst = '_Total') AS err_total,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Statistics' AND v.counter = 'Batch Requests/sec') AS batch,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Statistics' AND v.counter = 'SQL Compilations/sec') AS compiles,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Statistics' AND v.counter = 'SQL Re-Compilations/sec') AS recompiles,
+      max(v.rate) FILTER (WHERE v.object = 'SQL Statistics' AND v.counter = 'Misguided plan executions/sec') AS misguided,
+      max(v.rate) FILTER (WHERE v.object = 'Access Methods' AND v.counter = 'Full Scans/sec') AS full_scans,
+      max(v.rate) FILTER (WHERE v.object = 'Access Methods' AND v.counter = 'Index Searches/sec') AS searches,
+      max(v.rate) FILTER (WHERE v.object = 'Access Methods' AND v.counter = 'Page Splits/sec') AS splits,
+      max(v.rate) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Page lookups/sec') AS lookups,
+      max(v.rate) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Page reads/sec') AS preads,
+      max(v.rate) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Page writes/sec') AS pwrites,
+      max(v.rate) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Readahead pages/sec') AS readahead,
+      max(v.rate) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Lazy writes/sec') AS lazy,
+      max(v.rate) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Free list stalls/sec') AS stalls,
+      max(v.value) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Buffer cache hit ratio') AS bchr_v,
+      max(v.base) FILTER (WHERE v.object = 'Buffer Manager' AND v.counter = 'Buffer cache hit ratio') AS bchr_b,
+      max(v.rate) FILTER (WHERE v.object = 'Locks' AND v.inst = '_Total' AND v.counter = 'Lock Requests/sec') AS lock_req,
+      max(v.rate) FILTER (WHERE v.object = 'Locks' AND v.inst = '_Total' AND v.counter = 'Lock Waits/sec') AS lock_waits,
+      max(v.rate) FILTER (WHERE v.object = 'Locks' AND v.inst = '_Total' AND v.counter = 'Lock Timeouts (timeout > 0)/sec') AS lock_to,
+      max(v.dvalue) FILTER (WHERE v.object = 'Locks' AND v.inst = '_Total' AND v.counter = 'Average Wait Time (ms)') AS lw_dv,
+      max(v.dbase) FILTER (WHERE v.object = 'Locks' AND v.inst = '_Total' AND v.counter = 'Average Wait Time (ms)') AS lw_db,
+      max(v.rate) FILTER (WHERE v.object = 'Latches' AND v.counter = 'Latch Waits/sec') AS latch_waits,
+      max(v.dvalue) FILTER (WHERE v.object = 'Latches' AND v.counter = 'Average Latch Wait Time (ms)') AS la_dv,
+      max(v.dbase) FILTER (WHERE v.object = 'Latches' AND v.counter = 'Average Latch Wait Time (ms)') AS la_db,
+      max(v.dvalue) FILTER (WHERE v.object = 'Transactions' AND v.counter = 'Update conflict ratio') AS uc_dv,
+      max(v.dbase) FILTER (WHERE v.object = 'Transactions' AND v.counter = 'Update conflict ratio') AS uc_db,
+      max(v.value) FILTER (WHERE v.object = 'sys.dm_os_process_memory' AND v.counter = 'physical_memory_in_use_kb') AS in_use_kb,
+      max(v.value) FILTER (WHERE v.object = 'sys.dm_os_process_memory' AND v.counter = 'available_commit_limit_kb') AS commit_kb,
+      max(v.value) FILTER (WHERE v.object = 'sys.dm_os_schedulers' AND v.counter = 'failed_to_create_worker') AS failed_worker
+      FROM iv v GROUP BY v.snapshot_at),
+  -- page life expectancy per 4 GB of each memory node's buffer pool (a node under 4 GB is judged as 4 GB): the lowest node
+  n AS (SELECT v.snapshot_at, v.inst, max(v.value) FILTER (WHERE v.counter = 'Page life expectancy') AS ple,
+               max(v.value) FILTER (WHERE v.counter = 'Database pages') AS pages
+          FROM iv v WHERE v.object = 'Buffer Node' GROUP BY v.snapshot_at, v.inst),
+  nn AS (SELECT n.snapshot_at, min(n.ple / greatest(1.0, coalesce(n.pages, 0) * 8.0 / 1048576 / 4)) AS ple4
+           FROM n WHERE n.ple IS NOT NULL GROUP BY n.snapshot_at),
+  d AS (
+    SELECT v.snapshot_at,
+      max(v.rate) FILTER (WHERE v.counter = 'Write Transactions/sec') AS wtx,
+      max(v.rate) FILTER (WHERE v.counter = 'Log Flush Waits/sec') AS lfw,
+      max(v.rate) FILTER (WHERE v.counter = 'Log Flush Wait Time') AS lfwt,
+      max(v.value) FILTER (WHERE v.counter = 'Percent Log Used') AS plu,
+      max(v.value) FILTER (WHERE v.counter = 'Active Transactions') AS atx,
+      max(v.dvalue) FILTER (WHERE v.counter = 'Log Growths') AS growths
+      FROM pgvigil.mssql_counter_values(p_instance_id, p_from, p_to, 'database') v
+     WHERE v.object = 'Databases' AND v.inst = coalesce(p_database, '_Total')
+     GROUP BY v.snapshot_at),
+  -- SQL Agent's jobs at each instance read, from the job history FLEET stores (mssql_job_runs step 0, mssql_jobs'
+  -- running_since): running at the read, started, and ended failed / cancelled or succeeded since the read before
+  rd AS (SELECT c.snapshot_at, lag(c.snapshot_at) OVER (ORDER BY c.snapshot_at) AS prev
+           FROM pgvigil.mssql_counter_read c
+          WHERE c.instance_id = p_instance_id AND c.scope = 'instance' AND c.snapshot_at > p_from - p_lookback AND c.snapshot_at <= p_to),
+  ag AS (SELECT rd.snapshot_at,
+           (SELECT count(*) FROM pgvigil.mssql_job_runs j
+             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.snapshot_at > rd.snapshot_at - interval '7 days'
+               AND j.snapshot_at <= rd.snapshot_at AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) > rd.snapshot_at)
+           + (SELECT count(*) FROM pgvigil.mssql_jobs m
+               WHERE m.instance_id = p_instance_id AND m.running_since IS NOT NULL AND m.running_since <= rd.snapshot_at) AS active,
+           (SELECT count(*) FROM pgvigil.mssql_job_runs j
+             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.snapshot_at > rd.prev AND j.snapshot_at <= rd.snapshot_at) AS started,
+           (SELECT count(*) FROM pgvigil.mssql_job_runs j
+             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.run_status IN (0, 3) AND j.snapshot_at > rd.prev - interval '7 days'
+               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) > rd.prev
+               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) <= rd.snapshot_at) AS failed,
+           (SELECT count(*) FROM pgvigil.mssql_job_runs j
+             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.run_status = 1 AND j.snapshot_at > rd.prev - interval '7 days'
+               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) > rd.prev
+               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) <= rd.snapshot_at) AS succeeded
+           FROM rd WHERE rd.prev IS NOT NULL AND rd.snapshot_at > p_from)
+  SELECT i.snapshot_at, x.metric, x.value
+    FROM i CROSS JOIN LATERAL (VALUES
+      ('logins_s', i.logins::double precision), ('logouts_s', i.logouts::double precision),
+      ('connection_resets_s', i.resets::double precision), ('user_connections', i.user_conn::double precision),
+      ('errors_user_s', i.err_user::double precision), ('errors_kill_s', i.err_kill::double precision),
+      ('errors_offline_s', i.err_offline::double precision), ('errors_info_s', i.err_info::double precision),
+      ('errors_total_s', i.err_total::double precision),
+      ('compiles_per_100_batches', CASE WHEN i.batch IS NULL OR i.compiles IS NULL THEN NULL WHEN i.batch < 1 THEN 0 ELSE 100.0 * i.compiles / i.batch END),
+      ('recompiles_per_100_compiles', CASE WHEN i.compiles IS NULL OR i.recompiles IS NULL THEN NULL WHEN i.compiles < 1 THEN 0 ELSE 100.0 * i.recompiles / i.compiles END),
+      ('page_splits_per_100_batches', CASE WHEN i.batch IS NULL OR i.splits IS NULL THEN NULL WHEN i.batch < 1 THEN 0 ELSE 100.0 * i.splits / i.batch END),
+      ('page_lookups_per_batch', CASE WHEN i.batch IS NULL OR i.lookups IS NULL THEN NULL WHEN i.batch < 1 THEN 0 ELSE i.lookups / i.batch END),
+      ('full_scans_per_search', CASE WHEN i.searches IS NULL OR i.full_scans IS NULL THEN NULL WHEN i.searches < 10 THEN 0 ELSE i.full_scans / i.searches END),
+      ('readahead_pct', CASE WHEN i.preads IS NULL OR i.readahead IS NULL THEN NULL WHEN i.preads < 1 THEN 0 ELSE 100.0 * i.readahead / i.preads END),
+      ('page_reads_s', i.preads::double precision), ('page_writes_s', i.pwrites::double precision),
+      ('lazy_writes_s', i.lazy::double precision), ('free_list_stalls_s', i.stalls::double precision),
+      ('lock_requests_s', i.lock_req::double precision), ('lock_waits_s', i.lock_waits::double precision),
+      ('lock_timeouts_gt0_s', i.lock_to::double precision),
+      ('avg_lock_wait_ms', CASE WHEN i.lw_db IS NULL THEN NULL WHEN i.lw_db = 0 THEN 0 ELSE i.lw_dv::double precision / i.lw_db END),
+      ('latch_waits_s', i.latch_waits::double precision),
+      ('avg_latch_wait_ms', CASE WHEN i.la_db IS NULL THEN NULL WHEN i.la_db = 0 THEN 0 ELSE i.la_dv::double precision / i.la_db END),
+      ('buffer_cache_hit_pct', 100.0 * i.bchr_v / nullif(i.bchr_b, 0)),
+      ('misguided_plans_s', i.misguided::double precision),
+      ('update_conflict_pct', CASE WHEN i.uc_db IS NULL THEN NULL WHEN i.uc_db = 0 THEN 0 ELSE 100.0 * i.uc_dv / i.uc_db END),
+      ('memory_commit_pct', 100.0 * i.in_use_kb / nullif(i.in_use_kb + i.commit_kb, 0)),
+      ('failed_to_create_worker', i.failed_worker::double precision)) AS x(metric, value)
+   WHERE x.value IS NOT NULL
+  UNION ALL
+  SELECT nn.snapshot_at, 'ple_per_4gb', nn.ple4::double precision FROM nn WHERE nn.ple4 IS NOT NULL
+  UNION ALL
+  SELECT d.snapshot_at, x.metric, x.value
+    FROM d CROSS JOIN LATERAL (VALUES
+      ('write_transactions_s', d.wtx::double precision), ('log_flush_waits_s', d.lfw::double precision),
+      ('log_flush_wait_ms_s', d.lfwt::double precision), ('percent_log_used', d.plu::double precision),
+      ('active_transactions', d.atx::double precision), ('log_growths', d.growths::double precision)) AS x(metric, value)
+   WHERE x.value IS NOT NULL
+  UNION ALL
+  SELECT ag.snapshot_at, x.metric, x.value
+    FROM ag CROSS JOIN LATERAL (VALUES
+      ('agent_active_jobs', ag.active::double precision), ('agent_jobs_started', ag.started::double precision),
+      ('agent_jobs_failed', ag.failed::double precision), ('agent_jobs_succeeded', ag.succeeded::double precision)) AS x(metric, value)
+$$;
+
+-- ---- the Counters page's other reads ----------------------------------------------------------------------------------
+
+-- mssql_counter_histogram: the Batch Resp Statistics buckets over a window (T41): per bucket the batches and their
+-- total time by elapsed and by CPU time, the changes summed over the window's reads
+CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_histogram(p_instance_id int, p_from timestamptz, p_to timestamptz)
+RETURNS TABLE (bucket text, lo_ms int, hi_ms int, elapsed_batches bigint, elapsed_total_ms bigint, cpu_batches bigint, cpu_total_ms bigint, reads bigint)
+LANGUAGE sql STABLE AS $$
+  SELECT v.counter, substring(v.counter FROM '>=0*([0-9]+)ms')::int, substring(v.counter FROM '<0*([0-9]+)ms')::int,
+         sum(v.dvalue) FILTER (WHERE v.inst = 'Elapsed Time:Requests'), sum(v.dvalue) FILTER (WHERE v.inst = 'Elapsed Time:Total(ms)'),
+         sum(v.dvalue) FILTER (WHERE v.inst = 'CPU Time:Requests'), sum(v.dvalue) FILTER (WHERE v.inst = 'CPU Time:Total(ms)'),
+         count(DISTINCT v.snapshot_at) FILTER (WHERE v.dvalue IS NOT NULL)
+    FROM pgvigil.mssql_counter_values(p_instance_id, p_from, p_to, 'instance') v
+   WHERE v.object = 'Batch Resp Statistics'
+   GROUP BY v.counter
+   ORDER BY 2
+$$;
+
+-- mssql_counter_absent: the instance's listed counters with no series at its scope's newest read, and why: the
+-- server has no such counter (the catalogue read says so, or has not been read), or it was listed after that read
+CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_absent(p_instance_id int, p_yaml jsonb DEFAULT '[]'::jsonb)
+RETURNS TABLE (object text, counter text, inst text, scope text, why text)
+LANGUAGE sql STABLE AS $$
+  WITH l AS (SELECT e->>'object' AS object, e->>'counter' AS counter, coalesce(e->>'inst', '') AS inst, e->>'scope' AS scope
+               FROM jsonb_array_elements(pgvigil.mssql_counter_list(p_instance_id, p_yaml)) e),
+  r AS (SELECT DISTINCT ON (c.scope) c.scope, c.server_utc FROM pgvigil.mssql_counter_read c
+         WHERE c.instance_id = p_instance_id ORDER BY c.scope, c.snapshot_at DESC),
+  cat AS (SELECT max(k.read_at) AS read_at FROM pgvigil.mssql_counter_catalog k WHERE k.instance_id = p_instance_id)
+  SELECT l.object, l.counter, l.inst, l.scope,
+         CASE WHEN l.object LIKE 'sys.dm_os_%' THEN 'the DMV read did not give this column (see the collection''s log)'
+              WHEN (SELECT read_at FROM cat) IS NULL THEN 'not in the newest read; the server''s counter catalogue has not been read yet'
+              WHEN NOT EXISTS (SELECT 1 FROM pgvigil.mssql_counter_catalog k WHERE k.instance_id = p_instance_id
+                                AND lower(k.object) = lower(l.object) AND lower(k.counter) = lower(l.counter))
+                THEN 'this server has no such counter (its version or edition)'
+              ELSE 'listed after the newest read, or no instance of it matched' END
+    FROM l JOIN r ON r.scope = l.scope
+   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_last t ON t.series_id = k.series_id
+                      WHERE k.instance_id = p_instance_id AND lower(k.object) = lower(l.object) AND lower(k.counter) = lower(l.counter)
+                        AND (l.inst = '' OR k.inst = l.inst) AND t.server_utc = r.server_utc)
+   ORDER BY l.object, l.counter, l.inst
+$$;
+
+-- ---- the memory clerks' friendly names (T24) ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_clerk_names (
+  clerk_type  text PRIMARY KEY,
+  name        text NOT NULL
+);
+DELETE FROM pgvigil.mssql_clerk_names;
+-- Telegraf 1.40.3, plugins/inputs/sqlserver/sqlserverqueries.go (sqlServerMemoryClerks), MIT, Copyright (c) 2015-2025
+-- InfluxData Inc.; its list thanks Bob Ward and Opserver's SQLInstance.Memory.cs
+INSERT INTO pgvigil.mssql_clerk_names (clerk_type, name) VALUES
+  ('CACHESTORE_BROKERDSH', 'Service Broker Dialog Security Header Cache'),
+  ('CACHESTORE_BROKERKEK', 'Service Broker Key Exchange Key Cache'),
+  ('CACHESTORE_BROKERREADONLY', 'Service Broker (Read-Only)'),
+  ('CACHESTORE_BROKERRSB', 'Service Broker Null Remote Service Binding Cache'),
+  ('CACHESTORE_BROKERTBLACS', 'Broker dormant rowsets'),
+  ('CACHESTORE_BROKERTO', 'Service Broker Transmission Object Cache'),
+  ('CACHESTORE_BROKERUSERCERTLOOKUP', 'Service Broker user certificates lookup result cache'),
+  ('CACHESTORE_CLRPROC', 'CLR Procedure Cache'),
+  ('CACHESTORE_CLRUDTINFO', 'CLR UDT Info'),
+  ('CACHESTORE_COLUMNSTOREOBJECTPOOL', 'Column Store Object Pool'),
+  ('CACHESTORE_CONVPRI', 'Conversation Priority Cache'),
+  ('CACHESTORE_EVENTS', 'Event Notification Cache'),
+  ('CACHESTORE_FULLTEXTSTOPLIST', 'Full Text Stoplist Cache'),
+  ('CACHESTORE_NOTIF', 'Notification Store'),
+  ('CACHESTORE_OBJCP', 'Object Plans'),
+  ('CACHESTORE_PHDR', 'Bound Trees'),
+  ('CACHESTORE_SEARCHPROPERTYLIST', 'Search Property List Cache'),
+  ('CACHESTORE_SEHOBTCOLUMNATTRIBUTE', 'SE Shared Column Metadata Cache'),
+  ('CACHESTORE_SQLCP', 'SQL Plans'),
+  ('CACHESTORE_STACKFRAMES', 'SOS_StackFramesStore'),
+  ('CACHESTORE_SYSTEMROWSET', 'System Rowset Store'),
+  ('CACHESTORE_TEMPTABLES', 'Temporary Tables & Table Variables'),
+  ('CACHESTORE_VIEWDEFINITIONS', 'View Definition Cache'),
+  ('CACHESTORE_XML_SELECTIVE_DG', 'XML DB Cache (Selective)'),
+  ('CACHESTORE_XMLDBATTRIBUTE', 'XML DB Cache (Attribute)'),
+  ('CACHESTORE_XMLDBELEMENT', 'XML DB Cache (Element)'),
+  ('CACHESTORE_XMLDBTYPE', 'XML DB Cache (Type)'),
+  ('CACHESTORE_XPROC', 'Extended Stored Procedures'),
+  ('MEMORYCLERK_FILETABLE', 'Memory Clerk (File Table)'),
+  ('MEMORYCLERK_FSCHUNKER', 'Memory Clerk (FS Chunker)'),
+  ('MEMORYCLERK_FULLTEXT', 'Full Text'),
+  ('MEMORYCLERK_FULLTEXT_SHMEM', 'Full-text IG'),
+  ('MEMORYCLERK_HADR', 'HADR'),
+  ('MEMORYCLERK_HOST', 'Host'),
+  ('MEMORYCLERK_LANGSVC', 'Language Service'),
+  ('MEMORYCLERK_LWC', 'Light Weight Cache'),
+  ('MEMORYCLERK_QSRANGEPREFETCH', 'QS Range Prefetch'),
+  ('MEMORYCLERK_SERIALIZATION', 'Serialization'),
+  ('MEMORYCLERK_SNI', 'SNI'),
+  ('MEMORYCLERK_SOSMEMMANAGER', 'SOS Memory Manager'),
+  ('MEMORYCLERK_SOSNODE', 'SOS Node'),
+  ('MEMORYCLERK_SOSOS', 'SOS Memory Clerk'),
+  ('MEMORYCLERK_SQLBUFFERPOOL', 'Buffer Pool'),
+  ('MEMORYCLERK_SQLCLR', 'CLR'),
+  ('MEMORYCLERK_SQLCLRASSEMBLY', 'CLR Assembly'),
+  ('MEMORYCLERK_SQLCONNECTIONPOOL', 'Connection Pool'),
+  ('MEMORYCLERK_SQLGENERAL', 'General'),
+  ('MEMORYCLERK_SQLHTTP', 'HTTP'),
+  ('MEMORYCLERK_SQLLOGPOOL', 'Log Pool'),
+  ('MEMORYCLERK_SQLOPTIMIZER', 'SQL Optimizer'),
+  ('MEMORYCLERK_SQLQERESERVATIONS', 'SQL Reservations'),
+  ('MEMORYCLERK_SQLQUERYCOMPILE', 'SQL Query Compile'),
+  ('MEMORYCLERK_SQLQUERYEXEC', 'SQL Query Exec'),
+  ('MEMORYCLERK_SQLQUERYPLAN', 'SQL Query Plan'),
+  ('MEMORYCLERK_SQLSERVICEBROKER', 'SQL Service Broker'),
+  ('MEMORYCLERK_SQLSERVICEBROKERTRANSPORT', 'Unified Communication Stack'),
+  ('MEMORYCLERK_SQLSOAP', 'SQL SOAP'),
+  ('MEMORYCLERK_SQLSOAPSESSIONSTORE', 'SQL SOAP (Session Store)'),
+  ('MEMORYCLERK_SQLSTORENG', 'SQL Storage Engine'),
+  ('MEMORYCLERK_SQLUTILITIES', 'SQL Utilities'),
+  ('MEMORYCLERK_SQLXML', 'SQL XML'),
+  ('MEMORYCLERK_SQLXP', 'SQL XP'),
+  ('MEMORYCLERK_TRACE_EVTNOTIF', 'Trace Event Notification'),
+  ('MEMORYCLERK_XE', 'XE Engine'),
+  ('MEMORYCLERK_XE_BUFFER', 'XE Buffer'),
+  ('MEMORYCLERK_XTP', 'In-Memory OLTP'),
+  ('OBJECTSTORE_LBSS', 'Lbss Cache (Object Store)'),
+  ('OBJECTSTORE_LOCK_MANAGER', 'Lock Manager (Object Store)'),
+  ('OBJECTSTORE_SECAUDIT_EVENT_BUFFER', 'Audit Event Buffer (Object Store)'),
+  ('OBJECTSTORE_SERVICE_BROKER', 'Service Broker (Object Store)'),
+  ('OBJECTSTORE_SNI_PACKET', 'SNI Packet (Object Store)'),
+  ('OBJECTSTORE_XACT_CACHE', 'Transactions Cache (Object Store)'),
+  ('USERSTORE_DBMETADATA', 'DB Metadata (User Store)'),
+  ('USERSTORE_OBJPERM', 'Object Permissions (User Store)'),
+  ('USERSTORE_SCHEMAMGR', 'Schema Manager (User Store)'),
+  ('USERSTORE_SXC', 'SXC (User Store)'),
+  ('USERSTORE_TOKENPERM', 'Token Permissions (User Store)'),
+  ('USERSTORE_QDSSTMT', 'QDS Statement Buffer (Pre-persist)'),
+  ('CACHESTORE_QDSRUNTIMESTATS', 'QDS Runtime Stats (Pre-persist)'),
+  ('CACHESTORE_QDSCONTEXTSETTINGS', 'QDS Unique Context Settings'),
+  ('MEMORYCLERK_QUERYDISKSTORE', 'QDS General'),
+  ('MEMORYCLERK_QUERYDISKSTORE_HASHMAP', 'QDS Query/Plan Hash Table');

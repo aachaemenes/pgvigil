@@ -79,12 +79,12 @@ func ParseCounterList(b []byte) ([]CounterSpec, error) {
 
 // the cntr_type codes (sys.dm_os_performance_counters)
 const (
-	typeRawLarge   = 65792      // PERF_COUNTER_LARGE_RAWCOUNT
-	typeBulk       = 272696576  // PERF_COUNTER_BULK_COUNT
-	typeCounter    = 272696320  // PERF_COUNTER_COUNTER
-	typeFraction   = 537003264  // PERF_LARGE_RAW_FRACTION
-	typeAverage    = 1073874176 // PERF_AVERAGE_BULK
-	typeBase       = 1073939712 // PERF_LARGE_RAW_BASE
+	typeRawLarge = 65792      // PERF_COUNTER_LARGE_RAWCOUNT
+	typeBulk     = 272696576  // PERF_COUNTER_BULK_COUNT
+	typeCounter  = 272696320  // PERF_COUNTER_COUNTER
+	typeFraction = 537003264  // PERF_LARGE_RAW_FRACTION
+	typeAverage  = 1073874176 // PERF_AVERAGE_BULK
+	typeBase     = 1073939712 // PERF_LARGE_RAW_BASE
 )
 
 // counterKind is the arithmetic a row gets: the list's own kind wins; else the type's; a fraction or an average
@@ -114,10 +114,10 @@ func counterKind(ctype int64, given string, hasBase bool) string {
 // irregularBases: the counters whose base Telegraf's rule does not find (object, counter -> base), read on SQL
 // Server 2017 CU31, 2019 CU32 and 2022 CU28.
 var irregularBases = map[[2]string]string{
-	{"access methods", "worktables from cache ratio"}:      "worktables from cache base",
+	{"access methods", "worktables from cache ratio"}:         "worktables from cache base",
 	{"broker to statistics", "avg. length of batched writes"}: "avg. length of batched writes bs",
-	{"databases", "avg dist from eol/lp request"}:          "log pool requests base",
-	{"databases", "xtp controller dlc latency/fetch"}:      "xtp controller dlc latency base",
+	{"databases", "avg dist from eol/lp request"}:             "log pool requests base",
+	{"databases", "xtp controller dlc latency/fetch"}:         "xtp controller dlc latency base",
 }
 
 // baseNames: the names (lower case) a counter's base may have in its object.
@@ -140,50 +140,50 @@ func baseNames(object, counter string) []string {
 // countersInUse: what a page or a rule reads of the list - Admin refuses to remove these, and so does the config's
 // validation (0152's defaults carry the same in used_by; counters_test.go holds the two equal).
 var countersInUse = map[[2]string]string{
-	{"Workload Group Stats", "Active requests"}:         "the CPU page's thread use",
-	{"Workload Group Stats", "Queued requests"}:         "the CPU page's thread use and its scheduler level",
-	{"Workload Group Stats", "Blocked tasks"}:           "the CPU page's thread use",
-	{"Workload Group Stats", "Active parallel threads"}: "the CPU page's thread use",
-	{"Databases", "Log Bytes Flushed/sec"}:              "the File IO page's log flushes",
-	{"SQL Statistics", "Batch Requests/sec"}:            "the counters metrics (compilations, page splits and page lookups per batch)",
-	{"SQL Statistics", "SQL Compilations/sec"}:          "the counters metrics (compilations per batch, re-compilations per compilation)",
-	{"SQL Statistics", "SQL Re-Compilations/sec"}:       "the counters metric re-compilations per compilation",
-	{"SQL Statistics", "Misguided plan executions/sec"}: "the counters metric misguided plan executions",
-	{"General Statistics", "Logins/sec"}:                "the counters metric logins/sec",
-	{"General Statistics", "Logouts/sec"}:               "the counters metric logouts/sec",
-	{"General Statistics", "User Connections"}:          "the counters metric user connections",
-	{"SQL Errors", "Errors/sec"}:                        "the counters metrics errors/sec by kind",
-	{"Locks", "Lock Timeouts (timeout > 0)/sec"}:        "the counters metric lock timeouts (timeout > 0)",
-	{"Locks", "Lock Waits/sec"}:                         "the counters metric lock waits/sec",
-	{"Locks", "Lock Requests/sec"}:                      "the counters metric lock requests/sec",
-	{"Locks", "Average Wait Time (ms)"}:                 "the counters metric average lock wait",
-	{"Latches", "Latch Waits/sec"}:                      "the counters metric latch waits/sec",
-	{"Latches", "Average Latch Wait Time (ms)"}:         "the counters metric average latch wait",
-	{"Access Methods", "Full Scans/sec"}:                "the counters metric full scans per index search",
-	{"Access Methods", "Index Searches/sec"}:            "the counters metric full scans per index search",
-	{"Access Methods", "Page Splits/sec"}:               "the counters metric page splits per batch",
-	{"Buffer Manager", "Page lookups/sec"}:              "the counters metric page lookups per batch",
-	{"Buffer Manager", "Page reads/sec"}:                "the counters metrics page reads/sec and read-ahead share",
-	{"Buffer Manager", "Page writes/sec"}:               "the counters metric page writes/sec",
-	{"Buffer Manager", "Readahead pages/sec"}:           "the counters metric read-ahead share",
-	{"Buffer Manager", "Lazy writes/sec"}:               "the counters metric lazy writes/sec",
-	{"Buffer Manager", "Free list stalls/sec"}:          "the counters metric free list stalls/sec",
-	{"Buffer Manager", "Buffer cache hit ratio"}:        "the counters metric buffer cache hit ratio",
-	{"Buffer Node", "Page life expectancy"}:             "the counters metric page life expectancy per 4 GB",
-	{"Buffer Node", "Database pages"}:                   "the counters metric page life expectancy per 4 GB",
-	{"Transactions", "Update conflict ratio"}:           "the counters metric update conflicts",
-	{"Databases", "Write Transactions/sec"}:             "the counters metric write transactions/sec and the storage pages",
-	{"Databases", "Log Flush Waits/sec"}:                "the counters metric log flush waits/sec",
-	{"Databases", "Log Flush Wait Time"}:                "the counters metric log flush wait time",
-	{"Databases", "Log Growths"}:                        "the counters metric log growths",
-	{"Databases", "Percent Log Used"}:                   "the counters metric percent log used and the storage pages",
-	{"Databases", "Active Transactions"}:                "the counters metric active transactions and the storage pages",
+	{"Workload Group Stats", "Active requests"}:               "the CPU page's thread use",
+	{"Workload Group Stats", "Queued requests"}:               "the CPU page's thread use and its scheduler level",
+	{"Workload Group Stats", "Blocked tasks"}:                 "the CPU page's thread use",
+	{"Workload Group Stats", "Active parallel threads"}:       "the CPU page's thread use",
+	{"Databases", "Log Bytes Flushed/sec"}:                    "the File IO page's log flushes",
+	{"SQL Statistics", "Batch Requests/sec"}:                  "the counters metrics (compilations, page splits and page lookups per batch)",
+	{"SQL Statistics", "SQL Compilations/sec"}:                "the counters metrics (compilations per batch, re-compilations per compilation)",
+	{"SQL Statistics", "SQL Re-Compilations/sec"}:             "the counters metric re-compilations per compilation",
+	{"SQL Statistics", "Misguided plan executions/sec"}:       "the counters metric misguided plan executions",
+	{"General Statistics", "Logins/sec"}:                      "the counters metric logins/sec",
+	{"General Statistics", "Logouts/sec"}:                     "the counters metric logouts/sec",
+	{"General Statistics", "User Connections"}:                "the counters metric user connections",
+	{"SQL Errors", "Errors/sec"}:                              "the counters metrics errors/sec by kind",
+	{"Locks", "Lock Timeouts (timeout > 0)/sec"}:              "the counters metric lock timeouts (timeout > 0)",
+	{"Locks", "Lock Waits/sec"}:                               "the counters metric lock waits/sec",
+	{"Locks", "Lock Requests/sec"}:                            "the counters metric lock requests/sec",
+	{"Locks", "Average Wait Time (ms)"}:                       "the counters metric average lock wait",
+	{"Latches", "Latch Waits/sec"}:                            "the counters metric latch waits/sec",
+	{"Latches", "Average Latch Wait Time (ms)"}:               "the counters metric average latch wait",
+	{"Access Methods", "Full Scans/sec"}:                      "the counters metric full scans per index search",
+	{"Access Methods", "Index Searches/sec"}:                  "the counters metric full scans per index search",
+	{"Access Methods", "Page Splits/sec"}:                     "the counters metric page splits per batch",
+	{"Buffer Manager", "Page lookups/sec"}:                    "the counters metric page lookups per batch",
+	{"Buffer Manager", "Page reads/sec"}:                      "the counters metrics page reads/sec and read-ahead share",
+	{"Buffer Manager", "Page writes/sec"}:                     "the counters metric page writes/sec",
+	{"Buffer Manager", "Readahead pages/sec"}:                 "the counters metric read-ahead share",
+	{"Buffer Manager", "Lazy writes/sec"}:                     "the counters metric lazy writes/sec",
+	{"Buffer Manager", "Free list stalls/sec"}:                "the counters metric free list stalls/sec",
+	{"Buffer Manager", "Buffer cache hit ratio"}:              "the counters metric buffer cache hit ratio",
+	{"Buffer Node", "Page life expectancy"}:                   "the counters metric page life expectancy per 4 GB",
+	{"Buffer Node", "Database pages"}:                         "the counters metric page life expectancy per 4 GB",
+	{"Transactions", "Update conflict ratio"}:                 "the counters metric update conflicts",
+	{"Databases", "Write Transactions/sec"}:                   "the counters metric write transactions/sec and the storage pages",
+	{"Databases", "Log Flush Waits/sec"}:                      "the counters metric log flush waits/sec",
+	{"Databases", "Log Flush Wait Time"}:                      "the counters metric log flush wait time",
+	{"Databases", "Log Growths"}:                              "the counters metric log growths",
+	{"Databases", "Percent Log Used"}:                         "the counters metric percent log used and the storage pages",
+	{"Databases", "Active Transactions"}:                      "the counters metric active transactions and the storage pages",
 	{"sys.dm_os_process_memory", "physical_memory_in_use_kb"}: "the counters metric memory in use of the commit limit",
 	{"sys.dm_os_process_memory", "available_commit_limit_kb"}: "the counters metric memory in use of the commit limit",
 	{"sys.dm_os_schedulers", "failed_to_create_worker"}:       "the counters metric failed to create a worker",
 }
 
-// CounterInUse says what reads a counter ('' = nothing): config validation refuses a 'remove' of it.
+// CounterInUse says what reads a counter (” = nothing): config validation refuses a 'remove' of it.
 func CounterInUse(object, counter string) string {
 	for k, v := range countersInUse {
 		if strings.EqualFold(k[0], object) && strings.EqualFold(k[1], counter) {
@@ -222,9 +222,6 @@ var pseudoColumns = map[string]map[string]struct{ kind, expr string }{
 
 // the filter of a DMV whose rows are summed
 var pseudoWhere = map[string]string{"sys.dm_os_schedulers": " WHERE status = N'VISIBLE ONLINE'"}
-
-// isPerDB: the objects whose instances are databases (or a database's replica), read by mssql_counters_db.
-func isPerDB(object string) bool { return object == "Databases" || object == "Database Replica" }
 
 type countersCollector struct{ scope string }
 
@@ -296,7 +293,7 @@ func (c countersCollector) RunList(ctx context.Context, conn *sql.Conn, info Inf
 }
 
 // counterQuery reads the listed counters' rows of the scope's objects and every base of those objects. The names are
-// N'' literals with quotes doubled (nList); the object is matched in Go (pairCounters), the prefix being the
+// N” literals with quotes doubled (nList); the object is matched in Go (pairCounters), the prefix being the
 // instance's (SQLServer: or MSSQL$<name>:).
 func counterQuery(list []CounterSpec, scope string) string {
 	names := map[string]bool{}
