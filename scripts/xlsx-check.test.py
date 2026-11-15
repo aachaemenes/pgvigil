@@ -270,7 +270,13 @@ PROBES = [
     ('X7 a number under 0.000', 'X7', 'PASS', lambda: fmt_b2(1.6328125, '0.000')),
     ('X7 a share under 0%', 'X7', 'PASS', lambda: fmt_b2(0.125, '0%')),
     ('X7 a unit inside the format', 'X7', 'FAIL', lambda: fmt_b2(1.6328125, '0.0" GB"')),
-    ('X7 a grouped format', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,##0.0')),
+    # (changed: a grouped fixed format where the page groups thousands, the page's formatting carried; never a unit in it)
+    ('X7 a grouped format #,##0.0', 'X7', 'PASS', lambda: fmt_b2(1234.5, '#,##0.0')),
+    ('X7 a grouped format #,##0', 'X7', 'PASS', lambda: fmt_b2(1234.5, '#,##0')),
+    ('X7 a grouped format #,##0.000', 'X7', 'PASS', lambda: fmt_b2(1234.5, '#,##0.000')),
+    ('X7 a grouped format with four decimals', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,##0.0000')),
+    ('X7 a grouped format with a unit inside', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,##0.00" GB"')),
+    ('X7 a grouping of other than thousands', 'X7', 'FAIL', lambda: fmt_b2(1234.5, '#,#0.0')),
     # X13: no number cell shows more decimals than its column shows on the page
     ('X13 the built workbook, the page 2 decimals', 'X13', 'PASS', base, PAGE2),
     ('X13 the built workbook, the page 1 decimal (0.25 shows 2)', 'X13', 'FAIL', base, PAGE1),
@@ -278,6 +284,9 @@ PROBES = [
     ('X13 0.01605224609375 under General (Excel draws 0.016052246), the page 2', 'X13', 'FAIL', lambda: set_b2(base(), 0.01605224609375), PAGE2),
     ('X13 1.6328125 under 0.00, the page 2', 'X13', 'PASS', lambda: fmt_b2(1.6328125, '0.00'), PAGE2),
     ('X13 1.6328125 under 0.000, the page 2', 'X13', 'FAIL', lambda: fmt_b2(1.6328125, '0.000'), PAGE2),
+    ('X13 1234.5678 under #,##0.00, the page 2', 'X13', 'PASS', lambda: fmt_b2(1234.5678, '#,##0.00'), PAGE2),
+    ('X13 1234.5678 under #,##0.0, the page 2 (fewer)', 'X13', 'FAIL', lambda: fmt_b2(1234.5678, '#,##0.0'), PAGE2),
+    ('X13 1234.5678 under #,##0.000, the page 2 (more)', 'X13', 'FAIL', lambda: fmt_b2(1234.5678, '#,##0.000'), PAGE2),
     ('X13 1.6 under General (a value stored rounded), the page 2', 'X13', 'PASS', lambda: set_b2(base(), 1.6), PAGE2),
     ('X13 1.25E-05 under General (drawn 1.25E-05 = 7 decimals), the page 2', 'X13', 'FAIL', lambda: set_b2(base(), 1.25e-05), PAGE2),
     # (B3 set so that only B2 decides: 0.5 shows one decimal, 1 none)
