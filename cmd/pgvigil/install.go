@@ -600,7 +600,7 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	n, err := upgradeMigrate(ctx, p.ownerDSN)
+	n, err := upgradeMigrate(ctx, log, p.ownerDSN)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "the migrate failed: the binary was not swapped and the service stays stopped. %s\n", wayBack(p, false))
 		return fmt.Errorf("migrate: %w", err)
@@ -864,12 +864,15 @@ func upgradeDump(h *upgradeHooks, p *upgradePlan) error {
 	return nil
 }
 
-func upgradeMigrate(ctx context.Context, dsn string) (int, error) {
+// upgradeMigrate runs the repository's migrations with the upgrade's own logger (migrate's jit line, info or warning,
+// prints in the upgrade's format between its steps).
+func upgradeMigrate(ctx context.Context, log *slog.Logger, dsn string) (int, error) {
 	r, err := repo.Open(ctx, dsn)
 	if err != nil {
 		return 0, err
 	}
 	defer r.Close()
+	r.SetLog(log)
 	return r.Migrate(ctx)
 }
 

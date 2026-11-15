@@ -107,6 +107,28 @@ database than the repository dsn's is refused, with words. Without the key (or w
 the store is refused and the page and a mailed report say why; `serve` starts anyway, with one WARN. Reports on
 instances need nothing here. The rules and the words: [customreports.md](customreports.md).
 
+## The Daily checks mail (reports.daily_checks)
+
+```yaml
+reports:
+  daily_checks:
+    enabled: true               # required when the block is there; false = off, and the page says the file turned it off
+    at: "07:00"                 # HH:MM
+    tz: America/Los_Angeles     # an IANA name, or UTC
+    to: [dba@example.org]       # 1 to 50 addresses
+    as: alice                   # the UI user the page is drawn as
+    channel: mail               # an smtp channel of the alerts: block
+```
+
+Off by default: no block, no mail (the Daily checks page's own **Mail daily...** then decides). With `enabled: true`
+every key is required, and a key the block does not know or writes twice, a value of the wrong kind (`to:` is a list,
+`enabled:` is true or false), or a block without `enabled`, stops `pgvigil serve` at its start with the key's name
+and its line in the file; `pgvigil report`'s configuration check line says the same. There is no separate check
+command: `pgvigil serve` and `pgvigil report` are where the block is checked. An alias (`to: *dba_list`) and a merge
+key read as what they stand for. `pgvigil serve` reads the block once, at its start. What it keeps, who wins between the
+file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily checks mail*. In a support report
+(`pgvigil report`) the switch, the hour and the zone are shown; the addresses, the user and the channel are masked.
+
 ## Instances added in the page
 
 Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
@@ -215,3 +237,22 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 `door_generation`, the repository's inventory generation its door set was read from. `pgvigil serve` keeps every open
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
+
+## The repository's own sessions run without jit
+
+Every `pgvigil migrate` (and so `install -upgrade` and `demo`) sets `jit = off` on the repository database
+(`ALTER DATABASE <the repository> SET jit = off`, logged as one INFO line) when the database has no jit setting of
+its own and its login owns that database or is a superuser. Every new session on that database then plans without
+jit: Grafana's login, psql, a BI tool and pgvigil's own processes. The reason: the findings view and the heavy
+functions cross the server's `jit_above_cost` even on a near-empty repository, and with jit on each such read spends
+its time compiling with LLVM (a 55 s read against 0.5 s without jit was measured on PostgreSQL 18). `pgvigil serve`
+already starts its sessions with `jit = off`, and the alert sender's functions carry their own `SET jit = off`. A jit
+setting the database already has is the site's own choice and is left alone: off in any spelling PostgreSQL takes is
+nothing to do, any other value is kept and named in an INFO line on each migrate. When the login does not own the
+database, migrate logs one WARN with the statement for the database's owner to run once (none where no session would
+compile anyway: the server's own jit off, or no LLVM module). A login role's own setting
+(`ALTER ROLE <login> SET jit = on`) or a session's startup parameter outranks the database's: that is how an
+application that shares the repository database keeps jit on for its own login. The setting reaches new sessions
+only: a connection already open keeps its jit until it reconnects, so restart Grafana (or reconnect its data source)
+and any pooler's server connections after the migrate. Connections to a monitored instance are unchanged: that
+server's jit is its owner's choice.

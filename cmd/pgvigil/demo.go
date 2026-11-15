@@ -91,6 +91,7 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	r.SetLog(log)
 	applied, err := r.Migrate(ctx)
 	r.Close()
 	if err != nil {

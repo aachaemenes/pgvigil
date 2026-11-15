@@ -123,6 +123,11 @@ func TestMonitorSetupSettings(t *testing.T) {
 				if strings.Contains(line, "ADD TARGET ") && strings.Contains(filepath.ToSlash(path), "internal/mssql/") {
 					continue
 				}
+				// the repository's own ALTER DATABASE ... SET (internal/repo's migrate preamble: jit = off) stores a default
+				// on pgvigil's repository database: never a session setting, and never on a monitored instance
+				if strings.Contains(line, "ALTER DATABASE ") && strings.Contains(filepath.ToSlash(path), "internal/repo/") {
+					continue
+				}
 				for _, m := range setStmt.FindAllStringSubmatch(line, -1) {
 					seen++
 					if !monitorSetupSettings[strings.ToLower(m[1])] {

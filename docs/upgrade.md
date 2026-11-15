@@ -12,6 +12,14 @@ what happens in the other order, and what the project's own proof showed (`scrip
   recorded is never run again, and a released file is never edited (the rule of `internal/repo/sql/README.md`), so a
   store that was upgraded and a store that was installed fresh have run the same files. A second `migrate` applies
   nothing. The run takes an advisory lock, so two at once do not collide (not proven: no proof runs two at once).
+- **jit off on the repository database.** From this version `pgvigil migrate` sets `jit = off` on the repository
+  database when its login owns it and the database has no jit setting of its own
+  ([configuration.md](configuration.md#the-repositorys-own-sessions-run-without-jit)): every new session on that
+  database plans without jit from then on, other applications' logins too (a connection already open keeps its jit:
+  restart Grafana or reconnect its data source after the upgrade). A database's own jit setting is left alone and named
+  in an INFO line. An application that shares the repository database and wants jit keeps it with
+  `ALTER ROLE <its login> SET jit = on`. A login that does not own the database gets one WARN with the statement for
+  the owner instead.
 - **The grants.** Every file re-applies the access contract (`pgvigil.apply_roles()`) inside its own transaction: the
   collector's login and the UI's login get their rights on the new tables and functions with it. `pgvigil roles` is
   not run again for an upgrade, unless the release notes name a new login.

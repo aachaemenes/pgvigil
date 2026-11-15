@@ -207,6 +207,7 @@ func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
+	r.SetLog(log)
 	n, err := r.Migrate(ctx)
 	if err != nil {
 		return err

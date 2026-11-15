@@ -40,6 +40,63 @@ the subject: one test of yours at a time, on a browser of its own (a test never 
 The subject of a scheduled mail is the schedule's name and the page's window, as `Daily backups - last 24h
 (2026-11-11 07:00:00 to 2026-11-12 07:00:00, America/Los_Angeles)`.
 
+## The Daily checks mail
+
+One switch mails the **Daily checks** page every day: the kept schedule, named `Daily checks`, of `#/checks?w=24h`,
+daily at an hour in a time zone. It is off unless it is turned on in one of two places, and there is never more than
+one (the repository holds it to one live schedule):
+
+- **`pgvigil.yaml`**:
+
+  ```yaml
+  reports:
+    daily_checks:
+      enabled: true
+      at: "07:00"                 # the hour of the mail, HH:MM
+      tz: America/Los_Angeles     # the time zone of at (an IANA name, or UTC)
+      to: [dba@example.org]       # 1 to 50 addresses
+      as: alice                   # the UI user the page is drawn as
+      channel: mail               # an smtp channel of the alerts: block
+  ```
+
+  The block is absent or whole: `enabled` is required when the block is there, every other key is required when it is
+  `true`, and a key the block does not know stops `pgvigil serve` at its start with the key's name (a typo must never
+  read as "no block"). `as` is a person: a scheduled page is drawn in a headless browser signed in as its owner, so
+  the mail shows what that user's session shows; a user who can no longer sign in fails each day's mail, which is
+  alerted like any failed report mail, and the Daily checks page says why. `channel` is never picked for you.
+- **the Daily checks page**, when the file has no such block: the line under the page's heading says `Mail daily:
+  off` and **Mail daily...** asks for the hour, the zone, the addresses and the smtp channel; the mail is then drawn
+  as the admin who turned it on. **Change...** edits it and **Turn off** ends it.
+
+The file wins. While the block is in the file the page's line shows the mail's state and its next send, and its
+buttons are off with the reason beside them (`kept by pgvigil.yaml` or `turned off in pgvigil.yaml`): `enabled: true`
+keeps the schedule as the file says (one the page made is taken over in place), `enabled: false` ends it, also one the
+page made. A block taken out of the file ends the schedule the file kept; from then on the page decides. The line is
+also off, with its reason, on a server without the UI login (`pgvigil serve -no-login`, `pgvigil demo -serve`) and
+while the sender has recorded no smtp channel; on a server with no browser it says the mail cannot be drawn there.
+
+`pgvigil serve` applies the block once, at its start (it reads `pgvigil.yaml` once): the schedule is made, updated in
+place or ended, and a block equal to what is kept writes nothing. A setting that cannot be kept yet - the sender has
+not recorded the channel, the repository is not migrated, the user cannot sign in - is tried again each minute
+without a write, its reason logged once and shown on the page. While a schedule kept before is live, that schedule
+goes on as it was (its hour, its addresses, its user) until the file's setting can be kept: the page then says *The
+file's change is not applied: the schedule still runs as before (<why>)*, so a change that also took an address out
+is not in force until the reason is gone. Two servers on one repository carry the same block; with different blocks
+the last one started wins and nothing is rewritten after that. A setting equal to what is kept is logged once as
+*the setting is as kept: nothing written*.
+
+An hour or a zone changed while that day's turn is being drawn refuses the turn being drawn and moves the next send
+to the new hour's next time, as an edit of any schedule does: when that time is tomorrow, that day has no Daily
+checks mail. A change of the addresses, the user or the channel keeps the turn and draws it again with the new
+values. A refusal of the block names the key and the line of the file it stands on, never the value written there
+(`pgvigil report` prints it in its configuration check line).
+
+The mail goes out every day, also on a day every check passes: its body then holds the checks grid's header row and
+*All checks pass: ...*. The page shows the state at the send (its range applies to the instance tabs), so the
+`Window` lines of the mail read `last 24h` over a list that is "now". On the **Report mail** page the kept schedule
+is listed with the others, with `kept by ...` in place of Edit, Turn off and End (the repository refuses those for
+it); **Send test** works on it as on any schedule.
+
 ## How the mail equals the window
 
 There is one renderer. The browser that shows a page is also what builds its mail:
@@ -50,8 +107,12 @@ There is one renderer. The browser that shows a page is also what builds its mai
   same sort order, a column hidden with the grid tools left out, a value cell in the colour of the cell that
   judges it;
 - the attachment is the workbook **Export .xlsx** saves from the same page: a grid with no row is a sheet of its
-  header row there too; a page whose grids are all empty is mailed (the body its header lines, the workbook the
-  empty grids' sheets).
+  header row there;
+- a grid with no row is in the body too: its header row, and under it the sentence the screen shows for it (the
+  Daily checks page on a day nothing fails says *All checks pass: no failing or stale collections ...*), where a
+  grid without a sentence of its own says `No rows.`. A page whose grids are all empty is mailed, from the page and
+  on a schedule. (Before the Daily checks mail a scheduled page whose grids were all empty failed with `the page
+  drew no grid`, and an empty grid had no place in the body.)
 
 A scheduled page has no browser of its own, so the server opens one: at each turn the serve process starts a
 headless Chromium-family browser (`chromium`, Chrome or Edge, found on the PATH or at the usual install places;
@@ -113,7 +174,7 @@ repository dsn), like alert rules: `pgvigil serve -no-login` shows the page read
 
 | Login | May |
 |-------|-----|
-| the audit login (IN ROLE `pgvigil_collector`) | `import_report_mail` (a schedule's add, edit, end, on, off), `import_report_mail_send` (a mail queued), `import_report_mail_claim` (the due turns, leased so two servers never mail one turn twice) |
+| the audit login (IN ROLE `pgvigil_collector`) | `import_report_mail` (a schedule's add, edit, end, on, off), `import_report_mail_kept` (the Daily checks mail kept or ended: migration 0258), `import_report_mail_send` (a mail queued), `import_report_mail_claim` (the due turns, leased so two servers never mail one turn twice) |
 | the sender (IN ROLE `pgvigil_alerter`) | `report_mail_due` and `report_mail_record`: read the mails owed and write their answers |
 | a reader (IN ROLE `pgvigil_reader`) | read the schedules, the mails' log and the attempts |
 
@@ -128,6 +189,11 @@ mailed with Send now and four on a schedule drawn by the servers (one in America
 owner hid, one whose claim the proof takes over mid-render) and a Send test reach the sink, each schedule's turn
 once, and each mail's every cell equals the page's screen (its words and its colours); every workbook opens with
 openpyxl; a bad relay and an owner disabled before the turn are both failed and alerted; the role contract and
-the write door are checked. `internal/reportmail` has the unit tests of the cron lines, the addresses, the body's
+the write door are checked. Its part K (`scripts/proof-reportmail-kept.sh`) is the Daily checks mail: one live
+schedule whatever asks (twice, two sessions at once, the ordinary door, a second row by hand), the page's control in
+the browser, the file taking a page-made schedule over, `enabled: false` and a block removed ending it, a setting that
+cannot be kept yet writing nothing, and the green day - a repository where no check fails, whose turn is sent with
+*All checks pass* in its body. Not proven there: a send at the real hour (the proof brings the next send due), and
+two servers racing a keep (two sessions stand for it). `internal/reportmail` has the unit tests of the cron lines, the addresses, the body's
 allowlist, the message and the render keys (`TestRendersDoor`, `TestRendersRace`); `TestLiveSMTP` mails one report
 through a real relay when its three variables are set.
