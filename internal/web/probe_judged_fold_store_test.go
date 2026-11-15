@@ -77,7 +77,7 @@ func TestProbeJudgedFoldOnAStore(t *testing.T) {
 				ms = 30
 			}
 			if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_probe (minute, collector_id, host, address, method, sent, answered, ms_sum, ms_max, scheduled)
-				VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, $4, 'tcp', 1, $5, $6, $6, $7)`, r[0], col, host, addr, r[1], ms, name != "deflt"); err != nil {
+				VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, $4, 'tcp', 1, $5, $6::bigint, $6::int, $7)`, r[0], col, host, addr, r[1], ms, name != "deflt"); err != nil {
 				t.Fatal(err)
 			}
 		}
