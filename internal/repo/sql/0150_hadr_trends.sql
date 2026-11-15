@@ -289,7 +289,7 @@ BEGIN
         SELECT count(*) INTO v_rows FROM pgvigil.replication_sample s   -- the chunk's hour as replication_hours widens it
          WHERE s.instance_id = p_instance_id AND s.snapshot_at >= v_cut AND s.snapshot_at < v_cut + interval '1 hour';
         IF v_chunks > 0 AND extract(epoch FROM clock_timestamp() - v_t0) * 1000
-                            + v_rows * CASE WHEN v_done_rows >= 1000 THEN v_done_ms / v_done_rows ELSE 0.05 END > p_budget_ms THEN
+                            + v_rows * (CASE WHEN v_done_rows >= 1000 THEN v_done_ms / v_done_rows ELSE 0.05 END) > p_budget_ms THEN   -- a bare CASE ... THEN would end plpgsql's IF condition
           UPDATE pgvigil.replication_hourly_dirty d SET to_at = v_hi, noted_at = now()
            WHERE d.instance_id = p_instance_id AND d.source = v.source AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
           RETURN v_n;
