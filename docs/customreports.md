@@ -315,7 +315,9 @@ The community tools change upstream without asking pgvigil, so pgvigil watches t
   column pgvigil reads by name, a coarse type, a set or column removed, a preset's parameter, the help's descriptions,
   a new form parameter pgvigil's write filter does not take out, a new sibling, a run that stops succeeding) turns the
   run red with its lines in the run's summary; a **DRIFT** line (a column or set added, an exact type inside one
-  coarse type, nullability, order, a ported block or list that moved) is a warning on a green run. The pinned pass is
+  coarse type, nullability, order, a ported block or list that moved) is a warning on a green run. A section that had
+  no rows in one of the two runs (sp_HealthParser's one-column 'finding' set, sp_PressureDetector's 'THREADPOOL') is an
+  info line, its columns not compared that week: its shape follows the server's data, not the kit. The pinned pass is
   also compared with `shapes.json`, so a change of pgvigil's own code, its driver or the runner is told apart from a
   kit's. A run that could not run (a fetch, docker, a state the tools need not reached) is red and says why.
 - **Taking a change**: accommodate the code, then run the workflow by hand with its baseline input (or

@@ -97,11 +97,21 @@ func overlap(a, b Set) float64 {
 func colList(s Set) string { return strings.Join(names(s), ", ") }
 
 // compareSets aligns the baseline's sets with this run's in order (a set matches the next one sharing at least half
-// its columns): a set skipped in got is added (DRIFT), a set of want with no match is removed (BREAK) - unless got was
-// cut before it (a truncated set, the set cap): then the rest is 'unread' (INFO).
+// its columns, or at its own place the same set without rows: 'no rows', INFO): a set skipped in got is added (DRIFT),
+// a set of want with no match is removed (BREAK) - unless got was cut before it (a truncated set, the set cap): then
+// the rest is 'unread' (INFO).
 func compareSets(want, got []Set, atCap bool, add func(Class, string, string, ...any)) {
 	j := 0
 	for i, w := range want {
+		if j < len(got) && noRows(w, got[j]) {
+			if len(got[j].Columns) == 1 {
+				add(Info, "no rows", "set %d came back as its one-column %s set (no rows this run): its columns (%s) not compared", i+1, got[j].Columns[0].Name, colList(w))
+			} else {
+				add(Info, "no rows", "set %d is the one-column %s set in the baseline (no rows there): this run's columns (%s) are not in it", i+1, w.Columns[0].Name, colList(got[j]))
+			}
+			j++
+			continue
+		}
 		k := -1
 		for x := j; x < len(got); x++ {
 			if overlap(w, got[x]) >= 0.5 {
@@ -127,6 +137,22 @@ func compareSets(want, got []Set, atCap bool, add func(Class, string, string, ..
 	for x := j; x < len(got); x++ {
 		add(Drift, "set added", "a new set at the end (%s)", colList(got[x]))
 	}
+}
+
+// noRows: a section without rows comes back as one column in place of its columns (sp_HealthParser's finding = 'no
+// queries with significant waits found ...', sp_PressureDetector's THREADPOOL = 'No current THREADPOOL waits'), so
+// its shape follows the data. Checked only at the set's own place in the order: one of the two sets has one column,
+// named in a column of the other (equal or contained, any case), which has three or more.
+func noRows(a, b Set) bool {
+	one, full := a, b
+	if len(one.Columns) != 1 {
+		one, full = b, a
+	}
+	if len(one.Columns) != 1 || len(full.Columns) < 3 {
+		return false
+	}
+	n := strings.ToLower(one.Columns[0].Name)
+	return n != "" && slices.ContainsFunc(names(full), func(x string) bool { return strings.Contains(x, n) })
 }
 
 // compareColumns compares one aligned set's columns by name: removed (BREAK), added (DRIFT), the coarse type (BREAK),
