@@ -501,13 +501,21 @@ RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_n      int;
   v_prev   timestamptz;
+  v_prev_iv real;
+  v_gap    boolean;
   v_zero   int[];
 BEGIN
   SELECT count(*) INTO v_n FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'ctr';
   -- an older read arriving late: its scope's newest read is already stored
-  SELECT c.server_utc INTO v_prev FROM pgvigil.mssql_counter_read c WHERE c.instance_id = p_instance_id AND c.scope = p_scope
+  SELECT c.server_utc, c.interval_secs INTO v_prev, v_prev_iv FROM pgvigil.mssql_counter_read c
+   WHERE c.instance_id = p_instance_id AND c.scope = p_scope
    ORDER BY c.snapshot_at DESC LIMIT 1;
   IF v_prev IS NOT NULL AND v_prev >= p_now THEN RETURN; END IF;
+  -- F15: no change and no rate after a gap in time - the scope's read before is older than twice its interval (the
+  -- read before's own interval, else the scope's default: 60 s, 300 s per database); a schedule made longer costs one
+  -- read's rates, a collector stopped for hours never puts its hours on one point
+  v_gap := v_prev IS NOT NULL AND extract(epoch FROM p_now - v_prev)
+             > 2 * greatest(coalesce(v_prev_iv, 0), CASE p_scope WHEN 'database' THEN 300 ELSE 60 END);
 
   INSERT INTO pgvigil.mssql_counter_series AS k (instance_id, object, counter, inst, cntr_type, kind)
   SELECT DISTINCT ON (r->>'object', r->>'counter', r->>'instance') p_instance_id, r->>'object', r->>'counter', r->>'instance',
@@ -534,7 +542,7 @@ BEGIN
     -- restart, a reset, or a gap in which the counter was not listed
     CROSS JOIN LATERAL (SELECT CASE WHEN ok THEN x.value - l.value END AS dvalue,
                                CASE WHEN ok AND x.base IS NOT NULL AND l.base IS NOT NULL AND x.base >= l.base THEN x.base - l.base END AS dbase
-                          FROM (SELECT l.series_id IS NOT NULL AND v_prev IS NOT NULL AND l.server_utc = v_prev AND p_now > l.server_utc
+                          FROM (SELECT l.series_id IS NOT NULL AND v_prev IS NOT NULL AND NOT v_gap AND l.server_utc = v_prev AND p_now > l.server_utc
                                        AND pgvigil.mssql_same_run(l.server_start, p_start) AND x.value >= l.value AS ok) o) d;
 
   -- a rate, count or average at raw 0 (never counted since the start): the read names it, no row is stored

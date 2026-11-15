@@ -50,7 +50,8 @@
 #     instance row adding it back wins; Admin and yaml both refuse removing Logins/sec ('read by ...'); a removal of a
 #     counter in use from the yaml is refused at load; mssql_counter_yaml holds the lines the runner used.
 #  F. the gap rule: Pages Allocated/sec removed for two reads and added back: its first read back has no change and no
-#     rate; the read after has both.
+#     rate; the read after has both. F15 (a gap in time, review part 1 S3): a read 125 s after the one before (over twice
+#     the 60 s default) has no change and no rate on any series; the read 3 s after it has them.
 #  G. a restart (docker restart): the first read after it has no rate, no change and no average on any series; the
 #     read after has them.
 #  H. zero points: errors_offline_s is 0 at every instance read of the window (as many points as reads); errors_kill_s
@@ -462,6 +463,11 @@ sleep 2; col mssql_counters; G1=$(stored 'Access Methods' 'Pages Allocated/sec' 
 sleep 2; col mssql_counters; G2=$(stored 'Access Methods' 'Pages Allocated/sec' '_Total')
 [[ -n "$(field "$G1" 1)" && -z "$(field "$G1" 3)" && -z "$(field "$G1" 5)" && -n "$(field "$G2" 3)" && -n "$(field "$G2" 5)" ]] || fail "F: back from the gap [$G1] then [$G2]"
 ok "F: Pages Allocated/sec back after a gap: no change and no rate at its first read back [$G1], both at the next [$G2]"
+withrate() { pq "SELECT count(*) FILTER (WHERE s.rate IS NOT NULL OR s.dvalue IS NOT NULL) || '|' || count(*) FROM pgvigil.mssql_counter_sample s
+  WHERE s.instance_id = $SB AND s.snapshot_at = (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance')"; }
+sleep 125; col mssql_counters; T1=$(withrate); sleep 3; col mssql_counters; T2=$(withrate)
+[[ "$(field "$T1" 1)" == 0 && "$(field "$T2" 1)" -gt 0 ]] || fail "F: F15, after 125 s [$T1] (rows with a change or rate | rows), then [$T2]"
+ok "F: F15: the read 125 s after the one before has no change or rate on any of its $(field "$T1" 2) rows; the read 3 s later has $(field "$T2" 1)"
 
 echo "== G. a restart =="
 docker restart "$SQL" >/dev/null
