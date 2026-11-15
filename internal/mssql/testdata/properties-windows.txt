@@ -2,7 +2,8 @@
 # (16.0.1000.6), the default instance, Windows authentication as a sysadmin - 2026-11-15 21:15 UTC: its N5 lines as
 # sqlcmd printed them, the column's trailing pad removed. Every line ends '|~' except the view's lines of a string value
 # (TcpPort, TcpDynamicPorts): those end at their data with neither '|~' nor the pad - sqlcmd stopped at the NUL that
-# sys.dm_server_registry keeps at the end of a REG_SZ value (the same values through xp_instance_regread end '|~').
+# sys.dm_server_registry keeps at the end of a REG_SZ value (inferred, not read byte by byte; the same values through
+# xp_instance_regread end '|~').
 N5|version|16.0.1000.6|16|Windows|3|sysadmin 1|default instance 1|~
 N5|gate|1|1|1|login named 1|~
 N5|gate-rows|1|~

@@ -15,7 +15,14 @@ import (
 
 // readWindowsFixture reads testdata/properties-windows.txt (301c N5: what the lab's Windows VM answered to the code's own
 // four statements) into the gate, the view's rows, xp_instance_regread's row and xp_regread's row. A view line that
-// lacks its '|~' end was cut by sqlcmd at the NUL that ends the value (the fixture's header): its value gets that NUL back.
+// lacks its '|~' end was cut by sqlcmd at the NUL that ends the value (the fixture's header; inferred, not read byte by
+// byte): its value gets that NUL back. A view value '<NULL>' is nil; '<not printed>' (the runner prints only what the rows
+// are built from) on a value the code reads stops the test. IpAddress holds the runner's class of the address (ipv4,
+// ipv6, loopback), never the address: the rows of this server (ListenOnAllIPs 1) do not read it.
+// readByCode: the value names netFactsFromView reads
+var readByCode = map[string]bool{"forceencryption": true, "forcestrictencryption": true, "listenonallips": true, "enabled": true,
+	"tcpport": true, "tcpdynamicports": true, "ipaddress": true}
+
 func readWindowsFixture(t *testing.T, path string) (gate propGate, view []collect.Row, reg, prio collect.Row) {
 	t.Helper()
 	f, err := os.Open(path)
@@ -52,9 +59,14 @@ func readWindowsFixture(t *testing.T, path string) (gate propGate, view []collec
 		case "gate":
 			gate = propGate{read: true, registryView: x[1] == "1", instanceRegread: x[2] == "1", regread: x[3] == "1", login: "pgvigil_mon"}
 		case "view":
-			v := x[3]
-			if !whole {
-				v += "\x00"
+			var v any = x[3]
+			switch {
+			case x[3] == "<NULL>":
+				v = nil
+			case x[3] == "<not printed>" && readByCode[strings.ToLower(x[2])]:
+				t.Fatalf("the fixture's view line of %s has no value printed: the code reads it (%s)", x[2], line)
+			case !whole:
+				v = x[3] + "\x00"
 			}
 			view = append(view, collect.Row{"registry_key": x[1], "value_name": x[2], "value_data": v})
 		case "view-rows":
@@ -142,7 +154,7 @@ func TestNetRowsOnWindowsFixtureWithoutRegread(t *testing.T) {
 		t.Errorf("partial rows: %v", partial)
 	}
 	got := netOf(in)
-	why := " | not read: sys.dm_server_registry holds no SuperSocketNetLib encryption value here; no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [pgvigil_mon]"
+	why := " | not read: sys.dm_server_registry holds no ForceEncryption or ForceStrictEncryption value here; no right: EXECUTE on master.dbo.xp_instance_regread - in master, CREATE USER [pgvigil_mon]"
 	for _, k := range []string{keyForceEnc, keyForceStrictEnc} {
 		if !strings.HasPrefix(got[k], why) {
 			t.Errorf("%s: %q, want it to start %q", k, got[k], why)
@@ -152,5 +164,62 @@ func TestNetRowsOnWindowsFixtureWithoutRegread(t *testing.T) {
 		if got[k] != w {
 			t.Errorf("%s: %q, want %q", k, got[k], w)
 		}
+	}
+}
+
+// fixtureNet runs readNetwork and netRows over the fixture's answers with the view's rows given and xp_instance_regread
+// answering regAns (nil = never sent: a call fails the test); it says the rows, the partial rows and the calls.
+func fixtureNet(t *testing.T, view []collect.Row, major int, gate propGate, regAns func() ([]collect.Row, error)) (map[string]string, []collect.Row, int) {
+	t.Helper()
+	_, _, _, prio := readWindowsFixture(t, "testdata/properties-windows.txt")
+	old := netQuery
+	defer func() { netQuery = old }()
+	calls := 0
+	netQuery = func(_ context.Context, _ *sql.Conn, q string, _ ...any) ([]collect.Row, error) {
+		switch q {
+		case propsNetViewSQL:
+			return view, nil
+		case propsNetRegSQL:
+			calls++
+			if regAns == nil {
+				t.Errorf("xp_instance_regread sent where it is not needed")
+				return nil, fmt.Errorf("not expected")
+			}
+			return regAns()
+		case propsPrioritySQL:
+			return []collect.Row{prio}, nil
+		}
+		return nil, fmt.Errorf("the fixture holds no answer to %.60q", q)
+	}
+	in, partial := readNetwork(context.Background(), nil, Info{Kind: KindServer, Major: major}, "Windows", gate)
+	return netOf(in), partial, calls
+}
+
+// The fixture's view with other answers (the N5 fix's review): the view holding both encryption values sends no
+// xp_instance_regread; a failed read names its error in both rows and leaves one partial row; SQL Server 2019 reads
+// ForceEncryption alone; a view holding ForceEncryption only, with no right to the procedure, names the one it lacks.
+func TestNetRowsOnWindowsFixtureOtherAnswers(t *testing.T) {
+	gate, view, reg, _ := readWindowsFixture(t, "testdata/properties-windows.txt")
+	withBare := append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "1"), viewRow("", "ForceStrictEncryption", "0"))
+	if got, partial, calls := fixtureNet(t, withBare, 16, gate, nil); got[keyForceEnc] != "yes | " || got[keyForceStrictEnc] != "no | " || calls != 0 || len(partial) != 0 {
+		t.Errorf("the view holding both: force %q, strict %q, %d call(s), partial %v", got[keyForceEnc], got[keyForceStrictEnc], calls, partial)
+	}
+	got, partial, calls := fixtureNet(t, view, 16, gate, func() ([]collect.Row, error) { return nil, fmt.Errorf("Msg 22001, xp_instance_regread failed") })
+	if got[keyForceEnc] != " | not read: Msg 22001, xp_instance_regread failed" || got[keyForceStrictEnc] != got[keyForceEnc] || calls != 1 ||
+		len(partial) != 1 || partial[0]["source"] != "xp_instance_regread" {
+		t.Errorf("the read failing: force %q, strict %q, %d call(s), partial %v", got[keyForceEnc], got[keyForceStrictEnc], calls, partial)
+	}
+	if got[keyTCPPort] != "1433 | " {
+		t.Errorf("the read failing: tcp_port %q (the view's rows stand)", got[keyTCPPort])
+	}
+	got, _, calls = fixtureNet(t, view, 15, gate, func() ([]collect.Row, error) { return []collect.Row{reg}, nil })
+	if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not on this version: ForceStrictEncryption came with SQL Server 2022" || calls != 1 {
+		t.Errorf("SQL Server 2019: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
+	}
+	noRight := gate
+	noRight.instanceRegread = false
+	got, _, calls = fixtureNet(t, append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "0")), 16, noRight, nil)
+	if got[keyForceEnc] != "no | " || !strings.HasPrefix(got[keyForceStrictEnc], " | not read: sys.dm_server_registry holds no ForceStrictEncryption value here; no right: EXECUTE on master.dbo.xp_instance_regread") || calls != 0 {
+		t.Errorf("ForceEncryption alone in the view, no right: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
 	}
 }

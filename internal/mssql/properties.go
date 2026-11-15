@@ -508,8 +508,9 @@ func pctText(part, whole int64) string {
 //
 //   - Windows: sys.dm_server_registry (VIEW SERVER STATE; VIEW SERVER PERFORMANCE STATE from SQL Server 2022), the
 //     SuperSocketNetLib rows with the IPn entries; where the view is refused or empty, xp_instance_regread for the
-//     instance's values - without the view the IPn entries cannot be listed. Win32PrioritySeparation, never in the
-//     view, through xp_regread.
+//     instance's values - without the view the IPn entries cannot be listed; where the view lacks ForceEncryption or
+//     (from SQL Server 2022) ForceStrictEncryption, xp_instance_regread for those two (301c N5: the lab's 2022 VM holds
+//     no row of the bare key in the view). Win32PrioritySeparation, never in the view, through xp_regread.
 //   - Linux: the view is empty there; xp_instance_regread answers from SQL Server on Linux's own registry, which
 //     follows mssql-conf (network.tcpport, network.forceencryption: read back on 2022 after a restart). The
 //     protocols are TCP only; ListenOnAllIPs and Win32PrioritySeparation are Windows settings ('not on Linux').
@@ -631,7 +632,8 @@ func (f netFacts) encNote(p *int64, name string) string {
 }
 
 // regValue is a registry value as sys.dm_server_registry gives it, without the spaces and the terminating NUL a REG_SZ
-// value keeps there (301c N5: the lab's Windows VM, SQL Server 2022 - '1433' + NUL, a lone NUL for a blank value).
+// value keeps there (301c N5: the lab's Windows VM, SQL Server 2022 - '1433' + NUL, a lone NUL for a blank value;
+// inferred: sqlcmd cut those lines there, not read byte by byte).
 func regValue(v string) string {
 	return strings.TrimFunc(v, func(r rune) bool { return r == 0 || unicode.IsSpace(r) })
 }
@@ -1027,7 +1029,14 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 	if f := in.facts; f != nil && f.source == "sys.dm_server_registry" && (f.forceEnc == nil || (strictToo && f.forceStrict == nil)) {
 		switch {
 		case !gate.instanceRegread:
-			f.encWhy = "not read: sys.dm_server_registry holds no SuperSocketNetLib encryption value here; " + gate.noRight("xp_instance_regread")
+			var lacks []string
+			if f.forceEnc == nil {
+				lacks = append(lacks, "ForceEncryption")
+			}
+			if strictToo && f.forceStrict == nil {
+				lacks = append(lacks, "ForceStrictEncryption")
+			}
+			f.encWhy = "not read: sys.dm_server_registry holds no " + strings.Join(lacks, " or ") + " value here; " + gate.noRight("xp_instance_regread")
 		default:
 			rows, err := netQuery(ctx, conn, propsNetRegSQL)
 			switch {
