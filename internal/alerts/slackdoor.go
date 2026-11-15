@@ -34,6 +34,10 @@ import (
 // (up to 41 blocks, form-encoded); proof part B measures the largest post the sender builds against it.
 const SlackBodyMax = 256 << 10
 
+// slackProofHooks lets a proof build answer a click through a loopback stand-in of Slack's hooks host
+// (-ldflags "-X github.com/aachaemenes/pgvigil/internal/alerts.slackProofHooks=on"); never set in a release build.
+var slackProofHooks = ""
+
 // SlackPath is the door's path on serve.
 const SlackPath = "/api/slack/actions"
 
@@ -296,6 +300,9 @@ func (d *SlackDoor) AllowUser(c *SlackClick, now time.Time) bool {
 // point a response_url at slack-gov.com instead of slack.com; hooks.slack-gov.com is that form].
 func slackResponseURL(raw string) error {
 	u, err := url.Parse(raw)
+	if err == nil && slackProofHooks == "on" && u.Scheme == "http" && loopback(u.Hostname()) {
+		return nil // a proof build only: the proof's stand-in of Slack's hooks host on loopback
+	}
 	if err != nil || u.Scheme != "https" || u.User != nil || (u.Host != "hooks.slack.com" && u.Host != "hooks.slack-gov.com") {
 		return errors.New("the click's response_url is not Slack's hooks host")
 	}
