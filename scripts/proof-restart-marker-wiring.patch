@@ -1,3 +1,35 @@
+diff --git i/docs/performance.md w/docs/performance.md
+index daea736..4618d17 100644
+--- i/docs/performance.md
++++ w/docs/performance.md
+@@ -52,6 +52,27 @@ with a sample in any chart). Each title opens the detailed page.
+ API: `GET /api/performance?instance=N&from=&to=[&part=]` - parts `meta`, `grid` and, per engine, `cpu`, `sessions`,
+ `waits`, `db`, `io` (PostgreSQL) or `cpu`, `sessions`, `waits`, `db`, `io` (SQL Server).
+ 
++## Restarts, failovers and builds
++
++Every instance chart marks each restart, failover, crash restart and build change in its range, listed under the chart
++(`GET /api/frame/events`), and each one is an info finding for 24 hours: `instance restarted`, `instance failed over`,
++`crash restart`, `build changed`. They come from the reads pgvigil already makes: an instance's first read is no event.
++
++- SQL Server: the start time moved by over 120 s. On another machine (a failover cluster's physical node, else the
++  machine name) a failover; on the same machine a restart when the new start is after the read before; any other move
++  on the same machine is the host's clock stepping, no event.
++- PostgreSQL: the postmaster's start moved. A new start after the read before is a restart; a start at or before it
++  is a failover (a node already up took over), whatever the server's address: a container or pod recreated on a new
++  address reads restart, and a promotion behind a virtual IP or over a Unix socket reads failover. The edge: a standby
++  created and promoted between two reads started after the read before, so it reads restart (the timeline is not read).
++- A crash restart (PostgreSQL 15 and later): the statistics were reset with the postmaster kept, the server's crash
++  recovery; a crash the server log already reports is one finding, the log's. On 14 and older only the server log's
++  finding names it.
++- A build change: SQL Server's product version moved between two reads; on PostgreSQL a row of its version history (a
++  patch, an upgrade, an engine version read from AWS).
++- An event is dated at the new start when that is after the read before, else at the read that saw it: a failover onto
++  a node up for days is dated when it was seen, not days back. Events are kept 365 days.
++
+ ## Not proven
+ 
+ The SQL Server columns and charts on SQL Server 2016 (task 164), on Windows (task 144), on Amazon RDS for SQL Server (task 165) and on Azure SQL Managed Instance: `scripts/proof-mssql-perf.sh` runs on SQL Server 2017 to 2025 in Linux containers (through `scripts/proof-mssql-versions.sh`).
 diff --git i/internal/mssql/instance.go w/internal/mssql/instance.go
 index bcd7ac4..dbf1275 100644
 --- i/internal/mssql/instance.go

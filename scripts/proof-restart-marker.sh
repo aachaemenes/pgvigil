@@ -33,14 +33,19 @@
 #     machine_name up 3 days = 'failover' at its read (not 3 days back) and a 'instance failed over' finding; the
 #     product_version changed with the start unchanged = 'build' at that read's time. D2 built rows on a PostgreSQL
 #     instance (T1 / T2): over onto a standby up 3 days, back, over again onto it = three 'failover' events at their
-#     reads and three findings (red on 168ca53: two events, at the starts, no finding).
+#     reads and three findings (red on 168ca53: two events, at the starts, no finding). Finding 7 (the lead's 11-14
+#     23:1x, (a): a new start after the read before = restart, else failover, whatever the address; red on 81f943d,
+#     where the address decided): T9 a new address with a start 30 s after the read before = 'restart' (81f943d:
+#     'failover'); T10 one address (a VIP) and T11 none (a Unix socket), the standby up 3 days and started after the
+#     old primary = 'failover' (81f943d: 'restart').
 #  E. the PostgreSQL container on PG_OLD with its volume: two reads of instance, versions and dbstats write no event;
 #     docker restart: ONE 'restart' at pg_postmaster_start_time() exactly; 40 commits, two dbstats reads, a backend killed
 #     with SIGKILL (the postmaster runs crash recovery and stays up), the next dbstats read: ONE 'crash restart', the
 #     postmaster start unchanged, stats_reset before and after printed (expected NULL after: PostgreSQL 15 and later drop
-#     every statistics entry at a crash); recreated on PG_NEW on the same volume: ONE more 'restart' and version_history's
-#     'patch' row as one 'build' in instance_event_list; findings: 'instance restarted' 2, 'crash restart' 1, 'build
-#     changed' 1; frame marks: restart 2, crash restart 1, build 1.
+#     every statistics entry at a crash); recreated on PG_NEW on the same volume and on a second network of the run (so
+#     its address differs for certain: both printed; finding 7's red row, a 'failover' on 81f943d): ONE more 'restart'
+#     and version_history's 'patch' row as one 'build' in instance_event_list; findings: 'instance restarted' 2, 'crash
+#     restart' 1, 'build changed' 1; frame marks: restart 2, crash restart 1, build 1.
 #  F. the charts in a headless Chromium (the web built from this copy with the patch): the SQL Server instance's CPU and
 #     Memory pages and the PostgreSQL instance's Performance page over the run's window, in the light and the dark theme:
 #     every chart whose span holds an event's time carries that event's mark (kind and time) and lists its marks under
@@ -58,6 +63,7 @@ SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 LBL=pgvigil-proof=rst
 PGDB=pgv_rst_$SUF; MON=pgv_rmon_$SUF; MS=pgv-rstms-$SUF; PG=pgv-rstpg-$SUF; MSVOL=pgv-rstms-$SUF; PGVOL=pgv-rstpg-$SUF; HOSTN=pgvrst$SUF
+PGN1=pgv-rstpg1-$SUF; PGN2=pgv-rstpg2-$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
@@ -71,6 +77,7 @@ cleanup() {
   [[ -n "$CHRPID" ]] && kill "$CHRPID" 2>/dev/null || true
   docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker volume rm -f "$MSVOL" "$PGVOL" >/dev/null 2>&1 || true
+  docker network rm "$PGN1" "$PGN2" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   rm -rf "$TMPD"
 }
@@ -111,7 +118,9 @@ pg_up() { local r=; for _ in $(seq 1 90); do r=$(ps_ "select 1" 2>/dev/null || t
   export PGV_RST_PG="host=127.0.0.1 port=$p user=postgres password=$PG_PW dbname=postgres sslmode=disable"; }
 ms_run() { docker run -d --name "$MS" --label "$LBL-$SUF" --hostname "$HOSTN" --memory 4g --env-file "$TMPD/sa.env" -v "$MSVOL:/var/opt/mssql" \
   -p 127.0.0.1::1433 "mcr.microsoft.com/mssql/server:$1" >/dev/null; }
-pg_run() { docker run -d --name "$PG" --label "$LBL-$SUF" --env-file "$TMPD/pg.env" -v "$PGVOL:/var/lib/postgresql/data" -p 127.0.0.1::5432 "postgres:$1" >/dev/null; }
+# pg_run <tag> <network>: the run's own networks, so a recreate on the second one has another address for certain
+pg_run() { docker run -d --name "$PG" --label "$LBL-$SUF" --network "$2" --env-file "$TMPD/pg.env" -v "$PGVOL:/var/lib/postgresql/data" \
+  -p 127.0.0.1::5432 "postgres:$1" >/dev/null; }
 # events of an instance: kind=count in kind order; the newest event of a kind
 evs() { pq "SELECT coalesce(string_agg(kind || '=' || n, ' ' ORDER BY kind), 'none') FROM (SELECT kind, count(*) n FROM pgvigil.instance_event_list WHERE instance_id = $1 GROUP BY kind) x"; }
 # times are compared as epoch seconds (psql prints in its session's zone, the DMV in the container's)
@@ -209,18 +218,30 @@ ok "D: no event within 120 s, for a first read or for a clock step on one machin
 SP=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
          VALUES ('rstpgsyn', 'postgres', '{}', now(), now(), true, 'postgres') RETURNING instance_id" | head -1)
 pq "INSERT INTO pgvigil.instance_state (instance_id, snapshot_at, postmaster_start, server_addr) VALUES ($SP, $(rk 0), $(rk 0) - interval '10 days', '10.0.0.1')" >/dev/null
-ps_() { pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk "$1"), postmaster_start = $(rk "$1") - interval '$2', server_addr = '$3' WHERE instance_id = $SP" >/dev/null; }
-ps_ 1 '3 days' 10.0.0.2; P1_=$(pq "SELECT count(*) || '|' || count(*) FILTER (WHERE at = ($(rk 1))) FROM pgvigil.instance_events WHERE instance_id = $SP")
+pst() { pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk "$1"), postmaster_start = $(rk "$1") - interval '$2', server_addr = '$3' WHERE instance_id = $SP" >/dev/null; }
+pst 1 '3 days' 10.0.0.2; P1_=$(pq "SELECT count(*) || '|' || count(*) FILTER (WHERE at = ($(rk 1))) FROM pgvigil.instance_events WHERE instance_id = $SP")
 pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk 2), postmaster_start = $(rk 2) - interval '5 days', server_addr = '10.0.0.1' WHERE instance_id = $SP" >/dev/null
 pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk 3), postmaster_start = $(rk 1) - interval '3 days', server_addr = '10.0.0.2' WHERE instance_id = $SP" >/dev/null
 P3_=$(pq "SELECT (SELECT count(*) FROM pgvigil.instance_events WHERE instance_id = $SP AND kind = 'failover') || '|' || (SELECT count(*) FROM pgvigil.restart_findings WHERE instance_id = $SP)")
 echo "   PostgreSQL: over onto a standby up 3 days: events|at its read $P1_; over, back, over: failovers|findings $P3_"
 [[ "$P1_" == "1|1" && "$P3_" == "3|3" ]] || fail "D2: [$P1_] [$P3_] (want 1|1, then 3|3)"
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $SP" >/dev/null
-ok "D2: a PostgreSQL failover onto a standby up 3 days is dated at its read with its finding; over, back and over again: three events, three findings"
+# finding 7: pgcase <name> <the first address> <the second read's start> <the second address> (SQL literals): its events
+pgcase() { local i; i=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         VALUES ('$1', 'postgres', '{}', now(), now(), true, 'postgres') RETURNING instance_id" | head -1)
+  pq "INSERT INTO pgvigil.instance_state (instance_id, snapshot_at, postmaster_start, server_addr) VALUES ($i, $(rk 0), $(rk 0) - interval '10 days', $2)" >/dev/null
+  pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk 1), postmaster_start = $3, server_addr = $4 WHERE instance_id = $i" >/dev/null
+  evs "$i"; pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $i" >/dev/null; }
+P9_=$(pgcase rstpg9 "'172.18.0.2'" "$(rk 0) + interval '30 seconds'" "'172.18.0.3'")
+P10=$(pgcase rstpg10 "'10.0.0.100'" "$(rk 1) - interval '3 days'" "'10.0.0.100'")
+P11=$(pgcase rstpg11 NULL "$(rk 1) - interval '3 days'" NULL)
+echo "   finding 7: T9 a new address, a start after the read before: $P9_; T10 one address (a VIP), a standby up 3 days: $P10; T11 a socket (no address): $P11"
+[[ "$P9_|$P10|$P11" == "restart=1|failover=1|failover=1" ]] || fail "D2: finding 7 [$P9_|$P10|$P11] (want restart=1|failover=1|failover=1)"
+ok "D2: a PostgreSQL failover onto a standby up 3 days is dated at its read with its finding; over, back and over again: three events, three findings; a start after the read before is a restart and one before it a failover, whatever the address"
 
 echo "== E. PostgreSQL on $PG_OLD: restarted, crashed, recreated on $PG_NEW =="
-docker volume create "$PGVOL" >/dev/null; pg_run "$PG_OLD"; pg_up
+docker network create --label "$LBL-$SUF" "$PGN1" >/dev/null; docker network create --label "$LBL-$SUF" "$PGN2" >/dev/null
+docker volume create "$PGVOL" >/dev/null; pg_run "$PG_OLD" "$PGN1"; pg_up
 col rstpg instance versions dbstats; sleep 5; col rstpg instance versions dbstats
 PGI=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'rstpg'")
 [[ "$(evs "$PGI")" == none ]] || fail "E: an event from the first reads: $(evs "$PGI")"
@@ -239,13 +260,16 @@ PS2=$(ps_ "select extract(epoch from pg_postmaster_start_time())"); SR1=$(ps_ "s
 col rstpg dbstats
 echo "   crashed: the postmaster start $PS1 -> $PS2, stats_reset $SR0 -> $SR1, events $(evs "$PGI")"
 [[ "$PS1" == "$PS2" && "$(evs "$PGI")" == "crash restart=1 restart=1" ]] || fail "E: the crash restart [$PS2|$SR1|$(evs "$PGI")]"
-docker stop -t 30 "$PG" >/dev/null; docker rm "$PG" >/dev/null; pg_run "$PG_NEW"; pg_up; col rstpg instance versions dbstats; sleep 5; col rstpg instance dbstats
+AD0=$(pq "SELECT coalesce(server_addr, 'NULL') FROM pgvigil.instance_state WHERE instance_id = $PGI")
+docker stop -t 30 "$PG" >/dev/null; docker rm "$PG" >/dev/null; pg_run "$PG_NEW" "$PGN2"; pg_up; col rstpg instance versions dbstats; sleep 5; col rstpg instance dbstats
+AD1=$(pq "SELECT coalesce(server_addr, 'NULL') FROM pgvigil.instance_state WHERE instance_id = $PGI")
 E3=$(evs "$PGI"); F3=$(fnd "$PGI"); K3=$(marks "$PGI")
 VH=$(pq "SELECT change || ' ' || old_value || ' -> ' || new_value FROM pgvigil.version_history WHERE instance_id = $PGI")
-echo "   recreated: version_history [$VH]; events $E3; findings $F3; marks $K3"
+echo "   recreated: the address $AD0 -> $AD1; version_history [$VH]; events $E3; findings $F3; marks $K3"
+[[ "$AD0" != "$AD1" && "$AD1" != NULL ]] || fail "E: the recreated container kept its address [$AD0 -> $AD1]: finding 7's red row is not exercised"
 [[ "$VH" == "patch $PG_OLD"*" -> $PG_NEW"* && "$E3" == "build=1 crash restart=1 restart=2" && "$F3" == "build changed=1 crash restart=1 instance restarted=2" \
    && "$K3" == "build=1 crash restart=1 restart=2" ]] || fail "E: [$VH|$E3|$F3|$K3]"
-ok "E: a restart at the postmaster's start, a crash restart with the postmaster kept, a minor version move as a build"
+ok "E: a restart at the postmaster's start, a crash restart with the postmaster kept, a recreate on another address a restart, a minor version move as a build"
 
 echo "== F. the charts in a headless Chromium, both themes =="
 (cd "$TMPD" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1) || fail "F: npm install axe-core"

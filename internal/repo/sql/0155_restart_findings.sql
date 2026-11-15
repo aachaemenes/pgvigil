@@ -12,9 +12,13 @@
 --                     new start after the read before = 'restart', any other move no event (a clock step: the lead's
 --                     11-14 22:5x, F16's clock rule (a)); product_version changed = 'build' (old and new with the
 --                     update level).
---     instance_state  postmaster_start moved (exact: no tolerance), the read newer than the stored one: later on the
---                     same server_addr = 'restart'; earlier, or on another server_addr = 'failover' (a replica that
---                     started before it was promoted).
+--     instance_state  postmaster_start moved (exact: no tolerance), the read newer than the stored one: a new start
+--                     after the read before = 'restart'; a start at or before it = 'failover' (a node already up took
+--                     over), whatever the address (the lead's 11-14 23:1x, finding 7 (a): inet_server_addr() no longer
+--                     decides, so a recreated container or pod reads 'restart', and a VIP or a Unix socket, which keep
+--                     one address or none, reads a promotion as 'failover'; server_addr stays in the words). The edge:
+--                     a standby created and promoted between two reads started after the read before and reads
+--                     'restart' (the timeline is not read).
 --     dbstats_last    0011's restart epoch rose with the postmaster start unchanged, the commits fell, and stats_reset
 --                     unchanged or NULL = 'crash restart' (the postmaster stays up through crash recovery; a manual
 --                     pg_stat_reset moves stats_reset to a time; PostgreSQL 15 and later drop every statistics entry
@@ -172,9 +176,7 @@ BEGIN
   IF NEW.postmaster_start IS NOT NULL AND OLD.postmaster_start IS NOT NULL THEN
     INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
     VALUES (NEW.instance_id, CASE WHEN NEW.postmaster_start > OLD.snapshot_at THEN NEW.postmaster_start ELSE NEW.snapshot_at END,
-            CASE WHEN NEW.postmaster_start < OLD.postmaster_start
-                   OR (NEW.server_addr IS NOT NULL AND OLD.server_addr IS NOT NULL AND NEW.server_addr <> OLD.server_addr)
-                 THEN 'failover' ELSE 'restart' END,
+            CASE WHEN NEW.postmaster_start > OLD.snapshot_at THEN 'restart' ELSE 'failover' END,
             pgvigil.instance_event_start(OLD.server_addr, OLD.postmaster_start), pgvigil.instance_event_start(NEW.server_addr, NEW.postmaster_start),
             'instance_state', NEW.snapshot_at, OLD.snapshot_at)
     ON CONFLICT DO NOTHING;
