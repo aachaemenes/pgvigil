@@ -195,6 +195,12 @@
 #   AB3  a failover (hadr-ab-r read as the writer, hadr-ab-w as a reader): the two STAY on hadr-ab-w (their value
 #        unchanged, so the alert keeps its key), hadr-ab-r's cell names hadr-ab-w [red FAIL: both raise] [red2 FAIL: the
 #        findings move to the new writer hadr-ab-r]
+#   ABK  (the lead 08:1x, written 08:2x before its runs) through the alert engine, around AB3's failover: before it,
+#        alert_mark / alert_due on a proof channel (warning floor, repeat 60 s, clear_after 0) gives the cluster's two as
+#        'firing' on hadr-ab-w only, alert_record stores them sent and each is acknowledged (import_ack 'alert_ack'); after
+#        the failover, alert_mark / alert_due 2 minutes later gives NOTHING for the cluster - no repeat (acknowledged),
+#        no new 'firing', no 'resolved' [red FAIL: hadr-ab-r's two fire too and repeat] [red2 FAIL: the two fire anew on
+#        hadr-ab-r]
 #   AB4  the holder's reads stop (hadr-ab-w's rows read 2 hours ago): hadr-ab-r, read fresh, raises the two once (the
 #        overview keeps reads of the last hour) [red ok, red2 ok: a guard - a holder chosen without the read's age
 #        leaves the cluster silent]
@@ -303,7 +309,7 @@
 # read, bumped after its hour was rebuilt) and #8 (the wide-write path's own error) - races and an FK case, reasoned.
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
 # L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU AF AB RP R3 R3X L4 RU LK LD CC SQ CL; a riding row runs its host: L7 R2W, NS and NS2 G,
-# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, LDR LDB LD, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF2 AF; G2R G; AB2-AB9 AB); an unknown name stops the run; unset = all.
+# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, LDR LDB LD, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF2 AF; G2R G; AB2-AB9 ABK AB); an unknown name stops the run; unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -313,7 +319,7 @@ ok() { echo "ok   $*"; }
 ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL AF AB "
 if [[ -n "${PROOF_ONLY:-}" ]]; then   # a riding row runs its host row; an unknown name is a typo, not an empty OK
   PO=""; for n in ${PROOF_ONLY//,/ }; do
-    case "$n" in L7) n=R2W ;; NS|NS2|G2R) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; LDR|LDB) n=LD ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; AF2) n=AF ;; AB[2-9]) n=AB ;; esac
+    case "$n" in L7) n=R2W ;; NS|NS2|G2R) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; LDR|LDB) n=LD ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; AF2) n=AF ;; AB[2-9]|ABK) n=AB ;; esac
     [[ "$ROWS" == *" $n "* ]] || { echo "FAIL PROOF_ONLY names an unknown row: $n"; exit 1; }
     PO+="$n,"; done; PROOF_ONLY=$PO
 fi
@@ -921,7 +927,25 @@ if want AB; then
   [[ "$r" == "hadr-ab-x no snapshot in 24 h, hadr-ab-x retention under 7 days" ]] \
     && ok "AB2 another cluster's writer keeps its own findings ($r)" || fail "AB2 a second cluster: '$r' (expected hadr-ab-x's two)"
   q "update pgvigil.instances set is_active = false where instance_id = $ABX" >/dev/null
+  # ABK: the cluster's alert through the alert engine, acknowledged before the failover (a proof channel, no sender)
+  ABCH='[{"name":"abproof","min_severity":"warning","repeat_secs":60,"clear_after_secs":0}]'
+  abdue() { # abdue <at expression>: alert_mark then alert_due at that time: the cluster's due rows '<event> <instance> <rule>'
+    q "select pgvigil.alert_mark($1, '$ABCH')" >/dev/null
+    q "select coalesce(string_agg(d.event || ' ' || d.instance || ' ' || d.setting, ', ' order by d.instance, d.setting, d.event), 'none')
+         from pgvigil.alert_due($1, '$ABCH') d where d.instance in ('hadr-ab-w', 'hadr-ab-r') and (d.setting like 'retention %' or d.setting = 'no snapshot in 24 h')"; }
+  r=$(abdue "now()")
+  q "select pgvigil.alert_record(now(), jsonb_build_object('outcome', 'sent', 'channel', 'abproof', 'kind', 'proof', 'items',
+       (select jsonb_agg(to_jsonb(d)) from pgvigil.alert_due(now(), '$ABCH') d where d.instance in ('hadr-ab-w', 'hadr-ab-r')
+           and (d.setting like 'retention %' or d.setting = 'no snapshot in 24 h'))))" >/dev/null
+  r2=$(q "select count(*) from (select pgvigil.import_ack(now(), jsonb_build_object('op', 'add', 'kind', 'alert_ack', 'ui_user', 'proof',
+            'instance_name', s.instance_name, 'finding_key', s.finding_key, 'note', 'proof ABK')) ->> 'outcome' o
+          from pgvigil.alert_state s where s.channel = 'abproof' and s.cleared_at is null and s.instance_name = 'hadr-ab-w') x where o = 'done'")
+  echo "  ABK before the failover: due '$r'; acknowledged on hadr-ab-w: $r2"
   abread "$ABR" false ab-one; abread "$ABW" true ab-one   # a failover: hadr-ab-r is the writer now
+  r3=$(abdue "now() + interval '2 minutes'")
+  [[ "$r" == "firing hadr-ab-w no snapshot in 24 h, firing hadr-ab-w retention under 7 days" && "$r2" == 2 && "$r3" == none ]] \
+    && ok "ABK the cluster's alert acknowledged on its holder before a failover: nothing due 2 minutes after it (no repeat, no new firing, no resolve)" \
+    || fail "ABK before the failover '$r' (expected the two firing on hadr-ab-w), acknowledged '$r2' (expected 2), due after it '$r3' (expected none)"
   r=$(abf); r2=$(abcell)
   [[ "$r" == "hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days" && "$r2" == "hadr-ab-r=hadr-ab-w hadr-ab-w=-" ]] \
     && ok "AB3 after a failover the findings stay on their holder hadr-ab-w, now a reader ($r; $r2)" || fail "AB3 after a failover: '$r', cells '$r2' (expected only hadr-ab-w's two, 'hadr-ab-r=hadr-ab-w hadr-ab-w=-': the holder is stable)"
