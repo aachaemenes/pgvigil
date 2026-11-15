@@ -711,6 +711,8 @@ try {
     const said = e => (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && x.textContent.trim().length > 10; });
     const on = w.filter(e => !off(e)), unsaid = w.filter(e => off(e) && !said(e));
     return w.length + ' on:' + on.length + ' unsaid:' + unsaid.length + (on.length + unsaid.length ? ' [' + [...on, ...unsaid].map(name).slice(0, 12).join(' | ') + ']' : ''); })()`));
+  // task 312 (review C, 3): the inventory's export is a read, so it stays on in a read-only page
+  out('P10.export', await ev(`(() => { const b = [...document.querySelectorAll('main .applications button')].find(b => b.textContent.trim().startsWith('Export the inventory')); return !b ? 'none' : (b.disabled || b.getAttribute('aria-disabled') === 'true') ? 'off' : 'on'; })()`));
   out('P10.contacts', await click('Show contacts of Http App'));
   out('P10.words', await ev(`document.querySelector('main section[aria-label="Application Http App"]')?.textContent.includes('contacts hidden: the login is off') ?? false`));
   for (const t of ['light', 'dark']) { await theme(t); await go(U6, '#/admin_applications'); const o = await click('Open Http App'); out(`P11.roclick_${t}`, String(o).startsWith('NOT FOUND') ? o : 'ok'); out(`P11.ro_${t}`, await axe()); }
@@ -766,8 +768,8 @@ if [[ $P_SET == 1 ]]; then
     || bad "P13 the page's notice '$(pv P13.note)'"
   # P10
   c10=$(pv P10.controls); n10=${c10%% *}
-  [[ $(pv P10.ready) == true && $n10 -ge 8 && $c10 == *" on:0 unsaid:0" && $(pv P10.words) == true ]] && ok "P10 -no-login: $n10 write controls, every one off with a visible reason; contacts: 'contacts hidden: the login is off'" \
-    || bad "P10 ready $(pv P10.ready); controls '$c10'; contacts words $(pv P10.words) ('$(pv P10.contacts)')"
+  [[ $(pv P10.ready) == true && $n10 -ge 8 && $c10 == *" on:0 unsaid:0" && $(pv P10.words) == true && $(pv P10.export) == on ]] && ok "P10 -no-login: $n10 write controls, every one off with a visible reason; contacts: 'contacts hidden: the login is off'; the inventory's export $(pv P10.export)" \
+    || bad "P10 ready $(pv P10.ready); controls '$c10'; contacts words $(pv P10.words) ('$(pv P10.contacts)'); the inventory's export '$(pv P10.export)'"
   # P11
   [[ $(pv P11.clicks_light) == ok && $(pv P11.clicks_dark) == ok && $(pv P11.roclick_light) == ok && $(pv P11.roclick_dark) == ok && $(pv P11.light) == "0 "* && $(pv P11.dark) == "0 "* && $(pv P11.ro_light) == "0 "* && $(pv P11.ro_dark) == "0 "* ]] && ok "P11 axe-core 4.14.0: 0 violation nodes, light and dark, writable (contacts open) and read only" \
     || bad "P11 clicks '$(pv P11.clicks_light)' / '$(pv P11.clicks_dark)' / '$(pv P11.roclick_light)' / '$(pv P11.roclick_dark)'; light '$(pv P11.light)'; dark '$(pv P11.dark)'; read only '$(pv P11.ro_light)' / '$(pv P11.ro_dark)'"

@@ -52,8 +52,9 @@ func TestImportCSVForms(t *testing.T) {
 	if f := mustParse(t, []byte(semi)); len(f.Rows) != 1 || f.Rows[0].Database != "sales" || f.Rows[0].Application != "Billing" {
 		t.Errorf("a semicolon file: %+v", f.Rows)
 	}
-	if f := mustParse(t, []byte("instance,application,description\npg-1,Billing,say \"hi\" now\n")); f.Rows[0].Description != `say "hi" now` {
-		t.Errorf("a bare quote: %q", f.Rows[0].Description)
+	// review B m2: a bad quote is refused with its line, never read on to the file's end (LazyQuotes off)
+	if _, err := parseInventory([]byte("instance,application,description\npg-1,Billing,\"Main\" billing app\npg-2,HR,x\npg-3,Ops,y\n")); err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("a quote that ends a field early: %v, want a refusal naming line 2", err)
 	}
 	if _, err := parseInventory([]byte("instance\tapplication\npg-1\tBilling\n")); err == nil || !strings.Contains(err.Error(), "tab-separated") {
 		t.Errorf("a tab-separated file: %v", err)
@@ -68,7 +69,7 @@ func TestImportCSVForms(t *testing.T) {
 
 // The CSV the route writes reads back cell for cell: the guard adds one ' and the import takes one off.
 func TestImportCSVRoundTrip(t *testing.T) {
-	vals := []string{"=SUM(1)", "'=x", "''+y", "-name", "+1", "@a", "\tx", "plain", "'plain", "a,b", "line1\nline2", "2024", ""}
+	vals := []string{"=SUM(1)", "'=x", "''+y", "-name", "+1", "@a", "\tx", "plain", "'plain", "a,b", "line1\nline2", "2024", "\rx", "a\rb", ""}
 	tb := &table{Columns: invColumns}
 	for _, v := range vals {
 		row := make([]any, len(invColumns))
@@ -164,7 +165,7 @@ func TestImportXLSX(t *testing.T) {
 			t.Errorf("%s row 2: %+v", name, r)
 		}
 		r = f.Rows[1]
-		if r.Line != 3 || !strings.Contains(r.Why, "formula") || r.Database != "no" || r.Description != "two\r\nlines" && r.Description != "two\nlines" {
+		if r.Line != 3 || !strings.Contains(r.Why, "formula") || r.Database != "no" || r.Description != "two\nlines" {
 			t.Errorf("%s row 3: %+v", name, r)
 		}
 	}
@@ -210,5 +211,90 @@ func TestImportXLSXDates(t *testing.T) {
 	rows, err := xlsxRows([]byte(`<worksheet><sheetData><row r="1"><c r="A1" s="2"><v>45658</v></c><c r="B1" s="0"><v>2024</v></c></row></sheetData></worksheet>`), nil, d)
 	if err != nil || len(rows) != 1 || rows[0].cells[0] != "2025-01-01" || rows[0].cells[1] != "2024" {
 		t.Errorf("cells %v (%v)", rows, err)
+	}
+}
+
+// xlsxBook: a workbook whose <sheets> are given (each r:id rId1, the one sheet part) around one sheet's XML
+func xlsxBook(t *testing.T, sheets, workbookPr, sheet string) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	z := zip.NewWriter(&b)
+	for _, p := range [][2]string{
+		{"[Content_Types].xml", `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`},
+		{"xl/workbook.xml", `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` + workbookPr + `<sheets>` + sheets + `</sheets></workbook>`},
+		{"xl/_rels/workbook.xml.rels", `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`},
+		{"xl/worksheets/sheet1.xml", `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>` + sheet + `</sheetData></worksheet>`},
+	} {
+		w, err := z.Create(p[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(p[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+func inl(ref, v string) string {
+	return `<c r="` + ref + `" t="inlineStr"><is><t>` + v + `</t></is></c>`
+}
+
+// review B M1-M4, A M4, m4: a hostile or careless file is refused in words, or read within its caps
+func TestImportHostile(t *testing.T) {
+	head := `<row r="1">` + inl("A1", "instance") + inl("B1", "application") + `</row>`
+	one := `<sheet name="Inventory" sheetId="1" r:id="rId1"/>`
+	// M1: the elements of a JSON array are counted before any row is built (25001 empty objects: not 'no line')
+	if _, err := parseInventory([]byte("[" + strings.Repeat("{},", 25000) + "{}]")); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Errorf("25001 JSON elements: %v, want 'at most'", err)
+	}
+	// M1: keys no column takes are never cells of a row; their names listed within a cap
+	var keys strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&keys, `"k%05d": 1, `, i)
+	}
+	f := mustParse(t, []byte(`[{`+keys.String()+`"instance": "pg-1", "application": "A"}]`))
+	if len(f.Rows) != 1 || f.Rows[0].Application != "A" || len(f.Unread) > 41 {
+		t.Errorf("5000 unknown keys: %d rows, %d names not read (want at most 41)", len(f.Rows), len(f.Unread))
+	}
+	// M2: a cell far to the right is not a reason to build 16384 cells
+	rows, err := xlsxRows([]byte(`<worksheet><sheetData><row r="1">`+inl("A1", "x")+`<c r="XFD1"><v>1</v></c></row></sheetData></worksheet>`), nil, nil)
+	if err != nil || len(rows) != 1 || len(rows[0].cells) > 64 {
+		t.Errorf("a cell at XFD1: %d rows (%v), want one row of at most 64 cells", len(rows), err)
+	}
+	// M3: a workbook naming its sheet part 40 times
+	if _, err := parseInventory(xlsxBook(t, strings.Repeat(one, 40), "", head)); err == nil || !strings.Contains(err.Error(), "sheets") {
+		t.Errorf("40 sheets: %v, want a refusal naming the sheets", err)
+	}
+	// A M4: a row number twice
+	if _, err := parseInventory(xlsxBook(t, one, "", head+`<row r="2">`+inl("A2", "pg-1")+inl("B2", "A")+`</row><row r="2">`+inl("A2", "pg-2")+inl("B2", "B")+`</row>`)); err == nil || !strings.Contains(err.Error(), "row 2") {
+		t.Errorf("row 2 twice: %v, want a refusal naming row 2", err)
+	}
+	// M4: two header cells for one column
+	if _, err := parseInventory([]byte("Instance,Server,Application\nHOST1\\PROD,HOST1,Billing\n")); err == nil || !strings.Contains(err.Error(), "Instance") || !strings.Contains(err.Error(), "Server") {
+		t.Errorf("Instance and Server: %v, want a refusal naming both", err)
+	}
+	if _, err := parseInventory([]byte(`[{"Instance": "a", "instance": "b", "application": "c"}]`)); err == nil {
+		t.Error("JSON keys Instance and instance: taken")
+	}
+	// m4: an element that is no object is a refused line, never dropped
+	f = mustParse(t, []byte(`[{"instance": "pg-1", "application": "A"}, "pg-2,HR", 5]`))
+	if len(f.Rows) != 3 || f.Rows[1].Why == "" || f.Rows[2].Why == "" {
+		t.Errorf("elements that are no objects: %+v", f.Rows)
+	}
+	// coverage (m8): an error cell, a shared string out of range
+	rows, _ = xlsxRows([]byte(`<worksheet><sheetData><row r="1"><c r="A1" t="e"><v>#N/A</v></c></row><row r="2"><c r="A2" t="s"><v>9</v></c></row></sheetData></worksheet>`), []string{"x"}, nil)
+	if len(rows) != 2 || !strings.Contains(rows[0].why, "error value") || !strings.Contains(rows[1].why, "no shared string") {
+		t.Errorf("an error cell, a shared string out of range: %+v", rows)
+	}
+}
+
+// review B m7: a time alone (a serial under 1) reads as its time, not as a day of 1899
+func TestImportXLSXTimes(t *testing.T) {
+	if got := xlsxSerialText("0.5"); got != "12:00:00" {
+		t.Errorf("0.5 read %q, want 12:00:00", got)
 	}
 }

@@ -17,6 +17,8 @@
 #  M8 a person's re-assign of an imported row takes it over: source 'entered'
 #  M9 each of M1-M6 forced (force true): done - the refusals are the rule's, not a broken write
 #  M10 an application named '(none)' (the file's unassign token) refused in words
+#  M11 (R4's mark arm, as built) an import's mark of a database a person marked: done, nothing written, the mark the
+#      person's;  M12 (review A, M4) a payload whose line numbers repeat: refused in words
 # On a tree without 0146 M1-M7 and M10 FAIL: the red run (6a3b56b).
 #
 # Section F, the file through the API (a serve whose reads are a login IN ROLE pgvigil_reader, pgvigil_auth and whose
@@ -39,8 +41,12 @@
 #  F14 (R14) a store without 0146's functions answers in words;  F16 (R16) a database renamed between export and
 #      import: no change;  F17 (R17) an application renamed between them: the old name previewed as an add
 #  F18 (R18) a second import while one holds the lock: refused at once;  F19 (R19) a credential-shaped cell refused,
-#      its text in no answer or audit row;  F21 (R21) '(none)': nothing on an inheriting database, a conflict on a
-#      person's own assignment, removed when ticked
+#      its text in no answer or audit row;  F21 (R21) '(none)': nothing on an inheriting database (the preview says so),
+#      a conflict on a person's own assignment (removed when ticked), a change on an import's (any case of the word)
+#  The review's rows (agent-runs 20261114-151618 / 152723 / 153929 / 155152): F22 a ticked application conflict's words
+#  name every field it writes; F23 a line refused later adds or refuses no application; F24 an .xlsx with a repeated
+#  row number refused in words; F25 a server-level line applied, its tag move counted; F26 (P-6, as built) an import's
+#  re-assign of its own row under a person's server is a change; F19b one cell at a time for the credential check
 set -uo pipefail
 cd "$(dirname "$0")/.."
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -129,6 +135,12 @@ st1=$(q "select set_at || '|' || set_by from pgvigil.app_assignments where insta
 # M8
 wp assign "{\"op\": \"assign\", \"app_id\": $EA, \"targets\": [{\"instance_id\": $MI, \"database\": \"m3\"}]}" >/dev/null
 [[ $(asg_of "$MI" "'m3'") == "$EA|-|entered" ]] && ok "M8 a person's re-assign of an imported row takes it over as entered" || bad "M8 m3 $(asg_of "$MI" "'m3'")"
+# M11 (R4's mark arm, as built): an import's mark of a database a person marked changes nothing and is no refusal
+au0=$(q "select count(*) from pgvigil.admin_audit")
+a=$(wi assign "{\"op\": \"mark\", \"targets\": [{\"instance_id\": $MI, \"database\": \"m2\"}]}")
+msrc=$(q "select source from pgvigil.app_not_application where instance_id = $MI and database_name = 'm2'")
+[[ $(field "$a" outcome) == done && $(field "$a" written) == 0 && $msrc == entered && $(q "select count(*) from pgvigil.admin_audit") == "$au0" ]] \
+  && ok "M11 an import's mark of a database a person marked: done, 0 written, the mark still the person's, no audit row" || bad "M11 '$a'; source '$msrc'"
 # M9: the same writes forced
 f1=$(wi assign "{\"op\": \"unassign\", \"force\": true, \"app_id\": $EA, \"targets\": [{\"instance_id\": $MI, \"database\": \"m1\"}]}")
 f2=$(wi assign "{\"op\": \"unmark\", \"force\": true, \"targets\": [{\"instance_id\": $MI, \"database\": \"m2\"}]}")
@@ -136,11 +148,16 @@ f4=$(wi assign "{\"op\": \"assign\", \"force\": true, \"app_id\": $EB, \"targets
 f6=$(wi contact "{\"op\": \"edit\", \"force\": true, \"app_id\": $EA, \"contact_id\": ${EC:-0}, \"ord\": 9}")
 f5=$(wi application "{\"op\": \"remove\", \"force\": true, \"app_id\": ${IA:-0}, \"version\": 1, \"with_assignments\": true}")
 o9="$(field "$f1" outcome) $(field "$f2" outcome) $(field "$f4" outcome) $(field "$f6" outcome) $(field "$f5" outcome)"
-[[ $o9 == "done done done done done" ]] && ok "M9 the same imports forced: done (unassign, unmark, the database under the server, ord, remove)" || bad "M9 outcomes '$o9' ($(field "$f5" detail))"
+land="$(asg_of "$MI" "'m1'") $(q "select count(*) from pgvigil.app_not_application where instance_id = $MI and database_name = 'm2'") $(asg_of "$MI2" "'n1'") $(q "select ord from pgvigil.ui_app_contacts where contact_id = ${EC:-0}") $(q "select count(*) from pgvigil.app_applications where app_id = ${IA:-0}")"
+[[ $o9 == "done done done done done" && $land == "none 0 $EB|-|import:proof 9 0" ]] && ok "M9 the same imports forced: done and written (m1 unassigned, m2 unmarked, n1 the import's M Other, ord 9, M Imported removed)" \
+  || bad "M9 outcomes '$o9' ($(field "$f5" detail)); landed '$land' (want 'none 0 $EB|-|import:proof 9 0')"
 # M10
 a=$(wp application '{"op": "add", "name": "(none)"}')
 [[ $(field "$a" outcome) == refused && $(q "select count(*) from pgvigil.app_applications where name = '(none)'") == 0 ]] \
   && ok "M10 an application named '(none)' (the file's unassign token) refused ('$(field "$a" detail | cut -c1-90)')" || bad "M10 '$a'"
+# M12 (review A, M4): the planner keys every join on the line: a payload whose line numbers repeat is refused in words
+a=$(qc "select pgvigil.import_app_file(now(), '{\"ui_user\": \"importer\", \"client\": \"proof\", \"dry\": true, \"rows\": [{\"line\": 2, \"instance\": \"proof-imp-m\", \"database\": \"m4\", \"application\": \"M Other\"}, {\"line\": 2, \"instance\": \"proof-imp-m\", \"database\": \"m3\", \"application\": \"M Entered\"}]}'::jsonb)")
+[[ $(field "$a" outcome) == refused && $(field "$a" detail) == *"line 2"* ]] && ok "M12 a payload whose line numbers repeat: refused ('$(field "$a" detail | cut -c1-80)')" || bad "M12 '${a:0:200}'"
 fi
 
 # ================= F: the file through the API (a serve on non-superuser logins, both engines) =================
@@ -207,23 +224,23 @@ gone=$(csvread database,absent_since "r[h.index('database')] in ('fgone', 'sgone
 keys=$(csvread database "r[h.index('instance')] == 'imp-pg' and r[h.index('database')][:2] in (\"'=\", \"'-\")")
 inh=$(csvread database,application,inherited_from "r[h.index('database')] == 'f3'")
 m0=$(appmd5); a0=$(audits)
-p=$(imp "$WORK/inv.csv" "dry=1"); D1=$(dig); pc="$(cnt applications_added)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt unknown_servers)/$(cnt refused)"
+p=$(imp "$WORK/inv.csv" "dry=1"); D1=$(dig); pc="$(cnt applications_added)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt unknown_servers)/$(cnt refused)/$(cnt unknown_databases)"; ul="$(cnt unchanged)/$(cnt lines)"
 a1=$(audits)
 x=$(imp "$WORK/inv.csv" "dry=0&digest=$D1"); xo=$(js "print(d.get('outcome'))")
 m1=$(appmd5); a2=$(audits)
 [[ $c == 200 && $(head -c 3 "$WORK/inv.csv" | od -An -tx1 | tr -d ' ') == efbbbf && $(grep -ci 'attachment' "$WORK/inv.hdr") == 1 && $gone == *"fgone;2"* && $gone == *"sgone;2"* \
-   && $keys == "'-name|'=x" && $inh == "f3;;F Alpha" && $p == 200 && $pc == "0/0/0/0/0/0" && $a1 == "$a0" && $x == 200 && $xo == done && $m1 == "$m0" && $a2 == $((a0 + 1)) ]] \
+   && $keys == "'-name|'=x" && $inh == "f3;;F Alpha" && $p == 200 && $pc == "0/0/0/0/0/0/0" && ${ul%/*} == "${ul#*/}" && $a1 == "$a0" && $x == 200 && $xo == done && $m1 == "$m0" && $a2 == $((a0 + 1)) ]] \
   && ok "F1 the CSV export imported as it is (both engines, absent fgone / sgone, inherited f3 blank, keys '=x' and '-name' guarded): 0 adds / changes / conflicts / unknown / refused; applied: the app_* rows' md5 the same, one summary audit row" \
-  || bad "F1 export $c (absent '$gone'; keys '$keys'; f3 '$inh'); preview $p counts $pc; audit $a0 -> $a1 -> $a2; apply $x $xo; md5 same: $([[ $m1 == "$m0" ]] && echo yes || echo no); $(head -c 300 "$WORK/ans.json")"
+  || bad "F1 export $c (absent '$gone'; keys '$keys'; f3 '$inh'); preview $p counts $pc (unchanged/lines $ul); audit $a0 -> $a1 -> $a2; apply $x $xo; md5 same: $([[ $m1 == "$m0" ]] && echo yes || echo no); $(head -c 300 "$WORK/ans.json")"
 
 # F2 (R2): an add, a change, a conflict and an unknown server, on both engines; F3 (R3) the conflict ticked
 cat > "$WORK/f2.csv" <<CSV
-instance,engine,database,application,environment
-imp-pg,postgres,f3,F Alpha,test
-imp-pg,postgres,f2,F Alpha,
-imp-pg,postgres,f1,F Gamma,
-imp-ms,sqlserver,s2,F Gamma,
-imp-nowhere,postgres,x1,F Gamma,
+instance,engine,database,application,environment,tier,cmdb_url
+imp-pg,postgres,f3,F Alpha,test,,
+imp-pg,postgres,f2,F Alpha,,,
+imp-pg,postgres,f1,F Gamma,,3,https://cmdb.example.com/ci/123
+imp-ms,sqlserver,s2,F Gamma,,3,https://cmdb.example.com/ci/123
+imp-nowhere,postgres,x1,F Gamma,,3,https://cmdb.example.com/ci/123
 CSV
 n0=$(q "select count(*) from pgvigil.instances")
 p=$(imp "$WORK/f2.csv" "dry=1"); D2=$(dig)
@@ -231,10 +248,13 @@ pc="$(cnt applications_added)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt unkn
 i3=$(item 4); i6=$(item 6)
 x=$(imp "$WORK/f2.csv" "dry=0&digest=$D2"); xo=$(js "print(d.get('outcome'))")
 st="$(asg imp-pg f3) $(asg imp-pg f2) $(asg imp-pg f1) $(asg imp-ms s2)"
+# review P, M-4: the file's environment, tier and cmdb_url stored
+f2v="$(q "select coalesce(a.environment, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f3'")|$(q "select tier || '|' || cmdb_url from pgvigil.app_applications where name = 'F Gamma'")"
 [[ $p == 200 && $pc == "1/3/1/1" && $i3 == conflict:* && $i6 == refused:*"no server named imp-nowhere"* && $x == 200 && $xo == done \
-   && $st == "F Alpha|import:proof F Alpha|import:proof F Beta|entered F Gamma|import:proof" && $(q "select count(*) from pgvigil.instances") == "$n0" ]] \
-  && ok "F2 an add (F Gamma on s2), changes on both engines (f3 its own F Alpha in test, f2 re-assigned, s2), a conflict (f1 entered) and an unknown server: previewed exactly; applied unticked - the conflict kept, no server made" \
-  || bad "F2 preview $p counts $pc (want 1/3/1/1); line 4 '$i3'; line 6 '$i6'; apply $x $xo; now $st; $(head -c 300 "$WORK/ans.json")"
+   && $st == "F Alpha|import:proof F Alpha|import:proof F Beta|entered F Gamma|import:proof" && $(q "select count(*) from pgvigil.instances") == "$n0" \
+   && $f2v == "test|3|https://cmdb.example.com/ci/123" ]] \
+  && ok "F2 an add (F Gamma on s2, tier 3 and its CMDB link from the file), changes on both engines (f3 its own F Alpha in test, f2 re-assigned, s2), a conflict (f1 entered) and an unknown server: previewed exactly; applied unticked - the conflict kept, no server made" \
+  || bad "F2 preview $p counts $pc (want 1/3/1/1); line 4 '$i3'; line 6 '$i6'; apply $x $xo; now $st; stored '$f2v'; $(head -c 300 "$WORK/ans.json")"
 p=$(imp "$WORK/f2.csv" "dry=1"); D3=$(dig)
 x=$(imp "$WORK/f2.csv" "dry=0&digest=$D3&force=t4"); xo=$(js "print(d.get('outcome'))")
 [[ $x == 200 && $xo == done && $(asg imp-pg f1) == "F Gamma|import:proof" ]] && ok "F3 the same conflict ticked (force t4): applied, source import:proof" || bad "F3 apply $x $xo; f1 $(asg imp-pg f1); $(head -c 300 "$WORK/ans.json")"
@@ -250,9 +270,13 @@ m0=$(appmd5); x=$(imp "$WORK/f4.csv" "dry=0&digest=$D4"); xd=$(js "print(d.get('
 [[ $pw == 200 && $pa == "F Gamma|entered" && $x == 409 && $xd == *"changed since the preview"* && $m1 == "$m0" ]] && ok "F4 a page write between the preview and the apply (f2 re-assigned by hand): refused whole ('${xd:0:80}'), nothing written" || bad "F4 page write $pw (f2 $pa); apply $x '$xd'; md5 same: $([[ $m1 == "$m0" ]] && echo yes || echo no)"
 # F5: f2 is now entered by hand, so the file's line 2 is a conflict: ticked (t2), the collector's read between
 imp "$WORK/f4.csv" "dry=1" >/dev/null; D5=$(dig); i5=$(item 2)
-dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81002 f2), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
+seen() { q "select coalesce(engine_db_id::text, '-') || '|' || coalesce(last_seen::text, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f2'"; }
+s0=$(seen)
+# review P, M-5: f2 made again on its server under a new dbid, so the list read moves both columns the digest leaves out
+dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81202 f2), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
+s1=$(seen)
 x=$(imp "$WORK/f4.csv" "dry=0&digest=$D5&force=t2"); xo=$(js "print(d.get('outcome'))")
-[[ $i5 == conflict:* && $x == 200 && $xo == done && $(asg imp-pg f2) == "F Beta|import:proof" ]] && ok "F5 a collector's list read (last_seen, engine_db_id moved) between the preview and the apply: not refused, applied (its conflict ticked)" || bad "F5 line 2 '$i5'; $x $xo; f2 $(asg imp-pg f2); $(head -c 300 "$WORK/ans.json")"
+[[ $i5 == conflict:* && ${s0%%|*} != "${s1%%|*}" && ${s0#*|} != "${s1#*|}" && $x == 200 && $xo == done && $(asg imp-pg f2) == "F Beta|import:proof" ]] && ok "F5 a collector's list read between the preview and the apply (f2's engine_db_id ${s0%%|*} -> ${s1%%|*}, last_seen moved): not refused, applied (its conflict ticked)" || bad "F5 line 2 '$i5'; seen '$s0' -> '$s1'; $x $xo; f2 $(asg imp-pg f2); $(head -c 300 "$WORK/ans.json")"
 
 # F6 (R6): the export as a semicolon file (Excel in a comma-decimal locale) under the bar's two mark lines: no change
 curl -s -o "$WORK/inv2.csv" -b "$WORK/cj" -H 'X-Pgvigil: 1' "$U/api/applications/inventory.csv"
@@ -260,17 +284,21 @@ python3 -I -c 'import csv, sys, io
 t = open(sys.argv[1], encoding="utf-8-sig").read(); rows = list(csv.reader(io.StringIO(t)))
 o = io.StringIO(); w = csv.writer(o, delimiter=";", lineterminator="\r\n"); w.writerow(["sample of a stored read"]); w.writerow(["read 2026-11-14 10:00"]); w.writerows(rows)
 open(sys.argv[2], "w", encoding="utf-8-sig").write(o.getvalue())' "$WORK/inv2.csv" "$WORK/semi.csv"
-p=$(imp "$WORK/semi.csv" "dry=1"); pc="$(cnt applications_added)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt refused)/$(cnt lines)"
-[[ $p == 200 && $pc == 0/0/0/0/0/* && ${pc##*/} -ge 12 ]] && ok "F6 a semicolon file under two mark lines reads as the export: no change ($pc)" || bad "F6 $p $pc; $(head -c 300 "$WORK/ans.json")"
+p=$(imp "$WORK/semi.csv" "dry=1"); pc="$(cnt applications_added)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt refused)/$(cnt unknown_databases)/$(cnt lines)"
+[[ $p == 200 && $pc == 0/0/0/0/0/0/* && ${pc##*/} -ge 12 ]] && ok "F6 a semicolon file under two mark lines reads as the export: no change ($pc)" || bad "F6 $p $pc; $(head -c 300 "$WORK/ans.json")"
 
 # F7 (R7): '=SUM(1)' as a description: written guarded, read back exactly
 printf "instance,database,application,description\nimp-pg,f3,F Gamma,=SUM(1)\n" > "$WORK/f7.csv"
-imp "$WORK/f7.csv" "dry=1" >/dev/null; D7=$(dig); imp "$WORK/f7.csv" "dry=0&digest=$D7" >/dev/null
+imp "$WORK/f7.csv" "dry=1" >/dev/null; D7=$(dig); i7=$(item 2); imp "$WORK/f7.csv" "dry=0&digest=$D7" >/dev/null
 curl -s -o "$WORK/inv3.csv" -b "$WORK/cj" -H 'X-Pgvigil: 1' "$U/api/applications/inventory.csv"
 stored=$(q "select description from pgvigil.app_applications where name = 'F Gamma'"); g7=$(grep -c "'=SUM(1)" "$WORK/inv3.csv")
 p=$(imp "$WORK/inv3.csv" "dry=1"); pc="$(cnt applications_changed)/$(cnt targets_changed)"
 [[ $stored == "=SUM(1)" && $g7 -ge 1 && $pc == 0/0 && $(q "select description from pgvigil.app_applications where name = 'F Beta'") == "'=x" ]] \
   && ok "F7 '=SUM(1)' and \"'=x\" as descriptions: stored as typed, written with one more ', read back with no change" || bad "F7 stored '$stored'; guarded cells $g7; re-import $pc"
+# F26 (review P, P-6; kept as built, for the lead's eye): f3's own F Alpha was the import's (F2), so F7's re-assign to
+# F Gamma under imp-pg's ENTERED F Alpha is a change, not a conflict: the person entered the server's application and f3
+# did not inherit it (a database that inherits it would be the m3 conflict, F setup / M4)
+[[ $i7 == change:* && $(asg imp-pg f3) == "F Gamma|import:proof" ]] && ok "F26 an import's re-assign of its own row (f3) under a person's server application: a change ('${i7:0:60}')" || bad "F26 line 2 '$i7'; f3 $(asg imp-pg f3)"
 
 # F8 (R8, the API half): contacts shown on the page are in no export; an imported email column makes no contact
 post admin/applications/contacts "{\"op\": \"add\", \"app_id\": $FA, \"role\": \"support\", \"kind\": \"person\", \"name\": \"Fiona Planted\", \"email\": \"fiona.$SUF@example.com\", \"phone\": \"+1 555 7$SUF\"}" >/dev/null
@@ -291,7 +319,12 @@ c3=$(curl -s -o /dev/null -w '%{http_code}' "$U/api/applications/inventory.csv")
 [[ $c1 == 401 && $c2 == 403 && $c3 == 401 && $(appmd5) == "$m0" ]] && ok "F9 the import without a login 401, without the header 403, the CSV without a login 401; nothing written" || bad "F9 $c1 $c2 $c3"
 
 # F10 (R10, R20): an .xlsx with shared strings, a blank cell left out mid-row, 'no' as a boolean cell, 2024 as a number
-python3 -I - "$WORK/inv4.csv" "$WORK/f10.xlsx" <<'PY'
+# (review P, P-4: F Year's description 2024 on lines no refusal touches; the database 'no' line counted if unmatched)
+q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, is_system, snapshot_at) values ($MSF, 's10', 10, false, now())" >/dev/null
+FY=$(field "$(wp application '{"op": "add", "name": "F Year", "description": "2024"}')" app_id)
+wp assign "{\"op\": \"assign\", \"app_id\": ${FY:-0}, \"targets\": [{\"instance_id\": $MSF, \"database\": \"s10\"}]}" >/dev/null
+curl -s -o "$WORK/inv10.csv" -b "$WORK/cj" -H 'X-Pgvigil: 1' "$U/api/applications/inventory.csv"
+python3 -I - "$WORK/inv10.csv" "$WORK/f10.xlsx" <<'PY'
 import csv, io, re, sys, zipfile
 from xml.sax.saxutils import escape
 rows = list(csv.reader(io.StringIO(open(sys.argv[1], encoding="utf-8-sig").read())))
@@ -326,10 +359,10 @@ z.writestr("xl/sharedStrings.xml", '<?xml version="1.0"?><sst xmlns="http://sche
 z.writestr("xl/worksheets/sheet1.xml", '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' + "".join(sheet) + "</sheetData></worksheet>")
 z.close()
 PY
-p=$(imp "$WORK/f10.xlsx" "dry=1"); pc="$(cnt applications_changed)/$(cnt targets_changed)/$(cnt refused)"; kind=$(js "print(d['file']['kind'])")
+p=$(imp "$WORK/f10.xlsx" "dry=1"); pc="$(cnt applications_added)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt refused)/$(cnt unknown_databases)/$(cnt unknown_servers)"; kind=$(js "print(d['file']['kind'])")
 i10=$(js "print([i['words'] for i in d.get('items', []) if i['kind'] == 'target' and i['database'] == 'f3'])")
-[[ $p == 200 && $kind == xlsx && $pc == 0/0/1 && $i10 == *"same database as line"* ]] \
-  && ok "F10 an .xlsx (shared strings, blank cells left out, 'no' a boolean cell, 2024 a number): the export's rows read with no change; the extra f3 line refused as a second line of one database" \
+[[ $p == 200 && $kind == xlsx && $pc == 0/0/0/1/0/0 && $i10 == *"same database as line"* && -n $FY ]] \
+  && ok "F10 an .xlsx (shared strings, blank cells left out, 'no' a boolean cell, F Year's 2024 a number): the export's rows read with no change and no unknown; the extra f3 line refused as a second line of one database" \
   || bad "F10 $p kind $kind counts $pc; f3 items $i10; $(head -c 300 "$WORK/ans.json")"
 
 # F11 (R11): refused lines with their numbers; the rest previewed
@@ -341,32 +374,38 @@ imp-pg,f2,F Beta,,5,
 imp-pg,f2,F Beta,,,yes
 imp-old,x,F Beta,,,
 imp-pg,f4,,,,no
+imp-pg,template1,F Gamma,,,
+imp-pg,f1,F Gamma,test,,
 CSV
-p=$(imp "$WORK/f11.csv" "dry=1")
-r11="$(item 2 | cut -c1-8)/$(item 3 | cut -c1-8)/$(item 4 | cut -c1-8)/$(item 5 | cut -c1-8)/$(item 6 | cut -c1-8)/$(item 7 | cut -c1-8)"
+p=$(imp "$WORK/f11.csv" "dry=1"); D11=$(dig); u11="$(cnt unknown_databases)/$(cnt refused)"
+r11="$(item 2 | cut -c1-8)/$(item 3 | cut -c1-8)/$(item 4 | cut -c1-8)/$(item 5 | cut -c1-8)/$(item 6 | cut -c1-8)/$(item 7 | cut -c1-8)/$(item 8 | cut -c1-8)/$(item 9 | cut -c1-7)"
 w11="$(item 3)|$(item 6)|$(item 7)"
-[[ $p == 200 && $r11 == "refused:/refused:/refused:/refused:/refused:/conflict" && $w11 == *environment*"not an active server"*"marked by hand"* ]] \
-  && ok "F11 a bad name, a bad environment, a bad tier, an application with not_an_application yes, an inactive server: each refused on its line; the unmark of a person's mark a conflict" \
-  || bad "F11 $p lines 2-7 '$r11'; $w11"
+# review P, M-10: the rest applied (f1's environment), the refused lines and the unticked conflict not
+x=$(imp "$WORK/f11.csv" "dry=0&digest=$D11")
+e11="$(q "select coalesce(a.environment, '-') from pgvigil.app_assignments a join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and a.database_name = 'f1'")|$(q "select count(*) from pgvigil.app_not_application m join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and m.database_name = 'f4'")"
+[[ $p == 200 && $r11 == "refused:/refused:/refused:/refused:/refused:/conflict/refused:/change:" && $w11 == *environment*"not an active server"*"marked by hand"* && $u11 == 0/6 && $x == 200 && $e11 == "test|1" ]] \
+  && ok "F11 a bad name, a bad environment, a bad tier, an application with not_an_application yes, an inactive server, template1: each refused on its line (template1 counted once: unknown 0, refused 6); the unmark of a person's mark a conflict; applied: f1's environment test, f4 still marked" \
+  || bad "F11 $p lines 2-9 '$r11'; unknown/refused $u11 (want 0/6); $w11; apply $x; f1 env|f4 marked '$e11'"
 
 # F12 (R12): a dry run and refused lines write no audit row; an apply one per change and one summary
 a0=$(audits); imp "$WORK/f11.csv" "dry=1" >/dev/null; a1=$(audits)
-printf 'instance,database,application\nimp-pg,f3,F Alpha\nimp-ms,s2,F Alpha\nimp-pg,f3x,F Alpha\n' > "$WORK/f12.csv"
+printf 'instance,database,application,tier\nimp-pg,f3,F Alpha,\nimp-ms,s2,F Alpha,\nimp-pg,f3x,F Alpha,\nimp-pg,f1,F Gamma,5\n' > "$WORK/f12.csv"
 imp "$WORK/f12.csv" "dry=1" >/dev/null; D12=$(dig); imp "$WORK/f12.csv" "dry=0&digest=$D12" >/dev/null; a2=$(audits)
 sum=$(q "select detail from pgvigil.admin_audit where op = 'app_import' order by audit_id desc limit 1")
-[[ $a1 == "$a0" && $a2 == $((a0 + 3)) && $sum == *"2 target(s) changed"*"1 unknown database"* && $sum != *f3x* ]] \
+[[ $a1 == "$a0" && $a2 == $((a0 + 3)) && $sum == *"2 target(s) changed"*"1 unknown database"*"1 refused"* && $sum != *f3x* ]] \
   && ok "F12 a dry run and refused lines: no audit row; an apply: one per change (2) and one summary of counts ('${sum:0:90}')" || bad "F12 audit $a0 -> $a1 -> $a2; summary '$sum'"
 
 # F14 (R14): a store without 0146's functions answers in words, never a SQL error
 q "alter function pgvigil.import_app_file(timestamptz, jsonb) rename to import_app_file_hidden" >/dev/null
 c1=$(imp "$WORK/f4.csv" "dry=1"); w1=$(js "print(d.get('error', ''))"); c2=$(get applications/inventory.csv); w2=$(js "print(d.get('error', ''))")
+c3=$(get applications/inventory); w3=$(js "print(d.get('error', ''))")
 q "alter function pgvigil.import_app_file_hidden(timestamptz, jsonb) rename to import_app_file" >/dev/null
-[[ $c1 == 409 && $w1 == *"older than this pgvigil"*"pgvigil migrate"* && $c2 == 409 && $w2 == *"older than this pgvigil"* && $w1 != *SQLSTATE* ]] \
-  && ok "F14 a repository without 0146's functions: the import and the CSV answer in words ('${w1:0:70}')" || bad "F14 $c1 '$w1'; $c2 '$w2'"
+[[ $c1 == 409 && $w1 == *"older than this pgvigil"*"pgvigil migrate"* && $c2 == 409 && $w2 == *"older than this pgvigil"* && $c3 == 409 && $w3 == *"older than this pgvigil"* && $w1 != *SQLSTATE* ]] \
+  && ok "F14 a repository without 0146's functions: the import, the CSV and the grid's read answer in words ('${w1:0:70}')" || bad "F14 $c1 '$w1'; $c2 '$w2'; $c3 '$w3'"
 
 # F16 (R16): a database renamed on its server between export and import (the same dbid): the old file changes nothing
 curl -s -o "$WORK/inv5.csv" -b "$WORK/cj" -H 'X-Pgvigil: 1' "$U/api/applications/inventory.csv"
-dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81002 f2new), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
+dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81202 f2new), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no)]"
 p=$(imp "$WORK/inv5.csv" "dry=1"); pc="$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt refused)/$(cnt unknown_databases)"
 [[ $p == 200 && $pc == 0/0/0/0/0 ]] && ok "F16 f2 renamed f2new on its server after the export: the old file changes nothing (f2 absent, still named; f2new not in the file)" || bad "F16 $p $pc; $(head -c 300 "$WORK/ans.json")"
 
@@ -382,28 +421,93 @@ sleep 1; c=$(imp "$WORK/f4.csv" "dry=1"); w=$(js "print(d.get('detail', ''))"); 
 [[ $c == 409 && $w == *"another import is running"* ]] && ok "F18 an import while another holds its lock: refused at once ('${w:0:60}')" || bad "F18 $c '$w'"
 
 # F19 (R19): a credential-shaped cell: its line refused, its text in no answer and no audit row
-printf 'instance,database,application,description\nimp-pg,f3,F Alpha,password=hunter2x%s\n' "$SUF" > "$WORK/f19.csv"
-p=$(imp "$WORK/f19.csv" "dry=1"); w=$(item 2); D19=$(dig); imp "$WORK/f19.csv" "dry=0&digest=$D19" > /dev/null
-hits=$(( $(grep -c "hunter2x$SUF" "$WORK/ans.json") + $(q "select count(*) from pgvigil.admin_audit where detail like '%hunter2x$SUF%' or target like '%hunter2x$SUF%'") ))
-[[ $p == 200 && $w == refused:*credential* && $hits == 0 ]] && ok "F19 a credential-shaped cell: its line refused ('${w:0:70}'), its text in no answer and no audit row" || bad "F19 $p '$w'; hits $hits"
+# (review A M1 / P P-1, A m3: the secret in the application, the server, the engine; an Azure key, a PEM block, a bearer
+# token; the preview's own answer read - it is the one that lists the items)
+S19=hunter2x$SUF
+cat > "$WORK/f19.csv" <<CSV
+instance,engine,database,application,description
+imp-pg,,f3,F Alpha,password=$S19
+imp-pg,,f3,svc password=$S19,
+postgres://u:$S19@h,,f3,F Alpha,
+imp-pg,token=$S19,f3,F Alpha,
+imp-ms,,s2,F Gamma,AccountKey=$S19
+imp-ms,,s2,F Gamma,-----BEGIN PRIVATE KEY----- $S19
+imp-ms,,s2,F Gamma,Authorization: Bearer abcdefghijklmnop$S19
+CSV
+p=$(imp "$WORK/f19.csv" "dry=1"); cp "$WORK/ans.json" "$WORK/f19p.json"; D19=$(dig)
+w=$(for l in 2 3 4 5 6 7 8; do item $l | cut -c1-30; done | sort -u | tr '\n' '|')
+imp "$WORK/f19.csv" "dry=0&digest=$D19" > /dev/null
+hits=$(( $(cat "$WORK/f19p.json" "$WORK/ans.json" | grep -c "$S19") + $(q "select count(*) from pgvigil.admin_audit where detail like '%$S19%' or target like '%$S19%'") ))
+[[ $p == 200 && $w == "refused:a cell looks like a cr|" && $hits == 0 ]] && ok "F19 a credential-shaped cell in the description, the application, the server, the engine (a password, a URL's, a token, an Azure key, a PEM block, a bearer token): each line refused, the text in no answer (the preview's items included) and no audit row" || bad "F19 $p lines 2-8 '$w'; hits $hits; $(head -c 300 "$WORK/f19p.json")"
+# F19b (review A, m3): each cell checked alone - an application 'Payment Token' beside a description '=SUM(1)' is no credential
+printf 'instance,database,application,description\nimp-ms,s2,Payment Token,=SUM(1)\n' > "$WORK/f19b.csv"
+p=$(imp "$WORK/f19b.csv" "dry=1"); w=$(item 2)
+[[ $p == 200 && $w != refused:* ]] && ok "F19b two cells read alone: 'Payment Token' and '=SUM(1)' make no credential ('${w:0:50}')" || bad "F19b $p '$w'"
 
 # F21 (R21): '(none)' on an inheriting database changes nothing; on a person's own assignment a conflict, removed when ticked
-printf 'instance,database,application\nimp-pg,-name,(none)\nimp-ms,s1,(none)\n' > "$WORK/f21.csv"
-dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81002 f2new), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no), $(pgdb 81009 f5)]"
-printf 'instance,database,application\nimp-pg,f5,(none)\nimp-ms,s1,(none)\n' > "$WORK/f21.csv"
-p=$(imp "$WORK/f21.csv" "dry=1"); D21=$(dig); i2=$(js "print([i['words'] for i in d.get('items', []) if i.get('line') == 2])"); i3=$(item 3)
+dbs "$PGF" "[$(pgdb 5 postgres), $(pgdb 81001 f1), $(pgdb 81202 f2new), $(pgdb 81003 f3), $(pgdb 81004 f4), $(pgdb 81006 '=x'), $(pgdb 81007 '-name'), $(pgdb 81008 no), $(pgdb 81009 f5)]"
+printf 'instance,database,application\nimp-pg,f5,(none)\nimp-ms,s1,(none)\nimp-pg,-name,(None)\n' > "$WORK/f21.csv"
+p=$(imp "$WORK/f21.csv" "dry=1"); D21=$(dig); i2=$(js "print([i['words'] for i in d.get('items', []) if i.get('line') == 2])"); i3=$(item 3); i4=$(item 4)
 x=$(imp "$WORK/f21.csv" "dry=0&digest=$D21&force=t3")
-[[ $p == 200 && $(cnt unchanged) -ge 1 && $i3 == conflict:*unassign* && $x == 200 && $(asg imp-ms s1) == none && $(asg imp-pg f5) == none ]] \
-  && ok "F21 '(none)' on f5 (it inherits F Alpha): nothing; on s1 (a person's): a conflict, removed when ticked" || bad "F21 $p line 2 $i2 / line 3 '$i3'; apply $x; s1 $(asg imp-ms s1); $(head -c 300 "$WORK/ans.json")"
+[[ $p == 200 && $(cnt unchanged) -ge 1 && $i2 == *"inherits F Alpha from its server: (none) changes nothing"* && $i3 == conflict:*unassign* && $i4 == change:unassign* && $x == 200 \
+   && $(asg imp-ms s1) == none && $(asg imp-pg f5) == none && $(asg imp-pg -name) == none ]] \
+  && ok "F21 '(none)' on f5 (it inherits F Alpha): nothing, the preview says so; on s1 (a person's): a conflict, removed when ticked; '(None)' on -name (the import's): a change, removed unticked" || bad "F21 $p line 2 $i2 / line 3 '$i3' / line 4 '$i4'; apply $x; s1 $(asg imp-ms s1); -name $(asg imp-pg -name); $(head -c 300 "$WORK/ans.json")"
+
+# F22 (review A, M2): a ticked application conflict writes every field its words name - and they name every one
+FT=$(field "$(wp application '{"op": "add", "name": "F Tick", "tier": 2}')" app_id)
+wi application "{\"op\": \"edit\", \"app_id\": ${FT:-0}, \"version\": 1, \"description\": \"old\"}" >/dev/null
+printf 'instance,database,application,tier,description\nimp-ms,s2,F Tick,3,new\n' > "$WORK/f22.csv"
+p=$(imp "$WORK/f22.csv" "dry=1"); D22=$(dig)
+a22=$(js "print('|'.join(i['id'] + ':' + i['outcome'] + ':' + i['words'] for i in d.get('items', []) if i['kind'] == 'application'))")
+x=$(imp "$WORK/f22.csv" "dry=0&digest=$D22&force=${a22%%:*}")
+v22=$(q "select tier || '|' || description from pgvigil.app_applications where app_id = ${FT:-0}")
+[[ $p == 200 && $a22 == *:conflict:*tier*description* && $x == 200 && $v22 == "3|new" ]] && ok "F22 a ticked application conflict (tier entered, description the import's): its words name both ('${a22:0:110}'), both written" || bad "F22 $p '$a22'; apply $x; tier|description '$v22'"
+
+# F23 (review A, M3): a line refused later (an absent database) adds no application and refuses none
+printf 'instance,database,application,tier\nimp-pg,fgone,F New,3\nimp-ms,s2,F Gamma,3\nimp-ms,sgone,F Gamma,4\n' > "$WORK/f23.csv"
+p=$(imp "$WORK/f23.csv" "dry=1")
+a23=$(js "print('|'.join(i['application'] + ':' + i['outcome'] for i in d.get('items', []) if i['kind'] == 'application'))")
+[[ $p == 200 && $(cnt applications_added) == 0 && $a23 != *refused* && $a23 != *"F New"* && $(item 2) == refused:*absent* && $(item 4) == refused:*absent* ]] \
+  && ok "F23 lines refused on an absent database: F New not added, F Gamma's item not refused by the absent line's tier ('$a23')" || bad "F23 $p added $(cnt applications_added); items '$a23'; line 2 '$(item 2)'; line 4 '$(item 4)'"
+
+# F24 (review A, M4): an .xlsx whose row numbers repeat is refused in words (every line keyed on its number)
+python3 -I - "$WORK/f24.xlsx" <<'PY'
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+z.writestr("xl/workbook.xml", '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Inventory" sheetId="1" r:id="rId1"/></sheets></workbook>')
+z.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>')
+c = lambda r, v: '<c r="%s" t="inlineStr"><is><t>%s</t></is></c>' % (r, v)
+rows = [(1, ["instance", "database", "application"]), (2, ["imp-ms", "s2", "F Alpha"]), (2, ["imp-ms", "s10", "F Gamma"])]
+z.writestr("xl/worksheets/sheet1.xml", '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  + "".join('<row r="%d">%s</row>' % (n, "".join(c("%s%d" % ("ABC"[i], n), v) for i, v in enumerate(vs))) for n, vs in rows) + "</sheetData></worksheet>")
+z.close()
+PY
+p=$(imp "$WORK/f24.xlsx" "dry=1"); w=$(js "print(d.get('error', d.get('detail', '')))")
+[[ $p == 400 && $w == *"row 2"* ]] && ok "F24 an .xlsx with row 2 twice: refused in words ('${w:0:70}')" || bad "F24 $p '$w'; $(head -c 200 "$WORK/ans.json")"
+
+# F25 (review P, M-14): a server-level line applied; the preview counts the server whose application tag moves
+SRV=$(newinst imp-srv); dbs "$SRV" "[$(pgdb 5 postgres), $(pgdb 91001 v1)]"
+printf 'level,instance,application\nserver,imp-srv,F Gamma\n' > "$WORK/f25.csv"
+p=$(imp "$WORK/f25.csv" "dry=1"); D25=$(dig); c25="$(cnt targets_changed)/$(cnt servers_whose_tag_moves)"
+x=$(imp "$WORK/f25.csv" "dry=0&digest=$D25")
+[[ $p == 200 && $c25 == 1/1 && $x == 200 && $(asg imp-srv '') == "F Gamma|import:proof" ]] && ok "F25 a server-level line: previewed (1 change, 1 server whose tag moves) and applied (imp-srv F Gamma, the import's)" || bad "F25 $p $c25; apply $x; imp-srv $(asg imp-srv '')"
 fi
 
 # ================= P: the page (Admin > Applications in a headless Chromium, on section F's serve) =================
 #  P1 (R22, R10, R8's page half) the Inventory grid filtered to one server, an application's contacts shown, the
 #     inventory's own export: its .xlsx holds every line (read back through the import: as many lines as the API's
 #     inventory, nothing to change), and no contact, user name or client address
-#  P2 a file chosen, previewed (a conflict ticked) and applied by clicks: the store holds the change and the ticked one
-#  P3 (R23) axe-core 4.14.0 on the page with the preview shown, light and dark: 0 violation nodes
-# Excel's own save of the workbook is NOT PROVEN (no Excel on the box): F10 reads a workbook with shared strings.
+#     (review C 2 / B M5: a two-line description, 'Yes' and '1.50' entered on the page read back unchanged; C 6: the
+#     workbook says every line whatever the filter; P M-9: the lines drawn are imp-ms's alone, the button says it too)
+#  P2 a file chosen, its source name typed (the field's pattern compiles: C 5), previewed (two conflicts, one ticked:
+#     C 7) and applied by a double click (one apply: C 4): the store holds the change and the ticked one, the unticked
+#     kept; focus on the import's result (C 9)
+#  P3 (R23) axe-core 4.14.0 on the page with the preview shown, light and dark (dark set on the page: P P-2): 0 nodes
+#  P4 (review C 1) a preview of over 200 items: a conflict ticked, the grid's Copy all (which draws every row again),
+#     the tick taken off on screen, applied: the conflict kept
+# Excel's own save of the workbook is NOT PROVEN (no Excel on the box), nor a LibreOffice re-save (no LibreOffice on
+# the box): F10 reads a workbook with shared strings the proof writes.
 if want P; then
 if [[ -z "${U:-}" ]]; then bad "P needs section F's serve (IMP_ONLY with F)"; else
 P_OK=1
@@ -413,10 +517,22 @@ chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/ch
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 (cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1); AXE=$WORK/node_modules/axe-core/axe.min.js
 [[ -f "$AXE" ]] || { P_OK=0; bad "P setup: axe-core 4.14.0 did not install"; }
-# P2's file: an assign (s1, no application now) and the unmark of f4 (a person's mark: a conflict, ticked on the page)
-printf 'instance,database,application,not_an_application\nimp-ms,s1,F Gamma,\nimp-pg,f4,,no\n' > "$WORK/p2.csv"
+# P2's file: an assign (s1, no application now), the unmark of f4 (a person's mark: a conflict, ticked on the page) and
+# =x re-assigned (a person's assignment: a conflict left unticked)
+printf 'instance,database,application,not_an_application\nimp-ms,s1,F Gamma,\nimp-pg,f4,,no\nimp-pg,=x,F Gamma,\n' > "$WORK/p2.csv"
+# P4's file: =x's conflict on line 2, then 205 unknown databases (each an item: over the grid's 200 drawn rows)
+python3 -I -c 'import sys; open(sys.argv[1], "w").write("instance,database,application\nimp-pg,=x,F Gamma\n" + "".join("imp-pg,u%03d,F Gamma\n" % i for i in range(205)))' "$WORK/p4.csv"
+# P1's values the page takes and a typed export would not give back (review C 2, B M5): a two-line description with
+# two spaces, the word Yes, a number-like text - each an application a person entered, on a server of their own
+PSV=$(newinst imp-p); dbs "$PSV" "[$(pgdb 5 postgres), $(pgdb 92001 p1), $(pgdb 92002 p2), $(pgdb 92003 p3)]"
+for x in "P Multi|line one\\nline  two|p1" "Yes|Yes|p2" "1.50|1.50|p3"; do
+  IFS='|' read -r pn pd pdb <<< "$x"
+  pa=$(field "$(wp application "{\"op\": \"add\", \"name\": \"$pn\", \"description\": \"$pd\"}")" app_id)
+  wp assign "{\"op\": \"assign\", \"app_id\": ${pa:-0}, \"targets\": [{\"instance_id\": $PSV, \"database\": \"$pdb\"}]}" >/dev/null
+done
+PMULTI=$(q "select description from pgvigil.app_applications where name = 'P Multi'" | od -c | tr -s ' ' | tr -d '\n' | grep -c 'e \\n l')
 cat > "$WORK/p.mjs" <<'JS'
-const [port, U, dl, axePath, p2file, phase] = process.argv.slice(2);   // phase 1: P1; phase 2: P2 and P3 (P1's file is read back between)
+const [port, U, dl, axePath, p2file, phase, p4file] = process.argv.slice(2);   // phase 1: P1; phase 2: P2, P3, P4 (P1's file is read back between)
 const fs = await import('node:fs');
 const env = process.env;
 const out = (k, v) => console.log(`${k}=${(typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ')}`);
@@ -444,7 +560,15 @@ const axe = async () => {
   await cmd('Runtime.evaluate', { expression: fs.readFileSync(axePath, 'utf8') });
   return await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => r.violations.reduce((n, v) => n + v.nodes.length, 0) + ' ' + r.violations.map(v => v.id + ':' + v.nodes.map(n => n.target.join(' ')).join(',')).join(';').slice(0, 600))`, true);
 };
-const theme = async t => { await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(t)}); 'ok'`); await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: t }] }); };
+// the theme set as the page sets it at load (main.ts: data-theme on the root), so a page already drawn changes too
+// (review P, P-2: the media emulation alone left data-theme="light" in force)
+const theme = async t => { await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(t)}); document.documentElement.setAttribute('data-theme', ${JSON.stringify(t)}); 'ok'`); await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: t }] }); };
+const bg = () => ev(`getComputedStyle(document.body).backgroundColor`);
+const fileIn = async f => { const doc = await cmd('DOM.getDocument', { depth: 1 }); const node = await cmd('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: '#app-import-file' });
+  return (await cmd('DOM.setFileInputFiles', { nodeId: node.result?.nodeId, files: [f] })).error ? 'error' : 'ok'; };
+const submit = () => ev(`(() => { const f = [...document.querySelectorAll('main form')].find(f => f.getAttribute('aria-label') === 'Import a file'); if (!f) return false; f.requestSubmit(); return true; })()`);
+const applyBtn = n => ev(`(() => { const b = [...document.querySelectorAll('main section.app-file button')].find(b => b.textContent.startsWith('Apply the import')); if (!b) return false; for (let i = 0; i < ${n}; i++) b.click(); return true; })()`);
+const ticked = label => ev(`[...document.querySelectorAll('main input[type=checkbox]')].find(b => b.getAttribute('aria-label') === ${JSON.stringify(label)})?.checked ?? 'none'`);
 await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('DOM.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1100, deviceScaleFactor: 1, mobile: false });
 await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
@@ -465,22 +589,34 @@ try {
   out('P1.press', await press('Export the inventory (.xlsx)'));
   out('P1.file', (await newFile(before)) || 'none');
   out('P1.status', await fileStatus());
+  out('P1.title', await ev(`[...document.querySelectorAll('main section.app-file button')].find(b => b.textContent.startsWith('Export the inventory'))?.title ?? ''`));
  } else {
   // P2: the file chosen, its source name typed, previewed, its conflict ticked, applied
   out('P2.ready', await go('#/admin_applications'));
   out('P2.source', await ev(`(() => { const s = document.querySelector('#app-import-source'); if (!s) return 'no field'; s.value = 'proof'; s.dispatchEvent(new Event('input', { bubbles: true })); return s.value; })()`));
-  const doc = await cmd('DOM.getDocument', { depth: 1 });
-  const node = await cmd('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: '#app-import-file' });
-  out('P2.set', (await cmd('DOM.setFileInputFiles', { nodeId: node.result?.nodeId, files: [p2file] })).error ? 'error' : 'ok');
-  out('P2.preview', await ev(`(() => { const f = [...document.querySelectorAll('main form')].find(f => f.getAttribute('aria-label') === 'Import a file'); if (!f) return false; f.requestSubmit(); return true; })()`));
+  // C 5: the field's pattern compiles as the browser compiles it (the v flag) and refuses a name with a space
+  out('P2.pattern', await ev(`(() => { const s = document.querySelector('#app-import-source'); try { new RegExp('^(?:' + s.pattern + ')$', 'v'); } catch (e) { return 'invalid'; } s.value = 'A B'; const bad = s.validity.patternMismatch; s.value = 'proof'; return bad ? 'ok' : 'no mismatch'; })()`));
+  out('P2.set', await fileIn(p2file));
+  out('P2.preview', await submit());
   out('P2.previewed', await settle());
   out('P2.counts', await ev(`document.querySelector('main [data-part=import-counts]')?.textContent ?? ''`));
-  // P3 before the apply: axe with the preview shown, light and dark
-  out('P3.light', await axe());
-  await theme('dark'); await sleep(400); out('P3.dark', await axe()); await theme('light');
+  // P3 before the apply: axe with the preview shown, light and dark (the dark one checked to be dark)
+  out('P3.light', await axe()); out('P3.bglight', await bg());
+  await theme('dark'); await sleep(400); out('P3.bgdark', await bg()); out('P3.dark', await axe()); await theme('light'); await sleep(200);
   out('P2.tick', await press("Take line 3's change"));
-  out('P2.apply', await ev(`(() => { const b = [...document.querySelectorAll('main section.app-file button')].find(b => b.textContent.startsWith('Apply the import')); if (!b) return false; b.click(); return true; })()`));
-  out('P2.applied', await settle());
+  out('P2.apply', await applyBtn(2));   // a double click: one apply (C 4)
+  out('P2.applied', await settle()); await sleep(1500); out('P2.after', await fileStatus());
+  out('P2.focus', await ev(`document.activeElement?.closest('section.app-file') ? 'in' : (document.activeElement?.tagName ?? 'none') + ' ' + (document.activeElement?.textContent ?? '').slice(0, 40)`));
+  // P4 (C 1): a tick kept by the item, never by the checkbox a redraw replaced
+  out('P4.ready', await go('#/admin_applications'));
+  out('P4.set', await fileIn(p4file)); out('P4.preview', await submit()); out('P4.previewed', await settle());
+  out('P4.tick', await press("Take line 2's change"));
+  out('P4.copy', await ev(`(() => { const td = document.querySelector('main [data-part=import-preview] table.grid tbody td'); if (!td) return 'no grid';
+    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }));
+    const m = [...document.querySelectorAll('[role=menuitem]')].find(b => /^Copy all/.test(b.textContent.trim())); if (!m) return 'no menu'; m.click(); return 'ok'; })()`));
+  await sleep(600);
+  out('P4.untick', await press("Take line 2's change")); out('P4.onscreen', await ticked("Take line 2's change"));
+  out('P4.apply', await applyBtn(1)); out('P4.applied', await settle());
  }
 } catch (e) { out('ERROR', String(e?.message ?? e)); }
 process.exit(0);
@@ -488,26 +624,35 @@ JS
 if [[ $P_OK == 1 ]]; then
   # phase 1 (P1's export), its read back, then phase 2 (P2's apply): the read back before P2 changes the store (t-im-g3:
   # P2's unmark of f4 made P1's workbook, read after it, one mark to make)
-  P_USR=$USR P_UPW=$UPW P_FIONA="fiona.$SUF@example.com" timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" 1 > "$WORK/p.out" 2> "$WORK/p.err"
+  P_USR=$USR P_UPW=$UPW P_FIONA="fiona.$SUF@example.com" timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" 1 "$WORK/p4.csv" > "$WORK/p.out" 2> "$WORK/p.err"
   pv() { sed -n "s/^$1=//p" "$WORK/p.out" | head -1; }
   # P1: the workbook read back through the import's own preview; no contact, user or client in it
-  F1X=$(pv P1.file); get applications/inventory >/dev/null; ninv=$(js "print(len(d['rows']))")
+  F1X=$(pv P1.file); get applications/inventory >/dev/null; ninv=$(js "print(len(d['rows']))"); nms=$(js "print(sum(1 for r in d['rows'] if r[d['columns'].index('instance')] == 'imp-ms'))")
   if [[ -f "$F1X" ]]; then
-    p=$(imp "$F1X" "dry=1"); pc="$(cnt lines)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt refused)"; kind=$(js "print(d.get('file', {}).get('kind'))")
+    p=$(imp "$F1X" "dry=1"); pc="$(cnt lines)/$(cnt applications_added)/$(cnt applications_changed)/$(cnt targets_changed)/$(cnt conflicts)/$(cnt refused)/$(cnt unknown_databases)"; kind=$(js "print(d.get('file', {}).get('kind'))")
+    p1i=$(js "print('|'.join(i['outcome'] + ':' + i['words'][:50] for i in d.get('items', []))[:300])")
     sheets=$(unzip -p "$F1X" xl/workbook.xml | grep -o 'name="[^"]*"' | tr '\n' ' ')
     leak=$(unzip -p "$F1X" | grep -c -i -e 'Fiona Planted' -e "fiona.$SUF@" -e "555 7$SUF" -e "$USR" -e '127.0.0.1')
-    [[ $(pv P1.shown) == true && $(pv P1.filter) == ok && $(pv P1.visible) -lt $ninv && $p == 200 && $kind == xlsx && $pc == "$ninv/0/0/0/0" && $sheets == *'name="Inventory"'* && $leak == 0 ]] \
-      && ok "P1 contacts shown, the grid filtered to imp-ms ($(pv P1.visible) of $ninv lines drawn): the inventory's own .xlsx holds all $ninv lines (read back: nothing to change), sheet Inventory, no contact / user / client in it" \
-      || bad "P1 shown $(pv P1.shown), filter $(pv P1.filter), drawn $(pv P1.visible) of $ninv; read back $p $kind $pc; sheets $sheets; hits $leak; status '$(pv P1.status)'; $(head -c 200 "$WORK/ans.json")"
+    about=$(unzip -p "$F1X" | grep -c 'whatever the grid')
+    [[ $PMULTI == 1 && $(pv P1.shown) == true && $(pv P1.filter) == ok && $(pv P1.visible) == "$nms" && $p == 200 && $kind == xlsx && $pc == "$ninv/0/0/0/0/0/0" && $sheets == *'name="Inventory"'* && $leak == 0 \
+       && $about -ge 1 && $(pv P1.title) == *"whatever the grid"* ]] \
+      && ok "P1 contacts shown, the grid filtered to imp-ms ($(pv P1.visible) = its $nms lines drawn of $ninv): the inventory's own .xlsx holds all $ninv lines (read back: nothing to add, change or match - a two-line description, Yes and 1.50 as entered), sheet Inventory saying every line whatever the filter (the button too), no contact / user / client in it" \
+      || bad "P1 two-line description stored $PMULTI; shown $(pv P1.shown), filter $(pv P1.filter), drawn $(pv P1.visible) of $nms imp-ms / $ninv; read back $p $kind $pc ($p1i); sheets $sheets; hits $leak; about $about; title '$(pv P1.title)'; status '$(pv P1.status)'"
   else bad "P1 no workbook downloaded (press $(pv P1.press); status '$(pv P1.status)'; $(head -c 200 "$WORK/p.err"))"; fi
-  P_USR=$USR P_UPW=$UPW timeout 300 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" 2 >> "$WORK/p.out" 2>> "$WORK/p.err"
+  P_USR=$USR P_UPW=$UPW timeout 400 node "$WORK/p.mjs" "$CDP" "$U/" "$DL" "$AXE" "$WORK/p2.csv" 2 "$WORK/p4.csv" >> "$WORK/p.out" 2>> "$WORK/p.err"
   # P2
-  [[ $(pv P2.source) == proof && $(pv P2.set) == ok && $(pv P2.previewed) == Previewed* && $(pv P2.counts) == *"1 conflict"* && $(pv P2.tick) == true && $(pv P2.applied) == Applied* \
-     && $(asg imp-ms s1) == "F Gamma|import:proof" && $(q "select count(*) from pgvigil.app_not_application m join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and m.database_name = 'f4'") == 0 ]] \
-    && ok "P2 a file chosen, previewed ('$(pv P2.counts | cut -c1-80)'), its conflict ticked and applied by clicks: s1 assigned, f4's hand mark taken off" \
-    || bad "P2 source '$(pv P2.source)'; set $(pv P2.set); '$(pv P2.previewed)'; counts '$(pv P2.counts)'; tick $(pv P2.tick); '$(pv P2.applied)'; s1 $(asg imp-ms s1); $(pv ERROR) $(head -c 200 "$WORK/p.err")"
+  [[ $(pv P2.source) == proof && $(pv P2.pattern) == ok && $(pv P2.set) == ok && $(pv P2.previewed) == Previewed* && $(pv P2.counts) == *"2 conflict"* && $(pv P2.tick) == true \
+     && $(pv P2.applied) == Applied* && $(pv P2.after) == Applied* && $(pv P2.focus) == in \
+     && $(asg imp-ms s1) == "F Gamma|import:proof" && $(q "select count(*) from pgvigil.app_not_application m join pgvigil.instances i using (instance_id) where i.name = 'imp-pg' and m.database_name = 'f4'") == 0 \
+     && $(asg imp-pg =x) == "F Alpha|entered" ]] \
+    && ok "P2 a file chosen, its source typed (the pattern compiles), previewed ('$(pv P2.counts | cut -c1-80)'), one of two conflicts ticked, applied by a double click (one apply, focus on the result): s1 assigned, f4's hand mark taken off, =x kept" \
+    || bad "P2 source '$(pv P2.source)'; pattern '$(pv P2.pattern)'; set $(pv P2.set); '$(pv P2.previewed)'; counts '$(pv P2.counts)'; tick $(pv P2.tick); '$(pv P2.applied)' then '$(pv P2.after)'; focus '$(pv P2.focus)'; s1 $(asg imp-ms s1); =x $(asg imp-pg =x); $(pv ERROR) $(head -c 200 "$WORK/p.err")"
   # P3
-  [[ $(pv P3.light) == "0 "* && $(pv P3.dark) == "0 "* ]] && ok "P3 axe-core 4.14.0 with the Inventory and the preview shown: 0 violation nodes, light and dark" || bad "P3 light '$(pv P3.light)'; dark '$(pv P3.dark)'"
+  [[ $(pv P3.light) == "0 "* && $(pv P3.dark) == "0 "* && -n $(pv P3.bgdark) && $(pv P3.bgdark) != "$(pv P3.bglight)" ]] && ok "P3 axe-core 4.14.0 with the Inventory and the preview shown: 0 violation nodes, light and dark (the page's background $(pv P3.bglight) / $(pv P3.bgdark))" || bad "P3 light '$(pv P3.light)'; dark '$(pv P3.dark)'; background '$(pv P3.bglight)' / '$(pv P3.bgdark)'"
+  # P4
+  [[ $(pv P4.previewed) == Previewed* && $(pv P4.tick) == true && $(pv P4.copy) == ok && $(pv P4.untick) == true && $(pv P4.onscreen) == false && $(pv P4.applied) == Applied* && $(asg imp-pg =x) == "F Alpha|entered" ]] \
+    && ok "P4 over 200 items: a conflict ticked, Copy all (every row drawn again), the tick taken off on screen, applied: =x kept, the person's" \
+    || bad "P4 '$(pv P4.previewed)'; tick $(pv P4.tick); copy $(pv P4.copy); untick $(pv P4.untick) (on screen $(pv P4.onscreen)); '$(pv P4.applied)'; =x $(asg imp-pg =x); $(pv ERROR)"
 fi
 fi
 fi
