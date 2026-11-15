@@ -511,6 +511,9 @@ type beat struct {
 	Streaks    []beatStreak `json:"streaks"`
 	// the probe's rows since the last beat (B24h-1b; read by import_collector_probe, 0254; import_collector_beat leaves it)
 	Probes []beatProbe `json:"probes"`
+	// the addresses a connection opened to since the last beat (the review of B24h-1 part a #1: a TCP answer;
+	// import_collector_probe sets the host's last answer from them)
+	Opened []beatOpened `json:"opened"`
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -521,9 +524,10 @@ func (h *Heartbeat) take() beat {
 	runtime.ReadMemStats(&ms)
 	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
 	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load),
-		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Probes: []beatProbe{}}
+		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Probes: []beatProbe{}, Opened: []beatOpened{}}
 	if h.probe != nil {
 		b.Probes = append(b.Probes, h.probe.take()...)
+		b.Opened = append(b.Opened, h.probe.takeOpened()...)
 	}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
@@ -709,7 +713,7 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 	}
 	// B24h (0254): the round trips and the probe's rows, through B24h's own import function with the same body (no
 	// joined function changes); a repository without it (42883: not migrated to 0254) is not asked again
-	if !h.noProbeImport && (len(b.Probes) > 0 || anyRoundTrip(b.Load)) {
+	if !h.noProbeImport && (len(b.Probes) > 0 || len(b.Opened) > 0 || anyRoundTrip(b.Load)) {
 		if _, err := h.pool.Exec(bctx, `SELECT pgvigil.import_collector_probe($1, $2, $3::jsonb)`, h.id, minute, string(body)); err != nil {
 			var pe *pgconn.PgError
 			if errors.As(err, &pe) && pe.Code == "42883" {

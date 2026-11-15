@@ -23,8 +23,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_probe (
   answered      int,
   ms_sum        bigint NOT NULL DEFAULT 0,
   ms_max        int NOT NULL DEFAULT 0,
+  scheduled     boolean NOT NULL DEFAULT false,   -- a round of probe_every_minute (the review of B24h-1 part b #7)
   PRIMARY KEY (minute, collector_id, address)
 );
+-- a store that ran this file before the column (the lab's): added
+ALTER TABLE pgvigil.collector_probe ADD COLUMN IF NOT EXISTS scheduled boolean NOT NULL DEFAULT false;
 
 -- collector_probe_host: per collector and address, when it was first probed and last answered (the fold's #5: the
 -- 'never answered' and 'stopped answering' words read this, never 8 days of probe rows)
@@ -52,15 +55,16 @@ BEGIN
             JOIN pgvigil.instances i ON i.name = r.instance
            WHERE coalesce(r.rt_count, 0) > 0) x
    WHERE l.minute = p_minute AND l.collector_id = p_collector AND l.instance_id = x.instance_id;
-  INSERT INTO pgvigil.collector_probe AS p (minute, collector_id, host, address, method, sent, answered, ms_sum, ms_max)
+  INSERT INTO pgvigil.collector_probe AS p (minute, collector_id, host, address, method, sent, answered, ms_sum, ms_max, scheduled)
   SELECT date_trunc('minute', coalesce(r.at, p_minute)), p_collector, coalesce(r.host, ''), r.address, r.method, coalesce(r.sent, 0), r.answered,
-         coalesce(r.ms_sum, 0), coalesce(r.ms_max, 0)
+         coalesce(r.ms_sum, 0), coalesce(r.ms_max, 0), coalesce(r.scheduled, false)
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'probes') = 'array' THEN p_beat->'probes' ELSE '[]'::jsonb END))
-         AS r(host text, address text, method text, at timestamptz, sent int, answered int, ms_sum bigint, ms_max int)
+         AS r(host text, address text, method text, at timestamptz, sent int, answered int, ms_sum bigint, ms_max int, scheduled boolean)
    WHERE r.address IS NOT NULL AND r.method IN ('icmp', 'tcp')
   ON CONFLICT (minute, collector_id, address) DO UPDATE
      SET sent = p.sent + EXCLUDED.sent, answered = CASE WHEN EXCLUDED.answered IS NULL THEN p.answered ELSE coalesce(p.answered, 0) + EXCLUDED.answered END,
-         ms_sum = p.ms_sum + EXCLUDED.ms_sum, ms_max = greatest(p.ms_max, EXCLUDED.ms_max), method = EXCLUDED.method, host = EXCLUDED.host;
+         ms_sum = p.ms_sum + EXCLUDED.ms_sum, ms_max = greatest(p.ms_max, EXCLUDED.ms_max), method = EXCLUDED.method, host = EXCLUDED.host,
+         scheduled = p.scheduled OR EXCLUDED.scheduled;
   INSERT INTO pgvigil.collector_probe_host AS h (collector_id, host, address, first_probed, last_answered, last_method)
   SELECT p_collector, coalesce(max(r.host), ''), r.address, min(coalesce(r.at, p_minute)),
          max(coalesce(r.at, p_minute)) FILTER (WHERE r.answered > 0), max(r.method)
@@ -72,6 +76,21 @@ BEGIN
      SET first_probed = least(h.first_probed, EXCLUDED.first_probed),
          last_answered = greatest(h.last_answered, EXCLUDED.last_answered),
          host = EXCLUDED.host, last_method = EXCLUDED.last_method;
+  -- an opened connection is a TCP answer (the review of B24h-1 part a #1, the lead's 12:4x (a)): the host's last answer is
+  -- the newest open, probed or not ('never answered' never stands for a server a connection reached); first_probed is
+  -- then the first time the address was seen
+  INSERT INTO pgvigil.collector_probe_host AS h (collector_id, host, address, first_probed, last_answered, last_method)
+  SELECT p_collector, coalesce(max(o.host), ''), o.address, min(coalesce(o.at, p_minute)), max(coalesce(o.at, p_minute)), 'tcp'
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'opened') = 'array' THEN p_beat->'opened' ELSE '[]'::jsonb END))
+         AS o(host text, address text, at timestamptz)
+   WHERE o.address IS NOT NULL
+   GROUP BY o.address
+  ON CONFLICT (collector_id, address) DO UPDATE
+     SET first_probed = least(h.first_probed, EXCLUDED.first_probed),
+         last_answered = greatest(h.last_answered, EXCLUDED.last_answered), host = EXCLUDED.host;
+  -- the probe rows are kept 8 days, trimmed here (the review of B24h-1 part b #9: until the join's purge() line, a
+  -- store under probe_every_minute grew without end); the key's leading minute serves the delete
+  DELETE FROM pgvigil.collector_probe WHERE minute < now() - interval '8 days';
 END
 $$;
 
@@ -86,9 +105,11 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
 
 -- collector_target_host: the first host of a dial target ('postgres:db1:5432,db2:5433' -> 'db1'; '[2001:db8::1]:5432'
 -- -> '2001:db8::1') - the name probe.go files an instance's probe under (heartbeat.go targetHost)
+-- (a SQL Server named instance's host is its box: 'mssql:sql01\a:0' -> 'sql01', the review of B24h-1 part b #6; a bare
+-- IPv6 literal loses its ':port' as heartbeat.go targetHost cuts it, part a #4)
 CREATE OR REPLACE FUNCTION pgvigil.collector_target_host(p_target text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN f LIKE '[%' THEN substring(f FROM 2 FOR strpos(f, ']') - 2) ELSE regexp_replace(f, ':[0-9]+$', '') END
+  SELECT split_part(CASE WHEN f LIKE '[%' THEN substring(f FROM 2 FOR strpos(f, ']') - 2) ELSE regexp_replace(f, ':[0-9]+$', '') END, E'\\', 1)
     FROM (SELECT split_part(substring(p_target FROM strpos(p_target, ':') + 1), ',', 1) AS f) x
 $$;
 

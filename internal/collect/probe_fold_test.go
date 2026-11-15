@@ -103,3 +103,28 @@ func TestProbeAnsweredAtLeastOneMs(t *testing.T) {
 		t.Errorf("an instant answer: %+v, want answered 1 with ms_sum and ms_max at least 1", rows)
 	}
 }
+
+// F3 (#a1's beat half, #b7): the beat carries the opened addresses once (an empty list as [], never null:
+// jsonb_to_recordset refuses null), and each probe row its mode
+func TestBeatCarriesOpenedAndMode(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}, probe: newProber("tcp", false)}
+	h.targets = map[string]string{"i1": "postgres:db1:5432"}
+	h.noteRemote("i1", "10.1.2.3:5432")
+	b := h.take()
+	if len(b.Opened) != 1 || b.Opened[0].Address != "10.1.2.3:5432" || b.Opened[0].Host != "db1" {
+		t.Errorf("the beat's opened: %+v, want 10.1.2.3:5432 under db1", b.Opened)
+	}
+	if b2 := h.take(); b2.Opened == nil || len(b2.Opened) != 0 {
+		t.Errorf("the next beat's opened: %#v, want [] (handed once, never null)", b2.Opened)
+	}
+	for _, every := range []bool{true, false} {
+		p := newProber("tcp", every)
+		p.dial = func(ctx context.Context, addr string) error { return nil }
+		p.noteRemote("i1", "db1", "10.1.2.3:5432")
+		p.noteFailed("i1")
+		p.round(context.Background(), time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC))
+		if rows := p.take(); len(rows) != 1 || rows[0].Scheduled != every {
+			t.Errorf("probe_every_minute %v: rows %+v, want one with scheduled %v", every, rows, every)
+		}
+	}
+}

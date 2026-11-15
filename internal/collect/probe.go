@@ -36,6 +36,9 @@ type beatProbe struct {
 	Answered *int      `json:"answered"`
 	MsSum    int64     `json:"ms_sum"`
 	MsMax    int       `json:"ms_max"`
+	// a round of probe_every_minute (the review of B24h-1 part b #7, the lead's 12:4x (a)): ping slow and not answering
+	// judge such rows only - the default mode's probes after a failure feed the parent's words
+	Scheduled bool `json:"scheduled"`
 }
 
 // beatOpened: an address a connection of an instance opened to since the last beat - a TCP answer (the review of
@@ -148,7 +151,7 @@ func (p *prober) round(ctx context.Context, now time.Time) {
 	sem := make(chan struct{}, probeInFlightFor(len(addrs), p.connectMax))
 	var wg sync.WaitGroup
 	for i, a := range addrs {
-		res[i] = beatProbe{Address: a, Method: p.method, At: now}
+		res[i] = beatProbe{Address: a, Method: p.method, At: now, Scheduled: p.every}
 		wg.Add(1)
 		go func(i int, a string) {
 			defer wg.Done()
