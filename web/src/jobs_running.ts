@@ -312,6 +312,8 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
           const shown = Date.parse(String(v)) < Date.now() ? `${fmtTime(v)} (passed)` : fmtTime(v);
           return r.over_average === true ? badge(shown, 'warn') : shown;
         },
+        // as 'running for': past its average a warning, within it OK, no average (or no estimate) N/A
+        cls: (v, r) => r.over_average === true ? '' : v != null && r.over_average === false ? 'status ok' : 'status none',
       },
       { key: 'current_step', label: 'current step', fmt: (v, r) => v == null ? (r.scheduler === 'pgagent' ? '-' : 'no steps') : `${text(v)} (since ${fmtTime(r.current_step_start)})` },
       { key: 'job_pid', label: 'pid', num: true }, { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
