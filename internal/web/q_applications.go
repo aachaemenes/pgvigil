@@ -15,8 +15,8 @@ import (
 // UI login on, through the ui_ function the serve login may call (never in the list, one application's answer, an
 // import's answer or an audit row). The writes go through the actions door's audit login like Admin > Instances',
 // with this page's own words when they are off, a body of 64 KB (500 targets of an assign), the source forced
-// 'entered' (only 312's import passes another), and one gate per write (appCanEdit: every signed-in user until the
-// viewer / operator / admin roles exist).
+// 'entered' (only 312's import passes another), and one gate per write (the admin role, checked by s.post before the
+// handler - B24f; appCanEdit is the login check that is left).
 
 // appBodyLimit holds an assign of 500 targets (about 30 KB) with room.
 const appBodyLimit = 64 << 10
