@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -202,13 +203,13 @@ func TestImportXLSXDates(t *testing.T) {
 	if d[0] || !d[1] || !d[2] || d[3] {
 		t.Fatalf("date styles %v, want 1 and 2 only (165's ' d' is quoted text)", d)
 	}
-	if got := xlsxSerialText("45658"); got != "2025-01-01" {
+	if got := xlsxSerialText("45658", false); got != "2025-01-01" {
 		t.Errorf("45658 read %q, want 2025-01-01", got)
 	}
-	if got := xlsxSerialText("45658.5"); got != "2025-01-01 12:00:00" {
+	if got := xlsxSerialText("45658.5", false); got != "2025-01-01 12:00:00" {
 		t.Errorf("45658.5 read %q", got)
 	}
-	rows, err := xlsxRows([]byte(`<worksheet><sheetData><row r="1"><c r="A1" s="2"><v>45658</v></c><c r="B1" s="0"><v>2024</v></c></row></sheetData></worksheet>`), nil, d)
+	rows, err := xlsxRows([]byte(`<worksheet><sheetData><row r="1"><c r="A1" s="2"><v>45658</v></c><c r="B1" s="0"><v>2024</v></c></row></sheetData></worksheet>`), nil, d, false)
 	if err != nil || len(rows) != 1 || rows[0].cells[0] != "2025-01-01" || rows[0].cells[1] != "2024" {
 		t.Errorf("cells %v (%v)", rows, err)
 	}
@@ -261,7 +262,7 @@ func TestImportHostile(t *testing.T) {
 		t.Errorf("5000 unknown keys: %d rows, %d names not read (want at most 41)", len(f.Rows), len(f.Unread))
 	}
 	// M2: a cell far to the right is not a reason to build 16384 cells
-	rows, err := xlsxRows([]byte(`<worksheet><sheetData><row r="1">`+inl("A1", "x")+`<c r="XFD1"><v>1</v></c></row></sheetData></worksheet>`), nil, nil)
+	rows, err := xlsxRows([]byte(`<worksheet><sheetData><row r="1">`+inl("A1", "x")+`<c r="XFD1"><v>1</v></c></row></sheetData></worksheet>`), nil, nil, false)
 	if err != nil || len(rows) != 1 || len(rows[0].cells) > 64 {
 		t.Errorf("a cell at XFD1: %d rows (%v), want one row of at most 64 cells", len(rows), err)
 	}
@@ -286,7 +287,7 @@ func TestImportHostile(t *testing.T) {
 		t.Errorf("elements that are no objects: %+v", f.Rows)
 	}
 	// coverage (m8): an error cell, a shared string out of range
-	rows, _ = xlsxRows([]byte(`<worksheet><sheetData><row r="1"><c r="A1" t="e"><v>#N/A</v></c></row><row r="2"><c r="A2" t="s"><v>9</v></c></row></sheetData></worksheet>`), []string{"x"}, nil)
+	rows, _ = xlsxRows([]byte(`<worksheet><sheetData><row r="1"><c r="A1" t="e"><v>#N/A</v></c></row><row r="2"><c r="A2" t="s"><v>9</v></c></row></sheetData></worksheet>`), []string{"x"}, nil, false)
 	if len(rows) != 2 || !strings.Contains(rows[0].why, "error value") || !strings.Contains(rows[1].why, "no shared string") {
 		t.Errorf("an error cell, a shared string out of range: %+v", rows)
 	}
@@ -294,7 +295,29 @@ func TestImportHostile(t *testing.T) {
 
 // review B m7: a time alone (a serial under 1) reads as its time, not as a day of 1899
 func TestImportXLSXTimes(t *testing.T) {
-	if got := xlsxSerialText("0.5"); got != "12:00:00" {
+	if got := xlsxSerialText("0.5", false); got != "12:00:00" {
 		t.Errorf("0.5 read %q, want 12:00:00", got)
+	}
+}
+
+// review B m7: a 1904 workbook's day 0; review B m5: a NUL in the request's values refused in words
+func TestImportXLSX1904AndNUL(t *testing.T) {
+	if got := xlsxSerialText("0", true); got != "00:00:00" {
+		t.Errorf("serial 0 read %q", got)
+	}
+	if got := xlsxSerialText("44197", true); got != "2025-01-02" {
+		t.Errorf("44197 in a 1904 workbook read %q, want 2025-01-02", got)
+	}
+	f := mustParse(t, xlsxBook(t, `<sheet name="Inventory" sheetId="1" r:id="rId1"/>`, `<workbookPr date1904="1"/>`, `<row r="1">`+inl("A1", "instance")+inl("B1", "application")+inl("C1", "description")+`</row><row r="2">`+inl("A2", "pg-1")+inl("B2", "A")+`<c r="C2"><v>1</v></c></row>`))
+	if len(f.Rows) != 1 || f.Rows[0].Description != "1" {
+		t.Errorf("a 1904 workbook's plain number: %+v", f.Rows)
+	}
+	for _, k := range []string{"source", "digest", "force"} {
+		if err := importParamsBad(url.Values{k: {"a\x00b"}}); err == nil || !strings.Contains(err.Error(), k) {
+			t.Errorf("a NUL in %s: %v", k, err)
+		}
+	}
+	if err := importParamsBad(url.Values{"source": {"proof"}, "force": {"t2,a1"}}); err != nil {
+		t.Errorf("plain values refused: %v", err)
 	}
 }

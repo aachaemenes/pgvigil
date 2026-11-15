@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -33,12 +34,17 @@ import (
 )
 
 const (
-	importBodyLimit = 5 << 20  // the file
-	importMaxRows   = 20000    // its lines
-	xlsxPartLimit   = 64 << 20 // one decompressed part of an .xlsx
-	xlsxMaxEntries  = 4000     // the parts of an .xlsx
-	xlsxMaxStrings  = 400000   // its shared strings
-	importTimeout   = "120s"   // the planner's own statement timeout (the audit pool's is 5 s)
+	importBodyLimit = 5 << 20          // the file
+	importMaxRows   = 20000            // its lines
+	xlsxPartLimit   = 64 << 20         // one decompressed part of an .xlsx
+	xlsxMaxEntries  = 4000             // the parts of an .xlsx
+	xlsxMaxStrings  = 400000           // its shared strings
+	xlsxMaxSheets   = 32               // the sheets a workbook may list (review B, M3)
+	xlsxUnpacked    = 128 << 20        // all its parts unpacked (review B, M3)
+	xlsxMaxCols     = 64               // the cells of a row read (the file has 14 columns; review B, M2)
+	unreadMax       = 40               // the names of columns not read, listed (review B, M1)
+	importTimeout   = "120s"           // the planner's own statement timeout (the audit pool's is 5 s)
+	importReadTime  = 60 * time.Second // the body's read and parse, before the work's budget starts
 )
 
 // invColumns are the file's columns in order; the last four are the export's alone (read back and ignored).
@@ -151,10 +157,17 @@ func fromRecords(kind string, header []string, recs [][]string, lines []int, why
 	cols := make([]string, len(header))
 	f := &invFile{Kind: kind}
 	seen := map[string]bool{}
+	first := map[string]string{} // a known column's header cell: a second cell naming it is refused (review B, M4)
 	for i, h := range header {
 		c := normCol(h)
 		cols[i] = c
 		known := slicesContains(invColumns, c)
+		if known {
+			if prev, dup := first[c]; dup {
+				return nil, fmt.Errorf("the header names the column %s twice (%q and %q): keep one of them", c, prev, strings.TrimSpace(h))
+			}
+			first[c] = strings.TrimSpace(h)
+		}
 		if (!known || c == "") && strings.TrimSpace(h) != "" && !seen[c] {
 			seen[c] = true
 			f.Unread = append(f.Unread, strings.TrimSpace(h))
@@ -163,6 +176,7 @@ func fromRecords(kind string, header []string, recs [][]string, lines []int, why
 			cols[i] = "" // read back and ignored
 		}
 	}
+	f.Unread = capUnread(f.Unread)
 	for n, rec := range recs {
 		empty := true
 		for _, c := range rec {
@@ -171,7 +185,7 @@ func fromRecords(kind string, header []string, recs [][]string, lines []int, why
 				break
 			}
 		}
-		if empty {
+		if empty && (whys == nil || whys[n] == "") { // a blank line that carries a reason is a refused line (review B, m4)
 			continue
 		}
 		if len(f.Rows) >= importMaxRows {
@@ -195,6 +209,14 @@ func fromRecords(kind string, header []string, recs [][]string, lines []int, why
 		f.Rows = append(f.Rows, row)
 	}
 	return f, nil
+}
+
+// capUnread: the names of the columns not read, at most unreadMax of them and a count of the rest
+func capUnread(u []string) []string {
+	if len(u) <= unreadMax {
+		return u
+	}
+	return append(u[:unreadMax:unreadMax], fmt.Sprintf("and %d more", len(u)-unreadMax))
 }
 
 // csvGuardUndo: the export writes one more ' before a cell that starts with = + - @ TAB CR (or with 's before one); the
@@ -249,7 +271,9 @@ func parseCSVInventory(text string) (*invFile, error) {
 	}
 	cr := csv.NewReader(strings.NewReader(text))
 	cr.Comma = sep
-	cr.LazyQuotes, cr.FieldsPerRecord = true, -1
+	// a bad quote is refused with its line (review B, m2: with LazyQuotes a quote that ends a field early read the rest of
+	// the file into one cell); the export and Excel write RFC 4180
+	cr.FieldsPerRecord = -1
 	var header []string
 	var recs [][]string
 	var lines []int
@@ -317,9 +341,18 @@ func parseJSONInventory(t string) (*invFile, error) {
 			s, _ := cell(c)
 			header = append(header, s)
 		}
+		if len(rs) > importMaxRows {
+			return nil, fmt.Errorf("more than %d lines: at most %d in one file (split it)", importMaxRows, importMaxRows)
+		}
 		for _, r := range rs {
-			arr, _ := r.([]any)
+			arr, isArr := r.([]any)
+			if len(arr) > len(header) {
+				arr = arr[:len(header)]
+			}
 			rec, why := make([]string, len(arr)), ""
+			if !isArr {
+				why = "a line is not a list of cells: not read"
+			}
 			for i, x := range arr {
 				s, ok := cell(x)
 				if !ok {
@@ -330,36 +363,72 @@ func parseJSONInventory(t string) (*invFile, error) {
 			recs, whys = append(recs, rec), append(whys, why)
 		}
 	case []any:
+		// the elements counted before any row is built, and a row holds the known columns alone: a key no column takes
+		// is a name in the 'not read' list, never a cell (review B, M1: 100,000 keys times a million elements)
+		if len(d) > importMaxRows {
+			return nil, fmt.Errorf("more than %d lines: at most %d in one file (split it)", importMaxRows, importMaxRows)
+		}
 		idx := map[string]int{}
+		unknown := map[string]bool{}
 		for _, r := range d {
 			obj, _ := r.(map[string]any)
-			keys := make([]string, 0, len(obj))
 			for k := range obj {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				if _, ok := idx[k]; !ok {
-					idx[k] = len(header)
-					header = append(header, k)
+				if _, ok := idx[k]; ok || unknown[k] {
+					continue
 				}
+				if !slicesContains(invColumns, normCol(k)) {
+					unknown[k] = true
+					continue
+				}
+				idx[k] = -1
 			}
 		}
+		keys := make([]string, 0, len(idx))
+		for k := range idx {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			idx[k] = len(header)
+			header = append(header, k)
+		}
 		for _, r := range d {
-			obj, _ := r.(map[string]any)
+			obj, isObj := r.(map[string]any)
 			rec, why := make([]string, len(header)), ""
-			if obj == nil {
+			if !isObj {
 				why = "a line is not an object: not read"
 			}
 			for k, x := range obj {
+				i, ok := idx[k]
+				if !ok {
+					continue
+				}
 				s, ok := cell(x)
 				if !ok {
 					why = "a cell is not a single value: this line is not read"
 				}
-				rec[idx[k]] = s
+				rec[i] = s
 			}
 			recs, whys = append(recs, rec), append(whys, why)
 		}
+		names := make([]string, 0, len(unknown))
+		for k := range unknown {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		if !isHeader(header) {
+			return nil, errors.New("the JSON names no instance and application columns")
+		}
+		lines := make([]int, len(recs))
+		for i := range lines {
+			lines[i] = i + 1
+		}
+		f, err := fromRecords("json", header, recs, lines, whys)
+		if err != nil {
+			return nil, err
+		}
+		f.Unread = capUnread(append(f.Unread, names...))
+		return f, nil
 	default:
 		return nil, errors.New("the JSON is neither {columns, rows} nor an array of rows")
 	}
@@ -377,7 +446,8 @@ func parseJSONInventory(t string) (*invFile, error) {
 // their reference (the house export leaves blank cells out), a formula cell refused, every part's size capped ----
 
 type xlsxReader struct {
-	zr *zip.Reader
+	zr       *zip.Reader
+	unpacked int // the bytes unpacked so far: xlsxUnpacked for the whole file (review B, M3)
 }
 
 func (x *xlsxReader) part(name string) ([]byte, error) {
@@ -395,6 +465,9 @@ func (x *xlsxReader) part(name string) ([]byte, error) {
 			}
 			if len(b) > xlsxPartLimit {
 				return nil, fmt.Errorf("%s is over %d MB unpacked: not read", name, xlsxPartLimit>>20)
+			}
+			if x.unpacked += len(b); x.unpacked > xlsxUnpacked {
+				return nil, fmt.Errorf("the workbook is over %d MB unpacked: not read", xlsxUnpacked>>20)
 			}
 			return b, nil
 		}
@@ -432,6 +505,9 @@ func parseXLSX(body []byte) (*invFile, error) {
 		return nil, fmt.Errorf("the workbook has no xl/workbook.xml: not an .xlsx (%v)", err)
 	}
 	var book struct {
+		Pr struct {
+			Date1904 string `xml:"date1904,attr"`
+		} `xml:"workbookPr"`
 		Sheets []struct {
 			Name string `xml:"name,attr"`
 			RID  string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
@@ -440,6 +516,10 @@ func parseXLSX(body []byte) (*invFile, error) {
 	if err := xml.Unmarshal(wb, &book); err != nil {
 		return nil, fmt.Errorf("xl/workbook.xml could not be read: %v", err)
 	}
+	if len(book.Sheets) > xlsxMaxSheets {
+		return nil, fmt.Errorf("the workbook lists %d sheets: at most %d are read (save the inventory's sheet alone)", len(book.Sheets), xlsxMaxSheets)
+	}
+	d1904 := book.Pr.Date1904 == "1" || strings.EqualFold(book.Pr.Date1904, "true") // a Mac workbook's day 0 is 1904-01-01 (review B, m7)
 	relsB, err := x.part("xl/_rels/workbook.xml.rels")
 	if err != nil || relsB == nil {
 		return nil, fmt.Errorf("the workbook has no relationships part: not read (%v)", err)
@@ -486,7 +566,13 @@ func parseXLSX(body []byte) (*invFile, error) {
 			order = append(order, i)
 		}
 	}
+	read := map[string]bool{} // each sheet part read once, however many sheets name it (review B, M3)
 	for _, i := range order {
+		tp := strings.ToLower(target[book.Sheets[i].RID])
+		if read[tp] {
+			continue
+		}
+		read[tp] = true
 		sb, err := x.part(target[book.Sheets[i].RID])
 		if err != nil {
 			return nil, err
@@ -494,7 +580,7 @@ func parseXLSX(body []byte) (*invFile, error) {
 		if sb == nil {
 			continue
 		}
-		rows, err := xlsxRows(sb, sst, dates)
+		rows, err := xlsxRows(sb, sst, dates, d1904)
 		if err != nil {
 			return nil, fmt.Errorf("sheet %s: %v", book.Sheets[i].Name, err)
 		}
@@ -579,7 +665,7 @@ func colIndex(ref string) int {
 	return n - 1
 }
 
-func xlsxRows(b []byte, sst []string, dates map[int]bool) ([]xlsxRow, error) {
+func xlsxRows(b []byte, sst []string, dates map[int]bool, d1904 bool) ([]xlsxRow, error) {
 	d := xml.NewDecoder(bytes.NewReader(b))
 	var rows []xlsxRow
 	var row *xlsxRow
@@ -603,13 +689,21 @@ func xlsxRows(b []byte, sst []string, dates map[int]bool) ([]xlsxRow, error) {
 				if len(rows) > importMaxRows+20 {
 					return nil, fmt.Errorf("more than %d rows: at most %d lines in one file (split it)", importMaxRows, importMaxRows)
 				}
-				num := len(rows) + 1
+				last := 0
+				if len(rows) > 0 {
+					last = rows[len(rows)-1].num
+				}
+				num := last + 1 // a row with no number is the next one
 				for _, a := range t.Attr {
 					if a.Name.Local == "r" {
 						if n, err := strconv.Atoi(a.Value); err == nil {
 							num = n
 						}
 					}
+				}
+				// a line is keyed by its number all the way to the planner: the rows go up (review A, M4)
+				if num <= last {
+					return nil, fmt.Errorf("row %d comes after row %d: a sheet's rows go up, each once (save the sheet again)", num, last)
 				}
 				rows = append(rows, xlsxRow{num: num})
 				row, next = &rows[len(rows)-1], 0
@@ -654,10 +748,10 @@ func xlsxRows(b []byte, sst []string, dates map[int]bool) ([]xlsxRow, error) {
 				if i < 0 {
 					i = next
 				}
-				if i > 16383 {
+				next = i + 1
+				if i >= xlsxMaxCols { // the file has 14 columns: a cell far to the right is not read (review B, M2)
 					continue
 				}
-				next = i + 1
 				var s string
 				switch ctype {
 				case "s":
@@ -676,7 +770,7 @@ func xlsxRows(b []byte, sst []string, dates map[int]bool) ([]xlsxRow, error) {
 				case "", "n":
 					s = strings.TrimSpace(val.String())
 					if dates[cstyle] && s != "" {
-						s = xlsxSerialText(s) // a date cell (the house export writes a date-like text as one) reads as its date
+						s = xlsxSerialText(s, d1904) // a date cell (the house export writes a date-like text as one) reads as its date
 					}
 				default: // str, d
 					s = xlsxUnescape(val.String())
@@ -734,8 +828,36 @@ func (s *Server) hasImport(ctx context.Context) (bool, error) {
 	return ok, err
 }
 
+// appBusy: a write that waited past the audit login's lock_timeout (55P03) for the applications' write lock - an import
+// or a page write holding it - answered in words (review B, m3), here and in 310's appWrite
+func appBusy(err error) error {
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "55P03" {
+		return errors.New("the applications are being written now (an import, or a change on this page): nothing was written; try again when it has ended")
+	}
+	return nil
+}
+
+// importParamsBad: a NUL in the source, the digest or the ticks is refused in words, never sent to the store (review B,
+// m5: jsonb refuses \u0000 with a SQL error)
+func importParamsBad(q url.Values) error {
+	for _, k := range []string{"source", "digest", "force"} {
+		if strings.ContainsRune(q.Get(k), 0) {
+			return fmt.Errorf("the request's %s holds a NUL character: refused", k)
+		}
+	}
+	return nil
+}
+
 // AppImport is POST /api/admin/applications/import.
 func (s *Server) AppImport(w http.ResponseWriter, r *http.Request) {
+	// serve's WriteTimeout (75 s) would cut a long import's answer (t-im-g2 F13: curl 000 after 79 s): this route moves
+	// its own write deadline past its work's, first of all (review B, m6: a deadline already passed is not moved); a
+	// writer that cannot move it keeps the work inside the serve's 75 s
+	budget := 130 * time.Second
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget + 20*time.Second + importReadTime)); err != nil {
+		budget = 70 * time.Second
+	}
 	user, ok := s.appImportGate(w, r)
 	if !ok {
 		return
@@ -763,6 +885,10 @@ func (s *Server) AppImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	if err := importParamsBad(q); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	force := []string{}
 	for _, x := range strings.Split(q.Get("force"), ",") {
 		if x = strings.TrimSpace(x); x != "" {
@@ -772,12 +898,6 @@ func (s *Server) AppImport(w http.ResponseWriter, r *http.Request) {
 	pay := map[string]any{"ui_user": user, "client": clientIP(r), "source_name": q.Get("source"), "dry": q.Get("dry") != "0",
 		"digest": q.Get("digest"), "force": force, "file_kind": f.Kind, "rows": f.Rows}
 	b, _ := json.Marshal(pay)
-	// serve's WriteTimeout (75 s) would cut a long import's answer (t-im-g2 F13: curl 000 after 79 s): this route moves
-	// its own write deadline past its work's; a writer that cannot move it keeps the work inside the serve's 75 s
-	budget := 130 * time.Second
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget + 20*time.Second)); err != nil {
-		budget = 70 * time.Second
-	}
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
 	ans, err := s.importCall(wctx, b)
@@ -790,6 +910,8 @@ func (s *Server) AppImport(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, fmt.Errorf("the import took longer than %s and was rolled back: nothing was written; split the file", importTimeout))
 		case errors.As(err, &pe) && pe.Code == "P0001":
 			writeErr(w, http.StatusConflict, errors.New(pe.Message))
+		case appBusy(err) != nil:
+			writeErr(w, http.StatusConflict, appBusy(err))
 		default:
 			writeErr(w, http.StatusInternalServerError, err)
 		}
@@ -838,26 +960,26 @@ const sqlInventory = `SELECT level, instance, engine, database, application, env
 // AppInventory is GET /api/applications/inventory: the round trip's rows as a grid.
 func (s *Server) AppInventory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if have, err := s.hasImport(ctx); err != nil || !have {
-		if err == nil {
-			err = errors.New(importOldStore)
-		}
-		writeErr(w, http.StatusConflict, err)
+	if have, err := s.hasImport(ctx); err != nil {
+		writeErr(w, http.StatusInternalServerError, err) // a store that cannot be read is no 409 (review B, m9)
+		return
+	} else if !have {
+		writeErr(w, http.StatusConflict, errors.New(importOldStore))
 		return
 	}
 	t, err := s.query(ctx, sqlInventory)
 	s.reply(w, r, t, err)
 }
 
-// AppInventoryCSV is GET /api/applications/inventory.csv: the same rows as CSV (UTF-8 with BOM, CRLF, every cell that
-// starts with = + - @ TAB CR written with one more ' - undone by the import).
+// AppInventoryCSV is GET /api/applications/inventory.csv: the same rows as CSV (UTF-8 with BOM, LF line ends, every
+// cell that starts with = + - @ TAB CR written with one more ' - undone by the import).
 func (s *Server) AppInventoryCSV(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if have, err := s.hasImport(ctx); err != nil || !have {
-		if err == nil {
-			err = errors.New(importOldStore)
-		}
-		writeErr(w, http.StatusConflict, err)
+	if have, err := s.hasImport(ctx); err != nil {
+		writeErr(w, http.StatusInternalServerError, err) // a store that cannot be read is no 409 (review B, m9)
+		return
+	} else if !have {
+		writeErr(w, http.StatusConflict, errors.New(importOldStore))
 		return
 	}
 	t, err := s.query(ctx, sqlInventory)
@@ -895,8 +1017,9 @@ func writeInventoryCSV(w io.Writer, t *table) error {
 	if _, err := io.WriteString(w, "\ufeff"); err != nil {
 		return err
 	}
+	// LF line ends: encoding/csv's UseCRLF drops every CR inside a quoted field (review B, m1), so a CR in a cell would not
+	// come back; Excel and the import read LF files
 	cw := csv.NewWriter(w)
-	cw.UseCRLF = true
 	if err := cw.Write(t.Columns); err != nil {
 		return err
 	}
@@ -942,13 +1065,21 @@ func xlsxDateStyles(b []byte) map[int]bool {
 	return out
 }
 
-// xlsxSerialText: an Excel serial day (the 1900 system, day 0 = 1899-12-30) as yyyy-MM-dd, with the time when it has one.
-func xlsxSerialText(v string) string {
+// xlsxSerialText: an Excel serial day (the 1900 system, day 0 = 1899-12-30; a 1904 workbook's day 0 = 1904-01-01) as
+// yyyy-MM-dd, with the time when it has one; a serial under 1 is a time alone, HH:MM:SS (review B, m7).
+func xlsxSerialText(v string, d1904 bool) string {
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
 		return v
 	}
-	t := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC).Add(time.Duration(f*86400*1000+0.5) * time.Millisecond).Truncate(time.Second)
+	if f >= 0 && f < 1 {
+		return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(f*86400*1000+0.5) * time.Millisecond).Truncate(time.Second).Format("15:04:05")
+	}
+	day0 := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+	if d1904 {
+		day0 = time.Date(1904, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	t := day0.Add(time.Duration(f*86400*1000+0.5) * time.Millisecond).Truncate(time.Second)
 	if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 {
 		return t.Format("2006-01-02")
 	}

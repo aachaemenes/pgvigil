@@ -96,6 +96,10 @@ func (s *Server) appWrite(w http.ResponseWriter, r *http.Request, fn string) {
 	}
 	in["ui_user"], in["client"], in["source"] = user, clientIP(r), "entered"
 	a, raw, err := s.callImport(r.Context(), fn, in)
+	if busy := appBusy(err); busy != nil { // task 312: an import's apply holds the write lock (review B, m3)
+		writeErr(w, http.StatusConflict, busy)
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
