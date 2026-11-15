@@ -7,6 +7,9 @@
 #                   other connection string is ADMIN_DSN with user / password / dbname appended (never a fixed port)
 #   MSSQL_IMAGE     the SQL Server image (default mcr.microsoft.com/mssql/server:2022-latest)
 #   PGVIGIL_PARTS   the parts to run (default every part this file has)
+#   PGVIGIL_SQL_MEM_MB  SQL Server's own memory cap in the 6 GB container (MSSQL_MEMORY_LIMIT_MB; default 4096; 0 = none):
+#                   2017 and 2019 size themselves on the host's memory, not the container's (box diag 413-d2017c:
+#                   physical_memory_kb 105517056 in a 6 GB container)
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-mssql-sessions-wiring.patch (activity.go's grouping sets, web.go,
 #                   mssql_perf.ts, 0190: the lead's files) to this copy when the tree lacks them.
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch.
@@ -89,7 +92,8 @@ if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && grep -q 'func (s \*Server) MSSQLSessions
 fi
 
 echo "== A. the container ($IMG_SQL) =="
-docker run -d --name "$SQL" --label "$LBL" --memory 6g --env-file "$TMPD/sa.env" -p 127.0.0.1::1433 "$IMG_SQL" >/dev/null
+MEMCAP=(); [[ "${PGVIGIL_SQL_MEM_MB:-4096}" != 0 ]] && MEMCAP=(-e "MSSQL_MEMORY_LIMIT_MB=${PGVIGIL_SQL_MEM_MB:-4096}")
+docker run -d --name "$SQL" --label "$LBL" --memory 6g "${MEMCAP[@]}" --env-file "$TMPD/sa.env" -p 127.0.0.1::1433 "$IMG_SQL" >/dev/null
 SQLCMD=
 for _ in $(seq 1 60); do
   for c in /opt/mssql-tools18/bin/sqlcmd /opt/mssql-tools/bin/sqlcmd; do docker exec "$SQL" test -x "$c" 2>/dev/null && SQLCMD=$c && break 2; done
@@ -126,10 +130,13 @@ export PGV_S_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?databas
   printf '  - name: ssnone\n    engine: sqlserver\n    dsn: env:PGV_S_MON\n    query_text: none\n'
 } > "$TMPD/m.yaml"
 "$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "A: migrate"; }
-col() { local i=$1; shift; for c in "$@"; do timeout 300 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; fail "collect $i $c"; }; done; }
+# memstat <label>: the container's memory against its limit, its cgroup memory events and SQL Server's own view of memory
+memstat() { echo "     MEM $1: $(docker stats --no-stream --format '{{.MemUsage}}' "$SQL" 2>/dev/null); $(docker exec "$SQL" sh -c 'cat /sys/fs/cgroup/memory.events 2>/dev/null | tr "\n" " "' 2>/dev/null); $(sq "SELECT CONCAT('physical_kb ', i.physical_memory_kb, ' committed_kb ', i.committed_kb, ' target_kb ', i.committed_target_kb) FROM sys.dm_os_sys_info i" master 30 2>/dev/null)"; }
+col() { local i=$1; shift; for c in "$@"; do timeout 300 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; memstat "at the failed collect" >&2; fail "collect $i $c"; }; done; }
 col ss mssql_instance; col ssnone mssql_instance
 ISS=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ss'"); INONE=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ssnone'")
-echo "ok   A: SQL Server $VER, pgvss, $(echo $LOGINS | wc -w) logins, instances ss $ISS / ssnone $INONE"
+echo "ok   A: SQL Server $VER, pgvss, $(echo $LOGINS | wc -w) logins, instances ss $ISS / ssnone $INONE, SQL memory cap ${PGVIGIL_SQL_MEM_MB:-4096} MB"
+memstat "after A"
 
 # hold <login> <seconds> <T-SQL>: one session of <login> in pgvss (host name pgvss-<login>) that runs the batch at once, then
 # stays connected (sleeping) for <seconds>. sqlcmd reads its stdin with no -i: given '-i /dev/stdin' it reads the input to its
@@ -330,6 +337,7 @@ rows2, pol2 = top(sys.argv[2])
 if pol2['query_text'] != 'none' or any(r['statement'] for r in rows2): bad.append(f"ssnone (none): a statement returned ({pol2})")
 if bad: print('DIFF', '; '.join(bad)); sys.exit(1)
 PY
+memstat "after P5"
 echo "ok   P5: R1 at rank 1 of CPU, logical reads and duration, R2 at rank 1 of tempdb and grant (50 MB+); the statement under 'full', none under 'none'"
 fi
 
@@ -340,6 +348,7 @@ go run ./scripts/proof-sessions-hold 5000 900 >"$TMPD/hold5k.out" 2>"$TMPD/hold5
 for _ in $(seq 1 300); do grep -q '^held' "$TMPD/hold5k.out" 2>/dev/null && break; sleep 1; done
 grep -q '^held' "$TMPD/hold5k.out" || { cat "$TMPD/hold5k.err" >&2; fail "A6: the 5,000 sessions never opened"; }
 N=$(sq "SELECT COUNT(*) FROM sys.dm_exec_sessions")
+memstat "A6, $N sessions held"
 echo "     $(cat "$TMPD/hold5k.out"); the server lists $N sessions"
 A6FAIL=0
 for c in mssql_sessions mssql_activity; do
