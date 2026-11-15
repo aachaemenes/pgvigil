@@ -44,6 +44,17 @@
     "item_re": "\\('((?:[^']|'')+)'\\)"
   },
   {
+    "name": "errorLogNoise",
+    "go_file": "internal/mssql/errorlog.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_LogHunter 3.11 (20261101), the lines it deletes after the search (errorLogNoise*)",
+    "begin": "/*get rid of some messages we don't care about*/",
+    "end": "/*get rid of duplicate messages we don't care about*/",
+    "sha256": "",
+    "item_re": "N'((?:[^']|'')+)'"
+  },
+  {
     "name": "waitCategories",
     "go_file": "internal/mssql/waits.go",
     "repo": "erikdarlingdata/DarlingData",
