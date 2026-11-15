@@ -128,12 +128,13 @@
 #     minutes, a load (one firing), a quiet read (na), a second quiet read and pass (still na and no resolved: with
 #     clear_after 0 that pass resolves, G3's b4), a load within the 5 minutes (critical): one firing and no resolved -
 #     one open alert (a rule of 0 minutes; with more minutes a flap resolves and fires again, docs/alerts.md).
-#     G_FROM=G3, G4, G5 or G6 starts G there (GC, G0-G2 and the parts before it skipped; such a run ends PARTIAL). G1 also reads FL4 through the API: the grid's
+#     G_FROM=G3, G4, G5 or G6 starts G there (T, GC, G0-G2 and the G parts before it skipped; any other value refused
+#     before the setup; such a run ends PARTIAL). G1 also reads FL4 through the API: the grid's
 #     compilations row has no current value, floor 5, unit 'batch requests', input counters.batch_requests_s; its
 #     state row 'na' with the unit 'batch requests' (red without 402's patch: no such columns). NOT PROVEN here: the
 #     pages' N/A words as drawn (metrics.ts, alert_rules.ts) and FL5's summary flag (no row reads them yet).
-#  F. at the end every seeded row but the ended one keeps its rule_id, op, thresholds, for_minutes and enabled false
-#     as read at A.
+#  F. at the end every seeded row but the two ended ones (page reads at A, lock timeouts at B2) keeps its rule_id, op,
+#     thresholds, for_minutes and enabled false as read at A.
 # NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low page life expectancy and a database taken
 #   offline at the seeded thresholds (no memory pressure or offline database on a box); SQL Server 2016, Managed
 #   Instance, a Windows host.
@@ -148,6 +149,10 @@ LBL=pgvigil-proof=chk
 PGDB=pgv_chk_$SUF; MON=pgv_kmon_$SUF; SQL=pgv-chk-$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
+# G_FROM=<G3|G4|G5|G6>: a diagnostic run starts G at that part (T, GC, G0-G2 and the G parts before it skipped); any other
+# value is refused here, before the setup (merge review NIT 2); such a run ends 'PARTIAL', never 'PROOF OK'
+G_FROM=${G_FROM:-}
+case "$G_FROM" in ''|G3|G4|G5|G6) ;; *) fail "G_FROM=$G_FROM (want G3, G4, G5 or G6)" ;; esac
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
 TMPD=$(mktemp -d); SRVPID=; APPLIED=
@@ -630,7 +635,7 @@ done
 ok "E: free list stalls, lazy writes, hit ratio, page life expectancy per 4 GB, offline errors: each metric reaches its rule (NOT PROVEN live at the seeded thresholds)"
 
 echo "== T. client timeouts (B24 Fixed 1) =="
-if [[ -n "$D_FROM" ]]; then echo "   T skipped (D_FROM=$D_FROM)"; else
+if [[ -n "$D_FROM" || -n "$G_FROM" ]]; then echo "   T skipped (D_FROM='$D_FROM' G_FROM='$G_FROM')"; else
 XM=xe.client_timeouts_per_min
 xstate() { pq "SELECT state FROM pgvigil.alert_rule_state WHERE instance_id = $1 AND metric = '$XM' AND database = ''"; }
 xrule() { rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"$XM\",\"op_dir\":\"above\",\"scope\":\"instance\",\"instance_name\":\"$1\",\"warning\":9.999,\"critical\":59.999,\"for_minutes\":0}" \
@@ -912,8 +917,6 @@ ok "T3: one mssql_attention_reads row per read, all done; the XE API names each 
 fi
 
 echo "== G. the floors: not judged under a floor (FL6) =="
-G_FROM=${G_FROM:-}
-case "$G_FROM" in ''|G3|G4|G5|G6) ;; *) fail "G_FROM=$G_FROM (want G3, G4, G5 or G6)" ;; esac
 # gpart <G3|G4|G5|G6>: true when the run judges that part (all of G, or from G_FROM on)
 gpart() { [[ -z "$G_FROM" || "${1#G}" -ge "${G_FROM#G}" ]]; }
 # GC: one CHECK on alert_rule_state.state, naming 'na' (a DROP CONSTRAINT IF EXISTS of a wrong name passes silently)
