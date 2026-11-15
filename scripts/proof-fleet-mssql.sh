@@ -67,7 +67,7 @@
 #   J3 stats     4 s after the grid: the 'succeeded 7 days' column there, every cell a number, both seeded jobs' '1'
 #   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2); its
 #                'Open the job on its instance' link is #/mssqljobs?i=<sql01>&job=<name> and lands with that job's history open (SF4)
-#   (B9b, expected written 2026-11-14 23:0x PST before any run; red on rel-b9's base 00e7b96, which has none of it)
+#   (B9b, expected written 2026-11-14 22:5x PST before any run; red on rel-b9's base 00e7b96, which has none of it)
 #   J8 cards     on that tab (sql01): 'Runs, <range>' above the grid with the tiles 'failed or cancelled', 'succeeded',
 #                'retries attempted' whose numbers equal /api/jobs/history?part=cards (parity) and the HAND COUNT from
 #                job_stats_hourly (sql01, step 0, the hours that started in the tab's range); 'Longest 5', 'Most frequent
