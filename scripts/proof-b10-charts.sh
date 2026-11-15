@@ -30,7 +30,9 @@
 #     second in one; 120's two in one each. RED: the part is refused or absent.
 #  E. the Blocked reports page draws 'Chains over the range': one bar per chain (11), coloured by its longest wait as
 #     'a blocking chain' judges one (over 300 s critical: 3; over 30 s warning: 8; 120's two neither), each bar's title
-#     naming the head's login and program, and a grid of 13 rows under it. RED: no such section.
+#     naming the head's login and program, and a grid of 13 rows under it; the drawing in a box that scrolls (its bars
+#     keep their height however many chains), a time axis of 5 labelled ticks, and the grid's 'as a blocking chain'
+#     column naming 3 critical and 8 warning. RED: no such section.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 PIMG=${PGVIGIL_B10_PG_IMAGE:-postgres:18}
@@ -138,8 +140,11 @@ h = open(sys.argv[1]).read()
 i = h.find('Chains over the range')
 if i < 0: print('absent'); sys.exit()
 s = h[i:]
+s = s[:s.find('Findings over the range')] if 'Findings over the range' in s else s
 bars = re.findall(r'<rect[^>]*class=\"chain-bar ([a-z]+)\"[^>]*>\s*<title>([^<]*)</title>', s)
-print('%d|%d|%d|%s' % (len(bars), sum(b[0] == 'crit' for b in bars), sum(b[0] == 'warn' for b in bars), all(re.search(r'login l(\\d+), program p\\1\\b', b[1]) for b in bars)))" "$OUT.blk")" "13|3|8|True" "E: 13 bars, 3 critical, 8 warning (120's two neither), each titled 'login lk, program pk'"
+extra = '%s|%d|%d|%d' % ('class=\"chain-scroll\"' in s, len(re.findall(r'class=\"chain-tick-label\"', s)),
+                         len(re.findall(r'class=\"badge crit\">critical<', s)), len(re.findall(r'class=\"badge warn\">warning<', s)))
+print('%d|%d|%d|%s|%s' % (len(bars), sum(b[0] == 'crit' for b in bars), sum(b[0] == 'warn' for b in bars), all(re.search(r'login l(\\d+), program p\\1\\b', b[1]) for b in bars), extra))" "$OUT.blk")" "13|3|8|True|True|5|3|8" "E: 13 bars, 3 critical, 8 warning (120's two neither), each titled 'login lk, program pk'; the scroll box, 5 ticks, the grid's band 3 critical / 8 warning"
 
 echo
 [ "$bad" = 0 ] && echo "proof-b10-charts: every row ok" || { echo "proof-b10-charts: $bad row(s) FAIL"; exit 1; }
