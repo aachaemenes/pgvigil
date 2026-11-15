@@ -232,17 +232,14 @@ SELECT i.instance_id, i.name AS instance, i.engine,
        AND h.snapshot_at > $1::timestamptz - interval '15 minutes' AND h.snapshot_at <= $1
      ORDER BY h.snapshot_at DESC LIMIT 1) hm ON true
   LEFT JOIN LATERAL (
-    SELECT count(*) AS blocking, round(max(x.waited)::numeric, 1) AS longest_wait_s FROM (
-      SELECT extract(epoch FROM max(a.snapshot_at) - min(a.snapshot_at)) AS waited
-        FROM pgvigil.activity_sample a
-       WHERE i.engine = 'postgres' AND a.instance_id = i.instance_id AND a.wait_event_type = 'Lock'
-         AND a.snapshot_at > $1::timestamptz - interval '1 hour' AND a.snapshot_at <= $1
-       GROUP BY a.pid, a.backend_start, a.query_start) x
+    -- blocking in WAITS over the last hour (0165), as the calendar counts them
+    SELECT count(*) AS blocking, round(max(w.wait_ms) / 1000.0, 1) AS longest_wait_s
+      FROM pgvigil.pg_block_waits(i.instance_id, $1::timestamptz - interval '1 hour', $1) w
+     WHERE i.engine = 'postgres'
     UNION ALL
-    SELECT count(*), round(max(b.wait_ms) / 1000.0, 1)
-      FROM pgvigil.mssql_blocked_reports b
-     WHERE i.engine = 'sqlserver' AND b.instance_id = i.instance_id
-       AND b.event_at > $1::timestamptz - interval '1 hour' AND b.event_at <= $1
+    SELECT count(*), round(max(w.wait_ms) / 1000.0, 1)
+      FROM pgvigil.mssql_block_waits(i.instance_id, $1::timestamptz - interval '1 hour', $1) w
+     WHERE i.engine = 'sqlserver'
      ORDER BY 1 DESC LIMIT 1) bl ON true
   LEFT JOIN LATERAL (
     SELECT coalesce(sum(greatest(d.hi - d.lo, 0)), 0)::bigint AS deadlocks, NULL::timestamptz AS last_deadlock_at FROM (

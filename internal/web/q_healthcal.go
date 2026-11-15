@@ -77,17 +77,14 @@ SELECT d.day, round((extract(epoch FROM d.day_end - d.day_start) / 3600)::numeri
        AND m.snapshot_at >= d.day_start AND m.snapshot_at < d.day_end
      ORDER BY 1 DESC LIMIT 1) cpu ON true
   LEFT JOIN LATERAL (
-    SELECT count(*) AS blocking, round(max(x.waited)::numeric, 1) AS peak_block_s FROM (
-      SELECT extract(epoch FROM max(a.snapshot_at) - min(a.snapshot_at)) AS waited
-        FROM pgvigil.activity_sample a
-       WHERE i.engine = 'postgres' AND a.instance_id = i.instance_id AND a.wait_event_type = 'Lock'
-         AND a.snapshot_at >= d.day_start AND a.snapshot_at < d.day_end
-       GROUP BY a.pid, a.backend_start, a.query_start) x
+    -- blocking in WAITS (0165: one blocked session behind one blocker over one stretch), not reports or samples
+    SELECT count(*) AS blocking, round(max(w.wait_ms) / 1000.0, 1) AS peak_block_s
+      FROM pgvigil.pg_block_waits(i.instance_id, d.day_start, d.day_end) w
+     WHERE i.engine = 'postgres'
     UNION ALL
-    SELECT count(*), round(max(b.wait_ms) / 1000.0, 1)
-      FROM pgvigil.mssql_blocked_reports b
-     WHERE i.engine = 'sqlserver' AND b.instance_id = i.instance_id
-       AND b.event_at >= d.day_start AND b.event_at < d.day_end
+    SELECT count(*), round(max(w.wait_ms) / 1000.0, 1)
+      FROM pgvigil.mssql_block_waits(i.instance_id, d.day_start, d.day_end) w
+     WHERE i.engine = 'sqlserver'
      ORDER BY 1 DESC LIMIT 1) bl ON true
   LEFT JOIN LATERAL (
     SELECT coalesce(sum(greatest(x.hi - x.lo, 0)), 0)::bigint AS deadlocks FROM (

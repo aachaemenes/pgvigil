@@ -50,7 +50,7 @@ export function dayReasons(d: Row): string[] {
   if (n(d.deadlocks) > 0) out.push(`${plural(n(d.deadlocks), 'deadlock')} (${h < 1 ? 'under an hour' : `${(n(d.deadlocks) / h).toFixed(1)}/hr`})`);
   if (n(d.errors) > 0) out.push(`${n(d.errors)} collection errors`);
   if (n(d.high_cpu) > 0) out.push(`${plural(n(d.high_cpu), 'high-CPU sample')}`);
-  if (n(d.blocking) > 0) out.push(`${n(d.blocking)} blocking events (${h < 1 ? 'under an hour' : `${(n(d.blocking) / h).toFixed(1)} reports/hr`}${d.peak_block_s != null ? `, peak block ${n(d.peak_block_s).toFixed(1)} s` : ''})`);
+  if (n(d.blocking) > 0) out.push(`${n(d.blocking)} blocking waits (${h < 1 ? 'under an hour' : `${(n(d.blocking) / h).toFixed(1)} waits/hr`}${d.peak_block_s != null ? `, peak block ${n(d.peak_block_s).toFixed(1)} s` : ''})`);
   if (n(d.mem_crit) > 0) out.push(`${plural(n(d.mem_crit), 'severe memory-pressure event')}`);
   if (n(d.mem_pressure) > 0) out.push(`${plural(n(d.mem_pressure), 'memory-pressure event')}`);
   if (n(d.alerts) > 0) out.push(`${plural(n(d.alerts), 'alert')}`);
