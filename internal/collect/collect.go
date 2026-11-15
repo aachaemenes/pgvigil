@@ -174,10 +174,18 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 
 	info, err := platform.Detect(ctx, conn, in.Platform)
 	if err != nil {
+		// connected, then failed: recorded as the collection's failed run ('detect: ', B6.1's fold), so its failures in a
+		// row reach the run status as the hourly counts do; a read cut by pgvigil's own shutdown is not recorded
+		if ctx.Err() == nil {
+			if lerr := r.LogRunFailure(ctx, in.Name, config.EnginePostgres, name, start, time.Since(start), err); lerr != nil {
+				log.Warn("the failed run was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+		}
 		return Result{Err: err, Duration: time.Since(start)}
 	}
 	instanceID, err := r.EnsureInstance(ctx, in.Name, string(info.Kind), info.ServerVersion, info.ServerVersionNum, info.IsReplica, in.Tags)
 	if err != nil {
+		// the repository's own failure: nothing to record it in (the hourly counts still count it)
 		return Result{Err: err, Duration: time.Since(start)}
 	}
 	if ok, why := c.Applies(info); !ok {

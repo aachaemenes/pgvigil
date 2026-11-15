@@ -6,25 +6,35 @@
 
 -- the run status: the last run and how it ended, the failures in a row (a connect failure included: it is logged as
 -- an 'error' run, 0118), the last success (an ok or a partial run: DBA Dash counts a partial as a success for the
--- streak and Last Success, CollectionRuns_Upd.sql:352-355), the last failure and the last partial. A skip is no run.
+-- streak and Last Success, CollectionRuns_Upd.sql:352-355), the last failure and the last partial. A skip is no run,
+-- but it ends a streak (pgvigil's own rule, heartbeat.go record(): a collection that skips after it failed is failing
+-- no more): the skip that ends one is written as the last status 'skipped', so the rate's critical arm (the last run
+-- failed) ends with it too. Fillfactor 70: the row is updated at every run, no index on an updated column (HOT).
 CREATE TABLE IF NOT EXISTS pgvigil.collection_run_status (
   instance_id           int NOT NULL REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
   collection            text NOT NULL,
-  last_run_at           timestamptz NOT NULL,
-  last_status           text NOT NULL,             -- ok | partial | error
+  last_run_at           timestamptz NOT NULL,      -- the last run, or the skip that ended its failures in a row
+  last_status           text NOT NULL,             -- ok | partial | error | skipped (that skip)
   consecutive_failures  int NOT NULL DEFAULT 0,
   last_ok_at            timestamptz,               -- the last ok or partial run
   last_failure_at       timestamptz,
   last_partial_at       timestamptz,
   PRIMARY KEY (instance_id, collection)
-);
+) WITH (fillfactor = 70);
 
--- kept from collection_dates, which every run writes (log_collection, 0001; a connect failure through 0118): a row
--- trigger, as 0134's dbadash_move_reads, so no function another file redefines is touched
+-- kept from collection_dates, which every run that reached the repository writes (log_collection, 0001; a connect
+-- failure through 0118's import_connect_failure; a failure before the instance's row was read - the server's version
+-- read, Detect - through import_run_failure below): a row trigger, as 0134's dbadash_move_reads, so no function
+-- another file redefines is touched. A run that failed on the repository's own side (EnsureInstance) is not logged.
 CREATE OR REPLACE FUNCTION pgvigil.collection_run_status_take() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF NEW.status NOT IN ('ok', 'partial', 'error') THEN
-    RETURN NULL;   -- a skip (or any status that is not a run's outcome) leaves the run status as it is
+  IF NEW.status = 'skipped' THEN
+    -- a skip ends the failures in a row (it writes only then: a skip after an ok run is no run, nothing changes)
+    UPDATE pgvigil.collection_run_status
+       SET consecutive_failures = 0, last_status = 'skipped', last_run_at = NEW.snapshot_at
+     WHERE instance_id = NEW.instance_id AND collection = NEW.collection
+       AND consecutive_failures > 0 AND NEW.snapshot_at >= last_run_at;
+    RETURN NULL;
   END IF;
   INSERT INTO pgvigil.collection_run_status AS s (instance_id, collection, last_run_at, last_status, consecutive_failures,
                                                   last_ok_at, last_failure_at, last_partial_at)
@@ -42,7 +52,36 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS collection_run_status_take ON pgvigil.collection_dates;
 CREATE TRIGGER collection_run_status_take AFTER INSERT OR UPDATE ON pgvigil.collection_dates
-  FOR EACH ROW EXECUTE FUNCTION pgvigil.collection_run_status_take();
+  FOR EACH ROW WHEN (NEW.status IN ('ok', 'partial', 'error', 'skipped'))
+  EXECUTE FUNCTION pgvigil.collection_run_status_take();
+
+-- an upgraded store starts from each collection's last run (collection_dates holds one per instance and collection):
+-- a collection whose last run was ok keeps its last success, one whose last run failed starts at 1 failure in a row
+-- (collection_log keeps no ok run, so an older success is not known: 'never succeeded' until its next one). The
+-- trigger's lock on collection_dates holds a concurrent run's write out until this file commits.
+INSERT INTO pgvigil.collection_run_status (instance_id, collection, last_run_at, last_status, consecutive_failures,
+                                           last_ok_at, last_failure_at, last_partial_at)
+SELECT d.instance_id, d.collection, d.snapshot_at, d.status, (d.status = 'error')::int,
+       CASE WHEN d.status <> 'error' THEN d.snapshot_at END, CASE WHEN d.status = 'error' THEN d.snapshot_at END,
+       CASE WHEN d.status = 'partial' THEN d.snapshot_at END
+  FROM pgvigil.collection_dates d
+ WHERE d.status IN ('ok', 'partial', 'error')
+ON CONFLICT (instance_id, collection) DO NOTHING;
+
+-- import_run_failure: a run that connected but failed before the instance's row was read (the server's version read,
+-- Detect: a server under load, a login missing a right it needs), recorded as that collection's error with the note
+-- 'detect: <the error>' - never 'connect: ' (0118's 'server unreachable' reads only those). An instance with no row,
+-- or a retired one, is left alone (its row is made by a read that gets past Detect, or by a connect failure). The
+-- collector's door (an import_ function: apply_roles makes it SECURITY DEFINER and the collector's).
+CREATE OR REPLACE FUNCTION pgvigil.import_run_failure(p_name text, p_engine text, p_collection text, p_at timestamptz,
+                                                      p_duration_ms int, p_error text)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_id int;
+BEGIN
+  SELECT i.instance_id INTO v_id FROM pgvigil.instances i WHERE i.name = p_name AND i.engine = p_engine AND i.is_active;
+  IF v_id IS NULL THEN RETURN; END IF;
+  PERFORM pgvigil.log_collection(v_id, p_collection, p_at, p_duration_ms, 'error', 'detect: ' || left(coalesce(nullif(p_error, ''), 'no reason given'), 2000));
+END $$;
 
 -- the runs per instance, collection, UTC hour and collector run: RUNNING TOTALS since that run began, written by its
 -- beat once a minute (SET = EXCLUDED: a lost beat is repaired by the next); readers sum over collector_id. Known runs
@@ -72,8 +111,12 @@ CREATE INDEX IF NOT EXISTS collection_health_hour_instance ON pgvigil.collection
 
 -- 8 days by default (as collector_load); settable up to 30 with
 --   UPDATE pgvigil.hours_retention SET days = 30, changed_at = now() WHERE table_name = 'collection_health_hour';
--- (docs/collection-health.md); the trim clamps it to 1-30 whatever the row says
+-- (docs/collection-health.md); more than 30 is refused (the CHECK below: 'pgvigil purge -hours
+-- collection_health_hour=40' fails in words, never trims silently at 30), and the trim clamps it to 1-30 as well
 INSERT INTO pgvigil.hours_retention (table_name, days) VALUES ('collection_health_hour', 8) ON CONFLICT (table_name) DO NOTHING;
+ALTER TABLE pgvigil.hours_retention DROP CONSTRAINT IF EXISTS hours_retention_collection_health_30;
+ALTER TABLE pgvigil.hours_retention ADD CONSTRAINT hours_retention_collection_health_30
+  CHECK (table_name <> 'collection_health_hour' OR days <= 30);
 
 -- the beat's door for the hourly rows: one set-based statement a beat (the beat's jsonb 'health' array, heartbeat.go
 -- beatHealth), instances by name (a name not in pgvigil.instances is left out), then the table's own trim
@@ -93,7 +136,10 @@ BEGIN
      SET runs = EXCLUDED.runs, ok = EXCLUDED.ok, partial = EXCLUDED.partial, failed = EXCLUDED.failed, skipped = EXCLUDED.skipped,
          rows_written = EXCLUDED.rows_written, dur_ms_sum = EXCLUDED.dur_ms_sum, dur_ms_max = EXCLUDED.dur_ms_max,
          runs_over_half = EXCLUDED.runs_over_half, runs_over_interval = EXCLUDED.runs_over_interval, interval_s = EXCLUDED.interval_s,
-         last_ok_at = EXCLUDED.last_ok_at, last_failure_at = EXCLUDED.last_failure_at, last_partial_at = EXCLUDED.last_partial_at;
+         last_ok_at = EXCLUDED.last_ok_at, last_failure_at = EXCLUDED.last_failure_at, last_partial_at = EXCLUDED.last_partial_at
+   -- a row the beat sends unchanged (the hour before, a slow collection's) is not written again: every counted run
+   -- raises runs or skipped, so a change is never missed, and a lost beat still differs from the stored row
+   WHERE (h.runs, h.skipped) IS DISTINCT FROM (EXCLUDED.runs, EXCLUDED.skipped);
   GET DIAGNOSTICS n = ROW_COUNT;
   DELETE FROM pgvigil.collection_health_hour
    WHERE hour < now() - make_interval(days => (SELECT least(greatest(coalesce(max(r.days), 8), 1), 30) FROM pgvigil.hours_retention r
@@ -103,11 +149,16 @@ END $$;
 
 -- collection_health: ONE status per instance and collection, DBA Dash's rule with its default numbers
 -- (CollectionHealthStatus.sql; B6g makes them settable): failures in a row counted in runs AND in minutes since the
--- LAST SUCCESS to the latest failure (never succeeded: runs only) - critical 3 runs and 30 minutes, warning 1 and 10;
--- over the runs since p_rate_from (5 or more known runs): critical when 50 % or more failed and the last run failed,
--- warning when 10 % or more failed or ended partial. N/A: the collection off for the instance (its interval 0 in
--- p_expected, the stale check's {"defaults": {...}, "instances": {name: {...}}}) or no known run (skips only).
--- A collection failing now is listed even with no run since p_rate_from. The Summary and the page both read this.
+-- LAST SUCCESS to the latest failure (minute boundaries, as DATEDIFF(mi); never succeeded: runs only) - critical 3
+-- runs and 30 minutes, warning 1 and 10; over the runs since p_rate_from rounded UP to the next whole hour
+-- (CollectionHealthRateFrom.sql:10-12), 5 or more known runs: critical when 50 % or more failed and the last run
+-- failed, warning when 10 % or more failed or ended partial. The worse of the two tiers is the status, and the reason
+-- is that tier's (the streak's when both are equal). N/A: the collection off for the instance (its interval 0 in
+-- p_expected, the stale check's {"defaults": {...}, "instances": {name: {...}}}) or no known run (skips only). A
+-- collection failing now is listed even with no run since p_rate_from - while its last run is within three of its
+-- intervals and at least a day (a collection removed from the configuration while it failed leaves the list then;
+-- B6.1 has no acknowledge). An inactive instance is not listed (DBA Dash's CollectionHealth_Get: IsActive = 1).
+-- The Summary and the page both read this.
 CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL)
 RETURNS TABLE (instance_id int, collection text, status text, status_reason text, failing_minutes int, consecutive_failures int,
                runs int, ok int, partial int, failed int, skipped int, failed_pct numeric, problem_pct numeric,
@@ -117,10 +168,11 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT h.instance_id, h.collection, sum(h.runs)::int AS runs, sum(h.ok)::int AS ok, sum(h.partial)::int AS partial,
            sum(h.failed)::int AS failed, sum(h.skipped)::int AS skipped
       FROM pgvigil.collection_health_hour h
-     WHERE h.hour >= date_trunc('hour', p_rate_from AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+     WHERE h.hour >= date_trunc('hour', (p_rate_from AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'
      GROUP BY h.instance_id, h.collection
   ), k AS (
     SELECT coalesce(h.instance_id, s.instance_id) AS instance_id, coalesce(h.collection, s.collection) AS collection,
+           h.instance_id IS NOT NULL AS in_range,
            coalesce(h.runs, 0) AS runs, coalesce(h.ok, 0) AS ok, coalesce(h.partial, 0) AS partial,
            coalesce(h.failed, 0) AS failed, coalesce(h.skipped, 0) AS skipped,
            s.last_run_at, s.last_status, coalesce(s.consecutive_failures, 0) AS cf, s.last_ok_at, s.last_failure_at, s.last_partial_at
@@ -129,44 +181,50 @@ LANGUAGE sql STABLE SET jit = off AS $$
   ), j AS (
     SELECT k.*, i.name,
            coalesce((p_expected -> 'instances' -> i.name ->> k.collection)::int, (p_expected -> 'defaults' ->> k.collection)::int, -1) AS iv,
-           CASE WHEN k.cf > 0 AND k.last_ok_at IS NOT NULL
-                THEN floor(extract(epoch FROM k.last_failure_at - k.last_ok_at) / 60)::int END AS fm,
+           CASE WHEN k.cf = 0 THEN 0
+                WHEN k.last_ok_at IS NOT NULL
+                THEN (extract(epoch FROM date_trunc('minute', k.last_failure_at) - date_trunc('minute', k.last_ok_at)) / 60)::int END AS fm,
            k.ok + k.partial + k.failed AS known
       FROM k JOIN pgvigil.instances i ON i.instance_id = k.instance_id
      WHERE i.is_active
+  ), t AS (
+    SELECT j.*,
+           CASE WHEN j.cf >= 3 AND (j.fm IS NULL OR j.fm >= 30) THEN 2
+                WHEN j.cf >= 1 AND (j.fm IS NULL OR j.fm >= 10) THEN 1 ELSE 0 END AS st,
+           CASE WHEN j.known >= 5 AND j.failed * 2 >= j.known AND j.last_status = 'error' THEN 2
+                WHEN j.known >= 5 AND (j.failed + j.partial) * 10 >= j.known THEN 1 ELSE 0 END AS rt,
+           j.iv = 0 OR (j.known = 0 AND j.cf = 0) AS na
+      FROM j
+     WHERE j.in_range OR j.last_run_at >= now() - make_interval(secs => greatest(3 * j.iv, 86400))
   )
-  SELECT j.instance_id, j.collection,
-         CASE WHEN j.iv = 0 OR (j.known = 0 AND j.cf = 0) THEN 'n/a'
-              WHEN j.cf >= 3 AND (j.fm IS NULL OR j.fm >= 30) THEN 'critical'
-              WHEN j.known >= 5 AND j.failed * 2 >= j.known AND j.last_status = 'error' THEN 'critical'
-              WHEN j.cf >= 1 AND (j.fm IS NULL OR j.fm >= 10) THEN 'warning'
-              WHEN j.known >= 5 AND (j.failed + j.partial) * 10 >= j.known THEN 'warning'
-              ELSE 'ok' END,
-         CASE WHEN j.iv = 0 THEN 'collection off'
-              WHEN j.known = 0 AND j.cf = 0 THEN 'no runs (skipped only)'
-              WHEN j.cf >= 1 AND (j.fm IS NULL OR j.fm >= 10)
-                THEN j.cf || ' failure(s) in a row' || CASE WHEN j.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || j.fm || ' min' END
-              WHEN j.known >= 5 AND (j.failed + j.partial) * 10 >= j.known
-                THEN round(100.0 * j.failed / j.known) || ' % failed, ' || round(100.0 * j.partial / j.known) || ' % partial of ' || j.known || ' runs'
+  SELECT t.instance_id, t.collection,
+         CASE WHEN t.na THEN 'n/a' WHEN greatest(t.st, t.rt) = 2 THEN 'critical' WHEN greatest(t.st, t.rt) = 1 THEN 'warning' ELSE 'ok' END,
+         CASE WHEN t.iv = 0 THEN 'collection off'
+              WHEN t.na THEN 'no runs (skipped only)'
+              WHEN t.st > 0 AND t.st >= t.rt
+                THEN t.cf || ' failure(s) in a row' || CASE WHEN t.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || t.fm || ' min' END
+              WHEN t.rt > 0
+                THEN round(100.0 * t.failed / t.known) || ' % failed, ' || round(100.0 * t.partial / t.known) || ' % partial of ' || t.known || ' runs'
               ELSE '' END,
-         j.fm, j.cf, j.runs, j.ok, j.partial, j.failed, j.skipped,
-         CASE WHEN j.known > 0 THEN round(100.0 * j.failed / j.known, 1) END,
-         CASE WHEN j.known > 0 THEN round(100.0 * (j.failed + j.partial) / j.known, 1) END,
-         j.last_run_at, j.last_ok_at, j.last_failure_at, j.last_partial_at
-    FROM j
+         t.fm, t.cf, t.runs, t.ok, t.partial, t.failed, t.skipped,
+         CASE WHEN t.known > 0 THEN round(100.0 * t.failed / t.known, 1) END,
+         CASE WHEN t.known > 0 THEN round(100.0 * (t.failed + t.partial) / t.known, 1) END,
+         t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at
+    FROM t
 $$;
 
 -- the Summary's 'Collection Health' cell per instance (DBA Dash's Summary_Upd.sql:156-158): the worst status but N/A,
--- n = the collections at warning or critical; the window 24 hours from the next whole hour (CollectionHealthRateFrom.sql)
+-- n = the collections at warning or critical, all_na when every listed collection is N/A (the cell then says N/A, as
+-- DBA Dash's ISNULL(MIN(NULLIF(...,3)),3)); the window 24 hours from the next whole hour (CollectionHealthRateFrom.sql)
 CREATE OR REPLACE FUNCTION pgvigil.collection_health_summary(p_expected jsonb DEFAULT NULL)
-RETURNS TABLE (instance_id int, level int, n int, collections text)
+RETURNS TABLE (instance_id int, level int, n int, collections text, all_na boolean)
 LANGUAGE sql STABLE SET jit = off AS $$
   SELECT c.instance_id,
-         max(CASE c.status WHEN 'critical' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END)::int,
+         coalesce(max(CASE c.status WHEN 'critical' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END) FILTER (WHERE c.status <> 'n/a'), 0)::int,
          count(*) FILTER (WHERE c.status IN ('warning', 'critical'))::int,
          string_agg(c.collection || ' ' || c.status, ', ' ORDER BY c.status = 'critical' DESC, c.collection)
-           FILTER (WHERE c.status IN ('warning', 'critical'))
+           FILTER (WHERE c.status IN ('warning', 'critical')),
+         bool_and(c.status = 'n/a')
     FROM pgvigil.collection_health(date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '23 hours', p_expected) c
-   WHERE c.status <> 'n/a'
    GROUP BY c.instance_id
 $$;

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // The Summary of the SQL Server instances: one row per instance and status group, read from the findings the
@@ -251,13 +252,22 @@ SELECT d.instance_id, count(*)::int AS n,
  GROUP BY d.instance_id`
 
 // The Summary's Snapshot Age and Collection Health columns for every instance of either engine (DBA Dash's
-// SnapshotAgeStatus, task P08, and 4.25.0's CollectionHealthStatus, B6.1: ch_level / ch_n / ch_detail from
-// pgvigil.collection_health_summary, 0166 - the page and the Summary read one judgement): the youngest and the oldest last run of the instance's
-// collections that run there and last ended well (not disabled, not skipped, not failed) in seconds, how many of them are
-// stale (older than three intervals, at least 300 s; $2 when no interval is known: the daily check 'collection
-// stale') and how many failed at their last run, and the errors collection_log holds for the last 24 hours. $1 the
-// intervals as the daily checks read them.
-const sqlSummaryCollect = `
+// SnapshotAgeStatus, task P08, and 4.25.0's CollectionHealthStatus, B6.1): the youngest and the oldest last run of the
+// instance's collections that run there and last ended well (not disabled, not skipped, not failed) in seconds, how
+// many of them are stale (older than three intervals, at least 300 s; $2 when no interval is known: the daily check
+// 'collection stale'), and Collection Health's ch_level / ch_n / ch_detail / ch_all_na from
+// pgvigil.collection_health_summary (0166 - the page and the Summary read one judgement). $1 the intervals as the
+// daily checks read them. A repository before 0166 (a 'serve' started on a store not yet migrated: only 'run' refuses
+// a schema behind the binary) reads sqlSummaryCollectPre0166: ch_missing true, the cell N/A in words, the other cells
+// still read.
+var sqlSummaryCollect = strings.NewReplacer("{ch}", sqlSummaryCH, "{chjoin}", sqlSummaryCHJoin).Replace(sqlSummaryCollectBase)
+var sqlSummaryCollectPre0166 = strings.NewReplacer("{ch}", sqlSummaryCHNone, "{chjoin}", "").Replace(sqlSummaryCollectBase)
+
+const sqlSummaryCH = `max(h.level) AS ch_level, max(h.n) AS ch_n, max(h.collections) AS ch_detail, bool_and(h.all_na) AS ch_all_na, false AS ch_missing`
+const sqlSummaryCHNone = `NULL::int AS ch_level, NULL::int AS ch_n, NULL::text AS ch_detail, NULL::boolean AS ch_all_na, true AS ch_missing`
+const sqlSummaryCHJoin = `LEFT JOIN pgvigil.collection_health_summary($1::jsonb) h ON h.instance_id = i.instance_id`
+
+const sqlSummaryCollectBase = `
 WITH c AS (
   SELECT c.instance_id, c.collection, c.status, c.snapshot_at,
          coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
@@ -267,22 +277,19 @@ WITH c AS (
 SELECT i.instance_id,
        -- the ages count from runs that ended well only: log_collection moves snapshot_at on a failed run too, and a
        -- collection failing for days is not a young one (DBA Dash's collection dates move on success); Collection
-       -- Errors shows the failing ones
+       -- Health shows the failing ones
        (min(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_min_secs,
        (max(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_max_secs,
        count(*) FILTER (WHERE c.status NOT IN ('skipped', 'error') AND c.iv IS DISTINCT FROM 0
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END))::int AS stale,
-       count(*) FILTER (WHERE c.status = 'error' AND c.iv IS DISTINCT FROM 0)::int AS failing,
        coalesce(array_agg(c.collection || CASE WHEN c.status = 'error' THEN ': the last run failed' ELSE ': stale, the last run ' || to_char(c.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC' END
                           ORDER BY c.status <> 'error', c.collection)
                 FILTER (WHERE c.iv IS DISTINCT FROM 0 AND (c.status = 'error' OR (c.status <> 'skipped'
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END)))), '{}') AS detail,
-       (SELECT count(*) FROM pgvigil.collection_log l
-         WHERE l.instance_id = i.instance_id AND l.status = 'error' AND l.snapshot_at > now() - interval '24 hours')::int AS errors_24h,
-       max(h.level) AS ch_level, max(h.n) AS ch_n, max(h.collections) AS ch_detail
+       {ch}
   FROM pgvigil.instances i
   LEFT JOIN c ON c.instance_id = i.instance_id
-  LEFT JOIN pgvigil.collection_health_summary($1::jsonb) h ON h.instance_id = i.instance_id
+  {chjoin}
  WHERE i.is_active
  GROUP BY i.instance_id`
 
@@ -305,11 +312,16 @@ func (s *Server) MSSQLSummary(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
+	collectSQL := sqlSummaryCollect
+	var have bool
+	if err := s.pool.QueryRow(r.Context(), `SELECT to_regprocedure('pgvigil.collection_health_summary(jsonb)') IS NOT NULL`).Scan(&have); err == nil && !have {
+		collectSQL = sqlSummaryCollectPre0166
+	}
 	s.multiPart(w, r, []part{
 		{"cells", sqlMSSQLSummaryCells, []any{string(exp), DefaultStaleSecs}},
 		{"servers", sqlMSSQLSummaryServers, nil},
 		{"pgdb", sqlPGDatabaseState, nil},
-		{"collect", sqlSummaryCollect, []any{string(exp), DefaultStaleSecs}},
+		{"collect", collectSQL, []any{string(exp), DefaultStaleSecs}},
 		{"roots", sqlSummaryRoots, nil},
 	})
 }

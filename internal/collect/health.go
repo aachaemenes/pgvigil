@@ -1,6 +1,10 @@
 package collect
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
 
 // The outcome of a run (B6.1, DBA Dash's run status): a producer sets OutcomePartial when its run ended with a
 // collector error row; every other outcome is derived from the Result (outcomeOf).
@@ -43,7 +47,7 @@ type healthKey struct {
 type healthAgg struct {
 	runs, ok, partial, errs, skipped, overHalf, overInterval, durMax, intervalS int
 	rows, durSum                                                                int64
-	lastOk, lastErr, lastPartial                                                time.Time
+	lastOk, lastErr, lastPartial                                                time.Time // lastOk: an ok or a partial run
 }
 
 // beatHealth: one instance, collection and UTC hour's running totals since this run began (the repository keeps them
@@ -81,8 +85,18 @@ func (h *Heartbeat) health(instance, collection string, res Result, now time.Tim
 		a = &healthAgg{}
 		h.hourly[k] = a
 	}
-	if hour.After(h.hourNew) {
+	switch {
+	case hour.After(h.hourNew):
 		h.hourNew = hour
+	case hour.Before(h.hourNew.Add(-time.Hour)):
+		// the clock stepped back (NTP after a clock that ran fast, a VM resumed): this hour is the newest again, and
+		// the hours ahead of it, sent already, are sent no more (takeHealth would otherwise drop this run's hour)
+		h.hourNew = hour
+		for k := range h.hourly {
+			if k.hour.After(hour) {
+				delete(h.hourly, k)
+			}
+		}
 	}
 	if s := int(every / time.Second); s > 0 && (a.intervalS == 0 || s < a.intervalS) {
 		a.intervalS = s
@@ -100,6 +114,7 @@ func (h *Heartbeat) health(instance, collection string, res Result, now time.Tim
 	case OutcomePartial:
 		a.partial++
 		a.lastPartial = now
+		a.lastOk = now // a partial is a success for Last Success, as collection_run_status.last_ok_at (0166)
 	default:
 		a.errs++
 		a.lastErr = now
@@ -143,4 +158,32 @@ func timePtr(t time.Time) *time.Time {
 	}
 	u := t.UTC()
 	return &u
+}
+
+// healthBody: the hourly rows' own statement body for import_collection_health ({"health": [...]}); the heartbeat's
+// body never carries them (import_collector_beat would parse them and ignore them)
+func healthBody(hs []beatHealth) ([]byte, error) {
+	return json.Marshal(struct {
+		Health []beatHealth `json:"health"`
+	}{hs})
+}
+
+// amcheckUnchecked: a collector_error row for each amcheck run row (one database and check) that left relations
+// unchecked - a missing EXECUTE on the check function, a relation's lock_timeout - so the run ends partial (B6.1's
+// fold, X2: the run's Outcome in every producer); a run that only reached its budget (its note) stays ok: that is the
+// planned rotation
+func amcheckUnchecked(rows []Row) []Row {
+	var out []Row
+	for _, r := range rows {
+		if r["kind"] != "run" {
+			continue
+		}
+		n, _ := r["errors"].(int)
+		if n <= 0 {
+			continue
+		}
+		out = append(out, Row{"kind": "collector_error", "source": fmt.Sprintf("amcheck:%v", r["datname"]),
+			"message": fmt.Sprintf("%v: %d relation(s) not checked", r["check_name"], n)})
+	}
+	return out
 }

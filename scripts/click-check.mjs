@@ -64,7 +64,7 @@ const dbadash = {
   '% Max Size':          { sqlserver: ['dbfiles'], dd: '% Max Size -> Storage > Files' },
   // the landing checked, the difference from DBA Dash's page named in the verdict (argued in the report)
   'Collection Health': { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'DBA Dash 4.25.0 Collection Health -> Checks > Collection Health (4.24.1: Errors (24hrs) -> DBA Dash ErrorLog); Collection dates until B6.2 builds the tab',
-    diff: 'pgvigil has no error-log page yet (E205, parity task P13): Collection dates, whose rows carry each collection\'s last error' },
+    diff: 'pgvigil has no Collection Health tab until B6.2: Collection dates, whose rows carry each collection\'s last run and error (4.24.1\'s ErrorLog landing is P13\'s)' },
 };
 // the differences named (pgvigil lands elsewhere, argued in the report): column -> words
 const named = {};

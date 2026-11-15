@@ -499,7 +499,17 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 
 	info, err := Detect(sctx, conn, in.Platform)
 	if err != nil {
-		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, timeoutNote(sctx, limit, err)), Duration: time.Since(start)}
+		// connected, then failed: recorded as the collection's failed run ('detect: ', B6.1's fold); the run's own
+		// timeout (sctx) is recorded, a read cut by pgvigil's own shutdown (the parent ctx) is not
+		derr := timeoutNote(sctx, limit, err)
+		if ctx.Err() == nil {
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			if lerr := r.LogRunFailure(rctx, in.Name, config.EngineSQLServer, name, start, time.Since(start), derr); lerr != nil {
+				log.Warn("the failed run was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			rcancel()
+		}
+		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, derr), Duration: time.Since(start)}
 	}
 	for _, t := range in.TagPairs() {
 		if t.Key == "pool" {
@@ -510,6 +520,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
 	ecancel()
 	if err != nil {
+		// the repository's own failure: nothing to record it in (the hourly counts still count it)
 		return collect.Result{Err: err, Duration: time.Since(start)}
 	}
 	if ok, why := c.Applies(info); !ok {

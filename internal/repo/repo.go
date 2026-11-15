@@ -392,6 +392,15 @@ func (r *Repo) LogConnectFailure(ctx context.Context, name, engine, platform str
 	return err
 }
 
+// LogRunFailure records a run that connected but failed before the instance's row was read (the server's version read,
+// Detect) as that collection's error noted 'detect: <err>' (B6.1's fold: the run status and Collection Health see it as
+// they see any failed run; 0118's 'server unreachable' reads only 'connect: ' notes). An instance with no row of this
+// engine, or an inactive one, is left alone (pgvigil.import_run_failure, 0166).
+func (r *Repo) LogRunFailure(ctx context.Context, name, engine, collection string, at time.Time, d time.Duration, cause error) error {
+	_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_run_failure($1, $2, $3, $4, $5, $6)`, name, engine, collection, at, int(d.Milliseconds()), cause.Error())
+	return err
+}
+
 func nullIfEmpty(s string) any {
 	if s == "" {
 		return nil

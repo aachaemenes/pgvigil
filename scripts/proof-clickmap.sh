@@ -86,8 +86,8 @@
 #     DIFF / LOG: backups / mssqlbackups; Log Shipping, Mirroring, Availability Groups: replication or pgbackups /
 #     availability; Log Space and File Space: dbfiles; Identity Columns: the Identity columns view; Snapshot Age:
 #     Collection dates; Collection Health (4.25.0's name; 4.24.1's Collection Errors (24hrs)): Collection dates until B6.2
-#     builds its tab, a difference argued meanwhile: DBA Dash's ErrorLog page is
-#     P13's); Memory Dump, Is Agent Running and DB Mail are text, no link; the cell texts T10 seeded read 'Never',
+#     builds its tab, a difference argued meanwhile: pgvigil has no Collection Health tab until B6.2 (4.24.1's
+#     ErrorLog landing is P13's)); Memory Dump, Is Agent Running and DB Mail are text, no link; the cell texts T10 seeded read 'Never',
 #     '9 days', '5hrs', 'Never', '3 days', '42.5% / 3 months', 'View', the dump instance's Memory Dump '3 days', sql01's
 #     Instance Uptime 'ack: ...'; the test grid's headers are 'Test', 'Instance Count OK', 'Instance Count Warning',
 #     'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged', its tests sorted by name, each

@@ -152,6 +152,9 @@ function collectCell(f: Fleet, id: number, key: string): Cell {
     : { level: 0, n: 0, detail: ['no collection has run for this instance yet'], none: true, text: 'not yet' };
   const lines = Array.isArray(x.detail) ? x.detail.map(String) : [];
   if (key === 'errors') {
+    // a repository before 0166 judges nothing (the other cells still read); every collection N/A = N/A, as DBA Dash's
+    if (x.ch_missing === true) return { level: 0, n: 0, detail: ['the repository is before 0166 (pgvigil migrate): Collection Health is not judged yet'], none: true, text: 'n/a' };
+    if (x.ch_all_na === true) return { level: 0, n: 0, detail: ['every collection N/A over the last 24 hours (off for this instance, or skipped only)'], none: true, text: 'n/a' };
     const level = Math.max(0, Math.min(2, Number(x.ch_level ?? 0))) as Level, n = Number(x.ch_n ?? 0);
     const detail = x.ch_detail ? String(x.ch_detail).split(', ') : ['every collection judged OK or N/A over the last 24 hours'];
     return { level, n, detail };

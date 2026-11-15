@@ -488,7 +488,7 @@ type beat struct {
 	Runs       []beatRun    `json:"runs"`
 	Load       []beatLoad   `json:"load"`
 	Streaks    []beatStreak `json:"streaks"`
-	Health     []beatHealth `json:"health"` // B6.1: running totals per instance, collection and UTC hour (import_collection_health)
+	Health     []beatHealth `json:"-"` // B6.1: running totals per instance, collection and UTC hour - their own body (healthBody)
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -671,8 +671,15 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 		return
 	}
 	if len(b.Health) > 0 {
-		// running totals: a beat lost here is repaired by the next one
-		if _, err := h.pool.Exec(bctx, `SELECT pgvigil.import_collection_health($1, $2::jsonb)`, h.id, string(body)); err != nil {
+		// running totals: a beat lost here is repaired by the next one; their own body and their own 30 s (a slow
+		// heartbeat statement leaves this one its full time; at a stop both share the caller's 8 s)
+		hb, err := healthBody(b.Health)
+		if err == nil {
+			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
+			_, err = h.pool.Exec(hctx, `SELECT pgvigil.import_collection_health($1, $2::jsonb)`, h.id, string(hb))
+			hcancel()
+		}
+		if err != nil {
 			h.log.Warn("heartbeat: the hourly collection health was not written", "err", err)
 		}
 	}
