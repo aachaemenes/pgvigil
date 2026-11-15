@@ -3,8 +3,10 @@ package mssql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
@@ -62,6 +64,17 @@ type BatchOptions struct {
 	// Deadline is when the collector stops starting new batches: the run's deadline less a margin for the last
 	// batch's read.
 	Deadline time.Time
+	// SchemaDatabases is the instance's mssql_schema.databases list (the schema collection's scope: '*', names,
+	// '-name' to leave one out); empty = the collection is off on this instance.
+	SchemaDatabases []string
+	// SchemaDue asks the repository which databases a schema pass reads whole (import_mssql_schema_due); nil when
+	// the run has no repository.
+	SchemaDue func(ctx context.Context, payload []byte) ([]byte, error)
+}
+
+// schemaDueStore is the repository's side of SchemaDue (*repo.Repo has it); a batchStore without it gives none.
+type schemaDueStore interface {
+	MSSQLSchemaDue(ctx context.Context, instanceID int, snapshotAt time.Time, payload []byte) ([]byte, error)
 }
 
 // BatchCollector is a Collector that reads from a cursor. RunOnce calls RunBatches instead of Run; an error it
@@ -101,6 +114,13 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	if dl, ok := sctx.Deadline(); ok && dl.Add(-batchMargin).Before(opt.Deadline) {
 		opt.Deadline = dl.Add(-batchMargin)
 	}
+	if sd, ok := st.(schemaDueStore); ok {
+		opt.SchemaDue = func(_ context.Context, payload []byte) ([]byte, error) {
+			rctx, cancel := repoCtx()
+			defer cancel()
+			return sd.MSSQLSchemaDue(rctx, instanceID, start, payload)
+		}
+	}
 	cursor := func(_ context.Context, source string) (Cursor, error) {
 		rctx, cancel := repoCtx()
 		defer cancel()
@@ -135,6 +155,13 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		return nil
 	}
 	if err := bc.RunBatches(sctx, conn, info, opt, cursor, emit); err != nil {
+		// a collection off on this instance (the schema collection without its mssql_schema key) is skipped, as the
+		// plain path skips one (mssql.go)
+		if errors.Is(err, collect.ErrSkip) {
+			why := strings.TrimSuffix(err.Error(), ": "+collect.ErrSkip.Error())
+			logRun("skipped", why)
+			return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
+		}
 		err = timeoutNote(sctx, limit, err)
 		logRun("error", err.Error())
 		return collect.Result{Rows: n, Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
