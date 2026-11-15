@@ -40,14 +40,6 @@ function baseline(prefix: 'd1' | 'd7'): (v: unknown, r: Row) => string | Node {
 // null = not read. The rest are counted on a button that writes the whole list into the region under the grid (keyboard
 // and screen reader reach it; a title alone does not). A labelled control's name begins with its visible text (WCAG
 // 2.5.3, axe label-content-name-mismatch).
-// setsCls: the cell's status - N/A when the sessions' SETs were not read, OK when none of its sets is a planner one
-function setsCls(byRole: Map<string, Row[]> | null): (v: unknown, r: Row) => string {
-  return (_, r) => {
-    if (!byRole) return 'status none';
-    const roles = Array.isArray(r.usenames) ? r.usenames.map(String) : [];
-    return roles.flatMap(k => byRole.get(setsKey(k, r.datname)) ?? []).some(x => x.fires) ? '' : 'status ok';
-  };
-}
 function setsCell(byRole: Map<string, Row[]> | null, out: HTMLElement): (v: unknown, r: Row) => string | Node {
   return (_, r) => {
     if (!byRole) return 'not read';
@@ -73,6 +65,14 @@ function setsCell(byRole: Map<string, Row[]> | null, out: HTMLElement): (v: unkn
       box.append(planner.length ? ' ' : '', b);
     }
     return box;
+  };
+}
+// setsCls: the cell's status - N/A when the sessions' SETs were not read, OK when none of its sets is a planner one
+function setsCls(byRole: Map<string, Row[]> | null): (v: unknown, r: Row) => string {
+  return (_, r) => {
+    if (!byRole) return 'status none';
+    const roles = Array.isArray(r.usenames) ? r.usenames.map(String) : [];
+    return roles.flatMap(k => byRole.get(setsKey(k, r.datname)) ?? []).some(x => x.fires) ? '' : 'status ok';
   };
 }
 
