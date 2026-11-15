@@ -104,6 +104,13 @@ cleanup() {
 trap cleanup EXIT
 for t in docker go psql python3; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
+# PGVIGIL_WIRING 1 (default): this task's lines in other owners' files (scripts/proof-pm313-rules-wiring.patch) are
+# applied to this copy when it lacks them; 0 = the tree as it is
+if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q 'memory_node_id' internal/mssql/memory.go; then
+  git apply scripts/proof-pm313-rules-wiring.patch 2>/dev/null || patch -p1 --forward < scripts/proof-pm313-rules-wiring.patch >/dev/null \
+    || fail "405's wiring patch"
+  echo "405's wiring applied to this copy"
+fi
 sq() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-180}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqb() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-180}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -b -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqok() { local out; out=$(sqb "$2" "${3:-master}" 2>&1) || fail "$1: $out"; }
