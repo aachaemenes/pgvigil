@@ -51,9 +51,11 @@ export function forget() { cache = null; }
 // dd: one of DBA Dash's Summary tests (task P08: its name, its column order, Checks/Summary.Designer.cs); the others are
 // pgvigil's own, after them. plain: DBA Dash's cell is text, not a link (Memory Dump, Is Agent Running, DB Mail).
 // both: read for either engine from the collect part (Snapshot Age, Collection Errors (24hrs)).
+// mssqlStatus: the status filter the SQL Server tab opens on (% Max Size: Files on its critical and warning files, the
+// ones the cell counts - never the page's stored filter, which may list every file).
 // pgLabel: the group's name in PostgreSQL's words where DBA Dash's is SQL Server's (Memory Dump on PostgreSQL's crash
 // restarts, Last Good Check DB on amcheck ...): labelOf picks it for a PostgreSQL row, page or scope
-export interface Group { key: string; label: string; pgLabel?: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?, string?]; mssqlOnly?: boolean; names?: (checkName: string, checkGroup: string) => boolean; dd?: boolean; plain?: boolean; both?: boolean; cv?: string }   // kind: the Metrics family a PostgreSQL cell opens; cv: the view of a PostgreSQL tab
+export interface Group { key: string; label: string; pgLabel?: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?, string?]; mssqlStatus?: string; mssqlOnly?: boolean; names?: (checkName: string, checkGroup: string) => boolean; dd?: boolean; plain?: boolean; both?: boolean; cv?: string }   // kind: the Metrics family a PostgreSQL cell opens; cv: the view of a PostgreSQL tab
 // PostgreSQL's Backup FULL takes the base backups and the managed service's snapshots and retention (0103 names the
 // retention row by its threshold: 'retention under <n> days', 'retention at or under <n> days'); Backup LOG the
 // archiver (WAL)
@@ -79,7 +81,7 @@ export const groups: Group[] = [
   { key: 'replication', label: 'Availability Groups', pgLabel: 'Replication', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'], dd: true },
   { key: 'logspace', label: 'Log Space', checks: [], tab: 'summary', mssql: ['logspace', 'dbfiles', 'Log space'], mssqlOnly: true, dd: true },
   { key: 'filespace', label: 'File Space', checks: [], tab: 'summary', mssql: ['filespace', 'dbfiles', 'File space'], mssqlOnly: true, dd: true },
-  { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlOnly: true, dd: true },
+  { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlStatus: 'critical,warning', mssqlOnly: true, dd: true },
   // Azure SQL Database's elastic pools (CLOUDSQL C4: mssql_pool, the cell DBA Dash's AzureDBElasticPoolStorageStatus,
   // n/a and so hidden outside a pool); Service Broker: pgvigil does not read it yet, so it stays N/A and hidden
   { key: 'elasticpool', label: 'Elastic Pool Storage', checks: [], tab: 'summary', mssql: ['elasticpool', 'mssqlpool', 'Elastic pool'], mssqlOnly: true, dd: true },
@@ -308,10 +310,19 @@ export function worst(f: Fleet, r: Row): Level {
 export const levelClass = ['ok', 'warn', 'crit'];
 export const cellClass = (c: Cell) => c.none ? 'none' : levelClass[c.level];
 // cellTarget: the page a group's cell opens for an instance (DBA Dash's tabMapping): the group's tab on PostgreSQL (with
-// its Metrics family), its SQL Server tab and the view that tab opens on - the fleet Summary's links and the verdict card's
-export function cellTarget(g: Group, r: Row): { tab: string; kind?: string; cv?: string } {
+// its Metrics family), its SQL Server tab, the view that tab opens on and the status filter it opens with - the fleet
+// Summary's links, the header's reasons, the verdict card's and the SQL Server Summary's own line
+export interface Target { tab: string; kind?: string; cv?: string; status?: string }
+export function cellTarget(g: Group, r: Row): Target {
   const ms = r.engine === 'sqlserver';
-  return { tab: ms ? g.mssql?.[1] ?? 'summary' : g.tab, ...(!ms && g.kind ? { kind: g.kind } : {}), ...((ms ? g.mssql?.[3] : g.cv) ? { cv: ms ? g.mssql?.[3] : g.cv } : {}) };
+  return { tab: ms ? g.mssql?.[1] ?? 'summary' : g.tab, ...(!ms && g.kind ? { kind: g.kind } : {}), ...((ms ? g.mssql?.[3] : g.cv) ? { cv: ms ? g.mssql?.[3] : g.cv } : {}),
+    ...(ms && g.mssqlStatus ? { status: g.mssqlStatus } : {}) };
+}
+// withTarget: a target's own part of its page's address after the tab's (base: router.ts href for t.tab and t.kind):
+// the view (cv) and the status filter (status), read by the page itself from its address
+export function withTarget(base: string, t: Target): string {
+  const extra = [t.cv ? `cv=${t.cv}` : '', t.status ? `status=${t.status}` : ''].filter(Boolean).join('&');
+  return extra ? `${base}${base.includes('?') ? '&' : '?'}${extra}` : base;
 }
 
 export const cellText = (c: Cell) => c.none ? c.text ?? 'no sample' : c.text ?? (c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`);

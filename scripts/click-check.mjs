@@ -72,10 +72,13 @@ const named = {};
 const plainColumns = ['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB Mail'];
 // Instance Uptime: DBA Dash's Summary opens the Instance Uptime threshold dialog over the grid; the click must too
 const dialogColumns = new Set(['Instance Uptime']);
+// the status filter a link's page must open on (fleet.ts mssqlStatus): % Max Size opens Files on the files the cell
+// counts - its critical and warning ones - whatever filter the page has stored
+const statusWant = { '% Max Size': 'critical,warning' };
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
   'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
-  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
+  '% Max Size': 'dbfiles', 'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
   // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
   'Last amcheck': 'corruption', 'WAL archive': 'backups', 'Jobs': 'jobs', 'Replication': 'pgreplication' };
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
@@ -264,6 +267,8 @@ for (const sc of scopes) {
       if (cv && paramsOf(l.href).get('cv') !== cv) verdict = `FAIL the ${engine} ${l.column} cell does not open its view (cv=${cv}; its href: ${l.href})`;
     } else if (l.kind === 'test') verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : testWant[l.column] ? (testWant[l.column] === tab ? 'ok (DBA Dash: the test\'s own page)' : `FAIL want ${testWant[l.column]}`) : 'ok (the test\'s own page; not Daily checks)';
     else verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : 'ok';
+    const stWant = (l.kind === 'cell' && engine === 'sqlserver') || l.kind === 'test' ? statusWant[l.column] : undefined;
+    if (stWant && !verdict.startsWith('FAIL') && paramsOf(l.href).get('status') !== stWant) verdict = `FAIL the ${l.column} ${l.kind} does not open its page on its status filter (status=${stWant}; its href: ${l.href})`;
     const key = `${l.kind}|${l.column}|${engine}`;
     let landed = `${tab} (href)`;
     if (l.kind === 'cell' && dialogColumns.has(l.column)) {
@@ -285,6 +290,12 @@ for (const sc of scopes) {
       if (gt !== tab) verdict = `FAIL clicked to ${gt}, its href says ${tab}`;
       else if (got.err.length) verdict = `FAIL the landing shows an error: ${got.err[0]}`;
       else if (!got.h2) verdict = 'FAIL the landing drew no page';
+      else if (stWant && !verdict.startsWith('FAIL')) {
+        // the page itself shows the filter the link asked for (the Status select), not its stored one
+        const sel = await ev(`document.querySelector('main select#files-status')?.value ?? '(no Status select)'`);
+        if (sel !== stWant) verdict = `FAIL the landing's Status filter shows '${sel}', the link asked for '${stWant}'`;
+        else landed += `, Status ${sel}`;
+      }
     }
     record({ scope: sc.name, kind: l.kind, column: l.column, engine, link: l.text, inst: l.inst, landed, href: l.href, verdict });
   }

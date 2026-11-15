@@ -405,6 +405,16 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
   const folder = !ctx.instance;
   const fkey = folder ? 'pgvigil.filesStatus.folder' : 'pgvigil.filesStatus.instance';
   const statusSel = statusSelect('files-status', fkey, folder ? 'critical,warning' : 'all');
+  // the address's status (the Summary's % Max Size opens Files on its critical and warning files) wins over the stored
+  // choice while it is in the address: the select shows it; a choice made here is stored as before and takes it out of
+  // the address, so the page's next draw keeps the choice
+  const asked = hashParam('status');
+  if (asked && [...statusSel.options].some(o => o.value === asked)) statusSel.value = asked;
+  const dropAsked = () => {
+    const [path, qs] = location.hash.split('?'); const q = new URLSearchParams(qs ?? '');
+    if (!q.has('status')) return;
+    q.delete('status'); history.replaceState(null, '', q.toString() ? `${path}?${q}` : path);
+  };
   const refresh = el('button', { type: 'button' }, 'Refresh');
   const body = el('div');
   async function draw() {
@@ -432,7 +442,7 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
         drive ? el('span', {}, ' ', el('a', { href: instHref(ctx, ctx.instance, 'dbfiles') }, 'All the files of the instance')) : ''),
       grid(rows, cols, statusSel.value === 'all' ? 'No file read yet.' : 'No file matches the filter: show All to list every file.'));
   }
-  statusSel.addEventListener('change', () => { lsSet(fkey, statusSel.value); void draw(); });
+  statusSel.addEventListener('change', () => { lsSet(fkey, statusSel.value); dropAsked(); void draw(); });
   refresh.addEventListener('click', () => void draw());
   sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'files-status' }, 'Status ', statusSel)), body);
   await draw();

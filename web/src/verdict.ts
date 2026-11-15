@@ -5,7 +5,7 @@
 // Problem (Critical and Offline: the header's badge keeps its own words) and 'pgvigil has not read <name> yet' (no
 // collection ever, or no live read answered); a collection that is late (the header's 'Warning' status) is named.
 import { Row } from './api';
-import { Cell, cellTarget, cellText, groups, humanize, labelOf } from './fleet';
+import { Cell, cellTarget, cellText, groups, humanize, labelOf, Target, withTarget } from './fleet';
 import type { BandItem, Freshness, InstBand } from './instheader';
 import { Ctx, href } from './router';
 import { el } from './ui';
@@ -61,7 +61,7 @@ export function phraseOf(key: string, level: number, pg: boolean): string {
 }
 
 export type VerdictState = 'ok' | 'warning' | 'problem' | 'unread';
-export interface VerdictReason { key: string; phrase: string; level: number; cell?: Cell; target: { tab: string; kind?: string; cv?: string } }
+export interface VerdictReason { key: string; phrase: string; level: number; cell?: Cell; target: Target }
 export interface Verdict { state: VerdictState; word: string; sentence: string; reasons: VerdictReason[]; notes: string[]; acked: BandItem[]; notJudged: { key: string; label: string; target: VerdictReason['target'] }[] }
 
 // verdict: ONE function over the header's own band and freshness (instheader.ts instBand, freshness: the caller reads
@@ -128,8 +128,7 @@ const stateCls: Record<VerdictState, string> = { ok: 'ok', warning: 'warn', prob
 // verdictCard: the card on the instance's Summary (instheader.ts instanceFrame places it under the header)
 export function verdictCard(ctx: Ctx, v: Verdict): HTMLElement {
   const to = (t: VerdictReason['target']) => {
-    const base = href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) });
-    return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base;
+    return withTarget(href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) }), t);
   };
   // the word and the sentence are one link to the instance's Findings (the header's band word goes there too: no
   // text of the Summary does nothing on a click)

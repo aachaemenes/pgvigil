@@ -3,7 +3,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { AckData, loadAckSafe } from './ack';
 import { alertHref } from './alert_page';
-import { cellClass, cells, cellText, fleet, groups } from './fleet';
+import { cellClass, cells, cellTarget, cellText, fleet, groups, withTarget } from './fleet';
 import { Ctx, href } from './router';
 import { badge, el, fmtTime, grid, props, Col } from './ui';
 import { healthCalendar } from './healthcal';
@@ -35,11 +35,13 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
   const notOk = mine.filter(g => !c[g.key].none && c[g.key].level > 0);
   const unread = mine.filter(g => c[g.key].none && c[g.key].text !== 'n/a');
   const notHere = mine.filter(g => c[g.key].none && c[g.key].text === 'n/a');
-  // every group named is a link to its page; one whose page is this Summary (DB Mail: DBA Dash's text cell) is text
+  // every group named is a link to its page - the header's own target (cellTarget: the tab, the view it opens on and
+  // its status filter, so 'Suspect pages' opens the checks page's Build view here as its reason does in the header);
+  // one whose page is this Summary (DB Mail: DBA Dash's text cell) is text
   const named = (g: typeof mine[number], words: string, cls = '') => {
-    const tab = g.mssql?.[1] ?? 'summary';
-    return tab === ctx.tab ? el('span', { class: cls, 'data-nolink': 'this page' }, words)
-      : el('a', { class: cls, href: href(ctx, { tab }) }, words);
+    const t = cellTarget(g, r);
+    return t.tab === ctx.tab ? el('span', { class: cls, 'data-nolink': 'this page' }, words)
+      : el('a', { class: cls, href: withTarget(href(ctx, { tab: t.tab }), t) }, words);
   };
   const sep = (xs: HTMLElement[]) => xs.flatMap((a, i) => i ? [', ', a] : [a]);
   sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? 'No warning or critical' : 'Not OK: ',

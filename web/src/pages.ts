@@ -3,7 +3,7 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf, tagWords, inTagScope, cellTarget } from './fleet';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, labelOf, notReadYet, summaryText, tagsOf, tagWords, inTagScope, cellTarget, withTarget } from './fleet';
 import { Ctx, href, isMssql, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
@@ -361,8 +361,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // a cell's page: the column's tab for the instance (DBA Dash's tabMapping), with the view a SQL Server tab opens on
   const cellHref = (g: Group, r: Row): string => {
     const t = cellTarget(g, r);
-    const base = href(ctx, { tab: t.tab, instance: Number(r.instance_id), tag: undefined, ...(t.kind ? { kind: t.kind } : {}) });
-    return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base;
+    return withTarget(href(ctx, { tab: t.tab, instance: Number(r.instance_id), tag: undefined, ...(t.kind ? { kind: t.kind } : {}) }), t);
   };
   const statusCol = (g: Group): Col => ({
     key: 'g_' + g.key, label: labelOf(g, pgOnly),
@@ -555,12 +554,14 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // grid below to the instances where it is a warning or a critical. Never the Daily checks list.
   const rootTabOf: Record<string, string> = {
     full: 'backups', diff: 'backups', log: 'backups', disk: 'drives', jobs: 'jobs', errors: 'collectiondates', snapshot: 'collectiondates',
-    checkdb: 'corruption', corruption: 'corruption', logspace: 'dbfiles', filespace: 'dbfiles', replication: 'pgreplication', custom: 'custom',
+    checkdb: 'corruption', corruption: 'corruption', logspace: 'dbfiles', filespace: 'dbfiles', pctmax: 'dbfiles', replication: 'pgreplication', custom: 'custom',
     dbstate: 'mssqlrisks', activity: 'running', dms: 'dms', tables: 'tablesize', roles: 'roles', indexes: 'indexes', version: 'versions',
   };
   const testLink = (r: Row, text: string): HTMLElement => {
     const tab = rootTabOf[String(r.key)];
-    if (tab) return el('a', { class: 'cell-link', href: href(ctx, { tab, instance: undefined }) }, text);
+    // % Max Size opens Files over the scope (DBA Dash: PctMaxSizeStatus -> Tabs.Files) on the files the test counts
+    const st = groups.find(g => g.key === r.key)?.mssqlStatus;
+    if (tab) return el('a', { class: 'cell-link', href: withTarget(href(ctx, { tab, instance: undefined }), { tab, ...(st ? { status: st } : {}) }) }, text);
     const b = el('button', { type: 'button', class: 'cell-link link', 'aria-label': `${text}: show the instances where it is a warning or a critical` }, text);
     b.addEventListener('click', () => {
       setPick(pick && pick.key === r.key && pick.b === 'bad' ? null : { key: String(r.key), label: text, b: 'bad' });

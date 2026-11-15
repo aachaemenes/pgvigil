@@ -23,7 +23,7 @@
 // cadence; an acknowledged check does not make the band (the Summary's rule).
 import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
-import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
+import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState, Target, withTarget } from './fleet';
 import { Ctx, href, isMssql } from './router';
 import { summaryCellAction } from './uptimedialog';
 import { verdict, verdictCard } from './verdict';
@@ -199,7 +199,7 @@ export function chipEl(c: Chip, to?: string): HTMLElement {
 // groups not OK and not acknowledged (worst first, then the Summary's order), each with its level, its cell and the
 // page its Summary cell opens; acked the groups not OK an acknowledgement holds; reasons their words. The header and
 // the verdict card (verdict.ts) both read this one result.
-export interface BandItem { key: string; label: string; level: number; cell: Cell; target: { tab: string; kind?: string; cv?: string } }
+export interface BandItem { key: string; label: string; level: number; cell: Cell; target: Target }
 export interface InstBand { level: number; word: string; cls: string; reasons: string[]; items: BandItem[]; acked: BandItem[]; offline: boolean; cells: Record<string, Cell> }
 export function instBand(f: Fleet, r: Row, ad: AckData, live: Row | undefined, now = Date.now()): InstBand {
   const c = cells(f, r);
@@ -272,7 +272,7 @@ export const treeBell = (): HTMLElement => el('span', { class: 'silenced-bell', 
 // DB Mail on its Summary), except Instance Uptime, which opens its dialog there as DBA Dash's Uptime cell does; the
 // first six, then '+n more', a button that shows the rest in place with the focus on the first one it adds
 function reasonLine(ctx: Ctx, b: ReturnType<typeof instBand>, r: Row): HTMLElement {
-  const to = (t: { tab: string; kind?: string; cv?: string }) => { const base = href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) }); return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base; };
+  const to = (t: Target) => withTarget(href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) }), t);
   const links = [...(b.offline ? [{ key: 'offline', text: 'Offline - no recent collection', tab: 'collectiondates', href: href(ctx, { tab: 'collectiondates' }) }] : []),
     ...b.items.map(i => ({ key: i.key, text: `${i.label} ${cellText(i.cell)}`, tab: i.target.tab, href: to(i.target) }))];
   const box = el('div', { class: `meta inst-reason ${b.cls}` });
