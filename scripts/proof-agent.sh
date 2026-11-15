@@ -227,7 +227,8 @@ refused collector "$(dsn_of "$(L cola)")" pgvigil_collector
 refused auth "$(dsn_of "$(L autha)")" pgvigil_auth
 refused writer "$(dsn_of "$(L wra)")" "may change the repository's tables"
 refused superuser "$PGVIGIL_ADMIN_DSN dbname=$REPO" superuser
-refused read_all_data "$(dsn_of "$(L rada)")" pg_read_all_data
+if [[ $(qa "select count(*) from pg_roles where rolname = 'pg_read_all_data'") == 1 ]]; then refused read_all_data "$(dsn_of "$(L rada)")" pg_read_all_data
+else NOTPROVEN+=("R2 pg_read_all_data on this server: the role exists from PostgreSQL 14"); fi
 refused read_server_files "$(dsn_of "$(L rsfa)")" pg_read_server_files
 refused alerter "$(dsn_of "$(L alra)")" pgvigil_alerter
 refused owner_by_role "$(dsn_of "$(L ownm)") options='-c role=$(L agr)'" "$(L ownm) is a member of"
@@ -239,17 +240,18 @@ out=$(as "$(L ag1)" -c "insert into pgvigil.investigations (kind) values ('ask')
 [[ $out == *"permission denied for table investigations"* ]] && ok "R4 the agent login has no INSERT on investigations" || bad "R4 the agent login's INSERT: ${out:0:200}"
 if [[ -n "${PGVIGIL_SKIP_STANDBY:-}" ]] || ! command -v docker >/dev/null; then NOTPROVEN+=("R5 the agent role on a standby (PGVIGIL_SKIP_STANDBY or no docker)")
 else
-  IMG=${PG_IMAGE:-postgres:18}; NET=pgagt-net-$SUF; PRI=pgagt-pri-$SUF; STB=pgagt-stb-$SUF
+  IMG=${PG_IMAGE:-${PGIMG:-postgres:18}}; NET=pgagt-net-$SUF; PRI=pgagt-pri-$SUF; STB=pgagt-stb-$SUF
   docker network create "$NET" >/dev/null && MADE_NET=$NET && MADE_CT+=("$PRI" "$STB")
   docker run -d --name "$PRI" --network "$NET" -e POSTGRES_HOST_AUTH_METHOD=trust "$IMG" -c wal_level=replica >/dev/null
-  for _ in $(seq 1 60); do docker exec "$PRI" psql -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
+  # ready over TCP: the image's first start runs a temporary server on the socket alone, then restarts
+  for _ in $(seq 1 90); do docker exec "$PRI" psql -h 127.0.0.1 -U postgres -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
   # the image's own data folder ($PGDATA: /var/lib/postgresql/18/docker on 18, .../data before), read inside the container
-  docker exec "$PRI" bash -c 'echo "host replication all all trust" >> "$PGDATA/pg_hba.conf" && psql -U postgres -XAtqc "select pg_reload_conf()" -c "create database sb"' >/dev/null \
+  docker exec "$PRI" bash -c 'echo "host replication all all trust" >> "$PGDATA/pg_hba.conf" && psql -h 127.0.0.1 -U postgres -XAtqc "select pg_reload_conf()" -c "create database sb"' >/dev/null \
     || echo "note: the primary's replication line or its database sb: $(docker exec "$PRI" bash -c 'echo $PGDATA; ls "$PGDATA" | head -3' 2>&1 | tr '\n' ' ')"
   PRIIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$PRI")
   printf 'repository:\n  dsn: env:SBP_DSN\ninstances: []\n' > "$WORK/cfg-sb.yaml"
   SBP_DSN="host=$PRIIP port=5432 user=postgres dbname=sb sslmode=disable" "$BIN" migrate -config "$WORK/cfg-sb.yaml" >"$WORK/sb-migrate.log" 2>&1 || echo "note: the standby's primary did not migrate: $(tail -2 "$WORK/sb-migrate.log")"
-  docker exec "$PRI" psql -U postgres -d sb -XAtqc "create role sbagent login password '$PW' in role pgvigil_reader, pgvigil_agent" >/dev/null 2>&1
+  docker exec "$PRI" psql -h 127.0.0.1 -U postgres -d sb -XAtqc "create role sbagent login password '$PW' in role pgvigil_reader, pgvigil_agent" >/dev/null 2>&1
   docker run -d --name "$STB" --network "$NET" --entrypoint bash "$IMG" -c "until pg_basebackup -h $PRI -U postgres -D /tmp/sb -R -X stream -c fast; do sleep 1; done; chown -R postgres /tmp/sb; chmod 700 /tmp/sb; exec su postgres -c 'postgres -D /tmp/sb -c listen_addresses=*'" >/dev/null
   STBIP=""; for _ in $(seq 1 150); do STBIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$STB" 2>/dev/null); docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t && break; sleep 1; done
   if docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t; then
