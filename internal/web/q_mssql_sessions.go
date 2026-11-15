@@ -17,6 +17,7 @@ import (
 //          top         the top requests over the window per measure (CPU, logical reads, tempdb, memory grant,
 //                      duration) from mssql_requests, n each (5 by default; 10 or 25), the statement only under the
 //                      instance's query_text policy 'full' or 'normalized' (as stored), none under 'none'
+//          activity    every session's summed CPU / reads / writes at each group read (OVW#34; A2: summed in 413's own read)
 //          policy      the instance's query_text policy now
 //        One user / system rule on every part: sys.dm_exec_sessions.is_user_process over all sessions (the lead 11-15).
 //                                                                                          -> Server.MSSQLSessions
@@ -71,6 +72,11 @@ func (s *Server) MSSQLSessions(w http.ResponseWriter, r *http.Request) {
 		{"reads", `SELECT * FROM pgvigil.mssql_session_by_reads($1, $2, $3)`, []any{id, from, to}},
 		dim("login"), dim("status"), dim("interface"), dim("address"), dim("isolation"),
 		{"top", sqlMSSQLSessionsTop, []any{id, from, to, n, showText}},
+		// OVW#34 (A2): the session CPU / reads / writes of EVERY session at each group read, the status rows summed
+		// (413's own read; activity's program groups count only user sessions with a program name)
+		{"activity", `SELECT snapshot_at, sum(cpu_ms) AS cpu_ms, sum(reads) AS reads, sum(writes) AS writes
+  FROM pgvigil.mssql_session_by WHERE instance_id = $1 AND dimension = 'status' AND snapshot_at > $2 AND snapshot_at <= $3
+ GROUP BY snapshot_at ORDER BY snapshot_at`, []any{id, from, to}},
 		{"policy", `SELECT $1::text AS query_text`, []any{policy}},
 	})
 }
