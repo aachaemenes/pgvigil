@@ -34,8 +34,18 @@
 #     'this read is from before pgvigil marked its own sessions: nothing in it is hidden'; read T does not.
 #  O10 (added after green run 1: 70001 hidden but not counted) own_shown_pg for an idle backend with no transaction answers
 #     false and own_shown_mssql for an open transaction of unknown age true - never NULL. Red before rel-b24own d9eeffa0.
+#     [review part 2 L3: + own_shown_pg for a backend with no state yet: false, red before rel-b24own 3938ff82]
+#  Rows of the review fold, part 2 (FALLBACK; each red on 1c6f1c9a, the code before it, then green):
+#  O1 switch (M3) the focus is back on the switch after the tick. O1 / O2 (M2) the words name the one count n belongs
+#     to: '3 of the sessions above are pgvigil's own'; O2b '2 of the waiting tasks above are pgvigil's own' (902, 905).
+#  O2 steps (L7) the read before T on SQL Server says the before-0265 note too.
+#  O2e (M1) SQL Server Running queries: Earlier (the slider, no navigation), then tick: own=1 and at= in the address, the
+#     snapshot shown the earlier one. O2f (L5) wait=LCK_M_S: '(2 hidden in this snapshot)'.
+#  NOT PROVEN: L1 (Longest wait follows the switch) - the staged read's longest task is a shown one; L4 (the alert page's
+#  marks) - the demo's alerts read snapshots stored before 0265 (no is_own); a strip drag carrying own=1 - the strip
+#  calls the slider's own load() (read from the code). Each traced from the code.
 #  Red on rel-viewsb's base (the server halves, no page wiring): O1, O2, O2b-O2d FAIL 'no own switch'; O3 FAIL (no own=1
-#  on its reads); O4 FAIL (the pick is 902 / 70002); O9 FAIL (no since in the reply).
+#  on its reads); O4 FAIL (the pick is 902 / 70002); O9 not reached (it runs inside O1, which stops at 'no own switch').
 set -uo pipefail
 : "${PGVIGIL_ADMIN_DSN:?}"
 cd "$(dirname "$0")/.."
@@ -153,13 +163,16 @@ COMMIT;
 SQL
 [[ $(q "select max(snapshot_at) < '$T'::timestamptz - interval '1 second' from pgvigil.activity_summary where instance_id = $IPG and snapshot_at < '$T'") == t ]] \
   || fail "setup: PostgreSQL instance $IPG has no read older than 0265's staged applied_at ($T - 1 s)"
+[[ $(q "select max(snapshot_at) < '$T'::timestamptz - interval '1 second' from pgvigil.mssql_requests_summary where instance_id = $IMS and snapshot_at < '$T'") == t ]] \
+  || fail "setup: SQL Server instance $IMS has no read older than 0265's staged applied_at ($T - 1 s)"
 ok "setup: the demo fleet in $REPO; read $T staged on SQL Server instance $IMS and PostgreSQL instance $IPG; 0265 applied at T - 1 s"
 # O10: the never-hidden tests answer true or false, never NULL (a NULL hide left a row out of the grid and out of the count)
 O10=$(q "select coalesce(pgvigil.own_shown_pg('Client', false, 'idle', now(), now(), null, now())::text, 'NULL') || ' ' ||
-               coalesce(pgvigil.own_shown_mssql(51, 0, null, false, null, null, 1, null, 0, 0, null, now())::text, 'NULL')" 2>&1)
-O10OK=0; [[ $O10 == 'false true' ]] && O10OK=1
-(( O10OK )) && ok "O10: own_shown_pg (idle, no transaction) false; own_shown_mssql (an open transaction of unknown age) true" \
-  || echo "FAIL O10: own_shown_pg / own_shown_mssql answered '$O10', want 'false true'"
+               coalesce(pgvigil.own_shown_mssql(51, 0, null, false, null, null, 1, null, 0, 0, null, now())::text, 'NULL') || ' ' ||
+               coalesce(pgvigil.own_shown_pg(null, false, null, null, null, null, now())::text, 'NULL')" 2>&1)
+O10OK=0; [[ $O10 == 'false true false' ]] && O10OK=1
+(( O10OK )) && ok "O10: own_shown_pg (idle, no transaction) false; own_shown_mssql (an open transaction of unknown age) true; own_shown_pg (no state yet) false" \
+  || echo "FAIL O10: own_shown_pg / own_shown_mssql / own_shown_pg (no state) answered '$O10', want 'false true false'"
 
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
 "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 &

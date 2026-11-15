@@ -6,7 +6,7 @@
 //   node scripts/own-pages-check.mjs <cdp port> <base url/>
 // The page contract (the design's O1-O3, FOLD O5-O8): the switch is input[type=checkbox][data-own-switch] in a label
 // reading "Show pgvigil's own sessions (n hidden)"; a shown own row holds span.own-mark 'pgvigil'; a figure counted from
-// the server's summary says "include n of pgvigil's own" (or 'includes'); each id cell of a read that hides is own.ts
+// the server's summary says "n of the sessions above are pgvigil's own" (waiting: "n of the waiting tasks above"); each id cell of a read that hides is own.ts
 // withMark's span[data-own-id="<id>"]; a read from before the flag says, in p.own-note, "this read
 // is from before pgvigil marked its own sessions: nothing in it is hidden"; the wait-types grid says "pgvigil's own tasks
 // are left out unless the switch is on".
@@ -68,10 +68,12 @@ await run('O1', async () => {
   await go(`#/activity?i=${E.OP_PG}`); if (await noSwitch('O1')) return;
   const r = await ids([70001, 70002, 70003, 70004, 70005]), s = await sw(), t = await text();
   const def = gone(r['70001']) && gone(r['70002']) && r['70003'] === 'listed' && r['70004'] === 'listed' && r['70005'] === 'pgvigil';
-  check('O1', def && !s.on && /\(2 hidden\)/.test(s.label) && /includes? 3 of pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'include(s) 3' ${/includes? 3 of pgvigil's own/.test(t)}`);
+  check('O1', def && !s.on && /\(2 hidden\)/.test(s.label) && /3 of the sessions above are pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', '3 of the sessions above' ${/3 of the sessions above are pgvigil's own/.test(t)}`);
+  await ev(`document.querySelector('input[type=checkbox][data-own-switch]').focus(); 'ok'`);
   await tick();
   const k = await keys(), r2 = await ids([70001, 70002]);
-  check('O1 switch', k.own === '1' && r2['70001'] === 'pgvigil' && r2['70002'] === 'pgvigil', `ticked: own=${k.own}, ${JSON.stringify(r2)}`);
+  const focused = await ev(`!!document.activeElement?.matches('input[type=checkbox][data-own-switch]')`);
+  check('O1 switch', k.own === '1' && r2['70001'] === 'pgvigil' && r2['70002'] === 'pgvigil' && focused, `ticked: own=${k.own}, ${JSON.stringify(r2)}, the focus back on the switch ${focused}`);
   await clickText('Earlier');
   const k2 = await keys(), t2 = await text();
   await clickText('Latest');
@@ -83,21 +85,38 @@ await run('O2', async () => {
   await go(`#/mssql_running?i=${E.OP_MS}`); if (await noSwitch('O2')) return;
   const r = await ids([901, 902, 903, 904, 905]), s = await sw(), t = await text();
   const def = gone(r['901']) && gone(r['902']) && r['903'] === 'listed' && r['904'] === 'listed' && r['905'] === 'pgvigil';
-  check('O2', def && /\(2 hidden\)/.test(s.label) && /includes? 3 of pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'include(s) 3' ${/includes? 3 of pgvigil's own/.test(t)}`);
+  check('O2', def && /\(2 hidden\)/.test(s.label) && /3 of the sessions above are pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', '3 of the sessions above' ${/3 of the sessions above are pgvigil's own/.test(t)}`);
   await tick();
   reqs.length = 0;
   await clickText('Earlier');
-  const sent = reqs.filter(u => u.includes('/api/mssql/running'));
+  const sent = reqs.filter(u => u.includes('/api/mssql/running')), tE = await text();
   await clickText('Latest');
   const r2 = await ids([901, 902]), k = await keys();
-  check('O2 steps', sent.length > 0 && sent.every(u => /[?&]own=1(&|$)/.test(u)) && k.own === '1' && r2['901'] === 'pgvigil' && r2['902'] === 'pgvigil',
-    `the reads after Earlier: ${JSON.stringify(sent.map(u => u.replace(/^.*\?/, '?')))}; Latest: own=${k.own}, ${JSON.stringify(r2)}`);
+  check('O2 steps', sent.length > 0 && sent.every(u => /[?&]own=1(&|$)/.test(u)) && k.own === '1' && r2['901'] === 'pgvigil' && r2['902'] === 'pgvigil' && tE.includes(NOTE),
+    `the reads after Earlier: ${JSON.stringify(sent.map(u => u.replace(/^.*\?/, '?')))}, its note ${tE.includes(NOTE)}; Latest: own=${k.own}, ${JSON.stringify(r2)}`);
+});
+await run('O2e', async () => {
+  // review part 2 M1: on SQL Server Running queries the slider moves without a navigation; ticking the switch keeps the
+  // snapshot it was on
+  await go(`#/mssql_running?i=${E.OP_MS}`); if (await noSwitch('O2e')) return;
+  await clickText('Earlier');
+  const before = await ev(`document.querySelector('b.snap-time')?.textContent ?? ''`);
+  await tick();
+  const k = await keys(), after = await ev(`document.querySelector('b.snap-time')?.textContent ?? ''`);
+  check('O2e', k.own === '1' && !!k.at && before !== '' && after === before, `Earlier: '${before}'; ticked: own=${k.own} at=${k.at ?? '(none)'}, '${after}'`);
+});
+await run('O2f', async () => {
+  // review part 2 L5: with a wait filter the count is said to be the snapshot's
+  await go(`#/mssql_running?i=${E.OP_MS}&wait=LCK_M_S`); if (await noSwitch('O2f')) return;
+  const s = await sw();
+  check('O2f', /\(2 hidden in this snapshot\)/.test(s.label), `wait=LCK_M_S: the switch '${s.label}'`);
 });
 await run('O2b', async () => {
   await go(`#/mssql_waiting?i=${E.OP_MS}`); if (await noSwitch('O2b')) return;
   const r = await ids([902, 903, 905]), s = await sw(), t = await text();
-  check('O2b', gone(r['902']) && r['903'] === 'listed' && r['905'] === 'pgvigil' && /\(1 hidden\)/.test(s.label) && t.includes("pgvigil's own tasks are left out unless the switch is on"),
-    `${JSON.stringify(r)}, the switch '${s.label}', the wait-types line ${t.includes("pgvigil's own tasks are left out unless the switch is on")}`);
+  const words2 = /2 of the waiting tasks above are pgvigil's own/.test(t);
+  check('O2b', gone(r['902']) && r['903'] === 'listed' && r['905'] === 'pgvigil' && /\(1 hidden\)/.test(s.label) && t.includes("pgvigil's own tasks are left out unless the switch is on") && words2,
+    `${JSON.stringify(r)}, the switch '${s.label}', the wait-types line ${t.includes("pgvigil's own tasks are left out unless the switch is on")}, '2 of the waiting tasks above' ${words2}`);
 });
 await run('O2c', async () => {
   await go(`#/waiting?i=${E.OP_PG}`); if (await noSwitch('O2c')) return;
