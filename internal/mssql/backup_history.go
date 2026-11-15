@@ -52,14 +52,16 @@ func (backupChecksCollector) Applies(info Info) (bool, string) {
 func (backupChecksCollector) Timeout() time.Duration { return 2 * time.Minute }
 
 const (
-	// BackupHistoryCursorSource and BackupHistoryMarkSource name mssql_backup_history's set cursor: the newest
-	// backup_set_id read and CHECKSUM(backup_set_uuid) of that row (pgvigil.mssql_hadr_cursor; the arm is the join's).
+	// BackupHistoryCursorSource names mssql_backup_history's set cursor: the newest backup_set_id read
+	// (pgvigil.mssql_hadr_cursor; the arm is the join's).
 	BackupHistoryCursorSource = "backup_history"
-	BackupHistoryMarkSource   = "backup_history_mark"
-	// RestoreHistoryCursorSource and RestoreHistoryMarkSource name its restore cursor: the newest restore_history_id
-	// read and CHECKSUM(restore_date, destination_database_name, backup_set_id) of that row.
+	// BackupHistoryMarkSource names the set cursor's mark: CHECKSUM(backup_set_uuid) of that row.
+	BackupHistoryMarkSource = "backup_history_mark"
+	// RestoreHistoryCursorSource names its restore cursor: the newest restore_history_id read.
 	RestoreHistoryCursorSource = "restore_history"
-	RestoreHistoryMarkSource   = "restore_history_mark"
+	// RestoreHistoryMarkSource names the restore cursor's mark: CHECKSUM(restore_date, destination_database_name,
+	// backup_set_id) of that row.
+	RestoreHistoryMarkSource = "restore_history_mark"
 	// backupHistoryN and restoreHistoryM: the lead's E2 (the repository keeps the same numbers, 0191).
 	backupHistoryN  = 10
 	restoreHistoryM = 20
