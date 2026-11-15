@@ -152,8 +152,10 @@ dialog. In DBA Dash's order:
   `standard_conforming_strings` on or off and in every client (pgAdmin's F5 or `psql -c` send the file as one query,
   read before any `SET` in it runs); it sets `standard_conforming_strings` on and `client_encoding` UTF8, drops and creates `pg_temp.pgvigil_grid`, and ends with its SELECT and a commented DROP;
   SQL Server's starts with a UTF-8 byte-order mark (SSMS reads the encoding from it), drops `#pgvigil_grid` if it is
-  there, writes every string `N'...'` (a backslash right before a line break, T-SQL's line continuation, ends the
-  literal there and the rest is joined with `+`, the first part `NVARCHAR(MAX)`), asks in its header for `sqlcmd -x`
+  there, writes every string `N'...'` with its line breaks, except a break after a backslash (T-SQL's line
+  continuation) or before a line sqlcmd or SSMS would act on (`GO`, a `:command`, `!!`, `EXIT`, `QUIT`, `RESET`,
+  `ED`): that break is written as `NCHAR(13)` / `NCHAR(10)` outside the literal, the parts joined with `+`, the first
+  `NVARCHAR(MAX)`; it asks in its header for `sqlcmd -x`
   (a value may hold what sqlcmd reads as a variable), and ends the same way. In both a string doubles its `'`, a column name its `"`
   or `]`; an empty header is `column_<n>`, a repeated one `_1`, `_2` (the next number no other column holds;
   on SQL Server names that differ only in case count as repeated), a name past the engine's length (SQL Server 128
@@ -192,6 +194,7 @@ workbook writes Excel's own forms; Markdown, HTML and the copies write the words
 | a percent (`12.5 %`) | `12.5` | `12.5` | `0.125` under `0.0%` |
 | a size (`1.5 MB`) | the bytes | the bytes | the bytes under a size format |
 | a time | `2026-11-14 17:00:00` on the display zone's clock | `2026-11-14T17:00:00-08:00` (its offset) | an Excel date on the display zone's clock |
+| text with a line break or a tab | the words as shown (one space) | the value with its line breaks and tabs | the words as shown |
 | yes / no | the word | the word (`"yes"`; SQL: a text column) | the word |
 | a time in the hour a fall-back repeats | as shown | one of that hour's two offsets for both (the screen's clock cannot tell them apart) | as shown |
 

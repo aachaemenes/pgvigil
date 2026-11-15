@@ -6,6 +6,10 @@
 // the text goes to the clipboard or to a file the browser saves.
 import { Cell, fillOf, fontOf, headFill, linkFill, linkFont, rawValue, Status } from './export';
 
+// valueOf: the value the JSON and SQL forms write: a text cell's own value with its line breaks and tabs (Cell.raw), else
+// rawValue's (the CSV and the workbook keep the words the screen shows)
+const valueOf = (c: Cell) => c.raw ?? rawValue(c);
+
 // a grid as the writers take it: its header, its rows, which columns are numbers (Markdown aligns them right), a stored
 // sample's mark (community.ts data-sample: written first in every form, so a copy is never read as the instance's own)
 export interface Grid { cols: string[]; rows: Cell[][]; num?: boolean[]; sample?: string; name?: string }
@@ -47,7 +51,7 @@ export function markdown(g: Grid, pretty: boolean): string {
 // {"sample": "<its mark>", "rows": [...]} (a plain array otherwise)
 export function json(g: Grid, pretty: boolean): string {
   const ks = keys(g.cols);
-  const rows = g.rows.map(r => Object.fromEntries(ks.map((k, j) => [k, r[j] ? rawValue(r[j]) : null])));
+  const rows = g.rows.map(r => Object.fromEntries(ks.map((k, j) => [k, r[j] ? valueOf(r[j]) : null])));
   return JSON.stringify(g.sample ? { sample: g.sample, rows } : rows, null, pretty ? 2 : undefined);
 }
 
@@ -116,9 +120,8 @@ function sqlType(g: Grid, j: number, e: Engine): string {
 // sqlScript: a temp table and its rows as INSERT batches, DBA Dash's script shape for each engine. A string is quoted
 // with ' doubled. PostgreSQL: an escape string E'...' with every backslash doubled - it reads the same with
 // standard_conforming_strings on or off and in every client (pgAdmin's F5 and psql -c send the whole file as one
-// query, lexed before any SET in it runs), the SET kept for a reader. SQL Server: N'...', and a backslash right before a
-// line break (T-SQL's line continuation: both would be dropped) ends the literal there, the rest joined with +, the
-// first part CAST to NVARCHAR(MAX) so a long value is not cut at 4,000; the header asks for sqlcmd -x (a value may
+// query, lexed before any SET in it runs), the SET kept for a reader. SQL Server: N'...' with its line breaks, those
+// after a backslash or before a GO, :command or !! line written outside it (msLit); the header asks for sqlcmd -x (a value may
 // hold a sqlcmd variable's form; the header itself holds none). NUL characters are dropped (neither engine stores one in text) and the
 // header says so; a number is written from its value (String(n)), never the words shown; a time with its offset. The
 // header names the grid, the zone, the export time and a sample's mark, each a comment line of its own.
@@ -130,12 +133,31 @@ export function sqlScript(g: Grid, e: Engine, head: SqlHead): string {
   const str = (s: string) => {
     const t = s.replace(/\u0000/g, () => { nuls++; return ''; });
     if (!ms) return "E'" + q(t.replace(/\\/g, '\\\\')) + "'";
-    const parts = t.split(/(?<=\\)(?=\r?\n)/);
-    return parts.length === 1 ? "N'" + q(t) + "'" : `CAST(N'${q(parts[0])}' AS NVARCHAR(MAX))` + parts.slice(1).map(p => " + N'" + q(p) + "'").join('');
+    return msLit(t);
+  };
+  // msLit: N'...' with its line breaks kept, but written as NCHAR(13) / NCHAR(10) outside the literal where a break would
+  // be read: after a backslash (T-SQL's line continuation drops both) and before a line that sqlcmd or SSMS reads as its
+  // own even inside a string - GO (a batch break), a :command (:r reads a file), !! (runs a shell command), EXIT / QUIT /
+  // RESET / ED (sqlcmd takes them without the colon). The first
+  // part is CAST to NVARCHAR(MAX), so a long value is not cut at 4,000 characters.
+  const msLit = (t: string): string => {
+    const out: string[] = [];
+    let from = 0;
+    const brk = /\r\n|\r|\n/g, line = /[^\r\n]*/y;
+    for (let m = brk.exec(t); m; m = brk.exec(t)) {
+      line.lastIndex = m.index + m[0].length;
+      const next = line.exec(t)?.[0] ?? '';
+      if (t[m.index - 1] !== '\\' && !/^\s*(go(\s+\d+)?\s*$|:|!!|(exit|quit|reset|ed)\b)/i.test(next)) continue;   // sqlcmd's EXIT, QUIT, RESET, ED, !! need no colon
+      out.push("N'" + q(t.slice(from, m.index)) + "'", m[0] === '\r\n' ? 'NCHAR(13) + NCHAR(10)' : m[0] === '\r' ? 'NCHAR(13)' : 'NCHAR(10)');
+      from = m.index + m[0].length;
+    }
+    if (!out.length) return "N'" + q(t) + "'";
+    out.push("N'" + q(t.slice(from)) + "'");
+    return `CAST(${out[0]} AS NVARCHAR(MAX)) + ` + out.slice(1).join(' + ');
   };
   const text = ms ? 'NVARCHAR(MAX)' : 'text', bool = ms ? 'BIT' : 'boolean', num = new Set(ms ? ['BIGINT', 'DECIMAL(38,10)'] : ['bigint', 'numeric']);
   const lit = (c: Cell | undefined, j: number): string => {
-    const v = c ? rawValue(c) : null;
+    const v = c ? valueOf(c) : null;
     if (v === null) return 'NULL';
     if (types[j] === bool) return ms ? (v ? '1' : '0') : (v ? 'true' : 'false');
     if (num.has(types[j])) return String(v);

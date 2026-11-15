@@ -21,7 +21,7 @@ import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showM
 
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
-export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string }   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
+export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string; raw?: string }   // raw: a text cell's own value where the screen collapses its whitespace (a line break, a tab): the JSON and SQL forms write it   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
 export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; sample?: string }   // note: the page's 'the newest N of M' line above the grid   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)
 
 // ---- reading the page -----------------------------------------------------------------------------------
@@ -184,7 +184,9 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     const r: Cell[] = [...tr.children].map((td, j) => {
       const t = text(td);
       const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
-      return { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
+      // a text whose words the screen collapsed ('line1\nline2' shows 'line1 line2'): its own value kept beside them (review-15 gm3 B4)
+      const own = typeof raw === 'string' && t !== '' && raw !== t && norm(raw) === t ? { raw } : {};
+      return { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), ...own, status: statusOf(td), link: linkOf(td), text: t };
     });
     // the colours the row's own cells hold, read before any is carried: a carried colour is never carried on
     const own = r.map(c => c.status);
