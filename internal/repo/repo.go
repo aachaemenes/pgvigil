@@ -560,3 +560,48 @@ func (r *Repo) JobStatsHeal(ctx context.Context) (instances int, hourRows int64,
 	}
 	return instances, hourRows, failed, nil
 }
+
+// AzureDBHoursHeal builds the hours of Azure SQL Database's resource minutes (0167, task B2a-N2) of every instance
+// still waiting - the first build after the upgrade (minutes stored before 0167), a failed rollup
+// (pgvigil.mssql_azuredb_hour_pending) - each instance in its own statement and transaction
+// (mssql_azuredb_hour_heal_one), never all in one, so no import waits on one long transaction. It returns the
+// instances built, their hour rows and the instances that failed (they stay for the next run, recorded as a trigger's
+// failure is). A store without 0167 heals nothing.
+func (r *Repo) AzureDBHoursHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
+	var have bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.mssql_azuredb_hour_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return 0, 0, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT i FROM pgvigil.mssql_azuredb_hour_pending() i`)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+	}
+	var ids []int32
+	for rows.Next() {
+		var id int32
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+	}
+	for _, id := range ids {
+		var n int64
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.mssql_azuredb_hour_heal_one($1)`, id).Scan(&n); err != nil {
+			if ctx.Err() != nil {
+				return instances, hourRows, failed, ctx.Err()
+			}
+			failed++
+			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.mssql_azuredb_hour_failed($1, coalesce(d.from_at, '-infinity'), coalesce(d.to_at, 'infinity'), 'in pgvigil purge: ' || $2)
+			                           FROM (SELECT 1) one LEFT JOIN pgvigil.mssql_azuredb_hour_dirty d ON d.instance_id = $1`, id, err.Error())
+			continue
+		}
+		instances++
+		hourRows += n
+	}
+	return instances, hourRows, failed, nil
+}

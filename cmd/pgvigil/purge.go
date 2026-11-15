@@ -147,6 +147,21 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 		fmt.Println()
 	}
+	// 0167: the hours of Azure SQL Database's resource minutes still waiting (the first build, a failed rollup), each
+	// instance in its own transaction
+	start = time.Now()
+	ainst, arows, afailed, err := r.AzureDBHoursHeal(ctx)
+	if err != nil {
+		return err
+	}
+	if ainst > 0 || afailed > 0 {
+		log.Info("azure hours healed", "instances", ainst, "hour_rows", arows, "failed", afailed, "ms", time.Since(start).Milliseconds())
+		fmt.Printf("purge: the Azure SQL Database hours of %d instance(s) built (%d hour rows) in %.1f s", ainst, arows, time.Since(start).Seconds())
+		if afailed > 0 {
+			fmt.Printf("; %d instance(s) failed and stay for the next run (collection log 'mssql_azuredb_hour')", afailed)
+		}
+		fmt.Println()
+	}
 	return nil
 }
 
