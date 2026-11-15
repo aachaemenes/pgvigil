@@ -38,6 +38,88 @@ index 812798e..d0ce4e7 100644
  	doors := map[string]mssql.Door{}
  	for _, in := range cfg.Instances {
  		if in.Engine == config.EngineSQLServer {
+diff --git i/docs/sqlserver-indexes.md w/docs/sqlserver-indexes.md
+index 7e7b0cc..e7a75c2 100644
+--- i/docs/sqlserver-indexes.md
++++ w/docs/sqlserver-indexes.md
+@@ -89,6 +89,47 @@ A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `
+ 
+ Missing-index requests are what the optimizer asked for, one query shape at a time, since the server started. They show the equality, inequality and included columns, how often each was asked for, and the benefit per day of uptime. They are **hints**. They know nothing of the indexes that already exist or of the other requests, so pgvigil never writes them as a `CREATE INDEX`. A request worth 100,000 or more a day of uptime raises an info finding.
+ 
++### Usage and requests kept per read (task 414)
++
++Each read of `mssql_indexes` keeps what it added, so the Indexes tab charts **User actions over time**: the seeks, scans, lookups and updates each six-hourly read added, for a database or for one index (its row's *trend*). An index that did not move keeps no row; an index read for the first time adds nothing (its counters start the line); after a restart, a restore or the database taken offline or closed, a read adds the whole count. The inventory shows seeks, scans, lookups and updates apart, scans per seek and updates per read. The missing-index requests are kept the same way: **Missing-index requests over time** draws the seeks and scans each read added for the ten requests with the most benefit, beside the newest read's top 10 and its impact-against-requests scatter. A request is the same across reads when its database, table and columns are (the server's handle changes at a restart).
++
++Volume: one row per index that moved, per read: at most instances x indexes x 4 a day (every index of a table written in six hours moves its updates). The rows sit in monthly partitions under the repository's retention.
++
++### Disabled indexes, untrusted keys and constraints (task 414)
++
++A disabled index is listed per database (info). A disabled clustered index is a **warning**: the table can be neither read nor written, and its nonclustered indexes and foreign keys are disabled with it; `ALTER INDEX ALL ON <table> REBUILD` enables them. A disabled primary key or unique index that a foreign key references is a warning too: those foreign keys are disabled with it, and the rebuild does not enable them: each takes `ALTER TABLE ... WITH CHECK CHECK CONSTRAINT` (Microsoft Learn, *Disable Indexes and Constraints*).
++
++The collection `mssql_constraints` (every six hours) reads the untrusted foreign keys and check constraints of each user database: enabled again without `WITH CHECK`, or disabled. The rows written while they were off were never checked, and the optimizer does not use them. NOT FOR REPLICATION ones are left out, and disabled check constraints are counted, not named (dbachecks' rules). `WITH CHECK CHECK CONSTRAINT` reads the whole table: the tab shows it as text to review. Not on Azure SQL Database.
++
++### A histogram on demand (task 414)
++
++A statistic's histogram (its steps: RANGE_HI_KEY, EQ_ROWS, RANGE_ROWS, DISTINCT_RANGE_ROWS) is read when asked, from `sys.dm_db_stats_histogram`, and never stored. The keys are the column's **real values**, so it is **off** until an admin turns it on for the instance in `pgvigil.yaml`:
++
++```yaml
++  - name: sql1
++    engine: sqlserver
++    dsn: env:PGV_SQL1
++    histogram: true
++    stats_dsn: env:PGV_SQL1_STATS   # optional: the statistics-only login
++```
++
++It is read under `query_text: full` only, each read is audited before its answer (Custom reports' log, op `histogram`: who, the instance, the statistic and the step count, never a key value), the answer is sent `no-store`, and it is never an MCP tool, an export or a report mail. `sys.dm_db_stats_histogram` answers only for a login that may SELECT the statistic's columns (or owns the table). Do **not** give that to the read login: custom reports and report mail stay metadata-only because the read login holds VIEW SERVER STATE, VIEW ANY DEFINITION and CONNECT ANY DATABASE and no more. Give it to a separate statistics-only login, named by `stats_dsn` (env: or file: only), used by this read alone:
++
++```sql
++CREATE LOGIN pgvigil_stats WITH PASSWORD = '<a strong password>';
++-- in each database whose histograms you want, per schema:
++CREATE USER pgvigil_stats FOR LOGIN pgvigil_stats;
++GRANT SELECT ON SCHEMA::dbo TO pgvigil_stats;
++```
++
++On Amazon RDS use the per-database form `ALTER ROLE db_datareader ADD MEMBER pgvigil_stats;` (whether the master user may grant a server-wide right there was not checked). Off below SQL Server 2016 SP1 CU2 (13.0.4422.0), on Azure SQL Database, on a columnstore, XML or spatial index, and on an instance added in Admin > Instances (the file's instances only, as EXPLAIN and the index advisor).
++
++### Fragmentation on demand (task 414)
++
++**Read LIMITED** or **Read SAMPLED** reads `sys.dm_db_index_physical_stats` for one database, when asked, never on a schedule. It reads every index and heap of the database, and a heap's data pages are read in full even in LIMITED (the read login may only ask for every object at once: a single object needs CONTROL on it). SAMPLED reads 1 % of an index or heap of 10,000 pages or more and all of a smaller one. **Show the heap size** gives the database's heap and total size first. It is **off** until an admin turns it on for the instance (`index_fragmentation: true` in `pgvigil.yaml`).
++
++The read is a job of `pgvigil serve`, not tied to the browser's request: the page polls it, **Cancel** ends it on the server, one runs at a time per instance, and a read that loses serve (a restart) reads *stopped* a minute after its last beat. Its lock timeout is 30 s: index maintenance (an offline rebuild, an ALTER) can end it, and the rows read before are kept with where it stopped. It is refused on a secondary replica (its locks can block the redo thread there). Indexes over 30 % fragmented and over 1,000 pages are marked; pgvigil offers no rebuild. Each read is kept with who asked and when.
++
+ ## Statistics (`mssql_stats`)
+ 
+ For each database the read stores:
+diff --git i/docs/sqlserver.md w/docs/sqlserver.md
+index 3ec1c5e..9902caa 100644
+--- i/docs/sqlserver.md
++++ w/docs/sqlserver.md
+@@ -88,6 +88,7 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
+ | `mssql_plancache` | 5 min | `sys.dm_exec_query_stats`: per cached statement, what changed between two reads (the place of Query Store where it is off) | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE) | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
++| `mssql_constraints` | 6 hours | each user database's untrusted foreign keys and check constraints (dbachecks' rules) | VIEW ANY DEFINITION, CONNECT ANY DATABASE | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
+ | `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
+diff --git i/docs/upgrade.md w/docs/upgrade.md
+index e803d2c..6dd5430 100644
+--- i/docs/upgrade.md
++++ w/docs/upgrade.md
+@@ -28,6 +28,13 @@ what happens in the other order, and what the project's own proof showed (`scrip
+   `%ProgramData%\pgvigil\app\pgvigil.yaml`, [app.md](app.md)), its connection string in that serve's environment or
+   file, never only in the collector's unit (`pgvigil serve` is not part of it). `serve` reads `reports_dsn` when it
+   starts: restart it after the line is in.
++- **SQL Server indexes (task 414).** A new collection, `mssql_constraints`, reads each user database's untrusted
++  foreign keys and check constraints every six hours on every SQL Server instance (catalog views only; not on Azure
++  SQL Database); `mssql_indexes` keeps what each read added to the usage counters and the missing-index requests (the
++  first read after the upgrade is each index's baseline). Two findings are new: disabled indexes (info, a warning
++  when a disabled clustered index or a disabled referenced key blocks its table) and untrusted keys and constraints
++  (info). The histogram and the fragmentation read on demand are off on every instance until `histogram: true` and
++  `index_fragmentation: true` name it in `pgvigil.yaml` ([sqlserver-indexes.md](sqlserver-indexes.md)).
+ - **EXPLAIN asks the same check.** Plain EXPLAIN (Plans > a statement's EXPLAIN) and the index advisor's hypothetical
+   index now refuse, in words, a monitoring login that is a superuser or a member of `pg_execute_server_program`,
+   `pg_write_server_files` or `pg_read_server_files`, besides the logins above: they plan the DBA's statement on that
 diff --git i/internal/config/config.go w/internal/config/config.go
 index 07e6a24..6b5cbe8 100644
 --- i/internal/config/config.go
