@@ -83,10 +83,23 @@ const sqlCollectorLoad = `
 WITH l AS (
   SELECT l.instance_id, l.minute, sum(l.attempts) AS attempts, sum(l.opened) AS opened, sum(l.runs) AS runs,
          sum(l.failures) AS failures, sum(l.auth_failures) AS auth_failures,
-         sum(l.timed) AS timed, sum(l.connect_ms_sum) AS connect_ms, max(l.connect_ms_max) AS connect_ms_max
+         sum(l.timed) AS timed, sum(l.connect_ms_sum) AS connect_ms, max(l.connect_ms_max) AS connect_ms_max,
+         sum(l.rt_count) AS rt_count, sum(l.rt_ms_sum) AS rt_ms, max(l.rt_ms_max) AS rt_ms_max
     FROM pgvigil.collector_load l
    WHERE l.minute > now() - interval '24 hours' AND ($1::int = 0 OR l.instance_id = $1)
    GROUP BY l.instance_id, l.minute
+), pr AS (
+  -- B24h (0254): the instance's host's probe over the hour - its probed host through collector_instance_hosts, every
+  -- collector host summed; when its address last answered (collector_probe_host)
+  SELECT ih.instance_id, max(p.method) AS method, count(*) FILTER (WHERE p.answered IS NOT NULL) AS rounds,
+         sum(p.answered) AS answered, round(sum(p.ms_sum)::numeric / nullif(sum(p.answered), 0) / 1000, 3) AS avg_s,
+         round(max(p.ms_max) FILTER (WHERE p.answered > 0)::numeric / 1000, 3) AS max_s,
+         (SELECT max(ph.last_answered) FROM pgvigil.collector_probe_host ph WHERE ph.host = ih.host) AS last_answered
+    FROM pgvigil.collector_instance_hosts ih
+    JOIN pgvigil.collector_heartbeat h ON h.host = ih.collector_host
+    JOIN pgvigil.collector_probe p ON p.collector_id = h.collector_id AND p.host = ih.host AND p.minute > now() - interval '1 hour'
+   WHERE ($1::int = 0 OR ih.instance_id = $1)
+   GROUP BY ih.instance_id, ih.host
 )
 SELECT i.instance_id, i.name AS instance, i.engine,
        round(avg(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour'), 1) AS conns_per_min,
@@ -99,9 +112,16 @@ SELECT i.instance_id, i.name AS instance, i.engine,
        round(sum(l.connect_ms) FILTER (WHERE l.minute > now() - interval '1 hour')::numeric
              / nullif(sum(l.timed) FILTER (WHERE l.minute > now() - interval '1 hour'), 0) / 1000, 3) AS connect_avg_s,
        round(max(l.connect_ms_max) FILTER (WHERE l.minute > now() - interval '1 hour' AND l.timed > 0)::numeric / 1000, 3) AS connect_max_s,
+       -- B24h: the query round trip over the hour (one 'SELECT 1' a minute: the network and the server's answer)
+       round(sum(l.rt_ms_sum) FILTER (WHERE l.minute > now() - interval '1 hour')::numeric
+             / nullif(sum(l.rt_count) FILTER (WHERE l.minute > now() - interval '1 hour'), 0) / 1000, 3) AS rt_avg_s,
+       round(max(l.rt_ms_max) FILTER (WHERE l.minute > now() - interval '1 hour' AND l.rt_count > 0)::numeric / 1000, 3) AS rt_max_s,
+       max(pr.method) AS probe_method, max(pr.rounds) AS probe_rounds_1h, max(pr.answered) AS probe_answered_1h,
+       max(pr.avg_s) AS probe_avg_s, max(pr.max_s) AS probe_max_s, max(pr.last_answered) AS probe_last_answered,
        max(l.minute) AS last_minute
   FROM l
   JOIN pgvigil.instances i ON i.instance_id = l.instance_id AND i.is_active
+  LEFT JOIN pr ON pr.instance_id = l.instance_id
  GROUP BY i.instance_id, i.name, i.engine
  ORDER BY sum(l.auth_failures) DESC, avg(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour') DESC NULLS LAST, i.name`
 

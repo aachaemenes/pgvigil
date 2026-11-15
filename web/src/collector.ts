@@ -15,6 +15,17 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, pan
 
 // connectSecs: a connect time in seconds as the page shows it ('0.12 s'; '-' when none was timed)
 const connectSecs = (v: unknown): string => v == null || v === '' ? '-' : `${Number(v).toFixed(2)} s`;
+// B24h: a round trip or a probe's answer in milliseconds ('-' when none)
+const msOf = (v: unknown): string => v == null || v === '' ? '-' : `${Math.round(Number(v) * 1000)} ms`;
+// the host's probe over the hour in words: its answer (method, answered of probed), or why there is none - not probed
+// (by default a host is probed only after a failed collection), never answered (blocked or not allowed: no finding), or
+// not answering since it last did
+function probeWords(r: Row): string {
+  const rounds = Number(r.probe_rounds_1h ?? 0), answered = Number(r.probe_answered_1h ?? 0);
+  if (!rounds) return '-';
+  if (answered > 0) return `${msOf(r.probe_avg_s)} (${String(r.probe_method ?? '')}, ${answered} of ${rounds})`;
+  return r.probe_last_answered == null ? 'never answered (blocked or not allowed)' : `not answering since ${fmtTime(r.probe_last_answered)}`;
+}
 
 type Parts = Record<string, Table | null>;
 
@@ -153,7 +164,14 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'auth_failures_24h', label: 'logins refused (24 h)', num: true, fmt: fmtNum },
       { key: 'connect_avg_s', label: 'connect avg (1 h)', num: true, fmt: connectSecs },
       { key: 'connect_max_s', label: 'connect max (1 h)', num: true, fmt: connectSecs },
+      { key: 'rt_avg_s', label: 'round trip avg (1 h)', num: true, fmt: msOf },
+      { key: 'rt_max_s', label: 'round trip max (1 h)', num: true, fmt: msOf },
+      { key: 'probe_avg_s', label: 'host probe (1 h)', fmt: (_v, r) => probeWords(r) },
     ] as Col[], 'No run in the last 24 hours.'),
+    el('p', { class: 'meta' }, 'Round trip: one \'SELECT 1\' a minute on a collection\'s own connection - the network there and back and the server\'s answer, '
+      + 'not the network alone; over its round_trip_time threshold (0.040 s by default, warning only) it raises \'query round trip slow\'. '
+      + 'Host probe: the TCP handshake to the address the instance\'s last connection used (ICMP comes later), by default only after a failed collection '
+      + '(probe_every_minute: each minute); a host that never answered is shown, never a finding; a listener or balancer answers for the servers behind it.'),
     el('p', { class: 'meta' }, 'Counted at every connect a collection makes, a per-database connect included (each collection connects and closes; '
       + 'every collector of the instance summed). A login refused (PostgreSQL 28P01 / 28000, SQL Server 18456) is retried at every run: a changed password can lock the login out. '
       + 'Connect avg / max: from the call to the open connection - DNS, the TLS handshake, the login and the collector\'s own CPU; an Entra token fetch left out - over the hour. '
