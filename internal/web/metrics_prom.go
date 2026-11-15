@@ -274,24 +274,25 @@ type promState struct {
 	series   int
 }
 
-// promStates maps a Server to its endpoint (set by EnableMetrics; absent = the door is off).
+// promStates maps a Server to its endpoint (set by EnableMetrics; absent = the door is off), keyed by s.self() so a
+// render's copy of the Server finds it (TestSideMapsKeyedBySelf).
 var promStates sync.Map
 
 // EnableMetrics turns /metrics on for this server (serve, after CheckMetricsToken); nil leaves it off.
 func (s *Server) EnableMetrics(c *MetricsConfig) {
 	if c == nil {
-		promStates.Delete(s)
+		promStates.Delete(s.self())
 		return
 	}
 	st := &promState{cfg: c}
 	if c.Token != "" {
 		st.token = &promToken{spec: c.Token}
 	}
-	promStates.Store(s, st)
+	promStates.Store(s.self(), st)
 }
 
 func (s *Server) prom() *promState {
-	v, ok := promStates.Load(s)
+	v, ok := promStates.Load(s.self())
 	if !ok {
 		return nil
 	}
