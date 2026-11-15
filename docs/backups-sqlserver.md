@@ -26,7 +26,9 @@ backup taken in the hour the clocks go back is not outranked by an earlier one.
 The repository keeps the newest set of each key (database, type, copy-only) and replaces it only with a newer one; a set
 msdb no longer lists stays. As `mssql_backups` does, a set is kept only for a database the server lists and only when it
 finished after the database was created (an hour of slack); a database created anew under an old name starts without the
-old one's sets.
+old one's sets. A database a read does not list loses its sets; when a later read lists it again (a login that
+could not see it for a while: `sys.databases` lists only what the login may see), the next read starts from the
+beginning again, so its sets older than the cursor come back.
 
 ## The page
 
@@ -49,19 +51,25 @@ old one's sets.
 
 | Finding | Severity | When |
 |---|---|---|
-| a full / differential / log backup on the volume of the database's own files | warning | the newest backup of the type that is not copy-only sits with the database's data or log files: on Windows on the same volume (the longest mount point of the instance's volumes the path starts with, compared without case; the drive letter when none is), on Linux in the directory of one of the database's files or below it |
-| log backups to two destinations | warning | the log backups of the last 7 days that are not copy-only went to two or more destinations or device kinds: a restore needs every log backup of the chain, from each place. Two logins writing to one destination are a note in the panel, not a finding |
+| a full / differential / log backup on the volume of the database's own files | warning (info when a replica of the group is not monitored) | the newest backup of the type that is not copy-only sits with the database's data or log files: on Windows on the same volume (the longest mount point of the instance's volumes the path starts with, compared without case; the drive letter when none is) and in that volume's root or in a directory a database file sits in (or below); on Linux in the very directory of one of the database's files |
+| log backups to two destinations | warning (info when a replica of the group is not monitored) | the log backups of the last 7 days that are not copy-only went to two or more destinations or device kinds: a restore needs every log backup of the chain, from each place. Two logins writing to one destination are a note in the panel, not a finding |
 | a backup destination not seen before | info, 7 days | a backup that is not copy-only went to a destination the database's backups of that type were not seen at before; a move back to a known destination writes nothing |
 
 A destination is the part of the path that does not change from one backup to the next: a share `\\host\share` (written
 as msdb holds it: `\\name`, `\\name.domain` and `\\10.1.2.3` are three destinations, and a DFS namespace hides its
 target), a drive `X:\`, a Linux path's first two directories, an Azure container `https://account/container`, an S3
 bucket (`s3://endpoint/bucket` in path style, `s3://bucket.domain` in virtual-host style), a virtual device by its
-software. Whether a URL used a SAS token, a key or a managed identity is never in msdb.
+software. A URL's file is never part of it. SQL Server's documentation gives both S3 styles, the port optional in path
+style, and no rule between them: a host with `.s3.` or `.s3-` after the bucket (Amazon's virtual host), or a file right
+after the host, is read as virtual-host style; any other S3 URL with a folder after the host as path style (a virtual
+host on another domain with folders is read so, its first folder taken for the bucket). Whether a URL used a SAS token, a key or a managed identity is never in msdb.
 
 Not judged, and said so in the panel: a database that is not judged for its backups (excluded, new, offline, a snapshot,
 tempdb); the volume on Windows when the instance's volumes were not read (`mssql_storage` needs VIEW ANY DEFINITION and
-VIEW SERVER STATE); on Linux any directory other than the database's own; on Amazon RDS and Azure SQL Managed Instance,
+VIEW SERVER STATE); on Windows a directory deeper than its volume's root where no database file sits - it may be a
+folder mounted for the backups alone, and the instance's volumes list only those that hold a database file
+(`sys.dm_os_volume_stats` per file); on Linux any directory other than the database's own, a directory below it too
+(it may be a mounted folder); on Amazon RDS and Azure SQL Managed Instance,
 until a real row of theirs is seen. Each replica of an availability group has its own msdb: the newest set of each type
 is the newest any monitored replica took, and two destinations split between two replicas are not seen.
 
