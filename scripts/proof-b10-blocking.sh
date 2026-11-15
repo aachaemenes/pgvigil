@@ -68,8 +68,8 @@
 #     day: 24 hours a call, then 16 past the last hour): 'blocking at 3x this hour''s usual' fires off its floor - '6
 #     waits in the hour from ..., 6.0 times its usual of 1.0', not 'no usual yet'. RED: no import_block_hourly.
 #  N. two callers in the same minute, both a login IN ROLE pgvigil_collector (the door's reason: run's own login):
-#     one holds the door 3 s, the other calls 1 s in: the second returns 0, the first writes the instance's hours,
-#     each hour one row. RED: no import_block_hourly.
+#     one holds the door 10 s, the other calls once the first holds the lock and the lock is still held after it
+#     returned: the second returns 0, the first writes the instance's hours, each hour one row. RED: no import_block_hourly.
 #  O. a capped call (p_limit 2), 3 hours later: each call but the last writes 2, the last fewer; the first call's
 #     hours are the oldest (no later call writes an hour before them); an uncapped call after them writes 0, each
 #     instance-hour one row. RED: no import_block_hourly.
@@ -392,10 +392,14 @@ if fn import_block_hourly; then
   NI=$(syn n postgres); q "update pgvigil.instances set first_seen = now() - interval '5 hours' where instance_id = $NI" >/dev/null
   q "CREATE ROLE b10_collector LOGIN IN ROLE pgvigil_collector" >/dev/null; CDSN="${PGVIGIL_REPO_DSN/user=postgres/user=b10_collector}"
   AT=$(q "select now()")
-  ( psql "$CDSN" -XAtq -v ON_ERROR_STOP=1 -c "BEGIN" -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" -c "select pg_sleep(3)" -c "COMMIT" > "$OUT.n1" 2>&1 ) & NP=$!
-  sleep 1; N2=$(psql "$CDSN" -XAt -v ON_ERROR_STOP=1 -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" 2>&1 || true); wait $NP || true; N1=$(head -1 "$OUT.n1")
+  # the second caller goes once the first holds the rollup's lock (not after a fixed 1 s), and the lock is read again
+  # after it returned: still held = the two met (a second caller after the first's commit would return 0 untested)
+  nlock() { q "select count(*) from pg_locks l join pg_stat_activity a using (pid) where l.locktype = 'advisory' and l.granted and a.usename = 'b10_collector'"; }
+  ( psql "$CDSN" -XAtq -v ON_ERROR_STOP=1 -c "BEGIN" -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" -c "select pg_sleep(10)" -c "COMMIT" > "$OUT.n1" 2>&1 ) & NP=$!
+  NH=0; NT=$SECONDS; while [ $((SECONDS - NT)) -lt 30 ]; do NH=$(nlock); [ "$NH" = 1 ] && break; sleep 0.1; done
+  N2=$(psql "$CDSN" -XAt -v ON_ERROR_STOP=1 -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" 2>&1 || true); NH2=$(nlock); wait $NP || true; N1=$(head -1 "$OUT.n1")
   NE=$(q "select count(*) from pgvigil.instances i, generate_series(date_trunc('hour', i.first_seen), date_trunc('hour', '$AT'::timestamptz - interval '15 minutes') - interval '1 hour', interval '1 hour') g where i.instance_id = $NI")
-  check "$N2|$(q "select count(*) || '/' || count(distinct hour) from pgvigil.mssql_block_hourly where instance_id = $NI")|$([ "${N1:-0}" -ge "$NE" ] 2>/dev/null && echo first-wrote || echo "first $N1")" "0|$NE/$NE|first-wrote" "N: the second caller returns 0, the first writes the $NE hours, each once"
+  check "held $NH|$N2|held $NH2|$(q "select count(*) || '/' || count(distinct hour) from pgvigil.mssql_block_hourly where instance_id = $NI")|$([ "${N1:-0}" -ge "$NE" ] 2>/dev/null && echo first-wrote || echo "first $N1")" "held 1|0|held 1|$NE/$NE|first-wrote" "N: while the first caller holds the lock the second returns 0, the first writes the $NE hours, each once"
 else check "no import_block_hourly" "yes" "N: two callers in the same minute"; fi
 
 echo "--- O. a capped call: the oldest hours first, repeated while it returns its cap"
