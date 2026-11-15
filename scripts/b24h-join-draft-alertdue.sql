@@ -20,21 +20,26 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT value FROM slow_folds WHERE kind = 'target' GROUP BY value HAVING bool_and(under_host)
   ), slow_forming AS MATERIALIZED (  -- 3 or more of a collector's instances crossed in its newest minute: new ones wait
     SELECT instance_id FROM pgvigil.collector_slow_forming
-  ), probe_judged AS MATERIALIZED (   -- B24h line 3: the judged instances, read once a pass (the review of the fold #1)
-    SELECT collector_host, instance_id, host FROM pgvigil.collector_probe_judged
-  ), probe_held AS MATERIALIZED (     -- B24h line 3: the probe findings a standing fold or a host row holds
-    SELECT instance_id, setting FROM pgvigil.collector_probe_held
-  ), probe_held_hosts AS MATERIALIZED (   -- B24h line 3: the host rows a standing fold holds
-    SELECT host FROM pgvigil.collector_probe_held_hosts
-  ), probe_parent_hosts AS MATERIALIZED (   -- B24h line 3: the hosts of instances held under 'collector or network'
-    SELECT DISTINCT j.host FROM probe_judged j JOIN held ON held.instance_id = j.instance_id
+  ), probe_state AS MATERIALIZED (   -- B24h line 3: the judged instances and their collector's fold, read ONCE a pass
+    -- (the review of the fold #1; #b4's attempt 3: collector_probe_state reads the judged view once)
+    SELECT collector_host, instance_id, host, ping_slow, not_answering, folded, host_crossed, crossed_hosts FROM pgvigil.collector_probe_state
+  ), probe_held AS MATERIALIZED (     -- B24h line 3: as collector_probe_held, from the one read
+    SELECT p.instance_id || E'\x1f' || s.setting AS k
+      FROM probe_state p CROSS JOIN (VALUES ('query round trip slow'), ('ping slow'), ('host not answering ping')) s(setting)
+     WHERE p.folded OR (s.setting = 'ping slow' AND p.ping_slow) OR (s.setting = 'host not answering ping' AND p.not_answering)
+  ), probe_held_hosts AS MATERIALIZED (   -- B24h line 3: as collector_probe_held_hosts; and the hosts of instances held
+    -- under 'collector or network' (the B24h-1 review part b #2: a host row has no instance id)
+    SELECT host FROM probe_state WHERE folded
+    UNION SELECT host FROM probe_state WHERE instance_id IN (SELECT instance_id FROM held)
   ), probe_under_slow AS MATERIALIZED (   -- B24h line 3: instances judged from a collector whose slow-connect host fold
     -- stands (kind 'host': its value is the collector host)
-    SELECT DISTINCT j.instance_id FROM probe_judged j JOIN slow_folds f ON f.kind = 'host' AND f.value = j.collector_host
+    SELECT instance_id FROM probe_state WHERE collector_host IN (SELECT value FROM slow_folds WHERE kind = 'host')
   ), probe_forming AS MATERIALIZED (  -- B24h line 3: 3 or more of a collector's instances crossed a slow round trip
     SELECT instance_id FROM pgvigil.collector_probe_forming
-  ), probe_forming_hosts AS MATERIALIZED (   -- B24h line 3: 3 or more of a collector's hosts crossed a slow ping
-    SELECT DISTINCT host FROM pgvigil.collector_probe_forming_hosts
+  ), probe_forming_hosts AS MATERIALIZED (   -- B24h line 3: as collector_probe_forming_hosts, from the one read
+    SELECT host FROM probe_state WHERE host_crossed AND crossed_hosts >= 3
+  ), probe_parents AS MATERIALIZED (   -- B24h line 3: the collector hosts whose 'collector or network' stands
+    SELECT host FROM pgvigil.collector_parent
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
@@ -58,20 +63,18 @@ LANGUAGE sql STABLE SET jit = off AS $$
                 AND EXISTS (SELECT 1 FROM slow_held WHERE slow_held.instance_id = sc.instance_id))
        AND NOT (sc.source = 'pgvigil repository' AND sc.setting = 'slow connects'
                 AND EXISTS (SELECT 1 FROM slow_under WHERE slow_under.value = sc.value))
-       -- B24h line 3: an instance's probe finding while collector_probe_held names it (under its collector's fold, or
-       -- its ping rows under its host's row); a host's row while a standing fold holds the host or its instances are
-       -- held under 'collector or network' (the B24h-1 review part b #2: a host row has no instance id)
+       -- B24h line 3: an instance's probe finding while probe_held names it (under its collector's fold, or its ping rows
+       -- under its host's row) or it is judged from a collector under slow-connect's host fold; a host's row while a
+       -- standing fold holds the host or its instances are held under 'collector or network'; B24h's fold while its
+       -- collector's parent or slow-connect's host fold stands (one alert, not three: part b #8). Each an uncorrelated IN
+       -- on a CTE (hashed once a pass: the review of the fold #1), never a correlated EXISTS per row
        AND NOT (sc.source = 'pgvigil collector' AND sc.setting IN ('query round trip slow', 'ping slow', 'host not answering ping')
-                AND EXISTS (SELECT 1 FROM probe_held h WHERE h.instance_id = sc.instance_id AND h.setting = sc.setting))
+                AND (sc.instance_id || E'\x1f' || sc.setting IN (SELECT k FROM probe_held)
+                     OR sc.instance_id IN (SELECT instance_id FROM probe_under_slow)))
        AND NOT (sc.source = 'pgvigil repository' AND sc.setting IN ('ping slow', 'host not answering ping')
-                AND (sc.value IN (SELECT host FROM probe_held_hosts) OR sc.value IN (SELECT host FROM probe_parent_hosts)))
-       -- B24h line 3: the fold held while its collector's parent stands, or slow-connect's host fold for the same
-       -- collector (one alert, not three: part b #8), and its members under slow-connect's fold
+                AND sc.value IN (SELECT host FROM probe_held_hosts))
        AND NOT (sc.source = 'pgvigil repository' AND sc.setting = 'network slow from this collector'
-                AND (EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = sc.value)
-                     OR EXISTS (SELECT 1 FROM slow_folds f WHERE f.kind = 'host' AND f.value = sc.value)))
-       AND NOT (sc.source = 'pgvigil collector' AND sc.setting IN ('query round trip slow', 'ping slow', 'host not answering ping')
-                AND EXISTS (SELECT 1 FROM probe_under_slow u WHERE u.instance_id = sc.instance_id))
+                AND (sc.value IN (SELECT host FROM probe_parents) OR sc.value IN (SELECT value FROM slow_folds WHERE kind = 'host')))
   ), s AS (
     SELECT st.*, ch.repeat_secs, ch.recovery, ch.clear_after_secs,
            (i.is_active IS TRUE OR st.source = 'pgvigil repository') AS instance_active,
@@ -96,7 +99,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
                    -- B24h line 3: a new round trip or host ping row waits while B24h's fold may be forming (part b #5,
                    -- the review of the fold #4: the host row is the ping alert sent)
                    AND NOT (m.source = 'pgvigil collector' AND m.setting = 'query round trip slow'
-                            AND EXISTS (SELECT 1 FROM probe_forming WHERE probe_forming.instance_id = m.instance_id))
+                            AND m.instance_id IN (SELECT instance_id FROM probe_forming))
                    AND NOT (m.source = 'pgvigil repository' AND m.setting = 'ping slow'
                             AND m.value IN (SELECT host FROM probe_forming_hosts))
               -- open: an escalation always; a repeat of a collector kind waits like a new one while its newest failure
@@ -129,10 +132,10 @@ LANGUAGE sql STABLE SET jit = off AS $$
      -- B24h line 3: B24h's fold, and a host's rows of a collector whose parent stands, are not 'resolved' (part b #2,
      -- the review of the fold #3: the probes stopped with the collector, the host was not seen to recover)
      AND NOT (s.source = 'pgvigil repository' AND s.setting = 'network slow from this collector'
-              AND EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = s.value))
+              AND s.value IN (SELECT host FROM probe_parents))
      AND NOT (s.source = 'pgvigil repository' AND s.setting IN ('ping slow', 'host not answering ping')
-              AND EXISTS (SELECT 1 FROM pgvigil.collector_probe_host ph JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                           JOIN pgvigil.collector_parent p ON p.host = h.host WHERE ph.host = s.value))
+              AND s.value IN (SELECT ph.host FROM pgvigil.collector_probe_host ph JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                               WHERE h.host IN (SELECT host FROM probe_parents)))
      AND (NOT s.instance_active OR s.present
           OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)
               AND s.source = 'pgvigil repository')

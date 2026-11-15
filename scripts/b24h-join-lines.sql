@@ -14,12 +14,13 @@
 --    alert_due (L476-574 at df95d278) with them in, proven by TestProbeAlertDueDraftOnAStore on the drafts (the review of
 --    the fold #5: BJb4 / BJb5 / BJf3 / BJf4) and timed by BJf2; the join diffs it against 0190 and writes the terms into
 --    0300's alert_due. In short:
---    - CTEs read once a pass (the review of the fold #1: none inside the per-row filter reads a view of its own):
---      probe_judged, probe_held, probe_held_hosts, probe_parent_hosts (the judged hosts of instances under 'held'),
---      probe_under_slow (judged from a collector whose slow-connect host fold stands: slow_folds, kind 'host', value =
---      the collector host), probe_forming, probe_forming_hosts;
+--    - CTEs read once a pass (the review of the fold #1: none inside the per-row filter reads a view of its own, each
+--      term an uncorrelated IN, hashed once): probe_state (collector_probe_state: the judged rows and the fold in ONE
+--      read) and, from it, probe_held, probe_held_hosts (with the hosts of instances under 'held'), probe_under_slow
+--      (judged from a collector whose slow-connect host fold stands: slow_folds, kind 'host', value = the collector
+--      host), probe_forming_hosts; probe_forming (the round trips); probe_parents (collector_parent's hosts);
 --    - m: an instance's probe finding held while probe_held names it or it is under slow-connect's host fold; a host's
---      row ('ping slow', 'host not answering ping') while probe_held_hosts or probe_parent_hosts names the host; B24h's
+--      row ('ping slow', 'host not answering ping') while probe_held_hosts names the host; B24h's
 --      fold while its collector's parent (collector_parent) or slow-connect's host fold stands (part b #2 / #8);
 --    - a NEW 'query round trip slow' waits while probe_forming names its instance, a NEW host 'ping slow' row while
 --      probe_forming_hosts names its host (part b #5, the review of the fold #4; a staggered crossing is sent first, as
