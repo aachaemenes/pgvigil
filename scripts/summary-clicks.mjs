@@ -94,15 +94,28 @@ const ev = async (expr, awaitPromise = false) => {
   return d.result?.result?.value;
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-// the Summary is drawn: its instance grid (or its empty one) is on the page and nothing says Loading
+// the Summary is drawn and nothing says Loading: the fleet's when its instance grid (or its empty one) is on the page,
+// an instance's when its header and its health calendar are (both follow the page when their own reads end; the
+// fleet's grid is not on an instance's page, and asking for it there held every redraw its whole 20 s)
 const drawn = async (ms = 20000) => {
   const t = Date.now();
   while (Date.now() - t < ms) {
     const ok = await ev(`(() => { const m = document.querySelector('main'); if (!m || !m.querySelector('h2')) return false;
       const e = m.querySelector('p.empty'); if (e && /^Loading/.test(e.textContent)) return false;
-      return !/^#\\/summary/.test(location.hash) || !!m.querySelector('.summary-instances table'); })()`);
+      if (!/^#\\/summary/.test(location.hash)) return true;
+      return /[?&]i=/.test(location.hash) ? !!m.querySelector('.inst-header') && !!m.querySelector('.healthcal-grid') : !!m.querySelector('.summary-instances table'); })()`);
     if (ok) { await sleep(400); return true; }
     await sleep(150);
+  }
+  return false;
+};
+// the page has stopped drawing: its text is the same on two looks 300 ms apart (the app's refresh is Off for the walk,
+// so a drawn page stays as it is), 6 s at most - a part landing between a click's two looks would read as its change
+const still = async () => {
+  for (let i = 0, last = -1; i < 20; i++) {
+    const n = await ev(`(document.querySelector('main')?.innerText ?? '').length`);
+    if (n === last) return true;
+    last = n; await sleep(300);
   }
   return false;
 };
@@ -114,14 +127,18 @@ const key = async k => { await cmd('Input.dispatchKeyEvent', { type: 'keyDown', 
 const reset = async (hash, load = false) => {
   // the app's own refresh is Off (paused) for the whole walk: a refresh landing between a click's two looks would
   // read as the click's change (the review of 823e113, finding 3)
-  if (load) { await go(hash); await ev(`(() => { sessionStorage.removeItem('pgvigil.summaryPick'); localStorage.setItem('pgvigil.refresh', '0'); return true; })()`); await go(hash); await ev('window.scrollTo(0, 0)'); return; }
+  if (load) {
+    await go(hash); await ev(`(() => { sessionStorage.removeItem('pgvigil.summaryPick'); localStorage.setItem('pgvigil.refresh', '0'); return true; })()`);
+    // the scope's targets are read from this page: every late part on it first (3 s more, then still)
+    await go(hash); await sleep(3000); await still(); await ev('window.scrollTo(0, 0)'); return;
+  }
   await key('Escape'); await key('Escape');
   // the page on screen is marked first: the app keeps it until its new read (main.ts), so the walk waits until it is gone
   await ev(`(() => { sessionStorage.removeItem('pgvigil.summaryPick'); document.querySelectorAll('dialog[open]').forEach(d => d.close());
     for (const c of document.querySelector('main')?.children ?? []) c.setAttribute('data-walkold', '1');
     if (location.hash !== ${JSON.stringify(hash)}) location.hash = ${JSON.stringify(hash)}; else window.dispatchEvent(new HashChangeEvent('hashchange')); return true; })()`);
   for (const t = Date.now(); Date.now() - t < 20000; await sleep(150)) if (!(await ev(`!!document.querySelector('main [data-walkold]')`))) break;
-  await sleep(250); await drawn(); await ev('window.scrollTo(0, 0)');
+  await sleep(250); await drawn(); await still(); await ev('window.scrollTo(0, 0)');
 };
 
 // the demo writes samples while the walk runs, so a number in a text can move between the read and the click: a
