@@ -68,7 +68,10 @@
 #     A skip is never counted as collected or as failed; a RUN collection skipped for a missing right is a FAIL.
 #     [B2a, written before the first run of these rows:]
 #       mssql_storage   (RUN since B2a) the database's own files: file id, name, type, size, max size and filegroup
-#                       equal to the setup login's read of sys.database_files; every file's used space read; no
+#                       equal to the setup login's read of sys.database_files; every ROWS and LOG file's used space
+#                       read [corrected after lab 1's first green run: 'every file' - a General Purpose database
+#                       lists an in-memory OLTP FILESTREAM container (file 65537, size 0) that FILEPROPERTY gives no
+#                       used space for: its row says 'used not read: the server gives no used space ...']; no
 #                       volume row; the 'max size' finding present only when the setup login's PRIMARY data files'
 #                       allocated / max size is over 80 %
 #       mssql_azuredb_governance  one current row whose 54 compared columns (pgvigil.mssql_azuredb_gov_compared)
@@ -129,7 +132,9 @@
 #  every failed item is listed with its text, the last line says FAIL with their count, and the exit code is 1.
 #  NOT PROVEN HERE: Azure SQL Managed Instance, an elastic pool, the Basic / S0 / S1 tiers (where the server-state
 #  DMVs ask for the server admin instead of VIEW DATABASE STATE), Microsoft Entra authentication, a geo-replica.
-set -euo pipefail
+set -Eeuo pipefail
+# a stop under set -e names its line and command (lab 1's first green run ended with exit 1 and no message)
+trap 'echo "STOPPED: line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection to a PostgreSQL in keyword form, no dbname}"
 STATE=${PGVIGIL_LAB_STATE:-.lab/azure-sqldb.env}
@@ -411,14 +416,16 @@ if run_ok mssql_storage; then
   sq "$FSQL" > "$WORK/files-hand.txt"; sed -i '/^[[:space:]]*$/d' "$WORK/files-hand.txt"
   q "select file_id || '|' || file_name || '|' || type_desc || '|' || size_bytes || '|' || coalesce(max_size_bytes::text, 'NULL') || '|' || coalesce(filegroup, 'NULL') from pgvigil.mssql_files where instance_id=$iid and is_present order by file_id" > "$WORK/files-stored.txt"
   NFILES=$(wc -l < "$WORK/files-hand.txt")
-  USED=$(q "select count(*) filter (where used_read) || ' of ' || count(*) from pgvigil.mssql_files where instance_id=$iid and is_present")
+  USED=$(q "select count(*) filter (where used_read) || ' of ' || count(*) from pgvigil.mssql_files where instance_id=$iid and is_present and type_desc <> 'FILESTREAM'")
+  NFS=$(q "select count(*) from pgvigil.mssql_files where instance_id=$iid and is_present and type_desc = 'FILESTREAM'")
+  NFSOK=$(q "select count(*) from pgvigil.mssql_files where instance_id=$iid and is_present and type_desc = 'FILESTREAM' and not used_read and used_note like 'used not read: the server gives no used space%'")
   VOLS=$(q "select count(*) from pgvigil.mssql_volumes where instance_id=$iid")
   PCT=$(sq "SELECT CASE WHEN MIN(df.max_size) < 0 THEN 'unlimited' ELSE CAST(CAST(100.0 * SUM(CAST(df.size AS bigint)) / NULLIF(SUM(CAST(CASE WHEN df.max_size = 0 THEN df.size ELSE df.max_size END AS bigint)), 0) AS decimal(9,3)) AS varchar(20)) END FROM sys.database_files df WHERE df.type = 0 AND df.data_space_id = 1")
   NF=$(q "select count(*) from pgvigil.mssql_storage_findings where instance_id=$iid and check_name like '%max size%'")
   WANTF=0; if [ "$PCT" != unlimited ] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 80 else 1)' "$PCT"; then WANTF=1; fi
-  if [ "$NFILES" -gt 0 ] && cmp -s "$WORK/files-hand.txt" "$WORK/files-stored.txt" && [ "$USED" = "$NFILES of $NFILES" ] && [ "$VOLS" = 0 ] && [ "$NF" = "$WANTF" ]; then
-    VERDICT[mssql_storage]="PASS ($NFILES file(s) equal to the setup login's sys.database_files, the used space read on each, no volume row; the PRIMARY data files hold $PCT % of their max size allocated: $NF max size finding(s))"
-  else VERDICT[mssql_storage]="FAIL"; bad "B: mssql_storage stored [$(tr '\n' ' ' < "$WORK/files-stored.txt")] (used read on $USED, $VOLS volume row(s), $NF max size finding(s)); the setup login reads [$(tr '\n' ' ' < "$WORK/files-hand.txt")] with $PCT % of the max size allocated (want $WANTF finding(s))"; fi
+  if [ "$NFILES" -gt 0 ] && cmp -s "$WORK/files-hand.txt" "$WORK/files-stored.txt" && [ "$USED" = "$((NFILES - NFS)) of $((NFILES - NFS))" ] && [ "$NFSOK" = "$NFS" ] && [ "$VOLS" = 0 ] && [ "$NF" = "$WANTF" ]; then
+    VERDICT[mssql_storage]="PASS ($NFILES file(s) equal to the setup login's sys.database_files, the used space read on each ROWS and LOG file ($NFS FILESTREAM container(s) with its note), no volume row; the PRIMARY data files hold $PCT % of their max size allocated: $NF max size finding(s))"
+  else VERDICT[mssql_storage]="FAIL"; bad "B: mssql_storage stored [$(tr '\n' ' ' < "$WORK/files-stored.txt")] (used read on $USED ROWS / LOG, $NFSOK of $NFS FILESTREAM with the note, $VOLS volume row(s), $NF max size finding(s)); the setup login reads [$(tr '\n' ' ' < "$WORK/files-hand.txt")] with $PCT % of the max size allocated (want $WANTF finding(s))"; fi
 fi
 # mssql_azuredb_governance: on a low tier the contained user is skipped with the tier's sentence and the server admin reads it
 gov_state() { # the stored tier of instance $1 against the setup login's read in $WORK/gov-hand.json
@@ -449,7 +456,10 @@ else
   GOV1=$(gov_state "$GOVID")
   IFS='|' read -r GEQ GKEYS GED GSO GHIST GPROPS GCHG GDTU GUSE1 GCPU <<<"$GOV1"
   # the tier's own limit: DTUs on a DTU edition, vCores on the others (Microsoft: dtu_limit is NULL for vCore)
-  case "$GED" in Basic|Standard|Premium) LIMOK=$([[ $GDTU =~ ^[1-9][0-9]*$ ]] && echo 1); WLIM="a DTU limit" ;; *) LIMOK=$([[ $GCPU =~ ^[0-9]+(\.[0-9]+)?$ ]] && [ "$GCPU" != 0 ] && echo 1); WLIM="a vCore limit" ;; esac
+  LIMOK=; case "$GED" in
+    Basic|Standard|Premium) WLIM="a DTU limit"; if [[ $GDTU =~ ^[1-9][0-9]*$ ]]; then LIMOK=1; fi ;;
+    *) WLIM="a vCore limit"; if [[ $GCPU =~ ^[0-9]+(\.[0-9]+)?$ ]] && [ "$GCPU" != 0 ]; then LIMOK=1; fi ;;
+  esac
   if [ "$GEQ" = true ] && [ "$GKEYS" = 54 ] && [ "$GED" = "$HED" ] && [ "$GSO" = "$HSO" ] && [ "$GHIST" = 1 ] && [ "$GPROPS" = 11 ] && [ "$GCHG" = 0 ] && [ -n "$LIMOK" ]; then GOVOK=1
   else VERDICT[mssql_azuredb_governance]="FAIL"; bad "B: mssql_azuredb_governance as $GOVN stored '$GOV1' (compared columns equal | their count | edition | service objective | history rows | Properties rows | changes | dtu_limit | usage MB | cpu_limit); want 'true|54|$HED|$HSO|1|11|0|...' with $WLIM"; fi
 fi
@@ -539,7 +549,9 @@ PY
       [ "$GAP" = "1|$GF|true" ] || N1BAD+=("the forced gap: gap rows | the gap's start | the cursor back at the newest minute = '$GAP', want '1|$GF|true'")
     else N1BAD+=("the read after the forced gap was not ok"); fi
   else N1BAD+=("the read from the cursor was not ok"); fi
-  if [ ${#N1BAD[@]} -eq 0 ]; then VERDICT[mssql_azuredb_resources]="PASS ($N1SAY; no minute missing from the cursor ($CN in a row); the burst's largest max CPU $BMAX$([ "${BDLIM:-0}" -gt 0 ] && echo ", max DTU % $BDTU"); the forced gap stored from $GF UTC)"
+  # (an assignment takes its command substitution's status: a $([ ... ] && echo) here ended the proof under set -e on vCore)
+  DTUSAY=; if [ "${BDLIM:-0}" -gt 0 ]; then DTUSAY=", max DTU % $BDTU"; fi
+  if [ ${#N1BAD[@]} -eq 0 ]; then VERDICT[mssql_azuredb_resources]="PASS ($N1SAY; no minute missing from the cursor ($CN in a row); the burst's largest max CPU $BMAX$DTUSAY; the forced gap stored from $GF UTC)"
   else VERDICT[mssql_azuredb_resources]="FAIL"; for e in "${N1BAD[@]}"; do bad "B: mssql_azuredb_resources: $e"; done; fi
 fi
 # mssql_azuredb_governance again, minutes later: no new history row and no change row
@@ -559,7 +571,8 @@ else
   G1=$(status_for "$NRID" mssql_azuredb_resources); G2=$(status_for "$NRID" mssql_azuredb_governance); G3=$(status_for "$NRID" mssql_storage)
   NRF=$(q "select count(*) from pgvigil.mssql_files where instance_id=$NRID and is_present"); NRM=$(q "select count(*) from pgvigil.mssql_azuredb_minute where instance_id=$NRID")
   NRU=$(q "select count(*) from pgvigil.mssql_files where instance_id=$NRID and is_present and used_read")
-  if [ "$G1" = "$W1" ] && [ "$G2" = "$W2" ] && [[ $G3 == ok\|* ]] && [ "$NRF" = "${NFILES:-x}" ] && [ "$NRU" = "$NRF" ] && [ "$NRM" = 0 ]; then RIGHTS="PASS (CONNECT only: mssql_azuredb_resources and mssql_azuredb_governance skipped with their sentences, nothing stored; mssql_storage ok with $NRF file(s), the used space read on each)"
+  NRFS=$(q "select count(*) from pgvigil.mssql_files where instance_id=$NRID and is_present and type_desc = 'FILESTREAM'")
+  if [ "$G1" = "$W1" ] && [ "$G2" = "$W2" ] && [[ $G3 == ok\|* ]] && [ "$NRF" = "${NFILES:-x}" ] && [ "$NRU" = "$((NRF - NRFS))" ] && [ "$NRM" = 0 ]; then RIGHTS="PASS (CONNECT only: mssql_azuredb_resources and mssql_azuredb_governance skipped with their sentences, nothing stored; mssql_storage ok with $NRF file(s), the used space read on each)"
   else RIGHTS="FAIL"; bad "B: the missing rights as the CONNECT-only user: mssql_azuredb_resources '$G1' (want '$W1'), mssql_azuredb_governance '$G2' (want '$W2'), mssql_storage '$G3' with $NRF file(s) (want ok with ${NFILES:-?}), the used space read on $NRU (want every file), $NRM minute(s) stored (want 0)"; fi
 fi
 # the role without a user: the lab's pgv_conn, ##MS_ServerStateReader## and ##MS_DatabaseConnector## only
