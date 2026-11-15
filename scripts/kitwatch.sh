@@ -28,8 +28,9 @@
 #        then `kitshape compare -want a/shapes.json -got b/shapes.json`: no line, the collector entry ok, the noise
 #        proof; graded only with KW-B (and `KITWATCH_NEWEST=pinned`: both passes of one run the same, exit 0).
 #   KW-B the pinned kits with run-time plants (KITWATCH_NEWEST=pinned KITWATCH_PLANT=<name>: sed on the second pass's
-#        copy, the planted string asserted present): each flagged with its kind and class, exit 1 (the missing-state
-#        plant: exit 3). In the table below now: wia-column (BREAK read by name), blitz-column (DRIFT column added),
+#        copy, the planted string asserted present): each flagged with its kind and class, exit 1 for a BREAK and 0
+#        for a DRIFT (preset-rename: exit 2, the tool's own run fails in the newest pass; the missing-state plant:
+#        exit 3). In the table below now: wia-column (BREAK read by name), blitz-column (DRIFT column added),
 #        column-swap (DRIFT reordered), pd-set (BREAK set removed), cache-retype (DRIFT type), decline-reword and
 #        decline-throw (BREAK outcome), preset-rename (BREAK preset parameter removed), new-param (BREAK new form
 #        parameter), help-layout (BREAK help), sibling-call (BREAK new hard sibling), port-edit (DRIFT list; once the
