@@ -47,6 +47,9 @@
 #  name every field it writes; F23 a line refused later adds or refuses no application; F24 an .xlsx with a repeated
 #  row number refused in words; F25 a server-level line applied, its tag move counted; F26 (P-6, as built) an import's
 #  re-assign of its own row under a person's server is a change; F19b one cell at a time for the credential check
+#  F27 (P-5, section B: R18's second half, D3 'the page waits for the apply') during a 20000-line apply, a collector's
+#  list reads of one of its servers and a page assign: every read ends (or 40P01, which the collector retries), the page
+#  answers in words (409 past its 2 s lock_timeout, or 200), never 500 or a SQLSTATE; the apply ends done 20000
 set -uo pipefail
 cd "$(dirname "$0")/.."
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -678,6 +681,43 @@ nb=$(q "select count(*) from pgvigil.app_assignments a join pgvigil.app_applicat
 [[ $c1 == 413 && $w1 == *"over 5 MB"* && $c2 == 400 && $w2 == *"at most 20000"* && $p == 200 && $x == 200 && $xo == "done 20000" && $nb == 20000 ]] \
   && ok "F13 6 MB refused ('${w1:0:40}'), 20001 lines refused ('${w2:0:40}'); 20000 lines previewed in $((t1 - t0)) s and applied in $((t2 - t1)) s (20000 assignments)" \
   || bad "F13 5 MB: $c1 '$w1'; 20001: $c2 '$w2'; 20000: preview $p ($((t1 - t0)) s), apply $x '$xo' ($((t2 - t1)) s), assigned $nb; $(head -c 300 "$WORK/ans.json")"
+
+# F27 (review P, P-5): F Big's 20000 targets moved to F Big2 by an apply in the background; while it holds the write
+# lock, (i) the collector's list read of imp-big050 in a loop (its own login, no lock_timeout, as its repository pool)
+# and (ii) a page assign of imp-big050 b000 (the audit pool, lock_timeout 2 s): every read ends rc 0 or 40P01 (the
+# collector's ImportCounted retries one), the page answers 409 in words or 200, never 500 or a SQLSTATE; the apply ends
+# done 20000 (or 409 in the deadlock's words, which R18 allows - said in the line)
+python3 -I -c 'import sys; open(sys.argv[1], "w").write("instance,database,application\n" + "".join("imp-big%03d,b%03d,F Big2\n" % (k, j) for k in range(100) for j in range(200)))' "$WORK/b20k2.csv"
+IB=$(q "select instance_id from pgvigil.instances where name = 'imp-big050'"); FBG=$(q "select app_id from pgvigil.app_applications where name = 'F Big'")
+p27=$(imp "$WORK/b20k2.csv" "dry=1"); D27=$(dig); c27=$(cnt targets_changed)
+WK=$(q "select hashtext('pgvigil.app_writes')::bigint")
+# held: the apply's backend holds the applications' write lock (a bigint key: classid its high half, objid its low)
+held() { q "select count(*) from pg_locks l join pg_stat_activity s using (pid) where s.pid <> pg_backend_pid() and l.locktype = 'advisory'
+  and l.granted and l.objsubid = 1 and l.classid::bigint = (($WK >> 32) & 4294967295) and l.objid::bigint = ($WK & 4294967295)
+  and s.query like '%import_app_file%'"; }
+curl -s -o "$WORK/ans27.json" -w '%{http_code}' -b "$WORK/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/octet-stream' --data-binary @"$WORK/b20k2.csv" \
+  "$U/api/admin/applications/import?source=proof&dry=0&digest=$D27" > "$WORK/code27" & AP=$!
+h0=0; for _ in $(seq 1 150); do [[ $(held) == 1 ]] && { h0=1; break; }; sleep 0.2; done
+: > "$WORK/dbs27.log"
+( n=0; while kill -0 "$AP" 2>/dev/null && (( n < 400 )); do n=$((n + 1))
+    psql "$PGVIGIL_ADMIN_DSN dbname=$DB user=$COLF" -XAtq -v ON_ERROR_STOP=1 -c "select pgvigil.import_databases(${IB:-0}, now(), (select jsonb_agg(jsonb_build_object('dbid', 90000 + j,
+      'datname', 'b' || lpad(j::text, 3, '0'), 'is_template', false, 'allow_conn', true, 'can_connect', true, 'size_bytes', 1)) from generate_series(0, 199) j))" > "$WORK/dbs27.one" 2>&1
+    echo "$? $(head -c 160 "$WORK/dbs27.one" | tr '\n' ' ')" >> "$WORK/dbs27.log"; sleep 0.05
+  done ) & DP=$!
+pw27=$(post admin/applications/assign "{\"op\": \"assign\", \"app_id\": ${FBG:-0}, \"targets\": [{\"instance_id\": ${IB:-0}, \"database\": \"b000\"}]}"); cp "$WORK/ans.json" "$WORK/pw27.json"
+alive=$(kill -0 "$AP" 2>/dev/null && echo yes || echo no)
+wait "$AP"; wait "$DP"; x27=$(cat "$WORK/code27")
+pe27=$(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("error", d.get("outcome", "")))' "$WORK/pw27.json" 2>&1)
+xo27=$(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("outcome"), d.get("counts", {}).get("targets_changed"))' "$WORK/ans27.json" 2>&1)
+xe27=$(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("error", ""))' "$WORK/ans27.json" 2>&1)
+np=$(wc -l < "$WORK/dbs27.log"); nok=$(grep -c '^0 ' "$WORK/dbs27.log"); ndl=$(grep -c 'deadlock detected' "$WORK/dbs27.log"); nbad=$((np - nok - ndl))
+nb2=$(q "select count(*) from pgvigil.app_assignments a join pgvigil.app_applications p using (app_id) where p.name = 'F Big2'"); b0=$(asg imp-big050 b000)
+pg27=no; [[ ( ( $pw27 == 409 && $pe27 == *"being written now"* ) || $pw27 == 200 ) && $(cat "$WORK/pw27.json") != *SQLSTATE* ]] && pg27=yes
+ap27=no; [[ $x27 == 200 && $xo27 == "done 20000" && $nb2 == 20000 && $b0 == "F Big2|import:proof" ]] && ap27=done
+[[ $ap27 == no && $x27 == 409 && $xe27 == *deadlock* && $(cat "$WORK/ans27.json") != *SQLSTATE* ]] && ap27="refused in the deadlock's words"
+[[ $p27 == 200 && $c27 == 20000 && $h0 == 1 && $alive == yes && $pg27 == yes && $np -ge 1 && $nbad == 0 && $ap27 != no ]] \
+  && ok "F27 during the 20000-line apply (the write lock held; still running when the page answered): the page assign $pw27 ('${pe27:0:70}'); $np collector list reads of imp-big050, $nok ended, $ndl deadlock(s) (the collector retries one); the apply $ap27" \
+  || bad "F27 preview $p27 (changed $c27); lock seen $h0, apply running after the page $alive; page $pw27 '$(head -c 200 "$WORK/pw27.json")'; reads $np ($nok ok, $ndl 40P01, $nbad other: $(grep -v '^0 ' "$WORK/dbs27.log" | grep -v 'deadlock detected' | head -2 | tr '\n' ' ')); apply $x27 '$xo27' '${xe27:0:120}'; F Big2 $nb2; b000 $b0"
 
 fi
 fi
