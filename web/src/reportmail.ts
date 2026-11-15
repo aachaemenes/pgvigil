@@ -207,12 +207,13 @@ const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 
 // dialog: one modal form; run answers with the server's words or throws its refusal. invalid: what is missing.
 // route, can: the route the go button posts to and the door's word on the session's role (B24f): below the route's
-// need the button is off with the role's words where it says what is missing, whatever the fields hold.
+// need the button is off with the role's words where it says what is missing, whatever the fields hold - unless the
+// server takes no mail write at all (serverOff): its own reason comes first (review-18 b24f2 S4).
 function dialog(title: string, what: string | Node, go: string, fields: HTMLElement[], run: () => Promise<string>, invalid: () => string = () => '',
-  extra: HTMLElement[] = [], after: () => void = () => { /* nothing to redraw */ }, route: WriteRoute = 'reportmail', can?: Can | null) {
+  extra: HTMLElement[] = [], after: () => void = () => { /* nothing to redraw */ }, route: WriteRoute = 'reportmail', can?: Can | null, serverOff = false) {
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const ok = markNeed(el('button', { type: 'submit' }, go), route);
-  const role = routeWhy(route, can);
+  const role = serverOff ? null : routeWhy(route, can);
   const no = el('button', { type: 'button' }, 'Back');
   const need = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
@@ -314,7 +315,7 @@ async function openMail(ctx: Ctx, root: () => HTMLElement | null) {
       xlsx: attach.checked ? body.xlsx : '' });
     if (res.send_id) void watchSend(Number(res.send_id), msg);
     return `${res.detail} (${fmtNum(body.rows)} rows in ${fmtNum(body.grids)} grid${body.grids === 1 ? '' : 's'})`;
-  }, invalid, w.writable ? [sched] : [sched, schedWhy], undefined, 'reportmail/send', w.can);
+  }, invalid, w.writable ? [sched] : [sched, schedWhy], undefined, 'reportmail/send', w.can, !w.writable);
   sched.addEventListener('click', () => {
     (sched.closest('dialog') as HTMLDialogElement | null)?.close();
     sched.closest('dialog')?.remove();
@@ -399,7 +400,7 @@ export async function scheduleDialog(p: SchedulePrefill, after: () => void = red
       ...(p.prefs ? { grid_prefs: p.prefs } : {}),
     });
     return res.detail;
-  }, invalid, [], after, 'reportmail', w.can);
+  }, invalid, [], after, 'reportmail', w.can, !w.writable);
 }
 
 const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -441,7 +442,7 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
     if (why) offControl(b, why, doorLine); else b.addEventListener('click', run);
     return needControl(b, route, { can: door0.can });
   };
-  const confirmAct = (title: string, what: string, go: string, op: string, id: unknown) => dialog(title, what, go, [], () => act(op, id, go), () => '', [], redraw, 'reportmail', door0.can);
+  const confirmAct = (title: string, what: string, go: string, op: string, id: unknown) => dialog(title, what, go, [], () => act(op, id, go), () => '', [], redraw, 'reportmail', door0.can, !door0.writable);
   const sched: Col[] = [
     { key: 'name', label: 'name' },
     { key: 'page', label: 'page', fmt: (v, r) => el('a', { href: String(r.route) }, String(v || r.route)) },
@@ -459,7 +460,7 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
       button('Edit', `Change schedule ${String(r.name)}`, null, () => { void scheduleDialog({ schedule: r }); }), ' ',
       button('Send test', `Send a test of schedule ${String(r.name)} now`, door0.browser ? null : (door0.browser_reason || 'no headless browser on this server: a test is drawn on the server'), () => {
         dialog(`Send a test of ${String(r.name)}`, `The page is drawn now on the server as you and mailed to ${String(r.recipients)} with [test] in its subject.`, 'Send test', [],
-          async () => (await post<WriteResult>('reportmail/test', { schedule_id: Number(v) })).detail, () => '', [], redraw, 'reportmail/test', door0.can);
+          async () => (await post<WriteResult>('reportmail/test', { schedule_id: Number(v) })).detail, () => '', [], redraw, 'reportmail/test', door0.can, !door0.writable);
       }, 'reportmail/test'), ' ',
       button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, null, () => {
         confirmAct(`${r.enabled ? 'Turn off' : 'Turn on'} ${String(r.name)}`, r.enabled ? 'No mail goes out until it is turned on again.' : 'The next send is the cron line\'s next time.', r.enabled ? 'Turn off' : 'Turn on', r.enabled ? 'disable' : 'enable', v);

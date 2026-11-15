@@ -280,7 +280,7 @@ func TestPagesNameTheirNeeds(t *testing.T) {
 			}
 			seen++
 			q := regexp.QuoteMeta("'" + r + "'")
-			marked := regexp.MustCompile(`(needControl|markNeed|routeWhy)\([^\n]*`+q).MatchString(src) ||
+			marked := regexp.MustCompile(`(needControl|markNeed|routeWhy|dialogRole)\([^\n]*`+q).MatchString(src) ||
 				regexp.MustCompile(`\broute: [^\n]*`+q).MatchString(src) ||
 				strings.Contains(src, "dataset.need = '"+need+"'")
 			// a route the file posts to by its literal and hands to a helper as an argument: spelled once more than

@@ -11,7 +11,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtTime, grid, props } from './ui';
 import { offBeside } from './ack';
-import { markNeed, needControl } from './needs';
+import { dialogRole, needControl } from './needs';
 
 type Kind = 'kill' | 'job_start' | 'job_stop' | 'plan_evict';
 interface OnOff { enabled: boolean; reason?: string }
@@ -174,9 +174,11 @@ async function confirmAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
   const want = kind === 'kill' ? String(t.session_id) : String(t.job_name ?? '');
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', 'aria-label': kind === 'kill' ? 'type the session id to confirm' : 'type the job name to confirm', placeholder: want, autocomplete: 'off' });
-  const go = markNeed(el('button', { type: 'submit', disabled: '' }, kind === 'kill' ? `Kill session ${want}` : `${labels[kind]} ${want}`), 'mssql/actions/run');
+  const go = el('button', { type: 'submit', disabled: '' }, kind === 'kill' ? `Kill session ${want}` : `${labels[kind]} ${want}`);
+  // the role (B24f, review-18 b24f2 B1): the dialog's own check backs the button that opened it
+  const role = dialogRole(go, 'mssql/actions/run');
   const msg = el('p', { class: 'meta', role: 'status' });
-  const check = () => { go.disabled = typed.value.trim() !== want || reason.value.trim().length < 5; };
+  const check = () => { if (!role.why) go.disabled = typed.value.trim() !== want || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);
   typed.addEventListener('input', check);
   body.replaceChildren(
@@ -187,11 +189,12 @@ async function confirmAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
     el('p', { class: 'meta' }, 'The statement: ', el('code', {}, p.statement)),
     el('label', {}, 'Reason', el('br'), reason), el('br'),
     el('label', {}, kind === 'kill' ? `Type the session id ${want} to confirm ` : `Type the job's name to confirm `, typed), el('br'),
-    msg);
+    role.note, msg);
   foot.prepend(go, ' ');
   reason.focus();
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
+    if (role.why) return;   // off is off: an Enter in a field submits the form too
     go.disabled = true;
     msg.textContent = 'Sending...';
     try {
