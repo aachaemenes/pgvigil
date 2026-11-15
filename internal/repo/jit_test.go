@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,5 +137,52 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 	}
 	if jit != "on" {
 		t.Errorf("a session that sends jit = on reads %q; want on (a session's own choice outranks the database's)", jit)
+	}
+
+	// a login that does not own the database: no setting written, one warning that carries the statement; then the
+	// owner's run writes it back (the test's login is the scratch database's owner or a superuser)
+	var db string
+	if err := plain.QueryRow(ctx, `SELECT current_database()`).Scan(&db); err != nil {
+		t.Fatal(err)
+	}
+	isOff := func() bool {
+		t.Helper()
+		var off bool
+		if err := plain.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase
+             WHERE d.datname = current_database() AND s.setrole = 0 AND 'jit=off' = ANY (s.setconfig))`).Scan(&off); err != nil {
+			t.Fatal(err)
+		}
+		return off
+	}
+	if !isOff() {
+		t.Fatalf("after Migrate the database %s holds no jit=off setting", db)
+	}
+	for _, s := range []string{`DROP ROLE IF EXISTS pgv_jit_probe`, `CREATE ROLE pgv_jit_probe NOLOGIN`, "ALTER DATABASE " + pgx.Identifier{db}.Sanitize() + " RESET jit"} {
+		if _, err := plain.Exec(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	defer func() { _, _ = plain.Exec(context.WithoutCancel(ctx), `RESET ROLE; DROP ROLE IF EXISTS pgv_jit_probe`) }()
+	if _, err := plain.Exec(ctx, `SET ROLE pgv_jit_probe`); err != nil {
+		t.Fatal(err)
+	}
+	warn, err := repositoryJITOff(ctx, plain)
+	if err != nil {
+		t.Fatalf("a non-owner's run: %v", err)
+	}
+	if _, err := plain.Exec(ctx, `RESET ROLE`); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(warn, jitOffStatement(db)) {
+		t.Errorf("a non-owner's run warns %q; want the statement %s in it", warn, jitOffStatement(db))
+	}
+	if isOff() {
+		t.Error("a non-owner's run wrote the jit=off setting")
+	}
+	if warn, err := repositoryJITOff(ctx, plain); err != nil || warn != "" {
+		t.Errorf("the owner's run: warn %q, err %v; want neither", warn, err)
+	}
+	if !isOff() {
+		t.Error("the owner's run did not write jit=off back")
 	}
 }
