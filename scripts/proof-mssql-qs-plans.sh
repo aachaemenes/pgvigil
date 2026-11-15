@@ -418,9 +418,11 @@ echo "grant|$(req pgvc-grant)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans
 # C2 below every threshold: one session blocked 2 s
 hold 7 100; bg low 100 "$(victim low 7) /* pgvc-low */"; waitreq pgvc-low >/dev/null; sleep 1
 echo "low|$(req pgvc-low)" >>"$TMPD/cases.txt"; col rpon mssql_running_plans; stopbg
-python3 - "$TMPD" "$PGDSN" "$U" "$EXTRACT" <<'PYEND' || fail "C1-C4: see above"
+SQLC="$SQL|$SQLCMD|$TRUST|$(victim dur 0 | sed 's/ 0$//')" python3 - "$TMPD" "$PGDSN" "$U" "$EXTRACT" <<'PYEND' || fail "C1-C4: see above"
 import json, subprocess, sys, urllib.parse
 d, dsn, u, extract = sys.argv[1:]
+import os
+sqlc = os.environ['SQLC'].split('|', 3)
 def q(s): return [l.split('|') for l in subprocess.run(['psql', dsn, '-XAtq', '-c', s], check=True, capture_output=True, text=True).stdout.splitlines() if l]
 def api(path, **qs):
     out = f"{d}/rc.json"
@@ -470,13 +472,16 @@ else:
     if r.returncode != 0: bad.append(f"C4 extract.py rc {r.returncode}: {r.stderr[:300]}")
 code, b = api('mssql/runningplans/plan', instance=iid['rpnone'], qh=dur.get('qh'), ph=dur.get('ph'), start=dur.get('start'), end=dur.get('end'))
 if code != 200 or b.get('state') != 'none' or 'query_text' not in b.get('words', ''): bad.append(f"C4 rpnone plan: HTTP {code} {str(b)[:200]}")
-# C7: the duration case's plans by its hashes (the plan cache was read in A; read it again so the entry is there)
+# C7: the duration case's plans by its hashes; its statement run once to completion first (the blocked request was
+# killed, and a request that never completed leaves no sys.dm_exec_query_stats row), then a plan cache read
+subprocess.run(['docker', 'exec', '-i', '--env-file', f"{d}/sa.env", sqlc[0], 'bash', '-c', 'SQLCMDPASSWORD=$SA_PW ' + sqlc[1] + ' -S localhost -U sa ' + sqlc[2] + ' -b -d pgvqs -i /dev/stdin'],
+               input=sqlc[3] + ' 5;\n', capture_output=True, text=True)
 subprocess.run([f"{d}/pgvigil", 'collect', '-config', f"{d}/m.yaml", '-instance', 'rpon', '-once', 'mssql_plancache'], capture_output=True)
 code, b = api('mssql/plansources', instance=iid['rpon'], db='pgvqs', qh=dur.get('qh'), ph=dur.get('ph'))
 srcs = [dict(zip(b['sources']['columns'], r)) for r in b.get('sources', {}).get('rows', [])] if code == 200 else []
 kinds = {x['source'] for x in srcs}
 if code != 200 or 'running' not in kinds or not any(x['source'] == 'running' and x['has_plan'] for x in srcs): bad.append(f"C7 plansources: HTTP {code} {srcs}")
-if 'plan cache' not in kinds: print(f"C7 note: no plan cache entry for the duration case (the statement left the cache before the read): {sorted(kinds)}")
+if 'plan cache' not in kinds: bad.append(f"C7 no plan cache entry for the duration case after it completed and a plan cache read: {sorted(kinds)}")
 code, b = api('mssql/plansources', instance=iid['rpon'], db='pgvqs', qh=dur.get('qh'), ph='0x1234')
 if code != 200 or b.get('sources', {}).get('rows'): bad.append(f"C7 a plan hash with no plan: HTTP {code} {str(b)[:200]}")
 for x in bad: print('DIFF', x)
@@ -764,8 +769,7 @@ t = open(doc).read().split('### For plan_evict: a certificate-signed procedure')
 sql = re.search(r'```sql\n(.*?)```', t, re.S).group(1)
 print(sql.replace('[pgvigil_actions]', '[' + act + ']').replace('<a long random password>', pw).replace('<the password above>', pw).replace('USE master;', ''))
 PYEND
-docker cp "$TMPD/signed.sql" "$SQL:/tmp/signed.sql" >/dev/null
-docker exec --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -d master -i /tmp/signed.sql' >"$TMPD/signed.out" 2>&1 || { cat "$TMPD/signed.out"; fail "H: the signed procedure (the docs' script)"; }
+docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -d master -i /dev/stdin' <"$TMPD/signed.sql" >"$TMPD/signed.out" 2>&1 || { cat "$TMPD/signed.out"; fail "H: the signed procedure (the docs' script)"; }
 dsn() { echo "sqlserver://$1:$(urlq "$2")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"; }
 export EV1="$(dsn "$ACT1" "$P1")" EV2="$(dsn "$ACT2" "$P2")" EV3="$(dsn "$ACT3" "$P3")" EVS="$(dsn "$ACTS" "$PS")"
 for spec in "ev_signed EV1 [plan_evict] full" "ev_off EV1 [kill] full" "ev_noright EV3 [plan_evict] full" "ev_sa EVS [plan_evict] full" "ev_none EV1 [plan_evict] none" "ev_direct EV2 [plan_evict] full"; do
