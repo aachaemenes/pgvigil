@@ -480,7 +480,10 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
 -- minute is written, 3 minutes at most) and, for the collector's own kinds, while its newest failure is inside an
 -- 'instances failing together' window of the instance (collector_in_window: one failure past it after the parent
 -- clears; an open one's repeat waits the same way, its escalation never); every other finding is sent as it is; a repository-wide alert is never 'the instance left' and resolves
--- once its finding has been gone for the channel's clear_after. held and forming are read once per pass.
+-- once its finding has been gone for the channel's clear_after. held and forming are read once per pass. B6.4 #4 / B6f7
+-- (0166, WIRING): a member's 'collection runs long' of a collection long on its standing fold's host is held at or under
+-- the fold's held level; a new one waits one beat while 3 or more of its host's instances turned long in its newest
+-- minute (collection_runs_long_forming).
 CREATE OR REPLACE FUNCTION pgvigil.alert_due(p_at timestamptz, p_channels jsonb)
 RETURNS TABLE (channel text, event text, finding_key text, instance_id int, instance text, severity text, source text,
                setting text, value text, detail text, suggested text, finding_at timestamptz, first_sent_at timestamptz,
@@ -499,9 +502,12 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT value FROM slow_folds WHERE kind = 'target' GROUP BY value HAVING bool_and(under_host)
   ), slow_forming AS MATERIALIZED (  -- 3 or more of a collector's instances crossed in its newest minute: new ones wait
     SELECT instance_id FROM pgvigil.collector_slow_forming
-  ), long_held AS MATERIALIZED (   -- B6.4 #4 (0166, WIRING): the members of a standing 'collections run long' fold and
-    -- the severity at or under which their own 'collection runs long' is held
-    SELECT instance_id, severity FROM pgvigil.collection_runs_long_held
+  ), long_held AS MATERIALIZED (   -- B6.4 #4 (0166, WIRING): the members of a standing 'collections run long' fold, the
+    -- collections that run long on its host (B6f7 #6) and the severity at or under which their own 'collection runs long'
+    -- of those is held
+    SELECT instance_id, collection, severity FROM pgvigil.collection_runs_long_held
+  ), long_forming AS MATERIALIZED (  -- B6f7 #2 (0166, WIRING): 3 or more of a host's instances newly long: new ones wait
+    SELECT DISTINCT instance_id FROM pgvigil.collection_runs_long_forming
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
@@ -524,7 +530,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
        AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'slow connect'
                 AND EXISTS (SELECT 1 FROM slow_held WHERE slow_held.instance_id = sc.instance_id))
        AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'collection runs long'
-                AND EXISTS (SELECT 1 FROM long_held WHERE long_held.instance_id = sc.instance_id
+                AND EXISTS (SELECT 1 FROM long_held WHERE long_held.instance_id = sc.instance_id AND long_held.collection = sc.value
                                AND pgvigil.severity_rank(sc.severity) <= pgvigil.severity_rank(long_held.severity)))
        AND NOT (sc.source = 'pgvigil repository' AND sc.setting = 'slow connects'
                 AND EXISTS (SELECT 1 FROM slow_under WHERE slow_under.value = sc.value))
@@ -549,6 +555,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
                              OR (m.source = 'pgvigil collector' AND pgvigil.collector_in_window(m.instance_id, m.at))))
                    AND NOT (m.source = 'pgvigil collector' AND m.setting = 'slow connect'
                             AND EXISTS (SELECT 1 FROM slow_forming WHERE slow_forming.instance_id = m.instance_id))
+                   AND NOT (m.source = 'pgvigil collector' AND m.setting = 'collection runs long'
+                            AND EXISTS (SELECT 1 FROM long_forming WHERE long_forming.instance_id = m.instance_id))
               -- open: an escalation always; a repeat of a collector kind waits like a new one while its newest failure
               -- is inside a failing-together window (the instance released by an ok read, its finding standing until
               -- the next clean minute is written: a stale repeat just before its recovery) - deferred, never dropped

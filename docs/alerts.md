@@ -263,10 +263,22 @@ instance, the host gets one alert. Over the same two UTC hours, and on the host'
 judged there when a collection of it ran 5 or more times on that host, and runs long there by the rule above. The
 alert forms when more than half of the host's judged instances, and at least 3, run long. Once it has been sent, it
 stands until a quarter or less of them, or fewer than 3, still do. It is critical when more than half run long at
-critical. While it stands, its members' own *collection runs long* alerts are held when they are at or under its
-level; a member above it (a critical one under a warning alert) is sent on its own. It is not resolved while the
-host's own *collector or network* stands: the runs stopped being judged because the host stopped, not because they
-got shorter. An instance read by two hosts is judged on each by its own runs there.
+critical. Its detail names the three slowest and how many more. While it stands, its members' own *collection runs
+long* alerts are held for the collections that run long on that host, when they are at or under the level the alert
+was sent at (or its level now, when that is higher): a member above it is sent on its own, and a critical member is
+still held when a critical alert falls to warning. A collection of a member that runs long only on another host is
+sent on its own. When 3 or more of a host's instances start running long in the same minute, a new *collection runs
+long* of one of them waits one beat (the host's span and a minute), so an alert forming over two beats sends no member
+first. It is not resolved while the host's own *collector or network* stands: the runs stopped being judged because
+the host stopped, not because they got shorter. An instance read by two hosts is judged on each by its own runs there.
+
+What is judged: a host's runs that are not retired, and a host only while a run of it beats (a stopped, retired or
+renamed host makes no alert from its old runs); never an instance that a *collector or network* holds (a cut slows
+the runs it does not fail); and never a host whose *collector or network* alert was open inside the two hours on a
+configured channel - the cut's long runs stay in the window, so the host is judged again once the window has passed
+the parent. A parent that was never sent (no channel configured, or quiet hours over the whole of it) is not seen:
+its runs are judged once it clears. After a cut, the instances' own *collection runs long* stand on the cut's runs for
+up to two hours, and are sent one by one.
 
 **alert sender idle** (warning, source `pgvigil repository`, no instance): alert channels are configured (a contact's
 route is not one) and no alert rule has been judged for more than 180 s while a collector beats - the same line as the
