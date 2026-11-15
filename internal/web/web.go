@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/logparse"
 )
 
@@ -501,9 +502,12 @@ func (s *Server) query(ctx context.Context, sql string, args ...any) (*table, er
 			return nil, err
 		}
 		for i, x := range v {
-			// a bigint past 2^53 (a queryid) would lose digits as a JSON number in a browser
+			// a bigint past 2^53 (a queryid) would lose digits as a JSON number in a browser; +/-infinity and the float
+			// specials go as PostgreSQL's text (collect.JSONValue: pgx's InfinityModifier is JSON 1 / -1, a NaN has no JSON)
 			if n, ok := x.(int64); ok && (n > 1<<53 || n < -(1<<53)) {
 				v[i] = strconv.FormatInt(n, 10)
+			} else {
+				v[i] = collect.JSONValue(x)
 			}
 		}
 		t.Rows = append(t.Rows, v)

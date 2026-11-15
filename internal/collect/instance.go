@@ -102,7 +102,7 @@ func rowsToMaps(rows pgx.Rows) ([]Row, error) {
 		}
 		m := make(Row, len(descs))
 		for i, d := range descs {
-			m[string(d.Name)] = vals[i]
+			m[string(d.Name)] = JSONValue(vals[i]) // +/-infinity and the float specials as PostgreSQL's text (jsonvalue.go)
 		}
 		out = append(out, m)
 	}
