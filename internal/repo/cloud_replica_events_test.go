@@ -65,7 +65,7 @@ func TestCloudFailoverEventsOnAStore(t *testing.T) {
 	restart := func(at time.Time) {
 		t.Helper()
 		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
-		  VALUES ($1, $2, 'restart', '10.0.0.1 2026-11-01 00:00', $3, 'instance_state', $2, $2 - interval '5 minutes')`, id, at, "10.0.0.2 "+at.Format(time.RFC3339)); err != nil {
+		  VALUES ($1, $2, 'restart', '10.0.0.1 2026-11-01 00:00', $3, 'instance_state', $2, $2::timestamptz - interval '5 minutes')`, id, at, "10.0.0.2 "+at.Format(time.RFC3339)); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -59,8 +59,6 @@ func (c cloudReplicasCollector) RunInstance(ctx context.Context, _ *sql.Conn, in
 		return nil, err
 	}
 	out := make([]collect.Row, len(rows))
-	for i, r := range rows {
-		out[i] = r
-	}
+	copy(out, rows)
 	return out, nil
 }

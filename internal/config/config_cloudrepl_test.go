@@ -18,7 +18,8 @@ func TestCloudReplicaBlocks(t *testing.T) {
 		cfg    Config
 		refuse string
 	}{
-		{"sqlserver: region, profile, db_instance", base(EngineSQLServer, &AWS{Region: "us-east-2", Profile: "p", DBInstance: "db1"}, nil), ""},
+		{"sqlserver: region, profile, db_instance, replicas off (its one reader is the provider replica door: review part a, finding 1)",
+			base(EngineSQLServer, &AWS{Region: "us-east-2", Profile: "p", DBInstance: "db1"}, nil), "needs replicas: true and db_instance"},
 		{"sqlserver: replicas on", base(EngineSQLServer, &AWS{Region: "us-east-2", DBInstance: "db1", Replicas: true}, nil), ""},
 		{"sqlserver: a cluster", base(EngineSQLServer, &AWS{Region: "us-east-2", Cluster: "c1"}, nil), "region, profile, db_instance and replicas"},
 		{"sqlserver: a log group", base(EngineSQLServer, &AWS{Region: "us-east-2", DBInstance: "db1", LogGroup: "/x"}, nil), "region, profile, db_instance and replicas"},

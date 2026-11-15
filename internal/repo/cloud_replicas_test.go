@@ -168,7 +168,7 @@ func TestCloudReplicasOnAStore(t *testing.T) {
 	if s := finding("rep", "provider lag missing", r1a); s != "" {
 		t.Errorf("r1a seen 3 minutes ago with no datapoint yet: %q, want none", s)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE pgvigil.cloud_replicas SET first_seen_at = first_seen_at - interval '20 minutes' WHERE provider = 'aws' AND resource_id = $1`, r1a); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.cloud_replicas SET first_seen_at = first_seen_at - interval '20 minutes', status_since = status_since - interval '20 minutes' WHERE provider = 'aws' AND resource_id = $1`, r1a); err != nil {
 		t.Fatal(err)
 	}
 	if s := finding("rep", "provider lag missing", r1a); s != "warning" {

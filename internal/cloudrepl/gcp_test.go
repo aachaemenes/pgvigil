@@ -24,14 +24,14 @@ func TestGCPReplicas(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		switch {
-		case r.URL.Path == "/sql/v1/projects/p1/instances/pg-a":
+		switch r.URL.Path {
+		case "/sql/v1/projects/p1/instances/pg-a":
 			_, _ = w.Write([]byte(`{"name":"pg-a","project":"p1","region":"us-central1","databaseVersion":"POSTGRES_16","state":"RUNNABLE",
 				"instanceType":"CLOUD_SQL_INSTANCE","replicaNames":["pg-a-r1"]}`))
-		case r.URL.Path == "/sql/v1/projects/p1/instances/pg-a-r1":
+		case "/sql/v1/projects/p1/instances/pg-a-r1":
 			_, _ = w.Write([]byte(`{"name":"pg-a-r1","project":"p1","region":"us-central1","databaseVersion":"POSTGRES_16","state":"RUNNABLE",
 				"instanceType":"READ_REPLICA_INSTANCE","masterInstanceName":"p1:pg-a"}`))
-		case r.URL.Path == "/mon/v3/projects/p1/timeSeries":
+		case "/mon/v3/projects/p1/timeSeries":
 			if monStatus != http.StatusOK {
 				if monStatus == http.StatusTooManyRequests {
 					w.Header().Set("Retry-After", "60")

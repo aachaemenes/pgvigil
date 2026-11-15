@@ -234,14 +234,14 @@ func TestCloudFailoverCoverFoldB(t *testing.T) {
 			[][2]any{{-18, "started"}, {0, "completed"}},
 			func(id int, c time.Time) error {
 				_, err := tx.Exec(ctx, `INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
-				  VALUES ($1, $2, 'restart', '10.0.0.1 x', '10.0.0.2 y', 'instance_state', $2, $2 - interval '5 minutes')`, id, c.Add(-16*time.Minute))
+				  VALUES ($1, $2, 'restart', '10.0.0.1 x', '10.0.0.2 y', 'instance_state', $2, $2::timestamptz - interval '5 minutes')`, id, c.Add(-16*time.Minute))
 				return err
 			}, "rds events: Multi-AZ instance failover completed.", 1},
 		{"no start event, the read's restart 14 minutes before the completion (the gap between the conversion's 10 and the delete's 15 minutes)",
 			[][2]any{{0, "completed"}},
 			func(id int, c time.Time) error {
 				_, err := tx.Exec(ctx, `INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
-				  VALUES ($1, $2, 'restart', '10.0.0.1 x', '10.0.0.2 y', 'instance_state', $2, $2 - interval '5 minutes')`, id, c.Add(-14*time.Minute))
+				  VALUES ($1, $2, 'restart', '10.0.0.1 x', '10.0.0.2 y', 'instance_state', $2, $2::timestamptz - interval '5 minutes')`, id, c.Add(-14*time.Minute))
 				return err
 			}, "rds events: Multi-AZ instance failover completed.", 1},
 		{"both completion messages (RDS-EVENT-0015 and 0049) 3 minutes apart, no read event (a second completion counted as a second failover)",
