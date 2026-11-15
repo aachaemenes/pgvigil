@@ -4,7 +4,9 @@
 -- blocked-process report every threshold seconds while a session stays blocked (a 65 s wait at the 5 s threshold is
 -- about 12 reports); a calendar or a chip that counts the reports counts one wait twelve times.
 --
---   mssql_block_waits(instance, from, to)   one row per SQL Server wait whose last sight falls in (from, to]: the pair,
+--   mssql_block_waits(instance, from, to)   one row per SQL Server wait whose last sight falls in (from, to] (read an
+--                                           hour either side: a wait still seen after to belongs to a later window,
+--                                           so each wait is in one window, an hour's or a day's, never two): the pair,
 --                                           its start (the report's time less its wait), its last sight, its longest
 --                                           wait, the reports or snapshots it was seen in, and the source. A report
 --                                           belongs to the pair's current wait when its start is within 2 s of the
@@ -14,7 +16,8 @@
 --                                           none installed, or nothing over the threshold) are read from the requests
 --                                           snapshots' lock waits at the server's blocked process threshold or longer
 --                                           (5 s at least) by the same rule (source 'snapshot').
---   pg_block_waits(instance, from, to)      one row per PostgreSQL wait: a session's Lock waits in activity_sample under
+--   pg_block_waits(instance, from, to)      one row per PostgreSQL wait whose last sight falls in (from, to] (read as
+--                                           above): a session's Lock waits in activity_sample under
 --                                           one statement (pid, backend_start, query_start), split where the samples
 --                                           leave a gap longer than two of the instance's sample intervals.
 
@@ -26,7 +29,7 @@ LANGUAGE sql STABLE AS $$
     SELECT b.blocked_spid AS a, b.blocking_spid AS h, b.event_at AS at, coalesce(b.wait_ms, 0) AS w,
            b.event_at - make_interval(secs => coalesce(b.wait_ms, 0) / 1000.0) AS st
       FROM pgvigil.mssql_blocked_reports b
-     WHERE b.instance_id = p_instance AND b.event_at > p_from - interval '1 hour' AND b.event_at <= p_to
+     WHERE b.instance_id = p_instance AND b.event_at > p_from - interval '1 hour' AND b.event_at <= p_to + interval '1 hour'
        AND b.blocked_spid IS NOT NULL AND b.blocking_spid IS NOT NULL AND b.blocked_spid <> b.blocking_spid
   ), hours AS (
     SELECT DISTINCT date_trunc('hour', r.at) AS hr FROM rep r
@@ -42,7 +45,7 @@ LANGUAGE sql STABLE AS $$
     SELECT q.session_id AS a, q.blocking_session_id AS h, q.snapshot_at AS at, coalesce(q.wait_ms, 0) AS w,
            q.snapshot_at - make_interval(secs => coalesce(q.wait_ms, 0) / 1000.0) AS st
       FROM pgvigil.mssql_requests q
-     WHERE q.instance_id = p_instance AND q.snapshot_at > p_from - interval '1 hour' AND q.snapshot_at <= p_to
+     WHERE q.instance_id = p_instance AND q.snapshot_at > p_from - interval '1 hour' AND q.snapshot_at <= p_to + interval '1 hour'
        AND q.blocking_session_id > 0 AND q.blocking_session_id <> q.session_id
        AND left(q.wait_type, 6) = 'LCK_M_' AND coalesce(q.wait_ms, 0) >= (SELECT ms FROM thr)
        AND date_trunc('hour', q.snapshot_at) NOT IN (SELECT hr FROM hours)
@@ -64,7 +67,7 @@ LANGUAGE sql STABLE AS $$
   SELECT n.a, n.h, min(n.st), max(n.at), max(n.w)::bigint, count(*)::int, n.src
     FROM numbered n
    GROUP BY n.src, n.a, n.h, n.n
-  HAVING max(n.at) > p_from
+  HAVING max(n.at) > p_from AND max(n.at) <= p_to
 $$;
 
 CREATE OR REPLACE FUNCTION pgvigil.pg_block_waits(p_instance int, p_from timestamptz, p_to timestamptz)
@@ -74,13 +77,13 @@ LANGUAGE sql STABLE AS $$
     SELECT a.pid AS p, a.backend_start AS bs, a.query_start AS qs, a.snapshot_at AS at
       FROM pgvigil.activity_sample a
      WHERE a.instance_id = p_instance AND a.wait_event_type = 'Lock'
-       AND a.snapshot_at > p_from - interval '1 hour' AND a.snapshot_at <= p_to
+       AND a.snapshot_at > p_from - interval '1 hour' AND a.snapshot_at <= p_to + interval '1 hour'
   ), step AS (
     -- the instance's sample interval: the smallest gap between two of its snapshots in the stretch read (15 s by default)
     SELECT coalesce(min(g), interval '15 seconds') AS iv FROM (
       SELECT t.at - lag(t.at) OVER (ORDER BY t.at) AS g
         FROM (SELECT DISTINCT a.snapshot_at AS at FROM pgvigil.activity_sample a
-               WHERE a.instance_id = p_instance AND a.snapshot_at > p_from - interval '1 hour' AND a.snapshot_at <= p_to) t) x
+               WHERE a.instance_id = p_instance AND a.snapshot_at > p_from - interval '1 hour' AND a.snapshot_at <= p_to + interval '1 hour') t) x
      WHERE g > interval '0'
   ), marked AS (
     SELECT s.*, CASE WHEN lag(s.at) OVER w IS NULL OR s.at - lag(s.at) OVER w > 2 * (SELECT iv FROM step) THEN 1 ELSE 0 END AS fresh
@@ -92,7 +95,7 @@ LANGUAGE sql STABLE AS $$
   SELECT n.p, min(n.at), max(n.at), (extract(epoch FROM max(n.at) - min(n.at)) * 1000)::bigint, count(*)::int
     FROM numbered n
    GROUP BY n.p, n.bs, n.qs, n.n
-  HAVING max(n.at) > p_from
+  HAVING max(n.at) > p_from AND max(n.at) <= p_to
 $$;
 
 

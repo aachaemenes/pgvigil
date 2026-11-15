@@ -52,6 +52,9 @@
 #  K. PostgreSQL deadlocks (log_events kind 'deadlock'): a pair of statements not seen in 30 days fires 'a deadlock
 #     between a new pair of statements' (warning) naming both; 5 deadlocks of a known pair in an hour fire 'deadlocks
 #     in the last hour' (warning); 2 of a known pair: neither. RED: no PostgreSQL deadlock finding.
+#  L. one window per wait: a SQL Server wait seen from 20 s before an hour's end to 20 s after it (reports every 5 s) and
+#     a PostgreSQL one sampled across the same end: each function gives 0 for the hour before the end and 1 for the
+#     hour after; a wait that ended 30 s before the end: 1 and 0. RED: 1 and 1 (counted in both windows).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 MIMG=${PGVIGIL_B10_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}; PIMG=${PGVIGIL_B10_PG_IMAGE:-postgres:18}
@@ -258,6 +261,27 @@ check "$(has "$K1" 'a deadlock between a new pair of statements')" yes "K: a new
 check "$(finding "$K1" 'a deadlock between a new pair of statements' | grep -c 'UPDATE a SET v = 1.*UPDATE b SET v = 1')" 1 "K: the finding names both statements"
 check "$(has "$K2" 'deadlocks in the last hour')|$(has "$K2" 'a deadlock between a new pair of statements')" "yes|no" "K: 5 of a known pair in an hour fire the count, not the new pair"
 check "$(has "$K3" 'deadlocks in the last hour')|$(has "$K3" 'a deadlock between a new pair of statements')" "no|no" "K: 2 of a known pair fire neither"
+
+echo "--- L. one window per wait (an hour's end crossed)"
+LS=$(syn ls sqlserver); LP=$(syn lp postgres); BEND="date_trunc('hour', now()) - interval '1 hour'"
+q "select pgvigil.mssql_event_partition('mssql_blocked_reports', now() - interval '1 hour');
+   insert into pgvigil.mssql_blocked_reports (instance_id, event_at, event_key, snapshot_at, database_name, wait_ms, blocked_spid, blocking_spid, blocked_statement, blocking_statement, head_key)
+   select $LS, $BEND - interval '20 seconds' + make_interval(secs => k * 5), 'b10-l-' || k, now(), 'b10', k * 5000, 91, 90, 'UPDATE dbo.l SET v = 1', 'UPDATE dbo.l', md5('l')
+     from generate_series(1, 8) k
+   union all
+   select $LS, $BEND - interval '60 seconds' + make_interval(secs => k * 5), 'b10-l2-' || k, now(), 'b10', k * 5000, 92, 90, 'UPDATE dbo.l SET v = 2', 'UPDATE dbo.l', md5('l')
+     from generate_series(1, 6) k" >/dev/null
+q "select pgvigil.ensure_month_partition('activity_sample', now() - interval '1 hour');
+   insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
+   select $LP, $BEND + make_interval(secs => s), 103, $BEND - interval '1 hour', 'b10', 'app', 'active', 'Lock', 'transactionid', $BEND - interval '30 seconds', '{100}'
+     from unnest(array[-15, 0, 15]) s" >/dev/null
+wl() { q "select (select count(*) from pgvigil.$1($2, $BEND - interval '1 hour', $BEND)$3) || '|' || (select count(*) from pgvigil.$1($2, $BEND, $BEND + interval '1 hour')$3)"; }
+if fn mssql_block_waits; then
+  check "$(wl mssql_block_waits "$LS" " where blocked_spid = 91")" "0|1" "L: SQL Server, a wait across the end: in the later hour only"
+  check "$(wl mssql_block_waits "$LS" " where blocked_spid = 92")" "1|0" "L: SQL Server, a wait ended 30 s before the end: in the earlier hour only"
+else check "no mssql_block_waits" "0|1" "L: SQL Server one window per wait"; fi
+if fn pg_block_waits; then check "$(wl pg_block_waits "$LP" "")" "0|1" "L: PostgreSQL, a wait across the end: in the later hour only"
+else check "no pg_block_waits" "0|1" "L: PostgreSQL one window per wait"; fi
 
 echo
 [ "$bad" = 0 ] && echo "proof-b10-blocking: every row ok" || { echo "proof-b10-blocking: $bad row(s) FAIL"; exit 1; }
