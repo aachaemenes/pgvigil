@@ -87,6 +87,23 @@ SELECT a.snapshot_at AS minute, a.snapshot_at, a.samples, a.avg_cpu_percent, a.m
  ORDER BY a.snapshot_at DESC
  LIMIT 1440`
 
+// the window's hours, newest first, through the same split as the summary (pgvigil.mssql_azuredb_window): a built hour
+// whole, an edge or unbuilt hour from its minutes, its minutes counted (partial: fewer than 60 minutes in the window);
+// the page lists them for a window over a day (B2a-N2)
+const sqlAzureDBHours = `
+SELECT date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour, sum(a.minutes)::int AS minutes, sum(a.samples)::bigint AS samples,
+       round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 2) AS avg_cpu_percent, max(a.max_cpu_percent) AS max_cpu_percent,
+       round(sum(a.data_io_total) / nullif(sum(a.data_io_counted), 0), 2) AS avg_data_io_percent, max(a.max_data_io_percent) AS max_data_io_percent,
+       round(sum(a.log_write_total) / nullif(sum(a.log_write_counted), 0), 2) AS avg_log_write_percent, max(a.max_log_write_percent) AS max_log_write_percent,
+       round(sum(a.memory_usage_total) / nullif(sum(a.memory_usage_counted), 0), 2) AS avg_memory_usage_percent,
+       round(sum(a.dtu_percent_total) / nullif(sum(a.dtu_percent_counted), 0), 2) AS avg_dtu_percent, max(a.max_dtu_percent) AS max_dtu_percent,
+       max(a.max_worker_percent) AS max_worker_percent, max(a.max_session_percent) AS max_session_percent,
+       sum(a.minutes) < 60 AS partial
+  FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a
+ GROUP BY 1
+ ORDER BY 1 DESC
+ LIMIT 8784`
+
 // the gaps that touch the window: minutes the store does not have because the view no longer held them
 const sqlAzureDBGaps = `
 SELECT g.gap_from, g.gap_to, round(extract(epoch FROM g.gap_to - g.gap_from) / 60) AS minutes, g.oldest_end, g.noted_at
@@ -106,6 +123,7 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 		{"tier", sqlAzureDBTier, []any{id}},
 		{"summary", sqlAzureDBSummary, []any{id, from, to}},
 		{"minutes", sqlAzureDBMinutes, []any{id, from, to}},
+		{"hours", sqlAzureDBHours, []any{id, from, to}},
 		{"gaps", sqlAzureDBGaps, []any{id, from, to}},
 	})
 }
