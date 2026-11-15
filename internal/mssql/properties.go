@@ -221,8 +221,20 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 		return ""
 	}
 	platform, _ := hval("host_platform").(string)
-	plan, planNote := powerPlan(ctx, conn, info, platform, host != nil, hostWhy)
+	// the rights of the registry reads (task 301c), asked once; a managed service runs the host: nothing to ask
+	var gate propGate
+	managed := info.Kind == KindRDS || info.Kind == KindAzureMI || info.Kind == KindCloudSQL
+	if !managed && host != nil {
+		gate = readPropGate(ctx, conn)
+	}
+	plan, planNote := powerPlan(ctx, conn, info, platform, host != nil, hostWhy, gate)
 	p.add("power_plan", "Processor", "Power plan", 310, plan, planNote)
+	net, netPartial := readNetwork(ctx, conn, info, platform, gate)
+	if host == nil {
+		net.hostWhy = hostWhy
+	}
+	netRows(p, net)
+	partial = append(partial, netPartial...)
 
 	maxMB, _ := s["max_memory_mb"].(int64)
 	physMB, _ := val("physical_memory_mb").(int64)
@@ -343,7 +355,8 @@ func readHost(ctx context.Context, conn *sql.Conn, info Info) (collect.Row, stri
 
 // powerPlan is the Windows power plan and the row's note. The registry is read only on a Windows server someone
 // runs: a managed service has no registry to offer and Linux has no power scheme.
-func powerPlan(ctx context.Context, conn *sql.Conn, info Info, platform string, hostRead bool, hostWhy string) (any, string) {
+// gates: the rights Run asked once (task 301c); none given, they are asked here when the registry is to be read.
+func powerPlan(ctx context.Context, conn *sql.Conn, info Info, platform string, hostRead bool, hostWhy string, gates ...propGate) (any, string) {
 	switch {
 	case info.Kind == KindRDS:
 		return nil, "not read: Amazon RDS runs the host; its power plan is not the customer's to read"
@@ -355,6 +368,19 @@ func powerPlan(ctx context.Context, conn *sql.Conn, info Info, platform string, 
 		return nil, "not read: the host's platform is not known (" + strings.TrimPrefix(hostWhy, "not read: ") + ")"
 	case platform != "Windows":
 		return nil, "not read: SQL Server on " + platform + " has no Windows power plan; the CPU governor is the host's"
+	}
+	var gate propGate
+	if len(gates) > 0 {
+		gate = gates[0]
+	} else {
+		gate = readPropGate(ctx, conn)
+	}
+	switch {
+	case !gate.read:
+		return nil, "not read: " + gate.why
+	case !gate.regread:
+		// a refused procedure is never asked for every hour (task 301c, as 408's review asked)
+		return nil, gate.noRight("xp_regread")
 	}
 	rows, err := QueryRows(ctx, conn, propsPowerSQL)
 	if err != nil {
@@ -462,4 +488,517 @@ func joinNonEmpty(vals ...any) any {
 func pctText(part, whole int64) string {
 	tenths := (part*1000 + whole/2) / whole
 	return strconv.FormatInt(tenths/10, 10) + "." + strconv.FormatInt(tenths%10, 10)
+}
+
+// ---- the network rows and the processor scheduling (task 301c) -------------------------------------------------
+//
+// The TCP port, ForceEncryption, ForceStrictEncryption and the enabled protocols are SQL Server's own registry
+// values (SuperSocketNetLib); Win32PrioritySeparation is the machine's (HKLM\SYSTEM\CurrentControlSet\Control\
+// PriorityControl). Their keys are fixed: the checks (task 409) judge the stored rows by them.
+//
+//   - Windows: sys.dm_server_registry (VIEW SERVER STATE; VIEW SERVER PERFORMANCE STATE from SQL Server 2022), the
+//     SuperSocketNetLib rows with the IPn entries; where the view is refused or empty, xp_instance_regread for the
+//     instance's values - without the view the IPn entries cannot be listed. Win32PrioritySeparation, never in the
+//     view, through xp_regread.
+//   - Linux: the view is empty there; xp_instance_regread answers from SQL Server on Linux's own registry, which
+//     follows mssql-conf (network.tcpport, network.forceencryption: read back on 2022 after a restart). The
+//     protocols are TCP only; ListenOnAllIPs and Win32PrioritySeparation are Windows settings ('not on Linux').
+//   - Amazon RDS, Azure SQL Managed Instance and Google Cloud SQL run the host: 'not applicable'.
+//
+// The two procedures are undocumented and a site may take EXECUTE away from public: each is called only after
+// HAS_PERMS_BY_NAME says the login may execute it (a refused object is never asked for every hour); without the
+// right the rows say how to give it (a GRANT on an object names a database user: the login's user in master).
+// On Linux the protocols ('met: Linux serves TCP only') and ListenOnAllIPs ('not on Linux') need no registry read and
+// keep their words whatever the read gave.
+
+// netKeys are the seven rows' keys, fixed for the checks that judge them.
+const (
+	keyTCPPort        = "tcp_port"
+	keyTCPDynamic     = "tcp_port_dynamic"
+	keyListenAll      = "tcp_listen_all_ips"
+	keyForceEnc       = "force_encryption"
+	keyForceStrictEnc = "force_strict_encryption"
+	keyProtocols      = "protocols_enabled"
+	keyPrioritySep    = "win32_priority_separation"
+)
+
+// propsGateSQL: the rights the registry reads need, asked once a run; HAS_PERMS_BY_NAME answers NULL for a
+// permission the version does not have (VIEW SERVER PERFORMANCE STATE before 2022), counted as not held.
+const propsGateSQL = `SELECT
+  CAST(CASE WHEN ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE'), 0) = 1
+              OR ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER PERFORMANCE STATE'), 0) = 1 THEN 1 ELSE 0 END AS int) AS can_registry_view,
+  CAST(ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE'), 0) AS int) AS can_instance_regread,
+  CAST(ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.xp_regread', 'OBJECT', 'EXECUTE'), 0) AS int) AS can_regread,
+  CAST(SUSER_SNAME() AS nvarchar(128)) AS login_name`
+
+// propsNetViewSQL: the instance's network configuration as sys.dm_server_registry holds it.
+const propsNetViewSQL = `SELECT CAST(registry_key AS nvarchar(256)) AS registry_key, CAST(value_name AS nvarchar(256)) AS value_name,
+  CAST(value_data AS nvarchar(512)) AS value_data
+FROM sys.dm_server_registry WHERE registry_key LIKE N'%SuperSocketNetLib%'`
+
+// propsNetRegSQL: the same values, but the IPn entries, through xp_instance_regread (a value that is not there
+// comes back NULL).
+const propsNetRegSQL = `DECLARE @fe int, @fse int, @all int, @tcp int, @np int, @sm int, @port nvarchar(256), @dyn nvarchar(256);
+DECLARE @k nvarchar(200) = N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib';
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'ForceEncryption', @fe OUTPUT;
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'ForceStrictEncryption', @fse OUTPUT;
+SET @k = N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Tcp';
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'ListenOnAllIPs', @all OUTPUT;
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'Enabled', @tcp OUTPUT;
+SET @k = N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Tcp\IPAll';
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'TcpPort', @port OUTPUT;
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @k, N'TcpDynamicPorts', @dyn OUTPUT;
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Np', N'Enabled', @np OUTPUT;
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib\Sm', N'Enabled', @sm OUTPUT;
+SELECT @fe AS force_encryption, @fse AS force_strict_encryption, @all AS listen_all, @tcp AS tcp_enabled, @np AS np_enabled,
+  @sm AS sm_enabled, @port AS ipall_port, @dyn AS ipall_dynamic;`
+
+// propsPrioritySQL: Win32PrioritySeparation through xp_regread (the machine's key, not the instance's).
+const propsPrioritySQL = `DECLARE @ps int;
+EXEC master.dbo.xp_regread N'HKEY_LOCAL_MACHINE', N'SYSTEM\CurrentControlSet\Control\PriorityControl', N'Win32PrioritySeparation', @ps OUTPUT;
+SELECT @ps AS priority_separation;`
+
+// propGate is what propsGateSQL answered; read is false when the question itself failed.
+type propGate struct {
+	read                                   bool
+	why                                    string
+	registryView, instanceRegread, regread bool
+	login                                  string
+}
+
+func readPropGate(ctx context.Context, conn *sql.Conn) propGate {
+	rows, err := QueryRows(ctx, conn, propsGateSQL)
+	if err != nil || len(rows) != 1 {
+		why := "the rights could not be asked"
+		if err != nil {
+			why = err.Error()
+		}
+		return propGate{why: why}
+	}
+	one := func(k string) bool { n, ok := rows[0][k].(int64); return ok && n == 1 }
+	login, _ := rows[0]["login_name"].(string)
+	return propGate{read: true, registryView: one("can_registry_view"), instanceRegread: one("can_instance_regread"), regread: one("can_regread"), login: login}
+}
+
+// noRight is the words of a refused procedure: how the right is given, the login quoted as QUOTENAME does. A GRANT on
+// an object names a database principal, so the login's user in master (made first when it has none: a GRANT to a
+// login's name alone fails with Msg 15151).
+func (g propGate) noRight(proc string) string {
+	l := "[" + strings.ReplaceAll(g.login, "]", "]]") + "]"
+	return "no right: EXECUTE on master.dbo." + proc + " - in master, CREATE USER " + l + " FOR LOGIN " + l +
+		" when it has none, then GRANT EXECUTE ON dbo." + proc + " TO " + l
+}
+
+// ipEntry is one Tcp\IPn key of the registry view.
+type ipEntry struct {
+	name, address, port, dynamic string
+	enabled                      bool
+}
+
+// netFacts is what one read found of the network configuration; nil = not there.
+type netFacts struct {
+	source                                              string // "view" or "xp_instance_regread"
+	forceEnc, forceStrict, listenAll, tcpOn, npOn, smOn *int64
+	ipAllPort, ipAllDynamic                             string
+	ips                                                 []ipEntry
+	ipsRead                                             bool // the IPn entries were listed (the view only)
+}
+
+// netFactsFromView turns sys.dm_server_registry's SuperSocketNetLib rows into the facts.
+func netFactsFromView(rows []collect.Row) netFacts {
+	f := netFacts{source: "sys.dm_server_registry", ipsRead: true}
+	ips := map[string]*ipEntry{}
+	var order []string
+	num := func(v string) *int64 {
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return nil
+		}
+		return &n
+	}
+	for _, r := range rows {
+		key, _ := r["registry_key"].(string)
+		name, _ := r["value_name"].(string)
+		val, _ := r["value_data"].(string)
+		i := strings.Index(strings.ToLower(key), `supersocketnetlib`)
+		if i < 0 {
+			continue
+		}
+		sub := strings.ToLower(strings.Trim(key[i+len("supersocketnetlib"):], `\`))
+		nm := strings.ToLower(name)
+		switch {
+		case sub == "" && nm == "forceencryption":
+			f.forceEnc = num(val)
+		case sub == "" && nm == "forcestrictencryption":
+			f.forceStrict = num(val)
+		case sub == "tcp" && nm == "listenonallips":
+			f.listenAll = num(val)
+		case sub == "tcp" && nm == "enabled":
+			f.tcpOn = num(val)
+		case sub == "np" && nm == "enabled":
+			f.npOn = num(val)
+		case sub == "sm" && nm == "enabled":
+			f.smOn = num(val)
+		case sub == `tcp\ipall` && nm == "tcpport":
+			f.ipAllPort = strings.TrimSpace(val)
+		case sub == `tcp\ipall` && nm == "tcpdynamicports":
+			f.ipAllDynamic = strings.TrimSpace(val)
+		case strings.HasPrefix(sub, `tcp\ip`):
+			n := key[strings.LastIndex(key, `\`)+1:]
+			e, ok := ips[n]
+			if !ok {
+				e = &ipEntry{name: n}
+				ips[n] = e
+				order = append(order, n)
+			}
+			switch nm {
+			case "enabled":
+				if p := num(val); p != nil && *p == 1 {
+					e.enabled = true
+				}
+			case "ipaddress":
+				e.address = strings.TrimSpace(val)
+			case "tcpport":
+				e.port = strings.TrimSpace(val)
+			case "tcpdynamicports":
+				e.dynamic = strings.TrimSpace(val)
+			}
+		}
+	}
+	for _, n := range order {
+		f.ips = append(f.ips, *ips[n])
+	}
+	return f
+}
+
+// netFactsFromRegread turns propsNetRegSQL's one row into the facts (no IPn entries).
+func netFactsFromRegread(r collect.Row) netFacts {
+	f := netFacts{source: "xp_instance_regread"}
+	n := func(k string) *int64 {
+		if v, ok := r[k].(int64); ok {
+			return &v
+		}
+		return nil
+	}
+	f.forceEnc, f.forceStrict, f.listenAll = n("force_encryption"), n("force_strict_encryption"), n("listen_all")
+	f.tcpOn, f.npOn, f.smOn = n("tcp_enabled"), n("np_enabled"), n("sm_enabled")
+	f.ipAllPort, _ = r["ipall_port"].(string)
+	f.ipAllDynamic, _ = r["ipall_dynamic"].(string)
+	f.ipAllPort, f.ipAllDynamic = strings.TrimSpace(f.ipAllPort), strings.TrimSpace(f.ipAllDynamic)
+	return f
+}
+
+// portsOf splits a registry port value ("1433", "1433,1533") into port numbers; anything else is left out.
+func portsOf(v string) []int {
+	var out []int
+	for _, p := range strings.Split(v, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil && n > 0 && n < 65536 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// tcpPorts is the tcp_port row: the ports the instance listens on, ascending, whether any is dynamic, and the note.
+// A static port and a dynamic one both listen: TcpDynamicPorts is blank only while dynamic ports are off (Learn, the
+// IP Addresses tab), and '0' means they are on with the port chosen at the next start. With ListenOnAllIPs (the
+// default) IPAll's ports; with it off, the enabled IPn entries' ports, each named in the note. With TCP/IP disabled
+// the instance listens on no TCP port, whatever the ports configured. On Linux ListenOnAllIPs is not read (mssql-conf
+// network.ipaddress chooses the address; the view of the IPn entries is empty there): IPAll's ports.
+func tcpPorts(f netFacts, linux bool) (value any, dynamic any, note string) {
+	if !linux && f.tcpOn != nil && *f.tcpOn == 0 {
+		return nil, nil, "not listening: TCP/IP is disabled, so the instance listens on no TCP port"
+	}
+	seen := map[int]bool{}
+	var ports []int
+	dyn, dynPending, both := false, false, false
+	add := func(ps []int) {
+		for _, p := range ps {
+			if !seen[p] {
+				seen[p] = true
+				ports = append(ports, p)
+			}
+		}
+	}
+	addAll := func(static, dynv string) bool {
+		got := false
+		if ps := portsOf(static); len(ps) > 0 {
+			add(ps)
+			got = true
+		}
+		if strings.TrimSpace(dynv) != "" {
+			both = both || got
+			dyn, got = true, true
+			if ps := portsOf(dynv); len(ps) > 0 {
+				add(ps)
+			} else {
+				dynPending = true
+			}
+		}
+		return got
+	}
+	portText := func(static, dynv string) string {
+		if strings.TrimSpace(static) != "" && strings.TrimSpace(dynv) != "" {
+			return strings.TrimSpace(static) + " and dynamic " + strings.TrimSpace(dynv)
+		}
+		return firstNonEmpty(static, dynv)
+	}
+	if !linux && f.listenAll != nil && *f.listenAll == 0 {
+		if !f.ipsRead {
+			return nil, nil, "not read: ListenOnAllIPs is off and the IPn entries need sys.dm_server_registry (VIEW SERVER STATE)"
+		}
+		var named []string
+		for _, e := range f.ips {
+			if !e.enabled {
+				continue
+			}
+			if addAll(e.port, e.dynamic) {
+				named = append(named, strings.TrimSpace(e.name+" "+e.address)+": "+portText(e.port, e.dynamic))
+			}
+		}
+		if len(named) == 0 {
+			return nil, nil, "not read: ListenOnAllIPs is off and no enabled IPn entry names a port"
+		}
+		note = "ListenOnAllIPs is off: " + strings.Join(named, "; ")
+	} else if !addAll(f.ipAllPort, f.ipAllDynamic) {
+		return nil, nil, "not read: IPAll names no static or dynamic TCP port"
+	}
+	if len(ports) == 0 {
+		return nil, true, "dynamic ports are on and none is chosen yet (TcpDynamicPorts 0: SQL Server chooses it at its next start)"
+	}
+	sortInts(ports)
+	text := make([]string, len(ports))
+	for i, p := range ports {
+		text[i] = strconv.Itoa(p)
+	}
+	switch {
+	case note != "":
+	case both && dynPending:
+		note = "dynamic ports are on as well (TcpDynamicPorts 0): SQL Server chooses one at its next start besides the static port"
+	case both:
+		note = "a static port and a dynamic one: TcpDynamicPorts is set, so the instance listens on both; the dynamic one may change at the next start"
+	case dyn:
+		note = "a dynamic port: SQL Server chose it at its start and may choose another at the next"
+	}
+	return strings.Join(text, ", "), dyn, note
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func sortInts(a []int) {
+	for i := 1; i < len(a); i++ {
+		for j := i; j > 0 && a[j] < a[j-1]; j-- {
+			a[j], a[j-1] = a[j-1], a[j]
+		}
+	}
+}
+
+// onOff is a registry flag as the repository stores a yes / no; nil stays nil.
+func onOff(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p == 1
+}
+
+// netRowsInput is everything the seven rows are built from (a pure function of it: the unit tests stub it).
+type netRowsInput struct {
+	kind     Kind
+	major    int
+	platform string // the host's platform; "" = not known
+	hostWhy  string // why the host is not known
+	gate     propGate
+	facts    *netFacts // nil = not read
+	factsWhy string    // why not
+	priority any       // Win32PrioritySeparation; nil = not read
+	prioWhy  string
+}
+
+// netRows adds the seven rows to p.
+func netRows(p *propList, in netRowsInput) {
+	add := func(key, grp, label string, ord int, v any, note string) { p.add(key, grp, label, ord, v, note) }
+	labels := []struct {
+		key, grp, label string
+		ord             int
+	}{
+		{keyTCPPort, "Network", "TCP port", 700}, {keyTCPDynamic, "Network", "TCP port is dynamic", 710},
+		{keyListenAll, "Network", "Listen on all IP addresses", 720}, {keyForceEnc, "Network", "Force encryption", 730},
+		{keyForceStrictEnc, "Network", "Force strict encryption", 740}, {keyProtocols, "Network", "Protocols enabled", 750},
+		{keyPrioritySep, "Processor", "Win32PrioritySeparation", 320},
+	}
+	all := func(note string) {
+		for _, l := range labels {
+			add(l.key, l.grp, l.label, l.ord, nil, note)
+		}
+	}
+	switch in.kind {
+	case KindRDS:
+		all("not applicable: Amazon RDS runs the host")
+		return
+	case KindAzureMI:
+		all("not applicable: Azure SQL Managed Instance runs the host")
+		return
+	case KindCloudSQL:
+		all("not applicable: Google Cloud SQL runs the host")
+		return
+	}
+	if in.platform == "" {
+		all("not read: the host's platform is not known (" + strings.TrimPrefix(in.hostWhy, "not read: ") + ")")
+		return
+	}
+	linux := in.platform == "Linux"
+	if in.facts == nil {
+		for _, l := range labels[:6] {
+			switch {
+			case linux && l.key == keyListenAll:
+				add(l.key, l.grp, l.label, l.ord, nil, "not on Linux: mssql-conf network.ipaddress chooses the address")
+			case linux && l.key == keyProtocols:
+				add(l.key, l.grp, l.label, l.ord, "TCP/IP", "met: Linux serves TCP only")
+			default:
+				add(l.key, l.grp, l.label, l.ord, nil, in.factsWhy)
+			}
+		}
+	} else {
+		f := *in.facts
+		port, dyn, portNote := tcpPorts(f, linux)
+		if linux && portNote == "" {
+			portNote = "SQL Server on Linux: mssql-conf network.tcpport, read through its registry"
+		}
+		add(keyTCPPort, "Network", "TCP port", 700, port, portNote)
+		dynNote := ""
+		if dyn == nil {
+			dynNote = portNote
+		}
+		add(keyTCPDynamic, "Network", "TCP port is dynamic", 710, dyn, dynNote)
+		if linux {
+			add(keyListenAll, "Network", "Listen on all IP addresses", 720, nil, "not on Linux: mssql-conf network.ipaddress chooses the address")
+		} else {
+			add(keyListenAll, "Network", "Listen on all IP addresses", 720, onOff(f.listenAll), missing(f.listenAll, "ListenOnAllIPs", f.source))
+		}
+		encNote := missing(f.forceEnc, "ForceEncryption", f.source)
+		if linux && f.forceEnc != nil {
+			encNote = "SQL Server on Linux: mssql-conf network.forceencryption, read through its registry"
+		}
+		add(keyForceEnc, "Network", "Force encryption", 730, onOff(f.forceEnc), encNote)
+		switch {
+		case in.major > 0 && in.major < 16:
+			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, nil, "not on this version: ForceStrictEncryption came with SQL Server 2022")
+		default:
+			add(keyForceStrictEnc, "Network", "Force strict encryption", 740, onOff(f.forceStrict), missing(f.forceStrict, "ForceStrictEncryption", f.source))
+		}
+		if linux {
+			add(keyProtocols, "Network", "Protocols enabled", 750, "TCP/IP", "met: Linux serves TCP only")
+		} else {
+			var on []string
+			for _, pr := range []struct {
+				v    *int64
+				name string
+			}{{f.smOn, "Shared Memory"}, {f.npOn, "Named Pipes"}, {f.tcpOn, "TCP/IP"}} {
+				if pr.v != nil && *pr.v == 1 {
+					on = append(on, pr.name)
+				}
+			}
+			switch {
+			case f.smOn == nil && f.npOn == nil && f.tcpOn == nil:
+				add(keyProtocols, "Network", "Protocols enabled", 750, nil, "not read: "+f.source+" holds no protocol's Enabled value")
+			case len(on) == 0:
+				add(keyProtocols, "Network", "Protocols enabled", 750, "none", "")
+			default:
+				add(keyProtocols, "Network", "Protocols enabled", 750, strings.Join(on, ", "), "")
+			}
+		}
+	}
+	switch {
+	case linux:
+		add(keyPrioritySep, "Processor", "Win32PrioritySeparation", 320, nil, "not on Linux: a Windows scheduler setting")
+	case in.platform != "Windows":
+		add(keyPrioritySep, "Processor", "Win32PrioritySeparation", 320, nil, "not on "+in.platform+": a Windows scheduler setting")
+	default:
+		add(keyPrioritySep, "Processor", "Win32PrioritySeparation", 320, in.priority, in.prioWhy)
+	}
+}
+
+// missing is the note of a registry value the read did not find.
+func missing(p *int64, name, source string) string {
+	if p != nil {
+		return ""
+	}
+	return "not read: " + source + " holds no " + name + " value"
+}
+
+// readNetwork reads the facts netRows needs; partial gets a row for each read that failed.
+func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string, gate propGate) (in netRowsInput, partial []collect.Row) {
+	in = netRowsInput{kind: info.Kind, major: info.Major, platform: platform, gate: gate}
+	if info.Kind == KindRDS || info.Kind == KindAzureMI || info.Kind == KindCloudSQL || platform == "" {
+		return in, nil
+	}
+	if !gate.read {
+		in.factsWhy, in.prioWhy = "not read: "+gate.why, "not read: "+gate.why
+		return in, []collect.Row{{"kind": "collector_error", "source": "HAS_PERMS_BY_NAME", "message": gate.why}}
+	}
+	fail := func(source string, err error) string {
+		partial = append(partial, collect.Row{"kind": "collector_error", "source": source, "message": err.Error()})
+		return "not read: " + err.Error()
+	}
+	// the view first (Windows; empty on Linux), then xp_instance_regread; the view's error is a partial run only when
+	// the procedure read nothing either
+	var viewErr error
+	if platform == "Windows" && gate.registryView {
+		rows, err := QueryRows(ctx, conn, propsNetViewSQL)
+		switch {
+		case err != nil:
+			viewErr = err
+			in.factsWhy = "not read: " + err.Error()
+		case len(rows) > 0:
+			f := netFactsFromView(rows)
+			in.facts = &f
+		}
+	}
+	if in.facts == nil {
+		switch {
+		case !gate.instanceRegread && platform == "Windows" && !gate.registryView:
+			in.factsWhy = gate.noRight("xp_instance_regread") + " (or GRANT VIEW SERVER STATE TO [" + strings.ReplaceAll(gate.login, "]", "]]") + "], which reads sys.dm_server_registry)"
+		case !gate.instanceRegread:
+			in.factsWhy = gate.noRight("xp_instance_regread")
+		default:
+			rows, err := QueryRows(ctx, conn, propsNetRegSQL)
+			switch {
+			case err != nil:
+				in.factsWhy = fail("xp_instance_regread", err)
+			case len(rows) != 1:
+				in.factsWhy = "not read: xp_instance_regread returned no row"
+			default:
+				f := netFactsFromRegread(rows[0])
+				in.facts = &f
+				in.factsWhy = ""
+			}
+		}
+	}
+	if viewErr != nil && in.facts == nil {
+		fail("sys.dm_server_registry", viewErr)
+	}
+	if platform == "Windows" {
+		switch {
+		case !gate.regread:
+			in.prioWhy = gate.noRight("xp_regread")
+		default:
+			rows, err := QueryRows(ctx, conn, propsPrioritySQL)
+			switch {
+			case err != nil:
+				in.prioWhy = fail("xp_regread", err)
+			case len(rows) != 1 || rows[0]["priority_separation"] == nil:
+				in.prioWhy = "not read: the registry holds no Win32PrioritySeparation value where xp_regread looked"
+			default:
+				in.priority = rows[0]["priority_separation"]
+			}
+		}
+	}
+	return in, partial
 }
