@@ -77,11 +77,25 @@ var (
 	composeAutoSteps = []int{60, 300, 900, 3600, 6 * 3600, 86400}
 )
 
-// composeMaxRange is the longest window a panel reads; composeFamilyRange cuts a family to less (set from the box
-// measurement scripts/measure-compose.sh: the longest range that answered at fleet scope inside serve's 15 s with margin).
+// composeMaxRange is the longest window a panel reads. composeFamilyRange is each family's longest window at
+// composeMeasuredInstances instances, from the box measurement scripts/measure-compose.sh (2026-11-15, one LATERAL
+// statement at fleet scope under serve's settings): the longest measured range whose warm run answered under 7.5 s, half
+// serve's 15 s. A read grows with instances x days, so a panel scoped to fewer instances reads proportionally longer
+// (up to composeMaxRange); a fleet or tag scope is taken as the measured fleet.
 var (
-	composeMaxRange    = 90 * 24 * time.Hour
-	composeFamilyRange = map[string]time.Duration{}
+	composeMaxRange          = 90 * 24 * time.Hour
+	composeMeasuredInstances = 40
+	composeFamilyRange       = map[string]time.Duration{
+		"cpu":       31 * 24 * time.Hour, // 1.0 s at 7 days, 5.3 s at 31, past 15 s at 90
+		"sessions":  7 * 24 * time.Hour,  // 2.5 s at 7 days, 14.9 s cold / past 15 s warm at 31
+		"server":    7 * 24 * time.Hour,  // 5.1 s at 7 days, past 15 s at 31
+		"host":      7 * 24 * time.Hour,  // 2.1 s at 7 days, 11.6 s at 31
+		"requests":  7 * 24 * time.Hour,  // 1.9 s at 7 days, 11.5 s at 31
+		"scheduler": 7 * 24 * time.Hour,  // 2.5 s at 7 days, 11.8 s at 31
+		"memory":    7 * 24 * time.Hour,  // 4.7 s at 7 days, past 15 s at 31
+		"io":        24 * time.Hour,      // past 15 s at 7 days (30 rows a 5-minute read)
+		"database":  24 * time.Hour,      // dbstats_rate over every database
+	}
 )
 
 const (
@@ -171,8 +185,9 @@ func checkPanel(p *PanelSpec, m catalogMetric) error {
 }
 
 // composeWindow is the window a panel reads: its pinned window, else the dashboard's; cut to the family's longest
-// range, counted back from the end or now, whichever is earlier.
-func composeWindow(p PanelSpec, family string, from, to, now time.Time) (time.Time, time.Time, string) {
+// range for the scope's instances (n; 0 = a fleet or tag scope, taken as the measured fleet), counted back from the end
+// or now, whichever is earlier.
+func composeWindow(p PanelSpec, family string, n int, from, to, now time.Time) (time.Time, time.Time, string) {
 	if to.After(now) {
 		to = now
 	}
@@ -180,11 +195,16 @@ func composeWindow(p PanelSpec, family string, from, to, now time.Time) (time.Ti
 		from = to.Add(-d)
 	}
 	limit := composeMaxRange
-	if d, ok := composeFamilyRange[family]; ok && d < limit {
-		limit = d
+	if d, ok := composeFamilyRange[family]; ok {
+		if n > 0 && n < composeMeasuredInstances {
+			d = time.Duration(float64(d) * float64(composeMeasuredInstances) / float64(n))
+		}
+		if d < limit {
+			limit = d.Truncate(time.Hour)
+		}
 	}
 	if to.Sub(from) > limit {
-		return to.Add(-limit), to, fmt.Sprintf("the %s family is read at most %s at a time", family, fmtDays(limit))
+		return to.Add(-limit), to, fmt.Sprintf("the %s family is read at most %s at a time over this scope (a narrower scope reads longer)", family, fmtDays(limit))
 	}
 	return from, to, ""
 }
@@ -216,7 +236,11 @@ func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.T
 	if err := checkPanel(&p, m); err != nil {
 		return composed{}, err
 	}
-	from, to, cut := composeWindow(p, m.Family, from, to, now)
+	n := 0
+	if sc.Kind == "instances" {
+		n = len(sc.Instances)
+	}
+	from, to, cut := composeWindow(p, m.Family, n, from, to, now)
 	if !from.Before(to) {
 		return composed{}, errors.New("the window is empty: from must be before to")
 	}

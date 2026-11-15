@@ -60,21 +60,30 @@ func TestComposeWindow(t *testing.T) {
 	old := composeFamilyRange
 	defer func() { composeFamilyRange = old }()
 	composeFamilyRange = map[string]time.Duration{"database": 31 * day}
-	f, to, cut := composeWindow(PanelSpec{}, "sessions", now.Add(-10*day), now.Add(-day), now)
+	f, to, cut := composeWindow(PanelSpec{}, "sessions", 0, now.Add(-10*day), now.Add(-day), now)
 	if !f.Equal(now.Add(-10*day)) || !to.Equal(now.Add(-day)) || cut != "" {
 		t.Errorf("a window inside the range: %v .. %v %q", f, to, cut)
 	}
-	f, to, cut = composeWindow(PanelSpec{}, "database", now.Add(-90*day), now.Add(5*day), now)
+	f, to, cut = composeWindow(PanelSpec{}, "database", 0, now.Add(-90*day), now.Add(5*day), now)
 	if !to.Equal(now) || !f.Equal(now.Add(-31*day)) || !strings.Contains(cut, "31 days") {
 		t.Errorf("a 90-day database window from a future end: %v .. %v %q", f, to, cut)
 	}
-	f, _, _ = composeWindow(PanelSpec{Window: "6h"}, "sessions", now.Add(-30*day), now, now)
+	f, _, _ = composeWindow(PanelSpec{Window: "6h"}, "sessions", 0, now.Add(-30*day), now, now)
 	if !f.Equal(now.Add(-6 * time.Hour)) {
 		t.Errorf("a pinned 6h window starts %v", f)
 	}
-	f, _, cut = composeWindow(PanelSpec{}, "sessions", now.Add(-200*day), now, now)
+	f, _, cut = composeWindow(PanelSpec{}, "nosuchfamily", 0, now.Add(-200*day), now, now)
 	if !f.Equal(now.Add(-composeMaxRange)) || cut == "" {
 		t.Errorf("past the longest range: %v %q", f, cut)
+	}
+	// a narrower scope reads proportionally longer: database's 31 days at 40 instances = 310 days at 4, held to 90
+	f, _, _ = composeWindow(PanelSpec{}, "database", 4, now.Add(-200*day), now, now)
+	if !f.Equal(now.Add(-composeMaxRange)) {
+		t.Errorf("4 instances of database: from %v, want the 90-day ceiling", f)
+	}
+	f, _, _ = composeWindow(PanelSpec{}, "database", 20, now.Add(-200*day), now, now)
+	if !f.Equal(now.Add(-62 * day)) {
+		t.Errorf("20 instances of database: from %v, want 62 days back (31 x 40 / 20)", f)
 	}
 }
 
