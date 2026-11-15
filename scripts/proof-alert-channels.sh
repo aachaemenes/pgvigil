@@ -517,19 +517,27 @@ endall() {
     q "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"proof\",\"rule_id\":$id}'::jsonb)->>'outcome'" >/dev/null
   done
 }
-# newfinding <critical threshold>: the previous rule ended, a new one (critical at the threshold) judged on a fresh sample
-# of 50; prints the one rule finding of the seeded instance
+# newfinding <critical threshold 5-10>: every live rule of the seeded instance ended, a new one on a metric of its own
+# (critical at the threshold) judged on a fresh sample; prints the one rule finding of the seeded instance. Each
+# threshold has its own metric: a finding's key turns its numbers into '#', so two rules on one metric make one key,
+# and the next row would see the last row's alert still open instead of a new one.
 newfinding() {
-  local k
+  local k m
+  case $1 in
+    5) m=sessions.idle_in_txn ;; 6) m=sessions.total ;; 7) m=sessions.active ;; 8) m=sessions.longest_active_secs ;;
+    9) m=sessions.longest_idle_txn_secs ;; 10) m=sessions.oldest_xmin_age ;; *) fail "newfinding: no metric for threshold $1" ;;
+  esac
   endall
-  RID=$(q "select pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"proof\",\"metric\":\"sessions.idle_in_txn\",\"op_dir\":\"above\",\"warning\":$(( $1 - 1 )),\"critical\":$1,\"for_minutes\":0,\"scope\":\"instance\",\"instance_name\":\"$INSTH\"}'::jsonb)->>'rule_id'")
-  [[ $RID =~ ^[0-9]+$ ]] || fail "the rule above $1 was not made: $RID"
+  RID=$(q "select pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"proof\",\"metric\":\"$m\",\"op_dir\":\"above\",\"warning\":$(( $1 - 1 )),\"critical\":$1,\"for_minutes\":0,\"scope\":\"instance\",\"instance_name\":\"$INSTH\"}'::jsonb)->>'rule_id'")
+  [[ $RID =~ ^[0-9]+$ ]] || fail "the rule on $m above $1 was not made: $RID"
+  # every metric of the six over 10: total 60, active 20, idle_in_txn 50, longest active 30 s, longest idle in
+  # transaction 40 s, oldest xmin age 70
   q "insert into pgvigil.activity_summary (instance_id, snapshot_at, total, active, idle, idle_in_txn, idle_in_txn_aborted, waiting_lock,
        active_client_wait, longest_active_secs, longest_idle_txn_secs, oldest_xmin_age, max_connections)
-     values ($HID, now() - interval '5 seconds', 60, 1, 5, 50, 0, 0, 0, 1, 1, 1, 100)" >/dev/null
+     values ($HID, now() - interval '5 seconds', 60, 20, 5, 50, 0, 0, 0, 30, 40, 70, 100)" >/dev/null
   q "select pgvigil.alert_rules_run(now())" >/dev/null
   k=$(q "select string_agg(finding_key, ',') from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and severity = 'critical'")
-  [[ $k =~ ^[0-9a-f]+$ ]] || fail "the rule above $1: its finding is '$k' (wanted one critical key)"
+  [[ $k =~ ^[0-9a-f]+$ ]] || fail "the rule on $m above $1: its finding is '$k' (wanted one critical key)"
   echo "$k"
 }
 newest_alert() { q "select outcome || '|' || coalesce(error, '') from pgvigil.alert_log where channel = '$1' and n_firing + n_repeat + n_resolved > 0 order by snapshot_at desc limit 1"; }
