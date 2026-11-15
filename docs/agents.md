@@ -35,7 +35,7 @@ CREATE ROLE pgvigil_agent_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader
 ```
 
 `pgvigil mcp` checks it before the first message, on its **session** user (a role set at connect, `options=-c role=`,
-changes nothing): a superuser, a member of any role but `pgvigil_reader` and `pgvigil_agent` (`pg_read_all_data`,
+changes nothing; a superuser that sets a reader's role is still refused): a superuser, a member of any role but `pgvigil_reader` and `pgvigil_agent` (`pg_read_all_data`,
 `pg_read_server_files`, `pg_monitor`, `pgvigil_alerter`, `pgvigil_collector`, `pgvigil_auth`, the database's owner), a
 login that may read the UI's password hashes, a login with CREATE in the schema or a write on a table, and a repository
 in recovery (a standby: the door writes its requests' records and listens for new requests on the primary) are each
@@ -53,8 +53,8 @@ With `pgvigil_agent`, `pgvigil mcp` serves seven tools beside the reader's nine:
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `list_investigations` | `state`, `kind`, `limit` | the requests, newest first, with their state on the repository's clock (open, claimed, reported, closed, expired) |
-| `wait_for_investigations` | `known`, `timeout_s` (1..25) | waits until an open request not in `known` exists, then answers every open one (`timed_out` when none came); pass the ids back as `known` |
+| `list_investigations` | `state`, `kind`, `limit` | the newest requests (`limit`), listed oldest first, with their state on the repository's clock (open, claimed, reported, closed, expired) |
+| `wait_for_investigations` | `known`, `timeout_s` (1..25) | waits until an open request not in `known` exists, then answers every open one and `known` (`timed_out` when none came); pass `known` back as it came: its keys `<id>:<claims>` make a request that opened again after a lapsed or released claim new to the wait (a bare id matches its request whatever it went through) |
 | `claim_investigation` | `id`, `agent` | claims an open request; answers the `claim_id` (shown once: the repository keeps only its hash) and the **brief** |
 | `renew_investigation` | `id`, `claim_id` | moves the lease 15 minutes on, never past the request's expiry |
 | `run_select` | `id`, `claim_id`, `sql` | runs one read-only SELECT: 15 s, 1,000 rows, 1 MB |
@@ -66,15 +66,27 @@ read tools to call first, by the finding's area: `instance_findings` always, the
 `plan_findings`, or `storage_forecast` where the finding's name points there), the earlier reports of the same finding
 (each marked unreviewed), the budget (30 minutes, 40 tool calls) and the rules below; 24,000 characters at most.
 
-A verdict is `real`, `false_positive` or `needs_person` for a finding, `answered` for a question. The summary is at most
-4,000 characters, the body 8,000, the evidence 50 entries `{tool, arguments, key_numbers, basis}` (32 KB), `queries_run`
-20 statements. An answered question's `sql` must be one SELECT: the door prepares the statement Run would run (it is
-parsed and planned, never run) and refuses anything else, "the sql must be one SELECT".
+A verdict is `real`, `false_positive` or `needs_person` for a finding, `answered` (or `needs_person`, when it cannot
+answer) for a question; another is refused. The summary is at most 4,000 characters, the body 8,000, the evidence 50
+entries `{tool, arguments, key_numbers, basis}` (`tool` a name, `arguments` an object, `basis` verified or inferred;
+32 KB), `queries_run` 20 statements' texts; an entry of another shape is refused with its place. Only a question's answer
+carries `sql` (a finding's suggested statement goes in the body), and it must be one SELECT: the door prepares the
+statement Run would run on its login (parsed and checked against the schema, never planned or run) and refuses
+anything else, "the sql must be one SELECT".
+
+Every call on the agent's read-write connection, and every `run_select`, has 20 s in pgvigil itself (the statement
+timeout is the server's, which a silent network never delivers): past it the call answers "no answer from the
+repository in 20 s" and the next call opens a new connection. A connection that breaks is opened again once for a read,
+and for a write only when the write never reached the server: a write whose answer was lost after it was sent may have
+committed, so it is **never sent twice** - the reply says its outcome is unknown and `list_investigations` shows the
+request's state (a claim whose `claim_id` was lost lapses in 15 minutes). A `run_select` whose outcome write is lost
+still answers its rows, with a `record` line saying the outcome was not written.
 
 ### run_select
 
-The statement runs on a connection of its own, opened and closed for the one call (an advisory lock or a setting never
-outlives it), through the custom reports' runner: pgx's describe-exec protocol (a connection string's
+The statement runs on a connection of its own (`application_name` `pgvigil-mcp-select`; serve's Run is
+`pgvigil-ask-run`), opened and closed for the one call (an advisory lock or a setting never outlives it), through the
+custom reports' runner, its text sent as written (no named-argument rewrite: `@@` and `@>` stay operators): pgx's describe-exec protocol (a connection string's
 `default_query_exec_mode=simple_protocol` cannot send several statements), `BEGIN READ ONLY` with a 15 s statement
 timeout and a 2 s lock timeout, the login's rule asked inside the transaction first. The text is the FROM of one SELECT -
 `SELECT * FROM ( <sql> ) AS q LIMIT 1001` - so a second statement, an INSERT, an UPDATE, a DELETE or a data-modifying
@@ -121,12 +133,15 @@ report". To run it unattended, give a headless run the server and nothing else:
 
 ```sh
 claude -p "Wait for a pgvigil investigation request (wait_for_investigations), claim it, follow the brief's next_calls and rules, and report." \
-  --mcp-config pgvigil-mcp.json --strict-mcp-config --allowedTools 'mcp__pgvigil__*' --output-format json
+  --mcp-config pgvigil-mcp.json --strict-mcp-config --allowedTools 'mcp__pgvigil__*' \
+  --disallowedTools 'Bash,Read,Glob,Grep,Edit,Write,NotebookEdit,WebFetch,WebSearch' --output-format json
 ```
 
 with `pgvigil-mcp.json` holding `{"mcpServers": {"pgvigil": {"command": "/usr/local/bin/pgvigil", "args": ["mcp", "-dsn",
-"file:/home/agent/.config/pgvigil/agent.dsn"]}}}`. `--strict-mcp-config` and `--allowedTools` keep the run to pgvigil's
-tools. A loop or a timer the operator owns runs it again; pgvigil starts nothing.
+"file:/home/agent/.config/pgvigil/agent.dsn"]}}}`. `--strict-mcp-config` loads pgvigil's server alone and
+`--allowedTools` lets its tools run unasked; `--allowedTools` does not take Claude Code's own tools away, so
+`--disallowedTools` denies the ones that read files, run commands or fetch pages, and the connection string's file
+stays outside the folder the run works in. A loop or a timer the operator owns runs it again; pgvigil starts nothing.
 
 **Kiro** reads the same shape from `.kiro/settings/mcp.json` (`mcpServers` → `command`, `args`, `env`). Not proven:
 its file's shape is from Kiro's documentation, no run.
@@ -146,7 +161,8 @@ The brief carries these, and an agent's own instructions should too (adapted fro
 - Read only: the door has no tool that changes a server; `run_select` runs one SELECT.
 - Within the budget (30 minutes, 40 tool calls) report what you have; if you cannot conclude, report `needs_person` and
   say what a person should look at.
-- A finding's verdict: real, false_positive or needs_person. A question's: answered, with its one SELECT in `sql`.
+- A finding's verdict: real, false_positive or needs_person. A question's: answered, with its one SELECT in `sql`
+  (needs_person when it cannot answer).
 
 ## Limits
 
@@ -161,12 +177,16 @@ The brief carries these, and an agent's own instructions should too (adapted fro
 - A wait holds the stdio server for up to 25 s: a renew or a cancel sent meanwhile is answered after it (well inside the
   15-minute lease). A pooler that drops LISTEN costs the wait its wake-up, not its answer: it looks again every 5 s.
 - A report is the agent's own: pgvigil checks its shape, never its truth. Links in it are not followed.
+- A request made through serve waits at most 2 s for the request cap's lock (requests hold it for milliseconds); past
+  that it answers 500 with the server's words.
 
 ## The proofs
 
 `scripts/proof-agent.sh` drives the door with a scripted MCP client (`scripts/agent-client.py`, no model) against a demo
 repository and three collected instances: the switch off (A), the logins (R, the standby among them), the request (Q),
-the claim and its lease, the out-of-order commits and the dropped listener (C), the brief (B), run_select's refusals and
-caps (S), the record (J), the report (P), the ask and its Run (K), expiry and purge (E), the masks on PostgreSQL and
-SQL Server (M) and the pages in a headless browser with axe-core (U). Not proven by it: a real agent's run (its own job,
-with Claude Code), Kiro, the cloud agents, CQ's queue mode (not in this tree).
+the claim and its lease, the out-of-order commits, the dropped listener and a request that opens again (C), the brief
+(B), run_select's refusals, caps and read-only transaction (S), the record (J), the report and its shapes (P), the ask
+and its Run (K), expiry and purge (E), the masks on PostgreSQL and SQL Server (M) and the pages in a headless browser
+with axe-core (U). A wire proxy (`scripts/proof-pgproxy.py`) breaks calls there: a write whose answer is lost after its
+commit is not sent again (C, S) and a statement that gets no answer ends in 20 s (S). Not proven by it: a real agent's
+run (its own job, with Claude Code), Kiro, the cloud agents, the request queue's mode (not in this tree).

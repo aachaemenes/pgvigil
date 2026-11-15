@@ -21,4 +21,11 @@ func TestWrapSelect(t *testing.T) {
 	if _, err := WrapSelect(strings.Repeat("x", MaxSelectText+1), 5); err == nil {
 		t.Fatal("an over-long statement was taken")
 	}
+	// the cap counts characters, as the report function's length() does: 20,000 two-byte characters pass
+	if _, err := WrapSelect("SELECT '"+strings.Repeat("é", MaxSelectText-9)+"'", 5); err != nil {
+		t.Fatalf("20,000 characters of two bytes each: %v", err)
+	}
+	if _, err := WrapSelect("SELECT '"+strings.Repeat("é", MaxSelectText-8)+"'", 5); err == nil {
+		t.Fatal("20,001 characters were taken")
+	}
 }

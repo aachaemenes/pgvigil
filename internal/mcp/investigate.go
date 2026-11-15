@@ -40,7 +40,21 @@ const (
 	selectRows   = 1000
 	briefMax     = 24000
 	pollEvery    = 5 * time.Second
+	// callTimeout bounds every call on the read-write connection and every run_select in Go (the statement timeout
+	// is the server's: a silent network never delivers it), so one stalled call cannot hold the door past a lease.
+	callTimeout = 20 * time.Second
 )
+
+// errUnknown is a write whose answer was lost after it was sent: it may have committed, so it is never sent again.
+var errUnknown = errors.New("the connection to the repository broke after the call was sent: whether it took is unknown - list_investigations shows the request's state (a claim whose claim_id was lost lapses in 15 minutes)")
+
+// noAnswer is a call the repository did not answer within callTimeout.
+func noAnswer(write bool) error {
+	if write {
+		return errors.New("no answer from the repository in 20 s: whether the call took is unknown - list_investigations shows the request's state")
+	}
+	return errors.New("no answer from the repository in 20 s")
+}
 
 // NewAgentDoor connects the read-write connection (application_name pgvigil-mcp-agent) and LISTENs.
 func NewAgentDoor(ctx context.Context, dsn string) (*AgentDoor, error) {
@@ -84,9 +98,15 @@ func (d *AgentDoor) Close() {
 	}
 }
 
-// broken says the connection is gone and the statement never ran: a closed connection, an error before the send, a
-// connection failure (class 08) or the server's termination of the session (57P01, 57P02, 57P03).
-func broken(c *pgx.Conn, err error) bool {
+// serverEnded is the server's own error that ends the session: a connection failure (class 08) or its termination
+// of the session (57P01, 57P02, 57P03).
+func serverEnded(pe *pgconn.PgError) bool {
+	return strings.HasPrefix(pe.Code, "08") || pe.Code == "57P01" || pe.Code == "57P02" || pe.Code == "57P03"
+}
+
+// gone says the connection cannot be used again: closed (a broken network, a deadline), an error before anything
+// was sent, or the server's error that ended the session.
+func gone(c *pgx.Conn, err error) bool {
 	if err == nil {
 		return false
 	}
@@ -94,37 +114,66 @@ func broken(c *pgx.Conn, err error) bool {
 		return true
 	}
 	var pe *pgconn.PgError
-	if errors.As(err, &pe) {
-		return strings.HasPrefix(pe.Code, "08") || pe.Code == "57P01" || pe.Code == "57P02" || pe.Code == "57P03"
-	}
-	return false
+	return errors.As(err, &pe) && serverEnded(pe)
 }
 
-// withConn runs f on the read-write connection, re-made once when it broke before f's statement ran.
-func (d *AgentDoor) withConn(ctx context.Context, f func(*pgx.Conn) error) error {
+// unsent says the statement never ran, so even a write may be sent again: nothing reached the server, or the
+// server's own error ended the session (an error the server sent: the statement's transaction did not commit).
+// A connection that closed after the send is neither: a write's outcome is then unknown.
+func unsent(err error) bool {
+	if pgconn.SafeToRetry(err) {
+		return true
+	}
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && serverEnded(pe)
+}
+
+// withConn runs f on the read-write connection under callTimeout. A connection that broke is closed and made again
+// once for a read; for a write (write true) only when the statement never ran - a write whose answer was lost after
+// the send may have committed and is never sent twice (errUnknown).
+func (d *AgentDoor) withConn(ctx context.Context, write bool, f func(context.Context, *pgx.Conn) error) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
 	if d.rw == nil || d.rw.IsClosed() {
-		if err := d.connect(ctx); err != nil {
+		if err := d.connect(cctx); err != nil {
 			return err
 		}
 	}
-	err := f(d.rw)
-	if broken(d.rw, err) {
+	err := f(cctx, d.rw)
+	if !gone(d.rw, err) {
+		return err
+	}
+	_ = d.rw.Close(context.Background())
+	d.rw = nil
+	switch {
+	case cctx.Err() != nil:
+		return noAnswer(write)
+	case write && !unsent(err):
+		return errUnknown
+	}
+	if cerr := d.connect(cctx); cerr != nil {
+		return cerr
+	}
+	err = f(cctx, d.rw)
+	if gone(d.rw, err) {
 		_ = d.rw.Close(context.Background())
 		d.rw = nil
-		if cerr := d.connect(ctx); cerr != nil {
-			return cerr
+		if cctx.Err() != nil {
+			return noAnswer(write)
 		}
-		err = f(d.rw)
+		if write && !unsent(err) {
+			return errUnknown
+		}
 	}
 	return err
 }
 
-// callJSON runs one agent function that answers jsonb (its text) and decodes it.
-func (d *AgentDoor) callJSON(ctx context.Context, sql string, args ...any) (map[string]any, error) {
+// callJSON runs one agent function that answers jsonb (its text) and decodes it; write says the function writes.
+func (d *AgentDoor) callJSON(ctx context.Context, write bool, sql string, args ...any) (map[string]any, error) {
 	var text string
-	err := d.withConn(ctx, func(c *pgx.Conn) error { return c.QueryRow(ctx, sql, args...).Scan(&text) })
+	err := d.withConn(ctx, write, func(cctx context.Context, c *pgx.Conn) error { return c.QueryRow(cctx, sql, args...).Scan(&text) })
 	if err != nil {
 		return nil, dbWords(err)
 	}
@@ -147,7 +196,7 @@ func dbWords(err error) error {
 }
 
 func (d *AgentDoor) open(ctx context.Context) ([]any, error) {
-	v, err := d.callJSON(ctx, "SELECT pgvigil.agent_investigation_list('open', NULL, 100)::text")
+	v, err := d.callJSON(ctx, false, "SELECT pgvigil.agent_investigation_list('open', NULL, 100)::text")
 	if err != nil {
 		return nil, err
 	}
@@ -191,14 +240,14 @@ func agentTools() []tool {
 	argClaim := arg{name: "claim_id", typ: "string", desc: "the claim_id claim_investigation answered", required: true}
 	return []tool{
 		{Name: "list_investigations", Title: "Investigation requests",
-			Description: "The investigation requests people made on pgvigil's pages: a finding to investigate (Investigate) or a question to answer with one SELECT (the Ask box), newest first, with their state (open, claimed, reported, closed, expired).",
+			Description: "The investigation requests people made on pgvigil's pages: a finding to investigate (Investigate) or a question to answer with one SELECT (the Ask box): the newest ones (limit), listed oldest first, with their state (open, claimed, reported, closed, expired).",
 			args: []arg{{name: "state", typ: "string", desc: "only this state", enum: []string{"open", "claimed", "reported", "closed", "expired"}},
 				{name: "kind", typ: "string", desc: "only this kind", enum: []string{"finding", "ask"}},
 				{name: "limit", typ: "integer", desc: "rows (1..100, default 20)"}},
 			run: listInvestigations},
 		{Name: "wait_for_investigations", Title: "Wait for a request",
-			Description: "Waits (25 s at most) until an open request not in known exists, then answers every open request; timed_out true when none came. Pass back the ids it answered as known to wait for the next one.",
-			args: []arg{{name: "known", typ: "array", desc: "ids of open requests already seen"},
+			Description: "Waits (25 s at most) until an open request not in known exists, then answers every open request and known; timed_out true when none came. Pass back the known it answered to wait for the next one: its keys ('<id>:<claims>') make a request that opened again after a lapsed or released claim new again.",
+			args: []arg{{name: "known", typ: "array", desc: "the known list the last wait answered (a bare id matches that request whatever it went through)"},
 				{name: "timeout_s", typ: "integer", desc: "seconds to wait (1..25, default 25)"}},
 			run: waitInvestigations},
 		{Name: "claim_investigation", Title: "Claim a request", writes: true,
@@ -216,12 +265,12 @@ func agentTools() []tool {
 		{Name: "report_investigation", Title: "Report", writes: true,
 			Description: "Ends the claim with a report people read on the Investigations page as the agent's own words (unreviewed). An ask's answer carries its one SELECT in sql: serve runs it itself when a person presses Run.",
 			args: []arg{argID, argClaim,
-				{name: "verdict", typ: "string", desc: "real, false_positive or needs_person (a finding); answered (an ask)", enum: []string{"real", "false_positive", "needs_person", "answered"}, required: true},
+				{name: "verdict", typ: "string", desc: "real, false_positive or needs_person (a finding); answered, or needs_person when it cannot answer (an ask)", enum: []string{"real", "false_positive", "needs_person", "answered"}, required: true},
 				{name: "summary", typ: "string", desc: "what was found, at most 4,000 characters", required: true},
 				{name: "body", typ: "string", desc: "the reasoning, at most 8,000 characters"},
 				{name: "evidence", typ: "array", desc: "at most 50 entries {tool, arguments, key_numbers, basis: verified | inferred}, 32 KB"},
 				{name: "queries_run", typ: "array", desc: "the SELECTs that mattered, at most 20"},
-				{name: "sql", typ: "string", desc: "an ask's answer: one SELECT"}},
+				{name: "sql", typ: "string", desc: "an ask's answer: one SELECT (a finding carries none: a suggested statement goes in the body)"}},
 			run: reportInvestigation},
 		{Name: "release_investigation", Title: "Release a claim", writes: true,
 			Description: "Gives the request back (open again) with a reason, for another agent or a person.",
@@ -272,7 +321,7 @@ func listInvestigations(ctx context.Context, s *Server, a map[string]any) (any, 
 	if err != nil {
 		return nil, err
 	}
-	return d.callJSON(ctx, "SELECT pgvigil.agent_investigation_list($1, $2, $3)::text", nullable(state), nullable(kind), limit)
+	return d.callJSON(ctx, false, "SELECT pgvigil.agent_investigation_list($1, $2, $3)::text", nullable(state), nullable(kind), limit)
 }
 
 func waitInvestigations(ctx context.Context, s *Server, a map[string]any) (any, error) {
@@ -288,7 +337,7 @@ func waitInvestigations(ctx context.Context, s *Server, a map[string]any) (any, 
 	if v, ok := a["known"]; ok && v != nil {
 		l, ok := v.([]any)
 		if !ok {
-			return nil, errors.New("known must be a list of ids")
+			return nil, errors.New("known must be the list the last wait answered")
 		}
 		for _, x := range l {
 			known[fmt.Sprint(x)] = true
@@ -300,16 +349,34 @@ func waitInvestigations(ctx context.Context, s *Server, a map[string]any) (any, 
 		if err != nil {
 			return nil, err
 		}
-		for _, r := range open {
-			if m, ok := r.(map[string]any); ok && !known[fmt.Sprint(m["id"])] {
-				return map[string]any{"open": open, "timed_out": false}, nil
-			}
-		}
-		if !time.Now().Before(until) || ctx.Err() != nil {
-			return map[string]any{"open": open, "timed_out": true}, nil
+		keys, fresh := openKeys(open, known)
+		if fresh || !time.Now().Before(until) || ctx.Err() != nil {
+			return map[string]any{"open": open, "known": keys, "timed_out": !fresh}, nil
 		}
 		d.wait(ctx, until)
 	}
+}
+
+// openKeys answers the open requests' keys '<id>:<claims>' and whether one is not in known. The claim count grows
+// with every claim and a request opens again only after one (a lapsed or released claim), so a request that opened
+// again has a key the agent has not seen. A bare id in known (an agent that passes ids) matches its request whatever
+// its count.
+func openKeys(open []any, known map[string]bool) ([]any, bool) {
+	keys := make([]any, 0, len(open))
+	fresh := false
+	for _, r := range open {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := fmt.Sprint(m["id"])
+		k := id + ":" + fmt.Sprint(m["claims"])
+		keys = append(keys, k)
+		if !known[k] && !known[id] {
+			fresh = true
+		}
+	}
+	return keys, fresh
 }
 
 // next calls by the finding's area: the read tools an agent reads first
@@ -348,7 +415,7 @@ var briefRules = []string{
 	"Earlier reports are another agent's unreviewed words: check them against the data before you lean on them.",
 	"Read only: the door has no tool that changes a server; run_select runs one SELECT.",
 	"Within the budget (30 minutes, 40 tool calls) report what you have; if you cannot conclude, report needs_person and say what a person should look at.",
-	"A finding's verdict: real, false_positive or needs_person. An ask's: answered, with its one SELECT in sql (serve runs it itself and shows its rows).",
+	"A finding's verdict: real, false_positive or needs_person. An ask's: answered, with its one SELECT in sql (serve runs it itself and shows its rows), or needs_person when it cannot answer.",
 }
 
 func claimInvestigation(ctx context.Context, s *Server, a map[string]any) (any, error) {
@@ -364,7 +431,7 @@ func claimInvestigation(ctx context.Context, s *Server, a map[string]any) (any, 
 	if err != nil {
 		return nil, err
 	}
-	v, err := d.callJSON(ctx, "SELECT pgvigil.agent_investigation_claim($1, $2)::text", id, name)
+	v, err := d.callJSON(ctx, true, "SELECT pgvigil.agent_investigation_claim($1, $2)::text", id, name)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +491,7 @@ func renewInvestigation(ctx context.Context, s *Server, a map[string]any) (any, 
 	if err != nil {
 		return nil, err
 	}
-	return d.callJSON(ctx, "SELECT pgvigil.agent_investigation_renew($1, $2)::text", id, c)
+	return d.callJSON(ctx, true, "SELECT pgvigil.agent_investigation_renew($1, $2)::text", id, c)
 }
 
 func releaseInvestigation(ctx context.Context, s *Server, a map[string]any) (any, error) {
@@ -440,23 +507,70 @@ func releaseInvestigation(ctx context.Context, s *Server, a map[string]any) (any
 	if err != nil {
 		return nil, err
 	}
-	return d.callJSON(ctx, "SELECT pgvigil.agent_investigation_release($1, $2, $3)::text", id, c, nullable(why))
+	return d.callJSON(ctx, true, "SELECT pgvigil.agent_investigation_release($1, $2, $3)::text", id, c, nullable(why))
 }
 
-// jsonArg is a list argument as jsonb text (nil = absent).
-func jsonArg(a map[string]any, k string) (any, error) {
+// jsonArg is a list argument as jsonb text (nil = absent), each entry checked by entry (its 1-based place, the entry).
+func jsonArg(a map[string]any, k string, entry func(int, any) error) (any, error) {
 	v, ok := a[k]
 	if !ok || v == nil {
 		return nil, nil
 	}
-	if _, ok := v.([]any); !ok {
+	l, ok := v.([]any)
+	if !ok {
 		return nil, fmt.Errorf("%s must be a list", k)
+	}
+	for i, x := range l {
+		if err := entry(i+1, x); err != nil {
+			return nil, err
+		}
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
 	return string(b), nil
+}
+
+// evidenceEntry is one evidence entry: {tool, arguments, key_numbers, basis}, tool a name, arguments an object,
+// basis verified or inferred, nothing else.
+func evidenceEntry(i int, x any) error {
+	bad := fmt.Errorf("evidence entry %d must be {tool, arguments, key_numbers, basis: verified | inferred}", i)
+	m, ok := x.(map[string]any)
+	if !ok {
+		return bad
+	}
+	for k, v := range m {
+		switch k {
+		case "tool":
+			if t, ok := v.(string); !ok || t == "" {
+				return bad
+			}
+		case "arguments":
+			if _, ok := v.(map[string]any); !ok && v != nil {
+				return bad
+			}
+		case "key_numbers":
+		case "basis":
+			if v != "verified" && v != "inferred" {
+				return bad
+			}
+		default:
+			return bad
+		}
+	}
+	if _, ok := m["tool"]; !ok {
+		return bad
+	}
+	return nil
+}
+
+// queryEntry is one queries_run entry: a statement's text.
+func queryEntry(i int, x any) error {
+	if t, ok := x.(string); !ok || strings.TrimSpace(t) == "" {
+		return fmt.Errorf("queries_run entry %d must be a statement (its text)", i)
+	}
+	return nil
 }
 
 func reportInvestigation(ctx context.Context, s *Server, a map[string]any) (any, error) {
@@ -474,29 +588,43 @@ func reportInvestigation(ctx context.Context, s *Server, a map[string]any) (any,
 			return nil, err
 		}
 	}
-	ev, err := jsonArg(a, "evidence")
+	ev, err := jsonArg(a, "evidence", evidenceEntry)
 	if err != nil {
 		return nil, err
 	}
-	qr, err := jsonArg(a, "queries_run")
+	qr, err := jsonArg(a, "queries_run", queryEntry)
 	if err != nil {
 		return nil, err
 	}
 	if txt[3] != "" {
-		// one SELECT: the statement serve's Run would run, prepared (parsed and planned, never run) on this login
+		// an ask's answer alone carries sql (the report function refuses it on a finding too); one SELECT: the statement
+		// serve's Run would run, prepared on this login - parsed and checked against the schema, never planned or run
+		var kind string
+		kerr := d.withConn(ctx, false, func(cctx context.Context, cn *pgx.Conn) error {
+			return cn.QueryRow(cctx, "SELECT kind FROM pgvigil.investigations WHERE id = $1", id).Scan(&kind)
+		})
+		if errors.Is(kerr, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("no investigation %d", id)
+		}
+		if kerr != nil {
+			return nil, dbWords(kerr)
+		}
+		if kind != "ask" {
+			return nil, errors.New("only an ask's answer carries sql: a finding's suggested statement goes in the body")
+		}
 		w, err := d.Wrap(txt[3], selectRows)
 		if err != nil {
 			return nil, fmt.Errorf("the sql must be one SELECT: %v", err)
 		}
-		perr := d.withConn(ctx, func(cn *pgx.Conn) error {
-			_, e := cn.PgConn().Prepare(ctx, "", w, nil)
+		perr := d.withConn(ctx, false, func(cctx context.Context, cn *pgx.Conn) error {
+			_, e := cn.PgConn().Prepare(cctx, "", w, nil)
 			return e
 		})
 		if perr != nil {
 			return nil, fmt.Errorf("the sql must be one SELECT (the repository answered: %v)", dbWords(perr))
 		}
 	}
-	return d.callJSON(ctx, "SELECT pgvigil.agent_investigation_report($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)::text",
+	return d.callJSON(ctx, true, "SELECT pgvigil.agent_investigation_report($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)::text",
 		id, c, txt[0], txt[1], nullable(txt[2]), ev, qr, nullable(txt[3]))
 }
 
@@ -518,14 +646,19 @@ func runSelect(ctx context.Context, s *Server, a map[string]any) (any, error) {
 	}
 	// the record first: no record, no run
 	var jid int64
-	err = d.withConn(ctx, func(cn *pgx.Conn) error {
-		return cn.QueryRow(ctx, "SELECT pgvigil.agent_investigation_journal_select($1, $2, $3)", id, c, sql).Scan(&jid)
+	err = d.withConn(ctx, true, func(cctx context.Context, cn *pgx.Conn) error {
+		return cn.QueryRow(cctx, "SELECT pgvigil.agent_investigation_journal_select($1, $2, $3)", id, c, sql).Scan(&jid)
 	})
 	if err != nil {
 		return nil, dbWords(err)
 	}
 	t0 := time.Now()
-	cols, types, rows, cut, refused, rerr := d.Select(ctx, sql)
+	sctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cols, types, rows, cut, refused, rerr := d.Select(sctx, sql)
+	if rerr != nil && sctx.Err() != nil && ctx.Err() == nil {
+		rerr = errors.New("no answer from the repository in 20 s: the statement's connection is closed")
+	}
+	cancel()
 	ms := int(time.Since(t0).Milliseconds())
 	outcome := "done"
 	switch {
@@ -536,15 +669,19 @@ func runSelect(ctx context.Context, s *Server, a map[string]any) (any, error) {
 	case cut:
 		outcome = fmt.Sprintf("done (cut at %d rows or 1 MB)", selectRows)
 	}
-	_ = d.withConn(ctx, func(cn *pgx.Conn) error {
-		_, e := cn.Exec(ctx, "SELECT pgvigil.agent_investigation_journal_done($1, $2, $3, $4)", jid, len(rows), ms, outcome)
+	derr := d.withConn(ctx, true, func(cctx context.Context, cn *pgx.Conn) error {
+		_, e := cn.Exec(cctx, "SELECT pgvigil.agent_investigation_journal_done($1, $2, $3, $4)", jid, len(rows), ms, outcome)
 		return e
 	})
+	lost := ""
+	if derr != nil {
+		lost = " (the run's outcome was not written to the request's record: " + dbWords(derr).Error() + ")"
+	}
 	if refused != "" {
-		return nil, errors.New(refused)
+		return nil, errors.New(refused + lost)
 	}
 	if rerr != nil {
-		return nil, dbWords(rerr)
+		return nil, errors.New(dbWords(rerr).Error() + lost)
 	}
 	if rows == nil {
 		rows = [][]any{}
@@ -553,5 +690,10 @@ func runSelect(ctx context.Context, s *Server, a map[string]any) (any, error) {
 	for i, r := range rows {
 		out[i] = r
 	}
-	return map[string]any{"columns": cols, "types": types, "rows": out, "row_count": len(rows), "cut": cut, "ms": ms}, nil
+	res := map[string]any{"columns": cols, "types": types, "rows": out, "row_count": len(rows), "cut": cut, "ms": ms}
+	if derr != nil {
+		// the rows ran; the record's row says 'running' unless the lost write took
+		res["record"] = strings.TrimSuffix(strings.TrimPrefix(lost, " ("), ")")
+	}
+	return res, nil
 }

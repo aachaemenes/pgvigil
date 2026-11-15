@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -26,7 +27,7 @@ type SelectResult struct {
 	Cut     bool     `json:"cut"` // more rows (or bytes) than the cap: the first ones kept
 }
 
-// MaxSelectText is the longest statement either door takes.
+// MaxSelectText is the longest statement either door takes, in characters.
 const MaxSelectText = 20000
 
 // WrapSelect is the statement the doors run: the text, its trailing semicolons and blanks dropped, as the FROM of one
@@ -40,15 +41,16 @@ func WrapSelect(sql string, maxRows int) (string, error) {
 	if t == "" {
 		return "", errors.New("the statement is empty")
 	}
-	if len(t) > MaxSelectText {
+	if utf8.RuneCountInString(t) > MaxSelectText {
 		return "", errors.New("the statement is over 20,000 characters")
 	}
 	return "SELECT * FROM (\n" + t + "\n) AS q LIMIT " + strconv.Itoa(maxRows+1), nil
 }
 
 // StoreSelect runs one wrapped SELECT read-only as cfg's login under refusal (AgentStoreRefusal for the agent's login;
-// the reports door's rule for serve's Run): refused is the rule's words (nothing ran), err the server's.
-func StoreSelect(ctx context.Context, cfg *pgx.ConnConfig, sql string, timeout time.Duration, maxRows, maxBytes int,
+// the reports door's rule for serve's Run), its session named app: refused is the rule's words (nothing ran), err the
+// server's.
+func StoreSelect(ctx context.Context, cfg *pgx.ConnConfig, app, sql string, timeout time.Duration, maxRows, maxBytes int,
 	refusal func(context.Context, pgx.Tx) (string, error)) (res SelectResult, refused string, err error) {
 	stmt, err := WrapSelect(sql, maxRows)
 	if err != nil {
@@ -57,7 +59,7 @@ func StoreSelect(ctx context.Context, cfg *pgx.ConnConfig, sql string, timeout t
 	if refusal == nil {
 		return res, "", errors.New("no login rule: nothing was run")
 	}
-	sets, why, err := runPGSized(ctx, cfg, stmt, nil, timeout, maxRows, maxBytes, refusal)
+	sets, why, err := runPGSized(ctx, cfg, app, stmt, nil, timeout, maxRows, maxBytes, refusal)
 	if err != nil || why != "" {
 		return res, why, err
 	}

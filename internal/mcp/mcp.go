@@ -275,6 +275,9 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 	}
 	t, ok := findTool(s.served(), p.Name)
 	if !ok {
+		if s.agent != nil {
+			return nil, &rpcError{codeInvalidParams, fmt.Sprintf("unknown tool %q: pgvigil mcp serves only the tools tools/list names; the agent door's writes are its requests' own records and run_select runs one read-only SELECT - no tool changes, cancels or terminates anything on a monitored server", p.Name)}
+		}
 		return nil, &rpcError{codeInvalidParams, fmt.Sprintf("unknown tool %q: pgvigil mcp is read-only; it serves only the tools tools/list names and has no tool that writes, cancels, terminates or runs SQL", p.Name)}
 	}
 	args := map[string]any{}

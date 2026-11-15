@@ -1,9 +1,14 @@
 package mcp
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The agent door's tools appear only with the door: the reader's server lists its nine, the agent's sixteen, and the
@@ -58,5 +63,61 @@ func TestNextCalls(t *testing.T) {
 		if got := tools(nextCalls(c.req)); got != c.want {
 			t.Errorf("%v: %s, want %s", c.req, got, c.want)
 		}
+	}
+}
+
+// The wait's keys: '<id>:<claims>' for each open request; a request whose claim count grew (it opened again after a
+// lapsed or released claim) is new; a bare id in known matches its request at any count.
+func TestOpenKeys(t *testing.T) {
+	open := []any{map[string]any{"id": json.Number("7"), "claims": json.Number("0")}, map[string]any{"id": json.Number("9"), "claims": json.Number("1")}}
+	keys, fresh := openKeys(open, map[string]bool{})
+	if got, _ := json.Marshal(keys); string(got) != `["7:0","9:1"]` || !fresh {
+		t.Fatalf("nothing known: %s, fresh %v", got, fresh)
+	}
+	if _, fresh := openKeys(open, map[string]bool{"7:0": true, "9:1": true}); fresh {
+		t.Fatal("both known: fresh")
+	}
+	if _, fresh := openKeys(open, map[string]bool{"7:0": true, "9:0": true}); !fresh {
+		t.Fatal("9 opened again (claims 0 -> 1): not fresh")
+	}
+	if _, fresh := openKeys(open, map[string]bool{"7": true, "9": true}); fresh {
+		t.Fatal("bare ids: fresh")
+	}
+	if keys, fresh := openKeys(nil, map[string]bool{"7:0": true}); fresh || len(keys) != 0 {
+		t.Fatalf("no open request: %v, fresh %v", keys, fresh)
+	}
+}
+
+type sentNothing struct{}
+
+func (sentNothing) Error() string     { return "dial: nothing sent" }
+func (sentNothing) SafeToRetry() bool { return true }
+
+// The retry rule: a write is sent again only when it never ran (nothing sent, or the server's own error ended the
+// session); a connection that closed after the send leaves a write's outcome unknown.
+func TestUnsent(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want bool
+	}{
+		{sentNothing{}, true},
+		{&pgconn.PgError{Code: "57P01", Message: "terminating connection due to administrator command"}, true},
+		{&pgconn.PgError{Code: "08006", Message: "connection failure"}, true},
+		{&pgconn.PgError{Code: "40001", Message: "could not serialize"}, false},
+		{errors.New("unexpected EOF"), false},
+		{context.DeadlineExceeded, false},
+	} {
+		if got := unsent(c.err); got != c.want {
+			t.Errorf("unsent(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+// An unknown tool on the agent's door is not told the server has no tool that writes or runs SQL.
+func TestUnknownToolWithTheDoor(t *testing.T) {
+	a := New(nil, "test").WithAgent(&AgentDoor{})
+	_, e := a.call(context.Background(), json.RawMessage(`{"name":"drop_everything","arguments":{}}`))
+	if e == nil || strings.Contains(e.Message, "read-only") || !strings.Contains(e.Message, "run_select runs one read-only SELECT") {
+		t.Fatalf("the agent door's unknown tool: %+v", e)
 	}
 }

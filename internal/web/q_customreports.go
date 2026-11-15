@@ -654,18 +654,20 @@ func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
 // refusal is the check asked inside the run's transaction before the statement: nil = pgRefusal (an instance's login);
 // a store run passes the store's own (storeRefusal: IN ROLE pgvigil_reader alone, serve's own repository).
 func runPG(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
-	return runPGSized(ctx, cfg, stmt, args, timeout, maxRows, 0, refusal)
+	return runPGSized(ctx, cfg, "pgvigil-report", stmt, args, timeout, maxRows, 0, refusal)
 }
 
-// runPGSized is runPG with its own byte cap (0 = maxRunBytes): the agent door's run_select keeps 1 MB.
-func runPGSized(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows, maxBytes int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
+// runPGSized is runPG with its session's name and its own byte cap (0 = maxRunBytes): the agent door's run_select keeps
+// 1 MB. args nil = a statement with no named arguments: its text is sent as it is (a nil pgx.NamedArgs would still
+// rewrite every @name in it, the @@ operator's right side among them).
+func runPGSized(ctx context.Context, cfg *pgx.ConnConfig, app, stmt string, args pgx.NamedArgs, timeout time.Duration, maxRows, maxBytes int, refusal func(context.Context, pgx.Tx) (string, error)) (sets []resultSet, refused string, err error) {
 	if refusal == nil {
 		refusal = pgRefusal
 	}
 	cfg = cfg.Copy()
 	cfg.ConnectTimeout = 10 * time.Second
 	rp := cfg.RuntimeParams
-	rp["application_name"] = "pgvigil-report"
+	rp["application_name"] = app
 	rp["default_transaction_read_only"] = "on"
 	rp["statement_timeout"] = strconv.FormatInt(timeout.Milliseconds(), 10)
 	rp["lock_timeout"] = "2000"
@@ -685,7 +687,11 @@ func runPGSized(ctx context.Context, cfg *pgx.ConnConfig, stmt string, args pgx.
 	}
 	qctx, qcancel := context.WithCancel(ctx)
 	defer qcancel()
-	rows, err := tx.Query(qctx, stmt, pgx.QueryExecModeDescribeExec, args)
+	qargs := []any{pgx.QueryExecModeDescribeExec}
+	if args != nil {
+		qargs = append(qargs, args)
+	}
+	rows, err := tx.Query(qctx, stmt, qargs...)
 	if err != nil {
 		return nil, "", err
 	}

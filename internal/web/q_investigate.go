@@ -327,7 +327,7 @@ func (s *Server) InvestigationRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t0 := time.Now()
-	res, why, rerr := StoreSelect(ctx, s.reports.cfg, *sql, runTimeout, runRows, runBytes, s.reports.refusal)
+	res, why, rerr := StoreSelect(ctx, s.reports.cfg, "pgvigil-ask-run", *sql, runTimeout, runRows, runBytes, s.reports.refusal)
 	ms := time.Since(t0).Milliseconds()
 	outcome := "done"
 	switch {

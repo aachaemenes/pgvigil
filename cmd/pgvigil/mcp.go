@@ -79,7 +79,7 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 		door.Wrap = web.WrapSelect
 		door.Select = func(ctx context.Context, sql string) ([]string, []string, [][]any, bool, string, error) {
-			r, why, err := web.StoreSelect(ctx, selCfg, sql, 15*time.Second, 1000, 1<<20, web.AgentStoreRefusal)
+			r, why, err := web.StoreSelect(ctx, selCfg, "pgvigil-mcp-select", sql, 15*time.Second, 1000, 1<<20, web.AgentStoreRefusal)
 			return r.Columns, r.Types, r.Rows, r.Cut, why, err
 		}
 	}

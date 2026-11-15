@@ -461,8 +461,9 @@ BEGIN
   RETURN jsonb_build_object('id', p_id, 'state', 'open');
 END $$;
 
--- the report: verdict real | false_positive | needs_person | answered (an ask); the sizes checked with words (the SELECT
--- of an ask is checked to be one SELECT by the door before it calls this)
+-- the report: a finding's verdict real | false_positive | needs_person, an ask's answered (or needs_person: no answer);
+-- sql an ask's alone; the sizes checked with words (the SELECT of an ask is checked to be one SELECT by the door before
+-- it calls this)
 CREATE OR REPLACE FUNCTION pgvigil.agent_investigation_report(p_id bigint, p_claim text, p_verdict text, p_summary text,
                                                               p_body text, p_evidence jsonb, p_queries jsonb, p_sql text)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp AS $$
@@ -487,6 +488,12 @@ BEGIN
     RAISE EXCEPTION 'queries_run is a list of at most 20 statements (64 KB)' USING ERRCODE = '22023';
   ELSIF length(coalesce(p_sql, '')) > 20000 THEN
     RAISE EXCEPTION 'the sql is over 20,000 characters' USING ERRCODE = '22001';
+  ELSIF r.kind = 'finding' AND p_verdict = 'answered' THEN
+    RAISE EXCEPTION 'a finding''s verdict is real, false_positive or needs_person' USING ERRCODE = '22023';
+  ELSIF r.kind = 'ask' AND p_verdict <> 'answered' AND p_verdict <> 'needs_person' THEN
+    RAISE EXCEPTION 'an ask''s verdict is answered (or needs_person)' USING ERRCODE = '22023';
+  ELSIF r.kind = 'finding' AND nullif(btrim(coalesce(p_sql, '')), '') IS NOT NULL THEN
+    RAISE EXCEPTION 'only an ask''s answer carries sql: a finding''s suggested statement goes in the body' USING ERRCODE = '22023';
   ELSIF r.kind = 'ask' AND nullif(btrim(coalesce(p_sql, '')), '') IS NULL AND p_verdict = 'answered' THEN
     RAISE EXCEPTION 'an answered ask carries its one SELECT in sql' USING ERRCODE = '22023';
   END IF;
@@ -495,7 +502,7 @@ BEGIN
   END IF;
   UPDATE pgvigil.ui_investigation_data
      SET summary = p_summary, body = nullif(p_body, ''), evidence = p_evidence, queries_run = p_queries,
-         sql = CASE WHEN r.kind = 'ask' THEN nullif(btrim(coalesce(p_sql, '')), '') END
+         sql = nullif(btrim(coalesce(p_sql, '')), '')
    WHERE investigation_id = p_id;
   UPDATE pgvigil.investigations SET state = 'reported', reported_at = now(), verdict = p_verdict, lease_until = NULL WHERE id = p_id;
   RETURN jsonb_build_object('id', p_id, 'state', 'reported');

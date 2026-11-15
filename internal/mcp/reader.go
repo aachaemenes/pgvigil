@@ -81,10 +81,12 @@ type Login struct {
 }
 
 // sqlAgentLogin reads whether the SESSION user is a member of pgvigil_agent (a role set at connect is undone by
-// reading the session user; a superuser, a member of every role, takes the reader's check and its refusal), whether the repository is a standby, and the session user's own CREATE and table writes.
+// reading the session user), whether it is a superuser (a member of every role: refused here, before the reader's
+// check, which reads current_user and so would pass a superuser that set a reader's role at connect), whether the
+// repository is a standby, and the session user's own CREATE and table writes.
 const sqlAgentLogin = `
-SELECT coalesce(pg_has_role(session_user, to_regrole('pgvigil_agent')::oid, 'MEMBER'), false)
-         AND NOT (SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = session_user),
+SELECT coalesce(pg_has_role(session_user, to_regrole('pgvigil_agent')::oid, 'MEMBER'), false),
+       coalesce((SELECT r.rolsuper OR r.rolbypassrls FROM pg_roles r WHERE r.rolname = session_user), false),
        pg_is_in_recovery(),
        coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false),
        EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -110,9 +112,12 @@ func CheckLogin(ctx context.Context, dsn string, agentRefusal func(context.Conte
 		return Login{User: cfg.User}, fmt.Errorf("repository: %w", err)
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	var agent, standby, creates, writes bool
-	if err := conn.QueryRow(ctx, sqlAgentLogin).Scan(&agent, &standby, &creates, &writes); err != nil {
+	var agent, super, standby, creates, writes bool
+	if err := conn.QueryRow(ctx, sqlAgentLogin).Scan(&agent, &super, &standby, &creates, &writes); err != nil {
 		return Login{User: cfg.User}, fmt.Errorf("login check: %w", err)
+	}
+	if super {
+		return Login{User: cfg.User}, fmt.Errorf("refused: the login %s is a superuser (or bypasses row security), whatever role it sets at connect; pgvigil mcp runs as a login IN ROLE pgvigil_reader alone ('pgvigil roles' prints it)", cfg.User)
 	}
 	if !agent {
 		u, err := CheckReader(ctx, dsn)
