@@ -274,7 +274,7 @@ def helpers(text):
 
 
 COL = re.compile(r"\{\s*key:\s*'([^']+)'")          # a Col literal, on one line or over several
-CLS_STATUS = re.compile(r"'(?:status )?(?:ok|warn|crit)'")
+CLS_STATUS = re.compile(r"'(?:status )?(?:ok|warn|crit)'|'status ' \+|`status \$\{")   # a class built from a status word too
 HELPER = re.compile(r"(?m)^[ \t]*(?:export\s+)?(?:const\s+(\w{3,})\s*=\s*(?:\([^)]*\)|\w+)\s*(?::\s*[\w |]+)?\s*=>\s*|function\s+(\w{3,})\s*\()")
 
 
@@ -294,7 +294,7 @@ def all_helpers(text):
 
 
 def cls_text(body, hs):
-    """a Col's cls as written, with the body of each helper of the file it names or calls"""
+    """a Col's cls as written, with the body of each helper of the file it names or calls, and of theirs"""
     i = body.find('cls:')
     if i < 0:
         return None
@@ -302,8 +302,14 @@ def cls_text(body, hs):
     while body[k:k + 1] in (' ', '\n'):
         k += 1
     t = body[k:expr_end(body, k)]
-    code = re.sub(r"'[^'\\]*'", "''", t)   # a helper's name inside a string is no call
-    return t + ''.join(hs[h] for h in hs if re.search(r'\b' + h + r'\b', code))   # each helper it names or calls
+    seen, todo = set(), [t]
+    while todo:   # each helper it names or calls, and theirs, to any depth
+        code = re.sub(r"'[^'\\]*'", "''", todo.pop())   # a helper's name inside a string is no call
+        for h in hs:
+            if h not in seen and re.search(r'\b' + h + r'\b', code):
+                seen.add(h)
+                todo.append(hs[h])
+    return t + ''.join(hs[h] for h in sorted(seen))
 
 
 # (file, key): why a column the badge scan does not see passes X18. 'empty' = its '' branch only meets an empty cell
