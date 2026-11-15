@@ -374,7 +374,9 @@ export async function scheduleDialog(p: SchedulePrefill, after: () => void = red
   // a grid's choices are one key per grid; DB Space's Unit and Decimal places (drives.ts, '.size-' keys) are no grid
   const prefKeys = Object.keys(p.prefs ?? {}), sizeKeys = prefKeys.filter(k => /\.size-(unit|decimals)$/.test(k));
   const nPrefs = prefKeys.length - sizeKeys.length;
-  const sizeWords = sizeKeys.length ? `DB Space's unit and decimal places as you picked them (${sizeKeys.map(k => (p.prefs ?? {})[k]).join(', ')})` : '';
+  const sizeOf = (re: RegExp) => { const k = sizeKeys.find(x => re.test(x)); return k ? String((p.prefs ?? {})[k]) : undefined; };
+  const sizeDp = sizeOf(/\.size-decimals$/) ?? '1';   // each named, never in the keys' order (a browser's own)
+  const sizeWords = sizeKeys.length ? `DB Space's unit and decimal places as you picked them (${sizeOf(/\.size-unit$/) ?? 'GB'}, ${sizeDp} decimal place${sizeDp === '1' ? '' : 's'})` : '';
   const prefsNote = el('p', { class: 'meta' }, nPrefs || sizeKeys.length ? `The page's ${[nPrefs ? `grid choices in this browser (${nPrefs} grid${nPrefs === 1 ? '' : 's'}: hidden, frozen and barred columns)` : '', sizeWords].filter(Boolean).join(' and ')} are kept with the schedule: its mail shows the page as your window does.`
     : s ? 'The grid choices kept with the schedule stay as they are.' : 'No grid choice of this browser is kept: the mail shows every column of the page.');
   const fields = [el('label', {}, 'Name (the subject starts with it) ', name), el('label', {}, 'Page (its address in this UI, as the bar\'s Mail... takes it) ', route), fixedNote, prefsNote,

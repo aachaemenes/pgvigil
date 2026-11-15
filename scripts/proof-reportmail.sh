@@ -554,6 +554,8 @@ DBSNOTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mb"][
 [[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0} and grid_prefs->>'pgvigil.grid.dbspace.size-unit' = 'MB' and grid_prefs->>'pgvigil.grid.dbspace.size-decimals' = '2'") == 1 && $DBSNOTE == *"unit and decimal places"* && $DBSNOTE != *" grids:"* ]] || fail "S: the MB / 2 schedule's kept choice: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0}"); note: $DBSNOTE"
 ok "S: DB Space at MB / 2 scheduled (schedule $SDBS): both size keys kept with it, the dialog says so ($DBSNOTE)"
 [[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0} and coalesce(grid_prefs::text, '{}') !~ 'size-'") == 1 ]] || fail "S: the GB / 1 schedule kept a size key: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0}")"
+# the two DB Space schedules ended once read: the Report mail page's Schedules grid (P) lists the live ones it made
+for x in ${SDBS:-} ${SDBSGB:-}; do [[ $(postj reportmail "{\"op\":\"end\",\"schedule_id\":$x}") == 200 ]] || fail "S: ending the DB Space schedule $x: $(cat "$WORK/body")"; done
 ok "S: DB Space back at GB / 1 scheduled (schedule $SDBSGB): no size key kept (the default is no key)"
 SIDS=""
 for i in 0 1 2; do
