@@ -26,6 +26,12 @@
 #     rows ok; admin: the 10 must rows, the 5 'on' rows ok, 0 controls off for the role. Every page rendered.
 #     The click row per role: a viewer's click on the off Silence opens nothing; an operator's and an admin's opens
 #     its dialog, whose Save carries the operator need and is not off for the role (closed, nothing saved).
+#     review-18 part 3 (written before the run that carries it): a button with a need off by the disabled attribute, and
+#     a control off for the server's own reason with no words (no title, no visible description), are FAILs; five dialog
+#     rows per role - a job's thresholds (opener open to every role: the viewer's and the operator's Save and Inherit
+#     off with the admin words, the admin's on), the drive thresholds, a PostgreSQL threshold, a new alert rule and a
+#     new mail schedule (openers that need admin: off for the viewer and the operator with the role's words, a click
+#     opens nothing; the admin's opens the dialog, no control off for the role).
 #     'PASS: proof-uiroles-pages'.
 set -uo pipefail
 cd "$(dirname "$0")/.."

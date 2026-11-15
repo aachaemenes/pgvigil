@@ -88,12 +88,14 @@ const header = await ev(`(() => { const x = document.getElementById('role-note')
 if (header.startsWith(`${user} (${role}`)) console.log(`ok   the header names the role: '${header}'`);
 else bad(`the header's role line (#role-note) says '${header}', not '${user} (${role} ...'`);
 
-const read = () => ev(`(() => {
+// read: every shown control with data-need (within: a CSS scope, the open dialog for a dialog row)
+const read = (within = '') => ev(`(() => {
   const vis = e => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden';
   const txt = x => (x.textContent || '').replace(/\\s+/g, ' ').trim();
-  return [...document.querySelectorAll('[data-need]')].filter(vis).map(e => {
+  return [...document.querySelectorAll(${JSON.stringify(within)} + ' [data-need]')].filter(vis).map(e => {
     const ids = (e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean);
     return { need: e.dataset.need, what: (e.getAttribute('aria-label') || txt(e) || e.getAttribute('name') || e.tagName).slice(0, 70),
+      tag: e.tagName, native: e.disabled === true,
       off: e.disabled === true || e.getAttribute('aria-disabled') === 'true', title: e.title || '',
       desc: ids.map(i => { const x = document.getElementById(i); return x ? txt(x) : ''; }).join(' | '),
       descVis: ids.some(i => { const x = document.getElementById(i); return vis(x) && txt(x) !== ''; }) };
@@ -105,6 +107,31 @@ const seen = new Map();    // 'key|need' -> { n, role, own, on }
 const tot = { operator: { role: 0, own: 0, on: 0 }, admin: { role: 0, own: 0, on: 0 } };
 let notRendered = 0, withControls = 0;
 const ownWhy = new Map();
+// judge: one control against the role - 'role' (off with the role's words and a visible description), 'own' (off for
+// the server's own reason, with words: a title or a visible description), 'on', or null after a FAIL. A button off by
+// the disabled attribute is a FAIL whatever the reason (aria-disabled, never disabled: review-18 b24f3 4); a field
+// (an input) stays natively disabled by design, described by its page's sentence.
+function judge(c, where) {
+  if (!rank[c.need] || c.need === 'viewer') { bad(`${where} '${c.what}': data-need='${c.need}' is not operator or admin`); return null; }
+  if (c.native && c.tag === 'BUTTON') { bad(`${where} '${c.what}' (needs ${c.need}): off by the disabled attribute ('${(c.title || c.desc).slice(0, 100)}')`); return null; }
+  const above = rank[c.need] > rank[role];
+  const mine = new RegExp(`needs the ${c.need} role: ${user} is an? ${role} `).test(c.title);
+  const said = () => { const w = (c.title || c.desc).slice(0, 90); ownWhy.set(w, (ownWhy.get(w) ?? 0) + 1); return c.title.trim() !== '' || c.descVis; };
+  if (above) {
+    if (!c.off) { bad(`${where} '${c.what}' (needs ${c.need}): ON for ${art} ${role}`); return null; }
+    if (mine) {
+      if (!c.descVis) { bad(`${where} '${c.what}' (needs ${c.need}): off with the role's words as its title and no visible description ('${c.desc.slice(0, 80)}')`); return null; }
+      return 'role';
+    }
+    if (anyRole.test(c.title)) { bad(`${where} '${c.what}' (needs ${c.need}): off with other role words: '${c.title.slice(0, 140)}'`); return null; }
+    if (!said()) { bad(`${where} '${c.what}' (needs ${c.need}): off with no words (no title, no visible description)`); return null; }
+    return 'own';
+  }
+  if (c.off && anyRole.test(c.title)) { bad(`${where} '${c.what}' (needs ${c.need}): off with the role's words for ${art} ${role}: '${c.title.slice(0, 140)}'`); return null; }
+  if (!c.off) return 'on';
+  if (!said()) { bad(`${where} '${c.what}' (needs ${c.need}): off with no words (no title, no visible description)`); return null; }
+  return 'own';
+}
 for (const [scope, hash] of pages) {
   await cmd('Page.navigate', { url: U + hash });
   await sleep(400);
@@ -116,22 +143,8 @@ for (const [scope, hash] of pages) {
   withControls++;
   const line = { role: 0, own: 0, on: 0 };
   for (const c of cs) {
-    if (!rank[c.need] || c.need === 'viewer') { bad(`${hash} '${c.what}': data-need='${c.need}' is not operator or admin`); continue; }
-    const above = rank[c.need] > rank[role];
-    const mine = new RegExp(`needs the ${c.need} role: ${user} is an? ${role} `).test(c.title);
-    let state;
-    if (above) {
-      if (!c.off) { bad(`${hash} '${c.what}' (needs ${c.need}): ON for ${art} ${role}`); continue; }
-      if (mine) {
-        if (!c.descVis) { bad(`${hash} '${c.what}' (needs ${c.need}): off with the role's words as its title and no visible description ('${c.desc.slice(0, 80)}')`); continue; }
-        state = 'role';
-      } else if (anyRole.test(c.title)) { bad(`${hash} '${c.what}' (needs ${c.need}): off with other role words: '${c.title.slice(0, 140)}'`); continue; }
-      else { state = 'own'; const w = (c.title || c.desc).slice(0, 90); ownWhy.set(w, (ownWhy.get(w) ?? 0) + 1); }
-    } else {
-      if (c.off && anyRole.test(c.title)) { bad(`${hash} '${c.what}' (needs ${c.need}): off with the role's words for ${art} ${role}: '${c.title.slice(0, 140)}'`); continue; }
-      state = c.off ? 'own' : 'on';
-      if (c.off) { const w = (c.title || c.desc).slice(0, 90); ownWhy.set(w, (ownWhy.get(w) ?? 0) + 1); }
-    }
+    const state = judge(c, hash);
+    if (!state) continue;
     line[state]++; tot[c.need][state]++;
     const k = `${key}|${c.need}`, s = seen.get(k) ?? { n: 0, role: 0, own: 0, on: 0 };
     s.n++; s[state]++; seen.set(k, s);
@@ -159,6 +172,41 @@ else if (rank.operator > rank[role]) {
   else bad(`click: Silence as ${art} ${role}: off ${click.off}, a dialog opened ${click.dialog} ('${click.title}')`);
 } else if (!click.off && click.dialog && click.save.length && click.save.every(x => x.need === 'operator' && !anyRole.test(x.title))) console.log(`ok   click: Silence clicked as ${art} ${role}: '${click.title}' opened, its Save carries the operator need and is not off for the role`);
 else bad(`click: Silence as ${role}: off ${click.off}, dialog ${click.dialog} ('${click.title}'), its controls ${JSON.stringify(click.save).slice(0, 200)}`);
+
+// dialog rows (review-18 b24f3 3): a dialog's Save is the control that is off for the role where its opener is open to
+// every role (a job's thresholds); where the opener itself needs the role, a click on it below the need opens nothing.
+// Each opener is clicked, the open dialog's controls with data-need judged as the pages' are, and the dialog closed
+// (nothing is saved). [the page, the opener's words, its scope]
+const OPENERS = [[`#/jobs?i=${ms.instance_id}`, /^Thresholds$/, 'a job\'s thresholds'], ['#/drives', /^Configure$/, 'the drive thresholds'],
+  ['#/pgthresholds', /^Set\.\.\.$/, 'a PostgreSQL threshold'], ['#/alertrules', /^New rule$/, 'a new alert rule'], ['#/reportmail', /^New schedule\.\.\.$/, 'a new mail schedule']];
+for (const [hash, words, name] of OPENERS) {
+  await cmd('Page.navigate', { url: U + hash }); await sleep(400);
+  if (!await settled()) { bad(`dialog ${name}: ${hash} did not render in 20 s`); continue; }
+  const o = await ev(`(async () => {
+    const vis = e => !!e && e.getClientRects().length > 0;
+    const b = [...document.querySelectorAll('main button')].filter(vis).find(e => ${words.toString()}.test((e.textContent || '').trim()));
+    if (!b) return { found: false };
+    const out = { found: true, need: b.dataset.need || '', off: b.getAttribute('aria-disabled') === 'true', title: b.title || '' };
+    b.click();
+    await new Promise(r => setTimeout(r, 900));
+    out.dialog = !!document.querySelector('dialog[open]');
+    return out;
+  })()`, true);
+  if (!o.found) { bad(`dialog ${name}: no '${words.source}' button on ${hash}`); continue; }
+  const below = o.need && rank[o.need] > rank[role];
+  if (below) {
+    if (o.off && !o.dialog && new RegExp(`needs the ${o.need} role: ${user} is an? ${role} `).test(o.title)) console.log(`ok   dialog ${name}: its opener is off for ${art} ${role} with the role's words; a click opened nothing`);
+    else bad(`dialog ${name}: the opener (needs ${o.need}) for ${art} ${role}: off ${o.off}, a dialog opened ${o.dialog}, '${o.title.slice(0, 120)}'`);
+  } else if (!o.dialog) bad(`dialog ${name}: the opener (${o.need || 'no need'}${o.off ? ', off: ' + o.title.slice(0, 100) : ''}) opened no dialog for ${art} ${role}`);
+  else {
+    const cs = await read('dialog[open]');
+    const got = { role: 0, own: 0, on: 0 }, f0 = fails;
+    for (const c of cs) { const st = judge(c, `dialog ${name}`); if (st) got[st]++; }
+    if (!cs.length) bad(`dialog ${name}: the open dialog holds no control with data-need`);
+    else if (fails === f0) console.log(`ok   dialog ${name}: opened for ${art} ${role}; ${cs.length} control(s) with a need - ${got.role} off for the role, ${got.own} off for the server's own reason, ${got.on} on`);
+  }
+  await ev(`(() => { for (const d of document.querySelectorAll('dialog[open]')) { d.close(); d.remove(); } })()`);
+}
 
 for (const [k, need] of MUST) {
   const s = seen.get(`${k}|${need}`);

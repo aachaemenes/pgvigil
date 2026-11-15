@@ -19,18 +19,40 @@ import (
 // needNames are the need constants an s.post call may name (roles.go)
 var needNames = map[string]string{"needAnyone": "anyone", "needViewer": "viewer", "needOperator": "operator", "needAdmin": "admin"}
 
-// postNeeds reads web.go: each s.post(mux, "POST <path>", <need>, h) registration's pattern and need, and every
-// other registration (HandleFunc / Handle) that a role cannot reach: a POST, PUT, PATCH or DELETE pattern, or a
-// method-less pattern other than "/" and the "/api/" gate
+// postNeeds reads every non-test file of the package (review-18 b24f3 7: not web.go alone): each s.post(mux,
+// "POST <path>", <need>, h) registration's pattern and need, and every other registration (HandleFunc / Handle) that a
+// role cannot reach: a POST, PUT, PATCH or DELETE pattern, a method-less pattern other than "/" and the "/api/" gate,
+// or a pattern that is not a string literal (outside s.post's own body, which registers what it is given)
 func postNeeds(t *testing.T) (needs map[string]string, outside []string) {
 	t.Helper()
 	fset := token.NewFileSet()
-	af, err := parser.ParseFile(fset, "web.go", nil, 0)
+	ents, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	needs = map[string]string{}
-	ast.Inspect(af, func(n ast.Node) bool {
+	for _, e := range ents {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "post" && fd.Recv != nil {
+				continue // s.post itself: its HandleFunc registers the pattern each call names
+			}
+			inspectRegs(t, fset, d, needs, &outside)
+		}
+	}
+	return needs, outside
+}
+
+// inspectRegs is postNeeds' read of one declaration
+func inspectRegs(t *testing.T, fset *token.FileSet, d ast.Decl, needs map[string]string, outside *[]string) {
+	t.Helper()
+	ast.Inspect(d, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -43,7 +65,7 @@ func postNeeds(t *testing.T) (needs map[string]string, outside []string) {
 		isPost := se.Sel.Name == "post" && recv != nil && recv.Name == "s"
 		at := fset.Position(call.Pos()).String()
 		if isPost && len(call.Args) != 4 {
-			outside = append(outside, at+": s.post with "+strconv.Itoa(len(call.Args))+" arguments")
+			*outside = append(*outside, at+": s.post with "+strconv.Itoa(len(call.Args))+" arguments")
 			return true
 		}
 		arg := call.Args[0]
@@ -52,8 +74,11 @@ func postNeeds(t *testing.T) (needs map[string]string, outside []string) {
 		}
 		lit, ok := arg.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
-			if isPost {
-				outside = append(outside, at+": s.post's pattern is not a string literal")
+			switch {
+			case isPost:
+				*outside = append(*outside, at+": s.post's pattern is not a string literal")
+			case se.Sel.Name == "HandleFunc", se.Sel.Name == "Handle":
+				*outside = append(*outside, at+": a "+se.Sel.Name+" pattern that is not a string literal")
 			}
 			return true
 		}
@@ -70,11 +95,11 @@ func postNeeds(t *testing.T) (needs map[string]string, outside []string) {
 			}
 			switch {
 			case !strings.HasPrefix(pat, "POST /"):
-				outside = append(outside, at+": s.post of a pattern that is not a POST: "+pat)
+				*outside = append(*outside, at+": s.post of a pattern that is not a POST: "+pat)
 			case need == "":
-				outside = append(outside, at+": "+pat+" has no need of the four (needAnyone, needViewer, needOperator, needAdmin)")
+				*outside = append(*outside, at+": "+pat+" has no need of the four (needAnyone, needViewer, needOperator, needAdmin)")
 			case needs[pat] != "":
-				outside = append(outside, at+": "+pat+" registered twice")
+				*outside = append(*outside, at+": "+pat+" registered twice")
 			default:
 				needs[pat] = need
 			}
@@ -82,14 +107,13 @@ func postNeeds(t *testing.T) (needs map[string]string, outside []string) {
 			method, _, hasMethod := strings.Cut(pat, " ")
 			switch {
 			case !hasMethod && pat != "/" && pat != "/api/":
-				outside = append(outside, at+": a method-less pattern "+pat)
+				*outside = append(*outside, at+": a method-less pattern "+pat)
 			case hasMethod && method != "GET" && method != "HEAD":
-				outside = append(outside, at+": "+pat+" is registered outside s.post")
+				*outside = append(*outside, at+": "+pat+" is registered outside s.post")
 			}
 		}
 		return true
 	})
-	return needs, outside
 }
 
 // TestEveryPostHasANeed: no write route escapes the role check
@@ -211,7 +235,7 @@ func TestPageNeedsMatch(t *testing.T) {
 var (
 	pagePostLit  = regexp.MustCompile(`\bpost(?:<.*?>)?\(\s*'([a-z_/]+)'\s*[,)]`)
 	pagePostAny  = regexp.MustCompile(`\bpost(?:<.*?>)?\(`)
-	pageRawPost  = regexp.MustCompile(`method:\s*'POST'`)
+	pageRawPost  = regexp.MustCompile(`method:\s*['"]POST['"]`)
 	pageOtherRts = map[string][]string{
 		"actions.ts":         {"actions/cancel", "actions/terminate"},
 		"jobs_running.ts":    {"jobs/actions/stop", "jobs/actions/start"},
