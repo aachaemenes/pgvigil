@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
@@ -353,5 +354,137 @@ func TestZabbixAPI(t *testing.T) {
 	err := s.send(context.Background(), msg(crit))
 	if err == nil || !strings.Contains(err.Error(), "Invalid params.") || strings.Contains(err.Error(), token) {
 		t.Errorf("a JSON-RPC error (the token scrubbed): %v", err)
+	}
+}
+
+// B24k review 5: a name is written as Zabbix compares it (its 'Using certificates' page: RFC 4514, the lowest level
+// first, the special characters escaped with a backslash), not as Go's pkix.Name writes it.
+func TestZabbixName(t *testing.T) {
+	cn, ou, o := asn1.ObjectIdentifier{2, 5, 4, 3}, asn1.ObjectIdentifier{2, 5, 4, 11}, asn1.ObjectIdentifier{2, 5, 4, 10}
+	dc := asn1.ObjectIdentifier{0, 9, 2342, 19200300, 100, 1, 25}
+	for _, c := range []struct {
+		seq  pkix.RDNSequence
+		want string
+	}{
+		{pkix.RDNSequence{ // the page's example, as the certificate holds it (top level first)
+			{{Type: dc, Value: "com"}}, {{Type: dc, Value: "zabbix"}}, {{Type: o, Value: "Zabbix SIA"}},
+			{{Type: ou, Value: "Development group"}}, {{Type: cn, Value: "Zabbix server"}}},
+			"CN=Zabbix server,OU=Development group,O=Zabbix SIA,DC=zabbix,DC=com"},
+		{pkix.RDNSequence{ // the page's escapes and a type with no name
+			{{Type: o, Value: " Example SIA "}}, {{Type: ou, Value: `Development group "5"`}},
+			{{Type: asn1.ObjectIdentifier{1, 2, 3, 4}, Value: "#x"}}, {{Type: cn, Value: "a,b+c;d<e>f\\g"}}},
+			`CN=a\,b\+c\;d\<e\>f\\g,1.2.3.4=\#x,OU=Development group \"5\",O=\ Example SIA\ `},
+		{pkix.RDNSequence{{{Type: asn1.ObjectIdentifier{1, 2, 3, 5}, Value: 7}}}, "1.2.3.5=#020107"}, // not a string: its DER
+		{pkix.RDNSequence{{{Type: cn, Value: "Zabbix \u00dcnicode"}}}, "CN=Zabbix \u00dcnicode"},     // UTF-8 as it is
+	} {
+		der, err := asn1.Marshal(c.seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := zbxName(der); err != nil || got != c.want {
+			t.Errorf("zbxName: %q %v, want %q", got, err, c.want)
+		}
+	}
+	if _, err := zbxName([]byte{0x30, 0x03, 0x01}); err == nil {
+		t.Error("a broken name: no error")
+	}
+}
+
+// B24k review 4: with a pinned subject the server's certificate is checked as Zabbix checks one - its chain to tls_ca
+// and the pin, no host name - so a certificate with no Subject Alternative Name works; with no pin the name is checked.
+func TestZabbixPinWithoutSAN(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, typ string, der []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	ca := func(name string) (*x509.Certificate, *ecdsa.PrivateKey, string) {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: name},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true,
+			KeyUsage: x509.KeyUsageCertSign}
+		der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &k.PublicKey, k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return c, k, write(name+".pem", "CERTIFICATE", der)
+	}
+	leaf := func(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, serial int64, cn string, usage x509.ExtKeyUsage) (string, string) {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: cn}, // no SAN at all
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{usage},
+			KeyUsage: x509.KeyUsageDigitalSignature}
+		der, err := x509.CreateCertificate(rand.Reader, tpl, caCert, &k.PublicKey, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kd, _ := x509.MarshalECPrivateKey(k)
+		return write(cn+".crt", "CERTIFICATE", der), write(cn+".key", "EC PRIVATE KEY", kd)
+	}
+	caCert, caKey, caFile := ca("zabbix CA")
+	otherCert, otherKey, _ := ca("another CA")
+	cc, ck := leaf(caCert, caKey, 3, "pgvigil", x509.ExtKeyUsageClientAuth)
+	pool, _ := caPool("ca", caFile)
+	listen := func(crt, key string) net.Listener {
+		pair, err := tls.LoadX509KeyPair(crt, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{pair}, ClientCAs: pool,
+			ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		go (&zbxStub{}).serve(t, ln)
+		return ln
+	}
+	sc, sk := leaf(caCert, caKey, 2, "zabbix-nosan", x509.ExtKeyUsageServerAuth)
+	ln := listen(sc, sk)
+	z := Zabbix{Server: ln.Addr().String(), Host: "pgvigil", TLSCA: caFile, TLSCert: cc, TLSKey: ck}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := zabbixFor(t, z).send(ctx, msg(crit)); err == nil {
+		t.Error("no pin, a certificate without the server's name: sent (the name must be checked)")
+	}
+	z.TLSServerSubject = "CN=zabbix-nosan"
+	if err := zabbixFor(t, z).send(ctx, msg(crit)); err != nil {
+		t.Errorf("the subject pinned, a certificate without a SAN: %v", err)
+	}
+	z.TLSServerSubject, z.TLSServerIssuer = "", "CN=zabbix CA"
+	if err := zabbixFor(t, z).send(ctx, msg(crit)); err != nil {
+		t.Errorf("the issuer pinned, a certificate without a SAN: %v", err)
+	}
+	// the pin never stands in for the chain: the same subject from another CA is refused
+	oc, okey := leaf(otherCert, otherKey, 4, "zabbix-other", x509.ExtKeyUsageServerAuth)
+	ln2 := listen(oc, okey)
+	z = Zabbix{Server: ln2.Addr().String(), Host: "pgvigil", TLSCA: caFile, TLSCert: cc, TLSKey: ck, TLSServerSubject: "CN=zabbix-other"}
+	if err := zabbixFor(t, z).send(ctx, msg(crit)); err == nil || !strings.Contains(err.Error(), "does not chain to tls_ca") {
+		t.Errorf("a pinned subject from another CA: %v", err)
+	}
+}
+
+// B24k review 2: every value's (clock, ns) is new, across messages and channels of one pass (Zabbix keys an item's
+// history by them).
+func TestZabbixStamps(t *testing.T) {
+	a := zabbixFor(t, Zabbix{Server: "127.0.0.1:10051", Host: "pgvigil"})
+	b := zabbixFor(t, Zabbix{Server: "127.0.0.1:10052", Host: "pgvigil"})
+	m := msg(crit, crit, crit)
+	var all []zbxItem
+	all = append(all, a.items(m)...)
+	all = append(all, b.items(m)...)
+	all = append(all, a.items(m)...)
+	for i := 1; i < len(all); i++ {
+		p, c := all[i-1], all[i]
+		if c.Clock < p.Clock || (c.Clock == p.Clock && c.NS <= p.NS) {
+			t.Fatalf("value %d (%d, %d) is not after value %d (%d, %d)", i, c.Clock, c.NS, i-1, p.Clock, p.NS)
+		}
+	}
+	if all[0].Clock != m.SentAt.Unix() {
+		t.Errorf("clock %d, want the message's %d", all[0].Clock, m.SentAt.Unix())
 	}
 }

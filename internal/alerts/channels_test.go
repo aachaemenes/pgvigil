@@ -126,3 +126,15 @@ func TestFailingChannel(t *testing.T) {
 		}
 	}
 }
+
+// B24k review 9: the kinds are read out of alert_channels_kind_check's definition as pg_get_constraintdef prints it.
+func TestStoreKindRE(t *testing.T) {
+	def := `CHECK ((kind = ANY (ARRAY['smtp'::text, 'webhook'::text, 'file'::text, 'pagerduty'::text, 'opsgenie'::text])))`
+	var got []string
+	for _, m := range storeKindRE.FindAllStringSubmatch(def, -1) {
+		got = append(got, m[1])
+	}
+	if strings.Join(got, ",") != "smtp,webhook,file,pagerduty,opsgenie" {
+		t.Errorf("kinds %v", got)
+	}
+}

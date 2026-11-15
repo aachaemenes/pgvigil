@@ -235,3 +235,15 @@ func TestAzureMonitorTokenError(t *testing.T) {
 		t.Error("an upload without a token")
 	}
 }
+
+// B24k review 8: the secret is replaced before Azure's words are cut, so a cut through it leaves no part of it.
+func TestAzureWordsHideBeforeCut(t *testing.T) {
+	desc := strings.Repeat("a", maxLine-len(" ...")-len("invalid_client ")-8) + azTestSecret // the cut falls inside the secret
+	raw := []byte(`{"error":"invalid_client","error_description":"` + desc + `"}`)
+	if got := azWords(raw); !strings.Contains(got, azTestSecret[:8]) {
+		t.Fatalf("the case does not cut through the secret: %q", got[len(got)-20:])
+	}
+	if got := azWords(raw, azTestSecret); strings.Contains(got, azTestSecret[:8]) {
+		t.Errorf("a part of the secret survived the cut: %q", got[len(got)-20:])
+	}
+}

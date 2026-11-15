@@ -198,7 +198,58 @@ func (s *pushoverSender) form(m Message, a Alert) url.Values {
 	return f
 }
 
+// poDigestCut ends a digest's text that did not fit a notification.
+const poDigestCut = "\n... (cut: the Alerts page lists every held alert)"
+
+// digestForm is a daily digest as ONE notification (B24k review 3: a push per group would sound once per group and
+// spend the month's messages): the digest's subject as the title, its group lines as the message (cut at a line
+// within 1,024 characters, the cut said), priority 0 (a digest is never urgent: what was urgent was not held).
+func (s *pushoverSender) digestForm(m Message) url.Values {
+	lines := make([]string, len(m.Alerts))
+	for i, a := range m.Alerts {
+		lines[i] = a.Line()
+	}
+	text := strings.Join(lines, "\n")
+	if utf8.RuneCountInString(text) > poMaxMessage {
+		r := []rune(text)[:poMaxMessage-utf8.RuneCountInString(poDigestCut)]
+		text = string(r)
+		if i := strings.LastIndexByte(text, '\n'); i > 0 {
+			text = text[:i]
+		}
+		text += poDigestCut
+	}
+	title := m.Subject
+	if title == "" {
+		title = m.Summary()
+	}
+	f := url.Values{
+		"token":     {s.token},
+		"user":      {s.user},
+		"title":     {cutRunes(title, poMaxTitle)},
+		"message":   {text},
+		"priority":  {"0"},
+		"timestamp": {strconv.FormatInt(m.SentAt.Unix(), 10)},
+	}
+	if s.device != "" {
+		f.Set("device", s.device)
+	}
+	return f
+}
+
+// isDigest: a daily digest's message (digest.go: every item's event is 'digest').
+func isDigest(m Message) bool {
+	for _, a := range m.Alerts {
+		if a.Event != "digest" {
+			return false
+		}
+	}
+	return len(m.Alerts) > 0
+}
+
 func (s *pushoverSender) send(ctx context.Context, m Message) error {
+	if isDigest(m) {
+		return s.post(ctx, s.digestForm(m))
+	}
 	for _, a := range m.Alerts {
 		if err := s.post(ctx, s.form(m, a)); err != nil {
 			return err

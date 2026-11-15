@@ -10,9 +10,12 @@ package alerts
 //     every value was processed. A failed value comes back as a count only: the reason (the item missing, not a
 //     trapper item, the host not monitored, this machine not in the item's Allowed hosts) is in the Zabbix server's log.
 //     To any server off loopback the connection is TLS with certificates (tls_ca, tls_cert, tls_key: the files of the
-//     host's certificate, as zabbix_sender's --tls-connect cert), the server's name checked, and optionally its
-//     certificate's issuer and subject (tls_server_issuer, tls_server_subject, compared as Go writes a name: RFC 2253,
-//     'CN=zabbix,O=Example'). Go's crypto/tls has no PSK: a site on PSK uses mode api. Plain text goes to a loopback
+//     host's certificate, as zabbix_sender's --tls-connect cert). With tls_server_issuer or tls_server_subject set, the
+//     server's certificate is checked as Zabbix checks one: its chain to tls_ca and those strings, no host name (Zabbix
+//     reads no Subject Alternative Name); with neither, its chain and the server's name. The strings are written as
+//     Zabbix's 'Using certificates' page writes them (RFC 4514, the lowest level first: 'CN=Zabbix server,OU=
+//     Development group,O=Zabbix SIA,DC=zabbix,DC=com') and compared exactly [the page read as a reader's summary,
+//     2026-11-15]. Go's crypto/tls has no PSK: a site on PSK uses mode api. Plain text goes to a loopback
 //     server only, or under allow_plain: true (an admin's opt-in, named on the channel, logged at start and shown in the
 //     destination). [unverified: the TLS handshake opens the connection, before the header: the container proof reads it]
 //   - api: the HTTP API's history.push (POST <url>/api_jsonrpc.php, an API token in 'Authorization: Bearer'), https
@@ -32,7 +35,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,7 +49,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf16"
 )
 
 // Zabbix is a channel's zabbix: block.
@@ -252,11 +259,32 @@ type zbxItem struct {
 	NS    int    `json:"ns"`
 }
 
+// zbxClock hands out the values' (clock, ns), strictly increasing across every Zabbix channel of this process: Zabbix
+// keeps an item's history by (itemid, clock, ns), and every message of a pass carries the pass's time, so two
+// messages (a batch past 25 alerts, a Send test and an alert, two channels into one item) would share a stamp
+// [unverified: whether Zabbix drops the second value or fails the batch; part Z's two channels into one item read it].
+var zbxClock struct {
+	sync.Mutex
+	last time.Time
+}
+
+// zbxStamp is at, or a nanosecond after the last stamp handed out when at is not later.
+func zbxStamp(at time.Time) time.Time {
+	zbxClock.Lock()
+	defer zbxClock.Unlock()
+	if !at.After(zbxClock.last) {
+		at = zbxClock.last.Add(time.Nanosecond)
+	}
+	zbxClock.last = at
+	return at
+}
+
 func (s *zabbixSender) items(m Message) []zbxItem {
 	out := make([]zbxItem, 0, len(m.Alerts))
-	for i, a := range m.Alerts {
-		// one clock per message, the values a nanosecond apart: Zabbix keeps them in order
-		out = append(out, zbxItem{Host: s.host, Key: s.key, Value: zbxValue(a), Clock: m.SentAt.Unix(), NS: m.SentAt.Nanosecond()/1000*1000 + i})
+	for _, a := range m.Alerts {
+		// the message's time, each value a nanosecond after the one before it (zbxStamp): Zabbix keeps them in order
+		t := zbxStamp(m.SentAt)
+		out = append(out, zbxItem{Host: s.host, Key: s.key, Value: zbxValue(a), Clock: t.Unix(), NS: t.Nanosecond()})
 	}
 	return out
 }
@@ -329,6 +357,110 @@ func zbxRead(r io.Reader) ([]byte, error) {
 	return data, nil
 }
 
+// zbxNameTypes are the attribute names a name is written with: OpenSSL's short names (Zabbix compares OpenSSL's
+// string) for the components certificates carry; any other is its dotted OID, as RFC 4514 writes an unknown type
+// [unverified: OpenSSL's names beyond CN, OU, O, DC (the page's examples); a refused pin prints the string read, so it
+// can be copied from the error].
+var zbxNameTypes = map[string]string{
+	"2.5.4.3": "CN", "2.5.4.4": "SN", "2.5.4.5": "serialNumber", "2.5.4.6": "C", "2.5.4.7": "L", "2.5.4.8": "ST",
+	"2.5.4.9": "street", "2.5.4.10": "O", "2.5.4.11": "OU", "2.5.4.12": "title", "2.5.4.17": "postalCode",
+	"2.5.4.42": "GN", "2.5.4.43": "initials", "2.5.4.46": "dnQualifier",
+	"0.9.2342.19200300.100.1.25": "DC", "0.9.2342.19200300.100.1.1": "UID", "1.2.840.113549.1.9.1": "emailAddress",
+}
+
+type zbxATV struct {
+	Type  asn1.ObjectIdentifier
+	Value asn1.RawValue
+}
+
+// zbxRDNSET is one relative name: a SET OF (encoding/asn1 reads a slice type named ...SET as a SET).
+type zbxRDNSET []zbxATV
+
+// zbxName writes a certificate's DER name as Zabbix compares it: the relative names in reverse order (the lowest level
+// first), the values of a multi-valued one joined by '+', a string value escaped (zbxEscape), any other value '#' and
+// its DER in hex (RFC 4514 2.4).
+func zbxName(der []byte) (string, error) {
+	var seq []zbxRDNSET
+	rest, err := asn1.Unmarshal(der, &seq)
+	if err != nil {
+		return "", err
+	}
+	if len(rest) > 0 {
+		return "", errors.New("data after the name")
+	}
+	var b strings.Builder
+	for i := len(seq) - 1; i >= 0; i-- {
+		if i != len(seq)-1 {
+			b.WriteByte(',')
+		}
+		for j, atv := range seq[i] {
+			if j > 0 {
+				b.WriteByte('+')
+			}
+			name := zbxNameTypes[atv.Type.String()]
+			if name == "" {
+				name = atv.Type.String()
+			}
+			b.WriteString(name)
+			b.WriteByte('=')
+			if v, ok := zbxString(atv.Value); ok {
+				b.WriteString(zbxEscape(v))
+			} else {
+				b.WriteString("#" + hex.EncodeToString(atv.Value.FullBytes))
+			}
+		}
+	}
+	return b.String(), nil
+}
+
+// zbxString reads a name's string value (UTF-8 as it is: Zabbix's page says UTF-8 is supported); false for a value
+// that is not one of the string types.
+func zbxString(v asn1.RawValue) (string, bool) {
+	if v.Class != asn1.ClassUniversal {
+		return "", false
+	}
+	switch v.Tag {
+	case asn1.TagUTF8String, asn1.TagPrintableString, asn1.TagIA5String, asn1.TagNumericString, 26: // 26: VisibleString
+		return string(v.Bytes), true
+	case asn1.TagT61String: // read as Latin-1, as OpenSSL converts it
+		r := make([]rune, len(v.Bytes))
+		for i, c := range v.Bytes {
+			r[i] = rune(c)
+		}
+		return string(r), true
+	case asn1.TagBMPString:
+		if len(v.Bytes)%2 != 0 {
+			return "", false
+		}
+		u := make([]uint16, len(v.Bytes)/2)
+		for i := range u {
+			u[i] = uint16(v.Bytes[2*i])<<8 | uint16(v.Bytes[2*i+1])
+		}
+		return string(utf16.Decode(u)), true
+	}
+	return "", false
+}
+
+// zbxEscape escapes a value as RFC 4514 2.4 and Zabbix's page list it: the double quote, plus, comma, semicolon, the
+// angle brackets and the backslash anywhere, a space or '#' first, a space last, each with a backslash before it; a
+// control character as a backslash and its two hex digits.
+func zbxEscape(v string) string {
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case strings.IndexByte(`\"+,;<>`, c) >= 0, (c == ' ' || c == '#') && i == 0, c == ' ' && i == len(v)-1:
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case c < 0x20 || c == 0x7f:
+			fmt.Fprintf(&b, "\\%02X", c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // zbxCauses is what a value Zabbix did not process may mean; the server's log has the reason.
 const zbxCauses = "the item is missing, is not a trapper item (or an HTTP agent item with trapping on), or is disabled; the host is not monitored; or this machine is not in the item's Allowed hosts - the Zabbix server's log says which"
 
@@ -340,16 +472,33 @@ func (s *zabbixSender) sendData(ctx context.Context, items []zbxItem) error {
 	if s.tlsCfg != nil {
 		cfg := s.tlsCfg.Clone()
 		if s.issuer != "" || s.subject != "" {
+			// a pinned issuer or subject: the certificate is checked as Zabbix checks one - its chain to tls_ca and
+			// the pinned strings, never a host name. crypto/tls's own check (the name with the chain) is off, and
+			// VerifyConnection, which runs on every connection whatever InsecureSkipVerify says, does the rest.
+			roots := cfg.RootCAs
+			cfg.InsecureSkipVerify = true
 			cfg.VerifyConnection = func(cs tls.ConnectionState) error {
 				if len(cs.PeerCertificates) == 0 {
 					return errors.New("the server sent no certificate")
 				}
 				c := cs.PeerCertificates[0]
-				if s.issuer != "" && c.Issuer.String() != s.issuer {
-					return fmt.Errorf("the server certificate's issuer %q is not tls_server_issuer", c.Issuer.String())
+				inter := x509.NewCertPool()
+				for _, ic := range cs.PeerCertificates[1:] {
+					inter.AddCert(ic)
 				}
-				if s.subject != "" && c.Subject.String() != s.subject {
-					return fmt.Errorf("the server certificate's subject %q is not tls_server_subject", c.Subject.String())
+				if _, err := c.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter,
+					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+					return fmt.Errorf("the server certificate does not chain to tls_ca: %w", err)
+				}
+				if s.issuer != "" {
+					if got, err := zbxName(c.RawIssuer); err != nil || got != s.issuer {
+						return fmt.Errorf("the server certificate's issuer %q is not tls_server_issuer", got)
+					}
+				}
+				if s.subject != "" {
+					if got, err := zbxName(c.RawSubject); err != nil || got != s.subject {
+						return fmt.Errorf("the server certificate's subject %q is not tls_server_subject", got)
+					}
 				}
 				return nil
 			}

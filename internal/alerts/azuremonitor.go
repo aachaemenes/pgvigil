@@ -255,8 +255,17 @@ func (s *azureSender) upload(ctx context.Context, body []byte) error {
 }
 
 // azWords is Azure's message in an error body: the ingestion's {"error":{"code","message"}}, or the token endpoint's
-// {"error":"<code>","error_description":"..."}; else the body's first line.
-func azWords(raw []byte) string {
+// {"error":"<code>","error_description":"..."}; else the body's first line. Each hide (the client secret) is replaced
+// before the words are cut, so no part of it survives a cut through it (B24k review 8).
+func azWords(raw []byte, hide ...string) string {
+	capLine := func(t string) string {
+		for _, h := range hide {
+			if h != "" {
+				t = strings.ReplaceAll(t, h, "[secret]")
+			}
+		}
+		return capLine(t)
+	}
 	var top map[string]json.RawMessage
 	if json.Unmarshal(raw, &top) == nil {
 		var obj struct{ Code, Message string }
@@ -302,7 +311,7 @@ func (s *azureSender) bearerToken(ctx context.Context, fresh bool) (string, erro
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token %s answered %s: %s", hostOf(s.token), resp.Status, strings.ReplaceAll(azWords(raw), s.secret, "[secret]"))
+		return "", fmt.Errorf("token %s answered %s: %s", hostOf(s.token), resp.Status, azWords(raw, s.secret))
 	}
 	var t struct {
 		Type    string `json:"token_type"`

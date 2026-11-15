@@ -1257,7 +1257,8 @@ END $$;
 
 -- ---- task 403b: 'alert channel failing' (PerformanceMonitor Fixed 21 / Fixed 27) --------------------------------
 -- A configured channel whose last three send attempts (sent, failed, refused, or a Send test answered) all failed or
--- were refused is a finding of the repository itself (source 'pgvigil repository', no instance), so 0190's
+-- were refused, or whose destination's answer holds it (B24k: Pushover's 429 or 4xx, read as alerts.go reads it), is
+-- a finding of the repository itself (source 'pgvigil repository', no instance), so 0190's
 -- alert_findings carries it (through alert_channel_findings below, its third arm: a wiring line) and alert_due sends it
 -- as a repository-wide alert:
 -- to every channel past its floor whose checks list takes it, scoped ones too, never a contact's route, resolved (the
@@ -1279,40 +1280,63 @@ CREATE INDEX IF NOT EXISTS alert_log_channel_at_idx ON pgvigil.alert_log (channe
 -- their own two views, never from 0190's alert_findings, which reads this view (no cycle). The key, the setting and the
 -- detail's fixed words do not change with the severity (alert_key holds no severity).
 CREATE OR REPLACE VIEW pgvigil.alert_channel_failing AS
+WITH f AS MATERIALIZED (   -- the failing channels: three failed attempts in a row, or held by its destination's answer
+  SELECT c.name, c.kind, c.destination, l.n, l.first_at, l.last_at, l.err, h.held_at, h.held_err
+    FROM pgvigil.alert_channels c
+   CROSS JOIN LATERAL (
+          SELECT count(*)::int AS n, min(x.snapshot_at) AS first_at, max(x.snapshot_at) AS last_at,
+                 (array_agg(x.error ORDER BY x.snapshot_at DESC))[1] AS err,
+                 coalesce(bool_and(x.outcome IN ('failed', 'refused')), false) AS all_failed
+            FROM (SELECT a.snapshot_at, a.outcome, a.error FROM pgvigil.alert_log a
+                   WHERE a.channel = c.name AND a.outcome IN ('sent', 'failed', 'refused', 'test')
+                   ORDER BY a.snapshot_at DESC LIMIT 3) x) l
+    -- B24k's hold (a Pushover 429 or 4xx: alerts.go reads it the same way): the newest of the channel's sends, Send
+    -- tests that went and held attempts is a held attempt, its date (when it has one) still ahead, and no post that
+    -- carried alerts failed after it (one does only once the hold is gone: a changed configuration). A held channel
+    -- makes no more attempts, so the three in a row would never come.
+    LEFT JOIN LATERAL (
+          SELECT m.snapshot_at AS held_at, m.error AS held_err
+            FROM (SELECT a.snapshot_at, a.outcome, a.error FROM pgvigil.alert_log a
+                   WHERE a.channel = c.name
+                     AND (a.outcome IN ('sent', 'test') OR (a.outcome = 'failed' AND a.error LIKE 'held until %'))
+                   ORDER BY a.snapshot_at DESC LIMIT 1) m
+           WHERE m.outcome = 'failed'
+             AND coalesce(substring(m.error FROM '^held until (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ): ')::timestamptz > now(), true)
+             AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_log b
+                              WHERE b.channel = c.name AND b.snapshot_at > m.snapshot_at
+                                AND b.outcome IN ('failed', 'refused') AND b.keys <> '{}')) h ON true
+   WHERE c.is_configured AND ((l.n = 3 AND l.all_failed) OR h.held_at IS NOT NULL)
+)
 SELECT NULL::int AS instance_id,
        CASE WHEN EXISTS (SELECT 1
-                           FROM (SELECT f.instance_id, f.source, f.setting, f.value FROM pgvigil.findings f WHERE f.severity = 'critical'
+                           FROM (SELECT f2.instance_id, f2.source, f2.setting, f2.value FROM pgvigil.findings f2 WHERE f2.severity = 'critical'
                                  UNION ALL
                                  SELECT r.instance_id, r.source, r.setting, r.value FROM pgvigil.alert_rule_findings r WHERE r.severity = 'critical') cf
                           WHERE pgvigil.alert_key(cf.instance_id, cf.source, cf.setting, cf.value) = ANY (kk.keys))
             THEN 'critical' ELSE 'warning' END::text AS severity,
-       'alert channel failing'::text AS setting, c.name AS value,
+       'alert channel failing'::text AS setting, f.name AS value,
        'fix the destination or its credentials (the Alerts page lists the channel''s errors), then press its Send test: a test that goes through ends this alert; alerts owed to it are sent once it answers'::text AS suggested,
-       'alert channel failing: ' || c.kind || ' to ' || c.destination || ', the last ' || l.n || ' sends failed, the newest at '
-         || to_char(l.last_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
-         || coalesce('; last error: ' || left(l.err, 300), '') AS detail,
+       'alert channel failing: ' || f.kind || ' to ' || f.destination
+         || CASE WHEN f.held_at IS NOT NULL
+                 THEN ', held by its answer of ' || to_char(f.held_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
+                      || '; ' || left(f.held_err, 300)
+                 ELSE ', the last ' || f.n || ' sends failed, the newest at '
+                      || to_char(f.last_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
+                      || coalesce('; last error: ' || left(f.err, 300), '') END AS detail,
        'pgvigil repository'::text AS source, fs.since AS at
-  FROM pgvigil.alert_channels c
- CROSS JOIN LATERAL (
-        SELECT count(*)::int AS n, min(x.snapshot_at) AS first_at, max(x.snapshot_at) AS last_at,
-               (array_agg(x.error ORDER BY x.snapshot_at DESC))[1] AS err
-          FROM (SELECT a.snapshot_at, a.outcome, a.error FROM pgvigil.alert_log a
-                 WHERE a.channel = c.name AND a.outcome IN ('sent', 'failed', 'refused', 'test')
-                 ORDER BY a.snapshot_at DESC LIMIT 3) x
-        HAVING count(*) = 3 AND bool_and(x.outcome IN ('failed', 'refused'))) l
- CROSS JOIN LATERAL (   -- the keys those three attempts carried (only for a failing channel: l has its row)
+  FROM f
+ CROSS JOIN LATERAL (   -- the keys the newest three attempts carried
         SELECT coalesce(array_agg(DISTINCT k), '{}') AS keys
           FROM (SELECT a.keys FROM pgvigil.alert_log a
-                 WHERE a.channel = c.name AND a.outcome IN ('sent', 'failed', 'refused', 'test')
+                 WHERE a.channel = f.name AND a.outcome IN ('sent', 'failed', 'refused', 'test')
                  ORDER BY a.snapshot_at DESC LIMIT 3) y, unnest(y.keys) k) kk
  CROSS JOIN LATERAL (   -- failing since: the first failed or refused attempt after the channel's newest one that went
-        SELECT coalesce(min(a.snapshot_at), l.first_at) AS since
+        SELECT coalesce(min(a.snapshot_at), f.first_at) AS since
           FROM pgvigil.alert_log a
-         WHERE a.channel = c.name AND a.outcome IN ('failed', 'refused')
+         WHERE a.channel = f.name AND a.outcome IN ('failed', 'refused')
            AND a.snapshot_at > coalesce((SELECT b.snapshot_at FROM pgvigil.alert_log b
-                                          WHERE b.channel = c.name AND b.outcome IN ('sent', 'test')
-                                          ORDER BY b.snapshot_at DESC LIMIT 1), '-infinity')) fs
- WHERE c.is_configured;
+                                          WHERE b.channel = f.name AND b.outcome IN ('sent', 'test')
+                                          ORDER BY b.snapshot_at DESC LIMIT 1), '-infinity')) fs;
 
 -- ---- task B24k: the channel kinds pushover, zabbix and azuremonitor; a destination's monthly quota -----------------
 ALTER TABLE pgvigil.alert_channels DROP CONSTRAINT IF EXISTS alert_channels_kind_check;

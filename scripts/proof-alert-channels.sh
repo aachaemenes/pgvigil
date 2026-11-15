@@ -63,11 +63,14 @@
 #       token, the user key, priority 1 and the alert's line; alert_channel_quota holds 500 / 10000; the next pass:
 #       drop gets ONE firing file 'pushover quota low', value po;
 #     - O2 the stub answers 429 with X-Limit-App-Reset an hour ahead: 'failed', the error opening 'held until <that
-#       time>: '; the next pass posts nothing to the stub and its summary says 'held by the destination: po:'; a Send
+#       time>: '; the next pass posts nothing to the stub and its summary says 'held by the destination: po:', and
+#       drop gets ONE firing 'alert channel failing' of po (a held channel is a failing one: review B24k 1); a Send
 #       test (the stub back at 200) goes through ('test'), which ends the hold, so the same pass sends the owed alert
-#       ('sent': a pass answers its tests before it reads the holds);
-#     - O3 the stub answers 400: 'failed', 'held until the configuration changes ('; the next pass posts nothing; the
-#       configuration given a device: the next pass posts again, with device proof1 ('sent').
+#       ('sent': a pass answers its tests before it reads the holds) and drop gets ONE resolved file of it;
+#     - O3 the stub answers 400: 'failed', 'held until the configuration changes ('; the next pass posts nothing and
+#       drop gets a second firing 'alert channel failing' of po; the configuration given a device: the next pass posts
+#       again, with device proof1 ('sent'), and the pass after it sends drop the second resolved file (the pass that
+#       posts read the findings before its post).
 #  U. (B24k) Azure Monitor Logs through a real pass against loopback stubs of the token endpoint and the ingestion URL
 #     (NOT PROVEN LIVE: no Log Analytics workspace). A channel az (floor critical): a rule finding: 'sent'; the stub saw
 #     one token request (grant_type client_credentials, scope https://monitor.azure.com//.default, the secret) and one
@@ -78,15 +81,19 @@
 #     zabbix-web-nginx-pgsql alpine-7.0-latest and postgres:16-alpine, free): a server with certificate TLS (a CA,
 #     its certificate, made here by openssl), three hosts made through its API - pgvigil-proof (a trapper item
 #     pgvigil.alert, text), pgvigil-proof-tls (the same item; the host accepts a certificate only, its subject
-#     CN=pgvigil-proof), pgvigil-proof-deny (its item's Allowed hosts 192.0.2.1) - and an API token. One critical rule
-#     finding, one pass, five channels:
+#     CN=pgvigil-proof), pgvigil-proof-deny (its item's Allowed hosts 192.0.2.1) - and an API token. The server's
+#     certificate carries NO Subject Alternative Name (Zabbix reads none). One critical rule finding, one pass, six
+#     channels:
 #     - zbx (sender, plain, loopback, host pgvigil-proof): 'sent';
-#     - zbxtls (sender, certificate TLS, host pgvigil-proof-tls, tls_server_subject the server's): 'sent';
+#     - zbxtls (sender, certificate TLS, host pgvigil-proof-tls, tls_server_subject and tls_server_issuer the server
+#       certificate's, as Zabbix writes them): 'sent' - the chain and the pins checked, no host name (review B24k 4);
+#     - zbxname (sender, certificate TLS, host pgvigil-proof-tls, no pin): 'failed', the error naming the certificate
+#       (with nothing pinned the server's name is checked, and 127.0.0.1 is not in it);
 #     - zbxapi (api, history.push with the token, host pgvigil-proof): 'sent';
 #     - zbxclear (sender, plain, host pgvigil-proof-tls): 'failed', 'processed 0 of 1';
 #     - zbxdeny (sender, plain, host pgvigil-proof-deny): 'failed', 'processed 0 of 1'.
-#     history.get reads back two values on pgvigil-proof's item and one on pgvigil-proof-tls's, each a JSON object with
-#     the finding's key. Not graded: whether TLS opens the connection before the ZBXD header (a TLS send to a server
+#     history.get reads back two values on pgvigil-proof's item (zbx's and zbxapi's in one pass: their (clock, ns)
+#     differ, review B24k 2) and one on pgvigil-proof-tls's, each a JSON object with the finding's key. Not graded: whether TLS opens the connection before the ZBXD header (a TLS send to a server
 #     that answers only TLS succeeding is what is read). The containers, their network and volumes are removed after
 #     and read back gone.
 #  S. (K2) the Slack bot against a loopback stand-in of chat.postMessage (NOT PROVEN LIVE: no bot token is ever stored).
@@ -484,7 +491,7 @@ newfinding() {
 newest_alert() { q "select outcome || '|' || coalesce(error, '') from pgvigil.alert_log where channel = '$1' and n_firing + n_repeat + n_resolved > 0 order by snapshot_at desc limit 1"; }
 dropcount() { grep -l "\"$1\"" "$WORK/drop"/* 2>/dev/null | xargs -r grep -l "\"$2\"" 2>/dev/null | xargs -r grep -l "\"$3\"" 2>/dev/null | wc -l; }
 # the vendors' stubs on loopback: Pushover's Messages API and Azure's token endpoint and Logs Ingestion upload
-AZTEN=72f988bf-86f1-41af-91ab-2d7cd011db47; AZCID=00001111-aaaa-2222-bbbb-3333cccc4444; AZDCR=dcr-0123456789abcdef0123456789abcdef
+AZTEN=0c0ffee0-0b24-4000-8000-00000000b24c; AZCID=00001111-aaaa-2222-bbbb-3333cccc4444; AZDCR=dcr-0123456789abcdef0123456789abcdef
 export PGV_PROOF_PO_TOKEN=azGDORePK8gMaC0QOYAMyEE$SUF PGV_PROOF_PO_USER=uQiRzpo4DXghDmr9QzzfQu$SUF PGV_PROOF_AZ_SECRET=s3cr3t-$SUF-$RANDOM
 cat > "$WORK/vendor.py" <<'PY'
 import json, os, sys, time, urllib.parse
@@ -511,6 +518,9 @@ class H(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode('utf-8', 'replace')
         u = urllib.parse.urlparse(self.path)
         if u.path == '/1/messages.json':
+            # Pushover's API page states: 200 with status 1, the X-Limit-App-* headers, 429 when the month is used
+            # up, 4xx for a bad request. ASSUMED (not stated): that a 429 carries X-Limit-App-Reset, and the bodies'
+            # exact words below.
             form = {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
             log('po.log', form)
             m = mode('po.mode', '200')
@@ -520,6 +530,8 @@ class H(BaseHTTPRequestHandler):
                 return self.answer(400, '{"user":"invalid","errors":["user identifier is not a valid user, group, or subscribed user key"],"status":0}')
             return self.answer(200, '{"status":1,"request":"5042853c-402d-4a18-abcb-168734a801de"}',
                                {'X-Limit-App-Limit': '10000', 'X-Limit-App-Remaining': mode('po.left', '9000'), 'X-Limit-App-Reset': str(int(time.time()) + 30 * 86400)})
+        # Entra's token endpoint (client credentials) and the Logs Ingestion upload: the tutorial's shapes; ASSUMED
+        # (not on the pages read): the 400 body's exact words.
         if u.path == '/%s/oauth2/v2.0/token' % tenant:
             form = {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
             n = sum(1 for _ in open(os.path.join(work, 'aztok.log'))) + 1 if os.path.exists(os.path.join(work, 'aztok.log')) else 1
@@ -571,11 +583,13 @@ n0=$(posts)
 pass O2b
 [[ $(posts) == "$n0" ]] || fail "O2: a post while held by the 429"
 grep -q 'held by the destination: po:' "$WORK/pass.O2b.out" || fail "O2: the pass does not say po is held: $(cat "$WORK/pass.O2b.out")"
+[[ $(dropcount 'alert channel failing' firing po) == 1 ]] || fail "O2: drop's 'alert channel failing' of the held po: $(dropcount 'alert channel failing' firing po) (wanted 1); the view: $(q "select severity || ' ' || detail from pgvigil.alert_channel_failing where value = 'po'")"
 echo 200 > "$WORK/po.mode"
 testreq po 20
 pass O2c
 [[ $(newest po | cut -d'|' -f1) == test ]] || fail "O2: the Send test: $(newest po)"
 [[ $(newest_alert po | cut -d'|' -f1) == sent ]] || fail "O2: the owed alert after the test: $(newest_alert po)"
+[[ $(dropcount 'alert channel failing' resolved po) == 1 ]] || fail "O2: drop's recovery of po's hold: $(dropcount 'alert channel failing' resolved po)"
 echo 400 > "$WORK/po.mode"
 K3=$(newfinding 7)
 pass O3
@@ -583,11 +597,14 @@ pass O3
 n0=$(posts)
 pass O3b
 [[ $(posts) == "$n0" ]] || fail "O3: a post while held by the 400"
+[[ $(dropcount 'alert channel failing' firing po) == 2 ]] || fail "O3: drop's 'alert channel failing' of po held by the 400: $(dropcount 'alert channel failing' firing po) firing file(s) (wanted 2)"
 cp "$WORK/cfg.base.yaml" "$CFG"; echo "${POLINE%\}\}}, device: proof1}}" >> "$CFG"
 echo 200 > "$WORK/po.mode"
 pass O3c
 [[ $(newest_alert po | cut -d'|' -f1) == sent ]] || fail "O3: after the configuration changed: $(newest_alert po)"
 [[ $(tail -1 "$WORK/po.log" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("device",""))') == proof1 ]] || fail "O3: the post after the change has no device proof1"
+pass O3d
+[[ $(dropcount 'alert channel failing' resolved po) == 2 ]] || fail "O3: drop's recovery after the configuration changed: $(dropcount 'alert channel failing' resolved po)"
 cp "$WORK/cfg.base.yaml" "$CFG"
 ok "O: Pushover sent with its fields and quota; quota low raised; a 429 held until its reset or a test; a 400 until the configuration changed"
 fi
@@ -869,10 +886,10 @@ if [[ $PART == *Z* ]]; then
 for t in docker openssl; do command -v $t >/dev/null || fail "$t is not on this machine (part Z)"; done
 ZN=pgv-zbx-$SUF; ZPW=z$RANDOM$RANDOM; ZENC=$WORK/zenc; mkdir -p "$ZENC"
 ZCLEAN="$ZN"
-# a CA, the server's certificate (127.0.0.1 and the container's name) and the sending host's (CN=pgvigil-proof)
+# a CA, the server's certificate (no Subject Alternative Name: Zabbix reads none) and the sending host's (CN=pgvigil-proof)
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=pgvigil proof CA" -keyout "$ZENC/ca.key" -out "$ZENC/ca.pem" 2>/dev/null
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$ZN-srv" -keyout "$ZENC/server.key" -out "$ZENC/server.csr" 2>/dev/null
-printf 'subjectAltName=IP:127.0.0.1,DNS:%s-srv\nextendedKeyUsage=serverAuth\n' "$ZN" > "$ZENC/srv.ext"
+printf 'extendedKeyUsage=serverAuth\n' > "$ZENC/srv.ext"
 openssl x509 -req -in "$ZENC/server.csr" -CA "$ZENC/ca.pem" -CAkey "$ZENC/ca.key" -CAcreateserial -days 1 -extfile "$ZENC/srv.ext" -out "$ZENC/server.crt" 2>/dev/null
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=pgvigil-proof" -keyout "$ZENC/client.key" -out "$ZENC/client.csr" 2>/dev/null
 printf 'extendedKeyUsage=clientAuth\n' > "$ZENC/cli.ext"
@@ -937,13 +954,14 @@ PY
 }
 for n in $(seq 1 40); do
   [[ $(probe 2>/dev/null) == "processed: 1;"* ]] && break
-  [[ $n == 40 ]] && fail "Z: the server never took the proof's host: $(probe 2>&1 | tail -1)"
+  [[ $n == 40 ]] && fail "Z: the server never took the proof's host: $(probe 2>&1 | tail -1); the server's log: $(docker logs --tail 30 "$ZN-srv" 2>&1)"
   sleep 3
 done
 cp "$CFG" "$WORK/cfg.base.yaml"
 cat >> "$CFG" <<EOF
   - {name: zbx, kind: zabbix, min_severity: critical, instances: [$INSTH], zabbix: {server: "127.0.0.1:$ZP1", host: pgvigil-proof}}
-  - {name: zbxtls, kind: zabbix, min_severity: critical, instances: [$INSTH], zabbix: {server: "127.0.0.1:$ZP1", host: pgvigil-proof-tls, tls_ca: $ZENC/ca.pem, tls_cert: $ZENC/client.crt, tls_key: $ZENC/client.key, tls_server_subject: "CN=$ZN-srv"}}
+  - {name: zbxtls, kind: zabbix, min_severity: critical, instances: [$INSTH], zabbix: {server: "127.0.0.1:$ZP1", host: pgvigil-proof-tls, tls_ca: $ZENC/ca.pem, tls_cert: $ZENC/client.crt, tls_key: $ZENC/client.key, tls_server_subject: "CN=$ZN-srv", tls_server_issuer: "CN=pgvigil proof CA"}}
+  - {name: zbxname, kind: zabbix, min_severity: critical, instances: [$INSTH], zabbix: {server: "127.0.0.1:$ZP1", host: pgvigil-proof-tls, tls_ca: $ZENC/ca.pem, tls_cert: $ZENC/client.crt, tls_key: $ZENC/client.key}}
   - {name: zbxapi, kind: zabbix, min_severity: critical, instances: [$INSTH], zabbix: {mode: api, url: "http://127.0.0.1:$ZP2", token: env:PGV_PROOF_ZBX_TOKEN, host: pgvigil-proof}}
   - {name: zbxclear, kind: zabbix, min_severity: critical, instances: [$INSTH], zabbix: {server: "127.0.0.1:$ZP1", host: pgvigil-proof-tls}}
   - {name: zbxdeny, kind: zabbix, min_severity: critical, instances: [$INSTH], zabbix: {server: "127.0.0.1:$ZP1", host: pgvigil-proof-deny}}
@@ -956,6 +974,7 @@ done
 for c in zbxclear zbxdeny; do
   [[ $(newest_alert $c) == failed*"processed 0 of 1"* ]] || fail "Z: $c's attempt: $(newest_alert $c)"
 done
+[[ $(newest_alert zbxname) == failed*certificate* ]] || fail "Z: zbxname (TLS, nothing pinned, no SAN in the server's certificate): $(newest_alert zbxname)"
 hist() { zapi history.get "{\"history\":4,\"itemids\":[\"$1\"],\"output\":\"extend\"}" | python3 -c 'import json,sys; v=[json.loads(r["value"]) for r in json.load(sys.stdin)]; print(sum(1 for x in v if x.get("finding_key") == sys.argv[1]))' "$K6"; }
 for n in $(seq 1 20); do [[ $(hist "$ZI1") == 2 && $(hist "$ZI2") == 1 ]] && break; sleep 3; done
 [[ $(hist "$ZI1") == 2 ]] || fail "Z: pgvigil-proof's item holds $(hist "$ZI1") value(s) of the finding (wanted 2: the sender's and history.push's)"

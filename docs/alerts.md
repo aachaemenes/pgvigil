@@ -105,19 +105,19 @@ the send's 30 seconds and posted once more; the second answer stands. A longer `
 fails that send as above, and the log's error says which.
 
 **Alert channel failing.** When a channel's last three send attempts (alerts or a Send test) all failed or were
-refused, the repository raises its own finding *alert channel failing* (warning, instance `pgvigil`, its value the
-channel's name; critical while one of those failed sends carried an alert that is critical now, so a channel losing
-criticals is told to the channels at a critical floor too), and the other channels are sent it like any
-repository-wide alert: every channel at or under its severity, scoped ones too, never an application contact's route.
-A channel whose `checks:` list leaves out *alert channel failing* (or `pgvigil repository`) is not told, and a channel
-in its quiet hours is told after them while it stands; no window or digest holds it (none holds a repository-wide
-alert). The detail names the channel's kind and destination (a webhook's scheme and host only), the newest failed
-attempt and its error; its time is the first failed attempt of the streak (failing since). The failing channel itself
-is never sent its own alert. The next send that goes through ends it, and the other channels get its recovery. A
-channel that nothing is owed to makes no attempt, so the alert stands, repeating on the other channels, until a send
-goes through: once the destination is fixed, press the channel's **Send test** on the Alerts page, and a test that
-goes through ends it. A channel whose floor is critical hears it only while criticals are being lost: set one channel
-at warning to hear of every failing channel.
+refused, or its destination's answer holds it (Pushover's), the repository raises its own finding *alert channel
+failing* (warning, instance `pgvigil`, its value the channel's name; critical while one of those failed sends carried
+an alert that is critical now, so a channel losing criticals is told to the channels at a critical floor too), and the
+other channels are sent it like any repository-wide alert: every channel at or under its severity, scoped ones too,
+never an application contact's route. A channel whose `checks:` list leaves out *alert channel failing* (or `pgvigil
+repository`) is not told, and a channel in its quiet hours is told after them while it stands; no window or digest
+holds it (none holds a repository-wide alert). The detail names the channel's kind and destination (a webhook's scheme
+and host only), the newest failed attempt and its error; its time is the first failed attempt of the streak (failing
+since). The failing channel itself is never sent its own alert. The next send that goes through ends it, and the other
+channels get its recovery. A channel that nothing is owed to makes no attempt, so the alert stands, repeating on the
+other channels, until a send goes through: once the destination is fixed, press the channel's **Send test** on the
+Alerts page, and a test that goes through ends it. A channel whose floor is critical hears it only while criticals are
+being lost: set one channel at warning to hear of every failing channel.
 
 One collector sends alerts: name the `alerts:` list in one configuration. A collector without the list leaves the
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
@@ -461,9 +461,11 @@ NOT PROVEN LIVE: no public address and no Slack token in the lab; the proof sign
   that. The application token and the user or group key come through `env:` or `file:` and never show. Pushover's
   answers decide what follows: a 200 with status 1 is sent; a 429 (the month's messages used up) holds the channel -
   nothing is posted - until the reset Pushover names; another 4xx (a key wrong, a device unknown) holds it until its
-  configuration changes or a Send test goes through. The Alerts page marks a held channel. Under 10 % of the month's
-  messages left, the repository raises *pushover quota low* on every channel. Proven against a stub of Pushover's
-  documented answers only: no Pushover account was made.
+  configuration changes or a Send test goes through (a Send test that fails leaves the hold). The Alerts page marks a
+  held channel, and a held channel raises *alert channel failing* on the other channels. A daily digest goes as one
+  notification (its group lines, cut within 1,024 characters, priority 0). Under 10 % of the month's messages left,
+  the repository raises *pushover quota low* on every channel. NOT PROVEN LIVE (no Pushover account was made), and
+  its proof against a stub of Pushover's documented answers has not run yet.
 - **Zabbix** (`kind: zabbix`) sends each message's alerts as values of one item of one Zabbix host: a trapper item
   of type text, key `pgvigil.alert` by default, its *Allowed hosts* naming the machine that sends. Each value is the
   alert as a JSON object (event, severity, instance, source, setting, value, detail, url, finding_key, line).
@@ -473,10 +475,14 @@ NOT PROVEN LIVE: no public address and no Slack token in the lab; the proof sign
     log line names the causes to look for (the item missing, not a trapper item or disabled, the host not monitored,
     the sender not in *Allowed hosts*); the Zabbix server's own log has the reason. To a server off loopback the
     connection is TLS with certificates: the host's certificate and key (the host's encryption set to accept a
-    certificate), the server's name checked, and optionally `tls_server_issuer` / `tls_server_subject`, compared
-    exactly as Go writes a name (`CN=zabbix,O=Example`). Go has no PSK: a site on PSK uses `mode: api`. Plain text
-    goes to a loopback server only, or with `allow_plain: true` (an admin's opt-in, logged at start and shown in the
-    destination).
+    certificate). With `tls_server_issuer` or `tls_server_subject` set, the server's certificate is checked as Zabbix
+    checks one: its chain to `tls_ca` and those strings, no host name (Zabbix reads no Subject Alternative Name); with
+    neither, its chain and the server's name. The strings are written as Zabbix writes them - the lowest level first,
+    `CN=Zabbix server,OU=Development group,O=Zabbix SIA,DC=zabbix,DC=com`, special characters escaped with `\` - and
+    compared exactly; a refusal prints the string pgvigil read. Go has no PSK: a site on PSK uses `mode: api`. Plain
+    text goes to a loopback server only, or with `allow_plain: true` (an admin's opt-in, logged at start and shown in
+    the destination). NOT PROVEN until the container proof runs: certificate TLS against a Zabbix 7.0 server (whether
+    the handshake comes before the protocol's header), and a value's own timestamp kept per value.
   - `mode: api`: the HTTP API's `history.push` (Zabbix 7.0), `zabbix: {mode: api, url: https://zabbix.example.org/zabbix, token: env:ZBX_TOKEN, host: pgvigil}`,
     the token sent in `Authorization: Bearer`, over https (plain only to loopback or with `allow_plain`). A value
     Zabbix refuses comes back with its own words.
@@ -492,7 +498,8 @@ NOT PROVEN LIVE: no public address and no Slack token in the lab; the proof sign
   go in several calls, and a detail is cut at 60,000 bytes (the service truncates a field over 64 KB). A 400 shows
   Azure's message. The site makes, once: an app registration with a secret, the table, and a data collection rule
   whose input stream takes the columns below, with the role *Monitoring Metrics Publisher* on the rule for the app.
-  Proven against a stub of the documented answers only: no Log Analytics workspace was made.
+  NOT PROVEN LIVE (no Log Analytics workspace was made), and its proof against a stub of the documented answers has
+  not run yet.
 
   The table `PgvigilAlerts_CL` and the stream `Custom-PgvigilAlerts` take these columns, the only ones pgvigil sends
   (the shape of Microsoft's samples; compare with the JSON view of your rule):
@@ -655,7 +662,7 @@ through `pgvigil.alert_test_record`; its login needs nothing new (0093 grants `p
 | `pgvigil.alert_channel_quota` | A destination's monthly quota from its newest answer (Pushover's); `alert_channel_quota_low` is the finding *pushover quota low* under 10 % left, and `alert_channel_findings` is both channel findings, the view `alert_findings` reads. |
 | `pgvigil.alert_threads` | The Slack bot's thread per alert occurrence (the post's ts and the Slack channel's id), written with the send's attempt; `alert_threads_purge` drops a closed one's after 90 days. |
 | `pgvigil.alert_anchor_checks` | What makes a finding an anchor for attachment (rule metrics, exact check names); `alert_anchor` is the test, and `alert_held` keeps an attached send with its anchor. |
-| `pgvigil.alert_channel_failing` | Each configured channel whose last three send attempts failed: the repository-wide finding *alert channel failing* (a view over `alert_log`, read through `alert_findings`; the index `alert_log_channel_at_idx` serves it). |
+| `pgvigil.alert_channel_failing` | Each configured channel whose last three send attempts failed, or that its destination's answer holds: the repository-wide finding *alert channel failing* (a view over `alert_log`, read through `alert_findings`; the index `alert_log_channel_at_idx` serves it). |
 
 Writes from the UI go through `pgvigil.import_alert_window` and `pgvigil.import_alert_rule` (the actions door's audit
 login; `POST /api/alertwindows`, `/api/alertrules`); the pages read `GET /api/alertscope`. Its part `alerts` is one

@@ -207,3 +207,44 @@ func TestPushoverAnswers(t *testing.T) {
 		t.Error("a hold not at the head of the error text holds")
 	}
 }
+
+// B24k review 3: a daily digest is one notification (its subject, its group lines cut at a line within 1,024
+// characters, priority 0), never a push per group.
+func TestPushoverDigest(t *testing.T) {
+	st := &poStub{code: 200, body: `{"status":1,"request":"647d2300-702c-4b38-8b2f-d56326ae460b"}`}
+	srv := httptest.NewServer(st)
+	defer srv.Close()
+	s := pushoverFor(t, srv.URL, poTestUser, "")
+	var groups []Alert
+	for i := 0; i < 30; i++ {
+		a := Alert{Event: "digest", Instance: "erp01", Severity: "critical", Setting: fmt.Sprintf("check %02d", i), Value: "3 alert(s) held"}
+		a.text = fmt.Sprintf("[CRITICAL] erp01 - check %02d: 3 alert(s) held - newest: %s", i, strings.Repeat("x", 40))
+		groups = append(groups, a)
+	}
+	at := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
+	if err := s.send(context.Background(), Message{Channel: "po", SentAt: at, Subject: "pgvigil: daily digest - 90 alert(s) held on po", Alerts: groups}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	forms := st.posts(true)
+	if len(forms) != 1 {
+		t.Fatalf("%d posts, want the digest as one", len(forms))
+	}
+	f := forms[0]
+	msg := f.Get("message")
+	if f.Get("priority") != "0" || f.Get("title") != "pgvigil: daily digest - 90 alert(s) held on po" {
+		t.Errorf("priority %s title %q, want 0 and the digest's subject", f.Get("priority"), f.Get("title"))
+	}
+	if n := utf8.RuneCountInString(msg); n > 1024 || !strings.HasPrefix(msg, groups[0].text+"\n") || !strings.HasSuffix(msg, poDigestCut) {
+		t.Errorf("message of %d characters, want the first group first and the cut said: %q", n, msg)
+	}
+	if strings.Contains(msg, "check 29") {
+		t.Error("the 30th group fit in 1,024 characters (the cut case is not tested)")
+	}
+	short := groups[:2]
+	if err := s.send(context.Background(), Message{Channel: "po", SentAt: at, Subject: "digest", Alerts: short}); err != nil {
+		t.Fatal(err)
+	}
+	if f := st.posts(true); len(f) != 1 || f[0].Get("message") != short[0].text+"\n"+short[1].text {
+		t.Errorf("a short digest: %v", f)
+	}
+}

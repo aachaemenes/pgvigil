@@ -865,6 +865,22 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 	}
 	res.Routes = len(routed)
+	// a channel of a kind this repository's check does not take yet (before 0154: pushover, zabbix, azuremonitor,
+	// slack) is left out of the pass and named, so the other channels still go (B24k review 9: one such channel made
+	// the sync, and so every send, fail)
+	if known, err := storeKinds(ctx, conn); err != nil {
+		return res, nil, err
+	} else if known != nil {
+		kept := make([]Channel, 0, len(all))
+		for _, c := range all {
+			if !known[c.Kind] {
+				res.Errors = append(res.Errors, c.Name+": the repository does not take kind "+c.Kind+" yet (pgvigil migrate)")
+				continue
+			}
+			kept = append(kept, c)
+		}
+		all = kept
+	}
 	if err := syncChannels(ctx, conn.Exec, all, now); err != nil {
 		return res, nil, err
 	}
@@ -910,9 +926,13 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		if !ok || skipped[c.Name] || c.Quiet(now) {
 			continue
 		}
+		// the newest of the channel's sends, Send tests that went and held attempts: only a send or a test that went
+		// through ends a hold (a test that timed out carries no marker and leaves it), or a changed configuration
+		// (held compares the marker's hash); 0154's alert_channel_failing reads the same row
 		var last string
 		if err := conn.QueryRow(ctx, `SELECT coalesce((SELECT coalesce(l.error, '') FROM pgvigil.alert_log l
-		     WHERE l.channel = $1 AND l.outcome IN ('sent', 'failed', 'refused', 'test') ORDER BY l.snapshot_at DESC LIMIT 1), '')`,
+		     WHERE l.channel = $1 AND (l.outcome IN ('sent', 'test') OR (l.outcome = 'failed' AND l.error LIKE 'held until %'))
+		     ORDER BY l.snapshot_at DESC LIMIT 1), '')`,
 			c.Name).Scan(&last); err != nil {
 			return res, nil, err
 		}
@@ -1417,6 +1437,27 @@ func nonNil(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// storeKindRE reads a kind out of alert_channels_kind_check's definition (CHECK ((kind = ANY (ARRAY['smtp'::text, ...]))).
+var storeKindRE = regexp.MustCompile(`'([a-z0-9_]+)'::text`)
+
+// storeKinds is the channel kinds the repository's alert_channels takes (nil: no kind check found, nothing filtered).
+func storeKinds(ctx context.Context, conn rowQuerier) (map[string]bool, error) {
+	var def string
+	err := conn.QueryRow(ctx, `SELECT coalesce((SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+	     WHERE c.conrelid = 'pgvigil.alert_channels'::regclass AND c.conname = 'alert_channels_kind_check'), '')`).Scan(&def)
+	if err != nil || def == "" {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, m := range storeKindRE.FindAllStringSubmatch(def, -1) {
+		out[m[1]] = true
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func syncChannels[T any](ctx context.Context, exec func(context.Context, string, ...any) (T, error), chs []Channel, now time.Time) error {
