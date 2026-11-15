@@ -43,10 +43,14 @@ const (
 	ActionKill     ActionKind = "kill"
 	ActionJobStart ActionKind = "job_start"
 	ActionJobStop  ActionKind = "job_stop"
+	// ActionPlanEvict removes one cached plan (task 406, Opserver's remove-plan): DBCC FREEPROCCACHE (plan_handle),
+	// through the certificate-signed procedure master.dbo.pgvigil_evict_plan when the server has it, else directly
+	// (docs/sqlserver-actions.md: the rights of each). The plan's handle rides in the request's JobID.
+	ActionPlanEvict ActionKind = "plan_evict"
 )
 
 // ActionKinds lists every action, in the order the documentation gives them.
-var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop}
+var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop, ActionPlanEvict}
 
 // ValidAction says whether s names an action (the config's validation of an actions: list).
 func ValidAction(s string) bool {
@@ -81,6 +85,9 @@ type Door struct {
 	Allow []string
 	// Page: an instance added in Admin > Instances (serve's page door: its read login only, never an action)
 	Page bool
+	// Platform is the instance's platform as its config names it ("" or "auto" = not named): plan_evict is not
+	// offered on Azure SQL Database (task 406)
+	Platform string
 }
 
 // Allows says whether the instance's allow list names the action.
@@ -110,9 +117,14 @@ func (d Door) Off(instance string, k ActionKind) string {
 		return fmt.Sprintf("instance %s has no actions_dsn: no action runs there (docs/sqlserver-actions.md has the login to create)", instance)
 	case !d.Allows(k):
 		return fmt.Sprintf("instance %s: %s is not on the instance's actions: list", instance, k)
+	case k == ActionPlanEvict && strings.EqualFold(d.Platform, string(KindAzureDB)):
+		return fmt.Sprintf("instance %s: %s", instance, planEvictAzureDB)
 	}
 	return ""
 }
+
+// planEvictAzureDB is why the evict is not offered on Azure SQL Database.
+const planEvictAzureDB = "plan_evict is not offered on Azure SQL Database: DBCC FREEPROCCACHE there needs ##MS_ServerStateManager## and empties the plans of every database of an elastic pool"
 
 // Target is what the read login saw of a session or a job: what the user is shown before the confirm step, and
 // what the confirm step carries back.
@@ -132,6 +144,19 @@ type Target struct {
 	JobName  string `json:"job_name,omitempty"`
 	JobOwner string `json:"job_owner,omitempty"`
 	JobState string `json:"job_state,omitempty"` // running | idle
+	// a cached plan (plan_evict): what the plan cache holds under the handle
+	PlanHandle     string `json:"plan_handle,omitempty"`
+	ObjType        string `json:"objtype,omitempty"`      // Proc, Adhoc, Prepared, Trigger ... (sys.dm_exec_cached_plans)
+	PlanCreated    string `json:"plan_created,omitempty"` // the plan's earliest statement compile, the server's clock; with the objtype it names the plan
+	PlanDatabase   string `json:"plan_database,omitempty"`
+	PlanObject     string `json:"plan_object,omitempty"`     // schema.module of a module's plan
+	PlanStatements int    `json:"plan_statements,omitempty"` // its statements: each compiles again at its next run
+	PlanUses       int64  `json:"plan_uses,omitempty"`
+	PlanSizeKB     int64  `json:"plan_size_kb,omitempty"`
+	PlanBatch      string `json:"plan_batch,omitempty"` // the batch's first 400 characters (the web blanks it under a query_text policy other than full)
+	PlanRoute      string `json:"plan_route,omitempty"` // signed procedure | direct
+	planSystem     bool
+	planAzureDB    bool
 	// set by the read, never sent back
 	userProcess bool
 	readerSPID  int
@@ -146,10 +171,13 @@ type ActionRequest struct {
 	LoginTime string // kill: of the session shown
 	Login     string // kill: of the session shown
 	JobID     string // job_start, job_stop
-	JobName   string // of the job shown
-	Reason    string
-	User      string // the UI login
-	Client    string // the client address
+	JobName   string // of the job shown; plan_evict: the plan as shown (its objtype and object)
+	// plan_evict: the plan as shown, compared before the statement (the handle is JobID)
+	PlanObjType string
+	PlanCreated string
+	Reason      string
+	User        string // the UI login
+	Client      string // the client address
 }
 
 // ActionResult is how an attempt ended, with the statement (sent, or that would have been sent), the server's own
@@ -188,6 +216,13 @@ func ValidateAction(r ActionRequest) error {
 		if strings.TrimSpace(r.JobName) == "" {
 			return errors.New("the name of the job shown is required")
 		}
+	case ActionPlanEvict:
+		if _, err := ParsePlanHandle(r.JobID); err != nil {
+			return errors.New("plan_handle: " + err.Error())
+		}
+		if strings.TrimSpace(r.PlanObjType) == "" {
+			return errors.New("the objtype of the plan shown is required")
+		}
 	default:
 		return fmt.Errorf("unknown action %q", r.Kind)
 	}
@@ -214,6 +249,89 @@ func Statement(k ActionKind, sessionID int, jobID string) string {
 		return fmt.Sprintf("EXEC msdb.dbo.sp_start_job @job_id = '%s'", strings.ToUpper(jobID))
 	case ActionJobStop:
 		return fmt.Sprintf("EXEC msdb.dbo.sp_stop_job @job_id = '%s'", strings.ToUpper(jobID))
+	case ActionPlanEvict:
+		// the text shown and audited; the handle is sent as a varbinary parameter (planEvictSQL)
+		if b, err := ParsePlanHandle(jobID); err == nil {
+			return fmt.Sprintf("DBCC FREEPROCCACHE (0x%X)", b)
+		}
+	}
+	return ""
+}
+
+// PlanEvictStatement is the text an evict sends by its route (the handle as a parameter, @p1).
+func PlanEvictStatement(route, handle string) string {
+	if route == "signed procedure" {
+		return "EXEC master.dbo.pgvigil_evict_plan @plan_handle = " + handle
+	}
+	return Statement(ActionPlanEvict, 0, handle)
+}
+
+const (
+	planEvictSignedSQL = `EXEC master.dbo.pgvigil_evict_plan @plan_handle = @p1`
+	planEvictDirectSQL = `DBCC FREEPROCCACHE (@p1) WITH NO_INFOMSGS`
+)
+
+// planTargetSQL reads one cached plan by its handle as the read login sees it: no row = no plan under the handle (a
+// SQL handle is no plan handle and finds none). The batch text is the first 400 characters; the platform and the
+// signed procedure come with it.
+const planTargetSQL = `SELECT CAST(cp.objtype AS nvarchar(20)), ISNULL(CONVERT(varchar(33), qs.created, 126), ''), CAST(ISNULL(qs.statements, 0) AS int),
+  CAST(cp.usecounts AS bigint), CAST(cp.size_in_bytes / 1024 AS bigint), CAST(ISNULL(t.dbid, 0) AS int), ISNULL(CAST(DB_NAME(t.dbid) AS nvarchar(128)), ''),
+  ISNULL(CAST(LEFT(t.text, 400) AS nvarchar(400)), ''), CAST(ISNULL(t.objectid, 0) AS int),
+  CAST(SERVERPROPERTY('EngineEdition') AS int), CAST(CASE WHEN OBJECT_ID(N'master.dbo.pgvigil_evict_plan', N'P') IS NOT NULL THEN 1 ELSE 0 END AS int)
+FROM sys.dm_exec_cached_plans cp
+OUTER APPLY (SELECT MIN(q.creation_time) AS created, COUNT(*) AS statements FROM sys.dm_exec_query_stats q WHERE q.plan_handle = cp.plan_handle) qs
+OUTER APPLY sys.dm_exec_sql_text(cp.plan_handle) t
+WHERE cp.plan_handle = @p1`
+
+// readPlan reads a cached plan by its handle (errNoTarget: none under it).
+func readPlan(ctx context.Context, mon *sql.Conn, handle []byte) (Target, error) {
+	var t Target
+	var dbid, objid, edition, signed int
+	err := mon.QueryRowContext(ctx, planTargetSQL, handle).Scan(&t.ObjType, &t.PlanCreated, &t.PlanStatements, &t.PlanUses, &t.PlanSizeKB,
+		&dbid, &t.PlanDatabase, &t.PlanBatch, &objid, &edition, &signed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return t, errNoTarget
+	}
+	if err != nil {
+		return t, err
+	}
+	t.PlanHandle = fmt.Sprintf("0x%X", handle)
+	t.planSystem, t.planAzureDB = dbid == 32767, edition == 5
+	t.PlanRoute = "direct"
+	if signed == 1 {
+		t.PlanRoute = "signed procedure"
+	}
+	if objid != 0 && dbid != 0 {
+		var name sql.NullString
+		if mon.QueryRowContext(ctx, `SELECT CAST(OBJECT_SCHEMA_NAME(@p1, @p2) + N'.' + OBJECT_NAME(@p1, @p2) AS nvarchar(260))`, objid, dbid).Scan(&name) == nil {
+			t.PlanObject = name.String
+		}
+	}
+	return t, nil
+}
+
+// PlanWhat is what an evict removes, as the preview and the audit say it.
+func PlanWhat(t Target) string {
+	what := "an ad hoc batch"
+	switch {
+	case t.PlanObject != "":
+		what = t.ObjType + " " + t.PlanObject
+	case t.ObjType != "":
+		what = t.ObjType + " batch"
+	}
+	if t.PlanDatabase != "" {
+		what += " in " + t.PlanDatabase
+	}
+	return what
+}
+
+// planRefusal is why a plan read is never evicted from the UI, or "".
+func planRefusal(t Target) string {
+	switch {
+	case t.planAzureDB:
+		return planEvictAzureDB
+	case t.planSystem:
+		return "the plan belongs to the resource database (a system plan): it is never evicted from the UI"
 	}
 	return ""
 }
@@ -345,7 +463,13 @@ func Preview(ctx context.Context, d Door, instance string, k ActionKind, session
 	if d.Monitor == "" {
 		return t, fmt.Sprintf("instance %s: the read login's dsn resolved to an empty string", instance)
 	}
-	if k != ActionKill && !jobIDForm.MatchString(jobID) {
+	var handle []byte
+	if k == ActionPlanEvict {
+		var err error
+		if handle, err = ParsePlanHandle(jobID); err != nil {
+			return t, "plan_handle: " + err.Error()
+		}
+	} else if k != ActionKill && !jobIDForm.MatchString(jobID) {
 		return t, "job_id must be a job's id (a GUID)"
 	}
 	db, mon, err := openAction(ctx, d.Monitor, "pgvigil-actions-check")
@@ -353,6 +477,16 @@ func Preview(ctx context.Context, d Door, instance string, k ActionKind, session
 		return t, fmt.Sprintf("the read login could not connect to read the target: %v", err)
 	}
 	defer func() { _ = mon.Close(); _ = db.Close() }()
+	if k == ActionPlanEvict {
+		t, err = readPlan(ctx, mon, handle)
+		switch {
+		case errors.Is(err, errNoTarget):
+			return t, "the plan cache holds no plan under this handle now (evicted, compiled again under another handle, or a SQL handle and not a plan's): nothing to evict"
+		case err != nil:
+			return t, fmt.Sprintf("the read of the plan failed: %v", err)
+		}
+		return t, planRefusal(t)
+	}
 	if k == ActionKill {
 		t, err = readSession(ctx, mon, sessionID)
 		switch {
@@ -453,6 +587,43 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 		if r.SessionID == actSPID || strings.EqualFold(t.Login, actLogin) {
 			return refuse(t, "session %d belongs to the actions login itself (%s)", r.SessionID, actLogin)
 		}
+	} else if r.Kind == ActionPlanEvict {
+		handle, _ := ParsePlanHandle(r.JobID) // ValidateAction checked its form
+		t, err = readPlan(ctx, mon, handle)
+		switch {
+		case errors.Is(err, errNoTarget):
+			return refuse(Target{}, "the plan cache holds no plan under %s now: nothing to evict", stmt[len("DBCC FREEPROCCACHE ("):len(stmt)-1])
+		case err != nil:
+			return refuse(Target{}, "the target check failed: %v", err)
+		case !strings.EqualFold(t.ObjType, r.PlanObjType) || t.PlanCreated != r.PlanCreated:
+			return refuse(Target{}, "the cache holds another plan under this handle now (%s compiled %s; the one shown was %s compiled %s): read it again",
+				t.ObjType, t.PlanCreated, r.PlanObjType, r.PlanCreated)
+		}
+		if why := planRefusal(t); why != "" {
+			return refuse(t, "%s", why)
+		}
+		send := planEvictDirectSQL
+		if t.PlanRoute == "signed procedure" {
+			send = planEvictSignedSQL
+		}
+		stmt = PlanEvictStatement(t.PlanRoute, t.PlanHandle)
+		if _, err = act.ExecContext(ctx, send, handle); err != nil {
+			msg := serverMessage(err)
+			return ActionResult{Outcome: OutcomeFailed, Detail: fmt.Sprintf("the server refused %s: %s", stmt, msg), Statement: stmt, ServerMessage: msg, Target: t}
+		}
+		// read back: the plan is gone, or the handle holds a plan compiled since
+		after, err := readPlan(ctx, mon, handle)
+		switch {
+		case errors.Is(err, errNoTarget):
+			return ActionResult{Outcome: OutcomeDone, Detail: fmt.Sprintf("%s sent: the plan of %s is gone from the cache (%d statement(s) compile again at their next run)", stmt, PlanWhat(t), t.PlanStatements),
+				Statement: stmt, ServerMessage: "the server accepted the statement (it returns no message for it)", Target: t}
+		case err != nil:
+			return ActionResult{Outcome: OutcomeDone, Detail: fmt.Sprintf("%s sent; the read back failed: %v", stmt, err), Statement: stmt, Target: t}
+		case after.PlanCreated != t.PlanCreated:
+			return ActionResult{Outcome: OutcomeDone, Detail: fmt.Sprintf("%s sent: the plan of %s was evicted and compiled again at %s", stmt, PlanWhat(t), after.PlanCreated),
+				Statement: stmt, ServerMessage: "the server accepted the statement (it returns no message for it)", Target: t}
+		}
+		return ActionResult{Outcome: OutcomeFailed, Detail: fmt.Sprintf("%s was accepted, but the plan of %s is still in the cache as it was", stmt, PlanWhat(t)), Statement: stmt, Target: t}
 	} else {
 		t, err = readJob(ctx, mon, r.JobID)
 		switch {
@@ -537,6 +708,14 @@ func ActionRow(at time.Time, r ActionRequest, res ActionResult) ActionLogRow {
 		row.TargetUser, row.TargetApp, row.TargetHost = nul(first(t.Login, r.Login)), nul(t.Program), nul(t.Host)
 		return row
 	}
+	if r.Kind == ActionPlanEvict {
+		what := r.JobName
+		if t.ObjType != "" {
+			what = PlanWhat(t)
+		}
+		row.Target, row.TargetID = nul(what), nul(strings.ToUpper(r.JobID))
+		return row
+	}
 	row.Target, row.TargetID, row.TargetUser = nul(first(t.JobName, r.JobName)), nul(r.JobID), nul(t.JobOwner)
 	return row
 }
@@ -553,3 +732,40 @@ func ActionPayload(rows ...ActionLogRow) ([]byte, error) { return json.Marshal(r
 
 // ActionImportSQL is the audit write; $1 instance_id, $2 the attempt's time, $3 the payload.
 const ActionImportSQL = `SELECT pgvigil.import_mssql_actions_log($1, $2, $3::jsonb)`
+
+// ActionsLoginRights is what the actions login holds for plan_evict (the Actions log tab shows it): VIEW SERVER STATE
+// (it reads every session's text and plan), ALTER SERVER STATE (the direct route), the signed procedure and its
+// EXECUTE right (the documented route).
+type ActionsLoginRights struct {
+	ViewServerState  bool   `json:"view_server_state"`
+	AlterServerState bool   `json:"alter_server_state"`
+	SignedProcedure  bool   `json:"signed_procedure"`
+	MayExecute       bool   `json:"may_execute"`
+	Error            string `json:"error,omitempty"`
+}
+
+const actionsRightsSQL = `SELECT CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE'), 0) AS int), CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER SERVER STATE'), 0) AS int),
+  CAST(CASE WHEN OBJECT_ID(N'master.dbo.pgvigil_evict_plan', N'P') IS NOT NULL THEN 1 ELSE 0 END AS int),
+  CAST(ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.pgvigil_evict_plan', N'OBJECT', N'EXECUTE'), 0) AS int)`
+
+// ReadActionsLoginRights connects as the door's actions login and reads its rights (an error is said in Error).
+func ReadActionsLoginRights(ctx context.Context, d Door) ActionsLoginRights {
+	var r ActionsLoginRights
+	if d.Actions == "" {
+		r.Error = "no actions_dsn"
+		return r
+	}
+	db, conn, err := openAction(ctx, d.Actions, "pgvigil-actions-rights")
+	if err != nil {
+		r.Error = "the actions login could not connect: " + err.Error()
+		return r
+	}
+	defer func() { _ = conn.Close(); _ = db.Close() }()
+	var v, a, s, x int
+	if err := conn.QueryRowContext(ctx, actionsRightsSQL).Scan(&v, &a, &s, &x); err != nil {
+		r.Error = "the rights were not read: " + err.Error()
+		return r
+	}
+	r.ViewServerState, r.AlterServerState, r.SignedProcedure, r.MayExecute = v == 1, a == 1, s == 1, x == 1
+	return r
+}

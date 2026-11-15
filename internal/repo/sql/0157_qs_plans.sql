@@ -27,7 +27,8 @@
 -- arm changed as above and one arm more: 'a plan compiled on stale statistics' (info); its columns are unchanged, so
 -- pgvigil.findings' arm is unchanged.
 --
--- For the join: add 'mssql_qs_plans_purge' to apply_roles()' owner-only list (it deletes) and
+-- For the join: the actions_log constraints below start from 0102 and 0078: a join that adds an action merges the lists.
+-- Add 'mssql_qs_plans_purge' and 'mssql_plan_stats_store' to apply_roles()' owner-only list (it deletes) and
 -- n := n + pgvigil.mssql_qs_plans_purge(p_days) to purge(). No partitioned parent, no findings arm here.
 SET LOCAL lock_timeout = '20s';
 
@@ -406,3 +407,14 @@ LANGUAGE sql STABLE AS $$
     LEFT JOIN pg_class c ON c.relname = w.index_name AND c.relnamespace = 'pgvigil'::regnamespace
     LEFT JOIN pg_index x ON x.indexrelid = c.oid
 $$;
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- the actions door's plan_evict (Opserver's remove-plan): the audit's two constraints with the action added (the
+-- list of 0102 and 0078; a later file that changes the list starts from this one's)
+-- ---------------------------------------------------------------------------------------------------------------
+ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_action_check;
+ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_action_check CHECK (
+     (engine = 'postgres' AND action IN ('cancel', 'terminate', 'explain_analyze', 'hypo_index', 'job_stop', 'job_start'))
+  OR (engine = 'sqlserver' AND action IN ('kill', 'job_start', 'job_stop', 'plan_evict')));
+ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_pid_check;
+ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_pid_check CHECK (pid IS NOT NULL OR action IN ('explain_analyze', 'hypo_index', 'job_start', 'job_stop', 'plan_evict'));

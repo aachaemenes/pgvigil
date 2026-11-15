@@ -80,10 +80,14 @@ type mssqlActionBody struct {
 	JobName    string `json:"job_name"`
 	Reason     string `json:"reason"`
 	Confirm    string `json:"confirm"`
+	// plan_evict (task 406): the plan's handle, and its objtype and compile time as shown
+	PlanHandle  string `json:"plan_handle"`
+	PlanObjType string `json:"objtype"`
+	PlanCreated string `json:"plan_created"`
 }
 
 func (b mssqlActionBody) hasNUL() bool {
-	for _, v := range []string{b.Action, b.LoginTime, b.Login, b.JobID, b.JobName, b.Reason, b.Confirm} {
+	for _, v := range []string{b.Action, b.LoginTime, b.Login, b.JobID, b.JobName, b.Reason, b.Confirm, b.PlanHandle, b.PlanObjType, b.PlanCreated} {
 		if strings.ContainsRune(v, 0) {
 			return true
 		}
@@ -123,7 +127,7 @@ func (m *MSSQLActions) gate(w http.ResponseWriter, r *http.Request) (in mssqlAct
 		return in, "", "", false
 	}
 	if !mssql.ValidAction(in.Action) {
-		writeErr(w, http.StatusBadRequest, errors.New("action must be one of kill, job_start, job_stop"))
+		writeErr(w, http.StatusBadRequest, errors.New("action must be one of kill, job_start, job_stop, plan_evict"))
 		return in, "", "", false
 	}
 	var engine string
@@ -147,13 +151,27 @@ func (m *MSSQLActions) Preview(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	t, why := m.preview(ctx, m.doorsNow().MS[name], name, mssql.ActionKind(in.Action), in.SessionID, in.JobID)
+	kind, id := mssql.ActionKind(in.Action), in.JobID
+	if kind == mssql.ActionPlanEvict {
+		id = in.PlanHandle
+	}
+	t, why := m.preview(ctx, m.doorsNow().MS[name], name, kind, in.SessionID, id)
 	out := struct {
 		OK        bool         `json:"ok"`
 		Reason    string       `json:"reason,omitempty"`
 		Statement string       `json:"statement"`
 		Target    mssql.Target `json:"target"`
-	}{OK: why == "", Reason: why, Statement: mssql.Statement(mssql.ActionKind(in.Action), in.SessionID, in.JobID), Target: t}
+		Note      string       `json:"note,omitempty"`
+		What      string       `json:"what,omitempty"`
+	}{OK: why == "", Reason: why, Statement: mssql.Statement(kind, in.SessionID, id), Target: t}
+	if kind == mssql.ActionPlanEvict && t.ObjType != "" {
+		out.Statement, out.What = mssql.PlanEvictStatement(t.PlanRoute, t.PlanHandle), mssql.PlanWhat(t)
+		// the batch's text follows the instance's query_text policy, as a plan does (full only)
+		if qt := m.a.s.mssqlPlanPolicy(name); qt != "full" {
+			out.Target.PlanBatch = ""
+			out.Note = fmt.Sprintf("the batch's text is not shown: this instance's query_text policy is %q", qt)
+		}
+	}
 	m.a.s.reply(w, r, out, nil)
 }
 
@@ -181,12 +199,23 @@ func (m *MSSQLActions) Run(w http.ResponseWriter, r *http.Request) {
 		JobID: in.JobID, JobName: in.JobName, Reason: in.Reason, User: user, Client: clientIP(r)}
 	var res mssql.ActionResult
 	want, what := strconv.Itoa(in.SessionID), "the session id "+strconv.Itoa(in.SessionID)
-	if kind != mssql.ActionKill {
+	switch kind {
+	case mssql.ActionKill:
+	case mssql.ActionPlanEvict:
+		// the handle's last 8 hex digits are typed: the user names the plan, not a fixed word
+		req.JobID, req.PlanObjType, req.PlanCreated = in.PlanHandle, in.PlanObjType, in.PlanCreated
+		h := strings.ToUpper(strings.TrimSpace(in.PlanHandle))
+		want, what = "", "the plan handle's last 8 hex digits"
+		if len(h) >= 10 {
+			want = h[len(h)-8:]
+		}
+		in.Confirm = strings.ToUpper(in.Confirm)
+	default:
 		want, what = in.JobName, "the job's name"
 	}
 	if strings.TrimSpace(in.Confirm) != want || want == "" {
 		res = mssql.ActionResult{Outcome: mssql.OutcomeRefused, Detail: "the typed confirmation is not " + what,
-			Statement: mssql.Statement(kind, in.SessionID, in.JobID)}
+			Statement: mssql.Statement(kind, in.SessionID, req.JobID)}
 	} else {
 		res = m.run(ctx, m.doorsNow().MS[name], req) // the door read once, here
 	}
@@ -253,6 +282,8 @@ func (m *MSSQLActions) State(w http.ResponseWriter, r *http.Request) {
 	out := struct {
 		Actions map[string]onOff `json:"actions"`
 		Log     *table           `json:"log"`
+		// task 406: what the actions login holds, read when plan_evict is on the instance's list
+		ActionsLogin *mssql.ActionsLoginRights `json:"actions_login,omitempty"`
 	}{Actions: map[string]onOff{}}
 	var name, engine string
 	if err := m.a.s.pool.QueryRow(r.Context(), `SELECT name, engine FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name, &engine); err != nil {
@@ -269,6 +300,12 @@ func (m *MSSQLActions) State(w http.ResponseWriter, r *http.Request) {
 			why = door.Off(name, k)
 		}
 		out.Actions[string(k)] = onOff{Enabled: why == "", Reason: why}
+	}
+	if door.Allows(mssql.ActionPlanEvict) && door.Actions != "" && m.a.off == "" {
+		rctx, rcancel := context.WithTimeout(r.Context(), 8*time.Second)
+		rights := mssql.ReadActionsLoginRights(rctx, door)
+		rcancel()
+		out.ActionsLogin = &rights
 	}
 	out.Log, err = m.a.s.query(r.Context(), sqlMSSQLActionsLog, id)
 	m.a.s.reply(w, r, out, err)
