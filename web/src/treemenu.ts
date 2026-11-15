@@ -758,6 +758,9 @@ export function installTreeMenu() {
     openFor(n, x, y);
   });
   document.addEventListener('mousedown', e => { if (open && !open.boxes.some(b => b.contains(e.target as Node))) closeAll(false); });
+  // an Escape from outside the open menu (the focus left it without a focusin: on the page's body) closes it, the focus
+  // back on its node, as ui.ts's grid menu did; an Escape inside a menu is its own box's (one level at a time)
+  document.addEventListener('keydown', e => { if (open && e.key === 'Escape' && !open.boxes.some(b => b.contains(e.target as Node))) { e.preventDefault(); closeAll(true); } });
   document.addEventListener('focusin', e => { if (open && !open.boxes.some(b => b.contains(e.target as Node))) closeAll(false); });
   window.addEventListener('hashchange', () => closeAll(false));
   const tree = document.getElementById('tree');

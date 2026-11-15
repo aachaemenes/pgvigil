@@ -399,7 +399,8 @@ let before = folder();
 if (!await click('Export Excel')) throw new Error("the grid's menu has no Export Excel: " + JSON.stringify(gm.items));
 gm.xlsx = await waitDl(before, "the grid menu's Export Excel");
 await sleep(200);
-gm.said = await ev(`document.querySelector('main .grid-box .filter-count')?.textContent ?? ''`);
+// the grid menu (task GM) says what it saved in the grid tools' own line (.gt-stats); main's hook wrote the filter count's
+gm.said = await ev(`(() => { const b = document.querySelector('main .grid-box'); return b?.querySelector('.gt-stats')?.textContent || b?.querySelector('.filter-count')?.textContent || ''; })()`);
 out.gridmenu = gm;
 // the fleet Summary's Export to Excel drop-down: Export Summary (the instance grid), Export Test Summary (the tests grid)
 await go('#/summary?w=2h');

@@ -938,15 +938,36 @@ const axOff = async () => {
   }
   return rows;
 };
+const press = async (k, code, vk, mods = 0) => {
+  await cmd('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+  await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+};
+const OFFB = 'main table.grid button.link[aria-disabled="true"]';
 const tabWalk = async (max) => {
-  // from the page's own heading (the bar and the tree come first in the document: not this page's controls)
+  // from the page's own heading (the bar and the tree come first in the document: not this page's controls), Tab; a grid
+  // is ONE tab stop, its current cell (the ARIA grid pattern, task GM): in each grid Tab reaches, Ctrl+Home, then each row
+  // holding an off tool: Home, ArrowRight to its column, F2 onto the cell's button (read), Escape back to the cell, Down
   await ev(`(() => { const h = document.querySelector('main h2'); h.setAttribute('tabindex', '-1'); h.focus(); return 1; })()`);
-  const reached = new Set();
+  const reached = new Set(), walked = new Set();
+  const onOff = () => ev(`(() => { const e = document.activeElement; return e?.matches?.(${JSON.stringify(OFFB)}) ? e.textContent.trim() : ''; })()`);
   for (let i = 0; i < max; i++) {
-    await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
-    await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
-    const x = await ev(`(() => { const e = document.activeElement; return e && e.matches && e.matches('main table.grid button.link[aria-disabled="true"]') ? e.textContent.trim() : ''; })()`);
-    if (x) reached.add(x);
+    await press('Tab', 'Tab', 9);
+    const at = await ev(`(() => { const e = document.activeElement; if (e?.matches?.(${JSON.stringify(OFFB)})) return { off: e.textContent.trim() };
+      const t = e?.closest?.('main table.grid'); return t && e.matches('td, th') ? { grid: [...document.querySelectorAll('main table.grid')].indexOf(t) } : {}; })()`);
+    if (at.off) reached.add(at.off);
+    if (at.grid === undefined || walked.has(at.grid)) continue;
+    walked.add(at.grid);
+    const plan = await ev(`[...[...document.querySelectorAll('main table.grid')][${at.grid}].querySelectorAll(':scope > tbody > tr:not(.trend-row)')].map(tr => [...tr.children].findIndex(td => !!td.querySelector(${JSON.stringify(OFFB)})))`);
+    await press('Home', 'Home', 36, 2);   // Ctrl+Home: the first row's first cell
+    for (let r = 0; r < plan.length; r++) {
+      if (r > 0) await press('ArrowDown', 'ArrowDown', 40);
+      if (plan[r] < 0) continue;
+      await press('Home', 'Home', 36);
+      for (let k = 0; k < plan[r]; k++) await press('ArrowRight', 'ArrowRight', 39);
+      await press('F2', 'F2', 113);
+      const x = await onOff(); if (x) reached.add(x);
+      await press('Escape', 'Escape', 27);
+    }
   }
   return [...reached];
 };
@@ -1339,8 +1360,8 @@ assert bv.get('sessionInput') == xes and xes in (bv.get('filled') or ''), f"U2: 
 print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (b): @session_name filled {xes} (the running session with the blocked process report), said, done")
 ax, tab = d['msaAx'], d['msaTab']
 assert len(ax) == 14 and all(x['same'] for x in ax), f"U2: the sa page's off tools in the accessibility tree: {[(x['name'], x['same'], x['axDesc'][:60]) for x in ax]}"
-assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: Tab reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
-print(f"ok   U2: pgcr-msa: Tab reaches all {len(tab)} off tools; each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
+assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: the keyboard (Tab, the grid's arrows, F2) reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
+print(f"ok   U2: pgcr-msa: the keyboard reaches all {len(tab)} off tools (Tab to the grid, the arrows, F2: the grid pattern); each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
 c = d['msaClick']; assert c['clicked'] and c['sent'] == 0 and not c['error'], f"U2: a mouse click on an off tool: {c}"
 lk = d['look']
 for t in ('light', 'dark'):
