@@ -495,6 +495,14 @@ func TestEndpoint(t *testing.T) {
 	if got, _ := NewReader().Endpoint(ctx, Ref{ID: "s", Region: "us-east-2", Profile: "fips"}); got != "https://secretsmanager-fips.us-east-2.amazonaws.com/" {
 		t.Errorf("a profile's use_fips_endpoint: %s", got)
 	}
+	// the host is the service's own endpoint resolver's for the region's partition (task 205's rule: pgvigil writes no
+	// partition's domain): GovCloud, and an isolated partition whose domain is not amazonaws.com at all
+	if got, _ := NewReader().Endpoint(ctx, Ref{ID: "s", Region: "us-gov-west-1"}); got != "https://secretsmanager.us-gov-west-1.amazonaws.com/" {
+		t.Errorf("GovCloud: %s", got)
+	}
+	if got, _ := NewReader().Endpoint(ctx, Ref{ID: "s", Region: "us-iso-east-1"}); got != "https://secretsmanager.us-iso-east-1.c2s.ic.gov/" {
+		t.Errorf("an isolated partition: %s", got)
+	}
 	t.Setenv("AWS_ENDPOINT_URL_SECRETS_MANAGER", "https://vpce-1.secretsmanager.us-east-2.vpce.amazonaws.com")
 	if got, _ := NewReader().Endpoint(ctx, Ref{ID: "s", Region: "us-east-2"}); got != "https://vpce-1.secretsmanager.us-east-2.vpce.amazonaws.com/" {
 		t.Errorf("AWS_ENDPOINT_URL_SECRETS_MANAGER: %s", got)
