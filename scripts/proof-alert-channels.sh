@@ -213,10 +213,12 @@ newest() { q "select outcome || '|' || coalesce(error, '') from pgvigil.alert_lo
 if [[ $PART == L ]]; then
   : "${PGVIGIL_BIN:?a binary cross-built on the lab box and fetched}"
   # the live channels this run has a secret for (the runner puts them in the environment from its secrets file)
+  # az-live first: the one most likely to fail goes before the two a person sees (a rerun after a failure names only
+  # the failed channel)
   live=()
+  [[ -n ${PGV_LIVE_AZ_SECRET:-} ]] && live+=(az-live)
   [[ -n ${PGV_LIVE_SLACK:-} ]] && live+=(slack-live)
   [[ -n ${PGV_LIVE_PO_TOKEN:-} && -n ${PGV_LIVE_PO_USER:-} ]] && live+=(po-live)
-  [[ -n ${PGV_LIVE_AZ_SECRET:-} ]] && live+=(az-live)
   (( ${#live[@]} > 0 )) || fail "no live channel: the runner sets PGV_LIVE_SLACK, PGV_LIVE_PO_TOKEN with PGV_LIVE_PO_USER, or PGV_LIVE_AZ_SECRET"
   if [[ " ${live[*]} " == *" az-live "* ]]; then
     for v in PGV_LIVE_AZ_ENDPOINT PGV_LIVE_AZ_DCR PGV_LIVE_AZ_STREAM PGV_LIVE_AZ_TENANT PGV_LIVE_AZ_CLIENT; do
@@ -251,6 +253,8 @@ if [[ $PART == L ]]; then
     got=$(q "select string_agg(outcome, ',' order by snapshot_at) from pgvigil.alert_log where channel = '$c'")
     [[ $got == test ]] || fail "L: $c's attempts: '$got' (wanted one 'test'): $(newest "$c" | cut -d'|' -f2 | cut -c1-300)"
     ok "L: $c: one Send test through the changed sender, answered by the real destination; nothing else sent"
+    # the test's finding key, which the destination carries (Azure's FindingKey column): a reader matches this run's row
+    echo "L: $c sent finding key test-$(q "select max(test_id) from pgvigil.alert_tests where channel = '$c'")"
   done
   echo "L: test sent at $(q "select to_char(max(snapshot_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') from pgvigil.alert_log")"
   exit 0
