@@ -100,6 +100,12 @@ type Channel struct {
 	// outcome 'capped', and sent by a later pass once the hour allows.
 	MaxPerHour int        `yaml:"max_per_hour"`
 	Templates  *Templates `yaml:"templates"`
+	// DigestHour, when set (0-23 in the channel's timezone), sends the channel one message a day at that hour with the
+	// alerts a digest window held on it (0154; digest.go); a route channel takes its base's (routes.go's copy).
+	DigestHour *int `yaml:"digest_hour"`
+	// Checks, when set, limits the channel to the findings of these checks: a finding's source or setting, compared
+	// case-insensitively (SQLMonitor A31: backups to one team, blocking to another; the mutes' check match, 0073).
+	Checks []string `yaml:"checks"`
 
 	quiet  *quiet
 	loc    *time.Location
@@ -107,6 +113,9 @@ type Channel struct {
 	tpl    *compiled // Templates, checked
 	base   string    // alerts_base_url, "" = no link
 }
+
+// maxChecks bounds a channel's checks: list.
+const maxChecks = 50
 
 // maxPerHourLimit bounds max_per_hour (a typing slip of 300000 is refused, not taken as no cap).
 const maxPerHourLimit = 100000
@@ -299,6 +308,24 @@ func (c *Channel) validate() error {
 	}
 	if c.MaxPerHour < 0 || c.MaxPerHour > maxPerHourLimit {
 		return fmt.Errorf("max_per_hour must be 0 (no cap) to %d (got %d)", maxPerHourLimit, c.MaxPerHour)
+	}
+	if c.DigestHour != nil {
+		if *c.DigestHour < 0 || *c.DigestHour > 23 {
+			return fmt.Errorf("digest_hour must be 0 to 23, an hour in the channel's timezone (got %d)", *c.DigestHour)
+		}
+		if incidentKind(c.Kind) {
+			return fmt.Errorf("digest_hour: a %s channel opens an incident per alert, never a daily message: set it on a mail, chat or file channel", c.Kind)
+		}
+	}
+	if len(c.Checks) > maxChecks {
+		return fmt.Errorf("checks: at most %d (got %d)", maxChecks, len(c.Checks))
+	}
+	for j, k := range c.Checks {
+		k = strings.ToLower(strings.TrimSpace(k))
+		if k == "" || len(k) > 200 {
+			return errors.New("checks: each entry is a check's name (a finding's source or setting), 1 to 200 characters")
+		}
+		c.Checks[j] = k
 	}
 	tpl, err := c.Templates.compile()
 	if err != nil {
@@ -625,6 +652,14 @@ type Result struct {
 	// RoutesErr is why the routes were not read (their door failed: no route sent, none closed).
 	Routes    int
 	RoutesErr error
+	// HistoryRows is how many findings-history rows the pass wrote (0154: changes and hourly samples); HistoryErr is
+	// why it wrote none (a repository before 0154: nil).
+	HistoryRows int
+	HistoryErr  error
+	// Digests is how many daily digests the pass sent (digest.go), DigestsFailed how many failed; DigestErr is why
+	// the digests owed were not read.
+	Digests, DigestsFailed int
+	DigestErr              error
 }
 
 func (r Result) String() string {
@@ -655,6 +690,15 @@ func (r Result) String() string {
 	}
 	if r.RoutesErr != nil {
 		s += "; contact routes not read: " + strings.Join(strings.Fields(r.RoutesErr.Error()), " ")
+	}
+	if r.HistoryErr != nil {
+		s += "; findings history not written: " + strings.Join(strings.Fields(r.HistoryErr.Error()), " ")
+	}
+	if r.Digests > 0 || r.DigestsFailed > 0 {
+		s += fmt.Sprintf("; %d digest(s) sent, %d failed", r.Digests, r.DigestsFailed)
+	}
+	if r.DigestErr != nil {
+		s += "; digests not read: " + strings.Join(strings.Fields(r.DigestErr.Error()), " ")
 	}
 	return s
 }
@@ -764,6 +808,13 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	} else {
 		res.RulesFiring = n
 	}
+	// the findings history (0154) is written whatever the channels: every finding's open, close and severity change,
+	// and an hourly sample of each standing one. A failure costs this pass's rows only.
+	if n, err := historyRun(ctx, conn, now); err != nil {
+		res.HistoryErr = err
+	} else {
+		res.HistoryRows = n
+	}
 	// a Send test asked on the Alerts page goes out whatever the channel's quiet hours, back-off or cap: a person is
 	// waiting for its answer (tests.go)
 	if err := runTests(ctx, conn, chs, now, &res); err != nil {
@@ -784,7 +835,8 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		due = append(due, map[string]any{"name": c.Name, "min_severity": c.MinSeverity, "instances": nonNil(c.Instances),
 			"tags": nonNil(c.Tags), "repeat_secs": int(c.RepeatEvery().Seconds()),
 			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery(),
-			"repo_wide": !routed[c.Name]}) // a route never takes the repository-wide findings (0190 alert_due)
+			"repo_wide": !routed[c.Name],   // a route never takes the repository-wide findings (0190 alert_due)
+			"checks":    nonNil(c.Checks)}) // A31: the checks the channel takes ([] = all; alert_due's wiring line)
 	}
 	if len(due) == 0 {
 		return res, outcome, nil
@@ -883,6 +935,11 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 			}
 		}
 		outcome[c.Name] = chErr
+	}
+	// the daily digests (digest.go): after the alerts, to every channel owed one that is not quiet, not backing off and
+	// did not just fail
+	if err := runDigests(ctx, conn, all, now, skip, outcome, &res); err != nil {
+		res.DigestErr = err
 	}
 	for _, c := range all {
 		if _, ok := outcome[c.Name]; !ok && !c.Quiet(now) && !skip[c.Name] {

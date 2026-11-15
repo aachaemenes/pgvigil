@@ -1,0 +1,42 @@
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index a994399..61ce6a5 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -189,9 +189,12 @@ BEGIN
+                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
+                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+-                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute')
++                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'findings_history')
+        AND c.relname ~ '_[0-9]{6}$'
+-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
++       -- task 403a: the alert log and the findings history are kept 90 days at least (PM Added 20's three months)
++       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days =>
++             CASE p.relname WHEN 'alert_log' THEN greatest(p_days, 90)
++                            WHEN 'findings_history' THEN greatest(p_days, pgvigil.findings_history_days()) ELSE p_days END)
+      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
+      -- ACCESS EXCLUSIVE on its parent)
+      ORDER BY p.relname, c.relname
+@@ -468,16 +471,18 @@ LANGUAGE sql STABLE SET jit = off AS $$
+            coalesce(c.repo_wide, true) AS repo_wide
+       FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
+            AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
+-                repo_wide boolean)
++                repo_wide boolean, checks text[])
+   ), sc AS (   -- every finding in a channel's scope, any severity (a repository-wide one: every channel but a route's,
+                -- task 310 - an application contact's route says repo_wide false)
+-    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, f.*
++    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, ch.clear_after_secs AS ch_clear_after, f.*
+       FROM ch JOIN pgvigil.alert_findings f
+-        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide)
++        ON (pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide))
++       AND pgvigil.alert_checks_match(ch.checks, f.source, f.setting)   -- task 403a: a channel's checks: list (A31, 0154)
+      ORDER BY ch.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC
+   ), m AS (    -- the ones at or above its floor that nothing holds
+     SELECT * FROM sc WHERE pgvigil.severity_rank(sc.severity) >= sc.floor
+-       AND pgvigil.ack_hold(p_at, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value) IS NULL
++       AND pgvigil.alert_hold(p_at, sc.channel, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value,
++                              sc.severity, sc.ch_clear_after) IS NULL   -- task 403a: every hold (0154), acks first
+        AND NOT (pgvigil.collector_shared_cause(sc.source, sc.setting)
+                 AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
+   ), s AS (

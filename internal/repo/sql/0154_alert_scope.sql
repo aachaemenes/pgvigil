@@ -150,6 +150,15 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
                       ELSE w.instance_name = p_instance END
 $$;
 
+-- alert_checks_match: a channel's checks: list (SQLMonitor A31; lower-cased by the sender) against one finding - its
+-- source or setting, case-insensitively (the mutes' check match, 0073); an empty list takes every finding. alert_mark
+-- uses it here, alert_due through the wiring line.
+CREATE OR REPLACE FUNCTION pgvigil.alert_checks_match(p_checks text[], p_source text, p_setting text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT cardinality(coalesce(p_checks, '{}')) = 0
+      OR lower(coalesce(p_source, '')) = ANY (p_checks) OR lower(coalesce(p_setting, '')) = ANY (p_checks)
+$$;
+
 -- ---- the held-sends log and the one hold test ---------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS pgvigil.alert_held (
@@ -216,9 +225,10 @@ BEGIN
                    pgvigil.alert_hold(p_at, c.name, f.instance, f.tags, f.finding_key, f.source, f.setting, f.value,
                                       f.severity, c.clear_after_secs) AS hold
               FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
-                   AS c(name text, min_severity text, instances text[], tags text[], clear_after_secs int)
+                   AS c(name text, min_severity text, instances text[], tags text[], clear_after_secs int, checks text[])
               JOIN pgvigil.alert_findings f ON pgvigil.alert_in_scope(f.instance, f.tags, coalesce(c.instances, '{}'), coalesce(c.tags, '{}'))
              WHERE pgvigil.severity_rank(f.severity) >= pgvigil.severity_rank(c.min_severity)
+               AND pgvigil.alert_checks_match(c.checks, f.source, f.setting)
              ORDER BY c.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC) x
      WHERE x.hold IS NOT NULL
   ), a AS (
