@@ -84,10 +84,15 @@ func TestRestoreChainOnAStore(t *testing.T) {
 				dbs = append(dbs, r)
 			}
 		}
-		for fn, p := range map[string][]map[string]any{"import_mssql_backups": dbs, "import_mssql_restore_chain": rows} {
-			b, _ := json.Marshal(p)
-			if _, err := pool.Exec(ctx, `SELECT pgvigil.`+fn+`($1, $2, $3::jsonb)`, id, snap, string(b)); err != nil {
-				t.Fatalf("%s: %v", fn, err)
+		// mssql_backups first, as the collector does: the restore chain's import reads the group's members from its rows
+		// (a map here gave a random order - run 302d's db10 decided before its replica's group row existed)
+		for _, step := range []struct {
+			fn string
+			p  []map[string]any
+		}{{"import_mssql_backups", dbs}, {"import_mssql_restore_chain", rows}} {
+			b, _ := json.Marshal(step.p)
+			if _, err := pool.Exec(ctx, `SELECT pgvigil.`+step.fn+`($1, $2, $3::jsonb)`, id, snap, string(b)); err != nil {
+				t.Fatalf("%s: %v", step.fn, err)
 			}
 		}
 	}
