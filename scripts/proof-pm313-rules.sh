@@ -67,6 +67,13 @@
 #     (within 10 minutes); reads 11, 9 and 7 minutes before read nothing (no evaluation); reads every 5 minutes, the
 #     newest 5.5 minutes before T, read the newest 3 (the window 4 x 5 minutes = 20). The arm of darling_alert_findings
 #     that reads it is WIRING (proven with the wiring patch). Red on f8e89d2: no mssql_runnable_queue.
+#  R8. memory nodes (Fixed 20, F4): three payloads through import_mssql_memory for ctrsyn: read 1 with node 0's records 100
+#     and 101 and node 1's 50 and 51 (copies: the same times and notification) and node 1's own 52 at another time stores 3
+#     records (red on f8e89d2: 2, node 1's own lost under node 0's higher ids), the watermark {0: 101, 1: 52}; read 2 with
+#     101 and 52 again, node 0's 102 and its copy 53 on node 1, and node 1's 49 stores 1 more (4); read 3 from a collector
+#     without the node column, record 103, stores it (5); mssql_memory_rmon_hourly counts each event once (5 at
+#     indicator 2, not 7). The live record's NodeId (0 on the container) waits for memory.go's WIRING; NOT PROVEN live on
+#     two nodes (a container has one).
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -345,4 +352,23 @@ for x in "$V1" "$V2" "$V3" "$V4"; do echo "   $x"; done
 [[ "$V4" == "9.00|3|the newest 3 reads (fewer than 3 in the last 5 minutes; the 3 within 20 minutes)" ]] || fail "R3: reads every 5 minutes [$V4]"
 ok "R3: the 5-minute average, the newest-3 fallback (10 minutes, 20 at a 5-minute spacing), no evaluation past it"
 
-echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3)"
+echo "== R8. memory nodes (Fixed 20) =="
+TM=$(pq "SELECT to_char(date_trunc('hour', now()) - interval '3 hours', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+# rm <record id> <node or ''> <minutes after TM>: one RING_BUFFER_RESOURCE_MONITOR row of a payload
+rm() { local n=; [[ -n "$2" ]] && n=",\"memory_node_id\":$2"
+  echo "{\"kind\":\"rmon\",\"server_start\":\"2026-11-01T00:00:00\",\"record_id\":$1$n,\"sample_at\":\"$(pq "SELECT to_char('$TM'::timestamptz + interval '$3 minutes', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
+mem() { local at=$1; shift; local rows; rows=$(IFS=,; echo "$*")
+  pq "SELECT pgvigil.import_mssql_memory($SY, '$at'::timestamptz, '[{\"kind\":\"memory\"},$rows]'::jsonb)" >/dev/null; }
+nrm() { pq "SELECT count(*) FROM pgvigil.mssql_memory_rmon WHERE instance_id = $SY"; }
+mem "$(pq "SELECT now() - interval '20 minutes'")" "$(rm 100 0 1)" "$(rm 101 0 2)" "$(rm 50 1 1)" "$(rm 51 1 2)" "$(rm 52 1 3)"
+N1=$(nrm); WM=$(pq "SELECT rmon_last_by_node::text FROM pgvigil.mssql_memory_reads WHERE instance_id = $SY")
+mem "$(pq "SELECT now() - interval '15 minutes'")" "$(rm 101 0 2)" "$(rm 52 1 3)" "$(rm 102 0 4)" "$(rm 53 1 4)" "$(rm 49 1 0)"
+N2=$(nrm)
+mem "$(pq "SELECT now() - interval '10 minutes'")" "$(rm 103 '' 5)"
+N3=$(nrm); HR=$(pq "SELECT sum(sql_medium) FROM pgvigil.mssql_memory_rmon_hourly($SY, '$TM'::timestamptz - interval '1 hour', '$TM'::timestamptz + interval '1 hour')")
+echo "   records stored after each read: $N1 $N2 $N3; watermark $WM; events at indicator 2 in the hours: $HR"
+[[ "$N1" == 3 && "$WM" == '{"0": 101, "1": 52}' && "$N2" == 4 && "$N3" == 5 && "$HR" == 5 ]] \
+  || fail "R8: stored $N1 $N2 $N3 (want 3 4 5), watermark [$WM] (want {0: 101, 1: 52}), hourly $HR (want 5)"
+ok "R8: records keyed per node, the copies of one event stored once, the watermark per node, a collector without nodes still read"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3 R8)"

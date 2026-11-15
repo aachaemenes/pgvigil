@@ -20,9 +20,11 @@
 --   mssql_perf_findings              ms over 250 writes; 0074's view, 'slow log writes' at 10 / 30 ms over 250 writes;
 --                                    the open alerts on user data files closed as 'rule retired' (D1).
 --   mssql_runnable_queue             Changed 13: the reading with its fallback window of the newest 3 reads.
+--   import_mssql_memory              Fixed 20: 0119's import, the resource monitor's records keyed (server start,
+--                                    memory node, record id), the watermark per node, one copy of an event across nodes.
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
 -- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85,
--- AlertEngine.cs L1045-1404, RunnableQueueEvaluator.cs L55-125.
+-- AlertEngine.cs L1045-1404, RunnableQueueEvaluator.cs L55-125, MemoryPressureEventsCollector.cs L35-126.
 -- The lead's calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
 -- upgraded site has its release-note line (no site runs pgvigil before v0.4.0).
 
@@ -898,3 +900,207 @@ LANGUAGE sql STABLE AS $$
    WHERE (SELECT count(*) FROM w) < 3
   HAVING count(*) = 3 AND min(f.snapshot_at) >= p_at - make_interval(secs => coalesce((SELECT fw.secs FROM fw), 600))
 $$;
+
+-- ---- memory nodes (Fixed 20) -----------------------------------------------------------------------------------------
+
+-- memory_node_id: the NodeId of a RING_BUFFER_RESOURCE_MONITOR record (MemoryPressureEventsCollector.cs L35-126: each
+-- memory node writes its own record of one event); NULL = not read (a collector before 0156's read: memory.go's one
+-- column is WIRING). rmon_last_by_node: the watermark per node.
+ALTER TABLE pgvigil.mssql_memory_rmon ADD COLUMN IF NOT EXISTS memory_node_id int;
+ALTER TABLE pgvigil.mssql_memory_reads ADD COLUMN IF NOT EXISTS rmon_last_by_node jsonb;
+
+-- 0119's import, its resource monitor records keyed per node (the rest unchanged)
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_memory(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_m  jsonb;
+  v_g  jsonb;
+  v_t  jsonb;
+  v_c  jsonb;
+  v_n  jsonb;
+  v_mo timestamptz;
+BEGIN
+  IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
+    RAISE EXCEPTION 'import_mssql_memory: instance % is not a SQL Server instance', p_instance_id;
+  END IF;
+  SELECT r INTO v_m FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'memory' LIMIT 1;
+  IF v_m IS NULL THEN
+    RAISE EXCEPTION 'import_mssql_memory: the payload has no memory row';
+  END IF;
+  SELECT r INTO v_g FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'grants' LIMIT 1;
+  SELECT r INTO v_t FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'clerks' LIMIT 1;
+  SELECT coalesce(jsonb_object_agg(r->>'counter', (r->>'value')::bigint), '{}') INTO v_c
+    FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'counter' AND r->>'counter' IS NOT NULL;
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_memory'), p_instance_id);
+  PERFORM pgvigil.ensure_month_partition('mssql_memory_clerk', p_snapshot_at);
+  PERFORM pgvigil.ensure_month_partition('mssql_memory_sample', p_snapshot_at);
+  PERFORM pgvigil.ensure_month_partition('mssql_memory_pool', p_snapshot_at);
+  PERFORM pgvigil.ensure_month_partition('mssql_memory_cache', p_snapshot_at);
+  PERFORM pgvigil.ensure_month_partition('mssql_plancache_type', p_snapshot_at);
+  PERFORM pgvigil.ensure_month_partition('mssql_memory_grant_query', p_snapshot_at);
+  -- the ring buffer reaches back days: a partition for each month its records fall in
+  FOR v_mo IN SELECT DISTINCT date_trunc('month', (r->>'sample_at')::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'rmon' AND r->>'sample_at' IS NOT NULL
+  LOOP
+    PERFORM pgvigil.ensure_month_partition('mssql_memory_rmon', v_mo);
+  END LOOP;
+  LOCK TABLE ONLY pgvigil.mssql_memory_clerk, ONLY pgvigil.mssql_memory_sample, ONLY pgvigil.mssql_memory_pool,
+             ONLY pgvigil.mssql_memory_cache, ONLY pgvigil.mssql_plancache_type, ONLY pgvigil.mssql_memory_grant_query,
+             ONLY pgvigil.mssql_memory_rmon IN ROW EXCLUSIVE MODE;
+
+  DELETE FROM pgvigil.mssql_memory_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
+  INSERT INTO pgvigil.mssql_memory_sample (instance_id, snapshot_at, physical_kb, available_kb, system_state, process_kb, process_low,
+      committed_kb, committed_target_kb, target_kb, total_kb, stolen_kb, buffer_pool_kb, plan_cache_kb, clerks_kb, ple,
+      grants_pending, grants_outstanding, sem_granted, sem_waiting, sem_granted_kb, sem_target_kb, grants, grants_waiting,
+      max_grant_kb, sum_grant_kb, max_requested_kb, memory_model, xtp_kb, tokenperm_kb, max_workspace_kb, granted_workspace_kb)
+  VALUES (p_instance_id, p_snapshot_at, (v_m->>'physical_kb')::bigint, (v_m->>'available_kb')::bigint, v_m->>'system_state',
+          (v_m->>'process_kb')::bigint, ((v_m->>'process_low')::int = 1), (v_m->>'committed_kb')::bigint, (v_m->>'committed_target_kb')::bigint,
+          (v_c->>'Target Server Memory (KB)')::bigint, (v_c->>'Total Server Memory (KB)')::bigint, (v_c->>'Stolen Server Memory (KB)')::bigint,
+          (v_c->>'Database Cache Memory (KB)')::bigint, (v_t->>'plan_cache_kb')::bigint, (v_t->>'clerks_kb')::bigint,
+          (v_c->>'Page life expectancy')::bigint, (v_c->>'Memory Grants Pending')::int, (v_c->>'Memory Grants Outstanding')::int,
+          (v_g->>'sem_granted')::int, (v_g->>'sem_waiting')::int, (v_g->>'sem_granted_kb')::bigint, (v_g->>'sem_target_kb')::bigint,
+          (v_g->>'grants')::int, (v_g->>'grants_waiting')::int, (v_g->>'max_grant_kb')::bigint, (v_g->>'sum_grant_kb')::bigint,
+          (v_g->>'max_requested_kb')::bigint, v_m->>'memory_model', (v_t->>'xtp_kb')::bigint, (v_t->>'tokenperm_kb')::bigint,
+          (v_c->>'Maximum Workspace Memory (KB)')::bigint, (v_c->>'Granted Workspace Memory (KB)')::bigint);
+
+  DELETE FROM pgvigil.mssql_memory_clerk WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
+  INSERT INTO pgvigil.mssql_memory_clerk (instance_id, snapshot_at, clerk_type, pages_kb, vm_committed_kb)
+  SELECT p_instance_id, p_snapshot_at, x.clerk_type, x.pages_kb, x.vm_committed_kb
+    FROM (SELECT DISTINCT ON (r->>'clerk_type') r->>'clerk_type' AS clerk_type, (r->>'pages_kb')::bigint AS pages_kb,
+                 (r->>'vm_committed_kb')::bigint AS vm_committed_kb
+            FROM jsonb_array_elements(p_payload) r
+           WHERE r->>'kind' = 'clerk' AND r->>'clerk_type' IS NOT NULL AND r->>'pages_kb' IS NOT NULL) x;
+  -- the clerks past the 25 listed, as one row: the listed ones and this add up to the total
+  INSERT INTO pgvigil.mssql_memory_clerk (instance_id, snapshot_at, clerk_type, pages_kb)
+  SELECT p_instance_id, p_snapshot_at, '(other)', (v_t->>'clerks_kb')::bigint - sum(c.pages_kb)
+    FROM pgvigil.mssql_memory_clerk c
+   WHERE c.instance_id = p_instance_id AND c.snapshot_at = p_snapshot_at AND v_t->>'clerks_kb' IS NOT NULL
+  HAVING (v_t->>'clerks_kb')::bigint - sum(c.pages_kb) > 0;
+
+  -- 0115: the semaphores of the read (a collector before 0115 sends none: nothing is stored)
+  DELETE FROM pgvigil.mssql_memory_pool WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
+  INSERT INTO pgvigil.mssql_memory_pool (instance_id, snapshot_at, pool_id, pool_name, semaphore_id, target_kb, max_target_kb, total_kb,
+      available_kb, granted_kb, used_kb, grantees, waiters, timeout_errors, forced_grants)
+  SELECT DISTINCT ON ((r->>'pool_id')::int, (r->>'semaphore_id')::int)
+         p_instance_id, p_snapshot_at, (r->>'pool_id')::int, r->>'pool_name', (r->>'semaphore_id')::int, (r->>'target_kb')::bigint,
+         (r->>'max_target_kb')::bigint, (r->>'total_kb')::bigint, (r->>'available_kb')::bigint, (r->>'granted_kb')::bigint,
+         (r->>'used_kb')::bigint, (r->>'grantees')::int, (r->>'waiters')::int, (r->>'timeout_errors')::bigint, (r->>'forced_grants')::bigint
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'pool' AND r->>'pool_id' IS NOT NULL AND r->>'semaphore_id' IS NOT NULL;
+  SELECT r INTO v_n FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'numa' LIMIT 1;
+  IF v_n IS NOT NULL THEN
+    INSERT INTO pgvigil.mssql_memory_numa AS m (instance_id, snapshot_at, node0_schedulers, other_nodes)
+    VALUES (p_instance_id, p_snapshot_at, (v_n->>'node0_schedulers')::int, (v_n->>'other_nodes')::int)
+    ON CONFLICT (instance_id) DO UPDATE
+       SET snapshot_at = EXCLUDED.snapshot_at, node0_schedulers = EXCLUDED.node0_schedulers, other_nodes = EXCLUDED.other_nodes
+     WHERE m.snapshot_at <= EXCLUDED.snapshot_at;
+  END IF;
+
+  -- 0156 (Fixed 20, the lead's F4): the resource monitor's records past the newest stored for the same server start and
+  -- memory node (each node numbers its own records: /Record/@id with its NodeId); a copy of one event on another node
+  -- (the same record time and notification) is stored once, the lowest node's. A record with no node (a collector
+  -- before 0156's read, or a store's rows from before it) is a node of its own: the old watermark rmon_last_id is its.
+  INSERT INTO pgvigil.mssql_memory_rmon (instance_id, server_start, record_id, snapshot_at, notification, ind_process, ind_system,
+      avail_phys_kb, avail_vas_kb, read_at, memory_node_id)
+  SELECT DISTINCT ON (x.ss, x.at, x.notification)
+         p_instance_id, x.ss, x.rid, x.at, x.notification, (x.r->>'ind_process')::int, (x.r->>'ind_system')::int,
+         (x.r->>'avail_phys_kb')::bigint, (x.r->>'avail_vas_kb')::bigint, p_snapshot_at, x.node
+    FROM (SELECT r AS r, r->>'server_start' AS ss, (r->>'record_id')::bigint AS rid, (r->>'memory_node_id')::int AS node,
+                 (r->>'sample_at')::timestamptz AS at, r->>'notification' AS notification
+            FROM jsonb_array_elements(p_payload) r
+           WHERE r->>'kind' = 'rmon' AND r->>'record_id' IS NOT NULL AND r->>'server_start' IS NOT NULL AND r->>'sample_at' IS NOT NULL) x
+   WHERE x.rid > greatest(
+           coalesce((SELECT max(y.record_id) FROM pgvigil.mssql_memory_rmon y
+                      WHERE y.instance_id = p_instance_id AND y.server_start = x.ss AND y.memory_node_id IS NOT DISTINCT FROM x.node), -1),
+           coalesce((SELECT CASE WHEN x.node IS NULL THEN w.rmon_last_id ELSE (w.rmon_last_by_node->>x.node::text)::bigint END
+                       FROM pgvigil.mssql_memory_reads w
+                      WHERE w.instance_id = p_instance_id AND w.rmon_start = x.ss), -1))
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_memory_rmon y
+                      WHERE y.instance_id = p_instance_id AND y.server_start = x.ss AND y.snapshot_at = x.at
+                        AND y.notification IS NOT DISTINCT FROM x.notification AND y.memory_node_id IS DISTINCT FROM x.node)
+   ORDER BY x.ss, x.at, x.notification, x.node NULLS FIRST;
+
+  DELETE FROM pgvigil.mssql_memory_cache WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
+  INSERT INTO pgvigil.mssql_memory_cache (instance_id, snapshot_at, cache_name, pages_kb, pages_in_use_kb, entries, entries_in_use)
+  SELECT DISTINCT ON (r->>'cache_name') p_instance_id, p_snapshot_at, r->>'cache_name', (r->>'pages_kb')::bigint,
+         (r->>'pages_in_use_kb')::bigint, (r->>'entries')::bigint, (r->>'entries_in_use')::bigint
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'cache' AND r->>'cache_name' IS NOT NULL;
+
+  DELETE FROM pgvigil.mssql_plancache_type WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
+  INSERT INTO pgvigil.mssql_plancache_type (instance_id, snapshot_at, cache_type, object_type, plans, size_kb, single_use_plans,
+      single_use_kb, multi_use_plans, multi_use_kb, avg_use_count)
+  SELECT DISTINCT ON (r->>'cache_type', r->>'object_type') p_instance_id, p_snapshot_at, r->>'cache_type', r->>'object_type',
+         (r->>'plans')::bigint, (r->>'size_kb')::bigint, (r->>'single_use_plans')::bigint, (r->>'single_use_kb')::bigint,
+         (r->>'multi_use_plans')::bigint, (r->>'multi_use_kb')::bigint, (r->>'avg_use_count')::numeric
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'plantype' AND r->>'cache_type' IS NOT NULL AND r->>'object_type' IS NOT NULL;
+
+  DELETE FROM pgvigil.mssql_memory_grant_query WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
+  INSERT INTO pgvigil.mssql_memory_grant_query (instance_id, snapshot_at, session_id, request_id, database_name, request_at, grant_at,
+      wait_time_ms, requested_kb, granted_kb, used_kb, max_used_kb, ideal_kb, required_kb, queue_id, wait_order, is_next_candidate,
+      timeout_sec, semaphore_id, pool_id, group_id, is_small, dop, query_cost, wait_type, wait_ms, plan_handle, statement)
+  SELECT p_instance_id, p_snapshot_at, (r->>'session_id')::int, (r->>'request_id')::int, r->>'database_name',
+         p_snapshot_at - make_interval(secs => (r->>'request_age_ms')::bigint / 1000.0),
+         p_snapshot_at - make_interval(secs => (r->>'grant_age_ms')::bigint / 1000.0),
+         (r->>'wait_time_ms')::bigint, (r->>'requested_kb')::bigint, (r->>'granted_kb')::bigint, (r->>'used_kb')::bigint,
+         (r->>'max_used_kb')::bigint, (r->>'ideal_kb')::bigint, (r->>'required_kb')::bigint, (r->>'queue_id')::int,
+         (r->>'wait_order')::int, (r->>'is_next_candidate')::int = 1, (r->>'timeout_sec')::int, (r->>'semaphore_id')::int,
+         (r->>'pool_id')::int, (r->>'group_id')::int, (r->>'is_small')::int = 1, (r->>'dop')::int, (r->>'query_cost')::double precision,
+         r->>'wait_type', (r->>'wait_ms')::bigint, r->>'plan_handle', r->>'statement'
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'mgrant' AND r->>'session_id' IS NOT NULL;
+
+  -- the Resource Governor: the newest read replaces the last (a read the server refused keeps the last)
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'rgroup') THEN
+    DELETE FROM pgvigil.mssql_rg_group WHERE instance_id = p_instance_id;
+    INSERT INTO pgvigil.mssql_rg_group (instance_id, group_id, snapshot_at, group_name, pool_id, importance, max_grant_pct, max_cpu_sec,
+        grant_timeout_sec, max_requests, max_dop, reduced_grants, requests, active_requests, queued_requests, max_request_grant_kb)
+    SELECT DISTINCT ON ((r->>'group_id')::int) p_instance_id, (r->>'group_id')::int, p_snapshot_at, r->>'group_name', (r->>'pool_id')::int,
+           r->>'importance', (r->>'max_grant_pct')::int, (r->>'max_cpu_sec')::int, (r->>'grant_timeout_sec')::int, (r->>'max_requests')::int,
+           (r->>'max_dop')::int, (r->>'reduced_grants')::bigint, (r->>'requests')::bigint, (r->>'active_requests')::int,
+           (r->>'queued_requests')::int, (r->>'max_request_grant_kb')::bigint
+      FROM jsonb_array_elements(p_payload) r
+     WHERE r->>'kind' = 'rgroup' AND r->>'group_id' IS NOT NULL;
+  END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'rpool') THEN
+    DELETE FROM pgvigil.mssql_rg_pool WHERE instance_id = p_instance_id;
+    INSERT INTO pgvigil.mssql_rg_pool (instance_id, pool_id, snapshot_at, pool_name, min_memory_pct, max_memory_pct, max_memory_kb,
+        used_memory_kb, target_memory_kb, cache_memory_kb, used_memgrant_kb, memgrants, memgrant_timeouts, memgrant_waiters, out_of_memory)
+    SELECT DISTINCT ON ((r->>'pool_id')::int) p_instance_id, (r->>'pool_id')::int, p_snapshot_at, r->>'pool_name',
+           (r->>'min_memory_pct')::int, (r->>'max_memory_pct')::int, (r->>'max_memory_kb')::bigint, (r->>'used_memory_kb')::bigint,
+           (r->>'target_memory_kb')::bigint, (r->>'cache_memory_kb')::bigint, (r->>'used_memgrant_kb')::bigint, (r->>'memgrants')::bigint,
+           (r->>'memgrant_timeouts')::bigint, (r->>'memgrant_waiters')::int, (r->>'out_of_memory')::bigint
+      FROM jsonb_array_elements(p_payload) r
+     WHERE r->>'kind' = 'rpool' AND r->>'pool_id' IS NOT NULL;
+  END IF;
+
+  -- the watermark: the newest record of the newest server start read, per memory node (rmon_last_by_node, {node: id};
+  -- rmon_last_id the records with no node), every record of the read counted, stored or a copy dropped (a purge of the
+  -- records' month cannot bring them back)
+  INSERT INTO pgvigil.mssql_memory_reads AS m (instance_id, snapshot_at, skipped, rmon_start, rmon_last_id, rmon_last_by_node)
+  SELECT p_instance_id, p_snapshot_at,
+         coalesce((SELECT jsonb_agg(jsonb_build_object('read', r->>'read', 'error', r->>'error'))
+                     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'skip'), '[]'),
+         w.s,
+         (SELECT max((r->>'record_id')::bigint) FROM jsonb_array_elements(p_payload) r
+           WHERE r->>'kind' = 'rmon' AND r->>'record_id' IS NOT NULL AND r->>'server_start' = w.s AND r->>'memory_node_id' IS NULL),
+         (SELECT jsonb_object_agg(n.node, n.id) FROM (
+            SELECT r->>'memory_node_id' AS node, max((r->>'record_id')::bigint) AS id FROM jsonb_array_elements(p_payload) r
+             WHERE r->>'kind' = 'rmon' AND r->>'record_id' IS NOT NULL AND r->>'server_start' = w.s AND r->>'memory_node_id' IS NOT NULL
+             GROUP BY 1) n)
+    FROM (SELECT max(r->>'server_start') AS s
+            FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'rmon' AND r->>'record_id' IS NOT NULL) w
+  ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, skipped = EXCLUDED.skipped,
+         rmon_start = coalesce(EXCLUDED.rmon_start, m.rmon_start),
+         rmon_last_id = CASE WHEN EXCLUDED.rmon_start IS NULL THEN m.rmon_last_id
+                             WHEN EXCLUDED.rmon_start IS DISTINCT FROM m.rmon_start THEN EXCLUDED.rmon_last_id
+                             ELSE greatest(EXCLUDED.rmon_last_id, m.rmon_last_id) END,
+         rmon_last_by_node = CASE WHEN EXCLUDED.rmon_start IS NULL THEN m.rmon_last_by_node
+                                  WHEN EXCLUDED.rmon_start IS DISTINCT FROM m.rmon_start THEN EXCLUDED.rmon_last_by_node
+                                  ELSE (SELECT jsonb_object_agg(k, greatest((coalesce(m.rmon_last_by_node, '{}') ->> k)::bigint,
+                                                                            (coalesce(EXCLUDED.rmon_last_by_node, '{}') ->> k)::bigint))
+                                          FROM (SELECT jsonb_object_keys(coalesce(m.rmon_last_by_node, '{}')) AS k
+                                                UNION SELECT jsonb_object_keys(coalesce(EXCLUDED.rmon_last_by_node, '{}'))) ks) END
+   WHERE m.snapshot_at <= EXCLUDED.snapshot_at;
+END $$;
