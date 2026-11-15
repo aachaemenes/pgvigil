@@ -39,7 +39,8 @@
 #  H. the monitor's own deadlocks: with mssql_monitor_app 'pgvigil' for the instance, a deadlock whose every victim's
 #     program is 'pgvigil' is not counted, one with a user victim is, one with two victims (pgvigil and a user) is:
 #     'deadlocks in the last hour' says '2 deadlock(s)', the day and the live part count 2; mssql_deadlocks still
-#     holds 3. RED: 3.
+#     holds 3. RED: 3. Then an import whose monitor_app row is empty (the driver's default name, go-mssqldb: a
+#     connection string naming none) removes the stored name: the finding counts 3.
 #  I. the spike: pgvigil.mssql_block_hourly seeded with 4 weeks of the same weekday and hour at 2 waits and 1
 #     deadlock, the last hour at 9 waits and 4 deadlocks: 'blocking at 3x this hour''s usual' and 'deadlocks at 3x this
 #     hour''s usual' (warning); a second instance with one week of history and 6 waits: the blocking one fires worded
@@ -236,6 +237,10 @@ q "select pgvigil.mssql_event_partition('mssql_deadlocks', now());
 check "$(finding "$H" 'deadlocks in the last hour' | grep -c '2 deadlock(s) in the last hour')" 1 "H: 'deadlocks in the last hour' counts 2"
 check "$(api healthcal "$H" deadlocks)|$(api ack "$H" deadlocks)" "2|2" "H: the day and the live part count 2"
 check "$(q "select count(*) from pgvigil.mssql_deadlocks where instance_id = $H")" 3 "H: all 3 stay stored"
+if tab mssql_monitor_app; then
+  q "select pgvigil.import_mssql_xe($H, now(), '[{\"kind\": \"monitor_app\", \"app_name\": \"\"}]'::jsonb)" >/dev/null
+  check "$(q "select count(*) from pgvigil.mssql_monitor_app where instance_id = $H")|$(finding "$H" 'deadlocks in the last hour' | grep -c '3 deadlock(s) in the last hour')" "0|1" "H: an empty name (the driver's default) removes the stored one: 3 counted"
+fi
 
 echo "--- I. the spike against the hour's usual"
 if tab mssql_block_hourly; then

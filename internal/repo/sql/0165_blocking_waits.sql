@@ -118,8 +118,9 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
      WHERE m.instance_id = p_instance), false)
 $$;
 
--- the importer: the one before (0116's), renamed import_mssql_xe_pre0165 and called with the other rows; a
--- 'monitor_app' row stores the collector's application name. Renamed once: a rerun finds it.
+-- the importer: the one before (0134's wrapper), renamed import_mssql_xe_pre0165 and called with the other rows; a
+-- 'monitor_app' row stores the collector's application name, or with an empty name (the driver's default, shared by
+-- other programs) removes the stored one. Renamed once: a rerun finds it.
 DO $$
 BEGIN
   IF to_regprocedure('pgvigil.import_mssql_xe_pre0165(integer, timestamp with time zone, jsonb)') IS NULL THEN
@@ -133,6 +134,10 @@ BEGIN
   SELECT p_instance_id, r->>'app_name', p_snapshot_at FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'monitor_app' AND coalesce(r->>'app_name', '') <> '' LIMIT 1
   ON CONFLICT (instance_id) DO UPDATE SET app_name = EXCLUDED.app_name, read_at = EXCLUDED.read_at;
+  DELETE FROM pgvigil.mssql_monitor_app m
+   WHERE m.instance_id = p_instance_id
+     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'monitor_app' AND coalesce(r->>'app_name', '') = '')
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'monitor_app' AND coalesce(r->>'app_name', '') <> '');
   PERFORM pgvigil.import_mssql_xe_pre0165(p_instance_id, p_snapshot_at,
     (SELECT coalesce(jsonb_agg(r), '[]'::jsonb) FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' IS DISTINCT FROM 'monitor_app'));
   -- the hours that ended since the last import, rolled for the spike's usual (nothing to do most minutes)
