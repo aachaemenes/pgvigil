@@ -56,7 +56,7 @@ const replicaCols: Col[] = [
 
 // dbStateCls: SYNCHRONIZING is the healthy state of an asynchronous-commit replica and amber only on a synchronous one
 // (as the finding 'a synchronous replica is not synchronized'); a row whose commit mode is not known (a server without
-// that column in its API) leaves SYNCHRONIZING unmarked. Suspended, and any state but the two, is red whatever the mode
+// that column in its API) shows SYNCHRONIZING N/A (grey). Suspended, and any state but the two, is red whatever the mode
 // (as the finding 'a database is not synchronizing').
 const dbStateCls = (v: unknown, r: Row) => r.is_suspended === true ? 'crit'
   : v == null ? '' : v === 'SYNCHRONIZED' ? 'status ok'
