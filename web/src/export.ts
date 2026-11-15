@@ -35,7 +35,8 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
   runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
   jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
   fmt?: string;   // the page sheet (E2-15, F2): the number format that shows the value as the page's words ('#,##0.0', a size's unit, the page's date form)
-  sheets?: number[] }   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+  sheets?: number[];   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+  grp?: boolean }   // (X7) the page's figure groups its thousands ('1,672.00'): its column's fixed decimals grouped ('#,##0.00')
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
 export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
@@ -128,6 +129,10 @@ export function bareNumber(text: string): Pick<Cell, 'v' | 'kind'> | undefined {
 
 // the locale's grouping and decimal characters, learnt from fmtNum (',' and '.' in en-US, U+202F and ',' in fr-FR)
 const sep = (() => { const t = fmtNum(1234567.5); return { group: t[1], dec: t[t.length - 2] }; })();
+// grouped: a page figure written with the locale's thousands separator ('1,672.00'; fr-FR '1 672,00', its narrow space
+// read as a space); a figure the page writes ungrouped ('1672.5', a port '5432') is not
+const groupRe = new RegExp('\\d' + (/\s/.test(sep.group) ? '[\\s\\u202f\\u00a0]' : sep.group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) + '\\d{3}(?!\\d)');
+const grouped = (t: string) => groupRe.test(t);
 // digitsOf: a number as the locale wrote it, back to JavaScript's form ('1,234.5' or '1 234,5' -> '1234.5'); '' = not one
 function digitsOf(t: string): string {
   const d = t.split(sep.group).join('').split(sep.dec).join('.').replace(/[\s\u202f\u00a0']/g, '');
@@ -698,7 +703,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
   };
   // (X13) a grid sheet's number under its column's decimals as the page shows them: '0', '0.0' .. (a share: Excel's '0%')
   const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt)
-    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? 9 : st.code(c.dp ? '0.' + '0'.repeat(c.dp) : '0')) : fmtOf(c);
+    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? 9 : st.code((c.grp ? '#,##' : '') + (c.dp ? '0.' + '0'.repeat(c.dp) : '0'))) : fmtOf(c);
   const styleOf = (c: Cell) => c.look ? st.look(fmtFor(c), c.look) : st.id(fmtFor(c), c.status, !!c.head, c.link);
   // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
   // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
@@ -766,7 +771,9 @@ const sizeUnit = (n: number) => { let i = 0; for (let a = Math.abs(n); a >= 1024
 // rich runs, the page sheet's formats and jumps stay out
 // a dot's glyph (export_page.ts withDot: its own coloured run before the words) goes with its run: the cell keeps the words
 const dotless = (c: Cell): string | number => typeof c.v === 'string' && c.runs?.length === 2 && c.v === c.runs[0].text + c.runs[1].text ? c.runs[1].text : c.v;
-const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}) });
+// (X7) a decimal read straight from the page's figure keeps whether that figure groups its thousands (a size, a duration
+// or a rate converted to its column's unit later is a figure of another unit: never grouped)
+const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}), ...(c.kind === 'dec' && typeof c.v === 'number' && grouped(c.text) ? { grp: true } : {}) });
 // gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
 // writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
 // with its time unit ('took (s)'). X8: a seconds column is numbers - in its one unit, or in seconds when the page mixes
@@ -792,6 +799,10 @@ export function gridSection(s: Section): Section {
   const decimals = (j: number) => {
     const decs = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'dec');
     const k = Math.max(-1, ...decs.map(c => decimalsOf(c.text, c.v) ?? -1));
+    // the page's grouping carried, as its colours and decimals are: a column whose figures group their thousands is grouped
+    // under its fixed decimals, '#,##0' .. '#,##0.000' (DBA Dash writes General); an ungrouped column stays ungrouped
+    const grp = k >= 0 && k <= 3 && decs.some(c => c.grp);
+    for (const c of decs) if (grp) c.grp = true; else delete c.grp;
     if (k >= 0 && k <= 6) for (const c of decs) c.dp = k;
     // (a chart's share holds its fraction as text, not the page's percent: only a column of the page's own percents)
     const pcts = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'pct');
