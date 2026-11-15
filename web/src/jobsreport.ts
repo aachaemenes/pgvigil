@@ -71,7 +71,7 @@ const jobCols: Col[] = [
   { key: 'next_run', label: 'next run', fmt: (v, r) => r.active === false || r.is_present === false ? '' : fmtTime(v) },
   { key: 'fail_streak', label: 'failed in a row', num: true, fmt: streak, cls: streakCls },
   { key: 'runs_7d', label: 'runs 7 d', num: true },
-  { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails },
+  { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails, cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
   { key: 'avg_7d_secs', label: 'avg 7 d', num: true, fmt: dur },
   { key: 'max_7d_secs', label: 'max 7 d', num: true, fmt: dur },
   { key: 'runs_30d', label: 'runs 30 d', num: true },

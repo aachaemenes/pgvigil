@@ -18,9 +18,9 @@ const roleName = (v: unknown, r: Row) => r.is_platform ? el('span', { class: 'me
 
 const roleCols: Col[] = [
   { key: 'rolname', label: 'role', fmt: roleName },
-  { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '' },
+  { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && r.is_platform ? 'status none' : '' },
   { key: 'canlogin', label: 'login', fmt: yes },
-  { key: 'createrole', label: 'createrole', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '' },
+  { key: 'createrole', label: 'createrole', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && (r.super || r.is_platform) ? 'status none' : '' },
   { key: 'createdb', label: 'createdb', fmt: yes },
   { key: 'replication', fmt: yes },
   { key: 'bypassrls', label: 'bypassrls', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '' },
@@ -62,7 +62,7 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
 
   if (findings.length) {
     sec.append(el('h3', {}, 'Findings'), grid(findings, [
-      { key: 'severity', fmt: sevBadge }, { key: 'setting', label: 'rule' }, { key: 'value', label: 'role' },
+      { key: 'severity', fmt: sevBadge, cls: v => v == null || v === 'critical' || v === 'warning' ? '' : 'status none' }, { key: 'setting', label: 'rule' }, { key: 'value', label: 'role' },
       { key: 'suggested' }, { key: 'detail', wide: true },
     ]));
   }
@@ -151,7 +151,7 @@ export async function rolesFleetView(keep?: (r: Row) => boolean, instLink?: (nam
     const shown = w === 'super' ? roles.filter(r => r.super) : w === 'login' ? roles.filter(r => r.canlogin) : roles;
     out.replaceChildren(grid(shown, [
       { key: 'instance', fmt: link }, { key: 'platform' }, { key: 'rolname', label: 'role', fmt: roleName },
-      { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '' },
+      { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && r.is_platform ? 'status none' : '' },
       { key: 'canlogin', label: 'login', fmt: yes }, { key: 'createrole', fmt: yes }, { key: 'createdb', fmt: yes },
       { key: 'replication', fmt: yes }, { key: 'bypassrls', fmt: yes },
       { key: 'valid_until', label: 'password valid until', fmt: never }, { key: 'member_of', label: 'member of', wide: true },

@@ -277,7 +277,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   if (ch.tree.length) {
     const treeCols: Col[] = [
       { key: 'pid', fmt: (v, r) => el('span', { style: `padding-left:${Number(r._depth) * 1.2}em` }, (Number(r._depth) > 0 ? '└ ' : '') + String(v)) },
-      { key: '_role', label: 'role', fmt: v => v === 'head' ? badge('head', 'crit') : String(v ?? '') },
+      { key: '_role', label: 'role', fmt: v => v === 'head' ? badge('head', 'crit') : String(v ?? ''), cls: v => v && v !== 'head' ? 'status none' : '' },
       { key: '_behind', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
       { key: 'state', fmt: (v, r) => r._absent ? el('span', { class: 'meta', title: 'The head\'s own row is not in this sample (a background worker, or a session gone by the read).' }, String(v ?? '')) : String(v ?? '') },
       { key: 'wait_event', label: 'wait', fmt: waitCell },

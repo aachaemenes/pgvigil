@@ -103,7 +103,9 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
       return el('div', {}, el('h4', {}, title), grid(rs, [{ key: 'datname', label: 'db' }, { key: 'table_name', label: 'table', fmt: name }, lead, ...extra,
         { key: 'first_at', label: 'counted from', fmt: fmtTime }], 'No table moved by this measure in the window.'));
     };
-    const pctHot = (v: unknown, r: Row) => Number(r.n_tup_upd) > 0 ? fmtNum(Math.round(1000 * Number(v ?? 0) / Number(r.n_tup_upd)) / 10) + ' %' : '';
+    // the HOT share as the row's own value (the export types '80 %' over 80 as Excel's 0.8, not text over a count)
+    rows.forEach(r => { r.hot_pct = Number(r.n_tup_upd) > 0 ? Math.round(1000 * Number(r.n_tup_hot_upd ?? 0) / Number(r.n_tup_upd)) / 10 : null; });
+    const pctHot = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
     body.replaceChildren(
       el('p', { class: 'meta' }, `Over ${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)} (at most the last 7 days of the range): the sum of the rises between the table activity reads (every 5 minutes; ${fmtNum(meta.reads)} in the window, the newest `
         + `${fmtTime(meta.last_read) || 'none'}), the read before the window as the base. A table read first inside the window counts from that read (counted from). `
@@ -113,7 +115,7 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
           [{ key: 'seq_tup_read', label: 'rows read by them', num: true }, { key: 'idx_scan', label: 'index scans', num: true }]),
         part('Most inserts', 'rank_ins', { key: 'n_tup_ins', label: 'rows inserted', num: true }, []),
         part('Most updates', 'rank_upd', { key: 'n_tup_upd', label: 'rows updated', num: true },
-          [{ key: 'n_tup_hot_upd', label: 'HOT', num: true, fmt: pctHot }]),
+          [{ key: 'hot_pct', label: 'HOT', num: true, fmt: pctHot }]),
         part('Most deletes', 'rank_del', { key: 'n_tup_del', label: 'rows deleted', num: true }, [])));
   }
   sel.addEventListener('change', () => {
