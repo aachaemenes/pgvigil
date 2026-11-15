@@ -35,7 +35,8 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
   runs?: { text: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number }[];   // rich text: words in their own colours (a dot's run before a cell's words)
   jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
   fmt?: string;   // the page sheet (E2-15, F2): the number format that shows the value as the page's words ('#,##0.0', a size's unit, the page's date form)
-  sheets?: number[] }   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+  sheets?: number[];   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
+  bare?: Pick<Cell, 'v' | 'kind' | 'stamp' | 'per'> & { text: string } }   // (X15) a status cell's figure without its status word: what a grid sheet writes (gridSection)
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
 export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
@@ -309,10 +310,11 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
     const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
     // (X15) a status cell that writes its status word after its figure ('463.71 warning', '92 % critical'; the screen keeps
-    // the word for a reader who cannot tell the colours apart): the figure, its status the fill; an activity mark ' *' goes
+    // the word for a reader who cannot tell the colours apart): the grid sheet writes the figure, its status the fill (an
+    // activity mark ' *' goes with the word); the CSV, which has no fill, keeps the page's words
     if (c.status && typeof c.v === 'string' && raw !== undefined) {
       const fig = /^(.*?)(?: \*)? (?:ok|warning|critical)$/.exec(t);
-      if (fig) { const n = typed(raw, fig[1]); if (typeof n.v === 'number') Object.assign(c, n, { text: fig[1] }); }
+      if (fig) { const n = typed(raw, fig[1]); if (typeof n.v === 'number') c.bare = { ...n, text: fig[1] }; }
     }
     // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
     // are that number ('3' collection errors; on DBA Dash 4.25.0 '3' collections at warning or critical), as DBA Dash
@@ -772,7 +774,10 @@ const sizeUnit = (n: number) => { let i = 0; for (let a = Math.abs(n); a >= 1024
 // rich runs, the page sheet's formats and jumps stay out
 // a dot's glyph (export_page.ts withDot: its own coloured run before the words) goes with its run: the cell keeps the words
 const dotless = (c: Cell): string | number => typeof c.v === 'string' && c.runs?.length === 2 && c.v === c.runs[0].text + c.runs[1].text ? c.runs[1].text : c.v;
-const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}) });
+const plainCell = (cell: Cell): Cell => {
+  const c: Cell = cell.bare ? { ...cell, ...cell.bare } : cell;   // (X15) the figure of a status cell that writes its word after it
+  return { v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}) };
+};
 // gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
 // writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
 // with its time unit ('took (s)'). X8: a seconds column is numbers - in its one unit, or in seconds when the page mixes
