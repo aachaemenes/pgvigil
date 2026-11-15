@@ -79,6 +79,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"mon", "IN ROLE pgvigil_reader, pg_monitor"},
 		{"none", ""},
 		{"rad", "IN ROLE pg_read_all_data"},
+		{"alr", "IN ROLE pgvigil_alerter"}, // the alerts login: a reader too, and alert_contact_routes() answers it (j14 review B1)
 	}
 	defer func() {
 		bg := context.Background()
@@ -141,6 +142,7 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"noinh", "", "is a member of "}, // and the owner among the roles named (below)
 		{"insu", "", "is a member of "},  // and the superuser role among them (below)
 		{"mon", "", "pg_monitor"},
+		{"alr", "", "is a member of pgvigil_alerter"},
 		{"none", "", "may not read the repository"},
 		{"rd", other, "reaches another server or database"},
 	} {
@@ -213,6 +215,8 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"rd", "", ""},
 		{"rad", plain, ""},
 		{"insu", plain, "a member of a superuser role"}, // SET ROLE reaches the superuser (part B)
+		{"alr", "", "a member of pgvigil_alerter"},      // alert_contact_routes() returns every contact's address to it
+		{"alr", plain, "a member of pgvigil_alerter"},   // the role is the server's, whichever database the run opens
 	} {
 		got := refusalAs(name(c.key), c.db)
 		switch {

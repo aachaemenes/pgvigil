@@ -590,7 +590,9 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 // pgvigil name in oid form: a monitored server without the pgvigil roles or schema answers NULL, never an error. In a
 // database that is a pgvigil repository also plans.RepoSecretsCols: a member of the schema's owner (NOINHERIT too),
 // pg_read_all_data, a direct read of the hashes (the code review of REPORT ROLE, part A). A member of a superuser role
-// (plans.SuperMemberCol, NOINHERIT too) is refused as a superuser is (part B).
+// (plans.SuperMemberCol, NOINHERIT too) is refused as a superuser is (part B). A member of pgvigil_alerter (the alerts
+// login) is refused too: it reads like a reader, but alert_contact_routes() (0136, SECURITY DEFINER) answers it with
+// every alert contact's address (the j14 join review, B1).
 const pgRightsSQL = `SELECT r.rolsuper,
        ` + plans.SuperMemberCol + `,
        pg_has_role(session_user, 'pg_execute_server_program', 'MEMBER'),
@@ -598,6 +600,7 @@ const pgRightsSQL = `SELECT r.rolsuper,
        pg_has_role(session_user, 'pg_read_server_files', 'MEMBER'),
        coalesce(pg_has_role(session_user, to_regrole('pgvigil_auth')::oid, 'MEMBER'), false),
        coalesce(pg_has_role(session_user, to_regrole('pgvigil_collector')::oid, 'MEMBER'), false),
+       coalesce(pg_has_role(session_user, to_regrole('pgvigil_alerter')::oid, 'MEMBER'), false),
        coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false),
        ` + plans.RepoSecretsCols + `
   FROM pg_roles r WHERE r.rolname = session_user`
@@ -605,8 +608,8 @@ const pgRightsSQL = `SELECT r.rolsuper,
 // pgRefusal refuses a login whose rights reach past a read: every PostgreSQL run of the DBA's own SQL (a custom report
 // on an instance, a community tool, EXPLAIN) asks it inside the run's own transaction.
 func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
-	var super, superMember, prog, write, read, auth, collector, create, owner, readAll, hashes bool
-	if err := tx.QueryRow(ctx, pgRightsSQL).Scan(&super, &superMember, &prog, &write, &read, &auth, &collector, &create, &owner, &readAll, &hashes); err != nil {
+	var super, superMember, prog, write, read, auth, collector, alerter, create, owner, readAll, hashes bool
+	if err := tx.QueryRow(ctx, pgRightsSQL).Scan(&super, &superMember, &prog, &write, &read, &auth, &collector, &alerter, &create, &owner, &readAll, &hashes); err != nil {
 		return "", fmt.Errorf("reading the login's rights: %w", err)
 	}
 	var too, why []string
@@ -620,6 +623,7 @@ func pgRefusal(ctx context.Context, tx pgx.Tx) (string, error) {
 		{read, "pg_read_server_files", "pg_read_file reads the server's files"},
 		{auth, "a member of pgvigil_auth", "it reads the UI's password hashes"},
 		{collector, "a member of pgvigil_collector", "its import functions write the repository"},
+		{alerter, "a member of pgvigil_alerter", "alert_contact_routes() returns every alert contact's address to it"},
 		{create, "allowed to CREATE in the pgvigil schema (its owner?)", "the owner reads every table, the UI's logins among them"},
 		{owner && !create, "a member of the pgvigil schema's owner", "the owner reads every table, the UI's logins among them"},
 		{readAll, "a member of pg_read_all_data in a pgvigil repository", "it reads every table there, the UI's logins among them"},

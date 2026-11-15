@@ -156,12 +156,14 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	// in a database that is a pgvigil repository also plans.RepoSecretsCols: a member of the schema's owner (NOINHERIT
 	// too), pg_read_all_data, a direct read of the UI's hashes (the code review of REPORT ROLE, part A)
 	// a member of a superuser role (NOINHERIT too) counts as a superuser: the statement can SET ROLE to it (part B)
+	// a member of pgvigil_alerter is refused as pgvigil_auth is: alert_contact_routes() answers it with every alert
+	// contact's address (the j14 join review, B1)
 	var actSuper, superMember, actOwner, ownerMember, readAll, hashes bool
 	var acting, secrets *string
 	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time(), (SELECT rolsuper FROM pg_roles WHERE rolname = session_user),
 	       `+plans.SuperMemberCol+`,
 	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname = ANY($1) AND pg_has_role(session_user, oid, 'MEMBER')),
-	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('pgvigil_auth', 'pgvigil_collector') AND pg_has_role(session_user, oid, 'MEMBER')),
+	       (SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('pgvigil_alerter', 'pgvigil_auth', 'pgvigil_collector') AND pg_has_role(session_user, oid, 'MEMBER')),
 	       coalesce(has_schema_privilege(session_user, to_regnamespace('pgvigil')::oid, 'CREATE'), false),
 	       `+plans.RepoSecretsCols,
 		signalLike).Scan(&actStart, &actSuper, &superMember, &acting, &secrets, &actOwner, &ownerMember, &readAll, &hashes); err != nil {
@@ -189,7 +191,7 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 		case readAll:
 			what = "a member of pg_read_all_data in a pgvigil repository"
 		}
-		return refused("the explain login is %s: a statement it plans or runs could read the UI's password hashes or write the repository, so pgvigil refuses it; "+
+		return refused("the explain login is %s: a statement it plans or runs could read the UI's password hashes, the alert contacts' addresses or write the repository, so pgvigil refuses it; "+
 			"give EXPLAIN ANALYZE a login of its own with SELECT grants only", what), nil
 	}
 	if acting != nil {

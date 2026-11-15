@@ -77,8 +77,9 @@ and on SQL Server a later result set of the same batch is not read.
 A PostgreSQL run is refused before the report's statement when its SESSION user is a superuser, a member of a
 superuser role (a `NOINHERIT` member too: the statement can `SET ROLE` to it), or a member of
 `pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files` (a read-only transaction does not stop
-`COPY ... TO PROGRAM`), a member of `pgvigil_auth` (it reads the UI's password hashes) or `pgvigil_collector` (its
-import functions write the repository), or may `CREATE` in a `pgvigil` schema (the repository's owner); and, in a
+`COPY ... TO PROGRAM`), a member of `pgvigil_auth` (it reads the UI's password hashes), `pgvigil_collector` (its
+import functions write the repository) or `pgvigil_alerter` (the alerts login: `alert_contact_routes()` returns every
+alert contact's address to it), or may `CREATE` in a `pgvigil` schema (the repository's owner); and, in a
 database that holds a `pgvigil` schema (the repository monitored as an instance), a member of that schema's owner (a
 `NOINHERIT` member too: `SET ROLE` reaches the owner) or of `pg_read_all_data` (it reads every table, the UI's logins
 among them), or a login that may read the UI's password hashes. A monitoring login's `pg_read_all_data` stays fine on

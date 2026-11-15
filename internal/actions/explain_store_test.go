@@ -49,6 +49,7 @@ func TestExplainAnalyzeLoginsOnAStore(t *testing.T) {
 		{"rd", "LOGIN IN ROLE pgvigil_reader"},
 		{"rad", "LOGIN IN ROLE pg_read_all_data"},
 		{"insu", "LOGIN NOINHERIT IN ROLE pgvigil_reader, " + name("su")},
+		{"alr", "LOGIN IN ROLE pgvigil_alerter"},
 	}
 	defer func() {
 		for i := len(roles) - 1; i >= 0; i-- {
@@ -66,6 +67,7 @@ func TestExplainAnalyzeLoginsOnAStore(t *testing.T) {
 		{"rd", ""},
 		{"rad", "the explain login is a member of pg_read_all_data in a pgvigil repository"},
 		{"insu", "the explain login is a member of a superuser role"},
+		{"alr", "the explain login is a member of pgvigil_alerter"},
 	} {
 		g := ExplainGate{Enabled: true, Configured: true, DSN: dsn + " user=" + name(c.key) + " password=" + pw, Timeout: 10 * time.Second}
 		r := ExplainRequest{InstanceID: 1, Instance: "repo", Datname: cfg.Database, Statement: "SELECT 1",
