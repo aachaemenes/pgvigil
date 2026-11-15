@@ -157,9 +157,11 @@
 #     character and a row was thousands of pixels tall; the first run's checks did not see it); the fleet Running
 #     queries row of the stored snapshot reads 4.0 MB, 5.0 MB, 2, 800, 1, 500 and a PostgreSQL row's six cells are
 #     empty. The Backups tab of the stored snapshot's instance (one database whose full backup went to a path of about
-#     110 characters, stored through import_mssql_backups) shows its row one line tall (40 px at most) with the 'to'
-#     cell cut by an ellipsis (its text wider than its box), the whole path its title and its text (added in task 166:
-#     the path had wrapped in a 14rem cell and every row was about three lines tall). Eighteen screenshots are saved
+#     110 characters, stored through import_mssql_backups and import_mssql_backup_files) shows its row one line tall
+#     (40 px at most) with the 'full to' cell cut by an ellipsis (its text wider than its box), the whole folder of that
+#     path its title and its text (added in task 166 on the 'to' column - the path had wrapped in a 14rem cell and every
+#     row was about three lines tall; moved to 'full to' when task 301 replaced 'to' with the folder of the newest backup
+#     of each type, from mssql_backup_files' stored sets). Eighteen screenshots are saved
 #     (reads-<page>-<theme>.png; the Waits grid and the right ends of the fleet and Backups grids have a picture of
 #     their own) for the look against the tools' shots.
 #  NOT PROVEN HERE: a real power plan (a Windows SQL Server), a real tempdb page latch wait, SQL Server 2016-2019
@@ -792,6 +794,19 @@ if [ -n "${PGVIGIL_SHOTS:-}" ]; then
       {kind: "history", oldest_utc: $made}]')
   q "select pgvigil.import_mssql_backups($xf, now(), '$BKP')" >/dev/null || fail "S: the stored backups read"
   [ "$(q "select full_device_name from pgvigil.mssql_backup_state where instance_id = $xf and database_name = 'pv_bk'")" = "$BKPATH" ] || fail "S: the stored backup's path"
+  # 'full to' (task 301) is the folder of the newest full of mssql_backup_files' stored sets: a stored read of that full
+  BKDIR=${BKPATH%/*}/
+  BKF=$(jq -nc --arg p "$BKPATH" --arg now "$(date -u +%FT%TZ)" --arg start "$(date -u -d '3 seconds ago' +%FT%TZ)" --arg made "$(date -u -d '30 days ago' +%FT%TZ)" \
+    '[{kind: "database", database_name: "pv_bk", state: "ONLINE", recovery_model: "SIMPLE", created_utc: $made, is_snapshot: 0, is_read_only: 0, is_standby: 0},
+      {kind: "set", database_name: "pv_bk", backup_type: "full", is_copy_only: 0, backup_set_id: 1, backup_set_uuid: "00000000-0000-0000-0000-000000000001",
+       start_utc: $start, finish_utc: $now, duration_s: 3, size_bytes: 1048576, compressed_bytes: 524288, has_checksums: 0, is_damaged: 0,
+       is_password_protected: 0, family_count: 1, mirror_count: 1, software_name: "Microsoft SQL Server", user_name: "sa", recovery_model: "SIMPLE"},
+      {kind: "file", backup_set_id: 1, family: 1, mirror: 0, device_kind: "disk", path: $p},
+      {kind: "dbfile", backup_set_id: 1, file_number: 1, file_type: "D", physical_name: "/var/opt/mssql/data/pv_bk.mdf"},
+      {kind: "writers_read"}, {kind: "cursor", last_set_id: 1, mark: 1}]')
+  q "select pgvigil.import_mssql_backup_files($xf, now(), '$BKF')" >/dev/null || fail "S: the stored backup files read"
+  [ "$(q "select full_to from pgvigil.mssql_backup_loc_db where instance_id = $xf and database_name = 'pv_bk'")" = "$BKDIR" ] \
+    || fail "S: the stored full's folder: '$(q "select full_to from pgvigil.mssql_backup_loc_db where instance_id = $xf and database_name = 'pv_bk'")', want $BKDIR"
   CDP=$(freeport 19222 19260) || fail "S: no free port for Chromium"
   # shellcheck disable=SC2086  # PGVIGIL_CHROMIUM_FLAGS is a list of flags (--no-sandbox where Chromium runs as root)
   chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu ${PGVIGIL_CHROMIUM_FLAGS:-} about:blank > "$WORK/chrome.log" 2>&1 & CHR_PID=$!
@@ -884,24 +899,24 @@ for (const theme of ['light', 'dark']) {
   await pv(`const w = gridOf('max memory grant').closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
   await sleep(200); await shot('fleet-right', theme);
 
-  // the Backups tab: a path stays on one line, cut by an ellipsis, the whole path the cell's title and text
-  check(await go(`#/mssqlbackups?i=${a.xf}`, 'to'), T + 'Backups rendered');
-  const bk = await pv(`const t = gridOf('to'); const tr = rowWith(t, 'database', 'pv_bk'); const c = cell(t, tr, 'to'); const sp = c?.querySelector('span[title]');
+  // the Backups tab: the full's folder stays on one line, cut by an ellipsis, the whole folder the cell's title and text
+  check(await go(`#/mssqlbackups?i=${a.xf}`, 'full to'), T + 'Backups rendered');
+  const bk = await pv(`const t = gridOf('full to'); const tr = rowWith(t, 'database', 'pv_bk'); const c = cell(t, tr, 'full to'); const sp = c?.querySelector('span[title]');
     return tr ? { h: tr.getBoundingClientRect().height, title: sp?.title ?? null, text: c.textContent.trim(), cut: sp ? sp.scrollWidth > sp.clientWidth : false } : null;`);
-  const whole = !!bk && bk.title === a.bkpath && bk.text === a.bkpath;
-  check(!!bk && bk.h <= 40 && bk.cut && whole, T + `Backups: pv_bk's row ${Math.round(bk?.h ?? 0)} px tall (40 at most), the path cut ${bk?.cut}, its title and text the whole path ${whole}`);
+  const whole = !!bk && bk.title === a.bkdir && bk.text === a.bkdir;
+  check(!!bk && bk.h <= 40 && bk.cut && whole, T + `Backups: pv_bk's row ${Math.round(bk?.h ?? 0)} px tall (40 at most), the full's folder cut ${bk?.cut}, its title and text the whole folder ${whole}`);
   await shot('backups', theme);
-  await pv(`const w = gridOf('to').closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
+  await pv(`const w = gridOf('full to')?.closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
   await sleep(200); await shot('backups-right', theme);
 }
 ws.close();
 process.exit(fails ? 1 : 0);
 JS
   ARGS=$(jq -nc --arg cdp "$CDP" --arg u "http://127.0.0.1:$PORT" --arg shots "$PGVIGIL_SHOTS" --arg db "$DB" --argjson iid "$iid" --arg fleet "proof-reads-fleet-$SUF" --arg pg "proof-reads-pg-$SUF" --arg lck "$LT" \
-    --argjson xf "$xf" --arg bkpath "$BKPATH" \
+    --argjson xf "$xf" --arg bkdir "$BKDIR" \
     --argjson linux "$([ "$HOSTP" = Linux ] && echo true || echo false)" \
     --argjson waits "$(curl -fs "$U/mssql/waits?instance=$iid&$(win)" | jq '.events.rows | length')" \
-    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck, linux: $linux, waits: $waits, xf: $xf, bkpath: $bkpath}')
+    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck, linux: $linux, waits: $waits, xf: $xf, bkdir: $bkdir}')
   node "$WORK/ui.mjs" "$ARGS" || fail "S: the pages"
   kill "$CHR_PID" 2>/dev/null || true; wait "$CHR_PID" 2>/dev/null || true; CHR_PID=
   echo "S: OK (eighteen screenshots in $PGVIGIL_SHOTS: reads-<page>-<theme>.png)"; S_NOTE=", S"
