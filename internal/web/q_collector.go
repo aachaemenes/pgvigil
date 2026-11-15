@@ -73,10 +73,24 @@ SELECT r.engine, r.collection, r.runs, r.failures,
  ORDER BY r.failures DESC, r.engine, r.collection`
 
 // sqlCollectorMinutes: runs, failures and rows written per minute over 24 h (the chart)
+// B6.4 (CHK#38 / OVW#140): p95_ms, the minute's run duration at its 95th percentile over every collection (the
+// histograms of the minute summed, as the 24-hour p95 above)
 const sqlCollectorMinutes = `
-SELECT minute AS snapshot_at, sum(runs)::bigint AS runs, sum(failures)::bigint AS failures, sum(rows_written)::bigint AS rows_written
-  FROM pgvigil.collector_runs WHERE minute > now() - interval '24 hours'
- GROUP BY minute ORDER BY minute`
+WITH m AS (
+  SELECT minute, sum(runs)::bigint AS runs, sum(failures)::bigint AS failures, sum(rows_written)::bigint AS rows_written
+    FROM pgvigil.collector_runs WHERE minute > now() - interval '24 hours'
+   GROUP BY minute
+), h AS (
+  SELECT minute, array_agg(n ORDER BY b) AS hist
+    FROM (SELECT cr.minute, u.b, sum(u.v)::int AS n
+            FROM pgvigil.collector_runs cr, unnest(cr.dur_hist) WITH ORDINALITY AS u(v, b)
+           WHERE cr.minute > now() - interval '24 hours'
+           GROUP BY cr.minute, u.b) x
+   GROUP BY minute
+)
+SELECT m.minute AS snapshot_at, m.runs, m.failures, m.rows_written, round(pgvigil.collector_pctl(h.hist, 0.95)::numeric) AS p95_ms
+  FROM m LEFT JOIN h ON h.minute = m.minute
+ ORDER BY m.minute`
 
 // sqlCollectorLoad: pgvigil's own load per instance: connections opened and connection attempts per minute over the
 // last hour (the mean over the minutes it ran, every collector summed, and the busiest minute), runs and failures in
