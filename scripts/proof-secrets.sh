@@ -11,6 +11,8 @@
 #   PGVIGIL_PROOF_MS      host,port of a SQL Server the machine reaches, with MSSQL_SA_PASSWORD its sa password
 #                         (handed to sqlcmd's container through the environment, never its command line)
 #   PGVIGIL_PROOF_REGION  the AWS region of the lab secret (us-east-2)
+#   PGVIGIL_SQLCMD_NET    optional: the docker network of the sqlcmd client container - 'host' when PGVIGIL_PROOF_MS is
+#                         a tunnel on this machine's loopback (a container on the default bridge does not reach it)
 #   PGVIGIL_PROOF_PG_LOG  optional: a command that prints the monitored PostgreSQL's server log (e.g. 'ssh box docker
 #                         logs pg'); without it S2's PostgreSQL failed-login count is NOT PROVEN
 # What it makes, and removes on every exit path it can catch: one secret pgvigil-proof/<n> (restored if a deletion is
@@ -61,7 +63,7 @@ MADE_SECRET=; MADE_ROLE=; MADE_LOGIN=; MADE_DB=; RUN_PID=
 FAILS=(); NOTPROVEN=()
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
 # sqlcmd reads its password from SQLCMDPASSWORD in the environment (docker -e NAME passes it on without a value)
-ms() { docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$PGVIGIL_PROOF_MS" -U sa -C -b -h -1 -W -i /dev/stdin <<<"SET NOCOUNT ON; $1"; }
+ms() { docker run --rm -i ${PGVIGIL_SQLCMD_NET:+--network "$PGVIGIL_SQLCMD_NET"} -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$PGVIGIL_PROOF_MS" -U sa -C -b -h -1 -W -i /dev/stdin <<<"SET NOCOUNT ON; $1"; }
 sqlq() { python3 -c 'import sys; print("N\x27" + sys.argv[1].replace("\x27", "\x27\x27") + "\x27")' "$1"; }
 pgq() { python3 -c 'import sys; print("\x27" + sys.argv[1].replace("\x27", "\x27\x27") + "\x27")' "$1"; }
 # SQL that carries a password goes through stdin, never psql's command line
