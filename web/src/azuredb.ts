@@ -97,6 +97,14 @@ export async function mssqlAzureView(ctx: Ctx): Promise<HTMLElement> {
 export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<{ databases: Table | null }>('azuredb/summary', { ...window_(ctx), ...(ctx.tag ? { tag: ctx.tag } : {}) });
   const rows = rowsOf(d.databases);
+  // the read lists every Azure SQL Database of the scope (read or not): none = the scope holds none, so no grid of
+  // Azure's columns and no word of them, the scope said instead (j15b's wording walk: 'elastic pool' under a
+  // PostgreSQL tag)
+  if (!rows.length) {
+    return el('section', {}, el('h2', {}, 'Azure Summary'), el('p', { class: 'empty' }, ctx.tag
+      ? `The tag ${ctx.tag} holds no Azure SQL Database: this summary has nothing to show for it.`
+      : 'pgvigil reads no Azure SQL Database: this summary has nothing to show.'));
+  }
   const sec = el('section', {}, el('h2', {}, 'Azure Summary'),
     el('p', { class: 'meta' }, 'Every Azure SQL Database pgvigil reads, over the window: its resource use as a share of its limit (each average weighs ' +
       'the minutes by their 15-second samples; a maximum is the largest sample), the share of samples at 70 % and over, and its PRIMARY data files ' +

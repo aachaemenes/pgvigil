@@ -188,3 +188,4 @@ must-not | ms-tag | ^jobs\?tag= | heading | PostgreSQL | jobsreport.ts: no Postg
 must-not | ms-tag | ^jobs\?tag= | tile | PostgreSQL | jobsreport.ts: no PostgreSQL schedule checks without a PostgreSQL instance in view (pages.ts jobsRoot) | -
 must-not | pg-tag | ^admin_applications\?tag= | prose | tempdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view (red on 946b61a, j14b) | -
 must-not | pg-tag | ^admin_applications\?tag= | prose | msdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view (red on 946b61a, j14b) | -
+must-not | pg-tag | ^azuresummary\?tag= | th | Elastic Pool | azuredb.ts azureSummaryView: under a tag that holds no Azure SQL Database no grid of Azure's columns, the words that the tag holds none (red on aa84437f's join, j15b's walk: 'elastic pool' on #/azuresummary?tag=aurora) | -
