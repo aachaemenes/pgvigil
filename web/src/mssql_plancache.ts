@@ -339,7 +339,7 @@ function runningPlansSection(ctx: Ctx): HTMLElement {
 
 // ---- evict one plan through the actions door (task 406, Opserver's remove-plan) -------------------------------------
 
-type EvictPreview = { ok: boolean; reason?: string; statement: string; what?: string; note?: string;
+type EvictPreview = { ok: boolean; reason?: string; statement: string; what?: string; note?: string; confirm?: string;
   target: { plan_handle?: string; objtype?: string; plan_created?: string; plan_database?: string; plan_object?: string; plan_statements?: number;
     plan_uses?: number; plan_size_kb?: number; plan_batch?: string; plan_route?: string } };
 
@@ -374,9 +374,12 @@ async function evictDialog(ctx: Ctx, handle: string, back: HTMLElement, after: (
     body.replaceChildren(...kids);
     return;
   }
-  const last8 = (t.plan_handle ?? handle).slice(-8).toUpperCase();
+  // the plan's code (the server's, from the handle): typed beside the plan's own words and its handle
+  const code = pv.confirm ?? '';
+  const words = t.plan_object ? `${t.plan_object}${t.plan_database ? ` in ${t.plan_database}` : ''}`
+    : t.plan_batch ? `the batch '${t.plan_batch.replace(/\s+/g, ' ').trim().slice(0, 60)}'` : (pv.what ?? 'this batch');
   const reason = el('textarea', { rows: '2', cols: '60', minlength: '5', maxlength: '500', 'aria-label': 'Reason (kept in the actions log)' }) as HTMLTextAreaElement;
-  const confirm = el('input', { type: 'text', size: '10', 'aria-label': `Type the handle's last 8 hex digits (${last8}) to confirm` }) as HTMLInputElement;
+  const confirm = el('input', { type: 'text', size: '10', autocomplete: 'off', 'aria-label': `Type ${code} to evict the plan of ${words} (handle ${t.plan_handle ?? handle})` }) as HTMLInputElement;
   const run = el('button', { type: 'button' }, 'Evict the plan');
   const res = el('p', { role: 'status', 'aria-live': 'polite' });
   run.addEventListener('click', async () => {
@@ -390,7 +393,8 @@ async function evictDialog(ctx: Ctx, handle: string, back: HTMLElement, after: (
       res.textContent = e instanceof Error ? e.message : String(e);
     }
   });
-  kids.push(el('label', {}, 'Reason (kept in the actions log) ', reason), el('label', {}, `Type ${last8} (the handle's last 8 hex digits) `, confirm), el('div', {}, run), res);
+  kids.push(el('label', {}, 'Reason (kept in the actions log) ', reason),
+    el('label', {}, `Type ${code} to evict the plan of ${words} (handle ${t.plan_handle ?? handle}) `, confirm), el('div', {}, run), res);
   body.replaceChildren(...kids);
   confirm.focus();
 }

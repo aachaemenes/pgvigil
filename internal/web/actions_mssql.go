@@ -163,9 +163,12 @@ func (m *MSSQLActions) Preview(w http.ResponseWriter, r *http.Request) {
 		Target    mssql.Target `json:"target"`
 		Note      string       `json:"note,omitempty"`
 		What      string       `json:"what,omitempty"`
+		// Confirm: a plan's code to type (mssql.PlanConfirm), shown beside the plan's own words and its handle
+		Confirm string `json:"confirm,omitempty"`
 	}{OK: why == "", Reason: why, Statement: mssql.Statement(kind, in.SessionID, id), Target: t}
 	if kind == mssql.ActionPlanEvict && t.ObjType != "" {
 		out.Statement, out.What = mssql.PlanEvictStatement(t.PlanRoute, t.PlanHandle), mssql.PlanWhat(t)
+		out.Confirm = mssql.PlanConfirm(t.PlanHandle)
 		// the batch's text follows the instance's query_text policy, as a plan does (full only)
 		if qt := m.a.s.mssqlPlanPolicy(name); qt != "full" {
 			out.Target.PlanBatch = ""
@@ -202,13 +205,10 @@ func (m *MSSQLActions) Run(w http.ResponseWriter, r *http.Request) {
 	switch kind {
 	case mssql.ActionKill:
 	case mssql.ActionPlanEvict:
-		// the handle's last 8 hex digits are typed: the user names the plan, not a fixed word
+		// the plan's code is typed (the first 8 hex digits of SHA-256 over the whole handle, computed here from the
+		// handle the request names): the user names this plan, never a fixed word or the handle's zero padding
 		req.JobID, req.PlanObjType, req.PlanCreated = in.PlanHandle, in.PlanObjType, in.PlanCreated
-		h := strings.ToUpper(strings.TrimSpace(in.PlanHandle))
-		want, what = "", "the plan handle's last 8 hex digits"
-		if len(h) >= 10 {
-			want = h[len(h)-8:]
-		}
+		want, what = mssql.PlanConfirm(in.PlanHandle), "the plan's code shown beside it"
 		in.Confirm = strings.ToUpper(in.Confirm)
 	default:
 		want, what = in.JobName, "the job's name"

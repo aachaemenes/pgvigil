@@ -231,3 +231,24 @@ func TestPlanStatsUsed(t *testing.T) {
 		t.Error("a plan without the element, or no XML, gives none")
 	}
 }
+
+// TestPlanConfirm: the evict's typed code is SHA-256 over the whole handle (the lead's call after proof H10 on 2022:
+// a handle's last 8 digits are zero padding, 00000000 for nearly every plan); two handles that share their object id
+// and differ only past it get different codes; the case of the digits and the 0x do not matter.
+func TestPlanConfirm(t *testing.T) {
+	pad := func(h string) string { return h + strings.Repeat("0", 130-len(h)) } // a handle is 64 bytes, zero padded
+	a, b := pad("0x0500050027B3813A60392F020D00000001"), pad("0x0500050027B3813A60A92F020D00000001")
+	ca, cb := PlanConfirm(a), PlanConfirm(b)
+	if len(ca) != 8 || strings.ToUpper(ca) != ca || ca == "00000000" {
+		t.Fatalf("code %q", ca)
+	}
+	if ca == cb {
+		t.Errorf("two plans of one object share the code %s", ca)
+	}
+	if PlanConfirm("0X"+strings.ToLower(a[2:])) != ca {
+		t.Error("the code depends on the digits' case")
+	}
+	if PlanConfirm("0x123") != "" || PlanConfirm("") != "" {
+		t.Error("a handle that does not parse has a code")
+	}
+}

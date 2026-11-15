@@ -38,6 +38,10 @@
 #     B8 a handle evicted by hand (DBCC FREEPROCCACHE as sa) answers 404 with the 'no plan under this handle' words;
 #     B9 a handle of odd length, one of 65 bytes, a bad key, an end before the start: 400 each;
 #     B10 after the reads no session of the read login named pgvigil-plan stays open (each read closes its connection).
+#     B11 every read above wrote its custom_report_log row first (op plan_read, done, the UI user, door file, the handle;
+#        no row holds a plan); sqlsa (the read login is sa, a sysadmin) gets the plan (ok) and its row (task 406's FOLD);
+#     B12 a serve with -no-login (no audit door): the read answers off, 'needs a signed-in user', no plan; the server's
+#        Logins/sec count moves by the hand read's own login only, no plan_read row added.
 #     Red on f8e89d2: the two routes do not exist (B1 is not a JSON reply with entries).
 #  C. the plans of running queries (rows N55 and SQLWATCH COL#27's capture, F6, F7, F18 P1); instances rpon (schedules:
 #     mssql_running_plans and mssql_live_plans 1m), rpoff (no schedules), rpnone (query_text none, schedules on):
@@ -54,12 +58,20 @@
 #     C5 live plan: on a build LivePlanBuildOK passes and SQL Server 2019 or later, a CPU-bound statement read past 61 s
 #        of CPU by 'collect -once mssql_live_plans': one mssql_live_plan row whose XML holds RunTimeCountersPerThread; on
 #        2017 (CU26 or later) with trace flag 7412 off: no row and mssql_live_read's note names trace flag 7412;
-#     C6 the switch, under 'pgvigil run' for 150 s with the wiring applied: rpon and rppage (added on Admin > Instances
-#        through POST /api/admin/instances) each store the 80 s blocked statement's plan and have an ok
-#        mssql_running_plans run; rpoff has no mssql_running_plans run at all and no row.
+#     C6 the switch under 'pgvigil run' with the wiring applied (review B2, the lead 17:5x): rppage added on Admin >
+#        Instances, then the upgrade (running_plans dropped, 0157 run again): its box false (R1); rppage2 and rppage3 added
+#        after: false (R2); the box on rpon (a file instance) refused naming pgvigil.yaml; rppage3 ticked (an admin_audit
+#        row): under pgvigil run rpon and rppage3 store the blocked statement's plan, rppage, rppage2 and rpoff run no
+#        mssql_running_plans (R3); rppage3's box cleared while it runs: no read of it starts 20 s past that (R5), rpon
+#        reads on; the global schedules: mssql_running_plans: 0 in the file: ticked rppage3 runs none, rpon (its own
+#        schedules:) runs (R4).
 #     C7 SQLWATCH COL#27, a slow or long-wait event's plan by its hashes: GET /api/mssql/plansources for the duration
 #        case (pgvqs, its query hash and plan hash) lists its running capture (has_plan) and its plan cache entry after a
 #        plan cache read, and the running capture's plan reads as ShowPlanXML; a plan hash no plan has lists none.
+#     C8 rpon's query_text full -> none, then its read: no plan or live plan kept (plan_state policy); serve again: the
+#        running and live plan reads answer none with the policy's words, no plan (review B1).
+#     C9 purge(30) (0190's line in the wiring): a running plan, a live capture and a plan statistic aged 40 days gone, the
+#        rest kept; pgvigil_reader may not EXECUTE mssql_qs_plans_purge or mssql_plans_policy_drop (review finding 6).
 #     Red on f8e89d2: no such collection (collect -once refuses mssql_running_plans).
 #  D. the statistics a plan was compiled with (PerformanceMonitor 3.13 Added 1, F10, P5), database pgvqs2 with Query Store
 #     on: four tables of 20,000 rows, each with a statistic on v made WITH FULLSCAN, 30 % of rows changed, then one query
@@ -112,10 +124,12 @@
 #        'plan_handle: ...', the run is refused (409) before any connection; H3 p_two's SQL handle: 'no plan under this
 #        handle'; H4 ev_noright: failed (502) with the server's own message, the plan still cached; H5 ev_sa: refused,
 #        'sysadmin or holds CONTROL SERVER'; H6 a compile time other than the one shown: refused, 'another plan under
-#        this handle'; H7 ev_none's preview: no batch text, a note naming the policy 'none'; H10 a wrong typed
-#        confirmation: refused;
-#     H8 ev_signed: the preview says Proc dbo.p_two in pgvqs, 2 statements, the signed procedure's route; the run with the
-#        handle's last 8 hex digits: done, 'gone from the cache'; the plan absent by hand; its actions_log row
+#        this handle'; H7 ev_none's preview: no batch text, a note naming the policy 'none'; H10 two plans of p_two (ARITHABORT ON and
+#        OFF) get two codes in the preview; '00000000' and the other plan's code are refused ('typed confirmation'),
+#        both plans still cached;
+#     H8 ev_signed: the preview says Proc dbo.p_two in pgvqs, 2 statements, the signed procedure's route, and the plan's
+#        code = the first 8 hex digits of SHA-256 over the handle (computed here); the run with that code (lower case):
+#        done, 'gone from the cache'; the plan absent by hand, the other plan of p_two still cached; its actions_log row
 #        (plan_evict, done, target 'Proc dbo.p_two in pgvqs', target_id the handle); H9 the same handle again: refused;
 #     H11 the procedure dropped, a new plan: ev_direct's route is DBCC FREEPROCCACHE itself, done, gone;
 #     H12 GET actions/state: ev_signed's actions login may EXECUTE the procedure and holds neither VIEW nor ALTER SERVER
@@ -218,6 +232,15 @@ instances:
     dsn: env:PGV_Q_MON
     query_text: normalized
 EOF
+# part B's sysadmin read login (B11: sa itself; the plan read by handle does not refuse it)
+if part B; then cat >> "$TMPD/m.yaml" <<'EOF'
+  - name: sqlsa
+    engine: sqlserver
+    dsn: env:PGV_Q_SA
+    query_text: full
+EOF
+fi
+export PGV_Q_SA="sqlserver://sa:$(urlq "$SA_PW")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
 # part C's instances only when C runs: their schedules name collections a tree without them refuses (its red is C's own)
 if part C; then cat >> "$TMPD/m.yaml" <<'EOF'
   - name: rpon
@@ -258,6 +281,24 @@ printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$TMPD/login.json"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "A: the API login"
 # api <path?query> <out>: the reply's body in <out>, the HTTP code printed
 api() { curl -s -o "$2" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/$1"; }
+# serve_restart <tag>: serve again with m.yaml as it is now (a policy changed), signed in again
+serve_restart() { kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null || true
+  "$TMPD/pgvigil" serve -config "$TMPD/m.yaml" -listen "127.0.0.1:$WPORT" >"$TMPD/serve-$1.out" 2>&1 & SRVPID=$!
+  for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
+  kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve-$1.out" >&2; fail "$1: serve exited"; }
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "$1: the API login"; }
+# set_qt <instance> <policy>: an instance's query_text in m.yaml
+set_qt() { python3 - "$TMPD/m.yaml" "$1" "$2" <<'PY'
+import sys
+p, inst, v = sys.argv[1:]
+out, cur = [], None
+for l in open(p).read().split('\n'):
+    if l.startswith('  - name: '): cur = l.split(': ', 1)[1]
+    if cur == inst and l.strip().startswith('query_text:'): l = '    query_text: ' + v
+    out.append(l)
+open(p, 'w').write('\n'.join(out))
+PY
+}
 
 if part B; then
 echo "== B. a cached plan by handle, on demand =="
@@ -369,7 +410,34 @@ read -r HH HS HE <<<"$H1"
 sqok "B8: the hand evict" "DBCC FREEPROCCACHE ($HH) WITH NO_INFOMSGS;"
 CODE=$(api "mssql/plancache/plan?instance=$IF&handle=$HH&start=$HS&end=$HE" "$TMPD/b8.json")
 [[ "$CODE" == 404 ]] && grep -q 'no plan under this handle' "$TMPD/b8.json" || fail "B8: an evicted handle: HTTP $CODE $(head -c 300 "$TMPD/b8.json")"
-echo "ok   B: entries equal the hand read; the statement's plan (ok, its hash, Proc dbo.p_two, one statement, extract.py reads it), the batch's; changed; encrypted; parameterized; the mask; none / normalized refused with their words; 404 once evicted; 400 on bad input; no pgvigil-plan session left open"
+# B11: every read wrote its audit row first (op plan_read: who, the door, the handle; never the plan); a sysadmin read
+# login (sqlsa: sa itself) gets the plan, and its row is written too
+AUD=$(pq "SELECT count(*) FILTER (WHERE outcome = 'done' AND ui_user = '$USR' AND door = 'file' AND payload ? 'plan_handle') || '|' ||
+              count(*) FILTER (WHERE coalesce(detail, '') || coalesce(statement, '') || coalesce(payload::text, '') LIKE '%ShowPlanXML%')
+          FROM pgvigil.custom_report_log WHERE op = 'plan_read' AND instance = 'sqlfull'")
+[[ "${AUD%%|*}" -ge 6 && "${AUD##*|}" == 0 ]] || fail "B11: sqlfull's plan_read rows (done by $USR through the file door | rows holding a plan): $AUD"
+col sqlsa mssql_instance
+ISA=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlsa'")
+read -r SXH SXS SXE <<<"$(python3 -c 'import json,sys; h=json.load(open(sys.argv[1]))["secret"]; print(h["handle"], h["start"], h["end"])' "$TMPD/hand.json")"
+CODE=$(api "mssql/plancache/plan?instance=$ISA&handle=$SXH&start=$SXS&end=$SXE" "$TMPD/b11.json")
+[[ "$CODE" == 200 ]] && grep -q '"state":"ok"' "$TMPD/b11.json" && grep -q 'ShowPlanXML' "$TMPD/b11.json" || fail "B11: the sysadmin read login's plan: HTTP $CODE $(head -c 300 "$TMPD/b11.json")"
+SROW=$(pq "SELECT outcome || '|' || ui_user || '|' || (payload->>'plan_handle') || '|' || (coalesce(detail, '') LIKE 'ok:%')::text || '|' || (statement IS NULL)::text
+          FROM pgvigil.custom_report_log WHERE op = 'plan_read' AND instance = 'sqlsa' ORDER BY log_id DESC LIMIT 1")
+[[ "$SROW" == "done|$USR|$SXH|true|true" ]] || fail "B11: sqlsa's audit row '$SROW'"
+# B12: a serve without the audit door (-no-login: no signed-in user) reads no plan: refused in words, nothing sent to the
+# server (its login counter moves by the second hand read's own login only), no audit row
+NPORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+"$TMPD/pgvigil" serve -config "$TMPD/m.yaml" -listen "127.0.0.1:$NPORT" -no-login >"$TMPD/serve-nl.out" 2>&1 & NLPID=$!
+for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$NPORT/api/session" 2>/dev/null && break; sleep 0.1; done
+LOGINS="SELECT cntr_value FROM sys.dm_os_performance_counters WHERE counter_name = 'Logins/sec' AND object_name LIKE '%General Statistics%'"
+N0=$(pq "SELECT count(*) FROM pgvigil.custom_report_log WHERE op = 'plan_read'"); L0=$(sq "$LOGINS")
+CODE=$(curl -s -o "$TMPD/b12.json" -w '%{http_code}' -H 'X-Pgvigil: 1' "http://127.0.0.1:$NPORT/api/mssql/plancache/plan?instance=$ISA&handle=$SXH&start=$SXS&end=$SXE")
+L1=$(sq "$LOGINS"); N1=$(pq "SELECT count(*) FROM pgvigil.custom_report_log WHERE op = 'plan_read'")
+kill "$NLPID" 2>/dev/null; wait "$NLPID" 2>/dev/null || true
+[[ "$CODE" == 200 ]] && grep -q '"state":"off"' "$TMPD/b12.json" && grep -q 'needs a signed-in user' "$TMPD/b12.json" && ! grep -q ShowPlanXML "$TMPD/b12.json" \
+  || fail "B12: without the audit door: HTTP $CODE $(head -c 300 "$TMPD/b12.json")"
+[[ $((L1 - L0)) == 1 && "$N1" == "$N0" ]] || fail "B12: logins on the server $L0 -> $L1 (want +1: the hand read's own), plan_read rows $N0 -> $N1"
+echo "ok   B: entries equal the hand read; the statement's plan (ok, its hash, Proc dbo.p_two, one statement, extract.py reads it), the batch's; changed; encrypted; parameterized; the mask; none / normalized refused with their words; 404 once evicted; 400 on bad input; no pgvigil-plan session left open; every read audited (plan_read, no plan in the row), a sysadmin read login served and audited; no audit door: refused, nothing sent"
 fi
 
 if part C; then
@@ -504,7 +572,31 @@ LN=$(pq "SELECT coalesce(r.note, '') FROM pgvigil.mssql_live_read r JOIN pgvigil
 if (( MAJ >= 15 )); then [[ "$LV" -ge 1 ]] || fail "C5: no live plan with operator counters on $VER (note: $LN)"; echo "ok   C5: a live plan with RunTimeCountersPerThread on $VER"
 else [[ "$LV" == 0 && "$LN" == *7412* ]] || fail "C5: on $VER want no live plan and the trace flag 7412 note (live plans $LV, note '$LN')"; echo "ok   C5: on $VER no live plan, the note: $LN"; fi
 
-# C6 the switch, under pgvigil run; rppage added on Admin > Instances
+# C8 the policy leaves full (review 20261114-173221 B1): rpon's next read drops every plan and live plan it kept, and the
+# plan reads answer none with the policy's words (serve reads the policy again when it starts)
+RK=$(pq "SELECT p.query_hash || ' ' || p.plan_hash || ' ' || p.stmt_start || ' ' || p.stmt_end FROM pgvigil.mssql_running_plan p JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpon' AND p.plan_xml IS NOT NULL LIMIT 1")
+[[ -n "$RK" ]] || fail "C8: rpon keeps no plan before its policy changes"
+read -r KQ KP KS KE <<<"$RK"
+LID=$(pq "SELECT coalesce(max(l.live_id), 0) FROM pgvigil.mssql_live_plan l JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpon' AND l.live_xml IS NOT NULL")
+set_qt rpon none
+col rpon mssql_running_plans
+KEPT=$(pq "SELECT count(*) FILTER (WHERE p.plan_xml IS NOT NULL) || '|' || count(*) FILTER (WHERE p.plan_state = 'policy') FROM pgvigil.mssql_running_plan p JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpon'")
+LKEPT=$(pq "SELECT count(*) FROM pgvigil.mssql_live_plan l JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpon' AND l.live_xml IS NOT NULL")
+[[ "${KEPT%%|*}" == 0 && "${KEPT##*|}" -ge 1 && "$LKEPT" == 0 ]] || fail "C8: after rpon's read under none: plans kept | policy rows $KEPT, live plans kept $LKEPT (before: live $LID)"
+serve_restart C8
+IRP=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'rpon'")
+for q in "" "&live=$LID"; do
+  [[ "$q" == "&live=0" ]] && continue
+  CODE=$(api "mssql/runningplans/plan?instance=$IRP&qh=$KQ&ph=$KP&start=$KS&end=$KE$q" "$TMPD/c8.json")
+  [[ "$CODE" == 200 ]] && grep -q '"state":"none"' "$TMPD/c8.json" && grep -q 'policy is \\"none\\"' "$TMPD/c8.json" && ! grep -q ShowPlanXML "$TMPD/c8.json" \
+    || fail "C8: the plan read$q under none: HTTP $CODE $(head -c 300 "$TMPD/c8.json")"
+done
+set_qt rpon full
+echo "ok   C8: rpon's policy full -> none: its next read dropped every kept plan and live plan (plan_state policy); the plan and live reads answer none with the policy's words"
+
+# C6 the switch under pgvigil run (review B2, the lead 17:5x): the running plans box of Admin > Instances is off for every
+# page instance (present at the upgrade or added after) until an admin ticks it; cleared, the reads stop; the file's
+# global schedules: mssql_running_plans: 0 stops a ticked one; a file instance keeps its own schedules:
 COL=pgv_qcol_$SUF; COL_PW=$(pw)
 printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_collector;\n" "$COL" "$COL_PW" | psql "$ADMIN_DSN" -Xq -v ON_ERROR_STOP=1 >/dev/null
 export PGV_Q_COL="host=127.0.0.1 port=5432 user=$COL password=$COL_PW dbname=$PGDB"
@@ -515,27 +607,78 @@ for l in sys.stdin.read().split("\n"):
     if not skip: out.append(l)
 print("\n".join(out))' > "$TMPD/collector.yaml"
 export ADD_PW="$MON_PW"
-python3 -c 'import json, os, sys; print(json.dumps({"op": "add", "name": "rppage", "engine": "sqlserver", "auth": "sql", "host": "127.0.0.1", "port": sys.argv[1], "login": sys.argv[2], "password": os.environ["ADD_PW"], "options": "encrypt=true&TrustServerCertificate=true"}))' "$PORT_SQL" "$MON" > "$TMPD/add.json"
-CODE=$(curl -s -o "$TMPD/add.out" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/add.json" "$U/api/admin/instances")
-[[ "$CODE" == 200 ]] || fail "C6: adding rppage on Admin > Instances: HTTP $CODE $(head -c 300 "$TMPD/add.out")"
+# admin <json>: POST /api/admin/instances, the code; the reply in $TMPD/adm.out
+admin() { curl -s -o "$TMPD/adm.out" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "$1" "$U/api/admin/instances"; }
+addpage() { python3 -c 'import json, os, sys; print(json.dumps({"op": "add", "name": sys.argv[3], "engine": "sqlserver", "auth": "sql", "host": "127.0.0.1", "port": sys.argv[1], "login": sys.argv[2], "password": os.environ["ADD_PW"], "options": "encrypt=true&TrustServerCertificate=true"}))' "$PORT_SQL" "$MON" "$1"; }
+box() { admin "{\"op\":\"running_plans\",\"name\":\"$1\",\"on\":$2}"; }
+CODE=$(admin "$(addpage rppage)"); [[ "$CODE" == 200 ]] || fail "C6: adding rppage on Admin > Instances: HTTP $CODE $(head -c 300 "$TMPD/adm.out")"
+# the upgrade: rppage is in admin_instances before 0157 adds running_plans (the column dropped, 0157 run again by migrate)
+pq "ALTER TABLE pgvigil.admin_instances DROP COLUMN running_plans; DELETE FROM pgvigil.schema_version WHERE version LIKE '0157%'" >/dev/null
+"$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate2.out" 2>&1 || { cat "$TMPD/migrate2.out" >&2; fail "C6: 0157 again (the upgrade)"; }
+[[ "$(pq "SELECT running_plans FROM pgvigil.admin_instances WHERE name = 'rppage'")" == f ]] || fail "C6 R1: rppage after the upgrade: running_plans $(pq "SELECT running_plans FROM pgvigil.admin_instances WHERE name = 'rppage'")"
+for n in rppage2 rppage3; do CODE=$(admin "$(addpage $n)"); [[ "$CODE" == 200 ]] || fail "C6: adding $n: HTTP $CODE $(head -c 300 "$TMPD/adm.out")"; done
+[[ "$(pq "SELECT string_agg(name || '=' || running_plans, ' ' ORDER BY name) FROM pgvigil.admin_instances WHERE name LIKE 'rppage%'")" == "rppage=false rppage2=false rppage3=false" ]] \
+  || fail "C6 R2: new page instances' box: $(pq "SELECT string_agg(name || '=' || running_plans, ' ' ORDER BY name) FROM pgvigil.admin_instances WHERE name LIKE 'rppage%'")"
+CODE=$(box rpon true); [[ "$CODE" == 409 ]] && grep -q 'pgvigil.yaml' "$TMPD/adm.out" || fail "C6: the box on a file instance: HTTP $CODE $(head -c 300 "$TMPD/adm.out")"
+CODE=$(box rppage3 true); [[ "$CODE" == 200 ]] || fail "C6 R3: ticking rppage3: HTTP $CODE $(head -c 300 "$TMPD/adm.out")"
+[[ "$(pq "SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance running_plans' AND target = 'rppage3' AND outcome = 'done' AND ui_user = '$USR'")" == 1 ]] || fail "C6 R3: no audit row for the tick"
+lastrun() { pq "SELECT coalesce(max(c.snapshot_at)::text, '') FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND c.collection = 'mssql_running_plans'"; }
 hold 8 200; bg sw 200 "$(victim sw 8) /* pgvc-switch */"; waitreq pgvc-switch >/dev/null
 "$TMPD/pgvigil" run -config "$TMPD/collector.yaml" >"$TMPD/run.log" 2>&1 & RUNPID=$!
-sleep 150
-kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true; RUNPID=
+for _ in $(seq 1 60); do [[ -n "$(lastrun rppage3)" && -n "$(lastrun rpon)" ]] && break; sleep 2; done
+sleep 5   # the first reads of the ticked instances end
 SWQ=$(req pgvc-switch | cut -d'|' -f1); SWQ="0x${SWQ:2}"; SWQ=${SWQ^^}; SWQ="0x${SWQ:2}"
+# R5: the box cleared while pgvigil run runs: no read of rppage3 starts after the collector's next read of the list
+CODE=$(box rppage3 false); [[ "$CODE" == 200 ]] || fail "C6 R5: clearing rppage3: HTTP $CODE $(head -c 300 "$TMPD/adm.out")"
+TOFF=$(pq "SELECT now()")
+sleep 80
+kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true; RUNPID=
 stopbg
-for n in rpon rppage rpoff; do
+for n in rpon rppage3 rppage rppage2 rpoff; do
   R=$(pq "SELECT count(*) FROM pgvigil.mssql_running_plan p JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$n' AND p.query_hash = '$SWQ'")
-  K=$(pq "SELECT count(*) FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$n' AND c.collection = 'mssql_running_plans' AND c.status = 'ok'")
-  echo "C6 $n: rows $R, ok runs $K"
+  K=$(lastrun $n)
+  echo "C6 $n: rows $R, last run '${K}'"
   case $n in
-    rpoff) [[ "$R" == 0 ]] || fail "C6: rpoff (no schedules) stored a plan" ;;
-    *) [[ "$R" -ge 1 && "$K" -ge 1 ]] || { tail -20 "$TMPD/run.log" >&2; fail "C6: $n did not read the running plan under pgvigil run"; } ;;
+    rpon|rppage3) [[ "$R" -ge 1 && -n "$K" ]] || { tail -20 "$TMPD/run.log" >&2; fail "C6: $n did not read the running plan under pgvigil run"; } ;;
+    *) [[ "$R" == 0 && -z "$K" ]] || fail "C6: $n (box not ticked / no schedules) read plans: rows $R, last run '$K'" ;;
   esac
 done
-OFFRUN=$(pq "SELECT count(*) FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'rpoff' AND c.collection = 'mssql_running_plans'")
-[[ "$OFFRUN" == 0 ]] || fail "C6: rpoff has an mssql_running_plans run"
-echo "ok   C6: under pgvigil run rpon and rppage (added on the page) read the running plan; rpoff ran no mssql_running_plans"
+[[ "$(pq "SELECT ('$(lastrun rppage3)'::timestamptz < '$TOFF'::timestamptz + interval '20 seconds')::text")" == true ]] || fail "C6 R5: rppage3 read at $(lastrun rppage3), after its box was cleared at $TOFF"
+[[ "$(pq "SELECT ('$(lastrun rpon)'::timestamptz > '$TOFF'::timestamptz + interval '20 seconds')::text")" == true ]] || fail "C6 R5: rpon's own reads stopped too (last $(lastrun rpon), the box cleared at $TOFF)"
+# R4: the file's global schedules: mssql_running_plans: 0 beats a ticked box; rpon's own schedules: beat the global line
+CODE=$(box rppage3 true); [[ "$CODE" == 200 ]] || fail "C6 R4: ticking rppage3 again: HTTP $CODE"
+{ cat "$TMPD/collector.yaml"; printf 'schedules:\n  mssql_running_plans: 0s\n'; } > "$TMPD/collector0.yaml"
+T4=$(pq "SELECT now()")
+"$TMPD/pgvigil" run -config "$TMPD/collector0.yaml" >"$TMPD/run0.log" 2>&1 & RUNPID=$!
+sleep 75
+kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true; RUNPID=
+[[ "$(pq "SELECT ('$(lastrun rppage3)'::timestamptz < '$T4'::timestamptz)::text")" == true ]] || { tail -20 "$TMPD/run0.log" >&2; fail "C6 R4: rppage3 read at $(lastrun rppage3) under the global 0 (started $T4)"; }
+[[ "$(pq "SELECT ('$(lastrun rpon)'::timestamptz > '$T4'::timestamptz)::text")" == true ]] || { tail -20 "$TMPD/run0.log" >&2; fail "C6 R4: rpon (its own schedules:) did not read under the global 0"; }
+CODE=$(box rppage3 false)
+echo "ok   C6: the box is off for every page instance (rppage present at the upgrade, rppage2 added after: no read); ticked, rppage3 reads (audited); cleared, it stops within the list's read; the global 0 stops a ticked one, not a file instance's own schedules:; rpoff ran none; the box refused on a file instance"
+
+# C9 purge() with the wiring's 0190 line (review finding 6): a running plan, a live capture and a plan statistic aged 40
+# days are gone after purge(30), the rest kept; the reader may not call mssql_qs_plans_purge
+AGE="interval '40 days'"
+pq "UPDATE pgvigil.mssql_running_plan SET first_seen = first_seen - $AGE, last_seen = last_seen - $AGE WHERE (instance_id, query_hash, plan_hash, stmt_start, stmt_end) IN
+      (SELECT instance_id, query_hash, plan_hash, stmt_start, stmt_end FROM pgvigil.mssql_running_plan ORDER BY last_seen LIMIT 1)" >/dev/null
+pq "UPDATE pgvigil.mssql_live_plan SET captured_at = captured_at - $AGE WHERE live_id = (SELECT min(live_id) FROM pgvigil.mssql_live_plan)" >/dev/null
+pq "UPDATE pgvigil.mssql_plan_stat SET captured_at = captured_at - $AGE WHERE ctid = (SELECT ctid FROM pgvigil.mssql_plan_stat LIMIT 1)" >/dev/null
+CNT="SELECT (SELECT count(*) FROM pgvigil.mssql_running_plan WHERE last_seen < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_running_plan)
+       || '|' || (SELECT count(*) FROM pgvigil.mssql_live_plan WHERE captured_at < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_live_plan)
+       || '|' || (SELECT count(*) FROM pgvigil.mssql_plan_stat WHERE captured_at < now() - interval '30 days') || '|' || (SELECT count(*) FROM pgvigil.mssql_plan_stat)"
+IFS='|' read -r A1 T1 A2 T2 A3 T3 <<<"$(pq "$CNT")"
+pq "SELECT pgvigil.purge(30)" >/dev/null || fail "C9: purge(30)"
+IFS='|' read -r B1 U1 B2 U2 B3 U3 <<<"$(pq "$CNT")"
+echo "C9 aged / all before: running $A1/$T1, live $A2/$T2, statistics $A3/$T3; after: running $B1/$U1, live $B2/$U2, statistics $B3/$U3"
+[[ "$A1" == 1 && "$B1" == 0 && "$U1" == $((T1 - 1)) ]] || fail "C9: the aged running plan"
+(( A2 == 0 )) || [[ "$B2" == 0 && "$U2" == $((T2 - A2)) ]] || fail "C9: the aged live capture"
+(( A3 == 0 )) || [[ "$B3" == 0 && "$U3" == $((T3 - A3)) ]] || fail "C9: the aged plan statistic"
+if [[ "$(pq "SELECT count(*) FROM pg_roles WHERE rolname = 'pgvigil_reader'")" == 1 ]]; then
+  [[ "$(pq "SELECT has_function_privilege('pgvigil_reader', 'pgvigil.mssql_qs_plans_purge(int)', 'EXECUTE')::text || '|' || has_function_privilege('pgvigil_reader', 'pgvigil.mssql_plans_policy_drop(int, jsonb)', 'EXECUTE')::text")" == "false|false" ]] \
+    || fail "C9: the reader may call mssql_qs_plans_purge or mssql_plans_policy_drop"
+fi
+echo "ok   C9: purge(30) removed the aged running plan, live capture and plan statistic and kept the rest; the reader may not call the purge"
 fi
 
 if part D || part E; then
@@ -794,38 +937,49 @@ act() { local body; body=$(python3 -c 'import json, sys; d = json.loads(sys.argv
 jv() { python3 -c 'import json, sys; v = json.load(open(sys.argv[1]))
 for k in sys.argv[2].split("."): v = v.get(k) if isinstance(v, dict) else None
 print("" if v is None else v)' "$TMPD/h.json" "$1"; }
-plan2() { sq "EXEC dbo.p_two;" pgvqs >/dev/null
+# plan2: two plans of dbo.p_two (ARITHABORT ON and OFF: another cache key), one line each 'plan handle|sql handle'
+plan2() { sq "SET ARITHABORT ON; EXEC dbo.p_two;" pgvqs >/dev/null; sq "SET ARITHABORT OFF; EXEC dbo.p_two;" pgvqs >/dev/null
   sq "SELECT CONVERT(varchar(140), cp.plan_handle, 1) + '|' + CONVERT(varchar(140), MIN(qs.sql_handle), 1) FROM sys.dm_exec_cached_plans cp CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) t
-       JOIN sys.dm_exec_query_stats qs ON qs.plan_handle = cp.plan_handle WHERE t.objectid = OBJECT_ID('pgvqs.dbo.p_two') AND t.dbid = DB_ID('pgvqs') GROUP BY cp.plan_handle"; }
-HH=$(plan2); PH=${HH%%|*}; SH=${HH##*|}; PH="0x${PH:2}"; PH=${PH^^}; PH="0x${PH:2}"; [[ ${#PH} -gt 10 ]] || fail "H0: no plan of dbo.p_two in the cache ($HH)"
-L8=${PH: -8}
+       JOIN sys.dm_exec_query_stats qs ON qs.plan_handle = cp.plan_handle WHERE t.objectid = OBJECT_ID('pgvqs.dbo.p_two') AND t.dbid = DB_ID('pgvqs') GROUP BY cp.plan_handle ORDER BY cp.plan_handle"; }
+up0x() { local h="0x${1:2}"; h=${h^^}; echo "0x${h:2}"; }
+# code: the plan's code as the lead wrote it (the first 8 hex digits of SHA-256 over the handle's bytes), computed here
+code() { python3 -c 'import hashlib, sys; print(hashlib.sha256(bytes.fromhex(sys.argv[1][2:])).hexdigest()[:8].upper())' "$1"; }
+HH=$(plan2); L1=$(sed -n 1p <<<"$HH"); L2=$(sed -n 2p <<<"$HH"); PH=$(up0x "${L1%%|*}"); SH=${L1##*|}; PH2=$(up0x "${L2%%|*}")
+[[ ${#PH} -gt 10 && ${#PH2} -gt 10 && "$PH" != "$PH2" ]] || fail "H0: want two plans of dbo.p_two in the cache (ARITHABORT ON and OFF): $HH"
+CODE=$(code "$PH"); CODE2=$(code "$PH2")
+echo "H0: two plans of dbo.p_two: ...${PH: -8} and ...${PH2: -8} (last 8 digits), bytes 4-7 ${PH:10:8} / ${PH2:10:8}, codes $CODE / $CODE2"
 C=$(act preview ev_off "{\"plan_handle\":\"$PH\"}"); [[ $C == 200 && "$(jv ok)" == False && "$(jv reason)" == *"not on the instance's actions: list"* ]] || fail "H1: $C $(cat "$TMPD/h.json")"
 C=$(act preview ev_signed '{"plan_handle":"0x123"}'); [[ "$(jv reason)" == plan_handle:* ]] || fail "H2 preview: $C $(cat "$TMPD/h.json")"
 C=$(act run ev_signed '{"plan_handle":"0x123","objtype":"Proc","reason":"the proof asks","confirm":"123"}'); [[ $C == 409 ]] || fail "H2 run: $C $(cat "$TMPD/h.json")"
 C=$(act preview ev_signed "{\"plan_handle\":\"$SH\"}"); [[ "$(jv ok)" == False && "$(jv reason)" == *"no plan under this handle"* ]] || fail "H3: $C $(cat "$TMPD/h.json")"
+C=$(act preview ev_signed "{\"plan_handle\":\"$PH2\"}"); [[ $C == 200 && "$(jv confirm)" == "$CODE2" ]] || fail "H10 the other plan's code: $C $(cat "$TMPD/h.json")"
 C=$(act preview ev_signed "{\"plan_handle\":\"$PH\"}"); [[ $C == 200 && "$(jv ok)" == True ]] || fail "H8 preview: $C $(cat "$TMPD/h.json")"
+[[ "$(jv confirm)" == "$CODE" && "$CODE" != "$CODE2" ]] || fail "H10: the preview's code $(jv confirm), want $CODE (the other plan's $CODE2)"
 CREATED=$(jv target.plan_created); [[ "$(jv target.objtype)" == Proc && "$(jv what)" == "Proc dbo.p_two in pgvqs" && "$(jv target.plan_statements)" == 2 && "$(jv target.plan_route)" == "signed procedure" ]] || fail "H8 preview's target: $(cat "$TMPD/h.json")"
 C=$(act preview ev_none "{\"plan_handle\":\"$PH\"}"); [[ -z "$(jv target.plan_batch)" && "$(jv note)" == *'"none"'* ]] || fail "H7: $C $(cat "$TMPD/h.json")"
 run_body() { echo "{\"plan_handle\":\"$PH\",\"objtype\":\"Proc\",\"plan_created\":\"$1\",\"job_name\":\"Proc dbo.p_two in pgvqs\",\"reason\":\"the proof asks for it\",\"confirm\":\"$2\"}"; }
-C=$(act run ev_noright "$(run_body "$CREATED" "$L8")"); [[ $C == 502 && "$(jv server_message)" == Msg* ]] || fail "H4: $C $(cat "$TMPD/h.json")"
-C=$(act run ev_sa "$(run_body "$CREATED" "$L8")"); [[ $C == 409 && "$(jv detail)" == *"sysadmin or holds CONTROL SERVER"* ]] || fail "H5: $C $(cat "$TMPD/h.json")"
-C=$(act run ev_signed "$(run_body "2001-01-01T00:00:00" "$L8")"); [[ $C == 409 && "$(jv detail)" == *"another plan under this handle"* ]] || fail "H6: $C $(cat "$TMPD/h.json")"
-C=$(act run ev_signed "$(run_body "$CREATED" "00000000")"); [[ $C == 409 && "$(jv detail)" == *"typed confirmation"* ]] || fail "H10: $C $(cat "$TMPD/h.json")"
-[[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_cached_plans WHERE plan_handle = $PH")" == 1 ]] || fail "H4-H10: the plan left the cache before the evict"
-C=$(act run ev_signed "$(run_body "$CREATED" "${L8,,}")"); [[ $C == 200 && "$(jv outcome)" == done && "$(jv detail)" == *"gone from the cache"* ]] || fail "H8 run: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_noright "$(run_body "$CREATED" "$CODE")"); [[ $C == 502 && "$(jv server_message)" == Msg* ]] || fail "H4: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_sa "$(run_body "$CREATED" "$CODE")"); [[ $C == 409 && "$(jv detail)" == *"sysadmin or holds CONTROL SERVER"* ]] || fail "H5: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_signed "$(run_body "2001-01-01T00:00:00" "$CODE")"); [[ $C == 409 && "$(jv detail)" == *"another plan under this handle"* ]] || fail "H6: $C $(cat "$TMPD/h.json")"
+for wrong in 00000000 "$CODE2"; do
+  C=$(act run ev_signed "$(run_body "$CREATED" "$wrong")"); [[ $C == 409 && "$(jv detail)" == *"typed confirmation"* ]] || fail "H10 '$wrong': $C $(cat "$TMPD/h.json")"
+done
+[[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_cached_plans WHERE plan_handle IN ($PH, $PH2)")" == 2 ]] || fail "H4-H10: a plan left the cache before the evict"
+C=$(act run ev_signed "$(run_body "$CREATED" "${CODE,,}")"); [[ $C == 200 && "$(jv outcome)" == done && "$(jv detail)" == *"gone from the cache"* ]] || fail "H8 run: $C $(cat "$TMPD/h.json")"
 [[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_cached_plans WHERE plan_handle = $PH")" == 0 ]] || fail "H8: the plan is still cached"
 LOGROW=$(pq "SELECT action || '|' || outcome || '|' || coalesce(target, '') || '|' || coalesce(target_id, '') FROM pgvigil.actions_log WHERE instance_name = 'ev_signed' AND outcome = 'done'")
 [[ "$LOGROW" == "plan_evict|done|Proc dbo.p_two in pgvqs|$PH" ]] || fail "H8: the audit row '$LOGROW'"
-C=$(act run ev_signed "$(run_body "$CREATED" "$L8")"); [[ $C == 409 && "$(jv detail)" == *"no plan under"* ]] || fail "H9: $C $(cat "$TMPD/h.json")"
+[[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_cached_plans WHERE plan_handle = $PH2")" == 1 ]] || fail "H8: the other plan of dbo.p_two left the cache too"
+C=$(act run ev_signed "$(run_body "$CREATED" "$CODE")"); [[ $C == 409 && "$(jv detail)" == *"no plan under"* ]] || fail "H9: $C $(cat "$TMPD/h.json")"
 C=$(curl -s -o "$TMPD/h.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/mssql/actions/state?instance=$(iid ev_signed)")
 [[ "$(jv actions_login.may_execute)" == True && "$(jv actions_login.view_server_state)" == False && "$(jv actions_login.alter_server_state)" == False ]] || fail "H12 ev_signed: $(cat "$TMPD/h.json" | head -c 400)"
 sqok "H11: the procedure dropped" "DROP PROCEDURE dbo.pgvigil_evict_plan;"
-HH=$(plan2); PH=${HH%%|*}; PH="0x${PH:2}"; PH=${PH^^}; PH="0x${PH:2}"; L8=${PH: -8}
-C=$(act preview ev_direct "{\"plan_handle\":\"$PH\"}"); CREATED=$(jv target.plan_created); [[ "$(jv target.plan_route)" == direct ]] || fail "H11 preview: $C $(cat "$TMPD/h.json")"
-C=$(act run ev_direct "$(run_body "$CREATED" "$L8")"); [[ $C == 200 && "$(jv detail)" == *"gone from the cache"* && "$(jv statement)" == "DBCC FREEPROCCACHE ($PH)" ]] || fail "H11 run: $C $(cat "$TMPD/h.json")"
+HH=$(plan2); PH=$(up0x "$(sed -n 1p <<<"$HH" | cut -d'|' -f1)")
+C=$(act preview ev_direct "{\"plan_handle\":\"$PH\"}"); CREATED=$(jv target.plan_created); [[ "$(jv target.plan_route)" == direct && "$(jv confirm)" == "$(code "$PH")" ]] || fail "H11 preview: $C $(cat "$TMPD/h.json")"
+C=$(act run ev_direct "$(run_body "$CREATED" "$(code "$PH")")"); [[ $C == 200 && "$(jv detail)" == *"gone from the cache"* && "$(jv statement)" == "DBCC FREEPROCCACHE ($PH)" ]] || fail "H11 run: $C $(cat "$TMPD/h.json")"
 C=$(curl -s -o "$TMPD/h.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/mssql/actions/state?instance=$(iid ev_direct)")
 [[ "$(jv actions_login.alter_server_state)" == True && "$(jv actions_login.view_server_state)" == True ]] || fail "H12 ev_direct: $(head -c 400 "$TMPD/h.json")"
-echo "ok   H: refused when off, malformed, a SQL handle, another plan, a wrong confirmation, a sysadmin login; failed with the server's words without the right; done through the signed procedure and directly, the plan gone, the audit row; the actions login's rights"
+echo "ok   H: refused when off, malformed, a SQL handle, another plan, a wrong confirmation (00000000, the other plan's code), a sysadmin login; two plans of one procedure, two codes; failed with the server's words without the right; done through the signed procedure and directly, the plan gone, the audit row; the actions login's rights"
 fi
 
 echo "PASS: proof-mssql-qs-plans parts $PARTS on SQL Server $VER"
