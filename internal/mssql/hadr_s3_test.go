@@ -202,15 +202,20 @@ func TestLogShippingExtrasText(t *testing.T) {
 		"PARTITION BY e.agent_type, e.database_name ORDER BY e.log_time_utc DESC, e.session_id DESC, e.sequence_number DESC",
 		"sd.secondary_id = e.agent_id", "p.primary_id = e.agent_id", " AS logged_utc,", " AS rows_24h,",
 		"r.restore_mode = 1 AND (r.message LIKE N'%read-only database%' OR r.message LIKE N'%database is in read-only mode%'",
-		"OR r.message LIKE N'%because the database is read-only%')"} {
+		"OR r.message LIKE N'%because the database is read-only%')",
+		"AND ((e.agent_type = 0 AND p.primary_id IS NOT NULL) OR (e.agent_type IN (1, 2) AND sd.secondary_id IS NOT NULL))"} {
 		if !strings.Contains(lsErrorSQL, want) {
 			t.Errorf("the agents' errors read lacks %q", want)
 		}
 	}
 	// the idle runs: one hour by the indexed UTC time, the restore agent's one line, after this server's own last restore
-	for _, want := range []string{"h.agent_type = 2 AND h.log_time_utc >= DATEADD(hour, -1, GETUTCDATE())",
+	// - from this server's own secondary databases by the history's clustered key (no scan of the whole table, no
+	// other server's agent)
+	for _, want := range []string{"FROM msdb.dbo.log_shipping_secondary_databases sd",
+		"h.agent_id = sd.secondary_id AND h.agent_type = 2 AND h.database_name = sd.secondary_database",
+		"WHERE h.log_time_utc >= DATEADD(hour, -1, GETUTCDATE())",
 		"h.message LIKE N'Could not find a log backup_file that could be applied%'",
-		"m.secondary_id = h.agent_id AND m.secondary_database = h.database_name", "GROUP BY h.database_name"} {
+		"m.secondary_id = sd.secondary_id AND m.secondary_database = sd.secondary_database", "GROUP BY sd.secondary_database"} {
 		if !strings.Contains(lsIdleSQL, want) {
 			t.Errorf("the idle runs read lacks %q", want)
 		}
