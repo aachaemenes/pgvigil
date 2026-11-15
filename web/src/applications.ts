@@ -9,7 +9,7 @@
 // only when asked, so an export of this page carries them only while they are shown (the page is never mailed). The route and the
 // tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
-import { fleet, fleetWideNote, inTagScope, tagWords } from './fleet';
+import { fleet, fleetWideNote, folderWords, inTagScope, tagsOf, tagWords } from './fleet';
 import { Ctx } from './router';
 import { Col, el, fmtTime, grid, gridModel, offControl } from './ui';
 
@@ -99,10 +99,12 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
     const tag = f ? ctx.tag : undefined;
     const inView = f ? f.instances.filter(r => !tag || inTagScope(tag, r)) : [];
     const viewIds = new Set(inView.map(r => String(r.instance_id)));
+    const viewApps = new Set(inView.flatMap(r => tagsOf(r)).filter(t => t.toLowerCase().startsWith('application:')).map(t => t.slice(12).toLowerCase()));
     const scoped = (rs: Row[]): Row[] => tag ? rs.filter(r => viewIds.has(str(r.instance_id))) : rs;
     const msIn = !f || inView.some(r => r.engine === 'sqlserver'), pgIn = !f || inView.some(r => r.engine !== 'sqlserver');
     const sysDbs = [pgIn ? 'template0, template1, rdsadmin' : '', msIn ? 'master, model, msdb, tempdb' : ''].filter(Boolean).join(', ');
     const apps = rowsOf(d.applications), un = scoped(rowsOf(u.unassigned)), marked = scoped(rowsOf(u.marked)), audit = rowsOf(d.audit), fileTags = rowsOf(d.file_tags);
+    const listApps = tag ? apps.filter(a => viewApps.has(str(a.name).toLowerCase())) : apps;   // TAGALL: the folder's
     const onList = new Set(un.map(pickKey));
     for (const k of [...picked]) if (!onList.has(k)) picked.delete(k);
     if (openId && !apps.some(a => Number(a.app_id) === openId)) openId = 0;
@@ -114,7 +116,11 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
         'An application is set on a whole server (its databases inherit it) or on one database (its own beats the server\'s); every server it is on carries the tag application:<name>, ',
         'which thresholds, acknowledgements and alert rules may be scoped by. Until the viewer / operator / admin roles exist, any signed-in user may change applications.'),
       // under a tag folder (TAGALL) the databases are the folder's; the applications and their log are every folder's
-      fleetWideNote(ctx, 'The applications and their change log are one list') ?? '',
+      // a tag folder lists the applications its servers carry (each server an application is on carries application:<name>);
+      // the change log stays one list
+      tag ? el('p', { class: 'meta' }, `In view: ${tagWords(tag)} - the applications on its servers (${listApps.length} of ${apps.length}) and the databases of its servers.`
+        + (apps.length > listApps.length ? ` Not listed here: ${apps.length - listApps.length} application(s) of other servers (All instances lists them).` : '')) : '',
+      fleetWideNote(ctx, 'The change log of the applications is one list') ?? '',
       whyNot ? el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${whyNot}.`) : '',
       status,
       // decision E5: an application: tag from pgvigil.yaml (or an older override) is not taken - named, never dropped silently
@@ -122,7 +128,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
         'Not taken (an application is set on this page): ', fileTags.map(r => `${str(r.instance)} has ${str(r.tag)} from ${str(r.source)}`).join('; '), '.') : '',
       addForm(),
       el('h3', {}, 'Applications'),
-      grid(apps, listCols, 'No application yet: add one above.'),
+      grid(listApps, listCols, tag && apps.length ? `No application is on a server of ${folderWords(tag)}.` : 'No application yet: add one above.'),
       one ?? '',
       el('h3', {}, `Databases with no application (${un.length})`),
       el('p', { class: 'meta' }, `Every present database of a monitored server${tag ? ' in this folder' : ''} with no application of its own or of its server's; `
