@@ -155,7 +155,8 @@ func (m *MSSQLActions) Preview(w http.ResponseWriter, r *http.Request) {
 	if kind == mssql.ActionPlanEvict {
 		id = in.PlanHandle
 	}
-	t, why := m.preview(ctx, m.doorsNow().MS[name], name, kind, in.SessionID, id)
+	ds := m.doorsNow() // one generation: the actions login and the policy
+	t, why := m.preview(ctx, ds.MS[name], name, kind, in.SessionID, id)
 	out := struct {
 		OK        bool         `json:"ok"`
 		Reason    string       `json:"reason,omitempty"`
@@ -170,7 +171,7 @@ func (m *MSSQLActions) Preview(w http.ResponseWriter, r *http.Request) {
 		out.Statement, out.What = mssql.PlanEvictStatement(t.PlanRoute, t.PlanHandle), mssql.PlanWhat(t)
 		out.Confirm = mssql.PlanConfirm(t.PlanHandle)
 		// the batch's text follows the instance's query_text policy, as a plan does (full only)
-		if qt := m.a.s.mssqlPlanPolicy(name); qt != "full" {
+		if qt := ds.planPolicy(name); qt != "full" {
 			out.Target.PlanBatch = ""
 			out.Note = fmt.Sprintf("the batch's text is not shown: this instance's query_text policy is %q", qt)
 		}

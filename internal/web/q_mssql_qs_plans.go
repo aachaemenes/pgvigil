@@ -39,24 +39,24 @@ var planHashForm = regexp.MustCompile(`^0x[0-9A-Fa-f]{1,16}$`)
 
 var queryKeyForm = regexp.MustCompile(`^(0x[0-9A-Fa-f]{1,16}|0x[0-9A-Fa-f]{2,128}:-?[0-9]{1,10})$`)
 
-// mssqlPlanPolicy is the instance's query_text policy (the file's when the instance has none).
-func (s *Server) mssqlPlanPolicy(name string) string {
-	c := s.plansConfig()
-	if qt, ok := c.QueryText[name]; ok && qt != "" {
+// planPolicy is the instance's query_text policy as this request's door set holds it (the file's when the instance has
+// none): the policy and the read login come from one generation of the doors (TestDoorsReadOnce).
+func (ds *doorSet) planPolicy(name string) string {
+	if qt := ds.QueryText[name]; qt != "" {
 		return qt
 	}
-	if c.DefaultQueryText != "" {
-		return c.DefaultQueryText
+	if ds.DefaultQT != "" {
+		return ds.DefaultQT
 	}
 	return "full"
 }
 
-// planFetchOff is why a plan cannot be read on demand for the instance here, or "".
-func (s *Server) planFetchOff(name string) string {
-	if qt := s.mssqlPlanPolicy(name); qt != "full" {
+// planFetchOff is why a plan cannot be read on demand for the instance on this door set, or "".
+func (ds *doorSet) planFetchOff(name string) string {
+	if qt := ds.planPolicy(name); qt != "full" {
 		return fmt.Sprintf("not read: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled parameter values, so plans are read under \"full\" only", qt)
 	}
-	if _, _, no := s.doorsNow().readLogin("sqlserver", name); no.Why != "" {
+	if _, _, no := ds.readLogin("sqlserver", name); no.Why != "" {
 		return "not read: " + no.Why
 	}
 	return ""
@@ -119,7 +119,8 @@ func (s *Server) MSSQLPlanCacheEntries(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	s.reply(w, r, map[string]any{"entries": t, "fetch_off": s.planFetchOff(name), "policy": s.mssqlPlanPolicy(name)}, nil)
+	ds := s.doorsNow()
+	s.reply(w, r, map[string]any{"entries": t, "fetch_off": ds.planFetchOff(name), "policy": ds.planPolicy(name)}, nil)
 }
 
 // openPlanRead opens one short connection on the read login for a read on demand. Unlike a custom report's, the
@@ -197,7 +198,8 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if why := s.planFetchOff(name); why != "" {
+	ds := s.doorsNow() // the request's one door set: the policy, the read login and the generation the audit names
+	if why := ds.planFetchOff(name); why != "" {
 		s.reply(w, r, map[string]any{"state": "off", "words": why}, nil)
 		return
 	}
@@ -220,7 +222,6 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	// a sysadmin read login is not refused (task 406's FOLD): these are pgvigil's own fixed reads, the ones the
 	// collectors already make on that login; openMS refuses one because a custom report runs the DBA's own SQL
-	ds := s.doorsNow()
 	dsn, kind, _ := ds.readLogin("sqlserver", name)
 	row := (&instanceRun{Door: kind, DoorGen: ds.Gen}).audit(map[string]any{"op": "plan_read", "ui_user": user, "client": clientIP(r),
 		"instance_id": id, "instance": name, "params": map[string]any{"plan_handle": handleText, "start": start, "end": end, "plan_hash": want}})
@@ -356,7 +357,7 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	// the policy as this serve reads it now: a plan kept under 'full' is not served once the policy is narrower (the
 	// collectors' policy row then drops what is kept, at their next run)
-	if qt := s.mssqlPlanPolicy(name); qt != "full" {
+	if qt := s.doorsNow().planPolicy(name); qt != "full" {
 		s.reply(w, r, map[string]any{"state": "none", "words": fmt.Sprintf("not shown: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", qt)}, nil)
 		return
 	}
@@ -585,12 +586,13 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	// the instances whose policy keeps no text, or only normalized text
 	var noText, normalized []string
+	ds := s.doorsNow()
 	if pol, err := s.pool.Query(ctx, `SELECT name, instance_id FROM pgvigil.instances WHERE engine = 'sqlserver' ORDER BY name`); err == nil {
 		for pol.Next() {
 			var n string
 			var id int
 			if pol.Scan(&n, &id) == nil && (inst == nil || inst == id) {
-				switch s.mssqlPlanPolicy(n) {
+				switch ds.planPolicy(n) {
 				case "none":
 					noText = append(noText, n)
 				case "normalized":
