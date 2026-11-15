@@ -76,7 +76,17 @@ func TestPageCloudNameMatch(t *testing.T) {
 		{"an Aurora cluster's writer endpoint", pgPage("dba-lab-pg.cluster-c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", Cluster: "dba-lab-pg", DBInstance: "dba-lab-pg-1"}), true},
 		{"an Aurora cluster's reader endpoint", pgPage("dba-lab-pg.cluster-ro-c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", Cluster: "dba-lab-pg"}), true},
 		{"a member's own endpoint", pgPage("dba-lab-pg-1.c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", Cluster: "dba-lab-pg", DBInstance: "dba-lab-pg-1"}), true},
-		{"the China partition", pgPage("db1.c9akciq32.cn-north-1.rds.amazonaws.com.cn", &PageAWS{Region: "cn-north-1", DBInstance: "db1"}), true},
+		// review finding 8: the China partition's instance form is not confirmed (AWS China's RDS pages show only
+		// global examples): both orders pass the name, the provider's Endpoint.Address decides (collect.checkPageAWS)
+		{"the China partition, the region first", pgPage("db1.c9akciq32.cn-north-1.rds.amazonaws.com.cn", &PageAWS{Region: "cn-north-1", DBInstance: "db1"}), true},
+		{"the China partition, the service first", pgPage("db1.c9akciq32.rds.cn-north-1.amazonaws.com.cn", &PageAWS{Region: "cn-north-1", DBInstance: "db1"}), true},
+		{"a China host for a global region", pgPage("db1.c9akciq32.rds.us-east-2.amazonaws.com.cn", &PageAWS{Region: "us-east-2", DBInstance: "db1"}), false},
+		// review finding 2: an instance endpoint names its DB instance, a cluster endpoint its cluster - the other name
+		// is the provider's to confirm, never the first label's
+		{"a cluster-only block on an instance endpoint of the same name", pgPage("dba-lab-pg.c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", Cluster: "dba-lab-pg"}), false},
+		{"a db_instance-only block on a cluster endpoint of the same name", pgPage("dba-lab-pg.cluster-c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", DBInstance: "dba-lab-pg"}), false},
+		// review finding 3: a custom endpoint's first label is the endpoint's own name, not its cluster's
+		{"a custom endpoint", pgPage("reporting.cluster-custom-c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", Cluster: "reporting"}), false},
 		{"another instance", pgPage("db2.c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", DBInstance: "db1"}), false},
 		{"another region", pgPage("db1.c9akciq32.us-west-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", DBInstance: "db1"}), false},
 		{"a CNAME", pgPage("billing-db.corp.example", &PageAWS{Region: "us-east-2", DBInstance: "db1"}), false},
@@ -103,6 +113,13 @@ func TestPageCloudNameMatch(t *testing.T) {
 	all, _, _ := MergeNotes(nil, []PageInstance{pgPage("dba-lab-pg.cluster-c9akciq32.us-east-2.rds.amazonaws.com", &PageAWS{Region: "us-east-2", Cluster: "dba-lab-pg", DBInstance: "dba-lab-pg-1"})}, "")
 	if a := all[0].AWS; a == nil || a.Region != "us-east-2" || a.Cluster != "dba-lab-pg" || a.DBInstance != "dba-lab-pg-1" || a.Profile != "" {
 		t.Errorf("the aws block's fields: %+v", a)
+	}
+	// fold 1: the instance carries the page row's host, so the collector checks the block against the provider first
+	if all[0].PageAWSHost != "dba-lab-pg.cluster-c9akciq32.us-east-2.rds.amazonaws.com" {
+		t.Errorf("the page block's host mark: %q", all[0].PageAWSHost)
+	}
+	if all, _, _ := MergeNotes([]Instance{{Name: "f", Engine: EnginePostgres, AWS: &AWS{Region: "us-east-2", DBInstance: "db1"}}}, nil, ""); all[0].PageAWSHost != "" {
+		t.Errorf("a file instance's block carries the page mark %q (pgvigil.yaml's block is its own door)", all[0].PageAWSHost)
 	}
 	all, _, _ = MergeNotes(nil, []PageInstance{msPage("srv1.database.windows.net", &PageAzure{Subscription: "0b1f6471-1bf0-4dda-aec3-111122223333", ResourceGroup: "rg-1", Server: "srv1"})}, "")
 	if a := all[0].Azure; a == nil || a.Subscription != "0b1f6471-1bf0-4dda-aec3-111122223333" || a.ResourceGroup != "rg-1" || a.Server != "srv1" {
@@ -150,6 +167,10 @@ func TestPageCloudShape(t *testing.T) {
 		{"an upper-case server", msPage("h", &PageAzure{Subscription: sub, ResourceGroup: "g", Server: "Srv"}), "server"},
 		{"a resource group ending in a dot", msPage("h", &PageAzure{Subscription: sub, ResourceGroup: "g.", Server: "s"}), "resource_group"},
 		{"an unknown cloud", msPage("h", &PageAzure{Subscription: sub, ResourceGroup: "g", Server: "s", Cloud: "moon"}), "cloud"},
+		// review finding 11: the store's rules, rule for rule - an ASCII resource group, a cloud name as written
+		{"a resource group with a letter outside ASCII", msPage("h", &PageAzure{Subscription: sub, ResourceGroup: "rg-\u00e9", Server: "s"}), "resource_group"},
+		{"a resource group with parentheses", msPage("h", &PageAzure{Subscription: sub, ResourceGroup: "rg_(1).a", Server: "s"}), ""},
+		{"a cloud name with a space", msPage("h", &PageAzure{Subscription: sub, ResourceGroup: "g", Server: "s", Cloud: " public"}), "cloud"},
 	} {
 		why := PageCloudShape(c.p)
 		switch {

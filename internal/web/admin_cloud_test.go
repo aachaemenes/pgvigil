@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -174,5 +175,118 @@ func TestProposalCloud(t *testing.T) {
 	}
 	if a, z, _ := proposalCloud(azSrc, "azure:0b1f6471-1bf0-4dda-aec3-111122223333:sql:srv1/app", config.EngineSQLServer, "azuresqlmi", ztags); a != nil || z != nil {
 		t.Errorf("a proposal that is not azuresqldb got a block: %+v %+v", a, z)
+	}
+}
+
+// collectorPool is a pool on a role IN ROLE pgvigil_collector, as a real install's audit login is (actions.go): every
+// connection SET ROLE to it, so a write the collector's role may not make fails here as it does there.
+func collectorPool(ctx context.Context, t *testing.T, owner *pgxpool.Pool, dsn string, sfx int64) *pgxpool.Pool {
+	t.Helper()
+	role := fmt.Sprintf("t_b24p_c_%d", sfx)
+	if _, err := owner.Exec(ctx, `CREATE ROLE `+role+` NOLOGIN IN ROLE pgvigil_collector`); err != nil {
+		t.Skipf("this store's login may not make roles (it needs CREATE ROLE and SET ROLE): %v", err)
+	}
+	t.Cleanup(func() { _, _ = owner.Exec(context.Background(), `DROP ROLE IF EXISTS `+role) })
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
+		_, err := c.Exec(ctx, `SET ROLE `+role)
+		return err
+	}
+	p, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	return p
+}
+
+// B24p's fold 4 (review 20261115-023158 finding 4): a cloud block the STORE refuses (Go's pre-check passed) rolls the
+// add back and still leaves its 'refused' audit row - on the audit login a real install has (IN ROLE
+// pgvigil_collector, which may not run admin_log nor insert into admin_audit), through import_admin_cloud_refused.
+// Needs a migrated repository and its owner (CREATE ROLE): PGVIGIL_REPO_TEST_DSN (skipped without it).
+func TestCloudRefusalAuditAsCollector(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := time.Now().UnixNano() % 1000000000
+	name := fmt.Sprintf("b24p-aud-%d", sfx)
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_instances WHERE name = $1`, name) })
+	s := &Server{pool: pool, log: discardLog(), actions: &Actions{audit: collectorPool(ctx, t, pool, dsn, sfx)}}
+	pay := map[string]any{"op": "add", "ui_user": "b24p", "client": "t", "name": name, "engine": "postgres", "platform": "rds",
+		"dsn_ref": "file:/x/" + name + ".dsn", "host": "db1.c9akciq32.us-east-2.rds.amazonaws.com", "auth": "password"}
+	// a region the store's shape refuses (Go's pre-check is the handler's, not this call's)
+	cloud := map[string]any{"op": "set", "ui_user": "b24p", "client": "t", "name": name, "aws": map[string]any{"region": "nowhere", "db_instance": "db1"}, "azure": nil}
+	ans, _, err := s.writeWithCloud(ctx, pay, cloud)
+	if err != nil || ans.Outcome != "refused" || !strings.Contains(ans.Detail, "region") {
+		t.Fatalf("an add whose block the store refuses: %+v %v, want refused naming the region", ans, err)
+	}
+	var rows, audits int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_instances WHERE name = $1`, name).Scan(&rows)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance cloud' AND target = $1 AND outcome = 'refused' AND detail LIKE '%region%'`, name).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || audits != 1 {
+		t.Errorf("after the refusal: %d instance row(s), %d refusal audit row(s); want 0 and 1", rows, audits)
+	}
+}
+
+// B24p's fold 10 (finding 10): an approve whose derived block the store refuses is approved WITHOUT the block (the
+// design: 'a proposal without them gets none'), the refusal audited and said in the answer - never the whole approve
+// refused. On the collector-role audit login, as a real install.
+func TestApproveWithoutRefusedBlock(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := time.Now().UnixNano() % 1000000000
+	src, inst := fmt.Sprintf("b24p-src-%d", sfx), fmt.Sprintf("b24p-apr-%d", sfx)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_instances WHERE name = $1`, inst)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_proposals WHERE source = $1`, src)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_sources WHERE name = $1`, src)
+	})
+	var o, d string
+	if err := pool.QueryRow(ctx, `SELECT r->>'outcome', coalesce(r->>'detail', '') FROM pgvigil.import_admin_source(now(), $1::jsonb) AS t(r)`,
+		fmt.Sprintf(`{"op":"add","ui_user":"test","name":%q,"kind":"sqlserver_list","ref":"/etc/pgvigil/servers.csv","auth":"entra-identity","every_s":"3600"}`, src)).Scan(&o, &d); err != nil || o != "done" {
+		t.Fatalf("the source: %s %s %v", o, d, err)
+	}
+	var id int64
+	if err := pool.QueryRow(ctx, `INSERT INTO pgvigil.admin_proposals (source, server, engine, host, port, dbname, platform)
+	                               VALUES ($1, 'srv-b24p/db1', 'sqlserver', 'srv-b24p.database.windows.net', 1433, 'db1', 'azuresqldb') RETURNING proposal_id`, src).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{pool: pool, log: discardLog(), actions: &Actions{audit: collectorPool(ctx, t, pool, dsn, sfx)}}
+	pay := map[string]any{"op": "approve", "ui_user": "b24p", "client": "t", "proposal_id": fmt.Sprint(id), "name": inst, "dsn_ref": "file:/x/" + inst + ".dsn", "auth": "entra-identity"}
+	// a resource group the store refuses (a '/'): the derived block's refusal
+	cloud := map[string]any{"op": "set", "ui_user": "b24p", "client": "t", "name": inst, "aws": nil,
+		"azure": map[string]any{"subscription": "0b1f6471-1bf0-4dda-aec3-111122223333", "resource_group": "rg/b24p", "server": "srv-b24p"}}
+	ans, _, note, err := s.approveWrite(ctx, pay, cloud)
+	if err != nil || ans.Outcome != "done" || !strings.Contains(note, "without its cloud block") || !strings.Contains(note, "resource_group") {
+		t.Fatalf("the approve: %+v note %q %v, want done, the note naming the refused resource_group", ans, note, err)
+	}
+	var rows, blocks, audits int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_instances WHERE name = $1`, inst).Scan(&rows)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_instance_cloud WHERE name = $1`, inst).Scan(&blocks)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance cloud' AND target = $1 AND outcome = 'refused'`, inst).Scan(&audits)
+	if rows != 1 || blocks != 0 || audits != 1 {
+		t.Errorf("after the approve: %d instance row(s), %d block(s), %d refusal audit row(s); want 1, 0 and 1", rows, blocks, audits)
 	}
 }

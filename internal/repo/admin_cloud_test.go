@@ -114,6 +114,22 @@ func TestAdminInstanceCloudOnAStore(t *testing.T) {
 	if !strings.Contains(detail, `"db1"`) || !strings.Contains(detail, `"db2"`) {
 		t.Errorf("the edit's audit: %q, want the old (db1) and the new (db2) block", detail)
 	}
+	// B24p's fold 9 (review 20261115-023158 finding 9): the page's Cloud fieldset has no profile; an edit in the same
+	// region keeps the stored one (a discovered instance's source profile, Q5), a region change drops it
+	profile := func() string {
+		var p string
+		_ = pool.QueryRow(ctx, `SELECT coalesce(aws->>'profile', '') FROM pgvigil.admin_instance_cloud WHERE name = $1`, pg).Scan(&p)
+		return p
+	}
+	if p := profile(); p != "prod-read" {
+		t.Errorf("an edit in the same region: the stored profile %q, want prod-read kept", p)
+	}
+	if out, d := set(pg, `{"region":"us-west-2","db_instance":"db2"}`, "null"); out != "done" {
+		t.Fatalf("edit aws's region: %s %s", out, d)
+	}
+	if p := profile(); p != "" {
+		t.Errorf("an edit to another region: the stored profile %q, want none", p)
+	}
 	// the store's rules
 	for _, c := range []struct{ what, name, aws, azure, want string }{
 		{"a key the page block does not take", pg, `{"region":"us-east-2","db_instance":"db1","log_group":"/x"}`, "null", "log_group"},
@@ -127,6 +143,8 @@ func TestAdminInstanceCloudOnAStore(t *testing.T) {
 		{"azure without its server", ms, "null", `{"subscription":"0b1f6471-1bf0-4dda-aec3-111122223333","resource_group":"rg-1"}`, "server"},
 		{"an upper-case server", ms, "null", `{"subscription":"0b1f6471-1bf0-4dda-aec3-111122223333","resource_group":"rg-1","server":"Srv1"}`, "server"},
 		{"a bad subscription", ms, "null", `{"subscription":"x","resource_group":"rg-1","server":"srv1"}`, "subscription"},
+		// fold 11: Go's class, rule for rule, whatever the repository's collation
+		{"a resource group outside ASCII", ms, "null", `{"subscription":"0b1f6471-1bf0-4dda-aec3-111122223333","resource_group":"rg-\u00e9","server":"srv1"}`, "resource_group"},
 		{"neither block (a clear is its own op)", pg, "null", "null", "clear"},
 		{"no such instance", "no-such-" + pg, `{"region":"us-east-2","db_instance":"db1"}`, "null", "no instance"},
 		{"a name of pgvigil.yaml", "in-the-file", `{"region":"us-east-2","db_instance":"db1"}`, "null", "pgvigil.yaml"},
