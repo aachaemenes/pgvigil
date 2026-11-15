@@ -49,6 +49,24 @@
 #  C. lesser logins (proxy_public on at the fleet for C, so the proxies part is asked for): sec_lp (VIEW SERVER STATE, VIEW ANY DEFINITION, a user in msdb) - logins and databases read,
 #     proxies 'no right' naming GRANT SELECT ON msdb.dbo.sysproxies (P6 of the 13:38 probe); sec_bare (no right beyond
 #     public) - logins 'no right' naming GRANT VIEW ANY DEFINITION, and orphaned_user 'not read' (pass F3).
+# Changed after the review 20261114-193737-reviewer (written before its first run): A grants VIEW SERVER STATE to public
+# (for public_server_perm), so C's logins held it through public and the paths without it never ran. C now revokes it
+# from public first, and adds:
+#     C5 sec_bare's auth part 'read' (the own connection through CONNECTIONPROPERTY needs no right) and its
+#        mssql_security run 'ok' in collection_dates (no part failed).
+#     C6 an expired certificate c_tde in master (2019-01-01 to 2020-01-01, under master's key) encrypting secdb's
+#        database encryption key (encryption itself not turned on), read by sa: the finding on master.c_tde is
+#        'warning', 'used for TDE' and 'expiry is not enforced for TDE'.
+#     C7 VIEW SERVER STATE revoked from sec_lp, read again: master.c_tde 'critical' (the rule's own severity) saying its
+#        use was not read; the databases part's note names 'TDE: GRANT VIEW SERVER STATE'; sysadmin_must_change 'not
+#        read' (has_session unknown); auth 'read' and the run 'ok'.
+#     C8 VIEW ANY DEFINITION revoked from sec_lp too, read again: logins 'no right'; sa_exists (a hit on the rows kept
+#        from before) 'not read'; owner_allow (the default list comes from the logins) 'not read'.
+#     C9 put back: secdb's key, c_tde and master's key dropped, sec_lp's two rights and public's VIEW SERVER STATE
+#        given back, sec-sa read again (its rows as B left them, which D starts from).
+# The lesser logins' passwords now reach sqlcmd on stdin (sqi) and the session cookie reaches node in its environment:
+# neither is on a command line. V again (2017 / 2019, parts MA): the context now asks HAS_PERMS_BY_NAME for VIEW SERVER
+# SECURITY STATE, a permission those versions do not have - expected 0 (NULL), not an error [inferred]: A passes as before.
 #  D. the settings through import_mssql_security_config: rule:guest_connect on at the fleet makes it a finding; off at
 #     the instance's tag secprod removes it (a tag beats the fleet); on at the instance brings it back (the instance beats
 #     the tag); ending the instance row returns the tag's off. owner_allow ["sa","sec_owner"] at the instance with secdb
@@ -119,6 +137,8 @@ PORT=$(docker port "$SQL" 1433 | head -1 | sed 's/.*://')
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 docker exec "$SQL" test -x "$SQLCMD" || SQLCMD=/opt/mssql-tools/bin/sqlcmd
 sq() { docker exec -e SQLCMDPASSWORD "$SQL" $SQLCMD -S localhost -U sa -C -b -W -h -1 -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
+# sqi: a batch on stdin (a statement carrying a password: printf is a shell builtin, so it never reaches a command line)
+sqi() { docker exec -i -e SQLCMDPASSWORD "$SQL" $SQLCMD -S localhost -U sa -C -b -W -h -1 -d "${1:-master}" -i /dev/stdin; }
 for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
 sq "SELECT 1" >/dev/null 2>&1 || die "SQL Server did not answer"
 echo "server: $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(40))")"
@@ -126,7 +146,7 @@ echo "server: $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(40)
 psql "$ADMIN_DSN" -XAtq -c "create database $REPO_DB" || die "the repository database"; MADE_DB=1
 export PGVIGIL_REPO_DSN="$ADMIN_DSN dbname=$REPO_DB"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
-sq "CREATE LOGIN sec_lp WITH PASSWORD = '$LPW', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF; GRANT VIEW SERVER STATE TO sec_lp; GRANT VIEW ANY DEFINITION TO sec_lp; CREATE LOGIN sec_bare WITH PASSWORD = '$LPW', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF;" || die "the lesser logins"
+printf "CREATE LOGIN sec_lp WITH PASSWORD = '%s', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF; GRANT VIEW SERVER STATE TO sec_lp; GRANT VIEW ANY DEFINITION TO sec_lp; CREATE LOGIN sec_bare WITH PASSWORD = '%s', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF;\n" "$LPW" "$LPW" | sqi >/dev/null || die "the lesser logins"
 sq "CREATE USER sec_lp FOR LOGIN sec_lp;" msdb || die "sec_lp's msdb user"
 export SEC_SA_DSN="sqlserver://sa:$SAPW@127.0.0.1:$PORT?database=master&encrypt=true&TrustServerCertificate=true"
 export SEC_LP_DSN="sqlserver://sec_lp:$LPW@127.0.0.1:$PORT?database=master&encrypt=true&TrustServerCertificate=true"
@@ -164,7 +184,7 @@ fi
 
 if has A; then
   echo "--- A. as sa: every rule provoked"
-  sq "CREATE LOGIN sec_owner WITH PASSWORD = '$LPW', CHECK_POLICY = OFF; CREATE LOGIN sec_sys WITH PASSWORD = '$LPW', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF; ALTER SERVER ROLE sysadmin ADD MEMBER sec_sys; CREATE LOGIN sec_gone WITH PASSWORD = '$LPW', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF; GRANT VIEW SERVER STATE TO public;" || die "A: the logins"
+  printf "CREATE LOGIN sec_owner WITH PASSWORD = '%s', CHECK_POLICY = OFF; CREATE LOGIN sec_sys WITH PASSWORD = '%s', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF; ALTER SERVER ROLE sysadmin ADD MEMBER sec_sys; CREATE LOGIN sec_gone WITH PASSWORD = '%s', CHECK_POLICY = ON, CHECK_EXPIRATION = OFF; GRANT VIEW SERVER STATE TO public;\n" "$LPW" "$LPW" "$LPW" | sqi >/dev/null || die "A: the logins"
   sq "CREATE DATABASE secdb; ALTER DATABASE secdb SET COMPATIBILITY_LEVEL = 120; ALTER AUTHORIZATION ON DATABASE::secdb TO sec_owner;" || die "A: secdb"
   sq "CREATE USER sec_gone FOR LOGIN sec_gone; GRANT CONNECT TO guest;
       CREATE ASYMMETRIC KEY k1024 WITH ALGORITHM = RSA_1024 ENCRYPTION BY PASSWORD = N'Kx-1!long-enough-2026';
@@ -174,7 +194,7 @@ if has A; then
       EXEC (N'CREATE CERTIFICATE c_soon ENCRYPTION BY PASSWORD = N''Kx-1!long-enough-2026'' WITH SUBJECT = N''soon'', EXPIRY_DATE = ''' + @d + N'''');" secdb > /dev/null || die "A: secdb's objects"
   sq "DROP LOGIN sec_gone;" || die "A: drop sec_gone"
   sq "EXEC sp_configure 'contained database authentication', 1; RECONFIGURE; CREATE DATABASE seccdb CONTAINMENT = PARTIAL;" > /dev/null || die "A: seccdb"
-  sq "CREATE USER sec_cu WITH PASSWORD = N'Cu-1!long-enough-2026';" seccdb || die "A: the contained user"
+  printf "CREATE USER sec_cu WITH PASSWORD = N'%s';\n" "$LPW" | sqi seccdb >/dev/null || die "A: the contained user"
   collect mssql_checks sec-sa
   collect mssql_security sec-sa
   SA=$(iid sec-sa)
@@ -222,14 +242,45 @@ fi
 if has C; then
   echo "--- C. lesser logins"
   cfg "{$base, \"op\": \"add\", \"scope\": \"fleet\", \"key\": \"rule:proxy_public\", \"value\": \"on\"}" >/dev/null
+  # A gave public VIEW SERVER STATE (public_server_perm's hit): taken back, so the lesser logins hold only their own rights
+  sq "REVOKE VIEW SERVER STATE FROM public;" || bad "C: revoke from public"
   collect mssql_security sec-lp
   collect mssql_security sec-bare
   LP=$(iid sec-lp); BARE=$(iid sec-bare)
+  part() { q "select status from pgvigil.mssql_security_read where instance_id = $1 and part = '$2'"; }
+  verdict() { q "select verdict from pgvigil.mssql_security_rule_state where instance_id = $1 and rule_key = '$2'"; }
+  runstatus() { q "select status from pgvigil.collection_dates where instance_id = $1 and collection = 'mssql_security'"; }
+  tdecert() { q "select coalesce(string_agg(severity || '|' || (detail like '%used for TDE%')::text || '|' || (detail like '%expiry is not enforced for TDE%')::text || '|' || (detail like '%its use (TDE, backup encryption, an endpoint) was not read%')::text, ','), 'none') from pgvigil.mssql_security_findings where instance_id = $1 and object = 'master.c_tde'"; }
+  want "C5: sec_bare's auth read | its run" "$(part "$BARE" auth)|$(runstatus "$BARE")" "read|ok"
   want "C1: sec_lp reads the logins and the databases" "$(q "select string_agg(part || '=' || status, ' ' order by part) from pgvigil.mssql_security_read where instance_id = $LP and part in ('logins', 'databases')")" "databases=read logins=read"
   want "C2: sec_lp's proxies 'no right' with the grant" "$(q "select status || '|' || (note like 'GRANT SELECT ON msdb.dbo.sysproxies%')::text from pgvigil.mssql_security_read where instance_id = $LP and part = 'proxies'")" "no right|true"
   echo "  sec_lp's registry: $(q "select status || ' ' || coalesce(note, '') from pgvigil.mssql_security_read where instance_id = $LP and part = 'registry'") (the server's answer, written down)"
   want "C3: sec_bare's logins 'no right' with the grant" "$(q "select status || '|' || (note like 'GRANT VIEW ANY DEFINITION TO [sec_bare]%')::text from pgvigil.mssql_security_read where instance_id = $BARE and part = 'logins'")" "no right|true"
   want "C4: sec_bare's orphaned_user not read" "$(q "select verdict from pgvigil.mssql_security_rule_state where instance_id = $BARE and rule_key = 'orphaned_user'")" "not read"
+  # C6 a TDE certificate in master, expired: graded by its use with sa's rights
+  sqi >/dev/null <<'SQL' || bad "C6: master's key and c_tde"
+IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = N'##MS_DatabaseMasterKey##') CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'Kx-1!long-enough-2026';
+CREATE CERTIFICATE c_tde WITH SUBJECT = N'tde', START_DATE = '20190101', EXPIRY_DATE = '20200101';
+SQL
+  sq "CREATE DATABASE ENCRYPTION KEY WITH ALGORITHM = AES_256 ENCRYPTION BY SERVER CERTIFICATE c_tde;" secdb >/dev/null || bad "C6: secdb's database encryption key"
+  collect mssql_security sec-sa
+  SA=$(iid sec-sa)
+  want "C6: master.c_tde by sa: severity | used for TDE | not enforced | use not read" "$(tdecert "$SA")" "warning|true|true|false"
+  # C7 the same read without VIEW SERVER STATE: the use is unknown, said so, at the rule's severity
+  sq "REVOKE VIEW SERVER STATE FROM sec_lp;" || bad "C7: revoke from sec_lp"
+  collect mssql_security sec-lp
+  want "C7: master.c_tde by sec_lp: severity | used for TDE | not enforced | use not read" "$(tdecert "$LP")" "critical|false|false|true"
+  want "C7: the databases part names the right" "$(q "select (note like '%TDE: GRANT VIEW SERVER STATE%')::text from pgvigil.mssql_security_read where instance_id = $LP and part = 'databases'")" "true"
+  want "C7: sysadmin_must_change | auth | the run" "$(verdict "$LP" sysadmin_must_change)|$(part "$LP" auth)|$(runstatus "$LP")" "not read|read|ok"
+  # C8 without VIEW ANY DEFINITION as well: the logins' older rows are never judged
+  sq "REVOKE VIEW ANY DEFINITION FROM sec_lp;" || bad "C8: revoke from sec_lp"
+  collect mssql_security sec-lp
+  want "C8: logins | sa_exists | owner_allow" "$(part "$LP" logins)|$(verdict "$LP" sa_exists)|$(verdict "$LP" owner_allow)" "no right|not read|not read"
+  # C9 put back what C changed; sec-sa read again so D starts from B's rows
+  sq "DROP DATABASE ENCRYPTION KEY;" secdb >/dev/null || bad "C9: drop secdb's key"
+  sq "DROP CERTIFICATE c_tde; DROP MASTER KEY; GRANT VIEW SERVER STATE TO sec_lp; GRANT VIEW ANY DEFINITION TO sec_lp; GRANT VIEW SERVER STATE TO public;" || bad "C9: put back"
+  collect mssql_security sec-sa
+  want "C9: no c_tde finding left" "$(tdecert "$SA")" "none"
   endkey rule:proxy_public
 fi
 
@@ -307,7 +358,8 @@ if has S; then
   chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu about:blank > "$TMPD/chrome.log" 2>&1 & CHR=$!
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   cat > "$TMPD/sec-page.mjs" <<'EOF'
-const [port, base, axePath, inst, cookie] = process.argv.slice(2);
+const [port, base, axePath, inst] = process.argv.slice(2);
+const cookie = process.env.PGV_COOKIE || ''; // the session cookie comes through the environment, never argv
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -351,7 +403,7 @@ for (const theme of ['light', 'dark']) {
 console.log(JSON.stringify(out));
 ws.close();
 EOF
-  page() { node "$TMPD/sec-page.mjs" "$CDP" "$1/" "$TMPD/node_modules/axe-core/axe.min.js" "$SA" "${2:-}" 2> "$TMPD/node.err" || echo "[]"; }
+  page() { PGV_COOKIE="${2:-}" node "$TMPD/sec-page.mjs" "$CDP" "$1/" "$TMPD/node_modules/axe-core/axe.min.js" "$SA" 2> "$TMPD/node.err" || echo "[]"; }
   grade() { python3 -c 'import json,sys
 r = json.loads(sys.argv[1]); mode = sys.argv[2]
 print(" ".join("%s:rendered=%s,error=%s,rules=%s,offBad=%s,%s,nodes=%s" % (x["theme"], x["rendered"], x["error"], x["rules"], x["offBad"],

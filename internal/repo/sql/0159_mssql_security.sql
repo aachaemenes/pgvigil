@@ -317,9 +317,9 @@ INSERT INTO pgvigil.mssql_security_rule_defs (rule_key, label, source, part, sev
   ('owner_deny',          'database owner in the deny-list',              'dbachecks InvalidDatabaseOwner (Database#9)',    'databases', 'warning', true,
    'the deny-list starts empty (dbachecks names sa in both lists, so a stock server fails one of them)', 20),
   ('cert_expired',        'a certificate has expired',                    'dbachecks CertificateExpiration (Database#30)',  'databases', 'critical', true,
-   'graded by use: backup encryption and Service Broker critical, TDE and endpoints warning; master''s certificates read', 30),
+   'graded by use: backup encryption and Service Broker critical, TDE and endpoints warning, a use not read at the rule''s severity; master''s certificates read (msdb, model and tempdb left out, as dbachecks)', 30),
   ('cert_expiring',       'a certificate expires soon',                   'dbachecks CertificateExpiration (Database#31)',  'databases', 'warning', true,
-   'the window in days (default 30: dbachecks'' one month); master''s certificates read', 40),
+   'the window in days (default 30: dbachecks'' one month); master''s certificates read (msdb, model and tempdb left out, as dbachecks)', 40),
   ('orphaned_user',       'an orphaned database user',                    'dbachecks OrphanedUser (Database#38)',           'databases', 'warning', true,
    'judged only where the logins were read with VIEW ANY DEFINITION; a Windows user is info (access may come through a group login)', 50),
   ('clr_not_safe',        'a user CLR assembly is not SAFE',              'dbachecks CLRAssembliesSafe (Database#47)',      'databases', 'warning', false, NULL, 60),
@@ -503,6 +503,10 @@ BEGIN
   END IF;
   IF v_why IS NULL AND v_op = 'add' AND v_note IS NOT NULL AND length(v_note) > 500 THEN
     v_why := 'a note is 500 characters at most';
+  ELSIF v_why IS NULL AND v_op = 'add' AND length(v_value) > 4000 THEN
+    v_why := 'a value is 4,000 characters at most (a list: fewer or shorter names)';
+  ELSIF v_why IS NULL AND v_op = 'add' AND v_scope = 'tag' AND length(v_tag) > 200 THEN
+    v_why := 'a tag is 200 characters at most';
   END IF;
   IF v_why IS NOT NULL THEN
     INSERT INTO pgvigil.mssql_security_config_log (at, ui_user, client, op, config_id, outcome, detail, payload)
@@ -558,10 +562,14 @@ SELECT i.instance_id, k.key, coalesce(b.value, k.default_val) AS value, coalesce
  WHERE i.is_active AND i.engine = 'sqlserver';
 
 -- the parts an instance's rules in force need (the collector's settings hook): a part is read when any of its rules is on;
--- Inst#2's auth part is cheap and always read
+-- Inst#2's auth part is cheap and always read; owner_allow on with no list of its own needs the logins too (its default
+-- list is the original sa, or the RDS master user, read there)
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_security_parts(p_instance_id int) RETURNS jsonb LANGUAGE sql STABLE AS $$
   SELECT jsonb_build_object('parts', coalesce(jsonb_object_agg(x.part, x.wanted), '{}'::jsonb))
-    FROM (SELECT d.part, bool_or(s.value = 'on') OR d.part = 'auth' AS wanted
+    FROM (SELECT d.part, bool_or(s.value = 'on') OR d.part = 'auth'
+                 OR (d.part = 'logins' AND EXISTS (SELECT 1 FROM pgvigil.mssql_security_settings a
+                       JOIN pgvigil.mssql_security_settings l ON l.instance_id = a.instance_id AND l.key = 'owner_allow' AND l.value IS NULL
+                      WHERE a.instance_id = p_instance_id AND a.key = 'rule:owner_allow' AND a.value = 'on')) AS wanted
             FROM pgvigil.mssql_security_rule_defs d
             JOIN pgvigil.mssql_security_settings s ON s.instance_id = p_instance_id AND s.key = 'rule:' || d.rule_key
            WHERE d.part IS NOT NULL
@@ -607,7 +615,8 @@ WITH inst AS (
 ), dbs AS (   -- the database options' owner (the mssql_checks collection, 0090) for user databases
   SELECT o.instance_id, o.database_name, o.options->>'owner' AS owner, o.snapshot_at
     FROM pgvigil.mssql_database_option o
-   WHERE o.is_present AND NOT o.is_system AND NOT o.is_snapshot AND o.database_name NOT IN ('master', 'msdb', 'model', 'tempdb')
+   WHERE o.is_present AND NOT o.is_system AND NOT o.is_snapshot
+     AND o.database_name NOT IN ('master', 'msdb', 'model', 'tempdb', 'rdsadmin', 'gcloud_cloudsqladmin')   -- the platform's own (dboptions.go)
 ), objs AS (
   SELECT o.*, d.containment FROM pgvigil.mssql_security_db_objects o
     JOIN pgvigil.mssql_security_db d ON d.instance_id = o.instance_id AND d.database_name = o.database_name AND d.is_present
@@ -632,18 +641,20 @@ SELECT o.instance_id, CASE WHEN o.expires_at <= now() THEN 'cert_expired' ELSE '
        CASE WHEN o.expires_at > now() THEN 'warning'
             WHEN o.cert_use ~ 'backup encryption|Service Broker' THEN 'critical'
             WHEN o.cert_use ~ 'TDE|endpoint' THEN 'warning'
+            WHEN o.cert_use = 'unknown' THEN NULL
             ELSE 'critical' END,
        o.database_name || '.' || o.object_name,
        CASE WHEN o.expires_at <= now() THEN format('the certificate %s in %s expired %s', o.object_name, o.database_name, to_char(o.expires_at, 'YYYY-MM-DD'))
             ELSE format('the certificate %s in %s expires %s (%s days)', o.object_name, o.database_name, to_char(o.expires_at, 'YYYY-MM-DD'),
                         ceil(extract(epoch FROM o.expires_at - now()) / 86400)::int) END
-       || coalesce('; used for ' || o.cert_use, '')
+       || CASE WHEN o.cert_use = 'unknown' THEN '; its use (TDE, backup encryption, an endpoint) was not read: the databases part names the right'
+               ELSE coalesce('; used for ' || o.cert_use, '') END
        || CASE WHEN o.expires_at <= now() AND o.cert_use ~ 'TDE' THEN '; expiry is not enforced for TDE: rotate it per policy'
                WHEN o.expires_at <= now() AND o.cert_use ~ 'mirroring' THEN '; an endpoint certificate''s expiry: rotate it before a reconnect needs it'
                ELSE '' END,
        o.snapshot_at
   FROM objs o JOIN days d ON d.instance_id = o.instance_id
- WHERE o.object_kind = 'certificate' AND o.expires_at IS NOT NULL
+ WHERE o.object_kind = 'certificate' AND o.expires_at IS NOT NULL AND o.database_name NOT IN ('msdb', 'model', 'tempdb')
    AND o.expires_at <= now() + make_interval(days => coalesce(d.cert_warn, 30))
 UNION ALL
 -- DB#38: an orphaned user (dbatools' rule): a SQL user with a 16-byte SID in a database that is not contained, or a
@@ -668,7 +679,7 @@ SELECT o.instance_id, 'guest_connect', NULL, o.database_name, format('guest hold
 UNION ALL
 SELECT o.instance_id, 'asym_key_size', NULL, o.database_name || '.' || o.object_name,
        format('the asymmetric key %s in %s is %s bits', o.object_name, o.database_name, o.key_length), o.snapshot_at
-  FROM objs o WHERE o.object_kind = 'asym_key' AND o.key_length < 2048
+  FROM objs o WHERE o.object_kind = 'asym_key' AND o.key_length < 2048 AND o.database_name NOT IN ('master', 'msdb', 'tempdb')
 UNION ALL
 SELECT o.instance_id, 'sym_key_algorithm', NULL, o.database_name || '.' || o.object_name,
        format('the symmetric key %s in %s uses %s', o.object_name, o.database_name, o.detail), o.snapshot_at
@@ -765,7 +776,14 @@ SELECT i.instance_id, d.rule_key, d.label, d.source, d.part, d.severity AS defau
             WHEN i.platform = 'azuresqldb' AND d.rule_key NOT IN ('cert_expired', 'cert_expiring', 'guest_connect', 'asym_key_size', 'sym_key_algorithm', 'auth_scheme') THEN 'n/a'
             WHEN d.rule_key IN ('hide_instance', 'local_windows_group') AND coalesce(c.linux, false) THEN 'n/a'
             WHEN d.rule_key = 'orphaned_user' AND NOT (coalesce(c.view_any_definition, false) OR coalesce(c.alter_any_login, false)) THEN 'not read'
-            WHEN r.status IS NULL OR r.read_at IS NULL THEN 'not read'
+            -- the default allow-list comes from the logins: judged only when they were read in full this time
+            WHEN d.rule_key = 'owner_allow' AND al.value IS NULL
+                 AND (NOT (coalesce(c.view_any_definition, false) OR coalesce(c.alter_any_login, false)) OR coalesce(rl.status, '') <> 'read') THEN 'not read'
+            -- 'signed in now' needs VIEW SERVER STATE: without it has_session is unknown
+            WHEN d.rule_key = 'sysadmin_must_change' AND NOT coalesce(c.view_server_state, false) THEN 'not read'
+            -- a part whose latest read was refused or failed keeps its older rows: never judged on them
+            WHEN r.status = 'n/a' THEN 'n/a'
+            WHEN r.status IS NULL OR r.read_at IS NULL OR r.status <> 'read' THEN 'not read'
             WHEN EXISTS (SELECT 1 FROM pgvigil.mssql_security_hits h WHERE h.instance_id = i.instance_id AND h.rule_key = d.rule_key) THEN 'hit'
             ELSE 'ok' END AS verdict,
        (SELECT count(*) FROM pgvigil.mssql_security_hits h WHERE h.instance_id = i.instance_id AND h.rule_key = d.rule_key)::int AS hits
@@ -773,6 +791,8 @@ SELECT i.instance_id, d.rule_key, d.label, d.source, d.part, d.severity AS defau
   CROSS JOIN pgvigil.mssql_security_rule_defs d
   LEFT JOIN pgvigil.mssql_security_settings s ON s.instance_id = i.instance_id AND s.key = 'rule:' || d.rule_key
   LEFT JOIN pgvigil.mssql_security_read r ON r.instance_id = i.instance_id AND r.part = d.part
+  LEFT JOIN pgvigil.mssql_security_read rl ON rl.instance_id = i.instance_id AND rl.part = 'logins'
+  LEFT JOIN pgvigil.mssql_security_settings al ON al.instance_id = i.instance_id AND al.key = 'owner_allow'
   LEFT JOIN pgvigil.mssql_security_context c ON c.instance_id = i.instance_id
  WHERE i.is_active AND i.engine = 'sqlserver';
 

@@ -28,8 +28,9 @@ import (
 //	registry      AuditLevel (login auditing) and HideInstance: sys.dm_server_registry (VIEW SERVER STATE) on Windows;
 //	              master.dbo.xp_instance_regread (EXECUTE on it) on Linux, where the DMV answers no rows, and on
 //	              Windows when the DMV has no row for a value. HideInstance does not apply on Linux.
-//	auth          the collector's own connection (no right needed); every connection by scheme and transport - VIEW
-//	              SERVER STATE.
+//	auth          the collector's own connection through CONNECTIONPROPERTY (no right needed: sys.dm_exec_connections
+//	              refuses even a login's own row without VIEW SERVER STATE); every connection by scheme and transport -
+//	              VIEW SERVER STATE.
 //	proxies       msdb.dbo.sysproxies and sysproxylogin - SELECT on both (a sysadmin, or a grant in msdb).
 //	databases     each ONLINE database the login can enter (HAS_DBACCESS), not a snapshot or a local secondary
 //	              replica; its principals, permissions, assemblies, certificates and keys are listed in full with
@@ -107,8 +108,8 @@ type secRun struct {
 
 // secContext is what the parts need to know about the server and the login, read once.
 type secContext struct {
-	Linux, VAD, AAL, VSS, CanRegread, CanProxies bool
-	Login, Machine                               string
+	Linux, VAD, AAL, VSS, VSSS, CanRegread, CanProxies, CanBackupset bool
+	Login, Machine                                                   string
 }
 
 func (r *secRun) part(name, status, note string) {
@@ -136,6 +137,8 @@ const secContextSQL = `SELECT CAST(SERVERPROPERTY('MachineName') AS nvarchar(256
   CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION'), 0) AS int) AS vad,
   CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LOGIN'), 0) AS int) AS aal,
   CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE'), 0) AS int) AS vss,
+  CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER SECURITY STATE'), 0) AS int) AS vsss,
+  CAST(ISNULL(HAS_PERMS_BY_NAME('msdb.dbo.backupset', 'OBJECT', 'SELECT'), 0) AS int) AS can_backupset,
   CAST(ISNULL(HAS_PERMS_BY_NAME('master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE'), 0) AS int) AS can_regread,
   CAST(CASE WHEN ISNULL(HAS_PERMS_BY_NAME('msdb.dbo.sysproxies', 'OBJECT', 'SELECT'), 0) = 1
              AND ISNULL(HAS_PERMS_BY_NAME('msdb.dbo.sysproxylogin', 'OBJECT', 'SELECT'), 0) = 1 THEN 1 ELSE 0 END AS int) AS can_proxies`
@@ -152,8 +155,8 @@ func (r *secRun) run() ([]collect.Row, error) {
 		return nil, fmt.Errorf("the login's rights: %w", err)
 	}
 	c := ctxRows[0]
-	r.ctxt = secContext{VAD: secFlag(c["vad"]), AAL: secFlag(c["aal"]), VSS: secFlag(c["vss"]), CanRegread: secFlag(c["can_regread"]),
-		CanProxies: secFlag(c["can_proxies"])}
+	r.ctxt = secContext{VAD: secFlag(c["vad"]), AAL: secFlag(c["aal"]), VSS: secFlag(c["vss"]), VSSS: secFlag(c["vsss"]),
+		CanRegread: secFlag(c["can_regread"]), CanProxies: secFlag(c["can_proxies"]), CanBackupset: secFlag(c["can_backupset"])}
 	r.ctxt.Login, _ = c["login_name"].(string)
 	r.ctxt.Machine, _ = c["machine_name"].(string)
 	if r.info.Kind != KindAzureDB {
@@ -348,9 +351,10 @@ func nilIfEmptyStr(s string) any {
 	return s
 }
 
-const secAuthOwnSQL = `SELECT CAST(c.auth_scheme AS nvarchar(40)) AS auth_scheme, CAST(c.net_transport AS nvarchar(40)) AS net_transport,
-  CAST(c.client_net_address AS nvarchar(48)) AS client_address, CAST(c.local_net_address AS nvarchar(48)) AS local_address
-FROM sys.dm_exec_connections c WHERE c.session_id = @@SPID`
+const secAuthOwnSQL = `SELECT CAST(CONNECTIONPROPERTY('auth_scheme') AS nvarchar(40)) AS auth_scheme,
+  CAST(CONNECTIONPROPERTY('net_transport') AS nvarchar(40)) AS net_transport,
+  CAST(CONNECTIONPROPERTY('client_net_address') AS nvarchar(48)) AS client_address,
+  CAST(CONNECTIONPROPERTY('local_net_address') AS nvarchar(48)) AS local_address`
 
 const secAuthAllSQL = `SELECT CAST(c.auth_scheme AS nvarchar(40)) AS auth_scheme, CAST(c.net_transport AS nvarchar(40)) AS net_transport,
   CAST(COUNT(*) AS int) AS connections
@@ -415,7 +419,7 @@ ORDER BY d.name`
 // database's quoted name and a dot, or nothing for the connected database; %[2]s whether a login has the user's SID).
 // One kind per branch, the columns shared: users (with whether a login has their SID and whether they hold CONNECT), guest's
 // CONNECT, user CLR assemblies, certificates (their use found in master by thumbprint: TDE, backup encryption, an
-// endpoint), asymmetric and symmetric keys. ##-named system objects are left out but ##MS_DatabaseMasterKey##.
+// endpoint), asymmetric and symmetric keys. ##-named system objects (users too) are left out but ##MS_DatabaseMasterKey##.
 const secDatabaseSQL = `EXEC %[1]ssys.sp_executesql N'
 SELECT N''user'' AS object_kind, CAST(dp.name AS nvarchar(256)) AS object_name, CAST(dp.type AS nvarchar(4)) AS object_type,
   CAST(dp.authentication_type AS int) AS num1, CAST(DATALENGTH(dp.sid) AS int) AS num2, CAST(dp.principal_id AS int) AS num3,
@@ -424,7 +428,7 @@ SELECT N''user'' AS object_kind, CAST(dp.name AS nvarchar(256)) AS object_name, 
           AND pe.class = 0 AND pe.permission_name = N''CONNECT'' AND pe.state IN (''G'', ''W'')) THEN 1 ELSE 0 END AS int) AS flag2,
   CAST(NULL AS nvarchar(256)) AS text1, CAST(NULL AS nvarchar(256)) AS text2, CAST(NULL AS varchar(40)) AS at_utc
 FROM sys.database_principals dp
-WHERE dp.type IN (''S'', ''U'', ''G'', ''C'', ''K'', ''E'', ''X'') AND dp.principal_id > 4
+WHERE dp.type IN (''S'', ''U'', ''G'', ''C'', ''K'', ''E'', ''X'') AND dp.principal_id > 4 AND dp.name NOT LIKE N''##%%##''
 UNION ALL
 SELECT N''guest_connect'', N''guest'', NULL, NULL, NULL, NULL, NULL, NULL, CAST(pe.state_desc AS nvarchar(256)), NULL, NULL
 FROM sys.database_permissions pe
@@ -457,13 +461,39 @@ func (r *secRun) dbName() (string, error) {
 }
 
 // a certificate's use, read in master by thumbprint: a database encryption key's encryptor (TDE), a backup encrypted
-// with it in the last 90 days, a mirroring / availability group or Service Broker endpoint's certificate
+// with it in the last 90 days, a mirroring / availability group or Service Broker endpoint's certificate. Each test
+// runs only with its own right (certUseSQL): one the login lacks is NULL (not read), never a refused statement.
 const secCertUseSQL = `SELECT CONVERT(nvarchar(256), c.thumbprint, 1) AS thumbprint,
-  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_database_encryption_keys k WHERE k.encryptor_thumbprint = c.thumbprint) THEN 1 ELSE 0 END AS int) AS tde,
+  CAST(%s AS int) AS tde,
   CAST(%s AS int) AS backup_encryptor,
-  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.database_mirroring_endpoints e WHERE e.certificate_id = c.certificate_id) THEN 1 ELSE 0 END AS int) AS mirroring_endpoint,
-  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.service_broker_endpoints e WHERE e.certificate_id = c.certificate_id) THEN 1 ELSE 0 END AS int) AS broker_endpoint
+  CAST(%s AS int) AS mirroring_endpoint,
+  CAST(%s AS int) AS broker_endpoint
 FROM master.sys.certificates c WHERE c.name NOT LIKE N'##%%##'`
+
+// certUseSQL is secCertUseSQL with each test the login has the right for, and the rights it lacks (for the part's
+// note): sys.dm_database_encryption_keys needs VIEW SERVER STATE (VIEW SERVER SECURITY STATE on 2022), msdb's backupset
+// SELECT on it, and the endpoints' catalog views show every endpoint only with VIEW ANY DEFINITION.
+func (r *secRun) certUseSQL() (string, []string) {
+	tde, backup, mirroring, broker := "NULL", "NULL", "NULL", "NULL"
+	var missing []string
+	if r.ctxt.VSS || r.ctxt.VSSS {
+		tde = `CASE WHEN EXISTS (SELECT 1 FROM sys.dm_database_encryption_keys k WHERE k.encryptor_thumbprint = c.thumbprint) THEN 1 ELSE 0 END`
+	} else {
+		missing = append(missing, "TDE: GRANT VIEW SERVER STATE")
+	}
+	if r.ctxt.CanBackupset {
+		backup = `CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.backupset b WHERE b.encryptor_thumbprint = c.thumbprint AND b.backup_finish_date > DATEADD(day, -90, GETDATE())) THEN 1 ELSE 0 END`
+	} else {
+		missing = append(missing, "backup encryption: GRANT SELECT ON msdb.dbo.backupset")
+	}
+	if r.ctxt.VAD {
+		mirroring = `CASE WHEN EXISTS (SELECT 1 FROM sys.database_mirroring_endpoints e WHERE e.certificate_id = c.certificate_id) THEN 1 ELSE 0 END`
+		broker = `CASE WHEN EXISTS (SELECT 1 FROM sys.service_broker_endpoints e WHERE e.certificate_id = c.certificate_id) THEN 1 ELSE 0 END`
+	} else {
+		missing = append(missing, "endpoints: GRANT VIEW ANY DEFINITION")
+	}
+	return fmt.Sprintf(secCertUseSQL, tde, backup, mirroring, broker), missing
+}
 
 func (r *secRun) databases() {
 	if r.skip("databases") {
@@ -510,18 +540,22 @@ func (r *secRun) databases() {
 		}
 		r.out = append(r.out, row)
 	}
-	// the certificates' use, once, from master (a failure leaves the use unknown, never the read)
+	// the certificates' use, once, from master: a test without its right, or a failed read, leaves the use unknown
+	// (the hit keeps the rule's severity and says so), never the database read
 	use := map[string]collect.Row{}
-	backup := "0"
-	if r.ctxt.VSS || r.info.MsdbAccess {
-		backup = `CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.backupset b WHERE b.encryptor_thumbprint = c.thumbprint AND b.backup_finish_date > DATEADD(day, -90, GETDATE())) THEN 1 ELSE 0 END`
-	}
-	if rows, err := QueryRows(r.ctx, r.conn, fmt.Sprintf(secCertUseSQL, backup)); err == nil {
+	useSQL, useMissing := r.certUseSQL()
+	useNote := ""
+	if rows, err := QueryRows(r.ctx, r.conn, useSQL); err == nil {
 		for _, u := range rows {
 			if t, ok := u["thumbprint"].(string); ok {
 				use[t] = u
 			}
 		}
+		if len(useMissing) > 0 {
+			useNote = fmt.Sprintf("master's certificate use not read in full (%s TO [%s])", strings.Join(useMissing, "; "), r.ctxt.Login)
+		}
+	} else {
+		useNote = "master's certificate use not read: " + err.Error()
 	}
 	if len(enter) > 1 {
 		k := int(time.Now().Unix()/3600) % len(enter)
@@ -548,12 +582,9 @@ func (r *secRun) databases() {
 		r.out = append(r.out, collect.Row{"kind": "dbread", "database_name": name})
 		for _, o := range rows {
 			o["kind"], o["database_name"] = "dbobject", name
-			if k, _ := o["object_kind"].(string); k == "certificate" {
-				if t, ok := o["text2"].(string); ok {
-					if u, ok := use[t]; ok {
-						o["use"] = certUse(name, u)
-					}
-				}
+			if k, _ := o["object_kind"].(string); k == "certificate" && name == "master" {
+				t, _ := o["text2"].(string)
+				o["use"] = certUse(use[t])
 			}
 			r.out = append(r.out, o)
 		}
@@ -568,29 +599,34 @@ func (r *secRun) databases() {
 	if !r.ctxt.VAD {
 		parts = append(parts, fmt.Sprintf("each database lists only what the login may see without VIEW ANY DEFINITION: GRANT VIEW ANY DEFINITION TO [%s]", r.ctxt.Login))
 	}
+	if useNote != "" {
+		parts = append(parts, useNote)
+	}
 	r.part("databases", "read", strings.Join(parts, "; "))
 }
 
-// certUse names a master certificate's use (TDE, backup encryption, an endpoint); a certificate of another database
-// has its own uses (signing, Service Broker dialogs, a key's encryption) the read does not trace: "".
-func certUse(db string, u collect.Row) any {
-	if db != "master" {
-		return nil
+// certUse names a master certificate's use (TDE, backup encryption, an endpoint) from its row of the use read; a
+// certificate of another database has its own uses (signing, Service Broker dialogs, a key's encryption) the read
+// does not trace, and is never asked. No use found where a test was not read (NULL), or no row at all, is
+// "unknown": the hit keeps the rule's severity and says its use was not read (0159).
+func certUse(u collect.Row) any {
+	if u == nil {
+		return "unknown"
 	}
 	var uses []string
-	if secFlag(u["backup_encryptor"]) {
-		uses = append(uses, "backup encryption")
-	}
-	if secFlag(u["broker_endpoint"]) {
-		uses = append(uses, "Service Broker endpoint")
-	}
-	if secFlag(u["mirroring_endpoint"]) {
-		uses = append(uses, "mirroring / availability group endpoint")
-	}
-	if secFlag(u["tde"]) {
-		uses = append(uses, "TDE")
+	unread := false
+	for _, t := range []struct{ col, name string }{{"backup_encryptor", "backup encryption"}, {"broker_endpoint", "Service Broker endpoint"},
+		{"mirroring_endpoint", "mirroring / availability group endpoint"}, {"tde", "TDE"}} {
+		if u[t.col] == nil {
+			unread = true
+		} else if secFlag(u[t.col]) {
+			uses = append(uses, t.name)
+		}
 	}
 	if len(uses) == 0 {
+		if unread {
+			return "unknown"
+		}
 		return nil
 	}
 	return strings.Join(uses, ", ")
