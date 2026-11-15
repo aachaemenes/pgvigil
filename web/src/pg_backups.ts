@@ -13,7 +13,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, writeButton } from './ack';
 import { Ctx, href } from './router';
-import { fleet, inTagScope } from './fleet';
+import { fleet, fleetWideNote, inTagScope, tagsOf, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 
 type Parts<K extends string> = Record<K, Table | null>;
@@ -368,7 +368,23 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
   const draw = async () => {
     keysCache = null;
     const d = await get<Parts<'keys' | 'rows' | 'tags' | 'instances'>>('pg/thresholds', {});
-    const keys = rowsOf(d.keys), rows = rowsOf(d.rows), tags = rowsOf(d.tags).map(r => String(r.tag)), insts = rowsOf(d.instances);
+    // under a tag folder (TAGALL): the levels that reach one of its instances - the root, a tag one of them carries (the
+    // folder's own too), one of its instances or their databases - and the form's places the same; a folder of a written
+    // tag starts the form on that tag
+    const scoped = ctx.tag && !ctx.instance ? ctx.tag : undefined;
+    let ids: Set<number> | null = null, folderTags = new Set<string>();
+    if (scoped) {
+      const f = await fleet().catch((e: unknown) => { throw new Error(`the instances of ${tagWords(scoped)} could not be read: ${e instanceof Error ? e.message : String(e)}`); });
+      const mine = f.instances.filter(r => inTagScope(scoped, r));
+      ids = new Set(mine.map(r => Number(r.instance_id)));
+      folderTags = new Set([...mine.flatMap(tagsOf), ...(writtenTag(scoped) ? [scoped] : [])]);
+    }
+    const rowIn = (r: Row) => r.level === 'root' || (r.level === 'tag' ? folderTags.has(String(r.tag)) : !!ids?.has(Number(r.instance_id)));
+    const rowsAll = rowsOf(d.rows);
+    const keys = rowsOf(d.keys), rows = ids ? rowsAll.filter(rowIn) : rowsAll;
+    const tags = rowsOf(d.tags).map(r => String(r.tag)).filter(t => !ids || folderTags.has(t));
+    const insts = rowsOf(d.instances).filter(r => !ids || ids.has(Number(r.instance_id)));
+    const startTag = writtenTag(scoped) && tags.includes(scoped!) ? scoped : undefined;
     keysCache = keys;
     // who may set a threshold here (the acknowledgement seat). The root and a tag are wider than one instance: off
     // where the server writes nothing, and on a demo serve, whose door carries one instance's thresholds only - ONE
@@ -378,7 +394,7 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
     const rootOffP = !rootWhy ? null : el('p', { class: 'meta' }, ad.door
       ? "Demo: a threshold is set here for one demo instance or one of its databases (the form below the keys). The root and a tag would reach past the demo's instances: they need pgvigil serve with a signed-in user."
       : `Thresholds are read only here: ${rootWhy}`);
-    const out: HTMLElement[] = [el('h2', {}, 'Thresholds'),
+    const out: HTMLElement[] = [el('h2', {}, 'Thresholds' + (scoped ? ` - ${tagWords(scoped)}` : '')),
       el('p', { class: 'meta' }, 'State thresholds: the root applies to every instance, a tag to its instances (the first of an instance\'s tags in sort order that has a row), an instance to itself, a database to one database (amcheck). The nearest level wins; with none, the built-in default. Two keys judge SQL Server instances too: uptime (the Summary\'s Instance Uptime: a root or tag row set here colours every SQL Server Uptime cell under it as well) and crash (the Summary\'s Memory Dump - Crash restarts on a scope with no SQL Server instance: SQL Server\'s memory dumps, PostgreSQL\'s crash restarts).')];
     const keyCols: Col[] = [
       { key: 'label', label: 'threshold' }, { key: 'unit' },
@@ -403,11 +419,13 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       const k = keys.find(x => x.key === kSel.value);
       const lv = (Array.isArray(k?.levels) ? k!.levels as string[] : []).filter(l => l !== 'root');
       lSel.replaceChildren(...lv.map(l => el('option', { value: l }, l)));
+      if (startTag && lv.includes('tag')) lSel.value = 'tag';
       fillPlace();
     };
     const fillPlace = () => {
       const l = lSel.value;
       pSel.replaceChildren(...(l === 'tag' ? tags.map(t => el('option', { value: t }, t)) : insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name)))));
+      if (l === 'tag' && startTag) pSel.value = startTag;
       db.hidden = l !== 'database';
     };
     kSel.addEventListener('change', fill); lSel.addEventListener('change', fillPlace); fill();
@@ -437,7 +455,13 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'created_by', label: 'set by' }, { key: 'created_at', label: 'set', fmt: fmtTime },
     ];
     out.push(el('section', {}, el('h3', {}, `Set levels (${rows.length})`), grid(rows, rowCols, 'Nothing is set: every instance takes the built-in defaults.')));
-    if (ctx.tag) out.push(el('p', { class: 'meta' }, `The tag folder ${ctx.tag} is in view: the page lists the whole fleet's levels.`));
+    if (ids) {
+      const left = rowsAll.length - rows.length;
+      out.push(el('p', { class: 'meta' }, `In view: ${tagWords(scoped!)} - the levels that reach one of its ${fmtNum(ids.size)} instance(s): the root, a tag one of them carries, one of its instances or their databases.`
+        + (left ? ` Not listed here: ${fmtNum(left)} level(s) of other tags and instances (All instances lists them).` : '')));
+      const wide = fleetWideNote(ctx, 'The root level of each threshold is one setting');
+      if (wide) out.push(wide);
+    }
     box.replaceChildren(...out);
   };
   await draw();
