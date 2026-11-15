@@ -305,7 +305,7 @@ rows = lambda t: [dict(zip(t["columns"], r)) for r in (t or {}).get("rows") or [
 s = [r for r in rows(d["missing_series"]) if r["equality_columns"] == "[c]" and r["inequality_columns"] is None and str(r["table_ref"]).endswith("[t]")]
 top = rows(d["missing_top"])
 ok = len(s) == 2 and s[1]["seeks_delta"] == want and s[0]["seeks_delta"] is None and len(top) == nmiss and nmiss >= 2
-print(("ok   " if ok else "BAD  ") + f"C3: the series of the equality request: {[(x['at'], x['seeks_delta']) for x in s]}; missing_top {len(top)} row(s) of {nmiss}")
+print(("ok   " if ok else "BAD  ") + f"C3: the series of the equality request: {[(x['snapshot_at'], x['seeks_delta']) for x in s]}; missing_top {len(top)} row(s) of {nmiss}")
 sys.exit(0 if ok else 1)
 PY
 fi

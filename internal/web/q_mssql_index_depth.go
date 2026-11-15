@@ -152,7 +152,7 @@ func (s *Server) fragOff(ds *doorSet, name string) string {
 const ixDepthDB = `($4::int IS NULL OR x.database_name = (SELECT b.database_name FROM pgvigil.mssql_index_db b WHERE b.instance_id = $1 AND b.database_id = $4))`
 
 var sqlIxDepthUsage = `
-SELECT x.snapshot_at AS at, sum(x.seeks_delta) AS seeks, sum(x.scans_delta) AS scans, sum(x.lookups_delta) AS lookups, sum(x.updates_delta) AS updates,
+SELECT x.snapshot_at, sum(x.seeks_delta) AS seeks, sum(x.scans_delta) AS scans, sum(x.lookups_delta) AS lookups, sum(x.updates_delta) AS updates,
        count(*) AS indexes_moved, count(*) FILTER (WHERE x.reset) AS reset_rows
   FROM pgvigil.mssql_index_usage_read x
  WHERE x.instance_id = $1 AND x.snapshot_at >= $2 AND x.snapshot_at <= $3 AND x.prev_at IS NOT NULL AND ` + ixDepthDB + `
@@ -165,7 +165,7 @@ WITH top AS (
   SELECT x.ident FROM pgvigil.mssql_missing_index_read x
    WHERE x.instance_id = $1 AND x.snapshot_at >= $2 AND x.snapshot_at <= $3 AND ` + ixDepthDB + `
    GROUP BY x.ident ORDER BY max(x.benefit) DESC NULLS LAST, x.ident LIMIT 10)
-SELECT x.ident, x.snapshot_at AS at, x.database_name AS database, x.table_ref, x.equality_columns, x.inequality_columns, x.included_columns,
+SELECT x.ident, x.snapshot_at, x.database_name AS database, x.table_ref, x.equality_columns, x.inequality_columns, x.included_columns,
        x.user_seeks, x.user_scans, x.seeks_delta, x.scans_delta, round(x.avg_impact::numeric, 1) AS avg_impact, round(x.benefit::numeric) AS benefit, x.reset
   FROM pgvigil.mssql_missing_index_read x JOIN top t ON t.ident = x.ident
  WHERE x.instance_id = $1 AND x.snapshot_at >= $2 AND x.snapshot_at <= $3
