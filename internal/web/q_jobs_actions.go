@@ -7,12 +7,15 @@ package web
 //                                            job actions are on and why not, and the job actions' audit rows
 //   POST /api/jobs/actions/stop              cancel the backend of a running pg_cron or pgAgent run
 //   POST /api/jobs/actions/start             pgAgent's Run now (jobnextrun = now())
+//   POST /api/jobs/actions/enable|disable    (B9c) a pgAgent job's jobenabled, a pg_cron job's active (cron.alter_job,
+//                                            the actions login's own jobs only)
 //   GET  /api/jobs/steps?instance=N&job=J[&run=R]   pgAgent's step log: per step its outcomes and durations in the
 //                                            range, and the step runs (of one run with run=)
 //   GET  /api/jobs/exclusions?instance=N     the live exclusions that take the instance's jobs, and whether they can be
 //                                            written; POST: add one or end one (import_job_exclusion)
 //
-// The job actions are off by default: a PostgreSQL instance's 'actions:' list names job_stop and / or job_start (the
+// The job actions are off by default: a PostgreSQL instance's 'actions:' list names job_stop, job_start, job_enable and
+// job_disable, each on its own (the
 // config's allow list, as a SQL Server instance's), on top of the actions_dsn that turns cancel and terminate on. The
 // checks and the signal are internal/collect/jobs_actions.go; this file is the HTTP side, in the shape of actions.go:
 // the UI login, the X-Pgvigil header, the typed confirmation (the job's name), and one audit row per attempt in
@@ -41,13 +44,13 @@ var pgJobAllow sync.Map // *Server -> map[string]map[string]bool
 var pgJobRun = collect.ExecuteJobAction
 
 // SetPgJobActions gives the server the job actions each PostgreSQL instance allows: its name -> the 'actions:' list
-// (job_stop, job_start; anything else is ignored here: the config refuses it).
+// (job_stop, job_start, job_enable, job_disable; anything else is ignored here: the config refuses it).
 func (s *Server) SetPgJobActions(allow map[string][]string) {
 	m := map[string]map[string]bool{}
 	for name, list := range allow {
 		m[name] = map[string]bool{}
 		for _, a := range list {
-			if a == collect.JobStop || a == collect.JobStart {
+			if a == collect.JobStop || a == collect.JobStart || a == collect.JobEnable || a == collect.JobDisable {
 				m[name][a] = true
 			}
 		}
@@ -93,7 +96,7 @@ const sqlJobsRunning = `SELECT * FROM pgvigil.pg_jobs_running($1)`
 const sqlJobActionsLog = `
 SELECT action_id, at, ui_user, client, action, target AS job, target_id, pid, backend_start, target_user, reason, outcome, detail, statement
   FROM pgvigil.actions_log
- WHERE instance_id = $1 AND engine = 'postgres' AND action IN ('job_stop', 'job_start')
+ WHERE instance_id = $1 AND engine = 'postgres' AND action IN ('job_stop', 'job_start', 'job_enable', 'job_disable')
  ORDER BY at DESC, action_id DESC
  LIMIT 200`
 
@@ -125,11 +128,18 @@ func (s *Server) JobsRunning(w http.ResponseWriter, r *http.Request) {
 		auditOff = s.pgJobAuditOff(ctx)
 	}
 	ds := s.doorsNow()
-	for _, k := range []string{collect.JobStop, collect.JobStart} {
+	for _, k := range []string{collect.JobStop, collect.JobStart, collect.JobEnable, collect.JobDisable} {
 		why := s.pgJobOff(ds, name, k, auditOff)
 		acts[k] = state{On: why == "", Reason: why}
 	}
 	out["actions"] = acts
+	// the role the actions login connects as: the page offers a pg_cron job's Enable and Disable only where the job's
+	// owner (its run_as) is that role - the server checks it again before anything is sent
+	if d, ok := ds.PG[name]; ok && d.Actions != "" {
+		if who := collect.ActionsLoginName(d.Actions); who != "" {
+			out["actions_login"] = who
+		}
+	}
 	if out["running"], err = s.query(ctx, sqlJobsRunning, id); err != nil {
 		s.reply(w, r, nil, fmt.Errorf("running: %w", err))
 		return
@@ -158,6 +168,16 @@ func (s *Server) JobStop(w http.ResponseWriter, r *http.Request) { s.jobAction(w
 // JobStart is POST /api/jobs/actions/start.
 func (s *Server) JobStart(w http.ResponseWriter, r *http.Request) {
 	s.jobAction(w, r, collect.JobStart)
+}
+
+// JobEnable is POST /api/jobs/actions/enable (B9c; its route is a WIRING line of web.go).
+func (s *Server) JobEnable(w http.ResponseWriter, r *http.Request) {
+	s.jobAction(w, r, collect.JobEnable)
+}
+
+// JobDisable is POST /api/jobs/actions/disable (B9c; its route is a WIRING line of web.go).
+func (s *Server) JobDisable(w http.ResponseWriter, r *http.Request) {
+	s.jobAction(w, r, collect.JobDisable)
 }
 
 func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) {
@@ -202,7 +222,7 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 		return
 	}
 	if engine != "postgres" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("instance %s is a %s instance: its jobs are started and stopped through the SQL Server actions; nothing was sent", name, engine))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("instance %s is a %s instance: its jobs are started, stopped, enabled and disabled through the SQL Server actions; nothing was sent", name, engine))
 		return
 	}
 	// the audit door first: an attempt that cannot be written is not made
@@ -218,13 +238,7 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 		JobName: in.JobName, RunID: in.RunID, PID: in.PID, Reason: in.Reason, User: user, Client: clientIP(r)}
 	var res collect.JobActionResult
 	// the statement a refusal here would have sent (a pgAgent stop's pid is not known before its checks)
-	would := ""
-	switch {
-	case kind == collect.JobStart:
-		would = fmt.Sprintf("UPDATE pgagent.pga_job SET jobnextrun = now() WHERE jobid = %d", in.JobID)
-	case in.Scheduler == "pg_cron" && in.PID > 0:
-		would = fmt.Sprintf("SELECT pg_cancel_backend(%d)", in.PID)
-	}
+	would := collect.JobStatement(kind, in.Scheduler, in.JobID, in.PID)
 	ds := s.doorsNow() // the request's one door set
 	switch {
 	case ds.PG[name].Page:

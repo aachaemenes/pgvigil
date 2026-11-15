@@ -27,12 +27,12 @@ export async function jobsPgView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
       { key: 'command', fmt: oneLine },
       { key: 'job_id', label: 'page', fmt: (v, r: Row) => jobLink(ctx, `#${String(v)}`, r.scheduler, Number(v)) },
-      // task 161: the pg_cron schedule in words, Run now on a pgAgent job
+      // task 161: the pg_cron schedule in words, Run now on a pgAgent job; B9c: Enable or Disable
       { key: '_schedule_words', label: 'schedule in words (cron.timezone)', fmt: (_v, r: Row) => r.scheduler === 'pg_cron' ? cronInWords(r.schedule) : '' },
       run,
     ];
     const panel = await jobsPanel(ctx, 'pg', extra);
-    if (run.offNote) sec.append(run.offNote);   // Run now off for the whole instance, where a pgAgent job shows the button
+    if (run.offNote) sec.append(run.offNote);   // Run now / Enable / Disable off for the whole instance, where a row shows the button
     sec.append(panel);
     sec.append(await jobsRunningPanel(ctx, run.stopNote));   // one sentence above for Run now AND Stop: not said again below
     const d = await get<Record<'runs', Table | null>>('jobs', { instance: ctx.instance, ...window_(ctx), part: 'runs' });

@@ -1,0 +1,13 @@
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6290ed6e..a3dd8627 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -384,6 +384,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/jobs/running", s.JobsRunning)
+ 	api.HandleFunc("POST /api/jobs/actions/stop", s.JobStop)
+ 	api.HandleFunc("POST /api/jobs/actions/start", s.JobStart)
++	api.HandleFunc("POST /api/jobs/actions/enable", s.JobEnable)   // B9c
++	api.HandleFunc("POST /api/jobs/actions/disable", s.JobDisable) // B9c
+ 	api.HandleFunc("GET /api/jobs/steps", s.JobSteps)
+ 	api.HandleFunc("GET /api/jobs/exclusions", s.JobExclusions)
+ 	api.HandleFunc("POST /api/jobs/exclusions", s.JobExclusions)

@@ -2,8 +2,9 @@ package web
 
 // The actions door, the SQL Server side: POST /api/mssql/actions/preview reads the target of an action (a session
 // with its login, host, program, open transaction count and last statement; an Agent job with its name, owner and
-// state) through the instance's read login, POST /api/mssql/actions/run sends KILL, sp_start_job or sp_stop_job
-// through the instance's actions login when the target is still the one shown, GET /api/mssql/actions/state says
+// state) through the instance's read login, POST /api/mssql/actions/run sends KILL, sp_start_job, sp_stop_job or
+// sp_update_job @enabled (B9c: job_enable / job_disable) through the instance's actions login when the target is
+// still the one shown, GET /api/mssql/actions/state says
 // which actions are on for an instance (and why not) with its audit rows. The work and its checks are
 // internal/mssql (actions.go); this file is the HTTP side, in the shape of actions.go: the UI login, the
 // X-Pgvigil header, the typed confirmation, and the audit row of every attempt in pgvigil.actions_log.
@@ -123,7 +124,11 @@ func (m *MSSQLActions) gate(w http.ResponseWriter, r *http.Request) (in mssqlAct
 		return in, "", "", false
 	}
 	if !mssql.ValidAction(in.Action) {
-		writeErr(w, http.StatusBadRequest, errors.New("action must be one of kill, job_start, job_stop"))
+		names := make([]string, len(mssql.ActionKinds))
+		for i, k := range mssql.ActionKinds {
+			names[i] = string(k)
+		}
+		writeErr(w, http.StatusBadRequest, errors.New("action must be one of "+strings.Join(names, ", ")))
 		return in, "", "", false
 	}
 	var engine string

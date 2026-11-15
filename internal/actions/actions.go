@@ -87,7 +87,7 @@ func DoorsFromConfig(cfg *config.Config) map[string]Door {
 	m := map[string]Door{}
 	for _, in := range cfg.Instances {
 		if in.Engine == config.EngineSQLServer {
-			continue // its door is internal/mssql's (kill, job_start, job_stop)
+			continue // its door is internal/mssql's (kill, job_start, job_stop, job_enable, job_disable)
 		}
 		m[in.Name] = Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != ""}
 	}

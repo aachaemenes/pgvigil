@@ -467,9 +467,9 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     const findings = rowsOf(d.findings);
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
     if (running.length) sec.append(el('h3', {}, 'Running now'), grid(running, runningCols));
-    // Start and Stop ride the actions door: where the instance has none they are off, with the reason said once above
-    // the grid (the column's offNote) and each button pointing at it
-    const act = await mssqlJobCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange')));
+    // Start, Stop and (B9c) Enable or Disable ride the actions door: where the instance has none they are off, with the
+    // reason said once above the grid (the column's offNote) and each button pointing at it
+    const act = await mssqlJobCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange')), { toggle: true });
     // the panel hands the column its rows before it draws: the sentence is read after it, so it stands only where a
     // job's Start and Stop point at it
     const jobsBox = await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }, act]);

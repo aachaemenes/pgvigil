@@ -1,6 +1,8 @@
 package mssql
 
-// The actions door of the SQL Server engine: KILL one session, start or stop one SQL Server Agent job. It is the
+// The actions door of the SQL Server engine: KILL one session, start, stop, enable or disable one SQL Server Agent
+// job (an enable or a disable through sp_update_job @job_id, @enabled alone: what SQLAgentOperatorRole may send, on a
+// local job only - Microsoft's 'SQL Server Agent fixed database roles' page). It is the
 // only place pgvigil sends a statement that changes anything on a monitored SQL Server, and it never does so with
 // the read login.
 //
@@ -40,13 +42,23 @@ type ActionKind string
 
 // The actions an instance's allow list may name.
 const (
-	ActionKill     ActionKind = "kill"
-	ActionJobStart ActionKind = "job_start"
-	ActionJobStop  ActionKind = "job_stop"
+	ActionKill       ActionKind = "kill"
+	ActionJobStart   ActionKind = "job_start"
+	ActionJobStop    ActionKind = "job_stop"
+	ActionJobEnable  ActionKind = "job_enable"  // sp_update_job @enabled = 1
+	ActionJobDisable ActionKind = "job_disable" // sp_update_job @enabled = 0
 )
 
 // ActionKinds lists every action, in the order the documentation gives them.
-var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop}
+var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop, ActionJobEnable, ActionJobDisable}
+
+// jobKind says whether k acts on an Agent job (its target is the job, not a session).
+func jobKind(k ActionKind) bool {
+	return k == ActionJobStart || k == ActionJobStop || k == ActionJobEnable || k == ActionJobDisable
+}
+
+// toggleKind says whether k changes the job's enabled flag.
+func toggleKind(k ActionKind) bool { return k == ActionJobEnable || k == ActionJobDisable }
 
 // ValidAction says whether s names an action (the config's validation of an actions: list).
 func ValidAction(s string) bool {
@@ -127,11 +139,15 @@ type Target struct {
 	Status    string `json:"status,omitempty"`
 	OpenTran  int    `json:"open_transaction_count,omitempty"`
 	Statement string `json:"statement,omitempty"` // the session's last statement (its input buffer)
-	// a job (job_start, job_stop)
+	// a job (job_start, job_stop, job_enable, job_disable)
 	JobID    string `json:"job_id,omitempty"`
 	JobName  string `json:"job_name,omitempty"`
 	JobOwner string `json:"job_owner,omitempty"`
 	JobState string `json:"job_state,omitempty"` // running | idle
+	// JobEnabled is msdb.dbo.sysjobs.enabled as read (nil: not read)
+	JobEnabled *bool `json:"job_enabled,omitempty"`
+	// JobMultiserver: the job has a target server (msdb.dbo.sysjobservers.server_id <> 0): its master server owns it
+	JobMultiserver bool `json:"job_multiserver,omitempty"`
 	// set by the read, never sent back
 	userProcess bool
 	readerSPID  int
@@ -145,7 +161,7 @@ type ActionRequest struct {
 	SessionID int    // kill
 	LoginTime string // kill: of the session shown
 	Login     string // kill: of the session shown
-	JobID     string // job_start, job_stop
+	JobID     string // job_start, job_stop, job_enable, job_disable
 	JobName   string // of the job shown
 	Reason    string
 	User      string // the UI login
@@ -181,7 +197,7 @@ func ValidateAction(r ActionRequest) error {
 		if strings.TrimSpace(r.Login) == "" {
 			return errors.New("the login of the session shown is required")
 		}
-	case ActionJobStart, ActionJobStop:
+	case ActionJobStart, ActionJobStop, ActionJobEnable, ActionJobDisable:
 		if !jobIDForm.MatchString(r.JobID) {
 			return errors.New("job_id must be a job's id (a GUID)")
 		}
@@ -214,6 +230,10 @@ func Statement(k ActionKind, sessionID int, jobID string) string {
 		return fmt.Sprintf("EXEC msdb.dbo.sp_start_job @job_id = '%s'", strings.ToUpper(jobID))
 	case ActionJobStop:
 		return fmt.Sprintf("EXEC msdb.dbo.sp_stop_job @job_id = '%s'", strings.ToUpper(jobID))
+	case ActionJobEnable:
+		return fmt.Sprintf("EXEC msdb.dbo.sp_update_job @job_id = '%s', @enabled = 1", strings.ToUpper(jobID))
+	case ActionJobDisable:
+		return fmt.Sprintf("EXEC msdb.dbo.sp_update_job @job_id = '%s', @enabled = 0", strings.ToUpper(jobID))
 	}
 	return ""
 }
@@ -270,9 +290,12 @@ OUTER APPLY sys.dm_exec_input_buffer(s.session_id, NULL) ib
 WHERE s.session_id = @p1`
 
 // jobSQL reads one Agent job as the read login sees it (db_datareader in msdb). Running = the newest Agent
-// session's activity row for the job has started and not stopped.
+// session's activity row for the job has started and not stopped. Multiserver = a target server row
+// (sysjobservers.server_id <> 0; a local job's row has server_id 0).
 const jobSQL = `SELECT CAST(j.job_id AS nvarchar(36)), j.name, ISNULL(SUSER_SNAME(j.owner_sid), ''),
   CASE WHEN a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL THEN 'running' ELSE 'idle' END,
+  CAST(j.enabled AS int),
+  CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysjobservers js WHERE js.job_id = j.job_id AND js.server_id <> 0) THEN 1 ELSE 0 END,
   @@SPID, SUSER_SNAME()
 FROM msdb.dbo.sysjobs j
 OUTER APPLY (SELECT TOP (1) ja.start_execution_date, ja.stop_execution_date
@@ -307,11 +330,37 @@ func readSession(ctx context.Context, mon *sql.Conn, sessionID int) (Target, err
 
 func readJob(ctx context.Context, mon *sql.Conn, jobID string) (Target, error) {
 	var t Target
-	err := mon.QueryRowContext(ctx, jobSQL, jobID).Scan(&t.JobID, &t.JobName, &t.JobOwner, &t.JobState, &t.readerSPID, &t.readerLogin)
+	var enabled, multi int
+	err := mon.QueryRowContext(ctx, jobSQL, jobID).Scan(&t.JobID, &t.JobName, &t.JobOwner, &t.JobState, &enabled, &multi, &t.readerSPID, &t.readerLogin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, errNoTarget
 	}
+	if err == nil {
+		on := enabled == 1
+		t.JobEnabled, t.JobMultiserver = &on, multi == 1
+	}
 	return t, err
+}
+
+// toggleRefusal is why an enable or a disable of the job the read login saw is not sent, or "" when it may be (and
+// for any other kind): a multiserver job belongs to its master server (SQLAgentOperatorRole may not enable or disable
+// one, and a change here would be undone by the master's next download), and a job already in the state asked needs
+// nothing.
+func toggleRefusal(k ActionKind, t Target) string {
+	if !toggleKind(k) {
+		return ""
+	}
+	switch {
+	case t.JobMultiserver:
+		return fmt.Sprintf("job %q is a multiserver job (its master server owns it): enable or disable it on the master server; nothing was sent", t.JobName)
+	case t.JobEnabled == nil:
+		return fmt.Sprintf("job %q: its enabled flag was not read; nothing was sent", t.JobName)
+	case k == ActionJobEnable && *t.JobEnabled:
+		return fmt.Sprintf("job %q is already enabled: nothing to do, nothing was sent", t.JobName)
+	case k == ActionJobDisable && !*t.JobEnabled:
+		return fmt.Sprintf("job %q is already disabled: nothing to do, nothing was sent", t.JobName)
+	}
+	return ""
 }
 
 // sessionRefusal is why a session the read login saw is never killed from the UI, or "" when it may be.
@@ -345,7 +394,7 @@ func Preview(ctx context.Context, d Door, instance string, k ActionKind, session
 	if d.Monitor == "" {
 		return t, fmt.Sprintf("instance %s: the read login's dsn resolved to an empty string", instance)
 	}
-	if k != ActionKill && !jobIDForm.MatchString(jobID) {
+	if jobKind(k) && !jobIDForm.MatchString(jobID) {
 		return t, "job_id must be a job's id (a GUID)"
 	}
 	db, mon, err := openAction(ctx, d.Monitor, "pgvigil-actions-check")
@@ -370,7 +419,7 @@ func Preview(ctx context.Context, d Door, instance string, k ActionKind, session
 	case err != nil:
 		return t, fmt.Sprintf("the read of job %s failed: %v", jobID, err)
 	}
-	return t, ""
+	return t, toggleRefusal(k, t)
 }
 
 // Execute runs the checks and, when they pass, sends the statement through the actions login. It never returns an
@@ -463,6 +512,9 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 		case t.JobName != r.JobName:
 			return refuse(Target{}, "job %s is now named %q, not %q as shown: read the job again", r.JobID, t.JobName, r.JobName)
 		}
+		if why := toggleRefusal(r.Kind, t); why != "" {
+			return refuse(t, "%s", why)
+		}
 	}
 
 	// 3. the statement, at once, on the connection already open: a session id cannot be a parameter of KILL, so
@@ -472,8 +524,20 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 		msg := serverMessage(err)
 		return ActionResult{Outcome: OutcomeFailed, Detail: fmt.Sprintf("the server refused %s: %s", stmt, msg), Statement: stmt, ServerMessage: msg, Target: t}
 	}
-	return ActionResult{Outcome: OutcomeDone, Detail: stmt + " sent", Statement: stmt,
+	res := ActionResult{Outcome: OutcomeDone, Detail: stmt + " sent", Statement: stmt,
 		ServerMessage: "the server accepted the statement (it returns no message for it)", Target: t}
+	if toggleKind(r.Kind) {
+		// the flag read back through the read login: what the Agent now holds, said beside the done
+		switch now, err := readJob(ctx, mon, r.JobID); {
+		case err != nil:
+			res.Detail += fmt.Sprintf("; the read back failed: %v", err)
+		case now.JobEnabled != nil && *now.JobEnabled:
+			res.Detail += "; the job reads enabled now"
+		case now.JobEnabled != nil:
+			res.Detail += "; the job reads disabled now"
+		}
+	}
+	return res
 }
 
 // serverMessage is the server's own text for an error, with its number where the driver gives one.

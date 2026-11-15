@@ -98,8 +98,9 @@ type Instance struct {
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
 	// accepted: the password of a login that can stop sessions never sits in the file.
 	ActionsDSNRaw string `yaml:"actions_dsn"`
-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop; on PostgreSQL job_stop and
-	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
+	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, job_enable, job_disable; on
+	// PostgreSQL job_stop and job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now), job_enable and
+	// job_disable (B9c: pgAgent's jobenabled, pg_cron's active). An action not named here is off even with
 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
 	// alone turns them on.
 	Actions []string `yaml:"actions"`
@@ -526,9 +527,9 @@ func (c *Config) Validate() error {
 			seenPG := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "job_stop", "job_start":
+				case "job_stop", "job_start", "job_enable", "job_disable":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (a PostgreSQL instance's are job_stop and job_start; its cancel and terminate are on with its actions_dsn)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (a PostgreSQL instance's are job_stop, job_start, job_enable and job_disable; its cancel and terminate are on with its actions_dsn)", in.Name, a)
 				}
 				if seenPG[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
@@ -555,9 +556,9 @@ func (c *Config) Validate() error {
 			seen := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "kill", "job_start", "job_stop":
+				case "kill", "job_start", "job_stop", "job_enable", "job_disable":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, job_enable, job_disable)", in.Name, a)
 				}
 				if seen[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)

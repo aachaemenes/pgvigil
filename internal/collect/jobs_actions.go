@@ -8,7 +8,11 @@ package collect
 //     runs it) and Run now for a pgAgent job (jobnextrun = now(), what pgAdmin's Run now does). pg_cron has no run-now
 //     call. Both are checked through the instance's monitoring login and sent through the actions login
 //     (pgvigil_actions), as cancel and terminate are (internal/actions); the HTTP side and the audit row are
-//     internal/web/q_jobs_actions.go.
+//     internal/web/q_jobs_actions.go;
+//   - (B9c) Enable and Disable: a pgAgent job's jobenabled (UPDATE pgagent.pga_job; pgAgent's own BEFORE UPDATE
+//     trigger then sets or clears jobnextrun, reading the job's schedules as the caller on an enable), and a pg_cron
+//     job's active through cron.alter_job (pg_cron 1.4.0 and later) for a job the actions login owns: pg_cron lets
+//     only a job's owner or a superuser change it, and the actions login is never a superuser.
 //
 // Finding the backend of a run: pg_cron records it (cron.job_run_details.job_pid; the backend is a client backend with
 // application_name 'pg_cron', the job's user and database). pgAgent records no pid: a step runs on a connection of the
@@ -82,16 +86,45 @@ func (jobStepsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Inf
 
 // The job actions.
 const (
-	JobStop  = "job_stop"  // cancel the backend of a running run
-	JobStart = "job_start" // pgAgent: run now
+	JobStop    = "job_stop"    // cancel the backend of a running run
+	JobStart   = "job_start"   // pgAgent: run now
+	JobEnable  = "job_enable"  // pgAgent: jobenabled = true; pg_cron: cron.alter_job(active := true)
+	JobDisable = "job_disable" // pgAgent: jobenabled = false; pg_cron: cron.alter_job(active := false)
 )
+
+// JobStatement is the statement a job action sends, or would have sent (a refusal's audit row carries it); "" where
+// it is not known before the checks (a pgAgent stop's backend) or there is none (pg_cron has no run-now call).
+func JobStatement(kind, scheduler string, jobID int64, pid int) string {
+	switch {
+	case kind == JobStart && scheduler == "pgagent":
+		return fmt.Sprintf("UPDATE pgagent.pga_job SET jobnextrun = now() WHERE jobid = %d", jobID)
+	case kind == JobStop && scheduler == "pg_cron" && pid > 0:
+		return fmt.Sprintf("SELECT pg_cancel_backend(%d)", pid)
+	case (kind == JobEnable || kind == JobDisable) && scheduler == "pgagent":
+		return fmt.Sprintf("UPDATE pgagent.pga_job SET jobenabled = %t WHERE jobid = %d", kind == JobEnable, jobID)
+	case (kind == JobEnable || kind == JobDisable) && scheduler == "pg_cron":
+		return fmt.Sprintf("SELECT cron.alter_job(job_id := %d, active := %t)", jobID, kind == JobEnable)
+	}
+	return ""
+}
+
+// ActionsLoginName is the role an actions dsn connects as (pgx's reading of it: a dsn without a user is the
+// operating-system user pgx would use), "" when the dsn does not parse. The page offers a pg_cron job's Enable and
+// Disable only where the job's owner is this role.
+func ActionsLoginName(dsn string) string {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return ""
+	}
+	return cfg.User
+}
 
 // JobActionRequest is one job action as the UI sent it: the job and, for a stop, the run as the Running now grid
 // showed it.
 type JobActionRequest struct {
 	InstanceID int
 	Instance   string
-	Kind       string // JobStop or JobStart
+	Kind       string // JobStop, JobStart, JobEnable or JobDisable
 	Scheduler  string // pg_cron or pgagent
 	JobID      int64
 	JobName    string // as shown: a job renamed since is refused
@@ -117,7 +150,7 @@ type JobActionResult struct {
 // ValidateJobAction checks the request's own shape (no connection needed).
 func ValidateJobAction(r JobActionRequest) error {
 	switch {
-	case r.Kind != JobStop && r.Kind != JobStart:
+	case r.Kind != JobStop && r.Kind != JobStart && r.Kind != JobEnable && r.Kind != JobDisable:
 		return fmt.Errorf("unknown job action %q", r.Kind)
 	case r.Scheduler != "pg_cron" && r.Scheduler != "pgagent":
 		return errors.New("scheduler must be pg_cron or pgagent")
@@ -195,13 +228,18 @@ func ExecuteJobAction(ctx context.Context, d actions.Door, r JobActionRequest) J
 		return jobRefused("this server is a standby: its job tables are the primary's copy and the jobs run on the primary; act from the primary's page")
 	}
 	// the actions login first (connected and checked), so the target read below is the last step before the signal
-	act, fail := actionsLogin(ctx, mon, d, r.Kind == JobStart)
+	act, fail := actionsLogin(ctx, mon, d, r.Kind != JobStop)
 	if fail != nil {
 		return *fail
 	}
 	defer func() { _ = act.Close(context.WithoutCancel(ctx)) }()
-	if r.Kind == JobStart {
+	switch {
+	case r.Kind == JobStart:
 		return runNow(ctx, mon, act, r)
+	case (r.Kind == JobEnable || r.Kind == JobDisable) && r.Scheduler == "pgagent":
+		return agentToggle(ctx, mon, act, r)
+	case r.Kind == JobEnable || r.Kind == JobDisable:
+		return cronToggle(ctx, mon, act, r)
 	}
 	var canWatch bool
 	if err := mon.QueryRow(ctx, `SELECT pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')`).Scan(&canWatch); err != nil {
@@ -468,6 +506,178 @@ SELECT j.jobname, j.jobenabled, j.jobagentid, j.jobhostagent,
 		return res
 	}
 	res.Outcome, res.Detail = actions.Done, "jobnextrun set to now(): pgAgent starts the job at its next poll (within a minute)"
+	return res
+}
+
+// agentToggle is a pgAgent job's Enable or Disable: both logins in the same database (pgAgent's tables), the actions
+// login allowed to change jobenabled (and, for an enable, to read the job's schedules and their exceptions: pgAgent's
+// pga_job_trigger, BEFORE UPDATE and not SECURITY DEFINER, computes the next run from pga_schedule through
+// pga_next_schedule, which reads pga_exception, as the caller), the job under the name shown and not in the state
+// asked; then jobenabled through the actions login, only while it still holds the other state.
+func agentToggle(ctx context.Context, mon, act *pgx.Conn, r JobActionRequest) JobActionResult {
+	on := r.Kind == JobEnable
+	res := JobActionResult{Statement: JobStatement(r.Kind, "pgagent", r.JobID, 0)}
+	refuse := func(format string, a ...any) JobActionResult {
+		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf(format, a...)
+		return res
+	}
+	var monDB, actDB string
+	if err := mon.QueryRow(ctx, `SELECT current_database()`).Scan(&monDB); err != nil {
+		return refuse("the database check failed: %v", err)
+	}
+	if err := act.QueryRow(ctx, `SELECT current_database()`).Scan(&actDB); err != nil {
+		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("the actions login's database check failed: %v", err)
+		return res
+	}
+	if monDB != actDB {
+		return refuse("actions_dsn connects to database %q, the instance's dsn to %q, where pgAgent's tables are: the change is written there, so actions_dsn must name %q", actDB, monDB, monDB)
+	}
+	// in this order (a CASE): the schema, its USAGE (naming a table without it is an error), the job's columns, then
+	// for an enable the two tables the trigger reads
+	var miss string
+	if err := act.QueryRow(ctx, `
+SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgagent') THEN 'job'
+            WHEN NOT has_schema_privilege('pgagent', 'USAGE') THEN 'job'
+            WHEN to_regclass('pgagent.pga_job') IS NULL THEN 'job'
+            WHEN NOT (has_column_privilege('pgagent.pga_job', 'jobenabled', 'UPDATE') AND has_column_privilege('pgagent.pga_job', 'jobenabled', 'SELECT')
+                      AND has_column_privilege('pgagent.pga_job', 'jobid', 'SELECT')) THEN 'job'
+            WHEN NOT $1::boolean THEN ''
+            WHEN to_regclass('pgagent.pga_schedule') IS NULL OR to_regclass('pgagent.pga_exception') IS NULL THEN 'schedule'
+            WHEN NOT (has_table_privilege('pgagent.pga_schedule', 'SELECT') AND has_table_privilege('pgagent.pga_exception', 'SELECT')) THEN 'schedule'
+            ELSE '' END`, on).Scan(&miss); err != nil {
+		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("the actions login's grant check failed: %v", err)
+		return res
+	}
+	switch miss {
+	case "job":
+		return refuse("the actions login may not change jobenabled (GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions; GRANT SELECT (jobid, jobenabled), UPDATE (jobenabled) ON pgagent.pga_job TO pgvigil_actions)")
+	case "schedule":
+		return refuse("the actions login may not read the job's schedules, which an enable needs (pgAgent's trigger on pga_job computes the next run as the caller): GRANT SELECT ON pgagent.pga_schedule, pgagent.pga_exception TO pgvigil_actions")
+	}
+	var name *string
+	var enabled bool
+	err := mon.QueryRow(ctx, `SELECT j.jobname, j.jobenabled FROM pgagent.pga_job j WHERE j.jobid = $1`, r.JobID).Scan(&name, &enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return refuse("pgAgent job %d is not in pgagent.pga_job", r.JobID)
+	}
+	if err != nil {
+		return refuse("the job check failed: %v", err)
+	}
+	switch {
+	case deref(name) != r.JobName:
+		return refuse("pgAgent job %d is now named %q, not %q as shown: nothing was sent", r.JobID, deref(name), r.JobName)
+	case enabled == on && on:
+		return refuse("the job is already enabled: nothing to do, nothing was sent")
+	case enabled == on:
+		return refuse("the job is already disabled: nothing to do, nothing was sent")
+	}
+	tag, err := act.Exec(ctx, `UPDATE pgagent.pga_job SET jobenabled = $2 WHERE jobid = $1 AND jobenabled <> $2`, r.JobID, on)
+	if err != nil {
+		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("the update failed: %v", err)
+		return res
+	}
+	if tag.RowsAffected() != 1 {
+		res.Outcome, res.Detail = actions.Failed, "the job changed between the check and the update (its state changed, or it was dropped): nothing was set"
+		return res
+	}
+	res.Outcome = actions.Done
+	if on {
+		res.Detail = "jobenabled set to true: pgAgent runs the job again at its schedules (pgAgent's trigger computed the next run from them)"
+	} else {
+		res.Detail = "jobenabled set to false: pgAgent starts no new run of the job; a run going now goes on (Stop ends it)"
+	}
+	return res
+}
+
+// cronAlterJob is cron.alter_job's signature as pg_cron 1.4.0 created it (and revoked from public: 'admin should
+// decide whether alter_job is safe by explicitly granting execute', pg_cron--1.3--1.4.sql).
+const cronAlterJob = "cron.alter_job(bigint,text,text,text,text,boolean)"
+
+// cronAtLeast says whether pg_cron's extversion ('1.6', '1.4-1') is at least major.minor.
+func cronAtLeast(v string, major, minor int) bool {
+	var a, b int
+	if n, _ := fmt.Sscanf(v, "%d.%d", &a, &b); n < 2 {
+		return false
+	}
+	return a > major || (a == major && b >= minor)
+}
+
+// cronToggle is a pg_cron job's Enable or Disable: pg_cron 1.4.0 or later (cron.alter_job), the actions login in
+// pg_cron's database with USAGE on cron, EXECUTE on cron.alter_job and SELECT on cron.job, the job the actions login's
+// OWN (pg_cron's AlterJob adds 'and username = <the caller>' for anyone but a superuser: 'Job N does not exist or you
+// don't own it'), under the name shown and not in the state asked; then cron.alter_job(job_id, active) through the
+// actions login, and its active read back.
+func cronToggle(ctx context.Context, mon, act *pgx.Conn, r JobActionRequest) JobActionResult {
+	on := r.Kind == JobEnable
+	res := JobActionResult{Statement: JobStatement(r.Kind, "pg_cron", r.JobID, 0)}
+	refuse := func(format string, a ...any) JobActionResult {
+		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf(format, a...)
+		return res
+	}
+	var ver string
+	err := mon.QueryRow(ctx, `SELECT extversion FROM pg_extension WHERE extname = 'pg_cron'`).Scan(&ver)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return refuse("pg_cron is not installed in the database the instance's dsn connects to")
+	}
+	if err != nil {
+		return refuse("the pg_cron version check failed: %v", err)
+	}
+	if !cronAtLeast(ver, 1, 4) {
+		return refuse("pg_cron %s has no cron.alter_job (it came in pg_cron 1.4.0): the job is enabled or disabled by its owner by hand", ver)
+	}
+	var me, miss string
+	if err := act.QueryRow(ctx, `
+SELECT current_user::text,
+       CASE WHEN to_regnamespace('cron') IS NULL THEN 'database'
+            WHEN NOT has_schema_privilege('cron', 'USAGE') THEN 'grant'
+            WHEN to_regprocedure('`+cronAlterJob+`') IS NULL OR to_regclass('cron.job') IS NULL THEN 'grant'
+            WHEN NOT (has_function_privilege('`+cronAlterJob+`', 'EXECUTE') AND has_table_privilege('cron.job', 'SELECT')) THEN 'grant'
+            ELSE '' END`).Scan(&me, &miss); err != nil {
+		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("the actions login's grant check failed: %v", err)
+		return res
+	}
+	switch miss {
+	case "database":
+		return refuse("actions_dsn connects to a database without pg_cron's schema: it must name pg_cron's database (cron.database_name), as the instance's dsn does")
+	case "grant":
+		return refuse("the actions login may not call cron.alter_job (GRANT USAGE ON SCHEMA cron TO pgvigil_actions; GRANT EXECUTE ON FUNCTION %s TO pgvigil_actions: pg_cron 1.4.0 revokes it from public)", cronAlterJob)
+	}
+	// through the actions login: pg_cron's row security shows a login its own jobs, which are the ones it may change
+	var name, owner *string
+	var active *bool
+	err = act.QueryRow(ctx, `SELECT j.jobname::text, j.username::text, j.active FROM cron.job j WHERE j.jobid = $1`, r.JobID).Scan(&name, &owner, &active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return refuse("pg_cron job %d is not the actions login's (%s) own, or is gone: pg_cron lets only the job's owner or a superuser change a job", r.JobID, me)
+	}
+	if err != nil {
+		return refuse("the job check failed: %v", err)
+	}
+	switch {
+	case deref(owner) != me:
+		return refuse("pg_cron job %d belongs to %s, not to the actions login %s: pg_cron lets only the job's owner or a superuser change a job", r.JobID, orDash(owner), me)
+	case deref(name) != r.JobName && deref(name) != "":
+		return refuse("pg_cron job %d is now named %q, not %q as shown: nothing was sent", r.JobID, deref(name), r.JobName)
+	case active != nil && *active == on && on:
+		return refuse("the job is already enabled: nothing to do, nothing was sent")
+	case active != nil && *active == on:
+		return refuse("the job is already disabled: nothing to do, nothing was sent")
+	}
+	if _, err := act.Exec(ctx, `SELECT cron.alter_job(job_id := $1, active := $2)`, r.JobID, on); err != nil {
+		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("cron.alter_job failed: %v", err)
+		return res
+	}
+	res.Outcome = actions.Done
+	if on {
+		res.Detail = "cron.alter_job set active = true: pg_cron runs the job again at its schedule"
+	} else {
+		res.Detail = "cron.alter_job set active = false: pg_cron starts no new run of the job; a run going now goes on (Stop ends it)"
+	}
+	var now *bool
+	if err := act.QueryRow(ctx, `SELECT j.active FROM cron.job j WHERE j.jobid = $1`, r.JobID).Scan(&now); err != nil {
+		res.Detail += fmt.Sprintf("; the read back failed: %v", err)
+	} else if now != nil {
+		res.Detail += fmt.Sprintf("; cron.job.active reads %t now", *now)
+	}
 	return res
 }
 
