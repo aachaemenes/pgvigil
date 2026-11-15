@@ -32,8 +32,9 @@ must disabled | ms | ^mssql_running$ | ^B (Later|Latest)$ | 'Later' and 'Latest'
 # the grid menu (GM, rel-gridmenu): a right-click on a grid's first cell opens .tm-menu (web/src/gridtools.ts gridMenu,
 # web/src/treemenu.ts menuBox); a submenu opens on its click; an item that cannot act is off with its words
 # (aria-describedby). Each item the walk must reach on some grid (each item GRID_MAX a driver, clickthrough.mjs gmWords),
-# its kind as the item acts: a submenu 'menu', a copy 'copies', a file 'download' (or the grid's 'Exported <file>' line,
-# written after the save), a dialog 'dialog', a change of the grid 'redraws' or its status line, off 'disabled'. Items
+# its kind as the item acts: a submenu 'menu', a copy 'copies', a file 'download' (the file itself: 'Exported <file>' is
+# written as the save is asked, 'Export failed' is an error - review-17 B2), a dialog 'dialog', a change of the grid
+# 'redraws' or its status line, off 'disabled'; an item that only closes its menu is NOTHING (review-17 B1). Items
 # drawn only on some grids (Freeze / Unfreeze, Filter by value, Exclude value, All filters, Data bar, the statistics
 # line, Clear the selection) have no row: one that does nothing is NEW
 must menu | * | .* | ^CTX > menu B Copy▸$ | Copy opens its submenu (Grid, Column, Cell, Row, Selected, As Markdown, As JSON) (gridtools.ts gridMenu 1)
@@ -44,14 +45,14 @@ must copies | * | .* | ^CTX > menu B Copy▸ > menu B Row$ | Copy > Row: the hea
 must disabled | * | .* | ^CTX > menu B Copy▸ > menu B Selected$ | Copy > Selected with no cell selected: off, 'no cell is selected' (B01)
 must menu | * | .* | ^CTX > menu B Copy▸ > menu B As Markdown▸$ | Copy > As Markdown opens Standard / Prettified (B01)
 must menu | * | .* | ^CTX > menu B Copy▸ > menu B As JSON▸$ | Copy > As JSON opens Compact / Prettified (B01)
-must download|status | * | .* | ^CTX > menu B Export Excel$ | Export Excel: this grid as a workbook of one sheet, the page export's writer (B02)
+must download | * | .* | ^CTX > menu B Export Excel$ | Export Excel: this grid as a workbook of one sheet, the page export's writer (B02)
 must menu | * | .* | ^CTX > menu B Export file▸$ | Export file opens its six forms (B03)
-must download|status | * | .* | ^CTX > menu B Export file▸ > menu B CSV$ | Export file > CSV (B03)
-must download|status | * | .* | ^CTX > menu B Export file▸ > menu B JSON$ | Export file > JSON (B03)
-must download|status | * | .* | ^CTX > menu B Export file▸ > menu B Markdown$ | Export file > Markdown (B03)
-must download|status | * | .* | ^CTX > menu B Export file▸ > menu B HTML$ | Export file > HTML, the screen's colours kept (B03)
-must download|status | * | .* | ^CTX > menu B Export file▸ > menu B SQL \(INSERT\) for PostgreSQL$ | Export file > SQL (INSERT) for PostgreSQL (B03)
-must download|status | * | .* | ^CTX > menu B Export file▸ > menu B SQL \(INSERT\) for SQL Server$ | Export file > SQL (INSERT) for SQL Server (B03)
+must download | * | .* | ^CTX > menu B Export file▸ > menu B CSV$ | Export file > CSV (B03)
+must download | * | .* | ^CTX > menu B Export file▸ > menu B JSON$ | Export file > JSON (B03)
+must download | * | .* | ^CTX > menu B Export file▸ > menu B Markdown$ | Export file > Markdown (B03)
+must download | * | .* | ^CTX > menu B Export file▸ > menu B HTML$ | Export file > HTML, the screen's colours kept (B03)
+must download | * | .* | ^CTX > menu B Export file▸ > menu B SQL \(INSERT\) for PostgreSQL$ | Export file > SQL (INSERT) for PostgreSQL (B03)
+must download | * | .* | ^CTX > menu B Export file▸ > menu B SQL \(INSERT\) for SQL Server$ | Export file > SQL (INSERT) for SQL Server (B03)
 must menu | * | .* | ^CTX > menu B Transpose▸$ | Transpose opens This row / Selected rows / Grid (B15)
 must dialog | * | .* | ^CTX > menu B Transpose▸ > menu B This row$ | Transpose > This row: the row as a column in a dialog with Copy (B15)
 must disabled | * | .* | ^CTX > menu B Transpose▸ > menu B Selected rows$ | Transpose > Selected rows with no cell selected: off, 'no cell is selected' (B15)
