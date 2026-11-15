@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-// A page instance's settings (0263, ST5a): ParsePageSettings reads the stored shape and refuses any other; Merge applies
-// them as pgvigil.yaml's schedules:, disabled: and query_text: are applied, so Interval keeps the file's order (off,
-// then the instance's own value, then the global schedules:, then the running plans box, then the default); a value
-// that does not parse leaves the instance out with its reason; Fingerprint moves with a change.
+// A page instance's settings (0263, ST5a): ParsePageSettings reads the stored shape and refuses any other; apply puts
+// them on an instance as pgvigil.yaml's schedules:, disabled: and query_text: would be, so Interval keeps the file's
+// order (off, then the instance's own value, then the global schedules:, then the running plans box, then the
+// default); Fingerprint moves with a change. Merge's reading of them is TestMergePageSettings (inventory_test.go).
 func TestPageSettings(t *testing.T) {
 	for _, c := range []struct{ raw, want string }{
 		{``, ""},
@@ -42,18 +42,14 @@ func TestPageSettings(t *testing.T) {
 		t.Errorf("Stored: %s", b)
 	}
 
-	page := func(name, raw string) PageInstance {
-		return PageInstance{Name: name, Engine: EnginePostgres, DSNRef: "file:/etc/pgvigil/" + name, SettingsRaw: []byte(raw)}
+	// apply puts them on an instance as the file's lines would be (Merge calls it: inventory_test.go)
+	p1 := Instance{Name: "p1", Engine: EnginePostgres, QueryText: "full"}
+	ps1, err := ParsePageSettings([]byte(`{"schedules": {"statements": 60, "activity": 0, "locks": 0}, "query_text": "none"}`))
+	if err != nil {
+		t.Fatal(err)
 	}
-	all, skipped := Merge(nil, []PageInstance{
-		page("p1", `{"schedules": {"statements": 60, "activity": 0, "locks": 0}, "query_text": "none"}`),
-		page("p2", ``),
-		page("p3", `{"schedules": {"statements": "soon"}}`),
-	}, "full")
-	if len(all) != 2 || len(skipped) != 1 || !strings.HasPrefix(skipped[0], "p3: its settings in Admin > Instances do not parse: ") {
-		t.Fatalf("merged %d, skipped %v (want p1 and p2; p3 left out with its reason)", len(all), skipped)
-	}
-	p1, p2 := all[0], all[1]
+	ps1.apply(&p1)
+	p2 := Instance{Name: "p2", Engine: EnginePostgres, QueryText: "full"}
 	if p1.QueryText != "none" || p2.QueryText != "full" {
 		t.Errorf("query_text: p1 %q (want none), p2 %q (want the file's full)", p1.QueryText, p2.QueryText)
 	}
@@ -78,9 +74,11 @@ func TestPageSettings(t *testing.T) {
 			t.Errorf("%s %s: %v, want %v", c.in.Name, c.coll, got, c.want)
 		}
 	}
-	// a change of a page instance's settings changes its fingerprint (its loops restart), the other's stands
-	again, _ := Merge(nil, []PageInstance{page("p1", `{"schedules": {"statements": 120}}`), page("p2", ``)}, "full")
-	if Fingerprint(again[0]) == Fingerprint(p1) || Fingerprint(again[1]) != Fingerprint(p2) {
-		t.Errorf("fingerprints: p1 moved %t (want true), p2 moved %t (want false)", Fingerprint(again[0]) != Fingerprint(p1), Fingerprint(again[1]) != Fingerprint(p2))
+	// a change of a page instance's settings changes its fingerprint (its loops restart)
+	again := Instance{Name: "p1", Engine: EnginePostgres, QueryText: "full"}
+	ps2, _ := ParsePageSettings([]byte(`{"schedules": {"statements": 120}}`))
+	ps2.apply(&again)
+	if Fingerprint(again) == Fingerprint(p1) {
+		t.Error("the fingerprint did not move with the settings")
 	}
 }
