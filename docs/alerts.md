@@ -277,10 +277,13 @@ renamed host makes no alert from its old runs); never an instance that a *collec
 the runs it does not fail); and no new alert for a host whose *collector or network* stood inside the two hours - its
 alert open there on a configured channel, or held unsent by a mute (a silence or a blackout names an instance and never
 holds it) - since the cut's long runs stay in the window: the host is judged again once the window has passed the
-parent. An alert not yet cleared when the parent rises keeps being judged without the instances the parent holds - its
-finding missing for a pass as well, so a fold that flickers comes back: its members stay held unless the parent holds
-enough of them to drop it (the rest are then sent on their own until the cut ends and the fold forms again), and the
-parent's tail does not resolve it (the cut's runs may keep it up to two hours after the parent clears). A parent never
+parent. An alert not yet cleared on a configured channel when the parent rises keeps being judged without the instances
+the parent holds - while its finding is missing as well, if it went missing after the parent rose: it comes back when
+more than half of its judged instances, and at least 3, still run long. Its members stay held unless the parent holds
+enough of them to drop it; the rest are then sent on their own, and an alert that stood at half or less loses its lower
+bar at the first missing pass - it resolves after the parent and its members are sent on their own. An alert already
+found gone before the parent rose is not brought back by the cut's runs. The parent's tail does not resolve an alert
+that stands (the cuts' runs may keep it up to two hours after the last parent clears). A parent never
 seen by the alert sender is not seen here: no channel configured, quiet hours over the whole of it, every send of it
 failing, or its channel removed since - its runs are judged once it clears (a mute that held it on that channel keeps
 the host unjudged until the window has passed the hold: the safe side). After a cut, the instances' own *collection runs long*
