@@ -50,16 +50,8 @@ SELECT q.snapshot_at, q.server_utc, q.source, q.session_id, q.request_id, q.stat
        q.sql_handle, q.stmt_start, q.stmt_end, left(q.statement, 4000) AS statement, q.full_chars, q.plan_handle, q.query_hash,
        q.query_plan_hash, q.session_waits::text AS session_waits, q.is_user_process, q.head_session_id, q.chain_depth, q.victims,
        q.longest_victim_wait_ms, q.in_cycle, q.chain_note, o.is_own,
-       coalesce(o.is_own, false)
-         AND NOT (pgvigil.own_shown_mssql(q.session_id, q.blocking_session_id, q.head_session_id, q.in_cycle, q.elapsed_ms, q.request_id,
-                                          q.open_tran, q.last_request_end, q.granted_memory_kb, q.tempdb_alloc_kb, q.tran_age_ms,
-                                          q.snapshot_at)
-                  OR EXISTS (SELECT 1 FROM pgvigil.mssql_requests b WHERE b.instance_id = q.instance_id AND b.snapshot_at = q.snapshot_at
-                               AND b.blocking_session_id = q.session_id AND b.session_id <> q.session_id)) AS hide
-  FROM pgvigil.mssql_requests_v q
-  LEFT JOIN LATERAL (SELECT r.is_own FROM pgvigil.mssql_requests r
-                      WHERE r.instance_id = q.instance_id AND r.snapshot_at = q.snapshot_at AND r.session_id = q.session_id
-                        AND r.request_id IS NOT DISTINCT FROM q.request_id LIMIT 1) o ON true
+       ` + ownHideMssql + ` AS hide
+  FROM pgvigil.mssql_requests_v q` + ownLateralMssql + `
  WHERE q.instance_id = $1
    AND q.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_requests_summary s WHERE s.instance_id = $1 AND s.snapshot_at <= $2)`
 
@@ -70,8 +62,12 @@ const sqlMssqlRunningRows = `SELECT x.* FROM (` + sqlMssqlRunningInner + `) x
  ORDER BY x.head_session_id NULLS LAST, x.chain_depth, x.session_id, x.request_id NULLS FIRST
  LIMIT 5000`
 
-// sqlMssqlRunningOwnHidden: how many of the snapshot's rows the default hid (0 with own=1), counted before any LIMIT.
-const sqlMssqlRunningOwnHidden = `SELECT count(*) FILTER (WHERE x.hide AND NOT $3::boolean) AS rows FROM (` + sqlMssqlRunningInner + `) x`
+// sqlMssqlRunningOwnHidden: how many of the snapshot's rows, and of its sessions, the default hid (0 with own=1), counted
+// before any LIMIT; the read's own sessions in all (the status line's 'includes n of pgvigil's own'); since (ownSince)
+const sqlMssqlRunningOwnHidden = `SELECT count(*) FILTER (WHERE x.hide AND NOT $3::boolean) AS rows,
+       count(DISTINCT x.session_id) FILTER (WHERE x.hide AND NOT $3::boolean) AS sessions,
+       count(DISTINCT x.session_id) FILTER (WHERE x.is_own) AS own_sessions, ` + ownSince + ` AS since
+  FROM (` + sqlMssqlRunningInner + `) x`
 
 // sqlMssqlBlocking: the heads of that snapshot, the one with the longest wait behind it first.
 const sqlMssqlBlocking = `

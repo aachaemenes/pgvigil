@@ -83,6 +83,7 @@ export interface Activity {
   summary: Table | null;
   sessions: Table | null;
   chains: Table | null;
+  own_hidden?: Table | null;   // B24 OWN: what the default hid, the read's own in all, since (own.ts)
 }
 
 export interface DMS {
