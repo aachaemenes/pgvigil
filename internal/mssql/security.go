@@ -25,9 +25,11 @@ import (
 //	logins        sys.server_principals - VIEW ANY DEFINITION (or ALTER ANY LOGIN); without it the server lists the
 //	              login itself and the fixed roles only. 'Signed in now' (dbatools' LastLogin) needs VIEW SERVER STATE.
 //	server_perms  sys.server_permissions for public - VIEW ANY DEFINITION.
-//	registry      AuditLevel (login auditing) and HideInstance: sys.dm_server_registry (VIEW SERVER STATE) on Windows;
-//	              master.dbo.xp_instance_regread (EXECUTE on it) on Linux, where the DMV answers no rows, and on
-//	              Windows when the DMV has no row for a value. HideInstance does not apply on Linux.
+//	registry      AuditLevel (login auditing) and HideInstance: sys.dm_server_registry (VIEW SERVER STATE) first on
+//	              Windows, then master.dbo.xp_instance_regread (EXECUTE on it) for each value the DMV has no row for -
+//	              in practice both: SQL Server 2022 on Windows (16.0.1000.6, read 2026-11-15) lists neither value in the
+//	              DMV, so the EXECUTE right is what reads them on Windows as on Linux (where the DMV answers no rows).
+//	              HideInstance does not apply on Linux.
 //	auth          the collector's own connection through CONNECTIONPROPERTY (no right needed: sys.dm_exec_connections
 //	              refuses even a login's own row without VIEW SERVER STATE); every connection by scheme and transport -
 //	              VIEW SERVER STATE.
