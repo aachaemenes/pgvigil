@@ -612,6 +612,53 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
   }
 }
 
+// TAGALL (Allen 11-15 04:55: 'It should have all the stuff the main pgvigil all instances have under prod or dev tag
+// too'): every page a folder of 'All instances' lists (its caret key r/<group>) is listed by the tag folder's folder of the
+// same group (t:<folder>/<group>), each link carrying tag=<tag>, and the tag's main strip carries every page of the root's
+// main strip; the tag holds both engines (`tag` above), so no page is excused by its engine. One row per page missing.
+{
+  const sc = `tag ${tag}`;
+  // a folder's pages by the tab of every link under it (a nested Custom reports folder counts as its tab), opened when closed
+  const folderTabs = (keyRe, topLink) => ev(`(async () => {
+    const re = new RegExp(${JSON.stringify(keyRe)});
+    const want = ${JSON.stringify(topLink)};
+    const scopeBox = () => want ? [...document.querySelectorAll('#tree .folder')].find(f => [...f.querySelectorAll(':scope > .folder-head a')].some(a => ((a.getAttribute('href') || '').split('?')[1] || '').split('&').includes(want))) : document.querySelector('#tree');
+    const carets = () => { const b = scopeBox(); return b ? [...b.querySelectorAll('button.caret')].filter(c => re.test(c.dataset.key || '')) : []; };
+    for (const c of carets()) if (c.getAttribute('aria-expanded') !== 'true') { c.click(); await new Promise(r => setTimeout(r, 300)); }
+    const out = {};
+    for (const c of carets()) {
+      const g = (c.dataset.key || '').split('/').pop();
+      const box = c.closest('.tree-node')?.parentElement;
+      out[g] = box ? [...box.querySelectorAll('a')].map(a => a.getAttribute('href') || '').filter(h => h.startsWith('#/')).map(h => ({ tab: h.slice(2).split('?')[0], tagged: ((h.split('?')[1] || '').split('&')).includes(want) })) : [];
+    }
+    return out;
+  })()`, true);
+  await go(`#/summary`);
+  const root = await folderTabs('^r/', '');
+  await go(`#/summary?tag=${encodeURIComponent(tag)}`);
+  const inTag = await folderTabs('^t:.*/[a-z]+$', 'tag=' + encodeURIComponent(tag));
+  let missing = 0;
+  for (const [g, links] of Object.entries(root)) {
+    const have = new Set((inTag[g] ?? []).map(l => l.tab));
+    for (const t of new Set(links.map(l => l.tab))) {
+      if (have.has(t)) continue;
+      missing++;
+      record({ scope: sc, kind: 'tag-all', column: g, engine: '', link: `All instances > ${g} > ${t}`, landed: inTag[g] ? `the tag folder's ${g} lists ${[...have].join(', ') || 'nothing'}` : `the tag folder has no ${g} folder`, verdict: `FAIL ${t} is under All instances > ${g} and not under ${tag} > ${g}` });
+    }
+    for (const l of (inTag[g] ?? []).filter(l => !l.tagged)) missing++, record({ scope: sc, kind: 'tag-all', column: g, engine: '', link: `${tag} > ${g} > ${l.tab}`, landed: 'its link carries no tag=', verdict: `FAIL ${l.tab} under ${tag} > ${g} does not carry the tag` });
+  }
+  // the main strip: the root's main tabs against the tag's
+  const strip = () => ev(`[...document.querySelectorAll('#tabs a:not(.tab-back)')].map(a => { const h = a.getAttribute('href') || ''; return [h.slice(2).split('?')[0], (h.split('?')[1] || '').split('&').includes(${JSON.stringify('tag=' + encodeURIComponent(tag))})]; })`);
+  await go(`#/summary`);
+  const rootStrip = (await strip()).map(([t]) => t);
+  await go(`#/summary?tag=${encodeURIComponent(tag)}`);
+  const tagStripRows = await strip();
+  const tagStrip = new Set(tagStripRows.map(([t]) => t));
+  for (const t of rootStrip.filter(t => !tagStrip.has(t))) { missing++; record({ scope: sc, kind: 'tag-all', column: 'main strip', engine: '', link: `the root strip's ${t}`, landed: `the tag's strip: ${[...tagStrip].join(', ')}`, verdict: `FAIL ${t} is on the root's strip and not on ${tag}'s` }); }
+  for (const [t] of tagStripRows.filter(([, k]) => !k)) { missing++; record({ scope: sc, kind: 'tag-all', column: 'main strip', engine: '', link: `${tag}'s strip ${t}`, landed: 'its link carries no tag=', verdict: `FAIL ${t} on ${tag}'s strip does not carry the tag` }); }
+  if (!missing) record({ scope: sc, kind: 'tag-all', column: 'every group', engine: '', link: `${Object.keys(root).length} root folders and the main strip`, landed: `${tag}'s folders hold every page`, verdict: 'ok (TAGALL: every root page under the tag folder)' });
+}
+
 // TAGTREE rows (the lead's 07:35 GO): (a) the tag folder's own Jobs folder holds the Jobs page of that tag
 {
   const sc = `tag ${tag}`;
