@@ -490,17 +490,15 @@ function Invoke-Up {
         Invoke-LabSql $pubInst "EXEC sp_addmergepushsubscription_agent @publication = N'$publication', @subscriber = @sub, @subscriber_db = N'$subDb', @subscriber_security_mode = 0, @subscriber_login = N'sa', @subscriber_password = @pw, @publisher_security_mode = 1, @job_login = NULL, @job_password = NULL, @frequency_type = 64;" $pubDb @{ sub = $subName; pw = $sapw } | Out-Null
         $agentRow = Get-MergeAgent
         if ($null -eq $agentRow -or -not $agentRow.job) { throw 'no merge agent job was made' }
-        # SQL Server Agent may start the new continuous agent's job by itself: on SQL Server 2022 RTM up's own start right
-        # after sp_addmergepushsubscription_agent was refused 'the job already has a pending request from User sa' while
-        # the job ran and synchronized. So the job is started only when this Agent session shows it neither running nor
-        # requested, and the Agent's own refusal for a job already starting (Msg 22022) counts as started, said.
+        # SQL Server Agent may already have a start request for a new continuous agent's job: the job is started only when
+        # the current Agent session shows it neither running nor requested, and the Agent's refusal for a job already
+        # starting (Msg 22022) counts as started; the agent is judged by its own synchronization below either way.
         $actRows = Invoke-LabSql $pubInst @'
 SELECT TOP (1) CASE WHEN a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL THEN 'running'
-                    WHEN a.start_requested_date IS NOT NULL AND a.start_execution_date IS NULL THEN 'requested'
+                    WHEN a.run_requested_date IS NOT NULL AND a.start_execution_date IS NULL THEN 'requested'
                     ELSE 'idle' END AS job_state
   FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id
- WHERE j.name = @job AND a.session_id = (SELECT MAX(s.session_id) FROM msdb.dbo.syssessions s)
- ORDER BY a.start_requested_date DESC;
+ WHERE j.name = @job AND a.session_id = (SELECT MAX(s.session_id) FROM msdb.dbo.syssessions s);
 '@ 'master' @{ job = $agentRow.job }
         $jobState = if ($actRows.Count -gt 0 -and $actRows[0].job_state) { [string]$actRows[0].job_state } else { 'idle' }
         if ($jobState -ne 'idle') {
