@@ -451,7 +451,7 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
 	q := fmt.Sprintf(`SELECT pgvigil.import_%s($1, $2, $3::jsonb)`, collection)
 	for attempt := 1; ; attempt++ {
 		_, err = r.pool.Exec(ctx, q, instanceID, snapshotAt, string(payload))
-		if err == nil || attempt == importDeadlockTries || !isDeadlock(err) || ctx.Err() != nil {
+		if err == nil || attempt == ImportDeadlockTries || !IsDeadlock(err) || ctx.Err() != nil {
 			return err
 		}
 		// An import that makes a new month's partition holds the parent table's lock until it ends, and another
@@ -467,11 +467,11 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
 	}
 }
 
-// importDeadlockTries is how many times Import runs one import that PostgreSQL ends with a deadlock.
-const importDeadlockTries = 3
+// ImportDeadlockTries is how many times Import (and the demo seed's importer) runs one import that PostgreSQL ends with a deadlock.
+const ImportDeadlockTries = 3
 
-// isDeadlock: PostgreSQL ended the statement's transaction as a deadlock's victim (SQLSTATE 40P01).
-func isDeadlock(err error) bool {
+// IsDeadlock: PostgreSQL ended the statement's transaction as a deadlock's victim (SQLSTATE 40P01).
+func IsDeadlock(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }

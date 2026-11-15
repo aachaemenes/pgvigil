@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
 // Options shape a seed.
@@ -321,7 +323,17 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 			return fmt.Errorf("marshal %s: %w", b.Collection, err)
 		}
 		// the collection names are this package's own constants: a fixed set, never input
-		if _, err := m.pool.Exec(ctx, `SELECT pgvigil.import_`+b.Collection+`($1, $2, $3::jsonb)`, id, b.At, string(payload)); err != nil {
+		q := `SELECT pgvigil.import_` + b.Collection + `($1, $2, $3::jsonb)`
+		for attempt := 1; ; attempt++ {
+			_, err = m.pool.Exec(ctx, q, id, b.At, string(payload))
+			// the seed's workers cross a month line side by side: a new month's partition and a shared query_text
+			// row can deadlock two imports, and PostgreSQL rolls the victim back whole (repo.Import's rule)
+			if err == nil || attempt == repo.ImportDeadlockTries || !repo.IsDeadlock(err) || ctx.Err() != nil {
+				break
+			}
+			time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
+		}
+		if err != nil {
 			return fmt.Errorf("import_%s at %s: %w", b.Collection, b.At.Format(time.RFC3339), err)
 		}
 		m.imports++
