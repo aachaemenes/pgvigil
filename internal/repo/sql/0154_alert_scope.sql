@@ -1362,6 +1362,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.alert_threads (
   PRIMARY KEY (channel, finding_key, first_sent_at)
 );
 GRANT SELECT, INSERT, UPDATE ON pgvigil.alert_threads TO pgvigil_alerter;
+GRANT SELECT ON pgvigil.alert_threads TO pgvigil_reader;   -- K5: the Slack door finds the clicked post's occurrence
 
 -- alert_record_threads: one send's attempt (0190's alert_record) and the threads its post opened, in one transaction;
 -- each thread row takes its occurrence's first_sent_at from alert_state as the record left it (an item that did not

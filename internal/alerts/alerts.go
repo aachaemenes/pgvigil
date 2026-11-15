@@ -173,7 +173,10 @@ type Settings struct {
 	DSNRaw     string    `yaml:"alerts_dsn"`
 	Channels   []Channel `yaml:"alerts"`
 	BaseURLRaw string    `yaml:"alerts_base_url"`
-	baseURL    string
+	// task 403b K5 (slackdoor.go): the Slack door's switch and its apps
+	Doors     slackDoorSwitch `yaml:"doors"`
+	SlackApps []SlackApp      `yaml:"slack_apps"`
+	baseURL   string
 }
 
 // BaseURL is alerts_base_url as checked ("" = not set: the messages carry no link).
@@ -235,6 +238,9 @@ func Parse(b []byte) (*Settings, error) {
 		return nil, fmt.Errorf("alerts: %w", err)
 	}
 	if err := Validate(s.Channels); err != nil {
+		return nil, err
+	}
+	if err := checkSlackDoor(&s); err != nil {
 		return nil, err
 	}
 	if v := strings.TrimSpace(s.DSNRaw); v != "" && (strings.HasPrefix(v, "env:") || strings.HasPrefix(v, "file:")) && s.DSN() == "" {
