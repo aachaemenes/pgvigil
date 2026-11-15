@@ -75,8 +75,12 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       const sc = await scope();
       folder = sc.folder;
       const w = window_(ctx);
-      parts = on.length === 0 ? { collections: null, runs: null, cost: null }
-        : await get<Record<'collections' | 'runs' | 'cost', Table | null>>('collectionhealth', { ...sc.params, ...w, grain, status: on.join(','), ...(onlyColl ? { collection: onlyColl } : {}) });
+      const ask = { ...sc.params, ...w, grain, ...(onlyColl ? { collection: onlyColl } : {}) };
+      // no status ticked: the grid lists nothing, the charts still read every collection - DBA Dash's charts read its
+      // #Source, never the status-filtered rows (CollectionHealth_Get.sql L94-98; the review of B6.2, part b #9)
+      parts = on.length === 0
+        ? { collections: null, ...(await Promise.all(['runs', 'cost'].map(part => get<Record<'runs' | 'cost', Table | null>>('collectionhealth', { ...ask, part })))).reduce((a, b) => ({ ...a, ...b }), { runs: null, cost: null }) }
+        : await get<Record<'collections' | 'runs' | 'cost', Table | null>>('collectionhealth', { ...ask, status: on.join(',') });
     } catch (e) { if (mine === seq) { body.replaceChildren(errorBox(e)); sec.dataset.drawn = drawn; } return; }
     if (mine !== seq) return;
     const rows = rowsOf(parts.collections);
@@ -95,7 +99,9 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
           + 'are counted on the instances with a failed or a partial run in that period, as DBA Dash counts them.' },
       { key: 'succeeded', label: 'Succeeded', num: true, fmt: fmtNum },
       { key: 'partial', label: 'Partial', num: true, fmt: fmtNum },
-      { key: 'failed', label: 'Failed', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'failed') : fmtNum(v) },
+      // Failed opens the window it counts (the hours from the one holding the range's start to the end of the one holding
+      // its end: rate_from .. rate_to); Errors keeps the range (the review of B6.2, part b #1)
+      { key: 'failed', label: 'Failed', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'failed', { from: String(r.rate_from), to: String(r.rate_to) }) : fmtNum(v) },
       { key: 'failures_in_a_row', label: 'Failures In A Row', num: true, fmt: fmtNum },
       { key: 'last_run_at', label: 'Last Run', fmt: fmtTime },
       { key: 'last_success', label: 'Last Success', fmt: fmtTime },
@@ -117,15 +123,23 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       return { snapshot_at: r.at, failed: f, fp: f + p, all: f + p + s };
     });
     const cost = rowsOf(parts.cost).map(r => ({ snapshot_at: r.at, collecting_s: Number(r.collecting_s ?? 0) }));
+    // the charts are hourly (the rows are): a range of under two whole hours has one bucket at most, said in each
+    // chart's place rather than a chart's 'needs two reads' (the review of B6.2, part b #8)
+    const hourMs = 3600000, wr = window_(ctx);
+    const wholeHours = Math.round((Math.ceil(Date.parse(wr.to) / hourMs) - Math.floor(Date.parse(wr.from) / hourMs)));
+    const hourly = (title: string) => el('div', { class: 'chart' }, el('h3', {}, title), el('p', { class: 'meta' }, 'The charts are hourly: pick a range of 2 hours or more.'));
     charts.replaceChildren(
-      lineChart('Runs', runs, [{ key: 'failed', label: 'Failed', color: '--crit' }, { key: 'fp', label: 'Partial', color: '--warn' }, { key: 'all', label: 'Succeeded', color: '--ok' }],
+      // Runs as stacked areas, not the design's stacked columns: the data are running totals (failed, failed + partial,
+      // all) and uPlot's bars of running totals draw the tallest over the others (the review of B6.2, part b #14)
+      wholeHours < 2 ? hourly('Runs') : lineChart('Runs', runs, [{ key: 'failed', label: 'Failed', color: '--crit' }, { key: 'fp', label: 'Partial', color: '--warn' }, { key: 'all', label: 'Succeeded', color: '--ok' }],
         v => v.toLocaleString(), { stacked: true, marks: false }),
-      lineChart('Time spent collecting (sec)', cost, [{ key: 'collecting_s', label: 'collecting' }], v => v.toLocaleString(), { marks: false, unit: 's' }),
+      wholeHours < 2 ? hourly('Time spent collecting (sec)') : lineChart('Time spent collecting (sec)', cost, [{ key: 'collecting_s', label: 'collecting' }], v => v.toLocaleString(), { marks: false, unit: 's' }),
       el('div', { class: 'chart' }, el('h3', {}, 'Import Lag'), el('p', { class: 'meta' }, importLagWords)));
     body.replaceChildren(
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s)${folder}${onlyColl ? `, collection ${onlyColl}` : ''}: ${n('critical')} critical, ${n('warning')} warning, ${n('n/a')} N/A, ${n('ok')} OK. `
-        + 'Status: critical at 3 failures in a row and 30 minutes since the last success, or 50 % of 5 or more runs failed with the last run failed; '
-        + 'warning at 1 failure and 10 minutes, or 10 % failed or partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
+        // the rule in docs/collection-health.md's words (0166; the review of B6.2, part b #10)
+        + 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
+        + 'warning at 1 or more failures in a row and 10 minutes or more since the last success, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
         + 'Failed % 24hrs is the Summary\'s rate. Not shown, as pgvigil has no source for them: Warnings, Retried, Import Failed, No Status, CPU, Logical Reads, '
         + 'the import columns; no Steps (pgvigil has no run steps); Runs and Max Duration are not links (no Collection Performance report yet); '
         + 'the Status column shows the word as well as the colour.'),
@@ -143,7 +157,11 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
         const sc = await scope();
         const t = await get<Record<'errors', Table | null>>('collectionhealth', { ...sc.params, ...window_(ctx), part: 'errors', ...(onlyColl ? { collection: onlyColl } : {}), q: qBox.value });
         const rs = rowsOf(t.errors);
-        list.replaceChildren(el('p', { class: 'meta' }, `${fmtNum(rs.length)} error(s)${onlyColl ? ` of ${onlyColl}` : ''} logged ${window_(ctx).from} to ${window_(ctx).to}${rs.length >= 500 ? ' (the newest 500)' : ''}.`),
+        // the window as the API reads it, on the page's clock: the reach (31 days) counts back from the end or now,
+        // whichever is earlier (web.go paramsReach; the review of B6.2, part b #11)
+        const wv = window_(ctx), end = Math.min(Date.parse(wv.to), Date.now()), fromMs = Math.max(Date.parse(wv.from), end - 31 * 86400000);
+        const cut = fromMs > Date.parse(wv.from);
+        list.replaceChildren(el('p', { class: 'meta' }, `${fmtNum(rs.length)} error(s)${onlyColl ? ` of ${onlyColl}` : ''} logged ${fmtTime(new Date(fromMs).toISOString())} to ${fmtTime(wv.to)}${cut ? ' (the last 31 days of the range: the hourly rows are kept 30)' : ''}${rs.length >= 500 ? ' (the newest 500)' : ''}.`),
           grid(rs, [{ key: 'instance', label: 'Instance' }, { key: 'collection', label: 'Collection' }, { key: 'at', label: 'Time', fmt: fmtTime },
             { key: 'duration_ms', label: 'Duration (ms)', num: true, fmt: fmtNum }, { key: 'message', label: 'Message', wide: true }], 'No error logged in this range.'));
       } catch (e) { list.replaceChildren(errorBox(e)); }

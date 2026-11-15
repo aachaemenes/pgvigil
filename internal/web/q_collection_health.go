@@ -30,6 +30,10 @@ func chScopeOf(alias string) string { return strings.ReplaceAll(chScope, "%[1]s"
 // 00:5x call on the review's #6) - the Summary's rate keeps rounding up (collection_health_summary)
 const chHourFrom = `date_trunc('hour', $1::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
 
+// the end of the hour that holds the range's end: 0166 counts the hours that begin before it, so Failed's window is
+// chHourFrom .. chHourTo (capped at now); the Failed link opens that window (the review of B6.2, part b #1)
+const chHourTo = `date_trunc('hour', ($2::timestamptz AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'`
+
 // sqlCHRows: one row per instance and collection. $7 the expected intervals (the stale check's), $6 the statuses
 // shown (NULL = all).
 var sqlCHRows = `
@@ -71,7 +75,8 @@ const chCols = `
        r.ok + r.partial AS succeeded, r.partial, r.failed, r.consecutive_failures AS failures_in_a_row,
        r.last_run_at, r.last_ok_at AS last_success, r.last_failure_at AS last_failure,
        round(r.dur_sum::numeric / nullif(r.ok + r.partial + r.failed, 0)) AS avg_duration_ms, r.dur_max AS max_duration_ms,
-       r.rows_written AS rows, r.errors, 'DBA Dash''s defaults' AS thresholds, r.errors_from, r.errors_to`
+       r.rows_written AS rows, r.errors, 'DBA Dash''s defaults' AS thresholds, r.errors_from, r.errors_to,
+       ` + chHourFrom + ` AS rate_from, least(` + chHourTo + `, now()) AS rate_to`
 
 // sqlCHInstance: Row per collection per instance (DBA Dash's default), worst first
 var sqlCHInstance = `WITH r AS (` + sqlCHRows + `)

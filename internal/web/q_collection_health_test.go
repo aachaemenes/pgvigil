@@ -1,6 +1,7 @@
 package web
 
 import (
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -113,5 +114,26 @@ func TestCollectionHealthRangeShape(t *testing.T) {
 		if !strings.Contains(q, "WHEN 'n/a' THEN 3 WHEN 'ok' THEN 4") || !strings.Contains(q, "failed_pct DESC NULLS LAST") {
 			t.Errorf("%s is not in DBA Dash's order (Status, Failed %% down, name)", name)
 		}
+	}
+}
+
+// Review B6.2 part b #1: Failed counts the hourly rows from the hour holding from to the end of the hour holding to
+// (0166: the hours that begin before p_rate_to), so the list the Failed link opens reads that same window - the API
+// gives it on every row (rate_from, rate_to; capped at now) and the page's link carries it; Errors keeps [from, to).
+func TestCollectionHealthFailedWindowShape(t *testing.T) {
+	for name, q := range map[string]string{"sqlCHInstance": sqlCHInstance, "sqlCHCollection": sqlCHCollection} {
+		if !strings.Contains(q, chHourFrom+` AS rate_from`) {
+			t.Errorf("%s: no rate_from = the hour holding from", name)
+		}
+		if !strings.Contains(q, `least(`+chHourTo+`, now()) AS rate_to`) {
+			t.Errorf("%s: no rate_to = the end of the hour holding to, capped at now", name)
+		}
+	}
+	b, err := os.ReadFile("../../web/src/collection_health.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `errorsLink(r, v, 'failed', { from: String(r.rate_from), to: String(r.rate_to) })`) {
+		t.Errorf("collection_health.ts: the Failed link does not open the counted window")
 	}
 }
