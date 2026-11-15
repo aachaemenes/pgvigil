@@ -17,12 +17,15 @@
 #
 # Expected (written before its first run):
 #   on a build whose pages mark nothing (rel-roles 1daa94a, the red run): per role 'signed in' ok; the header row FAIL
-#     (no #role-note); every 'must' row FAIL (10: no control with data-need), every 'words' / 'on' row FAIL (5);
+#     (no #role-note); every 'must' row FAIL (10: no control with data-need), every 'words' / 'on' row FAIL (5), the
+#     click row FAIL (no Silence with data-need);
 #     'roles-check <role>: ... 0 with a control that carries a need'; 'proof-uiroles-pages: 3 role(s) FAIL', rc 1.
 #   on the build with the pages: per role 0 FAIL - viewer: the 10 must rows ok, the 5 words rows ok (alerts and an
 #     instance's Summary with the operator words; the root Thresholds, Drives and Applications with the admin words),
 #     no control on above the role; operator: the 10 must rows, 'on alerts' and 'on pg:summary' ok, the 3 admin words
 #     rows ok; admin: the 10 must rows, the 5 'on' rows ok, 0 controls off for the role. Every page rendered.
+#     The click row per role: a viewer's click on the off Silence opens nothing; an operator's and an admin's opens
+#     its dialog, whose Save carries the operator need and is not off for the role (closed, nothing saved).
 #     'PASS: proof-uiroles-pages'.
 set -uo pipefail
 cd "$(dirname "$0")/.."
