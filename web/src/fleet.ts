@@ -2,7 +2,7 @@
 // fetched at most once per 25 s unless a refresh forces it.
 import { get, Row, rowsOf, Table } from './api';
 import { auditFleetCell, readAuditFleet } from './pgaudit';
-import { fmtTime } from './ui';
+import { el, fmtTime } from './ui';
 import { versionCell } from './versions';
 
 // mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
@@ -349,6 +349,22 @@ export function tagWords(tag: string): string {
   const i = tag.indexOf(':');
   if (i > 0 && i === tag.length - 1) return `(no ${tag.slice(0, i).trim().toLowerCase()})`;
   return `tag ${tag}`;
+}
+
+// writtenTag: the tag a folder names when it is one an instance carries ('env:prod', 'prod') - what a rule, a threshold,
+// a report run or a new instance can take; undefined for no tag and for the tree's two folders of no tag, 'untagged' and
+// '<key>:' (inTagScope), which no row carries
+export function writtenTag(tag?: string): string | undefined {
+  if (!tag || tag === 'untagged' || tag.endsWith(':')) return undefined;
+  return tag;
+}
+
+// fleetWideNote: the one line a root page opened under a tag folder (TAGALL) says of what it holds for the whole
+// repository - what = '<the thing> is one setting' or '<the things> are one list'; null at the root and on an
+// instance's page
+export function fleetWideNote(ctx: { tag?: string; instance?: number }, what: string): HTMLElement | null {
+  if (!ctx.tag || ctx.instance) return null;
+  return el('p', { class: 'meta fleet-wide' }, `${what} for the whole repository: the folder ${tagWords(ctx.tag)} shows all of it.`);
 }
 
 // tagScopeIds: the instance ids of a fleet page's tag scope (null with no tag, or on an instance's page); a fleet read

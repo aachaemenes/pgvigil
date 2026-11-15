@@ -89,10 +89,8 @@ export const rootGroups: TabGroup[] = [
 // TAGALL (the owner's report 11-15: 'It should have all the stuff the main pgvigil all instances have under prod or dev tag
 // too'): a tag folder carries EVERY page of the root, the Doors and Admin folders too - DBA Dash keeps its custom reports,
 // community tools and Recycle Bin at the root only (CustomReports.cs L19-23, Main.cs L210), pgvigil does not. Each page
-// opened under ?tag= narrows what it lists or picks to the tag's instances; fleetWide names the pages that hold one
-// setting or one list for the whole repository, which say so in words under a tag (fleetWideNote) and are otherwise the
-// root's page.
-export const fleetWide = new Set(['retention', 'admin', 'alertrules', 'reportmail', 'customreports']);
+// opened under ?tag= narrows what it lists or picks to the tag's instances; what a page holds as one setting or one list
+// for the whole repository it says so in one line under a tag (fleet.ts fleetWideNote) and shows as the root does.
 // pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
 // page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
 // 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host

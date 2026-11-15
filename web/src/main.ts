@@ -443,7 +443,7 @@ async function render(force = false) {
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(
     ...(group.name ? [el('a', { href: href(ctx, { tab: 'summary' }), class: 'tab-back' }, 'Summary'), el('span', { class: 'tab-group', 'aria-hidden': 'true' }, '/ ' + group.name + ':')] : []),
-    // every page keeps the tag (TAGALL; a fleet-wide one says so on the page: router.ts fleetWide)
+    // every page keeps the tag (TAGALL; what a page holds for the whole repository it says so: fleet.ts fleetWideNote)
     ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
   // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
   $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));

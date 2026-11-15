@@ -395,7 +395,7 @@ function scopeFolders(ctx: Ctx, scope: string | undefined, keyOf: (g: string) =>
   return rootGroups.filter(g => g.key !== 'main').flatMap(g => {
     const tabs = pages(g);
     if (!tabs.length) return [];
-    // every page carries the folder's tag (TAGALL): a fleet-wide one says so on the page (router.ts fleetWide)
+    // every page carries the folder's tag (TAGALL): what a page holds for the whole repository it says so (fleet.ts fleetWideNote)
     const scopeOf = (_t: string) => scope;
     const link = (t: string) => href(ctx, { tab: t, instance: undefined, tag: scopeOf(t), at: undefined, task: undefined, taskInstance: undefined });
     const on = (t: string) => !ctx.instance && ctx.tag === scopeOf(t) && ctx.tab === t;
