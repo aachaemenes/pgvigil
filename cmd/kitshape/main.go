@@ -54,7 +54,7 @@ type Report struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fail(errors.New("usage: kitshape compare|ports|pin|version|args|report ..."))
+		fail(errors.New("usage: kitshape compare|ports|pin|version|args|report|deny (the flags in its header)"))
 	}
 	var err error
 	code := 0

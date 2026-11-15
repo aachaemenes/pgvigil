@@ -20,10 +20,11 @@ import (
 // Class is a line's weight: BREAK turns the run red, DRIFT is a warning, INFO says what was not compared.
 type Class string
 
+// The three classes of a line.
 const (
-	Break Class = "BREAK"
-	Drift Class = "DRIFT"
-	Info  Class = "INFO"
+	Break Class = "BREAK" // pgvigil's code or page depends on what changed: the run is red
+	Drift Class = "DRIFT" // a change pgvigil does not depend on: a warning on a green run
+	Info  Class = "INFO"  // what could not be compared
 )
 
 // Column is one result column as the Run path answers it with exact_types: the page's coarse type (number / time /
