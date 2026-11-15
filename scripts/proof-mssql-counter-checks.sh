@@ -9,7 +9,8 @@
 #   PGVIGIL_IMAGE   the SQL Server image (default 2022-latest).
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-mssql-counters-wiring.patch (401's) when the tree lacks the
 #                   counters' runner hook, then scripts/proof-mssql-counter-checks-wiring.patch (this task's) when the
-#                   join file lacks the seeded rules' metric_rule; 0 = the tree as it is.
+#                   join file lacks the seeded rules' metric_rule; 0 = the tree as it is. A patch the run applied is
+#                   reversed at its exit (402 review part B: the tree is left as it was).
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment. Only the
 # collection a step names runs (pgvigil collect -once). Each rule is judged with for_minutes 0 by an instance rule at
@@ -25,24 +26,35 @@
 #     'critical'; alert_rules_run writes no state and no finding for counters.logins_s; a user's own fleet rule on
 #     counters.latch_waits_s added and then switched off: metric_rule gives no row for it.
 #  C. on by an instance rule (F20): an enabled instance rule on counters.logins_s at 2 / 5 for 0 minutes; the same
-#     load: state critical, one alert_rule_findings row naming it, the grid's rule the instance's with metric_status
-#     critical; two quiet reads: state ok and no finding; the seed keeps its rule_id and enabled false; GET
+#     load: state critical (warning is red here), one alert_rule_findings row naming it, the grid's rule the
+#     instance's with metric_status critical (402 review part B, finding 4: metric_rule gives exactly that one row,
+#     the grid row carries its id and a name without '(off'), read with the rule on; two quiet reads: state ok and no finding; the seed keeps its rule_id and enabled false; GET
 #     /api/alertrules?part=rules lists the seed with enabled false; GET /api/metrics?family=counters gives the seeded page
 #     lookups row rule_enabled false, its name ending '(off: colours only, no alert)', no rule state (402 part A's S1).
-#  D. each provoked check, judged as C at the seeded thresholds (warning or critical after the load, ok after two
-#     quiet reads; from run chk11 the second quiet read 60 s after the first, the product's interval, and the window
-#     named: batches and RPCs by program, statistics updates, scans and seeks per object; a clear held up by named
-#     background prints 'NOT PROVEN clear: <names>' and the fire leg stays hard; held up with only pgvigil's own
-#     batches in the window = red): errors_kill_s (3 at severity 20), lock_timeouts_gt0_s and lock_waits_s (6 probes at LOCK_TIMEOUT
-#     200 behind a held lock), avg_lock_wait_ms (3 probes at LOCK_TIMEOUT 1500: over 1000 ms), compiles_per_100_batches
-#     (20 distinct batches; the quiet reads 12 s apart, so the collector's own batches stay under the ratios' 1
-#     batch/s floor), page_splits_per_100_batches (random-key inserts, 20 batches), full_scans_per_search (20
-#     heap scans and 20 clustered index scans among 200 seeks; its two rates printed), page_lookups_per_batch (10 batches each counting dbo.big), readahead_pct and
-#     page_reads_s (a cold scan of dbo.big after DBCC DROPCLEANBUFFERS; page reads by 1,500 cold random seeks),
-#     page_writes_s (dbo.big rewritten, then CHECKPOINT, then 600 single-page writes each checkpointed),
-#     lock_requests_s (6,000 HOLDLOCK row seeks in one batch), log_growths (database scope: 30,000 inserts
-#     into pgvctr with a 1 MB log); recompiles_per_100_compiles (a procedure whose temp table changes shape each run)
-#     printed as read, NOT PROVEN live if it stays under its warning.
+#  D. each provoked check, judged as C at the seeded thresholds (402 review part B folded). The fire leg (finding 3):
+#     the read before the load, judged with the rule on, reads ok, 'na' or no state (else two more reads QUIET s apart,
+#     then red), and the load's window is named (the XE session started before that read); for the batch ratios
+#     (compiles_per_100_batches, page_splits_per_100_batches, page_lookups_per_batch, recompiles_per_100_compiles) the
+#     proof's own batches and RPCs (its program, read by APP_NAME() at the setup) outnumber those of every program but
+#     pgvigil, else red; then warning or critical with one finding. The clear leg: two quiet reads, the second 60 s
+#     after the first (the product's interval, the lead's 19:0x; a run with QUIET other than 60 ends PARTIAL), the
+#     window named (batches and RPCs by program, statistics updates, scans and seeks per object): ok with no finding,
+#     or 'na' under a floor. A clear held up prints 'NOT PROVEN clear: <names>' only for a metric named background can
+#     move (the batch ratios, full_scans_per_search, page_reads_s, readahead_pct; finding 2) and only after three more
+#     quiet pairs each held up by named background; any other held clear is red, as is one held with only pgvigil's
+#     own work in its window. The loads (each one that must not error runs with sqlcmd -b: an error is red):
+#     errors_kill_s (3 at severity 20), lock_timeouts_gt0_s and lock_waits_s (6 probes at LOCK_TIMEOUT 200 behind a
+#     held lock), avg_lock_wait_ms (3 probes at LOCK_TIMEOUT 1500: over 1000 ms), compiles_per_100_batches (60
+#     distinct batches), page_splits_per_100_batches (random-key inserts, 40 batches), full_scans_per_search (20 heap
+#     scans and 20 clustered index scans among 200 seeks; its two rates printed), page_lookups_per_batch (20 batches
+#     each counting dbo.big, each followed by a SELECT 1 batch), readahead_pct and page_reads_s (a cold scan of dbo.big
+#     after DBCC DROPCLEANBUFFERS; page reads by 1,500 cold random seeks), page_writes_s (dbo.big rewritten, then
+#     CHECKPOINT, then 600 single-page writes each checkpointed), lock_requests_s (6,000 HOLDLOCK row seeks in one
+#     batch), log_growths (database scope; finding 1: a database of the run's own, pgvlg, made just before its check,
+#     its log 1 MB growing 1 MB at a time in SIMPLE recovery, 30,000 inserts in one transaction: SQL Server's own Log
+#     Growths change for pgvlg over the load is 1 or more and equals the point, so no other database's growth is
+#     counted); recompiles_per_100_compiles (a procedure whose temp table changes shape each run) NOT PROVEN live when
+#     the load leaves the state ok or none and the point at or under its warning, red otherwise.
 #  E. not provokable on a box, the rule's path only: free_list_stalls_s, lazy_writes_s, buffer_cache_hit_pct,
 #     ple_per_4gb, errors_offline_s - an instance rule with a threshold the newest point crosses fires (the point
 #     printed); NOT PROVEN live at the seeded threshold.
@@ -93,13 +105,15 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
-TMPD=$(mktemp -d); SRVPID=
+TMPD=$(mktemp -d); SRVPID=; APPLIED=
 SA_PW=$(pw); MON_PW=$(pw)
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\nMSSQL_PID=Developer\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -f -v >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
+  # the wiring patches this run applied, newest first (402 review part B: the tree is left as it was)
+  for pf in $APPLIED; do git apply -R "$pf" 2>/dev/null || patch -R -p1 < "$pf" >/dev/null 2>&1 || echo "CLEANUP: $pf not reversed" >&2; done
   rm -rf "$TMPD"
 }
 trap cleanup EXIT
@@ -109,12 +123,12 @@ if [[ "${PGVIGIL_WIRING:-1}" == 1 ]]; then
   if ! grep -q 'ListCollector' internal/mssql/mssql.go; then
     git apply scripts/proof-mssql-counters-wiring.patch 2>/dev/null || patch -p1 --forward < scripts/proof-mssql-counters-wiring.patch >/dev/null \
       || fail "401's wiring patch"
-    echo "401's wiring applied to this copy"
+    APPLIED="scripts/proof-mssql-counters-wiring.patch $APPLIED"; echo "401's wiring applied to this copy"
   fi
   if [[ -f scripts/proof-mssql-counter-checks-wiring.patch ]] && ! grep -q "0153 seed" internal/repo/sql/0190_join_release2.sql; then
     git apply scripts/proof-mssql-counter-checks-wiring.patch 2>/dev/null || patch -p1 --forward < scripts/proof-mssql-counter-checks-wiring.patch >/dev/null \
       || fail "402's wiring patch"
-    echo "402's wiring applied to this copy (0190: metric_rule)"
+    APPLIED="scripts/proof-mssql-counter-checks-wiring.patch $APPLIED"; echo "402's wiring applied to this copy (0190: metric_rule)"
   fi
 fi
 freeport() { local lo=$1 hi=$2 p used
@@ -159,6 +173,8 @@ CREATE PROCEDURE dbo.rc AS BEGIN SET NOCOUNT ON; CREATE TABLE #r (a int); ALTER 
   INSERT #r (a) SELECT TOP (10) object_id FROM sys.objects; SELECT COUNT(*) FROM #r; END" pgvctr
 sqok "the monitor login" "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF;
   GRANT VIEW SERVER STATE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON];"
+# the program name every sq / sqok batch of the proof carries (the loads' own, named in each load's window)
+LOADAPP=$(sq "SELECT APP_NAME()" | tr -d '\r' | sed 's/[[:space:]]*$//'); [[ -n "$LOADAPP" ]] || fail "the proof's own program name"
 export PGV_CHK_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
 
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil
@@ -215,34 +231,42 @@ p_timeouts() { bg 20 "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITF
   for _ in $(seq 1 6); do sq "SET LOCK_TIMEOUT 200; SELECT v FROM dbo.t WHERE id = 1;" pgvctr >/dev/null 2>&1 || true; done; sleep 3; }
 p_longwait() { bg 20 "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:07'; ROLLBACK;"; sleep 1.5
   for _ in 1 2 3; do sq "SET LOCK_TIMEOUT 1500; SELECT v FROM dbo.t WHERE id = 1;" pgvctr >/dev/null 2>&1 || true; done; sleep 2; }
-p_compiles() { sq "$(for i in $(seq 1 60); do echo "SELECT COUNT(*) FROM dbo.t WHERE v >= 0 AND id <> $((RANDOM * 100 + i));"; echo GO; done)" pgvctr >/dev/null; }
-p_splits() { sq "$(for _ in $(seq 1 40); do echo "INSERT dbo.sp (pad) SELECT TOP (400) 'x' FROM sys.all_objects;"; echo GO; done)" pgvctr >/dev/null; }
-p_scans() { sq "DECLARE @i int = 0, @x int; WHILE @i < 200 BEGIN SELECT @x = v FROM dbo.t WHERE id = @i + 1; SET @i += 1; END;
-  $(for _ in $(seq 1 20); do echo "SELECT @x = COUNT(*) FROM dbo.h; SELECT @x = COUNT(*) FROM dbo.big;"; done)" pgvctr >/dev/null; }
+p_compiles() { sqok "the compiles load" "$(for i in $(seq 1 60); do echo "SELECT COUNT(*) FROM dbo.t WHERE v >= 0 AND id <> $((RANDOM * 100 + i));"; echo GO; done)" pgvctr; }
+p_splits() { sqok "the splits load" "$(for _ in $(seq 1 40); do echo "INSERT dbo.sp (pad) SELECT TOP (400) 'x' FROM sys.all_objects;"; echo GO; done)" pgvctr; }
+p_scans() { sqok "the scans load" "DECLARE @i int = 0, @x int; WHILE @i < 200 BEGIN SELECT @x = v FROM dbo.t WHERE id = @i + 1; SET @i += 1; END;
+  $(for _ in $(seq 1 20); do echo "SELECT @x = COUNT(*) FROM dbo.h; SELECT @x = COUNT(*) FROM dbo.big;"; done)" pgvctr; }
 # the inputs of a ratio at the newest instance read: object|counter|rate per second
 rates() { pq "SELECT string_agg(v.counter || ' ' || coalesce(round(v.rate::numeric, 2)::text, 'no rate'), ', ' ORDER BY v.counter)
   FROM pgvigil.mssql_counter_values($SB, (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance') - interval '1 second', now(), 'instance') v
   WHERE v.object = '$1' AND v.counter IN ($2) AND v.inst = '_Total'"; }
-p_lookups() { sq "$(for _ in $(seq 1 20); do echo "SELECT COUNT(*) FROM dbo.big;"; echo GO; echo "SELECT 1;"; echo GO; done)" pgvctr >/dev/null; }
-p_cold() { sq "CHECKPOINT; DBCC DROPCLEANBUFFERS WITH NO_INFOMSGS;" pgvctr >/dev/null; sq "SELECT COUNT(*) FROM dbo.big WHERE pad <> 'z';" pgvctr >/dev/null; }
+p_lookups() { sqok "the lookups load" "$(for _ in $(seq 1 20); do echo "SELECT COUNT(*) FROM dbo.big;"; echo GO; echo "SELECT 1;"; echo GO; done)" pgvctr; }
+p_cold() { sqok "the cold buffers" "CHECKPOINT; DBCC DROPCLEANBUFFERS WITH NO_INFOMSGS;" pgvctr; sqok "the cold scan" "SELECT COUNT(*) FROM dbo.big WHERE pad <> 'z';" pgvctr; }
 # cold single-page reads: 1,500 random seeks after DROPCLEANBUFFERS (one page an I/O, whether the counter counts pages or I/Os)
-p_coldseek() { sq "CHECKPOINT; DBCC DROPCLEANBUFFERS WITH NO_INFOMSGS;" pgvctr >/dev/null
-  sq "DECLARE @i int = 0, @x int; WHILE @i < 1500 BEGIN SELECT @x = LEN(pad) FROM dbo.big WHERE id = ABS(CHECKSUM(NEWID())) % 60000 + 1; SET @i += 1; END" pgvctr >/dev/null; }
+p_coldseek() { sqok "the cold buffers" "CHECKPOINT; DBCC DROPCLEANBUFFERS WITH NO_INFOMSGS;" pgvctr
+  sqok "the cold seeks" "DECLARE @i int = 0, @x int; WHILE @i < 1500 BEGIN SELECT @x = LEN(pad) FROM dbo.big WHERE id = ABS(CHECKSUM(NEWID())) % 60000 + 1; SET @i += 1; END" pgvctr; }
 # every page of dbo.big rewritten and checkpointed, then 600 single-page writes each with its CHECKPOINT
-p_writes() { sq "UPDATE dbo.big SET pad = REPLICATE(CHAR(65 + ABS(CHECKSUM(NEWID())) % 26), 200); CHECKPOINT;" pgvctr >/dev/null
-  sq "DECLARE @i int = 0; WHILE @i < 600 BEGIN UPDATE dbo.big SET pad = 'w' WHERE id = ABS(CHECKSUM(NEWID())) % 60000 + 1; CHECKPOINT; SET @i += 1; END" pgvctr >/dev/null; }
-p_lockreq() { sq "DECLARE @i int = 0, @x int; WHILE @i < 6000 BEGIN SELECT @x = v FROM dbo.t WITH (ROWLOCK, HOLDLOCK) WHERE id = @i % 2000 + 1; SET @i += 1; END" pgvctr >/dev/null; }
-p_recompiles() { sq "$(for _ in $(seq 1 20); do echo "EXEC dbo.rc;"; echo GO; done)" pgvctr >/dev/null; }
-# the log is shrunk to a few MB first: D's earlier loads leave it larger than this one transaction (run chk11 read no
-# growth with a 36 MB log; chk12, those checks skipped, read +5). The full backup at the setup started the log chain, so
-# only a log backup frees it (chk13's CHECKPOINT and shrink left 77 MB): a log backup and a shrink, twice; a log over
-# 4 MB after them fails here, so the check never passes on the log's own history
-p_growth() { sq "BACKUP LOG pgvctr TO DISK = N'/var/opt/mssql/data/pgvctr_log.trn' WITH INIT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS;
-BACKUP LOG pgvctr TO DISK = N'/var/opt/mssql/data/pgvctr_log.trn' WITH INIT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS;" pgvctr >/dev/null
-  local mb; mb=$(sq "SELECT CAST(size / 128 AS varchar(10)) FROM sys.database_files WHERE type = 1" pgvctr | tr -d '[:space:]')
-  echo "   pgvctr's log before the load: $mb MB"
-  [[ "$mb" =~ ^[0-9]+$ && "$mb" -le 4 ]] || fail "D: log_growths: the shrink left pgvctr's log at [$mb] MB"
-  sq "INSERT dbo.t (id, pad) SELECT TOP (30000) 200000 + ROW_NUMBER() OVER (ORDER BY (SELECT 1)) + (SELECT count(*) FROM dbo.t), REPLICATE('g', 200) FROM sys.all_objects a CROSS JOIN sys.all_objects b" pgvctr >/dev/null; }
+p_writes() { sqok "the rewrite" "UPDATE dbo.big SET pad = REPLICATE(CHAR(65 + ABS(CHECKSUM(NEWID())) % 26), 200); CHECKPOINT;" pgvctr
+  sqok "the single-page writes" "DECLARE @i int = 0; WHILE @i < 600 BEGIN UPDATE dbo.big SET pad = 'w' WHERE id = ABS(CHECKSUM(NEWID())) % 60000 + 1; CHECKPOINT; SET @i += 1; END" pgvctr; }
+p_lockreq() { sqok "the lock requests load" "DECLARE @i int = 0, @x int; WHILE @i < 6000 BEGIN SELECT @x = v FROM dbo.t WITH (ROWLOCK, HOLDLOCK) WHERE id = @i % 2000 + 1; SET @i += 1; END" pgvctr; }
+p_recompiles() { sqok "the recompiles load" "$(for _ in $(seq 1 20); do echo "EXEC dbo.rc;"; echo GO; done)" pgvctr; }
+# log_growths (402 review part B, finding 1): a database of the run's own, made just before its check (lg_db), its log
+# 1 MB growing 1 MB at a time in SIMPLE recovery; one transaction of 30,000 rows grows it. SQL Server's own Log Growths
+# for pgvlg is read before and after the load (LG_OWN), and D holds it equal to the point, so a growth of another
+# database in the window is red (pgvctr's log, which D's earlier loads grow, is never shrunk or backed up here)
+lg_db() { sqok "the log growth database" "CREATE DATABASE pgvlg ON (NAME = pgvlg, FILENAME = '/var/opt/mssql/data/pgvlg.mdf', SIZE = 16MB)
+  LOG ON (NAME = pgvlg_log, FILENAME = '/var/opt/mssql/data/pgvlg_log.ldf', SIZE = 1MB, FILEGROWTH = 1MB);
+  ALTER DATABASE pgvlg SET RECOVERY SIMPLE;"
+  sqok "the log growth table" "CREATE TABLE dbo.g (id int NOT NULL PRIMARY KEY, pad char(200) NOT NULL);" pgvlg; }
+lgc() { sq "SELECT CAST(cntr_value AS varchar(20)) FROM sys.dm_os_performance_counters WHERE RTRIM(counter_name) = N'Log Growths' AND RTRIM(instance_name) = N'pgvlg'" | tr -d '[:space:]'; }
+LG_OWN=
+p_growth() { local a b mb
+  mb=$(sq "SELECT CAST(size / 128 AS varchar(10)) FROM sys.database_files WHERE type = 1" pgvlg | tr -d '[:space:]')
+  echo "   pgvlg's log before the load: $mb MB"
+  [[ "$mb" =~ ^[0-9]+$ && "$mb" -le 2 ]] || fail "D: log_growths: pgvlg's log at [$mb] MB before the load (want 1 or 2)"
+  a=$(lgc)
+  sqok "the log growth load" "INSERT dbo.g (id, pad) SELECT TOP (30000) ROW_NUMBER() OVER (ORDER BY (SELECT 1)), REPLICATE('g', 200) FROM sys.all_objects a CROSS JOIN sys.all_objects b" pgvlg
+  b=$(lgc); [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ ]] || fail "D: log_growths: pgvlg's Log Growths counter [$a] [$b]"
+  LG_OWN=$((b - a)); echo "   pgvlg's own Log Growths over the load: $a -> $b"; }
 
 echo "== B. the owner line: a seeded rule colours while off and raises nothing =="
 LS=$(pq "SELECT rule_id FROM pgvigil.alert_rules WHERE metric = 'counters.logins_s' AND client = '0153 seed'")
@@ -303,7 +327,7 @@ SELECT 'xe|' + e.n + '|' + ISNULL(NULLIF(e.app, N''), N'(no program)') + '|' + C
  WHERE e.ts > '$a' AND e.ts <= '$b'
  GROUP BY e.n, e.app;
 DROP EVENT SESSION pgv_chk_diag ON SERVER;" > "$TMPD/xe-w" 2>&1
-  python3 - "$TMPD/usage-a" "$TMPD/usage-b" "$TMPD/xe-w" "$a" "$b" > "$TMPD/diag-w" <<'PY'
+  python3 - "$TMPD/usage-a" "$TMPD/usage-b" "$TMPD/xe-w" "$a" "$b" "$LOADAPP" > "$TMPD/diag-w" <<'PY' || fail "the window's names"
 import sys
 def rows(p):
     out = {}
@@ -316,9 +340,12 @@ a, b = rows(sys.argv[1]), rows(sys.argv[2])
 other = []
 print(f'      the window {sys.argv[4]} .. {sys.argv[5]} UTC:')
 xe = [l.strip().split('|') for l in open(sys.argv[3]) if l.startswith('xe|')]
+loadapp = sys.argv[6]
+loadb = sum(int(r[3]) for r in xe if r[2] == loadapp and r[1] in ('sql_batch_completed', 'rpc_completed'))
+otherb = sum(int(r[3]) for r in xe if r[2] not in ('pgvigil', loadapp) and r[1] in ('sql_batch_completed', 'rpc_completed'))
 for _, n, app, c, lr in sorted(xe, key=lambda r: -int(r[3])):
     own = app == 'pgvigil'
-    tag = " (the collector's own)" if own else ""
+    tag = " (the collector's own)" if own else (" (the proof's own)" if app == loadapp else "")
     print(f"      {n} by {app}{tag}: {c} events, {lr} logical reads")
     if not own:
         other.append(f'{app} ({n} x{c})')
@@ -335,9 +362,12 @@ for _, k, d in sorted(moved, reverse=True)[:8]:
     if (d[0] or d[1]) and k[0] not in ('master', 'msdb', 'model', 'tempdb'):
         other.append(f'{k[0]}.{k[1]} user scans +{d[0]} seeks +{d[1]}')
 print('OTHER=' + '; '.join(other))
+print(f'LOADB={loadb}')
+print(f'OTHERB={otherb}')
 PY
-  grep -v '^OTHER=' "$TMPD/diag-w"
+  grep -vE '^(OTHER|LOADB|OTHERB)=' "$TMPD/diag-w"
   DIAG_OTHER=$(sed -n 's/^OTHER=//p' "$TMPD/diag-w")
+  LOADB=$(sed -n 's/^LOADB=//p' "$TMPD/diag-w"); OTHERB=$(sed -n 's/^OTHERB=//p' "$TMPD/diag-w"); LOADB=${LOADB:-0}; OTHERB=${OTHERB:-0}
 }
 # D_FROM=<metric>: a diagnostic run starts D at that check (the checks before it skipped); such a run ends 'PARTIAL', never
 # 'PROOF OK'
@@ -352,37 +382,90 @@ floored() { [[ "$HAVE_FLOORS" == t ]] || return 0
                     || CASE WHEN i.value IS NULL OR i.value < f.floor THEN ': under it)' ELSE ')' END, ', ' ORDER BY f.unit)
     FROM pgvigil.metric_floors f CROSS JOIN n LEFT JOIN p i ON i.metric = split_part(f.input_key, '.', 2) AND i.at = n.at
    WHERE f.key = 'counters.$1'"; }
+# judge <metric> <provoke> [collection] [inputs printer] [hook]: an enabled instance rule at the seed's thresholds for
+# 0 minutes. The read before the load judged with the rule on: ok, 'na' or no state (else two more reads QUIET s
+# apart, then red: the fire leg must be the load's; 402 review part B, finding 3), the XE session started before it so
+# the load's window is named; the load, a read, the run: warning or critical with one finding (the batch ratios: the
+# proof's own batches outnumber every other program's but pgvigil's); the hook called with the rule's id. Two quiet
+# reads, the run: ok, or 'na' under a floor; a metric named background can move gets three more quiet pairs while
+# named background holds its clear, then 'NOT PROVEN clear' (finding 2); any other held clear is red. Returns 0 (fired;
+# CLEARED 1 cleared, 0 NOT PROVEN), 2 the load left the state ok or none and the point at or under the warning, 1 red.
+# Every read is checked by hand: a caller's || switches set -e off for the whole body (finding 6).
+MOVABLE=' compiles_per_100_batches page_splits_per_100_batches page_lookups_per_batch recompiles_per_100_compiles full_scans_per_search page_reads_s readahead_pct '
+BATCHY=' compiles_per_100_batches page_splits_per_100_batches page_lookups_per_batch recompiles_per_100_compiles '
+JUDGED=0; J_ST1=; J_V1=; LOADB=0; OTHERB=0
 judge() {
-  local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st1 st2 f1 f2 v v2 fl fl2
+  local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st0 st1 st2 f1 f2 v v2 fl fl2 try scope=instance
+  J_ST1=; J_V1=; CLEARED=0
   if [[ -n "$D_FROM" && $D_REACHED == 0 && "$m" != logins_s ]]; then
     if [[ "$m" == "$D_FROM" ]]; then D_REACHED=1; else echo "   $m skipped (D_FROM=$D_FROM)"; CLEARED=1; return 0; fi
   fi
-  s=$(SEEDOF "$m"); op=$(cut -d'|' -f3 <<<"$s"); w=$(cut -d'|' -f4 <<<"$s"); cr=$(cut -d'|' -f5 <<<"$s")
+  JUDGED=$((JUDGED + 1))
+  [[ "$c" == mssql_counters_db ]] && scope=database
+  s=$(SEEDOF "$m") || fail "$m: no seed row read at A"
+  op=$(cut -d'|' -f3 <<<"$s"); w=$(cut -d'|' -f4 <<<"$s"); cr=$(cut -d'|' -f5 <<<"$s")
   rid=$(rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"counters.$m\",\"op_dir\":\"$op\",\"scope\":\"instance\",\"instance_name\":\"chkbox\",\"warning\":${w:-null},\"critical\":${cr:-null},\"for_minutes\":0}" \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")')
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")') || fail "$m: the instance rule"
   [[ -n "$rid" ]] || fail "$m: the instance rule was refused"
+  # the read before the load, the rule on (finding 3)
+  for try in 1 2 3; do
+    diag_on; col "$c"; run || fail "$m: alert_rules_run"; st0=$(state "$m") || fail "$m: the state read"
+    [[ -z "$st0" || "$st0" == ok || "$st0" == na ]] && break
+    echo "   $m: $st0 at the read before the load, the point $(point "$m") (try $try of 3)"
+    [[ $try == 3 ]] && { echo "   $m: the read before the load never read ok: a fire after the load would not be the load's"; return 1; }
+    sleep "$QUIET"
+  done
   # the read after the load waits 2 s: SQL Server publishes some counters a moment after the statement ends (run chk5
   # read a ratio's full scans and its index searches in two reads 0.3 s apart)
-  col "$c"; $fn; sleep 2; col "$c"; run; st1=$(state "$m"); f1=$(findings "$m"); v=$(point "$m"); fl=$(floored "$m")
+  $fn; sleep 2; col "$c"; echo "   $m: the load's window"; diag_read "$scope"
+  run || fail "$m: alert_rules_run"
+  st1=$(state "$m") || fail "$m: the state read"; f1=$(findings "$m") || fail "$m: the findings read"
+  v=$(point "$m") || fail "$m: the point read"; fl=$(floored "$m") || fail "$m: the floors read"
+  J_ST1=$st1; J_V1=$v
   [[ -n "${4:-}" ]] && echo "   $m's inputs at that read: $($4)"
   [[ -n "$fl" ]] && echo "   $m's floors at that read: $fl"
-  local scope=instance; [[ "$c" == mssql_counters_db ]] && scope=database
-  sleep 2; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"; run; st2=$(state "$m"); f2=$(findings "$m"); v2=$(point "$m")
-  fl2=$(floored "$m")
+  [[ -n "${5:-}" ]] && "$5" "$rid"
+  echo "   $m ($op ${w:-} / ${cr:-}): before the load ${st0:-no state}; $v after the load -> $st1 ($f1 finding); the load's batches and RPCs $LOADB, other programs' $OTHERB"
+  if [[ "$fl" == *"under it"* ]]; then echo "   $m: the load's read is under a floor ($fl): the load is too small to judge it"; return 1; fi
+  if [[ "$BATCHY" == *" $m "* ]] && (( LOADB <= OTHERB )); then echo "   $m: the load's window holds $LOADB batches and RPCs of the proof against $OTHERB of other programs: the load does not dominate it"; return 1; fi
+  if ! [[ ( "$st1" == warning || "$st1" == critical ) && "$f1" == 1 ]]; then
+    rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$rid\"}" >/dev/null
+    [[ ( -z "$st1" || "$st1" == ok ) && "$f1" == 0 && -n "$v" && -n "$w" ]] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) <= float(sys.argv[2]) else 1)' "$v" "$w" && return 2
+    return 1
+  fi
+  # the clear leg: two quiet reads; while named background holds a movable metric, three more quiet pairs (finding 2)
+  sleep 2; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"
+  for try in 0 1 2 3; do
+    if (( try > 0 )); then echo "   $m held at $st2 ($v2) with named background: quiet pair $try of 3 more"; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"; fi
+    run || fail "$m: alert_rules_run"
+    st2=$(state "$m") || fail "$m: the state read"; f2=$(findings "$m") || fail "$m: the findings read"
+    v2=$(point "$m") || fail "$m: the point read"; fl2=$(floored "$m") || fail "$m: the floors read"
+    [[ "$st2" == ok && "$f2" == 0 ]] && { CLEARED=1; break; }
+    # FL3: under a floor the check is not judged ('na', no finding): a hard clear, the window's background named above
+    [[ -n "$fl2" && "$st2" == na && "$f2" == 0 && "$fl2" == *"under it"* ]] && { CLEARED=1; break; }
+    [[ "$MOVABLE" == *" $m "* && -z "$fl2" && -n "$DIAG_OTHER" ]] || break
+  done
   [[ -n "${4:-}" ]] && echo "   $m's inputs after the quiet reads: $($4)"
   [[ -n "$fl2" ]] && echo "   $m's floors after the quiet reads: $fl2"
   rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$rid\"}" >/dev/null
-  echo "   $m ($op ${w:-} / ${cr:-}): $v after the load -> $st1 ($f1 finding); quiet ($v2) -> $st2 ($f2)"
-  if [[ "$fl" == *"under it"* ]]; then echo "   $m: the load's read is under a floor ($fl): the load is too small to judge it"; return 1; fi
-  [[ ( "$st1" == warning || "$st1" == critical ) && "$f1" == 1 ]] || return 1
-  CLEARED=1; [[ "$st2" == ok && "$f2" == 0 ]] && return 0
-  # FL3: under a floor the check is not judged ('na', no finding): a hard clear, the window's background named above
-  [[ -n "$fl2" && "$st2" == na && "$f2" == 0 && "$fl2" == *"under it"* ]] && return 0
-  CLEARED=0
-  if [[ -z "$fl2" && -n "$DIAG_OTHER" ]]; then echo "NOT PROVEN clear: $m stayed $st2 at $v2 with named background in the window: $DIAG_OTHER"; return 0; fi
+  echo "   $m: quiet ($v2) -> $st2 ($f2)"
+  [[ $CLEARED == 1 ]] && return 0
+  if [[ "$MOVABLE" == *" $m "* && -z "$fl2" && -n "$DIAG_OTHER" ]]; then echo "NOT PROVEN clear: $m stayed $st2 at $v2 after four quiet pairs, each with named background in its window (the last: $DIAG_OTHER)"; return 0; fi
   return 1
 }
-judge logins_s p_logins && [[ $CLEARED == 1 ]] || fail "C: logins_s (fire and clear both hard here)"
+# C's hook (402 review part B, finding 4): with the instance rule on, metric_rule gives exactly that rule and the grid row
+# carries it, its name without '(off', critical
+C_GRID=
+c_grid() { C_GRID=$(pq "SELECT (SELECT count(*) FROM pgvigil.metric_rule($SB, 'counters.logins_s')) || '|'
+    || coalesce((SELECT string_agg(r.rule_id::text, ',') FROM pgvigil.metric_rule($SB, 'counters.logins_s') r), '') || '|'
+    || coalesce((SELECT g.rule_id || '|' || (g.rule_name LIKE '%(off%') || '|' || coalesce(pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical), 'none')
+         FROM pgvigil.metric_grid($SB, now() - interval '10 minutes', now(), interval '15 minutes', NULL, 'counters') g WHERE g.key = 'counters.logins_s'), 'no row')") \
+    || fail "C: the grid read"
+  C_GRID="$1=$C_GRID"; }
+judge logins_s p_logins mssql_counters '' c_grid && [[ $CLEARED == 1 && "$J_ST1" == critical ]] || fail "C: logins_s (critical and clear both hard here; the state after the load [$J_ST1])"
+echo "   C with the rule on: metric_rule rows|their ids|the grid row's rule|its name says off|its status = $C_GRID"
+[[ "$C_GRID" =~ ^([0-9]+)=1\|([0-9]+)\|([0-9]+)\|false\|critical$ && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[3]}" ]] \
+  || fail "C: the rule in force with the instance rule on [$C_GRID] (want <id>=1|<id>|<id>|false|critical)"
 [[ $(pq "SELECT rule_id || '|' || enabled FROM pgvigil.alert_rules WHERE metric = 'counters.logins_s' AND client = '0153 seed' AND ended_at IS NULL") == "$LS|false" ]] \
   || fail "C: the seeded logins rule changed"
 PORT=$(freeport 29000 32499)
@@ -396,7 +479,7 @@ r = [x for x in rows if str(x.get('rule_id')) == sys.argv[2]]
 print(f"   /api/alertrules: rule {sys.argv[2]} enabled {r[0].get('enabled') if r else 'no row'}")
 sys.exit(0 if r and r[0].get('enabled') is False else 1)
 PY
-ok "C: on by an instance rule: critical with its finding, ok after two quiet reads; the seed kept its rule_id and stays off (the API says so)"
+ok "C: on by an instance rule: critical with its finding, the grid's one rule in force the instance's; ok after two quiet reads; the seed kept its rule_id and stays off (the API says so)"
 # the review's S1 (402 part A): the grid says a seeded rule is off, never 'not judged yet' (the wiring's q_metrics.go
 # rule_enabled; metrics.ts writes 'off: colours only, no alert' in the rule cell)
 curl -fs -m 20 "http://127.0.0.1:$PORT/api/metrics?instance=$SB&family=counters" > "$TMPD/grid.json" || fail "C: GET /api/metrics: $(tail -3 "$TMPD/serve.log")"
@@ -411,6 +494,7 @@ PY2
 ok "C: the grid marks the seeded page lookups rule off (rule_enabled false, its name says so, no state)"
 
 echo "== D. each provoked check =="
+J0=$JUDGED
 judge errors_kill_s p_kill || fail "D: errors_kill_s"
 judge lock_timeouts_gt0_s p_timeouts || fail "D: lock_timeouts_gt0_s"
 judge lock_waits_s p_timeouts || fail "D: lock_waits_s"
@@ -429,26 +513,36 @@ d_scans() { perread "'Access Methods'" "'Full Scans/sec', 'Index Searches/sec'" 
 d_ahead() { perread "'Buffer Manager'" "'Page reads/sec', 'Readahead pages/sec'" readahead_pct; }
 d_lookups() { perread "'Buffer Manager', 'SQL Statistics'" "'Page lookups/sec', 'Batch Requests/sec'" page_lookups_per_batch; }
 d_lockreq() { perread "'Locks'" "'Lock Requests/sec'" lock_requests_s | grep -E '\[_Total\]|point'; }
-# d_growths: Log Growths of _Total and pgvctr at the newest three database reads (stored, or named in zero_series), the
+# d_growths: Log Growths of _Total and pgvlg at the newest three database reads (stored, or named in zero_series), the
 # metric's points, and SQL Server's own read now with pgvctr's log size
 d_growths() { echo; pq "SELECT '      ' || r.snapshot_at || ' Log Growths [' || k.inst || '] value ' || coalesce(s.value::text, CASE WHEN k.series_id = ANY (r.zero_series) THEN '0 (zero_series)' ELSE '-' END) || ' change ' || coalesce(s.dvalue::text, '-')
   FROM (SELECT * FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'database' ORDER BY snapshot_at DESC LIMIT 3) r
-  JOIN pgvigil.mssql_counter_series k ON k.instance_id = $SB AND k.object = 'Databases' AND k.counter = 'Log Growths' AND k.inst IN ('_Total', 'pgvctr')
+  JOIN pgvigil.mssql_counter_series k ON k.instance_id = $SB AND k.object = 'Databases' AND k.counter = 'Log Growths' AND k.inst IN ('_Total', 'pgvlg')
   LEFT JOIN pgvigil.mssql_counter_sample s ON s.instance_id = $SB AND s.series_id = k.series_id AND s.snapshot_at = r.snapshot_at
   ORDER BY r.snapshot_at DESC, k.inst"
   pq "SELECT '      point ' || at || ' ' || value FROM pgvigil.metric_points($SB, 'counters', now() - interval '10 minutes', now()) WHERE metric = 'log_growths' ORDER BY at DESC LIMIT 3"
-  sq "SELECT '      SQL Server now: Log Growths [' + RTRIM(instance_name) + '] ' + CAST(cntr_value AS varchar(20)) FROM sys.dm_os_performance_counters WHERE RTRIM(counter_name) = N'Log Growths' AND RTRIM(instance_name) IN (N'_Total', N'pgvctr', N'master', N'tempdb');
-SELECT '      pgvctr log ' + CAST(size / 128 AS varchar(10)) + ' MB, growth ' + CAST(growth AS varchar(10)) + CASE WHEN is_percent_growth = 1 THEN ' %' ELSE ' pages' END FROM pgvctr.sys.database_files WHERE type = 1;"; }
+  sq "SELECT '      SQL Server now: Log Growths [' + RTRIM(instance_name) + '] ' + CAST(cntr_value AS varchar(20)) FROM sys.dm_os_performance_counters WHERE RTRIM(counter_name) = N'Log Growths' AND RTRIM(instance_name) IN (N'_Total', N'pgvlg', N'pgvctr', N'master', N'tempdb');
+SELECT '      pgvlg log ' + CAST(size / 128 AS varchar(10)) + ' MB, growth ' + CAST(growth AS varchar(10)) + CASE WHEN is_percent_growth = 1 THEN ' %' ELSE ' pages' END FROM pgvlg.sys.database_files WHERE type = 1;"; }
 judge full_scans_per_search p_scans mssql_counters d_scans || fail "D: full_scans_per_search"
 judge page_lookups_per_batch p_lookups mssql_counters d_lookups || fail "D: page_lookups_per_batch"
 judge readahead_pct p_cold mssql_counters d_ahead || fail "D: readahead_pct"
 judge page_reads_s p_coldseek || fail "D: page_reads_s"
 judge page_writes_s p_writes || fail "D: page_writes_s"
 judge lock_requests_s p_lockreq mssql_counters d_lockreq || fail "D: lock_requests_s"
+lg_db
 judge log_growths p_growth mssql_counters_db d_growths || fail "D: log_growths"
-if judge recompiles_per_100_compiles p_recompiles; then ok "D: recompiles_per_100_compiles fired and cleared"
-else echo "NOT PROVEN live: recompiles_per_100_compiles did not reach its warning with a procedure whose temp table changes shape (the line above)"; fi
-ok "D: thirteen provoked checks fired at their seeded thresholds; each cleared after two quiet reads 60 s apart, or its clear is NOT PROVEN above with the background named"
+if [[ -n "$J_V1" ]]; then
+  echo "   log_growths: the point $J_V1, pgvlg's own Log Growths over the load $LG_OWN"
+  [[ "$LG_OWN" =~ ^[0-9]+$ && "$LG_OWN" -ge 1 ]] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) == float(sys.argv[2]) else 1)' "$J_V1" "$LG_OWN" \
+    || fail "D: log_growths: the point [$J_V1] is not pgvlg's own growth [$LG_OWN] (another database grew in the window, or none did)"
+fi
+RC=0; judge recompiles_per_100_compiles p_recompiles || RC=$?
+case $RC in
+  0) ok "D: recompiles_per_100_compiles fired$([[ $CLEARED == 1 ]] && echo ' and cleared')" ;;
+  2) echo "NOT PROVEN live: recompiles_per_100_compiles did not reach its warning with a procedure whose temp table changes shape (the state ok or none, the point at or under the warning: the line above)" ;;
+  *) fail "D: recompiles_per_100_compiles (a state or a point the load cannot explain: the line above)" ;;
+esac
+ok "D: $((JUDGED - J0)) provoked checks judged at their seeded thresholds, each fired from a quiet read before its load; each cleared after quiet reads 60 s apart, or its clear is NOT PROVEN above with the background named"
 
 echo "== E. not provokable on a box: the rule's path =="
 for m in free_list_stalls_s lazy_writes_s buffer_cache_hit_pct ple_per_4gb errors_offline_s; do
@@ -589,5 +683,6 @@ ok "F: the 19 live seeded rows as read at A (rule_id, op, thresholds, for_minute
 
 echo "NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low page life expectancy and a database taken offline at the seeded thresholds; SQL Server 2016, Managed Instance, a Windows host"
 [[ -n "$D_FROM" ]] && { echo "PARTIAL: D from $D_FROM (a diagnostic run, not a proof)"; exit 3; }
+[[ "$QUIET" != 60 ]] && { echo "PARTIAL: QUIET=$QUIET, not the product's 60 s (a diagnostic run, not a proof)"; exit 3; }
 [[ -n "$G_FROM" ]] && { echo "PARTIAL: G from $G_FROM (a diagnostic run, not a proof)"; exit 3; }
 echo "PROOF OK: mssql counter checks (A B C D E G F)"
