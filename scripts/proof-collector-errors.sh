@@ -24,7 +24,7 @@
 #                    ('error log' | 'AlwaysOn_health'), noise (its label when noise=1)
 #     part noise   - this page's labels (check_key 'error log' or 'error log:<n>'): ack_id, check_key, match_text, instance,
 #                    tag, note, hits (lines it hides in the window)
-#     part cannot  - error_number, why: a listed number pgvigil keeps no row of (D5: said, not collected)
+#     part cannot  - error_number, why: a listed number pgvigil keeps no row of (said, not collected)
 #     part agstate - instance_id, instance, state: an instance whose AlwaysOn_health capture was not read
 #   GET /api/mssql/summary?part=collect - errors_24h, failing and detail after the instance's 'collector errors' mark
 #

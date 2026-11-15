@@ -145,8 +145,10 @@ pgvigil already reads.
   lines leave the counts and come back with Show known noise. A label with neither a number nor a text hides nothing.
   The labels also show in the Alerts page's list of known noise, where they match no alert (an alert's source and
   setting are never `error log`), and they are ended on either page.
-- **Not here**: a listed number pgvigil keeps no row of is named under Not kept (15457: a configuration change is logged
-  at severity 0 and matches none of the reader's search strings - add an instance's own search string to keep it); an
+- **Not here**: a listed number pgvigil keeps no row of is named under Not kept - the informational ones (severity 10:
+  825, 3402, 5084, 15457, 19406, 35273, 35274, 41091, 41131), which SQL Server writes to the error log without their
+  'Error: n' line (their text is on the instance's Error log page when a search string matches), and 976, 983, 35250,
+  41406, 41414, which it does not log at all; 1480, 35206, 35264 and 41142 come from the AlwaysOn_health capture; an
   instance whose AlwaysOn_health capture was not read (stopped) is named at the top.
 - The error log's finding 'error log: errors of severity 17 or higher' links to this page at its instance.
 - PostgreSQL has no fleet stream of its log errors yet: each instance's Logs page holds them.

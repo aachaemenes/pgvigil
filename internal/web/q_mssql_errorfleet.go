@@ -22,9 +22,23 @@ var mssqlErrorFleetNumbers = []int32{1480, 976, 983, 3402, 19406, 35206, 35250, 
 	41091, 41131, 41142, 41406, 41414, 823, 824, 825, 15457, 5084}
 
 // mssqlErrorFleetCannot is a listed number pgvigil keeps no row of, and why (said on the page, not collected).
-var mssqlErrorFleetCannot = map[int32]string{
-	15457: "a configuration change (sp_configure) is logged at severity 0 and matches none of the error log reader's search strings: add one of the instance's own (the Error log page says how) to keep it",
-}
+// Read on SQL Server 2022: an informational message (severity 10; 5084 and 15457 read) is written to the error log
+// without its 'Error: n, Severity: s' line, so no stored line carries its number (the instance's Error log page shows
+// its text when a search string matches); a message SQL Server does not log (sys.messages is_event_logged 0) is not
+// in the error log at all. 1480, 35206, 35264 and 41142 come from the AlwaysOn_health capture (its error_reported
+// list), so they are not here.
+var mssqlErrorFleetCannot = func() map[int32]string {
+	const noNumber = "an informational message (severity 10): SQL Server writes it to the error log without its 'Error: n' line, so no stored line carries the number (the instance's Error log page shows its text when one of the reader's search strings matches), and AlwaysOn_health does not capture it"
+	const notLogged = "SQL Server does not write it to the error log (sys.messages is_event_logged 0) and AlwaysOn_health does not capture it"
+	m := map[int32]string{}
+	for _, n := range []int32{825, 3402, 5084, 15457, 19406, 35273, 35274, 41091, 41131} {
+		m[n] = noNumber
+	}
+	for _, n := range []int32{976, 983, 35250, 41406, 41414} {
+		m[n] = notLogged
+	}
+	return m
+}()
 
 // sqlErrorFleetBase is the rows y. $1 from, $2 to, $3 the instance (NULL = any), $4 a folder's instances, $5 a tag,
 // $6 one error number (NULL = any), $7 the listed numbers.
