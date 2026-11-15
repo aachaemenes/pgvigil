@@ -384,8 +384,8 @@ at = q(f"SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = 
 # rate is stored real: read it as float8 so Python gets the very value SQL divides (psql prints a real by its shortest
 # text, 112.827, against SQL's 112.82700347...: box run 401proof13 read 136.73499899 against 136.73500137)
 rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate)::float8, 0) FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}'") or 0)
-# the point AT this read: metric_points also hands back the point its lookback carries in from the read before (box run
-# 401proof12 read '136.73...\n16.00...' for one metric)
+# the point AT this read: a 1 s window can hold a second read under 1 s before this one (box run 401proof12 read
+# '136.73...\n16.00...' for one metric; metric_points is (from, to] - the second point was a real read)
 pt = lambda m: q(f"SELECT value FROM pgvigil.metric_points({sb}, 'counters', '{at}'::timestamptz - interval '1 second', '{at}') WHERE metric = '{m}' AND at = '{at}'::timestamptz")
 b, c, rc = rate('SQL Statistics', 'Batch Requests/sec'), rate('SQL Statistics', 'SQL Compilations/sec'), rate('SQL Statistics', 'SQL Re-Compilations/sec')
 exp = {'compiles_per_100_batches': 0 if b < 1 else 100 * c / b, 'recompiles_per_100_compiles': 0 if c < 1 else 100 * rc / c}
@@ -673,10 +673,10 @@ NRD=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_read WHERE instance_id = $S
 ZK=$(pq "SELECT count(*) FILTER (WHERE value = 0) || '|' || count(*) FROM pgvigil.metric_points($SB, 'counters', now() - interval '30 minutes', now()) WHERE metric = 'errors_offline_s'")
 [[ "$ZK" == "$NRD|$NRD" ]] || fail "H: errors_offline_s points [$ZK] for $NRD reads"
 # errors_kill_s at D's severe-phase read (review part 4, finding 3): above 0 there, equal to that read's stored rate
-KR=$(pq "SELECT s.rate FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_sample s ON s.instance_id = k.instance_id AND s.series_id = k.series_id
+KR=$(pq "SELECT s.rate::float8 FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_sample s ON s.instance_id = k.instance_id AND s.series_id = k.series_id
   WHERE k.instance_id = $SB AND k.object = 'SQL Errors' AND k.counter = 'Errors/sec' AND k.inst = 'Kill Connection Errors' AND s.snapshot_at = '$EKAT'")
-# metric_points hands back the lookback point before the window too (401proof14: '0' and '3.935' on two lines): the
-# point AT the severe read only
+# a read under 1 s before the severe read sits in the 1 s window too (401proof14: '0' and '3.935' on two lines; the
+# window is (from, to]): the point AT the severe read only
 KP=$(pq "SELECT coalesce(string_agg(value::text, ',' ORDER BY at), '') FROM pgvigil.metric_points($SB, 'counters', '$EKAT'::timestamptz - interval '1 second', '$EKAT')
   WHERE metric = 'errors_kill_s' AND at = '$EKAT'::timestamptz")
 echo "   errors_kill_s at D's severe read: point [$KP], the stored rate [$KR]"
@@ -859,9 +859,14 @@ const gridRows = h => `(() => { const h3 = [...document.querySelectorAll('main h
   let t = h3.nextElementSibling; while (t && !t.querySelector?.('table.grid') && !t.matches?.('table.grid') && !t.matches?.('p.empty') && t.tagName !== 'H3') t = t.nextElementSibling;
   const tb = t?.matches?.('table.grid') ? t : t?.querySelector?.('table.grid'); return tb ? Number(tb.dataset.rows) : t?.matches?.('p.empty') ? 0 : -1; })()`;
 const api = async (q, part) => { const d = await (await fetch(`${base}/api/${q}`)).json(); return d[part]?.rows?.length ?? -1; };
+// blank / fresh: every theme's page is a new document opened through about:blank, settled on its own hash (boxfix S2:
+// a hash-only navigation and a reload let the reads see the page before the reload, as 404green1d's F harness did)
+const blank = async () => { await cmd('Page.navigate', { url: 'about:blank' }); for (let i = 0; i < 50; i++) { if ((await ev('location.href')) === 'about:blank') return; await sleep(100); } throw new Error('about:blank never loaded'); };
+const khash = `#/counters?i=${sb}&w=1h`;
+const fresh = async () => { await blank(); await cmd('Page.navigate', { url: `${base}/${khash}` });
+  return until(`location.hash === ${JSON.stringify(khash)} && document.readyState === 'complete' && !!document.querySelector('main')`); };
 for (const theme of ['light', 'dark']) {
-  await cmd('Page.navigate', { url: `${base}/#/counters?i=${sb}&w=1h` }); await until(`!!document.querySelector('main')`);
-  await ev(`localStorage.setItem('pgvigil.theme', '${theme}')`); await cmd('Page.reload'); await sleep(500);
+  await fresh(); await ev(`localStorage.setItem('pgvigil.theme', '${theme}')`); await fresh();
   check(`counters ${theme}`, (await until(`[...document.querySelectorAll('main h3')].some(h => h.textContent.startsWith('Listed but not read'))`)) !== null, "the 'Listed but not read' section");
   const nowRows = await api(`mssql/counters?instance=${sb}&part=now`, 'now');
   const g = await ev(gridRows('Performance counters'));
