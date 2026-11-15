@@ -1,5 +1,5 @@
 // DOM helpers and formatters. Data is always set as text, never parsed as HTML.
-import { ReadWindow, readWindowOf } from './api';
+import { ReadWindow, Session, readWindowOf } from './api';
 import { fmt } from './tz';
 
 export function el<K extends keyof HTMLElementTagNameMap>(
@@ -407,6 +407,32 @@ export function offControl(c: HTMLElement, reason: string | null, reasonEl?: HTM
     if (!reasonEl) note.textContent = '';
   }
   return note;
+}
+
+// ---- the session's role (B24f) ----------------------------------------------------------------------------------
+// main.ts hands over GET /api/session's answer and the login's reply; roleWhy says whether the session's role may make
+// a change of a need, in the server's own words (internal/web/roles.go roleWords). With the login off (-no-login, the
+// demo) every role check is open: the route's own words say what holds there.
+let who: Session = { login: false };
+export function setWho(s: Session): void { who = s; }
+const roleRank: Record<string, number> = { viewer: 1, operator: 2, admin: 3 };
+export type Need = 'operator' | 'admin';
+export function roleWhy(need: Need, what = 'this change'): string | null {
+  if (!who.login || !who.user) return null;
+  if (who.role_error) return who.role_error;
+  const role = who.role ?? '';
+  if ((roleRank[role] ?? 0) >= roleRank[need]) return null;
+  return `${what} needs the ${need} role: ${who.user} is ${role === 'viewer' ? 'a' : 'an'} ${role || 'user with no role'} (an admin changes it with 'pgvigil user role ${who.user} ${need}' on the server)`;
+}
+// needControl marks a write control with its need (data-need: proof R4 reads every one) and draws it off with the
+// role's words when the session's role is below it. A control already off for the server's own reason (no login, no
+// door, the demo) keeps that reason: it is the first that holds (review-16 S6). Returns the note offControl made,
+// for the caller to place, or null.
+export function needControl(c: HTMLElement, need: Need, what?: string, reasonEl?: HTMLElement): HTMLElement | null {
+  c.dataset.need = need;
+  if (c.getAttribute('aria-disabled') === 'true') return null;
+  const why = roleWhy(need, what);
+  return why ? offControl(c, why, reasonEl) : null;
 }
 
 export function errorBox(e: unknown): HTMLElement {
