@@ -177,9 +177,10 @@ func TestRefreshAfterAuthFailure(t *testing.T) {
 	if err != nil || !retry || nv.Password != "new" || nv.Version != "v2" {
 		t.Fatalf("after the back-off with a new version: %+v %v %v", nv, retry, err)
 	}
-	// an older failure (another goroutine's, on v1) does not drop the v2 entry
-	if _, retry, _ := r.Refresh(ctx, ref, "v1"); retry {
-		t.Error("a failure on an older version re-read")
+	// a caller whose sign-in failed on v1 after another already read v2: it retries with v2, and no new read is made
+	calls := f.calls.Load()
+	if nv2, retry, _ := r.Refresh(ctx, ref, "v1"); !retry || nv2.Version != "v2" || f.calls.Load() != calls {
+		t.Errorf("a failure on an older version: %+v retry %v, calls %d (want v2, a retry, no new call)", nv2, retry, f.calls.Load()-calls)
 	}
 }
 
