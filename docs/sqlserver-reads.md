@@ -20,7 +20,7 @@ Without it the counters are still stored, under the object's id.
 
 ## Properties (`mssql_properties`)
 
-One row per property, in six groups (DBA Dash's Info page, and the network beside it):
+One row per property, in seven groups (DBA Dash's Info page, and the network and the default backup path beside it):
 
 - **Server**: edition, version and level, collation, clustered, Always On enabled, the machine's and the server's name, max degree of parallelism, cost threshold for parallelism (`SERVERPROPERTY`, `sys.configurations`).
 - **Processor**: logical CPUs, sockets, cores per socket, the hyperthread ratio, NUMA nodes, soft NUMA, the affinity type, max worker threads, the hypervisor (`sys.dm_os_sys_info`); the schedulers online and offline (`sys.dm_os_schedulers`: an offline scheduler is a CPU the edition's core limit, the licence or an affinity mask keeps SQL Server from using); the power plan; Win32PrioritySeparation (`win32_priority_separation`: the machine's processor scheduling, the raw registry value; the checks judge it).
@@ -28,6 +28,7 @@ One row per property, in six groups (DBA Dash's Info page, and the network besid
 - **TempDB**: data files, their size, whether they are one size, log files, log size (`tempdb.sys.database_files`).
 - **Host**: platform, distribution, release (`sys.dm_os_host_info`; before SQL Server 2017 `sys.dm_os_windows_info`).
 - **Network**: the TCP port (`tcp_port`: the ports the instance listens on - IPAll's static port, or its dynamic one; with ListenOnAllIPs off, the enabled IPn entries', each named in the note), whether it is dynamic (`tcp_port_dynamic`), listen on all IP addresses (`tcp_listen_all_ips`), force encryption (`force_encryption`), force strict encryption (`force_strict_encryption`, SQL Server 2022 and later), the protocols enabled (`protocols_enabled`: of Shared Memory, Named Pipes and TCP/IP). These keys are fixed: the configuration checks judge the stored rows by them.
+- **Backups**: the default backup path (`default_backup_path`: `SERVERPROPERTY('InstanceDefaultBackupPath')` from SQL Server 2019, the registry's `BackupDirectory` through `xp_instance_regread` on 2017 once the right is checked; not read on 2016 and earlier and on Azure SQL Managed Instance), a change of it logged as any property's; beside it on the tab, whether the SQL Server service account sees it as a directory - `mssql_backup_checks`' hourly read, [backups-sqlserver.md](backups-sqlserver.md), not a stored property.
 
 A property the server did not give says **not read** and why: the login lacks the right, the server's version does not have the column (`socket_count`, `cores_per_socket` and `numa_node_count` came with SQL Server 2016 SP2 and 2017; the collector asks the server which columns it has), or the platform has no such thing.
 
