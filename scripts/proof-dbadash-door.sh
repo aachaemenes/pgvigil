@@ -810,7 +810,7 @@ const s = await ev(`(() => { const m = document.querySelector('main'); const h3 
   const t = m.querySelector('table.grid'); const heads = t ? [...t.querySelectorAll('thead tr:first-child th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()) : [];
   const k = heads.indexOf('Status Reason');
   return { h3, h4, heads, rows: t ? t.querySelectorAll('tbody tr').length : 0, coloured: k < 0 || !t ? false : [...t.querySelectorAll('tbody tr')].every(tr => tr.children[k]?.classList.contains('status')),
-    notRead: /not read: dbo\.CollectionHealth_Get is not in this repository \(it came with version 4\.25\.0\)/.test(m.textContent), grids: m.querySelectorAll('table.grid').length }; })()`);
+    notRead: m.textContent.includes('not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)'), grids: m.querySelectorAll('table.grid').length }; })()`);
 if (ver === '4.25.0') {
   say(s.h3.includes('Collection Health') && JSON.stringify(s.h4.slice(0, 5)) === JSON.stringify(['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights']), 'CH9b the screen\'s headings', `${s.h3.join(' | ')} / ${s.h4.join(' | ')}`);
   // every key chHidden hides that comes back at @GroupByInstance = 1 (the review B6f3 #4), and No Status (UnknownCount's alias)
