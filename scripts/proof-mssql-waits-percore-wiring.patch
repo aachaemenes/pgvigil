@@ -44,10 +44,10 @@ index ad9f4acf..de3419bc 100644
  A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
 diff --git i/internal/mssql/builddocs_test.go w/internal/mssql/builddocs_test.go
 new file mode 100644
-index 00000000..a942df11
+index 00000000..ec8dd88c
 --- /dev/null
 +++ w/internal/mssql/builddocs_test.go
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,71 @@
 +package mssql
 +
 +import (
@@ -102,6 +102,12 @@ index 00000000..a942df11
 +	}
 +	if d := BuildDocsOf("Microsoft SQL Azure (RTM) - 12.0.2000.8"); len(d) != 0 {
 +		t.Errorf("BuildDocsOf(Azure SQL Database, a major the catalogue lacks): %v", d)
++	}
++	// a preview's name holds a dotted number of its own ('CTP2.1'): the build read is the three-part one after it, a
++	// row the catalogue lists with a product page only (a read of '2.1' would be major 2: no row, an empty map)
++	if d := BuildDocsOf("Microsoft SQL Server 2025 (CTP2.1) - 17.0.800.3 (X64)"); d["build_url"] != buildListURL ||
++		!strings.Contains(d["build_url_words"].(string), "no page of Preview CTP 2.1's own") || d["newest_build"] != "17.0.4055" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 17.0.800.3): %v", d)
 +	}
 +	// every page of the catalogue is empty or Microsoft's, with no blank around it
 +	for major, rows := range builds {
