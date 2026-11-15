@@ -62,6 +62,7 @@ const sqlReportMailSchedules = `
 SELECT s.schedule_id, s.name, s.page, s.route, array_to_string(s.recipients, ', ') AS recipients, s.recipients AS recipient_list,
        s.channel, s.cadence, s.cron, s.timezone, s.attach_xlsx, s.enabled, s.next_at, s.created_by, s.created_at,
        s.changed_by, s.changed_at, l.send_id AS last_send_id, l.requested_at AS last_at, l.kind AS last_kind,
+       to_jsonb(s)->>'kept_as' AS kept_as, to_jsonb(s)->>'kept_by' AS kept_by, -- 0258's (read so on a repository before it)
        coalesce(l.outcome, CASE WHEN l.send_id IS NULL THEN NULL WHEN l.requested_at <= now() - pgvigil.report_mail_window() THEN 'unanswered' ELSE 'queued' END) AS last_outcome,
        coalesce(l.error, l.render_error) AS last_error
   FROM pgvigil.report_mail_schedules s
@@ -134,6 +135,12 @@ func (s *Server) ReportMail(w http.ResponseWriter, r *http.Request) {
 		}
 		t, err := s.query(ctx, sqlReportMailSend, id)
 		out["send"] = t
+		s.reply(w, r, out, err)
+		return
+	}
+	if part == "daily" { // the Daily checks mail's state, for the Daily checks page's control (q_reportmail_kept.go)
+		d, err := s.dailyChecksPart(ctx, r)
+		out["daily"] = d
 		s.reply(w, r, out, err)
 		return
 	}
@@ -260,6 +267,10 @@ func (s *Server) ReportMailWrite(w http.ResponseWriter, r *http.Request) {
 	var in scheduleRequest
 	if err := json.Unmarshal(raw, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
+		return
+	}
+	if strings.HasPrefix(in.Op, "daily_") { // the Daily checks mail's keep and drop (q_reportmail_kept.go)
+		s.reportMailDaily(w, r, user, raw)
 		return
 	}
 	pay := map[string]any{"op": in.Op, "ui_user": user, "client": clientIP(r)}
@@ -688,6 +699,7 @@ func (s *Server) RunReportMail(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
+		s.applyDailyChecks(ctx) // the Daily checks mail's setting, until the repository has answered it
 		s.reportMailTurns(ctx)
 		select {
 		case <-ctx.Done():

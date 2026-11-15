@@ -1,0 +1,142 @@
+diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
+index a87ac1d8..a7afc66f 100644
+--- i/cmd/pgvigil/report.go
++++ w/cmd/pgvigil/report.go
+@@ -25,6 +25,7 @@ import (
+ 	"github.com/aachaemenes/pgvigil/internal/collect"
+ 	"github.com/aachaemenes/pgvigil/internal/config"
+ 	"github.com/aachaemenes/pgvigil/internal/repo"
++	"github.com/aachaemenes/pgvigil/internal/reportmail"
+ )
+ 
+ // supportAddress is where a problem report goes; pgvigil never sends anything there itself.
+@@ -160,7 +161,10 @@ func checkConfig(path string, raw []byte) error {
+ 	if _, _, err := collect.ParseCustomChecks(raw, cfg.Instances); err != nil {
+ 		return err
+ 	}
+-	_, err = alerts.LoadFile(path)
++	if _, err := alerts.LoadFile(path); err != nil {
++		return err
++	}
++	_, err = reportmail.LoadDailyChecks(path) // reports.daily_checks: a missing or unknown key, by its name
+ 	return err
+ }
+ 
+@@ -295,6 +299,8 @@ var keepKeys = map[string]bool{
+ 	"import": true,
+ 	// custom:
+ 	"every": true, "rule": true, "compare": true, "warning": true, "critical": true,
++	// reports: daily_checks: the switch, its hour and its zone (the addresses, the user and the channel are masked)
++	"enabled": true, "at": true, "tz": true,
+ }
+ 
+ // keepTrees are the keys under which every value is a setting: collection names with their intervals, threshold
+@@ -320,6 +326,7 @@ var knownKeys = map[string]bool{
+ 	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
+ 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
+ 	"warning": true, "critical": true,
++	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true,
+ }
+ 
+ // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
+diff --git i/cmd/pgvigil/report_test.go w/cmd/pgvigil/report_test.go
+index 7cf97b6b..75f8b4e6 100644
+--- i/cmd/pgvigil/report_test.go
++++ w/cmd/pgvigil/report_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"errors"
++	"fmt"
+ 	"io"
+ 	"os"
+ 	"path/filepath"
+@@ -19,6 +20,7 @@ import (
+ 	"github.com/aachaemenes/pgvigil/internal/alerts"
+ 	"github.com/aachaemenes/pgvigil/internal/collect"
+ 	"github.com/aachaemenes/pgvigil/internal/config"
++	"github.com/aachaemenes/pgvigil/internal/reportmail"
+ )
+ 
+ // The values the tests seed into a configuration: none of them may be in any file of a report.
+@@ -383,6 +385,36 @@ func TestReportZip(t *testing.T) {
+ 	}
+ }
+ 
++// The Daily checks mail's block (reports.daily_checks) refused by the configuration check: the check line names the key
++// and never the value - a mistyped address or an application contact's channel name is in no file of the report.
++func TestReportDailyChecksCheckLine(t *testing.T) {
++	dir := t.TempDir()
++	for i, c := range []struct{ to, channel, want, leak string }{
++		// the channel of row 0 is no plain word: a masked value is taken out of the check line as a whole word
++		{"[LeakAddr9zq]", "relay7q", "reports.daily_checks: to: address 1 of the list", "LeakAddr9zq"},
++		{"[dba@example.org]", "contact-Leak7chq", "reports.daily_checks: channel names an application contact", "Leak7chq"},
++	} {
++		cfg := filepath.Join(dir, fmt.Sprintf("daily%d.yaml", i))
++		text := "repository:\n  dsn: \"host=127.0.0.1 port=1 user=u_daily dbname=d_daily\"\nreports:\n  daily_checks:\n    enabled: true\n" +
++			"    at: \"07:00\"\n    tz: UTC\n    to: " + c.to + "\n    as: alice\n    channel: " + c.channel + "\n"
++		if err := os.WriteFile(cfg, []byte(text), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		out := filepath.Join(dir, fmt.Sprintf("daily%d.zip", i))
++		if err := runReportTo(context.Background(), []string{"-config", cfg, "-out", out}, io.Discard); err != nil {
++			t.Fatalf("report: %v", err)
++		}
++		files := readZip(t, out)
++		// the loader names the file, which the report writes as <the configuration file>
++		if !strings.Contains(files["config.yaml"], "# configuration check: config <the configuration file>: "+c.want) {
++			t.Errorf("row %d: the check line does not hold %q:\n%s", i, c.want, files["config.yaml"])
++		}
++		for name, body := range files {
++			noLeak(t, name, body, c.leak, dir)
++		}
++	}
++}
++
+ // What stays out of error text by its shape or by the order of the passes, whatever the configuration knows.
+ func TestReportScrubShapes(t *testing.T) {
+ 	// an instance named after its host's first label: the host goes whole, with and without -names
+@@ -465,7 +497,7 @@ func TestReportKnowsEveryConfigKey(t *testing.T) {
+ 			walk(f.Type)
+ 		}
+ 	}
+-	for _, v := range []any{config.Config{}, alerts.Settings{}, collect.CustomCheck{}} {
++	for _, v := range []any{config.Config{}, alerts.Settings{}, collect.CustomCheck{}, reportmail.DailyChecks{}} {
+ 		walk(reflect.TypeOf(v))
+ 	}
+ 	if len(seen) < 8 {
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index ec97781a..ed87bd06 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -21,6 +21,7 @@ import (
+ 	"github.com/aachaemenes/pgvigil/internal/engines"
+ 	"github.com/aachaemenes/pgvigil/internal/mssql"
+ 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
++	"github.com/aachaemenes/pgvigil/internal/reportmail"
+ 	"github.com/aachaemenes/pgvigil/internal/web"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+ )
+@@ -52,6 +53,11 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		return err
+ 	}
+ 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
++	// the Daily checks mail's block (reports.daily_checks): a missing or unknown key stops serve here, by its name
++	dailyChecks, err := reportmail.LoadDailyChecks(*path)
++	if err != nil {
++		return err
++	}
+ 	// the custom: list (task 61): with it the stale check counts the custom collection among the expected ones
+ 	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
+ 		return err
+@@ -204,7 +210,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	// the read doors of each inventory generation (pgvigil.yaml's, and Admin > Instances' when doors.page_instance_reads
+ 	// is on), after every Set* call above: serve alone watches (demo and mcp keep the file's doors)
+ 	go srv.WatchDoors(ctx, log, cfg, web.DoorEvery)
+-	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
++	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender); the Daily checks
++	// mail's block is applied by the same loop, at its start
++	srv.SetDailyChecks(dailyChecks)
+ 	go srv.RunReportMail(ctx)
+ 
+ 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
