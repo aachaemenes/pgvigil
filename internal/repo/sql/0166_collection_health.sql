@@ -217,6 +217,121 @@ END $$;
 -- p_instances / p_collection (the review of B6.2, part a #4): the page's scope applied inside, on the hourly scan and on
 -- the run status side, so an instance's page never aggregates the fleet; the durations and rows written come from the
 -- same scan (the page read them twice). NULL = every instance / every collection (the Summary's call)
+-- B6g-2 (N33 / N41): DBA Dash's per-collection thresholds (dbo.CollectionHealthThresholds) in pg_thresholds' history
+-- shape (0103): instance_id NULL = every instance, collection NULL = every collection; each column NULL = the next
+-- level up - this instance and collection, this instance's row for every collection, this collection's row for every
+-- instance, the row for everything, then DBA Dash's defaults (CollectionHealthThresholds.sql's order). dont_monitor
+-- three-state: NULL inherit, true not judged (N/A), false judged over a wider true. Written through
+-- import_collection_health_threshold only; a change ends the live row and writes its successor (replaces); inherit
+-- ends it.
+CREATE TABLE IF NOT EXISTS pgvigil.collection_health_threshold (
+  threshold_id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  instance_id        int REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
+  instance_name      text,
+  collection         text CHECK (length(collection) BETWEEN 1 AND 100),
+  warn_fails_in_row  int CHECK (warn_fails_in_row >= 1),
+  warn_fail_minutes  int CHECK (warn_fail_minutes >= 0),
+  crit_fails_in_row  int CHECK (crit_fails_in_row >= 1),
+  crit_fail_minutes  int CHECK (crit_fail_minutes >= 0),
+  warn_fail_pct      numeric(5,2) CHECK (warn_fail_pct BETWEEN 0 AND 100),
+  crit_fail_pct      numeric(5,2) CHECK (crit_fail_pct BETWEEN 0 AND 100),
+  min_runs           int CHECK (min_runs >= 1),
+  dont_monitor       boolean,
+  created_by         text NOT NULL,
+  created_at         timestamptz NOT NULL,
+  client             text,
+  replaces           bigint,
+  ended_by           text,
+  ended_at           timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS collection_health_threshold_live
+  ON pgvigil.collection_health_threshold (coalesce(instance_id, 0), coalesce(collection, '')) WHERE ended_at IS NULL;
+
+-- import_collection_health_threshold(at, p): p = {op: set | inherit, ui_user, client, instance_id (none = every
+-- instance), collection (none = every collection), and for a set the columns it gives}; answers {outcome: done |
+-- refused, detail, threshold_id}. A set of no column, a value out of its range, an unknown or inactive instance, an
+-- inherit of a scope with no row of its own: refused in words, nothing written.
+CREATE OR REPLACE FUNCTION pgvigil.import_collection_health_threshold(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_op    text := p_payload->>'op';
+  v_user  text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_inst  int;
+  v_name  text;
+  v_coll  text := nullif(btrim(coalesce(p_payload->>'collection', '')), '');
+  v_why   text;
+  v_old   bigint;
+  v_new   bigint;
+  v_given int := 0;
+  k       text;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_collection_health_threshold: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  IF coalesce(p_payload->>'instance_id', '') <> '' THEN
+    IF p_payload->>'instance_id' !~ '^[0-9]{1,9}$' THEN
+      v_why := 'instance_id must be an instance''s number, or none for every instance';
+    ELSE
+      v_inst := (p_payload->>'instance_id')::int;
+      SELECT i.name INTO v_name FROM pgvigil.instances i WHERE i.instance_id = v_inst AND i.is_active;
+      IF v_name IS NULL THEN v_why := format('no active instance %s', v_inst); END IF;
+    END IF;
+  END IF;
+  IF v_why IS NULL AND (v_op IS NULL OR v_op NOT IN ('set', 'inherit')) THEN
+    v_why := 'op must be set or inherit';
+  ELSIF v_why IS NULL AND v_coll IS NOT NULL AND length(v_coll) > 100 THEN
+    v_why := 'a collection''s name is 100 characters at most';
+  ELSIF v_why IS NULL AND v_op = 'set' THEN
+    FOREACH k IN ARRAY ARRAY['warn_fails_in_row', 'crit_fails_in_row', 'warn_fail_minutes', 'crit_fail_minutes', 'min_runs'] LOOP
+      IF p_payload ? k AND jsonb_typeof(p_payload->k) <> 'null' THEN
+        v_given := v_given + 1;
+        IF (p_payload->>k) !~ '^[0-9]{1,6}$' OR (k IN ('warn_fails_in_row', 'crit_fails_in_row', 'min_runs') AND (p_payload->>k)::int < 1) THEN
+          v_why := format('%s must be a whole number from %s, or null to inherit', k, CASE WHEN k LIKE '%minutes' THEN 0 ELSE 1 END);
+          EXIT;
+        END IF;
+      END IF;
+    END LOOP;
+    IF v_why IS NULL THEN
+      FOREACH k IN ARRAY ARRAY['warn_fail_pct', 'crit_fail_pct'] LOOP
+        IF p_payload ? k AND jsonb_typeof(p_payload->k) <> 'null' THEN
+          v_given := v_given + 1;
+          IF (p_payload->>k) !~ '^[0-9]{1,3}(\.[0-9]{1,2})?$' OR (p_payload->>k)::numeric > 100 THEN
+            v_why := format('%s must be a percentage from 0 to 100, or null to inherit', k);
+            EXIT;
+          END IF;
+        END IF;
+      END LOOP;
+    END IF;
+    IF v_why IS NULL AND p_payload ? 'dont_monitor' AND jsonb_typeof(p_payload->'dont_monitor') <> 'null' THEN
+      IF jsonb_typeof(p_payload->'dont_monitor') <> 'boolean' THEN v_why := 'dont_monitor must be true, false or null';
+      ELSE v_given := v_given + 1; END IF;
+    END IF;
+    IF v_why IS NULL AND v_given = 0 THEN
+      v_why := 'no threshold is set: to take the level above, inherit';
+    END IF;
+  END IF;
+  IF v_why IS NOT NULL THEN
+    RETURN jsonb_build_object('outcome', 'refused', 'detail', v_why);
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.collection_health_threshold'), hashtext(coalesce(v_inst, 0) || '|' || coalesce(v_coll, '')));
+  SELECT t.threshold_id INTO v_old FROM pgvigil.collection_health_threshold t
+   WHERE t.ended_at IS NULL AND coalesce(t.instance_id, 0) = coalesce(v_inst, 0) AND coalesce(t.collection, '') = coalesce(v_coll, '');
+  IF v_op = 'inherit' AND v_old IS NULL THEN
+    RETURN jsonb_build_object('outcome', 'refused', 'detail', 'this scope has no threshold of its own: it inherits already');
+  END IF;
+  UPDATE pgvigil.collection_health_threshold SET ended_by = v_user, ended_at = p_at WHERE threshold_id = v_old;
+  IF v_op = 'inherit' THEN
+    RETURN jsonb_build_object('outcome', 'done', 'detail', 'ended: the level above applies', 'threshold_id', v_old);
+  END IF;
+  INSERT INTO pgvigil.collection_health_threshold (instance_id, instance_name, collection, warn_fails_in_row, warn_fail_minutes, crit_fails_in_row,
+         crit_fail_minutes, warn_fail_pct, crit_fail_pct, min_runs, dont_monitor, created_by, created_at, client, replaces)
+  VALUES (v_inst, v_name, v_coll, (p_payload->>'warn_fails_in_row')::int, (p_payload->>'warn_fail_minutes')::int, (p_payload->>'crit_fails_in_row')::int,
+          (p_payload->>'crit_fail_minutes')::int, (p_payload->>'warn_fail_pct')::numeric, (p_payload->>'crit_fail_pct')::numeric,
+          (p_payload->>'min_runs')::int, (p_payload->>'dont_monitor')::boolean, v_user, p_at, nullif(p_payload->>'client', ''), v_old)
+  RETURNING threshold_id INTO v_new;
+  RETURN jsonb_build_object('outcome', 'done', 'detail', 'set', 'threshold_id', v_new);
+END $$;
+
 -- its result grew (B6g-1): CREATE OR REPLACE cannot change a result's columns, so an earlier form is dropped first
 -- (nothing depends on it: collection_health_summary's body is text, the page reads it by name)
 DROP FUNCTION IF EXISTS pgvigil.collection_health(timestamptz, jsonb, timestamptz, int[], text);
@@ -266,19 +381,37 @@ LANGUAGE sql STABLE SET jit = off AS $$
            k.ok + k.partial + k.failed AS known
       FROM k JOIN pgvigil.instances i ON i.instance_id = k.instance_id
      WHERE i.is_active
-  ), t AS (
-    SELECT j.*,
-           CASE WHEN j.cf >= 3 AND (j.fm IS NULL OR j.fm >= 30) THEN 2
-                WHEN j.cf >= 1 AND (j.fm IS NULL OR j.fm >= 10) THEN 1 ELSE 0 END AS st,
-           CASE WHEN j.known >= 5 AND j.failed * 2 >= j.known AND j.last_status = 'error' THEN 2
-                WHEN j.known >= 5 AND (j.failed + j.partial) * 10 >= j.known THEN 1 ELSE 0 END AS rt,
-           j.iv = 0 OR (j.known = 0 AND j.cf = 0) AS na
+  ), th AS (
+    -- B6g-2: each threshold resolved on its own - this instance and collection, this instance's row for every
+    -- collection, this collection's row for every instance, the row for everything, then DBA Dash's defaults
+    SELECT j.instance_id, j.collection,
+           coalesce(ic.warn_fails_in_row, ia.warn_fails_in_row, ac.warn_fails_in_row, aa.warn_fails_in_row, 1) AS wfr,
+           coalesce(ic.warn_fail_minutes, ia.warn_fail_minutes, ac.warn_fail_minutes, aa.warn_fail_minutes, 10) AS wfm,
+           coalesce(ic.crit_fails_in_row, ia.crit_fails_in_row, ac.crit_fails_in_row, aa.crit_fails_in_row, 3) AS cfr,
+           coalesce(ic.crit_fail_minutes, ia.crit_fail_minutes, ac.crit_fail_minutes, aa.crit_fail_minutes, 30) AS cfm,
+           coalesce(ic.warn_fail_pct, ia.warn_fail_pct, ac.warn_fail_pct, aa.warn_fail_pct, 10) AS wpct,
+           coalesce(ic.crit_fail_pct, ia.crit_fail_pct, ac.crit_fail_pct, aa.crit_fail_pct, 50) AS cpct,
+           coalesce(ic.min_runs, ia.min_runs, ac.min_runs, aa.min_runs, 5) AS mr,
+           coalesce(ic.dont_monitor, ia.dont_monitor, ac.dont_monitor, aa.dont_monitor, false) AS dm
       FROM j
+      LEFT JOIN pgvigil.collection_health_threshold ic ON ic.ended_at IS NULL AND ic.instance_id = j.instance_id AND ic.collection = j.collection
+      LEFT JOIN pgvigil.collection_health_threshold ia ON ia.ended_at IS NULL AND ia.instance_id = j.instance_id AND ia.collection IS NULL
+      LEFT JOIN pgvigil.collection_health_threshold ac ON ac.ended_at IS NULL AND ac.instance_id IS NULL AND ac.collection = j.collection
+      LEFT JOIN pgvigil.collection_health_threshold aa ON aa.ended_at IS NULL AND aa.instance_id IS NULL AND aa.collection IS NULL
+  ), t AS (
+    SELECT j.*, th.dm,
+           CASE WHEN j.cf >= th.cfr AND (j.fm IS NULL OR j.fm >= th.cfm) THEN 2
+                WHEN j.cf >= th.wfr AND (j.fm IS NULL OR j.fm >= th.wfm) THEN 1 ELSE 0 END AS st,
+           CASE WHEN j.known >= th.mr AND j.failed * 100 >= th.cpct * j.known AND j.last_status = 'error' THEN 2
+                WHEN j.known >= th.mr AND (j.failed + j.partial) * 100 >= th.wpct * j.known THEN 1 ELSE 0 END AS rt,
+           j.iv = 0 OR th.dm OR (j.known = 0 AND j.cf = 0) AS na
+      FROM j JOIN th ON th.instance_id = j.instance_id AND th.collection = j.collection
      WHERE j.in_range OR j.last_run_at >= now() - make_interval(secs => greatest(3 * j.iv, 86400))
   )
   SELECT t.instance_id, t.collection,
          CASE WHEN t.na THEN 'n/a' WHEN greatest(t.st, t.rt) = 2 THEN 'critical' WHEN greatest(t.st, t.rt) = 1 THEN 'warning' ELSE 'ok' END,
          CASE WHEN t.iv = 0 THEN 'collection off'
+              WHEN t.dm THEN 'not monitored (its Collection Health threshold)'
               WHEN t.na THEN 'no runs (skipped only)'
               WHEN t.st > 0 AND t.st >= t.rt
                 THEN t.cf || ' failure(s) in a row' || CASE WHEN t.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || t.fm || ' min' END
