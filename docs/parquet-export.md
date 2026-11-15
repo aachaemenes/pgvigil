@@ -78,7 +78,9 @@ hour aged out; 2 usage; 3 the configuration or the login is refused.
   the manifest; the files an older pass wrote and this one did not are removed.
 - A table with no row in the window has an entry with `row_count` 0 and no file.
 - A file holds at most 1,000,000 rows and is closed at 256 MB; its row groups hold at most 50,000 rows or 64 MB of
-  values. Pages are ZSTD. Every column is OPTIONAL and the columns are in the table's own order.
+  values. Pages are ZSTD. Every column is OPTIONAL and the columns are in the table's own order. A text, bytes or
+  JSON column has no statistics in its page headers (a page's largest value would sit there whole, and a reader
+  refuses a header of many megabytes); its row group's minimum and maximum are in the footer, whole.
 - A subset run (`-tables a,b` with `-from / -to`) writes a manifest and files marked `__t<8 hex>`: it never
   replaces a full window's.
 - Two machines exporting one repository to one destination are not supported (the lock is per machine); a manifest
