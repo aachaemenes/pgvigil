@@ -126,7 +126,8 @@ export function verdict(r: Row, live: Row | undefined, now: number, b: InstBand,
 const stateCls: Record<VerdictState, string> = { ok: 'ok', warning: 'warn', problem: 'crit', unread: 'none' };
 
 // verdictCard: the card on the instance's Summary (instheader.ts instanceFrame places it under the header)
-export function verdictCard(ctx: Ctx, v: Verdict): HTMLElement {
+// ownRows: the page holds the Server card (a SQL Server instance's Summary): its Memory dumps / DB Mail reasons jump there
+export function verdictCard(ctx: Ctx, v: Verdict, ownRows = false): HTMLElement {
   const to = (t: VerdictReason['target']) => {
     return withTarget(href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) }), t);
   };
@@ -142,7 +143,7 @@ export function verdictCard(ctx: Ctx, v: Verdict): HTMLElement {
       // the cell's own text ('(1 warning)') is inside the link: a click on it goes where the phrase goes
       const words = [q.phrase, q.cell ? ` (${cellText(q.cell)})` : ''];
       const link = el('a', { href: to(q.target) }, ...words) as HTMLAnchorElement;
-      const text = q.target.tab === ctx.tab && !ownPageAction(link, q.key, ctx.instance ?? 0);
+      const text = q.target.tab === ctx.tab && !ownPageAction(link, q.key, ctx.instance ?? 0, ownRows);
       const a = text ? el('span', { class: 'verdict-text' }, ...words) : link;
       if (q.cell?.detail.length) a.title = q.cell.detail.join('\n');
       return el('li', { class: q.level >= 2 ? 'crit' : 'warn', 'data-group': q.key, 'data-phrase': q.phrase, ...(text ? { 'data-nolink': 'this page' } : {}) }, a);
@@ -153,7 +154,7 @@ export function verdictCard(ctx: Ctx, v: Verdict): HTMLElement {
   // the reasons above)
   const groupEl = (x: { key: string; label: string; target: VerdictReason['target'] }) => {
     const a = el('a', { 'data-group': x.key, href: to(x.target) }, x.label) as HTMLAnchorElement;
-    return x.target.tab !== ctx.tab || ownPageAction(a, x.key, ctx.instance ?? 0) ? a : el('span', { 'data-group': x.key, 'data-nolink': 'this page' }, x.label);
+    return x.target.tab !== ctx.tab || ownPageAction(a, x.key, ctx.instance ?? 0, ownRows) ? a : el('span', { 'data-group': x.key, 'data-nolink': 'this page' }, x.label);
   };
   const list = (cls: string, lead: string, xs: { key: string; label: string; target: VerdictReason['target'] }[]) => xs.length
     ? el('p', { class: `meta ${cls}` }, lead, ...xs.flatMap((x, i) => [i ? ', ' : '', groupEl(x)])) : null;

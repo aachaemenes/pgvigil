@@ -268,9 +268,10 @@ function hidden(n: HTMLElement): HTMLElement { n.setAttribute('aria-hidden', 'tr
 export const treeBell = (): HTMLElement => el('span', { class: 'silenced-bell', role: 'img', 'aria-label': 'Alerts silenced', title: 'Alerts silenced for this server' });
 
 // reasonLine: the header's reasons, each a link to the page of its cell (the Summary cell's own target, cellTarget),
-// 'Offline' to the collection dates; one whose page is this one is text (verdict.ts's rule: a SQL Server Memory dump or
-// DB Mail on its Summary), except Instance Uptime, which opens its dialog there as DBA Dash's Uptime cell does; the
-// first six, then '+n more', a button that shows the rest in place with the focus on the first one it adds
+// 'Offline' to the collection dates; one whose page is this one answers here (rowjump.ts: on a SQL Server Summary
+// Memory dumps and DB Mail jump to their Server card row, Instance Uptime opens its dialog as DBA Dash's Uptime cell
+// does) or is text; the first six, then '+n more', a button that shows the rest in place with the focus on the first
+// one it adds
 function reasonLine(ctx: Ctx, b: ReturnType<typeof instBand>, r: Row): HTMLElement {
   const to = (t: Target) => withTarget(href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) }), t);
   const links = [...(b.offline ? [{ key: 'offline', text: 'Offline - no recent collection', tab: 'collectiondates', href: href(ctx, { tab: 'collectiondates' }) }] : []),
@@ -279,7 +280,7 @@ function reasonLine(ctx: Ctx, b: ReturnType<typeof instBand>, r: Row): HTMLEleme
   const one = (x: typeof links[number]): HTMLElement => {
     const a = el('a', { class: 'cell-link', href: x.href, 'data-group': x.key }, x.text) as HTMLAnchorElement;
     // a reason whose page is this one answers here (rowjump.ts: Instance Uptime's dialog, a Server card row), else text
-    if (x.tab !== ctx.tab || ownPageAction(a, x.key, Number(r.instance_id))) return a;
+    if (x.tab !== ctx.tab || ownPageAction(a, x.key, Number(r.instance_id), isMssql(r.engine) && ctx.tab === 'summary')) return a;
     return el('span', { class: 'reason-text', 'data-group': x.key, 'data-nolink': 'this page' }, x.text);
   };
   const draw = (all: boolean) => {
@@ -315,8 +316,9 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
     : `${statusWord[fr]} · ${fr === 'offline' ? lastCollected(live, now) : `last collect ${clockOf(live?.last_collect_at)}`}${n < m ? ` · ${n} of ${m} measured` : ''}`;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   // data-groups: the band's items in order (an offline band 'offline' first): the verdict card's reasons are these
-  // the band word opens the instance's Findings (every finding behind the band, with its detail); no text of the
-  // header is dead, and none is a link to the page it is on (on that page it is text: data-nolink)
+  // the band word opens the instance's Findings (every finding behind the band, with its detail); the name, the band
+  // word and the status line are never a link to the page they are on (there they are text: data-nolink); a reason of
+  // this page answers here (reasonLine)
   const self = (tab: string) => tab === ctx.tab ? { 'data-nolink': 'this page' } : null;
   const linkOr = (tab: string, attrs: Record<string, string>, ...kids: (string | HTMLElement)[]) => self(tab)
     ? el('span', { ...attrs, ...self(tab)! }, ...kids) : el('a', { ...attrs, href: href(ctx, { tab }) }, ...kids);
@@ -330,6 +332,6 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
     el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(c => { const t = chipTab(c.key, isMssql(r.engine)); if (t && t === ctx.tab) { const d = chipEl(c); d.dataset.nolink = 'this page'; return d; } return chipEl(c, t ? href(ctx, { tab: t }) : undefined); })),
     // the verdict card on the instance's Summary (both engines): a reading of this band and freshness, never another;
     // a fault in it leaves the header standing (instanceFrame's caller drops the whole header on a throw)
-    ctx.tab === 'summary' ? (() => { try { return verdictCard(ctx, verdict(r, live, now, b, fr)); } catch { return null; } })() : null);
+    ctx.tab === 'summary' ? (() => { try { return verdictCard(ctx, verdict(r, live, now, b, fr), isMssql(r.engine)); } catch { return null; } })() : null);
   return { header, dot: bandDot(b) };
 }

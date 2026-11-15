@@ -14,7 +14,7 @@ const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v
 // the Alerts page does; one link a row, the cells beside it text (DBA Dash's grids)
 const findingCols = (ctx: Ctx): Col[] => [
   // the severity is a status text: a link where the check's link goes
-  { key: 'severity', fmt: (v, r) => r.finding_key == null ? sev(v) : el('a', { href: alertHref(r.finding_key, undefined, ctx), class: 'cell-link' }, sev(v)) },
+  { key: 'severity', fmt: (v, r) => r.finding_key == null ? sev(v) : el('a', { href: alertHref(r.finding_key, undefined, ctx), class: 'cell-link', 'aria-label': `${String(v ?? '')}: ${String(r.setting ?? '')}` }, sev(v)) },
   { key: 'setting', label: 'check', fmt: (v, r) => r.finding_key == null ? String(v ?? '') : el('a', { href: alertHref(r.finding_key, undefined, ctx) }, String(v ?? '')) },
   { key: 'value', label: 'object' },
   { key: 'detail' }, { key: 'at', label: 'seen', fmt: fmtTime },
@@ -39,13 +39,12 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
   const notHere = mine.filter(g => c[g.key].none && c[g.key].text === 'n/a');
   // every group named is a link to its page - the header's own target (cellTarget: the tab, the view it opens on and
   // its status filter, so 'Suspect pages' opens the checks page's Build view here as its reason does in the header);
-  // one whose page is this Summary (DB Mail: DBA Dash's text cell) is text
   // one whose page is this Summary answers here (rowjump.ts: Memory dumps and DB Mail jump to their Server card row,
   // Instance Uptime opens its dialog)
   const named = (g: typeof mine[number], words: string, cls = '') => {
     const t = cellTarget(g, r);
     const a = el('a', { class: cls, href: withTarget(href(ctx, { tab: t.tab }), t), 'data-group': g.key }, words) as HTMLAnchorElement;
-    return t.tab !== ctx.tab || ownPageAction(a, g.key, Number(r.instance_id)) ? a : el('span', { class: cls, 'data-group': g.key, 'data-nolink': 'this page' }, words);
+    return t.tab !== ctx.tab || ownPageAction(a, g.key, Number(r.instance_id), true) ? a : el('span', { class: cls, 'data-group': g.key, 'data-nolink': 'this page' }, words);
   };
   const sep = (xs: HTMLElement[]) => xs.flatMap((a, i) => i ? [', ', a] : [a]);
   sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? 'No warning or critical' : 'Not OK: ',

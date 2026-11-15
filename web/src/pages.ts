@@ -766,7 +766,7 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
   ])));
   const checkCols: Col[] = [
     // the severity is a status text: a link where the check's link goes, as the check is
-    { key: 'severity', fmt: (v, x) => el('a', { href: href(ctx, { tab: groupTab(x.check_group) }), class: 'cell-link' }, badge(String(v), v === 'critical' ? 'crit' : 'warn')) },
+    { key: 'severity', fmt: (v, x) => el('a', { href: href(ctx, { tab: groupTab(x.check_group) }), class: 'cell-link', 'aria-label': `${String(v)}: ${String(x.check_name ?? '')}` }, badge(String(v), v === 'critical' ? 'crit' : 'warn')) },
     { key: 'check_name', label: 'check', fmt: (v, x) => link(String(v), href(ctx, { tab: groupTab(x.check_group) })) },
     { key: 'object' },
     { key: 'at', label: 'when', fmt: fmtTime },
