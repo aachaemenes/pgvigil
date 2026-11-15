@@ -422,6 +422,36 @@ if (mode === 'now' || mode === 'screen') {
   const m = /schedule (\d+) added/.exec(said);
   if (!m) throw new Error('the schedule dialog said: ' + said);
   res.schedule_id = Number(m[1]); res.hidden = col;
+} else if (mode === 'dbsprefs') {
+  // DB Space's Unit and Decimal places kept with a schedule: MB / 2 picked on the page, Mail... > Schedule this page...
+  // > Add; then GB / 1 picked back (its keys go) and a second schedule. No picker = said in res.pick, no schedule
+  const route = routes[0];
+  const pick = (u, k) => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp'); if (!a || !b) return 'no Unit picker on the page';
+    a.value = ${JSON.stringify(u)}; a.dispatchEvent(new Event('change', { bubbles: true })); b.value = ${JSON.stringify(k)}; b.dispatchEvent(new Event('change', { bubbles: true })); return 'ok'; })()`);
+  const add = async (nm) => {
+    await ev(`document.querySelector('#bar .mail button').click()`);
+    for (let n = 0; n < 50 && !await ev(`!!document.querySelector('dialog[open] textarea')`); n++) await sleep(100);
+    await ev(`[...document.querySelectorAll('dialog[open] button')].find(b => b.textContent === 'Schedule this page...').click()`);
+    for (let n = 0; n < 80 && await ev(`document.querySelector('dialog[open] h3')?.textContent ?? ''`) !== 'New report mail schedule'; n++) await sleep(100);
+    const note = await ev(`(() => { const d = document.querySelector('dialog[open]'); const name = d.querySelector('input[type=text]'); name.value = ${JSON.stringify(nm)}; name.dispatchEvent(new Event('input', { bubbles: true }));
+      const t = d.querySelector('textarea'); t.value = 'sched-dbs@pgvigil.test'; t.dispatchEvent(new Event('input', { bubbles: true }));
+      const ss = d.querySelectorAll('select'); ss[0].value = 'mail'; ss[0].dispatchEvent(new Event('change', { bubbles: true })); ss[2].value = 'UTC'; ss[2].dispatchEvent(new Event('change', { bubbles: true }));
+      const note = [...d.querySelectorAll('p.meta')].map(p => p.textContent).find(x => /kept with the schedule|No grid choice/.test(x)) ?? '';
+      d.querySelector('button[type=submit]').click(); return note; })()`);
+    let said = '';
+    for (let n = 0; n < 100; n++) { await sleep(200); said = await ev(`document.querySelector('dialog[open] [role=status]')?.textContent ?? ''`); if (/added|not done/.test(said)) break; }
+    const m = /schedule (\d+) added/.exec(said);
+    await ev(`document.querySelector('dialog[open]')?.close(); true`);
+    return { id: m ? Number(m[1]) : null, said, note };
+  };
+  await open(route);
+  res.pick = await pick('MB', '2'); await sleep(400);
+  if (res.pick === 'ok') {
+    res.mb = await add('Proof DB Space MB');
+    await open(route);
+    res.back = await pick('GB', '1'); await sleep(400);
+    res.gb = await add('Proof DB Space GB');
+  }
 } else if (mode === 'page') {
   await open('#/reportmail?w=24h');
   res.screen = await ev(SCREEN);
@@ -513,6 +543,18 @@ HIDDEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hidden
 [[ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"])' "$WORK/prefs.json") == *"grid choices in this browser (1 grid"* ]] || fail "S: the dialog's note: $(cat "$WORK/prefs.json")"
 [[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = $SJOB and route = '$JOBS' and grid_prefs is not null and (select count(*) from jsonb_object_keys(grid_prefs)) = 1") == 1 ]] || fail "S: the dialog's schedule: $(q "select route, grid_prefs from pgvigil.report_mail_schedules where schedule_id = $SJOB")"
 ok "S: column '$HIDDEN' hidden on the Jobs page with the grid's menu; Mail... > Schedule this page... added schedule $SJOB with that grid's choice"
+# DB Space's Unit and Decimal places kept with a schedule (its grid_prefs, under the grid tools' prefix): MB / 2 picked =
+# both size keys kept and the dialog's note names them, not as grids; GB / 1 picked back = no size key kept
+drive dbsprefs "$WORK" - "#/dbspace?i=$DSID" > "$WORK/dbsprefs.json" || fail "S: the DB Space schedule dialog: $(tail -3 "$WORK/dbsprefs.json")"
+DBSP=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("pick"))' "$WORK/dbsprefs.json")
+[[ $DBSP == ok ]] || fail "S: DB Space's pickers on #/dbspace?i=$DSID: $DBSP"
+SDBS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mb"]["id"])' "$WORK/dbsprefs.json")
+SDBSGB=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gb"]["id"])' "$WORK/dbsprefs.json")
+DBSNOTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mb"]["note"])' "$WORK/dbsprefs.json")
+[[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0} and grid_prefs->>'pgvigil.grid.dbspace.size-unit' = 'MB' and grid_prefs->>'pgvigil.grid.dbspace.size-decimals' = '2'") == 1 && $DBSNOTE == *"unit and decimal places"* && $DBSNOTE != *" grids:"* ]] || fail "S: the MB / 2 schedule's kept choice: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0}"); note: $DBSNOTE"
+ok "S: DB Space at MB / 2 scheduled (schedule $SDBS): both size keys kept with it, the dialog says so ($DBSNOTE)"
+[[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0} and coalesce(grid_prefs::text, '{}') !~ 'size-'") == 1 ]] || fail "S: the GB / 1 schedule kept a size key: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0}")"
+ok "S: DB Space back at GB / 1 scheduled (schedule $SDBSGB): no size key kept (the default is no key)"
 SIDS=""
 for i in 0 1 2; do
   r=${ROUTES[$i]}; tz=UTC; [[ $i == 2 ]] && tz=America/Los_Angeles
