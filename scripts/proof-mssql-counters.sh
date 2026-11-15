@@ -253,7 +253,8 @@ LX=$(pq "SELECT count(*) FROM ((SELECT object, counter, inst FROM pgvigil.mssql_
 [[ "$NDEF" == "$NL" && "$LX" == 0 ]] || fail "A: the list holds $NL, the defaults $NDEF, $LX rows in one and not the other"
 ok "A: SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))"), migrate, the three collections, the list = every default ($NL)"
 # M's measure (review part 4, finding 10): the sample table's bytes and rows here, against the end of the run's reads
-M_BYTES0=$(pq "SELECT pg_total_relation_size('pgvigil.mssql_counter_sample')"); M_ROWS0=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_sample")
+# a partitioned parent holds no storage (401proof15 measured 0 bytes): the sum over its partitions
+M_BYTES0=$(pq "SELECT coalesce(sum(pg_total_relation_size(relid)), 0) FROM pg_partition_tree('pgvigil.mssql_counter_sample')"); M_ROWS0=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_sample")
 
 # bracket <tag> [scope] [least]: a hand read before and after one read of the scope (instance: mssql_counters; database:
 # mssql_counters_db); the stored raw values of that read between them, and an average's or fraction's base against the
@@ -1004,9 +1005,9 @@ ok "N: compiles_per_100 on the Performance summary = SQL Server's own counters r
 
 echo "== M. the size =="
 pq "SELECT scope, round(avg(rows_read)), count(*) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB GROUP BY 1 ORDER BY 1" | sed 's/^/   reads: /'
-M_BYTES1=$(pq "SELECT pg_total_relation_size('pgvigil.mssql_counter_sample')"); M_ROWS1=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_sample")
+M_BYTES1=$(pq "SELECT coalesce(sum(pg_total_relation_size(relid)), 0) FROM pg_partition_tree('pgvigil.mssql_counter_sample')"); M_ROWS1=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_sample")
 M_DBS=$(sq "SELECT CAST(COUNT(*) AS varchar(10)) FROM sys.databases" | tr -d '[:space:]')
-python3 - "$PGDSN" "$SB" "$M_BYTES0" "$M_BYTES1" "$M_ROWS0" "$M_ROWS1" "$M_DBS" <<'PY'
+python3 - "$PGDSN" "$SB" "$M_BYTES0" "$M_BYTES1" "$M_ROWS0" "$M_ROWS1" "$M_DBS" <<'PY' || fail "M: see above"
 import subprocess, sys
 q = lambda s: subprocess.run(['psql', sys.argv[1], '-XAtq', '-c', s], capture_output=True, text=True, check=True).stdout.strip()
 sb = sys.argv[2]
@@ -1017,7 +1018,9 @@ for sc in ('instance', 'database'):
        WHERE s.instance_id = {sb} AND r.scope = '{sc}' GROUP BY s.snapshot_at) x"""))
     read[sc] = float(q(f"SELECT coalesce(avg(rows_read), 0) FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = '{sc}'"))
 # the bytes the run's rows took, measured (table, its indexes and its toast), over the rows it stored
-row = (b1 - b0) / (r1 - r0) if r1 > r0 and b1 > b0 else 0
+if r1 <= r0 or b1 <= b0:
+    sys.exit(f"M: measured {b1 - b0} bytes for {r1 - r0} rows (the partitions' sizes not read)")
+row = (b1 - b0) / (r1 - r0)
 day = lambda i, d: i * 1440 + d * 288                 # one instance read a minute, one database read per 5 minutes
 mb = lambda n: n * row / 1048576
 pdb = per['database'] / max(1, dbs)                    # the database read stores each database's rows
