@@ -25,8 +25,11 @@
 #      script, sp_WhoIsActive 'not installed'.
 #  R2  (RED first) f-bare (a login of the public role only): mssql_jobs is skipped for it; Rights lists as missing
 #      VIEW SERVER STATE, VIEW ANY DEFINITION, msdb, CONNECT ANY DATABASE (needed; the database it cannot enter
-#      named) and the optional ones; the script, run by sa exactly as printed, makes the next Rights read missing 0
-#      with an empty script, and mssql_jobs ends ok.
+#      named) and, of the optional ones, ALTER TRACE and VIEW SERVER SECURITY AUDIT. It HOLDS the two registry rights
+#      and SELECT on restorehistory: SQL Server grants xp_instance_regread and xp_regread to public, and every login
+#      reads restorehistory through msdb's guest (the first run wanted them missing: the expectation was wrong, the
+#      read right). The script, run by sa exactly as printed, makes the next Rights read missing 0 with an empty
+#      script, and mssql_jobs ends ok.
 #  R3  f-odd (a login whose name holds a ']' and a space, public only): the script names it as QUOTENAME does and runs
 #      as printed; then missing 0.
 #  R4  f-pgmon (PostgreSQL 16, a role whose name holds a '"', a capital and a space, without pg_monitor; a database
@@ -241,8 +244,9 @@ P0=$(perms "$BARE")
 collect mssql_jobs f-bare; J0=$(colstate f-bare mssql_jobs)
 code=$(rights f-bare); [[ "$code" == 200 && "$(ans ok)" == True ]] || fail "R2: $code $(cat "$TMPD/ans.json")"
 M0=$(missing); N0=$(ans missing_needed)
-WANT="audit_events database_access default_trace msdb_reader registry_instance registry_machine restore_history view_any_definition view_server_state"
-[[ "$M0" == "$WANT" && "$N0" == 4 && "$J0" == skipped ]] || fail "R2 before: missing '$M0' (want '$WANT'), needed $N0 (want 4), mssql_jobs '$J0' (want skipped): $(tail -2 "$TMPD/collect.out")"
+WANT="audit_events database_access default_trace msdb_reader view_any_definition view_server_state"
+HELD="$(state registry_instance)|$(state registry_machine)|$(state restore_history)"
+[[ "$M0" == "$WANT" && "$N0" == 4 && "$J0" == skipped && "$HELD" == "held|held|held" ]] || fail "R2 before: missing '$M0' (want '$WANT'), needed $N0 (want 4), the registry rights and restorehistory '$HELD' (want held|held|held), mssql_jobs '$J0' (want skipped): $(tail -2 "$TMPD/collect.out")"
 script > "$TMPD/bare.sql"
 grep -q "the login cannot enter: .*$UDB" "$TMPD/bare.sql" || fail "R2: the script does not name $UDB: $(grep -n 'cannot enter' "$TMPD/bare.sql")"
 grep -q "pgvigil did not run it and never does" "$TMPD/bare.sql" || fail "R2: the script's head: $(head -3 "$TMPD/bare.sql")"
@@ -253,7 +257,7 @@ sqfile "$TMPD/bare.sql" > "$TMPD/bare.out" 2>&1 || fail "R2: the printed script 
 code=$(rights f-bare); [[ "$(ans missing)|$(script | wc -c)" == "0|0" ]] || fail "R2 after the script: missing $(ans missing): $(missing)"
 collect mssql_jobs f-bare; J1=$(colstate f-bare mssql_jobs)
 [[ "$J1" == ok ]] || fail "R2 after the script: mssql_jobs '$J1' (want ok): $(tail -2 "$TMPD/collect.out")"
-ok "R2: f-bare as $BARE: mssql_jobs '$J0', 4 needed and 5 optional rights missing ($UDB named); the printed script ($(wc -l < "$TMPD/bare.sql") lines) run by sa as printed: nothing missing, mssql_jobs '$J1'"
+ok "R2: f-bare as $BARE: mssql_jobs '$J0', 4 needed and 2 optional rights missing ($UDB named; the registry rights and restorehistory held through public and msdb's guest); the printed script ($(wc -l < "$TMPD/bare.sql") lines) run by sa as printed: nothing missing, mssql_jobs '$J1'"
 ok "R5 (SQL Server): the login's permissions, role memberships and users ($P0) equal before and after ten Rights reads"
 
 echo "== R3. a login whose name needs quoting =="
