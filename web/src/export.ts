@@ -773,7 +773,7 @@ const sizeUnit = (n: number) => { let i = 0; for (let a = Math.abs(n); a >= 1024
 const dotless = (c: Cell): string | number => typeof c.v === 'string' && c.runs?.length === 2 && c.v === c.runs[0].text + c.runs[1].text ? c.runs[1].text : c.v;
 // (X7) a decimal read straight from the page's figure keeps whether that figure groups its thousands (a size, a duration
 // or a rate converted to its column's unit later is a figure of another unit: never grouped)
-const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}), ...(c.kind === 'dec' && typeof c.v === 'number' && grouped(c.text) ? { grp: true } : {}) });
+const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}), ...((c.kind === 'dec' || c.kind === 'int') && typeof c.v === 'number' && grouped(c.text) ? { grp: true } : {}) });
 // gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
 // writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
 // with its time unit ('took (s)'). X8: a seconds column is numbers - in its one unit, or in seconds when the page mixes
@@ -801,9 +801,13 @@ export function gridSection(s: Section): Section {
     const k = Math.max(-1, ...decs.map(c => decimalsOf(c.text, c.v) ?? -1));
     // the page's grouping carried, as its colours and decimals are: a column whose figures group their thousands is grouped
     // under its fixed decimals, '#,##0' .. '#,##0.000' (DBA Dash writes General); an ungrouped column stays ungrouped
-    const grp = k >= 0 && k <= 3 && decs.some(c => c.grp);
-    for (const c of decs) if (grp) c.grp = true; else delete c.grp;
-    if (k >= 0 && k <= 6) for (const c of decs) c.dp = k;
+    // a column of no decimals (DB Space at 0 places) also holds the figures that are whole numbers (typed int: a size of a
+    // whole number of MB): one column, one format - '0' or '#,##0' for all of them; with decimals, an int keeps General
+    const whole = k === 0 ? rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'int') : [];
+    const all = [...decs, ...whole];
+    const grp = k >= 0 && k <= 3 && all.some(c => c.grp);
+    for (const c of all) if (grp) c.grp = true; else delete c.grp;
+    if (k >= 0 && k <= 6) for (const c of all) c.dp = k;
     // (a chart's share holds its fraction as text, not the page's percent: only a column of the page's own percents)
     const pcts = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number' && c.kind === 'pct');
     if (pcts.length && pcts.every(c => / ?%$/.test(norm(c.text)) && decimalsOf(c.text) === 0)) for (const c of pcts) c.dp = 0;
