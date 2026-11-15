@@ -459,7 +459,7 @@ if [[ "$(pq "SELECT count(*) FROM pg_roles WHERE rolname IN ('pgvigil_reader', '
     for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$NPORT/api/session" 2>/dev/null && break; sleep 0.1; done
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj-$tag" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "http://127.0.0.1:$NPORT/api/login")" == 200 ]] || { cat "$TMPD/serve-$tag.out" >&2; fail "$tag: the API login"; }
     N0=$(pq "SELECT count(*) FROM pgvigil.custom_report_log WHERE op = 'plan_read'"); L0=$(sq "$LOGINS")
-    CE=$(curl -s -o "$TMPD/$tag-e.json" -w '%{http_code}' -b "$TMPD/cj-$tag" -H 'X-Pgvigil: 1' "http://127.0.0.1:$NPORT/api/mssql/plancache/entries?instance=$ISA&db=$(sq "SELECT DB_ID('pgvqs')")&key=0x0000000000000001")
+    CE=$(curl -s -o "$TMPD/$tag-e.json" -w '%{http_code}' -b "$TMPD/cj-$tag" -H 'X-Pgvigil: 1' "http://127.0.0.1:$NPORT/api/mssql/plancache/entries?instance=$ISA&db=$DBID&key=0x0000000000000001")
     CODE=$(curl -s -o "$TMPD/$tag.json" -w '%{http_code}' -b "$TMPD/cj-$tag" -H 'X-Pgvigil: 1' "http://127.0.0.1:$NPORT/api/mssql/plancache/plan?instance=$ISA&handle=$SXH&start=$SXS&end=$SXE")
     L1=$(sq "$LOGINS"); N1=$(pq "SELECT count(*) FROM pgvigil.custom_report_log WHERE op = 'plan_read'")
     kill "$NLPID" 2>/dev/null; wait "$NLPID" 2>/dev/null || true
