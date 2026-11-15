@@ -942,6 +942,10 @@ func missing(p *int64, name, source string) string {
 	return "not read: " + source + " holds no " + name + " value"
 }
 
+// netQuery is the query readNetwork sends its three statements through: QueryRows (a test of a server's recorded
+// answers stands in for it: properties_winfixture_test.go).
+var netQuery = QueryRows
+
 // readNetwork reads the facts netRows needs; partial gets a row for each read that failed.
 func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string, gate propGate) (in netRowsInput, partial []collect.Row) {
 	in = netRowsInput{kind: info.Kind, major: info.Major, platform: platform, gate: gate}
@@ -960,7 +964,7 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 	// the procedure read nothing either
 	var viewErr error
 	if platform == "Windows" && gate.registryView {
-		rows, err := QueryRows(ctx, conn, propsNetViewSQL)
+		rows, err := netQuery(ctx, conn, propsNetViewSQL)
 		switch {
 		case err != nil:
 			viewErr = err
@@ -977,7 +981,7 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 		case !gate.instanceRegread:
 			in.factsWhy = gate.noRight("xp_instance_regread")
 		default:
-			rows, err := QueryRows(ctx, conn, propsNetRegSQL)
+			rows, err := netQuery(ctx, conn, propsNetRegSQL)
 			switch {
 			case err != nil:
 				in.factsWhy = fail("xp_instance_regread", err)
@@ -998,7 +1002,7 @@ func readNetwork(ctx context.Context, conn *sql.Conn, info Info, platform string
 		case !gate.regread:
 			in.prioWhy = gate.noRight("xp_regread")
 		default:
-			rows, err := QueryRows(ctx, conn, propsPrioritySQL)
+			rows, err := netQuery(ctx, conn, propsPrioritySQL)
 			switch {
 			case err != nil:
 				in.prioWhy = fail("xp_regread", err)

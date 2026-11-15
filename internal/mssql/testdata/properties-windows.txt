@@ -1,0 +1,91 @@
+# 301c N5: scripts/proof-mssql-properties-windows.sql (rel-inv 4c7701a2) on the lab's Windows VM - SQL Server 2022 RTM
+# (16.0.1000.6), the default instance, Windows authentication as a sysadmin - 2026-11-15 21:15 UTC: its N5 lines as
+# sqlcmd printed them, the column's trailing pad removed. Every line ends '|~' except the view's lines of a string value
+# (TcpPort, TcpDynamicPorts): those end at their data with neither '|~' nor the pad - sqlcmd stopped at the NUL that
+# sys.dm_server_registry keeps at the end of a REG_SZ value (the same values through xp_instance_regread end '|~').
+N5|version|16.0.1000.6|16|Windows|3|sysadmin 1|default instance 1|~
+N5|gate|1|1|1|login named 1|~
+N5|gate-rows|1|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\AdminConnection\Tcp|TcpDynamicPorts|1434
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\AdminConnection\Tcp|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Np|Enabled|0|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Np|PipeName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Np|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Sm|Enabled|1|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Sm|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Via|Enabled|0|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Via|DefaultServerPort|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Via|ListenInfo|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Via|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp|Enabled|1|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp|ListenOnAllIPs|1|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp|KeepAlive|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP1|Enabled|0|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP1|Active|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP1|TcpPort|1433
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP1|TcpDynamicPorts|
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP1|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP1|IpAddress|ipv6|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP2|Enabled|0|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP2|Active|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP2|TcpPort|1433
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP2|TcpDynamicPorts|
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP2|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP2|IpAddress|ipv4|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP3|Enabled|0|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP3|Active|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP3|TcpPort|1433
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP3|TcpDynamicPorts|
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP3|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP3|IpAddress|loopback|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP4|Enabled|0|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP4|Active|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP4|TcpPort|1433
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP4|TcpDynamicPorts|
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP4|DisplayName|<not printed>|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IP4|IpAddress|loopback|~
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IPAll|TcpPort|1433
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IPAll|TcpDynamicPorts|
+N5|view|HKLM\Software\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp\IPAll|DisplayName|<not printed>|~
+N5|view-rows|42|~
+N5|reg|0|<NULL>|1|1|0|1|1433|<NULL>|~
+N5|reg-rows|1|~
+N5|prio|2|~
+N5|prio-rows|1|~
+N5|sa-enum|ERROR|SuperSocketNetLib|213|Column name or number of supplied values does not match table definition.|~
+N5|sa-enum-rc|Tcp|0|~
+N5|sa-enum-rc|Tcp\IPAll|0|~
+N5|sa-enum-rc|Np|0|~
+N5|sa-enum-rc|Sm|0|~
+N5|sa-enum-rc|PriorityControl|0|~
+N5|sa-enum|Tcp|Enabled|1|~
+N5|sa-enum|Tcp|ListenOnAllIPs|1|~
+N5|sa-enum|Tcp|KeepAlive|<not printed>|~
+N5|sa-enum|Tcp|DisplayName|<not printed>|~
+N5|sa-enum|Tcp\IPAll|TcpPort|1433|~
+N5|sa-enum|Tcp\IPAll|TcpDynamicPorts|<NULL>|~
+N5|sa-enum|Tcp\IPAll|DisplayName|<not printed>|~
+N5|sa-enum|Np|Enabled|0|~
+N5|sa-enum|Np|PipeName|<not printed>|~
+N5|sa-enum|Np|DisplayName|<not printed>|~
+N5|sa-enum|Sm|Enabled|1|~
+N5|sa-enum|Sm|DisplayName|<not printed>|~
+N5|sa-enum|PriorityControl|Win32PrioritySeparation|2|~
+N5|sa-read|SuperSocketNetLib|ForceEncryption|rc 0|0|~
+N5|sa-read|SuperSocketNetLib|ForceStrictEncryption|rc 0|<NULL>|~
+N5|sa-keys-rc|Tcp|0|~
+N5|sa-keys|Tcp|IP1|~
+N5|sa-keys|Tcp|IP2|~
+N5|sa-keys|Tcp|IP3|~
+N5|sa-keys|Tcp|IP4|~
+N5|sa-keys|Tcp|IPAll|~
+N5|sa-listener|any|1433|TSQL|ONLINE|~
+N5|sa-listener|any|1433|TSQL|ONLINE|~
+N5|sa-listener|loopback|1434|TSQL|ONLINE|~
+N5|sa-listener|loopback|1434|TSQL|ONLINE|~
+N5|sa-listener-rows|4|~
+N5|sa-conn|Session|encrypt FALSE|port <NULL>|2|~
+N5|sa-conn|Shared memory|encrypt FALSE|port <NULL>|5|~
+N5|sa-conn|Shared memory|encrypt TRUE|port <NULL>|12|~
+N5|done|~
