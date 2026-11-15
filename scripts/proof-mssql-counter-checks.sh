@@ -203,7 +203,11 @@ p_writes() { sq "UPDATE dbo.big SET pad = REPLICATE(CHAR(65 + ABS(CHECKSUM(NEWID
   sq "DECLARE @i int = 0; WHILE @i < 600 BEGIN UPDATE dbo.big SET pad = 'w' WHERE id = ABS(CHECKSUM(NEWID())) % 60000 + 1; CHECKPOINT; SET @i += 1; END" pgvctr >/dev/null; }
 p_lockreq() { sq "DECLARE @i int = 0, @x int; WHILE @i < 6000 BEGIN SELECT @x = v FROM dbo.t WITH (ROWLOCK, HOLDLOCK) WHERE id = @i % 2000 + 1; SET @i += 1; END" pgvctr >/dev/null; }
 p_recompiles() { sq "$(for _ in $(seq 1 20); do echo "EXEC dbo.rc;"; echo GO; done)" pgvctr >/dev/null; }
-p_growth() { sq "INSERT dbo.t (id, pad) SELECT TOP (30000) 200000 + ROW_NUMBER() OVER (ORDER BY (SELECT 1)) + (SELECT count(*) FROM dbo.t), REPLICATE('g', 200) FROM sys.all_objects a CROSS JOIN sys.all_objects b" pgvctr >/dev/null; }
+# the log is shrunk to 1 MB first: D's earlier loads leave it far larger than this one transaction (run chk11 read no
+# growth with a 36 MB log; chk12, those checks skipped, read +5)
+p_growth() { sq "CHECKPOINT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS; CHECKPOINT; DBCC SHRINKFILE (pgvctr_log, 1) WITH NO_INFOMSGS;" pgvctr >/dev/null
+  echo "   pgvctr's log before the load: $(sq "SELECT CAST(size / 128 AS varchar(10)) + ' MB' FROM sys.database_files WHERE type = 1" pgvctr)"
+  sq "INSERT dbo.t (id, pad) SELECT TOP (30000) 200000 + ROW_NUMBER() OVER (ORDER BY (SELECT 1)) + (SELECT count(*) FROM dbo.t), REPLICATE('g', 200) FROM sys.all_objects a CROSS JOIN sys.all_objects b" pgvctr >/dev/null; }
 
 echo "== B. the owner line: a seeded rule colours while off and raises nothing =="
 LS=$(pq "SELECT rule_id FROM pgvigil.alert_rules WHERE metric = 'counters.logins_s' AND client = '0153 seed'")
@@ -300,8 +304,14 @@ PY
   grep -v '^OTHER=' "$TMPD/diag-w"
   DIAG_OTHER=$(sed -n 's/^OTHER=//p' "$TMPD/diag-w")
 }
+# D_FROM=<metric>: a diagnostic run starts D at that check (the checks before it skipped); such a run ends 'PARTIAL', never
+# 'PROOF OK'
+D_FROM=${D_FROM:-}; D_REACHED=0
 judge() {
   local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st1 st2 f1 f2 v v2
+  if [[ -n "$D_FROM" && $D_REACHED == 0 && "$m" != logins_s ]]; then
+    if [[ "$m" == "$D_FROM" ]]; then D_REACHED=1; else echo "   $m skipped (D_FROM=$D_FROM)"; CLEARED=1; return 0; fi
+  fi
   s=$(SEEDOF "$m"); op=$(cut -d'|' -f3 <<<"$s"); w=$(cut -d'|' -f4 <<<"$s"); cr=$(cut -d'|' -f5 <<<"$s")
   rid=$(rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"counters.$m\",\"op_dir\":\"$op\",\"scope\":\"instance\",\"instance_name\":\"chkbox\",\"warning\":${w:-null},\"critical\":${cr:-null},\"for_minutes\":0}" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")')
@@ -356,13 +366,23 @@ d_scans() { perread "'Access Methods'" "'Full Scans/sec', 'Index Searches/sec'" 
 d_ahead() { perread "'Buffer Manager'" "'Page reads/sec', 'Readahead pages/sec'" readahead_pct; }
 d_lookups() { perread "'Buffer Manager', 'SQL Statistics'" "'Page lookups/sec', 'Batch Requests/sec'" page_lookups_per_batch; }
 d_lockreq() { perread "'Locks'" "'Lock Requests/sec'" lock_requests_s | grep -E '\[_Total\]|point'; }
+# d_growths: Log Growths of _Total and pgvctr at the newest three database reads (stored, or named in zero_series), the
+# metric's points, and SQL Server's own read now with pgvctr's log size
+d_growths() { echo; pq "SELECT '      ' || r.snapshot_at || ' Log Growths [' || k.inst || '] value ' || coalesce(s.value::text, CASE WHEN k.series_id = ANY (r.zero_series) THEN '0 (zero_series)' ELSE '-' END) || ' change ' || coalesce(s.dvalue::text, '-')
+  FROM (SELECT * FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'database' ORDER BY snapshot_at DESC LIMIT 3) r
+  JOIN pgvigil.mssql_counter_series k ON k.instance_id = $SB AND k.object = 'Databases' AND k.counter = 'Log Growths' AND k.inst IN ('_Total', 'pgvctr')
+  LEFT JOIN pgvigil.mssql_counter_sample s ON s.instance_id = $SB AND s.series_id = k.series_id AND s.snapshot_at = r.snapshot_at
+  ORDER BY r.snapshot_at DESC, k.inst"
+  pq "SELECT '      point ' || at || ' ' || value FROM pgvigil.metric_points($SB, 'counters', now() - interval '10 minutes', now()) WHERE metric = 'log_growths' ORDER BY at DESC LIMIT 3"
+  sq "SELECT '      SQL Server now: Log Growths [' + RTRIM(instance_name) + '] ' + CAST(cntr_value AS varchar(20)) FROM sys.dm_os_performance_counters WHERE RTRIM(counter_name) = N'Log Growths' AND RTRIM(instance_name) IN (N'_Total', N'pgvctr', N'master', N'tempdb');
+SELECT '      pgvctr log ' + CAST(size / 128 AS varchar(10)) + ' MB, growth ' + CAST(growth AS varchar(10)) + CASE WHEN is_percent_growth = 1 THEN ' %' ELSE ' pages' END FROM pgvctr.sys.database_files WHERE type = 1;"; }
 judge full_scans_per_search p_scans mssql_counters d_scans || fail "D: full_scans_per_search"
 judge page_lookups_per_batch p_lookups mssql_counters d_lookups || fail "D: page_lookups_per_batch"
 judge readahead_pct p_cold mssql_counters d_ahead || fail "D: readahead_pct"
 judge page_reads_s p_coldseek || fail "D: page_reads_s"
 judge page_writes_s p_writes || fail "D: page_writes_s"
 judge lock_requests_s p_lockreq mssql_counters d_lockreq || fail "D: lock_requests_s"
-judge log_growths p_growth mssql_counters_db || fail "D: log_growths"
+judge log_growths p_growth mssql_counters_db d_growths || fail "D: log_growths"
 if judge recompiles_per_100_compiles p_recompiles; then ok "D: recompiles_per_100_compiles fired and cleared"
 else echo "NOT PROVEN live: recompiles_per_100_compiles did not reach its warning with a procedure whose temp table changes shape (the line above)"; fi
 ok "D: thirteen provoked checks fired at their seeded thresholds; each cleared after two quiet reads 60 s apart, or its clear is NOT PROVEN above with the background named"
@@ -388,4 +408,5 @@ grep -v '^counters.page_reads_s|' "$TMPD/seed-a" | diff - "$TMPD/seed-f" >&2 || 
 ok "F: the 19 live seeded rows as read at A (rule_id, op, thresholds, for_minutes, off)"
 
 echo "NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low page life expectancy and a database taken offline at the seeded thresholds; SQL Server 2016, Managed Instance, a Windows host"
+[[ -n "$D_FROM" ]] && { echo "PARTIAL: D from $D_FROM (a diagnostic run, not a proof)"; exit 3; }
 echo "PROOF OK: mssql counter checks (A B C D E F)"
