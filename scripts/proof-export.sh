@@ -608,7 +608,7 @@ if (pq_) out.dbspace_p = { ...(await page(`#/dbspace?i=${pq_.instance_id}`)), in
 const dbsPick = (u, k) => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp');
   if (!a || !b) return { err: 'no Unit picker on the page' };
   a.focus(); a.value = ${JSON.stringify(u)}; a.dispatchEvent(new Event('change', { bubbles: true }));
-  b.value = ${JSON.stringify(k)}; b.dispatchEvent(new Event('change', { bubbles: true })); a.focus();
+  b.value = ${JSON.stringify(k)}; b.dispatchEvent(new Event('change', { bubbles: true }));
   return { ok: true }; })()`);
 const dbsRead = () => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp'), t = document.querySelector('main table.grid');
   return { unit: a ? a.value : null, dp: b ? b.value : null, focus: document.activeElement ? document.activeElement.id : '',
@@ -622,8 +622,9 @@ const dbsApi = () => ev(`(async () => { const u = performance.getEntriesByType('
 if (sq && pq_) {
   await cmd('Page.navigate', { url: U + `#/dbspace?i=${sq.instance_id}` }); await sleep(300);
   if (!await settled()) throw new Error('the SQL Server DB Space page did not render');
-  // sorted by allocated, largest first (two clicks), the first row read before the unit changes
-  await ev(`(() => { const t = document.querySelector('main table.grid'); const h = [...t.querySelectorAll('thead th')].find(x => /^allocated/.test(x.textContent.trim())); if (h) { h.click(); h.click(); } return !!h; })()`);
+  // sorted by allocated, smallest first (one click: the API's own order is largest first, so a sort the redraw lost
+  // shows), the first row read before the unit changes
+  await ev(`(() => { const t = document.querySelector('main table.grid'); const h = [...t.querySelectorAll('thead th')].find(x => /^allocated/.test(x.textContent.trim())); if (h) { h.click(); } return !!h; })()`);
   await sleep(300);
   out.dbs_sorted = await dbsRead();
   out.dbs_pick_mb = await dbsPick('MB', '2'); await sleep(500);
@@ -986,6 +987,10 @@ def carried(key, name, g, cells, cx, judge, value, least):
         if f == fill[s]: got[s] = got.get(s, 0) + 1
         else: miss.append(f"{colname(b)}{i + 2} {f} for {s}")
     check(not miss and sum(got.values()) >= 1 and all(got.get(k, 0) >= 1 for k in least), f"{key}: '{value}' is in the colour of '{judge}' in its row ({got}; at least one of {least or 'any'}; {len(miss)} wrong {miss[:3]})")
+def half_up(v, k):
+    # a value rounded as the page's toLocaleString rounds it: half away from zero on the exact binary value (100.125 -> 100.13)
+    from decimal import Decimal, ROUND_HALF_UP
+    return float(Decimal(v).quantize(Decimal(1).scaleb(-k), rounding=ROUND_HALF_UP))
 def number(t):
     t = re.sub(r'[\s\u202f\u00a0%+]', '', t)
     if ',' in t and '.' not in t: t = t.replace(',', '.')
@@ -1006,7 +1011,7 @@ def dbs_onedec(key, g, cells, cx):
             code = FMT_CODES.get(cx[sid]['fmt'], cx[sid]['fmt']) if sid < len(cx) else '?'
             n_ = number(t_); seen += 1
             if n_ is not None and n_ == int(n_): whole += 1
-            if not re.fullmatch(r'-?[\d\s\u202f\u00a0.,]*\d[.,]\d', t_) or v_ is None or code != '0.0' or n_ is None or abs(n_ - round(v_, 1)) >= 1e-9:
+            if not re.fullmatch(r'-?[\d\s\u202f\u00a0.,]*\d[.,]\d', t_) or v_ is None or code != '0.0' or n_ is None or abs(n_ - half_up(v_, 1)) >= 1e-9:
                 bad.append(f"{colname(j)}{i + 2} page {t_!r}, workbook {v_} under {code!r}")
     check(len(gb) >= 1 and seen >= 1 and whole >= 1 and not bad, f"{key}: every GB figure shows one decimal on the page and is a number under '0.0' in the workbook, the value shown ({len(gb)} GB columns, {seen} figures, {whole} whole; {len(bad)} off {bad[:3]})")
 def sheets_of(z):
@@ -1570,9 +1575,9 @@ else: print("not checked: sqljobs: the demo has no SQL Server instance (its Jobs
 if d.get('dbspace_i'): PAGES.append(('dbspace_i', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_i']['instance'])))
 else: print("not checked: dbspace_i: the demo has no SQL Server instance (its DB Space grid)")
 if d.get('dbspace_p'): PAGES.append(('dbspace_p', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_p']['instance'])))
+else: print("not checked: dbspace_p: the demo has no PostgreSQL instance (its DB Space grid)")
 for _k in ('dbspace_imb', 'dbspace_ptb'):   # (pickers) the DB Space pages exported in the unit and decimals picked
     if d.get(_k): PAGES.append((_k, 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d[_k]['instance'])))
-else: print("not checked: dbspace_p: the demo has no PostgreSQL instance (its DB Space grid)")
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
 for key, tab, inst in PAGES:
@@ -1810,7 +1815,7 @@ for key, tab, inst in PAGES:
             dsi_nums = [v for _, v, _ in dsi_v if v is not None]
             dsi_texts = sorted({t for _, v, t in dsi_v if v is None and t})
             dsi_odd = []   # (each value exact in its unit; its figure under '0.0' is the screen's: dsi_diff and dbs_onedec)
-            dsi_diff = [(s_, v) for (_, v, _), s_ in zip(dsi_v, dsi_scr) if not ((v is None and not s_) or (v is not None and s_ and number(s_) is not None and abs(number(s_) - round(v, 1)) < 1e-9))]
+            dsi_diff = [(s_, v) for (_, v, _), s_ in zip(dsi_v, dsi_scr) if not ((v is None and not s_) or (v is not None and s_ and number(s_) is not None and abs(number(s_) - half_up(v, 1)) < 1e-9))]
             dsi_full = len(dsi_nums) >= 1 if dsi_w == 'used (GB)' else len(dsi_nums) == len(dsi_rows)
             check(len(dsi_rows) == dsi_g['rows'] == len(dsi_scr) and dsi_full and not dsi_texts and not dsi_odd and not dsi_diff,
                   f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}, screen read {len(dsi_scr)}), text cells {dsi_texts[:3]}, not a tenth {dsi_odd[:3]}, off the screen {dsi_diff[:3]}")
@@ -1828,7 +1833,7 @@ for key, tab, inst in PAGES:
         if len(dsp_cols) > 2:
             dsp_a = [(dsp_c.get((r, dsp_cols[1])) or (0, None, None)) for r in dsp_rows]
             dsp_as = [(row[1]['t'] if len(row) > 1 else '') for row in dsp_scr]
-            dsp_bad = [(t_, v) for (_, v, _), t_ in zip(dsp_a, dsp_as) if v is None or number(t_) is None or abs(number(t_) - round(v, 1)) >= 1e-9]
+            dsp_bad = [(t_, v) for (_, v, _), t_ in zip(dsp_a, dsp_as) if v is None or number(t_) is None or abs(number(t_) - half_up(v, 1)) >= 1e-9]
             check(len(dsp_rows) == dsp_g['rows'] == len(dsp_scr) and not dsp_bad, f"dbspace_p: 'allocated (GB)' a number rounded to 0.1, the screen's, in every row ({len(dsp_rows)} rows, page {dsp_g['rows']}, screen read {len(dsp_scr)}; off {dsp_bad[:3]})")
             dsp_u = [(dsp_c.get((r, dsp_cols[2])) or (0, None, None))[2] for r in dsp_rows]
             dsp_us = [(row[2]['t'] if len(row) > 2 else '') for row in dsp_scr]
@@ -1858,7 +1863,7 @@ for key, tab, inst in PAGES:
                 dec = re.search(r'[.,](\d+)$', t_.replace('\u202f', '').replace('\u00a0', ''))
                 shown_k = len(dec.group(1)) if dec and (dpk_k > 0 or not re.search(r'[.,]\d{3}$', t_)) else 0
                 dpk_seen += 1
-                if b_ is None or v_ is None or abs(v_ - float(b_) / 1024 ** dpk_p) > 1e-9 * max(1.0, abs(v_)) or shown_k != dpk_k or number(t_) is None or abs(number(t_) - round(v_, dpk_k)) > 1e-9:
+                if b_ is None or v_ is None or abs(v_ - float(b_) / 1024 ** dpk_p) > 1e-9 * max(1.0, abs(v_)) or shown_k != dpk_k or number(t_) is None or abs(number(t_) - half_up(v_, dpk_k)) > 1e-9:
                     dpk_bad.append(f"{nm} {w}: page {t_!r}, workbook {v_}, API {b_}")
         check(dpk_seen >= 2 and not dpk_bad, f"{key}: every size figure shows {dpk_k} decimals; each workbook cell = the API's bytes / 1024^{dpk_p} exact, rounding to the screen's figure ({dpk_seen} figures; {dpk_bad[:3]})")
         # (the page's grouping) each size column under the screen's grouping: '#,##0.00' where a figure of the column groups
@@ -1874,6 +1879,7 @@ for key, tab, inst in PAGES:
             dpk_f = {fmt_code(cx[s_]['fmt']) for (r_, c_), (s_, v_, _t) in dpk_c.items() if r_ > 1 and c_ == dpk_cols[j] and v_ is not None}
             if dpk_f != {dpk_w}: dpk_fo.append(f"{w}: {sorted(dpk_f)}, want {dpk_w!r}")
         check(not dpk_fo, f"{key}: each size column's number format follows the screen's grouping, grouped only where a figure groups its thousands ({dpk_gr} grouped column(s); {dpk_fo[:3]})")
+        if not dpk_gr: print(f"not checked: {key}: the grouped format ('#,##0.00'): no figure of 1,000 or more in the unit picked on this demo")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
@@ -2085,7 +2091,11 @@ else:
         a_, s_ = d.get('dbs_after_mb') or {}, d.get('dbs_sorted') or {}
         check(a_.get('unit') == 'MB' and a_.get('dp') == '2' and {'dbs-unit', 'dbs-dp'} <= set(a_.get('labels') or []), f"pickers: MB and 2 picked, each select with its label ({a_.get('unit')}, {a_.get('dp')}, labels {a_.get('labels')})")
         check(a_.get('focus') == 'dbs-unit', f"pickers: the focus stays on the Unit select after the grid is drawn again (on {a_.get('focus')!r})")
-        check(bool(s_.get('first')) and a_.get('first') == s_.get('first') and any(h.startswith('allocated (MB)') for h in a_.get('head') or []), f"pickers: the sort survives the unit - first row {s_.get('first')!r} before, {a_.get('first')!r} after (sorted by allocated, largest first)")
+        # the API's own order is allocated, largest first: the click must have changed the first row, or a lost sort passes
+        api_ = [str(r.get('database')) for r in ((d.get('dbs_api_i') or {}).get('databases') or [])]
+        check(bool(s_.get('first')) and a_.get('first') == s_.get('first') and any(h.startswith('allocated (MB)') for h in a_.get('head') or [])
+              and (len(set(api_)) < 2 or s_.get('first') != api_[0]),
+              f"pickers: the sort survives the unit - first row {s_.get('first')!r} before, {a_.get('first')!r} after (sorted by allocated, smallest first; the API's first {api_[:1]})")
         check(sorted(a_.get('keys') or []) == ['pgvigil.grid.dbspace.size-decimals', 'pgvigil.grid.dbspace.size-unit'], f"pickers: the choice kept under the grid tools' prefix ({a_.get('keys')})")
         for nm_, r_ in (('the folder\'s page', d.get('dbs_folder') or {}), ('after a reload', d.get('dbs_reload') or {})):
             check(r_.get('unit') == 'MB' and r_.get('dp') == '2' and 'allocated (MB)' in (r_.get('head') or []), f"pickers: {nm_} shows MB / 2 and 'allocated (MB)' (remembered: {r_.get('unit')}, {r_.get('dp')}, {r_.get('head', [])[:3]})")
@@ -2094,7 +2104,7 @@ else:
         bk = d.get('dbs_back') or {}
         check(bk.get('unit') == 'GB' and bk.get('dp') == '1' and bk.get('keys') == [], f"pickers: GB / 1 picked back removes the size keys (the default kept as no key: {bk.get('keys')})")
         big = [r for r in ((d.get('dbs_api_p') or {}).get('databases') or []) if float(r.get('allocated_bytes') or 0) >= 1.1 * 1024 ** 3]
-        if big: check(True, f"pickers: the TB divisor proven on {len(big)} PostgreSQL database(s) of 1.1 GB or more (dbspace_ptb's rows)")
+        if big: print(f"the TB divisor: the dbspace_ptb row above holds TB / 3 against the API's bytes / 1024^4 on {len(big)} PostgreSQL database(s) of 1.1 GB or more")
         else: print("not checked: the TB divisor: no PostgreSQL database of 1.1 GB or more in the demo (TB divisor not proven)")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
