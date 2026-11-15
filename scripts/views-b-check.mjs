@@ -18,11 +18,12 @@ const E = process.env, only = (E.VB_CASES ?? '').split(/\s+/).filter(Boolean);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const connect = async wsUrl => {
   const ws = new WebSocket(wsUrl); await new Promise(r => ws.onopen = r);
-  let id = 0; const pend = new Map(), reqs = [];
+  let id = 0; const pend = new Map(), reqs = [], paused = [];
   ws.onmessage = m => {
     const d = JSON.parse(m.data);
     if (d.id && pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); }
     if (d.method === 'Network.requestWillBeSent') reqs.push(d.params.request.url);
+    if (d.method === 'Fetch.requestPaused') paused.push(d.params);   // a read held by a case (W9)
   };
   const send = (method, params = {}) => new Promise(r => { const i = ++id; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
   const ev = async e => {
@@ -32,7 +33,7 @@ const connect = async wsUrl => {
   };
   await send('Network.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
-  return { send, ev, reqs, ws };
+  return { send, ev, reqs, ws, paused };
 };
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
 const A = await connect(tabs.find(t => t.type === 'page').webSocketDebuggerUrl);
@@ -138,8 +139,29 @@ await run('W1d', async () => {
   await pick(/^\{None\}/);
   const h = await hash();
   await P.send('Page.reload'); await sleep(2500);
-  const k = await keys(), t = await vcText();
-  check('W1d', k.view === 'none' && /^View: None/.test(t ?? ''), `{None} then a reload: ${h} -> view=${k.view}, button '${t}'`);
+  const k = await keys(), t = await vcText(), f = await focusedOnly();
+  check('W1d', k.view === 'none' && /^View: None/.test(t ?? '') && k.focus === '1' && f?.allBad, `{None} then a reload: ${h} -> view=${k.view}, button '${t}', focus=${k.focus}, the grid ${JSON.stringify(f)} ({None} keeps the toggles)`);
+});
+await run('W1e', async () => {
+  // review B2: the server's bare address (no hash) with u1's default f1: the keys go into the hash, never before it
+  await go(''); await sleep(1000);
+  const h1 = await hash(), q1 = await P.ev('location.search'), t1 = await vcText();
+  await sleep(35000);   // past the Summary's 30-second refresh
+  const t2 = await vcText(), q2 = await P.ev('location.search'), k = await keys();
+  check('W1e', q1 === '' && q2 === '' && k.view === S.f1 && k.focus === '1' && /^View: f1/.test(t1 ?? '') && /^View: f1/.test(t2 ?? ''),
+    `a load of the bare address: hash '${h1}', search '${q1}', button '${t1}'; 35 s later: search '${q2}', view=${k.view} focus=${k.focus}, button '${t2}'`);
+});
+await run('W1f', async () => {
+  // review H1: Save as writes the saved keys with view=: a link copied at once draws what was saved
+  await go('#/summary?view=none'); if (await noControl('W1f')) return;
+  await P.ev(`localStorage.setItem('pgvigil.summaryFocus', '1'); 'ok'`);
+  await go('#/summary?view=none');
+  const s = await saveAs('f1h', { everyone: true });
+  const k = await keys();
+  S.f1h = s.id; S.f1hHash = await hash();
+  await P.ev(`localStorage.removeItem('pgvigil.summaryFocus'); 'ok'`);
+  check('W1f', !!s.id && k.view === s.id && k.focus === '1' && k.tests !== undefined && k.tmax !== undefined && k.sort !== undefined,
+    `Save as 'f1h' with Focused View from this browser only: the address ${S.f1hHash}`);
 });
 await run('W2', async () => {
   await go('#/perfsummary'); if (await noControl('W2')) return;
@@ -197,12 +219,22 @@ await run('W3', async () => {
   const listed = it.find(x => /^sq1/.test(x)) ?? '';
   await pick(/^sq1/);
   const k = await keys();
-  const oneLine = await P.ev(`(() => { const c = document.querySelector('main table.grid td.wide'); return c ? getComputedStyle(c).whiteSpace : 'no long-text cell'; })()`);
+  const oneLine = await P.ev(`(() => { const c = document.querySelector('.slow-groups.fit-cols table.grid td.wide, .slow-groups.fit-cols'); return c ? (c.matches('td') ? getComputedStyle(c).whiteSpace : 'nowrap') : 'no Auto Size on the Group by panel'; })()`);
   const it2 = await openMenu(); await P.ev(`document.body.click(); 'ok'`);
   const saveOff = it2.find(x => /^Save( |$)/.test(x)) ?? '';
-  check('W3', /long text on one line/.test(words) && /\(shared\)/.test(listed) && k.g === 'database' && k.top === '1000' && k.fit === '1' && oneLine === 'nowrap' && /\[off: .+\]/.test(saveOff),
+  check('W3', /on one line/.test(words) && /off: /.test(words) && /\(shared\)/.test(listed) && k.g === 'database' && k.top === '1000' && k.fit === '1' && oneLine === 'nowrap' && /\[off: .+\]/.test(saveOff),
     `the item '${words}'; u2 lists '${listed}', picks it: g=${k.g} top=${k.top} fit=${k.fit}, a long-text cell ${oneLine}; u2's '${saveOff}'`);
   await login(E.VB_U1, E.VB_U1PW);
+});
+await run('W3c', async () => {
+  // review M4: Auto Size acts on the Group by panel alone; a statement there shows up to 400 characters, off 80
+  await go('#/slowqueries?view=none&g=text&fit=1'); if (await noControl('W3c')) return;
+  const on = await P.ev(`(() => { const b = [...document.querySelectorAll('.slow-groups table.grid button.sqlcell')].find(x => (x.dataset.full || '').replace(/\\s+/g, ' ').length > 80);
+    return { panel: !!document.querySelector('.slow-groups.fit-cols'), page: !!document.querySelector('section.fit-cols'), long: !!b, len: b ? b.textContent.length : 0, title: b ? (b.closest('td').title || '').length : 0 }; })()`);
+  await go('#/slowqueries?view=none&g=text&fit=0');
+  const off = await P.ev(`(() => { const b = [...document.querySelectorAll('.slow-groups table.grid button.sqlcell')].find(x => (x.dataset.full || '').replace(/\\s+/g, ' ').length > 80); return b ? b.textContent.length : 0; })()`);
+  check('W3c', on.panel && !on.page && on.long && on.len > 81 && on.title > 81 && off > 0 && off <= 81,
+    `fit=1: the panel ${on.panel}, the page section ${on.page}, a statement over 80 characters ${on.long}: ${on.len} shown, title ${on.title}; fit=0: ${off} shown`);
 });
 await run('W3b', async () => {
   if (!E.VB_MSSQL) { check('W3b', false, 'the demo fleet has no SQL Server instance'); return; }
@@ -255,12 +287,40 @@ await run('W6', async () => {
   const k = await keys();
   check('W6', !!sOff && !sOff.range && sOn?.range?.w === '6h' && k.w === '6h', `p6off's state.range ${JSON.stringify(sOff?.range ?? null)}; p6's ${JSON.stringify(sOn?.range ?? null)}; picking p6 from 1h: w=${k.w}`);
 });
+await run('W6b', async () => {
+  // review H2: a rename keeps the stored range
+  await go('#/perfsummary?w=1h&view=none'); if (await noControl('W6b')) return;
+  await pick(/^p6( |$)/);
+  const { hit } = await pick(/^Rename/);
+  await sleep(300);
+  const r = await P.ev(`(() => { const d = document.querySelector('dialog[aria-label="Rename view"]'); if (!d) return 'no dialog';
+    const i = d.querySelector('input[name=name]'); i.value = 'p6r'; i.dispatchEvent(new Event('input', { bubbles: true }));
+    const b = [...d.querySelectorAll('button')].find(x => x.textContent.trim() === 'Rename'); if (!b) return 'no Rename button'; b.click(); return 'ok'; })()`);
+  for (let i = 0; i < 40; i++) { await sleep(250); if (!(await P.ev(`!!document.querySelector('dialog[aria-label="Rename view"][open]')`))) break; }
+  await sleep(1000);
+  await go('#/perfsummary?w=1h&view=none');
+  await pick(/^p6r( |$)/);
+  const k = await keys();
+  check('W6b', hit && r === 'ok' && k.w === '6h', `p6 renamed 'p6r' (${hit}, ${r}); picking p6r from 1h: w=${k.w}`);
+});
 await run('W7', async () => {
   if (!S.sq1hash) { check('W7', false, 'no sq1 address (W3 did not save it)'); return; }
   await login(E.VB_U2, E.VB_U2PW);
   await go(S.sq1hash);
-  const k = await keys(), t = await vcText();
-  check('W7', t !== null && k.g === 'database' && k.top === '1000' && k.fit === '1' && /^View: sq1/.test(t ?? ''), `u2 opens u1's link ${S.sq1hash}: g=${k.g} top=${k.top} fit=${k.fit}, button '${t}'`);
+  const t = await vcText();
+  // what the page drew (review M5: the address it opened says nothing)
+  const d = await P.ev(`(() => ({ g: document.querySelector('select[aria-label="Group By"]')?.value, top: document.querySelector('select[aria-label="Top"]')?.value, fit: !!document.querySelector('.slow-groups.fit-cols') }))()`);
+  check('W7', t !== null && d.g === 'database' && d.top === '1000' && d.fit && /^View: sq1/.test(t ?? ''), `u2 opens u1's link ${S.sq1hash}: Group By ${d.g}, Top ${d.top}, Auto Size ${d.fit}, button '${t}'`);
+  await login(E.VB_U1, E.VB_U1PW);
+});
+await run('W7b', async () => {
+  // review H1: u2 opens the shared f1h by a bare view= link (no keys): the view's keys are written and drawn
+  if (!S.f1h) { check('W7b', false, 'no f1h (W1f did not save it)'); return; }
+  await login(E.VB_U2, E.VB_U2PW);
+  await P.ev(`localStorage.removeItem('pgvigil.summaryFocus'); 'ok'`);
+  await go(`#/summary?view=${S.f1h}`);
+  const k = await keys(), f = await focusedOnly(), t = await vcText();
+  check('W7b', k.view === S.f1h && k.focus === '1' && f?.allBad && /^View: f1h$/.test(t ?? ''), `u2 opens #/summary?view=${S.f1h}: focus=${k.focus}, the grid ${JSON.stringify(f)}, button '${t}'`);
   await login(E.VB_U1, E.VB_U1PW);
 });
 await run('W8', async () => {
@@ -277,6 +337,37 @@ await run('W8', async () => {
   await go(`#/perfsummary?view=${S.p1}&mailrender=000000000000000000000000000000000000000000000000`);
   const h = await hiddenCols('Performance summary');
   check('W8', !!s.id && k.view === undefined && f?.rows === all?.rows && !h.includes(S.p1col), `a mail render of #/summary: view=${k.view ?? '(none)'}, ${f?.rows} instance rows (unfocused ${all?.rows}); of p1: hidden ${JSON.stringify(h)}`);
+});
+await run('W9', async () => {
+  // review B1: u1 enters the Summary (default f1) and leaves for Slow queries while the views list read is held; the
+  // read let go afterwards writes nothing into Slow queries
+  await go('#/about');
+  P.paused.length = 0;
+  await P.send('Fetch.enable', { patterns: [{ urlPattern: '*api/views?page=root%3Asummary*', requestStage: 'Request' }, { urlPattern: '*api/views?page=root:summary*', requestStage: 'Request' }] });
+  await P.send('Page.navigate', { url: base + '#/summary' });
+  for (let i = 0; i < 40 && !P.paused.length; i++) await sleep(250);
+  const held = P.paused.length > 0;
+  await P.ev(`location.hash = '#/slowqueries'; 'ok'`);
+  for (let i = 0; i < 60; i++) { await sleep(250); if (await P.ev(ready)) break; }
+  await sleep(1500);
+  for (const x of P.paused) await P.send('Fetch.continueRequest', { requestId: x.requestId });
+  await P.send('Fetch.disable');
+  await sleep(2500);
+  const k = await keys(), t = await vcText();
+  check('W9', held && (await hash()).startsWith('#/slowqueries') && k.view === undefined && k.focus === undefined && /^View: None/.test(t ?? ''),
+    `the list read held ${held}; on Slow queries after its release: ${await hash()}, button '${t}'`);
+});
+await run('W10', async () => {
+  // review M1: a view saved on an instance's Slow queries with a count's events open loads with no 'skipped' line
+  if (!E.VB_PG) { check('W10', false, 'no PostgreSQL instance'); return; }
+  await go(`#/slowqueries?i=${E.VB_PG}&view=none`); if (await noControl('W10')) return;
+  const opened = await P.ev(`(() => { const b = document.querySelector('.slow-groups table.grid button.link[aria-label$="list them"]'); if (!b) return false; b.click(); return true; })()`);
+  await sleep(2500);
+  const s = await saveAs('sk1');
+  await go(`#/slowqueries?i=${E.VB_PG}&view=${s.id}`);
+  await sleep(2000);
+  const n = await notes();
+  check('W10', opened && !!s.id && !n.some(x => /skipped/.test(x)), `saved 'sk1' (${s.id}) with a drill open (${opened}); loaded: notes ${JSON.stringify(n)}`);
 });
 
 // SHOTS (the design's P2; only with VB_SHOTS = a folder): each of the five view pages with its View menu open, in the

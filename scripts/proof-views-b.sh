@@ -18,7 +18,8 @@
 #     -> f1 DRAWN: the instance grid holds only rows with a warning or a critical status, the address has focus=1 and
 #     view=<f1>, the button reads 'View: f1'. W1b localStorage focus=1, an address without keys, Save as 'f1b' (no
 #     default); localStorage cleared, 'f1b' picked -> the focused grid (the effective value was saved). W1c a fresh
-#     load of #/summary -> f1 drawn. W1d {None} then a reload -> no default (view=none), the unfocused grid.
+#     load of #/summary -> f1 drawn. W1d {None} then a reload -> no default (view=none), the toggles kept: focus=1 and the
+#     focused grid [corrected at the review fold: the first header said 'the unfocused grid'; {None} keeps the toggles].
 #  W2 Performance Summary: u1 hides a column (the grid's menu 'Hide column <c>'), Save 'p1' -> {None}: the column back;
 #     'p1': hidden again. [refined after green run 1, before green run 2: the hide went into the browser's own choices,
 #     which {None} rightly gives back; they are cleared after the save, so W2-W2d and W8 see a viewer whose own layout
@@ -34,6 +35,23 @@
 #  W5 Top ALL in the panel asks top=all (the request seen over CDP); W5b under a tag folder ALL asks top=all, not 500.
 #  W6 'Save the time range' off: the saved view has no range; on ('p6'): picking it restores the range (w=).
 #  W7 u1's shared link to 'sq1' (the whole address) opened in u2's session draws its keys.
+#  Rows added at the review fold (part 1, FALLBACK; each red on f20395d9, the code before the fold, then green):
+#  W1e (B2) the bare address with u1's default f1: the hash carries focus=1 and view=<f1>, location.search stays empty,
+#     the button 'View: f1' now and 35 s later (past the 30-second refresh).
+#  W1f (H1) Focused View from localStorage only, Save as 'f1h' (Everyone): the address holds focus, tests, tmax, sort and
+#     view at once. W7b (H1) u2, its localStorage clear, opens #/summary?view=<f1h> (no keys): focus=1 written, the
+#     focused grid, the button 'View: f1h'.
+#  W3c (M4) #/slowqueries?g=text&fit=1: the Group by panel carries Auto Size, the page section does not; a statement
+#     over 80 characters shows more than 80, its cell's title too; fit=0: at most 80 (+ the ellipsis).
+#  W6b (H2) p6 renamed 'p6r': picking it from 1 h restores w=6h.
+#  W7 (M5) reads what u2's page drew (Group By, Top, Auto Size on the panel), not the address it opened.
+#  W9 (B1) the views list read of the Summary held (CDP Fetch) while the reader moves to Slow queries, then let go: the
+#     Slow queries address has no view= and no focus=, its button 'View: None'.
+#  W10 (M1) an instance's Slow queries saved as 'sk1' with a count's events open: loading it says no 'skipped'.
+#  NOT PROVEN: review M3 (2), a layer edit while the Group by panel reads (the button detached): no redraw on that page
+#  changes no key, so a red row cannot tell it from M2; read from the code (views.ts AbortController). Design V5's
+#  filter keystroke over ALL and its 90-day seed: the proof's demo holds 31 groups over 7 days (T: 0.066 s); a 5,000-group
+#  keystroke needs a seeded set of 5,000 shapes - a box job of its own.
 #  W8 a mail render (#/summary?mailrender=<48 hex>, the key mailRenderBoot reads) with a shared default focus=1 draws the
 #     unfocused grid; #/perfsummary?view=<p1>&mailrender=<48 hex> draws with the column shown (views off in a mail render).
 #  Red on rel-viewsb's base (75c72186 + the two server halves): T top=1000 -> 400 'top must be 1..500'; W1-W8 FAIL 'no
