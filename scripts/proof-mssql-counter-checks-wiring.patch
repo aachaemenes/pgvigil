@@ -1,8 +1,8 @@
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 2ea6318..d9a594a 100644
+index 2ea6318..c795e7f 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
-@@ -1021,3 +1021,28 @@ LANGUAGE sql STABLE AS $$
+@@ -1021,3 +1021,49 @@ LANGUAGE sql STABLE AS $$
      CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
                                                    s.cpu_count, wg.q::int) l
  $$;
@@ -12,25 +12,46 @@ index 2ea6318..d9a594a 100644
 +-- set (Allen 11-11 12:18); it notifies only when on (alert_rule_scope keeps enabled rules only). A user's own disabled
 +-- rule never colours. The rule in force wins: the seeded row is read only when no enabled rule covers the series, and
 +-- its name says it is off.
++-- An Edit of an off seed keeps its colours (402 S2, the lead's 11-14 22:0x): the live, off fleet rule of the series
++-- colours too when its replaces chain leads back to this metric's seed and no rule of the chain was ever on. An edit
++-- copies on / off from the rule it replaces and the seed is made off, so a chain was ever on exactly when one of its
++-- rules has a done 'enable' in alert_rule_log (never purged). A rule a user switched on and later off is that user's
++-- own off rule and colours nothing, nor does an edit of it; the seed itself colours on or off (the owner line).
 +CREATE OR REPLACE FUNCTION pgvigil.metric_rule(p_instance_id int, p_key text, p_database text DEFAULT NULL)
 +RETURNS TABLE (rule_id bigint, rule_name text, op text, warning double precision, critical double precision, for_minutes int,
 +               rule_scope text, rule_target text, rule_database text)
 +LANGUAGE sql STABLE AS $$
-+  WITH e AS (
++  WITH RECURSIVE e AS (
 +    SELECT e.rule_id, e.name, e.op, e.warning, e.critical, e.for_minutes, e.scope, coalesce(e.tag, e.instance_name), e.database
 +      FROM pgvigil.alert_rules_effective e
-+     WHERE e.instance_id = p_instance_id AND e.metric = p_key AND e.database IS NOT DISTINCT FROM p_database)
++     WHERE e.instance_id = p_instance_id AND e.metric = p_key AND e.database IS NOT DISTINCT FROM p_database),
++  o AS (       -- the series' live, off fleet rule (one at most: alert_rules_live_uq)
++    SELECT r.rule_id, r.name, r.metric, r.op, r.warning, r.critical, r.for_minutes, r.scope, r.database, r.replaces,
++           r.created_by, r.client
++      FROM pgvigil.alert_rules r
++     WHERE r.metric = p_key AND r.scope = 'fleet' AND r.ended_at IS NULL AND NOT r.enabled
++       AND r.database IS NOT DISTINCT FROM p_database),
++  ch AS (      -- that rule and each rule it replaces, back to the first (a successor's id is always the higher)
++    SELECT o.rule_id, o.replaces, o.created_by, o.client, o.metric FROM o
++    UNION ALL
++    SELECT a.rule_id, a.replaces, a.created_by, a.client, a.metric
++      FROM ch JOIN pgvigil.alert_rules a ON a.rule_id = ch.replaces AND a.rule_id < ch.rule_id)
 +  SELECT * FROM e
 +  UNION ALL
-+  SELECT r.rule_id, r.name || ' (off: colours only, no alert)', r.op, r.warning, r.critical, r.for_minutes, r.scope, NULL::text,
-+         r.database
-+    FROM pgvigil.alert_rules r
++  SELECT o.rule_id, coalesce(o.name, o.metric) || ' (off: colours only, no alert)', o.op, o.warning, o.critical,
++         o.for_minutes, o.scope, NULL::text, o.database
++    FROM o
 +    JOIN pgvigil.instances i ON i.instance_id = p_instance_id AND i.is_active
-+    JOIN pgvigil.metric_catalog c ON c.key = r.metric AND c.engine IN (i.engine, 'any')
-+   WHERE r.metric = p_key AND r.scope = 'fleet' AND r.ended_at IS NULL AND NOT r.enabled
-+     AND r.created_by = 'pgvigil' AND r.client = '0153 seed' AND r.database IS NOT DISTINCT FROM p_database
-+     AND NOT EXISTS (SELECT 1 FROM e)
++    JOIN pgvigil.metric_catalog c ON c.key = o.metric AND c.engine IN (i.engine, 'any')
++   WHERE NOT EXISTS (SELECT 1 FROM e)
++     AND (   (o.created_by = 'pgvigil' AND o.client = '0153 seed')
++          OR (    EXISTS (SELECT 1 FROM ch WHERE ch.replaces IS NULL AND ch.created_by = 'pgvigil' AND ch.client = '0153 seed'
++                             AND ch.metric = p_key)
++              AND NOT EXISTS (SELECT 1 FROM ch JOIN pgvigil.alert_rule_log l ON l.rule_id = ch.rule_id
++                               WHERE l.op = 'enable' AND l.outcome = 'done')))
 +$$;
++-- the walk's read of the switches: a done 'enable' by rule
++CREATE INDEX IF NOT EXISTS alert_rule_log_enable_idx ON pgvigil.alert_rule_log (rule_id) WHERE op = 'enable' AND outcome = 'done';
 diff --git i/internal/web/q_metrics.go w/internal/web/q_metrics.go
 index 62f936b..83f386d 100644
 --- i/internal/web/q_metrics.go

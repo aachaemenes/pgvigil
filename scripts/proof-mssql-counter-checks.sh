@@ -24,6 +24,11 @@
 #     carries the seed's rule_id, 2 and 5, a name ending '(off: colours only, no alert)', and metric_status
 #     'critical'; alert_rules_run writes no state and no finding for counters.logins_s; a user's own fleet rule on
 #     counters.latch_waits_s added and then switched off: metric_rule gives no row for it.
+#     B2 (402 S2, the lead's 22:0x; red on df1ffdc at B2a: 'none', the sandbox run s2-test of 11-14 22:2x read 10 of 14
+#     there and 14 of 14 on this metric_rule): the seed of counters.lock_timeouts_gt0_s (the one seeded row the proof
+#     edits, against F20: F leaves it out) edited to 0.5 / 2 while off: metric_rule gives the successor, 0.5 and 2, its
+#     name ending '(off: colours only, no alert)'; edited again (never on): the second successor; that one switched on
+#     is the rule in force (its name without the words); switched off: no row; an edit of it: no row (its chain was on).
 #  C. on by an instance rule (F20): an enabled instance rule on counters.logins_s at 2 / 5 for 0 minutes; the same
 #     load: state critical, one alert_rule_findings row naming it, the grid's rule the instance's with metric_status
 #     critical; two quiet reads: state ok and no finding; the seed keeps its rule_id and enabled false; GET
@@ -229,6 +234,29 @@ rule "{\"op\":\"disable\",\"ui_user\":\"proof402\",\"rule_id\":\"$UID_\"}" | gre
 [[ $(pq "SELECT count(*) FROM pgvigil.metric_rule($SB, 'counters.latch_waits_s')") == 0 ]] || fail "B: a user's own off rule colours"
 rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$UID_\"}" >/dev/null
 ok "B: the grid colours counters.logins_s critical by the seeded rule while it is off, its name says so; no state, no finding; a user's own off rule colours nothing"
+# B2 (402 S2): an Edit of an off seed keeps its colours while no rule of its chain was ever on
+S2M=counters.lock_timeouts_gt0_s
+mr() { pq "SELECT coalesce(string_agg(m.rule_id || '|' || coalesce(m.warning::text, '') || '|' || coalesce(m.critical::text, '') || '|' || m.rule_name, ' ; '), 'none') FROM pgvigil.metric_rule($SB, '$S2M') m"; }
+redit() { rule "{\"op\":\"edit\",\"ui_user\":\"proof402\",\"rule_id\":\"$1\",\"metric\":\"$S2M\",\"op_dir\":\"above\",\"scope\":\"fleet\",\"warning\":$2,\"critical\":$3,\"for_minutes\":15,\"name\":\"$4\"}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")'; }
+S2S=$(pq "SELECT rule_id FROM pgvigil.alert_rules WHERE metric = '$S2M' AND client = '0153 seed' AND ended_at IS NULL")
+[[ -n "$S2S" ]] || fail "B2: no live seed on $S2M"
+E1=$(redit "$S2S" 0.5 2 "proof402 fitted"); [[ -n "$E1" ]] || fail "B2: the edit of the off seed was refused"
+G=$(mr); echo "   B2a the off seed $S2S edited ($E1, off): $G"
+[[ "$G" == "$E1|0.5|2|proof402 fitted (off: colours only, no alert)" ]] || fail "B2a: an edited off seed lost its colours [$G]"
+E2=$(redit "$E1" 0.5 3 "proof402 fitted again"); [[ -n "$E2" ]] || fail "B2: the second edit was refused"
+G=$(mr); echo "   B2a3 edited again ($E2, never on): $G"
+[[ "$G" == "$E2|0.5|3|proof402 fitted again (off: colours only, no alert)" ]] || fail "B2a3: a second edit, never on, lost the colours [$G]"
+rule "{\"op\":\"enable\",\"ui_user\":\"proof402\",\"rule_id\":\"$E2\"}" | grep -q '"done"' || fail "B2: switching the successor on"
+G=$(mr); [[ "$G" == "$E2|0.5|3|proof402 fitted again" ]] || fail "B2b1: the successor switched on is not the rule in force [$G]"
+rule "{\"op\":\"disable\",\"ui_user\":\"proof402\",\"rule_id\":\"$E2\"}" | grep -q '"done"' || fail "B2: switching the successor off"
+G=$(mr); echo "   B2b switched on, then off: $G"
+[[ "$G" == none ]] || fail "B2b: an on-then-off successor colours [$G]"
+E3=$(redit "$E2" 0.5 4 "proof402 after on"); [[ -n "$E3" ]] || fail "B2: the edit of the on-then-off rule was refused"
+G=$(mr); echo "   B2c that rule edited ($E3): $G"
+[[ "$G" == none ]] || fail "B2c: an edit of an on-then-off rule colours [$G]"
+rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$E3\"}" >/dev/null
+ok "B2: an off seed edited keeps its colours, its name says off, through a second edit; switched on and off its chain colours nothing, nor does an edit of it"
 
 echo "== C. on by an instance rule (F20) =="
 # judge <metric> <provoke> [collection]: an enabled instance rule at the seed's thresholds for 0 minutes; a read, the
@@ -422,8 +450,9 @@ ok "E: free list stalls, lazy writes, hit ratio, page life expectancy per 4 GB, 
 echo "== F. the seeded rows at the end =="
 pq "SELECT metric || '|' || rule_id || '|' || op || '|' || coalesce(warning::text, '') || '|' || coalesce(critical::text, '') || '|' || for_minutes || '|' || enabled || '|' || scope
       FROM pgvigil.alert_rules WHERE created_by = 'pgvigil' AND client = '0153 seed' AND ended_at IS NULL ORDER BY metric" > "$TMPD/seed-f"
-grep -v '^counters.page_reads_s|' "$TMPD/seed-a" | diff - "$TMPD/seed-f" >&2 || fail "F: a seeded row changed"
-ok "F: the 19 live seeded rows as read at A (rule_id, op, thresholds, for_minutes, off)"
+# the two seeds the proof ends: page reads at A, lock timeouts at B2
+grep -vE '^counters\.(page_reads_s|lock_timeouts_gt0_s)\|' "$TMPD/seed-a" | diff - "$TMPD/seed-f" >&2 || fail "F: a seeded row changed"
+ok "F: the $(wc -l < "$TMPD/seed-f") live seeded rows as read at A (rule_id, op, thresholds, for_minutes, off)"
 
 echo "NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low page life expectancy and a database taken offline at the seeded thresholds; SQL Server 2016, Managed Instance, a Windows host"
 [[ -n "$D_FROM" ]] && { echo "PARTIAL: D from $D_FROM (a diagnostic run, not a proof)"; exit 3; }
