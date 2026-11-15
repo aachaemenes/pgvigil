@@ -189,14 +189,17 @@ LEFT JOIN msdb.dbo.sysjobs j ON j.job_id = x.job_id`
 // TestLogShippingForeignPathsLive runs this fragment as it is over Windows- and Linux-shaped paths.
 const lsForeignWhere = `
 CROSS APPLY (SELECT UPPER(REPLACE(ISNULL(x.file_name, N''), N'/', N'\')) AS fn,
-                    UPPER(REPLACE(ISNULL(x.backup_directory, N''), N'/', N'\')) AS d1,
-                    UPPER(REPLACE(ISNULL(x.backup_share, N''), N'/', N'\')) AS d2,
+                    UPPER(RTRIM(REPLACE(ISNULL(x.backup_directory, N''), N'/', N'\'))) AS d1,
+                    UPPER(RTRIM(REPLACE(ISNULL(x.backup_share, N''), N'/', N'\'))) AS d2,
                     UPPER(x.database_name) AS db) n
-CROSS APPLY (SELECT CASE WHEN RIGHT(n.d1, 1) = N'\' THEN LEFT(n.d1, LEN(n.d1) - 1) ELSE n.d1 END AS d1,
-                    CASE WHEN RIGHT(n.d2, 1) = N'\' THEN LEFT(n.d2, LEN(n.d2) - 1) ELSE n.d2 END AS d2) t
+CROSS APPLY (SELECT RTRIM(CASE WHEN RIGHT(n.d1, 1) = N'\' THEN LEFT(n.d1, LEN(n.d1) - 1) ELSE n.d1 END) AS d1,
+                    RTRIM(CASE WHEN RIGHT(n.d2, 1) = N'\' THEN LEFT(n.d2, LEN(n.d2) - 1) ELSE n.d2 END) AS d2,
+                    RIGHT(n.fn, CHARINDEX(N'\', REVERSE(n.fn) + N'\') - 1) AS leaf) t
 WHERE LEN(t.d1) > 0
   AND LEFT(n.fn, LEN(t.d1) + 1) <> t.d1 + N'\'
-  AND (LEN(t.d2) = 0 OR LEFT(n.fn, LEN(t.d2) + 1) <> t.d2 + N'\')`
+  AND (LEN(t.d2) = 0 OR LEFT(n.fn, LEN(t.d2) + 1) <> t.d2 + N'\')
+  AND NOT (LEN(t.leaf) = LEN(n.db) + 19 AND LEFT(t.leaf, LEN(n.db) + 1) = n.db + N'_'
+           AND SUBSTRING(t.leaf, LEN(n.db) + 2, 14) NOT LIKE N'%[^0-9]%' AND RIGHT(t.leaf, 4) = N'.TRN')`
 
 // lsForeignSQL: on a primary, every log backup of a log-shipped database finished in the last 24 hours (this
 // server's own rows) that is NOT copy-only and is not log shipping's own (lsForeignWhere) - another job's log backup:
