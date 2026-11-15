@@ -239,7 +239,12 @@
 #        starts; every import of LD during the build still under 2 s [red FAIL: e6b2501 heals 'mark' first and deletes
 #        its row at the build's start, so each import of LD waits on that row 1 s for its mark and 1 s for its
 #        'rollup failed' row]; the stand-in hour healed (no dirty range after the next import, as before)
-#   LDR  after the build, 5 imports of LD with its rollup running (the lock free; 30 days of 300 databases stored):
+#   LD   (07:2x, after 375full2) the hours marked before and during the build: the next import heals what its budget
+#        holds, purge's heal_one the rest - no dirty range (the 'next import heals all' of 18:0x predates review A's #4:
+#        a budgeted heal now stops at 2 s; the build's imports a second apart fill an hour 60 times a collector's rate)
+#   LDR  after the build, its samples a second apart removed and 5 reads a minute apart imported (a collector's rate;
+#        07:2x, after 375full2 measured the rows on the build's rate),
+#        5 imports of LD with its rollup running (the lock free; 30 days of 300 databases stored):
 #        each import's server time under 1000 ms, and replication_rises(LD) over the conflicts check's 13 minutes
 #        under 300 ms [red FAIL expected: e6b2501's 'standby' EXISTS has no time bound and reads LD's whole history;
 #        a plan that probes the index per row would pass it - then the difference is said in one line]
@@ -1104,9 +1109,20 @@ SQL
   [[ "$b" == rc\ 0\ * && "$n" -ge 1 && "$worst" -lt 2000 && "$worst2" -lt 2000 && "$bad" == 0 && "$r" == 72[0-9]\|1\|0 && "${r3%%|*}" == "$(( n * 301 ))" && "$r3" == *\|0\|[1-9]* ]] \
     && ok "LD the first build ($b) ran beside $n imports of it and $n of another instance, each under 2 s (slowest $worst / $worst2 ms), every one stored ($r3); 72x receiver hours" \
     || fail "LD build '$b', $n imports, slowest $worst / $worst2 ms, failed $bad, '$r', '$r3' (expected rc 0, every import under 2000 ms and stored ($(( n * 301 ))|0|<hours>), 72x|1|0)"
+  # the hours marked before and during the build: the next import heals what its 2 s budget holds (one UTC hour a
+  # chunk since review A's #4), purge's next pass (heal_one) the rest
   imp "$LD" "now()" "$CONF"
+  r1=$(q "select coalesce((select round(extract(epoch from to_at - from_at) / 3600, 1)::text from pgvigil.replication_hourly_dirty where instance_id = $LD and source = 'mark'), 'none')")
+  q "select pgvigil.replication_hourly_heal_one($LD)" >/dev/null
   r=$(q "select count(*) from pgvigil.replication_hourly_dirty where instance_id = $LD")
-  [[ "$r" == 0 ]] && ok "LD the import after the build healed the hours marked before and during it" || fail "LD dirty ranges after the build: $r"
+  [[ "$r" == 0 ]] && ok "LD the hours marked before and during the build healed (left after the next import: $r1 hours; then purge's heal_one: none)" || fail "LD dirty ranges after the next import ($r1 hours left) and heal_one: $r"
+  # the build's imports came a second apart (60 times a collector's rate): removed before the rows below, which
+  # measure a collector's rate - five reads a minute apart, then the timed ones (the AFTER DELETE trigger recomputes
+  # the hours the delete touches)
+  n=$(q "with d as (delete from pgvigil.replication_sample where instance_id = $LD and snapshot_at > now() - interval '100 days' returning 1) select count(*) from d")
+  for k in 5 4 3 2 1; do imp "$LD" "now() - interval '$k minutes'" "$CONF"; done
+  w=$(q "select count(*) from pgvigil.replication_sample where instance_id = $LD and snapshot_at > now() - interval '28 minutes'")
+  echo "  LD the build's $n samples a second apart removed; LD's samples in the conflicts check's 28 minutes now: $w (5 reads a minute apart)"
   # LDR review A #3: imports with LD's rollup running (the lock free, 30 days of 300 databases stored) and the conflicts
   # check's rises read
   svs=""; worst=0
