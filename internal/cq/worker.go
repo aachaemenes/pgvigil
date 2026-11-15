@@ -469,10 +469,9 @@ func (w *Worker) start(ctx context.Context, r Request, raw []byte) {
 			// 'cancelled' here would be a false word)
 			end.Outcome = strings.TrimSpace(end.Outcome + " (the cancel came after it had ended)")
 		case cancelled && end.State != "refused":
-			end.State, end.Result = "cancelled", nil
-			if end.Outcome == "" {
-				end.Outcome = why
-			}
+			// the worker cut it: the cancel's words (the asker's, or the collector's stop), not the runner's own account
+			// of its cut context, as the deadline's words below
+			end.State, end.Result, end.Outcome = "cancelled", nil, why
 		case errors.Is(rctx.Err(), context.DeadlineExceeded) && end.State != "done" && end.State != "refused":
 			end.State = "failed"
 			end.Outcome = "the run passed its time (its request expired while it ran)"
