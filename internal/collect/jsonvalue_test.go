@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -118,7 +119,7 @@ func TestRowsToMapsInfinityLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the casts the imports use do not read the JSON back: %v (JSON %s)", err, b)
 	}
-	if want := "true true true true true true true true true true true true true"; back != want {
+	if want := "t t t t t t t t t t t t t"; back != want { // concat_ws writes a boolean through its output function (t)
 		t.Errorf("read back %q, want %q (JSON %s)", back, want, b)
 	}
 }
@@ -147,8 +148,17 @@ func TestRolesValidUntilInfinityImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	sfx := time.Now().UTC().Format("150405000")
+	sfx := strconv.FormatInt(time.Now().UnixNano()%1_000_000_000_000, 10)
 	role, roleNeg := "pginf_inf_"+sfx, "pginf_ninf_"+sfx
+	// the drop is deferred before the first CREATE (and after the connection's close: it runs first), so a CREATE that
+	// fails part way leaves no role behind
+	defer func() {
+		for _, n := range []string{role, roleNeg} {
+			if _, err := conn.Exec(context.Background(), `DROP ROLE IF EXISTS `+n); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
 	for _, q := range []string{
 		`CREATE ROLE ` + role + ` NOLOGIN VALID UNTIL 'infinity'`,
 		`CREATE ROLE ` + roleNeg + ` NOLOGIN VALID UNTIL '-infinity'`,
@@ -157,13 +167,6 @@ func TestRolesValidUntilInfinityImport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	defer func() {
-		for _, n := range []string{role, roleNeg} {
-			if _, err := conn.Exec(context.Background(), `DROP ROLE IF EXISTS `+n); err != nil {
-				t.Error(err)
-			}
-		}
-	}()
 	name := "pginf-roles-" + sfx
 	id, err := r.EnsureInstance(ctx, name, "onprem", "fixture", 180000, false, []string{"fixture"})
 	if err != nil {
@@ -186,7 +189,7 @@ func TestRolesValidUntilInfinityImport(t *testing.T) {
 	                                FROM pgvigil.role_attributes WHERE instance_id = $1 AND rolname IN ($2, $3)`, id, role, roleNeg).Scan(&got); err != nil {
 		t.Fatal(err)
 	}
-	if want := roleNeg + "=-infinity " + role + "=infinity"; got != want {
+	if want := role + "=infinity " + roleNeg + "=-infinity"; got != want { // by name: pginf_inf_ sorts before pginf_ninf_
 		t.Errorf("role_attributes %q, want %q", got, want)
 	}
 }

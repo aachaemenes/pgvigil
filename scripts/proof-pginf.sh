@@ -13,8 +13,12 @@
 #     TestRolesValidUntilInfinityImport  FAIL 'did not import: ERROR: invalid input syntax for type timestamp with
 #                                        time zone: "1" (SQLSTATE 22007)' - the RDS lab's error, on-prem
 #     TestQueryJSONValues                FAIL 'query: the table does not marshal ... unsupported value: NaN'
-#   green (the fix): all four PASS; PGINF_FULL=1: ok for ./internal/collect/ and ./internal/web/ (their other
-#     database tests skip unless their own variables are set).
+#     TestPgCellJSONValues               FAIL 'the cells do not marshal ... unsupported value: NaN' (added with the
+#                                        review's fold; red on f22a85b3, whose fix did not reach custom reports' pgCell)
+#   green (the fix): all five PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: ok for
+#     ./internal/collect/ and ./internal/web/ - their other tests gated on PGVIGIL_REPO_DSN / PGVIGIL_REPO_TEST_DSN
+#     run against this throwaway database too (collect: dms, statements, pi, versions, cloudwatch_io; web: actions,
+#     q_plans, q_storage, migrate, perf_scope and more); every other database test skips without its own variable.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 TAG=pginf-$$-$RANDOM
@@ -37,8 +41,13 @@ W=$(mktemp -d); trap 'cleanup; rm -rf "$W"' EXIT
 pick() { grep -E '^(=== RUN|--- |ok|FAIL|PASS|panic)|jsonvalue_test.go' "$1"; }
 go test ./internal/collect/ -run '^(TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport)$' -count=1 -v > "$W/c.out" 2>&1 || RC=1
 pick "$W/c.out"
-go test ./internal/web/ -run '^TestQueryJSONValues$' -count=1 -v > "$W/w.out" 2>&1 || RC=1
+go test ./internal/web/ -run '^(TestQueryJSONValues|TestPgCellJSONValues)$' -count=1 -v > "$W/w.out" 2>&1 || RC=1
 pick "$W/w.out"
+# a test that skipped (its variable unset) or matched nothing passes go test: the five are counted
+NP=$(cat "$W/c.out" "$W/w.out" | grep -cE '^--- PASS: (TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport|TestQueryJSONValues|TestPgCellJSONValues) ')
+NS=$(cat "$W/c.out" "$W/w.out" | grep -c '^--- SKIP')
+[ "$NP" = 5 ] && [ "$NS" = 0 ] || { echo "FAIL $NP of the 5 rows passed, $NS skipped"; RC=1; }
+[ "$RC" = 0 ] || { echo "pginf: the whole output of the rows:"; cat "$W/c.out" "$W/w.out"; }
 if [ "${PGINF_FULL:-0}" = 1 ]; then
   echo "pginf: the whole collect and web packages"
   go test ./internal/collect/ ./internal/web/ -count=1 2>&1 | tail -20
