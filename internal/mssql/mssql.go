@@ -53,6 +53,18 @@ type Collector interface {
 
 // Timeouter is what a collector adds when one run needs more (or must take less) than RunTimeout on the SQL
 // Server side: a reader of an Extended Events file, a pass over every database.
+// InstanceRunner is a collection that reads the instance's configuration too (a cloud door: task 390a's azure:
+// block); RunOnce calls RunInstance in place of Run.
+type InstanceRunner interface {
+	RunInstance(ctx context.Context, conn *sql.Conn, info Info, in config.Instance) ([]collect.Row, error)
+}
+
+// Configurer is a collection that runs only where the configuration names its door; a run without it is skipped
+// with the reason before any connection (as a collection that does not apply).
+type Configurer interface {
+	Configured(in config.Instance) (bool, string)
+}
+
 type Timeouter interface {
 	Timeout() time.Duration
 }
@@ -486,7 +498,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	// (detectcache.go): recorded on the instance the connecting run named, its row (last_seen, version) left as that
 	// run wrote it - nothing was read; an instance row gone meanwhile (removed and added again) is made again first
 	if info, instanceID, ok := cachedDetect(in, start); ok {
-		if applies, why := c.Applies(info); !applies {
+		applies, why := c.Applies(info)
+		if cc, isCfg := c.(Configurer); applies && isCfg {
+			applies, why = cc.Configured(in)
+		}
+		if !applies {
 			lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			err := r.LogCollection(lctx, instanceID, name, start, time.Since(start), "skipped", why)
 			lcancel()
@@ -532,7 +548,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return collect.Result{Err: err, Duration: time.Since(start)}
 	}
 	rememberDetect(in, info, instanceID, start)
-	if ok, why := c.Applies(info); !ok {
+	ok, why := c.Applies(info)
+	if cc, isCfg := c.(Configurer); ok && isCfg {
+		ok, why = cc.Configured(in)
+	}
+	if !ok {
 		logRun(instanceID, "skipped", why)
 		return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
@@ -555,6 +575,8 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			defer ccancel()
 			return r.MSSQLSeqCursor(cctx, instanceID, source)
 		})
+	} else if ir, isInst := c.(InstanceRunner); isInst {
+		rows, err = ir.RunInstance(sctx, conn, info, in)
 	} else {
 		rows, err = c.Run(sctx, conn, info)
 	}
