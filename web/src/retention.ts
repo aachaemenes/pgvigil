@@ -7,6 +7,7 @@
 // Data: /api/retention?days=N.
 import { get, Table, rowsOf } from './api';
 import type { Ctx } from './router';
+import { fleetWideNote } from './fleet';
 import { Col, el, errorBox, fmtBytes, fmtNum, grid } from './ui';
 
 const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -33,10 +34,13 @@ function late(r: Record<string, unknown>, days: number): boolean {
   return a > days + 1;
 }
 
-export async function retentionView(_ctx: Ctx): Promise<HTMLElement> {
+export async function retentionView(ctx: Ctx): Promise<HTMLElement> {
   let days = Number(lsGet(KEY));
   if (!Number.isInteger(days) || days < 1 || days > 3650) days = 30;
   const sec = el('section', {}, el('h2', {}, 'Data retention'));
+  // under a tag folder (TAGALL): the page is the repository's own, said in one line
+  const wide = fleetWideNote(ctx, 'Data retention is one setting');
+  if (wide) sec.append(wide);
   const age = el('input', { type: 'number', min: '1', max: '3650', step: '1', value: String(days), id: 'ret-days', style: 'width:5rem' }) as HTMLInputElement;
   const apply = el('button', { type: 'button' }, 'Preview');
   const body = el('div');
