@@ -142,13 +142,21 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_files_cursor (
   instance_id    int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   last_set_id    bigint NOT NULL,
   mark           bigint,                            -- CHECKSUM(backup_set_uuid) of the row at last_set_id as it was read
+  -- the databases whose sets a read deleted because it did not list them (dropped - or hidden from the login for a
+  -- while: sys.databases lists only what it may see). Their sets older than the cursor are never read again, so when one
+  -- is listed again the cursor goes back to 0 and the next read is one full pass.
+  unlisted       text[] NOT NULL DEFAULT '{}',
   updated_at     timestamptz NOT NULL
 );
 
 -- mssql_backup_root: the destination a backup file's path names, the part that does not change from one backup to the
--- next (a date folder, a file name). A URL by its scheme, never by the device kind: Azure Blob 'https://<account>/<container>';
--- S3 path style (an endpoint with a port, an IP address, or a host starting 's3.' / 's3-') 's3://<endpoint>/<bucket>',
--- virtual-host style 's3://<bucket>.<domain>'; any other scheme '<scheme>://<host>'. A share '\\host\share' in lower case
+-- next (a date folder, a file name). A URL by its scheme, never by the device kind, and never with its last part (the
+-- file) in the root: Azure Blob 'https://<account>/<container>' (a blob at the top, the $root container: the host);
+-- S3 (Learn: path style 's3://<endpoint>:<port>/<bucket>/<file>', the port optional; virtual host 's3://<bucket>.<domain>/<file>';
+-- SQL Server names no rule between them): 's3://<bucket>.s3[.-]...' (Amazon's virtual host) or a file right after the host
+-- = 's3://<host>'; any other S3 URL with a folder after the host is path style, 's3://<endpoint>/<bucket>' (a virtual host
+-- on another domain with folders is read so: its first folder taken for the bucket); any other scheme '<scheme>://<host>'.
+-- A share '\\host\share' in lower case
 -- (\\name, \\name.domain and \\10.1.2.3 are three roots, and a DFS namespace hides its target); a drive 'X:\'; a Linux
 -- path its first two directories ('/mnt/nfs_old'); a virtual device 'virtual device (<software>)'; NUL and a tape as
 -- named; anything else the path itself.
@@ -159,14 +167,17 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
     WHEN upper(btrim(p_path)) IN ('NUL', 'NUL:') THEN 'NUL'
     WHEN p_path ~* '^[a-z][a-z0-9+.-]*://' THEN
       (SELECT CASE
-         WHEN u.scheme = 's3' AND (u.host ~ ':[0-9]+$' OR u.host ~ '^[0-9.]+(:[0-9]+)?$' OR u.host ~ '^\[' OR u.host ~* '^s3[.-]')
-           THEN 's3://' || u.host || coalesce('/' || nullif(u.seg1, ''), '')
+         WHEN u.scheme = 's3' AND u.folder
+              AND (u.host ~ ':[0-9]+$' OR u.host ~ '^[0-9.]+(:[0-9]+)?$' OR u.host ~ '^\[' OR u.host ~* '^s3[.-]' OR u.host !~* '\.s3[.-]')
+           THEN 's3://' || u.host || '/' || u.seg1
          WHEN u.scheme = 's3' THEN 's3://' || u.host
-         WHEN u.scheme IN ('https', 'http') THEN u.scheme || '://' || u.host || coalesce('/' || nullif(u.seg1, ''), '')
+         WHEN u.scheme IN ('https', 'http') THEN u.scheme || '://' || u.host || CASE WHEN u.folder THEN '/' || u.seg1 ELSE '' END
          ELSE u.scheme || '://' || u.host END
          FROM (SELECT lower(split_part(p_path, '://', 1)) AS scheme,
                       lower(split_part(split_part(p_path, '://', 2), '/', 1)) AS host,
-                      split_part(split_part(p_path, '://', 2), '/', 2) AS seg1) u)
+                      split_part(split_part(p_path, '://', 2), '/', 2) AS seg1,
+                      -- the part after the host is a folder (a '/' follows it), never the file
+                      split_part(p_path, '://', 2) ~ '^[^/]*/[^/]+/' AS folder) u)
     WHEN p_kind = 'virtual device' THEN 'virtual device (' || coalesce(nullif(btrim(p_software), ''), 'unknown software') || ')'
     WHEN p_kind = 'tape' THEN 'tape ' || p_path
     WHEN p_path ~ '^\\\\[^\\]+\\[^\\]+' THEN lower(substring(p_path FROM '^(\\\\[^\\]+\\[^\\]+)'))
@@ -196,25 +207,31 @@ RETURNS text LANGUAGE sql STABLE AS $$
 $$;
 
 -- mssql_backup_same_volume: whether a stored set's files sit with the database's own files, in words. 'yes: ...' is a
--- finding; 'no' is none; 'not judged: ...' says why it cannot be told. Windows: by volume (above); the instance's volumes
--- never read (the storage collection skipped, or every volume NULL without VIEW SERVER STATE) = not judged. Linux (a
--- path starting '/'): only a backup in the directory of one of the database's files (or below it) is judged, as 'yes';
--- the volume of any other directory is not read. A share, a URL, a tape or a virtual device never sits on the database's
--- volume. Amazon RDS and Managed Instance: not judged until a real row of theirs is seen.
+-- finding; 'no' is none; 'not judged: ...' says why it cannot be told. Windows: by volume (above) - but mssql_volumes
+-- holds only the volumes that hold a database file (storage.go reads sys.dm_os_volume_stats per database file), so a
+-- folder mounted for the backups alone is never listed and its path matches the volume above it: a backup on the same
+-- volume as a database file is 'yes' only when its directory is that volume's root, or a database file (of the set, or
+-- any file the storage collection read) sits in that directory or below it on that volume; else 'not judged: <dir> may be
+-- a mounted folder'. The instance's volumes never read (the storage collection skipped, or every volume NULL without VIEW
+-- SERVER STATE) = not judged. Linux (a path starting '/'): only a backup in the very directory of one of the database's
+-- files is judged, as 'yes'; a directory below it may be a mounted folder (not judged), and the volume of any other
+-- directory is not read. A share, a URL, a tape or a virtual device never sits on the database's volume. Amazon RDS and
+-- Managed Instance: not judged until a real row of theirs is seen.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_backup_same_volume(p_instance_id int, p_database text, p_type text, p_copy_only boolean)
 RETURNS text LANGUAGE plpgsql STABLE AS $$
 DECLARE
   v_platform text;
-  v_kind text;
-  v_hit text;
+  v_path text;
+  v_vol text;
+  v_dbfile text;
+  v_dir text;
+  v_proven boolean;
 BEGIN
   SELECT platform INTO v_platform FROM pgvigil.instances WHERE instance_id = p_instance_id;
   IF v_platform IN ('rdssqlserver', 'azuresqlmi') THEN
     RETURN 'not judged: ' || CASE v_platform WHEN 'rdssqlserver' THEN 'Amazon RDS' ELSE 'Azure SQL Managed Instance' END
            || ' - the volume of its backup rows is not known (no real row of it seen yet)';
   END IF;
-  SELECT device_kind INTO v_kind FROM pgvigil.mssql_backup_sets
-   WHERE instance_id = p_instance_id AND database_name = p_database AND backup_type = p_type AND is_copy_only = p_copy_only;
   IF NOT EXISTS (SELECT 1 FROM pgvigil.mssql_backup_files f WHERE f.instance_id = p_instance_id AND f.database_name = p_database
                     AND f.backup_type = p_type AND f.is_copy_only = p_copy_only AND (f.path ~ '^[A-Za-z]:[\\/]' OR f.path ~ '^/')) THEN
     RETURN 'no';   -- a share, a URL, a tape, a virtual device
@@ -223,17 +240,20 @@ BEGIN
                     AND d.backup_type = p_type AND d.is_copy_only = p_copy_only AND d.physical_name IS NOT NULL) THEN
     RETURN 'not judged: msdb recorded no file of the database with this backup';
   END IF;
-  -- Linux: the directory rule
-  SELECT f.path || ' is in ' || pgvigil.mssql_backup_dir(d.physical_name) || ', the directory of ' || d.physical_name INTO v_hit
+  -- Linux: the directory rule (the same directory = yes; below it = not judged)
+  SELECT f.path, d.physical_name, pgvigil.mssql_backup_dir(f.path), pgvigil.mssql_backup_dir(f.path) = pgvigil.mssql_backup_dir(d.physical_name) AS same
+    INTO v_path, v_dbfile, v_dir, v_proven
     FROM pgvigil.mssql_backup_files f
     JOIN pgvigil.mssql_backup_dbfiles d ON d.instance_id = f.instance_id AND d.database_name = f.database_name
          AND d.backup_type = f.backup_type AND d.is_copy_only = f.is_copy_only
    WHERE f.instance_id = p_instance_id AND f.database_name = p_database AND f.backup_type = p_type AND f.is_copy_only = p_copy_only
      AND f.path ~ '^/' AND d.physical_name ~ '^/' AND pgvigil.mssql_backup_dir(d.physical_name) IS NOT NULL
      AND left(f.path, length(pgvigil.mssql_backup_dir(d.physical_name))) = pgvigil.mssql_backup_dir(d.physical_name)
-   ORDER BY f.family, f.mirror, d.file_number LIMIT 1;
-  IF v_hit IS NOT NULL THEN
-    RETURN 'yes: ' || v_hit;
+   ORDER BY same DESC, f.family, f.mirror, d.file_number LIMIT 1;
+  IF v_path IS NOT NULL THEN
+    RETURN CASE WHEN v_proven THEN 'yes: ' || v_path || ' is in ' || v_dir || ', the directory of ' || v_dbfile
+                ELSE 'not judged: ' || v_dir || ' is below ' || pgvigil.mssql_backup_dir(v_dbfile) || ', the directory of ' || v_dbfile
+                     || ', and may be a mounted folder of its own (the volume of another directory is not read)' END;
   END IF;
   IF EXISTS (SELECT 1 FROM pgvigil.mssql_backup_files f WHERE f.instance_id = p_instance_id AND f.database_name = p_database
                 AND f.backup_type = p_type AND f.is_copy_only = p_copy_only AND f.path ~ '^/') THEN
@@ -243,15 +263,33 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pgvigil.mssql_volumes v WHERE v.instance_id = p_instance_id AND v.is_present AND v.volume ~ '^[A-Za-z]:[\\/]') THEN
     RETURN 'not judged: volumes not read (the storage collection needs VIEW ANY DEFINITION and VIEW SERVER STATE)';
   END IF;
-  SELECT f.path || ' is on ' || pgvigil.mssql_backup_volume(p_instance_id, f.path) || ', the volume of ' || d.physical_name INTO v_hit
-    FROM pgvigil.mssql_backup_files f
-    JOIN pgvigil.mssql_backup_dbfiles d ON d.instance_id = f.instance_id AND d.database_name = f.database_name
-         AND d.backup_type = f.backup_type AND d.is_copy_only = f.is_copy_only
-   WHERE f.instance_id = p_instance_id AND f.database_name = p_database AND f.backup_type = p_type AND f.is_copy_only = p_copy_only
-     AND f.path ~ '^[A-Za-z]:[\\/]' AND d.physical_name ~ '^[A-Za-z]:[\\/]'
-     AND pgvigil.mssql_backup_volume(p_instance_id, f.path) = pgvigil.mssql_backup_volume(p_instance_id, d.physical_name)
-   ORDER BY f.family, f.mirror, d.file_number LIMIT 1;
-  RETURN CASE WHEN v_hit IS NOT NULL THEN 'yes: ' || v_hit ELSE 'no' END;
+  SELECT p.path, p.vol, p.physical_name, pgvigil.mssql_backup_dir(p.path),
+         -- on that volume for certain: the volume's root itself, or a directory a database file sits in (or below) on that volume
+         (p.dir = upper(replace(p.vol, '/', '\'))
+          OR EXISTS (SELECT 1 FROM (SELECT d2.physical_name AS fp FROM pgvigil.mssql_backup_dbfiles d2
+                                     WHERE d2.instance_id = p_instance_id AND d2.database_name = p_database
+                                       AND d2.backup_type = p_type AND d2.is_copy_only = p_copy_only
+                                    UNION ALL
+                                    SELECT m.physical_name FROM pgvigil.mssql_files m WHERE m.instance_id = p_instance_id AND m.is_present) x
+                      WHERE x.fp ~ '^[A-Za-z]:[\\/]' AND left(upper(replace(x.fp, '/', '\')), length(p.dir)) = p.dir
+                        AND pgvigil.mssql_backup_volume(p_instance_id, x.fp) = p.vol)) AS proven
+    INTO v_path, v_vol, v_dbfile, v_dir, v_proven
+    FROM (
+    SELECT f.path, f.family, f.mirror, d.file_number, d.physical_name,
+           pgvigil.mssql_backup_volume(p_instance_id, f.path) AS vol,
+           upper(replace(pgvigil.mssql_backup_dir(f.path), '/', '\')) AS dir
+      FROM pgvigil.mssql_backup_files f
+      JOIN pgvigil.mssql_backup_dbfiles d ON d.instance_id = f.instance_id AND d.database_name = f.database_name
+           AND d.backup_type = f.backup_type AND d.is_copy_only = f.is_copy_only
+     WHERE f.instance_id = p_instance_id AND f.database_name = p_database AND f.backup_type = p_type AND f.is_copy_only = p_copy_only
+       AND f.path ~ '^[A-Za-z]:[\\/]' AND d.physical_name ~ '^[A-Za-z]:[\\/]'
+       AND pgvigil.mssql_backup_volume(p_instance_id, f.path) = pgvigil.mssql_backup_volume(p_instance_id, d.physical_name)
+    ) p
+   ORDER BY proven DESC, p.family, p.mirror, p.file_number LIMIT 1;
+  RETURN CASE WHEN v_path IS NULL THEN 'no'
+              WHEN v_proven THEN 'yes: ' || v_path || ' is on ' || v_vol || ', the volume of ' || v_dbfile
+              ELSE 'not judged: ' || v_dir || ' may be a mounted folder of its own - only the volumes that hold a database file are read, '
+                   || 'and no database file sits there (by the path it is on ' || v_vol || ', the volume of ' || v_dbfile || ')' END;
 END $$;
 
 -- mssql_hadr_cursor: 0083's, with the collection mssql_backup_files' cursor:
@@ -292,11 +330,14 @@ RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_rows jsonb := pgvigil.mssql_rows(p_payload);
   v_dbs int;
+  v_unlisted text[];
+  v_back boolean := false;
 BEGIN
   v_dbs := (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'database');
   IF NOT pgvigil.mssql_hadr_read(p_instance_id, 'mssql_backup_files', p_snapshot_at, v_dbs) THEN
     RETURN;
   END IF;
+  SELECT c.unlisted INTO v_unlisted FROM pgvigil.mssql_backup_files_cursor c WHERE c.instance_id = p_instance_id;
 
   CREATE TEMP TABLE IF NOT EXISTS pgv_bf_db (database_name text PRIMARY KEY, created_at timestamptz) ON COMMIT DROP;
   TRUNCATE pgv_bf_db;
@@ -305,6 +346,15 @@ BEGIN
     FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'database' AND r->>'database_name' IS NOT NULL;
 
   IF v_dbs > 0 THEN
+    -- a database listed again after a read that did not list it: a cursor read misses its sets older than the cursor
+    -- (a whole read - 'from' 0 - has them); the databases this read does not list, with stored sets, join the list
+    v_back := EXISTS (SELECT 1 FROM unnest(coalesce(v_unlisted, '{}')) u(n) JOIN pgv_bf_db d ON d.database_name = u.n)
+              AND coalesce((SELECT (r->>'from')::bigint FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'read' LIMIT 1), 0) > 0;
+    v_unlisted := ARRAY(SELECT DISTINCT u.n
+                          FROM (SELECT unnest(coalesce(v_unlisted, '{}')) AS n
+                                UNION SELECT s.database_name FROM pgvigil.mssql_backup_sets s WHERE s.instance_id = p_instance_id) u
+                         WHERE NOT EXISTS (SELECT 1 FROM pgv_bf_db d WHERE d.database_name = u.n)
+                         ORDER BY u.n);
     -- gone from the server, or created anew under its name
     DELETE FROM pgvigil.mssql_backup_sets s
      WHERE s.instance_id = p_instance_id
@@ -447,6 +497,17 @@ BEGIN
     FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'cursor' AND r->>'last_set_id' IS NOT NULL
    LIMIT 1
   ON CONFLICT (instance_id) DO UPDATE SET last_set_id = EXCLUDED.last_set_id, mark = EXCLUDED.mark, updated_at = EXCLUDED.updated_at;
+  IF v_dbs > 0 THEN
+    UPDATE pgvigil.mssql_backup_files_cursor c
+       SET unlisted = v_unlisted,
+           last_set_id = CASE WHEN v_back THEN 0 ELSE c.last_set_id END,
+           mark = CASE WHEN v_back THEN NULL ELSE c.mark END
+     WHERE c.instance_id = p_instance_id;
+    IF NOT FOUND AND cardinality(v_unlisted) > 0 THEN
+      INSERT INTO pgvigil.mssql_backup_files_cursor (instance_id, last_set_id, mark, unlisted, updated_at)
+      VALUES (p_instance_id, 0, NULL, v_unlisted, p_snapshot_at);
+    END IF;
+  END IF;
 END $$;
 
 -- mssql_backup_locations: per database of mssql_backup_judged (its instance, judged or not and why, whether a replica is
@@ -499,7 +560,8 @@ SELECT j.instance_id, j.instance, j.database_name, j.ag_name, j.not_judged, j.re
   JOIN k ON k.for_instance_id = j.instance_id AND k.database_name = j.database_name;
 
 -- mssql_backup_loc_findings (the findings columns): on a judged database only (not_judged NULL: excluded, new, offline,
--- a snapshot, tempdb are never judged) -
+-- a snapshot, tempdb are never judged); a database of a group with a replica that is not monitored raises its warnings
+-- at info, with 0066's sentence (the newest backup may have run there; the tab says such a group is not alarmed on) -
 --   'a full / differential / log backup on the volume of the database's own files' (warning): the newest set of the type
 --     that is not copy-only, by mssql_backup_same_volume ('yes');
 --   'log backups to two destinations' (warning): the log backups of the last 7 days (not copy-only) of one server went to
@@ -508,21 +570,26 @@ SELECT j.instance_id, j.instance, j.database_name, j.ag_name, j.not_judged, j.re
 --   'a backup destination not seen before' (info, 7 days): a set that is not copy-only went to a root the database's
 --     backups of that type were not seen at before (a flip back to a known root writes nothing).
 CREATE OR REPLACE VIEW pgvigil.mssql_backup_loc_findings AS
-SELECT l.instance_id, 'warning'::text AS severity,
+SELECT l.instance_id, CASE WHEN l.replicas_unseen THEN 'info' ELSE 'warning' END::text AS severity,
        'a ' || CASE l.backup_type WHEN 'full' THEN 'full' WHEN 'diff' THEN 'differential' ELSE 'log' END
          || ' backup on the volume of the database''s own files' AS check_name,
        l.database_name AS object,
        substr(l.same_volume, 6) || ' (taken ' || to_char(l.finish_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC on ' || l.from_instance
-         || '): a lost volume takes the database and its backup together' AS detail,
+         || '): a lost volume takes the database and its backup together'
+         || CASE WHEN l.replicas_unseen THEN format('. Only %s of the %s replicas of %s are monitored: the backup may run on another.',
+                                                     b.replicas_monitored, b.replicas_total, l.ag_name) ELSE '' END AS detail,
        l.finish_at AS at
   FROM pgvigil.mssql_backup_locations l
+  JOIN pgvigil.mssql_backup_judged b ON b.instance_id = l.instance_id AND b.database_name = l.database_name
  WHERE l.judged AND l.not_judged IS NULL AND l.same_volume LIKE 'yes:%'
 UNION ALL
-SELECT w.instance_id, 'warning', 'log backups to two destinations', w.database_name,
+SELECT w.instance_id, CASE WHEN bool_or(b.replicas_unseen) THEN 'info' ELSE 'warning' END, 'log backups to two destinations', w.database_name,
        string_agg(w.root || ' (' || w.device_kind || '): ' || w.sets || ' log backup' || CASE WHEN w.sets = 1 THEN '' ELSE 's' END
                   || ', the last ' || to_char(w.last_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
                   || coalesce(', by ' || array_to_string(w.users, ', '), ''), '; ' ORDER BY w.last_at DESC)
-         || ' - in the last 7 days; a restore needs every log backup of the chain, from each place',
+         || ' - in the last 7 days; a restore needs every log backup of the chain, from each place'
+         || CASE WHEN bool_or(b.replicas_unseen) THEN format('. Only %s of the %s replicas of %s are monitored: the backup may run on another.',
+                                                              max(b.replicas_monitored), max(b.replicas_total), max(b.ag_name)) ELSE '' END,
        max(w.last_at)
   FROM pgvigil.mssql_backup_writers w
   JOIN pgvigil.mssql_backup_judged b ON b.instance_id = w.instance_id AND b.database_name = w.database_name AND b.not_judged IS NULL
@@ -545,8 +612,9 @@ SELECT r.instance_id, 'info', 'a backup destination not seen before', r.database
 
 -- mssql_backup_loc_db: per instance and database the fleet's and the tab's added cells (the lead's join into
 -- sqlMSSQLBackups): '<type>_to' = the folder (a URL's container) of the newest set of the type, ', n files' when
--- striped, ', mirrored' when mirrored; and DBA Dash's Detail flags of that set (Is Full Damaged .. Log Compression
--- Algorithm).
+-- striped, ', mirrored' when mirrored; full_to_copy_only / full_to_snapshot: the marks of the full shown there (F2: from
+-- the stored set, never from mssql_backup_state); and DBA Dash's Detail flags of that set (Is Full Damaged .. Log
+-- Compression Algorithm).
 CREATE OR REPLACE VIEW pgvigil.mssql_backup_loc_db AS
 SELECT l.instance_id, l.database_name,
        max(CASE WHEN l.backup_type = 'full' THEN l.folder || CASE WHEN l.family_count > 1 THEN ', ' || l.family_count || ' files' ELSE '' END
@@ -555,6 +623,8 @@ SELECT l.instance_id, l.database_name,
                                                  || CASE WHEN l.mirror_count > 1 THEN ', mirrored' ELSE '' END END) AS diff_to,
        max(CASE WHEN l.backup_type = 'log' THEN l.folder || CASE WHEN l.family_count > 1 THEN ', ' || l.family_count || ' files' ELSE '' END
                                                 || CASE WHEN l.mirror_count > 1 THEN ', mirrored' ELSE '' END END) AS log_to,
+       bool_or(l.is_copy_only) FILTER (WHERE l.backup_type = 'full') AS full_to_copy_only,
+       bool_or(l.is_snapshot) FILTER (WHERE l.backup_type = 'full') AS full_to_snapshot,
        bool_or(l.is_damaged) FILTER (WHERE l.backup_type = 'full') AS full_damaged,
        bool_or(l.is_damaged) FILTER (WHERE l.backup_type = 'diff') AS diff_damaged,
        bool_or(l.is_damaged) FILTER (WHERE l.backup_type = 'log') AS log_damaged,

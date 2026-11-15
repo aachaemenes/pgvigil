@@ -35,9 +35,10 @@ const yesNo = (v: unknown) => v == null ? '' : v === true ? 'yes' : 'no';
 // a flag of DBA Dash's Detail per type ('full checksum', 'differential checksum', 'log checksum')
 const flagCols = (k: string, words: string): Col[] => (['full', 'diff', 'log'] as const).map(t => ({ key: `${t}_${k}`, label: `${typeWord[t]} ${words}`, fmt: yesNo }));
 // a 'to' cell: one line, cut with an ellipsis, the whole text in its title (a copy or an export takes all of it); the full's
-// copy-only and snapshot marks after it
+// copy-only and snapshot marks after it - of the stored set shown there (0140's full_to_copy_only / full_to_snapshot),
+// never mssql_backup_state's, which the hourly backup read may not have caught up with (F2)
 const toCell = (v: unknown, full?: Row) => {
-  const marks = full ? (full.full_copy_only === true ? ', copy-only' : '') + (full.full_snapshot === true ? ', snapshot' : '') : '';
+  const marks = full ? (full.full_to_copy_only === true ? ', copy-only' : '') + (full.full_to_snapshot === true ? ', snapshot' : '') : '';
   if (v == null || v === '') return marks.slice(2);
   const t = String(v) + marks;
   return el('span', { class: 'mono', title: t, style: 'display:block;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px' }, t);
@@ -221,9 +222,9 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
       : el('a', { href: hrefWith(ctx, 'mssqlbackups', { db: String(v ?? '') }), title: 'Its last backups and every file' }, String(v ?? ''));
     sec.append(
       el('p', { class: 'meta' }, 'msdb is each server\'s own record. A database in an availability group shows the newest backup of each type that any '
-        + 'monitored replica took, with the instance it ran on (its size and device are on that instance\'s tab); a group with a replica that is not monitored is not alarmed on. '
+        + 'monitored replica took, with the instance it ran on (its size and how long it took are on that instance\'s tab); a group with a replica that is not monitored is not alarmed on. '
         + 'A backup to the NUL device is no backup and is listed apart. Full to, differential to, log to: the folder (a URL\'s container) of the newest backup of the type, '
-        + 'its file count when striped; open a database for every file.'),
+        + 'on whichever monitored replica it ran, and its file count when striped; open a database for every file.'),
       grid(dbs, [{ ...cols[0], fmt: nameCell }, ...cols.slice(1)], 'The last read listed no database.'));
     if (lp) sec.append(...locationParts(lp, asked ?? undefined, picked != null));
     else if (locErr) sec.append(errorBox(locErr));
@@ -389,9 +390,9 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, el('label', { for: 'mssql-backups-fleet-filter' }, 'Show '), pick, ' ', said),
       el('p', { class: 'meta' }, 'Problems: a full, differential or log backup that is late or was never taken, or a backup to the NUL device inside the instance\'s '
         + 'nul_backup_days. A view of one instance opens on All. The database opens its instance\'s Backups tab with its row first; pgvigil keeps the newest backup '
-        + 'of each type per database, not a history of backups. Full size, compressed, took, device and path are of a full backup that ran on the row\'s own server '
+        + 'of each type per database, not a history of backups. Full size, compressed and took are of a full backup that ran on the row\'s own server '
         + '(blank where it ran on another replica: open that instance). Full to, differential to, log to: the folder (a URL\'s container) of the newest backup of '
-        + 'the type and its file count when striped; the database\'s Backups tab lists every file. Not read by pgvigil: partial and filegroup backups (DBA Dash\'s '
+        + 'the type, on whichever monitored replica of the group it ran, and its file count when striped; the database\'s Backups tab lists every file. Not read by pgvigil: partial and filegroup backups (DBA Dash\'s '
         + 'Last Filegroup and Last Partial columns).'),
       box);
     draw(rowsOf(d.databases).filter(keep));

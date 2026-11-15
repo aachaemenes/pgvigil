@@ -40,8 +40,9 @@ func (backupsCollector) Applies(info Info) (bool, string) {
 	return true, ""
 }
 
-// Timeout: one pass over msdb.dbo.backupset, which nothing indexes by database; a history of millions of rows
-// takes its time.
+// Timeout: one pass over msdb.dbo.backupset for the newest set of each database and type. msdb indexes backupset
+// by database_name and by backup_finish_date (backupsetDatabaseName, backupsetDate), but the pass still reads every
+// row of the history; millions of rows take their time.
 func (backupsCollector) Timeout() time.Duration { return 2 * time.Minute }
 
 // backupDatabasesSQL: every database with what decides whether its backups are judged. SQL Server 2016 SP1 and

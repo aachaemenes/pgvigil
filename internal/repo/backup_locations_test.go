@@ -154,6 +154,13 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 		{`s3://10.0.0.5/bucket/x.bak`, "url", "", `s3://10.0.0.5/bucket`},
 		{`s3://s3.us-west-2.amazonaws.com/bucket/x.bak`, "url", "", `s3://s3.us-west-2.amazonaws.com/bucket`},
 		{`s3://mybucket.s3.us-west-2.amazonaws.com/2026-11-14/x.bak`, "url", "", `s3://mybucket.s3.us-west-2.amazonaws.com`},
+		// a path style URL with no port on a name (Learn's own example): the bucket kept
+		{`s3://objects.corp.local/sqlbak/db/x.bak`, "url", "", `s3://objects.corp.local/sqlbak`},
+		// a file right after the host is never part of a root: a virtual host with a port, a bucket's top
+		{`s3://bkt.store.local:9000/db_20261114.bak`, "url", "", `s3://bkt.store.local:9000`},
+		{`https://acct.blob.core.windows.net/x.bak`, "url", "", `https://acct.blob.core.windows.net`},
+		// a writer's directory reads as its files do
+		{`s3://minio.lab:9000/bucket/`, "url", "", `s3://minio.lab:9000/bucket`},
 		{`{4A0C1E3B-1111-2222-3333-444455556666}`, "virtual device", "Veeam Backup", `virtual device (Veeam Backup)`},
 		{`NUL`, "disk", "", `NUL`},
 	} {
@@ -164,11 +171,18 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 
 	// ---- one server, read three times
 	a := inst("a", "sqlserver")
+	// mssql_volumes holds only the volumes a database file sits on (storage.go reads sys.dm_os_volume_stats per file): a
+	// folder mounted for the backups alone is never listed. D:\Logs\ is a mounted folder with a log file on it.
 	exec(`INSERT INTO pgvigil.mssql_volumes (instance_id, volume, snapshot_at, is_present) VALUES
-	        ($1, 'C:\', now(), true), ($1, 'C:\ClusterStorage\Volume1\', now(), true), ($1, 'D:\', now(), true), ($1, 'D:\Backup\', now(), true)`, a)
+	        ($1, 'C:\', now(), true), ($1, 'C:\ClusterStorage\Volume1\', now(), true), ($1, 'D:\', now(), true), ($1, 'D:\Logs\', now(), true)`, a)
+	exec(`INSERT INTO pgvigil.mssql_files (instance_id, database_id, file_id, database_name, physical_name, volume, snapshot_at, first_seen) VALUES
+	        ($1, 1, 1, 'master', 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\master.mdf', 'C:\', now(), now()),
+	        ($1, 5, 1, 'win', 'C:\ClusterStorage\Volume1\data\win.mdf', 'C:\ClusterStorage\Volume1\', now(), now()),
+	        ($1, 6, 1, 'app', 'D:\data\app.mdf', 'D:\', now(), now()),
+	        ($1, 7, 2, 'wm', 'D:\Logs\wm.ldf', 'D:\Logs\', now(), now())`, a)
 	h := time.Hour
 	d := 24 * h
-	dbs1 := bkRows{db("app", -30*d, ""), db("fresh", -3*h, ""), db("win", -30*d, ""), db("lnx", -30*d, "")}
+	dbs1 := bkRows{db("app", -30*d, ""), db("fresh", -3*h, ""), db("win", -30*d, ""), db("lnx", -30*d, ""), db("wm", -30*d, "")}
 	files1 := bkRows{
 		set("app", "full", false, 101, -2*d, map[string]any{"family_count": 4}),
 		file(101, 1, 0, "disk", `\\NAS01\SQL\app\app_1.bak`), file(101, 2, 0, "disk", `\\NAS01\SQL\app\app_2.bak`),
@@ -183,14 +197,19 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 		set("fresh", "full", false, 202, -2*h, nil), file(202, 1, 0, "disk", `/var/opt/mssql/data/fresh.bak`), dbfile(202, 1, `/var/opt/mssql/data/fresh.mdf`),
 		// a name msdb remembers and the server does not list (F2 B)
 		set("ghost", "full", false, 301, -h, nil), file(301, 1, 0, "disk", `D:\data\ghost.bak`),
-		// Windows: a Cluster Shared Volume with the backup beside the data = yes; a separate volume mounted at D:\Backup\ =
-		// no; d:\ against D:\ without case = yes (F3)
-		set("win", "full", false, 401, -3*h, nil), file(401, 1, 0, "disk", `C:\ClusterStorage\Volume1\bk\win.bak`), dbfile(401, 1, `C:\ClusterStorage\Volume1\data\win.mdf`),
+		// Windows (F3, the review's 1): at a Cluster Shared Volume's root beside the data = yes; in the data's own directory, d:\
+		// against D:\ without case = yes; D:\Backup\ (no database file there: it may be a folder mounted for the backups
+		// alone, which mssql_volumes never lists) = not judged; to D:\Backup\ with the log file on the mounted folder
+		// D:\Logs\ = no (two volumes either way)
+		set("win", "full", false, 401, -3*h, nil), file(401, 1, 0, "disk", `C:\ClusterStorage\Volume1\win.bak`), dbfile(401, 1, `C:\ClusterStorage\Volume1\data\win.mdf`),
 		set("win", "log", false, 402, -h, nil), file(402, 1, 0, "disk", `D:\Backup\win.trn`), dbfile(402, 1, `D:\data\win.ldf`),
 		set("win", "diff", false, 403, -2*h, nil), file(403, 1, 0, "disk", `d:\data\win.dif`), dbfile(403, 1, `D:\data\win.mdf`),
-		// Linux: in the database's own directory = yes; a sibling directory on the same filesystem = not judged (F3)
+		set("wm", "log", false, 601, -h, nil), file(601, 1, 0, "disk", `D:\Backup\wm.trn`), dbfile(601, 1, `D:\Logs\wm.ldf`),
+		// Linux: in the database's own directory = yes; a sibling directory on the same filesystem = not judged; a directory
+		// below the database's (it may be a mounted folder) = not judged (F3, the review's 1)
 		set("lnx", "full", false, 501, -3*h, nil), file(501, 1, 0, "disk", `/var/opt/mssql/data/lnx.bak`), dbfile(501, 1, `/var/opt/mssql/data/lnx.mdf`),
 		set("lnx", "log", false, 502, -h, nil), file(502, 1, 0, "disk", `/var/opt/mssql/backup/lnx.trn`), dbfile(502, 1, `/var/opt/mssql/data/lnx.ldf`),
+		set("lnx", "diff", false, 503, -2*h, nil), file(503, 1, 0, "disk", `/var/opt/mssql/data/bk/lnx.dif`), dbfile(503, 1, `/var/opt/mssql/data/lnx.mdf`),
 		// writers (F5): app's two logins to one share (cased two ways) = one destination; lnx's local directory and a URL = two
 		writer("app", "disk", `\\nas01\sql\app\`, "svc_a", 10), writer("app", "disk", `\\NAS01\SQL\app\`, "dba_b", 2),
 		writer("lnx", "disk", `/var/opt/mssql/backup/`, "sa", 5), writer("lnx", "url", `https://acct.blob.core.windows.net/cont/`, "tool", 3),
@@ -233,12 +252,18 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 	if got := one(`SELECT full_to || ' | ' || diff_to || ' | ' || log_to FROM pgvigil.mssql_backup_loc_db WHERE instance_id = $1 AND database_name = 'app'`, a); got != `D:\temp\ | \\nas01\sql\app\ | \\nas01\sql\app\` {
 		t.Errorf("app's to cells: %s", got)
 	}
+	// the 'full to' cell's marks come from the stored set shown there, never from mssql_backup_state (F2, the review's 4)
+	if got := one(`SELECT full_to_copy_only::text || '/' || full_to_snapshot::text FROM pgvigil.mssql_backup_loc_db WHERE instance_id = $1 AND database_name = 'app'`, a); got != "true/false" {
+		t.Errorf("app's full to marks: %s, want true/false (the copy-only full is shown)", got)
+	}
 	for _, c := range []struct{ dbn, typ, want string }{
-		{"win", "full", `yes: C:\ClusterStorage\Volume1\bk\win.bak is on C:\CLUSTERSTORAGE\VOLUME1\, the volume of C:\ClusterStorage\Volume1\data\win.mdf`},
-		{"win", "log", "no"},
+		{"win", "full", `yes: C:\ClusterStorage\Volume1\win.bak is on C:\CLUSTERSTORAGE\VOLUME1\, the volume of C:\ClusterStorage\Volume1\data\win.mdf`},
+		{"win", "log", `not judged: D:\Backup\ may be a mounted folder of its own - only the volumes that hold a database file are read, and no database file sits there (by the path it is on D:\, the volume of D:\data\win.ldf)`},
 		{"win", "diff", `yes: d:\data\win.dif is on D:\, the volume of D:\data\win.mdf`},
+		{"wm", "log", "no"},
 		{"lnx", "full", "yes: /var/opt/mssql/data/lnx.bak is in /var/opt/mssql/data/, the directory of /var/opt/mssql/data/lnx.mdf"},
 		{"lnx", "log", "not judged: on Linux only a backup in the directory of the database's own files is judged (the volume of another directory is not read)"},
+		{"lnx", "diff", "not judged: /var/opt/mssql/data/bk/ is below /var/opt/mssql/data/, the directory of /var/opt/mssql/data/lnx.mdf, and may be a mounted folder of its own (the volume of another directory is not read)"},
 		{"app", "full", "no"},
 	} {
 		if got := loc(a, c.dbn, c.typ, false, "same_volume"); got != c.want {
@@ -264,7 +289,7 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 	// ---- read 2: app's full goes to another share (a root not seen before); an older log read again changes nothing;
 	// 'win' is created anew under its name; 'lnx' is dropped
 	t2 := now.Add(time.Minute)
-	dbs2 := bkRows{db("app", -30*d, ""), db("fresh", -3*h, ""), db("win", -2*h, "")}
+	dbs2 := bkRows{db("app", -30*d, ""), db("fresh", -3*h, ""), db("win", -2*h, ""), db("wm", -30*d, "")}
 	files2 := bkRows{
 		set("app", "full", false, 110, -30*time.Minute, nil), file(110, 1, 0, "disk", `\\nas02\sql\app\app.bak`), dbfile(110, 1, `D:\data\app.mdf`),
 		set("app", "log", false, 90, -3*d, nil), file(90, 1, 0, "disk", `\\old\sql\app.trn`),
@@ -308,6 +333,25 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 	importBoth(a, now.Add(4*time.Minute), dbsTie, bkRows{set("tie", "full", false, 981, -h, nil), file(981, 1, 0, "disk", `\\nas02\sql\t.bak`)})
 	if got := one(`SELECT coalesce(string_agg(severity || ' ' || check_name, '; '), '') FROM pgvigil.mssql_backup_loc_findings WHERE instance_id = $1 AND object = 'tie'`, a); got != "info a backup destination not seen before" {
 		t.Errorf("two fulls in one second to two shares: %q", got)
+	}
+
+	// ---- a database a read did not list (read 2 dropped lnx's sets) is listed again: a cursor read cannot see its sets
+	// older than the cursor, so the cursor goes back to 0 and the next read is one whole pass (the review's 3)
+	cur := func(id int) string {
+		return one(`SELECT coalesce(last_set_id::text, '-') || '/' || coalesce(mark::text, '-') || ' ' || array_to_string(unlisted, ',') FROM pgvigil.mssql_backup_files_cursor WHERE instance_id = $1`, id)
+	}
+	if got := cur(a); got != "700/78 lnx" {
+		t.Errorf("the cursor with lnx unlisted: %q", got)
+	}
+	dbsBack := append(append(bkRows{}, dbsTie...), db("lnx", -30*d, ""))
+	importBoth(a, now.Add(5*time.Minute), dbsBack, bkRows{{"kind": "read", "cursor": true, "from": 650}, {"kind": "cursor", "last_set_id": 720, "mark": 79}})
+	if got := cur(a); got != "0/- " {
+		t.Errorf("the cursor after lnx came back on a cursor read: %q, want 0/- (one whole pass next)", got)
+	}
+	importBoth(a, now.Add(6*time.Minute), dbsBack, bkRows{set("lnx", "full", false, 501, -3*h, nil), file(501, 1, 0, "disk", `/var/opt/mssql/data/lnx.bak`),
+		{"kind": "read", "cursor": true, "from": 0}, {"kind": "cursor", "last_set_id": 730, "mark": 80}})
+	if got := cur(a) + " " + keys(a, "lnx"); got != "730/80  full:501" {
+		t.Errorf("the cursor and lnx's sets after the whole pass: %q", got)
 	}
 
 	// ---- an availability group: the newest set of each type over the monitored replicas (F10)

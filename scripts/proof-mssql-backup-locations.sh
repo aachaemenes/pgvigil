@@ -54,10 +54,15 @@
 #      - a partial backup (READ_WRITE_FILEGROUPS): dbatools' -LastFull takes it (type P), pgvigil the full before it.
 #  L17 (F7) 60 logs of pgvbkf, a read, one log of pgvbka, a read: exactly two sets re-stored by the second read (pgvbkf's
 #      and pgvbka's log rows; every other set keeps the first read's snapshot); the cursor = msdb's newest backup_set_id
-#      with its mark. msdb replaced: its history deleted and backupset's identity reseeded, a full of pgvbkr taken (a
-#      backup_set_id below the cursor): the next read stores it.
-#  L12 the least-privilege login (a user in msdb with db_datareader, no server right) reads the same sets as the monitor
-#      login; a login without a user in msdb: read through msdb's guest where public may select the backup tables, else
+#      with its mark. The row at the cursor's number given another backup_set_uuid by hand (the mark differs): the next read
+#      is one whole pass - every stored set re-stored by it, none keeps an earlier snapshot; the cursor msdb's newest with
+#      the new mark. (Added after the review of run 11: the mark-changed branch ran nowhere.) msdb replaced: its history
+#      deleted and backupset's identity reseeded, a full of pgvbkr taken (a backup_set_id below the cursor): the next read
+#      stores it.
+#  L12 (run before L17 empties msdb) the least-privilege login (a user in msdb with db_datareader, no server right): its
+#      one whole read stores the same sets as the monitor login's cursor reads over the same msdb state - (database, type,
+#      copy-only, backup_set_id) equal. (Changed after the review of run 11: the row only counted more than 0 sets, after
+#      L17 had emptied msdb.) A login without a user in msdb: read through msdb's guest where public may select the backup tables, else
 #      'skipped' naming the table - never an error. (Changed after run 9: the expected said 'skipped'; on this container
 #      public may select them and the login read 20 rows.)
 #  L15 (F9) SQL Server 2019: one read with no error, compression_algorithm and last_valid_restore_at NULL.
@@ -140,13 +145,16 @@ s3setup() {
   # MinIO's community images are gone from Docker Hub, quay.io and bitnami (run 2): an S3 server that serves its own TLS
   # certificate is tried in turn - MinIO, Versity's gateway, SeaweedFS - and the bucket made over its host port
   S3IMG=; S3P=
+  # the stand-in's password from files, never on a command line (ps): an env file for the server, a config file for curl
+  printf 'MINIO_ROOT_USER=pgvbk\nMINIO_ROOT_PASSWORD=%s\nROOT_ACCESS_KEY=pgvbk\nROOT_SECRET_KEY=%s\n' "$S3PW" "$S3PW" > "$WORK/s3.env"
+  printf 'user = "pgvbk:%s"\n' "$S3PW" > "$WORK/s3.curl"; chmod 600 "$WORK/s3.env" "$WORK/s3.curl"
   for i in quay.io/minio/minio:latest minio/minio:RELEASE.2025-04-22T22-12-26Z versity/versitygw:latest chrislusf/seaweedfs:latest; do
     docker pull -q "$i" >/dev/null 2>&1 || continue
     case "$i" in
       *minio*) docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -p 127.0.0.1::9000 \
-                 -e MINIO_ROOT_USER=pgvbk -e MINIO_ROOT_PASSWORD="$S3PW" -v "$WORK/certs:/root/.minio/certs:ro" --entrypoint minio "$i" server /data >"$WORK/s3.err" 2>&1 ;;
+                 --env-file "$WORK/s3.env" -v "$WORK/certs:/root/.minio/certs:ro" --entrypoint minio "$i" server /data >"$WORK/s3.err" 2>&1 ;;
       *versitygw*) docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -p 127.0.0.1::9000 \
-                 -e ROOT_ACCESS_KEY=pgvbk -e ROOT_SECRET_KEY="$S3PW" -v "$WORK/certs:/certs:ro" --tmpfs /data "$i" \
+                 --env-file "$WORK/s3.env" -v "$WORK/certs:/certs:ro" --tmpfs /data "$i" \
                  --port :9000 --cert /certs/public.crt --key /certs/private.key posix /data >"$WORK/s3.err" 2>&1 ;;
       *seaweedfs*) printf '{"identities":[{"name":"pgvbk","credentials":[{"accessKey":"pgvbk","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' "$S3PW" > "$WORK/certs/s3.json" && chmod 644 "$WORK/certs/s3.json" \
                  && docker run -d --name "$S3" --label pgvigil-proof=inv301 --network "$NET" --network-alias pgvbk-s3 -p 127.0.0.1::9000 -v "$WORK/certs:/certs:ro" "$i" \
@@ -166,7 +174,7 @@ s3setup() {
   sleep 3
   # the bucket: one signed PUT over the host port (curl's own SigV4)
   for _ in 1 2 3 4 5 6; do
-    curl -sk -o "$WORK/s3.err" -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" --user "pgvbk:$S3PW" -X PUT "https://127.0.0.1:$S3P/pgvbk" > "$WORK/s3.code" 2>>"$WORK/s3.err" \
+    curl -sk -o "$WORK/s3.err" -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" -K "$WORK/s3.curl" -X PUT "https://127.0.0.1:$S3P/pgvbk" > "$WORK/s3.code" 2>>"$WORK/s3.err" \
       && grep -qE '^(200|409)$' "$WORK/s3.code" && { S3OK=1; break; }
     sleep 3
   done
@@ -425,6 +433,22 @@ if [ -z "${PROOF_SKIP_DBATOOLS:-}" ]; then
   else notproven "L11: dbatools did not answer: $(tail -c 400 "$WORK/dbatools.err" | tr '\n' ' ')"; fi
 else notproven "L11: PROOF_SKIP_DBATOOLS"; fi
 
+echo "== L12 the least-privilege login, a login without msdb"
+# over one msdb state: the monitor login's cursor reads up to now, then the least-privilege login's one whole read
+read2 L12m
+collect mssql_backup_files pgvbk-l || fail "L12: the least-privilege read failed: $(cat "$OUT")"; grep -q skipped "$OUT" && fail "L12: the least-privilege read was skipped: $(cat "$OUT")"
+IL=$(q "select instance_id from pgvigil.instances where name='pgvbk-l'")
+KEYS="string_agg(database_name || ':' || backup_type || CASE WHEN is_copy_only THEN '/copy' ELSE '' END || ':' || backup_set_id, ',' ORDER BY database_name, backup_type, is_copy_only)"
+KL=$(q "select $KEYS from pgvigil.mssql_backup_sets where instance_id=$IL"); KM=$(q "select $KEYS from pgvigil.mssql_backup_sets where instance_id=$(iid)")
+[ -n "$KL" ] && [ "$KL" = "$KM" ] || fail "L12: the least-privilege login's sets differ from the monitor login's (< monitor, > least): $(diff <(tr ',' '\n' <<<"$KM") <(tr ',' '\n' <<<"$KL") | grep '^[<>]' | tr '\n' ' ' | cut -c1-600)"
+G=$(tr ',' '\n' <<<"$KL" | wc -l)
+# a login without a user in msdb: msdb's guest lets it in, and where public holds SELECT on the backup tables (this
+# container, run 9 - as proof-mssql-hadr.sh notes for mssql_backups) it reads them; where not, the collection is skipped
+# naming the table; never an error
+collect mssql_backup_files pgvbk-b || fail "L12: the login without msdb failed: $(cat "$OUT")"
+grep -qE "row\(s\) in" "$OUT" && { ! grep -q skipped "$OUT" || grep -q "msdb.dbo.backup" "$OUT"; } || fail "L12: the login without msdb: $(cat "$OUT")"
+ok "L12: the least-privilege login's one whole read stored the same $G sets as the monitor login's cursor reads (database, type, copy-only, backup_set_id); without msdb: $(tr '\n' ' ' < "$OUT" | cut -c1-200)"
+
 echo "== L17 the cursor"
 sq "BACKUP DATABASE pgvbkf TO DISK = N'/backups/f/full.bak' WITH FORMAT;" >/dev/null
 for k in $(seq 1 60); do echo "BACKUP LOG pgvbkf TO DISK = N'/backups/f/l$k.trn' WITH FORMAT;"; done | sqin "$SQL" >/dev/null
@@ -440,6 +464,17 @@ G=$(q "select string_agg(database_name || ':' || backup_type, ',' order by datab
 N1=$(q "select count(*) from pgvigil.mssql_backup_sets where instance_id=$(iid) and snapshot_at < '$R2'")
 [ "$G" = "pgvbka:log,pgvbkf:log" ] || fail "L17: the second read re-stored $G, want pgvbka:log,pgvbkf:log"
 ok "L17: the cursor $C = msdb's newest; the read after one more log re-stored $G alone ($N1 sets keep an earlier read's snapshot)"
+# the row at the cursor's number given another backup_set_uuid (msdb replaced under the same number): the mark differs, so
+# the next read is one whole pass - every stored set re-stored by it, none keeps an earlier read's snapshot
+CX=$(q "select last_set_id from pgvigil.mssql_backup_files_cursor where instance_id=$(iid)")
+sq "UPDATE msdb.dbo.backupset SET backup_set_uuid = NEWID() WHERE backup_set_id = $CX;" msdb >/dev/null
+sleep 1; read2 L17d
+R3=$(q "select snapshot_at from pgvigil.mssql_hadr_reads where instance_id=$(iid) and collection='mssql_backup_files'")
+N3=$(q "select count(*) from pgvigil.mssql_backup_sets where instance_id=$(iid) and snapshot_at < '$R3'"); A3=$(q "select count(*) from pgvigil.mssql_backup_sets where instance_id=$(iid)")
+C3=$(q "select last_set_id || '|' || mark from pgvigil.mssql_backup_files_cursor where instance_id=$(iid)")
+W=$(sq "SELECT TOP 1 CAST(backup_set_id AS varchar(12)) + '|' + CAST(CAST(CHECKSUM(backup_set_uuid) AS bigint) AS varchar(20)) FROM msdb.dbo.backupset ORDER BY backup_set_id DESC")
+[ "$N3" = 0 ] && [ "$C3" = "$W" ] && [ "${C3#*|}" != "${C#*|}" ] || fail "L17 the mark changed under the cursor $CX: $N3 of $A3 sets kept an earlier snapshot (want 0: one whole pass); the cursor $C3, msdb's newest $W (the old mark ${C#*|})"
+ok "L17: the row at the cursor $CX given another backup_set_uuid: the next read was one whole pass ($A3 sets re-stored, none kept an earlier snapshot); the cursor $C3"
 sq "EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = '9999-12-31'; DBCC CHECKIDENT ('msdb.dbo.backupset', RESEED, 0) WITH NO_INFOMSGS;" >/dev/null
 sq "BACKUP DATABASE pgvbkr TO DISK = N'/backups/r4.bak' WITH FORMAT;" >/dev/null
 NEWID=$(setid pgvbkr D); read2 L17c
@@ -447,17 +482,6 @@ G=$(SF "backup_set_id;folder" pgvbkr full)
 [ "$G" = "$NEWID|/backups/" ] && [ "$NEWID" -lt "${C%%|*}" ] || fail "L17 msdb replaced: stored $G, the new full is $NEWID (the old cursor ${C%%|*})"
 ok "L17: msdb's history deleted and its numbering restarted: the full numbered $NEWID (below the cursor ${C%%|*}) is stored"
 
-echo "== L12 the least-privilege login, a login without msdb"
-collect mssql_backup_files pgvbk-l || fail "L12: the least-privilege read failed: $(cat "$OUT")"; grep -q skipped "$OUT" && fail "L12: the least-privilege read was skipped: $(cat "$OUT")"
-IL=$(q "select instance_id from pgvigil.instances where name='pgvbk-l'")
-G=$(q "select count(*) from pgvigil.mssql_backup_sets where instance_id=$IL"); GM=$(q "select count(*) from pgvigil.mssql_backup_sets where instance_id=$(iid) and snapshot_at > now() - interval '1 hour'")
-[ "$G" -gt 0 ] || fail "L12: the least-privilege login stored no set"
-# a login without a user in msdb: msdb's guest lets it in, and where public holds SELECT on the backup tables (this
-# container, run 9 - as proof-mssql-hadr.sh notes for mssql_backups) it reads them; where not, the collection is skipped
-# naming the table; never an error
-collect mssql_backup_files pgvbk-b || fail "L12: the login without msdb failed: $(cat "$OUT")"
-grep -qE "row\(s\) in" "$OUT" && { ! grep -q skipped "$OUT" || grep -q "msdb.dbo.backup" "$OUT"; } || fail "L12: the login without msdb: $(cat "$OUT")"
-ok "L12: the least-privilege login stored $G sets (the monitor login $GM after msdb was emptied); without msdb: $(tr '\n' ' ' < "$OUT" | cut -c1-200)"
 
 echo "== L15 SQL Server 2019"
 if [ -z "${PROOF_SKIP_2019:-}" ]; then
