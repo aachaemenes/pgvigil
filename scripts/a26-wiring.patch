@@ -1,0 +1,27 @@
+diff --git i/internal/config/config.go w/internal/config/config.go
+index 78f7dccc..c834e3d4 100644
+--- i/internal/config/config.go
++++ w/internal/config/config.go
+@@ -126,6 +126,8 @@ type Instance struct {
+ 	PgBouncerDSNRaw string `yaml:"pgbouncer"`
+ 	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
+ 	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
++	// MSSQLSchema turns the SQL Server schema history on for the databases it names (docs/schema.md, task A26).
++	MSSQLSchema *MSSQLSchema `yaml:"mssql_schema"`
+ }
+ 
+ // DBADashRepo is one DBADash repository of the dbadash: list.
+diff --git i/internal/mssql/batch.go w/internal/mssql/batch.go
+index a906df04..c8a9e8a1 100644
+--- i/internal/mssql/batch.go
++++ w/internal/mssql/batch.go
+@@ -111,6 +111,9 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
+ 	n, batches := 0, 0
+ 	status, note := "ok", ""
+ 	opt := BatchOptions{QueryText: in.QueryText, AuditText: in.AuditText, Deadline: start.Add(limit - batchMargin)}
++	if in.MSSQLSchema != nil {
++		opt.SchemaDatabases = in.MSSQLSchema.Databases
++	}
+ 	if dl, ok := sctx.Deadline(); ok && dl.Add(-batchMargin).Before(opt.Deadline) {
+ 		opt.Deadline = dl.Add(-batchMargin)
+ 	}
