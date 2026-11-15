@@ -97,6 +97,12 @@ q "select pgvigil.import_collection_health('proof', jsonb_build_object('health',
      'hour', date_trunc('hour', '$CH_NOW'::timestamp) at time zone 'UTC', 'runs', 3, 'ok', 0, 'partial', 0, 'error', 3, 'skipped', 0,
      'rows', 0, 'dur_ms_sum', 30, 'dur_ms_max', 10, 'over_half', 0, 'over_interval', 0, 'interval_s', 60,
      'import_failed', 2, 'import_runs', 2, 'import_ms_sum', 8, 'import_ms_max', 5))))" >/dev/null
+# B6g-3 (CH23): an hour before it of 2 ok runs, so the Collection Performance report of fx-chimport has two hours to
+# chart (one read draws no chart); Failed and Import Failed stay 1 and 2 (CH17)
+q "select pgvigil.import_collection_health('proof', jsonb_build_object('health', jsonb_build_array(jsonb_build_object('instance', 'fx-chimport', 'collection', 'activity',
+     'hour', date_trunc('hour', '$CH_NOW'::timestamp) at time zone 'UTC' - interval '1 hour', 'runs', 2, 'ok', 2, 'partial', 0, 'error', 0, 'skipped', 0,
+     'rows', 4, 'dur_ms_sum', 20, 'dur_ms_max', 12, 'over_half', 0, 'over_interval', 0, 'interval_s', 60,
+     'import_failed', 0, 'import_runs', 2, 'import_ms_sum', 6, 'import_ms_max', 4))))" >/dev/null
 
 echo "== a headless Chromium on CDP $CDP"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &

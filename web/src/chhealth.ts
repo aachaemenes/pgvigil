@@ -45,3 +45,28 @@ export function costWords(v: unknown, engine: unknown): string | null {
   if (v != null && v !== '') return null;
   return engine === 'postgres' ? 'not read by pgvigil' : 'not read';
 }
+
+// perfCell (B6g-3, N42): what a Collection Performance cell says when it is not its row's number - a Run row (a failed
+// or partial run of collection_log, the one pgvigil keeps one by one) holds its duration alone, so its CPU, logical
+// reads and import say 'hourly only'; the import's own CPU, logical reads and lag have no source in pgvigil (it writes
+// inside the run that collected: no queue, no lag) - 'not read' on every row; an hour's CPU and reads as costWords
+// (a PostgreSQL row 'not read by pgvigil'). null = the cell shows its number
+export function perfCell(key: string, v: unknown, r: Row): string | null {
+  if (key === 'import_cpu_ms' || key === 'import_logical_reads' || key === 'import_lag_s') return 'not read';
+  if (r.period === 'Run' && (key === 'cpu_ms' || key === 'logical_reads' || key === 'import_ms')) return 'hourly only';
+  if (key === 'cpu_ms' || key === 'logical_reads') return costWords(v, r.engine);
+  return null;
+}
+
+// perfCutWords: a range that starts before the hourly rows still kept (hours_retention: 8 days by default, 30 at most)
+// says where the report's hours start; '' when the range is inside them. fmt: the page's time format
+export function perfCutWords(from: string, keptFrom: string, days: number, fmt: (v: string) => string): string {
+  if (!(Date.parse(from) < Date.parse(keptFrom))) return '';
+  return `The hourly rows are kept ${days} days: the hours before ${fmt(keptFrom)} are gone, so the report starts there (a failed or partial run kept longer is still listed).`;
+}
+
+// perfCapWords: DBA Dash's row cap (CollectionPerformance_Get @MaxRows 5000): the read asks one row more, so a range
+// with more rows than the cap says so; '' under it
+export function perfCapWords(read: number, cap: number): string {
+  return read > cap ? `The latest ${cap} rows are listed: the range holds more (pick a shorter range for the rest).` : '';
+}

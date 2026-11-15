@@ -36,6 +36,23 @@ if (m) {
   call('an empty cost cell of a PostgreSQL row', () => m.costWords(null, 'postgres'), 'not read by pgvigil');
   call('an empty cost cell of a SQL Server row (no run reached its end read)', () => m.costWords(null, 'sqlserver'), 'not read');
   call('an empty cost cell of a row per collection (no engine)', () => m.costWords(undefined, undefined), 'not read');
+  // B6g-3 (N42): the Collection Performance report's cells - pgvigil keeps a failed or partial run one by one with its
+  // duration only (the design's (iv) CHANGED), so a Run row's CPU, logical reads and import say 'hourly only'; the
+  // import's own CPU, logical reads and lag have no source ('not read'); a PostgreSQL hour's CPU and reads as costWords
+  const hour = { period: 'Hour', engine: 'sqlserver' }, run = { period: 'Run', engine: 'sqlserver' }, pgHour = { period: 'Hour', engine: 'postgres' };
+  call('a Run row\'s CPU, logical reads and import: hourly only', () => ['cpu_ms', 'logical_reads', 'import_ms'].map(k => m.perfCell?.(k, null, run)), ['hourly only', 'hourly only', 'hourly only']);
+  call('a Run row\'s duration and counts: its own numbers', () => ['duration_ms', 'max_duration_ms', 'runs', 'failed', 'partial'].map(k => m.perfCell?.(k, 5, run)), [null, null, null, null, null]);
+  call('the import\'s CPU, logical reads and lag: not read, every row', () => ['import_cpu_ms', 'import_logical_reads', 'import_lag_s'].flatMap(k => [m.perfCell?.(k, null, hour), m.perfCell?.(k, null, run)]), Array(6).fill('not read'));
+  call('a PostgreSQL hour\'s CPU and reads: not read by pgvigil; its import a number', () => ['cpu_ms', 'logical_reads', 'import_ms'].map(k => m.perfCell?.(k, k === 'import_ms' ? 5 : null, pgHour)), ['not read by pgvigil', 'not read by pgvigil', null]);
+  call('a SQL Server hour with no session read: not read', () => m.perfCell?.('cpu_ms', null, hour), 'not read');
+  call('a SQL Server hour\'s CPU read: a number', () => m.perfCell?.('cpu_ms', 9, hour), null);
+  // the hourly rows' retention cut and the row cap, in the page's words
+  const fmt = v => `<${v}>`;
+  call('a range starting before the hourly rows kept: the cut said', () => m.perfCutWords?.('2026-11-01T00:00:00Z', '2026-11-07T13:00:00Z', 8, fmt),
+    'The hourly rows are kept 8 days: the hours before <2026-11-07T13:00:00Z> are gone, so the report starts there (a failed or partial run kept longer is still listed).');
+  call('a range inside them: nothing said', () => m.perfCutWords?.('2026-11-10T00:00:00Z', '2026-11-07T13:00:00Z', 8, fmt), '');
+  call('the cap hit: said', () => m.perfCapWords?.(5001, 5000), 'The latest 5000 rows are listed: the range holds more (pick a shorter range for the rest).');
+  call('under the cap: nothing said', () => m.perfCapWords?.(12, 5000), '');
 }
 console.log(bad ? `chhealth: ${bad} FAIL` : 'chhealth: 0 FAIL');
 process.exit(bad ? 1 : 0);

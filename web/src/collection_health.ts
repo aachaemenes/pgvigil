@@ -212,6 +212,15 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
     const q = String(new URLSearchParams(extra));
     return q ? h + (h.includes('?') ? '&' : '?') + q : h;
   };
+  // B6g-3 (N42): the Collection Performance report of the row's collection - its instance on a row per collection per
+  // instance, the page's scope on a row per collection - over the range this grid was read with (DBA Dash's
+  // PerformanceLink on Collection, Runs, Avg / Max Duration and Total CPU)
+  const perfLink = (r: Row, content: string | Node, landing: string, perInstance: boolean) => {
+    const wr = window_(ctx), id = perInstance && r.instance_id != null ? Number(r.instance_id) : undefined;
+    const h = href(ctx, { tab: 'collectionperf', range: { from: wr.from, to: wr.to }, ...(id ? { instance: id, tag: undefined } : {}) });
+    return el('a', { href: h + (h.includes('?') ? '&' : '?') + 'collection=' + encodeURIComponent(String(r.collection)), 'data-land': landing,
+      title: 'The collection\'s performance over this range: Collection Performance' }, content);
+  };
   const errorsLink = (r: Row, n: unknown, landing: string, range?: { from: string; to: string }) => {
     const id = r.instance_id != null ? Number(r.instance_id) : undefined;
     const over: Partial<Ctx> = id ? { instance: id, tag: undefined } : {};
@@ -244,7 +253,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
     const instCol: Col = { key: 'instance', label: 'Instance', fmt: (v, r) => el('a', { href: land({ instance: Number(r.instance_id), tag: undefined }, {}), 'data-land': 'instance' }, String(v ?? '')) };
     const statusCol: Col = { key: 'status', label: 'Status', fmt: v => badge(word[String(v)] ?? String(v), kind[String(v)] ?? '') };
     const tail: Col[] = [
-      { key: 'runs', label: 'Runs', num: true, fmt: fmtNum },
+      { key: 'runs', label: 'Runs', num: true, fmt: (v, r) => perfLink(r, fmtNum(v), 'perf-runs', grain === 'instance') },
       { key: 'succeeded_pct', label: 'Succeeded %', num: true, fmt: pct },
       { key: 'failed_pct', label: 'Failed %', num: true, fmt: pct },
       // DBA Dash's own words (CollectionHealthView.cs FailedPct24Hrs) without its 'since errors were acknowledged' (pgvigil's
@@ -267,13 +276,14 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'last_run_at', label: 'Last Run', fmt: fmtTime },
       { key: 'last_success', label: 'Last Success', fmt: fmtTime },
       { key: 'last_failure', label: 'Last Failure', fmt: (v, r) => v == null ? '' : errorsLink(r, v, 'lastfailure', { from: String(r.errors_from), to: String(r.errors_to) }) },
-      { key: 'avg_duration_ms', label: 'Avg Duration (ms)', num: true, fmt: fmtNum },
-      { key: 'max_duration_ms', label: 'Max Duration (ms)', num: true, fmt: fmtNum },
+      { key: 'avg_duration_ms', label: 'Avg Duration (ms)', num: true, fmt: (v, r) => v == null ? '' : perfLink(r, fmtNum(v), 'perf-avg', grain === 'instance') },
+      { key: 'max_duration_ms', label: 'Max Duration (ms)', num: true, fmt: (v, r) => v == null ? '' : perfLink(r, fmtNum(v), 'perf-max', grain === 'instance') },
       // B6g-1 (N25 / N26): the run's own session's cost, read at the run's end on SQL Server; a PostgreSQL row says so.
       // DBA Dash's order and words after Max Duration (CollectionHealthView.cs: Avg CPU, Max CPU, Total CPU, Avg Logical
       // Reads, Total Logical Reads, Avg Import, Max Import; the review of B6g-1 part b #5)
       ...([['avg_cpu_ms', 'Avg CPU (ms)'], ['max_cpu_ms', 'Max CPU (ms)'], ['total_cpu_ms', 'Total CPU (ms)'], ['avg_logical_reads', 'Avg Logical Reads'], ['logical_reads', 'Total Logical Reads']] as const)
-        .map(([key, label]): Col => ({ key, label, num: true, fmt: (v, r) => costWords(v, r.engine) ?? fmtNum(v),
+        .map(([key, label]): Col => ({ key, label, num: true, fmt: (v, r) => key === 'total_cpu_ms'
+          ? perfLink(r, costWords(v, r.engine) ?? fmtNum(v), 'perf-cpu', grain === 'instance') : costWords(v, r.engine) ?? fmtNum(v),
           title: 'Of the run\'s own session on SQL Server (cpu_time, logical_reads of sys.dm_exec_sessions), read at the run\'s end, over the runs that read it.  A run cut by its own timeout is not read: the driver drops its connection.' })),
       // B6g-1 (N27): the write into the repository alone, over the runs that wrote or tried to (the durations hold it too)
       { key: 'avg_import_ms', label: 'Avg Import (ms)', num: true, fmt: fmtNum, title: 'The time of the writes into the repository alone, over the runs that wrote into it or tried to (a failed write too).  Avg Duration includes it.' },
@@ -293,10 +303,10 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       } },
     ];
     const cols: Col[] = grain === 'collection'
-      ? [{ key: 'collection', label: 'Collection' }, statusCol,
+      ? [{ key: 'collection', label: 'Collection', fmt: (v, r) => perfLink(r, String(v ?? ''), 'perf-collection', false) }, statusCol,
          { key: 'instances', label: 'Instances', num: true, fmt: (v, r) => el('a', { href: land({}, { grain: 'instance', collection: String(r.collection) }), 'data-land': 'instances' }, fmtNum(v)) },
          { key: 'failing_instances', label: 'Failing Instances', num: true, fmt: fmtNum }, ...tail]
-      : [...(ctx.instance ? [] : [instCol]), { key: 'collection', label: 'Collection' }, statusCol, { key: 'status_reason', label: 'Status Reason', wide: true }, ...tail];
+      : [...(ctx.instance ? [] : [instCol]), { key: 'collection', label: 'Collection', fmt: (v, r) => perfLink(r, String(v ?? ''), 'perf-collection', true) }, statusCol, { key: 'status_reason', label: 'Status Reason', wide: true }, ...tail];
     // the charts: Runs by outcome (DBA Dash's colours), the time spent collecting, Import Lag in words
     const runs = rowsOf(parts.runs).map(r => {
       const f = Number(r.failed ?? 0), p = Number(r.partial ?? 0), s = Number(r.succeeded ?? 0);
@@ -325,7 +335,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
         + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
         + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end (a run cut by its own timeout is not read); a PostgreSQL row says not read by pgvigil. '
         + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads (and the Cost chart\'s Import CPU line), the highest logical reads of one run; '
-        + 'no Steps (pgvigil has no run steps); Runs and Max Duration are not links (no Collection Performance report yet); '
+        + 'no Steps (pgvigil has no run steps). Collection, Runs, Avg and Max Duration and Total CPU open the Collection Performance report over this range; '
         + 'the Status column shows the word as well as the colour.'),
       grid(rows, cols, on.length === 0 ? 'No status is picked: pick one or more to list the collections.' : 'No collection matches: show every status, or a wider range.'));
     sec.dataset.drawn = drawn;

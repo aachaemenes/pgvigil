@@ -240,6 +240,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/driveperf", s.DrivePerf)
 	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
 	api.HandleFunc("GET /api/collectionhealth", s.CollectionHealth)             // B6.2
+	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                 // B6g-3: WIRING for the join (web.go is the lead's)
 	api.HandleFunc("POST /api/collectionhealth/thresholds", s.CHThresholdWrite) // B6g-2: WIRING for the join (web.go is the lead's)
 	api.HandleFunc("GET /api/collector", s.Collector)                           // task 201
 	// task 204: Admin > Instances (q_instances_admin.go)

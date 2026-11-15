@@ -106,3 +106,23 @@ instance that is not the demo's, or a level over every instance) the dialog stil
 reason in words. A refused value comes back in the repository's own words. One difference from DBA Dash: the rate's
 range is the page's (the Summary's last 24 hours), as pgvigil has no Acknowledge Errors yet.
 
+
+## Collection Performance
+
+DBA Dash's Collection Performance report, opened from the Collection Health grid: Collection, Runs, Avg Duration, Max
+Duration and Total CPU open it for the row's collection - on its instance for a row per collection per instance, over
+the page's scope for a row per collection - over the range the grid was read with (GET /api/collectionperf).
+
+Its charts, two by two, are hourly: Duration (ms) - collecting and importing, average and highest; CPU (ms) - collecting
+(SQL Server's runs that read their session); Logical Reads; Runs by outcome. Its grid lists the newest first, 5,000 rows
+at most (said when the range holds more):
+
+- an **Hour** row per instance, collection and hour - every run of the hour, summed over the collectors that ran it;
+- a **Run** row per run that failed or was partial, with its duration. pgvigil keeps only those one by one (a run that
+  went well is counted in its hour), so the Run rows are never all the runs; a Run row's CPU, logical reads and import
+  say 'hourly only'.
+
+Failed holds the failures at the write too (DBA Dash's Failed and Import Failed together); Partial is DBA Dash's
+'Retried / Partial' (pgvigil retries nothing). Import CPU, Import Logical Reads and Import Lag are not read: pgvigil
+writes into the repository inside the run that collected. The hourly rows are kept 8 days by default (30 at most,
+Data retention): a range that starts before them says where the report's hours start.

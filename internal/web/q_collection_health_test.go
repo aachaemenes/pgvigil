@@ -80,7 +80,7 @@ func TestCollectionHealthBucket(t *testing.T) {
 // TestCollectionHealthPG13: the page's statements run on PostgreSQL 13 (README's floor): no date_bin, which 13 does not
 // have (0054, 0076 and q_mssql_plancache.go floor the epoch instead) - the review of B6.2, part a #1
 func TestCollectionHealthPG13(t *testing.T) {
-	for name, q := range map[string]string{"sqlCHRuns": sqlCHRuns, "sqlCHCost": sqlCHCost, "sqlCHInstance": sqlCHInstance, "sqlCHCollection": sqlCHCollection, "sqlCHErrors": sqlCHErrors, "sqlCHThresholds": sqlCHThresholds} {
+	for name, q := range map[string]string{"sqlCHRuns": sqlCHRuns, "sqlCHCost": sqlCHCost, "sqlCHInstance": sqlCHInstance, "sqlCHCollection": sqlCHCollection, "sqlCHErrors": sqlCHErrors, "sqlCHThresholds": sqlCHThresholds, "sqlCollPerfRows": sqlCollPerfRows, "sqlCollPerfCharts": sqlCollPerfCharts} {
 		if strings.Contains(q, "date_bin") {
 			t.Errorf("%s calls date_bin: PostgreSQL 13 has none", name)
 		}

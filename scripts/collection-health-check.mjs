@@ -281,6 +281,52 @@ const allRows = await api({});
   say(/^409 refused: warn_fails_in_row must be a whole number from 1/.test(ref ?? ''), 'CH21 the API\'s 409 carries the refusal\'s words (what the page\'s post() shows)', String(ref).slice(0, 160));
 }
 
+// CH22-CH24 (B6g-3, N42, design G4): DBA Dash's Collection Performance report. CH22 every link of a row per collection
+// per instance (Collection, Runs, Avg Duration, Max Duration, Total CPU) lands on #/collectionperf with the row's
+// instance, its collection and the grid's range; a row per collection's links keep the page's scope (no instance).
+// CH23 the report of fx-chimport's activity: its heading, the four charts (each drawn, or said hourly), its rows the
+// API's, its three failed runs as Run rows (pgvigil keeps a failed run one by one) with 'hourly only' CPU, its Hour row.
+// CH24 the cut and the cap words are absent on a range inside the hourly rows with few rows.
+{
+  const p = await open('#/collectionhealth?w=24h');
+  const row = (p?.rows ?? []).find(r => r['Instance']?.text === 'fx-chimport' && r['Collection']?.text === 'activity');
+  const want = { tab: 'collectionperf', i: String(byName('fx-chimport')?.instance_id ?? ''), collection: 'activity' };
+  const lands = [['Collection', 'perf-collection'], ['Runs', 'perf-runs'], ['Avg Duration (ms)', 'perf-avg'], ['Max Duration (ms)', 'perf-max'], ['Total CPU (ms)', 'perf-cpu']];
+  const hrefs = lands.map(([c, l]) => row?.[c]?.links?.[l]);
+  const bad = hrefs.map((h, k) => [lands[k][0], h]).filter(([, h]) => { const r = route(h); return !h || r.tab !== want.tab || r.q.get('i') !== want.i || r.q.get('collection') !== want.collection || !r.q.get('from') || !r.q.get('to'); });
+  const same = new Set(hrefs.map(h => { const r = route(h); return `${r.q.get('from')}|${r.q.get('to')}`; })).size === 1;
+  say(!!row && bad.length === 0 && same, 'CH22 a row per instance: its five cells open the report of its instance and collection over one range',
+    row ? (bad.length ? bad.map(([c, h]) => `${c}: ${h ?? 'no link'}`).join('; ') : `${hrefs[0]}`) : 'no fx-chimport row');
+  // a row per collection: the links keep the scope (no i=)
+  await ev(`(() => { const s = document.querySelector('#ch-show'); if (s) { s.value = 'collection'; s.dispatchEvent(new Event('change', { bubbles: true })); } })()`);
+  await sleep(2500);
+  const pc = await ev(`[...document.querySelectorAll('main .ch-grid tbody tr')].map(tr => [...tr.querySelectorAll('a[data-land^="perf-"]')].map(a => a.getAttribute('href'))).find(x => x.length > 0) ?? []`);
+  say(pc.length >= 2 && pc.every(h => { const r = route(h); return r.tab === 'collectionperf' && !r.q.get('i') && !!r.q.get('collection'); }), 'CH22 a row per collection: its links keep the page\'s scope', (pc ?? []).slice(0, 2).join(' | ') || 'no link');
+  // CH23 the report itself
+  const h0 = hrefs[1];
+  if (h0) {
+    await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: U + h0 });
+    for (let k = 0; k < 100; k++) { if (await ev(`!!document.querySelector('main section.collectionperf[data-drawn]')`)) break; await sleep(150); }
+    await sleep(800);
+    const rep = await ev(`(() => { const s = document.querySelector('main section.collectionperf'); if (!s) return null;
+      const t = s.querySelector('.cp-grid table'); const heads = [...(t?.querySelectorAll('thead th') ?? [])].map(th => (th.querySelector('.th-label') ?? th).textContent.trim());
+      const rows = [...(t?.querySelectorAll('tbody tr') ?? [])].map(tr => Object.fromEntries(heads.map((h, i) => [h, tr.children[i]?.textContent.trim() ?? ''])));
+      const charts = [...s.querySelectorAll('.cp-charts .chart')].map(c => ({ title: c.querySelector('h3')?.firstChild?.textContent.trim() ?? '', drawn: !!c.querySelector('canvas, svg, .u-wrap') || /The charts are hourly/.test(c.textContent) }));
+      return { title: s.querySelector('h2')?.textContent.trim(), meta: s.querySelector('p.meta')?.textContent ?? '', rows, charts }; })()`);
+    const q = route(h0).q;
+    let apiRows = null;
+    try { const d = await (await fetch(U + 'api/collectionperf?' + new URLSearchParams({ part: 'rows', instance: q.get('i'), collection: 'activity', from: q.get('from'), to: q.get('to') }))).json(); apiRows = d.rows?.rows?.length ?? null; } catch { apiRows = null; }
+    const titles = (rep?.charts ?? []).map(c => c.title);
+    say(rep?.title === 'Collection Performance' && JSON.stringify(titles) === JSON.stringify(['Duration (ms)', 'CPU (ms)', 'Logical Reads', 'Runs']) && rep.charts.every(c => c.drawn),
+      'CH23 the report: its heading and its four charts drawn', rep ? `${rep.title} | ${rep.charts.map(c => `${c.title} ${c.drawn ? 'drawn' : 'NOT drawn'}`).join(', ')}` : 'no report');
+    say(!!rep && apiRows != null && rep.rows.length === apiRows, 'CH23 its rows are the API\'s', `${rep?.rows.length ?? 'no'} drawn, the API ${apiRows}`);
+    const runs = (rep?.rows ?? []).filter(r => r['Period'] === 'Run'), hours = (rep?.rows ?? []).filter(r => r['Period'] === 'Hour');
+    say(runs.length === 3 && runs.every(r => r['Outcome'] === 'Failed' && r['CPU (ms)'] === 'hourly only' && r['Import (ms)'] === 'hourly only') && hours.length >= 1 && hours.every(r => r['Import Lag (sec)'] === 'not read'),
+      'CH23 fx-chimport: its three failed runs one by one (hourly only), its hour', `${runs.length} Run row(s) [${runs.map(r => r['Outcome'] + ' / ' + r['CPU (ms)']).join('; ')}], ${hours.length} Hour row(s)`);
+    say(!!rep && !/are gone, so the report starts there/.test(rep.meta) && !/rows are listed: the range holds more/.test(rep.meta), 'CH24 a range inside the hourly rows, few rows: no cut, no cap said', (rep?.meta ?? '').slice(0, 160));
+  } else for (const r of ['the report: its heading and its four charts drawn', 'its rows are the API\'s', 'fx-chimport: its three failed runs one by one (hourly only), its hour', 'a range inside the hourly rows, few rows: no cut, no cap said']) say(false, 'CH23 ' + r, 'no Runs link');
+}
+
 // CH7 the landings
 {
   // the Summary's cell, one PostgreSQL row (fx-chcrit) and one SQL Server row; a row is found by its instance link's
