@@ -174,7 +174,7 @@ syn() {   # a synthetic instance of this proof (its engine: sqlserver or postgre
 }
 # the reports SQL Server writes for one wait: every 5 s while it lasts, its wait so far (the threshold 5 s)
 reports() {   # instance, blocked, blocking, start (seconds before now), length (s), head statement
-  q "select pgvigil.mssql_event_partition('mssql_blocked_reports', now());
+  q "select pgvigil.mssql_event_partition('mssql_blocked_reports', now() - make_interval(secs => $4)), pgvigil.mssql_event_partition('mssql_blocked_reports', now());
      insert into pgvigil.mssql_blocked_reports (instance_id, event_at, event_key, snapshot_at, database_name, wait_ms, blocked_spid,
             blocking_spid, blocked_statement, blocking_statement, head_key)
      select $1, now() - make_interval(secs => $4) + make_interval(secs => k * 5), 'b10-$2-$3-$4-' || k, now(), 'b10', k * 5000, $2, $3,
@@ -219,7 +219,7 @@ check "$(has "$D" 'blocking events in the last hour')" no "D: three 12 s waits d
 
 echo "--- E. the hold while 'a blocking chain' stands"
 E=$(syn e sqlserver); reports "$E" 71 70 1500 25 'BEGIN TRAN; UPDATE dbo.t'; reports "$E" 72 70 1000 25 'BEGIN TRAN; UPDATE dbo.t'; reports "$E" 73 70 500 25 'BEGIN TRAN; UPDATE dbo.t'
-q "select pgvigil.mssql_ensure_day_partition('mssql_blocking', now());   -- mssql_requests_summary is a plain table (0064): no partition
+q "select pgvigil.ensure_month_partition('mssql_blocking', t) from unnest(array[now() - interval '20 seconds', now()]) t;   -- by month, as import_mssql_requests makes it; mssql_requests_summary is a plain table (0064): no partition
    insert into pgvigil.mssql_requests_summary (instance_id, snapshot_at, source, sessions, requests, blocked, heads, longest_wait_ms) values ($E, now() - interval '20 seconds', 'dmv', 5, 2, 1, 1, 40000);
    insert into pgvigil.mssql_blocking (instance_id, snapshot_at, head_session_id, victims, longest_wait_ms, in_snapshot) values ($E, now() - interval '20 seconds', 70, 1, 40000, true)" >/dev/null
 check "$(has "$E" 'a blocking chain')|$(has "$E" 'blocking events in the last hour')" "yes|no" "E: 'a blocking chain' stands, the hour finding held"
@@ -231,7 +231,7 @@ check "$(finding "$C" 'blocked-process reports naming the same head statement' |
 
 echo "--- G. an hour with no reports: the requests snapshots"
 G=$(syn g sqlserver)
-q "select pgvigil.mssql_ensure_day_partition('mssql_requests', now());
+q "select pgvigil.mssql_ensure_day_partition('mssql_requests', t) from unnest(array[now() - interval '10 minutes', now()]) t;
    insert into pgvigil.mssql_requests (instance_id, snapshot_at, session_id, request_id, status, wait_type, wait_ms, blocking_session_id, is_user_process, database_name)
    select $G, t0 + make_interval(secs => k * 15), 61, 0, 'suspended', 'LCK_M_X', 10000 + k * 15000, 55, true, 'b10'
      from (select now() - interval '10 minutes' t0) x, generate_series(0, 3) k
@@ -245,7 +245,7 @@ fn mssql_block_waits && check "$(q "select string_agg(distinct source, ',') from
 echo "--- H. the monitor's own deadlocks left out"
 H=$(syn h sqlserver)
 tab mssql_monitor_app && q "insert into pgvigil.mssql_monitor_app (instance_id, app_name, read_at) values ($H, 'pgvigil', now())" >/dev/null
-q "select pgvigil.mssql_event_partition('mssql_deadlocks', now());
+q "select pgvigil.mssql_event_partition('mssql_deadlocks', t) from unnest(array[now() - interval '30 minutes', now()]) t;
    insert into pgvigil.mssql_deadlocks (instance_id, event_at, event_key, snapshot_at, source, process_count, victim_count, victim_program, processes)
    values ($H, now() - interval '30 minutes', 'b10-h1', now(), 'product', 2, 1, 'pgvigil', '[{\"victim\": true, \"program\": \"pgvigil\"}, {\"victim\": false, \"program\": \"app\"}]'),
           ($H, now() - interval '20 minutes', 'b10-h2', now(), 'product', 2, 1, 'app', '[{\"victim\": true, \"program\": \"app\"}, {\"victim\": false, \"program\": \"pgvigil\"}]'),
@@ -298,7 +298,7 @@ else check "no mssql_block_hourly" "yes" "I: the spike against the hour's usual"
 
 echo "--- J. PostgreSQL waits split at a gap"
 J=$(syn j postgres)
-q "select pgvigil.ensure_month_partition('activity_sample', now());
+q "select pgvigil.ensure_month_partition('activity_sample', t) from unnest(array[date_trunc('minute', now()) - interval '20 minutes', now()]) t;
    insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
    select $J, t0 + make_interval(secs => s), 101, t0 - interval '1 hour', 'b10', 'app', 'active', 'Lock', 'transactionid', t0 - interval '5 seconds', '{100}'::int[]
      from (select date_trunc('minute', now()) - interval '20 minutes' t0) x, unnest(array[0, 15, 30, 45, 60, 105, 120, 135]) s
@@ -309,7 +309,8 @@ check "$(waits pg_block_waits "$J")" 3 "J: 101 two waits (a 45 s gap), 102 one"
 check "$(api healthcal "$J" blocking)|$(api ack "$J" blocking)" "3|3" "J: the day and the live part read 3"
 check "$(has "$J" 'blocking events in the last hour')" yes "J: the hour arm fires on PostgreSQL (3 waits, the longest 60 s)"
 J2=$(syn j2 postgres)
-q "insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
+q "select pgvigil.ensure_month_partition('activity_sample', t) from unnest(array[date_trunc('minute', now()) - interval '30 minutes', now()]) t;
+   insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
    select $J2, t0 + make_interval(secs => v.s), v.p, t0 - interval '1 hour', 'b10', 'app', 'active', v.wt, v.we, t0 - interval '5 seconds', v.bp
      from (select date_trunc('minute', now()) - interval '30 minutes' t0) x,
           (values (104, 0, 'Lock', 'transactionid', '{100}'::int[]), (104, 60, null, null, '{}'::int[]), (104, 120, 'Lock', 'transactionid', '{100}'),
