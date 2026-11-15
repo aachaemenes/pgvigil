@@ -218,7 +218,7 @@ function buildView(b: Row | undefined, suspect: Row[]): HTMLElement[] {
 const scriptChecks = new Set(['no alerts for severity 19 to 25', 'alerts missing for some severities', 'no alerts for corruption errors']);
 
 // alertsScript (C13, B9d): 'The script that creates them', beside a missing-alert finding - or, where the area was not
-// read (the login could not read msdb), with words that say so (the script checks the server itself). Where the
+// read, with the area's own note (why it was not read), with words that say so (the script checks the server itself). Where the
 // platform rules alerts out the server says why and there is no script. pgvigil prints the script and never runs it.
 function alertsScript(ctx: Ctx, findings: Row[], areas: Row[]): HTMLElement | null {
   const area = areas.find(a => a.area === 'alerts');
@@ -234,7 +234,7 @@ function alertsScript(ctx: Ctx, findings: Row[], areas: Row[]): HTMLElement | nu
     copy.addEventListener('click', () => { void copyText(text).then(ok => { said.textContent = ok ? ' Copied.' : ' Not copied: select the text and copy it.'; }); });
     box.replaceChildren(el('details', { 'data-sheet': 'agent alerts script' }, el('summary', {}, 'The script that creates them'),
       el('p', { class: 'meta' },
-        ...(unread && !missing ? ['The alerts were not read on this instance (its login could not read msdb): the script checks the server itself before it creates anything. '] : []),
+        ...(unread && !missing ? [`The alerts were not read on this instance${area?.note ? ` (${String(area.note)})` : ''}: the script checks the server itself before it creates anything. `] : []),
         'pgvigil prints this and never runs it: the server\'s DBA reads it and runs it as a sysadmin. It creates only what is missing and changes no setting. ',
         s.operator ? `Each alert e-mails the operator ${s.operator} (enabled and with an address at the last read). ` : 'No enabled operator with an e-mail address was read: name one in its @operator line, or the alerts notify nobody. ',
         'The Availability Group alerts are made only where Availability Groups are on, and are not proven to fire. Undo: pgvigil mssql-agent-alerts -print -drop.'),

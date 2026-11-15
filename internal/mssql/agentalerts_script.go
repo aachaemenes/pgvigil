@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 )
 
 // AgentAlertsDelay is the script's default @delay_between_responses, in seconds: the larger of the two published
@@ -64,13 +65,14 @@ type AgentAlertsOptions struct {
 }
 
 // check refuses a value the script could not carry safely: sysoperators.name is sysname (128), sp_add_operator's
-// @email_address nvarchar(100); no control character in either.
+// @email_address nvarchar(100), both counted in UTF-16 units as SQL Server counts them (an emoji is two); no control
+// character in either.
 func (o AgentAlertsOptions) check() error {
 	ctl := func(s string) bool { return strings.IndexFunc(s, unicode.IsControl) >= 0 }
 	switch {
 	case strings.TrimSpace(o.Operator) != o.Operator:
 		return errors.New("the operator's name has leading or trailing spaces")
-	case len([]rune(o.Operator)) > 128:
+	case len(utf16.Encode([]rune(o.Operator))) > 128:
 		return errors.New("the operator's name is longer than 128 characters (sysname)")
 	case ctl(o.Operator) || ctl(o.Email):
 		return errors.New("the operator's name or the e-mail address holds a control character")
@@ -78,7 +80,7 @@ func (o AgentAlertsOptions) check() error {
 		return errors.New("an e-mail address needs the operator's name (-operator)")
 	case strings.TrimSpace(o.Email) != o.Email:
 		return errors.New("the e-mail address has leading or trailing spaces")
-	case len([]rune(o.Email)) > 100:
+	case len(utf16.Encode([]rune(o.Email))) > 100:
 		return errors.New("the e-mail address is longer than 100 characters (sp_add_operator's @email_address is nvarchar(100))")
 	case o.DelaySeconds < 0 || o.DelaySeconds > 86400:
 		return errors.New("the delay between responses must be 0 to 86400 seconds")
@@ -223,7 +225,7 @@ BEGIN
   END
   IF EXISTS (SELECT 1 FROM msdb.dbo.sysalerts WHERE name = @name)
   BEGIN
-    PRINT N'not created: ' + @name + N' - an alert of that name is on another condition (rename it, or drop it if it is not wanted).';
+    PRINT N'not created: ' + @name + N' - an alert of that name is on another condition; its name makes it pgvigil''s: the notify block below e-mails the operator from it and the drop script drops it (rename it to keep it apart).';
     CONTINUE;
   END
   SET @scoped = NULL;
@@ -238,7 +240,11 @@ BEGIN
       + ISNULL(N'; the alert ' + QUOTENAME(@scoped) + N' covers this error for one database or keyword only', N'');
   END TRY
   BEGIN CATCH
-    PRINT N'not created: ' + @name + N' - ' + ERROR_MESSAGE();
+    -- sp_add_alert inserts, then tells the Agent: a refusal of that step (14258 while the Agent starts) leaves the row
+    IF EXISTS (SELECT 1 FROM msdb.dbo.sysalerts WHERE name = @name)
+      PRINT N'created (the Agent was not told: ' + ERROR_MESSAGE() + N'): ' + @name;
+    ELSE
+      PRINT N'not created: ' + @name + N' - ' + ERROR_MESSAGE();
   END CATCH
 END
 
@@ -281,7 +287,10 @@ BEGIN
         + @an + N' e-mails ' + QUOTENAME(@operator);
     END TRY
     BEGIN CATCH
-      PRINT N'not added: ' + @an + N' e-mails ' + QUOTENAME(@operator) + N' - ' + ERROR_MESSAGE();
+      IF EXISTS (SELECT 1 FROM msdb.dbo.sysnotifications s JOIN msdb.dbo.sysalerts a ON a.id = s.alert_id WHERE a.name = @an AND s.operator_id = @op_id)
+        PRINT N'notifies (the Agent was not told: ' + ERROR_MESSAGE() + N'): ' + @an + N' e-mails ' + QUOTENAME(@operator);
+      ELSE
+        PRINT N'not added: ' + @an + N' e-mails ' + QUOTENAME(@operator) + N' - ' + ERROR_MESSAGE();
     END CATCH
     FETCH NEXT FROM pgv_notify INTO @an;
   END
@@ -294,13 +303,22 @@ IF ISNULL((SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name =
   PRINT N'note: Database Mail is off (sp_configure ''Database Mail XPs'' is 0): the alerts cannot e-mail anyone.';
 IF NOT EXISTS (SELECT 1 FROM msdb.dbo.sysmail_profile)
   PRINT N'note: msdb holds no Database Mail profile: the alerts cannot e-mail anyone.';
-DECLARE @agent_profile nvarchar(256), @xrc int;
+DECLARE @agent_profile nvarchar(256), @xrc int, @use_dbmail int, @xrc2 int;
 BEGIN TRY
   EXEC @xrc = master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'SOFTWARE\Microsoft\MSSQLServer\SQLServerAgent', N'DatabaseMailProfile', @agent_profile OUTPUT, N'no_output';
 END TRY
 BEGIN CATCH
   SET @xrc = NULL;
 END CATCH
+-- the Agent's 'Enable mail profile' (sp_set_sqlagent_properties writes UseDatabaseMail beside the profile's name)
+BEGIN TRY
+  EXEC @xrc2 = master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'SOFTWARE\Microsoft\MSSQLServer\SQLServerAgent', N'UseDatabaseMail', @use_dbmail OUTPUT, N'no_output';
+END TRY
+BEGIN CATCH
+  SET @xrc2 = NULL;
+END CATCH
+IF @xrc2 = 0 AND ISNULL(@use_dbmail, 0) = 0
+  PRINT N'note: the Agent''s mail profile is not enabled (UseDatabaseMail is 0: the Agent''s properties, Alert System, Enable mail profile): the alerts cannot e-mail anyone.';
 IF @xrc = 0 AND NULLIF(LTRIM(RTRIM(@agent_profile)), N'') IS NULL
   PRINT N'note: SQL Server Agent has no mail profile, so alerts and job notifications cannot e-mail (Windows: the Agent''s properties, Alert System; Linux: mssql-conf set sqlagent.databasemailprofile).';
 ELSE IF ISNULL(@xrc, 1) <> 0

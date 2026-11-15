@@ -56,9 +56,9 @@ func TestAgentAlertsScriptOnAStore(t *testing.T) {
 		}
 	}()
 	for q, args := range map[string][]any{
-		`INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, engine_edition) VALUES ($1, now(), 3), ($2, now(), 3), ($3, now(), 2), ($4, now(), 4)`:                                                                                 {srv, bare, rds, express},
-		`INSERT INTO pgvigil.mssql_agent_operator (instance_id, name, enabled, has_email, snapshot_at) VALUES ($1, 'a-off', false, true, now()), ($1, 'b-ops', true, true, now()), ($2, 'c-nomail', true, false, now())`:                      {srv, bare},
-		`INSERT INTO pgvigil.mssql_property (instance_id, name, grp, label, value, ord, snapshot_at) VALUES ($1, 'host_platform', 'Host', 'Platform', 'Windows', 600, now()), ($2, 'host_platform', 'Host', 'Platform', 'Linux', 600, now())`: {srv, linux},
+		`INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, engine_edition) VALUES ($1, now(), 3), ($2, now(), 3), ($3, now(), 2), ($4, now(), 4)`:                                                                                                                             {srv, bare, rds, express},
+		`INSERT INTO pgvigil.mssql_agent_operator (instance_id, name, enabled, has_email, snapshot_at) VALUES ($1, 'a-off', false, true, now()), ($1, 'b-ops', true, true, now()), ($2, 'c-nomail', true, false, now())`:                                                                  {srv, bare},
+		`INSERT INTO pgvigil.mssql_property (instance_id, name, grp, label, value, ord, snapshot_at, since, seen_at) VALUES ($1, 'host_platform', 'Host', 'Platform', 'Windows', 600, now(), now(), now()), ($2, 'host_platform', 'Host', 'Platform', 'Linux', 600, now(), now(), now())`: {srv, linux},
 	} {
 		if _, err := pool.Exec(ctx, q, args...); err != nil {
 			t.Fatalf("%v\n%s", err, q)
