@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -156,5 +159,41 @@ func TestReadinessCanceledNotKept(t *testing.T) {
 	}
 	if ok, why := s.readiness(context.Background()); !ok || calls != 2 {
 		t.Errorf("after a Canceled check: ready %v %q in %d check(s), want ready in 2 (the Canceled answer not kept)", ok, why, calls)
+	}
+}
+
+// TestOpenCopiesReadyzOption (B6f4 #3): Open copies the option the serve passes, the serve passes the config's
+// web.readyz_without_login, and nothing else in the package writes the field - TestProbes builds its Server by hand,
+// so a hard-wired 'true' in Open (/readyz open with the login on and the switch off) passed every row
+func TestOpenCopiesReadyzOption(t *testing.T) {
+	for _, c := range []struct{ file, want, says string }{
+		{"web.go", `(?m)^\s*s\.readyzWithoutLogin\s*=\s*o\.ReadyzWithoutLogin\s*$`, "Open does not copy o.ReadyzWithoutLogin into s.readyzWithoutLogin"},
+		{"../../cmd/pgvigil/serve.go", `\bReadyzWithoutLogin:\s*cfg\.Web\.ReadyzWithoutLogin\b`, "serve does not pass cfg.Web.ReadyzWithoutLogin to web.Open"},
+	} {
+		b, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := len(regexp.MustCompile(c.want).FindAllIndex(b, -1)); n != 1 {
+			t.Errorf("%s (%s: %d match(es), want 1)", c.says, c.file, n)
+		}
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writes += len(regexp.MustCompile(`\breadyzWithoutLogin\s*=[^=]`).FindAllIndex(b, -1))
+	}
+	if writes != 1 {
+		t.Errorf("readyzWithoutLogin is written %d time(s) in the package, want 1 (Open's copy)", writes)
 	}
 }

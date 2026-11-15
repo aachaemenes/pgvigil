@@ -28,8 +28,10 @@ const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 // collection that runs long, the alert sender idle, the repository's autovacuum behind), deduplicated by the findings
 // view's own key. Never pgvigil.findings itself: a filter on source cannot pass its DISTINCT ON, so a fleet-wide load
 // built every arm (B6.2 part c #5). 403b's K3 (an alert channel failing) is read here where its arm is joined: a
-// WIRING line at the join (TestCollectorFindingsReadsItsArms is red until it is). The claim ('why') is the collector
-// parents' only.
+// WIRING line at the join. K3 is alert_findings' arm through alert_channel_findings (never findings': its ck CTE
+// reads findings), so the guard walks the arms of both views and names K3 by its view (TestCollectorFindingsReadsItsArms;
+// TestCollectorFindingsK3AtTheJoin shows it red at the join until K3 and 'pushover quota low' are read here and named
+// in the claim CASE below). The claim ('why') is the collector parents' only.
 const sqlCollectorFindings = `
 WITH f AS (
   SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
