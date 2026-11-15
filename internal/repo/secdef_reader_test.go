@@ -44,7 +44,12 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		"alert_log_partition(timestamp with time zone)": true, "mssql_hadr_cursor(integer, text)": true,
 		"alert_contact_routes()": true,
 		"dbadash_import_stored(integer, text, timestamp with time zone, timestamp with time zone)": true,
-		"dbadash_import_target(jsonb)": true}
+		"dbadash_import_target(jsonb)": true,
+		// the Parquet export's door (0256): each raises unless session_user is a member of pgvigil_exporter, which the
+		// report login is not (a member of any role but pgvigil_reader is refused: reportrole.go), so a report gets an
+		// error and writes nothing
+		"export_run_record(text, text, timestamp with time zone, timestamp with time zone, text, timestamp with time zone, text, integer, integer, bigint, bigint, text)": true,
+		"export_off(text)": true}
 	// the signature without the schema (oidvectortypes: argument types as format_type writes them), whatever the
 	// connection's search_path
 	rows, err := conn.Query(ctx, `SELECT p.proname || '(' || oidvectortypes(p.proargtypes) || ')' FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

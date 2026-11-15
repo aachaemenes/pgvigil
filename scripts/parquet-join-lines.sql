@@ -1,0 +1,18 @@
+-- The Parquet export (migration 0256): the arms of joined objects, for the next join file. 0256 itself creates
+-- only its own objects.
+--
+-- 1. apply_roles(): the export's door is the exporter's, not the reader's. In the owner-only branch (the functions
+--    apply_roles revokes from pgvigil_reader), add export_run_record and export_off, and after it:
+--      GRANT EXECUTE ON FUNCTION pgvigil.export_run_record(text, text, timestamptz, timestamptz, text, timestamptz, text, int, int, bigint, bigint, text) TO pgvigil_exporter;
+--      GRANT EXECUTE ON FUNCTION pgvigil.export_off(text) TO pgvigil_exporter;
+--    Until then both raise for a login that is not a member of pgvigil_exporter (the check is inside them), and
+--    internal/repo/secdef_reader_test.go lists the two signatures with that reason; once apply_roles takes the
+--    reader's EXECUTE back, the two lines leave that list.
+--
+-- 2. The collector's errors (the page of the collector's own errors, where it is merged): one more arm for the
+--    service's own row, an export whose last run failed or which is more than 3 hours behind while configured:
+--      SELECT NULL::int AS instance_id, '(the service)' AS instance, 'export' AS collection, s.last_run_at AS error_at,
+--             'error' AS error_type, 'other' AS stage, s.detail AS message
+--        FROM pgvigil.export_service s
+--
+-- 3. purge(): nothing. export_runs trims itself to 90 days in export_run_record.

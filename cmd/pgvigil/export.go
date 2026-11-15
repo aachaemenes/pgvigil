@@ -32,6 +32,7 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 	plan := fs.Bool("plan", false, "print the due windows and every table's kind; write nothing")
 	status := fs.Bool("status", false, "read the destination's manifests: the newest window, the hours missing, the hours aged out")
 	check := fs.Bool("check", false, "prove the configuration: the login, the map of tables, the destination (one tiny object written and removed)")
+	off := fs.Bool("off", false, "take this export's row out of the repository (export_state): it is turned off and must raise no 'behind' line")
 	gap := fs.Bool("gap", false, "-gap <from> <to>: accept a hole - write a gap manifest for every hour of it that has none")
 	asJSON := fs.Bool("json", false, "with -tables-list, -plan or -status: JSON")
 	from := fs.String("from", "", "with -to: export these hours whatever the manifests say (UTC, on the hour: 2026-01-31T14:00:00Z)")
@@ -45,7 +46,7 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 		return &usageError{err}
 	}
 	modes := 0
-	for _, m := range []bool{*list, *plan, *status, *check, *gap, *from != "" || *to != ""} {
+	for _, m := range []bool{*list, *plan, *status, *check, *gap, *off, *from != "" || *to != ""} {
 		if m {
 			modes++
 		}
@@ -53,7 +54,7 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 	explicit := *from != "" || *to != ""
 	switch {
 	case modes > 1:
-		return &usageError{errors.New("export: one of -tables-list, -plan, -status, -check, -gap, -from / -to at a time")}
+		return &usageError{errors.New("export: one of -tables-list, -plan, -status, -check, -gap, -off, -from / -to at a time")}
 	case (*tables != "" || *out != "") && !explicit:
 		return &usageError{errors.New("export: -tables and -out go with -from and -to")}
 	case *asJSON && !(*list || *plan || *status):
@@ -77,7 +78,7 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 	}
 	c := export.Config{Name: e.Name, DSN: e.DSN(), StateDir: e.StateDir, Dest: dest, Settle: e.Settle(), MaxAge: e.MaxAge(),
 		FinalAfter: e.FinalAfter(), PerRun: e.PerRun(), MaxBytes: e.MaxBytes(), Timeout: e.Timeout(), Carry: e.Carry,
-		Exclude: e.Tables.Exclude, ConfigPath: *path, Version: version, Out: os.Stdout, Err: os.Stderr}
+		Exclude: e.Tables.Exclude, ConfigPath: *path, NoRecord: *out != "", Version: version, Out: os.Stdout, Err: os.Stderr}
 	switch {
 	case *list:
 		return export.List(ctx, c, *asJSON)
@@ -87,6 +88,8 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 		return export.Status(ctx, c, *asJSON)
 	case *check:
 		return export.Check(ctx, c)
+	case *off:
+		return export.Off(ctx, c)
 	case *gap:
 		if fs.NArg() != 2 {
 			return &usageError{errors.New("export: -gap <from> <to>, UTC and on the hour (2026-01-31T14:00:00Z 2026-01-31T16:00:00Z)")}

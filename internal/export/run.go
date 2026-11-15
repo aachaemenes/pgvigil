@@ -30,6 +30,7 @@ type Config struct {
 	Carry      []string
 	Exclude    []string
 	ConfigPath string // named in the lines that give a command
+	NoRecord   bool   // a side copy (-out): no row through the door
 	Version    string
 	Out, Err   io.Writer
 }
@@ -46,6 +47,65 @@ type session struct {
 	tables     []Resolved
 	now        time.Time
 	migrations int
+	door       bool // the login holds the door (it is IN ROLE pgvigil_exporter and migration 0256 is applied)
+}
+
+// windowStats is what a window's export wrote, for its line and its row.
+type windowStats struct {
+	tables, files int
+	rows, bytes   int64
+	reason        string // why the window is not complete
+}
+
+// doorSQL asks whether this login may write the export's own record: the function is there (an older repository
+// has none) and the login is a member of the exporter role. A login IN ROLE pgvigil_reader alone exports all the
+// same; it leaves no row on the Collector page.
+const doorSQL = `/* pgvigil-export:door */
+SELECT to_regprocedure('pgvigil.export_run_record(text,text,timestamptz,timestamptz,text,timestamptz,text,int,int,bigint,bigint,text)') IS NOT NULL
+   AND CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgvigil_exporter')
+            THEN pg_has_role(session_user, 'pgvigil_exporter', 'MEMBER') ELSE false END`
+
+// record writes a window's row through the door, on a short connection of its own: the reading connection never
+// leaves READ ONLY. A row that cannot be written is said and costs the export nothing.
+func (s *session) record(ctx context.Context, w Hour, final bool, started time.Time, ok bool, st windowStats, errText string) {
+	if !s.door || s.c.NoRecord {
+		return
+	}
+	conn, err := connectDoor(ctx, s.c.DSN)
+	if err == nil {
+		defer conn.Close(context.Background())
+		pass, outcome := "1", "ok"
+		if final {
+			pass = "final"
+		}
+		var e *string
+		if !ok {
+			outcome = "failed"
+			if errText == "" {
+				errText = st.reason
+			}
+			e = &errText
+		}
+		_, err = conn.Exec(ctx, "/* pgvigil-export:door */ SELECT pgvigil.export_run_record($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+			s.c.Name, s.c.Dest.String(), w.From, w.To, pass, started, outcome, st.tables, st.files, st.rows, st.bytes, e)
+	}
+	if err != nil {
+		fmt.Fprintf(s.c.Err, "pgvigil export: the window's row for the Collector page could not be written: %s\n", oneLine(err.Error()))
+	}
+}
+
+// window exports one window and leaves its row.
+func (s *session) window(ctx context.Context, w Hour, final bool, only map[string]bool, mark string) (bool, error) {
+	started := time.Now()
+	ok, st, err := s.exportWindow(ctx, w, final, only, mark)
+	if mark == "" {
+		msg := ""
+		if err != nil {
+			msg = oneLine(err.Error())
+		}
+		s.record(context.WithoutCancel(ctx), w, final, started, ok && err == nil, st, msg)
+	}
+	return ok, err
 }
 
 func open(ctx context.Context, c Config) (*session, error) {
@@ -68,6 +128,10 @@ func open(ctx context.Context, c Config) (*session, error) {
 		return nil, fmt.Errorf("the repository's clock: %w", err)
 	}
 	s.now = s.now.UTC()
+	if err := conn.QueryRow(ctx, doorSQL).Scan(&s.door); err != nil {
+		conn.Close(ctx)
+		return nil, fmt.Errorf("the export's door: %w", err)
+	}
 	return s, nil
 }
 
@@ -177,7 +241,7 @@ func Run(ctx context.Context, c Config) error {
 	}
 	incomplete := false
 	for _, j := range todo {
-		ok, err := s.exportWindow(ctx, j.w, j.final, nil, "")
+		ok, err := s.window(ctx, j.w, j.final, nil, "")
 		if err != nil {
 			return err
 		}
@@ -234,7 +298,7 @@ func RunWindows(ctx context.Context, c Config, from, to time.Time, only []string
 	n := 0
 	for a := from; a.Before(to); a = a.Add(time.Hour) {
 		w := Hour{a, a.Add(time.Hour)}
-		ok, err := s.exportWindow(ctx, w, !w.To.Add(c.FinalAfter).After(s.now), subset, mark)
+		ok, err := s.window(ctx, w, !w.To.Add(c.FinalAfter).After(s.now), subset, mark)
 		if err != nil {
 			return err
 		}
@@ -278,13 +342,13 @@ const giveUpAfter = 3
 
 // exportWindow writes one window: every table's files first, the manifest last and only when no table is still to
 // be tried again. complete false = the window has no manifest after this call.
-func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map[string]bool, mark string) (complete bool, err error) {
+func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map[string]bool, mark string) (complete bool, st windowStats, err error) {
 	c := s.c
 	started := time.Now()
 	tmp := filepath.Join(c.StateDir, "tmp")
 	_ = os.RemoveAll(tmp)
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
-		return false, refused("export.state_dir (%s) cannot be written: %v", c.StateDir, err)
+		return false, st, refused("export.state_dir (%s) cannot be written: %v", c.StateDir, err)
 	}
 	defer os.RemoveAll(tmp)
 
@@ -302,14 +366,14 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 			}
 		}
 		if err := c.Dest.Delete(ctx, mkey); err != nil {
-			return false, fmt.Errorf("window %s: the old manifest cannot be removed: %w", isoUTC(w.From), err)
+			return false, st, fmt.Errorf("window %s: the old manifest cannot be removed: %w", isoUTC(w.From), err)
 		}
 	} else if !errors.Is(err, errAbsent) {
-		return false, fmt.Errorf("window %s: the destination (%s): %w", isoUTC(w.From), c.Dest, err)
+		return false, st, fmt.Errorf("window %s: the destination (%s): %w", isoUTC(w.From), c.Dest, err)
 	}
 	if mark == "" {
 		if err := c.Dest.Delete(ctx, finalKey(c.Name, w)); err != nil {
-			return false, fmt.Errorf("window %s: the old marker cannot be removed: %w", isoUTC(w.From), err)
+			return false, st, fmt.Errorf("window %s: the old marker cannot be removed: %w", isoUTC(w.From), err)
 		}
 	}
 
@@ -322,8 +386,6 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 	att := s.loadAttempts()
 	wkey := windowName(c.Name, w) + mark
 	retry := 0
-	var nfiles int
-	var nrows, nbytes int64
 	for i := range s.tables {
 		r := &s.tables[i]
 		if only != nil && !only[r.Name] {
@@ -350,7 +412,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return false, ctx.Err()
+				return false, st, ctx.Err()
 			}
 			if att[wkey] == nil {
 				att[wkey] = map[string]int{}
@@ -367,7 +429,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 			s.saveAttempts(att)
 			if s.conn.IsClosed() { // the read cost the connection: a new one for the tables that follow
 				if s.conn, err = connect(ctx, c.DSN, c.Timeout); err != nil {
-					return false, err
+					return false, st, err
 				}
 			}
 			continue
@@ -377,44 +439,51 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 		for _, d := range r.Dropped {
 			m.DroppedColumns = append(m.DroppedColumns, DroppedColumn{r.Name, d.Column, d.Reason})
 		}
-		nfiles += len(files)
-		nrows += entry.RowCount
-		nbytes += entry.ByteSize
+		st.tables++
+		st.files += len(files)
+		st.rows += entry.RowCount
+		st.bytes += entry.ByteSize
 	}
 	if retry > 0 {
 		fmt.Fprintf(c.Err, "pgvigil export: window %s is not complete: %d table(s) to try again; its manifest is not written\n", isoUTC(w.From), retry)
-		return false, nil
+		st.reason = fmt.Sprintf("%d table(s) failed and will be tried again; the window has no manifest", retry)
+		return false, st, nil
 	}
 	// the files of the old manifest this pass did not write again (a table with no row now) go before the new
 	// manifest names what is there
 	for p := range old {
 		if err := c.Dest.Delete(ctx, p); err != nil {
-			return false, fmt.Errorf("window %s: an old file cannot be removed: %w", isoUTC(w.From), err)
+			return false, st, fmt.Errorf("window %s: an old file cannot be removed: %w", isoUTC(w.From), err)
 		}
 	}
 	m.FinishedAt = isoUTC(time.Now())
 	body, err := json.MarshalIndent(m, "", " ")
 	if err != nil {
-		return false, err
+		return false, st, err
 	}
 	if err := c.Dest.Put(ctx, mkey, body, true); err != nil {
 		if errors.Is(err, errExists) {
-			return false, fmt.Errorf("window %s: its manifest was written by another run while this one worked: two exports of one repository to one destination are not supported", isoUTC(w.From))
+			return false, st, fmt.Errorf("window %s: its manifest was written by another run while this one worked: two exports of one repository to one destination are not supported", isoUTC(w.From))
 		}
 		fmt.Fprintf(c.Err, "pgvigil export: window %s: its files are written and its manifest is not (%s): %v\n", isoUTC(w.From), c.Dest, err)
-		return false, nil
+		st.reason = "the files are written and the manifest is not: " + oneLine(err.Error())
+		return false, st, nil
 	}
 	if final && mark == "" {
 		if err := c.Dest.Put(ctx, finalKey(c.Name, w), []byte(isoUTC(time.Now())+"\n"), false); err != nil {
 			fmt.Fprintf(c.Err, "pgvigil export: window %s: its final manifest is written and its marker is not: %v\n", isoUTC(w.From), err)
-			return false, nil
+			st.reason = "the final manifest is written and its marker is not: " + oneLine(err.Error())
+			return false, st, nil
 		}
 	}
 	delete(att, wkey)
 	s.saveAttempts(att)
 	fmt.Fprintf(c.Out, "window %s .. %s pass %v: %d table(s), %d file(s), %d row(s), %d bytes in %.1f s\n",
-		isoUTC(w.From), isoUTC(w.To), m.Pass, len(m.Tables), nfiles, nrows, nbytes, time.Since(started).Seconds())
-	return len(m.Failed) == 0, nil
+		isoUTC(w.From), isoUTC(w.To), m.Pass, st.tables, st.files, st.rows, st.bytes, time.Since(started).Seconds())
+	if len(m.Failed) > 0 {
+		st.reason = fmt.Sprintf("%d table(s) left out after %d failed runs (the manifest's failed list names them)", len(m.Failed), giveUpAfter)
+	}
+	return len(m.Failed) == 0, st, nil
 }
 
 func oneLine(s string) string {
@@ -754,6 +823,34 @@ func Check(ctx context.Context, c Config) error {
 			exported++
 		}
 	}
-	fmt.Fprintf(c.Out, "pgvigil export -check: ok - %d of %d tables exported, destination %s writable, the repository's clock %s\n", exported, len(s.tables), c.Dest, isoUTC(s.now))
+	door := "its windows are recorded for the Collector page"
+	if !s.door {
+		door = "no row for the Collector page (the login is not IN ROLE pgvigil_exporter, or the repository has no export_run_record)"
+	}
+	fmt.Fprintf(c.Out, "pgvigil export -check: ok - %d of %d tables exported, destination %s writable, %s, the repository's clock %s\n", exported, len(s.tables), c.Dest, door, isoUTC(s.now))
+	return nil
+}
+
+// Off takes the export's row out of the repository (export_state): an export that is turned off raises no 'behind'
+// line. Nothing at the destination is touched.
+func Off(ctx context.Context, c Config) error {
+	s, err := open(ctx, c)
+	if err != nil {
+		return err
+	}
+	defer s.close()
+	if !s.door {
+		return refused("pgvigil export -off needs the export's login IN ROLE pgvigil_exporter on a repository with migration 0256: this login left no row to remove")
+	}
+	conn, err := connectDoor(ctx, c.DSN)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(context.Background())
+	var n int
+	if err := conn.QueryRow(ctx, "/* pgvigil-export:door */ SELECT pgvigil.export_off($1)", c.Name).Scan(&n); err != nil {
+		return fmt.Errorf("export_off: %w", err)
+	}
+	fmt.Fprintf(c.Out, "pgvigil export -off: %d row(s) of %s removed from export_state; the destination is as it was\n", n, c.Name)
 	return nil
 }

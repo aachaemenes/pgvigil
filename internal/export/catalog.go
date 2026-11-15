@@ -147,6 +147,8 @@ var tables = []Table{
 	window("dms_task_sample", "snapshot_at"),
 	state("dms_tasks"),
 	state("drive_thresholds"),
+	window("export_runs", "started_at"),
+	out("export_state", whyMark),
 	window("extension_history", "changed_at"),
 	window("function_stats", "snapshot_at"),
 	state("hba_rules").carry(CarryAudit),

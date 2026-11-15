@@ -71,6 +71,8 @@ dms_table_stats	state
 dms_task_sample	window	snapshot_at			
 dms_tasks	state				
 drive_thresholds	state				
+export_runs	window	started_at			
+export_state	left-out				
 extension_history	window	changed_at			
 function_stats	window	snapshot_at			
 hba_rules	state		audit		

@@ -178,6 +178,21 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
     ] as Col[], 'purge() has not run on this repository: pgvigil purge daily keeps it to the retention.'));
 
   sec.append(svc, find, runsPanel, failPanel, loadPanel, repoPanel);
+  // the Parquet export (pgvigil export): drawn only where one is configured or has run
+  let x: Parts | null = null;
+  try { x = await get<Parts>('export'); } catch (e) { sec.append(errorBox(e)); }
+  const xruns = rowsOf(x?.runs ?? null), xstate = rowsOf(x?.state ?? null), xsvc = rowsOf(x?.service ?? null);
+  if (xruns.length || xstate.length) sec.append(panel('Parquet export', 'pgvigil export: the last windows it wrote',
+    ...xsvc.map(r => el('p', { class: 'meta' }, badge('behind or failing', 'crit'), ' ', String(r.detail ?? ''))),
+    ...xstate.map(r => el('p', { class: 'meta' }, `${r.name} to ${r.destination}: newest window ended ${r.newest_window_to ? fmtTime(r.newest_window_to) : 'never'}`
+      + (r.hours_behind == null ? '' : ` (${fmtNum(r.hours_behind)} h ago)`) + `; last run ${fmtTime(r.last_run_at)}.`)),
+    grid(xruns, [
+      { key: 'window_from', label: 'window from', fmt: fmtTime }, { key: 'pass' },
+      { key: 'outcome', fmt: (v: unknown) => badge(String(v), v === 'ok' ? 'ok' : 'crit') },
+      { key: 'finished_at', label: 'finished', fmt: fmtTime }, { key: 'duration_ms', label: 'duration (ms)', num: true, fmt: fmtNum },
+      { key: 'tables', num: true, fmt: fmtNum }, { key: 'files', num: true, fmt: fmtNum }, { key: 'rows', num: true, fmt: fmtNum },
+      { key: 'bytes', label: 'size', num: true, fmt: fmtBytes }, { key: 'error', wide: true },
+    ] as Col[], 'The export is configured and has written no window yet.')));
   return sec;
 }
 

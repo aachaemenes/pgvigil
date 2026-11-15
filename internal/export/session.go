@@ -52,6 +52,21 @@ func connect(ctx context.Context, dsn string, timeout time.Duration) (*pgx.Conn,
 	return conn, nil
 }
 
+// connectDoor opens the short session that writes the export's own row through export_run_record / export_off. It
+// is the one session that is not read only, and it runs nothing but those two calls.
+func connectDoor(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, refused("export.dsn does not parse as a connection string")
+	}
+	rp := cfg.RuntimeParams
+	rp["application_name"] = AppName
+	rp["statement_timeout"] = "15000"
+	rp["lock_timeout"] = "5000"
+	rp["TimeZone"] = "UTC"
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
 // guardSQL asks, as the export's own login, whether that login could write: a superuser or one that bypasses row
 // security; every role it is a MEMBER of (one it may switch to, not only one it inherits) but itself and the two
 // read roles; any write privilege on a table of the schema. Everything is found through the catalogs.
