@@ -32,7 +32,6 @@ import (
 
 	mssqldb "github.com/microsoft/go-mssqldb"
 
-	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
@@ -80,8 +79,9 @@ const (
 // Door is what an action needs on one SQL Server instance (resolved connection strings).
 type Door struct {
 	Monitor string // the instance's read login (dsn)
-	// Secret is the read login's password_secret (task B24e): its password set at each connect; nil = none
-	Secret  *config.PasswordSecret
+	// Secret is the read login's password_secret (task B24e): its login (msLogin's rule) and password set on the parsed
+	// string at each connect; nil = none
+	Secret  *secrets.Ref
 	Actions string // the actions login (actions_dsn); "" = none
 	// Configured says actions_dsn is set in the config, so an empty Actions means it did not resolve.
 	Configured bool
@@ -812,15 +812,7 @@ func (d Door) openMonitor(ctx context.Context) (*sql.DB, *sql.Conn, error) {
 	if d.Secret == nil {
 		return openAction(ctx, d.Monitor, "pgvigil-actions-check")
 	}
-	ref, err := secrets.ParseRef(d.Secret.Ref, d.Secret.Region, d.Secret.Profile)
-	if err != nil {
-		return nil, nil, err
-	}
-	v, err := secrets.Default.Get(ctx, ref)
-	if err != nil {
-		return nil, nil, err
-	}
-	db, err := mssqlopen.OpenDialerCredentials(withApp(d.Monitor, "pgvigil-actions-check"), v.User, v.Password, nil)
+	db, err := OpenRead(ctx, withApp(d.Monitor, "pgvigil-actions-check"), d.Secret) // review 7(b): the collector's login rule
 	if err != nil {
 		return nil, nil, err
 	}

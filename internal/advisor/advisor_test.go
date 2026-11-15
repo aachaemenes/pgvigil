@@ -54,7 +54,7 @@ func TestRunLive(t *testing.T) {
 	if dsn == "" {
 		t.Skip("PGVIGIL_ADVISOR_DSN not set")
 	}
-	rep, err := Run(context.Background(), dsn, "", Options{MinFilter: 50})
+	rep, err := Run(context.Background(), dsn, nil, "", Options{MinFilter: 50})
 	if err != nil {
 		t.Fatal(err)
 	}

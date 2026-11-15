@@ -137,16 +137,12 @@ func ExplainAnalyze(ctx context.Context, d Door, g ExplainGate, r ExplainRequest
 	stmt := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(r.Statement), ";"))
 
 	// the two logins must reach one server (the monitoring login's is the instance the user looked at)
-	monDSN, err := d.monitorDSN(ctx)
-	if err != nil {
-		return refused("the monitoring login's password: %v", err), nil
-	}
-	mon, err := plans.Connect(ctx, monDSN, "", "pgvigil-actions-check", 5*time.Second)
+	mon, err := plans.Connect(ctx, d.Monitor, d.Secret, "", "pgvigil-actions-check", 5*time.Second)
 	if err != nil {
 		return refused("the monitoring login could not connect to check the server: %v", err), nil
 	}
 	defer func() { _ = mon.Close(context.WithoutCancel(ctx)) }()
-	act, err := plans.Connect(ctx, g.DSN, r.Datname, "pgvigil-actions-explain", timeout)
+	act, err := plans.Connect(ctx, g.DSN, nil, r.Datname, "pgvigil-actions-explain", timeout)
 	if err != nil {
 		return Result{Outcome: Failed, Detail: fmt.Sprintf("the explain login could not connect to %s: %v", dbName(r.Datname), err)}, nil
 	}

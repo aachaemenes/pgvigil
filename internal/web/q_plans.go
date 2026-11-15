@@ -296,7 +296,7 @@ func (a *Actions) Explain(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), plans.ExplainTimeout+20*time.Second)
 	defer cancel()
-	row, err := plans.Explain(ctx, ds.PG[name].Monitor, in.Datname, in.Statement, pgRefusal)
+	row, err := plans.Explain(ctx, ds.PG[name].Monitor, ds.PG[name].Secret, in.Datname, in.Statement, pgRefusal)
 	a.s.log.Info("plans: explain", "instance", name, "datname", in.Datname, "user", user, "err", err)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
@@ -555,7 +555,7 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 		res = actions.Result{Outcome: actions.Refused, Detail: "the plan has no statement text (the query-text policy keeps none): nothing to plan"}
 	default:
 		ddl = sug[in.N].DDL
-		hr, err = plans.Hypo(ctx, ds.PG[p.Instance].Monitor, deref0(p.Datname), deref0(p.Query), ddl, pgRefusal)
+		hr, err = plans.Hypo(ctx, ds.PG[p.Instance].Monitor, ds.PG[p.Instance].Secret, deref0(p.Datname), deref0(p.Query), ddl, pgRefusal)
 		switch {
 		case err != nil:
 			res = actions.Result{Outcome: actions.Failed, Detail: err.Error()}

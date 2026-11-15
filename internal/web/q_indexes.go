@@ -179,7 +179,7 @@ func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, fmt.Errorf("instance %s is not in this server's configuration", name))
 		return
 	}
-	rep, err := runAdvisor(ctx, door.Monitor, in.Database, advisor.Options{})
+	rep, err := runAdvisor(ctx, door.Monitor, door.Secret, in.Database, advisor.Options{}) // its password_secret too (B24e review 3)
 	s.log.Info("index advisor", "instance", name, "database", in.Database, "user", user, "suggestions", len(rep.Suggestions),
 		"skipped", rep.Skipped, "err", err)
 	if err != nil {

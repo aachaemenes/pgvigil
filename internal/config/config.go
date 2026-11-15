@@ -6,6 +6,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // Config is the whole file.
@@ -715,19 +718,21 @@ func validAzureCloud(c string) bool {
 	return false
 }
 
-// validatePasswordSecret: the reference and its region; a dsn that carries a password, or an Entra / Windows sign-in
-// (fedauth=, authenticator=), refused beside it - the dsn is read for the check as the collector reads it (env:, file:)
+// validatePasswordSecret: the reference as secrets.ParseRef reads it (its region, an ARN's form); a dsn that carries a
+// password, or an Entra / Windows sign-in (fedauth=, authenticator=, integrated security / trusted_connection),
+// refused beside it - the dsn is read for the check as the collector reads it (env:, file:). A DOMAIN\user login is
+// refused at connect, where the string is parsed (a backslash here may be a named instance's host\instance).
 func validatePasswordSecret(in Instance) error {
 	ps := in.PasswordSecret
 	if ps == nil {
 		return nil
 	}
-	ref := strings.TrimSpace(ps.Ref)
-	if !strings.HasPrefix(ref, "aws-secretsmanager:") || len(ref) == len("aws-secretsmanager:") {
-		return fmt.Errorf("instance %q: password_secret.ref is aws-secretsmanager:<name or ARN>[#key]", in.Name)
-	}
-	if strings.TrimSpace(ps.Region) == "" && !strings.HasPrefix(strings.TrimPrefix(ref, "aws-secretsmanager:"), "arn:") {
-		return fmt.Errorf("instance %q: password_secret needs its region (or an ARN)", in.Name)
+	if _, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile); err != nil {
+		var re *secrets.ReadError
+		if errors.As(err, &re) {
+			return fmt.Errorf("instance %q: password_secret.ref %s: %s", in.Name, re.Secret, re.Message)
+		}
+		return fmt.Errorf("instance %q: password_secret: %w", in.Name, err)
 	}
 	dsn := in.DSN()
 	if inlinePassword(dsn) || keywordPassword(dsn) {
@@ -737,18 +742,46 @@ func validatePasswordSecret(in Instance) error {
 	if strings.Contains(l, "fedauth=") || strings.Contains(l, "authenticator=") {
 		return fmt.Errorf("instance %q: password_secret is a SQL or PostgreSQL login's password: not with fedauth= or authenticator= in the dsn", in.Name)
 	}
+	if in.Engine == EngineSQLServer {
+		for _, k := range []string{"integrated security", "integratedsecurity", "trusted_connection", "trusted connection"} {
+			if strings.Contains(l, k) {
+				return fmt.Errorf("instance %q: password_secret is a SQL login's password: not with %s in the dsn (a Windows sign-in)", in.Name, k)
+			}
+		}
+	}
 	return nil
 }
 
-// keywordPassword: a libpq keyword/value string (host=h user=u password=p) that sets a password
+// keywordPassword: a libpq keyword/value string (host=h user=u password=p, spaces around '=' too) that sets a password
 func keywordPassword(v string) bool {
 	if strings.Contains(v, "://") {
+		return false // a URL: inlinePassword reads it (an ADO string's ';' segments too)
+	}
+	m, err := secrets.PGSettings(v)
+	if err != nil {
+		// not libpq's form: the word itself, as before
+		for _, f := range strings.Fields(v) {
+			if k, _, ok := strings.Cut(f, "="); ok && strings.EqualFold(strings.TrimSpace(k), "password") {
+				return true
+			}
+		}
 		return false
 	}
-	for _, f := range strings.Fields(v) {
-		if k, _, ok := strings.Cut(f, "="); ok && strings.EqualFold(strings.TrimSpace(k), "password") {
-			return true
-		}
+	_, has := m["password"]
+	return has
+}
+
+// SecretRef is the instance's password_secret as the reader takes it (nil = none). Load's Validate refused a block
+// that does not parse, so an error here is a configuration built past Validate: it rides on the reference
+// (secrets.Ref.Invalid) and every read refuses it - never a connect without the password.
+func (in Instance) SecretRef() *secrets.Ref {
+	ps := in.PasswordSecret
+	if ps == nil {
+		return nil
 	}
-	return false
+	r, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile)
+	if err != nil {
+		return &secrets.Ref{ID: strings.TrimSpace(ps.Ref), Invalid: err.Error()}
+	}
+	return &r
 }

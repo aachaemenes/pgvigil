@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // 0192 (task B24e, the lead's Q7): an instance whose newest runs could not read their password from AWS Secrets
@@ -38,24 +41,48 @@ func TestSecretFindingsOnAStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	finding := func() (string, string) {
-		var sev, detail string
-		_ = pool.QueryRow(ctx, `SELECT severity, detail FROM pgvigil.secret_findings WHERE instance_id = $1`, id).Scan(&sev, &detail)
-		return sev, detail
+	finding := func() (string, string, string) {
+		var sev, object, detail string
+		_ = pool.QueryRow(ctx, `SELECT severity, object, detail FROM pgvigil.secret_findings WHERE instance_id = $1`, id).Scan(&sev, &object, &detail)
+		return sev, object, detail
+	}
+	r, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var name string
+	if err := pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name); err != nil {
+		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	logc("activity", "ok", "", now.Add(-3*time.Minute))
-	logc("activity", "error", "secret: the password could not be read from AWS Secrets Manager: AccessDeniedException, pgvigil/read (not allowed)", now.Add(-time.Minute))
-	if sev, detail := finding(); sev != "critical" || detail == "" {
-		t.Fatalf("an unreadable secret: %q %q, want critical with the refusal's words", sev, detail)
+	// review 5: the row as the collector writes it - through LogSecretFailure, with the connect's own wrapping
+	cause := fmt.Errorf("connect %s: %w", name, &secrets.ReadError{Secret: "pgvigil/read", Code: "AccessDeniedException", Message: "not allowed", Refused: true})
+	if err := r.LogSecretFailure(ctx, name, "postgres", "rds", nil, "activity", now.Add(-time.Minute), 10*time.Millisecond, cause); err != nil {
+		t.Fatal(err)
 	}
+	if sev, object, detail := finding(); sev != "critical" || object != "AccessDeniedException, pgvigil/read" || !strings.Contains(detail, "GetSecretValue") {
+		t.Fatalf("an unreadable secret: %q %q %q, want critical, the object 'AccessDeniedException, pgvigil/read', the right named", sev, object, detail)
+	}
+	// pgvigil.findings names a check in its setting column (0190's union); the error is read, never dropped
 	var unreachable int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.findings WHERE instance_id = $1 AND check_name ILIKE '%unreachable%'`, id).Scan(&unreachable)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.findings WHERE instance_id = $1 AND (setting ILIKE '%unreachable%' OR setting ILIKE '%collection failing%')`, id).Scan(&unreachable); err != nil {
+		t.Fatal(err)
+	}
 	if unreachable != 0 {
-		t.Error("an unreadable secret raised 'server unreachable'")
+		t.Error("an unreadable secret raised 'server unreachable' or 'collection failing'")
 	}
 	logc("statements", "ok", "", now)
-	if sev, _ := finding(); sev != "" {
+	if sev, _, _ := finding(); sev != "" {
 		t.Errorf("a good run after the refusal: still %q", sev)
+	}
+	// a version the server refused: its own words (not 'the server was not asked')
+	held := &secrets.ReadError{Secret: "pgvigil/read", Code: "LoginRefused", Message: "the server refused the secret's version v1"}
+	if err := r.LogSecretFailure(ctx, name, "postgres", "rds", nil, "activity", now.Add(time.Second), time.Millisecond, held); err != nil {
+		t.Fatal(err)
+	}
+	if _, object, detail := finding(); object != "LoginRefused, pgvigil/read" || !strings.Contains(detail, "refused the secret's current password") {
+		t.Errorf("a refused version: %q %q", object, detail)
 	}
 }

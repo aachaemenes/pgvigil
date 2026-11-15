@@ -423,6 +423,11 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	if ce := (*connectError)(nil); failed && errors.As(res.Err, &ce) {
 		return // the instance's own connect failed: its connect streak and 'authentication failing' speak for it
 	}
+	if se := (*secrets.ReadError)(nil); failed && errors.As(res.Err, &se) {
+		// the login's password could not be read from AWS Secrets Manager (B24e, the lead's Q7): 0192's one finding
+		// speaks for the instance, never a 'collection failing' streak per collection
+		return
+	}
 	sk := [2]string{instance, collection}
 	s := h.streaks[sk]
 	if s == nil {

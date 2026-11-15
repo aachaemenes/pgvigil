@@ -10,9 +10,10 @@ import (
 	"testing"
 )
 
-// Every file that reads an instance's dsn (in.DSN()) and connects with it applies the instance's password_secret
-// (task B24e): a new caller fails here until it is checked and named below (the fill: collect.dialWithSecret,
-// mssql.readSecret, the actions doors' Secret, secrets.PGWithSecret), or named as one that never dials.
+// Every file that reads an instance's dsn (in.DSN()) or a door's monitoring string (.Monitor) and connects with it
+// applies the instance's password_secret (task B24e; review 3: the doors' Monitor dials of internal/web were unseen):
+// a new caller fails here until it is checked and named below (the fill: collect.dialWithSecret, mssql.readSecret /
+// OpenRead, secrets.FillPG on the parsed config with the door's Secret), or named as one that never dials.
 func TestEveryInstanceDSNCallerIsKnown(t *testing.T) {
 	known := map[string]string{
 		"internal/collect/collect.go":    "Connect: dialWithSecret",
@@ -29,20 +30,28 @@ func TestEveryInstanceDSNCallerIsKnown(t *testing.T) {
 		"internal/mssql/mssql.go":        "Connect: readSecret",
 		// task 390a (rel-b24p's merge): the Entra sign-in of the dsn for Resource Manager's token, no database dial
 		// (password_secret refuses a fedauth= dsn: validatePasswordSecret)
-		"internal/mssql/failovergroups.go": "ARMToken: the dsn's Entra identity, no dial",
-		"internal/actions/actions.go":      "DoorsFromConfig: the door's Secret",
-		"internal/config/config.go":        "validatePasswordSecret: no dial",
-		"cmd/pgvigil/serve.go":             "the SQL Server door's Secret",
+		"internal/mssql/failovergroups.go":  "ARMToken: the dsn's Entra identity, no dial",
+		"internal/mssql/actions.go":         "openMonitor: OpenRead with the door's Secret; Actions is the actions login's",
+		"internal/actions/actions.go":       "DoorsFromConfig: the door's Secret; connect: secrets.FillPG",
+		"internal/actions/explain.go":       "plans.Connect with the door's Secret",
+		"internal/collect/jobs_actions.go":  "jobConn: secrets.FillPG with the door's Secret",
+		"internal/config/config.go":         "validatePasswordSecret: no dial",
+		"cmd/pgvigil/serve.go":              "the SQL Server door's Secret",
+		"internal/web/actions.go":           "superusers: secrets.FillPG with the door's Secret",
+		"internal/web/q_indexes.go":         "advisor.Run with the door's Secret",
+		"internal/web/q_plans.go":           "plans.Explain / plans.Hypo with the door's Secret; L121 an emptiness check",
+		"internal/web/q_instances_admin.go": "testConfigured: testConnectionList with the door's Secret",
+		"internal/web/doorset.go":           "readLogin refuses a Secret door in words; the rest copies or checks strings",
 	}
 	root := filepath.Join("..", "..")
-	use := regexp.MustCompile(`\bin\.DSN\(\)`)
+	use := regexp.MustCompile(`\bin\.DSN\(\)|\.Monitor\b`)
 	var found []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == ".git" || d.Name() == "web") {
-			return filepath.SkipDir
+		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == ".git" || filepath.Clean(p) == filepath.Join(root, "web")) {
+			return filepath.SkipDir // the top-level web/ (TypeScript) alone: internal/web is Go and is read
 		}
 		if d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
