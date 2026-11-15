@@ -32,9 +32,13 @@
 #      replica_lag grows on an idle primary); no lag finding at the defaults.
 #  C-E the replica's replication disabled (`gcloud sql instances patch <replica> --no-enable-database-replication`;
 #      Google's manage-replicas page: it restarts the replica): after the FIRST read that stores a status other than
-#      Running, no finding yet (the store's two-read rule: repl_since is that read's time); 'provider replica stopped'
-#      critical by a later read within 15 minutes; enabled again: cleared within 15 minutes, the replica's row read
-#      after it and Running. A status Google does not report while replication is off = a FAIL with what was read.
+#      Running, no finding yet (repl_since is that read's time); 'provider replica stopped' critical by a later read
+#      within 15 minutes; enabled again: cleared within 15 minutes, the replica's row read after it and Running. A
+#      status Google does not report while replication is off = a FAIL with what was read.
+#      CHANGED 2026-11-15, AFTER lab CP's run: the store's rule was 'in two reads' then (critical came at the read
+#      after the first, as that run's log shows); it is by time now - the status must have stood 5 minutes - so
+#      critical comes at the first read 5 minutes or more after the one that stored it (the loop's 15 reads cover it).
+#      NOT PROVEN live under the new rule: no second lab CP; the store test (TestCloudReplicasOnAStore) stands for it.
 #  C-F promote-replica: the replica 'standalone' with a 'promoted' event, the primary's 'removed' event, the 'replica
 #      promoted or detached' finding (warning) on both instances.
 # A refused lab call in C-E or C-F is a FAIL row and the run goes on; a stop anywhere leaves both instances billed
@@ -197,7 +201,7 @@ echo "--- C-E replication disabled, then enabled"
 ST=; SEEN=; ONE=; FIRST=; OFF=1
 "$LAB" repl-off | sed 's/^/  lab: /' || { OFF=; bad "C-E: repl-off refused (the lab's output above): its waits skipped"; }
 # offread <src|rep>: one read, the status it stored; the finding read right after the FIRST read that stored a status
-# other than Running (the two-read rule: none yet), finding 7
+# other than Running (none yet: the status has not stood 5 minutes), finding 7
 offread() { local s; run "$1"; s=$(rstat); SEEN="$SEEN $1:${s:-blank}"
   if [ -z "$FIRST" ] && [ -n "$s" ] && [ "$s" != Running ]; then FIRST=$s; ONE=$(finding src 'provider replica stopped' "$REP_ID"); fi; }
 if [ -n "$OFF" ]; then

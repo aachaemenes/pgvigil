@@ -16,6 +16,8 @@
 #                            rds:DescribeDBInstances; without it R-G is 'not proven: no such profile here'
 #   PGVIGIL_PROOF_DOC_PROFILE   (R-H, optional) an AWS profile whose identity holds ONLY docs/cloud-replicas.md's policy,
 #                            verbatim; without it R-H is 'not proven: no such profile here'
+#   PGVIGIL_PROOF_ROWS       (optional) the rows to run after R-A and R-B, space-separated, default 'C D E H F G'; a
+#                            row left out is a NOT PROVEN line of the pass (e.g. 'E' = a short pass: the reboot alone)
 #
 # Expected (written before the first run; red first: on a tree without 390b, cloud_replicas is an unknown collection
 # and every R row FAILs):
@@ -34,10 +36,16 @@
 #      minutes before every datapoint of a 10-minute window is over 600 s (review 055507 finding 4), so it is not held.
 #  R-D 15 idle minutes: the idle lag's maximum printed (AWS: 'up to five minutes' on an idle source), no lag finding at
 #      the defaults.
-#  R-E the replica rebooted: its status read 'rebooting' (or the read between), no 'stopped' while it reboots,
-#      'available' again and a replica_lag datapoint dated after that read within 6 more reads; no 'provider lag
-#      missing' too, but WEAK: that rule needs 15 minutes without a datapoint and this row reads 12 at most, so it cannot
-#      fail here (part c finding 9).
+#  R-E the replica rebooted (CHANGED 2026-11-15 after lab RP's first whole pass: RDS's own events report 'Replication
+#      has stopped.' for about 2.5 minutes after a reboot with the instance available, and the two-read rule of then
+#      fired critical on it; the rule is by time now - a status that has stood 5 minutes): 20 reads 30 s apart, each
+#      printing the stored status, replication status, its since, the read's time and the 'stopped' finding. Expected:
+#      the stop stored in two reads or more (under two = 'R-E: OK' with a NOT PROVEN line: the rule was not exercised),
+#      NO 'provider replica stopped' at any read, replicating again at the last read, 'available', a replica_lag
+#      datapoint dated after the first 'available' read within 6 more reads; RDS's events of the replica printed. A
+#      stop RDS itself holds 5 minutes or longer fires the finding and FAILs the row: graded from the printed rows and
+#      events. No 'provider lag missing' too, but WEAK: that rule needs 15 minutes without a datapoint and this row
+#      reads 16 at most, so it can fail here only at its very end (part c finding 9).
 #  R-F promote: the replica 'standalone' with a 'promoted' event, the source's 'removed' event, the 'replica promoted or
 #      detached' finding (warning) on both instances.
 #  R-G a profile without rds:DescribeDBInstances: the read row's note names AccessDenied and the right, the run
@@ -50,7 +58,8 @@
 #      one trial; replica_lag on the replica's cloudsql_database; replica_byte_lag from the primary, replay_location);
 #      replay held 12 minutes (the Cloud SQL flag max_standby_streaming_delay -1); 45 idle minutes (fold 6: whether
 #      replica_lag grows on an idle primary, printed); `gcloud sql instances patch <replica> --no-enable-database-
-#      replication`: 'provider replica stopped' critical in two reads, re-enabled: cleared; promote-replica: 'promoted'.
+#      replication`: 'provider replica stopped' critical once the status has stood 5 minutes, re-enabled: cleared;
+#      promote-replica: 'promoted'.
 set -Eeuo pipefail
 trap 'echo "STOPPED: line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 cd "$(dirname "$0")/.."
@@ -76,6 +85,10 @@ WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
 MADE_DB=; MADE_T=; HOLD_PID=; WRITE_PID=; SRV_PID=
 FAILS=(); NOTPROVEN=()
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
+# the rows of this pass: R-A and R-B always (every other row needs the replica), then PGVIGIL_PROOF_ROWS
+ROWS=${PGVIGIL_PROOF_ROWS:-C D E H F G}
+for r in $ROWS; do case $r in C|D|E|H|F|G) ;; *) echo "FAIL: PGVIGIL_PROOF_ROWS names '$r' (C D E H F G, space-separated)" >&2; exit 1 ;; esac; done
+want() { case " $ROWS " in *" $1 "*) return 0 ;; esac; NOTPROVEN+=("R-$1: not run in this pass (PGVIGIL_PROOF_ROWS='$ROWS')"); return 1; }
 die() { echo "FAIL: $*" >&2; exit 1; }
 # src / rep "<sql>": a statement as the master user on the source or the replica
 src() { PGPASSWORD="$ADMIN_PW" psql "host=$SRC_HOST port=5432 user=$ADMIN_USER dbname=postgres sslmode=require connect_timeout=20" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
@@ -181,74 +194,103 @@ hold() {
 }
 release() { stopbg; rep "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep%' AND pid <> pg_backend_pid()" >/dev/null 2>&1 || true; }
 
-echo "--- R-C replay held: the source's tier warn 1 / crit 2 minutes, the replica's warn 1"
-# the rule fires when every datapoint of the 10 minutes to the newest is over the tier: at the default 10 minutes a
-# hold would run past 21 minutes first (review 055507 finding 4), so one hold proves both severities at small tiers
-tier src set 1 2; tier rep set 1
-hold 30   # pg_sleep's ceiling: release ends the hold after the 16 reads, so replay is held through the last of them
-for i in $(seq 1 16); do sleep 60; run src; run rep; done
-K1=$(finding src 'provider replica lag' "$REP_KEY"); K2=$(finding rep 'provider replica lag' "$REP_KEY")
-L=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > now() - interval '20 minutes'")
-release
-C1=x; C2=x
-for i in $(seq 1 10); do sleep 60; run src; run rep
-  C1=$(finding src 'provider replica lag' "$REP_KEY"); C2=$(finding rep 'provider replica lag' "$REP_KEY"); [ -z "$C1$C2" ] && break; done
-tier src inherit; tier rep inherit
-echo "  held: the source's '$K1' (tier 1 / 2), the replica's '$K2' (tier 1) (lag up to $L s); released: '$C1' '$C2' after $i minute(s)"
-[ "$K1" = critical ] && [ "$K2" = warning ] && [ -z "$C1$C2" ] && echo "R-C: OK" \
-  || bad "R-C: '$K1' '$K2' then '$C1' '$C2' (want critical on the source, warning on the replica, both cleared)"
-
-echo "--- R-D 15 idle minutes"
-for i in $(seq 1 15); do sleep 60; run src; done
-IL=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > now() - interval '15 minutes'")
-D=$(finding src 'provider replica lag' "$REP_KEY")
-echo "  the idle lag's maximum: ${IL:-none} s; the finding: '${D}'"
-[ -z "$D" ] && echo "R-D: OK" || bad "R-D: '$D' on an idle source at the defaults"
-
-echo "--- R-E the replica rebooted"
-"$LAB" reboot | sed 's/^/  lab: /'
-SEEN=; MISS=; STOP=; AFTER=0
-for i in $(seq 1 12); do
-  sleep 60; run src
-  st=$(q "SELECT status FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_KEY'"); SEEN="$SEEN $st"
-  [ -n "$(finding src 'provider lag missing' "$REP_KEY")" ] && MISS=1
-  [ -n "$(finding src 'provider replica stopped' "$REP_KEY")" ] && STOP=1
-  [ "$st" = available ] && [ $i -gt 2 ] && break
-done
-# a replica_lag datapoint dated after the read that saw 'available' (CloudWatch's delay: up to 6 more reads; part c finding 9)
-AV_AT=$(q "SELECT now()")
-for i in $(seq 1 6); do sleep 60; run src
-  AFTER=$(q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > '$AV_AT'::timestamptz"); [ "$AFTER" -gt 0 ] && break; done
-echo "  statuses read:$SEEN; replica_lag datapoints after 'available': $AFTER${MISS:+; 'lag missing' fired}${STOP:+; 'stopped' fired}"
-[[ $SEEN == *available ]] && [ "$AFTER" -gt 0 ] && [ -z "$MISS$STOP" ] && echo "R-E: OK" || bad "R-E: statuses '$SEEN', datapoints after available $AFTER, lag missing '${MISS:-no}', stopped '${STOP:-no}'"
-
-echo "--- R-H the documented policy verbatim"
-if [ -n "${PGVIGIL_PROOF_DOC_PROFILE:-}" ]; then
-  run doc; S=$(status doc); NT=$(q "SELECT coalesce(door_error, '') || '|' || door_fails FROM pgvigil.cloud_replica_reads WHERE instance_id = $(iid doc)")
-  echo "  run: $S; read: '$NT'"
-  [[ $S == ok* ]] && [ "$NT" = "|0" ] && echo "R-H: OK" || bad "R-H: '$S' '$NT' (want ok and no refused call)"
-else
-  NOTPROVEN+=("R-H: no PGVIGIL_PROOF_DOC_PROFILE on this machine (an identity holding only the documented policy)")
+if want C; then
+  echo "--- R-C replay held: the source's tier warn 1 / crit 2 minutes, the replica's warn 1"
+  # the rule fires when every datapoint of the 10 minutes to the newest is over the tier: at the default 10 minutes a
+  # hold would run past 21 minutes first (review 055507 finding 4), so one hold proves both severities at small tiers
+  tier src set 1 2; tier rep set 1
+  hold 30   # pg_sleep's ceiling: release ends the hold after the 16 reads, so replay is held through the last of them
+  for i in $(seq 1 16); do sleep 60; run src; run rep; done
+  K1=$(finding src 'provider replica lag' "$REP_KEY"); K2=$(finding rep 'provider replica lag' "$REP_KEY")
+  L=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > now() - interval '20 minutes'")
+  release
+  C1=x; C2=x
+  for i in $(seq 1 10); do sleep 60; run src; run rep
+    C1=$(finding src 'provider replica lag' "$REP_KEY"); C2=$(finding rep 'provider replica lag' "$REP_KEY"); [ -z "$C1$C2" ] && break; done
+  tier src inherit; tier rep inherit
+  echo "  held: the source's '$K1' (tier 1 / 2), the replica's '$K2' (tier 1) (lag up to $L s); released: '$C1' '$C2' after $i minute(s)"
+  [ "$K1" = critical ] && [ "$K2" = warning ] && [ -z "$C1$C2" ] && echo "R-C: OK" \
+    || bad "R-C: '$K1' '$K2' then '$C1' '$C2' (want critical on the source, warning on the replica, both cleared)"
 fi
 
-echo "--- R-F promote"
-"$LAB" promote | sed 's/^/  lab: /'
-for i in $(seq 1 10); do run src; run rep; [ "$(q "SELECT role FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_KEY'")" = standalone ] && break; sleep 60; done
-PR=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND kind = 'promoted'")
-RM=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$SRC_KEY' AND kind = 'removed' AND subject = '$REP_KEY'")
-F1=$(finding rep 'replica promoted or detached' "$REP_KEY"); F2=$(finding src 'replica promoted or detached' "$REP_KEY")
-echo "  promoted $PR, removed $RM; findings: the replica's '$F1', the source's '$F2'"
-[ "$PR" = 1 ] && [ "$RM" = 1 ] && [ "$F1" = warning ] && [ "$F2" = warning ] && echo "R-F: OK" || bad "R-F: promoted $PR, removed $RM, '$F1', '$F2' (want 1, 1, warning, warning)"
+if want D; then
+  echo "--- R-D 15 idle minutes"
+  for i in $(seq 1 15); do sleep 60; run src; done
+  IL=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > now() - interval '15 minutes'")
+  D=$(finding src 'provider replica lag' "$REP_KEY")
+  echo "  the idle lag's maximum: ${IL:-none} s; the finding: '${D}'"
+  [ -z "$D" ] && echo "R-D: OK" || bad "R-D: '$D' on an idle source at the defaults"
+fi
 
-echo "--- R-G a profile without rds:DescribeDBInstances"
-if [ -n "${PGVIGIL_PROOF_DENY_PROFILE:-}" ]; then
-  for i in 1 2 3; do run deny; sleep 5; done
-  S=$(status deny); NT=$(q "SELECT coalesce(door_error, '') || '|' || door_fails FROM pgvigil.cloud_replica_reads WHERE instance_id = $(iid deny)")
-  DF=$(q "SELECT count(*) FROM pgvigil.cloud_replica_findings WHERE instance_id = $(iid deny) AND check_name = 'cloud door failing'")
-  echo "  run: $S; read: $NT; door failing findings: $DF"
-  [[ $S == partial* ]] && [[ $NT == *AccessDenied*rds:DescribeDBInstances*\|3 ]] && [ "$DF" = 1 ] && echo "R-G: OK" || bad "R-G: '$S' '$NT' $DF"
-else
-  NOTPROVEN+=("R-G: no PGVIGIL_PROOF_DENY_PROFILE on this machine (an identity without rds:DescribeDBInstances); the Go case proves the sentence")
+if want E; then
+  echo "--- R-E the replica rebooted"
+  "$LAB" reboot | sed 's/^/  lab: /'
+  # 20 reads 30 s apart (10 minutes), each printing the row the rule judges. RDS reports replication stopped for a few
+  # minutes after a reboot: NONREPL counts the reads that stored it on an available replica (two or more = a rule by
+  # reads would have fired, so the rule by time is exercised)
+  SEEN=; MISS=; STOP=; AFTER=0; NONREPL=0; AV_AT=; LAST=
+  for i in $(seq 1 20); do
+    sleep 30; run src
+    ROW=$(q "SELECT status || '|' || repl_status || '|' || to_char(repl_since AT TIME ZONE 'UTC', 'HH24:MI:SS') || '|' || to_char(snapshot_at AT TIME ZONE 'UTC', 'HH24:MI:SS') FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_KEY'")
+    FS=$(finding src 'provider replica stopped' "$REP_KEY")
+    echo "  read $i: status|replication|since|read at (UTC) = $ROW; 'provider replica stopped': '$FS'"
+    IFS='|' read -r st rs _ <<<"$ROW"
+    SEEN="$SEEN ${st:-none}"; LAST=$rs
+    [ "$st" = available ] && [ -z "$AV_AT" ] && AV_AT=$(q "SELECT now()")
+    [ "$st" = available ] && [ -n "$rs" ] && [ "$rs" != replicating ] && NONREPL=$((NONREPL + 1))
+    [ -n "$(finding src 'provider lag missing' "$REP_KEY")" ] && MISS=1
+    [ -n "$FS" ] && STOP=1
+  done
+  # a replica_lag datapoint dated after the first read that saw 'available' (CloudWatch's delay: up to 6 more reads; part c finding 9)
+  [ -n "$AV_AT" ] || AV_AT=$(q "SELECT now()")
+  after() { q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > '$AV_AT'::timestamptz"; }
+  AFTER=$(after)
+  for i in $(seq 1 6); do [ "$AFTER" -gt 0 ] && break; sleep 60; run src; AFTER=$(after); done
+  echo "  RDS's own events of the replica, the last 30 minutes:"
+  aws --profile "$PGVIGIL_LAB_AWS_PROFILE" --region "$PGVIGIL_LAB_AWS_REGION" rds describe-events --source-type db-instance --source-identifier "$REP_ID" \
+    --duration 30 --query 'Events[].[Date,Message]' --output text 2>&1 | sed 's/^/    /' || true
+  echo "  statuses read:$SEEN; reads that stored a replication status other than replicating on an available replica: $NONREPL; the last read's: '$LAST'; replica_lag datapoints after 'available': $AFTER${MISS:+; 'lag missing' fired}${STOP:+; 'stopped' fired}"
+  if [[ $SEEN == *available ]] && [ "$LAST" = replicating ] && [ "$AFTER" -gt 0 ] && [ -z "$MISS$STOP" ]; then
+    echo "R-E: OK"
+    [ "$NONREPL" -ge 2 ] || NOTPROVEN+=("R-E's rule by time: RDS's stop after the reboot was stored in $NONREPL read(s), under the two a rule by reads fires on - the store test (TestCloudReplicasOnAStore) stands for it")
+  else
+    bad "R-E: statuses '$SEEN', the last replication status '$LAST', datapoints after available $AFTER, lag missing '${MISS:-no}', stopped '${STOP:-no}'"
+  fi
+fi
+
+if want H; then
+  echo "--- R-H the documented policy verbatim"
+  if [ -n "${PGVIGIL_PROOF_DOC_PROFILE:-}" ]; then
+    run doc; S=$(status doc); NT=$(q "SELECT coalesce(door_error, '') || '|' || door_fails FROM pgvigil.cloud_replica_reads WHERE instance_id = $(iid doc)")
+    echo "  run: $S; read: '$NT'"
+    [[ $S == ok* ]] && [ "$NT" = "|0" ] && echo "R-H: OK" || bad "R-H: '$S' '$NT' (want ok and no refused call)"
+  else
+    NOTPROVEN+=("R-H: no PGVIGIL_PROOF_DOC_PROFILE on this machine (an identity holding only the documented policy)")
+  fi
+fi
+
+if want F; then
+  echo "--- R-F promote"
+  "$LAB" promote | sed 's/^/  lab: /'
+  for i in $(seq 1 10); do run src; run rep; [ "$(q "SELECT role FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_KEY'")" = standalone ] && break; sleep 60; done
+  PR=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND kind = 'promoted'")
+  RM=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$SRC_KEY' AND kind = 'removed' AND subject = '$REP_KEY'")
+  F1=$(finding rep 'replica promoted or detached' "$REP_KEY"); F2=$(finding src 'replica promoted or detached' "$REP_KEY")
+  echo "  promoted $PR, removed $RM; findings: the replica's '$F1', the source's '$F2'"
+  [ "$PR" = 1 ] && [ "$RM" = 1 ] && [ "$F1" = warning ] && [ "$F2" = warning ] && echo "R-F: OK" || bad "R-F: promoted $PR, removed $RM, '$F1', '$F2' (want 1, 1, warning, warning)"
+fi
+
+if want G; then
+  echo "--- R-G a profile without rds:DescribeDBInstances"
+  if [ -n "${PGVIGIL_PROOF_DENY_PROFILE:-}" ]; then
+    for i in 1 2 3; do run deny; sleep 5; done
+    S=$(status deny); NT=$(q "SELECT coalesce(door_error, '') || '|' || door_fails FROM pgvigil.cloud_replica_reads WHERE instance_id = $(iid deny)")
+    DF=$(q "SELECT count(*) FROM pgvigil.cloud_replica_findings WHERE instance_id = $(iid deny) AND check_name = 'cloud door failing'")
+    echo "  run: $S; read: $NT; door failing findings: $DF"
+    [[ $S == partial* ]] && [[ $NT == *AccessDenied*rds:DescribeDBInstances*\|3 ]] && [ "$DF" = 1 ] && echo "R-G: OK" || bad "R-G: '$S' '$NT' $DF"
+  else
+    NOTPROVEN+=("R-G: no PGVIGIL_PROOF_DENY_PROFILE on this machine (an identity without rds:DescribeDBInstances); the Go case proves the sentence")
+  fi
 fi
 NOTPROVEN+=("P3 (the provider's failover event): an RDS Multi-AZ DB instance is billed and not approved; the Go cases and the store row prove the hand-off")
 
@@ -258,4 +300,4 @@ NOTPROVEN+=("C-A..C-F: run by scripts/proof-cloud-replicas-gcp.sh on lab CP (scr
 echo
 for n in "${NOTPROVEN[@]}"; do echo "NOT PROVEN: $n"; done
 if [ ${#FAILS[@]} -gt 0 ]; then echo "cloud replicas: ${#FAILS[@]} FAIL"; for f in "${FAILS[@]}"; do echo "  $f"; done; exit 1; fi
-echo "cloud replicas: every R row OK"
+[ "$ROWS" = "C D E H F G" ] && echo "cloud replicas: every R row OK" || echo "cloud replicas: the rows run (A B $ROWS) OK"
