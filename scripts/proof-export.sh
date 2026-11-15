@@ -1972,6 +1972,38 @@ _cells = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) number cells', l) f
 _cols = sum(int(m_.group(1)) for m_ in (re.search(r', (\d+) with decimals', l) for l in _pass) if m_)   # columns judged whose screen shows decimals
 check(len(_books) >= len(PAGES) - 1 and len(_pass) == len(_books) and not _fail and _cells >= 50 and _cols >= 3,
       f"decimals (X13): no number cell shows more decimals than its column on the screen, none under a fixed format fewer - {len(_pass)} of {len(_books)} page workbooks PASS, {_cells} number cells judged, {_cols} columns whose screen shows decimals; page in {os.path.basename(_pg)} ({[l[:300].replace(dl + '/', '') for l in _fail][:4]}{(' rc ' + str(_r.returncode) + ' ' + _r.stderr[-200:]) if _r.returncode not in (0, 1) else ''})")
+# (X17) the measured cell carries its row's status, as DBA Dash colours it: the map from the workbooks' own headers - a
+# 'Drives' sheet's free % (its status column's colour) and free in a size unit (N/A: no size threshold), a job grid's job
+# and last failure (its status) and the time since (any status) - handed to scripts/xlsx-check.py rules --measured; the
+# Drives sheet and a job grid found, every mapped workbook PASS
+import importlib.util
+_xs = importlib.util.spec_from_file_location('xlsx_check', 'scripts/xlsx-check.py'); _xc = importlib.util.module_from_spec(_xs); _xs.loader.exec_module(_xc)
+MEASURED = {}
+for _n in sorted(os.listdir(dl)):
+    if not _n.endswith('.xlsx'): continue
+    try: _bk = _xc.Book(f"{dl}/{_n}")
+    except Exception: continue
+    for _s in _bk.sheets:
+        if not _s['grid']: continue
+        _h = [str(c['v'] if c['v'] is not None else '').strip() for c in _s['cells'] if c['row'] == 1]
+        _m = {}
+        if _s['name'] == 'Drives' and 'free %' in _h and 'status' in _h:
+            _m['free %'] = 'status'
+            _m.update({h: 'N/A' for h in _h if re.fullmatch(r'free \((?:B|KB|MB|GB|TB|PB)\)', h)})
+        if {'job', 'status', 'last failure'} <= set(_h):
+            _m.update({'job': 'status', 'last failure': 'status'})
+            if 'since last failure (minutes)' in _h: _m['since last failure (minutes)'] = '*'
+        if _m: MEASURED.setdefault(_n, {})[_s['name']] = _m
+_mg = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), f'measured-{want}.json')
+json.dump(MEASURED, open(_mg, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+if os.environ.get('PGVIGIL_EXPORT_OUT') and os.path.isdir(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want)):   # kept beside the downloads
+    json.dump(MEASURED, open(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want, os.path.basename(_mg)), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+_r17 = subprocess.run([sys.executable, '-I', 'scripts/xlsx-check.py', 'rules', '--measured', _mg] + [f"{dl}/{n}" for n in MEASURED], capture_output=True, text=True)
+_p17 = [l for l in _r17.stdout.splitlines() if l.startswith('PASS X17 ')]; _f17 = [l for l in _r17.stdout.splitlines() if l.startswith('FAIL X17 ')]
+_c17 = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) cells', l) for l in _p17) if m_)
+_s17 = sorted({s for v in MEASURED.values() for s in v})
+check('Drives' in _s17 and any(s != 'Drives' for s in _s17) and len(_p17) == len(MEASURED) and not _f17 and _c17 >= 4,
+      f"measured cells (X17): the Drives sheet's free % / free and the job grids' job / last failure carry their row's status - {len(_p17)} of {len(MEASURED)} workbooks PASS on sheets {_s17}, {_c17} cells judged; map in {os.path.basename(_mg)}; {(_f17 or [''])[0][:300]}")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
     # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
