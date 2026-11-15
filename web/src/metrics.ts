@@ -103,9 +103,18 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
 
     const figure = (key: string, label: string): Col => ({
       key, label, num: true,
-      cls: (_v, r) => { const c = statusClass(r[key.replace('_value', '_status')]); return c ? 'status ' + c : ''; },
+      // task 402: a floored row under its floor is N/A, grey ('status none', the not-judged class of mssql_backups.ts)
+      cls: (v, r) => { if (v == null && r.floor != null && Number(r.samples) > 0) return 'status none';
+        const c = statusClass(r[key.replace('_value', '_status')]); return c ? 'status ' + c : ''; },
       fmt: (v, r) => {
-        if (v == null) return '';
+        if (v == null) {
+          // task 402: a floored metric (0152's metric_floors) under its floor has no value: N/A, grey, in words, with or
+          // without a rule's state; the current cell names the input's current rate from the same grid
+          if (r.floor == null || Number(r.samples) === 0) return '';
+          if (key !== 'current_value') return 'N/A';
+          const inp = famRows.find(x => x.key === r.floor_input && (x.database ?? null) === (r.database ?? null))?.current_value;
+          return `N/A: too few ${String(r.floor_unit)}/s to judge (${inp == null ? 'not read' : fmtNum(Math.floor(100 * Number(inp)) / 100)}/s, the floor ${fmtNum(Number(r.floor))}/s)`;
+        }
         const st = r[key.replace('_value', '_status')];
         if (st == null) return fmtMetric(v, r.unit);
         // the status is a word in the cell too (never the colour alone; a copy or an export carries it)

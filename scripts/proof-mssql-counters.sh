@@ -24,7 +24,10 @@
 #     grow); the gauges and fractions outside [min, max] of the two hand reads are counted and listed, not judged.
 #  C. from two stored reads: every rate = (value - value before) / the reads' interval by the server's clock (3
 #     places), every count's change = value - value before, every average = change in value / change in base, every
-#     fraction = 100 * value / base, as mssql_counter_newest and metric_points return them.
+#     fraction = 100 * value / base, as mssql_counter_newest and metric_points return them; the ratio metrics equal
+#     their rates (read as double precision, as 0152's points are), a floored ratio under its floor (0152's
+#     metric_floors) a point with no value (NULL); C's 3 s window judges the floor on whichever side it reads (printed)
+#     for compiles_per_100_batches and full_scans_per_search - both sides of all four floored keys are the 402 proof's G0.
 #  D. provoked between two reads with nothing else connected, each change read from the store minus pgvigil's own
 #     logins (one per collector read):
 #     Logins/sec and Logouts/sec + 40 each; SQL Errors User Errors + 12 (RAISERROR 16), Info Errors + 7 (RAISERROR 10)
@@ -76,11 +79,13 @@
 #     here: the line above says why', the long reason in its title; the page's line 'Edits are off here: ...
 #     -no-login'); no error box, no exception.
 #  N. D6 (the rows on other slices' pages, WIRING hunks), over five reads (R0 early in a minute; R1 in the next, the wait
-#     busy at two batches a second; R2 after 20 distinct batches; R3 mssql_cpu alone in a later minute; R4 30 s idle
-#     after it; R0-R2 with mssql_counters): /api/perfsummary's mssql part over (R0, R2] reads at least 1 batch/s and
+#     busy at six batches a second; R2 after 20 distinct batches; R3 mssql_cpu alone in a later minute; R4 30 s idle
+#     after it; R0-R2 with mssql_counters): /api/perfsummary's mssql part over (R0, R2] reads at least 1 batch/s (5
+#     with 402's FL5 in the tree, its response carrying compiles_floor: the floors' part B, finding 5) and
 #     gives ctrbox compiles_per_100 = 100 x the change in SQL Compilations / Batch Requests read by hand from SQL Server
 #     around those reads (within the 10 batches and 10 compilations the reads around the hand reads add); over (R3, R4]
-#     under 1 batch/s it gives 0 (else 'NOT PROVEN live: the floor'); the CPU API's sched part carries
+#     under 1 batch/s it gives 0 (with FL5: under 5 batch requests/s no ratio, compiles_under_floor true and
+#     compiles_floor 5; else 'NOT PROVEN live: the floor'); the CPU API's sched part carries
 #     failed_to_create_worker on exactly the steps that hold an instance counter read (0 on a healthy box), on two steps
 #     at least, NULL on R3's; the Memory API's clerk_stats names MEMORYCLERK_SQLBUFFERPOOL 'Buffer Pool'; the pages
 #     show ctrbox's 'compilations per 100 batches' cell = the API's over the hour, the scheduler trend's 'schedulers that
@@ -293,12 +298,24 @@ import subprocess, sys
 dsn, sb = sys.argv[1], sys.argv[2]
 q = lambda s: subprocess.run(['psql', dsn, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-F', '|', '-c', s], capture_output=True, text=True, check=True).stdout.strip()
 at = q(f"SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")
-rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate), 0) FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}'") or 0)
-pt = lambda m: q(f"SELECT value FROM pgvigil.metric_points({sb}, 'counters', '{at}'::timestamptz - interval '1 second', '{at}') WHERE metric = '{m}'")
+# the rates read as double precision: mssql_counter_values.rate is real, and its text (the shortest that rounds back)
+# differs from 0152's double precision points by up to half a float4 step (7.8e-6 at 523/s; the floors' part B, 2)
+rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate), 0)::double precision FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}'") or 0)
+# a point with no value reads NULL (a floored ratio under its floor: not judged); no point at all reads ''
+pt = lambda m: q(f"SELECT coalesce(value::text, 'NULL') FROM pgvigil.metric_points({sb}, 'counters', '{at}'::timestamptz - interval '1 second', '{at}') WHERE metric = '{m}'")
 b, c, rc = rate('SQL Statistics', 'Batch Requests/sec'), rate('SQL Statistics', 'SQL Compilations/sec'), rate('SQL Statistics', 'SQL Re-Compilations/sec')
-exp = {'compiles_per_100_batches': 0 if b < 1 else 100 * c / b, 'recompiles_per_100_compiles': 0 if c < 1 else 100 * rc / c}
-bad = [f'{m} {pt(m)} != {e}' for m, e in exp.items() if pt(m) == '' or abs(float(pt(m)) - e) > 1e-6]
-print(f'{sys.argv[3]}: ratios at batches {b}/s: ' + ', '.join(f'{m} {pt(m)}' for m in exp))
+fs, se = rate('Access Methods', 'Full Scans/sec'), rate('Access Methods', 'Index Searches/sec')
+# the floors are 0152's metric_floors (5 Batch Requests/s; 1 Full Scan/s): None = no value; no index search = one
+exp = {'batch_requests_s': b, 'full_scans_s': fs, 'index_searches_s': se,
+       'compiles_per_100_batches': None if b < 5 else 100 * c / b, 'recompiles_per_100_compiles': 0 if c < 1 else 100 * rc / c,
+       'full_scans_per_search': None if fs < 1 else fs / (se if se > 0 else 1)}
+def wrong(g, e):
+    if g == '': return True
+    if e is None: return g != 'NULL'
+    return g == 'NULL' or abs(float(g) - e) > 1e-6
+bad = [f'{m} {pt(m)} != {e}' for m, e in exp.items() if wrong(pt(m), e)]
+print(f'{sys.argv[3]}: ratios at batches {b}/s, full scans {fs}/s, index searches {se}/s: ' + ', '.join(f'{m} {pt(m)}' for m in exp))
+print(f"{sys.argv[3]}: the floors' side this read judged: batch requests {'under' if b < 5 else 'at or over'} 5/s, full scans {'under' if fs < 1 else 'at or over'} 1/s")
 for x in bad: print('   FAIL ' + x)
 sys.exit(1 if bad else 0)
 PY
@@ -655,11 +672,11 @@ echo "== N. D6: the Performance summary, the CPU page's scheduler trend, the Mem
 # two steps ('a chart needs two': run proof8 read two reads in one step), so R1 lands in the minute after R0; every read
 # of R0-R2 takes mssql_counters too (failed_to_create_worker is its series); R3, mssql_cpu alone in a later minute, makes
 # a step with no counter read (its failed_to_create_worker NULL); R4, 30 s of nothing after R3, is the floor's window
-# (under 1 batch a second: compilations per 100 batches 0). Each wait to a minute is kept busy at two batches a second
-# (the summary's 1 batch/s floor). Batch Requests/sec and SQL Compilations/sec are read by hand right after R0's
+# (under 1 batch a second: compilations per 100 batches 0; with 402's FL5 under 5: no ratio). Each wait to a minute is
+# kept busy at about six batches a second (the summary's floor: 1 batch/s, 5 with FL5). Batch Requests/sec and SQL Compilations/sec are read by hand right after R0's
 # mssql_cpu read (mssql_cpu runs last in R0) and right before R2's (first in R2): the summary over (R0, R2] is 100 x
 # their change, the reads around the hand reads adding at most 10 batches and 10 compilations to either side.
-busymin() { local w=$(( 62 - 10#$(date -u +%S) )); sq "$(for _ in $(seq 1 $((w * 2))); do echo "WAITFOR DELAY '00:00:00.500';"; echo GO; done)" >/dev/null; }
+busymin() { local w=$(( 62 - 10#$(date -u +%S) )); sq "$(for _ in $(seq 1 $((w * 6))); do echo "WAITFOR DELAY '00:00:00.150';"; echo GO; done)" >/dev/null; }
 handbc() { sq "SELECT CAST(SUM(CASE WHEN RTRIM(counter_name) = N'Batch Requests/sec' THEN cntr_value END) AS varchar(20)) + '|' + CAST(SUM(CASE WHEN RTRIM(counter_name) = N'SQL Compilations/sec' THEN cntr_value END) AS varchar(20))
   FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE N'%:SQL Statistics' AND RTRIM(counter_name) IN (N'Batch Requests/sec', N'SQL Compilations/sec')"; }
 [[ 10#$(date -u +%S) -gt 40 ]] && sleep $(( 61 - 10#$(date -u +%S) ))
@@ -690,13 +707,21 @@ hs = one('perfsummary_hand')
 got, bs = hs.get('compiles_per_100'), hs.get('batch_s')
 lo = 100 * max(dc - 10, 0) / (db + 10); hi = 100 * (dc + 10) / max(db - 10, 1)
 print(f'   perfsummary over (R0, R2]: batch_s {bs}, compiles_per_100 {got}; by hand +{db} batches, +{dc} compilations: {100 * dc / db:.1f} (with the reads around the hand reads {lo:.1f}-{hi:.1f})')
-if bs is None or float(bs) < 1: bad.append(f'the hand window read {bs} batches/s: under the floor, the ratio not tested')
+# 402's FL5 (q_perfsummary.go's floor) when the response carries compiles_floor: the summary's floor is 5, not 1
+fl5 = 'compiles_floor' in hs
+floor = 5 if fl5 else 1
+fl5_words = '402s FL5 in this tree' if fl5 else 'no FL5 in this tree'
+print(f'   the summary floor: {floor} batch/s ({fl5_words})')
+if bs is None or float(bs) < floor: bad.append(f'the hand window read {bs} batches/s: under the {floor}/s floor, the ratio not tested')
 if got is None or not (lo - 0.05 <= float(got) <= hi + 0.05): bad.append(f'compiles_per_100 {got} outside {lo:.1f}-{hi:.1f}')
 # the floor's window (R3, R4]: 30 s with nothing of the proof running
 fl = one('perfsummary_floor')
 print(f"   perfsummary over (R3, R4]: batch_s {fl.get('batch_s')}, compiles_per_100 {fl.get('compiles_per_100')}")
-if fl.get('batch_s') is not None and float(fl['batch_s']) < 1:
-    if fl.get('compiles_per_100') is None or float(fl['compiles_per_100']) != 0: bad.append(f"under the floor compiles_per_100 {fl.get('compiles_per_100')}, want 0")
+if fl.get('batch_s') is not None and float(fl['batch_s']) < floor:
+    if fl5:
+        if fl.get('compiles_per_100') is not None or fl.get('compiles_under_floor') is not True or fl.get('compiles_floor') != 5:
+            bad.append(f"under FL5's floor: compiles_per_100 {fl.get('compiles_per_100')} (want none), under_floor {fl.get('compiles_under_floor')} (want true), floor {fl.get('compiles_floor')} (want 5)")
+    elif fl.get('compiles_per_100') is None or float(fl['compiles_per_100']) != 0: bad.append(f"under the floor compiles_per_100 {fl.get('compiles_per_100')}, want 0")
 else:
     print(f"NOT PROVEN live: the floor (the idle window read {fl.get('batch_s')} batches/s: the server was not idle)")
 # the hour the page shows: the cell the page check compares

@@ -13,9 +13,10 @@
 --   - read-ahead is a percentage of page reads (SQLWATCH compares a 0-1 fraction with 20 / 25 and never fires: D3).
 --   - the buffer cache hit ratio warns under 90 with no critical (a weak signal: D4).
 --   - page life expectancy is judged per 4 GB of the lowest memory node's database pages (300 s per 4 GB, D5 / F19).
---   - a ratio under its denominator's floor is 0 (0152's metric_points), so a server under the floor never trips a
---     ratio (F21); an otherwise idle server can still pass it: SQL Server's own telemetry (SQLServerCEIP) pushed
---     compilations to 139.7 per 100 batches and full scans per search to 0.0128 on the proof's quiet container (chk13).
+--   - the other ratios under their denominator's floor are 0 (0152's metric_points); the per-batch ratios and full
+--     scans per search are NOT JUDGED under a floor (0152's metric_floors, the lead's 19:4x): SQL Server's own
+--     telemetry (SQLServerCEIP) runs 2-3 batches a second and pushed compilations to 139.7 per 100 batches and full
+--     scans per search to 0.0128 on the proof's quiet container (chk13), over both seeds' critical.
 --   - SQLWATCH CHK#32 judges kill-connection and database-offline errors summed (critical above 1); here each is its own
 --     rule (each names its cause).
 --   - page reads, page writes and lock requests measure volume, not a fault: their notes say so (F21).
@@ -27,13 +28,13 @@
 
 WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
   ('SQL Server: full scans per index search', 'counters.full_scans_per_search', 'above', 0.001, 0.01, 15,
-   'SQLWATCH CHK#12. Full scans per index search, 0 under 10 index searches a second.'),
+   'SQLWATCH CHK#12. Full scans per index search; not judged (N/A) under 1 full scan a second.'),
   ('SQL Server: compilations per 100 batches', 'counters.compiles_per_100_batches', 'above', 10, 15, 15,
-   'SQLWATCH CHK#13. SQL Compilations per 100 Batch Requests, 0 under 1 batch a second.'),
+   'SQLWATCH CHK#13. SQL Compilations per 100 Batch Requests; not judged (N/A) under 5 batch requests a second.'),
   ('SQL Server: re-compilations per 100 compilations', 'counters.recompiles_per_100_compiles', 'above', 10, 15, 15,
    'SQLWATCH CHK#14. SQL Re-Compilations per 100 SQL Compilations, 0 under 1 compilation a second.'),
   ('SQL Server: page splits per 100 batches', 'counters.page_splits_per_100_batches', 'above', 20, 25, 15,
-   'SQLWATCH CHK#15. Page Splits per 100 Batch Requests, 0 under 1 batch a second.'),
+   'SQLWATCH CHK#15. Page Splits per 100 Batch Requests; not judged (N/A) under 5 batch requests a second.'),
   ('SQL Server: free list stalls', 'counters.free_list_stalls_s', 'above', 2, 5, 5,
    'SQLWATCH CHK#16, Zabbix FREE_LIST_STALLS.MAX 2. Requests that waited for a free buffer page, per second.'),
   ('SQL Server: lazy writes', 'counters.lazy_writes_s', 'above', 20, 25, 5,
@@ -41,7 +42,7 @@ WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
   ('SQL Server: page reads', 'counters.page_reads_s', 'above', 90, 120, 15,
    'SQLWATCH CHK#18. Measures volume, not a fault: switch it on with a threshold fitted to this server.'),
   ('SQL Server: page lookups per batch', 'counters.page_lookups_per_batch', 'above', 100, 120, 15,
-   'SQLWATCH CHK#19. Buffer page lookups per Batch Request, 0 under 1 batch a second.'),
+   'SQLWATCH CHK#19. Buffer page lookups per Batch Request; not judged (N/A) under 5 batch requests a second.'),
   ('SQL Server: page writes', 'counters.page_writes_s', 'above', 90, 120, 15,
    'SQLWATCH CHK#20. Measures volume, not a fault: switch it on with a threshold fitted to this server.'),
   ('SQL Server: average lock wait', 'counters.avg_lock_wait_ms', 'above', 500, 1000, 15,
