@@ -46,6 +46,19 @@
 #     the UI user, a reason, a statement and engine sqlserver; PostgreSQL's rows still import through
 #     import_actions_log as engine postgres (a cancel with its pid, an explain_analyze without one); a sqlserver
 #     row with action 'terminate' and a kill without a session id are refused by the table.
+#  H. (B9c, written before its first run 2026-11-15) enable and disable on the same job: on the full instance job_enable
+#     and job_disable are on, on the [job_start] instance off with 'not on the instance's actions: list'; the preview
+#     of job_disable shows the job enabled now, not multiserver, and 'EXEC msdb.dbo.sp_update_job @job_id = '<ID>',
+#     @enabled = 0'; job_enable on the enabled job: the preview says 'already enabled' and the run is 409 refused (one
+#     audit row, nothing sent); job_disable through the login with no right: 502 failed with the server's own error
+#     (Msg 229 or 916) and sysjobs.enabled still 1; job_disable on the [job_start] instance: 409 'not on the
+#     instance's actions: list'; job_disable: 200 done, its detail 'reads disabled now', and the read login reads
+#     sysjobs.enabled 0; job_disable again: 409 'already disabled'; job_enable: 200 done 'reads enabled now', the read
+#     login reads 1; a target server row seeded in msdb.dbo.sysjobservers (server_id 1: a stand-in, the proof sets up no
+#     master server) makes the preview and the run refuse it as a 'multiserver job' (409), and with the row removed the
+#     preview is ok again; the two done rows carry 'EXEC msdb.dbo.sp_update_job @job_id = '<ID>', @enabled = 0' and
+#     '... = 1', the job's name and id, no pid, owner sa. H's own counts: full done 2 / refused 3, jobstart refused 1,
+#     noright failed 1.
 #  NOT PROVEN HERE: a Windows login as the actions login, Azure SQL Managed Instance and RDS (no SQL Server Agent
 #     rights of this shape were tried there), a session id reused inside the milliseconds between the check and KILL.
 set -euo pipefail
@@ -81,6 +94,8 @@ cleanup() {
   for p in "${BG[@]:-}"; do [ -n "$p" ] && kill -- "-$p" 2>/dev/null || true; done
   # only what THIS run created
   if [ -n "$MADE_JOB" ]; then sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = '$JOB') BEGIN EXEC msdb.dbo.sp_stop_job @job_name = '$JOB'; END" >/dev/null 2>&1 || true
+    # H's seeded target server row first: sp_delete_job treats a job with one as a multiserver job
+    sq "DELETE FROM msdb.dbo.sysjobservers WHERE server_id <> 0 AND job_id IN (SELECT job_id FROM msdb.dbo.sysjobs WHERE name = '$JOB');" >/dev/null 2>&1 || echo "CLEANUP: the seeded sysjobservers row of $JOB not deleted" >&2
     sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = '$JOB') EXEC msdb.dbo.sp_delete_job @job_name = '$JOB';" >/dev/null 2>&1 || echo "CLEANUP: job $JOB not deleted" >&2; fi
   for l in "${MADE_USERS[@]:-}"; do [ -n "$l" ] && { sq "IF USER_ID('$l') IS NOT NULL DROP USER [$l];" msdb >/dev/null 2>&1 || echo "CLEANUP: msdb user $l not dropped" >&2; }; done
   for l in "${MADE_LOGINS[@]:-}"; do
@@ -134,7 +149,7 @@ instances:
     engine: sqlserver
     dsn: env:A_MON_DSN
     actions_dsn: env:A_ACT_DSN
-    actions: [kill, job_start, job_stop]
+    actions: [kill, job_start, job_stop, job_enable, job_disable]
   - name: $I2
     engine: sqlserver
     dsn: env:A_MON_DSN
@@ -147,7 +162,7 @@ instances:
     engine: sqlserver
     dsn: env:A_MON_DSN
     actions_dsn: env:A_NOR_DSN
-    actions: [kill, job_start]
+    actions: [kill, job_start, job_disable]
   - name: $I5
     engine: sqlserver
     dsn: env:A_MON_DSN
@@ -315,6 +330,47 @@ grep -q "actions_log_action_check" "$TMPD/bad.out" || { cat "$TMPD/bad.out" >&2;
 : > "$BODY"
 echo "G: OK"
 
+echo "--- H. the job: disable and enable (B9c)"
+H0=$N
+# the job's flag as the READ login reads it (its password through the environment, by name)
+ren() { SQLCMDPASSWORD="$PMON" sqlcmd_ -U "$MON" -d msdb -Q "SET NOCOUNT ON; SELECT CAST(enabled AS int) FROM msdb.dbo.sysjobs WHERE job_id = '$JOBID'"; }
+[ "$(state "$I1" '[.actions.job_enable.enabled, .actions.job_disable.enabled] | join(",")')" = "true,true" ] || fail "H: the toggles on the full instance"
+[ "$(state "$I2" '[.actions.job_enable.enabled, .actions.job_disable.enabled] | join(",")')" = "false,false" ] || fail "H: the toggles on the [job_start] instance"
+case "$(state "$I2" .actions.job_disable.reason)" in *"job_disable is not on the instance's actions: list"*) ;; *) fail "H: the reason on the [job_start] instance";; esac
+[ "$(ren)" = 1 ] || fail "H: the job is not enabled before H"
+[ "$(post preview "{\"instance_id\":${IID[$I1]},\"action\":\"job_disable\",\"job_id\":\"$JOBID\"}")" = 200 ] || fail "H: the preview's status"
+[ "$(jb '[.ok, .target.job_name, .target.job_enabled, (.target.job_multiserver // false), .statement] | join("|")')" = "true|$JOB|true|false|EXEC msdb.dbo.sp_update_job @job_id = '$UJ', @enabled = 0" ] || fail "H: the disable preview: $(cat "$BODY")"
+echo "  the job shown: $(jq -c .target "$BODY"), statement: $(jb .statement)"
+[ "$(post preview "{\"instance_id\":${IID[$I1]},\"action\":\"job_enable\",\"job_id\":\"$JOBID\"}")" = 200 ] && [ "$(jb .ok)" = false ] || fail "H: the enable preview of an enabled job: $(cat "$BODY")"
+case "$(jb .reason)" in *"already enabled"*) ;; *) fail "H: the enable preview's reason: $(jb .reason)";; esac
+expect "job_enable on an enabled job" "$(post run "$(job_req "$I1" job_enable "$JOB" "$JOB")")" 409 refused "already enabled"
+expect "job_disable through a login with no right" "$(post run "$(job_req "$I4" job_disable "$JOB" "$JOB")")" 502 failed "the server refused EXEC msdb.dbo.sp_update_job"
+case "$(jb .server_message)" in "Msg 229,"*|"Msg 916,"*) ;; *) fail "H: the server's message for the job_disable: $(jb .server_message)";; esac
+echo "  the server said: $(jb .server_message)"
+[ "$(ren)" = 1 ] || fail "H: the job was disabled by a failed attempt"
+expect "job_disable is not on the instance's list" "$(post run "$(job_req "$I2" job_disable "$JOB" "$JOB")")" 409 refused "not on the instance's actions: list"
+expect "job_disable" "$(post run "$(job_req "$I1" job_disable "$JOB" "$JOB")")" 200 done "reads disabled now"
+[ "$(ren)" = 0 ] || fail "H: the read login reads sysjobs.enabled $(ren) after the disable"
+expect "job_disable on a disabled job" "$(post run "$(job_req "$I1" job_disable "$JOB" "$JOB")")" 409 refused "already disabled"
+expect "job_enable" "$(post run "$(job_req "$I1" job_enable "$JOB" "$JOB")")" 200 done "reads enabled now"
+[ "$(ren)" = 1 ] || fail "H: the read login reads sysjobs.enabled $(ren) after the enable"
+# a stand-in multiserver job: a target server row (the proof sets up no master server; removed at once after)
+sq "INSERT INTO msdb.dbo.sysjobservers (job_id, server_id, last_run_outcome, last_outcome_message, last_run_date, last_run_time, last_run_duration) VALUES ('$JOBID', 1, 0, NULL, 0, 0, 0);" >/dev/null || fail "H: the seeded target server row"
+[ "$(post preview "{\"instance_id\":${IID[$I1]},\"action\":\"job_disable\",\"job_id\":\"$JOBID\"}")" = 200 ] && [ "$(jb '[.ok, .target.job_multiserver] | join("|")')" = "false|true" ] || fail "H: the multiserver preview: $(cat "$BODY")"
+expect "job_disable on a multiserver job" "$(post run "$(job_req "$I1" job_disable "$JOB" "$JOB")")" 409 refused "multiserver job"
+sq "DELETE FROM msdb.dbo.sysjobservers WHERE job_id = '$JOBID' AND server_id <> 0;" >/dev/null || fail "H: the seeded row was not removed"
+[ "$(ren)" = 1 ] || fail "H: the multiserver refusal changed the job"
+[ "$(post preview "{\"instance_id\":${IID[$I1]},\"action\":\"job_disable\",\"job_id\":\"$JOBID\"}")" = 200 ] && [ "$(jb .ok)" = true ] || fail "H: the preview after the seeded row went: $(cat "$BODY")"
+[ "$(q "select string_agg(action || '|' || statement || '|' || target || '|' || target_id || '|' || coalesce(pid::text, 'no pid') || '|' || target_user, ' ; ' order by action_id) from pgvigil.actions_log where instance_name = '$I1' and outcome = 'done' and action in ('job_enable', 'job_disable')")" \
+  = "job_disable|EXEC msdb.dbo.sp_update_job @job_id = '$UJ', @enabled = 0|$JOB|$JOBID|no pid|sa ; job_enable|EXEC msdb.dbo.sp_update_job @job_id = '$UJ', @enabled = 1|$JOB|$JOBID|no pid|sa" ] \
+  || fail "H: the audit rows: $(q "select action, statement, target, target_id, pid, target_user from pgvigil.actions_log where instance_name = '$I1' and action in ('job_enable', 'job_disable')")"
+HGOT=$(q "select string_agg(n || ':' || outcome || '=' || c, ' ' order by n, outcome) from (select split_part(instance_name, '-', 3) n, outcome, count(*) c from pgvigil.actions_log where instance_name like 'proof-act-%-$SUF' and action in ('job_enable', 'job_disable') group by 1, 2) x")
+[ "$HGOT" = "full:done=2 full:refused=3 jobstart:refused=1 noright:failed=1" ] || fail "H: the toggles' audit holds '$HGOT'"
+echo "  $HGOT ($((N - H0)) attempts)"
+: > "$BODY"
+echo "H: OK"
+
 [ "$OFFSET" != 0 ] || echo "NOT PROVEN: the conversion of a login time to UTC (this server's clock is UTC: local time and UTC are the same here)"
 echo "NOT PROVEN: a Windows login as the actions login, Managed Instance and RDS, a session id reused between the check and KILL"
-echo "proof-mssql-actions: PASS (A-G)"
+echo "NOT PROVEN: a real multiserver job (H seeds a target server row; no master server was set up), the buttons clicked in a browser"
+echo "proof-mssql-actions: PASS (A-H)"
