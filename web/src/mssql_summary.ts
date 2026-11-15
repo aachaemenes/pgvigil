@@ -2,14 +2,19 @@
 // groups are not OK (each a link to its page), and the findings the wave's collections raise for it.
 import { get, Row, rowsOf, Table } from './api';
 import { AckData, loadAckSafe } from './ack';
+import { alertHref } from './alert_page';
 import { cellClass, cells, cellText, fleet, groups } from './fleet';
 import { Ctx, href } from './router';
 import { badge, el, fmtTime, grid, props, Col } from './ui';
 import { healthCalendar } from './healthcal';
 
 const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const findingCols: Col[] = [
-  { key: 'severity', fmt: sev }, { key: 'setting', label: 'check' }, { key: 'value', label: 'object' },
+// the check opens the finding's own page (alert_page.ts: the finding as it stands, its fix, its firings), as a row of
+// the Alerts page does; one link a row, the cells beside it text (DBA Dash's grids)
+const findingCols = (ctx: Ctx): Col[] => [
+  { key: 'severity', fmt: sev },
+  { key: 'setting', label: 'check', fmt: (v, r) => r.finding_key == null ? String(v ?? '') : el('a', { href: alertHref(r.finding_key, undefined, ctx) }, String(v ?? '')) },
+  { key: 'value', label: 'object' },
   { key: 'detail' }, { key: 'at', label: 'seen', fmt: fmtTime },
   // PerformanceMonitor's Occurrences and First seen (task 177 D29): from the alert history (GET /api/ack part=seen):
   // how many times the finding was raised anew and when first; '-' for a finding never sent
@@ -68,7 +73,7 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
     const k = seen.get(`${String(x.setting ?? '')}\x1f${String(x.value ?? '')}`);
     return { ...x, _occ: k?.occurrences ?? null, _first: k?.first_seen ?? null };
   });
-  sec.append(el('h3', {}, `Findings (${rows.length})`), grid(rows, findingCols, 'No warning or critical finding on this instance.'));
+  sec.append(el('h3', {}, `Findings (${rows.length})`), grid(rows, findingCols(ctx), 'No warning or critical finding on this instance.'));
   // PerformanceMonitor's Daily Health Calendar (task 177 D29, healthcal.ts): read after the page is drawn
   sec.append(healthCalendar(ctx, 'sqlserver'));
   return sec;
