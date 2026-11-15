@@ -184,7 +184,9 @@
 #        exits 0, 72x receiver hours, the first build recorded, no build range left; the next import heals the hours
 #        marked meanwhile. Printed: the conflicts series of the 300 databases over 30 days (hours) and 2 days (samples). The build's time, the bytes
 #        per hour row and the HOT share of the hours' updates are printed (docs/upgrade.md's line; F16) [red FAIL]
-#   CC   hadr-c, a standby of hadr-s (pg_basebackup from it, cluster_name hadrc1): its link row sending hadr-s, status
+#   CC   hadr-c, a standby of hadr-s (pg_basebackup from it with a slot hadrc_slot made on hadr-s and NO cluster_name:
+#        its WAL receiver sends the default application_name 'walreceiver' - review A's fold, below): its link row
+#        slot:hadrc_slot sending hadr-s, status
 #        'streaming (cascaded from hadr-s)', sending_in_recovery true [red FAIL]; paired once, hadr-p's link to hadr-s
 #        stays 'streaming' [red ok: 0141's pairing, a guard]
 #   SQ   max_standby_streaming_delay 0 on hadr-c: 3 queries on it cancelled by a replayed ACCESS EXCLUSIVE lock, one
@@ -208,12 +210,35 @@
 #        other [red FAIL]
 #   CL1b hadr-c (streaming from hadr-s) promoted while hadr-s runs: 'two primaries' on hadr-c naming hadr-s, and on
 #        hadr-s naming hadr-c and hadr-p [red FAIL]
-# Not proven here (375): a Patroni cluster (the leader's name, 'no leader' left to task 376), a link paired by slot only
-# (the topology needs the other's name or cluster_name in the link, or a 'cluster' tag), confl_active_logicalslot
-# (PostgreSQL 16+), the hours' series past the cap, the purge command's Go loop (the lead's wiring).
+# Review A's fold (agent-runs 20261114-185748-reviewer, of d6178ba), written 2026-11-14 20:0x PST before its runs; red =
+# rel-hadr-s1 e6b2501 (the tree before the fold) with this file:
+#   LD   a stand-in 'mark' range of LD (an hour 3 hours back: a lock miss before the first purge) when its first build
+#        starts; every import of LD during the build still under 2 s [red FAIL: e6b2501 heals 'mark' first and deletes
+#        its row at the build's start, so each import of LD waits on that row 1 s for its mark and 1 s for its
+#        'rollup failed' row]; the stand-in hour healed (no dirty range after the next import, as before)
+#   LDR  after the build, 5 imports of LD with its rollup running (the lock free; 30 days of 300 databases stored):
+#        each import's server time under 1000 ms, and replication_rises(LD) over the conflicts check's 13 minutes
+#        under 300 ms [red FAIL expected: e6b2501's 'standby' EXISTS has no time bound and reads LD's whole history;
+#        a plan that probes the index per row would pass it - then the difference is said in one line]
+#   LDB  a 24-hour 'mark' range inside LD's history whose newest hour holds two reads (on e6b2501 that hour sizes the
+#        first chunk): one import of LD heals part of it under the 2 s budget - its server time under 3000 ms, the range
+#        kept and shrunk from its newest end [red FAIL: e6b2501 heals the whole day in one chunk, about 6 s]
+#   CC   as above, its link now slot:hadrc_slot, paired by 0141's slot rule [red ok on e6b2501]
+#   CL2  hadr-c cascaded by its slot (hadr-s's link slot:hadrc_slot = hadr-c's primary_slot): ONE 'cluster without a
+#        primary' on hadr-p as before [red FAIL: e6b2501 matches a cascaded link by name only - hadr-c reads as a
+#        standby with its receiver up, so nothing is raised]
+#   CL1b hadr-c's last slot kept past its promotion (pg_repl_standby_state.last_primary_slot hadrc_slot) [red FAIL: no
+#        column], and 'two primaries' on hadr-c naming hadr-s, and on hadr-s naming hadr-c and hadr-p, the pair matched
+#        by that slot alone [red FAIL: e6b2501 matches a link by name only - nothing on hadr-c, hadr-s names hadr-p]
+#   CL4G unchanged; since the fold A's read is compared with the promotion's detected_at (the collector's clock), not
+#        its changed_at (the promoted server's) [red ok]
+# Not proven here (375): a Patroni cluster (the leader's name, 'no leader' left to task 376), a link with neither a slot
+# nor a name the other side carries (only a 'cluster' tag pairs it), confl_active_logicalslot (PostgreSQL 16+), the
+# hours' series past the cap, the purge command's Go loop (the lead's wiring); review A's #7 (a mark inside the range
+# read, bumped after its hour was rebuilt) and #8 (the wide-write path's own error) - races and an FK case, reasoned.
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
 # L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU AF RP R3 R3X L4 RU LK LD CC SQ CL; a riding row runs its host: L7 R2W, NS and NS2 G,
-# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF); an unknown name stops the run; unset = all.
+# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU7 RU, LDR LDB LD, CL1-CL4 CL1b CL2N CL4G RB RB2 RB3 CL; AF); an unknown name stops the run; unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -223,7 +248,7 @@ ok() { echo "ok   $*"; }
 ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL AF "
 if [[ -n "${PROOF_ONLY:-}" ]]; then   # a riding row runs its host row; an unknown name is a typo, not an empty OK
   PO=""; for n in ${PROOF_ONLY//,/ }; do
-    case "$n" in L7) n=R2W ;; NS|NS2) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; esac
+    case "$n" in L7) n=R2W ;; NS|NS2) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-7]) n=RU ;; LDR|LDB) n=LD ;; CL[1-4]|CL1b|CL2N|CL4G|RB|RB2|RB3) n=CL ;; esac
     [[ "$ROWS" == *" $n "* ]] || { echo "FAIL PROOF_ONLY names an unknown row: $n"; exit 1; }
     PO+="$n,"; done; PROOF_ONLY=$PO
 fi
@@ -990,6 +1015,9 @@ SQL
            from (select distinct date_trunc('month', snapshot_at at time zone 'UTC') as m from pgvigil.replication_sample where instance_id = $LD) x")
   r2=$(q "select pgvigil.replication_hourly_months($LD)")
   [[ "$r" == 0\|* && "$r2" =~ ^[1-9] ]] && ok "LD the history's months had no hours partition ($r of them existed|months) and replication_hourly_months made $r2 before the build" || fail "LD months before the build: '$r' (expected 0|<n>), made '$r2'"
+  # review A #2: a 'mark' range when the first build starts (a lock miss before the first purge) - the build must not
+  # hold that row: each import of LD meanwhile merges its hours into it
+  q "select pgvigil.replication_hourly_mark($LD, date_trunc('hour', now()) - interval '3 hours', date_trunc('hour', now()) - interval '2 hours', 'a stand-in: a lock miss before the first purge')" >/dev/null
   LDN0=$(q "select count(*) from pgvigil.replication_sample where instance_id = $LD")
   ( s0=$(date +%s%N); psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 -c "select pgvigil.replication_hourly_heal_one($LD)" > "$WORK/ld-build.out" 2>&1
     echo "rc $? ms $(( ($(date +%s%N) - s0) / 1000000 ))" >> "$WORK/ld-build.out" ) & LDB=$!
@@ -1018,7 +1046,27 @@ SQL
     || fail "LD build '$b', $n imports, slowest $worst / $worst2 ms, failed $bad, '$r', '$r3' (expected rc 0, every import under 2000 ms and stored ($(( n * 301 ))|0|<hours>), 72x|1|0)"
   imp "$LD" "now()" "$CONF"
   r=$(q "select count(*) from pgvigil.replication_hourly_dirty where instance_id = $LD")
-  [[ "$r" == 0 ]] && ok "LD the import after the build healed the hours marked during it" || fail "LD dirty ranges after the build: $r"
+  [[ "$r" == 0 ]] && ok "LD the import after the build healed the hours marked before and during it" || fail "LD dirty ranges after the build: $r"
+  # LDR review A #3: imports with LD's rollup running (the lock free, 30 days of 300 databases stored) and the conflicts
+  # check's rises read
+  svs=""; worst=0
+  for k in 1 2 3 4 5; do
+    sv=$(q "with i as (select pgvigil.import_replication($LD, now(), '$CONF'::jsonb)) select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from i")
+    [[ "$sv" =~ ^[0-9]+$ ]] || { echo "  LDR an import failed: $sv"; sv=99999; }
+    svs+="$sv "; (( sv > worst )) && worst=$sv; sleep 1
+  done
+  rr=$(q "select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from (select count(*) from pgvigil.replication_rises($LD, now() - interval '12 minutes', now() + interval '1 minute')) x")
+  [[ "$worst" -lt 1000 && "$rr" =~ ^[0-9]+$ && "$rr" -lt 300 ]] && ok "LDR 5 imports of LD with its rollup running at 30 days: server ms $svs; the conflicts check's rises read $rr ms" \
+    || fail "LDR imports with the rollup running: server ms $svs(expected each under 1000), the rises read '$rr' ms (expected under 300)"
+  # LDB review A #4: a 24-hour mark inside LD's history whose newest hour holds one read (the hour below sizes a chunk);
+  # one import heals part of it under the 2 s budget
+  TE=$(q "select max(snapshot_at) from pgvigil.replication_sample where instance_id = $LD and snapshot_at < now() - interval '100 days'")
+  q "select pgvigil.replication_hourly_mark($LD, '$TE'::timestamptz + interval '59 minutes' - interval '24 hours', '$TE'::timestamptz + interval '59 minutes', 'a stand-in: a day to heal')" >/dev/null
+  sv=$(q "with i as (select pgvigil.import_replication($LD, now(), '$CONF'::jsonb)) select round(extract(epoch from clock_timestamp() - statement_timestamp()) * 1000) from i")
+  r=$(q "select coalesce((select (to_at < '$TE'::timestamptz + interval '59 minutes' and to_at > from_at) || ' ' || round(extract(epoch from to_at - from_at) / 3600, 1)
+                            from pgvigil.replication_hourly_dirty where instance_id = $LD and source = 'mark'), 'none')")
+  [[ "$sv" =~ ^[0-9]+$ && "$sv" -lt 3000 && "$r" == true\ * ]] && ok "LDB one import healed part of a 24-hour mark under the budget: server $sv ms, the range kept and shrunk (kept|hours left): $r" \
+    || fail "LDB the 24-hour mark: server '$sv' ms (expected under 3000), range '$r' (expected 'true <hours under 24>')"
   t1=$(date +%s%N); r=$(q "select count(*) from pgvigil.replication_series($LD, now() - interval '190 days', now() - interval '160 days', 4320, 'conflicts')"); a=$(( ($(date +%s%N) - t1) / 1000000 ))
   t1=$(date +%s%N); r2=$(q "select count(*) from pgvigil.replication_series($LD, now() - interval '162 days', now() - interval '160 days', 288, 'conflicts')"); b2=$(( ($(date +%s%N) - t1) / 1000000 ))
   echo "  LD the conflicts series of 300 databases: 30 days (hours) $r rows in $a ms, 2 days (samples) $r2 rows in $b2 ms"
@@ -1032,10 +1080,12 @@ if want CC || want SQ || want CL; then
   CP=$(fp); XP=$(fp)
   CDSN="host=127.0.0.1 port=$CP user=postgres password=$PW sslmode=disable dbname=postgres"
   cq() { psql "$CDSN" -XAtq -c "$1" 2>/dev/null; }
-  # hadr-c: a standby of the standby (pg_basebackup from hadr-s), max_standby_streaming_delay 0 (its queries yield to replay)
+  # hadr-c: a standby of the standby (pg_basebackup from hadr-s with a slot made there), max_standby_streaming_delay 0
+  # (its queries yield to replay), no cluster_name: its receiver sends the default application_name 'walreceiver', so
+  # only the slot pairs it (review A #5)
   docker run -d --name "$CAS" --network "$NET" --user postgres -e PGPASSWORD="$PW" -p "127.0.0.1:$CP:5432" postgres:18 bash -c 'set -e; D=/var/lib/postgresql/cdata
-    if [ ! -s "$D/PG_VERSION" ]; then pg_basebackup -h standby -U postgres -D "$D" -R -X stream -c fast; chmod 700 "$D"; fi
-    exec postgres -D "$D" -c cluster_name=hadrc1 -c hot_standby=on -c listen_addresses="*" -c max_standby_streaming_delay=0' >/dev/null
+    if [ ! -s "$D/PG_VERSION" ]; then pg_basebackup -h standby -U postgres -D "$D" -R -X stream -C -S hadrc_slot -c fast; chmod 700 "$D"; fi
+    exec postgres -D "$D" -c hot_standby=on -c listen_addresses="*" -c max_standby_streaming_delay=0' >/dev/null
   for _ in $(seq 1 90); do [[ "$(cq "select status from pg_stat_wal_receiver")" == streaming ]] && break; sleep 1; done
   [[ "$(cq "select status from pg_stat_wal_receiver")" == streaming ]] || { fail "375 rig: hadr-c is not streaming from hadr-s"; docker logs --tail 15 "$CAS"; }
   { cat "$WORK/pgvigil.yaml"; printf '  - name: hadr-c\n    dsn: "host=127.0.0.1 port=%s user=pgv password=%s dbname=postgres sslmode=disable"\n' "$CP" "$MPW"
@@ -1047,7 +1097,7 @@ if want CC || want SQ || want CL; then
 fi
 if want CC; then
   read_ hadr-s 2; read_ hadr-c 1; read_ hadr-p 1
-  r=$(q "select status || '|' || sending_in_recovery || '|' || coalesce(standby_id::text, '-') from pgvigil.pg_repl_link_health where sending_id = $SID_ and link like 'app:hadrc1@%'")
+  r=$(q "select status || '|' || sending_in_recovery || '|' || coalesce(standby_id::text, '-') from pgvigil.pg_repl_link_health where sending_id = $SID_ and link = 'slot:hadrc_slot'")
   [[ "$r" == "streaming (cascaded from hadr-s)|true|$CID" ]] && ok "CC hadr-c's link from hadr-s: $r" || fail "CC the cascaded link (status|sending_in_recovery|standby): '$r', expected 'streaming (cascaded from hadr-s)|true|$CID'"
   r=$(q "select count(*) || '|' || string_agg(status, ',') from pgvigil.pg_repl_link_health where standby_id = $CID")
   r2=$(q "select status from pgvigil.pg_repl_link_health where sending_id = $PID_ and link like 'app:hadrs1@%'")
@@ -1149,6 +1199,8 @@ if want CL; then
   for _ in $(seq 1 30); do [[ "$(cq 'select pg_is_in_recovery()')" == f ]] && break; sleep 1; done
   rc_ hadr-c hadr-s; sleep 60; rc_ hadr-c hadr-s
   r=$(finding "$CID" 'two primaries'); r2=$(finding "$SID_" 'two primaries')
+  r3=$(q "select coalesce(primary_slot, '-') || '|' || coalesce(last_primary_slot, '-') from pgvigil.pg_repl_standby_state where instance_id = $CID")
+  [[ "$r3" == *\|hadrc_slot ]] && ok "CL1b hadr-c's last slot kept past its promotion (primary_slot|last_primary_slot): $r3" || fail "CL1b hadr-c's slot after its promotion: '$r3', expected '<any>|hadrc_slot'"
   [[ "$r" == *"primary together with hadr-s: a split brain" && "$r2" == *"primary together with hadr-c, hadr-p: a split brain" ]] \
     && ok "CL1b hadr-c promoted while hadr-s runs: 'two primaries' on hadr-c ($r) and hadr-s ($r2)" || fail "CL1b hadr-c '$r', hadr-s '$r2' (expected hadr-c naming hadr-s, hadr-s naming hadr-c and hadr-p)"
 fi
