@@ -30,11 +30,11 @@
 #     na_why 'not judged: no scheduler count (the mssql_cpu collection is off, or Azure SQL Database)'.
 #  D. live on the container: mssql_cpu and mssql_waits read at t0 and then three times about 110 s apart (the server's
 #     clock: three stored reads, a span of 300 s or more); a WAITFOR DELAY of 10 s ends in the second interval, a lock
-#     wait of about 10 s (a holder and a waiter on one row) in the third. The second read stores WAITFOR benign with
-#     at least 9,000 ms; the third an LCK_M_ row not benign with at least 8,000 ms; the scheduler count stored equals
-#     the container's VISIBLE ONLINE schedulers; the point at the fourth read equals python's hand formula over the
-#     stored rows (is_benign and the proof's own copy of the 27 types left out); it holds the lock wait and not the
-#     WAITFOR.
+#     wait of about 10 s (a holder of 15 s, the waiter started once the holder is seen in its WAITFOR) in the third.
+#     The second read stores WAITFOR benign with at least 9,000 ms; the third an LCK_M_ row not benign with at least
+#     8,000 ms; the scheduler count stored equals the container's VISIBLE ONLINE schedulers; the point at the fourth
+#     read equals python's hand formula over the stored rows (is_benign and the proof's own copy of the 27 types left
+#     out); it holds the lock wait and not the WAITFOR.
 #  E. the APIs: GET /api/metrics/series?metric=waits.wait_s_per_core_min gives D's point; GET /api/perfsummary's
 #     wait_s_core_min for the container equals mssql_wait_core_summary over the same window; GET /api/mssql/checks
 #     ?part=build_docs for the container's version equals python's reading of checks.go's catalogue (the build's own
@@ -45,7 +45,9 @@
 #  G. the pages in headless Chromium, light and dark: the Waits page's 'Wait seconds per core per minute' section,
 #     its two tiles in 's/core/min' and a chart; a wait type's two links (Microsoft's list, SQLskills' lowercase page)
 #     with target _blank, rel 'noopener noreferrer' and an accessible name ending '(opens in a new tab)'; the error
-#     log's 18456 (a failed login the proof makes) linking ...-18000-to-18999; the checks' Build view's version link
+#     log's 18456 (a failed login the proof makes, kept by the instance search string 'Login failed for user': a
+#     severity-14 18456 is noise to the reader otherwise; at least one such row stored, marked custom) linking
+#     ...-18000-to-18999; the checks' Build view's version link
 #     equal to E's build_url; the Performance summary's column 'wait s per core per minute' with the container's value.
 #  PASS: 'PROOF OK: waits per core and doc links (A B C D E F G)'.
 set -uo pipefail
@@ -213,7 +215,13 @@ SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'wpcbox'"); [[ "
 sleep 100; col mssql_cpu mssql_waits           # read 1
 sqok "the WAITFOR" "WAITFOR DELAY '00:00:10';" pgvctr
 sleep 98; col mssql_cpu mssql_waits            # read 2: the WAITFOR ended in its interval
-bg 40 "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:12'; COMMIT;"; sleep 1.5
+bg 40 "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:15'; COMMIT;"
+# the waiter starts only once the holder sits in its WAITFOR with the row locked (the build review's S4: a fixed sleep
+# on a loaded box let the waiter run first); the holder's 15 s leave the waiter 8 s or more when it is seen within 7 s
+HT=$SECONDS; HS=0
+for _ in $(seq 1 60); do HS=$(sq "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE database_id = DB_ID('pgvctr') AND wait_type = 'WAITFOR'" master 15 | tr -d '\r '); [[ "$HS" == 1 ]] && break; sleep 0.3; done
+[[ "$HS" == 1 ]] || fail "D: the lock holder never reached its WAITFOR [$HS]"
+echo "   the holder in its WAITFOR after $((SECONDS - HT)) s"
 sqok "the lock wait" "UPDATE dbo.t SET v = v + 1 WHERE id = 1;" pgvctr
 sleep 96; col mssql_cpu mssql_waits            # read 3: the lock wait ended in its interval
 sleep 5; col mssql_cpu mssql_waits             # read 4: the span of reads 2-4 (and 1) covers 300 s or more
@@ -280,9 +288,12 @@ parts = (ver.split('.') + ['0', '0', '0'])[:3]; major, build = int(parts[0] or 0
 rowsm = [l.split('|') for l in cat.strip().splitlines() if l.split('|')[0] == str(major)]
 lst = 'https://support.microsoft.com/kb/321185'
 def page(r): return lst if (r[7].strip() == '' or 'info.microsoft.com' in r[7]) else r[7].strip()
-newest_row = max(rowsm, key=lambda r: int(r[1])) if rowsm else None
+# a build listed twice keeps its earlier-released line, as checks.go's loader does (the first among equal dates)
+def keep(rs): return min(rs, key=lambda r: r[3])
+nb = max((int(r[1]) for r in rowsm), default=None)
+newest_row = keep([r for r in rowsm if int(r[1]) == nb]) if rowsm else None
 exact = [r for r in rowsm if int(r[1]) == build]
-want = page(exact[0]) if exact else lst
+want = page(keep(exact)) if exact else lst
 ok3 = bool(rowsm) and d.get('build_url') == want and d.get('newest_url') == page(newest_row) and d.get('newest_build') == f"{major}.0.{newest_row[1]}"
 print(f"   series newest {newest} (the point {lp}); perfsummary {pv} (the function {psum}); version {ver}: build_url {d.get('build_url')} "
       f"[{d.get('build_url_words')}] (want {want}, {'listed' if exact else 'not listed'}), newest {d.get('newest_build')} {d.get('newest_url')}")
@@ -313,9 +324,15 @@ PY
 ok "F: 25 error ranges 0-49999 with no gap, every boundary on its side, 50,000 none; the URL forms"
 
 echo "== G. the pages in headless Chromium, light and dark =="
+# a 'Login failed' line (18456, severity 14) is on the reader's noise list (errorlog.go): the instance's own search
+# string keeps it (a custom match), as a DBA who wants failed logins on the error log page sets it (the build review's B2)
+SS=$(pq "SELECT pgvigil.mssql_errorlog_search_set('wpcbox', ARRAY['Login failed for user'])"); [[ "$SS" == 1 ]] || fail "G: the search string [$SS]"
 sq "SELECT 1" master 15 >/dev/null 2>&1 || true
 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c "$SQLCMD -S localhost -U pgv_nobody_$SUF -P 'Wrong9pw!' -C -Q 'SELECT 1'" >/dev/null 2>&1 || true
 col mssql_errorlog mssql_checks
+N18=$(pq "SELECT count(*) FROM pgvigil.mssql_errorlog WHERE instance_id = $SB AND error_number = 18456 AND custom")
+[[ "$N18" =~ ^[1-9][0-9]*$ ]] || fail "G: no 18456 row stored by the error log reader [$N18] ($(tail -3 "$TMPD/col-mssql_errorlog.out" | tr '\n' ' '))"
+echo "   18456 rows kept by the search string: $N18"
 setsid chromium --headless=new --remote-debugging-port=0 --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu about:blank > "$TMPD/chrome.log" 2>&1 & CHRPID=$!
 CDP=; for _ in $(seq 1 60); do [ -s "$TMPD/chrome/DevToolsActivePort" ] && CDP=$(head -1 "$TMPD/chrome/DevToolsActivePort"); [ -n "$CDP" ] && curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 [[ "$CDP" =~ ^[0-9]+$ ]] || fail "G: Chromium never answered"

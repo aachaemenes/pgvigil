@@ -59,6 +59,9 @@ export const waitDocsNote = () => el('p', { class: 'meta' },
 export function buildDocs(r: Record<string, unknown>): HTMLElement | string {
   if (!r.build_url) return '';
   const parts: (Node | string)[] = [docLink(String(r.build_url), String(r.build_url_words ?? 'Microsoft'))];
-  if (r.newest_url) parts.push(' - the newest build ' + String(r.newest_build ?? '') + ': ', docLink(String(r.newest_url), String(r.newest_url_words ?? 'Microsoft')));
+  // the newest build's page beside it, said once when it is the same page (the instance runs the newest build, or both
+  // link Microsoft's build list)
+  if (r.newest_url && String(r.newest_url) === String(r.build_url)) parts.push(' - the newest build ' + String(r.newest_build ?? ''));
+  else if (r.newest_url) parts.push(' - the newest build ' + String(r.newest_build ?? '') + ': ', docLink(String(r.newest_url), String(r.newest_url_words ?? 'Microsoft')));
   return el('span', { class: 'doclinks' }, ...parts);
 }

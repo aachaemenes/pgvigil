@@ -180,16 +180,21 @@ function perCoreSection(pc: SeriesData | null, err: string): HTMLElement {
   if (!pc) { box.append(el('p', { class: 'meta' }, `Not read (${err}).`)); return box; }
   const pts = rowsOf(pc.series), m = rowsOf(pc.metric)[0] ?? {};
   if (!pts.length) { box.append(el('p', { class: 'empty' }, 'No point in this range: under five minutes of wait reads, or the first reads after a restart.')); return box; }
-  const newest = pts[pts.length - 1], vals = pts.map(p => p.value).filter(v => v != null).map(Number);
+  // a long range comes bucketed (step_secs): a bucket's value is its average, max_value its highest point, so the peak
+  // reads max_value (the point itself when not bucketed) and the newest tile says it is an average
+  const bucketed = Number(pc.step_secs) > 1, stepMin = fmtNum(Number(pc.step_secs) / 60);
+  const newest = pts[pts.length - 1], vals = pts.map(p => p.max_value ?? p.value).filter(v => v != null).map(Number);
   const peak = vals.length ? Math.max(...vals) : null;
-  const level = (v: number | null) => v == null ? '' : m.critical != null && v > Number(m.critical) ? 'crit' : m.warning != null && v > Number(m.warning) ? 'warn' : 'ok';
+  // the rule's direction as metric_status reads it (0085): 'below' is past a threshold under it
+  const op = String(m.op ?? 'above'), past = (v: number, t: unknown) => t != null && (op === 'below' ? v < Number(t) : v > Number(t));
+  const level = (v: number | null) => v == null ? '' : past(v, m.critical) ? 'crit' : past(v, m.warning) ? 'warn' : 'ok';
   box.append(el('div', { class: 'tiles' },
-    tile('wait s per core per minute, the newest point', newest.value == null ? perCoreNA : sCore(newest.value), newest.value == null ? '' : level(Number(newest.value))),
+    tile(bucketed ? `wait s per core per minute, the newest ${stepMin} min (their average)` : 'wait s per core per minute, the newest point',
+      newest.value == null ? perCoreNA : sCore(newest.value), newest.value == null ? '' : level(Number(newest.value))),
     tile('the highest point of the range', peak == null ? perCoreNA : sCore(peak), level(peak))));
-  const bucketed = Number(pc.step_secs) > 1;
-  const series = [{ key: 'value', label: bucketed ? `wait s per core per minute (average per ${fmtNum(Number(pc.step_secs) / 60)} min)` : 'wait s per core per minute' },
-    ...(m.warning != null ? [{ key: 'warning', label: `warning (above ${sCore(m.warning)})` }] : []),
-    ...(m.critical != null ? [{ key: 'critical', label: `critical (above ${sCore(m.critical)})` }] : [])];
+  const series = [{ key: 'value', label: bucketed ? `wait s per core per minute (average per ${stepMin} min)` : 'wait s per core per minute' },
+    ...(m.warning != null ? [{ key: 'warning', label: `warning (${op} ${sCore(m.warning)})` }] : []),
+    ...(m.critical != null ? [{ key: 'critical', label: `critical (${op} ${sCore(m.critical)})` }] : [])];
   box.append(el('div', { class: 'charts' }, lineChart('Wait seconds per core per minute (s/core/min)',
     pts.map(p => ({ ...p, warning: m.warning ?? null, critical: m.critical ?? null })), series, sCore)));
   return box;

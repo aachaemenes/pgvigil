@@ -44,10 +44,10 @@ index ad9f4acf..de3419bc 100644
  A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
 diff --git i/internal/mssql/builddocs_test.go w/internal/mssql/builddocs_test.go
 new file mode 100644
-index 00000000..92256205
+index 00000000..a6a27b36
 --- /dev/null
 +++ w/internal/mssql/builddocs_test.go
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,53 @@
 +package mssql
 +
 +import (
@@ -66,7 +66,8 @@ index 00000000..92256205
 +		{15, 4470, "https://support.microsoft.com/kb/5090407", "Microsoft: Cumulative Update 32 GDR (15.0.4470)"},
 +		{16, 1000, buildListURL, "no page of RTM's own"},
 +		{17, 1000, buildListURL, "no page of RTM's own"},
-+		{15, 4471, buildListURL, "a build the catalogue does not list"},
++		{15, 4466, buildListURL, "a build the catalogue does not list"}, // between 4465 and 4470, 2019's newest
++		{15, 4471, buildListURL, "a build newer than the catalogue"},
 +		{17, 99999, buildListURL, "a build newer than the catalogue"},
 +	}
 +	for _, c := range cases {
@@ -766,23 +767,25 @@ index 0f4db5b2..b1515bae 100644
    }
  }
 diff --git i/web/src/blocking_history.ts w/web/src/blocking_history.ts
-index d97eccd1..8afacf2d 100644
+index d97eccd1..d6bcf9af 100644
 --- i/web/src/blocking_history.ts
 +++ w/web/src/blocking_history.ts
-@@ -14,6 +14,13 @@ import { get, Row, rowsOf, Table } from './api';
+@@ -14,8 +14,15 @@ import { get, Row, rowsOf, Table } from './api';
  import { lineChart } from './chart';
  import { Ctx, href, rangeLabel, window_ } from './router';
  import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 +import { waitDocs } from './doclinks';
-+
+ import { sqlCell, whatIsThis } from './sqlview';
+ 
 +// a cell's list of wait types (an array, or text with ', ' between), each with its documentation links (task 412)
 +const waitList = (v: unknown): HTMLElement | string => {
 +  const ts = (Array.isArray(v) ? v.map(String) : String(v ?? '').split(',')).map(t => t.trim()).filter(Boolean);
 +  return ts.length ? el('span', {}, ...ts.flatMap((t, i) => [i ? ', ' : '', t, waitDocs(t)])) : '';
 +};
- import { sqlCell, whatIsThis } from './sqlview';
- 
++
  type PgParts = 'meta' | 'summary' | 'episodes' | 'trend' | 'xmin_summary' | 'xmin_pins' | 'xmin_now';
+ type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs';
+ 
 @@ -163,7 +170,7 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
          { key: 'head_session_id', label: 'head of its chain', num: true, fmt: v => v == null ? '' : String(v) },
          { key: 'snapshots', label: 'snapshots', num: true },
