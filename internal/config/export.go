@@ -141,8 +141,8 @@ func (e *Export) validate() error {
 	if strings.TrimSpace(e.DSNRaw) == "" {
 		return fmt.Errorf("export.dsn is required: the export's own login, IN ROLE pgvigil_reader alone (env:NAME or file:/path)")
 	}
-	if inlinePassword(e.DSNRaw) {
-		return fmt.Errorf("export.dsn holds a password: name it by env:NAME or file:/path")
+	if d := strings.TrimSpace(e.DSNRaw); !strings.HasPrefix(d, "env:") && !strings.HasPrefix(d, "file:") && !strings.HasPrefix(d, "dpapi:") {
+		return fmt.Errorf("export.dsn is named by env:NAME or file:/path, never written in this file")
 	}
 	if strings.TrimSpace(e.StateDir) == "" {
 		return fmt.Errorf("export.state_dir is required: a folder for the lock and the files being built")

@@ -563,7 +563,7 @@ func Resolve(ctx context.Context, q Querier, opt Options) ([]Resolved, error) {
 			r.Skip = "left out by the configuration (export.tables.exclude)"
 		case r.Carry != "" && !opt.carries(r.Carry):
 			r.Skip = fmt.Sprintf("carried only with export.carry: [%s]", r.Carry)
-		case r.Class != Window && opt.StateMaxBytes > 0 && r.Bytes > opt.StateMaxBytes:
+		case r.Class != Window && r.Name != "instances" && opt.StateMaxBytes > 0 && r.Bytes > opt.StateMaxBytes: // instances names every id: always carried
 			r.Skip = fmt.Sprintf("%d bytes, over export.snapshot_max_bytes (%d): a whole-table export of it is left out", r.Bytes, opt.StateMaxBytes)
 		}
 		if r.Skip != "" {

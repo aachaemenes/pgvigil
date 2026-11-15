@@ -24,10 +24,14 @@ import (
 // The caps of a file: a row group is closed at maxGroupRows rows or maxGroupBytes of values, whichever comes first
 // (a plan or a log line can be megabytes a row); a file at maxFileRows rows or maxFileBytes written.
 const (
-	maxGroupRows  = 50_000
-	maxGroupBytes = 64 << 20
-	maxFileRows   = 1_000_000
-	maxFileBytes  = 256 << 20
+	maxGroupRows = 50_000
+	maxFileRows  = 1_000_000
+)
+
+// the two byte lines are variables for the unit test that crosses them with small files
+var (
+	maxGroupBytes int64 = 64 << 20
+	maxFileBytes  int64 = 256 << 20
 )
 
 type kind int

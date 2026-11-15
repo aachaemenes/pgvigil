@@ -231,6 +231,10 @@ func Run(ctx context.Context, c Config) error {
 	defer release()
 	st, err := s.readState(ctx)
 	if err != nil {
+		// a destination that does not answer is the likeliest failure of all: it leaves its row too, under the newest
+		// complete hour, so that the Collector page says it before the export is hours behind
+		h := s.now.Truncate(time.Hour)
+		s.record(context.WithoutCancel(ctx), Hour{h.Add(-time.Hour), h}, false, time.Now(), false, windowStats{}, oneLine(err.Error()))
 		return err
 	}
 	todo, aged := s.due(st)

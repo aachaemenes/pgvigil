@@ -1,8 +1,10 @@
 package export
 
 import (
+	"crypto/rand"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,5 +149,69 @@ func TestFileWriter(t *testing.T) {
 	// row 2: an empty list is not a null list
 	if len(rows[2]) != 5 || rows[2][2].DefinitionLevel() != 1 {
 		t.Errorf("row 2: %v", rows[2])
+	}
+}
+
+// The byte lines, crossed with small files: a row group is closed once its values pass maxGroupBytes, a file once
+// what is written passes maxFileBytes; the second file carries __p2, and no row is lost.
+func TestFileSplitByBytes(t *testing.T) {
+	defer func(g, f int64) { maxGroupBytes, maxFileBytes = g, f }(maxGroupBytes, maxFileBytes)
+	maxGroupBytes, maxFileBytes = 64<<10, 256<<10
+	cols := []pcol{mapColumn("t", Column{Name: "b", Type: "bytea"})}
+	fw := newFileWriter(t.TempDir(), "t", "t__x", cols)
+	const n = 200
+	for i := 0; i < n; i++ {
+		buf := make([]byte, 8<<10) // random: ZSTD cannot shrink it
+		if _, err := rand.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+		if err := fw.add([]any{buf}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := fw.finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 200 rows of 8 KiB = 1.6 MiB: a group about every 8 rows, a file about every 256 KiB
+	if len(files) < 4 || len(files) > 8 {
+		t.Fatalf("%d files, want 4 to 8", len(files))
+	}
+	var rows int64
+	for i, f := range files {
+		rows += f.RowCount
+		if f.ByteSize > 400<<10 {
+			t.Errorf("%s is %d bytes: a file is closed at the first group past %d", f.Path, f.ByteSize, maxFileBytes)
+		}
+		want := "t/t__x.parquet"
+		if i > 0 {
+			want = "t/t__x__p" + string(rune('1'+i)) + ".parquet"
+		}
+		if f.Path != want {
+			t.Errorf("file %d is %s, want %s", i, f.Path, want)
+		}
+		fh, err := os.Open(f.local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pf, err := parquet.OpenFile(fh, f.ByteSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < len(files)-1 && len(pf.RowGroups()) < 2 {
+			t.Errorf("%s has %d row group(s): the byte line closes one about every 8 rows", f.Path, len(pf.RowGroups()))
+		}
+		for _, g := range pf.RowGroups() {
+			if g.NumRows() == 0 || g.NumRows() > 10 {
+				t.Errorf("%s: a row group of %d rows", f.Path, g.NumRows())
+			}
+		}
+		fh.Close()
+	}
+	if rows != n {
+		t.Errorf("%d rows in the files, %d written", rows, n)
+	}
+	if !strings.HasSuffix(files[len(files)-1].Path, ".parquet") {
+		t.Error("the last file is closed")
 	}
 }

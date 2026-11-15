@@ -34,7 +34,8 @@
 #  A2. classes: a state table (host_state) is absent from an hourly window's manifest and whole in Wd's; `instances`
 #      is in both; with carry [text] a dimension (statement_text) carries in an hourly window the text last seen in
 #      or after it and not the one last seen before it, and both in Wd; without carry it is in `skipped` with the
-#      carry it needs, as an audit table (hba_rules) is.
+#      carry it needs, as an audit table (hba_rules) is. With snapshot_max_bytes 1 every state table is in `skipped`
+#      naming that key, and `instances` is carried all the same.
 #  B.  a window and the types: of five host_sample rows (at the window's start, inside, 1 microsecond before its end,
 #      at its end, 1 microsecond before its start) W2's file holds exactly the first three; an event stored now with
 #      event_at in W4 is in W4's file and not in W2's. Read back by pyarrow: every column OPTIONAL and in the table's
@@ -44,8 +45,8 @@
 #      18446744073709551615 exactly.
 #  B2. the final pass: after pass 1 of W4 (manifest pass 1) a job run and a Query Store interval are stored with
 #      their time in W4; a run with final_after_hours 2 exports W4 again under the same names: the manifest says
-#      final, both late rows are in the files, the marker _manifests/_final/<window> exists; W1 is still pass 1 with
-#      no marker. A final pass killed while it reads leaves the files it had written, no manifest for its window
+#      final, both late rows are in the files, the marker _manifests/_final/<window> exists; a table whose only row
+#      of W4 was deleted after pass 1 has row_count 0 and its pass-1 file is gone; W1 is still pass 1 with no marker. A final pass killed while it reads leaves the files it had written, no manifest for its window
 #      and no marker, and the next run does it again.
 #  C.  the manifest: contract_version 1 is its first key; each file's sha256, byte_size and row_count are the file's
 #      own, the table's figures their sums; a table with no row in the window has an entry with row_count 0 and no
@@ -65,7 +66,8 @@
 #      the manifest's failed[] with the window complete (exit 1).
 #  F.  left out and dropped: no ui_users file, the table in `skipped`; report_mail_sends is carried without html,
 #      xlsx, recipients and subject, the four named in dropped_columns; mssql_errorlog is carried without message
-#      (named in dropped_columns as text) and with it under carry [text].
+#      (named in dropped_columns as text) and with it under carry [text]; a table named in tables.exclude is in
+#      `skipped` naming that key, the others carried.
 #  G.  destinations: one window written to a folder, to the S3-compatible server and to Azurite: the three listings
 #      hold the same names, every file's sha256 is the one its own manifest gives, each table's rows are equal across
 #      the three, each manifest is the newest object of its window; a table of about 175 MB of text (over the 64 MB
@@ -73,8 +75,8 @@
 #      one row group.
 #  H.  the page door: a run by a login in the exporter role leaves one export_runs row per window (outcome ok, its
 #      files / rows / bytes the manifest's) and the export_state row; the same login's own INSERT into export_runs is
-#      refused; GET /api/export lists the runs; a failed run (its destination a file) is a row with outcome failed
-#      and export_service names 'the last run failed'; the newest run moved 4 hours back makes it name the hours
+#      refused; GET /api/export lists the runs; a run whose destination does not answer (a path under a file) exits
+#      1 and is a row with outcome failed and its error, and export_service names 'the last run failed'; the newest run moved 4 hours back makes it name the hours
 #      behind; after `pgvigil export -off` export_state is empty and export_service has no row.
 #  J.  doors and caps: `-plan -json` lists the three due windows and each table's kind and writes nothing; `-check`
 #      exits 0 on a good folder (left empty) and 3 on a destination that cannot be written; a hole between the
@@ -278,6 +280,7 @@ def seed_B2():
     q(f"INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, step_id, job_name) VALUES ({M1}, CAST({lit(a + dt.timedelta(minutes=5))} AS timestamptz), 1, 'J1', 0, 'b2 early')")
     q(f"INSERT INTO pgvigil.table_sizes (instance_id, snapshot_at, dbid, relid) VALUES ({I2}, CAST({lit(Wk(5)[0] + dt.timedelta(minutes=5))} AS timestamptz), 1, 77)")
     ds(I2, Wk(5)[0] + dt.timedelta(minutes=5), 300, 'b2-cut')
+    ds(I2, a + dt.timedelta(minutes=5), 301, 'b2-gone')
 def seed_B2_late():
     a, _ = Wk(4)
     q(f"INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, step_id, job_name) VALUES ({M1}, CAST({lit(a + dt.timedelta(minutes=6))} AS timestamptz), 2, 'J1', 0, 'b2 late')")
@@ -391,6 +394,9 @@ def row_A2():
     s1 = skipped(m3, 'statement_text'); s2 = skipped(m3, 'hba_rules')
     check(r3[0] == 0 and entry(m3, 'statement_text') is None and s1 and 'text' in s1['reason'] and s2 and 'audit' in s2['reason'] and not os.path.isdir(f'{root("a2n")}/statement_text') and not os.path.isdir(f'{root("a2n")}/hba_rules'),
           f'A2: without carry the text and the audit table are skipped, each naming its carry ({s1}, {s2})')
+    c3 = cfg('a2m', snapshot_max_bytes=1); r4 = window(c3, WD); m4 = man('a2m', WD); s3 = skipped(m4, 'host_state')
+    check(r4[0] == 0 and s3 and 'snapshot_max_bytes' in s3['reason'] and entry(m4, 'host_state') is None and len(rows('a2m', m4, 'instances')) == ninst,
+          f'A2: a state table over snapshot_max_bytes is skipped naming the key; instances is carried all the same ({s3})')
 
 def pcol(pf, name):   # (physical type, logical type, max definition level) of a top-level column, its first leaf
     sc = pf.schema
@@ -463,7 +469,9 @@ def row_B2():
     ca = cfg('b2', dest=dest, state=state); w4 = Wk(4); w5 = Wk(5); w1 = Wk(1)
     rc, out, err = export(ca); m = man('b2', w4)
     if not check(rc == 0 and m and m['pass'] == 1 and [r['job_name'] for r in rows('b2', m, 'mssql_job_runs')] == ['b2 early'], f'B2: pass 1 of W4 holds what was stored then (rc {rc}, pass {m and m["pass"]}: {err.strip()[:160]})'): return
-    seed_B2_late()
+    gone = glob.glob(f'{root("b2")}/database_sizes/*{stamp(w4[0])}*')
+    check(len(gone) == 1 and entry(m, 'database_sizes')['row_count'] == 1, f'B2: pass 1 wrote the file of a row that is deleted before the final pass ({len(gone)} file)')
+    seed_B2_late(); q("DELETE FROM pgvigil.database_sizes WHERE datname = 'b2-gone'")
     cb = cfg('b2f', dest=dest, state=state, final_after_hours=2)
     policy('table_sizes', 'pqproof.slow(45)', RD); t_cut = time.time()
     try:
@@ -479,6 +487,9 @@ def row_B2():
     check(rc == 0 and m5 and m5['pass'] == 'final' and mk(w5) and not sums_hold('b2', m5), f'B2: the next run does the cut window again (rc {rc}, pass {m5 and m5["pass"]}, marker {mk(w5)})')
     jr = sorted(r['job_name'] for r in rows('b2', m4, 'mssql_job_runs')); qs = [r['database_name'] for r in rows('b2', m4, 'mssql_qs_interval')]
     check(m4 and m4['pass'] == 'final' and jr == ['b2 early', 'b2 late'] and qs == ['b2db'] and mk(w4), f'B2: the final pass carries the rows stored after pass 1 under the same names (pass {m4 and m4["pass"]}, job runs {jr}, intervals {qs}, marker {mk(w4)})')
+    e4 = entry(m4, 'database_sizes') or {}
+    left = glob.glob(f'{root("b2")}/database_sizes/*{stamp(w4[0])}*')
+    check(e4.get('row_count') == 0 and not e4.get('output_files') and not left, f'B2: a table with no row any more has row_count 0 in the final manifest and its pass-1 file is gone (row_count {e4.get("row_count")}, files left {len(left)})')
     check(m1 and m1['pass'] == 1 and not mk(w1), f'B2: a window younger than final_after_hours stays pass 1 with no marker (pass {m1 and m1["pass"]}, marker {mk(w1)})')
 
 def row_C():
@@ -571,6 +582,9 @@ def row_F():
     check(len(e1) == 1 and 'message' not in e1[0] and 'text' in reason, f'F: the log\'s text column is dropped without carry text and named ({reason!r})')
     check(len(e2) == 1 and e2[0].get('message') == 'f secret text' and 'message' not in dc(mt, 'mssql_errorlog') and dc(mt, 'report_mail_sends') == ['html', 'recipients', 'subject', 'xlsx'],
           'F: with carry text the text column is carried; the mail columns stay dropped')
+    cx = cfg('fx', tables={'exclude': ['host_sample']}); r3 = window(cx, w); mx = man('fx', w); sx = skipped(mx, 'host_sample')
+    check(r3[0] == 0 and sx and 'exclude' in sx['reason'] and entry(mx, 'host_sample') is None and entry(mx, 'database_sizes') is not None,
+          f'F: a table named in tables.exclude is skipped naming the key, the others carried ({sx})')
 
 def row_G():
     import boto3, botocore
@@ -651,9 +665,9 @@ def row_H():
     svc = lambda: [r[0] for r in q('SELECT detail FROM pgvigil.export_service')]
     check(svc() == [], f'H: no service row while the export is current ({svc()})')
     open(f'{W}/notadir', 'w').write('x'); cb = cfg('hb', dest={'type': 'folder', 'path': f'{W}/notadir/x'}, state=f'{W}/state-h', max_window_age_hours=2)
-    rcb, _, errb = window(cb, Wk(1), dsn_=xd)
+    rcb, _, errb = export(cb, dsn_=xd)
     lastrun = q("SELECT outcome, error FROM pgvigil.export_runs ORDER BY started_at DESC, run_id DESC LIMIT 1")[0]
-    check(rcb == 1 and lastrun[0] == 'failed' and lastrun[1] and any('the last run failed' in d for d in svc()), f'H: a failed run is a row with its error and the service row names it (rc {rcb}, {lastrun[0]}, {svc()})')
+    check(rcb == 1 and lastrun[0] == 'failed' and lastrun[1] and any('the last run failed' in d for d in svc()), f'H: a run whose destination does not answer is a row with its error and the service row names it (rc {rcb}, {lastrun[0]}, {svc()})')
     rc2, _, _ = window(c, Wk(1), dsn_=xd)
     q("UPDATE pgvigil.export_runs SET window_from = window_from - interval '4 hours', window_to = window_to - interval '4 hours', started_at = started_at - interval '4 hours', finished_at = finished_at - interval '4 hours'")
     q("UPDATE pgvigil.export_state SET last_run_at = last_run_at - interval '4 hours', newest_window_to = newest_window_to - interval '4 hours'")
