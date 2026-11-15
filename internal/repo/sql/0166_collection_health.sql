@@ -158,8 +158,9 @@ END $$;
 -- collection failing now is listed even with no run since p_rate_from - while its last run is within three of its
 -- intervals and at least a day (a collection removed from the configuration while it failed leaves the list then;
 -- B6.1 has no acknowledge). An inactive instance is not listed (DBA Dash's CollectionHealth_Get: IsActive = 1).
--- The Summary and the page both read this.
-CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL)
+-- The Summary and the page both read this. p_rate_to (B6.2: a picked range in the past) ends the runs counted
+-- (hours that begin before it; NULL = now); the failures in a row are always now's, as DBA Dash's.
+CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL, p_rate_to timestamptz DEFAULT NULL)
 RETURNS TABLE (instance_id int, collection text, status text, status_reason text, failing_minutes int, consecutive_failures int,
                runs int, ok int, partial int, failed int, skipped int, failed_pct numeric, problem_pct numeric,
                last_run_at timestamptz, last_ok_at timestamptz, last_failure_at timestamptz, last_partial_at timestamptz)
@@ -169,6 +170,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
            sum(h.failed)::int AS failed, sum(h.skipped)::int AS skipped
       FROM pgvigil.collection_health_hour h
      WHERE h.hour >= date_trunc('hour', (p_rate_from AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'
+       AND (p_rate_to IS NULL OR h.hour < p_rate_to)
      GROUP BY h.instance_id, h.collection
   ), k AS (
     SELECT coalesce(h.instance_id, s.instance_id) AS instance_id, coalesce(h.collection, s.collection) AS collection,
@@ -228,3 +230,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
     FROM pgvigil.collection_health(date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '23 hours', p_expected) c
    GROUP BY c.instance_id
 $$;
+
+-- the error list of the Collection Health page (B6.2: one instance and collection, or one collection over a scope,
+-- between two times): its errors only. collection_log is a plain table (0001), so this build holds its writes for its
+-- length at the upgrade - measured at 10M rows on the box before it is kept here (the lead's 23:2x call)
+CREATE INDEX IF NOT EXISTS collection_log_errors_idx ON pgvigil.collection_log (instance_id, collection, snapshot_at) WHERE status = 'error';
