@@ -117,18 +117,34 @@ has() { [ -n "$(q "select 1 from $(fsrc) f where instance_id = $1 and setting = 
 waits() { if fn "$1"; then q "select count(*) from pgvigil.$1($2, now() - interval '1 hour', now())"; else echo "no $1"; fi; }
 "$BIN" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$PORT" -no-login > "$OUT.serve" 2>&1 & SRVPID=$!
 for i in $(seq 1 30); do curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" && break; sleep 1; done
-# the day's and the live part's blocking / deadlocks for an instance, from the routes the pages read
-api() { curl -s "http://127.0.0.1:$PORT/api/$1" | python3 -I -c '
+# the day's and the live part's blocking / deadlocks for an instance, from the routes the pages read: the calendar
+# needs instance= and gives a table of days (columns + rows, no instance_id): the key summed over the month's days (the
+# proof's rows lie within the last half hour: a run in the first half hour of a UTC month would read too few); the
+# live part is a table with an instance_id column
+api() {
+  if [ "$1" = healthcal ]; then
+    curl -s "http://127.0.0.1:$PORT/api/healthcal?instance=$2" | python3 -I -c '
+import json, sys
+d, key = json.load(sys.stdin), sys.argv[1]
+t = d.get("days") or {}
+cols, rows = t.get("columns") or [], t.get("rows") or []
+print(sum(int(r[cols.index(key)] or 0) for r in rows) if key in cols else "none")' "$3"
+    return
+  fi
+  # the live part (a table: columns + rows) narrowed by instance=; its row by the instance_id column
+  curl -s "http://127.0.0.1:$PORT/api/$1?instance=$2" | python3 -I -c '
 import json, sys
 d, iid, key = json.load(sys.stdin), int(sys.argv[1]), sys.argv[2]
-def rows(x):
-    if isinstance(x, list):
-        for y in x: yield from rows(y)
-    elif isinstance(x, dict):
-        if x.get("instance_id") == iid and key in x: yield x
-        for y in x.values(): yield from rows(y)
-v = [r[key] for r in rows(d)]
-print(v[-1] if v else "none")' "$2" "$3"; }
+def tables(x):
+    if isinstance(x, dict):
+        if isinstance(x.get("columns"), list) and isinstance(x.get("rows"), list): yield x
+        for y in x.values(): yield from tables(y)
+    elif isinstance(x, list):
+        for y in x: yield from tables(y)
+v = [r[t["columns"].index(key)] for t in tables(d) if "instance_id" in t["columns"] and key in t["columns"]
+     for r in t["rows"] if r[t["columns"].index("instance_id")] == iid]
+print(v[-1] if v else "none")' "$2" "$3"
+}
 syn() {   # a synthetic instance of this proof (its engine: sqlserver or postgres): its id
   q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
        values ('proof-b10-$1-$SUF', '$( [ "$2" = sqlserver ] && echo sqlserver || echo onprem )', '{env:proofb10}', now(), now(), true, '$2') returning instance_id" | head -1
