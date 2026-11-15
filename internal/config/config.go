@@ -53,6 +53,8 @@ type Config struct {
 	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
 	// report is refused with words, never run as serve's login (REPORT ROLE, internal/web/reportrole.go).
 	ReportsDSNRaw string `yaml:"reports_dsn"`
+	// Agents is the agents: block: the agent door on serve's pages (agents.go; off unless enabled).
+	Agents AgentsConfig `yaml:"agents"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
