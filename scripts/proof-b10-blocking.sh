@@ -42,7 +42,8 @@
 #  I. the spike: pgvigil.mssql_block_hourly seeded with 4 weeks of the same weekday and hour at 2 waits and 1
 #     deadlock, the last hour at 9 waits and 4 deadlocks: 'blocking at 3x this hour''s usual' and 'deadlocks at 3x this
 #     hour''s usual' (warning); a second instance with one week of history and 6 waits: the blocking one fires worded
-#     as a first occurrence ('no usual yet'); a third with 4 weeks and 4 waits (under the floor of 5): none.
+#     as a first occurrence ('no usual yet'); a third with 4 weeks and 4 waits (under the floor of 5): none; a fourth with
+#     4 weeks at 0 and 6 waits: fires, its detail 'none in this weekday and hour over the 4 weeks before' (never empty).
 #     pgvigil.rollup_block_hourly() writes one row per instance and finished hour, again a no-op. RED: no table.
 #  J. PostgreSQL (activity_sample every 15 s): pid 101 waits on a Lock in samples 0-60 s and again 105-135 s under the
 #     same query_start (a 45 s gap, over two intervals): 2 waits; pid 102 waits 30 s once: 1; pgvigil.pg_block_waits
@@ -204,16 +205,19 @@ check "$(q "select count(*) from pgvigil.mssql_deadlocks where instance_id = $H"
 
 echo "--- I. the spike against the hour's usual"
 if tab mssql_block_hourly; then
-  I1=$(syn i1 sqlserver); I2=$(syn i2 sqlserver); I3=$(syn i3 sqlserver)
+  I1=$(syn i1 sqlserver); I2=$(syn i2 sqlserver); I3=$(syn i3 sqlserver); I4=$(syn i4 sqlserver)
   q "insert into pgvigil.mssql_block_hourly (instance_id, hour, waits, deadlocks)
      select i, date_trunc('hour', now()) - interval '1 hour' - make_interval(weeks => w), 2, 1 from (values ($I1), ($I3)) v(i), generate_series(1, 4) w
      union all select $I2, date_trunc('hour', now()) - interval '1 hour' - interval '1 week', 2, 1
      union all select $I1, date_trunc('hour', now()) - interval '1 hour', 9, 4
      union all select $I2, date_trunc('hour', now()) - interval '1 hour', 6, 0
-     union all select $I3, date_trunc('hour', now()) - interval '1 hour', 4, 0" >/dev/null
+     union all select $I3, date_trunc('hour', now()) - interval '1 hour', 4, 0
+     union all select $I4, date_trunc('hour', now()) - interval '1 hour' - make_interval(weeks => w), 0, 0 from generate_series(1, 4) w
+     union all select $I4, date_trunc('hour', now()) - interval '1 hour', 6, 0" >/dev/null
   check "$(has "$I1" "blocking at 3x this hour''s usual")|$(has "$I1" "deadlocks at 3x this hour''s usual")" "yes|yes" "I: 9 waits and 4 deadlocks against 2 and 1 fire both"
   check "$(finding "$I2" "blocking at 3x this hour''s usual" | grep -c 'no usual yet')" 1 "I: one week of history fires on the floor, worded 'no usual yet'"
   check "$(has "$I3" "blocking at 3x this hour''s usual")" no "I: 4 waits are under the floor of 5"
+  check "$(finding "$I4" "blocking at 3x this hour''s usual" | grep -c '^warning|6 waits in the hour from .*, none in this weekday and hour over the 4 weeks before$')" 1 "I: a usual of 0 and 6 waits: fires, its detail not empty"
   q "delete from pgvigil.mssql_block_hourly where instance_id = $MSID" >/dev/null
   q "select pgvigil.rollup_block_hourly(now() + interval '1 hour')" >/dev/null; R1=$(q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $MSID")
   q "select pgvigil.rollup_block_hourly(now() + interval '1 hour')" >/dev/null; R2=$(q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $MSID")

@@ -268,7 +268,8 @@ UNION ALL
 -- the floors 5 waits / 3 deadlocks; under 4 weeks of that hour's history it fires on the floor alone, said so
 (SELECT DISTINCT ON (s.instance_id, s.check_name) s.instance_id, 'warning', s.check_name, s.what, s.hour + interval '1 hour',
        s.n || ' ' || s.what || ' in the hour from ' || to_char(s.hour, 'YYYY-MM-DD HH24:00') || ', '
-         || CASE WHEN s.samples >= 4 THEN round(s.n / nullif(s.usual, 0), 1) || ' times its usual of ' || round(s.usual, 1) || ' (this weekday and hour over 4 weeks)'
+         || CASE WHEN s.samples >= 4 AND s.usual = 0 THEN 'none in this weekday and hour over the 4 weeks before'
+                 WHEN s.samples >= 4 THEN round(s.n / s.usual, 1) || ' times its usual of ' || round(s.usual, 1) || ' (this weekday and hour over 4 weeks)'
                  ELSE 'no usual yet (' || s.samples || ' of 4 weeks of history for this hour): fired on the floor of ' || s.floor END
   FROM (
     SELECT h.instance_id, h.hour, k.what, k.check_name, k.floor, k.n,
