@@ -155,6 +155,30 @@ const allRows = await api({});
   say(hourly === 2, 'CH6 one whole hour: the charts said hourly', `${hourly} chart place(s) say so`);
 }
 
+// CH16 (B6g-1): the cost cells themselves on the demo, a row per collection per instance over 24 hours. A SQL Server
+// instance runs the mssql_ collections alone: each of its rows with a run holds its session's CPU and logical reads as
+// numbers above 0; every PostgreSQL row says 'not read by pgvigil' in the five cost cells; a row with a success has an
+// import time; the demo has no import failure.
+{
+  const p = await open('#/collectionhealth?w=24h');
+  const num = c => { const t = (c?.text ?? '').replace(/[^0-9.]/g, ''); return t === '' ? NaN : Number(t); };
+  const cost = ['Total CPU (ms)', 'Avg CPU (ms)', 'Max CPU (ms)', 'Logical Reads', 'Avg Logical Reads'];
+  const ran = (p?.rows ?? []).filter(r => num(r['Runs']) > 0);
+  const ms = ran.filter(r => r['Collection'].text.startsWith('mssql_')), pg = ran.filter(r => !r['Collection'].text.startsWith('mssql_'));
+  const msBad = ms.filter(r => !cost.every(k => num(r[k]) > 0));
+  say(ms.length > 0 && msBad.length === 0, 'CH16 SQL Server rows: CPU and logical reads as numbers above 0',
+    `${ms.length} row(s) with a run, ${msBad.length} without${msBad.length ? ': ' + msBad.slice(0, 3).map(r => r['Instance'].text + ' ' + r['Collection'].text + ' [' + cost.map(k => r[k]?.text).join(' | ') + ']').join('; ') : ''}`);
+  const pgBad = pg.filter(r => !cost.every(k => r[k]?.text === 'not read by pgvigil'));
+  say(pg.length > 0 && pgBad.length === 0, 'CH16 PostgreSQL rows: the five cost cells say not read by pgvigil',
+    `${pg.length} row(s) with a run, ${pgBad.length} otherwise${pgBad.length ? ': ' + pgBad.slice(0, 3).map(r => r['Instance'].text + ' ' + r['Collection'].text + ' [' + cost.map(k => r[k]?.text).join(' | ') + ']').join('; ') : ''}`);
+  const wrote = ran.filter(r => num(r['Succeeded']) > 0);
+  const noImp = wrote.filter(r => !(num(r['Avg Import (ms)']) > 0 && num(r['Max Import (ms)']) > 0 && num(r['Max Import (ms)']) <= num(r['Max Duration (ms)'])));   // the longest import is inside the longest run (an average over failed runs too may be under it)
+  say(wrote.length > 0 && noImp.length === 0, 'CH16 a row with a success has an import time, inside its duration',
+    `${wrote.length} row(s) with a success, ${noImp.length} without${noImp.length ? ': ' + noImp.slice(0, 3).map(r => r['Instance'].text + ' ' + r['Collection'].text + ' [' + r['Avg Import (ms)']?.text + ' avg, max ' + r['Max Import (ms)']?.text + ' of ' + r['Max Duration (ms)']?.text + ']').join('; ') : ''}`);
+  const impFailed = ran.filter(r => num(r['Import Failed']) !== 0);
+  say(ran.length > 0 && impFailed.length === 0, 'CH16 Import Failed is 0 on the demo', `${ran.length} row(s) with a run, ${impFailed.length} with an import failure`);
+}
+
 // CH7 the landings
 {
   // the Summary's cell, one PostgreSQL row (fx-chcrit) and one SQL Server row; a row is found by its instance link's
