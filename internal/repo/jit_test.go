@@ -237,15 +237,29 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 	if err := plain.QueryRow(ctx, `SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()`).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
-	exec(`DROP ROLE IF EXISTS pgv_jit_owner`, `CREATE ROLE pgv_jit_owner NOLOGIN NOSUPERUSER IN ROLE `+pgx.Identifier{owner}.Sanitize(),
-		`GRANT pgv_jit_owner TO CURRENT_USER`, "ALTER DATABASE "+qdb+" RESET jit", `SET ROLE pgv_jit_owner`)
-	info, warn, err = repositoryJITOff(ctx, plain)
-	exec(`RESET ROLE`)
-	if err != nil || warn != "" || !strings.Contains(info, "jit set off") {
-		t.Errorf("an owner that is not a superuser (a member of %s): info %q, warn %q, err %v; want the 'jit set off' info alone", owner, info, warn, err)
+	// A superuser login SETs ROLE to any role without a grant; a login that IS the owner cannot be granted a member
+	// of itself (0LP01, a circular membership) - and is then itself the non-superuser owner the Migrate above ran as.
+	var super, isOwner bool
+	if err := plain.QueryRow(ctx, `SELECT r.rolsuper, d.datdba = r.oid FROM pg_roles r, pg_database d
+         WHERE r.rolname = current_user AND d.datname = current_database()`).Scan(&super, &isOwner); err != nil {
+		t.Fatal(err)
 	}
-	if !isOff() {
-		t.Errorf("an owner that is not a superuser did not write jit=off (the entry reads %s)", entry())
+	if !super && isOwner {
+		t.Logf("an owner that is not a superuser: this login (%s) is one; the Migrate above ran that path", owner)
+	} else {
+		exec(`DROP ROLE IF EXISTS pgv_jit_owner`, `CREATE ROLE pgv_jit_owner NOLOGIN NOSUPERUSER IN ROLE `+pgx.Identifier{owner}.Sanitize())
+		if !super {
+			exec(`GRANT pgv_jit_owner TO CURRENT_USER`)
+		}
+		exec("ALTER DATABASE "+qdb+" RESET jit", `SET ROLE pgv_jit_owner`)
+		info, warn, err = repositoryJITOff(ctx, plain)
+		exec(`RESET ROLE`)
+		if err != nil || warn != "" || !strings.Contains(info, "jit set off") {
+			t.Errorf("an owner that is not a superuser (a member of %s): info %q, warn %q, err %v; want the 'jit set off' info alone", owner, info, warn, err)
+		}
+		if !isOff() {
+			t.Errorf("an owner that is not a superuser did not write jit=off (the entry reads %s)", entry())
+		}
 	}
 
 	// Migrate's own log: the write is one info line, the next migrate says nothing about jit
