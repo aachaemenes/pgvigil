@@ -105,7 +105,9 @@
 #     esbuild) and its binary serves /api/mssql/availability for the distributor: part replseries answers 2 or more
 #     buckets over the proof's window with the largest latency 120 s or more and 100 or more commands waiting; part
 #     replication carries the new columns (the transactional subscription running, continuous, latency 0, active);
-#     part repllimits the three keys at their defaults (10, 15, 5 minutes); the bundle holds the latency chart.
+#     part repllimits the three keys at their defaults (10, 15, 5 minutes); the bundle holds the latency chart, the
+#     Subscriptions grid's agent column (a merge subscription is read as its agent: task 385's merge rows) and the
+#     agents heading without merge ('Log reader and snapshot agents').
 #  M. everything removed: the lab read back as 0 containers, 0 networks, 0 volumes; the repository database dropped.
 #  NOT PROVEN HERE: merge replication (SQL Server on Linux has none: scripts/proof-mssql-merge.sh part T over stubs;
 #  its part W on a live Windows publication not yet run),
@@ -337,20 +339,20 @@ trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2; exit 1' ERR
 # they are joined; applied here to a scratch copy only
 wiring_patch() { cat <<'PATCH'
 diff -ru a/docs/sqlserver-hadr.md b/docs/sqlserver-hadr.md
---- a/docs/sqlserver-hadr.md	2026-11-14 09:32:01.484310526 -0800
-+++ b/docs/sqlserver-hadr.md	2026-11-14 09:32:37.582895779 -0800
+--- a/docs/sqlserver-hadr.md	2026-11-14 18:07:05.897474232 -0800
++++ b/docs/sqlserver-hadr.md	2026-11-14 18:07:30.733263190 -0800
 @@ -70,7 +70,7 @@
  
  - **Mirroring**: role, state, safety level, partner, witness and its state, the send and redo queues.
  - **Log shipping**: per primary database the last log backup, per secondary the last copy and restore, each against the threshold its own configuration in msdb names. A monitor server lists every secondary; two secondaries that carry the same database name are two rows.
 -- **Replication**, as the distributor knows it: publications, subscriptions with the distribution agent's last status, the commands not yet delivered (the distribution database's view `MSdistribution_status`) and the time to deliver them at the agent's last rate, and the log reader, snapshot and merge agents with their last status. **No tracer token is ever written and no replication procedure is called.** A publisher whose distributor is another server is read there: add the distributor as an instance. A distribution database the login cannot enter is named in the collection's note with the missing right (a distribution database on a secondary replica that takes no connections reads the same way: read it on the primary). When one of the three reads of a distribution database fails, the rows of the reads that worked are replaced and the failed read's rows stay as last read.
-+- **Replication**, as the distributor knows it: publications, subscriptions with the distribution agent's last status, the commands not yet delivered (the distribution database's view `MSdistribution_status`) and the time to deliver them at the agent's last rate, and the log reader, snapshot and merge agents with their last status. **No tracer token is ever written and no replication procedure is called.** A publisher whose distributor is another server is read there: add the distributor as an instance. A distribution database the login cannot enter is named in the collection's note with the missing right (a distribution database on a secondary replica that takes no connections reads the same way: read it on the primary). When one of the three reads of a distribution database fails, the rows of the reads that worked are replaced and the failed read's rows stay as last read. The publisher side, each agent's job, failing time and error text, the latency trend and the replication thresholds: [SQL Server replication](sqlserver-replication.md).
++- **Replication**, as the distributor knows it: publications, subscriptions with their agent's last status (a distribution agent, or a merge agent: a merge subscription is read as its agent), the commands not yet delivered (the distribution database's view `MSdistribution_status`) and the time to deliver them at the agent's last rate, and the log reader and snapshot agents with their last status. **No tracer token is ever written and no replication procedure is called.** A publisher whose distributor is another server is read there: add the distributor as an instance. A distribution database the login cannot enter is named in the collection's note with the missing right (a distribution database on a secondary replica that takes no connections reads the same way: read it on the primary). When one of the three reads of a distribution database fails, the rows of the reads that worked are replaced and the failed read's rows stay as last read. The publisher side, each agent's job, failing time and error text, the latency trend and the replication thresholds: [SQL Server replication](sqlserver-replication.md).
  
  ## Agent jobs
  
 diff -ru a/internal/web/q_mssql_hadr.go b/internal/web/q_mssql_hadr.go
---- a/internal/web/q_mssql_hadr.go	2026-11-14 09:32:01.481723795 -0800
-+++ b/internal/web/q_mssql_hadr.go	2026-11-14 10:04:45.725715711 -0800
+--- a/internal/web/q_mssql_hadr.go	2026-11-14 18:07:05.895737886 -0800
++++ b/internal/web/q_mssql_hadr.go	2026-11-14 18:07:05.908699048 -0800
 @@ -140,14 +140,30 @@
         snapshot_at
    FROM pgvigil.mssql_logshipping_state WHERE instance_id = $1 ORDER BY role, database_name`
@@ -395,8 +397,8 @@ diff -ru a/internal/web/q_mssql_hadr.go b/internal/web/q_mssql_hadr.go
  		{"limits", sqlMSSQLHADRLimits, []any{id}},
  		{"reads", sqlMSSQLHADRReads, []any{id}},
 diff -ru a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
---- a/web/src/mssql_hadr.ts	2026-11-14 09:32:01.478859373 -0800
-+++ b/web/src/mssql_hadr.ts	2026-11-14 09:32:37.582862336 -0800
+--- a/web/src/mssql_hadr.ts	2026-11-14 18:07:05.893353776 -0800
++++ b/web/src/mssql_hadr.ts	2026-11-14 18:07:30.733212866 -0800
 @@ -9,7 +9,7 @@
  import { Ctx, href, rangeLabel, window_ } from './router';
  import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
@@ -406,7 +408,7 @@ diff -ru a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
  
  export const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
  
-@@ -129,19 +129,46 @@
+@@ -129,19 +129,48 @@
    { key: 'publisher' }, { key: 'publisher_db', label: 'database' }, { key: 'publication' },
    { key: 'publication_type', label: 'type' }, { key: 'articles', num: true }, { key: 'distribution_db', label: 'distribution database' },
  ];
@@ -420,6 +422,8 @@ diff -ru a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
    { key: 'subscriber', fmt: (v, r) => `${String(v ?? '')}.${String(r.subscriber_db ?? '')}` },
 -  { key: 'subscription_type', label: 'type' }, { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
 +  { key: 'subscription_type', label: 'type' }, { key: 'subscription_status', label: 'subscription' },
++  // a merge agent is read as its subscription (agent 'merge': no status, commands or latency at the distributor)
++  { key: 'agent_type', label: 'agent' },
 +  { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
 +  { key: 'job_state', label: 'job', fmt: jobCell, cls: jobCls },
    { key: 'undistributed', label: 'undistributed commands', num: true },
@@ -456,7 +460,7 @@ diff -ru a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
  ];
  
  // groupKind: what a group is, in words (the catalog's own flags)
-@@ -306,10 +333,24 @@
+@@ -306,10 +335,24 @@
      if (mirroring.length) sec.append(el('h3', {}, 'Database mirroring'), grid(mirroring, mirrorCols));
      if (shipping.length) sec.append(el('h3', {}, 'Log shipping'), grid(shipping, shipCols));
      if (repl.length) {
@@ -468,7 +472,8 @@ diff -ru a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
 +      if (repl.some(r => r.kind !== 'published_db')) sec.append(
 +        el('h4', {}, 'Publications (as this distributor knows them)'), grid(repl.filter(r => r.kind === 'publication'), pubCols, 'No publication.'),
          el('h4', {}, 'Subscriptions'), grid(repl.filter(r => r.kind === 'subscription'), subCols, 'No subscription.'),
-         el('h4', {}, 'Log reader, snapshot and merge agents'), grid(repl.filter(r => r.kind === 'agent'), agentCols, 'No agent.'));
+-        el('h4', {}, 'Log reader, snapshot and merge agents'), grid(repl.filter(r => r.kind === 'agent'), agentCols, 'No agent.'));
++        el('h4', {}, 'Log reader and snapshot agents'), grid(repl.filter(r => r.kind === 'agent'), agentCols, 'No agent.'));
 +      // the trend: the worst subscription's latency, and what waits at the distributor and in the published logs
 +      const rs = rowsOf(d.replseries);
 +      sec.append(lineChart('Replication latency: the oldest command waiting (the worst subscription)', rs,
@@ -825,6 +830,8 @@ rows = [dict(zip(d["columns"], r)) for r in d["rows"]]
 print(",".join("%s:%s:%s" % (r["key"], int(float(r["warn"])), r["level"]) for r in rows))')
 [ "$got" = "repl_agent_retrying:10:default,repl_agent_silent:15:default,repl_latency:5:default" ] || fail "N: repllimits: $got"
 grep -q "Replication latency: the oldest command waiting" "$SCR/internal/web/dist/app.js" || fail "N: the bundle lacks the latency chart"
+grep -qF '{key:"subscription_status",label:"subscription"},{key:"agent_type",label:"agent"}' "$SCR/internal/web/dist/app.js" || fail "N: the Subscriptions grid lacks the agent column"
+grep -qF 'Log reader and snapshot agents' "$SCR/internal/web/dist/app.js" && ! grep -qF 'Log reader, snapshot and merge agents' "$SCR/internal/web/dist/app.js" || fail "N: the agents heading still names merge agents"
 kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 echo "N: OK (tsc and the bundle built; replseries, replication and repllimits answer with the new rows)"
 
