@@ -734,7 +734,7 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   echo "rec  N: sp_BlitzCache run anyway with master at 120: $bcr"
   [[ $(fresh "$MRID") == 200 && $(tl "t['sp_BlitzCache']['on']") == True ]] || fail "N: sp_BlitzCache with master back at $cl: $(tl "t['sp_BlitzCache']")"
   ok "N: master at compatibility level 120: sp_BlitzCache off before the click with the level named; master back at $cl, on again"
-  # the sibling pairs (the lead 15:50): EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
+  # the sibling pairs (a reviewer's finding): EXECUTE revoked on the sibling, the tool run with the form's defaults; the code's
   # list says hard (a default run fails) or a note (it ends done) - a pair the run contradicts fails here
   hard=(); disagree=()
   # the pairs are the code's own list (toolSiblings in q_community.go): a pair added there and not here fails
@@ -1716,7 +1716,7 @@ b = json.load(open(sys.argv[1]))['bv']
 assert b['sessionInput'] == 'system_health' and 'no running session captures the blocked process report' in b['filled'] and b['result'] == 'ran' and b['badge'] == 'done' and not b['error'], f"U2: the state (c) default click: {b}"
 print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (c) (threshold 5, no session): system_health filled, the note shown ('{b['filled'][:80]}...'), Ran at, done")
 PY
-    # ---- U3: each state of the checks as the page draws it (the lead's item 8): clicks in Chromium on the instance's
+    # ---- U3: each state of the checks as the page draws it (the reviewer's item 8): clicks in Chromium on the instance's
     # page, and on the fleet page's picker for the states a picker could get wrong
     state() { timeout 400 node "$WORK/buttons.mjs" state "$CDP" "$U/" "$COOKIE" "$WORK/spec.json" "$SHOTS" > "$WORK/state-$1.json" 2>"$WORK/state-$1.err" || fail "U3: the driver ($1): $(tail -5 "$WORK/state-$1.err")"; }
     # threshold 0 (read live, no collection after the change): the default click; the procedure's own refusals drawn as
