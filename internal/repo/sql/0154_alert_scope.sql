@@ -975,9 +975,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.alert_anchor_checks (
   PRIMARY KEY (match, source, name)
 );
 INSERT INTO pgvigil.alert_anchor_checks (match, source, name, kind) VALUES
-  ('metric', '', 'sql_pct', 'cpu'), ('metric', '', 'total_pct', 'cpu'), ('metric', '', 'cpu_pct', 'cpu'),
-  ('metric', '', 'blocked', 'blocking'), ('metric', '', 'heads', 'blocking'), ('metric', '', 'waiting_lock', 'blocking'),
-  ('metric', '', 'deadlocks', 'deadlock'),
+  ('metric', '', 'cpu.sql_pct', 'cpu'), ('metric', '', 'cpu.total_pct', 'cpu'), ('metric', '', 'host.cpu_pct', 'cpu'),
+  ('metric', '', 'requests.blocked', 'blocking'), ('metric', '', 'requests.heads', 'blocking'),
+  ('metric', '', 'sessions.waiting_lock', 'blocking'), ('metric', '', 'database.deadlocks', 'deadlock'),
   ('check', 'mssql_running', 'a blocking chain', 'blocking'),
   ('check', 'mssql_xe', 'deadlocks in the last hour', 'deadlock')
 ON CONFLICT (match, source, name) DO NOTHING;

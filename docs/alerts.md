@@ -372,7 +372,8 @@ bot against a stand-in of Slack's API.
 **Attachment** (Changed 24). While a CPU, blocking or deadlock alert stands on a channel (sent there, not held, not a
 flapping rule's), a new finding on the same instance is attached to it there instead of being sent: no new message,
 page or incident on any channel kind. What makes a finding an anchor is a fixed list (`pgvigil.alert_anchor_checks`):
-a rule on the metrics `sql_pct`, `total_pct`, `cpu_pct`, `blocked`, `heads`, `waiting_lock` or `deadlocks`, SQL Server's
+a rule on the metrics `cpu.sql_pct`, `cpu.total_pct`, `host.cpu_pct`, `requests.blocked`, `requests.heads`,
+`sessions.waiting_lock` or `database.deadlocks`, SQL Server's
 *a blocking chain* and *deadlocks in the last hour* - never a word in a check's name. A finding attaches only while the
 anchor's first send is at most 60 minutes old and the finding was never sent on that channel; it then stays attached
 while that occurrence stands. A critical alert and an escalation are never attached, and an anchor is never attached
