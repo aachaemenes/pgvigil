@@ -12,9 +12,14 @@
 //   chromium --headless=new --remote-debugging-port=<p> about:blank &   pgvigil demo ... -serve -listen 127.0.0.1:<port>
 // Writes <out dir>/summary-clicks.json (every click, its effect, its verdict; saved after each scope) and
 // <out dir>/summary-<scope>-dead.png (the Summary with every dead text outlined, the whole page). Prints one line per
-// click and 'clicks: <n>; <m> FAIL; <k> plain' last; exit 1 on a FAIL. Every CDP call has 15 s: a hung page or a
-// closed socket FAILS the click it was on, a new tab is opened and the walk goes on (three in a row end the scope);
-// a browser dialog is dismissed and counted as the click's effect.
+// click and 'clicks: <n>; <m> FAIL; <g> GONE; <k> plain' last; exit 1 on a FAIL or a VOID scope. Every CDP call has
+// 15 s: a hung page or a closed socket FAILS the click it was on, a new tab is opened and the walk goes on (three in a
+// row end the scope); a browser dialog is dismissed and counted as the click's effect.
+// The demo keeps writing samples while the walk runs, so a text read at the scope's start can be gone when its turn
+// comes: it is looked for again in a fresh read by its PLACE (the part and column it stood in: a grid's column, a
+// strip reason's name, a counts-line part, an element's place on an instance page) and what that place shows now is
+// clicked. Only a place that is gone itself is 'GONE (the demo's state changed)' - counted apart from FAIL, each one
+// printed; a scope with over 2 % of its clicks GONE is VOID and fails the walk. A FAIL stays a click that did nothing.
 const [port, U, outDir] = process.argv.slice(2);
 const fs = await import('node:fs');
 fs.mkdirSync(outDir, { recursive: true });
@@ -202,12 +207,17 @@ const enumerate = full => ev(`(() => { ${PARTS}
         : e.closest('table.props td, dd') ? 'value'
         : e.closest('[data-nolink]') ? 'nolink'
         : e.closest('tbody td') && e.closest('tr')?.querySelector('a[href], button:not(:disabled)') ? 'cell' : 'text';
+      // its place, for a text that changed before its turn: the element's path and which of its texts it is; in a
+      // grid's body the grid, the column and the row (the place is the grid's column: any row of it will do)
+      const td = e.closest('tbody td'), tbl = td?.closest('table');
+      const cellAt = td && tbl ? { grid: pathOf(tbl).join('.'), gcol: td.cellIndex, grow: td.parentElement.sectionRowIndex, sub: pathOf(e).slice(pathOf(td).length).join('.') } : {};
+      let nth = 0;
       for (const n of e.childNodes) {
         if (n.nodeType !== 3) continue;
         const own = n.textContent.replace(/\\s+/g, ' ').trim();
         if (!own || /^[·,:;.()\\/|+-]+$/.test(own)) continue;
         const kind = base === 'text' && /:$/.test(own) ? 'label' : base;
-        out.push({ part: 'inst', path: pathOf(e), label: (e.closest('[class]')?.className || e.tagName).toString().split(' ')[0], text: own, kind });
+        out.push({ part: 'inst', path: pathOf(e), nth: nth++, ...cellAt, label: (e.closest('[class]')?.className || e.tagName).toString().split(' ')[0], text: own, kind });
       }
     }
     return out;
@@ -291,10 +301,25 @@ const snap = () => ev(`(() => {
 const mouse = async (type, x, y) => cmd('Input.dispatchMouseEvent', { type, x, y, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: type === 'mouseMoved' ? 0 : 1 });
 
 const results = [];
-let fails = 0, plain = 0;
-const line = r => `${r.verdict.startsWith('FAIL') ? 'FAIL' : r.verdict.startsWith('plain') ? 'plain' : 'ok  '} | ${r.scope} | ${r.part} | ${r.label} | ${String(r.text).slice(0, 40)}${r.row ? ' @ ' + r.row : ''} | ${r.effect}`;
+let fails = 0, plain = 0, gone = 0;
+const voids = [];
+const line = r => `${r.verdict.startsWith('FAIL') ? 'FAIL' : r.verdict.startsWith('GONE') ? 'GONE' : r.verdict.startsWith('plain') ? 'plain' : 'ok  '} | ${r.scope} | ${r.part} | ${r.label} | ${String(r.text).slice(0, 40)}${r.row ? ' @ ' + r.row : ''} | ${r.effect}${r.was ? ` (its place read '${String(r.was).slice(0, 40)}' at the scope's start)` : ''}`;
+// a text's place (the walk's header): what a fresh read is searched by when the text itself is gone
+const stripName = s => String(s).replace(/\s+[0-9(].*$/, '').replace(/\s+(critical|warning)$/i, '');
+const placeOf = t => t.part === 'inst' ? (t.grid != null ? `grid ${t.grid} column ${t.gcol} ${t.sub}#${t.nth}` : `element ${t.path.join('.')}#${t.nth}`)
+  : t.part === 'strip' ? `strip reason '${t.label === '+n more' ? t.label : stripName(t.text)}'`
+  : t.part === 'counts' ? `counts '${t.label}'` : `${t.part} '${t.row ?? ''}' column ${t.col}`;
+// the target at t's place in a fresh read: the same row where the place keeps one (a grid's nearest row at or above
+// it, the strip's own instance line first), or none - the place is gone
+const samePlace = (fresh, t) => {
+  const at = fresh.filter(x => x.part === t.part && placeOf(x) === placeOf(t));
+  if (t.part === 'inst' && t.grid != null) return at.filter(x => x.grow <= t.grow).sort((a, b) => b.grow - a.grow)[0] ?? at.sort((a, b) => a.grow - b.grow)[0];
+  if (t.part === 'strip') return at.find(x => x.row === t.row) ?? at[0];
+  return at[0];
+};
+const VANISHED = new Set(['not on the page after the reload', 'no text of it found']);
 const fail = r => { results.push(r); fails++; console.log(line(r)); };
-const save = () => fs.writeFileSync(`${outDir}/summary-clicks.json`, JSON.stringify({ scopes, results, dialogs }, null, 1));
+const save = () => fs.writeFileSync(`${outDir}/summary-clicks.json`, JSON.stringify({ scopes, results, dialogs, voids }, null, 1));
 const plainKinds = { heading: 'a heading: it names what is beside it', label: 'a label: it names what is beside it',
   value: "a properties table's value", nolink: "marked as text (DBA Dash's text cell, or this page's own name)",
   off: 'a control that is off and says why', cell: "a grid cell whose row has its link (DBA Dash's grids: text beside the row's link)" };
@@ -302,7 +327,7 @@ const plainKinds = { heading: 'a heading: it names what is beside it', label: 'a
 const clickOne = async (scope, t) => {
   const p = await locate(t);
   const r = { scope, ...t, engine: t.part === 'instcell' ? engineByName.get(t.row) ?? '' : '' };
-  if (p.why) { r.effect = p.why; r.verdict = 'FAIL ' + p.why; return { r, dirty: false }; }
+  if (p.why) { r.effect = p.why; r.verdict = 'FAIL ' + p.why; return { r, dirty: false, vanished: VANISHED.has(p.why) }; }
   await mouse('mouseMoved', p.x, p.y); await sleep(150);
   const before = await snap(), d0 = dialogs.length;
   await mouse('mousePressed', p.x, p.y); await mouse('mouseReleased', p.x, p.y);
@@ -328,6 +353,19 @@ const clickOne = async (scope, t) => {
   await mouse('mouseMoved', 2, 2);
   return { r, dirty };
 };
+// one target under a demo that keeps writing: a text gone at its turn is looked for by its place in a fresh read (three
+// reads at most) and what the place shows now is clicked; a place that is gone is GONE, never a FAIL
+const clickLive = async (scope, t) => {
+  let o = await clickOne(scope, t);
+  for (let k = 0; o.vanished && k < 2; k++) {
+    const now = samePlace(await enumerate(true), t);
+    if (!now) { o.r.effect = `${o.r.effect}; its place is gone too (${placeOf(t)})`; o.r.verdict = "GONE (the demo's state changed)"; return { ...o, vanished: false }; }
+    o = await clickOne(scope, now);
+    if (String(now.text) !== String(t.text)) o.r.was = t.text;
+  }
+  if (o.vanished) { o.r.effect = `${o.r.effect}; its place (${placeOf(t)}) changed at each of three reads`; o.r.verdict = "GONE (the demo's state changed)"; }
+  return o;
+};
 // after a hang: a new tab, the scope loaded again
 const recover = async hash => { await freshTab(); await reset(hash, true); };
 for (const [scope, hash] of scopes) {
@@ -346,9 +384,9 @@ for (const [scope, hash] of scopes) {
   for (const t of targets) {
     try {
       if (dirty) { await reset(hash); dirty = false; }
-      const o = await clickOne(scope, t);
+      const o = await clickLive(scope, t);
       results.push(o.r); console.log(line(o.r));
-      if (o.r.verdict.startsWith('FAIL')) fails++; else if (o.r.verdict.startsWith('plain')) plain++;
+      if (o.r.verdict.startsWith('FAIL')) fails++; else if (o.r.verdict.startsWith('GONE')) gone++; else if (o.r.verdict.startsWith('plain')) plain++;
       dirty = o.dirty; hangs = 0;
     } catch (e) {
       fail({ scope, ...t, effect: e.message, verdict: 'FAIL ' + e.message });
@@ -373,6 +411,9 @@ for (const [scope, hash] of scopes) {
     console.log(`note | ${scope} | no picture: ${e.message}`);
     await freshTab().catch(() => null);
   }
+  // a scope that lost over 2 % of its clicks to the demo's changes proves nothing: VOID, and the walk fails on it
+  const mine = results.filter(r => r.scope === scope), lost = mine.filter(r => r.verdict.startsWith('GONE')).length;
+  if (lost > mine.length * 0.02) { voids.push(scope); console.log(`VOID | ${scope} | ${lost} of ${mine.length} clicks GONE: over 2 %, the scope proves nothing`); }
   save();
 }
 save();
@@ -384,6 +425,6 @@ for (const r of results.filter(x => x.verdict.startsWith('FAIL'))) {
 }
 console.log('== dead, by part and column:');
 for (const [k, n] of [...byCol.entries()].sort()) console.log(`DEAD ${k}: ${n}`);
-console.log(`clicks: ${results.length}; ${fails} FAIL; ${plain} plain`);
+console.log(`clicks: ${results.length}; ${fails} FAIL; ${gone} GONE; ${plain} plain${voids.length ? `; VOID: ${voids.join(', ')}` : ''}`);
 try { ws?.close(); } catch { /* gone */ }
-process.exit(fails ? 1 : 0);
+process.exit(fails || voids.length ? 1 : 0);
