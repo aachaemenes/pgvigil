@@ -64,7 +64,8 @@ export interface Col {
 // rows in the order the screen shows them now, their raw values unformatted, so a number exports as a number.
 // rows: the grid's rows as filtered and sorted; allRows: each of them as a table row, the ones not drawn yet (past the
 // grid's page) built off the screen, so the export and Copy all take every row without drawing them
-export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[] }
+// text: a row's cell as the screen words it (the grid menu's statistics read the rows without building them)
+export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[]; text?(r: Record<string, unknown>, c: Col): string }
 const models = new WeakMap<HTMLTableElement, GridModel>();
 export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
 
@@ -316,7 +317,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     return tr;
   }
   models.set(table, { cols, rows: () => shown,
-    allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[] });
+    allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[],
+    text: (r, c) => words(fmtCell(c, r)) });
   draw();
   const wrap = el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
   const tsv = (trs: Element[]) => trs.filter(tr => !tr.classList.contains('trend-row')).map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
