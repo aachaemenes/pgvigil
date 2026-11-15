@@ -16,10 +16,11 @@
 // 15 s: a hung page or a closed socket FAILS the click it was on, a new tab is opened and the walk goes on (three in a
 // row end the scope); a browser dialog is dismissed and counted as the click's effect.
 // The demo keeps writing samples while the walk runs, so a text read at the scope's start can be gone when its turn
-// comes: it is looked for again in a fresh read by its PLACE (the part and column it stood in: a grid's column, a
-// strip reason's name, a counts-line part, an element's place on an instance page) and what that place shows now is
-// clicked. Only a place that is gone itself is 'GONE (the demo's state changed)' - counted apart from FAIL, each one
-// printed; a scope with over 2 % of its clicks GONE is VOID and fails the walk. A FAIL stays a click that did nothing.
+// comes: it is looked for again in a fresh read by its PLACE (the part and column it stood in: a grid's column, a strip
+// reason's name on its own instance line - the strip's 'Show all <n>' and the line's '+<n> more' pressed first -, a
+// counts-line part, an element's place on an instance page) and what that place shows now is clicked. Only a place
+// that is gone itself is 'GONE (the demo's state changed)' - counted apart from FAIL, each one printed; a scope with
+// over 2 % of its clicks GONE is VOID and fails the walk. A FAIL stays a click that did nothing.
 const [port, U, outDir] = process.argv.slice(2);
 const fs = await import('node:fs');
 fs.mkdirSync(outDir, { recursive: true });
@@ -307,16 +308,24 @@ const line = r => `${r.verdict.startsWith('FAIL') ? 'FAIL' : r.verdict.startsWit
 // a text's place (the walk's header): what a fresh read is searched by when the text itself is gone
 const stripName = s => String(s).replace(/\s+[0-9(].*$/, '').replace(/\s+(critical|warning)$/i, '');
 const placeOf = t => t.part === 'inst' ? (t.grid != null ? `grid ${t.grid} column ${t.gcol} ${t.sub}#${t.nth}` : `element ${t.path.join('.')}#${t.nth}`)
-  : t.part === 'strip' ? `strip reason '${t.label === '+n more' ? t.label : stripName(t.text)}'`
+  : t.part === 'strip' ? `strip '${t.row}' reason '${t.label === '+n more' ? t.label : stripName(t.text)}'`
   : t.part === 'counts' ? `counts '${t.label}'` : `${t.part} '${t.row ?? ''}' column ${t.col}`;
-// the target at t's place in a fresh read: the same row where the place keeps one (a grid's nearest row at or above
-// it, the strip's own instance line first), or none - the place is gone
+// the target at t's place in a fresh read (a grid's column: its nearest row at or above t's, else its first row), or
+// none - the place is gone. A strip reason's place is its own instance line: another line's reason of the same name
+// is another instance's, never clicked in its stead
 const samePlace = (fresh, t) => {
   const at = fresh.filter(x => x.part === t.part && placeOf(x) === placeOf(t));
   if (t.part === 'inst' && t.grid != null) return at.filter(x => x.grow <= t.grow).sort((a, b) => b.grow - a.grow)[0] ?? at.sort((a, b) => a.grow - b.grow)[0];
-  if (t.part === 'strip') return at.find(x => x.row === t.row) ?? at[0];
   return at[0];
 };
+// the strip draws eight lines and four reasons a line: a line that moved past the eighth ('Show all <n>') or a reason
+// past the fourth ('+<n> more') is still on the page, and is shown before its place is called gone
+const showStrip = row => ev(`(() => { ${PARTS}
+  const all = [...document.querySelectorAll('main .attention button')].find(b => /^Show all \\d+$/.test(txt(b)));
+  if (all) all.click();
+  const more = [...(stripRow(${JSON.stringify(row)})?.querySelectorAll('button') ?? [])].find(b => /^\\+\\d+ more$/.test(txt(b)));
+  if (more) more.click();
+  return !!all || !!more; })()`);
 const VANISHED = new Set(['not on the page after the reload', 'no text of it found']);
 const fail = r => { results.push(r); fails++; console.log(line(r)); };
 const save = () => fs.writeFileSync(`${outDir}/summary-clicks.json`, JSON.stringify({ scopes, results, dialogs, voids }, null, 1));
@@ -354,17 +363,20 @@ const clickOne = async (scope, t) => {
   return { r, dirty };
 };
 // one target under a demo that keeps writing: a text gone at its turn is looked for by its place in a fresh read (three
-// reads at most) and what the place shows now is clicked; a place that is gone is GONE, never a FAIL
+// reads, 1.5 s apart) and what the place shows now is clicked; a place in none of them is GONE, never a FAIL
 const clickLive = async (scope, t) => {
-  let o = await clickOne(scope, t);
-  for (let k = 0; o.vanished && k < 2; k++) {
-    const now = samePlace(await enumerate(true), t);
-    if (!now) { o.r.effect = `${o.r.effect}; its place is gone too (${placeOf(t)})`; o.r.verdict = "GONE (the demo's state changed)"; return { ...o, vanished: false }; }
+  let o = await clickOne(scope, t), opened = false;
+  for (let k = 0; o.vanished && k < 3; k++) {
+    if (k) await sleep(1500);   // a part the page was still drawing is there on the next look
+    let now = samePlace(await enumerate(true), t);
+    if (!now && t.part === 'strip' && await showStrip(t.row)) { opened = true; await sleep(300); now = samePlace(await enumerate(true), t); }
+    if (!now) continue;
     o = await clickOne(scope, now);
     if (String(now.text) !== String(t.text)) o.r.was = t.text;
   }
-  if (o.vanished) { o.r.effect = `${o.r.effect}; its place (${placeOf(t)}) changed at each of three reads`; o.r.verdict = "GONE (the demo's state changed)"; }
-  return o;
+  if (o.vanished) { o.r.effect = `${o.r.effect}; its place (${placeOf(t)}) was in none of three fresh reads`; o.r.verdict = "GONE (the demo's state changed)"; }
+  // the strip opened by the search is closed again by the next target's fresh page
+  return { ...o, dirty: o.dirty || opened };
 };
 // after a hang: a new tab, the scope loaded again
 const recover = async hash => { await freshTab(); await reset(hash, true); };
