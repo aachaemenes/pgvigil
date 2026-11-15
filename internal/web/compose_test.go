@@ -86,7 +86,7 @@ func TestComposeBucket(t *testing.T) {
 		want int
 	}{
 		{"auto", time.Hour, 60}, {"auto", 24 * time.Hour, 300}, {"auto", 7 * 24 * time.Hour, 3600},
-		{"auto", 31 * 24 * time.Hour, 6 * 3600}, {"auto", 90 * 24 * time.Hour, 86400}, {"minute", 90 * 24 * time.Hour, 60},
+		{"auto", 31 * 24 * time.Hour, 6 * 3600}, {"auto", 90 * 24 * time.Hour, 6 * 3600}, {"auto", 400 * 24 * time.Hour, 86400}, {"minute", 90 * 24 * time.Hour, 60},
 		{"day", time.Hour, 86400},
 	} {
 		if got := composeBucket(PanelSpec{Bucket: c.b}, c.span); got != c.want {
