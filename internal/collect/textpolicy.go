@@ -405,6 +405,12 @@ func innerValue(s string, p, stop int) (end int, doubled bool, ok bool) {
 		}
 		return stop, true, true
 	}
+	if s[p] == '"' { // a value in double quotes (an OLE DB connection string's Pwd="..."): to its closing quote, quotes included
+		if k := strings.IndexByte(s[p+1:stop], '"'); k >= 0 {
+			return p + 1 + k + 1, false, true
+		}
+		return stop, false, true
+	}
 	j := p
 	for j < stop && !strings.ContainsRune(" \t\r\n;,)\"'", rune(s[j])) {
 		j++

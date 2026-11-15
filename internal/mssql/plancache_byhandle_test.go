@@ -173,7 +173,8 @@ func TestMaskPlanXML(t *testing.T) {
 			`<StmtSimple StatementText="` + stmt + `" StatementId="1" QueryPlanHash="0x01"/></Statements></Batch></BatchSequence></ShowPlanXML>`
 	}
 	for _, c := range []struct{ name, stmt, secret string }{
-		{"sqlcmd -P at the end of a statement", `UPDATE t SET a = a -Pct`, ""},
+		// a -P outside a sqlcmd, bcp, osql or isql command line is no password (415's review: 'a -Pct' is arithmetic)
+		{"sqlcmd -P at the end of a statement", `EXEC xp_cmdshell &apos;sqlcmd -S . -U sa -Ps3cretF`, "s3cretF"},
 		{"net use in xp_cmdshell", `EXEC xp_cmdshell &apos;net use \\h\s pass1&apos;`, "pass1"},
 		{"Pwd in double quotes in a connection string", `SELECT * FROM OPENROWSET(&apos;SQLNCLI&apos;, &apos;Server=x;Uid=u;Pwd=&quot;s3cretD&quot;;&apos;, &apos;SELECT 1&apos;)`, "s3cretD"},
 		{"a CR LF and a password", `CREATE LOGIN x WITH PASSWORD = &apos;s3cretE&apos;&#xD;&#xA;SELECT 1 &lt; 2`, "s3cretE"},

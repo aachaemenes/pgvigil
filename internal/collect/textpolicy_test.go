@@ -298,6 +298,9 @@ func TestMaskCredentials(t *testing.T) {
 		// the 415 review, finding 3: a value in T-SQL's doubled quotes inside a literal is one value
 		{"doubled SQLCMDPASSWORD", "EXEC xp_cmdshell 'set SQLCMDPASSWORD=''od3 secret'' && sqlcmd -S .'", "od3",
 			"EXEC xp_cmdshell 'set SQLCMDPASSWORD=''<masked>'' && sqlcmd -S .'"},
+		// the join with 406 (its TestMaskPlanXML): a value in double quotes inside a literal, an OLE DB connection string's
+		{"double-quoted PWD", "SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x;Uid=u;Pwd=\"dq1secret\";', 'SELECT 1')", "dq1secret",
+			"SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x;Uid=u;Pwd=<masked>;', 'SELECT 1')"},
 		{"doubled PWD", "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''od1;secret'';', 'SELECT 1')", "od1",
 			"SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''<masked>'';', 'SELECT 1')"},
 		{"doubled provstr", "EXEC sp_addlinkedserver @server = N'x', @provstr = N'Server=y;Password=''od2 secret'''", "od2",
