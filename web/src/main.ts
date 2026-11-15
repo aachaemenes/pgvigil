@@ -40,7 +40,7 @@ import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { closeRange, rangePicker } from './rangepicker';
 import { fmt, fmtClock } from './tz';
-import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootOnly, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
+import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
 import { runningFleet } from './running_fleet';
@@ -434,7 +434,7 @@ async function render(force = false) {
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
-  // under a tag a folder's strip is the tag folder's own (TAGTREE; router.ts tagPages): no root-only page, no page of an
+  // under a tag a folder's strip is the tag folder's own (TAGTREE / TAGALL; router.ts tagPages): every root page but one of an
   // engine the tag's instances lack - the page shown keeps its tab (an old link still opens it)
   const tagFleet = ctx.tag && !ctx.instance && group.key !== 'main' ? await fleet().catch(() => null) : null;
   const inTagStrip = tagFleet ? new Set(tagPages(group, new Set(tagFleet.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')))) : null;
@@ -443,8 +443,8 @@ async function render(force = false) {
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(
     ...(group.name ? [el('a', { href: href(ctx, { tab: 'summary' }), class: 'tab-back' }, 'Summary'), el('span', { class: 'tab-group', 'aria-hidden': 'true' }, '/ ' + group.name + ':')] : []),
-    // a root-only page (router.ts rootOnly: one that ignores a tag) is linked without the tag
-    ...strip.map(k => el('a', { href: href(ctx, rootOnly.has(k) ? { tab: k, tag: undefined } : { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
+    // every page keeps the tag (TAGALL; a fleet-wide one says so on the page: router.ts fleetWide)
+    ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
   // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
   $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));
 

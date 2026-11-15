@@ -86,14 +86,13 @@ export const rootGroups: TabGroup[] = [
   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
 ];
-// rootOnly: the fleet pages a tag folder does not carry (TAGTREE), DBA Dash's rule for its group Reports - what returns
-// the same result in every folder stays at the root (CustomReports.cs L19-23), its Recycle Bin root only (Main.cs L210):
-// the Doors and Admin groups whole, and these pages of the other groups. The tree leaves them out of a tag folder's own
-// folders and the strip out of a folder's strip under ?tag=; a link to one still opens it.
-export const rootOnlyGroups = new Set(['doors', 'admin']);
-// Alert rules too: the rules are the repository's and its state rows are not narrowed by a tag (the TAGTREE review A #5),
-// so a tag folder's name on it lands on the folder's Summary and the main strip links it without the tag
-export const rootOnly = new Set(['diff', 'pgthresholds', 'retention', 'rp_recycle', 'customreports', 'community', 'reportmail', 'alertrules']);
+// TAGALL (Allen 11-15 04:55: 'It should have all the stuff the main pgvigil all instances have under prod or dev tag
+// too'): a tag folder carries EVERY page of the root, the Doors and Admin folders too - DBA Dash keeps its custom reports,
+// community tools and Recycle Bin at the root only (CustomReports.cs L19-23, Main.cs L210), pgvigil does not. Each page
+// opened under ?tag= narrows what it lists or picks to the tag's instances; fleetWide names the pages that hold one
+// setting or one list for the whole repository, which say so in words under a tag (fleetWideNote) and are otherwise the
+// root's page.
+export const fleetWide = new Set(['retention', 'admin', 'alertrules', 'reportmail', 'customreports']);
 // pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
 // page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
 // 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host
@@ -108,8 +107,7 @@ export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
 };
 // tagPages: a group's pages under a tag folder whose instances are of the engines given ('sqlserver', 'postgres')
 export function tagPages(g: TabGroup, engines: Set<string>): string[] {
-  if (rootOnlyGroups.has(g.key)) return [];
-  return g.tabs.filter(t => !rootOnly.has(t) && (!pageEngine[t] || engines.has(pageEngine[t])));
+  return g.tabs.filter(t => !pageEngine[t] || engines.has(pageEngine[t]));
 }
 export const instanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'waiting', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
