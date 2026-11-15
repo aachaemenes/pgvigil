@@ -331,7 +331,10 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 			if err == nil || attempt == repo.ImportDeadlockTries || !repo.IsDeadlock(err) || ctx.Err() != nil {
 				break
 			}
-			time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("import_%s at %s: %w", b.Collection, b.At.Format(time.RFC3339), err)

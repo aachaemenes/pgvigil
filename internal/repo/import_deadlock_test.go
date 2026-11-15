@@ -1,9 +1,12 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +36,9 @@ func TestImportRetriesADeadlockOnAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
+	// the retry must have run: a run with no deadlock (no WARN) fails instead of passing
+	var logged bytes.Buffer
+	r.SetLog(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	tag := time.Now().UnixNano() % 1000000000
 	// Two months far ahead, so neither partition exists before the test: m0 is made first (the 'existing' month),
@@ -99,8 +105,8 @@ func TestImportRetriesADeadlockOnAStore(t *testing.T) {
 	go func() { done <- r.Import(ctx, i1, "activity", m1, row(2)) }()
 	waiting := false
 	for i := 0; i < 200 && !waiting; i++ {
-		if err := pool.QueryRow(ctx, `SELECT count(*) > 0 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-		  WHERE NOT l.granted AND a.pid <> $1 AND a.query LIKE '%import_activity%'`, pid1).Scan(&waiting); err != nil {
+		// exactly the wait that matters: a backend blocked by tx1 (its query_text row), never any other lock waiter
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid)))`, pid1).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if !waiting {
@@ -125,6 +131,9 @@ func TestImportRetriesADeadlockOnAStore(t *testing.T) {
 		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("Repo.Import did not return within 60 s")
+	}
+	if got := strings.Count(logged.String(), "taking it again"); got != 1 || !strings.Contains(logged.String(), "attempt=1") {
+		t.Fatalf("the retry's WARN lines: %d, log %q (want exactly one, attempt=1: a pass without a deadlock proves nothing)", got, logged.String())
 	}
 	var n0, n1 int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE instance_id = $1), count(*) FILTER (WHERE instance_id = $2)
