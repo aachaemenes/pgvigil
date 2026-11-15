@@ -41,3 +41,32 @@ func TestProbeMigration(t *testing.T) {
 		}
 	}
 }
+
+// TestProbeFindingsShape (B24h-1c part 2; the fold's #2, #3, #13, B24h-c): the threshold keys (warning only, settable
+// empty), the findings and the fold as B24h's own views, and every arm of a joined object in the join-lines file
+func TestProbeFindingsShape(t *testing.T) {
+	b, err := os.ReadFile("sql/0254_probe.sql")
+	if err != nil {
+		t.Fatalf("0254_probe.sql: %v", err)
+	}
+	for _, re := range []string{
+		`\('round_trip_time', '(?:[^']|'')+', 'seconds', 'over', 0\.040, NULL,`,
+		`\('ping_time', '(?:[^']|'')+', 'seconds', 'over', 0\.010, NULL,`,
+		`(?s)CREATE OR REPLACE VIEW pgvigil\.collector_probe_findings AS.*'query round trip slow'.*'ping slow'.*'host not answering ping'`,
+		`(?s)CREATE OR REPLACE VIEW pgvigil\.collector_probe_fold AS.*'network slow from this collector'`,
+	} {
+		if !regexp.MustCompile(re).Match(b) {
+			t.Errorf("0254 does not match %s", re)
+		}
+	}
+	j, err := os.ReadFile("../../scripts/b24h-join-lines.sql")
+	if err != nil {
+		t.Fatalf("scripts/b24h-join-lines.sql: %v", err)
+	}
+	for _, want := range []string{"pgvigil.collector_probe_findings", "'query round trip slow', 'ping slow', 'host not answering ping'",
+		"pgvigil.collector_probe_held", "'round_trip_time', 'ping_time'"} {
+		if !regexp.MustCompile(regexp.QuoteMeta(want)).Match(j) {
+			t.Errorf("the join lines lack %s", want)
+		}
+	}
+}
