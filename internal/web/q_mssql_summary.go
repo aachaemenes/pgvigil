@@ -251,7 +251,8 @@ const sqlSummaryCollect = `
 WITH m AS (
   -- the collector's errors acknowledged on the error log page (0198): the highest log_id of the instance's live
   -- 'collector errors' rows; a seen_state not of the form 'log_id:<n>' is never read (a CASE, so no cast can fail)
-  SELECT a.instance_id, max(CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END) AS mark
+  SELECT a.instance_id, max(CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END) AS mark,
+         max(a.created_at) FILTER (WHERE a.seen_state ~ '^log_id:[0-9]{1,18}$') AS acked_at
     FROM pgvigil.acks a
    WHERE a.kind = 'ack' AND a.check_key = 'collector errors' AND a.instance_id IS NOT NULL
      AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, now())
@@ -261,8 +262,11 @@ WITH m AS (
          coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv,
          -- a failing collection whose failed run is at or under the mark is acknowledged (DBA Dash's Summary_Upd L123):
          -- the run's row found by instance, collection and snapshot (log_collection writes both tables from one time)
-         coalesce(c.status = 'error' AND (SELECT max(l.log_id) FROM pgvigil.collection_log l
-                    WHERE l.instance_id = c.instance_id AND l.collection = c.collection AND l.snapshot_at = c.snapshot_at) <= m.mark, false) AS acked
+         -- (a failed run whose row was purged, 30 days, is acknowledged when it ran before the acknowledgement)
+         coalesce(c.status = 'error' AND m.mark IS NOT NULL
+                  AND coalesce((SELECT max(l.log_id) FROM pgvigil.collection_log l
+                                 WHERE l.instance_id = c.instance_id AND l.collection = c.collection AND l.snapshot_at = c.snapshot_at) <= m.mark,
+                               c.snapshot_at < m.acked_at), false) AS acked
     FROM pgvigil.collection_dates c
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
     LEFT JOIN m ON m.instance_id = c.instance_id
