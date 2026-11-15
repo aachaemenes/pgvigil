@@ -25,6 +25,9 @@ import (
 //     'host not answering ping' (missing 11 minutes, over clear_after) are not 'resolved': the probes stopped with it;
 //   - BJf4 (t): 3 of a collector's 10 hosts cross a slow ping together (no fold yet: 3 of 10) - their new host rows wait;
 //   - BJf4 (t+1): 6 of 10 slow (3 slow before, 3 crossing) - the fold fires and the host rows are held under it.
+//   - BJf9a (the review of F9 #1): the same fold while ONE other server of the collector is not answering (a 'server not
+//     answering' parent: the collector still probes every other host) - the fold still fires, and a recovered host's open
+//     'ping slow' (missing 11 minutes) is 'resolved'; only a collector not seen stops its probes.
 func TestProbeAlertDueDraftOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -143,6 +146,34 @@ func TestProbeAlertDueDraftOnAStore(t *testing.T) {
 		hosts := fold(c, col, 0, 3)
 		if got := c.due(append(hosts, col)...); got != "" {
 			c.t.Errorf("3 of 10 hosts crossing a slow ping together: %q, want nothing (their host rows wait for the fold)", got)
+		}
+	})
+	inTx("BJf9a", func(c *draftCase) {
+		col := fmt.Sprintf("bf9a-%d", sfx)
+		hosts := fold(c, col, 3, 3)
+		// db7: one other server of the collector, not answering for 4 minutes (as BJb4's), so 'server not answering' stands
+		db7 := fmt.Sprintf("db7-%d", sfx)
+		for k := 1; k <= 3; k++ {
+			id := c.instance(fmt.Sprintf("bf9a-db7-%d-%d", k, sfx))
+			for m := 10; m >= 5; m-- {
+				c.load(col, id, m, 1, 0, db7)
+			}
+			for m := 4; m >= 1; m-- {
+				c.load(col, id, m, 0, 1, db7)
+			}
+			c.exec(`INSERT INTO pgvigil.collector_spells (host, instance_id, kind, since, last)
+				VALUES ($1, $2, 'down', date_trunc('minute', now()) - interval '4 minutes', date_trunc('minute', now()) - interval '1 minute')`, col, id)
+		}
+		// the recovered host: the tenth (never slow in this minute), its 'ping slow' row open and missing 11 minutes
+		well := hosts[9]
+		c.probeHost(col, well, fmt.Sprintf("10.5.%d.10:5432", sfx%200))
+		c.openAlert("ping slow", well)
+		var why string
+		if err := c.tx.QueryRow(c.ctx, `SELECT string_agg(why, ',') FROM pgvigil.collector_parent WHERE host = $1`, col).Scan(&why); err != nil || why != "server not answering" {
+			c.t.Fatalf("the control: the parents of %s are %q (%v), want 'server not answering' alone", col, why, err)
+		}
+		if got, want := c.due(append(hosts, col)...), "firing network slow from this collector "+col+"; resolved ping slow "+well; got != want {
+			c.t.Errorf("the fold beside one other server not answering: %q, want %q (that parent stops no probe)", got, want)
 		}
 	})
 	inTx("BJf4 t+1", func(c *draftCase) {

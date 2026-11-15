@@ -38,8 +38,13 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT instance_id FROM pgvigil.collector_probe_forming
   ), probe_forming_hosts AS MATERIALIZED (   -- B24h line 3: as collector_probe_forming_hosts, from the one read
     SELECT host FROM probe_state WHERE host_crossed AND crossed_hosts >= 3
-  ), probe_parents AS MATERIALIZED (   -- B24h line 3: the collector hosts whose 'collector or network' stands
-    SELECT host FROM pgvigil.collector_parent
+  ), probe_parents AS MATERIALIZED (   -- B24h line 3: the collector hosts whose 'collector or network' stands for the
+    -- collector itself - not seen, or its instances failing together (the review of F9 #1: a 'server not answering'
+    -- parent is one server's; the collector still probes the rest, and its fold is news)
+    SELECT host FROM pgvigil.collector_parent WHERE why IN ('collector not seen', 'instances failing together')
+  ), probe_stopped AS MATERIALIZED (   -- B24h line 3: the collector hosts not seen - their probes stopped with them (the
+    -- resolve guards: a host was not seen to recover; the review of F9 #1)
+    SELECT host FROM pgvigil.collector_parent WHERE why = 'collector not seen'
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
@@ -48,10 +53,13 @@ LANGUAGE sql STABLE SET jit = off AS $$
       FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
            AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
                 repo_wide boolean)
+  ), af AS MATERIALIZED (   -- B24h line 3 (the review of F9 #3): alert_findings read ONCE a pass - line 1 puts the
+    -- judged rows in it, and 0190's form read it twice (sc, and s's EXISTS once alerts are open)
+    SELECT * FROM pgvigil.alert_findings
   ), sc AS (   -- every finding in a channel's scope, any severity (a repository-wide one: every channel but a route's,
                -- task 310 - an application contact's route says repo_wide false)
     SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, f.*
-      FROM ch JOIN pgvigil.alert_findings f
+      FROM ch JOIN af f   -- B24h line 3: the one read (was pgvigil.alert_findings)
         ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide)
      ORDER BY ch.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC
   ), m AS (    -- the ones at or above its floor that nothing holds
@@ -78,7 +86,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
   ), s AS (
     SELECT st.*, ch.repeat_secs, ch.recovery, ch.clear_after_secs,
            (i.is_active IS TRUE OR st.source = 'pgvigil repository') AS instance_active,
-           EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = st.finding_key) AS present
+           -- B24h line 3: on the one read, hashed (was EXISTS on pgvigil.alert_findings per open alert)
+           st.finding_key IN (SELECT af.finding_key FROM af WHERE af.finding_key IS NOT NULL) AS present
       FROM pgvigil.alert_state st JOIN ch ON ch.name = st.channel
       LEFT JOIN pgvigil.instances i ON i.instance_id = st.instance_id
      WHERE st.cleared_at IS NULL
@@ -132,10 +141,10 @@ LANGUAGE sql STABLE SET jit = off AS $$
      -- B24h line 3: B24h's fold, and a host's rows of a collector whose parent stands, are not 'resolved' (part b #2,
      -- the review of the fold #3: the probes stopped with the collector, the host was not seen to recover)
      AND NOT (s.source = 'pgvigil repository' AND s.setting = 'network slow from this collector'
-              AND s.value IN (SELECT host FROM probe_parents))
+              AND s.value IN (SELECT host FROM probe_stopped))
      AND NOT (s.source = 'pgvigil repository' AND s.setting IN ('ping slow', 'host not answering ping')
               AND s.value IN (SELECT ph.host FROM pgvigil.collector_probe_host ph JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                               WHERE h.host IN (SELECT host FROM probe_parents)))
+                               WHERE h.host IN (SELECT host FROM probe_stopped)))
      AND (NOT s.instance_active OR s.present
           OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)
               AND s.source = 'pgvigil repository')

@@ -18,15 +18,18 @@
 --      term an uncorrelated IN, hashed once): probe_state (collector_probe_state: the judged rows and the fold in ONE
 --      read) and, from it, probe_held, probe_held_hosts (with the hosts of instances under 'held'), probe_under_slow
 --      (judged from a collector whose slow-connect host fold stands: slow_folds, kind 'host', value = the collector
---      host), probe_forming_hosts; probe_forming (the round trips); probe_parents (collector_parent's hosts);
+--      host), probe_forming_hosts; probe_forming (the round trips); probe_parents (collector_parent's hosts whose why is
+--      the collector's own: 'collector not seen', 'instances failing together') and probe_stopped ('collector not seen'
+--      alone: the resolve guards) - the review of F9 #1; af (alert_findings read once a pass, which sc and s's 'present'
+--      read: line 1 puts the judged rows in it - the review of F9 #3);
 --    - m: an instance's probe finding held while probe_held names it or it is under slow-connect's host fold; a host's
 --      row ('ping slow', 'host not answering ping') while probe_held_hosts names the host; B24h's
---      fold while its collector's parent (collector_parent) or slow-connect's host fold stands (part b #2 / #8);
+--      fold while its collector's own parent (probe_parents) or slow-connect's host fold stands (part b #2 / #8);
 --    - a NEW 'query round trip slow' waits while probe_forming names its instance, a NEW host 'ping slow' row while
 --      probe_forming_hosts names its host (part b #5, the review of the fold #4; a staggered crossing is sent first, as
 --      slow-connect's is);
---    - the resolve arm: B24h's fold, and a host's rows of a collector whose parent stands, are not 'resolved' (part b #2,
---      the review of the fold #3).
+--    - the resolve arm: B24h's fold, and a host's rows of a collector not seen (probe_stopped), are not 'resolved' (part b
+--      #2, the review of the fold #3, of F9 #1).
 
 -- 4. import_pg_threshold (0190): a SQL Server instance's own level takes B24h's keys too
 --    AND (i.engine = 'postgres' OR (v_key IN ('uptime', 'connect_time', 'round_trip_time', 'ping_time') AND v_level = 'instance'))
