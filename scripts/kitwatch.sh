@@ -214,11 +214,16 @@ PY
 # kitof <tool>: its kit's name; kitver <kit>: the version and date read from an installed procedure's definition
 kitof() { case $1 in sp_Blitz*) echo frk ;; sp_WhoIsActive*) echo wia ;; *) echo dd ;; esac; }
 declare -A KV KD KSHA KURL
-kitver() {   # kitver <key> <procedure>
+kitver() {   # kitver <key> <procedure> <pass label>
   ks_definition "$2" > "$WORK/def.$1.sql"
   local v
   v=$("$KS" version "$WORK/def.$1.sql" | cut -f2-)
   KV[$1]=${v%%$'\t'*}; KD[$1]=${v##*$'\t'}
+  # the pinned kits' versions are known: one not read there is the read's fault, never a baseline (in the newest
+  # pass a version that does not parse is a report line)
+  if [[ $3 == pinned && ${KV[$1]} == - ]]; then
+    envfail "the pinned $1 version was not read from $2's definition ($(wc -c < "$WORK/def.$1.sql") characters read)"
+  fi
 }
 
 # pass <label> <files dir>: install the three kits (the second pass drops the first's), prepare the state, run every
@@ -239,7 +244,7 @@ pass() {
   KSHA[frk]=$(sha256sum < "$src/frk.sql" | cut -c1-64); KSHA[dd]=$(sha256sum < "$src/dd.sql" | cut -c1-64); KSHA[wia]=$(sha256sum < "$src/wia.sql" | cut -c1-64)
   if [[ $label == pinned ]]; then KURL[frk]="$FRK_REPO@$FRK_PIN"; KURL[dd]="$DD_REPO@$DD_PIN"; KURL[wia]="$WIA_REPO@$WIA_PIN"
   else KURL[frk]="$FRK_REPO@$FRK_NEW"; KURL[dd]="$DD_REPO@$DD_NEW"; KURL[wia]="$WIA_REPO@$WIA_NEW"; fi
-  kitver frk sp_Blitz; kitver dd sp_PressureDetector; kitver wia sp_WhoIsActive
+  kitver frk sp_Blitz "$label"; kitver dd sp_PressureDetector "$label"; kitver wia sp_WhoIsActive "$label"
   # the page's advice call: its outcome is a tool line of its own (F3)
   local advice=done
   ks_keeper || advice="failed: $KS_WHY"
@@ -270,6 +275,14 @@ pass() {
   ks_chain_release
   runphase after
   q "select coalesce((select status || chr(9) || coalesce(note, '') from pgvigil.collection_log where instance_id = $MSID and collection = 'mssql_requests' order by snapshot_at desc limit 1), 'none' || chr(9))" > "$d/collector.tsv"
+  # no row: the run ended before it could log one (a failed Detect, the instance row, the command itself) - its own
+  # last lines are the note (the run's passwords taken out), and the line goes to the job log either way
+  if [[ $(cut -f1 "$d/collector.tsv") == none ]]; then
+    local why; why=$(tail -n 3 "$d/collector.log" | tr '\n\t' '  ')
+    why=${why//"$RPW"/***}; why=${why//"$MSSQL_SA_PASSWORD"/***}
+    printf 'none\tno collection_log row; collect -once said: %s\n' "${why:-nothing}" > "$d/collector.tsv"
+  fi
+  echo "collector mssql_requests ($label): $(tr '\t' ' ' < "$d/collector.tsv")"
   # the siblings (F3): every other kit procedure revoked from the read login, the tool run with its form's defaults;
   # a tool that then fails is run again with one procedure revoked at a time (those its own definition names)
   local others p sibs

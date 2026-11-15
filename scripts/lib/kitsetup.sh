@@ -73,9 +73,12 @@ ks_drop_kits() {
   sq "IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'keeper_HumanEvents_blocking') DROP EVENT SESSION keeper_HumanEvents_blocking ON SERVER;" >/dev/null
 }
 
-# ks_definition <procedure>: its definition (VIEW DEFINITION's read: nothing is executed), for the version lines
+# ks_definition <procedure>: its definition (VIEW DEFINITION's read: nothing is executed), for the version lines,
+# the decline texts and the sibling names. Not through sq: sqlcmd returns at most -y characters of an nvarchar(max)
+# (256 by default) and sq's -W cannot be combined with -y, so -y 0 (the whole value) here and no -W.
 ks_definition() {
-  sq "SELECT OBJECT_DEFINITION(OBJECT_ID(N'dbo.$1'));" 2>/dev/null || true
+  docker exec -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -h -1 -y 0 \
+    -U sa -d master -Q "SET NOCOUNT ON; SELECT OBJECT_DEFINITION(OBJECT_ID(N'dbo.$1'));" 2>/dev/null || true
 }
 
 # ks_sales: the database, its tables and rows, Query Store, the logins orders_app and stock_job, pgvigil_read
