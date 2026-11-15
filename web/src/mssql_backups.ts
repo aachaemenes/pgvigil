@@ -311,7 +311,7 @@ function checkParts(lp: Record<FileParts, Table | null>, nameCell: (v: unknown) 
     el('p', { class: 'meta' }, 'Pseudo-simple: a database in FULL or BULK_LOGGED recovery whose log cannot be backed up yet (no full or differential backup since '
       + 'the log chain began): it behaves as SIMPLE until one is taken. An AUTO_CLOSE database is not read (the read would open it) unless the instance '
       + 'opts in (reads: auto_close_databases). The newest full, differential and log backup\'s file: whether the file msdb names is still there, as the '
-      + 'SQL Server service account sees it (sys.dm_os_file_exists) - read only where the instance opts in (backups: check_files), disk backups only.'),
+      + 'SQL Server service account sees it (sys.dm_os_file_exists) - read only where the instance opts in (reads: backup_files), disk backups only.'),
     el('div', { id: 'mssql-backups-checks-grid' }, grid(rows, [{ ...checkCols[0], fmt: nameCell }, ...checkCols.slice(1)]))];
 }
 

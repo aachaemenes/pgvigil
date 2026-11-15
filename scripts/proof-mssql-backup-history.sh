@@ -9,7 +9,7 @@
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...);
 #                      the proof makes its own database there and drops it.
 # The binary must carry the five WIRING patches (scripts/inv-301-, -304-, -301c-, -302-, -301b-wiring.patch applied in
-# that order to the tree it is built from): the opt-ins reads.auto_close_databases and backups.check_files, the verify
+# that order to the tree it is built from): the opt-ins reads.auto_close_databases and reads.backup_files, the verify
 # routes, serve's sweep and shutdown, and the Properties row come with them. The proof applies
 # scripts/inv-301b-joined-cursor.sql to its repository (mssql_hadr_cursor as the joined tree holds it).
 # Optional: PGVIGIL_BIN (default bin/pgvigil, built here when missing), PROOF_SKIP_2019=1 (H7 NOT PROVEN),
@@ -34,7 +34,7 @@
 #      each with the uuid of the set it restored; restore_at = msdb's restore_date + 8 hours, and within 10 minutes of
 #      the repository's now(). The monitoring login's msdb user DENIED SELECT on restorehistory: the next read says
 #      'no right' (the cursor row's restore_state), no error, the two restores stay; the DENY revoked after.
-#  H3  (check_files on) pgbh3: a full in /backups/h3/, a differential in /backups/h3d/, a log in /backups/h3/; the log's
+#  H3  (reads.backup_files on) pgbh3: a full in /backups/h3/, a differential in /backups/h3d/, a log in /backups/h3/; the log's
 #      file removed and the folder /backups/h3d removed: cells full 'present', log 'the file is gone', differential 'the
 #      folder /backups/h3d/ is gone'; findings 'backup file missing' for 'pgbh3 (diff)' and 'pgbh3 (log)' (warning).
 #      The instance without the opt-in: every file cell 'not read: the file check is off', no file finding.
@@ -164,8 +164,8 @@ instances:
     dsn: env:BH_MON_DSN
     actions_dsn: env:BH_ACT_DSN
     actions: [verify_backup]
-    backups:
-      check_files: true
+    reads:
+      backup_files: true
     mssql_thresholds:
       new_database_hours: 0
   - name: bh-off
@@ -211,7 +211,7 @@ SQL
   printf '  - name: bh-19\n    engine: sqlserver\n    dsn: env:BH_19_DSN\n    actions_dsn: env:BH_19A_DSN\n    actions: [verify_backup]\n    mssql_thresholds:\n      new_database_hours: 0\n' >> "$CFG"
 fi
 [ -x "$BIN" ] || go build -o "$BIN" ./cmd/pgvigil
-"$BIN" migrate -config "$CFG" >"$WORK/migrate.out" 2>&1 || fail "setup: migrate (a binary without the five WIRING patches refuses reads: and check_files): $(tail -5 "$WORK/migrate.out")"
+"$BIN" migrate -config "$CFG" >"$WORK/migrate.out" 2>&1 || fail "setup: migrate (a binary without the five WIRING patches refuses reads: and verify_backup): $(tail -5 "$WORK/migrate.out")"
 psql "$RDSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/inv-301b-joined-cursor.sql >/dev/null || fail "setup: the joined cursor"
 
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&1 || { cat "$OUT"; return 1; }; }

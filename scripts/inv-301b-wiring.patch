@@ -1,12 +1,12 @@
 diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
-index 56af0bc..c0acf5b 100644
+index 56af0bc..2c23d6a 100644
 --- c/cmd/pgvigil/report.go
 +++ i/cmd/pgvigil/report.go
 @@ -286,6 +286,7 @@ func osRelease() string {
  var keepKeys = map[string]bool{
  	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
  	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
-+	"check_files": true, "auto_close_databases": true, "verify_timeout": true,
++	"backup_files": true, "auto_close_databases": true, "verify_timeout": true,
  	// alerts:
  	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
  	"clear_after": true, "port": true, "tls": true, "format": true,
@@ -15,7 +15,7 @@ index 56af0bc..c0acf5b 100644
  	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
  	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
 -	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true,
-+	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "check_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
++	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "backup_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
  	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
  	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
  	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
@@ -80,7 +80,7 @@ index dfce885..c1a00ff 100644
  
  Every attempt is written to `pgvigil.actions_log` in the repository before the reply is sent: the UI user and their address, the instance, the action, the statement, the target (session id, login, program and host, or the job's name and id), the reason, the outcome and the server's message.
 diff --git c/internal/config/config.go i/internal/config/config.go
-index b32669a..2feb5da 100644
+index b32669a..4e63008 100644
 --- c/internal/config/config.go
 +++ i/internal/config/config.go
 @@ -25,6 +25,8 @@ type Config struct {
@@ -109,24 +109,24 @@ index b32669a..2feb5da 100644
  	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
  	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
  	ExplainAnalyze bool `yaml:"explain_analyze"`
-@@ -351,6 +355,17 @@ type Backups struct {
- 	// show-servers, barman-cloud-backup-list) and read its configuration on the collector's host (task 302's fold F1:
- 	// off by default - it runs programs as the collector's account and opens files that hold a repository's keys).
+@@ -353,6 +357,17 @@ type Backups struct {
  	ReadTools bool `yaml:"read_tools"`
-+	// CheckFiles lets mssql_backup_checks ask SQL Server whether the newest backups' files are still where msdb says
-+	// they were written (task 301b, Database#7: off by default - the SQL Server service account then touches every
-+	// backup share once an hour).
-+	CheckFiles bool `yaml:"check_files"`
-+}
-+
+ }
+ 
 +// Reads holds the opt-ins of reads that have a side effect on the monitored server; nil = all off.
 +type Reads struct {
 +	// AutoCloseDatabases lets mssql_backup_checks read an AUTO_CLOSE database's recovery status (task 301b: the read
 +	// opens a closed AUTO_CLOSE database - off by default, the database is then 'not read').
 +	AutoCloseDatabases bool `yaml:"auto_close_databases"`
- }
- 
++	// BackupFiles lets mssql_backup_checks ask SQL Server whether the newest backups' files are still where msdb says
++	// they were written (task 301b, Database#7: off by default - the SQL Server service account then touches every
++	// backup destination once an hour).
++	BackupFiles bool `yaml:"backup_files"`
++}
++
  // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
+ func (b *Backups) ArchiveWarn() int {
+ 	if b == nil || b.ArchiveWarnMinutes <= 0 {
 @@ -520,9 +535,9 @@ func (c *Config) Validate() error {
  			seen := map[string]bool{}
  			for _, a := range in.Actions {
@@ -140,17 +140,18 @@ index b32669a..2feb5da 100644
  				if seen[a] {
  					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
 diff --git c/internal/config/config_test.go i/internal/config/config_test.go
-index 0651639..9aab624 100644
+index 0651639..9a29975 100644
 --- c/internal/config/config_test.go
 +++ i/internal/config/config_test.go
-@@ -189,7 +189,9 @@ func TestEngine(t *testing.T) {
+@@ -189,7 +189,10 @@ func TestEngine(t *testing.T) {
  	}}
  	ok.Instances = append(ok.Instances,
  		Instance{Name: "ms-act", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "job_start", "job_stop"}},
 -		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"})
 +		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"},
 +		// task 301b: RESTORE VERIFYONLY through the door (off unless named here)
-+		Instance{Name: "ms-verify", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "verify_backup"}})
++		Instance{Name: "ms-verify", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "verify_backup"},
++			Reads: &Reads{AutoCloseDatabases: true, BackupFiles: true}})
  	if err := ok.Validate(); err != nil {
  		t.Fatalf("a valid two-engine config was rejected: %v", err)
  	}
@@ -205,7 +206,7 @@ index 70bb240..a3354ec 100644
  
  // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
 diff --git c/internal/mssql/mssql.go i/internal/mssql/mssql.go
-index d9e4822..88e1784 100644
+index d9e4822..9fcd736 100644
 --- c/internal/mssql/mssql.go
 +++ i/internal/mssql/mssql.go
 @@ -477,6 +477,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
@@ -213,7 +214,7 @@ index d9e4822..88e1784 100644
  		}
  	}
 +	info.ReadAutoCloseDatabases = in.Reads != nil && in.Reads.AutoCloseDatabases
-+	info.CheckBackupFiles = in.Backups != nil && in.Backups.CheckFiles
++	info.CheckBackupFiles = in.Reads != nil && in.Reads.BackupFiles
 +	info.Pool = db
  	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
  	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
