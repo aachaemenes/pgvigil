@@ -356,8 +356,10 @@ WITH w AS (
                              -- already found gone BEFORE the parent keeps nothing: the cut's rows do not revive it
                              -- (B6f11 #2). 'Since it rose' is read with 5 minutes' room (B6f12 #1): the pass that
                              -- first sees the parent stamps the fold's miss with its own time and records the
-                             -- parent's send after it, and 'collector not seen' rises a minute or more after its host
-                             -- stops being judged. Any parent of the host inside the window answers (B6f12 #3)
+                             -- parent's send after it, and 'collector not seen' rises up to a minute after its host
+                             -- stops being judged (a 1-minute span; at a longer span not after it). The price: an
+                             -- alert that had truly ended inside those 5 minutes is kept too (B6f13 #3: the two
+                             -- cannot be told apart). Any parent of the host inside the window answers (B6f12 #3)
   SELECT f.value AS host FROM pgvigil.alert_state f JOIN pgvigil.alert_channels k ON k.name = f.channel AND k.is_configured
    WHERE f.cleared_at IS NULL AND f.source = 'pgvigil repository' AND f.setting = 'collections run long'
      AND (f.missing_since IS NULL
