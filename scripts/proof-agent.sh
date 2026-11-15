@@ -44,8 +44,9 @@
 #     refused 'not your claim'; a login with another login's claim id refused 'not your claim'; the third lapse reads
 #     expired and a claim is refused 'expired'; a renew past expires_at refused 'expired'; release -> open, journal
 #     'released', its reason only in the ui_ text table; wait_for_investigations answers within 2 s of a request made
-#     1 s after it started; two requests committed out of order (the first insert's transaction held 4 s) both reach a
-#     waiting agent; with the agent's listening session terminated, a wait still answers (the 5 s poll) within 8 s.
+#     1 s after it started; two requests committed out of order (an owner's INSERT held open 4 s while a request through
+#     serve takes the next id and commits first - the request function's own cap lock keeps its requests in id order)
+#     both reach a waiting agent; with the agent's listening session terminated, a wait still answers (the 5 s poll) within 8 s.
 #  B. the brief: claim answers request.snapshot.setting = the finding's setting, request.note, next_calls[0] =
 #     instance_findings of that instance, budget 30 min / 40 tool calls, under 24,000 characters; a second request of
 #     the same finding, after the first was reported: earlier_reports[0] = the first, unreviewed true.
@@ -76,8 +77,8 @@
 #     instances under query_text full, normalized and none: run_select over activity_sample + query_text answers the
 #     full instance's text with LIT and '<masked>' and without P1, the normalized one without LIT and P1, none no text;
 #     no output of any agent client holds P1. SQL Server (415's mask, in this tree): a waiting UPDATE carrying '-P S1'
-#     stored by `collect -once mssql_requests` under full: run_select over mssql_statement_text and find_statements
-#     answer '<masked>' and never S1.
+#     stored by `collect -once mssql_requests` under full: run_select over mssql_statement_text answers '-P <masked>' and
+#     never S1 (find_statements reads the plan cache and the Query Store, which the requests sample does not fill).
 #  U. the pages (headless Chromium, the session cookie set): #/findings shows an Investigate button on a finding row;
 #     #/investigations shows the Ask box, the grid with the requests and a report's 'unreviewed' line; the serve
 #     without agents: no Investigate button; axe-core finds 0 violation nodes on #/investigations in both themes.
@@ -163,7 +164,8 @@ for u in u1 u2 u3; do PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" "agt
 U1=agtu1$SUF; U2=agtu2$SUF; U3=agtu3$SUF
 
 # the finding every request names: the demo's first active finding
-read -r FIID FSET FINST < <(q "select f.instance_id, f.setting, i.name from pgvigil.findings_alerts f join pgvigil.instances i using (instance_id) where i.is_active order by case f.severity when 'critical' then 0 when 'warning' then 1 else 2 end, i.name, f.setting limit 1" | tr '|' ' ')
+# split on psql's '|' alone: a setting may hold spaces ('amcheck never clean')
+IFS='|' read -r FIID FSET FINST < <(q "select f.instance_id, f.setting, i.name from pgvigil.findings_alerts f join pgvigil.instances i using (instance_id) where i.is_active order by case f.severity when 'critical' then 0 when 'warning' then 1 else 2 end, i.name, f.setting limit 1")
 [[ -n "${FIID:-}" && -n "${FSET:-}" ]] || die "the demo seeded no finding"
 echo "the finding: instance $FIID ($FINST), setting $FSET"
 NINST=$(q "select count(*) from pgvigil.instances")
@@ -248,11 +250,11 @@ else
   printf 'repository:\n  dsn: env:SBP_DSN\ninstances: []\n' > "$WORK/cfg-sb.yaml"
   SBP_DSN="host=$PRIIP port=5432 user=postgres dbname=sb sslmode=disable" "$BIN" migrate -config "$WORK/cfg-sb.yaml" >"$WORK/sb-migrate.log" 2>&1 || echo "note: the standby's primary did not migrate: $(tail -2 "$WORK/sb-migrate.log")"
   docker exec "$PRI" psql -U postgres -d sb -XAtqc "create role sbagent login password '$PW' in role pgvigil_reader, pgvigil_agent" >/dev/null 2>&1
-  docker run -d --name "$STB" --network "$NET" --entrypoint bash "$IMG" -c "until pg_basebackup -h $PRI -U postgres -D /tmp/sb -R -X stream; do sleep 1; done; chown -R postgres /tmp/sb; chmod 700 /tmp/sb; exec su postgres -c 'postgres -D /tmp/sb -c listen_addresses=*'" >/dev/null
-  STBIP=""; for _ in $(seq 1 90); do STBIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$STB" 2>/dev/null); docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t && break; sleep 1; done
+  docker run -d --name "$STB" --network "$NET" --entrypoint bash "$IMG" -c "until pg_basebackup -h $PRI -U postgres -D /tmp/sb -R -X stream -c fast; do sleep 1; done; chown -R postgres /tmp/sb; chmod 700 /tmp/sb; exec su postgres -c 'postgres -D /tmp/sb -c listen_addresses=*'" >/dev/null
+  STBIP=""; for _ in $(seq 1 150); do STBIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$STB" 2>/dev/null); docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t && break; sleep 1; done
   if docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t; then
     refused standby "host=$STBIP port=5432 dbname=sb user=sbagent password=$PW sslmode=disable" "in recovery"
-  else bad "R5 the standby did not come up in recovery: $(docker logs "$STB" 2>&1 | tail -3 | tr '\n' ' ' | cut -c1-200)"; fi
+  else bad "R5 the standby did not come up in recovery: $(docker ps -a --filter name="$STB" --format '{{.Status}}') $(docker logs "$STB" 2>&1 | tail -3 | tr '\n' ' ' | cut -c1-200)"; fi
 fi
 
 echo "--- Q. the request"
@@ -332,7 +334,9 @@ reset_inv; rm -f "$WORK/w2"
 calls c_oo '{"touch":"'"$WORK"'/w2"}' "$(tc wait_for_investigations '{"known":[],"timeout_s":20}')" "$(tc wait_for_investigations '{"known":"$open","timeout_s":20}')"
 mc AG1_DSN c_oo & po=$!
 for _ in $(seq 1 100); do [[ -f "$WORK/w2" ]] && break; sleep 0.1; done
-psql "$PGVIGIL_REPO_DSN" -XAtq -c "begin" -c "select pgvigil.import_investigation_request(now(), '{\"ui_user\":\"$U1\",\"client\":\"psql\",\"kind\":\"ask\",\"question\":\"first insert, last commit\"}'::jsonb)" -c "select pg_sleep(4)" -c "commit" >"$WORK/oo1" 2>&1 &
+# the owner's own INSERT (not the request function: its cap lock makes every request through it commit in id order),
+# held open 4 s while a request through serve takes the next id and commits first
+psql "$PGVIGIL_REPO_DSN" -XAtq -c "begin" -c "with i as (insert into pgvigil.investigations (kind, asked_by, asked_at, expires_at) values ('ask', '$U1', now(), now() + interval '4 hours') returning id) select pg_notify('pgvigil_investigation', id::text) from i" -c "select pg_sleep(4)" -c "commit" >"$WORK/oo1" 2>&1 &
 pp=$!; sleep 1; C6=$(ask_q "second insert, first commit"); wait $pp $po
 C5=$(q "select id from pgvigil.investigations where kind = 'ask' and asked_by = '$U1' order by id limit 1")
 seen=$(jq -r 'select(.i == 1 or .i == 2) | .body.open[]?.id' "$WORK/c_oo.out" 2>/dev/null | sort -u | paste -sd,)
@@ -406,8 +410,8 @@ a=$(as "$(L rd)" -c "select count(*) from pgvigil.investigation_journal"); b=$(a
 [[ $a =~ ^[0-9]+$ && $b == *"permission denied"* ]] && ok "J2 the plain reader reads the journal ($a rows), not its texts" || bad "J2 the plain reader: journal '${a:0:80}', texts '${b:0:120}'"
 api "$S1" s1 "$U2" GET "investigations?id=${S1R:-0}" >/dev/null
 [[ $(B '[.journal[]? | select(.event == "select") | .text] | map(select(. != null)) | length') == 11 && $(B '[.journal[]? | .text] | any(. == "SELECT count(*) AS n FROM pgvigil.instances")') == true ]] && ok "J3 serve shows a signed-in user each statement's text" || bad "J3 serve's journal: $(head -c 240 "$WORK/body")"
-# filled to 199: the claim writes row 200, the run's would be the 201st
-q "insert into pgvigil.investigation_journal (investigation_id, at, event, login, outcome) select ${S1R:-0}, now(), 'select', 'proof', 'filler' from generate_series(1, greatest(0, 199 - (select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0})))" >/dev/null
+# filled to 198: the lapse the claim settles writes row 199, the claim row 200, the run's would be the 201st
+q "insert into pgvigil.investigation_journal (investigation_id, at, event, login, outcome) select ${S1R:-0}, now(), 'select', 'proof', 'filler' from generate_series(1, greatest(0, 198 - (select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0})))" >/dev/null
 calls s_3 "$(tc claim_investigation "{\"id\":${S1R:-0},\"agent\":\"agent-s\"}")" "$(sel "SELECT 1")"
 q "update pgvigil.investigations set lease_until = now() - interval '1 second' where id = ${S1R:-0}" >/dev/null
 mc AG1_DSN s_3
@@ -526,7 +530,7 @@ else
   q "update pgvigil.investigations set lease_until = now() - interval '1 second' where id = ${M1:-0}" >/dev/null
   mc AG1_DSN m_2
   r1=$(Rr m_2 1 '.body.rows[0][0] // empty'); f=$(R m_2 2 '.body')
-  [[ $r1 == *"-P <masked>"* && $r1 != *"$S1K"* && $f == *"<masked>"* && $f != *"$S1K"* ]] && ok "M5 SQL Server under full: run_select and find_statements answer '-P <masked>', never the password" || bad "M5 SQL Server: run_select '${r1:0:160}' find_statements '${f:0:160}'"
+  [[ $r1 == *"-P <masked>"* && $r1 != *"$S1K"* && $f != *"$S1K"* ]] && ok "M5 SQL Server under full: run_select answers '-P <masked>', never the password" || bad "M5 SQL Server: run_select '${r1:0:160}' find_statements '${f:0:160}'"
 fi
 
 echo "--- U. the pages"
