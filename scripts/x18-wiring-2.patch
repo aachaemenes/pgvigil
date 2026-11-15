@@ -500,10 +500,10 @@ index bd1f07c8..b1966352 100644
        { key: 'run_id', label: 'run', num: true }, { key: 'datname', label: 'db' },
        { key: 'return_message', label: 'message', fmt: oneLine },
 diff --git a/web/src/jobs_running.ts b/web/src/jobs_running.ts
-index b1adccbd..b8e9c045 100644
+index b1adccbd..2e65685d 100644
 --- a/web/src/jobs_running.ts
 +++ b/web/src/jobs_running.ts
-@@ -199,7 +199,7 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
+@@ -199,10 +199,10 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
  const stepCols: Col[] = [
    { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' },
    { key: 'runs', num: true, fmt: fmtNum }, { key: 'succeeded', num: true, fmt: fmtNum },
@@ -511,7 +511,11 @@ index b1adccbd..b8e9c045 100644
 +  { key: 'failed', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : fmtNum(v), cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
    { key: 'ignored', label: 'failed, ignored', num: true, fmt: fmtNum }, { key: 'aborted', num: true, fmt: fmtNum },
    { key: 'avg_secs', label: 'average', num: true, fmt: fmtSecs }, { key: 'max_secs', label: 'longest', num: true, fmt: fmtSecs },
-   { key: 'last_status', label: 'last', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' ? badge('aborted', 'warn') : text(v), cls: v => v == null || v === '' || v === 'failed' || v === 'aborted' ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
+-  { key: 'last_status', label: 'last', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' ? badge('aborted', 'warn') : text(v), cls: v => v == null || v === '' || v === 'failed' || v === 'aborted' ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
++  { key: 'last_status', label: 'last', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' || v === 'ignored' ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || v === 'failed' || v === 'aborted' || v === 'ignored' ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
+   { key: 'last_start', label: 'last run', fmt: fmtTime },
+ ];
+ const stepRunCols: Col[] = [
 @@ -304,7 +304,7 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
      const cols: Col[] = [
        { key: 'job_name', label: 'job' }, { key: 'scheduler' }, { key: 'run_id', label: 'run', num: true },
@@ -587,7 +591,7 @@ index 24fa3c72..1e2ac2f4 100644
  const relkinds: Record<string, string> = { r: 'table', i: 'index', t: 'TOAST', m: 'materialized view', S: 'sequence', p: 'partitioned table', I: 'partitioned index' };
  
 diff --git a/web/src/mssql_audit.ts b/web/src/mssql_audit.ts
-index 3a72651a..ae05b4a3 100644
+index 3a72651a..585d2923 100644
 --- a/web/src/mssql_audit.ts
 +++ b/web/src/mssql_audit.ts
 @@ -18,7 +18,7 @@ type Part = 'state' | 'read' | 'status' | 'findings' | 'audits' | 'specs' | 'by_
@@ -632,6 +636,15 @@ index 3a72651a..ae05b4a3 100644
  }
  
  const fileLimit = (r: Row): string => {
+@@ -94,7 +94,7 @@ const specCols: Col[] = [
+   { key: 'scope', fmt: (v, r) => v === 'database' ? `database ${text(r.database_name)}` : 'server' },
+   { key: 'name', label: 'specification' },
+   { key: 'is_enabled', label: 'state', fmt: v => v === true ? badge('on', 'ok') : badge('off', 'warn') },
+-  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})`, cls: v => v == null ? '' : 'status ok' },
++  { key: 'audit_name', label: 'audit', fmt: (v, r) => v == null ? badge('no such audit on this server', 'warn') : `${text(v)} (${r.audit_state === 'stopped' ? 'not started' : text(r.audit_state)})`, cls: (v, r) => v == null ? '' : r.audit_state === 'started' ? 'status ok' : r.audit_state === 'failed' ? 'crit' : r.audit_state === 'stopped' || r.audit_state === 'shutting down' ? 'warn' : 'status none' },
+   { key: 'action_count', label: 'actions', num: true },
+   { key: 'actions', label: 'what it records', fmt: prose },
+   { key: 'modified', label: 'modified (server clock)' },
 diff --git a/web/src/mssql_backups.ts b/web/src/mssql_backups.ts
 index 6374febb..1bb42969 100644
 --- a/web/src/mssql_backups.ts
@@ -646,7 +659,7 @@ index 6374febb..1bb42969 100644
    { key: 'full_ok', label: 'full ok', ...count() }, { key: 'full_late', label: 'full late', ...count('crit') },
    { key: 'full_never', label: 'full never', ...count('crit') }, { key: 'full_not_judged', label: 'full not judged', ...count() },
 diff --git a/web/src/mssql_checks.ts b/web/src/mssql_checks.ts
-index e88efe09..a7bf58f7 100644
+index e88efe09..1d93fcd3 100644
 --- a/web/src/mssql_checks.ts
 +++ b/web/src/mssql_checks.ts
 @@ -56,7 +56,7 @@ const verdict = (status: unknown, severity: unknown): string => {
@@ -658,6 +671,15 @@ index e88efe09..a7bf58f7 100644
  const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
  const titled = (text: string, title: string): Node => title ? el('span', { title }, text) : document.createTextNode(text);
  
+@@ -122,7 +122,7 @@ function optionsView(rows: Row[]): HTMLElement[] {
+     { key: 'default_value', label: 'default', num: true, fmt: fmtNum },
+     { key: 'advised', label: 'advised', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
+     { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
+-    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : 'status ok' },
++    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : r.status === 'ok' ? 'status ok' : 'status none' },
+     { key: 'detail', label: 'why', wide: true },
+     { key: 'rule' },
+   ];
 diff --git a/web/src/mssql_config.ts b/web/src/mssql_config.ts
 index 5804240f..8a2480b5 100644
 --- a/web/src/mssql_config.ts
@@ -694,7 +716,7 @@ index b354f5ea..a9ad7dd5 100644
  
  // stateLine: the deadlock capture as the reader last saw it (the Extended Events tabs' wording, shortened)
 diff --git a/web/src/mssql_errorlog.ts b/web/src/mssql_errorlog.ts
-index b137c07d..e6005881 100644
+index b137c07d..639712bb 100644
 --- a/web/src/mssql_errorlog.ts
 +++ b/web/src/mssql_errorlog.ts
 @@ -12,7 +12,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './
@@ -706,6 +728,15 @@ index b137c07d..e6005881 100644
  const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
  const mb = (v: unknown) => v == null ? '' : fmtNum(v) + ' MB';
  
+@@ -65,7 +65,7 @@ const lineCols: Col[] = [
+   { key: 'log_at', label: 'when', fmt: fmtTime },
+   { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : '' },
+   { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) },
+-  { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v), cls: v => v == null || v === '' || v === 'corruption' ? '' : 'status ok' },
++  { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v), cls: v => v == null || v === '' || v === 'corruption' ? '' : 'status none' },
+   { key: 'message', label: 'line', wide: true },
+   { key: 'process' },
+   { key: 'matched', label: 'matched', fmt: (v, r) => (Array.isArray(v) ? v.join(', ') : '') + (r.custom === true ? ' (own)' : '') },
 @@ -147,7 +147,7 @@ const growthSummaryCols: Col[] = [
    { key: 'size_mb', label: 'size change', num: true, fmt: mb }, { key: 'last_at', label: 'last', fmt: fmtTime },
  ];
@@ -1053,6 +1084,34 @@ index de395185..554960dc 100644
  const titled = (text: string, title: string): Node => title ? el('span', { title }, text) : document.createTextNode(text);
  const str = (v: unknown): string => v == null ? '' : String(v);
  
+diff --git a/web/src/pgaudit.ts b/web/src/pgaudit.ts
+index aa39213c..ce846bfe 100644
+--- a/web/src/pgaudit.ts
++++ b/web/src/pgaudit.ts
+@@ -69,9 +69,11 @@ const windowText = (m: unknown): string => {
+   return n % 1440 === 0 ? `${n / 1440} d` : n % 60 === 0 ? `${n / 60} h` : `${n} min`;
+ };
+ 
+-const ruleCols: Col[] = [
+-  // the state: a rule that is off, or one firing at info, is not judged warning or critical (N/A); a quiet rule OK
+-  { key: 'fires', label: 'state', fmt: (v, r) => !r.is_enabled ? badge('off', '') : v ? badge('firing', r.severity === 'critical' ? 'crit' : r.severity === 'info' ? '' : 'warn') : 'quiet', cls: (v, r) => !r.is_enabled || (v && r.severity === 'info') ? 'status none' : v ? '' : 'status ok' },
++// ruleCols: logRead = the instance's audit-line read (h.log_read): a rule other than failed sign-ins counts those lines,
++// so where they are not read it is not checked (N/A), never 'quiet'
++const ruleCols = (logRead: unknown): Col[] => [
++  // the state: a rule that is off, one firing at info, or one not checked is not judged warning or critical (N/A); a quiet rule OK
++  { key: 'fires', label: 'state', fmt: (v, r) => !r.is_enabled ? badge('off', '') : v ? badge('firing', r.severity === 'critical' ? 'crit' : r.severity === 'info' ? '' : 'warn') : r.what !== 'AUTH_FAIL' && logRead !== 'ok' ? 'not checked: the audit lines are not read' : 'quiet', cls: (v, r) => !r.is_enabled || (v && r.severity === 'info') || (!v && r.what !== 'AUTH_FAIL' && logRead !== 'ok') ? 'status none' : v ? '' : 'status ok' },
+   { key: 'name', label: 'rule' },
+   { key: 'what', label: 'entries', fmt: (v, r) => (v === 'AUTH_FAIL' ? 'failed sign-ins' : String(v))
+       + (r.command_like ? `, command like ${String(r.command_like)}` : '') + (r.object_like ? `, object like ${String(r.object_like)}` : '') },
+@@ -200,7 +202,7 @@ export async function pgauditView(ctx: Ctx): Promise<HTMLElement> {
+     sec.append(el('h3', {}, 'Alert rules'),
+       el('p', { class: 'meta' }, 'A rule that fires is a finding of this instance and reaches the alert channels like any other. '
+         + 'The rules are rows of pgvigil.pgaudit_rules in the repository (docs/audit.md says how to change one).'),
+-      grid(rowsOf(d.rules), ruleCols, 'No rule.'));
++      grid(rowsOf(d.rules), ruleCols(h.log_read), 'No rule.'));
+ 
+     sec.append(el('h3', {}, 'Role, DDL and audited SET entries'),
+       el('p', { class: 'meta' }, 'pgaudit\'s ROLE and DDL entries, and each SET or RESET of a setting that changes who the session is, what is '
 diff --git a/web/src/pi.ts b/web/src/pi.ts
 index 322cb9df..8f4e4453 100644
 --- a/web/src/pi.ts
@@ -1133,7 +1192,7 @@ index 684bb3fe..09e12da9 100644
        { key: 'head_pid', label: 'chain head', fmt: (v, r) => r.role === 'head' ? '' : runningLink(ctx, actAt, v) },
        { key: 'backend_query', label: 'statement', fmt: (v, r) => sqlCell(v, { heading: `pid ${String(r.backend_pid)}: ${String(r.backend_state ?? '').startsWith('idle') ? 'last statement' : 'statement'}` }) },
 diff --git a/web/src/roles.ts b/web/src/roles.ts
-index e58f3ba3..dc79adf7 100644
+index e58f3ba3..57df5e82 100644
 --- a/web/src/roles.ts
 +++ b/web/src/roles.ts
 @@ -5,7 +5,7 @@
@@ -1154,6 +1213,15 @@ index e58f3ba3..dc79adf7 100644
    { key: 'member_of', label: 'member of', wide: true },
    { key: 'config', label: 'ALTER ROLE SET', wide: true },
  ];
+@@ -121,7 +121,7 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
+       { key: 'rule_number', label: '#', num: true }, { key: 'line_number', label: 'line', num: true },
+       { key: 'type' }, { key: 'databases' }, { key: 'users' },
+       { key: 'address', fmt: (v, r) => v == null ? '' : String(v) + (r.netmask ? '/' + String(r.netmask) : '') },
+-      { key: 'auth_method', label: 'method', fmt: v => v === 'trust' ? badge('trust', 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'trust' ? '' : 'status ok' },
++      { key: 'auth_method', label: 'method', fmt: v => v === 'trust' ? badge('trust', 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'trust' ? '' : v === 'password' || v === 'md5' ? 'status none' : 'status ok' },
+       { key: 'options', wide: true }, { key: 'error', fmt: v => v ? badge(String(v), 'crit') : '' },
+     ], 'The file has no rules.'));
+   }
 @@ -168,12 +168,12 @@ export async function rolesFleetView(keep?: (r: Row) => boolean, instLink?: (nam
      el('p', { class: 'meta' }, 'Per server: who is superuser and who can log in. Read hourly; a password is never read.'),
      grid(sum, [
