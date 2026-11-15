@@ -808,9 +808,11 @@ export function gridSection(s: Section): Section {
     // (X14) a percent column the page writes as bare figures (its header names the percent: 'free %', 'signal wait %'):
     // the shares Excel's percent format draws, as DBA Dash writes every '%' column (13.4 -> 0.134 under '0.0%'), under
     // the decimals the page shows (0, 1, 2: '0%', '0.0%', '0.00%')
-    if (j < cols.length && cols[j].includes('%')) for (const c of nums) if (c.kind === 'int' || c.kind === 'dec') {
-      c.dp = Math.min(decimalsOf(c.text, c.v) ?? 0, 2);
-      c.v = (c.v as number) / 100; c.kind = 'pct';
+    // a column that mixes them with shares already typed ('12 %' badges beside a bare '0': tempdb's max growth %): one
+    // format for the column, the most decimals any of its figures shows
+    if (j < cols.length && cols[j].includes('%') && nums.some(c => c.kind === 'int' || c.kind === 'dec')) {
+      const k = Math.min(Math.max(0, ...nums.filter(c => ['int', 'dec', 'pct'].includes(c.kind)).map(c => decimalsOf(c.text, c.kind === 'pct' ? undefined : c.v) ?? 0)), 2);
+      for (const c of nums) if (c.kind === 'int' || c.kind === 'dec') { c.v = (c.v as number) / 100; c.kind = 'pct'; c.dp = k; } else if (c.kind === 'pct') c.dp = k;
     }
     // (X8) a date column's cell with no date in it ('none in the last 7 days', 'never'): empty, as DBA Dash leaves a date
     // with no value; the page keeps its words. A date with a note in brackets after it (an availability group's backup
