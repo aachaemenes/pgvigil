@@ -11,8 +11,9 @@
 --                                           previous report's start and not past that report's own time by more than
 --                                           150 ms (a wait that ended and a new one); a self-wait (a session blocked
 --                                           by itself) is no wait. Hours with no report at all (the capture stopped,
---                                           or none installed) are read from the blocked rows of the requests
---                                           snapshots by the same rule (source 'snapshot').
+--                                           none installed, or nothing over the threshold) are read from the requests
+--                                           snapshots' lock waits at the server's blocked process threshold or longer
+--                                           (5 s at least) by the same rule (source 'snapshot').
 --   pg_block_waits(instance, from, to)      one row per PostgreSQL wait: a session's Lock waits in activity_sample under
 --                                           one statement (pid, backend_start, query_start), split where the samples
 --                                           leave a gap longer than two of the instance's sample intervals.
@@ -29,13 +30,21 @@ LANGUAGE sql STABLE AS $$
        AND b.blocked_spid IS NOT NULL AND b.blocking_spid IS NOT NULL AND b.blocked_spid <> b.blocking_spid
   ), hours AS (
     SELECT DISTINCT date_trunc('hour', r.at) AS hr FROM rep r
+  ), thr AS (
+    -- the server's blocked process threshold (sys.configurations as last read), never under 5 s (below it the deadlock
+    -- monitor runs constantly: checks.go), 5 s where none is read
+    SELECT greatest(5, coalesce(max(c.value_in_use), 0)) * 1000 AS ms FROM pgvigil.mssql_config c
+     WHERE c.instance_id = p_instance AND c.name IN ('blocked process threshold (s)', 'blocked process threshold')
   ), snap AS (
-    -- an hour with no report: the requests snapshots' blocked rows, the wait as the DMV gives it
+    -- an hour with no report: the requests snapshots' blocked rows, the wait as the DMV gives it - only a lock wait
+    -- (LCK_M_*) at the threshold or longer, what a report would have shown: an hour with no report may as well be one
+    -- where nothing passed the threshold, and a short lock or a page latch with a blocking session is no wait here
     SELECT q.session_id AS a, q.blocking_session_id AS h, q.snapshot_at AS at, coalesce(q.wait_ms, 0) AS w,
            q.snapshot_at - make_interval(secs => coalesce(q.wait_ms, 0) / 1000.0) AS st
       FROM pgvigil.mssql_requests q
      WHERE q.instance_id = p_instance AND q.snapshot_at > p_from - interval '1 hour' AND q.snapshot_at <= p_to
        AND q.blocking_session_id > 0 AND q.blocking_session_id <> q.session_id
+       AND left(q.wait_type, 6) = 'LCK_M_' AND coalesce(q.wait_ms, 0) >= (SELECT ms FROM thr)
        AND date_trunc('hour', q.snapshot_at) NOT IN (SELECT hr FROM hours)
   ), seen AS (
     SELECT r.*, 'report'::text AS src FROM rep r

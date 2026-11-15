@@ -34,7 +34,8 @@
 #     ('3 wait(s) in the last hour'). RED: '15 report(s) in the last hour'.
 #  G. no reports in the hour (the session stopped): requests snapshots 15 s apart show session 61 blocked by 55 in four
 #     of them (waits 10 / 25 / 40 / 55 s: one start) and session 62 blocked by 55 in two whose starts are 9 s apart:
-#     3 waits, source 'snapshot'. RED: mssql_block_waits does not exist.
+#     3 waits, source 'snapshot'; beside them session 63 in a 2 s LCK_M_S wait and session 64 in a 30 s PAGELATCH_EX
+#     wait behind 55: no wait (under the threshold of 5 s; not a lock). RED: mssql_block_waits does not exist.
 #  H. the monitor's own deadlocks: with mssql_monitor_app 'pgvigil' for the instance, a deadlock whose every victim's
 #     program is 'pgvigil' is not counted, one with a user victim is, one with two victims (pgvigil and a user) is:
 #     'deadlocks in the last hour' says '2 deadlock(s)', the day and the live part count 2; mssql_deadlocks still
@@ -187,8 +188,10 @@ q "select pgvigil.mssql_ensure_day_partition('mssql_requests', now());
    select $G, t0 + make_interval(secs => k * 15), 61, 0, 'suspended', 'LCK_M_X', 10000 + k * 15000, 55, true, 'b10'
      from (select now() - interval '10 minutes' t0) x, generate_series(0, 3) k
    union all select $G, now() - interval '8 minutes', 62, 0, 'suspended', 'LCK_M_X', 5000, 55, true, 'b10'
-   union all select $G, now() - interval '8 minutes' + interval '15 seconds', 62, 0, 'suspended', 'LCK_M_X', 11000, 55, true, 'b10'" >/dev/null
-check "$(waits mssql_block_waits "$G")" 3 "G: 61 one wait over four snapshots, 62 two (starts 9 s apart)"
+   union all select $G, now() - interval '8 minutes' + interval '15 seconds', 62, 0, 'suspended', 'LCK_M_X', 11000, 55, true, 'b10'
+   union all select $G, now() - interval '7 minutes', 63, 0, 'suspended', 'LCK_M_S', 2000, 55, true, 'b10'
+   union all select $G, now() - interval '7 minutes', 64, 0, 'suspended', 'PAGELATCH_EX', 30000, 55, true, 'b10'" >/dev/null
+check "$(waits mssql_block_waits "$G")" 3 "G: 61 one wait over four snapshots, 62 two (starts 9 s apart); 63 (2 s) and 64 (a page latch) none"
 fn mssql_block_waits && check "$(q "select string_agg(distinct source, ',') from pgvigil.mssql_block_waits($G, now() - interval '1 hour', now())")" snapshot "G: source 'snapshot'"
 
 echo "--- H. the monitor's own deadlocks left out"
