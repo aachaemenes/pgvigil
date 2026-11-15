@@ -301,7 +301,7 @@ func literalSpans(s string) []litSpan {
 			}
 		case c == '"':
 			j := i + 1
-			for j < n && !(s[j] == '"' && (j+1 >= n || s[j+1] != '"')) {
+			for j < n && (s[j] != '"' || (j+1 < n && s[j+1] == '"')) {
 				if s[j] == '"' {
 					j++
 				}
@@ -339,7 +339,7 @@ func literalAtB(s string, i int) (int, bool) {
 		return skipQuotedB(s, i+1, false), true
 	case (c == 'E' || c == 'e') && i+1 < n && s[i+1] == '\'' && !identBefore:
 		return skipQuotedB(s, i+1, true), true
-	case c == '$' && !identBefore && i+1 < n && !(s[i+1] >= '0' && s[i+1] <= '9'):
+	case c == '$' && !identBefore && i+1 < n && (s[i+1] < '0' || s[i+1] > '9'):
 		j := i + 1
 		for j < n && (s[j] == '_' || (s[j]|0x20 >= 'a' && s[j]|0x20 <= 'z') || (j > i+1 && s[j] >= '0' && s[j] <= '9') || s[j] >= 0x80) {
 			j++
@@ -376,7 +376,7 @@ func skipQuotedB(s string, i int, backslash bool) int {
 }
 
 // enclosing is the literal whose body holds offset p (start < p < end-1 for a closed one), if any.
-func enclosing(spans []litSpan, p int, n int) (litSpan, bool) {
+func enclosing(spans []litSpan, p int) (litSpan, bool) {
 	k := sort.Search(len(spans), func(i int) bool { return spans[i].end > p })
 	if k < len(spans) && spans[k].start < p {
 		return spans[k], true
@@ -447,7 +447,7 @@ func apply(s string, eds []edit) string {
 // maskLiteralsIn masks every literal in s[from:to]: inside an enclosing literal the doubled-quote ones,
 // outside it the top-level ones.
 func maskLiteralsIn(s string, spans []litSpan, from, to int, eds []edit) []edit {
-	if l, in := enclosing(spans, from, len(s)); in {
+	if l, in := enclosing(spans, from); in {
 		stop := closeAt(s, l)
 		if to > stop {
 			to = stop
@@ -489,7 +489,7 @@ func maskCalls(s string) string {
 	for _, loc := range fl {
 		open := loc[1] // after '('
 		stop := len(s)
-		if l, in := enclosing(spans, loc[0], len(s)); in {
+		if l, in := enclosing(spans, loc[0]); in {
 			stop = closeAt(s, l)
 		}
 		depth, j := 1, open
@@ -515,7 +515,7 @@ func maskCalls(s string) string {
 	}
 	for _, loc := range pl {
 		stop := len(s)
-		if l, in := enclosing(spans, loc[0], len(s)); in {
+		if l, in := enclosing(spans, loc[0]); in {
 			stop = closeAt(s, l)
 		}
 		end := loc[1]
@@ -538,7 +538,7 @@ func maskCalls(s string) string {
 	return apply(s, eds)
 }
 
-func isInside(spans []litSpan, p int) bool { _, in := enclosing(spans, p, 0); return in }
+func isInside(spans []litSpan, p int) bool { _, in := enclosing(spans, p); return in }
 
 // maskKeywordValues masks the literal or 0x value after a password keyword. Outside a literal: a literal that opens
 // right after the keyword; the =-less PASSWORD only after ROLE / USER / GROUP / WITH / ENCRYPTED / UNENCRYPTED.
@@ -555,7 +555,7 @@ func maskKeywordValues(s string) string {
 		word := strings.ToUpper(strings.TrimSpace(s[kw:min(kw+8, len(s))]))
 		bare := strings.HasPrefix(word, "PASSWORD") && loc[2] < 0 // PASSWORD without its =
 		byForm := strings.HasPrefix(word, "IDENTIFI")
-		if l, in := enclosing(spans, kw, len(s)); in {
+		if l, in := enclosing(spans, kw); in {
 			stop := closeAt(s, l)
 			end, doubled, ok := innerValue(s, at, stop)
 			if !ok || ((bare || byForm) && !doubled) {
@@ -608,7 +608,7 @@ func maskPairs(s string) string {
 		}
 		var end int
 		var with string
-		if l, in := enclosing(spans, loc[0], len(s)); in {
+		if l, in := enclosing(spans, loc[0]); in {
 			e, doubled, ok := innerValue(s, at, closeAt(s, l))
 			if !ok {
 				continue
@@ -657,7 +657,7 @@ func maskArgs(s string) string {
 	for _, loc := range locs {
 		sw := s[loc[2]:loc[3]]
 		at := loc[1]
-		l, in := enclosing(spans, loc[2], len(s))
+		l, in := enclosing(spans, loc[2])
 		if sw == "-P" {
 			ctx := s[:loc[2]]
 			if in {

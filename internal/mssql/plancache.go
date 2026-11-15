@@ -588,8 +588,6 @@ type PlanFetch struct {
 
 var planHandleForm = regexp.MustCompile(`^0[xX](?:[0-9A-Fa-f]{2}){1,64}$`)
 
-// ParsePlanHandle turns a handle as the pages carry it (0x text, an even number of hex digits, varbinary(64) at most)
-// into its bytes.
 // PlanConfirm is the code typed to evict a plan: the first 8 hex digits (upper case) of SHA-256 over the handle's
 // bytes, the whole handle. A handle's own digits do not name its plan: its tail is zero padding (00000000 for nearly
 // every plan) and its object id or batch hash is shared by a procedure's plans under other SET options. "" for a
@@ -603,6 +601,8 @@ func PlanConfirm(handle string) string {
 	return strings.ToUpper(hex.EncodeToString(sum[:4]))
 }
 
+// ParsePlanHandle turns a handle as the pages carry it (0x text, an even number of hex digits, varbinary(64) at most)
+// into its bytes.
 func ParsePlanHandle(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if !planHandleForm.MatchString(s) {

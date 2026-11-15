@@ -44,6 +44,9 @@ var toolCalls = []struct{ name, args string }{
 	{"table_state", `{"instance":"Alpha","table":"orders"}`},
 	{"storage_forecast", `{}`},
 	{"storage_forecast", `{"instance":"beta"}`},
+	{"statement_everywhere", `{"query_hash":"0x1A2B","hours":6}`},
+	{"find_statements", `{"text":"orders"}`},
+	{"find_statements", `{"text":"orders","instance":"Alpha"}`},
 }
 
 func allTools(t *testing.T, h http.Handler) string {

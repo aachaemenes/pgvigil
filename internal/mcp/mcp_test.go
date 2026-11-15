@@ -40,6 +40,10 @@ func fakeAPI(t *testing.T, seen *[]string) http.Handler {
 			"checks": tbl([]string{"c"}), "series": tbl([]string{"s"})},
 		"/api/plan":  map[string]any{"plan": tbl([]string{"plan_id", "plan_text"}, []any{7, "Seq Scan"}), "hits": tbl([]string{"rule"}, []any{"seq scan"}), "buttons": map[string]any{"explain": false}},
 		"/api/plans": map[string]any{"plans": tbl([]string{"plan_id"}, []any{7}), "buttons": map[string]any{}},
+		"/api/mssql/everywhere": map[string]any{"rows": tbl([]string{"instance", "database", "source", "executions", "cpu_ms"},
+			[]any{"Alpha", "app", "plan cache", 3, 12}), "note": "PostgreSQL statements are not compared"},
+		"/api/mssql/search": map[string]any{"sources": []any{map[string]any{"source": "plan cache",
+			"rows": tbl([]string{"instance", "query_hash", "text"}, []any{"Alpha", "0x1A2B", "select * from orders"})}}, "no_text": []string{"beta"}},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*seen = append(*seen, r.Method+" "+r.URL.String())
@@ -126,8 +130,8 @@ func TestProtocol(t *testing.T) {
 		t.Errorf("an unknown version gets the newest: got %v", v)
 	}
 	list := got["3"]["result"].(map[string]any)["tools"].([]any)
-	if len(list) != 7 {
-		t.Errorf("tools = %d, want 7", len(list))
+	if len(list) != 9 {
+		t.Errorf("tools = %d, want 9", len(list))
 	}
 	for _, x := range list {
 		a := x.(map[string]any)["annotations"].(map[string]any)
@@ -174,6 +178,10 @@ func TestTools(t *testing.T) {
 		call(13, "top_statements", `{"instance":"Alpha","limit":1000}`),
 		call(14, "fleet_summary", `{"sql":"x"}`),
 		call(15, "blocking_chain", `{"instance":"Alpha","at":"yesterday"}`),
+		call(16, "statement_everywhere", `{"query_hash":"0x1a2b","hours":6}`),
+		call(17, "statement_everywhere", `{"query_hash":"1a2b"}`),
+		call(18, "find_statements", `{"text":"orders"}`),
+		call(19, "find_statements", `{"text":"orders","instance":"beta"}`),
 	)
 	want := map[string]struct {
 		err  bool
@@ -195,6 +203,10 @@ func TestTools(t *testing.T) {
 		"13": {err: true, has: []string{"limit must be"}},
 		"14": {err: true, has: []string{"takes no argument"}},
 		"15": {err: true, has: []string{"RFC 3339"}},
+		"16": {has: []string{`"query_hash": "0x1a2b"`, `"source": "plan cache"`, `"executions": 3`, "not compared"}},
+		"17": {err: true, has: []string{"query_hash must be 0x"}},
+		"18": {has: []string{"select * from orders", `"no_text"`}},
+		"19": {has: []string{"select * from orders"}},
 	}
 	for id, w := range want {
 		m, ok := got[id]
@@ -241,6 +253,22 @@ func TestTools(t *testing.T) {
 	}
 	if !strings.Contains(stmts, "instance=2") || !strings.Contains(stmts, "limit=5") || !strings.Contains(stmts, "order=io") {
 		t.Errorf("statements request: %s", stmts)
+	}
+	// task 406's two tools: the hash goes to the everywhere read; the search names its one instance only when asked
+	var every, search []string
+	for _, r := range seen {
+		switch {
+		case strings.Contains(r, "/api/mssql/everywhere"):
+			every = append(every, r)
+		case strings.Contains(r, "/api/mssql/search"):
+			search = append(search, r)
+		}
+	}
+	if len(every) != 1 || !strings.Contains(every[0], "hash=0x1a2b") || !strings.Contains(every[0], "from=") {
+		t.Errorf("everywhere requests (the bad hash sends none): %v", every)
+	}
+	if len(search) != 2 || strings.Contains(search[0], "instance=") || !strings.Contains(search[1], "instance=2") || !strings.Contains(search[1], "q=orders") {
+		t.Errorf("search requests: %v", search)
 	}
 }
 

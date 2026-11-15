@@ -595,7 +595,8 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 
 	// 2. the target as the read login sees it NOW, compared with the one shown
 	var t Target
-	if r.Kind == ActionKill {
+	switch r.Kind {
+	case ActionKill:
 		t, err = readSession(ctx, mon, r.SessionID)
 		switch {
 		case errors.Is(err, errNoTarget):
@@ -612,7 +613,7 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 		if r.SessionID == actSPID || strings.EqualFold(t.Login, actLogin) {
 			return refuse(t, "session %d belongs to the actions login itself (%s)", r.SessionID, actLogin)
 		}
-	} else if r.Kind == ActionPlanEvict {
+	case ActionPlanEvict:
 		handle, _ := ParsePlanHandle(r.JobID) // ValidateAction checked its form
 		t, err = readPlan(ctx, mon, handle)
 		switch {
@@ -652,7 +653,7 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 				Statement: stmt, ServerMessage: "the server accepted the statement (it returns no message for it)", Target: t}
 		}
 		return ActionResult{Outcome: OutcomeFailed, Detail: fmt.Sprintf("%s was accepted, but the plan of %s is still in the cache as it was", stmt, PlanWhat(t)), Statement: stmt, Target: t}
-	} else {
+	default:
 		t, err = readJob(ctx, mon, r.JobID)
 		switch {
 		case errors.Is(err, errNoTarget):

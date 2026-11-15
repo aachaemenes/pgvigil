@@ -387,12 +387,13 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	if xml == nil || *xml == "" {
 		words := "no plan is kept for it"
-		if deref(state) == "policy" {
+		switch st := deref(state); {
+		case st == "policy":
 			words = "not kept: this instance's query_text policy is not \"full\", and a plan carries the statement's text and its compiled values"
-		} else if deref(state) == "too large" {
+		case st == "too large":
 			words = "no plan is kept for it: it is over the 4 MB a plan may take"
-		} else if deref(state) != "" {
-			words = "no plan is kept for it: " + deref(state)
+		case st != "":
+			words = "no plan is kept for it: " + st
 		}
 		s.reply(w, r, map[string]any{"state": "none", "words": words}, nil)
 		return
