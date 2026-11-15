@@ -39,8 +39,8 @@ func (s *Server) applicationsOff() string {
 	return ""
 }
 
-// appCanEdit is the one gate of every application write: any signed-in user today (decision E3), the roles' check
-// here when they exist ("" = allowed).
+// appCanEdit is the application writes' login check; the role (admin) is s.post's, before the handler runs (B24f:
+// decision E3's one gate is the needs table now) ("" = allowed).
 func (s *Server) appCanEdit(user string) string {
 	if user == "" {
 		return "login required"
@@ -176,8 +176,12 @@ func (s *Server) ApplicationsList(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("file tags: %w", err))
 		return
 	}
-	off := s.applicationsOff()
-	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "applications": apps, "audit": audit, "file_tags": fileTags}, nil)
+	off, can := s.applicationsOff(), s.roleCan(r)
+	if off == "" && !can["admin"] {
+		wh, _ := whoOf(r)
+		off = roleWords(routeWhat["POST /api/admin/applications"], needAdmin, wh)
+	}
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "can": can, "applications": apps, "audit": audit, "file_tags": fileTags}, nil)
 }
 
 // ApplicationOne is GET /api/applications/{id}: its fields with each one's source, and its servers and databases

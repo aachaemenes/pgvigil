@@ -151,6 +151,7 @@ for u in v$SUF o$SUF a$SUF dem$SUF dis$SUF; do
   c=$(login "$u"); [[ $c == 200 ]] || bad "login $u: $c $(cat "$WORK/login.body")"
 done
 ok "login: every user signs in with no session first (anyone)"
+art() { [[ $1 == viewer ]] && echo a || echo an; }
 rank() { case $1 in viewer) echo 1 ;; operator) echo 2 ;; admin) echo 3 ;; *) echo 0 ;; esac; }
 ROLEWORDS='needs the (viewer|operator|admin) role'
 # grade <user> <need> <path> <body> [what]
@@ -158,7 +159,7 @@ grade() {
   local u=$1 need=$2 p=$3 body=$4 what=${5:-$3} role=${ROLE[$1]} res code
   res=$(post "$u" "$p" "$body"); code=${res%% *}
   if (( $(rank "$role") < $(rank "$need") )); then
-    if [[ $code == 403 && $res =~ needs\ the\ $need\ role && $res == *"$u is a $role"* ]]; then ok "R1 $role $what: refused ($res)"
+    if [[ $code == 403 && $res =~ needs\ the\ $need\ role && $res == *"$u is $(art "$role") $role"* ]]; then ok "R1 $role $what: refused ($res)"
     else bad "R1 $role $what (needs $need): not refused with the role's words: $res"; fi
   else
     if [[ $code != 401 && ! $res =~ $ROLEWORDS ]]; then ok "R1 $role $what: its own answer ($code)"

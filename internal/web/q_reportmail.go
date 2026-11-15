@@ -499,7 +499,9 @@ func (s *Server) renderPage(ctx context.Context, user, route, tz, prefs string, 
 	if browser == "" {
 		return mailRequest{}, errors.New("no Chromium-family browser on this server (PGVIGIL_BROWSER names one)")
 	}
-	hash, err := s.auth.lookup(ctx, user)
+	// the render runs as the schedule's user, whatever its role now (it only reads; review-16 S4): a disabled or
+	// removed user's schedule stops here with its words
+	hash, _, err := s.auth.lookup(ctx, user)
 	if err != nil {
 		return mailRequest{}, fmt.Errorf("the user %s could not be read: %w", user, err)
 	}
