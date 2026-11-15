@@ -113,6 +113,11 @@
 #        finds the statement;
 #     F4 no note while the repository holds no PostgreSQL instance; after one is registered the replies carry the
 #        'PostgreSQL instances are not compared or searched here' note.
+#     F5 the policy NOW (j15's fix review finding 4): sqlfull's query_text set full -> none and serve again, its stored
+#        texts still in the repository (a policy change clears neither the plan cache's texts nor the Query Store's: a
+#        text goes only when its key is sent again): the search returns no row of sqlfull from either source, names
+#        sqlfull under no_text, and instance=sqlfull returns no row; f2's rows still come. Set back to full after.
+#        Red on 92fc66cd: sqlfull's stored rows come back while no_text names it.
 #     Red on f8e89d2: the routes do not exist.
 #  G. the STATISTICS IO / TIME reader (DBA Dash N62-N67, F11, P9): web/src/mssql_statsio.ts compiled by esbuild; its unit
 #     tests (web/src/mssql_statsio.test.mjs: sqlcmd, SSMS and Azure Data Studio shapes, a German text, the
@@ -933,7 +938,27 @@ if not any(x.get('rows') and x['rows']['rows'] for x in b['sources']): print('DI
 PYEND
 pq "SELECT pgvigil.ensure_instance('pgf_$SUF', 'auto', '17.0', 170000, false, '{}'::text[])" >/dev/null || fail "F4: a PostgreSQL instance"
 CODE=$(api "mssql/search?q=marker%25_x" "$TMPD/f4.json"); grep -q 'PostgreSQL instances are not compared or searched here' "$TMPD/f4.json" || fail "F4: no note with a PostgreSQL instance held: $(head -c 300 "$TMPD/f4.json")"
-echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note"
+# F5: the search follows each instance's policy NOW, not the policy its stored texts were sent under
+STORED=$(pq "SELECT (SELECT count(*) FROM pgvigil.mssql_pc_text WHERE instance_id = $IF AND query ILIKE '%marker%') + (SELECT count(*) FROM pgvigil.mssql_qs_query WHERE instance_id = $IF AND query_text ILIKE '%marker%')")
+[[ "$STORED" -ge 1 ]] || fail "F5: sqlfull holds no stored text with the marker to begin with"
+set_qt sqlfull none; serve_restart f5
+CODE=$(api "mssql/search?q=marker%25_x" "$TMPD/f5a.json"); CODE2=$(api "mssql/search?q=marker%25_x&instance=$IF" "$TMPD/f5b.json")
+python3 - "$TMPD/f5a.json" "$TMPD/f5b.json" <<'PYEND' || fail "F5: see above (red on 92fc66cd: sqlfull's stored texts come back)"
+import json, sys
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
+rows = lambda d: [dict(zip(x['rows']['columns'], r)) for x in d.get('sources', []) if x.get('rows') for r in x['rows']['rows']]
+full = [x for x in rows(a) if x['instance'] == 'sqlfull']
+bad = []
+if full: bad.append(f"every instance: {len(full)} row(s) of sqlfull (policy none): {[(x['source'], x['statement'][:40]) for x in full][:3]}")
+if 'sqlfull' not in (a.get('no_text') or []): bad.append(f"no_text {a.get('no_text')}")
+if not [x for x in rows(a) if x['instance'] == 'f2']: bad.append("f2's rows are gone too")
+if rows(b): bad.append(f"instance=sqlfull: {len(rows(b))} row(s)")
+for x in bad: print('DIFF F5', x)
+sys.exit(1 if bad else 0)
+PYEND
+echo "ok   F5: sqlfull's policy set to none: none of its $STORED stored text(s) is returned (every instance, or it alone), it is named under no_text, f2's rows still come"
+set_qt sqlfull full; serve_restart f5back
+echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note; the policy now (F5)"
 fi
 
 if part G; then
