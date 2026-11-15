@@ -41,7 +41,9 @@ WITH scope AS (
     JOIN scope s ON s.instance_id = l.instance_id
     CROSS JOIN LATERAL pgvigil.collection_error_class(l.status, l.note, l.stage) c
     LEFT JOIN marks m ON m.instance_id = l.instance_id
-   WHERE l.status IN ('error', 'partial', 'skipped') AND l.snapshot_at >= $1 AND l.snapshot_at < $2 AND NOT $6
+   -- skips read only when shown ($11): a store's rows are mostly the steady skips (every run of a collection that
+   -- does not apply), and the partial index (0198) holds the rest
+   WHERE (l.status IN ('error', 'partial') OR $11 AND l.status = 'skipped') AND l.snapshot_at >= $1 AND l.snapshot_at < $2 AND NOT $6
   UNION ALL
   SELECT NULL, a.snapshot_at, NULL, '(the service)', NULL, 'alerts', 'Error', 'Other',
          CASE WHEN EXISTS (SELECT 1 FROM unnest(a.keys) k WHERE k LIKE 'test-%') THEN 'test send ' ELSE 'alert send ' END

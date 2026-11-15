@@ -33,7 +33,9 @@ BEGIN
       CHECK (stage IN ('connect', 'collect', 'import', 'other')) NOT VALID;
   END IF;
 END $$;
-CREATE INDEX IF NOT EXISTS collection_log_instance_idx ON pgvigil.collection_log (instance_id, snapshot_at);
+-- the runs that failed or ran in part, per instance: the error log page and the Summary read these; the skips (every run of
+-- a collection that does not apply, most of a store's rows) are read only when asked, through the snapshot_at index
+CREATE INDEX IF NOT EXISTS collection_log_instance_idx ON pgvigil.collection_log (instance_id, snapshot_at) WHERE status <> 'skipped';
 
 CREATE OR REPLACE FUNCTION pgvigil.log_collection(
   p_instance_id int, p_collection text, p_snapshot_at timestamptz, p_duration_ms int, p_status text, p_note text,
