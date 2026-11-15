@@ -11,6 +11,8 @@
 #   MSSQL_IMAGE  the SQL Server image (default mcr.microsoft.com/mssql/server:2022-latest)
 #   PGVIGIL_PARTS  the parts to run (default MABCDEFGS; they run in the file's order: M A B C D G E F S); S needs node,
 #                npm, chromium, curl and python3
+#   PGVIGIL_VERSION_PASS 1 = the script-and-read pass on another version (MSSQL_IMAGE 2017 / 2019, PGVIGIL_PARTS=MABC):
+#                  every check as on 2022 except A2, which prints the events the script left out instead of wanting none
 #   PGVIGIL_WIRING 1 (default) applies scripts/proof-mssql-xe-captures-wiring.patch (the CLI's -captures, the routes, the
 #                  tabs, the findings arm) to this copy first
 # The proof makes, and removes on every exit path, its repository database and one SQL Server container of its own.
@@ -32,7 +34,8 @@
 #     GUID keys (page splits: about 18 rows a page); a procedure of 6 s; a procedure of 50 ms; master.dbo.sp_pgvproof of 6 s (the default
 #     procedure exclusion 'master.sp[_]%').
 #  C. `collect -once mssql_xe_captures` twice (the counter needs two reads), then:
-#     C1 a wait LCK_M_X of 2,500 to 6,000 ms stored, category 'Locking'; C2 no WAITFOR wait stored; C3 (sa reads the files in /var/opt/mssql/log/, the Linux image's log folder) the stored waits equal
+#     C1 a wait LCK_M_X of 2,500 to 6,000 ms stored (2,000 since the V result below; and equal to sa's read of the
+#     file), category 'Locking'; C2 no WAITFOR wait stored; C3 (sa reads the files in /var/opt/mssql/log/, the Linux image's log folder) the stored waits equal
 #     sa's count of wait_info events over 1,000 ms in the waits session's file (the same events, after the read's
 #     filter); C4 sort_warning counted at least once; C5 missing_join_predicate and plan_affecting_convert each counted at
 #     least once, or written down as the server's answer if it raised none; C6 page_split's difference between the two
@@ -67,6 +70,15 @@
 # Result green5 (sqltb-s2-411-green5: PROOF OK MABCDEFGS, go test ok): G1-G3 passed with 16, every one 'Recursion level
 # 1', and they came from G1b (6,144 spills); G1c spilled 0 (total_spills 0, 3 s), not the bailout expected [unverified
 # why]. G1c stays as run until the review's fold.
+#  V (written before its first run): PGVIGIL_VERSION_PASS=1, PGVIGIL_PARTS=MABC on SQL Server 2017 and 2019 (the CU
+#     images): M, A1, A3, B and C pass as on 2022; A2 printed - expected 'none' on both [inferred: all 16 events are in
+#     the 2016 event catalogue]; a listed event is the server's answer, and the C check that needs it says so.
+# Result V: v2019 (15.0.4510.2) PROOF OK MABC, A2 none; v2017 (14.0.3570.2) A2 none, one FAIL - C1 stored 2,499 ms
+# against 2,500 to 6,000. Root cause: the waiter starts 0.5 s after the holder's 3 s hold, so the wait the proof makes
+# is about 2,500 ms - C1's floor sat on the value itself (every run before read 2,505 to 2,772). Changed: C1's window
+# is 2,000 to 6,000 (3 s less the head start, less up to 0.5 s of start skew), and C1 now also wants the stored wait
+# EQUAL to sa's read of the LCK_M_X duration in the file (the exact check the window never was). Rerun: v2017b 3,063,
+# v2019b 2,506, 2022 (parts MABC) 2,499 - the old floor would have failed 2022 too - each equal to sa's read; PROOF OK.
 #  G. auto create statistics off in xcdb, then: G1 a hash aggregate, a wide-build hash join and a one-key hash join (all
 #     MAX_GRANT_PERCENT = 0, row mode) - hash_warning stored as sa's read of the file has it, at least 1; G2 a predicate on a column with no statistics
 #     (dbo.g.pad) - missing_column_statistics the same, at least 1; G3 a filtered index (vc_f, WHERE id > 100) and a
@@ -170,7 +182,12 @@ if has A; then
   "$BIN" mssql-xe -print -captures all -install-id cap > "$TMPD/cap.sql" || die "A: mssql-xe -print -captures all"
   sqs < "$TMPD/cap.sql" > "$TMPD/cap.out" 2>&1
   want "A1: the four sessions created and running" "$(sq "SELECT COUNT(*) FROM sys.dm_xe_sessions WHERE name IN (N'pgvigil_cap_waits', N'pgvigil_cap_warnings', N'pgvigil_cap_warncounts', N'pgvigil_cap_modules')")" "4"
-  want "A2: no event left out on this version" "$(grep -c 'left out' "$TMPD/cap.out")" "0"
+  if [ "${PGVIGIL_VERSION_PASS:-0}" = 1 ]; then
+    LO=$(grep 'left out' "$TMPD/cap.out" | sed 's/.*: //' | sort -u | tr '\n' ' ')
+    echo "  A2 (printed, a version pass): left out: ${LO:-none}"
+  else
+    want "A2: no event left out on this version" "$(grep -c 'left out' "$TMPD/cap.out")" "0"
+  fi
   sqs < "$TMPD/cap.sql" > "$TMPD/cap2.out" 2>&1
   want "A3: a second run leaves them as they are" "$(grep -c 'exists, left as it is' "$TMPD/cap2.out")" "4"
   [ "$(grep -c 'created:' "$TMPD/cap.out")" = 4 ] || echo "  the script's output: $(grep -v '^$' "$TMPD/cap.out" | head -12 | tr '\n' ' ')"
@@ -215,10 +232,12 @@ fi
 if has C; then
   echo "--- C. what was stored"
   I=$(iid)
-  between "C1: a lock wait of about 3 s" "$(q "select max(duration_ms) from pgvigil.mssql_xe_waits where instance_id = $I and wait_type = 'LCK_M_X'")" 2500 6000
+  LW=$(lastread pgvigil_cap_waits)
+  LCK=$(q "select max(duration_ms) from pgvigil.mssql_xe_waits where instance_id = $I and wait_type = 'LCK_M_X'")
+  between "C1: a lock wait of about 3 s less the waiter's 0.5 s head start" "$LCK" 2000 6000
+  want "C1: it equals sa's read of the file" "$LCK" "$(sq "SELECT MAX(e.x.value('(event/data[@name=\"duration\"]/value)[1]', 'bigint')) FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_cap_waits*.xel', NULL, NULL, NULL) f CROSS APPLY (SELECT CAST(f.event_data AS xml) x) e WHERE f.object_name = N'wait_info' AND e.x.value('(event/data[@name=\"wait_type\"]/text)[1]', 'nvarchar(60)') = N'LCK_M_X' AND e.x.value('(event/@timestamp)[1]', 'datetime2(7)') <= '$LW'")"
   want "C1: its category" "$(q "select category from pgvigil.mssql_xe_waits where instance_id = $I and wait_type = 'LCK_M_X' limit 1")" "Locking"
   want "C2: no WAITFOR stored" "$(q "select count(*) from pgvigil.mssql_xe_waits where instance_id = $I and wait_type = 'WAITFOR'")" "0"
-  LW=$(lastread pgvigil_cap_waits)
   HAND=$(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_cap_waits*.xel', NULL, NULL, NULL) f CROSS APPLY (SELECT CAST(f.event_data AS xml) x) e WHERE f.object_name IN (N'wait_info', N'wait_info_external') AND e.x.value('(event/data[@name=\"duration\"]/value)[1]', 'bigint') >= 1000 AND e.x.value('(event/@timestamp)[1]', 'datetime2(7)') <= '$LW'")
   want "C3: the stored waits equal sa's read of the file" "$(q "select count(*) from pgvigil.mssql_xe_waits where instance_id = $I")" "$HAND"
   N=$(q "select coalesce(sum(events), 0) from pgvigil.mssql_xe_warning_hours where instance_id = $I and event_name = 'sort_warning'")
