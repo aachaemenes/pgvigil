@@ -51,6 +51,7 @@ import { mssqlWaitsView } from './mssql_waits';
 import { mssqlBlocked, mssqlSlow, mssqlAgEvents } from './mssql_xe';
 import { mssqlDeadlocksView } from './mssql_deadlocks';
 import { hasAvailability, mssqlAvailability } from './mssql_hadr';
+import { geoReplBlock, hasGeoRepl } from './georepl';
 import { mssqlBackups, mssqlBackupsFleetSection } from './mssql_backups';
 import { mssqlRestore } from './mssql_restore';
 import { mssqlJobs } from './mssql_jobs';
@@ -103,7 +104,7 @@ const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
   jobstimeline: jobsTimelineView,
-  availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
+  availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); return s; },
   mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
@@ -436,7 +437,7 @@ async function render(force = false) {
   const offStrip = new Set<string>();
   if (ctx.instance && isMssql(engine)) {
     // the Availability tab only where one of its collections has stored a read (an imported server keeps it: its line says why it is not read)
-    if (!imported && !(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+    if (!imported && !(await hasAvailability(ctx.instance).catch(() => false)) && !(await hasGeoRepl(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
     // the Elastic pool tab in the strip only where the database is in a pool now (an imported server has no pgvigil read
     // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
     // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)
