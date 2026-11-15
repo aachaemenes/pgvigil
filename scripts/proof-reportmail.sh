@@ -48,6 +48,10 @@
 #      lease) - that render's turn is refused ('no longer this server's') and the turn mailed after the lease; every
 #      schedule has exactly one scheduled mail sent (none twice), rendered headless as the owner; next_at back at the
 #      next 07:00 of its zone, no lease, no token; the subject starts with the schedule's name and carries the window.
+#      DB Space's Unit and Decimal places: a schedule made at MB / 2 keeps both keys, one made at GB / 1 none; the MB / 2
+#      one brought due alone afterwards is mailed with its page drawn in MB with 2 decimals - the HTML grid's 'allocated
+#      (MB)' column every figure with exactly 2 decimals, no '(GB)' heading in that grid, and the workbook's 'allocated
+#      (MB)' column numbers under '0.00' or '#,##0.00'. RED (before the pickers): no Unit picker, no schedule.
 #   T  Send test on a schedule: queued as kind test by the asking user, mailed with '[test] <name> - ' as its subject; a
 #      second test at once is refused (one at a time).
 #   C  every one of the nine mails (four now, four scheduled, the test) against the page's screen (the driver's read of the same route): the same grids in
@@ -554,8 +558,9 @@ DBSNOTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mb"][
 [[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0} and grid_prefs->>'pgvigil.grid.dbspace.size-unit' = 'MB' and grid_prefs->>'pgvigil.grid.dbspace.size-decimals' = '2'") == 1 && $DBSNOTE == *"unit and decimal places"* && $DBSNOTE != *" grids:"* ]] || fail "S: the MB / 2 schedule's kept choice: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBS:-0}"); note: $DBSNOTE"
 ok "S: DB Space at MB / 2 scheduled (schedule $SDBS): both size keys kept with it, the dialog says so ($DBSNOTE)"
 [[ $(q "select count(*) from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0} and coalesce(grid_prefs::text, '{}') !~ 'size-'") == 1 ]] || fail "S: the GB / 1 schedule kept a size key: $(q "select grid_prefs from pgvigil.report_mail_schedules where schedule_id = ${SDBSGB:-0}")"
-# the two DB Space schedules ended once read: the Report mail page's Schedules grid (P) lists the live ones it made
-for x in ${SDBS:-} ${SDBSGB:-}; do [[ $(postj reportmail "{\"op\":\"end\",\"schedule_id\":$x}") == 200 ]] || fail "S: ending the DB Space schedule $x: $(cat "$WORK/body")"; done
+# the GB / 1 schedule ended once read (the MB / 2 one after its mail, below): the Report mail page's Schedules grid (P)
+# lists the live ones it made
+[[ $(postj reportmail "{\"op\":\"end\",\"schedule_id\":${SDBSGB:-0}}") == 200 ]] || fail "S: ending the DB Space schedule $SDBSGB: $(cat "$WORK/body")"
 ok "S: DB Space back at GB / 1 scheduled (schedule $SDBSGB): no size key kept (the default is no key)"
 SIDS=""
 for i in 0 1 2; do
@@ -614,6 +619,72 @@ waitsent $SCHIDS $GONEID || fail "S: the turns not answered: $(q "select send_id
 nextok " and claimed_until is null and claim_token is null" || fail "S: the turns did not move on: $(q "select schedule_id, next_at, claimed_until, claim_token from pgvigil.report_mail_schedules where schedule_id in ($SL)")"
 Q1=$(grep -c "report mail: queued" "$WORK/serve.log" || true); Q3=$(grep -c "report mail: queued" "$WORK/serve3.log" || true)
 ok "S: four schedules rendered headless as $UIUSER by the two serves ($Q1 and $Q3 turns) and mailed once each (mails $SCHIDS); schedule $STOLEN's stale turn refused and mailed after the lease; next_at back at $NEXT7 (UTC) and $NEXT7LA (Los Angeles), no lease left"
+# DB Space's MB / 2 schedule brought due alone (after the four: the C/H/X screens are theirs): its mail drawn in its
+# kept unit and decimals, the HTML grid and the workbook
+q "update pgvigil.report_mail_schedules set next_at = now() - interval '1 second' where schedule_id = ${SDBS:-0}" >/dev/null
+DBSID=""
+for _ in $(seq 1 90); do
+  DBSID=$(q "select send_id from pgvigil.report_mail_sends where schedule_id = ${SDBS:-0} and kind = 'scheduled' and outcome is distinct from 'refused' order by send_id limit 1")
+  [[ -n $DBSID ]] && break; sleep 2
+done
+[[ -n $DBSID ]] || fail "S: the DB Space MB / 2 turn was not queued in 3 minutes: $(grep -i 'report mail' "$WORK/serve.log" "$WORK/serve3.log" | tail -4)"
+waitsent "$DBSID" || fail "S: the DB Space MB / 2 mail not answered: $(q "select outcome, error from pgvigil.report_mail_sends where send_id = $DBSID")"
+python3 - "$WORK/sink" "$DBSID" <<'PY2' || fail "S: the DB Space MB / 2 mail (above)"
+import email, glob, html, io, os, re, sys, zipfile
+from email import policy
+sink, sid = sys.argv[1], sys.argv[2]
+m = next((email.message_from_binary_file(open(f, 'rb'), policy=policy.default) for f in sorted(glob.glob(os.path.join(sink, '*.eml')))
+          if email.message_from_binary_file(open(f, 'rb'), policy=policy.default)['X-Pgvigil-Report'] == sid), None)
+assert m is not None, f"S: DB Space mail {sid} is not in the sink"
+txt = lambda x: html.unescape(re.sub(r'<[^>]+>', '', x)).replace('\xa0', ' ').strip()
+body = m.get_body(('html',)).get_content()
+two = re.compile(r'^-?\d{1,3}(,\d{3})*\.\d{2}$|^-?\d+\.\d{2}$')
+found = None
+for t in re.findall(r'<table\b.*?</table>', body, re.S):
+    trs = re.findall(r'<tr\b.*?</tr>', t, re.S)
+    if not trs: continue
+    head = [txt(c) for c in re.findall(r'<th\b.*?</th>', trs[0], re.S)]
+    if 'allocated (MB)' not in head: continue
+    k = head.index('allocated (MB)')
+    cells = [txt(c) for tr in trs[1:] for i, c in enumerate(re.findall(r'<td\b.*?</td>', tr, re.S)) if i == k]
+    found = (head, cells)
+    break
+assert found, f"S: DB Space mail {sid}: no HTML grid headed 'allocated (MB)'"
+head, cells = found
+assert cells and all(two.match(c) for c in cells), f"S: DB Space mail {sid}: 'allocated (MB)' figures not all with 2 decimals: {cells[:6]}"
+assert not any('(GB)' in h for h in head), f"S: DB Space mail {sid}: a GB heading beside MB: {head}"
+xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
+z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
+st = z.read('xl/styles.xml').decode()
+fmts = {int(a): html.unescape(b) for a, b in re.findall(r'<numFmt numFmtId="(\d+)" formatCode="([^"]*)"', st)}
+fmts.update({0: 'General', 2: '0.00', 4: '#,##0.00'})
+xfs = [int(x) for x in re.findall(r'<xf [^>]*?numFmtId="(\d+)"', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st, re.S).group(1))]
+ss = [txt(x) for x in re.findall(r'<si>(.*?)</si>', z.read('xl/sharedStrings.xml').decode(), re.S)] if 'xl/sharedStrings.xml' in z.namelist() else []
+def val(c):
+    v = re.search(r'<v>(.*?)</v>', c); t = re.search(r' t="(\w+)"', c); inl = re.search(r'<is>(.*?)</is>', c, re.S)
+    if inl: return txt(inl.group(1))
+    if not v: return ''
+    return ss[int(v.group(1))] if t and t.group(1) == 's' else v.group(1)
+got = None
+for n in sorted(x for x in z.namelist() if x.startswith('xl/worksheets/sheet')):
+    rows = re.findall(r'<row [^>]*>(.*?)</row>', z.read(n).decode(), re.S)
+    if not rows: continue
+    hc = re.findall(r'<c [^>]*?(?:/>|>.*?</c>)', rows[0], re.S)
+    hv = [val(c) for c in hc]
+    if 'allocated (MB)' not in hv: continue
+    col = re.search(r' r="([A-Z]+)', hc[hv.index('allocated (MB)')]).group(1)
+    got = []
+    for r in rows[1:]:
+        for c in re.findall(r'<c [^>]*?(?:/>|>.*?</c>)', r, re.S):
+            if re.search(r' r="' + col + r'\d+"', c):
+                sx = re.search(r' s="(\d+)"', c)
+                got.append((re.search(r' t="(\w+)"', c) is None and bool(re.search(r'<v>', c)), fmts.get(xfs[int(sx.group(1))] if sx else 0, '?')))
+    break
+assert got, f"S: DB Space mail {sid}: no workbook sheet headed 'allocated (MB)'"
+assert all(num and f in ('0.00', '#,##0.00') for num, f in got), f"S: DB Space mail {sid}: the workbook's 'allocated (MB)' cells (number, format): {got[:6]}"
+print(f"ok   S: DB Space's MB / 2 schedule mailed (mail {sid}): its HTML grid 'allocated (MB)' {len(cells)} figure(s) with 2 decimals, no GB heading; the workbook's {len(got)} cell(s) numbers under {sorted({f for _, f in got})}")
+PY2
+[[ $(postj reportmail "{\"op\":\"end\",\"schedule_id\":${SDBS:-0}}") == 200 ]] || fail "S: ending the DB Space schedule $SDBS: $(cat "$WORK/body")"
 
 # ---- T: Send test ----------------------------------------------------------------------------------------------------------
 [[ $(postj reportmail/test "{\"schedule_id\":$S1}") == 200 ]] || fail "T: $(cat "$WORK/body")"
