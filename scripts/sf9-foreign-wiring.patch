@@ -1,0 +1,116 @@
+diff --git c/web/src/backups.ts w/web/src/backups.ts
+index 1ea4a2d8..4c801f20 100644
+--- c/web/src/backups.ts
++++ w/web/src/backups.ts
+@@ -123,7 +123,7 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
+       { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },
+       { key: 'platform' },
+       { key: 'worst', label: 'findings', fmt: (v, r) => v == null ? '' : badge(`${fmtNum(r.findings)} ${String(v)}`, v === 'critical' ? 'crit' : 'warn') },
+-      { key: 'archiver_failing', label: 'archiver', fmt: (_v, r) => { const [t, k] = archiverState(r); return k ? badge(t, k) : t; } },
++      { key: 'archiver_failing', label: 'archiver', fmt: (_v, r) => { const [t, k] = archiverState(r); return k ? badge(t, k) : t; }, cls: (_v, r) => archiverState(r)[1] ? '' : 'status none' },
+       { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] },
+       { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
+       { key: 'failed_count', label: 'failed', num: true },
+diff --git c/web/src/borrowed.ts w/web/src/borrowed.ts
+index 8cabb0cc..eff7d43f 100644
+--- c/web/src/borrowed.ts
++++ w/web/src/borrowed.ts
+@@ -103,7 +103,9 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
+       return el('div', {}, el('h4', {}, title), grid(rs, [{ key: 'datname', label: 'db' }, { key: 'table_name', label: 'table', fmt: name }, lead, ...extra,
+         { key: 'first_at', label: 'counted from', fmt: fmtTime }], 'No table moved by this measure in the window.'));
+     };
+-    const pctHot = (v: unknown, r: Row) => Number(r.n_tup_upd) > 0 ? fmtNum(Math.round(1000 * Number(v ?? 0) / Number(r.n_tup_upd)) / 10) + ' %' : '';
++    // the HOT share as the row's own value (the export types '80 %' over 80 as Excel's 0.8, not text over a count)
++    rows.forEach(r => { r.hot_pct = Number(r.n_tup_upd) > 0 ? Math.round(1000 * Number(r.n_tup_hot_upd ?? 0) / Number(r.n_tup_upd)) / 10 : null; });
++    const pctHot = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
+     body.replaceChildren(
+       el('p', { class: 'meta' }, `Over ${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)} (at most the last 7 days of the range): the sum of the rises between the table activity reads (every 5 minutes; ${fmtNum(meta.reads)} in the window, the newest `
+         + `${fmtTime(meta.last_read) || 'none'}), the read before the window as the base. A table read first inside the window counts from that read (counted from). `
+@@ -113,7 +115,7 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
+           [{ key: 'seq_tup_read', label: 'rows read by them', num: true }, { key: 'idx_scan', label: 'index scans', num: true }]),
+         part('Most inserts', 'rank_ins', { key: 'n_tup_ins', label: 'rows inserted', num: true }, []),
+         part('Most updates', 'rank_upd', { key: 'n_tup_upd', label: 'rows updated', num: true },
+-          [{ key: 'n_tup_hot_upd', label: 'HOT', num: true, fmt: pctHot }]),
++          [{ key: 'hot_pct', label: 'HOT', num: true, fmt: pctHot }]),
+         part('Most deletes', 'rank_del', { key: 'n_tup_del', label: 'rows deleted', num: true }, [])));
+   }
+   sel.addEventListener('change', () => {
+diff --git c/web/src/jobsreport.ts w/web/src/jobsreport.ts
+index ad015501..f946b52b 100644
+--- c/web/src/jobsreport.ts
++++ w/web/src/jobsreport.ts
+@@ -71,7 +71,7 @@ const jobCols: Col[] = [
+   { key: 'next_run', label: 'next run', fmt: (v, r) => r.active === false || r.is_present === false ? '' : fmtTime(v) },
+   { key: 'fail_streak', label: 'failed in a row', num: true, fmt: streak, cls: streakCls },
+   { key: 'runs_7d', label: 'runs 7 d', num: true },
+-  { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails },
++  { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails, cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
+   { key: 'avg_7d_secs', label: 'avg 7 d', num: true, fmt: dur },
+   { key: 'max_7d_secs', label: 'max 7 d', num: true, fmt: dur },
+   { key: 'runs_30d', label: 'runs 30 d', num: true },
+diff --git c/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
+index 823b6dd0..ca91add8 100644
+--- c/web/src/mssql_perf.ts
++++ w/web/src/mssql_perf.ts
+@@ -291,11 +291,11 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
+ const tempdbCols = (fleet: boolean, ctx: Ctx): Col[] => [
+   ...(fleet ? [{ key: 'instance', fmt: (v: unknown, row: Row) => el('a', { href: href(ctx, { tab: mssqlTempdbTab, instance: Number(row.instance_id) }) }, String(v ?? '')) }] : []),
+   { key: 'data_files', label: '# data files', num: true },
+-  { key: 'insufficient_files', label: 'insufficient files', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no' },
++  { key: 'insufficient_files', label: 'insufficient files', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no', cls: v => v == null ? 'status none' : v ? '' : 'status ok' },
+   { key: 'recommended_files', label: 'recommended (minimum)', num: true },
+   { key: 'log_files', label: '# log files', num: true },
+-  { key: 'even_size', label: 'even sized', fmt: v => v ? 'yes' : badge('no', 'warn') },
+-  { key: 'even_growth', label: 'even growth', fmt: v => v ? 'yes' : badge('no', 'warn') },
++  { key: 'even_size', label: 'even sized', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
++  { key: 'even_growth', label: 'even growth', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
+   { key: 'total_mb', label: 'total size (MB)', num: true },
+   { key: 'log_mb', label: 'log (MB)', num: true },
+   { key: 'file_mb', label: 'file size (MB)', num: true },
+diff --git c/web/src/roles.ts w/web/src/roles.ts
+index 2eff0c2f..d29065c2 100644
+--- c/web/src/roles.ts
++++ w/web/src/roles.ts
+@@ -18,9 +18,9 @@ const roleName = (v: unknown, r: Row) => r.is_platform ? el('span', { class: 'me
+ 
+ const roleCols: Col[] = [
+   { key: 'rolname', label: 'role', fmt: roleName },
+-  { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '' },
++  { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && r.is_platform ? 'status none' : '' },
+   { key: 'canlogin', label: 'login', fmt: yes },
+-  { key: 'createrole', label: 'createrole', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '' },
++  { key: 'createrole', label: 'createrole', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && (r.super || r.is_platform) ? 'status none' : '' },
+   { key: 'createdb', label: 'createdb', fmt: yes },
+   { key: 'replication', fmt: yes },
+   { key: 'bypassrls', label: 'bypassrls', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '' },
+@@ -62,7 +62,7 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
+ 
+   if (findings.length) {
+     sec.append(el('h3', {}, 'Findings'), grid(findings, [
+-      { key: 'severity', fmt: sevBadge }, { key: 'setting', label: 'rule' }, { key: 'value', label: 'role' },
++      { key: 'severity', fmt: sevBadge, cls: v => v == null || v === 'critical' || v === 'warning' ? '' : 'status none' }, { key: 'setting', label: 'rule' }, { key: 'value', label: 'role' },
+       { key: 'suggested' }, { key: 'detail', wide: true },
+     ]));
+   }
+@@ -151,7 +151,7 @@ export async function rolesFleetView(keep?: (r: Row) => boolean, instLink?: (nam
+     const shown = w === 'super' ? roles.filter(r => r.super) : w === 'login' ? roles.filter(r => r.canlogin) : roles;
+     out.replaceChildren(grid(shown, [
+       { key: 'instance', fmt: link }, { key: 'platform' }, { key: 'rolname', label: 'role', fmt: roleName },
+-      { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '' },
++      { key: 'super', label: 'superuser', fmt: (v, r) => v ? badge('yes', r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && r.is_platform ? 'status none' : '' },
+       { key: 'canlogin', label: 'login', fmt: yes }, { key: 'createrole', fmt: yes }, { key: 'createdb', fmt: yes },
+       { key: 'replication', fmt: yes }, { key: 'bypassrls', fmt: yes },
+       { key: 'valid_until', label: 'password valid until', fmt: never }, { key: 'member_of', label: 'member of', wide: true },
+diff --git c/web/src/running.ts w/web/src/running.ts
+index 9cd84fb8..972da5cb 100644
+--- c/web/src/running.ts
++++ w/web/src/running.ts
+@@ -277,7 +277,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
+   if (ch.tree.length) {
+     const treeCols: Col[] = [
+       { key: 'pid', fmt: (v, r) => el('span', { style: `padding-left:${Number(r._depth) * 1.2}em` }, (Number(r._depth) > 0 ? '└ ' : '') + String(v)) },
+-      { key: '_role', label: 'role', fmt: v => v === 'head' ? badge('head', 'crit') : String(v ?? '') },
++      { key: '_role', label: 'role', fmt: v => v === 'head' ? badge('head', 'crit') : String(v ?? ''), cls: v => v && v !== 'head' ? 'status none' : '' },
+       { key: '_behind', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
+       { key: 'state', fmt: (v, r) => r._absent ? el('span', { class: 'meta', title: 'The head\'s own row is not in this sample (a background worker, or a session gone by the read).' }, String(v ?? '')) : String(v ?? '') },
+       { key: 'wait_event', label: 'wait', fmt: waitCell },
