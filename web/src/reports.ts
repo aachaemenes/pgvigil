@@ -9,7 +9,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart, ringChart, Slice } from './chart';
 import { deadlockSvg, DlGraph, graphFromRows, graphFromXml } from './deadlock_graph';
 import { hrefWith } from './dbinfo';
-import { fleet, tagsOf, tagWords, inTagScope } from './fleet';
+import { fleet, fleetWideNote, tagsOf, tagWords, inTagScope } from './fleet';
 import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { sqlCell } from './sqlview';
@@ -687,6 +687,10 @@ const qsChartsView: Render = ctx => page(ctx, 'rp_qscharts', [], async (_v, s, o
 const recycleView: Render = ctx => page(ctx, 'rp_recycle', [], async (_v, s, out) => {
   const d = await get<{ instances: Table }>('reports', { r: 'recycle', ...(ctx.instance ? { instance: ctx.instance } : {}) });
   const rows = rowsOf(d.instances).filter(r => !s.ids || s.ids.has(Number(r.instance_id)) || r.is_active === false);
+  // under a tag folder (TAGALL) the inactive instances are every folder's: the fleet list, where an instance's tags are
+  // read, holds the active ones only
+  const wide = fleetWideNote(ctx, 'The inactive instances (no tag of one is read) are one list');
+  if (wide) out.append(wide);
   out.append(el('p', { class: 'meta' }, 'Instances made inactive (kept with their history; nothing is collected from them) and active ones no collection has reached for a day (taken out of the configuration, or unreachable). '
     + 'Restore: name the instance in the configuration again (an inactive one is made active by its next collection). Delete: as the repository owner, DELETE FROM pgvigil.instances WHERE instance_id = <Connection ID> removes it and every row of it; the actions log keeps its rows under the instance\'s name.'),
   ...section('Recycle Bin', grid(rows, [{ key: 'instance_id', label: 'Connection ID', num: true }, { key: 'instance', label: 'Instance' }, engCol,
