@@ -29,8 +29,9 @@
 #        proof; graded only with KW-B (and `KITWATCH_NEWEST=pinned`: both passes of one run the same, exit 0).
 #   KW-B the pinned kits with run-time plants (KITWATCH_NEWEST=pinned KITWATCH_PLANT=<name>: sed on the second pass's
 #        copy, the planted string asserted present): each flagged with its kind and class, exit 1 (the missing-state
-#        plant: exit 3). In the table below now: wia-column, cut-frk; the rest of the design's F18 list is written at the
-#        KW-B run against the pinned files (each sed needs the kit's own text).
+#        plant: exit 3). In the table below now: wia-column (BREAK read by name), blitz-column (DRIFT column added),
+#        column-swap (DRIFT reordered), pd-set (BREAK set removed), cache-retype (DRIFT type), missing-state (exit 3),
+#        cut-frk; the rest of the design's F18 list is written against the pinned files (each sed needs the kit's text).
 #   KW-C a kit file cut at a GO (KITWATCH_PLANT=cut-frk): 'installed without' and the FRK tools missing, exit 2.
 #   KW-D (a RUN) the newest kits: exit 0 or 1; three kits with URL, sha256 and version; 14 tool lines, the collector
 #        line, every port line; deny 0.
@@ -112,6 +113,11 @@ if [[ -n ${KITWATCH_PLANT:-} ]]; then
   P=$WORK/newest; [[ $MODE == check ]] || envfail "a plant runs in the check mode"
   case $KITWATCH_PLANT in
     wia-column)   plant "$P/wia.sql" 's/\btempdb_current\b/tempdb_current_kb/g' tempdb_current_kb ;;
+    blitz-column) plant "$P/frk.sql" "/--TOURSTOP05--/{n;s/SELECT  \\[Priority\\] ,/SELECT  [Priority] , N'planted' AS KitwatchPlanted ,/}" "N'planted' AS KitwatchPlanted" ;;
+    column-swap)  plant "$P/frk.sql" '/--TOURSTOP05--/,/FROM    #BlitzResults/{s/\[FindingsGroup\] ,$/@@FG@@/;s/\[Finding\] ,$/[FindingsGroup] ,/;s/@@FG@@/[Finding] , \/* kitwatch: swapped *\//}' 'kitwatch: swapped' ;;
+    pd-set)       plant "$P/dd.sql" "s/THREADPOOL = N'No current THREADPOOL waits';/@pass = @pass; \\/* kitwatch: set dropped *\\//" 'kitwatch: set dropped' ;;
+    cache-retype) plant "$P/frk.sql" '/CREATE TABLE ##BlitzCacheResults (/,/);/s/CheckID INT,$/CheckID BIGINT, \/* kitwatch: retyped *\//' 'kitwatch: retyped' ;;
+    missing-state) ;;   # a MARK no tool can hold, set once the setup library is read (below)
     cut-frk)      head -c "$(( $(wc -c < "$P/frk.sql") / 2 ))" "$P/frk.sql" > "$P/frk.cut" && mv "$P/frk.cut" "$P/frk.sql"
                   printf '\nGO\n' >> "$P/frk.sql" ;;
     *)            envfail "unknown plant $KITWATCH_PLANT" ;;
@@ -129,6 +135,12 @@ WIA_ARGS=$("$KS" args | python3 -c 'import json,sys,re; print(json.dumps({m[0]: 
 
 # ---- SQL Server: one container, one prepared state ----------------------------------------------------------------
 . "$ROOT/scripts/lib/kitsetup.sh"
+if [[ ${KITWATCH_PLANT:-} == missing-state ]]; then   # KW-B: a state the pinned pass never reaches (exit 3, not a change)
+  for i in "${!KS_SQL_RUNS[@]}"; do
+    if [[ ${KS_SQL_RUNS[$i]} == sp_LogHunter~* ]]; then KS_SQL_RUNS[$i]='sp_LogHunter~after~kitwatch: a state never made~~{}'; fi
+  done
+  [[ ${KS_SQL_RUNS[*]} == *'kitwatch: a state never made'* ]] || envfail "the plant missing-state changed nothing"
+fi
 ks_container
 ks_sales
 
