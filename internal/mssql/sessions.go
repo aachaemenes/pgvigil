@@ -36,6 +36,8 @@ func (sessionsCollector) Applies(in Info) (bool, string) {
 // sys.dm_exec_requests (each session's requests by status), so every figure of the row is of the same moment (review
 // 413a finding 8: a scalar subquery per figure read the sessions once per figure). A session is pgvigil's own when its
 // program name is the reading connection's or starts with 'pgvigil'; a request whose session has no row is not counted.
+// OPTION (RECOMPILE) here and on the waits read: a plan of these DMVs cached at a few sessions and reused at thousands
+// can run CPU-bound for tens of seconds (activity.go's read on 2017: box diag 413-d2017d); one compile a minute.
 const sessionsCountsSQL = `WITH s AS (
   SELECT CAST(s.is_user_process AS int) AS u, s.status,
          CASE WHEN ISNULL(s.program_name, N'') <> N'' AND (s.program_name = ISNULL(PROGRAM_NAME(), N'') OR s.program_name LIKE N'pgvigil%')
@@ -74,7 +76,8 @@ SELECT 'counts' AS kind,
   CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_background ELSE 0 END) AS int) AS req_system_background,
   CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_other ELSE 0 END) AS int) AS req_system_other,
   CAST(SUM(own) AS int) AS own_sessions
-FROM s`
+FROM s
+OPTION (RECOMPILE)`
 
 // sessionsWaitsSQL: the waiting tasks of user sessions (not pgvigil's own) per wait type, with the longest wait; the
 // benign waits are taken out in Go (sessionsWaiting), from the same list the waits page uses.
@@ -84,7 +87,8 @@ FROM sys.dm_os_waiting_tasks w
 JOIN sys.dm_exec_sessions s ON s.session_id = w.session_id
 WHERE s.is_user_process = 1
   AND NOT (ISNULL(s.program_name, N'') <> N'' AND (s.program_name = ISNULL(PROGRAM_NAME(), N'') OR s.program_name LIKE N'pgvigil%'))
-GROUP BY w.wait_type`
+GROUP BY w.wait_type
+OPTION (RECOMPILE)`
 
 func (sessionsCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
 	counts, err := QueryRows(ctx, conn, sessionsCountsSQL)
