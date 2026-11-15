@@ -9,7 +9,15 @@
 #   up      refused (exit 2, nothing changed) when either lab instance does not answer, or when any of this script's
 #           names already exists: a distribution database or a distributor entry on PGVPRINCIPAL, a SQL Server Agent
 #           job in a REPL- category there, pgvmerge on PGVPRINCIPAL, pgvmerge_sub on PGVMIRROR, or a right of
-#           PGVPRINCIPAL's SQL Server Agent account on its snapshot folder. Then builds, in Microsoft's documented
+#           PGVPRINCIPAL's SQL Server Agent account on its snapshot folder, or this script's feature marker. First
+#           SQL Server's Replication feature on both instances (win-mirroring.ps1 installs the engine only, and
+#           sp_adddistributor refuses 'Replication components are not installed on this server' without it): each
+#           instance where master.sys.sp_MS_replication_installed refuses gets it from the lab's ISO
+#           (C:\sqlmedia\SQLServer2022-x64-ENU-Dev.iso, read only: mounted when not attached and dismounted after, its
+#           setup.exe's signature Valid, Microsoft) by setup.exe /QUIET /ACTION=Install /FEATURES=Replication
+#           /INSTANCENAME=<it> /IACCEPTSQLSERVERLICENSETERMS /UPDATEENABLED=False, run as SYSTEM through this script's
+#           one-shot task (removed on every path); the instance is named in <LabDir>\merge-feature.txt BEFORE setup
+#           runs, and the check is read back. Then builds, in Microsoft's documented
 #           order (sp_adddistributor, sp_adddistributiondb, sp_adddistpublisher, sp_replicationdboption 'merge
 #           publish', sp_addmergepublication, sp_addpublication_snapshot, sp_addmergearticle,
 #           sp_startpublication_snapshot, sp_addmergesubscription, sp_addmergepushsubscription_agent with
@@ -23,12 +31,15 @@
 #           instances.
 #   status  read only: the publication, the subscription, the merge agent's job and newest session, the rows on
 #           both sides, the grant absent; the last line is the VERDICT (exit 1 when not UP).
-#   down    the undo, by name only, each step skipped when its object is absent: the lab's replication jobs stopped,
+#   down    the undo, by name only, each step skipped when its object is absent (a read of a replication table that
+#           may not exist is an IF OBJECT_ID ... ELSE, never a CASE: Msg 208 at bind time): the lab's replication jobs stopped,
 #           sp_dropmergesubscription, sp_mergesubscription_cleanup on the subscriber, sp_dropmergepublication,
 #           sp_replicationdboption 'merge publish' false, sp_dropdistpublisher, sp_dropdistributiondb,
-#           sp_dropdistributor, the two databases dropped, the grant removed if still there; then every name read
-#           back gone: VERDICT CLEAN (exit 0) or VERDICT NOT CLEAN naming what is left (exit 1). win-mirroring.ps1 down
-#           uninstalls both instances afterwards whatever this left.
+#           sp_dropdistributor, the two databases dropped, the grant removed if still there; then the Replication
+#           feature removed from each instance the marker names (setup /QUIET /ACTION=Uninstall /FEATURES=Replication
+#           /INSTANCENAME=<it>, the same way), read back refused, the marker and the one-shot task gone; then every
+#           name read back gone: VERDICT CLEAN (exit 0) or VERDICT NOT CLEAN naming what is left (exit 1).
+#           win-mirroring.ps1 down uninstalls both instances afterwards whatever this left.
 #
 # Secrets: the subscriber connection is SQL Server authentication as sa with the lab's password from
 # <LabDir>\secret\sa.pw (win-mirroring.ps1's), passed as a parameter, never in a statement's text and never printed;
@@ -36,7 +47,10 @@
 # distributor needs it for nothing after; sp_dropdistributor does not ask for it).
 #
 # Expected (written before the first run on the host):
-#   up      'publisher <host>\PGVPRINCIPAL, subscriber <host>\PGVMIRROR (16.0.1000.6)'; the folder's rights printed
+#   up      'publisher <host>\PGVPRINCIPAL, subscriber <host>\PGVMIRROR (16.0.1000.6)'; for each instance
+#           'replication feature <inst>: absent - setup as SYSTEM ... exit 0 (or 3010), read back: installed' (a few
+#           minutes each), the mirroring roles of pgvmirror printed after (a feature setup may restart an engine); the
+#           ISO 'dismounted' when this script mounted it; the folder's rights printed
 #           ('ReplData before: ...', when it exists); 'distributor: distribution made, working directory <the instance's
 #           ReplData>'; 'grant: NT Service\SQLAgent$PGVPRINCIPAL Modify on <ReplData> (read back)'; 'snapshot:
 #           succeeded' within 180 s; 'merge agent job <name>: started'; 'pgvmerge_sub: 100 rows, merge triggers in
@@ -47,8 +61,9 @@
 #           and continuous, the newest session's runstatus, 120 / 120 rows, no grant; 'VERDICT UP'.
 #   down    'stopped: <job>' for a running lab job; 'dropped: subscription', 'cleanup: subscriber', 'dropped:
 #           publication', 'merge publish: off', 'dropped: distpublisher', 'dropped: distribution database',
-#           'dropped: distributor', 'dropped: pgvmerge', 'dropped: pgvmerge_sub'; read back: no distribution database,
-#           no distributor entry, no REPL- job, no pgvmerge, no pgvmerge_sub, no grant; 'VERDICT CLEAN', exit 0.
+#           'dropped: distributor', 'dropped: pgvmerge', 'dropped: pgvmerge_sub', 'replication feature <inst>: removed
+#           (read back: not installed)' for each the marker names; read back: no distribution database, no distributor
+#           entry, no REPL- job, no pgvmerge, no pgvmerge_sub, no grant, no marker, no task; 'VERDICT CLEAN', exit 0.
 # Exit: 0 done, 1 failed (a VERDICT NOT ... line names what), 2 refused (nothing changed).
 [CmdletBinding()]
 param(
@@ -64,6 +79,10 @@ $subInst = [pscustomobject]@{ Name = 'PGVMIRROR'; SqlPort = 14332 }
 $pubDb = 'pgvmerge'; $subDb = 'pgvmerge_sub'; $publication = 'pgvm_merge'; $distDb = 'distribution'
 $saFile = Join-Path $LabDir 'secret\sa.pw'
 $agentAccount = "NT Service\SQLAgent`$$($pubInst.Name)"
+$featureMarker = Join-Path $LabDir 'merge-feature.txt'   # the instances whose Replication feature this script added
+$isoPath = 'C:\sqlmedia\SQLServer2022-x64-ENU-Dev.iso'     # the lab's ISO (win-mirroring.ps1's), read only
+$setupTask = 'pgvigil-merge-lab-setup'                   # this script's one-shot task: setup as SYSTEM
+$secretDir = Join-Path $LabDir 'secret'                  # win-mirroring.ps1's folder (Administrators and SYSTEM only)
 
 function Say([string]$text) { Write-Host "win-merge: $text" }
 function Stop-Refused([string]$why) { Say "REFUSED: $why"; exit 2 }
@@ -147,6 +166,82 @@ function Remove-Grant([string]$folder) {
     return $true
 }
 
+# SQL Server's Replication feature on an instance: master.sys.sp_MS_replication_installed refuses (error 21028,
+# 'Replication components are not installed on this server') when it is absent - the refusal sp_adddistributor gives
+function Test-ReplicationInstalled([object]$inst) {
+    try { $null = Invoke-LabSql $inst 'EXEC master.sys.sp_MS_replication_installed;'; return $true }
+    catch { if ($_.Exception.Message -match 'Replication components are not installed') { return $false }; throw }
+}
+function Get-MarkedInstances {
+    if (-not (Test-Path -LiteralPath $featureMarker)) { return @() }
+    return @(Get-Content -LiteralPath $featureMarker -ErrorAction Stop | Where-Object { $_ -in @($pubInst.Name, $subInst.Name) })
+}
+
+# setup.exe <arguments> as SYSTEM through this script's one-shot task (setup under the ssh door's key-based logon fails:
+# ProtectedData 'Access is denied'); returns setup's exit code. The task's .cmd and exit file live in the lab's secret
+# folder; the task, the .cmd and the exit file are removed on every path; a task of this name still running = refused.
+function Invoke-SetupAsSystem([string]$setupExe, [string]$arguments, [int]$timeoutMin = 30) {
+    $earlier = Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue
+    if ($earlier -and [string]$earlier.State -eq 'Running') { throw "setup as SYSTEM from an earlier run is still running (task '$setupTask')" }
+    if (-not (Test-Path -LiteralPath $secretDir)) { throw "no $secretDir (win-mirroring.ps1 up makes it)" }
+    $wrapper = Join-Path $secretDir 'merge-setup-run.cmd'
+    $exitFile = Join-Path $secretDir 'merge-setup-run.exit'
+    if (Test-Path -LiteralPath $exitFile) { Remove-Item -LiteralPath $exitFile -Force -ErrorAction Stop }
+    # the redirection first: 'echo 0> file' would redirect handle 0 and leave the file empty
+    Set-Content -LiteralPath $wrapper -Encoding ASCII -Value @("@echo off", "`"$setupExe`" $arguments", "> `"$exitFile`" echo %ERRORLEVEL%")
+    $taskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$wrapper`""
+    $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes ($timeoutMin + 10)) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    try {
+        Register-ScheduledTask -TaskName $setupTask -Action $taskAction -Principal $taskPrincipal -Settings $taskSettings -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $setupTask -ErrorAction Stop
+        $started = Get-Date; $deadline = $started.AddMinutes($timeoutMin)
+        while (-not (Test-Path -LiteralPath $exitFile)) {
+            $state = [string](Get-ScheduledTask -TaskName $setupTask -ErrorAction Stop).State
+            if ($state -eq 'Ready' -and ((Get-Date) - $started).TotalSeconds -gt 30) {
+                Start-Sleep -Seconds 2
+                if (Test-Path -LiteralPath $exitFile) { break }
+                throw "setup as SYSTEM ended with no exit code (task state $state, last result $((Get-ScheduledTaskInfo -TaskName $setupTask).LastTaskResult))"
+            }
+            if ((Get-Date) -gt $deadline) { Stop-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue; throw "setup as SYSTEM wrote no exit code in $timeoutMin minutes (the task was stopped)" }
+            Start-Sleep -Seconds 10
+        }
+        Start-Sleep -Seconds 2
+        $codeText = [string](Get-Content -LiteralPath $exitFile -Raw -ErrorAction Stop)
+        if ($codeText.Trim() -notmatch '^-?[0-9]+$') { throw "setup as SYSTEM left no exit code ('$($codeText.Trim())')" }
+        return [int]$codeText.Trim()
+    } finally {
+        if (Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $setupTask -Confirm:$false -ErrorAction SilentlyContinue }
+        foreach ($leftover in @($wrapper, $exitFile)) { if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Force -ErrorAction SilentlyContinue } }
+    }
+}
+
+# the lab's ISO mounted (when it is not already) and its setup.exe checked; returns @(setup path, whether this mounted it)
+function Get-SetupFromIso {
+    if (-not (Test-Path -LiteralPath $isoPath)) { throw "no $isoPath (the lab's ISO)" }
+    $image = Get-DiskImage -ImagePath $isoPath -ErrorAction Stop
+    $mountedHere = $false
+    if (-not $image.Attached) { $image = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop; $mountedHere = $true; Say "mounted $isoPath" }
+    $drive = (Get-Volume -DiskImage (Get-DiskImage -ImagePath $isoPath -ErrorAction Stop) -ErrorAction Stop).DriveLetter
+    $setupExe = "${drive}:\setup.exe"
+    $exeSig = Get-AuthenticodeSignature -FilePath $setupExe
+    if ($exeSig.Status -ne 'Valid' -or $exeSig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        if ($mountedHere) { Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null }
+        throw "setup.exe's signature is $($exeSig.Status): not run"
+    }
+    return @($setupExe, $mountedHere)
+}
+
+# the Replication feature added (op 'Install') or removed (op 'Uninstall') on one instance, read back
+function Set-ReplicationFeature([object]$inst, [string]$op, [string]$setupExe) {
+    $want = ($op -eq 'Install')
+    $code = Invoke-SetupAsSystem $setupExe "/QUIET /ACTION=$op /FEATURES=Replication /INSTANCENAME=$($inst.Name) /IACCEPTSQLSERVERLICENSETERMS$(if ($want) { ' /UPDATEENABLED=False' })"
+    $now = Test-ReplicationInstalled $inst
+    Say "replication feature $($inst.Name): setup /ACTION=$op as SYSTEM exit $code, read back: $(if ($now) { 'installed' } else { 'not installed' })"
+    if ($code -notin 0, 3010) { throw "setup /ACTION=$op /FEATURES=Replication on $($inst.Name) exit $code" }
+    if ($now -ne $want) { throw "the Replication feature on $($inst.Name) reads $(if ($now) { 'installed' } else { 'not installed' }) after setup /ACTION=$op" }
+}
+
 # the names this script makes, as found now (each a count; 0 = absent)
 function Get-LabNames {
     return [pscustomobject]@{
@@ -228,12 +323,31 @@ function Invoke-Up {
     if ($taken.Count -gt 0) { Stop-Refused "already present: $($taken -join ', ') (down first)" }
     if ($agentActual -ne $agentAccount) { Stop-Refused "the Agent service account is '$agentActual', not '$agentAccount'" }
     if ($grantBefore.Count -gt 0) { Stop-Refused "$agentAccount already has an explicit right on $replData" }
+    if (Test-Path -LiteralPath $featureMarker) { Stop-Refused "$featureMarker exists (an earlier run's: down first)" }
     Say "publisher $pubName, subscriber $subName ($version)"
     if (Test-Path -LiteralPath $replData) { foreach ($aclLine in @(& icacls.exe $replData 2>&1)) { if ("$aclLine".Trim()) { Say "ReplData before: $("$aclLine".Trim())" } } }
 
     $sapw = (Get-Content -LiteralPath $saFile -Raw -ErrorAction Stop).Trim()
     $made = $false
     try {
+        # SQL Server's Replication feature on both instances, from the lab's ISO, the instance named in the marker first
+        $missing = @(@($pubInst, $subInst) | Where-Object { -not (Test-ReplicationInstalled $_) })
+        foreach ($inst in @($pubInst, $subInst)) { if ($inst -notin $missing) { Say "replication feature $($inst.Name): installed already (not this script's: left as it is)" } }
+        if ($missing.Count -gt 0) {
+            $media = Get-SetupFromIso
+            try {
+                foreach ($inst in $missing) {
+                    Add-Content -LiteralPath $featureMarker -Value $inst.Name -ErrorAction Stop
+                    Say "replication feature $($inst.Name): absent - setup as SYSTEM (a few minutes)"
+                    Set-ReplicationFeature $inst 'Install' $media[0]
+                }
+            } finally { if ($media[1]) { Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null; Say "dismounted $isoPath" } }
+            # a feature setup may restart an engine (an automatic failover of the mirroring lab): the roles, read only
+            foreach ($inst in @($pubInst, $subInst)) {
+                $roleRow = Invoke-LabSql $inst "SELECT CAST(d.name AS nvarchar(128)) AS db, CAST(m.mirroring_role_desc AS nvarchar(60)) AS role, CAST(m.mirroring_state_desc AS nvarchar(60)) AS state FROM sys.database_mirroring m JOIN sys.databases d ON d.database_id = m.database_id WHERE m.mirroring_guid IS NOT NULL"
+                foreach ($roleLine in $roleRow) { Say "mirroring on $($inst.Name) after the feature: $($roleLine.db) $($roleLine.role) $($roleLine.state)" }
+            }
+        }
         Invoke-LabSql $pubInst "EXEC sp_adddistributor @distributor = @@SERVERNAME, @password = @pw;" 'master' @{ pw = (New-LabPassword) } | Out-Null
         Invoke-LabSql $pubInst "EXEC sp_adddistributiondb @database = N'$distDb', @security_mode = 1;" | Out-Null
         Invoke-LabSql $pubInst "EXEC sp_adddistpublisher @publisher = @@SERVERNAME, @distribution_db = N'$distDb', @security_mode = 1, @trusted = N'false', @thirdparty_flag = 0, @publisher_type = N'MSSQLSERVER';" | Out-Null
@@ -316,10 +430,11 @@ function Invoke-Down {
         $jobs = @()
         try { $jobs = Invoke-LabSql $pubInst $runningSql } catch { Say "FAILED read of the running jobs: $($_.Exception.Message)"; $failures.Add('jobs unread') }
         foreach ($jobRow in $jobs) { Step "stopped: $($jobRow.job)" { Invoke-LabSql $pubInst 'EXEC msdb.dbo.sp_stop_job @job_name = @job;' 'master' @{ job = $jobRow.job } | Out-Null } }
-        # sp_stop_job only asks: the agents may hold the distribution database for seconds (60 s at most)
-        if ($jobs.Count -gt 0 -and -not (Wait-Until 60 { @(Invoke-LabSql $pubInst $runningSql).Count -eq 0 })) { Say 'a lab job still runs 60 s after its stop'; $failures.Add('a job did not stop') }
+        # sp_stop_job only asks: the agents may hold the distribution database for seconds (60 s at most). Invoke-LabSql
+        # returns its rows as ONE array object: @() around the call would nest it (Count 1 always), so the call is bare
+        if ($jobs.Count -gt 0 -and -not (Wait-Until 60 { (Invoke-LabSql $pubInst $runningSql).Count -eq 0 })) { Say 'a lab job still runs 60 s after its stop'; $failures.Add('a job did not stop') }
     }
-    if ($hasPubDb -and [int](Get-LabValue $pubInst "SELECT CASE WHEN OBJECT_ID(N'dbo.sysmergepublications') IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM dbo.sysmergepublications WHERE name = N'$publication') END" $pubDb) -gt 0) {
+    if ($hasPubDb -and [int](Get-LabValue $pubInst "IF OBJECT_ID(N'dbo.sysmergepublications') IS NULL SELECT 0 AS n ELSE SELECT COUNT(*) AS n FROM dbo.sysmergepublications WHERE name = N'$publication';" $pubDb) -gt 0) {
         if ([int](Get-LabValue $pubInst "SELECT COUNT(*) FROM dbo.sysmergesubscriptions s JOIN dbo.sysmergepublications p ON p.pubid = s.pubid WHERE p.name = N'$publication' AND s.db_name = N'$subDb'" $pubDb) -gt 0) {
             Step 'dropped: subscription' { Invoke-LabSql $pubInst "EXEC sp_dropmergesubscription @publication = N'$publication', @subscriber = @sub, @subscriber_db = N'$subDb', @subscription_type = N'push';" $pubDb @{ sub = $subName } | Out-Null }
         }
@@ -329,7 +444,7 @@ function Invoke-Down {
     if ($hasPubDb -and [int](Get-LabValue $pubInst "SELECT CAST(is_merge_published AS int) FROM sys.databases WHERE name = N'$pubDb'") -eq 1) {
         Step 'merge publish: off' { Invoke-LabSql $pubInst "EXEC sp_replicationdboption @dbname = N'$pubDb', @optname = N'merge publish', @value = N'false';" | Out-Null }
     }
-    if ([int](Get-LabValue $pubInst "SELECT CASE WHEN OBJECT_ID(N'msdb.dbo.MSdistpublishers') IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM msdb.dbo.MSdistpublishers WHERE name = @@SERVERNAME) END") -gt 0) {
+    if ([int](Get-LabValue $pubInst "IF OBJECT_ID(N'msdb.dbo.MSdistpublishers') IS NULL SELECT 0 AS n ELSE SELECT COUNT(*) AS n FROM msdb.dbo.MSdistpublishers WHERE name = @@SERVERNAME;") -gt 0) {
         Step 'dropped: distpublisher' { Invoke-LabSql $pubInst 'EXEC sp_dropdistpublisher @publisher = @@SERVERNAME;' | Out-Null }
     }
     if ($hasDist) { Step 'dropped: distribution database' { Invoke-LabSql $pubInst "EXEC sp_dropdistributiondb @database = N'$distDb';" | Out-Null } }
@@ -340,13 +455,32 @@ function Invoke-Down {
     if ($hasSubDb) { Step "dropped: $subDb" { Invoke-LabSql $subInst "ALTER DATABASE [$subDb] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$subDb];" | Out-Null } }
     $replData = Get-ReplDataPath
     if (@(Get-GrantLines $replData).Count -gt 0) { if (-not (Remove-Grant $replData)) { $failures.Add('the grant') } }
+    # the Replication feature this script added (the marker's instances only), the same ISO and task, read back
+    $marked = @()
+    try { $marked = @(Get-MarkedInstances) } catch { Say "FAILED read of $featureMarker`: $($_.Exception.Message)"; $failures.Add('marker unread') }
+    $toRemove = @(@($pubInst, $subInst) | Where-Object { $_.Name -in $marked })
+    if ($toRemove.Count -gt 0) {
+        try {
+            $media = Get-SetupFromIso
+            try {
+                foreach ($inst in $toRemove) {
+                    if (Test-ReplicationInstalled $inst) { Set-ReplicationFeature $inst 'Uninstall' $media[0] }
+                    else { Say "replication feature $($inst.Name): not installed already" }
+                }
+            } finally { if ($media[1]) { Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null; Say "dismounted $isoPath" } }
+            Remove-Item -LiteralPath $featureMarker -Force -ErrorAction Stop
+        } catch { Say "FAILED replication feature removal: $($_.Exception.Message)"; $failures.Add('replication feature') }
+    } elseif (Test-Path -LiteralPath $featureMarker) { Remove-Item -LiteralPath $featureMarker -Force -ErrorAction SilentlyContinue }
     # read back every name
     try {
         $names = Get-LabNames
         foreach ($prop in $names.PSObject.Properties) { if ($prop.Value -gt 0) { $failures.Add("$($prop.Name) left ($($prop.Value))") } }
         $grantLeft = @(Get-GrantLines $replData).Count
         if ($grantLeft -gt 0) { $failures.Add('grant left') }
-        Say "read back: distribution database $($names.DistDb), distributor entry $($names.Distributor), REPL- jobs $($names.ReplJobs), $pubDb $($names.PubDb), $subDb $($names.SubDb), explicit grant entries $grantLeft"
+        $markerLeft = [int](Test-Path -LiteralPath $featureMarker); $taskLeft = @(Get-ScheduledTask -TaskName $setupTask -ErrorAction SilentlyContinue).Count
+        $featureLeft = @(@($pubInst, $subInst) | Where-Object { $_.Name -in $marked -and (Test-ReplicationInstalled $_) }).Count
+        if ($markerLeft -gt 0) { $failures.Add('marker left') }; if ($taskLeft -gt 0) { $failures.Add("task $setupTask left") }; if ($featureLeft -gt 0) { $failures.Add("replication feature left on $featureLeft") }
+        Say "read back: distribution database $($names.DistDb), distributor entry $($names.Distributor), REPL- jobs $($names.ReplJobs), $pubDb $($names.PubDb), $subDb $($names.SubDb), explicit grant entries $grantLeft, feature marker $markerLeft, setup task $taskLeft, replication feature this script added $featureLeft"
     } catch { Say "FAILED read back: $($_.Exception.Message)"; $failures.Add('read back failed') }
     if ($failures.Count -eq 0) { Say 'VERDICT CLEAN'; exit 0 }
     Say "VERDICT NOT CLEAN: $($failures -join '; ')"
