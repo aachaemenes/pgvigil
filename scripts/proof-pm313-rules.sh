@@ -9,7 +9,8 @@
 # password is made at run time and reaches the tools through environment files or the environment. Only the
 # collection a step names runs (pgvigil collect -once).
 #
-# Expected (written before the first run; red on f8e89d2 at R7a: no compiled_plans column there):
+# Expected (written before the first run; red on f8e89d2 at R7a with PGVIGIL_WIRING=0: no compiled_plans column there;
+# with the default PGVIGIL_WIRING=1 f8e89d2 goes red at A's migrate, the patch's 0190 view calling mssql_runnable_queue):
 #  A. the container, a database pgvctr, a monitor login with VIEW SERVER STATE; migrate ok; mssql_memory runs.
 #  R7. plan cache bloat (Fixed 10, PlanCacheBloatRule.cs):
 #     R7a on a built instance ctrsyn's plan cache rows (mssql_plancache_type, one read each): a whole cache of 80 MB
@@ -21,7 +22,11 @@
 #        (single_use_pct and compiled_plans over Compiled Plan and its stubs only).
 #     R7b live: 'optimize for ad hoc workloads' on, 400 distinct ad hoc batches run once each, mssql_memory: the
 #        newest read holds Compiled Plan Stub rows and the summary's compiled_plans counts them (400 or more single-use
-#        compiled plans); the memory findings' plan cache sentence, when a level is reached, names 'compiled plans'.
+#        compiled plans). The memory findings' plan cache sentence on ctrsyn (405 review part B, S1: live it never
+#        reached a level): with 'optimize for ad hoc workloads' at 0 in mssql_config, the 100 MB at 60 % read is an
+#        info 'plan cache bloat with optimize for ad hoc workloads off' whose words start '60.0 % of the 1000 compiled
+#        plans are used once'. S4: the live RESOURCE_MONITOR records mssql_memory stored carry memory_node_id 0 and
+#        ring_ms on every row (the wiring's memory.go; none stored = 'NOT PROVEN live' printed).
 #  R9. parallelism advice (Fixed 24, F10): R9a on ctrsyn's built rows (16 CPUs on one NUMA node; MAXDOP 0 and cost
 #     threshold 5 in force 2 h to 1 h ago, 8 and 50 since; cost threshold 50 alone 3 h to 2 h ago): mssql_advised_maxdop
 #     8 ('16 logical processors on one NUMA node: up to 8'), 16 with 32 CPUs over 2 nodes; the CXPACKET advice 90 min
@@ -29,7 +34,11 @@
 #     guidance: raise cost threshold for parallelism to 50, cap MAXDOP at 8 (...)', now 'Both are within topology
 #     guidance', 150 min ago 'check the other setting by hand', 5 h ago none (the static text stays); the THREADPOOL
 #     advice now 'Resolve the dominant cause ... Both are within topology guidance, so if it is parallelism the driver
-#     is the volume of concurrent parallel queries'. R9b live: mssql_activity and mssql_checks read; the advisor equals
+#     is the volume of concurrent parallel queries'. R9c (405 review part B, S2) the wait findings' wiring: ctrsyn's
+#     wait reads with CXPACKET and THREADPOOL over 10 % of the read, one 90 minutes ago and one 5 hours ago:
+#     mssql_wait_findings_between's Parallelism detail ends with mssql_parallelism_advice at the read's time (90 min)
+#     and with the static 'Usually a cost threshold ...' text (5 h, nothing read); THREADPOOL's detail the same with
+#     the 'threadpool' advice and its static text. R9b live: mssql_activity and mssql_checks read; the advisor equals
 #     dbatools' rule over the container's own cpu_count and numa_node_count read by hand, and the advice now names the
 #     container's MAXDOP and cost threshold (5: 'raise cost threshold for parallelism to 50'). Red on f8e89d2: no
 #     mssql_advised_maxdop.
@@ -42,8 +51,8 @@
 #     at 97 % and 60 % of that RAM (mssql_instance, mssql_checks read each time): warning, review, ok, each suggestion
 #     = RAM minus the reserve. Red on f8e89d2: no mssql_memory_suggestion.
 #  R5. protection ages (Changed 46, F1, F2): on pmbox (tags env:pma, app:pmb) after mssql_backups, msdb's ages read
-#     168 'the default' / 60 'the default'; tag rows env:pma 48 h and app:pmb 24 h: 24 'tag app:pmb (row n)' (the
-#     strictest); env:pma at 0: still 24 (0 only when every tag says 0); a database row on msdb 1 h / 15 min: 1 and 15
+#     168 'the default' / 60 'the default'; tag rows app:pmb 24 h, then env:pma 48 h (the stricter first, so the
+#     newest is not the strictest: 405 review part B, S3): 24 'tag app:pmb (row n)' (the strictest); env:pma at 0: still 24 (0 only when every tag says 0); a database row on msdb 1 h / 15 min: 1 and 15
 #     'database row n', model keeps 24; pgvigil.yaml's mssql_thresholds full_backup_hours 100: model 100 'pgvigil.yaml',
 #     msdb still 1 (the database row wins); msdb's row at 0: full_status 'not judged'; the door refuses a negative age,
 #     a database row on an instance it does not know, and an instance scope (the yaml's); every row ended: model 100.
@@ -55,7 +64,7 @@
 #     a tag row added 200, a negative age refused 409, the row ended 200; a -no-login serve reads with writable false and
 #     its reason, and refuses a POST 403; the log holds done=2 refused=1 by the proof's user from 127.0.0.1.
 #     Red on f8e89d2: no import_mssql_protection_override.
-#  R2. High CPU (Changed 12, Release 5, D2 a, F12): R2a after migrate one fleet rule 'SQL Server: High CPU' on cpu.sql_pct,
+#  R2. High CPU (Changed 12, Release 5, D2 a, F12): R2a after migrate one fleet rule named 'SQL Server: High CPU' on cpu.sql_pct,
 #     above 79.999 / 94.999 for 4 minutes, enabled false, created_by 'pgvigil', client '0156 seed', one 'seed' log row;
 #     0156 run again by hand adds nothing, nor after the rule is ended. R2b on a built active instance cpusyn's CPU
 #     records one minute apart, an instance rule at the seed's thresholds and minutes: four records at 96 % read
@@ -66,7 +75,8 @@
 #     over 5,000 writes raises nothing (red on f8e89d2: 'slow data file writes' on it) and the tempdb sentences give its
 #     average; log files at 12 ms over 300 writes warning, 35 ms critical, 19 ms over 1,000 writes warning (red on
 #     f8e89d2: under 20 ms). The retirement: an open alert of 'slow data file writes' on the user file and one on tempdb;
-#     0156 run again: the user file's closed with no recovery and a 'cleared' alert_log row 'rule retired', tempdb's open;
+#     0156 run again: the user file's closed with no recovery (alert_due with a recovery channel at clear delay 0 lists
+#     no row for it) and a 'cleared' alert_log row 'rule retired', tempdb's open;
 #     a third run adds no row. NOT PROVEN live: the box's disk cannot be slowed to an exact latency.
 #  R3. Runnable Queue's reading (Changed 13, D3 b): on built scheduler reads of three instances, judged at a fixed time
 #     T: five reads a minute apart in the last 5 minutes at 10 per scheduler read 10 over 'the 5 reads of the last 5
@@ -81,8 +91,8 @@
 #     records (red on f8e89d2: 2, node 1's own lost under node 0's higher ids), the watermark {0: 101, 1: 52}; read 2 with
 #     101 and 52 again, node 0's 102 and its copy 53 on node 1, and node 1's 49 stores 1 more (4); read 3 from a collector
 #     without the node column, record 103, stores it (5); mssql_memory_rmon_hourly counts each event once (5 at
-#     indicator 2, not 7). The live record's NodeId (0 on the container) waits for memory.go's WIRING; NOT PROVEN live on
-#     two nodes (a container has one).
+#     indicator 2, not 7). The live record's NodeId (0 on the container) is R7b's S4 row; NOT PROVEN live on two nodes
+#     (a container has one).
 #     R8b (with the wiring patch) the Memory page's records under pgvigil serve: GET /api/mssql/memory?part=rmon for
 #     ctrsyn over the hours of R8's records answers 200 with a memory_node_id column, the 5 records per node
 #     '0:3 1:1 none:1' (node 1's own 52; 103 read before the node column). Red without the patch: no such column. The
@@ -135,10 +145,11 @@ cleanup() {
   if [[ -n "$CHRPID" ]]; then kill -- "-$CHRPID" 2>/dev/null || kill "$CHRPID" 2>/dev/null || true; fi
   docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -f -v >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
-  rm -rf "$TMPD"
+  command rm -rf "$TMPD"
 }
 trap cleanup EXIT
 for t in docker go psql python3 curl node npm chromium setsid ss; do command -v "$t" >/dev/null || fail "needs $t"; done
+node -e 'process.exit(typeof WebSocket === "function" && typeof fetch === "function" ? 0 : 1)' || fail "node $(node --version) has no global WebSocket: R10c needs node 22 or later"
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
 # PGVIGIL_WIRING 1 (default): this task's lines in other owners' files (scripts/proof-pm313-rules-wiring.patch) are
 # applied to the run's own copy of the tree when it lacks them; 0 = the copy as it is. The web bundle and the binary
@@ -225,7 +236,19 @@ echo "   live: $LV single-use stubs in the newest read; the summary compiled_pla
 (( $(cut -d'|' -f2 <<<"$LS") >= LV && $(cut -d'|' -f1 <<<"$LS") >= LV )) || fail "R7b: the summary does not count the stubs [$LS]"
 FT=$(pq "SELECT coalesce(string_agg(detail, ' / '), '') FROM pgvigil.mssql_memory_findings_between($SB, now() - interval '5 minutes', now()) WHERE check_name LIKE 'plan cache bloat%'")
 [[ -z "$FT" || "$FT" == *"compiled plans are used once"* ]] || fail "R7b: the plan cache finding's sentence [$FT]"
-ok "R7b: with optimize for ad hoc workloads on, $LV single-use stubs read live and counted as compiled plans by the summary ($LS)"
+# S1: the sentence on ctrsyn's 100 MB at 60 % read (S3's window), 'optimize for ad hoc workloads' at 0
+pq "INSERT INTO pgvigil.mssql_config (instance_id, name, value, value_in_use, snapshot_at, is_present) VALUES ($SY, 'optimize for ad hoc workloads', 0, 0, now(), true)
+    ON CONFLICT (instance_id, name) DO UPDATE SET value = 0, value_in_use = 0, snapshot_at = EXCLUDED.snapshot_at, is_present = true" >/dev/null
+FS=$(pq "SELECT coalesce(string_agg(severity || '|' || check_name || '|' || detail, ' / '), '') FROM pgvigil.mssql_memory_findings_between($SY, now() - interval '57.5 minutes', now() - interval '56.5 minutes') WHERE check_name LIKE 'plan cache bloat%'")
+echo "   ctrsyn's plan cache sentence: $FS"
+[[ "$FS" == "info|plan cache bloat with optimize for ad hoc workloads off|60.0 % of the 1000 compiled plans are used once ("* && "$FS" != *" / "* ]] \
+  || fail "R7b: the plan cache sentence on a built read [$FS] (want one info row starting '60.0 % of the 1000 compiled plans are used once')"
+# S4: the live records' node and ring time (the wiring's memory.go)
+RN=$(pq "SELECT count(*) || '|' || count(memory_node_id) || '|' || count(ring_ms) || '|' || coalesce(string_agg(DISTINCT memory_node_id::text, ','), '') FROM pgvigil.mssql_memory_rmon WHERE instance_id = $SB")
+echo "   live RESOURCE_MONITOR records stored|with a node|with ring_ms|nodes: $RN"
+if [[ "${RN%%|*}" == 0 ]]; then echo "NOT PROVEN live: no RESOURCE_MONITOR record on the container, so memory.go's node and ring_ms reads were not exercised"
+else IFS='|' read -r rn1 rn2 rn3 rn4 <<<"$RN"; [[ "$rn1" == "$rn2" && "$rn1" == "$rn3" && "$rn4" == 0 ]] || fail "R7b: the live records' node and ring_ms [$RN] (want every row with node 0 and ring_ms)"; fi
+ok "R7b: with optimize for ad hoc workloads on, $LV single-use stubs read live and counted as compiled plans by the summary ($LS); the sentence names the compiled plans; the live records' node and ring time [$RN]"
 
 echo "== R9. parallelism advice (Fixed 24) =="
 pq "INSERT INTO pgvigil.mssql_cpu_info (instance_id, snapshot_at, info) VALUES ($SY, now(), '{\"cpu_count\": 16, \"numa_node_count\": 1}')" >/dev/null
@@ -248,6 +271,23 @@ for x in "$AM" "$C90" "$C0" "$C150" "$C300" "$T0"; do echo "   $x"; done
 pq "UPDATE pgvigil.mssql_cpu_info SET info = '{\"cpu_count\": 32, \"numa_node_count\": 2}' WHERE instance_id = $SY" >/dev/null
 AM2=$(pq "SELECT maxdop FROM pgvigil.mssql_advised_maxdop($SY)"); [[ "$AM2" == 16 ]] || fail "R9a: 32 CPUs over 2 nodes [$AM2] (want 16)"
 ok "R9a: the advisor 8 and 16; the four CXPACKET cases (off guidance, within, one by hand, none read) and THREADPOOL's within"
+# R9c: the advice in the wait findings (16 CPUs again for C90's words); a read 90 minutes and one 5 hours ago
+pq "UPDATE pgvigil.mssql_cpu_info SET info = '{\"cpu_count\": 16, \"numa_node_count\": 1}' WHERE instance_id = $SY" >/dev/null
+pq "SELECT pgvigil.ensure_month_partition('mssql_wait_sample', now() - interval '5 hours'), pgvigil.ensure_month_partition('mssql_wait_sample', now())" >/dev/null
+for ago in 90 300; do pq "INSERT INTO pgvigil.mssql_wait_sample (instance_id, snapshot_at, wait_type, category, is_benign, waiting_tasks, wait_ms, signal_ms, interval_secs)
+  VALUES ($SY, now() - interval '$ago minutes', 'CXPACKET', 'Parallelism', false, 100, 30000, 0, 60), ($SY, now() - interval '$ago minutes', 'THREADPOOL', 'CPU', false, 100, 12000, 0, 60)" >/dev/null; done
+# wfa <minutes ago> <wait type> <advice kind> <static text>: t|t when the detail ends with the advice at the read's time (or the static text when none), and which
+wfa() { pq "SELECT coalesce(string_agg(CASE WHEN pgvigil.mssql_parallelism_advice($SY, f.at, '$3') IS NOT NULL
+      THEN 'advice|' || (right(f.detail, length(pgvigil.mssql_parallelism_advice($SY, f.at, '$3'))) = pgvigil.mssql_parallelism_advice($SY, f.at, '$3'))
+      ELSE 'static|' || (right(f.detail, length('$4')) = '$4') END, ','), 'none')
+  FROM pgvigil.mssql_wait_findings_between($SY, now() - interval '$1 minutes' - interval '1 minute', now() - interval '$1 minutes' + interval '1 minute') f WHERE f.object LIKE '$2 (%'"; }
+CXS='Usually a cost threshold for parallelism / MAXDOP tuning issue rather than a problem in itself.'
+TPS='Scheduling pressure. Review parallelism settings and plan quality; THREADPOOL specifically means worker-thread exhaustion.'
+W90=$(wfa 90 CXPACKET cx "$CXS"); W300=$(wfa 300 CXPACKET cx "$CXS"); P90=$(wfa 90 THREADPOOL threadpool "$TPS"); P300=$(wfa 300 THREADPOOL threadpool "$TPS")
+echo "   the wait findings: CXPACKET 90 min $W90, 5 h $W300; THREADPOOL 90 min $P90, 5 h $P300"
+[[ "$W90|$W300|$P90|$P300" == "advice|true|static|true|advice|true|static|true" ]] || fail "R9c: the advice in the wait findings [$W90|$W300|$P90|$P300]"
+pq "UPDATE pgvigil.mssql_cpu_info SET info = '{\"cpu_count\": 32, \"numa_node_count\": 2}' WHERE instance_id = $SY" >/dev/null
+ok "R9c: the wait findings' Parallelism and THREADPOOL details carry the advice at the read's time, the static text where nothing was read"
 col mssql_activity mssql_checks
 HW=$(sq "SELECT CAST(cpu_count AS varchar(10)) + '|' + CAST(numa_node_count AS varchar(10)) FROM sys.dm_os_sys_info")
 LM=$(pq "SELECT maxdop FROM pgvigil.mssql_advised_maxdop($SB)")
@@ -295,8 +335,8 @@ door() { pq "SELECT pgvigil.import_mssql_protection_override(now(), '$1'::jsonb)
 jb() { pq "SELECT full_backup_hours::float8 || '|' || full_hours_from || '|' || log_backup_minutes::float8 || '|' || log_minutes_from || '|' || full_status
   FROM pgvigil.mssql_backup_judged WHERE instance_id = $SB AND database_name = '$1'"; }
 J0=$(jb msdb); [[ "$J0" == "168|the default|60|the default|"* ]] || fail "R5: msdb before any row [$J0]"
-door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_backup_hours":48}' | grep -q '"done"' || fail "R5: the env:pma row"
 door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"app:pmb","full_backup_hours":24}' | grep -q '"done"' || fail "R5: the app:pmb row"
+door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_backup_hours":48}' | grep -q '"done"' || fail "R5: the env:pma row"
 J1=$(jb msdb); [[ "$J1" == "24|tag app:pmb (row "*")|60|the default|"* ]] || fail "R5: two tag rows [$J1] (want 24 from app:pmb)"
 door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_backup_hours":0}' | grep -q 'replaced' || fail "R5: env:pma at 0"
 J2=$(jb msdb); [[ "$J2" == "24|tag app:pmb (row "* ]] || fail "R5: a tag at 0 beside one at 24 [$J2] (want 24)"
@@ -312,7 +352,7 @@ J5=$(jb msdb); [[ "$J5" == "0|database row "*"|not judged" ]] || fail "R5: msdb 
 R1=$(door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_backup_hours":-1}')
 R2=$(door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"nosuch","database_name":"x","full_backup_hours":1}')
 R3=$(door '{"op":"add","ui_user":"proof405","scope":"instance","instance_name":"pmbox","full_backup_hours":1}')
-grep -q '"refused"' <<<"$R1" && grep -q '"refused"' <<<"$R2" && grep -q 'mssql_thresholds' <<<"$R3" || fail "R5: the refusals [$R1] [$R2] [$R3]"
+grep -q '"refused"' <<<"$R1" && grep -q '"refused"' <<<"$R2" && grep -q '"refused"' <<<"$R3" && grep -q 'mssql_thresholds' <<<"$R3" || fail "R5: the refusals [$R1] [$R2] [$R3]"
 # the database row's name as the server spells it (405 review part A, finding 5)
 door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"pmbox","database_name":"MODEL","log_backup_minutes":30}' | grep -q '"done"' || fail "R5: the MODEL row"
 DBN=$(pq "SELECT database_name FROM pgvigil.mssql_protection_overrides WHERE ended_at IS NULL AND scope = 'database' AND lower(database_name) = 'model'")
@@ -337,6 +377,7 @@ serve() { local p; for _ in 1 2 3; do p=$(freeport 29000 32499)
     for _ in $(seq 1 60); do grep -q "url=http://127.0.0.1:$p/" "$TMPD/serve-$p.log" 2>/dev/null && { echo "$pid $p"; return 0; }; kill -0 $pid 2>/dev/null || break; sleep 0.5; done
     kill $pid 2>/dev/null || true; done; fail "R5b: serve never answered: $(tail -3 "$TMPD"/serve-*.log)"; }
 read -r SRVPID SPORT <<<"$(serve)"; read -r SRV2PID SPORT2 <<<"$(serve -no-login)"
+[[ -n "$SPORT" && -n "$SPORT2" ]] || fail "R5b: serve never answered: $(tail -3 "$TMPD"/serve-*.log 2>/dev/null)"
 U=http://127.0.0.1:$SPORT; U2=http://127.0.0.1:$SPORT2; JAR=$TMPD/jar
 code() { curl -s -m 20 -o "$TMPD/body" -w '%{http_code}' "$@"; }
 NOW_LOG=$(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log")
@@ -366,11 +407,11 @@ LOGS=$(pq "SELECT string_agg(outcome || '=' || n, ' ' ORDER BY outcome) FROM (SE
 ok "R5b: the API: GET with limits; POST 401 / 403 / add 200 / refused 409 / end 200; a -no-login serve read only and refusing; done=2 refused=1 logged"
 
 echo "== R2. High CPU (Changed 12) =="
-HC=$(pq "SELECT rule_id || '|' || op || '|' || warning || '|' || critical || '|' || for_minutes || '|' || enabled || '|' || scope || '|' || created_by
+HC=$(pq "SELECT rule_id || '|' || name || '|' || op || '|' || warning || '|' || critical || '|' || for_minutes || '|' || enabled || '|' || scope || '|' || created_by
   FROM pgvigil.alert_rules WHERE metric = 'cpu.sql_pct' AND client = '0156 seed'")
 HL=$(pq "SELECT count(*) FROM pgvigil.alert_rule_log WHERE op = 'seed' AND client = '0156 seed'")
 echo "   the seed: $HC; log rows $HL"
-[[ "$HC" =~ ^[0-9]+\|above\|79\.999\|94\.999\|4\|false\|fleet\|pgvigil$ && "$HL" == 1 ]] || fail "R2a: the seeded rule [$HC], $HL log row(s)"
+[[ "$HC" =~ ^[0-9]+\|SQL\ Server:\ High\ CPU\|above\|79\.999\|94\.999\|4\|false\|fleet\|pgvigil$ && "$HL" == 1 ]] || fail "R2a: the seeded rule [$HC], $HL log row(s)"
 HID=${HC%%|*}
 psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql >/dev/null || fail "R2a: 0156 run again by hand"
 pq "SELECT pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"proof405\",\"rule_id\":\"$HID\"}'::jsonb)" | grep -q '"done"' || fail "R2a: ending the seed"
@@ -380,7 +421,7 @@ psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql
 ok "R2a: seeded off as PerformanceMonitor's numbers; 0156 again, and again after the end, adds nothing"
 CS=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
          VALUES ('cpusyn', 'sqlserver', '{}', now(), now(), true, 'sqlserver') RETURNING instance_id" | head -1)
-T0=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '30 minutes', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+T0=$(pq "SELECT to_char((date_trunc('minute', now()) - interval '30 minutes') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 pq "SELECT pgvigil.ensure_month_partition('mssql_cpu_sample', '$T0'::timestamptz)" >/dev/null
 pq "SELECT pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"proof405\",\"metric\":\"cpu.sql_pct\",\"op_dir\":\"above\",\"scope\":\"instance\",\"instance_name\":\"cpusyn\",\"warning\":79.999,\"critical\":94.999,\"for_minutes\":4}'::jsonb)" | grep -q '"done"' || fail "R2b: the instance rule"
 # rec <minute after T0> <pct>: one CPU record of cpusyn; judge <minute>: the rules judged at that record's time
@@ -405,8 +446,8 @@ io() { pq "INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, da
   VALUES ($IO, now() - interval '10 minutes', $1, $2, '$3', '$4', '$5', 0, 0, 0, $6, 0, $7, 60)" >/dev/null; }
 io 2 1 tempdb tempdev ROWS 300 3600; io 2 3 tempdb temp2 ROWS 300 9600; io 2 4 tempdb temp3 ROWS 300 2970; io 2 5 tempdb temp4 ROWS 249 4980
 io 5 1 userdb ud1 ROWS 5000 1000000; io 5 2 userdb udlog LOG 300 3600; io 6 2 userdb2 log2 LOG 300 10500; io 7 2 userdb3 log3 LOG 1000 19000
-CF=$(pq "SELECT string_agg(severity || ' ' || check_name || ' ' || object, '; ' ORDER BY object COLLATE "C") FROM pgvigil.mssql_cpu_findings WHERE instance_id = $IO")
-PF=$(pq "SELECT string_agg(severity || ' ' || check_name || ' ' || object, '; ' ORDER BY object COLLATE "C") FROM pgvigil.mssql_perf_findings WHERE instance_id = $IO")
+CF=$(pq "SELECT string_agg(severity || ' ' || check_name || ' ' || object, '; ' ORDER BY object COLLATE \"C\") FROM pgvigil.mssql_cpu_findings WHERE instance_id = $IO")
+PF=$(pq "SELECT string_agg(severity || ' ' || check_name || ' ' || object, '; ' ORDER BY object COLLATE \"C\") FROM pgvigil.mssql_perf_findings WHERE instance_id = $IO")
 TD=$(pq "SELECT detail FROM pgvigil.mssql_cpu_findings WHERE instance_id = $IO AND object = 'tempdb: tempdev'")
 echo "   data files: $CF"; echo "   log files: $PF"; echo "   tempdev: $TD"
 [[ "$CF" == "critical slow data file writes tempdb: temp2; warning slow data file writes tempdb: tempdev" ]] \
@@ -422,14 +463,15 @@ psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql
 RU=$(pq "SELECT (cleared_at IS NOT NULL) || '|' || (recovery_sent_at IS NULL) FROM pgvigil.alert_state WHERE finding_key = 'proofkey-user'")
 RT=$(pq "SELECT (cleared_at IS NULL) FROM pgvigil.alert_state WHERE finding_key = 'proofkey-tempdb'")
 RL=$(pq "SELECT count(*) FROM pgvigil.alert_log WHERE outcome = 'cleared' AND error LIKE 'rule retired (task 405, D1)%' AND 'proofkey-user' = ANY (keys)")
+RD=$(pq "SELECT count(*) FROM pgvigil.alert_due(now(), '[{\"name\":\"drop\",\"recovery\":true,\"clear_after_secs\":0}]'::jsonb) WHERE finding_key = 'proofkey-user'")
 psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql >/dev/null || fail "R1: 0156 a third time"
 RL2=$(pq "SELECT count(*) FROM pgvigil.alert_log WHERE outcome = 'cleared' AND error LIKE 'rule retired (task 405, D1)%'")
-[[ "$RU" == "t|t" && "$RT" == t && "$RL" == 1 && "$RL2" == 1 ]] || fail "R1: the retirement: user file [$RU] (want cleared, no recovery), tempdb open [$RT], log rows $RL then $RL2 (want 1, 1)"
+[[ "$RU" == "t|t" && "$RD" == 0 && "$RT" == t && "$RL" == 1 && "$RL2" == 1 ]] || fail "R1: the retirement: user file [$RU] (want cleared, no recovery), alert_due rows for it $RD (want 0), tempdb open [$RT], log rows $RL then $RL2 (want 1, 1)"
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $IO" >/dev/null
 ok "R1: the open alert on a user data file closed as 'rule retired' with no recovery, tempdb's kept; a re-run adds nothing"
 
 echo "== R3. Runnable Queue's reading (Changed 13) =="
-TQ=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '2 hours', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+TQ=$(pq "SELECT to_char((date_trunc('minute', now()) - interval '2 hours') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 pq "SELECT pgvigil.ensure_month_partition('mssql_sched_sample', '$TQ'::timestamptz - interval '1 hour')" >/dev/null
 rq() { pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
          VALUES ('$1', 'sqlserver', '{}', now(), now(), false, 'sqlserver') RETURNING instance_id" | head -1; }
@@ -457,18 +499,19 @@ echo "   the arm: $RA"
 ok "R3: darling_alert_findings' runnable arm judges a late collector's newest 3 reads"
 
 echo "== R8. memory nodes (Fixed 20) =="
-TM=$(pq "SELECT to_char(date_trunc('hour', now()) - interval '3 hours', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
-# rm <record id> <node or ''> <minutes after TM>: one RING_BUFFER_RESOURCE_MONITOR row of a payload
-rm() { local n=; [[ -n "$2" ]] && n=",\"memory_node_id\":$2"
-  echo "{\"kind\":\"rmon\",\"server_start\":\"2026-11-01T00:00:00\",\"record_id\":$1$n,\"sample_at\":\"$(pq "SELECT to_char('$TM'::timestamptz + interval '$3 minutes', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
+TM=$(pq "SELECT to_char((date_trunc('hour', now()) - interval '3 hours') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+# rmrec <record id> <node or ''> <minutes after TM>: one RING_BUFFER_RESOURCE_MONITOR row of a payload (never a function
+# named rm: the cleanup trap's rm would call it; 405 review part B, B2)
+rmrec() { local n=; [[ -n "$2" ]] && n=",\"memory_node_id\":$2"
+  echo "{\"kind\":\"rmon\",\"server_start\":\"2026-11-01T00:00:00\",\"record_id\":$1$n,\"sample_at\":\"$(pq "SELECT to_char(('$TM'::timestamptz + interval '$3 minutes') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
 mem() { local at=$1; shift; local rows; rows=$(IFS=,; echo "$*")
   pq "SELECT pgvigil.import_mssql_memory($SY, '$at'::timestamptz, '[{\"kind\":\"memory\"},$rows]'::jsonb)" >/dev/null; }
 nrm() { pq "SELECT count(*) FROM pgvigil.mssql_memory_rmon WHERE instance_id = $SY"; }
-mem "$(pq "SELECT now() - interval '20 minutes'")" "$(rm 100 0 1)" "$(rm 101 0 2)" "$(rm 50 1 1)" "$(rm 51 1 2)" "$(rm 52 1 3)"
+mem "$(pq "SELECT now() - interval '20 minutes'")" "$(rmrec 100 0 1)" "$(rmrec 101 0 2)" "$(rmrec 50 1 1)" "$(rmrec 51 1 2)" "$(rmrec 52 1 3)"
 N1=$(nrm); WM=$(pq "SELECT rmon_last_by_node::text FROM pgvigil.mssql_memory_reads WHERE instance_id = $SY")
-mem "$(pq "SELECT now() - interval '15 minutes'")" "$(rm 101 0 2)" "$(rm 52 1 3)" "$(rm 102 0 4)" "$(rm 53 1 4)" "$(rm 49 1 0)"
+mem "$(pq "SELECT now() - interval '15 minutes'")" "$(rmrec 101 0 2)" "$(rmrec 52 1 3)" "$(rmrec 102 0 4)" "$(rmrec 53 1 4)" "$(rmrec 49 1 0)"
 N2=$(nrm)
-mem "$(pq "SELECT now() - interval '10 minutes'")" "$(rm 103 '' 5)"
+mem "$(pq "SELECT now() - interval '10 minutes'")" "$(rmrec 103 '' 5)"
 N3=$(nrm); HR=$(pq "SELECT sum(sql_medium) FROM pgvigil.mssql_memory_rmon_hourly($SY, '$TM'::timestamptz - interval '1 hour', '$TM'::timestamptz + interval '1 hour')")
 echo "   records stored after each read: $N1 $N2 $N3; watermark $WM; events at indicator 2 in the hours: $HR"
 [[ "$N1" == 3 && "$WM" == '{"0": 101, "1": 52}' && "$N2" == 4 && "$N3" == 5 && "$HR" == 5 ]] \
@@ -508,7 +551,7 @@ echo "   R8c records of its server start after each read: $C1 $C2 $C3; watermark
 ok "R8c: the records stored without a node are not stored again under node 0; a copy on another node in a later read is matched by its ring time"
 
 echo "== R4. the PostgreSQL poison wait (Changed 19) =="
-TP=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '1 hour', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+TP=$(pq "SELECT to_char((date_trunc('minute', now()) - interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 pq "SELECT pgvigil.ensure_month_partition('wait_sample', '$TP'::timestamptz - interval '20 minutes')" >/dev/null
 pgi() { pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
          VALUES ('$1', 'postgres', '{}', now(), now(), false, 'postgres') RETURNING instance_id" | head -1; }
