@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_probe (
   scheduled     boolean NOT NULL DEFAULT false,   -- a round of probe_every_minute (the review of B24h-1 part b #7)
   PRIMARY KEY (minute, collector_id, address)
 );
--- a store that ran this file before the column (the lab's): added
-ALTER TABLE pgvigil.collector_probe ADD COLUMN IF NOT EXISTS scheduled boolean NOT NULL DEFAULT false;
+-- no upgrade path from the pre-fold 0254 (the review of the fold #10): migrate skips a file schema_version holds, and no
+-- release carried the earlier form - a store that applied it (a lab's own) is built again, never patched
 
 -- collector_probe_host: per collector and address, when it was first probed and last answered (the fold's #5: the
 -- 'never answered' and 'stopped answering' words read this, never 8 days of probe rows)
