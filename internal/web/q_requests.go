@@ -48,7 +48,7 @@ type queueState struct {
 var queues sync.Map
 
 func (s *Server) queue() *queueState {
-	if v, ok := queues.Load(s); ok {
+	if v, ok := queues.Load(s.self()); ok {
 		return v.(*queueState)
 	}
 	return nil
@@ -85,7 +85,7 @@ func (s *Server) SetQueue(ctx context.Context, dsn string) error {
 	if !req {
 		q.off = fmt.Sprintf("the repository login %s IN ROLE pgvigil_requester (run 'pgvigil migrate' for 0200, then GRANT pgvigil_requester TO %s)", who, who)
 	}
-	queues.Store(s, q)
+	queues.Store(s.self(), q)
 	if s.actions != nil {
 		s.actions.off = queueNotYet
 	}
