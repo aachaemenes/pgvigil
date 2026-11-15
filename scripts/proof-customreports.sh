@@ -184,6 +184,22 @@
 #     Install-DbaFirstResponderKit, Install-DbaDarlingData and Install-DbaWhoIsActive, each with -Database pgcr_v, and
 #     the comment naming -LocalFile and the tested releases; no stub ran (sys.dm_exec_procedure_stats holds none of
 #     pgcr_v). RED (ebf9a9c): no version on any tool, no install_script.
+#  UV. the versions on the page (headless Chromium, signed in, light; after U, before U2): pgcr-msr's Community tools page
+#     draws 'Installed community tools' under the tools, its columns procedure | kit | database | version | its date |
+#     tested by pgvigil | status, one row per procedure GET /api/community gives a version word, each row's cells equal to
+#     that reply's (the same database, the page's own check), the status cell the word itself in its badge (ok for the
+#     tested version, warn for older and unread); master: 13 rows, every one 'the tested version', no mixed-versions note;
+#     'Print the install script' opens on its summary's click to the reply's install_script exactly ('nothing to install'),
+#     with its Copy button, and the click sends no request; pgcr_v (the stubs of V again) typed and Look again: its four
+#     words on their rows (warn on the older and the unread), the note 'First Responder Kit: mixed versions' above the grid
+#     with its badge, the printed script's three installs for pgcr_v; nothing run (no custom_report_log row; no stub in
+#     sys.dm_exec_procedure_stats). U's axe rows on the SQL Server community page read the grid too (0 expected).
+#     RED (ebf9a9c): not reached (V reds first); on its own no 'Installed community tools' heading.
+#  DV. the demo's versions (the demo serve, no login, as the 8080 demo): on the first demo SQL Server instance off and on
+#     the test server's platform, the page's grid of 13 rows, every one 'the tested version' at the tested version and date
+#     of its kit (8.34 2026-07-02, 3.11 2026-11-01, 2200.20260409 2026-04-09), the database cell empty (no server stands
+#     behind it), no note, the script 'nothing to install' equal to the demo serve's own reply; no custom_report_log row.
+#     RED (ebf9a9c): not reached; on its own no 'Installed community tools' heading on a demo instance.
 #  A. the audit: the log's run rows (run, community_run, community_help) = the runs this proof made.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -558,10 +574,14 @@ if [[ -z "$SKIP_MSSQL" ]]; then
     [[ $V1 == "Darling Data=3.11/the tested version|First Responder Kit=8.34/the tested version|sp_WhoIsActive=2200.20260409/the tested version" ]] || fail "V: master's versions: $V1"
     [[ $(js "str(d.get('install_script', '')).count('Install-Dba')") == 0 && $(js "'nothing to install' in str(d.get('install_script', ''))") == True ]] || fail "V: master's script: $(js "d.get('install_script')")"
     ok "V: every procedure in master at the tested version (8.34, 3.11, 2200.20260409); the script says nothing to install"
-    sq "CREATE DATABASE pgcr_v" >/dev/null
-    sq "EXEC('CREATE PROCEDURE dbo.sp_BlitzCache AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.30'', @VersionDate = ''20250101''; RAISERROR(''a stub: never run'', 16, 1); END');
-        EXEC('CREATE PROCEDURE dbo.sp_Blitz AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.40'', @VersionDate = ''20270101''; RAISERROR(''a stub: never run'', 16, 1); END');
-        EXEC('CREATE PROCEDURE dbo.sp_PressureDetector AS BEGIN RAISERROR(''a stub: never run'', 16, 1); END');" pgcr_v >/dev/null
+    # the stubs (each would raise if run), made again for the page's rows (UV)
+    vstubs() {
+      sq "CREATE DATABASE pgcr_v" >/dev/null
+      sq "EXEC('CREATE PROCEDURE dbo.sp_BlitzCache AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.30'', @VersionDate = ''20250101''; RAISERROR(''a stub: never run'', 16, 1); END');
+          EXEC('CREATE PROCEDURE dbo.sp_Blitz AS BEGIN DECLARE @Version varchar(30), @VersionDate datetime; SELECT @Version = ''8.40'', @VersionDate = ''20270101''; RAISERROR(''a stub: never run'', 16, 1); END');
+          EXEC('CREATE PROCEDURE dbo.sp_PressureDetector AS BEGIN RAISERROR(''a stub: never run'', 16, 1); END');" pgcr_v >/dev/null
+    }
+    vstubs
     [[ $(getc "community?instance=$MRID&database=pgcr_v&fresh=1") == 200 ]] || fail "V: GET community pgcr_v: $(cat "$WORK/body")"
     V2=$(tl "'|'.join('%s=%s/%s' % (k, t[k].get('version'), t[k].get('version_word')) for k in ('sp_BlitzCache', 'sp_Blitz', 'sp_PressureDetector', 'sp_WhoIsActive'))")
     [[ $V2 == "sp_BlitzCache=8.30/older than tested|sp_Blitz=8.40/newer than tested (not tested by pgvigil)|sp_PressureDetector=None/version not read|sp_WhoIsActive=None/not installed" ]] || fail "V: pgcr_v's words: $V2"
@@ -1001,6 +1021,129 @@ except ImportError:
     print('note U: openpyxl is not installed here: the workbook open is not checked by it')
 if bad: sys.exit(1)
 PY
+  # ---- UV / DV: the versions on the page (the community tools' versions; nothing run) - a tab of its own
+  cat > "$WORK/versions.mjs" <<'JS'
+// UV / DV's page rows (headless Chromium over CDP; written by proof-customreports.sh):
+//   <port> <base URL> <cookie or ''> <instance id> [<database>]
+// Opens the instance's Community tools page (with a database: typed, then Look again), reads what it drew under
+// 'Installed community tools' (the notes, the grid, the printed script after its summary's click) and prints one JSON
+// object; the shell grades it.
+const [port, base, cookie, inst, db] = process.argv.slice(2);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
+const ws = new WebSocket(t.webSocketDebuggerUrl);
+await new Promise((r, j) => { ws.addEventListener('open', r); ws.addEventListener('error', j); });
+let id = 0; const wait = new Map(); const reqs = [];
+ws.addEventListener('message', m => {
+  const d = JSON.parse(m.data);
+  if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); }
+  if (d.method === 'Network.requestWillBeSent') reqs.push(d.params.request.method + ' ' + d.params.request.url);
+});
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
+  return d.result?.result?.value;
+};
+const until = async (expr, ms = 30000) => { for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(200)) if (await ev(expr)) return true; return false; };
+await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
+if (cookie) await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: base });
+const out = { db: db || '', heading: false };
+try {
+  await cmd('Page.navigate', { url: `${base}#/community?i=${inst}` });
+  if (!await until(`!!document.querySelector('main table.grid button.link')`)) throw new Error('the page did not render: ' + await ev(`document.querySelector('main')?.innerText.slice(0, 300)`));
+  if (db) {
+    await ev(`(() => { window.__old = document.querySelector('main table.grid'); const i = [...document.querySelectorAll('main input')].find(x => /^Database the/.test(x.getAttribute('aria-label') || ''));
+      i.value = ${JSON.stringify(db)}; [...document.querySelectorAll('main button')].find(b => b.textContent === 'Look again').click(); return 1; })()`);
+    if (!await until(`!!window.__old && !window.__old.isConnected && !!document.querySelector('main table.grid button.link')`)) throw new Error('Look again did not redraw the page');
+  }
+  await sleep(400);
+  Object.assign(out, await ev(`(() => {
+    const sq = s => (s ?? '').replace(/\\s+/g, ' ').trim();
+    const h = [...document.querySelectorAll('main h3')].find(x => x.textContent === 'Installed community tools');
+    if (!h) return { heading: false };
+    const notes = []; let g = null;
+    for (let e = h.nextElementSibling; e && !g && e.tagName !== 'H3'; e = e.nextElementSibling) {
+      if (e.matches('p.meta')) notes.push({ text: sq(e.textContent), badge: sq(e.querySelector('.badge')?.textContent) });
+      g = e.matches('table.grid') ? e : e.querySelector('table.grid');
+    }
+    if (!g) return { heading: true, notes };
+    const cols = [...g.querySelectorAll('thead tr:first-child th')].map(th => sq((th.querySelector('.th-label') ?? th).textContent));
+    const si = cols.indexOf('status');
+    const rows = [...g.querySelectorAll('tbody tr')].map(tr => { const c = [...tr.children]; const o = {}; cols.forEach((k, i) => { o[k] = sq(c[i]?.textContent); });
+      o._badge = c[si]?.querySelector('.badge')?.className ?? ''; return o; });
+    return { heading: true, notes, cols, rows };
+  })()`));
+  // the printed script: its summary clicked (a details element opens; nothing is asked of the server)
+  const n0 = reqs.length;
+  await ev(`(() => { const s = document.querySelector('main details.install-script > summary'); if (s) s.click(); return 1; })()`);
+  await sleep(500);
+  Object.assign(out, await ev(`(() => { const d = document.querySelector('main details.install-script'); const p = d?.querySelector('pre');
+    return { open: !!d?.open, script: p ? p.textContent : null, shown: !!p && p.getClientRects().length > 0,
+      copy: !!d && [...d.querySelectorAll('button')].some(b => b.textContent === 'Copy') }; })()`));
+  out.sent = reqs.slice(n0).filter(u => /\/api\/community/.test(u));
+} catch (e) { out.error = String(e?.message ?? e).slice(0, 400); }
+console.log(JSON.stringify(out));
+await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
+ws.close(); process.exit(0);
+JS
+  # UV's grader: the page's rows against the API's reply for the same instance and database
+  uvgrade() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); a = json.load(open(sys.argv[2])); db = sys.argv[3]
+assert not p.get('error'), f"UV {db}: the driver: {p.get('error')}"
+assert p.get('heading'), f"UV {db}: no 'Installed community tools' heading on the page"
+want_cols = ['procedure', 'kit', 'database', 'version', 'its date', 'tested by pgvigil', 'status']
+assert p.get('cols') == want_cols, f"UV {db}: the grid's columns {p.get('cols')}"
+api = {t['name']: t for t in a['tools'] if t['kind'] == 'proc' and t.get('version_word')}
+rows = {r['procedure']: r for r in p.get('rows') or []}
+assert set(rows) == set(api) and len(rows) == len(p['rows']), f"UV {db}: the page's rows {sorted(rows)}, the reply's {sorted(api)}"
+bad = []
+for n, t in api.items():
+    r = rows[n]
+    want = {'kit': t['group'], 'database': t.get('where') or '', 'version': t.get('version') or '', 'its date': t.get('version_date') or '',
+            'tested by pgvigil': t.get('tested') or '', 'status': t['version_word']}
+    got = {k: r[k] for k in want}
+    if got != want: bad.append((n, got, want))
+    kind = 'ok' if t['version_word'] == 'the tested version' else 'warn' if t['version_word'] in ('older than tested', 'version not read') else ''
+    cls = r['_badge'].split()
+    if 'badge' not in cls or (kind and kind not in cls): bad.append((n, 'badge', r['_badge'], kind))
+assert not bad, f"UV {db}: cells unlike the reply's: {bad[:4]}"
+assert p.get('script') == a.get('install_script') and p.get('open') and p.get('shown') and p.get('copy'), \
+    f"UV {db}: the printed script (open {p.get('open')}, shown {p.get('shown')}, Copy {p.get('copy')}): page {str(p.get('script'))[:200]!r}, reply {str(a.get('install_script'))[:200]!r}"
+assert not p.get('sent'), f"UV {db}: opening the script sent {p['sent']}"
+words = {n: r['status'] for n, r in rows.items()}
+notes = p.get('notes') or []
+if db == 'master':
+    assert len(rows) == 13 and set(words.values()) == {'the tested version'} and not notes, f"UV master: {len(rows)} rows, words {sorted(set(words.values()))}, notes {notes}"
+    assert 'nothing to install' in p['script'], f"UV master: the script {p['script'][:200]!r}"
+    print("ok   UV: master on the page: 13 rows equal to the reply, every one 'the tested version' (badge ok), no note; the script printed as the reply's ('nothing to install') with its Copy button, its opening sent nothing")
+else:
+    w4 = {k: words.get(k) for k in ('sp_BlitzCache', 'sp_Blitz', 'sp_PressureDetector', 'sp_WhoIsActive')}
+    assert w4 == {'sp_BlitzCache': 'older than tested', 'sp_Blitz': 'newer than tested (not tested by pgvigil)', 'sp_PressureDetector': 'version not read', 'sp_WhoIsActive': 'not installed'}, f"UV pgcr_v: {w4}"
+    mix = [n for n in notes if 'First Responder Kit: mixed versions' in n['text']]
+    assert mix and mix[0]['badge'] == 'mixed versions', f"UV pgcr_v: the mixed-versions note above the grid: {notes}"
+    for c in ('Install-DbaFirstResponderKit', 'Install-DbaDarlingData', 'Install-DbaWhoIsActive'):
+        assert any(l.startswith(c + ' ') and "-Database 'pgcr_v'" in l for l in p['script'].splitlines()), f"UV pgcr_v: the printed script lacks {c} for pgcr_v"
+    print(f"ok   UV: pgcr_v on the page after Look again: {len(rows)} rows equal to the reply, older / newer / version not read / not installed on their rows, '{mix[0]['text'][:90]}' above the grid, the printed script's three installs for pgcr_v")
+PY
+  }
+  if [[ -z "$SKIP_MSSQL" ]] && [[ ${#INSTALLED[@]} == 3 ]]; then
+    L0=$(logn)
+    timeout 120 node "$WORK/versions.mjs" "$CDP" "$U/" "$COOKIE" "$MRID" "" > "$WORK/uv-master.json" 2>"$WORK/uv.err" || fail "UV: the page driver (master): $(tail -3 "$WORK/uv.err")"
+    [[ $(getc "community?instance=$MRID") == 200 ]] || fail "UV: GET community: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/uv-master-api.json"
+    uvgrade "$WORK/uv-master.json" "$WORK/uv-master-api.json" master || fail "UV: see above"
+    vstubs
+    timeout 120 node "$WORK/versions.mjs" "$CDP" "$U/" "$COOKIE" "$MRID" pgcr_v > "$WORK/uv-v.json" 2>>"$WORK/uv.err" || fail "UV: the page driver (pgcr_v): $(tail -3 "$WORK/uv.err")"
+    [[ $(getc "community?instance=$MRID&database=pgcr_v") == 200 ]] || fail "UV: GET community pgcr_v: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/uv-v-api.json"
+    uvgrade "$WORK/uv-v.json" "$WORK/uv-v-api.json" pgcr_v || fail "UV: see above"
+    [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgcr_v')") == 0 ]] || fail "UV: a stub ran"
+    sq "DROP DATABASE pgcr_v" >/dev/null
+    [[ $(logn) == "$L0" ]] || fail "UV: the page's reads wrote custom_report_log row(s)"
+    ok "UV: no stub ran and no custom_report_log row from the page's reads; pgcr_v dropped"
+  else NOTPROVEN+=("UV: the versions on the page need the SQL Server part and all three community scripts (PGVIGIL_COMMUNITY_DIR)"); fi
   # ---- U2 (B3 DONE-1): every tool clicked and run, keyboard and accessibility tree, the off look, the DOM check, the demo
   cat > "$WORK/buttons.mjs" <<'JS'
 // B3 DONE-1's page rows (headless Chromium over CDP; written by proof-customreports.sh part U2 and run twice):
@@ -1832,6 +1975,31 @@ r = d['real']
 assert not r['demoLine'] and r['nologin'] and r['off'] == (14 if real_ms else 10) and r['samples'] == 0 and r['sampleStatus'] == 404, f"S: the real instance served beside the demo: {r}"
 print(f"ok   S: pgvigil demo -serve -config: the real instance shows its own state (-no-login, {r['off']} off), never the demo line, no sample (GET /api/community/sample 404)")
 PY
+  # ---- DV: the demo's versions, as the 8080 demo shows them (the demo serve, no login): invented at the tested version
+  L0=$(logn)
+  for dv in "$DMS" "$DMS2"; do
+    timeout 120 node "$WORK/versions.mjs" "$CDP" "$U4/" "" "$dv" "" > "$WORK/dv-$dv.json" 2>"$WORK/dv.err" || fail "DV: the page driver ($dv): $(tail -3 "$WORK/dv.err")"
+    [[ $(code "$U4/api/community?instance=$dv") == 200 ]] || fail "DV: GET community on the demo serve ($dv): $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/dv-$dv-api.json"
+    python3 - "$WORK/dv-$dv.json" "$WORK/dv-$dv-api.json" "$(ident "$dv")" <<'PY' || fail "DV: see above"
+import json, sys
+p = json.load(open(sys.argv[1])); a = json.load(open(sys.argv[2])); who = sys.argv[3]
+tested = {'First Responder Kit': ('8.34', '2026-07-02'), 'Darling Data': ('3.11', '2026-11-01'), 'sp_WhoIsActive': ('2200.20260409', '2026-04-09')}
+assert not p.get('error'), f"DV {who}: the driver: {p.get('error')}"
+assert a.get('demo') is True, f"DV {who}: the demo serve's reply is not a demo instance's"
+assert p.get('heading'), f"DV {who}: no 'Installed community tools' heading on the demo's page"
+rows = p.get('rows') or []
+bad = [r for r in rows if r['status'] != 'the tested version' or (r['version'], r['its date']) != tested.get(r['kit'])
+       or r['tested by pgvigil'] != tested.get(r['kit'], ('',))[0] or r['database'] != '' or 'ok' not in r['_badge'].split()]
+assert len(rows) == 13 and not bad, f"DV {who}: {len(rows)} rows; unlike the tested version: {bad[:3]}"
+api = [t for t in a['tools'] if t['kind'] == 'proc']
+assert len(api) == 13 and all(t.get('version_word') == 'the tested version' for t in api), f"DV {who}: the reply's words {sorted({str(t.get('version_word')) for t in api})}"
+assert not p.get('notes'), f"DV {who}: notes {p.get('notes')}"
+assert p.get('script') == a.get('install_script') and 'nothing to install' in (p.get('script') or '') and p.get('open') and p.get('copy'), f"DV {who}: the script {str(p.get('script'))[:200]!r}"
+assert not p.get('sent'), f"DV {who}: opening the script sent {p['sent']}"
+print(f"ok   DV: {who}: 13 rows, every one 'the tested version' at its kit's tested version and date, no database, no note; the script 'nothing to install' as the demo serve's reply")
+PY
+  done
+  [[ $(logn) == "$L0" ]] || fail "DV: the demo's pages wrote custom_report_log row(s)"
 fi
 
 echo
