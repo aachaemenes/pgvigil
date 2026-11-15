@@ -6,15 +6,20 @@
 // figure comes from a series the repository already holds (no new collection); the grid, a row's chart and the rule's
 // evaluation read the same samples (pgvigil.metric_points). Data from /api/metrics and /api/metrics/series. The page
 // keeps the old Counters address: ?kind= is the family (db, server, io and sessions still open theirs; none = all) and
-// ?mdb= one database's series of the Database family. The route and the tab are the shell's.
+// ?mdb= one database's series of the Database family; ?mcol= one collection's of the Collection family (B6g-4). The
+// route and the tab are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { conditionWords, fmtMetric, ruleButton, ruleDialog, RulesDoor, scopeWords, stateBadge, unitWord } from './alert_rules';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { collectionTickKey, subSeries, subWords, visibleFamilies } from './metricfam';
 
-interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null }
+interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null; collections?: Table | null }
+// the 'Collection Metrics' tick, per browser (storage may be off: unticked then)
+const lsGetM = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSetM = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* off: the tick lasts this page */ } };
 interface SeriesData { step_secs: number; series: Table | null; metric: Table | null }
 
 // the Counters page's kinds, kept as addresses of their families
@@ -29,25 +34,31 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
   const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
   const asked = q.get('kind') ?? 'all';
   const mdb = q.get('mdb')?.slice(0, 200) || undefined;
+  // B6g-4: the Collection family's own cut (a collection), apart from the Database family's
+  const mcol = q.get('mcol')?.slice(0, 100) || undefined;
+  const colTick = lsGetM(collectionTickKey) === '1';
   const sec = el('section', {}, el('h2', {}, `Metrics (${rangeLabel(ctx)})`));
   const w = window_(ctx);
   let d: MetricsData;
   try { d = await get<MetricsData>('metrics', { instance: ctx.instance, ...w, part: 'families' }); } catch (e) { sec.append(errorBox(e)); return sec; }
   const dbs = rowsOf(d.databases).map(r => String(r.datname));
-  const families: [string, string][] = rowsOf(d.families).map(f => [String(f.family), String(f.family_label)]);
+  const colNames = rowsOf(d.collections).map(r => String(r.collection));
+  // the Collection family listed once 'Collection Metrics' is ticked (DBA Dash's own toggle)
+  const families: [string, string][] = visibleFamilies(rowsOf(d.families).map(f => [String(f.family), String(f.family_label)] as [string, string]), colTick);
   const kind = families.some(([k]) => k === (legacyKind[asked] ?? asked)) ? legacyKind[asked] ?? asked : 'all';
   // each family in view is its own read: a long range costs one family's read per request, and a family that fails
   // or times out shows its error under its own heading while the others draw
   const shown = families.filter(([k]) => kind === 'all' || kind === k);
-  const reads = await Promise.all(shown.map(([k]) => get<MetricsData>('metrics', { instance: ctx.instance, ...w, db: mdb, family: k })
+  const reads = await Promise.all(shown.map(([k]) => get<MetricsData>('metrics', { instance: ctx.instance, ...w, db: subSeries(k, mdb, mcol), family: k })
     .then(x => rowsOf(x.grid)).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)))));
   const rows = reads.flatMap(x => x instanceof Error ? [] : x);
   // a link to this page: the family, and the database cut while the Database family is in view
   // (set or taken out here whatever the shell's own links keep, so 'all databases' always clears it)
-  const link = (k: string, db?: string) => {
+  const link = (k: string, db?: string, col: string | undefined = mcol) => {
     const [path, qs] = href(ctx, { tab: ctx.tab, kind: k }).split('?');
     const p = new URLSearchParams(qs ?? '');
     if (db && (k === 'all' || k === 'database')) p.set('mdb', db); else p.delete('mdb');
+    if (col && (k === 'all' || k === 'collection')) p.set('mcol', col); else p.delete('mcol');
     return `${path}?${p}`;
   };
 
@@ -59,9 +70,15 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
   if (!d.writable) { d.note = el('p', { class: 'meta' }, `Thresholds are read only here: ${d.reason ?? ''}`); sec.append(d.note); }
   sec.append(el('div', { class: 'subtabs' }, ...[['all', 'all'], ...families].map(([k, label]) =>
     el('a', { href: link(k, mdb), class: k === kind ? 'on' : '', ...(k === kind ? { 'aria-current': 'true' } : {}) }, label))));
+  // 'Collection Metrics' (DBA Dash's toolbar tick): the collection counters, hidden until ticked, kept per browser
+  const tick = el('input', { type: 'checkbox', id: 'metrics-collection' });
+  tick.checked = colTick;
+  tick.addEventListener('change', () => { lsSetM(collectionTickKey, tick.checked ? '1' : '0'); window.dispatchEvent(new HashChangeEvent('hashchange')); });
+  sec.append(el('div', { class: 'toolbar' }, tick, ' ', el('label', { for: 'metrics-collection' }, 'Collection Metrics'),
+    el('span', { class: 'meta' }, ' - each collection\'s duration, CPU, logical reads, import and failed per cent by the hour')));
   if (!families.length) { sec.append(el('p', { class: 'empty' }, 'No counter is known for this instance.')); return sec; }
 
-  for (const [i, [, famLabel]] of shown.entries()) {
+  for (const [i, [famKey, famLabel]] of shown.entries()) {
     const read = reads[i];
     if (read instanceof Error) { sec.append(el('h3', {}, famLabel), errorBox(read)); continue; }
     const famRows = read;
@@ -72,7 +89,8 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
     const open = new Map<string, HTMLElement>();          // the charts drawn, by counter key
     const btns = new Map<string, HTMLButtonElement>();    // each row's Chart button as the grid last drew it
     const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-    const cut = (r: Row) => r.per_database ? mdb : undefined;
+    const famCut = subSeries(famKey, mdb, mcol), sw = subWords(famKey), subs = famKey === 'collection' ? colNames : dbs;
+    const cut = (r: Row) => r.per_database ? famCut : undefined;
 
     const toggleChart = async (r: Row) => {
       const key = String(r.key);
@@ -116,7 +134,7 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
     });
     const cols: Col[] = [
       { key: 'label', label: 'counter', fmt: (v, r) => el('span', { title: `${String(r.key)}, in ${unitWord(r.unit)}` }, String(v ?? '')) },
-      ...(perDb && mdb ? [{ key: 'database', fmt: (v: unknown, r: Row) => r.per_database ? String(v ?? '') : '(the instance)' }] as Col[] : []),
+      ...(perDb && famCut ? [{ key: 'database', label: sw.noun, fmt: (v: unknown, r: Row) => r.per_database ? String(v ?? '') : '(the instance)' }] as Col[] : []),
       figure('max_value', 'max'), figure('min_value', 'min'), figure('avg_value', 'avg'), figure('current_value', 'current'),
       { key: 'samples', num: true },
       { key: 'current_at', label: 'last sample', fmt: fmtTime },
@@ -142,14 +160,14 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
       if (todo.length) said.textContent = `${todo.length} chart(s) drawn under the grid.`;
     });
     const tools = el('div', { class: 'toolbar' }, el('div', { class: 'seg' }, allBtn));
-    if (perDb && dbs.length) {
-      const sel = el('select', { 'aria-label': `${famLabel}: database` }, el('option', { value: '' }, 'all databases (summed)'), ...dbs.map(n => el('option', { value: n }, n)));
-      if (mdb && !dbs.includes(mdb)) sel.append(el('option', { value: mdb }, mdb));
-      sel.value = mdb ?? '';
-      sel.addEventListener('change', () => { location.hash = link(kind, sel.value || undefined); });
-      tools.append(el('label', {}, 'Database ', sel));
-      // a rule without a database judges the summed series only: it is not shown as one database's threshold
-      if (mdb) tools.append(el('span', { class: 'meta' }, `The thresholds shown for ${mdb} are the rules that name that database; a rule without a database watches all databases summed, and shows under 'all databases'.`));
+    if (perDb && subs.length) {
+      const sel = el('select', { 'aria-label': `${famLabel}: ${sw.noun}` }, el('option', { value: '' }, sw.all), ...subs.map(n => el('option', { value: n }, n)));
+      if (famCut && !subs.includes(famCut)) sel.append(el('option', { value: famCut }, famCut));
+      sel.value = famCut ?? '';
+      sel.addEventListener('change', () => { location.hash = famKey === 'collection' ? link(kind, mdb, sel.value || undefined) : link(kind, sel.value || undefined); });
+      tools.append(el('label', {}, `${sw.label} `, sel));
+      // a rule without a database (collection) judges the summed series only: it is not shown as one's threshold
+      if (famCut) tools.append(el('span', { class: 'meta' }, `The thresholds shown for ${famCut} are the rules that name that ${sw.noun}; a rule without one watches ${sw.all.replace(' (summed)', '')} summed, and shows under '${sw.all.replace(' (summed)', '')}'.`));
     }
     box.append(grid(famRows, cols, 'No counter in this family.'));
     sec.append(head, tools, said, box, chartsBox);

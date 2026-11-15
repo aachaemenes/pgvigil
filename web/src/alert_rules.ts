@@ -195,6 +195,12 @@ export async function ruleDialog(o: RuleDialog) {
     tagBox.hidden = scope.value !== 'tag';
     instBox.hidden = scope.value !== 'instance';
     dbBox.hidden = !m?.per_database;
+    // B6g-4 (N31): the Collection family's sub-series is a collection, and its points are hourly - a window of 60
+    // minutes or more (the server refuses less in words)
+    const isColl = String(m?.key ?? '').startsWith('collection.');
+    dbBox.firstChild!.textContent = isColl ? 'Collection (empty = every collection summed) ' : 'Database (empty = the whole instance) ';
+    mins.min = isColl ? '60' : '0';
+    if (isColl && (mins.value.trim() === '' || Number(mins.value) < 60)) mins.value = '60';
   };
   metricSel.addEventListener('change', sync);
   scope.addEventListener('change', sync);
@@ -215,7 +221,7 @@ export async function ruleDialog(o: RuleDialog) {
     metricSel.value === '' ? 'a metric' : '',
     warn.validity.badInput || crit.validity.badInput ? 'numbers in warning and critical'
       : warn.value.trim() === '' && crit.value.trim() === '' ? 'a warning or a critical value' : '',
-    mins.value.trim() === '' || !mins.validity.valid ? 'whole minutes from 0 to 1440' : '',
+    mins.value.trim() === '' || !mins.validity.valid ? `whole minutes from ${mins.min} to 1440` : '',
     scope.value === 'tag' && tagSel.value === '' ? 'a tag' : '',
     scope.value === 'instance' && instSel.value === '' ? 'an instance' : '',
   ].filter(Boolean).join(', ');
