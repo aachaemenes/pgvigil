@@ -74,6 +74,11 @@
 #     without the node column, record 103, stores it (5); mssql_memory_rmon_hourly counts each event once (5 at
 #     indicator 2, not 7). The live record's NodeId (0 on the container) waits for memory.go's WIRING; NOT PROVEN live on
 #     two nodes (a container has one).
+#  R4. the PostgreSQL poison wait (Changed 19, D4 changed): on built PostgreSQL instances' wait_sample rows judged at a
+#     fixed time: IPC:BufferIO 700 s in the newest 10 minutes and 650 s in the 10 before = warning (1.17 and 1.08), its
+#     query naming 'queryid 42: SELECT pgv_poison' from statement_text; IPC:BtreePage 6,100 s in the newest alone =
+#     critical (10.17); 700 s then 300 s = nothing; an instance with no wait_sample row = one info row 'not judged: needs
+#     pg_wait_sampling'. NOT PROVEN live: no PostgreSQL image on the box carries pg_wait_sampling.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -371,4 +376,27 @@ echo "   records stored after each read: $N1 $N2 $N3; watermark $WM; events at i
   || fail "R8: stored $N1 $N2 $N3 (want 3 4 5), watermark [$WM] (want {0: 101, 1: 52}), hourly $HR (want 5)"
 ok "R8: records keyed per node, the copies of one event stored once, the watermark per node, a collector without nodes still read"
 
-echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3 R8)"
+echo "== R4. the PostgreSQL poison wait (Changed 19) =="
+TP=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '1 hour', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+pq "SELECT pgvigil.ensure_month_partition('wait_sample', '$TP'::timestamptz - interval '20 minutes')" >/dev/null
+pgi() { pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         VALUES ('$1', 'postgres', '{}', now(), now(), false, 'postgres') RETURNING instance_id" | head -1; }
+# wsa <instance> <minutes before TP> <event> <queryid> <wait secs>
+wsa() { pq "INSERT INTO pgvigil.wait_sample (instance_id, snapshot_at, interval_secs, source, event_type, event, queryid, samples, wait_secs)
+  VALUES ($1, '$TP'::timestamptz - interval '$2 minutes', 300, 'pg_wait_sampling', 'IPC', '$3', $4, 1, $5)" >/dev/null; }
+pw1=$(pgi pgsyn1); wsa "$pw1" 2 BufferIO 42 400; wsa "$pw1" 7 BufferIO 42 300; wsa "$pw1" 12 BufferIO 42 650
+pq "INSERT INTO pgvigil.statement_text (instance_id, queryid, first_seen, last_seen, query) VALUES ($pw1, 42, now(), now(), 'SELECT pgv_poison FROM t')" >/dev/null
+pw2=$(pgi pgsyn2); wsa "$pw2" 3 BtreePage 7 6100
+pw3=$(pgi pgsyn3); wsa "$pw3" 4 BufferIO 9 700; wsa "$pw3" 14 BufferIO 9 300
+pw4=$(pgi pgsyn4)
+pf() { pq "SELECT coalesce(string_agg(severity || '|' || object || '|' || coalesce(query, ''), ' ; '), 'none') FROM pgvigil.pg_poison_wait_findings($1, '$TP'::timestamptz)"; }
+P1=$(pf "$pw1"); P2=$(pf "$pw2"); P3=$(pf "$pw3"); P4=$(pf "$pw4")
+P1D=$(pq "SELECT detail FROM pgvigil.pg_poison_wait_findings($pw1, '$TP'::timestamptz)")
+for x in "$P1" "$P2" "$P3" "$P4" "$P1D"; do echo "   $x"; done
+[[ "$P1" == "warning|IPC:BufferIO|queryid 42: SELECT pgv_poison FROM t" && "$P1D" == *"averaged 1.17 waiting backends over the last 10 minutes and 1.08 over the 10 before"* ]] || fail "R4: two windows over 1.0 [$P1] [$P1D]"
+[[ "$P2" == "critical|IPC:BtreePage|queryid 7: (no text stored)" ]] || fail "R4: 10.17 at once [$P2]"
+[[ "$P3" == none ]] || fail "R4: 1.17 then 0.5 [$P3] (want none)"
+[[ "$P4" == "info|not judged|" ]] || fail "R4: no wait_sample [$P4] (want the info row)"
+ok "R4: warning over two windows at 1.0+, critical at once at 10.0+, nothing on one window, 'not judged: needs pg_wait_sampling' without the samples"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3 R8 R4)"

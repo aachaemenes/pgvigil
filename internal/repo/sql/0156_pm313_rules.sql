@@ -22,9 +22,10 @@
 --   mssql_runnable_queue             Changed 13: the reading with its fallback window of the newest 3 reads.
 --   import_mssql_memory              Fixed 20: 0119's import, the resource monitor's records keyed (server start,
 --                                    memory node, record id), the watermark per node, one copy of an event across nodes.
+--   pg_poison_wait_findings          Changed 19 (PostgreSQL): IPC:BtreePage and IPC:BufferIO from wait_sample only.
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
 -- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85,
--- AlertEngine.cs L1045-1404, RunnableQueueEvaluator.cs L55-125, MemoryPressureEventsCollector.cs L35-126.
+-- AlertEngine.cs L1045-1404, RunnableQueueEvaluator.cs L55-125, MemoryPressureEventsCollector.cs L35-126, PoisonWaitEvaluator.cs L20-90.
 -- The lead's calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
 -- upgraded site has its release-note line (no site runs pgvigil before v0.4.0).
 
@@ -1104,3 +1105,51 @@ BEGIN
                                                 UNION SELECT jsonb_object_keys(coalesce(EXCLUDED.rmon_last_by_node, '{}'))) ks) END
    WHERE m.snapshot_at <= EXCLUDED.snapshot_at;
 END $$;
+
+-- ---- PostgreSQL poison wait (Changed 19) ----------------------------------------------------------------------------
+
+-- pg_poison_wait_findings: PerformanceMonitor 3.13.0's PostgreSQL poison wait (PoisonWaitEvaluator.cs L20-90,
+-- DarlingPostgresAlertReadAdapter.cs L240-318) at p_at for one PostgreSQL instance: IPC:BtreePage and IPC:BufferIO,
+-- their waiting backends on average over a 10-minute window (the wait seconds pg_wait_sampling or Azure's
+-- pgms_wait_sampling stored in wait_sample, over the window's 600 s of wall clock: a partly covered window counts
+-- low, the safe way for a page); 1.0 or more in the newest window and the one before it = warning, 10.0 or more in
+-- the newest = critical at once. The lead's D4: wait_sample only (activity_sample's one-minute snapshots cannot stand
+-- in for accumulated wait time); an instance with no wait_sample row in a day gets one info row 'not judged: needs
+-- pg_wait_sampling'. The finding's words are in detail; the top statements (up to 3, by wait on the event, their
+-- text from statement_text) are in query (task 415's mask covers the two keys). Its alert arm is darling_alert_findings'
+-- (WIRING).
+CREATE OR REPLACE FUNCTION pgvigil.pg_poison_wait_findings(p_instance_id int, p_at timestamptz)
+RETURNS TABLE (severity text, check_name text, object text, at timestamptz, detail text, query text)
+LANGUAGE sql STABLE AS $$
+  WITH me AS (SELECT i.instance_id FROM pgvigil.instances i WHERE i.instance_id = p_instance_id AND i.engine = 'postgres'),
+  ws AS (SELECT w.* FROM pgvigil.wait_sample w JOIN me ON me.instance_id = w.instance_id
+          WHERE w.snapshot_at > p_at - interval '20 minutes' AND w.snapshot_at <= p_at),
+  have AS (SELECT EXISTS (SELECT 1 FROM pgvigil.wait_sample w JOIN me ON me.instance_id = w.instance_id
+                           WHERE w.snapshot_at > p_at - interval '1 day' AND w.snapshot_at <= p_at) AS yes),
+  ev AS (SELECT ws.event_type, ws.event,
+                coalesce(sum(ws.wait_secs) FILTER (WHERE ws.snapshot_at > p_at - interval '10 minutes'), 0) / 600.0 AS now_avg,
+                coalesce(sum(ws.wait_secs) FILTER (WHERE ws.snapshot_at <= p_at - interval '10 minutes'), 0) / 600.0 AS before_avg,
+                max(ws.snapshot_at) AS last_at
+           FROM ws WHERE ws.event_type = 'IPC' AND ws.event IN ('BtreePage', 'BufferIO') GROUP BY 1, 2),
+  top AS (SELECT string_agg(t.event_type || ':' || t.event || ' ' || round((t.s / 600.0)::numeric, 2), ', ' ORDER BY t.s DESC) AS events
+            FROM (SELECT ws.event_type, ws.event, sum(ws.wait_secs) AS s FROM ws WHERE ws.snapshot_at > p_at - interval '10 minutes'
+                   GROUP BY 1, 2 ORDER BY 3 DESC NULLS LAST LIMIT 3) t),
+  f AS (SELECT ev.*, CASE WHEN ev.now_avg >= 10 THEN 'critical' WHEN ev.now_avg >= 1 AND ev.before_avg >= 1 THEN 'warning' END AS sev
+          FROM ev)
+  SELECT f.sev, 'poison wait', f.event_type || ':' || f.event, f.last_at,
+         format('%s:%s averaged %s waiting backends over the last 10 minutes and %s over the 10 before (PerformanceMonitor 3.13: '
+                '1.0 or more in two windows back to back is a warning, 10.0 or more at once critical). The top wait events of '
+                'the window: %s.', f.event_type, f.event, round(f.now_avg::numeric, 2), round(f.before_avg::numeric, 2),
+                coalesce((SELECT top.events FROM top), 'none')),
+         (SELECT string_agg('queryid ' || q.queryid || ': ' || left(coalesce(st.query, '(no text stored)'), 300), ' / ' ORDER BY q.s DESC)
+            FROM (SELECT ws.queryid, sum(ws.wait_secs) AS s FROM ws
+                   WHERE ws.snapshot_at > p_at - interval '10 minutes' AND ws.event_type = f.event_type AND ws.event = f.event
+                   GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 3) q
+            LEFT JOIN pgvigil.statement_text st ON st.instance_id = p_instance_id AND st.queryid = q.queryid)
+    FROM f WHERE f.sev IS NOT NULL
+  UNION ALL
+  SELECT 'info', 'poison wait', 'not judged', p_at,
+         'not judged: needs pg_wait_sampling (or Azure''s pgms_wait_sampling): the poison wait is accumulated wait time, which '
+         'one-minute session snapshots cannot measure', NULL::text
+    FROM me, have WHERE NOT have.yes
+$$;
