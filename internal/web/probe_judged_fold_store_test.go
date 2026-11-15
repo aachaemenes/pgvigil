@@ -224,7 +224,7 @@ func TestProbeFormingOnAStore(t *testing.T) {
 						ms = 60
 					}
 					if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures, target, rt_count, rt_ms_sum, rt_ms_max)
-						VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, 1, 1, 1, 0, 0, $4, 1, $5, $5)`, m, id, col, fmt.Sprintf("postgres:h%d-%d:5432", k, sfx), ms); err != nil {
+						VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, 1, 1, 1, 0, 0, $4, 1, $5::bigint, $5::int)`, m, id, col, fmt.Sprintf("postgres:h%d-%d:5432", k, sfx), ms); err != nil {
 						t.Fatal(err)
 					}
 				}
