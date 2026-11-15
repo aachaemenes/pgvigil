@@ -282,8 +282,13 @@ func TestPagesNameTheirNeeds(t *testing.T) {
 			q := regexp.QuoteMeta("'" + r + "'")
 			marked := regexp.MustCompile(`(needControl|markNeed|routeWhy)\([^\n]*`+q).MatchString(src) ||
 				regexp.MustCompile(`\broute: [^\n]*`+q).MatchString(src) ||
-				strings.Count(src, "'"+r+"'") > len(regexp.MustCompile(`\bpost(?:<.*?>)?\(\s*`+q).FindAllString(src, -1)) ||
 				strings.Contains(src, "dataset.need = '"+need+"'")
+			// a route the file posts to by its literal and hands to a helper as an argument: spelled once more than
+			// posted. Never for a route built at run time or written through addAck / endAck (no post literal): 'ack'
+			// and a route's parts are words a file may hold for other reasons (roles-red2 counted them as named).
+			if posted := len(regexp.MustCompile(`\bpost(?:<.*?>)?\(\s*`+q).FindAllString(src, -1)); !marked && posted > 0 {
+				marked = strings.Count(src, "'"+r+"'") > posted
+			}
 			if !marked {
 				t.Errorf("web/src/%s posts to %s (%s) and names its need nowhere: needControl / markNeed / routeWhy with '%s'", name, r, need, r)
 			}
