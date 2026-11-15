@@ -1,8 +1,38 @@
+diff --git i/docs/alerts.md w/docs/alerts.md
+index bbc51aa..b246e8d 100644
+--- i/docs/alerts.md
++++ w/docs/alerts.md
+@@ -247,6 +247,16 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
+   stores. A level is reached when the newest sample is beyond its value **and** the unbroken run of samples beyond
+   it spans the rule's minutes, measured from the run's first sample to its newest: a single late sample never fires
+   a rule by the clock alone. Until then the rule is *pending*. With 0 minutes the first sample beyond the value fires.
++- **Too few to judge (N/A).** A ratio over a small divisor says nothing: SQL Server's compilations, page splits and
++  page lookups per batch are judged only at 5 batch requests a second or more, full scans per index search only at 1
++  full scan a second or more. Under its floor the metric has no value, and a rule on it reads *N/A* (`na`), grey,
++  with the words "too few batch requests/s to judge (3.2/s, the floor 5/s)": never OK, never a warning, and no
++  finding. A rule that was firing and goes under the floor resolves with its normal *resolved* message after the
++  destination's clear delay; one that was not firing changes nothing. A read under the floor also breaks the run of
++  samples beyond the value, so a rule that flaps across the floor resolves and fires again: two messages for each
++  flap, the new firing only after its minutes of judged samples. A bursty server that crosses the floor every few
++  minutes may never hold a run long enough to fire: on such a server give the rule fewer minutes (0 to 3), so a
++  short run beyond the value is enough.
+ - **No data is not a recovery.** A metric with no sample newer than its limit (10 minutes; 30 for the IO counters,
+   15 for the host) reads *no data*. A firing rule whose series stops is **held** open, and its alert says since when
+   no fresh sample came: the collector may be down, or the instance. When the samples come back still beyond the
+@@ -409,7 +419,7 @@ tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and ex
+ | `pgvigil.metric_catalog` | Every metric a rule may name (`family.metric`): engine, label, unit, whether it has a per-database series, how old its newest sample may be. |
+ | `pgvigil.alert_rules` | The rules; an edit ends a row and writes its successor (`replaces`), so the table is its own history. |
+ | `pgvigil.alert_rule_log` | Every attempt from the UI, done or refused: who, from where, what. Not purged, like the acknowledge log. |
+-| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical` or `nodata`, held or not, the newest sample, since when. |
++| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical`, `nodata` or `na` (under a metric's floor: not judged), held or not, the newest sample, since when. |
+ | `pgvigil.alert_rule_fired` | Per rule: when it last began to fire, on which instance, how often. |
+ | `pgvigil.alert_rule_scope`, `pgvigil.alert_rules_effective` | Every live rule on every instance it covers; the one in force per instance, metric and series. |
+ | `pgvigil.alert_rule_findings` | The firing rows as findings; `pgvigil.alert_findings` (0059) lists them beside `pgvigil.findings`. |
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 2ea6318..d9a594a 100644
+index 2ea6318..9556f05 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
-@@ -1021,3 +1021,28 @@ LANGUAGE sql STABLE AS $$
+@@ -1021,3 +1021,115 @@ LANGUAGE sql STABLE AS $$
      CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
                                                    s.cpu_count, wg.q::int) l
  $$;
@@ -31,6 +61,93 @@ index 2ea6318..d9a594a 100644
 +     AND r.created_by = 'pgvigil' AND r.client = '0153 seed' AND r.database IS NOT DISTINCT FROM p_database
 +     AND NOT EXISTS (SELECT 1 FROM e)
 +$$;
++
++-- ---- task 402 (0152 / 0153, the floors: the lead's 19:4x and 19:5x) -------------------------------------------------
++-- alert_rule_state's states gain 'na': a floored metric (0152's metric_floors) whose newest fresh point has no value is
++-- not judged. alert_rule_eval is 0085's whole with its two changes marked 'task 402 change n of 2'; alert_rules_run
++-- needs none: its hold covers 'nodata' only, a 'na' row is beyond no level (change 1), and alert_rule_findings lists
++-- warning and critical only - a FIRING rule that goes to 'na' leaves the findings and alert_due sends its normal
++-- 'resolved' after the channel's clear delay (the lead's 19:5x), one that was not firing changes nothing. A rule that
++-- flaps across a floor resolves and fires again (two events a flap); docs/alerts.md says so (the lead's 21:4x).
++ALTER TABLE pgvigil.alert_rule_state DROP CONSTRAINT IF EXISTS alert_rule_state_state_check;
++ALTER TABLE pgvigil.alert_rule_state ADD CONSTRAINT alert_rule_state_state_check
++  CHECK (state IN ('ok', 'pending', 'warning', 'critical', 'nodata', 'na'));
++
++CREATE OR REPLACE FUNCTION pgvigil.alert_rule_eval(p_at timestamptz)
++RETURNS TABLE (rule_id bigint, instance_id int, metric text, database text, state text, value double precision,
++               threshold double precision, sample_at timestamptz, beyond_since timestamptz,
++               crit_beyond boolean, crit_within_at timestamptz, warn_beyond boolean, warn_within_at timestamptz)
++LANGUAGE plpgsql STABLE SET jit = off AS $$
++#variable_conflict use_column
++DECLARE
++  g record;
++BEGIN
++  FOR g IN
++    SELECT e.instance_id, c.family, e.database, max(e.for_minutes) AS max_for
++      FROM pgvigil.alert_rules_effective e JOIN pgvigil.metric_catalog c ON c.key = e.metric
++     GROUP BY e.instance_id, c.family, e.database
++  LOOP
++    RETURN QUERY
++    WITH p AS MATERIALIZED (
++      SELECT x.at, x.metric, x.value
++        FROM pgvigil.metric_points(g.instance_id, g.family, p_at - make_interval(mins => g.max_for + 60), p_at,
++                                   interval '1 hour', g.database) x
++    ), lv AS (          -- each rule of this instance, family and series at each level it sets
++      SELECT e.rule_id, e.metric AS key, c.metric AS m, e.op, e.for_minutes, c.fresh_secs, l.sev, l.thr
++        FROM pgvigil.alert_rules_effective e
++        JOIN pgvigil.metric_catalog c ON c.key = e.metric
++        CROSS JOIN LATERAL (VALUES ('critical', e.critical), ('warning', e.warning)) AS l(sev, thr)
++       WHERE e.instance_id = g.instance_id AND c.family = g.family AND e.database IS NOT DISTINCT FROM g.database
++         AND l.thr IS NOT NULL
++    ), j AS (
++      SELECT lv.*, z.last_at, z.last_value, z.last_within,
++             (SELECT min(p2.at) FROM p p2
++               WHERE p2.metric = lv.m AND (z.last_within IS NULL OR p2.at > z.last_within)) AS run_from
++        FROM lv
++        LEFT JOIN LATERAL (
++          SELECT max(p1.at) AS last_at, (array_agg(p1.value ORDER BY p1.at DESC))[1] AS last_value,
++                 -- task 402 change 1 of 2: a point with no value (a floored ratio under its floor) is inside every level,
++                 -- so it breaks a run beyond (0085 counted it beyond: NOT alert_beyond(op, NULL, thr) is NULL)
++                 max(p1.at) FILTER (WHERE p1.value IS NULL OR NOT pgvigil.alert_beyond(lv.op, p1.value, lv.thr)) AS last_within
++            FROM p p1 WHERE p1.metric = lv.m) z ON true
++    ), k AS (
++      SELECT j.*,
++             (j.last_at IS NOT NULL AND p_at - j.last_at <= make_interval(secs => j.fresh_secs)) AS fresh,
++             (j.run_from IS NOT NULL AND j.last_at - j.run_from >= make_interval(mins => j.for_minutes)) AS long_enough
++        FROM j
++    ), x AS (
++      SELECT k.rule_id, k.key,
++             CASE WHEN NOT bool_or(k.fresh) THEN 'nodata'
++                  -- task 402 change 2 of 2: the newest fresh point has no value (a floored ratio under its floor,
++                  -- 0152's metric_floors): not judged, 'na', before the levels
++                  WHEN bool_or(k.fresh AND k.last_value IS NULL) THEN 'na'
++                  WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'critical') THEN 'critical'
++                  WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'warning') THEN 'warning'
++                  WHEN bool_or(k.run_from IS NOT NULL) THEN 'pending'
++                  ELSE 'ok' END AS st,
++             max(k.last_value) AS last_value, max(k.last_at) AS last_at,
++             max(k.thr) FILTER (WHERE k.sev = 'critical') AS crit_thr, max(k.thr) FILTER (WHERE k.sev = 'warning') AS warn_thr,
++             min(k.run_from) FILTER (WHERE k.sev = 'critical') AS crit_from, min(k.run_from) FILTER (WHERE k.sev = 'warning') AS warn_from,
++             bool_or(k.run_from IS NOT NULL) FILTER (WHERE k.sev = 'critical') AS crit_run,
++             max(k.last_within) FILTER (WHERE k.sev = 'critical') AS crit_in,
++             bool_or(k.run_from IS NOT NULL) FILTER (WHERE k.sev = 'warning') AS warn_run,
++             max(k.last_within) FILTER (WHERE k.sev = 'warning') AS warn_in
++        FROM k
++       GROUP BY k.rule_id, k.key
++    )
++    SELECT x.rule_id, g.instance_id, x.key, g.database, x.st,
++           -- 'na' (change 2): the value is the floor's input at the same read and the threshold the floor (no floor
++           -- row: both NULL)
++           CASE WHEN x.st = 'na' THEN (SELECT p3.value FROM p p3 WHERE p3.metric = split_part(f.input_key, '.', 2) AND p3.at = x.last_at)
++                ELSE x.last_value END,
++           -- the value and the run of the level the state names (no level reached: the lower one set)
++           CASE x.st WHEN 'na' THEN f.floor WHEN 'critical' THEN x.crit_thr WHEN 'warning' THEN x.warn_thr ELSE coalesce(x.warn_thr, x.crit_thr) END,
++           x.last_at,
++           CASE x.st WHEN 'na' THEN NULL WHEN 'critical' THEN x.crit_from WHEN 'warning' THEN x.warn_from ELSE coalesce(x.warn_from, x.crit_from) END,
++           x.crit_run, x.crit_in, x.warn_run, x.warn_in
++      FROM x LEFT JOIN pgvigil.metric_floors f ON f.key = x.key;
++  END LOOP;
++END $$;
 diff --git i/internal/web/q_metrics.go w/internal/web/q_metrics.go
 index 62f936b..83f386d 100644
 --- i/internal/web/q_metrics.go
