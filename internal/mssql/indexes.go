@@ -618,9 +618,13 @@ const FragLockTimeoutMS = 30000
 const fragTargetSQL = `SELECT QUOTENAME(d.name) AS quoted_name, CAST(d.state_desc AS nvarchar(60)) AS database_state,
   CAST(CASE WHEN d.state = 0 AND HAS_DBACCESS(d.name) = 1 THEN 1 ELSE 0 END AS int) AS can_enter,
   CAST(CASE WHEN d.database_id <= 4 OR d.source_database_id IS NOT NULL THEN 1 ELSE 0 END AS int) AS not_user,
-  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states rs WHERE rs.database_id = d.database_id AND rs.is_local = 1
-                          AND rs.is_primary_replica = 0) THEN 1 ELSE 0 END AS int) AS secondary
+  {{secondary}} AS secondary
 FROM sys.databases d WHERE d.name = @db`
+
+// fragSecondary: whether the database is a secondary replica here (sys.dm_hadr_database_replica_states needs VIEW
+// SERVER STATE, which the read login has and a statistics-only login does not: asked only for the fragmentation read)
+const fragSecondary = `CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states rs WHERE rs.database_id = d.database_id AND rs.is_local = 1
+                          AND rs.is_primary_replica = 0) THEN 1 ELSE 0 END AS int)`
 
 // OnDemandDatabase finds a user database an on-demand read names (task 414) and answers its QUOTENAME, or an error
 // with the words: a cloud service's own database (rdsadmin, gcloud_cloudsqladmin), a system database or a snapshot,
@@ -630,7 +634,11 @@ func OnDemandDatabase(ctx context.Context, conn *sql.Conn, database string, refu
 	if strings.EqualFold(database, "rdsadmin") || strings.EqualFold(database, "gcloud_cloudsqladmin") {
 		return "", fmt.Errorf("%s is the cloud service's own database: pgvigil does not read it", database)
 	}
-	rows, err := QueryRows(ctx, conn, fragTargetSQL, sql.Named("db", database))
+	sec := "CAST(0 AS int)"
+	if refuseSecondary {
+		sec = fragSecondary
+	}
+	rows, err := QueryRows(ctx, conn, strings.Replace(fragTargetSQL, "{{secondary}}", sec, 1), sql.Named("db", database))
 	if err != nil {
 		return "", err
 	}

@@ -1,0 +1,148 @@
+diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
+index 466e959..8d5c097 100644
+--- i/cmd/pgvigil/report.go
++++ w/cmd/pgvigil/report.go
+@@ -285,6 +285,7 @@ func osRelease() string {
+ // key this list does not know (a new one, a misspelt one) is masked, never shown.
+ var keepKeys = map[string]bool{
+ 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
++	"histogram": true, "index_fragmentation": true,
+ 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
+ 	// doors: (the page door's switch, on or off)
+ 	"page_instance_reads": true,
+@@ -308,6 +309,7 @@ var knownKeys = map[string]bool{
+ 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
+ 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
+ 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
++	"histogram": true, "stats_dsn": true, "index_fragmentation": true,
+ 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
+ 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
+ 	"latency_warn_secs": true, "archive_warn_minutes": true,
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index 812798e..d0ce4e7 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -176,6 +176,15 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		pc.Hypo[in.Name] = in.HypoIndex
+ 	}
+ 	srv.SetPlans(pc)
++	// task 414: the histogram and fragmentation switches of the file's SQL Server instances (off by default)
++	idc := web.IndexDepthConfig{Gates: map[string]web.IndexDepthGate{}}
++	for _, in := range cfg.Instances {
++		if in.Engine == config.EngineSQLServer {
++			idc.Gates[in.Name] = web.IndexDepthGate{Histogram: in.Histogram, StatsDSN: in.StatsDSN(), StatsConfigured: strings.TrimSpace(in.StatsDSNRaw) != "",
++				Fragmentation: in.IndexFragmentation}
++		}
++	}
++	srv.SetIndexDepth(idc)
+ 	doors := map[string]mssql.Door{}
+ 	for _, in := range cfg.Instances {
+ 		if in.Engine == config.EngineSQLServer {
+diff --git i/internal/config/config.go w/internal/config/config.go
+index 07e6a24..6b5cbe8 100644
+--- i/internal/config/config.go
++++ w/internal/config/config.go
+@@ -119,6 +119,19 @@ type Instance struct {
+ 	PgBouncerDSNRaw string `yaml:"pgbouncer"`
+ 	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
+ 	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
++	// Histogram turns on the Indexes tab's histogram of a statistic for this sqlserver instance (task 414): it shows
++	// the column's real values (each step's key), read when asked, never stored, audited and under query_text full
++	// only; false (the default) = off.
++	Histogram bool `yaml:"histogram"`
++	// StatsDSNRaw is the statistics-only login the histogram reads through (a user with SELECT on the tables whose
++	// statistics it shows, nothing else; docs/sqlserver-indexes.md): the read login keeps its rights, so custom reports
++	// and report mail stay metadata-only. env:NAME or file:/path only; empty = the read login (which then needs that
++	// SELECT itself, or the histogram says so).
++	StatsDSNRaw string `yaml:"stats_dsn"`
++	// IndexFragmentation turns on the Indexes tab's fragmentation read for this sqlserver instance (task 414): it reads
++	// every index and heap of a database (a heap's data pages in full even in LIMITED), when asked, as a job; false (the
++	// default) = off.
++	IndexFragmentation bool `yaml:"index_fragmentation"`
+ }
+ 
+ // DBADashRepo is one DBADash repository of the dbadash: list.
+@@ -310,6 +323,15 @@ func (i Instance) ExplainDSN() string {
+ 	return Resolve(strings.TrimSpace(i.ExplainDSNRaw))
+ }
+ 
++// StatsDSN resolves the statistics-only login of a histogram (task 414); "" = none configured (or an unset variable /
++// unreadable file).
++func (i Instance) StatsDSN() string {
++	if strings.TrimSpace(i.StatsDSNRaw) == "" {
++		return ""
++	}
++	return Resolve(strings.TrimSpace(i.StatsDSNRaw))
++}
++
+ // PgBouncerDSN resolves the pooler's admin console; "" = none configured (or an unset variable / unreadable file).
+ func (i Instance) PgBouncerDSN() string {
+ 	if strings.TrimSpace(i.PgBouncerDSNRaw) == "" {
+@@ -512,7 +534,14 @@ func (c *Config) Validate() error {
+ 			if len(in.Actions) > 0 && strings.TrimSpace(in.ActionsDSNRaw) == "" {
+ 				return fmt.Errorf("instance %q: actions: names %s but the instance has no actions_dsn", in.Name, strings.Join(in.Actions, ", "))
+ 			}
++			if in.Histogram || in.IndexFragmentation || strings.TrimSpace(in.StatsDSNRaw) != "" {
++				return fmt.Errorf("instance %q: histogram, stats_dsn and index_fragmentation are SQL Server's", in.Name)
++			}
+ 		case EngineSQLServer:
++			// task 414: the statistics login reads table data (a histogram's keys): its password never sits in the file
++			if v := strings.TrimSpace(in.StatsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
++				return fmt.Errorf("instance %q: stats_dsn must be env:NAME or file:/path (the statistics login's password never sits in the file)", in.Name)
++			}
+ 			switch in.Platform {
+ 			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi", "cloudsql":
+ 			default:
+diff --git i/internal/repo/sql/0110_join_release.sql w/internal/repo/sql/0110_join_release.sql
+index 68128c5..b831a2f 100644
+--- i/internal/repo/sql/0110_join_release.sql
++++ w/internal/repo/sql/0110_join_release.sql
+@@ -425,7 +425,8 @@ BEGIN
+       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_auth', f.sig);
+     ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
+-                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set') THEN
++                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
++                        'mssql_index_depth_purge', 'mssql_fragmentation_stale') THEN
+       -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
+       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+     ELSE
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 40526c2..b587fef 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -187,7 +187,7 @@ BEGIN
+                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
+                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+-                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute')
++                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_index_usage_read')
+        AND c.relname ~ '_[0-9]{6}$'
+        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
+      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
+@@ -332,6 +332,7 @@ BEGIN
+   n := n + pgvigil.mssql_running_purge(p_days);
+   n := n + pgvigil.mssql_reads_purge(p_days);
+   n := n + pgvigil.mssql_plancache_purge(p_days);
++  n := n + pgvigil.mssql_index_depth_purge(p_days);   -- task 414 (0164)
+   -- the PostgreSQL job step runs (161, 0102) past the retention, as job_runs
+   DELETE FROM pgvigil.job_step_runs WHERE start_time < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6b3933a..f5b7b8b 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -345,6 +345,13 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
+ 	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
+ 	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
++	// task 414 (B23): indexes and statistics on demand (q_mssql_index_depth.go)
++	api.HandleFunc("GET /api/mssql/indexes/depth", s.MSSQLIndexDepth)
++	api.HandleFunc("POST /api/mssql/stats/histogram", s.MSSQLHistogram)
++	api.HandleFunc("POST /api/mssql/indexes/fragmentation/cost", s.MSSQLFragCost)
++	api.HandleFunc("POST /api/mssql/indexes/fragmentation/cancel", s.MSSQLFragCancel)
++	api.HandleFunc("POST /api/mssql/indexes/fragmentation", s.MSSQLFragStart)
++	api.HandleFunc("GET /api/mssql/indexes/fragmentation", s.MSSQLFragRead)
+ 	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
+ 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
+ 	api.HandleFunc("GET /api/mssql/syshealth", s.MSSQLSysHealth)
