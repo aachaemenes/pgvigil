@@ -174,8 +174,11 @@ func msServerOf(dsn string) string {
 	return ""
 }
 
-// psQuote is a PowerShell single-quoted string.
-func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+// psQuote is a PowerShell single-quoted string: PowerShell ends one at the ASCII quote and at the four single quotation
+// marks U+2018-U+201B as well, so each is doubled
+var psQuoter = strings.NewReplacer("'", "''", "\u2018", "\u2018\u2018", "\u2019", "\u2019\u2019", "\u201a", "\u201a\u201a", "\u201b", "\u201b\u201b")
+
+func psQuote(s string) string { return "'" + psQuoter.Replace(s) + "'" }
 
 // installScript: the script a DBA runs to install what is missing, older than tested or of no readable version in db
 // (a newer one is left as it is), with dbatools; pgvigil runs none of it. notes: a group's procedures at different

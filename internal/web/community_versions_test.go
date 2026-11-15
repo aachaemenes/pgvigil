@@ -95,3 +95,17 @@ func TestInstallScript(t *testing.T) {
 		t.Errorf("nothing missing: %s", s)
 	}
 }
+
+func TestPsQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"dba":           "'dba'",
+		"o'brien":       "'o''brien'",
+		"o\u2019brien":  "'o\u2019\u2019brien'",
+		"\u2018x\u201b": "'\u2018\u2018x\u201b\u201b'",
+		"a\u201ab":      "'a\u201a\u201ab'",
+	} {
+		if got := psQuote(in); got != want {
+			t.Errorf("psQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
