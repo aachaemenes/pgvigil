@@ -4,7 +4,7 @@
 # lab box (a Cloud-Box job): go, docker, psql. One postgres:18 container of the run's own, published on 127.0.0.1
 # only, removed at the end.
 #
-#   scripts/proof-pginf.sh            the four rows below, then (PGINF_FULL=1) the whole collect and web packages
+#   scripts/proof-pginf.sh            the seven rows below, then (PGINF_FULL=1) the whole collect and web packages
 #
 # EXPECTED (written 2026-11-15 15:4x PST before any run):
 #   red  (the tests on pgvigil main 32c7aace's code, rel-pginf's first commit):
@@ -19,7 +19,10 @@
 #     TestRolesMinusInfinityText         red (the tests on 70f74171): FAIL - role_flags got 'login | login | login,valid
 #                                        until 2026-01-02 03:04 UTC | login' (the non-finite 'valid until' dropped) and
 #                                        the finding's detail got NULL; green (0270): PASS
-#   green (the fix): all six PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: 'ok   tsc --noEmit' for
+#   PGINF-2's review fold (written 2026-11-15 15:4x before its run):
+#     TestReportPwageNonFinite           red (on 59a71dd8): FAIL 'the Password age report's PostgreSQL part failed ...
+#                                        cannot convert infinity to integer' (PostgreSQL 18); green: PASS
+#   green (the fix): all seven PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: 'ok   tsc --noEmit' for
 #     web/ (roles.ts: '-infinity' badged expired) and ok for
 #     ./internal/collect/ and ./internal/web/ - their other tests gated on PGVIGIL_REPO_DSN / PGVIGIL_REPO_TEST_DSN
 #     run against this throwaway database too (collect: dms, statements, pi, versions, cloudwatch_io; web: actions,
@@ -46,12 +49,12 @@ W=$(mktemp -d); trap 'cleanup; rm -rf "$W"' EXIT
 pick() { grep -E '^(=== RUN|--- |ok|FAIL|PASS|panic)|jsonvalue_test.go' "$1"; }
 go test ./internal/collect/ -run '^(TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport|TestRolesMinusInfinityText)$' -count=1 -v > "$W/c.out" 2>&1 || RC=1
 pick "$W/c.out"
-go test ./internal/web/ -run '^(TestQueryJSONValues|TestPgCellJSONValues)$' -count=1 -v > "$W/w.out" 2>&1 || RC=1
+go test ./internal/web/ -run '^(TestQueryJSONValues|TestPgCellJSONValues|TestReportPwageNonFinite)$' -count=1 -v > "$W/w.out" 2>&1 || RC=1
 pick "$W/w.out"
-# a test that skipped (its variable unset) or matched nothing passes go test: the six are counted
-NP=$(cat "$W/c.out" "$W/w.out" | grep -cE '^--- PASS: (TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport|TestRolesMinusInfinityText|TestQueryJSONValues|TestPgCellJSONValues) ')
+# a test that skipped (its variable unset) or matched nothing passes go test: the seven are counted
+NP=$(cat "$W/c.out" "$W/w.out" | grep -cE '^--- PASS: (TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport|TestRolesMinusInfinityText|TestQueryJSONValues|TestPgCellJSONValues|TestReportPwageNonFinite) ')
 NS=$(cat "$W/c.out" "$W/w.out" | grep -c '^--- SKIP')
-[ "$NP" = 6 ] && [ "$NS" = 0 ] || { echo "FAIL $NP of the 6 rows passed, $NS skipped"; RC=1; }
+[ "$NP" = 7 ] && [ "$NS" = 0 ] || { echo "FAIL $NP of the 7 rows passed, $NS skipped"; RC=1; }
 [ "$RC" = 0 ] || { echo "pginf: the whole output of the rows:"; cat "$W/c.out" "$W/w.out"; }
 if [ "${PGINF_FULL:-0}" = 1 ]; then
   echo "pginf: the whole collect and web packages"
