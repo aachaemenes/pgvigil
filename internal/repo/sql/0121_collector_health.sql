@@ -891,7 +891,8 @@ $$;
 -- collector_reading: the hosts still reading each instance - a host reads it while its newest naming of it (the beat
 -- names what it loaded, at the minute's end; the instance's own connect names it too) is no older than the host's own
 -- newest - its newest naming of any instance, or its newest beat minute's end when later - less the instance's
--- interval and a beat. Judged against the host's OWN clock, never another host's rows: a host that beats with nothing
+-- interval, the start spread's least(interval, 5 min) (a collection's first run after a start or an instance change
+-- falls anywhere in it: sched.go firstStartSpread) and a beat. Judged against the host's OWN clock, never another host's rows: a host that beats with nothing
 -- left to read stops reading what moved away. A host with no live run (crashed, stopped, renamed: its newest frozen)
 -- reads an instance only while no live host reads it - its old streaks never speak over a live host's; as the only
 -- reader it speaks until collector_covers ends that, 20 minutes after its last naming.
@@ -909,7 +910,8 @@ WITH n AS (
 ), r AS (
   SELECT n.host, i.instance_id, hs.live
     FROM n JOIN hs USING (host) JOIN pgvigil.instances i ON i.name = n.instance
-   WHERE n.seen >= hs.newest - make_interval(secs => coalesce(n.interval_s, 60)) - interval '1 minute'
+   WHERE n.seen >= hs.newest - make_interval(secs => coalesce(n.interval_s, 60) + least(coalesce(n.interval_s, 60), 300))
+                    - interval '1 minute'
 )
 SELECT r.host, r.instance_id
   FROM r
