@@ -70,7 +70,8 @@ const windowText = (m: unknown): string => {
 };
 
 // ruleCols: logRead = the instance's audit-line read (h.log_read): a rule other than failed sign-ins counts those lines,
-// so where they are not read it is not checked (N/A), never 'quiet'
+// so where they are not read it is not checked (N/A), never 'quiet'. Failed sign-ins count the log readers' rows, whose
+// state this page does not hold: their 'quiet' is OK even where the server log is not read (a known limit)
 const ruleCols = (logRead: unknown): Col[] => [
   // the state: a rule that is off, one firing at info, or one not checked is not judged warning or critical (N/A); a quiet rule OK
   { key: 'fires', label: 'state', fmt: (v, r) => !r.is_enabled ? badge('off', '') : v ? badge('firing', r.severity === 'critical' ? 'crit' : r.severity === 'info' ? '' : 'warn') : r.what !== 'AUTH_FAIL' && logRead !== 'ok' ? 'not checked: the audit lines are not read' : 'quiet', cls: (v, r) => !r.is_enabled || (v && r.severity === 'info') || (!v && r.what !== 'AUTH_FAIL' && logRead !== 'ok') ? 'status none' : v ? '' : 'status ok' },
