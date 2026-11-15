@@ -62,7 +62,9 @@ type PageDef struct {
 	Window bool `json:"window"`
 	// Snapshot says the procedure takes one running-queries snapshot time (the sessions page; none = the latest).
 	Snapshot bool `json:"snapshot,omitempty"`
-	args     func(a PageArgs) []any
+	// Since names the DBA Dash version the procedure came with (B6.3: a repository without it is read as 'not read')
+	Since string `json:"since,omitempty"`
+	args  func(a PageArgs) []any
 }
 
 // PageArgs are a page call's inputs: the DBADash InstanceID, the time range (UTC) and, for the sessions page, the
@@ -124,6 +126,27 @@ var Pages = []PageDef{
 	{Key: "alerts", Title: "SQL Agent Alerts", Procedure: "dbo.Alerts_Get", args: func(a PageArgs) []any {
 		return []any{sql.Named("InstanceIDs", fmt.Sprint(a.InstanceID)), sql.Named("ShowHidden", true)}
 	}},
+	// B6.3: DBA Dash 4.25.0's Checks > Collection Health, called as its GUI calls it by default (CollectionHealthView.cs:
+	// Show 'Row per collection per instance', Steps shown, every status; @DetailMaxHours its default 48; the chart
+	// bucket and the collection left to the procedure). Absent on 4.24.1 and older: gated (gateNote).
+	{Key: "collectionhealth", Title: "Collection Health", Procedure: "dbo.CollectionHealth_Get", Window: true, Since: "4.25.0", args: func(a PageArgs) []any {
+		return append([]any{sql.Named("InstanceIDs", ids(a.InstanceID)), sql.Named("FromDate", utc2(a.From)), sql.Named("ToDate", utc2(a.To)),
+			sql.Named("DetailMaxHours", 48), sql.Named("GroupByInstance", true), sql.Named("IncludeSteps", true)}, allStatuses()...)
+	}},
+}
+
+// gateNote: why a page whose procedure came with a later DBA Dash (Since) is not read - the procedure absent from the
+// repository, or the login without EXECUTE on it; "" to read it (and for every page with no Since)
+func gateNote(def PageDef, exists, canExec bool) string {
+	switch {
+	case def.Since == "":
+		return ""
+	case !exists:
+		return fmt.Sprintf("not read: %s is not in this DBA Dash repository (it came with DBA Dash %s)", def.Procedure, def.Since)
+	case !canExec:
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (docs/dbadash.md's GRANT, on DBA Dash %s and later)", def.Procedure, def.Since)
+	}
+	return ""
 }
 
 // PageByKey finds a page; ok false for a key not in Pages.
@@ -264,6 +287,21 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 			return PageReply{}, fmt.Errorf("dbo.Instances: %w", err)
 		}
 		out.Instance, out.Machine = inst.String, machine.String
+	}
+	if def.Since != "" {
+		// a procedure newer than some repositories: read only where it is and may be run (never a failed call on 4.24.1)
+		var exists, canExec bool
+		if err := conn.QueryRowContext(ctx, `SELECT CAST(CASE WHEN OBJECT_ID(@p, 'P') IS NULL THEN 0 ELSE 1 END AS bit),
+       CAST(ISNULL(HAS_PERMS_BY_NAME(@p, 'OBJECT', 'EXECUTE'), 0) AS bit)`, sql.Named("p", def.Procedure)).Scan(&exists, &canExec); err != nil {
+			return PageReply{}, fmt.Errorf("%s's presence: %w", def.Procedure, err)
+		}
+		if n := gateNote(def, exists, canExec); n != "" {
+			if out.Note != "" {
+				n = out.Note + "; " + n
+			}
+			out.Note = n
+			return out, nil
+		}
 	}
 	start := time.Now()
 	rs, err := callProc(ctx, conn, def.Procedure, def.args(a))

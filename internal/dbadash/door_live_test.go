@@ -54,7 +54,7 @@ func TestLivePages(t *testing.T) {
 		for _, rs := range out.Results {
 			counts = append(counts, strconv.Itoa(len(rs.Rows)))
 		}
-		fmt.Printf("page %s %s version=%s proven=%t sets=%d rows=%s err=%s\n", p.Key, state, out.Version, out.Proven, len(out.Results), strings.Join(counts, ","), msg)
+		fmt.Printf("page %s %s version=%s proven=%t sets=%d rows=%s err=%s note=%s\n", p.Key, state, out.Version, out.Proven, len(out.Results), strings.Join(counts, ","), msg, out.Note)
 		if dir != "" && err == nil {
 			b, err := json.Marshal(out)
 			if err != nil {

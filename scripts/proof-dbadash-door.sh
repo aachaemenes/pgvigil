@@ -133,6 +133,8 @@ NET=pgvdoor-net-$SUF; SQL=pgvdoor-sql-$SUF; SVC=pgvdoor-svc-$SUF; CFGC=pgvdoor-c
 DDB=DBADash_pgv$SUF; PGDB=pgv_door_$SUF; PGRO=pgv_door_ro_$SUF
 RO=pgv_ddro_$SUF; MON=pgv_ddmon_$SUF; ACT=pgv_ddact_$SUF; APP=pgv_ddapp_$SUF; USR=proofdba$SUF
 PROCS="PerformanceSummary_Get RunningQueriesSummary_Get RunningQueries_Get BackupReport_Get AgentJobsReport_Get DrivesReport_Get DBFilesReport_Get Configuration_Get Alerts_Get"
+# B6.3 (CH9): the tenth screen's procedure came with 4.25.0 - granted there only (docs/dbadash.md's GRANT line)
+[[ "$DDV" == 4.25.0 ]] && PROCS="$PROCS CollectionHealth_Get"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
@@ -266,7 +268,16 @@ pages() { PGVIGIL_DBADASH_PAGE_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_PAGE_ID="$ID" PG
   PGVIGIL_DBADASH_PAGE_SNAPSHOT="${2:-}" go test -count=1 -run '^TestLivePages$' -v ./internal/dbadash 2>&1 | grep '^page ' || true; }
 echo "page read at $(date +%s) (the page side; the doorage review, finding 2: the gap to the pymssql read)"
 res=$(pages); echo "$res"
-[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == 9 ]] || fail "C: not every page answered ok and proven"
+[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == 10 ]] || fail "C: not every page answered ok and proven"
+# CH9: the tenth screen (B6.3) - on 4.25.0 its five result sets; on 4.24.1 no call, the gate's words
+chl=$(echo "$res" | grep '^page collectionhealth ' || true)
+if [[ "$DDV" == 4.25.0 ]]; then
+  [[ "$chl" == *" sets=5 "* && "$chl" == *"note="* && "$chl" != *"not read:"* ]] || fail "CH9a: the Collection Health screen on 4.25.0: $chl"
+  echo "ok   CH9a: Collection Health on 4.25.0 answers with its five result sets ($chl)"
+else
+  [[ "$chl" == *" sets=0 "*"note=not read: dbo.CollectionHealth_Get is not in this DBA Dash repository (it came with DBA Dash 4.25.0)"* ]] || fail "CH9c: the Collection Health screen on $DDV: $chl"
+  echo "ok   CH9c: Collection Health on $DDV is not called and says why"
+fi
 # the exact snapshot: one SnapshotDateUTC as the running page printed it, back through the sessions page
 SNAPTXT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["results"][0]; i=[c["name"] for c in s["columns"]].index("SnapshotDateUTC"); print(s["rows"][0][i] if s["rows"] else "")' "$TMPD/pages/running.json")
 [[ -n "$SNAPTXT" ]] || fail "C: the running page holds no snapshot to call back"
@@ -288,6 +299,9 @@ calls = {  # DBA Dash GUI's parameters for one instance, every status ticked (DB
   "dbfiles": ids + f"EXEC dbo.DBFilesReport_Get @InstanceIDs = @i, {st}, @FilegroupLevel = 1, @ShowHidden = 1",
   "configuration": f"EXEC dbo.Configuration_Get @InstanceIDs = '{idn}', @ShowHidden = 1",
   "alerts": f"EXEC dbo.Alerts_Get @InstanceIDs = '{idn}', @ShowHidden = 1",
+  # B6.3 (CH9a): 4.25.0's Collection Health as its GUI calls it by default (CollectionHealthView.cs), 4.25.0 only
+  **({"collectionhealth": ids + f"EXEC dbo.CollectionHealth_Get @InstanceIDs = @i, @FromDate = '{frm}', @ToDate = '{to}', @DetailMaxHours = 48, @GroupByInstance = 1, @IncludeSteps = 1, {st}"}
+     if os.environ.get("DDV") == "4.25.0" else {}),
   "sessions@snapshot": f"EXEC dbo.RunningQueries_Get @InstanceID = {idn}, @SnapshotDateFrom = '{snap}', @SnapshotDateTo = '{snap}'",
 }
 def dec(s):
@@ -389,12 +403,13 @@ for page, sqltext in calls.items():
     nonempty += rows_seen > 0
     print(f"ok   C: {page}: {len(sets)} set(s), rows {[len(r) for _, r in sets]}, equal" if not any(x.startswith(page) for x in bad) else f"FAIL C: {page}")
 if bad: print("\n".join("FAIL " + x for x in bad)); sys.exit(1)
-if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of 9 pages and the snapshot call returned rows"); sys.exit(1)
-print(f"ok   C: 9 pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of {len(calls) - 1} pages and the snapshot call returned rows"); sys.exit(1)
+print(f"ok   C: {len(calls) - 1} pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
 PY
-docker run --rm --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES=/w/pages \
+docker run --rm --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e DDV="$DDV" -e PAGES=/w/pages \
   -v "$TMPD:/w:ro" "$IMG_PY" sh -c 'pip install -q --disable-pip-version-check --root-user-action=ignore "pymssql>=2.3,<2.4" 2>&1 | tail -3 && python /w/grids.py' | tee "$TMPD/grids.out" || true
-grep -q "^ok   C: 9 pages and the exact snapshot" "$TMPD/grids.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
+NPG=9; [[ "$DDV" == 4.25.0 ]] && NPG=10
+grep -q "^ok   C: $NPG pages and the exact snapshot" "$TMPD/grids.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
 
 echo "== D. the actions, through pgvigil serve =="
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil
@@ -741,4 +756,4 @@ kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 
 echo "Not proven here: the buttons' machine-name and latest-snapshot guards in a browser;"
 echo "the 'volumes' mapping with rows when DBA Dash collected none ($n_vol here); a DBA Dash version other than $VER; Azure SQL Database rows."
-echo "proof-dbadash-door: OK (DBA Dash $VER; 9 pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's; every SQL Server tab of the door instance and of the imported server rendered in Chromium)"
+echo "proof-dbadash-door: OK (DBA Dash $VER; $NPG pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's; every SQL Server tab of the door instance and of the imported server rendered in Chromium)"

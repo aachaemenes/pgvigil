@@ -43,7 +43,10 @@ GRANT EXECUTE ON dbo.DrivesReport_Get          TO pgvigil_dbadash;
 GRANT EXECUTE ON dbo.DBFilesReport_Get         TO pgvigil_dbadash;
 GRANT EXECUTE ON dbo.Configuration_Get         TO pgvigil_dbadash;
 GRANT EXECUTE ON dbo.Alerts_Get                TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.CollectionHealth_Get     TO pgvigil_dbadash;  -- DBA Dash 4.25.0 and later only (4.24.1 has no such procedure: leave this line out)
 ```
+
+The Collection Health screen (DBA Dash 4.25.0's Checks > Collection Health, called with its GUI's defaults) reads nothing on a repository without `dbo.CollectionHealth_Get`, or without EXECUTE on it, and says which.
 
 SELECT on the dbo schema is needed beside EXECUTE: four of these procedures (AgentJobsReport_Get, DrivesReport_Get, DBFilesReport_Get, RunningQueries_Get) build their statement as dynamic SQL, which SQL Server runs with the caller's own rights. SELECT writes nothing. The login needs no other EXECUTE and must not have DBA Dash's `AppReadOnly` role or `db_owner`: `AppReadOnly` may run every `*_Get` procedure, and `dbo.Summary_Get` rewrites the Summary cache (below). `scripts/proof-dbadash-door.sh` checks that this login is refused an INSERT, `dbo.Summary_Upd` and `dbo.Summary_Get`.
 
