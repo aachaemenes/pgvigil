@@ -95,14 +95,33 @@ func (r *Repo) UIUserEnable(ctx context.Context, name string, enabled bool) erro
 	return nil
 }
 
-// UIUserRemove deletes a user.
+// UIUserRemove deletes a user, in one transaction with the user's personal views (0259's ui_views: a personal view is
+// its owner's alone); a shared view the user made stays, its owner NULL (the foreign key's ON DELETE SET NULL).
 func (r *Repo) UIUserRemove(ctx context.Context, name string) error {
-	t, err := r.pool.Exec(ctx, `DELETE FROM pgvigil.ui_users WHERE username = $1`, name)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return uiErr("remove", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var hasViews bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('pgvigil.ui_views') IS NOT NULL`).Scan(&hasViews); err != nil {
+		return uiErr("remove", err)
+	}
+	if hasViews {
+		if _, err := tx.Exec(ctx, `DELETE FROM pgvigil.ui_views v USING pgvigil.ui_users u
+ WHERE u.username = $1 AND v.owner_user_id = u.user_id AND NOT v.shared`, name); err != nil {
+			return uiErr("remove", err)
+		}
+	}
+	t, err := tx.Exec(ctx, `DELETE FROM pgvigil.ui_users WHERE username = $1`, name)
 	if err != nil {
 		return uiErr("remove", err)
 	}
 	if t.RowsAffected() == 0 {
 		return fmt.Errorf("remove: no user %q", name)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uiErr("remove", err)
 	}
 	return nil
 }
