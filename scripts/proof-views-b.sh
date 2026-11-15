@@ -97,18 +97,19 @@ NI=$(q "select count(*) from pgvigil.instances")
 TAG=$(q "select t from (select unnest(tags) t from pgvigil.instances) x group by t order by count(*) desc, t limit 1" 2>/dev/null || true)
 ok "setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), the demo fleet ($NI instances, 7 days), users $U1 and $U3 (shared editors) and $U2; a tag '${TAG:-none}'"
 
-# T: slow/groups' top
+# T: slow/groups' top (a T failure is counted and the browser cases still run: the red shows every row's reason)
+TF=0; tfail() { echo "FAIL T: $*"; TF=1; }
 FROM=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ); TO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 get() { curl -s -o "$WORK/out.json" -w '%{http_code} %{time_total} %{size_download}' -b "$J" -H 'X-Pgvigil: 1' "$U$1"; }
 read -r c _ _ <<< "$(get "/api/slow/groups?from=$FROM&to=$TO&min=0&group=instance&top=1000")"
-[[ $c == 200 ]] || fail "T: slow/groups top=1000: HTTP $c: $(head -c 200 "$WORK/out.json")"
+[[ $c == 200 ]] || tfail "slow/groups top=1000: HTTP $c: $(head -c 200 "$WORK/out.json")"
 read -r c _ _ <<< "$(get "/api/slow/groups?from=$FROM&to=$TO&min=0&group=instance&top=1001")"
-[[ $c == 400 ]] || fail "T: slow/groups top=1001: HTTP $c, want 400"
+[[ $c == 400 ]] || tfail "slow/groups top=1001: HTTP $c, want 400"
 read -r c secs bytes <<< "$(get "/api/slow/groups?from=$FROM&to=$TO&min=0&group=text&top=all")"
-[[ $c == 200 ]] || fail "T: slow/groups top=all: HTTP $c: $(head -c 200 "$WORK/out.json")"
-n=$(python3 -c "import json; d=json.load(open('$WORK/out.json')); print(len((d.get('groups') or {}).get('rows') or []))")
-(( n <= 5000 )) || fail "T: top=all returned $n groups, over 5,000"
-ok "T: top=1000 200, top=1001 400, top=all $n groups; THE ALL READ (fleet, group by text, 7 days): ${secs} s, ${bytes} bytes$(awk -v s="$secs" 'BEGIN { if (s > 2) print " - OVER 2 s: a finding" }')"
+n=$(python3 -c "import json; d=json.load(open('$WORK/out.json')); print(len((d.get('groups') or {}).get('rows') or []))" 2>/dev/null || echo 0)
+[[ $c == 200 ]] || tfail "slow/groups top=all: HTTP $c: $(head -c 200 "$WORK/out.json")"
+(( n <= 5000 )) || tfail "top=all returned $n groups, over 5,000"
+(( TF == 0 )) && ok "T: top=1000 200, top=1001 400, top=all $n groups; THE ALL READ (fleet, group by text, 7 days): ${secs} s, ${bytes} bytes$(awk -v s="$secs" 'BEGIN { if (s > 2) print " - OVER 2 s: a finding" }')"
 
 # the browser
 CDP=$(freeport)
@@ -120,5 +121,5 @@ MSSQL_I=$(q "select instance_id from pgvigil.instances where engine = 'sqlserver
 VB_U1=$U1 VB_U1PW=$U1PW VB_U2=$U2 VB_U2PW=$U2PW VB_TAG=$TAG VB_MSSQL=$MSSQL_I VB_CASES=${PGVIGIL_VB_CASES:-} \
   node "$SRC/scripts/views-b-check.mjs" "$CDP" "$U/" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}
-(( rc == 0 )) || fail "views-b-check: $(grep -c '^FAIL' "$WORK/check.txt") case(s) failed"
+(( rc == 0 && TF == 0 )) || fail "views-b-check: $(grep -c '^FAIL' "$WORK/check.txt") case(s) failed; T $( ((TF)) && echo failed || echo ok)"
 echo "PASS: proof-views-b"
