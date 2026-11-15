@@ -66,13 +66,32 @@
 #           member's alert after it.
 #      SL   one slow server: t1 alone through slowp (its own port), t2-t12 direct - t1's own 'slow connect' once on U
 #           and S, no fold, no other instance's; the delay lifted: resolved once.
+#      RT   B24h-1's query round trip through the service (P5a; the lead 11-15 06:1x: READ FROM THE VIEWS - B24h's alert
+#           arms are WIRING until the join writes 0300, so nothing is sent; P5b, the alert, runs at that join): t1-t12
+#           dialled through four proxies slowq1-slowq4 (each its own container and address: its own host), three each,
+#           that hold every frontend 'Q' and 'S' (a server answering late); round_trip_time at its default (0.040 s,
+#           warning). After 3 measured minutes through them (none slow, no fold) each 'Q' / 'S' held 0.1 s: within 480 s
+#           collector_round_trips slow on all 12, collector_probe_fold 'pgvigil-svc 4/4', collector_probe_findings'
+#           12 'query round trip slow' (t1's detail 'query round trip (network and the server's response) ... from
+#           pgvigil-svc; warning over 0.04...') and the fold's 'network slow from this collector' ('4 of the 4 hosts this
+#           collector reads are slow ...'), the 12 held under it (collector_probe_held), held hosts slowq1-slowq4, no
+#           ping row (no probe: no failure, no probe_every_minute); the delay lifted: no fold, nothing slow within 600 s.
+#      RT1  one slow host: t1 alone through slowq1, t2-t12 direct - after 0.1 s held: t1's 'query round trip slow'
+#           alone, no fold (1 of the 2 judged hosts slowq1 and target), nothing held; lifted: nothing slow.
+#      RT2  the ping (P5a's ping half; B24h-1's probe is the TCP handshake to the address the instance dialled, which a
+#           proxy cannot slow: the kernel completes it before accept()): tc netem's 50 ms delay on slowq1-slowq4's own
+#           interface from a sidecar sharing each one's network (NET_ADMIN on the sidecar only; an image of
+#           debian:trixie-slim + iproute2 built here), the service with probe_every_minute: within 540 s every
+#           instance's ping_slow (method tcp, its host about 0.05 s over ping_time's 0.010 s), the four hosts' own 'ping
+#           slow' rows (source pgvigil repository) and the 12 instances' (held), the fold 4/4 holding every instance's
+#           'ping slow'; the delay removed. A sidecar or image the box refuses: 'NOT PROVEN RT2: <why>', not a FAIL.
 #   U  uninstall (the join fold, last: the service is gone after it): `pgvigil uninstall` in the service's container
 #      retires the host in the repository it keeps (pgvigil.import_collector_retire); the page says retired; no
 #      'collector or network' follows (B shows the one a host that only stopped raises)
 #   (in A) W  serve's watchdog at its first answer 'starting' or 'on', never empty (DONE-2 N12), then 'on'.
 #          W2 a second serve whose alerts login accepts and never answers: 'starting' at its first answer, then
 #          'off: the alerts login: ...' once the 20 s ping ends (W alone cannot fail: a local login answers first).
-# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G SC5 SC6 SC4 BH SV SC7 SL U); unset = all.
+# PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G SC5 SC6 SC4 BH SV SC7 SL RT RT1 RT2 U); unset = all.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .vis/spool-evidence .vis/collector-shots   # fetched back by the box job even when no case wrote to them
@@ -84,6 +103,7 @@ fp() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 PW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 RP=$(fp); TP=$(fp); SP=$(fp); CDP=$(fp)
 NET=pgvch-$$; REPO=pgvch-repo-$$; TGT=pgvch-tgt-$$; TGT2=pgvch-tgt2-$$; SVC=pgvch-svc-$$; SLP=pgvch-slowp-$$; IMG=pgvigil-proof-systemd:1
+SLQ=pgvch-slowq-$$; TCI=pgvigil-proof-tc:1   # RT: the four query-delaying proxies $SLQ-1..4; RT2: the tc sidecar's image
 SRV=""; CHR=""; SECOND=""; SRV2=""; HANG=""
 cleanup() {
   [[ -n "$CHR" ]] && kill -- -"$CHR" 2>/dev/null || true
@@ -91,9 +111,9 @@ cleanup() {
   [[ -n "$SECOND" ]] && kill "$SECOND" 2>/dev/null || true
   [[ -n "$SRV2" ]] && kill "$SRV2" 2>/dev/null || true
   [[ -n "$HANG" ]] && kill "$HANG" 2>/dev/null || true
-  docker rm -f -v "$SVC" "$TGT" "$TGT2" "$SLP" "$REPO" >/dev/null 2>&1 || true
+  docker rm -f -v "$SVC" "$TGT" "$TGT2" "$SLP" "$SLQ-1" "$SLQ-2" "$SLQ-3" "$SLQ-4" "$REPO" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
-  for c in "$SVC" "$TGT" "$TGT2" "$SLP" "$REPO"; do docker inspect "$c" >/dev/null 2>&1 && echo "container $c LEFT"; done
+  for c in "$SVC" "$TGT" "$TGT2" "$SLP" "$SLQ-1" "$SLQ-2" "$SLQ-3" "$SLQ-4" "$REPO"; do docker inspect "$c" >/dev/null 2>&1 && echo "container $c LEFT"; done
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -586,7 +606,7 @@ page=$(api '' | jget repository | python3 -c "import json,sys; r=json.load(sys.s
 fi
 
 # ---- SC the scale arm (the last cases: they change the service's instance list) ------------------------------------
-if want SC5 || want SC6 || want SC4 || want BH || want SV || want SC7 || want SL; then
+if want SC5 || want SC6 || want SC4 || want BH || want SV || want SC7 || want SL || want RT || want RT1 || want RT2; then
 for n in 5 6 7 8 9 10 11 12; do psql "$TDSN" -Xq -v ON_ERROR_STOP=1 -c "create role l$n login password 'p$n' in role pg_monitor" -c "create database db$n owner l$n" >/dev/null; done
 instances12() { # $1 host, $2 port: t1-t12, each with 'activity' every 10 s (a cut at :20 reaches every cut instance in its first minute)
   local n; for n in $(seq 1 12); do printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n    schedules: {activity: 10s}\n' "$n" "$1" "$2" "$n" "$n" "$n"; done
@@ -861,6 +881,167 @@ if want SC7 || want SL; then
   [[ "$sc_thr" != done || "$sc_thr2" == done ]] || fail "SC7 / SL: the root's connect_time row ended ('inherit'): '$sc_thr2'"
 fi
 # ---- SC7 / SL end
+# ---- RT / RT1 / RT2 B24h-1's query round trip and probe through the service (P5a: read from the views; the header's
+# rows). slowq: one listener (argument 1) passing everything to target:5432, the frontend's untyped startup as it
+# comes, then each 'Q' (a simple query) and 'S' (an extended-protocol Sync) held /tmp/qdelay seconds (none: 0) first
+if want RT || want RT1 || want RT2; then
+  cat > "$WORK/slowq.py" <<'PY'
+import asyncio, struct, sys
+
+def qdelay():
+    try:
+        with open('/tmp/qdelay') as f:
+            return float(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+
+async def back(r, w):
+    try:
+        while True:
+            b = await r.read(65536)
+            if not b:
+                break
+            w.write(b)
+            await w.drain()
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        w.close()
+
+async def front(r, w):
+    try:
+        while True:  # the untyped startup; an SSLRequest / GSSENCRequest first is answered by the server, then the startup
+            n = struct.unpack('!I', await r.readexactly(4))[0]
+            body = await r.readexactly(n - 4)
+            w.write(struct.pack('!I', n) + body)
+            await w.drain()
+            if struct.unpack('!I', body[:4])[0] not in (80877103, 80877104):
+                break
+        while True:
+            hdr = await r.readexactly(5)
+            body = await r.readexactly(struct.unpack('!I', hdr[1:])[0] - 4)
+            if hdr[:1] in (b'Q', b'S'):
+                d = qdelay()
+                if d > 0:
+                    await asyncio.sleep(d)
+            w.write(hdr + body)
+            await w.drain()
+    except (asyncio.IncompleteReadError, ConnectionError, OSError, struct.error):
+        pass
+    finally:
+        w.close()
+
+async def handle(cr, cw):
+    try:
+        ur, uw = await asyncio.open_connection('target', 5432)
+    except OSError:
+        cw.close()
+        return
+    await asyncio.gather(front(cr, uw), back(ur, cw))
+
+async def main():
+    s = await asyncio.start_server(handle, '0.0.0.0', int(sys.argv[1]))
+    print('slowq on', sys.argv[1], flush=True)
+    await s.serve_forever()
+
+asyncio.run(main())
+PY
+  docker image inspect python:3-slim >/dev/null 2>&1 || docker pull -q python:3-slim >/dev/null || fail "RT: docker pull python:3-slim"
+  for k in 1 2 3 4; do docker run -d --name "$SLQ-$k" --network "$NET" --network-alias "slowq$k" -v "$WORK/slowq.py:/slowq.py:ro" python:3-slim python3 -u /slowq.py 6001 >/dev/null; done
+  for k in 1 2 3 4; do for _ in $(seq 1 30); do docker logs "$SLQ-$k" 2>&1 | grep -q 'slowq on' && break; sleep 1; done; done
+  qslow() { local k; for k in 1 2 3 4; do docker exec "$SLQ-$k" sh -c "echo $1 > /tmp/qdelay"; done; }
+  rt_head() { printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\n%binstances:\n' "$PW" "${1:-}"; }
+  rt_inst() { printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n    schedules: {activity: 10s}\n' "$1" "$2" "$3" "$1" "$1" "$1"; }
+  { rt_head; for n in $(seq 1 12); do rt_inst "$n" "slowq$(( (n - 1) / 3 + 1 ))" 6001; done; alerts_of /work; } > "$WORK/svc-rt.yaml"
+  { rt_head; rt_inst 1 slowq1 6001; for n in $(seq 2 12); do rt_inst "$n" target 5432; done; alerts_of /work; } > "$WORK/svc-rt1.yaml"
+  { rt_head 'probe_every_minute: true\n'; for n in $(seq 1 12); do rt_inst "$n" "slowq$(( (n - 1) / 3 + 1 ))" 6001; done; alerts_of /work; } > "$WORK/svc-rt2.yaml"
+  rt_dial() { docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/$1 /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"; }
+  # rt_through NAMES TARGET N: N of the instances NAMES (a regex) with 3 or more measured round trips through TARGET (a
+  # LIKE pattern) in the last 8 minutes
+  rt_through() { waitfor 420 "SELECT count(*) = $3 FROM (SELECT l.instance_id FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name ~ '^($1)\$' AND l.target LIKE '$2' AND l.rt_count > 0 AND l.minute > now() - interval '8 minutes' GROUP BY 1 HAVING count(*) >= 3) x"; }
+  RT12='t([1-9]|1[0-2])'
+  rt_slow() { q "SELECT coalesce(string_agg(name, ' ' ORDER BY name), '-') FROM pgvigil.collector_round_trips WHERE slow" || echo error; }
+  rt_fold() { q "SELECT coalesce(string_agg(collector_host || ' ' || slow_hosts || '/' || hosts, '; '), '-') FROM pgvigil.collector_probe_fold" || echo error; }
+  NOSLOW="SELECT NOT EXISTS (SELECT 1 FROM pgvigil.collector_probe_fold) AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_round_trips WHERE slow)"
+fi
+if want RT; then
+  rt_dial svc-rt.yaml
+  rt_in=1; rt_through "$RT12" 'postgres:slowq_:6001' 12 || rt_in=0
+  rt_b=$(rt_slow); rt_bf=$(rt_fold)
+  qslow 0.1; rt_t0=$SECONDS
+  rt_tp=-1; waitfor 480 "SELECT count(*) = 12 FROM pgvigil.collector_round_trips WHERE slow AND name ~ '^($RT12)\$'" && rt_tp=$((SECONDS - rt_t0))
+  rt_f=$(rt_fold)
+  rt_n=$(q "SELECT count(*) FROM pgvigil.collector_probe_findings WHERE setting = 'query round trip slow' AND source = 'pgvigil collector' AND value ~ '^($RT12)\$'" || echo error)
+  rt_fd=$(q "SELECT coalesce(max(detail), '-') FROM pgvigil.collector_probe_findings WHERE setting = 'network slow from this collector' AND value = 'pgvigil-svc' AND source = 'pgvigil repository'" || echo error)
+  rt_h=$(q "SELECT count(DISTINCT instance_id) || ' ' || count(*) FILTER (WHERE setting = 'query round trip slow') FROM pgvigil.collector_probe_held" || echo error)
+  rt_hh=$(q "SELECT coalesce(string_agg(host, ' ' ORDER BY host), '-') FROM pgvigil.collector_probe_held_hosts" || echo error)
+  rt_a=$(q "SELECT coalesce(min(avg_s) || ' - ' || max(avg_s) || ' s', '-') FROM pgvigil.collector_round_trips WHERE name ~ '^($RT12)\$'" || echo error)
+  rt_d=$(q "SELECT coalesce(max(detail), '-') FROM pgvigil.collector_probe_findings WHERE setting = 'query round trip slow' AND value = 't1'" || echo error)
+  rt_p=$(q "SELECT count(*) FROM pgvigil.collector_probe_findings WHERE setting IN ('ping slow', 'host not answering ping')" || echo error)
+  qslow 0; rt_t1=$SECONDS
+  rt_tr=-1; waitfor 600 "$NOSLOW" && rt_tr=$((SECONDS - rt_t1))
+  if [[ "$rt_in" == 1 && "$rt_b" == - && "$rt_bf" == - && "$rt_tp" -ge 0 && "$rt_f" == "pgvigil-svc 4/4" && "$rt_n" == 12 \
+        && "$rt_fd" == "4 of the 4 hosts this collector reads are slow"* && "$rt_h" == "12 12" && "$rt_hh" == "slowq1 slowq2 slowq3 slowq4" \
+        && "$rt_d" == "query round trip (network and the server's response) "*"from pgvigil-svc; warning over 0.04"* && "$rt_p" == 0 && "$rt_tr" -ge 0 ]]; then
+    ok "RT: t1-t12 through slowq1-slowq4 with each 'Q' / 'S' held 0.1 s - all 12 slow $rt_tp s after (averages $rt_a), the fold '$rt_f' ('$(echo "$rt_fd" | cut -c1-120)'), 12 'query round trip slow' held under it, held hosts '$rt_hh', no ping row; t1 '$(echo "$rt_d" | cut -c1-160)'; lifted: no fold, nothing slow $rt_tr s after"
+  else
+    fail "RT: the 12 through slowq $rt_in (want 1); before the delay slow '$rt_b' fold '$rt_bf' (want - / -); all 12 slow after $rt_tp s (want 0-480); fold '$rt_f' (want 'pgvigil-svc 4/4'); findings $rt_n (want 12); the fold's row '$(echo "$rt_fd" | cut -c1-160)'; held '$rt_h' (want '12 12'), held hosts '$rt_hh'; averages $rt_a; t1 '$(echo "$rt_d" | cut -c1-200)'; ping rows $rt_p (want 0); lifted after $rt_tr s (want 0-600)"
+  fi
+fi
+if want RT1; then
+  rt_dial svc-rt1.yaml
+  r1_in=1; rt_through t1 'postgres:slowq1:6001' 1 || r1_in=0; rt_through 't([2-9]|1[0-2])' 'postgres:target:5432' 11 || r1_in=0
+  waitfor 600 "$NOSLOW" || true; r1_b=$(rt_slow)
+  qslow 0.1; r1_t0=$SECONDS
+  r1_tp=-1; waitfor 480 "SELECT count(*) = 1 FROM pgvigil.collector_round_trips WHERE slow AND name = 't1'" && r1_tp=$((SECONDS - r1_t0))
+  sleep 60   # one minute more: no other instance turns slow, no fold forms
+  r1_s=$(rt_slow); r1_f=$(rt_fold)
+  r1_n=$(q "SELECT coalesce(string_agg(setting || ' ' || value, ', ' ORDER BY setting, value), '-') FROM pgvigil.collector_probe_findings" || echo error)
+  r1_h=$(q "SELECT count(*) FROM pgvigil.collector_probe_held" || echo error)
+  r1_hosts=$(q "SELECT coalesce(string_agg(DISTINCT host, ' ' ORDER BY host), '-') FROM pgvigil.collector_probe_judged" || echo error)
+  qslow 0; r1_t1=$SECONDS
+  r1_tr=-1; waitfor 600 "$NOSLOW" && r1_tr=$((SECONDS - r1_t1))
+  if [[ "$r1_in" == 1 && "$r1_b" == - && "$r1_tp" -ge 0 && "$r1_s" == t1 && "$r1_f" == - && "$r1_n" == "query round trip slow t1" && "$r1_h" == 0 \
+        && "$r1_hosts" == "slowq1 target" && "$r1_tr" -ge 0 ]]; then
+    ok "RT1: t1 alone through slowq1 held 0.1 s, t2-t12 direct - t1 slow $r1_tp s after, its 'query round trip slow' alone, no fold (judged hosts '$r1_hosts'), nothing held; lifted: nothing slow $r1_tr s after"
+  else
+    fail "RT1: t1 through slowq1 and the rest direct $r1_in (want 1); slow before '$r1_b' (want -); t1 slow after $r1_tp s (want 0-480); slow '$r1_s' (want t1); fold '$r1_f' (want -); findings '$r1_n' (want 'query round trip slow t1'); held $r1_h (want 0); judged hosts '$r1_hosts' (want 'slowq1 target'); lifted after $r1_tr s (want 0-600)"
+  fi
+fi
+if want RT2; then
+  r2_why=""
+  if ! docker image inspect "$TCI" >/dev/null 2>&1; then
+    mkdir -p "$WORK/tcimg"
+    printf 'FROM debian:trixie-slim\nRUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends iproute2 >/dev/null && rm -rf /var/lib/apt/lists/*\n' > "$WORK/tcimg/Dockerfile"
+    docker build -q -t "$TCI" "$WORK/tcimg" >/dev/null 2>"$WORK/tcimg.err" || r2_why="the tc image did not build: $(tail -2 "$WORK/tcimg.err" | tr '\n' ' ' | cut -c1-200)"
+  fi
+  tcq() { docker run --rm --net "container:$1" --cap-add NET_ADMIN "$TCI" sh -c "$2" 2>&1; }
+  if [[ -z "$r2_why" ]]; then
+    for k in 1 2 3 4; do e=$(tcq "$SLQ-$k" 'tc qdisc add dev eth0 root netem delay 50ms') || { r2_why="tc netem on slowq$k: $(echo "$e" | tail -2 | tr '\n' ' ' | cut -c1-200)"; break; }; done
+  fi
+  if [[ -n "$r2_why" ]]; then
+    echo "NOT PROVEN RT2: $r2_why"
+  else
+    qslow 0; rt_dial svc-rt2.yaml; r2_t0=$SECONDS
+    r2_tp=-1; waitfor 540 "SELECT count(*) = 12 FROM pgvigil.collector_probe_judged WHERE ping_slow AND name ~ '^($RT12)\$'" && r2_tp=$((SECONDS - r2_t0))
+    r2_m=$(q "SELECT coalesce(string_agg(DISTINCT method, ' '), '-') || ' ' || coalesce(min(ping_avg_s) || ' - ' || max(ping_avg_s) || ' s', '-') FROM pgvigil.collector_probe_judged WHERE name ~ '^($RT12)\$'" || echo error)
+    r2_hr=$(q "SELECT coalesce(string_agg(value, ' ' ORDER BY value), '-') FROM pgvigil.collector_probe_findings WHERE setting = 'ping slow' AND source = 'pgvigil repository'" || echo error)
+    r2_ir=$(q "SELECT count(*) FROM pgvigil.collector_probe_findings WHERE setting = 'ping slow' AND source = 'pgvigil collector'" || echo error)
+    r2_f=$(rt_fold); r2_h=$(q "SELECT count(*) FROM pgvigil.collector_probe_held WHERE setting = 'ping slow'" || echo error)
+    for k in 1 2 3 4; do tcq "$SLQ-$k" 'tc qdisc del dev eth0 root' >/dev/null || true; done
+    if [[ "$r2_tp" -ge 0 && "$r2_m" == "tcp 0.0"* && "$r2_hr" == "slowq1 slowq2 slowq3 slowq4" && "$r2_ir" == 12 && "$r2_f" == "pgvigil-svc 4/4" && "$r2_h" == 12 ]]; then
+      ok "RT2: tc netem's 50 ms on slowq1-slowq4 (a sidecar on each one's network), probe_every_minute - every instance's ping slow $r2_tp s after ('$r2_m'), the hosts' rows '$r2_hr', 12 instance rows, the fold '$r2_f' holding the 12; the delay removed"
+    else
+      fail "RT2: all 12 ping_slow after $r2_tp s (want 0-540); method and averages '$r2_m' (want tcp, about 0.05 s); host rows '$r2_hr' (want slowq1-slowq4); instance rows $r2_ir (want 12); fold '$r2_f' (want 'pgvigil-svc 4/4'); held ping $r2_h (want 12)"
+    fi
+  fi
+fi
+if want RT || want RT1 || want RT2; then
+  # the dial back first (slowq still answers while the service restarts), then the four proxies removed
+  docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc12.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
+  for k in 1 2 3 4; do docker rm -f -v "$SLQ-$k" >/dev/null 2>&1 || true; done
+fi
+# ---- RT / RT1 / RT2 end
 # shellcheck disable=SC2086
 logins login $ALL12
 fi
