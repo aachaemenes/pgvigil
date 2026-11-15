@@ -131,3 +131,36 @@ func ParseVersion(def string) (version, date string, ok bool) {
 func Newer(a, b string) bool {
 	return len(a) == 8 && len(b) == 8 && strings.Compare(a, b) > 0
 }
+
+// Version is a kit's version as pgvigil was checked against it (shapes.json's pinned pass; pinned_test.go keeps the
+// two equal): the kit, the version string and its date (yyyymmdd).
+type Version struct {
+	Kit, Version, Date string
+}
+
+// Tools are the 13 community procedures pgvigil runs (the Run path; sp_WhoIsActive the collector too).
+var Tools = []string{"sp_Blitz", "sp_BlitzCache", "sp_BlitzFirst", "sp_BlitzIndex", "sp_BlitzLock", "sp_BlitzWho",
+	"sp_PressureDetector", "sp_QuickieStore", "sp_HumanEventsBlockViewer", "sp_HealthParser", "sp_LogHunter", "sp_IndexCleanup",
+	"sp_WhoIsActive"}
+
+var checked = map[string]Version{
+	"sp_Blitz": {"First Responder Kit", "8.34", "20260702"}, "sp_BlitzCache": {"First Responder Kit", "8.34", "20260702"},
+	"sp_BlitzFirst": {"First Responder Kit", "8.34", "20260702"}, "sp_BlitzIndex": {"First Responder Kit", "8.34", "20260702"},
+	"sp_BlitzLock": {"First Responder Kit", "8.34", "20260702"}, "sp_BlitzWho": {"First Responder Kit", "8.34", "20260702"},
+	"sp_PressureDetector": {"DarlingData", "6.11", "20261101"}, "sp_QuickieStore": {"DarlingData", "6.11", "20261101"},
+	"sp_HumanEventsBlockViewer": {"DarlingData", "5.11", "20261101"}, "sp_HealthParser": {"DarlingData", "3.11", "20261101"},
+	"sp_LogHunter": {"DarlingData", "3.11", "20261101"}, "sp_IndexCleanup": {"DarlingData", "2.11", "20261101"},
+	"sp_WhoIsActive": {"sp_WhoIsActive", "v2200.20260409", "20260409"},
+}
+
+// Checked is the version pgvigil was checked against for a tool it runs (false: not one of them).
+func Checked(tool string) (Version, bool) {
+	v, ok := checked[tool]
+	return v, ok
+}
+
+// NewerThanChecked says whether an installed version dated date is newer than the one pgvigil was checked against.
+func NewerThanChecked(tool, date string) bool {
+	c, ok := Checked(tool)
+	return ok && Newer(date, c.Date)
+}

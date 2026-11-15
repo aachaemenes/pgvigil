@@ -1,4 +1,4 @@
--- 0201_kit_findings: KITWATCH K4.2 (the design's F15 / F16) - the collector's sp_WhoIsActive fallback seen.
+-- 0201_kit_findings: KITWATCH K4.2 (the design's F15 / F16) - the collector's sp_WhoIsActive fallback seen; and K4.3 (F14) - the kits' versions per instance (mssql_kit_versions, import_mssql_kits, kit_versions_fleet).
 --
 -- mssql_requests runs sp_WhoIsActive and reads 14 of its columns by name; when the call fails the DMV read runs
 -- instead and the run is 'partial' with the note 'sp_WhoIsActive: <the server's error> (error <n>); the DMV read ran
@@ -53,3 +53,53 @@ SELECT s.instance_id,
  WHERE s.runs >= 5 AND s.newest - s.since >= interval '5 minutes';
 
 COMMENT ON VIEW pgvigil.kit_findings IS 'KITWATCH K4.2: sp_WhoIsActive unusable (a streak of the collector''s fallback with a shape-class error) or failing (another error), in the findings shape; joined into the findings union by its owner (WIRING).';
+
+-- KITWATCH K4.3 (F14): the community procedures as installed per SQL Server instance, read daily from their
+-- definitions by mssql_kits (internal/mssql/kits.go; nothing of the kits executed), kept as last read: each read
+-- replaces the instance's rows. The Community tools page shows them beside the versions pgvigil was checked against
+-- (internal/community/kits); kit_versions_fleet is the fleet's one line per procedure and version.
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_kit_versions (
+  instance_id     int NOT NULL REFERENCES pgvigil.instances ON DELETE CASCADE,
+  database_name   text NOT NULL,
+  procedure_name  text NOT NULL,
+  version         text NOT NULL DEFAULT '',
+  version_date    text NOT NULL DEFAULT '',   -- yyyymmdd, '' when the definition said none
+  modify_date     text NOT NULL DEFAULT '',
+  readable        boolean NOT NULL,           -- false: the login has no VIEW DEFINITION on it
+  read_at         timestamptz NOT NULL,
+  PRIMARY KEY (instance_id, database_name, procedure_name)
+);
+COMMENT ON TABLE pgvigil.mssql_kit_versions IS 'KITWATCH K4.3: the community procedures installed on a SQL Server instance and their versions from their definitions, as last read (mssql_kits).';
+
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_kits(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_rows jsonb := CASE WHEN jsonb_typeof(p_payload) = 'array' THEN p_payload ELSE '[]'::jsonb END;
+BEGIN
+  IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
+    RAISE EXCEPTION 'import_mssql_kits: instance % is not a SQL Server instance', p_instance_id;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'read') THEN
+    RAISE EXCEPTION 'import_mssql_kits: the payload has no read row';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.mssql_kits'), p_instance_id);
+  -- an older read arriving late changes nothing
+  IF EXISTS (SELECT 1 FROM pgvigil.mssql_kit_versions WHERE instance_id = p_instance_id AND read_at > p_snapshot_at) THEN
+    RETURN;
+  END IF;
+  DELETE FROM pgvigil.mssql_kit_versions WHERE instance_id = p_instance_id;
+  INSERT INTO pgvigil.mssql_kit_versions (instance_id, database_name, procedure_name, version, version_date, modify_date, readable, read_at)
+  SELECT DISTINCT ON (r->>'database_name', r->>'procedure_name')
+         p_instance_id, r->>'database_name', r->>'procedure_name', coalesce(r->>'version', ''), coalesce(r->>'version_date', ''),
+         coalesce(r->>'modify_date', ''), coalesce((r->>'readable')::boolean, false), p_snapshot_at
+    FROM jsonb_array_elements(v_rows) r
+   WHERE r->>'kind' = 'proc' AND coalesce(r->>'database_name', '') <> '' AND coalesce(r->>'procedure_name', '') <> '';
+END $$;
+
+-- the fleet: one line per procedure and version (an unreadable or unversioned definition is the version '')
+CREATE OR REPLACE VIEW pgvigil.kit_versions_fleet AS
+SELECT k.procedure_name, k.version, k.version_date, count(DISTINCT k.instance_id)::int AS instances,
+       bool_or(NOT k.readable) AS some_not_readable, max(k.read_at) AS newest_read
+  FROM pgvigil.mssql_kit_versions k
+  JOIN pgvigil.instances i ON i.instance_id = k.instance_id AND i.is_active
+ GROUP BY k.procedure_name, k.version, k.version_date;
