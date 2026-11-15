@@ -63,5 +63,16 @@
     "begin": "dows.wait_type = N'SLEEP_TASK'\n             AND ISNULL(",
     "end": "CASE WHEN @sample_seconds > 0 THEN 0. ELSE 1000. END",
     "sha256": ""
+  },
+  {
+    "name": "configDefaultList",
+    "go_file": "internal/mssql/checks.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "Install-All-Scripts.sql",
+    "follows": "8.34 (20260702), sp_Blitz's #ConfigurationDefaults (109 rows)",
+    "begin": "We'll make our own list here.",
+    "end": ");",
+    "sha256": "",
+    "item_re": "\\(\\s*'([^']+)'\\s*,\\s*-?\\d+\\s*,\\s*\\d+\\s*\\)"
   }
 ]
