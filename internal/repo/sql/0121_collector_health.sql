@@ -1045,17 +1045,23 @@ UNION ALL
 -- failed' row of the last day (collection_log, collection 'job_stats_hourly') with no 'rollup healed' row of that
 -- source after it (the heal writes one when it rebuilds a range that was logged). The runs are stored and the alerting
 -- grid reads them; the fleet Jobs page's 7-day columns are behind. A failing range is logged once an hour, so the
--- newest row stands for the whole fault and the heal clears it (not 'the last hour': that would drop between rows)
+-- newest row stands for the whole fault and the heal clears it (not 'the last hour': that would drop between rows).
+-- 'After' is by log_id: both writers hold the instance's lock, so log_id follows their order, while snapshot_at is the
+-- transaction's start (a heal and a failure of one statement share it). collection_log_job_stats_idx (below) serves both reads
 SELECT f.instance_id, 'warning', 'job statistics not rolled up', f.src, true, 'the hours rebuilt by the next import or pgvigil purge', 'all',
        f.note, 'pgvigil collector', f.snapshot_at
   FROM (SELECT DISTINCT ON (l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'))
-               l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours') AS src, l.note, l.snapshot_at
+               l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours') AS src, l.note, l.snapshot_at, l.log_id
           FROM pgvigil.collection_log l
          WHERE l.collection = 'job_stats_hourly' AND l.status = 'error' AND l.note LIKE 'rollup failed for the %'
            AND l.snapshot_at > now() - interval '1 day'
-         ORDER BY l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'), l.snapshot_at DESC) f
+         ORDER BY l.instance_id, substring(l.note FROM '^rollup failed for the ([a-z_]+) hours'), l.log_id DESC) f
   JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
  WHERE f.src IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_log h
                     WHERE h.instance_id = f.instance_id AND h.collection = 'job_stats_hourly' AND h.status = 'ok'
-                      AND h.note LIKE 'rollup healed: the ' || f.src || ' hours %' AND h.snapshot_at >= f.snapshot_at);
+                      AND h.note LIKE 'rollup healed: the ' || f.src || ' hours %' AND h.log_id > f.log_id);
+
+-- the job statistics' rows of collection_log (0139's 'rollup failed' / 'rollup healed'), per instance newest first: the
+-- arm 'job statistics not rolled up' above reads only these (the log keeps every collection's errors and skips)
+CREATE INDEX IF NOT EXISTS collection_log_job_stats_idx ON pgvigil.collection_log (instance_id, log_id DESC) WHERE collection = 'job_stats_hourly';

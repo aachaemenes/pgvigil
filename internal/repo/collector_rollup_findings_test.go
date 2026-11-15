@@ -14,8 +14,10 @@ import (
 // (FLEET STATS ROLLUP, 0139's 'rollup failed' rows in collection_log): one finding per instance and source while its
 // newest 'rollup failed' row of the last day has no 'rollup healed' row of that source after it - warning, source
 // 'pgvigil collector', the value the source, the detail the row's note; a 'rollup healed' row clears it; a failure
-// after the heal raises it again; a row older than a day raises nothing; another source's heal does not clear it.
-// The rows are written as 0139 writes them (job_stats_failed / job_stats_heal's notes), so the store needs no 0139.
+// after the heal raises it again; a row older than a day raises nothing; another source's heal does not clear it; a
+// heal and then a failure in ONE transaction (one now(): equal snapshot_at) leave the finding standing ('after' is by
+// log_id). Most rows are written in 0139's note shape by hand (the store needs no 0139); on a store with 0139 one
+// instance's rows come from 0139's own job_stats_failed and job_stats_heal_one, so a change of their notes shows here.
 func TestCollectorFindingsRollupNotRolledUp(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -28,18 +30,18 @@ func TestCollectorFindingsRollupNotRolledUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	var a, b int
+	var a, b, c int
 	sfx := time.Now().UnixNano() % 1000000000
-	for i, id := range []*int{&a, &b} {
+	for i, id := range []*int{&a, &b, &c} {
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
 			fmt.Sprintf("rollupfind-%d-%d", i, sfx)).Scan(id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
-		c, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		cx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stop()
-		if _, err := pool.Exec(c, `DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2)`, a, b); err != nil {
+		if _, err := pool.Exec(cx, `DELETE FROM pgvigil.instances WHERE instance_id IN ($1, $2, $3)`, a, b, c); err != nil {
 			t.Logf("cleanup: %v", err)
 		}
 	})
@@ -88,4 +90,38 @@ func TestCollectorFindingsRollupNotRolledUp(t *testing.T) {
 	want("a failure after the heal raises it again, one per source", findings(a), "warning job_runs pgvigil collector, warning mssql_job_runs pgvigil collector")
 	logRow(b, 26*time.Hour, "error", failed("mssql_job_runs"))
 	want("a row older than a day raises nothing", findings(b), "none")
+
+	// a heal, then a failure, in one transaction: equal snapshot_at, the failure is the newer
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range [][2]string{{"ok", healed("job_runs")}, {"error", failed("job_runs")}} {
+		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note) VALUES ($1, 'job_stats_hourly', now(), $2, $3)`, b, r[0], r[1]); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want("a heal then a failure in one transaction: the failure stands", findings(b), "warning job_runs pgvigil collector")
+
+	// 0139's own writers, where the store has them
+	var with0139 bool
+	if err := pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.job_stats_heal_one(integer)') IS NOT NULL`).Scan(&with0139); err != nil {
+		t.Fatal(err)
+	}
+	if !with0139 {
+		t.Log("no 0139 on this store: its own writers not driven")
+		return
+	}
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.job_stats_failed($1, 'mssql_job_runs', now() - interval '2 hours', now() - interval '1 hour', 'a table in the way')`, c); err != nil {
+		t.Fatal(err)
+	}
+	want("0139's job_stats_failed raises it", findings(c), "warning mssql_job_runs pgvigil collector")
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.job_stats_heal_one($1)`, c); err != nil {
+		t.Fatal(err)
+	}
+	want("0139's heal ('rollup healed') clears it", findings(c), "none")
 }

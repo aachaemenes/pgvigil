@@ -510,8 +510,8 @@ SELECT c.relname
 // JobStatsHeal builds the job statistics' hours (0139) of every instance still waiting - a failed rollup, a lapsed
 // history import, the first build after the upgrade (pgvigil.job_stats_pending) - each instance in its own statement
 // and transaction (job_stats_heal_one), never all in one. It returns the instances built, their hour rows and the
-// instances that failed (they stay for the next run; the failure goes to the collection log). A store without 0139
-// heals nothing.
+// instances that failed (they stay for the next run; the failure goes to the collection log as a trigger's does). A
+// store without 0139 heals nothing.
 func (r *Repo) JobStatsHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
 	var have bool
 	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.job_stats_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
@@ -541,8 +541,14 @@ func (r *Repo) JobStatsHeal(ctx context.Context) (instances int, hourRows int64,
 				return instances, hourRows, failed, ctx.Err()
 			}
 			failed++
-			_, _ = r.pool.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
-			                         VALUES ($1, 'job_stats_hourly', now(), 'error', 'rollup heal failed in purge (the hours stay for the next run): ' || $2)`,
+			// recorded as a trigger's failure is (0139's job_stats_failed: per source, merged into the instance's dirty
+			// range, a 'rollup failed' row at most once an hour - the Collector page's finding reads it); an instance
+			// whose first build failed has no range yet: its whole range is queued again
+			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.job_stats_failed($1, s.source, s.from_at, s.to_at, 'in pgvigil purge: ' || $2)
+			                           FROM (SELECT d.source, d.from_at, d.to_at FROM pgvigil.job_stats_dirty d WHERE d.instance_id = $1
+			                                 UNION ALL
+			                                 SELECT x, '-infinity'::timestamptz, 'infinity'::timestamptz FROM unnest(ARRAY['mssql_job_runs', 'job_runs']) x
+			                                  WHERE NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_dirty d WHERE d.instance_id = $1)) s`,
 				id, err.Error())
 			continue
 		}
