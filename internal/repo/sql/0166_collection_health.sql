@@ -327,7 +327,8 @@ WITH r AS (
     FROM t
 )
 SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autovacuum behind'::text AS setting,
-       coalesce(v.parent || ' / ', '') || v.relname AS value, NULL::boolean AS is_set,
+       -- relname is type name (collation "C"): the default collation, as every findings arm's value (0110's view)
+       (coalesce(v.parent || ' / ', '') || v.relname)::text COLLATE "default" AS value, NULL::boolean AS is_set,
        'the repository''s autovacuum settings (autovacuum_max_workers, the table''s reloptions), or a VACUUM of the table'::text AS suggested,
        'all'::text AS platforms,
        format('%s dead tuple(s), %s live; autovacuum''s own trigger is %s; last vacuumed %s', v.n_dead_tup, v.n_live_tup,
